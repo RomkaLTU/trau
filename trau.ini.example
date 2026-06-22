@@ -1,0 +1,161 @@
+# Trau configuration template.
+#
+# Trau uses a layered config model. From lowest to highest precedence:
+#
+#   1. built-in defaults
+#   2. local config file  ->  ./trau.ini (or TRAU_ENV) when no target repo is given
+#   3. project config file -> <repo>/.trau.ini  (repo-specific facts)
+#   4. user config file    -> ~/.trau.ini      (personal / machine overrides)
+#   5. process environment variables — any KEY below, or its collision-safe
+#      TRAU_<KEY> alias (e.g. TRAU_PROVIDER, TRAU_REMOTE) which wins over the
+#      bare name and avoids clashing with a generic PROVIDER/REMOTE in your shell
+#   6. CLI flags (--repo, --provider, etc.)
+#
+# Format: a flat INI subset (KEY=value with # comments). The keys ARE the
+# environment-variable names, so PROVIDER here and TRAU_PROVIDER in your shell
+# are the same knob. Saved with a .ini extension so VS Code and IntelliJ
+# highlight it with no plugin.
+#
+# This file is the template / local fallback. For day-to-day work on a target
+# project, copy the project-appropriate knobs into <repo>/.trau.ini and keep
+# machine-trust flags (CLAUDE_FLAGS, CODEX_FLAGS, etc.) in ~/.trau.ini.
+#
+# Linear can be reached either through the Linear MCP inside agent calls OR
+# directly via Linear's GraphQL API when LINEAR_API_KEY is set. The direct API
+# is faster for common read/write operations; MCP is used for complex operations
+# that require reasoning over files.
+
+# =============================================================================
+# PROJECT-LEVEL KNOBS (put these in <repo>/.trau.ini)
+# =============================================================================
+#
+# The TUI first-run onboarding wizard can generate <repo>/.trau.ini for you.
+# Run `trau` with no arguments inside a repo that has no .trau.ini to start it.
+
+# --- project-management backend ---
+TRACKER_PROVIDER=linear      # linear | jira | github
+LINEAR_TEAM=YourTeam         # your Linear team name, Jira project key, or GitHub repo slug (required for whole-team picks)
+READY_LABEL=ready-for-agent
+QUARANTINE_LABEL=needs-human
+PROJECT=                     # optional: Linear project for issues (empty = none)
+
+# --- git / GitHub ---
+BASE_BRANCH=main
+REMOTE=origin
+# Target app repo the loop operates on (REPO_ROOT). Usually empty in project
+# config; the repo is resolved first from --repo, then TRAU_REPO_ROOT, then
+# the cwd git top-level (ADR 0001 §2).
+TRAU_REPO_ROOT=
+
+# --- provider defaults for this project ---
+# Which provider backs this loop: claude (default) | codex | kimi. Override per-run
+# with --provider <name>.
+PROVIDER=claude
+
+# Per-provider phase tuning for this project. Phases: BUILD HANDOFF VERIFY REPAIR
+# BUGFIX COMMIT PICK. Model/effort are provider-specific.
+#
+# Example Claude tuning: Opus for implementation, Sonnet for cold verify.
+# CLAUDE_BUILD_MODEL=claude-opus-4-8
+# CLAUDE_BUILD_EFFORT=max
+# CLAUDE_VERIFY_MODEL=claude-sonnet-4-6
+# CLAUDE_VERIFY_EFFORT=medium
+# CLAUDE_BUGFIX_MODEL=claude-opus-4-8
+# CLAUDE_BUGFIX_EFFORT=max
+#
+# Example Codex tuning: hardest work on GPT-5.5, mechanical phases on lighter Codex.
+# CODEX_BUILD_MODEL=gpt-5.5
+# CODEX_BUILD_EFFORT=xhigh
+# CODEX_REPAIR_MODEL=gpt-5.5
+# CODEX_REPAIR_EFFORT=high
+# CODEX_BUGFIX_MODEL=gpt-5.5
+# CODEX_BUGFIX_EFFORT=xhigh
+# CODEX_VERIFY_MODEL=gpt-5.5
+# CODEX_VERIFY_EFFORT=medium
+# CODEX_COMMIT_MODEL=gpt-5.4-mini
+# CODEX_COMMIT_EFFORT=low
+# CODEX_PICK_MODEL=gpt-5.4-mini
+# CODEX_PICK_EFFORT=low
+
+# --- loop control ---
+MAX_ITERATIONS=15
+MAX_REPAIRS=2                # quick verify-fail self-heal attempts before bugfix (0 = none)
+MAX_BUGFIXES=2               # comprehensive bugfix passes after quick repairs (0 = none)
+AUTO_MERGE=1                 # 1 = merge on green CI; 0 = stop at the PR for you
+EPIC_FLOW=1                  # 1 = when running a ticket with sub-issues, create an epic branch and process children
+                             # 0 = always process the passed ticket as a standalone branch from BASE_BRANCH
+MERGE_METHOD=squash          # squash | merge | rebase
+CI_TIMEOUT=600               # seconds to wait for required checks to appear AND finish
+CI_POLL=30                   # seconds between check polls
+EXPECTED_CHECKS=             # named checks (substring, case-insensitive) that must be PRESENT
+                             # and green before merge. EMPTY = wait for whatever PR checks exist
+                             # with none pending. Empty is right when your repo's tests run
+                             # locally (the loop's verify phase is the gate); set to e.g.
+                             # "tests,lint" when those checks run on the PR itself.
+
+# --- TUI ---
+# Enable the Bubble Tea TUI when running in a terminal. Set to 0 to force the
+# original plain log output. This is also toggled per-run with --no-tui.
+# Pipes, cron, TRAU_LOG_JSON=1, and --status always use plain output.
+TRAU_TUI=1
+
+# --- verify ---
+BROWSER_VERIFY=auto          # auto (browser only for UI slices) | always | never
+APP_URL=http://localhost     # base URL of your locally-running app (used by browser verify)
+
+# =============================================================================
+# USER / MACHINE KNOBS (put these in ~/.trau.ini)
+# =============================================================================
+# These are personal or machine-trust settings. They should generally NOT be
+# committed to a project repo, especially the permission-override flags.
+
+# Provider binaries and dangerous permission overrides. Use only in trusted,
+# sandboxed checkouts — these disable approval prompts.
+CLAUDE_BIN=claude
+CLAUDE_FLAGS=--dangerously-skip-permissions
+CLAUDE_DISALLOWED_TOOLS=Agent,Workflow
+
+CODEX_BIN=codex
+CODEX_FLAGS=--dangerously-bypass-approvals-and-sandbox
+CODEX_PROFILE=
+
+# Linear personal API key. Enables fast direct GraphQL calls for title lookups,
+# status moves, label changes, etc. Create one in Linear under
+# Settings > Account > Security & Access > API. Keep this in ~/.trau.ini, NOT
+# in a committed project config file.
+LINEAR_API_KEY=
+
+KIMI_BIN=kimi
+KIMI_FLAGS=
+
+# Optional provider-local KEY=value files, resolved relative to the env file that
+# names them. Leave empty if unused.
+CLAUDE_CONFIG=
+CODEX_CONFIG=
+KIMI_CONFIG=
+
+# Per-agent call timeout in seconds. Interactive Claude writes a PTY transcript
+# next to the expected result file when this trips, so failures have evidence.
+AGENT_TIMEOUT=900
+
+# Optional provider model/effort defaults when a phase does not override them.
+# Empty = provider or profile default.
+CLAUDE_MODEL=
+CLAUDE_EFFORT=
+CODEX_MODEL=
+CODEX_EFFORT=
+KIMI_MODEL=
+
+# --- artifacts ---
+# Root for per-ticket run artifacts: runs/<ID>/{state,*.log,tokens.jsonl}. Defaults
+# to ./runs (relative to the working directory). Point it at a stable path if you
+# run the loop from varying directories.
+RUNS_DIR=runs
+
+# COST NOTE: the "~$X est" in the closing recap (and --status) is a NOTIONAL
+# API-list estimate, not a bill — no provider cost is reported for interactive
+# Claude runs, so trau prices tokens itself. Most of the token TOTAL is
+# cache-read tokens, billed at 0.1× input (5-min cache writes at 1.25×), so a
+# multi-million-"token" phase is mostly cheap cache hits, not fresh spend. On a
+# Claude subscription your marginal cost is the flat plan fee (~$0 per run); the
+# estimate is useful as a *relative* signal between phases/models, not a charge.

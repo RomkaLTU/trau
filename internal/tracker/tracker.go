@@ -1,0 +1,177 @@
+// Package tracker isolates project-management interactions behind a typed seam.
+//
+// The Linear implementation can use Linear's GraphQL API directly when a
+// LINEAR_API_KEY is configured, falling back to the Linear MCP otherwise.
+// Other providers reach the PM tool through the relevant MCP inside agent
+// calls. Each method either uses a direct API or renders a natural-language
+// prompt, runs it through an [agent.Runner], and recovers the result from
+// sentinel lines. Adding a new PM provider means implementing the Tracker
+// interface once; the loop and TUI stay provider-agnostic.
+package tracker
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/RomkaLTU/trau/internal/agent"
+)
+
+// DefaultPrefix is the issue-identifier prefix assumed when none can be derived
+// from a parent. The sentinel regexes assume this prefix; making it configurable
+// is a known limitation (see README).
+const DefaultPrefix = "COD"
+
+// Config is the provider-agnostic configuration a Tracker implementation needs.
+type Config struct {
+	Team            string
+	Project         string
+	ReadyLabel      string
+	QuarantineLabel string
+	APIKey          string // Linear API key; enables direct GraphQL calls
+}
+
+// SubIssue is a lightweight identifier+title pair for an issue's children.
+type SubIssue struct {
+	ID    string
+	Title string
+}
+
+// Tracker is the project-management backend used by the loop. All methods run
+// through an agent, so token lines bucket to runs/<ID>/.
+type Tracker interface {
+	// Pick returns the next eligible ticket identifier, or "" when nothing is
+	// eligible (the agent answered PICK=NONE).
+	Pick(ctx context.Context, scope Scope) (string, error)
+
+	// SubIssues asks for the direct children of issue id.
+	SubIssues(ctx context.Context, id string) ([]SubIssue, error)
+
+	// Title returns the human-readable title of issue id.
+	Title(ctx context.Context, id string) (string, error)
+
+	// SetStatus moves a ticket to a workflow status (e.g. "In Review", "Done").
+	SetStatus(ctx context.Context, id, status, extra string) error
+
+	// Reset returns a ticket to an unstarted/ready state so the picker can
+	// re-select it.
+	Reset(ctx context.Context, id string) error
+
+	// Quarantine marks a ticket unrecoverable.
+	Quarantine(ctx context.Context, id, reason string) error
+
+	// FileBug files a new tracker issue as a last-resort HITL blocker when the
+	// loop's repair and bugfix phases could not resolve a QA failure.
+	FileBug(ctx context.Context, id, verdictPath string) (string, error)
+
+	// EnsureLabels creates the ready and quarantine labels if they do not exist.
+	EnsureLabels(ctx context.Context) error
+}
+
+// Team is a selectable project-management container — a Linear team or a Jira
+// project — that the onboarding wizard can list and let the user pick.
+type Team struct {
+	Key  string `json:"key"`  // stored in config (e.g. "ENG", "PROJ")
+	Name string `json:"name"` // human-readable display name
+}
+
+// TeamLister is the optional capability of enumerating selectable containers
+// through the PM tool. Linear and Jira implement it; GitHub does not — its
+// repository is detected locally from the git remote, not listed via an agent.
+type TeamLister interface {
+	ListTeams(ctx context.Context) ([]Team, error)
+}
+
+// Scope selects which issues the picker considers: sub-issues of a parent, or
+// every issue in a team/project.
+type Scope struct {
+	Parent string
+	Team   string
+}
+
+func (s Scope) clause() string {
+	if s.Parent != "" {
+		return "sub-issues of " + s.Parent
+	}
+	return "issues in the " + s.Team + " team/project"
+}
+
+func (s Scope) prefix() string {
+	if s.Parent != "" {
+		for i := len(s.Parent) - 1; i > 0; i-- {
+			if s.Parent[i] == '-' {
+				return s.Parent[:i]
+			}
+		}
+	}
+	return DefaultPrefix
+}
+
+// New creates a Tracker for the named provider.
+func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
+	switch provider {
+	case "linear":
+		return &Linear{
+			Runner:          runner,
+			Team:            cfg.Team,
+			Project:         cfg.Project,
+			ReadyLabel:      cfg.ReadyLabel,
+			QuarantineLabel: cfg.QuarantineLabel,
+			APIKey:          cfg.APIKey,
+		}, nil
+	case "jira":
+		return &Jira{Runner: runner, Team: cfg.Team, Project: cfg.Project, ReadyLabel: cfg.ReadyLabel, QuarantineLabel: cfg.QuarantineLabel}, nil
+	case "github":
+		return &GitHub{Runner: runner, Repo: cfg.Team, ReadyLabel: cfg.ReadyLabel, QuarantineLabel: cfg.QuarantineLabel}, nil
+	default:
+		return nil, fmt.Errorf("unknown tracker provider %q (expected: linear | jira | github)", provider)
+	}
+}
+
+// parseTeams recovers the team/project list from an agent response. It accepts
+// the 'TEAMS=[...]' sentinel (last occurrence wins, with 'TEAMS=NONE' meaning an
+// empty list) or, failing that, a bare JSON array anywhere in the text — the
+// same tolerance the PICK/TITLE parsers apply.
+func parseTeams(text string) ([]Team, bool) {
+	if idx := strings.LastIndex(text, "TEAMS="); idx >= 0 {
+		rest := strings.TrimSpace(text[idx+len("TEAMS="):])
+		if strings.HasPrefix(rest, "NONE") {
+			return []Team{}, true
+		}
+		if teams, ok := parseTeamsJSON(rest); ok {
+			return teams, true
+		}
+	}
+	return parseTeamsJSON(text)
+}
+
+func parseTeamsJSON(s string) ([]Team, bool) {
+	start := strings.Index(s, "[")
+	end := strings.LastIndex(s, "]")
+	if start < 0 || end < start {
+		return nil, false
+	}
+	var teams []Team
+	if err := json.Unmarshal([]byte(s[start:end+1]), &teams); err != nil {
+		return nil, false
+	}
+	seen := map[string]bool{}
+	out := make([]Team, 0, len(teams))
+	for _, t := range teams {
+		key := strings.TrimSpace(t.Key)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		name := strings.TrimSpace(t.Name)
+		if name == "" {
+			name = key
+		}
+		out = append(out, Team{Key: key, Name: name})
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}

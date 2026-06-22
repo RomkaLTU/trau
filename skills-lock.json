@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "skills": {
+    "github-release": {
+      "source": "jezweb/claude-skills",
+      "sourceType": "github",
+      "skillPath": "plugins/dev-tools/skills/github-release/SKILL.md",
+      "computedHash": "105d59393b2ebed453d148294cbd59ec1e19acceb9283c26d55ad96742372c9d"
+    },
+    "golang-patterns": {
+      "source": "affaan-m/everything-claude-code",
+      "sourceType": "github",
+      "skillPath": "skills/golang-patterns/SKILL.md",
+      "computedHash": "eb058a2c65cc1bb212892821c8278aa5c6d66867b33fe1358686db93a892d2a3"
+    },
+    "golang-pro": {
+      "source": "jeffallan/claude-skills",
+      "sourceType": "github",
+      "skillPath": "skills/golang-pro/SKILL.md",
+      "computedHash": "12b4cac8f65228f82cbc26f0da9232aba87ffa45ccd01afa3998fb8ec61dc288"
+    },
+    "goreleaser": {
+      "source": "aaronflorey/agent-skills",
+      "sourceType": "github",
+      "skillPath": "skills/goreleaser/SKILL.md",
+      "computedHash": "8b3c3f0e5a00d10b5928cf9ddc95efe85bfb86c412692a36142182ea6d34b315"
+    },
+    "homebrew-formula-maintenance": {
+      "source": "bobmatnyc/claude-mpm-skills",
+      "sourceType": "github",
+      "skillPath": "toolchains/universal/infrastructure/homebrew-formula-maintenance/SKILL.md",
+      "computedHash": "2a89e88f462bb38089d70443a888fc2ff578f2cb048d058bc552e3bf1652961e"
+    }
+  }
+}

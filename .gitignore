@@ -1,0 +1,26 @@
+# Local config (copy from trau.ini.example; .trau.ini for project/user scope)
+trau.ini
+.trau.ini
+
+# Agentic / internal files — kept out of the public repo
+AGENTS.md
+CLAUDE.md
+tasks/
+runs/
+/.agents/
+/.claude/
+/.serena/
+
+# Per-developer dev-flow config (bind it to your own tracker/team locally)
+/.dev-flow/
+
+# Go build artifacts
+/trau
+/bin/
+/dist/
+*.test
+*.out
+coverage.txt
+
+# IDE
+/.idea/

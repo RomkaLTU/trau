@@ -1,0 +1,29 @@
+Trau
+Copyright 2026 Codesomelabs
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+------------------------------------------------------------------------
+Third-party software
+------------------------------------------------------------------------
+
+This product depends on the following third-party libraries. Each is
+distributed under the MIT License, which is compatible with the Apache
+License, Version 2.0.
+
+  github.com/charmbracelet/bubbletea
+      Copyright (c) Charmbracelet, Inc. — MIT License
+
+  github.com/charmbracelet/bubbles
+      Copyright (c) Charmbracelet, Inc. — MIT License
+
+  github.com/charmbracelet/lipgloss
+      Copyright (c) Charmbracelet, Inc. — MIT License
+
+  github.com/creack/pty
+      Copyright (c) 2011 Keith Rarick, 2013 Guillaume J. Charmes — MIT License
+
+Transitive dependencies pulled in by the libraries above (the Charm "x"
+packages, muesli/*, mattn/*, golang.org/x/*, and others listed in go.mod)
+are likewise distributed under permissive MIT or BSD licenses compatible
+with the Apache License, Version 2.0.

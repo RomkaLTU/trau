@@ -1,0 +1,72 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+project_name: trau
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: trau
+    main: ./cmd/trau
+    binary: trau
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: trau
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^style:"
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Others
+      order: 999
+
+homebrew_casks:
+  - name: trau
+    repository:
+      owner: RomkaLTU
+      name: homebrew-trau
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/RomkaLTU/trau"
+    description: "Autonomous, ticket-driven development loop"
+    # trau is not (yet) Apple-notarized; strip the quarantine attribute on
+    # install so the unsigned binary runs without a Gatekeeper prompt (ADR 0002 §6).
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/trau"]
+          end
+
+release:
+  github:
+    owner: RomkaLTU
+    name: trau
+  draft: false
+  prerelease: auto

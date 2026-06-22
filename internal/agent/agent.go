@@ -1,0 +1,774 @@
+// Package agent runs headless agent CLIs and returns only their final message.
+//
+// Each call spawns a fresh, isolated subprocess — a brand-new session, never
+// --continue/--resume — so phases can never share context. This is the property
+// that keeps the verify phase cold: it can only inherit the durable handoff file
+// and the code on disk, not the build agent's reasoning. The interface is
+// provider-agnostic; Claude and Codex are the two backends. All per-provider
+// divergence lives inside the implementation; nothing branches on the provider
+// name outside this package.
+package agent
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/creack/pty"
+
+	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/tokens"
+)
+
+// TokenSink persists one normalized token-accounting record per agent call.
+// agent depends only on this narrow behavior; internal/tokens implements it and
+// the main loop points the sink's bucket at the current ticket. A nil sink
+// disables persistence (e.g. unit tests that only assert the event stream).
+type TokenSink interface {
+	Append(phase string, rec tokens.Record)
+}
+
+// Usage is the normalized per-call token accounting. Input is stored as the
+// non-cached portion so totals mean the same thing across providers.
+type Usage struct {
+	Input         int
+	Output        int
+	CacheRead     int
+	CacheCreation int
+	Reasoning     int
+}
+
+// Result is the outcome of one agent invocation.
+type Result struct {
+	Final    string
+	Usage    Usage
+	CostUSD  float64
+	IsError  bool
+	NumTurns int
+	Model    string
+	Context  int
+	Skills   []string
+}
+
+// Runner runs one prompt to completion in a fresh process and returns the final
+// message. label is the phase tag used for logging/token attribution.
+type Runner interface {
+	Run(ctx context.Context, prompt, label string) (Result, error)
+}
+
+// PhaseRoute optionally reports the provider/model/effort a labeled phase is
+// configured to run under, before the call starts — so callers can name the
+// agent at the moment a phase begins instead of only on the closing stat line.
+// The concrete backends and the Router implement it. The model returned is the
+// *configured* one, which may be "" when the CLI default is used; the
+// actually-recovered (and possibly more specific) model still rides the
+// agent_call event afterward.
+type PhaseRoute interface {
+	Route(label string) (provider, model, effort string)
+}
+
+type terminalSession interface {
+	Read([]byte) (int, error)
+	Write([]byte) (int, error)
+	Wait() error
+	Close() error
+	Kill() error
+}
+
+type terminalStarter func(ctx context.Context, bin, dir string, args []string) (terminalSession, error)
+
+type ptySession struct {
+	cmd *exec.Cmd
+	tty *os.File
+}
+
+func startPTY(ctx context.Context, bin, dir string, args []string) (terminalSession, error) {
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir = dir
+	tty, err := pty.Start(cmd)
+	if err != nil {
+		return nil, err
+	}
+	return &ptySession{cmd: cmd, tty: tty}, nil
+}
+
+func (s *ptySession) Read(p []byte) (int, error)  { return s.tty.Read(p) }
+func (s *ptySession) Write(p []byte) (int, error) { return s.tty.Write(p) }
+func (s *ptySession) Wait() error                 { return s.cmd.Wait() }
+func (s *ptySession) Close() error                { return s.tty.Close() }
+func (s *ptySession) Kill() error {
+	if s.cmd.Process == nil {
+		return nil
+	}
+	return s.cmd.Process.Kill()
+}
+
+// ClaudeInteractive runs Claude in a real terminal session and uses a result
+// file as the machine protocol. It deliberately does not pass -p/--print or
+// --output-format; stdout is terminal UI only, never parsed for correctness.
+type ClaudeInteractive struct {
+	Bin             string
+	Flags           []string
+	Model           string
+	Effort          string
+	DisallowedTools string
+	Preamble        string
+	ResultDir       string
+	Dir             string
+	Timeout         time.Duration
+	TrustPromptWait time.Duration
+	Log             *event.Log
+	Tokens          TokenSink
+	now             func() time.Time
+	start           terminalStarter
+}
+
+func (c *ClaudeInteractive) Provider() string { return "claude" }
+
+// Route reports the configured provider/model/effort for pre-call display.
+func (c *ClaudeInteractive) Route(string) (string, string, string) {
+	return "claude", c.Model, c.Effort
+}
+
+func (c *ClaudeInteractive) args(prompt, sessionID string) []string {
+	args := append([]string{}, c.Flags...)
+	if c.Model != "" {
+		args = append(args, "--model", c.Model)
+	}
+	if c.Effort != "" {
+		args = append(args, "--effort", c.Effort)
+	}
+	if c.DisallowedTools != "" {
+		args = append(args, "--disallowedTools="+c.DisallowedTools)
+	}
+	if sessionID != "" {
+		args = append(args, "--session-id", sessionID)
+	}
+	return append(args, prompt)
+}
+
+func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Result, error) {
+	if c.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.Timeout)
+		defer cancel()
+	}
+	resultPath, err := c.resultPath(label)
+	if err != nil {
+		return Result{}, err
+	}
+	transcriptPath := transcriptPathFor(resultPath)
+	full := c.Preamble + "\n\n" + prompt + "\n\n" + resultInstruction(resultPath)
+
+	sessionID, _ := newUUID()
+
+	starter := c.start
+	if starter == nil {
+		starter = startPTY
+	}
+
+	start := c.clock()
+	sess, err := starter(ctx, c.Bin, c.Dir, c.args(full, sessionID))
+	if err != nil {
+		res := Result{IsError: true}
+		c.emit(label, res, c.clock().Sub(start), err)
+		return res, fmt.Errorf("claude interactive run (%s): %w", label, err)
+	}
+	defer func() { _ = sess.Close() }()
+	trustPrompt := make(chan struct{}, 1)
+	go drainTranscript(sess, transcriptPath, trustPrompt)
+
+	wait := make(chan error, 1)
+	go func() { wait <- sess.Wait() }()
+
+	trustWait := c.TrustPromptWait
+	if trustWait == 0 {
+		trustWait = 3 * time.Second
+	}
+	if trustWait > 0 {
+		if ok, err := c.maybeConfirmTrust(ctx, sess, trustPrompt, trustWait); err != nil {
+			_ = sess.Kill()
+			res := Result{IsError: true}
+			c.emit(label, res, c.clock().Sub(start), err)
+			return res, fmt.Errorf("claude interactive run (%s): %w", label, err)
+		} else if ok {
+			if err := sleepContext(ctx, time.Second); err != nil {
+				_ = sess.Kill()
+				res := Result{IsError: true}
+				c.emit(label, res, c.clock().Sub(start), err)
+				return res, fmt.Errorf("claude interactive run (%s): %w", label, err)
+			}
+		}
+	}
+
+	tick := time.NewTicker(250 * time.Millisecond)
+	defer tick.Stop()
+
+	for {
+		if final, ok, err := readResultFile(resultPath); err != nil {
+			_ = sess.Kill()
+			res := Result{IsError: true}
+			c.emit(label, res, c.clock().Sub(start), err)
+			return res, fmt.Errorf("claude interactive run (%s): read result: %w", label, err)
+		} else if ok {
+			_ = sess.Kill()
+			res := c.enrich(Result{Final: final}, sessionID)
+			c.emit(label, res, c.clock().Sub(start), nil)
+			c.record(label, res)
+			return res, nil
+		}
+
+		select {
+		case err := <-wait:
+			final, ok, readErr := readResultFile(resultPath)
+			res := c.enrich(Result{Final: final, IsError: err != nil || readErr != nil || !ok}, sessionID)
+			c.emit(label, res, c.clock().Sub(start), err)
+			c.record(label, res)
+			switch {
+			case readErr != nil:
+				return res, fmt.Errorf("claude interactive run (%s): read result after exit: %w", label, readErr)
+			case ok:
+				return res, err
+			case err != nil:
+				return res, fmt.Errorf("claude interactive run (%s): %w", label, err)
+			default:
+				return res, fmt.Errorf("claude interactive run (%s): exited without writing result file %s", label, resultPath)
+			}
+		case <-ctx.Done():
+			_ = sess.Kill()
+			res := Result{IsError: true}
+			c.emit(label, res, c.clock().Sub(start), ctx.Err())
+			return res, fmt.Errorf("claude interactive run (%s): %w", label, ctx.Err())
+		case <-tick.C:
+		}
+	}
+}
+
+func (c *ClaudeInteractive) resultPath(label string) (string, error) {
+	root := c.ResultDir
+	if root == "" {
+		root = filepath.Join(os.TempDir(), "trau-agent-results")
+	}
+	dir := filepath.Join(root, "_agent-results")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create result dir: %w", err)
+	}
+	name := fmt.Sprintf("%d-%s.result.json", c.clock().UnixNano(), safeLabel(label))
+
+	abs, err := filepath.Abs(filepath.Join(dir, name))
+	if err != nil {
+		return "", fmt.Errorf("resolve result path: %w", err)
+	}
+	return abs, nil
+}
+
+func (c *ClaudeInteractive) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (c *ClaudeInteractive) enrich(res Result, sessionID string) Result {
+	if sessionID == "" {
+		return res
+	}
+	stats, ok := readSessionStats(claudeConfigDir(), sessionID)
+	if !ok {
+		return res
+	}
+	res.Usage = stats.Usage
+	res.NumTurns = stats.Turns
+	res.Context = stats.Context
+	res.Skills = stats.Skills
+	res.Model = stats.Model
+	if res.Model == "" {
+		res.Model = c.Model
+	}
+	return res
+}
+
+func (c *ClaudeInteractive) emit(label string, res Result, dur time.Duration, runErr error) {
+	if c.Log == nil {
+		return
+	}
+	model := res.Model
+	if model == "" {
+		model = c.Model
+	}
+	fields := map[string]any{
+		"provider":       "claude",
+		"mode":           "interactive",
+		"model":          model,
+		"effort":         c.Effort,
+		"is_error":       res.IsError || runErr != nil,
+		"num_turns":      res.NumTurns,
+		"input_tokens":   res.Usage.Input,
+		"output_tokens":  res.Usage.Output,
+		"total_tokens":   res.Usage.Input + res.Usage.Output + res.Usage.CacheRead + res.Usage.CacheCreation,
+		"context_tokens": res.Context,
+		"cost_usd":       res.CostUSD,
+		"duration_ms":    dur.Milliseconds(),
+	}
+	if len(res.Skills) > 0 {
+		fields["skills"] = res.Skills
+	}
+	if runErr != nil {
+		fields["error"] = runErr.Error()
+	}
+	c.Log.Emit("agent_call", label, "", fields)
+}
+
+func (c *ClaudeInteractive) maybeConfirmTrust(ctx context.Context, sess terminalSession, trustPrompt <-chan struct{}, wait time.Duration) (bool, error) {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-trustPrompt:
+		_, err := sess.Write([]byte("\r"))
+		if err != nil {
+			return true, fmt.Errorf("confirm trust prompt: %w", err)
+		}
+		return true, nil
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-timer.C:
+		return false, nil
+	}
+}
+
+func (c *ClaudeInteractive) record(label string, res Result) {
+	if c.Tokens == nil {
+		return
+	}
+
+	model := res.Model
+	if model == "" {
+		model = c.Model
+	}
+	cost := tokens.EstimateCost(model, res.Usage.Input, res.Usage.Output, res.Usage.CacheRead, res.Usage.CacheCreation)
+	c.Tokens.Append(label, tokens.Record{
+		Input:         res.Usage.Input,
+		Output:        res.Usage.Output,
+		CacheRead:     res.Usage.CacheRead,
+		CacheCreation: res.Usage.CacheCreation,
+		Reasoning:     res.Usage.Reasoning,
+		CostUSD:       &cost,
+		Turns:         res.NumTurns,
+		IsError:       res.IsError,
+		Model:         model,
+		Context:       res.Context,
+		Skills:        res.Skills,
+	})
+}
+
+func resultInstruction(path string) string {
+	return "Do not rely on stdout as the machine-readable response. When this phase is complete, write your result to exactly this file path, creating parent directories if needed: " + path + "\n" +
+		"Write either the exact requested sentinel/text or a small JSON object requested by the task. After the file is written, stop working and leave the session idle; the loop will close the terminal."
+}
+
+func transcriptPathFor(resultPath string) string {
+	return strings.TrimSuffix(resultPath, ".result.json") + ".pty.log"
+}
+
+func drainTranscript(r io.Reader, path string, trustPrompt chan<- struct{}) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		drainWithTrustSignal(io.Discard, r, trustPrompt)
+		return
+	}
+	defer func() { _ = f.Close() }()
+	drainWithTrustSignal(f, r, trustPrompt)
+}
+
+func drainWithTrustSignal(dst io.Writer, src io.Reader, trustPrompt chan<- struct{}) {
+	buf := make([]byte, 4096)
+	var seen strings.Builder
+	signaled := false
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			_, _ = dst.Write(chunk)
+			if !signaled {
+				seen.WriteString(string(chunk))
+				text := seen.String()
+				if strings.Contains(text, "Quick") && strings.Contains(text, "safety") && strings.Contains(text, "trust") {
+					signaled = true
+					select {
+					case trustPrompt <- struct{}{}:
+					default:
+					}
+				}
+				if seen.Len() > 8192 {
+					trimmed := text[len(text)-4096:]
+					seen.Reset()
+					seen.WriteString(trimmed)
+				}
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func readResultFile(path string) (string, bool, error) {
+	b, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	text := strings.TrimRight(string(b), "\n")
+	if strings.TrimSpace(text) == "" {
+		return "", false, nil
+	}
+	return text, true, nil
+}
+
+func safeLabel(label string) string {
+	var b strings.Builder
+	for _, r := range label {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+	if b.Len() == 0 {
+		return "phase"
+	}
+	return b.String()
+}
+
+// Codex runs `codex exec --json -o <msgfile> "<prompt>"`, the second backend
+// behind the seam. It diverges from Claude in three ways, all confined
+// here: the final agent message is read from the -o file (not stdout); the --json
+// event stream on stdout carries token usage which is summed and dropped; and
+// codex reports input_tokens INCLUDING cached, so usage is renormalized to the
+// shared non-cached schema. There is no disallowed-tools field: codex exec is a
+// single-agent runner with no Agent/Workflow fan-out tool, so Claude's
+// --disallowedTools block has no codex equivalent — the Preamble covers fan-out
+// denial instead.
+type Codex struct {
+	Bin      string
+	Flags    []string
+	Profile  string
+	Model    string
+	Effort   string
+	Preamble string
+	Dir      string
+	Log      *event.Log
+	Tokens   TokenSink
+	now      func() time.Time
+}
+
+// Provider names the backend for logging and routing attribution.
+func (c *Codex) Provider() string { return "codex" }
+
+// Route reports the configured provider/model/effort for pre-call display.
+func (c *Codex) Route(string) (string, string, string) { return "codex", c.Model, c.Effort }
+
+func (c *Codex) args(prompt, msgPath string) []string {
+	args := []string{"exec"}
+	args = append(args, c.Flags...)
+	args = append(args, "--json", "-o", msgPath)
+	if c.Profile != "" {
+		args = append(args, "--profile", c.Profile)
+	}
+	if c.Model != "" {
+		args = append(args, "--model", c.Model)
+	}
+	if c.Effort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+c.Effort)
+	}
+	return append(args, prompt)
+}
+
+type codexEvent struct {
+	Type  string `json:"type"`
+	Usage struct {
+		Input     int `json:"input_tokens"`
+		Cached    int `json:"cached_input_tokens"`
+		Output    int `json:"output_tokens"`
+		Reasoning int `json:"reasoning_output_tokens"`
+	} `json:"usage"`
+}
+
+func parseCodexUsage(stream []byte) (Usage, int) {
+	var u Usage
+	turns := 0
+	sc := bufio.NewScanner(bytes.NewReader(stream))
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		b := bytes.TrimSpace(sc.Bytes())
+		if len(b) == 0 {
+			continue
+		}
+		var ev codexEvent
+		if err := json.Unmarshal(b, &ev); err != nil || ev.Type != "turn.completed" {
+			continue
+		}
+		turns++
+		u.Input += ev.Usage.Input - ev.Usage.Cached
+		u.Output += ev.Usage.Output
+		u.CacheRead += ev.Usage.Cached
+		u.Reasoning += ev.Usage.Reasoning
+	}
+	return u, turns
+}
+
+// Run executes one fresh codex process and returns its final message. The prompt
+// is Preamble + blank line + the caller's prompt, identical to Claude. codex
+// streams --json events (token usage) to stdout, which we parse then drop, and
+// writes the final agent message to a temp -o file we read and clean up. If that
+// file is missing or empty (a crash before codex wrote it), Final is empty rather
+// than the raw event JSON — `codex exec` itself prints no event noise as its
+// message, so dumping stdout here would be wrong; the -o file is the only source
+// of the final message.
+func (c *Codex) Run(ctx context.Context, prompt, label string) (Result, error) {
+	full := c.Preamble + "\n\n" + prompt
+
+	msg, err := os.CreateTemp("", "trau-codex-msg-*")
+	if err != nil {
+		return Result{}, fmt.Errorf("codex run (%s): create message file: %w", label, err)
+	}
+	msgPath := msg.Name()
+	_ = msg.Close()
+	defer func() { _ = os.Remove(msgPath) }()
+
+	var stdout bytes.Buffer
+	cmd := exec.CommandContext(ctx, c.Bin, c.args(full, msgPath)...)
+	cmd.Dir = c.Dir
+	cmd.Stdout = &stdout
+	cmd.Stderr = nil
+
+	start := c.clock()
+	runErr := cmd.Run()
+	dur := c.clock().Sub(start)
+
+	res := Result{}
+	res.Usage, res.NumTurns = parseCodexUsage(stdout.Bytes())
+
+	final, _ := os.ReadFile(msgPath)
+	res.Final = strings.TrimRight(string(final), "\n")
+
+	c.emit(label, res, dur, runErr)
+	c.record(label, res)
+
+	if runErr != nil {
+		return res, fmt.Errorf("codex run (%s): %w", label, runErr)
+	}
+	return res, nil
+}
+
+func (c *Codex) emit(label string, res Result, dur time.Duration, runErr error) {
+	if c.Log == nil {
+		return
+	}
+	fields := map[string]any{
+		"provider":       "codex",
+		"model":          c.Model,
+		"effort":         c.Effort,
+		"is_error":       res.IsError || runErr != nil,
+		"num_turns":      res.NumTurns,
+		"input_tokens":   res.Usage.Input,
+		"output_tokens":  res.Usage.Output,
+		"total_tokens":   res.Usage.Input + res.Usage.Output + res.Usage.CacheRead + res.Usage.CacheCreation,
+		"context_tokens": res.Context,
+		"cost_usd":       res.CostUSD,
+		"duration_ms":    dur.Milliseconds(),
+	}
+	if runErr != nil {
+		fields["error"] = runErr.Error()
+	}
+	c.Log.Emit("agent_call", label, "", fields)
+}
+
+func (c *Codex) record(label string, res Result) {
+	if c.Tokens == nil {
+		return
+	}
+	c.Tokens.Append(label, tokens.Record{
+		Input:         res.Usage.Input,
+		Output:        res.Usage.Output,
+		CacheRead:     res.Usage.CacheRead,
+		CacheCreation: res.Usage.CacheCreation,
+		Reasoning:     res.Usage.Reasoning,
+		CostUSD:       nil,
+		Turns:         res.NumTurns,
+		IsError:       res.IsError,
+		Model:         c.Model,
+	})
+}
+
+func (c *Codex) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+// Kimi runs Kimi Code CLI in print mode (`kimi -p <prompt> --output-format
+// stream-json`) and returns the final assistant message parsed from the stream.
+// Each call is a fresh process — never -S/--continue session reuse — so phases
+// stay isolated. Print mode auto-executes tools (no approval prompt) and rejects
+// --yolo/--auto, so KIMI_FLAGS is normally empty. Kimi Code reports no token usage
+// on any output format, so Usage stays zero (the sink drops the resulting zero
+// record) and CostUSD is nil; accounting is best-effort by design.
+type Kimi struct {
+	Bin      string
+	Flags    []string
+	Model    string
+	Preamble string
+	Dir      string
+	Timeout  time.Duration
+	Log      *event.Log
+	Tokens   TokenSink
+	now      func() time.Time
+}
+
+// Provider names the backend for logging and routing attribution.
+func (c *Kimi) Provider() string { return "kimi" }
+
+// Route reports the configured provider/model for pre-call display. Kimi has no
+// reasoning-effort knob, so effort is always empty.
+func (c *Kimi) Route(string) (string, string, string) { return "kimi", c.Model, "" }
+
+func (c *Kimi) args(prompt string) []string {
+	args := append([]string{}, c.Flags...)
+	if c.Model != "" {
+		args = append(args, "--model", c.Model)
+	}
+
+	return append(args, "--output-format", "stream-json", "-p", prompt)
+}
+
+type kimiEvent struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+func parseKimiFinal(stream []byte) string {
+	final := ""
+	sc := bufio.NewScanner(bytes.NewReader(stream))
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		b := bytes.TrimSpace(sc.Bytes())
+		if len(b) == 0 {
+			continue
+		}
+		var ev kimiEvent
+		if err := json.Unmarshal(b, &ev); err != nil || ev.Role != "assistant" {
+			continue
+		}
+		if ev.Content != "" {
+			final = ev.Content
+		}
+	}
+	return final
+}
+
+// Run executes one fresh kimi process and returns its final assistant message. The
+// prompt is Preamble + blank line + the caller's prompt, like the other backends.
+// stdout carries the stream-json events; parseKimiFinal extracts the final message
+// from them. stderr is progress, kept only for error context.
+func (c *Kimi) Run(ctx context.Context, prompt, label string) (Result, error) {
+	if c.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.Timeout)
+		defer cancel()
+	}
+	full := c.Preamble + "\n\n" + prompt
+
+	var stdout, stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, c.Bin, c.args(full)...)
+	cmd.Dir = c.Dir
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	start := c.clock()
+	runErr := cmd.Run()
+	dur := c.clock().Sub(start)
+
+	res := Result{Model: c.Model}
+	res.Final = parseKimiFinal(stdout.Bytes())
+
+	c.emit(label, res, dur, runErr)
+	c.record(label, res)
+
+	if runErr != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return res, fmt.Errorf("kimi run (%s): %w: %s", label, runErr, msg)
+		}
+		return res, fmt.Errorf("kimi run (%s): %w", label, runErr)
+	}
+	return res, nil
+}
+
+func (c *Kimi) emit(label string, res Result, dur time.Duration, runErr error) {
+	if c.Log == nil {
+		return
+	}
+	fields := map[string]any{
+		"provider":       "kimi",
+		"model":          c.Model,
+		"effort":         "",
+		"is_error":       res.IsError || runErr != nil,
+		"num_turns":      res.NumTurns,
+		"input_tokens":   res.Usage.Input,
+		"output_tokens":  res.Usage.Output,
+		"total_tokens":   res.Usage.Input + res.Usage.Output + res.Usage.CacheRead + res.Usage.CacheCreation,
+		"context_tokens": res.Context,
+		"cost_usd":       res.CostUSD,
+		"duration_ms":    dur.Milliseconds(),
+	}
+	if runErr != nil {
+		fields["error"] = runErr.Error()
+	}
+	c.Log.Emit("agent_call", label, "", fields)
+}
+
+func (c *Kimi) record(label string, res Result) {
+	if c.Tokens == nil {
+		return
+	}
+	c.Tokens.Append(label, tokens.Record{
+		Input:   res.Usage.Input,
+		Output:  res.Usage.Output,
+		CostUSD: nil,
+		Turns:   res.NumTurns,
+		IsError: res.IsError,
+		Model:   c.Model,
+	})
+}
+
+func (c *Kimi) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}

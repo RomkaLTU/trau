@@ -1,0 +1,1263 @@
+// Package pipeline runs a ticket through the fixed phases — build → handoff →
+// verify → commit → PR → CI → merge — one phase per fresh, isolated agent
+// process. Each phase records a durable checkpoint via internal/state the moment
+// it completes, so a crash only loses the phase in flight; resumption skips
+// checkpointed phases (Resume) or adopts a parked feature branch
+// (InferredResume). Every collaborator is an injected seam (agent runner, git,
+// state store, token bucket).
+package pipeline
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/console"
+	"github.com/RomkaLTU/trau/internal/state"
+	"github.com/RomkaLTU/trau/internal/tracker"
+)
+
+// Git is the subset of git operations the pipeline needs, scoped to the target
+// repo. Stubbed in tests; ExecGit is the real `git -C <repo>` implementation.
+// Later phases (commit/PR/merge, resume) widen this interface further.
+type Git interface {
+	CurrentBranch(ctx context.Context) (string, error)
+
+	AddAll(ctx context.Context) error
+
+	Commit(ctx context.Context, message string, noVerify bool) error
+
+	Push(ctx context.Context, remote, ref string) error
+
+	Checkout(ctx context.Context, ref string, force bool) error
+
+	CreateBranch(ctx context.Context, branch, base string) error
+
+	Clean(ctx context.Context) error
+
+	BranchExists(ctx context.Context, branch string) (bool, error)
+
+	FindFeatureBranch(ctx context.Context, id string) (string, error)
+
+	DeleteBranch(ctx context.Context, branch string) error
+
+	DeletePushedBranch(ctx context.Context, remote, branch string) error
+
+	StatusPorcelain(ctx context.Context) (string, error)
+
+	Pull(ctx context.Context, remote, branch string) error
+}
+
+// Check is one PR status check (gh pr checks --json name,bucket). bucket is gh's
+// rollup of the check's conclusion: pass | fail | pending | skipping | cancel.
+type Check struct {
+	Name   string `json:"name"`
+	Bucket string `json:"bucket"`
+}
+
+// GitHub is the subset of `gh` operations the closing phases need, scoped to the
+// target repo. Stubbed in tests; ExecGitHub is the real `gh` implementation. The
+// read methods follow a swallow-and-default convention (a missing PR or a gh
+// hiccup reads as "" / no checks) so a transient failure re-polls rather than
+// aborting the ticket.
+type GitHub interface {
+	PRURL(ctx context.Context, branch string) (string, error)
+
+	CreatePR(ctx context.Context, base, head, title, body string) (string, error)
+
+	PRState(ctx context.Context, pr string) (string, error)
+
+	Checks(ctx context.Context, pr string) ([]Check, error)
+
+	Merge(ctx context.Context, pr, method string, deleteBranch bool) error
+}
+
+// ErrCIFailed and ErrCITimeout are the two non-green outcomes of pollCI; both map
+// to the same "CI not green" give-up reason but are distinguished in the log line.
+// ErrAlreadyDone is returned by CIAndMerge when it reconciles a ticket whose PR
+// was already merged, so the outer loop can skip counting it and keep picking.
+var (
+	ErrCIFailed    = errors.New("a required CI check failed")
+	ErrCITimeout   = errors.New("CI timed out waiting for required checks")
+	ErrAlreadyDone = errors.New("ticket already done")
+)
+
+// TicketSetter points the token sink's bucket at the current ticket so per-call
+// token lines land in runs/<ID>/. *tokens.Sink satisfies it; kept as a narrow
+// interface so pipeline doesn't depend on the tokens package.
+type TicketSetter interface {
+	SetTicket(id string)
+}
+
+// GiveUpError signals a ticket cannot proceed and must be abandoned; the caller
+// runs the quarantine/finalize path.
+type GiveUpError struct {
+	ID     string
+	Reason string
+}
+
+func (e *GiveUpError) Error() string {
+	return fmt.Sprintf("give up on %s: %s", e.ID, e.Reason)
+}
+
+// PausedError signals the loop hit an external, blameless stop — a provider
+// rate/usage limit — partway through a ticket. Unlike a give-up it does NOT
+// quarantine the ticket or file a bug: the work stays on its branch at the last
+// checkpoint, and a later run resumes it once the limit clears. The loop driver
+// stops picking new tickets when it sees one.
+type PausedError struct {
+	ID       string
+	Phase    string
+	Provider string
+	Reason   string
+}
+
+func (e *PausedError) Error() string {
+	return fmt.Sprintf("paused on %s (%s): %s", e.ID, e.Phase, e.Reason)
+}
+
+// IsPaused reports whether err is (or wraps) a *PausedError.
+func IsPaused(err error) bool {
+	var p *PausedError
+	return errors.As(err, &p)
+}
+
+// Pipeline holds the collaborators a ticket run needs. One Pipeline is
+// constructed per process and reused across tickets.
+type Pipeline struct {
+	Runner         agent.Runner
+	State          *state.Store
+	Git            Git
+	GitHub         GitHub
+	Tracker        tracker.Tracker
+	Tokens         TicketSetter
+	RunsDir        string
+	Base           string
+	Remote         string
+	MaxRepairs     int
+	MaxBugfixes    int
+	BrowserVerify  string
+	AppURL         string
+	AutoMerge      bool
+	MergeMethod    string
+	ExpectedChecks string
+	CITimeout      int
+	CIPoll         int
+	Sleep          func(time.Duration)
+	Renderer       console.Renderer
+
+	EpicID     string
+	epicBranch string
+}
+
+// Process runs a ticket end-to-end through the fresh full chain: build → handoff →
+// verify → commit/PR → CI/merge. It is the from="" entry to Resume, kept as a named
+// method so callers that always start clean (and the existing tests) read plainly.
+func (p *Pipeline) Process(ctx context.Context, id string) error {
+	return p.Resume(ctx, id, "")
+}
+
+// Resume runs a ticket through the phases not yet checkpointed. It buckets token
+// logs to the ticket, restores the recorded feature branch (auto-resetting the
+// ticket when that branch is gone), then runs each phase whose rank exceeds the
+// resume point (fi = Idx(from)); from="" runs everything fresh. A *GiveUpError
+// from build (no feature branch) is funneled into giveUp here; verify and the CI
+// gate run giveUp themselves and return the resulting *GiveUpError, which passes
+// straight through.
+func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
+	if p.Tokens != nil {
+		p.Tokens.SetTicket(id)
+	}
+	if p.Renderer != nil {
+		p.Renderer.SetTicket(id)
+
+		p.setTitle(p.State.Get(id, "TITLE"))
+	}
+	fi := state.Idx(from)
+
+	if from != "" {
+		p.logf("  ↳ resuming from checkpoint: %s", from)
+	}
+
+	branch := p.State.Get(id, "BRANCH")
+	exists := false
+	if branch != "" {
+		exists, _ = p.Git.BranchExists(ctx, branch)
+	}
+	switch {
+	case branch != "" && exists:
+		_ = p.Git.Checkout(ctx, branch, false)
+	case fi >= 2:
+		shown := branch
+		if shown == "" {
+			shown = "?"
+		}
+		p.logf("  ⚠ resume: recorded branch '%s' for %s is missing — resetting it to start fresh", shown, id)
+		return p.Reset(ctx, id)
+	}
+
+	if fi < 2 {
+		if err := p.build(ctx, id, fi == 1); err != nil {
+			return p.handleGiveUp(ctx, id, err)
+		}
+	}
+	if fi < 3 {
+		if err := p.Handoff(ctx, id); err != nil {
+			return err
+		}
+	}
+	if fi < 4 {
+		if err := p.Verify(ctx, id); err != nil {
+			return err
+		}
+	}
+	if fi < 5 {
+		if err := p.CommitAndPR(ctx, id); err != nil {
+			return err
+		}
+	}
+	return p.CIAndMerge(ctx, id)
+}
+
+func (p *Pipeline) handleGiveUp(ctx context.Context, id string, err error) error {
+	var g *GiveUpError
+	if errors.As(err, &g) {
+		return p.giveUp(ctx, id, g.Reason)
+	}
+	return err
+}
+
+var reInferID = regexp.MustCompile(`COD-[0-9]+`)
+
+// InferredResume is the bridge for work started BEFORE state tracking (or whose
+// state file was lost): if HEAD is parked on a feature/COD-… branch with no tracked
+// checkpoint, it infers how far the work got from the artifacts on disk (branch →
+// built; handoff file → handed_off; passing verdict → verified; open PR → pr_open),
+// seeds the state file, and returns (id, phase) for the resume path. Conservative
+// on purpose — only the currently checked-out branch, never a scan. It returns
+// ("", "") when HEAD is not a parked feature branch or the ticket is already
+// tracked.
+func (p *Pipeline) InferredResume(ctx context.Context) (id, phase string) {
+	head, err := p.Git.CurrentBranch(ctx)
+	if err != nil || !strings.HasPrefix(head, "feature/COD-") {
+		return "", ""
+	}
+	id = reInferID.FindString(head)
+	if id == "" {
+		return "", ""
+	}
+	if p.State.Get(id, "PHASE") != "" {
+		return "", ""
+	}
+
+	phase = state.Built
+	if fi, err := os.Stat(handoffPath(id)); err == nil && fi.Size() > 0 {
+		phase = state.HandedOff
+	}
+	if v, ok := readVerdict(verifyPath(id)); ok && v.Pass {
+		phase = state.Verified
+	}
+	if pr, _ := p.GitHub.PRURL(ctx, head); pr != "" {
+		phase = state.PROpen
+		_ = p.State.Set(id, "PR", prNumber(pr))
+		_ = p.State.Set(id, "PR_URL", pr)
+	}
+	_ = p.State.Set(id, "BRANCH", head)
+	_ = p.State.Set(id, "PHASE", phase)
+	p.logf("  ↻ adopted in-progress branch %s (inferred checkpoint: %s)", head, phase)
+	return id, phase
+}
+
+// EnsureCleanBase guards the loop's fresh-pick path: it refuses to run when TRACKED
+// files have uncommitted changes (untracked tooling rides along safely), then checks
+// out the base branch and fast-forwards it from the remote (best-effort). The
+// resume path deliberately skips this — the feature branch's WIP IS the work.
+func (p *Pipeline) EnsureCleanBase(ctx context.Context) error {
+	dirty, err := p.Git.StatusPorcelain(ctx)
+	if err != nil {
+		return fmt.Errorf("ensure clean base: git status: %w", err)
+	}
+	if strings.TrimSpace(dirty) != "" {
+		return fmt.Errorf("tracked files have uncommitted changes — aborting so I don't touch your WIP")
+	}
+	if err := p.Git.Checkout(ctx, p.Base, false); err != nil {
+		return fmt.Errorf("ensure clean base: checkout %s: %w", p.Base, err)
+	}
+	_ = p.Git.Pull(ctx, p.Remote, p.Base)
+	return nil
+}
+
+// Reset discards a ticket's attempt: drop its feature branch (local + remote) and
+// saved state + /tmp artifacts, then send Linear back to an unstarted/ready state so
+// the picker re-selects it. Every git step is best-effort — a stale ref or a remote
+// that already pruned the branch must not stop the reset. The recorded BRANCH is
+// preferred; with none, the first matching feature/<id>-* branch is used.
+func (p *Pipeline) Reset(ctx context.Context, id string) error {
+	branch := p.State.Get(id, "BRANCH")
+	if branch == "" {
+		branch, _ = p.Git.FindFeatureBranch(ctx, id)
+	}
+	_ = p.Git.Checkout(ctx, p.Base, true)
+	if branch != "" && branch != p.Base {
+		_ = p.Git.DeleteBranch(ctx, branch)
+		_ = p.Git.DeletePushedBranch(ctx, p.Remote, branch)
+	}
+	_ = os.Remove(handoffPath(id))
+	_ = os.Remove(verifyPath(id))
+	_ = p.State.RemoveState(id)
+	if branch != "" {
+		p.logf("  reset %s: cleared saved state + branch %s", id, branch)
+	} else {
+		p.logf("  reset %s: cleared saved state", id)
+	}
+	return p.Tracker.Reset(ctx, id)
+}
+
+// Build runs the implementation phase fresh (no resume note). It is the
+// from="" entry to build; the resumable path uses build directly.
+func (p *Pipeline) Build(ctx context.Context, id string) error {
+	return p.build(ctx, id, false)
+}
+
+func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
+	p.phaseStart("build")
+
+	_ = os.Remove(handoffPath(id))
+	_ = os.Remove(verifyPath(id))
+
+	if err := p.State.Set(id, "PHASE", state.Building); err != nil {
+		return fmt.Errorf("build %s: checkpoint building: %w", id, err)
+	}
+
+	branch, err := p.resolveBuildBranch(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := p.State.Set(id, "BRANCH", branch); err != nil {
+		return fmt.Errorf("build %s: record branch: %w", id, err)
+	}
+
+	note := ""
+	if withNote {
+		note = resumeNote
+	}
+	if _, err := p.agentStep(ctx, id, "build", buildInstruction(id, branch, note)); err != nil {
+		return err
+	}
+
+	if err := p.State.Set(id, "PHASE", state.Built); err != nil {
+		return fmt.Errorf("build %s: checkpoint built: %w", id, err)
+	}
+	return nil
+}
+
+func (p *Pipeline) resolveBuildBranch(ctx context.Context, id string) (string, error) {
+	branch := p.State.Get(id, "BRANCH")
+	if branch == "" {
+		branch, _ = p.Git.FindFeatureBranch(ctx, id)
+	}
+	if branch != "" {
+		if err := p.Git.Checkout(ctx, branch, false); err != nil {
+			return "", fmt.Errorf("build %s: checkout %s: %w", id, branch, err)
+		}
+		return branch, nil
+	}
+
+	title, err := p.Tracker.Title(ctx, id)
+	switch {
+	case err != nil:
+		p.logf("  title lookup error (using id-only branch): %v", err)
+	case slugify(title) == "":
+
+		p.logf("  title yielded no usable slug (using id-only branch)")
+	}
+
+	if title != "" {
+		_ = p.State.Set(id, "TITLE", title)
+		p.setTitle(title)
+	}
+	branch = featureBranch(id, title)
+	base := p.Base
+	if p.EpicID != "" {
+		epic, err := p.epicBranchName(ctx)
+		if err != nil {
+			return "", err
+		}
+		base = epic
+	}
+	if err := p.Git.CreateBranch(ctx, branch, base); err != nil {
+		return "", &GiveUpError{ID: id, Reason: "could not create feature branch for " + id}
+	}
+	p.logf("  branch %s ← %s", branch, base)
+
+	if err := p.Tracker.SetStatus(ctx, id, "In Progress", ""); err != nil {
+		p.logf("  set In Progress error (continuing): %v", err)
+	}
+	return branch, nil
+}
+
+func featureBranch(id, title string) string {
+	if slug := slugify(title); slug != "" {
+		return "feature/" + id + "-" + slug
+	}
+	return "feature/" + id
+}
+
+func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
+	if p.epicBranch != "" {
+		return p.epicBranch, nil
+	}
+
+	title, err := p.Tracker.Title(ctx, p.EpicID)
+	if err != nil {
+		p.logf("  epic title lookup error (using id-only branch): %v", err)
+	}
+	branch := epicBranch(p.EpicID, title)
+
+	exists, _ := p.Git.BranchExists(ctx, branch)
+	if !exists {
+		if err := p.Git.CreateBranch(ctx, branch, p.Base); err != nil {
+			return "", &GiveUpError{ID: p.EpicID, Reason: "could not create epic branch for " + p.EpicID}
+		}
+		p.logf("  epic branch %s ← %s", branch, p.Base)
+		if err := p.Git.Push(ctx, p.Remote, branch); err != nil {
+			p.logf("  push epic branch error (continuing): %v", err)
+		}
+	}
+
+	p.epicBranch = branch
+	return branch, nil
+}
+
+func epicBranch(id, title string) string {
+	if slug := slugify(title); slug != "" {
+		return "epic/" + id + "-" + slug
+	}
+	return "epic/" + id
+}
+
+func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string) error {
+	prURL, _ := p.GitHub.PRURL(ctx, epicBranch)
+	if prURL != "" {
+		return nil
+	}
+
+	title, err := p.Tracker.Title(ctx, p.EpicID)
+	if err != nil {
+		title = p.EpicID
+	}
+	prURL, err = p.GitHub.CreatePR(ctx, p.Base, epicBranch, "Epic: "+title, epicPRBody(p.EpicID))
+	if err != nil {
+		return err
+	}
+	p.logf("  epic PR %s", prURL)
+	return nil
+}
+
+func epicPRBody(id string) string {
+	return fmt.Sprintf("## Summary\nEpic integration branch for %s.\n\nFeatures land on the epic branch first; this PR ships the epic to main once complete.\n\nLinear: %s", id, id)
+}
+
+// Handoff runs the handoff skill to write the QA brief to exactly
+// /tmp/handoff-<ID>.md, then checkpoints handed_off.
+func (p *Pipeline) Handoff(ctx context.Context, id string) error {
+	p.phaseStart("handoff")
+	if _, err := p.agentStep(ctx, id, "handoff", handoffTail(id)); err != nil {
+		return err
+	}
+	p.persistHandoff(id)
+	if err := p.State.Set(id, "PHASE", state.HandedOff); err != nil {
+		return fmt.Errorf("handoff %s: checkpoint handed_off: %w", id, err)
+	}
+	return nil
+}
+
+func (p *Pipeline) persistHandoff(id string) {
+	data, err := os.ReadFile(handoffPath(id))
+	if err != nil || len(data) == 0 {
+		return
+	}
+	dir := filepath.Join(p.RunsDir, id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, "handoff.md"), data, 0o644)
+}
+
+// Verify is the real test gate (EXPECTED_CHECKS is empty), run in a fresh,
+// adversarial process that can only inherit the durable handoff file + the code on
+// disk. It regenerates the handoff if /tmp lost it, runs the verify skill, parses
+// the JSON verdict, and self-heals up to MaxRepairs times — each repair and each
+// re-verify is its own cold process. If quick repairs are exhausted, it delegates
+// to a comprehensive bugfix agent up to MaxBugfixes times. On pass it checkpoints
+// verified; on exhaustion it files a last-resort HITL blocker issue and
+// quarantines the original ticket.
+func (p *Pipeline) Verify(ctx context.Context, id string) error {
+	p.phaseStart("verify")
+	handoff := handoffPath(id)
+
+	if fi, err := os.Stat(handoff); err != nil || fi.Size() == 0 {
+		if _, err := p.agentStep(ctx, id, "handoff", handoffTail(id)); err != nil {
+			return err
+		}
+		p.persistHandoff(id)
+	}
+
+	if fi, err := os.Stat(handoff); err == nil && fi.Size() > 0 {
+		p.logf("  ↳ handoff: %s → verify", fmtBytes(fi.Size()))
+	} else {
+		p.logf("  ⚠ handoff brief missing/empty — verify will run without a QA brief")
+	}
+
+	verdictPath := verifyPath(id)
+	note := browserNote(p.BrowserVerify, p.AppURL)
+	branch := p.State.Get(id, "BRANCH")
+
+	repairAttempt := 0
+	bugfixAttempt := 0
+	passed := false
+	label := "verify"
+	for {
+		_ = os.Remove(verdictPath)
+		prompt := verifyTail(id, handoff, verdictPath, note)
+		if _, err := p.agentStep(ctx, id, label, prompt); err != nil {
+			return err
+		}
+		v, _ := readVerdict(verdictPath)
+		if v.Pass {
+			passed = true
+			break
+		}
+		if repairAttempt < p.MaxRepairs {
+			repairAttempt++
+			label = fmt.Sprintf("verify-retry%d", repairAttempt)
+			p.logf("  ⚠ verify failed — self-heal attempt %d/%d", repairAttempt, p.MaxRepairs)
+			for _, fl := range topFailures(v) {
+				p.logf("  ↳ %s", fl)
+			}
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(id, verdictPath, handoff, branch, v.failureLines())); err != nil {
+				return err
+			}
+			continue
+		}
+		if bugfixAttempt < p.MaxBugfixes {
+			bugfixAttempt++
+			label = fmt.Sprintf("verify-retry%d", repairAttempt+bugfixAttempt)
+			p.logf("  ⚠ repairs exhausted — comprehensive bugfix attempt %d/%d", bugfixAttempt, p.MaxBugfixes)
+			for _, fl := range topFailures(v) {
+				p.logf("  ↳ %s", fl)
+			}
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(id, verdictPath, handoff, branch, v.failureLines())); err != nil {
+				return err
+			}
+			continue
+		}
+		break
+	}
+
+	if !passed {
+		reason := fmt.Sprintf("verify failed after %d repair attempt(s) and %d bugfix attempt(s)", repairAttempt, bugfixAttempt)
+		bug, _ := p.Tracker.FileBug(ctx, id, verdictPath)
+		if bug != "" {
+			reason += "; filed HITL blocker " + bug
+		}
+		return p.giveUp(ctx, id, reason)
+	}
+	if repairAttempt > 0 || bugfixAttempt > 0 {
+		p.logf("  ✓ verify passed (after %d repair attempt(s) and %d bugfix attempt(s))", repairAttempt, bugfixAttempt)
+	} else {
+		p.logf("  ✓ verify passed")
+	}
+	if err := p.State.Set(id, "PHASE", state.Verified); err != nil {
+		return fmt.Errorf("verify %s: checkpoint verified: %w", id, err)
+	}
+	return nil
+}
+
+func (p *Pipeline) giveUp(ctx context.Context, id, reason string) error {
+	p.finalizeFailed(ctx, id)
+	if err := p.State.Set(id, "PHASE", state.Quarantined); err != nil {
+		return fmt.Errorf("give up %s: checkpoint quarantined: %w", id, err)
+	}
+	p.logf("  ✗ quarantining %s: %s", id, reason)
+	if err := p.Tracker.Quarantine(ctx, id, reason); err != nil {
+		p.logf("  quarantine MCP error (continuing): %v", err)
+	}
+	return &GiveUpError{ID: id, Reason: reason}
+}
+
+func (p *Pipeline) finalizeFailed(ctx context.Context, id string) {
+	branch, _ := p.Git.CurrentBranch(ctx)
+	if branch != p.Base {
+		_ = p.Git.AddAll(ctx)
+		_ = p.Git.Commit(ctx, fmt.Sprintf("wip(%s): quarantined attempt — needs human", id), true)
+		if err := p.Git.Push(ctx, p.Remote, "HEAD"); err == nil {
+			p.logf("  saved attempt to %s/%s", p.Remote, branch)
+		} else {
+			p.logf("  saved attempt to local branch %s", branch)
+		}
+	}
+	_ = p.Git.Checkout(ctx, p.Base, true)
+	_ = p.Git.Clean(ctx)
+}
+
+// CommitAndPR ships the verified slice: the commit phase stages and commits ONLY
+// this ticket's files, then the branch is pushed and a PR opened against Base — or
+// an existing PR reused when a prior run already created one. It checkpoints
+// pr_open with PR/PR_URL and moves the ticket to In Review with the PR link.
+// A push/PR failure aborts this ticket (returned to the caller) without
+// quarantining — the WIP stays on the branch for a later resume.
+func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
+	p.phaseStart("commit")
+	if _, err := p.agentStep(ctx, id, "commit", commitInstruction(id)); err != nil {
+		return err
+	}
+	if err := p.Git.Push(ctx, p.Remote, "HEAD"); err != nil {
+		return fmt.Errorf("commit %s: push: %w", id, err)
+	}
+
+	p.phaseStart("pr")
+	branch := p.State.Get(id, "BRANCH")
+	if branch == "" {
+		if b, err := p.Git.CurrentBranch(ctx); err == nil {
+			branch = b
+		}
+	}
+	prURL, err := p.GitHub.PRURL(ctx, branch)
+	if err != nil {
+		return fmt.Errorf("commit %s: pr view: %w", id, err)
+	}
+	if prURL == "" {
+		prBase := p.Base
+		if p.EpicID != "" {
+			prBase, err = p.epicBranchName(ctx)
+			if err != nil {
+				return fmt.Errorf("commit %s: resolve epic branch: %w", id, err)
+			}
+		}
+		prURL, err = p.GitHub.CreatePR(ctx, prBase, branch, id+": "+prDesc(branch), prBody(id))
+		if err != nil {
+			return fmt.Errorf("commit %s: pr create: %w", id, err)
+		}
+	}
+	p.logf("  PR %s", prURL)
+	if err := p.State.Set(id, "PR", prNumber(prURL)); err != nil {
+		return fmt.Errorf("commit %s: record PR: %w", id, err)
+	}
+	if err := p.State.Set(id, "PR_URL", prURL); err != nil {
+		return fmt.Errorf("commit %s: record PR_URL: %w", id, err)
+	}
+	if err := p.State.Set(id, "PHASE", state.PROpen); err != nil {
+		return fmt.Errorf("commit %s: checkpoint pr_open: %w", id, err)
+	}
+	if err := p.Tracker.SetStatus(ctx, id, "In Review", "Attach this PR link to the issue: "+prURL+"."); err != nil {
+		p.logf("  status (In Review) error: %v", err)
+	}
+	return nil
+}
+
+// CIAndMerge is the CI gate + merge. It reconciles first: a PR a prior run
+// already merged is marked Done without re-merging. Otherwise it polls
+// CI; on green it squash-merges and deletes the branch when AutoMerge is set (else
+// it stops at the open PR), moves the ticket to Done, and checkpoints merged. A CI
+// failure or timeout gives up — preserving the branch and quarantining without
+// aborting the loop.
+func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
+	pr := p.State.Get(id, "PR")
+	if prState, _ := p.GitHub.PRState(ctx, pr); prState == "MERGED" {
+		if err := p.markDone(ctx, id, "  ✓ %s already merged — marked Done"); err != nil {
+			return err
+		}
+		return ErrAlreadyDone
+	}
+
+	p.phaseStart("ci")
+	if err := p.pollCI(ctx, pr); err != nil {
+		p.logf("  ✗ CI: %v", err)
+		return p.giveUp(ctx, id, "CI not green")
+	}
+	if !p.AutoMerge {
+		p.logf("  green CI — leaving merge to you (AUTO_MERGE=0)")
+		return nil
+	}
+	p.phaseStart("merge")
+	if err := p.GitHub.Merge(ctx, pr, p.MergeMethod, true); err != nil {
+		return fmt.Errorf("merge %s: %w", id, err)
+	}
+	if p.EpicID != "" {
+		if epic, err := p.epicBranchName(ctx); err == nil {
+			if err := p.ensureEpicPR(ctx, epic); err != nil {
+				p.logf("  epic PR error (continuing): %v", err)
+			}
+		} else {
+			p.logf("  epic branch error (continuing): %v", err)
+		}
+	}
+	return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+}
+
+func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
+	if err := p.Tracker.SetStatus(ctx, id, "Done", ""); err != nil {
+		p.logf("  status (Done) error: %v", err)
+	}
+	if err := p.State.Set(id, "PHASE", state.Merged); err != nil {
+		return fmt.Errorf("merge %s: checkpoint merged: %w", id, err)
+	}
+	p.logf(logFmt, id)
+	return nil
+}
+
+func (p *Pipeline) pollCI(ctx context.Context, pr string) error {
+	expected := splitChecks(p.ExpectedChecks)
+	for waited := 0; ; waited += p.CIPoll {
+		checks, _ := p.GitHub.Checks(ctx, pr)
+		switch evalChecks(checks, expected) {
+		case ciFailed:
+			return ErrCIFailed
+		case ciGreen:
+			return nil
+		}
+		if waited >= p.CITimeout {
+			return ErrCITimeout
+		}
+		p.sleep(p.CIPoll)
+	}
+}
+
+func (p *Pipeline) sleep(seconds int) {
+	d := time.Duration(seconds) * time.Second
+	if p.Sleep != nil {
+		p.Sleep(d)
+		return
+	}
+	time.Sleep(d)
+}
+
+type ciStatus int
+
+const (
+	ciWaiting ciStatus = iota
+	ciGreen
+	ciFailed
+)
+
+func evalChecks(checks []Check, expected []string) ciStatus {
+	for _, c := range checks {
+		if c.Bucket == "fail" || c.Bucket == "cancel" {
+			return ciFailed
+		}
+	}
+	if len(expected) > 0 {
+		for _, name := range expected {
+			if !hasGreenNamed(checks, name) {
+				return ciWaiting
+			}
+		}
+		return ciGreen
+	}
+	if len(checks) == 0 {
+		return ciWaiting
+	}
+	for _, c := range checks {
+		if c.Bucket == "pending" {
+			return ciWaiting
+		}
+	}
+	return ciGreen
+}
+
+func hasGreenNamed(checks []Check, pattern string) bool {
+	re, err := regexp.Compile("(?i)" + pattern)
+	for _, c := range checks {
+		if c.Bucket != "pass" && c.Bucket != "skipping" {
+			continue
+		}
+		if err == nil {
+			if re.MatchString(c.Name) {
+				return true
+			}
+		} else if strings.Contains(strings.ToLower(c.Name), strings.ToLower(pattern)) {
+			return true
+		}
+	}
+	return false
+}
+
+func splitChecks(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+func prNumber(url string) string { return url[strings.LastIndex(url, "/")+1:] }
+
+var (
+	reBranchType = regexp.MustCompile(`^[a-z]+/`)
+	reBranchID   = regexp.MustCompile(`^COD-[0-9]+-`)
+)
+
+func prDesc(branch string) string {
+	slug := branch
+	if i := strings.LastIndex(branch, "/"); i >= 0 {
+		slug = branch[i+1:]
+	}
+	slug = reBranchType.ReplaceAllString(slug, "")
+	slug = reBranchID.ReplaceAllString(slug, "")
+	return strings.ReplaceAll(slug, "-", " ")
+}
+
+var reSlug = regexp.MustCompile(`[^a-z0-9]+`)
+
+func slugify(title string) string {
+	s := reSlug.ReplaceAllString(strings.ToLower(title), "-")
+	s = strings.Trim(s, "-")
+	if s == "" {
+		return ""
+	}
+	words := strings.Split(s, "-")
+	if len(words) > 6 {
+		words = words[:6]
+	}
+	return strings.Join(words, "-")
+}
+
+func prBody(id string) string {
+	return fmt.Sprintf("## Summary\nAutomated implementation of %s via the Trau loop.\n\n## Test plan\n- [x] Pest suite for this slice\n- [x] QA verify pass (browser for UI slices)\n\nLinear: %s", id, id)
+}
+
+func (p *Pipeline) agentPhase(ctx context.Context, id, phase, prompt string) (string, error) {
+	label := p.phaseLabel(phase)
+	p.logf("  ▸ %s", label)
+	stop := p.spin(label)
+	res, err := p.Runner.Run(ctx, prompt, phase)
+	stop()
+	p.writeTranscript(id, phase, res.Final)
+	return res.Final, err
+}
+
+func (p *Pipeline) phaseLabel(phase string) string {
+	pr, ok := p.Runner.(agent.PhaseRoute)
+	if !ok {
+		return phase
+	}
+	if tag := routeTag(pr.Route(phase)); tag != "" {
+		return phase + " · " + tag
+	}
+	return phase
+}
+
+func routeTag(provider, model, effort string) string {
+	name := strings.TrimPrefix(model, "claude-")
+	if name == "" {
+		name = provider
+	}
+	switch {
+	case name != "" && effort != "":
+		return name + " @" + effort
+	case name != "":
+		return name
+	case effort != "":
+		return "@" + effort
+	default:
+		return ""
+	}
+}
+
+func (p *Pipeline) spin(phase string) func() {
+	if p.Renderer == nil {
+		return func() {}
+	}
+	return p.Renderer.Spin(phase)
+}
+
+func (p *Pipeline) writeTranscript(id, phase, content string) {
+	dir := filepath.Join(p.RunsDir, id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, phase+".log"), []byte(content), 0o644)
+}
+
+func (p *Pipeline) logf(format string, a ...any) {
+	if p.Renderer != nil {
+		p.Renderer.Logf(format, a...)
+	}
+}
+
+// logAgentErr surfaces an agent failure as a single clean line: a paused glyph for
+// provider rate/usage limits, an error glyph otherwise.
+func (p *Pipeline) logAgentErr(phase string, err error) {
+	msg, _ := agentErrSummary(err)
+	p.logf("  ✗ %s error — %s", phase, msg)
+}
+
+// agentStep runs a phase agent and classifies a failure. A provider rate/usage
+// limit returns a *PausedError the caller propagates — pausing the loop without
+// quarantining or filing a bug. Any other agent error is logged and swallowed
+// (returns nil), preserving the existing "log and continue" behavior.
+func (p *Pipeline) agentStep(ctx context.Context, id, phase, prompt string) (string, error) {
+	out, err := p.agentPhase(ctx, id, phase, prompt)
+	if err == nil {
+		return out, nil
+	}
+	if isRateLimited(err) {
+		return out, p.pause(id, phase, err)
+	}
+	p.logAgentErr(phase, err)
+	return out, nil
+}
+
+// pause logs the blameless stop and builds the *PausedError. The ticket keeps its
+// last checkpoint, so a later run resumes it from there once the limit clears.
+func (p *Pipeline) pause(id, phase string, err error) error {
+	prov := providerOf(err)
+	p.logf("  ⏸ paused — %s usage/rate limit reached during %s", prov, phase)
+	p.logf("  ↳ %s left resumable on its branch; rerun trau when the limit resets", id)
+	return &PausedError{ID: id, Phase: phase, Provider: prov, Reason: prov + " rate/usage limit reached"}
+}
+
+func isRateLimited(err error) bool {
+	_, rl := agentErrSummary(err)
+	return rl
+}
+
+var reProvider = regexp.MustCompile(`^(\w+) run \(`)
+
+// providerOf best-effort extracts the backend name from a wrapped agent error
+// like "kimi run (verify): …"; defaults to "provider".
+func providerOf(err error) string {
+	if m := reProvider.FindStringSubmatch(err.Error()); m != nil {
+		return m[1]
+	}
+	return "provider"
+}
+
+func (p *Pipeline) phaseStart(phase string) {
+	if p.Renderer != nil {
+		p.Renderer.PhaseStart(phase)
+	}
+}
+
+func (p *Pipeline) setTitle(title string) {
+	if title != "" && p.Renderer != nil {
+		p.Renderer.SetTitle(title)
+	}
+}
+
+const resumeNote = " A previous attempt may have left partial work on this branch; continue from it rather than starting over."
+
+func buildInstruction(id, branch, note string) string {
+	return "Implement " + id + " on branch " + branch + " (already checked out). This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Always include the project's test skill (e.g. pest-testing); add domain skills based on what the ticket actually touches (e.g. inertia-react-development and tailwindcss-development for UI, medialibrary-development for uploads, pennant-development for feature flags, the relevant *-development skill for each area)." + note + " Implement the ticket fully and run only the tests relevant to this slice (the new or changed test files for this ticket) — not the entire suite. Do not commit, push, or open a PR — stop after implementation."
+}
+
+func fmtBytes(n int64) string {
+	if n < 1024 {
+		return fmt.Sprintf("%dB", n)
+	}
+	return fmt.Sprintf("%.1fKB", float64(n)/1024)
+}
+
+func handoffPath(id string) string { return "/tmp/handoff-" + id + ".md" }
+
+func verifyPath(id string) string { return "/tmp/verify-" + id + ".json" }
+
+func handoffTail(id string) string {
+	return "Write a QA brief for " + id + ": the concrete, checkable behaviors a manual QA tester must verify for this slice, in priority order. Don't duplicate content already in the ticket, PRD, or diff — focus on what to check and how. Redact any secrets. Save it to exactly " + handoffPath(id) + " (overwrite if present) and nowhere else."
+}
+
+func browserNote(mode, appURL string) string {
+	switch mode {
+	case "always":
+		return "Also drive the running app at " + appURL + " via the browser-harness skill to exercise the UI in the handoff."
+	case "auto":
+		return "If this slice has a UI surface, also drive the running app at " + appURL + " via the browser-harness skill; skip the browser for backend-only slices."
+	default:
+		return ""
+	}
+}
+
+func verifyTail(id, handoff, verdict, note string) string {
+	return "Cold, adversarial QA verification of " + id + " against the QA brief at " + handoff + ". Treat the code on disk and the brief as the only sources of truth; your job is to find what does NOT work. Run only the tests relevant to this slice (the new or changed test files for this ticket) using the project's test runner — not the whole suite. For each behavior the brief lists, confirm it actually holds. " + note + " Distinguish defects in this slice's own code from pre-existing or out-of-scope issues. When finished, write a JSON verdict to exactly " + verdict + ": {\"pass\": true|false, \"summary\": \"one line\", \"failures\": [\"...\"]}. Set pass=false if any relevant test fails or any behavior in the brief does not work; failures lists each concrete problem (empty when pass is true). Do not commit, push, or open a PR."
+}
+
+func commitInstruction(id string) string {
+	return "Commit the implementation for " + id + ". Stage and commit ONLY files that are part of " + id + "; never commit unrelated untracked files or tooling (e.g. scripts/, *.env). Group related changes into atomic, dependency-ordered commits (foundational changes first; keep refactors, features, and fixes in distinct commits). Use Conventional Commits: '<type>(scope): <subject>' (type ∈ feat|fix|refactor|docs|style|test|chore), imperative mood, subject under 72 characters, with a 'Refs: " + id + "' trailer; match the project's existing git-log style if it differs. The commit message must contain ONLY the subject and body: do NOT add any 'Co-authored-by:'/'Co-Authored-By:' trailer, a '🤖 Generated with Claude Code' line, or any mention of AI/assistant authorship, and remove them if your environment adds them by default."
+}
+
+func repairInstruction(id, verdict, handoff, branch, fails string) string {
+	return id + " verification FAILED. QA verdict file: " + verdict + ". QA brief: " + handoff + ". Failures:\n" +
+		fails + "\n\nYou are on branch " + branch + " with this slice's implementation uncommitted. If this is a DEFECT IN THIS SLICE'S OWN code, find the root cause and fix it with minimal, targeted changes, then run the relevant Pest tests to confirm. If the failure is actually a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — change nothing and say so clearly. Do not commit, push, or open a PR."
+}
+
+func bugfixInstruction(id, verdict, handoff, branch, fails string) string {
+	return id + " verification FAILED after initial quick repairs. QA verdict file: " + verdict + ". QA brief: " + handoff + ". Failures:\n" +
+		fails + "\n\nYou are on branch " + branch + " with this slice's implementation uncommitted. This is a comprehensive bug-fix pass: read the full verdict, identify every failure that is a DEFECT IN THIS SLICE'S OWN code, and fix ALL of them with minimal, targeted changes. Do not stop after the first fix. Run the relevant tests (and browser checks if applicable) to confirm every failure is resolved before finishing. If a failure is a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — note it clearly. Do not commit, push, or open a PR."
+}
+
+type verdict struct {
+	Pass     bool     `json:"pass"`
+	Summary  string   `json:"summary"`
+	Failures []string `json:"failures"`
+}
+
+func readVerdict(path string) (v verdict, ok bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return verdict{}, false
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		return verdict{}, false
+	}
+	return v, true
+}
+
+// topFailures returns up to three plain-English failure reasons from a verdict,
+// for surfacing under a "verify failed" line. Empty when the verdict carries none
+// (e.g. the agent never wrote one).
+func topFailures(v verdict) []string {
+	if len(v.Failures) > 0 {
+		n := len(v.Failures)
+		if n > 3 {
+			n = 3
+		}
+		return v.Failures[:n]
+	}
+	if s := strings.TrimSpace(v.Summary); s != "" {
+		return []string{s}
+	}
+	return nil
+}
+
+// agentErrSummary condenses a multi-line agent error into one human line and flags
+// provider rate/usage limits. The full detail stays in the provider's own log.
+func agentErrSummary(err error) (msg string, rateLimited bool) {
+	s := err.Error()
+	low := strings.ToLower(s)
+	if strings.Contains(low, "rate_limit") || strings.Contains(low, "rate limit") ||
+		strings.Contains(low, "usage limit") || strings.Contains(low, "quota") || strings.Contains(s, "429") {
+		return "provider usage/rate limit reached — see provider log", true
+	}
+	for _, ln := range strings.Split(s, "\n") {
+		ln = strings.TrimSpace(ln)
+		if strings.HasPrefix(strings.ToLower(ln), "error:") {
+			return ln, false
+		}
+	}
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	return s, false
+}
+
+func (v verdict) failureLines() string {
+	if len(v.Failures) > 0 {
+		lines := v.Failures
+		if len(lines) > 20 {
+			lines = lines[:20]
+		}
+		return strings.Join(lines, "\n")
+	}
+	if v.Summary != "" {
+		return v.Summary
+	}
+	return "see verdict"
+}
+
+// ExecGit runs git against a target repo via `git -C <repo>`.
+type ExecGit struct {
+	Bin  string
+	Repo string
+}
+
+func (g ExecGit) bin() string {
+	if g.Bin != "" {
+		return g.Bin
+	}
+	return "git"
+}
+
+func (g ExecGit) run(ctx context.Context, args ...string) error {
+	full := append([]string{"-C", g.Repo}, args...)
+	if out, err := exec.CommandContext(ctx, g.bin(), full...).CombinedOutput(); err != nil {
+		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// CurrentBranch returns the checked-out branch of the target repo.
+func (g ExecGit) CurrentBranch(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo, "rev-parse", "--abbrev-ref", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("git current branch: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// AddAll stages every change in the target repo (git add -A).
+func (g ExecGit) AddAll(ctx context.Context) error { return g.run(ctx, "add", "-A") }
+
+// Commit records the staged changes; noVerify adds --no-verify to bypass hooks.
+func (g ExecGit) Commit(ctx context.Context, message string, noVerify bool) error {
+	args := []string{"commit"}
+	if noVerify {
+		args = append(args, "--no-verify")
+	}
+	return g.run(ctx, append(args, "-m", message)...)
+}
+
+// Push pushes ref to remote, setting upstream (git push -u <remote> <ref>).
+func (g ExecGit) Push(ctx context.Context, remote, ref string) error {
+	return g.run(ctx, "push", "-u", remote, ref)
+}
+
+// Checkout switches to ref; force adds -f to discard local changes.
+func (g ExecGit) Checkout(ctx context.Context, ref string, force bool) error {
+	args := []string{"checkout"}
+	if force {
+		args = append(args, "-f")
+	}
+	return g.run(ctx, append(args, ref)...)
+}
+
+// CreateBranch creates and switches to branch off base (git checkout -b <branch> <base>).
+func (g ExecGit) CreateBranch(ctx context.Context, branch, base string) error {
+	return g.run(ctx, "checkout", "-b", branch, base)
+}
+
+// Clean removes untracked files and directories (git clean -fd).
+func (g ExecGit) Clean(ctx context.Context) error { return g.run(ctx, "clean", "-fd") }
+
+// BranchExists reports whether refs/heads/<branch> resolves. git rev-parse --verify
+// exits non-zero when the ref is absent, which reads as (false, nil) — a missing
+// branch is an expected answer, not an error (only the exit status is checked).
+func (g ExecGit) BranchExists(ctx context.Context, branch string) (bool, error) {
+	err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo, "rev-parse", "--verify", "refs/heads/"+branch).Run()
+	return err == nil, nil
+}
+
+// FindFeatureBranch returns the first local feature/<id>-* branch, or "" when none
+// match (a git for-each-ref taking the first line, errors swallowed).
+func (g ExecGit) FindFeatureBranch(ctx context.Context, id string) (string, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"for-each-ref", "--format=%(refname:short)", "refs/heads/feature/"+id+"-*").Output()
+	if err != nil {
+		return "", nil
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	return strings.TrimSpace(first), nil
+}
+
+// DeleteBranch deletes a local branch (git branch -D <branch>).
+func (g ExecGit) DeleteBranch(ctx context.Context, branch string) error {
+	return g.run(ctx, "branch", "-D", branch)
+}
+
+// DeletePushedBranch deletes the remote branch (git push <remote> --delete <branch>).
+func (g ExecGit) DeletePushedBranch(ctx context.Context, remote, branch string) error {
+	return g.run(ctx, "push", remote, "--delete", branch)
+}
+
+// StatusPorcelain returns tracked-only porcelain status; empty means a clean base.
+func (g ExecGit) StatusPorcelain(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"status", "--porcelain", "--untracked-files=no").Output()
+	if err != nil {
+		return "", fmt.Errorf("git status: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// Pull fast-forwards branch from remote (git pull --ff-only <remote> <branch>).
+func (g ExecGit) Pull(ctx context.Context, remote, branch string) error {
+	return g.run(ctx, "pull", "--ff-only", remote, branch)
+}
+
+// ExecGitHub runs `gh` against a target repo (resolved from the working directory
+// by setting the command's Dir).
+type ExecGitHub struct {
+	Bin  string
+	Repo string
+}
+
+func (g ExecGitHub) bin() string {
+	if g.Bin != "" {
+		return g.Bin
+	}
+	return "gh"
+}
+
+func (g ExecGitHub) output(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, g.bin(), args...)
+	cmd.Dir = g.Repo
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+// PRURL returns the open PR's URL for branch, or "" when none exists. A gh error
+// (no PR found) is swallowed to "".
+func (g ExecGitHub) PRURL(ctx context.Context, branch string) (string, error) {
+	out, err := g.output(ctx, "pr", "view", branch, "--json", "url", "-q", ".url")
+	if err != nil {
+		return "", nil
+	}
+	return out, nil
+}
+
+// PRState returns the PR's state (OPEN, MERGED, …), or "" when unknown (a gh error
+// is swallowed to "").
+func (g ExecGitHub) PRState(ctx context.Context, pr string) (string, error) {
+	out, err := g.output(ctx, "pr", "view", pr, "--json", "state", "-q", ".state")
+	if err != nil {
+		return "", nil
+	}
+	return out, nil
+}
+
+// CreatePR opens a PR against base from head and returns the URL gh prints.
+func (g ExecGitHub) CreatePR(ctx context.Context, base, head, title, body string) (string, error) {
+	out, err := g.output(ctx, "pr", "create", "--base", base, "--head", head, "--title", title, "--body", body)
+	if err != nil {
+		return "", fmt.Errorf("gh pr create: %w: %s", err, out)
+	}
+	return out, nil
+}
+
+// Checks returns the PR's status checks. A gh error reads as no checks, so pollCI
+// re-polls rather than aborting.
+func (g ExecGitHub) Checks(ctx context.Context, pr string) ([]Check, error) {
+	out, err := g.output(ctx, "pr", "checks", pr, "--json", "name,bucket")
+	if err != nil {
+		return nil, nil
+	}
+	var checks []Check
+	if err := json.Unmarshal([]byte(out), &checks); err != nil {
+		return nil, nil
+	}
+	return checks, nil
+}
+
+// Merge merges the PR with the given method; deleteBranch adds --delete-branch.
+func (g ExecGitHub) Merge(ctx context.Context, pr, method string, deleteBranch bool) error {
+	args := []string{"pr", "merge", pr, "--" + method}
+	if deleteBranch {
+		args = append(args, "--delete-branch")
+	}
+	cmd := exec.CommandContext(ctx, g.bin(), args...)
+	cmd.Dir = g.Repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("gh pr merge: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}

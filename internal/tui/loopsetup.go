@@ -1,0 +1,353 @@
+package tui
+
+import (
+	"context"
+	"fmt"
+	"regexp"
+	"strings"
+
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+type loopStep int
+
+const (
+	loopConfirm loopStep = iota
+	loopLoading
+	loopList
+)
+
+// loopSetupModel is the screen shown when the user selects "Run loop". It takes an
+// optional epic: with one, it fetches the epic's sub-issues via an agent and shows
+// the planned list before starting (loop scoped to that epic); left blank, it loops
+// the team's ready queue as before. Either way nothing starts from a stray keypress.
+// Outcome is read via Done/Cancelled/Epic.
+type loopSetupModel struct {
+	styles  Styles
+	actions Actions
+	ctx     context.Context
+	width   int
+	height  int
+	info    MenuInfo
+
+	step      loopStep
+	input     textinput.Model
+	epic      string
+	subs      []SubIssue
+	cursor    int
+	loadErr   error
+	badID     bool
+	subsCache map[string][]SubIssue // epic id -> loaded sub-issues
+
+	done      bool
+	cancelled bool
+	single    bool
+	selected  string // single sub-issue ID to run instead of the loop
+}
+
+type subIssuesLoadedMsg struct {
+	epic string
+	subs []SubIssue
+	err  error
+}
+
+func newLoopSetupModel(ctx context.Context, actions Actions, styles Styles, info MenuInfo, w, h int) loopSetupModel {
+	ti := textinput.New()
+	ti.Placeholder = "COD-400 (optional)"
+	ti.CharLimit = 64
+	ti.Width = 32
+	ti.Prompt = "› "
+	ti.Focus()
+
+	return loopSetupModel{
+		styles:    styles,
+		actions:   actions,
+		ctx:       ctx,
+		width:     w,
+		height:    h,
+		info:      info,
+		step:      loopConfirm,
+		input:     ti,
+		subsCache: map[string][]SubIssue{},
+	}
+}
+
+func (m loopSetupModel) Update(msg tea.Msg) (loopSetupModel, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		return m, nil
+
+	case subIssuesLoadedMsg:
+		if m.step != loopLoading || msg.epic != m.epic {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.loadErr = msg.err
+			m.step = loopConfirm
+			m.input.Focus()
+			return m, nil
+		}
+		m.subs = msg.subs
+		m.subsCache[msg.epic] = msg.subs
+		m.cursor = 0
+		m.step = loopList
+		return m, nil
+
+	case tea.KeyMsg:
+		return m.handleKey(msg)
+	}
+
+	if m.step == loopConfirm {
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m loopSetupModel) handleKey(msg tea.KeyMsg) (loopSetupModel, tea.Cmd) {
+	switch m.step {
+	case loopConfirm:
+		switch msg.Type {
+		case tea.KeyCtrlC, tea.KeyEsc:
+			m.cancelled, m.done = true, true
+			return m, nil
+		case tea.KeyEnter:
+			raw := strings.TrimSpace(m.input.Value())
+			if raw == "" {
+				m.epic = ""
+				m.done = true
+				return m, nil
+			}
+			id := extractTicketID(raw, m.info.Prefix)
+			if id == "" {
+				m.badID = true
+				return m, nil
+			}
+			m.epic = id
+			m.badID = false
+			m.loadErr = nil
+			if cached, ok := m.subsCache[id]; ok {
+				m.subs = cached
+				m.cursor = 0
+				m.step = loopList
+				return m, nil
+			}
+			m.step = loopLoading
+			return m, m.loadCmd(id)
+		}
+		m.badID = false
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+
+	case loopLoading:
+		if msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyEsc {
+			m.step = loopConfirm
+			m.input.Focus()
+		}
+		return m, nil
+
+	case loopList:
+		switch msg.Type {
+		case tea.KeyCtrlC:
+			m.cancelled, m.done = true, true
+		case tea.KeyEsc:
+			m.step = loopConfirm
+			m.subs = nil
+			m.cursor = 0
+			m.input.Focus()
+		case tea.KeyEnter:
+			m.single = len(m.subs) == 0
+			m.done = true
+		case tea.KeyUp, tea.KeyShiftTab:
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case tea.KeyDown, tea.KeyTab:
+			if m.cursor < len(m.subs)-1 {
+				m.cursor++
+			}
+		}
+		switch msg.String() {
+		case "o":
+			if m.cursor >= 0 && m.cursor < len(m.subs) {
+				return m, openURLCmd(linearIssueURL(m.subs[m.cursor].ID))
+			}
+		case "r":
+			delete(m.subsCache, m.epic)
+			m.step = loopLoading
+			return m, m.loadCmd(m.epic)
+		case "s":
+			if len(m.subs) > 0 && m.cursor >= 0 && m.cursor < len(m.subs) {
+				m.selected = m.subs[m.cursor].ID
+			} else {
+				m.selected = m.epic
+			}
+			m.done = true
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m loopSetupModel) loadCmd(epic string) tea.Cmd {
+	actions, ctx := m.actions, m.ctx
+	return func() tea.Msg {
+		subs, err := actions.SubIssues(ctx, epic)
+		return subIssuesLoadedMsg{epic: epic, subs: subs, err: err}
+	}
+}
+
+func (m loopSetupModel) Done() bool      { return m.done }
+func (m loopSetupModel) Cancelled() bool { return m.cancelled }
+func (m loopSetupModel) Epic() string    { return m.epic }
+
+// Single reports that the entered issue has no sub-issues, so it should run as a
+// single ticket rather than as an epic loop.
+func (m loopSetupModel) Single() bool { return m.single }
+
+// Selected returns the ID of a single sub-issue chosen by the user, or "" when
+// the user wants to run the whole loop/epic.
+func (m loopSetupModel) Selected() string { return m.selected }
+
+func (m loopSetupModel) body(spinnerView string) string {
+	switch m.step {
+	case loopLoading:
+		return spinnerView + " " + m.styles.Subtle.Render("loading sub-issues of "+m.epic+"…") + "\n\n" + m.summary()
+	case loopList:
+		return m.renderList() + "\n\n" + m.summary()
+	default:
+		return m.renderConfirm()
+	}
+}
+
+func (m loopSetupModel) renderConfirm() string {
+	s := m.styles
+	rows := []string{
+		s.Subtle.Render("Run an epic, a single issue, or the whole ready queue:"),
+		"",
+		s.Subtle.Render("Issue ") + m.input.View(),
+		s.Help.Render("epic → its sub-issues · issue → just that one · blank → ready queue"),
+	}
+	switch {
+	case m.badID:
+		rows = append(rows, "", s.Error.Render("Couldn't read an epic ID — try COD-400."))
+	case m.loadErr != nil:
+		rows = append(rows, "", s.Warning.Render(truncate("Couldn't load sub-issues: "+m.loadErr.Error(), 48)))
+	}
+	rows = append(rows, "", m.summary())
+	return strings.Join(rows, "\n")
+}
+
+func (m loopSetupModel) renderList() string {
+	s := m.styles
+	if len(m.subs) == 0 {
+		return s.Subtle.Render(m.epic+" — no sub-issues") + "\n\n" +
+			s.Help.Render("It will run as a single ticket.")
+	}
+
+	var rows []string
+	rows = append(rows, s.Subtle.Render(fmt.Sprintf("%s — planned sub-issues (%d):", m.epic, len(m.subs))))
+	rows = append(rows, "")
+
+	idW, titleW := m.subIssueColumnWidths()
+	for i, sub := range m.subs {
+		marker := "  "
+		idStyle := s.Subtle
+		titleStyle := s.Subtle
+		if i == m.cursor {
+			marker = s.Info.Render("▸ ")
+			idStyle = s.Header
+			titleStyle = lipgloss.NewStyle().Foreground(colorBrand)
+		}
+		idStr := padRight(sub.ID, idW)
+		titleStr := truncate(sub.Title, titleW)
+		rows = append(rows, marker+idStyle.Render(idStr)+"  "+titleStyle.Render(titleStr))
+	}
+
+	return strings.Join(rows, "\n")
+}
+
+func (m loopSetupModel) subIssueColumnWidths() (idW, titleW int) {
+	const gap = 4 // marker + padding between columns
+	for _, sub := range m.subs {
+		if w := lipgloss.Width(sub.ID); w > idW {
+			idW = w
+		}
+	}
+	if idW < 8 {
+		idW = 8
+	}
+	titleW = m.width - idW - gap - 4
+	if titleW < 12 {
+		titleW = 12
+	}
+	return idW, titleW
+}
+
+func (m loopSetupModel) summary() string {
+	s := m.styles
+	info := m.info
+
+	agent := firstNonEmpty(info.Provider, "?")
+	if info.Model != "" {
+		agent += " · " + info.Model
+	}
+	merge := "auto-merge off"
+	if info.AutoMerge {
+		merge = "auto-merge on"
+	}
+	parts := []string{agent}
+	if info.Base != "" {
+		parts = append(parts, "base "+info.Base)
+	}
+	parts = append(parts, merge)
+
+	return s.Help.Render(strings.Join(parts, " · ")) + "\n" +
+		s.Help.Render(fmt.Sprintf("%d in-flight · %d done", info.InFlight, info.Done))
+}
+
+func (m loopSetupModel) hint() string {
+	switch m.step {
+	case loopLoading:
+		return "loading… · esc cancel"
+	case loopList:
+		return "↑↓ move · 's' run selected · 'o' open · 'r' refresh · enter start · esc back"
+	default:
+		return "enter start · type an epic to preview · esc cancel"
+	}
+}
+
+func linearIssueURL(id string) string {
+	return "https://linear.app/issue/" + id
+}
+
+// extractTicketID accepts free-form input and returns the best-effort ticket
+// identifier using the configured prefix.
+func extractTicketID(input, prefix string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+	prefix = strings.ToUpper(strings.TrimSpace(prefix))
+	if prefix == "" {
+		prefix = "COD"
+	}
+	upper := strings.ToUpper(input)
+	re := regexp.MustCompile(`(` + regexp.QuoteMeta(prefix) + `)-?([0-9]+)`)
+	if ms := re.FindStringSubmatch(upper); len(ms) == 3 {
+		return ms[1] + "-" + ms[2]
+	}
+	return ""
+}
+
+func padRight(s string, w int) string {
+	if n := lipgloss.Width(s); n < w {
+		return s + strings.Repeat(" ", w-n)
+	}
+	return s
+}
