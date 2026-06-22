@@ -53,7 +53,7 @@ homebrew_casks:
       name: homebrew-trau
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: "https://github.com/RomkaLTU/trau"
+    homepage: "https://trau.sh"
     description: "Autonomous, ticket-driven development loop"
     # trau is not (yet) Apple-notarized; strip the quarantine attribute on
     # install so the unsigned binary runs without a Gatekeeper prompt (ADR 0002 §6).

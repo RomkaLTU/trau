@@ -1,5 +1,7 @@
 # Trau loop
 
+[**trau.sh**](https://trau.sh)
+
 An autonomous, ticket-driven development loop: it pulls the next ready issue from your tracker
 and drives it through **build → handoff → verify → commit → PR → CI → merge**, one issue per
 iteration, as a single self-contained Go binary. Every phase runs in its own fresh agent
@@ -21,7 +23,7 @@ trau --version
 Or from source (Go 1.24+): `git clone https://github.com/RomkaLTU/trau && cd trau && make build`.
 
 Requires `git`, `gh` (authenticated), `jq`, and an agent CLI — `claude` (default), `codex`, or
-`kimi` — on `$PATH`, plus **Linear** connected through the Linear MCP (the only supported tracker).
+`kimi` — on `$PATH`, plus a supported issue tracker — Linear, Jira, or GitHub Issues — via its MCP.
 
 ## Use
 
