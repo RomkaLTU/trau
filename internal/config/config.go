@@ -137,7 +137,20 @@ func Defaults() Config {
 type envLayer struct {
 	file map[string]string
 	dir  string
+	path string
 	name Layer
+}
+
+// providerGet returns the value for key from a provider-local config file when
+// present, otherwise delegates to fallback (the normal layered lookup). It is a
+// package-level helper so mode expansion can reuse the same precedence rule.
+func providerGet(file map[string]string, src envLayer, key string, fallback func(string) (string, envLayer)) (string, envLayer) {
+	if file != nil {
+		if v, present := file[key]; present {
+			return v, src
+		}
+	}
+	return fallback(key)
 }
 
 // Layer identifies which configuration layer supplied a value.
@@ -248,9 +261,9 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		return c, sources, err
 	}
 
-	localLayer := envLayer{file: local, dir: dirOf(localPath), name: LayerLocal}
-	projLayer := envLayer{file: proj, dir: dirOf(projectPath), name: LayerProject}
-	userLayer := envLayer{file: user, dir: dirOf(userPath), name: LayerUser}
+	localLayer := envLayer{file: local, dir: dirOf(localPath), path: localPath, name: LayerLocal}
+	projLayer := envLayer{file: proj, dir: dirOf(projectPath), path: projectPath, name: LayerProject}
+	userLayer := envLayer{file: user, dir: dirOf(userPath), path: userPath, name: LayerUser}
 
 	get := func(key string) (string, envLayer) {
 		if !strings.HasPrefix(key, "TRAU_") {
@@ -290,19 +303,11 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		if v == "" {
 			return nil, envLayer{}, nil
 		}
-		f, err := ParseEnvFile(resolveSiblingPath(src.dir, v))
+		f, err := ParseEnvFile(resolveSiblingPath(src.path, v))
 		return f, src, err
 	}
-	providerGet := func(providerFile map[string]string, src envLayer, key string) (string, envLayer) {
-		if providerFile != nil {
-			if v, present := providerFile[key]; present {
-				return v, src
-			}
-		}
-		return get(key)
-	}
 	providerStr := func(providerFile map[string]string, src envLayer, key string, dst *string) {
-		v, srcLayer := providerGet(providerFile, src, key)
+		v, srcLayer := providerGet(providerFile, src, key, get)
 		if v != "" {
 			*dst = v
 			sources[key] = srcLayer.name
@@ -363,12 +368,17 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	switch c.Provider {
 	case "claude":
 		phaseGet = func(key string) (string, Layer) {
-			v, src := providerGet(claudeFile, claudeSrc, key)
+			v, src := providerGet(claudeFile, claudeSrc, key, get)
 			return v, src.name
 		}
 	case "codex":
 		phaseGet = func(key string) (string, Layer) {
-			v, src := providerGet(codexFile, codexSrc, key)
+			v, src := providerGet(codexFile, codexSrc, key, get)
+			return v, src.name
+		}
+	case "kimi":
+		phaseGet = func(key string) (string, Layer) {
+			v, src := providerGet(kimiFile, kimiSrc, key, get)
 			return v, src.name
 		}
 	}
