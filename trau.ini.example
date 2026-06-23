@@ -52,6 +52,25 @@ TRAU_REPO_ROOT=
 # with --provider <name>.
 PROVIDER=claude
 
+# Provider speed/reasoning presets: fast | balanced | slow. A mode sets the default
+# model and effort for the active provider unless you override them explicitly with
+# CLAUDE_MODEL / CLAUDE_EFFORT (or their per-phase variants below). You can also
+# define your own presets in a provider-local config file by setting a mode and
+# naming keys like FAST_CLAUDE_MODEL / FAST_CLAUDE_EFFORT.
+#
+# Built-in Claude presets:
+#   fast     -> claude-haiku-4-5  @ low
+#   balanced -> claude-sonnet-4-6 @ medium
+#   slow     -> claude-opus-4-8   @ max
+# Built-in Codex presets:
+#   fast     -> gpt-5.4-mini @ low
+#   balanced -> gpt-5.5      @ medium
+#   slow     -> gpt-5.5      @ xhigh
+#
+# CLAUDE_MODE=balanced
+# CODEX_MODE=fast
+# KIMI_MODE=
+
 # Per-provider phase tuning for this project. Phases: BUILD HANDOFF VERIFY REPAIR
 # BUGFIX COMMIT PICK. Model/effort are provider-specific.
 #
