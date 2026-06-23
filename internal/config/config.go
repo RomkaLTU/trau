@@ -53,6 +53,7 @@ type Config struct {
 	AgentTimeout          int
 	ClaudeModel           string
 	ClaudeEffort          string
+	ClaudeMode            string
 	ClaudeDisallowedTools string
 
 	CodexConfig  string
@@ -61,11 +62,13 @@ type Config struct {
 	CodexProfile string
 	CodexModel   string
 	CodexEffort  string
+	CodexMode    string
 
 	KimiConfig string
 	KimiBin    string
 	KimiFlags  string
 	KimiModel  string
+	KimiMode   string
 
 	Routes map[string]string
 
@@ -107,6 +110,7 @@ func Defaults() Config {
 		AgentTimeout:          900,
 		ClaudeModel:           "",
 		ClaudeEffort:          "",
+		ClaudeMode:            "",
 		ClaudeDisallowedTools: "Agent,Workflow",
 		CodexConfig:           "",
 		CodexBin:              "codex",
@@ -114,10 +118,12 @@ func Defaults() Config {
 		CodexProfile:          "",
 		CodexModel:            "",
 		CodexEffort:           "",
+		CodexMode:             "",
 		KimiConfig:            "",
 		KimiBin:               "kimi",
 		KimiFlags:             "",
 		KimiModel:             "",
+		KimiMode:              "",
 		MaxIterations:         15,
 		MaxRepairs:            2,
 		MaxBugfixes:           2,
@@ -137,7 +143,20 @@ func Defaults() Config {
 type envLayer struct {
 	file map[string]string
 	dir  string
+	path string
 	name Layer
+}
+
+// providerGet returns the value for key from a provider-local config file when
+// present, otherwise delegates to fallback (the normal layered lookup). It is a
+// package-level helper so mode expansion can reuse the same precedence rule.
+func providerGet(file map[string]string, src envLayer, key string, fallback func(string) (string, envLayer)) (string, envLayer) {
+	if file != nil {
+		if v, present := file[key]; present {
+			return v, src
+		}
+	}
+	return fallback(key)
 }
 
 // Layer identifies which configuration layer supplied a value.
@@ -248,9 +267,9 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		return c, sources, err
 	}
 
-	localLayer := envLayer{file: local, dir: dirOf(localPath), name: LayerLocal}
-	projLayer := envLayer{file: proj, dir: dirOf(projectPath), name: LayerProject}
-	userLayer := envLayer{file: user, dir: dirOf(userPath), name: LayerUser}
+	localLayer := envLayer{file: local, dir: dirOf(localPath), path: localPath, name: LayerLocal}
+	projLayer := envLayer{file: proj, dir: dirOf(projectPath), path: projectPath, name: LayerProject}
+	userLayer := envLayer{file: user, dir: dirOf(userPath), path: userPath, name: LayerUser}
 
 	get := func(key string) (string, envLayer) {
 		if !strings.HasPrefix(key, "TRAU_") {
@@ -290,19 +309,11 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		if v == "" {
 			return nil, envLayer{}, nil
 		}
-		f, err := ParseEnvFile(resolveSiblingPath(src.dir, v))
+		f, err := ParseEnvFile(resolveSiblingPath(src.path, v))
 		return f, src, err
 	}
-	providerGet := func(providerFile map[string]string, src envLayer, key string) (string, envLayer) {
-		if providerFile != nil {
-			if v, present := providerFile[key]; present {
-				return v, src
-			}
-		}
-		return get(key)
-	}
 	providerStr := func(providerFile map[string]string, src envLayer, key string, dst *string) {
-		v, srcLayer := providerGet(providerFile, src, key)
+		v, srcLayer := providerGet(providerFile, src, key, get)
 		if v != "" {
 			*dst = v
 			sources[key] = srcLayer.name
@@ -346,14 +357,19 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	providerStr(claudeFile, claudeSrc, "CLAUDE_MODEL", &c.ClaudeModel)
 	providerStr(claudeFile, claudeSrc, "CLAUDE_DISALLOWED_TOOLS", &c.ClaudeDisallowedTools)
 	providerStr(claudeFile, claudeSrc, "CLAUDE_EFFORT", &c.ClaudeEffort)
+	providerStr(claudeFile, claudeSrc, "CLAUDE_MODE", &c.ClaudeMode)
 	providerStr(codexFile, codexSrc, "CODEX_BIN", &c.CodexBin)
 	providerStr(codexFile, codexSrc, "CODEX_FLAGS", &c.CodexFlags)
 	providerStr(codexFile, codexSrc, "CODEX_PROFILE", &c.CodexProfile)
 	providerStr(codexFile, codexSrc, "CODEX_MODEL", &c.CodexModel)
 	providerStr(codexFile, codexSrc, "CODEX_EFFORT", &c.CodexEffort)
+	providerStr(codexFile, codexSrc, "CODEX_MODE", &c.CodexMode)
 	providerStr(kimiFile, kimiSrc, "KIMI_BIN", &c.KimiBin)
 	providerStr(kimiFile, kimiSrc, "KIMI_FLAGS", &c.KimiFlags)
 	providerStr(kimiFile, kimiSrc, "KIMI_MODEL", &c.KimiModel)
+	providerStr(kimiFile, kimiSrc, "KIMI_MODE", &c.KimiMode)
+
+	applyProviderMode(&c, claudeFile, claudeSrc, codexFile, codexSrc, kimiFile, kimiSrc, get, sources)
 
 	routes := map[string]string{}
 	phaseGet := func(key string) (string, Layer) {
@@ -363,12 +379,17 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	switch c.Provider {
 	case "claude":
 		phaseGet = func(key string) (string, Layer) {
-			v, src := providerGet(claudeFile, claudeSrc, key)
+			v, src := providerGet(claudeFile, claudeSrc, key, get)
 			return v, src.name
 		}
 	case "codex":
 		phaseGet = func(key string) (string, Layer) {
-			v, src := providerGet(codexFile, codexSrc, key)
+			v, src := providerGet(codexFile, codexSrc, key, get)
+			return v, src.name
+		}
+	case "kimi":
+		phaseGet = func(key string) (string, Layer) {
+			v, src := providerGet(kimiFile, kimiSrc, key, get)
 			return v, src.name
 		}
 	}
@@ -400,6 +421,82 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("RUNS_DIR", &c.RunsDir)
 
 	return c, sources, nil
+}
+
+// ProviderMode is a named speed/reasoning preset for a provider. It maps to a
+// default model and effort when the user does not set them explicitly.
+type ProviderMode struct {
+	Model  string
+	Effort string
+}
+
+// providerModeDefaults supplies built-in fast/balanced/slow presets for providers
+// that do not define their own in a provider-local config file. Explicit
+// MODEL/EFFORT values and per-phase overrides always win.
+var providerModeDefaults = map[string]map[string]ProviderMode{
+	"claude": {
+		"fast":     {Model: "claude-haiku-4-5", Effort: "low"},
+		"balanced": {Model: "claude-sonnet-4-6", Effort: "medium"},
+		"slow":     {Model: "claude-opus-4-8", Effort: "max"},
+	},
+	"codex": {
+		"fast":     {Model: "gpt-5.4-mini", Effort: "low"},
+		"balanced": {Model: "gpt-5.5", Effort: "medium"},
+		"slow":     {Model: "gpt-5.5", Effort: "xhigh"},
+	},
+}
+
+// applyProviderMode expands CLAUDE_MODE/CODEX_MODE/KIMI_MODE into model and
+// effort defaults. It first looks for user-defined presets named like
+// FAST_CLAUDE_MODEL / FAST_CLAUDE_EFFORT in the provider-local config file (or
+// the normal config layers), then falls back to the built-in defaults above.
+// Any explicit MODEL/EFFORT already loaded takes precedence.
+func applyProviderMode(c *Config, claudeFile map[string]string, claudeSrc envLayer, codexFile map[string]string, codexSrc envLayer, kimiFile map[string]string, kimiSrc envLayer, get func(string) (string, envLayer), sources map[string]Layer) {
+	modeFor := func(provider string, mode string, file map[string]string, src envLayer, model, effort *string) {
+		if mode == "" {
+			return
+		}
+		mode = strings.ToLower(mode)
+		prefix := strings.ToUpper(provider) + "_"
+		modeSource := sources[prefix+"MODE"]
+		if model != nil && *model == "" {
+			if v, _ := providerGet(file, src, strings.ToUpper(mode)+"_"+prefix+"MODEL", get); v != "" {
+				*model = v
+				if _, ok := sources[prefix+"MODEL"]; !ok {
+					sources[prefix+"MODEL"] = modeSource
+				}
+			}
+		}
+		if effort != nil && *effort == "" {
+			if v, _ := providerGet(file, src, strings.ToUpper(mode)+"_"+prefix+"EFFORT", get); v != "" {
+				*effort = v
+				if _, ok := sources[prefix+"EFFORT"]; !ok {
+					sources[prefix+"EFFORT"] = modeSource
+				}
+			}
+		}
+
+		preset, ok := providerModeDefaults[provider][mode]
+		if !ok {
+			return
+		}
+		if model != nil && *model == "" {
+			*model = preset.Model
+			if _, ok := sources[prefix+"MODEL"]; !ok {
+				sources[prefix+"MODEL"] = modeSource
+			}
+		}
+		if effort != nil && *effort == "" {
+			*effort = preset.Effort
+			if _, ok := sources[prefix+"EFFORT"]; !ok {
+				sources[prefix+"EFFORT"] = modeSource
+			}
+		}
+	}
+
+	modeFor("claude", c.ClaudeMode, claudeFile, claudeSrc, &c.ClaudeModel, &c.ClaudeEffort)
+	modeFor("codex", c.CodexMode, codexFile, codexSrc, &c.CodexModel, &c.CodexEffort)
+	modeFor("kimi", c.KimiMode, kimiFile, kimiSrc, &c.KimiModel, nil)
 }
 
 var phases = []string{"build", "handoff", "verify", "repair", "bugfix", "commit", "pick"}
@@ -684,16 +781,19 @@ func KnownKeys() []KeyMeta {
 		{Key: "CLAUDE_FLAGS", Advanced: true, Default: "--dangerously-skip-permissions", Description: "Extra flags passed to Claude"},
 		{Key: "AGENT_TIMEOUT", Advanced: true, Default: "900", Description: "Per-agent call timeout in seconds"},
 		{Key: "CLAUDE_MODEL", Advanced: true, Description: "Default Claude model"},
-		{Key: "CLAUDE_DISALLOWED_TOOLS", Advanced: true, Default: "Agent,Workflow", Description: "Tools disabled inside agents"},
 		{Key: "CLAUDE_EFFORT", Advanced: true, Description: "Default Claude reasoning effort"},
+		{Key: "CLAUDE_MODE", Advanced: true, Description: "Claude speed preset: fast | balanced | slow", Options: []string{"fast", "balanced", "slow"}},
+		{Key: "CLAUDE_DISALLOWED_TOOLS", Advanced: true, Default: "Agent,Workflow", Description: "Tools disabled inside agents"},
 		{Key: "CODEX_BIN", Advanced: true, Default: "codex", Description: "Codex binary"},
 		{Key: "CODEX_FLAGS", Advanced: true, Default: "--dangerously-bypass-approvals-and-sandbox", Description: "Extra flags passed to Codex"},
 		{Key: "CODEX_PROFILE", Advanced: true, Description: "Codex exec profile"},
 		{Key: "CODEX_MODEL", Advanced: true, Description: "Default Codex model"},
 		{Key: "CODEX_EFFORT", Advanced: true, Description: "Default Codex reasoning effort"},
+		{Key: "CODEX_MODE", Advanced: true, Description: "Codex speed preset: fast | balanced | slow", Options: []string{"fast", "balanced", "slow"}},
 		{Key: "KIMI_BIN", Advanced: true, Default: "kimi", Description: "Kimi binary"},
 		{Key: "KIMI_FLAGS", Advanced: true, Description: "Extra flags passed to Kimi"},
 		{Key: "KIMI_MODEL", Advanced: true, Description: "Default Kimi model"},
+		{Key: "KIMI_MODE", Advanced: true, Description: "Kimi speed preset: fast | balanced | slow", Options: []string{"fast", "balanced", "slow"}},
 		{Key: "MAX_ITERATIONS", Default: "15", Description: "Maximum tickets per run"},
 		{Key: "MAX_REPAIRS", Default: "2", Description: "Verify-fail quick repair attempts before bugfix"},
 		{Key: "MAX_BUGFIXES", Default: "2", Description: "Comprehensive bugfix passes after quick repairs are exhausted"},
@@ -735,6 +835,13 @@ func KnownKeys() []KeyMeta {
 		{Key: "CODEX_COMMIT_EFFORT", Advanced: true, Description: "Codex effort for commit phase"},
 		{Key: "CODEX_PICK_MODEL", Advanced: true, Description: "Codex model for pick phase"},
 		{Key: "CODEX_PICK_EFFORT", Advanced: true, Description: "Codex effort for pick phase"},
+		{Key: "KIMI_BUILD_MODEL", Advanced: true, Description: "Kimi model for build phase"},
+		{Key: "KIMI_HANDOFF_MODEL", Advanced: true, Description: "Kimi model for handoff phase"},
+		{Key: "KIMI_VERIFY_MODEL", Advanced: true, Description: "Kimi model for verify phase"},
+		{Key: "KIMI_REPAIR_MODEL", Advanced: true, Description: "Kimi model for repair phase"},
+		{Key: "KIMI_BUGFIX_MODEL", Advanced: true, Description: "Kimi model for comprehensive bugfix phase"},
+		{Key: "KIMI_COMMIT_MODEL", Advanced: true, Description: "Kimi model for commit phase"},
+		{Key: "KIMI_PICK_MODEL", Advanced: true, Description: "Kimi model for pick phase"},
 	}
 }
 
@@ -813,10 +920,12 @@ func keyValue(cfg Config, key string) string {
 		return strconv.Itoa(cfg.AgentTimeout)
 	case "CLAUDE_MODEL":
 		return cfg.ClaudeModel
-	case "CLAUDE_DISALLOWED_TOOLS":
-		return cfg.ClaudeDisallowedTools
 	case "CLAUDE_EFFORT":
 		return cfg.ClaudeEffort
+	case "CLAUDE_MODE":
+		return cfg.ClaudeMode
+	case "CLAUDE_DISALLOWED_TOOLS":
+		return cfg.ClaudeDisallowedTools
 	case "CODEX_BIN":
 		return cfg.CodexBin
 	case "CODEX_FLAGS":
@@ -827,12 +936,16 @@ func keyValue(cfg Config, key string) string {
 		return cfg.CodexModel
 	case "CODEX_EFFORT":
 		return cfg.CodexEffort
+	case "CODEX_MODE":
+		return cfg.CodexMode
 	case "KIMI_BIN":
 		return cfg.KimiBin
 	case "KIMI_FLAGS":
 		return cfg.KimiFlags
 	case "KIMI_MODEL":
 		return cfg.KimiModel
+	case "KIMI_MODE":
+		return cfg.KimiMode
 	case "MAX_ITERATIONS":
 		return strconv.Itoa(cfg.MaxIterations)
 	case "MAX_REPAIRS":
@@ -876,6 +989,8 @@ func keyValue(cfg Config, key string) string {
 		return phaseRouteModel(cfg.Routes, "codex", key)
 	case "CODEX_BUILD_EFFORT", "CODEX_HANDOFF_EFFORT", "CODEX_VERIFY_EFFORT", "CODEX_REPAIR_EFFORT", "CODEX_BUGFIX_EFFORT", "CODEX_COMMIT_EFFORT", "CODEX_PICK_EFFORT":
 		return phaseRouteEffort(cfg.Routes, "codex", key)
+	case "KIMI_BUILD_MODEL", "KIMI_HANDOFF_MODEL", "KIMI_VERIFY_MODEL", "KIMI_REPAIR_MODEL", "KIMI_BUGFIX_MODEL", "KIMI_COMMIT_MODEL", "KIMI_PICK_MODEL":
+		return phaseRouteModel(cfg.Routes, "kimi", key)
 	}
 	return ""
 }
@@ -908,6 +1023,8 @@ func phaseFromRouteKey(key string) string {
 		prefix = "CLAUDE_"
 	case strings.HasPrefix(key, "CODEX_"):
 		prefix = "CODEX_"
+	case strings.HasPrefix(key, "KIMI_"):
+		prefix = "KIMI_"
 	default:
 		return ""
 	}
