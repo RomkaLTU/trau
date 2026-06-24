@@ -38,6 +38,20 @@ type SubIssue struct {
 	Title string
 }
 
+// ListedTicket is one eligible ticket returned by a fast list operation.
+type ListedTicket struct {
+	ID    string
+	Title string
+	State string
+}
+
+// TicketLister is the optional capability of enumerating eligible tickets
+// directly through the PM tool's API (Linear GraphQL). Tracker providers that
+// cannot list quickly return ErrNotImplemented or an unsupported error.
+type TicketLister interface {
+	ListEligible(ctx context.Context, scope Scope) ([]ListedTicket, error)
+}
+
 // Tracker is the project-management backend used by the loop. All methods run
 // through an agent, so token lines bucket to runs/<ID>/.
 type Tracker interface {

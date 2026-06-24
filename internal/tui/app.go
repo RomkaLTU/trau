@@ -38,6 +38,10 @@ type Actions interface {
 	// SubIssues returns the direct children of an epic, for the run-loop preview.
 	SubIssues(ctx context.Context, id string) ([]SubIssue, error)
 
+	// ListEligible returns the ready queue using the fast API lister, when the
+	// tracker supports it. An empty result means nothing is eligible right now.
+	ListEligible(ctx context.Context) ([]ListedTicket, error)
+
 	// RunTicket runs a single chosen ticket through the pipeline — resuming its own
 	// checkpoint when it has one — routing progress to r and closing with r.LoopDone.
 	RunTicket(ctx context.Context, id string, r console.Renderer)
@@ -46,6 +50,13 @@ type Actions interface {
 	// to run the loop. When true, the menu shell starts in the onboarding wizard
 	// instead of the hero-card menu.
 	OnboardingNeeded() bool
+}
+
+// ListedTicket is one eligible ticket returned by a fast list operation.
+type ListedTicket struct {
+	ID    string
+	Title string
+	State string
 }
 
 // MenuInfo is the at-a-glance context shown on the landing screen.
@@ -82,6 +93,7 @@ const (
 	viewDryRun
 	viewReset
 	viewRunLoop
+	viewRunOnce
 	viewRunning
 	viewError
 	viewSettings
@@ -91,6 +103,7 @@ type menuAction int
 
 const (
 	actRun menuAction = iota
+	actRunOnce
 	actDryRun
 	actStatus
 	actReset
@@ -148,12 +161,14 @@ type appModel struct {
 
 	onboard   onboardingModel
 	loopSetup loopSetupModel
+	runOnce   runOnceModel
 	settings  settingsHubModel
 }
 
 func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
 	items := []menuItem{
 		{actRun, "Run loop", "next ready ticket → PR"},
+		{actRunOnce, "Run once", "pick one ticket to run"},
 		{actDryRun, "Dry run", "preview the next ticket"},
 		{actMore, "More…", "status · reset · version"},
 		{actQuit, "Quit", ""},
@@ -269,6 +284,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reset, cmd = m.reset.Update(msg)
 	case viewRunLoop:
 		m.loopSetup, cmd = m.loopSetup.Update(msg)
+	case viewRunOnce:
+		m.runOnce, cmd = m.runOnce.Update(msg)
 	case viewSettings:
 		m.settings, cmd = m.settings.Update(msg)
 	case viewRunning:
@@ -342,6 +359,17 @@ func (m appModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			default:
 				return m.startRunLoop(m.loopSetup.Epic())
 			}
+		}
+		return m, cmd
+
+	case viewRunOnce:
+		var cmd tea.Cmd
+		m.runOnce, cmd = m.runOnce.Update(msg)
+		if m.runOnce.Done() {
+			if m.runOnce.Cancelled() {
+				return m.toMenu(), nil
+			}
+			return m.startRunTicket(m.runOnce.Selected())
 		}
 		return m, cmd
 
@@ -444,6 +472,11 @@ func (m appModel) selectAction(a menuAction) (tea.Model, tea.Cmd) {
 	case actRun:
 		m.loopSetup = newLoopSetupModel(m.baseCtx, m.actions, m.styles, m.info, m.width, m.height)
 		m.view = viewRunLoop
+		return m, textinput.Blink
+
+	case actRunOnce:
+		m.runOnce = newRunOnceModel(m.baseCtx, m.actions, m.styles, m.info, m.width, m.height)
+		m.view = viewRunOnce
 		return m, textinput.Blink
 
 	case actMore:
@@ -564,6 +597,8 @@ func (m appModel) View() string {
 		return m.renderReset()
 	case viewRunLoop:
 		return m.renderCard("Run loop", m.loopSetup.body(m.spin.View()), m.loopSetup.hint())
+	case viewRunOnce:
+		return m.renderCard("Run once", m.runOnce.body(m.spin.View()), m.runOnce.hint())
 	case viewMore:
 		return m.renderMore()
 	case viewSettings:

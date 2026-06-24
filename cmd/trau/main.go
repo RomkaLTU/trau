@@ -971,6 +971,29 @@ func (a *appActions) SubIssues(ctx context.Context, id string) ([]tui.SubIssue, 
 	return out, nil
 }
 
+// ListEligible returns the ready queue using the tracker's fast lister, if
+// available. It is bounded so a hung call cannot stall the TUI.
+func (a *appActions) ListEligible(ctx context.Context) ([]tui.ListedTicket, error) {
+	if err := a.ensure(); err != nil {
+		return nil, err
+	}
+	lister, ok := a.tracker.(tracker.TicketLister)
+	if !ok {
+		return nil, fmt.Errorf("tracker %q does not support listing eligible tickets", a.cfg.TrackerProvider)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	raw, err := lister.ListEligible(ctx, a.scope)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]tui.ListedTicket, 0, len(raw))
+	for _, t := range raw {
+		out = append(out, tui.ListedTicket{ID: t.ID, Title: t.Title, State: t.State})
+	}
+	return out, nil
+}
+
 func (a *appActions) Reset(ctx context.Context, id string) error {
 	if err := a.ensure(); err != nil {
 		return err

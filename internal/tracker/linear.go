@@ -104,6 +104,87 @@ func allBlockersCompleted(refs []linearapi.IssueRef) bool {
 	return true
 }
 
+// ListEligible enumerates tickets the loop could pick next. It uses the
+// GraphQL API when an API key is configured, otherwise the Linear MCP.
+func (l *Linear) ListEligible(ctx context.Context, scope Scope) ([]ListedTicket, error) {
+	if list, err := l.listEligibleAPI(ctx, scope); err == nil {
+		return list, nil
+	} else if !shouldFallback(err) {
+		return nil, err
+	}
+
+	res, err := l.Runner.Run(ctx, l.listEligiblePrompt(scope), "list_eligible")
+	if list, matched := parseEligible(res.Final); matched {
+		return list, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("could not parse eligible ticket list")
+}
+
+func (l *Linear) listEligibleAPI(ctx context.Context, scope Scope) ([]ListedTicket, error) {
+	if scope.Parent != "" {
+		return nil, linearapi.ErrNotEnabled
+	}
+	if strings.TrimSpace(l.Team) == "" {
+		return nil, linearapi.ErrNotEnabled
+	}
+	team, err := l.api().TeamByKey(ctx, l.Team)
+	if err != nil {
+		return nil, err
+	}
+	candidates, err := l.api().Pick(ctx, team.ID, l.ReadyLabel)
+	if err != nil {
+		return nil, err
+	}
+	prefix := scope.prefix()
+	out := make([]ListedTicket, 0, len(candidates))
+	for _, c := range candidates {
+		if !c.State.IsUnstarted() {
+			continue
+		}
+		if !allBlockersCompleted(c.BlockedBy) {
+			continue
+		}
+		if !strings.HasPrefix(c.Identifier, prefix+"-") {
+			continue
+		}
+		out = append(out, ListedTicket{ID: c.Identifier, Title: c.Title, State: c.State.Name})
+	}
+	return out, nil
+}
+
+func (l *Linear) listEligiblePrompt(scope Scope) string {
+	return fmt.Sprintf("Use the Linear MCP. List eligible issues in %s that carry the label '%s', "+
+		"are unstarted, have all 'blocked by' issues completed, and match prefix %s-. "+
+		"Respond with exactly one final line of JSON: ELIGIBLE=[{\"id\":\"COD-123\",\"title\":\"...\"}, ...] "+
+		"or ELIGIBLE=[]. No other output.",
+		scope.clause(), l.ReadyLabel, scope.prefix())
+}
+
+func parseEligible(text string) ([]ListedTicket, bool) {
+	if idx := strings.LastIndex(text, "ELIGIBLE="); idx >= 0 {
+		text = text[idx+len("ELIGIBLE="):]
+	}
+	start := strings.Index(text, "[")
+	end := strings.LastIndex(text, "]")
+	if start < 0 || end < start {
+		return nil, false
+	}
+	var list []ListedTicket
+	if err := json.Unmarshal([]byte(text[start:end+1]), &list); err != nil {
+		return nil, false
+	}
+	out := make([]ListedTicket, 0, len(list))
+	for _, t := range list {
+		if t.ID != "" {
+			out = append(out, t)
+		}
+	}
+	return out, true
+}
+
 // ListTeams enumerates the Linear teams the user can access. It uses the
 // GraphQL API when an API key is configured, otherwise the Linear MCP.
 func (l *Linear) ListTeams(ctx context.Context) ([]Team, error) {
