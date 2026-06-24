@@ -336,6 +336,7 @@ func (p *Pipeline) Reset(ctx context.Context, id string) error {
 	}
 	_ = os.Remove(handoffPath(id))
 	_ = os.Remove(verifyPath(id))
+	_ = os.Remove(rubricPath(id))
 	_ = p.State.RemoveState(id)
 	if branch != "" {
 		p.logf("  reset %s: cleared saved state + branch %s", id, branch)
@@ -356,6 +357,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 
 	_ = os.Remove(handoffPath(id))
 	_ = os.Remove(verifyPath(id))
+	_ = os.Remove(rubricPath(id))
 
 	if err := p.State.Set(id, "PHASE", state.Building); err != nil {
 		return fmt.Errorf("build %s: checkpoint building: %w", id, err)
@@ -501,6 +503,10 @@ func (p *Pipeline) Handoff(ctx context.Context, id string) error {
 		return fmt.Errorf("handoff %s: agent did not write handoff brief", id)
 	}
 	p.persistHandoff(id)
+	p.persistRubric(id)
+	if _, ok := p.activeRubric(id); !ok {
+		p.logf("  ⚠ handoff wrote no usable rubric — verify will grade from the brief alone")
+	}
 	if err := p.State.Set(id, "PHASE", state.HandedOff); err != nil {
 		return fmt.Errorf("handoff %s: checkpoint handed_off: %w", id, err)
 	}
@@ -519,6 +525,22 @@ func (p *Pipeline) persistHandoff(id string) {
 	_ = os.WriteFile(filepath.Join(dir, "handoff.md"), data, 0o644)
 }
 
+// restoreHandoff copies the durable runs/<ID>/handoff.md back to /tmp when /tmp
+// lost it (wiped on reboot), so a resumed verify reuses the exact brief the
+// handoff produced — and the matching rubric — instead of regenerating a fresh
+// pair. Best-effort: it leaves /tmp untouched when a non-empty copy is already
+// there or no durable copy exists.
+func (p *Pipeline) restoreHandoff(id string) {
+	if fi, err := os.Stat(handoffPath(id)); err == nil && fi.Size() > 0 {
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(p.RunsDir, id, "handoff.md"))
+	if err != nil || len(data) == 0 {
+		return
+	}
+	_ = os.WriteFile(handoffPath(id), data, 0o644)
+}
+
 // Verify is the real test gate (EXPECTED_CHECKS is empty), run in a fresh,
 // adversarial process that can only inherit the durable handoff file + the code on
 // disk. It regenerates the handoff if /tmp lost it, runs the verify skill, parses
@@ -531,11 +553,15 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	p.phaseStart("verify")
 	handoff := handoffPath(id)
 
+	p.restoreHandoff(id)
+	p.restoreRubric(id)
+
 	if fi, err := os.Stat(handoff); err != nil || fi.Size() == 0 {
 		if _, err := p.agentStep(ctx, id, "handoff", handoffTail(id)); err != nil {
 			return err
 		}
 		p.persistHandoff(id)
+		p.persistRubric(id)
 	}
 
 	if fi, err := os.Stat(handoff); err == nil && fi.Size() > 0 {
@@ -547,6 +573,15 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	verdictPath := verifyPath(id)
 	note := browserNote(p.BrowserVerify, p.AppURL)
 	branch := p.State.Get(id, "BRANCH")
+
+	rubricRef, rubricOK := p.activeRubric(id)
+	if rubricOK {
+		p.logf("  ↳ rubric: runs/%s/rubric.json → verify", id)
+	} else {
+		p.logf("  ⚠ no usable rubric — verify grades from the brief alone")
+	}
+	rubricVerify := verifyRubricNote(rubricRef)
+	rubricRepair := repairRubricNote(rubricRef)
 
 	checksFragment := checks.Render(p.Checks)
 	if n := len(p.Checks); n > 0 {
@@ -561,7 +596,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	passed := false
 	label := "verify"
 	for {
-		v, err := p.verifyAttempt(ctx, id, label, handoff, note, checksFragment)
+		v, err := p.verifyAttempt(ctx, id, label, handoff, note, checksFragment, rubricVerify)
 		if err != nil {
 			return err
 		}
@@ -576,7 +611,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 			for _, fl := range topFailures(v) {
 				p.logf("  ↳ %s", fl)
 			}
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(id, verdictPath, handoff, branch, v.failureLines())); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(id, verdictPath, handoff, branch, v.failureLines(), rubricRepair)); err != nil {
 				return err
 			}
 			continue
@@ -588,7 +623,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 			for _, fl := range topFailures(v) {
 				p.logf("  ↳ %s", fl)
 			}
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(id, verdictPath, handoff, branch, v.failureLines())); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(id, verdictPath, handoff, branch, v.failureLines(), rubricRepair)); err != nil {
 				return err
 			}
 			continue
@@ -656,7 +691,8 @@ func (p *Pipeline) finalizeFailed(ctx context.Context, id string) {
 // quarantining — the WIP stays on the branch for a later resume.
 func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	p.phaseStart("commit")
-	if _, err := p.agentStep(ctx, id, "commit", commitInstruction(id)); err != nil {
+	rubricRef, _ := p.activeRubric(id)
+	if _, err := p.agentStep(ctx, id, "commit", commitInstruction(id, commitRubricNote(rubricRef))); err != nil {
 		return err
 	}
 	if err := p.Git.Push(ctx, p.Remote, "HEAD"); err != nil {
@@ -1071,7 +1107,7 @@ func handoffPath(id string) string { return "/tmp/handoff-" + id + ".md" }
 func verifyPath(id string) string { return "/tmp/verify-" + id + ".json" }
 
 func handoffTail(id string) string {
-	return "Write a QA brief for " + id + ": the concrete, checkable behaviors a manual QA tester must verify for this slice, in priority order. Don't duplicate content already in the ticket, PRD, or diff — focus on what to check and how. Redact any secrets. Save it to exactly " + handoffPath(id) + " (overwrite if present) and nowhere else."
+	return "Write a QA brief for " + id + ": the concrete, checkable behaviors a manual QA tester must verify for this slice, in priority order. Don't duplicate content already in the ticket, PRD, or diff — focus on what to check and how. Redact any secrets. Save it to exactly " + handoffPath(id) + " (overwrite if present) and nowhere else." + rubricInstruction(id)
 }
 
 func browserNote(mode, appURL string) string {
@@ -1085,22 +1121,22 @@ func browserNote(mode, appURL string) string {
 	}
 }
 
-func verifyTail(id, handoff, verdict, note, checksFragment string) string {
-	return "Cold, adversarial QA verification of " + id + " against the QA brief at " + handoff + ". Treat the code on disk and the brief as the only sources of truth; your job is to find what does NOT work. Run only the tests relevant to this slice (the new or changed test files for this ticket) using the project's test runner — not the whole suite. For each behavior the brief lists, confirm it actually holds. " + note + " Distinguish defects in this slice's own code from pre-existing or out-of-scope issues. When finished, write a JSON verdict to exactly " + verdict + ": {\"pass\": true|false, \"summary\": \"one line\", \"failures\": [\"...\"]}. Set pass=false if any relevant test fails or any behavior in the brief does not work; failures lists each concrete problem (empty when pass is true)." + checksFragment + " Do not commit, push, or open a PR."
+func verifyTail(id, handoff, verdict, note, checksFragment, rubricNote string) string {
+	return "Cold, adversarial QA verification of " + id + " against the QA brief at " + handoff + ". Treat the code on disk and the brief as the only sources of truth; your job is to find what does NOT work." + rubricNote + " Run only the tests relevant to this slice (the new or changed test files for this ticket) using the project's test runner — not the whole suite. For each behavior the brief lists, confirm it actually holds. " + note + " Distinguish defects in this slice's own code from pre-existing or out-of-scope issues. When finished, write a JSON verdict to exactly " + verdict + ": {\"pass\": true|false, \"summary\": \"one line\", \"failures\": [\"...\"]}. Set pass=false if any relevant test fails or any behavior in the brief does not work; failures lists each concrete problem (empty when pass is true)." + checksFragment + " Do not commit, push, or open a PR."
 }
 
-func commitInstruction(id string) string {
-	return "Commit the implementation for " + id + ". Stage and commit ONLY files that are part of " + id + "; never commit unrelated untracked files or tooling (e.g. scripts/, *.env). Group related changes into atomic, dependency-ordered commits (foundational changes first; keep refactors, features, and fixes in distinct commits). Use Conventional Commits: '<type>(scope): <subject>' (type ∈ feat|fix|refactor|docs|style|test|chore), imperative mood, subject under 72 characters, with a 'Refs: " + id + "' trailer; match the project's existing git-log style if it differs. The commit message must contain ONLY the subject and body: do NOT add any 'Co-authored-by:'/'Co-Authored-By:' trailer, a '🤖 Generated with Claude Code' line, or any mention of AI/assistant authorship, and remove them if your environment adds them by default."
+func commitInstruction(id, rubricNote string) string {
+	return "Commit the implementation for " + id + ". Stage and commit ONLY files that are part of " + id + "; never commit unrelated untracked files or tooling (e.g. scripts/, *.env)." + rubricNote + " Group related changes into atomic, dependency-ordered commits (foundational changes first; keep refactors, features, and fixes in distinct commits). Use Conventional Commits: '<type>(scope): <subject>' (type ∈ feat|fix|refactor|docs|style|test|chore), imperative mood, subject under 72 characters, with a 'Refs: " + id + "' trailer; match the project's existing git-log style if it differs. The commit message must contain ONLY the subject and body: do NOT add any 'Co-authored-by:'/'Co-Authored-By:' trailer, a '🤖 Generated with Claude Code' line, or any mention of AI/assistant authorship, and remove them if your environment adds them by default."
 }
 
-func repairInstruction(id, verdict, handoff, branch, fails string) string {
+func repairInstruction(id, verdict, handoff, branch, fails, rubricNote string) string {
 	return id + " verification FAILED. QA verdict file: " + verdict + ". QA brief: " + handoff + ". Failures:\n" +
-		fails + "\n\nYou are on branch " + branch + " with this slice's implementation uncommitted. If this is a DEFECT IN THIS SLICE'S OWN code, find the root cause and fix it with minimal, targeted changes, then run the relevant Pest tests to confirm. If the failure is actually a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — change nothing and say so clearly. Do not commit, push, or open a PR."
+		fails + "\n\nYou are on branch " + branch + " with this slice's implementation uncommitted." + rubricNote + " If this is a DEFECT IN THIS SLICE'S OWN code, find the root cause and fix it with minimal, targeted changes, then run the relevant Pest tests to confirm. If the failure is actually a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — change nothing and say so clearly. Do not commit, push, or open a PR."
 }
 
-func bugfixInstruction(id, verdict, handoff, branch, fails string) string {
+func bugfixInstruction(id, verdict, handoff, branch, fails, rubricNote string) string {
 	return id + " verification FAILED after initial quick repairs. QA verdict file: " + verdict + ". QA brief: " + handoff + ". Failures:\n" +
-		fails + "\n\nYou are on branch " + branch + " with this slice's implementation uncommitted. This is a comprehensive bug-fix pass: read the full verdict, identify every failure that is a DEFECT IN THIS SLICE'S OWN code, and fix ALL of them with minimal, targeted changes. Do not stop after the first fix. Run the relevant tests (and browser checks if applicable) to confirm every failure is resolved before finishing. If a failure is a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — note it clearly. Do not commit, push, or open a PR."
+		fails + "\n\nYou are on branch " + branch + " with this slice's implementation uncommitted." + rubricNote + " This is a comprehensive bug-fix pass: read the full verdict, identify every failure that is a DEFECT IN THIS SLICE'S OWN code, and fix ALL of them with minimal, targeted changes. Do not stop after the first fix. Run the relevant tests (and browser checks if applicable) to confirm every failure is resolved before finishing. If a failure is a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — note it clearly. Do not commit, push, or open a PR."
 }
 
 type verdict struct {
@@ -1192,13 +1228,13 @@ type panelResult struct {
 // so the repair prompt and FileBug read the authoritative result. A non-nil error
 // is fatal and propagated (a provider pause or a budget give-up) — it stops the
 // phase rather than counting as a verify failure.
-func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, checksFragment string) (verdict, error) {
+func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, checksFragment, rubricNote string) (verdict, error) {
 	if len(p.VerifyPanel) > 0 {
-		return p.runPanel(ctx, id, label, handoff, note, checksFragment)
+		return p.runPanel(ctx, id, label, handoff, note, checksFragment, rubricNote)
 	}
 	verdictPath := verifyPath(id)
 	_ = os.Remove(verdictPath)
-	prompt := verifyTail(id, handoff, verdictPath, note, checksFragment)
+	prompt := verifyTail(id, handoff, verdictPath, note, checksFragment, rubricNote)
 	_, agentErr := p.agentStep(ctx, id, label, prompt)
 	v, ok := readVerdict(verdictPath)
 	if agentErr != nil || !ok {
@@ -1227,13 +1263,13 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 // propagated so the loop stops cleanly (the ticket stays resumable on its branch)
 // instead of being recorded as a dissenting fail; a plain timeout/crash counts as
 // that member failing.
-func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, checksFragment string) (verdict, error) {
+func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, checksFragment, rubricNote string) (verdict, error) {
 	results := make([]panelResult, 0, len(p.VerifyPanel))
 	for _, m := range p.VerifyPanel {
 		memberPath := verifyMemberPath(id, m.Name)
 		_ = os.Remove(memberPath)
 		memberLabel := label + "-" + m.Name
-		prompt := verifyTail(id, handoff, memberPath, note, checksFragment)
+		prompt := verifyTail(id, handoff, memberPath, note, checksFragment, rubricNote)
 		_, agentErr := p.agentStepOn(ctx, id, memberLabel, prompt, m.Runner)
 		if agentErr != nil && isFatalAgentErr(agentErr) {
 			return verdict{}, agentErr
