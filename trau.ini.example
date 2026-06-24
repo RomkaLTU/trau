@@ -52,34 +52,22 @@ TRAU_REPO_ROOT=
 # with --provider <name>.
 PROVIDER=claude
 
-# Provider speed/reasoning presets: fast | balanced | slow. A mode sets the default
-# model and effort for the active provider unless you override them explicitly with
-# CLAUDE_MODEL / CLAUDE_EFFORT (or their per-phase variants below). You can also
-# define your own presets in a provider-local config file by setting a mode and
-# naming keys like FAST_CLAUDE_MODEL / FAST_CLAUDE_EFFORT.
+# Execution tuning is two independent dials per provider: model (capability) and
+# effort (reasoning depth / latency). Set a default model and effort for the active
+# provider, then optionally override either per phase below. There are no bundled
+# speed presets — "fast on a smart model" is just a strong model at low effort.
 #
-# Built-in Claude presets:
-#   fast     -> claude-haiku-4-5  @ low
-#   balanced -> claude-sonnet-4-6 @ medium
-#   slow     -> claude-opus-4-8   @ max
-# Built-in Codex presets:
-#   fast     -> gpt-5.4-mini @ low
-#   balanced -> gpt-5.5      @ medium
-#   slow     -> gpt-5.5      @ xhigh
-# Built-in Kimi presets:
-#   fast     -> kimi-k2.7-code-highspeed @ low
-#   balanced -> kimi-k2.7-code           @ medium
-#   slow     -> kimi-k2.7-code           @ high
-#
-# CLAUDE_MODE=balanced
-# CODEX_MODE=fast
-# KIMI_MODE=
-
 # Effort knobs are provider-specific. Claude takes --effort (low|medium|high|xhigh|max);
 # Codex takes -c model_reasoning_effort (minimal|low|medium|high|xhigh); Kimi takes the
 # KIMI_MODEL_THINKING_EFFORT env var (low|medium|high|xhigh|max), set for you from
 # KIMI_EFFORT (and its per-phase KIMI_<PHASE>_EFFORT variants).
-# KIMI_EFFORT=
+#
+# CLAUDE_MODEL=claude-sonnet-4-6
+# CLAUDE_EFFORT=medium
+# CODEX_MODEL=gpt-5.5
+# CODEX_EFFORT=medium
+# KIMI_MODEL=kimi-k2.7-code
+# KIMI_EFFORT=medium
 
 # Per-provider phase tuning for this project. Phases: BUILD HANDOFF VERIFY REPAIR
 # BUGFIX COMMIT PICK. Model/effort are provider-specific.
