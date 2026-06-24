@@ -626,7 +626,7 @@ func nodeToPickCandidate(n *pickNode) PickCandidate {
 		},
 	}
 	for _, s := range n.Children.Nodes {
-		c.Issue.Children = append(c.Issue.Children, IssueRef{ID: s.ID, Identifier: s.Identifier, Title: s.Title})
+		c.Children = append(c.Children, IssueRef{ID: s.ID, Identifier: s.Identifier, Title: s.Title})
 	}
 	c.BlockedBy = blockers(n.InverseRelations.Nodes)
 	return c
