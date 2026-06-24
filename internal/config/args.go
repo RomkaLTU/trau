@@ -21,6 +21,8 @@ type Options struct {
 	Repo     string
 	NoTUI    bool
 	JSON     bool
+	Verbose  bool
+	Debug    bool
 }
 
 // ParseArgs parses the CLI argument vector. It returns an error on an unknown
@@ -73,6 +75,10 @@ func ParseArgs(args []string) (Options, error) {
 			o.NoTUI = true
 		case a == "--json":
 			o.JSON = true
+		case a == "--verbose":
+			o.Verbose = true
+		case a == "--debug":
+			o.Debug = true
 		case a == "--provider":
 			v, err := next(a)
 			if err != nil {

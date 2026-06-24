@@ -21,6 +21,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/console"
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
@@ -1090,6 +1091,7 @@ func (g ExecGit) bin() string {
 
 func (g ExecGit) run(ctx context.Context, args ...string) error {
 	full := append([]string{"-C", g.Repo}, args...)
+	logger.Debugf("git %s", strings.Join(full, " "))
 	if out, err := exec.CommandContext(ctx, g.bin(), full...).CombinedOutput(); err != nil {
 		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
@@ -1199,6 +1201,7 @@ func (g ExecGitHub) bin() string {
 }
 
 func (g ExecGitHub) output(ctx context.Context, args ...string) (string, error) {
+	logger.Debugf("gh %s", strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, g.bin(), args...)
 	cmd.Dir = g.Repo
 	out, err := cmd.Output()
@@ -1254,6 +1257,7 @@ func (g ExecGitHub) Merge(ctx context.Context, pr, method string, deleteBranch b
 	if deleteBranch {
 		args = append(args, "--delete-branch")
 	}
+	logger.Debugf("gh %s", strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, g.bin(), args...)
 	cmd.Dir = g.Repo
 	if out, err := cmd.CombinedOutput(); err != nil {

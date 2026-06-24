@@ -50,6 +50,37 @@ trau --status         # print checkpoints + token/cost totals
 `trau --help` lists them all. Settings live in `trau.ini` (`cp trau.ini.example trau.ini`, fully
 documented). If a run dies mid-issue, just re-run — it resumes from the next unfinished phase.
 
+## Troubleshooting
+
+Start with the preflight check — it catches the common setup problems before a run can fail
+mid-phase:
+
+```bash
+trau doctor
+```
+
+It verifies `git`, `gh` (installed + authenticated), your agent provider CLI, config sanity,
+tracker labels (against the live Linear team when `LINEAR_API_KEY` is set), and write
+permissions — reporting each as `✓` / `⚠` / `✗`. It exits non-zero if any required check fails,
+so it drops cleanly into CI.
+
+When a run misbehaves, add diagnostics — both go to **stderr only** and never change `stdout`
+or `--json` output, so they're safe to leave on in scripts:
+
+```bash
+trau --verbose ...   # what the loop is doing (phases, resolved repo/config)
+trau --debug ...     # the above plus every git / gh command invoked
+```
+
+Logs are written under `runs/`:
+
+- `runs/events.jsonl` — the structured event stream for the whole session.
+- `runs/<ID>/` — per-phase logs for one issue (`build.log`, `handoff.md`, `verify*.log`, …)
+  plus the saved checkpoint, so you can see exactly where an issue stopped.
+
+If an issue gets quarantined (moved to the `needs-human` label), its `runs/<ID>/` directory has
+the full trail of what verify rejected.
+
 ## License
 
 Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). © 2026 Codesomelabs. Architecture
