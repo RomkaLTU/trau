@@ -26,6 +26,11 @@ type Actions interface {
 
 	StatusRows() []StatusRow
 
+	// Reconcile cross-checks in-flight/quarantined checkpoints against the tracker
+	// and clears those whose issue is Done/Canceled, returning the cleared ids. It
+	// backs the status screen's on-demand reconcile.
+	Reconcile(ctx context.Context) (cleared []string, err error)
+
 	DryRun(ctx context.Context) (id string, err error)
 
 	Reset(ctx context.Context, id string) error
@@ -164,6 +169,10 @@ type (
 		id  string
 		err error
 	}
+	reconcileDoneMsg struct {
+		cleared []string
+		err     error
+	}
 )
 
 type appModel struct {
@@ -183,12 +192,15 @@ type appModel struct {
 	subReturn  appView
 	info       MenuInfo
 
-	status table.Model
-	reset  textinput.Model
-	spin   spinner.Model
-	busy   bool
-	result string
-	errMsg string
+	status       table.Model
+	reset        textinput.Model
+	spin         spinner.Model
+	busy         bool
+	result       string
+	errMsg       string
+	statusBusy   bool
+	statusNote   string
+	statusCancel context.CancelFunc
 
 	dash       model
 	loopCancel context.CancelFunc
@@ -288,6 +300,26 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.result = "Reset " + msg.id + " — it can be picked again."
 		}
+		return m, nil
+
+	case reconcileDoneMsg:
+		m.statusBusy = false
+		if m.statusCancel != nil {
+			m.statusCancel()
+			m.statusCancel = nil
+		}
+		if m.view != viewStatus {
+			return m, nil
+		}
+		switch {
+		case msg.err != nil:
+			m.statusNote = "✗ reconcile failed: " + msg.err.Error()
+		case len(msg.cleared) == 0:
+			m.statusNote = "✓ nothing stale — all checkpoints match the tracker"
+		default:
+			m.statusNote = fmt.Sprintf("✓ cleared %d stale checkpoint(s): %s", len(msg.cleared), strings.Join(msg.cleared, ", "))
+		}
+		m.status = m.buildStatusTable()
 		return m, nil
 
 	case spinner.TickMsg:
@@ -409,14 +441,32 @@ func (m appModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 
-	case viewStatus, viewVersion, viewError:
+	case viewStatus:
 		if isBack(msg) {
+			if m.statusCancel != nil {
+				m.statusCancel()
+				m.statusCancel = nil
+			}
+			m.statusBusy = false
 			return m.toMenu(), nil
 		}
-		if m.view == viewStatus {
-			var cmd tea.Cmd
-			m.status, cmd = m.status.Update(msg)
-			return m, cmd
+		if m.statusBusy {
+			return m, nil
+		}
+		if msg.String() == "r" {
+			ctx, cancel := context.WithCancel(m.baseCtx)
+			m.statusCancel = cancel
+			m.statusBusy = true
+			m.statusNote = ""
+			return m, tea.Batch(m.spin.Tick, m.reconcileCmd(ctx))
+		}
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(msg)
+		return m, cmd
+
+	case viewVersion, viewError:
+		if isBack(msg) {
+			return m.toMenu(), nil
 		}
 		return m, nil
 
@@ -519,6 +569,8 @@ func (m appModel) selectAction(a menuAction) (tea.Model, tea.Cmd) {
 
 	case actStatus:
 		m.status = m.buildStatusTable()
+		m.statusBusy = false
+		m.statusNote = ""
 		m.view = viewStatus
 		return m, nil
 
@@ -662,6 +714,14 @@ func (m appModel) resetCmd(id string) tea.Cmd {
 	}
 }
 
+func (m appModel) reconcileCmd(ctx context.Context) tea.Cmd {
+	actions := m.actions
+	return func() tea.Msg {
+		cleared, err := actions.Reconcile(ctx)
+		return reconcileDoneMsg{cleared: cleared, err: err}
+	}
+}
+
 func (m appModel) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "Loading…"
@@ -672,7 +732,18 @@ func (m appModel) View() string {
 	case viewRunning:
 		return m.dash.View()
 	case viewStatus:
-		return m.renderCard("Status", m.status.View(), "↑↓ scroll · esc/q back")
+		body := m.status.View()
+		switch {
+		case m.statusBusy:
+			body += "\n\n" + m.spin.View() + " reconciling against the tracker…"
+		case m.statusNote != "":
+			body += "\n\n" + m.statusNote
+		}
+		hint := "↑↓ scroll · r reconcile · esc/q back"
+		if m.statusBusy {
+			hint = "reconciling… · esc to cancel"
+		}
+		return m.renderCard("Status", body, hint)
 	case viewVersion:
 		return m.renderCard("Version", "trau "+m.info.Version, "esc/q back")
 	case viewDryRun:
