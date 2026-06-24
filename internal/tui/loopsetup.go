@@ -55,7 +55,7 @@ type subIssuesLoadedMsg struct {
 
 func newLoopSetupModel(ctx context.Context, actions Actions, styles Styles, info MenuInfo, w, h int) loopSetupModel {
 	ti := textinput.New()
-	ti.Placeholder = "COD-400 (optional)"
+	ti.Placeholder = exampleID(info.Prefix) + " (optional)"
 	ti.CharLimit = 64
 	ti.Width = 32
 	ti.Prompt = "› "
@@ -235,7 +235,7 @@ func (m loopSetupModel) renderConfirm() string {
 	}
 	switch {
 	case m.badID:
-		rows = append(rows, "", s.Error.Render("Couldn't read an epic ID — try COD-400."))
+		rows = append(rows, "", s.Error.Render("Couldn't read an epic ID — try "+exampleID(m.info.Prefix)+"."))
 	case m.loadErr != nil:
 		rows = append(rows, "", s.Warning.Render(truncate("Couldn't load sub-issues: "+m.loadErr.Error(), 48)))
 	}
@@ -324,6 +324,16 @@ func (m loopSetupModel) hint() string {
 
 func linearIssueURL(id string) string {
 	return "https://linear.app/issue/" + id
+}
+
+// exampleID renders a sample ticket id for placeholders and hints using the
+// configured prefix (COD-123, ENG-123). An empty prefix falls back to COD.
+func exampleID(prefix string) string {
+	prefix = strings.ToUpper(strings.TrimSpace(prefix))
+	if prefix == "" {
+		prefix = "COD"
+	}
+	return prefix + "-123"
 }
 
 // extractTicketID accepts free-form input and returns the best-effort ticket

@@ -2,9 +2,15 @@ package config
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
-	"strings"
 )
+
+// reBareID matches a bare ticket identifier of any tracker prefix (COD-123,
+// TMS-456, ENG-7). The pre-config arg scan can't know the configured prefix yet
+// — it matches the generic <PREFIX>-<n> shape here and the prefix is validated
+// against the loaded config later (see config.ResolvePrefix).
+var reBareID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
 
 // Options holds the parsed CLI flags. Zero values mean "not set";
 // Max is -1 when unset so the config default applies.
@@ -93,7 +99,7 @@ func ParseArgs(args []string) (Options, error) {
 			o.Repo = v
 		case a == "--yes":
 			o.Confirm = true
-		case strings.HasPrefix(a, "COD-"):
+		case reBareID.MatchString(a):
 			o.Parent = a
 		default:
 			return o, fmt.Errorf("unknown arg: %s", a)

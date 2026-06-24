@@ -18,10 +18,27 @@ import (
 	"github.com/RomkaLTU/trau/internal/agent"
 )
 
-// DefaultPrefix is the issue-identifier prefix assumed when none can be derived
-// from a parent. The sentinel regexes assume this prefix; making it configurable
-// is a known limitation (see README).
+// DefaultPrefix is the issue-identifier prefix assumed as a last resort when none
+// can be derived from a parent id or the configured Scope.Prefix. The configured
+// prefix (config.ISSUE_PREFIX, defaulting to the tracker team key) flows in via
+// Scope.Prefix; sentinel/prompt builders that hold a concrete id derive the prefix
+// from it directly with prefixOf.
 const DefaultPrefix = "COD"
+
+// prefixOf returns the identifier prefix of a ticket id — everything before the
+// final "-<digits>" group (COD-123 → COD, TMS-9 → TMS). It falls back to
+// DefaultPrefix when id carries no recognisable prefix.
+func prefixOf(id string) string {
+	for i := len(id) - 1; i > 0; i-- {
+		if id[i] == '-' {
+			if p := id[:i]; p != "" {
+				return p
+			}
+			break
+		}
+	}
+	return DefaultPrefix
+}
 
 // Config is the provider-agnostic configuration a Tracker implementation needs.
 type Config struct {
@@ -102,6 +119,10 @@ type TeamLister interface {
 type Scope struct {
 	Parent string
 	Team   string
+	// Prefix is the configured issue-identifier prefix (config.ISSUE_PREFIX). It
+	// is consulted for whole-team picks, where there is no parent id to derive a
+	// prefix from. Empty falls back to DefaultPrefix.
+	Prefix string
 }
 
 func (s Scope) clause() string {
@@ -113,11 +134,10 @@ func (s Scope) clause() string {
 
 func (s Scope) prefix() string {
 	if s.Parent != "" {
-		for i := len(s.Parent) - 1; i > 0; i-- {
-			if s.Parent[i] == '-' {
-				return s.Parent[:i]
-			}
-		}
+		return prefixOf(s.Parent)
+	}
+	if p := strings.ToUpper(strings.TrimSpace(s.Prefix)); p != "" {
+		return p
 	}
 	return DefaultPrefix
 }

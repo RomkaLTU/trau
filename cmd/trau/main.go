@@ -45,14 +45,14 @@ const usage = `trau — autonomous Linear-ticket dev loop
 
 Usage:
   trau [flags]               run the loop: resume any in-flight ticket, else pick the next ready one
-  trau COD-123               run a single ticket (or its sub-issues, if it is an epic)
+  trau <ID>                  run a single ticket (e.g. ENG-123), or its sub-issues if it is an epic
   trau doctor                preflight check: git/gh/provider/config/labels/write perms
   trau --status [--json]     show saved ticket checkpoints with token/cost totals
   trau --dry-run             print the next eligible ticket without doing any work
-  trau --reset COD-123       drop the branch + state and re-queue the ticket in Linear
+  trau --reset <ID>          drop the branch + state and re-queue the ticket in the tracker
 
 Flags:
-  --parent <ID>     treat <ID> as an epic and process its sub-issues (bare COD-<n> is equivalent)
+  --parent <ID>     treat <ID> as an epic and process its sub-issues (a bare <PREFIX>-<n> arg is equivalent)
   --once            stop after one ticket
   --max <N>         cap iterations for this run (overrides MAX_ITERATIONS)
   --no-resume       skip the resume scan; always pick a fresh ticket
@@ -164,11 +164,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return console.Actionable(err, "load config", "check trau.ini, ~/.trau.ini, and environment variables")
 	}
-	logger.Verbosef("loaded config: provider=%s tracker=%s team=%q base=%s", cfg.Provider, cfg.TrackerProvider, cfg.LinearTeam, cfg.BaseBranch)
+	logger.Verbosef("loaded config: provider=%s tracker=%s team=%q prefix=%s base=%s", cfg.Provider, cfg.TrackerProvider, cfg.LinearTeam, cfg.IssuePrefix, cfg.BaseBranch)
 	if opts.Repo != "" || os.Getenv("TRAU_REPO_ROOT") != "" {
 		cfg.RepoRoot = repoRoot
 	} else if cfg.RepoRoot == "" {
 		cfg.RepoRoot = repoRoot
+	}
+
+	for _, id := range []string{opts.Parent, opts.ResetID} {
+		if err := config.ValidatePrefix(id, cfg.IssuePrefix); err != nil {
+			return console.Actionable(err, "validate ticket id",
+				fmt.Sprintf("set ISSUE_PREFIX (or LINEAR_TEAM) to this tracker's key, or pass a %s-<n> ticket", cfg.IssuePrefix))
+		}
 	}
 
 	if len(args) == 0 && cfg.TUI && !opts.NoTUI && console.IsTerminal(stdout) && os.Getenv("TRAU_LOG_JSON") != "1" {
@@ -238,7 +245,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	dryRun := opts.DryRun
 
-	scope := tracker.Scope{Parent: epicID, Team: cfg.LinearTeam}
+	scope := scopeFor(cfg, epicID)
 	parentSuffix := ""
 	if epicID != "" {
 		parentSuffix = " under " + epicID
@@ -368,6 +375,12 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 	})
 }
 
+// scopeFor builds a picker scope carrying the configured issue prefix so whole-team
+// picks (which have no parent id to derive a prefix from) match the right tracker.
+func scopeFor(cfg config.Config, parent string) tracker.Scope {
+	return tracker.Scope{Parent: parent, Team: cfg.LinearTeam, Prefix: cfg.IssuePrefix}
+}
+
 func newRenderer(stdout, stderr io.Writer, cfg config.Config, opts config.Options, onInterrupt func()) console.Renderer {
 	if opts.Status {
 		return console.New(stdout, stderr)
@@ -395,6 +408,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		RunsDir:        cfg.RunsDir,
 		Base:           cfg.BaseBranch,
 		Remote:         cfg.Remote,
+		Prefix:         cfg.IssuePrefix,
 		MaxRepairs:     cfg.MaxRepairs,
 		MaxBugfixes:    cfg.MaxBugfixes,
 		BrowserVerify:  cfg.BrowserVerify,
@@ -543,7 +557,7 @@ func runSession(ctx context.Context, cfg config.Config, opts config.Options, std
 		log:     log,
 		sink:    tokens.New(cfg.RunsDir),
 		store:   state.NewStore(cfg.RunsDir),
-		scope:   tracker.Scope{Team: cfg.LinearTeam},
+		scope:   scopeFor(cfg, ""),
 		maxIter: maxIter,
 	}
 	return tui.RunSession(ctx, stdout, holder, acts)
@@ -880,7 +894,7 @@ func (a *appActions) MenuInfo() tui.MenuInfo {
 		Provider:      a.cfg.Provider,
 		Model:         modelEffortTag(model, effort),
 		Base:          a.cfg.BaseBranch,
-		Prefix:        strings.ToUpper(strings.TrimSpace(a.cfg.LinearTeam)),
+		Prefix:        a.cfg.IssuePrefix,
 		MaxIterations: a.maxIter,
 		AutoMerge:     a.cfg.AutoMerge,
 		InFlight:      inFlight,
@@ -1013,7 +1027,7 @@ func (a *appActions) RunLoop(ctx context.Context, epic string, r console.Rendere
 	}
 	a.pipe.Renderer = r
 	a.pipe.EpicID = epic
-	a.eng.scope = tracker.Scope{Team: a.cfg.LinearTeam, Parent: epic}
+	a.eng.scope = scopeFor(a.cfg, epic)
 	total := func(ids []string) (int, float64) {
 		t, c := 0, 0.0
 		for _, id := range ids {

@@ -46,7 +46,7 @@ type eligibleLoadedMsg struct {
 
 func newRunOnceModel(ctx context.Context, actions Actions, styles Styles, info MenuInfo, w, h int) runOnceModel {
 	ti := textinput.New()
-	ti.Placeholder = "COD-123"
+	ti.Placeholder = exampleID(info.Prefix)
 	ti.CharLimit = 64
 	ti.Width = 32
 	ti.Prompt = "› "
@@ -208,7 +208,7 @@ func (m runOnceModel) renderConfirm() string {
 	}
 	switch {
 	case m.badID:
-		rows = append(rows, "", s.Error.Render("Couldn't read a ticket ID — try COD-123."))
+		rows = append(rows, "", s.Error.Render("Couldn't read a ticket ID — try "+exampleID(m.info.Prefix)+"."))
 	case m.loadErr != nil:
 		rows = append(rows, "", s.Warning.Render(truncate("Couldn't load eligible tickets: "+m.loadErr.Error(), 48)))
 	}

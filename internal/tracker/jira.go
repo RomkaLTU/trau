@@ -78,7 +78,7 @@ func (j *Jira) SubIssues(ctx context.Context, id string) ([]SubIssue, error) {
 func (j *Jira) subIssuesPrompt(id string) string {
 	return fmt.Sprintf("Use the Jira (Rovo) MCP. List the direct sub-tasks (children) of issue %s. "+
 		"Respond with exactly one final line of JSON: SUB_ISSUES=[{\"id\":\"%s-414\",\"title\":\"...\"}, ...] "+
-		"using each child's identifier and title. If there are none, respond SUB_ISSUES=[]. No other output.", id, DefaultPrefix)
+		"using each child's identifier and title. If there are none, respond SUB_ISSUES=[]. No other output.", id, prefixOf(id))
 }
 
 // Title returns the summary of issue id via the Jira MCP.
@@ -132,7 +132,7 @@ func (j *Jira) quarantinePrompt(id, reason string) string {
 // the slice could not self-heal, even after comprehensive bugfix passes.
 func (j *Jira) FileBug(ctx context.Context, id, verdictPath string) (string, error) {
 	res, err := j.Runner.Run(ctx, j.fileBugPrompt(id, verdictPath), "file_bug")
-	if bug, ok := parseBug(res.Final); ok {
+	if bug, ok := parseBug(res.Final, prefixOf(id)); ok {
 		return bug, nil
 	}
 	return "", err
@@ -144,7 +144,7 @@ func (j *Jira) fileBugPrompt(id, verdictPath string) string {
 		project = j.Project
 	}
 	return fmt.Sprintf("Use the Jira (Rovo) MCP. Read the QA verdict at %s. Create a NEW issue of type 'Bug' in project %q, labelled 'HITL', describing the failure that blocked %s's QA after automated repair and bugfix passes — a concise summary plus a description with the verdict summary and the specific failures, noting it was surfaced by the Trau loop while working on %s and needs human attention. Output exactly one final line: BUG=<IDENTIFIER> (e.g. BUG=%s-500).",
-		verdictPath, project, id, id, DefaultPrefix)
+		verdictPath, project, id, id, prefixOf(id))
 }
 
 // EnsureLabels creates the ready and quarantine labels in Jira if they do not exist.
