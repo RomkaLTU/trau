@@ -332,6 +332,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			ID:          id,
 			Title:       p.State.Get(id, "TITLE"),
 			Phase:       p.State.Get(id, "PHASE"),
+			Branch:      p.State.Get(id, "BRANCH"),
 			PRURL:       p.State.Get(id, "PR_URL"),
 			Tokens:      tk,
 			Cost:        math.Round(cs*100) / 100,
@@ -349,7 +350,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}, con, result)
 
 	tk, cost, metered := total(processed)
-	con.LoopDone(console.SessionSummary{
+	con.LoopDone(applyFault(console.SessionSummary{
 		Tickets:     len(processed),
 		TotalTokens: tk,
 		TotalCost:   cost,
@@ -357,9 +358,21 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		Elapsed:     time.Since(start),
 		Err:         lerr,
 		Paused:      pipeline.IsPaused(lerr),
-	})
+	}, lerr))
 	con.Wait()
 	return lerr
+}
+
+// applyFault fills a SessionSummary's fault fields from err when the loop stopped
+// on a *FaultError, so the summary can show an actionable "incomplete — work
+// saved, rerun to resume" line instead of a generic "aborted".
+func applyFault(s console.SessionSummary, err error) console.SessionSummary {
+	if f := pipeline.AsFault(err); f != nil {
+		s.Fault = true
+		s.FaultID = f.ID
+		s.FaultPhase = pipeline.FaultPhaseLabel(f.Phase)
+	}
+	return s
 }
 
 // runDoctor runs the preflight health check and exits non-zero if any required
@@ -597,14 +610,21 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 			}
 			processed = append(processed, rid)
 			con.TicketDone(result(rid, time.Since(t0)))
+			if pipeline.IsFault(err) {
+				return processed, err
+			}
 		} else if p.ForcedID != "" {
 			con.Logf("▶ [%d] %s", len(processed)+1, p.ForcedID)
 			t0 := time.Now()
-			if err := eng.Process(ctx, p.ForcedID, ""); pipeline.IsPaused(err) {
+			err := eng.Process(ctx, p.ForcedID, "")
+			if pipeline.IsPaused(err) {
 				return processed, err
 			}
 			processed = append(processed, p.ForcedID)
 			con.TicketDone(result(p.ForcedID, time.Since(t0)))
+			if pipeline.IsFault(err) {
+				return processed, err
+			}
 			if p.Once {
 				con.Logf("--once: stopping")
 				break
@@ -625,11 +645,15 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 			}
 			con.Logf("▶ [%d] %s", len(processed)+1, id)
 			t0 := time.Now()
-			if err := eng.Process(ctx, id, ""); pipeline.IsPaused(err) {
+			err = eng.Process(ctx, id, "")
+			if pipeline.IsPaused(err) {
 				return processed, err
 			}
 			processed = append(processed, id)
 			con.TicketDone(result(id, time.Since(t0)))
+			if pipeline.IsFault(err) {
+				return processed, err
+			}
 		}
 
 		if p.Once {
@@ -1125,6 +1149,13 @@ func (a *appActions) Reset(ctx context.Context, id string) error {
 	return a.pipe.Reset(ctx, id)
 }
 
+func (a *appActions) CheckoutBranch(ctx context.Context, id string) (string, error) {
+	if err := a.ensure(); err != nil {
+		return "", err
+	}
+	return a.pipe.CheckoutBranch(ctx, id)
+}
+
 // RunLoop runs the autonomous loop with the configured defaults (MAX_ITERATIONS,
 // resume in-flight work first), routing its progress to the dashboard renderer r,
 // and always closes with r.LoopDone so the shell flips to the summary. A non-empty
@@ -1165,6 +1196,7 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 			ID:          id,
 			Title:       a.store.Get(id, "TITLE"),
 			Phase:       a.store.Get(id, "PHASE"),
+			Branch:      a.store.Get(id, "BRANCH"),
 			PRURL:       a.store.Get(id, "PR_URL"),
 			Tokens:      tk,
 			Cost:        math.Round(cs*100) / 100,
@@ -1175,7 +1207,7 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 	start := time.Now()
 	processed, lerr := runLoop(ctx, a.eng, loopParams{Max: max}, r, result)
 	tk, cost, metered := total(processed)
-	r.LoopDone(console.SessionSummary{
+	r.LoopDone(applyFault(console.SessionSummary{
 		Tickets:     len(processed),
 		TotalTokens: tk,
 		TotalCost:   cost,
@@ -1183,7 +1215,7 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 		Elapsed:     time.Since(start),
 		Err:         lerr,
 		Paused:      pipeline.IsPaused(lerr),
-	})
+	}, lerr))
 }
 
 // RunTicket runs exactly the ticket the user chose in the run-once picker,
@@ -1224,6 +1256,7 @@ func (a *appActions) RunTicket(ctx context.Context, id string, r console.Rendere
 			ID:          id,
 			Title:       a.store.Get(id, "TITLE"),
 			Phase:       a.store.Get(id, "PHASE"),
+			Branch:      a.store.Get(id, "BRANCH"),
 			PRURL:       a.store.Get(id, "PR_URL"),
 			Tokens:      tk,
 			Cost:        math.Round(cs*100) / 100,
@@ -1233,7 +1266,7 @@ func (a *appActions) RunTicket(ctx context.Context, id string, r console.Rendere
 	}
 
 	tk, cs, metered := a.sink.Total(id)
-	r.LoopDone(console.SessionSummary{
+	r.LoopDone(applyFault(console.SessionSummary{
 		Tickets:     1,
 		TotalTokens: tk,
 		TotalCost:   math.Round(cs*100) / 100,
@@ -1241,7 +1274,7 @@ func (a *appActions) RunTicket(ctx context.Context, id string, r console.Rendere
 		Elapsed:     time.Since(start),
 		Err:         lerr,
 		Paused:      pipeline.IsPaused(lerr),
-	})
+	}, lerr))
 }
 
 type providerConfig struct {

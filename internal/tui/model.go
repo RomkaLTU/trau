@@ -97,6 +97,11 @@ type model struct {
 
 	summary      console.SessionSummary
 	summaryTable table.Model
+	// recoveryNote is a transient line shown under the summary card after a
+	// recovery key (b/x) acts; confirmResetID, when non-empty, is the ticket
+	// awaiting a second keypress to confirm a destructive reset.
+	recoveryNote   string
+	confirmResetID string
 }
 
 type (
@@ -107,6 +112,14 @@ type (
 	phaseStartMsg struct{ phase string }
 	ticketDoneMsg struct{ r console.TicketResult }
 	loopDoneMsg   struct{ s console.SessionSummary }
+	// recoveryDoneMsg carries the outcome of a summary recovery action (b/x): note
+	// is the line to surface; resetID, when set and err is nil, marks the ticket
+	// that was reset so its summary row can reflect it.
+	recoveryDoneMsg struct {
+		note    string
+		resetID string
+		err     error
+	}
 )
 
 // feedEntry is one row of the activity feed: a timestamped, glyph-tagged line
@@ -195,6 +208,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case loopDoneMsg:
 		return m.enterSummary(msg.s)
+
+	case recoveryDoneMsg:
+		m = m.applyRecovery(msg)
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -410,6 +427,39 @@ func (m *model) startTicket(id string) {
 	if !m.stopping {
 		m.banner = ""
 	}
+}
+
+// pendingResetID returns the ticket awaiting a reset confirmation, or "".
+func (m model) pendingResetID() string { return m.confirmResetID }
+
+// askResetConfirm arms the two-keypress guard before a destructive reset.
+func (m model) askResetConfirm(id string) model {
+	m.confirmResetID = id
+	m.recoveryNote = ""
+	return m
+}
+
+// clearResetConfirm cancels a pending reset confirmation.
+func (m model) clearResetConfirm() model {
+	m.confirmResetID = ""
+	return m
+}
+
+// applyRecovery folds a recovery action's outcome into the recap: it shows the
+// note and, on a successful reset, relabels that ticket's row so the recap
+// reflects it will be re-picked.
+func (m model) applyRecovery(msg recoveryDoneMsg) model {
+	m.confirmResetID = ""
+	m.recoveryNote = msg.note
+	if msg.err == nil && msg.resetID != "" {
+		for i := range m.results {
+			if m.results[i].ID == msg.resetID {
+				m.results[i].Phase = phaseReset
+			}
+		}
+		m.summaryTable = m.makeSummaryTable()
+	}
+	return m
 }
 
 func (m *model) finishTicket(r console.TicketResult) {
