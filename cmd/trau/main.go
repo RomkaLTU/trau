@@ -1012,7 +1012,7 @@ func providerConfigFor(cfg config.Config, provider string) providerConfig {
 			bin:    cfg.KimiBin,
 			flags:  cfg.KimiFlags,
 			model:  cfg.KimiModel,
-			effort: "",
+			effort: cfg.KimiEffort,
 			extra:  map[string]string{},
 		}
 	}

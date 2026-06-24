@@ -643,6 +643,7 @@ type Kimi struct {
 	Bin      string
 	Flags    []string
 	Model    string
+	Effort   string
 	Preamble string
 	Dir      string
 	Timeout  time.Duration
@@ -654,9 +655,8 @@ type Kimi struct {
 // Provider names the backend for logging and routing attribution.
 func (c *Kimi) Provider() string { return "kimi" }
 
-// Route reports the configured provider/model for pre-call display. Kimi has no
-// reasoning-effort knob, so effort is always empty.
-func (c *Kimi) Route(string) (string, string, string) { return "kimi", c.Model, "" }
+// Route reports the configured provider/model/effort for pre-call display.
+func (c *Kimi) Route(string) (string, string, string) { return "kimi", c.Model, c.Effort }
 
 func (c *Kimi) args(prompt string) []string {
 	args := append([]string{}, c.Flags...)
@@ -665,6 +665,17 @@ func (c *Kimi) args(prompt string) []string {
 	}
 
 	return append(args, "--output-format", "stream-json", "-p", prompt)
+}
+
+// env returns the process environment for a kimi run. Kimi exposes its
+// reasoning-effort dial as the KIMI_MODEL_THINKING_EFFORT environment variable
+// (low|medium|high|xhigh|max) rather than a CLI flag, so effort is layered onto
+// the inherited environment here.
+func (c *Kimi) env() []string {
+	if c.Effort == "" {
+		return nil
+	}
+	return append(os.Environ(), "KIMI_MODEL_THINKING_EFFORT="+c.Effort)
 }
 
 type kimiEvent struct {
@@ -707,6 +718,7 @@ func (c *Kimi) Run(ctx context.Context, prompt, label string) (Result, error) {
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, c.Bin, c.args(full)...)
 	cmd.Dir = c.Dir
+	cmd.Env = c.env()
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
@@ -736,7 +748,7 @@ func (c *Kimi) emit(label string, res Result, dur time.Duration, runErr error) {
 	fields := map[string]any{
 		"provider":       "kimi",
 		"model":          c.Model,
-		"effort":         "",
+		"effort":         c.Effort,
 		"is_error":       res.IsError || runErr != nil,
 		"num_turns":      res.NumTurns,
 		"input_tokens":   res.Usage.Input,

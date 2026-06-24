@@ -69,6 +69,7 @@ type Config struct {
 	KimiFlags  string
 	KimiModel  string
 	KimiMode   string
+	KimiEffort string
 
 	Routes map[string]string
 
@@ -124,6 +125,7 @@ func Defaults() Config {
 		KimiFlags:             "",
 		KimiModel:             "",
 		KimiMode:              "",
+		KimiEffort:            "",
 		MaxIterations:         15,
 		MaxRepairs:            2,
 		MaxBugfixes:           2,
@@ -368,6 +370,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	providerStr(kimiFile, kimiSrc, "KIMI_FLAGS", &c.KimiFlags)
 	providerStr(kimiFile, kimiSrc, "KIMI_MODEL", &c.KimiModel)
 	providerStr(kimiFile, kimiSrc, "KIMI_MODE", &c.KimiMode)
+	providerStr(kimiFile, kimiSrc, "KIMI_EFFORT", &c.KimiEffort)
 
 	applyProviderMode(&c, claudeFile, claudeSrc, codexFile, codexSrc, kimiFile, kimiSrc, get, sources)
 
@@ -444,6 +447,11 @@ var providerModeDefaults = map[string]map[string]ProviderMode{
 		"balanced": {Model: "gpt-5.5", Effort: "medium"},
 		"slow":     {Model: "gpt-5.5", Effort: "xhigh"},
 	},
+	"kimi": {
+		"fast":     {Model: "kimi-k2.7-code-highspeed", Effort: "low"},
+		"balanced": {Model: "kimi-k2.7-code", Effort: "medium"},
+		"slow":     {Model: "kimi-k2.7-code", Effort: "high"},
+	},
 }
 
 // applyProviderMode expands CLAUDE_MODE/CODEX_MODE/KIMI_MODE into model and
@@ -496,7 +504,7 @@ func applyProviderMode(c *Config, claudeFile map[string]string, claudeSrc envLay
 
 	modeFor("claude", c.ClaudeMode, claudeFile, claudeSrc, &c.ClaudeModel, &c.ClaudeEffort)
 	modeFor("codex", c.CodexMode, codexFile, codexSrc, &c.CodexModel, &c.CodexEffort)
-	modeFor("kimi", c.KimiMode, kimiFile, kimiSrc, &c.KimiModel, nil)
+	modeFor("kimi", c.KimiMode, kimiFile, kimiSrc, &c.KimiModel, &c.KimiEffort)
 }
 
 var phases = []string{"build", "handoff", "verify", "repair", "bugfix", "commit", "pick"}
@@ -512,6 +520,7 @@ func addProviderPhaseRoutesWithSources(routes map[string]string, sources map[str
 		defaultEffort = c.CodexEffort
 	case "kimi":
 		defaultModel = c.KimiModel
+		defaultEffort = c.KimiEffort
 
 	default:
 		return
@@ -793,6 +802,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "KIMI_BIN", Advanced: true, Default: "kimi", Description: "Kimi binary"},
 		{Key: "KIMI_FLAGS", Advanced: true, Description: "Extra flags passed to Kimi"},
 		{Key: "KIMI_MODEL", Advanced: true, Description: "Default Kimi model"},
+		{Key: "KIMI_EFFORT", Advanced: true, Description: "Default Kimi reasoning effort (KIMI_MODEL_THINKING_EFFORT)"},
 		{Key: "KIMI_MODE", Advanced: true, Description: "Kimi speed preset: fast | balanced | slow", Options: []string{"fast", "balanced", "slow"}},
 		{Key: "MAX_ITERATIONS", Default: "15", Description: "Maximum tickets per run"},
 		{Key: "MAX_REPAIRS", Default: "2", Description: "Verify-fail quick repair attempts before bugfix"},
@@ -836,12 +846,19 @@ func KnownKeys() []KeyMeta {
 		{Key: "CODEX_PICK_MODEL", Advanced: true, Description: "Codex model for pick phase"},
 		{Key: "CODEX_PICK_EFFORT", Advanced: true, Description: "Codex effort for pick phase"},
 		{Key: "KIMI_BUILD_MODEL", Advanced: true, Description: "Kimi model for build phase"},
+		{Key: "KIMI_BUILD_EFFORT", Advanced: true, Description: "Kimi effort for build phase"},
 		{Key: "KIMI_HANDOFF_MODEL", Advanced: true, Description: "Kimi model for handoff phase"},
+		{Key: "KIMI_HANDOFF_EFFORT", Advanced: true, Description: "Kimi effort for handoff phase"},
 		{Key: "KIMI_VERIFY_MODEL", Advanced: true, Description: "Kimi model for verify phase"},
+		{Key: "KIMI_VERIFY_EFFORT", Advanced: true, Description: "Kimi effort for verify phase"},
 		{Key: "KIMI_REPAIR_MODEL", Advanced: true, Description: "Kimi model for repair phase"},
+		{Key: "KIMI_REPAIR_EFFORT", Advanced: true, Description: "Kimi effort for repair phase"},
 		{Key: "KIMI_BUGFIX_MODEL", Advanced: true, Description: "Kimi model for comprehensive bugfix phase"},
+		{Key: "KIMI_BUGFIX_EFFORT", Advanced: true, Description: "Kimi effort for comprehensive bugfix phase"},
 		{Key: "KIMI_COMMIT_MODEL", Advanced: true, Description: "Kimi model for commit phase"},
+		{Key: "KIMI_COMMIT_EFFORT", Advanced: true, Description: "Kimi effort for commit phase"},
 		{Key: "KIMI_PICK_MODEL", Advanced: true, Description: "Kimi model for pick phase"},
+		{Key: "KIMI_PICK_EFFORT", Advanced: true, Description: "Kimi effort for pick phase"},
 	}
 }
 
@@ -944,6 +961,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.KimiFlags
 	case "KIMI_MODEL":
 		return cfg.KimiModel
+	case "KIMI_EFFORT":
+		return cfg.KimiEffort
 	case "KIMI_MODE":
 		return cfg.KimiMode
 	case "MAX_ITERATIONS":
@@ -991,6 +1010,8 @@ func keyValue(cfg Config, key string) string {
 		return phaseRouteEffort(cfg.Routes, "codex", key)
 	case "KIMI_BUILD_MODEL", "KIMI_HANDOFF_MODEL", "KIMI_VERIFY_MODEL", "KIMI_REPAIR_MODEL", "KIMI_BUGFIX_MODEL", "KIMI_COMMIT_MODEL", "KIMI_PICK_MODEL":
 		return phaseRouteModel(cfg.Routes, "kimi", key)
+	case "KIMI_BUILD_EFFORT", "KIMI_HANDOFF_EFFORT", "KIMI_VERIFY_EFFORT", "KIMI_REPAIR_EFFORT", "KIMI_BUGFIX_EFFORT", "KIMI_COMMIT_EFFORT", "KIMI_PICK_EFFORT":
+		return phaseRouteEffort(cfg.Routes, "kimi", key)
 	}
 	return ""
 }

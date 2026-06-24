@@ -66,10 +66,20 @@ PROVIDER=claude
 #   fast     -> gpt-5.4-mini @ low
 #   balanced -> gpt-5.5      @ medium
 #   slow     -> gpt-5.5      @ xhigh
+# Built-in Kimi presets:
+#   fast     -> kimi-k2.7-code-highspeed @ low
+#   balanced -> kimi-k2.7-code           @ medium
+#   slow     -> kimi-k2.7-code           @ high
 #
 # CLAUDE_MODE=balanced
 # CODEX_MODE=fast
 # KIMI_MODE=
+
+# Effort knobs are provider-specific. Claude takes --effort (low|medium|high|xhigh|max);
+# Codex takes -c model_reasoning_effort (minimal|low|medium|high|xhigh); Kimi takes the
+# KIMI_MODEL_THINKING_EFFORT env var (low|medium|high|xhigh|max), set for you from
+# KIMI_EFFORT (and its per-phase KIMI_<PHASE>_EFFORT variants).
+# KIMI_EFFORT=
 
 # Per-provider phase tuning for this project. Phases: BUILD HANDOFF VERIFY REPAIR
 # BUGFIX COMMIT PICK. Model/effort are provider-specific.
@@ -95,6 +105,12 @@ PROVIDER=claude
 # CODEX_COMMIT_EFFORT=low
 # CODEX_PICK_MODEL=gpt-5.4-mini
 # CODEX_PICK_EFFORT=low
+#
+# Example Kimi tuning: turbo model for cheap phases, full thinking for the hard ones.
+# KIMI_BUILD_MODEL=kimi-k2.7-code
+# KIMI_BUILD_EFFORT=high
+# KIMI_COMMIT_MODEL=kimi-k2.7-code-highspeed
+# KIMI_COMMIT_EFFORT=low
 
 # --- loop control ---
 MAX_ITERATIONS=15
