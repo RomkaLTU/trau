@@ -8,6 +8,7 @@ import (
 
 type fakeSettingsActions struct {
 	items      []ConfigItem
+	tunings    []ProviderTuning
 	saveCalled bool
 	savedKey   string
 	savedValue string
@@ -25,6 +26,8 @@ func (f *fakeSettingsActions) SaveConfigItem(key, value, layer string) error {
 }
 
 func (f *fakeSettingsActions) ConfigLayers() []string { return []string{"local", "project", "user"} }
+
+func (f *fakeSettingsActions) ProviderTunings() []ProviderTuning { return f.tunings }
 
 func TestSettingsFiltersAdvancedByDefault(t *testing.T) {
 	acts := &fakeSettingsActions{

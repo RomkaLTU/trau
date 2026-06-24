@@ -26,6 +26,35 @@ type ConfigItem struct {
 	Default     string
 }
 
+// ProviderTuningField is one resolved value plus the layer that supplied it.
+// It mirrors config.ProviderTuningField.
+type ProviderTuningField struct {
+	Value string
+	Layer string
+}
+
+// ProviderPhaseTuning is one phase's model/effort for a provider: the raw
+// per-phase override (empty Value = inherit) plus the effective value that runs.
+type ProviderPhaseTuning struct {
+	Phase     string
+	Model     ProviderTuningField
+	Effort    ProviderTuningField
+	EffModel  string
+	EffEffort string
+}
+
+// ProviderTuning is the execution-tuning picture for one provider, consumed by
+// the provider settings panel. It mirrors config.ProviderTuning.
+type ProviderTuning struct {
+	Name    string
+	Active  bool
+	Models  []string
+	Efforts []string
+	Model   ProviderTuningField
+	Effort  ProviderTuningField
+	Phases  []ProviderPhaseTuning
+}
+
 // SettingsActions is the narrow seam the settings editor needs from the
 // backend. The concrete implementation lives in cmd/trau/main.go.
 type SettingsActions interface {
@@ -40,6 +69,10 @@ type SettingsActions interface {
 	// ConfigLayers returns the writable layer names offered by the editor,
 	// ordered from lowest to highest precedence.
 	ConfigLayers() []string
+
+	// ProviderTunings returns per-provider execution tuning (model/effort and
+	// per-phase overrides) for the provider settings panel.
+	ProviderTunings() []ProviderTuning
 }
 
 type settingsStep int
@@ -59,6 +92,16 @@ const (
 	editBool                   // on/off toggle stored as 1/0
 )
 
+// settingsCategory restricts which keys the flat editor lists. The provider
+// settings panel owns model/effort tuning, so the General view hides every
+// provider-prefixed key; All shows everything as a raw escape hatch.
+type settingsCategory int
+
+const (
+	categoryAll settingsCategory = iota
+	categoryGeneral
+)
+
 type settingsModel struct {
 	styles Styles
 
@@ -68,6 +111,9 @@ type settingsModel struct {
 	items    []ConfigItem
 	filtered []ConfigItem
 	cursor   int
+
+	category settingsCategory
+	title    string
 
 	showAdvanced bool
 	step         settingsStep
@@ -100,11 +146,30 @@ func newSettingsModel(actions SettingsActions, styles Styles, width, height int)
 		width:      width,
 		height:     height,
 		items:      actions.ConfigItems(),
+		title:      "Settings",
 		editInput:  ti,
 		editLayers: actions.ConfigLayers(),
 	}
 	m.rebuildFiltered()
 	return m
+}
+
+// newSettingsModelCategory builds a flat editor scoped to a category with a
+// custom title, used by the settings hub for its General and All views.
+func newSettingsModelCategory(actions SettingsActions, styles Styles, width, height int, category settingsCategory, title string) settingsModel {
+	m := newSettingsModel(actions, styles, width, height)
+	m.category = category
+	m.title = title
+	m.rebuildFiltered()
+	return m
+}
+
+// isProviderKey reports whether key is a provider execution-tuning key (owned by
+// the provider settings panel) rather than general config.
+func isProviderKey(key string) bool {
+	return strings.HasPrefix(key, "CLAUDE_") ||
+		strings.HasPrefix(key, "CODEX_") ||
+		strings.HasPrefix(key, "KIMI_")
 }
 
 func (m settingsModel) Init() tea.Cmd { return nil }
@@ -328,6 +393,9 @@ func (m *settingsModel) rebuildFiltered() {
 		if it.Advanced && !m.showAdvanced {
 			continue
 		}
+		if m.category == categoryGeneral && isProviderKey(it.Key) {
+			continue
+		}
 		m.filtered = append(m.filtered, it)
 	}
 	if m.cursor >= len(m.filtered) {
@@ -351,8 +419,12 @@ func (m settingsModel) View() string {
 
 func (m settingsModel) renderList() string {
 	s := m.styles
+	title := m.title
+	if title == "" {
+		title = "Settings"
+	}
 	rows := []string{
-		s.SummaryTitle.Render("Settings"),
+		s.SummaryTitle.Render(title),
 		"",
 		s.Subtle.Render("Effective config values and the layer that supplies each one."),
 		"",

@@ -767,6 +767,142 @@ func KnownKeys() []KeyMeta {
 	}
 }
 
+// ProviderTuningMeta enumerates the execution knobs a provider exposes, so the
+// settings UI can offer valid pickers instead of free text. Models are
+// suggestions (custom values are still allowed); Efforts is the exact set the
+// provider's CLI accepts.
+type ProviderTuningMeta struct {
+	Name    string
+	Models  []string
+	Efforts []string
+}
+
+// ProviderTuningMetas returns the per-provider model/effort option sets used by
+// the in-TUI provider settings panel. Effort values reflect each CLI's real
+// knob: Claude --effort, Codex -c model_reasoning_effort, Kimi
+// KIMI_MODEL_THINKING_EFFORT.
+func ProviderTuningMetas() []ProviderTuningMeta {
+	return []ProviderTuningMeta{
+		{
+			Name:    "claude",
+			Models:  []string{"opus", "sonnet", "haiku", "fable", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-fable-5"},
+			Efforts: []string{"low", "medium", "high", "xhigh", "max"},
+		},
+		{
+			Name:    "codex",
+			Models:  []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini"},
+			Efforts: []string{"minimal", "low", "medium", "high", "xhigh"},
+		},
+		{
+			Name:    "kimi",
+			Models:  []string{"kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-for-coding"},
+			Efforts: []string{"low", "medium", "high", "xhigh", "max"},
+		},
+	}
+}
+
+// ProviderTuningField is one resolved value plus the layer that supplied it.
+type ProviderTuningField struct {
+	Value string
+	Layer Layer
+}
+
+// ProviderPhaseTuning is one phase's model/effort for a provider: the raw
+// per-phase override (empty Value means "inherit the default") alongside the
+// effective value that actually runs after applying the inherit fallback.
+type ProviderPhaseTuning struct {
+	Phase     string
+	Model     ProviderTuningField
+	Effort    ProviderTuningField
+	EffModel  string
+	EffEffort string
+}
+
+// ProviderTuning is the full execution-tuning picture for one provider, consumed
+// by the provider settings panel: option sets, default model/effort, and the
+// per-phase overrides with their effective resolution.
+type ProviderTuning struct {
+	Name    string
+	Active  bool
+	Models  []string
+	Efforts []string
+	Model   ProviderTuningField
+	Effort  ProviderTuningField
+	Phases  []ProviderPhaseTuning
+}
+
+// ResolveProviderTunings returns the execution-tuning state for every provider.
+// Values are read across the standard config layers (env > user > project >
+// local); per-phase keys fall back to the provider default for their effective
+// value. activeProvider marks which provider the loop currently runs.
+func ResolveProviderTunings(localPath, projectPath, userPath, activeProvider string) []ProviderTuning {
+	local, _ := ParseEnvFile(localPath)
+	proj, _ := ParseEnvFile(projectPath)
+	user, _ := ParseEnvFile(userPath)
+
+	rawGet := func(key string) (string, Layer) {
+		if !strings.HasPrefix(key, "TRAU_") {
+			if v := os.Getenv("TRAU_" + key); v != "" {
+				return v, LayerEnv
+			}
+		}
+		if v := os.Getenv(key); v != "" {
+			return v, LayerEnv
+		}
+		if v, ok := user[key]; ok {
+			return v, LayerUser
+		}
+		if v, ok := proj[key]; ok {
+			return v, LayerProject
+		}
+		if v, ok := local[key]; ok {
+			return v, LayerLocal
+		}
+		return "", LayerDefault
+	}
+	field := func(key string) ProviderTuningField {
+		v, l := rawGet(key)
+		return ProviderTuningField{Value: v, Layer: l}
+	}
+
+	out := make([]ProviderTuning, 0, len(ProviderTuningMetas()))
+	for _, meta := range ProviderTuningMetas() {
+		prefix := strings.ToUpper(meta.Name) + "_"
+		model := field(prefix + "MODEL")
+		effort := field(prefix + "EFFORT")
+		pt := ProviderTuning{
+			Name:    meta.Name,
+			Active:  meta.Name == activeProvider,
+			Models:  meta.Models,
+			Efforts: meta.Efforts,
+			Model:   model,
+			Effort:  effort,
+		}
+		for _, ph := range phases {
+			pp := strings.ToUpper(ph)
+			pm := field(prefix + pp + "_MODEL")
+			pe := field(prefix + pp + "_EFFORT")
+			effModel := pm.Value
+			if effModel == "" {
+				effModel = model.Value
+			}
+			effEffort := pe.Value
+			if effEffort == "" {
+				effEffort = effort.Value
+			}
+			pt.Phases = append(pt.Phases, ProviderPhaseTuning{
+				Phase:     ph,
+				Model:     pm,
+				Effort:    pe,
+				EffModel:  effModel,
+				EffEffort: effEffort,
+			})
+		}
+		out = append(out, pt)
+	}
+	return out
+}
+
 // ResolveConfigItems returns every known config key with its effective value and
 // the layer that supplied it. The result is sorted in the order of KnownKeys.
 // CLI-sourced values are only recorded when opts supplies the override.
