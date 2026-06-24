@@ -21,6 +21,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/budget"
+	"github.com/RomkaLTU/trau/internal/checks"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -152,6 +153,7 @@ type Pipeline struct {
 	Prefix         string
 	MaxRepairs     int
 	MaxBugfixes    int
+	Checks         []checks.Check
 	BrowserVerify  string
 	AppURL         string
 	AutoMerge      bool
@@ -544,13 +546,18 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	note := browserNote(p.BrowserVerify, p.AppURL)
 	branch := p.State.Get(id, "BRANCH")
 
+	checksFragment := checks.Render(p.Checks)
+	if n := len(p.Checks); n > 0 {
+		p.logf("  ↳ verify checks: %d active (severity gates the merge)", n)
+	}
+
 	repairAttempt := 0
 	bugfixAttempt := 0
 	passed := false
 	label := "verify"
 	for {
 		_ = os.Remove(verdictPath)
-		prompt := verifyTail(id, handoff, verdictPath, note)
+		prompt := verifyTail(id, handoff, verdictPath, note, checksFragment)
 		_, agentErr := p.agentStep(ctx, id, label, prompt)
 		v, ok := readVerdict(verdictPath)
 		if agentErr != nil || !ok {
@@ -562,6 +569,11 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				return fmt.Errorf("verify %s: write failure verdict: %w", id, err)
 			}
 			v, _ = readVerdict(verdictPath)
+		}
+		var warnings []string
+		v, warnings = gateChecks(p.Checks, v)
+		for _, w := range warnings {
+			p.logf("  ⚠ %s", w)
 		}
 		if v.Pass {
 			passed = true
@@ -1073,8 +1085,8 @@ func browserNote(mode, appURL string) string {
 	}
 }
 
-func verifyTail(id, handoff, verdict, note string) string {
-	return "Cold, adversarial QA verification of " + id + " against the QA brief at " + handoff + ". Treat the code on disk and the brief as the only sources of truth; your job is to find what does NOT work. Run only the tests relevant to this slice (the new or changed test files for this ticket) using the project's test runner — not the whole suite. For each behavior the brief lists, confirm it actually holds. " + note + " Distinguish defects in this slice's own code from pre-existing or out-of-scope issues. When finished, write a JSON verdict to exactly " + verdict + ": {\"pass\": true|false, \"summary\": \"one line\", \"failures\": [\"...\"]}. Set pass=false if any relevant test fails or any behavior in the brief does not work; failures lists each concrete problem (empty when pass is true). Do not commit, push, or open a PR."
+func verifyTail(id, handoff, verdict, note, checksFragment string) string {
+	return "Cold, adversarial QA verification of " + id + " against the QA brief at " + handoff + ". Treat the code on disk and the brief as the only sources of truth; your job is to find what does NOT work. Run only the tests relevant to this slice (the new or changed test files for this ticket) using the project's test runner — not the whole suite. For each behavior the brief lists, confirm it actually holds. " + note + " Distinguish defects in this slice's own code from pre-existing or out-of-scope issues. When finished, write a JSON verdict to exactly " + verdict + ": {\"pass\": true|false, \"summary\": \"one line\", \"failures\": [\"...\"]}. Set pass=false if any relevant test fails or any behavior in the brief does not work; failures lists each concrete problem (empty when pass is true)." + checksFragment + " Do not commit, push, or open a PR."
 }
 
 func commitInstruction(id string) string {
@@ -1092,9 +1104,69 @@ func bugfixInstruction(id, verdict, handoff, branch, fails string) string {
 }
 
 type verdict struct {
-	Pass     bool     `json:"pass"`
-	Summary  string   `json:"summary"`
-	Failures []string `json:"failures"`
+	Pass     bool          `json:"pass"`
+	Summary  string        `json:"summary"`
+	Failures []string      `json:"failures"`
+	Checks   []checkResult `json:"checks,omitempty"`
+}
+
+// checkResult is one verify-check outcome the cold verifier reports back inside
+// the verdict (see internal/checks). Severity is echoed for the agent's benefit,
+// but gateChecks trusts the declared library severity, not this field.
+type checkResult struct {
+	Name     string `json:"name"`
+	Severity string `json:"severity"`
+	Pass     bool   `json:"pass"`
+	Detail   string `json:"detail"`
+}
+
+// gateChecks applies severity gating from the declared check library to the
+// verdict the verifier reported. A failing error-severity check forces the
+// overall verdict to fail — folded into Failures — even if the agent set
+// pass=true; a failing warn-severity check is returned as a non-blocking warning
+// line for logging. The library's declared severity wins over whatever severity
+// the agent echoed back, so a verifier can't silently downgrade a blocking check.
+func gateChecks(library []checks.Check, v verdict) (verdict, []string) {
+	if len(library) == 0 || len(v.Checks) == 0 {
+		return v, nil
+	}
+	severity := make(map[string]string, len(library))
+	for _, c := range library {
+		severity[c.Name] = checks.NormalizeSeverity(c.Severity)
+	}
+	var warnings []string
+	for _, r := range v.Checks {
+		if r.Pass {
+			continue
+		}
+		detail := strings.TrimSpace(r.Detail)
+		if detail == "" {
+			detail = "failed"
+		}
+		sev, known := severity[r.Name]
+		if !known {
+			sev = checks.NormalizeSeverity(r.Severity)
+		}
+		line := fmt.Sprintf("[check:%s] %s", r.Name, detail)
+		if checks.Blocks(sev) {
+			v.Pass = false
+			if !containsLine(v.Failures, line) {
+				v.Failures = append(v.Failures, line)
+			}
+		} else {
+			warnings = append(warnings, line)
+		}
+	}
+	return v, warnings
+}
+
+func containsLine(lines []string, line string) bool {
+	for _, l := range lines {
+		if l == line {
+			return true
+		}
+	}
+	return false
 }
 
 func readVerdict(path string) (v verdict, ok bool) {

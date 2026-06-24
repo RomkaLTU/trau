@@ -28,6 +28,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/budget"
+	"github.com/RomkaLTU/trau/internal/checks"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/doctor"
@@ -427,6 +428,15 @@ func newRenderer(stdout, stderr io.Writer, cfg config.Config, opts config.Option
 }
 
 func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *tokens.Sink, con console.Renderer) *pipeline.Pipeline {
+	var verifyChecks []checks.Check
+	if cfg.VerifyChecks {
+		loaded, _, err := checks.Load(repoRoot)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v — falling back to default verify checks\n", err)
+			loaded = checks.Defaults()
+		}
+		verifyChecks = loaded
+	}
 	return &pipeline.Pipeline{
 		Runner:         runner,
 		State:          state.NewStore(cfg.RunsDir),
@@ -441,6 +451,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		Prefix:         cfg.IssuePrefix,
 		MaxRepairs:     cfg.MaxRepairs,
 		MaxBugfixes:    cfg.MaxBugfixes,
+		Checks:         verifyChecks,
 		BrowserVerify:  cfg.BrowserVerify,
 		AppURL:         cfg.AppURL,
 		AutoMerge:      cfg.AutoMerge,

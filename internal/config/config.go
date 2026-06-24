@@ -81,6 +81,7 @@ type Config struct {
 
 	BrowserVerify string
 	AppURL        string
+	VerifyChecks  bool
 
 	TUI bool
 
@@ -138,6 +139,7 @@ func Defaults() Config {
 		ExpectedChecks:        "",
 		BrowserVerify:         "auto",
 		AppURL:                "http://localhost",
+		VerifyChecks:          true,
 		TUI:                   true,
 		EpicFlow:              true,
 		RunsDir:               "runs",
@@ -423,6 +425,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("EXPECTED_CHECKS", &c.ExpectedChecks)
 	str("BROWSER_VERIFY", &c.BrowserVerify)
 	str("APP_URL", &c.AppURL)
+	if v, src := get("VERIFY_CHECKS"); v != "" {
+		c.VerifyChecks = v == "1"
+		sources["VERIFY_CHECKS"] = src.name
+	}
 	if v, src := get("TRAU_TUI"); v != "" {
 		c.TUI = v == "1"
 		sources["TRAU_TUI"] = src.name
@@ -779,6 +785,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "EXPECTED_CHECKS", Description: "Required CI check names (comma-separated)"},
 		{Key: "BROWSER_VERIFY", Default: "auto", Description: "Browser verify: auto | always | never", Options: []string{"auto", "always", "never"}},
 		{Key: "APP_URL", Default: "http://localhost", Description: "Local app URL for browser verify"},
+		{Key: "VERIFY_CHECKS", Default: "1", Description: "Run the pluggable verify-check library (.trau/checks); 1 = yes, 0 = no", Bool: true},
 		{Key: "TRAU_TUI", Default: "1", Description: "Enable Bubble Tea TUI (1 = yes, 0 = no)", Bool: true},
 		{Key: "EPIC_FLOW", Default: "1", Description: "Process epic sub-issues (1 = yes, 0 = no)", Bool: true},
 		{Key: "RUNS_DIR", Default: "runs", Description: "Directory for run artifacts"},
@@ -1146,6 +1153,11 @@ func keyValue(cfg Config, key string) string {
 		return cfg.BrowserVerify
 	case "APP_URL":
 		return cfg.AppURL
+	case "VERIFY_CHECKS":
+		if cfg.VerifyChecks {
+			return "1"
+		}
+		return "0"
 	case "TRAU_TUI":
 		if cfg.TUI {
 			return "1"
