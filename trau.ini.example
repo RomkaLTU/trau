@@ -116,6 +116,21 @@ EXPECTED_CHECKS=             # named checks (substring, case-insensitive) that m
                              # locally (the loop's verify phase is the gate); set to e.g.
                              # "tests,lint" when those checks run on the PR itself.
 
+# --- budget governance ---
+# Spend ceilings enforced off the normalized token/cost ledger. Empty = no cap
+# (default; fully back-compatible). Checked against the live tokens.jsonl totals
+# before each agent call: a ticket that reaches its per-ticket cap is quarantined
+# (ready-for-agent dropped, needs-human added) with a cost-overrun note and the loop
+# moves on; reaching a per-day cap (summed across ALL tickets that day) stops the run
+# cleanly so it can resume tomorrow or once you raise the cap. Set USD caps, token
+# caps, or both — the USD figure is the same notional estimate shown by --status, so
+# on unmetered providers (kimi) prefer the token caps. See the COST NOTE at the
+# bottom of this file.
+MAX_TICKET_USD=              # e.g. 5      → quarantine a ticket once its est. cost reaches $5
+MAX_TICKET_TOKENS=           # e.g. 2000000 → quarantine a ticket once it reaches 2M tokens
+MAX_DAILY_USD=               # e.g. 50     → stop the run once today's spend reaches $50
+MAX_DAILY_TOKENS=            # e.g. 50000000 → stop the run once today reaches 50M tokens
+
 # --- TUI ---
 # Enable the Bubble Tea TUI when running in a terminal. Set to 0 to force the
 # original plain log output. This is also toggled per-run with --no-tui.

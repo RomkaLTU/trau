@@ -87,6 +87,14 @@ type Config struct {
 	EpicFlow bool
 
 	RunsDir string
+
+	// Spend ceilings off the normalized token/cost ledger. Zero = no cap
+	// (back-compat: a config with no MAX_* knobs enforces nothing). USD caps use
+	// the notional cost estimate; token caps the raw total. See internal/budget.
+	MaxTicketUSD    float64
+	MaxTicketTokens int
+	MaxDailyUSD     float64
+	MaxDailyTokens  int
 }
 
 // Defaults returns the built-in configuration used when neither the env file
@@ -133,6 +141,10 @@ func Defaults() Config {
 		TUI:                   true,
 		EpicFlow:              true,
 		RunsDir:               "runs",
+		MaxTicketUSD:          0,
+		MaxTicketTokens:       0,
+		MaxDailyUSD:           0,
+		MaxDailyTokens:        0,
 	}
 }
 
@@ -299,6 +311,15 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 			}
 		}
 	}
+	fnum := func(key string, dst *float64) {
+		v, src := get(key)
+		if v != "" {
+			if f, e := strconv.ParseFloat(strings.TrimSpace(v), 64); e == nil {
+				*dst = f
+				sources[key] = src.name
+			}
+		}
+	}
 
 	providerFile := func(configKey string) (map[string]string, envLayer, error) {
 		v, src := get(configKey)
@@ -411,6 +432,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		sources["EPIC_FLOW"] = src.name
 	}
 	str("RUNS_DIR", &c.RunsDir)
+	fnum("MAX_TICKET_USD", &c.MaxTicketUSD)
+	num("MAX_TICKET_TOKENS", &c.MaxTicketTokens)
+	fnum("MAX_DAILY_USD", &c.MaxDailyUSD)
+	num("MAX_DAILY_TOKENS", &c.MaxDailyTokens)
 
 	c.IssuePrefix = ResolvePrefix(c.IssuePrefix, c.LinearTeam)
 
@@ -757,6 +782,10 @@ func KnownKeys() []KeyMeta {
 		{Key: "TRAU_TUI", Default: "1", Description: "Enable Bubble Tea TUI (1 = yes, 0 = no)", Bool: true},
 		{Key: "EPIC_FLOW", Default: "1", Description: "Process epic sub-issues (1 = yes, 0 = no)", Bool: true},
 		{Key: "RUNS_DIR", Default: "runs", Description: "Directory for run artifacts"},
+		{Key: "MAX_TICKET_USD", Description: "Per-ticket USD spend cap; over it the ticket is quarantined (empty = no cap)"},
+		{Key: "MAX_TICKET_TOKENS", Description: "Per-ticket token spend cap; over it the ticket is quarantined (empty = no cap)"},
+		{Key: "MAX_DAILY_USD", Description: "Per-day USD spend cap across all tickets; reaching it stops the run (empty = no cap)"},
+		{Key: "MAX_DAILY_TOKENS", Description: "Per-day token spend cap across all tickets; reaching it stops the run (empty = no cap)"},
 		{Key: "CLAUDE_BUILD_MODEL", Advanced: true, Description: "Claude model for build phase"},
 		{Key: "CLAUDE_BUILD_EFFORT", Advanced: true, Description: "Claude effort for build phase"},
 		{Key: "CLAUDE_HANDOFF_MODEL", Advanced: true, Description: "Claude model for handoff phase"},
@@ -1129,6 +1158,14 @@ func keyValue(cfg Config, key string) string {
 		return "0"
 	case "RUNS_DIR":
 		return cfg.RunsDir
+	case "MAX_TICKET_USD":
+		return floatValue(cfg.MaxTicketUSD)
+	case "MAX_TICKET_TOKENS":
+		return intValue(cfg.MaxTicketTokens)
+	case "MAX_DAILY_USD":
+		return floatValue(cfg.MaxDailyUSD)
+	case "MAX_DAILY_TOKENS":
+		return intValue(cfg.MaxDailyTokens)
 	case "CLAUDE_BUILD_MODEL", "CLAUDE_HANDOFF_MODEL", "CLAUDE_VERIFY_MODEL", "CLAUDE_REPAIR_MODEL", "CLAUDE_BUGFIX_MODEL", "CLAUDE_COMMIT_MODEL", "CLAUDE_PICK_MODEL":
 		return phaseRouteModel(cfg.Routes, "claude", key)
 	case "CLAUDE_BUILD_EFFORT", "CLAUDE_HANDOFF_EFFORT", "CLAUDE_VERIFY_EFFORT", "CLAUDE_REPAIR_EFFORT", "CLAUDE_BUGFIX_EFFORT", "CLAUDE_COMMIT_EFFORT", "CLAUDE_PICK_EFFORT":
@@ -1141,6 +1178,24 @@ func keyValue(cfg Config, key string) string {
 		return phaseRouteModel(cfg.Routes, "kimi", key)
 	}
 	return ""
+}
+
+// intValue renders an integer config value, treating 0 as unset ("") so the
+// settings editor shows the key as empty rather than a literal 0.
+func intValue(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return strconv.Itoa(n)
+}
+
+// floatValue renders a float config value as the shortest decimal, treating 0 as
+// unset ("").
+func floatValue(f float64) string {
+	if f == 0 {
+		return ""
+	}
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 func phaseRouteModel(routes map[string]string, provider, key string) string {

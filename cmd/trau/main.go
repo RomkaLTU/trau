@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/budget"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/doctor"
@@ -195,11 +196,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	if opts.Status {
 		store := state.NewStore(cfg.RunsDir)
+		var report any
+		if lim := budgetLimits(cfg); lim.Enabled() {
+			today := time.Now().Format("2006-01-02")
+			dt, dc, dm := sink.DayTotal(today)
+			report = budget.Report{Date: today, Limits: lim, Today: budget.Spend{Tokens: dt, Cost: dc, Metered: dm}}
+		}
 		if opts.JSON {
-			return store.StatusJSON(stdout, sink.Total)
+			return store.StatusJSON(stdout, sink.Total, report)
 		}
 		con.Logf("Saved ticket checkpoints:")
 		store.Status(stdout, sink.Total)
+		if r, ok := report.(budget.Report); ok {
+			_, _ = fmt.Fprintf(stdout, "  %s\n", r.Summary())
+		}
 		return nil
 	}
 
@@ -281,7 +291,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if opts.Max >= 0 {
 		maxIter = opts.Max
 	}
-	con.Logf("provider=%s · AUTO_MERGE=%v · max=%d%s", cfg.Provider, cfg.AutoMerge, maxIter, parentSuffix)
+	budgetSuffix := ""
+	if lim := budgetLimits(cfg); lim.Enabled() {
+		budgetSuffix = " · " + lim.Summary()
+	}
+	con.Logf("provider=%s · AUTO_MERGE=%v · max=%d%s%s", cfg.Provider, cfg.AutoMerge, maxIter, parentSuffix, budgetSuffix)
 
 	eng := &realEngine{pipe: p, tracker: pm, scope: scope}
 
@@ -385,6 +399,17 @@ func scopeFor(cfg config.Config, parent string) tracker.Scope {
 	return tracker.Scope{Parent: parent, Team: cfg.LinearTeam, Prefix: cfg.IssuePrefix}
 }
 
+// budgetLimits projects the resolved config's spend ceilings into the budget
+// package's Limits (zero fields = no cap).
+func budgetLimits(cfg config.Config) budget.Limits {
+	return budget.Limits{
+		TicketUSD:    cfg.MaxTicketUSD,
+		TicketTokens: cfg.MaxTicketTokens,
+		DailyUSD:     cfg.MaxDailyUSD,
+		DailyTokens:  cfg.MaxDailyTokens,
+	}
+}
+
 func newRenderer(stdout, stderr io.Writer, cfg config.Config, opts config.Options, onInterrupt func()) console.Renderer {
 	if opts.Status {
 		return console.New(stdout, stderr)
@@ -409,6 +434,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		GitHub:         pipeline.ExecGitHub{Repo: repoRoot},
 		Tracker:        pm,
 		Tokens:         sink,
+		Budget:         budgetLimits(cfg),
 		RunsDir:        cfg.RunsDir,
 		Base:           cfg.BaseBranch,
 		Remote:         cfg.Remote,
@@ -436,6 +462,8 @@ type engine interface {
 	Pick(ctx context.Context) (string, error)
 
 	Process(ctx context.Context, id, from string) error
+
+	BudgetExhausted() (reason string, stop bool)
 }
 
 type realEngine struct {
@@ -453,6 +481,7 @@ func (e *realEngine) Pick(ctx context.Context) (string, error)  { return e.track
 func (e *realEngine) Process(ctx context.Context, id, from string) error {
 	return e.pipe.Resume(ctx, id, from)
 }
+func (e *realEngine) BudgetExhausted() (string, bool) { return e.pipe.BudgetExhausted() }
 
 type loopParams struct {
 	Once         bool
@@ -474,6 +503,11 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 
 		if len(processed) >= p.Max {
 			con.Logf("hit MAX_ITERATIONS=%d", p.Max)
+			break
+		}
+
+		if reason, stop := eng.BudgetExhausted(); stop {
+			con.Logf("■ daily budget reached — stopping the run (%s)", reason)
 			break
 		}
 

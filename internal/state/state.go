@@ -238,8 +238,10 @@ func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost floa
 // object: a tickets array (id/title/phase/pr_url/tokens/cost) plus a summed
 // total. It mirrors Status's data but stays byte-stable for scripts piping
 // `trau --status --json` into jq. No header line is written, so stdout carries
-// only the JSON document.
-func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost float64, metered bool)) error {
+// only the JSON document. budget, when non-nil, is marshaled under a "budget" key
+// (the configured caps + the day's spend); state takes it as any so it need not
+// depend on the budget package.
+func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost float64, metered bool), budget any) error {
 	type ticket struct {
 		ID           string  `json:"id"`
 		Title        string  `json:"title,omitempty"`
@@ -256,10 +258,12 @@ func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost 
 			Cost         float64 `json:"cost"`
 			CostMeasured bool    `json:"cost_measured"`
 		} `json:"total"`
+		Budget any `json:"budget,omitempty"`
 	}
 
 	report.Tickets = []ticket{}
 	report.Total.CostMeasured = true
+	report.Budget = budget
 	for _, id := range s.Tickets() {
 		tok, cost, metered := total(id)
 		report.Tickets = append(report.Tickets, ticket{

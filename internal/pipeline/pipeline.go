@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/budget"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -91,11 +92,15 @@ var (
 	ErrAlreadyDone = errors.New("ticket already done")
 )
 
-// TicketSetter points the token sink's bucket at the current ticket so per-call
-// token lines land in runs/<ID>/. *tokens.Sink satisfies it; kept as a narrow
-// interface so pipeline doesn't depend on the tokens package.
-type TicketSetter interface {
+// Ledger is the pipeline's view of the token/cost sink: it points the bucket at
+// the current ticket (SetTicket) and reports accumulated spend for budget
+// enforcement (Total per ticket, DayTotal for the per-day window). *tokens.Sink
+// satisfies it; kept as a narrow interface so pipeline doesn't depend on the
+// tokens package.
+type Ledger interface {
 	SetTicket(id string)
+	Total(id string) (tokens int, cost float64, metered bool)
+	DayTotal(date string) (tokens int, cost float64, metered bool)
 }
 
 // GiveUpError signals a ticket cannot proceed and must be abandoned; the caller
@@ -139,7 +144,8 @@ type Pipeline struct {
 	Git            Git
 	GitHub         GitHub
 	Tracker        tracker.Tracker
-	Tokens         TicketSetter
+	Tokens         Ledger
+	Budget         budget.Limits
 	RunsDir        string
 	Base           string
 	Remote         string
@@ -155,6 +161,10 @@ type Pipeline struct {
 	CIPoll         int
 	Sleep          func(time.Duration)
 	Renderer       console.Renderer
+
+	// Now supplies the current time for the per-day budget window; nil defaults
+	// to time.Now (overridable in tests).
+	Now func() time.Time
 
 	EpicID     string
 	epicBranch string
@@ -604,6 +614,12 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 }
 
 func (p *Pipeline) giveUp(ctx context.Context, id, reason string) error {
+	// Idempotent: a ticket already quarantined this run (e.g. a budget guard that
+	// fired inside build, whose *GiveUpError then flows through handleGiveUp) must
+	// not be finalized or quarantined twice.
+	if p.State.Get(id, "PHASE") == state.Quarantined {
+		return &GiveUpError{ID: id, Reason: reason}
+	}
 	p.finalizeFailed(ctx, id)
 	if err := p.State.Set(id, "PHASE", state.Quarantined); err != nil {
 		return fmt.Errorf("give up %s: checkpoint quarantined: %w", id, err)
@@ -930,6 +946,9 @@ func (p *Pipeline) logAgentErr(phase string, err error) {
 // the caller so the phase cannot advance when the agent timed out or crashed
 // without producing its required artifact.
 func (p *Pipeline) agentStep(ctx context.Context, id, phase, prompt string) (string, error) {
+	if err := p.guardBudget(ctx, id); err != nil {
+		return "", err
+	}
 	out, err := p.agentPhase(ctx, id, phase, prompt)
 	if err == nil {
 		return out, nil
@@ -953,6 +972,50 @@ func (p *Pipeline) pause(id, phase string, err error) error {
 func isRateLimited(err error) bool {
 	_, rl := agentErrSummary(err)
 	return rl
+}
+
+// guardBudget enforces the configured spend ceilings before an agent call. It
+// reads the LIVE ledger totals (this ticket's runs/<ID>/tokens.jsonl and the day's
+// spend across all buckets) and, on the first cap reached, quarantines the ticket
+// via giveUp with a cost-overrun reason — halting before the next call adds to the
+// bill. A nil ledger or no configured cap is a no-op (back-compat).
+func (p *Pipeline) guardBudget(ctx context.Context, id string) error {
+	if p.Tokens == nil || !p.Budget.Enabled() {
+		return nil
+	}
+	tt, tc, tm := p.Tokens.Total(id)
+	b, ok := p.Budget.Check(budget.Spend{Tokens: tt, Cost: tc, Metered: tm}, p.dailySpend())
+	if !ok {
+		return nil
+	}
+	return p.giveUp(ctx, id, "budget cap reached — "+b.Reason())
+}
+
+// dailySpend reads the day's accumulated spend across every ticket bucket, keyed on
+// the local date from p.Now (defaulting to time.Now).
+func (p *Pipeline) dailySpend() budget.Spend {
+	now := time.Now
+	if p.Now != nil {
+		now = p.Now
+	}
+	dt, dc, dm := p.Tokens.DayTotal(now().Format("2006-01-02"))
+	return budget.Spend{Tokens: dt, Cost: dc, Metered: dm}
+}
+
+// BudgetExhausted reports whether today's spend has already reached a configured
+// DAILY cap, with a human reason. The loop calls it before picking or resuming a
+// ticket so a day already over budget stops the run cleanly — rather than
+// quarantining every remaining ticket against the same exhausted ceiling. Per-ticket
+// caps are not consulted here; those are enforced inline by guardBudget.
+func (p *Pipeline) BudgetExhausted() (string, bool) {
+	if p.Tokens == nil || !p.Budget.Enabled() {
+		return "", false
+	}
+	b, ok := p.Budget.CheckDaily(p.dailySpend())
+	if !ok {
+		return "", false
+	}
+	return b.Reason(), true
 }
 
 var reProvider = regexp.MustCompile(`^(\w+) run \(`)
