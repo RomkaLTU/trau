@@ -208,7 +208,7 @@ func (s *Store) RemoveState(id string) error {
 // supplies each ticket's (tokens, cost) — the caller
 // injects tokens.Sink.Total, keeping this package independent of the tokens
 // package. It never errors; an empty runs/ prints a "no saved state" line.
-func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost float64)) {
+func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost float64, metered bool)) {
 	_, _ = fmt.Fprintf(w, "  %-10s %-12s %12s %9s  %s\n", "ID", "PHASE", "TOKENS", "COST", "PR")
 
 	ids := s.Tickets()
@@ -219,17 +219,19 @@ func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost floa
 
 	var grandTokens int
 	var grandCost float64
+	grandMetered := true
 	for _, id := range ids {
 		phase := s.Get(id, "PHASE")
 		if phase == "" {
 			phase = "?"
 		}
-		tok, cost := total(id)
-		_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s  %s\n", id, phase, tok, "$"+fmtCost(cost), s.Get(id, "PR_URL"))
+		tok, cost, metered := total(id)
+		_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s  %s\n", id, phase, tok, fmtCostCell(cost, metered), s.Get(id, "PR_URL"))
 		grandTokens += tok
 		grandCost = math.Round((grandCost+cost)*100) / 100
+		grandMetered = grandMetered && metered
 	}
-	_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s\n", "TOTAL", "", grandTokens, "$"+fmtCost(grandCost))
+	_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s\n", "TOTAL", "", grandTokens, fmtCostCell(grandCost, grandMetered))
 }
 
 // StatusJSON writes the saved checkpoints as a single machine-readable JSON
@@ -237,36 +239,41 @@ func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost floa
 // total. It mirrors Status's data but stays byte-stable for scripts piping
 // `trau --status --json` into jq. No header line is written, so stdout carries
 // only the JSON document.
-func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost float64)) error {
+func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost float64, metered bool)) error {
 	type ticket struct {
-		ID     string  `json:"id"`
-		Title  string  `json:"title,omitempty"`
-		Phase  string  `json:"phase"`
-		PRURL  string  `json:"pr_url,omitempty"`
-		Tokens int     `json:"tokens"`
-		Cost   float64 `json:"cost"`
+		ID           string  `json:"id"`
+		Title        string  `json:"title,omitempty"`
+		Phase        string  `json:"phase"`
+		PRURL        string  `json:"pr_url,omitempty"`
+		Tokens       int     `json:"tokens"`
+		Cost         float64 `json:"cost"`
+		CostMeasured bool    `json:"cost_measured"`
 	}
 	var report struct {
 		Tickets []ticket `json:"tickets"`
 		Total   struct {
-			Tokens int     `json:"tokens"`
-			Cost   float64 `json:"cost"`
+			Tokens       int     `json:"tokens"`
+			Cost         float64 `json:"cost"`
+			CostMeasured bool    `json:"cost_measured"`
 		} `json:"total"`
 	}
 
 	report.Tickets = []ticket{}
+	report.Total.CostMeasured = true
 	for _, id := range s.Tickets() {
-		tok, cost := total(id)
+		tok, cost, metered := total(id)
 		report.Tickets = append(report.Tickets, ticket{
-			ID:     id,
-			Title:  s.Get(id, "TITLE"),
-			Phase:  s.Get(id, "PHASE"),
-			PRURL:  s.Get(id, "PR_URL"),
-			Tokens: tok,
-			Cost:   cost,
+			ID:           id,
+			Title:        s.Get(id, "TITLE"),
+			Phase:        s.Get(id, "PHASE"),
+			PRURL:        s.Get(id, "PR_URL"),
+			Tokens:       tok,
+			Cost:         cost,
+			CostMeasured: metered,
 		})
 		report.Total.Tokens += tok
 		report.Total.Cost = math.Round((report.Total.Cost+cost)*100) / 100
+		report.Total.CostMeasured = report.Total.CostMeasured && metered
 	}
 
 	enc := json.NewEncoder(w)
@@ -276,4 +283,19 @@ func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost 
 
 func fmtCost(cost float64) string {
 	return strconv.FormatFloat(cost, 'f', -1, 64)
+}
+
+// fmtCostCell renders a COST cell honestly: "$1.23" when fully metered, "n/a"
+// when no per-call dollar cost was measured (kimi/codex subscription phases that
+// log tokens but no dollars), and "$1.23+" when the figure is a lower bound
+// because some calls were unmetered.
+func fmtCostCell(cost float64, metered bool) string {
+	switch {
+	case metered:
+		return "$" + fmtCost(cost)
+	case cost == 0:
+		return "n/a"
+	default:
+		return "$" + fmtCost(cost) + "+"
+	}
 }

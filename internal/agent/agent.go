@@ -636,19 +636,26 @@ func (c *Codex) clock() time.Time {
 // stream-json`) and returns the final assistant message parsed from the stream.
 // Each call is a fresh process — never -S/--continue session reuse — so phases
 // stay isolated. Print mode auto-executes tools (no approval prompt) and rejects
-// --yolo/--auto, so KIMI_FLAGS is normally empty. Kimi Code reports no token usage
-// on any output format, so Usage stays zero (the sink drops the resulting zero
-// record) and CostUSD is nil; accounting is best-effort by design.
+// --yolo/--auto, so KIMI_FLAGS is normally empty.
+//
+// Token accounting: Kimi prints no usage on stdout, but it persists per-turn
+// usage.record events to the session's wire.jsonl. Run recovers them via the
+// session id echoed in the stream's session.resume_hint line, normalizing the
+// counts into the shared non-cached schema (inputOther→Input, inputCacheRead→
+// CacheRead, inputCacheCreation→CacheCreation). CostUSD stays nil: Kimi exposes
+// tokens but no per-call dollar cost (a subscription plan, like codex), so spend
+// is reported as unmetered rather than a misleading $0.
 type Kimi struct {
-	Bin      string
-	Flags    []string
-	Model    string
-	Preamble string
-	Dir      string
-	Timeout  time.Duration
-	Log      *event.Log
-	Tokens   TokenSink
-	now      func() time.Time
+	Bin         string
+	Flags       []string
+	Model       string
+	Preamble    string
+	Dir         string
+	Timeout     time.Duration
+	SessionsDir string
+	Log         *event.Log
+	Tokens      TokenSink
+	now         func() time.Time
 }
 
 // Provider names the backend for logging and routing attribution.
@@ -694,6 +701,101 @@ func parseKimiFinal(stream []byte) string {
 	return final
 }
 
+type kimiResumeHint struct {
+	Type      string `json:"type"`
+	SessionID string `json:"session_id"`
+}
+
+// parseKimiSessionID returns the session id Kimi echoes in its stream's
+// session.resume_hint line, or "" if absent. The id locates the session's
+// wire.jsonl, the only place Kimi records per-call token usage.
+func parseKimiSessionID(stream []byte) string {
+	sc := bufio.NewScanner(bytes.NewReader(stream))
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		b := bytes.TrimSpace(sc.Bytes())
+		if len(b) == 0 {
+			continue
+		}
+		var ev kimiResumeHint
+		if err := json.Unmarshal(b, &ev); err != nil {
+			continue
+		}
+		if ev.Type == "session.resume_hint" && ev.SessionID != "" {
+			return ev.SessionID
+		}
+	}
+	return ""
+}
+
+type kimiUsageRecord struct {
+	Type       string `json:"type"`
+	Model      string `json:"model"`
+	UsageScope string `json:"usageScope"`
+	Usage      struct {
+		InputOther         int `json:"inputOther"`
+		Output             int `json:"output"`
+		InputCacheRead     int `json:"inputCacheRead"`
+		InputCacheCreation int `json:"inputCacheCreation"`
+	} `json:"usage"`
+}
+
+// readKimiUsage sums the turn-scoped usage.record events Kimi writes to the
+// session's wire.jsonl (one per LLM turn, across every sub-agent), normalizing
+// them into the shared non-cached schema. ok is false when no usage file or
+// record is found, so the caller can flag the call unrecovered instead of
+// recording a false zero.
+func readKimiUsage(sessionsDir, sessionID string) (u Usage, turns int, model string, ok bool) {
+	if sessionsDir == "" || sessionID == "" {
+		return Usage{}, 0, "", false
+	}
+	matches, _ := filepath.Glob(filepath.Join(sessionsDir, "*", sessionID, "agents", "*", "wire.jsonl"))
+	for _, path := range matches {
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			b := bytes.TrimSpace(sc.Bytes())
+			if len(b) == 0 {
+				continue
+			}
+			var ev kimiUsageRecord
+			if err := json.Unmarshal(b, &ev); err != nil || ev.Type != "usage.record" || ev.UsageScope != "turn" {
+				continue
+			}
+			turns++
+			ok = true
+			if ev.Model != "" {
+				model = ev.Model
+			}
+			u.Input += ev.Usage.InputOther
+			u.Output += ev.Usage.Output
+			u.CacheRead += ev.Usage.InputCacheRead
+			u.CacheCreation += ev.Usage.InputCacheCreation
+		}
+		_ = f.Close()
+	}
+	return u, turns, model, ok
+}
+
+// kimiSessionsDir resolves where Kimi Code stores session transcripts:
+// SessionsDir when set (tests/overrides), else ~/.kimi-code/sessions. Returns ""
+// if the home directory can't be resolved, which readKimiUsage treats as
+// "no usage available".
+func (c *Kimi) kimiSessionsDir() string {
+	if c.SessionsDir != "" {
+		return c.SessionsDir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".kimi-code", "sessions")
+}
+
 // Run executes one fresh kimi process and returns its final assistant message. The
 // prompt is Preamble + blank line + the caller's prompt, like the other backends.
 // stdout carries the stream-json events; parseKimiFinal extracts the final message
@@ -719,7 +821,19 @@ func (c *Kimi) Run(ctx context.Context, prompt, label string) (Result, error) {
 	res := Result{Model: c.Model}
 	res.Final = parseKimiFinal(stdout.Bytes())
 
-	c.emit(label, res, dur, runErr)
+	usageOK := false
+	if sid := parseKimiSessionID(stdout.Bytes()); sid != "" {
+		if u, turns, model, ok := readKimiUsage(c.kimiSessionsDir(), sid); ok {
+			usageOK = true
+			res.Usage = u
+			res.NumTurns = turns
+			if model != "" {
+				res.Model = model
+			}
+		}
+	}
+
+	c.emit(label, res, dur, runErr, usageOK)
 	c.record(label, res)
 
 	if runErr != nil {
@@ -731,22 +845,23 @@ func (c *Kimi) Run(ctx context.Context, prompt, label string) (Result, error) {
 	return res, nil
 }
 
-func (c *Kimi) emit(label string, res Result, dur time.Duration, runErr error) {
+func (c *Kimi) emit(label string, res Result, dur time.Duration, runErr error, usageRecovered bool) {
 	if c.Log == nil {
 		return
 	}
 	fields := map[string]any{
-		"provider":       "kimi",
-		"model":          c.Model,
-		"effort":         "",
-		"is_error":       res.IsError || runErr != nil,
-		"num_turns":      res.NumTurns,
-		"input_tokens":   res.Usage.Input,
-		"output_tokens":  res.Usage.Output,
-		"total_tokens":   res.Usage.Input + res.Usage.Output + res.Usage.CacheRead + res.Usage.CacheCreation,
-		"context_tokens": res.Context,
-		"cost_usd":       res.CostUSD,
-		"duration_ms":    dur.Milliseconds(),
+		"provider":        "kimi",
+		"model":           res.Model,
+		"effort":          "",
+		"is_error":        res.IsError || runErr != nil,
+		"num_turns":       res.NumTurns,
+		"input_tokens":    res.Usage.Input,
+		"output_tokens":   res.Usage.Output,
+		"total_tokens":    res.Usage.Input + res.Usage.Output + res.Usage.CacheRead + res.Usage.CacheCreation,
+		"context_tokens":  res.Context,
+		"cost_usd":        res.CostUSD,
+		"usage_recovered": usageRecovered,
+		"duration_ms":     dur.Milliseconds(),
 	}
 	if runErr != nil {
 		fields["error"] = runErr.Error()
@@ -758,13 +873,19 @@ func (c *Kimi) record(label string, res Result) {
 	if c.Tokens == nil {
 		return
 	}
+	model := res.Model
+	if model == "" {
+		model = c.Model
+	}
 	c.Tokens.Append(label, tokens.Record{
-		Input:   res.Usage.Input,
-		Output:  res.Usage.Output,
-		CostUSD: nil,
-		Turns:   res.NumTurns,
-		IsError: res.IsError,
-		Model:   c.Model,
+		Input:         res.Usage.Input,
+		Output:        res.Usage.Output,
+		CacheRead:     res.Usage.CacheRead,
+		CacheCreation: res.Usage.CacheCreation,
+		CostUSD:       nil,
+		Turns:         res.NumTurns,
+		IsError:       res.IsError,
+		Model:         model,
 	})
 }
 

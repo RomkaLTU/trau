@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -80,6 +79,10 @@ type StatusRow struct {
 	PRURL  string
 	Tokens int
 	Cost   float64
+	// CostMetered is false when some phase logged tokens but no per-call dollar
+	// cost (a kimi/codex subscription call), so Cost is a lower bound shown as
+	// "n/a"/"+" rather than a measured "$0".
+	CostMetered bool
 }
 
 type appView int
@@ -779,7 +782,7 @@ func (m appModel) buildStatusTable() table.Model {
 			truncate(firstNonEmpty(r.Title, "—"), titleW),
 			phase,
 			fmtTokens(r.Tokens),
-			"$" + strconv.FormatFloat(r.Cost, 'f', 2, 64),
+			fmtCostCell(r.Cost, r.CostMetered),
 		})
 	}
 	h := len(trows) + 1

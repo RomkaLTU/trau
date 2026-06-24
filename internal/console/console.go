@@ -53,13 +53,17 @@ type Renderer interface {
 // the TUI's per-ticket summary row and finalizes the live stepper. Fields are
 // read from the durable state file + token sink, so it survives a resume.
 type TicketResult struct {
-	ID      string
-	Title   string
-	Phase   string
-	PRURL   string
-	Tokens  int
-	Cost    float64
-	Elapsed time.Duration
+	ID     string
+	Title  string
+	Phase  string
+	PRURL  string
+	Tokens int
+	Cost   float64
+	// CostMetered is false when some phase logged tokens but no per-call dollar
+	// cost (a kimi/codex subscription call), so Cost is a lower bound, not a
+	// measured total.
+	CostMetered bool
+	Elapsed     time.Duration
 }
 
 // SessionSummary is the loop's closing totals, handed to LoopDone once the run
@@ -70,6 +74,9 @@ type SessionSummary struct {
 	Tickets     int
 	TotalTokens int
 	TotalCost   float64
+	// CostMetered is false when any processed phase logged tokens but no per-call
+	// dollar cost (kimi/codex subscription phases), so TotalCost is a lower bound.
+	CostMetered bool
 	Elapsed     time.Duration
 	Err         error
 	Paused      bool // loop stopped on a blameless provider rate/usage limit
@@ -219,8 +226,22 @@ func (c *Console) LoopDone(s SessionSummary) {
 	if s.Tickets == 1 {
 		noun = "ticket"
 	}
-	c.Logf("✔ done · %d %s · ~$%s est · %s",
-		s.Tickets, noun, strconv.FormatFloat(s.TotalCost, 'f', -1, 64), fmtDur(int(s.Elapsed.Milliseconds())))
+	c.Logf("✔ done · %d %s · %s · %s",
+		s.Tickets, noun, costSummary(s.TotalCost, s.CostMetered), fmtDur(int(s.Elapsed.Milliseconds())))
+}
+
+// costSummary renders the closing total honestly: "~$X est" (a notional list
+// estimate) when every call was metered, "cost n/a" when no dollar cost was
+// measured at all (a kimi/codex-only run), and "~$X+ est" when the figure is a
+// lower bound because some calls were unmetered.
+func costSummary(cost float64, metered bool) string {
+	if metered {
+		return "~$" + strconv.FormatFloat(cost, 'f', -1, 64) + " est"
+	}
+	if cost == 0 {
+		return "cost n/a"
+	}
+	return "~$" + strconv.FormatFloat(cost, 'f', -1, 64) + "+ est"
 }
 
 // Spin shows a live progress indicator for a phase on stderr while a (blocking)
