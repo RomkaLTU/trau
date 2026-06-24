@@ -156,11 +156,12 @@ func (l *Linear) listEligibleAPI(ctx context.Context, scope Scope) ([]ListedTick
 }
 
 func (l *Linear) listEligiblePrompt(scope Scope) string {
+	pfx := scope.prefix()
 	return fmt.Sprintf("Use the Linear MCP. List eligible issues in %s that carry the label '%s', "+
 		"are unstarted, have all 'blocked by' issues completed, and match prefix %s-. "+
-		"Respond with exactly one final line of JSON: ELIGIBLE=[{\"id\":\"COD-123\",\"title\":\"...\"}, ...] "+
+		"Respond with exactly one final line of JSON: ELIGIBLE=[{\"id\":\"%s-123\",\"title\":\"...\"}, ...] "+
 		"or ELIGIBLE=[]. No other output.",
-		scope.clause(), l.ReadyLabel, scope.prefix())
+		scope.clause(), l.ReadyLabel, pfx, pfx)
 }
 
 func parseEligible(text string) ([]ListedTicket, bool) {
@@ -259,8 +260,8 @@ func (l *Linear) subIssuesAPI(ctx context.Context, id string) ([]SubIssue, error
 
 func (l *Linear) subIssuesPrompt(id string) string {
 	return fmt.Sprintf("Use the Linear MCP. List the direct sub-issues (children) of issue %s. "+
-		"Respond with exactly one final line of JSON: SUB_ISSUES=[{\"id\":\"COD-494\",\"title\":\"...\"}, ...] "+
-		"using each child's identifier and title. If there are none, respond SUB_ISSUES=[]. No other output.", id)
+		"Respond with exactly one final line of JSON: SUB_ISSUES=[{\"id\":\"%s-494\",\"title\":\"...\"}, ...] "+
+		"using each child's identifier and title. If there are none, respond SUB_ISSUES=[]. No other output.", id, prefixOf(id))
 }
 
 func parseSubIssues(text string) ([]SubIssue, bool) {
@@ -425,7 +426,7 @@ func parseTitleJSON(text string) (title string, matched bool) {
 // always uses the MCP rather than the direct API.
 func (l *Linear) FileBug(ctx context.Context, id, verdictPath string) (string, error) {
 	res, err := l.Runner.Run(ctx, l.fileBugPrompt(id, verdictPath), "file_bug")
-	if bug, ok := parseBug(res.Final); ok {
+	if bug, ok := parseBug(res.Final, prefixOf(id)); ok {
 		return bug, nil
 	}
 	return "", err
@@ -437,7 +438,7 @@ func (l *Linear) fileBugPrompt(id, verdictPath string) string {
 		target += ", project '" + l.Project + "'"
 	}
 	return fmt.Sprintf("Use the Linear MCP. Read the QA verdict at %s. Create a NEW issue in %s, labelled 'HITL' and 'Bug', describing the failure that blocked %s's QA after automated repair and bugfix passes — a concise title plus a description with the verdict summary and the specific failures, noting it was surfaced by the Trau loop while working on %s and needs human attention. Output exactly one final line: BUG=<IDENTIFIER> (e.g. BUG=%s-500).",
-		verdictPath, target, id, id, DefaultPrefix)
+		verdictPath, target, id, id, prefixOf(id))
 }
 
 // SetStatus moves a ticket to a workflow status (e.g. "In Review", "Done"). It
@@ -591,11 +592,14 @@ func (l *Linear) quarantinePrompt(id, reason string) string {
 		id, l.ReadyLabel, l.QuarantineLabel, reason, id)
 }
 
-func parseBug(text string) (id string, matched bool) {
-	if id, matched := parseBugJSON(text); matched {
+func parseBug(text, prefix string) (id string, matched bool) {
+	if prefix == "" {
+		prefix = DefaultPrefix
+	}
+	if id, matched := parseBugJSON(text, prefix); matched {
 		return id, true
 	}
-	re := regexp.MustCompile(`BUG=(` + regexp.QuoteMeta(DefaultPrefix) + `-[0-9]+)`)
+	re := regexp.MustCompile(`BUG=(` + regexp.QuoteMeta(prefix) + `-[0-9]+)`)
 	ms := re.FindAllStringSubmatch(text, -1)
 	if len(ms) == 0 {
 		return "", false
@@ -603,7 +607,7 @@ func parseBug(text string) (id string, matched bool) {
 	return ms[len(ms)-1][1], true
 }
 
-func parseBugJSON(text string) (id string, matched bool) {
+func parseBugJSON(text, prefix string) (id string, matched bool) {
 	var result map[string]*string
 	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &result); err != nil {
 		return "", false
@@ -616,7 +620,7 @@ func parseBugJSON(text string) (id string, matched bool) {
 		if v == nil || *v == "" {
 			return "", true
 		}
-		re := regexp.MustCompile(`^` + regexp.QuoteMeta(DefaultPrefix) + `-[0-9]+$`)
+		re := regexp.MustCompile(`^` + regexp.QuoteMeta(prefix) + `-[0-9]+$`)
 		if re.MatchString(*v) {
 			return *v, true
 		}

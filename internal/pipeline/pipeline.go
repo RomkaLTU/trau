@@ -143,6 +143,7 @@ type Pipeline struct {
 	RunsDir        string
 	Base           string
 	Remote         string
+	Prefix         string
 	MaxRepairs     int
 	MaxBugfixes    int
 	BrowserVerify  string
@@ -236,22 +237,30 @@ func (p *Pipeline) handleGiveUp(ctx context.Context, id string, err error) error
 	return err
 }
 
-var reInferID = regexp.MustCompile(`COD-[0-9]+`)
+// prefix returns the configured issue-identifier prefix, falling back to COD when
+// the pipeline was constructed without one (e.g. in tests).
+func (p *Pipeline) prefix() string {
+	if p.Prefix != "" {
+		return p.Prefix
+	}
+	return "COD"
+}
 
 // InferredResume is the bridge for work started BEFORE state tracking (or whose
-// state file was lost): if HEAD is parked on a feature/COD-… branch with no tracked
-// checkpoint, it infers how far the work got from the artifacts on disk (branch →
-// built; handoff file → handed_off; passing verdict → verified; open PR → pr_open),
-// seeds the state file, and returns (id, phase) for the resume path. Conservative
-// on purpose — only the currently checked-out branch, never a scan. It returns
-// ("", "") when HEAD is not a parked feature branch or the ticket is already
+// state file was lost): if HEAD is parked on a feature/<PREFIX>-… branch with no
+// tracked checkpoint, it infers how far the work got from the artifacts on disk
+// (branch → built; handoff file → handed_off; passing verdict → verified; open PR →
+// pr_open), seeds the state file, and returns (id, phase) for the resume path.
+// Conservative on purpose — only the currently checked-out branch, never a scan. It
+// returns ("", "") when HEAD is not a parked feature branch or the ticket is already
 // tracked.
 func (p *Pipeline) InferredResume(ctx context.Context) (id, phase string) {
+	pfx := p.prefix()
 	head, err := p.Git.CurrentBranch(ctx)
-	if err != nil || !strings.HasPrefix(head, "feature/COD-") {
+	if err != nil || !strings.HasPrefix(head, "feature/"+pfx+"-") {
 		return "", ""
 	}
-	id = reInferID.FindString(head)
+	id = regexp.MustCompile(regexp.QuoteMeta(pfx) + `-[0-9]+`).FindString(head)
 	if id == "" {
 		return "", ""
 	}
@@ -817,7 +826,7 @@ func prNumber(url string) string { return url[strings.LastIndex(url, "/")+1:] }
 
 var (
 	reBranchType = regexp.MustCompile(`^[a-z]+/`)
-	reBranchID   = regexp.MustCompile(`^COD-[0-9]+-`)
+	reBranchID   = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-[0-9]+-`)
 )
 
 func prDesc(branch string) string {

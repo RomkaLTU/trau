@@ -35,6 +35,7 @@ const Preamble = "[Unattended run] You are running headless inside an automated 
 // trau.ini knobs documented in trau.ini.example.
 type Config struct {
 	LinearTeam      string
+	IssuePrefix     string
 	LinearAPIKey    string
 	ReadyLabel      string
 	QuarantineLabel string
@@ -93,6 +94,7 @@ type Config struct {
 func Defaults() Config {
 	return Config{
 		LinearTeam:            "",
+		IssuePrefix:           "",
 		ReadyLabel:            "ready-for-agent",
 		QuarantineLabel:       "needs-human",
 		Project:               "",
@@ -315,6 +317,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	}
 
 	str("LINEAR_TEAM", &c.LinearTeam)
+	str("ISSUE_PREFIX", &c.IssuePrefix)
 	str("LINEAR_API_KEY", &c.LinearAPIKey)
 	str("READY_LABEL", &c.ReadyLabel)
 	str("QUARANTINE_LABEL", &c.QuarantineLabel)
@@ -409,7 +412,43 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	}
 	str("RUNS_DIR", &c.RunsDir)
 
+	c.IssuePrefix = ResolvePrefix(c.IssuePrefix, c.LinearTeam)
+
 	return c, sources, nil
+}
+
+// ResolvePrefix settles the issue-identifier prefix used for ticket-ID parsing,
+// branch inference, and sentinel matching. An explicit ISSUE_PREFIX wins; failing
+// that the tracker team/project key is the natural source (a Linear team keyed COD
+// owns COD-123 issues); failing both it falls back to COD for back-compat. The
+// result is always upper-cased and trimmed so downstream regexes are stable.
+func ResolvePrefix(prefix, team string) string {
+	if p := strings.ToUpper(strings.TrimSpace(prefix)); p != "" {
+		return p
+	}
+	if t := strings.ToUpper(strings.TrimSpace(team)); t != "" {
+		return t
+	}
+	return "COD"
+}
+
+// ValidatePrefix checks that a ticket id supplied on the command line matches the
+// resolved issue prefix. The pre-config arg scan accepts any <PREFIX>-<n> shape; this
+// is the after-load gate that rejects a TMS-5 run against a COD-configured repo
+// before branch/sentinel parsing silently mismatches. An empty id is a no-op.
+func ValidatePrefix(id, prefix string) error {
+	if strings.TrimSpace(id) == "" {
+		return nil
+	}
+	want := strings.ToUpper(strings.TrimSpace(prefix))
+	got := ""
+	if i := strings.LastIndex(id, "-"); i > 0 {
+		got = strings.ToUpper(id[:i])
+	}
+	if got != want {
+		return fmt.Errorf("ticket %q does not match the configured issue prefix %s- (got %s-)", id, want, got)
+	}
+	return nil
 }
 
 var phases = []string{"build", "handoff", "verify", "repair", "bugfix", "commit", "pick"}
@@ -678,6 +717,7 @@ type KeyMeta struct {
 func KnownKeys() []KeyMeta {
 	return []KeyMeta{
 		{Key: "LINEAR_TEAM", Description: "Linear team / Jira project / GitHub repo"},
+		{Key: "ISSUE_PREFIX", Description: "Issue-ID prefix for ticket parsing (default: the team key, e.g. COD, TMS, ENG)"},
 		{Key: "LINEAR_API_KEY", Advanced: true, Description: "Linear personal API key"},
 		{Key: "TRACKER_PROVIDER", Default: "linear", Description: "Ticket backend: linear | jira | github", Options: []string{"linear", "jira", "github"}},
 		{Key: "READY_LABEL", Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
@@ -1000,6 +1040,8 @@ func keyValue(cfg Config, key string) string {
 	switch key {
 	case "LINEAR_TEAM":
 		return cfg.LinearTeam
+	case "ISSUE_PREFIX":
+		return cfg.IssuePrefix
 	case "LINEAR_API_KEY":
 		return cfg.LinearAPIKey
 	case "READY_LABEL":

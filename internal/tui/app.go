@@ -182,8 +182,10 @@ func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
 		{actBack, "Back", "to the main menu"},
 	}
 
+	info := actions.MenuInfo()
+
 	ti := textinput.New()
-	ti.Placeholder = "COD-123"
+	ti.Placeholder = exampleID(info.Prefix)
 	ti.CharLimit = 32
 	ti.Width = 30
 	ti.Prompt = "Ticket ID: "
@@ -200,7 +202,7 @@ func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
 		view:      viewMenu,
 		items:     items,
 		moreItems: moreItems,
-		info:      actions.MenuInfo(),
+		info:      info,
 		reset:     ti,
 		spin:      s,
 	}
@@ -516,6 +518,7 @@ func (m appModel) selectAction(a menuAction) (tea.Model, tea.Cmd) {
 
 	case actReset:
 		m.reset.SetValue("")
+		m.reset.Placeholder = exampleID(m.info.Prefix)
 		m.reset.Focus()
 		m.result = ""
 		m.busy = false
@@ -745,7 +748,7 @@ func (m appModel) renderReset() string {
 		body = m.result
 		hint = "enter/esc back"
 	default:
-		body = "Enter the ticket ID to reset (e.g. COD-123):\n\n" + m.reset.View()
+		body = "Enter the ticket ID to reset (e.g. " + exampleID(m.info.Prefix) + "):\n\n" + m.reset.View()
 		hint = "enter confirm · esc back"
 	}
 	return m.renderCard("Reset ticket", body, hint)

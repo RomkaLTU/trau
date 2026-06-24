@@ -55,7 +55,7 @@ func (g *GitHub) SubIssues(ctx context.Context, id string) ([]SubIssue, error) {
 func (g *GitHub) subIssuesPrompt(id string) string {
 	return fmt.Sprintf("Use the GitHub MCP. Inspect issue %s in repository %q for task-list items, sub-issue references, or linked child issues. "+
 		"Respond with exactly one final line of JSON: SUB_ISSUES=[{\"id\":\"%s-414\",\"title\":\"...\"}, ...] "+
-		"using each child's mapped identifier and title. If there are none, respond SUB_ISSUES=[]. No other output.", id, g.Repo, DefaultPrefix)
+		"using each child's mapped identifier and title. If there are none, respond SUB_ISSUES=[]. No other output.", id, g.Repo, prefixOf(id))
 }
 
 // Title returns the title of issue id via the GitHub MCP.
@@ -109,7 +109,7 @@ func (g *GitHub) quarantinePrompt(id, reason string) string {
 // the slice could not self-heal, even after comprehensive bugfix passes.
 func (g *GitHub) FileBug(ctx context.Context, id, verdictPath string) (string, error) {
 	res, err := g.Runner.Run(ctx, g.fileBugPrompt(id, verdictPath), "file_bug")
-	if bug, ok := parseBug(res.Final); ok {
+	if bug, ok := parseBug(res.Final, prefixOf(id)); ok {
 		return bug, nil
 	}
 	return "", err
@@ -117,7 +117,7 @@ func (g *GitHub) FileBug(ctx context.Context, id, verdictPath string) (string, e
 
 func (g *GitHub) fileBugPrompt(id, verdictPath string) string {
 	return fmt.Sprintf("Use the GitHub MCP. Read the QA verdict at %s. Create a NEW issue in repository %q, labelled 'HITL' and 'bug', describing the failure that blocked %s's QA after automated repair and bugfix passes — a concise title plus a description with the verdict summary and the specific failures, noting it was surfaced by the Trau loop while working on %s and needs human attention. Output exactly one final line: BUG=<IDENTIFIER> (e.g. BUG=%s-500).",
-		verdictPath, g.Repo, id, id, DefaultPrefix)
+		verdictPath, g.Repo, id, id, prefixOf(id))
 }
 
 // EnsureLabels creates the ready and quarantine labels in GitHub if they do not exist.
