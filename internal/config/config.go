@@ -773,7 +773,7 @@ func ProviderTuningMetas() []ProviderTuningMeta {
 	return []ProviderTuningMeta{
 		{
 			Name:    "claude",
-			Models:  []string{"opus", "sonnet", "haiku", "fable", "opusplan"},
+			Models:  []string{"opus", "sonnet", "haiku"},
 			Efforts: []string{"low", "medium", "high", "xhigh", "max"},
 		},
 		{
