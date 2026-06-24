@@ -92,16 +92,6 @@ const (
 	editBool                   // on/off toggle stored as 1/0
 )
 
-// settingsCategory restricts which keys the flat editor lists. The provider
-// settings panel owns model/effort tuning, so the General view hides every
-// provider-prefixed key; All shows everything as a raw escape hatch.
-type settingsCategory int
-
-const (
-	categoryAll settingsCategory = iota
-	categoryGeneral
-)
-
 type settingsModel struct {
 	styles Styles
 
@@ -112,8 +102,7 @@ type settingsModel struct {
 	filtered []ConfigItem
 	cursor   int
 
-	category settingsCategory
-	title    string
+	title string
 
 	showAdvanced bool
 	step         settingsStep
@@ -152,24 +141,6 @@ func newSettingsModel(actions SettingsActions, styles Styles, width, height int)
 	}
 	m.rebuildFiltered()
 	return m
-}
-
-// newSettingsModelCategory builds a flat editor scoped to a category with a
-// custom title, used by the settings hub for its General and All views.
-func newSettingsModelCategory(actions SettingsActions, styles Styles, width, height int, category settingsCategory, title string) settingsModel {
-	m := newSettingsModel(actions, styles, width, height)
-	m.category = category
-	m.title = title
-	m.rebuildFiltered()
-	return m
-}
-
-// isProviderKey reports whether key is a provider execution-tuning key (owned by
-// the provider settings panel) rather than general config.
-func isProviderKey(key string) bool {
-	return strings.HasPrefix(key, "CLAUDE_") ||
-		strings.HasPrefix(key, "CODEX_") ||
-		strings.HasPrefix(key, "KIMI_")
 }
 
 func (m settingsModel) Init() tea.Cmd { return nil }
@@ -391,9 +362,6 @@ func (m *settingsModel) rebuildFiltered() {
 	m.filtered = m.filtered[:0]
 	for _, it := range m.items {
 		if it.Advanced && !m.showAdvanced {
-			continue
-		}
-		if m.category == categoryGeneral && isProviderKey(it.Key) {
 			continue
 		}
 		m.filtered = append(m.filtered, it)

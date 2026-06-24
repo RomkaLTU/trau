@@ -7,9 +7,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// settingsHubModel is the Settings landing screen. It routes to three views:
-// General (non-provider config), Providers (the execution-tuning panel), and
-// All settings (the raw flat editor as an escape hatch).
+// settingsHubModel is the Settings landing screen. It routes to two views:
+// Providers (the curated execution-tuning panel) and All settings (the raw flat
+// editor of every key, as an escape hatch).
 type settingsHubModel struct {
 	styles  Styles
 	actions SettingsActions
@@ -20,7 +20,6 @@ type settingsHubModel struct {
 	cursor int
 	items  []hubItem
 
-	general   settingsModel
 	all       settingsModel
 	providers providerSettingsModel
 }
@@ -29,7 +28,6 @@ type hubStep int
 
 const (
 	hubMenu hubStep = iota
-	hubGeneral
 	hubProviders
 	hubAll
 )
@@ -48,7 +46,6 @@ func newSettingsHubModel(actions SettingsActions, styles Styles, width, height i
 		height:  height,
 		step:    hubMenu,
 		items: []hubItem{
-			{"General", "trackers · branch · CI · merge", hubGeneral},
 			{"Providers", "model · reasoning effort · per-phase", hubProviders},
 			{"All settings", "every key, raw", hubAll},
 		},
@@ -65,7 +62,6 @@ func (m settingsHubModel) Update(msg tea.Msg) (settingsHubModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
-		m.general, _ = m.general.Update(msg)
 		m.all, _ = m.all.Update(msg)
 		m.providers, _ = m.providers.Update(msg)
 		return m, nil
@@ -75,8 +71,6 @@ func (m settingsHubModel) Update(msg tea.Msg) (settingsHubModel, tea.Cmd) {
 
 	var cmd tea.Cmd
 	switch m.step {
-	case hubGeneral:
-		m.general, cmd = m.general.Update(msg)
 	case hubAll:
 		m.all, cmd = m.all.Update(msg)
 	case hubProviders:
@@ -107,15 +101,6 @@ func (m settingsHubModel) handleKey(msg tea.KeyMsg) (settingsHubModel, tea.Cmd) 
 		}
 		return m, nil
 
-	case hubGeneral:
-		if m.general.InList() && (msg.Type == tea.KeyEsc || msg.String() == "q") {
-			m.step = hubMenu
-			return m, nil
-		}
-		var cmd tea.Cmd
-		m.general, cmd = m.general.Update(msg)
-		return m, cmd
-
 	case hubAll:
 		if m.all.InList() && (msg.Type == tea.KeyEsc || msg.String() == "q") {
 			m.step = hubMenu
@@ -141,10 +126,9 @@ func (m settingsHubModel) handleKey(msg tea.KeyMsg) (settingsHubModel, tea.Cmd) 
 // then switches to it.
 func (m settingsHubModel) openSection(step hubStep) (settingsHubModel, tea.Cmd) {
 	switch step {
-	case hubGeneral:
-		m.general = newSettingsModelCategory(m.actions, m.styles, m.width, m.height, categoryGeneral, "General settings")
 	case hubAll:
-		m.all = newSettingsModelCategory(m.actions, m.styles, m.width, m.height, categoryAll, "All settings")
+		m.all = newSettingsModel(m.actions, m.styles, m.width, m.height)
+		m.all.title = "All settings"
 	case hubProviders:
 		m.providers = newProviderSettingsModel(m.actions, m.styles, m.width, m.height)
 	}
@@ -157,8 +141,6 @@ func (m settingsHubModel) View() string {
 		return "Loading…"
 	}
 	switch m.step {
-	case hubGeneral:
-		return m.general.View()
 	case hubAll:
 		return m.all.View()
 	case hubProviders:
