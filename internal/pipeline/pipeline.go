@@ -1245,6 +1245,13 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 	_ = os.Remove(verdictPath)
 	prompt := verifyTail(id, handoff, verdictPath, note, checksFragment, rubricNote, lessonsNote)
 	_, agentErr := p.agentStep(ctx, id, label, prompt)
+	// A provider pause (rate/usage limit) or budget give-up must propagate, not be
+	// recorded as a verify failure — otherwise a transient 429 burns repair/bugfix
+	// attempts and cascades into a bogus quarantine + HITL bug. The panel path
+	// (runPanel) already does this; this is the single-verifier mirror.
+	if agentErr != nil && isFatalAgentErr(agentErr) {
+		return verdict{}, agentErr
+	}
 	v, ok := readVerdict(verdictPath)
 	if agentErr != nil || !ok {
 		reason := "verify agent timed out or exited without writing a verdict"
