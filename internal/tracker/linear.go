@@ -47,10 +47,14 @@ func shouldFallback(err error) bool {
 // the agent produced no sentinel at all, so a genuine failure is visible rather
 // than silently reported as "nothing eligible".
 func (l *Linear) Pick(ctx context.Context, scope Scope) (string, error) {
-	if id, err := l.pickAPI(ctx, scope); err == nil {
-		return id, nil
-	} else if !shouldFallback(err) {
-		return "", err
+	// Sub-issue selection (epic scope) is not mapped to the GraphQL API, so it always
+	// goes through the MCP. Only the team-queue pick uses the fast API path.
+	if scope.Parent == "" {
+		if id, err := l.pickAPI(ctx, scope); err == nil {
+			return id, nil
+		} else if !shouldFallback(err) {
+			return "", err
+		}
 	}
 
 	res, err := l.Runner.Run(ctx, l.pickPrompt(scope), "pick")
@@ -64,10 +68,6 @@ func (l *Linear) Pick(ctx context.Context, scope Scope) (string, error) {
 }
 
 func (l *Linear) pickAPI(ctx context.Context, scope Scope) (string, error) {
-	if scope.Parent != "" {
-		// Sub-issue picking is not yet mapped to the GraphQL API; fall through to MCP.
-		return "", linearapi.ErrNotEnabled
-	}
 	if strings.TrimSpace(l.Team) == "" {
 		return "", linearapi.ErrNotEnabled
 	}
@@ -82,6 +82,10 @@ func (l *Linear) pickAPI(ctx context.Context, scope Scope) (string, error) {
 	prefix := scope.prefix()
 	for _, c := range candidates {
 		if !c.State.IsUnstarted() {
+			continue
+		}
+		if len(c.Children) > 0 {
+			// Epics are containers, not buildable leaves — never pick one directly.
 			continue
 		}
 		if !allBlockersCompleted(c.BlockedBy) {
@@ -317,7 +321,8 @@ func (l *Linear) pickPrompt(scope Scope) string {
 	return fmt.Sprintf("Use the Linear MCP. Among %s, find issues that ALL of: "+
 		"(a) carry the label '%s'; "+
 		"(b) are NOT started — workflow state type is 'backlog' or 'unstarted' (exclude started, completed, canceled); "+
-		"(c) have every 'blocked by' issue in a completed/Done state. "+
+		"(c) have every 'blocked by' issue in a completed/Done state; "+
+		"(d) are leaf issues — exclude any epic/parent that has its own sub-issues. "+
 		"Pick the best one to start next by considering, in order: priority (Urgent > High > Medium > Low), due date (sooner is better), then the lowest issue number as a tie-breaker. "+
 		"Respond with exactly one final line: 'PICK=<IDENTIFIER>' (e.g. PICK=%s-414) or 'PICK=NONE'. No other output.",
 		scope.clause(), l.ReadyLabel, scope.prefix())

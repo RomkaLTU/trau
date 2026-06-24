@@ -20,6 +20,7 @@ type Options struct {
 	Max      int
 	DryRun   bool
 	ResetID  string
+	Force    bool
 	NoResume bool
 	Status   bool
 	Provider string
@@ -73,6 +74,8 @@ func ParseArgs(args []string) (Options, error) {
 				return o, err
 			}
 			o.ResetID = v
+		case a == "--force":
+			o.Force = true
 		case a == "--no-resume":
 			o.NoResume = true
 		case a == "--status":

@@ -3,10 +3,12 @@ package linearapi
 const (
 	endpoint = "https://api.linear.app/graphql"
 
-	// issueQuery loads everything the tracker needs for a single issue.
+	// issueQuery loads everything the tracker needs for a single issue. Linear's
+	// IssueFilter has no "identifier" field, so the human id (COD-493) is split into
+	// its team key (COD) and number (493) and matched on those.
 	issueQuery = `
-query Issue($identifier: String!) {
-  issues(first: 10, filter: { identifier: { eq: $identifier } }) {
+query Issue($number: Float!, $teamKey: String!) {
+  issues(first: 1, filter: { number: { eq: $number }, team: { key: { eq: $teamKey } } }) {
     nodes {
       id
       identifier
@@ -37,11 +39,15 @@ query Issue($identifier: String!) {
           title
         }
       }
-      blockedByIssues {
+      inverseRelations(first: 50) {
         nodes {
-          id
-          state {
-            type
+          type
+          issue {
+            id
+            identifier
+            state {
+              type
+            }
           }
         }
       }
@@ -65,11 +71,20 @@ query PickIssues($teamId: ID!, $labelName: String!) {
         name
         type
       }
-      blockedByIssues {
+      children {
         nodes {
           id
-          state {
-            type
+        }
+      }
+      inverseRelations(first: 50) {
+        nodes {
+          type
+          issue {
+            id
+            identifier
+            state {
+              type
+            }
           }
         }
       }

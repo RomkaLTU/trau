@@ -83,6 +83,17 @@ func (s *Store) Root() string { return s.root }
 
 func (s *Store) file(id string) string { return filepath.Join(s.root, id, "state") }
 
+// ensureRunsGitignore drops a "*" .gitignore in the runs root so trau's own state
+// and logs are never swept into the target repo by a `git add -A`. Best-effort and
+// idempotent — a missing or unwritable runs dir simply leaves things as they were.
+func ensureRunsGitignore(root string) {
+	gi := filepath.Join(root, ".gitignore")
+	if _, err := os.Stat(gi); err == nil {
+		return
+	}
+	_ = os.WriteFile(gi, []byte("# trau run artifacts — do not commit\n*\n"), 0o644)
+}
+
 // Get returns the value of key in ticket id's state file, or "" when the file or
 // key is absent. The value is everything after the first '=' (so values may
 // contain '='); on duplicate keys the last wins.
@@ -110,6 +121,7 @@ func (s *Store) Set(id, key, value string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	ensureRunsGitignore(s.root)
 	var kept []string
 	if data, err := os.ReadFile(s.file(id)); err == nil {
 		for _, line := range strings.Split(string(data), "\n") {

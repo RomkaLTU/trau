@@ -103,14 +103,32 @@ func (c *Client) Issue(ctx context.Context, identifier string) (*Issue, error) {
 	if c.apiKey == "" {
 		return nil, ErrNotEnabled
 	}
+	teamKey, number, ok := splitIdentifier(identifier)
+	if !ok {
+		return nil, ErrNotFound
+	}
 	var dst issueQueryResponse
-	if err := c.do(ctx, issueQuery, map[string]any{"identifier": identifier}, &dst); err != nil {
+	if err := c.do(ctx, issueQuery, map[string]any{"number": number, "teamKey": teamKey}, &dst); err != nil {
 		return nil, err
 	}
 	if len(dst.Data.Issues.Nodes) == 0 {
 		return nil, ErrNotFound
 	}
 	return nodeToIssue(&dst.Data.Issues.Nodes[0]), nil
+}
+
+// splitIdentifier breaks a human issue id ("COD-493") into its team key ("COD") and
+// number (493). It reports ok=false for anything that is not <KEY>-<N>.
+func splitIdentifier(identifier string) (teamKey string, number float64, ok bool) {
+	idx := strings.LastIndex(identifier, "-")
+	if idx <= 0 {
+		return "", 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(identifier[idx+1:]))
+	if err != nil {
+		return "", 0, false
+	}
+	return identifier[:idx], float64(n), true
 }
 
 // PickCandidate is an issue returned by Pick.
@@ -521,6 +539,25 @@ type issueRefNode struct {
 	State      stateNode `json:"state"`
 }
 
+// relationNode is one IssueRelation. For "blocked by", we read inverseRelations
+// whose type is "blocks" — there the `issue` is the blocker.
+type relationNode struct {
+	Type  string       `json:"type"`
+	Issue issueRefNode `json:"issue"`
+}
+
+// blockers extracts the "blocked by" issues from a set of inverse relations.
+func blockers(nodes []relationNode) []IssueRef {
+	var out []IssueRef
+	for _, rel := range nodes {
+		if rel.Type != "blocks" {
+			continue
+		}
+		out = append(out, IssueRef{ID: rel.Issue.ID, Identifier: rel.Issue.Identifier, State: State(rel.Issue.State)})
+	}
+	return out
+}
+
 type issueNode struct {
 	ID          string    `json:"id"`
 	Identifier  string    `json:"identifier"`
@@ -536,21 +573,24 @@ type issueNode struct {
 	Children struct {
 		Nodes []issueRefNode `json:"nodes"`
 	} `json:"children"`
-	BlockedByIssues struct {
-		Nodes []issueRefNode `json:"nodes"`
-	} `json:"blockedByIssues"`
+	InverseRelations struct {
+		Nodes []relationNode `json:"nodes"`
+	} `json:"inverseRelations"`
 }
 
 type pickNode struct {
-	ID              string    `json:"id"`
-	Identifier      string    `json:"identifier"`
-	Title           string    `json:"title"`
-	Priority        int       `json:"priority"`
-	DueDate         string    `json:"dueDate"`
-	State           stateNode `json:"state"`
-	BlockedByIssues struct {
+	ID         string    `json:"id"`
+	Identifier string    `json:"identifier"`
+	Title      string    `json:"title"`
+	Priority   int       `json:"priority"`
+	DueDate    string    `json:"dueDate"`
+	State      stateNode `json:"state"`
+	Children   struct {
 		Nodes []issueRefNode `json:"nodes"`
-	} `json:"blockedByIssues"`
+	} `json:"children"`
+	InverseRelations struct {
+		Nodes []relationNode `json:"nodes"`
+	} `json:"inverseRelations"`
 }
 
 func nodeToIssue(n *issueNode) *Issue {
@@ -570,9 +610,7 @@ func nodeToIssue(n *issueNode) *Issue {
 	for _, s := range n.Children.Nodes {
 		issue.Children = append(issue.Children, IssueRef{ID: s.ID, Identifier: s.Identifier, Title: s.Title, State: State(s.State)})
 	}
-	for _, b := range n.BlockedByIssues.Nodes {
-		issue.BlockedBy = append(issue.BlockedBy, IssueRef{ID: b.ID, Identifier: b.Identifier, State: State(b.State)})
-	}
+	issue.BlockedBy = blockers(n.InverseRelations.Nodes)
 	return issue
 }
 
@@ -587,8 +625,9 @@ func nodeToPickCandidate(n *pickNode) PickCandidate {
 			State:      State{ID: n.State.ID, Name: n.State.Name, Type: n.State.Type},
 		},
 	}
-	for _, b := range n.BlockedByIssues.Nodes {
-		c.BlockedBy = append(c.BlockedBy, IssueRef{ID: b.ID, Identifier: b.Identifier, State: State{ID: b.State.ID, Name: b.State.Name, Type: b.State.Type}})
+	for _, s := range n.Children.Nodes {
+		c.Issue.Children = append(c.Issue.Children, IssueRef{ID: s.ID, Identifier: s.Identifier, Title: s.Title})
 	}
+	c.BlockedBy = blockers(n.InverseRelations.Nodes)
 	return c
 }
