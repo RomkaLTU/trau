@@ -140,6 +140,12 @@ TRAU_TUI=1
 # --- verify ---
 BROWSER_VERIFY=auto          # auto (browser only for UI slices) | always | never
 APP_URL=http://localhost     # base URL of your locally-running app (used by browser verify)
+# Run the pluggable verify-check library each verify phase. Checks live in the
+# TARGET repo under .trau/checks/*.yaml (name, severity, command|prompt, tools);
+# severity gates the merge (error blocks, warn only surfaces). With no custom
+# checks, a built-in default set runs (tests, typecheck, lint, anti-placeholder,
+# anti-duplication). Set 0 to disable entirely. See docs/verify-checks.md.
+VERIFY_CHECKS=1
 
 # =============================================================================
 # USER / MACHINE KNOBS (put these in ~/.trau.ini)
