@@ -24,6 +24,11 @@ const (
 	statusBad                    // quarantined / incomplete
 )
 
+// phaseReset is a synthetic phase set on a summary row after the user resets that
+// ticket from the recap, so the row reflects the manual action (it is never a real
+// checkpoint).
+const phaseReset = "·reset·"
+
 // statusLabel maps a final state checkpoint to a human label + kind.
 func statusLabel(phase string) (string, statusKind) {
 	switch phase {
@@ -33,6 +38,8 @@ func statusLabel(phase string) (string, statusKind) {
 		return "PR open", statusWarn
 	case state.Quarantined:
 		return "quarantined", statusBad
+	case phaseReset:
+		return "reset", statusWarn
 	default:
 		return "incomplete", statusBad
 	}
@@ -114,12 +121,18 @@ func (m model) renderSummary() string {
 
 	var head string
 	switch {
+	case m.summary.Fault:
+		id := firstNonEmpty(m.summary.FaultID, "the ticket")
+		phase := firstNonEmpty(m.summary.FaultPhase, "a phase")
+		head = m.styles.Subtle.Render(m.totalsLine()) + "\n" +
+			m.styles.Warning.Render(fmt.Sprintf("⚠ %s couldn't finish during %s — work saved on its branch; rerun trau to resume", id, phase))
 	case m.summary.Paused:
 		reason := "provider rate/usage limit reached"
 		if m.summary.Err != nil {
 			reason = m.summary.Err.Error()
 		}
-		head = m.styles.Warning.Render("⏸ " + reason + " — work saved; rerun trau to resume")
+		head = m.styles.Subtle.Render(m.totalsLine()) + "\n" +
+			m.styles.Warning.Render("⏸ "+reason+" — work saved; rerun trau to resume")
 	case m.summary.Err != nil:
 		head = m.styles.Error.Render("aborted: " + m.summary.Err.Error())
 	default:
@@ -130,22 +143,73 @@ func (m model) renderSummary() string {
 	if len(m.results) > 0 {
 		body += "\n\n" + m.summaryTable.View()
 	}
+	if m.recoveryNote != "" {
+		body += "\n\n" + m.styles.Subtle.Render(m.recoveryNote)
+	}
 	card := m.styles.SummaryCard.MaxWidth(m.width).Render(body)
-	hint := m.styles.Help.Render("↑↓ move · o open PR · enter/q exit")
+	hint := m.styles.Help.Render(m.summaryHint())
 
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 		lipgloss.JoinVertical(lipgloss.Center, card, hint))
 }
 
+// summaryHint builds the key legend under the recap. It surfaces recovery keys
+// (resume / checkout branch / reset) only for the selected row when they apply,
+// and switches to a confirm prompt while a destructive reset is pending.
+func (m model) summaryHint() string {
+	if m.confirmResetID != "" {
+		return "⚠ reset " + m.confirmResetID + "? x again to confirm · esc cancel"
+	}
+	parts := []string{"↑↓ move"}
+	if r, ok := m.selectedResult(); ok {
+		if r.PRURL != "" {
+			parts = append(parts, "o open PR")
+		}
+		if recoverable(r) {
+			parts = append(parts, "r resume")
+			if r.Branch != "" {
+				parts = append(parts, "b branch")
+			}
+			parts = append(parts, "x reset")
+		}
+	}
+	parts = append(parts, "enter/q exit")
+	return strings.Join(parts, " · ")
+}
+
+// recoverable reports whether a ticket result still has work to act on — i.e. it
+// is neither merged nor already reset, so resume/reset/checkout make sense.
+func recoverable(r console.TicketResult) bool {
+	return r.Phase != state.Merged && r.Phase != phaseReset
+}
+
+// selectedResult returns the ticket result under the summary table cursor.
+func (m model) selectedResult() (console.TicketResult, bool) {
+	idx := m.summaryTable.Cursor()
+	if idx < 0 || idx >= len(m.results) {
+		return console.TicketResult{}, false
+	}
+	return m.results[idx], true
+}
+
 // totalsLine summarizes the session: counts by outcome, elapsed, cost, tokens.
+// Each outcome gets its own count so an unfinished ticket reads as "incomplete"
+// rather than being lumped under "quarantined" — only a genuinely quarantined
+// ticket (PHASE=quarantined) is counted as such.
 func (m model) totalsLine() string {
-	merged, quarantined := 0, 0
+	merged, inReview, incomplete, quarantined := 0, 0, 0, 0
 	for i := range m.results {
-		switch _, k := statusLabel(m.results[i].Phase); k {
-		case statusOK:
+		switch m.results[i].Phase {
+		case state.Merged:
 			merged++
-		case statusBad:
+		case state.PROpen:
+			inReview++
+		case state.Quarantined:
 			quarantined++
+		case phaseReset:
+			// reset from the recap — not an outcome of the run itself
+		default:
+			incomplete++
 		}
 	}
 	noun := "tickets"
@@ -155,6 +219,12 @@ func (m model) totalsLine() string {
 	parts := []string{fmt.Sprintf("%d %s", m.summary.Tickets, noun)}
 	if merged > 0 {
 		parts = append(parts, m.styles.Success.Render(fmt.Sprintf("%d merged", merged)))
+	}
+	if inReview > 0 {
+		parts = append(parts, m.styles.Warning.Render(fmt.Sprintf("%d in review", inReview)))
+	}
+	if incomplete > 0 {
+		parts = append(parts, m.styles.Warning.Render(fmt.Sprintf("%d incomplete", incomplete)))
 	}
 	if quarantined > 0 {
 		parts = append(parts, m.styles.Error.Render(fmt.Sprintf("%d quarantined", quarantined)))

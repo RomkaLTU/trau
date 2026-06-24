@@ -137,6 +137,31 @@ func IsPaused(err error) bool {
 	return errors.As(err, &p)
 }
 
+// FaultError signals a ticket hit an UNEXPECTED error mid-phase — an agent crash
+// or timeout, a failed git push, an infra hiccup — that is neither a blameless
+// rate-limit pause nor a verified give-up. Unlike a give-up it does NOT file a
+// bug or quarantine the ticket: the partial work is committed to the feature
+// branch and the ticket is left at its last checkpoint, resumable on a rerun.
+// Unlike a swallowed error, the loop stops on it instead of dragging a dirty
+// working tree (or an infinitely re-faulting ticket) across the rest of the run.
+type FaultError struct {
+	ID    string
+	Phase string
+	Err   error
+}
+
+func (e *FaultError) Error() string {
+	return fmt.Sprintf("ticket %s could not finish during %s: %v", e.ID, e.Phase, e.Err)
+}
+
+func (e *FaultError) Unwrap() error { return e.Err }
+
+// IsFault reports whether err is (or wraps) a *FaultError.
+func IsFault(err error) bool {
+	var f *FaultError
+	return errors.As(err, &f)
+}
+
 // Pipeline holds the collaborators a ticket run needs. One Pipeline is
 // constructed per process and reused across tickets.
 type Pipeline struct {
@@ -222,9 +247,18 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 		return p.Reset(ctx, id)
 	}
 
+	return p.classifyPhaseErr(ctx, id, p.runPhases(ctx, id, fi))
+}
+
+// runPhases runs each phase whose rank exceeds the resume point fi, returning the
+// first phase error verbatim (build's *GiveUpError, verify/CI's already-finalized
+// *GiveUpError, a *PausedError, ErrAlreadyDone, or a raw unexpected error). The
+// classification of what that error MEANS for the ticket is centralized in
+// classifyPhaseErr, so every phase is handled the same way.
+func (p *Pipeline) runPhases(ctx context.Context, id string, fi int) error {
 	if fi < 2 {
 		if err := p.build(ctx, id, fi == 1); err != nil {
-			return p.handleGiveUp(ctx, id, err)
+			return err
 		}
 	}
 	if fi < 3 {
@@ -245,12 +279,98 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 	return p.CIAndMerge(ctx, id)
 }
 
+// classifyPhaseErr decides what a phase error means for the ticket and the loop:
+//   - nil / ErrAlreadyDone: nothing went wrong — pass through.
+//   - paused: a blameless provider rate/usage limit — pass through; the work
+//     stays on its branch and the loop driver stops picking new tickets.
+//   - give-up: a verified dead end — finalize+quarantine (idempotent, so the
+//     give-ups verify/CI already finalized are not double-handled).
+//   - anything else: an UNEXPECTED error — funnel into the blameless fault path,
+//     which preserves the WIP on the branch without quarantining or filing a bug.
+func (p *Pipeline) classifyPhaseErr(ctx context.Context, id string, err error) error {
+	switch {
+	case err == nil, errors.Is(err, ErrAlreadyDone), IsPaused(err):
+		return err
+	case isGiveUp(err):
+		return p.handleGiveUp(ctx, id, err)
+	default:
+		return p.fault(ctx, id, err)
+	}
+}
+
+func isGiveUp(err error) bool {
+	var g *GiveUpError
+	return errors.As(err, &g)
+}
+
 func (p *Pipeline) handleGiveUp(ctx context.Context, id string, err error) error {
 	var g *GiveUpError
 	if errors.As(err, &g) {
 		return p.giveUp(ctx, id, g.Reason)
 	}
 	return err
+}
+
+// fault preserves the partial work of a ticket aborted by an unexpected error and
+// returns a *FaultError tagged with the phase it died in. The ticket is left at
+// its last checkpoint so a rerun resumes it; the loop driver stops the session on
+// the *FaultError rather than dragging a dirty tree or a re-faulting ticket on.
+func (p *Pipeline) fault(ctx context.Context, id string, err error) error {
+	phase := p.State.Get(id, "PHASE")
+	p.finalizeFault(ctx, id)
+	p.logf("  ⚠ %s could not finish during %s — work saved, ticket left resumable", id, FaultPhaseLabel(phase))
+	return &FaultError{ID: id, Phase: phase, Err: err}
+}
+
+// finalizeFault mirrors finalizeFailed's preserve-and-clean — commit the WIP to
+// the feature branch, push it best-effort, then return the working tree to a clean
+// base — but it does NOT quarantine the ticket or file a bug, and it leaves PHASE
+// untouched so the ticket stays resumable.
+func (p *Pipeline) finalizeFault(ctx context.Context, id string) {
+	branch, _ := p.Git.CurrentBranch(ctx)
+	if branch != p.Base {
+		_ = p.Git.AddAll(ctx)
+		_ = p.Git.Commit(ctx, fmt.Sprintf("wip(%s): incomplete attempt — rerun trau to resume", id), true)
+		if err := p.Git.Push(ctx, p.Remote, "HEAD"); err == nil {
+			p.logf("  saved attempt to %s/%s", p.Remote, branch)
+		} else {
+			p.logf("  saved attempt to local branch %s", branch)
+		}
+	}
+	_ = p.Git.Checkout(ctx, p.Base, true)
+	_ = p.Git.Clean(ctx)
+}
+
+// AsFault extracts the *FaultError from err (traversing wraps), or nil when err
+// is not a fault. Callers use it to read the faulted ticket's ID and phase for
+// the summary.
+func AsFault(err error) *FaultError {
+	var f *FaultError
+	if errors.As(err, &f) {
+		return f
+	}
+	return nil
+}
+
+// FaultPhaseLabel maps a checkpoint phase to the human phase name a fault died in,
+// for the log line and summary ("building" → "build", "" → "startup").
+func FaultPhaseLabel(phase string) string {
+	switch phase {
+	case state.Building:
+		return "build"
+	case state.Built:
+		return "handoff"
+	case state.HandedOff:
+		return "verify"
+	case state.Verified:
+		return "commit/PR"
+	case state.PROpen:
+		return "CI/merge"
+	case "":
+		return "startup"
+	default:
+		return phase
+	}
 }
 
 // prefix returns the configured issue-identifier prefix, falling back to COD when
@@ -346,6 +466,24 @@ func (p *Pipeline) Reset(ctx context.Context, id string) error {
 		p.logf("  reset %s: cleared saved state", id)
 	}
 	return p.Tracker.Reset(ctx, id)
+}
+
+// CheckoutBranch checks out ticket id's recorded feature branch in the target repo
+// so a user inspecting an incomplete or quarantined result lands directly on its
+// preserved WIP. It resolves the branch from saved state, falling back to the
+// first matching feature/<id>-* branch, and returns the branch it switched to.
+func (p *Pipeline) CheckoutBranch(ctx context.Context, id string) (string, error) {
+	branch := p.State.Get(id, "BRANCH")
+	if branch == "" {
+		branch, _ = p.Git.FindFeatureBranch(ctx, id)
+	}
+	if branch == "" {
+		return "", fmt.Errorf("no feature branch recorded for %s", id)
+	}
+	if err := p.Git.Checkout(ctx, branch, false); err != nil {
+		return "", fmt.Errorf("checkout %s: %w", branch, err)
+	}
+	return branch, nil
 }
 
 // Build runs the implementation phase fresh (no resume note). It is the

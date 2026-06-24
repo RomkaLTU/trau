@@ -56,6 +56,7 @@ type TicketResult struct {
 	ID     string
 	Title  string
 	Phase  string
+	Branch string
 	PRURL  string
 	Tokens int
 	Cost   float64
@@ -80,6 +81,13 @@ type SessionSummary struct {
 	Elapsed     time.Duration
 	Err         error
 	Paused      bool // loop stopped on a blameless provider rate/usage limit
+	// Fault is set when the loop stopped on an UNEXPECTED error (agent crash,
+	// failed push, infra hiccup) partway through a ticket. The ticket's WIP was
+	// preserved on its branch without quarantining or filing a bug, so it stays
+	// resumable. FaultID/FaultPhase name the ticket and the phase it died in.
+	Fault      bool
+	FaultID    string
+	FaultPhase string
 }
 
 // Console writes timestamped progress to out (stdout) and per-call stat lines to

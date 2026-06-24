@@ -30,6 +30,11 @@ type Actions interface {
 
 	Reset(ctx context.Context, id string) error
 
+	// CheckoutBranch switches the target repo to ticket id's feature branch and
+	// returns the branch name, so the summary's recovery keys can land the user on
+	// an incomplete ticket's preserved WIP.
+	CheckoutBranch(ctx context.Context, id string) (string, error)
+
 	// RunLoop runs the autonomous loop. When epic is non-empty the loop is scoped
 	// to that epic's sub-issues; otherwise it works the team's ready queue.
 	RunLoop(ctx context.Context, epic string, r console.Renderer)
@@ -233,7 +238,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 
-	case logMsg, eventMsg, ticketMsg, titleMsg, phaseStartMsg, ticketDoneMsg, loopDoneMsg:
+	case logMsg, eventMsg, ticketMsg, titleMsg, phaseStartMsg, ticketDoneMsg, loopDoneMsg, recoveryDoneMsg:
 		var cmd tea.Cmd
 		m.dash, cmd = applyDashCmd(m.dash, msg)
 		return m, cmd
@@ -435,15 +440,7 @@ func (m appModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case viewRunning:
 		if m.dash.done() {
-			if msg.String() == "o" {
-				m.dash = applyDash(m.dash, msg)
-				return m, nil
-			}
-			if isBack(msg) {
-				return m.toMenu(), nil
-			}
-			m.dash = applyDash(m.dash, msg)
-			return m, nil
+			return m.handleSummaryKey(msg)
 		}
 
 		if msg.String() == "q" || msg.Type == tea.KeyCtrlC {
@@ -548,6 +545,61 @@ func (m appModel) runLoopCmd(ctx context.Context, epic string) tea.Cmd {
 	return func() tea.Msg {
 		actions.RunLoop(ctx, epic, r)
 		return nil
+	}
+}
+
+// handleSummaryKey drives the recap screen's recovery keys: r resumes the selected
+// ticket, b checks out its branch, x resets it (guarded by a two-key confirm).
+// Navigation and "o open PR" stay delegated to the dash; enter/q/esc return to the
+// menu. Recovery keys appear only for rows where they apply.
+func (m appModel) handleSummaryKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if id := m.dash.pendingResetID(); id != "" {
+		if msg.String() == "x" || msg.String() == "y" {
+			m.dash = m.dash.clearResetConfirm()
+			return m, m.resetFromSummaryCmd(m.baseCtx, id)
+		}
+		m.dash = m.dash.clearResetConfirm()
+		return m, nil
+	}
+
+	sel, hasSel := m.dash.selectedResult()
+	switch {
+	case msg.String() == "o":
+		m.dash = applyDash(m.dash, msg)
+		return m, nil
+	case msg.String() == "r" && hasSel && recoverable(sel):
+		return m.startRunTicket(sel.ID)
+	case msg.String() == "b" && hasSel && sel.Branch != "":
+		return m, m.checkoutFromSummaryCmd(m.baseCtx, sel.ID)
+	case msg.String() == "x" && hasSel && recoverable(sel):
+		m.dash = m.dash.askResetConfirm(sel.ID)
+		return m, nil
+	case isBack(msg):
+		return m.toMenu(), nil
+	default:
+		m.dash = applyDash(m.dash, msg)
+		return m, nil
+	}
+}
+
+func (m appModel) checkoutFromSummaryCmd(ctx context.Context, id string) tea.Cmd {
+	actions := m.actions
+	return func() tea.Msg {
+		branch, err := actions.CheckoutBranch(ctx, id)
+		if err != nil {
+			return recoveryDoneMsg{note: "✗ checkout failed: " + err.Error(), err: err}
+		}
+		return recoveryDoneMsg{note: "✓ checked out " + branch + " — your WIP is here when you exit trau"}
+	}
+}
+
+func (m appModel) resetFromSummaryCmd(ctx context.Context, id string) tea.Cmd {
+	actions := m.actions
+	return func() tea.Msg {
+		if err := actions.Reset(ctx, id); err != nil {
+			return recoveryDoneMsg{note: "✗ reset failed: " + err.Error(), err: err}
+		}
+		return recoveryDoneMsg{note: "✓ reset " + id + " — it will be picked again on the next run", resetID: id}
 	}
 }
 
