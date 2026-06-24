@@ -474,6 +474,9 @@ func (p *Pipeline) Handoff(ctx context.Context, id string) error {
 	if _, err := p.agentStep(ctx, id, "handoff", handoffTail(id)); err != nil {
 		return err
 	}
+	if fi, err := os.Stat(handoffPath(id)); err != nil || fi.Size() == 0 {
+		return fmt.Errorf("handoff %s: agent did not write handoff brief", id)
+	}
 	p.persistHandoff(id)
 	if err := p.State.Set(id, "PHASE", state.HandedOff); err != nil {
 		return fmt.Errorf("handoff %s: checkpoint handed_off: %w", id, err)
@@ -529,10 +532,18 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	for {
 		_ = os.Remove(verdictPath)
 		prompt := verifyTail(id, handoff, verdictPath, note)
-		if _, err := p.agentStep(ctx, id, label, prompt); err != nil {
-			return err
+		_, agentErr := p.agentStep(ctx, id, label, prompt)
+		v, ok := readVerdict(verdictPath)
+		if agentErr != nil || !ok {
+			reason := "verify agent timed out or exited without writing a verdict"
+			if agentErr != nil {
+				reason = fmt.Sprintf("verify agent failed: %v", agentErr)
+			}
+			if err := writeFailureVerdict(verdictPath, reason); err != nil {
+				return fmt.Errorf("verify %s: write failure verdict: %w", id, err)
+			}
+			v, _ = readVerdict(verdictPath)
 		}
-		v, _ := readVerdict(verdictPath)
 		if v.Pass {
 			passed = true
 			break
@@ -906,8 +917,9 @@ func (p *Pipeline) logAgentErr(phase string, err error) {
 
 // agentStep runs a phase agent and classifies a failure. A provider rate/usage
 // limit returns a *PausedError the caller propagates — pausing the loop without
-// quarantining or filing a bug. Any other agent error is logged and swallowed
-// (returns nil), preserving the existing "log and continue" behavior.
+// quarantining or filing a bug. Any other agent error is logged and returned to
+// the caller so the phase cannot advance when the agent timed out or crashed
+// without producing its required artifact.
 func (p *Pipeline) agentStep(ctx context.Context, id, phase, prompt string) (string, error) {
 	out, err := p.agentPhase(ctx, id, phase, prompt)
 	if err == nil {
@@ -917,7 +929,7 @@ func (p *Pipeline) agentStep(ctx context.Context, id, phase, prompt string) (str
 		return out, p.pause(id, phase, err)
 	}
 	p.logAgentErr(phase, err)
-	return out, nil
+	return out, err
 }
 
 // pause logs the blameless stop and builds the *PausedError. The ticket keeps its
@@ -1022,6 +1034,15 @@ func readVerdict(path string) (v verdict, ok bool) {
 		return verdict{}, false
 	}
 	return v, true
+}
+
+func writeFailureVerdict(path, reason string) error {
+	v := verdict{Pass: false, Summary: reason, Failures: []string{reason}}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
 }
 
 // topFailures returns up to three plain-English failure reasons from a verdict,
