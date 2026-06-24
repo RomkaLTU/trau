@@ -318,7 +318,7 @@ func (p *Pipeline) handleGiveUp(ctx context.Context, id string, err error) error
 func (p *Pipeline) fault(ctx context.Context, id string, err error) error {
 	phase := p.State.Get(id, "PHASE")
 	p.finalizeFault(ctx, id)
-	p.logf("  ⚠ %s could not finish during %s — work saved, ticket left resumable", id, FaultPhaseLabel(phase))
+	p.logf("  ⚠ %s could not finish during %s — work saved, ticket left resumable", id, NextPhaseLabel(phase))
 	return &FaultError{ID: id, Phase: phase, Err: err}
 }
 
@@ -352,9 +352,11 @@ func AsFault(err error) *FaultError {
 	return nil
 }
 
-// FaultPhaseLabel maps a checkpoint phase to the human phase name a fault died in,
-// for the log line and summary ("building" → "build", "" → "startup").
-func FaultPhaseLabel(phase string) string {
+// NextPhaseLabel maps a checkpoint phase to the human name of the phase that runs
+// next from it ("built" → "handoff", "" → "startup"). It is the phase a fault
+// died in and the phase a resume continues into — the same mapping serves both
+// the fault recap and the resume callout.
+func NextPhaseLabel(phase string) string {
 	switch phase {
 	case state.Building:
 		return "build"

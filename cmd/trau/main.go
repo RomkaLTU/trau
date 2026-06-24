@@ -370,7 +370,7 @@ func applyFault(s console.SessionSummary, err error) console.SessionSummary {
 	if f := pipeline.AsFault(err); f != nil {
 		s.Fault = true
 		s.FaultID = f.ID
-		s.FaultPhase = pipeline.FaultPhaseLabel(f.Phase)
+		s.FaultPhase = pipeline.NextPhaseLabel(f.Phase)
 	}
 	return s
 }
@@ -1017,6 +1017,14 @@ func (a *appActions) MenuInfo() tui.MenuInfo {
 			inFlight++
 		}
 	}
+	resume := tui.ResumeTarget{}
+	if id, phase := a.store.ResumeTarget(); id != "" {
+		resume = tui.ResumeTarget{
+			ID:    id,
+			Phase: pipeline.NextPhaseLabel(phase),
+			Title: a.store.Get(id, "TITLE"),
+		}
+	}
 	return tui.MenuInfo{
 		Version:       version,
 		Provider:      a.cfg.Provider,
@@ -1027,6 +1035,7 @@ func (a *appActions) MenuInfo() tui.MenuInfo {
 		AutoMerge:     a.cfg.AutoMerge,
 		InFlight:      inFlight,
 		Done:          done,
+		Resume:        resume,
 	}
 }
 
