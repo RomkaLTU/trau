@@ -83,6 +83,9 @@ type Config struct {
 	AppURL        string
 	VerifyChecks  bool
 
+	VerifyPanel       []string
+	VerifyPanelPolicy string
+
 	TUI bool
 
 	EpicFlow bool
@@ -140,6 +143,7 @@ func Defaults() Config {
 		BrowserVerify:         "auto",
 		AppURL:                "http://localhost",
 		VerifyChecks:          true,
+		VerifyPanelPolicy:     "unanimous",
 		TUI:                   true,
 		EpicFlow:              true,
 		RunsDir:               "runs",
@@ -429,6 +433,11 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		c.VerifyChecks = v == "1"
 		sources["VERIFY_CHECKS"] = src.name
 	}
+	if v, src := get("VERIFY_PANEL"); v != "" {
+		c.VerifyPanel = splitCSV(v)
+		sources["VERIFY_PANEL"] = src.name
+	}
+	str("VERIFY_PANEL_POLICY", &c.VerifyPanelPolicy)
 	if v, src := get("TRAU_TUI"); v != "" {
 		c.TUI = v == "1"
 		sources["TRAU_TUI"] = src.name
@@ -710,6 +719,17 @@ func WriteEnvFile(path string, values map[string]string) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 }
 
+// splitCSV parses a comma-separated knob into a trimmed, non-empty list.
+func splitCSV(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func stripInlineComment(v string) string {
 	for i := 1; i < len(v); i++ {
 		if v[i] == '#' && (v[i-1] == ' ' || v[i-1] == '\t') {
@@ -786,6 +806,8 @@ func KnownKeys() []KeyMeta {
 		{Key: "BROWSER_VERIFY", Default: "auto", Description: "Browser verify: auto | always | never", Options: []string{"auto", "always", "never"}},
 		{Key: "APP_URL", Default: "http://localhost", Description: "Local app URL for browser verify"},
 		{Key: "VERIFY_CHECKS", Default: "1", Description: "Run the pluggable verify-check library (.trau/checks); 1 = yes, 0 = no", Bool: true},
+		{Key: "VERIFY_PANEL", Description: "Cross-vendor verify panel: comma-separated provider:model:effort verifiers (e.g. claude,codex:gpt-5.5,kimi). Empty = single verifier"},
+		{Key: "VERIFY_PANEL_POLICY", Default: "unanimous", Description: "Panel verdict merge policy: unanimous | majority | any-pass", Options: []string{"unanimous", "majority", "any-pass"}},
 		{Key: "TRAU_TUI", Default: "1", Description: "Enable Bubble Tea TUI (1 = yes, 0 = no)", Bool: true},
 		{Key: "EPIC_FLOW", Default: "1", Description: "Process epic sub-issues (1 = yes, 0 = no)", Bool: true},
 		{Key: "RUNS_DIR", Default: "runs", Description: "Directory for run artifacts"},
@@ -1158,6 +1180,10 @@ func keyValue(cfg Config, key string) string {
 			return "1"
 		}
 		return "0"
+	case "VERIFY_PANEL":
+		return strings.Join(cfg.VerifyPanel, ",")
+	case "VERIFY_PANEL_POLICY":
+		return cfg.VerifyPanelPolicy
 	case "TRAU_TUI":
 		if cfg.TUI {
 			return "1"

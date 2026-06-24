@@ -146,6 +146,13 @@ APP_URL=http://localhost     # base URL of your locally-running app (used by bro
 # checks, a built-in default set runs (tests, typecheck, lint, anti-placeholder,
 # anti-duplication). Set 0 to disable entirely. See docs/verify-checks.md.
 VERIFY_CHECKS=1
+# Cross-vendor verify panel (the moat): run verify as N fresh, isolated processes
+# from DIFFERENT providers, each independently judging the diff, then merge their
+# verdicts. Each member is a provider:model:effort spec (model/effort optional);
+# empty = single verifier (default). Policy: unanimous (any dissent blocks) |
+# majority | any-pass. See docs/verify-panel.md.
+# VERIFY_PANEL=claude,codex:gpt-5.5,kimi
+VERIFY_PANEL_POLICY=unanimous
 
 # =============================================================================
 # USER / MACHINE KNOBS (put these in ~/.trau.ini)
