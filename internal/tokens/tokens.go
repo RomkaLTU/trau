@@ -194,6 +194,49 @@ func (s *Sink) Total(id string) (tokens int, cost float64, metered bool) {
 	return tokens, math.Round(sum*100) / 100, metered
 }
 
+// DayTotal sums token + cost spend across ALL buckets for calls whose timestamp
+// falls on the given local date (YYYY-MM-DD) — the per-day window the budget caps
+// enforce. It globs runs/<bucket>/tokens.jsonl (including the _loop bucket, since
+// picker spend still counts toward the day), scans each, and keeps only lines whose
+// ts begins with date. metered follows the same lower-bound contract as Total:
+// false when any in-window line carried no per-call cost. A runs/ root with no logs
+// yields (0, 0, true) — never an error — so callers can print it unconditionally.
+func (s *Sink) DayTotal(date string) (tokens int, cost float64, metered bool) {
+	metered = true
+	matches, _ := filepath.Glob(filepath.Join(s.root, "*", "tokens.jsonl"))
+
+	var sum float64
+	for _, path := range matches {
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			b := bytes.TrimSpace(sc.Bytes())
+			if len(b) == 0 {
+				continue
+			}
+			var ln line
+			if err := json.Unmarshal(b, &ln); err != nil {
+				continue
+			}
+			if !strings.HasPrefix(ln.TS, date) {
+				continue
+			}
+			tokens += ln.Total
+			if ln.CostUSD != nil {
+				sum += *ln.CostUSD
+			} else {
+				metered = false
+			}
+		}
+		_ = f.Close()
+	}
+	return tokens, math.Round(sum*100) / 100, metered
+}
+
 // Pair returns Total(id) rendered as the "<tokens> <cost>" string that --status
 // consumes (e.g. "0 0", "15234 1.2").
 func (s *Sink) Pair(id string) string {
