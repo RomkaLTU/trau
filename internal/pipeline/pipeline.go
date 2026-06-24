@@ -154,6 +154,8 @@ type Pipeline struct {
 	MaxRepairs     int
 	MaxBugfixes    int
 	Checks         []checks.Check
+	VerifyPanel    []Verifier
+	PanelPolicy    string
 	BrowserVerify  string
 	AppURL         string
 	AutoMerge      bool
@@ -550,30 +552,18 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	if n := len(p.Checks); n > 0 {
 		p.logf("  ↳ verify checks: %d active (severity gates the merge)", n)
 	}
+	if n := len(p.VerifyPanel); n > 0 {
+		p.logf("  ↳ verify panel: %d cross-vendor verifiers, %s policy", n, normalizePolicy(p.PanelPolicy))
+	}
 
 	repairAttempt := 0
 	bugfixAttempt := 0
 	passed := false
 	label := "verify"
 	for {
-		_ = os.Remove(verdictPath)
-		prompt := verifyTail(id, handoff, verdictPath, note, checksFragment)
-		_, agentErr := p.agentStep(ctx, id, label, prompt)
-		v, ok := readVerdict(verdictPath)
-		if agentErr != nil || !ok {
-			reason := "verify agent timed out or exited without writing a verdict"
-			if agentErr != nil {
-				reason = fmt.Sprintf("verify agent failed: %v", agentErr)
-			}
-			if err := writeFailureVerdict(verdictPath, reason); err != nil {
-				return fmt.Errorf("verify %s: write failure verdict: %w", id, err)
-			}
-			v, _ = readVerdict(verdictPath)
-		}
-		var warnings []string
-		v, warnings = gateChecks(p.Checks, v)
-		for _, w := range warnings {
-			p.logf("  ⚠ %s", w)
+		v, err := p.verifyAttempt(ctx, id, label, handoff, note, checksFragment)
+		if err != nil {
+			return err
 		}
 		if v.Pass {
 			passed = true
@@ -886,18 +876,21 @@ func prBody(id string) string {
 	return fmt.Sprintf("## Summary\nAutomated implementation of %s via the Trau loop.\n\n## Test plan\n- [x] Pest suite for this slice\n- [x] QA verify pass (browser for UI slices)\n\nLinear: %s", id, id)
 }
 
-func (p *Pipeline) agentPhase(ctx context.Context, id, phase, prompt string) (string, error) {
-	label := p.phaseLabel(phase)
+// agentPhaseOn runs one phase on a specific runner (the primary loop runner, or a
+// single panel verifier's backend). The label and transcript are keyed off phase,
+// so panel members must pass distinct phase tags to avoid clobbering each other.
+func (p *Pipeline) agentPhaseOn(ctx context.Context, id, phase, prompt string, runner agent.Runner) (string, error) {
+	label := runnerLabel(phase, runner)
 	p.logf("  ▸ %s", label)
 	stop := p.spin(label)
-	res, err := p.Runner.Run(ctx, prompt, phase)
+	res, err := runner.Run(ctx, prompt, phase)
 	stop()
 	p.writeTranscript(id, phase, res.Final)
 	return res.Final, err
 }
 
-func (p *Pipeline) phaseLabel(phase string) string {
-	pr, ok := p.Runner.(agent.PhaseRoute)
+func runnerLabel(phase string, runner agent.Runner) string {
+	pr, ok := runner.(agent.PhaseRoute)
 	if !ok {
 		return phase
 	}
@@ -958,10 +951,17 @@ func (p *Pipeline) logAgentErr(phase string, err error) {
 // the caller so the phase cannot advance when the agent timed out or crashed
 // without producing its required artifact.
 func (p *Pipeline) agentStep(ctx context.Context, id, phase, prompt string) (string, error) {
+	return p.agentStepOn(ctx, id, phase, prompt, p.Runner)
+}
+
+// agentStepOn is agentStep against a specific runner, used to drive each
+// cross-vendor verify-panel member through the same budget guard and rate-limit
+// classification as the primary phases.
+func (p *Pipeline) agentStepOn(ctx context.Context, id, phase, prompt string, runner agent.Runner) (string, error) {
 	if err := p.guardBudget(ctx, id); err != nil {
 		return "", err
 	}
-	out, err := p.agentPhase(ctx, id, phase, prompt)
+	out, err := p.agentPhaseOn(ctx, id, phase, prompt, runner)
 	if err == nil {
 		return out, nil
 	}
@@ -1169,6 +1169,193 @@ func containsLine(lines []string, line string) bool {
 	return false
 }
 
+// Verifier is one member of the cross-vendor verify panel: a named, isolated
+// agent backend with its own provider/model that independently judges the slice
+// and emits its own verdict. Name is a short, filename-safe tag (e.g. "claude",
+// "codex", "claude2") used for the member's verdict file, phase label, and ledger
+// attribution.
+type Verifier struct {
+	Name     string
+	Provider string
+	Runner   agent.Runner
+}
+
+type panelResult struct {
+	Name    string
+	Verdict verdict
+}
+
+// verifyAttempt produces one verify verdict for the current attempt. With a
+// configured panel it fans out to every cross-vendor verifier and merges by
+// policy; otherwise it runs the single primary verifier. Either way the per-check
+// severity gate is applied and the effective verdict is written to verifyPath(id)
+// so the repair prompt and FileBug read the authoritative result. A non-nil error
+// is fatal and propagated (a provider pause or a budget give-up) — it stops the
+// phase rather than counting as a verify failure.
+func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, checksFragment string) (verdict, error) {
+	if len(p.VerifyPanel) > 0 {
+		return p.runPanel(ctx, id, label, handoff, note, checksFragment)
+	}
+	verdictPath := verifyPath(id)
+	_ = os.Remove(verdictPath)
+	prompt := verifyTail(id, handoff, verdictPath, note, checksFragment)
+	_, agentErr := p.agentStep(ctx, id, label, prompt)
+	v, ok := readVerdict(verdictPath)
+	if agentErr != nil || !ok {
+		reason := "verify agent timed out or exited without writing a verdict"
+		if agentErr != nil {
+			reason = fmt.Sprintf("verify agent failed: %v", agentErr)
+		}
+		if err := writeFailureVerdict(verdictPath, reason); err != nil {
+			return verdict{}, fmt.Errorf("verify %s: write failure verdict: %w", id, err)
+		}
+		v, _ = readVerdict(verdictPath)
+	}
+	var warnings []string
+	v, warnings = gateChecks(p.Checks, v)
+	for _, w := range warnings {
+		p.logf("  ⚠ %s", w)
+	}
+	_ = writeVerdictFile(verdictPath, v)
+	return v, nil
+}
+
+// runPanel runs each configured verifier as a fresh, isolated process against the
+// same handoff brief and on-disk code, gates each verdict by the check library,
+// merges them by the configured policy, and writes the merged verdict to
+// verifyPath(id). A provider pause or budget give-up from any member is
+// propagated so the loop stops cleanly (the ticket stays resumable on its branch)
+// instead of being recorded as a dissenting fail; a plain timeout/crash counts as
+// that member failing.
+func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, checksFragment string) (verdict, error) {
+	results := make([]panelResult, 0, len(p.VerifyPanel))
+	for _, m := range p.VerifyPanel {
+		memberPath := verifyMemberPath(id, m.Name)
+		_ = os.Remove(memberPath)
+		memberLabel := label + "-" + m.Name
+		prompt := verifyTail(id, handoff, memberPath, note, checksFragment)
+		_, agentErr := p.agentStepOn(ctx, id, memberLabel, prompt, m.Runner)
+		if agentErr != nil && isFatalAgentErr(agentErr) {
+			return verdict{}, agentErr
+		}
+		v, ok := readVerdict(memberPath)
+		if agentErr != nil || !ok {
+			reason := m.Name + " verifier timed out or exited without writing a verdict"
+			if agentErr != nil {
+				reason = fmt.Sprintf("%s verifier failed: %v", m.Name, agentErr)
+			}
+			v = verdict{Pass: false, Summary: reason, Failures: []string{reason}}
+		}
+		var warnings []string
+		v, warnings = gateChecks(p.Checks, v)
+		for _, w := range warnings {
+			p.logf("  ⚠ %s: %s", m.Name, w)
+		}
+		results = append(results, panelResult{Name: m.Name, Verdict: v})
+		p.logf("  ↳ %s: %s", m.Name, passFailLine(v))
+	}
+	merged := mergeVerdicts(p.PanelPolicy, results)
+	_ = writeVerdictFile(verifyPath(id), merged)
+	p.logf("  ↳ panel verdict: %s", merged.Summary)
+	return merged, nil
+}
+
+// isFatalAgentErr reports whether an agent error must abort the panel and the
+// phase (a provider pause that should leave the ticket resumable, or a budget
+// give-up that already quarantined it) rather than being treated as one verifier
+// dissenting.
+func isFatalAgentErr(err error) bool {
+	if IsPaused(err) {
+		return true
+	}
+	var g *GiveUpError
+	return errors.As(err, &g)
+}
+
+func passFailLine(v verdict) string {
+	if v.Pass {
+		return "pass"
+	}
+	if s := strings.TrimSpace(v.Summary); s != "" {
+		return "fail — " + s
+	}
+	return "fail"
+}
+
+// mergeVerdicts folds the panel members' (already check-gated) verdicts into one
+// by policy. The merged verdict fails closed: when it does not pass, every
+// dissenting member's failures are carried over (tagged by member) so the repair
+// prompt has the full cross-vendor picture.
+func mergeVerdicts(policy string, results []panelResult) verdict {
+	total := len(results)
+	passes := 0
+	var failers []string
+	var failLines []string
+	for _, r := range results {
+		if r.Verdict.Pass {
+			passes++
+			continue
+		}
+		failers = append(failers, r.Name)
+		lines := r.Verdict.Failures
+		if len(lines) == 0 {
+			if s := strings.TrimSpace(r.Verdict.Summary); s != "" {
+				lines = []string{s}
+			}
+		}
+		for _, f := range lines {
+			failLines = append(failLines, fmt.Sprintf("[%s] %s", r.Name, f))
+		}
+	}
+	pass := panelPasses(policy, passes, total)
+	summary := fmt.Sprintf("panel %s: %d/%d verifiers passed", normalizePolicy(policy), passes, total)
+	if len(failers) > 0 {
+		summary += " (dissent: " + strings.Join(failers, ", ") + ")"
+	}
+	merged := verdict{Pass: pass, Summary: summary}
+	if !pass {
+		if len(failLines) == 0 {
+			failLines = []string{summary}
+		}
+		merged.Failures = failLines
+	}
+	return merged
+}
+
+// panelPasses decides the merged outcome under a policy. unanimous (the default,
+// = any single fail blocks) requires every verifier to pass; majority requires a
+// strict majority; any-pass merges if at least one verifier passes.
+func panelPasses(policy string, passes, total int) bool {
+	if total == 0 {
+		return false
+	}
+	switch normalizePolicy(policy) {
+	case "majority":
+		return passes*2 > total
+	case "any-pass":
+		return passes > 0
+	default: // unanimous
+		return passes == total
+	}
+}
+
+// normalizePolicy canonicalizes a merge-policy string; unknown/empty defaults to
+// unanimous, the most conservative (a single dissent blocks the merge).
+func normalizePolicy(policy string) string {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "majority":
+		return "majority"
+	case "any-pass", "any_pass", "anypass":
+		return "any-pass"
+	default:
+		return "unanimous"
+	}
+}
+
+func verifyMemberPath(id, name string) string {
+	return "/tmp/verify-" + id + "-" + name + ".json"
+}
+
 func readVerdict(path string) (v verdict, ok bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1181,7 +1368,10 @@ func readVerdict(path string) (v verdict, ok bool) {
 }
 
 func writeFailureVerdict(path, reason string) error {
-	v := verdict{Pass: false, Summary: reason, Failures: []string{reason}}
+	return writeVerdictFile(path, verdict{Pass: false, Summary: reason, Failures: []string{reason}})
+}
+
+func writeVerdictFile(path string, v verdict) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
