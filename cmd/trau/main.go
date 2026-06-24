@@ -229,7 +229,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return console.Actionable(err, "resolve target repo", "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository")
 		}
-		return buildPipeline(cfg, runner, repoRoot, pm, sink, con).Reset(ctx, opts.ResetID)
+		pipe, err := buildPipeline(cfg, runner, repoRoot, pm, sink, log, con)
+		if err != nil {
+			return err
+		}
+		return pipe.Reset(ctx, opts.ResetID)
 	}
 
 	epicID := opts.Parent
@@ -285,7 +289,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return console.Actionable(err, "resolve target repo", "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository")
 	}
 	logger.Verbosef("final repo root for pipeline: %s", repoRoot)
-	p := buildPipeline(cfg, runner, repoRoot, pm, sink, con)
+	p, err := buildPipeline(cfg, runner, repoRoot, pm, sink, log, con)
+	if err != nil {
+		return err
+	}
 	p.EpicID = epicID
 
 	maxIter := cfg.MaxIterations
@@ -427,7 +434,7 @@ func newRenderer(stdout, stderr io.Writer, cfg config.Config, opts config.Option
 	return tui.New(stdout, stderr, onInterrupt)
 }
 
-func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *tokens.Sink, con console.Renderer) *pipeline.Pipeline {
+func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *tokens.Sink, log *event.Log, con console.Renderer) (*pipeline.Pipeline, error) {
 	var verifyChecks []checks.Check
 	if cfg.VerifyChecks {
 		loaded, _, err := checks.Load(repoRoot)
@@ -436,6 +443,10 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 			loaded = checks.Defaults()
 		}
 		verifyChecks = loaded
+	}
+	panel, err := buildPanel(cfg, log, sink)
+	if err != nil {
+		return nil, err
 	}
 	return &pipeline.Pipeline{
 		Runner:         runner,
@@ -452,6 +463,8 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		MaxRepairs:     cfg.MaxRepairs,
 		MaxBugfixes:    cfg.MaxBugfixes,
 		Checks:         verifyChecks,
+		VerifyPanel:    panel,
+		PanelPolicy:    cfg.VerifyPanelPolicy,
 		BrowserVerify:  cfg.BrowserVerify,
 		AppURL:         cfg.AppURL,
 		AutoMerge:      cfg.AutoMerge,
@@ -460,7 +473,40 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		CITimeout:      cfg.CITimeout,
 		CIPoll:         cfg.CIPoll,
 		Renderer:       con,
+	}, nil
+}
+
+// buildPanel constructs the cross-vendor verify panel from VERIFY_PANEL — one
+// fresh backend per provider:model:effort spec, reusing the same route parsing and
+// backend construction as phase routes so each member can be a different provider.
+// Returns nil when no panel is configured (the single-verifier default). A spec
+// naming an unknown provider or whose binary is missing from PATH is a startup
+// error. Repeated providers get a numeric suffix (claude, claude2) so their
+// verdict files and ledger labels stay distinct.
+func buildPanel(cfg config.Config, log *event.Log, sink agent.TokenSink) ([]pipeline.Verifier, error) {
+	if len(cfg.VerifyPanel) == 0 {
+		return nil, nil
 	}
+	reg := agent.DefaultRegistry()
+	counts := map[string]int{}
+	var panel []pipeline.Verifier
+	for _, spec := range cfg.VerifyPanel {
+		provider, model, effort, err := parseRoute(reg, spec, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("verify panel %q: %w", spec, err)
+		}
+		runner, err := buildBackend(reg, cfg, provider, model, effort, log, sink)
+		if err != nil {
+			return nil, fmt.Errorf("verify panel %q: %w", spec, err)
+		}
+		counts[provider]++
+		name := provider
+		if counts[provider] > 1 {
+			name = fmt.Sprintf("%s%d", provider, counts[provider])
+		}
+		panel = append(panel, pipeline.Verifier{Name: name, Provider: provider, Runner: runner})
+	}
+	return panel, nil
 }
 
 type engine interface {
@@ -1004,7 +1050,12 @@ func (a *appActions) ensure() error {
 		a.buildErr = err
 		return err
 	}
-	a.pipe = buildPipeline(a.cfg, runner, repoRoot, a.tracker, a.sink, nil)
+	pipe, err := buildPipeline(a.cfg, runner, repoRoot, a.tracker, a.sink, a.log, nil)
+	if err != nil {
+		a.buildErr = err
+		return err
+	}
+	a.pipe = pipe
 	a.eng = &realEngine{pipe: a.pipe, tracker: a.tracker, scope: a.scope}
 	return nil
 }
