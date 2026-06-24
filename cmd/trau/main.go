@@ -285,26 +285,29 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	eng := &realEngine{pipe: p, tracker: pm, scope: scope}
 
-	total := func(ids []string) (int, float64) {
+	total := func(ids []string) (int, float64, bool) {
 		t, c := 0, 0.0
+		metered := true
 		for _, id := range ids {
-			tk, cs := sink.Total(id)
+			tk, cs, m := sink.Total(id)
 			t += tk
 			c += cs
+			metered = metered && m
 		}
-		return t, math.Round(c*100) / 100
+		return t, math.Round(c*100) / 100, metered
 	}
 
 	result := func(id string, elapsed time.Duration) console.TicketResult {
-		tk, cs := sink.Total(id)
+		tk, cs, metered := sink.Total(id)
 		return console.TicketResult{
-			ID:      id,
-			Title:   p.State.Get(id, "TITLE"),
-			Phase:   p.State.Get(id, "PHASE"),
-			PRURL:   p.State.Get(id, "PR_URL"),
-			Tokens:  tk,
-			Cost:    math.Round(cs*100) / 100,
-			Elapsed: elapsed,
+			ID:          id,
+			Title:       p.State.Get(id, "TITLE"),
+			Phase:       p.State.Get(id, "PHASE"),
+			PRURL:       p.State.Get(id, "PR_URL"),
+			Tokens:      tk,
+			Cost:        math.Round(cs*100) / 100,
+			CostMetered: metered,
+			Elapsed:     elapsed,
 		}
 	}
 	start := time.Now()
@@ -316,11 +319,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		ForcedID:     forcedID,
 	}, con, result)
 
-	tk, cost := total(processed)
+	tk, cost, metered := total(processed)
 	con.LoopDone(console.SessionSummary{
 		Tickets:     len(processed),
 		TotalTokens: tk,
 		TotalCost:   cost,
+		CostMetered: metered,
 		Elapsed:     time.Since(start),
 		Err:         lerr,
 		Paused:      pipeline.IsPaused(lerr),
@@ -921,14 +925,15 @@ func (a *appActions) StatusRows() []tui.StatusRow {
 	ids := a.store.Tickets()
 	rows := make([]tui.StatusRow, 0, len(ids))
 	for _, id := range ids {
-		tok, cost := a.sink.Total(id)
+		tok, cost, metered := a.sink.Total(id)
 		rows = append(rows, tui.StatusRow{
-			ID:     id,
-			Title:  a.store.Get(id, "TITLE"),
-			Phase:  a.store.Get(id, "PHASE"),
-			PRURL:  a.store.Get(id, "PR_URL"),
-			Tokens: tok,
-			Cost:   cost,
+			ID:          id,
+			Title:       a.store.Get(id, "TITLE"),
+			Phase:       a.store.Get(id, "PHASE"),
+			PRURL:       a.store.Get(id, "PR_URL"),
+			Tokens:      tok,
+			Cost:        cost,
+			CostMetered: metered,
 		})
 	}
 	return rows
@@ -1028,25 +1033,28 @@ func (a *appActions) RunLoop(ctx context.Context, epic string, r console.Rendere
 	a.pipe.Renderer = r
 	a.pipe.EpicID = epic
 	a.eng.scope = scopeFor(a.cfg, epic)
-	total := func(ids []string) (int, float64) {
+	total := func(ids []string) (int, float64, bool) {
 		t, c := 0, 0.0
+		metered := true
 		for _, id := range ids {
-			tk, cs := a.sink.Total(id)
+			tk, cs, m := a.sink.Total(id)
 			t += tk
 			c += cs
+			metered = metered && m
 		}
-		return t, math.Round(c*100) / 100
+		return t, math.Round(c*100) / 100, metered
 	}
 	result := func(id string, elapsed time.Duration) console.TicketResult {
-		tk, cs := a.sink.Total(id)
+		tk, cs, metered := a.sink.Total(id)
 		return console.TicketResult{
-			ID:      id,
-			Title:   a.store.Get(id, "TITLE"),
-			Phase:   a.store.Get(id, "PHASE"),
-			PRURL:   a.store.Get(id, "PR_URL"),
-			Tokens:  tk,
-			Cost:    math.Round(cs*100) / 100,
-			Elapsed: elapsed,
+			ID:          id,
+			Title:       a.store.Get(id, "TITLE"),
+			Phase:       a.store.Get(id, "PHASE"),
+			PRURL:       a.store.Get(id, "PR_URL"),
+			Tokens:      tk,
+			Cost:        math.Round(cs*100) / 100,
+			CostMetered: metered,
+			Elapsed:     elapsed,
 		}
 	}
 	max := a.maxIter
@@ -1055,11 +1063,12 @@ func (a *appActions) RunLoop(ctx context.Context, epic string, r console.Rendere
 	}
 	start := time.Now()
 	processed, lerr := runLoop(ctx, a.eng, loopParams{Max: max}, r, result)
-	tk, cost := total(processed)
+	tk, cost, metered := total(processed)
 	r.LoopDone(console.SessionSummary{
 		Tickets:     len(processed),
 		TotalTokens: tk,
 		TotalCost:   cost,
+		CostMetered: metered,
 		Elapsed:     time.Since(start),
 		Err:         lerr,
 		Paused:      pipeline.IsPaused(lerr),
@@ -1088,23 +1097,25 @@ func (a *appActions) RunTicket(ctx context.Context, id string, r console.Rendere
 		if err := a.pipe.Resume(ctx, id, phase); err != nil && !errors.Is(err, pipeline.ErrAlreadyDone) {
 			lerr = err
 		}
-		tk, cs := a.sink.Total(id)
+		tk, cs, metered := a.sink.Total(id)
 		r.TicketDone(console.TicketResult{
-			ID:      id,
-			Title:   a.store.Get(id, "TITLE"),
-			Phase:   a.store.Get(id, "PHASE"),
-			PRURL:   a.store.Get(id, "PR_URL"),
-			Tokens:  tk,
-			Cost:    math.Round(cs*100) / 100,
-			Elapsed: time.Since(start),
+			ID:          id,
+			Title:       a.store.Get(id, "TITLE"),
+			Phase:       a.store.Get(id, "PHASE"),
+			PRURL:       a.store.Get(id, "PR_URL"),
+			Tokens:      tk,
+			Cost:        math.Round(cs*100) / 100,
+			CostMetered: metered,
+			Elapsed:     time.Since(start),
 		})
 	}
 
-	tk, cs := a.sink.Total(id)
+	tk, cs, metered := a.sink.Total(id)
 	r.LoopDone(console.SessionSummary{
 		Tickets:     1,
 		TotalTokens: tk,
 		TotalCost:   math.Round(cs*100) / 100,
+		CostMetered: metered,
 		Elapsed:     time.Since(start),
 		Err:         lerr,
 		Paused:      pipeline.IsPaused(lerr),
@@ -1209,7 +1220,7 @@ func emitProviderNotes(reg agent.Registry, used map[string]bool, repoRoot string
 			}
 		}
 		if name == "kimi" {
-			con.Logf("↳ %s: per-call token usage is not reported; token/cost totals will read zero", name)
+			con.Logf("↳ %s: token usage is recovered from the session log; per-call dollar cost is not metered (shown as n/a)", name)
 		}
 	}
 }

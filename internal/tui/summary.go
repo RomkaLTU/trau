@@ -83,7 +83,7 @@ func (m model) makeSummaryTable() table.Model {
 			truncate(firstNonEmpty(r.Title, "—"), titleW),
 			statusGlyph(kind) + " " + label,
 			fmtDur(r.Elapsed),
-			"$" + strconv.FormatFloat(r.Cost, 'f', 2, 64),
+			fmtCostCell(r.Cost, r.CostMetered),
 		})
 	}
 	h := len(rows) + 1
@@ -160,11 +160,36 @@ func (m model) totalsLine() string {
 		parts = append(parts, m.styles.Error.Render(fmt.Sprintf("%d quarantined", quarantined)))
 	}
 	parts = append(parts, fmtDur(m.summary.Elapsed))
-	parts = append(parts, fmt.Sprintf("~$%s est", strconv.FormatFloat(m.summary.TotalCost, 'f', 2, 64)))
+	parts = append(parts, costSummaryTUI(m.summary.TotalCost, m.summary.CostMetered))
 	if m.summary.TotalTokens > 0 {
 		parts = append(parts, fmtTokens(m.summary.TotalTokens)+" tokens")
 	}
 	return strings.Join(parts, " · ")
+}
+
+// fmtCostCell renders a TUI Cost table cell honestly: "$1.23" when fully metered,
+// "n/a" when no per-call dollar cost was measured (kimi/codex subscription
+// phases), and "$1.23+" when the figure is an unmetered lower bound.
+func fmtCostCell(cost float64, metered bool) string {
+	if metered {
+		return "$" + strconv.FormatFloat(cost, 'f', 2, 64)
+	}
+	if cost == 0 {
+		return "n/a"
+	}
+	return "$" + strconv.FormatFloat(cost, 'f', 2, 64) + "+"
+}
+
+// costSummaryTUI renders the closing session total: "~$X est" when metered,
+// "cost n/a" when nothing was measured, "~$X+ est" for an unmetered lower bound.
+func costSummaryTUI(cost float64, metered bool) string {
+	if metered {
+		return fmt.Sprintf("~$%s est", strconv.FormatFloat(cost, 'f', 2, 64))
+	}
+	if cost == 0 {
+		return "cost n/a"
+	}
+	return fmt.Sprintf("~$%s+ est", strconv.FormatFloat(cost, 'f', 2, 64))
 }
 
 // openSelectedPR opens the focused ticket's PR in the browser, if it has one.

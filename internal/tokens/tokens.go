@@ -158,13 +158,17 @@ func (s *Sink) Append(phase string, rec Record) {
 
 // Total sums a ticket's logged token + cost spend across all phases from
 // runs/<id>/tokens.jsonl. cost is summed raw then rounded once to cents
-// ((c*100|round)/100). A missing, empty, or unreadable file yields (0, 0) — never
-// an error — so callers can print it unconditionally. Malformed lines are skipped
-// (the writer only ever emits valid JSON).
-func (s *Sink) Total(id string) (tokens int, cost float64) {
+// ((c*100|round)/100). metered is false when any logged line carried no per-call
+// cost (a codex/kimi subscription call that records tokens but no dollars): the
+// summed cost is then a lower bound, not a measured total, so callers surface
+// that rather than printing a misleading $0. A missing, empty, or unreadable file
+// yields (0, 0, true) — never an error — so callers can print it unconditionally.
+// Malformed lines are skipped (the writer only ever emits valid JSON).
+func (s *Sink) Total(id string) (tokens int, cost float64, metered bool) {
+	metered = true
 	f, err := os.Open(filepath.Join(s.root, id, "tokens.jsonl"))
 	if err != nil {
-		return 0, 0
+		return 0, 0, true
 	}
 	defer func() { _ = f.Close() }()
 
@@ -183,15 +187,18 @@ func (s *Sink) Total(id string) (tokens int, cost float64) {
 		tokens += ln.Total
 		if ln.CostUSD != nil {
 			sum += *ln.CostUSD
+		} else {
+			metered = false
 		}
 	}
-	return tokens, math.Round(sum*100) / 100
+	return tokens, math.Round(sum*100) / 100, metered
 }
 
 // Pair returns Total(id) rendered as the "<tokens> <cost>" string that --status
 // consumes (e.g. "0 0", "15234 1.2").
 func (s *Sink) Pair(id string) string {
-	return FormatPair(s.Total(id))
+	t, c, _ := s.Total(id)
+	return FormatPair(t, c)
 }
 
 // FormatPair renders a token/cost pair as "<tokens> <cost>": the cost is printed
