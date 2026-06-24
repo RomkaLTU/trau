@@ -654,8 +654,10 @@ type Kimi struct {
 // Provider names the backend for logging and routing attribution.
 func (c *Kimi) Provider() string { return "kimi" }
 
-// Route reports the configured provider/model for pre-call display. Kimi has no
-// reasoning-effort knob, so effort is always empty.
+// Route reports the configured provider/model for pre-call display. Kimi Code's
+// reasoning-effort knob (KIMI_MODEL_THINKING_EFFORT) only applies via the
+// KIMI_MODEL_* env-provider mechanism, which trau does not drive, so effort is
+// always empty here.
 func (c *Kimi) Route(string) (string, string, string) { return "kimi", c.Model, "" }
 
 func (c *Kimi) args(prompt string) []string {

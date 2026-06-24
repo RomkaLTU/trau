@@ -148,7 +148,7 @@ type appModel struct {
 
 	onboard   onboardingModel
 	loopSetup loopSetupModel
-	settings  settingsModel
+	settings  settingsHubModel
 }
 
 func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
@@ -357,7 +357,7 @@ func (m appModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case viewSettings:
-		if m.settings.InList() && (msg.Type == tea.KeyEsc || msg.String() == "q") {
+		if m.settings.AtRoot() && (msg.Type == tea.KeyEsc || msg.String() == "q") {
 			return m.toMenu(), nil
 		}
 		var cmd tea.Cmd
@@ -471,7 +471,7 @@ func (m appModel) selectAction(a menuAction) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 
 	case actSettings:
-		m.settings = newSettingsModel(m.actions, m.styles, m.width, m.height)
+		m.settings = newSettingsHubModel(m.actions, m.styles, m.width, m.height)
 		m.view = viewSettings
 		return m, nil
 

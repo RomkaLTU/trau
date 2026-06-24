@@ -187,67 +187,6 @@ func containsAt(s, substr string) bool {
 	return false
 }
 
-func TestProviderModeAppliesBuiltInDefaults(t *testing.T) {
-	dir := t.TempDir()
-	local := filepath.Join(dir, "trau.ini")
-
-	if err := os.WriteFile(local, []byte("PROVIDER=claude\nCLAUDE_MODE=fast\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := LoadLayered("", "", local, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.ClaudeModel != "claude-haiku-4-5" {
-		t.Fatalf("ClaudeModel: want claude-haiku-4-5, got %s", cfg.ClaudeModel)
-	}
-	if cfg.ClaudeEffort != "low" {
-		t.Fatalf("ClaudeEffort: want low, got %s", cfg.ClaudeEffort)
-	}
-}
-
-func TestProviderModeDoesNotOverrideExplicitModel(t *testing.T) {
-	dir := t.TempDir()
-	local := filepath.Join(dir, "trau.ini")
-
-	if err := os.WriteFile(local, []byte("PROVIDER=codex\nCODEX_MODE=slow\nCODEX_MODEL=gpt-5.5\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := LoadLayered("", "", local, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.CodexModel != "gpt-5.5" {
-		t.Fatalf("CodexModel: want gpt-5.5, got %s", cfg.CodexModel)
-	}
-	if cfg.CodexEffort != "xhigh" {
-		t.Fatalf("CodexEffort: want xhigh, got %s", cfg.CodexEffort)
-	}
-}
-
-func TestProviderModeUserDefinedPreset(t *testing.T) {
-	dir := t.TempDir()
-	local := filepath.Join(dir, "trau.ini")
-
-	content := "PROVIDER=claude\nCLAUDE_MODE=custom\nCUSTOM_CLAUDE_MODEL=claude-custom\nCUSTOM_CLAUDE_EFFORT=medium\n"
-	if err := os.WriteFile(local, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := LoadLayered("", "", local, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.ClaudeModel != "claude-custom" {
-		t.Fatalf("ClaudeModel: want claude-custom, got %s", cfg.ClaudeModel)
-	}
-	if cfg.ClaudeEffort != "medium" {
-		t.Fatalf("ClaudeEffort: want medium, got %s", cfg.ClaudeEffort)
-	}
-}
-
 func TestKimiPhaseRouteReadsProviderFile(t *testing.T) {
 	dir := t.TempDir()
 	local := filepath.Join(dir, "trau.ini")

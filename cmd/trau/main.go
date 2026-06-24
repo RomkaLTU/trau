@@ -574,6 +574,35 @@ func (a *appActions) SaveConfigItem(key, value, layer string) error {
 	return nil
 }
 
+// ProviderTunings returns per-provider execution tuning (model/effort defaults
+// and per-phase overrides) for the in-TUI provider settings panel.
+func (a *appActions) ProviderTunings() []tui.ProviderTuning {
+	projectEnv, userEnv, localEnv := a.configPaths()
+	tunings := config.ResolveProviderTunings(localEnv, projectEnv, userEnv, a.cfg.Provider)
+	out := make([]tui.ProviderTuning, 0, len(tunings))
+	for _, t := range tunings {
+		pt := tui.ProviderTuning{
+			Name:    t.Name,
+			Active:  t.Active,
+			Models:  t.Models,
+			Efforts: t.Efforts,
+			Model:   tui.ProviderTuningField{Value: t.Model.Value, Layer: string(t.Model.Layer)},
+			Effort:  tui.ProviderTuningField{Value: t.Effort.Value, Layer: string(t.Effort.Layer)},
+		}
+		for _, ph := range t.Phases {
+			pt.Phases = append(pt.Phases, tui.ProviderPhaseTuning{
+				Phase:     ph.Phase,
+				Model:     tui.ProviderTuningField{Value: ph.Model.Value, Layer: string(ph.Model.Layer)},
+				Effort:    tui.ProviderTuningField{Value: ph.Effort.Value, Layer: string(ph.Effort.Layer)},
+				EffModel:  ph.EffModel,
+				EffEffort: ph.EffEffort,
+			})
+		}
+		out = append(out, pt)
+	}
+	return out
+}
+
 func (a *appActions) configPaths() (projectEnv, userEnv, localEnv string) {
 	localEnv = config.LocalConfigPath()
 	projectEnv = config.ProjectConfigPath(a.cfg.RepoRoot)

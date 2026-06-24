@@ -52,24 +52,22 @@ TRAU_REPO_ROOT=
 # with --provider <name>.
 PROVIDER=claude
 
-# Provider speed/reasoning presets: fast | balanced | slow. A mode sets the default
-# model and effort for the active provider unless you override them explicitly with
-# CLAUDE_MODEL / CLAUDE_EFFORT (or their per-phase variants below). You can also
-# define your own presets in a provider-local config file by setting a mode and
-# naming keys like FAST_CLAUDE_MODEL / FAST_CLAUDE_EFFORT.
+# Execution tuning is two independent dials per provider: model (capability) and
+# effort (reasoning depth / latency). Set a default model and effort for the active
+# provider, then optionally override either per phase below. There are no bundled
+# speed presets — "fast on a smart model" is just a strong model at low effort.
 #
-# Built-in Claude presets:
-#   fast     -> claude-haiku-4-5  @ low
-#   balanced -> claude-sonnet-4-6 @ medium
-#   slow     -> claude-opus-4-8   @ max
-# Built-in Codex presets:
-#   fast     -> gpt-5.4-mini @ low
-#   balanced -> gpt-5.5      @ medium
-#   slow     -> gpt-5.5      @ xhigh
+# Effort is provider-specific. Claude takes --effort (low|medium|high|xhigh|max);
+# Codex takes -c model_reasoning_effort (minimal|low|medium|high|xhigh). Kimi Code has
+# NO usable effort knob in headless runs (its KIMI_MODEL_THINKING_EFFORT only applies
+# via the KIMI_MODEL_* env-provider), so KIMI_MODEL is a model dial only — and the
+# value is a model ALIAS defined in your kimi config.toml [models.<alias>], not an ID.
 #
-# CLAUDE_MODE=balanced
-# CODEX_MODE=fast
-# KIMI_MODE=
+# CLAUDE_MODEL=claude-sonnet-4-6
+# CLAUDE_EFFORT=medium
+# CODEX_MODEL=gpt-5.5
+# CODEX_EFFORT=medium
+# KIMI_MODEL=kimi-for-coding
 
 # Per-provider phase tuning for this project. Phases: BUILD HANDOFF VERIFY REPAIR
 # BUGFIX COMMIT PICK. Model/effort are provider-specific.
@@ -95,6 +93,10 @@ PROVIDER=claude
 # CODEX_COMMIT_EFFORT=low
 # CODEX_PICK_MODEL=gpt-5.4-mini
 # CODEX_PICK_EFFORT=low
+#
+# Example Kimi tuning: a different config.toml model alias per phase (no effort knob).
+# KIMI_BUILD_MODEL=kimi-for-coding
+# KIMI_COMMIT_MODEL=kimi-fast
 
 # --- loop control ---
 MAX_ITERATIONS=15

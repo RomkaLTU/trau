@@ -26,6 +26,35 @@ type ConfigItem struct {
 	Default     string
 }
 
+// ProviderTuningField is one resolved value plus the layer that supplied it.
+// It mirrors config.ProviderTuningField.
+type ProviderTuningField struct {
+	Value string
+	Layer string
+}
+
+// ProviderPhaseTuning is one phase's model/effort for a provider: the raw
+// per-phase override (empty Value = inherit) plus the effective value that runs.
+type ProviderPhaseTuning struct {
+	Phase     string
+	Model     ProviderTuningField
+	Effort    ProviderTuningField
+	EffModel  string
+	EffEffort string
+}
+
+// ProviderTuning is the execution-tuning picture for one provider, consumed by
+// the provider settings panel. It mirrors config.ProviderTuning.
+type ProviderTuning struct {
+	Name    string
+	Active  bool
+	Models  []string
+	Efforts []string
+	Model   ProviderTuningField
+	Effort  ProviderTuningField
+	Phases  []ProviderPhaseTuning
+}
+
 // SettingsActions is the narrow seam the settings editor needs from the
 // backend. The concrete implementation lives in cmd/trau/main.go.
 type SettingsActions interface {
@@ -40,6 +69,10 @@ type SettingsActions interface {
 	// ConfigLayers returns the writable layer names offered by the editor,
 	// ordered from lowest to highest precedence.
 	ConfigLayers() []string
+
+	// ProviderTunings returns per-provider execution tuning (model/effort and
+	// per-phase overrides) for the provider settings panel.
+	ProviderTunings() []ProviderTuning
 }
 
 type settingsStep int
@@ -68,6 +101,8 @@ type settingsModel struct {
 	items    []ConfigItem
 	filtered []ConfigItem
 	cursor   int
+
+	title string
 
 	showAdvanced bool
 	step         settingsStep
@@ -100,6 +135,7 @@ func newSettingsModel(actions SettingsActions, styles Styles, width, height int)
 		width:      width,
 		height:     height,
 		items:      actions.ConfigItems(),
+		title:      "Settings",
 		editInput:  ti,
 		editLayers: actions.ConfigLayers(),
 	}
@@ -351,8 +387,12 @@ func (m settingsModel) View() string {
 
 func (m settingsModel) renderList() string {
 	s := m.styles
+	title := m.title
+	if title == "" {
+		title = "Settings"
+	}
 	rows := []string{
-		s.SummaryTitle.Render("Settings"),
+		s.SummaryTitle.Render(title),
 		"",
 		s.Subtle.Render("Effective config values and the layer that supplies each one."),
 		"",

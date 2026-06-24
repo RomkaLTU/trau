@@ -53,7 +53,6 @@ type Config struct {
 	AgentTimeout          int
 	ClaudeModel           string
 	ClaudeEffort          string
-	ClaudeMode            string
 	ClaudeDisallowedTools string
 
 	CodexConfig  string
@@ -62,13 +61,11 @@ type Config struct {
 	CodexProfile string
 	CodexModel   string
 	CodexEffort  string
-	CodexMode    string
 
 	KimiConfig string
 	KimiBin    string
 	KimiFlags  string
 	KimiModel  string
-	KimiMode   string
 
 	Routes map[string]string
 
@@ -110,7 +107,6 @@ func Defaults() Config {
 		AgentTimeout:          900,
 		ClaudeModel:           "",
 		ClaudeEffort:          "",
-		ClaudeMode:            "",
 		ClaudeDisallowedTools: "Agent,Workflow",
 		CodexConfig:           "",
 		CodexBin:              "codex",
@@ -118,12 +114,10 @@ func Defaults() Config {
 		CodexProfile:          "",
 		CodexModel:            "",
 		CodexEffort:           "",
-		CodexMode:             "",
 		KimiConfig:            "",
 		KimiBin:               "kimi",
 		KimiFlags:             "",
 		KimiModel:             "",
-		KimiMode:              "",
 		MaxIterations:         15,
 		MaxRepairs:            2,
 		MaxBugfixes:           2,
@@ -357,19 +351,14 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	providerStr(claudeFile, claudeSrc, "CLAUDE_MODEL", &c.ClaudeModel)
 	providerStr(claudeFile, claudeSrc, "CLAUDE_DISALLOWED_TOOLS", &c.ClaudeDisallowedTools)
 	providerStr(claudeFile, claudeSrc, "CLAUDE_EFFORT", &c.ClaudeEffort)
-	providerStr(claudeFile, claudeSrc, "CLAUDE_MODE", &c.ClaudeMode)
 	providerStr(codexFile, codexSrc, "CODEX_BIN", &c.CodexBin)
 	providerStr(codexFile, codexSrc, "CODEX_FLAGS", &c.CodexFlags)
 	providerStr(codexFile, codexSrc, "CODEX_PROFILE", &c.CodexProfile)
 	providerStr(codexFile, codexSrc, "CODEX_MODEL", &c.CodexModel)
 	providerStr(codexFile, codexSrc, "CODEX_EFFORT", &c.CodexEffort)
-	providerStr(codexFile, codexSrc, "CODEX_MODE", &c.CodexMode)
 	providerStr(kimiFile, kimiSrc, "KIMI_BIN", &c.KimiBin)
 	providerStr(kimiFile, kimiSrc, "KIMI_FLAGS", &c.KimiFlags)
 	providerStr(kimiFile, kimiSrc, "KIMI_MODEL", &c.KimiModel)
-	providerStr(kimiFile, kimiSrc, "KIMI_MODE", &c.KimiMode)
-
-	applyProviderMode(&c, claudeFile, claudeSrc, codexFile, codexSrc, kimiFile, kimiSrc, get, sources)
 
 	routes := map[string]string{}
 	phaseGet := func(key string) (string, Layer) {
@@ -421,82 +410,6 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("RUNS_DIR", &c.RunsDir)
 
 	return c, sources, nil
-}
-
-// ProviderMode is a named speed/reasoning preset for a provider. It maps to a
-// default model and effort when the user does not set them explicitly.
-type ProviderMode struct {
-	Model  string
-	Effort string
-}
-
-// providerModeDefaults supplies built-in fast/balanced/slow presets for providers
-// that do not define their own in a provider-local config file. Explicit
-// MODEL/EFFORT values and per-phase overrides always win.
-var providerModeDefaults = map[string]map[string]ProviderMode{
-	"claude": {
-		"fast":     {Model: "claude-haiku-4-5", Effort: "low"},
-		"balanced": {Model: "claude-sonnet-4-6", Effort: "medium"},
-		"slow":     {Model: "claude-opus-4-8", Effort: "max"},
-	},
-	"codex": {
-		"fast":     {Model: "gpt-5.4-mini", Effort: "low"},
-		"balanced": {Model: "gpt-5.5", Effort: "medium"},
-		"slow":     {Model: "gpt-5.5", Effort: "xhigh"},
-	},
-}
-
-// applyProviderMode expands CLAUDE_MODE/CODEX_MODE/KIMI_MODE into model and
-// effort defaults. It first looks for user-defined presets named like
-// FAST_CLAUDE_MODEL / FAST_CLAUDE_EFFORT in the provider-local config file (or
-// the normal config layers), then falls back to the built-in defaults above.
-// Any explicit MODEL/EFFORT already loaded takes precedence.
-func applyProviderMode(c *Config, claudeFile map[string]string, claudeSrc envLayer, codexFile map[string]string, codexSrc envLayer, kimiFile map[string]string, kimiSrc envLayer, get func(string) (string, envLayer), sources map[string]Layer) {
-	modeFor := func(provider string, mode string, file map[string]string, src envLayer, model, effort *string) {
-		if mode == "" {
-			return
-		}
-		mode = strings.ToLower(mode)
-		prefix := strings.ToUpper(provider) + "_"
-		modeSource := sources[prefix+"MODE"]
-		if model != nil && *model == "" {
-			if v, _ := providerGet(file, src, strings.ToUpper(mode)+"_"+prefix+"MODEL", get); v != "" {
-				*model = v
-				if _, ok := sources[prefix+"MODEL"]; !ok {
-					sources[prefix+"MODEL"] = modeSource
-				}
-			}
-		}
-		if effort != nil && *effort == "" {
-			if v, _ := providerGet(file, src, strings.ToUpper(mode)+"_"+prefix+"EFFORT", get); v != "" {
-				*effort = v
-				if _, ok := sources[prefix+"EFFORT"]; !ok {
-					sources[prefix+"EFFORT"] = modeSource
-				}
-			}
-		}
-
-		preset, ok := providerModeDefaults[provider][mode]
-		if !ok {
-			return
-		}
-		if model != nil && *model == "" {
-			*model = preset.Model
-			if _, ok := sources[prefix+"MODEL"]; !ok {
-				sources[prefix+"MODEL"] = modeSource
-			}
-		}
-		if effort != nil && *effort == "" {
-			*effort = preset.Effort
-			if _, ok := sources[prefix+"EFFORT"]; !ok {
-				sources[prefix+"EFFORT"] = modeSource
-			}
-		}
-	}
-
-	modeFor("claude", c.ClaudeMode, claudeFile, claudeSrc, &c.ClaudeModel, &c.ClaudeEffort)
-	modeFor("codex", c.CodexMode, codexFile, codexSrc, &c.CodexModel, &c.CodexEffort)
-	modeFor("kimi", c.KimiMode, kimiFile, kimiSrc, &c.KimiModel, nil)
 }
 
 var phases = []string{"build", "handoff", "verify", "repair", "bugfix", "commit", "pick"}
@@ -782,18 +695,15 @@ func KnownKeys() []KeyMeta {
 		{Key: "AGENT_TIMEOUT", Advanced: true, Default: "900", Description: "Per-agent call timeout in seconds"},
 		{Key: "CLAUDE_MODEL", Advanced: true, Description: "Default Claude model"},
 		{Key: "CLAUDE_EFFORT", Advanced: true, Description: "Default Claude reasoning effort"},
-		{Key: "CLAUDE_MODE", Advanced: true, Description: "Claude speed preset: fast | balanced | slow", Options: []string{"fast", "balanced", "slow"}},
 		{Key: "CLAUDE_DISALLOWED_TOOLS", Advanced: true, Default: "Agent,Workflow", Description: "Tools disabled inside agents"},
 		{Key: "CODEX_BIN", Advanced: true, Default: "codex", Description: "Codex binary"},
 		{Key: "CODEX_FLAGS", Advanced: true, Default: "--dangerously-bypass-approvals-and-sandbox", Description: "Extra flags passed to Codex"},
 		{Key: "CODEX_PROFILE", Advanced: true, Description: "Codex exec profile"},
 		{Key: "CODEX_MODEL", Advanced: true, Description: "Default Codex model"},
 		{Key: "CODEX_EFFORT", Advanced: true, Description: "Default Codex reasoning effort"},
-		{Key: "CODEX_MODE", Advanced: true, Description: "Codex speed preset: fast | balanced | slow", Options: []string{"fast", "balanced", "slow"}},
 		{Key: "KIMI_BIN", Advanced: true, Default: "kimi", Description: "Kimi binary"},
 		{Key: "KIMI_FLAGS", Advanced: true, Description: "Extra flags passed to Kimi"},
-		{Key: "KIMI_MODEL", Advanced: true, Description: "Default Kimi model"},
-		{Key: "KIMI_MODE", Advanced: true, Description: "Kimi speed preset: fast | balanced | slow", Options: []string{"fast", "balanced", "slow"}},
+		{Key: "KIMI_MODEL", Advanced: true, Description: "Default Kimi model alias (from your kimi config.toml [models.*])"},
 		{Key: "MAX_ITERATIONS", Default: "15", Description: "Maximum tickets per run"},
 		{Key: "MAX_REPAIRS", Default: "2", Description: "Verify-fail quick repair attempts before bugfix"},
 		{Key: "MAX_BUGFIXES", Default: "2", Description: "Comprehensive bugfix passes after quick repairs are exhausted"},
@@ -843,6 +753,208 @@ func KnownKeys() []KeyMeta {
 		{Key: "KIMI_COMMIT_MODEL", Advanced: true, Description: "Kimi model for commit phase"},
 		{Key: "KIMI_PICK_MODEL", Advanced: true, Description: "Kimi model for pick phase"},
 	}
+}
+
+// ProviderTuningMeta enumerates the execution knobs a provider exposes, so the
+// settings UI can offer valid pickers instead of free text. Models are
+// suggestions (custom values are still allowed); Efforts is the exact set the
+// provider's CLI accepts.
+type ProviderTuningMeta struct {
+	Name    string
+	Models  []string
+	Efforts []string
+}
+
+// ProviderTuningMetas returns the per-provider model/effort option sets used by
+// the in-TUI provider settings panel. Effort values reflect each CLI's real
+// knob: Claude --effort, Codex -c model_reasoning_effort, Kimi
+// KIMI_MODEL_THINKING_EFFORT.
+func ProviderTuningMetas() []ProviderTuningMeta {
+	return []ProviderTuningMeta{
+		{
+			Name:    "claude",
+			Models:  []string{"opus", "sonnet", "haiku"},
+			Efforts: []string{"low", "medium", "high", "xhigh", "max"},
+		},
+		{
+			Name:    "codex",
+			Models:  []string{"gpt-5.5", "gpt-5.4", "gpt-5.4-mini"},
+			Efforts: []string{"minimal", "low", "medium", "high", "xhigh"},
+		},
+		{
+			// Kimi Code selects models by alias from the user's config.toml, not by
+			// a fixed ID, so Models is populated dynamically by ResolveProviderTunings
+			// from KimiModelAliases. It exposes no usable reasoning-effort knob in
+			// headless runs (the KIMI_MODEL_THINKING_EFFORT env var only applies via
+			// the KIMI_MODEL_* env-provider mechanism), so Efforts is empty.
+			Name:    "kimi",
+			Models:  nil,
+			Efforts: nil,
+		},
+	}
+}
+
+// kimiConfigPath returns the location of the Kimi Code CLI config.toml:
+// $KIMI_CODE_HOME/config.toml when set, else ~/.kimi-code/config.toml.
+func kimiConfigPath() string {
+	if home := os.Getenv("KIMI_CODE_HOME"); home != "" {
+		return filepath.Join(home, "config.toml")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".kimi-code", "config.toml")
+}
+
+// KimiModelAliases returns the model alias names defined in the user's Kimi Code
+// config.toml ([models.<alias>] tables). Kimi's --model flag takes one of these
+// user-defined aliases — there is no fixed documented list — so the settings UI
+// offers them as real, typo-proof choices. Returns nil when the config is
+// absent or defines no models. It scans table headers rather than parsing TOML
+// to avoid a dependency for a read this shallow.
+func KimiModelAliases() []string {
+	path := kimiConfigPath()
+	if path == "" {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+
+	var aliases []string
+	seen := map[string]bool{}
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if !strings.HasPrefix(line, "[models.") || !strings.HasSuffix(line, "]") {
+			continue
+		}
+		alias := strings.TrimSuffix(strings.TrimPrefix(line, "[models."), "]")
+		alias = strings.Trim(alias, "\"")
+		if alias == "" || seen[alias] {
+			continue
+		}
+		seen[alias] = true
+		aliases = append(aliases, alias)
+	}
+	return aliases
+}
+
+// ProviderTuningField is one resolved value plus the layer that supplied it.
+type ProviderTuningField struct {
+	Value string
+	Layer Layer
+}
+
+// ProviderPhaseTuning is one phase's model/effort for a provider: the raw
+// per-phase override (empty Value means "inherit the default") alongside the
+// effective value that actually runs after applying the inherit fallback.
+type ProviderPhaseTuning struct {
+	Phase     string
+	Model     ProviderTuningField
+	Effort    ProviderTuningField
+	EffModel  string
+	EffEffort string
+}
+
+// ProviderTuning is the full execution-tuning picture for one provider, consumed
+// by the provider settings panel: option sets, default model/effort, and the
+// per-phase overrides with their effective resolution.
+type ProviderTuning struct {
+	Name    string
+	Active  bool
+	Models  []string
+	Efforts []string
+	Model   ProviderTuningField
+	Effort  ProviderTuningField
+	Phases  []ProviderPhaseTuning
+}
+
+// ResolveProviderTunings returns the execution-tuning state for every provider.
+// Values are read across the standard config layers (env > user > project >
+// local); per-phase keys fall back to the provider default for their effective
+// value. activeProvider marks which provider the loop currently runs.
+func ResolveProviderTunings(localPath, projectPath, userPath, activeProvider string) []ProviderTuning {
+	local, _ := ParseEnvFile(localPath)
+	proj, _ := ParseEnvFile(projectPath)
+	user, _ := ParseEnvFile(userPath)
+
+	rawGet := func(key string) (string, Layer) {
+		if !strings.HasPrefix(key, "TRAU_") {
+			if v := os.Getenv("TRAU_" + key); v != "" {
+				return v, LayerEnv
+			}
+		}
+		if v := os.Getenv(key); v != "" {
+			return v, LayerEnv
+		}
+		if v, ok := user[key]; ok {
+			return v, LayerUser
+		}
+		if v, ok := proj[key]; ok {
+			return v, LayerProject
+		}
+		if v, ok := local[key]; ok {
+			return v, LayerLocal
+		}
+		return "", LayerDefault
+	}
+	field := func(key string) ProviderTuningField {
+		v, l := rawGet(key)
+		return ProviderTuningField{Value: v, Layer: l}
+	}
+
+	out := make([]ProviderTuning, 0, len(ProviderTuningMetas()))
+	for _, meta := range ProviderTuningMetas() {
+		prefix := strings.ToUpper(meta.Name) + "_"
+		hasEffort := len(meta.Efforts) > 0
+		models := meta.Models
+		if meta.Name == "kimi" {
+			models = KimiModelAliases()
+		}
+		model := field(prefix + "MODEL")
+		effort := ProviderTuningField{}
+		if hasEffort {
+			effort = field(prefix + "EFFORT")
+		}
+		pt := ProviderTuning{
+			Name:    meta.Name,
+			Active:  meta.Name == activeProvider,
+			Models:  models,
+			Efforts: meta.Efforts,
+			Model:   model,
+			Effort:  effort,
+		}
+		for _, ph := range phases {
+			pp := strings.ToUpper(ph)
+			pm := field(prefix + pp + "_MODEL")
+			pe := ProviderTuningField{}
+			effEffort := ""
+			if hasEffort {
+				pe = field(prefix + pp + "_EFFORT")
+				effEffort = pe.Value
+				if effEffort == "" {
+					effEffort = effort.Value
+				}
+			}
+			effModel := pm.Value
+			if effModel == "" {
+				effModel = model.Value
+			}
+			pt.Phases = append(pt.Phases, ProviderPhaseTuning{
+				Phase:     ph,
+				Model:     pm,
+				Effort:    pe,
+				EffModel:  effModel,
+				EffEffort: effEffort,
+			})
+		}
+		out = append(out, pt)
+	}
+	return out
 }
 
 // ResolveConfigItems returns every known config key with its effective value and
@@ -922,8 +1034,6 @@ func keyValue(cfg Config, key string) string {
 		return cfg.ClaudeModel
 	case "CLAUDE_EFFORT":
 		return cfg.ClaudeEffort
-	case "CLAUDE_MODE":
-		return cfg.ClaudeMode
 	case "CLAUDE_DISALLOWED_TOOLS":
 		return cfg.ClaudeDisallowedTools
 	case "CODEX_BIN":
@@ -936,16 +1046,12 @@ func keyValue(cfg Config, key string) string {
 		return cfg.CodexModel
 	case "CODEX_EFFORT":
 		return cfg.CodexEffort
-	case "CODEX_MODE":
-		return cfg.CodexMode
 	case "KIMI_BIN":
 		return cfg.KimiBin
 	case "KIMI_FLAGS":
 		return cfg.KimiFlags
 	case "KIMI_MODEL":
 		return cfg.KimiModel
-	case "KIMI_MODE":
-		return cfg.KimiMode
 	case "MAX_ITERATIONS":
 		return strconv.Itoa(cfg.MaxIterations)
 	case "MAX_REPAIRS":
