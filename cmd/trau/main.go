@@ -51,7 +51,7 @@ Usage:
   trau doctor                preflight check: git/gh/provider/config/labels/write perms
   trau --status [--json]     show saved ticket checkpoints with token/cost totals
   trau --dry-run             print the next eligible ticket without doing any work
-  trau --reset <ID>          drop the branch + state and re-queue the ticket in the tracker
+  trau --reset <ID>          drop the branch + state and re-queue the ticket (refuses if already merged; --force overrides)
 
 Flags:
   --parent <ID>     treat <ID> as an epic and process its sub-issues (a bare <PREFIX>-<n> arg is equivalent)
@@ -62,6 +62,7 @@ Flags:
   --repo <path>     target app repo (else TRAU_REPO_ROOT, else the cwd git top-level)
   --dry-run         print the next eligible ticket and exit
   --reset <ID>      reset a ticket and exit
+  --force           with --reset, reset even a ticket whose code is already merged
   --status          print saved checkpoints and exit
   --json            emit --status as machine-readable JSON
   --no-tui          force plain console output (disable the Bubble Tea TUI)
@@ -232,6 +233,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		pipe, err := buildPipeline(cfg, runner, repoRoot, pm, sink, log, con)
 		if err != nil {
 			return err
+		}
+		if phase := pipe.State.Get(opts.ResetID, "PHASE"); phase == state.Merged && !opts.Force {
+			return console.Actionable(
+				fmt.Errorf("%s is already shipped (phase: %s)", opts.ResetID, phase),
+				"reset "+opts.ResetID,
+				"its code is already merged — pass --force to reset it anyway")
 		}
 		return pipe.Reset(ctx, opts.ResetID)
 	}
