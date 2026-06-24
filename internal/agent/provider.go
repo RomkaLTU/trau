@@ -125,7 +125,6 @@ var kimiSpec = Spec{
 			Bin:      p.Bin,
 			Flags:    p.Flags,
 			Model:    p.Model,
-			Effort:   p.Effort,
 			Preamble: p.Preamble,
 			Dir:      p.Dir,
 			Timeout:  p.Timeout,

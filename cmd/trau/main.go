@@ -1041,7 +1041,7 @@ func providerConfigFor(cfg config.Config, provider string) providerConfig {
 			bin:    cfg.KimiBin,
 			flags:  cfg.KimiFlags,
 			model:  cfg.KimiModel,
-			effort: cfg.KimiEffort,
+			effort: "",
 			extra:  map[string]string{},
 		}
 	}

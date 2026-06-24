@@ -57,17 +57,17 @@ PROVIDER=claude
 # provider, then optionally override either per phase below. There are no bundled
 # speed presets — "fast on a smart model" is just a strong model at low effort.
 #
-# Effort knobs are provider-specific. Claude takes --effort (low|medium|high|xhigh|max);
-# Codex takes -c model_reasoning_effort (minimal|low|medium|high|xhigh); Kimi takes the
-# KIMI_MODEL_THINKING_EFFORT env var (low|medium|high|xhigh|max), set for you from
-# KIMI_EFFORT (and its per-phase KIMI_<PHASE>_EFFORT variants).
+# Effort is provider-specific. Claude takes --effort (low|medium|high|xhigh|max);
+# Codex takes -c model_reasoning_effort (minimal|low|medium|high|xhigh). Kimi Code has
+# NO usable effort knob in headless runs (its KIMI_MODEL_THINKING_EFFORT only applies
+# via the KIMI_MODEL_* env-provider), so KIMI_MODEL is a model dial only — and the
+# value is a model ALIAS defined in your kimi config.toml [models.<alias>], not an ID.
 #
 # CLAUDE_MODEL=claude-sonnet-4-6
 # CLAUDE_EFFORT=medium
 # CODEX_MODEL=gpt-5.5
 # CODEX_EFFORT=medium
-# KIMI_MODEL=kimi-k2.7-code
-# KIMI_EFFORT=medium
+# KIMI_MODEL=kimi-for-coding
 
 # Per-provider phase tuning for this project. Phases: BUILD HANDOFF VERIFY REPAIR
 # BUGFIX COMMIT PICK. Model/effort are provider-specific.
@@ -94,11 +94,9 @@ PROVIDER=claude
 # CODEX_PICK_MODEL=gpt-5.4-mini
 # CODEX_PICK_EFFORT=low
 #
-# Example Kimi tuning: turbo model for cheap phases, full thinking for the hard ones.
-# KIMI_BUILD_MODEL=kimi-k2.7-code
-# KIMI_BUILD_EFFORT=high
-# KIMI_COMMIT_MODEL=kimi-k2.7-code-highspeed
-# KIMI_COMMIT_EFFORT=low
+# Example Kimi tuning: a different config.toml model alias per phase (no effort knob).
+# KIMI_BUILD_MODEL=kimi-for-coding
+# KIMI_COMMIT_MODEL=kimi-fast
 
 # --- loop control ---
 MAX_ITERATIONS=15

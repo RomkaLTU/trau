@@ -3,14 +3,16 @@ package tui
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
 // providerSettingsModel is the execution-tuning panel: a per-provider view of
 // the model and reasoning-effort dials, plus per-phase overrides. Provider tabs
-// switch with ←→; every value is a provider-aware picker so the editor never
-// accepts an effort the CLI would reject. There are no speed presets — tuning is
+// switch with ←→. Model is a free-text field (it may be a CLI alias, and model
+// names churn); effort is a provider-aware picker, shown only for providers that
+// actually expose a usable effort knob. There are no speed presets — tuning is
 // the two independent dials, model and effort, optionally overridden per phase.
 type providerSettingsModel struct {
 	styles  Styles
@@ -56,22 +58,28 @@ type provRow struct {
 	phaseIdx int // valid when kind == rowPhase
 }
 
-// provPicker is one option dial in the editor, bound to a config key.
+// provPicker is one field in the editor, bound to a config key. A text field
+// (free-text model) carries an input + hint; a radio field carries options.
 type provPicker struct {
-	label  string
-	key    string
-	values []string // values to save (e.g. "" for inherit)
-	labels []string // display labels
+	label string
+	key   string
+
+	text  bool
+	input textinput.Model
+	hint  string
+
+	values []string
+	labels []string
 	idx    int
 }
 
-// provEditor edits one browse row: one or two value pickers plus the write
-// layer. focus walks the pickers then the layer control.
+// provEditor edits one browse row: one or two value fields plus the write
+// layer. focus walks the fields then the layer control.
 type provEditor struct {
 	title   string
 	rowDesc string
 	pickers []provPicker
-	focus   int // 0..len(pickers)-1 = picker; len(pickers) = layer
+	focus   int // 0..len(pickers)-1 = field; len(pickers) = layer
 }
 
 type provSaveDoneMsg struct {
@@ -114,13 +122,25 @@ func defaultLayerIndex(layers []string) int {
 	return 0
 }
 
+func (m providerSettingsModel) current() (ProviderTuning, bool) {
+	if m.tab < 0 || m.tab >= len(m.providers) {
+		return ProviderTuning{}, false
+	}
+	return m.providers[m.tab], true
+}
+
 func (m *providerSettingsModel) rebuildRows() {
 	m.rows = m.rows[:0]
-	m.rows = append(m.rows, provRow{kind: rowModel}, provRow{kind: rowEffort})
-	if m.tab < len(m.providers) {
-		for i := range m.providers[m.tab].Phases {
-			m.rows = append(m.rows, provRow{kind: rowPhase, phaseIdx: i})
-		}
+	p, ok := m.current()
+	if !ok {
+		return
+	}
+	m.rows = append(m.rows, provRow{kind: rowModel})
+	if len(p.Efforts) > 0 {
+		m.rows = append(m.rows, provRow{kind: rowEffort})
+	}
+	for i := range p.Phases {
+		m.rows = append(m.rows, provRow{kind: rowPhase, phaseIdx: i})
 	}
 	if m.cursor >= len(m.rows) {
 		m.cursor = max(0, len(m.rows)-1)
@@ -152,7 +172,17 @@ func (m providerSettingsModel) Update(msg tea.Msg) (providerSettingsModel, tea.C
 		}
 		return m, nil
 	}
+	// Route cursor-blink and other stray messages to the focused text field.
+	if m.step == provEdit && m.editingText() {
+		var cmd tea.Cmd
+		m.edit.pickers[m.edit.focus].input, cmd = m.edit.pickers[m.edit.focus].input.Update(msg)
+		return m, cmd
+	}
 	return m, nil
+}
+
+func (m providerSettingsModel) editingText() bool {
+	return m.edit.focus < len(m.edit.pickers) && m.edit.pickers[m.edit.focus].text
 }
 
 func (m providerSettingsModel) handleKey(msg tea.KeyMsg) (providerSettingsModel, tea.Cmd) {
@@ -201,18 +231,12 @@ func (m providerSettingsModel) handleBrowseKey(msg tea.KeyMsg) (providerSettings
 }
 
 func (m providerSettingsModel) enterEdit() (providerSettingsModel, tea.Cmd) {
-	if m.tab >= len(m.providers) || m.cursor >= len(m.rows) {
+	p, ok := m.current()
+	if !ok || m.cursor >= len(m.rows) {
 		return m, nil
 	}
-	p := m.providers[m.tab]
 	row := m.rows[m.cursor]
 	prefix := strings.ToUpper(p.Name) + "_"
-
-	modelVals, modelLabels := optionsWith(p.Models, "(default)")
-	effortVals, effortLabels := optionsWith(p.Efforts, "(default)")
-	phModelVals, phModelLabels := optionsWith(p.Models, "(inherit)")
-	phEffortVals, phEffortLabels := optionsWith(p.Efforts, "(inherit)")
-
 	m.saveErr = nil
 	m.savedMsg = ""
 
@@ -221,102 +245,150 @@ func (m providerSettingsModel) enterEdit() (providerSettingsModel, tea.Cmd) {
 		m.edit = provEditor{
 			title:   "Default model — " + p.Name,
 			rowDesc: "The model used when a phase has no per-phase override.",
-			pickers: []provPicker{{
-				label:  "Model",
-				key:    prefix + "MODEL",
-				values: modelVals,
-				labels: modelLabels,
-				idx:    optionIndex(modelVals, p.Model.Value),
-			}},
+			pickers: []provPicker{modelField("Model", prefix+"MODEL", p.Model.Value, modelHint(p))},
 		}
 	case rowEffort:
 		m.edit = provEditor{
 			title:   "Default reasoning effort — " + p.Name,
 			rowDesc: effortDesc(p.Name),
-			pickers: []provPicker{{
-				label:  "Effort",
-				key:    prefix + "EFFORT",
-				values: effortVals,
-				labels: effortLabels,
-				idx:    optionIndex(effortVals, p.Effort.Value),
-			}},
+			pickers: []provPicker{effortField("Effort", prefix+"EFFORT", p.Efforts, p.Effort.Value, "(default)")},
 		}
 	case rowPhase:
 		ph := p.Phases[row.phaseIdx]
 		pp := strings.ToUpper(ph.Phase)
+		pickers := []provPicker{modelField("Model", prefix+pp+"_MODEL", ph.Model.Value, phaseModelHint(p))}
+		if len(p.Efforts) > 0 {
+			pickers = append(pickers, effortField("Effort", prefix+pp+"_EFFORT", p.Efforts, ph.Effort.Value, "(inherit)"))
+		}
 		m.edit = provEditor{
 			title:   ph.Phase + " phase — " + p.Name,
-			rowDesc: "Override model and/or effort for the " + ph.Phase + " phase. (inherit) uses the provider default.",
-			pickers: []provPicker{
-				{
-					label:  "Model",
-					key:    prefix + pp + "_MODEL",
-					values: phModelVals,
-					labels: phModelLabels,
-					idx:    optionIndex(phModelVals, ph.Model.Value),
-				},
-				{
-					label:  "Effort",
-					key:    prefix + pp + "_EFFORT",
-					values: phEffortVals,
-					labels: phEffortLabels,
-					idx:    optionIndex(phEffortVals, ph.Effort.Value),
-				},
-			},
+			rowDesc: "Override the " + ph.Phase + " phase. Leave model blank (or effort on inherit) to use the provider default.",
+			pickers: pickers,
 		}
 	}
 	m.edit.focus = 0
+	cmd := m.syncFocus()
 	m.step = provEdit
-	return m, nil
+	return m, cmd
+}
+
+func modelField(label, key, value, hint string) provPicker {
+	ti := textinput.New()
+	ti.Prompt = ""
+	ti.CharLimit = 128
+	ti.Width = 44
+	ti.SetValue(value)
+	return provPicker{label: label, key: key, text: true, input: ti, hint: hint}
+}
+
+func effortField(label, key string, efforts []string, value, sentinel string) provPicker {
+	values, labels := optionsWith(efforts, sentinel)
+	return provPicker{
+		label:  label,
+		key:    key,
+		values: values,
+		labels: labels,
+		idx:    optionIndex(values, value),
+	}
 }
 
 func (m providerSettingsModel) handleEditKey(msg tea.KeyMsg) (providerSettingsModel, tea.Cmd) {
 	layerFocus := len(m.edit.pickers)
-	switch {
-	case msg.Type == tea.KeyEsc:
+	switch msg.Type {
+	case tea.KeyEsc:
 		m.step = provBrowse
 		return m, nil
-	case msg.Type == tea.KeyUp, msg.String() == "k":
-		if m.edit.focus > 0 {
-			m.edit.focus--
-		}
-	case msg.Type == tea.KeyDown, msg.String() == "j", msg.Type == tea.KeyTab:
+	case tea.KeyEnter:
+		return m.saveEdit()
+	case tea.KeyTab, tea.KeyDown:
 		if m.edit.focus < layerFocus {
 			m.edit.focus++
 		}
+		return m, m.syncFocus()
+	case tea.KeyShiftTab, tea.KeyUp:
+		if m.edit.focus > 0 {
+			m.edit.focus--
+		}
+		return m, m.syncFocus()
+	}
+
+	// A focused text field consumes all remaining keys as input (so h/j/k/l are
+	// typed, not treated as navigation); left/right move the text cursor.
+	if m.editingText() {
+		var cmd tea.Cmd
+		m.edit.pickers[m.edit.focus].input, cmd = m.edit.pickers[m.edit.focus].input.Update(msg)
+		return m, cmd
+	}
+
+	switch {
 	case msg.Type == tea.KeyLeft, msg.String() == "h":
-		if m.edit.focus == layerFocus {
-			if m.layerIdx > 0 {
-				m.layerIdx--
-			}
-		} else {
-			p := &m.edit.pickers[m.edit.focus]
-			if p.idx > 0 {
-				p.idx--
-			}
-		}
+		m.changeFocused(-1)
 	case msg.Type == tea.KeyRight, msg.String() == "l":
-		if m.edit.focus == layerFocus {
-			if m.layerIdx < len(m.layers)-1 {
-				m.layerIdx++
-			}
-		} else {
-			p := &m.edit.pickers[m.edit.focus]
-			if p.idx < len(p.values)-1 {
-				p.idx++
-			}
+		m.changeFocused(1)
+	case msg.String() == "k":
+		if m.edit.focus > 0 {
+			m.edit.focus--
+			return m, m.syncFocus()
 		}
-	case msg.Type == tea.KeyEnter:
-		return m.saveEdit()
+	case msg.String() == "j":
+		if m.edit.focus < layerFocus {
+			m.edit.focus++
+			return m, m.syncFocus()
+		}
 	}
 	return m, nil
+}
+
+// syncFocus focuses the text input under the cursor and blurs the rest,
+// returning the blink cmd for the newly focused field (if any).
+func (m *providerSettingsModel) syncFocus() tea.Cmd {
+	var cmd tea.Cmd
+	for i := range m.edit.pickers {
+		if !m.edit.pickers[i].text {
+			continue
+		}
+		if i == m.edit.focus {
+			cmd = m.edit.pickers[i].input.Focus()
+		} else {
+			m.edit.pickers[i].input.Blur()
+		}
+	}
+	return cmd
+}
+
+func (m *providerSettingsModel) changeFocused(delta int) {
+	if m.edit.focus == len(m.edit.pickers) {
+		m.layerIdx = clampInt(m.layerIdx+delta, 0, len(m.layers)-1)
+		return
+	}
+	p := &m.edit.pickers[m.edit.focus]
+	if p.text {
+		return
+	}
+	p.idx = clampInt(p.idx+delta, 0, len(p.values)-1)
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func (m providerSettingsModel) saveEdit() (providerSettingsModel, tea.Cmd) {
 	layer := m.layers[m.layerIdx]
 	pairs := make([]provKV, 0, len(m.edit.pickers))
 	for _, p := range m.edit.pickers {
-		pairs = append(pairs, provKV{key: p.key, value: p.values[p.idx]})
+		val := ""
+		if p.text {
+			val = strings.TrimSpace(p.input.Value())
+		} else if p.idx >= 0 && p.idx < len(p.values) {
+			val = p.values[p.idx]
+		}
+		pairs = append(pairs, provKV{key: p.key, value: val})
 	}
 	m.step = provSaving
 	return m, m.saveCmd(pairs, layer)
@@ -358,10 +430,26 @@ func effortDesc(provider string) string {
 		return "Claude --effort: low · medium · high · xhigh · max."
 	case "codex":
 		return "Codex model_reasoning_effort: minimal · low · medium · high · xhigh."
-	case "kimi":
-		return "Kimi KIMI_MODEL_THINKING_EFFORT: low · medium · high · xhigh · max."
 	}
 	return ""
+}
+
+// modelHint describes valid model values for a provider's default model field.
+func modelHint(p ProviderTuning) string {
+	if len(p.Models) > 0 {
+		return "suggestions: " + strings.Join(p.Models, " · ")
+	}
+	if p.Name == "kimi" {
+		return "a model alias from your kimi config.toml [models.<alias>] (e.g. kimi-for-coding)"
+	}
+	return "enter a model name"
+}
+
+func phaseModelHint(p ProviderTuning) string {
+	if len(p.Models) > 0 {
+		return "blank = inherit · suggestions: " + strings.Join(p.Models, " · ")
+	}
+	return "blank = inherit · a config.toml model alias"
 }
 
 func (m providerSettingsModel) View() string {
@@ -388,27 +476,31 @@ func (m providerSettingsModel) renderBrowse() string {
 		rows = append(rows, s.Success.Render("✓ "+m.savedMsg), "")
 	}
 
-	if m.tab >= len(m.providers) {
+	p, ok := m.current()
+	if !ok {
 		return m.renderCard(strings.Join(rows, "\n"), "esc back")
 	}
-	p := m.providers[m.tab]
+	hasEffort := len(p.Efforts) > 0
 
 	rows = append(rows, s.Subtle.Render("Defaults"))
-	rows = append(rows,
-		m.renderValueRow(m.isCursor(rowDefaultsModelRow), "Model", fieldDisplay(p.Model, "(provider default)")),
-		m.renderValueRow(m.isCursor(rowDefaultsEffortRow), "Reasoning", fieldDisplay(p.Effort, "(provider default)")),
-		"",
-		s.Subtle.Render("Per-phase overrides"),
-	)
-	for i, ph := range p.Phases {
-		rowIdx := 2 + i
-		rows = append(rows, m.renderPhaseRow(m.cursor == rowIdx, ph))
+	phaseHeaderShown := false
+	for i, r := range m.rows {
+		focused := i == m.cursor
+		switch r.kind {
+		case rowModel:
+			rows = append(rows, m.renderValueRow(focused, "Model", fieldDisplay(p.Model, "(provider default)")))
+		case rowEffort:
+			rows = append(rows, m.renderValueRow(focused, "Reasoning", fieldDisplay(p.Effort, "(provider default)")))
+		case rowPhase:
+			if !phaseHeaderShown {
+				rows = append(rows, "", s.Subtle.Render("Per-phase overrides"))
+				phaseHeaderShown = true
+			}
+			rows = append(rows, m.renderPhaseRow(focused, p.Phases[r.phaseIdx], hasEffort))
+		}
 	}
 
-	rows = append(rows,
-		"",
-		s.Help.Render("Effective: "+m.effectiveRoutes(p)),
-	)
+	rows = append(rows, "", s.Help.Render("Effective: "+m.effectiveRoutes(p, hasEffort)))
 	if d := m.cursorDesc(p); d != "" {
 		rows = append(rows, "", s.Help.Render(d))
 	}
@@ -416,13 +508,6 @@ func (m providerSettingsModel) renderBrowse() string {
 	hint := "↑↓ move · ←→ switch provider · enter edit · esc back"
 	return m.renderCard(strings.Join(rows, "\n"), hint)
 }
-
-const (
-	rowDefaultsModelRow  = 0
-	rowDefaultsEffortRow = 1
-)
-
-func (m providerSettingsModel) isCursor(idx int) bool { return m.cursor == idx }
 
 func (m providerSettingsModel) renderTabs() string {
 	s := m.styles
@@ -454,17 +539,21 @@ func (m providerSettingsModel) renderValueRow(focused bool, label, value string)
 	return marker + labelStyle.Render(padRight(label, 12)) + "  " + valStyle.Render(value)
 }
 
-func (m providerSettingsModel) renderPhaseRow(focused bool, ph ProviderPhaseTuning) string {
+func (m providerSettingsModel) renderPhaseRow(focused bool, ph ProviderPhaseTuning, hasEffort bool) string {
 	model := ph.EffModel
 	if model == "" {
 		model = "(default)"
 	}
-	effort := ph.EffEffort
-	if effort == "" {
-		effort = "(default)"
+	value := model
+	overridden := ph.Model.Value != ""
+	if hasEffort {
+		effort := ph.EffEffort
+		if effort == "" {
+			effort = "(default)"
+		}
+		value += " @ " + effort
+		overridden = overridden || ph.Effort.Value != ""
 	}
-	value := model + " @ " + effort
-	overridden := ph.Model.Value != "" || ph.Effort.Value != ""
 	if overridden {
 		value += "  " + m.styles.Info.Render("•")
 	}
@@ -486,9 +575,10 @@ func (m providerSettingsModel) cursorDesc(p ProviderTuning) string {
 	return ""
 }
 
-// effectiveRoutes renders the model@effort each phase will run under, the same
-// resolution the loop applies, so the precedence is legible at a glance.
-func (m providerSettingsModel) effectiveRoutes(p ProviderTuning) string {
+// effectiveRoutes renders the model (and effort, where supported) each phase
+// will run under — the same resolution the loop applies — so precedence is
+// legible at a glance.
+func (m providerSettingsModel) effectiveRoutes(p ProviderTuning, hasEffort bool) string {
 	parts := make([]string, 0, len(p.Phases))
 	for _, ph := range p.Phases {
 		model := ph.EffModel
@@ -496,7 +586,7 @@ func (m providerSettingsModel) effectiveRoutes(p ProviderTuning) string {
 			model = "default"
 		}
 		seg := ph.Phase + "→" + model
-		if ph.EffEffort != "" {
+		if hasEffort && ph.EffEffort != "" {
 			seg += "@" + ph.EffEffort
 		}
 		parts = append(parts, seg)
@@ -515,10 +605,15 @@ func (m providerSettingsModel) renderEdit() string {
 	}
 	for i, p := range m.edit.pickers {
 		focused := m.edit.focus == i
-		rows = append(rows,
-			focusMark(s, focused)+s.Subtle.Render(p.label+":"),
-			"  "+radioRow(s, p.labels, p.idx),
-		)
+		rows = append(rows, focusMark(s, focused)+s.Subtle.Render(p.label+":"))
+		if p.text {
+			rows = append(rows, "  "+p.input.View())
+			if p.hint != "" {
+				rows = append(rows, "  "+s.Help.Render(p.hint))
+			}
+		} else {
+			rows = append(rows, "  "+radioRow(s, p.labels, p.idx))
+		}
 	}
 	layerFocus := m.edit.focus == len(m.edit.pickers)
 	rows = append(rows,
@@ -530,8 +625,7 @@ func (m providerSettingsModel) renderEdit() string {
 	if m.step == provSaving {
 		return m.renderCard(strings.Join(rows, "\n"), "saving…")
 	}
-	hint := "↑↓ switch field · ←→ change · enter save · esc cancel"
-	return m.renderCard(strings.Join(rows, "\n"), hint)
+	return m.renderCard(strings.Join(rows, "\n"), "↑↓ switch field · ←→ change · enter save · esc cancel")
 }
 
 // fieldDisplay renders a resolved field value with its source layer, or an empty

@@ -66,7 +66,6 @@ type Config struct {
 	KimiBin    string
 	KimiFlags  string
 	KimiModel  string
-	KimiEffort string
 
 	Routes map[string]string
 
@@ -119,7 +118,6 @@ func Defaults() Config {
 		KimiBin:               "kimi",
 		KimiFlags:             "",
 		KimiModel:             "",
-		KimiEffort:            "",
 		MaxIterations:         15,
 		MaxRepairs:            2,
 		MaxBugfixes:           2,
@@ -361,7 +359,6 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	providerStr(kimiFile, kimiSrc, "KIMI_BIN", &c.KimiBin)
 	providerStr(kimiFile, kimiSrc, "KIMI_FLAGS", &c.KimiFlags)
 	providerStr(kimiFile, kimiSrc, "KIMI_MODEL", &c.KimiModel)
-	providerStr(kimiFile, kimiSrc, "KIMI_EFFORT", &c.KimiEffort)
 
 	routes := map[string]string{}
 	phaseGet := func(key string) (string, Layer) {
@@ -428,7 +425,6 @@ func addProviderPhaseRoutesWithSources(routes map[string]string, sources map[str
 		defaultEffort = c.CodexEffort
 	case "kimi":
 		defaultModel = c.KimiModel
-		defaultEffort = c.KimiEffort
 
 	default:
 		return
@@ -707,8 +703,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "CODEX_EFFORT", Advanced: true, Description: "Default Codex reasoning effort"},
 		{Key: "KIMI_BIN", Advanced: true, Default: "kimi", Description: "Kimi binary"},
 		{Key: "KIMI_FLAGS", Advanced: true, Description: "Extra flags passed to Kimi"},
-		{Key: "KIMI_MODEL", Advanced: true, Description: "Default Kimi model"},
-		{Key: "KIMI_EFFORT", Advanced: true, Description: "Default Kimi reasoning effort (KIMI_MODEL_THINKING_EFFORT)"},
+		{Key: "KIMI_MODEL", Advanced: true, Description: "Default Kimi model alias (from your kimi config.toml [models.*])"},
 		{Key: "MAX_ITERATIONS", Default: "15", Description: "Maximum tickets per run"},
 		{Key: "MAX_REPAIRS", Default: "2", Description: "Verify-fail quick repair attempts before bugfix"},
 		{Key: "MAX_BUGFIXES", Default: "2", Description: "Comprehensive bugfix passes after quick repairs are exhausted"},
@@ -751,19 +746,12 @@ func KnownKeys() []KeyMeta {
 		{Key: "CODEX_PICK_MODEL", Advanced: true, Description: "Codex model for pick phase"},
 		{Key: "CODEX_PICK_EFFORT", Advanced: true, Description: "Codex effort for pick phase"},
 		{Key: "KIMI_BUILD_MODEL", Advanced: true, Description: "Kimi model for build phase"},
-		{Key: "KIMI_BUILD_EFFORT", Advanced: true, Description: "Kimi effort for build phase"},
 		{Key: "KIMI_HANDOFF_MODEL", Advanced: true, Description: "Kimi model for handoff phase"},
-		{Key: "KIMI_HANDOFF_EFFORT", Advanced: true, Description: "Kimi effort for handoff phase"},
 		{Key: "KIMI_VERIFY_MODEL", Advanced: true, Description: "Kimi model for verify phase"},
-		{Key: "KIMI_VERIFY_EFFORT", Advanced: true, Description: "Kimi effort for verify phase"},
 		{Key: "KIMI_REPAIR_MODEL", Advanced: true, Description: "Kimi model for repair phase"},
-		{Key: "KIMI_REPAIR_EFFORT", Advanced: true, Description: "Kimi effort for repair phase"},
 		{Key: "KIMI_BUGFIX_MODEL", Advanced: true, Description: "Kimi model for comprehensive bugfix phase"},
-		{Key: "KIMI_BUGFIX_EFFORT", Advanced: true, Description: "Kimi effort for comprehensive bugfix phase"},
 		{Key: "KIMI_COMMIT_MODEL", Advanced: true, Description: "Kimi model for commit phase"},
-		{Key: "KIMI_COMMIT_EFFORT", Advanced: true, Description: "Kimi effort for commit phase"},
 		{Key: "KIMI_PICK_MODEL", Advanced: true, Description: "Kimi model for pick phase"},
-		{Key: "KIMI_PICK_EFFORT", Advanced: true, Description: "Kimi effort for pick phase"},
 	}
 }
 
@@ -785,7 +773,7 @@ func ProviderTuningMetas() []ProviderTuningMeta {
 	return []ProviderTuningMeta{
 		{
 			Name:    "claude",
-			Models:  []string{"opus", "sonnet", "haiku", "fable", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-fable-5"},
+			Models:  []string{"opus", "sonnet", "haiku", "fable", "opusplan", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-fable-5"},
 			Efforts: []string{"low", "medium", "high", "xhigh", "max"},
 		},
 		{
@@ -794,9 +782,14 @@ func ProviderTuningMetas() []ProviderTuningMeta {
 			Efforts: []string{"minimal", "low", "medium", "high", "xhigh"},
 		},
 		{
+			// Kimi Code selects models by alias from the user's config.toml, not by
+			// a fixed ID, so there are no built-in suggestions. It exposes no usable
+			// reasoning-effort knob in headless runs (the KIMI_MODEL_THINKING_EFFORT
+			// env var only applies via the KIMI_MODEL_* env-provider mechanism), so
+			// Efforts is empty.
 			Name:    "kimi",
-			Models:  []string{"kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6", "kimi-for-coding"},
-			Efforts: []string{"low", "medium", "high", "xhigh", "max"},
+			Models:  nil,
+			Efforts: nil,
 		},
 	}
 }
@@ -868,8 +861,12 @@ func ResolveProviderTunings(localPath, projectPath, userPath, activeProvider str
 	out := make([]ProviderTuning, 0, len(ProviderTuningMetas()))
 	for _, meta := range ProviderTuningMetas() {
 		prefix := strings.ToUpper(meta.Name) + "_"
+		hasEffort := len(meta.Efforts) > 0
 		model := field(prefix + "MODEL")
-		effort := field(prefix + "EFFORT")
+		effort := ProviderTuningField{}
+		if hasEffort {
+			effort = field(prefix + "EFFORT")
+		}
 		pt := ProviderTuning{
 			Name:    meta.Name,
 			Active:  meta.Name == activeProvider,
@@ -881,14 +878,18 @@ func ResolveProviderTunings(localPath, projectPath, userPath, activeProvider str
 		for _, ph := range phases {
 			pp := strings.ToUpper(ph)
 			pm := field(prefix + pp + "_MODEL")
-			pe := field(prefix + pp + "_EFFORT")
+			pe := ProviderTuningField{}
+			effEffort := ""
+			if hasEffort {
+				pe = field(prefix + pp + "_EFFORT")
+				effEffort = pe.Value
+				if effEffort == "" {
+					effEffort = effort.Value
+				}
+			}
 			effModel := pm.Value
 			if effModel == "" {
 				effModel = model.Value
-			}
-			effEffort := pe.Value
-			if effEffort == "" {
-				effEffort = effort.Value
 			}
 			pt.Phases = append(pt.Phases, ProviderPhaseTuning{
 				Phase:     ph,
@@ -998,8 +999,6 @@ func keyValue(cfg Config, key string) string {
 		return cfg.KimiFlags
 	case "KIMI_MODEL":
 		return cfg.KimiModel
-	case "KIMI_EFFORT":
-		return cfg.KimiEffort
 	case "MAX_ITERATIONS":
 		return strconv.Itoa(cfg.MaxIterations)
 	case "MAX_REPAIRS":
@@ -1045,8 +1044,6 @@ func keyValue(cfg Config, key string) string {
 		return phaseRouteEffort(cfg.Routes, "codex", key)
 	case "KIMI_BUILD_MODEL", "KIMI_HANDOFF_MODEL", "KIMI_VERIFY_MODEL", "KIMI_REPAIR_MODEL", "KIMI_BUGFIX_MODEL", "KIMI_COMMIT_MODEL", "KIMI_PICK_MODEL":
 		return phaseRouteModel(cfg.Routes, "kimi", key)
-	case "KIMI_BUILD_EFFORT", "KIMI_HANDOFF_EFFORT", "KIMI_VERIFY_EFFORT", "KIMI_REPAIR_EFFORT", "KIMI_BUGFIX_EFFORT", "KIMI_COMMIT_EFFORT", "KIMI_PICK_EFFORT":
-		return phaseRouteEffort(cfg.Routes, "kimi", key)
 	}
 	return ""
 }
