@@ -49,6 +49,45 @@ func TestTerminal(t *testing.T) {
 	}
 }
 
+// --- Reconcilable / StaleCheckpoint --------------------------------------
+
+func TestReconcilable(t *testing.T) {
+	// In-flight (rank 1–5) and quarantined (9) are candidates; merged (6) and
+	// unknown/empty (0) are not.
+	for _, p := range []string{Building, Built, HandedOff, Verified, PROpen, Quarantined} {
+		if !Reconcilable(p) {
+			t.Errorf("Reconcilable(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{Merged, "", "bogus"} {
+		if Reconcilable(p) {
+			t.Errorf("Reconcilable(%q) = true, want false", p)
+		}
+	}
+}
+
+func TestStaleCheckpoint(t *testing.T) {
+	tests := []struct {
+		name        string
+		phase       string
+		trackerDone bool
+		want        bool
+	}{
+		{"quarantined-but-done is stale", Quarantined, true, true},
+		{"in-flight-but-done is stale", Built, true, true},
+		{"in-flight pr_open but done is stale", PROpen, true, true},
+		{"still-open quarantined is left intact", Quarantined, false, false},
+		{"still-open in-flight is left intact", Built, false, false},
+		{"merged is never stale even if done", Merged, true, false},
+		{"unknown phase is never stale", "", true, false},
+	}
+	for _, tc := range tests {
+		if got := StaleCheckpoint(tc.phase, tc.trackerDone); got != tc.want {
+			t.Errorf("%s: StaleCheckpoint(%q, %v) = %v, want %v", tc.name, tc.phase, tc.trackerDone, got, tc.want)
+		}
+	}
+}
+
 // --- Get / Set ------------------------------------------------------------
 
 func newStore(t *testing.T) *Store {

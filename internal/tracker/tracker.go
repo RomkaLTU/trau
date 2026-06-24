@@ -100,6 +100,35 @@ type Tracker interface {
 	EnsureLabels(ctx context.Context) error
 }
 
+// IssueStatus is the normalized lifecycle bucket of a tracker issue, used by
+// --status to reconcile stale local checkpoints. Each tracker maps its native
+// workflow states onto these.
+type IssueStatus string
+
+const (
+	// StatusOpen means the issue is still live (backlog/unstarted/started/in-review).
+	StatusOpen IssueStatus = "open"
+	// StatusDone means the issue reached a completed/shipped state.
+	StatusDone IssueStatus = "done"
+	// StatusCanceled means the issue was canceled / won't-do.
+	StatusCanceled IssueStatus = "canceled"
+	// StatusUnknown means the status could not be determined; reconciliation must
+	// treat it as "leave intact" rather than risk clearing live work.
+	StatusUnknown IssueStatus = "unknown"
+)
+
+// Terminal reports whether the status means the tracker considers the issue
+// finished (Done or Canceled) — the trigger for clearing a stale local checkpoint.
+func (s IssueStatus) Terminal() bool { return s == StatusDone || s == StatusCanceled }
+
+// IssueStatuser is the optional capability of reporting a single issue's
+// normalized lifecycle status. --status uses it to reconcile stale local
+// checkpoints against the tracker. Trackers that cannot answer skip reconcile
+// (callers type-assert and fall back to leaving checkpoints intact).
+type IssueStatuser interface {
+	IssueStatus(ctx context.Context, id string) (IssueStatus, error)
+}
+
 // Team is a selectable project-management container — a Linear team or a Jira
 // project — that the onboarding wizard can list and let the user pick.
 type Team struct {

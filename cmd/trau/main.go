@@ -52,6 +52,7 @@ Usage:
   trau --status [--json]     show saved ticket checkpoints with token/cost totals
   trau --dry-run             print the next eligible ticket without doing any work
   trau --reset <ID>          drop the branch + state and re-queue the ticket (refuses if already merged; --force overrides)
+  trau --clear <ID>          drop only the local checkpoint (no git, no re-queue) — for tickets finished out-of-band
 
 Flags:
   --parent <ID>     treat <ID> as an epic and process its sub-issues (a bare <PREFIX>-<n> arg is equivalent)
@@ -62,8 +63,9 @@ Flags:
   --repo <path>     target app repo (else TRAU_REPO_ROOT, else the cwd git top-level)
   --dry-run         print the next eligible ticket and exit
   --reset <ID>      reset a ticket and exit
+  --clear <ID>      drop a ticket's local checkpoint without touching git or the tracker (a.k.a. --forget)
   --force           with --reset, reset even a ticket whose code is already merged
-  --status          print saved checkpoints and exit
+  --status          print saved checkpoints (auto-reconciles stale in-flight/quarantined rows against the tracker) and exit
   --json            emit --status as machine-readable JSON
   --no-tui          force plain console output (disable the Bubble Tea TUI)
   --verbose         extra stderr diagnostics (what the loop is doing)
@@ -174,7 +176,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		cfg.RepoRoot = repoRoot
 	}
 
-	for _, id := range []string{opts.Parent, opts.ResetID} {
+	for _, id := range []string{opts.Parent, opts.ResetID, opts.ClearID} {
 		if err := config.ValidatePrefix(id, cfg.IssuePrefix); err != nil {
 			return console.Actionable(err, "validate ticket id",
 				fmt.Sprintf("set ISSUE_PREFIX (or LINEAR_TEAM) to this tracker's key, or pass a %s-<n> ticket", cfg.IssuePrefix))
@@ -196,8 +198,23 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	sink := tokens.New(cfg.RunsDir)
 
+	if opts.ClearID != "" {
+		store := state.NewStore(cfg.RunsDir)
+		was := store.Get(opts.ClearID, "PHASE")
+		if err := store.RemoveState(opts.ClearID); err != nil {
+			return console.Actionable(err, "clear "+opts.ClearID, "check write permissions on "+cfg.RunsDir)
+		}
+		if was == "" {
+			con.Logf("No saved checkpoint for %s — nothing to clear.", opts.ClearID)
+		} else {
+			con.Logf("Cleared %s local checkpoint (was %s). Branch and tracker were left untouched.", opts.ClearID, was)
+		}
+		return nil
+	}
+
 	if opts.Status {
 		store := state.NewStore(cfg.RunsDir)
+		reconciled := reconcileCheckpoints(ctx, cfg, log, sink, store)
 		var report any
 		if lim := budgetLimits(cfg); lim.Enabled() {
 			today := time.Now().Format("2006-01-02")
@@ -205,7 +222,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			report = budget.Report{Date: today, Limits: lim, Today: budget.Spend{Tokens: dt, Cost: dc, Metered: dm}}
 		}
 		if opts.JSON {
-			return store.StatusJSON(stdout, sink.Total, report)
+			return store.StatusJSON(stdout, sink.Total, report, reconciledIDs(reconciled))
+		}
+		for _, rt := range reconciled {
+			con.Logf("↳ %s is %s on the tracker — cleared stale %s checkpoint", rt.ID, rt.Status, rt.Phase)
 		}
 		con.Logf("Saved ticket checkpoints:")
 		store.Status(stdout, sink.Total)
@@ -419,6 +439,78 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		QuarantineLabel: cfg.QuarantineLabel,
 		APIKey:          cfg.LinearAPIKey,
 	})
+}
+
+// reconciledTicket records a stale local checkpoint that --status cleared because
+// its tracker issue is already terminal (Done/Canceled).
+type reconciledTicket struct {
+	ID     string
+	Status tracker.IssueStatus
+	Phase  string
+}
+
+func reconciledIDs(ts []reconciledTicket) []string {
+	ids := make([]string, 0, len(ts))
+	for _, t := range ts {
+		ids = append(ids, t.ID)
+	}
+	return ids
+}
+
+// reconcileCheckpoints cross-checks each in-flight/quarantined local checkpoint
+// against the tracker and drops any whose issue is already terminal (Done/Canceled)
+// — the out-of-band-finished case (COD-585). The tracker is built best-effort: a
+// missing provider binary or a tracker that can't report issue status simply skips
+// reconciliation (the status report still prints). Each query is time-bounded so a
+// hung MCP call can't stall --status, and a query error or StatusUnknown leaves the
+// checkpoint intact rather than risk clearing live work.
+func reconcileCheckpoints(ctx context.Context, cfg config.Config, log *event.Log, sink *tokens.Sink, store *state.Store) []reconciledTicket {
+	var candidates []string
+	for _, id := range store.Tickets() {
+		if state.Reconcilable(store.Get(id, "PHASE")) {
+			candidates = append(candidates, id)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	runner, err := buildRouter(cfg, log, sink, io.Discard)
+	if err != nil {
+		logger.Verbosef("reconcile: provider unavailable, skipping (%v)", err)
+		return nil
+	}
+	pm, err := buildTracker(cfg, runner)
+	if err != nil {
+		logger.Verbosef("reconcile: tracker unavailable, skipping (%v)", err)
+		return nil
+	}
+	statuser, ok := pm.(tracker.IssueStatuser)
+	if !ok {
+		logger.Verbosef("reconcile: tracker %q cannot report issue status, skipping", cfg.TrackerProvider)
+		return nil
+	}
+
+	var cleared []reconciledTicket
+	for _, id := range candidates {
+		phase := store.Get(id, "PHASE")
+		qctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		st, err := statuser.IssueStatus(qctx, id)
+		cancel()
+		if err != nil {
+			logger.Verbosef("reconcile %s: status query failed: %v", id, err)
+			continue
+		}
+		if !state.StaleCheckpoint(phase, st.Terminal()) {
+			continue
+		}
+		if err := store.RemoveState(id); err != nil {
+			logger.Verbosef("reconcile %s: clear failed: %v", id, err)
+			continue
+		}
+		cleared = append(cleared, reconciledTicket{ID: id, Status: st, Phase: phase})
+	}
+	return cleared
 }
 
 // scopeFor builds a picker scope carrying the configured issue prefix so whole-team
