@@ -154,6 +154,24 @@ VERIFY_CHECKS=1
 # VERIFY_PANEL=claude,codex:gpt-5.5,kimi
 VERIFY_PANEL_POLICY=unanimous
 
+# --- lessons memory ---
+# Durable lessons memory: each repair experiment (failure type, attempted fix,
+# evidence, result, distilled lesson) is appended to runs/memory/lessons.jsonl
+# after a repaired success or a quarantine, and the lessons relevant to a slice
+# are recalled into later build/verify/repair prompts so failed runs teach future
+# runs. Relevance is filtered and capped, so an empty/thin ledger injects nothing.
+# 1 = on (default), 0 = off (no recording, no recall).
+LESSONS=1
+# Enrich each recorded lesson with a cheap, isolated agent pass that distills a
+# richer, ticket-agnostic takeaway. Off by default: the free mechanical record
+# (synthesized from the verdict) is always written when LESSONS=1, and this only
+# changes how the lesson TEXT is produced — at the cost of one extra agent call on
+# each failure-path ticket. 1 = agent-distilled, 0 = mechanical only (default).
+LESSONS_DISTILL=0
+# The ledger lives under runs/ (gitignored) so it is run-scoped/local by default.
+# See docs/lessons-memory.md for the record schema and when to commit a curated
+# digest vs keep it local.
+
 # =============================================================================
 # USER / MACHINE KNOBS (put these in ~/.trau.ini)
 # =============================================================================
