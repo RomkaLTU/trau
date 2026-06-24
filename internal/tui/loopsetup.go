@@ -307,8 +307,13 @@ func (m loopSetupModel) summary() string {
 	}
 	parts = append(parts, merge)
 
-	return s.Help.Render(strings.Join(parts, " · ")) + "\n" +
+	out := s.Help.Render(strings.Join(parts, " · ")) + "\n" +
 		s.Help.Render(fmt.Sprintf("%d in-flight · %d done", info.InFlight, info.Done))
+	if info.Resume.Active() {
+		out = s.Warning.Render(info.Resume.Line()) + "\n" +
+			s.Help.Render("the loop resumes this first, then pulls the ready queue") + "\n" + out
+	}
+	return out
 }
 
 func (m loopSetupModel) hint() string {

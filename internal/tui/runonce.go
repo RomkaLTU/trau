@@ -110,6 +110,11 @@ func (m runOnceModel) handleKey(msg tea.KeyMsg) (runOnceModel, tea.Cmd) {
 		case tea.KeyEnter:
 			m.badID = false
 			raw := strings.TrimSpace(m.input.Value())
+			if raw == "" && m.info.Resume.Active() {
+				m.selected = m.info.Resume.ID
+				m.done = true
+				return m, nil
+			}
 			id := extractTicketID(raw, m.info.Prefix)
 			if id == "" {
 				m.badID = true
@@ -139,6 +144,7 @@ func (m runOnceModel) handleKey(msg tea.KeyMsg) (runOnceModel, tea.Cmd) {
 		return m, nil
 
 	case runOnceList:
+		rows := m.listRows()
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			m.cancelled, m.done = true, true
@@ -148,8 +154,8 @@ func (m runOnceModel) handleKey(msg tea.KeyMsg) (runOnceModel, tea.Cmd) {
 			m.cursor = 0
 			m.input.Focus()
 		case tea.KeyEnter:
-			if m.cursor >= 0 && m.cursor < len(m.eligible) {
-				m.selected = m.eligible[m.cursor].ID
+			if m.cursor >= 0 && m.cursor < len(rows) {
+				m.selected = rows[m.cursor].ID
 				m.done = true
 			}
 		case tea.KeyUp, tea.KeyShiftTab:
@@ -157,14 +163,14 @@ func (m runOnceModel) handleKey(msg tea.KeyMsg) (runOnceModel, tea.Cmd) {
 				m.cursor--
 			}
 		case tea.KeyDown, tea.KeyTab:
-			if m.cursor < len(m.eligible)-1 {
+			if m.cursor < len(rows)-1 {
 				m.cursor++
 			}
 		}
 		switch msg.String() {
 		case "o":
-			if m.cursor >= 0 && m.cursor < len(m.eligible) {
-				return m, openURLCmd(linearIssueURL(m.eligible[m.cursor].ID))
+			if m.cursor >= 0 && m.cursor < len(rows) {
+				return m, openURLCmd(linearIssueURL(rows[m.cursor].ID))
 			}
 		case "r":
 			m.step = runOnceLoading
@@ -200,12 +206,21 @@ func (m runOnceModel) body(spinnerView string) string {
 
 func (m runOnceModel) renderConfirm() string {
 	s := m.styles
-	rows := []string{
+	var rows []string
+	help := "type ID · 'l' load eligible tickets · enter run · esc back"
+	if m.info.Resume.Active() {
+		rows = append(rows,
+			s.Warning.Render(m.info.Resume.Line()),
+			s.Help.Render("press enter to continue it — or type another ID below"),
+			"")
+		help = "enter resume · type ID to pick another · 'l' load queue · esc back"
+	}
+	rows = append(rows,
 		s.Subtle.Render("Run a single ticket. Type an ID or load the ready queue:"),
 		"",
-		s.Subtle.Render("Issue ") + m.input.View(),
-		s.Help.Render("type ID · 'l' load eligible tickets · enter run · esc back"),
-	}
+		s.Subtle.Render("Issue ")+m.input.View(),
+		s.Help.Render(help),
+	)
 	switch {
 	case m.badID:
 		rows = append(rows, "", s.Error.Render("Couldn't read a ticket ID — try "+exampleID(m.info.Prefix)+"."))
@@ -218,17 +233,22 @@ func (m runOnceModel) renderConfirm() string {
 
 func (m runOnceModel) renderList() string {
 	s := m.styles
-	if len(m.eligible) == 0 {
+	items := m.listRows()
+	if len(items) == 0 {
 		return s.Subtle.Render("No eligible tickets right now.") + "\n\n" +
 			s.Help.Render("esc back · 'r' refresh")
 	}
 
+	header := fmt.Sprintf("Eligible tickets (%d):", len(items))
+	if m.info.Resume.Active() {
+		header = fmt.Sprintf("Resume or pick a ticket (%d):", len(items))
+	}
 	var rows []string
-	rows = append(rows, s.Subtle.Render(fmt.Sprintf("Eligible tickets (%d):", len(m.eligible))))
+	rows = append(rows, s.Subtle.Render(header))
 	rows = append(rows, "")
 
 	idW, titleW := m.listColumnWidths()
-	for i, t := range m.eligible {
+	for i, t := range items {
 		marker := "  "
 		idStyle := s.Subtle
 		titleStyle := s.Subtle
@@ -240,15 +260,33 @@ func (m runOnceModel) renderList() string {
 		}
 		idStr := padRight(t.ID, idW)
 		titleStr := truncate(t.Title, titleW)
-		stateStr := truncate(firstNonEmpty(t.State, "—"), 10)
+		stateStr := truncate(firstNonEmpty(t.State, "—"), 12)
 		rows = append(rows, marker+idStyle.Render(idStr)+"  "+titleStyle.Render(titleStr)+"  "+stateStyle.Render(stateStr))
 	}
 	return strings.Join(rows, "\n")
 }
 
+// listRows is the run-once list: the resumable ticket (if any) pinned first and
+// labeled as a resume, then the eligible ready queue with the resume de-duped out.
+// The cursor indexes into this combined slice, so resume sits at index 0 and is
+// pre-selected when the list opens.
+func (m runOnceModel) listRows() []ListedTicket {
+	var rows []ListedTicket
+	if r := m.info.Resume; r.Active() {
+		rows = append(rows, ListedTicket{ID: r.ID, Title: r.Title, State: "↻ resume"})
+	}
+	for _, t := range m.eligible {
+		if t.ID == m.info.Resume.ID {
+			continue
+		}
+		rows = append(rows, t)
+	}
+	return rows
+}
+
 func (m runOnceModel) listColumnWidths() (idW, titleW int) {
 	const gap = 8 // marker + padding + state column
-	for _, t := range m.eligible {
+	for _, t := range m.listRows() {
 		if w := lipgloss.Width(t.ID); w > idW {
 			idW = w
 		}
@@ -286,6 +324,9 @@ func (m runOnceModel) hint() string {
 	case runOnceList:
 		return "↑↓ move · enter run selected · 'o' open · 'r' refresh · esc back"
 	default:
+		if m.info.Resume.Active() {
+			return "enter resume " + m.info.Resume.ID + " · type an ID to pick another · 'l' load · esc back"
+		}
 		return "type an ID · 'l' load eligible · enter run · esc back"
 	}
 }

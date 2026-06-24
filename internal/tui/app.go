@@ -74,6 +74,32 @@ type MenuInfo struct {
 	AutoMerge     bool
 	InFlight      int
 	Done          int
+	Resume        ResumeTarget
+}
+
+// ResumeTarget names the in-flight ticket the next run will continue before it
+// picks anything new, so the menu and run screens can surface it by name instead
+// of as a bare in-flight count. A zero value (empty ID) means nothing is
+// resumable. Phase is the human label of the phase the resume runs next
+// (checkpoint built → "handoff").
+type ResumeTarget struct {
+	ID    string
+	Phase string
+	Title string
+}
+
+// Active reports whether there is a ticket to resume.
+func (r ResumeTarget) Active() bool { return r.ID != "" }
+
+// Line renders the one-line resume callout shared by every screen, e.g.
+// ↻ COD-498 resumes from handoff — "Enrich message conversations…". The title is
+// omitted when unknown.
+func (r ResumeTarget) Line() string {
+	s := "↻ " + r.ID + " resumes from " + firstNonEmpty(r.Phase, "where it left off")
+	if t := strings.TrimSpace(r.Title); t != "" {
+		s += " — " + t
+	}
+	return s
 }
 
 // StatusRow is one ticket's saved state, rendered in the in-TUI status table.
@@ -687,8 +713,12 @@ func (m appModel) renderMenu() string {
 
 	rows := m.menuRows(m.items, m.cursor)
 
-	body := strings.Join([]string{header, tagline, context, ""}, "\n") +
-		"\n" + strings.Join(rows, "\n")
+	head := []string{header, tagline}
+	if m.info.Resume.Active() {
+		head = append(head, s.Warning.Render(truncate(m.info.Resume.Line(), menuCardW)))
+	}
+	head = append(head, context, "")
+	body := strings.Join(head, "\n") + "\n" + strings.Join(rows, "\n")
 	card := s.SummaryCard.Render(body)
 	hint := s.Help.Render("↑↓ move · enter select · q quit")
 
