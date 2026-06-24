@@ -465,16 +465,9 @@ func reconciledIDs(ts []reconciledTicket) []string {
 // hung MCP call can't stall --status, and a query error or StatusUnknown leaves the
 // checkpoint intact rather than risk clearing live work.
 func reconcileCheckpoints(ctx context.Context, cfg config.Config, log *event.Log, sink *tokens.Sink, store *state.Store) []reconciledTicket {
-	var candidates []string
-	for _, id := range store.Tickets() {
-		if state.Reconcilable(store.Get(id, "PHASE")) {
-			candidates = append(candidates, id)
-		}
-	}
-	if len(candidates) == 0 {
+	if !hasReconcileCandidate(store) {
 		return nil
 	}
-
 	runner, err := buildRouter(cfg, log, sink, io.Discard)
 	if err != nil {
 		logger.Verbosef("reconcile: provider unavailable, skipping (%v)", err)
@@ -490,10 +483,34 @@ func reconcileCheckpoints(ctx context.Context, cfg config.Config, log *event.Log
 		logger.Verbosef("reconcile: tracker %q cannot report issue status, skipping", cfg.TrackerProvider)
 		return nil
 	}
+	return reconcileWith(ctx, store, statuser)
+}
 
+// hasReconcileCandidate reports whether any saved checkpoint is in a reconcilable
+// (in-flight/quarantined) phase, so callers can skip building a provider/tracker
+// when there is nothing to cross-check.
+func hasReconcileCandidate(store *state.Store) bool {
+	for _, id := range store.Tickets() {
+		if state.Reconcilable(store.Get(id, "PHASE")) {
+			return true
+		}
+	}
+	return false
+}
+
+// reconcileWith cross-checks each in-flight/quarantined local checkpoint against
+// the tracker via statuser and drops any whose issue is already terminal
+// (Done/Canceled). Each query is time-bounded so a hung MCP call can't stall the
+// caller; a query error or StatusUnknown leaves the checkpoint intact rather than
+// risk clearing live work. Shared by the --status CLI path and the TUI status
+// screen's on-demand reconcile.
+func reconcileWith(ctx context.Context, store *state.Store, statuser tracker.IssueStatuser) []reconciledTicket {
 	var cleared []reconciledTicket
-	for _, id := range candidates {
+	for _, id := range store.Tickets() {
 		phase := store.Get(id, "PHASE")
+		if !state.Reconcilable(phase) {
+			continue
+		}
 		qctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		st, err := statuser.IssueStatus(qctx, id)
 		cancel()
@@ -1248,6 +1265,21 @@ func (a *appActions) Reset(ctx context.Context, id string) error {
 		return err
 	}
 	return a.pipe.Reset(ctx, id)
+}
+
+// Reconcile cross-checks in-flight/quarantined checkpoints against the tracker and
+// clears any whose issue is already Done/Canceled, returning the cleared ids. It
+// backs the TUI status screen's on-demand reconcile; the CLI --status path uses
+// reconcileCheckpoints, which builds its own tracker.
+func (a *appActions) Reconcile(ctx context.Context) ([]string, error) {
+	if err := a.ensure(); err != nil {
+		return nil, err
+	}
+	statuser, ok := a.tracker.(tracker.IssueStatuser)
+	if !ok {
+		return nil, fmt.Errorf("tracker %q cannot report issue status", a.cfg.TrackerProvider)
+	}
+	return reconciledIDs(reconcileWith(ctx, a.store, statuser)), nil
 }
 
 func (a *appActions) CheckoutBranch(ctx context.Context, id string) (string, error) {
