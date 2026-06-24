@@ -773,7 +773,7 @@ func ProviderTuningMetas() []ProviderTuningMeta {
 	return []ProviderTuningMeta{
 		{
 			Name:    "claude",
-			Models:  []string{"opus", "sonnet", "haiku", "fable", "opusplan", "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-fable-5"},
+			Models:  []string{"opus", "sonnet", "haiku", "fable", "opusplan"},
 			Efforts: []string{"low", "medium", "high", "xhigh", "max"},
 		},
 		{
@@ -783,15 +783,64 @@ func ProviderTuningMetas() []ProviderTuningMeta {
 		},
 		{
 			// Kimi Code selects models by alias from the user's config.toml, not by
-			// a fixed ID, so there are no built-in suggestions. It exposes no usable
-			// reasoning-effort knob in headless runs (the KIMI_MODEL_THINKING_EFFORT
-			// env var only applies via the KIMI_MODEL_* env-provider mechanism), so
-			// Efforts is empty.
+			// a fixed ID, so Models is populated dynamically by ResolveProviderTunings
+			// from KimiModelAliases. It exposes no usable reasoning-effort knob in
+			// headless runs (the KIMI_MODEL_THINKING_EFFORT env var only applies via
+			// the KIMI_MODEL_* env-provider mechanism), so Efforts is empty.
 			Name:    "kimi",
 			Models:  nil,
 			Efforts: nil,
 		},
 	}
+}
+
+// kimiConfigPath returns the location of the Kimi Code CLI config.toml:
+// $KIMI_CODE_HOME/config.toml when set, else ~/.kimi-code/config.toml.
+func kimiConfigPath() string {
+	if home := os.Getenv("KIMI_CODE_HOME"); home != "" {
+		return filepath.Join(home, "config.toml")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".kimi-code", "config.toml")
+}
+
+// KimiModelAliases returns the model alias names defined in the user's Kimi Code
+// config.toml ([models.<alias>] tables). Kimi's --model flag takes one of these
+// user-defined aliases — there is no fixed documented list — so the settings UI
+// offers them as real, typo-proof choices. Returns nil when the config is
+// absent or defines no models. It scans table headers rather than parsing TOML
+// to avoid a dependency for a read this shallow.
+func KimiModelAliases() []string {
+	path := kimiConfigPath()
+	if path == "" {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+
+	var aliases []string
+	seen := map[string]bool{}
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if !strings.HasPrefix(line, "[models.") || !strings.HasSuffix(line, "]") {
+			continue
+		}
+		alias := strings.TrimSuffix(strings.TrimPrefix(line, "[models."), "]")
+		alias = strings.Trim(alias, "\"")
+		if alias == "" || seen[alias] {
+			continue
+		}
+		seen[alias] = true
+		aliases = append(aliases, alias)
+	}
+	return aliases
 }
 
 // ProviderTuningField is one resolved value plus the layer that supplied it.
@@ -862,6 +911,10 @@ func ResolveProviderTunings(localPath, projectPath, userPath, activeProvider str
 	for _, meta := range ProviderTuningMetas() {
 		prefix := strings.ToUpper(meta.Name) + "_"
 		hasEffort := len(meta.Efforts) > 0
+		models := meta.Models
+		if meta.Name == "kimi" {
+			models = KimiModelAliases()
+		}
 		model := field(prefix + "MODEL")
 		effort := ProviderTuningField{}
 		if hasEffort {
@@ -870,7 +923,7 @@ func ResolveProviderTunings(localPath, projectPath, userPath, activeProvider str
 		pt := ProviderTuning{
 			Name:    meta.Name,
 			Active:  meta.Name == activeProvider,
-			Models:  meta.Models,
+			Models:  models,
 			Efforts: meta.Efforts,
 			Model:   model,
 			Effort:  effort,
