@@ -90,6 +90,14 @@ type Config struct {
 
 	EpicFlow bool
 
+	// Lessons enables the durable lessons memory: failure→fix records are appended
+	// to runs/memory/lessons.jsonl and relevant ones are recalled into later
+	// build/verify/repair prompts. LessonsDistill additionally runs a cheap agent
+	// pass to distill a richer takeaway (default off — the free mechanical record
+	// is always written when Lessons is on).
+	Lessons        bool
+	LessonsDistill bool
+
 	RunsDir string
 
 	// Spend ceilings off the normalized token/cost ledger. Zero = no cap
@@ -146,6 +154,8 @@ func Defaults() Config {
 		VerifyPanelPolicy:     "unanimous",
 		TUI:                   true,
 		EpicFlow:              true,
+		Lessons:               true,
+		LessonsDistill:        false,
 		RunsDir:               "runs",
 		MaxTicketUSD:          0,
 		MaxTicketTokens:       0,
@@ -445,6 +455,14 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("EPIC_FLOW"); v != "" {
 		c.EpicFlow = v == "1"
 		sources["EPIC_FLOW"] = src.name
+	}
+	if v, src := get("LESSONS"); v != "" {
+		c.Lessons = v == "1"
+		sources["LESSONS"] = src.name
+	}
+	if v, src := get("LESSONS_DISTILL"); v != "" {
+		c.LessonsDistill = v == "1"
+		sources["LESSONS_DISTILL"] = src.name
 	}
 	str("RUNS_DIR", &c.RunsDir)
 	fnum("MAX_TICKET_USD", &c.MaxTicketUSD)
