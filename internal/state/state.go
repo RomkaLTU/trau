@@ -62,6 +62,24 @@ func Idx(phase string) int {
 // quarantined ticket that the resume scan must skip (rank >= 6).
 func Terminal(phase string) bool { return Idx(phase) >= 6 }
 
+// Reconcilable reports whether a checkpoint phase is worth cross-checking against
+// the tracker: any tracked attempt that is not already merged locally — an
+// in-flight phase (rank 1–5) or a quarantined one (rank 9). Merged (6) and
+// unknown/empty (0) phases are skipped, since neither can be a stale "problem"
+// left over after the work shipped out-of-band.
+func Reconcilable(phase string) bool {
+	r := Idx(phase)
+	return r != 0 && r != 6
+}
+
+// StaleCheckpoint reports whether a local checkpoint should be cleared during
+// reconciliation: a Reconcilable phase whose tracker issue is already terminal
+// (Done/Canceled, trackerDone=true). A still-open tracker issue is always left
+// intact, as is a locally-merged or unknown checkpoint.
+func StaleCheckpoint(phase string, trackerDone bool) bool {
+	return trackerDone && Reconcilable(phase)
+}
+
 // Store reads and writes per-ticket checkpoints under a runs/ root (the same
 // root the token sink uses).
 type Store struct {
@@ -253,7 +271,7 @@ func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost floa
 // only the JSON document. budget, when non-nil, is marshaled under a "budget" key
 // (the configured caps + the day's spend); state takes it as any so it need not
 // depend on the budget package.
-func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost float64, metered bool), budget any) error {
+func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost float64, metered bool), budget any, reconciled []string) error {
 	type ticket struct {
 		ID           string  `json:"id"`
 		Title        string  `json:"title,omitempty"`
@@ -270,12 +288,14 @@ func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost 
 			Cost         float64 `json:"cost"`
 			CostMeasured bool    `json:"cost_measured"`
 		} `json:"total"`
-		Budget any `json:"budget,omitempty"`
+		Budget     any      `json:"budget,omitempty"`
+		Reconciled []string `json:"reconciled,omitempty"`
 	}
 
 	report.Tickets = []ticket{}
 	report.Total.CostMeasured = true
 	report.Budget = budget
+	report.Reconciled = reconciled
 	for _, id := range s.Tickets() {
 		tok, cost, metered := total(id)
 		report.Tickets = append(report.Tickets, ticket{

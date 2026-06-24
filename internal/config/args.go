@@ -20,6 +20,7 @@ type Options struct {
 	Max      int
 	DryRun   bool
 	ResetID  string
+	ClearID  string
 	Force    bool
 	NoResume bool
 	Status   bool
@@ -74,6 +75,12 @@ func ParseArgs(args []string) (Options, error) {
 				return o, err
 			}
 			o.ResetID = v
+		case a == "--clear", a == "--forget":
+			v, err := next(a)
+			if err != nil {
+				return o, err
+			}
+			o.ClearID = v
 		case a == "--force":
 			o.Force = true
 		case a == "--no-resume":
@@ -110,13 +117,13 @@ func ParseArgs(args []string) (Options, error) {
 	}
 
 	modes := 0
-	for _, on := range []bool{o.Status, o.ResetID != "", o.DryRun} {
+	for _, on := range []bool{o.Status, o.ResetID != "", o.ClearID != "", o.DryRun} {
 		if on {
 			modes++
 		}
 	}
 	if modes > 1 {
-		return o, fmt.Errorf("--status, --reset, and --dry-run are mutually exclusive")
+		return o, fmt.Errorf("--status, --reset, --clear, and --dry-run are mutually exclusive")
 	}
 
 	return o, nil

@@ -423,6 +423,73 @@ func parseTitleJSON(text string) (title string, matched bool) {
 	return "", false
 }
 
+// IssueStatus reports the normalized lifecycle status of issue id, used by
+// --status to reconcile stale local checkpoints. The direct API maps the issue's
+// workflow-state type; the MCP fallback asks the agent and recovers a STATUS=
+// sentinel. An unrecoverable result yields StatusUnknown so the caller leaves the
+// checkpoint intact rather than risk clearing live work.
+func (l *Linear) IssueStatus(ctx context.Context, id string) (IssueStatus, error) {
+	if st, err := l.issueStatusAPI(ctx, id); err == nil {
+		return st, nil
+	} else if !shouldFallback(err) {
+		return StatusUnknown, err
+	}
+
+	res, err := l.Runner.Run(ctx, l.issueStatusPrompt(id), "status")
+	if st, ok := parseIssueStatus(res.Final); ok {
+		return st, nil
+	}
+	return StatusUnknown, err
+}
+
+func (l *Linear) issueStatusAPI(ctx context.Context, id string) (IssueStatus, error) {
+	issue, err := l.api().Issue(ctx, id)
+	if err != nil {
+		return StatusUnknown, err
+	}
+	return mapLinearState(issue.State.Type), nil
+}
+
+// mapLinearState maps a Linear workflow-state type onto the normalized status.
+// Linear's state types are backlog | unstarted | started | completed | canceled.
+func mapLinearState(stateType string) IssueStatus {
+	switch stateType {
+	case "completed":
+		return StatusDone
+	case "canceled":
+		return StatusCanceled
+	default:
+		return StatusOpen
+	}
+}
+
+func (l *Linear) issueStatusPrompt(id string) string {
+	return fmt.Sprintf("Use the Linear MCP. Look up issue %s and report its workflow state. "+
+		"Respond with exactly one final line: 'STATUS=<done|canceled|open>' — "+
+		"'done' if it is in a Done/completed state, 'canceled' if Canceled, otherwise 'open'. No other output.", id)
+}
+
+// parseIssueStatus recovers the normalized status from an agent response: the
+// last 'STATUS=<value>' sentinel wins, accepting common synonyms. matched is
+// false when no recognizable status line is present.
+func parseIssueStatus(text string) (status IssueStatus, matched bool) {
+	re := regexp.MustCompile(`(?mi)^.*STATUS=([A-Za-z_-]+)`)
+	ms := re.FindAllStringSubmatch(text, -1)
+	if len(ms) == 0 {
+		return StatusUnknown, false
+	}
+	switch strings.ToLower(strings.TrimSpace(ms[len(ms)-1][1])) {
+	case "done", "completed", "complete", "merged", "closed", "shipped":
+		return StatusDone, true
+	case "canceled", "cancelled", "wontfix", "wont-do", "duplicate":
+		return StatusCanceled, true
+	case "open", "started", "unstarted", "backlog", "todo", "in-progress":
+		return StatusOpen, true
+	default:
+		return StatusUnknown, false
+	}
+}
+
 // FileBug files a NEW Linear issue as a last-resort HITL blocker for a QA failure
 // the slice could not self-heal, even after comprehensive bugfix passes, and
 // returns the new issue identifier (or "" when none was produced). The agent
