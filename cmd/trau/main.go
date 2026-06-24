@@ -533,7 +533,7 @@ func reconcileWith(ctx context.Context, store *state.Store, statuser tracker.Iss
 // scopeFor builds a picker scope carrying the configured issue prefix so whole-team
 // picks (which have no parent id to derive a prefix from) match the right tracker.
 func scopeFor(cfg config.Config, parent string) tracker.Scope {
-	return tracker.Scope{Parent: parent, Team: cfg.LinearTeam, Prefix: cfg.IssuePrefix}
+	return tracker.Scope{Parent: parent, Team: cfg.LinearTeam, Project: cfg.Project, Prefix: cfg.IssuePrefix}
 }
 
 // budgetLimits projects the resolved config's spend ceilings into the budget
@@ -604,6 +604,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		Lessons:        cfg.Lessons,
 		LessonsDistill: cfg.LessonsDistill,
 		Renderer:       con,
+		OwnedProject:   cfg.Project,
 	}, nil
 }
 
@@ -658,9 +659,15 @@ type realEngine struct {
 	pipe    *pipeline.Pipeline
 	tracker tracker.Tracker
 	scope   tracker.Scope
+	// resumeKeep, when set, restricts the resume scan to ids it accepts — the epic
+	// flow sets it to the epic's child set so a stale checkpoint for an unrelated
+	// ticket in the same runs/ dir is skipped rather than resumed. Nil scans all.
+	resumeKeep func(id string) bool
 }
 
-func (e *realEngine) ResumeTarget() (string, string) { return e.pipe.State.ResumeTarget() }
+func (e *realEngine) ResumeTarget() (string, string) {
+	return e.pipe.State.ResumeTargetFunc(e.resumeKeep)
+}
 func (e *realEngine) InferredResume(ctx context.Context) (string, string) {
 	return e.pipe.InferredResume(ctx)
 }
@@ -681,6 +688,17 @@ type loopParams struct {
 
 func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer, result func(id string, elapsed time.Duration) console.TicketResult) ([]string, error) {
 	var processed []string
+	// crossStop surfaces an ownership refusal (the ticket belongs to another Linear
+	// project) and signals the loop to stop cleanly — nothing was touched, so the
+	// user just runs it from the owning repo or clears a stray checkpoint here.
+	crossStop := func(id string, err error) bool {
+		if !pipeline.IsCrossProject(err) {
+			return false
+		}
+		con.Logf("✗ %v", err)
+		con.Logf("  ↳ run it from the repo that owns that project, or `trau --clear %s` to drop a stray checkpoint here", id)
+		return true
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -713,6 +731,9 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 			if pipeline.IsPaused(err) {
 				return processed, err
 			}
+			if crossStop(rid, err) {
+				return processed, err
+			}
 			if errors.Is(err, pipeline.ErrAlreadyDone) {
 				con.Logf("  %s already done — skipping", rid)
 				continue
@@ -727,6 +748,9 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 			t0 := time.Now()
 			err := eng.Process(ctx, p.ForcedID, "")
 			if pipeline.IsPaused(err) {
+				return processed, err
+			}
+			if crossStop(p.ForcedID, err) {
 				return processed, err
 			}
 			processed = append(processed, p.ForcedID)
@@ -756,6 +780,9 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 			t0 := time.Now()
 			err = eng.Process(ctx, id, "")
 			if pipeline.IsPaused(err) {
+				return processed, err
+			}
+			if crossStop(id, err) {
 				return processed, err
 			}
 			processed = append(processed, id)
@@ -1302,6 +1329,25 @@ func (a *appActions) RunLoop(ctx context.Context, epic string, r console.Rendere
 	a.runEpicLoop(ctx, epic, r, max)
 }
 
+// epicChildFilter returns a predicate accepting the epic's own id and the ids of
+// its direct sub-issues — the only checkpoints the epic flow may resume. A lookup
+// failure yields nil (no filter) so a transient tracker error never silently
+// narrows the resume scan to nothing; the project guard still backstops a
+// cross-project checkpoint. Matching is case-insensitive on the trimmed id.
+func epicChildFilter(ctx context.Context, tr tracker.Tracker, epic string) func(string) bool {
+	subs, err := tr.SubIssues(ctx, epic)
+	if err != nil {
+		return nil
+	}
+	allow := map[string]bool{strings.ToUpper(strings.TrimSpace(epic)): true}
+	for _, s := range subs {
+		if id := strings.ToUpper(strings.TrimSpace(s.ID)); id != "" {
+			allow[id] = true
+		}
+	}
+	return func(id string) bool { return allow[strings.ToUpper(strings.TrimSpace(id))] }
+}
+
 // runEpicLoop runs the loop scoped to epic (or the team ready-queue when epic is
 // empty), processing at most max tickets. Run once on an epic uses max=1.
 func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Renderer, max int) {
@@ -1312,6 +1358,18 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 	a.pipe.Renderer = r
 	a.pipe.EpicID = epic
 	a.eng.scope = scopeFor(a.cfg, epic)
+	a.eng.resumeKeep = nil
+	if epic != "" {
+		if err := a.pipe.EnsureOwnedProject(ctx, epic); err != nil {
+			r.Logf("✗ %v", err)
+			r.LoopDone(console.SessionSummary{Err: err})
+			return
+		}
+		// Restrict the resume scan to this epic and its children so a stale
+		// checkpoint for an unrelated ticket in the same runs/ dir is skipped
+		// rather than resumed before the epic's real next child.
+		a.eng.resumeKeep = epicChildFilter(ctx, a.tracker, epic)
+	}
 	total := func(ids []string) (int, float64, bool) {
 		t, c := 0, 0.0
 		metered := true

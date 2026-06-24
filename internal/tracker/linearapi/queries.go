@@ -26,6 +26,10 @@ query Issue($number: Float!, $teamKey: String!) {
         key
         name
       }
+      project {
+        id
+        name
+      }
       labels {
         nodes {
           id
@@ -70,6 +74,10 @@ query PickIssues($teamId: ID!, $labelName: String!) {
         id
         name
         type
+      }
+      project {
+        id
+        name
       }
       children {
         nodes {

@@ -129,6 +129,15 @@ type IssueStatuser interface {
 	IssueStatus(ctx context.Context, id string) (IssueStatus, error)
 }
 
+// IssueProjecter is the optional capability of reporting the name of the Linear
+// project an issue belongs to. The ownership guard uses it to refuse a run on a
+// ticket from a different project than the repo owns. A tracker that cannot answer
+// (or returns "") makes the guard a no-op — uncertainty never blocks a run, only a
+// confirmed mismatch does.
+type IssueProjecter interface {
+	IssueProject(ctx context.Context, id string) (string, error)
+}
+
 // Team is a selectable project-management container — a Linear team or a Jira
 // project — that the onboarding wizard can list and let the user pick.
 type Team struct {
@@ -148,6 +157,10 @@ type TeamLister interface {
 type Scope struct {
 	Parent string
 	Team   string
+	// Project, when set, restricts a whole-team pick to issues in that Linear
+	// project (config.PROJECT — the project this repo owns). Empty means no
+	// project filter, preserving the team-wide pick.
+	Project string
 	// Prefix is the configured issue-identifier prefix (config.ISSUE_PREFIX). It
 	// is consulted for whole-team picks, where there is no parent id to derive a
 	// prefix from. Empty falls back to DefaultPrefix.
@@ -159,6 +172,15 @@ func (s Scope) clause() string {
 		return "sub-issues of " + s.Parent
 	}
 	return "issues in the " + s.Team + " team/project"
+}
+
+// projectClause renders an optional " They must belong to the Linear project '<X>'."
+// fragment spliced into the MCP pick/list prompts, or "" when no project is scoped.
+func (s Scope) projectClause() string {
+	if p := strings.TrimSpace(s.Project); p != "" {
+		return " They must belong to the Linear project '" + p + "'."
+	}
+	return ""
 }
 
 func (s Scope) prefix() string {

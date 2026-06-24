@@ -162,6 +162,27 @@ func IsFault(err error) bool {
 	return errors.As(err, &f)
 }
 
+// CrossProjectError signals a refusal: the ticket belongs to a different Linear
+// project than the one this repo owns (config PROJECT). It is raised before any
+// branch/checkpoint/build work, so nothing is left to clean up — the run simply
+// stops with guidance. It is neither a give-up (no quarantine, no filed bug) nor a
+// fault; the ticket is untouched and stays runnable from the repo that owns it.
+type CrossProjectError struct {
+	ID      string
+	Owned   string
+	Project string
+}
+
+func (e *CrossProjectError) Error() string {
+	return fmt.Sprintf("%s belongs to Linear project %q, but this repo owns %q — refusing to run it here", e.ID, e.Project, e.Owned)
+}
+
+// IsCrossProject reports whether err is (or wraps) a *CrossProjectError.
+func IsCrossProject(err error) bool {
+	var c *CrossProjectError
+	return errors.As(err, &c)
+}
+
 // Pipeline holds the collaborators a ticket run needs. One Pipeline is
 // constructed per process and reused across tickets.
 type Pipeline struct {
@@ -199,6 +220,12 @@ type Pipeline struct {
 
 	EpicID     string
 	epicBranch string
+
+	// OwnedProject is the Linear project this repo is bound to (config PROJECT).
+	// When set, Resume refuses any ticket whose project differs — before any
+	// branch/checkpoint/build — so a wrong-project ticket can't pollute this repo.
+	// Empty disables the guard (back-compat).
+	OwnedProject string
 }
 
 // Process runs a ticket end-to-end through the fresh full chain: build → handoff →
@@ -206,6 +233,34 @@ type Pipeline struct {
 // method so callers that always start clean (and the existing tests) read plainly.
 func (p *Pipeline) Process(ctx context.Context, id string) error {
 	return p.Resume(ctx, id, "")
+}
+
+// EnsureOwnedProject refuses a ticket that belongs to a different Linear project
+// than this repo owns (OwnedProject, from config PROJECT). It is a no-op when no
+// owned project is configured, when the tracker can't report a ticket's project,
+// or when the project can't be determined — the guard never blocks on uncertainty,
+// only on a confirmed mismatch. Callers run it before any hard-to-reverse work so a
+// wrong-project ticket can't cut a branch or write a checkpoint in this repo.
+func (p *Pipeline) EnsureOwnedProject(ctx context.Context, id string) error {
+	owned := strings.TrimSpace(p.OwnedProject)
+	if owned == "" {
+		return nil
+	}
+	projecter, ok := p.Tracker.(tracker.IssueProjecter)
+	if !ok {
+		return nil
+	}
+	proj, err := projecter.IssueProject(ctx, id)
+	if err != nil {
+		return nil
+	}
+	if proj = strings.TrimSpace(proj); proj == "" {
+		return nil
+	}
+	if !strings.EqualFold(proj, owned) {
+		return &CrossProjectError{ID: id, Owned: owned, Project: proj}
+	}
+	return nil
 }
 
 // Resume runs a ticket through the phases not yet checkpointed. It buckets token
@@ -216,6 +271,9 @@ func (p *Pipeline) Process(ctx context.Context, id string) error {
 // gate run giveUp themselves and return the resulting *GiveUpError, which passes
 // straight through.
 func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
+	if err := p.EnsureOwnedProject(ctx, id); err != nil {
+		return err
+	}
 	if p.Tokens != nil {
 		p.Tokens.SetTicket(id)
 	}

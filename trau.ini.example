@@ -39,7 +39,9 @@ ISSUE_PREFIX=                # ticket-ID prefix for parsing, branch inference, a
                              # (e.g. COD, TMS, ENG). Empty = derive from the team key above; falls back to COD
 READY_LABEL=ready-for-agent
 QUARANTINE_LABEL=needs-human
-PROJECT=                     # optional: Linear project for issues (empty = none)
+PROJECT=                     # Linear project this repo owns (e.g. salonradar.com). When set, the loop only
+                             # picks tickets in this project, refuses a run on a ticket from another project
+                             # before any branch/checkpoint, and files bugs here. Empty = no project scoping.
 
 # --- git / GitHub ---
 BASE_BRANCH=main

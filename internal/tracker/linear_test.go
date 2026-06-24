@@ -61,3 +61,61 @@ func TestIssueStatusTerminal(t *testing.T) {
 		}
 	}
 }
+
+func TestInProject(t *testing.T) {
+	tests := []struct {
+		candidate, scope string
+		want             bool
+	}{
+		{"trau", "", true},                // no scope → everything matches
+		{"trau", "trau", true},            // exact
+		{"salonradar.com", "trau", false}, // mismatch
+		{"  trau  ", "trau", true},        // trims
+		{"Trau", "trau", true},            // case-insensitive
+		{"", "trau", false},               // candidate has no project
+	}
+	for _, tc := range tests {
+		if got := inProject(tc.candidate, tc.scope); got != tc.want {
+			t.Errorf("inProject(%q, %q) = %v, want %v", tc.candidate, tc.scope, got, tc.want)
+		}
+	}
+}
+
+func TestScopeProjectClause(t *testing.T) {
+	if c := (Scope{}).projectClause(); c != "" {
+		t.Errorf("empty project should yield no clause, got %q", c)
+	}
+	c := Scope{Project: "trau"}.projectClause()
+	if c == "" || !contains(c, "trau") {
+		t.Errorf("projectClause should mention the project, got %q", c)
+	}
+}
+
+func TestParseProject(t *testing.T) {
+	tests := []struct {
+		text        string
+		wantName    string
+		wantMatched bool
+	}{
+		{"PROJECT=trau", "trau", true},
+		{"blah\nPROJECT=salonradar.com", "salonradar.com", true},
+		{"PROJECT=NONE", "", true},
+		{"PROJECT=none", "", true},
+		{"no sentinel here", "", false},
+	}
+	for _, tc := range tests {
+		name, matched := parseProject(tc.text)
+		if name != tc.wantName || matched != tc.wantMatched {
+			t.Errorf("parseProject(%q) = (%q,%v), want (%q,%v)", tc.text, name, matched, tc.wantName, tc.wantMatched)
+		}
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
