@@ -844,7 +844,9 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	if _, err := p.agentStep(ctx, id, "commit", commitInstruction(id, commitRubricNote(rubricRef))); err != nil {
 		return err
 	}
-	if err := p.Git.Push(ctx, p.Remote, "HEAD"); err != nil {
+	if err := p.retryGH(ctx, "git push", func() error {
+		return p.Git.Push(ctx, p.Remote, "HEAD")
+	}); err != nil {
 		return fmt.Errorf("commit %s: push: %w", id, err)
 	}
 
@@ -867,7 +869,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 				return fmt.Errorf("commit %s: resolve epic branch: %w", id, err)
 			}
 		}
-		prURL, err = p.GitHub.CreatePR(ctx, prBase, branch, id+": "+prDesc(branch), prBody(id))
+		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, id+": "+prDesc(branch), prBody(id))
 		if err != nil {
 			return fmt.Errorf("commit %s: pr create: %w", id, err)
 		}
@@ -913,7 +915,12 @@ func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 		return nil
 	}
 	p.phaseStart("merge")
-	if err := p.GitHub.Merge(ctx, pr, p.MergeMethod, true); err != nil {
+	if err := p.retryGH(ctx, "gh pr merge", func() error {
+		if st, _ := p.GitHub.PRState(ctx, pr); st == "MERGED" {
+			return nil
+		}
+		return p.GitHub.Merge(ctx, pr, p.MergeMethod, true)
+	}); err != nil {
 		return fmt.Errorf("merge %s: %w", id, err)
 	}
 	if p.EpicID != "" {
@@ -963,6 +970,76 @@ func (p *Pipeline) sleep(seconds int) {
 		return
 	}
 	time.Sleep(d)
+}
+
+// retryGH runs an idempotent gh/git operation, retrying transient failures with
+// exponential backoff (1s, 2s) before giving up. Deterministic failures
+// (retryableGH == false) return at once. op must re-check remote state so a
+// partially-applied first attempt is adopted, not duplicated.
+func (p *Pipeline) retryGH(ctx context.Context, what string, op func() error) error {
+	const attempts = 3
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err = op(); err == nil {
+			return nil
+		}
+		if attempt == attempts || !retryableGH(err) {
+			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		backoff := 1 << (attempt - 1)
+		p.logf("  ⟳ %s failed (%v) — retrying in %ds (%d/%d)", what, err, backoff, attempt, attempts-1)
+		p.sleep(backoff)
+	}
+	return err
+}
+
+// retryableGH reports whether a failed gh/git command is worth retrying. It is
+// optimistic: anything that is not a recognized deterministic failure (one a
+// retry cannot fix — bad input, auth, a missing or duplicate resource) is treated
+// as a transient hiccup. It reads the error text, which now carries the command's
+// stderr (see withStderr).
+func retryableGH(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, deterministic := range []string{
+		"no commits between",
+		"already exists",
+		"not found",
+		"could not resolve to",
+		"unauthorized", "authentication", "permission", "forbidden",
+		"not mergeable", "merge conflict",
+		"http 401", "http 403", "http 404", "http 422",
+	} {
+		if strings.Contains(s, deterministic) {
+			return false
+		}
+	}
+	return true
+}
+
+// createOrAdoptPR opens a PR, retrying transient failures. If a create attempt
+// fails but a PR for the branch already exists (a prior attempt, or a concurrent
+// run), it adopts that PR rather than failing or opening a duplicate.
+func (p *Pipeline) createOrAdoptPR(ctx context.Context, base, branch, title, body string) (string, error) {
+	var url string
+	err := p.retryGH(ctx, "gh pr create", func() error {
+		created, e := p.GitHub.CreatePR(ctx, base, branch, title, body)
+		if e == nil {
+			url = created
+			return nil
+		}
+		if existing, e2 := p.GitHub.PRURL(ctx, branch); e2 == nil && existing != "" {
+			url = existing
+			return nil
+		}
+		return e
+	})
+	return url, err
 }
 
 type ciStatus int
@@ -1752,7 +1829,22 @@ func (g ExecGitHub) output(ctx context.Context, args ...string) (string, error) 
 	cmd := exec.CommandContext(ctx, g.bin(), args...)
 	cmd.Dir = g.Repo
 	out, err := cmd.Output()
-	return strings.TrimSpace(string(out)), err
+	if err != nil {
+		return strings.TrimSpace(string(out)), withStderr(err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// withStderr folds an *exec.ExitError's captured stderr into the error so a failed
+// gh command carries gh's actual message instead of a bare "exit status N".
+func withStderr(err error) error {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		if msg := strings.TrimSpace(string(ee.Stderr)); msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+	}
+	return err
 }
 
 // PRURL returns the open PR's URL for branch, or "" when none exists. A gh error
@@ -1779,7 +1871,7 @@ func (g ExecGitHub) PRState(ctx context.Context, pr string) (string, error) {
 func (g ExecGitHub) CreatePR(ctx context.Context, base, head, title, body string) (string, error) {
 	out, err := g.output(ctx, "pr", "create", "--base", base, "--head", head, "--title", title, "--body", body)
 	if err != nil {
-		return "", fmt.Errorf("gh pr create: %w: %s", err, out)
+		return "", fmt.Errorf("gh pr create: %w", err)
 	}
 	return out, nil
 }
