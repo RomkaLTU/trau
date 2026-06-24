@@ -29,7 +29,9 @@ import (
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
+	"github.com/RomkaLTU/trau/internal/doctor"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
@@ -44,6 +46,7 @@ const usage = `trau — autonomous Linear-ticket dev loop
 Usage:
   trau [flags]               run the loop: resume any in-flight ticket, else pick the next ready one
   trau COD-123               run a single ticket (or its sub-issues, if it is an epic)
+  trau doctor                preflight check: git/gh/provider/config/labels/write perms
   trau --status [--json]     show saved ticket checkpoints with token/cost totals
   trau --dry-run             print the next eligible ticket without doing any work
   trau --reset COD-123       drop the branch + state and re-queue the ticket in Linear
@@ -60,6 +63,8 @@ Flags:
   --status          print saved checkpoints and exit
   --json            emit --status as machine-readable JSON
   --no-tui          force plain console output (disable the Bubble Tea TUI)
+  --verbose         extra stderr diagnostics (what the loop is doing)
+  --debug           very verbose stderr diagnostics, incl. git/gh commands invoked
   --yes             no-op, kept for backward compatibility
   -v, --version     print version and exit
   -h, --help        show this help and exit
@@ -73,6 +78,13 @@ type usageError struct{ err error }
 
 func (e usageError) Error() string { return e.err.Error() }
 func (e usageError) Unwrap() error { return e.err }
+
+// silentExit carries an exit code for a command that has already written its own
+// diagnostics (e.g. `trau doctor`), so main exits non-zero without printing an
+// extra wrapper line.
+type silentExit struct{ code int }
+
+func (silentExit) Error() string { return "" }
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -94,7 +106,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	fmt.Fprintln(os.Stderr, "trau:", err)
+	var se silentExit
+	if errors.As(err, &se) {
+		os.Exit(se.code)
+	}
+	fmt.Fprintln(os.Stderr, "trau:", console.FormatActionable(err))
+	fmt.Fprintln(os.Stderr, "  → run `trau doctor` to check your setup, or add `--verbose` / `--debug` for more detail")
 	os.Exit(1)
 }
 
@@ -110,10 +127,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 	}
 
+	if len(args) > 0 && args[0] == "doctor" {
+		return runDoctor(ctx, args[1:], stderr)
+	}
+
 	opts, err := config.ParseArgs(args)
 	if err != nil {
 		return usageError{err}
 	}
+
+	logger.Init(stderr, opts.Verbose, opts.Debug)
+	logger.Verbosef("trau %s starting (verbose=%v debug=%v)", version, opts.Verbose, opts.Debug)
 
 	if os.Getenv("TRAU_ACTIVE") == "1" && os.Getenv("TRAU_ALLOW_NESTED") != "1" {
 		return fmt.Errorf("refusing to start a nested Trau loop (a controller is already active; set TRAU_ALLOW_NESTED=1 to override)")
@@ -123,7 +147,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	ctx, cancelLoop := context.WithCancel(ctx)
 	defer cancelLoop()
 
-	repoRoot, _ := config.ResolveRepoRoot(opts.Repo, os.Getenv("TRAU_REPO_ROOT"), config.GitToplevel)
+	repoRoot, rrErr := config.ResolveRepoRoot(opts.Repo, os.Getenv("TRAU_REPO_ROOT"), config.GitToplevel)
+	if rrErr != nil {
+		logger.Verbosef("repo root resolution: %v", rrErr)
+	} else {
+		logger.Verbosef("resolved repo root: %s", repoRoot)
+	}
 
 	projectEnv := config.ProjectConfigPath(repoRoot)
 	userEnv := ""
@@ -133,8 +162,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	cfg, err := config.LoadLayered(projectEnv, userEnv, config.LocalConfigPath(), opts.Provider)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+		return console.Actionable(err, "load config", "check trau.ini, ~/.trau.ini, and environment variables")
 	}
+	logger.Verbosef("loaded config: provider=%s tracker=%s team=%q base=%s", cfg.Provider, cfg.TrackerProvider, cfg.LinearTeam, cfg.BaseBranch)
 	if opts.Repo != "" || os.Getenv("TRAU_REPO_ROOT") != "" {
 		cfg.RepoRoot = repoRoot
 	} else if cfg.RepoRoot == "" {
@@ -179,7 +209,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if opts.ResetID != "" {
 		repoRoot, err := config.ResolveRepoRoot(opts.Repo, cfg.RepoRoot, config.GitToplevel)
 		if err != nil {
-			return err
+			return console.Actionable(err, "resolve target repo", "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository")
 		}
 		return buildPipeline(cfg, runner, repoRoot, pm, sink, con).Reset(ctx, opts.ResetID)
 	}
@@ -234,8 +264,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	repoRoot, err = config.ResolveRepoRoot(opts.Repo, cfg.RepoRoot, config.GitToplevel)
 	if err != nil {
-		return err
+		return console.Actionable(err, "resolve target repo", "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository")
 	}
+	logger.Verbosef("final repo root for pipeline: %s", repoRoot)
 	p := buildPipeline(cfg, runner, repoRoot, pm, sink, con)
 	p.EpicID = epicID
 
@@ -289,6 +320,42 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	})
 	con.Wait()
 	return lerr
+}
+
+// runDoctor runs the preflight health check and exits non-zero if any required
+// check failed. It loads config best-effort (defaults still apply) so the
+// report can flag what is missing rather than aborting on the first problem.
+func runDoctor(ctx context.Context, args []string, stderr io.Writer) error {
+	opts, err := config.ParseArgs(args)
+	if err != nil {
+		return usageError{err}
+	}
+	logger.Init(stderr, opts.Verbose, opts.Debug)
+
+	repoRoot, rrErr := config.ResolveRepoRoot(opts.Repo, os.Getenv("TRAU_REPO_ROOT"), config.GitToplevel)
+	if rrErr != nil {
+		logger.Verbosef("repo root resolution failed: %v", rrErr)
+		repoRoot = ""
+	}
+
+	projectEnv := config.ProjectConfigPath(repoRoot)
+	userEnv := ""
+	if home, herr := os.UserHomeDir(); herr == nil {
+		userEnv = config.ProjectConfigPath(home)
+	}
+
+	cfg, sources, err := config.LoadLayeredWithSources(projectEnv, userEnv, config.LocalConfigPath(), opts.Provider)
+	if err != nil {
+		return console.Actionable(err, "load config", "check trau.ini, ~/.trau.ini, and environment variables")
+	}
+	if opts.Repo != "" || os.Getenv("TRAU_REPO_ROOT") != "" || cfg.RepoRoot == "" {
+		cfg.RepoRoot = repoRoot
+	}
+
+	if _, err = doctor.Run(ctx, cfg, sources, cfg.RepoRoot, stderr); err != nil {
+		return silentExit{1}
+	}
+	return nil
 }
 
 func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, error) {

@@ -268,6 +268,14 @@ func (c *Client) AddComment(ctx context.Context, identifier, body string) error 
 	return c.do(ctx, commentCreateMutation, map[string]any{"issueId": issue.ID, "body": body}, &dst)
 }
 
+// Labels returns a name->id map of the labels defined in the team.
+func (c *Client) Labels(ctx context.Context, teamID string) (map[string]string, error) {
+	if c.apiKey == "" {
+		return nil, ErrNotEnabled
+	}
+	return c.teamLabels(ctx, teamID)
+}
+
 // EnsureLabel creates a label in the team if it does not already exist.
 func (c *Client) EnsureLabel(ctx context.Context, teamID, name string) error {
 	if c.apiKey == "" {
