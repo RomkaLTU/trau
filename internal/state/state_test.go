@@ -186,6 +186,31 @@ func TestResumeTargetSkipsTerminalAndUnknown(t *testing.T) {
 	}
 }
 
+func TestResumeTargetFuncSkipsOutOfScope(t *testing.T) {
+	s := newStore(t)
+	_ = s.Set("COD-100", "PHASE", Building) // lower number, but NOT in the epic
+	_ = s.Set("COD-200", "PHASE", Building) // the epic's child
+
+	// The incident: a stale checkpoint for an unrelated ticket (COD-100) sits in the
+	// same runs/ dir. Unfiltered, it wins (lowest number) and hijacks the run.
+	if id, _ := s.ResumeTargetFunc(nil); id != "COD-100" {
+		t.Fatalf("ResumeTargetFunc(nil) = %q, want COD-100 (unfiltered picks lowest)", id)
+	}
+
+	// Scoped to the epic's children, the unrelated checkpoint is skipped and the
+	// child resumes instead.
+	keep := func(id string) bool { return id == "COD-200" }
+	if id, phase := s.ResumeTargetFunc(keep); id != "COD-200" || phase != Building {
+		t.Errorf("ResumeTargetFunc(keep COD-200) = (%q,%q), want (COD-200, building)", id, phase)
+	}
+
+	// A filter that excludes everything proceeds to Pick (empty resume target).
+	none := func(string) bool { return false }
+	if id, phase := s.ResumeTargetFunc(none); id != "" || phase != "" {
+		t.Errorf("ResumeTargetFunc(none) = (%q,%q), want empty", id, phase)
+	}
+}
+
 func TestTicketsExcludesUnstated(t *testing.T) {
 	s := newStore(t)
 	_ = s.Set("COD-1", "PHASE", Built)

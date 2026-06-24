@@ -94,9 +94,23 @@ func (l *Linear) pickAPI(ctx context.Context, scope Scope) (string, error) {
 		if !strings.HasPrefix(c.Identifier, prefix+"-") {
 			continue
 		}
+		if !inProject(c.Project.Name, scope.Project) {
+			continue
+		}
 		return c.Identifier, nil
 	}
 	return "", nil
+}
+
+// inProject reports whether a candidate's project matches the scope's owned
+// project. An empty scope project means "no filter" (every candidate matches),
+// preserving the team-wide pick when PROJECT is unset.
+func inProject(candidate, scopeProject string) bool {
+	want := strings.TrimSpace(scopeProject)
+	if want == "" {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(candidate), want)
 }
 
 func allBlockersCompleted(refs []linearapi.IssueRef) bool {
@@ -154,6 +168,9 @@ func (l *Linear) listEligibleAPI(ctx context.Context, scope Scope) ([]ListedTick
 		if !strings.HasPrefix(c.Identifier, prefix+"-") {
 			continue
 		}
+		if !inProject(c.Project.Name, scope.Project) {
+			continue
+		}
 		out = append(out, ListedTicket{ID: c.Identifier, Title: c.Title, State: c.State.Name})
 	}
 	return out, nil
@@ -162,10 +179,10 @@ func (l *Linear) listEligibleAPI(ctx context.Context, scope Scope) ([]ListedTick
 func (l *Linear) listEligiblePrompt(scope Scope) string {
 	pfx := scope.prefix()
 	return fmt.Sprintf("Use the Linear MCP. List eligible issues in %s that carry the label '%s', "+
-		"are unstarted, have all 'blocked by' issues completed, and match prefix %s-. "+
+		"are unstarted, have all 'blocked by' issues completed, and match prefix %s-.%s "+
 		"Respond with exactly one final line of JSON: ELIGIBLE=[{\"id\":\"%s-123\",\"title\":\"...\"}, ...] "+
 		"or ELIGIBLE=[]. No other output.",
-		scope.clause(), l.ReadyLabel, pfx, pfx)
+		scope.clause(), l.ReadyLabel, pfx, scope.projectClause(), pfx)
 }
 
 func parseEligible(text string) ([]ListedTicket, bool) {
@@ -322,10 +339,10 @@ func (l *Linear) pickPrompt(scope Scope) string {
 		"(a) carry the label '%s'; "+
 		"(b) are NOT started — workflow state type is 'backlog' or 'unstarted' (exclude started, completed, canceled); "+
 		"(c) have every 'blocked by' issue in a completed/Done state; "+
-		"(d) are leaf issues — exclude any epic/parent that has its own sub-issues. "+
+		"(d) are leaf issues — exclude any epic/parent that has its own sub-issues.%s "+
 		"Pick the best one to start next by considering, in order: priority (Urgent > High > Medium > Low), due date (sooner is better), then the lowest issue number as a tie-breaker. "+
 		"Respond with exactly one final line: 'PICK=<IDENTIFIER>' (e.g. PICK=%s-414) or 'PICK=NONE'. No other output.",
-		scope.clause(), l.ReadyLabel, scope.prefix())
+		scope.clause(), l.ReadyLabel, scope.projectClause(), scope.prefix())
 }
 
 func parsePick(text, prefix string) (id string, matched bool) {
@@ -488,6 +505,54 @@ func parseIssueStatus(text string) (status IssueStatus, matched bool) {
 	default:
 		return StatusUnknown, false
 	}
+}
+
+// IssueProject reports the name of the Linear project issue id belongs to, used by
+// the ownership guard to refuse cross-project runs. The direct API reads the
+// issue's project; the MCP fallback asks the agent for a PROJECT= sentinel. An
+// empty string means "no project / unknown" — the guard reads that as "can't
+// enforce" rather than a mismatch, so uncertainty never blocks a run.
+func (l *Linear) IssueProject(ctx context.Context, id string) (string, error) {
+	if name, err := l.issueProjectAPI(ctx, id); err == nil {
+		return name, nil
+	} else if !shouldFallback(err) {
+		return "", err
+	}
+
+	res, err := l.Runner.Run(ctx, l.issueProjectPrompt(id), "project")
+	if name, ok := parseProject(res.Final); ok {
+		return name, nil
+	}
+	return "", err
+}
+
+func (l *Linear) issueProjectAPI(ctx context.Context, id string) (string, error) {
+	issue, err := l.api().Issue(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return issue.Project.Name, nil
+}
+
+func (l *Linear) issueProjectPrompt(id string) string {
+	return fmt.Sprintf("Use the Linear MCP. Look up issue %s and report the NAME of the Linear project it belongs to. "+
+		"Respond with exactly one final line: 'PROJECT=<project name>' (or 'PROJECT=NONE' if it has no project). No other output.", id)
+}
+
+// parseProject recovers a project name from an agent response: the last 'PROJECT='
+// sentinel wins. 'NONE'/empty yields ("", true) — a determined "no project", which
+// the guard treats the same as unknown. matched is false when no sentinel exists.
+func parseProject(text string) (name string, matched bool) {
+	re := regexp.MustCompile(`(?m)^.*PROJECT=(.+)$`)
+	ms := re.FindAllStringSubmatch(text, -1)
+	if len(ms) == 0 {
+		return "", false
+	}
+	v := strings.TrimSpace(ms[len(ms)-1][1])
+	if v == "" || strings.EqualFold(v, "NONE") {
+		return "", true
+	}
+	return v, true
 }
 
 // FileBug files a NEW Linear issue as a last-resort HITL blocker for a QA failure

@@ -192,8 +192,20 @@ func (s *Store) Tickets() []string {
 // COD-10). This is the authoritative "where did we leave off" signal for the main
 // loop.
 func (s *Store) ResumeTarget() (id, phase string) {
+	return s.ResumeTargetFunc(nil)
+}
+
+// ResumeTargetFunc is ResumeTarget restricted to the ids the keep predicate
+// accepts. A nil predicate keeps every id (identical to ResumeTarget). The epic
+// flow passes a child-set membership test so a stale checkpoint for a ticket that
+// is not part of the requested epic — even one in the same runs/ dir — is skipped
+// rather than resumed.
+func (s *Store) ResumeTargetFunc(keep func(id string) bool) (id, phase string) {
 	bestNum := math.MaxInt
 	for _, t := range s.Tickets() {
+		if keep != nil && !keep(t) {
+			continue
+		}
 		ph := s.Get(t, "PHASE")
 		if rank := Idx(ph); rank == 0 || rank >= 6 {
 			continue

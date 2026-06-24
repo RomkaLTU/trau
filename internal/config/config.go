@@ -791,7 +791,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "TRACKER_PROVIDER", Default: "linear", Description: "Ticket backend: linear | jira | github", Options: []string{"linear", "jira", "github"}},
 		{Key: "READY_LABEL", Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
 		{Key: "QUARANTINE_LABEL", Default: "needs-human", Description: "Label applied when a ticket fails"},
-		{Key: "PROJECT", Description: "Optional Linear project for filed bugs"},
+		{Key: "PROJECT", Description: "Linear project this repo owns — scopes the ready queue, guards cross-project runs, and targets filed bugs"},
 		{Key: "BASE_BRANCH", Default: "main", Description: "Default git base branch"},
 		{Key: "REMOTE", Default: "origin", Description: "Git remote name"},
 		{Key: "TRAU_REPO_ROOT", Description: "Target app repo path"},

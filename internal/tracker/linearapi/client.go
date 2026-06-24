@@ -51,9 +51,16 @@ type Issue struct {
 	DueDate     string
 	State       State
 	Team        Team
+	Project     Project
 	Labels      []Label
 	Children    []IssueRef
 	BlockedBy   []IssueRef
+}
+
+// Project is a Linear project. Name is empty when the issue belongs to no project.
+type Project struct {
+	ID   string
+	Name string
 }
 
 // State is a workflow state.
@@ -527,6 +534,11 @@ type stateNode struct {
 	Type string `json:"type"`
 }
 
+type projectNode struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type labelNode struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -559,14 +571,15 @@ func blockers(nodes []relationNode) []IssueRef {
 }
 
 type issueNode struct {
-	ID          string    `json:"id"`
-	Identifier  string    `json:"identifier"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Priority    int       `json:"priority"`
-	DueDate     string    `json:"dueDate"`
-	State       stateNode `json:"state"`
-	Team        teamNode  `json:"team"`
+	ID          string      `json:"id"`
+	Identifier  string      `json:"identifier"`
+	Title       string      `json:"title"`
+	Description string      `json:"description"`
+	Priority    int         `json:"priority"`
+	DueDate     string      `json:"dueDate"`
+	State       stateNode   `json:"state"`
+	Team        teamNode    `json:"team"`
+	Project     projectNode `json:"project"`
 	Labels      struct {
 		Nodes []labelNode `json:"nodes"`
 	} `json:"labels"`
@@ -579,12 +592,13 @@ type issueNode struct {
 }
 
 type pickNode struct {
-	ID         string    `json:"id"`
-	Identifier string    `json:"identifier"`
-	Title      string    `json:"title"`
-	Priority   int       `json:"priority"`
-	DueDate    string    `json:"dueDate"`
-	State      stateNode `json:"state"`
+	ID         string      `json:"id"`
+	Identifier string      `json:"identifier"`
+	Title      string      `json:"title"`
+	Priority   int         `json:"priority"`
+	DueDate    string      `json:"dueDate"`
+	State      stateNode   `json:"state"`
+	Project    projectNode `json:"project"`
 	Children   struct {
 		Nodes []issueRefNode `json:"nodes"`
 	} `json:"children"`
@@ -603,6 +617,7 @@ func nodeToIssue(n *issueNode) *Issue {
 		DueDate:     n.DueDate,
 		State:       State(n.State),
 		Team:        Team(n.Team),
+		Project:     Project(n.Project),
 	}
 	for _, l := range n.Labels.Nodes {
 		issue.Labels = append(issue.Labels, Label(l))
@@ -623,6 +638,7 @@ func nodeToPickCandidate(n *pickNode) PickCandidate {
 			Priority:   n.Priority,
 			DueDate:    n.DueDate,
 			State:      State{ID: n.State.ID, Name: n.State.Name, Type: n.State.Type},
+			Project:    Project(n.Project),
 		},
 	}
 	for _, s := range n.Children.Nodes {
