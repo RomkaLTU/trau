@@ -139,6 +139,98 @@ func TestFinalizeEpicSurfacesUnknownChildStatusErrors(t *testing.T) {
 	}
 }
 
+func TestEpicBranchNameAdoptsRemoteWhenLocalMissing(t *testing.T) {
+	g := &epicGit{remoteExists: true}
+	p := &Pipeline{
+		Base:    "main",
+		Remote:  "origin",
+		EpicID:  "COD-1",
+		Git:     g,
+		Tracker: &epicTracker{title: "Checkout rebuild"},
+	}
+
+	branch, err := p.epicBranchName(context.Background())
+	if err != nil {
+		t.Fatalf("epicBranchName returned error: %v", err)
+	}
+	if branch != "epic/COD-1-checkout-rebuild" {
+		t.Fatalf("unexpected branch: %s", branch)
+	}
+	if !g.adopted {
+		t.Fatalf("expected the remote epic branch to be adopted")
+	}
+	if g.created {
+		t.Fatalf("must not recreate the epic branch off base when the remote exists")
+	}
+}
+
+func TestEpicBranchNameCreatesWhenNeitherExists(t *testing.T) {
+	g := &epicGit{}
+	p := &Pipeline{
+		Base:    "main",
+		Remote:  "origin",
+		EpicID:  "COD-1",
+		Git:     g,
+		Tracker: &epicTracker{title: "Checkout rebuild"},
+	}
+
+	if _, err := p.epicBranchName(context.Background()); err != nil {
+		t.Fatalf("epicBranchName returned error: %v", err)
+	}
+	if g.adopted {
+		t.Fatalf("nothing to adopt when the remote branch is absent")
+	}
+	if !g.created || g.createBase != "main" {
+		t.Fatalf("expected fresh epic created off main, created=%v base=%q", g.created, g.createBase)
+	}
+}
+
+func TestEpicBranchNameSurfacesRemoteCheckError(t *testing.T) {
+	g := &epicGit{remoteErr: errors.New("remote unreachable")}
+	p := &Pipeline{
+		Base:    "main",
+		Remote:  "origin",
+		EpicID:  "COD-1",
+		Git:     g,
+		Tracker: &epicTracker{title: "Checkout rebuild"},
+	}
+
+	_, err := p.epicBranchName(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "check remote") {
+		t.Fatalf("expected remote-check error, got %v", err)
+	}
+	if g.created || g.adopted {
+		t.Fatalf("an indeterminate remote must neither recreate nor adopt (created=%v adopted=%v)", g.created, g.adopted)
+	}
+}
+
+// epicGit is a fakeGit that drives epicBranchName's local/remote branch
+// resolution and records whether it recreated or adopted the epic branch.
+type epicGit struct {
+	fakeGit
+	localExists  bool
+	remoteExists bool
+	remoteErr    error
+	created      bool
+	adopted      bool
+	createBase   string
+}
+
+func (g *epicGit) BranchExists(context.Context, string) (bool, error) {
+	return g.localExists, nil
+}
+func (g *epicGit) RemoteBranchExists(context.Context, string, string) (bool, error) {
+	return g.remoteExists, g.remoteErr
+}
+func (g *epicGit) CheckoutRemoteBranch(context.Context, string, string) error {
+	g.adopted = true
+	return nil
+}
+func (g *epicGit) CreateBranch(_ context.Context, _, base string) error {
+	g.created, g.createBase = true, base
+	return nil
+}
+
 type epicTracker struct {
 	title     string
 	subs      []tracker.SubIssue

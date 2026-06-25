@@ -76,6 +76,15 @@ type Git interface {
 	// committing with the default merge message; a no-op when the tree is not
 	// mid-merge (the resolving agent may already have committed).
 	ContinueMerge(ctx context.Context) error
+
+	// RemoteBranchExists reports whether remote/branch exists on the remote
+	// (git ls-remote). A missing branch is an expected (false, nil), not an
+	// error; only an unreachable remote returns a non-nil error.
+	RemoteBranchExists(ctx context.Context, remote, branch string) (bool, error)
+
+	// CheckoutRemoteBranch creates a local branch from remote/branch and checks
+	// it out, adopting existing remote work instead of starting fresh.
+	CheckoutRemoteBranch(ctx context.Context, remote, branch string) error
 }
 
 // Check is one PR status check (gh pr checks --json name,bucket). bucket is gh's
@@ -1998,6 +2007,34 @@ func (g ExecGit) ContinueMerge(ctx context.Context) error {
 		return err
 	}
 	return g.run(ctx, "commit", "--no-edit")
+}
+
+// RemoteBranchExists reports whether remote has refs/heads/<branch>. ls-remote
+// --exit-code returns status 2 when no ref matches, which reads as (false, nil) —
+// an expected answer; any other failure (unreachable remote) returns the error so
+// the caller never mistakes a network blip for "branch absent".
+func (g ExecGit) RemoteBranchExists(ctx context.Context, remote, branch string) (bool, error) {
+	err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"ls-remote", "--heads", "--exit-code", remote, "refs/heads/"+branch).Run()
+	if err == nil {
+		return true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 2 {
+		return false, nil
+	}
+	return false, fmt.Errorf("ls-remote %s %s: %w", remote, branch, err)
+}
+
+// CheckoutRemoteBranch creates local <branch> at remote/<branch>'s tip and checks
+// it out (git fetch <remote> <branch>:<branch>; git checkout <branch>). Used only
+// when the branch is absent locally, so the fetch is a clean create with no
+// non-fast-forward risk.
+func (g ExecGit) CheckoutRemoteBranch(ctx context.Context, remote, branch string) error {
+	if err := g.run(ctx, "fetch", remote, branch+":"+branch); err != nil {
+		return err
+	}
+	return g.run(ctx, "checkout", branch)
 }
 
 // ExecGitHub runs `gh` against a target repo (resolved from the working directory

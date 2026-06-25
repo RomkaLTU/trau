@@ -19,14 +19,28 @@ func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
 	}
 	branch := epicBranch(p.EpicID, title)
 
-	exists, _ := p.Git.BranchExists(ctx, branch)
-	if !exists {
-		if err := p.Git.CreateBranch(ctx, branch, p.Base); err != nil {
-			return "", &GiveUpError{ID: p.EpicID, Reason: "could not create epic branch for " + p.EpicID}
-		}
-		p.logf("  epic branch %s ← %s", branch, p.Base)
-		if err := p.Git.Push(ctx, p.Remote, branch); err != nil {
-			p.logf("  push epic branch error (continuing): %v", err)
+	if exists, _ := p.Git.BranchExists(ctx, branch); !exists {
+		// The local branch is gone (e.g. a fresh clone, or a different machine than
+		// the one that built the epic). Adopt the remote epic branch if it exists
+		// rather than recreating an empty epic off the base, which would orphan the
+		// children's integration work and poison every later run on this machine.
+		remoteExists, rerr := p.Git.RemoteBranchExists(ctx, p.Remote, branch)
+		switch {
+		case rerr != nil:
+			return "", fmt.Errorf("resolve epic branch %s: check remote: %w", branch, rerr)
+		case remoteExists:
+			if err := p.Git.CheckoutRemoteBranch(ctx, p.Remote, branch); err != nil {
+				return "", fmt.Errorf("resolve epic branch %s: adopt from %s: %w", branch, p.Remote, err)
+			}
+			p.logf("  epic branch %s adopted from %s", branch, p.Remote)
+		default:
+			if err := p.Git.CreateBranch(ctx, branch, p.Base); err != nil {
+				return "", &GiveUpError{ID: p.EpicID, Reason: "could not create epic branch for " + p.EpicID}
+			}
+			p.logf("  epic branch %s ← %s", branch, p.Base)
+			if err := p.Git.Push(ctx, p.Remote, branch); err != nil {
+				p.logf("  push epic branch error (continuing): %v", err)
+			}
 		}
 	}
 
