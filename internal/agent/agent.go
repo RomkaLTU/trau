@@ -14,11 +14,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -194,7 +196,8 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	lastActivity.Store(start.UnixNano())
 
 	trustPrompt := make(chan struct{}, 1)
-	go drainTranscript(sess, transcriptPath, trustPrompt, func() {
+	authPrompt := make(chan struct{}, 1)
+	go drainTranscript(sess, transcriptPath, trustPrompt, authPrompt, func() {
 		lastActivity.Store(c.clock().UnixNano())
 	})
 
@@ -259,6 +262,15 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 			res := Result{IsError: true}
 			c.emit(label, res, c.clock().Sub(start), ctx.Err())
 			return res, fmt.Errorf("claude interactive run (%s): %w", label, ctx.Err())
+		case <-authPrompt:
+			// The agent hit a provider auth/login wall (403 / "Please run /login")
+			// and would otherwise idle here until the stall watchdog kills it, only
+			// for every retry to re-hit the same wall. Fail fast with a classifiable
+			// error so the pipeline pauses blamelessly instead of faulting the ticket.
+			_ = sess.Kill()
+			res := Result{IsError: true}
+			c.emit(label, res, c.clock().Sub(start), ErrAuthRequired)
+			return res, fmt.Errorf("claude interactive run (%s): %w", label, ErrAuthRequired)
 		case <-tick.C:
 			if c.StallWindow > 0 {
 				if idle := c.clock().Sub(time.Unix(0, lastActivity.Load())); idle >= c.StallWindow {
@@ -399,20 +411,20 @@ func transcriptPathFor(resultPath string) string {
 	return strings.TrimSuffix(resultPath, ".result.json") + ".pty.log"
 }
 
-func drainTranscript(r io.Reader, path string, trustPrompt chan<- struct{}, onActivity func()) {
+func drainTranscript(r io.Reader, path string, trustPrompt, authPrompt chan<- struct{}, onActivity func()) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
-		drainWithTrustSignal(io.Discard, r, trustPrompt, onActivity)
+		drainWithTrustSignal(io.Discard, r, trustPrompt, authPrompt, onActivity)
 		return
 	}
 	defer func() { _ = f.Close() }()
-	drainWithTrustSignal(f, r, trustPrompt, onActivity)
+	drainWithTrustSignal(f, r, trustPrompt, authPrompt, onActivity)
 }
 
-func drainWithTrustSignal(dst io.Writer, src io.Reader, trustPrompt chan<- struct{}, onActivity func()) {
+func drainWithTrustSignal(dst io.Writer, src io.Reader, trustPrompt, authPrompt chan<- struct{}, onActivity func()) {
 	buf := make([]byte, 4096)
 	var seen strings.Builder
-	signaled := false
+	trustSeen, authSeen := false, false
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
@@ -421,15 +433,16 @@ func drainWithTrustSignal(dst io.Writer, src io.Reader, trustPrompt chan<- struc
 			}
 			chunk := buf[:n]
 			_, _ = dst.Write(chunk)
-			if !signaled {
+			if !trustSeen || !authSeen {
 				seen.WriteString(string(chunk))
 				text := seen.String()
-				if strings.Contains(text, "Quick") && strings.Contains(text, "safety") && strings.Contains(text, "trust") {
-					signaled = true
-					select {
-					case trustPrompt <- struct{}{}:
-					default:
-					}
+				if !trustSeen && strings.Contains(text, "Quick") && strings.Contains(text, "safety") && strings.Contains(text, "trust") {
+					trustSeen = true
+					signalOnce(trustPrompt)
+				}
+				if !authSeen && hasAuthFailure(text) {
+					authSeen = true
+					signalOnce(authPrompt)
 				}
 				if seen.Len() > 8192 {
 					trimmed := text[len(text)-4096:]
@@ -441,6 +454,50 @@ func drainWithTrustSignal(dst io.Writer, src io.Reader, trustPrompt chan<- struc
 		if err != nil {
 			return
 		}
+	}
+}
+
+// signalOnce does a non-blocking send so a full (already-signaled) channel never
+// wedges the transcript drain.
+func signalOnce(ch chan<- struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+// ErrAuthRequired marks an agent run that failed because the provider needs
+// re-authentication — an OAuth/login wall, a 403, an invalid key, or an exhausted
+// credit balance — rather than because the work or the agent process went wrong.
+// Claude Code surfaces these as "API Error: 403 Request not allowed / Please run
+// /login" and then idles at a prompt, so the call would otherwise read as a
+// generic output stall. The pipeline treats it as a blameless pause (no retries,
+// ticket left resumable) instead of burning the recovery budget and faulting the
+// ticket. See COD-596.
+var ErrAuthRequired = errors.New("provider authentication required — re-login (e.g. run claude, then /login)")
+
+var reANSI = regexp.MustCompile("\x1b\\[[0-9;:?]*[ -/]*[@-~]|\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)?")
+
+// hasAuthFailure reports whether the agent's terminal output shows a provider
+// auth/login wall that won't clear without human re-authentication. It strips ANSI
+// styling/cursor codes first so a marker drawn with interleaved color or
+// positioning sequences still matches, and requires distinctive paired tokens for
+// the 403 case to avoid pausing on incidental prose.
+func hasAuthFailure(s string) bool {
+	low := strings.ToLower(reANSI.ReplaceAllString(s, ""))
+	switch {
+	case strings.Contains(low, "please run /login"):
+		return true
+	case strings.Contains(low, "invalid api key"):
+		return true
+	case strings.Contains(low, "credit balance is too low"):
+		return true
+	case strings.Contains(low, "oauth token") && strings.Contains(low, "expired"):
+		return true
+	case strings.Contains(low, "403") && strings.Contains(low, "not allowed"):
+		return true
+	default:
+		return false
 	}
 }
 
