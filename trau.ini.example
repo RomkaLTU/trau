@@ -139,6 +139,17 @@ MAX_DAILY_TOKENS=            # e.g. 50000000 → stop the run once today reaches
 # Pipes, cron, TRAU_LOG_JSON=1, and --status always use plain output.
 TRAU_TUI=1
 
+# Usage HUD provider window. When 1, the HUD bar tracks the active provider's real
+# rate-limit window (claude OAuth usage, codex app-server, kimi prepaid balance).
+# Every probe is metadata-only and fails closed to token/cost totals, so it is safe
+# to leave on; set 0 to skip provider polling entirely.
+USAGE_WINDOW=1
+# Pseudo-terminal /usage fallback. Off by default. When 1, providers with no
+# structured window (notably Kimi-Code *subscription* users) are probed by driving
+# their CLI's /usage panel in a pty and scraping it — brittle and version-sensitive,
+# so opt-in only.
+USAGE_WINDOW_PTY=0
+
 # --- verify ---
 BROWSER_VERIFY=auto          # auto (browser only for UI slices) | always | never
 APP_URL=http://localhost     # base URL of your locally-running app (used by browser verify)

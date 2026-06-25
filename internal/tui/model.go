@@ -18,6 +18,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/state"
+	"github.com/RomkaLTU/trau/internal/usage"
 )
 
 const maxLogLines = 1000
@@ -28,8 +29,6 @@ const (
 	headerH   = 2  // brand row + rule
 	footerH   = 1
 	panelGap  = 1 // vertical blank line between stacked regions
-
-	mockUsageLimit = 2_000_000 // placeholder provider token budget until a real source is wired
 )
 
 type viewState int
@@ -82,6 +81,7 @@ type model struct {
 	following bool
 	help      help.Model
 	usage     usageStats
+	win       usage.Window
 
 	currentTicket string
 	currentTitle  string
@@ -134,8 +134,10 @@ type feedEntry struct {
 	sub    bool
 }
 
-// usageStats accumulates the run's agent spend from agent_call events. limit and
-// resets are placeholders (mockUsageLimit) until a real provider source is wired.
+// usageStats accumulates the run's agent spend (tokens + cost) live from
+// agent_call events. The provider rate-limit window that frames it in the HUD
+// arrives separately as a usage_window event (see model.win) — this struct holds
+// only the run totals, which are always real.
 type usageStats struct {
 	provider string
 	in       int
@@ -385,6 +387,10 @@ func (m model) classifyLine(line string) (glyph string, style lipgloss.Style, te
 }
 
 func (m *model) applyEvent(ev event.Event) {
+	if ev.Kind == usage.EventKind {
+		m.win = usage.WindowFromFields(ev.Fields)
+		return
+	}
 	if ev.Kind != "agent_call" {
 		return
 	}
@@ -536,34 +542,96 @@ func (m model) stateChip() (string, lipgloss.Color) {
 	}
 }
 
+// renderHud draws the Usage strip. Row 1 frames the run against the provider's
+// real rate-limit window when one was probed (a utilization bar + reset hint), or
+// a prepaid balance, or — when no window source is available — token totals with
+// no bar, never a fabricated denominator. Row 2 is always the live run totals. A
+// rate-limit pause overrides row 1 with the banner regardless of window state.
 func (m model) renderHud(w int) string {
 	prov := m.usage.provider
 	if prov == "" {
+		prov = m.win.Provider
+	}
+	if prov == "" {
 		prov = "agent"
 	}
-	used := m.usage.total
-	frac := float64(used) / float64(mockUsageLimit)
-	if m.paused {
-		frac = 1
-	}
-	pct := int(frac*100 + 0.5)
-	if pct > 100 {
-		pct = 100
-	}
-	limitTag := m.styles.Help.Render("  (limit mocked)")
-	if m.paused {
-		limitTag = "  " + m.styles.BannerErr.Render("rate limited")
-	}
-	barW := 28
-	row1 := m.styles.Subtle.Render(pad(prov, 7)) + " " + usageBar(frac, barW) + " " +
-		m.styles.Subtle.Render(fmt.Sprintf("%3d%%", pct)) + "   " +
-		m.styles.Subtle.Render(fmt.Sprintf("%s / %s tokens", fmtTokens(used), fmtTokens(mockUsageLimit))) +
-		limitTag
+	row1 := m.styles.Subtle.Render(pad(prov, 7)) + " " + m.hudWindow()
 	row2 := m.styles.Help.Render("tokens ") +
 		m.styles.Subtle.Render(fmt.Sprintf("in %s · out %s · %s total", fmtTokens(m.usage.in), fmtTokens(m.usage.out), fmtTokens(m.usage.total))) +
 		m.styles.Help.Render("    cost ") + m.styles.Success.Render(fmt.Sprintf("$%.2f", m.usage.cost)) +
 		m.styles.Help.Render("  this run")
 	return titledPanel(m.styles, "Usage", row1+"\n"+row2, w, hudH)
+}
+
+// hudWindow renders row 1's window segment after the provider label. A pause wins
+// over everything (red full bar + banner). Otherwise: a utilization window shows a
+// threshold-colored bar + percent + which window + reset hint; a balance shows the
+// prepaid figure; and the no-window state shows the run's token total with an
+// explicit "no provider window" note instead of a misleading bar.
+func (m model) hudWindow() string {
+	const barW = 28
+	if m.paused {
+		return usageBar(1, barW) + " " + m.styles.Subtle.Render("100%") + "   " +
+			m.styles.BannerErr.Render("rate limited")
+	}
+	switch {
+	case m.win.Available && m.win.HasUtilization:
+		frac := m.win.Utilization / 100
+		pct := int(frac*100 + 0.5)
+		seg := usageBar(frac, barW) + " " + m.styles.Subtle.Render(fmt.Sprintf("%3d%%", pct))
+		if lbl := strings.TrimSpace(m.win.Label); lbl != "" {
+			seg += "   " + m.styles.Help.Render(lbl)
+		}
+		if hint := resetHint(m.win, time.Now()); hint != "" {
+			seg += " " + m.styles.Subtle.Render(hint)
+		}
+		return seg
+	case m.win.Available && m.win.HasBalance:
+		return m.styles.Help.Render("balance ") +
+			m.styles.Success.Render(fmt.Sprintf("$%.2f", m.win.BalanceUSD))
+	default:
+		return m.styles.Subtle.Render(fmt.Sprintf("%s tokens", fmtTokens(m.usage.total))) + "   " +
+			m.styles.Help.Render("(no provider window)")
+	}
+}
+
+// resetHint formats a window's reset as a countdown ("resets in 2h 14m") when the
+// remaining time is known, falling back to a wall-clock time ("resets 18:40") when
+// only an advisory reset instant is set. Empty when no reset is known.
+func resetHint(w usage.Window, now time.Time) string {
+	if d, ok := w.Remaining(now); ok {
+		return "resets in " + fmtCountdown(d)
+	}
+	if w.HasReset {
+		return "resets " + w.ResetAt.Local().Format("15:04")
+	}
+	return ""
+}
+
+// fmtCountdown renders a coarse human countdown: days+hours past a day (weekly
+// windows), hours+minutes past an hour, whole minutes under an hour, and "<1m"
+// below a minute.
+func fmtCountdown(d time.Duration) string {
+	switch {
+	case d >= 24*time.Hour:
+		days := int(d / (24 * time.Hour))
+		h := int((d % (24 * time.Hour)) / time.Hour)
+		if h == 0 {
+			return fmt.Sprintf("%dd", days)
+		}
+		return fmt.Sprintf("%dd %dh", days, h)
+	case d >= time.Hour:
+		h := int(d / time.Hour)
+		mnt := int((d % time.Hour) / time.Minute)
+		if mnt == 0 {
+			return fmt.Sprintf("%dh", h)
+		}
+		return fmt.Sprintf("%dh %dm", h, mnt)
+	case d >= time.Minute:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	default:
+		return "<1m"
+	}
 }
 
 func (m model) renderFooter() string {

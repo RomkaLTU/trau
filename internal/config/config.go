@@ -90,6 +90,15 @@ type Config struct {
 
 	EpicFlow bool
 
+	// UsageWindow enables the HUD's provider rate-limit window probe (claude OAuth
+	// usage, codex app-server, kimi balance). On by default; every probe is
+	// metadata-only and fails closed to token/cost totals, so it is safe to leave
+	// on. UsageWindowPTY additionally permits the brittle pseudo-terminal /usage
+	// scrape — the only route to Kimi-Code-subscription usage — and is off by
+	// default because it spawns a second interactive CLI.
+	UsageWindow    bool
+	UsageWindowPTY bool
+
 	// Lessons enables the durable lessons memory: failure→fix records are appended
 	// to runs/memory/lessons.jsonl and relevant ones are recalled into later
 	// build/verify/repair prompts. LessonsDistill additionally runs a cheap agent
@@ -154,6 +163,8 @@ func Defaults() Config {
 		VerifyPanelPolicy:     "unanimous",
 		TUI:                   true,
 		EpicFlow:              true,
+		UsageWindow:           true,
+		UsageWindowPTY:        false,
 		Lessons:               true,
 		LessonsDistill:        false,
 		RunsDir:               "runs",
@@ -463,6 +474,14 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("LESSONS_DISTILL"); v != "" {
 		c.LessonsDistill = v == "1"
 		sources["LESSONS_DISTILL"] = src.name
+	}
+	if v, src := get("USAGE_WINDOW"); v != "" {
+		c.UsageWindow = v == "1"
+		sources["USAGE_WINDOW"] = src.name
+	}
+	if v, src := get("USAGE_WINDOW_PTY"); v != "" {
+		c.UsageWindowPTY = v == "1"
+		sources["USAGE_WINDOW_PTY"] = src.name
 	}
 	str("RUNS_DIR", &c.RunsDir)
 	fnum("MAX_TICKET_USD", &c.MaxTicketUSD)

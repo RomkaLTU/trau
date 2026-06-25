@@ -39,9 +39,25 @@ import (
 	"github.com/RomkaLTU/trau/internal/tokens"
 	"github.com/RomkaLTU/trau/internal/tracker"
 	"github.com/RomkaLTU/trau/internal/tui"
+	"github.com/RomkaLTU/trau/internal/usage/probe"
 )
 
 var version = "dev"
+
+// usagePoller builds the HUD's provider usage-window poller from config, or nil
+// when the feature is off or the provider exposes no window. The caller runs it on
+// a context bounded by the loop's lifetime; every probe is metadata-only.
+func usagePoller(cfg config.Config, log *event.Log) *probe.Poller {
+	return probe.NewPoller(probe.Options{
+		Provider:   cfg.Provider,
+		Enabled:    cfg.UsageWindow,
+		PTY:        cfg.UsageWindowPTY,
+		ClaudeBin:  cfg.ClaudeBin,
+		CodexBin:   cfg.CodexBin,
+		KimiBin:    cfg.KimiBin,
+		KimiAPIKey: os.Getenv("KIMI_API_KEY"),
+	}, log)
+}
 
 const usage = `trau — autonomous Linear-ticket dev loop
 
@@ -367,6 +383,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		NoResume:     opts.NoResume,
 		ParentSuffix: parentSuffix,
 		ForcedID:     forcedID,
+		Poller:       usagePoller(cfg, log),
 	}, con, result)
 
 	tk, cost, metered := total(processed)
@@ -684,10 +701,18 @@ type loopParams struct {
 	NoResume     bool
 	ParentSuffix string
 	ForcedID     string
+	Poller       *probe.Poller
 }
 
 func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer, result func(id string, elapsed time.Duration) console.TicketResult) ([]string, error) {
 	var processed []string
+	// Poll the provider usage window for the run's lifetime, stopping when the loop
+	// returns. Windows reach the renderer over the event log; nil when disabled.
+	if p.Poller != nil {
+		pctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go p.Poller.Run(pctx)
+	}
 	// crossStop surfaces an ownership refusal (the ticket belongs to another Linear
 	// project) and signals the loop to stop cleanly — nothing was touched, so the
 	// user just runs it from the owning repo or clears a stray checkpoint here.
@@ -1396,7 +1421,7 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 		}
 	}
 	start := time.Now()
-	processed, lerr := runLoop(ctx, a.eng, loopParams{Max: max}, r, result)
+	processed, lerr := runLoop(ctx, a.eng, loopParams{Max: max, Poller: usagePoller(a.cfg, a.log)}, r, result)
 	tk, cost, metered := total(processed)
 	r.LoopDone(applyFault(console.SessionSummary{
 		Tickets:     len(processed),
@@ -1429,6 +1454,12 @@ func (a *appActions) RunTicket(ctx context.Context, id string, r console.Rendere
 		r.Logf("%s is an epic → running its next eligible sub-issue", id)
 		a.runEpicLoop(ctx, id, r, 1)
 		return
+	}
+
+	if pl := usagePoller(a.cfg, a.log); pl != nil {
+		pctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		go pl.Run(pctx)
 	}
 
 	start := time.Now()
