@@ -60,8 +60,16 @@ func (fakeGit) DeleteBranch(context.Context, string) error { return nil }
 func (fakeGit) DeletePushedBranch(context.Context, string, string) error {
 	return nil
 }
-func (fakeGit) StatusPorcelain(context.Context) (string, error) { return "", nil }
-func (fakeGit) Pull(context.Context, string, string) error      { return nil }
+func (fakeGit) StatusPorcelain(context.Context) (string, error)           { return "", nil }
+func (fakeGit) Pull(context.Context, string, string) error                { return nil }
+func (fakeGit) MergeRemote(context.Context, string, string) (bool, error) { return false, nil }
+func (fakeGit) MergeAbort(context.Context) error                          { return nil }
+func (fakeGit) Unmerged(context.Context) (string, error)                  { return "", nil }
+func (fakeGit) ContinueMerge(context.Context) error                       { return nil }
+func (fakeGit) RemoteBranchExists(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+func (fakeGit) CheckoutRemoteBranch(context.Context, string, string) error { return nil }
 
 // writeHandoff drops a non-empty handoff brief so Verify skips regeneration and
 // goes straight to the verify attempt (where the bug lives). Cleans up the /tmp
