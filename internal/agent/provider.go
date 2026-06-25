@@ -20,9 +20,12 @@ type BackendParams struct {
 	Dir      string
 	Preamble string
 	Timeout  time.Duration
-	Log      *event.Log
-	Tokens   TokenSink
-	Extra    map[string]string
+	// StallWindow kills+fails a call that produces no transcript output for this
+	// long, before Timeout. Zero disables the watchdog (wait the full Timeout).
+	StallWindow time.Duration
+	Log         *event.Log
+	Tokens      TokenSink
+	Extra       map[string]string
 }
 
 // Spec is one provider's contract: identity metadata plus a constructor. Adding a
@@ -91,6 +94,7 @@ var claudeSpec = Spec{
 			ResultDir:       p.Extra["result_dir"],
 			Dir:             p.Dir,
 			Timeout:         p.Timeout,
+			StallWindow:     p.StallWindow,
 			Log:             p.Log,
 			Tokens:          p.Tokens,
 		}, nil

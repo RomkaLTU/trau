@@ -594,6 +594,10 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 	if err != nil {
 		return nil, err
 	}
+	fallback, err := buildFallback(cfg, log, sink)
+	if err != nil {
+		return nil, err
+	}
 	return &pipeline.Pipeline{
 		Runner:         runner,
 		State:          state.NewStore(cfg.RunsDir),
@@ -608,6 +612,9 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		Prefix:         cfg.IssuePrefix,
 		MaxRepairs:     cfg.MaxRepairs,
 		MaxBugfixes:    cfg.MaxBugfixes,
+		AgentRetries:   cfg.AgentRetries,
+		AgentBackoff:   cfg.AgentBackoff,
+		Fallback:       fallback,
 		Checks:         verifyChecks,
 		VerifyPanel:    panel,
 		PanelPolicy:    cfg.VerifyPanelPolicy,
@@ -656,6 +663,33 @@ func buildPanel(cfg config.Config, log *event.Log, sink agent.TokenSink) ([]pipe
 		panel = append(panel, pipeline.Verifier{Name: name, Provider: provider, Runner: runner})
 	}
 	return panel, nil
+}
+
+// buildFallback builds the transient-recovery fallback chain from FALLBACK_PROVIDERS
+// — one fresh backend per provider[:model[:effort]] spec, reusing the same route
+// parsing and backend construction as phase routes (COD-547) so a fallback can be a
+// different provider, model, or effort. It returns a phase-keyed resolver; the
+// chain is global, so every phase gets the same ordered providers. Returns nil when
+// no fallback is configured (retry-only). A spec naming an unknown provider or whose
+// binary is missing from PATH is a startup error, surfaced before any run begins.
+func buildFallback(cfg config.Config, log *event.Log, sink agent.TokenSink) (func(string) []agent.Runner, error) {
+	if len(cfg.FallbackProviders) == 0 {
+		return nil, nil
+	}
+	reg := agent.DefaultRegistry()
+	var chain []agent.Runner
+	for _, spec := range cfg.FallbackProviders {
+		provider, model, effort, err := parseRoute(reg, spec, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("fallback provider %q: %w", spec, err)
+		}
+		b, err := buildBackend(reg, cfg, provider, model, effort, log, sink)
+		if err != nil {
+			return nil, fmt.Errorf("fallback provider %q: %w", spec, err)
+		}
+		chain = append(chain, b)
+	}
+	return func(string) []agent.Runner { return chain }, nil
 }
 
 type engine interface {
@@ -1612,16 +1646,17 @@ func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort
 		return nil, fmt.Errorf("provider %q: %q not found on PATH", provider, pc.bin)
 	}
 	return spec.New(agent.BackendParams{
-		Bin:      pc.bin,
-		Flags:    strings.Fields(pc.flags),
-		Model:    model,
-		Effort:   effort,
-		Dir:      cfg.RepoRoot,
-		Preamble: config.Preamble,
-		Timeout:  time.Duration(cfg.AgentTimeout) * time.Second,
-		Log:      log,
-		Tokens:   sink,
-		Extra:    pc.extra,
+		Bin:         pc.bin,
+		Flags:       strings.Fields(pc.flags),
+		Model:       model,
+		Effort:      effort,
+		Dir:         cfg.RepoRoot,
+		Preamble:    config.Preamble,
+		Timeout:     time.Duration(cfg.AgentTimeout) * time.Second,
+		StallWindow: time.Duration(cfg.AgentStallWindow) * time.Second,
+		Log:         log,
+		Tokens:      sink,
+		Extra:       pc.extra,
 	})
 }
 

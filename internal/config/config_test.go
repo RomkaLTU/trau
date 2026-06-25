@@ -207,3 +207,50 @@ func TestKimiPhaseRouteReadsProviderFile(t *testing.T) {
 		t.Fatalf("build route: want kimi:kimi-build, got %s", cfg.Routes["build"])
 	}
 }
+
+// TestRecoveryDefaults pins the COD-583 transient-recovery defaults: stall
+// detection and retry are on out of the box, provider fallback is opt-in.
+func TestRecoveryDefaults(t *testing.T) {
+	c := Defaults()
+	if c.AgentStallWindow != 180 {
+		t.Errorf("AgentStallWindow default = %d, want 180", c.AgentStallWindow)
+	}
+	if c.AgentRetries != 2 {
+		t.Errorf("AgentRetries default = %d, want 2", c.AgentRetries)
+	}
+	if c.AgentBackoff != 10 {
+		t.Errorf("AgentBackoff default = %d, want 10", c.AgentBackoff)
+	}
+	if len(c.FallbackProviders) != 0 {
+		t.Errorf("FallbackProviders default = %v, want empty (retry-only)", c.FallbackProviders)
+	}
+}
+
+// TestRecoveryConfigParsing checks the new keys parse, including the
+// comma-separated, whitespace-tolerant FALLBACK_PROVIDERS chain.
+func TestRecoveryConfigParsing(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "trau.ini")
+	content := "AGENT_STALL_WINDOW=90\nAGENT_RETRIES=3\nAGENT_BACKOFF=5\nFALLBACK_PROVIDERS=codex, kimi\n"
+	if err := os.WriteFile(local, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadLayered("", "", local, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.AgentStallWindow != 90 {
+		t.Errorf("AgentStallWindow = %d, want 90", cfg.AgentStallWindow)
+	}
+	if cfg.AgentRetries != 3 {
+		t.Errorf("AgentRetries = %d, want 3", cfg.AgentRetries)
+	}
+	if cfg.AgentBackoff != 5 {
+		t.Errorf("AgentBackoff = %d, want 5", cfg.AgentBackoff)
+	}
+	if got := cfg.FallbackProviders; len(got) != 2 || got[0] != "codex" || got[1] != "kimi" {
+		t.Errorf("FallbackProviders = %v, want [codex kimi]", got)
+	}
+}
