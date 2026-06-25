@@ -186,19 +186,33 @@ func IsCrossProject(err error) bool {
 // Pipeline holds the collaborators a ticket run needs. One Pipeline is
 // constructed per process and reused across tickets.
 type Pipeline struct {
-	Runner         agent.Runner
-	State          *state.Store
-	Git            Git
-	GitHub         GitHub
-	Tracker        tracker.Tracker
-	Tokens         Ledger
-	Budget         budget.Limits
-	RunsDir        string
-	Base           string
-	Remote         string
-	Prefix         string
-	MaxRepairs     int
-	MaxBugfixes    int
+	Runner      agent.Runner
+	State       *state.Store
+	Git         Git
+	GitHub      GitHub
+	Tracker     tracker.Tracker
+	Tokens      Ledger
+	Budget      budget.Limits
+	RunsDir     string
+	Base        string
+	Remote      string
+	Prefix      string
+	MaxRepairs  int
+	MaxBugfixes int
+
+	// AgentRetries is how many times a TRANSIENT agent-step failure (timeout,
+	// output stall, non-rate-limit crash) is retried on a fresh process per
+	// provider before recovery moves on; AgentBackoff is the base seconds slept
+	// between those retries (growing with the attempt). Zero retries reproduces the
+	// old single-shot behavior.
+	AgentRetries int
+	AgentBackoff int
+	// Fallback returns the ordered alternate runners to try for a phase once the
+	// primary provider's retries are exhausted (config FALLBACK_PROVIDERS). Nil or
+	// an empty result means retry-only — no provider fallback. Built at the
+	// composition root so the pipeline stays provider-agnostic.
+	Fallback func(phase string) []agent.Runner
+
 	Checks         []checks.Check
 	VerifyPanel    []Verifier
 	PanelPolicy    string
@@ -1265,31 +1279,111 @@ func (p *Pipeline) logAgentErr(phase string, err error) {
 	p.logf("  ✗ %s error — %s", phase, msg)
 }
 
-// agentStep runs a phase agent and classifies a failure. A provider rate/usage
-// limit returns a *PausedError the caller propagates — pausing the loop without
-// quarantining or filing a bug. Any other agent error is logged and returned to
-// the caller so the phase cannot advance when the agent timed out or crashed
-// without producing its required artifact.
+// agentStep runs a phase agent through transient-failure recovery: the primary
+// runner first, retried on a fresh process, then each configured fallback
+// provider. A provider rate/usage limit short-circuits to a blameless *PausedError
+// (never retried); a verified give-up never reaches here. Only when the whole
+// chain is exhausted is the error returned, for the caller to funnel into the
+// WIP-preserving fault path.
 func (p *Pipeline) agentStep(ctx context.Context, id, phase, prompt string) (string, error) {
-	return p.agentStepOn(ctx, id, phase, prompt, p.Runner)
+	return p.recoverStep(ctx, id, phase, prompt, p.recoveryChain(phase, p.Runner))
 }
 
-// agentStepOn is agentStep against a specific runner, used to drive each
-// cross-vendor verify-panel member through the same budget guard and rate-limit
-// classification as the primary phases.
+// agentStepOn runs a phase against ONE specific runner — a cross-vendor
+// verify-panel member — through the same budget guard, transient-retry, and
+// rate-limit classification as the primary phases, but with no provider fallback:
+// the panel deliberately pins each member to its provider.
 func (p *Pipeline) agentStepOn(ctx context.Context, id, phase, prompt string, runner agent.Runner) (string, error) {
-	if err := p.guardBudget(ctx, id); err != nil {
-		return "", err
+	return p.recoverStep(ctx, id, phase, prompt, []agent.Runner{runner})
+}
+
+// recoveryChain is the ordered list of runners a phase tries: the primary first,
+// then the configured fallback-provider backends. A nil/empty Fallback yields just
+// the primary (retry-only).
+func (p *Pipeline) recoveryChain(phase string, primary agent.Runner) []agent.Runner {
+	chain := []agent.Runner{primary}
+	if p.Fallback != nil {
+		for _, r := range p.Fallback(phase) {
+			if r != nil {
+				chain = append(chain, r)
+			}
+		}
 	}
-	out, err := p.agentPhaseOn(ctx, id, phase, prompt, runner)
-	if err == nil {
-		return out, nil
+	return chain
+}
+
+// recoverStep drives a phase agent through bounded transient-failure recovery. It
+// tries each runner in the chain in order; each is retried up to AgentRetries
+// times on a TRANSIENT failure (timeout, output stall, non-rate-limit crash), on a
+// fresh process, with a backoff that grows by attempt. A provider rate/usage limit
+// short-circuits to a blameless pause and is never retried; an outer-context
+// cancellation (user interrupt) stops immediately without burning retries. When
+// every runner and retry is exhausted the last error is returned — wrapped with
+// the attempt/provider count when recovery was actually attempted — so the caller
+// funnels it into the WIP-preserving fault path. A single-entry chain with
+// AgentRetries==0 is exactly the old single-shot behavior.
+func (p *Pipeline) recoverStep(ctx context.Context, id, phase, prompt string, chain []agent.Runner) (string, error) {
+	retries := p.AgentRetries
+	if retries < 0 {
+		retries = 0
 	}
-	if isRateLimited(err) {
-		return out, p.pause(id, phase, err)
+	var lastErr error
+	runs := 0
+	for ci, runner := range chain {
+		for attempt := 0; ; attempt++ {
+			if err := p.guardBudget(ctx, id); err != nil {
+				return "", err
+			}
+			runs++
+			out, err := p.agentPhaseOn(ctx, id, phase, prompt, runner)
+			if err == nil {
+				return out, nil
+			}
+			if isRateLimited(err) {
+				return out, p.pause(id, phase, err)
+			}
+			lastErr = err
+			if ctx.Err() != nil {
+				p.logAgentErr(phase, err)
+				return out, err
+			}
+			if attempt >= retries {
+				break
+			}
+			msg, _ := agentErrSummary(err)
+			p.logf("  ↻ %s failed (%s) — retrying %d/%d", phase, msg, attempt+1, retries)
+			p.backoff(attempt)
+		}
+		if ci < len(chain)-1 {
+			p.logf("  ⤳ %s: %s exhausted — falling back to %s", phase, providerLabel(chain[ci]), providerLabel(chain[ci+1]))
+			p.backoff(0)
+		}
 	}
-	p.logAgentErr(phase, err)
-	return out, err
+	p.logAgentErr(phase, lastErr)
+	if runs <= 1 {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("agent step %q exhausted recovery after %d attempt(s) across %d provider(s): %w", phase, runs, len(chain), lastErr)
+}
+
+// backoff sleeps a growing delay before a transient retry: AgentBackoff*(n+1)
+// seconds via the injected Sleep (a no-op in tests). Zero AgentBackoff is instant.
+func (p *Pipeline) backoff(n int) {
+	if p.AgentBackoff <= 0 {
+		return
+	}
+	p.sleep(p.AgentBackoff * (n + 1))
+}
+
+// providerLabel names the backend a runner dispatches to, for the fallback log
+// line; backends and the Router implement Provider(). Defaults to "provider".
+func providerLabel(r agent.Runner) string {
+	if pv, ok := r.(interface{ Provider() string }); ok {
+		if name := pv.Provider(); name != "" {
+			return name
+		}
+	}
+	return "provider"
 }
 
 // pause logs the blameless stop and builds the *PausedError. The ticket keeps its
