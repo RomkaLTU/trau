@@ -1281,6 +1281,9 @@ func (p *Pipeline) recoverStep(ctx context.Context, id, phase, prompt string, ch
 			if isRateLimited(err) {
 				return out, p.pause(id, phase, err)
 			}
+			if isAuthFailure(err) {
+				return out, p.pauseAuth(id, phase, err)
+			}
 			lastErr = err
 			if ctx.Err() != nil {
 				p.logAgentErr(phase, err)
@@ -1339,6 +1342,24 @@ func isRateLimited(err error) bool {
 	return rl
 }
 
+// pauseAuth logs the blameless stop for a provider auth/login wall and builds the
+// *PausedError. Unlike a rate limit it won't clear on its own — the human must
+// re-authenticate the provider — so the message says so. The ticket keeps its last
+// checkpoint and resumes from there once the provider is logged back in.
+func (p *Pipeline) pauseAuth(id, phase string, err error) error {
+	prov := providerOf(err)
+	p.logf("  ⏸ paused — %s needs re-authentication during %s (run the provider's /login)", prov, phase)
+	p.logf("  ↳ %s left resumable on its branch; rerun trau after re-authenticating %s", id, prov)
+	return &PausedError{ID: id, Phase: phase, Provider: prov, Reason: prov + " authentication required — re-login"}
+}
+
+// isAuthFailure reports whether err is (or wraps) the agent's auth/login-wall
+// sentinel — a provider state that retrying can't fix and that isn't the ticket's
+// fault, so the loop pauses blamelessly rather than burning retries.
+func isAuthFailure(err error) bool {
+	return errors.Is(err, agent.ErrAuthRequired)
+}
+
 // guardBudget enforces the configured spend ceilings before an agent call. It
 // reads the LIVE ledger totals (this ticket's runs/<ID>/tokens.jsonl and the day's
 // spend across all buckets) and, on the first cap reached, quarantines the ticket
@@ -1383,10 +1404,11 @@ func (p *Pipeline) BudgetExhausted() (string, bool) {
 	return b.Reason(), true
 }
 
-var reProvider = regexp.MustCompile(`^(\w+) run \(`)
+var reProvider = regexp.MustCompile(`^(\w+)(?: \w+)? run \(`)
 
 // providerOf best-effort extracts the backend name from a wrapped agent error
-// like "kimi run (verify): …"; defaults to "provider".
+// like "kimi run (verify): …" or "claude interactive run (build): …"; defaults to
+// "provider".
 func providerOf(err error) string {
 	if m := reProvider.FindStringSubmatch(err.Error()); m != nil {
 		return m[1]

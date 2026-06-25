@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -65,6 +66,31 @@ func TestRecoverStepRateLimitPausesWithoutRetry(t *testing.T) {
 	}
 	if r.calls != 1 {
 		t.Fatalf("a rate limit must not be retried; got %d calls", r.calls)
+	}
+}
+
+// TestRecoverStepAuthFailurePausesWithoutRetry is the COD-596 guard: a provider
+// auth/login wall (ErrAuthRequired) must pause blamelessly on the first hit —
+// never consuming the transient retry budget, since every retry re-hits the same
+// wall — and the pause must attribute the provider so the human knows what to
+// re-authenticate.
+func TestRecoverStepAuthFailurePausesWithoutRetry(t *testing.T) {
+	authErr := fmt.Errorf("claude interactive run (build): %w", agent.ErrAuthRequired)
+	r := &countingRunner{results: []error{authErr}, name: "claude"}
+	p := newTestPipeline(t, r, &fakeTracker{})
+	p.AgentRetries = 3
+	p.AgentBackoff = 0
+
+	_, err := p.agentStep(context.Background(), "COD-596", "build", "prompt")
+	var pe *PausedError
+	if !errors.As(err, &pe) {
+		t.Fatalf("want a *PausedError, got %v", err)
+	}
+	if pe.Provider != "claude" {
+		t.Errorf("pause provider = %q, want %q", pe.Provider, "claude")
+	}
+	if r.calls != 1 {
+		t.Fatalf("an auth wall must not be retried; got %d calls", r.calls)
 	}
 }
 
