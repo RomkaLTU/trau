@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/creack/pty"
@@ -124,6 +125,7 @@ type ClaudeInteractive struct {
 	ResultDir       string
 	Dir             string
 	Timeout         time.Duration
+	StallWindow     time.Duration
 	TrustPromptWait time.Duration
 	Log             *event.Log
 	Tokens          TokenSink
@@ -183,8 +185,18 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 		return res, fmt.Errorf("claude interactive run (%s): %w", label, err)
 	}
 	defer func() { _ = sess.Close() }()
+
+	// lastActivity tracks the most recent transcript byte so the stall watchdog
+	// can tell a working-but-quiet agent from one wedged before it ever produced
+	// output (the COD-498 stall: 0 bytes for the full timeout). Seeded at start so
+	// a process that never emits anything trips the window from launch.
+	var lastActivity atomic.Int64
+	lastActivity.Store(start.UnixNano())
+
 	trustPrompt := make(chan struct{}, 1)
-	go drainTranscript(sess, transcriptPath, trustPrompt)
+	go drainTranscript(sess, transcriptPath, trustPrompt, func() {
+		lastActivity.Store(c.clock().UnixNano())
+	})
 
 	wait := make(chan error, 1)
 	go func() { wait <- sess.Wait() }()
@@ -248,6 +260,15 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 			c.emit(label, res, c.clock().Sub(start), ctx.Err())
 			return res, fmt.Errorf("claude interactive run (%s): %w", label, ctx.Err())
 		case <-tick.C:
+			if c.StallWindow > 0 {
+				if idle := c.clock().Sub(time.Unix(0, lastActivity.Load())); idle >= c.StallWindow {
+					_ = sess.Kill()
+					res := Result{IsError: true}
+					stallErr := fmt.Errorf("no agent output for %s — stalled before AGENT_TIMEOUT", c.StallWindow)
+					c.emit(label, res, c.clock().Sub(start), stallErr)
+					return res, fmt.Errorf("claude interactive run (%s): %w", label, stallErr)
+				}
+			}
 		}
 	}
 }
@@ -378,23 +399,26 @@ func transcriptPathFor(resultPath string) string {
 	return strings.TrimSuffix(resultPath, ".result.json") + ".pty.log"
 }
 
-func drainTranscript(r io.Reader, path string, trustPrompt chan<- struct{}) {
+func drainTranscript(r io.Reader, path string, trustPrompt chan<- struct{}, onActivity func()) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
-		drainWithTrustSignal(io.Discard, r, trustPrompt)
+		drainWithTrustSignal(io.Discard, r, trustPrompt, onActivity)
 		return
 	}
 	defer func() { _ = f.Close() }()
-	drainWithTrustSignal(f, r, trustPrompt)
+	drainWithTrustSignal(f, r, trustPrompt, onActivity)
 }
 
-func drainWithTrustSignal(dst io.Writer, src io.Reader, trustPrompt chan<- struct{}) {
+func drainWithTrustSignal(dst io.Writer, src io.Reader, trustPrompt chan<- struct{}, onActivity func()) {
 	buf := make([]byte, 4096)
 	var seen strings.Builder
 	signaled := false
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
+			if onActivity != nil {
+				onActivity()
+			}
 			chunk := buf[:n]
 			_, _ = dst.Write(chunk)
 			if !signaled {
