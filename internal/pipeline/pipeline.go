@@ -57,6 +57,25 @@ type Git interface {
 	StatusPorcelain(ctx context.Context) (string, error)
 
 	Pull(ctx context.Context, remote, branch string) error
+
+	// MergeRemote fetches remote/base and merges it into the current branch,
+	// reporting conflicted=true when the merge stopped on conflicts (the tree is
+	// left with conflict markers for an agent to resolve). A clean merge or an
+	// already-up-to-date branch returns (false, nil); a non-conflict failure
+	// aborts the merge and returns the error.
+	MergeRemote(ctx context.Context, remote, base string) (conflicted bool, err error)
+
+	// MergeAbort aborts an in-progress conflicted merge (git merge --abort).
+	MergeAbort(ctx context.Context) error
+
+	// Unmerged returns the still-conflicted paths after a merge, empty when none
+	// remain (git diff --name-only --diff-filter=U).
+	Unmerged(ctx context.Context) (string, error)
+
+	// ContinueMerge completes a resolved merge by staging all changes and
+	// committing with the default merge message; a no-op when the tree is not
+	// mid-merge (the resolving agent may already have committed).
+	ContinueMerge(ctx context.Context) error
 }
 
 // Check is one PR status check (gh pr checks --json name,bucket). bucket is gh's
@@ -634,6 +653,7 @@ func (p *Pipeline) resolveBuildBranch(ctx context.Context, id string) (string, e
 		if err != nil {
 			return "", err
 		}
+		p.syncEpicBest(ctx, epic)
 		base = epic
 	}
 	if err := p.Git.CreateBranch(ctx, branch, base); err != nil {
@@ -1933,6 +1953,51 @@ func (g ExecGit) StatusPorcelain(ctx context.Context) (string, error) {
 // Pull fast-forwards branch from remote (git pull --ff-only <remote> <branch>).
 func (g ExecGit) Pull(ctx context.Context, remote, branch string) error {
 	return g.run(ctx, "pull", "--ff-only", remote, branch)
+}
+
+// MergeRemote fetches remote/base and merges it into the current branch. A clean
+// merge or already-up-to-date returns (false, nil). A merge stopped on conflicts
+// returns (true, nil) with the tree left for an agent to resolve. Any other merge
+// failure aborts the merge and returns the error.
+func (g ExecGit) MergeRemote(ctx context.Context, remote, base string) (bool, error) {
+	if err := g.run(ctx, "fetch", remote, base); err != nil {
+		return false, err
+	}
+	if err := g.run(ctx, "merge", "--no-edit", "FETCH_HEAD"); err == nil {
+		return false, nil
+	}
+	if unmerged, _ := g.Unmerged(ctx); strings.TrimSpace(unmerged) != "" {
+		return true, nil
+	}
+	_ = g.MergeAbort(ctx)
+	return false, fmt.Errorf("merge %s/%s into current branch failed", remote, base)
+}
+
+// MergeAbort aborts an in-progress conflicted merge (git merge --abort).
+func (g ExecGit) MergeAbort(ctx context.Context) error { return g.run(ctx, "merge", "--abort") }
+
+// Unmerged lists the still-conflicted paths after a merge (empty when none).
+func (g ExecGit) Unmerged(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"diff", "--name-only", "--diff-filter=U").Output()
+	if err != nil {
+		return "", fmt.Errorf("git diff --diff-filter=U: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// ContinueMerge completes a resolved merge (stage all + commit --no-edit). It is
+// a no-op when MERGE_HEAD is absent, so a resolving agent that already committed
+// the merge does not cause a spurious empty-commit failure.
+func (g ExecGit) ContinueMerge(ctx context.Context) error {
+	if exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"rev-parse", "-q", "--verify", "MERGE_HEAD").Run() != nil {
+		return nil
+	}
+	if err := g.run(ctx, "add", "-A"); err != nil {
+		return err
+	}
+	return g.run(ctx, "commit", "--no-edit")
 }
 
 // ExecGitHub runs `gh` against a target repo (resolved from the working directory

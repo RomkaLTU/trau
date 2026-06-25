@@ -63,11 +63,13 @@ func epicPRBody(id string) string {
 	return fmt.Sprintf("## Summary\nEpic integration branch for %s.\n\nFeatures land on the epic branch first; this PR ships the epic to main once complete.\n\nLinear: %s", id, id)
 }
 
-// FinalizeEpic closes an epic only after every direct child is terminal, then
-// opens or adopts the epic-branch PR to the base branch. It is intentionally a
-// loop-level finalizer, not part of a child merge: a child PR can land while
-// siblings are still open, but the parent must not be closed or shipped to main
-// until the tracker confirms the whole child set is complete.
+// FinalizeEpic ships the epic only after every direct child is terminal. It is
+// intentionally a loop-level finalizer, not part of a child merge: a child PR can
+// land while siblings are still open, but the parent must not be shipped to main
+// until the tracker confirms the whole child set is complete. Once it is, the epic
+// branch is synced with the base (drift conflicts resolved by an agent), the epic
+// PR is opened/adopted, its CI is gated with a bounded repair loop, and — when
+// AUTO_MERGE is set — it is squash-merged to the base before the Linear epic closes.
 func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 	if p.EpicID == "" {
 		return nil
@@ -97,19 +99,168 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("finalize epic %s: resolve branch: %w", p.EpicID, err)
 	}
+	synced, err := p.syncEpicForMerge(ctx, epic)
+	if err != nil {
+		return fmt.Errorf("finalize epic %s: sync with %s: %w", p.EpicID, p.Base, err)
+	}
 	prURL, err := p.ensureEpicPR(ctx, epic)
 	if err != nil {
 		return fmt.Errorf("finalize epic %s: create PR: %w", p.EpicID, err)
 	}
+	if !synced {
+		p.logf("  ⚠ epic %s still conflicts with %s — PR left for manual resolution: %s", p.EpicID, p.Base, prURL)
+		return nil
+	}
+
+	merged, err := p.epicCIAndMerge(ctx, prURL)
+	if err != nil {
+		return fmt.Errorf("finalize epic %s: ship: %w", p.EpicID, err)
+	}
+
 	extra := "All direct sub-issues are closed."
-	if prURL != "" {
-		extra += " Epic PR: " + prURL + "."
+	if merged {
+		extra += " Epic merged to " + p.Base + " via " + prURL + "."
+	} else {
+		extra += " Epic PR ready for review: " + prURL + "."
 	}
 	if err := p.Tracker.SetStatus(ctx, p.EpicID, "Done", extra); err != nil {
 		return fmt.Errorf("finalize epic %s: close epic: %w", p.EpicID, err)
 	}
 	p.logf("  ✓ epic %s closed; PR %s", p.EpicID, prURL)
 	return nil
+}
+
+// syncEpicBest keeps the epic branch current with the base between children: a
+// clean merge of the remote base is pushed so the next child branches off an
+// up-to-date epic. A conflicting merge is aborted and deferred to the
+// authoritative finalize sync (which runs a resolving agent). Best-effort by
+// design — any failure is logged, never blocking the child about to branch off.
+func (p *Pipeline) syncEpicBest(ctx context.Context, epic string) {
+	if err := p.Git.Checkout(ctx, epic, false); err != nil {
+		p.logf("  epic sync skipped (checkout %s: %v)", epic, err)
+		return
+	}
+	conflicted, err := p.Git.MergeRemote(ctx, p.Remote, p.Base)
+	switch {
+	case err != nil:
+		p.logf("  epic sync skipped (merge %s: %v)", p.Base, err)
+	case conflicted:
+		_ = p.Git.MergeAbort(ctx)
+		p.logf("  epic %s conflicts with %s — deferring resolution to epic finalize", epic, p.Base)
+	default:
+		if err := p.Git.Push(ctx, p.Remote, epic); err != nil {
+			p.logf("  push synced epic branch error (continuing): %v", err)
+		}
+	}
+}
+
+// syncEpicForMerge brings the base into the epic branch before the epic ships to
+// main so the epic PR is mergeable. A clean merge is pushed; a drift conflict is
+// resolved by a bounded repair-agent loop, then the merge is completed and pushed.
+// Returns false (with the merge aborted) when the conflicts could not be resolved,
+// so the caller leaves the PR open for a human instead of shipping a broken merge.
+func (p *Pipeline) syncEpicForMerge(ctx context.Context, epic string) (bool, error) {
+	if err := p.Git.Checkout(ctx, epic, false); err != nil {
+		return false, fmt.Errorf("checkout %s: %w", epic, err)
+	}
+	conflicted, err := p.Git.MergeRemote(ctx, p.Remote, p.Base)
+	if err != nil {
+		return false, fmt.Errorf("merge %s into %s: %w", p.Base, epic, err)
+	}
+	if !conflicted {
+		if err := p.Git.Push(ctx, p.Remote, epic); err != nil {
+			p.logf("  push synced epic branch error (continuing): %v", err)
+		}
+		return true, nil
+	}
+
+	p.phaseStart("epic-sync")
+	p.logf("  ⚠ epic %s drifted from %s — resolving merge conflicts", epic, p.Base)
+	maxAttempts := p.MaxRepairs
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if _, err := p.agentStep(ctx, p.EpicID, fmt.Sprintf("epic-sync%d", attempt), epicResolveInstruction(p.EpicID, p.Base, epic)); err != nil {
+			return false, err
+		}
+		if unmerged, _ := p.Git.Unmerged(ctx); strings.TrimSpace(unmerged) == "" {
+			if err := p.Git.ContinueMerge(ctx); err != nil {
+				return false, fmt.Errorf("complete merge: %w", err)
+			}
+			if err := p.Git.Push(ctx, p.Remote, epic); err != nil {
+				p.logf("  push synced epic branch error (continuing): %v", err)
+			}
+			return true, nil
+		}
+		p.logf("  ⚠ conflicts remain after attempt %d/%d", attempt, maxAttempts)
+	}
+	_ = p.Git.MergeAbort(ctx)
+	return false, nil
+}
+
+// epicCIAndMerge gates the epic PR on CI and, when AUTO_MERGE is set, squash-merges
+// it to the base. A red gate drives a bounded repair-agent loop on the epic branch
+// before re-polling; an unrecoverable gate leaves the PR open for review. The bool
+// reports whether the epic actually shipped to the base, so the caller closes the
+// Linear epic with the right comment.
+func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, error) {
+	pr := prNumber(prURL)
+	if st, _ := p.GitHub.PRState(ctx, pr); st == "MERGED" {
+		return true, nil
+	}
+
+	p.phaseStart("epic-ci")
+	for repair := 0; ; {
+		if err := p.pollCI(ctx, pr); err == nil {
+			break
+		} else {
+			p.logf("  ✗ epic CI: %v", err)
+		}
+		if repair >= p.MaxRepairs {
+			p.logf("  ⚠ epic CI not green after %d repair attempt(s) — leaving PR for review: %s", repair, prURL)
+			return false, nil
+		}
+		repair++
+		epic, err := p.epicBranchName(ctx)
+		if err != nil {
+			return false, err
+		}
+		if err := p.Git.Checkout(ctx, epic, false); err != nil {
+			return false, fmt.Errorf("epic repair %d: checkout %s: %w", repair, epic, err)
+		}
+		p.logf("  ⚠ epic CI red — repair attempt %d/%d", repair, p.MaxRepairs)
+		if _, err := p.agentStep(ctx, p.EpicID, fmt.Sprintf("epic-repair%d", repair), epicRepairInstruction(p.EpicID, prURL, epic)); err != nil {
+			return false, err
+		}
+		if err := p.Git.Push(ctx, p.Remote, epic); err != nil {
+			p.logf("  push epic repair error (continuing): %v", err)
+		}
+	}
+
+	if !p.AutoMerge {
+		p.logf("  ✓ epic CI green — leaving merge to you (AUTO_MERGE=0): %s", prURL)
+		return false, nil
+	}
+	p.phaseStart("epic-merge")
+	if err := p.retryGH(ctx, "gh pr merge", func() error {
+		if st, _ := p.GitHub.PRState(ctx, pr); st == "MERGED" {
+			return nil
+		}
+		return p.GitHub.Merge(ctx, pr, p.MergeMethod, true)
+	}); err != nil {
+		return false, fmt.Errorf("merge epic PR %s: %w", prURL, err)
+	}
+	p.logf("  ✓ epic merged to %s via %s", p.Base, prURL)
+	return true, nil
+}
+
+func epicResolveInstruction(epicID, base, branch string) string {
+	return "The epic integration branch " + branch + " is mid-merge with " + base + " and has conflicts. Resolve EVERY conflicted file so the branch combines the epic's work with the latest " + base + ": run `git diff --name-only --diff-filter=U` to list them, edit each to keep BOTH sides' intent (never drop the epic's feature work, and never drop " + base + "'s newer changes), then `git add` each resolved file. Run the relevant tests to confirm the combined result builds. Do NOT run `git commit`, `git merge --continue`, push, or open a PR — leave the resolved merge staged for the loop to finalize. Refs: " + epicID + "."
+}
+
+func epicRepairInstruction(epicID, prURL, branch string) string {
+	return "The CI checks on the epic PR " + prURL + " (branch " + branch + ") are failing. You are on " + branch + " with the full epic integrated against the base. Investigate the failing checks, find the root cause, and fix it with minimal, targeted changes anywhere in the epic's code so the whole suite passes; run the relevant tests locally to confirm. Commit the fix with a Conventional Commit ('fix(scope): <subject>', imperative mood, no 'Co-authored-by'/AI-authorship trailers) but do NOT push or merge — the loop pushes and merges. Refs: " + epicID + "."
 }
 
 func (p *Pipeline) openSubIssues(ctx context.Context, statuser tracker.IssueStatuser, subs []tracker.SubIssue) ([]string, error) {
