@@ -705,6 +705,8 @@ type engine interface {
 
 	Process(ctx context.Context, id, from string) error
 
+	Finalize(ctx context.Context) error
+
 	BudgetExhausted() (reason string, stop bool)
 }
 
@@ -729,7 +731,8 @@ func (e *realEngine) Pick(ctx context.Context) (string, error)  { return e.track
 func (e *realEngine) Process(ctx context.Context, id, from string) error {
 	return e.pipe.Resume(ctx, id, from)
 }
-func (e *realEngine) BudgetExhausted() (string, bool) { return e.pipe.BudgetExhausted() }
+func (e *realEngine) Finalize(ctx context.Context) error { return e.pipe.FinalizeEpic(ctx) }
+func (e *realEngine) BudgetExhausted() (string, bool)    { return e.pipe.BudgetExhausted() }
 
 type loopParams struct {
 	Once         bool
@@ -857,6 +860,9 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 			con.Logf("--once: stopping")
 			break
 		}
+	}
+	if err := eng.Finalize(ctx); err != nil {
+		return processed, err
 	}
 	return processed, nil
 }

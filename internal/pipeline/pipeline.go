@@ -654,61 +654,6 @@ func featureBranch(id, title string) string {
 	return "feature/" + id
 }
 
-func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
-	if p.epicBranch != "" {
-		return p.epicBranch, nil
-	}
-
-	title, err := p.Tracker.Title(ctx, p.EpicID)
-	if err != nil {
-		p.logf("  epic title lookup error (using id-only branch): %v", err)
-	}
-	branch := epicBranch(p.EpicID, title)
-
-	exists, _ := p.Git.BranchExists(ctx, branch)
-	if !exists {
-		if err := p.Git.CreateBranch(ctx, branch, p.Base); err != nil {
-			return "", &GiveUpError{ID: p.EpicID, Reason: "could not create epic branch for " + p.EpicID}
-		}
-		p.logf("  epic branch %s ← %s", branch, p.Base)
-		if err := p.Git.Push(ctx, p.Remote, branch); err != nil {
-			p.logf("  push epic branch error (continuing): %v", err)
-		}
-	}
-
-	p.epicBranch = branch
-	return branch, nil
-}
-
-func epicBranch(id, title string) string {
-	if slug := slugify(title); slug != "" {
-		return "epic/" + id + "-" + slug
-	}
-	return "epic/" + id
-}
-
-func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string) error {
-	prURL, _ := p.GitHub.PRURL(ctx, epicBranch)
-	if prURL != "" {
-		return nil
-	}
-
-	title, err := p.Tracker.Title(ctx, p.EpicID)
-	if err != nil {
-		title = p.EpicID
-	}
-	prURL, err = p.GitHub.CreatePR(ctx, p.Base, epicBranch, "Epic: "+title, epicPRBody(p.EpicID))
-	if err != nil {
-		return err
-	}
-	p.logf("  epic PR %s", prURL)
-	return nil
-}
-
-func epicPRBody(id string) string {
-	return fmt.Sprintf("## Summary\nEpic integration branch for %s.\n\nFeatures land on the epic branch first; this PR ships the epic to main once complete.\n\nLinear: %s", id, id)
-}
-
 // Handoff runs the handoff skill to write the QA brief to exactly
 // /tmp/handoff-<ID>.md, then checkpoints handed_off.
 func (p *Pipeline) Handoff(ctx context.Context, id string) error {
@@ -997,15 +942,6 @@ func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 		return p.GitHub.Merge(ctx, pr, p.MergeMethod, true)
 	}); err != nil {
 		return fmt.Errorf("merge %s: %w", id, err)
-	}
-	if p.EpicID != "" {
-		if epic, err := p.epicBranchName(ctx); err == nil {
-			if err := p.ensureEpicPR(ctx, epic); err != nil {
-				p.logf("  epic PR error (continuing): %v", err)
-			}
-		} else {
-			p.logf("  epic branch error (continuing): %v", err)
-		}
 	}
 	return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
 }

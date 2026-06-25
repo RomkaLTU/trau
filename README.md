@@ -50,6 +50,11 @@ trau --status         # print checkpoints + token/cost totals
 `trau --help` lists them all. Settings live in `trau.ini` (`cp trau.ini.example trau.ini`, fully
 documented). If a run dies mid-issue, just re-run — it resumes from the next unfinished phase.
 
+When the chosen issue has sub-issues and epic flow is enabled, trau treats the parent as an
+integration branch: child feature PRs target `epic/<ID>-...`, not `main`. When the epic-scoped
+loop stops cleanly, trau checks every direct child; only if all are closed does it open or adopt
+the epic-to-`main` PR and mark the parent Done with that PR link.
+
 ## Troubleshooting
 
 Start with the preflight check — it catches the common setup problems before a run can fail

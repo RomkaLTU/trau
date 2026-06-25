@@ -95,6 +95,25 @@ func (j *Jira) titlePrompt(id string) string {
 		"Respond with exactly one final line: 'TITLE=<the issue summary>'. No other output.", id)
 }
 
+// IssueStatus reports whether issue id is still open or has reached a terminal
+// Jira status. It is used by epic finalization and stale-checkpoint reconcile.
+func (j *Jira) IssueStatus(ctx context.Context, id string) (IssueStatus, error) {
+	res, err := j.Runner.Run(ctx, j.issueStatusPrompt(id), "status")
+	if st, ok := parseIssueStatus(res.Final); ok {
+		return st, nil
+	}
+	if err != nil {
+		return StatusUnknown, err
+	}
+	return StatusUnknown, fmt.Errorf("could not parse status for %s", id)
+}
+
+func (j *Jira) issueStatusPrompt(id string) string {
+	return fmt.Sprintf("Use the Jira (Rovo) MCP. Look up issue %s and report its workflow state. "+
+		"Respond with exactly one final line: 'STATUS=<done|canceled|open>' — "+
+		"'done' if it is Done/Closed/completed, 'canceled' if Canceled/won't-do/duplicate, otherwise 'open'. No other output.", id)
+}
+
 // SetStatus transitions issue id to the named Jira status.
 func (j *Jira) SetStatus(ctx context.Context, id, status, extra string) error {
 	_, err := j.Runner.Run(ctx, j.setStatusPrompt(id, status, extra), "status")

@@ -72,6 +72,25 @@ func (g *GitHub) titlePrompt(id string) string {
 		"Respond with exactly one final line: 'TITLE=<the issue title>'. No other output.", id, g.Repo)
 }
 
+// IssueStatus reports whether issue id is still open or has reached a terminal
+// GitHub state. It is used by epic finalization and stale-checkpoint reconcile.
+func (g *GitHub) IssueStatus(ctx context.Context, id string) (IssueStatus, error) {
+	res, err := g.Runner.Run(ctx, g.issueStatusPrompt(id), "status")
+	if st, ok := parseIssueStatus(res.Final); ok {
+		return st, nil
+	}
+	if err != nil {
+		return StatusUnknown, err
+	}
+	return StatusUnknown, fmt.Errorf("could not parse status for %s", id)
+}
+
+func (g *GitHub) issueStatusPrompt(id string) string {
+	return fmt.Sprintf("Use the GitHub MCP. Look up issue %s in repository %q and report its state. "+
+		"Respond with exactly one final line: 'STATUS=<done|canceled|open>' — "+
+		"'done' if it is closed as completed, 'canceled' if it is closed as not planned/duplicate/won't-do, otherwise 'open'. No other output.", id, g.Repo)
+}
+
 // SetStatus emulates a workflow status change via labels and comments.
 func (g *GitHub) SetStatus(ctx context.Context, id, status, extra string) error {
 	_, err := g.Runner.Run(ctx, g.setStatusPrompt(id, status, extra), "status")
