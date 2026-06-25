@@ -41,6 +41,11 @@ query Issue($number: Float!, $teamKey: String!) {
           id
           identifier
           title
+          priority
+          dueDate
+          state {
+            type
+          }
         }
       }
       inverseRelations(first: 50) {

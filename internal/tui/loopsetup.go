@@ -250,15 +250,33 @@ func (m loopSetupModel) renderList() string {
 			s.Help.Render("It will run as a single ticket.")
 	}
 
+	done := 0
+	for _, sub := range m.subs {
+		if sub.Done {
+			done++
+		}
+	}
+
 	var rows []string
-	rows = append(rows, s.Subtle.Render(fmt.Sprintf("%s — planned sub-issues (%d):", m.epic, len(m.subs))))
+	if done > 0 {
+		rows = append(rows, s.Subtle.Render(fmt.Sprintf("%s — planned sub-issues · %d done · %d left", m.epic, done, len(m.subs)-done)))
+	} else {
+		rows = append(rows, s.Subtle.Render(fmt.Sprintf("%s — planned sub-issues (%d):", m.epic, len(m.subs))))
+	}
 	rows = append(rows, "")
 
+	doneStyle := lipgloss.NewStyle().Foreground(colorFaint)
 	idW, titleW := m.subIssueColumnWidths()
 	for i, sub := range m.subs {
 		marker := "  "
+		status := "  "
 		idStyle := s.Subtle
 		titleStyle := s.Subtle
+		if sub.Done {
+			status = s.Success.Render("✓ ")
+			idStyle = doneStyle
+			titleStyle = doneStyle
+		}
 		if i == m.cursor {
 			marker = s.Info.Render("▸ ")
 			idStyle = s.Header
@@ -266,14 +284,14 @@ func (m loopSetupModel) renderList() string {
 		}
 		idStr := padRight(sub.ID, idW)
 		titleStr := truncate(sub.Title, titleW)
-		rows = append(rows, marker+idStyle.Render(idStr)+"  "+titleStyle.Render(titleStr))
+		rows = append(rows, marker+status+idStyle.Render(idStr)+"  "+titleStyle.Render(titleStr))
 	}
 
 	return strings.Join(rows, "\n")
 }
 
 func (m loopSetupModel) subIssueColumnWidths() (idW, titleW int) {
-	const gap = 4 // marker + padding between columns
+	const gap = 6 // marker + done-status slot + padding between columns
 	for _, sub := range m.subs {
 		if w := lipgloss.Width(sub.ID); w > idW {
 			idW = w

@@ -1445,7 +1445,7 @@ func (a *appActions) SubIssues(ctx context.Context, id string) ([]tui.SubIssue, 
 	}
 	out := make([]tui.SubIssue, 0, len(raw))
 	for _, s := range raw {
-		out = append(out, tui.SubIssue{ID: s.ID, Title: s.Title})
+		out = append(out, tui.SubIssue{ID: s.ID, Title: s.Title, Done: s.Done})
 	}
 	return out, nil
 }

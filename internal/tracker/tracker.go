@@ -49,10 +49,13 @@ type Config struct {
 	APIKey          string // Linear API key; enables direct GraphQL calls
 }
 
-// SubIssue is a lightweight identifier+title pair for an issue's children.
+// SubIssue is a lightweight identifier+title pair for an issue's children. Done
+// marks a child the tracker already considers finished (completed or canceled),
+// so the epic preview can flag work that will not run.
 type SubIssue struct {
 	ID    string
 	Title string
+	Done  bool
 }
 
 // ListedTicket is one eligible ticket returned by a fast list operation.
