@@ -52,6 +52,10 @@ type Config struct {
 	ClaudeBin             string
 	ClaudeFlags           string
 	AgentTimeout          int
+	AgentStallWindow      int
+	AgentRetries          int
+	AgentBackoff          int
+	FallbackProviders     []string
 	ClaudeModel           string
 	ClaudeEffort          string
 	ClaudeDisallowedTools string
@@ -136,6 +140,9 @@ func Defaults() Config {
 		ClaudeBin:             "claude",
 		ClaudeFlags:           "--dangerously-skip-permissions",
 		AgentTimeout:          900,
+		AgentStallWindow:      180,
+		AgentRetries:          2,
+		AgentBackoff:          10,
 		ClaudeModel:           "",
 		ClaudeEffort:          "",
 		ClaudeDisallowedTools: "Agent,Workflow",
@@ -399,6 +406,9 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	providerStr(claudeFile, claudeSrc, "CLAUDE_BIN", &c.ClaudeBin)
 	providerStr(claudeFile, claudeSrc, "CLAUDE_FLAGS", &c.ClaudeFlags)
 	num("AGENT_TIMEOUT", &c.AgentTimeout)
+	num("AGENT_STALL_WINDOW", &c.AgentStallWindow)
+	num("AGENT_RETRIES", &c.AgentRetries)
+	num("AGENT_BACKOFF", &c.AgentBackoff)
 	providerStr(claudeFile, claudeSrc, "CLAUDE_MODEL", &c.ClaudeModel)
 	providerStr(claudeFile, claudeSrc, "CLAUDE_DISALLOWED_TOOLS", &c.ClaudeDisallowedTools)
 	providerStr(claudeFile, claudeSrc, "CLAUDE_EFFORT", &c.ClaudeEffort)
@@ -436,6 +446,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	addProviderPhaseRoutesWithSources(routes, sources, c.Provider, c, phaseGet)
 	if len(routes) > 0 {
 		c.Routes = routes
+	}
+	if v, src := get("FALLBACK_PROVIDERS"); v != "" {
+		c.FallbackProviders = splitCSV(v)
+		sources["FALLBACK_PROVIDERS"] = src.name
 	}
 	num("MAX_ITERATIONS", &c.MaxIterations)
 	num("MAX_REPAIRS", &c.MaxRepairs)
@@ -820,7 +834,11 @@ func KnownKeys() []KeyMeta {
 		{Key: "KIMI_CONFIG", Advanced: true, Description: "Provider-local Kimi config file"},
 		{Key: "CLAUDE_BIN", Advanced: true, Default: "claude", Description: "Claude Code binary"},
 		{Key: "CLAUDE_FLAGS", Advanced: true, Default: "--dangerously-skip-permissions", Description: "Extra flags passed to Claude"},
-		{Key: "AGENT_TIMEOUT", Advanced: true, Default: "900", Description: "Per-agent call timeout in seconds"},
+		{Key: "AGENT_TIMEOUT", Advanced: true, Default: "900", Description: "Per-agent call hard timeout in seconds"},
+		{Key: "AGENT_STALL_WINDOW", Advanced: true, Default: "180", Description: "Kill+recover an agent step that emits no output for this many seconds, before AGENT_TIMEOUT (0 = disabled)"},
+		{Key: "AGENT_RETRIES", Advanced: true, Default: "2", Description: "Transient-failure retries (timeout/stall/crash) per provider before falling back / parking the ticket"},
+		{Key: "AGENT_BACKOFF", Advanced: true, Default: "10", Description: "Base seconds to wait between transient agent-step retries"},
+		{Key: "FALLBACK_PROVIDERS", Advanced: true, Description: "Ordered provider[:model[:effort]] specs to try after the primary's retries are exhausted (e.g. codex,kimi). Empty = retry-only, no provider fallback"},
 		{Key: "CLAUDE_MODEL", Advanced: true, Description: "Default Claude model"},
 		{Key: "CLAUDE_EFFORT", Advanced: true, Description: "Default Claude reasoning effort"},
 		{Key: "CLAUDE_DISALLOWED_TOOLS", Advanced: true, Default: "Agent,Workflow", Description: "Tools disabled inside agents"},
@@ -1167,6 +1185,14 @@ func keyValue(cfg Config, key string) string {
 		return cfg.ClaudeFlags
 	case "AGENT_TIMEOUT":
 		return strconv.Itoa(cfg.AgentTimeout)
+	case "AGENT_STALL_WINDOW":
+		return strconv.Itoa(cfg.AgentStallWindow)
+	case "AGENT_RETRIES":
+		return strconv.Itoa(cfg.AgentRetries)
+	case "AGENT_BACKOFF":
+		return strconv.Itoa(cfg.AgentBackoff)
+	case "FALLBACK_PROVIDERS":
+		return strings.Join(cfg.FallbackProviders, ",")
 	case "CLAUDE_MODEL":
 		return cfg.ClaudeModel
 	case "CLAUDE_EFFORT":

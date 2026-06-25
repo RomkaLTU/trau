@@ -216,9 +216,30 @@ CLAUDE_CONFIG=
 CODEX_CONFIG=
 KIMI_CONFIG=
 
-# Per-agent call timeout in seconds. Interactive Claude writes a PTY transcript
+# Per-agent call HARD timeout in seconds. Interactive Claude writes a PTY transcript
 # next to the expected result file when this trips, so failures have evidence.
 AGENT_TIMEOUT=900
+
+# --- transient-failure recovery (COD-583) ---
+# A transient agent-step failure — a stalled subprocess, a hard timeout, or a
+# non-rate-limit crash — self-heals instead of parking the ticket: the step is
+# retried on a fresh process, then handed to the next fallback provider, and only
+# when the whole chain is exhausted does the run stop (with the WIP preserved on
+# its branch and the ticket left resumable). Rate-limits still pause (blameless)
+# and verified give-ups still quarantine — both unchanged.
+#
+# Kill+recover a step that emits NO transcript output for this many seconds, well
+# before AGENT_TIMEOUT (Claude interactive only; 0 = disabled, wait the full
+# AGENT_TIMEOUT). Catches a subprocess that stalls before it ever starts working.
+AGENT_STALL_WINDOW=180
+# Transient retries on the SAME provider before falling back / parking.
+AGENT_RETRIES=2
+# Base seconds to wait between transient retries (grows with the attempt number).
+AGENT_BACKOFF=10
+# Ordered provider[:model[:effort]] specs to try after the primary provider's
+# retries are exhausted, for ANY phase. Reuses the route spec format. Empty =
+# retry-only (no provider fallback). Example: codex,kimi
+# FALLBACK_PROVIDERS=codex,kimi
 
 # Optional provider model/effort defaults when a phase does not override them.
 # Empty = provider or profile default.
