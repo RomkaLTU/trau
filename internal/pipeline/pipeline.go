@@ -1853,8 +1853,20 @@ func (g ExecGit) CreateBranch(ctx context.Context, branch, base string) error {
 	return g.run(ctx, "checkout", "-b", branch, base)
 }
 
-// Clean removes untracked files and directories (git clean -fd).
-func (g ExecGit) Clean(ctx context.Context) error { return g.run(ctx, "clean", "-fd") }
+// Clean removes untracked files and directories (git clean -fd) from the target
+// repo, but never trau's own config/artifacts living there: the project config
+// (.trau.ini), a cwd-local config (trau.ini), and the custom-checks dir (.trau/).
+// Without these excludes, the quarantine/clean-base path would delete an untracked
+// .trau.ini and force first-run onboarding to restart on the next run. This
+// matches EnsureCleanBase's intent that untracked tooling rides along safely; -e
+// adds gitignore-style patterns on top of the repo's existing ignore rules.
+func (g ExecGit) Clean(ctx context.Context) error {
+	return g.run(ctx, "clean", "-fd",
+		"-e", ".trau.ini",
+		"-e", "trau.ini",
+		"-e", ".trau/",
+	)
+}
 
 // BranchExists reports whether refs/heads/<branch> resolves. git rev-parse --verify
 // exits non-zero when the ref is absent, which reads as (false, nil) — a missing
