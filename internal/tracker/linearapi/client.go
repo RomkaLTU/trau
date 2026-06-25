@@ -88,6 +88,8 @@ type IssueRef struct {
 	ID         string
 	Identifier string
 	Title      string
+	Priority   int
+	DueDate    string
 	State      State
 }
 
@@ -103,6 +105,12 @@ func (s State) IsUnstarted() bool {
 // IsCompleted reports whether the issue is in a completed state.
 func (s State) IsCompleted() bool {
 	return s.Type == "completed"
+}
+
+// IsTerminal reports whether the issue has reached a finished state — completed
+// or canceled. The epic preview uses it to flag sub-issues that will not run.
+func (s State) IsTerminal() bool {
+	return s.Type == "completed" || s.Type == "canceled"
 }
 
 // Issue fetches a single issue by its human-readable identifier (e.g. "COD-578").
@@ -160,22 +168,37 @@ func (c *Client) Pick(ctx context.Context, teamID, readyLabel string) ([]PickCan
 		out = append(out, nodeToPickCandidate(&dst.Data.Issues.Nodes[i]))
 	}
 	sort.Slice(out, func(i, j int) bool {
-		pi, pj := out[i].Priority, out[j].Priority
-		if pi == 0 && pj != 0 {
-			return false
-		}
-		if pj == 0 && pi != 0 {
-			return true
-		}
-		if pi != pj {
-			return pi < pj
-		}
-		if out[i].DueDate != out[j].DueDate {
-			return out[i].DueDate < out[j].DueDate
-		}
-		return issueNumber(out[i].Identifier) < issueNumber(out[j].Identifier)
+		return runOrderLess(out[i].Priority, out[j].Priority, out[i].DueDate, out[j].DueDate, out[i].Identifier, out[j].Identifier)
 	})
 	return out, nil
+}
+
+// runOrderLess reports whether issue a should be selected before issue b under
+// the loop's rules: priority (urgent > … > low; "no priority" sorts last), then
+// due date (sooner first), then lowest issue number. It is the single comparator
+// behind both the team-queue picker and the epic sub-issue preview.
+func runOrderLess(pa, pb int, da, db, ida, idb string) bool {
+	if pa == 0 && pb != 0 {
+		return false
+	}
+	if pb == 0 && pa != 0 {
+		return true
+	}
+	if pa != pb {
+		return pa < pb
+	}
+	if da != db {
+		return da < db
+	}
+	return issueNumber(ida) < issueNumber(idb)
+}
+
+// SortChildrenForRun orders an epic's sub-issues in place by the same rules the
+// picker uses, so a preview lists them in approximately the order they will run.
+func SortChildrenForRun(refs []IssueRef) {
+	sort.Slice(refs, func(i, j int) bool {
+		return runOrderLess(refs[i].Priority, refs[j].Priority, refs[i].DueDate, refs[j].DueDate, refs[i].Identifier, refs[j].Identifier)
+	})
 }
 
 // issueNumber returns the numeric suffix of an identifier like "COD-578".
@@ -548,6 +571,8 @@ type issueRefNode struct {
 	ID         string    `json:"id"`
 	Identifier string    `json:"identifier"`
 	Title      string    `json:"title"`
+	Priority   int       `json:"priority"`
+	DueDate    string    `json:"dueDate"`
 	State      stateNode `json:"state"`
 }
 
@@ -623,7 +648,7 @@ func nodeToIssue(n *issueNode) *Issue {
 		issue.Labels = append(issue.Labels, Label(l))
 	}
 	for _, s := range n.Children.Nodes {
-		issue.Children = append(issue.Children, IssueRef{ID: s.ID, Identifier: s.Identifier, Title: s.Title, State: State(s.State)})
+		issue.Children = append(issue.Children, IssueRef{ID: s.ID, Identifier: s.Identifier, Title: s.Title, Priority: s.Priority, DueDate: s.DueDate, State: State(s.State)})
 	}
 	issue.BlockedBy = blockers(n.InverseRelations.Nodes)
 	return issue

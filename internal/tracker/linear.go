@@ -270,10 +270,12 @@ func (l *Linear) subIssuesAPI(ctx context.Context, id string) ([]SubIssue, error
 	if err != nil {
 		return nil, err
 	}
-	out := make([]SubIssue, 0, len(issue.Children))
-	for _, s := range issue.Children {
+	children := append([]linearapi.IssueRef(nil), issue.Children...)
+	linearapi.SortChildrenForRun(children)
+	out := make([]SubIssue, 0, len(children))
+	for _, s := range children {
 		if s.Identifier != "" {
-			out = append(out, SubIssue{ID: s.Identifier, Title: s.Title})
+			out = append(out, SubIssue{ID: s.Identifier, Title: s.Title, Done: s.State.IsTerminal()})
 		}
 	}
 	return out, nil
