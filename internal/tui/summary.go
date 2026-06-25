@@ -142,6 +142,9 @@ func (m model) renderSummary() string {
 	body := title + "\n" + head
 	if len(m.results) > 0 {
 		body += "\n\n" + m.summaryTable.View()
+		if reason := m.selectedFailureReason(); reason != "" {
+			body += "\n" + m.styles.Subtle.Render(reason)
+		}
 	}
 	if m.recoveryNote != "" {
 		body += "\n\n" + m.styles.Subtle.Render(m.recoveryNote)
@@ -190,6 +193,27 @@ func (m model) selectedResult() (console.TicketResult, bool) {
 		return console.TicketResult{}, false
 	}
 	return m.results[idx], true
+}
+
+// selectedFailureReason returns a wrapped "reason: ..." line for the focused
+// row when it carries a failure reason. It keeps the summary card readable by
+// truncating with an ellipsis instead of letting long reasons overflow.
+func (m model) selectedFailureReason() string {
+	r, ok := m.selectedResult()
+	if !ok || r.FailureReason == "" {
+		return ""
+	}
+	prefix := "reason: "
+	reason := r.FailureReason
+	max := m.width - 12
+	if max < 24 {
+		max = 24
+	}
+	text := prefix + reason
+	if len(text) > max {
+		text = text[:max-3] + "..."
+	}
+	return text
 }
 
 // totalsLine summarizes the session: counts by outcome, elapsed, cost, tokens.

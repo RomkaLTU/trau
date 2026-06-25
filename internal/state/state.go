@@ -285,13 +285,14 @@ func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost floa
 // depend on the budget package.
 func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost float64, metered bool), budget any, reconciled []string) error {
 	type ticket struct {
-		ID           string  `json:"id"`
-		Title        string  `json:"title,omitempty"`
-		Phase        string  `json:"phase"`
-		PRURL        string  `json:"pr_url,omitempty"`
-		Tokens       int     `json:"tokens"`
-		Cost         float64 `json:"cost"`
-		CostMeasured bool    `json:"cost_measured"`
+		ID            string  `json:"id"`
+		Title         string  `json:"title,omitempty"`
+		Phase         string  `json:"phase"`
+		PRURL         string  `json:"pr_url,omitempty"`
+		FailureReason string  `json:"failure_reason,omitempty"`
+		Tokens        int     `json:"tokens"`
+		Cost          float64 `json:"cost"`
+		CostMeasured  bool    `json:"cost_measured"`
 	}
 	var report struct {
 		Tickets []ticket `json:"tickets"`
@@ -311,13 +312,14 @@ func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost 
 	for _, id := range s.Tickets() {
 		tok, cost, metered := total(id)
 		report.Tickets = append(report.Tickets, ticket{
-			ID:           id,
-			Title:        s.Get(id, "TITLE"),
-			Phase:        s.Get(id, "PHASE"),
-			PRURL:        s.Get(id, "PR_URL"),
-			Tokens:       tok,
-			Cost:         cost,
-			CostMeasured: metered,
+			ID:            id,
+			Title:         s.Get(id, "TITLE"),
+			Phase:         s.Get(id, "PHASE"),
+			PRURL:         s.Get(id, "PR_URL"),
+			FailureReason: s.Get(id, "FAILURE_REASON"),
+			Tokens:        tok,
+			Cost:          cost,
+			CostMeasured:  metered,
 		})
 		report.Total.Tokens += tok
 		report.Total.Cost = math.Round((report.Total.Cost+cost)*100) / 100

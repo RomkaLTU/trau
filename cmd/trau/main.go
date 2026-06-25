@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -365,15 +366,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	result := func(id string, elapsed time.Duration) console.TicketResult {
 		tk, cs, metered := sink.Total(id)
 		return console.TicketResult{
-			ID:          id,
-			Title:       p.State.Get(id, "TITLE"),
-			Phase:       p.State.Get(id, "PHASE"),
-			Branch:      p.State.Get(id, "BRANCH"),
-			PRURL:       p.State.Get(id, "PR_URL"),
-			Tokens:      tk,
-			Cost:        math.Round(cs*100) / 100,
-			CostMetered: metered,
-			Elapsed:     elapsed,
+			ID:            id,
+			Title:         p.State.Get(id, "TITLE"),
+			Phase:         p.State.Get(id, "PHASE"),
+			Branch:        p.State.Get(id, "BRANCH"),
+			PRURL:         p.State.Get(id, "PR_URL"),
+			Tokens:        tk,
+			Cost:          math.Round(cs*100) / 100,
+			CostMetered:   metered,
+			Elapsed:       elapsed,
+			FailureReason: p.State.Get(id, "FAILURE_REASON"),
 		}
 	}
 	start := time.Now()
@@ -1267,6 +1269,125 @@ func (a *appActions) StatusRows() []tui.StatusRow {
 	return rows
 }
 
+// LogRuns returns every saved ticket run for the in-TUI log inspector, ordered
+// by most recent update first.
+func (a *appActions) LogRuns() []tui.LogRun {
+	ids := a.store.Tickets()
+	runs := make([]tui.LogRun, 0, len(ids))
+	for _, id := range ids {
+		updated, _ := time.Parse("2006-01-02 15:04:05", a.store.Get(id, "UPDATED"))
+		runs = append(runs, tui.LogRun{
+			ID:            id,
+			Title:         a.store.Get(id, "TITLE"),
+			Phase:         a.store.Get(id, "PHASE"),
+			Updated:       updated,
+			FailureReason: a.store.Get(id, "FAILURE_REASON"),
+		})
+	}
+	sort.Slice(runs, func(i, j int) bool {
+		return runs[i].Updated.After(runs[j].Updated)
+	})
+	return runs
+}
+
+// LogContent returns the logs for id formatted for the TUI inspector. The
+// output starts with a run header (phase + failure reason), followed by the
+// tail of the most recent phase log so the latest output/error is immediately
+// visible, then the full concatenated phase logs.
+func (a *appActions) LogContent(id string) string {
+	dir := filepath.Join(a.store.Root(), id)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+
+	phase := a.store.Get(id, "PHASE")
+	if phase == "" {
+		phase = "?"
+	}
+	failureReason := a.store.Get(id, "FAILURE_REASON")
+
+	type logFile struct {
+		name  string
+		phase string
+		mtime time.Time
+	}
+	var files []logFile
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		phase := strings.TrimSuffix(e.Name(), ".log")
+		files = append(files, logFile{
+			name:  e.Name(),
+			phase: phase,
+			mtime: info.ModTime(),
+		})
+	}
+
+	var b strings.Builder
+	_, _ = fmt.Fprintf(&b, "══ %s ══\nphase: %s\n", id, phase)
+	if failureReason != "" {
+		_, _ = fmt.Fprintf(&b, "failure: %s\n", failureReason)
+	}
+
+	if len(files) == 0 {
+		b.WriteString("\n(no phase logs)\n")
+		return b.String()
+	}
+
+	// Sort by modification time descending so the most recently written phase
+	// appears first. Filename is the tie-breaker for identical mtimes.
+	sort.Slice(files, func(i, j int) bool {
+		if !files[i].mtime.Equal(files[j].mtime) {
+			return files[i].mtime.After(files[j].mtime)
+		}
+		return files[i].name > files[j].name
+	})
+
+	// Show the tail of the most recent log up front.
+	latest, _ := os.ReadFile(filepath.Join(dir, files[0].name))
+	b.WriteString("\n── latest output ──\n")
+	if len(latest) == 0 {
+		b.WriteString("(empty log)\n")
+	} else {
+		b.Write(tailLines(latest, 80))
+	}
+
+	// Then the full logs for deeper inspection.
+	b.WriteString("\n── full logs ──\n")
+	for _, f := range files {
+		data, err := os.ReadFile(filepath.Join(dir, f.name))
+		if err != nil || len(data) == 0 {
+			continue
+		}
+		_, _ = fmt.Fprintf(&b, "\n── %s ──\n", f.phase)
+		b.Write(data)
+	}
+	return b.String()
+}
+
+// tailLines returns the last n lines of buf, preserving the trailing newline
+// when buf ends with one.
+func tailLines(buf []byte, n int) []byte {
+	if n <= 0 {
+		return nil
+	}
+	lines := strings.Split(string(buf), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	out := strings.Join(lines, "\n")
+	if len(buf) > 0 && buf[len(buf)-1] == '\n' && !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	return []byte(out)
+}
+
 func (a *appActions) ensure() error {
 	if a.built {
 		return a.buildErr
@@ -1443,15 +1564,16 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 	result := func(id string, elapsed time.Duration) console.TicketResult {
 		tk, cs, metered := a.sink.Total(id)
 		return console.TicketResult{
-			ID:          id,
-			Title:       a.store.Get(id, "TITLE"),
-			Phase:       a.store.Get(id, "PHASE"),
-			Branch:      a.store.Get(id, "BRANCH"),
-			PRURL:       a.store.Get(id, "PR_URL"),
-			Tokens:      tk,
-			Cost:        math.Round(cs*100) / 100,
-			CostMetered: metered,
-			Elapsed:     elapsed,
+			ID:            id,
+			Title:         a.store.Get(id, "TITLE"),
+			Phase:         a.store.Get(id, "PHASE"),
+			Branch:        a.store.Get(id, "BRANCH"),
+			PRURL:         a.store.Get(id, "PR_URL"),
+			Tokens:        tk,
+			Cost:          math.Round(cs*100) / 100,
+			CostMetered:   metered,
+			Elapsed:       elapsed,
+			FailureReason: a.store.Get(id, "FAILURE_REASON"),
 		}
 	}
 	start := time.Now()
@@ -1509,15 +1631,16 @@ func (a *appActions) RunTicket(ctx context.Context, id string, r console.Rendere
 		}
 		tk, cs, metered := a.sink.Total(id)
 		r.TicketDone(console.TicketResult{
-			ID:          id,
-			Title:       a.store.Get(id, "TITLE"),
-			Phase:       a.store.Get(id, "PHASE"),
-			Branch:      a.store.Get(id, "BRANCH"),
-			PRURL:       a.store.Get(id, "PR_URL"),
-			Tokens:      tk,
-			Cost:        math.Round(cs*100) / 100,
-			CostMetered: metered,
-			Elapsed:     time.Since(start),
+			ID:            id,
+			Title:         a.store.Get(id, "TITLE"),
+			Phase:         a.store.Get(id, "PHASE"),
+			Branch:        a.store.Get(id, "BRANCH"),
+			PRURL:         a.store.Get(id, "PR_URL"),
+			Tokens:        tk,
+			Cost:          math.Round(cs*100) / 100,
+			CostMetered:   metered,
+			Elapsed:       time.Since(start),
+			FailureReason: a.store.Get(id, "FAILURE_REASON"),
 		})
 	}
 

@@ -390,6 +390,8 @@ func (p *Pipeline) handleGiveUp(ctx context.Context, id string, err error) error
 func (p *Pipeline) fault(ctx context.Context, id string, err error) error {
 	phase := p.State.Get(id, "PHASE")
 	p.finalizeFault(ctx, id)
+	reason := fmt.Sprintf("unexpected error during %s: %v", NextPhaseLabel(phase), err)
+	_ = p.State.Set(id, "FAILURE_REASON", reason)
 	p.logf("  ⚠ %s could not finish during %s — work saved, ticket left resumable", id, NextPhaseLabel(phase))
 	return &FaultError{ID: id, Phase: phase, Err: err}
 }
@@ -882,6 +884,7 @@ func (p *Pipeline) giveUp(ctx context.Context, id, reason string) error {
 	if err := p.State.Set(id, "PHASE", state.Quarantined); err != nil {
 		return fmt.Errorf("give up %s: checkpoint quarantined: %w", id, err)
 	}
+	_ = p.State.Set(id, "FAILURE_REASON", reason)
 	p.logf("  ✗ quarantining %s: %s", id, reason)
 	if err := p.Tracker.Quarantine(ctx, id, reason); err != nil {
 		p.logf("  quarantine MCP error (continuing): %v", err)

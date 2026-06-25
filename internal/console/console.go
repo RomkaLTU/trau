@@ -65,6 +65,10 @@ type TicketResult struct {
 	// measured total.
 	CostMetered bool
 	Elapsed     time.Duration
+	// FailureReason is a human-readable explanation for why the ticket did not
+	// reach a successful terminal state. It is set from the durable state file
+	// when a ticket is quarantined or faults out.
+	FailureReason string
 }
 
 // SessionSummary is the loop's closing totals, handed to LoopDone once the run

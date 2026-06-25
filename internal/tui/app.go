@@ -26,6 +26,15 @@ type Actions interface {
 
 	StatusRows() []StatusRow
 
+	// LogRuns returns every saved ticket run, ordered by most recent update first,
+	// for the log inspector. The implementation is allowed to read the durable
+	// state/logs directly; the TUI only renders what it returns.
+	LogRuns() []LogRun
+	// LogContent returns the concatenated phase logs for id, formatted for display.
+	// Phases are ordered with the most recent first so the inspector shows latest
+	// context at the top.
+	LogContent(id string) string
+
 	// Reconcile cross-checks in-flight/quarantined checkpoints against the tracker
 	// and clears those whose issue is Done/Canceled, returning the cleared ids. It
 	// backs the status screen's on-demand reconcile.
@@ -128,6 +137,7 @@ const (
 	viewMore
 	viewOnboarding
 	viewStatus
+	viewLogs
 	viewVersion
 	viewDryRun
 	viewReset
@@ -145,6 +155,7 @@ const (
 	actRunOnce
 	actDryRun
 	actStatus
+	actLogs
 	actReset
 	actVersion
 	actOnboarding
@@ -202,6 +213,8 @@ type appModel struct {
 	statusNote   string
 	statusCancel context.CancelFunc
 
+	logs logsModel
+
 	dash       model
 	loopCancel context.CancelFunc
 
@@ -221,6 +234,7 @@ func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
 	}
 	moreItems := []menuItem{
 		{actStatus, "Status", "saved checkpoints + tokens"},
+		{actLogs, "Logs", "inspect per-ticket phase logs"},
 		{actReset, "Reset ticket", "re-queue a ticket"},
 		{actVersion, "Version", "build info"},
 		{actOnboarding, "Re-run onboarding", "change project settings"},
@@ -348,6 +362,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case viewStatus:
 		m.status, cmd = m.status.Update(msg)
+	case viewLogs:
+		m.logs, cmd = m.logs.Update(msg, m.actions.LogContent)
 	case viewReset:
 		m.reset, cmd = m.reset.Update(msg)
 	case viewRunLoop:
@@ -464,6 +480,14 @@ func (m appModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status, cmd = m.status.Update(msg)
 		return m, cmd
 
+	case viewLogs:
+		if isBack(msg) {
+			return m.toMenu(), nil
+		}
+		var cmd tea.Cmd
+		m.logs, cmd = m.logs.Update(msg, m.actions.LogContent)
+		return m, cmd
+
 	case viewVersion, viewError:
 		if isBack(msg) {
 			return m.toMenu(), nil
@@ -572,6 +596,11 @@ func (m appModel) selectAction(a menuAction) (tea.Model, tea.Cmd) {
 		m.statusBusy = false
 		m.statusNote = ""
 		m.view = viewStatus
+		return m, nil
+
+	case actLogs:
+		m.logs = newLogsModel(m.styles, m.actions.LogRuns(), m.width, m.height, m.actions.LogContent)
+		m.view = viewLogs
 		return m, nil
 
 	case actVersion:
@@ -744,6 +773,8 @@ func (m appModel) View() string {
 			hint = "reconciling… · esc to cancel"
 		}
 		return m.renderCard("Status", body, hint)
+	case viewLogs:
+		return m.logs.View()
 	case viewVersion:
 		return m.renderCard("Version", "trau "+m.info.Version, "esc/q back")
 	case viewDryRun:
