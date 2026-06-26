@@ -7,6 +7,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
 func TestRunLoopFinalizesOnCleanStop(t *testing.T) {
@@ -52,3 +53,20 @@ func (noopRenderer) SetTitle(string)                 {}
 func (noopRenderer) PhaseStart(string)               {}
 func (noopRenderer) TicketDone(console.TicketResult) {}
 func (noopRenderer) Wait()                           {}
+
+func TestLeafSubsFiltersNestedEpics(t *testing.T) {
+	subs := []tracker.SubIssue{
+		{ID: "COD-500", HasChildren: true},
+		{ID: "COD-501", HasChildren: false},
+		{ID: "COD-502"},
+	}
+	got := leafSubs(subs)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 leaf sub-issues, got %d", len(got))
+	}
+	for _, s := range got {
+		if s.ID == "COD-500" {
+			t.Fatalf("nested epic COD-500 should be filtered out")
+		}
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/agent"
@@ -56,6 +57,26 @@ func (l *Linear) Pick(ctx context.Context, scope Scope) (string, error) {
 		} else if !shouldFallback(err) {
 			return "", err
 		}
+	} else {
+		// Epic scope: harden the pick so a nested epic (a sub-issue that itself has
+		// children) is never selected as a leaf. We first enumerate the parent's
+		// children and restrict the agent to confirmed leaves, then verify the
+		// returned id is actually in that set.
+		leaves, err := l.leafSubIssues(ctx, scope.Parent)
+		if err != nil {
+			return "", fmt.Errorf("pick %s: list children: %w", scope.Parent, err)
+		}
+		if len(leaves) == 0 {
+			return "", nil
+		}
+		res, err := l.Runner.Run(ctx, l.epicPickPrompt(scope, leaves), "pick")
+		if id, matched := parsePick(res.Final, scope.prefix()); matched && leaves[id] {
+			return id, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return "", nil
 	}
 
 	res, err := l.Runner.Run(ctx, l.pickPrompt(scope), "pick")
@@ -66,6 +87,23 @@ func (l *Linear) Pick(ctx context.Context, scope Scope) (string, error) {
 		return "", err
 	}
 	return "", nil
+}
+
+// leafSubIssues returns the set of direct children of parent that are themselves
+// leaf issues (they have no sub-issues). An empty set means the parent has no
+// buildable leaves right now.
+func (l *Linear) leafSubIssues(ctx context.Context, parent string) (map[string]bool, error) {
+	subs, err := l.SubIssues(ctx, parent)
+	if err != nil {
+		return nil, err
+	}
+	leaves := make(map[string]bool, len(subs))
+	for _, s := range subs {
+		if s.ID != "" && !s.HasChildren {
+			leaves[s.ID] = true
+		}
+	}
+	return leaves, nil
 }
 
 func (l *Linear) pickAPI(ctx context.Context, scope Scope) (string, error) {
@@ -276,7 +314,7 @@ func (l *Linear) subIssuesAPI(ctx context.Context, id string) ([]SubIssue, error
 	out := make([]SubIssue, 0, len(children))
 	for _, s := range children {
 		if s.Identifier != "" {
-			out = append(out, SubIssue{ID: s.Identifier, Title: s.Title, Done: s.State.IsTerminal()})
+			out = append(out, SubIssue{ID: s.Identifier, Title: s.Title, Done: s.State.IsTerminal(), HasChildren: s.HasChildren})
 		}
 	}
 	return out, nil
@@ -284,8 +322,9 @@ func (l *Linear) subIssuesAPI(ctx context.Context, id string) ([]SubIssue, error
 
 func (l *Linear) subIssuesPrompt(id string) string {
 	return fmt.Sprintf("Use the Linear MCP. List the direct sub-issues (children) of issue %s. "+
-		"Respond with exactly one final line of JSON: SUB_ISSUES=[{\"id\":\"%s-494\",\"title\":\"...\"}, ...] "+
-		"using each child's identifier and title. If there are none, respond SUB_ISSUES=[]. No other output.", id, prefixOf(id))
+		"Respond with exactly one final line of JSON: SUB_ISSUES=[{\"id\":\"%s-494\",\"title\":\"...\",\"hasChildren\":false}, ...] "+
+		"using each child's identifier, title, and whether it has its own sub-issues (hasChildren boolean). "+
+		"If there are none, respond SUB_ISSUES=[]. No other output.", id, prefixOf(id))
 }
 
 func parseSubIssues(text string) ([]SubIssue, bool) {
@@ -346,6 +385,21 @@ func (l *Linear) pickPrompt(scope Scope) string {
 		"Pick the best one to start next by considering, in order: priority (Urgent > High > Medium > Low), due date (sooner is better), then the lowest issue number as a tie-breaker. "+
 		"Respond with exactly one final line: 'PICK=<IDENTIFIER>' (e.g. PICK=%s-414) or 'PICK=NONE'. No other output.",
 		scope.clause(), l.ReadyLabel, scope.projectClause(), scope.prefix())
+}
+
+func (l *Linear) epicPickPrompt(scope Scope, leaves map[string]bool) string {
+	ids := make([]string, 0, len(leaves))
+	for id := range leaves {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return fmt.Sprintf("Use the Linear MCP. Among the leaf sub-issues of %s (%s), find one that ALL of: "+
+		"(a) carries the label '%s'; "+
+		"(b) is NOT started — workflow state type is 'backlog' or 'unstarted' (exclude started, completed, canceled); "+
+		"(c) has every 'blocked by' issue in a completed/Done state. "+
+		"Pick the best one to start next by considering, in order: priority (Urgent > High > Medium > Low), due date (sooner is better), then the lowest issue number as a tie-breaker. "+
+		"Respond with exactly one final line: 'PICK=<IDENTIFIER>' (e.g. PICK=%s-414) or 'PICK=NONE'. No other output.",
+		scope.Parent, strings.Join(ids, ", "), l.ReadyLabel, scope.prefix())
 }
 
 func parsePick(text, prefix string) (id string, matched bool) {

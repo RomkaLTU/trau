@@ -51,11 +51,13 @@ type Config struct {
 
 // SubIssue is a lightweight identifier+title pair for an issue's children. Done
 // marks a child the tracker already considers finished (completed or canceled),
-// so the epic preview can flag work that will not run.
+// so the epic preview can flag work that will not run. HasChildren flags a
+// nested epic/parent so the loop never descends into it as if it were a leaf.
 type SubIssue struct {
-	ID    string
-	Title string
-	Done  bool
+	ID          string
+	Title       string
+	Done        bool
+	HasChildren bool
 }
 
 // ListedTicket is one eligible ticket returned by a fast list operation.

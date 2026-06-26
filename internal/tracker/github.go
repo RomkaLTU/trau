@@ -3,6 +3,8 @@ package tracker
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/RomkaLTU/trau/internal/agent"
 )
@@ -19,6 +21,24 @@ type GitHub struct {
 
 // Pick returns the next eligible ticket identifier, or "" when nothing is eligible.
 func (g *GitHub) Pick(ctx context.Context, scope Scope) (string, error) {
+	if scope.Parent != "" {
+		leaves, err := g.leafSubIssues(ctx, scope.Parent)
+		if err != nil {
+			return "", fmt.Errorf("pick %s: list children: %w", scope.Parent, err)
+		}
+		if len(leaves) == 0 {
+			return "", nil
+		}
+		res, err := g.Runner.Run(ctx, g.epicPickPrompt(scope, leaves), "pick")
+		if id, matched := parsePick(res.Final, scope.prefix()); matched && leaves[id] {
+			return id, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return "", nil
+	}
+
 	res, err := g.Runner.Run(ctx, g.pickPrompt(scope), "pick")
 	if id, matched := parsePick(res.Final, scope.prefix()); matched {
 		return id, nil
@@ -29,6 +49,20 @@ func (g *GitHub) Pick(ctx context.Context, scope Scope) (string, error) {
 	return "", nil
 }
 
+func (g *GitHub) leafSubIssues(ctx context.Context, parent string) (map[string]bool, error) {
+	subs, err := g.SubIssues(ctx, parent)
+	if err != nil {
+		return nil, err
+	}
+	leaves := make(map[string]bool, len(subs))
+	for _, s := range subs {
+		if s.ID != "" && !s.HasChildren {
+			leaves[s.ID] = true
+		}
+	}
+	return leaves, nil
+}
+
 func (g *GitHub) pickPrompt(scope Scope) string {
 	return fmt.Sprintf("Use the GitHub MCP. In repository %q, among %s, find open issues that ALL of: "+
 		"(a) carry the label '%s'; "+
@@ -37,6 +71,21 @@ func (g *GitHub) pickPrompt(scope Scope) string {
 		"Pick the best one to start next by considering, in order: priority labels (e.g. P0/priority-critical > P1/priority-high > P2/priority-medium > P3/priority-low), milestone due date (sooner is better), then the lowest issue number as a tie-breaker. "+
 		"Map the selected GitHub issue #N to the configured prefix by responding 'PICK=<PREFIX>-N' (e.g. PICK=%s-414) or 'PICK=NONE'. No other output.",
 		g.Repo, scope.clause(), g.ReadyLabel, scope.prefix())
+}
+
+func (g *GitHub) epicPickPrompt(scope Scope, leaves map[string]bool) string {
+	ids := make([]string, 0, len(leaves))
+	for id := range leaves {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return fmt.Sprintf("Use the GitHub MCP. In repository %q, among the leaf child issues of %s (%s), find open issues that ALL of: "+
+		"(a) carry the label '%s'; "+
+		"(b) have no linked pull requests that are open; "+
+		"(c) have every 'blocked by' issue closed. "+
+		"Pick the best one to start next by considering, in order: priority labels (e.g. P0/priority-critical > P1/priority-high > P2/priority-medium > P3/priority-low), milestone due date (sooner is better), then the lowest issue number as a tie-breaker. "+
+		"Map the selected GitHub issue #N to the configured prefix by responding 'PICK=<PREFIX>-N' (e.g. PICK=%s-414) or 'PICK=NONE'. No other output.",
+		g.Repo, scope.Parent, strings.Join(ids, ", "), g.ReadyLabel, scope.prefix())
 }
 
 // SubIssues asks the GitHub MCP to inspect task-list items / sub-issue references
@@ -54,8 +103,9 @@ func (g *GitHub) SubIssues(ctx context.Context, id string) ([]SubIssue, error) {
 
 func (g *GitHub) subIssuesPrompt(id string) string {
 	return fmt.Sprintf("Use the GitHub MCP. Inspect issue %s in repository %q for task-list items, sub-issue references, or linked child issues. "+
-		"Respond with exactly one final line of JSON: SUB_ISSUES=[{\"id\":\"%s-414\",\"title\":\"...\"}, ...] "+
-		"using each child's mapped identifier and title. If there are none, respond SUB_ISSUES=[]. No other output.", id, g.Repo, prefixOf(id))
+		"Respond with exactly one final line of JSON: SUB_ISSUES=[{\"id\":\"%s-414\",\"title\":\"...\",\"hasChildren\":false}, ...] "+
+		"using each child's mapped identifier, title, and whether it has its own child issues (hasChildren boolean). "+
+		"If there are none, respond SUB_ISSUES=[]. No other output.", id, g.Repo, prefixOf(id))
 }
 
 // Title returns the title of issue id via the GitHub MCP.

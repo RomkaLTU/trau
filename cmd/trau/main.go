@@ -288,8 +288,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			if err != nil {
 				return fmt.Errorf("check sub-issues for %s: %w", epicID, err)
 			}
+			subs = leafSubs(subs)
 			if len(subs) == 0 {
-				con.Logf("  %s has no sub-issues — processing as standalone ticket", epicID)
+				con.Logf("  %s has no buildable leaf sub-issues — processing as standalone ticket", epicID)
 				forcedID = epicID
 				epicID = ""
 				opts.Once = true
@@ -553,6 +554,19 @@ func reconcileWith(ctx context.Context, store *state.Store, statuser tracker.Iss
 // picks (which have no parent id to derive a prefix from) match the right tracker.
 func scopeFor(cfg config.Config, parent string) tracker.Scope {
 	return tracker.Scope{Parent: parent, Team: cfg.LinearTeam, Project: cfg.Project, Prefix: cfg.IssuePrefix}
+}
+
+// leafSubs returns the sub-issues that are themselves leaves (they have no
+// children of their own). Nested epics are filtered out so the loop never
+// accidentally treats them as buildable tickets.
+func leafSubs(subs []tracker.SubIssue) []tracker.SubIssue {
+	out := make([]tracker.SubIssue, 0, len(subs))
+	for _, s := range subs {
+		if !s.HasChildren {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // budgetLimits projects the resolved config's spend ceilings into the budget
@@ -1445,7 +1459,7 @@ func (a *appActions) SubIssues(ctx context.Context, id string) ([]tui.SubIssue, 
 	}
 	out := make([]tui.SubIssue, 0, len(raw))
 	for _, s := range raw {
-		out = append(out, tui.SubIssue{ID: s.ID, Title: s.Title, Done: s.Done})
+		out = append(out, tui.SubIssue{ID: s.ID, Title: s.Title, Done: s.Done, HasChildren: s.HasChildren})
 	}
 	return out, nil
 }
@@ -1516,15 +1530,18 @@ func (a *appActions) RunLoop(ctx context.Context, epic string, r console.Rendere
 }
 
 // epicChildFilter returns a predicate accepting the epic's own id and the ids of
-// its direct sub-issues — the only checkpoints the epic flow may resume. A lookup
-// failure yields nil (no filter) so a transient tracker error never silently
-// narrows the resume scan to nothing; the project guard still backstops a
-// cross-project checkpoint. Matching is case-insensitive on the trimmed id.
+// its direct leaf sub-issues — the only checkpoints the epic flow may resume.
+// Nested epics (sub-issues that themselves have children) are excluded because
+// they are not buildable leaves. A lookup failure yields nil (no filter) so a
+// transient tracker error never silently narrows the resume scan to nothing;
+// the project guard still backstops a cross-project checkpoint. Matching is
+// case-insensitive on the trimmed id.
 func epicChildFilter(ctx context.Context, tr tracker.Tracker, epic string) func(string) bool {
 	subs, err := tr.SubIssues(ctx, epic)
 	if err != nil {
 		return nil
 	}
+	subs = leafSubs(subs)
 	allow := map[string]bool{strings.ToUpper(strings.TrimSpace(epic)): true}
 	for _, s := range subs {
 		if id := strings.ToUpper(strings.TrimSpace(s.ID)); id != "" {
@@ -1608,11 +1625,12 @@ func (a *appActions) RunTicket(ctx context.Context, id string, r console.Rendere
 	a.pipe.Renderer = r
 
 	// Epic guard: a parent issue is a container, not a buildable leaf. If the chosen
-	// ticket has sub-issues, descend into the epic flow — pick the next eligible child
-	// and build it on the epic branch — instead of building the epic directly. Capped
-	// at one ticket so "Run once" still means one. Mirrors the CLI `trau <epic>` descent
-	// so every entry point agrees.
-	if subs, err := a.tracker.SubIssues(ctx, id); err == nil && len(subs) > 0 {
+	// ticket has leaf sub-issues, descend into the epic flow — pick the next eligible
+	// child and build it on the epic branch — instead of building the epic directly.
+	// Nested epics (sub-issues that themselves have children) are ignored here because
+	// they are not buildable leaves. Capped at one ticket so "Run once" still means one.
+	// Mirrors the CLI `trau <epic>` descent so every entry point agrees.
+	if subs, err := a.tracker.SubIssues(ctx, id); err == nil && len(leafSubs(subs)) > 0 {
 		r.Logf("%s is an epic → running its next eligible sub-issue", id)
 		a.runEpicLoop(ctx, id, r, 1)
 		return

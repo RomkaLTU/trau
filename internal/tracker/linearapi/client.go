@@ -85,12 +85,13 @@ type Label struct {
 
 // IssueRef is a lightweight issue reference.
 type IssueRef struct {
-	ID         string
-	Identifier string
-	Title      string
-	Priority   int
-	DueDate    string
-	State      State
+	ID          string
+	Identifier  string
+	Title       string
+	Priority    int
+	DueDate     string
+	State       State
+	HasChildren bool // true when the referenced issue has its own sub-issues
 }
 
 // IsUnstarted reports whether the issue is in a backlog or unstarted state.
@@ -574,6 +575,11 @@ type issueRefNode struct {
 	Priority   int       `json:"priority"`
 	DueDate    string    `json:"dueDate"`
 	State      stateNode `json:"state"`
+	Children   struct {
+		Nodes []struct {
+			ID string `json:"id"`
+		} `json:"nodes"`
+	} `json:"children"`
 }
 
 // relationNode is one IssueRelation. For "blocked by", we read inverseRelations
@@ -648,7 +654,15 @@ func nodeToIssue(n *issueNode) *Issue {
 		issue.Labels = append(issue.Labels, Label(l))
 	}
 	for _, s := range n.Children.Nodes {
-		issue.Children = append(issue.Children, IssueRef{ID: s.ID, Identifier: s.Identifier, Title: s.Title, Priority: s.Priority, DueDate: s.DueDate, State: State(s.State)})
+		issue.Children = append(issue.Children, IssueRef{
+			ID:          s.ID,
+			Identifier:  s.Identifier,
+			Title:       s.Title,
+			Priority:    s.Priority,
+			DueDate:     s.DueDate,
+			State:       State(s.State),
+			HasChildren: len(s.Children.Nodes) > 0,
+		})
 	}
 	issue.BlockedBy = blockers(n.InverseRelations.Nodes)
 	return issue

@@ -46,6 +46,11 @@ query Issue($number: Float!, $teamKey: String!) {
           state {
             type
           }
+          children {
+            nodes {
+              id
+            }
+          }
         }
       }
       inverseRelations(first: 50) {

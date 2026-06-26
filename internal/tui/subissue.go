@@ -4,7 +4,8 @@ package tui
 // Done marks a child the tracker has already finished, so the list can flag work
 // that will not run.
 type SubIssue struct {
-	ID    string
-	Title string
-	Done  bool
+	ID          string
+	Title       string
+	Done        bool
+	HasChildren bool
 }

@@ -1,6 +1,12 @@
 package tracker
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"github.com/RomkaLTU/trau/internal/agent"
+)
 
 func TestParseIssueStatus(t *testing.T) {
 	tests := []struct {
@@ -118,4 +124,110 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+func TestParseSubIssuesReadsHasChildren(t *testing.T) {
+	subs, ok := parseSubIssuesJSON(`SUB_ISSUES=[{"id":"COD-1","title":"leaf","hasChildren":false},{"id":"COD-2","title":"epic","hasChildren":true}]`)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if len(subs) != 2 {
+		t.Fatalf("expected 2 sub-issues, got %d", len(subs))
+	}
+	if subs[0].ID != "COD-1" || subs[0].HasChildren {
+		t.Errorf("first sub-issue should be a leaf, got %+v", subs[0])
+	}
+	if subs[1].ID != "COD-2" || !subs[1].HasChildren {
+		t.Errorf("second sub-issue should be a nested epic, got %+v", subs[1])
+	}
+}
+
+func TestPickParentScopeSkipsNestedEpics(t *testing.T) {
+	runner := &recordingRunner{}
+	l := &Linear{
+		Runner:     runner,
+		ReadyLabel: "ready-for-agent",
+		Team:       "COD",
+	}
+
+	// First call lists sub-issues; second call is the pick. The agent tries to
+	// return the nested epic COD-500, but the hard leaf filter should reject it
+	// and return nothing eligible.
+	runner.responses = map[string]agent.Result{
+		"sub_issues": {Final: `SUB_ISSUES=[{"id":"COD-500","title":"nested epic","hasChildren":true},{"id":"COD-501","title":"leaf","hasChildren":false}]`},
+		"pick":       {Final: `PICK=COD-500`},
+	}
+
+	id, err := l.Pick(context.Background(), Scope{Parent: "COD-493", Team: "COD", Prefix: "COD"})
+	if err != nil {
+		t.Fatalf("Pick returned error: %v", err)
+	}
+	if id != "" {
+		t.Fatalf("expected no eligible ticket when agent picks a nested epic, got %s", id)
+	}
+	if runner.calls["sub_issues"] != 1 || runner.calls["pick"] != 1 {
+		t.Fatalf("expected one sub_issues and one pick call, got %v", runner.calls)
+	}
+}
+
+func TestPickParentScopeReturnsLeaf(t *testing.T) {
+	runner := &recordingRunner{}
+	l := &Linear{
+		Runner:     runner,
+		ReadyLabel: "ready-for-agent",
+		Team:       "COD",
+	}
+
+	runner.responses = map[string]agent.Result{
+		"sub_issues": {Final: `SUB_ISSUES=[{"id":"COD-500","title":"nested epic","hasChildren":true},{"id":"COD-501","title":"leaf","hasChildren":false}]`},
+		"pick":       {Final: `PICK=COD-501`},
+	}
+
+	id, err := l.Pick(context.Background(), Scope{Parent: "COD-493", Team: "COD", Prefix: "COD"})
+	if err != nil {
+		t.Fatalf("Pick returned error: %v", err)
+	}
+	if id != "COD-501" {
+		t.Fatalf("expected COD-501, got %s", id)
+	}
+}
+
+func TestPickParentScopeNoLeaves(t *testing.T) {
+	runner := &recordingRunner{}
+	l := &Linear{
+		Runner:     runner,
+		ReadyLabel: "ready-for-agent",
+		Team:       "COD",
+	}
+
+	runner.responses = map[string]agent.Result{
+		"sub_issues": {Final: `SUB_ISSUES=[{"id":"COD-500","title":"nested epic","hasChildren":true}]`},
+	}
+
+	id, err := l.Pick(context.Background(), Scope{Parent: "COD-493", Team: "COD", Prefix: "COD"})
+	if err != nil {
+		t.Fatalf("Pick returned error: %v", err)
+	}
+	if id != "" {
+		t.Fatalf("expected no eligible ticket when all sub-issues are nested epics, got %s", id)
+	}
+	if runner.calls["pick"] != 0 {
+		t.Fatalf("expected no pick call when there are no leaves, got %d", runner.calls["pick"])
+	}
+}
+
+type recordingRunner struct {
+	responses map[string]agent.Result
+	calls     map[string]int
+}
+
+func (r *recordingRunner) Run(_ context.Context, _ string, label string) (agent.Result, error) {
+	if r.calls == nil {
+		r.calls = make(map[string]int)
+	}
+	r.calls[label]++
+	res, ok := r.responses[label]
+	if !ok {
+		return agent.Result{}, fmt.Errorf("no fake response for label %q", label)
+	}
+	return res, nil
 }

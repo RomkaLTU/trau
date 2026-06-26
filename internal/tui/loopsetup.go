@@ -284,6 +284,9 @@ func (m loopSetupModel) renderList() string {
 		}
 		idStr := padRight(sub.ID, idW)
 		titleStr := truncate(sub.Title, titleW)
+		if sub.HasChildren {
+			titleStr += s.Subtle.Render("  ⊘ nested epic")
+		}
 		rows = append(rows, marker+status+idStyle.Render(idStr)+"  "+titleStyle.Render(titleStr))
 	}
 
