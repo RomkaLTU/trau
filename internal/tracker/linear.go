@@ -29,14 +29,15 @@ func (l *Linear) api() *linearapi.Client {
 }
 
 // shouldFallback reports whether a direct-API error should cause the caller to
-// retry the operation through the MCP. Auth and "not enabled" errors are not
-// fallback-worthy because retrying through MCP won't help; transient / mapping
-// errors are.
+// retry the operation through the MCP. Auth errors are not fallback-worthy
+// because retrying through MCP won't help; "not enabled" (no API key configured)
+// IS fallback-worthy because the MCP path is exactly the intended alternative.
+// Transient / mapping errors are also fallback-worthy.
 func shouldFallback(err error) bool {
 	if err == nil {
 		return false
 	}
-	if err == linearapi.ErrUnauthorized || err == linearapi.ErrNotEnabled {
+	if err == linearapi.ErrUnauthorized {
 		return false
 	}
 	return true
