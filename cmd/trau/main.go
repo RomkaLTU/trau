@@ -645,6 +645,12 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		LessonsDistill: cfg.LessonsDistill,
 		Renderer:       con,
 		OwnedProject:   cfg.Project,
+
+		RepoRoot:            repoRoot,
+		TimelogEnabled:      cfg.TimelogEnabled,
+		TimelogStorage:      cfg.TimelogStorage,
+		TimelogOutputFormat: cfg.TimelogOutputFormat,
+		TimelogEstimator:    cfg.TimelogEstimator,
 	}, nil
 }
 
