@@ -193,6 +193,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		cfg.RepoRoot = repoRoot
 	}
 
+	if err := state.EnsureGitignore(cfg.RepoRoot, cfg.RunsDir); err != nil {
+		logger.Verbosef("ensure runs .gitignore: %v", err)
+	}
+
 	for _, id := range []string{opts.Parent, opts.ResetID, opts.ClearID} {
 		if err := config.ValidatePrefix(id, cfg.IssuePrefix); err != nil {
 			return console.Actionable(err, "validate ticket id",

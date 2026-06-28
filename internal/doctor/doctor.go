@@ -262,7 +262,7 @@ func checkWritePerms(cfg config.Config, repoRoot string, rr *runner) {
 
 	runsDir := cfg.RunsDir
 	if runsDir == "" {
-		runsDir = "runs"
+		runsDir = ".trau/runs"
 	}
 	if !filepath.IsAbs(runsDir) && repoRoot != "" {
 		runsDir = filepath.Join(repoRoot, runsDir)
