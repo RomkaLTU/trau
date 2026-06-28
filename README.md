@@ -88,7 +88,9 @@ trau --debug ...     # the above plus every git / gh command invoked
 
 Logs are written under `.trau/runs/` (override with `RUNS_DIR`). trau adds this path and
 `.trau.ini` to the target repo's `.gitignore` on first run, so its artifacts never clutter
-`git status`:
+`git status`. If you ran an older version that used a root `runs/` dir, trau moves it to
+`.trau/runs/` automatically on the next run (unless `runs/` was committed — then move it
+yourself):
 
 - `.trau/runs/events.jsonl` — the structured event stream for the whole session.
 - `.trau/runs/<ID>/` — per-phase logs for one issue (`build.log`, `handoff.md`, `verify*.log`, …)
