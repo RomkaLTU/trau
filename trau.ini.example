@@ -186,6 +186,29 @@ LESSONS_DISTILL=0
 # See docs/lessons-memory.md for the record schema and when to commit a curated
 # digest vs keep it local.
 
+# --- time tracking (opt-in, OFF by default) ---
+# Optional, dev-flow-compatible time tracking. When enabled, trau writes a
+# per-ticket human-EFFORT estimate after a ticket merges to
+# <repo>/.dev-flow/time/<TICKET>.json, in the exact schema the dev-flow skill
+# uses — so the weekly "Service Transfer Act" report and anything else reading
+# .dev-flow/time/*.json keeps working when a team moves off the skill onto trau.
+# This is OFF by default: with TIMELOG_ENABLED=0 (or unset) NONE of this runs and
+# trau behaves exactly as before — no .dev-flow/ writes, no estimation, zero
+# overhead. The first-run onboarding wizard offers a toggle (defaulting to off).
+# The number is an ESTIMATE of senior-developer effort, never agent wall-clock.
+TIMELOG_ENABLED=0            # 1 = write the per-ticket effort log after merge; 0 = off (default)
+TIMELOG_STORAGE=repo         # repo  -> <repo>/.dev-flow/time/<TICKET>.json (default; per-repo, where tools read)
+                             # user  -> ~/.dev-flow/time/<repo-slug>/<TICKET>.json
+                             # none  -> persist nothing
+TIMELOG_OUTPUT_FORMAT=default # export rendering: default (canonical JSON) | jira-worklog | toggl-csv | plain.
+                             # The persisted file is always JSON; a non-default value also writes a
+                             # copy-paste sibling export next to it.
+TIMELOG_ESTIMATOR=heuristic  # heuristic = deterministic diffstat/file/commit -> minutes table (default,
+                             #             no extra agent cost); agent = a cheap agent call estimates minutes
+# With TIMELOG_STORAGE=repo, trau adds `.dev-flow/time/` to the target repo's
+# .gitignore if absent (effort numbers are per-developer / sensitive); it never
+# blanket-ignores .dev-flow/ (a project's .dev-flow/config.json is not trau's to ignore).
+
 # =============================================================================
 # USER / MACHINE KNOBS (put these in ~/.trau.ini)
 # =============================================================================

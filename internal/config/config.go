@@ -111,6 +111,16 @@ type Config struct {
 	Lessons        bool
 	LessonsDistill bool
 
+	// Opt-in, dev-flow-compatible time tracking. Off by default: when
+	// TimelogEnabled is false none of the time-log code runs and trau behaves
+	// exactly as before. Storage mirrors the skill (repo|user|none); OutputFormat
+	// selects the export rendering; Estimator picks the per-ticket effort estimate
+	// (deterministic heuristic, or a cheap agent call). See internal/timelog.
+	TimelogEnabled      bool
+	TimelogStorage      string
+	TimelogOutputFormat string
+	TimelogEstimator    string
+
 	RunsDir string
 
 	// Spend ceilings off the normalized token/cost ledger. Zero = no cap
@@ -174,6 +184,10 @@ func Defaults() Config {
 		UsageWindowPTY:        false,
 		Lessons:               true,
 		LessonsDistill:        false,
+		TimelogEnabled:        false,
+		TimelogStorage:        "repo",
+		TimelogOutputFormat:   "default",
+		TimelogEstimator:      "heuristic",
 		RunsDir:               "runs",
 		MaxTicketUSD:          0,
 		MaxTicketTokens:       0,
@@ -489,6 +503,13 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		c.LessonsDistill = v == "1"
 		sources["LESSONS_DISTILL"] = src.name
 	}
+	if v, src := get("TIMELOG_ENABLED"); v != "" {
+		c.TimelogEnabled = v == "1"
+		sources["TIMELOG_ENABLED"] = src.name
+	}
+	str("TIMELOG_STORAGE", &c.TimelogStorage)
+	str("TIMELOG_OUTPUT_FORMAT", &c.TimelogOutputFormat)
+	str("TIMELOG_ESTIMATOR", &c.TimelogEstimator)
 	if v, src := get("USAGE_WINDOW"); v != "" {
 		c.UsageWindow = v == "1"
 		sources["USAGE_WINDOW"] = src.name
@@ -699,6 +720,11 @@ func WriteProjectEnv(path string, values map[string]string) error {
 		"REMOTE",
 		"TRAU_REPO_ROOT",
 		"PROVIDER",
+		"EPIC_FLOW",
+		"TIMELOG_ENABLED",
+		"TIMELOG_STORAGE",
+		"TIMELOG_OUTPUT_FORMAT",
+		"TIMELOG_ESTIMATOR",
 	}
 	var b strings.Builder
 	b.WriteString("# Trau project-level configuration.\n")
@@ -865,6 +891,10 @@ func KnownKeys() []KeyMeta {
 		{Key: "VERIFY_PANEL_POLICY", Default: "unanimous", Description: "Panel verdict merge policy: unanimous | majority | any-pass", Options: []string{"unanimous", "majority", "any-pass"}},
 		{Key: "TRAU_TUI", Default: "1", Description: "Enable Bubble Tea TUI (1 = yes, 0 = no)", Bool: true},
 		{Key: "EPIC_FLOW", Default: "1", Description: "Process epic sub-issues (1 = yes, 0 = no)", Bool: true},
+		{Key: "TIMELOG_ENABLED", Default: "0", Description: "Write a dev-flow-compatible per-ticket effort time log after merge (opt-in; 1 = yes, 0 = no)", Bool: true},
+		{Key: "TIMELOG_STORAGE", Default: "repo", Description: "Time-log location: repo (<repo>/.dev-flow/time/) | user (~/.dev-flow/time/<repo>/) | none", Options: []string{"repo", "user", "none"}},
+		{Key: "TIMELOG_OUTPUT_FORMAT", Default: "default", Description: "Time-log export rendering: default (JSON) | jira-worklog | toggl-csv | plain", Options: []string{"default", "jira-worklog", "toggl-csv", "plain"}},
+		{Key: "TIMELOG_ESTIMATOR", Default: "heuristic", Description: "Per-ticket effort estimate: heuristic (deterministic table) | agent (cheap agent call)", Options: []string{"heuristic", "agent"}},
 		{Key: "RUNS_DIR", Default: "runs", Description: "Directory for run artifacts"},
 		{Key: "MAX_TICKET_USD", Description: "Per-ticket USD spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_TICKET_TOKENS", Description: "Per-ticket token spend cap; over it the ticket is quarantined (empty = no cap)"},
@@ -1257,6 +1287,17 @@ func keyValue(cfg Config, key string) string {
 			return "1"
 		}
 		return "0"
+	case "TIMELOG_ENABLED":
+		if cfg.TimelogEnabled {
+			return "1"
+		}
+		return "0"
+	case "TIMELOG_STORAGE":
+		return cfg.TimelogStorage
+	case "TIMELOG_OUTPUT_FORMAT":
+		return cfg.TimelogOutputFormat
+	case "TIMELOG_ESTIMATOR":
+		return cfg.TimelogEstimator
 	case "RUNS_DIR":
 		return cfg.RunsDir
 	case "MAX_TICKET_USD":

@@ -30,6 +30,7 @@ type ProjectSetup struct {
 	QuarantineLabel string
 	CreateLabels    bool
 	EpicFlow        bool
+	Timelog         bool
 	LinearAPIKey    string
 }
 
@@ -67,6 +68,7 @@ type OnboardingPrefill struct {
 	ReadyLabel      string
 	QuarantineLabel string
 	EpicFlow        bool
+	Timelog         bool
 	LinearAPIKey    string
 }
 
@@ -106,6 +108,7 @@ const (
 	onboardBaseBranch
 	onboardLinearTeam
 	onboardLabels
+	onboardTimeTracking
 	onboardWrite
 	onboardCreateLabels
 	onboardDone
@@ -175,6 +178,10 @@ type onboardingModel struct {
 	labelOptions []string
 	createLabels bool
 
+	timelogCursor  int
+	timelogOptions []string
+	timelog        bool
+
 	writing bool
 	done    bool
 	result  SetupResult
@@ -210,6 +217,7 @@ func newOnboardingModelWithPrefill(ctx context.Context, actions OnboardingAction
 		providers:              []string{"claude", "codex", "kimi"},
 		branchingOptions:       []string{"Use epic branches for tickets with sub-issues", "Process every ticket standalone"},
 		labelOptions:           []string{"Create the labels in Linear now", "I'll create the labels myself"},
+		timelogOptions:         []string{"No — don't track time (default)", "Yes — log estimated dev time per ticket"},
 		epicFlow:               true,
 		baseBranchInputFocused: true,
 		providersPMFocused:     true,
@@ -287,6 +295,11 @@ func (m *onboardingModel) applyPrefill(p OnboardingPrefill) {
 		m.branchingCursor = 0
 	} else {
 		m.branchingCursor = 1
+	}
+	if p.Timelog {
+		m.timelogCursor = 1
+	} else {
+		m.timelogCursor = 0
 	}
 	if p.LinearAPIKey != "" {
 		m.apiKey.SetValue(p.LinearAPIKey)
@@ -389,6 +402,8 @@ func (m onboardingModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleLinearTeam(msg)
 	case onboardLabels:
 		return m.handleLabels(msg)
+	case onboardTimeTracking:
+		return m.handleTimeTracking(msg)
 	case onboardWrite:
 		return m.handleWrite(msg)
 	case onboardCreateLabels:
@@ -796,7 +811,7 @@ func (m onboardingModel) handleLabels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyEnter:
 		m.createLabels = m.labelsCursor == 0
-		m.step = onboardWrite
+		m.step = onboardTimeTracking
 	case tea.KeyUp:
 		if m.labelsCursor > 0 {
 			m.labelsCursor--
@@ -819,6 +834,36 @@ func (m onboardingModel) handleLabels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m onboardingModel) handleTimeTracking(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyLeft:
+		m.step = onboardLabels
+		return m, nil
+	case tea.KeyEnter:
+		m.timelog = m.timelogCursor == 1
+		m.step = onboardWrite
+	case tea.KeyUp:
+		if m.timelogCursor > 0 {
+			m.timelogCursor--
+		}
+	case tea.KeyDown:
+		if m.timelogCursor < len(m.timelogOptions)-1 {
+			m.timelogCursor++
+		}
+	}
+	switch msg.String() {
+	case "k":
+		if m.timelogCursor > 0 {
+			m.timelogCursor--
+		}
+	case "j":
+		if m.timelogCursor < len(m.timelogOptions)-1 {
+			m.timelogCursor++
+		}
+	}
+	return m, nil
+}
+
 func (m onboardingModel) handleWrite(msg tea.Msg) (tea.Model, tea.Cmd) {
 	msgKey, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -829,7 +874,7 @@ func (m onboardingModel) handleWrite(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.writing {
 			return m, nil
 		}
-		m.step = onboardLabels
+		m.step = onboardTimeTracking
 		return m, nil
 	case tea.KeyEnter:
 		if m.writing {
@@ -1204,6 +1249,7 @@ func (m onboardingModel) writeConfigCmd() tea.Cmd {
 		QuarantineLabel: "needs-human",
 		CreateLabels:    m.createLabels,
 		EpicFlow:        m.epicFlow,
+		Timelog:         m.timelog,
 		LinearAPIKey:    strings.TrimSpace(m.apiKey.Value()),
 	}
 	return func() tea.Msg {
@@ -1277,6 +1323,8 @@ func (m onboardingModel) View() string {
 		body = m.renderLinearTeam()
 	case onboardLabels:
 		body = m.renderLabels()
+	case onboardTimeTracking:
+		body = m.renderTimeTracking()
 	case onboardWrite:
 		body = m.renderWrite()
 	case onboardCreateLabels:
@@ -1658,6 +1706,27 @@ func (m onboardingModel) renderLabels() string {
 	return strings.Join(rows, "\n")
 }
 
+func (m onboardingModel) renderTimeTracking() string {
+	var rows []string
+	rows = append(rows, m.styles.SummaryTitle.Render("Time tracking (optional)"))
+	rows = append(rows, "")
+	rows = append(rows, "Track estimated dev time per ticket?")
+	rows = append(rows, m.styles.Subtle.Render("After a ticket merges, trau writes a per-ticket effort estimate to"))
+	rows = append(rows, m.styles.Subtle.Render(".dev-flow/time/<TICKET>.json — compatible with the dev-flow weekly report."))
+	rows = append(rows, m.styles.Subtle.Render("Off by default; the number is an estimate of human effort, not agent time."))
+	rows = append(rows, "")
+	for i, opt := range m.timelogOptions {
+		marker := "  "
+		label := m.styles.Subtle.Render(opt)
+		if i == m.timelogCursor {
+			marker = m.styles.Info.Render("▸ ")
+			label = m.styles.Header.Render(opt)
+		}
+		rows = append(rows, marker+label)
+	}
+	return strings.Join(rows, "\n")
+}
+
 func (m onboardingModel) renderWrite() string {
 	if m.writing {
 		return lipgloss.JoinVertical(lipgloss.Left,
@@ -1690,6 +1759,11 @@ func (m onboardingModel) renderWrite() string {
 		rows = append(rows, "  EPIC_FLOW=1")
 	} else {
 		rows = append(rows, "  EPIC_FLOW=0")
+	}
+	if m.timelog {
+		rows = append(rows, "  TIMELOG_ENABLED=1")
+	} else {
+		rows = append(rows, "  TIMELOG_ENABLED=0")
 	}
 	if m.createLabels {
 		rows = append(rows, "  Create labels in Linear: yes")
@@ -1763,6 +1837,8 @@ func (m onboardingModel) hint() string {
 	case onboardLinearAPIKey:
 		return "enter/tab next · 'o' open key settings · esc/← back · q quit"
 	case onboardLabels:
+		return "↑↓ move · enter select · esc/← back · q quit"
+	case onboardTimeTracking:
 		return "↑↓ move · enter select · esc/← back · q quit"
 	case onboardBaseBranch:
 		if m.baseBranchInputFocused {

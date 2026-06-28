@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -268,6 +269,16 @@ type Pipeline struct {
 	// branch/checkpoint/build — so a wrong-project ticket can't pollute this repo.
 	// Empty disables the guard (back-compat).
 	OwnedProject string
+
+	// Opt-in, dev-flow-compatible time tracking (off by default). When
+	// TimelogEnabled is false none of the time-log code runs. RepoRoot is the
+	// resolved target-repo filesystem root, where repo-mode logs and the
+	// .gitignore live. See internal/timelog and recordTimelog (COD-622).
+	RepoRoot            string
+	TimelogEnabled      bool
+	TimelogStorage      string
+	TimelogOutputFormat string
+	TimelogEstimator    string
 }
 
 // Process runs a ticket end-to-end through the fresh full chain: build → handoff →
@@ -982,6 +993,7 @@ func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
 	if err := p.State.Set(id, "PHASE", state.Merged); err != nil {
 		return fmt.Errorf("merge %s: checkpoint merged: %w", id, err)
 	}
+	p.recordTimelog(ctx, id)
 	p.logf(logFmt, id)
 	return nil
 }
@@ -1934,6 +1946,61 @@ func (g ExecGit) FindFeatureBranch(ctx context.Context, id string) (string, erro
 		"for-each-ref", "--format=%(refname:short)", "refs/heads/feature/"+id+"-*").Output()
 	if err != nil {
 		return "", nil
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	return strings.TrimSpace(first), nil
+}
+
+// DiffStat returns the numstat totals for the symmetric diff base...branch (the
+// changes on branch since it diverged from base): file count and summed
+// additions/deletions. Binary files count toward Files but contribute no line
+// totals (git emits "-" for them). Used by the opt-in time-log hook.
+func (g ExecGit) DiffStat(ctx context.Context, base, branch string) (files, additions, deletions int, err error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"diff", "--numstat", base+"..."+branch).Output()
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("git diff --numstat %s...%s: %w", base, branch, err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) < 3 {
+			continue
+		}
+		files++
+		if a, e := strconv.Atoi(fields[0]); e == nil {
+			additions += a
+		}
+		if d, e := strconv.Atoi(fields[1]); e == nil {
+			deletions += d
+		}
+	}
+	return files, additions, deletions, nil
+}
+
+// Commits returns the short SHAs unique to branch relative to base (base..branch),
+// newest first — the commits trau created on the branch. Used by the time-log hook.
+func (g ExecGit) Commits(ctx context.Context, base, branch string) ([]string, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"log", "--format=%h", base+".."+branch).Output()
+	if err != nil {
+		return nil, fmt.Errorf("git log %s..%s: %w", base, branch, err)
+	}
+	var shas []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			shas = append(shas, s)
+		}
+	}
+	return shas, nil
+}
+
+// FirstCommitDate returns the committer date (RFC3339) of the earliest commit
+// unique to branch relative to base, or "" when there is none.
+func (g ExecGit) FirstCommitDate(ctx context.Context, base, branch string) (string, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"log", "--reverse", "--format=%cI", base+".."+branch).Output()
+	if err != nil {
+		return "", fmt.Errorf("git log --reverse %s..%s: %w", base, branch, err)
 	}
 	first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 	return strings.TrimSpace(first), nil
