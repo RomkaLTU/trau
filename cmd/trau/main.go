@@ -945,6 +945,7 @@ func (a *appActions) OnboardingPrefill() tui.OnboardingPrefill {
 		ReadyLabel:      a.cfg.ReadyLabel,
 		QuarantineLabel: a.cfg.QuarantineLabel,
 		EpicFlow:        a.cfg.EpicFlow,
+		Timelog:         a.cfg.TimelogEnabled,
 		LinearAPIKey:    a.cfg.LinearAPIKey,
 	}
 }
@@ -1069,6 +1070,15 @@ func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (
 		"BASE_BRANCH":      setup.BaseBranch,
 		"PROVIDER":         setup.Provider,
 		"EPIC_FLOW":        epicFlowValue(setup.EpicFlow),
+	}
+	if setup.Timelog {
+		// Opting in writes the master toggle plus sensible defaults for the rest, so
+		// the feature is fully configured. Leaving it off writes nothing — the keys
+		// default to off and trau behaves exactly as before.
+		values["TIMELOG_ENABLED"] = "1"
+		values["TIMELOG_STORAGE"] = "repo"
+		values["TIMELOG_OUTPUT_FORMAT"] = "default"
+		values["TIMELOG_ESTIMATOR"] = "heuristic"
 	}
 	if err := config.WriteProjectEnv(path, values); err != nil {
 		return tui.SetupResult{}, fmt.Errorf("write project env: %w", err)

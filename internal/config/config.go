@@ -720,6 +720,11 @@ func WriteProjectEnv(path string, values map[string]string) error {
 		"REMOTE",
 		"TRAU_REPO_ROOT",
 		"PROVIDER",
+		"EPIC_FLOW",
+		"TIMELOG_ENABLED",
+		"TIMELOG_STORAGE",
+		"TIMELOG_OUTPUT_FORMAT",
+		"TIMELOG_ESTIMATOR",
 	}
 	var b strings.Builder
 	b.WriteString("# Trau project-level configuration.\n")
