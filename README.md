@@ -86,14 +86,16 @@ trau --verbose ...   # what the loop is doing (phases, resolved repo/config)
 trau --debug ...     # the above plus every git / gh command invoked
 ```
 
-Logs are written under `runs/`:
+Logs are written under `.trau/runs/` (override with `RUNS_DIR`). trau adds this path and
+`.trau.ini` to the target repo's `.gitignore` on first run, so its artifacts never clutter
+`git status`:
 
-- `runs/events.jsonl` — the structured event stream for the whole session.
-- `runs/<ID>/` — per-phase logs for one issue (`build.log`, `handoff.md`, `verify*.log`, …)
+- `.trau/runs/events.jsonl` — the structured event stream for the whole session.
+- `.trau/runs/<ID>/` — per-phase logs for one issue (`build.log`, `handoff.md`, `verify*.log`, …)
   plus the saved checkpoint, so you can see exactly where an issue stopped.
 
-If an issue gets quarantined (moved to the `needs-human` label), its `runs/<ID>/` directory has
-the full trail of what verify rejected.
+If an issue gets quarantined (moved to the `needs-human` label), its `.trau/runs/<ID>/` directory
+has the full trail of what verify rejected.
 
 ## License
 
