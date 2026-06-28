@@ -55,6 +55,16 @@ integration branch: child feature PRs target `epic/<ID>-...`, not `main`. When t
 loop stops cleanly, trau checks every direct child; only if all are closed does it open or adopt
 the epic-to-`main` PR and mark the parent Done with that PR link.
 
+### Optional time tracking (off by default)
+
+trau can optionally write a per-issue **human-effort** estimate after an issue merges, to
+`<repo>/.dev-flow/time/<ID>.json` — the same schema the `dev-flow` skill uses, so a weekly
+report or any tool reading `.dev-flow/time/*.json` keeps working when a team moves onto trau.
+It is **off by default**: with `TIMELOG_ENABLED=0` (the default) nothing is written and trau
+runs exactly as before. The onboarding wizard offers a toggle (defaulting to off), or set the
+`TIMELOG_*` keys yourself — see `trau.ini.example`. The number is an **estimate** of senior-dev
+effort (a deterministic diffstat heuristic, or a cheap agent call), never the agent's wall-clock.
+
 ## Troubleshooting
 
 Start with the preflight check — it catches the common setup problems before a run can fail
