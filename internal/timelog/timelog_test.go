@@ -101,7 +101,7 @@ func TestRecordAppendsDistinctWork(t *testing.T) {
 	}
 }
 
-// TestRecordSchemaRoundTrip guards the dev-flow contract: the persisted JSON must
+// TestRecordSchemaRoundTrip guards the on-disk contract: the persisted JSON must
 // carry exactly the keys downstream collectors read, in the documented shape.
 func TestRecordSchemaRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "COD-3.json")

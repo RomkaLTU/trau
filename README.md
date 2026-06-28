@@ -57,12 +57,11 @@ the epic-to-`main` PR and mark the parent Done with that PR link.
 
 ### Optional time tracking (off by default)
 
-trau can optionally write a per-issue **human-effort** estimate after an issue merges, to
-`<repo>/.dev-flow/time/<ID>.json` — the same schema the `dev-flow` skill uses, so a weekly
-report or any tool reading `.dev-flow/time/*.json` keeps working when a team moves onto trau.
-It is **off by default**: with `TIMELOG_ENABLED=0` (the default) nothing is written and trau
-runs exactly as before. The onboarding wizard offers a toggle (defaulting to off), or set the
-`TIMELOG_*` keys yourself — see `trau.ini.example`. The number is an **estimate** of senior-dev
+trau can optionally write a per-issue **effort estimate** after an issue merges, as JSON to
+`<repo>/.dev-flow/time/<ID>.json` (a format other time-tracking tools can read). It is **off by
+default**: with `TIMELOG_ENABLED=0` (the default) nothing is written and trau runs exactly as
+before. Enable it from the onboarding wizard (a toggle defaulting to off), or set the
+`TIMELOG_*` keys yourself — see `trau.ini.example`. The number is an **estimate** of developer
 effort (a deterministic diffstat heuristic, or a cheap agent call), never the agent's wall-clock.
 
 ## Troubleshooting

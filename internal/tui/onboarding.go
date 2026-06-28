@@ -1712,7 +1712,7 @@ func (m onboardingModel) renderTimeTracking() string {
 	rows = append(rows, "")
 	rows = append(rows, "Track estimated dev time per ticket?")
 	rows = append(rows, m.styles.Subtle.Render("After a ticket merges, trau writes a per-ticket effort estimate to"))
-	rows = append(rows, m.styles.Subtle.Render(".dev-flow/time/<TICKET>.json — compatible with the dev-flow weekly report."))
+	rows = append(rows, m.styles.Subtle.Render(".dev-flow/time/<TICKET>.json, a format other time-tracking tools can read."))
 	rows = append(rows, m.styles.Subtle.Render("Off by default; the number is an estimate of human effort, not agent time."))
 	rows = append(rows, "")
 	for i, opt := range m.timelogOptions {

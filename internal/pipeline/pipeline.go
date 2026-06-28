@@ -270,7 +270,7 @@ type Pipeline struct {
 	// Empty disables the guard (back-compat).
 	OwnedProject string
 
-	// Opt-in, dev-flow-compatible time tracking (off by default). When
+	// Opt-in, per-ticket time tracking (off by default). When
 	// TimelogEnabled is false none of the time-log code runs. RepoRoot is the
 	// resolved target-repo filesystem root, where repo-mode logs and the
 	// .gitignore live. See internal/timelog and recordTimelog (COD-622).
