@@ -111,11 +111,11 @@ type Config struct {
 	Lessons        bool
 	LessonsDistill bool
 
-	// Opt-in, dev-flow-compatible time tracking. Off by default: when
-	// TimelogEnabled is false none of the time-log code runs and trau behaves
-	// exactly as before. Storage mirrors the skill (repo|user|none); OutputFormat
-	// selects the export rendering; Estimator picks the per-ticket effort estimate
-	// (deterministic heuristic, or a cheap agent call). See internal/timelog.
+	// Opt-in, per-ticket time tracking. Off by default: when TimelogEnabled is
+	// false none of the time-log code runs and trau behaves exactly as before.
+	// Storage is repo|user|none; OutputFormat selects the export rendering;
+	// Estimator picks the per-ticket effort estimate (deterministic heuristic, or
+	// a cheap agent call). See internal/timelog.
 	TimelogEnabled      bool
 	TimelogStorage      string
 	TimelogOutputFormat string
@@ -891,7 +891,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "VERIFY_PANEL_POLICY", Default: "unanimous", Description: "Panel verdict merge policy: unanimous | majority | any-pass", Options: []string{"unanimous", "majority", "any-pass"}},
 		{Key: "TRAU_TUI", Default: "1", Description: "Enable Bubble Tea TUI (1 = yes, 0 = no)", Bool: true},
 		{Key: "EPIC_FLOW", Default: "1", Description: "Process epic sub-issues (1 = yes, 0 = no)", Bool: true},
-		{Key: "TIMELOG_ENABLED", Default: "0", Description: "Write a dev-flow-compatible per-ticket effort time log after merge (opt-in; 1 = yes, 0 = no)", Bool: true},
+		{Key: "TIMELOG_ENABLED", Default: "0", Description: "Write a per-ticket effort time log (JSON) after merge (opt-in; 1 = yes, 0 = no)", Bool: true},
 		{Key: "TIMELOG_STORAGE", Default: "repo", Description: "Time-log location: repo (<repo>/.dev-flow/time/) | user (~/.dev-flow/time/<repo>/) | none", Options: []string{"repo", "user", "none"}},
 		{Key: "TIMELOG_OUTPUT_FORMAT", Default: "default", Description: "Time-log export rendering: default (JSON) | jira-worklog | toggl-csv | plain", Options: []string{"default", "jira-worklog", "toggl-csv", "plain"}},
 		{Key: "TIMELOG_ESTIMATOR", Default: "heuristic", Description: "Per-ticket effort estimate: heuristic (deterministic table) | agent (cheap agent call)", Options: []string{"heuristic", "agent"}},

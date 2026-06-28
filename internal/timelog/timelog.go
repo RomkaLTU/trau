@@ -1,8 +1,5 @@
-// Package timelog writes per-ticket human-effort time logs that match the
-// dev-flow skill's schema (<repo>/.dev-flow/time/<TICKET>.json), so tooling that
-// reads those files — the weekly "Service Transfer Act" report and anything else
-// consuming .dev-flow/time/*.json — keeps working when a team moves off the skill
-// and onto the trau binary.
+// Package timelog writes per-ticket human-effort time logs as JSON under
+// <repo>/.dev-flow/time/<TICKET>.json, a format other time-tracking tools can read.
 //
 // The feature is opt-in (off by default) and best-effort: callers gather the
 // inputs, call Record, and log-and-continue on any error. Nothing here ever blocks
@@ -20,7 +17,7 @@ import (
 	"strings"
 )
 
-// Storage modes, mirroring the dev-flow skill.
+// Storage modes.
 const (
 	StorageRepo = "repo" // <repoRoot>/.dev-flow/time/<TICKET>.json (default)
 	StorageUser = "user" // ~/.dev-flow/time/<repo-slug>/<TICKET>.json
@@ -263,7 +260,7 @@ func renderTogglCSV(l Log) string {
 }
 
 // HeuristicMinutes maps a change's shape to a senior-developer effort estimate in
-// minutes, anchored to the dev-flow effort table. It is deterministic — the same
+// minutes, anchored to a fixed effort table. It is deterministic — the same
 // diffstats and commit count always yield the same number — and never returns zero,
 // so an enabled run always logs a real estimate. The estimate is HUMAN effort, not
 // agent wall-clock. Anchored against diff size, file count, and commit count (a

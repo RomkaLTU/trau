@@ -187,15 +187,13 @@ LESSONS_DISTILL=0
 # digest vs keep it local.
 
 # --- time tracking (opt-in, OFF by default) ---
-# Optional, dev-flow-compatible time tracking. When enabled, trau writes a
-# per-ticket human-EFFORT estimate after a ticket merges to
-# <repo>/.dev-flow/time/<TICKET>.json, in the exact schema the dev-flow skill
-# uses — so the weekly "Service Transfer Act" report and anything else reading
-# .dev-flow/time/*.json keeps working when a team moves off the skill onto trau.
-# This is OFF by default: with TIMELOG_ENABLED=0 (or unset) NONE of this runs and
-# trau behaves exactly as before — no .dev-flow/ writes, no estimation, zero
-# overhead. The first-run onboarding wizard offers a toggle (defaulting to off).
-# The number is an ESTIMATE of senior-developer effort, never agent wall-clock.
+# Optional per-ticket time tracking. When enabled, trau writes a per-ticket
+# human-EFFORT estimate after a ticket merges to
+# <repo>/.dev-flow/time/<TICKET>.json, as JSON that other time-tracking tools can
+# read. This is OFF by default: with TIMELOG_ENABLED=0 (or unset) NONE of this
+# runs and trau behaves exactly as before — no .dev-flow/ writes, no estimation,
+# zero overhead. The first-run onboarding wizard offers a toggle (defaulting to
+# off). The number is an ESTIMATE of senior-developer effort, never agent wall-clock.
 TIMELOG_ENABLED=0            # 1 = write the per-ticket effort log after merge; 0 = off (default)
 TIMELOG_STORAGE=repo         # repo  -> <repo>/.dev-flow/time/<TICKET>.json (default; per-repo, where tools read)
                              # user  -> ~/.dev-flow/time/<repo-slug>/<TICKET>.json
