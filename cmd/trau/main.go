@@ -193,6 +193,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		cfg.RepoRoot = repoRoot
 	}
 
+	if cfg.RunsDir == ".trau/runs" {
+		if _, err := os.Stat("runs"); err == nil {
+			if legacyRunsTracked() {
+				logger.Verbosef("legacy runs/ is git-tracked — skipping auto-migration; move it to .trau/runs manually")
+			} else if moved, merr := state.MigrateLegacyRunsDir("runs", cfg.RunsDir); merr != nil {
+				logger.Verbosef("migrate legacy runs/: %v", merr)
+			} else if moved {
+				logger.Verbosef("migrated legacy runs/ → %s", cfg.RunsDir)
+			}
+		}
+	}
+
 	if err := state.EnsureGitignore(cfg.RepoRoot, cfg.RunsDir); err != nil {
 		logger.Verbosef("ensure runs .gitignore: %v", err)
 	}
@@ -1854,6 +1866,14 @@ func epicFlowValue(on bool) string {
 		return "1"
 	}
 	return "0"
+}
+
+// legacyRunsTracked reports whether the cwd-relative legacy runs/ dir has any
+// git-tracked files. Auto-migration skips a tracked dir: os.Rename would surface its
+// files as tracked deletions and trip EnsureCleanBase. Errors (no git, not a repo)
+// read as untracked — there is nothing to dirty.
+func legacyRunsTracked() bool {
+	return exec.Command("git", "ls-files", "--error-unmatch", "runs").Run() == nil
 }
 
 func newEventFile(runsDir string) io.Writer {
