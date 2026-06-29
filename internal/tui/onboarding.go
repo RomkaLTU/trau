@@ -31,6 +31,7 @@ type ProjectSetup struct {
 	CreateLabels    bool
 	EpicFlow        bool
 	Timelog         bool
+	RequireCI       bool
 	LinearAPIKey    string
 }
 
@@ -109,6 +110,7 @@ const (
 	onboardLinearTeam
 	onboardLabels
 	onboardTimeTracking
+	onboardCI
 	onboardWrite
 	onboardCreateLabels
 	onboardDone
@@ -182,6 +184,11 @@ type onboardingModel struct {
 	timelogOptions []string
 	timelog        bool
 
+	ciCursor   int
+	ciOptions  []string
+	requireCI  bool
+	ciHasPRDet bool // a pull_request-triggered workflow was detected in the repo
+
 	writing bool
 	done    bool
 	result  SetupResult
@@ -218,6 +225,7 @@ func newOnboardingModelWithPrefill(ctx context.Context, actions OnboardingAction
 		branchingOptions:       []string{"Use epic branches for tickets with sub-issues", "Process every ticket standalone"},
 		labelOptions:           []string{"Create the labels in Linear now", "I'll create the labels myself"},
 		timelogOptions:         []string{"No — don't track time (default)", "Yes — log estimated dev time per ticket"},
+		ciOptions:              []string{"Yes — wait for CI checks before merge (default)", "No — this repo has no PR CI; skip the gate"},
 		epicFlow:               true,
 		baseBranchInputFocused: true,
 		providersPMFocused:     true,
@@ -230,6 +238,12 @@ func newOnboardingModelWithPrefill(ctx context.Context, actions OnboardingAction
 
 	if m.repoRoot == "" {
 		m.step = onboardNoRepo
+	}
+
+	m.ciHasPRDet = config.HasPullRequestCI(m.repoRoot)
+	m.requireCI = m.ciHasPRDet
+	if !m.ciHasPRDet {
+		m.ciCursor = 1
 	}
 
 	ak := textinput.New()
@@ -404,6 +418,8 @@ func (m onboardingModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleLabels(msg)
 	case onboardTimeTracking:
 		return m.handleTimeTracking(msg)
+	case onboardCI:
+		return m.handleCI(msg)
 	case onboardWrite:
 		return m.handleWrite(msg)
 	case onboardCreateLabels:
@@ -841,7 +857,7 @@ func (m onboardingModel) handleTimeTracking(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 		return m, nil
 	case tea.KeyEnter:
 		m.timelog = m.timelogCursor == 1
-		m.step = onboardWrite
+		m.step = onboardCI
 	case tea.KeyUp:
 		if m.timelogCursor > 0 {
 			m.timelogCursor--
@@ -864,6 +880,36 @@ func (m onboardingModel) handleTimeTracking(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 	return m, nil
 }
 
+func (m onboardingModel) handleCI(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyLeft:
+		m.step = onboardTimeTracking
+		return m, nil
+	case tea.KeyEnter:
+		m.requireCI = m.ciCursor == 0
+		m.step = onboardWrite
+	case tea.KeyUp:
+		if m.ciCursor > 0 {
+			m.ciCursor--
+		}
+	case tea.KeyDown:
+		if m.ciCursor < len(m.ciOptions)-1 {
+			m.ciCursor++
+		}
+	}
+	switch msg.String() {
+	case "k":
+		if m.ciCursor > 0 {
+			m.ciCursor--
+		}
+	case "j":
+		if m.ciCursor < len(m.ciOptions)-1 {
+			m.ciCursor++
+		}
+	}
+	return m, nil
+}
+
 func (m onboardingModel) handleWrite(msg tea.Msg) (tea.Model, tea.Cmd) {
 	msgKey, ok := msg.(tea.KeyMsg)
 	if !ok {
@@ -874,7 +920,7 @@ func (m onboardingModel) handleWrite(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.writing {
 			return m, nil
 		}
-		m.step = onboardTimeTracking
+		m.step = onboardCI
 		return m, nil
 	case tea.KeyEnter:
 		if m.writing {
@@ -1250,6 +1296,7 @@ func (m onboardingModel) writeConfigCmd() tea.Cmd {
 		CreateLabels:    m.createLabels,
 		EpicFlow:        m.epicFlow,
 		Timelog:         m.timelog,
+		RequireCI:       m.requireCI,
 		LinearAPIKey:    strings.TrimSpace(m.apiKey.Value()),
 	}
 	return func() tea.Msg {
@@ -1325,6 +1372,8 @@ func (m onboardingModel) View() string {
 		body = m.renderLabels()
 	case onboardTimeTracking:
 		body = m.renderTimeTracking()
+	case onboardCI:
+		body = m.renderCI()
 	case onboardWrite:
 		body = m.renderWrite()
 	case onboardCreateLabels:
@@ -1727,6 +1776,31 @@ func (m onboardingModel) renderTimeTracking() string {
 	return strings.Join(rows, "\n")
 }
 
+func (m onboardingModel) renderCI() string {
+	var rows []string
+	rows = append(rows, m.styles.SummaryTitle.Render("CI merge gate"))
+	rows = append(rows, "")
+	if m.ciHasPRDet {
+		rows = append(rows, m.styles.Subtle.Render("Detected a pull_request-triggered workflow in .github/workflows."))
+	} else {
+		rows = append(rows, m.styles.Subtle.Render("No pull_request-triggered workflow found in .github/workflows — PRs in"))
+		rows = append(rows, m.styles.Subtle.Render("this repo would get zero checks, which the gate reads as never-green."))
+	}
+	rows = append(rows, m.styles.Subtle.Render("Skip the gate only if this repo has no PR CI (detection misses non-GitHub"))
+	rows = append(rows, m.styles.Subtle.Render("CI). Change later in Settings or via REQUIRE_CI in .trau.ini."))
+	rows = append(rows, "")
+	for i, opt := range m.ciOptions {
+		marker := "  "
+		label := m.styles.Subtle.Render(opt)
+		if i == m.ciCursor {
+			marker = m.styles.Info.Render("▸ ")
+			label = m.styles.Header.Render(opt)
+		}
+		rows = append(rows, marker+label)
+	}
+	return strings.Join(rows, "\n")
+}
+
 func (m onboardingModel) renderWrite() string {
 	if m.writing {
 		return lipgloss.JoinVertical(lipgloss.Left,
@@ -1839,6 +1913,8 @@ func (m onboardingModel) hint() string {
 	case onboardLabels:
 		return "↑↓ move · enter select · esc/← back · q quit"
 	case onboardTimeTracking:
+		return "↑↓ move · enter select · esc/← back · q quit"
+	case onboardCI:
 		return "↑↓ move · enter select · esc/← back · q quit"
 	case onboardBaseBranch:
 		if m.baseBranchInputFocused {
