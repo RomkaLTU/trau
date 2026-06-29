@@ -10,7 +10,7 @@ import (
 // place, keeps SGR color, drops control sequences, and that a device-attributes
 // query does not deadlock the writer.
 func TestScreenReconstructsCursorAddressedOutput(t *testing.T) {
-	s := New()
+	s := New(80, 24)
 	defer s.Close()
 
 	s.Write([]byte("\x1b[?1049h\x1b[2J\x1b[H")) // enter alt-screen, clear, home
@@ -39,7 +39,7 @@ func TestScreenReconstructsCursorAddressedOutput(t *testing.T) {
 // TestScreenLastWriteWins checks a later repaint of a cell replaces the earlier
 // content rather than appending — the collapse that makes spinners legible.
 func TestScreenLastWriteWins(t *testing.T) {
-	s := New()
+	s := New(80, 24)
 	defer s.Close()
 	s.Write([]byte("\x1b[1;1Hfirst"))
 	s.Write([]byte("\x1b[1;1Hsecond"))
@@ -49,5 +49,26 @@ func TestScreenLastWriteWins(t *testing.T) {
 	}
 	if strings.Contains(joined, "firstst") {
 		t.Errorf("repaint appended instead of overwriting:\n%s", joined)
+	}
+}
+
+// TestScreenHonorsWidth checks New sizes the emulator to the given geometry: a run
+// wider than 80 columns is kept on one row when sized to 120 and wrapped when sized
+// to 80 — the COD-631 contract that the size is no longer hardcoded.
+func TestScreenHonorsWidth(t *testing.T) {
+	wide := strings.Repeat("X", 100)
+
+	s := New(120, 40)
+	defer s.Close()
+	s.Write([]byte("\x1b[1;1H" + wide))
+	if line0 := s.Lines()[0]; !strings.Contains(line0, wide) {
+		t.Errorf("120-col screen wrapped a 100-col run; line 0 = %q", line0)
+	}
+
+	narrow := New(80, 24)
+	defer narrow.Close()
+	narrow.Write([]byte("\x1b[1;1H" + wide))
+	if line0 := narrow.Lines()[0]; strings.Contains(line0, wide) {
+		t.Errorf("80-col screen did not wrap a 100-col run; line 0 = %q", line0)
 	}
 }

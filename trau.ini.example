@@ -246,6 +246,13 @@ KIMI_CONFIG=
 # next to the expected result file when this trips, so failures have evidence.
 AGENT_TIMEOUT=900
 
+# Geometry of the interactive agent PTY (Claude). Claude paints its full-screen TUI
+# into this size, and the live view (the TUI `w` toggle and `trau watch`)
+# reconstructs at the recorded geometry. Bumped past the 80x24 fallback so wide
+# diffs and tool output aren't wrapped at 80 columns; set both to 80/24 for parity.
+AGENT_COLS=120
+AGENT_ROWS=40
+
 # --- transient-failure recovery (COD-583) ---
 # A transient agent-step failure — a stalled subprocess, a hard timeout, or a
 # non-rate-limit crash — self-heals instead of parking the ticket: the step is

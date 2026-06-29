@@ -86,17 +86,25 @@ type terminalSession interface {
 	Kill() error
 }
 
-type terminalStarter func(ctx context.Context, bin, dir string, args []string) (terminalSession, error)
+type terminalStarter func(ctx context.Context, bin, dir string, args []string, cols, rows int) (terminalSession, error)
 
 type ptySession struct {
 	cmd *exec.Cmd
 	tty *os.File
 }
 
-func startPTY(ctx context.Context, bin, dir string, args []string) (terminalSession, error) {
+func startPTY(ctx context.Context, bin, dir string, args []string, cols, rows int) (terminalSession, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
-	tty, err := pty.Start(cmd)
+	var (
+		tty *os.File
+		err error
+	)
+	if cols > 0 && rows > 0 {
+		tty, err = pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	} else {
+		tty, err = pty.Start(cmd)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -126,6 +134,8 @@ type ClaudeInteractive struct {
 	Preamble        string
 	ResultDir       string
 	Dir             string
+	Cols            int
+	Rows            int
 	Timeout         time.Duration
 	StallWindow     time.Duration
 	TrustPromptWait time.Duration
@@ -179,8 +189,10 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 		starter = startPTY
 	}
 
+	cols, rows := effectiveSize(c.Cols, c.Rows)
+
 	start := c.clock()
-	sess, err := starter(ctx, c.Bin, c.Dir, c.args(full, sessionID))
+	sess, err := starter(ctx, c.Bin, c.Dir, c.args(full, sessionID), cols, rows)
 	if err != nil {
 		res := Result{IsError: true}
 		c.emit(label, res, c.clock().Sub(start), err)
@@ -195,8 +207,13 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	var lastActivity atomic.Int64
 	lastActivity.Store(start.UnixNano())
 
+	writeSize(transcriptPath, cols, rows)
 	if c.Log != nil {
-		c.Log.Emit(event.KindAgentStart, label, "", map[string]any{"transcript_path": transcriptPath})
+		c.Log.Emit(event.KindAgentStart, label, "", map[string]any{
+			"transcript_path": transcriptPath,
+			"cols":            cols,
+			"rows":            rows,
+		})
 	}
 
 	trustPrompt := make(chan struct{}, 1)
@@ -417,10 +434,47 @@ const (
 	ResultsSubdir = "_agent-results"
 	TranscriptExt = ".pty.log"
 	resultExt     = ".result.json"
+	// SizeExt suffixes the geometry sidecar written next to a transcript so a
+	// detached consumer (trau watch) reconstructs at the agent's PTY size.
+	SizeExt = ".size"
 )
+
+// defaultCols/defaultRows is the geometry Claude paints at when its PTY is
+// unsized; effectiveSize falls back to it so a zero config still records a
+// faithful size for the consumers.
+const (
+	defaultCols = 80
+	defaultRows = 24
+)
+
+func effectiveSize(cols, rows int) (int, int) {
+	if cols <= 0 || rows <= 0 {
+		return defaultCols, defaultRows
+	}
+	return cols, rows
+}
 
 func transcriptPathFor(resultPath string) string {
 	return strings.TrimSuffix(resultPath, resultExt) + TranscriptExt
+}
+
+func sizePathFor(transcriptPath string) string { return transcriptPath + SizeExt }
+
+func writeSize(transcriptPath string, cols, rows int) {
+	_ = os.WriteFile(sizePathFor(transcriptPath), []byte(fmt.Sprintf("%d %d\n", cols, rows)), 0o644)
+}
+
+// ReadSize returns the PTY geometry recorded next to transcriptPath, or ok=false
+// when no sidecar exists or it can't be parsed — callers fall back to defaults.
+func ReadSize(transcriptPath string) (cols, rows int, ok bool) {
+	b, err := os.ReadFile(sizePathFor(transcriptPath))
+	if err != nil {
+		return 0, 0, false
+	}
+	if _, err := fmt.Sscanf(string(b), "%d %d", &cols, &rows); err != nil || cols <= 0 || rows <= 0 {
+		return 0, 0, false
+	}
+	return cols, rows, true
 }
 
 func drainTranscript(r io.Reader, path string, trustPrompt, authPrompt chan<- struct{}, onActivity func()) {

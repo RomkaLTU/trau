@@ -127,6 +127,8 @@ type watcher struct {
 	isTTY      bool
 
 	screen    *vterm.Screen
+	cols      int
+	rows      int
 	curPath   string
 	offset    int64
 	waiting   bool
@@ -196,7 +198,8 @@ func (w *watcher) switchTo(path string) {
 	if w.screen != nil {
 		w.screen.Close()
 	}
-	w.screen = vterm.New()
+	w.cols, w.rows, _ = agent.ReadSize(path)
+	w.screen = vterm.New(w.cols, w.rows)
 	w.curPath = path
 	w.offset = 0
 	w.lastFrame = ""
@@ -217,7 +220,7 @@ func (w *watcher) readDelta() bool {
 	if fi, err := f.Stat(); err == nil && fi.Size() < w.offset {
 		w.offset = 0
 		w.screen.Close()
-		w.screen = vterm.New()
+		w.screen = vterm.New(w.cols, w.rows)
 		w.lastFrame = ""
 	}
 	if _, err := f.Seek(w.offset, io.SeekStart); err != nil {

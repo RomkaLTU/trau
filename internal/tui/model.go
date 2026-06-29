@@ -103,6 +103,8 @@ type model struct {
 	// terminal so Claude's full-screen TUI renders legibly
 	streaming     bool
 	streamPath    string
+	streamCols    int
+	streamRows    int
 	streamOffset  int64
 	stream        *vterm.Screen
 	streamReading bool
@@ -323,7 +325,7 @@ func (m *model) startStream() {
 	if m.stream != nil {
 		m.stream.Close()
 	}
-	m.stream = vterm.New()
+	m.stream = vterm.New(m.streamCols, m.streamRows)
 	m.streamOffset = 0
 }
 
@@ -504,6 +506,8 @@ func (m *model) applyEvent(ev event.Event) {
 	if ev.Kind == event.KindAgentStart {
 		if p := strField(ev.Fields, "transcript_path"); p != "" && p != m.streamPath {
 			m.streamPath = p
+			m.streamCols = intField(ev.Fields, "cols")
+			m.streamRows = intField(ev.Fields, "rows")
 			if m.streaming {
 				m.startStream()
 			}

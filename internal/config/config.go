@@ -52,6 +52,8 @@ type Config struct {
 	ClaudeBin             string
 	ClaudeFlags           string
 	AgentTimeout          int
+	AgentCols             int
+	AgentRows             int
 	AgentStallWindow      int
 	AgentRetries          int
 	AgentBackoff          int
@@ -151,6 +153,8 @@ func Defaults() Config {
 		ClaudeBin:             "claude",
 		ClaudeFlags:           "--dangerously-skip-permissions",
 		AgentTimeout:          900,
+		AgentCols:             120,
+		AgentRows:             40,
 		AgentStallWindow:      180,
 		AgentRetries:          2,
 		AgentBackoff:          10,
@@ -422,6 +426,8 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	providerStr(claudeFile, claudeSrc, "CLAUDE_BIN", &c.ClaudeBin)
 	providerStr(claudeFile, claudeSrc, "CLAUDE_FLAGS", &c.ClaudeFlags)
 	num("AGENT_TIMEOUT", &c.AgentTimeout)
+	num("AGENT_COLS", &c.AgentCols)
+	num("AGENT_ROWS", &c.AgentRows)
 	num("AGENT_STALL_WINDOW", &c.AgentStallWindow)
 	num("AGENT_RETRIES", &c.AgentRetries)
 	num("AGENT_BACKOFF", &c.AgentBackoff)
@@ -867,6 +873,8 @@ func KnownKeys() []KeyMeta {
 		{Key: "CLAUDE_BIN", Advanced: true, Default: "claude", Description: "Claude Code binary"},
 		{Key: "CLAUDE_FLAGS", Advanced: true, Default: "--dangerously-skip-permissions", Description: "Extra flags passed to Claude"},
 		{Key: "AGENT_TIMEOUT", Advanced: true, Default: "900", Description: "Per-agent call hard timeout in seconds"},
+		{Key: "AGENT_COLS", Advanced: true, Default: "120", Description: "Width (columns) of the agent PTY; the live view (TUI w / trau watch) reconstructs at this size"},
+		{Key: "AGENT_ROWS", Advanced: true, Default: "40", Description: "Height (rows) of the agent PTY; the live view reconstructs at this size"},
 		{Key: "AGENT_STALL_WINDOW", Advanced: true, Default: "180", Description: "Kill+recover an agent step that emits no output for this many seconds, before AGENT_TIMEOUT (0 = disabled)"},
 		{Key: "AGENT_RETRIES", Advanced: true, Default: "2", Description: "Transient-failure retries (timeout/stall/crash) per provider before falling back / parking the ticket"},
 		{Key: "AGENT_BACKOFF", Advanced: true, Default: "10", Description: "Base seconds to wait between transient agent-step retries"},
@@ -1222,6 +1230,10 @@ func keyValue(cfg Config, key string) string {
 		return cfg.ClaudeFlags
 	case "AGENT_TIMEOUT":
 		return strconv.Itoa(cfg.AgentTimeout)
+	case "AGENT_COLS":
+		return strconv.Itoa(cfg.AgentCols)
+	case "AGENT_ROWS":
+		return strconv.Itoa(cfg.AgentRows)
 	case "AGENT_STALL_WINDOW":
 		return strconv.Itoa(cfg.AgentStallWindow)
 	case "AGENT_RETRIES":

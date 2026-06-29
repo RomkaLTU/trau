@@ -1874,6 +1874,8 @@ func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort
 		Effort:      effort,
 		Dir:         cfg.RepoRoot,
 		Preamble:    config.Preamble,
+		Cols:        cfg.AgentCols,
+		Rows:        cfg.AgentRows,
 		Timeout:     time.Duration(cfg.AgentTimeout) * time.Second,
 		StallWindow: time.Duration(cfg.AgentStallWindow) * time.Second,
 		Log:         log,
