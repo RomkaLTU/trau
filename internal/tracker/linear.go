@@ -596,6 +596,52 @@ func (l *Linear) issueProjectPrompt(id string) string {
 		"Respond with exactly one final line: 'PROJECT=<project name>' (or 'PROJECT=NONE' if it has no project). No other output.", id)
 }
 
+// ParentIssue reports the identifier of id's immediate parent (the epic it
+// belongs to), or "" when id is top-level. Like IssueProject it tries the direct
+// API first and falls back to the MCP, so it works with either configuration.
+func (l *Linear) ParentIssue(ctx context.Context, id string) (string, error) {
+	if parent, err := l.parentIssueAPI(ctx, id); err == nil {
+		return parent, nil
+	} else if !shouldFallback(err) {
+		return "", err
+	}
+
+	res, err := l.Runner.Run(ctx, l.parentIssuePrompt(id), "parent")
+	if parent, ok := parseParent(res.Final); ok {
+		return parent, nil
+	}
+	return "", err
+}
+
+func (l *Linear) parentIssueAPI(ctx context.Context, id string) (string, error) {
+	issue, err := l.api().Issue(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return issue.Parent.Identifier, nil
+}
+
+func (l *Linear) parentIssuePrompt(id string) string {
+	return fmt.Sprintf("Use the Linear MCP. Look up issue %s and report the IDENTIFIER of its parent issue (the epic it belongs to). "+
+		"Respond with exactly one final line: 'PARENT=<identifier>' (or 'PARENT=NONE' if it has no parent). No other output.", id)
+}
+
+// parseParent recovers a parent identifier from an agent response: the last
+// 'PARENT=' sentinel wins. 'NONE'/empty yields ("", true) — a determined "no
+// parent". matched is false when no sentinel exists.
+func parseParent(text string) (id string, matched bool) {
+	re := regexp.MustCompile(`(?m)^.*PARENT=(.+)$`)
+	ms := re.FindAllStringSubmatch(text, -1)
+	if len(ms) == 0 {
+		return "", false
+	}
+	v := strings.TrimSpace(ms[len(ms)-1][1])
+	if v == "" || strings.EqualFold(v, "NONE") {
+		return "", true
+	}
+	return v, true
+}
+
 // parseProject recovers a project name from an agent response: the last 'PROJECT='
 // sentinel wins. 'NONE'/empty yields ("", true) — a determined "no project", which
 // the guard treats the same as unknown. matched is false when no sentinel exists.
