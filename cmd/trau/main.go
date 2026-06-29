@@ -679,6 +679,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		AutoMerge:      cfg.AutoMerge,
 		MergeMethod:    cfg.MergeMethod,
 		ExpectedChecks: cfg.ExpectedChecks,
+		RequireCI:      cfg.RequireCI,
 		CITimeout:      cfg.CITimeout,
 		CIPoll:         cfg.CIPoll,
 		Lessons:        cfg.Lessons,
@@ -1109,7 +1110,8 @@ func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (
 		"QUARANTINE_LABEL": setup.QuarantineLabel,
 		"BASE_BRANCH":      setup.BaseBranch,
 		"PROVIDER":         setup.Provider,
-		"EPIC_FLOW":        epicFlowValue(setup.EpicFlow),
+		"EPIC_FLOW":        boolEnvValue(setup.EpicFlow),
+		"REQUIRE_CI":       boolEnvValue(setup.RequireCI),
 	}
 	if setup.Timelog {
 		// Opting in writes the master toggle plus sensible defaults for the rest, so
@@ -1897,7 +1899,7 @@ func parseRoute(reg agent.Registry, spec string, cfg config.Config) (provider, m
 	return provider, model, effort, nil
 }
 
-func epicFlowValue(on bool) string {
+func boolEnvValue(on bool) string {
 	if on {
 		return "1"
 	}

@@ -74,6 +74,7 @@ func TestFinalizeEpicAutoMergesWhenCIGreen(t *testing.T) {
 		EpicID:      "COD-1",
 		epicBranch:  "epic/COD-1-checkout-rebuild",
 		AutoMerge:   true,
+		RequireCI:   true,
 		MergeMethod: "squash",
 		Git:         fakeGit{},
 		GitHub:      gh,
@@ -91,6 +92,46 @@ func TestFinalizeEpicAutoMergesWhenCIGreen(t *testing.T) {
 	}
 	if tr.setStatus != "Done" || !strings.Contains(tr.setExtra, "merged to main") {
 		t.Fatalf("expected epic closed as merged, got %s %q", tr.setStatus, tr.setExtra)
+	}
+}
+
+// A repo whose only workflow runs on push (not pull_request) produces a PR with
+// zero checks. With RequireCI off, the CI gate is bypassed so the epic still
+// merges instead of spinning to ErrCITimeout. Guards the M4C-57-style quarantine.
+func TestFinalizeEpicMergesWithRequireCIOffAndNoChecks(t *testing.T) {
+	tr := &epicTracker{
+		title: "Checkout rebuild",
+		subs: []tracker.SubIssue{
+			{ID: "COD-2", Title: "first"},
+			{ID: "COD-3", Title: "second"},
+		},
+		status: map[string]tracker.IssueStatus{
+			"COD-2": tracker.StatusDone,
+			"COD-3": tracker.StatusDone,
+		},
+	}
+	gh := &epicGitHub{createURL: "https://github.test/pr/42"} // no checks ever appear
+	p := &Pipeline{
+		Base:        "main",
+		Remote:      "origin",
+		EpicID:      "COD-1",
+		epicBranch:  "epic/COD-1-checkout-rebuild",
+		AutoMerge:   true,
+		RequireCI:   false,
+		MergeMethod: "squash",
+		Git:         fakeGit{},
+		GitHub:      gh,
+		Tracker:     tr,
+	}
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+	if gh.mergeCalls != 1 {
+		t.Fatalf("REQUIRE_CI=0 must merge a checkless PR, got %d merges", gh.mergeCalls)
+	}
+	if tr.setStatus != "Done" {
+		t.Fatalf("expected epic closed Done, got %s", tr.setStatus)
 	}
 }
 
