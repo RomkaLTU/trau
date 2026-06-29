@@ -86,6 +86,20 @@ trau --verbose ...   # what the loop is doing (phases, resolved repo/config)
 trau --debug ...     # the above plus every git / gh command invoked
 ```
 
+To watch the agent work in real time: under the TUI, press `w` to flip the activity pane into a
+live tail of the running agent's terminal. For a headless or CI run (`--no-tui`, or piped
+output), run the read-only counterpart in a second terminal:
+
+```bash
+trau watch                       # follow the newest active agent transcript
+trau watch --id <stem>           # pin to one transcript (a name under .trau/runs/_agent-results)
+trau watch path/to/file.pty.log  # …or an explicit path
+```
+
+It tails the live transcript, reconstructs the agent's screen legibly (no raw escape sequences),
+follows across phase boundaries, and prints `waiting for agent output…` until a phase starts. It
+never touches the loop, so it's safe to start before, during, or after a run.
+
 Logs are written under `.trau/runs/` (override with `RUNS_DIR`). trau adds this path and
 `.trau.ini` to the target repo's `.gitignore` on first run, so its artifacts never clutter
 `git status`. If you ran an older version that used a root `runs/` dir, trau moves it to

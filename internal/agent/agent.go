@@ -294,11 +294,11 @@ func (c *ClaudeInteractive) resultPath(label string) (string, error) {
 	if root == "" {
 		root = filepath.Join(os.TempDir(), "trau-agent-results")
 	}
-	dir := filepath.Join(root, "_agent-results")
+	dir := filepath.Join(root, ResultsSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create result dir: %w", err)
 	}
-	name := fmt.Sprintf("%d-%s.result.json", c.clock().UnixNano(), safeLabel(label))
+	name := fmt.Sprintf("%d-%s%s", c.clock().UnixNano(), safeLabel(label), resultExt)
 
 	abs, err := filepath.Abs(filepath.Join(dir, name))
 	if err != nil {
@@ -411,8 +411,16 @@ func resultInstruction(path string) string {
 		"Write either the exact requested sentinel/text or a small JSON object requested by the task. After the file is written, stop working and leave the session idle; the loop will close the terminal."
 }
 
+// On-disk layout of agent transcripts, shared with `trau watch` (COD-628) so the
+// watcher resolves the same files the loop writes.
+const (
+	ResultsSubdir = "_agent-results"
+	TranscriptExt = ".pty.log"
+	resultExt     = ".result.json"
+)
+
 func transcriptPathFor(resultPath string) string {
-	return strings.TrimSuffix(resultPath, ".result.json") + ".pty.log"
+	return strings.TrimSuffix(resultPath, resultExt) + TranscriptExt
 }
 
 func drainTranscript(r io.Reader, path string, trustPrompt, authPrompt chan<- struct{}, onActivity func()) {
