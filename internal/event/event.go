@@ -12,6 +12,9 @@ import (
 	"time"
 )
 
+// KindAgentStart marks the start of an agent run, carrying its live transcript path.
+const KindAgentStart = "agent_start"
+
 // Event is one structured log record. Fields carries action-specific detail
 // (token counts, ids, durations) so the schema can grow without churning the
 // envelope.

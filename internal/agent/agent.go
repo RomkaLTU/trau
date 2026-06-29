@@ -195,6 +195,10 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	var lastActivity atomic.Int64
 	lastActivity.Store(start.UnixNano())
 
+	if c.Log != nil {
+		c.Log.Emit(event.KindAgentStart, label, "", map[string]any{"transcript_path": transcriptPath})
+	}
+
 	trustPrompt := make(chan struct{}, 1)
 	authPrompt := make(chan struct{}, 1)
 	go drainTranscript(sess, transcriptPath, trustPrompt, authPrompt, func() {
@@ -477,6 +481,9 @@ func signalOnce(ch chan<- struct{}) {
 var ErrAuthRequired = errors.New("provider authentication required — re-login (e.g. run claude, then /login)")
 
 var reANSI = regexp.MustCompile("\x1b\\[[0-9;:?]*[ -/]*[@-~]|\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)?")
+
+// StripANSI removes ANSI escape/control sequences from s.
+func StripANSI(s string) string { return reANSI.ReplaceAllString(s, "") }
 
 // hasAuthFailure reports whether the agent's terminal output shows a provider
 // auth/login wall that won't clear without human re-authentication. It strips ANSI

@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -43,6 +46,7 @@ type keyMap struct {
 	Help   key.Binding
 	Follow key.Binding
 	Open   key.Binding
+	Watch  key.Binding
 }
 
 func defaultKeyMap() keyMap {
@@ -51,17 +55,18 @@ func defaultKeyMap() keyMap {
 		Help:   key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Follow: key.NewBinding(key.WithKeys("f", "G"), key.WithHelp("f", "follow")),
 		Open:   key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open PR")),
+		Watch:  key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "watch agent")),
 	}
 }
 
 // ShortHelp returns the short-form key bindings for the help footer.
 func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Follow, k.Help, k.Quit}
+	return []key.Binding{k.Watch, k.Follow, k.Help, k.Quit}
 }
 
 // FullHelp returns the full key binding help page.
 func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Follow, k.Open}, {k.Help, k.Quit}}
+	return [][]key.Binding{{k.Watch, k.Follow, k.Open}, {k.Help, k.Quit}}
 }
 
 type model struct {
@@ -93,6 +98,14 @@ type model struct {
 	stopping    bool
 	paused      bool
 
+	// live agent tail (w toggle): tails streamPath into a bounded line buffer
+	streaming     bool
+	streamPath    string
+	streamOffset  int64
+	streamLines   []string
+	streamTail    string
+	streamReading bool
+
 	results []console.TicketResult
 
 	summary      console.SessionSummary
@@ -112,6 +125,11 @@ type (
 	phaseStartMsg struct{ phase string }
 	ticketDoneMsg struct{ r console.TicketResult }
 	loopDoneMsg   struct{ s console.SessionSummary }
+	streamDataMsg struct {
+		path   string
+		offset int64
+		chunk  string
+	}
 	// recoveryDoneMsg carries the outcome of a summary recovery action (b/x): note
 	// is the line to surface; resetID, when set and err is nil, marks the ticket
 	// that was reset so its summary row can reflect it.
@@ -214,11 +232,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case recoveryDoneMsg:
 		m = m.applyRecovery(msg)
 		return m, nil
+
+	case streamDataMsg:
+		m.streamReading = false
+		if msg.path == m.streamPath {
+			m.ingestStream(msg.chunk)
+			m.streamOffset = msg.offset
+		}
 	}
 
 	var cmd tea.Cmd
 	m.spin, cmd = m.spin.Update(msg)
 	cmds = append(cmds, cmd)
+
+	if _, ok := msg.(spinner.TickMsg); ok &&
+		m.state == stateRunning && m.streaming && m.streamPath != "" && !m.streamReading {
+		m.streamReading = true
+		cmds = append(cmds, m.tailReadCmd())
+	}
 
 	if m.state == stateSummary {
 		m.summaryTable, cmd = m.summaryTable.Update(msg)
@@ -264,6 +295,18 @@ func (m model) handleKey(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		m.following = true
 		m.viewport.GotoBottom()
 		return m, nil, true
+	case key.Matches(msg, m.keys.Watch):
+		m.streaming = !m.streaming
+		if m.streaming && m.streamPath != "" && !m.streamReading {
+			m.streamReading = true
+			return m, m.tailReadCmd(), true
+		}
+		return m, nil, true
+	case msg.Type == tea.KeyEsc:
+		if m.streaming {
+			m.streaming = false
+			return m, nil, true
+		}
 	}
 	return m, nil, false
 }
@@ -344,6 +387,78 @@ func (m *model) refreshFeed() {
 	}
 }
 
+// tailReadCmd reads the next transcript delta from the current path/offset.
+func (m model) tailReadCmd() tea.Cmd {
+	path, offset := m.streamPath, m.streamOffset
+	return func() tea.Msg { return readTail(path, offset) }
+}
+
+// readTail returns the ANSI-stripped bytes appended to path since offset.
+func readTail(path string, offset int64) streamDataMsg {
+	if path == "" {
+		return streamDataMsg{}
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return streamDataMsg{path: path, offset: offset}
+	}
+	defer func() { _ = f.Close() }()
+	if fi, err := f.Stat(); err == nil && fi.Size() < offset {
+		offset = 0
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return streamDataMsg{path: path, offset: offset}
+	}
+	data, _ := io.ReadAll(f)
+	if len(data) == 0 {
+		return streamDataMsg{path: path, offset: offset}
+	}
+	clean := strings.ReplaceAll(agent.StripANSI(string(data)), "\r\n", "\n")
+	clean = strings.ReplaceAll(clean, "\r", "")
+	return streamDataMsg{path: path, offset: offset + int64(len(data)), chunk: clean}
+}
+
+// ingestStream appends a cleaned delta into the bounded line buffer.
+func (m *model) ingestStream(chunk string) {
+	if chunk == "" {
+		return
+	}
+	m.streamTail += chunk
+	for {
+		i := strings.IndexByte(m.streamTail, '\n')
+		if i < 0 {
+			break
+		}
+		m.streamLines = append(m.streamLines, m.streamTail[:i])
+		m.streamTail = m.streamTail[i+1:]
+	}
+	if len(m.streamLines) > maxLogLines {
+		m.streamLines = m.streamLines[len(m.streamLines)-maxLogLines:]
+	}
+	if len(m.streamTail) > 8192 {
+		m.streamTail = m.streamTail[len(m.streamTail)-8192:]
+	}
+}
+
+// renderStream is the live pane body, or a placeholder when no transcript is active.
+func (m model) renderStream(d dims) string {
+	if m.streamPath == "" {
+		return m.styles.Subtle.Render("live view available for claude only") + "\n" +
+			m.styles.Help.Render("waiting for the next claude phase…")
+	}
+	lines := m.streamLines
+	if m.streamTail != "" {
+		lines = append(append([]string(nil), lines...), m.streamTail)
+	}
+	if len(lines) == 0 {
+		return m.styles.Subtle.Render("(no agent output yet)")
+	}
+	if d.vpH > 0 && len(lines) > d.vpH {
+		lines = lines[len(lines)-d.vpH:]
+	}
+	return strings.Join(lines, "\n")
+}
+
 // activePhase is the label of the currently-running pipeline step, used as the
 // feed's phase column. Empty between tickets / before the first phase.
 func (m model) activePhase() string {
@@ -387,6 +502,15 @@ func (m model) classifyLine(line string) (glyph string, style lipgloss.Style, te
 }
 
 func (m *model) applyEvent(ev event.Event) {
+	if ev.Kind == event.KindAgentStart {
+		if p := strField(ev.Fields, "transcript_path"); p != "" && p != m.streamPath {
+			m.streamPath = p
+			m.streamOffset = 0
+			m.streamLines = nil
+			m.streamTail = ""
+		}
+		return
+	}
 	if ev.Kind == usage.EventKind {
 		m.win = usage.WindowFromFields(ev.Fields)
 		return
@@ -430,6 +554,10 @@ func (m *model) startTicket(id string) {
 	m.ticketNum++
 	m.paused = false
 	m.steps = phaseSteps()
+	m.streamPath = ""
+	m.streamOffset = 0
+	m.streamLines = nil
+	m.streamTail = ""
 	if !m.stopping {
 		m.banner = ""
 	}
@@ -505,7 +633,11 @@ func (m model) renderRunning() string {
 		" " + m.styles.Subtle.Render(fmt.Sprintf("%3d%%", int(completedFraction(m.steps)*100+0.5)))
 	leftBox := titledPanel(m.styles, "Pipeline", left, d.leftW, d.bodyH)
 
-	rightBox := titledPanel(m.styles, "Activity", m.viewport.View(), d.rightW, d.bodyH)
+	rightTitle, rightBody := "Activity", m.viewport.View()
+	if m.streaming {
+		rightTitle, rightBody = "Live · claude", m.renderStream(d)
+	}
+	rightBox := titledPanel(m.styles, rightTitle, rightBody, d.rightW, d.bodyH)
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, leftBox, rightBox)
 	gap := strings.Repeat("\n", panelGap)
