@@ -52,6 +52,7 @@ type Issue struct {
 	State       State
 	Team        Team
 	Project     Project
+	Parent      IssueRef
 	Labels      []Label
 	Children    []IssueRef
 	BlockedBy   []IssueRef
@@ -611,7 +612,11 @@ type issueNode struct {
 	State       stateNode   `json:"state"`
 	Team        teamNode    `json:"team"`
 	Project     projectNode `json:"project"`
-	Labels      struct {
+	Parent      struct {
+		ID         string `json:"id"`
+		Identifier string `json:"identifier"`
+	} `json:"parent"`
+	Labels struct {
 		Nodes []labelNode `json:"nodes"`
 	} `json:"labels"`
 	Children struct {
@@ -649,6 +654,7 @@ func nodeToIssue(n *issueNode) *Issue {
 		State:       State(n.State),
 		Team:        Team(n.Team),
 		Project:     Project(n.Project),
+		Parent:      IssueRef{ID: n.Parent.ID, Identifier: n.Parent.Identifier},
 	}
 	for _, l := range n.Labels.Nodes {
 		issue.Labels = append(issue.Labels, Label(l))

@@ -30,6 +30,10 @@ query Issue($number: Float!, $teamKey: String!) {
         id
         name
       }
+      parent {
+        id
+        identifier
+      }
       labels {
         nodes {
           id

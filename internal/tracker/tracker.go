@@ -143,6 +143,15 @@ type IssueProjecter interface {
 	IssueProject(ctx context.Context, id string) (string, error)
 }
 
+// IssueParenter is the optional capability of reporting the immediate parent
+// (the epic) of a leaf issue. Epic flow uses it so a directly-run child stacks on
+// its parent epic's branch instead of branching off the base. An empty identifier
+// — or a tracker that cannot answer — means "no parent", so the ticket is built
+// standalone; uncertainty never forces an unwanted epic stack.
+type IssueParenter interface {
+	ParentIssue(ctx context.Context, id string) (string, error)
+}
+
 // Team is a selectable project-management container — a Linear team or a Jira
 // project — that the onboarding wizard can list and let the user pick.
 type Team struct {

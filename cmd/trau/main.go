@@ -304,12 +304,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			if err != nil {
 				return fmt.Errorf("check sub-issues for %s: %w", epicID, err)
 			}
-			subs = leafSubs(subs)
-			if len(subs) == 0 {
-				con.Logf("  %s has no buildable leaf sub-issues — processing as standalone ticket", epicID)
+			if len(leafSubs(subs)) == 0 {
+				// epicID is itself a leaf, not an epic. Under epic flow a leaf that
+				// belongs to an epic is forced onto that epic's branch (stacking with
+				// its siblings); a leaf with no parent is built standalone off the base.
 				forcedID = epicID
-				epicID = ""
 				opts.Once = true
+				if parent := parentEpic(ctx, pm, epicID); parent != "" {
+					con.Logf("  %s is a sub-issue of epic %s — building on the epic branch", epicID, parent)
+					epicID = parent
+				} else {
+					con.Logf("  %s has no buildable leaf sub-issues — processing as standalone ticket", epicID)
+					epicID = ""
+				}
 			}
 		} else {
 			con.Logf("  epic flow disabled — processing %s as standalone ticket", epicID)
@@ -583,6 +590,23 @@ func leafSubs(subs []tracker.SubIssue) []tracker.SubIssue {
 		}
 	}
 	return out
+}
+
+// parentEpic returns the identifier of id's parent epic, or "" when the tracker
+// cannot report a parent or id is top-level. A parent issue is the epic that owns
+// the leaf, so under epic flow a directly-run child stacks on that epic's branch
+// instead of branching off the base. Any tracker error degrades to "" (standalone)
+// so an unreachable tracker never blocks a build.
+func parentEpic(ctx context.Context, tr tracker.Tracker, id string) string {
+	pr, ok := tr.(tracker.IssueParenter)
+	if !ok {
+		return ""
+	}
+	parent, err := pr.ParentIssue(ctx, id)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parent)
 }
 
 // budgetLimits projects the resolved config's spend ceilings into the budget
@@ -1666,6 +1690,18 @@ func (a *appActions) RunTicket(ctx context.Context, id string, r console.Rendere
 		r.Logf("%s is an epic → running its next eligible sub-issue", id)
 		a.runEpicLoop(ctx, id, r, 1)
 		return
+	}
+
+	// Leaf ticket: under epic flow, if it belongs to an epic, build it ON the epic
+	// branch (and have its PR target that branch) instead of branching off the base.
+	// Resolve the parent fresh each run — and clear any stale value from a prior epic
+	// run on this shared pipeline — so the decision tracks this ticket alone.
+	a.pipe.EpicID = ""
+	if a.cfg.EpicFlow {
+		if parent := parentEpic(ctx, a.tracker, id); parent != "" {
+			r.Logf("%s is a sub-issue of epic %s → building on the epic branch", id, parent)
+			a.pipe.EpicID = parent
+		}
 	}
 
 	if pl := usagePoller(a.cfg, a.log); pl != nil {

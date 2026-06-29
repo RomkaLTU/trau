@@ -231,3 +231,62 @@ func (r *recordingRunner) Run(_ context.Context, _ string, label string) (agent.
 	}
 	return res, nil
 }
+
+func TestParseParent(t *testing.T) {
+	tests := []struct {
+		name    string
+		text    string
+		want    string
+		matched bool
+	}{
+		{"plain sentinel", "PARENT=M4C-54", "M4C-54", true},
+		{"none means no parent", "PARENT=NONE", "", true},
+		{"case-insensitive none value", "PARENT=none", "", true},
+		{"lowercase key not matched", "parent=M4C-54", "", false},
+		{"empty value not matched", "PARENT=", "", false},
+		{"line prefix before sentinel", "The issue M4C-57 PARENT=M4C-54", "M4C-54", true},
+		{"last sentinel wins", "PARENT=M4C-10\nPARENT=M4C-54", "M4C-54", true},
+		{"no sentinel", "I could not find a parent", "", false},
+	}
+	for _, tc := range tests {
+		got, ok := parseParent(tc.text)
+		if got != tc.want || ok != tc.matched {
+			t.Errorf("%s: parseParent(%q) = (%q, %v), want (%q, %v)", tc.name, tc.text, got, ok, tc.want, tc.matched)
+		}
+	}
+}
+
+// With no API key the direct path is unavailable, so ParentIssue must fall back to
+// the MCP runner and parse its PARENT= sentinel.
+func TestParentIssueFallsBackToRunner(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{
+		"parent": {Final: "PARENT=M4C-54"},
+	}}
+	l := &Linear{Runner: runner, Team: "M4C"}
+
+	got, err := l.ParentIssue(context.Background(), "M4C-57")
+	if err != nil {
+		t.Fatalf("ParentIssue returned error: %v", err)
+	}
+	if got != "M4C-54" {
+		t.Errorf("ParentIssue = %q, want %q", got, "M4C-54")
+	}
+	if runner.calls["parent"] != 1 {
+		t.Errorf("expected exactly one parent lookup, got %d", runner.calls["parent"])
+	}
+}
+
+func TestParentIssueTopLevelReturnsEmpty(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{
+		"parent": {Final: "PARENT=NONE"},
+	}}
+	l := &Linear{Runner: runner, Team: "M4C"}
+
+	got, err := l.ParentIssue(context.Background(), "M4C-1")
+	if err != nil {
+		t.Fatalf("ParentIssue returned error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("ParentIssue = %q, want empty (top-level issue)", got)
+	}
+}

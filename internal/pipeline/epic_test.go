@@ -185,6 +185,34 @@ func TestEpicBranchNameCreatesWhenNeitherExists(t *testing.T) {
 	}
 }
 
+// A renamed epic (whose title now slugs differently) must still resolve to its
+// EXISTING branch — matched by epic ID, not the title slug — and never create a
+// second one. This is the regression guard for the duplicate-epic-branch bug.
+func TestEpicBranchNameAdoptsExistingDespiteTitleDrift(t *testing.T) {
+	g := &epicGit{localExists: true, existing: "epic/COD-1-original-short-slug"}
+	p := &Pipeline{
+		Base:    "main",
+		Remote:  "origin",
+		EpicID:  "COD-1",
+		Git:     g,
+		Tracker: &epicTracker{title: "A Much Longer Renamed Title That Slugs Differently Now"},
+	}
+
+	branch, err := p.epicBranchName(context.Background())
+	if err != nil {
+		t.Fatalf("epicBranchName returned error: %v", err)
+	}
+	if branch != "epic/COD-1-original-short-slug" {
+		t.Fatalf("expected the existing epic branch despite title drift, got %s", branch)
+	}
+	if g.created {
+		t.Fatalf("must not create a second epic branch when one already exists")
+	}
+	if g.adopted {
+		t.Fatalf("a local branch needs no remote adoption")
+	}
+}
+
 func TestEpicBranchNameSurfacesRemoteCheckError(t *testing.T) {
 	g := &epicGit{remoteErr: errors.New("remote unreachable")}
 	p := &Pipeline{
@@ -211,16 +239,32 @@ type epicGit struct {
 	localExists  bool
 	remoteExists bool
 	remoteErr    error
+	existing     string // branch name the finders report; defaults via existingOr
 	created      bool
 	adopted      bool
 	createBase   string
 }
 
-func (g *epicGit) BranchExists(context.Context, string) (bool, error) {
-	return g.localExists, nil
+func (g *epicGit) FindEpicBranch(_ context.Context, id string) (string, error) {
+	if g.localExists {
+		return g.existingOr(id), nil
+	}
+	return "", nil
 }
-func (g *epicGit) RemoteBranchExists(context.Context, string, string) (bool, error) {
-	return g.remoteExists, g.remoteErr
+func (g *epicGit) FindRemoteEpicBranch(_ context.Context, _, id string) (string, error) {
+	if g.remoteErr != nil {
+		return "", g.remoteErr
+	}
+	if g.remoteExists {
+		return g.existingOr(id), nil
+	}
+	return "", nil
+}
+func (g *epicGit) existingOr(id string) string {
+	if g.existing != "" {
+		return g.existing
+	}
+	return "epic/" + id + "-checkout-rebuild"
 }
 func (g *epicGit) CheckoutRemoteBranch(context.Context, string, string) error {
 	g.adopted = true

@@ -56,6 +56,12 @@ func (fakeGit) BranchExists(context.Context, string) (bool, error) { return fals
 func (fakeGit) FindFeatureBranch(context.Context, string) (string, error) {
 	return "", nil
 }
+func (fakeGit) FindEpicBranch(context.Context, string) (string, error) {
+	return "", nil
+}
+func (fakeGit) FindRemoteEpicBranch(context.Context, string, string) (string, error) {
+	return "", nil
+}
 func (fakeGit) DeleteBranch(context.Context, string) error { return nil }
 func (fakeGit) DeletePushedBranch(context.Context, string, string) error {
 	return nil
