@@ -23,6 +23,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/budget"
 	"github.com/RomkaLTU/trau/internal/checks"
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -1217,11 +1218,43 @@ func prBody(id string) string {
 func (p *Pipeline) agentPhaseOn(ctx context.Context, id, phase, prompt string, runner agent.Runner) (string, error) {
 	label := runnerLabel(phase, runner)
 	p.logf("  ▸ %s", label)
+	defer p.guardMachineConfig()()
 	stop := p.spin(label)
 	res, err := runner.Run(ctx, prompt, phase)
 	stop()
 	p.writeTranscript(id, phase, res.Final)
 	return res.Final, err
+}
+
+// guardMachineConfig snapshots the repo-local, gitignored trau config files before
+// an agent phase and returns a closure that rewrites any the agent deleted. The
+// phase agent runs with full shell in the target repo, so a stray `git clean -xdf`,
+// `git stash -u`, or `rm` can wipe the untracked .trau.ini and force re-onboarding;
+// restoring only a file that vanished (never overwriting a live edit) keeps the
+// loop running unattended.
+func (p *Pipeline) guardMachineConfig() func() {
+	if p.RepoRoot == "" {
+		return func() {}
+	}
+	snaps := map[string][]byte{}
+	for _, name := range []string{config.ProjectConfigName, config.LocalConfigName} {
+		path := filepath.Join(p.RepoRoot, name)
+		if b, err := os.ReadFile(path); err == nil {
+			snaps[path] = b
+		}
+	}
+	if len(snaps) == 0 {
+		return func() {}
+	}
+	return func() {
+		for path, content := range snaps {
+			if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+				if werr := os.WriteFile(path, content, 0o600); werr == nil {
+					p.logf("  ↺ restored %s removed during the agent phase", filepath.Base(path))
+				}
+			}
+		}
+	}
 }
 
 func runnerLabel(phase string, runner agent.Runner) string {
