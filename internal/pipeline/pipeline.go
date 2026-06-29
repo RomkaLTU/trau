@@ -51,6 +51,15 @@ type Git interface {
 
 	FindFeatureBranch(ctx context.Context, id string) (string, error)
 
+	// FindEpicBranch returns the existing local epic/<id>-* branch (or exact
+	// epic/<id>), matched by epic ID so a renamed epic never spawns a second branch.
+	FindEpicBranch(ctx context.Context, id string) (string, error)
+
+	// FindRemoteEpicBranch returns the existing remote epic/<id>-* branch (or exact
+	// epic/<id>) on remote, the cross-machine/fresh-clone counterpart to
+	// FindEpicBranch. An error means the remote could not be consulted (indeterminate).
+	FindRemoteEpicBranch(ctx context.Context, remote, id string) (string, error)
+
 	DeleteBranch(ctx context.Context, branch string) error
 
 	DeletePushedBranch(ctx context.Context, remote, branch string) error
@@ -1949,6 +1958,44 @@ func (g ExecGit) FindFeatureBranch(ctx context.Context, id string) (string, erro
 	}
 	first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
 	return strings.TrimSpace(first), nil
+}
+
+// FindEpicBranch returns the first local epic/<id>-* branch (or the exact
+// epic/<id>), or "" when none match. Matching on the epic ID — not the title slug
+// — makes resolution deterministic: a renamed epic still finds its branch instead
+// of creating a second one. Errors are swallowed (treated as "none").
+func (g ExecGit) FindEpicBranch(ctx context.Context, id string) (string, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"for-each-ref", "--format=%(refname:short)",
+		"refs/heads/epic/"+id+"-*", "refs/heads/epic/"+id).Output()
+	if err != nil {
+		return "", nil
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	return strings.TrimSpace(first), nil
+}
+
+// FindRemoteEpicBranch returns the first epic/<id>-* (or exact epic/<id>) branch on
+// remote, or "" when none. Unlike the local finder a real failure is surfaced: an
+// indeterminate remote must NOT fall through to creating a duplicate epic branch.
+func (g ExecGit) FindRemoteEpicBranch(ctx context.Context, remote, id string) (string, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"ls-remote", "--heads", remote,
+		"refs/heads/epic/"+id+"-*", "refs/heads/epic/"+id).Output()
+	if err != nil {
+		return "", fmt.Errorf("ls-remote %s epic/%s: %w", remote, id, err)
+	}
+	line, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\n")
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return "", nil
+	}
+	// Each line is "<sha>\trefs/heads/<branch>"; take the ref and drop the prefix.
+	_, ref, ok := strings.Cut(line, "\t")
+	if !ok {
+		return "", nil
+	}
+	return strings.TrimPrefix(strings.TrimSpace(ref), "refs/heads/"), nil
 }
 
 // DiffStat returns the numstat totals for the symmetric diff base...branch (the
