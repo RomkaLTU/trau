@@ -82,6 +82,7 @@ type Config struct {
 	CITimeout      int
 	CIPoll         int
 	ExpectedChecks string
+	RequireCI      bool
 
 	BrowserVerify string
 	AppURL        string
@@ -174,6 +175,7 @@ func Defaults() Config {
 		CITimeout:             600,
 		CIPoll:                30,
 		ExpectedChecks:        "",
+		RequireCI:             true,
 		BrowserVerify:         "auto",
 		AppURL:                "http://localhost",
 		VerifyChecks:          true,
@@ -476,6 +478,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	num("CI_TIMEOUT", &c.CITimeout)
 	num("CI_POLL", &c.CIPoll)
 	str("EXPECTED_CHECKS", &c.ExpectedChecks)
+	if v, src := get("REQUIRE_CI"); v != "" {
+		c.RequireCI = v == "1"
+		sources["REQUIRE_CI"] = src.name
+	}
 	str("BROWSER_VERIFY", &c.BrowserVerify)
 	str("APP_URL", &c.AppURL)
 	if v, src := get("VERIFY_CHECKS"); v != "" {
@@ -884,6 +890,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "CI_TIMEOUT", Default: "600", Description: "Seconds to wait for CI checks"},
 		{Key: "CI_POLL", Default: "30", Description: "Seconds between CI polls"},
 		{Key: "EXPECTED_CHECKS", Description: "Required CI check names (comma-separated)"},
+		{Key: "REQUIRE_CI", Default: "1", Description: "Gate merge on CI; set 0 for repos with no PR CI (1 = yes, 0 = no)", Bool: true},
 		{Key: "BROWSER_VERIFY", Default: "auto", Description: "Browser verify: auto | always | never", Options: []string{"auto", "always", "never"}},
 		{Key: "APP_URL", Default: "http://localhost", Description: "Local app URL for browser verify"},
 		{Key: "VERIFY_CHECKS", Default: "1", Description: "Run the pluggable verify-check library (.trau/checks); 1 = yes, 0 = no", Bool: true},
@@ -1264,6 +1271,11 @@ func keyValue(cfg Config, key string) string {
 		return strconv.Itoa(cfg.CIPoll)
 	case "EXPECTED_CHECKS":
 		return cfg.ExpectedChecks
+	case "REQUIRE_CI":
+		if cfg.RequireCI {
+			return "1"
+		}
+		return "0"
 	case "BROWSER_VERIFY":
 		return cfg.BrowserVerify
 	case "APP_URL":

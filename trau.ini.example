@@ -118,6 +118,10 @@ EXPECTED_CHECKS=             # named checks (substring, case-insensitive) that m
                              # with none pending. Empty is right when your repo's tests run
                              # locally (the loop's verify phase is the gate); set to e.g.
                              # "tests,lint" when those checks run on the PR itself.
+REQUIRE_CI=1                 # 1 = gate merge on CI checks. Set 0 when the repo has NO PR-triggered
+                             # CI (e.g. only a deploy-on-push workflow): the PR then has zero checks,
+                             # which would otherwise spin to CI_TIMEOUT and quarantine. With 0 the
+                             # gate is skipped and the loop merges/leaves the clean PR per AUTO_MERGE.
 
 # --- budget governance ---
 # Spend ceilings enforced off the normalized token/cost ledger. Empty = no cap

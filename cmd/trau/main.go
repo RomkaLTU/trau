@@ -679,6 +679,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		AutoMerge:      cfg.AutoMerge,
 		MergeMethod:    cfg.MergeMethod,
 		ExpectedChecks: cfg.ExpectedChecks,
+		RequireCI:      cfg.RequireCI,
 		CITimeout:      cfg.CITimeout,
 		CIPoll:         cfg.CIPoll,
 		Lessons:        cfg.Lessons,

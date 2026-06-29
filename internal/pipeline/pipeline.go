@@ -259,6 +259,7 @@ type Pipeline struct {
 	AutoMerge      bool
 	MergeMethod    string
 	ExpectedChecks string
+	RequireCI      bool
 	CITimeout      int
 	CIPoll         int
 	Lessons        bool
@@ -1008,9 +1009,17 @@ func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
 }
 
 func (p *Pipeline) pollCI(ctx context.Context, pr string) error {
+	if !p.RequireCI {
+		p.logf("  CI gate off (REQUIRE_CI=0) — not waiting for checks")
+		return nil
+	}
 	expected := splitChecks(p.ExpectedChecks)
+	sawCheck := false
 	for waited := 0; ; waited += p.CIPoll {
 		checks, _ := p.GitHub.Checks(ctx, pr)
+		if len(checks) > 0 {
+			sawCheck = true
+		}
 		switch evalChecks(checks, expected) {
 		case ciFailed:
 			return ErrCIFailed
@@ -1018,6 +1027,9 @@ func (p *Pipeline) pollCI(ctx context.Context, pr string) error {
 			return nil
 		}
 		if waited >= p.CITimeout {
+			if !sawCheck && len(expected) == 0 {
+				p.logf("  ⓘ no checks ever appeared — if this repo has no PR CI, set REQUIRE_CI=0 to skip the gate")
+			}
 			return ErrCITimeout
 		}
 		p.sleep(p.CIPoll)
