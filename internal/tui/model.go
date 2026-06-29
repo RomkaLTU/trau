@@ -16,12 +16,13 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
-	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/usage"
+	"github.com/RomkaLTU/trau/internal/vterm"
 )
 
 const maxLogLines = 1000
@@ -98,12 +99,12 @@ type model struct {
 	stopping    bool
 	paused      bool
 
-	// live agent tail (w toggle): tails streamPath into a bounded line buffer
+	// live agent tail (w toggle): feeds streamPath's transcript into a virtual
+	// terminal so Claude's full-screen TUI renders legibly
 	streaming     bool
 	streamPath    string
 	streamOffset  int64
-	streamLines   []string
-	streamTail    string
+	stream        *vterm.Screen
 	streamReading bool
 
 	results []console.TicketResult
@@ -128,7 +129,7 @@ type (
 	streamDataMsg struct {
 		path   string
 		offset int64
-		chunk  string
+		data   []byte
 	}
 	// recoveryDoneMsg carries the outcome of a summary recovery action (b/x): note
 	// is the line to surface; resetID, when set and err is nil, marks the ticket
@@ -235,8 +236,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case streamDataMsg:
 		m.streamReading = false
-		if msg.path == m.streamPath {
-			m.ingestStream(msg.chunk)
+		if msg.path == m.streamPath && m.stream != nil {
+			m.stream.Write(msg.data)
 			m.streamOffset = msg.offset
 		}
 	}
@@ -246,7 +247,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, cmd)
 
 	if _, ok := msg.(spinner.TickMsg); ok &&
-		m.state == stateRunning && m.streaming && m.streamPath != "" && !m.streamReading {
+		m.state == stateRunning && m.streaming && m.stream != nil && !m.streamReading {
 		m.streamReading = true
 		cmds = append(cmds, m.tailReadCmd())
 	}
@@ -296,19 +297,44 @@ func (m model) handleKey(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 		m.viewport.GotoBottom()
 		return m, nil, true
 	case key.Matches(msg, m.keys.Watch):
-		m.streaming = !m.streaming
-		if m.streaming && m.streamPath != "" && !m.streamReading {
+		if m.streaming {
+			m.stopStream()
+			return m, nil, true
+		}
+		m.streaming = true
+		if m.streamPath != "" {
+			m.startStream()
 			m.streamReading = true
 			return m, m.tailReadCmd(), true
 		}
 		return m, nil, true
 	case msg.Type == tea.KeyEsc:
 		if m.streaming {
-			m.streaming = false
+			m.stopStream()
 			return m, nil, true
 		}
 	}
 	return m, nil, false
+}
+
+// startStream opens a fresh virtual terminal for the active transcript, read from
+// the top so the current screen reconstructs in full.
+func (m *model) startStream() {
+	if m.stream != nil {
+		m.stream.Close()
+	}
+	m.stream = vterm.New()
+	m.streamOffset = 0
+}
+
+// stopStream tears down the live view, leaving the loop untouched.
+func (m *model) stopStream() {
+	m.streaming = false
+	if m.stream != nil {
+		m.stream.Close()
+		m.stream = nil
+	}
+	m.streamOffset = 0
 }
 
 func (m *model) relayout() {
@@ -393,7 +419,7 @@ func (m model) tailReadCmd() tea.Cmd {
 	return func() tea.Msg { return readTail(path, offset) }
 }
 
-// readTail returns the ANSI-stripped bytes appended to path since offset.
+// readTail returns the raw bytes appended to path since offset, for the emulator.
 func readTail(path string, offset int64) streamDataMsg {
 	if path == "" {
 		return streamDataMsg{}
@@ -413,48 +439,21 @@ func readTail(path string, offset int64) streamDataMsg {
 	if len(data) == 0 {
 		return streamDataMsg{path: path, offset: offset}
 	}
-	clean := strings.ReplaceAll(agent.StripANSI(string(data)), "\r\n", "\n")
-	clean = strings.ReplaceAll(clean, "\r", "")
-	return streamDataMsg{path: path, offset: offset + int64(len(data)), chunk: clean}
-}
-
-// ingestStream appends a cleaned delta into the bounded line buffer.
-func (m *model) ingestStream(chunk string) {
-	if chunk == "" {
-		return
-	}
-	m.streamTail += chunk
-	for {
-		i := strings.IndexByte(m.streamTail, '\n')
-		if i < 0 {
-			break
-		}
-		m.streamLines = append(m.streamLines, m.streamTail[:i])
-		m.streamTail = m.streamTail[i+1:]
-	}
-	if len(m.streamLines) > maxLogLines {
-		m.streamLines = m.streamLines[len(m.streamLines)-maxLogLines:]
-	}
-	if len(m.streamTail) > 8192 {
-		m.streamTail = m.streamTail[len(m.streamTail)-8192:]
-	}
+	return streamDataMsg{path: path, offset: offset + int64(len(data)), data: data}
 }
 
 // renderStream is the live pane body, or a placeholder when no transcript is active.
 func (m model) renderStream(d dims) string {
-	if m.streamPath == "" {
+	if m.stream == nil {
 		return m.styles.Subtle.Render("live view available for claude only") + "\n" +
 			m.styles.Help.Render("waiting for the next claude phase…")
 	}
-	lines := m.streamLines
-	if m.streamTail != "" {
-		lines = append(append([]string(nil), lines...), m.streamTail)
-	}
-	if len(lines) == 0 {
-		return m.styles.Subtle.Render("(no agent output yet)")
-	}
+	lines := m.stream.Lines()
 	if d.vpH > 0 && len(lines) > d.vpH {
 		lines = lines[len(lines)-d.vpH:]
+	}
+	for i := range lines {
+		lines[i] = ansi.Truncate(lines[i], d.vpW, "")
 	}
 	return strings.Join(lines, "\n")
 }
@@ -505,9 +504,9 @@ func (m *model) applyEvent(ev event.Event) {
 	if ev.Kind == event.KindAgentStart {
 		if p := strField(ev.Fields, "transcript_path"); p != "" && p != m.streamPath {
 			m.streamPath = p
-			m.streamOffset = 0
-			m.streamLines = nil
-			m.streamTail = ""
+			if m.streaming {
+				m.startStream()
+			}
 		}
 		return
 	}
@@ -555,9 +554,11 @@ func (m *model) startTicket(id string) {
 	m.paused = false
 	m.steps = phaseSteps()
 	m.streamPath = ""
+	if m.stream != nil {
+		m.stream.Close()
+		m.stream = nil
+	}
 	m.streamOffset = 0
-	m.streamLines = nil
-	m.streamTail = ""
 	if !m.stopping {
 		m.banner = ""
 	}
