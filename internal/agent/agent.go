@@ -136,6 +136,7 @@ type ClaudeInteractive struct {
 	Dir             string
 	Cols            int
 	Rows            int
+	SizeFn          func() (cols, rows int)
 	Timeout         time.Duration
 	StallWindow     time.Duration
 	TrustPromptWait time.Duration
@@ -189,7 +190,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 		starter = startPTY
 	}
 
-	cols, rows := effectiveSize(c.Cols, c.Rows)
+	cols, rows := c.resolveSize()
 
 	start := c.clock()
 	sess, err := starter(ctx, c.Bin, c.Dir, c.args(full, sessionID), cols, rows)
@@ -434,14 +435,9 @@ const (
 	ResultsSubdir = "_agent-results"
 	TranscriptExt = ".pty.log"
 	resultExt     = ".result.json"
-	// SizeExt suffixes the geometry sidecar written next to a transcript so a
-	// detached consumer (trau watch) reconstructs at the agent's PTY size.
-	SizeExt = ".size"
+	SizeExt       = ".size"
 )
 
-// defaultCols/defaultRows is the geometry Claude paints at when its PTY is
-// unsized; effectiveSize falls back to it so a zero config still records a
-// faithful size for the consumers.
 const (
 	defaultCols = 80
 	defaultRows = 24
@@ -454,6 +450,15 @@ func effectiveSize(cols, rows int) (int, int) {
 	return cols, rows
 }
 
+func (c *ClaudeInteractive) resolveSize() (int, int) {
+	if c.SizeFn != nil {
+		if cols, rows := c.SizeFn(); cols > 0 && rows > 0 {
+			return effectiveSize(cols, rows)
+		}
+	}
+	return effectiveSize(c.Cols, c.Rows)
+}
+
 func transcriptPathFor(resultPath string) string {
 	return strings.TrimSuffix(resultPath, resultExt) + TranscriptExt
 }
@@ -464,8 +469,6 @@ func writeSize(transcriptPath string, cols, rows int) {
 	_ = os.WriteFile(sizePathFor(transcriptPath), []byte(fmt.Sprintf("%d %d\n", cols, rows)), 0o644)
 }
 
-// ReadSize returns the PTY geometry recorded next to transcriptPath, or ok=false
-// when no sidecar exists or it can't be parsed — callers fall back to defaults.
 func ReadSize(transcriptPath string) (cols, rows int, ok bool) {
 	b, err := os.ReadFile(sizePathFor(transcriptPath))
 	if err != nil {

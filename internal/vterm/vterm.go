@@ -26,9 +26,7 @@ type Screen struct {
 	drained chan struct{}
 }
 
-// New returns a started Screen sized to the agent's terminal geometry.
-// Non-positive dimensions fall back to 80x24, the size Claude paints at when its
-// PTY is unsized.
+// New returns a started Screen sized to cols×rows.
 func New(cols, rows int) *Screen {
 	if cols <= 0 {
 		cols = defaultCols

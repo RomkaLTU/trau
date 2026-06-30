@@ -221,6 +221,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 	}
 
+	cfg.LiveView = !opts.Status &&
+		os.Getenv("TRAU_LOG_JSON") != "1" &&
+		cfg.TUI && !opts.NoTUI &&
+		console.IsTerminal(stdout)
+
 	if len(args) == 0 && cfg.TUI && !opts.NoTUI && console.IsTerminal(stdout) && os.Getenv("TRAU_LOG_JSON") != "1" {
 		return runSession(ctx, cfg, opts, stdout, stderr)
 	}
@@ -1867,6 +1872,16 @@ func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort
 	if _, err := exec.LookPath(pc.bin); err != nil {
 		return nil, fmt.Errorf("provider %q: %q not found on PATH", provider, pc.bin)
 	}
+	var sizeFn func() (int, int)
+	if cfg.LiveView {
+		sizeFn = func() (int, int) {
+			w, h, ok := console.TerminalSize(os.Stdout)
+			if !ok {
+				return 0, 0
+			}
+			return tui.LiveAgentSize(w, h)
+		}
+	}
 	return spec.New(agent.BackendParams{
 		Bin:         pc.bin,
 		Flags:       strings.Fields(pc.flags),
@@ -1876,6 +1891,7 @@ func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort
 		Preamble:    config.Preamble,
 		Cols:        cfg.AgentCols,
 		Rows:        cfg.AgentRows,
+		SizeFn:      sizeFn,
 		Timeout:     time.Duration(cfg.AgentTimeout) * time.Second,
 		StallWindow: time.Duration(cfg.AgentStallWindow) * time.Second,
 		Log:         log,

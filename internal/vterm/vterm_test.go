@@ -52,9 +52,6 @@ func TestScreenLastWriteWins(t *testing.T) {
 	}
 }
 
-// TestScreenHonorsWidth checks New sizes the emulator to the given geometry: a run
-// wider than 80 columns is kept on one row when sized to 120 and wrapped when sized
-// to 80 — the COD-631 contract that the size is no longer hardcoded.
 func TestScreenHonorsWidth(t *testing.T) {
 	wide := strings.Repeat("X", 100)
 

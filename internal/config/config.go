@@ -95,6 +95,8 @@ type Config struct {
 
 	TUI bool
 
+	LiveView bool
+
 	EpicFlow bool
 
 	// UsageWindow enables the HUD's provider rate-limit window probe (claude OAuth

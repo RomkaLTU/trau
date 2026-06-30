@@ -20,10 +20,9 @@ type BackendParams struct {
 	Dir      string
 	Preamble string
 	Timeout  time.Duration
-	// Cols/Rows size the interactive PTY (Claude) so its live transcript is
-	// painted wider than the 80x24 fallback. Zero leaves the PTY unsized.
-	Cols int
-	Rows int
+	Cols     int
+	Rows     int
+	SizeFn   func() (cols, rows int)
 	// StallWindow kills+fails a call that produces no transcript output for this
 	// long, before Timeout. Zero disables the watchdog (wait the full Timeout).
 	StallWindow time.Duration
@@ -99,6 +98,7 @@ var claudeSpec = Spec{
 			Dir:             p.Dir,
 			Cols:            p.Cols,
 			Rows:            p.Rows,
+			SizeFn:          p.SizeFn,
 			Timeout:         p.Timeout,
 			StallWindow:     p.StallWindow,
 			Log:             p.Log,
