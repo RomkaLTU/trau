@@ -85,6 +85,10 @@ type Config struct {
 	CIPoll         int
 	ExpectedChecks string
 	RequireCI      bool
+	// RequireRepoChanges gates the post-build empty-diff guard: when on (default),
+	// a build that left the managed repo unchanged faults instead of advancing to a
+	// hollow handoff or empty PR. Set 0 for the rare legitimately no-op ticket.
+	RequireRepoChanges bool
 
 	BrowserVerify string
 	AppURL        string
@@ -182,6 +186,7 @@ func Defaults() Config {
 		CIPoll:                30,
 		ExpectedChecks:        "",
 		RequireCI:             true,
+		RequireRepoChanges:    true,
 		BrowserVerify:         "auto",
 		AppURL:                "http://localhost",
 		VerifyChecks:          true,
@@ -489,6 +494,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("REQUIRE_CI"); v != "" {
 		c.RequireCI = v == "1"
 		sources["REQUIRE_CI"] = src.name
+	}
+	if v, src := get("REQUIRE_REPO_CHANGES"); v != "" {
+		c.RequireRepoChanges = v == "1"
+		sources["REQUIRE_REPO_CHANGES"] = src.name
 	}
 	str("BROWSER_VERIFY", &c.BrowserVerify)
 	str("APP_URL", &c.AppURL)

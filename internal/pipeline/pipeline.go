@@ -66,6 +66,15 @@ type Git interface {
 
 	StatusPorcelain(ctx context.Context) (string, error)
 
+	// WorktreeDirty reports whether the working tree has any uncommitted change,
+	// including untracked files. Unlike StatusPorcelain (tracked-only, for
+	// clean-base detection) it counts new files an agent created but has not yet
+	// committed, so a build that only adds files is not mistaken for a no-op.
+	WorktreeDirty(ctx context.Context) (bool, error)
+
+	// Commits returns the short SHAs on branch but not base (base..branch).
+	Commits(ctx context.Context, base, branch string) ([]string, error)
+
 	Pull(ctx context.Context, remote, branch string) error
 
 	// MergeRemote fetches remote/base and merges it into the current branch,
@@ -260,12 +269,16 @@ type Pipeline struct {
 	MergeMethod    string
 	ExpectedChecks string
 	RequireCI      bool
-	CITimeout      int
-	CIPoll         int
-	Lessons        bool
-	LessonsDistill bool
-	Sleep          func(time.Duration)
-	Renderer       console.Renderer
+	// RequireRepoChanges gates the post-build empty-diff guard (config
+	// REQUIRE_REPO_CHANGES, default on). When set, a build that left the managed
+	// repo unchanged faults instead of advancing to a hollow handoff or empty PR.
+	RequireRepoChanges bool
+	CITimeout          int
+	CIPoll             int
+	Lessons            bool
+	LessonsDistill     bool
+	Sleep              func(time.Duration)
+	Renderer           console.Renderer
 
 	// Now supplies the current time for the per-day budget window; nil defaults
 	// to time.Now (overridable in tests).
@@ -379,6 +392,9 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 func (p *Pipeline) runPhases(ctx context.Context, id string, fi int) error {
 	if fi < 2 {
 		if err := p.build(ctx, id, fi == 1); err != nil {
+			return err
+		}
+		if err := p.assertRepoChanged(ctx, id); err != nil {
 			return err
 		}
 	}
@@ -702,6 +718,58 @@ func featureBranch(id, title string) string {
 		return "feature/" + id + "-" + slug
 	}
 	return "feature/" + id
+}
+
+// assertRepoChanged catches a build that produced nothing in the managed repo —
+// the agent escaped its working directory or built in the wrong repository — and
+// faults (resumable, WIP preserved) instead of advancing to a hollow handoff or
+// empty PR. Build leaves its work uncommitted (the commit phase runs later), so
+// "nothing here" means BOTH a clean working tree (untracked files included) AND no
+// commits on the branch beyond base. REQUIRE_REPO_CHANGES=0 disables it for the
+// rare legitimately no-op ticket.
+func (p *Pipeline) assertRepoChanged(ctx context.Context, id string) error {
+	if !p.RequireRepoChanges {
+		return nil
+	}
+	dirty, err := p.Git.WorktreeDirty(ctx)
+	if err != nil {
+		return fmt.Errorf("repo-change guard %s: status: %w", id, err)
+	}
+	if dirty {
+		return nil
+	}
+	base, err := p.buildBase(ctx)
+	if err != nil {
+		return err
+	}
+	if branch := p.State.Get(id, "BRANCH"); branch != "" {
+		commits, err := p.Git.Commits(ctx, base, branch)
+		if err != nil {
+			return fmt.Errorf("repo-change guard %s: commits: %w", id, err)
+		}
+		if len(commits) > 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf("build produced no changes in %s — the agent may have built in the wrong repository or escaped its working directory", p.repoLabel())
+}
+
+// buildBase resolves the branch the feature work diverges from: the epic branch
+// for an epic sub-ticket, otherwise the configured base.
+func (p *Pipeline) buildBase(ctx context.Context) (string, error) {
+	if p.EpicID != "" {
+		return p.epicBranchName(ctx)
+	}
+	return p.Base, nil
+}
+
+// repoLabel names the managed repo for guard messages — its directory basename,
+// or a generic phrase when no repo root was resolved.
+func (p *Pipeline) repoLabel() string {
+	if p.RepoRoot == "" {
+		return "the managed repo"
+	}
+	return filepath.Base(p.RepoRoot)
 }
 
 // Handoff runs the handoff skill to write the QA brief to exactly
@@ -2083,6 +2151,18 @@ func (g ExecGit) StatusPorcelain(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("git status: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// WorktreeDirty reports whether the working tree has any uncommitted change,
+// untracked files included (git status --porcelain), so a build that only added
+// new files still counts as a change.
+func (g ExecGit) WorktreeDirty(ctx context.Context) (bool, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"status", "--porcelain").Output()
+	if err != nil {
+		return false, fmt.Errorf("git status: %w", err)
+	}
+	return strings.TrimSpace(string(out)) != "", nil
 }
 
 // Pull fast-forwards branch from remote (git pull --ff-only <remote> <branch>).
