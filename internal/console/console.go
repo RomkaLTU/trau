@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/x/term"
+
 	"github.com/RomkaLTU/trau/internal/event"
 )
 
@@ -125,6 +127,18 @@ func IsTerminal(w io.Writer) bool {
 	}
 	fi, err := f.Stat()
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+func TerminalSize(w io.Writer) (cols, rows int, ok bool) {
+	f, isFile := w.(*os.File)
+	if !isFile {
+		return 0, 0, false
+	}
+	cw, ch, err := term.GetSize(f.Fd())
+	if err != nil || cw <= 0 || ch <= 0 {
+		return 0, 0, false
+	}
+	return cw, ch, true
 }
 
 func colorEnabled(w io.Writer) bool {

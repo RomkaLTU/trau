@@ -3,7 +3,7 @@
 // Claude Code paints a full-screen alt-screen TUI with cursor addressing and no
 // newlines, so naively stripping or appending its bytes yields garbage. This
 // feeds the bytes through a virtual terminal emulator and renders the resulting
-// 80x24 screen — the geometry Claude falls back to under trau's unsized PTY.
+// screen at the geometry the agent's PTY painted at.
 package vterm
 
 import (
@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	cols = 80
-	rows = 24
+	defaultCols = 80
+	defaultRows = 24
 )
 
 // Screen is a virtual terminal fed raw transcript bytes via Write and rendered to
@@ -26,8 +26,14 @@ type Screen struct {
 	drained chan struct{}
 }
 
-// New returns a started Screen sized to the agent's terminal.
-func New() *Screen {
+// New returns a started Screen sized to cols×rows.
+func New(cols, rows int) *Screen {
+	if cols <= 0 {
+		cols = defaultCols
+	}
+	if rows <= 0 {
+		rows = defaultRows
+	}
 	s := &Screen{emu: vt.NewEmulator(cols, rows), drained: make(chan struct{})}
 	go s.drain()
 	return s

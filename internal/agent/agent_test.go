@@ -47,7 +47,7 @@ func TestClaudeInteractiveStallWindowKills(t *testing.T) {
 			n := atomic.AddInt64(&calls, 1)
 			return base.Add(time.Duration(n) * 5 * time.Second)
 		},
-		start: func(context.Context, string, string, []string) (terminalSession, error) {
+		start: func(context.Context, string, string, []string, int, int) (terminalSession, error) {
 			return sess, nil
 		},
 	}
@@ -120,7 +120,7 @@ func TestClaudeInteractiveAuthFailurePauses(t *testing.T) {
 		Timeout:         0,         // no hard timeout
 		StallWindow:     time.Hour, // only the auth watchdog should end this run
 		TrustPromptWait: time.Millisecond,
-		start: func(context.Context, string, string, []string) (terminalSession, error) {
+		start: func(context.Context, string, string, []string, int, int) (terminalSession, error) {
 			return sess, nil
 		},
 	}

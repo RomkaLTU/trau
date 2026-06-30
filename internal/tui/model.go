@@ -103,6 +103,8 @@ type model struct {
 	// terminal so Claude's full-screen TUI renders legibly
 	streaming     bool
 	streamPath    string
+	streamCols    int
+	streamRows    int
 	streamOffset  int64
 	stream        *vterm.Screen
 	streamReading bool
@@ -323,7 +325,7 @@ func (m *model) startStream() {
 	if m.stream != nil {
 		m.stream.Close()
 	}
-	m.stream = vterm.New()
+	m.stream = vterm.New(m.streamCols, m.streamRows)
 	m.streamOffset = 0
 }
 
@@ -367,15 +369,32 @@ func (m model) dims() dims {
 	if rightW < 24 {
 		rightW = 24
 	}
-	vpW := rightW - 4 // 2 borders + 1 padding each side
-	if vpW < 12 {
-		vpW = 12
-	}
+	vpW, _ := LiveAgentSize(m.width, m.height)
 	vpH := bodyH - 2 // top + bottom border
 	if vpH < 3 {
 		vpH = 3
 	}
 	return dims{bodyH: bodyH, leftW: leftW, rightW: rightW, vpW: vpW, vpH: vpH}
+}
+
+func LiveAgentSize(termW, termH int) (cols, rows int) {
+	bodyH := termH - headerH - hudH - footerH - 3*panelGap
+	if bodyH < 6 {
+		bodyH = 6
+	}
+	rightW := termW - leftPaneW
+	if rightW < 24 {
+		rightW = 24
+	}
+	cols = rightW - 4
+	if cols < 12 {
+		cols = 12
+	}
+	rows = bodyH - 2
+	if rows < 3 {
+		rows = 3
+	}
+	return cols, rows
 }
 
 // addLog turns one raw pipeline line into an activity-feed entry. Continuation
@@ -504,6 +523,8 @@ func (m *model) applyEvent(ev event.Event) {
 	if ev.Kind == event.KindAgentStart {
 		if p := strField(ev.Fields, "transcript_path"); p != "" && p != m.streamPath {
 			m.streamPath = p
+			m.streamCols = intField(ev.Fields, "cols")
+			m.streamRows = intField(ev.Fields, "rows")
 			if m.streaming {
 				m.startStream()
 			}

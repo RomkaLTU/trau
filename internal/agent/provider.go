@@ -20,6 +20,9 @@ type BackendParams struct {
 	Dir      string
 	Preamble string
 	Timeout  time.Duration
+	Cols     int
+	Rows     int
+	SizeFn   func() (cols, rows int)
 	// StallWindow kills+fails a call that produces no transcript output for this
 	// long, before Timeout. Zero disables the watchdog (wait the full Timeout).
 	StallWindow time.Duration
@@ -93,6 +96,9 @@ var claudeSpec = Spec{
 			Preamble:        p.Preamble,
 			ResultDir:       p.Extra["result_dir"],
 			Dir:             p.Dir,
+			Cols:            p.Cols,
+			Rows:            p.Rows,
+			SizeFn:          p.SizeFn,
 			Timeout:         p.Timeout,
 			StallWindow:     p.StallWindow,
 			Log:             p.Log,
