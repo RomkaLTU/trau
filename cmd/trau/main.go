@@ -1787,7 +1787,10 @@ func providerConfigFor(cfg config.Config, provider string) providerConfig {
 			flags:  cfg.CodexFlags,
 			model:  cfg.CodexModel,
 			effort: cfg.CodexEffort,
-			extra:  map[string]string{"profile": cfg.CodexProfile},
+			extra: map[string]string{
+				"profile":    cfg.CodexProfile,
+				"result_dir": cfg.RunsDir,
+			},
 		}
 	case "kimi":
 		return providerConfig{
@@ -1795,7 +1798,7 @@ func providerConfigFor(cfg config.Config, provider string) providerConfig {
 			flags:  cfg.KimiFlags,
 			model:  cfg.KimiModel,
 			effort: "",
-			extra:  map[string]string{},
+			extra:  map[string]string{"result_dir": cfg.RunsDir},
 		}
 	}
 	return providerConfig{extra: map[string]string{}}

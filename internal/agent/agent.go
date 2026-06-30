@@ -451,12 +451,16 @@ func effectiveSize(cols, rows int) (int, int) {
 }
 
 func (c *ClaudeInteractive) resolveSize() (int, int) {
-	if c.SizeFn != nil {
-		if cols, rows := c.SizeFn(); cols > 0 && rows > 0 {
-			return effectiveSize(cols, rows)
+	return resolveSize(c.SizeFn, c.Cols, c.Rows)
+}
+
+func resolveSize(sizeFn func() (int, int), cols, rows int) (int, int) {
+	if sizeFn != nil {
+		if c, r := sizeFn(); c > 0 && r > 0 {
+			return effectiveSize(c, r)
 		}
 	}
-	return effectiveSize(c.Cols, c.Rows)
+	return effectiveSize(cols, rows)
 }
 
 func transcriptPathFor(resultPath string) string {
@@ -478,6 +482,43 @@ func ReadSize(transcriptPath string) (cols, rows int, ok bool) {
 		return 0, 0, false
 	}
 	return cols, rows, true
+}
+
+func agentTranscriptPath(resultDir, label string, now time.Time) (string, error) {
+	root := resultDir
+	if root == "" {
+		root = filepath.Join(os.TempDir(), "trau-agent-results")
+	}
+	dir := filepath.Join(root, ResultsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create result dir: %w", err)
+	}
+	name := fmt.Sprintf("%d-%s%s", now.UnixNano(), safeLabel(label), TranscriptExt)
+	abs, err := filepath.Abs(filepath.Join(dir, name))
+	if err != nil {
+		return "", fmt.Errorf("resolve transcript path: %w", err)
+	}
+	return abs, nil
+}
+
+func liveTranscript(log *event.Log, resultDir, label string, cols, rows int, now time.Time) (*os.File, bool) {
+	path, err := agentTranscriptPath(resultDir, label, now)
+	if err != nil {
+		return nil, false
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return nil, false
+	}
+	writeSize(path, cols, rows)
+	if log != nil {
+		log.Emit(event.KindAgentStart, label, "", map[string]any{
+			"transcript_path": path,
+			"cols":            cols,
+			"rows":            rows,
+		})
+	}
+	return f, true
 }
 
 func drainTranscript(r io.Reader, path string, trustPrompt, authPrompt chan<- struct{}, onActivity func()) {
@@ -627,16 +668,20 @@ func safeLabel(label string) string {
 // --disallowedTools block has no codex equivalent — the Preamble covers fan-out
 // denial instead.
 type Codex struct {
-	Bin      string
-	Flags    []string
-	Profile  string
-	Model    string
-	Effort   string
-	Preamble string
-	Dir      string
-	Log      *event.Log
-	Tokens   TokenSink
-	now      func() time.Time
+	Bin       string
+	Flags     []string
+	Profile   string
+	Model     string
+	Effort    string
+	Preamble  string
+	Dir       string
+	ResultDir string
+	Cols      int
+	Rows      int
+	SizeFn    func() (cols, rows int)
+	Log       *event.Log
+	Tokens    TokenSink
+	now       func() time.Time
 }
 
 // Provider names the backend for logging and routing attribution.
@@ -714,9 +759,16 @@ func (c *Codex) Run(ctx context.Context, prompt, label string) (Result, error) {
 	defer func() { _ = os.Remove(msgPath) }()
 
 	var stdout bytes.Buffer
+	sink := io.Writer(&stdout)
+	cols, rows := resolveSize(c.SizeFn, c.Cols, c.Rows)
+	if live, ok := liveTranscript(c.Log, c.ResultDir, label, cols, rows, c.clock()); ok {
+		defer func() { _ = live.Close() }()
+		sink = io.MultiWriter(&stdout, live)
+	}
+
 	cmd := exec.CommandContext(ctx, c.Bin, c.args(full, msgPath)...)
 	cmd.Dir = c.Dir
-	cmd.Stdout = &stdout
+	cmd.Stdout = sink
 	cmd.Stderr = nil
 
 	start := c.clock()
@@ -804,6 +856,10 @@ type Kimi struct {
 	Model       string
 	Preamble    string
 	Dir         string
+	ResultDir   string
+	Cols        int
+	Rows        int
+	SizeFn      func() (cols, rows int)
 	Timeout     time.Duration
 	SessionsDir string
 	Log         *event.Log
@@ -962,9 +1018,16 @@ func (c *Kimi) Run(ctx context.Context, prompt, label string) (Result, error) {
 	full := c.Preamble + "\n\n" + prompt
 
 	var stdout, stderr bytes.Buffer
+	sink := io.Writer(&stdout)
+	cols, rows := resolveSize(c.SizeFn, c.Cols, c.Rows)
+	if live, ok := liveTranscript(c.Log, c.ResultDir, label, cols, rows, c.clock()); ok {
+		defer func() { _ = live.Close() }()
+		sink = io.MultiWriter(&stdout, live)
+	}
+
 	cmd := exec.CommandContext(ctx, c.Bin, c.args(full)...)
 	cmd.Dir = c.Dir
-	cmd.Stdout = &stdout
+	cmd.Stdout = sink
 	cmd.Stderr = &stderr
 
 	start := c.clock()

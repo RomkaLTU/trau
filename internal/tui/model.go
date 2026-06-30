@@ -464,8 +464,8 @@ func readTail(path string, offset int64) streamDataMsg {
 // renderStream is the live pane body, or a placeholder when no transcript is active.
 func (m model) renderStream(d dims) string {
 	if m.stream == nil {
-		return m.styles.Subtle.Render("live view available for claude only") + "\n" +
-			m.styles.Help.Render("waiting for the next claude phase…")
+		return m.styles.Subtle.Render("live agent view") + "\n" +
+			m.styles.Help.Render("waiting for the next agent phase…")
 	}
 	lines := m.stream.Lines()
 	if d.vpH > 0 && len(lines) > d.vpH {

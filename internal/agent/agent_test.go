@@ -1,14 +1,19 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/RomkaLTU/trau/internal/event"
 )
 
 // stallSession is a terminalSession wedged before it ever produces output and
@@ -174,5 +179,39 @@ func TestHasAuthFailure(t *testing.T) {
 				t.Errorf("hasAuthFailure(%q) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestLiveTranscriptTeesAndAnnounces is the COD-629 guard for the non-PTY
+// backends (codex/kimi): liveTranscript must open a tail-able .pty.log under
+// _agent-results, write the .size sidecar trau watch reads, and emit the
+// agent_start event the TUI live view follows — the contract that lets all three
+// providers share one viewer with no provider branching.
+func TestLiveTranscriptTeesAndAnnounces(t *testing.T) {
+	dir := t.TempDir()
+	var events bytes.Buffer
+	now := time.Unix(0, 1234567890)
+
+	f, ok := liveTranscript(event.New(&events), dir, "build", 100, 40, now)
+	if !ok || f == nil {
+		t.Fatalf("liveTranscript ok=%v file!=nil=%v, want a live file", ok, f != nil)
+	}
+	defer func() { _ = f.Close() }()
+
+	want := filepath.Join(dir, ResultsSubdir, "1234567890-build"+TranscriptExt)
+	if f.Name() != want {
+		t.Errorf("live file = %q, want %q", f.Name(), want)
+	}
+	if _, err := io.WriteString(f, "hello agent\n"); err != nil {
+		t.Fatalf("write live file: %v", err)
+	}
+	if b, err := os.ReadFile(want); err != nil || !strings.Contains(string(b), "hello agent") {
+		t.Errorf("live file not tail-able: err=%v contents=%q", err, b)
+	}
+	if cols, rows, ok := ReadSize(want); !ok || cols != 100 || rows != 40 {
+		t.Errorf("size sidecar = %dx%d ok=%v, want 100x40", cols, rows, ok)
+	}
+	if s := events.String(); !strings.Contains(s, event.KindAgentStart) || !strings.Contains(s, want) {
+		t.Errorf("agent_start event must carry the transcript path; got: %s", s)
 	}
 }
