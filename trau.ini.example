@@ -122,6 +122,10 @@ REQUIRE_CI=1                 # 1 = gate merge on CI checks. Set 0 when the repo 
                              # CI (e.g. only a deploy-on-push workflow): the PR then has zero checks,
                              # which would otherwise spin to CI_TIMEOUT and quarantine. With 0 the
                              # gate is skipped and the loop merges/leaves the clean PR per AUTO_MERGE.
+REQUIRE_REPO_CHANGES=1       # 1 = after build, fault when the managed repo is unchanged (clean tree
+                             # AND no new commits vs base) instead of advancing to a hollow handoff /
+                             # empty PR — catches an agent that built in the wrong repo or escaped its
+                             # cwd. The ticket is left resumable. Set 0 for a legitimately no-op ticket.
 
 # --- budget governance ---
 # Spend ceilings enforced off the normalized token/cost ledger. Empty = no cap
