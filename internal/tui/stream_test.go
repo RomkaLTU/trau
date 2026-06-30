@@ -72,11 +72,11 @@ func TestWatchKeyTogglesStream(t *testing.T) {
 	}
 }
 
-// TestRenderStreamPlaceholder checks the pane shows the claude-only placeholder
+// TestRenderStreamPlaceholder checks the pane shows the live-view placeholder
 // when no live screen is active.
 func TestRenderStreamPlaceholder(t *testing.T) {
 	m := initialModel(nil)
-	if out := m.renderStream(m.dims()); !strings.Contains(out, "claude only") {
+	if out := m.renderStream(m.dims()); !strings.Contains(out, "live agent view") {
 		t.Errorf("no-stream pane must show the placeholder, got:\n%s", out)
 	}
 }
