@@ -374,10 +374,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	p.EpicID = epicID
-	// The size guard only warns (instead of quarantining) when a human explicitly
-	// named a single ticket in an interactive terminal; an autonomous loop pick or
-	// any headless run is treated as unattended.
-	p.Attended = forcedID != "" && cfg.LiveView
 
 	maxIter := cfg.MaxIterations
 	if opts.Max >= 0 {
@@ -503,8 +499,23 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		tc.APIKey = cfg.JiraAPIToken
 		tc.BaseURL = cfg.JiraBaseURL
 		tc.Email = cfg.JiraEmail
+		// A full set of per-repo REST credentials makes the Jira tracker act solely
+		// as that Atlassian identity: drop the agent runner so no operation can fall
+		// back to the shared Rovo MCP, which authenticates as a different account.
+		// The pipeline keeps its own runner, so agent work is unaffected. This mirrors
+		// onboarding detection — the loop must not silently switch identity either.
+		if jiraRESTComplete(cfg) {
+			runner = nil
+		}
 	}
 	return tracker.New(cfg.TrackerProvider, runner, tc)
+}
+
+// jiraRESTComplete reports whether cfg carries a full set of Jira REST credentials
+// (base URL, email, API token) — enough to drive Jira's API directly as a single
+// Atlassian identity without the Rovo MCP.
+func jiraRESTComplete(cfg config.Config) bool {
+	return cfg.JiraBaseURL != "" && cfg.JiraEmail != "" && cfg.JiraAPIToken != ""
 }
 
 // reconciledTicket records a stale local checkpoint that --status cleared because
@@ -704,8 +715,6 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		ExpectedChecks:     cfg.ExpectedChecks,
 		RequireCI:          cfg.RequireCI,
 		RequireRepoChanges: cfg.RequireRepoChanges,
-		SizeJudge:          cfg.SizeJudge,
-		SplitLabel:         cfg.SplitLabel,
 		LintFix:            cfg.LintFix,
 		LintFixCmd:         cfg.LintFixCmd,
 		Cleanup:            cfg.Cleanup,
@@ -1282,8 +1291,7 @@ func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvide
 		// to the shared Rovo MCP, which authenticates as a different Atlassian
 		// account. Building the tracker without an agent runner makes the REST path
 		// the sole source and surfaces an auth failure instead of masking it.
-		restOnly := trackerProvider == "jira" &&
-			cfg.JiraBaseURL != "" && cfg.JiraEmail != "" && cfg.JiraAPIToken != ""
+		restOnly := trackerProvider == "jira" && jiraRESTComplete(cfg)
 		var runner agent.Runner
 		if !restOnly {
 			r, err := buildRouter(cfg, a.log, a.sink, a.stderr)

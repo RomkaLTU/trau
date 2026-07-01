@@ -93,11 +93,6 @@ type Config struct {
 	// a build that left the managed repo unchanged faults instead of advancing to a
 	// hollow handoff or empty PR. Set 0 for the rare legitimately no-op ticket.
 	RequireRepoChanges bool
-	// SizeJudge gates the pre-flight ticket-size guard: when on (default), a cheap
-	// LLM judge sizes each ticket before the build, quarantining (or, in an attended
-	// single-ticket run, warning about) one too large to finish in a single build
-	// window. Set 0 to disable it entirely (no extra call, zero added cost).
-	SizeJudge bool
 	// LintFix gates the pre-verify lint-fix step: when on (default), the project's
 	// automated lint/format fixers run over the working tree just before verify so
 	// the verify gate isn't spent self-healing mechanical style noise. LintFixCmd, if
@@ -210,7 +205,6 @@ func Defaults() Config {
 		ExpectedChecks:        "",
 		RequireCI:             true,
 		RequireRepoChanges:    true,
-		SizeJudge:             true,
 		LintFix:               true,
 		Cleanup:               true,
 		BrowserVerify:         "auto",
@@ -529,10 +523,6 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		c.RequireRepoChanges = v == "1"
 		sources["REQUIRE_REPO_CHANGES"] = src.name
 	}
-	if v, src := get("SIZE_JUDGE"); v != "" {
-		c.SizeJudge = v == "1"
-		sources["SIZE_JUDGE"] = src.name
-	}
 	if v, src := get("LINT_FIX"); v != "" {
 		c.LintFix = v == "1"
 		sources["LINT_FIX"] = src.name
@@ -629,7 +619,7 @@ func ValidatePrefix(id, prefix string) error {
 	return nil
 }
 
-var phases = []string{"build", "handoff", "verify", "repair", "bugfix", "cleanup", "lintfix", "sizejudge", "commit", "pick"}
+var phases = []string{"build", "handoff", "verify", "repair", "bugfix", "cleanup", "lintfix", "commit", "pick"}
 
 func addProviderPhaseRoutesWithSources(routes map[string]string, sources map[string]Layer, provider string, c Config, get func(string) (string, Layer)) {
 	var defaultModel, defaultEffort string
@@ -699,17 +689,17 @@ func addProviderPhaseRoutesWithSources(routes map[string]string, sources map[str
 // seededPhaseModel is the cheap default model for a phase left unconfigured, or ""
 // when the phase gets no seed. Only Claude is seeded — sonnet/haiku are its model
 // aliases and its Opus default is the cost trap; codex/kimi keep their own default
-// tier. cleanup, sizejudge, commit, and handoff make light judgments (sizejudge
-// mis-sizes into a build spin, cleanup rewrites the diff and can quarantine, commit
-// groups atomic Conventional-Commits, handoff writes the PR) so they floor at
-// sonnet, not haiku; lintfix is mechanical enough for haiku (or a deterministic
-// LINT_FIX_CMD). build/verify/repair/bugfix are unseeded — they keep the Opus default.
+// tier. cleanup, commit, and handoff make light judgments (cleanup rewrites the
+// diff and can quarantine, commit groups atomic Conventional-Commits, handoff
+// writes the PR) so they floor at sonnet, not haiku; lintfix is mechanical enough
+// for haiku (or a deterministic LINT_FIX_CMD). build/verify/repair/bugfix are
+// unseeded — they keep the Opus default.
 func seededPhaseModel(provider, phase string) string {
 	if provider != "claude" {
 		return ""
 	}
 	switch phase {
-	case "cleanup", "sizejudge", "commit", "handoff":
+	case "cleanup", "commit", "handoff":
 		return "sonnet"
 	case "lintfix":
 		return "haiku"
@@ -996,8 +986,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "CI_POLL", Default: "30", Description: "Seconds between CI polls"},
 		{Key: "EXPECTED_CHECKS", Description: "Required CI check names (comma-separated)"},
 		{Key: "REQUIRE_CI", Default: "1", Description: "Gate merge on CI; set 0 for repos with no PR CI (1 = yes, 0 = no)", Bool: true},
-		{Key: "SIZE_JUDGE", Advanced: true, Default: "1", Description: "Pre-flight LLM size judge: quarantine (or warn) tickets too big for one build window (1 = yes, 0 = no)", Bool: true},
-		{Key: "SPLIT_LABEL", Advanced: true, Default: "needs-split", Description: "Label applied to a ticket the size judge flags as too large to build in one window"},
+		{Key: "SPLIT_LABEL", Advanced: true, Default: "needs-split", Description: "Managed label marking a ticket a human should split into smaller slices before the loop builds it"},
 		{Key: "LINT_FIX", Default: "1", Description: "Run the project's lint/format autofixers before verify so verify isn't spent self-healing style noise (1 = yes, 0 = no)", Bool: true},
 		{Key: "LINT_FIX_CMD", Description: "Deterministic lint-fix command run before verify (e.g. vendor/bin/pint, npm run lint:fix). Empty = a cheap agent auto-detects and runs the project's fixers"},
 		{Key: "CLEANUP", Default: "1", Description: "Strip AI-slop (unnecessary comments, dead code, over-defensive scaffolding) from the slice's diff before verify (1 = yes, 0 = no)", Bool: true},
@@ -1031,8 +1020,6 @@ func KnownKeys() []KeyMeta {
 		{Key: "CLAUDE_CLEANUP_EFFORT", Advanced: true, Description: "Claude effort for cleanup phase"},
 		{Key: "CLAUDE_LINTFIX_MODEL", Advanced: true, Description: "Claude model for lintfix phase (defaults to haiku)"},
 		{Key: "CLAUDE_LINTFIX_EFFORT", Advanced: true, Description: "Claude effort for lintfix phase"},
-		{Key: "CLAUDE_SIZEJUDGE_MODEL", Advanced: true, Description: "Claude model for size-judge phase (defaults to sonnet)"},
-		{Key: "CLAUDE_SIZEJUDGE_EFFORT", Advanced: true, Description: "Claude effort for size-judge phase"},
 		{Key: "CLAUDE_COMMIT_MODEL", Advanced: true, Description: "Claude model for commit phase (defaults to sonnet)"},
 		{Key: "CLAUDE_COMMIT_EFFORT", Advanced: true, Description: "Claude effort for commit phase"},
 		{Key: "CLAUDE_PICK_MODEL", Advanced: true, Description: "Claude model for pick phase"},
@@ -1407,11 +1394,6 @@ func keyValue(cfg Config, key string) string {
 			return "1"
 		}
 		return "0"
-	case "SIZE_JUDGE":
-		if cfg.SizeJudge {
-			return "1"
-		}
-		return "0"
 	case "LINT_FIX":
 		if cfg.LintFix {
 			return "1"
@@ -1468,9 +1450,9 @@ func keyValue(cfg Config, key string) string {
 		return floatValue(cfg.MaxDailyUSD)
 	case "MAX_DAILY_TOKENS":
 		return intValue(cfg.MaxDailyTokens)
-	case "CLAUDE_BUILD_MODEL", "CLAUDE_HANDOFF_MODEL", "CLAUDE_VERIFY_MODEL", "CLAUDE_REPAIR_MODEL", "CLAUDE_BUGFIX_MODEL", "CLAUDE_CLEANUP_MODEL", "CLAUDE_LINTFIX_MODEL", "CLAUDE_SIZEJUDGE_MODEL", "CLAUDE_COMMIT_MODEL", "CLAUDE_PICK_MODEL":
+	case "CLAUDE_BUILD_MODEL", "CLAUDE_HANDOFF_MODEL", "CLAUDE_VERIFY_MODEL", "CLAUDE_REPAIR_MODEL", "CLAUDE_BUGFIX_MODEL", "CLAUDE_CLEANUP_MODEL", "CLAUDE_LINTFIX_MODEL", "CLAUDE_COMMIT_MODEL", "CLAUDE_PICK_MODEL":
 		return phaseRouteModel(cfg.Routes, "claude", key)
-	case "CLAUDE_BUILD_EFFORT", "CLAUDE_HANDOFF_EFFORT", "CLAUDE_VERIFY_EFFORT", "CLAUDE_REPAIR_EFFORT", "CLAUDE_BUGFIX_EFFORT", "CLAUDE_CLEANUP_EFFORT", "CLAUDE_LINTFIX_EFFORT", "CLAUDE_SIZEJUDGE_EFFORT", "CLAUDE_COMMIT_EFFORT", "CLAUDE_PICK_EFFORT":
+	case "CLAUDE_BUILD_EFFORT", "CLAUDE_HANDOFF_EFFORT", "CLAUDE_VERIFY_EFFORT", "CLAUDE_REPAIR_EFFORT", "CLAUDE_BUGFIX_EFFORT", "CLAUDE_CLEANUP_EFFORT", "CLAUDE_LINTFIX_EFFORT", "CLAUDE_COMMIT_EFFORT", "CLAUDE_PICK_EFFORT":
 		return phaseRouteEffort(cfg.Routes, "claude", key)
 	case "CODEX_BUILD_MODEL", "CODEX_HANDOFF_MODEL", "CODEX_VERIFY_MODEL", "CODEX_REPAIR_MODEL", "CODEX_BUGFIX_MODEL", "CODEX_COMMIT_MODEL", "CODEX_PICK_MODEL":
 		return phaseRouteModel(cfg.Routes, "codex", key)

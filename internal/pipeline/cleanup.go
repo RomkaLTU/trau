@@ -33,23 +33,16 @@ type worktreeSizer interface {
 }
 
 // smallSlice reports whether a slice is tiny enough to skip the standalone cleanup
-// phase: few files, few changed lines, and the size judge already vouched it fits
-// one build window. Verify grades behavior, not slop, so minor slop surviving on a
-// diff this small is an accepted cosmetic tradeoff.
-func smallSlice(files, lines int, fitsOneWindow bool) bool {
-	return fitsOneWindow && files <= smallSliceMaxFiles && lines <= smallSliceMaxLines
+// phase: few files and few changed lines. Verify grades behavior, not slop, so
+// minor slop surviving on a diff this small is an accepted cosmetic tradeoff.
+func smallSlice(files, lines int) bool {
+	return files <= smallSliceMaxFiles && lines <= smallSliceMaxLines
 }
 
 // skipCleanup decides whether runPhases can drop the standalone cleanup phase for
-// id. It fails open — a missing size verdict (resume, or /tmp cleared), a Git that
-// cannot size the tree, or a measurement error all return false so the full chain
-// runs — and skips only when the persisted fits_one_window verdict pairs with a
-// tiny working-tree diff.
+// id. It fails open — a Git that cannot size the tree or a measurement error both
+// return false so the full chain runs — and skips only for a tiny working-tree diff.
 func (p *Pipeline) skipCleanup(ctx context.Context, id string) bool {
-	v, ok := readSizeVerdict(sizeJudgePath(id))
-	if !ok || !v.FitsOneWindow {
-		return false
-	}
 	sizer, ok := p.Git.(worktreeSizer)
 	if !ok {
 		return false
@@ -63,7 +56,7 @@ func (p *Pipeline) skipCleanup(ctx context.Context, id string) bool {
 		p.logf("  size gate: could not measure diff (running cleanup): %v", err)
 		return false
 	}
-	return smallSlice(files, lines, v.FitsOneWindow)
+	return smallSlice(files, lines)
 }
 
 func cleanupInstruction(id string) string {

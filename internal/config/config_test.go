@@ -209,8 +209,8 @@ func TestKimiPhaseRouteReadsProviderFile(t *testing.T) {
 }
 
 // TestSeedsCheapDefaultRoutes is the COD-641/COD-643 guard: with no phase keys
-// set, a Claude run seeds cleanup/sizejudge/commit/handoff onto sonnet and lintfix
-// onto haiku instead of inheriting the Opus default, build/verify stay unseeded
+// set, a Claude run seeds cleanup/commit/handoff onto sonnet and lintfix onto
+// haiku instead of inheriting the Opus default, build/verify stay unseeded
 // (Opus), and an explicit per-phase key still wins.
 func TestSeedsCheapDefaultRoutes(t *testing.T) {
 	dir := t.TempDir()
@@ -224,11 +224,10 @@ func TestSeedsCheapDefaultRoutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for phase, want := range map[string]string{
-		"cleanup":   "claude:sonnet",
-		"sizejudge": "claude:sonnet",
-		"commit":    "claude:sonnet",
-		"handoff":   "claude:sonnet",
-		"lintfix":   "claude:haiku",
+		"cleanup": "claude:sonnet",
+		"commit":  "claude:sonnet",
+		"handoff": "claude:sonnet",
+		"lintfix": "claude:haiku",
 	} {
 		if got := cfg.Routes[phase]; got != want {
 			t.Errorf("seeded Routes[%q] = %q, want %q", phase, got, want)
@@ -262,7 +261,7 @@ func TestSeedsCheapDefaultRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, phase := range []string{"commit", "handoff", "cleanup", "lintfix", "sizejudge"} {
+	for _, phase := range []string{"commit", "handoff", "cleanup", "lintfix"} {
 		if got := cfg.Routes[phase]; got != "" {
 			t.Errorf("codex Routes[%q] = %q, want empty (Claude tiers must not leak)", phase, got)
 		}

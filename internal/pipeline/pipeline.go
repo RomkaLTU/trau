@@ -273,23 +273,12 @@ type Pipeline struct {
 	// REQUIRE_REPO_CHANGES, default on). When set, a build that left the managed
 	// repo unchanged faults instead of advancing to a hollow handoff or empty PR.
 	RequireRepoChanges bool
-	// SizeJudge gates the pre-flight ticket-size guard (config SIZE_JUDGE, default
-	// on). When set, a fresh ticket is sized by a cheap LLM judge before build; one
-	// too large for a single build window is quarantined (unattended) or warned
-	// about (attended). SplitLabel is the label applied on a quarantine.
-	SizeJudge  bool
-	SplitLabel string
 	// LintFix gates the pre-verify lint-fix step (config LINT_FIX). LintFixCmd, when
 	// set, is run deterministically in RepoRoot; empty falls back to a cheap agent.
 	LintFix    bool
 	LintFixCmd string
 	// Cleanup gates the pre-verify slop-cleanup step (config CLEANUP).
-	Cleanup bool
-	// Attended is true only for a human-driven, explicitly-named single-ticket run
-	// in an interactive terminal. It flips the size guard from quarantine (the
-	// autonomous-loop / headless default) to a non-blocking warning, so a person
-	// watching can proceed or stop the run themselves.
-	Attended       bool
+	Cleanup        bool
 	CITimeout      int
 	CIPoll         int
 	Lessons        bool
@@ -407,11 +396,6 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 // classification of what that error MEANS for the ticket is centralized in
 // classifyPhaseErr, so every phase is handled the same way.
 func (p *Pipeline) runPhases(ctx context.Context, id string, fi int) error {
-	if fi == 0 {
-		if err := p.sizeGuard(ctx, id); err != nil {
-			return err
-		}
-	}
 	if fi < 2 {
 		if err := p.build(ctx, id, fi == 1); err != nil {
 			return err
@@ -430,7 +414,7 @@ func (p *Pipeline) runPhases(ctx context.Context, id string, fi int) error {
 			return err
 		}
 		if p.Cleanup && p.skipCleanup(ctx, id) {
-			p.logf("  ↳ cleanup: skipped for tiny one-window diff — build's inline style note already covers slop")
+			p.logf("  ↳ cleanup: skipped for tiny diff — build's inline style note already covers slop")
 		} else if err := p.cleanup(ctx, id); err != nil {
 			return err
 		}
