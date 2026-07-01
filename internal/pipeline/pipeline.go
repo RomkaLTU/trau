@@ -429,7 +429,9 @@ func (p *Pipeline) runPhases(ctx context.Context, id string, fi int) error {
 		if err := p.lintFix(ctx, id); err != nil {
 			return err
 		}
-		if err := p.cleanup(ctx, id); err != nil {
+		if p.Cleanup && p.skipCleanup(ctx, id) {
+			p.logf("  ↳ cleanup: skipped for tiny one-window diff — build's inline style note already covers slop")
+		} else if err := p.cleanup(ctx, id); err != nil {
 			return err
 		}
 		if err := p.Verify(ctx, id); err != nil {
@@ -2136,6 +2138,48 @@ func (g ExecGit) DiffStat(ctx context.Context, base, branch string) (files, addi
 		}
 	}
 	return files, additions, deletions, nil
+}
+
+// WorktreeDiffStat measures the working-tree changes against base — both the
+// tracked edits the build made and the untracked files it created — as a file
+// count and summed added+deleted lines. DiffStat only sees committed history,
+// which is empty mid-run (the build commits nothing before the commit phase), so
+// the size gate needs this working-tree view instead. Binary and unreadable files
+// count toward Files but contribute no lines.
+func (g ExecGit) WorktreeDiffStat(ctx context.Context, base string) (files, lines int, err error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"diff", "--numstat", base).Output()
+	if err != nil {
+		return 0, 0, fmt.Errorf("git diff --numstat %s: %w", base, err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		files++
+		if a, e := strconv.Atoi(fields[0]); e == nil {
+			lines += a
+		}
+		if d, e := strconv.Atoi(fields[1]); e == nil {
+			lines += d
+		}
+	}
+	others, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"ls-files", "--others", "--exclude-standard", "-z").Output()
+	if err != nil {
+		return 0, 0, fmt.Errorf("git ls-files --others: %w", err)
+	}
+	for _, path := range strings.Split(strings.TrimRight(string(others), "\x00"), "\x00") {
+		if path == "" {
+			continue
+		}
+		files++
+		if data, e := os.ReadFile(filepath.Join(g.Repo, path)); e == nil {
+			lines += strings.Count(string(data), "\n")
+		}
+	}
+	return files, lines, nil
 }
 
 // Commits returns the short SHAs unique to branch relative to base (base..branch),
