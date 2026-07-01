@@ -1007,7 +1007,7 @@ func (p *Pipeline) finalizeFailed(ctx context.Context, id string) {
 func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	p.phaseStart("commit")
 	rubricRef, _ := p.activeRubric(id)
-	if _, err := p.agentStep(ctx, id, "commit", commitInstruction(id, commitRubricNote(rubricRef))); err != nil {
+	if _, err := p.agentStep(ctx, id, "commit", commitInstruction(id, commitRubricNote(rubricRef), p.MergeMethod == "squash")); err != nil {
 		return err
 	}
 	if err := p.retryGH(ctx, "git push", func() error {
@@ -1606,7 +1606,7 @@ func handoffPath(id string) string { return "/tmp/handoff-" + id + ".md" }
 func verifyPath(id string) string { return "/tmp/verify-" + id + ".json" }
 
 func handoffTail(id string) string {
-	return "Write a QA brief for " + id + ": the concrete, checkable behaviors a manual QA tester must verify for this slice, in priority order. Don't duplicate content already in the ticket, PRD, or diff — focus on what to check and how. Redact any secrets. Save it to exactly " + handoffPath(id) + " (overwrite if present) and nowhere else." + rubricInstruction(id)
+	return "Write a QA brief for " + id + ": the concrete, checkable behaviors a manual QA tester must verify for this slice, in priority order. Don't duplicate content already in the ticket, PRD, or diff — focus on what to check and how. Do NOT run the test suite, execute the code, or verify behavior yourself — a separate verify step does that; just write the brief. Redact any secrets. Save it to exactly " + handoffPath(id) + " (overwrite if present) and nowhere else." + rubricInstruction(id)
 }
 
 func browserNote(mode, appURL string) string {
@@ -1624,8 +1624,12 @@ func verifyTail(id, handoff, verdict, note, checksFragment, rubricNote, lessonsN
 	return "Cold, adversarial QA verification of " + id + " against the QA brief at " + handoff + ". Treat the code on disk and the brief as the only sources of truth; your job is to find what does NOT work." + rubricNote + lessonsNote + " Run only the tests relevant to this slice (the new or changed test files for this ticket) using the project's test runner — not the whole suite. For each behavior the brief lists, confirm it actually holds. " + note + " Distinguish defects in this slice's own code from pre-existing or out-of-scope issues. When finished, write a JSON verdict to exactly " + verdict + ": {\"pass\": true|false, \"summary\": \"one line\", \"failures\": [\"...\"]}. Set pass=false if any relevant test fails or any behavior in the brief does not work; failures lists each concrete problem (empty when pass is true)." + checksFragment + " Do not commit, push, or open a PR."
 }
 
-func commitInstruction(id, rubricNote string) string {
-	return "Commit the implementation for " + id + ". Stage and commit ONLY files that are part of " + id + "; never commit unrelated untracked files or tooling (e.g. scripts/, *.env)." + rubricNote + " Group related changes into atomic, dependency-ordered commits (foundational changes first; keep refactors, features, and fixes in distinct commits). Use Conventional Commits: '<type>(scope): <subject>' (type ∈ feat|fix|refactor|docs|style|test|chore), imperative mood, subject under 72 characters, with a 'Refs: " + id + "' trailer; match the project's existing git-log style if it differs. The commit message must contain ONLY the subject and body: do NOT add any 'Co-authored-by:'/'Co-Authored-By:' trailer, a '🤖 Generated with Claude Code' line, or any mention of AI/assistant authorship, and remove them if your environment adds them by default."
+func commitInstruction(id, rubricNote string, squash bool) string {
+	split := "For a small, single-purpose change (a bug fix plus its tests, or ≤~5 files) make ONE commit; split into atomic, dependency-ordered commits only for genuinely independent concerns."
+	if squash {
+		split += " The merge method is squash, so skip splitting entirely and make ONE commit."
+	}
+	return "Commit the implementation for " + id + ". Verify has already passed on this working tree — do NOT run tests, re-verify behavior, or re-analyze the diff for correctness; just stage and commit, and do NOT emit a status report (your final message is only the commit subject line(s)). Stage and commit ONLY files that are part of " + id + "; never commit unrelated untracked files or tooling (e.g. scripts/, *.env)." + rubricNote + " " + split + " Use Conventional Commits: '<type>(scope): <subject>' (type ∈ feat|fix|refactor|docs|style|test|chore), imperative mood, subject under 72 characters, with a 'Refs: " + id + "' trailer; match the project's existing git-log style if it differs. The commit message must contain ONLY the subject and body: do NOT add any 'Co-authored-by:'/'Co-Authored-By:' trailer, a '🤖 Generated with Claude Code' line, or any mention of AI/assistant authorship, and remove them if your environment adds them by default."
 }
 
 func repairInstruction(id, verdict, handoff, branch, fails, rubricNote, lessonsNote string) string {
