@@ -623,7 +623,7 @@ func ValidatePrefix(id, prefix string) error {
 	return nil
 }
 
-var phases = []string{"build", "handoff", "verify", "repair", "bugfix", "commit", "pick"}
+var phases = []string{"build", "handoff", "verify", "repair", "bugfix", "cleanup", "lintfix", "sizejudge", "commit", "pick"}
 
 func addProviderPhaseRoutesWithSources(routes map[string]string, sources map[string]Layer, provider string, c Config, get func(string) (string, Layer)) {
 	var defaultModel, defaultEffort string
@@ -669,6 +669,44 @@ func addProviderPhaseRoutesWithSources(routes map[string]string, sources map[str
 			sources[phasePrefix+"EFFORT"] = effortSrc
 		}
 	}
+
+	// Seed cheap default routes for the judgment/cleanup phases: without an entry
+	// here they inherit Default (typically Opus), so the only lever to downtier
+	// them would be the shared pick tier — which also moves epic-sync/epic-repair
+	// (COD-641). Explicit per-phase config above already populated routes[ph]; this
+	// only fills a phase left entirely unset.
+	for _, ph := range phases {
+		if routes[ph] != "" {
+			continue
+		}
+		model := seededPhaseModel(provider, ph)
+		if model == "" {
+			continue
+		}
+		routes[ph] = routeSpec(provider, model, "")
+		if sources != nil {
+			sources[prefix+strings.ToUpper(ph)+"_MODEL"] = LayerDefault
+		}
+	}
+}
+
+// seededPhaseModel is the cheap default model for a phase left unconfigured, or ""
+// when the phase gets no seed. Only Claude is seeded — sonnet/haiku are its model
+// aliases and its Opus default is the cost trap; codex/kimi keep their own default
+// tier. cleanup and sizejudge make judgments (sizejudge mis-sizes into a build
+// spin, cleanup rewrites the diff and can quarantine) so they floor at sonnet, not
+// haiku; lintfix is mechanical enough for haiku (or a deterministic LINT_FIX_CMD).
+func seededPhaseModel(provider, phase string) string {
+	if provider != "claude" {
+		return ""
+	}
+	switch phase {
+	case "cleanup", "sizejudge":
+		return "sonnet"
+	case "lintfix":
+		return "haiku"
+	}
+	return ""
 }
 
 func routeSpec(provider, model, effort string) string {
@@ -978,6 +1016,12 @@ func KnownKeys() []KeyMeta {
 		{Key: "CLAUDE_REPAIR_EFFORT", Advanced: true, Description: "Claude effort for repair phase"},
 		{Key: "CLAUDE_BUGFIX_MODEL", Advanced: true, Description: "Claude model for comprehensive bugfix phase"},
 		{Key: "CLAUDE_BUGFIX_EFFORT", Advanced: true, Description: "Claude effort for comprehensive bugfix phase"},
+		{Key: "CLAUDE_CLEANUP_MODEL", Advanced: true, Description: "Claude model for cleanup phase (defaults to sonnet)"},
+		{Key: "CLAUDE_CLEANUP_EFFORT", Advanced: true, Description: "Claude effort for cleanup phase"},
+		{Key: "CLAUDE_LINTFIX_MODEL", Advanced: true, Description: "Claude model for lintfix phase (defaults to haiku)"},
+		{Key: "CLAUDE_LINTFIX_EFFORT", Advanced: true, Description: "Claude effort for lintfix phase"},
+		{Key: "CLAUDE_SIZEJUDGE_MODEL", Advanced: true, Description: "Claude model for size-judge phase (defaults to sonnet)"},
+		{Key: "CLAUDE_SIZEJUDGE_EFFORT", Advanced: true, Description: "Claude effort for size-judge phase"},
 		{Key: "CLAUDE_COMMIT_MODEL", Advanced: true, Description: "Claude model for commit phase"},
 		{Key: "CLAUDE_COMMIT_EFFORT", Advanced: true, Description: "Claude effort for commit phase"},
 		{Key: "CLAUDE_PICK_MODEL", Advanced: true, Description: "Claude model for pick phase"},
@@ -1193,6 +1237,9 @@ func ResolveProviderTunings(localPath, projectPath, userPath, activeProvider str
 			}
 			effModel := pm.Value
 			if effModel == "" {
+				effModel = seededPhaseModel(meta.Name, ph)
+			}
+			if effModel == "" {
 				effModel = model.Value
 			}
 			pt.Phases = append(pt.Phases, ProviderPhaseTuning{
@@ -1404,9 +1451,9 @@ func keyValue(cfg Config, key string) string {
 		return floatValue(cfg.MaxDailyUSD)
 	case "MAX_DAILY_TOKENS":
 		return intValue(cfg.MaxDailyTokens)
-	case "CLAUDE_BUILD_MODEL", "CLAUDE_HANDOFF_MODEL", "CLAUDE_VERIFY_MODEL", "CLAUDE_REPAIR_MODEL", "CLAUDE_BUGFIX_MODEL", "CLAUDE_COMMIT_MODEL", "CLAUDE_PICK_MODEL":
+	case "CLAUDE_BUILD_MODEL", "CLAUDE_HANDOFF_MODEL", "CLAUDE_VERIFY_MODEL", "CLAUDE_REPAIR_MODEL", "CLAUDE_BUGFIX_MODEL", "CLAUDE_CLEANUP_MODEL", "CLAUDE_LINTFIX_MODEL", "CLAUDE_SIZEJUDGE_MODEL", "CLAUDE_COMMIT_MODEL", "CLAUDE_PICK_MODEL":
 		return phaseRouteModel(cfg.Routes, "claude", key)
-	case "CLAUDE_BUILD_EFFORT", "CLAUDE_HANDOFF_EFFORT", "CLAUDE_VERIFY_EFFORT", "CLAUDE_REPAIR_EFFORT", "CLAUDE_BUGFIX_EFFORT", "CLAUDE_COMMIT_EFFORT", "CLAUDE_PICK_EFFORT":
+	case "CLAUDE_BUILD_EFFORT", "CLAUDE_HANDOFF_EFFORT", "CLAUDE_VERIFY_EFFORT", "CLAUDE_REPAIR_EFFORT", "CLAUDE_BUGFIX_EFFORT", "CLAUDE_CLEANUP_EFFORT", "CLAUDE_LINTFIX_EFFORT", "CLAUDE_SIZEJUDGE_EFFORT", "CLAUDE_COMMIT_EFFORT", "CLAUDE_PICK_EFFORT":
 		return phaseRouteEffort(cfg.Routes, "claude", key)
 	case "CODEX_BUILD_MODEL", "CODEX_HANDOFF_MODEL", "CODEX_VERIFY_MODEL", "CODEX_REPAIR_MODEL", "CODEX_BUGFIX_MODEL", "CODEX_COMMIT_MODEL", "CODEX_PICK_MODEL":
 		return phaseRouteModel(cfg.Routes, "codex", key)
