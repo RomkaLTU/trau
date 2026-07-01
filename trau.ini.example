@@ -279,6 +279,28 @@ LINEAR_API_KEY=
 JIRA_BASE_URL=               # e.g. https://acme.atlassian.net
 JIRA_EMAIL=                  # your Atlassian account email
 JIRA_API_TOKEN=              # classic API token (never commit)
+#
+# TWO SEPARATE JIRA ACCOUNTS — the reason this adapter exists. Give each repo its
+# own .trau.ini with its own account (the onboarding wizard writes these for you
+# and gitignores the file), so one account never leaks into the other repo:
+#
+#   # ~/work/acme-app/.trau.ini
+#   TRACKER_PROVIDER=jira
+#   LINEAR_TEAM=ACME
+#   JIRA_BASE_URL=https://acme.atlassian.net
+#   JIRA_EMAIL=you@acme.com
+#   JIRA_API_TOKEN=<acme classic token>
+#
+#   # ~/work/widgets/.trau.ini
+#   TRACKER_PROVIDER=jira
+#   LINEAR_TEAM=WID
+#   JIRA_BASE_URL=https://widgets.atlassian.net
+#   JIRA_EMAIL=you@widgets.com
+#   JIRA_API_TOKEN=<widgets classic token>
+#
+# Classic tokens can't self-refresh and expire ~annually; on a 401 trau prints a
+# "regenerate at id.atlassian.com/manage-profile/security/api-tokens" hint. Run
+# `trau doctor` to validate the three keys and live-ping the site before a run.
 
 KIMI_BIN=kimi
 KIMI_FLAGS=
