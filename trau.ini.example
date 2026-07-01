@@ -266,6 +266,20 @@ CODEX_PROFILE=
 # in a committed project config file.
 LINEAR_API_KEY=
 
+# Jira Cloud direct REST access (TRACKER_PROVIDER=jira). When JIRA_API_TOKEN is
+# set, trau reaches Jira directly over the REST v3 API for fast read/write ops and
+# falls back to the Jira (Rovo) MCP only when it is empty or the token is rejected.
+# Because auth is per-request Basic auth (no shared OAuth session), two repos tied
+# to two SEPARATE Jira accounts each keep their own credentials in their own
+# .trau.ini — the direct fix for the multi-account limit of the single-identity MCP.
+# Use a CLASSIC (unscoped) token from id.atlassian.com/manage-profile/security/api-tokens
+# so the simple <site>.atlassian.net base URL works. Treat the token like
+# LINEAR_API_KEY: keep it in ~/.trau.ini or a per-repo .trau.ini, never committed.
+# The Jira project key reuses LINEAR_TEAM above.
+JIRA_BASE_URL=               # e.g. https://acme.atlassian.net
+JIRA_EMAIL=                  # your Atlassian account email
+JIRA_API_TOKEN=              # classic API token (never commit)
+
 KIMI_BIN=kimi
 KIMI_FLAGS=
 

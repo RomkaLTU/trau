@@ -2,14 +2,18 @@ package tracker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 )
 
-// Jira picks tickets through the Jira MCP via an agent.
+// Jira picks tickets through the Jira MCP via an agent. When JIRA_API_TOKEN (plus
+// base URL and email) is configured it uses Jira's REST API directly for fast
+// read/write operations, falling back to the Jira (Rovo) MCP otherwise.
 type Jira struct {
 	Runner          agent.Runner
 	ReadyLabel      string
@@ -17,6 +21,23 @@ type Jira struct {
 	SplitLabel      string
 	Team            string // Jira project key
 	Project         string // optional project name/id for issue creation
+	BaseURL         string // Jira site base URL, e.g. https://acme.atlassian.net
+	Email           string // Atlassian account email (Basic-auth username)
+	APIToken        string // classic Jira API token (Basic-auth password)
+}
+
+func (j *Jira) api() *jiraapi.Client {
+	return jiraapi.New(j.BaseURL, j.Email, j.APIToken)
+}
+
+// jiraShouldFallback reports whether a direct-API error should cause the caller
+// to retry the operation through the Rovo MCP. Unlike Linear, a Jira 401 IS
+// fallback-worthy: the REST token and the Rovo MCP authenticate as independent
+// Atlassian identities, so a missing or expired per-repo token can still be
+// served by a working MCP session. Any other error (not-found, transient) is
+// surfaced — the MCP would not do better.
+func jiraShouldFallback(err error) bool {
+	return errors.Is(err, jiraapi.ErrNotEnabled) || errors.Is(err, jiraapi.ErrUnauthorized)
 }
 
 // Pick returns the next eligible ticket identifier, or "" when nothing is eligible.
@@ -132,13 +153,28 @@ func (j *Jira) subIssuesPrompt(id string) string {
 		"If there are none, respond SUB_ISSUES=[]. No other output.", id, prefixOf(id))
 }
 
-// Title returns the summary of issue id via the Jira MCP.
+// Title returns the summary of issue id via the Jira REST API when a token is
+// configured, otherwise (or on an auth error) via the Jira MCP.
 func (j *Jira) Title(ctx context.Context, id string) (string, error) {
+	if title, err := j.titleAPI(ctx, id); err == nil {
+		return title, nil
+	} else if !jiraShouldFallback(err) {
+		return "", err
+	}
+
 	res, err := j.Runner.Run(ctx, j.titlePrompt(id), "title")
 	if t, ok := parseTitle(res.Final); ok {
 		return t, nil
 	}
 	return "", err
+}
+
+func (j *Jira) titleAPI(ctx context.Context, id string) (string, error) {
+	issue, err := j.api().Issue(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return issue.Summary, nil
 }
 
 func (j *Jira) titlePrompt(id string) string {
