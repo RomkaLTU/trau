@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -31,6 +32,23 @@ var (
 	ErrNotEnabled   = errors.New("jira: direct API not enabled")
 )
 
+// TokenHelpURL is where a user regenerates a classic Jira API token. Classic
+// tokens cannot self-refresh and expire roughly annually, so a 401/403 usually
+// means the token lapsed rather than that the account lost access.
+const TokenHelpURL = "https://id.atlassian.com/manage-profile/security/api-tokens"
+
+// AuthErrorMessage returns an actionable, user-facing hint for an ErrUnauthorized
+// (an expired or invalid token), or "" for any other error. It deliberately does
+// not reword ErrUnauthorized itself: the sentinel's identity arms the tracker's
+// MCP fallback, so the human-facing string lives at the boundary that has already
+// exhausted fallback (doctor) rather than in the error value.
+func AuthErrorMessage(err error) string {
+	if errors.Is(err, ErrUnauthorized) {
+		return "Jira token expired or invalid — regenerate it at " + TokenHelpURL
+	}
+	return ""
+}
+
 const (
 	// apiPrefix is the classic (unscoped) REST v3 base path. It works with the
 	// simple https://<site>.atlassian.net base URL; scoped tokens would require
@@ -40,6 +58,9 @@ const (
 	// maxRetries bounds the 429 retry loop so a rate-limited site can't stall a
 	// run indefinitely.
 	maxRetries = 4
+
+	// maxBackoff caps a single 429 wait when the server sends no Retry-After.
+	maxBackoff = 30 * time.Second
 )
 
 // Client talks to a single Jira Cloud site over the REST v3 API.
@@ -68,6 +89,17 @@ func New(baseURL, email, apiToken string) *Client {
 
 // enabled reports whether the client has the credentials to reach the API.
 func (c *Client) enabled() bool { return c.auth != "" }
+
+// Ping verifies the client's credentials with a single cheap authenticated
+// request (GET /myself). It returns ErrNotEnabled when no credentials are set,
+// ErrUnauthorized when the token is missing/expired/rejected, and nil when the
+// token is accepted — the live auth check the doctor runs for the jira provider.
+func (c *Client) Ping(ctx context.Context) error {
+	if !c.enabled() {
+		return ErrNotEnabled
+	}
+	return c.do(ctx, http.MethodGet, "/myself", nil, nil)
+}
 
 // Issue is the subset of a Jira issue the tracker consumes. Description is the v3
 // ADF body flattened to plain text; Status/Resolution/Project/Parent back the
@@ -190,7 +222,7 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, dst a
 		}
 
 		if res.StatusCode == http.StatusTooManyRequests && attempt < maxRetries {
-			wait := retryAfter(res.Header.Get("Retry-After"), attempt)
+			wait := retryAfter(res.Header.Get("Retry-After"), attempt, rand.Float64())
 			_ = res.Body.Close()
 			select {
 			case <-ctx.Done():
@@ -232,17 +264,19 @@ func decode(res *http.Response, dst any) error {
 }
 
 // retryAfter derives how long to wait before retrying a 429. It honours a numeric
-// Retry-After (seconds) header when present, otherwise backs off exponentially
-// (1s, 2s, 4s, …) capped at 30s.
-func retryAfter(header string, attempt int) time.Duration {
+// Retry-After (seconds) header verbatim when present, otherwise backs off
+// exponentially (1s, 2s, 4s, …) capped at maxBackoff, plus up to 25% jitter to
+// decorrelate retries. jitter is a caller-supplied fraction in [0,1) (from
+// rand.Float64), keeping the function pure and deterministically testable.
+func retryAfter(header string, attempt int, jitter float64) time.Duration {
 	if secs, err := strconv.Atoi(strings.TrimSpace(header)); err == nil && secs >= 0 {
 		return time.Duration(secs) * time.Second
 	}
 	backoff := time.Duration(1<<attempt) * time.Second
-	if backoff > 30*time.Second {
-		backoff = 30 * time.Second
+	if backoff > maxBackoff {
+		backoff = maxBackoff
 	}
-	return backoff
+	return backoff + time.Duration(jitter*float64(backoff)/4)
 }
 
 // adfNode is one node of an Atlassian Document Format tree. Text carries inline
