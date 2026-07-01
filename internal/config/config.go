@@ -693,15 +693,17 @@ func addProviderPhaseRoutesWithSources(routes map[string]string, sources map[str
 // seededPhaseModel is the cheap default model for a phase left unconfigured, or ""
 // when the phase gets no seed. Only Claude is seeded — sonnet/haiku are its model
 // aliases and its Opus default is the cost trap; codex/kimi keep their own default
-// tier. cleanup and sizejudge make judgments (sizejudge mis-sizes into a build
-// spin, cleanup rewrites the diff and can quarantine) so they floor at sonnet, not
-// haiku; lintfix is mechanical enough for haiku (or a deterministic LINT_FIX_CMD).
+// tier. cleanup, sizejudge, commit, and handoff make light judgments (sizejudge
+// mis-sizes into a build spin, cleanup rewrites the diff and can quarantine, commit
+// groups atomic Conventional-Commits, handoff writes the PR) so they floor at
+// sonnet, not haiku; lintfix is mechanical enough for haiku (or a deterministic
+// LINT_FIX_CMD). build/verify/repair/bugfix are unseeded — they keep the Opus default.
 func seededPhaseModel(provider, phase string) string {
 	if provider != "claude" {
 		return ""
 	}
 	switch phase {
-	case "cleanup", "sizejudge":
+	case "cleanup", "sizejudge", "commit", "handoff":
 		return "sonnet"
 	case "lintfix":
 		return "haiku"
@@ -1008,7 +1010,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "MAX_DAILY_TOKENS", Description: "Per-day token spend cap across all tickets; reaching it stops the run (empty = no cap)"},
 		{Key: "CLAUDE_BUILD_MODEL", Advanced: true, Description: "Claude model for build phase"},
 		{Key: "CLAUDE_BUILD_EFFORT", Advanced: true, Description: "Claude effort for build phase"},
-		{Key: "CLAUDE_HANDOFF_MODEL", Advanced: true, Description: "Claude model for handoff phase"},
+		{Key: "CLAUDE_HANDOFF_MODEL", Advanced: true, Description: "Claude model for handoff phase (defaults to sonnet)"},
 		{Key: "CLAUDE_HANDOFF_EFFORT", Advanced: true, Description: "Claude effort for handoff phase"},
 		{Key: "CLAUDE_VERIFY_MODEL", Advanced: true, Description: "Claude model for verify phase"},
 		{Key: "CLAUDE_VERIFY_EFFORT", Advanced: true, Description: "Claude effort for verify phase"},
@@ -1022,7 +1024,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "CLAUDE_LINTFIX_EFFORT", Advanced: true, Description: "Claude effort for lintfix phase"},
 		{Key: "CLAUDE_SIZEJUDGE_MODEL", Advanced: true, Description: "Claude model for size-judge phase (defaults to sonnet)"},
 		{Key: "CLAUDE_SIZEJUDGE_EFFORT", Advanced: true, Description: "Claude effort for size-judge phase"},
-		{Key: "CLAUDE_COMMIT_MODEL", Advanced: true, Description: "Claude model for commit phase"},
+		{Key: "CLAUDE_COMMIT_MODEL", Advanced: true, Description: "Claude model for commit phase (defaults to sonnet)"},
 		{Key: "CLAUDE_COMMIT_EFFORT", Advanced: true, Description: "Claude effort for commit phase"},
 		{Key: "CLAUDE_PICK_MODEL", Advanced: true, Description: "Claude model for pick phase"},
 		{Key: "CLAUDE_PICK_EFFORT", Advanced: true, Description: "Claude effort for pick phase"},
