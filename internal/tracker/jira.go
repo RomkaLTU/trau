@@ -231,10 +231,17 @@ func (j *Jira) epicPickPrompt(scope Scope, leaves map[string]bool) string {
 }
 
 // ListTeams enumerates the Jira projects the user can access — Jira's analogue
-// of a Linear team — via the Jira (Rovo) MCP, recovered from the TEAMS=
-// sentinel. A runner error with no parseable list is surfaced so onboarding can
-// fall back to manual entry. Labeled "list_teams".
+// of a Linear team. It uses the REST /project/search path when a token is
+// configured, falling back to the Rovo MCP (TEAMS= sentinel) on an
+// auth/not-enabled error. A runner error with no parseable list is surfaced so
+// onboarding can fall back to manual entry.
 func (j *Jira) ListTeams(ctx context.Context) ([]Team, error) {
+	if teams, err := j.listTeamsAPI(ctx); err == nil {
+		return teams, nil
+	} else if !jiraShouldFallback(err) {
+		return nil, err
+	}
+
 	res, err := j.Runner.Run(ctx, j.listTeamsPrompt(), "list_teams")
 	if teams, ok := parseTeams(res.Final); ok {
 		return teams, nil
@@ -243,6 +250,21 @@ func (j *Jira) ListTeams(ctx context.Context) ([]Team, error) {
 		return nil, err
 	}
 	return nil, fmt.Errorf("could not parse Jira projects")
+}
+
+func (j *Jira) listTeamsAPI(ctx context.Context) ([]Team, error) {
+	projects, err := j.api().ListProjects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Team, 0, len(projects))
+	for _, p := range projects {
+		if p.Key == "" {
+			continue
+		}
+		out = append(out, Team{Key: p.Key, Name: p.Name})
+	}
+	return out, nil
 }
 
 func (j *Jira) listTeamsPrompt() string {
