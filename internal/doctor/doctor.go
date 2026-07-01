@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 )
 
@@ -47,6 +48,7 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkProvider(ctx, cfg, rr)
 	checkConfig(ctx, cfg, sources, repoRoot, rr)
 	checkLinearLabels(ctx, cfg, rr)
+	checkJira(ctx, cfg, rr)
 	checkWritePerms(cfg, repoRoot, rr)
 
 	w.blank()
@@ -249,6 +251,42 @@ func checkLinearLabels(ctx context.Context, cfg config.Config, rr *runner) {
 		return
 	}
 	rr.add("linear labels", pass, fmt.Sprintf("%s and %s exist in team %q", cfg.ReadyLabel, cfg.QuarantineLabel, cfg.LinearTeam), "")
+}
+
+// checkJira validates the Jira REST credentials and, when they are present,
+// pings the site for a live auth check. Missing keys are a warning, not a
+// failure: the tracker falls back to the Rovo MCP, so a single-account MCP user
+// can still run. The token and Authorization header are never printed.
+func checkJira(ctx context.Context, cfg config.Config, rr *runner) {
+	if cfg.TrackerProvider != "jira" {
+		return
+	}
+	var missing []string
+	if strings.TrimSpace(cfg.JiraBaseURL) == "" {
+		missing = append(missing, "JIRA_BASE_URL")
+	}
+	if strings.TrimSpace(cfg.JiraEmail) == "" {
+		missing = append(missing, "JIRA_EMAIL")
+	}
+	if strings.TrimSpace(cfg.JiraAPIToken) == "" {
+		missing = append(missing, "JIRA_API_TOKEN")
+	}
+	if len(missing) > 0 {
+		rr.add("jira auth", warn,
+			fmt.Sprintf("%s not set — Jira ops will go through the Rovo MCP", strings.Join(missing, ", ")),
+			"set the Jira REST keys in ~/.trau.ini (or a per-repo .trau.ini) for fast direct API access")
+		return
+	}
+	if err := jiraapi.New(cfg.JiraBaseURL, cfg.JiraEmail, cfg.JiraAPIToken).Ping(ctx); err != nil {
+		if hint := jiraapi.AuthErrorMessage(err); hint != "" {
+			rr.add("jira auth", fail, "Jira REST authentication failed", hint)
+			return
+		}
+		rr.add("jira auth", fail, fmt.Sprintf("Jira REST ping failed: %v", err),
+			"verify JIRA_BASE_URL is reachable and the token is valid")
+		return
+	}
+	rr.add("jira auth", pass, fmt.Sprintf("authenticated to %s as %s", cfg.JiraBaseURL, cfg.JiraEmail), "")
 }
 
 func checkWritePerms(cfg config.Config, repoRoot string, rr *runner) {
