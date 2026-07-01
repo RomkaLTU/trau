@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -387,7 +388,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	con.Logf("provider=%s · AUTO_MERGE=%v · max=%d%s%s", cfg.Provider, cfg.AutoMerge, maxIter, parentSuffix, budgetSuffix)
 
-	eng := &realEngine{pipe: p, tracker: pm, scope: scope}
+	eng := &realEngine{pipe: p, tracker: pm, scope: scope, sink: sink, log: log}
 
 	total := func(ids []string) (int, float64, bool) {
 		t, c := 0, 0.0
@@ -796,6 +797,8 @@ type realEngine struct {
 	pipe    *pipeline.Pipeline
 	tracker tracker.Tracker
 	scope   tracker.Scope
+	sink    *tokens.Sink
+	log     *event.Log
 	// resumeKeep, when set, restricts the resume scan to ids it accepts — the epic
 	// flow sets it to the epic's child set so a stale checkpoint for an unrelated
 	// ticket in the same runs/ dir is skipped rather than resumed. Nil scans all.
@@ -811,7 +814,32 @@ func (e *realEngine) InferredResume(ctx context.Context) (string, string) {
 func (e *realEngine) EnsureCleanBase(ctx context.Context) error { return e.pipe.EnsureCleanBase(ctx) }
 func (e *realEngine) Pick(ctx context.Context) (string, error)  { return e.tracker.Pick(ctx, e.scope) }
 func (e *realEngine) Process(ctx context.Context, id, from string) error {
-	return e.pipe.Resume(ctx, id, from)
+	err := e.pipe.Resume(ctx, id, from)
+	e.flagCostAnomalies(id)
+	return err
+}
+
+// flagCostAnomalies runs the post-run cost-anomaly check for a ticket the size
+// judge called one-window: it records any tripped phases to runs/<id>/anomalies.jsonl,
+// stamps the count onto the checkpoint (so --status can surface it), and emits one
+// summary event. A no-op when nothing tripped or the sink/log are unset.
+func (e *realEngine) flagCostAnomalies(id string) {
+	if e.sink == nil {
+		return
+	}
+	anomalies := e.sink.Flag(id)
+	if len(anomalies) == 0 {
+		return
+	}
+	_ = e.pipe.State.Set(id, "ANOMALIES", strconv.Itoa(len(anomalies)))
+	phases := make([]string, len(anomalies))
+	for i, a := range anomalies {
+		phases[i] = a.Phase
+	}
+	if e.log != nil {
+		e.log.Emit("cost_anomaly", "", fmt.Sprintf("%s: cost anomaly in %s", id, strings.Join(phases, ", ")),
+			map[string]any{"id": id, "phases": phases})
+	}
 }
 func (e *realEngine) Finalize(ctx context.Context) error { return e.pipe.FinalizeEpic(ctx) }
 func (e *realEngine) BudgetExhausted() (string, bool)    { return e.pipe.BudgetExhausted() }
@@ -1518,7 +1546,7 @@ func (a *appActions) ensure() error {
 		return err
 	}
 	a.pipe = pipe
-	a.eng = &realEngine{pipe: a.pipe, tracker: a.tracker, scope: a.scope}
+	a.eng = &realEngine{pipe: a.pipe, tracker: a.tracker, scope: a.scope, sink: a.sink, log: a.log}
 	return nil
 }
 

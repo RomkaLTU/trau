@@ -235,6 +235,13 @@ func ticketNum(id string) (int, bool) {
 	return n, true
 }
 
+// atoiSafe parses a stored integer field, yielding 0 for an empty or malformed
+// value so an absent checkpoint field reads as zero rather than erroring.
+func atoiSafe(v string) int {
+	n, _ := strconv.Atoi(v)
+	return n
+}
+
 // RemoveState deletes ticket id's state file (runs/<ID>/state), leaving the rest
 // of the run directory (logs, tokens.jsonl) intact, so a stuck attempt can be
 // reset and re-queued. A missing file is not an error (idempotent reset).
@@ -251,7 +258,7 @@ func (s *Store) RemoveState(id string) error {
 // injects tokens.Sink.Total, keeping this package independent of the tokens
 // package. It never errors; an empty runs/ prints a "no saved state" line.
 func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost float64, metered bool)) {
-	_, _ = fmt.Fprintf(w, "  %-10s %-12s %12s %9s  %s\n", "ID", "PHASE", "TOKENS", "COST", "PR")
+	_, _ = fmt.Fprintf(w, "  %-10s %-12s %12s %9s %5s  %s\n", "ID", "PHASE", "TOKENS", "COST", "ANOM", "PR")
 
 	ids := s.Tickets()
 	if len(ids) == 0 {
@@ -268,7 +275,7 @@ func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost floa
 			phase = "?"
 		}
 		tok, cost, metered := total(id)
-		_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s  %s\n", id, phase, tok, fmtCostCell(cost, metered), s.Get(id, "PR_URL"))
+		_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s %5s  %s\n", id, phase, tok, fmtCostCell(cost, metered), s.Get(id, "ANOMALIES"), s.Get(id, "PR_URL"))
 		grandTokens += tok
 		grandCost = math.Round((grandCost+cost)*100) / 100
 		grandMetered = grandMetered && metered
@@ -293,6 +300,7 @@ func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost 
 		Tokens        int     `json:"tokens"`
 		Cost          float64 `json:"cost"`
 		CostMeasured  bool    `json:"cost_measured"`
+		Anomalies     int     `json:"anomalies,omitempty"`
 	}
 	var report struct {
 		Tickets []ticket `json:"tickets"`
@@ -320,6 +328,7 @@ func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost 
 			Tokens:        tok,
 			Cost:          cost,
 			CostMeasured:  metered,
+			Anomalies:     atoiSafe(s.Get(id, "ANOMALIES")),
 		})
 		report.Total.Tokens += tok
 		report.Total.Cost = math.Round((report.Total.Cost+cost)*100) / 100

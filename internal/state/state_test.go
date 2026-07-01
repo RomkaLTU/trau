@@ -248,6 +248,7 @@ func TestStatusGolden(t *testing.T) {
 	_ = s.Set("COD-10", "PHASE", Building)
 	_ = s.Set("COD-2", "PHASE", Verified)
 	_ = s.Set("COD-2", "PR_URL", "https://example/pr/1")
+	_ = s.Set("COD-2", "ANOMALIES", "2")
 
 	totals := map[string]struct {
 		tok     int
