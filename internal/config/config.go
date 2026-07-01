@@ -95,6 +95,14 @@ type Config struct {
 	// single-ticket run, warning about) one too large to finish in a single build
 	// window. Set 0 to disable it entirely (no extra call, zero added cost).
 	SizeJudge bool
+	// LintFix gates the pre-verify lint-fix step: when on (default), the project's
+	// automated lint/format fixers run over the working tree just before verify so
+	// the verify gate isn't spent self-healing mechanical style noise. LintFixCmd, if
+	// set, is that command (run deterministically, zero tokens); left empty, a cheap
+	// agent step detects and runs the project's fixers instead. Set LintFix 0 to skip
+	// the step entirely.
+	LintFix    bool
+	LintFixCmd string
 
 	BrowserVerify string
 	AppURL        string
@@ -195,6 +203,7 @@ func Defaults() Config {
 		RequireCI:             true,
 		RequireRepoChanges:    true,
 		SizeJudge:             true,
+		LintFix:               true,
 		BrowserVerify:         "auto",
 		AppURL:                "http://localhost",
 		VerifyChecks:          true,
@@ -512,6 +521,11 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		c.SizeJudge = v == "1"
 		sources["SIZE_JUDGE"] = src.name
 	}
+	if v, src := get("LINT_FIX"); v != "" {
+		c.LintFix = v == "1"
+		sources["LINT_FIX"] = src.name
+	}
+	str("LINT_FIX_CMD", &c.LintFixCmd)
 	str("BROWSER_VERIFY", &c.BrowserVerify)
 	str("APP_URL", &c.AppURL)
 	if v, src := get("VERIFY_CHECKS"); v != "" {
@@ -925,6 +939,8 @@ func KnownKeys() []KeyMeta {
 		{Key: "REQUIRE_CI", Default: "1", Description: "Gate merge on CI; set 0 for repos with no PR CI (1 = yes, 0 = no)", Bool: true},
 		{Key: "SIZE_JUDGE", Advanced: true, Default: "1", Description: "Pre-flight LLM size judge: quarantine (or warn) tickets too big for one build window (1 = yes, 0 = no)", Bool: true},
 		{Key: "SPLIT_LABEL", Advanced: true, Default: "needs-split", Description: "Label applied to a ticket the size judge flags as too large to build in one window"},
+		{Key: "LINT_FIX", Default: "1", Description: "Run the project's lint/format autofixers before verify so verify isn't spent self-healing style noise (1 = yes, 0 = no)", Bool: true},
+		{Key: "LINT_FIX_CMD", Description: "Deterministic lint-fix command run before verify (e.g. vendor/bin/pint, npm run lint:fix). Empty = a cheap agent auto-detects and runs the project's fixers"},
 		{Key: "BROWSER_VERIFY", Default: "auto", Description: "Browser verify: auto | always | never", Options: []string{"auto", "always", "never"}},
 		{Key: "APP_URL", Default: "http://localhost", Description: "Local app URL for browser verify"},
 		{Key: "VERIFY_CHECKS", Default: "1", Description: "Run the pluggable verify-check library (.trau/checks); 1 = yes, 0 = no", Bool: true},
@@ -1321,6 +1337,13 @@ func keyValue(cfg Config, key string) string {
 			return "1"
 		}
 		return "0"
+	case "LINT_FIX":
+		if cfg.LintFix {
+			return "1"
+		}
+		return "0"
+	case "LINT_FIX_CMD":
+		return cfg.LintFixCmd
 	case "BROWSER_VERIFY":
 		return cfg.BrowserVerify
 	case "APP_URL":
