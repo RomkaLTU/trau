@@ -62,7 +62,9 @@ type Actions interface {
 
 	// RunTicket runs a single chosen ticket through the pipeline — resuming its own
 	// checkpoint when it has one — routing progress to r and closing with r.LoopDone.
-	RunTicket(ctx context.Context, id string, r console.Renderer)
+	// A non-empty provider applies an ephemeral single-run override of the default
+	// provider (Run once only); other callers pass "".
+	RunTicket(ctx context.Context, id, provider string, r console.Renderer)
 
 	// OnboardingNeeded reports whether the project is missing the setup required
 	// to run the loop. When true, the menu shell starts in the onboarding wizard
@@ -77,6 +79,14 @@ type ListedTicket struct {
 	State string
 }
 
+// ProviderChoice is one selectable provider and the model it would run, in the
+// fixed cycle order (claude → codex → kimi). The Run once screen renders and
+// cycles these to pick an ephemeral per-run provider override.
+type ProviderChoice struct {
+	Name  string
+	Model string
+}
+
 // MenuInfo is the at-a-glance context shown on the landing screen.
 type MenuInfo struct {
 	Version       string
@@ -89,6 +99,9 @@ type MenuInfo struct {
 	InFlight      int
 	Done          int
 	Resume        ResumeTarget
+	// Providers is the fixed-order set the Run once screen cycles for an
+	// ephemeral provider override; Provider names the config default within it.
+	Providers []ProviderChoice
 }
 
 // ResumeTarget names the in-flight ticket the next run will continue before it
@@ -437,9 +450,9 @@ func (m appModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case m.loopSetup.Cancelled():
 				return m.toMenu(), nil
 			case m.loopSetup.Selected() != "":
-				return m.startRunTicket(m.loopSetup.Selected())
+				return m.startRunTicket(m.loopSetup.Selected(), "")
 			case m.loopSetup.Single():
-				return m.startRunTicket(m.loopSetup.Epic())
+				return m.startRunTicket(m.loopSetup.Epic(), "")
 			default:
 				return m.startRunLoop(m.loopSetup.Epic())
 			}
@@ -453,7 +466,7 @@ func (m appModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.runOnce.Cancelled() {
 				return m.toMenu(), nil
 			}
-			return m.startRunTicket(m.runOnce.Selected())
+			return m.startRunTicket(m.runOnce.Selected(), m.runOnce.Provider())
 		}
 		return m, cmd
 
@@ -675,7 +688,7 @@ func (m appModel) handleSummaryKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.dash = applyDash(m.dash, msg)
 		return m, nil
 	case msg.String() == "r" && hasSel && recoverable(sel):
-		return m.startRunTicket(sel.ID)
+		return m.startRunTicket(sel.ID, "")
 	case msg.String() == "b" && hasSel && sel.Branch != "":
 		return m, m.checkoutFromSummaryCmd(m.baseCtx, sel.ID)
 	case msg.String() == "x" && hasSel && recoverable(sel):
@@ -710,19 +723,19 @@ func (m appModel) resetFromSummaryCmd(ctx context.Context, id string) tea.Cmd {
 	}
 }
 
-func (m appModel) startRunTicket(id string) (tea.Model, tea.Cmd) {
+func (m appModel) startRunTicket(id, provider string) (tea.Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(m.baseCtx)
 	m.loopCancel = cancel
 	m.subReturn = viewMenu
 	m.dash = freshDash(m.width, m.height)
 	m.view = viewRunning
-	return m, tea.Batch(m.dash.Init(), m.runTicketCmd(ctx, id))
+	return m, tea.Batch(m.dash.Init(), m.runTicketCmd(ctx, id, provider))
 }
 
-func (m appModel) runTicketCmd(ctx context.Context, id string) tea.Cmd {
+func (m appModel) runTicketCmd(ctx context.Context, id, provider string) tea.Cmd {
 	actions, r := m.actions, m.renderer
 	return func() tea.Msg {
-		actions.RunTicket(ctx, id, r)
+		actions.RunTicket(ctx, id, provider, r)
 		return nil
 	}
 }

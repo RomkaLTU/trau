@@ -1332,6 +1332,11 @@ func (a *appActions) MenuInfo() tui.MenuInfo {
 		InFlight:      inFlight,
 		Done:          done,
 		Resume:        resume,
+		Providers: []tui.ProviderChoice{
+			{Name: "claude", Model: modelEffortTag(a.cfg.ClaudeModel, a.cfg.ClaudeEffort)},
+			{Name: "codex", Model: modelEffortTag(a.cfg.CodexModel, a.cfg.CodexEffort)},
+			{Name: "kimi", Model: modelEffortTag(a.cfg.KimiModel, "")},
+		},
 	}
 }
 
@@ -1696,7 +1701,22 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 // resuming its saved checkpoint when it has one and otherwise starting fresh from
 // a clean base. Progress routes to the dashboard renderer r, always closing with
 // r.LoopDone so the shell flips to the summary.
-func (a *appActions) RunTicket(ctx context.Context, id string, r console.Renderer) {
+//
+// A non-empty provider is an ephemeral single-run override of the default: it is
+// snapshotted, applied, the built deps invalidated so ensure() rebuilds the
+// router/tracker/pipeline for it, and restored on return — so the menu and later
+// runs fall back to the config default. Per-phase Routes and FALLBACK_PROVIDERS
+// are untouched (they layer on top of whichever default is active).
+func (a *appActions) RunTicket(ctx context.Context, id, provider string, r console.Renderer) {
+	if provider != "" && provider != a.cfg.Provider {
+		orig := a.cfg.Provider
+		a.cfg.Provider = provider
+		a.built = false
+		defer func() {
+			a.cfg.Provider = orig
+			a.built = false
+		}()
+	}
 	if err := a.ensure(); err != nil {
 		r.LoopDone(console.SessionSummary{Err: err})
 		return

@@ -28,15 +28,16 @@ type runOnceModel struct {
 	height  int
 	info    MenuInfo
 
-	step      runOnceStep
-	input     textinput.Model
-	eligible  []ListedTicket
-	cursor    int
-	loadErr   error
-	badID     bool
-	done      bool
-	cancelled bool
-	selected  string
+	step        runOnceStep
+	input       textinput.Model
+	eligible    []ListedTicket
+	cursor      int
+	providerIdx int
+	loadErr     error
+	badID       bool
+	done        bool
+	cancelled   bool
+	selected    string
 }
 
 type eligibleLoadedMsg struct {
@@ -53,16 +54,28 @@ func newRunOnceModel(ctx context.Context, actions Actions, styles Styles, info M
 	ti.Focus()
 
 	return runOnceModel{
-		styles:   styles,
-		actions:  actions,
-		ctx:      ctx,
-		width:    w,
-		height:   h,
-		info:     info,
-		step:     runOnceConfirm,
-		input:    ti,
-		eligible: nil,
+		styles:      styles,
+		actions:     actions,
+		ctx:         ctx,
+		width:       w,
+		height:      h,
+		info:        info,
+		step:        runOnceConfirm,
+		input:       ti,
+		eligible:    nil,
+		providerIdx: providerIndex(info.Providers, info.Provider),
 	}
+}
+
+// providerIndex is the cycle start: the position of the config default within
+// the fixed provider set, or 0 when it isn't found (empty set included).
+func providerIndex(providers []ProviderChoice, dflt string) int {
+	for i, p := range providers {
+		if p.Name == dflt {
+			return i
+		}
+	}
+	return 0
 }
 
 func (m runOnceModel) Init() tea.Cmd { return textinput.Blink }
@@ -106,6 +119,9 @@ func (m runOnceModel) handleKey(msg tea.KeyMsg) (runOnceModel, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			m.cancelled, m.done = true, true
+			return m, nil
+		case tea.KeyShiftTab:
+			m.providerIdx = cycleProvider(m.providerIdx, len(m.info.Providers))
 			return m, nil
 		case tea.KeyEnter:
 			m.badID = false
@@ -158,16 +174,26 @@ func (m runOnceModel) handleKey(msg tea.KeyMsg) (runOnceModel, tea.Cmd) {
 				m.selected = rows[m.cursor].ID
 				m.done = true
 			}
-		case tea.KeyUp, tea.KeyShiftTab:
+		case tea.KeyShiftTab:
+			m.providerIdx = cycleProvider(m.providerIdx, len(m.info.Providers))
+		case tea.KeyUp:
 			if m.cursor > 0 {
 				m.cursor--
 			}
-		case tea.KeyDown, tea.KeyTab:
+		case tea.KeyDown:
 			if m.cursor < len(rows)-1 {
 				m.cursor++
 			}
 		}
 		switch msg.String() {
+		case "k":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "j":
+			if m.cursor < len(rows)-1 {
+				m.cursor++
+			}
 		case "o":
 			if m.cursor >= 0 && m.cursor < len(rows) {
 				return m, openURLCmd(linearIssueURL(rows[m.cursor].ID))
@@ -192,6 +218,35 @@ func (m runOnceModel) loadEligibleCmd() tea.Cmd {
 func (m runOnceModel) Done() bool       { return m.done }
 func (m runOnceModel) Cancelled() bool  { return m.cancelled }
 func (m runOnceModel) Selected() string { return m.selected }
+
+// Provider returns the picked provider for an ephemeral single-run override, or
+// "" when it matches the config default (so no override is applied).
+func (m runOnceModel) Provider() string {
+	name, _ := m.pickedProvider()
+	if name == "" || name == m.info.Provider {
+		return ""
+	}
+	return name
+}
+
+// pickedProvider is the currently-cycled provider name and its model, falling
+// back to the MenuInfo default when the provider set is empty.
+func (m runOnceModel) pickedProvider() (name, model string) {
+	if m.providerIdx >= 0 && m.providerIdx < len(m.info.Providers) {
+		p := m.info.Providers[m.providerIdx]
+		return p.Name, p.Model
+	}
+	return m.info.Provider, m.info.Model
+}
+
+// cycleProvider advances the provider index one step, wrapping around; a
+// non-positive count leaves it unchanged.
+func cycleProvider(idx, n int) int {
+	if n <= 0 {
+		return idx
+	}
+	return (idx + 1) % n
+}
 
 func (m runOnceModel) body(spinnerView string) string {
 	switch m.step {
@@ -301,32 +356,48 @@ func (m runOnceModel) listColumnWidths() (idW, titleW int) {
 	return idW, titleW
 }
 
+// canSwitchProvider reports whether there is more than one provider to cycle,
+// so the marker/hint only advertise the toggle when it does something.
+func (m runOnceModel) canSwitchProvider() bool { return len(m.info.Providers) > 1 }
+
 func (m runOnceModel) summary() string {
 	s := m.styles
 	info := m.info
 
-	agent := firstNonEmpty(info.Provider, "?")
-	if info.Model != "" {
-		agent += " · " + info.Model
+	name, model := m.pickedProvider()
+	agent := firstNonEmpty(name, "?")
+	if model != "" {
+		agent += " · " + model
 	}
 	parts := []string{agent}
 	if info.Base != "" {
 		parts = append(parts, "base "+info.Base)
 	}
-	return s.Help.Render(strings.Join(parts, " · ")) + "\n" +
+	line := s.Help.Render(strings.Join(parts, " · "))
+	if m.canSwitchProvider() {
+		line += "  " + s.Subtle.Render("⇥ switch provider")
+	}
+	if name != "" && info.Provider != "" && name != info.Provider {
+		line += " " + s.Help.Render("(default: "+info.Provider+")")
+	}
+	return line + "\n" +
 		s.Help.Render(fmt.Sprintf("%d in-flight · %d done", info.InFlight, info.Done))
 }
 
 func (m runOnceModel) hint() string {
+	sw := ""
+	if m.canSwitchProvider() {
+		sw = " · ⇥ switch provider"
+	}
 	switch m.step {
 	case runOnceLoading:
 		return "loading… · esc cancel"
 	case runOnceList:
-		return "↑↓ move · enter run selected · 'o' open · 'r' refresh · esc back"
+		return "↑↓/jk move · enter run" + sw + " · 'o' open · 'r' refresh · esc back"
 	default:
 		if m.info.Resume.Active() {
-			return "enter resume " + m.info.Resume.ID + " · type an ID to pick another · 'l' load · esc back"
+			return "enter resume " + m.info.Resume.ID + " · type an ID" + sw + " · 'l' load · esc back"
 		}
-		return "type an ID · 'l' load eligible · enter run · esc back"
+		return "type an ID" + sw + " · 'l' load eligible · enter run · esc back"
 	}
 }
