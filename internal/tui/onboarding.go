@@ -44,6 +44,15 @@ type SetupResult struct {
 	LabelErr   error
 }
 
+// JiraCreds carries the REST credentials entered in the wizard so team
+// detection enumerates projects as that Jira identity, rather than falling back
+// to the shared Rovo MCP account (a different Atlassian identity).
+type JiraCreds struct {
+	BaseURL  string
+	Email    string
+	APIToken string
+}
+
 // DetectedTeam is one selectable project-management container surfaced by the
 // wizard — a Linear team, a Jira project, or a GitHub repository slug. Key is
 // the value stored in config; Name is the label shown to the user.
@@ -96,9 +105,11 @@ type OnboardingActions interface {
 
 	// DetectTeams enumerates the selectable containers for the chosen tracker,
 	// driving the PM tool through the chosen AI provider where needed (Linear,
-	// Jira); GitHub is detected locally from the git remote. An error means the
+	// Jira); GitHub is detected locally from the git remote. The jira creds
+	// entered in the wizard are passed so Jira detection queries the REST API as
+	// that identity instead of the shared Rovo MCP account. An error means the
 	// wizard should fall back to manual entry.
-	DetectTeams(ctx context.Context, trackerProvider, aiProvider string) (TeamDetection, error)
+	DetectTeams(ctx context.Context, trackerProvider, aiProvider string, jira JiraCreds) (TeamDetection, error)
 
 	// SetupProject writes the project env file (and optionally creates Linear
 	// labels) from the values collected in the wizard.
@@ -777,10 +788,24 @@ func (m onboardingModel) detectTeamsCmd() tea.Cmd {
 	actions := m.actions
 	trackerProvider := m.selectedTracker()
 	aiProvider := m.selectedProvider()
+	jira := JiraCreds{
+		BaseURL:  strings.TrimSpace(m.jiraBaseURL.Value()),
+		Email:    strings.TrimSpace(m.jiraEmail.Value()),
+		APIToken: strings.TrimSpace(m.jiraToken.Value()),
+	}
 	return func() tea.Msg {
-		det, err := actions.DetectTeams(ctx, trackerProvider, aiProvider)
+		det, err := actions.DetectTeams(ctx, trackerProvider, aiProvider, jira)
 		return teamsDetectedMsg{detection: det, err: err}
 	}
+}
+
+// jiraRESTConfigured reports whether the wizard collected a full set of Jira
+// REST credentials, so detection uses the direct API (that identity) rather than
+// the shared Rovo MCP.
+func (m onboardingModel) jiraRESTConfigured() bool {
+	return strings.TrimSpace(m.jiraBaseURL.Value()) != "" &&
+		strings.TrimSpace(m.jiraEmail.Value()) != "" &&
+		strings.TrimSpace(m.jiraToken.Value()) != ""
 }
 
 func (m onboardingModel) applyTeamsDetected(msg teamsDetectedMsg) onboardingModel {
@@ -1809,12 +1834,16 @@ func (m onboardingModel) renderLinearTeam() string {
 	label := m.entityLabel()
 
 	if m.teamDetecting {
+		detail := "Driving the " + m.selectedTracker() + " MCP through " + m.selectedProvider() + " — this can take a few seconds."
+		if m.selectedTracker() == "jira" && m.jiraRESTConfigured() {
+			detail = "Querying the Jira REST API with the credentials you entered…"
+		}
 		return lipgloss.JoinVertical(lipgloss.Left,
 			s.SummaryTitle.Render(title),
 			"",
 			m.teamSpin.View()+" "+s.Info.Render("Detecting your "+pluralLabel(label)+"…"),
 			"",
-			s.Subtle.Render("Driving the "+m.selectedTracker()+" MCP through "+m.selectedProvider()+" — this can take a few seconds."),
+			s.Subtle.Render(detail),
 		)
 	}
 
@@ -1831,7 +1860,8 @@ func (m onboardingModel) renderLinearTeam() string {
 	if m.teamManual {
 		rows := []string{s.SummaryTitle.Render(title), ""}
 		if m.teamDetectErr != nil {
-			rows = append(rows, s.Warning.Render("Couldn't detect "+pluralLabel(label)+" automatically — enter it manually."), "")
+			rows = append(rows, s.Warning.Render("Couldn't detect "+pluralLabel(label)+" automatically — enter it manually."))
+			rows = append(rows, s.Subtle.Render(m.teamDetectErr.Error()), "")
 		}
 		rows = append(rows, desc, "", m.team.View())
 		return strings.Join(rows, "\n")
