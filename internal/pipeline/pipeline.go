@@ -283,6 +283,8 @@ type Pipeline struct {
 	// set, is run deterministically in RepoRoot; empty falls back to a cheap agent.
 	LintFix    bool
 	LintFixCmd string
+	// Cleanup gates the pre-verify slop-cleanup step (config CLEANUP).
+	Cleanup bool
 	// Attended is true only for a human-driven, explicitly-named single-ticket run
 	// in an interactive terminal. It flips the size guard from quarantine (the
 	// autonomous-loop / headless default) to a non-blocking warning, so a person
@@ -425,6 +427,9 @@ func (p *Pipeline) runPhases(ctx context.Context, id string, fi int) error {
 	}
 	if fi < 4 {
 		if err := p.lintFix(ctx, id); err != nil {
+			return err
+		}
+		if err := p.cleanup(ctx, id); err != nil {
 			return err
 		}
 		if err := p.Verify(ctx, id); err != nil {

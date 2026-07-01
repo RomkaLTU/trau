@@ -172,6 +172,9 @@ LINT_FIX=1                   # 1 = just before verify, run the project's automat
 LINT_FIX_CMD=                # deterministic fixer command run in the target repo before verify, e.g.
                              # vendor/bin/pint or "npm run lint:fix" — zero tokens, exit code ignored
                              # (fails open). Empty = a cheap agent auto-detects and runs the project's fixers.
+CLEANUP=1                    # 1 = just before verify, a cheap agent strips AI-slop from the slice's diff —
+                             # unnecessary comments, dead code, over-defensive scaffolding — so the code reads
+                             # hand-written. Behavior-preserving; fails open. 0 disables it.
 BROWSER_VERIFY=auto          # auto (browser only for UI slices) | always | never
 APP_URL=http://localhost     # base URL of your locally-running app (used by browser verify)
 # Run the pluggable verify-check library each verify phase. Checks live in the

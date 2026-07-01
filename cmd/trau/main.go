@@ -700,6 +700,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		SplitLabel:         cfg.SplitLabel,
 		LintFix:            cfg.LintFix,
 		LintFixCmd:         cfg.LintFixCmd,
+		Cleanup:            cfg.Cleanup,
 		CITimeout:          cfg.CITimeout,
 		CIPoll:             cfg.CIPoll,
 		Lessons:            cfg.Lessons,
