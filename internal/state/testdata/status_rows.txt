@@ -1,4 +1,4 @@
-  ID         PHASE              TOKENS      COST  PR
-  COD-10     building               50       $0  
-  COD-2      verified             1200    $0.12  https://example/pr/1
+  ID         PHASE              TOKENS      COST  ANOM  PR
+  COD-10     building               50       $0        
+  COD-2      verified             1200    $0.12     2  https://example/pr/1
   TOTAL                           1250    $0.12

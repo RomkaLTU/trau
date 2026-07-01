@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -134,6 +135,31 @@ func TestSizeGuard(t *testing.T) {
 				t.Errorf("labels = %v, want none", tr.labels)
 			}
 		})
+	}
+}
+
+// TestSizeGuardPersistsDurableVerdict covers the durable copy the post-run
+// cost-anomaly flag (COD-644) keys off: a usable verdict is written to
+// runs/<id>/sizejudge.json, surviving after /tmp is gone.
+func TestSizeGuardPersistsDurableVerdict(t *testing.T) {
+	id := "COD-63202"
+	t.Cleanup(func() { _ = os.Remove(sizeJudgePath(id)) })
+
+	runner := &sizeRunner{path: sizeJudgePath(id), verdict: `{"fits_one_window":true,"reason":"","suggested_slices":[]}`}
+	tr := &sizeTracker{fakeTracker: &fakeTracker{}, detail: tracker.IssueDetail{Title: "small", Description: "little to do"}}
+	p := newTestPipeline(t, runner, tr)
+	p.SizeJudge = true
+
+	if err := p.sizeGuard(context.Background(), id); err != nil {
+		t.Fatalf("sizeGuard err = %v, want nil", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(p.RunsDir, id, "sizejudge.json"))
+	if err != nil {
+		t.Fatalf("durable verdict not written: %v", err)
+	}
+	if !strings.Contains(string(data), `"fits_one_window":true`) {
+		t.Errorf("durable verdict = %s, want fits_one_window:true", data)
 	}
 }
 

@@ -1,2 +1,2 @@
-  ID         PHASE              TOKENS      COST  PR
+  ID         PHASE              TOKENS      COST  ANOM  PR
   (no saved ticket state in {{ROOT}})

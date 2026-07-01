@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -63,6 +64,7 @@ func (p *Pipeline) sizeGuard(ctx context.Context, id string) error {
 		p.logf("  size judge: no usable verdict for %s (skipping)", id)
 		return nil
 	}
+	p.persistSizeVerdict(id, v)
 	if v.FitsOneWindow {
 		return nil
 	}
@@ -129,6 +131,21 @@ func trimmedSlices(slices []string) []string {
 		}
 	}
 	return out
+}
+
+// persistSizeVerdict writes a durable copy of the verdict to runs/<id>/sizejudge.json
+// so post-run consumers (the cost-anomaly flag, a resumed cleanup gate) can key off
+// fits_one_window after /tmp is gone. Best-effort, like persistHandoff.
+func (p *Pipeline) persistSizeVerdict(id string, v sizeVerdict) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	dir := filepath.Join(p.RunsDir, id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, "sizejudge.json"), data, 0o644)
 }
 
 func readSizeVerdict(path string) (sizeVerdict, bool) {
