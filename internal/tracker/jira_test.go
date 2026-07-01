@@ -85,6 +85,53 @@ func jiraIssueServer(payload string) *httptest.Server {
 	}))
 }
 
+// With a token set, ListTeams enumerates projects via /project/search and maps
+// them onto teams without touching the runner.
+func TestJiraListTeamsUsesAPIWhenTokenSet(t *testing.T) {
+	srv := jiraIssueServer(`{"values":[{"key":"PROJ","name":"Project X","id":"1"},{"key":"OPS","name":"Operations","id":"2"}],"startAt":0,"maxResults":50,"total":2,"isLast":true}`)
+	defer srv.Close()
+
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	teams, err := j.ListTeams(context.Background())
+	if err != nil {
+		t.Fatalf("ListTeams error: %v", err)
+	}
+	want := []Team{{Key: "PROJ", Name: "Project X"}, {Key: "OPS", Name: "Operations"}}
+	if len(teams) != len(want) {
+		t.Fatalf("teams = %+v, want %+v", teams, want)
+	}
+	for i, tm := range want {
+		if teams[i] != tm {
+			t.Errorf("team[%d] = %+v, want %+v", i, teams[i], tm)
+		}
+	}
+	if runner.calls["list_teams"] != 0 {
+		t.Errorf("expected no MCP fallback when the API answers, got %d list_teams calls", runner.calls["list_teams"])
+	}
+}
+
+// With no token the direct path is disabled (ErrNotEnabled), so ListTeams falls
+// back to the MCP runner and parses its TEAMS= sentinel.
+func TestJiraListTeamsFallsBackToRunner(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{
+		"list_teams": {Final: `TEAMS=[{"key":"PROJ","name":"Project X"}]`},
+	}}
+	j := &Jira{Runner: runner, Team: "PROJ"}
+
+	teams, err := j.ListTeams(context.Background())
+	if err != nil {
+		t.Fatalf("ListTeams error: %v", err)
+	}
+	if len(teams) != 1 || teams[0].Key != "PROJ" || teams[0].Name != "Project X" {
+		t.Errorf("teams = %+v, want [PROJ/Project X]", teams)
+	}
+	if runner.calls["list_teams"] != 1 {
+		t.Errorf("expected exactly one MCP list_teams call, got %d", runner.calls["list_teams"])
+	}
+}
+
 // mapJiraStatus is the load-bearing mapping the ACs call out: statusCategory →
 // open/done/unknown, with a done-category resolution name flipping to canceled.
 func TestMapJiraStatus(t *testing.T) {
