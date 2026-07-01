@@ -47,7 +47,15 @@ type Config struct {
 	ReadyLabel      string
 	QuarantineLabel string
 	SplitLabel      string
-	APIKey          string // Linear API key; enables direct GraphQL calls
+	// APIKey is the tracker's API secret: the Linear API key (GraphQL) or the
+	// Jira API token (Basic-auth password). Empty disables the direct API and
+	// leaves the provider on its MCP path.
+	APIKey string
+	// BaseURL and Email carry the extra credentials Jira Basic auth needs beyond
+	// the token: the site base URL and the account email. Both are unused by the
+	// Linear and GitHub providers.
+	BaseURL string
+	Email   string
 }
 
 // SubIssue is a lightweight identifier+title pair for an issue's children. Done
@@ -268,7 +276,17 @@ func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 			APIKey:          cfg.APIKey,
 		}, nil
 	case "jira":
-		return &Jira{Runner: runner, Team: cfg.Team, Project: cfg.Project, ReadyLabel: cfg.ReadyLabel, QuarantineLabel: cfg.QuarantineLabel, SplitLabel: cfg.SplitLabel}, nil
+		return &Jira{
+			Runner:          runner,
+			Team:            cfg.Team,
+			Project:         cfg.Project,
+			ReadyLabel:      cfg.ReadyLabel,
+			QuarantineLabel: cfg.QuarantineLabel,
+			SplitLabel:      cfg.SplitLabel,
+			BaseURL:         cfg.BaseURL,
+			Email:           cfg.Email,
+			APIToken:        cfg.APIKey,
+		}, nil
 	case "github":
 		return &GitHub{Runner: runner, Repo: cfg.Team, ReadyLabel: cfg.ReadyLabel, QuarantineLabel: cfg.QuarantineLabel, SplitLabel: cfg.SplitLabel}, nil
 	default:

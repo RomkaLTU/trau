@@ -490,14 +490,20 @@ func runDoctor(ctx context.Context, args []string, stderr io.Writer) error {
 }
 
 func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, error) {
-	return tracker.New(cfg.TrackerProvider, runner, tracker.Config{
+	tc := tracker.Config{
 		Team:            cfg.LinearTeam,
 		Project:         cfg.Project,
 		ReadyLabel:      cfg.ReadyLabel,
 		QuarantineLabel: cfg.QuarantineLabel,
 		SplitLabel:      cfg.SplitLabel,
 		APIKey:          cfg.LinearAPIKey,
-	})
+	}
+	if cfg.TrackerProvider == "jira" {
+		tc.APIKey = cfg.JiraAPIToken
+		tc.BaseURL = cfg.JiraBaseURL
+		tc.Email = cfg.JiraEmail
+	}
+	return tracker.New(cfg.TrackerProvider, runner, tc)
 }
 
 // reconciledTicket records a stale local checkpoint that --status cleared because

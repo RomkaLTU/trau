@@ -37,6 +37,9 @@ type Config struct {
 	LinearTeam      string
 	IssuePrefix     string
 	LinearAPIKey    string
+	JiraBaseURL     string
+	JiraEmail       string
+	JiraAPIToken    string
 	ReadyLabel      string
 	QuarantineLabel string
 	SplitLabel      string
@@ -424,6 +427,9 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("LINEAR_TEAM", &c.LinearTeam)
 	str("ISSUE_PREFIX", &c.IssuePrefix)
 	str("LINEAR_API_KEY", &c.LinearAPIKey)
+	str("JIRA_BASE_URL", &c.JiraBaseURL)
+	str("JIRA_EMAIL", &c.JiraEmail)
+	str("JIRA_API_TOKEN", &c.JiraAPIToken)
 	str("READY_LABEL", &c.ReadyLabel)
 	str("QUARANTINE_LABEL", &c.QuarantineLabel)
 	str("SPLIT_LABEL", &c.SplitLabel)
@@ -947,6 +953,9 @@ func KnownKeys() []KeyMeta {
 		{Key: "LINEAR_TEAM", Description: "Linear team / Jira project / GitHub repo"},
 		{Key: "ISSUE_PREFIX", Description: "Issue-ID prefix for ticket parsing (default: the team key, e.g. COD, TMS, ENG)"},
 		{Key: "LINEAR_API_KEY", Advanced: true, Description: "Linear personal API key"},
+		{Key: "JIRA_BASE_URL", Advanced: true, Description: "Jira Cloud site base URL for the direct REST adapter (e.g. https://acme.atlassian.net)"},
+		{Key: "JIRA_EMAIL", Advanced: true, Description: "Atlassian account email for Jira REST Basic auth"},
+		{Key: "JIRA_API_TOKEN", Advanced: true, Description: "Classic (unscoped) Jira API token; enables direct REST calls with MCP fallback"},
 		{Key: "TRACKER_PROVIDER", Default: "linear", Description: "Ticket backend: linear | jira | github", Options: []string{"linear", "jira", "github"}},
 		{Key: "READY_LABEL", Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
 		{Key: "QUARANTINE_LABEL", Default: "needs-human", Description: "Label applied when a ticket fails"},
@@ -1304,6 +1313,12 @@ func keyValue(cfg Config, key string) string {
 		return cfg.IssuePrefix
 	case "LINEAR_API_KEY":
 		return cfg.LinearAPIKey
+	case "JIRA_BASE_URL":
+		return cfg.JiraBaseURL
+	case "JIRA_EMAIL":
+		return cfg.JiraEmail
+	case "JIRA_API_TOKEN":
+		return cfg.JiraAPIToken
 	case "READY_LABEL":
 		return cfg.ReadyLabel
 	case "QUARANTINE_LABEL":
