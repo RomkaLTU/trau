@@ -183,8 +183,16 @@ func (j *Jira) titlePrompt(id string) string {
 }
 
 // IssueStatus reports whether issue id is still open or has reached a terminal
-// Jira status. It is used by epic finalization and stale-checkpoint reconcile.
+// Jira status, used by epic finalization and stale-checkpoint reconcile. It maps
+// the issue's statusCategory (plus resolution) via the REST API, falling back to
+// the Rovo MCP on an auth/not-enabled error.
 func (j *Jira) IssueStatus(ctx context.Context, id string) (IssueStatus, error) {
+	if st, err := j.issueStatusAPI(ctx, id); err == nil {
+		return st, nil
+	} else if !jiraShouldFallback(err) {
+		return StatusUnknown, err
+	}
+
 	res, err := j.Runner.Run(ctx, j.issueStatusPrompt(id), "status")
 	if st, ok := parseIssueStatus(res.Final); ok {
 		return st, nil
@@ -195,10 +203,123 @@ func (j *Jira) IssueStatus(ctx context.Context, id string) (IssueStatus, error) 
 	return StatusUnknown, fmt.Errorf("could not parse status for %s", id)
 }
 
+func (j *Jira) issueStatusAPI(ctx context.Context, id string) (IssueStatus, error) {
+	issue, err := j.api().Issue(ctx, id)
+	if err != nil {
+		return StatusUnknown, err
+	}
+	return mapJiraStatus(issue.Status.Category, issue.Resolution), nil
+}
+
+// mapJiraStatus maps a Jira statusCategory key onto the normalized status. Jira
+// has no "canceled" category, so a done-category issue closed with a won't-do or
+// duplicate resolution reports as canceled; an unrecognized category is unknown
+// so reconcile leaves the checkpoint intact.
+func mapJiraStatus(category, resolution string) IssueStatus {
+	switch strings.ToLower(strings.TrimSpace(category)) {
+	case "done":
+		if isCanceledResolution(resolution) {
+			return StatusCanceled
+		}
+		return StatusDone
+	case "new", "indeterminate":
+		return StatusOpen
+	default:
+		return StatusUnknown
+	}
+}
+
+// isCanceledResolution reports whether a Jira resolution name denotes a
+// won't-do/duplicate outcome (case-insensitive) rather than a completion.
+func isCanceledResolution(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "won't do", "wont do", "won't fix", "wontfix",
+		"cancelled", "canceled", "duplicate", "declined", "abandoned", "rejected":
+		return true
+	default:
+		return false
+	}
+}
+
 func (j *Jira) issueStatusPrompt(id string) string {
 	return fmt.Sprintf("Use the Jira (Rovo) MCP. Look up issue %s and report its workflow state. "+
 		"Respond with exactly one final line: 'STATUS=<done|canceled|open>' — "+
 		"'done' if it is Done/Closed/completed, 'canceled' if Canceled/won't-do/duplicate, otherwise 'open'. No other output.", id)
+}
+
+// IssueProject reports the key of the Jira project issue id belongs to, used by
+// the ownership guard to refuse cross-project runs. It reads project.key — the
+// canonical identifier that doubles as the configured project key — via the REST
+// API, falling back to the Rovo MCP on an auth/not-enabled error. An empty result
+// means "unknown", which the guard treats as "cannot enforce".
+func (j *Jira) IssueProject(ctx context.Context, id string) (string, error) {
+	if key, err := j.issueProjectAPI(ctx, id); err == nil {
+		return key, nil
+	} else if !jiraShouldFallback(err) {
+		return "", err
+	}
+
+	res, err := j.Runner.Run(ctx, j.issueProjectPrompt(id), "project")
+	if key, ok := parseProject(res.Final); ok {
+		return key, nil
+	}
+	return "", err
+}
+
+func (j *Jira) issueProjectAPI(ctx context.Context, id string) (string, error) {
+	issue, err := j.api().Issue(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return issue.Project.Key, nil
+}
+
+func (j *Jira) issueProjectPrompt(id string) string {
+	return fmt.Sprintf("Use the Jira (Rovo) MCP. Look up issue %s and report the KEY of the Jira project it belongs to. "+
+		"Respond with exactly one final line: 'PROJECT=<project key>' (or 'PROJECT=NONE' if it has none). No other output.", id)
+}
+
+// ParentIssue reports the key of id's immediate parent (the epic it belongs to),
+// or "" when id is top-level. It reads the unified parent field — not the
+// deprecated Epic Link custom field — via the REST API, falling back to the Rovo
+// MCP on an auth/not-enabled error.
+func (j *Jira) ParentIssue(ctx context.Context, id string) (string, error) {
+	if parent, err := j.parentIssueAPI(ctx, id); err == nil {
+		return parent, nil
+	} else if !jiraShouldFallback(err) {
+		return "", err
+	}
+
+	res, err := j.Runner.Run(ctx, j.parentIssuePrompt(id), "parent")
+	if parent, ok := parseParent(res.Final); ok {
+		return parent, nil
+	}
+	return "", err
+}
+
+func (j *Jira) parentIssueAPI(ctx context.Context, id string) (string, error) {
+	issue, err := j.api().Issue(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return issue.Parent, nil
+}
+
+func (j *Jira) parentIssuePrompt(id string) string {
+	return fmt.Sprintf("Use the Jira (Rovo) MCP. Look up issue %s and report the KEY of its parent issue (the epic it belongs to). "+
+		"Respond with exactly one final line: 'PARENT=<key>' (or 'PARENT=NONE' if it has no parent). No other output.", id)
+}
+
+// IssueDetail returns the title and full description of issue id for the size
+// judge. Like Linear it is API-only: a multi-line ADF description cannot survive a
+// single-line MCP sentinel, so an unconfigured or failing API leaves the judge to
+// skip the ticket (a best-effort safety net).
+func (j *Jira) IssueDetail(ctx context.Context, id string) (IssueDetail, error) {
+	issue, err := j.api().Issue(ctx, id)
+	if err != nil {
+		return IssueDetail{}, err
+	}
+	return IssueDetail{Title: issue.Summary, Description: issue.Description}, nil
 }
 
 // SetStatus transitions issue id to the named Jira status.
