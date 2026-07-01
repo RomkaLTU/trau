@@ -33,6 +33,9 @@ type ProjectSetup struct {
 	Timelog         bool
 	RequireCI       bool
 	LinearAPIKey    string
+	JiraBaseURL     string
+	JiraEmail       string
+	JiraAPIToken    string
 }
 
 // SetupResult reports what the setup step actually did.
@@ -71,6 +74,9 @@ type OnboardingPrefill struct {
 	EpicFlow        bool
 	Timelog         bool
 	LinearAPIKey    string
+	JiraBaseURL     string
+	JiraEmail       string
+	JiraAPIToken    string
 }
 
 // OnboardingActions is the narrow seam the onboarding wizard needs from the
@@ -106,6 +112,7 @@ const (
 	onboardWelcome
 	onboardProviders
 	onboardLinearAPIKey
+	onboardJiraCreds
 	onboardBaseBranch
 	onboardLinearTeam
 	onboardLabels
@@ -154,6 +161,11 @@ type onboardingModel struct {
 
 	apiKey             textinput.Model
 	apiKeyInputFocused bool
+
+	jiraBaseURL     textinput.Model
+	jiraEmail       textinput.Model
+	jiraToken       textinput.Model
+	jiraFieldCursor int // 0=base url, 1=email, 2=token
 
 	baseBranch             textinput.Model
 	baseBranchInputFocused bool
@@ -254,6 +266,28 @@ func newOnboardingModelWithPrefill(ctx context.Context, actions OnboardingAction
 	ak.EchoMode = textinput.EchoPassword
 	m.apiKey = ak
 
+	jbu := textinput.New()
+	jbu.Placeholder = "https://acme.atlassian.net"
+	jbu.CharLimit = 200
+	jbu.Width = 40
+	jbu.Prompt = "Base URL:  "
+	m.jiraBaseURL = jbu
+
+	je := textinput.New()
+	je.Placeholder = "you@acme.com"
+	je.CharLimit = 200
+	je.Width = 40
+	je.Prompt = "Email:     "
+	m.jiraEmail = je
+
+	jt := textinput.New()
+	jt.Placeholder = "classic API token"
+	jt.CharLimit = 256
+	jt.Width = 40
+	jt.Prompt = "API token: "
+	jt.EchoMode = textinput.EchoPassword
+	m.jiraToken = jt
+
 	bb := textinput.New()
 	bb.Placeholder = "main"
 	bb.CharLimit = 64
@@ -318,6 +352,15 @@ func (m *onboardingModel) applyPrefill(p OnboardingPrefill) {
 	if p.LinearAPIKey != "" {
 		m.apiKey.SetValue(p.LinearAPIKey)
 	}
+	if p.JiraBaseURL != "" {
+		m.jiraBaseURL.SetValue(p.JiraBaseURL)
+	}
+	if p.JiraEmail != "" {
+		m.jiraEmail.SetValue(p.JiraEmail)
+	}
+	if p.JiraAPIToken != "" {
+		m.jiraToken.SetValue(p.JiraAPIToken)
+	}
 }
 
 func (m onboardingModel) Init() tea.Cmd {
@@ -377,6 +420,8 @@ func (m onboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.systemCheckSpin, cmd = m.systemCheckSpin.Update(msg)
 	case onboardLinearAPIKey:
 		m.apiKey, cmd = m.apiKey.Update(msg)
+	case onboardJiraCreds:
+		cmd = m.updateJiraField(msg)
 	case onboardBaseBranch:
 		m.baseBranch, cmd = m.baseBranch.Update(msg)
 	case onboardLinearTeam:
@@ -410,6 +455,8 @@ func (m onboardingModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleProviders(msg)
 	case onboardLinearAPIKey:
 		return m.handleLinearAPIKey(msg)
+	case onboardJiraCreds:
+		return m.handleJiraCreds(msg)
 	case onboardBaseBranch:
 		return m.handleBaseBranch(msg)
 	case onboardLinearTeam:
@@ -475,10 +522,16 @@ func (m onboardingModel) handleProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.providersPMFocused = true
 		return m, nil
 	case tea.KeyEnter:
-		if m.selectedTracker() == "linear" {
+		switch m.selectedTracker() {
+		case "linear":
 			m.step = onboardLinearAPIKey
 			m.apiKeyInputFocused = true
 			m.apiKey.Focus()
+			return m, textinput.Blink
+		case "jira":
+			m.step = onboardJiraCreds
+			m.jiraFieldCursor = 0
+			m.focusJiraField()
 			return m, textinput.Blink
 		}
 		m.step = onboardBaseBranch
@@ -554,15 +607,86 @@ func (m onboardingModel) handleLinearAPIKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 	return m, nil
 }
 
+// handleJiraCreds drives the three-field Jira credential form (base URL, email,
+// token). tab / ↑↓ move between fields, enter advances and then proceeds to the
+// base-branch step from the last field, and esc / ← goes back to the provider
+// picker. No single-letter shortcut is bound: every key must be typeable into a
+// URL or email.
+func (m onboardingModel) handleJiraCreds(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyLeft:
+		m.blurJiraInputs()
+		m.step = onboardProviders
+		m.providersPMFocused = false
+		return m, nil
+	case tea.KeyTab, tea.KeyDown, tea.KeyEnter:
+		if m.jiraFieldCursor < 2 {
+			m.jiraFieldCursor++
+			m.focusJiraField()
+			return m, textinput.Blink
+		}
+		m.blurJiraInputs()
+		m.step = onboardBaseBranch
+		m.baseBranch.Focus()
+		return m, textinput.Blink
+	case tea.KeyShiftTab, tea.KeyUp:
+		if m.jiraFieldCursor > 0 {
+			m.jiraFieldCursor--
+			m.focusJiraField()
+		}
+		return m, textinput.Blink
+	}
+	return m, m.updateJiraField(msg)
+}
+
+// focusJiraField focuses the input at jiraFieldCursor and blurs the rest.
+func (m *onboardingModel) focusJiraField() {
+	m.blurJiraInputs()
+	switch m.jiraFieldCursor {
+	case 0:
+		m.jiraBaseURL.Focus()
+	case 1:
+		m.jiraEmail.Focus()
+	case 2:
+		m.jiraToken.Focus()
+	}
+}
+
+func (m *onboardingModel) blurJiraInputs() {
+	m.jiraBaseURL.Blur()
+	m.jiraEmail.Blur()
+	m.jiraToken.Blur()
+}
+
+// updateJiraField forwards a message to the focused Jira input only.
+func (m *onboardingModel) updateJiraField(msg tea.Msg) tea.Cmd {
+	var cmd tea.Cmd
+	switch m.jiraFieldCursor {
+	case 0:
+		m.jiraBaseURL, cmd = m.jiraBaseURL.Update(msg)
+	case 1:
+		m.jiraEmail, cmd = m.jiraEmail.Update(msg)
+	case 2:
+		m.jiraToken, cmd = m.jiraToken.Update(msg)
+	}
+	return cmd
+}
+
 func (m onboardingModel) handleBaseBranch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.baseBranchInputFocused {
 		switch msg.Type {
 		case tea.KeyEsc, tea.KeyLeft:
-			if m.selectedTracker() == "linear" {
+			switch m.selectedTracker() {
+			case "linear":
 				m.step = onboardLinearAPIKey
 				m.baseBranch.Blur()
 				m.apiKeyInputFocused = true
 				m.apiKey.Focus()
+				return m, textinput.Blink
+			case "jira":
+				m.step = onboardJiraCreds
+				m.baseBranch.Blur()
+				m.focusJiraField()
 				return m, textinput.Blink
 			}
 			m.step = onboardProviders
@@ -798,6 +922,8 @@ func (m onboardingModel) textEntryActive() bool {
 	switch m.step {
 	case onboardLinearAPIKey:
 		return m.apiKeyInputFocused
+	case onboardJiraCreds:
+		return true
 	case onboardBaseBranch:
 		return m.baseBranchInputFocused
 	case onboardLinearTeam:
@@ -1298,6 +1424,9 @@ func (m onboardingModel) writeConfigCmd() tea.Cmd {
 		Timelog:         m.timelog,
 		RequireCI:       m.requireCI,
 		LinearAPIKey:    strings.TrimSpace(m.apiKey.Value()),
+		JiraBaseURL:     strings.TrimSpace(m.jiraBaseURL.Value()),
+		JiraEmail:       strings.TrimSpace(m.jiraEmail.Value()),
+		JiraAPIToken:    strings.TrimSpace(m.jiraToken.Value()),
 	}
 	return func() tea.Msg {
 		res, err := m.actions.SetupProject(m.ctx, setup)
@@ -1364,6 +1493,8 @@ func (m onboardingModel) View() string {
 		body = m.renderProviders()
 	case onboardLinearAPIKey:
 		body = m.renderLinearAPIKey()
+	case onboardJiraCreds:
+		body = m.renderJiraCreds()
 	case onboardBaseBranch:
 		body = m.renderBaseBranch()
 	case onboardLinearTeam:
@@ -1633,6 +1764,25 @@ func (m onboardingModel) renderLinearAPIKey() string {
 	return strings.Join(rows, "\n")
 }
 
+const jiraTokenSettingsURL = "https://id.atlassian.com/manage-profile/security/api-tokens"
+
+func (m onboardingModel) renderJiraCreds() string {
+	s := m.styles
+	var rows []string
+	rows = append(rows, s.SummaryTitle.Render("Jira REST credentials"))
+	rows = append(rows, "")
+	rows = append(rows, "Enter a classic Jira API token to enable fast direct REST calls.")
+	rows = append(rows, s.Subtle.Render("Per-repo credentials let two repos use two separate Jira accounts."))
+	rows = append(rows, s.Subtle.Render("Leave blank to use the Atlassian (Rovo) MCP for all Jira operations."))
+	rows = append(rows, "")
+	rows = append(rows, s.Subtle.Render("Generate a classic token: "+jiraTokenSettingsURL))
+	rows = append(rows, "")
+	rows = append(rows, m.jiraBaseURL.View())
+	rows = append(rows, m.jiraEmail.View())
+	rows = append(rows, m.jiraToken.View())
+	return strings.Join(rows, "\n")
+}
+
 func (m onboardingModel) renderBaseBranch() string {
 	var rows []string
 	rows = append(rows, m.styles.SummaryTitle.Render("Base branch & branching strategy"))
@@ -1825,6 +1975,19 @@ func (m onboardingModel) renderWrite() string {
 			rows = append(rows, "  LINEAR_API_KEY=(blank — will use MCP)")
 		}
 	}
+	if m.selectedTracker() == "jira" {
+		if v := strings.TrimSpace(m.jiraBaseURL.Value()); v != "" {
+			rows = append(rows, "  JIRA_BASE_URL="+v)
+		}
+		if v := strings.TrimSpace(m.jiraEmail.Value()); v != "" {
+			rows = append(rows, "  JIRA_EMAIL="+v)
+		}
+		if tok := strings.TrimSpace(m.jiraToken.Value()); tok != "" {
+			rows = append(rows, "  JIRA_API_TOKEN="+maskAPIKey(tok))
+		} else {
+			rows = append(rows, "  JIRA_API_TOKEN=(blank — will use MCP)")
+		}
+	}
 	rows = append(rows, "  BASE_BRANCH="+strings.TrimSpace(m.baseBranch.Value()))
 	rows = append(rows, "  PROVIDER="+m.selectedProvider())
 	rows = append(rows, "  READY_LABEL=ready-for-agent")
@@ -1910,6 +2073,8 @@ func (m onboardingModel) hint() string {
 		return "↑↓ move · enter select · tab back · esc/← back · q quit"
 	case onboardLinearAPIKey:
 		return "enter/tab next · 'o' open key settings · esc/← back · q quit"
+	case onboardJiraCreds:
+		return "tab/↑↓ move · enter next · esc/← back"
 	case onboardLabels:
 		return "↑↓ move · enter select · esc/← back · q quit"
 	case onboardTimeTracking:

@@ -1043,6 +1043,9 @@ func (a *appActions) OnboardingPrefill() tui.OnboardingPrefill {
 		EpicFlow:        a.cfg.EpicFlow,
 		Timelog:         a.cfg.TimelogEnabled,
 		LinearAPIKey:    a.cfg.LinearAPIKey,
+		JiraBaseURL:     a.cfg.JiraBaseURL,
+		JiraEmail:       a.cfg.JiraEmail,
+		JiraAPIToken:    a.cfg.JiraAPIToken,
 	}
 }
 
@@ -1177,8 +1180,26 @@ func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (
 		values["TIMELOG_OUTPUT_FORMAT"] = "default"
 		values["TIMELOG_ESTIMATOR"] = "heuristic"
 	}
+	// Jira REST credentials are per-repo — writing them to the project .trau.ini
+	// (not the shared user file) is what lets two repos target two separate Jira
+	// accounts, the whole point of the direct adapter.
+	if setup.TrackerProvider == "jira" {
+		if v := strings.TrimSpace(setup.JiraBaseURL); v != "" {
+			values["JIRA_BASE_URL"] = v
+		}
+		if v := strings.TrimSpace(setup.JiraEmail); v != "" {
+			values["JIRA_EMAIL"] = v
+		}
+		if v := strings.TrimSpace(setup.JiraAPIToken); v != "" {
+			values["JIRA_API_TOKEN"] = v
+		}
+	}
 	if err := config.WriteProjectEnv(path, values); err != nil {
 		return tui.SetupResult{}, fmt.Errorf("write project env: %w", err)
+	}
+	// The project .trau.ini may now hold a Jira token; keep it out of git.
+	if err := state.EnsureGitignore(a.cfg.RepoRoot, a.cfg.RunsDir); err != nil {
+		logger.Verbosef("ensure .trau.ini gitignored: %v", err)
 	}
 
 	projectEnv := path
