@@ -20,6 +20,7 @@ type Linear struct {
 	Runner          agent.Runner
 	ReadyLabel      string
 	QuarantineLabel string
+	SplitLabel      string
 	Team            string
 	Project         string
 	APIKey          string
@@ -816,15 +817,71 @@ func (l *Linear) ensureLabelsAPI(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := l.api().EnsureLabel(ctx, team.ID, l.ReadyLabel); err != nil {
-		return err
+	for _, name := range l.managedLabels() {
+		if err := l.api().EnsureLabel(ctx, team.ID, name); err != nil {
+			return err
+		}
 	}
-	return l.api().EnsureLabel(ctx, team.ID, l.QuarantineLabel)
+	return nil
 }
 
 func (l *Linear) ensureLabelsPrompt() string {
-	return fmt.Sprintf("Use the Linear MCP. Ensure two issue labels exist: '%s' and '%s'. "+
-		"Create them if missing. Reply DONE.", l.ReadyLabel, l.QuarantineLabel)
+	return fmt.Sprintf("Use the Linear MCP. Ensure these issue labels exist: %s. "+
+		"Create them if missing. Reply DONE.", quoteLabels(l.managedLabels()))
+}
+
+func (l *Linear) managedLabels() []string {
+	return managedLabelList(l.ReadyLabel, l.QuarantineLabel, l.SplitLabel)
+}
+
+// AddLabel adds one label to an issue without disturbing its other labels — used
+// by the size judge to tag a too-large ticket with the split label alongside the
+// quarantine label. Uses the API when possible, otherwise the MCP.
+func (l *Linear) AddLabel(ctx context.Context, id, label string) error {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return nil
+	}
+	if err := l.addLabelAPI(ctx, id, label); err == nil {
+		return nil
+	} else if !shouldFallback(err) {
+		return err
+	}
+
+	_, err := l.Runner.Run(ctx, l.addLabelPrompt(id, label), "label")
+	return err
+}
+
+func (l *Linear) addLabelAPI(ctx context.Context, id, label string) error {
+	issue, err := l.api().Issue(ctx, id)
+	if err != nil {
+		return err
+	}
+	labelNames := make([]string, 0, len(issue.Labels)+1)
+	for _, existing := range issue.Labels {
+		if existing.Name == label {
+			return nil // already present — nothing to do
+		}
+		labelNames = append(labelNames, existing.Name)
+	}
+	labelNames = append(labelNames, label)
+	return l.api().SetStatus(ctx, id, "", labelNames)
+}
+
+func (l *Linear) addLabelPrompt(id, label string) string {
+	return fmt.Sprintf("Use the Linear MCP on issue %s: add the label '%s' (keep every other label). Reply DONE.", id, label)
+}
+
+// IssueDetail returns the title and full description of issue id for the size
+// judge. It uses the direct API when possible; the MCP is not a fallback here
+// because a multi-line description does not survive a single-line sentinel, so an
+// MCP-only Linear leaves the judge to skip the ticket (a best-effort safety net).
+func (l *Linear) IssueDetail(ctx context.Context, id string) (IssueDetail, error) {
+	issue, err := l.api().Issue(ctx, id)
+	if err != nil {
+		return IssueDetail{}, err
+	}
+	return IssueDetail{Title: issue.Title, Description: issue.Description}, nil
 }
 
 func (l *Linear) quarantinePrompt(id, reason string) string {

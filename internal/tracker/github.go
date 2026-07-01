@@ -17,6 +17,7 @@ type GitHub struct {
 	Repo            string // repo slug, e.g. "owner/repo"
 	ReadyLabel      string
 	QuarantineLabel string
+	SplitLabel      string
 }
 
 // Pick returns the next eligible ticket identifier, or "" when nothing is eligible.
@@ -196,6 +197,6 @@ func (g *GitHub) EnsureLabels(ctx context.Context) error {
 }
 
 func (g *GitHub) ensureLabelsPrompt() string {
-	return fmt.Sprintf("Use the GitHub MCP. Ensure two issue labels exist in repository %q: '%s' and '%s'. "+
-		"Create them if missing. Reply DONE.", g.Repo, g.ReadyLabel, g.QuarantineLabel)
+	return fmt.Sprintf("Use the GitHub MCP. Ensure these issue labels exist in repository %q: %s. "+
+		"Create them if missing. Reply DONE.", g.Repo, quoteLabels(managedLabelList(g.ReadyLabel, g.QuarantineLabel, g.SplitLabel)))
 }

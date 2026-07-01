@@ -14,6 +14,7 @@ type Jira struct {
 	Runner          agent.Runner
 	ReadyLabel      string
 	QuarantineLabel string
+	SplitLabel      string
 	Team            string // Jira project key
 	Project         string // optional project name/id for issue creation
 }
@@ -223,6 +224,6 @@ func (j *Jira) EnsureLabels(ctx context.Context) error {
 }
 
 func (j *Jira) ensureLabelsPrompt() string {
-	return fmt.Sprintf("Use the Jira (Rovo) MCP. Ensure two issue labels exist: '%s' and '%s'. "+
-		"Create them if missing. Reply DONE.", j.ReadyLabel, j.QuarantineLabel)
+	return fmt.Sprintf("Use the Jira (Rovo) MCP. Ensure these issue labels exist: %s. "+
+		"Create them if missing. Reply DONE.", quoteLabels(managedLabelList(j.ReadyLabel, j.QuarantineLabel, j.SplitLabel)))
 }

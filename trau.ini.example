@@ -39,6 +39,8 @@ ISSUE_PREFIX=                # ticket-ID prefix for parsing, branch inference, a
                              # (e.g. COD, TMS, ENG). Empty = derive from the team key above; falls back to COD
 READY_LABEL=ready-for-agent
 QUARANTINE_LABEL=needs-human
+SPLIT_LABEL=needs-split      # label the pre-flight size judge applies to a ticket it flags as
+                             # too large to build in one window (see SIZE_JUDGE under loop control)
 PROJECT=                     # Linear project this repo owns (e.g. salonradar.com). When set, the loop only
                              # picks tickets in this project, refuses a run on a ticket from another project
                              # before any branch/checkpoint, and files bugs here. Empty = no project scoping.
@@ -126,6 +128,10 @@ REQUIRE_REPO_CHANGES=1       # 1 = after build, fault when the managed repo is u
                              # AND no new commits vs base) instead of advancing to a hollow handoff /
                              # empty PR — catches an agent that built in the wrong repo or escaped its
                              # cwd. The ticket is left resumable. Set 0 for a legitimately no-op ticket.
+SIZE_JUDGE=1                 # 1 = before building a fresh ticket, a cheap LLM judge sizes it; one too
+                             # large to finish in a single build window is quarantined + labeled
+                             # SPLIT_LABEL with the suggested seams (autonomous / headless run), or
+                             # warned about but built anyway (attended single-ticket run). 0 disables it.
 
 # --- budget governance ---
 # Spend ceilings enforced off the normalized token/cost ledger. Empty = no cap

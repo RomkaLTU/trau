@@ -273,12 +273,23 @@ type Pipeline struct {
 	// REQUIRE_REPO_CHANGES, default on). When set, a build that left the managed
 	// repo unchanged faults instead of advancing to a hollow handoff or empty PR.
 	RequireRepoChanges bool
-	CITimeout          int
-	CIPoll             int
-	Lessons            bool
-	LessonsDistill     bool
-	Sleep              func(time.Duration)
-	Renderer           console.Renderer
+	// SizeJudge gates the pre-flight ticket-size guard (config SIZE_JUDGE, default
+	// on). When set, a fresh ticket is sized by a cheap LLM judge before build; one
+	// too large for a single build window is quarantined (unattended) or warned
+	// about (attended). SplitLabel is the label applied on a quarantine.
+	SizeJudge  bool
+	SplitLabel string
+	// Attended is true only for a human-driven, explicitly-named single-ticket run
+	// in an interactive terminal. It flips the size guard from quarantine (the
+	// autonomous-loop / headless default) to a non-blocking warning, so a person
+	// watching can proceed or stop the run themselves.
+	Attended       bool
+	CITimeout      int
+	CIPoll         int
+	Lessons        bool
+	LessonsDistill bool
+	Sleep          func(time.Duration)
+	Renderer       console.Renderer
 
 	// Now supplies the current time for the per-day budget window; nil defaults
 	// to time.Now (overridable in tests).
@@ -390,6 +401,11 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 // classification of what that error MEANS for the ticket is centralized in
 // classifyPhaseErr, so every phase is handled the same way.
 func (p *Pipeline) runPhases(ctx context.Context, id string, fi int) error {
+	if fi == 0 {
+		if err := p.sizeGuard(ctx, id); err != nil {
+			return err
+		}
+	}
 	if fi < 2 {
 		if err := p.build(ctx, id, fi == 1); err != nil {
 			return err

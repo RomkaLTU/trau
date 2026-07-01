@@ -372,6 +372,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	p.EpicID = epicID
+	// The size guard only warns (instead of quarantining) when a human explicitly
+	// named a single ticket in an interactive terminal; an autonomous loop pick or
+	// any headless run is treated as unattended.
+	p.Attended = forcedID != "" && cfg.LiveView
 
 	maxIter := cfg.MaxIterations
 	if opts.Max >= 0 {
@@ -490,6 +494,7 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		Project:         cfg.Project,
 		ReadyLabel:      cfg.ReadyLabel,
 		QuarantineLabel: cfg.QuarantineLabel,
+		SplitLabel:      cfg.SplitLabel,
 		APIKey:          cfg.LinearAPIKey,
 	})
 }
@@ -691,6 +696,8 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		ExpectedChecks:     cfg.ExpectedChecks,
 		RequireCI:          cfg.RequireCI,
 		RequireRepoChanges: cfg.RequireRepoChanges,
+		SizeJudge:          cfg.SizeJudge,
+		SplitLabel:         cfg.SplitLabel,
 		CITimeout:          cfg.CITimeout,
 		CIPoll:             cfg.CIPoll,
 		Lessons:            cfg.Lessons,

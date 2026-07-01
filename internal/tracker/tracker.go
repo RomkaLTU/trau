@@ -46,6 +46,7 @@ type Config struct {
 	Project         string
 	ReadyLabel      string
 	QuarantineLabel string
+	SplitLabel      string
 	APIKey          string // Linear API key; enables direct GraphQL calls
 }
 
@@ -103,6 +104,31 @@ type Tracker interface {
 
 	// EnsureLabels creates the ready and quarantine labels if they do not exist.
 	EnsureLabels(ctx context.Context) error
+}
+
+// IssueDetail is the ticket content the pre-flight size judge reasons over: the
+// title plus the full description (which, for Linear/Jira, embeds the acceptance
+// criteria as markdown).
+type IssueDetail struct {
+	Title       string
+	Description string
+}
+
+// IssueDetailer is the optional capability of returning an issue's title and full
+// description in one call, so the size judge can size a ticket before building.
+// A tracker that cannot answer (or a provider without a direct API) leaves the
+// judge to skip the ticket — the guard is a best-effort safety net, so an
+// unavailable detail never blocks a build.
+type IssueDetailer interface {
+	IssueDetail(ctx context.Context, id string) (IssueDetail, error)
+}
+
+// IssueLabeler is the optional capability of adding one label to an issue without
+// disturbing its other labels. The size judge uses it to apply the configurable
+// split label alongside the quarantine label. A tracker that cannot answer makes
+// the label a no-op — the quarantine itself still lands.
+type IssueLabeler interface {
+	AddLabel(ctx context.Context, id, label string) error
 }
 
 // IssueStatus is the normalized lifecycle bucket of a tracker issue, used by
@@ -207,6 +233,27 @@ func (s Scope) prefix() string {
 	return DefaultPrefix
 }
 
+// managedLabelList returns the labels the loop provisions on a tracker: the ready
+// and quarantine labels, plus the split label when one is configured. Shared by
+// every provider's EnsureLabels so the set stays consistent.
+func managedLabelList(ready, quarantine, split string) []string {
+	labels := []string{ready, quarantine}
+	if s := strings.TrimSpace(split); s != "" {
+		labels = append(labels, s)
+	}
+	return labels
+}
+
+// quoteLabels renders a label list as a single-quoted, comma-separated fragment
+// ("'a', 'b', 'c'") for the MCP EnsureLabels prompts.
+func quoteLabels(labels []string) string {
+	quoted := make([]string, len(labels))
+	for i, name := range labels {
+		quoted[i] = "'" + name + "'"
+	}
+	return strings.Join(quoted, ", ")
+}
+
 // New creates a Tracker for the named provider.
 func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 	switch provider {
@@ -217,12 +264,13 @@ func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 			Project:         cfg.Project,
 			ReadyLabel:      cfg.ReadyLabel,
 			QuarantineLabel: cfg.QuarantineLabel,
+			SplitLabel:      cfg.SplitLabel,
 			APIKey:          cfg.APIKey,
 		}, nil
 	case "jira":
-		return &Jira{Runner: runner, Team: cfg.Team, Project: cfg.Project, ReadyLabel: cfg.ReadyLabel, QuarantineLabel: cfg.QuarantineLabel}, nil
+		return &Jira{Runner: runner, Team: cfg.Team, Project: cfg.Project, ReadyLabel: cfg.ReadyLabel, QuarantineLabel: cfg.QuarantineLabel, SplitLabel: cfg.SplitLabel}, nil
 	case "github":
-		return &GitHub{Runner: runner, Repo: cfg.Team, ReadyLabel: cfg.ReadyLabel, QuarantineLabel: cfg.QuarantineLabel}, nil
+		return &GitHub{Runner: runner, Repo: cfg.Team, ReadyLabel: cfg.ReadyLabel, QuarantineLabel: cfg.QuarantineLabel, SplitLabel: cfg.SplitLabel}, nil
 	default:
 		return nil, fmt.Errorf("unknown tracker provider %q (expected: linear | jira | github)", provider)
 	}
