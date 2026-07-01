@@ -236,10 +236,15 @@ func (j *Jira) epicPickPrompt(scope Scope, leaves map[string]bool) string {
 // auth/not-enabled error. A runner error with no parseable list is surfaced so
 // onboarding can fall back to manual entry.
 func (j *Jira) ListTeams(ctx context.Context) ([]Team, error) {
-	if teams, err := j.listTeamsAPI(ctx); err == nil {
+	teams, apiErr := j.listTeamsAPI(ctx)
+	if apiErr == nil {
 		return teams, nil
-	} else if !jiraShouldFallback(err) {
-		return nil, err
+	}
+	// A nil runner means REST is the sole identity (onboarding detection with
+	// per-repo credentials): surface the API error rather than fall back to the
+	// shared Rovo MCP, which authenticates as a different Atlassian account.
+	if j.Runner == nil || !jiraShouldFallback(apiErr) {
+		return nil, apiErr
 	}
 
 	res, err := j.Runner.Run(ctx, j.listTeamsPrompt(), "list_teams")

@@ -132,6 +132,38 @@ func TestJiraListTeamsFallsBackToRunner(t *testing.T) {
 	}
 }
 
+// Onboarding detection builds the tracker with per-repo REST credentials and no
+// MCP runner. A rejected token must surface as ErrUnauthorized — never a silent
+// fallback to the shared Rovo MCP (a different Atlassian identity) — and the nil
+// runner must not panic.
+func TestJiraListTeamsRESTOnlySurfacesAuthError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	j := &Jira{Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "bad"}
+	if _, err := j.ListTeams(context.Background()); !errors.Is(err, jiraapi.ErrUnauthorized) {
+		t.Fatalf("ListTeams err = %v, want ErrUnauthorized", err)
+	}
+}
+
+// With valid REST credentials and no MCP runner, detection returns the token
+// account's projects directly and never needs the runner.
+func TestJiraListTeamsRESTOnlySucceeds(t *testing.T) {
+	srv := jiraIssueServer(`{"values":[{"key":"VAI","name":"Vaiva","id":"1"}],"startAt":0,"maxResults":50,"total":1,"isLast":true}`)
+	defer srv.Close()
+
+	j := &Jira{Team: "VAI", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+	teams, err := j.ListTeams(context.Background())
+	if err != nil {
+		t.Fatalf("ListTeams error: %v", err)
+	}
+	if len(teams) != 1 || teams[0].Key != "VAI" {
+		t.Fatalf("teams = %+v, want [VAI]", teams)
+	}
+}
+
 // mapJiraStatus is the load-bearing mapping the ACs call out: statusCategory →
 // open/done/unknown, with a done-category resolution name flipping to canceled.
 func TestMapJiraStatus(t *testing.T) {

@@ -40,6 +40,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
 	"github.com/RomkaLTU/trau/internal/tracker"
+	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tui"
 	"github.com/RomkaLTU/trau/internal/usage/probe"
 )
@@ -1251,7 +1252,7 @@ func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (
 // listed by driving their MCP through the chosen AI provider, bounded by a
 // timeout so a hung agent cannot stall onboarding. Any error tells the wizard to
 // fall back to manual entry.
-func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvider string) (tui.TeamDetection, error) {
+func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvider string, jira tui.JiraCreds) (tui.TeamDetection, error) {
 	switch trackerProvider {
 	case "github":
 		slug, err := detectGitHubRepo(a.cfg.RepoRoot)
@@ -1271,9 +1272,25 @@ func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvide
 		cfg := a.cfg
 		cfg.Provider = aiProvider
 		cfg.TrackerProvider = trackerProvider
-		runner, err := buildRouter(cfg, a.log, a.sink, a.stderr)
-		if err != nil {
-			return tui.TeamDetection{Label: label}, err
+		if trackerProvider == "jira" {
+			cfg.JiraBaseURL = jira.BaseURL
+			cfg.JiraEmail = jira.Email
+			cfg.JiraAPIToken = jira.APIToken
+		}
+		// When the wizard supplied a full set of Jira REST credentials, detection
+		// must enumerate projects as THAT identity only — never silently fall back
+		// to the shared Rovo MCP, which authenticates as a different Atlassian
+		// account. Building the tracker without an agent runner makes the REST path
+		// the sole source and surfaces an auth failure instead of masking it.
+		restOnly := trackerProvider == "jira" &&
+			cfg.JiraBaseURL != "" && cfg.JiraEmail != "" && cfg.JiraAPIToken != ""
+		var runner agent.Runner
+		if !restOnly {
+			r, err := buildRouter(cfg, a.log, a.sink, a.stderr)
+			if err != nil {
+				return tui.TeamDetection{Label: label}, err
+			}
+			runner = r
 		}
 		pm, err := buildTracker(cfg, runner)
 		if err != nil {
@@ -1287,7 +1304,7 @@ func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvide
 		defer cancel()
 		teams, err := lister.ListTeams(ctx)
 		if err != nil {
-			return tui.TeamDetection{Label: label}, err
+			return tui.TeamDetection{Label: label}, detectListErr(trackerProvider, err)
 		}
 		out := make([]tui.DetectedTeam, 0, len(teams))
 		for _, t := range teams {
@@ -1297,6 +1314,19 @@ func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvide
 	default:
 		return tui.TeamDetection{Label: "team"}, fmt.Errorf("unknown tracker provider %q", trackerProvider)
 	}
+}
+
+// detectListErr rewrites a team/project detection failure into an actionable
+// message. For Jira it maps an auth failure (the wizard token was rejected) to a
+// clear "regenerate your token" hint instead of the raw sentinel, so a user who
+// mistyped a token sees why detection failed rather than a bare error.
+func detectListErr(trackerProvider string, err error) error {
+	if trackerProvider == "jira" {
+		if msg := jiraapi.AuthErrorMessage(err); msg != "" {
+			return errors.New(msg)
+		}
+	}
+	return err
 }
 
 // detectGitHubRepo resolves the current repository slug ("owner/repo") for the
