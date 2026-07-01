@@ -2,8 +2,10 @@ package tracker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -491,18 +493,75 @@ func (j *Jira) setStatusPrompt(id, status, extra string) string {
 	return prompt + " Reply DONE."
 }
 
-// Reset returns a ticket to a ready/unstarted state.
+// AddLabel adds one label to an issue without disturbing its other labels, via
+// the incremental PUT /issue label add op when a token is configured, otherwise
+// the Rovo MCP.
+func (j *Jira) AddLabel(ctx context.Context, id, label string) error {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return nil
+	}
+	if err := j.addLabelAPI(ctx, id, label); err == nil {
+		return nil
+	} else if !jiraShouldFallback(err) {
+		return err
+	}
+
+	_, err := j.Runner.Run(ctx, j.addLabelPrompt(id, label), "label")
+	return err
+}
+
+func (j *Jira) addLabelAPI(ctx context.Context, id, label string) error {
+	return j.api().UpdateLabels(ctx, id, []string{label}, nil)
+}
+
+func (j *Jira) addLabelPrompt(id, label string) string {
+	return fmt.Sprintf("Use the Jira (Rovo) MCP on issue %s: add the label '%s' (keep every other label). Reply DONE.", id, label)
+}
+
+// Reset returns a ticket to a ready/unstarted state so the picker re-selects it:
+// it drops the quarantine label, ensures the ready label, transitions back to an
+// unstarted status and comments. It uses the REST API when a token is configured,
+// falling back to the Rovo MCP on an auth/not-enabled error.
 func (j *Jira) Reset(ctx context.Context, id string) error {
+	if err := j.resetAPI(ctx, id); err == nil {
+		return nil
+	} else if !jiraShouldFallback(err) {
+		return err
+	}
+
 	extra := fmt.Sprintf("Remove the label '%s' if present and ensure '%s' is present so the loop can re-pick it; "+
 		"transition the issue to status 'To Do' or 'Backlog'; "+
 		"add a comment: \"Trau loop reset %s to start fresh.\"", j.QuarantineLabel, j.ReadyLabel, id)
 	return j.setStatusMCP(ctx, id, "To Do", extra)
 }
 
-// Quarantine marks a ticket unrecoverable.
+func (j *Jira) resetAPI(ctx context.Context, id string) error {
+	if err := j.api().UpdateLabels(ctx, id, []string{j.ReadyLabel}, []string{j.QuarantineLabel}); err != nil {
+		return err
+	}
+	return j.api().SetStatus(ctx, id, "To Do", "", fmt.Sprintf("Trau loop reset %s to start fresh.", id))
+}
+
+// Quarantine marks a ticket unrecoverable: it drops the ready label, adds the
+// quarantine label and comments with the reason. It uses the REST API when a
+// token is configured, falling back to the Rovo MCP on an auth/not-enabled error.
 func (j *Jira) Quarantine(ctx context.Context, id, reason string) error {
+	if err := j.quarantineAPI(ctx, id, reason); err == nil {
+		return nil
+	} else if !jiraShouldFallback(err) {
+		return err
+	}
+
 	_, err := j.Runner.Run(ctx, j.quarantinePrompt(id, reason), "quarantine")
 	return err
+}
+
+func (j *Jira) quarantineAPI(ctx context.Context, id, reason string) error {
+	if err := j.api().UpdateLabels(ctx, id, []string{j.QuarantineLabel}, []string{j.ReadyLabel}); err != nil {
+		return err
+	}
+	return j.api().AddComment(ctx, id, fmt.Sprintf("Trau loop stopped: %s (see runs/%s/).", reason, id))
 }
 
 func (j *Jira) quarantinePrompt(id, reason string) string {
@@ -511,13 +570,68 @@ func (j *Jira) quarantinePrompt(id, reason string) string {
 }
 
 // FileBug files a NEW Jira issue as a last-resort HITL blocker for a QA failure
-// the slice could not self-heal, even after comprehensive bugfix passes.
+// the slice could not self-heal, even after comprehensive bugfix passes. It uses
+// POST /issue when a token is configured — reading the verdict file to build an
+// ADF description — falling back to the Rovo MCP on an auth/not-enabled error.
 func (j *Jira) FileBug(ctx context.Context, id, verdictPath string) (string, error) {
+	if bug, err := j.fileBugAPI(ctx, id, verdictPath); err == nil {
+		return bug, nil
+	} else if !jiraShouldFallback(err) {
+		return "", err
+	}
+
 	res, err := j.Runner.Run(ctx, j.fileBugPrompt(id, verdictPath), "file_bug")
 	if bug, ok := parseBug(res.Final, prefixOf(id)); ok {
 		return bug, nil
 	}
 	return "", err
+}
+
+func (j *Jira) fileBugAPI(ctx context.Context, id, verdictPath string) (string, error) {
+	summary, description := bugContent(id, verdictPath)
+	return j.api().CreateIssue(ctx, strings.TrimSpace(j.Team), "Bug", summary, description, []string{"HITL"})
+}
+
+// qaVerdict is the subset of the QA verdict JSON FileBug reports on.
+type qaVerdict struct {
+	Summary  string   `json:"summary"`
+	Failures []string `json:"failures"`
+}
+
+// bugContent renders the Jira Bug summary and description from the QA verdict at
+// verdictPath. A missing or unparseable verdict still yields a filable bug that
+// points at the run artifacts.
+func bugContent(id, verdictPath string) (summary, description string) {
+	summary = fmt.Sprintf("Trau QA blocked %s — human attention needed", id)
+	var b strings.Builder
+	fmt.Fprintf(&b, "Trau loop QA verification of %s failed after automated repair and bugfix passes and needs human attention.\n\n", id)
+	if data, err := os.ReadFile(verdictPath); err == nil {
+		var v qaVerdict
+		if json.Unmarshal(data, &v) == nil {
+			if s := strings.TrimSpace(v.Summary); s != "" {
+				summary = truncateSummary(fmt.Sprintf("Trau QA blocked %s: %s", id, s))
+				fmt.Fprintf(&b, "Summary: %s\n\n", s)
+			}
+			if len(v.Failures) > 0 {
+				b.WriteString("Failures:\n")
+				for _, f := range v.Failures {
+					fmt.Fprintf(&b, "- %s\n", strings.TrimSpace(f))
+				}
+				b.WriteString("\n")
+			}
+		}
+	}
+	fmt.Fprintf(&b, "See runs/%s/ for the full run artifacts.", id)
+	return summary, b.String()
+}
+
+// truncateSummary keeps a Jira issue summary within the 255-character field limit.
+func truncateSummary(s string) string {
+	const max = 250
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 func (j *Jira) fileBugPrompt(id, verdictPath string) string {
@@ -529,13 +643,8 @@ func (j *Jira) fileBugPrompt(id, verdictPath string) string {
 		verdictPath, project, id, id, prefixOf(id))
 }
 
-// EnsureLabels creates the ready and quarantine labels in Jira if they do not exist.
+// EnsureLabels is a no-op on Jira: labels are freeform strings created implicitly
+// on first use, so there is nothing to pre-create.
 func (j *Jira) EnsureLabels(ctx context.Context) error {
-	_, err := j.Runner.Run(ctx, j.ensureLabelsPrompt(), "ensure_labels")
-	return err
-}
-
-func (j *Jira) ensureLabelsPrompt() string {
-	return fmt.Sprintf("Use the Jira (Rovo) MCP. Ensure these issue labels exist: %s. "+
-		"Create them if missing. Reply DONE.", quoteLabels(managedLabelList(j.ReadyLabel, j.QuarantineLabel, j.SplitLabel)))
+	return nil
 }

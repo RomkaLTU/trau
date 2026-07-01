@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/agent"
@@ -429,5 +432,228 @@ func TestJiraSetStatusSurfacesUnknownStatus(t *testing.T) {
 	}
 	if runner.calls["status"] != 0 {
 		t.Errorf("unknown status must not fall back to MCP, got %d status calls", runner.calls["status"])
+	}
+}
+
+// With a token set, AddLabel adds the label via a single PUT and never touches
+// the runner.
+func TestJiraAddLabelUsesAPI(t *testing.T) {
+	var puts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			puts++
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	if err := j.AddLabel(context.Background(), "PROJ-7", "split"); err != nil {
+		t.Fatalf("AddLabel error: %v", err)
+	}
+	if puts != 1 {
+		t.Errorf("expected one label PUT, got %d", puts)
+	}
+	if runner.calls["label"] != 0 {
+		t.Errorf("expected no MCP fallback, got %d label calls", runner.calls["label"])
+	}
+}
+
+// A blank label is a no-op that never calls the API or the runner.
+func TestJiraAddLabelBlankIsNoOp(t *testing.T) {
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", BaseURL: "https://x.atlassian.net", Email: "me@acme.com", APIToken: "tok"}
+	if err := j.AddLabel(context.Background(), "PROJ-7", "   "); err != nil {
+		t.Fatalf("AddLabel error: %v", err)
+	}
+	if runner.calls["label"] != 0 {
+		t.Errorf("blank label must not call the runner, got %d", runner.calls["label"])
+	}
+}
+
+// Without a token AddLabel falls back to the MCP.
+func TestJiraAddLabelFallsBackWithoutToken(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{"label": {Final: "DONE"}}}
+	j := &Jira{Runner: runner, Team: "PROJ"}
+	if err := j.AddLabel(context.Background(), "PROJ-7", "split"); err != nil {
+		t.Fatalf("AddLabel error: %v", err)
+	}
+	if runner.calls["label"] != 1 {
+		t.Errorf("expected one MCP fallback, got %d label calls", runner.calls["label"])
+	}
+}
+
+// Reset drops the quarantine label, ensures the ready label (one PUT) and
+// transitions back to To Do (GET+POST), all via the API.
+func TestJiraResetUsesAPI(t *testing.T) {
+	var puts, posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			puts++
+			w.WriteHeader(http.StatusNoContent)
+		case http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"transitions":[{"id":"11","name":"Backlog","to":{"name":"To Do"}}]}`))
+		case http.MethodPost:
+			posts++
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer srv.Close()
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", ReadyLabel: "ready", QuarantineLabel: "quarantine", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	if err := j.Reset(context.Background(), "PROJ-7"); err != nil {
+		t.Fatalf("Reset error: %v", err)
+	}
+	if puts != 1 {
+		t.Errorf("expected one label PUT, got %d", puts)
+	}
+	if posts != 1 {
+		t.Errorf("expected one transition POST, got %d", posts)
+	}
+	if runner.calls["status"] != 0 {
+		t.Errorf("expected no MCP fallback, got %d status calls", runner.calls["status"])
+	}
+}
+
+// Without a token Reset falls back to the MCP transition prompt.
+func TestJiraResetFallsBackWithoutToken(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{"status": {Final: "DONE"}}}
+	j := &Jira{Runner: runner, Team: "PROJ", ReadyLabel: "ready", QuarantineLabel: "quarantine"}
+	if err := j.Reset(context.Background(), "PROJ-7"); err != nil {
+		t.Fatalf("Reset error: %v", err)
+	}
+	if runner.calls["status"] != 1 {
+		t.Errorf("expected one MCP fallback, got %d status calls", runner.calls["status"])
+	}
+}
+
+// Quarantine adds the quarantine label / drops ready (one PUT) and posts a
+// reason comment (one POST), all via the API.
+func TestJiraQuarantineUsesAPI(t *testing.T) {
+	var puts, comments int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			puts++
+			w.WriteHeader(http.StatusNoContent)
+		case http.MethodPost:
+			comments++
+			w.WriteHeader(http.StatusCreated)
+		}
+	}))
+	defer srv.Close()
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", ReadyLabel: "ready", QuarantineLabel: "quarantine", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	if err := j.Quarantine(context.Background(), "PROJ-7", "boom"); err != nil {
+		t.Fatalf("Quarantine error: %v", err)
+	}
+	if puts != 1 {
+		t.Errorf("expected one label PUT, got %d", puts)
+	}
+	if comments != 1 {
+		t.Errorf("expected one comment POST, got %d", comments)
+	}
+	if runner.calls["quarantine"] != 0 {
+		t.Errorf("expected no MCP fallback, got %d quarantine calls", runner.calls["quarantine"])
+	}
+}
+
+// Without a token Quarantine falls back to the MCP.
+func TestJiraQuarantineFallsBackWithoutToken(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{"quarantine": {Final: "DONE"}}}
+	j := &Jira{Runner: runner, Team: "PROJ", ReadyLabel: "ready", QuarantineLabel: "quarantine"}
+	if err := j.Quarantine(context.Background(), "PROJ-7", "boom"); err != nil {
+		t.Fatalf("Quarantine error: %v", err)
+	}
+	if runner.calls["quarantine"] != 1 {
+		t.Errorf("expected one MCP fallback, got %d quarantine calls", runner.calls["quarantine"])
+	}
+}
+
+// FileBug reads the verdict, resolves the Bug type via createmeta, creates the
+// issue and returns its key — no MCP round-trip.
+func TestJiraFileBugUsesAPI(t *testing.T) {
+	dir := t.TempDir()
+	verdict := filepath.Join(dir, "verify.json")
+	if err := os.WriteFile(verdict, []byte(`{"pass":false,"summary":"login broken","failures":["500 on submit"]}`), 0o644); err != nil {
+		t.Fatalf("write verdict: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"values":[{"id":"10004","name":"Bug"}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"10500","key":"PROJ-500"}`))
+	}))
+	defer srv.Close()
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	got, err := j.FileBug(context.Background(), "PROJ-7", verdict)
+	if err != nil {
+		t.Fatalf("FileBug error: %v", err)
+	}
+	if got != "PROJ-500" {
+		t.Errorf("FileBug = %q, want PROJ-500", got)
+	}
+	if runner.calls["file_bug"] != 0 {
+		t.Errorf("expected no MCP fallback, got %d file_bug calls", runner.calls["file_bug"])
+	}
+}
+
+// Without a token FileBug falls back to the MCP and parses its BUG= sentinel.
+func TestJiraFileBugFallsBackWithoutToken(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{"file_bug": {Final: "BUG=PROJ-900"}}}
+	j := &Jira{Runner: runner, Team: "PROJ"}
+	got, err := j.FileBug(context.Background(), "PROJ-7", "/nonexistent/verify.json")
+	if err != nil {
+		t.Fatalf("FileBug error: %v", err)
+	}
+	if got != "PROJ-900" {
+		t.Errorf("FileBug = %q, want PROJ-900", got)
+	}
+	if runner.calls["file_bug"] != 1 {
+		t.Errorf("expected one MCP fallback, got %d file_bug calls", runner.calls["file_bug"])
+	}
+}
+
+// bugContent embeds the verdict summary and each failure, and keeps a working
+// fallback when the verdict file is missing.
+func TestBugContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "verify.json")
+	_ = os.WriteFile(path, []byte(`{"summary":"login broken","failures":["500 on submit","no retry"]}`), 0o644)
+
+	summary, desc := bugContent("PROJ-7", path)
+	if summary != "Trau QA blocked PROJ-7: login broken" {
+		t.Errorf("summary = %q", summary)
+	}
+	for _, want := range []string{"login broken", "500 on submit", "no retry", "runs/PROJ-7/"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("description missing %q:\n%s", want, desc)
+		}
+	}
+
+	_, missing := bugContent("PROJ-7", filepath.Join(dir, "gone.json"))
+	if !strings.Contains(missing, "runs/PROJ-7/") {
+		t.Errorf("missing-verdict description should still point at the run: %q", missing)
+	}
+}
+
+// EnsureLabels is a no-op on Jira: no API call, no MCP prompt, no error.
+func TestJiraEnsureLabelsNoOp(t *testing.T) {
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", ReadyLabel: "ready", QuarantineLabel: "quarantine"}
+	if err := j.EnsureLabels(context.Background()); err != nil {
+		t.Fatalf("EnsureLabels error: %v", err)
+	}
+	if runner.calls["ensure_labels"] != 0 {
+		t.Errorf("EnsureLabels must not call the runner, got %d", runner.calls["ensure_labels"])
 	}
 }
