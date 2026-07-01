@@ -166,6 +166,12 @@ USAGE_WINDOW=1
 USAGE_WINDOW_PTY=0
 
 # --- verify ---
+LINT_FIX=1                   # 1 = just before verify, run the project's automated lint/format fixers over
+                             # the working tree so verify isn't spent self-healing mechanical style noise
+                             # (whatever can't be auto-fixed still falls through to verify). 0 disables it.
+LINT_FIX_CMD=                # deterministic fixer command run in the target repo before verify, e.g.
+                             # vendor/bin/pint or "npm run lint:fix" — zero tokens, exit code ignored
+                             # (fails open). Empty = a cheap agent auto-detects and runs the project's fixers.
 BROWSER_VERIFY=auto          # auto (browser only for UI slices) | always | never
 APP_URL=http://localhost     # base URL of your locally-running app (used by browser verify)
 # Run the pluggable verify-check library each verify phase. Checks live in the

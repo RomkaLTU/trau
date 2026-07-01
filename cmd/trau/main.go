@@ -698,6 +698,8 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		RequireRepoChanges: cfg.RequireRepoChanges,
 		SizeJudge:          cfg.SizeJudge,
 		SplitLabel:         cfg.SplitLabel,
+		LintFix:            cfg.LintFix,
+		LintFixCmd:         cfg.LintFixCmd,
 		CITimeout:          cfg.CITimeout,
 		CIPoll:             cfg.CIPoll,
 		Lessons:            cfg.Lessons,
