@@ -69,14 +69,36 @@ func New(baseURL, email, apiToken string) *Client {
 // enabled reports whether the client has the credentials to reach the API.
 func (c *Client) enabled() bool { return c.auth != "" }
 
-// Issue is the subset of a Jira issue the tracker consumes.
+// Issue is the subset of a Jira issue the tracker consumes. Description is the v3
+// ADF body flattened to plain text; Status/Resolution/Project/Parent back the
+// tracker's status, ownership-guard and epic-parent reads.
 type Issue struct {
-	Key     string
-	Summary string
+	Key         string
+	Summary     string
+	Description string
+	Status      Status
+	Resolution  string // resolution.name, "" while unresolved
+	Project     Project
+	Parent      string // parent issue key, "" when top-level
 }
 
-// Issue fetches a single issue by its key (e.g. "PROJ-414"). Only the summary is
-// requested; later slices widen the fields as they add methods.
+// Status is an issue's workflow status. Category is the stable statusCategory.key
+// (new | indeterminate | done); Name is the display label.
+type Status struct {
+	Name     string
+	Category string
+}
+
+// Project is the Jira project an issue belongs to. Key is the canonical
+// identifier (the "PROJ" of PROJ-414).
+type Project struct {
+	Key  string
+	Name string
+	ID   string
+}
+
+// Issue fetches a single issue by its key (e.g. "PROJ-414"), reading the summary,
+// description, status, resolution, project and parent fields the tracker consumes.
 func (c *Client) Issue(ctx context.Context, key string) (*Issue, error) {
 	if !c.enabled() {
 		return nil, ErrNotEnabled
@@ -86,18 +108,59 @@ func (c *Client) Issue(ctx context.Context, key string) (*Issue, error) {
 		return nil, ErrNotFound
 	}
 	var dst issueResponse
-	path := "/issue/" + url.PathEscape(key) + "?fields=summary"
+	path := "/issue/" + url.PathEscape(key) + "?fields=summary,description,status,resolution,project,parent"
 	if err := c.do(ctx, http.MethodGet, path, nil, &dst); err != nil {
 		return nil, err
 	}
-	return &Issue{Key: dst.Key, Summary: dst.Fields.Summary}, nil
+	return dst.toIssue(), nil
 }
 
 type issueResponse struct {
 	Key    string `json:"key"`
 	Fields struct {
-		Summary string `json:"summary"`
+		Summary     string          `json:"summary"`
+		Description json.RawMessage `json:"description"`
+		Status      *struct {
+			Name           string `json:"name"`
+			StatusCategory struct {
+				Key string `json:"key"`
+			} `json:"statusCategory"`
+		} `json:"status"`
+		Resolution *struct {
+			Name string `json:"name"`
+		} `json:"resolution"`
+		Project *struct {
+			Key  string `json:"key"`
+			Name string `json:"name"`
+			ID   string `json:"id"`
+		} `json:"project"`
+		Parent *struct {
+			Key string `json:"key"`
+		} `json:"parent"`
 	} `json:"fields"`
+}
+
+// toIssue maps the raw REST payload onto the Issue the tracker consumes,
+// tolerating absent optional objects (null status/resolution/project/parent).
+func (r *issueResponse) toIssue() *Issue {
+	iss := &Issue{
+		Key:         r.Key,
+		Summary:     r.Fields.Summary,
+		Description: adfToText(r.Fields.Description),
+	}
+	if s := r.Fields.Status; s != nil {
+		iss.Status = Status{Name: s.Name, Category: s.StatusCategory.Key}
+	}
+	if res := r.Fields.Resolution; res != nil {
+		iss.Resolution = res.Name
+	}
+	if p := r.Fields.Project; p != nil {
+		iss.Project = Project{Key: p.Key, Name: p.Name, ID: p.ID}
+	}
+	if p := r.Fields.Parent; p != nil {
+		iss.Parent = p.Key
+	}
+	return iss
 }
 
 // do performs a request against the REST v3 API and decodes the JSON response
@@ -180,4 +243,68 @@ func retryAfter(header string, attempt int) time.Duration {
 		backoff = 30 * time.Second
 	}
 	return backoff
+}
+
+// adfNode is one node of an Atlassian Document Format tree. Text carries inline
+// content (marks are ignored); Content holds child nodes.
+type adfNode struct {
+	Type    string    `json:"type"`
+	Text    string    `json:"text"`
+	Content []adfNode `json:"content"`
+}
+
+// adfToText flattens a v3 ADF description document to plain, readable text. A
+// missing or null description, or any decode failure, yields "" so callers treat
+// an unreadable body as "no description" rather than an error.
+func adfToText(raw json.RawMessage) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return ""
+	}
+	var doc adfNode
+	if err := json.Unmarshal(trimmed, &doc); err != nil {
+		return ""
+	}
+	var b strings.Builder
+	writeADF(&b, doc)
+	return strings.TrimSpace(collapseBlankLines(b.String()))
+}
+
+// writeADF walks an ADF node depth-first, emitting text and a newline after every
+// block-level node so paragraphs and list items stay on their own lines.
+func writeADF(b *strings.Builder, n adfNode) {
+	switch n.Type {
+	case "text":
+		b.WriteString(n.Text)
+	case "hardBreak":
+		b.WriteByte('\n')
+	}
+	for _, c := range n.Content {
+		writeADF(b, c)
+	}
+	if isADFBlock(n.Type) {
+		b.WriteByte('\n')
+	}
+}
+
+// isADFBlock reports whether an ADF node type is block-level and should be
+// followed by a line break in the flattened text.
+func isADFBlock(t string) bool {
+	switch t {
+	case "paragraph", "heading", "blockquote", "codeBlock", "rule", "panel",
+		"listItem", "bulletList", "orderedList", "taskItem", "taskList",
+		"decisionItem", "decisionList", "mediaSingle", "mediaGroup", "tableRow":
+		return true
+	default:
+		return false
+	}
+}
+
+// collapseBlankLines squeezes runs of three or more newlines down to a single
+// blank line so nested block nodes don't stack extra spacing.
+func collapseBlankLines(s string) string {
+	for strings.Contains(s, "\n\n\n") {
+		s = strings.ReplaceAll(s, "\n\n\n", "\n\n")
+	}
+	return s
 }
