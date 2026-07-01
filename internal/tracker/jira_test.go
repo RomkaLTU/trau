@@ -242,3 +242,133 @@ func TestJiraIssueDetailNoTokenErrors(t *testing.T) {
 		t.Fatal("IssueDetail without a token should error, got nil")
 	}
 }
+
+// eligiblePayload lists an epic, a blocked ticket, then a clean leaf — in JQL
+// (rank) order — so a picker must skip the first two and land on the leaf.
+const eligiblePayload = `{"issues":[
+	{"key":"PROJ-2","fields":{"summary":"Epic","status":{"name":"To Do","statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":1},"issuelinks":[]}},
+	{"key":"PROJ-3","fields":{"summary":"Blocked","status":{"name":"To Do","statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},"issuelinks":[{"type":{"name":"Blocks","inward":"is blocked by"},"inwardIssue":{"key":"PROJ-8","fields":{"status":{"statusCategory":{"key":"new"}}}}}]}},
+	{"key":"PROJ-1","fields":{"summary":"Do it","status":{"name":"To Do","statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},"issuelinks":[]}}
+]}`
+
+func TestJiraPickUsesAPIAndSkipsEpicAndBlocked(t *testing.T) {
+	srv := jiraIssueServer(eligiblePayload)
+	defer srv.Close()
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", ReadyLabel: "ready-for-agent", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	got, err := j.Pick(context.Background(), Scope{Team: "PROJ", Prefix: "PROJ"})
+	if err != nil {
+		t.Fatalf("Pick error: %v", err)
+	}
+	if got != "PROJ-1" {
+		t.Errorf("Pick = %q, want PROJ-1 (epic + blocked skipped)", got)
+	}
+	if runner.calls["pick"] != 0 {
+		t.Errorf("expected no MCP fallback, got %d pick calls", runner.calls["pick"])
+	}
+}
+
+func TestJiraPickFallsBackWithoutToken(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{
+		"pick": {Final: "PICK=PROJ-7"},
+	}}
+	j := &Jira{Runner: runner, Team: "PROJ", ReadyLabel: "ready-for-agent"}
+
+	got, err := j.Pick(context.Background(), Scope{Team: "PROJ", Prefix: "PROJ"})
+	if err != nil {
+		t.Fatalf("Pick error: %v", err)
+	}
+	if got != "PROJ-7" {
+		t.Errorf("Pick = %q, want PROJ-7 from MCP fallback", got)
+	}
+	if runner.calls["pick"] != 1 {
+		t.Errorf("expected one MCP pick, got %d", runner.calls["pick"])
+	}
+}
+
+func TestJiraListEligibleUsesAPIAndKeepsEpics(t *testing.T) {
+	srv := jiraIssueServer(eligiblePayload)
+	defer srv.Close()
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", ReadyLabel: "ready-for-agent", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	list, err := j.ListEligible(context.Background(), Scope{Team: "PROJ", Prefix: "PROJ"})
+	if err != nil {
+		t.Fatalf("ListEligible error: %v", err)
+	}
+	// The blocked PROJ-3 is filtered; the epic PROJ-2 is kept (unlike Pick).
+	if len(list) != 2 || list[0].ID != "PROJ-2" || list[1].ID != "PROJ-1" {
+		t.Errorf("ListEligible = %+v, want [PROJ-2, PROJ-1]", list)
+	}
+	if runner.calls["list_eligible"] != 0 {
+		t.Errorf("expected no MCP fallback, got %d list calls", runner.calls["list_eligible"])
+	}
+}
+
+func TestJiraListEligibleFallsBackWithoutToken(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{
+		"list_eligible": {Final: `ELIGIBLE=[{"id":"PROJ-1","title":"A"}]`},
+	}}
+	j := &Jira{Runner: runner, Team: "PROJ", ReadyLabel: "ready-for-agent"}
+
+	list, err := j.ListEligible(context.Background(), Scope{Team: "PROJ", Prefix: "PROJ"})
+	if err != nil {
+		t.Fatalf("ListEligible error: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != "PROJ-1" {
+		t.Errorf("ListEligible = %+v, want [PROJ-1] from MCP fallback", list)
+	}
+	if runner.calls["list_eligible"] != 1 {
+		t.Errorf("expected one MCP list, got %d", runner.calls["list_eligible"])
+	}
+}
+
+func TestJiraSubIssuesUsesAPI(t *testing.T) {
+	const payload = `{"issues":[
+		{"key":"PROJ-10","fields":{"summary":"Leaf","status":{"statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},"subtasks":[]}},
+		{"key":"PROJ-11","fields":{"summary":"Parent","status":{"statusCategory":{"key":"done"}},"issuetype":{"hierarchyLevel":0},"subtasks":[{"key":"PROJ-12"}]}}
+	]}`
+	srv := jiraIssueServer(payload)
+	defer srv.Close()
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	subs, err := j.SubIssues(context.Background(), "PROJ-1")
+	if err != nil {
+		t.Fatalf("SubIssues error: %v", err)
+	}
+	want := []SubIssue{
+		{ID: "PROJ-10", Title: "Leaf", Done: false, HasChildren: false},
+		{ID: "PROJ-11", Title: "Parent", Done: true, HasChildren: true},
+	}
+	if len(subs) != len(want) {
+		t.Fatalf("got %d sub-issues, want %d (%+v)", len(subs), len(want), subs)
+	}
+	for i := range want {
+		if subs[i] != want[i] {
+			t.Errorf("sub[%d] = %+v, want %+v", i, subs[i], want[i])
+		}
+	}
+	if runner.calls["sub_issues"] != 0 {
+		t.Errorf("expected no MCP fallback, got %d sub_issues calls", runner.calls["sub_issues"])
+	}
+}
+
+func TestJiraSubIssuesFallsBackWithoutToken(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{
+		"sub_issues": {Final: `SUB_ISSUES=[{"id":"PROJ-2","title":"Child","hasChildren":false}]`},
+	}}
+	j := &Jira{Runner: runner, Team: "PROJ"}
+
+	subs, err := j.SubIssues(context.Background(), "PROJ-1")
+	if err != nil {
+		t.Fatalf("SubIssues error: %v", err)
+	}
+	if len(subs) != 1 || subs[0].ID != "PROJ-2" {
+		t.Errorf("SubIssues = %+v, want [PROJ-2] from MCP fallback", subs)
+	}
+	if runner.calls["sub_issues"] != 1 {
+		t.Errorf("expected one MCP sub_issues, got %d", runner.calls["sub_issues"])
+	}
+}

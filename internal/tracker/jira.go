@@ -40,9 +40,18 @@ func jiraShouldFallback(err error) bool {
 	return errors.Is(err, jiraapi.ErrNotEnabled) || errors.Is(err, jiraapi.ErrUnauthorized)
 }
 
-// Pick returns the next eligible ticket identifier, or "" when nothing is eligible.
+// Pick returns the next eligible ticket identifier, or "" when nothing is
+// eligible. A whole-project pick uses the REST /search/jql path when a token is
+// configured, falling back to the Rovo MCP on an auth/not-enabled error. Epic
+// scope (a parent id) always goes through the MCP, restricted to confirmed leaves.
 func (j *Jira) Pick(ctx context.Context, scope Scope) (string, error) {
-	if scope.Parent != "" {
+	if scope.Parent == "" {
+		if id, err := j.pickAPI(ctx, scope); err == nil {
+			return id, nil
+		} else if !jiraShouldFallback(err) {
+			return "", err
+		}
+	} else {
 		leaves, err := j.leafSubIssues(ctx, scope.Parent)
 		if err != nil {
 			return "", fmt.Errorf("pick %s: list children: %w", scope.Parent, err)
@@ -68,6 +77,112 @@ func (j *Jira) Pick(ctx context.Context, scope Scope) (string, error) {
 		return "", err
 	}
 	return "", nil
+}
+
+// pickAPI selects the highest-ranked eligible ticket via /search/jql. The query
+// already filters by project, ready label, unstarted status and unresolved state
+// and orders by the loop's rules; this applies the remaining policy the JQL can't
+// express: skip epics (containers), skip tickets with an unresolved blocker, and
+// keep only the configured key prefix.
+func (j *Jira) pickAPI(ctx context.Context, scope Scope) (string, error) {
+	project := j.pickProject(scope)
+	if project == "" {
+		return "", jiraapi.ErrNotEnabled
+	}
+	candidates, err := j.api().Eligible(ctx, project, j.ReadyLabel)
+	if err != nil {
+		return "", err
+	}
+	prefix := scope.prefix()
+	for _, c := range candidates {
+		if c.IsEpic {
+			continue
+		}
+		if !allBlockersResolved(c.BlockedBy) {
+			continue
+		}
+		if !strings.HasPrefix(c.Key, prefix+"-") {
+			continue
+		}
+		return c.Key, nil
+	}
+	return "", nil
+}
+
+// pickProject returns the Jira project key to search: the configured project key,
+// falling back to the scope's team when the field is unset.
+func (j *Jira) pickProject(scope Scope) string {
+	if p := strings.TrimSpace(j.Team); p != "" {
+		return p
+	}
+	return strings.TrimSpace(scope.Team)
+}
+
+// allBlockersResolved reports whether every "is blocked by" link on a candidate is
+// resolved. Jira JQL has no native way to test this, so it is enforced client-side
+// over the candidate's issuelinks.
+func allBlockersResolved(blockers []jiraapi.Blocker) bool {
+	for _, b := range blockers {
+		if !b.Resolved {
+			return false
+		}
+	}
+	return true
+}
+
+// ListEligible enumerates the tickets the loop could pick next. It uses the REST
+// /search/jql path when a token is configured, otherwise the Rovo MCP. Unlike
+// Pick it keeps epics in the list — the caller decides what to do with them.
+func (j *Jira) ListEligible(ctx context.Context, scope Scope) ([]ListedTicket, error) {
+	if list, err := j.listEligibleAPI(ctx, scope); err == nil {
+		return list, nil
+	} else if !jiraShouldFallback(err) {
+		return nil, err
+	}
+
+	res, err := j.Runner.Run(ctx, j.listEligiblePrompt(scope), "list_eligible")
+	if list, matched := parseEligible(res.Final); matched {
+		return list, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("could not parse eligible ticket list")
+}
+
+func (j *Jira) listEligibleAPI(ctx context.Context, scope Scope) ([]ListedTicket, error) {
+	if scope.Parent != "" {
+		return nil, jiraapi.ErrNotEnabled
+	}
+	project := j.pickProject(scope)
+	if project == "" {
+		return nil, jiraapi.ErrNotEnabled
+	}
+	candidates, err := j.api().Eligible(ctx, project, j.ReadyLabel)
+	if err != nil {
+		return nil, err
+	}
+	prefix := scope.prefix()
+	out := make([]ListedTicket, 0, len(candidates))
+	for _, c := range candidates {
+		if !allBlockersResolved(c.BlockedBy) {
+			continue
+		}
+		if !strings.HasPrefix(c.Key, prefix+"-") {
+			continue
+		}
+		out = append(out, ListedTicket{ID: c.Key, Title: c.Summary, State: c.StatusName})
+	}
+	return out, nil
+}
+
+func (j *Jira) listEligiblePrompt(scope Scope) string {
+	pfx := scope.prefix()
+	return fmt.Sprintf("Use the Jira (Rovo) MCP. List eligible issues in project %q that carry the label '%s', "+
+		"are unstarted (status category To Do — not In Progress, Done or Closed), have every 'is blocked by' issue resolved (Done/Closed), and match key prefix %s-. "+
+		"Respond with exactly one final line of JSON: ELIGIBLE=[{\"id\":\"%s-123\",\"title\":\"...\"}, ...] "+
+		"or ELIGIBLE=[]. No other output.",
+		j.pickProject(scope), j.ReadyLabel, pfx, pfx)
 }
 
 func (j *Jira) leafSubIssues(ctx context.Context, parent string) (map[string]bool, error) {
@@ -134,8 +249,16 @@ func (j *Jira) listTeamsPrompt() string {
 		"using each project's key (e.g. PROJ) and name. If there are none, respond TEAMS=NONE. No other output."
 }
 
-// SubIssues asks the Jira MCP for the direct sub-tasks of issue id.
+// SubIssues returns the direct children of issue id — sub-tasks and epic-children
+// alike, via the unified parent field. It uses the REST /search/jql path when a
+// token is configured, otherwise the Jira (Rovo) MCP.
 func (j *Jira) SubIssues(ctx context.Context, id string) ([]SubIssue, error) {
+	if subs, err := j.subIssuesAPI(ctx, id); err == nil {
+		return subs, nil
+	} else if !jiraShouldFallback(err) {
+		return nil, err
+	}
+
 	res, err := j.Runner.Run(ctx, j.subIssuesPrompt(id), "sub_issues")
 	if subs, matched := parseSubIssues(res.Final); matched {
 		return subs, nil
@@ -144,6 +267,21 @@ func (j *Jira) SubIssues(ctx context.Context, id string) ([]SubIssue, error) {
 		return nil, err
 	}
 	return nil, fmt.Errorf("could not parse sub-issues for %s", id)
+}
+
+func (j *Jira) subIssuesAPI(ctx context.Context, id string) ([]SubIssue, error) {
+	children, err := j.api().SubIssues(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SubIssue, 0, len(children))
+	for _, ch := range children {
+		if ch.Key == "" {
+			continue
+		}
+		out = append(out, SubIssue{ID: ch.Key, Title: ch.Summary, Done: ch.Done, HasChildren: ch.HasChildren})
+	}
+	return out, nil
 }
 
 func (j *Jira) subIssuesPrompt(id string) string {
