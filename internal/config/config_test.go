@@ -208,6 +208,43 @@ func TestKimiPhaseRouteReadsProviderFile(t *testing.T) {
 	}
 }
 
+// TestSeedsCheapDefaultRoutes is the COD-641 guard: with no phase keys set, a
+// Claude run seeds cleanup/sizejudge onto sonnet and lintfix onto haiku instead
+// of inheriting the Opus default, while an explicit per-phase key still wins.
+func TestSeedsCheapDefaultRoutes(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "trau.ini")
+
+	if err := os.WriteFile(local, []byte("PROVIDER=claude\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayered("", "", local, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for phase, want := range map[string]string{
+		"cleanup":   "claude:sonnet",
+		"sizejudge": "claude:sonnet",
+		"lintfix":   "claude:haiku",
+	} {
+		if got := cfg.Routes[phase]; got != want {
+			t.Errorf("seeded Routes[%q] = %q, want %q", phase, got, want)
+		}
+	}
+
+	// An explicit per-phase model overrides the seed.
+	if err := os.WriteFile(local, []byte("PROVIDER=claude\nCLAUDE_CLEANUP_MODEL=opus\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = LoadLayered("", "", local, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, model, _ := parseRouteSpec(cfg.Routes["cleanup"]); model != "opus" {
+		t.Errorf("explicit CLAUDE_CLEANUP_MODEL: cleanup model = %q, want opus (route %q)", model, cfg.Routes["cleanup"])
+	}
+}
+
 // TestRecoveryDefaults pins the COD-583 transient-recovery defaults: stall
 // detection and retry are on out of the box, provider fallback is opt-in.
 func TestRecoveryDefaults(t *testing.T) {

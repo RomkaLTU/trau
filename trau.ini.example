@@ -76,7 +76,13 @@ PROVIDER=claude
 # KIMI_MODEL=kimi-for-coding
 
 # Per-provider phase tuning for this project. Phases: BUILD HANDOFF VERIFY REPAIR
-# BUGFIX COMMIT PICK. Model/effort are provider-specific.
+# BUGFIX CLEANUP LINTFIX SIZEJUDGE COMMIT PICK. Model/effort are provider-specific.
+#
+# On Claude, the cheap judgment/cleanup phases are seeded so they don't ride the
+# Opus default: CLEANUP and SIZEJUDGE -> sonnet, LINTFIX -> haiku (unset otherwise
+# inherits Default). These are independent of PICK, so downtiering cleanup no longer
+# also downtiers epic-sync/epic-repair. Set the dedicated keys to override a seed;
+# if you previously relied on CLAUDE_PICK_MODEL covering cleanup/lintfix, set these.
 #
 # Example Claude tuning: Opus for implementation, Sonnet for cold verify.
 # CLAUDE_BUILD_MODEL=claude-opus-4-8
@@ -85,6 +91,8 @@ PROVIDER=claude
 # CLAUDE_VERIFY_EFFORT=medium
 # CLAUDE_BUGFIX_MODEL=claude-opus-4-8
 # CLAUDE_BUGFIX_EFFORT=max
+# CLAUDE_CLEANUP_MODEL=claude-sonnet-4-6
+# CLAUDE_SIZEJUDGE_MODEL=claude-sonnet-4-6
 #
 # Example Codex tuning: hardest work on GPT-5.5, mechanical phases on lighter Codex.
 # CODEX_BUILD_MODEL=gpt-5.5
