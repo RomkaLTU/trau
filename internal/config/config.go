@@ -39,6 +39,7 @@ type Config struct {
 	LinearAPIKey    string
 	ReadyLabel      string
 	QuarantineLabel string
+	SplitLabel      string
 	Project         string
 
 	BaseBranch string
@@ -89,6 +90,11 @@ type Config struct {
 	// a build that left the managed repo unchanged faults instead of advancing to a
 	// hollow handoff or empty PR. Set 0 for the rare legitimately no-op ticket.
 	RequireRepoChanges bool
+	// SizeJudge gates the pre-flight ticket-size guard: when on (default), a cheap
+	// LLM judge sizes each ticket before the build, quarantining (or, in an attended
+	// single-ticket run, warning about) one too large to finish in a single build
+	// window. Set 0 to disable it entirely (no extra call, zero added cost).
+	SizeJudge bool
 
 	BrowserVerify string
 	AppURL        string
@@ -149,6 +155,7 @@ func Defaults() Config {
 		IssuePrefix:           "",
 		ReadyLabel:            "ready-for-agent",
 		QuarantineLabel:       "needs-human",
+		SplitLabel:            "needs-split",
 		Project:               "",
 		BaseBranch:            "main",
 		Remote:                "origin",
@@ -187,6 +194,7 @@ func Defaults() Config {
 		ExpectedChecks:        "",
 		RequireCI:             true,
 		RequireRepoChanges:    true,
+		SizeJudge:             true,
 		BrowserVerify:         "auto",
 		AppURL:                "http://localhost",
 		VerifyChecks:          true,
@@ -403,6 +411,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("LINEAR_API_KEY", &c.LinearAPIKey)
 	str("READY_LABEL", &c.ReadyLabel)
 	str("QUARANTINE_LABEL", &c.QuarantineLabel)
+	str("SPLIT_LABEL", &c.SplitLabel)
 	str("PROJECT", &c.Project)
 	str("BASE_BRANCH", &c.BaseBranch)
 	str("REMOTE", &c.Remote)
@@ -498,6 +507,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("REQUIRE_REPO_CHANGES"); v != "" {
 		c.RequireRepoChanges = v == "1"
 		sources["REQUIRE_REPO_CHANGES"] = src.name
+	}
+	if v, src := get("SIZE_JUDGE"); v != "" {
+		c.SizeJudge = v == "1"
+		sources["SIZE_JUDGE"] = src.name
 	}
 	str("BROWSER_VERIFY", &c.BrowserVerify)
 	str("APP_URL", &c.AppURL)
@@ -910,6 +923,8 @@ func KnownKeys() []KeyMeta {
 		{Key: "CI_POLL", Default: "30", Description: "Seconds between CI polls"},
 		{Key: "EXPECTED_CHECKS", Description: "Required CI check names (comma-separated)"},
 		{Key: "REQUIRE_CI", Default: "1", Description: "Gate merge on CI; set 0 for repos with no PR CI (1 = yes, 0 = no)", Bool: true},
+		{Key: "SIZE_JUDGE", Advanced: true, Default: "1", Description: "Pre-flight LLM size judge: quarantine (or warn) tickets too big for one build window (1 = yes, 0 = no)", Bool: true},
+		{Key: "SPLIT_LABEL", Advanced: true, Default: "needs-split", Description: "Label applied to a ticket the size judge flags as too large to build in one window"},
 		{Key: "BROWSER_VERIFY", Default: "auto", Description: "Browser verify: auto | always | never", Options: []string{"auto", "always", "never"}},
 		{Key: "APP_URL", Default: "http://localhost", Description: "Local app URL for browser verify"},
 		{Key: "VERIFY_CHECKS", Default: "1", Description: "Run the pluggable verify-check library (.trau/checks); 1 = yes, 0 = no", Bool: true},
@@ -1217,6 +1232,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.ReadyLabel
 	case "QUARANTINE_LABEL":
 		return cfg.QuarantineLabel
+	case "SPLIT_LABEL":
+		return cfg.SplitLabel
 	case "PROJECT":
 		return cfg.Project
 	case "BASE_BRANCH":
@@ -1296,6 +1313,11 @@ func keyValue(cfg Config, key string) string {
 		return cfg.ExpectedChecks
 	case "REQUIRE_CI":
 		if cfg.RequireCI {
+			return "1"
+		}
+		return "0"
+	case "SIZE_JUDGE":
+		if cfg.SizeJudge {
 			return "1"
 		}
 		return "0"
