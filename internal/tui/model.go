@@ -147,12 +147,13 @@ type (
 // attributed to a pipeline phase. sub entries are indented continuation lines
 // (failure reasons, detail) that hang under the preceding entry.
 type feedEntry struct {
-	ts     time.Time
-	glyph  string
-	gstyle lipgloss.Style
-	phase  string
-	text   string
-	sub    bool
+	ts      time.Time
+	glyph   string
+	gstyle  lipgloss.Style
+	phase   string
+	text    string
+	sub     bool
+	stepIdx int // pipeline step a ▸ phase-start row belongs to, or -1
 }
 
 // usageStats accumulates the run's agent spend (tokens + cost) live from
@@ -252,6 +253,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.state == stateRunning && m.streaming && m.stream != nil && !m.streamReading {
 		m.streamReading = true
 		cmds = append(cmds, m.tailReadCmd())
+	}
+
+	// Re-render the feed each tick while a phase runs so the active row's elapsed
+	// advances live; the composed text is read from the step in renderFeed.
+	if _, ok := msg.(spinner.TickMsg); ok &&
+		m.state == stateRunning && activeIndex(m.steps) >= 0 {
+		m.refreshFeed()
 	}
 
 	if m.state == stateSummary {
@@ -406,9 +414,13 @@ func (m *model) addLog(line string) {
 		m.paused = true
 	}
 	if isSub {
-		m.appendFeed(feedEntry{ts: time.Now(), glyph: "↳", gstyle: m.styles.Subtle, text: text, sub: true})
+		m.appendFeed(feedEntry{ts: time.Now(), glyph: "↳", gstyle: m.styles.Subtle, text: text, sub: true, stepIdx: -1})
 	} else {
-		m.appendFeed(feedEntry{ts: time.Now(), glyph: glyph, gstyle: style, phase: m.activePhase(), text: text})
+		stepIdx := -1
+		if glyph == "▸" {
+			stepIdx = activeIndex(m.steps)
+		}
+		m.appendFeed(feedEntry{ts: time.Now(), glyph: glyph, gstyle: style, phase: m.activePhase(), text: text, stepIdx: stepIdx})
 	}
 	if a, b, ok := parseAttempt(line); ok {
 		if idx := activeIndex(m.steps); idx >= 0 {
@@ -484,6 +496,18 @@ func (m model) activePhase() string {
 		return m.steps[idx].label
 	}
 	return ""
+}
+
+// streamLabel names the live-view panel: the active phase's model tag if known,
+// else the usage provider, else "agent".
+func (m model) streamLabel() string {
+	if idx := activeIndex(m.steps); idx >= 0 && m.steps[idx].tag != "" {
+		return m.steps[idx].tag
+	}
+	if m.usage.provider != "" {
+		return m.usage.provider
+	}
+	return "agent"
 }
 
 // classifyLine maps a raw pipeline line to a feed glyph, color, cleaned text, and
@@ -657,7 +681,7 @@ func (m model) renderRunning() string {
 
 	rightTitle, rightBody := "Activity", m.viewport.View()
 	if m.streaming {
-		rightTitle, rightBody = "Live · claude", m.renderStream(d)
+		rightTitle, rightBody = "Live · "+m.streamLabel(), m.renderStream(d)
 	}
 	rightBox := titledPanel(m.styles, rightTitle, rightBody, d.rightW, d.bodyH)
 
@@ -825,13 +849,44 @@ func (m model) renderFeed(w int) string {
 			gl := e.gstyle.Render(pad(e.glyph, 1))
 			ph := m.styles.Help.Render(pad(e.phase, 8))
 			head := ts + "  " + gl + " " + ph + " "
-			b.WriteString(head + truncate(e.text, w-lipgloss.Width(head)))
+			b.WriteString(head + truncate(m.feedText(e), w-lipgloss.Width(head)))
 		}
 		if i < len(m.feed)-1 {
 			b.WriteByte('\n')
 		}
 	}
 	return b.String()
+}
+
+// feedText is the rendered text for a feed row. A phase-start (▸) row tied to a
+// pipeline step composes its text live from that step — the model tag recovered
+// from the phase's agent_call plus elapsed (ticking while active, frozen to the
+// real duration once done) — so it reads e.g. "opus-4-8 @high · 5m03s" instead of
+// the bare route tag. Until the tag lands it falls back to the parsed text
+// ("claude" by default). Every other row uses its parsed text unchanged.
+func (m model) feedText(e feedEntry) string {
+	if e.stepIdx < 0 || e.stepIdx >= len(m.steps) {
+		return e.text
+	}
+	st := m.steps[e.stepIdx]
+	tag := st.tag
+	if tag == "" {
+		tag = e.text
+	}
+	var parts []string
+	if tag != "" {
+		parts = append(parts, tag)
+	}
+	switch {
+	case st.state == stepActive && !st.start.IsZero():
+		parts = append(parts, fmtDur(time.Since(st.start)))
+	case st.took > 0:
+		parts = append(parts, fmtDur(st.took))
+	}
+	if len(parts) == 0 {
+		return e.text
+	}
+	return strings.Join(parts, " · ")
 }
 
 func modelTag(fields map[string]any) string {
