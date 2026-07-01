@@ -103,6 +103,11 @@ type Config struct {
 	// the step entirely.
 	LintFix    bool
 	LintFixCmd string
+	// Cleanup gates the pre-verify cleanup step: when on (default), a cheap agent
+	// pass strips AI-slop from the slice's uncommitted diff — unnecessary comments,
+	// dead code, over-defensive scaffolding — before verify grades the result. Set
+	// Cleanup 0 to skip it.
+	Cleanup bool
 
 	BrowserVerify string
 	AppURL        string
@@ -204,6 +209,7 @@ func Defaults() Config {
 		RequireRepoChanges:    true,
 		SizeJudge:             true,
 		LintFix:               true,
+		Cleanup:               true,
 		BrowserVerify:         "auto",
 		AppURL:                "http://localhost",
 		VerifyChecks:          true,
@@ -526,6 +532,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		sources["LINT_FIX"] = src.name
 	}
 	str("LINT_FIX_CMD", &c.LintFixCmd)
+	if v, src := get("CLEANUP"); v != "" {
+		c.Cleanup = v == "1"
+		sources["CLEANUP"] = src.name
+	}
 	str("BROWSER_VERIFY", &c.BrowserVerify)
 	str("APP_URL", &c.AppURL)
 	if v, src := get("VERIFY_CHECKS"); v != "" {
@@ -941,6 +951,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "SPLIT_LABEL", Advanced: true, Default: "needs-split", Description: "Label applied to a ticket the size judge flags as too large to build in one window"},
 		{Key: "LINT_FIX", Default: "1", Description: "Run the project's lint/format autofixers before verify so verify isn't spent self-healing style noise (1 = yes, 0 = no)", Bool: true},
 		{Key: "LINT_FIX_CMD", Description: "Deterministic lint-fix command run before verify (e.g. vendor/bin/pint, npm run lint:fix). Empty = a cheap agent auto-detects and runs the project's fixers"},
+		{Key: "CLEANUP", Default: "1", Description: "Strip AI-slop (unnecessary comments, dead code, over-defensive scaffolding) from the slice's diff before verify (1 = yes, 0 = no)", Bool: true},
 		{Key: "BROWSER_VERIFY", Default: "auto", Description: "Browser verify: auto | always | never", Options: []string{"auto", "always", "never"}},
 		{Key: "APP_URL", Default: "http://localhost", Description: "Local app URL for browser verify"},
 		{Key: "VERIFY_CHECKS", Default: "1", Description: "Run the pluggable verify-check library (.trau/checks); 1 = yes, 0 = no", Bool: true},
@@ -1344,6 +1355,11 @@ func keyValue(cfg Config, key string) string {
 		return "0"
 	case "LINT_FIX_CMD":
 		return cfg.LintFixCmd
+	case "CLEANUP":
+		if cfg.Cleanup {
+			return "1"
+		}
+		return "0"
 	case "BROWSER_VERIFY":
 		return cfg.BrowserVerify
 	case "APP_URL":
