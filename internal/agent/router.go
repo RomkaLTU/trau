@@ -15,13 +15,12 @@ const (
 	PhaseBugfix    = "bugfix"
 	PhaseCleanup   = "cleanup"
 	PhaseLintfix   = "lintfix"
-	PhaseSizejudge = "sizejudge"
 	PhaseCommit    = "commit"
 	PhasePick      = "pick"
 )
 
 // Phases lists the routable phase keys in pipeline order (loop-level "pick" last).
-var Phases = []string{PhaseBuild, PhaseHandoff, PhaseVerify, PhaseRepair, PhaseBugfix, PhaseCleanup, PhaseLintfix, PhaseSizejudge, PhaseCommit, PhasePick}
+var Phases = []string{PhaseBuild, PhaseHandoff, PhaseVerify, PhaseRepair, PhaseBugfix, PhaseCleanup, PhaseLintfix, PhaseCommit, PhasePick}
 
 // RouteKey normalizes a per-call label (the tag passed to Run) to its routable
 // phase. The pipeline emits dynamic labels — "verify-retry2", "repair1" — and the
@@ -43,8 +42,6 @@ func RouteKey(label string) string {
 		return PhaseCleanup
 	case strings.HasPrefix(label, PhaseLintfix):
 		return PhaseLintfix
-	case strings.HasPrefix(label, PhaseSizejudge):
-		return PhaseSizejudge
 	case strings.HasPrefix(label, PhaseCommit):
 		return PhaseCommit
 	default:

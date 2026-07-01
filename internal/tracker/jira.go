@@ -32,25 +32,34 @@ func (j *Jira) api() *jiraapi.Client {
 	return jiraapi.New(j.BaseURL, j.Email, j.APIToken)
 }
 
-// jiraShouldFallback reports whether a direct-API error should cause the caller
-// to retry the operation through the Rovo MCP. Unlike Linear, a Jira 401 IS
-// fallback-worthy: the REST token and the Rovo MCP authenticate as independent
-// Atlassian identities, so a missing or expired per-repo token can still be
-// served by a working MCP session. Any other error (not-found, transient) is
-// surfaced — the MCP would not do better.
+// jiraShouldFallback reports whether a direct-API error is the kind the Rovo MCP
+// could still serve: a disabled (no-token) or unauthorized client. Any other
+// error (not-found, transient) is surfaced — the MCP would not do better.
 func jiraShouldFallback(err error) bool {
 	return errors.Is(err, jiraapi.ErrNotEnabled) || errors.Is(err, jiraapi.ErrUnauthorized)
+}
+
+// canFallback reports whether a direct-API error should be retried through the
+// Rovo MCP. It gates jiraShouldFallback on having a runner at all: when the
+// tracker is built rest-only — a full set of per-repo REST credentials, so no
+// runner — the API is the sole Atlassian identity and its errors are surfaced,
+// never masked by the shared Rovo MCP, which authenticates as a different
+// account. This is the same rule onboarding detection applies, extended to every
+// tracker operation so a rest-only loop never silently switches identity.
+func (j *Jira) canFallback(err error) bool {
+	return j.Runner != nil && jiraShouldFallback(err)
 }
 
 // Pick returns the next eligible ticket identifier, or "" when nothing is
 // eligible. A whole-project pick uses the REST /search/jql path when a token is
 // configured, falling back to the Rovo MCP on an auth/not-enabled error. Epic
-// scope (a parent id) always goes through the MCP, restricted to confirmed leaves.
+// scope (a parent id) is restricted to the epic's confirmed leaves and likewise
+// prefers REST, falling back to the MCP only when a runner is available.
 func (j *Jira) Pick(ctx context.Context, scope Scope) (string, error) {
 	if scope.Parent == "" {
 		if id, err := j.pickAPI(ctx, scope); err == nil {
 			return id, nil
-		} else if !jiraShouldFallback(err) {
+		} else if !j.canFallback(err) {
 			return "", err
 		}
 	} else {
@@ -60,6 +69,11 @@ func (j *Jira) Pick(ctx context.Context, scope Scope) (string, error) {
 		}
 		if len(leaves) == 0 {
 			return "", nil
+		}
+		if id, err := j.pickEpicAPI(ctx, scope, leaves); err == nil {
+			return id, nil
+		} else if !j.canFallback(err) {
+			return "", err
 		}
 		res, err := j.Runner.Run(ctx, j.epicPickPrompt(scope, leaves), "pick")
 		if id, matched := parsePick(res.Final, scope.prefix()); matched && leaves[id] {
@@ -111,6 +125,33 @@ func (j *Jira) pickAPI(ctx context.Context, scope Scope) (string, error) {
 	return "", nil
 }
 
+// pickEpicAPI selects the highest-ranked eligible leaf sub-issue of an epic via
+// /search/jql. It runs the same project-wide eligibility query as pickAPI —
+// ready label, unstarted, unresolved, ranked — and keeps only candidates in the
+// epic's confirmed leaf set, skipping epics and unresolved-blocker tickets. This
+// is the REST equivalent of the epic-scoped MCP pick, so a rest-only Jira
+// identity can work an epic queue without falling back to Rovo.
+func (j *Jira) pickEpicAPI(ctx context.Context, scope Scope, leaves map[string]bool) (string, error) {
+	project := j.pickProject(scope)
+	if project == "" {
+		return "", jiraapi.ErrNotEnabled
+	}
+	candidates, err := j.api().Eligible(ctx, project, j.ReadyLabel)
+	if err != nil {
+		return "", err
+	}
+	for _, c := range candidates {
+		if c.IsEpic || !leaves[c.Key] {
+			continue
+		}
+		if !allBlockersResolved(c.BlockedBy) {
+			continue
+		}
+		return c.Key, nil
+	}
+	return "", nil
+}
+
 // pickProject returns the Jira project key to search: the configured project key,
 // falling back to the scope's team when the field is unset.
 func (j *Jira) pickProject(scope Scope) string {
@@ -138,7 +179,7 @@ func allBlockersResolved(blockers []jiraapi.Blocker) bool {
 func (j *Jira) ListEligible(ctx context.Context, scope Scope) ([]ListedTicket, error) {
 	if list, err := j.listEligibleAPI(ctx, scope); err == nil {
 		return list, nil
-	} else if !jiraShouldFallback(err) {
+	} else if !j.canFallback(err) {
 		return nil, err
 	}
 
@@ -240,10 +281,7 @@ func (j *Jira) ListTeams(ctx context.Context) ([]Team, error) {
 	if apiErr == nil {
 		return teams, nil
 	}
-	// A nil runner means REST is the sole identity (onboarding detection with
-	// per-repo credentials): surface the API error rather than fall back to the
-	// shared Rovo MCP, which authenticates as a different Atlassian account.
-	if j.Runner == nil || !jiraShouldFallback(apiErr) {
+	if !j.canFallback(apiErr) {
 		return nil, apiErr
 	}
 
@@ -284,7 +322,7 @@ func (j *Jira) listTeamsPrompt() string {
 func (j *Jira) SubIssues(ctx context.Context, id string) ([]SubIssue, error) {
 	if subs, err := j.subIssuesAPI(ctx, id); err == nil {
 		return subs, nil
-	} else if !jiraShouldFallback(err) {
+	} else if !j.canFallback(err) {
 		return nil, err
 	}
 
@@ -325,7 +363,7 @@ func (j *Jira) subIssuesPrompt(id string) string {
 func (j *Jira) Title(ctx context.Context, id string) (string, error) {
 	if title, err := j.titleAPI(ctx, id); err == nil {
 		return title, nil
-	} else if !jiraShouldFallback(err) {
+	} else if !j.canFallback(err) {
 		return "", err
 	}
 
@@ -356,7 +394,7 @@ func (j *Jira) titlePrompt(id string) string {
 func (j *Jira) IssueStatus(ctx context.Context, id string) (IssueStatus, error) {
 	if st, err := j.issueStatusAPI(ctx, id); err == nil {
 		return st, nil
-	} else if !jiraShouldFallback(err) {
+	} else if !j.canFallback(err) {
 		return StatusUnknown, err
 	}
 
@@ -422,7 +460,7 @@ func (j *Jira) issueStatusPrompt(id string) string {
 func (j *Jira) IssueProject(ctx context.Context, id string) (string, error) {
 	if key, err := j.issueProjectAPI(ctx, id); err == nil {
 		return key, nil
-	} else if !jiraShouldFallback(err) {
+	} else if !j.canFallback(err) {
 		return "", err
 	}
 
@@ -453,7 +491,7 @@ func (j *Jira) issueProjectPrompt(id string) string {
 func (j *Jira) ParentIssue(ctx context.Context, id string) (string, error) {
 	if parent, err := j.parentIssueAPI(ctx, id); err == nil {
 		return parent, nil
-	} else if !jiraShouldFallback(err) {
+	} else if !j.canFallback(err) {
 		return "", err
 	}
 
@@ -477,10 +515,10 @@ func (j *Jira) parentIssuePrompt(id string) string {
 		"Respond with exactly one final line: 'PARENT=<key>' (or 'PARENT=NONE' if it has no parent). No other output.", id)
 }
 
-// IssueDetail returns the title and full description of issue id for the size
-// judge. Like Linear it is API-only: a multi-line ADF description cannot survive a
-// single-line MCP sentinel, so an unconfigured or failing API leaves the judge to
-// skip the ticket (a best-effort safety net).
+// IssueDetail returns the title and full description of issue id for build-prompt
+// context. Like Linear it is API-only: a multi-line ADF description cannot survive
+// a single-line MCP sentinel, so an unconfigured or failing API leaves the pipeline
+// to build without the injected context (a best-effort enrichment).
 func (j *Jira) IssueDetail(ctx context.Context, id string) (IssueDetail, error) {
 	issue, err := j.api().Issue(ctx, id)
 	if err != nil {
@@ -497,7 +535,7 @@ func (j *Jira) IssueDetail(ctx context.Context, id string) (IssueDetail, error) 
 func (j *Jira) SetStatus(ctx context.Context, id, status, extra string) error {
 	if err := j.setStatusAPI(ctx, id, status, extra); err == nil {
 		return nil
-	} else if !jiraShouldFallback(err) {
+	} else if !j.canFallback(err) {
 		return err
 	}
 	return j.setStatusMCP(ctx, id, status, extra)
@@ -530,7 +568,7 @@ func (j *Jira) AddLabel(ctx context.Context, id, label string) error {
 	}
 	if err := j.addLabelAPI(ctx, id, label); err == nil {
 		return nil
-	} else if !jiraShouldFallback(err) {
+	} else if !j.canFallback(err) {
 		return err
 	}
 
@@ -553,7 +591,7 @@ func (j *Jira) addLabelPrompt(id, label string) string {
 func (j *Jira) Reset(ctx context.Context, id string) error {
 	if err := j.resetAPI(ctx, id); err == nil {
 		return nil
-	} else if !jiraShouldFallback(err) {
+	} else if !j.canFallback(err) {
 		return err
 	}
 
@@ -576,7 +614,7 @@ func (j *Jira) resetAPI(ctx context.Context, id string) error {
 func (j *Jira) Quarantine(ctx context.Context, id, reason string) error {
 	if err := j.quarantineAPI(ctx, id, reason); err == nil {
 		return nil
-	} else if !jiraShouldFallback(err) {
+	} else if !j.canFallback(err) {
 		return err
 	}
 
@@ -603,7 +641,7 @@ func (j *Jira) quarantinePrompt(id, reason string) string {
 func (j *Jira) FileBug(ctx context.Context, id, verdictPath string) (string, error) {
 	if bug, err := j.fileBugAPI(ctx, id, verdictPath); err == nil {
 		return bug, nil
-	} else if !jiraShouldFallback(err) {
+	} else if !j.canFallback(err) {
 		return "", err
 	}
 

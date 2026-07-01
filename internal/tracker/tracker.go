@@ -114,7 +114,7 @@ type Tracker interface {
 	EnsureLabels(ctx context.Context) error
 }
 
-// IssueDetail is the ticket content the pre-flight size judge reasons over: the
+// IssueDetail is the ticket content injected into the build/handoff prompts: the
 // title plus the full description (which, for Linear/Jira, embeds the acceptance
 // criteria as markdown).
 type IssueDetail struct {
@@ -123,18 +123,17 @@ type IssueDetail struct {
 }
 
 // IssueDetailer is the optional capability of returning an issue's title and full
-// description in one call, so the size judge can size a ticket before building.
-// A tracker that cannot answer (or a provider without a direct API) leaves the
-// judge to skip the ticket — the guard is a best-effort safety net, so an
-// unavailable detail never blocks a build.
+// description in one call, so the pipeline can hand a ticket's real content to the
+// build. A tracker that cannot answer (or a provider without a direct API) leaves
+// the pipeline to build without the injected context — a best-effort enrichment,
+// never a blocker.
 type IssueDetailer interface {
 	IssueDetail(ctx context.Context, id string) (IssueDetail, error)
 }
 
 // IssueLabeler is the optional capability of adding one label to an issue without
-// disturbing its other labels. The size judge uses it to apply the configurable
-// split label alongside the quarantine label. A tracker that cannot answer makes
-// the label a no-op — the quarantine itself still lands.
+// disturbing its other labels. A tracker that cannot answer makes the label a
+// no-op.
 type IssueLabeler interface {
 	AddLabel(ctx context.Context, id, label string) error
 }

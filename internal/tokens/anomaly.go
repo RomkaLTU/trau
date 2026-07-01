@@ -10,17 +10,18 @@ import (
 	"path/filepath"
 )
 
-// Soft per-phase thresholds for a ticket the size judge called one-window. They
-// start loose — a one-window slice that trips any of them spent far more than its
-// size implies — and are meant to be tuned down from observed medians.
+// Soft per-phase thresholds. They start loose — a slice that trips any of them
+// spent far more than its size implies — and are meant to be tuned down from
+// observed medians. Tickets fed to the loop are expected to be single-window by
+// construction, so these flat thresholds apply to every ticket.
 const (
 	anomalyOutputTokens = 25_000
 	anomalyTurns        = 25
 	anomalyCostUSD      = 3.0
 )
 
-// Anomaly is one phase whose spend on a one-window ticket cleared a soft
-// threshold. Reasons lists every threshold it tripped, most cost-relevant first.
+// Anomaly is one phase whose spend cleared a soft threshold. Reasons lists every
+// threshold it tripped, most cost-relevant first.
 type Anomaly struct {
 	Phase   string   `json:"phase"`
 	Output  int      `json:"output"`
@@ -29,24 +30,11 @@ type Anomaly struct {
 	Reasons []string `json:"reasons"`
 }
 
-// sizeVerdict reads only the field the flag keys off from the durable
-// runs/<id>/sizejudge.json the pipeline writes; the rest of the verdict is ignored.
-type sizeVerdict struct {
-	FitsOneWindow bool `json:"fits_one_window"`
-}
-
 // Flag detects post-run cost anomalies for id and records them to
-// runs/<id>/anomalies.jsonl, returning the trips. It fires only when the durable
-// size verdict says the ticket was one-window — flat thresholds would false-positive
-// on a genuinely large ticket, so a missing or not-one-window verdict returns nil
-// without touching the file. Within a one-window ticket it sums each phase's
+// runs/<id>/anomalies.jsonl, returning the trips. It sums each phase's
 // output/turns/cost from tokens.jsonl and flags any phase over a soft threshold.
 // I/O errors are swallowed (same contract as Append): flagging never aborts the loop.
 func (s *Sink) Flag(id string) []Anomaly {
-	if fits, ok := readOneWindow(s.root, id); !ok || !fits {
-		return nil
-	}
-
 	f, err := os.Open(filepath.Join(s.root, id, "tokens.jsonl"))
 	if err != nil {
 		return nil
@@ -136,19 +124,4 @@ func (s *Sink) writeAnomalies(id string, anomalies []Anomaly) {
 		buf.Write(append(data, '\n'))
 	}
 	_ = os.WriteFile(filepath.Join(dir, "anomalies.jsonl"), buf.Bytes(), 0o644)
-}
-
-// readOneWindow reports the size judge's fits_one_window verdict for id from the
-// durable runs/<id>/sizejudge.json. present is false when no verdict was persisted
-// (size judge disabled, or a run predating the durable copy).
-func readOneWindow(root, id string) (fits, present bool) {
-	data, err := os.ReadFile(filepath.Join(root, id, "sizejudge.json"))
-	if err != nil {
-		return false, false
-	}
-	var v sizeVerdict
-	if err := json.Unmarshal(data, &v); err != nil {
-		return false, false
-	}
-	return v.FitsOneWindow, true
 }

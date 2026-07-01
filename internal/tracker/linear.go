@@ -834,9 +834,8 @@ func (l *Linear) managedLabels() []string {
 	return managedLabelList(l.ReadyLabel, l.QuarantineLabel, l.SplitLabel)
 }
 
-// AddLabel adds one label to an issue without disturbing its other labels — used
-// by the size judge to tag a too-large ticket with the split label alongside the
-// quarantine label. Uses the API when possible, otherwise the MCP.
+// AddLabel adds one label to an issue without disturbing its other labels. Uses
+// the API when possible, otherwise the MCP.
 func (l *Linear) AddLabel(ctx context.Context, id, label string) error {
 	label = strings.TrimSpace(label)
 	if label == "" {
@@ -872,10 +871,11 @@ func (l *Linear) addLabelPrompt(id, label string) string {
 	return fmt.Sprintf("Use the Linear MCP on issue %s: add the label '%s' (keep every other label). Reply DONE.", id, label)
 }
 
-// IssueDetail returns the title and full description of issue id for the size
-// judge. It uses the direct API when possible; the MCP is not a fallback here
+// IssueDetail returns the title and full description of issue id for build-prompt
+// context. It uses the direct API when possible; the MCP is not a fallback here
 // because a multi-line description does not survive a single-line sentinel, so an
-// MCP-only Linear leaves the judge to skip the ticket (a best-effort safety net).
+// MCP-only Linear leaves the pipeline to build without the injected context (a
+// best-effort enrichment).
 func (l *Linear) IssueDetail(ctx context.Context, id string) (IssueDetail, error) {
 	issue, err := l.api().Issue(ctx, id)
 	if err != nil {

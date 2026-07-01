@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -317,7 +318,7 @@ func TestJiraIssueDetailUsesAPI(t *testing.T) {
 }
 
 // Without a token IssueDetail is API-only (no MCP fallback), so it surfaces the
-// not-enabled error and the size judge skips the ticket rather than sizing it.
+// not-enabled error and the pipeline builds without the injected ticket context.
 func TestJiraIssueDetailNoTokenErrors(t *testing.T) {
 	j := &Jira{Runner: &recordingRunner{}, Team: "PROJ"}
 	if _, err := j.IssueDetail(context.Background(), "PROJ-7"); err == nil {
@@ -366,6 +367,74 @@ func TestJiraPickFallsBackWithoutToken(t *testing.T) {
 	}
 	if runner.calls["pick"] != 1 {
 		t.Errorf("expected one MCP pick, got %d", runner.calls["pick"])
+	}
+}
+
+// A rest-only tracker (per-repo REST credentials, no MCP runner) must surface a
+// rejected token as ErrUnauthorized on the loop's hot path — never fall back to
+// the shared Rovo MCP (a different Atlassian identity) — and the nil runner must
+// not panic. This is the loop-mode analogue of the onboarding detection guard.
+func TestJiraPickRESTOnlySurfacesAuthError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	j := &Jira{Team: "PROJ", ReadyLabel: "ready-for-agent", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "bad"}
+	if _, err := j.Pick(context.Background(), Scope{Team: "PROJ", Prefix: "PROJ"}); !errors.Is(err, jiraapi.ErrUnauthorized) {
+		t.Fatalf("Pick err = %v, want ErrUnauthorized (no MCP fallback, no panic)", err)
+	}
+}
+
+// Write operations are just as identity-sensitive: a rest-only SetStatus must
+// surface the auth error rather than transition the ticket as the Rovo account.
+func TestJiraSetStatusRESTOnlySurfacesAuthError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	j := &Jira{Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "bad"}
+	if err := j.SetStatus(context.Background(), "PROJ-7", "In Review", ""); !errors.Is(err, jiraapi.ErrUnauthorized) {
+		t.Fatalf("SetStatus err = %v, want ErrUnauthorized (no MCP fallback, no panic)", err)
+	}
+}
+
+// Epic-scoped Pick resolves entirely over REST when a token is set: it lists the
+// epic's leaves (parent query), runs the project eligibility query, and returns
+// the highest-ranked candidate that is a leaf — skipping the epic, the blocked
+// ticket, and PROJ-5 (eligible but not a leaf of this epic) — without the runner.
+func TestJiraPickEpicUsesAPI(t *testing.T) {
+	const children = `{"issues":[
+		{"key":"PROJ-1","fields":{"summary":"Leaf","status":{"statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},"subtasks":[]}}
+	]}`
+	const eligible = `{"issues":[
+		{"key":"PROJ-2","fields":{"summary":"Epic","status":{"statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":1},"issuelinks":[]}},
+		{"key":"PROJ-5","fields":{"summary":"Not a leaf","status":{"statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},"issuelinks":[]}},
+		{"key":"PROJ-1","fields":{"summary":"Leaf","status":{"statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},"issuelinks":[]}}
+	]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), "parent =") {
+			_, _ = w.Write([]byte(children))
+			return
+		}
+		_, _ = w.Write([]byte(eligible))
+	}))
+	defer srv.Close()
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", ReadyLabel: "ready-for-agent", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	got, err := j.Pick(context.Background(), Scope{Team: "PROJ", Prefix: "PROJ", Parent: "PROJ-100"})
+	if err != nil {
+		t.Fatalf("Pick error: %v", err)
+	}
+	if got != "PROJ-1" {
+		t.Errorf("Pick = %q, want PROJ-1 (epic + non-leaf skipped)", got)
+	}
+	if runner.calls["pick"] != 0 {
+		t.Errorf("expected no MCP fallback, got %d pick calls", runner.calls["pick"])
 	}
 }
 

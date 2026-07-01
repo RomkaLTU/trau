@@ -3,7 +3,7 @@ package agent
 import "testing"
 
 // TestRouteKey pins the label→phase collapse, including the COD-641 additions
-// (cleanup/lintfix/sizejudge) that used to fall through to pick. Dynamic suffixes
+// (cleanup/lintfix) that used to fall through to pick. Dynamic suffixes
 // ("verify-retry2") and unknown labels ("status") must still resolve as before,
 // and the c-prefixed phases (cleanup/commit) must not shadow each other.
 func TestRouteKey(t *testing.T) {
@@ -19,7 +19,6 @@ func TestRouteKey(t *testing.T) {
 		{"bugfix", PhaseBugfix},
 		{"cleanup", PhaseCleanup},
 		{"lintfix", PhaseLintfix},
-		{"sizejudge", PhaseSizejudge},
 		{"commit", PhaseCommit},
 		{"pick", PhasePick},
 		{"status", PhasePick},
