@@ -262,11 +262,13 @@ var rates = []struct {
 	{"opus-4-6", modelRate{5, 25}},
 	{"opus-4-5", modelRate{5, 25}},
 	{"opus", modelRate{5, 25}},
+	{"sonnet-5", modelRate{3, 15}},
 	{"sonnet-4-6", modelRate{3, 15}},
 	{"sonnet", modelRate{3, 15}},
 	{"haiku-4-5", modelRate{1, 5}},
 	{"haiku", modelRate{1, 5}},
 	{"fable-5", modelRate{10, 50}},
+	{"fable", modelRate{10, 50}},
 	{"mythos-5", modelRate{10, 50}},
 }
 

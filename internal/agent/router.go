@@ -8,15 +8,15 @@ import (
 // Canonical routable phases. Every per-call label maps to exactly one
 // of these via RouteKey; a routing config keys overrides by these names.
 const (
-	PhaseBuild     = "build"
-	PhaseHandoff   = "handoff"
-	PhaseVerify    = "verify"
-	PhaseRepair    = "repair"
-	PhaseBugfix    = "bugfix"
-	PhaseCleanup   = "cleanup"
-	PhaseLintfix   = "lintfix"
-	PhaseCommit    = "commit"
-	PhasePick      = "pick"
+	PhaseBuild   = "build"
+	PhaseHandoff = "handoff"
+	PhaseVerify  = "verify"
+	PhaseRepair  = "repair"
+	PhaseBugfix  = "bugfix"
+	PhaseCleanup = "cleanup"
+	PhaseLintfix = "lintfix"
+	PhaseCommit  = "commit"
+	PhasePick    = "pick"
 )
 
 // Phases lists the routable phase keys in pipeline order (loop-level "pick" last).
