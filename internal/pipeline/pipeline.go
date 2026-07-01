@@ -687,7 +687,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 		note = resumeNote
 	}
 	note += buildLessonsNote(p.recallLessons(p.lessonQuery(id)))
-	if _, err := p.agentStep(ctx, id, "build", buildInstruction(id, branch, note)); err != nil {
+	if _, err := p.agentStep(ctx, id, "build", buildInstruction(id, branch, note, p.ticketContext(ctx, id))); err != nil {
 		return err
 	}
 
@@ -806,7 +806,7 @@ func (p *Pipeline) repoLabel() string {
 // /tmp/handoff-<ID>.md, then checkpoints handed_off.
 func (p *Pipeline) Handoff(ctx context.Context, id string) error {
 	p.phaseStart("handoff")
-	if _, err := p.agentStep(ctx, id, "handoff", handoffTail(id)); err != nil {
+	if _, err := p.agentStep(ctx, id, "handoff", handoffTail(id, p.ticketContext(ctx, id))); err != nil {
 		return err
 	}
 	if fi, err := os.Stat(handoffPath(id)); err != nil || fi.Size() == 0 {
@@ -867,7 +867,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	p.restoreRubric(id)
 
 	if fi, err := os.Stat(handoff); err != nil || fi.Size() == 0 {
-		if _, err := p.agentStep(ctx, id, "handoff", handoffTail(id)); err != nil {
+		if _, err := p.agentStep(ctx, id, "handoff", handoffTail(id, p.ticketContext(ctx, id))); err != nil {
 			return err
 		}
 		p.persistHandoff(id)
@@ -1592,8 +1592,50 @@ const resumeNote = " A previous attempt may have left partial work on this branc
 
 const codeStyleNote = " Write it the way a senior engineer on this project would: clean, idiomatic, and matching the surrounding file's conventions. Do NOT add explanatory or narrating comments — no comment that restates what the code does, no section banners, no ticket IDs in comments, no multi-line 'why' essays; let clear names carry the meaning and keep a comment only where a genuinely non-obvious decision truly needs one, matching the file's existing comment density rather than exceeding it. Skip the AI tells: no over-defensive guards for cases that can't occur, no redundant error/nil checks the codebase doesn't already use, no belt-and-suspenders boilerplate a human wouldn't bother to write."
 
-func buildInstruction(id, branch, note string) string {
-	return "Implement " + id + " on branch " + branch + " (already checked out). This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Always include the project's test skill (e.g. pest-testing); add domain skills based on what the ticket actually touches (e.g. inertia-react-development and tailwindcss-development for UI, medialibrary-development for uploads, pennant-development for feature flags, the relevant *-development skill for each area)." + note + " Implement the ticket fully and run only the tests relevant to this slice (the new or changed test files for this ticket) — not the entire suite." + codeStyleNote + " Do not commit, push, or open a PR — stop after implementation."
+func buildInstruction(id, branch, note, ticketCtx string) string {
+	return "Implement " + id + " on branch " + branch + " (already checked out). This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Always include the project's test skill (e.g. pest-testing); add domain skills based on what the ticket actually touches (e.g. inertia-react-development and tailwindcss-development for UI, medialibrary-development for uploads, pennant-development for feature flags, the relevant *-development skill for each area)." + note + " Implement the ticket fully and run only the tests relevant to this slice (the new or changed test files for this ticket) — not the entire suite." + codeStyleNote + " Do not commit, push, or open a PR — stop after implementation." + ticketCtx
+}
+
+// ticketContext returns a prompt block carrying the ticket's title and full
+// description, fetched via the tracker's REST API (IssueDetailer). Injecting it
+// lets the build/handoff agent work from the content directly instead of reading
+// the ticket through the account-level Atlassian/Linear MCP — a shared OAuth
+// identity independent of the per-repo API credentials. It returns "" (and the
+// agent falls back to the MCP, as before) when the tracker exposes no REST detail
+// capability or the API read fails — i.e. only when the per-repo credentials are
+// configured and working does the content get injected.
+func (p *Pipeline) ticketContext(ctx context.Context, id string) string {
+	detailer, ok := p.Tracker.(tracker.IssueDetailer)
+	if !ok {
+		return ""
+	}
+	detail, err := detailer.IssueDetail(ctx, id)
+	if err != nil {
+		p.logf("  ticket %s content not injected (agent will read it via MCP): %v", id, err)
+		return ""
+	}
+	return ticketContextNote(id, detail)
+}
+
+// ticketContextNote renders the injected ticket block, or "" when there is no
+// title or description to inject.
+func ticketContextNote(id string, detail tracker.IssueDetail) string {
+	title := strings.TrimSpace(detail.Title)
+	desc := strings.TrimSpace(detail.Description)
+	if title == "" && desc == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\nThe ticket content is provided below (fetched via the tracker API) — work from it directly and do NOT call the Jira/Atlassian or Linear MCP to read " + id + ".\n\n=== " + id)
+	if title != "" {
+		b.WriteString(": " + title)
+	}
+	b.WriteString(" ===\n")
+	if desc != "" {
+		b.WriteString(desc + "\n")
+	}
+	b.WriteString("=== end " + id + " ===")
+	return b.String()
 }
 
 func fmtBytes(n int64) string {
@@ -1607,8 +1649,8 @@ func handoffPath(id string) string { return "/tmp/handoff-" + id + ".md" }
 
 func verifyPath(id string) string { return "/tmp/verify-" + id + ".json" }
 
-func handoffTail(id string) string {
-	return "Write a QA brief for " + id + ": the concrete, checkable behaviors a manual QA tester must verify for this slice, in priority order. Don't duplicate content already in the ticket, PRD, or diff — focus on what to check and how. Do NOT run the test suite, execute the code, or verify behavior yourself — a separate verify step does that; just write the brief. Redact any secrets. Save it to exactly " + handoffPath(id) + " (overwrite if present) and nowhere else." + rubricInstruction(id)
+func handoffTail(id, ticketCtx string) string {
+	return "Write a QA brief for " + id + ": the concrete, checkable behaviors a manual QA tester must verify for this slice, in priority order. Don't duplicate content already in the ticket, PRD, or diff — focus on what to check and how. Do NOT run the test suite, execute the code, or verify behavior yourself — a separate verify step does that; just write the brief. Redact any secrets. Save it to exactly " + handoffPath(id) + " (overwrite if present) and nowhere else." + rubricInstruction(id) + ticketCtx
 }
 
 func browserNote(mode, appURL string) string {
