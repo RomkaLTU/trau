@@ -200,7 +200,6 @@ type onboardingModel struct {
 	teamSpin       spinner.Model
 
 	labelsCursor int
-	labelOptions []string
 	createLabels bool
 
 	timelogCursor  int
@@ -246,7 +245,6 @@ func newOnboardingModelWithPrefill(ctx context.Context, actions OnboardingAction
 		trackers:               []string{"linear", "jira", "github"},
 		providers:              []string{"claude", "codex", "kimi"},
 		branchingOptions:       []string{"Use epic branches for tickets with sub-issues", "Process every ticket standalone"},
-		labelOptions:           []string{"Create the labels in Linear now", "I'll create the labels myself"},
 		timelogOptions:         []string{"No — don't track time (default)", "Yes — log estimated dev time per ticket"},
 		ciOptions:              []string{"Yes — wait for CI checks before merge (default)", "No — this repo has no PR CI; skip the gate"},
 		epicFlow:               true,
@@ -971,20 +969,56 @@ func pluralLabel(label string) string {
 	return label + "s"
 }
 
+// titleTracker returns the display name of a tracker provider for headings.
+func titleTracker(provider string) string {
+	switch provider {
+	case "jira":
+		return "Jira"
+	case "github":
+		return "GitHub"
+	default:
+		return "Linear"
+	}
+}
+
+// labelCreationSupported reports whether Trau can pre-create the routing labels
+// for a tracker. Jira labels are freeform strings created implicitly when first
+// applied, so there is nothing to create; Linear and GitHub expose label APIs.
+func labelCreationSupported(provider string) bool {
+	return provider != "jira"
+}
+
+// labelStepOptions returns the choices shown on the labels step. Trackers that
+// can create labels offer to do so now; Jira (freeform labels) shows a single
+// acknowledgement since no creation is needed.
+func (m onboardingModel) labelStepOptions() []string {
+	if labelCreationSupported(m.selectedTracker()) {
+		return []string{"Create the labels in " + titleTracker(m.selectedTracker()) + " now", "I'll create the labels myself"}
+	}
+	return []string{"Continue"}
+}
+
 func (m onboardingModel) handleLabels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	opts := m.labelStepOptions()
+	if m.labelsCursor >= len(opts) {
+		m.labelsCursor = len(opts) - 1
+	}
+	if m.labelsCursor < 0 {
+		m.labelsCursor = 0
+	}
 	switch msg.Type {
 	case tea.KeyEsc, tea.KeyLeft:
 		m.step = onboardLinearTeam
 		return m, nil
 	case tea.KeyEnter:
-		m.createLabels = m.labelsCursor == 0
+		m.createLabels = labelCreationSupported(m.selectedTracker()) && m.labelsCursor == 0
 		m.step = onboardTimeTracking
 	case tea.KeyUp:
 		if m.labelsCursor > 0 {
 			m.labelsCursor--
 		}
 	case tea.KeyDown:
-		if m.labelsCursor < len(m.labelOptions)-1 {
+		if m.labelsCursor < len(opts)-1 {
 			m.labelsCursor++
 		}
 	}
@@ -994,7 +1028,7 @@ func (m onboardingModel) handleLabels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.labelsCursor--
 		}
 	case "j":
-		if m.labelsCursor < len(m.labelOptions)-1 {
+		if m.labelsCursor < len(opts)-1 {
 			m.labelsCursor++
 		}
 	}
@@ -1914,19 +1948,33 @@ func (m onboardingModel) teamPrompt() (title, desc string) {
 }
 
 func (m onboardingModel) renderLabels() string {
+	opts := m.labelStepOptions()
+	cursor := m.labelsCursor
+	if cursor >= len(opts) {
+		cursor = len(opts) - 1
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
 	var rows []string
-	rows = append(rows, m.styles.SummaryTitle.Render("Linear labels"))
+	rows = append(rows, m.styles.SummaryTitle.Render(titleTracker(m.selectedTracker())+" labels"))
 	rows = append(rows, "")
 	rows = append(rows, "Trau uses two labels to route tickets:")
 	rows = append(rows, "  • ready-for-agent  → tickets Trau should pick up")
 	rows = append(rows, "  • needs-human      → tickets that failed and need a human")
 	rows = append(rows, "")
-	rows = append(rows, "Defaults are ready-for-agent and needs-human.")
+	if labelCreationSupported(m.selectedTracker()) {
+		rows = append(rows, "Defaults are ready-for-agent and needs-human.")
+	} else {
+		rows = append(rows, m.styles.Subtle.Render("Jira labels are freeform — Trau applies these automatically as tickets"))
+		rows = append(rows, m.styles.Subtle.Render("move, so there's nothing to create. Label a ticket ready-for-agent for"))
+		rows = append(rows, m.styles.Subtle.Render("Trau to pick it up."))
+	}
 	rows = append(rows, "")
-	for i, opt := range m.labelOptions {
+	for i, opt := range opts {
 		marker := "  "
 		label := m.styles.Subtle.Render(opt)
-		if i == m.labelsCursor {
+		if i == cursor {
 			marker = m.styles.Info.Render("▸ ")
 			label = m.styles.Header.Render(opt)
 		}
@@ -2032,10 +2080,12 @@ func (m onboardingModel) renderWrite() string {
 	} else {
 		rows = append(rows, "  TIMELOG_ENABLED=0")
 	}
-	if m.createLabels {
-		rows = append(rows, "  Create labels in Linear: yes")
-	} else {
-		rows = append(rows, "  Create labels in Linear: no")
+	if labelCreationSupported(m.selectedTracker()) {
+		if m.createLabels {
+			rows = append(rows, "  Create labels in "+titleTracker(m.selectedTracker())+": yes")
+		} else {
+			rows = append(rows, "  Create labels in "+titleTracker(m.selectedTracker())+": no")
+		}
 	}
 	if m.errMsg != "" {
 		rows = append(rows, "")
@@ -2052,7 +2102,7 @@ func (m onboardingModel) renderCreateLabels() string {
 		status = m.styles.Success.Render("Labels created successfully.")
 	}
 	return lipgloss.JoinVertical(lipgloss.Left,
-		m.styles.SummaryTitle.Render("Linear labels"),
+		m.styles.SummaryTitle.Render(titleTracker(m.selectedTracker())+" labels"),
 		"",
 		status,
 		"",

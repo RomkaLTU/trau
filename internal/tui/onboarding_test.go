@@ -124,3 +124,49 @@ func TestOnboardingJiraCredsBackAndMasking(t *testing.T) {
 		t.Fatalf("esc from jira creds = %v, want onboardProviders", back.step)
 	}
 }
+
+// The labels step adapts to the selected tracker. Jira labels are freeform, so
+// the step is informational ("Jira labels", a single Continue option) and never
+// sets CreateLabels; Linear offers to create the routing labels via its API.
+func TestOnboardingLabelsStepTrackerAware(t *testing.T) {
+	setTracker := func(m onboardingModel, name string) onboardingModel {
+		for i, tr := range m.trackers {
+			if tr == name {
+				m.trackerCursor = i
+			}
+		}
+		return m
+	}
+
+	fake := &fakeOnboardActions{repoRoot: t.TempDir()}
+	m := newOnboardingModelWithPrefill(context.Background(), fake, DefaultStyles(), 80, 40, OnboardingPrefill{})
+	m = setTracker(m, "jira")
+	m.step = onboardLabels
+	m.labelsCursor = 0
+
+	if got := m.labelStepOptions(); len(got) != 1 || got[0] != "Continue" {
+		t.Fatalf("jira label options = %v, want [Continue]", got)
+	}
+	if body := m.renderLabels(); !strings.Contains(body, "Jira labels") || strings.Contains(body, "Linear labels") {
+		t.Fatalf("jira labels screen should be titled \"Jira labels\", not Linear:\n%s", body)
+	}
+	m = pressKey(m, tea.KeyEnter)
+	if m.createLabels {
+		t.Error("jira must not opt into CreateLabels (labels are freeform)")
+	}
+	if m.step != onboardTimeTracking {
+		t.Errorf("step after labels = %v, want onboardTimeTracking", m.step)
+	}
+
+	m2 := newOnboardingModelWithPrefill(context.Background(), fake, DefaultStyles(), 80, 40, OnboardingPrefill{})
+	m2 = setTracker(m2, "linear")
+	m2.step = onboardLabels
+	m2.labelsCursor = 0
+	if got := m2.labelStepOptions(); len(got) != 2 || !strings.Contains(got[0], "Linear") {
+		t.Fatalf("linear label options = %v, want a create-in-Linear choice", got)
+	}
+	m2 = pressKey(m2, tea.KeyEnter)
+	if !m2.createLabels {
+		t.Error("linear cursor 0 should opt into label creation")
+	}
+}
