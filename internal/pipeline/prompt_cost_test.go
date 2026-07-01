@@ -3,6 +3,8 @@ package pipeline
 import (
 	"strings"
 	"testing"
+
+	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
 // These pin the output-token constraints COD-640 added to the cleanup, commit,
@@ -38,7 +40,7 @@ func TestCommitInstructionStaysLean(t *testing.T) {
 }
 
 func TestHandoffTailSkipsTestRun(t *testing.T) {
-	got := handoffTail("COD-640")
+	got := handoffTail("COD-640", "")
 	mustContain(t, "handoffTail", got, "Do NOT run the test suite")
 }
 
@@ -58,4 +60,24 @@ func mustNotContain(t *testing.T, name, s string, subs ...string) {
 			t.Errorf("%s: should not contain %q", name, sub)
 		}
 	}
+}
+
+// ticketContextNote injects the REST-fetched title/description and steers the
+// agent away from the account-level tracker MCP; empty detail injects nothing so
+// the agent keeps its MCP fallback (used when per-repo API creds are missing).
+func TestTicketContextNote(t *testing.T) {
+	got := ticketContextNote("TMS-1121", tracker.IssueDetail{Title: "Model gateway", Description: "Change source engine."})
+	mustContain(t, "ticketContextNote", got,
+		"TMS-1121",
+		"Model gateway",
+		"Change source engine.",
+		"do NOT call the Jira/Atlassian or Linear MCP",
+	)
+	if empty := ticketContextNote("TMS-1121", tracker.IssueDetail{}); empty != "" {
+		t.Errorf("empty detail should inject nothing, got %q", empty)
+	}
+
+	// The build instruction carries the injected block through to the agent.
+	build := buildInstruction("TMS-1121", "feature/x", "", got)
+	mustContain(t, "buildInstruction", build, "Model gateway", "stop after implementation.")
 }
