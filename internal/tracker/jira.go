@@ -460,8 +460,25 @@ func (j *Jira) IssueDetail(ctx context.Context, id string) (IssueDetail, error) 
 	return IssueDetail{Title: issue.Summary, Description: issue.Description}, nil
 }
 
-// SetStatus transitions issue id to the named Jira status.
+// SetStatus transitions issue id to the named Jira status via the two-step REST
+// transition flow when a token is configured — matching the target status name
+// to a workflow transition and optionally attaching a comment — falling back to
+// the Rovo MCP on an auth/not-enabled error. An unknown target status is
+// surfaced, not sent to the MCP: the workflow simply has no transition to it.
 func (j *Jira) SetStatus(ctx context.Context, id, status, extra string) error {
+	if err := j.setStatusAPI(ctx, id, status, extra); err == nil {
+		return nil
+	} else if !jiraShouldFallback(err) {
+		return err
+	}
+	return j.setStatusMCP(ctx, id, status, extra)
+}
+
+func (j *Jira) setStatusAPI(ctx context.Context, id, status, extra string) error {
+	return j.api().SetStatus(ctx, id, status, "", extra)
+}
+
+func (j *Jira) setStatusMCP(ctx context.Context, id, status, extra string) error {
 	_, err := j.Runner.Run(ctx, j.setStatusPrompt(id, status, extra), "status")
 	return err
 }
@@ -479,7 +496,7 @@ func (j *Jira) Reset(ctx context.Context, id string) error {
 	extra := fmt.Sprintf("Remove the label '%s' if present and ensure '%s' is present so the loop can re-pick it; "+
 		"transition the issue to status 'To Do' or 'Backlog'; "+
 		"add a comment: \"Trau loop reset %s to start fresh.\"", j.QuarantineLabel, j.ReadyLabel, id)
-	return j.SetStatus(ctx, id, "To Do", extra)
+	return j.setStatusMCP(ctx, id, "To Do", extra)
 }
 
 // Quarantine marks a ticket unrecoverable.

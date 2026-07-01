@@ -308,3 +308,37 @@ func collapseBlankLines(s string) string {
 	}
 	return s
 }
+
+// adfDoc is a minimal ADF document assembled for v3 write bodies (transition
+// comments, descriptions) — the counterpart of adfToText.
+type adfDoc struct {
+	Type    string     `json:"type"`
+	Version int        `json:"version"`
+	Content []adfBlock `json:"content"`
+}
+
+type adfBlock struct {
+	Type    string      `json:"type"`
+	Content []adfInline `json:"content,omitempty"`
+}
+
+type adfInline struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// buildADF wraps plain, possibly multi-line text into an ADF document — one
+// paragraph per line, each holding a single text node — as Jira v3 requires for
+// comment and description bodies. It round-trips back through adfToText.
+func buildADF(text string) adfDoc {
+	lines := strings.Split(text, "\n")
+	content := make([]adfBlock, 0, len(lines))
+	for _, line := range lines {
+		block := adfBlock{Type: "paragraph"}
+		if line != "" {
+			block.Content = []adfInline{{Type: "text", Text: line}}
+		}
+		content = append(content, block)
+	}
+	return adfDoc{Type: "doc", Version: 1, Content: content}
+}

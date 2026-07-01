@@ -372,3 +372,62 @@ func TestJiraSubIssuesFallsBackWithoutToken(t *testing.T) {
 		t.Errorf("expected one MCP sub_issues, got %d", runner.calls["sub_issues"])
 	}
 }
+
+// With a token set, SetStatus drives the two-step REST transition (GET then a
+// 204 POST) and never touches the runner.
+func TestJiraSetStatusUsesAPI(t *testing.T) {
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"transitions":[{"id":"31","name":"Review","to":{"name":"In Review"}}]}`))
+			return
+		}
+		posts++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	if err := j.SetStatus(context.Background(), "PROJ-7", "In Review", ""); err != nil {
+		t.Fatalf("SetStatus error: %v", err)
+	}
+	if posts != 1 {
+		t.Errorf("expected one transition POST, got %d", posts)
+	}
+	if runner.calls["status"] != 0 {
+		t.Errorf("expected no MCP fallback, got %d status calls", runner.calls["status"])
+	}
+}
+
+// Without a token the direct path is disabled, so SetStatus falls back to the MCP.
+func TestJiraSetStatusFallsBackWithoutToken(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{
+		"status": {Final: "DONE"},
+	}}
+	j := &Jira{Runner: runner, Team: "PROJ"}
+
+	if err := j.SetStatus(context.Background(), "PROJ-7", "In Review", ""); err != nil {
+		t.Fatalf("SetStatus error: %v", err)
+	}
+	if runner.calls["status"] != 1 {
+		t.Errorf("expected one MCP fallback, got %d status calls", runner.calls["status"])
+	}
+}
+
+// A target status the workflow has no transition to is a real error, surfaced
+// rather than sent to the MCP (which could not resolve a missing status either).
+func TestJiraSetStatusSurfacesUnknownStatus(t *testing.T) {
+	srv := jiraIssueServer(`{"transitions":[{"id":"11","name":"Start","to":{"name":"In Progress"}}]}`)
+	defer srv.Close()
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	if err := j.SetStatus(context.Background(), "PROJ-7", "Nonexistent", ""); err == nil {
+		t.Fatal("SetStatus with an unknown status should error, got nil")
+	}
+	if runner.calls["status"] != 0 {
+		t.Errorf("unknown status must not fall back to MCP, got %d status calls", runner.calls["status"])
+	}
+}
