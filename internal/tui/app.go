@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/table"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/table"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/RomkaLTU/trau/internal/console"
 )
@@ -260,7 +260,7 @@ func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
 	ti := textinput.New()
 	ti.Placeholder = exampleID(info.Prefix)
 	ti.CharLimit = 32
-	ti.Width = 30
+	ti.SetWidth(30)
 	ti.Prompt = "Ticket ID: "
 
 	s := spinner.New()
@@ -293,14 +293,11 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.dash = applyDash(m.dash, msg)
-		nm, _ := m.onboard.Update(msg)
-		if om, ok := nm.(onboardingModel); ok {
-			m.onboard = om
-		}
+		m.onboard, _ = m.onboard.Update(msg)
 		m.loopSetup, _ = m.loopSetup.Update(msg)
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
 	case logMsg, eventMsg, ticketMsg, titleMsg, phaseStartMsg, ticketDoneMsg, loopDoneMsg, recoveryDoneMsg:
@@ -364,11 +361,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch m.view {
 	case viewOnboarding:
-		nm, c := m.onboard.Update(msg)
-		if om, ok := nm.(onboardingModel); ok {
-			m.onboard = om
-		}
-		cmd = c
+		m.onboard, cmd = m.onboard.Update(msg)
 		if m.onboard.Done() {
 			m.view = viewMenu
 			m.info = m.actions.MenuInfo()
@@ -391,13 +384,11 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m appModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.view {
 	case viewOnboarding:
-		nm, cmd := m.onboard.Update(msg)
-		if om, ok := nm.(onboardingModel); ok {
-			m.onboard = om
-		}
+		var cmd tea.Cmd
+		m.onboard, cmd = m.onboard.Update(msg)
 		if m.onboard.Done() {
 			m.view = viewMenu
 			m.info = m.actions.MenuInfo()
@@ -405,16 +396,16 @@ func (m appModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case viewMenu:
-		switch {
-		case msg.Type == tea.KeyCtrlC, msg.String() == "q":
+		switch msg.String() {
+		case "ctrl+c", "q":
 			return m, tea.Quit
-		case msg.Type == tea.KeyEnter:
+		case "enter":
 			return m.selectAction(m.items[m.cursor].action)
-		case msg.Type == tea.KeyUp, msg.String() == "k":
+		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
-		case msg.Type == tea.KeyDown, msg.String() == "j":
+		case "down", "j":
 			if m.cursor < len(m.items)-1 {
 				m.cursor++
 			}
@@ -422,20 +413,20 @@ func (m appModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case viewMore:
-		switch {
-		case msg.Type == tea.KeyCtrlC, msg.String() == "q":
+		switch msg.String() {
+		case "ctrl+c", "q":
 			return m, tea.Quit
-		case msg.Type == tea.KeyEsc, msg.String() == "b":
+		case "esc", "b":
 			m.view = viewMenu
 			m.info = m.actions.MenuInfo()
 			return m, nil
-		case msg.Type == tea.KeyEnter:
+		case "enter":
 			return m.selectAction(m.moreItems[m.moreCursor].action)
-		case msg.Type == tea.KeyUp, msg.String() == "k":
+		case "up", "k":
 			if m.moreCursor > 0 {
 				m.moreCursor--
 			}
-		case msg.Type == tea.KeyDown, msg.String() == "j":
+		case "down", "j":
 			if m.moreCursor < len(m.moreItems)-1 {
 				m.moreCursor++
 			}
@@ -508,7 +499,7 @@ func (m appModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case viewSettings:
-		if m.settings.AtRoot() && (msg.Type == tea.KeyEsc || msg.String() == "q") {
+		if m.settings.AtRoot() && (msg.String() == "esc" || msg.String() == "q") {
 			return m.toMenu(), nil
 		}
 		var cmd tea.Cmd
@@ -516,7 +507,7 @@ func (m appModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case viewDryRun:
-		if msg.Type == tea.KeyCtrlC {
+		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
 		if !m.busy && isBack(msg) {
@@ -525,15 +516,15 @@ func (m appModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case viewReset:
-		switch msg.Type {
-		case tea.KeyCtrlC:
+		switch msg.String() {
+		case "ctrl+c":
 			return m, tea.Quit
-		case tea.KeyEsc:
+		case "esc":
 			if m.busy {
 				return m, nil
 			}
 			return m.toMenu(), nil
-		case tea.KeyEnter:
+		case "enter":
 			if m.busy {
 				return m, nil
 			}
@@ -556,7 +547,7 @@ func (m appModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.handleSummaryKey(msg)
 		}
 
-		if msg.String() == "q" || msg.Type == tea.KeyCtrlC {
+		if msg.String() == "q" || msg.String() == "ctrl+c" {
 			if m.loopCancel != nil {
 				m.loopCancel()
 			}
@@ -672,7 +663,7 @@ func (m appModel) runLoopCmd(ctx context.Context, epic string) tea.Cmd {
 // ticket, b checks out its branch, x resets it (guarded by a two-key confirm).
 // Navigation and "o open PR" stay delegated to the dash; enter/q/esc return to the
 // menu. Recovery keys appear only for rows where they apply.
-func (m appModel) handleSummaryKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m appModel) handleSummaryKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if id := m.dash.pendingResetID(); id != "" {
 		if msg.String() == "x" || msg.String() == "y" {
 			m.dash = m.dash.clearResetConfirm()
@@ -764,7 +755,14 @@ func (m appModel) reconcileCmd(ctx context.Context) tea.Cmd {
 	}
 }
 
-func (m appModel) View() string {
+func (m appModel) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
+func (m appModel) render() string {
 	if m.width == 0 || m.height == 0 {
 		return "Loading…"
 	}
@@ -772,7 +770,7 @@ func (m appModel) View() string {
 	case viewOnboarding:
 		return m.onboard.View()
 	case viewRunning:
-		return m.dash.View()
+		return m.dash.render()
 	case viewStatus:
 		body := m.status.View()
 		switch {
@@ -1004,9 +1002,12 @@ func (m appModel) buildStatusTable() table.Model {
 	return t
 }
 
-func isBack(msg tea.KeyMsg) bool {
-	return msg.Type == tea.KeyEsc || msg.Type == tea.KeyEnter ||
-		msg.String() == "q" || msg.String() == "b"
+func isBack(msg tea.KeyPressMsg) bool {
+	switch msg.String() {
+	case "esc", "enter", "q", "b":
+		return true
+	}
+	return false
 }
 
 func freshDash(w, h int) model {

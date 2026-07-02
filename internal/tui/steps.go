@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // stepState is the lifecycle of one pipeline phase as the stepper sees it.

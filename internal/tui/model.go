@@ -2,20 +2,21 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"io"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/help"
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/progress"
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/table"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/progress"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/table"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/RomkaLTU/trau/internal/console"
@@ -173,10 +174,10 @@ func initialModel(onInterrupt func()) model {
 	s.Spinner = spinner.Dot
 	s.Style = DefaultStyles().Spinner
 
-	vp := viewport.New(0, 0)
+	vp := viewport.New()
 	vp.SetContent("")
 
-	p := progress.New(progress.WithDefaultGradient(), progress.WithoutPercentage())
+	p := progress.New(progress.WithDefaultBlend(), progress.WithoutPercentage())
 
 	return model{
 		styles:      DefaultStyles(),
@@ -202,7 +203,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		if m, cmd, handled := m.handleKey(msg); handled {
 			return m, cmd
 		}
@@ -274,10 +275,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m model) handleKey(msg tea.KeyMsg) (model, tea.Cmd, bool) {
+func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 	if m.state == stateSummary {
 		switch {
-		case key.Matches(msg, m.keys.Quit), msg.Type == tea.KeyEnter, msg.Type == tea.KeyEsc:
+		case key.Matches(msg, m.keys.Quit), msg.String() == "enter", msg.String() == "esc":
 			return m, tea.Quit, true
 		case key.Matches(msg, m.keys.Open):
 			return m, m.openSelectedPR(), true
@@ -288,7 +289,7 @@ func (m model) handleKey(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 
-		if m.stopping && msg.Type == tea.KeyCtrlC {
+		if m.stopping && msg.String() == "ctrl+c" {
 			return m, tea.Quit, true
 		}
 		if m.onInterrupt != nil {
@@ -318,7 +319,7 @@ func (m model) handleKey(msg tea.KeyMsg) (model, tea.Cmd, bool) {
 			return m, m.tailReadCmd(), true
 		}
 		return m, nil, true
-	case msg.Type == tea.KeyEsc:
+	case msg.String() == "esc":
 		if m.streaming {
 			m.stopStream()
 			return m, nil, true
@@ -349,10 +350,10 @@ func (m *model) stopStream() {
 
 func (m *model) relayout() {
 	d := m.dims()
-	m.viewport.Width = d.vpW
-	m.viewport.Height = d.vpH
-	m.progress.Width = d.leftW - 9 // inner text width less room for " 100%"
-	m.help.Width = m.width
+	m.viewport.SetWidth(d.vpW)
+	m.viewport.SetHeight(d.vpH)
+	m.progress.SetWidth(d.leftW - 9) // inner text width less room for " 100%"
+	m.help.SetWidth(m.width)
 	m.refreshFeed()
 }
 
@@ -438,7 +439,7 @@ func (m *model) appendFeed(e feedEntry) {
 }
 
 func (m *model) refreshFeed() {
-	m.viewport.SetContent(m.renderFeed(m.viewport.Width))
+	m.viewport.SetContent(m.renderFeed(m.viewport.Width()))
 	if m.following {
 		m.viewport.GotoBottom()
 	}
@@ -661,7 +662,16 @@ func (m model) markStopping() model {
 	return m
 }
 
-func (m model) View() string {
+func (m model) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
+// render is the dashboard's screen content, shared by its own View and the app
+// shell's running view.
+func (m model) render() string {
 	if m.width == 0 || m.height == 0 {
 		return "Loading…"
 	}
@@ -709,7 +719,7 @@ func (m model) renderHeader() string {
 
 // stateChip reflects the loop's real state — it does not claim "paused" for a
 // rate limit, since the engine still proceeds today.
-func (m model) stateChip() (string, lipgloss.Color) {
+func (m model) stateChip() (string, color.Color) {
 	switch {
 	case m.paused:
 		return "paused", colorError
@@ -991,7 +1001,7 @@ func pad(s string, w int) string {
 	return s + strings.Repeat(" ", w-cur)
 }
 
-func chip(label string, bg lipgloss.Color) string {
+func chip(label string, bg color.Color) string {
 	return lipgloss.NewStyle().Bold(true).Foreground(colorInk).Background(bg).Padding(0, 1).Render(label)
 }
 

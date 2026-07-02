@@ -3,7 +3,7 @@ package tui
 import (
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 type fakeSettingsActions struct {
@@ -50,7 +50,7 @@ func TestSettingsToggleAdvanced(t *testing.T) {
 		},
 	}
 	m := newSettingsModel(acts, DefaultStyles(), 80, 24)
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'a', Text: "a"})
 	if len(m.filtered) != 2 {
 		t.Fatalf("expected 2 items with advanced shown, got %d", len(m.filtered))
 	}
@@ -63,7 +63,7 @@ func TestSettingsEnterEdit(t *testing.T) {
 		},
 	}
 	m := newSettingsModel(acts, DefaultStyles(), 80, 24)
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("expected blink command on enter edit")
 	}
@@ -85,8 +85,8 @@ func TestSettingsEditCancel(t *testing.T) {
 		},
 	}
 	m := newSettingsModel(acts, DefaultStyles(), 80, 24)
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	if m.step != settingsList {
 		t.Fatalf("expected step list after cancel, got %d", m.step)
 	}
@@ -102,10 +102,10 @@ func TestSettingsSave(t *testing.T) {
 		},
 	}
 	m := newSettingsModel(acts, DefaultStyles(), 80, 24)
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m.editInput.SetValue("develop")
 	m.editLayer = 1 // project
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.step != settingsSaving {
 		t.Fatalf("expected step saving, got %d", m.step)
 	}
@@ -136,7 +136,7 @@ func TestSettingsInList(t *testing.T) {
 	if !m.InList() {
 		t.Fatal("expected InList true")
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.InList() {
 		t.Fatal("expected InList false while editing")
 	}

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 type fakeOnboardActions struct {
@@ -29,15 +29,14 @@ func (f *fakeOnboardActions) SetupProject(_ context.Context, s ProjectSetup) (Se
 
 func typeRunes(m onboardingModel, s string) onboardingModel {
 	for _, r := range s {
-		next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		m = next.(onboardingModel)
+		m, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
 	return m
 }
 
-func pressKey(m onboardingModel, t tea.KeyType) onboardingModel {
-	next, _ := m.Update(tea.KeyMsg{Type: t})
-	return next.(onboardingModel)
+func pressKey(m onboardingModel, code rune) onboardingModel {
+	m, _ = m.Update(tea.KeyPressMsg{Code: code})
+	return m
 }
 
 // Selecting the jira tracker routes the provider step into the three-field

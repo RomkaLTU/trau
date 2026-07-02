@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 type runOnceStep int
@@ -49,7 +49,7 @@ func newRunOnceModel(ctx context.Context, actions Actions, styles Styles, info M
 	ti := textinput.New()
 	ti.Placeholder = exampleID(info.Prefix)
 	ti.CharLimit = 64
-	ti.Width = 32
+	ti.SetWidth(32)
 	ti.Prompt = "› "
 	ti.Focus()
 
@@ -101,7 +101,7 @@ func (m runOnceModel) Update(msg tea.Msg) (runOnceModel, tea.Cmd) {
 		m.step = runOnceList
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 
@@ -113,17 +113,17 @@ func (m runOnceModel) Update(msg tea.Msg) (runOnceModel, tea.Cmd) {
 	return m, nil
 }
 
-func (m runOnceModel) handleKey(msg tea.KeyMsg) (runOnceModel, tea.Cmd) {
+func (m runOnceModel) handleKey(msg tea.KeyPressMsg) (runOnceModel, tea.Cmd) {
 	switch m.step {
 	case runOnceConfirm:
-		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEsc:
+		switch msg.String() {
+		case "ctrl+c", "esc":
 			m.cancelled, m.done = true, true
 			return m, nil
-		case tea.KeyShiftTab:
+		case "shift+tab":
 			m.providerIdx = cycleProvider(m.providerIdx, len(m.info.Providers))
 			return m, nil
-		case tea.KeyEnter:
+		case "enter":
 			m.badID = false
 			raw := strings.TrimSpace(m.input.Value())
 			if raw == "" && m.info.Resume.Active() {
@@ -140,8 +140,7 @@ func (m runOnceModel) handleKey(msg tea.KeyMsg) (runOnceModel, tea.Cmd) {
 			m.done = true
 			return m, nil
 		}
-		switch msg.String() {
-		case "l":
+		if msg.String() == "l" {
 			m.badID = false
 			m.loadErr = nil
 			m.step = runOnceLoading
@@ -153,7 +152,7 @@ func (m runOnceModel) handleKey(msg tea.KeyMsg) (runOnceModel, tea.Cmd) {
 		return m, cmd
 
 	case runOnceLoading:
-		if msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyEsc {
+		if msg.String() == "ctrl+c" || msg.String() == "esc" {
 			m.step = runOnceConfirm
 			m.input.Focus()
 		}
@@ -161,36 +160,26 @@ func (m runOnceModel) handleKey(msg tea.KeyMsg) (runOnceModel, tea.Cmd) {
 
 	case runOnceList:
 		rows := m.listRows()
-		switch msg.Type {
-		case tea.KeyCtrlC:
+		switch msg.String() {
+		case "ctrl+c":
 			m.cancelled, m.done = true, true
-		case tea.KeyEsc:
+		case "esc":
 			m.step = runOnceConfirm
 			m.eligible = nil
 			m.cursor = 0
 			m.input.Focus()
-		case tea.KeyEnter:
+		case "enter":
 			if m.cursor >= 0 && m.cursor < len(rows) {
 				m.selected = rows[m.cursor].ID
 				m.done = true
 			}
-		case tea.KeyShiftTab:
+		case "shift+tab":
 			m.providerIdx = cycleProvider(m.providerIdx, len(m.info.Providers))
-		case tea.KeyUp:
+		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
-		case tea.KeyDown:
-			if m.cursor < len(rows)-1 {
-				m.cursor++
-			}
-		}
-		switch msg.String() {
-		case "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-		case "j":
+		case "down", "j":
 			if m.cursor < len(rows)-1 {
 				m.cursor++
 			}

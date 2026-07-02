@@ -3,8 +3,8 @@ package tui
 import (
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // providerSettingsModel is the execution-tuning panel: a per-provider view of
@@ -153,7 +153,7 @@ func (m providerSettingsModel) Update(msg tea.Msg) (providerSettingsModel, tea.C
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	case provSaveDoneMsg:
 		m.step = provBrowse
@@ -170,8 +170,8 @@ func (m providerSettingsModel) Update(msg tea.Msg) (providerSettingsModel, tea.C
 	return m, nil
 }
 
-func (m providerSettingsModel) handleKey(msg tea.KeyMsg) (providerSettingsModel, tea.Cmd) {
-	if msg.Type == tea.KeyCtrlC {
+func (m providerSettingsModel) handleKey(msg tea.KeyPressMsg) (providerSettingsModel, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
 		return m, tea.Quit
 	}
 	switch m.step {
@@ -183,33 +183,33 @@ func (m providerSettingsModel) handleKey(msg tea.KeyMsg) (providerSettingsModel,
 	return m, nil
 }
 
-func (m providerSettingsModel) handleBrowseKey(msg tea.KeyMsg) (providerSettingsModel, tea.Cmd) {
-	switch {
-	case msg.Type == tea.KeyEsc, msg.String() == "q":
+func (m providerSettingsModel) handleBrowseKey(msg tea.KeyPressMsg) (providerSettingsModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
 		return m, nil // handled by the hub as back
-	case msg.Type == tea.KeyUp, msg.String() == "k":
+	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
 		}
-	case msg.Type == tea.KeyDown, msg.String() == "j":
+	case "down", "j":
 		if m.cursor < len(m.rows)-1 {
 			m.cursor++
 		}
-	case msg.Type == tea.KeyLeft, msg.String() == "h":
+	case "left", "h":
 		if m.tab > 0 {
 			m.tab--
 			m.cursor = 0
 			m.savedMsg, m.saveErr = "", nil
 			m.rebuildRows()
 		}
-	case msg.Type == tea.KeyRight, msg.String() == "l":
+	case "right", "l":
 		if m.tab < len(m.providers)-1 {
 			m.tab++
 			m.cursor = 0
 			m.savedMsg, m.saveErr = "", nil
 			m.rebuildRows()
 		}
-	case msg.Type == tea.KeyEnter, msg.String() == "e":
+	case "enter", "e":
 		return m.enterEdit()
 	}
 	return m, nil
@@ -267,25 +267,25 @@ func pickerField(label, key string, opts []string, value, sentinel string) provP
 	}
 }
 
-func (m providerSettingsModel) handleEditKey(msg tea.KeyMsg) (providerSettingsModel, tea.Cmd) {
+func (m providerSettingsModel) handleEditKey(msg tea.KeyPressMsg) (providerSettingsModel, tea.Cmd) {
 	layerFocus := len(m.edit.pickers)
-	switch {
-	case msg.Type == tea.KeyEsc:
+	switch msg.String() {
+	case "esc":
 		m.step = provBrowse
 		return m, nil
-	case msg.Type == tea.KeyEnter:
+	case "enter":
 		return m.saveEdit()
-	case msg.Type == tea.KeyTab, msg.Type == tea.KeyDown, msg.String() == "j":
+	case "tab", "down", "j":
 		if m.edit.focus < layerFocus {
 			m.edit.focus++
 		}
-	case msg.Type == tea.KeyShiftTab, msg.Type == tea.KeyUp, msg.String() == "k":
+	case "shift+tab", "up", "k":
 		if m.edit.focus > 0 {
 			m.edit.focus--
 		}
-	case msg.Type == tea.KeyLeft, msg.String() == "h":
+	case "left", "h":
 		m.changeFocused(-1)
-	case msg.Type == tea.KeyRight, msg.String() == "l":
+	case "right", "l":
 		m.changeFocused(1)
 	}
 	return m, nil

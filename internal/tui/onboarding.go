@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
+	"charm.land/bubbles/v2/progress"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
-	"github.com/charmbracelet/bubbles/progress"
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/sahilm/fuzzy"
 )
 
@@ -270,7 +270,7 @@ func newOnboardingModelWithPrefill(ctx context.Context, actions OnboardingAction
 	ak := textinput.New()
 	ak.Placeholder = "lin_api_..."
 	ak.CharLimit = 256
-	ak.Width = 40
+	ak.SetWidth(40)
 	ak.Prompt = "Linear API key: "
 	ak.EchoMode = textinput.EchoPassword
 	m.apiKey = ak
@@ -278,21 +278,21 @@ func newOnboardingModelWithPrefill(ctx context.Context, actions OnboardingAction
 	jbu := textinput.New()
 	jbu.Placeholder = "https://acme.atlassian.net"
 	jbu.CharLimit = 200
-	jbu.Width = 40
+	jbu.SetWidth(40)
 	jbu.Prompt = "Base URL:  "
 	m.jiraBaseURL = jbu
 
 	je := textinput.New()
 	je.Placeholder = "you@acme.com"
 	je.CharLimit = 200
-	je.Width = 40
+	je.SetWidth(40)
 	je.Prompt = "Email:     "
 	m.jiraEmail = je
 
 	jt := textinput.New()
 	jt.Placeholder = "classic API token"
 	jt.CharLimit = 256
-	jt.Width = 40
+	jt.SetWidth(40)
 	jt.Prompt = "API token: "
 	jt.EchoMode = textinput.EchoPassword
 	m.jiraToken = jt
@@ -300,21 +300,21 @@ func newOnboardingModelWithPrefill(ctx context.Context, actions OnboardingAction
 	bb := textinput.New()
 	bb.Placeholder = "main"
 	bb.CharLimit = 64
-	bb.Width = 30
+	bb.SetWidth(30)
 	bb.Prompt = "Base branch: "
 	m.baseBranch = bb
 
 	t := textinput.New()
 	t.Placeholder = "your-team"
 	t.CharLimit = 64
-	t.Width = 30
+	t.SetWidth(30)
 	t.Prompt = "Project/team: "
 	m.team = t
 
 	tf := textinput.New()
 	tf.Placeholder = "type to search…"
 	tf.CharLimit = 64
-	tf.Width = 30
+	tf.SetWidth(30)
 	tf.Prompt = "Search: "
 	m.teamFilter = tf
 
@@ -379,14 +379,14 @@ func (m onboardingModel) Init() tea.Cmd {
 	return textinput.Blink
 }
 
-func (m onboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m onboardingModel) Update(msg tea.Msg) (onboardingModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
 	case setupDoneMsg:
@@ -396,8 +396,8 @@ func (m onboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyTeamsDetected(msg), textinput.Blink
 
 	case progress.FrameMsg:
-		pm, cmd := m.systemCheckBar.Update(msg)
-		m.systemCheckBar = pm.(progress.Model)
+		var cmd tea.Cmd
+		m.systemCheckBar, cmd = m.systemCheckBar.Update(msg)
 		return m, cmd
 
 	case systemCheckResultMsg:
@@ -446,9 +446,8 @@ func (m onboardingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m onboardingModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyCtrlC:
+func (m onboardingModel) handleKey(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
 		return m, tea.Quit
 	}
 	if msg.String() == "q" && !m.textEntryActive() {
@@ -488,11 +487,11 @@ func (m onboardingModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m onboardingModel) handleWelcome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.Type == tea.KeyEsc {
+func (m onboardingModel) handleWelcome(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
+	if msg.String() == "esc" {
 		return m, tea.Quit
 	}
-	if msg.Type == tea.KeyEnter {
+	if msg.String() == "enter" {
 		m.step = onboardProviders
 		m.trackerCursor = m.firstEnabledOption(m.trackers)
 		m.providerCursor = m.firstEnabledOption(m.providers)
@@ -500,37 +499,31 @@ func (m onboardingModel) handleWelcome(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m onboardingModel) handleProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m onboardingModel) handleProviders(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
 	if m.providersPMFocused {
-		switch msg.Type {
-		case tea.KeyEsc, tea.KeyLeft:
+		switch msg.String() {
+		case "esc", "left":
 			m.step = onboardWelcome
 			return m, nil
-		case tea.KeyEnter, tea.KeyTab:
+		case "enter", "tab":
 			m.providersPMFocused = false
 			return m, nil
-		case tea.KeyUp:
+		case "up", "k":
 			m.trackerCursor = m.moveCursor(m.trackers, m.trackerCursor, -1)
-		case tea.KeyDown:
-			m.trackerCursor = m.moveCursor(m.trackers, m.trackerCursor, +1)
-		}
-		switch msg.String() {
-		case "k":
-			m.trackerCursor = m.moveCursor(m.trackers, m.trackerCursor, -1)
-		case "j":
+		case "down", "j":
 			m.trackerCursor = m.moveCursor(m.trackers, m.trackerCursor, +1)
 		}
 		return m, nil
 	}
 
-	switch msg.Type {
-	case tea.KeyEsc, tea.KeyLeft:
+	switch msg.String() {
+	case "esc", "left":
 		m.step = onboardWelcome
 		return m, nil
-	case tea.KeyTab:
+	case "tab":
 		m.providersPMFocused = true
 		return m, nil
-	case tea.KeyEnter:
+	case "enter":
 		switch m.selectedTracker() {
 		case "linear":
 			m.step = onboardLinearAPIKey
@@ -546,15 +539,9 @@ func (m onboardingModel) handleProviders(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.step = onboardBaseBranch
 		m.baseBranch.Focus()
 		return m, textinput.Blink
-	case tea.KeyUp:
+	case "up", "k":
 		m.providerCursor = m.moveCursor(m.providers, m.providerCursor, -1)
-	case tea.KeyDown:
-		m.providerCursor = m.moveCursor(m.providers, m.providerCursor, +1)
-	}
-	switch msg.String() {
-	case "k":
-		m.providerCursor = m.moveCursor(m.providers, m.providerCursor, -1)
-	case "j":
+	case "down", "j":
 		m.providerCursor = m.moveCursor(m.providers, m.providerCursor, +1)
 	}
 	return m, nil
@@ -590,14 +577,14 @@ func (m onboardingModel) moveCursor(list []string, cur, dir int) int {
 	return cur
 }
 
-func (m onboardingModel) handleLinearAPIKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m onboardingModel) handleLinearAPIKey(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
 	if m.apiKeyInputFocused {
-		switch msg.Type {
-		case tea.KeyEsc, tea.KeyLeft:
+		switch msg.String() {
+		case "esc", "left":
 			m.step = onboardProviders
 			m.apiKey.Blur()
 			return m, nil
-		case tea.KeyEnter, tea.KeyTab:
+		case "enter", "tab":
 			m.apiKeyInputFocused = false
 			m.apiKey.Blur()
 			m.baseBranch.Focus()
@@ -621,14 +608,14 @@ func (m onboardingModel) handleLinearAPIKey(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 // base-branch step from the last field, and esc / ← goes back to the provider
 // picker. No single-letter shortcut is bound: every key must be typeable into a
 // URL or email.
-func (m onboardingModel) handleJiraCreds(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc, tea.KeyLeft:
+func (m onboardingModel) handleJiraCreds(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "left":
 		m.blurJiraInputs()
 		m.step = onboardProviders
 		m.providersPMFocused = false
 		return m, nil
-	case tea.KeyTab, tea.KeyDown, tea.KeyEnter:
+	case "tab", "down", "enter":
 		if m.jiraFieldCursor < 2 {
 			m.jiraFieldCursor++
 			m.focusJiraField()
@@ -638,7 +625,7 @@ func (m onboardingModel) handleJiraCreds(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.step = onboardBaseBranch
 		m.baseBranch.Focus()
 		return m, textinput.Blink
-	case tea.KeyShiftTab, tea.KeyUp:
+	case "shift+tab", "up":
 		if m.jiraFieldCursor > 0 {
 			m.jiraFieldCursor--
 			m.focusJiraField()
@@ -681,10 +668,10 @@ func (m *onboardingModel) updateJiraField(msg tea.Msg) tea.Cmd {
 	return cmd
 }
 
-func (m onboardingModel) handleBaseBranch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m onboardingModel) handleBaseBranch(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
 	if m.baseBranchInputFocused {
-		switch msg.Type {
-		case tea.KeyEsc, tea.KeyLeft:
+		switch msg.String() {
+		case "esc", "left":
 			switch m.selectedTracker() {
 			case "linear":
 				m.step = onboardLinearAPIKey
@@ -700,13 +687,13 @@ func (m onboardingModel) handleBaseBranch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.step = onboardProviders
 			return m, nil
-		case tea.KeyEnter:
+		case "enter":
 			if strings.TrimSpace(m.baseBranch.Value()) == "" {
 				m.baseBranch.SetValue("main")
 			}
 			m.baseBranchInputFocused = false
 			return m, nil
-		case tea.KeyTab:
+		case "tab":
 			m.baseBranchInputFocused = false
 			return m, nil
 		}
@@ -715,29 +702,19 @@ func (m onboardingModel) handleBaseBranch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	switch msg.Type {
-	case tea.KeyEsc, tea.KeyLeft, tea.KeyTab:
+	switch msg.String() {
+	case "esc", "left", "tab":
 		m.baseBranchInputFocused = true
 		return m, nil
-	case tea.KeyEnter:
+	case "enter":
 		m.epicFlow = m.branchingCursor == 0
 		m.step = onboardLinearTeam
 		return m.enterTeamStep()
-	case tea.KeyUp:
+	case "up", "k":
 		if m.branchingCursor > 0 {
 			m.branchingCursor--
 		}
-	case tea.KeyDown:
-		if m.branchingCursor < len(m.branchingOptions)-1 {
-			m.branchingCursor++
-		}
-	}
-	switch msg.String() {
-	case "k":
-		if m.branchingCursor > 0 {
-			m.branchingCursor--
-		}
-	case "j":
+	case "down", "j":
 		if m.branchingCursor < len(m.branchingOptions)-1 {
 			m.branchingCursor++
 		}
@@ -754,7 +731,7 @@ type teamsDetectedMsg struct {
 // enterTeamStep kicks off (or reuses) detection for the selected tracker. The
 // result is cached per tracker so navigating back and forth does not re-run the
 // agent call; switching the tracker selection invalidates the cache.
-func (m onboardingModel) enterTeamStep() (tea.Model, tea.Cmd) {
+func (m onboardingModel) enterTeamStep() (onboardingModel, tea.Cmd) {
 	provider := m.selectedTracker()
 	if m.teamDetected && m.teamProvider == provider {
 		return m.focusTeamStep()
@@ -772,7 +749,7 @@ func (m onboardingModel) enterTeamStep() (tea.Model, tea.Cmd) {
 }
 
 // focusTeamStep restores input focus when re-entering an already-detected step.
-func (m onboardingModel) focusTeamStep() (tea.Model, tea.Cmd) {
+func (m onboardingModel) focusTeamStep() (onboardingModel, tea.Cmd) {
 	if m.teamManual || m.teamAutoFilled {
 		m.team.Focus()
 	} else {
@@ -830,9 +807,9 @@ func (m onboardingModel) applyTeamsDetected(msg teamsDetectedMsg) onboardingMode
 	return m
 }
 
-func (m onboardingModel) handleLinearTeam(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m onboardingModel) handleLinearTeam(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
 	if m.teamDetecting {
-		if msg.Type == tea.KeyEsc {
+		if msg.String() == "esc" {
 			m.step = onboardBaseBranch
 			m.baseBranchInputFocused = false
 		}
@@ -844,13 +821,13 @@ func (m onboardingModel) handleLinearTeam(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.handleTeamList(msg)
 }
 
-func (m onboardingModel) handleTeamManual(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc, tea.KeyLeft:
+func (m onboardingModel) handleTeamManual(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "left":
 		m.step = onboardBaseBranch
 		m.baseBranchInputFocused = false
 		return m, nil
-	case tea.KeyEnter:
+	case "enter":
 		if strings.TrimSpace(m.team.Value()) == "" {
 			return m, nil
 		}
@@ -862,30 +839,30 @@ func (m onboardingModel) handleTeamManual(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m onboardingModel) handleTeamList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m onboardingModel) handleTeamList(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
 	filtered := m.filteredTeams()
-	switch msg.Type {
-	case tea.KeyEsc, tea.KeyLeft:
+	switch msg.String() {
+	case "esc", "left":
 		m.step = onboardBaseBranch
 		m.baseBranchInputFocused = false
 		return m, nil
-	case tea.KeyUp:
+	case "up":
 		if m.teamCursor > 0 {
 			m.teamCursor--
 		}
 		return m, nil
-	case tea.KeyDown:
+	case "down":
 		if m.teamCursor < len(filtered)-1 {
 			m.teamCursor++
 		}
 		return m, nil
-	case tea.KeyEnter:
+	case "enter":
 		if m.teamCursor >= 0 && m.teamCursor < len(filtered) {
 			m.team.SetValue(filtered[m.teamCursor].Key)
 			m.step = onboardLabels
 		}
 		return m, nil
-	case tea.KeyCtrlT:
+	case "ctrl+t":
 		return m.switchToManual()
 	}
 	var cmd tea.Cmd
@@ -896,7 +873,7 @@ func (m onboardingModel) handleTeamList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m onboardingModel) switchToManual() (tea.Model, tea.Cmd) {
+func (m onboardingModel) switchToManual() (onboardingModel, tea.Cmd) {
 	m.teamManual = true
 	m.teamFilter.Blur()
 	m.team.Focus()
@@ -998,7 +975,7 @@ func (m onboardingModel) labelStepOptions() []string {
 	return []string{"Continue"}
 }
 
-func (m onboardingModel) handleLabels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m onboardingModel) handleLabels(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
 	opts := m.labelStepOptions()
 	if m.labelsCursor >= len(opts) {
 		m.labelsCursor = len(opts) - 1
@@ -1006,28 +983,18 @@ func (m onboardingModel) handleLabels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.labelsCursor < 0 {
 		m.labelsCursor = 0
 	}
-	switch msg.Type {
-	case tea.KeyEsc, tea.KeyLeft:
+	switch msg.String() {
+	case "esc", "left":
 		m.step = onboardLinearTeam
 		return m, nil
-	case tea.KeyEnter:
+	case "enter":
 		m.createLabels = labelCreationSupported(m.selectedTracker()) && m.labelsCursor == 0
 		m.step = onboardTimeTracking
-	case tea.KeyUp:
+	case "up", "k":
 		if m.labelsCursor > 0 {
 			m.labelsCursor--
 		}
-	case tea.KeyDown:
-		if m.labelsCursor < len(opts)-1 {
-			m.labelsCursor++
-		}
-	}
-	switch msg.String() {
-	case "k":
-		if m.labelsCursor > 0 {
-			m.labelsCursor--
-		}
-	case "j":
+	case "down", "j":
 		if m.labelsCursor < len(opts)-1 {
 			m.labelsCursor++
 		}
@@ -1035,29 +1002,19 @@ func (m onboardingModel) handleLabels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m onboardingModel) handleTimeTracking(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc, tea.KeyLeft:
+func (m onboardingModel) handleTimeTracking(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "left":
 		m.step = onboardLabels
 		return m, nil
-	case tea.KeyEnter:
+	case "enter":
 		m.timelog = m.timelogCursor == 1
 		m.step = onboardCI
-	case tea.KeyUp:
+	case "up", "k":
 		if m.timelogCursor > 0 {
 			m.timelogCursor--
 		}
-	case tea.KeyDown:
-		if m.timelogCursor < len(m.timelogOptions)-1 {
-			m.timelogCursor++
-		}
-	}
-	switch msg.String() {
-	case "k":
-		if m.timelogCursor > 0 {
-			m.timelogCursor--
-		}
-	case "j":
+	case "down", "j":
 		if m.timelogCursor < len(m.timelogOptions)-1 {
 			m.timelogCursor++
 		}
@@ -1065,29 +1022,19 @@ func (m onboardingModel) handleTimeTracking(msg tea.KeyMsg) (tea.Model, tea.Cmd)
 	return m, nil
 }
 
-func (m onboardingModel) handleCI(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyEsc, tea.KeyLeft:
+func (m onboardingModel) handleCI(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "left":
 		m.step = onboardTimeTracking
 		return m, nil
-	case tea.KeyEnter:
+	case "enter":
 		m.requireCI = m.ciCursor == 0
 		m.step = onboardWrite
-	case tea.KeyUp:
+	case "up", "k":
 		if m.ciCursor > 0 {
 			m.ciCursor--
 		}
-	case tea.KeyDown:
-		if m.ciCursor < len(m.ciOptions)-1 {
-			m.ciCursor++
-		}
-	}
-	switch msg.String() {
-	case "k":
-		if m.ciCursor > 0 {
-			m.ciCursor--
-		}
-	case "j":
+	case "down", "j":
 		if m.ciCursor < len(m.ciOptions)-1 {
 			m.ciCursor++
 		}
@@ -1095,19 +1042,15 @@ func (m onboardingModel) handleCI(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m onboardingModel) handleWrite(msg tea.Msg) (tea.Model, tea.Cmd) {
-	msgKey, ok := msg.(tea.KeyMsg)
-	if !ok {
-		return m, nil
-	}
-	switch msgKey.Type {
-	case tea.KeyEsc, tea.KeyLeft:
+func (m onboardingModel) handleWrite(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "left":
 		if m.writing {
 			return m, nil
 		}
 		m.step = onboardCI
 		return m, nil
-	case tea.KeyEnter:
+	case "enter":
 		if m.writing {
 			return m, nil
 		}
@@ -1118,35 +1061,23 @@ func (m onboardingModel) handleWrite(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m onboardingModel) handleCreateLabels(msg tea.Msg) (tea.Model, tea.Cmd) {
-	msgKey, ok := msg.(tea.KeyMsg)
-	if !ok {
-		return m, nil
-	}
-	switch msgKey.Type {
-	case tea.KeyEnter, tea.KeyEsc:
+func (m onboardingModel) handleCreateLabels(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
+	switch msg.String() {
+	case "enter", "esc":
 		m.step = onboardDone
 	}
 	return m, nil
 }
 
-func (m onboardingModel) handleDone(msg tea.Msg) (tea.Model, tea.Cmd) {
-	msgKey, ok := msg.(tea.KeyMsg)
-	if !ok {
-		return m, nil
-	}
-	if msgKey.Type == tea.KeyEnter || msgKey.Type == tea.KeyEsc {
+func (m onboardingModel) handleDone(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
+	if msg.String() == "enter" || msg.String() == "esc" {
 		m.done = true
 	}
 	return m, nil
 }
 
-func (m onboardingModel) handleNoRepo(msg tea.Msg) (tea.Model, tea.Cmd) {
-	msgKey, ok := msg.(tea.KeyMsg)
-	if !ok {
-		return m, nil
-	}
-	if msgKey.Type == tea.KeyEnter || msgKey.Type == tea.KeyEsc {
+func (m onboardingModel) handleNoRepo(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
+	if msg.String() == "enter" || msg.String() == "esc" {
 		m.done = true
 	}
 	return m, nil
@@ -1192,7 +1123,7 @@ func (m *onboardingModel) resetSystemChecks() {
 
 func newSystemCheckBar() progress.Model {
 	return progress.New(
-		progress.WithGradient(string(colorBrand), string(colorAccent)),
+		progress.WithColors(colorBrand, colorAccent),
 		progress.WithWidth(38),
 		progress.WithoutPercentage(),
 	)
@@ -1395,15 +1326,11 @@ func (m onboardingModel) advanceSystemCheck() onboardingModel {
 	return m
 }
 
-func (m onboardingModel) handleSystemCheck(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyCtrlC:
+func (m onboardingModel) handleSystemCheck(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
+	if msg.String() == "ctrl+c" || msg.String() == "q" {
 		return m, tea.Quit
 	}
-	if msg.String() == "q" {
-		return m, tea.Quit
-	}
-	if msg.Type == tea.KeyEnter {
+	if msg.String() == "enter" {
 		if !m.systemCheckStarted {
 			m.systemCheckStarted = true
 			m.systemChecks[0].status = checkRunning
