@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/RomkaLTU/trau/internal/event"
 )
@@ -60,7 +60,7 @@ func TestApplyEventAgentStartTracksPath(t *testing.T) {
 func TestWatchKeyTogglesStream(t *testing.T) {
 	m := initialModel(nil)
 	m.streamPath = "/runs/1-build.pty.log"
-	w := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'w'}}
+	w := tea.KeyPressMsg{Code: 'w', Text: "w"}
 
 	m, _, handled := m.handleKey(w)
 	if !handled || !m.streaming || m.stream == nil {

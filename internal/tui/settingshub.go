@@ -3,8 +3,8 @@ package tui
 import (
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // settingsHubModel is the Settings landing screen. It routes to two views:
@@ -65,7 +65,7 @@ func (m settingsHubModel) Update(msg tea.Msg) (settingsHubModel, tea.Cmd) {
 		m.all, _ = m.all.Update(msg)
 		m.providers, _ = m.providers.Update(msg)
 		return m, nil
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 
@@ -79,30 +79,30 @@ func (m settingsHubModel) Update(msg tea.Msg) (settingsHubModel, tea.Cmd) {
 	return m, cmd
 }
 
-func (m settingsHubModel) handleKey(msg tea.KeyMsg) (settingsHubModel, tea.Cmd) {
-	if msg.Type == tea.KeyCtrlC {
+func (m settingsHubModel) handleKey(msg tea.KeyPressMsg) (settingsHubModel, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
 		return m, tea.Quit
 	}
 	switch m.step {
 	case hubMenu:
-		switch {
-		case msg.Type == tea.KeyEsc, msg.String() == "q":
+		switch msg.String() {
+		case "esc", "q":
 			return m, nil // handled by the app as back
-		case msg.Type == tea.KeyUp, msg.String() == "k":
+		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
-		case msg.Type == tea.KeyDown, msg.String() == "j":
+		case "down", "j":
 			if m.cursor < len(m.items)-1 {
 				m.cursor++
 			}
-		case msg.Type == tea.KeyEnter:
+		case "enter":
 			return m.openSection(m.items[m.cursor].step)
 		}
 		return m, nil
 
 	case hubAll:
-		if m.all.InList() && (msg.Type == tea.KeyEsc || msg.String() == "q") {
+		if m.all.InList() && (msg.String() == "esc" || msg.String() == "q") {
 			m.step = hubMenu
 			return m, nil
 		}
@@ -111,7 +111,7 @@ func (m settingsHubModel) handleKey(msg tea.KeyMsg) (settingsHubModel, tea.Cmd) 
 		return m, cmd
 
 	case hubProviders:
-		if m.providers.AtRoot() && (msg.Type == tea.KeyEsc || msg.String() == "q") {
+		if m.providers.AtRoot() && (msg.String() == "esc" || msg.String() == "q") {
 			m.step = hubMenu
 			return m, nil
 		}

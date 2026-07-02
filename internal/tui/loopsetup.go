@@ -6,9 +6,9 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 type loopStep int
@@ -57,7 +57,7 @@ func newLoopSetupModel(ctx context.Context, actions Actions, styles Styles, info
 	ti := textinput.New()
 	ti.Placeholder = exampleID(info.Prefix) + " (optional)"
 	ti.CharLimit = 64
-	ti.Width = 32
+	ti.SetWidth(32)
 	ti.Prompt = "› "
 	ti.Focus()
 
@@ -96,7 +96,7 @@ func (m loopSetupModel) Update(msg tea.Msg) (loopSetupModel, tea.Cmd) {
 		m.step = loopList
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 
@@ -108,14 +108,14 @@ func (m loopSetupModel) Update(msg tea.Msg) (loopSetupModel, tea.Cmd) {
 	return m, nil
 }
 
-func (m loopSetupModel) handleKey(msg tea.KeyMsg) (loopSetupModel, tea.Cmd) {
+func (m loopSetupModel) handleKey(msg tea.KeyPressMsg) (loopSetupModel, tea.Cmd) {
 	switch m.step {
 	case loopConfirm:
-		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyEsc:
+		switch msg.String() {
+		case "ctrl+c", "esc":
 			m.cancelled, m.done = true, true
 			return m, nil
-		case tea.KeyEnter:
+		case "enter":
 			raw := strings.TrimSpace(m.input.Value())
 			if raw == "" {
 				m.epic = ""
@@ -145,34 +145,32 @@ func (m loopSetupModel) handleKey(msg tea.KeyMsg) (loopSetupModel, tea.Cmd) {
 		return m, cmd
 
 	case loopLoading:
-		if msg.Type == tea.KeyCtrlC || msg.Type == tea.KeyEsc {
+		if msg.String() == "ctrl+c" || msg.String() == "esc" {
 			m.step = loopConfirm
 			m.input.Focus()
 		}
 		return m, nil
 
 	case loopList:
-		switch msg.Type {
-		case tea.KeyCtrlC:
+		switch msg.String() {
+		case "ctrl+c":
 			m.cancelled, m.done = true, true
-		case tea.KeyEsc:
+		case "esc":
 			m.step = loopConfirm
 			m.subs = nil
 			m.cursor = 0
 			m.input.Focus()
-		case tea.KeyEnter:
+		case "enter":
 			m.single = len(m.subs) == 0
 			m.done = true
-		case tea.KeyUp, tea.KeyShiftTab:
+		case "up", "shift+tab":
 			if m.cursor > 0 {
 				m.cursor--
 			}
-		case tea.KeyDown, tea.KeyTab:
+		case "down", "tab":
 			if m.cursor < len(m.subs)-1 {
 				m.cursor++
 			}
-		}
-		switch msg.String() {
 		case "o":
 			if m.cursor >= 0 && m.cursor < len(m.subs) {
 				return m, openURLCmd(linearIssueURL(m.subs[m.cursor].ID))

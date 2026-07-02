@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/RomkaLTU/trau/internal/state"
 )
@@ -47,7 +47,7 @@ func newLogsModel(styles Styles, runs []LogRun, width, height int, contentFn fun
 		width:  width,
 		height: height,
 	}
-	m.viewport = viewport.New(0, 0)
+	m.viewport = viewport.New()
 	m.viewport.SetContent("")
 	if len(runs) > 0 && contentFn != nil {
 		m.viewport.SetContent(contentFn(runs[0].ID))
@@ -91,8 +91,8 @@ func (m *logsModel) relayout(width, height int) {
 	if innerH < 2 {
 		innerH = 2
 	}
-	m.viewport.Width = innerW
-	m.viewport.Height = innerH
+	m.viewport.SetWidth(innerW)
+	m.viewport.SetHeight(innerH)
 }
 
 func (m logsModel) selected() (LogRun, bool) {
@@ -117,7 +117,7 @@ func (m logsModel) Update(msg tea.Msg, contentFn func(string) string) (logsModel
 		m.relayout(msg.Width, msg.Height)
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "tab":
 			m.focused = !m.focused

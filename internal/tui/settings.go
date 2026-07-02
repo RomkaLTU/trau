@@ -3,9 +3,9 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // ConfigItem is one resolved configuration key exposed to the settings editor.
@@ -126,7 +126,7 @@ func newSettingsModel(actions SettingsActions, styles Styles, width, height int)
 	ti := textinput.New()
 	ti.Placeholder = "value"
 	ti.CharLimit = 512
-	ti.Width = 40
+	ti.SetWidth(40)
 	ti.Prompt = "Value: "
 
 	m := settingsModel{
@@ -151,7 +151,7 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
 	case saveConfigDoneMsg:
@@ -174,8 +174,8 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 	return m, nil
 }
 
-func (m settingsModel) handleKey(msg tea.KeyMsg) (settingsModel, tea.Cmd) {
-	if msg.Type == tea.KeyCtrlC {
+func (m settingsModel) handleKey(msg tea.KeyPressMsg) (settingsModel, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
 		return m, tea.Quit
 	}
 
@@ -190,22 +190,22 @@ func (m settingsModel) handleKey(msg tea.KeyMsg) (settingsModel, tea.Cmd) {
 	return m, nil
 }
 
-func (m settingsModel) handleListKey(msg tea.KeyMsg) (settingsModel, tea.Cmd) {
-	switch {
-	case msg.Type == tea.KeyEsc, msg.String() == "q":
+func (m settingsModel) handleListKey(msg tea.KeyPressMsg) (settingsModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
 		return m, nil // handled by app as back
-	case msg.Type == tea.KeyUp, msg.String() == "k":
+	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
 		}
-	case msg.Type == tea.KeyDown, msg.String() == "j":
+	case "down", "j":
 		if m.cursor < len(m.filtered)-1 {
 			m.cursor++
 		}
-	case msg.String() == "a":
+	case "a":
 		m.showAdvanced = !m.showAdvanced
 		m.rebuildFiltered()
-	case msg.Type == tea.KeyEnter, msg.String() == "e":
+	case "enter", "e":
 		if len(m.filtered) == 0 {
 			return m, nil
 		}
@@ -214,14 +214,15 @@ func (m settingsModel) handleListKey(msg tea.KeyMsg) (settingsModel, tea.Cmd) {
 	return m, nil
 }
 
-func (m settingsModel) handleEditKey(msg tea.KeyMsg) (settingsModel, tea.Cmd) {
+func (m settingsModel) handleEditKey(msg tea.KeyPressMsg) (settingsModel, tea.Cmd) {
+	key := msg.String()
 	switch {
-	case msg.Type == tea.KeyEsc:
+	case key == "esc":
 		m.step = settingsList
 		m.saveErr = nil
 		m.savedMsg = ""
 		return m, nil
-	case msg.Type == tea.KeyTab:
+	case key == "tab":
 		m.editValueFocused = !m.editValueFocused
 		if m.editValueFocused && m.editKind == editText {
 			m.editInput.Focus()
@@ -229,40 +230,40 @@ func (m settingsModel) handleEditKey(msg tea.KeyMsg) (settingsModel, tea.Cmd) {
 			m.editInput.Blur()
 		}
 		return m, nil
-	case m.editValueFocused && m.editKind != editText && (msg.Type == tea.KeyLeft || msg.String() == "h"):
+	case m.editValueFocused && m.editKind != editText && (key == "left" || key == "h"):
 		if m.editOptIdx > 0 {
 			m.editOptIdx--
 		}
 		return m, nil
-	case m.editValueFocused && m.editKind != editText && (msg.Type == tea.KeyRight || msg.String() == "l"):
+	case m.editValueFocused && m.editKind != editText && (key == "right" || key == "l"):
 		if m.editOptIdx < len(m.editOptions)-1 {
 			m.editOptIdx++
 		}
 		return m, nil
-	case m.editValueFocused && m.editKind == editBool && msg.Type == tea.KeySpace:
+	case m.editValueFocused && m.editKind == editBool && key == "space":
 		m.editOptIdx = 1 - m.editOptIdx
 		return m, nil
-	case !m.editValueFocused && (msg.Type == tea.KeyLeft || msg.String() == "h"):
+	case !m.editValueFocused && (key == "left" || key == "h"):
 		if m.editLayer > 0 {
 			m.editLayer--
 		}
-	case !m.editValueFocused && (msg.Type == tea.KeyRight || msg.String() == "l"):
+	case !m.editValueFocused && (key == "right" || key == "l"):
 		if m.editLayer < len(m.editLayers)-1 {
 			m.editLayer++
 		}
-	case msg.Type == tea.KeyUp, msg.String() == "k":
+	case key == "up", key == "k":
 		if !m.editValueFocused {
 			m.editValueFocused = true
 			if m.editKind == editText {
 				m.editInput.Focus()
 			}
 		}
-	case msg.Type == tea.KeyDown, msg.String() == "j":
+	case key == "down", key == "j":
 		if m.editValueFocused {
 			m.editValueFocused = false
 			m.editInput.Blur()
 		}
-	case msg.Type == tea.KeyEnter:
+	case key == "enter":
 		return m.saveEdit()
 	}
 

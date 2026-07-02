@@ -4,7 +4,7 @@ import (
 	"os/exec"
 	"runtime"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // openURLCmd returns a tea.Cmd that opens url in the user's default browser.

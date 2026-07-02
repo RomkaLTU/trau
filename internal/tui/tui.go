@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
@@ -25,12 +25,7 @@ type TUI struct {
 // being killed mid-flight; pass nil to disable graceful stop.
 func New(stdout, _ io.Writer, onInterrupt func()) *TUI {
 	m := initialModel(onInterrupt)
-	prog := tea.NewProgram(
-		m,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-		tea.WithOutput(stdout),
-	)
+	prog := tea.NewProgram(m, tea.WithOutput(stdout))
 	t := &TUI{prog: prog, done: make(chan struct{})}
 	go func() {
 		_, _ = prog.Run()
@@ -52,7 +47,7 @@ func NewRenderer() *TUI {
 // loop reports through; its program is attached here.
 func RunSession(ctx context.Context, stdout io.Writer, holder *TUI, actions Actions) error {
 	m := newAppModel(ctx, actions, holder)
-	prog := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithOutput(stdout))
+	prog := tea.NewProgram(m, tea.WithOutput(stdout))
 	holder.prog = prog
 	_, err := prog.Run()
 	return err
