@@ -20,7 +20,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -28,6 +27,7 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/sanitize"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
 
@@ -586,10 +586,9 @@ func signalOnce(ch chan<- struct{}) {
 // ticket. See COD-596.
 var ErrAuthRequired = errors.New("provider authentication required — re-login (e.g. run claude, then /login)")
 
-var reANSI = regexp.MustCompile("\x1b\\[[0-9;:?]*[ -/]*[@-~]|\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)?")
-
-// StripANSI removes ANSI escape/control sequences from s.
-func StripANSI(s string) string { return reANSI.ReplaceAllString(s, "") }
+// StripANSI removes ANSI escape/control sequences from s. It delegates to the
+// shared sanitize package so the ANSI pattern has a single source of truth.
+func StripANSI(s string) string { return sanitize.StripANSI(s) }
 
 // hasAuthFailure reports whether the agent's terminal output shows a provider
 // auth/login wall that won't clear without human re-authentication. It strips ANSI
@@ -597,7 +596,7 @@ func StripANSI(s string) string { return reANSI.ReplaceAllString(s, "") }
 // positioning sequences still matches, and requires distinctive paired tokens for
 // the 403 case to avoid pausing on incidental prose.
 func hasAuthFailure(s string) bool {
-	low := strings.ToLower(reANSI.ReplaceAllString(s, ""))
+	low := strings.ToLower(sanitize.StripANSI(s))
 	switch {
 	case strings.Contains(low, "please run /login"):
 		return true

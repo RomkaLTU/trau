@@ -9,6 +9,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/sanitize"
 )
 
 // TUI is a Bubble Tea-backed renderer. It implements console.Renderer and runs
@@ -57,12 +58,15 @@ func RunSession(ctx context.Context, stdout io.Writer, holder *TUI, actions Acti
 	return err
 }
 
-// Logf appends a formatted log line to the TUI.
+// Logf appends a formatted log line to the TUI. The line is sanitized to a single
+// clean row (ANSI/control chars stripped, bounded length) so raw subprocess output
+// — a hook's \r progress bars or multi-line ANSI — can't escape the row and repaint
+// over other panels.
 func (t *TUI) Logf(format string, a ...any) {
 	if t == nil || t.prog == nil {
 		return
 	}
-	t.prog.Send(logMsg{line: fmt.Sprintf(format, a...)})
+	t.prog.Send(logMsg{line: sanitize.FeedLine(fmt.Sprintf(format, a...))})
 }
 
 // Event forwards a structured event to the TUI for display.
