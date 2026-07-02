@@ -20,6 +20,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/RomkaLTU/trau/internal/sanitize"
 )
 
 // Checkpoint phase values written to the PHASE key. The loop advances a ticket
@@ -152,7 +154,7 @@ func (s *Store) Set(id, key, value string) error {
 			kept = append(kept, line)
 		}
 	}
-	kept = append(kept, key+"="+value)
+	kept = append(kept, key+"="+sanitize.StateValue(value))
 	kept = append(kept, "UPDATED="+s.now().Format("2006-01-02 15:04:05"))
 	out := strings.Join(kept, "\n") + "\n"
 
