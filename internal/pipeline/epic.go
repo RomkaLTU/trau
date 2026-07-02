@@ -47,7 +47,7 @@ func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
 		return "", &GiveUpError{ID: p.EpicID, Reason: "could not create epic branch for " + p.EpicID}
 	}
 	p.logf("  epic branch %s ← %s", branch, p.Base)
-	if err := p.Git.Push(ctx, p.Remote, branch); err != nil {
+	if err := p.Git.Push(ctx, p.Remote, branch, false); err != nil {
 		p.logf("  push epic branch error (continuing): %v", err)
 	}
 	p.epicBranch = branch
@@ -168,7 +168,7 @@ func (p *Pipeline) syncEpicBest(ctx context.Context, epic string) {
 		_ = p.Git.MergeAbort(ctx)
 		p.logf("  epic %s conflicts with %s — deferring resolution to epic finalize", epic, p.Base)
 	default:
-		if err := p.Git.Push(ctx, p.Remote, epic); err != nil {
+		if err := p.Git.Push(ctx, p.Remote, epic, false); err != nil {
 			p.logf("  push synced epic branch error (continuing): %v", err)
 		}
 	}
@@ -188,7 +188,7 @@ func (p *Pipeline) syncEpicForMerge(ctx context.Context, epic string) (bool, err
 		return false, fmt.Errorf("merge %s into %s: %w", p.Base, epic, err)
 	}
 	if !conflicted {
-		if err := p.Git.Push(ctx, p.Remote, epic); err != nil {
+		if err := p.Git.Push(ctx, p.Remote, epic, false); err != nil {
 			p.logf("  push synced epic branch error (continuing): %v", err)
 		}
 		return true, nil
@@ -208,7 +208,7 @@ func (p *Pipeline) syncEpicForMerge(ctx context.Context, epic string) (bool, err
 			if err := p.Git.ContinueMerge(ctx); err != nil {
 				return false, fmt.Errorf("complete merge: %w", err)
 			}
-			if err := p.Git.Push(ctx, p.Remote, epic); err != nil {
+			if err := p.Git.Push(ctx, p.Remote, epic, false); err != nil {
 				p.logf("  push synced epic branch error (continuing): %v", err)
 			}
 			return true, nil
@@ -253,7 +253,7 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 		if _, err := p.agentStep(ctx, p.EpicID, fmt.Sprintf("epic-repair%d", repair), epicRepairInstruction(p.EpicID, prURL, epic)); err != nil {
 			return false, err
 		}
-		if err := p.Git.Push(ctx, p.Remote, epic); err != nil {
+		if err := p.Git.Push(ctx, p.Remote, epic, false); err != nil {
 			p.logf("  push epic repair error (continuing): %v", err)
 		}
 	}

@@ -39,7 +39,18 @@ type Git interface {
 
 	Commit(ctx context.Context, message string, noVerify bool) error
 
-	Push(ctx context.Context, remote, ref string) error
+	// Push pushes ref to remote; noVerify adds --no-verify to bypass local hooks.
+	// Real deliverable pushes run hooks (noVerify=false); WIP-preservation pushes
+	// bypass them (noVerify=true) so saving work is never gated by the repo's checks.
+	Push(ctx context.Context, remote, ref string, noVerify bool) error
+
+	// PushDryRun performs git push --dry-run --no-verify: it contacts the remote and
+	// reports what the push WOULD do without transferring anything and without running
+	// local hooks. A nil result means the remote itself would accept the ref — so if
+	// the real push failed, a LOCAL pre-push hook was the only blocker. A non-nil error
+	// carries git's own ref-level reason (non-fast-forward, remote rejected) or an
+	// auth/network failure — the behavior-based, hook-manager-agnostic push classifier.
+	PushDryRun(ctx context.Context, remote, ref string) error
 
 	Checkout(ctx context.Context, ref string, force bool) error
 
@@ -484,7 +495,7 @@ func (p *Pipeline) finalizeFault(ctx context.Context, id string) {
 	if branch != p.Base {
 		_ = p.Git.AddAll(ctx)
 		_ = p.Git.Commit(ctx, fmt.Sprintf("wip(%s): incomplete attempt — rerun trau to resume", id), true)
-		if err := p.Git.Push(ctx, p.Remote, "HEAD"); err == nil {
+		if err := p.Git.Push(ctx, p.Remote, "HEAD", true); err == nil {
 			p.logf("  saved attempt to %s/%s", p.Remote, branch)
 		} else {
 			p.logf("  saved attempt to local branch %s", branch)
@@ -974,7 +985,7 @@ func (p *Pipeline) finalizeFailed(ctx context.Context, id string) {
 	if branch != p.Base {
 		_ = p.Git.AddAll(ctx)
 		_ = p.Git.Commit(ctx, fmt.Sprintf("wip(%s): quarantined attempt — needs human", id), true)
-		if err := p.Git.Push(ctx, p.Remote, "HEAD"); err == nil {
+		if err := p.Git.Push(ctx, p.Remote, "HEAD", true); err == nil {
 			p.logf("  saved attempt to %s/%s", p.Remote, branch)
 		} else {
 			p.logf("  saved attempt to local branch %s", branch)
@@ -996,10 +1007,8 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	if _, err := p.agentStep(ctx, id, "commit", commitInstruction(id, commitRubricNote(rubricRef), p.MergeMethod == "squash")); err != nil {
 		return err
 	}
-	if err := p.retryGH(ctx, "git push", func() error {
-		return p.Git.Push(ctx, p.Remote, "HEAD")
-	}); err != nil {
-		return fmt.Errorf("commit %s: push: %w", id, err)
+	if err := p.pushDeliverable(ctx, id, "HEAD"); err != nil {
+		return err
 	}
 
 	p.phaseStart("pr")
@@ -1175,6 +1184,106 @@ func retryableGH(err error) bool {
 		}
 	}
 	return true
+}
+
+// pushOutcome classifies why a deliverable push failed, so the commit phase can
+// treat a hook rejection as repairable feedback rather than a transient hiccup.
+type pushOutcome int
+
+const (
+	pushOK             pushOutcome = iota
+	pushTransient                  // auth-less network hiccup — retry with backoff
+	pushLocalHook                  // a local pre-push hook rejected the diff — repair
+	pushRemoteRejected             // remote-side hook/policy declined it — repair
+	pushNonFastForward             // remote moved on — deterministic, needs a sync
+	pushDeterministic              // auth / other non-retryable, non-repairable failure
+)
+
+// pushDeliverable pushes the committed slice with the repo's pre-push hooks live.
+// A local hook rejection (or a remote-side decline) is deterministic feedback about
+// the committed code — the same class as a red verify — so it is routed into the
+// bounded repair loop (REPAIRS) instead of being blind-retried or faulted: each
+// retry would otherwise re-run the repo's entire check suite. Auth/network hiccups
+// keep the transient retry path; repairs exhausted → normal give-up (WIP preserved,
+// session continues); a non-fast-forward or other deterministic failure returns to
+// the caller (fault, resumable). A green push returns nil.
+func (p *Pipeline) pushDeliverable(ctx context.Context, id, ref string) error {
+	repairs := 0
+	for {
+		outcome, err := p.retryPush(ctx, ref)
+		if outcome == pushOK {
+			return nil
+		}
+		if outcome != pushLocalHook && outcome != pushRemoteRejected {
+			return fmt.Errorf("commit %s: push: %w", id, err)
+		}
+		if repairs >= p.MaxRepairs {
+			return p.giveUp(ctx, id, fmt.Sprintf("push rejected by a pre-push gate after %d repair attempt(s)", repairs))
+		}
+		repairs++
+		p.logf("  ⚠ push rejected by a pre-push gate — repair attempt %d/%d", repairs, p.MaxRepairs)
+		if _, err := p.agentStep(ctx, id, fmt.Sprintf("push-repair%d", repairs), pushRepairInstruction(id, err.Error())); err != nil {
+			return err
+		}
+	}
+}
+
+// retryPush pushes ref (hooks live), retrying only genuinely transient failures
+// (auth-less network hiccups) with the same backoff as retryGH. It classifies each
+// failure with classifyPush so a local pre-push hook rejection is never blind-retried
+// — every retry would re-run the repo's whole check suite for zero chance of success.
+// It returns the final classified outcome and the last error.
+func (p *Pipeline) retryPush(ctx context.Context, ref string) (pushOutcome, error) {
+	const attempts = 3
+	var (
+		err     error
+		outcome pushOutcome
+	)
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err = p.Git.Push(ctx, p.Remote, ref, false); err == nil {
+			return pushOK, nil
+		}
+		outcome = p.classifyPush(ctx, ref)
+		if outcome != pushTransient || attempt == attempts {
+			return outcome, err
+		}
+		if ctx.Err() != nil {
+			return outcome, ctx.Err()
+		}
+		backoff := 1 << (attempt - 1)
+		p.logf("  ⟳ git push failed (%v) — retrying in %ds (%d/%d)", err, backoff, attempt, attempts-1)
+		p.sleep(backoff)
+	}
+	return outcome, err
+}
+
+// classifyPush decides why a real push of ref failed, using git's own behavior
+// rather than any hook tool's output. It probes the remote with hooks bypassed
+// (git push --dry-run --no-verify): if the remote WOULD accept the ref, the only
+// thing that blocked the real push was a local pre-push hook; otherwise the probe's
+// error carries git's ref-level reason, which classifyRemotePushErr maps.
+func (p *Pipeline) classifyPush(ctx context.Context, ref string) pushOutcome {
+	return classifyRemotePushErr(p.Git.PushDryRun(ctx, p.Remote, ref))
+}
+
+// classifyRemotePushErr maps a hook-bypassed push failure to an outcome using only
+// git's stable ref-level markers — never hook-tool output, whose format differs per
+// language and manager. A nil error means the remote would accept the ref.
+func classifyRemotePushErr(probeErr error) pushOutcome {
+	if probeErr == nil {
+		return pushLocalHook
+	}
+	s := strings.ToLower(probeErr.Error())
+	switch {
+	case strings.Contains(s, "[remote rejected]"):
+		return pushRemoteRejected
+	case strings.Contains(s, "[rejected]"), strings.Contains(s, "fetch first"), strings.Contains(s, "non-fast-forward"):
+		return pushNonFastForward
+	case retryableGH(probeErr):
+		return pushTransient
+	default:
+		return pushDeterministic
+	}
 }
 
 // createOrAdoptPR opens a PR, retrying transient failures. If a create attempt
@@ -1670,6 +1779,15 @@ func bugfixInstruction(id, verdict, handoff, branch, fails, rubricNote, lessonsN
 		fails + "\n\nYou are on branch " + branch + " with this slice's implementation uncommitted." + rubricNote + lessonsNote + " This is a comprehensive bug-fix pass: read the full verdict, identify every failure that is a DEFECT IN THIS SLICE'S OWN code, and fix ALL of them with minimal, targeted changes. Do not stop after the first fix. Run the relevant tests (and browser checks if applicable) to confirm every failure is resolved before finishing. If a failure is a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — note it clearly." + codeStyleNote + " Do not commit, push, or open a PR."
 }
 
+// pushRepairInstruction hands the verbatim pre-push rejection to a repair agent.
+// The slice is already committed on the branch, so the agent must fix the flagged
+// problem AND fold the fix into what gets pushed (amend or a follow-up commit); the
+// loop re-pushes after it finishes. The output is passed raw and unparsed — the
+// agent reads the hook's own report rather than trau guessing at its format.
+func pushRepairInstruction(id, hookOutput string) string {
+	return id + "'s commit is on the feature branch but `git push` was REJECTED by a local pre-push hook — a quality gate the repo runs before allowing a push (tests, linters, static analysis, etc.). This is deterministic feedback about the committed code, NOT an infra error. Rejection output:\n\n" + hookOutput + "\n\nRead the output, find the root cause in THIS slice's code, and fix it with minimal, targeted changes. Then COMMIT the fix so it becomes part of what gets pushed — amend the existing commit or add a follow-up commit, matching the repo's commit style. If the failure is a pre-existing or out-of-scope problem NOT caused by this slice, do NOT hack around it — say so clearly and change nothing." + codeStyleNote + " Do NOT run `git push` or open a PR yourself — the loop re-pushes once you finish."
+}
+
 type verdict struct {
 	Pass     bool          `json:"pass"`
 	Summary  string        `json:"summary"`
@@ -2048,9 +2166,22 @@ func (g ExecGit) Commit(ctx context.Context, message string, noVerify bool) erro
 	return g.run(ctx, append(args, "-m", message)...)
 }
 
-// Push pushes ref to remote, setting upstream (git push -u <remote> <ref>).
-func (g ExecGit) Push(ctx context.Context, remote, ref string) error {
-	return g.run(ctx, "push", "-u", remote, ref)
+// Push pushes ref to remote, setting upstream (git push -u <remote> <ref>);
+// noVerify adds --no-verify to bypass local pre-push hooks.
+func (g ExecGit) Push(ctx context.Context, remote, ref string, noVerify bool) error {
+	args := []string{"push", "-u"}
+	if noVerify {
+		args = append(args, "--no-verify")
+	}
+	return g.run(ctx, append(args, remote, ref)...)
+}
+
+// PushDryRun runs git push --dry-run --no-verify: it negotiates with the remote
+// but transfers nothing and skips local hooks, so a nil result means the remote
+// would accept the ref (any real-push failure was a local hook), while a non-nil
+// error carries git's own ref-level rejection reason.
+func (g ExecGit) PushDryRun(ctx context.Context, remote, ref string) error {
+	return g.run(ctx, "push", "--dry-run", "--no-verify", remote, ref)
 }
 
 // Checkout switches to ref; force adds -f to discard local changes.

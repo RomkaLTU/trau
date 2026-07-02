@@ -14,11 +14,12 @@ import (
 // committed and pushed rather than left dangling.
 type recordingGit struct {
 	fakeGit
-	branch     string
-	addAll     int
-	commitMsgs []string
-	pushes     int
-	cleans     int
+	branch      string
+	addAll      int
+	commitMsgs  []string
+	pushes      int
+	pushNoVerif int
+	cleans      int
 }
 
 func (g *recordingGit) CurrentBranch(context.Context) (string, error) { return g.branch, nil }
@@ -27,8 +28,14 @@ func (g *recordingGit) Commit(_ context.Context, msg string, _ bool) error {
 	g.commitMsgs = append(g.commitMsgs, msg)
 	return nil
 }
-func (g *recordingGit) Push(context.Context, string, string) error { g.pushes++; return nil }
-func (g *recordingGit) Clean(context.Context) error                { g.cleans++; return nil }
+func (g *recordingGit) Push(_ context.Context, _, _ string, noVerify bool) error {
+	g.pushes++
+	if noVerify {
+		g.pushNoVerif++
+	}
+	return nil
+}
+func (g *recordingGit) Clean(context.Context) error { g.cleans++; return nil }
 
 // TestUnexpectedErrorFaultsBlamelessly is the COD-498 regression guard: an
 // UNEXPECTED (non-rate-limit, non-give-up) agent error during build must NOT leave
@@ -81,6 +88,9 @@ func TestUnexpectedErrorFaultsBlamelessly(t *testing.T) {
 	}
 	if git.pushes == 0 {
 		t.Error("expected the preserved branch to be pushed best-effort")
+	}
+	if git.pushNoVerif != git.pushes {
+		t.Errorf("WIP-preservation push must bypass hooks (--no-verify): %d/%d pushes did", git.pushNoVerif, git.pushes)
 	}
 	if git.cleans == 0 {
 		t.Error("expected the working tree to be cleaned back to base")
