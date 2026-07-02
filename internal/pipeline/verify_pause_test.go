@@ -48,7 +48,8 @@ type fakeGit struct{}
 func (fakeGit) CurrentBranch(context.Context) (string, error)      { return "main", nil }
 func (fakeGit) AddAll(context.Context) error                       { return nil }
 func (fakeGit) Commit(context.Context, string, bool) error         { return nil }
-func (fakeGit) Push(context.Context, string, string) error         { return nil }
+func (fakeGit) Push(context.Context, string, string, bool) error   { return nil }
+func (fakeGit) PushDryRun(context.Context, string, string) error   { return nil }
 func (fakeGit) Checkout(context.Context, string, bool) error       { return nil }
 func (fakeGit) CreateBranch(context.Context, string, string) error { return nil }
 func (fakeGit) Clean(context.Context) error                        { return nil }
