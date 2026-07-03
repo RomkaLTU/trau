@@ -630,15 +630,24 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // the recap/Status. Everything else — watch, follow, page, exit stream — goes to
 // the dash. q/ctrl+c stop the loop.
 func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	// While the dash filter input is capturing, every key belongs to it — route
-	// straight to the dash so an action key (q, o, j) narrows the feed instead of
-	// firing the action or moving the rail.
+	// ctrl+c is the emergency stop and always wins, even mid-filter, so it can't be
+	// swallowed by the filter input.
+	if msg.String() == "ctrl+c" {
+		if m.loopCancel != nil {
+			m.loopCancel()
+		}
+		m.dash = m.dash.markStopping()
+		return m, nil
+	}
+	// While the dash filter input is capturing, every other key belongs to it —
+	// route straight to the dash so an action key (q, o, j) narrows the feed instead
+	// of firing the action or moving the rail.
 	if m.dash.filterActive() {
 		var cmd tea.Cmd
 		m.dash, cmd = applyDashCmd(m.dash, msg)
 		return m, cmd
 	}
-	if msg.String() == "q" || msg.String() == "ctrl+c" {
+	if msg.String() == "q" {
 		if m.loopCancel != nil {
 			m.loopCancel()
 		}

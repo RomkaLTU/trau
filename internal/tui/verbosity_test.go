@@ -183,4 +183,56 @@ func TestFilterInputOwnsKeysInAppShell(t *testing.T) {
 	if app.dash.stopping {
 		t.Error("q while filtering must not stop the loop")
 	}
+
+	// ctrl+c is the emergency stop and must win even mid-filter.
+	napp3, _ := app.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	app = napp3.(appModel)
+	if !app.dash.stopping {
+		t.Error("ctrl+c must stop the loop even while filtering")
+	}
+}
+
+// cycleTier drops any active filter so each tier is entered fresh — no filter
+// silently reactivates after cycling back around.
+func TestCycleTierClearsFilter(t *testing.T) {
+	m := initialModel(nil)
+	m = pressDash(m, keyRune('v')) // feed
+	m.filter = "err"
+	m = m.cycleTier() // raw
+	if m.filter != "" {
+		t.Errorf("cycleTier left a stale filter: %q", m.filter)
+	}
+}
+
+// A continuation (↳) row is shown only under a visible parent: a filter that
+// matches the parent keeps its detail, one that misses the parent hides both.
+func TestFilterKeepsSubRowsWithParent(t *testing.T) {
+	m := initialModel(nil)
+	m.addLog("✗ tests failed: TestFoo")
+	m.addLog("  ↳ expected 3 got 4")
+	m.tier = tierFeed
+
+	m.filter = "tests"
+	out := strip(m.renderFeed(120))
+	if !strings.Contains(out, "tests failed") || !strings.Contains(out, "expected 3 got 4") {
+		t.Errorf("matched parent should keep its detail\n%s", out)
+	}
+
+	m.filter = "expected" // matches only the sub's text, not the parent
+	out = strip(m.renderFeed(120))
+	if strings.Contains(out, "expected 3 got 4") {
+		t.Errorf("sub row must not orphan without its parent\n%s", out)
+	}
+}
+
+// / does not open the filter while the full-screen watch stream is up, where its
+// caret would be invisible and it would hijack the watch controls.
+func TestSlashInertDuringWatch(t *testing.T) {
+	m := initialModel(nil)
+	m = pressDash(m, keyRune('v')) // feed (filterable)
+	m.streaming = true
+	m = pressDash(m, keyRune('/'))
+	if m.filterActive() {
+		t.Error("/ should be inert while watching the stream")
+	}
 }

@@ -422,7 +422,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 	case msg.String() == "v":
 		m = m.cycleTier()
 		return m, nil, true
-	case msg.String() == "/" && m.tier != tierSpans:
+	case msg.String() == "/" && m.tier.filterable() && !m.streaming:
 		m.filtering = true
 		return m, nil, true
 	case msg.String() == "esc":
