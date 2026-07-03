@@ -205,6 +205,7 @@ func (m *onboardingModel) applyPrefill(p OnboardingPrefill) {
 	fv.baseBranch = p.BaseBranch
 	fv.team = p.Team
 	fv.teamManual = p.Team
+	fv.prefillTeam = p.Team
 	fv.epicFlow = p.EpicFlow
 	fv.timelog = p.Timelog
 	fv.requireCI = m.ciHasPRDet
@@ -335,7 +336,9 @@ func (m onboardingModel) updateWelcome(msg tea.Msg) (onboardingModel, tea.Cmd) {
 // to the welcome screen from the first field.
 func (m onboardingModel) updateForm(msg tea.Msg) (onboardingModel, tea.Cmd) {
 	if k, ok := msg.(tea.KeyPressMsg); ok {
-		if k.String() == "o" && m.focusedKey() == keyLinearKey {
+		// 'o' opens the Linear key settings URL, but only while the field is empty
+		// so a key containing 'o' can still be typed.
+		if k.String() == "o" && m.focusedKey() == keyLinearKey && strings.TrimSpace(m.fv.linearKey) == "" {
 			return m, openURLCmd(linearAPIKeySettingsURL)
 		}
 		if m.isBackKey(k) {
@@ -572,8 +575,14 @@ func (m onboardingModel) phaseBody() string {
 		if m.form == nil {
 			return ""
 		}
-		if m.focusedKey() == keyWrite {
+		switch m.focusedKey() {
+		case keyWrite:
 			return m.renderWritePreview() + "\n\n" + m.form.View()
+		case keyTeam, keyTeamManual:
+			if e := m.fv.teamErrText(); e != "" {
+				warn := m.styles.Warning.Render("Couldn't detect automatically — " + e)
+				return warn + "\n\n" + m.form.View()
+			}
 		}
 		return m.form.View()
 	case phaseWriting:

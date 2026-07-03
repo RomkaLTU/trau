@@ -92,7 +92,7 @@ func accessibleGroups(fv *formValues) []*huh.Group {
 					huh.NewOption("Use epic branches", true),
 					huh.NewOption("Process every ticket standalone", false),
 				).Value(&fv.epicFlow),
-			huh.NewInput().Title(teamTitle(fv.tracker)).Value(&fv.teamManual),
+			huh.NewInput().Title(teamTitle(fv.tracker)).Validate(requireTeam).Value(&fv.teamManual),
 		),
 		huh.NewGroup(
 			huh.NewSelect[string]().Title(titleTracker(fv.tracker)+" labels").
@@ -108,20 +108,4 @@ func accessibleGroups(fv *formValues) []*huh.Group {
 		),
 	)
 	return groups
-}
-
-func trackerOptionList() []huh.Option[string] {
-	return []huh.Option[string]{
-		huh.NewOption("Linear", "linear"),
-		huh.NewOption("Jira", "jira"),
-		huh.NewOption("GitHub", "github"),
-	}
-}
-
-func providerOptionList() []huh.Option[string] {
-	return []huh.Option[string]{
-		huh.NewOption("claude", "claude"),
-		huh.NewOption("codex", "codex"),
-		huh.NewOption("kimi", "kimi"),
-	}
 }

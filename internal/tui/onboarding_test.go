@@ -2,7 +2,9 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,10 +14,11 @@ import (
 )
 
 type fakeOnboardActions struct {
-	repoRoot string
-	prefill  OnboardingPrefill
-	teams    []DetectedTeam
-	gotSetup ProjectSetup
+	repoRoot  string
+	prefill   OnboardingPrefill
+	teams     []DetectedTeam
+	detectErr error
+	gotSetup  ProjectSetup
 }
 
 func (f *fakeOnboardActions) RepoRoot() string                     { return f.repoRoot }
@@ -23,7 +26,7 @@ func (f *fakeOnboardActions) OnboardingPrefill() OnboardingPrefill { return f.pr
 func (f *fakeOnboardActions) LinearAPIKeyConfigured() bool         { return false }
 
 func (f *fakeOnboardActions) DetectTeams(context.Context, string, string, JiraCreds) (TeamDetection, error) {
-	return TeamDetection{Label: "project", Teams: f.teams}, nil
+	return TeamDetection{Label: "project", Teams: f.teams}, f.detectErr
 }
 
 func (f *fakeOnboardActions) SetupProject(_ context.Context, s ProjectSetup) (SetupResult, error) {
@@ -387,6 +390,65 @@ func TestOnboardingClickAdvancesWelcome(t *testing.T) {
 	m, _ = m.handleMouseClick(tea.MouseClickMsg{Button: tea.MouseLeft})
 	if m.phase != phaseForm {
 		t.Fatalf("click on welcome → phase %v, want phaseForm", m.phase)
+	}
+}
+
+// TestRequireTeam guards the empty-team regression: a blank team must be
+// rejected so onboarding never writes an empty LINEAR_TEAM.
+func TestRequireTeam(t *testing.T) {
+	if requireTeam("") == nil || requireTeam("   ") == nil {
+		t.Error("blank team must be rejected")
+	}
+	if requireTeam("eng") != nil {
+		t.Error("non-empty team must be accepted")
+	}
+}
+
+// TestOnboardingLinearKeyOGate: 'o' opens the settings URL only while the key
+// field is empty; once the user has typed, 'o' is a literal character.
+func TestOnboardingLinearKeyOGate(t *testing.T) {
+	m := formModel(&fakeOnboardActions{repoRoot: t.TempDir()}, "linear")
+	m = pressKey(m, tea.KeyEnter) // tracker → ai provider
+	m = pressKey(m, tea.KeyEnter) // → linear key
+	if m.focusedKey() != keyLinearKey {
+		t.Fatalf("focused key = %q, want %q", m.focusedKey(), keyLinearKey)
+	}
+	m = typeRunes(m, "o")
+	if m.fv.linearKey != "" {
+		t.Errorf("'o' on an empty key should open the URL, not type; got %q", m.fv.linearKey)
+	}
+	m = typeRunes(m, "ab")
+	m = typeRunes(m, "o")
+	if m.fv.linearKey != "abo" {
+		t.Errorf("'o' after content should type; got %q", m.fv.linearKey)
+	}
+}
+
+// TestDetectTeamOptionsPreservesPrefill: a re-run whose detection omits the
+// current team still offers it, so tabbing past the step can't silently repoint.
+func TestDetectTeamOptionsPreservesPrefill(t *testing.T) {
+	fake := &fakeOnboardActions{teams: []DetectedTeam{{Key: "ENG"}, {Key: "OPS"}}}
+	fv := &formValues{tracker: "linear", prefillTeam: "COD"}
+	var vals []string
+	for _, o := range detectTeamOptions(context.Background(), fake, fv) {
+		vals = append(vals, o.Value)
+	}
+	if !slices.Contains(vals, "COD") {
+		t.Errorf("prefilled team COD not preserved as an option: %v", vals)
+	}
+	if !slices.Contains(vals, "ENG") || !slices.Contains(vals, teamManualSentinel) {
+		t.Errorf("options missing a detected team or the manual sentinel: %v", vals)
+	}
+}
+
+// TestDetectTeamOptionsRecordsError: a detection failure is captured so the team
+// step can surface the diagnostic instead of silently offering only manual entry.
+func TestDetectTeamOptionsRecordsError(t *testing.T) {
+	fake := &fakeOnboardActions{detectErr: errors.New("bad token")}
+	fv := &formValues{tracker: "jira"}
+	detectTeamOptions(context.Background(), fake, fv)
+	if fv.teamErrText() == "" {
+		t.Error("detection error should be recorded for the team step to surface")
 	}
 }
 

@@ -2,8 +2,10 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
@@ -63,6 +65,31 @@ type formValues struct {
 	requireCI  bool
 
 	writeConfirm bool
+
+	// prefillTeam is the team already in config when onboarding is re-run; it is
+	// never mutated by huh, so a detected set that omits it still keeps it as a
+	// selectable (and pre-selected) option instead of silently repointing.
+	prefillTeam string
+
+	// mu guards teamErr, which detectTeamOptions writes from its async command.
+	mu      sync.Mutex
+	teamErr string
+}
+
+func (fv *formValues) setTeamErr(err error) {
+	fv.mu.Lock()
+	defer fv.mu.Unlock()
+	if err != nil {
+		fv.teamErr = err.Error()
+	} else {
+		fv.teamErr = ""
+	}
+}
+
+func (fv *formValues) teamErrText() string {
+	fv.mu.Lock()
+	defer fv.mu.Unlock()
+	return fv.teamErr
 }
 
 type formCompletedMsg struct{}
@@ -81,13 +108,13 @@ func (m onboardingModel) newForm() *huh.Form {
 		huh.NewSelect[string]().
 			Key(keyTracker).
 			Title("Project management").
-			Options(trackerOptions(m)...).
+			Options(trackerOptionList()...).
 			Value(&fv.tracker),
 		huh.NewSelect[string]().
 			Key(keyAIProvider).
 			Title("AI agent").
 			DescriptionFunc(func() string { return providerSkillWarning(repoRoot, fv.aiProvider) }, &fv.aiProvider).
-			Options(providerOptions(m)...).
+			Options(providerOptionList()...).
 			Value(&fv.aiProvider),
 	).Title("Choose providers")
 
@@ -146,6 +173,7 @@ func (m onboardingModel) newForm() *huh.Form {
 			TitleFunc(func() string { return teamTitle(fv.tracker) }, &fv.tracker).
 			DescriptionFunc(func() string { return "Enter your " + teamNoun(fv.tracker) + "." }, &fv.tracker).
 			CharLimit(64).
+			Validate(requireTeam).
 			Value(&fv.teamManual),
 	).WithHideFunc(func() bool { return fv.team != teamManualSentinel })
 
@@ -210,58 +238,60 @@ func (m onboardingModel) ciDescription() string {
 }
 
 // detectTeamOptions runs the async tracker probe (huh shows a loading spinner)
-// and maps the result to picker options plus a manual-entry escape hatch. On
-// error or empty detection only the manual option is offered.
+// and maps the result to picker options plus a manual-entry escape hatch. The
+// probe error is recorded so the team step can surface it; a prefilled team that
+// detection did not surface is kept as an option so a re-run never silently
+// repoints the project. On error or empty detection only the manual option is
+// offered.
 func detectTeamOptions(ctx context.Context, actions OnboardingActions, fv *formValues) []huh.Option[string] {
-	det, _ := actions.DetectTeams(ctx, fv.tracker, fv.aiProvider, JiraCreds{
+	det, err := actions.DetectTeams(ctx, fv.tracker, fv.aiProvider, JiraCreds{
 		BaseURL:  strings.TrimSpace(fv.jiraBase),
 		Email:    strings.TrimSpace(fv.jiraEmail),
 		APIToken: strings.TrimSpace(fv.jiraToken),
 	})
-	opts := make([]huh.Option[string], 0, len(det.Teams)+1)
+	fv.setTeamErr(err)
+
+	opts := make([]huh.Option[string], 0, len(det.Teams)+2)
+	seen := map[string]bool{}
 	for _, t := range det.Teams {
 		label := t.Key
 		if t.Name != "" && t.Name != t.Key {
 			label = t.Key + " — " + t.Name
 		}
 		opts = append(opts, huh.NewOption(label, t.Key))
+		seen[t.Key] = true
 	}
-	if det.AutoFill && len(opts) == 1 {
-		opts[0] = opts[0].Selected(true)
+	if pt := strings.TrimSpace(fv.prefillTeam); pt != "" && !seen[pt] {
+		opts = append([]huh.Option[string]{huh.NewOption(pt+" (current)", pt)}, opts...)
 	}
 	opts = append(opts, huh.NewOption("✎ Enter it manually", teamManualSentinel))
 	return opts
 }
 
-func trackerOptions(m onboardingModel) []huh.Option[string] {
-	return onboardOptions(m, []string{"linear", "jira", "github"}, map[string]string{
-		"linear": "Linear", "jira": "Jira", "github": "GitHub",
-	})
+func trackerOptionList() []huh.Option[string] {
+	return []huh.Option[string]{
+		huh.NewOption("Linear", "linear"),
+		huh.NewOption("Jira", "jira"),
+		huh.NewOption("GitHub", "github"),
+	}
 }
 
-func providerOptions(m onboardingModel) []huh.Option[string] {
-	return onboardOptions(m, []string{"claude", "codex", "kimi"}, map[string]string{
-		"claude": "claude", "codex": "codex", "kimi": "kimi",
-	})
+func providerOptionList() []huh.Option[string] {
+	return []huh.Option[string]{
+		huh.NewOption("claude", "claude"),
+		huh.NewOption("codex", "codex"),
+		huh.NewOption("kimi", "kimi"),
+	}
 }
 
-// onboardOptions offers the ready choices, dropping any whose readiness probe
-// failed. If every option failed (the readiness gate should prevent this) it
-// falls back to offering all so the select is never empty.
-func onboardOptions(m onboardingModel, names []string, labels map[string]string) []huh.Option[string] {
-	opts := make([]huh.Option[string], 0, len(names))
-	for _, n := range names {
-		if m.checkStatusFor(n) == checkFailed {
-			continue
-		}
-		opts = append(opts, huh.NewOption(labels[n], n))
+// requireTeam blocks advancing past the team step with a blank value, so the
+// wizard never writes an empty LINEAR_TEAM (which would leave the project
+// unconfigured and re-trigger onboarding).
+func requireTeam(s string) error {
+	if strings.TrimSpace(s) == "" {
+		return errors.New("required — enter your team, project, or repository")
 	}
-	if len(opts) == 0 {
-		for _, n := range names {
-			opts = append(opts, huh.NewOption(labels[n], n))
-		}
-	}
-	return opts
+	return nil
 }
 
 func labelOptions(tracker string) []huh.Option[string] {
