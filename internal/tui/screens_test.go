@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,19 +135,23 @@ func TestResizeRoutesToEverySubModel(t *testing.T) {
 	}
 }
 
-// TestResizeRecomputesStatusTable checks the status table's responsive title
-// column is rebuilt when the terminal grows while the table is on screen.
-func TestResizeRecomputesStatusTable(t *testing.T) {
+// TestStatusScreenRendersQueue checks the Status screen loads its rows onto the
+// shared attention queue and renders through it across a resize.
+func TestStatusScreenRendersQueue(t *testing.T) {
 	base := newAppModel(context.Background(), &fakeAppActions{}, nil)
 	nm, _ := base.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	am, _ := nm.(appModel).selectAction(actStatus)
 	m := am.(appModel)
-	before := m.status.Columns()[1].Width
+	if len(m.statusRows) == 0 {
+		t.Fatal("Status screen loaded no rows")
+	}
+	if sel, ok := m.selectedStatusRow(); !ok || sel.ID != "COD-1" {
+		t.Fatalf("selected status row = %q (ok=%v), want COD-1", sel.ID, ok)
+	}
 
 	rm, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 50})
 	m = rm.(appModel)
-
-	if after := m.status.Columns()[1].Width; after <= before {
-		t.Errorf("status title column = %d after growing the terminal, want wider than %d", after, before)
+	if !strings.Contains(m.render(), "COD-1") {
+		t.Error("Status screen did not render its ticket after resize")
 	}
 }

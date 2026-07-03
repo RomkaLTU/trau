@@ -36,9 +36,10 @@ func TestTotalsLineCountsIncompleteSeparately(t *testing.T) {
 	}
 }
 
-// TestResizeRecomputesSummaryTable checks that resizing during the recap rebuilds
-// the table's responsive title column without losing the selected row.
-func TestResizeRecomputesSummaryTable(t *testing.T) {
+// TestResizeKeepsRecapSelection checks that resizing during the recap keeps the
+// queue selection put and still renders — the recap draws through the shared
+// attention-queue component, so there is no table to rebuild.
+func TestResizeKeepsRecapSelection(t *testing.T) {
 	d := freshDash(80, 24, "")
 	d.results = []console.TicketResult{
 		{ID: "COD-1", Title: "One", Phase: state.PROpen},
@@ -46,16 +47,22 @@ func TestResizeRecomputesSummaryTable(t *testing.T) {
 	}
 	sm, _ := d.enterSummary(console.SessionSummary{Tickets: 2})
 	d = sm.(model)
-	d.summaryTable.SetCursor(1)
-	before := d.summaryTable.Columns()[1].Width
+	d.queueCursor = 1
+	sel, ok := d.selectedRow()
+	if !ok || sel.ID != "COD-2" {
+		t.Fatalf("selected row before resize = %q (ok=%v), want COD-2", sel.ID, ok)
+	}
 
 	d = applyDash(d, tea.WindowSizeMsg{Width: 160, Height: 50})
 
-	if after := d.summaryTable.Columns()[1].Width; after <= before {
-		t.Errorf("summary title column = %d after growing the terminal, want wider than %d", after, before)
+	if got := d.queueCursor; got != 1 {
+		t.Errorf("queue cursor after resize = %d, want 1", got)
 	}
-	if got := d.summaryTable.Cursor(); got != 1 {
-		t.Errorf("summary cursor after resize = %d, want 1", got)
+	if sel, ok := d.selectedRow(); !ok || sel.ID != "COD-2" {
+		t.Errorf("selected row after resize = %q (ok=%v), want COD-2", sel.ID, ok)
+	}
+	if d.render() == "" {
+		t.Error("recap rendered empty after resize")
 	}
 }
 

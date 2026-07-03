@@ -11,7 +11,6 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
-	"charm.land/bubbles/v2/table"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -87,6 +86,7 @@ func (m model) summaryHelp() screenHelp {
 		group("Navigate", fk("↑↓", "move")),
 		group("Recover",
 			fk("o", "open PR"),
+			fk("l", "jump to logs"),
 			fk("r", "resume ticket"),
 			fk("b", "checkout branch"),
 			fk("x", "reset ticket"),
@@ -144,11 +144,18 @@ type model struct {
 
 	results []console.TicketResult
 
-	summary      console.SessionSummary
-	summaryTable table.Model
-	// recoveryNote is a transient line shown under the summary card after a
-	// recovery key (b/x) acts; confirmResetID, when non-empty, is the ticket
-	// awaiting a second keypress to confirm a destructive reset.
+	// queue is the live attention-rail snapshot of every tracked ticket, refreshed
+	// from the store as tickets start and finish. The recap draws from results
+	// instead (see queueRows); the two feed the same shared component.
+	queue []QueueRow
+
+	summary console.SessionSummary
+	// queueCursor selects a row in the attention queue (the recap, and the live
+	// rail). It indexes the selectable (non-folded) rows in attention order.
+	queueCursor int
+	// recoveryNote is a transient line shown under the queue after a recovery key
+	// (b/x) acts; confirmResetID, when non-empty, is the ticket awaiting a second
+	// keypress to confirm a destructive reset.
 	recoveryNote   string
 	confirmResetID string
 }
@@ -302,10 +309,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshBody()
 	}
 
-	if m.state == stateSummary {
-		m.summaryTable, cmd = m.summaryTable.Update(msg)
-		cmds = append(cmds, cmd)
-	} else {
+	if m.state != stateSummary {
 		m.viewport, cmd = m.viewport.Update(msg)
 		cmds = append(cmds, cmd)
 		m.following = m.viewport.AtBottom()
@@ -321,6 +325,12 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 			return m, tea.Quit, true
 		case key.Matches(msg, m.keys.Open):
 			return m, m.openSelectedPR(), true
+		case msg.String() == "up" || msg.String() == "k":
+			m.moveQueueCursor(-1)
+			return m, nil, true
+		case msg.String() == "down" || msg.String() == "j":
+			m.moveQueueCursor(1)
+			return m, nil, true
 		}
 		return m, nil, false
 	}
@@ -392,11 +402,6 @@ func (m *model) relayout() {
 	m.viewport.SetWidth(d.vpW)
 	m.viewport.SetHeight(d.vpH)
 	m.refreshBody()
-	if m.state == stateSummary {
-		cursor := m.summaryTable.Cursor()
-		m.summaryTable = m.makeSummaryTable()
-		m.summaryTable.SetCursor(cursor)
-	}
 }
 
 type dims struct {
@@ -689,9 +694,27 @@ func (m model) applyRecovery(msg recoveryDoneMsg) model {
 				m.results[i].Phase = phaseReset
 			}
 		}
-		m.summaryTable = m.makeSummaryTable()
+		m.clampQueueCursor()
 	}
 	return m
+}
+
+// moveQueueCursor shifts the queue selection by delta, clamped to the selectable
+// rows.
+func (m *model) moveQueueCursor(delta int) {
+	m.queueCursor += delta
+	m.clampQueueCursor()
+}
+
+// clampQueueCursor keeps the cursor within the selectable rows (0 when empty).
+func (m *model) clampQueueCursor() {
+	n := m.selectableCount()
+	if m.queueCursor >= n {
+		m.queueCursor = n - 1
+	}
+	if m.queueCursor < 0 {
+		m.queueCursor = 0
+	}
 }
 
 func (m *model) finishTicket(r console.TicketResult) {
@@ -989,6 +1012,12 @@ func modelTag(fields map[string]any) string {
 
 func shortModel(model string) string {
 	return strings.TrimPrefix(model, "claude-")
+}
+
+// spinnerGlyph is the spinner's current frame stripped of styling, for animating
+// a live row in the shared queue renderer from either the dash or the app shell.
+func spinnerGlyph(s spinner.Model) string {
+	return strings.TrimSpace(ansi.Strip(s.View()))
 }
 
 func strField(f map[string]any, k string) string {

@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/spinner"
-	"charm.land/bubbles/v2/table"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 
@@ -128,18 +128,23 @@ func (r ResumeTarget) Line() string {
 	return s
 }
 
-// StatusRow is one ticket's saved state, rendered in the in-TUI status table.
+// StatusRow is one ticket's saved state, rendered in the attention queue. Branch
+// and FailureReason back the rail's recovery verbs (checkout / reason reveal);
+// Updated dates the row so the rail can show its age.
 type StatusRow struct {
-	ID     string
-	Title  string
-	Phase  string
-	PRURL  string
-	Tokens int
-	Cost   float64
+	ID            string
+	Title         string
+	Phase         string
+	PRURL         string
+	Branch        string
+	FailureReason string
+	Tokens        int
+	Cost          float64
 	// CostMetered is false when some phase logged tokens but no per-call dollar
 	// cost (a kimi/codex subscription call), so Cost is a lower bound shown as
 	// "n/a"/"+" rather than a measured "$0".
 	CostMetered bool
+	Updated     time.Time
 }
 
 type appView int
@@ -196,6 +201,13 @@ type (
 		cleared []string
 		err     error
 	}
+	// statusActionMsg carries the outcome of a Status-screen recovery verb (b/x):
+	// note is the line to surface, and a successful reset drops the checkpoint so
+	// the reloaded rows reflect it.
+	statusActionMsg struct {
+		note string
+		err  error
+	}
 )
 
 type appModel struct {
@@ -215,15 +227,17 @@ type appModel struct {
 	subReturn  appView
 	info       MenuInfo
 
-	status       table.Model
-	reset        textinput.Model
-	spin         spinner.Model
-	busy         bool
-	result       string
-	errMsg       string
-	statusBusy   bool
-	statusNote   string
-	statusCancel context.CancelFunc
+	statusRows      []QueueRow
+	statusCursor    int
+	statusConfirmID string
+	reset           textinput.Model
+	spin            spinner.Model
+	busy            bool
+	result          string
+	errMsg          string
+	statusBusy      bool
+	statusNote      string
+	statusCancel    context.CancelFunc
 
 	logs logsModel
 
@@ -322,11 +336,6 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runOnce, _ = m.runOnce.Update(msg)
 		m.settings, _ = m.settings.Update(msg)
 		m.logs, _ = m.logs.Update(msg, m.actions.LogContent)
-		if m.view == viewStatus {
-			cursor := m.status.Cursor()
-			m.status = m.buildStatusTable()
-			m.status.SetCursor(cursor)
-		}
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -375,7 +384,14 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			m.statusNote = fmt.Sprintf("✓ cleared %d stale checkpoint(s): %s", len(msg.cleared), strings.Join(msg.cleared, ", "))
 		}
-		m.status = m.buildStatusTable()
+		m = m.loadStatusRows()
+		return m, nil
+
+	case statusActionMsg:
+		m.statusNote = msg.note
+		if m.view == viewStatus {
+			m = m.loadStatusRows()
+		}
 		return m, nil
 
 	case spinner.TickMsg:
@@ -397,8 +413,6 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.onboard.Done() {
 			m = m.toMenu()
 		}
-	case viewStatus:
-		m.status, cmd = m.status.Update(msg)
 	case viewLogs:
 		m.logs, cmd = m.logs.Update(msg, m.actions.LogContent)
 	case viewReset:
@@ -532,30 +546,18 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case viewStatus:
-		if isBack(msg) {
-			if m.statusCancel != nil {
-				m.statusCancel()
-				m.statusCancel = nil
-			}
-			m.statusBusy = false
-			return m.toMenu(), nil
-		}
-		if m.statusBusy {
-			return m, nil
-		}
-		if msg.String() == "r" {
-			ctx, cancel := context.WithCancel(m.baseCtx)
-			m.statusCancel = cancel
-			m.statusBusy = true
-			m.statusNote = ""
-			return m, tea.Batch(m.spin.Tick, m.reconcileCmd(ctx))
-		}
-		var cmd tea.Cmd
-		m.status, cmd = m.status.Update(msg)
-		return m, cmd
+		return m.handleStatusKey(msg)
 
 	case viewLogs:
 		if isBack(msg) {
+			switch m.subReturn {
+			case viewRunning:
+				m.view = viewRunning
+				return m, nil
+			case viewStatus:
+				m.view = viewStatus
+				return m, nil
+			}
 			return m.toMenu(), nil
 		}
 		var cmd tea.Cmd
@@ -615,7 +617,7 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case viewRunning:
 		if m.dash.done() {
-			return m.handleSummaryKey(msg)
+			return m.handleQueueKey(msg, false)
 		}
 
 		if msg.String() == "q" || msg.String() == "ctrl+c" {
@@ -667,7 +669,9 @@ func (m appModel) selectAction(a menuAction) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case actStatus:
-		m.status = m.buildStatusTable()
+		m.statusCursor = 0
+		m.statusConfirmID = ""
+		m = m.loadStatusRows()
 		m.statusBusy = false
 		m.statusNote = ""
 		m.view = viewStatus
@@ -730,11 +734,12 @@ func (m appModel) runLoopCmd(ctx context.Context, epic string) tea.Cmd {
 	}
 }
 
-// handleSummaryKey drives the recap screen's recovery keys: r resumes the selected
-// ticket, b checks out its branch, x resets it (guarded by a two-key confirm).
-// Navigation and "o open PR" stay delegated to the dash; q/esc return to the
-// menu. Recovery keys appear only for rows where they apply.
-func (m appModel) handleSummaryKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+// handleQueueKey drives the recovery verbs for the dash-backed attention queue —
+// the session recap and, when live, the running rail. It acts on the selected
+// row: o open PR, l jump to logs, r resume, b checkout branch, x reset (two-key
+// confirm). live withholds the tree/loop-mutating verbs (queueVerbs) so mid-run
+// actions can't disturb the running ticket; navigation and back stay uniform.
+func (m appModel) handleQueueKey(msg tea.KeyPressMsg, live bool) (tea.Model, tea.Cmd) {
 	if id := m.dash.pendingResetID(); id != "" {
 		if msg.String() == "x" || msg.String() == "y" {
 			m.dash = m.dash.clearResetConfirm()
@@ -744,23 +749,118 @@ func (m appModel) handleSummaryKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	sel, hasSel := m.dash.selectedResult()
+	sel, hasSel := m.dash.selectedRow()
+	open, logs, resume, branch, reset := queueVerbs(sel, live)
 	switch {
-	case msg.String() == "o":
-		m.dash = applyDash(m.dash, msg)
-		return m, nil
-	case msg.String() == "r" && hasSel && recoverable(sel):
+	case msg.String() == "o" && hasSel && open:
+		return m, m.dash.openSelectedPR()
+	case msg.String() == "l" && hasSel && logs:
+		return m.openLogsFor(sel.ID)
+	case msg.String() == "r" && hasSel && resume:
 		return m.startRunTicket(sel.ID, "")
-	case msg.String() == "b" && hasSel && sel.Branch != "":
+	case msg.String() == "b" && hasSel && branch:
 		return m, m.checkoutFromSummaryCmd(m.baseCtx, sel.ID)
-	case msg.String() == "x" && hasSel && recoverable(sel):
+	case msg.String() == "x" && hasSel && reset:
 		m.dash = m.dash.askResetConfirm(sel.ID)
 		return m, nil
-	case isBack(msg):
+	case isBack(msg) && !live:
 		return m.toMenu(), nil
 	default:
 		m.dash = applyDash(m.dash, msg)
 		return m, nil
+	}
+}
+
+// handleStatusKey drives the Status browse screen, which renders the same
+// attention queue as the rail and recap. R reconciles against the tracker;
+// o/l/r/b/x act on the selected checkpoint with the recap's semantics (the
+// screen is never mid-run, so the full recovery set applies). A pending reset is
+// guarded by the two-key confirm.
+func (m appModel) handleStatusKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.statusConfirmID != "" {
+		id := m.statusConfirmID
+		m.statusConfirmID = ""
+		if msg.String() == "x" || msg.String() == "y" {
+			return m, m.statusResetCmd(m.baseCtx, id)
+		}
+		return m, nil
+	}
+	if m.statusBusy {
+		if isBack(msg) {
+			if m.statusCancel != nil {
+				m.statusCancel()
+				m.statusCancel = nil
+			}
+			m.statusBusy = false
+		}
+		return m, nil
+	}
+	if isBack(msg) {
+		return m.toMenu(), nil
+	}
+
+	sel, hasSel := m.selectedStatusRow()
+	open, logs, resume, branch, reset := queueVerbs(sel, false)
+	switch {
+	case msg.String() == "up" || msg.String() == "k":
+		m.moveStatusCursor(-1)
+		return m, nil
+	case msg.String() == "down" || msg.String() == "j":
+		m.moveStatusCursor(1)
+		return m, nil
+	case msg.String() == "R":
+		ctx, cancel := context.WithCancel(m.baseCtx)
+		m.statusCancel = cancel
+		m.statusBusy = true
+		m.statusNote = ""
+		return m, tea.Batch(m.spin.Tick, m.reconcileCmd(ctx))
+	case msg.String() == "o" && hasSel && open:
+		return m, openURLCmd(sel.PRURL)
+	case msg.String() == "l" && hasSel && logs:
+		return m.openLogsFor(sel.ID)
+	case msg.String() == "r" && hasSel && resume:
+		return m.startRunTicket(sel.ID, "")
+	case msg.String() == "b" && hasSel && branch:
+		return m, m.statusCheckoutCmd(m.baseCtx, sel.ID)
+	case msg.String() == "x" && hasSel && reset:
+		m.statusConfirmID = sel.ID
+		m.statusNote = ""
+		return m, nil
+	}
+	return m, nil
+}
+
+// moveStatusCursor shifts the Status selection by delta, clamped to the
+// selectable rows.
+func (m *appModel) moveStatusCursor(delta int) {
+	active, _ := partitionQueue(m.statusRows)
+	m.statusCursor += delta
+	if m.statusCursor >= len(active) {
+		m.statusCursor = len(active) - 1
+	}
+	if m.statusCursor < 0 {
+		m.statusCursor = 0
+	}
+}
+
+func (m appModel) statusResetCmd(ctx context.Context, id string) tea.Cmd {
+	actions := m.actions
+	return func() tea.Msg {
+		if err := actions.Reset(ctx, id); err != nil {
+			return statusActionMsg{note: "✗ reset failed: " + err.Error(), err: err}
+		}
+		return statusActionMsg{note: "✓ reset " + id + " — it can be picked again"}
+	}
+}
+
+func (m appModel) statusCheckoutCmd(ctx context.Context, id string) tea.Cmd {
+	actions := m.actions
+	return func() tea.Msg {
+		branch, err := actions.CheckoutBranch(ctx, id)
+		if err != nil {
+			return statusActionMsg{note: "✗ checkout failed: " + err.Error(), err: err}
+		}
+		return statusActionMsg{note: "✓ checked out " + branch + " — your WIP is here when you exit trau"}
 	}
 }
 
@@ -854,14 +954,20 @@ func (m appModel) renderScreen() string {
 	case viewRunning:
 		return m.dash.render()
 	case viewStatus:
-		body := m.status.View()
+		queueW := m.width - 8
+		if queueW < 24 {
+			queueW = 24
+		}
+		bodyH := cardBodyBudget(m.height, 2) // title + a note/spinner row
+		body := renderQueue(m.styles, spinnerGlyph(m.spin), m.statusRows, m.statusCursor, queueW, bodyH)
 		switch {
 		case m.statusBusy:
 			body += "\n\n" + m.spin.View() + " reconciling against the tracker…"
 		case m.statusNote != "":
-			body += "\n\n" + m.statusNote
+			body += "\n\n" + m.styles.Subtle.Render(m.statusNote)
 		}
-		hint := statusHelp().footer()
+		sel, hasSel := m.selectedStatusRow()
+		hint := queueHint(sel, hasSel, false, m.statusConfirmID)
 		if m.statusBusy {
 			hint = "reconciling… · esc/q back"
 		}
@@ -1008,54 +1114,48 @@ func (m appModel) renderReset() string {
 	return m.renderCard("Reset ticket", body, hint)
 }
 
-func (m appModel) buildStatusTable() table.Model {
-	rows := m.actions.StatusRows()
-	idW, phaseW, tokW, costW := 9, 12, 10, 9
-	titleW := m.width - (idW + phaseW + tokW + costW) - 18
-	if titleW < 12 {
-		titleW = 12
-	}
-	cols := []table.Column{
-		{Title: "ID", Width: idW},
-		{Title: "Title", Width: titleW},
-		{Title: "Phase", Width: phaseW},
-		{Title: "Tokens", Width: tokW},
-		{Title: "Cost", Width: costW},
-	}
-	var trows []table.Row
-	for _, r := range rows {
-		phase := r.Phase
-		if phase == "" {
-			phase = "?"
+// loadStatusRows projects the saved checkpoints onto the shared queue model for
+// the Status browse screen, clamping the cursor into the new selectable set.
+// Age is time since each ticket's last checkpoint update.
+func (m appModel) loadStatusRows() appModel {
+	src := m.actions.StatusRows()
+	rows := make([]QueueRow, 0, len(src))
+	for _, r := range src {
+		var age time.Duration
+		if !r.Updated.IsZero() {
+			age = time.Since(r.Updated)
 		}
-		trows = append(trows, table.Row{
-			r.ID,
-			truncate(firstNonEmpty(r.Title, "—"), titleW),
-			phase,
-			fmtTokens(r.Tokens),
-			fmtCostCell(r.Cost, r.CostMetered),
+		rows = append(rows, QueueRow{
+			ID:            r.ID,
+			Title:         r.Title,
+			Phase:         r.Phase,
+			PRURL:         r.PRURL,
+			Branch:        r.Branch,
+			FailureReason: r.FailureReason,
+			Tokens:        r.Tokens,
+			Cost:          r.Cost,
+			CostMetered:   r.CostMetered,
+			Age:           age,
 		})
 	}
-	h := len(trows) + 1
-	if h < 2 {
-		h = 2
+	m.statusRows = rows
+	active, _ := partitionQueue(rows)
+	if m.statusCursor >= len(active) {
+		m.statusCursor = len(active) - 1
 	}
-	if h > 16 {
-		h = 16
+	if m.statusCursor < 0 {
+		m.statusCursor = 0
 	}
-	t := table.New(
-		table.WithColumns(cols),
-		table.WithRows(trows),
-		table.WithFocused(true),
-		table.WithHeight(h),
-	)
-	st := table.DefaultStyles()
-	st.Header = st.Header.Bold(true).Foreground(theme.Subtle).
-		BorderBottom(true).BorderForeground(theme.Border)
-	st.Selected = st.Selected.Foreground(theme.Ink).
-		Background(theme.Brand).Bold(false)
-	t.SetStyles(st)
-	return t
+	return m
+}
+
+// selectedStatusRow returns the queue row under the Status cursor.
+func (m appModel) selectedStatusRow() (QueueRow, bool) {
+	active, _ := partitionQueue(m.statusRows)
+	if m.statusCursor < 0 || m.statusCursor >= len(active) {
+		return QueueRow{}, false
+	}
+	return active[m.statusCursor], true
 }
 
 // isBack reports whether msg backs out one level under the shared key contract:
@@ -1137,8 +1237,15 @@ func moreHelp() screenHelp {
 
 func statusHelp() screenHelp {
 	return screenHelp{title: "Status", columns: []helpColumn{
-		group("Navigate", fk("↑↓", "scroll")),
-		group("Actions", fk("r", "reconcile"), fk("esc/q", "back")),
+		group("Navigate", fk("↑↓", "move"), xk("j/k", "move")),
+		group("Recover",
+			fk("o", "open PR"),
+			fk("l", "jump to logs"),
+			fk("r", "resume"),
+			fk("b", "checkout branch"),
+			fk("x", "reset"),
+		),
+		group("Session", fk("R", "reconcile"), fk("esc/q", "back")),
 	}}
 }
 
