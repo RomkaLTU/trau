@@ -201,7 +201,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	if note := tui.SetTheme(cfg.Theme, cfg.ThemeColors); note != "" {
-		fmt.Fprintln(stderr, note)
+		_, _ = fmt.Fprintln(stderr, note)
 	}
 
 	if cfg.RunsDir == ".trau/runs" {
