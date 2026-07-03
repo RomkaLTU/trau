@@ -55,8 +55,9 @@ func TestApplyEventAgentStartTracksPath(t *testing.T) {
 	}
 }
 
-// TestWatchKeyTogglesStream checks w opens a live screen when a transcript is
-// known and tears it down on the second press, never touching the loop.
+// TestWatchKeyTogglesStream checks w expands the full live screen when a
+// transcript is known and collapses it on the second press. The tail emulator
+// stays alive across the collapse so the span pane keeps showing live output.
 func TestWatchKeyTogglesStream(t *testing.T) {
 	m := initialModel(nil)
 	m.streamPath = "/runs/1-build.pty.log"
@@ -64,11 +65,14 @@ func TestWatchKeyTogglesStream(t *testing.T) {
 
 	m, _, handled := m.handleKey(w)
 	if !handled || !m.streaming || m.stream == nil {
-		t.Fatalf("first w must open the live screen (handled=%v streaming=%v stream=%v)", handled, m.streaming, m.stream != nil)
+		t.Fatalf("first w must expand the live screen (handled=%v streaming=%v stream=%v)", handled, m.streaming, m.stream != nil)
 	}
 	m, _, handled = m.handleKey(w)
-	if !handled || m.streaming || m.stream != nil {
-		t.Fatalf("second w must close it (handled=%v streaming=%v stream=%v)", handled, m.streaming, m.stream != nil)
+	if !handled || m.streaming {
+		t.Fatalf("second w must collapse the live view (handled=%v streaming=%v)", handled, m.streaming)
+	}
+	if m.stream == nil {
+		t.Fatal("collapsing the w view must keep the tail emulator alive for the span pane")
 	}
 }
 
