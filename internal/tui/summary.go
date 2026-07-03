@@ -2,12 +2,10 @@ package tui
 
 import (
 	"fmt"
-	"os/exec"
-	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
-	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/RomkaLTU/trau/internal/console"
@@ -62,59 +60,115 @@ func (m model) enterSummary(s console.SessionSummary) (tea.Model, tea.Cmd) {
 	m.state = stateSummary
 	m.summary = s
 	m.banner = ""
-	m.summaryTable = m.makeSummaryTable()
+	m.queueCursor = 0
 	return m, nil
 }
 
-// makeSummaryTable builds the per-ticket results table sized to the window.
-func (m model) makeSummaryTable() table.Model {
-	idW, resW, timeW, costW := 8, 14, 7, 9
-
-	titleW := m.width - (idW + resW + timeW + costW) - 18
-	if titleW < 12 {
-		titleW = 12
-	}
-	cols := []table.Column{
-		{Title: "ID", Width: idW},
-		{Title: "Title", Width: titleW},
-		{Title: "Result", Width: resW},
-		{Title: "Time", Width: timeW},
-		{Title: "Cost", Width: costW},
-	}
-	rows := make([]table.Row, 0, len(m.results))
+// resultRows projects the session's ticket results onto the shared queue model,
+// so the recap renders through the same attention-sorted component as the live
+// rail and the Status screen. Age is the measured per-ticket elapsed.
+func (m model) resultRows() []QueueRow {
+	rows := make([]QueueRow, 0, len(m.results))
 	for _, r := range m.results {
-		label, kind := statusLabel(r.Phase)
-		rows = append(rows, table.Row{
-			r.ID,
-			truncate(firstNonEmpty(r.Title, "—"), titleW),
-			statusGlyph(kind) + " " + label,
-			fmtDur(r.Elapsed),
-			fmtCostCell(r.Cost, r.CostMetered),
+		rows = append(rows, QueueRow{
+			ID:            r.ID,
+			Title:         r.Title,
+			Phase:         r.Phase,
+			PRURL:         r.PRURL,
+			Branch:        r.Branch,
+			FailureReason: r.FailureReason,
+			Tokens:        r.Tokens,
+			Cost:          r.Cost,
+			CostMetered:   r.CostMetered,
+			Age:           r.Elapsed,
 		})
 	}
-	h := len(rows) + 1
-	if h > 14 {
-		h = 14
-	}
-	if h < 2 {
-		h = 2
-	}
-	t := table.New(
-		table.WithColumns(cols),
-		table.WithRows(rows),
-		table.WithFocused(true),
-		table.WithHeight(h),
-	)
-	st := table.DefaultStyles()
-	st.Header = st.Header.Bold(true).Foreground(theme.Subtle).
-		BorderBottom(true).BorderForeground(theme.Border)
-	st.Selected = st.Selected.Foreground(theme.Ink).
-		Background(theme.Brand).Bold(false)
-	t.SetStyles(st)
-	return t
+	return rows
 }
 
-// renderSummary draws the centered completion card with totals + the table.
+// queueRows is the row set the cursor and renderer operate on: the recap draws
+// from the session results, the live rail from the store-backed snapshot with the
+// active ticket overlaid live.
+func (m model) queueRows() []QueueRow {
+	if m.state == stateSummary {
+		return m.resultRows()
+	}
+	return m.liveQueueRows()
+}
+
+// liveQueueRows overlays the running ticket onto the store snapshot: its row is
+// marked Live (so it animates and floats up its bucket), shows its precise active
+// phase, and ages from when it started. The active ticket is injected if the
+// store has no checkpoint for it yet, so the rail always shows what's running.
+func (m model) liveQueueRows() []QueueRow {
+	rows := make([]QueueRow, len(m.queue))
+	copy(rows, m.queue)
+	if m.currentTicket == "" {
+		return rows
+	}
+	found := false
+	for i := range rows {
+		if rows[i].ID != m.currentTicket {
+			continue
+		}
+		found = true
+		rows[i].Live = true
+		rows[i].FailureReason = "" // the active ticket is running, not failed
+		if d := m.activePhase(); d != "" {
+			rows[i].Desc = d
+		}
+		if !m.ticketStarted.IsZero() {
+			rows[i].Age = time.Since(m.ticketStarted)
+		}
+	}
+	if !found {
+		var age time.Duration
+		if !m.ticketStarted.IsZero() {
+			age = time.Since(m.ticketStarted)
+		}
+		rows = append(rows, QueueRow{
+			ID:    m.currentTicket,
+			Title: m.currentTitle,
+			Phase: state.Building,
+			Live:  true,
+			Desc:  m.activePhase(),
+			Age:   age,
+		})
+	}
+	return rows
+}
+
+// foldDone reports whether merged/reset rows fold away: they do on the live rail
+// (focus on active work) but not on the recap, where opening a merged ticket's PR
+// still matters.
+func (m model) foldDone() bool { return m.state != stateSummary }
+
+// selectableCount is the number of rows the queue cursor can land on (the
+// non-folded rows), shared by the recap and the live rail.
+func (m model) selectableCount() int {
+	active, _ := partitionQueue(m.queueRows(), m.foldDone())
+	return len(active)
+}
+
+// selectedRow returns the queue row under the cursor, or false when the queue is
+// empty. The row set is the recap results, or the live rail snapshot while a run
+// is in progress.
+func (m model) selectedRow() (QueueRow, bool) {
+	active, _ := partitionQueue(m.queueRows(), m.foldDone())
+	if m.queueCursor < 0 || m.queueCursor >= len(active) {
+		return QueueRow{}, false
+	}
+	return active[m.queueCursor], true
+}
+
+// spinFrame is the current spinner glyph, stripped of styling, for animating the
+// live row in the shared queue renderer.
+func (m model) spinFrame() string {
+	return spinnerGlyph(m.spin)
+}
+
+// renderSummary draws the centered completion card with totals + the attention
+// queue rendered through the shared component.
 func (m model) renderSummary() string {
 	title := m.styles.SummaryTitle.Render("trau · session complete")
 
@@ -140,10 +194,17 @@ func (m model) renderSummary() string {
 
 	body := title + "\n" + head
 	if len(m.results) > 0 {
-		body += "\n\n" + m.summaryTable.View()
-		if reason := m.selectedFailureReason(); reason != "" {
-			body += "\n" + m.styles.Subtle.Render(reason)
+		queueW := m.width - 8
+		if queueW < 24 {
+			queueW = 24
 		}
+		// Leave room for the card chrome, title, totals, and note so the queue
+		// (with always-shown failure reasons) never overflows a short terminal.
+		queueH := m.height - 12
+		if queueH < 4 {
+			queueH = 4
+		}
+		body += "\n\n" + renderQueue(m.styles, m.spinFrame(), m.resultRows(), m.queueCursor, queueW, queueH, false)
 	}
 	if m.recoveryNote != "" {
 		body += "\n\n" + m.styles.Subtle.Render(m.recoveryNote)
@@ -151,26 +212,15 @@ func (m model) renderSummary() string {
 	return cardView(m.styles, m.width, m.height, body, m.summaryHint())
 }
 
-// summaryHint builds the key legend under the recap. It surfaces recovery keys
-// (resume / checkout branch / reset) only for the selected row when they apply,
-// and switches to a confirm prompt while a destructive reset is pending.
+// summaryHint is the recap's key legend, built from the shared queue verbs. The
+// recap is not "live", so the full recovery set (resume/checkout) is offered; the
+// closing key is spelled esc/q here rather than the rail's reconcile.
 func (m model) summaryHint() string {
 	if m.confirmResetID != "" {
 		return "⚠ reset " + m.confirmResetID + "? x again to confirm · esc cancel"
 	}
-	parts := []string{"↑↓ move"}
-	if r, ok := m.selectedResult(); ok {
-		if r.PRURL != "" {
-			parts = append(parts, "o open PR")
-		}
-		if recoverable(r) {
-			parts = append(parts, "r resume")
-			if r.Branch != "" {
-				parts = append(parts, "b branch")
-			}
-			parts = append(parts, "x reset")
-		}
-	}
+	sel, hasSel := m.selectedRow()
+	parts := append([]string{"↑↓ move"}, queueVerbHints(sel, hasSel, false)...)
 	parts = append(parts, "esc/q close")
 	return strings.Join(parts, " · ")
 }
@@ -179,36 +229,6 @@ func (m model) summaryHint() string {
 // is neither merged nor already reset, so resume/reset/checkout make sense.
 func recoverable(r console.TicketResult) bool {
 	return r.Phase != state.Merged && r.Phase != phaseReset
-}
-
-// selectedResult returns the ticket result under the summary table cursor.
-func (m model) selectedResult() (console.TicketResult, bool) {
-	idx := m.summaryTable.Cursor()
-	if idx < 0 || idx >= len(m.results) {
-		return console.TicketResult{}, false
-	}
-	return m.results[idx], true
-}
-
-// selectedFailureReason returns a wrapped "reason: ..." line for the focused
-// row when it carries a failure reason. It keeps the summary card readable by
-// truncating with an ellipsis instead of letting long reasons overflow.
-func (m model) selectedFailureReason() string {
-	r, ok := m.selectedResult()
-	if !ok || r.FailureReason == "" {
-		return ""
-	}
-	prefix := "reason: "
-	reason := r.FailureReason
-	max := m.width - 12
-	if max < 24 {
-		max = 24
-	}
-	text := prefix + reason
-	if len(text) > max {
-		text = text[:max-3] + "..."
-	}
-	return text
 }
 
 // totalsLine summarizes the session: counts by outcome, elapsed, cost, tokens.
@@ -256,19 +276,6 @@ func (m model) totalsLine() string {
 	return strings.Join(parts, " · ")
 }
 
-// fmtCostCell renders a TUI Cost table cell honestly: "$1.23" when fully metered,
-// "n/a" when no per-call dollar cost was measured (kimi/codex subscription
-// phases), and "$1.23+" when the figure is an unmetered lower bound.
-func fmtCostCell(cost float64, metered bool) string {
-	if metered {
-		return "$" + strconv.FormatFloat(cost, 'f', 2, 64)
-	}
-	if cost == 0 {
-		return "n/a"
-	}
-	return "$" + strconv.FormatFloat(cost, 'f', 2, 64) + "+"
-}
-
 // costSummaryTUI renders the closing session total: "~$X est" when metered,
 // "cost n/a" when nothing was measured, "~$X+ est" for an unmetered lower bound.
 func costSummaryTUI(cost float64, metered bool) string {
@@ -283,33 +290,11 @@ func costSummaryTUI(cost float64, metered bool) string {
 
 // openSelectedPR opens the focused ticket's PR in the browser, if it has one.
 func (m model) openSelectedPR() tea.Cmd {
-	idx := m.summaryTable.Cursor()
-	if idx < 0 || idx >= len(m.results) {
+	sel, ok := m.selectedRow()
+	if !ok || sel.PRURL == "" {
 		return nil
 	}
-	url := m.results[idx].PRURL
-	if url == "" {
-		return nil
-	}
-	return func() tea.Msg {
-		_ = openURL(url)
-		return nil
-	}
-}
-
-// openURL launches the OS browser/handler for url. Best-effort: errors are
-// swallowed (the TUI shouldn't crash because a browser is missing).
-func openURL(url string) error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	default:
-		cmd = exec.Command("xdg-open", url)
-	}
-	return cmd.Start()
+	return openURLCmd(sel.PRURL)
 }
 
 // fmtTokens renders a token count compactly: 705 → "705", 11137 → "11.1k".

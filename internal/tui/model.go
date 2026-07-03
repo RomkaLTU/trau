@@ -11,7 +11,6 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
-	"charm.land/bubbles/v2/table"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -32,6 +31,13 @@ const (
 	headerH   = 2  // brand row + rule
 	footerH   = 1
 	panelGap  = 1 // vertical blank line between stacked regions
+
+	// The running body splits into the span pane (left) and the queue rail
+	// (right). The rail takes ~a third of the width, clamped, and is dropped
+	// below railShowMin so a narrow terminal keeps the live tail full-width.
+	railWMin    = 30
+	railWMax    = 44
+	railShowMin = 80
 )
 
 type viewState int
@@ -60,23 +66,39 @@ func defaultKeyMap() keyMap {
 	}
 }
 
-// runningHelp is the live dashboard's key legend — the single source for its
-// footer and its ? overlay.
+// runningHelp is the live dashboard's key legend (the ? overlay). The footer
+// itself is the dynamic runningHint, since the applicable recovery verbs depend
+// on the selected rail row.
 func (m model) runningHelp() screenHelp {
 	return screenHelp{title: "Run", columns: []helpColumn{
-		group("Pipeline",
+		group("Queue",
+			fk("↑↓", "select ticket"),
+			fk("o", "open PR"),
+			fk("l", "jump to logs"),
+		),
+		group("Live tail",
 			fk("w", "watch agent"),
 			fk("f", "follow tail"),
-			xk("↑↓", "scroll"),
-			xk("pgup/pgdn", "page"),
+			xk("pgup/pgdn", "scroll"),
 			xk("esc", "exit live view"),
 		),
-		group("Ticket", fk("o", "open PR")),
 		group("Session",
 			fk("q", "quit/stop"),
 			xk("ctrl+c", "force quit"),
 		),
 	}}
+}
+
+// runningHint is the live footer legend: the queue verbs that apply to the
+// selected rail row, plus watch and stop. A pending reset shows the confirm.
+func (m model) runningHint() string {
+	if m.streaming {
+		return "esc exit watch · f follow · q stop"
+	}
+	sel, hasSel := m.selectedRow()
+	parts := append([]string{"↑↓ select"}, queueVerbHints(sel, hasSel, true)...)
+	parts = append(parts, "w watch", "q stop")
+	return strings.Join(parts, " · ")
 }
 
 // summaryHelp is the recap screen's key legend. The recovery keys (resume,
@@ -87,6 +109,7 @@ func (m model) summaryHelp() screenHelp {
 		group("Navigate", fk("↑↓", "move")),
 		group("Recover",
 			fk("o", "open PR"),
+			fk("l", "jump to logs"),
 			fk("r", "resume ticket"),
 			fk("b", "checkout branch"),
 			fk("x", "reset ticket"),
@@ -114,6 +137,7 @@ type model struct {
 
 	currentTicket string
 	currentTitle  string
+	ticketStarted time.Time
 	ticketNum     int
 	plannedTotal  int    // epic sub-issue count; 0 in queue mode
 	binding       string // integration base branch, shown as run context
@@ -144,11 +168,18 @@ type model struct {
 
 	results []console.TicketResult
 
-	summary      console.SessionSummary
-	summaryTable table.Model
-	// recoveryNote is a transient line shown under the summary card after a
-	// recovery key (b/x) acts; confirmResetID, when non-empty, is the ticket
-	// awaiting a second keypress to confirm a destructive reset.
+	// queue is the live attention-rail snapshot of every tracked ticket, refreshed
+	// from the store as tickets start and finish. The recap draws from results
+	// instead (see queueRows); the two feed the same shared component.
+	queue []QueueRow
+
+	summary console.SessionSummary
+	// queueCursor selects a row in the attention queue (the recap, and the live
+	// rail). It indexes the selectable (non-folded) rows in attention order.
+	queueCursor int
+	// recoveryNote is a transient line shown under the queue after a recovery key
+	// (b/x) acts; confirmResetID, when non-empty, is the ticket awaiting a second
+	// keypress to confirm a destructive reset.
 	recoveryNote   string
 	confirmResetID string
 }
@@ -302,10 +333,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshBody()
 	}
 
-	if m.state == stateSummary {
-		m.summaryTable, cmd = m.summaryTable.Update(msg)
-		cmds = append(cmds, cmd)
-	} else {
+	if m.state != stateSummary {
 		m.viewport, cmd = m.viewport.Update(msg)
 		cmds = append(cmds, cmd)
 		m.following = m.viewport.AtBottom()
@@ -321,6 +349,12 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 			return m, tea.Quit, true
 		case key.Matches(msg, m.keys.Open):
 			return m, m.openSelectedPR(), true
+		case msg.String() == "up" || msg.String() == "k":
+			m.moveQueueCursor(-1)
+			return m, nil, true
+		case msg.String() == "down" || msg.String() == "j":
+			m.moveQueueCursor(1)
+			return m, nil, true
 		}
 		return m, nil, false
 	}
@@ -392,20 +426,16 @@ func (m *model) relayout() {
 	m.viewport.SetWidth(d.vpW)
 	m.viewport.SetHeight(d.vpH)
 	m.refreshBody()
-	if m.state == stateSummary {
-		cursor := m.summaryTable.Cursor()
-		m.summaryTable = m.makeSummaryTable()
-		m.summaryTable.SetCursor(cursor)
-	}
 }
 
 type dims struct {
-	bodyH, bodyW, vpW, vpH int
+	bodyH, bodyW, spanW, railW, vpW, vpH int
 }
 
-// dims derives the running view's regions. The span pane spans the full width now
-// (the queue rail takes the right side in a later slice). Vertical budget, top to
-// bottom: header(2) + gap + body(bodyH) + gap + usage HUD(hudH) + gap + footer(fh).
+// dims derives the running view's regions. The body row splits into the span pane
+// (spanW) and the queue rail (railW, 0 when the terminal is too narrow to spare
+// it). Vertical budget, top to bottom: header(2) + gap + body(bodyH) + gap +
+// usage HUD(hudH) + gap + footer(fh).
 func (m model) dims() dims {
 	bodyH := m.height - headerH - hudH - footerH - 3*panelGap
 	if bodyH < 6 {
@@ -415,7 +445,19 @@ func (m model) dims() dims {
 	if bodyW < 24 {
 		bodyW = 24
 	}
-	vpW := bodyW - 4 // pane borders + a padding cell each side
+	railW := 0
+	spanW := bodyW
+	if bodyW >= railShowMin {
+		railW = bodyW * 34 / 100
+		if railW < railWMin {
+			railW = railWMin
+		}
+		if railW > railWMax {
+			railW = railWMax
+		}
+		spanW = bodyW - railW - 1 // 1-col gap between the panes
+	}
+	vpW := spanW - 4 // pane borders + a padding cell each side
 	if vpW < 12 {
 		vpW = 12
 	}
@@ -423,7 +465,7 @@ func (m model) dims() dims {
 	if vpH < 3 {
 		vpH = 3
 	}
-	return dims{bodyH: bodyH, bodyW: bodyW, vpW: vpW, vpH: vpH}
+	return dims{bodyH: bodyH, bodyW: bodyW, spanW: spanW, railW: railW, vpW: vpW, vpH: vpH}
 }
 
 func LiveAgentSize(termW, termH int) (cols, rows int) {
@@ -516,18 +558,21 @@ func readTail(path string, offset int64) streamDataMsg {
 	return streamDataMsg{path: path, offset: offset + int64(len(data)), data: data}
 }
 
-// renderStream is the live pane body, or a placeholder when no transcript is active.
+// renderStream is the live pane body, or a placeholder when no transcript is
+// active. Watch mode owns the full body, so lines fit the full-width inner box
+// (bodyW-4), not the rail-reduced span width.
 func (m model) renderStream(d dims) string {
 	if m.stream == nil {
 		return m.styles.Subtle.Render("live agent view") + "\n" +
 			m.styles.Help.Render("waiting for the next agent phase…")
 	}
+	w, h := d.bodyW-4, d.bodyH-2
 	lines := m.stream.Lines()
-	if d.vpH > 0 && len(lines) > d.vpH {
-		lines = lines[len(lines)-d.vpH:]
+	if h > 0 && len(lines) > h {
+		lines = lines[len(lines)-h:]
 	}
 	for i := range lines {
-		lines[i] = ansi.Truncate(lines[i], d.vpW, "")
+		lines[i] = ansi.Truncate(lines[i], w, "")
 	}
 	return strings.Join(lines, "\n")
 }
@@ -647,6 +692,7 @@ func (m *model) applyEvent(ev event.Event) {
 func (m *model) startTicket(id string) {
 	m.currentTicket = id
 	m.currentTitle = ""
+	m.ticketStarted = time.Now()
 	m.ticketNum++
 	m.paused = false
 	m.prNum = 0
@@ -689,9 +735,42 @@ func (m model) applyRecovery(msg recoveryDoneMsg) model {
 				m.results[i].Phase = phaseReset
 			}
 		}
-		m.summaryTable = m.makeSummaryTable()
+		m.clampQueueCursor()
 	}
 	return m
+}
+
+// moveQueueCursor shifts the queue selection by delta, clamped to the selectable
+// rows.
+func (m *model) moveQueueCursor(delta int) {
+	m.queueCursor += delta
+	m.clampQueueCursor()
+}
+
+// movedQueueCursor is the value-returning form for the app shell, which drives
+// the live rail's selection.
+func (m model) movedQueueCursor(delta int) model {
+	m.moveQueueCursor(delta)
+	return m
+}
+
+// withQueue replaces the live rail snapshot (the app shell refreshes it from the
+// store as tickets start and finish).
+func (m model) withQueue(rows []QueueRow) model {
+	m.queue = rows
+	m.clampQueueCursor()
+	return m
+}
+
+// clampQueueCursor keeps the cursor within the selectable rows (0 when empty).
+func (m *model) clampQueueCursor() {
+	n := m.selectableCount()
+	if m.queueCursor >= n {
+		m.queueCursor = n - 1
+	}
+	if m.queueCursor < 0 {
+		m.queueCursor = 0
+	}
 }
 
 func (m *model) finishTicket(r console.TicketResult) {
@@ -709,6 +788,11 @@ func (m *model) finishTicket(r console.TicketResult) {
 }
 
 func (m model) done() bool { return m.state == stateSummary }
+
+// railVisible reports whether the queue rail is currently drawn — false while
+// watching the full-screen stream or on a terminal too narrow to spare the rail
+// — so the app shell only routes rail keys when there is a rail to act on.
+func (m model) railVisible() bool { return !m.streaming && m.dims().railW > 0 }
 
 func (m model) markStopping() model {
 	m.stopping = true
@@ -739,19 +823,44 @@ func (m model) render() string {
 func (m model) renderRunning() string {
 	d := m.dims()
 
-	title := fmt.Sprintf("Pipeline %d/%d", doneSteps(m.steps), len(m.steps))
-	body := m.viewport.View()
+	// Watch mode takes the whole body for the live agent stream — no rail.
 	if m.streaming {
-		title = "Live · " + m.streamLabel()
-		body = m.renderStream(d)
+		pane := titledPanel(m.styles, "Live · "+m.streamLabel(), m.renderStream(d), d.bodyW, d.bodyH)
+		return m.assembleRunning(pane)
 	}
-	pane := titledPanel(m.styles, title, body, d.bodyW, d.bodyH)
 
+	title := fmt.Sprintf("Pipeline %d/%d", doneSteps(m.steps), len(m.steps))
+	spanPane := titledPanel(m.styles, title, m.viewport.View(), d.spanW, d.bodyH)
+	if d.railW == 0 {
+		return m.assembleRunning(spanPane)
+	}
+	rail := titledPanel(m.styles, m.railTitle(), m.renderRail(d), d.railW, d.bodyH)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, spanPane, " ", rail)
+	return m.assembleRunning(body)
+}
+
+// assembleRunning stacks the run-view regions around the pre-rendered body row.
+func (m model) assembleRunning(body string) string {
 	gap := strings.Repeat("\n", panelGap)
 	return m.renderHeader() + gap +
-		pane + gap +
+		body + gap +
 		m.renderHud(m.width) + gap +
 		m.renderFooter()
+}
+
+// railTitle names the queue rail, tagged with the count of tickets that need a
+// glance (needs-human + in-flight + ready).
+func (m model) railTitle() string {
+	if n := m.selectableCount(); n > 0 {
+		return fmt.Sprintf("Queue · %d", n)
+	}
+	return "Queue"
+}
+
+// renderRail draws the attention queue into the right pane through the shared
+// component, sized to the rail's inner box.
+func (m model) renderRail(d dims) string {
+	return renderQueue(m.styles, m.spinFrame(), m.liveQueueRows(), m.queueCursor, d.railW-4, d.bodyH-2, true)
 }
 
 // renderHeader lays out the run-level context row. The left core and right cluster
@@ -969,7 +1078,7 @@ func (m model) renderFooter() string {
 	if done > 0 {
 		left = m.styles.Footer.Render(fmt.Sprintf("%d merged", done))
 	}
-	return joinEnds(left, m.styles.Help.Render(m.runningHelp().footer()), m.width)
+	return joinEnds(left, m.styles.Help.Render(m.runningHint()), m.width)
 }
 
 func modelTag(fields map[string]any) string {
@@ -989,6 +1098,12 @@ func modelTag(fields map[string]any) string {
 
 func shortModel(model string) string {
 	return strings.TrimPrefix(model, "claude-")
+}
+
+// spinnerGlyph is the spinner's current frame stripped of styling, for animating
+// a live row in the shared queue renderer from either the dash or the app shell.
+func spinnerGlyph(s spinner.Model) string {
+	return strings.TrimSpace(ansi.Strip(s.View()))
 }
 
 func strField(f map[string]any, k string) string {

@@ -10,14 +10,14 @@ import (
 // openURLCmd returns a tea.Cmd that opens url in the user's default browser.
 func openURLCmd(url string) tea.Cmd {
 	return func() tea.Msg {
-		var cmd string
 		switch runtime.GOOS {
 		case "darwin":
-			cmd = "open"
+			_ = exec.Command("open", url).Start()
+		case "windows":
+			_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
 		default:
-			cmd = "xdg-open"
+			_ = exec.Command("xdg-open", url).Start()
 		}
-		_ = exec.Command(cmd, url).Start()
 		return nil
 	}
 }

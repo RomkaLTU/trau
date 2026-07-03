@@ -175,7 +175,6 @@ func TestFootersDeriveFromHelp(t *testing.T) {
 	cases := []struct{ got, want string }{
 		{menuHelp().footer(), "↑↓ move · enter select · q quit"},
 		{moreHelp().footer(), "↑↓ move · enter select · esc/q back"},
-		{statusHelp().footer(), "↑↓ scroll · r reconcile · esc/q back"},
 		{resetHelp().footer(), "enter confirm · esc back"},
 		{leafHelp("Version").footer(), "esc/q back"},
 	}

@@ -1462,14 +1462,18 @@ func (a *appActions) StatusRows() []tui.StatusRow {
 	rows := make([]tui.StatusRow, 0, len(ids))
 	for _, id := range ids {
 		tok, cost, metered := a.sink.Total(id)
+		updated, _ := time.Parse("2006-01-02 15:04:05", a.store.Get(id, "UPDATED"))
 		rows = append(rows, tui.StatusRow{
-			ID:          id,
-			Title:       a.store.Get(id, "TITLE"),
-			Phase:       a.store.Get(id, "PHASE"),
-			PRURL:       a.store.Get(id, "PR_URL"),
-			Tokens:      tok,
-			Cost:        cost,
-			CostMetered: metered,
+			ID:            id,
+			Title:         a.store.Get(id, "TITLE"),
+			Phase:         a.store.Get(id, "PHASE"),
+			PRURL:         a.store.Get(id, "PR_URL"),
+			Branch:        a.store.Get(id, "BRANCH"),
+			FailureReason: a.store.Get(id, "FAILURE_REASON"),
+			Tokens:        tok,
+			Cost:          cost,
+			CostMetered:   metered,
+			Updated:       updated,
 		})
 	}
 	return rows
