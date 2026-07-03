@@ -647,6 +647,13 @@ func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.dash, cmd = applyDashCmd(m.dash, msg)
 		return m, cmd
 	}
+	// The peek preview is modal: while open every key (including q) belongs to it,
+	// so route straight to the dash before the q stop and rail nav below.
+	if m.dash.peeking() {
+		var cmd tea.Cmd
+		m.dash, cmd = applyDashCmd(m.dash, msg)
+		return m, cmd
+	}
 	if msg.String() == "q" {
 		if m.loopCancel != nil {
 			m.loopCancel()
@@ -1272,9 +1279,10 @@ func (m appModel) helpFor() screenHelp {
 	return screenHelp{}
 }
 
-// editing reports whether a free-text field is focused, so ? is typed as a
-// literal instead of opening help. Only genuine free-text entry gates ?;
-// ID/epic/branch fields (where ? is never a valid character) still open help.
+// editing reports whether a dash modal owns input, so the global ? and : overlays
+// stay closed rather than firing over a filter box or the peek preview. For
+// free-text fields ? is also typed as a literal; ID/epic/branch fields (where ? is
+// never valid) still open help.
 func (m appModel) editing() bool {
 	switch m.view {
 	case viewOnboarding:
@@ -1282,7 +1290,7 @@ func (m appModel) editing() bool {
 	case viewSettings:
 		return m.settings.editing()
 	case viewRunning:
-		return m.dash.filterActive()
+		return m.dash.filterActive() || m.dash.peeking()
 	}
 	return false
 }

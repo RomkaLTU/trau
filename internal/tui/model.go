@@ -72,6 +72,8 @@ func (m model) runningHelp() screenHelp {
 	return screenHelp{title: "Run", columns: []helpColumn{
 		group("Queue",
 			fk("↑↓", "select ticket"),
+			fk("space", "peek row"),
+			fk("enter", "attach active / peek"),
 			fk("o", "open PR"),
 			fk("l", "jump to logs"),
 		),
@@ -81,10 +83,10 @@ func (m model) runningHelp() screenHelp {
 			xk("esc", "clear filter"),
 		),
 		group("Live tail",
-			fk("w", "watch agent"),
+			fk("w", "attach agent view"),
 			fk("f", "follow tail"),
 			xk("pgup/pgdn", "scroll"),
-			xk("esc", "exit live view"),
+			xk("esc", "detach live view"),
 		),
 		group("Session",
 			fk("q", "quit/stop"),
@@ -97,18 +99,29 @@ func (m model) runningHelp() screenHelp {
 // selected rail row, plus watch and stop. A pending reset shows the confirm.
 func (m model) runningHint() string {
 	if m.streaming {
-		return "esc exit watch · f follow · q stop"
+		return "esc detach · f follow · q stop"
 	}
 	if m.filtering {
 		return "type to filter · enter apply · esc clear"
 	}
+	if m.peek {
+		hint := "↑↓ next · esc close"
+		if sel, ok := m.selectedRow(); ok && sel.Live {
+			hint = "↑↓ next · enter attach · esc close"
+		}
+		return hint
+	}
 	sel, hasSel := m.selectedRow()
-	parts := append([]string{"↑↓ select"}, queueVerbHints(sel, hasSel, true)...)
+	parts := []string{"↑↓ select", "space peek"}
+	if hasSel && sel.Live {
+		parts = append(parts, "enter attach")
+	}
+	parts = append(parts, queueVerbHints(sel, hasSel, true)...)
 	parts = append(parts, "v "+m.tier.next().short())
 	if m.tier != tierSpans {
 		parts = append(parts, "/ filter")
 	}
-	parts = append(parts, "w watch", "q stop")
+	parts = append(parts, "q stop")
 	return strings.Join(parts, " · ")
 }
 
@@ -186,6 +199,11 @@ type model struct {
 	streamOffset  int64
 	stream        *vterm.Screen
 	streamReading bool
+
+	// peek is the preview overlay (space): a state-appropriate glance at the
+	// selected queue row floated over the still-rendering dashboard. It captures
+	// keys while open but is read-only — the loop keeps running underneath.
+	peek bool
 
 	results []console.TicketResult
 
@@ -392,6 +410,11 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 	if m.filtering {
 		return m.handleFilterKey(msg)
 	}
+	// The peek preview is modal too: while open it owns every key so the loop
+	// underneath is never disturbed by a stray action key.
+	if m.peek {
+		return m.handlePeekKey(msg)
+	}
 
 	switch {
 	case key.Matches(msg, m.keys.Quit):
@@ -416,12 +439,23 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 			m.refreshBody()
 			return m, nil, true
 		}
-		m.streaming = true
-		if m.stream == nil && m.streamPath != "" {
-			m.startStream()
-			m.streamReading = true
-			return m, m.tailReadCmd(), true
+		return m.attach()
+	case msg.String() == "space":
+		// When there is nothing to peek (no rail, or attached), let space fall
+		// through so it still pages the scrollable span pane.
+		if !m.canPeek() {
+			return m, nil, false
 		}
+		m.peek = true
+		return m, nil, true
+	case msg.String() == "enter":
+		if !m.canPeek() {
+			return m, nil, false
+		}
+		if sel, ok := m.selectedRow(); ok && sel.Live {
+			return m.attach()
+		}
+		m.peek = true
 		return m, nil, true
 	case msg.String() == "v":
 		m = m.cycleTier()
@@ -866,19 +900,24 @@ func (m model) render() string {
 func (m model) renderRunning() string {
 	d := m.dims()
 
-	// Watch mode takes the whole body for the live agent stream — no rail.
-	if m.streaming {
-		pane := titledPanel(m.styles, "Live · "+m.streamLabel(), m.renderStream(d), d.bodyW, d.bodyH)
-		return m.assembleRunning(pane)
+	var body string
+	switch {
+	case m.streaming:
+		// Attach mode takes the whole body for the live agent stream — no rail.
+		body = titledPanel(m.styles, m.streamPaneTitle(), m.renderStream(d), d.bodyW, d.bodyH)
+	case d.railW == 0:
+		body = titledPanel(m.styles, m.spanPaneTitle(), m.viewport.View(), d.spanW, d.bodyH)
+	default:
+		spanPane := titledPanel(m.styles, m.spanPaneTitle(), m.viewport.View(), d.spanW, d.bodyH)
+		rail := titledPanel(m.styles, m.railTitle(), m.renderRail(d), d.railW, d.bodyH)
+		body = lipgloss.JoinHorizontal(lipgloss.Top, spanPane, " ", rail)
 	}
 
-	spanPane := titledPanel(m.styles, m.spanPaneTitle(), m.viewport.View(), d.spanW, d.bodyH)
-	if d.railW == 0 {
-		return m.assembleRunning(spanPane)
+	screen := m.assembleRunning(body)
+	if m.peek {
+		return m.compositePeek(screen)
 	}
-	rail := titledPanel(m.styles, m.railTitle(), m.renderRail(d), d.railW, d.bodyH)
-	body := lipgloss.JoinHorizontal(lipgloss.Top, spanPane, " ", rail)
-	return m.assembleRunning(body)
+	return screen
 }
 
 // assembleRunning stacks the run-view regions around the pre-rendered body row.
