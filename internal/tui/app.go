@@ -674,7 +674,7 @@ func (m appModel) startRunLoop(epic string) (tea.Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(m.baseCtx)
 	m.loopCancel = cancel
 	m.subReturn = viewMenu
-	m.dash = freshDash(m.width, m.height)
+	m.dash = freshDash(m.width, m.height, m.info.Base)
 	m.view = viewRunning
 	return m, tea.Batch(m.dash.Init(), m.runLoopCmd(ctx, epic))
 }
@@ -746,7 +746,7 @@ func (m appModel) startRunTicket(id, provider string) (tea.Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(m.baseCtx)
 	m.loopCancel = cancel
 	m.subReturn = viewMenu
-	m.dash = freshDash(m.width, m.height)
+	m.dash = freshDash(m.width, m.height, m.info.Base)
 	m.view = viewRunning
 	return m, tea.Batch(m.dash.Init(), m.runTicketCmd(ctx, id, provider))
 }
@@ -1015,8 +1015,9 @@ func isBack(msg tea.KeyPressMsg) bool {
 	return false
 }
 
-func freshDash(w, h int) model {
+func freshDash(w, h int, binding string) model {
 	d := initialModel(nil)
+	d.binding = binding
 	if w > 0 && h > 0 {
 		d = applyDash(d, tea.WindowSizeMsg{Width: w, Height: h})
 	}

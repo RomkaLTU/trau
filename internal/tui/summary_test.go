@@ -39,7 +39,7 @@ func TestTotalsLineCountsIncompleteSeparately(t *testing.T) {
 // TestResizeRecomputesSummaryTable checks that resizing during the recap rebuilds
 // the table's responsive title column without losing the selected row.
 func TestResizeRecomputesSummaryTable(t *testing.T) {
-	d := freshDash(80, 24)
+	d := freshDash(80, 24, "")
 	d.results = []console.TicketResult{
 		{ID: "COD-1", Title: "One", Phase: state.PROpen},
 		{ID: "COD-2", Title: "Two", Phase: state.Building},
