@@ -152,7 +152,8 @@ func (m runOnceModel) handleKey(msg tea.KeyPressMsg) (runOnceModel, tea.Cmd) {
 		return m, cmd
 
 	case runOnceLoading:
-		if msg.String() == "ctrl+c" || msg.String() == "esc" {
+		switch msg.String() {
+		case "ctrl+c", "esc", "q":
 			m.step = runOnceConfirm
 			m.input.Focus()
 		}
@@ -163,7 +164,7 @@ func (m runOnceModel) handleKey(msg tea.KeyPressMsg) (runOnceModel, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c":
 			m.cancelled, m.done = true, true
-		case "esc":
+		case "esc", "q":
 			m.step = runOnceConfirm
 			m.eligible = nil
 			m.cursor = 0
@@ -280,7 +281,7 @@ func (m runOnceModel) renderList() string {
 	items := m.listRows()
 	if len(items) == 0 {
 		return s.Subtle.Render("No eligible tickets right now.") + "\n\n" +
-			s.Help.Render("esc back · 'r' refresh")
+			s.Help.Render("esc/q back · 'r' refresh")
 	}
 
 	header := fmt.Sprintf("Eligible tickets (%d):", len(items))
@@ -380,9 +381,9 @@ func (m runOnceModel) hint() string {
 	}
 	switch m.step {
 	case runOnceLoading:
-		return "loading… · esc cancel"
+		return "loading… · esc/q cancel"
 	case runOnceList:
-		return "↑↓/jk move · enter run" + sw + " · 'o' open · 'r' refresh · esc back"
+		return "↑↓/jk move · enter run" + sw + " · 'o' open · 'r' refresh · esc/q back"
 	default:
 		if m.info.Resume.Active() {
 			return "enter resume " + m.info.Resume.ID + " · type an ID" + sw + " · 'l' load · esc back"

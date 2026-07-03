@@ -451,7 +451,7 @@ func (m onboardingModel) handleKey(msg tea.KeyPressMsg) (onboardingModel, tea.Cm
 		return m, tea.Quit
 	}
 	if msg.String() == "q" && !m.textEntryActive() {
-		return m, tea.Quit
+		msg = tea.KeyPressMsg{Code: tea.KeyEsc}
 	}
 
 	switch m.step {
@@ -489,7 +489,8 @@ func (m onboardingModel) handleKey(msg tea.KeyPressMsg) (onboardingModel, tea.Cm
 
 func (m onboardingModel) handleWelcome(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
 	if msg.String() == "esc" {
-		return m, tea.Quit
+		m.step = onboardSystemCheck
+		return m, nil
 	}
 	if msg.String() == "enter" {
 		m.step = onboardProviders
@@ -915,9 +916,9 @@ func (m onboardingModel) entityLabel() string {
 	}
 }
 
-// textEntryActive reports whether a focused text input owns keystrokes, so the
-// global 'q' shortcut must not quit (the user is typing a branch, team, or
-// search query).
+// textEntryActive reports whether a focused text input owns keystrokes, so 'q'
+// must type into the field instead of navigating back (the user is typing a
+// branch, team, or search query).
 func (m onboardingModel) textEntryActive() bool {
 	switch m.step {
 	case onboardLinearAPIKey:
@@ -1327,8 +1328,9 @@ func (m onboardingModel) advanceSystemCheck() onboardingModel {
 }
 
 func (m onboardingModel) handleSystemCheck(msg tea.KeyPressMsg) (onboardingModel, tea.Cmd) {
-	if msg.String() == "ctrl+c" || msg.String() == "q" {
-		return m, tea.Quit
+	if msg.String() == "esc" {
+		m.done = true
+		return m, nil
 	}
 	if msg.String() == "enter" {
 		if !m.systemCheckStarted {
@@ -2057,7 +2059,7 @@ func (m onboardingModel) renderNoRepo() string {
 		"",
 		"Run trau from inside a git repo, or pass --repo <path>.",
 		"",
-		"Press enter or q to exit.",
+		"Press enter or esc to exit.",
 	)
 }
 
@@ -2065,40 +2067,40 @@ func (m onboardingModel) hint() string {
 	switch m.step {
 	case onboardSystemCheck:
 		if !m.systemCheckStarted {
-			return "enter start check · q/esc quit"
+			return "enter start check · esc/q back"
 		}
 		if m.systemCheckDone {
-			return "enter continue/re-check · q/esc quit"
+			return "enter continue/re-check · esc/q back"
 		}
 		return "checking dependencies…"
 	case onboardWelcome:
-		return "enter continue · q/esc quit"
+		return "enter continue · esc/q back"
 	case onboardProviders:
 		if m.providersPMFocused {
-			return "↑↓ move · enter/tab next · esc/← back · q quit"
+			return "↑↓ move · enter/tab next · esc/q/← back"
 		}
-		return "↑↓ move · enter select · tab back · esc/← back · q quit"
+		return "↑↓ move · enter select · tab back · esc/q/← back"
 	case onboardLinearAPIKey:
-		return "enter/tab next · 'o' open key settings · esc/← back · q quit"
+		return "enter/tab next · 'o' open key settings · esc/← back"
 	case onboardJiraCreds:
 		return "tab/↑↓ move · enter next · esc/← back"
 	case onboardLabels:
-		return "↑↓ move · enter select · esc/← back · q quit"
+		return "↑↓ move · enter select · esc/q/← back"
 	case onboardTimeTracking:
-		return "↑↓ move · enter select · esc/← back · q quit"
+		return "↑↓ move · enter select · esc/q/← back"
 	case onboardCI:
-		return "↑↓ move · enter select · esc/← back · q quit"
+		return "↑↓ move · enter select · esc/q/← back"
 	case onboardBaseBranch:
 		if m.baseBranchInputFocused {
-			return "enter/tab next · esc/← back · q quit"
+			return "enter/tab next · esc/← back"
 		}
-		return "↑↓ move · enter select · tab back · q quit"
+		return "↑↓ move · enter select · esc/q/tab back"
 	case onboardLinearTeam:
 		switch {
 		case m.teamDetecting:
-			return "detecting… · esc back · q quit"
+			return "detecting… · esc/q back"
 		case m.teamManual, m.teamAutoFilled:
-			return "enter confirm · esc/← back · q quit"
+			return "enter confirm · esc/← back"
 		default:
 			return "type to search · ↑↓ move · enter select · ctrl+t manual · esc/← back"
 		}
@@ -2106,9 +2108,11 @@ func (m onboardingModel) hint() string {
 		if m.writing {
 			return "working…"
 		}
-		return "enter write · esc/← back · q quit"
-	case onboardCreateLabels, onboardDone, onboardNoRepo:
-		return "enter continue · q quit"
+		return "enter write · esc/q/← back"
+	case onboardCreateLabels, onboardDone:
+		return "enter/esc/q continue"
+	case onboardNoRepo:
+		return "enter/esc/q exit"
 	}
 	return ""
 }

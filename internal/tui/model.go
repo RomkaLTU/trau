@@ -278,7 +278,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 	if m.state == stateSummary {
 		switch {
-		case key.Matches(msg, m.keys.Quit), msg.String() == "enter", msg.String() == "esc":
+		case key.Matches(msg, m.keys.Quit), msg.String() == "esc":
 			return m, tea.Quit, true
 		case key.Matches(msg, m.keys.Open):
 			return m, m.openSelectedPR(), true
