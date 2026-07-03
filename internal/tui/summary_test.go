@@ -66,6 +66,25 @@ func TestResizeKeepsRecapSelection(t *testing.T) {
 	}
 }
 
+// TestRecapAllMergedSelectable checks that after an all-merged session the recap
+// still lets the cursor land on a merged ticket so its PR can be opened — the
+// recap does not fold merged rows the way the live rail does.
+func TestRecapAllMergedSelectable(t *testing.T) {
+	d := freshDash(100, 30, "")
+	d.results = []console.TicketResult{
+		{ID: "COD-1", Phase: state.Merged, PRURL: "https://x/1"},
+		{ID: "COD-2", Phase: state.Merged, PRURL: "https://x/2"},
+	}
+	sm, _ := d.enterSummary(console.SessionSummary{Tickets: 2})
+	d = sm.(model)
+	if d.selectableCount() != 2 {
+		t.Fatalf("recap selectable = %d, want 2 (merged not folded)", d.selectableCount())
+	}
+	if sel, ok := d.selectedRow(); !ok || sel.PRURL == "" {
+		t.Error("recap should let the cursor land on a merged ticket with a PR")
+	}
+}
+
 // TestRecoverableExcludesTerminalRows checks the predicate that gates the recovery
 // keys: resume/reset/checkout apply to unfinished work, not to merged or
 // already-reset rows.

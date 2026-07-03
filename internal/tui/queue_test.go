@@ -32,7 +32,7 @@ func TestQueueSortsByAttention(t *testing.T) {
 		{ID: "COD-faulted", Phase: state.HandedOff, FailureReason: "agent crashed"},
 		{ID: "COD-reset", Phase: phaseReset},
 	}
-	active, done := partitionQueue(rows)
+	active, done := partitionQueue(rows, true)
 
 	var order []string
 	for _, r := range active {
@@ -54,6 +54,22 @@ func TestQueueSortsByAttention(t *testing.T) {
 	}
 	if strings.Join(doneIDs, ",") != "COD-merged,COD-reset" {
 		t.Errorf("folded rows = %v, want [COD-merged COD-reset]", doneIDs)
+	}
+}
+
+// TestFoldDoneOffKeepsMergedSelectable guards that the recap/Status (foldDone
+// false) keep merged rows in the selectable set so their PRs stay openable, while
+// the live rail (foldDone true) folds them away.
+func TestFoldDoneOffKeepsMergedSelectable(t *testing.T) {
+	rows := []QueueRow{
+		{ID: "COD-1", Phase: state.Merged, PRURL: "u1"},
+		{ID: "COD-2", Phase: state.Merged, PRURL: "u2"},
+	}
+	if active, done := partitionQueue(rows, false); len(active) != 2 || len(done) != 0 {
+		t.Errorf("foldDone=false: active=%d done=%d, want 2/0", len(active), len(done))
+	}
+	if active, done := partitionQueue(rows, true); len(active) != 0 || len(done) != 2 {
+		t.Errorf("foldDone=true: active=%d done=%d, want 0/2", len(active), len(done))
 	}
 }
 
@@ -86,7 +102,7 @@ func TestNeedsHumanRowsNeverFold(t *testing.T) {
 		{ID: "COD-f", Phase: state.Verified, FailureReason: "boom"},
 		{ID: "COD-m", Phase: state.Merged},
 	}
-	active, _ := partitionQueue(rows)
+	active, _ := partitionQueue(rows, true)
 	if len(active) != 2 {
 		t.Fatalf("active rows = %d, want 2 (both needs-human rows)", len(active))
 	}
@@ -107,7 +123,7 @@ func TestNeedsHumanReasonAlwaysShown(t *testing.T) {
 	}
 	// Sorted, COD-q (needs-human) is first; put the cursor on COD-a (index 1) so
 	// the quarantined row is not the selected one.
-	out := ansi.Strip(renderQueue(s, "*", rows, 1, 60, 0))
+	out := ansi.Strip(renderQueue(s, "*", rows, 1, 60, 0, true))
 	if !strings.Contains(out, "husky pre-push failed") {
 		t.Errorf("quarantined reason must surface unselected:\n%s", out)
 	}
@@ -131,19 +147,20 @@ func TestQueueVerbsPerState(t *testing.T) {
 		t.Errorf("recoverable row (not live) verbs = open:%v logs:%v resume:%v branch:%v reset:%v, want resume/branch/reset all true", open, logs, resume, branch, reset)
 	}
 
-	// Mid-run: resume and checkout are withheld, reset survives for a non-active row.
-	_, _, lresume, lbranch, lreset := queueVerbs(fault, true)
-	if lresume || lbranch {
-		t.Error("live context must withhold resume/checkout so they can't disturb the running ticket")
+	// Mid-run: every tree/loop/store-mutating verb is withheld (reset itself
+	// force-switches the working tree), so only the read-only verbs stay live.
+	_, llogs, lresume, lbranch, lreset := queueVerbs(fault, true)
+	if lresume || lbranch || lreset {
+		t.Error("live context must withhold resume/checkout/reset so they can't disturb the running ticket")
 	}
-	if !lreset {
-		t.Error("live context should still allow reset of a non-active checkpoint")
+	if !llogs {
+		t.Error("logs must stay available live")
 	}
 
-	// The live (active) row itself: reset is withheld too.
-	live := QueueRow{ID: "COD-live", Phase: state.Building, Live: true}
-	if _, _, _, _, r := queueVerbs(live, true); r {
-		t.Error("the active ticket's own row must not offer reset")
+	// A live row with a PR still offers open (read-only).
+	livePR := QueueRow{ID: "COD-live", Phase: state.Building, Live: true, PRURL: "u"}
+	if lopen, _, _, _, lrst := queueVerbs(livePR, true); !lopen || lrst {
+		t.Error("live row: open stays available, reset withheld")
 	}
 }
 

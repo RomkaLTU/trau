@@ -344,11 +344,10 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case logMsg, eventMsg, ticketMsg, titleMsg, phaseStartMsg, ticketDoneMsg, loopDoneMsg, recoveryDoneMsg:
 		var cmd tea.Cmd
 		m.dash, cmd = applyDashCmd(m.dash, msg)
-		// Refresh the rail snapshot on ticket boundaries and after a recovery
-		// action, so other tickets reflect the store while the active one stays
-		// live-overlaid by the dash.
+		// Refresh the rail snapshot on ticket boundaries so other tickets reflect
+		// the store while the active one stays live-overlaid by the dash.
 		switch msg.(type) {
-		case ticketMsg, ticketDoneMsg, recoveryDoneMsg:
+		case ticketMsg, ticketDoneMsg:
 			m.dash = m.dash.withQueue(m.buildQueueRows())
 		}
 		return m, cmd
@@ -380,14 +379,12 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusCancel()
 			m.statusCancel = nil
 		}
-		note, isErr := reconcileNote(msg)
-		switch m.view {
-		case viewStatus:
-			m.statusNote = note
-			m = m.loadStatusRows()
-		case viewRunning:
-			m.dash = m.dash.withBanner(note, isErr).withQueue(m.buildQueueRows())
+		if m.view != viewStatus {
+			return m, nil
 		}
+		note, _ := reconcileNote(msg)
+		m.statusNote = note
+		m = m.loadStatusRows()
 		return m, nil
 
 	case statusActionMsg:
@@ -628,19 +625,25 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleRunningKey drives the live dashboard: the queue rail owns ↑↓ selection
-// and the recovery verbs (via handleQueueKey in live mode, which withholds the
-// tree/loop-mutating ones); everything else — watch, follow, page, exit stream —
-// goes to the dash. q/ctrl+c stop the loop.
+// and the read-only verbs (o open, l logs); the mutating verbs are withheld live
+// (queueVerbs) since they would disturb the running ticket, so they act only from
+// the recap/Status. Everything else — watch, follow, page, exit stream — goes to
+// the dash. q/ctrl+c stop the loop.
 func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if m.dash.pendingResetID() != "" {
-		return m.handleQueueKey(msg, true)
-	}
 	if msg.String() == "q" || msg.String() == "ctrl+c" {
 		if m.loopCancel != nil {
 			m.loopCancel()
 		}
 		m.dash = m.dash.markStopping()
 		return m, nil
+	}
+	// When the rail isn't drawn — watch mode is full-screen, or the terminal is
+	// too narrow to spare it — its keys go to the dash rather than acting on a
+	// selection the user can't see.
+	if !m.dash.railVisible() {
+		var cmd tea.Cmd
+		m.dash, cmd = applyDashCmd(m.dash, msg)
+		return m, cmd
 	}
 	switch msg.String() {
 	case "up", "k":
@@ -649,7 +652,7 @@ func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		m.dash = m.dash.movedQueueCursor(1)
 		return m, nil
-	case "o", "l", "r", "b", "x", "R":
+	case "o", "l":
 		return m.handleQueueKey(msg, true)
 	}
 	var cmd tea.Cmd
@@ -786,8 +789,6 @@ func (m appModel) handleQueueKey(msg tea.KeyPressMsg, live bool) (tea.Model, tea
 	case msg.String() == "x" && hasSel && reset:
 		m.dash = m.dash.askResetConfirm(sel.ID)
 		return m, nil
-	case msg.String() == "R" && live:
-		return m, m.reconcileCmd(m.baseCtx)
 	case isBack(msg) && !live:
 		return m.toMenu(), nil
 	default:
@@ -858,7 +859,7 @@ func (m appModel) handleStatusKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // moveStatusCursor shifts the Status selection by delta, clamped to the
 // selectable rows.
 func (m *appModel) moveStatusCursor(delta int) {
-	active, _ := partitionQueue(m.statusRows)
+	active, _ := partitionQueue(m.statusRows, false)
 	m.statusCursor += delta
 	if m.statusCursor >= len(active) {
 		m.statusCursor = len(active) - 1
@@ -997,7 +998,7 @@ func (m appModel) renderScreen() string {
 			queueW = 24
 		}
 		bodyH := cardBodyBudget(m.height, 2) // title + a note/spinner row
-		body := renderQueue(m.styles, spinnerGlyph(m.spin), m.statusRows, m.statusCursor, queueW, bodyH)
+		body := renderQueue(m.styles, spinnerGlyph(m.spin), m.statusRows, m.statusCursor, queueW, bodyH, false)
 		switch {
 		case m.statusBusy:
 			body += "\n\n" + m.spin.View() + " reconciling against the tracker…"
@@ -1186,7 +1187,7 @@ func (m appModel) buildQueueRows() []QueueRow {
 // into the new selectable set.
 func (m appModel) loadStatusRows() appModel {
 	m.statusRows = m.buildQueueRows()
-	active, _ := partitionQueue(m.statusRows)
+	active, _ := partitionQueue(m.statusRows, false)
 	if m.statusCursor >= len(active) {
 		m.statusCursor = len(active) - 1
 	}
@@ -1198,7 +1199,7 @@ func (m appModel) loadStatusRows() appModel {
 
 // selectedStatusRow returns the queue row under the Status cursor.
 func (m appModel) selectedStatusRow() (QueueRow, bool) {
-	active, _ := partitionQueue(m.statusRows)
+	active, _ := partitionQueue(m.statusRows, false)
 	if m.statusCursor < 0 || m.statusCursor >= len(active) {
 		return QueueRow{}, false
 	}

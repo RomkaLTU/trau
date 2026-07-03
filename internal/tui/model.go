@@ -75,12 +75,6 @@ func (m model) runningHelp() screenHelp {
 			fk("↑↓", "select ticket"),
 			fk("o", "open PR"),
 			fk("l", "jump to logs"),
-			fk("R", "reconcile"),
-		),
-		group("Recover",
-			fk("r", "resume"),
-			fk("b", "checkout branch"),
-			fk("x", "reset"),
 		),
 		group("Live tail",
 			fk("w", "watch agent"),
@@ -98,8 +92,8 @@ func (m model) runningHelp() screenHelp {
 // runningHint is the live footer legend: the queue verbs that apply to the
 // selected rail row, plus watch and stop. A pending reset shows the confirm.
 func (m model) runningHint() string {
-	if m.confirmResetID != "" {
-		return "⚠ reset " + m.confirmResetID + "? x again to confirm · esc cancel"
+	if m.streaming {
+		return "esc exit watch · f follow · q stop"
 	}
 	sel, hasSel := m.selectedRow()
 	parts := append([]string{"↑↓ select"}, queueVerbHints(sel, hasSel, true)...)
@@ -564,18 +558,21 @@ func readTail(path string, offset int64) streamDataMsg {
 	return streamDataMsg{path: path, offset: offset + int64(len(data)), data: data}
 }
 
-// renderStream is the live pane body, or a placeholder when no transcript is active.
+// renderStream is the live pane body, or a placeholder when no transcript is
+// active. Watch mode owns the full body, so lines fit the full-width inner box
+// (bodyW-4), not the rail-reduced span width.
 func (m model) renderStream(d dims) string {
 	if m.stream == nil {
 		return m.styles.Subtle.Render("live agent view") + "\n" +
 			m.styles.Help.Render("waiting for the next agent phase…")
 	}
+	w, h := d.bodyW-4, d.bodyH-2
 	lines := m.stream.Lines()
-	if d.vpH > 0 && len(lines) > d.vpH {
-		lines = lines[len(lines)-d.vpH:]
+	if h > 0 && len(lines) > h {
+		lines = lines[len(lines)-h:]
 	}
 	for i := range lines {
-		lines[i] = ansi.Truncate(lines[i], d.vpW, "")
+		lines[i] = ansi.Truncate(lines[i], w, "")
 	}
 	return strings.Join(lines, "\n")
 }
@@ -732,10 +729,6 @@ func (m model) clearResetConfirm() model {
 func (m model) applyRecovery(msg recoveryDoneMsg) model {
 	m.confirmResetID = ""
 	m.recoveryNote = msg.note
-	// The recap renders recoveryNote; the live footer renders the banner. Set both
-	// so a mid-run recovery action is visible either way.
-	m.banner = msg.note
-	m.bannerErr = msg.err != nil
 	if msg.err == nil && msg.resetID != "" {
 		for i := range m.results {
 			if m.results[i].ID == msg.resetID {
@@ -762,18 +755,10 @@ func (m model) movedQueueCursor(delta int) model {
 }
 
 // withQueue replaces the live rail snapshot (the app shell refreshes it from the
-// store as tickets start, finish, and after recovery/reconcile).
+// store as tickets start and finish).
 func (m model) withQueue(rows []QueueRow) model {
 	m.queue = rows
 	m.clampQueueCursor()
-	return m
-}
-
-// withBanner sets the transient footer banner, used to surface a live rail
-// recovery/reconcile outcome.
-func (m model) withBanner(text string, isErr bool) model {
-	m.banner = text
-	m.bannerErr = isErr
 	return m
 }
 
@@ -803,6 +788,11 @@ func (m *model) finishTicket(r console.TicketResult) {
 }
 
 func (m model) done() bool { return m.state == stateSummary }
+
+// railVisible reports whether the queue rail is currently drawn — false while
+// watching the full-screen stream or on a terminal too narrow to spare the rail
+// — so the app shell only routes rail keys when there is a rail to act on.
+func (m model) railVisible() bool { return !m.streaming && m.dims().railW > 0 }
 
 func (m model) markStopping() model {
 	m.stopping = true
@@ -870,7 +860,7 @@ func (m model) railTitle() string {
 // renderRail draws the attention queue into the right pane through the shared
 // component, sized to the rail's inner box.
 func (m model) renderRail(d dims) string {
-	return renderQueue(m.styles, m.spinFrame(), m.liveQueueRows(), m.queueCursor, d.railW-4, d.bodyH-2)
+	return renderQueue(m.styles, m.spinFrame(), m.liveQueueRows(), m.queueCursor, d.railW-4, d.bodyH-2, true)
 }
 
 // renderHeader lays out the run-level context row. The left core and right cluster

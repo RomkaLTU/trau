@@ -86,14 +86,16 @@ func sortQueue(rows []QueueRow) {
 	})
 }
 
-// partitionQueue sorts rows and splits them into the selectable rows (everything
-// that still needs a glance) and the finished rows that fold to a summary line.
-func partitionQueue(rows []QueueRow) (active, done []QueueRow) {
+// partitionQueue sorts rows and splits them into the selectable rows and the
+// finished rows that fold to a summary line. foldDone controls whether merged/
+// reset rows fold away (the live rail, to keep the focus on active work) or stay
+// selectable (the recap and Status, where opening a merged ticket's PR matters).
+func partitionQueue(rows []QueueRow, foldDone bool) (active, done []QueueRow) {
 	sorted := make([]QueueRow, len(rows))
 	copy(sorted, rows)
 	sortQueue(sorted)
 	for _, r := range sorted {
-		if r.attention() == attnDone {
+		if foldDone && r.attention() == attnDone {
 			done = append(done, r)
 		} else {
 			active = append(active, r)
@@ -103,16 +105,17 @@ func partitionQueue(rows []QueueRow) (active, done []QueueRow) {
 }
 
 // queueVerbs reports which recovery verbs apply to r. live is true during an
-// active loop run, where the mutating tree/loop verbs (resume, checkout) are
-// withheld so acting on the queue can never disturb the running ticket; reset is
-// still offered for any non-active row since it only clears a checkpoint.
+// active loop run, where every tree/loop/store-mutating verb (resume, checkout,
+// reset) is withheld — reset force-switches the working tree off the running
+// branch (Pipeline.Reset), so mid-run it would corrupt the active ticket. Only
+// the read-only verbs (open, logs) stay live; the rest act from the recap/Status.
 func queueVerbs(r QueueRow, live bool) (open, logs, resume, branch, reset bool) {
 	rec := recoverableRow(r)
 	open = r.PRURL != ""
 	logs = true
 	resume = rec && !live
 	branch = rec && r.Branch != "" && !live
-	reset = rec && !r.Live
+	reset = rec && !live && !r.Live
 	return open, logs, resume, branch, reset
 }
 
@@ -225,11 +228,11 @@ func prettyPhase(phase string) string {
 // finished rows folded to one summary line. width is the inner text width; when
 // height > 0 the rows window around the cursor so a long queue scrolls. spinFrame
 // is the current spinner glyph animating any live row.
-func renderQueue(s Styles, spinFrame string, rows []QueueRow, cursor, width, height int) string {
+func renderQueue(s Styles, spinFrame string, rows []QueueRow, cursor, width, height int, foldDone bool) string {
 	if width < 8 {
 		width = 8
 	}
-	active, done := partitionQueue(rows)
+	active, done := partitionQueue(rows, foldDone)
 	if len(active) == 0 && len(done) == 0 {
 		return s.Subtle.Render("no tracked tickets")
 	}

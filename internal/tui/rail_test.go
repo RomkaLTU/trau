@@ -85,10 +85,10 @@ func TestRunStartSeedsRail(t *testing.T) {
 	}
 }
 
-// TestRunningRailCursorAndReset checks live key routing: ↓ moves the rail
-// selection, and x on a quarantined non-active row arms the two-key reset confirm
-// then fires the reset on the second x.
-func TestRunningRailCursorAndReset(t *testing.T) {
+// TestRunningRailCursorAndSafety checks live key routing: ↓ moves the rail
+// selection, and the mutating verbs (x reset, r resume, b checkout) are inert
+// mid-run so acting on the queue can never disturb the running ticket.
+func TestRunningRailCursorAndSafety(t *testing.T) {
 	m := appModel{
 		actions: &fakeAppActions{},
 		baseCtx: context.Background(),
@@ -108,25 +108,43 @@ func TestRunningRailCursorAndReset(t *testing.T) {
 		t.Fatalf("after ↓ selected = %q, want COD-v", sel.ID)
 	}
 
-	// Back up to the quarantined row and arm the reset.
+	// Back onto the quarantined row; x must NOT arm a reset mid-run.
 	nm, _ = m.handleRunningKey(keyPress("k"))
 	m = nm.(appModel)
-	nm, cmd := m.handleRunningKey(keyPress("x"))
-	m = nm.(appModel)
-	if m.dash.pendingResetID() != "COD-q" {
-		t.Fatalf("pending reset = %q, want COD-q", m.dash.pendingResetID())
+	for _, k := range []string{"x", "r", "b"} {
+		nm, cmd := m.handleRunningKey(keyPress(k))
+		m = nm.(appModel)
+		if m.dash.pendingResetID() != "" {
+			t.Errorf("%q must not arm a reset mid-run", k)
+		}
+		if cmd != nil {
+			t.Errorf("%q must be inert on the live rail", k)
+		}
 	}
-	if cmd != nil {
-		t.Error("first x should only arm the confirm, not reset")
-	}
+}
 
-	// Second x confirms.
-	nm, cmd = m.handleRunningKey(keyPress("x"))
-	m = nm.(appModel)
-	if m.dash.pendingResetID() != "" {
-		t.Error("reset confirm should clear after the second x")
+// TestRunningRailHiddenRoutesToDash checks that on a terminal too narrow to draw
+// the rail, its keys don't act on an invisible selection — they go to the dash.
+func TestRunningRailHiddenRoutesToDash(t *testing.T) {
+	m := appModel{
+		actions: &fakeAppActions{},
+		baseCtx: context.Background(),
+		view:    viewRunning,
+		width:   70,
+		height:  32,
 	}
-	if cmd == nil {
-		t.Error("second x should issue the reset command")
+	m.dash = freshDash(70, 32, "").withQueue([]QueueRow{
+		{ID: "COD-q", Phase: state.Quarantined, Branch: "b"},
+		{ID: "COD-v", Phase: state.Verified},
+	})
+	if m.dash.railVisible() {
+		t.Fatal("rail should be hidden at 70 cols")
+	}
+	// ↓ must not move a hidden selection.
+	before := m.dash.queueCursor
+	nm, _ := m.handleRunningKey(keyPress("j"))
+	m = nm.(appModel)
+	if m.dash.queueCursor != before {
+		t.Error("↓ must not move the cursor while the rail is hidden")
 	}
 }

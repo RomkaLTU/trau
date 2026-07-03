@@ -138,10 +138,15 @@ func (m model) liveQueueRows() []QueueRow {
 	return rows
 }
 
+// foldDone reports whether merged/reset rows fold away: they do on the live rail
+// (focus on active work) but not on the recap, where opening a merged ticket's PR
+// still matters.
+func (m model) foldDone() bool { return m.state != stateSummary }
+
 // selectableCount is the number of rows the queue cursor can land on (the
 // non-folded rows), shared by the recap and the live rail.
 func (m model) selectableCount() int {
-	active, _ := partitionQueue(m.queueRows())
+	active, _ := partitionQueue(m.queueRows(), m.foldDone())
 	return len(active)
 }
 
@@ -149,7 +154,7 @@ func (m model) selectableCount() int {
 // empty. The row set is the recap results, or the live rail snapshot while a run
 // is in progress.
 func (m model) selectedRow() (QueueRow, bool) {
-	active, _ := partitionQueue(m.queueRows())
+	active, _ := partitionQueue(m.queueRows(), m.foldDone())
 	if m.queueCursor < 0 || m.queueCursor >= len(active) {
 		return QueueRow{}, false
 	}
@@ -199,7 +204,7 @@ func (m model) renderSummary() string {
 		if queueH < 4 {
 			queueH = 4
 		}
-		body += "\n\n" + renderQueue(m.styles, m.spinFrame(), m.resultRows(), m.queueCursor, queueW, queueH)
+		body += "\n\n" + renderQueue(m.styles, m.spinFrame(), m.resultRows(), m.queueCursor, queueW, queueH, false)
 	}
 	if m.recoveryNote != "" {
 		body += "\n\n" + m.styles.Subtle.Render(m.recoveryNote)
