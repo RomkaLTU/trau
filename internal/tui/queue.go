@@ -116,31 +116,40 @@ func queueVerbs(r QueueRow, live bool) (open, logs, resume, branch, reset bool) 
 	return open, logs, resume, branch, reset
 }
 
+// queueVerbHints lists the applicable recovery-verb hints for the selected row,
+// shared by every queue footer (rail, recap, Status) so the wording can't drift.
+func queueVerbHints(sel QueueRow, hasSel, live bool) []string {
+	if !hasSel {
+		return nil
+	}
+	open, logs, resume, branch, reset := queueVerbs(sel, live)
+	var parts []string
+	if open {
+		parts = append(parts, "o open")
+	}
+	if logs {
+		parts = append(parts, "l logs")
+	}
+	if resume {
+		parts = append(parts, "r resume")
+	}
+	if branch {
+		parts = append(parts, "b branch")
+	}
+	if reset {
+		parts = append(parts, "x reset")
+	}
+	return parts
+}
+
 // queueHint builds the one-line key legend for the selected row, listing only the
-// verbs that apply. A pending reset swaps in the two-key confirm prompt.
+// verbs that apply. A pending reset swaps in the two-key confirm prompt. Used by
+// the Status screen (reconcile is reachable, so R trails the verbs).
 func queueHint(sel QueueRow, hasSel, live bool, confirmID string) string {
 	if confirmID != "" {
 		return "⚠ reset " + confirmID + "? x again to confirm · esc cancel"
 	}
-	parts := []string{"↑↓ move"}
-	if hasSel {
-		open, logs, resume, branch, reset := queueVerbs(sel, live)
-		if open {
-			parts = append(parts, "o open")
-		}
-		if logs {
-			parts = append(parts, "l logs")
-		}
-		if resume {
-			parts = append(parts, "r resume")
-		}
-		if branch {
-			parts = append(parts, "b branch")
-		}
-		if reset {
-			parts = append(parts, "x reset")
-		}
-	}
+	parts := append([]string{"↑↓ move"}, queueVerbHints(sel, hasSel, live)...)
 	parts = append(parts, "R reconcile")
 	return strings.Join(parts, " · ")
 }

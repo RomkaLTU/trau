@@ -31,6 +31,13 @@ const (
 	headerH   = 2  // brand row + rule
 	footerH   = 1
 	panelGap  = 1 // vertical blank line between stacked regions
+
+	// The running body splits into the span pane (left) and the queue rail
+	// (right). The rail takes ~a third of the width, clamped, and is dropped
+	// below railShowMin so a narrow terminal keeps the live tail full-width.
+	railWMin    = 30
+	railWMax    = 44
+	railShowMin = 80
 )
 
 type viewState int
@@ -59,23 +66,45 @@ func defaultKeyMap() keyMap {
 	}
 }
 
-// runningHelp is the live dashboard's key legend — the single source for its
-// footer and its ? overlay.
+// runningHelp is the live dashboard's key legend (the ? overlay). The footer
+// itself is the dynamic runningHint, since the applicable recovery verbs depend
+// on the selected rail row.
 func (m model) runningHelp() screenHelp {
 	return screenHelp{title: "Run", columns: []helpColumn{
-		group("Pipeline",
+		group("Queue",
+			fk("↑↓", "select ticket"),
+			fk("o", "open PR"),
+			fk("l", "jump to logs"),
+			fk("R", "reconcile"),
+		),
+		group("Recover",
+			fk("r", "resume"),
+			fk("b", "checkout branch"),
+			fk("x", "reset"),
+		),
+		group("Live tail",
 			fk("w", "watch agent"),
 			fk("f", "follow tail"),
-			xk("↑↓", "scroll"),
-			xk("pgup/pgdn", "page"),
+			xk("pgup/pgdn", "scroll"),
 			xk("esc", "exit live view"),
 		),
-		group("Ticket", fk("o", "open PR")),
 		group("Session",
 			fk("q", "quit/stop"),
 			xk("ctrl+c", "force quit"),
 		),
 	}}
+}
+
+// runningHint is the live footer legend: the queue verbs that apply to the
+// selected rail row, plus watch and stop. A pending reset shows the confirm.
+func (m model) runningHint() string {
+	if m.confirmResetID != "" {
+		return "⚠ reset " + m.confirmResetID + "? x again to confirm · esc cancel"
+	}
+	sel, hasSel := m.selectedRow()
+	parts := append([]string{"↑↓ select"}, queueVerbHints(sel, hasSel, true)...)
+	parts = append(parts, "w watch", "q stop")
+	return strings.Join(parts, " · ")
 }
 
 // summaryHelp is the recap screen's key legend. The recovery keys (resume,
@@ -114,6 +143,7 @@ type model struct {
 
 	currentTicket string
 	currentTitle  string
+	ticketStarted time.Time
 	ticketNum     int
 	plannedTotal  int    // epic sub-issue count; 0 in queue mode
 	binding       string // integration base branch, shown as run context
@@ -405,12 +435,13 @@ func (m *model) relayout() {
 }
 
 type dims struct {
-	bodyH, bodyW, vpW, vpH int
+	bodyH, bodyW, spanW, railW, vpW, vpH int
 }
 
-// dims derives the running view's regions. The span pane spans the full width now
-// (the queue rail takes the right side in a later slice). Vertical budget, top to
-// bottom: header(2) + gap + body(bodyH) + gap + usage HUD(hudH) + gap + footer(fh).
+// dims derives the running view's regions. The body row splits into the span pane
+// (spanW) and the queue rail (railW, 0 when the terminal is too narrow to spare
+// it). Vertical budget, top to bottom: header(2) + gap + body(bodyH) + gap +
+// usage HUD(hudH) + gap + footer(fh).
 func (m model) dims() dims {
 	bodyH := m.height - headerH - hudH - footerH - 3*panelGap
 	if bodyH < 6 {
@@ -420,7 +451,19 @@ func (m model) dims() dims {
 	if bodyW < 24 {
 		bodyW = 24
 	}
-	vpW := bodyW - 4 // pane borders + a padding cell each side
+	railW := 0
+	spanW := bodyW
+	if bodyW >= railShowMin {
+		railW = bodyW * 34 / 100
+		if railW < railWMin {
+			railW = railWMin
+		}
+		if railW > railWMax {
+			railW = railWMax
+		}
+		spanW = bodyW - railW - 1 // 1-col gap between the panes
+	}
+	vpW := spanW - 4 // pane borders + a padding cell each side
 	if vpW < 12 {
 		vpW = 12
 	}
@@ -428,7 +471,7 @@ func (m model) dims() dims {
 	if vpH < 3 {
 		vpH = 3
 	}
-	return dims{bodyH: bodyH, bodyW: bodyW, vpW: vpW, vpH: vpH}
+	return dims{bodyH: bodyH, bodyW: bodyW, spanW: spanW, railW: railW, vpW: vpW, vpH: vpH}
 }
 
 func LiveAgentSize(termW, termH int) (cols, rows int) {
@@ -652,6 +695,7 @@ func (m *model) applyEvent(ev event.Event) {
 func (m *model) startTicket(id string) {
 	m.currentTicket = id
 	m.currentTitle = ""
+	m.ticketStarted = time.Now()
 	m.ticketNum++
 	m.paused = false
 	m.prNum = 0
@@ -688,6 +732,10 @@ func (m model) clearResetConfirm() model {
 func (m model) applyRecovery(msg recoveryDoneMsg) model {
 	m.confirmResetID = ""
 	m.recoveryNote = msg.note
+	// The recap renders recoveryNote; the live footer renders the banner. Set both
+	// so a mid-run recovery action is visible either way.
+	m.banner = msg.note
+	m.bannerErr = msg.err != nil
 	if msg.err == nil && msg.resetID != "" {
 		for i := range m.results {
 			if m.results[i].ID == msg.resetID {
@@ -704,6 +752,29 @@ func (m model) applyRecovery(msg recoveryDoneMsg) model {
 func (m *model) moveQueueCursor(delta int) {
 	m.queueCursor += delta
 	m.clampQueueCursor()
+}
+
+// movedQueueCursor is the value-returning form for the app shell, which drives
+// the live rail's selection.
+func (m model) movedQueueCursor(delta int) model {
+	m.moveQueueCursor(delta)
+	return m
+}
+
+// withQueue replaces the live rail snapshot (the app shell refreshes it from the
+// store as tickets start, finish, and after recovery/reconcile).
+func (m model) withQueue(rows []QueueRow) model {
+	m.queue = rows
+	m.clampQueueCursor()
+	return m
+}
+
+// withBanner sets the transient footer banner, used to surface a live rail
+// recovery/reconcile outcome.
+func (m model) withBanner(text string, isErr bool) model {
+	m.banner = text
+	m.bannerErr = isErr
+	return m
 }
 
 // clampQueueCursor keeps the cursor within the selectable rows (0 when empty).
@@ -762,19 +833,44 @@ func (m model) render() string {
 func (m model) renderRunning() string {
 	d := m.dims()
 
-	title := fmt.Sprintf("Pipeline %d/%d", doneSteps(m.steps), len(m.steps))
-	body := m.viewport.View()
+	// Watch mode takes the whole body for the live agent stream — no rail.
 	if m.streaming {
-		title = "Live · " + m.streamLabel()
-		body = m.renderStream(d)
+		pane := titledPanel(m.styles, "Live · "+m.streamLabel(), m.renderStream(d), d.bodyW, d.bodyH)
+		return m.assembleRunning(pane)
 	}
-	pane := titledPanel(m.styles, title, body, d.bodyW, d.bodyH)
 
+	title := fmt.Sprintf("Pipeline %d/%d", doneSteps(m.steps), len(m.steps))
+	spanPane := titledPanel(m.styles, title, m.viewport.View(), d.spanW, d.bodyH)
+	if d.railW == 0 {
+		return m.assembleRunning(spanPane)
+	}
+	rail := titledPanel(m.styles, m.railTitle(), m.renderRail(d), d.railW, d.bodyH)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, spanPane, " ", rail)
+	return m.assembleRunning(body)
+}
+
+// assembleRunning stacks the run-view regions around the pre-rendered body row.
+func (m model) assembleRunning(body string) string {
 	gap := strings.Repeat("\n", panelGap)
 	return m.renderHeader() + gap +
-		pane + gap +
+		body + gap +
 		m.renderHud(m.width) + gap +
 		m.renderFooter()
+}
+
+// railTitle names the queue rail, tagged with the count of tickets that need a
+// glance (needs-human + in-flight + ready).
+func (m model) railTitle() string {
+	if n := m.selectableCount(); n > 0 {
+		return fmt.Sprintf("Queue · %d", n)
+	}
+	return "Queue"
+}
+
+// renderRail draws the attention queue into the right pane through the shared
+// component, sized to the rail's inner box.
+func (m model) renderRail(d dims) string {
+	return renderQueue(m.styles, m.spinFrame(), m.liveQueueRows(), m.queueCursor, d.railW-4, d.bodyH-2)
 }
 
 // renderHeader lays out the run-level context row. The left core and right cluster
@@ -992,7 +1088,7 @@ func (m model) renderFooter() string {
 	if done > 0 {
 		left = m.styles.Footer.Render(fmt.Sprintf("%d merged", done))
 	}
-	return joinEnds(left, m.styles.Help.Render(m.runningHelp().footer()), m.width)
+	return joinEnds(left, m.styles.Help.Render(m.runningHint()), m.width)
 }
 
 func modelTag(fields map[string]any) string {

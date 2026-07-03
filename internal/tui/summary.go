@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -86,12 +87,55 @@ func (m model) resultRows() []QueueRow {
 }
 
 // queueRows is the row set the cursor and renderer operate on: the recap draws
-// from the session results, the live rail from the store-backed snapshot.
+// from the session results, the live rail from the store-backed snapshot with the
+// active ticket overlaid live.
 func (m model) queueRows() []QueueRow {
 	if m.state == stateSummary {
 		return m.resultRows()
 	}
-	return m.queue
+	return m.liveQueueRows()
+}
+
+// liveQueueRows overlays the running ticket onto the store snapshot: its row is
+// marked Live (so it animates and floats up its bucket), shows its precise active
+// phase, and ages from when it started. The active ticket is injected if the
+// store has no checkpoint for it yet, so the rail always shows what's running.
+func (m model) liveQueueRows() []QueueRow {
+	rows := make([]QueueRow, len(m.queue))
+	copy(rows, m.queue)
+	if m.currentTicket == "" {
+		return rows
+	}
+	found := false
+	for i := range rows {
+		if rows[i].ID != m.currentTicket {
+			continue
+		}
+		found = true
+		rows[i].Live = true
+		rows[i].FailureReason = "" // the active ticket is running, not failed
+		if d := m.activePhase(); d != "" {
+			rows[i].Desc = d
+		}
+		if !m.ticketStarted.IsZero() {
+			rows[i].Age = time.Since(m.ticketStarted)
+		}
+	}
+	if !found {
+		var age time.Duration
+		if !m.ticketStarted.IsZero() {
+			age = time.Since(m.ticketStarted)
+		}
+		rows = append(rows, QueueRow{
+			ID:    m.currentTicket,
+			Title: m.currentTitle,
+			Phase: state.Building,
+			Live:  true,
+			Desc:  m.activePhase(),
+			Age:   age,
+		})
+	}
+	return rows
 }
 
 // selectableCount is the number of rows the queue cursor can land on (the
@@ -165,25 +209,7 @@ func (m model) summaryHint() string {
 		return "⚠ reset " + m.confirmResetID + "? x again to confirm · esc cancel"
 	}
 	sel, hasSel := m.selectedRow()
-	parts := []string{"↑↓ move"}
-	if hasSel {
-		open, logs, resume, branch, reset := queueVerbs(sel, false)
-		if open {
-			parts = append(parts, "o open")
-		}
-		if logs {
-			parts = append(parts, "l logs")
-		}
-		if resume {
-			parts = append(parts, "r resume")
-		}
-		if branch {
-			parts = append(parts, "b branch")
-		}
-		if reset {
-			parts = append(parts, "x reset")
-		}
-	}
+	parts := append([]string{"↑↓ move"}, queueVerbHints(sel, hasSel, false)...)
 	parts = append(parts, "esc/q close")
 	return strings.Join(parts, " · ")
 }

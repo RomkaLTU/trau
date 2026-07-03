@@ -344,6 +344,13 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case logMsg, eventMsg, ticketMsg, titleMsg, phaseStartMsg, ticketDoneMsg, loopDoneMsg, recoveryDoneMsg:
 		var cmd tea.Cmd
 		m.dash, cmd = applyDashCmd(m.dash, msg)
+		// Refresh the rail snapshot on ticket boundaries and after a recovery
+		// action, so other tickets reflect the store while the active one stays
+		// live-overlaid by the dash.
+		switch msg.(type) {
+		case ticketMsg, ticketDoneMsg, recoveryDoneMsg:
+			m.dash = m.dash.withQueue(m.buildQueueRows())
+		}
 		return m, cmd
 
 	case dryRunDoneMsg:
@@ -373,18 +380,14 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusCancel()
 			m.statusCancel = nil
 		}
-		if m.view != viewStatus {
-			return m, nil
+		note, isErr := reconcileNote(msg)
+		switch m.view {
+		case viewStatus:
+			m.statusNote = note
+			m = m.loadStatusRows()
+		case viewRunning:
+			m.dash = m.dash.withBanner(note, isErr).withQueue(m.buildQueueRows())
 		}
-		switch {
-		case msg.err != nil:
-			m.statusNote = "✗ reconcile failed: " + msg.err.Error()
-		case len(msg.cleared) == 0:
-			m.statusNote = "✓ nothing stale — all checkpoints match the tracker"
-		default:
-			m.statusNote = fmt.Sprintf("✓ cleared %d stale checkpoint(s): %s", len(msg.cleared), strings.Join(msg.cleared, ", "))
-		}
-		m = m.loadStatusRows()
 		return m, nil
 
 	case statusActionMsg:
@@ -619,19 +622,39 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.dash.done() {
 			return m.handleQueueKey(msg, false)
 		}
-
-		if msg.String() == "q" || msg.String() == "ctrl+c" {
-			if m.loopCancel != nil {
-				m.loopCancel()
-			}
-			m.dash = m.dash.markStopping()
-			return m, nil
-		}
-		var cmd tea.Cmd
-		m.dash, cmd = applyDashCmd(m.dash, msg)
-		return m, cmd
+		return m.handleRunningKey(msg)
 	}
 	return m, nil
+}
+
+// handleRunningKey drives the live dashboard: the queue rail owns ↑↓ selection
+// and the recovery verbs (via handleQueueKey in live mode, which withholds the
+// tree/loop-mutating ones); everything else — watch, follow, page, exit stream —
+// goes to the dash. q/ctrl+c stop the loop.
+func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.dash.pendingResetID() != "" {
+		return m.handleQueueKey(msg, true)
+	}
+	if msg.String() == "q" || msg.String() == "ctrl+c" {
+		if m.loopCancel != nil {
+			m.loopCancel()
+		}
+		m.dash = m.dash.markStopping()
+		return m, nil
+	}
+	switch msg.String() {
+	case "up", "k":
+		m.dash = m.dash.movedQueueCursor(-1)
+		return m, nil
+	case "down", "j":
+		m.dash = m.dash.movedQueueCursor(1)
+		return m, nil
+	case "o", "l", "r", "b", "x", "R":
+		return m.handleQueueKey(msg, true)
+	}
+	var cmd tea.Cmd
+	m.dash, cmd = applyDashCmd(m.dash, msg)
+	return m, cmd
 }
 
 func (m appModel) toMenu() appModel {
@@ -721,7 +744,7 @@ func (m appModel) startRunLoop(epic string) (tea.Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(m.baseCtx)
 	m.loopCancel = cancel
 	m.subReturn = viewMenu
-	m.dash = freshDash(m.width, m.height, m.info.Base)
+	m.dash = freshDash(m.width, m.height, m.info.Base).withQueue(m.buildQueueRows())
 	m.view = viewRunning
 	return m, tea.Batch(m.dash.Init(), m.runLoopCmd(ctx, epic))
 }
@@ -763,6 +786,8 @@ func (m appModel) handleQueueKey(msg tea.KeyPressMsg, live bool) (tea.Model, tea
 	case msg.String() == "x" && hasSel && reset:
 		m.dash = m.dash.askResetConfirm(sel.ID)
 		return m, nil
+	case msg.String() == "R" && live:
+		return m, m.reconcileCmd(m.baseCtx)
 	case isBack(msg) && !live:
 		return m.toMenu(), nil
 	default:
@@ -889,7 +914,7 @@ func (m appModel) startRunTicket(id, provider string) (tea.Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(m.baseCtx)
 	m.loopCancel = cancel
 	m.subReturn = viewMenu
-	m.dash = freshDash(m.width, m.height, m.info.Base)
+	m.dash = freshDash(m.width, m.height, m.info.Base).withQueue(m.buildQueueRows())
 	m.view = viewRunning
 	return m, tea.Batch(m.dash.Init(), m.runTicketCmd(ctx, id, provider))
 }
@@ -915,6 +940,19 @@ func (m appModel) resetCmd(id string) tea.Cmd {
 	return func() tea.Msg {
 		err := actions.Reset(ctx, id)
 		return resetDoneMsg{id: id, err: err}
+	}
+}
+
+// reconcileNote formats a reconcile outcome for the Status note or the rail
+// banner, returning whether it was an error.
+func reconcileNote(msg reconcileDoneMsg) (string, bool) {
+	switch {
+	case msg.err != nil:
+		return "✗ reconcile failed: " + msg.err.Error(), true
+	case len(msg.cleared) == 0:
+		return "✓ nothing stale — all checkpoints match the tracker", false
+	default:
+		return fmt.Sprintf("✓ cleared %d stale checkpoint(s): %s", len(msg.cleared), strings.Join(msg.cleared, ", ")), false
 	}
 }
 
@@ -1114,11 +1152,9 @@ func (m appModel) renderReset() string {
 	return m.renderCard("Reset ticket", body, hint)
 }
 
-// loadStatusRows projects the saved checkpoints onto the shared queue model for
-// the Status browse screen, clamping the cursor into the new selectable set.
-// Age is time since each ticket's last checkpoint update.
-func (m appModel) loadStatusRows() appModel {
-	src := m.actions.StatusRows()
+// toQueueRows projects saved checkpoints onto the shared queue model, dating each
+// row by time since its last checkpoint update.
+func toQueueRows(src []StatusRow) []QueueRow {
 	rows := make([]QueueRow, 0, len(src))
 	for _, r := range src {
 		var age time.Duration
@@ -1138,8 +1174,19 @@ func (m appModel) loadStatusRows() appModel {
 			Age:           age,
 		})
 	}
-	m.statusRows = rows
-	active, _ := partitionQueue(rows)
+	return rows
+}
+
+// buildQueueRows reads the current checkpoints for the live rail snapshot.
+func (m appModel) buildQueueRows() []QueueRow {
+	return toQueueRows(m.actions.StatusRows())
+}
+
+// loadStatusRows refreshes the Status browse screen's rows, clamping the cursor
+// into the new selectable set.
+func (m appModel) loadStatusRows() appModel {
+	m.statusRows = m.buildQueueRows()
+	active, _ := partitionQueue(m.statusRows)
 	if m.statusCursor >= len(active) {
 		m.statusCursor = len(active) - 1
 	}
