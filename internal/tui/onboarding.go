@@ -2102,58 +2102,111 @@ func (m onboardingModel) renderNoRepo() string {
 	)
 }
 
+// hint is the wizard's footer legend, derived from help() so it can't drift
+// from the ? overlay. The three transient status states have no key legend and
+// keep their own copy.
 func (m onboardingModel) hint() string {
 	switch m.step {
 	case onboardSystemCheck:
-		if !m.systemCheckStarted {
-			return "enter start check · esc/q back"
+		if m.systemCheckStarted && !m.systemCheckDone {
+			return "checking dependencies…"
 		}
-		if m.systemCheckDone {
-			return "enter continue/re-check · esc/q back"
-		}
-		return "checking dependencies…"
-	case onboardWelcome:
-		return "enter continue · esc/q back"
-	case onboardProviders:
-		if m.providersPMFocused {
-			return "↑↓ move · enter/tab next · esc/q/← back"
-		}
-		return "↑↓ move · enter select · tab back · esc/q/← back"
-	case onboardLinearAPIKey:
-		return "enter/tab next · 'o' open key settings · esc/← back"
-	case onboardJiraCreds:
-		return "tab/↑↓ move · enter next · esc/← back"
-	case onboardLabels:
-		return "↑↓ move · enter select · esc/q/← back"
-	case onboardTimeTracking:
-		return "↑↓ move · enter select · esc/q/← back"
-	case onboardCI:
-		return "↑↓ move · enter select · esc/q/← back"
-	case onboardBaseBranch:
-		if m.baseBranchInputFocused {
-			return "enter/tab next · esc/← back"
-		}
-		return "↑↓ move · enter select · esc/q/tab back"
 	case onboardLinearTeam:
-		switch {
-		case m.teamDetecting:
+		if m.teamDetecting {
 			return "detecting… · esc/q back"
-		case m.teamManual, m.teamAutoFilled:
-			return "enter confirm · esc/← back"
-		default:
-			return "type to search · ↑↓ move · enter select · ctrl+t manual · esc/← back"
 		}
 	case onboardWrite:
 		if m.writing {
 			return "working…"
 		}
-		return "enter write · esc/q/← back"
-	case onboardCreateLabels, onboardDone:
-		return "enter/esc/q continue"
-	case onboardNoRepo:
-		return "enter/esc/q exit"
 	}
-	return ""
+	return m.help().footer()
+}
+
+// editing reports whether a free-text wizard field is focused, so ? is typed as
+// a literal instead of opening help. Mirrors the q→esc remap guard.
+func (m onboardingModel) editing() bool { return m.textEntryActive() }
+
+// help is the wizard's per-step key legend: the single source for its footer and
+// the ? overlay. Steps the static footer never had room for (e.g. ctrl+t manual
+// entry) surface here for the first time.
+func (m onboardingModel) help() screenHelp {
+	nav := group("Navigate", fk("↑↓", "move"))
+	switch m.step {
+	case onboardSystemCheck:
+		action := "start check"
+		if m.systemCheckDone {
+			action = "continue/re-check"
+		}
+		return screenHelp{title: "System check", columns: []helpColumn{
+			group("Actions", fk("enter", action), fk("esc/q", "back")),
+		}}
+	case onboardWelcome:
+		return screenHelp{title: "Welcome", columns: []helpColumn{
+			group("Actions", fk("enter", "continue"), fk("esc/q", "back")),
+		}}
+	case onboardProviders:
+		if m.providersPMFocused {
+			return screenHelp{title: "Providers", columns: []helpColumn{
+				nav, group("Actions", fk("enter/tab", "next"), fk("esc/q/←", "back")),
+			}}
+		}
+		return screenHelp{title: "Providers", columns: []helpColumn{
+			nav, group("Actions", fk("enter", "select"), fk("tab", "back"), fk("esc/q/←", "back")),
+		}}
+	case onboardLinearAPIKey:
+		return screenHelp{title: "Linear API key", columns: []helpColumn{
+			group("Actions", fk("enter/tab", "next"), fk("o", "open key settings"), fk("esc/←", "back")),
+		}}
+	case onboardJiraCreds:
+		return screenHelp{title: "Jira credentials", columns: []helpColumn{
+			group("Navigate", fk("tab/↑↓", "move")),
+			group("Actions", fk("enter", "next"), fk("esc/←", "back")),
+		}}
+	case onboardLabels, onboardTimeTracking, onboardCI:
+		return screenHelp{title: "Options", columns: []helpColumn{
+			nav, group("Actions", fk("enter", "select"), fk("esc/q/←", "back")),
+		}}
+	case onboardBaseBranch:
+		if m.baseBranchInputFocused {
+			return screenHelp{title: "Base branch", columns: []helpColumn{
+				group("Actions", fk("enter/tab", "next"), fk("esc/←", "back")),
+			}}
+		}
+		return screenHelp{title: "Base branch", columns: []helpColumn{
+			nav, group("Actions", fk("enter", "select"), fk("esc/q/tab", "back")),
+		}}
+	case onboardLinearTeam:
+		switch {
+		case m.teamDetecting:
+			return screenHelp{title: "Linear team", columns: []helpColumn{
+				group("Actions", fk("esc/q", "back")),
+			}}
+		case m.teamManual, m.teamAutoFilled:
+			return screenHelp{title: "Linear team", columns: []helpColumn{
+				group("Actions", fk("enter", "confirm"), fk("esc/←", "back")),
+			}}
+		default:
+			return screenHelp{title: "Linear team", columns: []helpColumn{
+				group("Search", fk("type", "to search")),
+				nav,
+				group("Actions", fk("enter", "select"), fk("ctrl+t", "manual"), fk("esc/←", "back")),
+			}}
+		}
+	case onboardWrite:
+		return screenHelp{title: "Write config", columns: []helpColumn{
+			group("Actions", fk("enter", "write"), fk("esc/q/←", "back")),
+		}}
+	case onboardCreateLabels, onboardDone:
+		return screenHelp{title: "Onboarding", columns: []helpColumn{
+			group("Actions", fk("enter/esc/q", "continue")),
+		}}
+	case onboardNoRepo:
+		return screenHelp{title: "No repository", columns: []helpColumn{
+			group("Actions", fk("enter/esc/q", "exit")),
+		}}
+	}
+	return screenHelp{title: "Onboarding"}
 }
 
 func (m onboardingModel) Done() bool { return m.done }

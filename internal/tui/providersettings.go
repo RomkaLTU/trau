@@ -453,8 +453,23 @@ func (m providerSettingsModel) renderBrowse() string {
 	body = append(body, mid...)
 	body = append(body, footer...)
 
-	hint := "↑↓ move · ←→ switch provider · enter edit · esc/q back"
-	return m.renderCard(strings.Join(body, "\n"), hint)
+	return m.renderCard(strings.Join(body, "\n"), m.help().footer())
+}
+
+// help is the provider tuning panel's key legend per step: the single source
+// for its footer and the ? overlay.
+func (m providerSettingsModel) help() screenHelp {
+	if m.step == provEdit {
+		return screenHelp{title: "Edit provider", columns: []helpColumn{
+			group("Navigate", fk("↑↓", "switch field"), xk("tab/⇧tab", "switch field")),
+			group("Value", fk("←→", "change"), xk("h/l", "change")),
+			group("Actions", fk("enter", "save"), fk("esc/q", "cancel")),
+		}}
+	}
+	return screenHelp{title: "Provider settings", columns: []helpColumn{
+		group("Navigate", fk("↑↓", "move"), fk("←→", "switch provider")),
+		group("Actions", fk("enter", "edit"), xk("e", "edit"), fk("esc/q", "back")),
+	}}
 }
 
 func (m providerSettingsModel) renderTabs() string {
@@ -575,7 +590,7 @@ func (m providerSettingsModel) renderEdit() string {
 	if m.step == provSaving {
 		return m.renderCard(strings.Join(rows, "\n"), "saving…")
 	}
-	return m.renderCard(strings.Join(rows, "\n"), "↑↓ switch field · ←→ change · enter save · esc/q cancel")
+	return m.renderCard(strings.Join(rows, "\n"), m.help().footer())
 }
 
 // fieldDisplay renders a resolved field value with its source layer, or an empty

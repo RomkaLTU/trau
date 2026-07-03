@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/progress"
 	"charm.land/bubbles/v2/spinner"
@@ -43,9 +42,11 @@ const (
 	stateSummary
 )
 
+// keyMap holds the running dashboard's action bindings. Key matching stays with
+// bubbles' key.Binding; the footer legend and the ? overlay are both rendered
+// from runningHelp so they can't drift from what this handles.
 type keyMap struct {
 	Quit   key.Binding
-	Help   key.Binding
 	Follow key.Binding
 	Open   key.Binding
 	Watch  key.Binding
@@ -54,21 +55,45 @@ type keyMap struct {
 func defaultKeyMap() keyMap {
 	return keyMap{
 		Quit:   key.NewBinding(key.WithKeys("ctrl+c", "q"), key.WithHelp("q", "quit/stop")),
-		Help:   key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Follow: key.NewBinding(key.WithKeys("f", "G"), key.WithHelp("f", "follow")),
 		Open:   key.NewBinding(key.WithKeys("o"), key.WithHelp("o", "open PR")),
 		Watch:  key.NewBinding(key.WithKeys("w"), key.WithHelp("w", "watch agent")),
 	}
 }
 
-// ShortHelp returns the short-form key bindings for the help footer.
-func (k keyMap) ShortHelp() []key.Binding {
-	return []key.Binding{k.Watch, k.Follow, k.Help, k.Quit}
+// runningHelp is the live dashboard's key legend — the single source for its
+// footer and its ? overlay.
+func (m model) runningHelp() screenHelp {
+	return screenHelp{title: "Run", columns: []helpColumn{
+		group("Pipeline",
+			fk("w", "watch agent"),
+			fk("f", "follow"),
+			xk("↑↓", "scroll feed"),
+			xk("pgup/pgdn", "page feed"),
+			xk("esc", "exit live view"),
+		),
+		group("Ticket", fk("o", "open PR")),
+		group("Session",
+			fk("q", "quit/stop"),
+			xk("ctrl+c", "force quit"),
+		),
+	}}
 }
 
-// FullHelp returns the full key binding help page.
-func (k keyMap) FullHelp() [][]key.Binding {
-	return [][]key.Binding{{k.Watch, k.Follow, k.Open}, {k.Help, k.Quit}}
+// summaryHelp is the recap screen's key legend. The recovery keys (resume,
+// branch, reset) apply per selected row; the overlay lists them all so nothing
+// stays hidden, while summaryHint keeps the footer to what the row supports.
+func (m model) summaryHelp() screenHelp {
+	return screenHelp{title: "Session complete", columns: []helpColumn{
+		group("Navigate", fk("↑↓", "move")),
+		group("Recover",
+			fk("o", "open PR"),
+			fk("r", "resume ticket"),
+			fk("b", "checkout branch"),
+			fk("x", "reset ticket"),
+		),
+		group("Session", fk("esc/q", "close")),
+	}}
 }
 
 type model struct {
@@ -86,7 +111,6 @@ type model struct {
 	viewport  viewport.Model
 	feed      []feedEntry
 	following bool
-	help      help.Model
 	usage     usageStats
 	win       usage.Window
 
@@ -200,7 +224,6 @@ func initialModel(onInterrupt func()) model {
 		viewport:    vp,
 		feed:        make([]feedEntry, 0, maxLogLines),
 		following:   true,
-		help:        help.New(),
 		onInterrupt: onInterrupt,
 	}
 }
@@ -319,10 +342,6 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 		m.banner = "⏹ stopping after this phase… (ctrl+c again to force quit)"
 		m.bannerErr = false
 		return m, nil, true
-	case key.Matches(msg, m.keys.Help):
-		m.help.ShowAll = !m.help.ShowAll
-		m.relayout()
-		return m, nil, true
 	case key.Matches(msg, m.keys.Follow):
 		m.following = true
 		m.viewport.GotoBottom()
@@ -373,7 +392,6 @@ func (m *model) relayout() {
 	m.viewport.SetWidth(d.vpW)
 	m.viewport.SetHeight(d.vpH)
 	m.progress.SetWidth(d.leftW - 9) // inner text width less room for " 100%"
-	m.help.SetWidth(m.width)
 	m.refreshFeed()
 	if m.state == stateSummary {
 		cursor := m.summaryTable.Cursor()
@@ -390,9 +408,6 @@ type dims struct {
 // header(2) + gap + body(bodyH) + gap + usage HUD(hudH) + gap + footer(fh).
 func (m model) dims() dims {
 	fh := footerH
-	if m.help.ShowAll {
-		fh += 2
-	}
 	bodyH := m.height - headerH - hudH - fh - 3*panelGap
 	if bodyH < 6 {
 		bodyH = 6
@@ -968,7 +983,7 @@ func (m model) renderFooter() string {
 	if done > 0 {
 		left = m.styles.Footer.Render(fmt.Sprintf("%d merged", done))
 	}
-	return joinEnds(left, m.help.View(m.keys), m.width)
+	return joinEnds(left, m.styles.Help.Render(m.runningHelp().footer()), m.width)
 }
 
 // renderFeed lays out the activity feed for a panel of inner text width w.

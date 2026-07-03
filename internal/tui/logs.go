@@ -205,8 +205,26 @@ func (m logsModel) View() string {
 
 	header := m.styles.Header.Render("⬡ trau") + "  " + m.styles.SummaryTitle.Render("logs")
 	sep := m.styles.Separator.Render(strings.Repeat("─", m.width))
-	hint := m.styles.Help.Render("↑↓ pick · f/b/u/d scroll · shift↑/shift↓ also scroll · g/G jump · esc/q back")
+	hint := m.styles.Help.Render(m.help().footer())
 	return header + "\n" + sep + "\n" + body + "\n" + sep + "\n" + hint
+}
+
+// help is the log inspector's key legend: the single source for its footer and
+// the ? overlay. tab (switch pane) was hidden behind a static hint before.
+func (m logsModel) help() screenHelp {
+	return screenHelp{title: "Logs", columns: []helpColumn{
+		group("Navigate",
+			fk("↑↓", "pick"),
+			xk("j/k", "pick"),
+			fk("tab", "switch pane"),
+		),
+		group("Scroll log",
+			fk("f/b/u/d", "scroll"),
+			xk("shift+↑↓", "half-page"),
+			fk("g/G", "jump"),
+		),
+		group("Session", fk("esc/q", "back")),
+	}}
 }
 
 func (m logsModel) logTitle() string {

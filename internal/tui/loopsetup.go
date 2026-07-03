@@ -335,13 +335,36 @@ func (m loopSetupModel) summary() string {
 }
 
 func (m loopSetupModel) hint() string {
+	if m.step == loopLoading {
+		return "loading… · esc/q cancel"
+	}
+	return m.help().footer()
+}
+
+// help is the run-loop setup's key legend per step: the single source for its
+// footer and the ? overlay.
+func (m loopSetupModel) help() screenHelp {
 	switch m.step {
 	case loopLoading:
-		return "loading… · esc/q cancel"
+		return screenHelp{title: "Run loop", columns: []helpColumn{
+			group("Session", fk("esc/q", "cancel")),
+		}}
 	case loopList:
-		return "↑↓ move · 's' run selected · 'o' open · 'r' refresh · enter start · esc/q back"
-	default:
-		return "enter start · type an epic to preview · esc back"
+		return screenHelp{title: "Run loop", columns: []helpColumn{
+			group("Navigate", fk("↑↓", "move"), xk("tab/⇧tab", "move")),
+			group("Actions",
+				fk("enter", "start"),
+				fk("s", "run selected"),
+				fk("o", "open issue"),
+				fk("r", "refresh"),
+			),
+			group("Session", fk("esc/q", "back")),
+		}}
+	default: // loopConfirm
+		return screenHelp{title: "Run loop", columns: []helpColumn{
+			group("Actions", fk("enter", "start"), fk("type", "epic to preview")),
+			group("Session", fk("esc", "back")),
+		}}
 	}
 }
 

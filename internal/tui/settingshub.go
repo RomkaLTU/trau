@@ -167,5 +167,30 @@ func (m settingsHubModel) renderMenu() string {
 	for i, it := range m.items {
 		rows = append(rows, listRow(s, i == m.cursor, it.title, it.desc, 14))
 	}
-	return cardView(s, m.width, m.height, strings.Join(rows, "\n"), "↑↓ move · enter select · esc/q back")
+	return cardView(s, m.width, m.height, strings.Join(rows, "\n"), m.help().footer())
+}
+
+// help delegates to the active section so the footer and the ? overlay track
+// whichever settings pane is showing.
+func (m settingsHubModel) help() screenHelp {
+	switch m.step {
+	case hubAll:
+		return m.all.help()
+	case hubProviders:
+		return m.providers.help()
+	default: // hubMenu
+		return screenHelp{title: "Settings", columns: []helpColumn{
+			group("Navigate", fk("↑↓", "move"), xk("j/k", "move")),
+			group("Actions", fk("enter", "select"), fk("esc/q", "back")),
+		}}
+	}
+}
+
+// editing reports whether the active section has a focused free-text field, so
+// ? is typed rather than opening help.
+func (m settingsHubModel) editing() bool {
+	if m.step == hubAll {
+		return m.all.editing()
+	}
+	return false
 }

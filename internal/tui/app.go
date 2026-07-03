@@ -234,6 +234,8 @@ type appModel struct {
 	loopSetup loopSetupModel
 	runOnce   runOnceModel
 	settings  settingsHubModel
+
+	help helpModel
 }
 
 func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
@@ -413,6 +415,23 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// The ? help overlay is modal and global: while open it owns every key, and
+	// it opens on any screen that isn't mid-text-entry (where ? is a literal
+	// character). One interception here keeps behavior identical on every view.
+	if m.help.active {
+		lay := layoutHelp(m.styles, m.helpFor(), m.help.filter, m.width, m.height)
+		var closed bool
+		m.help, closed = m.help.update(msg, lay)
+		if closed {
+			m.help = helpModel{}
+		}
+		return m, nil
+	}
+	if msg.String() == "?" && !m.editing() && m.helpFor().hasKeys() {
+		m.help = helpModel{active: true}
+		return m, nil
+	}
+
 	switch m.view {
 	case viewOnboarding:
 		var cmd tea.Cmd
@@ -794,6 +813,14 @@ func (m appModel) render() string {
 	if m.width == 0 || m.height == 0 {
 		return "Loading…"
 	}
+	base := m.renderScreen()
+	if m.help.active {
+		return compositeHelp(m.styles, base, m.helpFor(), m.help, m.width, m.height)
+	}
+	return base
+}
+
+func (m appModel) renderScreen() string {
 	switch m.view {
 	case viewOnboarding:
 		return m.onboard.View()
@@ -807,7 +834,7 @@ func (m appModel) render() string {
 		case m.statusNote != "":
 			body += "\n\n" + m.statusNote
 		}
-		hint := "↑↓ scroll · r reconcile · esc/q back"
+		hint := statusHelp().footer()
 		if m.statusBusy {
 			hint = "reconciling… · esc/q back"
 		}
@@ -815,7 +842,7 @@ func (m appModel) render() string {
 	case viewLogs:
 		return m.logs.View()
 	case viewVersion:
-		return m.renderCard("Version", "trau "+m.info.Version, "esc/q back")
+		return m.renderCard("Version", "trau "+m.info.Version, leafHelp("Version").footer())
 	case viewDryRun:
 		return m.renderBusy("Dry run", "asking Linear for the next eligible ticket")
 	case viewReset:
@@ -829,7 +856,7 @@ func (m appModel) render() string {
 	case viewSettings:
 		return m.settings.View()
 	case viewError:
-		return m.renderCard("Error", m.styles.Error.Render(m.errMsg), "esc/q back")
+		return m.renderCard("Error", m.styles.Error.Render(m.errMsg), leafHelp("Error").footer())
 	default:
 		return m.renderMenu()
 	}
@@ -861,7 +888,7 @@ func (m appModel) renderMenu() string {
 	head = append(head, context, "")
 	body := strings.Join(head, "\n") + "\n" + strings.Join(rows, "\n")
 
-	return cardView(s, m.width, m.height, body, "↑↓ move · enter select · q quit")
+	return cardView(s, m.width, m.height, body, menuHelp().footer())
 }
 
 func (m appModel) renderMore() string {
@@ -878,7 +905,7 @@ func (m appModel) renderMore() string {
 	body := strings.Join([]string{header, tagline, ""}, "\n") +
 		"\n" + strings.Join(rows, "\n")
 
-	return cardView(s, m.width, m.height, body, "↑↓ move · enter select · esc/q back")
+	return cardView(s, m.width, m.height, body, moreHelp().footer())
 }
 
 func (m appModel) menuRows(items []menuItem, cursor int) []string {
@@ -949,7 +976,7 @@ func (m appModel) renderReset() string {
 		hint = "esc/q back"
 	default:
 		body = "Enter the ticket ID to reset (e.g. " + exampleID(m.info.Prefix) + "):\n\n" + m.reset.View()
-		hint = "enter confirm · esc back"
+		hint = resetHelp().footer()
 	}
 	return m.renderCard("Reset ticket", body, hint)
 }
@@ -1013,6 +1040,91 @@ func isBack(msg tea.KeyPressMsg) bool {
 		return true
 	}
 	return false
+}
+
+// helpFor returns the current screen's key legend — the one declaration that
+// drives both its footer and the ? overlay. Sub-model-backed screens delegate
+// to the sub-model so its handled keys and the overlay can never drift apart.
+func (m appModel) helpFor() screenHelp {
+	switch m.view {
+	case viewMenu:
+		return menuHelp()
+	case viewMore:
+		return moreHelp()
+	case viewStatus:
+		return statusHelp()
+	case viewLogs:
+		return m.logs.help()
+	case viewReset:
+		return resetHelp()
+	case viewVersion:
+		return leafHelp("Version")
+	case viewDryRun:
+		return leafHelp("Dry run")
+	case viewError:
+		return leafHelp("Error")
+	case viewRunLoop:
+		return m.loopSetup.help()
+	case viewRunOnce:
+		return m.runOnce.help()
+	case viewSettings:
+		return m.settings.help()
+	case viewOnboarding:
+		return m.onboard.help()
+	case viewRunning:
+		if m.dash.done() {
+			return m.dash.summaryHelp()
+		}
+		return m.dash.runningHelp()
+	}
+	return screenHelp{}
+}
+
+// editing reports whether a free-text field is focused, so ? is typed as a
+// literal instead of opening help. Only genuine free-text entry gates ?;
+// ID/epic/branch fields (where ? is never a valid character) still open help.
+func (m appModel) editing() bool {
+	switch m.view {
+	case viewOnboarding:
+		return m.onboard.editing()
+	case viewSettings:
+		return m.settings.editing()
+	}
+	return false
+}
+
+func menuHelp() screenHelp {
+	return screenHelp{title: "Menu", columns: []helpColumn{
+		group("Navigate", fk("↑↓", "move"), xk("j/k", "move")),
+		group("Actions", fk("enter", "select"), fk("q", "quit")),
+	}}
+}
+
+func moreHelp() screenHelp {
+	return screenHelp{title: "More", columns: []helpColumn{
+		group("Navigate", fk("↑↓", "move"), xk("j/k", "move")),
+		group("Actions", fk("enter", "select"), fk("esc/q", "back")),
+	}}
+}
+
+func statusHelp() screenHelp {
+	return screenHelp{title: "Status", columns: []helpColumn{
+		group("Navigate", fk("↑↓", "scroll")),
+		group("Actions", fk("r", "reconcile"), fk("esc/q", "back")),
+	}}
+}
+
+func resetHelp() screenHelp {
+	return screenHelp{title: "Reset ticket", columns: []helpColumn{
+		group("Actions", fk("enter", "confirm"), fk("esc", "back")),
+	}}
+}
+
+// leafHelp is the legend for a read-only card whose only key is back.
+func leafHelp(title string) screenHelp {
+	return screenHelp{title: title, columns: []helpColumn{
+		group("Actions", fk("esc/q", "back")),
+	}}
 }
 
 func freshDash(w, h int, binding string) model {
