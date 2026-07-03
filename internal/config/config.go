@@ -116,6 +116,11 @@ type Config struct {
 
 	TUI bool
 
+	// Theme selects the TUI color preset; ThemeColors carries per-role hex
+	// overrides keyed by semantic role name (see ThemeRoles).
+	Theme       string
+	ThemeColors map[string]string
+
 	LiveView bool
 
 	EpicFlow bool
@@ -212,6 +217,7 @@ func Defaults() Config {
 		VerifyChecks:          true,
 		VerifyPanelPolicy:     "unanimous",
 		TUI:                   true,
+		Theme:                 "default",
 		EpicFlow:              true,
 		UsageWindow:           true,
 		UsageWindowPTY:        false,
@@ -547,6 +553,17 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		c.TUI = v == "1"
 		sources["TRAU_TUI"] = src.name
 	}
+	str("THEME", &c.Theme)
+	for _, role := range ThemeRoles {
+		key := "THEME_" + strings.ToUpper(role)
+		if v, src := get(key); v != "" {
+			if c.ThemeColors == nil {
+				c.ThemeColors = map[string]string{}
+			}
+			c.ThemeColors[role] = v
+			sources[key] = src.name
+		}
+	}
 	if v, src := get("EPIC_FLOW"); v != "" {
 		c.EpicFlow = v == "1"
 		sources["EPIC_FLOW"] = src.name
@@ -620,6 +637,10 @@ func ValidatePrefix(id, prefix string) error {
 }
 
 var phases = []string{"build", "handoff", "verify", "repair", "bugfix", "cleanup", "lintfix", "commit", "pick"}
+
+// ThemeRoles are the semantic color roles a THEME_<ROLE> config key can
+// override with a hex value.
+var ThemeRoles = []string{"brand", "accent", "success", "error", "warning", "info", "text", "subtle", "faint", "surface", "border", "ink"}
 
 func addProviderPhaseRoutesWithSources(routes map[string]string, sources map[string]Layer, provider string, c Config, get func(string) (string, Layer)) {
 	var defaultModel, defaultEffort string
@@ -939,7 +960,7 @@ type KeyMeta struct {
 // order is the order the editor presents them; advanced keys are hidden behind
 // a toggle by default.
 func KnownKeys() []KeyMeta {
-	return []KeyMeta{
+	keys := []KeyMeta{
 		{Key: "LINEAR_TEAM", Description: "Linear team / Jira project / GitHub repo"},
 		{Key: "ISSUE_PREFIX", Description: "Issue-ID prefix for ticket parsing (default: the team key, e.g. COD, TMS, ENG)"},
 		{Key: "LINEAR_API_KEY", Advanced: true, Description: "Linear personal API key"},
@@ -996,6 +1017,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "VERIFY_PANEL", Description: "Cross-vendor verify panel: comma-separated provider:model:effort verifiers (e.g. claude,codex:gpt-5.5,kimi). Empty = single verifier"},
 		{Key: "VERIFY_PANEL_POLICY", Default: "unanimous", Description: "Panel verdict merge policy: unanimous | majority | any-pass", Options: []string{"unanimous", "majority", "any-pass"}},
 		{Key: "TRAU_TUI", Default: "1", Description: "Enable Bubble Tea TUI (1 = yes, 0 = no)", Bool: true},
+		{Key: "THEME", Default: "default", Description: "TUI color theme preset", Options: []string{"default", "catppuccin", "dracula", "gruvbox", "nord"}},
 		{Key: "EPIC_FLOW", Default: "1", Description: "Process epic sub-issues (1 = yes, 0 = no)", Bool: true},
 		{Key: "TIMELOG_ENABLED", Default: "0", Description: "Write a per-ticket effort time log (JSON) after merge (opt-in; 1 = yes, 0 = no)", Bool: true},
 		{Key: "TIMELOG_STORAGE", Default: "repo", Description: "Time-log location: repo (<repo>/.dev-flow/time/) | user (~/.dev-flow/time/<repo>/) | none", Options: []string{"repo", "user", "none"}},
@@ -1046,6 +1068,14 @@ func KnownKeys() []KeyMeta {
 		{Key: "KIMI_COMMIT_MODEL", Advanced: true, Description: "Kimi model for commit phase"},
 		{Key: "KIMI_PICK_MODEL", Advanced: true, Description: "Kimi model for pick phase"},
 	}
+	for _, role := range ThemeRoles {
+		keys = append(keys, KeyMeta{
+			Key:         "THEME_" + strings.ToUpper(role),
+			Advanced:    true,
+			Description: "Hex override for the theme's " + role + " color (e.g. #7D56F4)",
+		})
+	}
+	return keys
 }
 
 // ProviderTuningMeta enumerates the execution knobs a provider exposes, so the
@@ -1424,6 +1454,8 @@ func keyValue(cfg Config, key string) string {
 			return "1"
 		}
 		return "0"
+	case "THEME":
+		return cfg.Theme
 	case "EPIC_FLOW":
 		if cfg.EpicFlow {
 			return "1"
@@ -1460,6 +1492,9 @@ func keyValue(cfg Config, key string) string {
 		return phaseRouteEffort(cfg.Routes, "codex", key)
 	case "KIMI_BUILD_MODEL", "KIMI_HANDOFF_MODEL", "KIMI_VERIFY_MODEL", "KIMI_REPAIR_MODEL", "KIMI_BUGFIX_MODEL", "KIMI_COMMIT_MODEL", "KIMI_PICK_MODEL":
 		return phaseRouteModel(cfg.Routes, "kimi", key)
+	}
+	if role, ok := strings.CutPrefix(key, "THEME_"); ok {
+		return cfg.ThemeColors[strings.ToLower(role)]
 	}
 	return ""
 }

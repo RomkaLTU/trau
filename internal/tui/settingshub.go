@@ -54,6 +54,13 @@ func newSettingsHubModel(actions SettingsActions, styles Styles, width, height i
 
 func (m settingsHubModel) Init() tea.Cmd { return nil }
 
+func (m settingsHubModel) restyled(s Styles) settingsHubModel {
+	m.styles = s
+	m.all.styles = s
+	m.providers.styles = s
+	return m
+}
+
 // AtRoot reports whether the hub is on its landing menu, so the app shell can
 // treat esc/q as "back to the More menu".
 func (m settingsHubModel) AtRoot() bool { return m.step == hubMenu }

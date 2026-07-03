@@ -1,21 +1,50 @@
 package tui
 
 import (
+	"strings"
+
 	"charm.land/lipgloss/v2"
 )
 
 var (
-	colorBrand   = lipgloss.Color("#00D4AA")
-	colorAccent  = lipgloss.Color("#7D56F4")
-	colorSuccess = lipgloss.Color("#04B575")
-	colorError   = lipgloss.Color("#FF4672")
-	colorWarning = lipgloss.Color("#F9D423")
-	colorInfo    = lipgloss.Color("#00AAFF")
-	colorSubtle  = lipgloss.Color("#888888")
-	colorFaint   = lipgloss.Color("#555555")
-	colorInk     = lipgloss.Color("#0B0B0E")
-	colorBarOff  = lipgloss.Color("#2A2A2E")
+	theme       = defaultTheme(true)
+	themeName   string
+	themeHexes  map[string]string
+	themeIsDark = true
+	themeNote   string
 )
+
+// SetTheme selects the palette every screen draws from: a preset name plus
+// per-role hex overrides. It returns a human-readable note when a value was
+// invalid and fell back to the default. The dark variant applies until the
+// terminal background has been detected (see setThemeBackground).
+func SetTheme(name string, overrides map[string]string) string {
+	themeName, themeHexes = name, overrides
+	theme, themeNote = resolveTheme(name, overrides, themeIsDark)
+	return themeNote
+}
+
+func setThemeBackground(isDark bool) {
+	themeIsDark = isDark
+	theme, _ = resolveTheme(themeName, themeHexes, isDark)
+}
+
+// applyThemeFromItems re-resolves the palette from the settings editor's
+// current config items, so a saved THEME/THEME_* change recolors the running
+// UI without a restart.
+func applyThemeFromItems(items []ConfigItem) {
+	name := ""
+	overrides := map[string]string{}
+	for _, it := range items {
+		switch {
+		case it.Key == "THEME":
+			name = it.Value
+		case strings.HasPrefix(it.Key, "THEME_") && it.Value != "":
+			overrides[strings.ToLower(strings.TrimPrefix(it.Key, "THEME_"))] = it.Value
+		}
+	}
+	SetTheme(name, overrides)
+}
 
 // Styles holds the Lip Gloss styles used by the TUI. They are intentionally
 // simple so the TUI stays readable and easy to maintain.
@@ -48,42 +77,47 @@ type Styles struct {
 	SummaryTitle lipgloss.Style
 }
 
-// DefaultStyles returns the default style set. Lip Gloss automatically respects
-// NO_COLOR, so these colors are best-effort and degrade gracefully.
+// DefaultStyles returns the style set for the active theme. Lip Gloss
+// automatically respects NO_COLOR and downsamples on low-color terminals, so
+// these colors are best-effort and degrade gracefully.
 func DefaultStyles() Styles {
+	return newStyles(theme)
+}
+
+func newStyles(t Theme) Styles {
 	return Styles{
-		Header:    lipgloss.NewStyle().Bold(true).Foreground(colorBrand),
-		Subtle:    lipgloss.NewStyle().Foreground(colorSubtle),
+		Header:    lipgloss.NewStyle().Bold(true).Foreground(t.Brand),
+		Subtle:    lipgloss.NewStyle().Foreground(t.Subtle),
 		LogLine:   lipgloss.NewStyle().PaddingLeft(1),
-		Spinner:   lipgloss.NewStyle().Foreground(colorAccent),
-		Success:   lipgloss.NewStyle().Foreground(colorSuccess),
-		Error:     lipgloss.NewStyle().Foreground(colorError),
-		Warning:   lipgloss.NewStyle().Foreground(colorWarning),
-		Info:      lipgloss.NewStyle().Foreground(colorInfo),
-		Footer:    lipgloss.NewStyle().Foreground(colorSubtle),
-		Help:      lipgloss.NewStyle().Foreground(colorFaint),
-		Separator: lipgloss.NewStyle().Foreground(colorFaint),
+		Spinner:   lipgloss.NewStyle().Foreground(t.Accent),
+		Success:   lipgloss.NewStyle().Foreground(t.Success),
+		Error:     lipgloss.NewStyle().Foreground(t.Error),
+		Warning:   lipgloss.NewStyle().Foreground(t.Warning),
+		Info:      lipgloss.NewStyle().Foreground(t.Info),
+		Footer:    lipgloss.NewStyle().Foreground(t.Subtle),
+		Help:      lipgloss.NewStyle().Foreground(t.Faint),
+		Separator: lipgloss.NewStyle().Foreground(t.Faint),
 
 		Pane: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colorFaint).
+			BorderForeground(t.Border).
 			Padding(0, 1),
-		PaneTitle: lipgloss.NewStyle().Bold(true).Foreground(colorSubtle),
+		PaneTitle: lipgloss.NewStyle().Bold(true).Foreground(t.Subtle),
 
-		StepDone:    lipgloss.NewStyle().Foreground(colorSuccess),
-		StepActive:  lipgloss.NewStyle().Bold(true).Foreground(colorAccent),
-		StepFailed:  lipgloss.NewStyle().Bold(true).Foreground(colorError),
-		StepPending: lipgloss.NewStyle().Foreground(colorFaint),
-		StepTag:     lipgloss.NewStyle().Foreground(colorSubtle),
+		StepDone:    lipgloss.NewStyle().Foreground(t.Success),
+		StepActive:  lipgloss.NewStyle().Bold(true).Foreground(t.Accent),
+		StepFailed:  lipgloss.NewStyle().Bold(true).Foreground(t.Error),
+		StepPending: lipgloss.NewStyle().Foreground(t.Faint),
+		StepTag:     lipgloss.NewStyle().Foreground(t.Subtle),
 
-		Banner: lipgloss.NewStyle().Bold(true).Foreground(colorWarning),
+		Banner: lipgloss.NewStyle().Bold(true).Foreground(t.Warning),
 		BannerErr: lipgloss.NewStyle().Bold(true).
-			Foreground(colorError),
+			Foreground(t.Error),
 
 		SummaryCard: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colorBrand).
+			BorderForeground(t.Brand).
 			Padding(1, 2),
-		SummaryTitle: lipgloss.NewStyle().Bold(true).Foreground(colorBrand),
+		SummaryTitle: lipgloss.NewStyle().Bold(true).Foreground(t.Brand),
 	}
 }

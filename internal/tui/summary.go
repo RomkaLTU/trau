@@ -107,10 +107,10 @@ func (m model) makeSummaryTable() table.Model {
 		table.WithHeight(h),
 	)
 	st := table.DefaultStyles()
-	st.Header = st.Header.Bold(true).Foreground(colorSubtle).
-		BorderBottom(true).BorderForeground(colorFaint)
-	st.Selected = st.Selected.Foreground(lipgloss.Color("#FFFFFF")).
-		Background(colorBrand).Bold(false)
+	st.Header = st.Header.Bold(true).Foreground(theme.Subtle).
+		BorderBottom(true).BorderForeground(theme.Border)
+	st.Selected = st.Selected.Foreground(theme.Ink).
+		Background(theme.Brand).Bold(false)
 	t.SetStyles(st)
 	return t
 }

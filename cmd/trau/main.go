@@ -200,6 +200,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		cfg.RepoRoot = repoRoot
 	}
 
+	if note := tui.SetTheme(cfg.Theme, cfg.ThemeColors); note != "" {
+		fmt.Fprintln(stderr, note)
+	}
+
 	if cfg.RunsDir == ".trau/runs" {
 		if _, err := os.Stat("runs"); err == nil {
 			if legacyRunsTracked() {

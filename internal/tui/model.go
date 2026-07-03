@@ -196,7 +196,13 @@ func initialModel(onInterrupt func()) model {
 }
 
 func (m model) Init() tea.Cmd {
-	return m.spin.Tick
+	return tea.Batch(m.spin.Tick, tea.RequestBackgroundColor)
+}
+
+func (m model) restyled() model {
+	m.styles = DefaultStyles()
+	m.spin.Style = m.styles.Spinner
+	return m
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -207,6 +213,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m, cmd, handled := m.handleKey(msg); handled {
 			return m, cmd
 		}
+
+	case tea.BackgroundColorMsg:
+		setThemeBackground(msg.IsDark())
+		m = m.restyled()
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -711,7 +721,7 @@ func (m model) renderRunning() string {
 func (m model) renderHeader() string {
 	left := m.styles.Header.Render("⬡ trau")
 	if m.currentTicket != "" {
-		left += "  " + chip(m.currentTicket, colorInfo)
+		left += "  " + chip(m.currentTicket, theme.Info)
 	}
 	if m.currentTitle != "" {
 		left += " " + m.styles.Subtle.Render(truncate(m.currentTitle, 44))
@@ -727,11 +737,11 @@ func (m model) renderHeader() string {
 func (m model) stateChip() (string, color.Color) {
 	switch {
 	case m.paused:
-		return "paused", colorError
+		return "paused", theme.Error
 	case m.stopping:
-		return "stopping", colorWarning
+		return "stopping", theme.Warning
 	default:
-		return "running", colorSuccess
+		return "running", theme.Success
 	}
 }
 
@@ -1007,7 +1017,7 @@ func pad(s string, w int) string {
 }
 
 func chip(label string, bg color.Color) string {
-	return lipgloss.NewStyle().Bold(true).Foreground(colorInk).Background(bg).Padding(0, 1).Render(label)
+	return lipgloss.NewStyle().Bold(true).Foreground(theme.Ink).Background(bg).Padding(0, 1).Render(label)
 }
 
 // usageBar renders a threshold-colored fill bar (green → amber → red) of width w.
@@ -1019,15 +1029,15 @@ func usageBar(frac float64, w int) string {
 		frac = 1
 	}
 	on := int(frac*float64(w) + 0.5)
-	c := colorSuccess
+	c := theme.Success
 	switch {
 	case frac >= 0.9:
-		c = colorError
+		c = theme.Error
 	case frac >= 0.7:
-		c = colorWarning
+		c = theme.Warning
 	}
 	full := lipgloss.NewStyle().Foreground(c).Render(strings.Repeat("█", on))
-	empty := lipgloss.NewStyle().Foreground(colorBarOff).Render(strings.Repeat("░", w-on))
+	empty := lipgloss.NewStyle().Foreground(theme.Surface).Render(strings.Repeat("░", w-on))
 	return full + empty
 }
 

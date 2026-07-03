@@ -286,10 +286,32 @@ func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
 	return m
 }
 
-func (m appModel) Init() tea.Cmd { return m.spin.Tick }
+func (m appModel) Init() tea.Cmd { return tea.Batch(m.spin.Tick, tea.RequestBackgroundColor) }
+
+func (m appModel) restyled() appModel {
+	m.styles = DefaultStyles()
+	m.spin.Style = m.styles.Spinner
+	m.onboard.styles = m.styles
+	m.settings = m.settings.restyled(m.styles)
+	m.dash = m.dash.restyled()
+	return m
+}
 
 func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.BackgroundColorMsg:
+		setThemeBackground(msg.IsDark())
+		return m.restyled(), nil
+
+	case saveConfigDoneMsg:
+		var cmd tea.Cmd
+		m.settings, cmd = m.settings.Update(msg)
+		if msg.err == nil {
+			applyThemeFromItems(m.actions.ConfigItems())
+			m = m.restyled()
+		}
+		return m, cmd
+
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.dash = applyDash(m.dash, msg)
@@ -874,7 +896,7 @@ func (m appModel) menuRows(items []menuItem, cursor int) []string {
 			rows = append(rows, s.Help.Render(strings.Repeat("─", menuCardW)))
 		}
 		marker := "  "
-		labelStyle := lipgloss.NewStyle().Foreground(colorSubtle)
+		labelStyle := lipgloss.NewStyle().Foreground(theme.Subtle)
 		descStyle := s.Help
 		if i == cursor {
 			marker = s.Info.Render("▸ ")
@@ -1001,10 +1023,10 @@ func (m appModel) buildStatusTable() table.Model {
 		table.WithHeight(h),
 	)
 	st := table.DefaultStyles()
-	st.Header = st.Header.Bold(true).Foreground(colorSubtle).
-		BorderBottom(true).BorderForeground(colorFaint)
-	st.Selected = st.Selected.Foreground(lipgloss.Color("#FFFFFF")).
-		Background(colorBrand).Bold(false)
+	st.Header = st.Header.Bold(true).Foreground(theme.Subtle).
+		BorderBottom(true).BorderForeground(theme.Border)
+	st.Selected = st.Selected.Foreground(theme.Ink).
+		Background(theme.Brand).Bold(false)
 	t.SetStyles(st)
 	return t
 }

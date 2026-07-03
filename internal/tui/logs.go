@@ -265,17 +265,17 @@ func (m logsModel) runLabel(r LogRun, w int, selected bool) string {
 	}
 	line := fmt.Sprintf("%s  %-12s %s", r.ID, phase, updated)
 
-	fg := colorSubtle
+	fg := theme.Subtle
 	switch {
 	case m.isFailed(r):
-		fg = colorError
+		fg = theme.Error
 	case state.Terminal(r.Phase):
-		fg = colorSuccess
+		fg = theme.Success
 	}
 
 	style := lipgloss.NewStyle().Foreground(fg)
 	if selected {
-		style = lipgloss.NewStyle().Bold(true).Background(colorBrand).Foreground(lipgloss.Color("#FFFFFF"))
+		style = lipgloss.NewStyle().Bold(true).Background(theme.Brand).Foreground(theme.Ink)
 	}
 	return style.Render(truncate(line, w))
 }
