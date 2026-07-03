@@ -18,6 +18,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/notify"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/usage"
 	"github.com/RomkaLTU/trau/internal/vterm"
@@ -229,6 +230,15 @@ type model struct {
 	// keypress to confirm a destructive reset.
 	recoveryNote   string
 	confirmResetID string
+
+	// Ambient signals (COD-671): notifier posts desktop notifications on the AFK
+	// events that need a human (nil = disabled). blurAt/blurSnapshot capture focus
+	// loss so a refocus past recapAwayThreshold surfaces recapBanner — a one-line
+	// "while you were away" summary, retired on the next key.
+	notifier     notify.Notifier
+	blurAt       time.Time
+	blurSnapshot map[string]string
+	recapBanner  string
 }
 
 type (
@@ -319,9 +329,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		m.toast = ""
+		m.recapBanner = ""
 		if m, cmd, handled := m.handleKey(msg); handled {
 			return m, cmd
 		}
+
+	case tea.FocusMsg:
+		m.onFocus()
+
+	case tea.BlurMsg:
+		m.onBlur()
 
 	case tea.BackgroundColorMsg:
 		setThemeBackground(msg.IsDark())
@@ -349,6 +366,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ticketDoneMsg:
 		m.finishTicket(msg.r)
+		cmds = append(cmds, m.ticketNotifyCmd(msg.r))
 
 	case loopDoneMsg:
 		return m.enterSummary(msg.s)
@@ -945,6 +963,8 @@ func (m model) View() tea.View {
 	}
 	v := tea.NewView(zone.Scan(content))
 	v.AltScreen = true
+	v.WindowTitle = m.ambientTitle()
+	v.ReportFocus = true
 	if !m.mouseOff {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
@@ -1206,6 +1226,12 @@ func fmtCountdown(d time.Duration) string {
 }
 
 func (m model) renderFooter() string {
+	// The away-recap takes the footer while it's up: it's transient and dismissed
+	// on the next key, so it briefly overlays the outcome banner rather than
+	// competing for a second line.
+	if m.recapBanner != "" {
+		return m.styles.Info.Render(truncate(m.recapBanner, m.width))
+	}
 	if m.banner != "" {
 		style := m.styles.Banner
 		if m.bannerErr {
@@ -1215,12 +1241,7 @@ func (m model) renderFooter() string {
 	}
 	// The running ticket counter lives in the header now; the footer keeps only the
 	// cumulative merged tally (not shown up top) beside the key help.
-	done := 0
-	for i := range m.results {
-		if m.results[i].Phase == state.Merged {
-			done++
-		}
-	}
+	done := m.mergedCount()
 	left := ""
 	switch {
 	case m.toast != "":

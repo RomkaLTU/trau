@@ -10,6 +10,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/notify"
 	"github.com/RomkaLTU/trau/internal/sanitize"
 )
 
@@ -24,8 +25,11 @@ type TUI struct {
 // onInterrupt is invoked the first time the user asks to quit during a run, so
 // the loop can stop gracefully and the program can show its summary instead of
 // being killed mid-flight; pass nil to disable graceful stop.
-func New(stdout, _ io.Writer, onInterrupt func()) *TUI {
+func New(stdout, _ io.Writer, onInterrupt func(), notifyOn bool) *TUI {
 	m := initialModel(onInterrupt)
+	if notifyOn {
+		m.notifier = notify.OS()
+	}
 	zone.NewGlobal()
 	prog := tea.NewProgram(m, tea.WithOutput(stdout))
 	t := &TUI{prog: prog, done: make(chan struct{})}

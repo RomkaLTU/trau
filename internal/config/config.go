@@ -123,6 +123,11 @@ type Config struct {
 
 	LiveView bool
 
+	// Notify posts desktop notifications for the AFK events that need a human —
+	// blameless pause, quarantine, and session end. Opt-in (default off) and a
+	// graceful no-op where no desktop backend is available. See internal/notify.
+	Notify bool
+
 	EpicFlow bool
 
 	// UsageWindow enables the HUD's provider rate-limit window probe (claude OAuth
@@ -221,6 +226,7 @@ func Defaults() Config {
 		EpicFlow:              true,
 		UsageWindow:           true,
 		UsageWindowPTY:        false,
+		Notify:                false,
 		Lessons:               true,
 		LessonsDistill:        false,
 		TimelogEnabled:        false,
@@ -590,6 +596,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("USAGE_WINDOW_PTY"); v != "" {
 		c.UsageWindowPTY = v == "1"
 		sources["USAGE_WINDOW_PTY"] = src.name
+	}
+	if v, src := get("NOTIFY"); v != "" {
+		c.Notify = v == "1"
+		sources["NOTIFY"] = src.name
 	}
 	str("RUNS_DIR", &c.RunsDir)
 	fnum("MAX_TICKET_USD", &c.MaxTicketUSD)
@@ -1019,6 +1029,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "TRAU_TUI", Default: "1", Description: "Enable Bubble Tea TUI (1 = yes, 0 = no)", Bool: true},
 		{Key: "THEME", Default: "default", Description: "TUI color theme preset", Options: []string{"default", "catppuccin", "dracula", "gruvbox", "nord"}},
 		{Key: "EPIC_FLOW", Default: "1", Description: "Process epic sub-issues (1 = yes, 0 = no)", Bool: true},
+		{Key: "NOTIFY", Default: "0", Description: "Desktop notifications on pause, quarantine, and session end (opt-in; 1 = yes, 0 = no)", Bool: true},
 		{Key: "TIMELOG_ENABLED", Default: "0", Description: "Write a per-ticket effort time log (JSON) after merge (opt-in; 1 = yes, 0 = no)", Bool: true},
 		{Key: "TIMELOG_STORAGE", Default: "repo", Description: "Time-log location: repo (<repo>/.dev-flow/time/) | user (~/.dev-flow/time/<repo>/) | none", Options: []string{"repo", "user", "none"}},
 		{Key: "TIMELOG_OUTPUT_FORMAT", Default: "default", Description: "Time-log export rendering: default (JSON) | jira-worklog | toggl-csv | plain", Options: []string{"default", "jira-worklog", "toggl-csv", "plain"}},
@@ -1458,6 +1469,11 @@ func keyValue(cfg Config, key string) string {
 		return cfg.Theme
 	case "EPIC_FLOW":
 		if cfg.EpicFlow {
+			return "1"
+		}
+		return "0"
+	case "NOTIFY":
+		if cfg.Notify {
 			return "1"
 		}
 		return "0"

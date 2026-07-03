@@ -12,6 +12,7 @@ import (
 	zone "github.com/lrstanley/bubblezone/v2"
 
 	"github.com/RomkaLTU/trau/internal/console"
+	"github.com/RomkaLTU/trau/internal/notify"
 )
 
 // Actions is the backend the menu shell drives. The main package wires a
@@ -96,6 +97,7 @@ type MenuInfo struct {
 	Prefix        string
 	MaxIterations int
 	AutoMerge     bool
+	Notify        bool
 	InFlight      int
 	Done          int
 	Resume        ResumeTarget
@@ -254,6 +256,10 @@ type appModel struct {
 	palette paletteModel
 
 	mouseOff bool
+
+	// notifier is the desktop notifier each fresh dashboard reports through
+	// (nil = NOTIFY off); see internal/notify and model.notifier.
+	notifier notify.Notifier
 }
 
 func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
@@ -297,6 +303,9 @@ func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
 		info:      info,
 		reset:     ti,
 		spin:      s,
+	}
+	if info.Notify {
+		m.notifier = notify.OS()
 	}
 	if actions.OnboardingNeeded() {
 		m.view = viewOnboarding
@@ -343,6 +352,17 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+
+	case tea.FocusMsg, tea.BlurMsg:
+		// The away-recap only lives on the running dashboard, so only track focus
+		// there. Elsewhere a blur/focus can't produce a recap the user would see, and
+		// routing it would let one linger for the next time the dashboard is shown.
+		if m.view != viewRunning {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.dash, cmd = applyDashCmd(m.dash, msg)
+		return m, cmd
 
 	case tea.MouseClickMsg:
 		return m.handleMouseClick(msg)
@@ -666,7 +686,7 @@ func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.dash = m.dash.markStopping()
 		return m, nil
 	}
-	m.dash = m.dash.clearToast()
+	m.dash = m.dash.clearToast().dismissRecap()
 	// While the dash filter input is capturing, every other key belongs to it —
 	// route straight to the dash so an action key (q, o, j) narrows the feed instead
 	// of firing the action or moving the rail.
@@ -799,7 +819,7 @@ func (m appModel) startRunLoop(epic string) (tea.Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(m.baseCtx)
 	m.loopCancel = cancel
 	m.subReturn = viewMenu
-	m.dash = freshDash(m.width, m.height, m.info.Base).withQueue(m.buildQueueRows())
+	m.dash = freshDash(m.width, m.height, m.info.Base).withNotifier(m.notifier).withQueue(m.buildQueueRows())
 	m.view = viewRunning
 	return m, tea.Batch(m.dash.Init(), m.runLoopCmd(ctx, epic))
 }
@@ -967,7 +987,7 @@ func (m appModel) startRunTicket(id, provider string) (tea.Model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(m.baseCtx)
 	m.loopCancel = cancel
 	m.subReturn = viewMenu
-	m.dash = freshDash(m.width, m.height, m.info.Base).withQueue(m.buildQueueRows())
+	m.dash = freshDash(m.width, m.height, m.info.Base).withNotifier(m.notifier).withQueue(m.buildQueueRows())
 	m.view = viewRunning
 	return m, tea.Batch(m.dash.Init(), m.runTicketCmd(ctx, id, provider))
 }
@@ -1024,6 +1044,15 @@ func (m appModel) View() tea.View {
 	}
 	v := tea.NewView(zone.Scan(content))
 	v.AltScreen = true
+	// The tab reflects run state only while the dashboard is up; on the menu and
+	// other screens the run isn't live (you can't leave a running dashboard without
+	// stopping it), so the title rests at plain "trau" rather than freezing on the
+	// last run's summary.
+	v.WindowTitle = "trau"
+	if m.view == viewRunning {
+		v.WindowTitle = m.dash.ambientTitle()
+	}
+	v.ReportFocus = true
 	if !m.mouseOff {
 		v.MouseMode = tea.MouseModeCellMotion
 	}
