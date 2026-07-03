@@ -253,8 +253,6 @@ type appModel struct {
 	help    helpModel
 	palette paletteModel
 
-	// mouseOff (ctrl+t) drops mouse reporting so the terminal's own drag-to-select
-	// works; while off the footer shows the mode and clicks do nothing.
 	mouseOff bool
 }
 
@@ -482,8 +480,6 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	// ctrl+t is global too: it flips mouse reporting off so the terminal reclaims
-	// drag-to-select, and back on. It bypasses editing() like the palette does.
 	if msg.String() == "ctrl+t" {
 		m.mouseOff = !m.mouseOff
 		setMouseEnabled(!m.mouseOff)
@@ -540,30 +536,12 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case viewRunLoop:
 		var cmd tea.Cmd
 		m.loopSetup, cmd = m.loopSetup.Update(msg)
-		if m.loopSetup.Done() {
-			switch {
-			case m.loopSetup.Cancelled():
-				return m.toMenu(), nil
-			case m.loopSetup.Selected() != "":
-				return m.startRunTicket(m.loopSetup.Selected(), "")
-			case m.loopSetup.Single():
-				return m.startRunTicket(m.loopSetup.Epic(), "")
-			default:
-				return m.startRunLoop(m.loopSetup.Epic())
-			}
-		}
-		return m, cmd
+		return m.afterLoopSetup(cmd)
 
 	case viewRunOnce:
 		var cmd tea.Cmd
 		m.runOnce, cmd = m.runOnce.Update(msg)
-		if m.runOnce.Done() {
-			if m.runOnce.Cancelled() {
-				return m.toMenu(), nil
-			}
-			return m.startRunTicket(m.runOnce.Selected(), m.runOnce.Provider())
-		}
-		return m, cmd
+		return m.afterRunOnce(cmd)
 
 	case viewStatus:
 		return m.handleStatusKey(msg)
@@ -649,6 +627,35 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // (queueVerbs) since they would disturb the running ticket, so they act only from
 // the recap/Status. Everything else — watch, follow, page, exit stream — goes to
 // the dash. q/ctrl+c stop the loop.
+// afterLoopSetup starts the run the loop-setup step resolved to, once its Update
+// reports Done — the single dispatch both the keyboard and a click drive through.
+func (m appModel) afterLoopSetup(cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	if !m.loopSetup.Done() {
+		return m, cmd
+	}
+	switch {
+	case m.loopSetup.Cancelled():
+		return m.toMenu(), nil
+	case m.loopSetup.Selected() != "":
+		return m.startRunTicket(m.loopSetup.Selected(), "")
+	case m.loopSetup.Single():
+		return m.startRunTicket(m.loopSetup.Epic(), "")
+	default:
+		return m.startRunLoop(m.loopSetup.Epic())
+	}
+}
+
+// afterRunOnce starts the ticket the run-once step resolved to, once Done.
+func (m appModel) afterRunOnce(cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	if !m.runOnce.Done() {
+		return m, cmd
+	}
+	if m.runOnce.Cancelled() {
+		return m.toMenu(), nil
+	}
+	return m.startRunTicket(m.runOnce.Selected(), m.runOnce.Provider())
+}
+
 func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// ctrl+c is the emergency stop and always wins, even mid-filter, so it can't be
 	// swallowed by the filter input.
@@ -659,7 +666,6 @@ func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.dash = m.dash.markStopping()
 		return m, nil
 	}
-	// A key press dismisses the copy toast; the y handler below re-sets it.
 	m.dash = m.dash.clearToast()
 	// While the dash filter input is capturing, every other key belongs to it —
 	// route straight to the dash so an action key (q, o, j) narrows the feed instead

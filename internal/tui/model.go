@@ -210,8 +210,6 @@ type model struct {
 	// keys while open but is read-only — the loop keeps running underneath.
 	peek bool
 
-	// mouseOff (ctrl+t) drops mouse reporting for native drag-to-select; toast is
-	// the transient OSC52-copy confirmation, cleared on the next key.
 	mouseOff bool
 	toast    string
 
@@ -378,8 +376,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseWheelMsg:
-		// The wheel scrolls whatever region is under the pointer: over the rail it
-		// moves the selection; anywhere else it falls through to the span viewport.
+		m.toast = ""
+		// Over the rail the wheel moves the selection; elsewhere it falls through to
+		// the span viewport below.
 		if m.railVisible() && zone.Get(zoneRail).InBounds(msg) {
 			d := 1
 			if msg.Button == tea.MouseWheelUp {
@@ -425,9 +424,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
-	// ctrl+t is global: it flips mouse reporting off for native drag-to-select and
-	// back on. The app shell intercepts it in the session; the standalone dashboard
-	// (direct `trau <args>` runs) routes here, so it is handled first in both states.
+	// Global in the standalone dashboard too (the app shell intercepts it in-session).
 	if msg.String() == "ctrl+t" {
 		m.mouseOff = !m.mouseOff
 		setMouseEnabled(!m.mouseOff)

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -235,6 +236,72 @@ func TestSettingsRowClickSelectsThenEdits(t *testing.T) {
 	}
 }
 
+// TestRunLoopClickStartsRun is the F1 regression: clicking the selected sub-issue
+// on the Run-loop screen must actually start the run (view → running), like the s
+// key does — the click path used to swallow the Done state.
+func TestRunLoopClickStartsRun(t *testing.T) {
+	ls := newLoopSetupModel(context.Background(), &fakeAppActions{}, DefaultStyles(), MenuInfo{}, 80, 24)
+	ls.step = loopList
+	ls.subs = []SubIssue{{ID: "COD-7", Title: "do a thing"}}
+	app := appModel{
+		actions: &fakeAppActions{}, baseCtx: context.Background(),
+		styles: DefaultStyles(), width: 80, height: 24,
+		view: viewRunLoop, loopSetup: ls,
+	}
+
+	z := locateZone(t, app.View, zoneLoopRow+"0")
+	next, _ := app.Update(clickAt(z))
+	if got := next.(appModel).view; got != viewRunning {
+		t.Errorf("clicking the selected sub-issue must start the run, view=%v", got)
+	}
+}
+
+// TestRunOnceClickStartsRun is the F2 regression: clicking the selected ticket on
+// the Run-once screen must start it (view → running), like enter does.
+func TestRunOnceClickStartsRun(t *testing.T) {
+	ro := newRunOnceModel(context.Background(), &fakeAppActions{}, DefaultStyles(), MenuInfo{}, 80, 24)
+	ro.step = runOnceList
+	ro.eligible = []ListedTicket{{ID: "COD-5", Title: "ship it"}}
+	app := appModel{
+		actions: &fakeAppActions{}, baseCtx: context.Background(),
+		styles: DefaultStyles(), width: 80, height: 24,
+		view: viewRunOnce, runOnce: ro,
+	}
+
+	z := locateZone(t, app.View, zoneRunOnceRow+"0")
+	next, _ := app.Update(clickAt(z))
+	if got := next.(appModel).view; got != viewRunning {
+		t.Errorf("clicking the selected ticket must start the run, view=%v", got)
+	}
+}
+
+// TestWheelDismissesToast is the F3 regression: scrolling the wheel dismisses the
+// copy toast, like a keypress or click does.
+func TestWheelDismissesToast(t *testing.T) {
+	rows := []QueueRow{{ID: "COD-1", Phase: state.Quarantined, FailureReason: "boom"}}
+	app := runningApp(120, 30, rows)
+	app.styles = DefaultStyles()
+
+	copied, _ := app.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	napp := copied.(appModel)
+	if napp.dash.toast == "" {
+		t.Fatal("y must set the copy toast")
+	}
+	scrolled, _ := napp.Update(tea.MouseWheelMsg{X: 5, Y: 5, Button: tea.MouseWheelDown})
+	if got := scrolled.(appModel).dash.toast; got != "" {
+		t.Errorf("wheel scroll must dismiss the toast, got %q", got)
+	}
+}
+
+// TestMouseOffOverlaySkipsNarrow is the F4 regression: the indicator no-ops rather
+// than overflowing when the terminal is narrower than the tag.
+func TestMouseOffOverlaySkipsNarrow(t *testing.T) {
+	base := "hi\nthere"
+	if got := overlayMouseOff(DefaultStyles(), base, 20, 6); got != base {
+		t.Error("overlay must no-op when the terminal is narrower than the indicator")
+	}
+}
+
 // TestProviderTabClickSwitches checks a provider tab responds to a click by
 // switching the active provider.
 func TestProviderTabClickSwitches(t *testing.T) {
@@ -288,6 +355,33 @@ func TestRailRowClickSelectsThenActivates(t *testing.T) {
 	after, _ := napp.Update(clickAt(z2))
 	if !after.(appModel).dash.peek {
 		t.Error("clicking the already-selected row must open its peek preview")
+	}
+}
+
+// TestClicksAbsorbedWhilePeeking checks the peek overlay owns input: a click on a
+// rail row still painted past the overlay is absorbed, not fired underneath.
+func TestClicksAbsorbedWhilePeeking(t *testing.T) {
+	rows := []QueueRow{
+		{ID: "COD-1", Phase: state.Quarantined, FailureReason: "boom"},
+		{ID: "COD-2", Phase: state.Quarantined, FailureReason: "bang"},
+	}
+	app := runningApp(120, 30, rows)
+	app.styles = DefaultStyles()
+
+	z := locateZone(t, app.View, zoneRailRow+"COD-2")
+	peeked, _ := app.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
+	papp := peeked.(appModel)
+	if !papp.dash.peek {
+		t.Fatal("space must open the peek preview")
+	}
+
+	after, _ := papp.Update(clickAt(z))
+	aapp := after.(appModel)
+	if aapp.dash.queueCursor != 0 {
+		t.Errorf("a click while peeking must be absorbed, cursor moved to %d", aapp.dash.queueCursor)
+	}
+	if !aapp.dash.peek {
+		t.Error("peek must stay open after an absorbed click")
 	}
 }
 
