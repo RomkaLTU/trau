@@ -41,6 +41,35 @@ func TestReadTailMissingFileIsNoOp(t *testing.T) {
 	}
 }
 
+// TestStreamDataTruncationResetsScreen checks a truncated delta rebuilds the
+// emulator before writing, so a phase that reused its transcript in place shows
+// only the new frame instead of splicing it onto the stale one.
+func TestStreamDataTruncationResetsScreen(t *testing.T) {
+	m := initialModel(nil)
+	m.streamPath = "/runs/1-build.pty.log"
+	m.streamCols, m.streamRows = 80, 24
+	m.startStream()
+
+	nm, _ := m.Update(streamDataMsg{path: m.streamPath, offset: 5, data: []byte("AAAAA")})
+	m = nm.(model)
+	if !strings.Contains(strings.Join(m.stream.Lines(), ""), "AAAAA") {
+		t.Fatal("first frame must land in the emulator")
+	}
+
+	nm, _ = m.Update(streamDataMsg{path: m.streamPath, offset: 3, data: []byte("BBB"), truncated: true})
+	m = nm.(model)
+	screen := strings.Join(m.stream.Lines(), "")
+	if strings.Contains(screen, "AAAAA") {
+		t.Errorf("truncation must reset the screen, still saw the stale frame:\n%s", screen)
+	}
+	if !strings.Contains(screen, "BBB") {
+		t.Errorf("truncation must write the fresh frame, got:\n%s", screen)
+	}
+	if m.streamOffset != 3 {
+		t.Errorf("streamOffset = %d, want 3 from the truncated delta", m.streamOffset)
+	}
+}
+
 // TestApplyEventAgentStartTracksPath checks agent_start records the active
 // transcript path and updates it when a new phase opens a different file.
 func TestApplyEventAgentStartTracksPath(t *testing.T) {

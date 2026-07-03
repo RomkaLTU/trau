@@ -3,8 +3,6 @@ package tui
 import (
 	"fmt"
 	"image/color"
-	"io"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +14,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -215,9 +214,10 @@ type (
 	ticketDoneMsg struct{ r console.TicketResult }
 	loopDoneMsg   struct{ s console.SessionSummary }
 	streamDataMsg struct {
-		path   string
-		offset int64
-		data   []byte
+		path      string
+		offset    int64
+		data      []byte
+		truncated bool
 	}
 	// recoveryDoneMsg carries the outcome of a summary recovery action (b/x): note
 	// is the line to surface; resetID, when set and err is nil, marks the ticket
@@ -333,6 +333,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case streamDataMsg:
 		m.streamReading = false
 		if msg.path == m.streamPath && m.stream != nil {
+			if msg.truncated {
+				m.stream.Close()
+				m.stream = vterm.New(m.streamCols, m.streamRows)
+			}
 			m.stream.Write(msg.data)
 			m.streamOffset = msg.offset
 			m.refreshBody()
@@ -589,27 +593,12 @@ func (m model) tailReadCmd() tea.Cmd {
 	return func() tea.Msg { return readTail(path, offset) }
 }
 
-// readTail returns the raw bytes appended to path since offset, for the emulator.
+// readTail reads the next transcript delta through the shared agent.ReadTail seam
+// and wraps it as the emulator message. Truncation (a reused phase file) is
+// surfaced so the stream handler can reset the screen before writing.
 func readTail(path string, offset int64) streamDataMsg {
-	if path == "" {
-		return streamDataMsg{}
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return streamDataMsg{path: path, offset: offset}
-	}
-	defer func() { _ = f.Close() }()
-	if fi, err := f.Stat(); err == nil && fi.Size() < offset {
-		offset = 0
-	}
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return streamDataMsg{path: path, offset: offset}
-	}
-	data, _ := io.ReadAll(f)
-	if len(data) == 0 {
-		return streamDataMsg{path: path, offset: offset}
-	}
-	return streamDataMsg{path: path, offset: offset + int64(len(data)), data: data}
+	data, next, truncated := agent.ReadTail(path, offset)
+	return streamDataMsg{path: path, offset: next, data: data, truncated: truncated}
 }
 
 // renderStream is the live pane body, or a placeholder when no transcript is

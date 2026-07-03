@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,6 +41,38 @@ type sessionLine struct {
 			} `json:"input"`
 		} `json:"content"`
 	} `json:"message"`
+}
+
+// ReadTail returns the bytes appended to the transcript at path since offset and
+// the offset to resume from. It is the single incremental-tail seam shared by the
+// dashboard's live view and `trau watch`, so both follow a growing phase log by
+// reading only the new bytes each tick rather than the whole file.
+//
+// When the file has shrunk below offset — a phase reusing its transcript with an
+// in-place truncation — it restarts from the top and reports truncated so the
+// caller can reset its terminal emulator. A missing or unreadable file is a no-op:
+// no data at the unchanged offset.
+func ReadTail(path string, offset int64) (data []byte, next int64, truncated bool) {
+	if path == "" {
+		return nil, offset, false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, offset, false
+	}
+	defer func() { _ = f.Close() }()
+	if fi, err := f.Stat(); err == nil && fi.Size() < offset {
+		offset = 0
+		truncated = true
+	}
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return nil, offset, truncated
+	}
+	data, err = io.ReadAll(f)
+	if err != nil || len(data) == 0 {
+		return nil, offset, truncated
+	}
+	return data, offset + int64(len(data)), truncated
 }
 
 // newUUID returns a random RFC-4122 v4 UUID for `--session-id`. A fresh id per
