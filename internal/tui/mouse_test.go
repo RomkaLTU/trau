@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	zone "github.com/lrstanley/bubblezone/v2"
@@ -49,6 +50,8 @@ func TestCopyArtifactByRowState(t *testing.T) {
 // in the app shell and the standalone dashboard, so the terminal reclaims native
 // drag-to-select while off.
 func TestMouseToggleFlipsReporting(t *testing.T) {
+	// Toggling drives the global zone-enabled flag; leave it on for other tests.
+	t.Cleanup(func() { zone.SetEnabled(true) })
 	// Standalone dashboard.
 	m := initialModel(nil)
 	m.width, m.height = 80, 24
@@ -111,5 +114,123 @@ func TestCopyKeyYanksSelectedArtifact(t *testing.T) {
 	after, _ := napp.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	if got := after.(appModel).dash.toast; got != "" {
 		t.Errorf("the next key must dismiss the toast, got %q", got)
+	}
+}
+
+// TestVerbKey pins the footer label → canonical key extraction that drives both
+// the click zone id and the synthesized key.
+func TestVerbKey(t *testing.T) {
+	cases := []struct {
+		part   string
+		want   string
+		wantOK bool
+	}{
+		{"o open", "o", true},
+		{"R reconcile", "R", true},
+		{"/ filter", "/", true},
+		{"space peek", "space", true},
+		{"enter attach", "enter", true},
+		{"esc/q back", "esc", true},
+		{"enter/e edit", "enter", true},
+		{"⇥ switch provider", "tab", true},
+		{"y copy PR URL", "y", true},
+		{"↑↓ move", "", false},
+		{"←→ switch provider", "", false},
+	}
+	for _, c := range cases {
+		k, ok := verbKey(c.part)
+		if k != c.want || ok != c.wantOK {
+			t.Errorf("verbKey(%q) = (%q,%v), want (%q,%v)", c.part, k, ok, c.want, c.wantOK)
+		}
+	}
+}
+
+// TestSynthVerbKey checks a canonical key round-trips to a key press the handlers
+// recognize by String().
+func TestSynthVerbKey(t *testing.T) {
+	for k, want := range map[string]string{"esc": "esc", "enter": "enter", "space": "space", "tab": "tab", "o": "o", "R": "R"} {
+		if got := synthVerbKey(k).String(); got != want {
+			t.Errorf("synthVerbKey(%q).String() = %q, want %q", k, got, want)
+		}
+	}
+}
+
+// locateZone renders the view until the async bubblezone worker has published the
+// zone's coordinates, then returns them. Mirrors bubblezone's own test pattern.
+func locateZone(t *testing.T, view func() tea.View, id string) *zone.ZoneInfo {
+	t.Helper()
+	// The enabled flag is global and other tests toggle it (mouse-off); ensure it's
+	// on so Mark actually emits the markers this hit-test depends on.
+	zone.SetEnabled(true)
+	for i := 0; i < 200; i++ {
+		view() // triggers zone.Scan on the rendered frame
+		if z := zone.Get(id); !z.IsZero() {
+			return z
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("zone %q never resolved", id)
+	return nil
+}
+
+func clickAt(z *zone.ZoneInfo) tea.MouseClickMsg {
+	return tea.MouseClickMsg{X: z.StartX, Y: z.StartY, Button: tea.MouseLeft}
+}
+
+// TestFooterVerbClickFiresKey drives a real click on the q-stop footer verb of the
+// running dashboard and checks it stops the loop, same as pressing q.
+func TestFooterVerbClickFiresKey(t *testing.T) {
+	app := runningApp(120, 30, []QueueRow{{ID: "COD-1", Phase: state.Quarantined, FailureReason: "boom"}})
+	app.styles = DefaultStyles()
+
+	z := locateZone(t, app.View, zoneFooterVerb+"q")
+	next, _ := app.Update(clickAt(z))
+	if !next.(appModel).dash.stopping {
+		t.Error("clicking the q-stop footer verb must stop the loop, like pressing q")
+	}
+}
+
+// TestRailRowClickSelectsThenActivates drives real clicks on a rail row: the first
+// selects it, a second on the same row opens its peek preview.
+func TestRailRowClickSelectsThenActivates(t *testing.T) {
+	rows := []QueueRow{
+		{ID: "COD-1", Phase: state.Quarantined, FailureReason: "boom"},
+		{ID: "COD-2", Phase: state.Quarantined, FailureReason: "bang"},
+	}
+	app := runningApp(120, 30, rows)
+	app.styles = DefaultStyles()
+
+	z := locateZone(t, app.View, zoneRailRow+"COD-2")
+	next, _ := app.Update(clickAt(z))
+	napp := next.(appModel)
+	if napp.dash.queueCursor != 1 {
+		t.Fatalf("clicking COD-2 must select it, cursor=%d", napp.dash.queueCursor)
+	}
+	if napp.dash.peek {
+		t.Fatal("the first click selects only, it must not peek")
+	}
+
+	z2 := locateZone(t, napp.View, zoneRailRow+"COD-2")
+	after, _ := napp.Update(clickAt(z2))
+	if !after.(appModel).dash.peek {
+		t.Error("clicking the already-selected row must open its peek preview")
+	}
+}
+
+// TestWheelOverRailMovesSelection checks the wheel scrolls the region under the
+// pointer: over the rail it advances the selection rather than the span pane.
+func TestWheelOverRailMovesSelection(t *testing.T) {
+	rows := []QueueRow{
+		{ID: "COD-1", Phase: state.Quarantined, FailureReason: "boom"},
+		{ID: "COD-2", Phase: state.Quarantined, FailureReason: "bang"},
+	}
+	app := runningApp(120, 30, rows)
+	app.styles = DefaultStyles()
+
+	z := locateZone(t, app.View, zoneRail)
+	wheel := tea.MouseWheelMsg{X: z.StartX + 1, Y: z.StartY + 1, Button: tea.MouseWheelDown}
+	next, _ := app.Update(wheel)
+	if got := next.(appModel).dash.queueCursor; got != 1 {
+		t.Errorf("wheel-down over the rail must advance the selection, cursor=%d", got)
 	}
 }

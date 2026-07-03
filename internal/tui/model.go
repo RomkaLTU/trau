@@ -127,7 +127,7 @@ func (m model) runningHint() string {
 		parts = append(parts, "/ filter")
 	}
 	parts = append(parts, "q stop")
-	return strings.Join(parts, " · ")
+	return strings.Join(markVerbs(parts), " · ")
 }
 
 // summaryHelp is the recap screen's key legend. The recovery keys (resume,
@@ -369,6 +369,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stream.Write(msg.data)
 			m.streamOffset = msg.offset
 			m.refreshBody()
+		}
+
+	case tea.MouseClickMsg:
+		m.toast = ""
+		if nm, cmd, handled := m.handleMouseClick(msg); handled {
+			return nm, cmd
+		}
+
+	case tea.MouseWheelMsg:
+		// The wheel scrolls whatever region is under the pointer: over the rail it
+		// moves the selection; anywhere else it falls through to the span viewport.
+		if m.railVisible() && zone.Get(zoneRail).InBounds(msg) {
+			d := 1
+			if msg.Button == tea.MouseWheelUp {
+				d = -1
+			}
+			m.moveQueueCursor(d)
+			return m, nil
 		}
 	}
 
@@ -960,7 +978,7 @@ func (m model) renderRunning() string {
 		body = titledPanel(m.styles, m.spanPaneTitle(), m.viewport.View(), d.spanW, d.bodyH)
 	default:
 		spanPane := titledPanel(m.styles, m.spanPaneTitle(), m.viewport.View(), d.spanW, d.bodyH)
-		rail := titledPanel(m.styles, m.railTitle(), m.renderRail(d), d.railW, d.bodyH)
+		rail := zone.Mark(zoneRail, titledPanel(m.styles, m.railTitle(), m.renderRail(d), d.railW, d.bodyH))
 		body = lipgloss.JoinHorizontal(lipgloss.Top, spanPane, " ", rail)
 	}
 
@@ -992,7 +1010,7 @@ func (m model) railTitle() string {
 // renderRail draws the attention queue into the right pane through the shared
 // component, sized to the rail's inner box.
 func (m model) renderRail(d dims) string {
-	return renderQueue(m.styles, m.spinFrame(), m.liveQueueRows(), m.queueCursor, d.railW-4, d.bodyH-2, true)
+	return renderQueue(m.styles, m.spinFrame(), m.liveQueueRows(), m.queueCursor, d.railW-4, d.bodyH-2, true, zoneRailRow)
 }
 
 // renderHeader lays out the run-level context row. The left core and right cluster

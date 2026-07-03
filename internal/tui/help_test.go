@@ -179,14 +179,16 @@ func TestFootersDeriveFromHelp(t *testing.T) {
 		{leafHelp("Version").footer(), "esc/q back"},
 	}
 	for _, c := range cases {
-		if c.got != c.want {
-			t.Errorf("footer() = %q, want %q", c.got, c.want)
+		// footer() weaves in zero-width bubblezone click markers; the visible legend
+		// is what must match, so compare stripped.
+		if got := ansi.Strip(c.got); got != c.want {
+			t.Errorf("footer() = %q, want %q", got, c.want)
 		}
 	}
 
 	// And the menu actually renders that derived footer.
 	m := helpApp(t)
-	if !strings.Contains(ansi.Strip(m.render()), menuHelp().footer()) {
+	if !strings.Contains(ansi.Strip(m.render()), ansi.Strip(menuHelp().footer())) {
 		t.Error("menu did not render its footer from menuHelp()")
 	}
 }

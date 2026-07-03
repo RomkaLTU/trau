@@ -346,6 +346,9 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
+	case tea.MouseClickMsg:
+		return m.handleMouseClick(msg)
+
 	case logMsg, eventMsg, ticketMsg, titleMsg, phaseStartMsg, ticketDoneMsg, loopDoneMsg, recoveryDoneMsg:
 		var cmd tea.Cmd
 		m.dash, cmd = applyDashCmd(m.dash, msg)
@@ -1047,7 +1050,7 @@ func (m appModel) renderScreen() string {
 			queueW = 24
 		}
 		bodyH := cardBodyBudget(m.height, 2) // title + a note/spinner row
-		body := renderQueue(m.styles, spinnerGlyph(m.spin), m.statusRows, m.statusCursor, queueW, bodyH, false)
+		body := renderQueue(m.styles, spinnerGlyph(m.spin), m.statusRows, m.statusCursor, queueW, bodyH, false, "")
 		switch {
 		case m.statusBusy:
 			body += "\n\n" + m.spin.View() + " reconciling against the tracker…"

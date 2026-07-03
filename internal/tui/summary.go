@@ -204,7 +204,7 @@ func (m model) renderSummary() string {
 		if queueH < 4 {
 			queueH = 4
 		}
-		body += "\n\n" + renderQueue(m.styles, m.spinFrame(), m.resultRows(), m.queueCursor, queueW, queueH, false)
+		body += "\n\n" + renderQueue(m.styles, m.spinFrame(), m.resultRows(), m.queueCursor, queueW, queueH, false, "")
 	}
 	if m.recoveryNote != "" {
 		body += "\n\n" + m.styles.Subtle.Render(m.recoveryNote)
@@ -222,7 +222,7 @@ func (m model) summaryHint() string {
 	sel, hasSel := m.selectedRow()
 	parts := append([]string{"↑↓ move"}, queueVerbHints(sel, hasSel, false)...)
 	parts = append(parts, "esc/q close")
-	return strings.Join(parts, " · ")
+	return strings.Join(markVerbs(parts), " · ")
 }
 
 // recoverable reports whether a ticket result still has work to act on — i.e. it
