@@ -35,6 +35,7 @@ func OS() Notifier {
 // command builds the host notifier invocation for goos, or ok=false when the
 // platform has no supported backend.
 func command(goos, title, body string) (name string, args []string, ok bool) {
+	title, body = oneLine(title), oneLine(body)
 	switch goos {
 	case "darwin":
 		script := fmt.Sprintf("display notification %s with title %s",
@@ -45,6 +46,14 @@ func command(goos, title, body string) (name string, args []string, ok bool) {
 	default:
 		return "", nil, false
 	}
+}
+
+// oneLine flattens s to a single line, collapsing any whitespace run (newlines,
+// tabs) to one space. A desktop notification is a one-line surface, and an
+// embedded newline is a syntax error inside an AppleScript string literal — which
+// would make osascript exit non-zero and silently drop the notification.
+func oneLine(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // appleScriptString renders s as a quoted AppleScript string literal, escaping

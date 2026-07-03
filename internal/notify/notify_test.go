@@ -44,6 +44,20 @@ func TestCommandLinux(t *testing.T) {
 	}
 }
 
+func TestCommandFlattensMultilineBody(t *testing.T) {
+	_, args, ok := command("darwin", "trau", "COD-9 quarantined\nstack trace:\n  boom")
+	if !ok {
+		t.Fatal("darwin should be supported")
+	}
+	script := args[1]
+	if strings.ContainsAny(script, "\n\r") {
+		t.Errorf("script must not contain raw newlines (breaks AppleScript): %q", script)
+	}
+	if !strings.Contains(script, `"COD-9 quarantined stack trace: boom"`) {
+		t.Errorf("body not flattened to one line: %q", script)
+	}
+}
+
 func TestCommandUnsupported(t *testing.T) {
 	if _, _, ok := command("plan9", "trau", "hi"); ok {
 		t.Error("plan9 should be unsupported (graceful no-op)")

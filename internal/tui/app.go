@@ -354,8 +354,12 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case tea.FocusMsg, tea.BlurMsg:
-		// Track focus at the dash regardless of the active screen, so the away-recap
-		// measures the whole absence even if the loop runs while the menu is up.
+		// The away-recap only lives on the running dashboard, so only track focus
+		// there. Elsewhere a blur/focus can't produce a recap the user would see, and
+		// routing it would let one linger for the next time the dashboard is shown.
+		if m.view != viewRunning {
+			return m, nil
+		}
 		var cmd tea.Cmd
 		m.dash, cmd = applyDashCmd(m.dash, msg)
 		return m, cmd
@@ -1040,7 +1044,14 @@ func (m appModel) View() tea.View {
 	}
 	v := tea.NewView(zone.Scan(content))
 	v.AltScreen = true
-	v.WindowTitle = m.dash.ambientTitle()
+	// The tab reflects run state only while the dashboard is up; on the menu and
+	// other screens the run isn't live (you can't leave a running dashboard without
+	// stopping it), so the title rests at plain "trau" rather than freezing on the
+	// last run's summary.
+	v.WindowTitle = "trau"
+	if m.view == viewRunning {
+		v.WindowTitle = m.dash.ambientTitle()
+	}
 	v.ReportFocus = true
 	if !m.mouseOff {
 		v.MouseMode = tea.MouseModeCellMotion

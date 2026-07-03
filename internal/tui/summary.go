@@ -62,7 +62,14 @@ func (m model) enterSummary(s console.SessionSummary) (tea.Model, tea.Cmd) {
 	m.banner = ""
 	m.recapBanner = ""
 	m.queueCursor = 0
-	return m, m.sessionNotifyCmd(s)
+	// The end-of-session notification is for an unattended finish. When the user
+	// stopped the loop themselves (q / ctrl+c) they're at the keyboard, so don't
+	// buzz them.
+	var cmd tea.Cmd
+	if !m.stopping {
+		cmd = m.sessionNotifyCmd(s)
+	}
+	return m, cmd
 }
 
 // resultRows projects the session's ticket results onto the shared queue model,

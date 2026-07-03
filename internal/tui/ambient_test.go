@@ -145,6 +145,25 @@ func TestSessionNotify(t *testing.T) {
 	}
 }
 
+func TestSessionNotifySuppressedOnManualStop(t *testing.T) {
+	var calls []string
+
+	// A natural, unattended finish notifies.
+	natural := initialModel(nil)
+	natural.notifier = recordNotifier(&calls)
+	if _, cmd := natural.enterSummary(console.SessionSummary{}); cmd == nil {
+		t.Error("natural session end should fire a notification")
+	}
+
+	// A user-initiated stop (q / ctrl+c) does not — they're at the keyboard.
+	stopped := initialModel(nil)
+	stopped.notifier = recordNotifier(&calls)
+	stopped.stopping = true
+	if _, cmd := stopped.enterSummary(console.SessionSummary{}); cmd != nil {
+		t.Error("manual stop should not fire a session notification")
+	}
+}
+
 func TestNotifyDisabledIsNoOp(t *testing.T) {
 	m := initialModel(nil) // nil notifier
 	if cmd := m.ticketNotifyCmd(console.TicketResult{ID: "COD-1", Phase: state.Quarantined}); cmd != nil {

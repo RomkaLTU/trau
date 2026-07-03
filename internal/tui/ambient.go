@@ -47,15 +47,24 @@ func (m model) ambientTitle() string {
 	}
 }
 
-// mergedCount counts the merged tickets among the session results.
-func (m model) mergedCount() int {
-	n := 0
+// resultTally counts the merged and quarantined tickets among the session
+// results — the numbers the title, footer, and session notification all report.
+func (m model) resultTally() (merged, quarantined int) {
 	for i := range m.results {
-		if m.results[i].Phase == state.Merged {
-			n++
+		switch m.results[i].Phase {
+		case state.Merged:
+			merged++
+		case state.Quarantined:
+			quarantined++
 		}
 	}
-	return n
+	return
+}
+
+// mergedCount counts the merged tickets among the session results.
+func (m model) mergedCount() int {
+	merged, _ := m.resultTally()
+	return merged
 }
 
 // notifyCmd posts a desktop notification off the render loop. It no-ops when the
@@ -98,15 +107,7 @@ func (m model) sessionNotifyCmd(s console.SessionSummary) tea.Cmd {
 			body = "faulted on " + s.FaultID + " — resumable WIP preserved"
 		}
 	default:
-		merged, quar := 0, 0
-		for i := range m.results {
-			switch m.results[i].Phase {
-			case state.Merged:
-				merged++
-			case state.Quarantined:
-				quar++
-			}
-		}
+		merged, quar := m.resultTally()
 		body = fmt.Sprintf("session ended — %d merged", merged)
 		if quar > 0 {
 			body += fmt.Sprintf(", %d quarantined", quar)
