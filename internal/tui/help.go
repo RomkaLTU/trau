@@ -264,7 +264,13 @@ func renderHelpPanel(s Styles, h screenHelp, hm helpModel, w, hgt int) string {
 // compositeHelp floats the overlay panel over base, centered, using the
 // lipgloss v2 compositor so the underlying screen is occluded but untouched.
 func compositeHelp(s Styles, base string, h screenHelp, hm helpModel, w, hgt int) string {
-	panel := renderHelpPanel(s, h, hm, w, hgt)
+	return centerOverlay(base, renderHelpPanel(s, h, hm, w, hgt), w, hgt)
+}
+
+// centerOverlay floats panel centered over base with the lipgloss v2 compositor,
+// occluding but not mutating the base screen. Shared by the ? help overlay and the
+// space peek layer so both float the same way.
+func centerOverlay(base, panel string, w, hgt int) string {
 	ox := (w - lipgloss.Width(panel)) / 2
 	oy := (hgt - lipgloss.Height(panel)) / 2
 	if ox < 0 {

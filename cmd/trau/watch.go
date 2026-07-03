@@ -208,29 +208,20 @@ func (w *watcher) switchTo(path string) {
 	}
 }
 
-// readDelta feeds the bytes appended since the last read into the emulator,
-// restarting the screen if the file shrank (an in-place O_TRUNC reuse). It
-// reports whether new bytes arrived.
+// readDelta feeds the bytes appended since the last read into the emulator
+// through the shared agent.ReadTail seam, restarting the screen if the file shrank
+// (an in-place O_TRUNC reuse). It reports whether new bytes arrived.
 func (w *watcher) readDelta() bool {
-	f, err := os.Open(w.curPath)
-	if err != nil {
-		return false
-	}
-	defer func() { _ = f.Close() }()
-	if fi, err := f.Stat(); err == nil && fi.Size() < w.offset {
-		w.offset = 0
+	data, next, truncated := agent.ReadTail(w.curPath, w.offset)
+	if truncated {
 		w.screen.Close()
 		w.screen = vterm.New(w.cols, w.rows)
 		w.lastFrame = ""
 	}
-	if _, err := f.Seek(w.offset, io.SeekStart); err != nil {
+	w.offset = next
+	if len(data) == 0 {
 		return false
 	}
-	data, err := io.ReadAll(f)
-	if err != nil || len(data) == 0 {
-		return false
-	}
-	w.offset += int64(len(data))
 	w.screen.Write(data)
 	return true
 }
