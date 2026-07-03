@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 type fakeOnboardActions struct {
@@ -37,6 +38,56 @@ func typeRunes(m onboardingModel, s string) onboardingModel {
 func pressKey(m onboardingModel, code rune) onboardingModel {
 	m, _ = m.Update(tea.KeyPressMsg{Code: code})
 	return m
+}
+
+// TestOnboardingStepScrolls is the AC2 regression: a step taller than a short
+// terminal stays fully reachable. pgdown and the mouse wheel move the scroll
+// offset, the view never exceeds the terminal, and changing step resets to top.
+func TestOnboardingStepScrolls(t *testing.T) {
+	fake := &fakeOnboardActions{repoRoot: t.TempDir()}
+	m := newOnboardingModelWithPrefill(context.Background(), fake, DefaultStyles(), 60, 12, OnboardingPrefill{})
+	m.step = onboardWrite
+
+	if h := lipgloss.Height(m.View()); h > 12 {
+		t.Fatalf("write step is %d rows on a 12-row terminal — content clipped", h)
+	}
+	total := strings.Count(m.stepBody(), "\n") + 1
+	if total <= m.bodyBudget() {
+		t.Fatalf("precondition: write step (%d lines) should overflow the %d-line budget", total, m.bodyBudget())
+	}
+
+	// pgdown scrolls down from the top.
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	if m.scrollOffset == 0 {
+		t.Fatalf("pgdown did not scroll; offset still 0")
+	}
+	down := m.scrollOffset
+
+	// Wheel-up scrolls back toward the top.
+	m, _ = m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	if m.scrollOffset >= down {
+		t.Errorf("wheel-up did not scroll back: %d ≥ %d", m.scrollOffset, down)
+	}
+
+	// The offset is clamped: many pgdowns never overflow the terminal.
+	for i := 0; i < 20; i++ {
+		m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
+	}
+	if h := lipgloss.Height(m.View()); h > 12 {
+		t.Errorf("view is %d rows after scrolling to the end — clipped", h)
+	}
+	if m.scrollOffset == 0 {
+		t.Fatalf("precondition: expected a non-zero offset before the step change")
+	}
+
+	// esc goes back a step and resets the scroll to the top.
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.step != onboardCI {
+		t.Fatalf("esc from write = %v, want onboardCI", m.step)
+	}
+	if m.scrollOffset != 0 {
+		t.Errorf("scroll offset not reset after step change: %d", m.scrollOffset)
+	}
 }
 
 // Selecting the jira tracker routes the provider step into the three-field

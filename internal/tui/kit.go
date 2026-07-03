@@ -121,3 +121,61 @@ func radioRow(s Styles, labels []string, idx int) string {
 	}
 	return strings.Join(parts, "   ")
 }
+
+// cardBodyBudget returns how many body lines fit inside a card screen on an
+// h-row terminal: total height minus the card's border and padding (4) and the
+// hint bar (1), minus `extra` fixed rows stacked above the card (e.g. a brand
+// header). Never less than 1.
+func cardBodyBudget(h, extra int) int {
+	b := h - 5 - extra
+	if b < 1 {
+		b = 1
+	}
+	return b
+}
+
+// scrollToCursor windows lines to at most height rows, edge-scrolling so the row
+// at index anchor stays visible. Content that already fits is returned unchanged,
+// so a terminal tall enough to show everything looks identical. This is the
+// selection-list scroll primitive: callers pass the focused row's line index.
+func scrollToCursor(lines []string, anchor, height int) []string {
+	if height < 1 {
+		height = 1
+	}
+	if len(lines) <= height {
+		return lines
+	}
+	start := 0
+	if anchor >= height {
+		start = anchor - height + 1
+	}
+	if limit := len(lines) - height; start > limit {
+		start = limit
+	}
+	if start < 0 {
+		start = 0
+	}
+	return lines[start : start+height]
+}
+
+// windowAt windows lines to at most height rows starting at offset, clamping the
+// offset into range. It returns the visible slice, the clamped offset, and
+// whether the content overflowed (so callers can show a scroll affordance).
+// Content that fits is returned unchanged with offset 0. This is the prose scroll
+// primitive: callers keep the offset as state driven by scroll keys/mouse wheel.
+func windowAt(lines []string, offset, height int) (window []string, clamped int, overflow bool) {
+	if height < 1 {
+		height = 1
+	}
+	if len(lines) <= height {
+		return lines, 0, false
+	}
+	maxOff := len(lines) - height
+	if offset > maxOff {
+		offset = maxOff
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	return lines[offset : offset+height], offset, true
+}

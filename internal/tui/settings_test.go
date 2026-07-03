@@ -1,9 +1,12 @@
 package tui
 
 import (
+	"strconv"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 type fakeSettingsActions struct {
@@ -28,6 +31,47 @@ func (f *fakeSettingsActions) SaveConfigItem(key, value, layer string) error {
 func (f *fakeSettingsActions) ConfigLayers() []string { return []string{"local", "project", "user"} }
 
 func (f *fakeSettingsActions) ProviderTunings() []ProviderTuning { return f.tunings }
+
+// TestSettingsListScrollsToCursor is the AC1 regression: a 60-key list on a
+// 24-row terminal must not clip — the view stays within the terminal, and the
+// focused key's row and description stay visible however far the cursor scrolls.
+func TestSettingsListScrollsToCursor(t *testing.T) {
+	items := make([]ConfigItem, 60)
+	for i := range items {
+		n := strconv.Itoa(i)
+		items[i] = ConfigItem{
+			Key:         "KEY_" + n,
+			Value:       "v" + n,
+			Layer:       "project",
+			Description: "describes key number " + n,
+		}
+	}
+	m := newSettingsModel(&fakeSettingsActions{items: items}, DefaultStyles(), 80, 24)
+
+	// Cursor at the bottom: the last key and its description must both render,
+	// and nothing may spill past the 24-row terminal.
+	m.cursor = len(items) - 1
+	view := m.View()
+	if h := lipgloss.Height(view); h > 24 {
+		t.Fatalf("view is %d rows on a 24-row terminal — content clipped", h)
+	}
+	if !strings.Contains(view, "KEY_59") {
+		t.Errorf("focused key KEY_59 not visible after scrolling:\n%s", view)
+	}
+	if !strings.Contains(view, "describes key number 59") {
+		t.Errorf("focused key's description not visible after scrolling:\n%s", view)
+	}
+	// A key from the top of the list has scrolled out of view.
+	if strings.Contains(view, "KEY_0 ") {
+		t.Errorf("top-of-list key should have scrolled off, but KEY_0 is still shown:\n%s", view)
+	}
+
+	// Cursor at the top: the first key is back in view.
+	m.cursor = 0
+	if top := m.View(); !strings.Contains(top, "KEY_0") {
+		t.Errorf("first key not visible with cursor at top:\n%s", top)
+	}
+}
 
 func TestSettingsFiltersAdvancedByDefault(t *testing.T) {
 	acts := &fakeSettingsActions{
