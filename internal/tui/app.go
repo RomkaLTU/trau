@@ -235,7 +235,8 @@ type appModel struct {
 	runOnce   runOnceModel
 	settings  settingsHubModel
 
-	help helpModel
+	help    helpModel
+	palette paletteModel
 }
 
 func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
@@ -429,6 +430,29 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.String() == "?" && !m.editing() && m.helpFor().hasKeys() {
 		m.help = helpModel{active: true}
+		return m, nil
+	}
+
+	// The command palette is the other global modal: ctrl+p opens it from every
+	// screen, : opens it anywhere ? would (outside free-text entry). While open it
+	// owns every key; enter runs the highlighted command and closes.
+	if m.palette.active {
+		lay := m.paletteLayoutNow()
+		var chosen *paletteCommand
+		var closed bool
+		m.palette, chosen, closed = m.palette.update(msg, lay)
+		if chosen != nil {
+			run := chosen.run
+			m.palette = paletteModel{}
+			return run(m)
+		}
+		if closed {
+			m.palette = paletteModel{}
+		}
+		return m, nil
+	}
+	if msg.String() == "ctrl+p" || (msg.String() == ":" && !m.editing()) {
+		m.palette = paletteModel{active: true}
 		return m, nil
 	}
 
@@ -817,6 +841,9 @@ func (m appModel) render() string {
 	if m.help.active {
 		return compositeHelp(m.styles, base, m.helpFor(), m.help, m.width, m.height)
 	}
+	if m.palette.active {
+		return compositePalette(m.styles, base, m.paletteMatches(m.palette.filter), m.palette, m.width, m.height)
+	}
 	return base
 }
 
@@ -1097,6 +1124,7 @@ func menuHelp() screenHelp {
 	return screenHelp{title: "Menu", columns: []helpColumn{
 		group("Navigate", fk("↑↓", "move"), xk("j/k", "move")),
 		group("Actions", fk("enter", "select"), fk("q", "quit")),
+		group("Global", xk("ctrl+p / :", "command palette")),
 	}}
 }
 
