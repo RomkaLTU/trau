@@ -177,6 +177,71 @@ func TestAttachReframesPaneTitle(t *testing.T) {
 	}
 }
 
+// TestPeekDoesNotSwallowCtrlC checks the standalone dashboard renderer still stops
+// on ctrl+c while peeking — the emergency stop must not be trapped by the modal.
+func TestPeekDoesNotSwallowCtrlC(t *testing.T) {
+	interrupted := false
+	d := freshDash(120, 32, "").withQueue([]QueueRow{{ID: "COD-9", Phase: state.Quarantined, FailureReason: "boom"}})
+	d.onInterrupt = func() { interrupted = true }
+
+	d, _, _ = d.handleKey(keySpace)
+	if !d.peek {
+		t.Fatal("space must open the peek preview")
+	}
+	d, _, handled := d.handleKey(keyCtrlC)
+	if !handled || !interrupted || !d.stopping {
+		t.Fatalf("ctrl+c while peeking must stop the loop (handled=%v interrupted=%v stopping=%v)", handled, interrupted, d.stopping)
+	}
+}
+
+// TestPeekSelfHealsWhenUnpeekable checks the modal auto-closes when its row can no
+// longer be previewed (here: the terminal shrinks below the rail), so it can never
+// swallow keys behind an invisible card.
+func TestPeekSelfHealsWhenUnpeekable(t *testing.T) {
+	d := freshDash(120, 32, "").withQueue([]QueueRow{{ID: "COD-9", Phase: state.Quarantined, FailureReason: "boom"}})
+	d, _, _ = d.handleKey(keySpace)
+	if !d.peek {
+		t.Fatal("space must open the peek preview")
+	}
+	nm, _ := d.Update(tea.WindowSizeMsg{Width: 70, Height: 32})
+	if nm.(model).peek {
+		t.Error("peek must self-heal closed when the rail is no longer drawn")
+	}
+}
+
+// TestPeekMergedBeatsStaleFailure checks a merged ticket carrying a stale
+// FailureReason previews the merged summary, not a failure card.
+func TestPeekMergedBeatsStaleFailure(t *testing.T) {
+	m := initialModel(nil)
+	_, body := m.peekContent(QueueRow{ID: "COD-7", Phase: state.Merged, FailureReason: "old transient boom", PRURL: "https://gh/pr/7"}, 60, 10)
+	joined := strip(strings.Join(body, "\n"))
+	if !strings.Contains(joined, "merged") {
+		t.Errorf("merged row must show the merged summary, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "old transient boom") {
+		t.Errorf("merged row must not surface the stale failure reason, got:\n%s", joined)
+	}
+}
+
+// TestPaletteDismissesPeek checks opening the command palette (ctrl+p, which
+// bypasses editing()) closes the peek preview instead of stacking over it.
+func TestPaletteDismissesPeek(t *testing.T) {
+	m := runningApp(120, 32, []QueueRow{{ID: "COD-9", Phase: state.Quarantined, FailureReason: "boom"}})
+	nm, _ := m.handleRunningKey(keySpace)
+	m = nm.(appModel)
+	if !m.dash.peeking() {
+		t.Fatal("space must open the peek preview")
+	}
+	nm2, _ := m.handleKey(keyCtrlP)
+	m = nm2.(appModel)
+	if !m.palette.active {
+		t.Error("ctrl+p must open the palette")
+	}
+	if m.dash.peeking() {
+		t.Error("opening the palette must dismiss the peek preview, not stack over it")
+	}
+}
+
 // runningApp builds an app shell parked on the live dashboard with a seeded queue.
 func runningApp(w, h int, rows []QueueRow) appModel {
 	return appModel{

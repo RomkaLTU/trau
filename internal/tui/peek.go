@@ -25,6 +25,11 @@ const (
 // every key to it while it owns input.
 func (m model) peeking() bool { return m.peek }
 
+// attachTarget reports whether enter attaches a row's live view rather than
+// peeking it. Only the active ticket streams a live transcript, so only it is
+// attachable — the single source of the attach-vs-peek decision.
+func attachTarget(sel QueueRow) bool { return sel.Live }
+
 // canPeek reports whether a row can be previewed now: the rail must be drawn (so a
 // selection is visible and we aren't already attached) and a row must be selected.
 func (m model) canPeek() bool {
@@ -69,7 +74,7 @@ func (m model) handlePeekKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 		m.moveQueueCursor(1)
 		return m, nil, true
 	case "enter":
-		if sel, ok := m.selectedRow(); ok && sel.Live {
+		if sel, ok := m.selectedRow(); ok && attachTarget(sel) {
 			m.peek = false
 			return m.attach()
 		}
@@ -88,15 +93,17 @@ func (m model) peekContent(sel QueueRow, bodyW, maxRows int) (title string, body
 	case sel.Live:
 		title = sel.ID + "  " + firstNonEmpty(m.activePhase(), "running")
 		body = m.peekTail(m.phaseTailLines(activeIndex(m.steps), maxRows), bodyW)
-	case sel.Phase == state.Quarantined || sel.FailureReason != "":
-		title = sel.ID + "  " + queueDesc(sel)
-		body = m.peekFailure(sel, bodyW, maxRows)
 	case sel.Phase == state.Merged:
+		// A ticket that recovered from an earlier transient failure keeps a stale
+		// FailureReason, so the terminal-success states are matched before it.
 		title = sel.ID + "  merged"
 		body = m.peekMerged(sel, bodyW)
 	case sel.Phase == phaseReset:
 		title = sel.ID + "  reset"
 		body = []string{m.styles.Subtle.Render("Working tree restored; nothing to resume.")}
+	case sel.Phase == state.Quarantined || sel.FailureReason != "":
+		title = sel.ID + "  " + queueDesc(sel)
+		body = m.peekFailure(sel, bodyW, maxRows)
 	case sel.Phase == "":
 		title = sel.ID + "  ready"
 		body = []string{m.styles.Subtle.Render("Queued — not started yet.")}
@@ -192,7 +199,7 @@ func (m model) renderPeekPanel(w, hgt int) string {
 	title, body := m.peekContent(sel, bodyW, maxRows)
 
 	nav := "esc close"
-	if sel.Live {
+	if attachTarget(sel) {
 		nav = "enter attach · " + nav
 	}
 	if m.selectableCount() > 1 {

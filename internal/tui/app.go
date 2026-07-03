@@ -467,6 +467,11 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.String() == "ctrl+p" || (msg.String() == ":" && !m.editing()) {
 		m.palette = paletteModel{active: true}
+		// ctrl+p opens the palette from anywhere, including over the peek preview;
+		// dismiss the preview so the two modals don't stack.
+		if m.view == viewRunning {
+			m.dash.peek = false
+		}
 		return m, nil
 	}
 

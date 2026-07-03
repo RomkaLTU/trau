@@ -106,14 +106,14 @@ func (m model) runningHint() string {
 	}
 	if m.peek {
 		hint := "↑↓ next · esc close"
-		if sel, ok := m.selectedRow(); ok && sel.Live {
+		if sel, ok := m.selectedRow(); ok && attachTarget(sel) {
 			hint = "↑↓ next · enter attach · esc close"
 		}
 		return hint
 	}
 	sel, hasSel := m.selectedRow()
 	parts := []string{"↑↓ select", "space peek"}
-	if hasSel && sel.Live {
+	if hasSel && attachTarget(sel) {
 		parts = append(parts, "enter attach")
 	}
 	parts = append(parts, queueVerbHints(sel, hasSel, true)...)
@@ -361,6 +361,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Self-heal the peek modal: if the previewed row left the selectable set (a
+	// queue refresh dropped it, or the terminal got too narrow for the rail), close
+	// the overlay so it can't swallow keys behind an invisible card.
+	if m.peek && !m.canPeek() {
+		m.peek = false
+	}
+
 	var cmd tea.Cmd
 	m.spin, cmd = m.spin.Update(msg)
 	cmds = append(cmds, cmd)
@@ -405,6 +412,23 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 		return m, nil, false
 	}
 
+	// ctrl+c is the emergency stop and must never be swallowed by a modal input
+	// (filter or peek). The app shell intercepts it before routing, but the
+	// standalone dashboard renderer (direct `trau <args>` runs) routes here, so it
+	// is guarded first — before the modal branches — in this path too.
+	if msg.String() == "ctrl+c" {
+		if m.stopping {
+			return m, tea.Quit, true
+		}
+		if m.onInterrupt != nil {
+			m.onInterrupt()
+		}
+		m.stopping = true
+		m.banner = "⏹ stopping after this phase… (ctrl+c again to force quit)"
+		m.bannerErr = false
+		return m, nil, true
+	}
+
 	// While the filter input captures keys it owns them all, so typing an action
 	// key (q, v, o) narrows the feed instead of firing the action.
 	if m.filtering {
@@ -418,10 +442,6 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 
 	switch {
 	case key.Matches(msg, m.keys.Quit):
-
-		if m.stopping && msg.String() == "ctrl+c" {
-			return m, tea.Quit, true
-		}
 		if m.onInterrupt != nil {
 			m.onInterrupt()
 		}
@@ -452,7 +472,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 		if !m.canPeek() {
 			return m, nil, false
 		}
-		if sel, ok := m.selectedRow(); ok && sel.Live {
+		if sel, ok := m.selectedRow(); ok && attachTarget(sel) {
 			return m.attach()
 		}
 		m.peek = true
