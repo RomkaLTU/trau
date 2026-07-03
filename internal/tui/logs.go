@@ -95,6 +95,22 @@ func (m *logsModel) relayout(width, height int) {
 	m.viewport.SetHeight(innerH)
 }
 
+// withFocus points the cursor at id's run (if present) and loads its log text,
+// so the palette's per-ticket "logs" verb opens straight to that ticket.
+func (m logsModel) withFocus(id string, contentFn func(string) string) logsModel {
+	for i, r := range m.runs {
+		if r.ID == id {
+			m.cursor = i
+			if contentFn != nil {
+				m.viewport.SetContent(contentFn(id))
+				m.viewport.GotoTop()
+			}
+			break
+		}
+	}
+	return m
+}
+
 func (m logsModel) selected() (LogRun, bool) {
 	if m.cursor < 0 || m.cursor >= len(m.runs) {
 		return LogRun{}, false
