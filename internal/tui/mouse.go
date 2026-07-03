@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -9,6 +10,59 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/state"
 )
+
+// Zone prefixes for the index-keyed lists and tabs each screen marks. Rows are
+// marked as prefix+index; a click is resolved back with clickedRow.
+const (
+	zoneMenuRow    = "menu:"
+	zoneMoreRow    = "more:"
+	zoneStatusRow  = "status:" // renderQueue by ticket id
+	zoneRecapRow   = "recap:"  // renderQueue by ticket id
+	zoneHubRow     = "hub:"
+	zoneSetRow     = "set:"
+	zoneProvRow    = "prov:"
+	zoneProvTab    = "provtab:"
+	zoneLoopRow    = "loop:"
+	zoneRunOnceRow = "run1:"
+	zoneLogsRow    = "logrun:"
+	zoneOnbTracker = "onbtrk:"
+	zoneOnbProv    = "onbprv:"
+	zoneOnbTeam    = "onbteam:"
+	zoneOnbLabel   = "onblbl:"
+	zoneOnbTimelog = "onbtl:"
+	zoneOnbCI      = "onbci:"
+)
+
+// markRow wraps a rendered row in an index-keyed zone so a click can resolve which
+// row was hit. An empty prefix leaves the row unmarked.
+func markRow(prefix string, i int, row string) string {
+	if prefix == "" {
+		return row
+	}
+	return zone.Mark(prefix+strconv.Itoa(i), row)
+}
+
+// clickedRow reports the index of the marked row under the mouse, scanning the n
+// rows a list drew, or false when the click missed every row.
+func clickedRow(msg tea.MouseMsg, prefix string, n int) (int, bool) {
+	for i := 0; i < n; i++ {
+		if zone.Get(prefix + strconv.Itoa(i)).InBounds(msg) {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+// clickedQueueRow reports the index (into the given selectable rows) of the marked
+// queue row under the mouse, for the renderQueue surfaces keyed by ticket id.
+func clickedQueueRow(msg tea.MouseMsg, prefix string, rows []QueueRow) (int, bool) {
+	for i, r := range rows {
+		if zone.Get(prefix + r.ID).InBounds(msg) {
+			return i, true
+		}
+	}
+	return -1, false
+}
 
 // Zone ids for hit-testing. Rail rows are keyed by ticket id; footer verbs by
 // their canonical (synthesizable) key so a click fires the same action the key
@@ -122,8 +176,23 @@ func (m model) clickRailRow(msg tea.MouseMsg) (model, tea.Cmd, bool) {
 	return m, nil, false
 }
 
+// clickRecapRow selects the recap row under the mouse; a click on the already-
+// selected row opens its PR, the recap's natural activate. Reports whether hit.
+func (m model) clickRecapRow(msg tea.MouseMsg) (model, tea.Cmd, bool) {
+	active, _ := partitionQueue(m.queueRows(), m.foldDone())
+	if i, ok := clickedQueueRow(msg, zoneRecapRow, active); ok {
+		if i == m.queueCursor {
+			return m, m.openSelectedPR(), true
+		}
+		m.queueCursor = i
+		return m, nil, true
+	}
+	return m, nil, false
+}
+
 // handleMouseClick routes a left click on the dashboard: a footer verb fires its
-// key, else a rail row selects/activates. Non-left buttons and misses fall through.
+// key, else a queue row selects/activates (the recap rows in the summary, the rail
+// rows while running). Non-left buttons and misses fall through.
 func (m model) handleMouseClick(msg tea.MouseClickMsg) (model, tea.Cmd, bool) {
 	if msg.Button != tea.MouseLeft {
 		return m, nil, false
@@ -131,12 +200,29 @@ func (m model) handleMouseClick(msg tea.MouseClickMsg) (model, tea.Cmd, bool) {
 	if k, ok := clickedFooterVerb(msg); ok {
 		return m.handleKey(k)
 	}
+	if m.state == stateSummary {
+		return m.clickRecapRow(msg)
+	}
 	return m.clickRailRow(msg)
 }
 
+// clickStatusRow selects the Status row under the mouse; a click on the already-
+// selected row opens its PR (the natural activate). Rows are hit-tested against the
+// same attention-sorted order renderQueue drew, which statusCursor indexes.
+func (m appModel) clickStatusRow(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
+	active, _ := partitionQueue(m.statusRows, false)
+	if i, ok := clickedQueueRow(msg, zoneStatusRow, active); ok {
+		if i == m.statusCursor {
+			return m.handleStatusKey(synthVerbKey("o"))
+		}
+		m.statusCursor = i
+	}
+	return m, nil
+}
+
 // handleMouseClick routes a left click through the app shell: a footer verb fires
-// its key on the current screen; on the running dashboard a non-verb click goes to
-// the dash to hit-test the rail. Card-screen rows are wired per screen elsewhere.
+// its key on the current screen; otherwise the click is resolved against the rows
+// of the active screen (menus and Status inline, sub-model screens forwarded).
 func (m appModel) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	if msg.Button != tea.MouseLeft {
 		return m, nil
@@ -144,13 +230,37 @@ func (m appModel) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	if k, ok := clickedFooterVerb(msg); ok {
 		return m.handleKey(k)
 	}
-	if m.view == viewRunning {
+	var cmd tea.Cmd
+	switch m.view {
+	case viewRunning:
 		m.dash = m.dash.clearToast()
-		var cmd tea.Cmd
 		m.dash, cmd = applyDashCmd(m.dash, msg)
-		return m, cmd
+	case viewMenu:
+		if i, ok := clickedRow(msg, zoneMenuRow, len(m.items)); ok {
+			if i == m.cursor {
+				return m.selectAction(m.items[i].action)
+			}
+			m.cursor = i
+		}
+	case viewMore:
+		if i, ok := clickedRow(msg, zoneMoreRow, len(m.moreItems)); ok {
+			if i == m.moreCursor {
+				return m.selectAction(m.moreItems[i].action)
+			}
+			m.moreCursor = i
+		}
+	case viewStatus:
+		return m.clickStatusRow(msg)
+	case viewLogs:
+		m.logs, cmd = m.logs.Update(msg, m.actions.LogContent)
+	case viewRunLoop:
+		m.loopSetup, cmd = m.loopSetup.Update(msg)
+	case viewRunOnce:
+		m.runOnce, cmd = m.runOnce.Update(msg)
+	case viewSettings:
+		m.settings, cmd = m.settings.Update(msg)
 	}
-	return m, nil
+	return m, cmd
 }
 
 // This file is the mouse layer: the mouse-off toggle that hands drag-to-select

@@ -177,6 +177,80 @@ func clickAt(z *zone.ZoneInfo) tea.MouseClickMsg {
 	return tea.MouseClickMsg{X: z.StartX, Y: z.StartY, Button: tea.MouseLeft}
 }
 
+// locateSub is locateZone for a sub-model whose View returns a plain string (not
+// yet scanned): it runs zone.Scan itself, the way the app shell does per frame.
+func locateSub(t *testing.T, render func() string, id string) *zone.ZoneInfo {
+	t.Helper()
+	zone.SetEnabled(true)
+	for i := 0; i < 200; i++ {
+		zone.Scan(render())
+		if z := zone.Get(id); !z.IsZero() {
+			return z
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("zone %q never resolved", id)
+	return nil
+}
+
+// TestMenuRowClickSelectsThenActivates drives real clicks on a menu row: the first
+// selects it, a second on the same row runs its action.
+func TestMenuRowClickSelectsThenActivates(t *testing.T) {
+	app := helpApp(t) // parked on the main menu at 80×24
+
+	z := locateZone(t, app.View, zoneMenuRow+"1") // "Run once"
+	next, _ := app.Update(clickAt(z))
+	napp := next.(appModel)
+	if napp.cursor != 1 {
+		t.Fatalf("clicking menu row 1 must select it, cursor=%d", napp.cursor)
+	}
+
+	z2 := locateZone(t, napp.View, zoneMenuRow+"1")
+	after, _ := napp.Update(clickAt(z2))
+	if got := after.(appModel).view; got != viewRunOnce {
+		t.Errorf("clicking the already-selected Run once row must open it, view=%v", got)
+	}
+}
+
+// TestSettingsRowClickSelectsThenEdits checks a settings key row selects on click
+// and opens its editor on a click of the already-selected key.
+func TestSettingsRowClickSelectsThenEdits(t *testing.T) {
+	items := []ConfigItem{
+		{Key: "MODEL", Value: "opus", Layer: "local"},
+		{Key: "EFFORT", Value: "high", Layer: "local"},
+		{Key: "CI", Value: "1", Layer: "project"},
+	}
+	m := newSettingsModel(&fakeSettingsActions{items: items}, DefaultStyles(), 80, 24)
+
+	z := locateSub(t, m.View, zoneSetRow+"1")
+	m2, _ := m.handleMouseClick(clickAt(z))
+	if m2.cursor != 1 {
+		t.Fatalf("clicking key row 1 must select it, cursor=%d", m2.cursor)
+	}
+
+	z2 := locateSub(t, m2.View, zoneSetRow+"1")
+	m3, _ := m2.handleMouseClick(clickAt(z2))
+	if m3.step != settingsEdit {
+		t.Errorf("clicking the already-selected key must open its editor, step=%v", m3.step)
+	}
+}
+
+// TestProviderTabClickSwitches checks a provider tab responds to a click by
+// switching the active provider.
+func TestProviderTabClickSwitches(t *testing.T) {
+	acts := &fakeSettingsActions{tunings: []ProviderTuning{
+		{Name: "claude", Active: true, Model: ProviderTuningField{Value: "opus", Layer: "project"}},
+		{Name: "codex", Model: ProviderTuningField{Value: "gpt", Layer: "project"}},
+	}}
+	m := newProviderSettingsModel(acts, DefaultStyles(), 80, 24)
+
+	z := locateSub(t, m.View, zoneProvTab+"1")
+	m2, _ := m.handleMouseClick(clickAt(z))
+	if m2.tab != 1 {
+		t.Errorf("clicking provider tab 1 must switch to it, tab=%d", m2.tab)
+	}
+}
+
 // TestFooterVerbClickFiresKey drives a real click on the q-stop footer verb of the
 // running dashboard and checks it stops the loop, same as pressing q.
 func TestFooterVerbClickFiresKey(t *testing.T) {

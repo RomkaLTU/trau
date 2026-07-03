@@ -204,7 +204,7 @@ func (m model) renderSummary() string {
 		if queueH < 4 {
 			queueH = 4
 		}
-		body += "\n\n" + renderQueue(m.styles, m.spinFrame(), m.resultRows(), m.queueCursor, queueW, queueH, false, "")
+		body += "\n\n" + renderQueue(m.styles, m.spinFrame(), m.resultRows(), m.queueCursor, queueW, queueH, false, zoneRecapRow)
 	}
 	if m.recoveryNote != "" {
 		body += "\n\n" + m.styles.Subtle.Render(m.recoveryNote)

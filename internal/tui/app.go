@@ -1050,7 +1050,7 @@ func (m appModel) renderScreen() string {
 			queueW = 24
 		}
 		bodyH := cardBodyBudget(m.height, 2) // title + a note/spinner row
-		body := renderQueue(m.styles, spinnerGlyph(m.spin), m.statusRows, m.statusCursor, queueW, bodyH, false, "")
+		body := renderQueue(m.styles, spinnerGlyph(m.spin), m.statusRows, m.statusCursor, queueW, bodyH, false, zoneStatusRow)
 		switch {
 		case m.statusBusy:
 			body += "\n\n" + m.spin.View() + " reconciling against the tracker…"
@@ -1103,7 +1103,7 @@ func (m appModel) renderMenu() string {
 	}
 	context := strings.Join(contextRows, "\n")
 
-	rows := m.menuRows(m.items, m.cursor)
+	rows := m.menuRows(m.items, m.cursor, zoneMenuRow)
 
 	head := []string{header, tagline}
 	if m.info.Resume.Active() {
@@ -1124,7 +1124,7 @@ func (m appModel) renderMore() string {
 		menuCardW,
 	)
 	tagline := s.Subtle.Render("status · maintenance · build info")
-	rows := m.menuRows(m.moreItems, m.moreCursor)
+	rows := m.menuRows(m.moreItems, m.moreCursor, zoneMoreRow)
 
 	body := strings.Join([]string{header, tagline, ""}, "\n") +
 		"\n" + strings.Join(rows, "\n")
@@ -1132,14 +1132,14 @@ func (m appModel) renderMore() string {
 	return cardView(s, m.width, m.height, body, moreHelp().footer())
 }
 
-func (m appModel) menuRows(items []menuItem, cursor int) []string {
+func (m appModel) menuRows(items []menuItem, cursor int, zonePrefix string) []string {
 	s := m.styles
 	rows := make([]string, 0, len(items)+1)
 	for i, it := range items {
 		if it.action == actMore {
 			rows = append(rows, s.Help.Render(strings.Repeat("─", menuCardW)))
 		}
-		rows = append(rows, listRow(s, i == cursor, it.title, it.desc, 14))
+		rows = append(rows, markRow(zonePrefix, i, listRow(s, i == cursor, it.title, it.desc, 14)))
 	}
 	return rows
 }

@@ -155,6 +155,8 @@ func (m providerSettingsModel) Update(msg tea.Msg) (providerSettingsModel, tea.C
 		return m, nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+	case tea.MouseClickMsg:
+		return m.handleMouseClick(msg)
 	case provSaveDoneMsg:
 		m.step = provBrowse
 		if msg.err != nil {
@@ -179,6 +181,31 @@ func (m providerSettingsModel) handleKey(msg tea.KeyPressMsg) (providerSettingsM
 		return m.handleBrowseKey(msg)
 	case provEdit:
 		return m.handleEditKey(msg)
+	}
+	return m, nil
+}
+
+// handleMouseClick resolves a left click on the browse screen: a provider tab
+// switches provider; a dial/phase row selects, and a click on the selected row
+// opens its editor. Ignored on the edit screen, which has no rows.
+func (m providerSettingsModel) handleMouseClick(msg tea.MouseClickMsg) (providerSettingsModel, tea.Cmd) {
+	if msg.Button != tea.MouseLeft || m.step != provBrowse {
+		return m, nil
+	}
+	if i, ok := clickedRow(msg, zoneProvTab, len(m.providers)); ok {
+		if i != m.tab {
+			m.tab = i
+			m.cursor = 0
+			m.savedMsg, m.saveErr = "", nil
+			m.rebuildRows()
+		}
+		return m, nil
+	}
+	if i, ok := clickedRow(msg, zoneProvRow, len(m.rows)); ok {
+		if i == m.cursor {
+			return m.enterEdit()
+		}
+		m.cursor = i
 	}
 	return m, nil
 }
@@ -422,12 +449,12 @@ func (m providerSettingsModel) renderBrowse() string {
 			if focused {
 				cursorLine = len(mid)
 			}
-			mid = append(mid, m.renderValueRow(focused, "Model", fieldDisplay(p.Model, "(provider default)")))
+			mid = append(mid, markRow(zoneProvRow, i, m.renderValueRow(focused, "Model", fieldDisplay(p.Model, "(provider default)"))))
 		case rowEffort:
 			if focused {
 				cursorLine = len(mid)
 			}
-			mid = append(mid, m.renderValueRow(focused, "Reasoning", fieldDisplay(p.Effort, "(provider default)")))
+			mid = append(mid, markRow(zoneProvRow, i, m.renderValueRow(focused, "Reasoning", fieldDisplay(p.Effort, "(provider default)"))))
 		case rowPhase:
 			if !phaseHeaderShown {
 				mid = append(mid, "", s.Subtle.Render("Per-phase overrides"))
@@ -436,7 +463,7 @@ func (m providerSettingsModel) renderBrowse() string {
 			if focused {
 				cursorLine = len(mid)
 			}
-			mid = append(mid, m.renderPhaseRow(focused, p.Phases[r.phaseIdx], hasEffort))
+			mid = append(mid, markRow(zoneProvRow, i, m.renderPhaseRow(focused, p.Phases[r.phaseIdx], hasEffort)))
 		}
 	}
 
@@ -480,11 +507,13 @@ func (m providerSettingsModel) renderTabs() string {
 		if p.Active {
 			label = "● " + label
 		}
+		var tab string
 		if i == m.tab {
-			parts = append(parts, s.Header.Render("["+label+"]"))
+			tab = s.Header.Render("[" + label + "]")
 		} else {
-			parts = append(parts, s.Help.Render(" "+label+" "))
+			tab = s.Help.Render(" " + label + " ")
 		}
+		parts = append(parts, markRow(zoneProvTab, i, tab))
 	}
 	return strings.Join(parts, "  ")
 }

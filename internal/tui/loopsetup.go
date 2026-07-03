@@ -98,12 +98,30 @@ func (m loopSetupModel) Update(msg tea.Msg) (loopSetupModel, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseClickMsg:
+		return m.handleMouseClick(msg)
 	}
 
 	if m.step == loopConfirm {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
+	}
+	return m, nil
+}
+
+// handleMouseClick resolves a left click on the sub-issue list: a row selects, and
+// a click on the already-selected row runs just that sub-issue (the s verb).
+func (m loopSetupModel) handleMouseClick(msg tea.MouseClickMsg) (loopSetupModel, tea.Cmd) {
+	if msg.Button != tea.MouseLeft || m.step != loopList {
+		return m, nil
+	}
+	if i, ok := clickedRow(msg, zoneLoopRow, len(m.subs)); ok {
+		if i == m.cursor {
+			return m.handleKey(synthVerbKey("s"))
+		}
+		m.cursor = i
 	}
 	return m, nil
 }
@@ -284,7 +302,7 @@ func (m loopSetupModel) renderList() string {
 		if sub.HasChildren {
 			titleStr += s.Subtle.Render("  ⊘ nested epic")
 		}
-		rows = append(rows, cursorMarker(s, i == m.cursor)+status+idStyle.Render(idStr)+"  "+titleStyle.Render(titleStr))
+		rows = append(rows, markRow(zoneLoopRow, i, cursorMarker(s, i == m.cursor)+status+idStyle.Render(idStr)+"  "+titleStyle.Render(titleStr)))
 	}
 
 	return strings.Join(rows, "\n")

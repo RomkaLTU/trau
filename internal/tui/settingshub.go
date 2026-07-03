@@ -73,6 +73,8 @@ func (m settingsHubModel) Update(msg tea.Msg) (settingsHubModel, tea.Cmd) {
 		return m, nil
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+	case tea.MouseClickMsg:
+		return m.handleMouseClick(msg)
 	}
 
 	var cmd tea.Cmd
@@ -83,6 +85,34 @@ func (m settingsHubModel) Update(msg tea.Msg) (settingsHubModel, tea.Cmd) {
 		m.providers, cmd = m.providers.Update(msg)
 	}
 	return m, cmd
+}
+
+// handleMouseClick resolves a left click: on the landing menu a hub row selects
+// (or, when already selected, opens its section); inside a section it forwards to
+// that section to hit-test its own rows.
+func (m settingsHubModel) handleMouseClick(msg tea.MouseClickMsg) (settingsHubModel, tea.Cmd) {
+	if msg.Button != tea.MouseLeft {
+		return m, nil
+	}
+	switch m.step {
+	case hubMenu:
+		if i, ok := clickedRow(msg, zoneHubRow, len(m.items)); ok {
+			if i == m.cursor {
+				return m.openSection(m.items[i].step)
+			}
+			m.cursor = i
+		}
+		return m, nil
+	case hubAll:
+		var cmd tea.Cmd
+		m.all, cmd = m.all.Update(msg)
+		return m, cmd
+	case hubProviders:
+		var cmd tea.Cmd
+		m.providers, cmd = m.providers.Update(msg)
+		return m, cmd
+	}
+	return m, nil
 }
 
 func (m settingsHubModel) handleKey(msg tea.KeyPressMsg) (settingsHubModel, tea.Cmd) {
@@ -165,7 +195,7 @@ func (m settingsHubModel) renderMenu() string {
 		"",
 	}
 	for i, it := range m.items {
-		rows = append(rows, listRow(s, i == m.cursor, it.title, it.desc, 14))
+		rows = append(rows, markRow(zoneHubRow, i, listRow(s, i == m.cursor, it.title, it.desc, 14)))
 	}
 	return cardView(s, m.width, m.height, strings.Join(rows, "\n"), m.help().footer())
 }
