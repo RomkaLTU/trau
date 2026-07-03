@@ -154,6 +154,9 @@ func (m settingsModel) Update(msg tea.Msg) (settingsModel, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
+	case tea.MouseClickMsg:
+		return m.handleMouseClick(msg)
+
 	case saveConfigDoneMsg:
 		m.step = settingsList
 		if msg.err != nil {
@@ -272,6 +275,22 @@ func (m settingsModel) handleEditKey(msg tea.KeyPressMsg) (settingsModel, tea.Cm
 		var cmd tea.Cmd
 		m.editInput, cmd = m.editInput.Update(msg)
 		return m, cmd
+	}
+	return m, nil
+}
+
+// handleMouseClick resolves a left click on the settings list: a key row selects,
+// and a click on the already-selected key opens its editor. Clicks are ignored on
+// the edit screen, which has no list.
+func (m settingsModel) handleMouseClick(msg tea.MouseClickMsg) (settingsModel, tea.Cmd) {
+	if msg.Button != tea.MouseLeft || m.step != settingsList {
+		return m, nil
+	}
+	if i, ok := clickedRow(msg, zoneSetRow, len(m.filtered)); ok {
+		if i == m.cursor {
+			return m.enterEdit()
+		}
+		m.cursor = i
 	}
 	return m, nil
 }
@@ -421,7 +440,7 @@ func (m settingsModel) renderList() string {
 			keyStyle.Render(padRight(it.Key, keyW)) + "  " +
 			valStyle.Render(truncate(displayValue(it, it.Value), layerW*2)) + "  " +
 			layerStyle.Render("("+it.Layer+")")
-		list = append(list, row)
+		list = append(list, markRow(zoneSetRow, i, row))
 	}
 
 	// The focused key's description is a fixed footer so it stays visible however

@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	zone "github.com/lrstanley/bubblezone/v2"
 
 	"github.com/RomkaLTU/trau/internal/console"
 )
@@ -251,6 +252,8 @@ type appModel struct {
 
 	help    helpModel
 	palette paletteModel
+
+	mouseOff bool
 }
 
 func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
@@ -340,6 +343,9 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseClickMsg:
+		return m.handleMouseClick(msg)
 
 	case logMsg, eventMsg, ticketMsg, titleMsg, phaseStartMsg, ticketDoneMsg, loopDoneMsg, recoveryDoneMsg:
 		var cmd tea.Cmd
@@ -474,6 +480,11 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if msg.String() == "ctrl+t" {
+		m.mouseOff = !m.mouseOff
+		setMouseEnabled(!m.mouseOff)
+		return m, nil
+	}
 
 	switch m.view {
 	case viewOnboarding:
@@ -525,30 +536,12 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case viewRunLoop:
 		var cmd tea.Cmd
 		m.loopSetup, cmd = m.loopSetup.Update(msg)
-		if m.loopSetup.Done() {
-			switch {
-			case m.loopSetup.Cancelled():
-				return m.toMenu(), nil
-			case m.loopSetup.Selected() != "":
-				return m.startRunTicket(m.loopSetup.Selected(), "")
-			case m.loopSetup.Single():
-				return m.startRunTicket(m.loopSetup.Epic(), "")
-			default:
-				return m.startRunLoop(m.loopSetup.Epic())
-			}
-		}
-		return m, cmd
+		return m.afterLoopSetup(cmd)
 
 	case viewRunOnce:
 		var cmd tea.Cmd
 		m.runOnce, cmd = m.runOnce.Update(msg)
-		if m.runOnce.Done() {
-			if m.runOnce.Cancelled() {
-				return m.toMenu(), nil
-			}
-			return m.startRunTicket(m.runOnce.Selected(), m.runOnce.Provider())
-		}
-		return m, cmd
+		return m.afterRunOnce(cmd)
 
 	case viewStatus:
 		return m.handleStatusKey(msg)
@@ -634,6 +627,35 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // (queueVerbs) since they would disturb the running ticket, so they act only from
 // the recap/Status. Everything else — watch, follow, page, exit stream — goes to
 // the dash. q/ctrl+c stop the loop.
+// afterLoopSetup starts the run the loop-setup step resolved to, once its Update
+// reports Done — the single dispatch both the keyboard and a click drive through.
+func (m appModel) afterLoopSetup(cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	if !m.loopSetup.Done() {
+		return m, cmd
+	}
+	switch {
+	case m.loopSetup.Cancelled():
+		return m.toMenu(), nil
+	case m.loopSetup.Selected() != "":
+		return m.startRunTicket(m.loopSetup.Selected(), "")
+	case m.loopSetup.Single():
+		return m.startRunTicket(m.loopSetup.Epic(), "")
+	default:
+		return m.startRunLoop(m.loopSetup.Epic())
+	}
+}
+
+// afterRunOnce starts the ticket the run-once step resolved to, once Done.
+func (m appModel) afterRunOnce(cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	if !m.runOnce.Done() {
+		return m, cmd
+	}
+	if m.runOnce.Cancelled() {
+		return m.toMenu(), nil
+	}
+	return m.startRunTicket(m.runOnce.Selected(), m.runOnce.Provider())
+}
+
 func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// ctrl+c is the emergency stop and always wins, even mid-filter, so it can't be
 	// swallowed by the filter input.
@@ -644,6 +666,7 @@ func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.dash = m.dash.markStopping()
 		return m, nil
 	}
+	m.dash = m.dash.clearToast()
 	// While the dash filter input is capturing, every other key belongs to it —
 	// route straight to the dash so an action key (q, o, j) narrows the feed instead
 	// of firing the action or moving the rail.
@@ -995,9 +1018,15 @@ func (m appModel) reconcileCmd(ctx context.Context) tea.Cmd {
 }
 
 func (m appModel) View() tea.View {
-	v := tea.NewView(m.render())
+	content := m.render()
+	if m.mouseOff {
+		content = overlayMouseOff(m.styles, content, m.width, m.height)
+	}
+	v := tea.NewView(zone.Scan(content))
 	v.AltScreen = true
-	v.MouseMode = tea.MouseModeCellMotion
+	if !m.mouseOff {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	return v
 }
 
@@ -1027,7 +1056,7 @@ func (m appModel) renderScreen() string {
 			queueW = 24
 		}
 		bodyH := cardBodyBudget(m.height, 2) // title + a note/spinner row
-		body := renderQueue(m.styles, spinnerGlyph(m.spin), m.statusRows, m.statusCursor, queueW, bodyH, false)
+		body := renderQueue(m.styles, spinnerGlyph(m.spin), m.statusRows, m.statusCursor, queueW, bodyH, false, zoneStatusRow)
 		switch {
 		case m.statusBusy:
 			body += "\n\n" + m.spin.View() + " reconciling against the tracker…"
@@ -1080,7 +1109,7 @@ func (m appModel) renderMenu() string {
 	}
 	context := strings.Join(contextRows, "\n")
 
-	rows := m.menuRows(m.items, m.cursor)
+	rows := m.menuRows(m.items, m.cursor, zoneMenuRow)
 
 	head := []string{header, tagline}
 	if m.info.Resume.Active() {
@@ -1101,7 +1130,7 @@ func (m appModel) renderMore() string {
 		menuCardW,
 	)
 	tagline := s.Subtle.Render("status · maintenance · build info")
-	rows := m.menuRows(m.moreItems, m.moreCursor)
+	rows := m.menuRows(m.moreItems, m.moreCursor, zoneMoreRow)
 
 	body := strings.Join([]string{header, tagline, ""}, "\n") +
 		"\n" + strings.Join(rows, "\n")
@@ -1109,14 +1138,14 @@ func (m appModel) renderMore() string {
 	return cardView(s, m.width, m.height, body, moreHelp().footer())
 }
 
-func (m appModel) menuRows(items []menuItem, cursor int) []string {
+func (m appModel) menuRows(items []menuItem, cursor int, zonePrefix string) []string {
 	s := m.styles
 	rows := make([]string, 0, len(items)+1)
 	for i, it := range items {
 		if it.action == actMore {
 			rows = append(rows, s.Help.Render(strings.Repeat("─", menuCardW)))
 		}
-		rows = append(rows, listRow(s, i == cursor, it.title, it.desc, 14))
+		rows = append(rows, markRow(zonePrefix, i, listRow(s, i == cursor, it.title, it.desc, 14)))
 	}
 	return rows
 }

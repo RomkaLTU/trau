@@ -56,7 +56,7 @@ func (h screenHelp) footer() string {
 			}
 		}
 	}
-	return strings.Join(parts, " · ")
+	return strings.Join(markVerbs(parts), " · ")
 }
 
 // hasKeys reports whether the screen declared any bindings; ? is a no-op on a

@@ -123,7 +123,7 @@ func TestNeedsHumanReasonAlwaysShown(t *testing.T) {
 	}
 	// Sorted, COD-q (needs-human) is first; put the cursor on COD-a (index 1) so
 	// the quarantined row is not the selected one.
-	out := ansi.Strip(renderQueue(s, "*", rows, 1, 60, 0, true))
+	out := ansi.Strip(renderQueue(s, "*", rows, 1, 60, 0, true, ""))
 	if !strings.Contains(out, "husky pre-push failed") {
 		t.Errorf("quarantined reason must surface unselected:\n%s", out)
 	}

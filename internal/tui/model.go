@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	zone "github.com/lrstanley/bubblezone/v2"
 
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/console"
@@ -117,12 +118,16 @@ func (m model) runningHint() string {
 		parts = append(parts, "enter attach")
 	}
 	parts = append(parts, queueVerbHints(sel, hasSel, true)...)
+	if hasSel {
+		_, label := copyArtifact(sel)
+		parts = append(parts, "y copy "+label)
+	}
 	parts = append(parts, "v "+m.tier.next().short())
 	if m.tier != tierSpans {
 		parts = append(parts, "/ filter")
 	}
 	parts = append(parts, "q stop")
-	return strings.Join(parts, " · ")
+	return strings.Join(markVerbs(parts), " · ")
 }
 
 // summaryHelp is the recap screen's key legend. The recovery keys (resume,
@@ -204,6 +209,9 @@ type model struct {
 	// selected queue row floated over the still-rendering dashboard. It captures
 	// keys while open but is read-only — the loop keeps running underneath.
 	peek bool
+
+	mouseOff bool
+	toast    string
 
 	results []console.TicketResult
 
@@ -310,6 +318,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		m.toast = ""
 		if m, cmd, handled := m.handleKey(msg); handled {
 			return m, cmd
 		}
@@ -359,6 +368,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamOffset = msg.offset
 			m.refreshBody()
 		}
+
+	case tea.MouseClickMsg:
+		m.toast = ""
+		if nm, cmd, handled := m.handleMouseClick(msg); handled {
+			return nm, cmd
+		}
+
+	case tea.MouseWheelMsg:
+		m.toast = ""
+		// Over the rail the wheel moves the selection; elsewhere it falls through to
+		// the span viewport below.
+		if m.railVisible() && zone.Get(zoneRail).InBounds(msg) {
+			d := 1
+			if msg.Button == tea.MouseWheelUp {
+				d = -1
+			}
+			m.moveQueueCursor(d)
+			return m, nil
+		}
 	}
 
 	// Self-heal the peek modal: if the previewed row left the selectable set (a
@@ -396,12 +424,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
+	// Global in the standalone dashboard too (the app shell intercepts it in-session).
+	if msg.String() == "ctrl+t" {
+		m.mouseOff = !m.mouseOff
+		setMouseEnabled(!m.mouseOff)
+		return m, nil, true
+	}
 	if m.state == stateSummary {
 		switch {
 		case key.Matches(msg, m.keys.Quit), msg.String() == "esc":
 			return m, tea.Quit, true
 		case key.Matches(msg, m.keys.Open):
 			return m, m.openSelectedPR(), true
+		case msg.String() == "y":
+			nm, cmd := m.copySelectedArtifact()
+			return nm, cmd, true
 		case msg.String() == "up" || msg.String() == "k":
 			m.moveQueueCursor(-1)
 			return m, nil, true
@@ -477,6 +514,9 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 		}
 		m.peek = true
 		return m, nil, true
+	case msg.String() == "y":
+		nm, cmd := m.copySelectedArtifact()
+		return nm, cmd, true
 	case msg.String() == "v":
 		m = m.cycleTier()
 		return m, nil, true
@@ -899,9 +939,15 @@ func (m model) markStopping() model {
 }
 
 func (m model) View() tea.View {
-	v := tea.NewView(m.render())
+	content := m.render()
+	if m.mouseOff {
+		content = overlayMouseOff(m.styles, content, m.width, m.height)
+	}
+	v := tea.NewView(zone.Scan(content))
 	v.AltScreen = true
-	v.MouseMode = tea.MouseModeCellMotion
+	if !m.mouseOff {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	return v
 }
 
@@ -929,7 +975,7 @@ func (m model) renderRunning() string {
 		body = titledPanel(m.styles, m.spanPaneTitle(), m.viewport.View(), d.spanW, d.bodyH)
 	default:
 		spanPane := titledPanel(m.styles, m.spanPaneTitle(), m.viewport.View(), d.spanW, d.bodyH)
-		rail := titledPanel(m.styles, m.railTitle(), m.renderRail(d), d.railW, d.bodyH)
+		rail := zone.Mark(zoneRail, titledPanel(m.styles, m.railTitle(), m.renderRail(d), d.railW, d.bodyH))
 		body = lipgloss.JoinHorizontal(lipgloss.Top, spanPane, " ", rail)
 	}
 
@@ -961,7 +1007,7 @@ func (m model) railTitle() string {
 // renderRail draws the attention queue into the right pane through the shared
 // component, sized to the rail's inner box.
 func (m model) renderRail(d dims) string {
-	return renderQueue(m.styles, m.spinFrame(), m.liveQueueRows(), m.queueCursor, d.railW-4, d.bodyH-2, true)
+	return renderQueue(m.styles, m.spinFrame(), m.liveQueueRows(), m.queueCursor, d.railW-4, d.bodyH-2, true, zoneRailRow)
 }
 
 // renderHeader lays out the run-level context row. The left core and right cluster
@@ -1176,7 +1222,10 @@ func (m model) renderFooter() string {
 		}
 	}
 	left := ""
-	if done > 0 {
+	switch {
+	case m.toast != "":
+		left = m.styles.Success.Render(m.toast)
+	case done > 0:
 		left = m.styles.Footer.Render(fmt.Sprintf("%d merged", done))
 	}
 	return joinEnds(left, m.styles.Help.Render(m.runningHint()), m.width)

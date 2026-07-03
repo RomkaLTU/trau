@@ -11,6 +11,7 @@ require (
 	github.com/charmbracelet/x/vt v0.0.0-20260629091435-9c70f75e26a4
 	github.com/creack/pty v1.1.24
 	github.com/lrstanley/bubbletint v1.0.0
+	github.com/lrstanley/bubblezone/v2 v2.0.0
 	github.com/lucasb-eyer/go-colorful v1.4.0
 	github.com/sahilm/fuzzy v0.1.1
 	gopkg.in/yaml.v3 v3.0.1

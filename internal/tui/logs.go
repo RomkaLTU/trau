@@ -162,6 +162,16 @@ func (m logsModel) Update(msg tea.Msg, contentFn func(string) string) (logsModel
 		m.viewport, cmd = m.viewport.Update(msg)
 		return m, cmd
 
+	case tea.MouseClickMsg:
+		if msg.Button == tea.MouseLeft {
+			if i, ok := clickedRow(msg, zoneLogsRow, len(m.runs)); ok {
+				m.moveCursor(i-m.cursor, contentFn)
+				return m, nil
+			}
+		}
+		m.viewport, cmd = m.viewport.Update(msg)
+		return m, cmd
+
 	case tea.MouseMsg:
 		m.viewport, cmd = m.viewport.Update(msg)
 		return m, cmd
@@ -280,7 +290,7 @@ func (m logsModel) runListBody(w, h int) string {
 
 	lines := make([]string, 0, innerH)
 	for i := start; i < end; i++ {
-		lines = append(lines, m.runLabel(m.runs[i], innerW, i == m.cursor))
+		lines = append(lines, markRow(zoneLogsRow, i, m.runLabel(m.runs[i], innerW, i == m.cursor)))
 	}
 	for len(lines) < innerH {
 		lines = append(lines, "")

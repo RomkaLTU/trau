@@ -103,12 +103,30 @@ func (m runOnceModel) Update(msg tea.Msg) (runOnceModel, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+
+	case tea.MouseClickMsg:
+		return m.handleMouseClick(msg)
 	}
 
 	if m.step == runOnceConfirm {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
+	}
+	return m, nil
+}
+
+// handleMouseClick resolves a left click on the eligible-ticket list: a row
+// selects, and a click on the already-selected row runs it (the enter action).
+func (m runOnceModel) handleMouseClick(msg tea.MouseClickMsg) (runOnceModel, tea.Cmd) {
+	if msg.Button != tea.MouseLeft || m.step != runOnceList {
+		return m, nil
+	}
+	if i, ok := clickedRow(msg, zoneRunOnceRow, len(m.listRows())); ok {
+		if i == m.cursor {
+			return m.handleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
+		}
+		m.cursor = i
 	}
 	return m, nil
 }
@@ -305,7 +323,7 @@ func (m runOnceModel) renderList() string {
 		idStr := padRight(t.ID, idW)
 		titleStr := truncate(t.Title, titleW)
 		stateStr := truncate(firstNonEmpty(t.State, "—"), 12)
-		rows = append(rows, cursorMarker(s, focused)+idStyle.Render(idStr)+"  "+titleStyle.Render(titleStr)+"  "+stateStyle.Render(stateStr))
+		rows = append(rows, markRow(zoneRunOnceRow, i, cursorMarker(s, focused)+idStyle.Render(idStr)+"  "+titleStyle.Render(titleStr)+"  "+stateStyle.Render(stateStr)))
 	}
 	return strings.Join(rows, "\n")
 }

@@ -8,6 +8,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	zone "github.com/lrstanley/bubblezone/v2"
 
 	"github.com/RomkaLTU/trau/internal/state"
 )
@@ -154,7 +155,7 @@ func queueHint(sel QueueRow, hasSel, live bool, confirmID string) string {
 	}
 	parts := append([]string{"↑↓ move"}, queueVerbHints(sel, hasSel, live)...)
 	parts = append(parts, "R reconcile")
-	return strings.Join(parts, " · ")
+	return strings.Join(markVerbs(parts), " · ")
 }
 
 // queueRowGlyph is the state indicator drawn before the ticket id: the live
@@ -228,7 +229,7 @@ func prettyPhase(phase string) string {
 // finished rows folded to one summary line. width is the inner text width; when
 // height > 0 the rows window around the cursor so a long queue scrolls. spinFrame
 // is the current spinner glyph animating any live row.
-func renderQueue(s Styles, spinFrame string, rows []QueueRow, cursor, width, height int, foldDone bool) string {
+func renderQueue(s Styles, spinFrame string, rows []QueueRow, cursor, width, height int, foldDone bool, zonePrefix string) string {
 	if width < 8 {
 		width = 8
 	}
@@ -244,7 +245,11 @@ func renderQueue(s Styles, spinFrame string, rows []QueueRow, cursor, width, hei
 		if focused {
 			anchor = len(lines)
 		}
-		lines = append(lines, queueRowLine(s, spinFrame, r, focused, width))
+		line := queueRowLine(s, spinFrame, r, focused, width)
+		if zonePrefix != "" {
+			line = zone.Mark(zonePrefix+r.ID, line)
+		}
+		lines = append(lines, line)
 		// Needs-human rows always surface their reason so a failure is never
 		// hidden behind the cursor; any other reason-bearing row shows it too.
 		if r.FailureReason != "" {
