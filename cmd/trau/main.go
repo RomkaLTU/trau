@@ -378,6 +378,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	p.EpicID = epicID
+	if epicID != "" {
+		if subs, serr := pm.SubIssues(ctx, epicID); serr == nil && len(subs) > 0 {
+			con.Event(event.Event{Kind: "tickets", Fields: map[string]any{"total": len(subs)}})
+		}
+	}
 
 	maxIter := cfg.MaxIterations
 	if opts.Max >= 0 {

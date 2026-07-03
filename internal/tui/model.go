@@ -93,8 +93,18 @@ type model struct {
 	currentTicket string
 	currentTitle  string
 	ticketNum     int
+	plannedTotal  int    // epic sub-issue count; 0 in queue mode
+	binding       string // integration base branch, shown as run context
 	banner        string
 	bannerErr     bool
+
+	// PR badge state for the current ticket, from pipeline pr_open/ci events.
+	// ciState ∈ {"", "open", "pending", "failing", "green", "merged"}.
+	prNum    int
+	prURL    string
+	ciState  string
+	ciPollAt time.Time
+	ciEvery  int
 
 	onInterrupt func()
 	stopping    bool
@@ -575,6 +585,27 @@ func (m *model) applyEvent(ev event.Event) {
 		m.win = usage.WindowFromFields(ev.Fields)
 		return
 	}
+	switch ev.Kind {
+	case "pr_open":
+		m.prNum = intField(ev.Fields, "number")
+		m.prURL = strField(ev.Fields, "url")
+		if m.ciState == "" {
+			m.ciState = "open"
+		}
+		return
+	case "ci":
+		m.ciState = strField(ev.Fields, "state")
+		if m.ciState == "pending" {
+			m.ciEvery = intField(ev.Fields, "poll_secs")
+			m.ciPollAt = time.Now()
+		}
+		return
+	case "tickets":
+		if t := intField(ev.Fields, "total"); t > 0 {
+			m.plannedTotal = t
+		}
+		return
+	}
 	if ev.Kind != "agent_call" {
 		return
 	}
@@ -613,6 +644,10 @@ func (m *model) startTicket(id string) {
 	m.currentTitle = ""
 	m.ticketNum++
 	m.paused = false
+	m.prNum = 0
+	m.prURL = ""
+	m.ciState = ""
+	m.ciEvery = 0
 	m.steps = phaseSteps()
 	m.streamPath = ""
 	if m.stream != nil {
@@ -718,31 +753,107 @@ func (m model) renderRunning() string {
 		m.renderFooter()
 }
 
+// renderHeader lays out the run-level context row. The left core and right cluster
+// always show; the title, then the binding, yield first to keep it legible at 80 cols.
 func (m model) renderHeader() string {
 	left := m.styles.Header.Render("⬡ trau")
+	if c := m.ticketCounter(); c != "" {
+		left += "  " + m.styles.Subtle.Render(c)
+	}
 	if m.currentTicket != "" {
 		left += "  " + chip(m.currentTicket, theme.Info)
 	}
-	if m.currentTitle != "" {
-		left += " " + m.styles.Subtle.Render(truncate(m.currentTitle, 44))
-	}
+
 	state, sc := m.stateChip()
-	right := chip(state, sc) + "  " + m.styles.Subtle.Render("⏱ "+fmtDur(time.Since(m.started)))
+	right := chip(state, sc)
+	if badge := m.prBadge(); badge != "" {
+		right += "  " + badge
+	}
+	right += "  " + m.styles.Subtle.Render("⏱ "+fmtDur(time.Since(m.started)))
+
+	// Binding yields before the title; the -4 keeps a 2-col gap to the right cluster
+	// so joinEnds never drops it.
+	avail := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 4
+	if b := strings.TrimSpace(m.binding); b != "" {
+		tag := m.styles.Help.Render("⎇ " + b)
+		if lipgloss.Width(tag)+2 <= avail {
+			left += "  " + tag
+			avail -= lipgloss.Width(tag) + 2
+		}
+	}
+	if m.currentTitle != "" && avail >= 8 {
+		left += "  " + m.styles.Subtle.Render(truncate(m.currentTitle, avail))
+	}
+
 	top := joinEnds(left, right, m.width)
 	return top + "\n" + m.styles.Separator.Render(strings.Repeat("─", maxInt(m.width, 1)))
 }
 
+// ticketCounter is "ticket n/N" for an epic set, "ticket n" in queue mode.
+func (m model) ticketCounter() string {
+	if m.ticketNum == 0 {
+		return ""
+	}
+	if m.plannedTotal > 0 {
+		return fmt.Sprintf("ticket %d/%d", m.ticketNum, m.plannedTotal)
+	}
+	return fmt.Sprintf("ticket %d", m.ticketNum)
+}
+
+// prBadge is the PR chip, colored by CI verdict: blue open, yellow pending,
+// red failing, green green, purple merged. Empty until a PR exists.
+func (m model) prBadge() string {
+	if m.prNum == 0 {
+		return ""
+	}
+	c := theme.Info
+	switch m.ciState {
+	case "pending":
+		c = theme.Warning
+	case "failing":
+		c = theme.Error
+	case "green":
+		c = theme.Success
+	case "merged":
+		c = theme.Accent
+	}
+	return chip(fmt.Sprintf("PR #%d", m.prNum), c)
+}
+
 // stateChip reflects the loop's real state — it does not claim "paused" for a
-// rate limit, since the engine still proceeds today.
+// rate limit, since the engine still proceeds today. While CI checks are pending
+// it surfaces the wait explicitly with a countdown to the next poll.
 func (m model) stateChip() (string, color.Color) {
 	switch {
 	case m.paused:
 		return "paused", theme.Error
 	case m.stopping:
 		return "stopping", theme.Warning
+	case m.ciState == "pending":
+		if s := m.ciCountdown(); s != "" {
+			return "CI " + s, theme.Warning
+		}
+		return "CI", theme.Warning
 	default:
 		return "running", theme.Success
 	}
+}
+
+// ciCountdown is the time to the next CI poll ("next 24s"), ticking on each spinner
+// frame. Empty when the cadence is unknown.
+func (m model) ciCountdown() string {
+	if m.ciEvery <= 0 || m.ciPollAt.IsZero() {
+		return ""
+	}
+	remain := time.Duration(m.ciEvery)*time.Second - time.Since(m.ciPollAt)
+	if remain < 0 {
+		remain = 0
+	}
+	secs := int(remain / time.Second)
+	if remain%time.Second > 0 {
+		secs++
+	}
+	return fmt.Sprintf("next %ds", secs)
 }
 
 // renderHud draws the Usage strip. Row 1 frames the run against the provider's
@@ -845,17 +956,19 @@ func (m model) renderFooter() string {
 		}
 		return style.Render(truncate(m.banner, m.width))
 	}
-	tickets := m.ticketNum
+	// The running ticket counter lives in the header now; the footer keeps only the
+	// cumulative merged tally (not shown up top) beside the key help.
 	done := 0
 	for i := range m.results {
 		if m.results[i].Phase == state.Merged {
 			done++
 		}
 	}
-	stats := fmt.Sprintf("ticket %d · %d merged", tickets, done)
-	left := m.styles.Footer.Render(stats)
-	right := m.help.View(m.keys)
-	return joinEnds(left, right, m.width)
+	left := ""
+	if done > 0 {
+		left = m.styles.Footer.Render(fmt.Sprintf("%d merged", done))
+	}
+	return joinEnds(left, m.help.View(m.keys), m.width)
 }
 
 // renderFeed lays out the activity feed for a panel of inner text width w.

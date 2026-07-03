@@ -24,6 +24,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/budget"
 	"github.com/RomkaLTU/trau/internal/checks"
 	"github.com/RomkaLTU/trau/internal/console"
+	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -1039,6 +1040,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	if err := p.State.Set(id, "PR", prNumber(prURL)); err != nil {
 		return fmt.Errorf("commit %s: record PR: %w", id, err)
 	}
+	p.emitEvent("pr_open", map[string]any{"number": prNumberInt(prURL), "url": prURL})
 	if err := p.State.Set(id, "PR_URL", prURL); err != nil {
 		return fmt.Errorf("commit %s: record PR_URL: %w", id, err)
 	}
@@ -1094,6 +1096,7 @@ func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
 	if err := p.State.Set(id, "PHASE", state.Merged); err != nil {
 		return fmt.Errorf("merge %s: checkpoint merged: %w", id, err)
 	}
+	p.emitEvent("ci", map[string]any{"state": "merged"})
 	p.recordTimelog(ctx, id)
 	p.logf(logFmt, id)
 	return nil
@@ -1113,16 +1116,20 @@ func (p *Pipeline) pollCI(ctx context.Context, pr string) error {
 		}
 		switch evalChecks(checks, expected) {
 		case ciFailed:
+			p.emitEvent("ci", map[string]any{"state": "failing"})
 			return ErrCIFailed
 		case ciGreen:
+			p.emitEvent("ci", map[string]any{"state": "green"})
 			return nil
 		}
 		if waited >= p.CITimeout {
 			if !sawCheck && len(expected) == 0 {
 				p.logf("  ⓘ no checks ever appeared — if this repo has no PR CI, set REQUIRE_CI=0 to skip the gate")
 			}
+			p.emitEvent("ci", map[string]any{"state": "failing"})
 			return ErrCITimeout
 		}
+		p.emitEvent("ci", map[string]any{"state": "pending", "poll_secs": p.CIPoll})
 		p.sleep(p.CIPoll)
 	}
 }
@@ -1368,6 +1375,12 @@ func splitChecks(s string) []string {
 
 func prNumber(url string) string { return url[strings.LastIndex(url, "/")+1:] }
 
+// prNumberInt is prNumber parsed to an int, or 0.
+func prNumberInt(url string) int {
+	n, _ := strconv.Atoi(prNumber(url))
+	return n
+}
+
 var (
 	reBranchType = regexp.MustCompile(`^[a-z]+/`)
 	reBranchID   = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-[0-9]+-`)
@@ -1461,6 +1474,14 @@ func (p *Pipeline) writeTranscript(id, phase, content string) {
 func (p *Pipeline) logf(format string, a ...any) {
 	if p.Renderer != nil {
 		p.Renderer.Logf(format, a...)
+	}
+}
+
+// emitEvent forwards a display-only event to the renderer (live TUI header);
+// no-op without one. It does not touch the durable event log.
+func (p *Pipeline) emitEvent(kind string, fields map[string]any) {
+	if p.Renderer != nil {
+		p.Renderer.Event(event.Event{Kind: kind, Fields: fields})
 	}
 }
 
