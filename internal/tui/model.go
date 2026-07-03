@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/progress"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/table"
 	"charm.land/bubbles/v2/viewport"
@@ -67,9 +66,9 @@ func (m model) runningHelp() screenHelp {
 	return screenHelp{title: "Run", columns: []helpColumn{
 		group("Pipeline",
 			fk("w", "watch agent"),
-			fk("f", "follow"),
-			xk("↑↓", "scroll feed"),
-			xk("pgup/pgdn", "page feed"),
+			fk("f", "follow tail"),
+			xk("↑↓", "scroll"),
+			xk("pgup/pgdn", "page"),
 			xk("esc", "exit live view"),
 		),
 		group("Ticket", fk("o", "open PR")),
@@ -107,7 +106,6 @@ type model struct {
 
 	steps     []phaseStep
 	spin      spinner.Model
-	progress  progress.Model
 	viewport  viewport.Model
 	feed      []feedEntry
 	following bool
@@ -178,17 +176,16 @@ type (
 	}
 )
 
-// feedEntry is one row of the activity feed: a timestamped, glyph-tagged line
+// feedEntry is one row of the retained activity feed: a glyph-tagged line
 // attributed to a pipeline phase. sub entries are indented continuation lines
-// (failure reasons, detail) that hang under the preceding entry.
+// (failure reasons, detail) that hang under the preceding entry. The feed is the
+// forensic tier and the source of the tail for non-agent phases.
 type feedEntry struct {
-	ts      time.Time
-	glyph   string
-	gstyle  lipgloss.Style
-	phase   string
-	text    string
-	sub     bool
-	stepIdx int // pipeline step a ▸ phase-start row belongs to, or -1
+	glyph  string
+	gstyle lipgloss.Style
+	phase  string
+	text   string
+	sub    bool
 }
 
 // usageStats accumulates the run's agent spend (tokens + cost) live from
@@ -211,8 +208,6 @@ func initialModel(onInterrupt func()) model {
 	vp := viewport.New()
 	vp.SetContent("")
 
-	p := progress.New(progress.WithDefaultBlend(), progress.WithoutPercentage())
-
 	return model{
 		styles:      DefaultStyles(),
 		keys:        defaultKeyMap(),
@@ -220,7 +215,6 @@ func initialModel(onInterrupt func()) model {
 		started:     time.Now(),
 		steps:       phaseSteps(),
 		spin:        s,
-		progress:    p,
 		viewport:    vp,
 		feed:        make([]feedEntry, 0, maxLogLines),
 		following:   true,
@@ -286,6 +280,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.path == m.streamPath && m.stream != nil {
 			m.stream.Write(msg.data)
 			m.streamOffset = msg.offset
+			m.refreshBody()
 		}
 	}
 
@@ -294,16 +289,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds = append(cmds, cmd)
 
 	if _, ok := msg.(spinner.TickMsg); ok &&
-		m.state == stateRunning && m.streaming && m.stream != nil && !m.streamReading {
+		m.state == stateRunning && m.stream != nil && !m.streamReading {
 		m.streamReading = true
 		cmds = append(cmds, m.tailReadCmd())
 	}
 
-	// Re-render the feed each tick while a phase runs so the active row's elapsed
-	// advances live; the composed text is read from the step in renderFeed.
+	// Advance the active phase's elapsed each tick. When a stream is live the
+	// per-tick streamDataMsg already re-renders, so only drive it here for phases
+	// with no stream (CI/merge), avoiding a second render per frame.
 	if _, ok := msg.(spinner.TickMsg); ok &&
-		m.state == stateRunning && activeIndex(m.steps) >= 0 {
-		m.refreshFeed()
+		m.state == stateRunning && m.stream == nil && activeIndex(m.steps) >= 0 {
+		m.refreshBody()
 	}
 
 	if m.state == stateSummary {
@@ -348,11 +344,12 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 		return m, nil, true
 	case key.Matches(msg, m.keys.Watch):
 		if m.streaming {
-			m.stopStream()
+			m.streaming = false
+			m.refreshBody()
 			return m, nil, true
 		}
 		m.streaming = true
-		if m.streamPath != "" {
+		if m.stream == nil && m.streamPath != "" {
 			m.startStream()
 			m.streamReading = true
 			return m, m.tailReadCmd(), true
@@ -360,7 +357,8 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 		return m, nil, true
 	case msg.String() == "esc":
 		if m.streaming {
-			m.stopStream()
+			m.streaming = false
+			m.refreshBody()
 			return m, nil, true
 		}
 	}
@@ -377,7 +375,9 @@ func (m *model) startStream() {
 	m.streamOffset = 0
 }
 
-// stopStream tears down the live view, leaving the loop untouched.
+// stopStream tears down the tail emulator (between tickets), leaving the loop
+// untouched. The w view is hidden by clearing m.streaming, not by tearing this
+// down, so the active phase's tail keeps updating whether or not it is expanded.
 func (m *model) stopStream() {
 	m.streaming = false
 	if m.stream != nil {
@@ -391,8 +391,7 @@ func (m *model) relayout() {
 	d := m.dims()
 	m.viewport.SetWidth(d.vpW)
 	m.viewport.SetHeight(d.vpH)
-	m.progress.SetWidth(d.leftW - 9) // inner text width less room for " 100%"
-	m.refreshFeed()
+	m.refreshBody()
 	if m.state == stateSummary {
 		cursor := m.summaryTable.Cursor()
 		m.summaryTable = m.makeSummaryTable()
@@ -401,29 +400,30 @@ func (m *model) relayout() {
 }
 
 type dims struct {
-	bodyH, leftW, rightW, vpW, vpH int
+	bodyH, bodyW, vpW, vpH int
 }
 
-// dims derives the running view's regions. Vertical budget, top to bottom:
-// header(2) + gap + body(bodyH) + gap + usage HUD(hudH) + gap + footer(fh).
+// dims derives the running view's regions. The span pane spans the full width now
+// (the queue rail takes the right side in a later slice). Vertical budget, top to
+// bottom: header(2) + gap + body(bodyH) + gap + usage HUD(hudH) + gap + footer(fh).
 func (m model) dims() dims {
-	fh := footerH
-	bodyH := m.height - headerH - hudH - fh - 3*panelGap
+	bodyH := m.height - headerH - hudH - footerH - 3*panelGap
 	if bodyH < 6 {
 		bodyH = 6
 	}
-
-	leftW := leftPaneW
-	rightW := m.width - leftW
-	if rightW < 24 {
-		rightW = 24
+	bodyW := m.width
+	if bodyW < 24 {
+		bodyW = 24
 	}
-	vpW, _ := LiveAgentSize(m.width, m.height)
+	vpW := bodyW - 4 // pane borders + a padding cell each side
+	if vpW < 12 {
+		vpW = 12
+	}
 	vpH := bodyH - 2 // top + bottom border
 	if vpH < 3 {
 		vpH = 3
 	}
-	return dims{bodyH: bodyH, leftW: leftW, rightW: rightW, vpW: vpW, vpH: vpH}
+	return dims{bodyH: bodyH, bodyW: bodyW, vpW: vpW, vpH: vpH}
 }
 
 func LiveAgentSize(termW, termH int) (cols, rows int) {
@@ -455,20 +455,16 @@ func (m *model) addLog(line string) {
 		m.paused = true
 	}
 	if isSub {
-		m.appendFeed(feedEntry{ts: time.Now(), glyph: "↳", gstyle: m.styles.Subtle, text: text, sub: true, stepIdx: -1})
+		m.appendFeed(feedEntry{glyph: "↳", gstyle: m.styles.Subtle, text: text, sub: true})
 	} else {
-		stepIdx := -1
-		if glyph == "▸" {
-			stepIdx = activeIndex(m.steps)
-		}
-		m.appendFeed(feedEntry{ts: time.Now(), glyph: glyph, gstyle: style, phase: m.activePhase(), text: text, stepIdx: stepIdx})
+		m.appendFeed(feedEntry{glyph: glyph, gstyle: style, phase: m.activePhase(), text: text})
 	}
-	if a, b, ok := parseAttempt(line); ok {
+	if c, ok := parseChildSpan(line); ok {
 		if idx := activeIndex(m.steps); idx >= 0 {
-			m.steps[idx].subs = []string{fmt.Sprintf("self-heal %d/%d", a, b)}
+			m.steps[idx].subs = upsertChildSpan(m.steps[idx].subs, c)
 		}
 	}
-	m.refreshFeed()
+	m.refreshBody()
 }
 
 func (m *model) appendFeed(e feedEntry) {
@@ -478,8 +474,14 @@ func (m *model) appendFeed(e feedEntry) {
 	}
 }
 
-func (m *model) refreshFeed() {
-	m.viewport.SetContent(m.renderFeed(m.viewport.Width()))
+// refreshBody re-renders the span pane into the viewport. It is a no-op while the
+// w live view is up (the viewport is hidden behind renderStream then), so the
+// full-screen tail render isn't computed for a pane no one can see.
+func (m *model) refreshBody() {
+	if m.streaming {
+		return
+	}
+	m.viewport.SetContent(m.renderSpanList(m.viewport.Width()))
 	if m.following {
 		m.viewport.GotoBottom()
 	}
@@ -590,9 +592,10 @@ func (m *model) applyEvent(ev event.Event) {
 			m.streamPath = p
 			m.streamCols = intField(ev.Fields, "cols")
 			m.streamRows = intField(ev.Fields, "rows")
-			if m.streaming {
-				m.startStream()
+			if idx := activeIndex(m.steps); idx >= 0 {
+				m.steps[idx].transcript = p
 			}
+			m.startStream()
 		}
 		return
 	}
@@ -641,19 +644,6 @@ func (m *model) applyEvent(ev event.Event) {
 	}
 }
 
-// parseAttempt extracts the N/M from a "self-heal attempt N/M" line.
-func parseAttempt(line string) (a, b int, ok bool) {
-	i := strings.Index(line, "self-heal attempt ")
-	if i < 0 {
-		return 0, 0, false
-	}
-	rest := line[i+len("self-heal attempt "):]
-	if _, err := fmt.Sscanf(rest, "%d/%d", &a, &b); err != nil {
-		return 0, 0, false
-	}
-	return a, b, true
-}
-
 func (m *model) startTicket(id string) {
 	m.currentTicket = id
 	m.currentTitle = ""
@@ -665,11 +655,7 @@ func (m *model) startTicket(id string) {
 	m.ciEvery = 0
 	m.steps = phaseSteps()
 	m.streamPath = ""
-	if m.stream != nil {
-		m.stream.Close()
-		m.stream = nil
-	}
-	m.streamOffset = 0
+	m.stopStream()
 	if !m.stopping {
 		m.banner = ""
 	}
@@ -710,6 +696,10 @@ func (m model) applyRecovery(msg recoveryDoneMsg) model {
 
 func (m *model) finishTicket(r console.TicketResult) {
 	m.steps = finalize(m.steps, r.Phase != state.Quarantined, time.Now())
+	if idx := failedIndex(m.steps); idx >= 0 {
+		m.steps[idx].tailSnapshot = m.liveTail(idx, tailWindow)
+	}
+	m.refreshBody()
 	m.results = append(m.results, r)
 	if r.Phase != state.Merged && !m.stopping {
 		label, kind := statusLabel(r.Phase)
@@ -749,21 +739,17 @@ func (m model) render() string {
 func (m model) renderRunning() string {
 	d := m.dims()
 
-	left := m.renderStepper(m.spin.View(), d.leftW-4)
-	left += "\n\n" + m.progress.ViewAs(completedFraction(m.steps)) +
-		" " + m.styles.Subtle.Render(fmt.Sprintf("%3d%%", int(completedFraction(m.steps)*100+0.5)))
-	leftBox := titledPanel(m.styles, "Pipeline", left, d.leftW, d.bodyH)
-
-	rightTitle, rightBody := "Activity", m.viewport.View()
+	title := fmt.Sprintf("Pipeline %d/%d", doneSteps(m.steps), len(m.steps))
+	body := m.viewport.View()
 	if m.streaming {
-		rightTitle, rightBody = "Live · "+m.streamLabel(), m.renderStream(d)
+		title = "Live · " + m.streamLabel()
+		body = m.renderStream(d)
 	}
-	rightBox := titledPanel(m.styles, rightTitle, rightBody, d.rightW, d.bodyH)
+	pane := titledPanel(m.styles, title, body, d.bodyW, d.bodyH)
 
-	body := lipgloss.JoinHorizontal(lipgloss.Top, leftBox, rightBox)
 	gap := strings.Repeat("\n", panelGap)
 	return m.renderHeader() + gap +
-		body + gap +
+		pane + gap +
 		m.renderHud(m.width) + gap +
 		m.renderFooter()
 }
@@ -984,62 +970,6 @@ func (m model) renderFooter() string {
 		left = m.styles.Footer.Render(fmt.Sprintf("%d merged", done))
 	}
 	return joinEnds(left, m.styles.Help.Render(m.runningHelp().footer()), m.width)
-}
-
-// renderFeed lays out the activity feed for a panel of inner text width w.
-func (m model) renderFeed(w int) string {
-	if w < 12 {
-		w = 12
-	}
-	var b strings.Builder
-	for i := range m.feed {
-		e := m.feed[i]
-		if e.sub {
-			indent := "            ↳ "
-			b.WriteString(m.styles.Help.Render(indent) + m.styles.Subtle.Render(truncate(e.text, w-lipgloss.Width(indent))))
-		} else {
-			ts := m.styles.Help.Render(e.ts.Format("15:04:05"))
-			gl := e.gstyle.Render(pad(e.glyph, 1))
-			ph := m.styles.Help.Render(pad(e.phase, 8))
-			head := ts + "  " + gl + " " + ph + " "
-			b.WriteString(head + truncate(m.feedText(e), w-lipgloss.Width(head)))
-		}
-		if i < len(m.feed)-1 {
-			b.WriteByte('\n')
-		}
-	}
-	return b.String()
-}
-
-// feedText is the rendered text for a feed row. A phase-start (▸) row tied to a
-// pipeline step composes its text live from that step — the model tag recovered
-// from the phase's agent_call plus elapsed (ticking while active, frozen to the
-// real duration once done) — so it reads e.g. "opus-4-8 @high · 5m03s" instead of
-// the bare route tag. Until the tag lands it falls back to the parsed text
-// ("claude" by default). Every other row uses its parsed text unchanged.
-func (m model) feedText(e feedEntry) string {
-	if e.stepIdx < 0 || e.stepIdx >= len(m.steps) {
-		return e.text
-	}
-	st := m.steps[e.stepIdx]
-	tag := st.tag
-	if tag == "" {
-		tag = e.text
-	}
-	var parts []string
-	if tag != "" {
-		parts = append(parts, tag)
-	}
-	switch {
-	case st.state == stepActive && !st.start.IsZero():
-		parts = append(parts, fmtDur(time.Since(st.start)))
-	case st.took > 0:
-		parts = append(parts, fmtDur(st.took))
-	}
-	if len(parts) == 0 {
-		return e.text
-	}
-	return strings.Join(parts, " · ")
 }
 
 func modelTag(fields map[string]any) string {
