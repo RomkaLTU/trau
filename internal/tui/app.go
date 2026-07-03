@@ -295,6 +295,14 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dash = applyDash(m.dash, msg)
 		m.onboard, _ = m.onboard.Update(msg)
 		m.loopSetup, _ = m.loopSetup.Update(msg)
+		m.runOnce, _ = m.runOnce.Update(msg)
+		m.settings, _ = m.settings.Update(msg)
+		m.logs, _ = m.logs.Update(msg, m.actions.LogContent)
+		if m.view == viewStatus {
+			cursor := m.status.Cursor()
+			m.status = m.buildStatusTable()
+			m.status.SetCursor(cursor)
+		}
 		return m, nil
 
 	case tea.KeyPressMsg:

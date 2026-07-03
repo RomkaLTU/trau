@@ -355,6 +355,11 @@ func (m *model) relayout() {
 	m.progress.SetWidth(d.leftW - 9) // inner text width less room for " 100%"
 	m.help.SetWidth(m.width)
 	m.refreshFeed()
+	if m.state == stateSummary {
+		cursor := m.summaryTable.Cursor()
+		m.summaryTable = m.makeSummaryTable()
+		m.summaryTable.SetCursor(cursor)
+	}
 }
 
 type dims struct {

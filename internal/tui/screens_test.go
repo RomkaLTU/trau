@@ -102,3 +102,51 @@ func TestScreensRenderAcrossSizes(t *testing.T) {
 		}
 	}
 }
+
+// TestResizeRoutesToEverySubModel resizes the terminal while each sub-model-backed
+// screen is active and asserts that screen picked up the new dimensions — the
+// shell must fan WindowSizeMsg out to every view, not just the dashboard.
+func TestResizeRoutesToEverySubModel(t *testing.T) {
+	cases := []struct {
+		name   string
+		action menuAction
+		width  func(m appModel) int
+	}{
+		{"run loop", actRun, func(m appModel) int { return m.loopSetup.width }},
+		{"run once", actRunOnce, func(m appModel) int { return m.runOnce.width }},
+		{"logs", actLogs, func(m appModel) int { return m.logs.width }},
+		{"settings", actSettings, func(m appModel) int { return m.settings.width }},
+		{"onboarding", actOnboarding, func(m appModel) int { return m.onboard.width }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			base := newAppModel(context.Background(), &fakeAppActions{}, nil)
+			nm, _ := base.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			am, _ := nm.(appModel).selectAction(c.action)
+
+			rm, _ := am.(appModel).Update(tea.WindowSizeMsg{Width: 140, Height: 50})
+			m := rm.(appModel)
+
+			if got := c.width(m); got != 140 {
+				t.Errorf("%s width after resize = %d, want 140", c.name, got)
+			}
+		})
+	}
+}
+
+// TestResizeRecomputesStatusTable checks the status table's responsive title
+// column is rebuilt when the terminal grows while the table is on screen.
+func TestResizeRecomputesStatusTable(t *testing.T) {
+	base := newAppModel(context.Background(), &fakeAppActions{}, nil)
+	nm, _ := base.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	am, _ := nm.(appModel).selectAction(actStatus)
+	m := am.(appModel)
+	before := m.status.Columns()[1].Width
+
+	rm, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 50})
+	m = rm.(appModel)
+
+	if after := m.status.Columns()[1].Width; after <= before {
+		t.Errorf("status title column = %d after growing the terminal, want wider than %d", after, before)
+	}
+}
