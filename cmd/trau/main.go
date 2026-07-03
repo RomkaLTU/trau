@@ -676,7 +676,7 @@ func newRenderer(stdout, stderr io.Writer, cfg config.Config, opts config.Option
 	if !console.IsTerminal(stdout) {
 		return console.New(stdout, stderr)
 	}
-	return tui.New(stdout, stderr, onInterrupt)
+	return tui.New(stdout, stderr, onInterrupt, cfg.Notify)
 }
 
 func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *tokens.Sink, log *event.Log, con console.Renderer) (*pipeline.Pipeline, error) {
@@ -1431,6 +1431,7 @@ func (a *appActions) MenuInfo() tui.MenuInfo {
 		Prefix:        a.cfg.IssuePrefix,
 		MaxIterations: a.maxIter,
 		AutoMerge:     a.cfg.AutoMerge,
+		Notify:        a.cfg.Notify,
 		InFlight:      inFlight,
 		Done:          done,
 		Resume:        resume,

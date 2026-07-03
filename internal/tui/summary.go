@@ -60,8 +60,9 @@ func (m model) enterSummary(s console.SessionSummary) (tea.Model, tea.Cmd) {
 	m.state = stateSummary
 	m.summary = s
 	m.banner = ""
+	m.recapBanner = ""
 	m.queueCursor = 0
-	return m, nil
+	return m, m.sessionNotifyCmd(s)
 }
 
 // resultRows projects the session's ticket results onto the shared queue model,
