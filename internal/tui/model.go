@@ -76,6 +76,11 @@ func (m model) runningHelp() screenHelp {
 			fk("o", "open PR"),
 			fk("l", "jump to logs"),
 		),
+		group("View",
+			fk("v", "cycle spans/feed/raw"),
+			fk("/", "filter feed/raw"),
+			xk("esc", "clear filter"),
+		),
 		group("Live tail",
 			fk("w", "watch agent"),
 			fk("f", "follow tail"),
@@ -95,8 +100,15 @@ func (m model) runningHint() string {
 	if m.streaming {
 		return "esc exit watch · f follow · q stop"
 	}
+	if m.filtering {
+		return "type to filter · enter apply · esc clear"
+	}
 	sel, hasSel := m.selectedRow()
 	parts := append([]string{"↑↓ select"}, queueVerbHints(sel, hasSel, true)...)
+	parts = append(parts, "v "+m.tier.next().short())
+	if m.tier != tierSpans {
+		parts = append(parts, "/ filter")
+	}
 	parts = append(parts, "w watch", "q stop")
 	return strings.Join(parts, " · ")
 }
@@ -134,6 +146,16 @@ type model struct {
 	following bool
 	usage     usageStats
 	win       usage.Window
+
+	// verbosity ladder (v cycles): the span pane can show the folded spans
+	// (default), the full classified activity feed, or the raw pre-classification
+	// lines. raw retains the sanitized lines exactly as addLog received them so the
+	// raw tier can show what classification collapsed. filter narrows the feed/raw
+	// tiers live; filtering is true while its input is capturing keys.
+	tier      verbosityTier
+	raw       []string
+	filter    string
+	filtering bool
 
 	currentTicket string
 	currentTitle  string
@@ -212,6 +234,7 @@ type (
 // (failure reasons, detail) that hang under the preceding entry. The feed is the
 // forensic tier and the source of the tail for non-agent phases.
 type feedEntry struct {
+	ts     time.Time
 	glyph  string
 	gstyle lipgloss.Style
 	phase  string
@@ -248,6 +271,7 @@ func initialModel(onInterrupt func()) model {
 		spin:        s,
 		viewport:    vp,
 		feed:        make([]feedEntry, 0, maxLogLines),
+		raw:         make([]string, 0, maxLogLines),
 		following:   true,
 		onInterrupt: onInterrupt,
 	}
@@ -359,6 +383,12 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 		return m, nil, false
 	}
 
+	// While the filter input captures keys it owns them all, so typing an action
+	// key (q, v, o) narrows the feed instead of firing the action.
+	if m.filtering {
+		return m.handleFilterKey(msg)
+	}
+
 	switch {
 	case key.Matches(msg, m.keys.Quit):
 
@@ -389,9 +419,20 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 			return m, m.tailReadCmd(), true
 		}
 		return m, nil, true
+	case msg.String() == "v":
+		m = m.cycleTier()
+		return m, nil, true
+	case msg.String() == "/" && m.tier != tierSpans:
+		m.filtering = true
+		return m, nil, true
 	case msg.String() == "esc":
 		if m.streaming {
 			m.streaming = false
+			m.refreshBody()
+			return m, nil, true
+		}
+		if m.filter != "" {
+			m.filter = ""
 			m.refreshBody()
 			return m, nil, true
 		}
@@ -492,6 +533,7 @@ func LiveAgentSize(termW, termH int) (cols, rows int) {
 // lines (↳) hang under the previous entry as detail; a "self-heal attempt N/M"
 // line also lights up a sub-step under the active pipeline phase.
 func (m *model) addLog(line string) {
+	m.appendRaw(line)
 	glyph, style, text, isSub := m.classifyLine(line)
 	if glyph == "⏸" && strings.HasPrefix(text, "paused") {
 		m.paused = true
@@ -510,9 +552,21 @@ func (m *model) addLog(line string) {
 }
 
 func (m *model) appendFeed(e feedEntry) {
+	if e.ts.IsZero() {
+		e.ts = time.Now()
+	}
 	m.feed = append(m.feed, e)
 	if len(m.feed) > maxLogLines {
 		m.feed = m.feed[len(m.feed)-maxLogLines:]
+	}
+}
+
+// appendRaw retains a sanitized log line verbatim for the raw verbosity tier,
+// ring-buffered to the same bound as the feed.
+func (m *model) appendRaw(line string) {
+	m.raw = append(m.raw, line)
+	if len(m.raw) > maxLogLines {
+		m.raw = m.raw[len(m.raw)-maxLogLines:]
 	}
 }
 
@@ -523,7 +577,7 @@ func (m *model) refreshBody() {
 	if m.streaming {
 		return
 	}
-	m.viewport.SetContent(m.renderSpanList(m.viewport.Width()))
+	m.viewport.SetContent(m.tierContent(m.viewport.Width()))
 	if m.following {
 		m.viewport.GotoBottom()
 	}
@@ -829,8 +883,7 @@ func (m model) renderRunning() string {
 		return m.assembleRunning(pane)
 	}
 
-	title := fmt.Sprintf("Pipeline %d/%d", doneSteps(m.steps), len(m.steps))
-	spanPane := titledPanel(m.styles, title, m.viewport.View(), d.spanW, d.bodyH)
+	spanPane := titledPanel(m.styles, m.spanPaneTitle(), m.viewport.View(), d.spanW, d.bodyH)
 	if d.railW == 0 {
 		return m.assembleRunning(spanPane)
 	}
