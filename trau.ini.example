@@ -168,6 +168,15 @@ MAX_DAILY_TOKENS=            # e.g. 50000000 → stop the run once today reaches
 # Pipes, cron, TRAU_LOG_JSON=1, and --status always use plain output.
 TRAU_TUI=1
 
+# Color theme. The palette adapts to the terminal's light/dark background
+# automatically; a preset swaps the whole palette. Unknown names fall back to
+# default with a note. Presets: default | catppuccin | dracula | gruvbox | nord.
+#THEME=default
+# Individual semantic colors can be overridden with hex values via
+# THEME_<ROLE>, where ROLE is one of BRAND, ACCENT, SUCCESS, ERROR, WARNING,
+# INFO, TEXT, SUBTLE, FAINT, SURFACE, BORDER, INK.
+#THEME_BRAND=#00D4AA
+
 # Usage HUD provider window. When 1, the HUD bar tracks the active provider's real
 # rate-limit window (claude OAuth usage, codex app-server, kimi prepaid balance).
 # Every probe is metadata-only and fails closed to token/cost totals, so it is safe

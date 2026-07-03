@@ -462,7 +462,7 @@ func (m providerSettingsModel) renderValueRow(focused bool, label, value string)
 	if focused {
 		marker = s.Info.Render("▸ ")
 		labelStyle = s.Header
-		valStyle = lipgloss.NewStyle().Foreground(colorBrand)
+		valStyle = lipgloss.NewStyle().Foreground(theme.Brand)
 	}
 	return marker + labelStyle.Render(padRight(label, 12)) + "  " + valStyle.Render(value)
 }

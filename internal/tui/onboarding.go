@@ -1124,7 +1124,7 @@ func (m *onboardingModel) resetSystemChecks() {
 
 func newSystemCheckBar() progress.Model {
 	return progress.New(
-		progress.WithColors(colorBrand, colorAccent),
+		progress.WithColors(theme.Brand, theme.Accent),
 		progress.WithWidth(38),
 		progress.WithoutPercentage(),
 	)
@@ -1460,10 +1460,10 @@ const trauWordmark = `  _______   _____               _    _
 
 func (m onboardingModel) brandHeader() string {
 	if m.height > 0 && m.height < 18 {
-		return lipgloss.NewStyle().Bold(true).Foreground(colorBrand).Render("T R A U")
+		return lipgloss.NewStyle().Bold(true).Foreground(theme.Brand).Render("T R A U")
 	}
-	mark := lipgloss.NewStyle().Bold(true).Foreground(colorBrand).Render(trauWordmark)
-	tag := lipgloss.NewStyle().Foreground(colorSubtle).Render("autonomous ticket loop")
+	mark := lipgloss.NewStyle().Bold(true).Foreground(theme.Brand).Render(trauWordmark)
+	tag := lipgloss.NewStyle().Foreground(theme.Subtle).Render("autonomous ticket loop")
 	return lipgloss.JoinVertical(lipgloss.Center, mark, tag)
 }
 

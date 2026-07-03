@@ -301,7 +301,7 @@ func (m runOnceModel) renderList() string {
 		if i == m.cursor {
 			marker = s.Info.Render("▸ ")
 			idStyle = s.Header
-			titleStyle = lipgloss.NewStyle().Foreground(colorBrand)
+			titleStyle = lipgloss.NewStyle().Foreground(theme.Brand)
 		}
 		idStr := padRight(t.ID, idW)
 		titleStr := truncate(t.Title, titleW)

@@ -264,7 +264,7 @@ func (m loopSetupModel) renderList() string {
 	}
 	rows = append(rows, "")
 
-	doneStyle := lipgloss.NewStyle().Foreground(colorFaint)
+	doneStyle := lipgloss.NewStyle().Foreground(theme.Faint)
 	idW, titleW := m.subIssueColumnWidths()
 	for i, sub := range m.subs {
 		marker := "  "
@@ -279,7 +279,7 @@ func (m loopSetupModel) renderList() string {
 		if i == m.cursor {
 			marker = s.Info.Render("▸ ")
 			idStyle = s.Header
-			titleStyle = lipgloss.NewStyle().Foreground(colorBrand)
+			titleStyle = lipgloss.NewStyle().Foreground(theme.Brand)
 		}
 		idStr := padRight(sub.ID, idW)
 		titleStr := truncate(sub.Title, titleW)

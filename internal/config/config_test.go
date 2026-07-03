@@ -314,3 +314,58 @@ func TestRecoveryConfigParsing(t *testing.T) {
 		t.Errorf("FallbackProviders = %v, want [codex kimi]", got)
 	}
 }
+
+func TestLoadThemeKeys(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "trau.ini")
+
+	if err := os.WriteFile(local, []byte("THEME=nord\nTHEME_BRAND=#ff0000\nTHEME_FAINT=cccccc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadLayered("", "", local, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Theme != "nord" {
+		t.Errorf("Theme = %q, want nord", cfg.Theme)
+	}
+	want := map[string]string{"brand": "#ff0000", "faint": "cccccc"}
+	if len(cfg.ThemeColors) != len(want) {
+		t.Fatalf("ThemeColors = %v, want %v", cfg.ThemeColors, want)
+	}
+	for role, hex := range want {
+		if cfg.ThemeColors[role] != hex {
+			t.Errorf("ThemeColors[%q] = %q, want %q", role, cfg.ThemeColors[role], hex)
+		}
+	}
+
+	items, err := ResolveConfigItems(cfg, local, "", "", "", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]ConfigItem{}
+	for _, it := range items {
+		byKey[it.Key] = it
+	}
+	if got := byKey["THEME"]; got.Layer != LayerLocal || got.Value != "nord" {
+		t.Errorf("THEME: want local/nord, got %s/%s", got.Layer, got.Value)
+	}
+	if got := byKey["THEME_BRAND"]; got.Layer != LayerLocal || got.Value != "#ff0000" {
+		t.Errorf("THEME_BRAND: want local/#ff0000, got %s/%s", got.Layer, got.Value)
+	}
+}
+
+func TestLoadThemeDefault(t *testing.T) {
+	cfg, err := LoadLayered("", "", filepath.Join(t.TempDir(), "missing.ini"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Theme != "default" {
+		t.Errorf("Theme = %q, want default", cfg.Theme)
+	}
+	if cfg.ThemeColors != nil {
+		t.Errorf("ThemeColors = %v, want nil", cfg.ThemeColors)
+	}
+}

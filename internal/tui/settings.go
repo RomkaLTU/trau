@@ -414,7 +414,7 @@ func (m settingsModel) renderList() string {
 		if i == m.cursor {
 			marker = s.Info.Render("▸ ")
 			keyStyle = s.Header
-			valStyle = lipgloss.NewStyle().Foreground(colorBrand)
+			valStyle = lipgloss.NewStyle().Foreground(theme.Brand)
 			layerStyle = s.Subtle
 		}
 		row := marker +
