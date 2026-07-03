@@ -97,6 +97,22 @@ func TestNeedsHumanRowsNeverFold(t *testing.T) {
 	}
 }
 
+// TestNeedsHumanReasonAlwaysShown guards the AC that quarantined/faulted rows
+// surface their reason — even when the cursor is on a different row.
+func TestNeedsHumanReasonAlwaysShown(t *testing.T) {
+	s := DefaultStyles()
+	rows := []QueueRow{
+		{ID: "COD-a", Phase: state.Verified}, // in-flight, no reason
+		{ID: "COD-q", Phase: state.Quarantined, FailureReason: "husky pre-push failed"},
+	}
+	// Sorted, COD-q (needs-human) is first; put the cursor on COD-a (index 1) so
+	// the quarantined row is not the selected one.
+	out := ansi.Strip(renderQueue(s, "*", rows, 1, 60, 0))
+	if !strings.Contains(out, "husky pre-push failed") {
+		t.Errorf("quarantined reason must surface unselected:\n%s", out)
+	}
+}
+
 // TestQueueVerbsPerState checks which recovery verbs apply per row and how the
 // live context withholds the tree/loop-mutating ones so mid-run actions can't
 // disturb the running ticket.

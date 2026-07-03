@@ -193,7 +193,13 @@ func (m model) renderSummary() string {
 		if queueW < 24 {
 			queueW = 24
 		}
-		body += "\n\n" + renderQueue(m.styles, m.spinFrame(), m.resultRows(), m.queueCursor, queueW, 0)
+		// Leave room for the card chrome, title, totals, and note so the queue
+		// (with always-shown failure reasons) never overflows a short terminal.
+		queueH := m.height - 12
+		if queueH < 4 {
+			queueH = 4
+		}
+		body += "\n\n" + renderQueue(m.styles, m.spinFrame(), m.resultRows(), m.queueCursor, queueW, queueH)
 	}
 	if m.recoveryNote != "" {
 		body += "\n\n" + m.styles.Subtle.Render(m.recoveryNote)

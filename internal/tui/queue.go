@@ -242,7 +242,9 @@ func renderQueue(s Styles, spinFrame string, rows []QueueRow, cursor, width, hei
 			anchor = len(lines)
 		}
 		lines = append(lines, queueRowLine(s, spinFrame, r, focused, width))
-		if focused && r.FailureReason != "" {
+		// Needs-human rows always surface their reason so a failure is never
+		// hidden behind the cursor; any other reason-bearing row shows it too.
+		if r.FailureReason != "" {
 			lines = append(lines, s.Subtle.Render("    "+truncate("↳ "+oneLine(r.FailureReason), width-4)))
 		}
 	}
