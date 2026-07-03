@@ -4,7 +4,6 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 )
 
 // settingsHubModel is the Settings landing screen. It routes to two views:
@@ -166,19 +165,7 @@ func (m settingsHubModel) renderMenu() string {
 		"",
 	}
 	for i, it := range m.items {
-		marker := "  "
-		titleStyle := s.Subtle
-		descStyle := s.Help
-		if i == m.cursor {
-			marker = s.Info.Render("▸ ")
-			titleStyle = s.Header
-			descStyle = s.Subtle
-		}
-		rows = append(rows, marker+titleStyle.Render(padRight(it.title, 14))+"  "+descStyle.Render(it.desc))
+		rows = append(rows, listRow(s, i == m.cursor, it.title, it.desc, 14))
 	}
-	body := strings.Join(rows, "\n")
-	card := s.SummaryCard.Render(body)
-	hint := s.Help.Render("↑↓ move · enter select · esc/q back")
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
-		lipgloss.JoinVertical(lipgloss.Center, card, hint))
+	return cardView(s, m.width, m.height, strings.Join(rows, "\n"), "↑↓ move · enter select · esc/q back")
 }

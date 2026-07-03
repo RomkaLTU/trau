@@ -407,17 +407,16 @@ func (m settingsModel) renderList() string {
 
 	keyW, layerW := m.listColumnWidths()
 	for i, it := range m.filtered {
-		marker := "  "
+		focused := i == m.cursor
 		keyStyle := s.Subtle
 		valStyle := lipgloss.NewStyle()
 		layerStyle := s.Help
-		if i == m.cursor {
-			marker = s.Info.Render("▸ ")
+		if focused {
 			keyStyle = s.Header
 			valStyle = lipgloss.NewStyle().Foreground(theme.Brand)
 			layerStyle = s.Subtle
 		}
-		row := marker +
+		row := cursorMarker(s, focused) +
 			keyStyle.Render(padRight(it.Key, keyW)) + "  " +
 			valStyle.Render(truncate(displayValue(it, it.Value), layerW*2)) + "  " +
 			layerStyle.Render("("+it.Layer+")")
@@ -441,7 +440,7 @@ func (m settingsModel) renderEdit() string {
 
 	valueView := m.editInput.View()
 	if m.editKind != editText {
-		valueView = m.renderOptionPicker()
+		valueView = radioRow(s, m.editOptLabels, m.editOptIdx)
 	}
 
 	rows := []string{
@@ -451,14 +450,14 @@ func (m settingsModel) renderEdit() string {
 	if item.Description != "" {
 		rows = append(rows, s.Subtle.Render(item.Description), "")
 	}
-	rows = append(rows, m.focusMarker(m.editValueFocused)+valueView)
+	rows = append(rows, cursorMarker(s, m.editValueFocused)+valueView)
 	if item.Default != "" {
 		rows = append(rows, "  "+s.Help.Render("default: "+displayValue(item, item.Default)))
 	}
 	rows = append(rows,
 		"",
-		m.focusMarker(!m.editValueFocused)+s.Subtle.Render("Write to layer:"),
-		"  "+m.renderLayerPicker(),
+		cursorMarker(s, !m.editValueFocused)+s.Subtle.Render("Write to layer:"),
+		"  "+radioRow(s, m.editLayers, m.editLayer),
 		"  "+s.Help.Render(layerHint(m.editLayers[m.editLayer])),
 	)
 	if item.Advanced {
@@ -504,28 +503,6 @@ func layerHint(layer string) string {
 	}
 }
 
-// focusMarker points at whichever control (value vs. layer) currently has focus.
-func (m settingsModel) focusMarker(focused bool) string {
-	if focused {
-		return m.styles.Info.Render("▸ ")
-	}
-	return "  "
-}
-
-// renderOptionPicker draws the select/toggle widget as a radio row.
-func (m settingsModel) renderOptionPicker() string {
-	s := m.styles
-	var parts []string
-	for i, label := range m.editOptLabels {
-		if i == m.editOptIdx {
-			parts = append(parts, s.Header.Render("● "+label))
-		} else {
-			parts = append(parts, s.Help.Render("○ "+label))
-		}
-	}
-	return strings.Join(parts, "   ")
-}
-
 func (m settingsModel) editHint() string {
 	switch m.editKind {
 	case editBool:
@@ -540,21 +517,6 @@ func (m settingsModel) editHint() string {
 	}
 }
 
-func (m settingsModel) renderLayerPicker() string {
-	s := m.styles
-	var parts []string
-	for i, l := range m.editLayers {
-		label := l
-		if i == m.editLayer {
-			label = s.Header.Render(label)
-		} else {
-			label = s.Help.Render(label)
-		}
-		parts = append(parts, label)
-	}
-	return strings.Join(parts, "  ")
-}
-
 func (m settingsModel) renderSaving() string {
 	return m.renderCard(
 		m.styles.SummaryTitle.Render("Saving…")+"\n\n"+m.styles.Subtle.Render(m.editKey),
@@ -563,9 +525,7 @@ func (m settingsModel) renderSaving() string {
 }
 
 func (m settingsModel) renderCard(body, hint string) string {
-	card := m.styles.SummaryCard.MaxWidth(m.width - 4).Render(body)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
-		lipgloss.JoinVertical(lipgloss.Center, card, m.styles.Help.Render(hint)))
+	return cardView(m.styles, m.width, m.height, body, hint)
 }
 
 func (m settingsModel) listColumnWidths() (keyW, layerW int) {

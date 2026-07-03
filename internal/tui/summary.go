@@ -9,7 +9,6 @@ import (
 
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -149,11 +148,7 @@ func (m model) renderSummary() string {
 	if m.recoveryNote != "" {
 		body += "\n\n" + m.styles.Subtle.Render(m.recoveryNote)
 	}
-	card := m.styles.SummaryCard.MaxWidth(m.width).Render(body)
-	hint := m.styles.Help.Render(m.summaryHint())
-
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
-		lipgloss.JoinVertical(lipgloss.Center, card, hint))
+	return cardView(m.styles, m.width, m.height, body, m.summaryHint())
 }
 
 // summaryHint builds the key legend under the recap. It surfaces recovery keys

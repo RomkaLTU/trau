@@ -1502,10 +1502,8 @@ func (m onboardingModel) View() string {
 	case onboardNoRepo:
 		body = m.renderNoRepo()
 	}
-	card := m.styles.SummaryCard.MaxWidth(m.width - 4).Render(body)
-	hint := m.styles.Help.Render(m.hint())
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
-		lipgloss.JoinVertical(lipgloss.Center, m.brandHeader(), card, hint))
+	return centerScreen(m.width, m.height,
+		m.brandHeader(), cardBox(m.styles, m.width, body), hintBar(m.styles, m.hint()))
 }
 
 func (m onboardingModel) renderSystemCheck() string {
@@ -1722,10 +1720,7 @@ func (m onboardingModel) renderOptionRow(name string, selected bool) string {
 		dim := m.styles.Subtle.Strikethrough(true)
 		return "  " + dim.Render(name) + "  " + m.styles.Subtle.Render(m.disabledReason(name))
 	}
-	if selected {
-		return m.styles.Info.Render("▸ ") + m.styles.Header.Render(name)
-	}
-	return "  " + m.styles.Subtle.Render(name)
+	return listRow(m.styles, selected, name, "", 0)
 }
 
 func (m onboardingModel) disabledReason(name string) string {
@@ -1780,13 +1775,7 @@ func (m onboardingModel) renderBaseBranch() string {
 	rows = append(rows, "")
 	rows = append(rows, "When a ticket has sub-issues:")
 	for i, opt := range m.branchingOptions {
-		marker := "  "
-		label := m.styles.Subtle.Render(opt)
-		if !m.baseBranchInputFocused && i == m.branchingCursor {
-			marker = m.styles.Info.Render("▸ ")
-			label = m.styles.Header.Render(opt)
-		}
-		rows = append(rows, marker+label)
+		rows = append(rows, listRow(m.styles, !m.baseBranchInputFocused && i == m.branchingCursor, opt, "", 0))
 	}
 	return strings.Join(rows, "\n")
 }
@@ -1859,10 +1848,7 @@ func (m onboardingModel) renderTeamRow(t DetectedTeam, selected bool) string {
 	if t.Name != "" && t.Name != t.Key {
 		name = "  " + s.Subtle.Render(t.Name)
 	}
-	if selected {
-		return s.Info.Render("▸ ") + s.Header.Render(t.Key) + name
-	}
-	return "  " + s.Subtle.Render(t.Key) + name
+	return listRow(s, selected, t.Key, "", 0) + name
 }
 
 func (m onboardingModel) teamPrompt() (title, desc string) {
@@ -1901,13 +1887,7 @@ func (m onboardingModel) renderLabels() string {
 	}
 	rows = append(rows, "")
 	for i, opt := range opts {
-		marker := "  "
-		label := m.styles.Subtle.Render(opt)
-		if i == cursor {
-			marker = m.styles.Info.Render("▸ ")
-			label = m.styles.Header.Render(opt)
-		}
-		rows = append(rows, marker+label)
+		rows = append(rows, listRow(m.styles, i == cursor, opt, "", 0))
 	}
 	return strings.Join(rows, "\n")
 }
@@ -1922,13 +1902,7 @@ func (m onboardingModel) renderTimeTracking() string {
 	rows = append(rows, m.styles.Subtle.Render("Off by default; the number is an estimate of human effort, not agent time."))
 	rows = append(rows, "")
 	for i, opt := range m.timelogOptions {
-		marker := "  "
-		label := m.styles.Subtle.Render(opt)
-		if i == m.timelogCursor {
-			marker = m.styles.Info.Render("▸ ")
-			label = m.styles.Header.Render(opt)
-		}
-		rows = append(rows, marker+label)
+		rows = append(rows, listRow(m.styles, i == m.timelogCursor, opt, "", 0))
 	}
 	return strings.Join(rows, "\n")
 }
@@ -1947,13 +1921,7 @@ func (m onboardingModel) renderCI() string {
 	rows = append(rows, m.styles.Subtle.Render("CI). Change later in Settings or via REQUIRE_CI in .trau.ini."))
 	rows = append(rows, "")
 	for i, opt := range m.ciOptions {
-		marker := "  "
-		label := m.styles.Subtle.Render(opt)
-		if i == m.ciCursor {
-			marker = m.styles.Info.Render("▸ ")
-			label = m.styles.Header.Render(opt)
-		}
-		rows = append(rows, marker+label)
+		rows = append(rows, listRow(m.styles, i == m.ciCursor, opt, "", 0))
 	}
 	return strings.Join(rows, "\n")
 }

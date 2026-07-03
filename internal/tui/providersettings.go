@@ -456,15 +456,13 @@ func (m providerSettingsModel) renderTabs() string {
 
 func (m providerSettingsModel) renderValueRow(focused bool, label, value string) string {
 	s := m.styles
-	marker := "  "
 	labelStyle := s.Subtle
 	valStyle := lipgloss.NewStyle()
 	if focused {
-		marker = s.Info.Render("▸ ")
 		labelStyle = s.Header
 		valStyle = lipgloss.NewStyle().Foreground(theme.Brand)
 	}
-	return marker + labelStyle.Render(padRight(label, 12)) + "  " + valStyle.Render(value)
+	return cursorMarker(s, focused) + labelStyle.Render(padRight(label, 12)) + "  " + valStyle.Render(value)
 }
 
 func (m providerSettingsModel) renderPhaseRow(focused bool, ph ProviderPhaseTuning, hasEffort bool) string {
@@ -534,14 +532,14 @@ func (m providerSettingsModel) renderEdit() string {
 	for i, p := range m.edit.pickers {
 		focused := m.edit.focus == i
 		rows = append(rows,
-			focusMark(s, focused)+s.Subtle.Render(p.label+":"),
+			cursorMarker(s, focused)+s.Subtle.Render(p.label+":"),
 			"  "+radioRow(s, p.labels, p.idx),
 		)
 	}
 	layerFocus := m.edit.focus == len(m.edit.pickers)
 	rows = append(rows,
 		"",
-		focusMark(s, layerFocus)+s.Subtle.Render("Write to layer:"),
+		cursorMarker(s, layerFocus)+s.Subtle.Render("Write to layer:"),
 		"  "+radioRow(s, m.layers, m.layerIdx),
 		"  "+s.Help.Render(layerHint(m.layers[m.layerIdx])),
 	)
@@ -564,27 +562,6 @@ func fieldDisplay(f ProviderTuningField, empty string) string {
 	return f.Value + "  (" + layer + ")"
 }
 
-func focusMark(s Styles, focused bool) string {
-	if focused {
-		return s.Info.Render("▸ ")
-	}
-	return "  "
-}
-
-func radioRow(s Styles, labels []string, idx int) string {
-	var parts []string
-	for i, label := range labels {
-		if i == idx {
-			parts = append(parts, s.Header.Render("● "+label))
-		} else {
-			parts = append(parts, s.Help.Render("○ "+label))
-		}
-	}
-	return strings.Join(parts, "   ")
-}
-
 func (m providerSettingsModel) renderCard(body, hint string) string {
-	card := m.styles.SummaryCard.MaxWidth(m.width - 4).Render(body)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
-		lipgloss.JoinVertical(lipgloss.Center, card, m.styles.Help.Render(hint)))
+	return cardView(m.styles, m.width, m.height, body, hint)
 }
