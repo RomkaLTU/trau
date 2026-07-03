@@ -1041,38 +1041,5 @@ func usageBar(frac float64, w int) string {
 	return full + empty
 }
 
-// titledPanel draws a rounded box of total width w and height h with the title
-// woven into the top border. body is pre-rendered (and may carry ANSI); its lines
-// are padded/truncated to the inner width and the block to h-2 rows.
-func titledPanel(s Styles, title, body string, w, h int) string {
-	if w < 6 {
-		w = 6
-	}
-	textW := w - 4
-	innerH := h - 2
-	if innerH < 1 {
-		innerH = 1
-	}
-	fill := w - 5 - lipgloss.Width(title)
-	if fill < 0 {
-		fill = 0
-	}
-	border := s.Separator
-	top := border.Render("╭─ ") + s.PaneTitle.Render(title) + border.Render(" "+strings.Repeat("─", fill)+"╮")
-	bottom := border.Render("╰" + strings.Repeat("─", w-2) + "╯")
-	bar := border.Render("│")
-
-	lines := strings.Split(body, "\n")
-	for len(lines) < innerH {
-		lines = append(lines, "")
-	}
-	lines = lines[:innerH]
-
-	out := make([]string, 0, innerH+2)
-	out = append(out, top)
-	for _, ln := range lines {
-		out = append(out, bar+" "+pad(ln, textW)+" "+bar)
-	}
-	out = append(out, bottom)
-	return strings.Join(out, "\n")
-}
+// titledPanel, the tiled dashboard/logs container, now lives in the shared
+// component kit (see kit.go).

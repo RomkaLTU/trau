@@ -9,7 +9,6 @@ import (
 	"charm.land/bubbles/v2/table"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 
 	"github.com/RomkaLTU/trau/internal/console"
 )
@@ -861,11 +860,8 @@ func (m appModel) renderMenu() string {
 	}
 	head = append(head, context, "")
 	body := strings.Join(head, "\n") + "\n" + strings.Join(rows, "\n")
-	card := s.SummaryCard.Render(body)
-	hint := s.Help.Render("↑↓ move · enter select · q quit")
 
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
-		lipgloss.JoinVertical(lipgloss.Center, card, hint))
+	return cardView(s, m.width, m.height, body, "↑↓ move · enter select · q quit")
 }
 
 func (m appModel) renderMore() string {
@@ -881,11 +877,8 @@ func (m appModel) renderMore() string {
 
 	body := strings.Join([]string{header, tagline, ""}, "\n") +
 		"\n" + strings.Join(rows, "\n")
-	card := s.SummaryCard.Render(body)
-	hint := s.Help.Render("↑↓ move · enter select · esc/q back")
 
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
-		lipgloss.JoinVertical(lipgloss.Center, card, hint))
+	return cardView(s, m.width, m.height, body, "↑↓ move · enter select · esc/q back")
 }
 
 func (m appModel) menuRows(items []menuItem, cursor int) []string {
@@ -895,23 +888,7 @@ func (m appModel) menuRows(items []menuItem, cursor int) []string {
 		if it.action == actMore {
 			rows = append(rows, s.Help.Render(strings.Repeat("─", menuCardW)))
 		}
-		marker := "  "
-		labelStyle := lipgloss.NewStyle().Foreground(theme.Subtle)
-		descStyle := s.Help
-		if i == cursor {
-			marker = s.Info.Render("▸ ")
-			labelStyle = s.Header
-			descStyle = s.Subtle
-		}
-		pad := 14 - len([]rune(it.title))
-		if pad < 1 {
-			pad = 1
-		}
-		row := marker + labelStyle.Render(it.title)
-		if it.desc != "" {
-			row += strings.Repeat(" ", pad) + descStyle.Render(it.desc)
-		}
-		rows = append(rows, row)
+		rows = append(rows, listRow(s, i == cursor, it.title, it.desc, 14))
 	}
 	return rows
 }
@@ -946,11 +923,7 @@ func (m appModel) contextLines() []string {
 }
 
 func (m appModel) renderCard(title, body, hint string) string {
-	card := m.styles.SummaryCard.MaxWidth(m.width).Render(
-		m.styles.SummaryTitle.Render(title) + "\n\n" + body,
-	)
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
-		lipgloss.JoinVertical(lipgloss.Center, card, m.styles.Help.Render(hint)))
+	return titledCardView(m.styles, m.width, m.height, title, body, hint)
 }
 
 func (m appModel) renderBusy(title, caption string) string {

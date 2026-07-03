@@ -294,19 +294,18 @@ func (m runOnceModel) renderList() string {
 
 	idW, titleW := m.listColumnWidths()
 	for i, t := range items {
-		marker := "  "
+		focused := i == m.cursor
 		idStyle := s.Subtle
 		titleStyle := s.Subtle
 		stateStyle := s.Help
-		if i == m.cursor {
-			marker = s.Info.Render("▸ ")
+		if focused {
 			idStyle = s.Header
 			titleStyle = lipgloss.NewStyle().Foreground(theme.Brand)
 		}
 		idStr := padRight(t.ID, idW)
 		titleStr := truncate(t.Title, titleW)
 		stateStr := truncate(firstNonEmpty(t.State, "—"), 12)
-		rows = append(rows, marker+idStyle.Render(idStr)+"  "+titleStyle.Render(titleStr)+"  "+stateStyle.Render(stateStr))
+		rows = append(rows, cursorMarker(s, focused)+idStyle.Render(idStr)+"  "+titleStyle.Render(titleStr)+"  "+stateStyle.Render(stateStr))
 	}
 	return strings.Join(rows, "\n")
 }

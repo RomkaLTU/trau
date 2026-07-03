@@ -267,7 +267,6 @@ func (m loopSetupModel) renderList() string {
 	doneStyle := lipgloss.NewStyle().Foreground(theme.Faint)
 	idW, titleW := m.subIssueColumnWidths()
 	for i, sub := range m.subs {
-		marker := "  "
 		status := "  "
 		idStyle := s.Subtle
 		titleStyle := s.Subtle
@@ -277,7 +276,6 @@ func (m loopSetupModel) renderList() string {
 			titleStyle = doneStyle
 		}
 		if i == m.cursor {
-			marker = s.Info.Render("▸ ")
 			idStyle = s.Header
 			titleStyle = lipgloss.NewStyle().Foreground(theme.Brand)
 		}
@@ -286,7 +284,7 @@ func (m loopSetupModel) renderList() string {
 		if sub.HasChildren {
 			titleStr += s.Subtle.Render("  ⊘ nested epic")
 		}
-		rows = append(rows, marker+status+idStyle.Render(idStr)+"  "+titleStyle.Render(titleStr))
+		rows = append(rows, cursorMarker(s, i == m.cursor)+status+idStyle.Render(idStr)+"  "+titleStyle.Render(titleStr))
 	}
 
 	return strings.Join(rows, "\n")
