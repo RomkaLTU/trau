@@ -1026,6 +1026,15 @@ func runSession(ctx context.Context, cfg config.Config, opts config.Options, std
 		scope:   scopeFor(cfg, ""),
 		maxIter: maxIter,
 	}
+	if tui.AccessibleOnboardingRequested() && acts.OnboardingNeeded() {
+		res, err := tui.RunAccessibleOnboarding(ctx, acts)
+		if err != nil {
+			return err
+		}
+		if res.ConfigPath != "" {
+			_, _ = fmt.Fprintf(stdout, "Wrote %s\n", res.ConfigPath)
+		}
+	}
 	return tui.RunSession(ctx, stdout, holder, acts)
 }
 

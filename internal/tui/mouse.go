@@ -248,6 +248,11 @@ func (m appModel) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		return m.afterRunOnce(cmd)
 	case viewSettings:
 		m.settings, cmd = m.settings.Update(msg)
+	case viewOnboarding:
+		m.onboard, cmd = m.onboard.handleMouseClick(msg)
+		if m.onboard.Done() {
+			m = m.toMenu()
+		}
 	}
 	return m, cmd
 }

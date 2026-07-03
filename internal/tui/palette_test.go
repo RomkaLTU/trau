@@ -96,7 +96,13 @@ func TestPaletteColonGatedByEditing(t *testing.T) {
 
 	am, _ := helpApp(t).selectAction(actOnboarding)
 	edit := am.(appModel)
-	edit.onboard.step = onboardJiraCreds
+	// Drive the onboarding form to a focused text field (jira base URL).
+	edit.onboard.fv.tracker = "jira"
+	edit.onboard.phase = phaseForm
+	edit.onboard.form = edit.onboard.newForm()
+	edit.onboard = driveCmds(edit.onboard, edit.onboard.form.Init())
+	edit.onboard = pressKey(edit.onboard, tea.KeyEnter)
+	edit.onboard = pressKey(edit.onboard, tea.KeyEnter)
 	if !edit.editing() {
 		t.Fatal("precondition: jira-creds step should be a text-entry context")
 	}
