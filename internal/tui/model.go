@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	zone "github.com/lrstanley/bubblezone/v2"
 
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/console"
@@ -117,6 +118,10 @@ func (m model) runningHint() string {
 		parts = append(parts, "enter attach")
 	}
 	parts = append(parts, queueVerbHints(sel, hasSel, true)...)
+	if hasSel {
+		_, label := copyArtifact(sel)
+		parts = append(parts, "y copy "+label)
+	}
 	parts = append(parts, "v "+m.tier.next().short())
 	if m.tier != tierSpans {
 		parts = append(parts, "/ filter")
@@ -204,6 +209,11 @@ type model struct {
 	// selected queue row floated over the still-rendering dashboard. It captures
 	// keys while open but is read-only — the loop keeps running underneath.
 	peek bool
+
+	// mouseOff (ctrl+t) drops mouse reporting for native drag-to-select; toast is
+	// the transient OSC52-copy confirmation, cleared on the next key.
+	mouseOff bool
+	toast    string
 
 	results []console.TicketResult
 
@@ -310,6 +320,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		m.toast = ""
 		if m, cmd, handled := m.handleKey(msg); handled {
 			return m, cmd
 		}
@@ -396,12 +407,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
+	// ctrl+t is global: it flips mouse reporting off for native drag-to-select and
+	// back on. The app shell intercepts it in the session; the standalone dashboard
+	// (direct `trau <args>` runs) routes here, so it is handled first in both states.
+	if msg.String() == "ctrl+t" {
+		m.mouseOff = !m.mouseOff
+		setMouseEnabled(!m.mouseOff)
+		return m, nil, true
+	}
 	if m.state == stateSummary {
 		switch {
 		case key.Matches(msg, m.keys.Quit), msg.String() == "esc":
 			return m, tea.Quit, true
 		case key.Matches(msg, m.keys.Open):
 			return m, m.openSelectedPR(), true
+		case msg.String() == "y":
+			nm, cmd := m.copySelectedArtifact()
+			return nm, cmd, true
 		case msg.String() == "up" || msg.String() == "k":
 			m.moveQueueCursor(-1)
 			return m, nil, true
@@ -477,6 +499,9 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 		}
 		m.peek = true
 		return m, nil, true
+	case msg.String() == "y":
+		nm, cmd := m.copySelectedArtifact()
+		return nm, cmd, true
 	case msg.String() == "v":
 		m = m.cycleTier()
 		return m, nil, true
@@ -899,9 +924,15 @@ func (m model) markStopping() model {
 }
 
 func (m model) View() tea.View {
-	v := tea.NewView(m.render())
+	content := m.render()
+	if m.mouseOff {
+		content = overlayMouseOff(m.styles, content, m.width, m.height)
+	}
+	v := tea.NewView(zone.Scan(content))
 	v.AltScreen = true
-	v.MouseMode = tea.MouseModeCellMotion
+	if !m.mouseOff {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	return v
 }
 
@@ -1176,7 +1207,10 @@ func (m model) renderFooter() string {
 		}
 	}
 	left := ""
-	if done > 0 {
+	switch {
+	case m.toast != "":
+		left = m.styles.Success.Render(m.toast)
+	case done > 0:
 		left = m.styles.Footer.Render(fmt.Sprintf("%d merged", done))
 	}
 	return joinEnds(left, m.styles.Help.Render(m.runningHint()), m.width)

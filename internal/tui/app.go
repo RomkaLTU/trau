@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	zone "github.com/lrstanley/bubblezone/v2"
 
 	"github.com/RomkaLTU/trau/internal/console"
 )
@@ -251,6 +252,10 @@ type appModel struct {
 
 	help    helpModel
 	palette paletteModel
+
+	// mouseOff (ctrl+t) drops mouse reporting so the terminal's own drag-to-select
+	// works; while off the footer shows the mode and clicks do nothing.
+	mouseOff bool
 }
 
 func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
@@ -474,6 +479,13 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	// ctrl+t is global too: it flips mouse reporting off so the terminal reclaims
+	// drag-to-select, and back on. It bypasses editing() like the palette does.
+	if msg.String() == "ctrl+t" {
+		m.mouseOff = !m.mouseOff
+		setMouseEnabled(!m.mouseOff)
+		return m, nil
+	}
 
 	switch m.view {
 	case viewOnboarding:
@@ -644,6 +656,8 @@ func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.dash = m.dash.markStopping()
 		return m, nil
 	}
+	// A key press dismisses the copy toast; the y handler below re-sets it.
+	m.dash = m.dash.clearToast()
 	// While the dash filter input is capturing, every other key belongs to it —
 	// route straight to the dash so an action key (q, o, j) narrows the feed instead
 	// of firing the action or moving the rail.
@@ -995,9 +1009,15 @@ func (m appModel) reconcileCmd(ctx context.Context) tea.Cmd {
 }
 
 func (m appModel) View() tea.View {
-	v := tea.NewView(m.render())
+	content := m.render()
+	if m.mouseOff {
+		content = overlayMouseOff(m.styles, content, m.width, m.height)
+	}
+	v := tea.NewView(zone.Scan(content))
 	v.AltScreen = true
-	v.MouseMode = tea.MouseModeCellMotion
+	if !m.mouseOff {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	return v
 }
 
