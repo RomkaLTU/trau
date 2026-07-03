@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/state"
 )
@@ -31,6 +33,29 @@ func TestTotalsLineCountsIncompleteSeparately(t *testing.T) {
 	}
 	if strings.Contains(got, "2 quarantined") {
 		t.Errorf("totalsLine = %q: an incomplete ticket must not be counted as quarantined", got)
+	}
+}
+
+// TestResizeRecomputesSummaryTable checks that resizing during the recap rebuilds
+// the table's responsive title column without losing the selected row.
+func TestResizeRecomputesSummaryTable(t *testing.T) {
+	d := freshDash(80, 24)
+	d.results = []console.TicketResult{
+		{ID: "COD-1", Title: "One", Phase: state.PROpen},
+		{ID: "COD-2", Title: "Two", Phase: state.Building},
+	}
+	sm, _ := d.enterSummary(console.SessionSummary{Tickets: 2})
+	d = sm.(model)
+	d.summaryTable.SetCursor(1)
+	before := d.summaryTable.Columns()[1].Width
+
+	d = applyDash(d, tea.WindowSizeMsg{Width: 160, Height: 50})
+
+	if after := d.summaryTable.Columns()[1].Width; after <= before {
+		t.Errorf("summary title column = %d after growing the terminal, want wider than %d", after, before)
+	}
+	if got := d.summaryTable.Cursor(); got != 1 {
+		t.Errorf("summary cursor after resize = %d, want 1", got)
 	}
 }
 
