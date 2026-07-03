@@ -371,8 +371,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case viewOnboarding:
 		m.onboard, cmd = m.onboard.Update(msg)
 		if m.onboard.Done() {
-			m.view = viewMenu
-			m.info = m.actions.MenuInfo()
+			m = m.toMenu()
 		}
 	case viewStatus:
 		m.status, cmd = m.status.Update(msg)
@@ -398,8 +397,7 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.onboard, cmd = m.onboard.Update(msg)
 		if m.onboard.Done() {
-			m.view = viewMenu
-			m.info = m.actions.MenuInfo()
+			m = m.toMenu()
 		}
 		return m, cmd
 
@@ -422,9 +420,9 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case viewMore:
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c":
 			return m, tea.Quit
-		case "esc", "b":
+		case "esc", "q":
 			m.view = viewMenu
 			m.info = m.actions.MenuInfo()
 			return m, nil
@@ -507,7 +505,7 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case viewSettings:
-		if m.settings.AtRoot() && (msg.String() == "esc" || msg.String() == "q") {
+		if m.settings.AtRoot() && isBack(msg) {
 			return m.toMenu(), nil
 		}
 		var cmd tea.Cmd
@@ -532,12 +530,13 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m.toMenu(), nil
-		case "enter":
-			if m.busy {
-				return m, nil
-			}
+		case "q":
 			if m.result != "" {
 				return m.toMenu(), nil
+			}
+		case "enter":
+			if m.busy || m.result != "" {
+				return m, nil
 			}
 			id := strings.TrimSpace(m.reset.Value())
 			if id == "" {
@@ -669,7 +668,7 @@ func (m appModel) runLoopCmd(ctx context.Context, epic string) tea.Cmd {
 
 // handleSummaryKey drives the recap screen's recovery keys: r resumes the selected
 // ticket, b checks out its branch, x resets it (guarded by a two-key confirm).
-// Navigation and "o open PR" stay delegated to the dash; enter/q/esc return to the
+// Navigation and "o open PR" stay delegated to the dash; q/esc return to the
 // menu. Recovery keys appear only for rows where they apply.
 func (m appModel) handleSummaryKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if id := m.dash.pendingResetID(); id != "" {
@@ -789,7 +788,7 @@ func (m appModel) render() string {
 		}
 		hint := "↑↓ scroll · r reconcile · esc/q back"
 		if m.statusBusy {
-			hint = "reconciling… · esc to cancel"
+			hint = "reconciling… · esc/q back"
 		}
 		return m.renderCard("Status", body, hint)
 	case viewLogs:
@@ -861,7 +860,7 @@ func (m appModel) renderMore() string {
 	body := strings.Join([]string{header, tagline, ""}, "\n") +
 		"\n" + strings.Join(rows, "\n")
 	card := s.SummaryCard.Render(body)
-	hint := s.Help.Render("↑↓ move · enter select · esc back")
+	hint := s.Help.Render("↑↓ move · enter select · esc/q back")
 
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 		lipgloss.JoinVertical(lipgloss.Center, card, hint))
@@ -952,7 +951,7 @@ func (m appModel) renderReset() string {
 		hint = "working…"
 	case m.result != "":
 		body = m.result
-		hint = "enter/esc back"
+		hint = "esc/q back"
 	default:
 		body = "Enter the ticket ID to reset (e.g. " + exampleID(m.info.Prefix) + "):\n\n" + m.reset.View()
 		hint = "enter confirm · esc back"
@@ -1010,9 +1009,12 @@ func (m appModel) buildStatusTable() table.Model {
 	return t
 }
 
+// isBack reports whether msg backs out one level under the shared key contract:
+// esc everywhere, q on leaf screens. enter is never back — it acts on the
+// selection (or does nothing where no action exists yet).
 func isBack(msg tea.KeyPressMsg) bool {
 	switch msg.String() {
-	case "esc", "enter", "q", "b":
+	case "esc", "q":
 		return true
 	}
 	return false

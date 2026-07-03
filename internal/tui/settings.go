@@ -216,8 +216,9 @@ func (m settingsModel) handleListKey(msg tea.KeyPressMsg) (settingsModel, tea.Cm
 
 func (m settingsModel) handleEditKey(msg tea.KeyPressMsg) (settingsModel, tea.Cmd) {
 	key := msg.String()
+	textFocused := m.editValueFocused && m.editKind == editText
 	switch {
-	case key == "esc":
+	case key == "esc", key == "q" && !textFocused:
 		m.step = settingsList
 		m.saveErr = nil
 		m.savedMsg = ""
@@ -528,11 +529,14 @@ func (m settingsModel) renderOptionPicker() string {
 func (m settingsModel) editHint() string {
 	switch m.editKind {
 	case editBool:
-		return "tab/↑↓ switch focus · ←→/space toggle · enter save · esc cancel"
+		return "tab/↑↓ switch focus · ←→/space toggle · enter save · esc/q cancel"
 	case editSelect:
-		return "tab/↑↓ switch focus · ←→/hl change value & layer · enter save · esc cancel"
+		return "tab/↑↓ switch focus · ←→/hl change value & layer · enter save · esc/q cancel"
 	default:
-		return "tab/↑↓ switch focus · ←→/hl pick layer · enter save · esc cancel"
+		if m.editValueFocused {
+			return "tab/↑↓ switch focus · ←→/hl pick layer · enter save · esc cancel"
+		}
+		return "tab/↑↓ switch focus · ←→/hl pick layer · enter save · esc/q cancel"
 	}
 }
 

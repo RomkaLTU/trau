@@ -176,7 +176,7 @@ func (m model) summaryHint() string {
 			parts = append(parts, "x reset")
 		}
 	}
-	parts = append(parts, "enter/q exit")
+	parts = append(parts, "esc/q close")
 	return strings.Join(parts, " · ")
 }
 

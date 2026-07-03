@@ -270,7 +270,7 @@ func pickerField(label, key string, opts []string, value, sentinel string) provP
 func (m providerSettingsModel) handleEditKey(msg tea.KeyPressMsg) (providerSettingsModel, tea.Cmd) {
 	layerFocus := len(m.edit.pickers)
 	switch msg.String() {
-	case "esc":
+	case "esc", "q":
 		m.step = provBrowse
 		return m, nil
 	case "enter":
@@ -433,7 +433,7 @@ func (m providerSettingsModel) renderBrowse() string {
 		rows = append(rows, "", s.Help.Render(d))
 	}
 
-	hint := "↑↓ move · ←→ switch provider · enter edit · esc back"
+	hint := "↑↓ move · ←→ switch provider · enter edit · esc/q back"
 	return m.renderCard(strings.Join(rows, "\n"), hint)
 }
 
@@ -548,7 +548,7 @@ func (m providerSettingsModel) renderEdit() string {
 	if m.step == provSaving {
 		return m.renderCard(strings.Join(rows, "\n"), "saving…")
 	}
-	return m.renderCard(strings.Join(rows, "\n"), "↑↓ switch field · ←→ change · enter save · esc cancel")
+	return m.renderCard(strings.Join(rows, "\n"), "↑↓ switch field · ←→ change · enter save · esc/q cancel")
 }
 
 // fieldDisplay renders a resolved field value with its source layer, or an empty

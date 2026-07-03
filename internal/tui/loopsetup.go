@@ -145,7 +145,8 @@ func (m loopSetupModel) handleKey(msg tea.KeyPressMsg) (loopSetupModel, tea.Cmd)
 		return m, cmd
 
 	case loopLoading:
-		if msg.String() == "ctrl+c" || msg.String() == "esc" {
+		switch msg.String() {
+		case "ctrl+c", "esc", "q":
 			m.step = loopConfirm
 			m.input.Focus()
 		}
@@ -155,7 +156,7 @@ func (m loopSetupModel) handleKey(msg tea.KeyPressMsg) (loopSetupModel, tea.Cmd)
 		switch msg.String() {
 		case "ctrl+c":
 			m.cancelled, m.done = true, true
-		case "esc":
+		case "esc", "q":
 			m.step = loopConfirm
 			m.subs = nil
 			m.cursor = 0
@@ -338,11 +339,11 @@ func (m loopSetupModel) summary() string {
 func (m loopSetupModel) hint() string {
 	switch m.step {
 	case loopLoading:
-		return "loading… · esc cancel"
+		return "loading… · esc/q cancel"
 	case loopList:
-		return "↑↓ move · 's' run selected · 'o' open · 'r' refresh · enter start · esc back"
+		return "↑↓ move · 's' run selected · 'o' open · 'r' refresh · enter start · esc/q back"
 	default:
-		return "enter start · type an epic to preview · esc cancel"
+		return "enter start · type an epic to preview · esc back"
 	}
 }
 
