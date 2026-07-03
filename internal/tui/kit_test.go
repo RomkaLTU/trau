@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -126,6 +127,89 @@ func TestCardBoxCapsWidth(t *testing.T) {
 		if got := maxLineWidth(out); got > cap {
 			t.Errorf("card at cap %d rendered %d wide, want ≤ %d", cap, got, cap)
 		}
+	}
+}
+
+// mkLines returns n lines "L0".."Ln-1" for exercising the scroll helpers.
+func mkLines(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = "L" + strconv.Itoa(i)
+	}
+	return out
+}
+
+// TestScrollToCursor covers the selection-list window: content that fits is
+// returned untouched (no visual change on a tall terminal), and content that
+// overflows is clamped to exactly height rows with the anchor always visible and
+// edge-scrolled at both ends.
+func TestScrollToCursor(t *testing.T) {
+	// Fits: returned unchanged, same backing slice length.
+	lines := mkLines(5)
+	if got := scrollToCursor(lines, 4, 10); len(got) != 5 || got[0] != "L0" || got[4] != "L4" {
+		t.Fatalf("fitting content should be unchanged, got %v", got)
+	}
+
+	// Anchor at the top: window starts at the top.
+	if got := scrollToCursor(mkLines(50), 0, 8); len(got) != 8 || got[0] != "L0" || got[7] != "L7" {
+		t.Fatalf("top anchor window = %v", got)
+	}
+
+	// Anchor in the middle: anchor is the last visible row (edge scroll).
+	got := scrollToCursor(mkLines(50), 20, 8)
+	if len(got) != 8 || got[7] != "L20" || got[0] != "L13" {
+		t.Fatalf("mid anchor window = %v, want L13..L20", got)
+	}
+
+	// Anchor at the bottom: window pins to the end, never scrolls past it.
+	got = scrollToCursor(mkLines(50), 49, 8)
+	if len(got) != 8 || got[0] != "L42" || got[7] != "L49" {
+		t.Fatalf("bottom anchor window = %v, want L42..L49", got)
+	}
+
+	// Degenerate height floors at 1 row.
+	if got := scrollToCursor(mkLines(5), 3, 0); len(got) != 1 || got[0] != "L3" {
+		t.Fatalf("zero height should show 1 row at anchor, got %v", got)
+	}
+}
+
+// TestWindowAt covers the prose scroll window: it clamps the offset into range,
+// reports overflow, and leaves fitting content untouched.
+func TestWindowAt(t *testing.T) {
+	win, off, overflow := windowAt(mkLines(5), 3, 10)
+	if overflow || off != 0 || len(win) != 5 {
+		t.Fatalf("fitting content: overflow=%v off=%d len=%d", overflow, off, len(win))
+	}
+
+	win, off, overflow = windowAt(mkLines(50), 5, 8)
+	if !overflow || off != 5 || win[0] != "L5" || win[7] != "L12" {
+		t.Fatalf("mid window: off=%d win=%v", off, win)
+	}
+
+	// Offset past the end is clamped so the last page stays full.
+	win, off, overflow = windowAt(mkLines(50), 999, 8)
+	if !overflow || off != 42 || win[0] != "L42" || win[7] != "L49" {
+		t.Fatalf("clamped window: off=%d win=%v", off, win)
+	}
+
+	// Negative offset clamps to the top.
+	_, off, _ = windowAt(mkLines(50), -5, 8)
+	if off != 0 {
+		t.Fatalf("negative offset should clamp to 0, got %d", off)
+	}
+}
+
+// TestCardBodyBudget checks the chrome math (border+padding+hint = 5) and the
+// extra-rows subtraction, floored at 1.
+func TestCardBodyBudget(t *testing.T) {
+	if got := cardBodyBudget(24, 0); got != 19 {
+		t.Errorf("budget(24,0) = %d, want 19", got)
+	}
+	if got := cardBodyBudget(24, 4); got != 15 {
+		t.Errorf("budget(24,4) = %d, want 15", got)
+	}
+	if got := cardBodyBudget(3, 0); got != 1 {
+		t.Errorf("tiny terminal should floor at 1, got %d", got)
 	}
 }
 

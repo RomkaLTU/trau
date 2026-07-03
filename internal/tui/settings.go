@@ -393,19 +393,20 @@ func (m settingsModel) renderList() string {
 	if title == "" {
 		title = "Settings"
 	}
-	rows := []string{
+	header := []string{
 		s.SummaryTitle.Render(title),
 		"",
 		s.Subtle.Render("Effective config values and the layer that supplies each one."),
 		"",
 	}
 	if m.saveErr != nil {
-		rows = append(rows, s.Error.Render("Error: "+m.saveErr.Error()), "")
+		header = append(header, s.Error.Render("Error: "+m.saveErr.Error()), "")
 	} else if m.savedMsg != "" {
-		rows = append(rows, s.Success.Render("✓ "+m.savedMsg), "")
+		header = append(header, s.Success.Render("✓ "+m.savedMsg), "")
 	}
 
 	keyW, layerW := m.listColumnWidths()
+	list := make([]string, 0, len(m.filtered))
 	for i, it := range m.filtered {
 		focused := i == m.cursor
 		keyStyle := s.Subtle
@@ -420,18 +421,31 @@ func (m settingsModel) renderList() string {
 			keyStyle.Render(padRight(it.Key, keyW)) + "  " +
 			valStyle.Render(truncate(displayValue(it, it.Value), layerW*2)) + "  " +
 			layerStyle.Render("("+it.Layer+")")
-		rows = append(rows, row)
+		list = append(list, row)
 	}
+
+	// The focused key's description is a fixed footer so it stays visible however
+	// far the list scrolls.
+	var footer []string
 	if len(m.filtered) == 0 {
-		rows = append(rows, s.Subtle.Render("No settings to show."))
+		footer = append(footer, s.Subtle.Render("No settings to show."))
 	} else if m.cursor < len(m.filtered) {
 		if d := m.filtered[m.cursor].Description; d != "" {
-			rows = append(rows, "", s.Help.Render(d))
+			footer = append(footer, "", s.Help.Render(d))
 		}
 	}
 
+	// Scroll the list to follow the cursor; the header and description stay put.
+	listBudget := cardBodyBudget(m.height, 0) - len(header) - len(footer)
+	list = scrollToCursor(list, m.cursor, listBudget)
+
+	body := make([]string, 0, len(header)+len(list)+len(footer))
+	body = append(body, header...)
+	body = append(body, list...)
+	body = append(body, footer...)
+
 	hint := "↑↓ move · enter/e edit · a toggle advanced · esc/q back"
-	return m.renderCard(strings.Join(rows, "\n"), hint)
+	return m.renderCard(strings.Join(body, "\n"), hint)
 }
 
 func (m settingsModel) renderEdit() string {
@@ -450,10 +464,12 @@ func (m settingsModel) renderEdit() string {
 	if item.Description != "" {
 		rows = append(rows, s.Subtle.Render(item.Description), "")
 	}
+	valueLine := len(rows)
 	rows = append(rows, cursorMarker(s, m.editValueFocused)+valueView)
 	if item.Default != "" {
 		rows = append(rows, "  "+s.Help.Render("default: "+displayValue(item, item.Default)))
 	}
+	layerLine := len(rows) + 1 // the "Write to layer:" line, after the blank
 	rows = append(rows,
 		"",
 		cursorMarker(s, !m.editValueFocused)+s.Subtle.Render("Write to layer:"),
@@ -463,6 +479,12 @@ func (m settingsModel) renderEdit() string {
 	if item.Advanced {
 		rows = append(rows, "", s.Warning.Render("⚠ Advanced setting — edit with care."))
 	}
+
+	focusLine := layerLine
+	if m.editValueFocused {
+		focusLine = valueLine
+	}
+	rows = scrollToCursor(rows, focusLine, cardBodyBudget(m.height, 0))
 	return m.renderCard(strings.Join(rows, "\n"), m.editHint())
 }
 

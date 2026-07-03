@@ -223,6 +223,11 @@ type onboardingModel struct {
 	systemCheckDone    bool
 	systemCheckStarted bool
 	mcp                *mcpProbe
+
+	// scrollOffset is the first visible body line for steps whose content is
+	// taller than the terminal (e.g. the config preview). It is reset whenever
+	// the step changes and clamped to the content in View.
+	scrollOffset int
 }
 
 func newOnboardingModel(ctx context.Context, actions OnboardingActions, styles Styles, width, height int) onboardingModel {
@@ -387,7 +392,25 @@ func (m onboardingModel) Update(msg tea.Msg) (onboardingModel, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyPressMsg:
-		return m.handleKey(msg)
+		if delta, ok := scrollKeyDelta(msg, m.bodyBudget()); ok {
+			m.scrollOffset = m.clampScroll(m.scrollOffset + delta)
+			return m, nil
+		}
+		prev := m.step
+		nm, cmd := m.handleKey(msg)
+		if nm.step != prev {
+			nm.scrollOffset = 0
+		}
+		return nm, cmd
+
+	case tea.MouseWheelMsg:
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			m.scrollOffset = m.clampScroll(m.scrollOffset - 3)
+		case tea.MouseWheelDown:
+			m.scrollOffset = m.clampScroll(m.scrollOffset + 3)
+		}
+		return m, nil
 
 	case setupDoneMsg:
 		return m.applySetupDone(msg), nil
@@ -1467,43 +1490,91 @@ func (m onboardingModel) brandHeader() string {
 	return lipgloss.JoinVertical(lipgloss.Center, mark, tag)
 }
 
+// stepBody renders the current step's card body — the region that scrolls when
+// it is taller than the terminal.
+func (m onboardingModel) stepBody() string {
+	switch m.step {
+	case onboardSystemCheck:
+		return m.renderSystemCheck()
+	case onboardWelcome:
+		return m.renderWelcome()
+	case onboardProviders:
+		return m.renderProviders()
+	case onboardLinearAPIKey:
+		return m.renderLinearAPIKey()
+	case onboardJiraCreds:
+		return m.renderJiraCreds()
+	case onboardBaseBranch:
+		return m.renderBaseBranch()
+	case onboardLinearTeam:
+		return m.renderLinearTeam()
+	case onboardLabels:
+		return m.renderLabels()
+	case onboardTimeTracking:
+		return m.renderTimeTracking()
+	case onboardCI:
+		return m.renderCI()
+	case onboardWrite:
+		return m.renderWrite()
+	case onboardCreateLabels:
+		return m.renderCreateLabels()
+	case onboardDone:
+		return m.renderDone()
+	case onboardNoRepo:
+		return m.renderNoRepo()
+	}
+	return ""
+}
+
+// bodyBudget is how many body lines fit under the brand header and above the
+// hint on the current terminal.
+func (m onboardingModel) bodyBudget() int {
+	return cardBodyBudget(m.height, lipgloss.Height(m.brandHeader()))
+}
+
+// scrollKeyDelta maps the explicit scroll keys to a body-line delta. Onboarding
+// steps own ↑↓ for navigation, so scrolling uses pgup/pgdn (a near-full page).
+func scrollKeyDelta(msg tea.KeyPressMsg, page int) (int, bool) {
+	step := page - 1
+	if step < 1 {
+		step = 1
+	}
+	switch msg.String() {
+	case "pgdown":
+		return step, true
+	case "pgup":
+		return -step, true
+	}
+	return 0, false
+}
+
+// clampScroll holds an offset within [0, maxScroll] for the current step's body.
+func (m onboardingModel) clampScroll(off int) int {
+	if off < 0 {
+		return 0
+	}
+	maxOff := strings.Count(m.stepBody(), "\n") + 1 - m.bodyBudget()
+	if maxOff < 0 {
+		maxOff = 0
+	}
+	if off > maxOff {
+		off = maxOff
+	}
+	return off
+}
+
 func (m onboardingModel) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "Loading…"
 	}
-	var body string
-	switch m.step {
-	case onboardSystemCheck:
-		body = m.renderSystemCheck()
-	case onboardWelcome:
-		body = m.renderWelcome()
-	case onboardProviders:
-		body = m.renderProviders()
-	case onboardLinearAPIKey:
-		body = m.renderLinearAPIKey()
-	case onboardJiraCreds:
-		body = m.renderJiraCreds()
-	case onboardBaseBranch:
-		body = m.renderBaseBranch()
-	case onboardLinearTeam:
-		body = m.renderLinearTeam()
-	case onboardLabels:
-		body = m.renderLabels()
-	case onboardTimeTracking:
-		body = m.renderTimeTracking()
-	case onboardCI:
-		body = m.renderCI()
-	case onboardWrite:
-		body = m.renderWrite()
-	case onboardCreateLabels:
-		body = m.renderCreateLabels()
-	case onboardDone:
-		body = m.renderDone()
-	case onboardNoRepo:
-		body = m.renderNoRepo()
+	lines := strings.Split(m.stepBody(), "\n")
+	win, _, overflow := windowAt(lines, m.scrollOffset, m.bodyBudget())
+	hint := m.hint()
+	if overflow {
+		hint += " · pgup/pgdn/wheel scroll"
 	}
 	return centerScreen(m.width, m.height,
-		m.brandHeader(), cardBox(m.styles, m.width, body), hintBar(m.styles, m.hint()))
+		m.brandHeader(), cardBox(m.styles, m.width, strings.Join(win, "\n")), hintBar(m.styles, hint))
 }
 
 func (m onboardingModel) renderSystemCheck() string {

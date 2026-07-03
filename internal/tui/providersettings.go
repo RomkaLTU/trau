@@ -392,49 +392,69 @@ func (m providerSettingsModel) View() string {
 
 func (m providerSettingsModel) renderBrowse() string {
 	s := m.styles
-	rows := []string{
+	header := []string{
 		s.SummaryTitle.Render("Provider tuning"),
 		"",
 		m.renderTabs(),
 		"",
 	}
 	if m.saveErr != nil {
-		rows = append(rows, s.Error.Render("Error: "+m.saveErr.Error()), "")
+		header = append(header, s.Error.Render("Error: "+m.saveErr.Error()), "")
 	} else if m.savedMsg != "" {
-		rows = append(rows, s.Success.Render("✓ "+m.savedMsg), "")
+		header = append(header, s.Success.Render("✓ "+m.savedMsg), "")
 	}
 
 	p, ok := m.current()
 	if !ok {
-		return m.renderCard(strings.Join(rows, "\n"), "esc back")
+		return m.renderCard(strings.Join(header, "\n"), "esc back")
 	}
 	hasEffort := len(p.Efforts) > 0
 
-	rows = append(rows, s.Subtle.Render("Defaults"))
+	// mid holds the selectable dial/phase rows plus their section labels; track
+	// the focused row's line so the window can keep it in view.
+	mid := []string{s.Subtle.Render("Defaults")}
+	cursorLine := 0
 	phaseHeaderShown := false
 	for i, r := range m.rows {
 		focused := i == m.cursor
 		switch r.kind {
 		case rowModel:
-			rows = append(rows, m.renderValueRow(focused, "Model", fieldDisplay(p.Model, "(provider default)")))
+			if focused {
+				cursorLine = len(mid)
+			}
+			mid = append(mid, m.renderValueRow(focused, "Model", fieldDisplay(p.Model, "(provider default)")))
 		case rowEffort:
-			rows = append(rows, m.renderValueRow(focused, "Reasoning", fieldDisplay(p.Effort, "(provider default)")))
+			if focused {
+				cursorLine = len(mid)
+			}
+			mid = append(mid, m.renderValueRow(focused, "Reasoning", fieldDisplay(p.Effort, "(provider default)")))
 		case rowPhase:
 			if !phaseHeaderShown {
-				rows = append(rows, "", s.Subtle.Render("Per-phase overrides"))
+				mid = append(mid, "", s.Subtle.Render("Per-phase overrides"))
 				phaseHeaderShown = true
 			}
-			rows = append(rows, m.renderPhaseRow(focused, p.Phases[r.phaseIdx], hasEffort))
+			if focused {
+				cursorLine = len(mid)
+			}
+			mid = append(mid, m.renderPhaseRow(focused, p.Phases[r.phaseIdx], hasEffort))
 		}
 	}
 
-	rows = append(rows, "", s.Help.Render("Effective: "+m.effectiveRoutes(p, hasEffort)))
+	footer := []string{"", s.Help.Render("Effective: " + m.effectiveRoutes(p, hasEffort))}
 	if d := m.cursorDesc(p); d != "" {
-		rows = append(rows, "", s.Help.Render(d))
+		footer = append(footer, "", s.Help.Render(d))
 	}
 
+	midBudget := cardBodyBudget(m.height, 0) - len(header) - len(footer)
+	mid = scrollToCursor(mid, cursorLine, midBudget)
+
+	body := make([]string, 0, len(header)+len(mid)+len(footer))
+	body = append(body, header...)
+	body = append(body, mid...)
+	body = append(body, footer...)
+
 	hint := "↑↓ move · ←→ switch provider · enter edit · esc/q back"
-	return m.renderCard(strings.Join(rows, "\n"), hint)
+	return m.renderCard(strings.Join(body, "\n"), hint)
 }
 
 func (m providerSettingsModel) renderTabs() string {
@@ -529,20 +549,29 @@ func (m providerSettingsModel) renderEdit() string {
 	if m.edit.rowDesc != "" {
 		rows = append(rows, s.Subtle.Render(m.edit.rowDesc), "")
 	}
+	focusLine := 0
 	for i, p := range m.edit.pickers {
 		focused := m.edit.focus == i
+		if focused {
+			focusLine = len(rows)
+		}
 		rows = append(rows,
 			cursorMarker(s, focused)+s.Subtle.Render(p.label+":"),
 			"  "+radioRow(s, p.labels, p.idx),
 		)
 	}
 	layerFocus := m.edit.focus == len(m.edit.pickers)
+	if layerFocus {
+		focusLine = len(rows) + 1 // the "Write to layer:" line, after the blank
+	}
 	rows = append(rows,
 		"",
 		cursorMarker(s, layerFocus)+s.Subtle.Render("Write to layer:"),
 		"  "+radioRow(s, m.layers, m.layerIdx),
 		"  "+s.Help.Render(layerHint(m.layers[m.layerIdx])),
 	)
+
+	rows = scrollToCursor(rows, focusLine, cardBodyBudget(m.height, 0))
 	if m.step == provSaving {
 		return m.renderCard(strings.Join(rows, "\n"), "saving…")
 	}
