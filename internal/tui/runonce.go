@@ -374,19 +374,47 @@ func (m runOnceModel) summary() string {
 }
 
 func (m runOnceModel) hint() string {
-	sw := ""
-	if m.canSwitchProvider() {
-		sw = " · ⇥ switch provider"
+	if m.step == runOnceLoading {
+		return "loading… · esc/q cancel"
 	}
+	return m.help().footer()
+}
+
+// help is the run-once picker's key legend per step: the single source for its
+// footer and the ? overlay. ⇥ (switch provider) appears only when more than one
+// provider is configured.
+func (m runOnceModel) help() screenHelp {
+	prov := m.canSwitchProvider()
 	switch m.step {
 	case runOnceLoading:
-		return "loading… · esc/q cancel"
+		return screenHelp{title: "Run once", columns: []helpColumn{
+			group("Session", fk("esc/q", "cancel")),
+		}}
 	case runOnceList:
-		return "↑↓/jk move · enter run" + sw + " · 'o' open · 'r' refresh · esc/q back"
-	default:
-		if m.info.Resume.Active() {
-			return "enter resume " + m.info.Resume.ID + " · type an ID" + sw + " · 'l' load · esc back"
+		actions := []helpKey{fk("enter", "run"), fk("o", "open issue"), fk("r", "refresh")}
+		if prov {
+			actions = append(actions, fk("⇥", "switch provider"))
 		}
-		return "type an ID" + sw + " · 'l' load eligible · enter run · esc back"
+		return screenHelp{title: "Run once", columns: []helpColumn{
+			group("Navigate", fk("↑↓", "move"), xk("j/k", "move")),
+			group("Actions", actions...),
+			group("Session", fk("esc/q", "back")),
+		}}
+	default: // runOnceConfirm
+		var actions []helpKey
+		if m.info.Resume.Active() {
+			actions = append(actions, fk("enter", "resume "+m.info.Resume.ID))
+		} else {
+			actions = append(actions, fk("enter", "run"))
+		}
+		actions = append(actions, fk("type", "an ID"))
+		if prov {
+			actions = append(actions, fk("⇥", "switch provider"))
+		}
+		actions = append(actions, fk("l", "load eligible"))
+		return screenHelp{title: "Run once", columns: []helpColumn{
+			group("Actions", actions...),
+			group("Session", fk("esc", "back")),
+		}}
 	}
 }

@@ -444,8 +444,7 @@ func (m settingsModel) renderList() string {
 	body = append(body, list...)
 	body = append(body, footer...)
 
-	hint := "↑↓ move · enter/e edit · a toggle advanced · esc/q back"
-	return m.renderCard(strings.Join(body, "\n"), hint)
+	return m.renderCard(strings.Join(body, "\n"), m.help().footer())
 }
 
 func (m settingsModel) renderEdit() string {
@@ -525,18 +524,49 @@ func layerHint(layer string) string {
 	}
 }
 
-func (m settingsModel) editHint() string {
-	switch m.editKind {
-	case editBool:
-		return "tab/↑↓ switch focus · ←→/space toggle · enter save · esc/q cancel"
-	case editSelect:
-		return "tab/↑↓ switch focus · ←→/hl change value & layer · enter save · esc/q cancel"
-	default:
-		if m.editValueFocused {
-			return "tab/↑↓ switch focus · ←→/hl pick layer · enter save · esc cancel"
+func (m settingsModel) editHint() string { return m.help().footer() }
+
+// help is the config editor's key legend per step: the single source for its
+// footer and the ? overlay.
+func (m settingsModel) help() screenHelp {
+	switch m.step {
+	case settingsEdit:
+		var change helpKey
+		switch m.editKind {
+		case editBool:
+			change = fk("←→/space", "toggle")
+		case editSelect:
+			change = fk("←→/hl", "change value & layer")
+		default: // editText
+			change = fk("←→/hl", "pick layer")
 		}
-		return "tab/↑↓ switch focus · ←→/hl pick layer · enter save · esc/q cancel"
+		cancel := "esc/q"
+		if m.editing() {
+			cancel = "esc"
+		}
+		return screenHelp{title: "Edit setting", columns: []helpColumn{
+			group("Navigate", fk("tab/↑↓", "switch focus")),
+			group("Value", change),
+			group("Actions", fk("enter", "save"), fk(cancel, "cancel")),
+		}}
+	case settingsSaving:
+		return screenHelp{title: "Settings"}
+	default: // settingsList
+		return screenHelp{title: "Settings", columns: []helpColumn{
+			group("Navigate", fk("↑↓", "move"), xk("j/k", "move")),
+			group("Actions",
+				fk("enter/e", "edit"),
+				fk("a", "toggle advanced"),
+				fk("esc/q", "back"),
+			),
+		}}
 	}
+}
+
+// editing reports whether the free-text value field is focused, so ? is typed
+// as a literal instead of opening help.
+func (m settingsModel) editing() bool {
+	return m.step == settingsEdit && m.editValueFocused && m.editKind == editText
 }
 
 func (m settingsModel) renderSaving() string {
