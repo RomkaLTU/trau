@@ -294,6 +294,10 @@ type appModel struct {
 
 	mouseOff bool
 
+	// focused tracks terminal focus so screens that fire desktop nudges (the Plan
+	// screen) only do so while the user is away. The terminal starts focused.
+	focused bool
+
 	// notifier is the desktop notifier each fresh dashboard reports through
 	// (nil = NOTIFY off); see internal/notify and model.notifier.
 	notifier notify.Notifier
@@ -341,6 +345,7 @@ func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
 		info:      info,
 		reset:     ti,
 		spin:      s,
+		focused:   true,
 	}
 	if info.Notify {
 		m.notifier = notify.OS()
@@ -393,7 +398,9 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case tea.FocusMsg, tea.BlurMsg:
-		// The away-recap only lives on the running dashboard, so only track focus
+		_, m.focused = msg.(tea.FocusMsg)
+		m.plan.focused = m.focused
+		// The away-recap only lives on the running dashboard, so only route focus
 		// there. Elsewhere a blur/focus can't produce a recap the user would see, and
 		// routing it would let one linger for the next time the dashboard is shown.
 		if m.view != viewRunning {
@@ -414,6 +421,15 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.(type) {
 		case ticketMsg, ticketDoneMsg:
 			m.dash = m.dash.withQueue(m.buildQueueRows())
+		}
+		// The Plan screen tails its own agent, so feed it the transcript-path event
+		// while it is open.
+		if m.view == viewPlan {
+			if _, ok := msg.(eventMsg); ok {
+				var pcmd tea.Cmd
+				m.plan, pcmd = m.plan.Update(msg)
+				cmd = tea.Batch(cmd, pcmd)
+			}
 		}
 		return m, cmd
 
@@ -466,6 +482,10 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 		if m.view == viewRunning {
 			m.dash, cmd = applyDashCmd(m.dash, msg)
+			cmds = append(cmds, cmd)
+		}
+		if m.view == viewPlan {
+			m.plan, cmd = m.plan.Update(msg)
 			cmds = append(cmds, cmd)
 		}
 		return m, tea.Batch(cmds...)
@@ -813,6 +833,8 @@ func (m appModel) selectAction(a menuAction) (tea.Model, tea.Cmd) {
 
 	case actPlan:
 		m.plan = newPlanModel(m.baseCtx, m.actions, m.styles, m.width, m.height)
+		m.plan.notifier = m.notifier
+		m.plan.focused = m.focused
 		m.view = viewPlan
 		return m, m.plan.Init()
 

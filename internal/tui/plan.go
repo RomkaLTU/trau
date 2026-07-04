@@ -4,11 +4,19 @@ import (
 	"context"
 	"strings"
 
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
+
+	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/notify"
 )
+
+// planQuestionsNotify is the desktop nudge fired when a planning question round
+// arrives while the terminal is unfocused, so a long round never silently stalls.
+const planQuestionsNotify = "planning needs answers — a question round is waiting"
 
 // PlanOutcome is a planning round's result surfaced to the Plan screen. Status is
 // the payload status; for a PRD, Title and Markdown carry the document; for
@@ -72,6 +80,13 @@ type planModel struct {
 	badIdea    bool
 	badNote    bool
 	cancelled  bool
+
+	// stream is the w-attach live tail of the planning agent during a round;
+	// notifier posts the desktop nudge when a question round lands while the
+	// terminal is unfocused (focused tracks that, fed from the app shell).
+	stream   liveStream
+	notifier notify.Notifier
+	focused  bool
 }
 
 type planDoneMsg struct {
@@ -111,6 +126,7 @@ func newPlanModel(ctx context.Context, actions Actions, styles Styles, w, h int)
 		idea:       ta,
 		changeNote: cn,
 		viewport:   viewport.New(),
+		focused:    true,
 	}
 	m.sessions = actions.ListPlans()
 	if len(m.sessions) > 0 {
@@ -170,8 +186,9 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 		if m.step != planRunning {
 			return m, nil
 		}
+		m.stream.reset()
 		if msg.err != nil {
-			m.step, m.note = planNote, "✗ "+msg.err.Error()
+			m.step, m.note = planNote, planErrNote(msg.err)
 			return m, nil
 		}
 		m.sessionDir = msg.out.SessionDir
@@ -183,16 +200,38 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 			m.viewport.GotoTop()
 			return m, nil
 		case "questions":
+			var cmds []tea.Cmd
+			if !m.focused {
+				cmds = append(cmds, notifyCmd(m.notifier, "trau", planQuestionsNotify))
+			}
 			if accessibleRequested() {
-				return m, m.accessiblePlanCmd(msg.out.Questions)
+				cmds = append(cmds, m.accessiblePlanCmd(msg.out.Questions))
+				return m, tea.Batch(cmds...)
 			}
 			m.pform = newPlanForm(msg.out.Questions, m.formWidth())
 			m.step = planQuestions
-			return m, m.pform.form.Init()
+			cmds = append(cmds, m.pform.form.Init())
+			return m, tea.Batch(cmds...)
 		default:
 			m.step, m.note = planNote, planStatusNote(msg.out)
 			return m, nil
 		}
+
+	case eventMsg:
+		if m.step == planRunning && msg.ev.Kind == event.KindAgentStart {
+			if p := strField(msg.ev.Fields, "transcript_path"); p != "" {
+				m.stream.setPath(p, intField(msg.ev.Fields, "cols"), intField(msg.ev.Fields, "rows"))
+				return m, m.stream.pump()
+			}
+		}
+		return m, nil
+
+	case streamDataMsg:
+		m.stream.write(msg)
+		return m, nil
+
+	case spinner.TickMsg:
+		return m, m.stream.pump()
 
 	case planFormSubmitMsg:
 		if m.step != planQuestions {
@@ -289,7 +328,20 @@ func (m planModel) handleKey(msg tea.KeyPressMsg) (planModel, tea.Cmd) {
 		return m, cmd
 
 	case planRunning:
+		switch msg.String() {
+		case "w":
+			if m.stream.toggle() {
+				return m, m.stream.pump()
+			}
+			return m, nil
+		case "esc", "q":
+			if m.stream.attached {
+				m.stream.attached = false
+				return m, nil
+			}
+		}
 		if isBack(msg) {
+			m.stream.reset()
 			m.step = planInput
 			m.idea.Focus()
 		}
@@ -511,6 +563,16 @@ func (m planModel) prdBody(out PlanOutcome) string {
 	return m.styles.SummaryTitle.Render(title) + "\n\n" + out.Markdown
 }
 
+// planErrNote frames a failed round: a blameless provider pause reads as a paused
+// glyph and stays resumable, everything else as a plain error.
+func planErrNote(err error) string {
+	msg := err.Error()
+	if strings.HasPrefix(msg, "planning paused:") {
+		return "⏸ " + strings.TrimPrefix(msg, "planning paused: ") + " — resume this session once the provider recovers."
+	}
+	return "✗ " + msg
+}
+
 // planStatusNote flags a result the Plan screen does not action gracefully — the
 // slice round that would publish slices is a later slice.
 func planStatusNote(out PlanOutcome) string {
@@ -557,7 +619,13 @@ func (m planModel) body(spinner string) string {
 	case planList:
 		return m.listBody()
 	case planRunning:
-		return spinner + " " + s.Subtle.Render("running a planning round — a fresh agent is reading the idea and your answers…")
+		if m.stream.attached {
+			if body := m.stream.view(m.width-2, m.height-4); body != "" {
+				return body
+			}
+			return s.Subtle.Render("◉ attached — waiting for the planning agent…  w detaches")
+		}
+		return spinner + " " + s.Subtle.Render("running a planning round — a fresh agent is reading the idea and your answers…  w attaches the live agent view")
 	case planQuestions:
 		if m.pform == nil {
 			return ""
@@ -613,6 +681,7 @@ func (m planModel) help() screenHelp {
 		}}
 	case planRunning:
 		return screenHelp{title: "Plan", columns: []helpColumn{
+			group("Live", fk("w", "attach agent view")),
 			group("Session", fk("esc", "cancel")),
 		}}
 	case planQuestions:

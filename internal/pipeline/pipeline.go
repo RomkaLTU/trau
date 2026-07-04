@@ -1652,7 +1652,7 @@ func (p *Pipeline) pauseAuth(id, phase string, err error) error {
 // sentinel — a provider state that retrying can't fix and that isn't the ticket's
 // fault, so the loop pauses blamelessly rather than burning retries.
 func isAuthFailure(err error) bool {
-	return errors.Is(err, agent.ErrAuthRequired)
+	return agent.IsAuthRequired(err)
 }
 
 // guardBudget enforces the configured spend ceilings before an agent call. It
@@ -2133,12 +2133,10 @@ func topFailures(v verdict) []string {
 // agentErrSummary condenses a multi-line agent error into one human line and flags
 // provider rate/usage limits. The full detail stays in the provider's own log.
 func agentErrSummary(err error) (msg string, rateLimited bool) {
-	s := err.Error()
-	low := strings.ToLower(s)
-	if strings.Contains(low, "rate_limit") || strings.Contains(low, "rate limit") ||
-		strings.Contains(low, "usage limit") || strings.Contains(low, "quota") || strings.Contains(s, "429") {
+	if agent.IsRateLimited(err) {
 		return "provider usage/rate limit reached — see provider log", true
 	}
+	s := err.Error()
 	for _, ln := range strings.Split(s, "\n") {
 		ln = strings.TrimSpace(ln)
 		if strings.HasPrefix(strings.ToLower(ln), "error:") {
