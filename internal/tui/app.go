@@ -88,8 +88,10 @@ type Actions interface {
 	RevisePlan(ctx context.Context, dir, note string) (PlanOutcome, error)
 
 	// ApprovePlan approves the drafted PRD in the plan session at dir, advancing the
-	// session checkpoint to prd_ready. It is cancellable via ctx.
-	ApprovePlan(ctx context.Context, dir string) error
+	// checkpoint to prd_ready, then publishes it to the tracker as an epic when the
+	// tracker supports it. The outcome reports the created epic, or that publish was
+	// skipped and the plan stayed local. It is cancellable via ctx.
+	ApprovePlan(ctx context.Context, dir string) (PublishOutcome, error)
 
 	// ListPlans returns every durable plan session for the Plan screen's list,
 	// resumable ones first. It reads local session state directly, so it needs no
@@ -105,6 +107,14 @@ type Actions interface {
 	// AbortPlan marks the plan session at dir aborted — a terminal side-exit that
 	// writes nothing to the tracker. It is cancellable via ctx.
 	AbortPlan(ctx context.Context, dir string) error
+}
+
+// PublishOutcome reports what approving a PRD did with the tracker. Epic is the
+// created epic identifier; Published is false when the tracker lacks the
+// hierarchical-create capability and the plan stayed local at prd_ready.
+type PublishOutcome struct {
+	Epic      string
+	Published bool
 }
 
 // ListedTicket is one eligible ticket returned by a fast list operation.

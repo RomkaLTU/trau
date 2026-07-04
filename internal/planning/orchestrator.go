@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
 // defaultMaxRounds caps how many rounds of questions a plan session may ask
@@ -228,6 +229,41 @@ func (o *Orchestrator) ReviseRound(ctx context.Context, sess *Session, note stri
 		return &RoundResult{Session: sess, Payload: payload}, fmt.Errorf("persist revised prd: %w", err)
 	}
 	return &RoundResult{Session: sess, Payload: payload}, nil
+}
+
+// PublishResult reports what publishing an approved PRD did with the tracker. Epic
+// is the created epic identifier; Published is false when the tracker lacks the
+// hierarchical-create capability and the plan stayed local at prd_ready.
+type PublishResult struct {
+	Epic      string
+	Published bool
+}
+
+// Publish creates the tracker epic that carries an approved PRD as its description,
+// advancing the checkpoint to published and recording the epic identifier. The epic
+// is created without any ready label — it is a container, never a buildable leaf —
+// and the tracker places it in its bound project so the ownership guard keeps
+// holding. The durable local PRD copy is left in place. A tracker that lacks the
+// hierarchical-create capability degrades gracefully: nothing is created, the
+// session stays where it is (prd_ready), and the result reports the skip so the
+// caller can surface it.
+func (o *Orchestrator) Publish(ctx context.Context, sess *Session, tr tracker.Tracker) (PublishResult, error) {
+	prd, ok := sess.PRD()
+	if !ok {
+		return PublishResult{}, fmt.Errorf("planning: no PRD to publish")
+	}
+	creator, ok := tr.(tracker.HierarchicalCreator)
+	if !ok {
+		return PublishResult{}, nil
+	}
+	epic, err := creator.CreateIssue(ctx, tracker.IssueSpec{Title: prd.Title, Description: prd.Markdown})
+	if err != nil {
+		return PublishResult{}, fmt.Errorf("publish epic: %w", err)
+	}
+	if err := sess.markPublished(epic); err != nil {
+		return PublishResult{Epic: epic}, fmt.Errorf("checkpoint published: %w", err)
+	}
+	return PublishResult{Epic: epic, Published: true}, nil
 }
 
 // ResumeRound re-runs a session's current round as a fresh process, rebuilding

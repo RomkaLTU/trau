@@ -98,7 +98,10 @@ type planFormSubmitMsg struct{}
 
 type planFormCancelMsg struct{}
 
-type planApprovedMsg struct{ err error }
+type planApprovedMsg struct {
+	out PublishOutcome
+	err error
+}
 
 type planAbortDoneMsg struct{ err error }
 
@@ -267,7 +270,7 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 			m.step, m.note = planNote, "✗ "+msg.err.Error()
 			return m, nil
 		}
-		m.step, m.note = planNote, "✓ PRD approved — checkpoint advanced to prd_ready. Publishing to the tracker is a later step."
+		m.step, m.note = planNote, planPublishNote(msg.out)
 		return m, nil
 
 	case planAbortDoneMsg:
@@ -488,8 +491,19 @@ func (m planModel) revisePlanCmd() tea.Cmd {
 func (m planModel) approvePlanCmd() tea.Cmd {
 	actions, ctx, dir := m.actions, m.ctx, m.sessionDir
 	return func() tea.Msg {
-		return planApprovedMsg{err: actions.ApprovePlan(ctx, dir)}
+		out, err := actions.ApprovePlan(ctx, dir)
+		return planApprovedMsg{out: out, err: err}
 	}
+}
+
+// planPublishNote is the message shown after approving a PRD: the epic it was
+// published as, or a graceful note that the tracker cannot publish so the plan stays
+// local at prd_ready.
+func planPublishNote(out PublishOutcome) string {
+	if out.Published {
+		return "✓ PRD approved and published as epic " + out.Epic + " — checkpoint advanced to published."
+	}
+	return "✓ PRD approved. This tracker can't publish plans, so it stays local at prd_ready."
 }
 
 func (m planModel) resumePlanCmd(dir string) tea.Cmd {

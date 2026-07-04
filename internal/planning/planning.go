@@ -92,6 +92,10 @@ func (s *Session) Idea() string {
 // Phase returns the current checkpoint phase, or "" when none is recorded.
 func (s *Session) Phase() string { return s.get("PHASE") }
 
+// Epic returns the identifier of the tracker epic the PRD was published as, or ""
+// when the session has not been published.
+func (s *Session) Epic() string { return s.get("EPIC") }
+
 // PRD returns the persisted PRD and whether one has been written.
 func (s *Session) PRD() (PRD, bool) {
 	b, err := os.ReadFile(filepath.Join(s.dir, prdFile))
@@ -122,13 +126,23 @@ func (s *Session) savePRD(prd PRD) error {
 }
 
 // Approve records the reviewed PRD as final, advancing the checkpoint from
-// prd_review to prd_ready. It is the closing step of the review loop for this
-// slice — publishing to the tracker is a later one.
+// prd_review to prd_ready. It is the closing step of the review loop; publishing the
+// PRD to the tracker follows.
 func (s *Session) Approve() error {
 	if _, ok := s.PRD(); !ok {
 		return fmt.Errorf("planning: no PRD to approve")
 	}
 	return s.setPhase(PhasePRDReady)
+}
+
+// markPublished records the created epic identifier and advances the checkpoint to
+// published. The durable PRD copy is left in place — publishing adds a tracker copy,
+// it does not replace the local one.
+func (s *Session) markPublished(epic string) error {
+	if err := s.set("EPIC", epic); err != nil {
+		return err
+	}
+	return s.setPhase(PhasePublished)
 }
 
 // Abort marks the session aborted — a terminal side-exit reachable from any phase.

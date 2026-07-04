@@ -67,7 +67,9 @@ func (f *fakeAppActions) RevisePlan(context.Context, string, string) (PlanOutcom
 	return PlanOutcome{Status: "prd", Title: "Draft PRD", Markdown: "# Draft PRD\n\nrevised"}, nil
 }
 
-func (f *fakeAppActions) ApprovePlan(context.Context, string) error { return nil }
+func (f *fakeAppActions) ApprovePlan(context.Context, string) (PublishOutcome, error) {
+	return PublishOutcome{}, nil
+}
 
 func (f *fakeAppActions) ListPlans() []PlanSession { return nil }
 
