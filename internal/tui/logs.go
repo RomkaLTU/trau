@@ -33,6 +33,7 @@ type logsModel struct {
 	width    int
 	height   int
 	focused  bool // false = list focused, true = viewport focused
+	copied   string
 }
 
 // newLogsModel creates a log inspector sized to the terminal. contentFn is
@@ -134,9 +135,18 @@ func (m logsModel) Update(msg tea.Msg, contentFn func(string) string) (logsModel
 		return m, nil
 
 	case tea.KeyPressMsg:
+		m.copied = ""
 		switch msg.String() {
 		case "tab":
 			m.focused = !m.focused
+			return m, nil
+		case "y":
+			if r, ok := m.selected(); ok && contentFn != nil {
+				if content := contentFn(r.ID); content != "" {
+					m.copied = "✓ copied " + r.ID + " log"
+					return m, tea.SetClipboard(content)
+				}
+			}
 			return m, nil
 		case "up", "k":
 			m.moveCursor(-1, contentFn)
@@ -184,6 +194,7 @@ func (m logsModel) Update(msg tea.Msg, contentFn func(string) string) (logsModel
 }
 
 func (m *logsModel) moveCursor(delta int, contentFn func(string) string) {
+	m.copied = ""
 	if len(m.runs) == 0 {
 		return
 	}
@@ -232,6 +243,9 @@ func (m logsModel) View() string {
 	header := m.styles.Header.Render("⬡ trau") + "  " + m.styles.SummaryTitle.Render("logs")
 	sep := m.styles.Separator.Render(strings.Repeat("─", m.width))
 	hint := m.styles.Help.Render(m.help().footer())
+	if m.copied != "" {
+		hint = m.styles.Success.Render(m.copied)
+	}
 	return header + "\n" + sep + "\n" + body + "\n" + sep + "\n" + hint
 }
 
@@ -249,7 +263,7 @@ func (m logsModel) help() screenHelp {
 			xk("shift+↑↓", "half-page"),
 			fk("g/G", "jump"),
 		),
-		group("Session", fk("esc/q", "back"), xk("ctrl+t", "toggle mouse (select text)")),
+		group("Session", fk("y", "copy log"), fk("esc/q", "back"), xk("ctrl+t", "toggle mouse (select text)")),
 	}}
 }
 
