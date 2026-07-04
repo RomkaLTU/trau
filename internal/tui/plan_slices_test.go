@@ -23,7 +23,10 @@ type planSliceFake struct {
 	createCalls int
 	createErr   error
 	errChildren []string
+	sessions    []PlanSession
 }
+
+func (f *planSliceFake) ListPlans() []PlanSession { return f.sessions }
 
 func (f *planSliceFake) SlicePlan(_ context.Context, dir string) (PlanOutcome, error) {
 	f.sliceDir = dir
@@ -197,7 +200,9 @@ func TestPlanSlicesConfirmCreates(t *testing.T) {
 // TestPlanSlicesCancelCreatesNothing backs out of the review with esc: nothing is
 // created and the screen returns to the session list, the session still resumable.
 func TestPlanSlicesCancelCreatesNothing(t *testing.T) {
-	fake := &planSliceFake{}
+	fake := &planSliceFake{sessions: []PlanSession{
+		{Dir: "/plans/session-1", Phase: "published", Title: "Widget export", Resumable: true},
+	}}
 	m := slicesModel(t, fake)
 
 	m, _ = m.handleKey(tea.KeyPressMsg{Code: tea.KeyEsc})
@@ -206,6 +211,9 @@ func TestPlanSlicesCancelCreatesNothing(t *testing.T) {
 	}
 	if fake.createCalls != 0 {
 		t.Error("cancel must not create anything")
+	}
+	if !strings.Contains(m.body(""), "Widget export") {
+		t.Error("the list should show the still-resumable session")
 	}
 }
 

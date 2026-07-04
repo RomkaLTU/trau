@@ -11,6 +11,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/notify"
@@ -57,15 +58,16 @@ type PlanSession struct {
 type planStep int
 
 const (
-	planInput     planStep = iota // idea entry
-	planRunning                   // round in flight
-	planQuestions                 // answering a round of questions
-	planPRD                       // PRD in a scrollable viewport
-	planRevise                    // entering a free-text change request
-	planSlices                    // reviewing drafted slices before anything is created
-	planCreating                  // creating the confirmed slices as children of the epic
-	planNote                      // graceful message (approval, non-PRD result, or error)
-	planList                      // choosing a saved session to resume, abort, or inspect
+	planInput      planStep = iota // idea entry
+	planRunning                    // round in flight
+	planQuestions                  // answering a round of questions
+	planPRD                        // PRD in a scrollable viewport
+	planRevise                     // entering a free-text change request
+	planPublishing                 // approving + publishing the PRD to the tracker
+	planSlices                     // reviewing drafted slices before anything is created
+	planCreating                   // creating the confirmed slices as children of the epic
+	planNote                       // graceful message (approval, non-PRD result, or error)
+	planList                       // choosing a saved session to resume, abort, or inspect
 )
 
 // planModel is the Plan screen: paste/type a raw idea (or a file path), run one
@@ -88,10 +90,17 @@ type planModel struct {
 	listCursor int
 	sessionDir string
 	title      string
+	markdown   string
 	note       string
 	badIdea    bool
 	badNote    bool
 	cancelled  bool
+
+	// flash is the PRD screen's transient feedback strip above the viewport: a
+	// copy confirmation or a publish failure (flashErr) with its retry hint. It
+	// clears on the next keypress, and the viewport shrinks while it shows.
+	flash    string
+	flashErr bool
 
 	// stream is the w-attach live tail of the planning agent during a round;
 	// notifier posts the desktop nudge when a question round lands while the
@@ -137,6 +146,9 @@ func newPlanModel(ctx context.Context, actions Actions, styles Styles, w, h int)
 	cn := textarea.New()
 	cn.Placeholder = "Describe the changes you want — the planner will revise the PRD…"
 
+	vp := viewport.New()
+	vp.SoftWrap = true // PRD prose re-flows to the terminal instead of clipping
+
 	m := planModel{
 		styles:     styles,
 		actions:    actions,
@@ -145,7 +157,7 @@ func newPlanModel(ctx context.Context, actions Actions, styles Styles, w, h int)
 		step:       planInput,
 		idea:       ta,
 		changeNote: cn,
-		viewport:   viewport.New(),
+		viewport:   vp,
 		focused:    true,
 	}
 	m.sessions = actions.ListPlans()
@@ -173,7 +185,14 @@ func (m *planModel) relayout(w, h int) {
 		innerW = 10
 	}
 	m.viewport.SetWidth(innerW)
-	m.viewport.SetHeight(bodyH)
+	vpH := bodyH - m.flashRows(innerW)
+	if vpH < 3 {
+		vpH = 3
+	}
+	m.viewport.SetHeight(vpH)
+	if m.markdown != "" {
+		m.viewport.SetContent(renderPRD(m.styles, m.title, m.markdown, innerW))
+	}
 
 	taH := bodyH - 2 // one instruction line + a spacer above the box
 	if taH < 3 {
@@ -208,15 +227,19 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 		}
 		m.stream.reset()
 		if msg.err != nil {
-			m.step, m.note = planNote, planErrNote(msg.err)
+			if msg.out.SessionDir != "" {
+				m.sessionDir = msg.out.SessionDir
+			}
+			m.step, m.note = planNote, planErrNote(msg.err, m.sessionDir != "")
 			return m, nil
 		}
 		m.sessionDir = msg.out.SessionDir
 		switch msg.out.Status {
 		case "prd":
 			m.step = planPRD
-			m.title = msg.out.Title
-			m.viewport.SetContent(m.prdBody(msg.out))
+			m.title, m.markdown = msg.out.Title, msg.out.Markdown
+			m.clearFlash()
+			m.viewport.SetContent(renderPRD(m.styles, m.title, m.markdown, m.width-2))
 			m.viewport.GotoTop()
 			return m, nil
 		case "questions":
@@ -273,7 +296,7 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 			return m, nil
 		}
 		if msg.err != nil {
-			m.step, m.note = planNote, "✗ "+msg.err.Error()
+			m.step, m.note = planNote, planErrNote(msg.err, m.sessionDir != "")
 			return m, nil
 		}
 		return m, m.answerPlanCmd(msg.answers)
@@ -287,11 +310,14 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 		return m, nil
 
 	case planApprovedMsg:
-		if m.step != planPRD {
+		if m.step != planPublishing {
 			return m, nil
 		}
 		if msg.err != nil {
-			m.step, m.note = planNote, "✗ "+msg.err.Error()
+			// The PRD and its approval are already durable, so a failed publish
+			// returns to the PRD with the error and a retry — never a dead end.
+			m.step = planPRD
+			m.setFlash("✗ publish failed: "+msg.err.Error()+" — a retries. The PRD is saved; resuming this session later also retries the publish.", true)
 			return m, nil
 		}
 		if msg.out.Published {
@@ -406,29 +432,39 @@ func (m planModel) handleKey(msg tea.KeyPressMsg) (planModel, tea.Cmd) {
 		}
 		return m.passToForm(msg)
 
-	case planPRD, planNote:
+	case planPRD:
+		m.clearFlash()
 		switch msg.String() {
 		case "esc", "q":
-			m.cancelled = true
-			return m, nil
+			return m.toSessions(), nil
 		case "e":
 			m.step = planInput
 			m.idea.Focus()
 			return m, textarea.Blink
+		case "y":
+			m.setFlash("✓ PRD copied to clipboard", false)
+			return m, tea.SetClipboard(m.prdClipboard())
+		case "a":
+			m.step = planPublishing
+			return m, m.approvePlanCmd()
+		case "r":
+			m.step, m.badNote = planRevise, false
+			m.changeNote.Reset()
+			m.changeNote.Focus()
+			return m, textarea.Blink
 		}
-		if m.step == planPRD {
-			switch msg.String() {
-			case "a":
-				return m, m.approvePlanCmd()
-			case "r":
-				m.step, m.badNote = planRevise, false
-				m.changeNote.Reset()
-				m.changeNote.Focus()
-				return m, textarea.Blink
-			}
-			var cmd tea.Cmd
-			m.viewport, cmd = m.viewport.Update(msg)
-			return m, cmd
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(msg)
+		return m, cmd
+
+	case planNote:
+		switch msg.String() {
+		case "esc", "q":
+			return m.toSessions(), nil
+		case "e":
+			m.step = planInput
+			m.idea.Focus()
+			return m, textarea.Blink
 		}
 		return m, nil
 
@@ -475,10 +511,7 @@ func (m planModel) handleSlicesKey(msg tea.KeyPressMsg) (planModel, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "esc", "q":
-		m.sessions = m.actions.ListPlans()
-		m.listCursor = 0
-		m.step = planList
-		return m, nil
+		return m.toSessions(), nil
 	case "up", "k":
 		m.slices.move(-1)
 	case "down", "j":
@@ -689,23 +722,73 @@ func (m planModel) formWidth() int {
 	return w
 }
 
-// prdBody is the PRD viewport content: the title as a heading over the markdown.
-func (m planModel) prdBody(out PlanOutcome) string {
-	title := strings.TrimSpace(out.Title)
-	if title == "" {
-		return out.Markdown
+// prdClipboard is the raw markdown `y` copies: the document as drafted, with the
+// title prepended as an H1 when the body does not already open with one.
+func (m planModel) prdClipboard() string {
+	title := strings.TrimSpace(m.title)
+	if title == "" || leadsWithH1(m.markdown) {
+		return m.markdown
 	}
-	return m.styles.SummaryTitle.Render(title) + "\n\n" + out.Markdown
+	return "# " + title + "\n\n" + m.markdown
+}
+
+// setFlash shows a transient feedback strip above the PRD viewport and re-lays
+// the screen out so the viewport shrinks beneath it.
+func (m *planModel) setFlash(text string, isErr bool) {
+	m.flash, m.flashErr = text, isErr
+	m.relayout(m.width, m.height)
+}
+
+func (m *planModel) clearFlash() {
+	if m.flash == "" {
+		return
+	}
+	m.flash, m.flashErr = "", false
+	m.relayout(m.width, m.height)
+}
+
+// flashRows is the body rows the flash strip occupies at width w — its wrapped
+// height capped at 4 plus a spacer — and 0 when no flash shows.
+func (m planModel) flashRows(w int) int {
+	if m.flash == "" {
+		return 0
+	}
+	h := lipgloss.Height(lipgloss.Wrap(m.flash, w, ""))
+	if h > 4 {
+		h = 4
+	}
+	return h + 1
+}
+
+// toSessions returns to the saved-session list, freshly reloaded so the session
+// just worked on shows its current checkpoint. With nothing saved to list it
+// closes the screen instead.
+func (m planModel) toSessions() planModel {
+	m.sessions = m.actions.ListPlans()
+	if len(m.sessions) == 0 {
+		m.cancelled = true
+		return m
+	}
+	if m.listCursor >= len(m.sessions) {
+		m.listCursor = 0
+	}
+	m.step = planList
+	return m
 }
 
 // planErrNote frames a failed round: a blameless provider pause reads as a paused
-// glyph and stays resumable, everything else as a plain error.
-func planErrNote(err error) string {
+// glyph and stays resumable, everything else as a plain error. A failure with a
+// durable session behind it says so — nothing typed or answered is lost.
+func planErrNote(err error, resumable bool) string {
 	msg := err.Error()
 	if strings.HasPrefix(msg, "planning paused:") {
 		return "⏸ " + strings.TrimPrefix(msg, "planning paused: ") + " — resume this session once the provider recovers."
 	}
-	return "✗ " + msg
+	note := "✗ " + msg
+	if resumable {
+		note += "\n\nYour progress is saved — resume this session from the plan list to pick up where it stopped."
+	}
+	return note
 }
 
 // planStatusNote flags a result the Plan screen does not action gracefully.
@@ -738,7 +821,7 @@ func (m planModel) view(spinner string) string {
 	s := m.styles
 	title := "plan"
 	switch {
-	case m.step == planPRD && strings.TrimSpace(m.title) != "":
+	case (m.step == planPRD || m.step == planPublishing) && strings.TrimSpace(m.title) != "":
 		title = "plan · " + truncate(m.title, m.width-16)
 	case (m.step == planSlices || m.step == planCreating) && m.slices.epic != "":
 		title = "plan · slices · " + m.slices.epic
@@ -768,7 +851,12 @@ func (m planModel) body(spinner string) string {
 		intro := s.Subtle.Render("The planner needs a few answers. Pick Other to type your own, or Skip to take the default.")
 		return intro + "\n\n" + m.pform.form.View()
 	case planPRD:
+		if m.flash != "" {
+			return m.flashView(m.width-2) + "\n\n" + m.viewport.View()
+		}
 		return m.viewport.View()
+	case planPublishing:
+		return spinner + " " + s.Subtle.Render("publishing the approved PRD to the tracker as an epic…")
 	case planSlices:
 		return m.slices.view(s, m.width)
 	case planCreating:
@@ -780,7 +868,7 @@ func (m planModel) body(spinner string) string {
 		}
 		return strings.Join(rows, "\n")
 	case planNote:
-		return s.Subtle.Width(m.width - 2).Render(m.note)
+		return m.noteBody()
 	default:
 		rows := []string{s.Subtle.Render("Describe the idea, or paste a file path. ctrl+d starts planning."), m.idea.View()}
 		if m.badIdea {
@@ -788,6 +876,39 @@ func (m planModel) body(spinner string) string {
 		}
 		return strings.Join(rows, "\n")
 	}
+}
+
+// flashView renders the PRD screen's feedback strip at width w, wrapped and
+// capped to the same rows flashRows reserved.
+func (m planModel) flashView(w int) string {
+	style := m.styles.Success
+	if m.flashErr {
+		style = m.styles.Error
+	}
+	lines := strings.Split(lipgloss.Wrap(m.flash, w, ""), "\n")
+	if len(lines) > 4 {
+		lines = lines[:4]
+		lines[3] = truncate(lines[3], w-1) + "…"
+	}
+	return style.Render(strings.Join(lines, "\n"))
+}
+
+// noteBody renders the outcome screen: the message colored by its glyph, with
+// the next step spelled out beneath it so a finished or failed plan never reads
+// as a dead end.
+func (m planModel) noteBody() string {
+	s := m.styles
+	style := s.Subtle
+	switch {
+	case strings.HasPrefix(m.note, "✓"):
+		style = s.Success
+	case strings.HasPrefix(m.note, "✗"):
+		style = s.Error
+	case strings.HasPrefix(m.note, "⏸"):
+		style = s.Warning
+	}
+	body := style.Width(m.width - 2).Render(m.note)
+	return body + "\n\n" + s.Help.Render("Press e to plan a new idea, or esc to review your plan sessions.")
 }
 
 // listBody renders the saved-session list: each row is its checkpoint state
@@ -806,7 +927,15 @@ func (m planModel) listBody() string {
 	return intro + "\n\n" + strings.Join(rows, "\n")
 }
 
-func (m planModel) hint() string { return m.help().footer() }
+// hint is the footer legend; while reading a PRD longer than the screen it also
+// carries the scroll position.
+func (m planModel) hint() string {
+	h := m.help().footer()
+	if m.step == planPRD && m.viewport.TotalLineCount() > m.viewport.VisibleLineCount() {
+		return h + " · " + fmt.Sprintf("%d%%", int(m.viewport.ScrollPercent()*100))
+	}
+	return h
+}
 
 // help is the Plan screen's key legend per step: the single source for its footer
 // and the ? overlay.
@@ -831,10 +960,12 @@ func (m planModel) help() screenHelp {
 		}}
 	case planPRD:
 		return screenHelp{title: "Plan", columns: []helpColumn{
-			group("Review", fk("a", "approve"), fk("r", "request changes")),
-			group("Read PRD", fk("f/b/u/d", "scroll"), xk("g/G", "jump")),
-			group("Actions", fk("e", "new idea"), fk("esc/q", "back")),
+			group("Review", fk("a", "approve & publish"), fk("r", "request changes")),
+			group("Read PRD", fk("y", "copy PRD"), fk("f/b/u/d", "scroll"), xk("g/G", "jump")),
+			group("Actions", fk("e", "new idea"), fk("esc/q", "sessions"), xk("ctrl+t", "toggle mouse (select text)")),
 		}}
+	case planPublishing:
+		return screenHelp{title: "Plan · publishing"}
 	case planRevise:
 		return screenHelp{title: "Plan · request changes", columns: []helpColumn{
 			group("Actions", fk("ctrl+d", "revise PRD"), fk("esc", "cancel")),
@@ -854,7 +985,7 @@ func (m planModel) help() screenHelp {
 		return screenHelp{title: "Plan · slices"}
 	case planNote:
 		return screenHelp{title: "Plan", columns: []helpColumn{
-			group("Actions", fk("e", "new idea"), fk("esc/q", "back")),
+			group("Actions", fk("e", "new idea"), fk("esc/q", "sessions")),
 		}}
 	default:
 		return screenHelp{title: "Plan", columns: []helpColumn{

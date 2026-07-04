@@ -76,15 +76,23 @@ func TestPlanQuestionsSilentWhenFocused(t *testing.T) {
 }
 
 // TestPlanErrNote checks a blameless provider pause surfaces as a resumable pause,
-// while any other failure reads as a plain error.
+// while any other failure reads as a plain error — with resume guidance when a
+// durable session survives the failure.
 func TestPlanErrNote(t *testing.T) {
-	paused := planErrNote(errors.New("planning paused: kimi rate/usage limit reached"))
+	paused := planErrNote(errors.New("planning paused: kimi rate/usage limit reached"), true)
 	if !strings.HasPrefix(paused, "⏸") || !strings.Contains(paused, "resume") {
 		t.Errorf("paused note = %q, want a resumable pause", paused)
 	}
-	hard := planErrNote(errors.New("parse payload: not json"))
+	hard := planErrNote(errors.New("parse payload: not json"), false)
 	if !strings.HasPrefix(hard, "✗") {
 		t.Errorf("error note = %q, want a plain error", hard)
+	}
+	if strings.Contains(hard, "resume") {
+		t.Errorf("error note without a session = %q, must not promise a resume", hard)
+	}
+	saved := planErrNote(errors.New("publish epic: linear: boom"), true)
+	if !strings.Contains(saved, "saved") || !strings.Contains(saved, "resume") {
+		t.Errorf("error note with a session = %q, want resume guidance", saved)
 	}
 }
 

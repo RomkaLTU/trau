@@ -170,6 +170,28 @@ func TestPlanListNewIdea(t *testing.T) {
 	}
 }
 
+// TestPlanNoteBacksOutToSessions routes esc on the outcome note to the freshly
+// reloaded session list — never a dead end — and spells the next step out in the
+// note body itself.
+func TestPlanNoteBacksOutToSessions(t *testing.T) {
+	fake := twoSessionFake()
+	m := newPlanModel(context.Background(), fake, DefaultStyles(), 100, 40)
+	m.step = planNote
+	m.note = "✓ Created 2 child issues under epic COD-800."
+
+	if body := m.body(""); !strings.Contains(body, "new idea") {
+		t.Errorf("note body should spell out the next step, got %q", body)
+	}
+
+	m, _ = m.handleKey(tea.KeyPressMsg{Code: tea.KeyEsc})
+	if m.step != planList {
+		t.Fatalf("esc from the note = %v, want planList", m.step)
+	}
+	if m.Cancelled() {
+		t.Error("esc from the note should show the sessions, not close the screen")
+	}
+}
+
 // TestPlanListNavAndBack moves the cursor and backs out to the menu.
 func TestPlanListNavAndBack(t *testing.T) {
 	m := newPlanModel(context.Background(), twoSessionFake(), DefaultStyles(), 100, 40)

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -16,6 +17,7 @@ type planReviewFake struct {
 	reviseNote     string
 	approveDir     string
 	approved       bool
+	approveErr     error
 	publishSkipped bool
 	sliceDir       string
 }
@@ -27,6 +29,9 @@ func (f *planReviewFake) RevisePlan(_ context.Context, dir, note string) (PlanOu
 
 func (f *planReviewFake) ApprovePlan(_ context.Context, dir string) (PublishOutcome, error) {
 	f.approveDir, f.approved = dir, true
+	if f.approveErr != nil {
+		return PublishOutcome{}, f.approveErr
+	}
 	if f.publishSkipped {
 		return PublishOutcome{}, nil
 	}
@@ -149,6 +154,12 @@ func TestPlanApprove(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("a should return the ApprovePlan cmd")
 	}
+	if m.step != planPublishing {
+		t.Fatalf("while publishing step = %v, want planPublishing", m.step)
+	}
+	if !strings.Contains(m.body("·"), "publishing") {
+		t.Error("publishing body should say the tracker call is in flight")
+	}
 	next := cmd()
 	msg, ok := next.(planApprovedMsg)
 	if !ok {
@@ -179,6 +190,74 @@ func TestPlanApprove(t *testing.T) {
 	}
 }
 
+// TestPlanPublishFailureReturnsToPRD keeps a failed publish out of the dead ends:
+// the screen returns to the PRD with the error in the flash strip and a retries
+// the publish against the same session.
+func TestPlanPublishFailureReturnsToPRD(t *testing.T) {
+	fake := &planReviewFake{approveErr: errors.New(`publish epic: linear: Variable "$teamId" of type "ID!" used in position expecting type "String!"`)}
+	m := prdModel(t, fake)
+
+	m, cmd := m.handleKey(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	msg := cmd().(planApprovedMsg)
+	m, _ = m.Update(msg)
+
+	if m.step != planPRD {
+		t.Fatalf("after failed publish step = %v, want planPRD", m.step)
+	}
+	if !m.flashErr || !strings.Contains(m.flash, "publish failed") || !strings.Contains(m.flash, "retries") {
+		t.Errorf("flash = %q, want the publish error with a retry hint", m.flash)
+	}
+	if !strings.Contains(m.body("·"), "publish failed") {
+		t.Error("PRD body should surface the publish failure above the viewport")
+	}
+
+	fake.approveErr = nil
+	m, cmd = m.handleKey(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	if m.step != planPublishing || cmd == nil {
+		t.Fatalf("a after a failure should retry the publish (step=%v)", m.step)
+	}
+	retry := cmd().(planApprovedMsg)
+	m, _ = m.Update(retry)
+	if m.step != planRunning {
+		t.Fatalf("after retried publish step = %v, want planRunning (the slice round)", m.step)
+	}
+}
+
+// TestPlanCopyPRD copies the raw PRD markdown to the clipboard from the viewport
+// and confirms it visibly.
+func TestPlanCopyPRD(t *testing.T) {
+	m := prdModel(t, &planReviewFake{})
+
+	m, cmd := m.handleKey(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	if cmd == nil {
+		t.Fatal("y should return the SetClipboard cmd")
+	}
+	if m.step != planPRD {
+		t.Fatalf("copy must stay on the PRD (step=%v)", m.step)
+	}
+	if m.flashErr || !strings.Contains(m.flash, "copied") {
+		t.Errorf("flash = %q, want a copy confirmation", m.flash)
+	}
+
+	m, _ = m.handleKey(tea.KeyPressMsg{Code: 'f', Text: "f"})
+	if m.flash != "" {
+		t.Errorf("the next keypress should clear the flash, got %q", m.flash)
+	}
+}
+
+// TestPlanPRDClipboardCarriesTitle pins the copied document shape: the title is
+// prepended as an H1 unless the markdown already opens with one.
+func TestPlanPRDClipboardCarriesTitle(t *testing.T) {
+	m := planModel{title: "Widgets", markdown: "Body text."}
+	if got := m.prdClipboard(); !strings.HasPrefix(got, "# Widgets\n\n") {
+		t.Errorf("clipboard = %q, want the title prepended as an H1", got)
+	}
+	m = planModel{title: "Widgets", markdown: "# Widgets\n\nBody text."}
+	if got := m.prdClipboard(); strings.Count(got, "# Widgets") != 1 {
+		t.Errorf("clipboard = %q, must not double the title", got)
+	}
+}
+
 // TestPlanApproveWithoutPublish covers the graceful-degradation message: a tracker
 // that cannot publish leaves the plan local and says so.
 func TestPlanApproveWithoutPublish(t *testing.T) {
@@ -186,7 +265,7 @@ func TestPlanApproveWithoutPublish(t *testing.T) {
 	fake.publishSkipped = true
 	m := prdModel(t, fake)
 
-	_, cmd := m.handleKey(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	m, cmd := m.handleKey(tea.KeyPressMsg{Code: 'a', Text: "a"})
 	msg := cmd().(planApprovedMsg)
 	m, _ = m.Update(msg)
 
