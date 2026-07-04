@@ -15,6 +15,8 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 
+import { AwayRecap } from '@/components/away-recap'
+
 interface NavItem {
   to: string
   label: string
@@ -61,6 +63,7 @@ function RootLayout() {
         </div>
       </header>
       <main className="mx-auto max-w-5xl px-6 py-8">
+        <AwayRecap />
         <Outlet />
       </main>
     </div>

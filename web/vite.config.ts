@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -16,6 +17,10 @@ export default defineConfig({
     },
   },
   base: '/',
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
+  },
   build: {
     outDir: '../internal/webserver/dist',
     emptyOutDir: true,

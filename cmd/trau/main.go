@@ -741,6 +741,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		Lessons:            cfg.Lessons,
 		LessonsDistill:     cfg.LessonsDistill,
 		Renderer:           con,
+		Events:             log,
 		OwnedProject:       cfg.Project,
 
 		RepoRoot:            repoRoot,

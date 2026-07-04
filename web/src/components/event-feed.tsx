@@ -85,6 +85,12 @@ function iconFor(ev: FeedEvent, base: ComponentType<LucideProps>) {
     if (s === 'green' || s === 'merged') return CircleCheck
     if (s === 'failing') return CircleX
   }
+  if (ev.kind === 'state_change') {
+    const s = str(ev.fields, 'state')
+    if (s === 'merged') return CircleCheck
+    if (s === 'faulted' || s === 'quarantined') return CircleX
+    if (s === 'paused') return TriangleAlert
+  }
   return base
 }
 
@@ -95,6 +101,12 @@ function toneFor(ev: FeedEvent, base: Tone): Tone {
     if (s === 'green' || s === 'merged') return 'success'
     if (s === 'failing') return 'danger'
     return 'flow'
+  }
+  if (ev.kind === 'state_change') {
+    const s = str(ev.fields, 'state')
+    if (s === 'merged') return 'success'
+    if (s === 'paused') return 'warn'
+    if (s === 'faulted' || s === 'quarantined') return 'danger'
   }
   return base
 }
@@ -134,6 +146,13 @@ function summarize(ev: FeedEvent): string {
     case 'pr_open': {
       const n = num(f, 'number')
       return n ? `#${n}` : str(f, 'url')
+    }
+    case 'state_change': {
+      const ticket = str(f, 'ticket')
+      const state = str(f, 'state')
+      const reason = str(f, 'reason')
+      const label = reason ? `${state} · ${reason}` : state
+      return ticket ? `${ticket} · ${label}` : label
     }
     default:
       return ev.msg ?? ''
