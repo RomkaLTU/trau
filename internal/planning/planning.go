@@ -22,11 +22,13 @@ import (
 
 // Plan-session lifecycle phases, written to the session's state file under the
 // PHASE key. A session advances through them in order; PhaseAborted is terminal.
-// This slice reaches PhasePRDReady; the later phases are defined here so the
-// checkpoint format is stable for the rounds that publish and slice.
+// A drafted PRD rests at PhaseReview until the user approves it into PhasePRDReady;
+// the later phases are defined here so the checkpoint format is stable for the
+// rounds that publish and slice.
 const (
 	PhaseDrafting  = "drafting"
 	PhaseQuestions = "questions"
+	PhaseReview    = "prd_review"
 	PhasePRDReady  = "prd_ready"
 	PhasePublished = "published"
 	PhaseSliced    = "sliced"
@@ -35,11 +37,11 @@ const (
 
 // phaseOrder is the forward progression of a plan session. PhaseAborted is not
 // listed — it is a terminal side-exit reachable from any phase.
-var phaseOrder = []string{PhaseDrafting, PhaseQuestions, PhasePRDReady, PhasePublished, PhaseSliced}
+var phaseOrder = []string{PhaseDrafting, PhaseQuestions, PhaseReview, PhasePRDReady, PhasePublished, PhaseSliced}
 
 // PhaseRank is the ordered rank of a plan-session phase: drafting(1) → questions(2)
-// → prd_ready(3) → published(4) → sliced(5), aborted(9), and 0 for an unknown or
-// empty phase. It mirrors state.Idx so resume logic can compare progress.
+// → prd_review(3) → prd_ready(4) → published(5) → sliced(6), aborted(9), and 0 for
+// an unknown or empty phase. It mirrors state.Idx so resume logic can compare progress.
 func PhaseRank(phase string) int {
 	if phase == PhaseAborted {
 		return 9
@@ -107,13 +109,24 @@ func (s *Session) writeIdea(idea string) error {
 func (s *Session) setPhase(phase string) error { return s.set("PHASE", phase) }
 
 // savePRD persists the PRD markdown and its title, then advances the checkpoint to
-// prd_ready — the two writes that make a drafted PRD durable.
+// prd_review — a drafted PRD awaiting the user's approval. Every revision rewrites
+// this same durable copy.
 func (s *Session) savePRD(prd PRD) error {
 	if err := os.WriteFile(filepath.Join(s.dir, prdFile), []byte(prd.Markdown), 0o644); err != nil {
 		return err
 	}
 	if err := s.set("PRD_TITLE", prd.Title); err != nil {
 		return err
+	}
+	return s.setPhase(PhaseReview)
+}
+
+// Approve records the reviewed PRD as final, advancing the checkpoint from
+// prd_review to prd_ready. It is the closing step of the review loop for this
+// slice — publishing to the tracker is a later one.
+func (s *Session) Approve() error {
+	if _, ok := s.PRD(); !ok {
+		return fmt.Errorf("planning: no PRD to approve")
 	}
 	return s.setPhase(PhasePRDReady)
 }

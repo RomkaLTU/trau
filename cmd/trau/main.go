@@ -1769,6 +1769,29 @@ func (a *appActions) AnswerPlan(ctx context.Context, dir string, answers []tui.P
 	return planOutcome(rr), nil
 }
 
+// RevisePlan records a free-text change request against the drafted PRD in the plan
+// session at dir and runs a fresh revision round, exactly like every other round —
+// the revised PRD replaces the durable copy and the outcome re-renders.
+func (a *appActions) RevisePlan(ctx context.Context, dir, note string) (tui.PlanOutcome, error) {
+	if err := a.ensure(); err != nil {
+		return tui.PlanOutcome{}, err
+	}
+	rr, err := a.planOrchestrator().ReviseRound(ctx, planning.OpenSession(dir), note)
+	if err != nil {
+		return tui.PlanOutcome{}, err
+	}
+	return planOutcome(rr), nil
+}
+
+// ApprovePlan approves the drafted PRD in the plan session at dir, advancing the
+// checkpoint to prd_ready and recording it as final.
+func (a *appActions) ApprovePlan(_ context.Context, dir string) error {
+	if err := a.ensure(); err != nil {
+		return err
+	}
+	return planning.OpenSession(dir).Approve()
+}
+
 func (a *appActions) planOrchestrator() *planning.Orchestrator {
 	return planning.NewOrchestrator(a.runner, filepath.Join(a.cfg.RunsDir, "_plans")).
 		WithMaxRounds(a.cfg.MaxPlanRounds)

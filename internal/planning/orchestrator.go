@@ -89,11 +89,48 @@ func (o *Orchestrator) AnswerRound(ctx context.Context, sess *Session, answers [
 	return o.round(ctx, sess)
 }
 
+// ReviseRound runs a fresh revision round after the user reviewed the drafted PRD
+// and requested changes with a free-text note. It re-reads the idea, the settled
+// Q&A transcript, and the current PRD from disk — no agent session is resumed —
+// and carries the note into the prompt. The revised PRD replaces the durable copy,
+// leaving the session at prd_review for another approve-or-revise pass. A revision
+// must return a PRD; a questions or slices payload is rejected.
+func (o *Orchestrator) ReviseRound(ctx context.Context, sess *Session, note string) (*RoundResult, error) {
+	note = strings.TrimSpace(note)
+	if note == "" {
+		return &RoundResult{Session: sess}, fmt.Errorf("planning: empty change request")
+	}
+	prd, ok := sess.PRD()
+	if !ok {
+		return &RoundResult{Session: sess}, fmt.Errorf("planning: no PRD to revise")
+	}
+	transcript, err := sess.Transcript()
+	if err != nil {
+		return &RoundResult{Session: sess}, err
+	}
+
+	res, err := o.runner.Run(ctx, BuildRevisionPrompt(sess.Idea(), transcript, prd.Markdown, note), agent.PhasePlan)
+	if err != nil {
+		return &RoundResult{Session: sess}, err
+	}
+	payload, err := Parse(res.Final)
+	if err != nil {
+		return &RoundResult{Session: sess}, err
+	}
+	if payload.Status != StatusPRD {
+		return &RoundResult{Session: sess, Payload: payload}, fmt.Errorf("planning: revision returned %q, want a revised prd", payload.Status)
+	}
+	if err := sess.savePRD(*payload.PRD); err != nil {
+		return &RoundResult{Session: sess, Payload: payload}, fmt.Errorf("persist revised prd: %w", err)
+	}
+	return &RoundResult{Session: sess, Payload: payload}, nil
+}
+
 // round runs one planning round against the session's accumulated context: it
 // builds the prompt from the idea and transcript, runs a fresh agent process,
 // validates the payload, enforces the round cap, and checkpoints the outcome —
-// PhaseQuestions for a questions payload, and a persisted PRD advancing to
-// prd_ready for a PRD. At the cap the prompt forces a PRD, and a stray questions
+// PhaseQuestions for a questions payload, and a persisted PRD resting at
+// prd_review for a PRD. At the cap the prompt forces a PRD, and a stray questions
 // payload is rejected rather than asked.
 func (o *Orchestrator) round(ctx context.Context, sess *Session) (*RoundResult, error) {
 	transcript, err := sess.Transcript()

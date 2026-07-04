@@ -82,6 +82,47 @@ Each question's "kind" is one of "single" (pick one), "multi" (pick any), or "te
 	return b.String()
 }
 
+// BuildRevisionPrompt is the planning prompt for a PRD revision round. The user
+// read the drafted PRD and asked for changes; this round re-reads the idea, the
+// settled Q&A, and the current PRD from disk (no agent session is resumed) and
+// carries the change note. It must return a revised PRD and never asks questions.
+func BuildRevisionPrompt(idea string, transcript []QARound, currentPRD, note string) string {
+	var b strings.Builder
+	b.WriteString(`You are revising an existing PRD (product requirements document) after the user reviewed it.
+
+Explore the repository to ground the PRD in the actual codebase: use the project's domain vocabulary (CONTEXT.md / glossary) throughout, and respect any ADRs in the area you are touching.
+
+`)
+
+	b.WriteString("The raw idea:\n<idea>\n")
+	b.WriteString(strings.TrimSpace(idea))
+	b.WriteString("\n</idea>\n")
+
+	if qa := renderTranscript(transcript); qa != "" {
+		b.WriteString("\nThe user has already answered these questions in earlier rounds. Treat the answers as settled and do not ask them again:\n<transcript>\n")
+		b.WriteString(qa)
+		b.WriteString("</transcript>\n")
+	}
+
+	b.WriteString("\nThe current PRD draft the user reviewed:\n<prd>\n")
+	b.WriteString(strings.TrimSpace(currentPRD))
+	b.WriteString("\n</prd>\n")
+
+	b.WriteString("\nThe user read that PRD and requested these changes:\n<changes>\n")
+	b.WriteString(strings.TrimSpace(note))
+	b.WriteString("\n</changes>\n")
+
+	b.WriteString(`
+Revise the PRD to address the requested changes, keeping the rest of the document intact and preserving its structure (Problem Statement, Solution, User Stories, Implementation Decisions, Testing Decisions, Out of Scope, Further Notes). Do NOT ask the user any questions — apply the most reasonable interpretation of the request and record any resulting choices under an "## Assumptions" heading.
+
+Return your result as a single JSON object — the planning payload:
+{"status":"prd","prd":{"title":"<short title>","markdown":"<the full revised PRD markdown>"}}
+Put the entire revised PRD in the "markdown" field.
+`)
+
+	return b.String()
+}
+
 // renderTranscript flattens the accumulated Q&A into plain text the fresh round
 // re-reads. Multi-select answers are joined; a skipped answer is flagged as its
 // default so the agent knows it was not an explicit choice.
