@@ -3,7 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <title>trau</title>
+    <script>
+      ;(function () {
+        const m = window.matchMedia('(prefers-color-scheme: dark)')
+        const apply = () => document.documentElement.classList.toggle('dark', m.matches)
+        apply()
+        m.addEventListener('change', apply)
+      })()
+    </script>
     <script type="module" crossorigin src="/assets/index.js"></script>
     <link rel="stylesheet" crossorigin href="/assets/index.css">
   </head>
