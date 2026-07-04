@@ -921,7 +921,8 @@ func (l *Linear) CreateIssue(ctx context.Context, spec IssueSpec) (string, error
 		}
 		in.ProjectID = p.ID
 	}
-	return l.api().CreateIssue(ctx, in)
+	id, _, err := l.api().CreateIssue(ctx, in)
+	return id, err
 }
 
 func (l *Linear) quarantinePrompt(id, reason string) string {

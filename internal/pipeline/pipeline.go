@@ -339,6 +339,10 @@ type Pipeline struct {
 	LessonsDistill bool
 	Sleep          func(time.Duration)
 	Renderer       console.Renderer
+	// Events is the durable event log. Lifecycle transitions the dashboard recap
+	// and browser notifications key off — merge, quarantine, fault, pause — are
+	// emitted here as state_change events; nil in modes that keep no durable log.
+	Events *event.Log
 
 	// Now supplies the current time for the per-day budget window; nil defaults
 	// to time.Now (overridable in tests).
@@ -422,6 +426,7 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 		p.clearFailure(id)
 		return ErrAlreadyDone
 	}
+	p.clearFailureMarks(id)
 	if p.Tokens != nil {
 		p.Tokens.SetTicket(id)
 	}
@@ -559,7 +564,9 @@ func (p *Pipeline) fault(ctx context.Context, id string, err error) error {
 	p.finalizeFault(ctx, id)
 	reason := fmt.Sprintf("unexpected error during %s: %v", NextPhaseLabel(phase), err)
 	_ = p.State.Set(id, "FAILURE_REASON", reason)
+	_ = p.State.Set(id, "FAILURE_CLASS", state.FailFaulted)
 	p.logf("  ⚠ %s could not finish during %s — work saved, ticket left resumable", id, NextPhaseLabel(phase))
+	p.emitState(id, phase, "faulted", NextPhaseLabel(phase))
 	return &FaultError{ID: id, Phase: phase, Err: err}
 }
 
@@ -941,6 +948,21 @@ func (p *Pipeline) persistHandoff(id string) {
 	_ = os.WriteFile(filepath.Join(dir, "handoff.md"), data, 0o644)
 }
 
+// persistVerdict mirrors the graded verify verdict into runs/<ID>/verdict.json so
+// the last QA outcome survives a reboot and is readable out of band (the web hub
+// renders it on the run detail page). Best-effort and silent.
+func (p *Pipeline) persistVerdict(id string, v verdict) {
+	dir := filepath.Join(p.RunsDir, id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, "verdict.json"), data, 0o644)
+}
+
 // restoreHandoff copies the durable runs/<ID>/handoff.md back to /tmp when /tmp
 // lost it (wiped on reboot), so a resumed verify reuses the exact brief the
 // handoff produced — and the matching rubric — instead of regenerating a fresh
@@ -1018,6 +1040,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 		if err != nil {
 			return err
 		}
+		p.persistVerdict(id, v)
 		if v.Pass {
 			passed = true
 			break
@@ -1084,6 +1107,7 @@ func (p *Pipeline) giveUp(ctx context.Context, id, reason string) error {
 		return fmt.Errorf("give up %s: checkpoint quarantined: %w", id, err)
 	}
 	_ = p.State.Set(id, "FAILURE_REASON", reason)
+	p.emitState(id, state.Quarantined, "quarantined", reason)
 	p.logf("  ✗ quarantining %s: %s", id, reason)
 	if err := p.Tracker.Quarantine(ctx, id, reason); err != nil {
 		p.logf("  quarantine MCP error (continuing): %v", err)
@@ -1327,6 +1351,7 @@ func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
 		return fmt.Errorf("merge %s: checkpoint merged: %w", id, err)
 	}
 	p.emitEvent("ci", map[string]any{"state": "merged"})
+	p.emitState(id, state.Merged, "merged", "")
 	p.recordTimelog(ctx, id)
 	p.logf(logFmt, id)
 	return nil
@@ -1735,6 +1760,21 @@ func (p *Pipeline) emitEvent(kind string, fields map[string]any) {
 	}
 }
 
+// emitState records a durable state_change for id — the signal the dashboard
+// recap and browser notifications consume. state ∈ {merged, quarantined, faulted,
+// paused}; reason distinguishes a blameless pause (usage_window vs reauth) and
+// carries the give-up text for a quarantine. No-op without a durable log.
+func (p *Pipeline) emitState(id, phase, st, reason string) {
+	if p.Events == nil {
+		return
+	}
+	fields := map[string]any{"ticket": id, "state": st}
+	if reason != "" {
+		fields["reason"] = reason
+	}
+	p.Events.Emit("state_change", phase, "", fields)
+}
+
 // logAgentErr surfaces an agent failure as a single clean line: a paused glyph for
 // provider rate/usage limits, an error glyph otherwise.
 func (p *Pipeline) logAgentErr(phase string, err error) {
@@ -1856,9 +1896,12 @@ func providerLabel(r agent.Runner) string {
 // last checkpoint, so a later run resumes it from there once the limit clears.
 func (p *Pipeline) pause(id, phase string, err error) error {
 	prov := providerOf(err)
+	reason := prov + " rate/usage limit reached"
+	p.markPaused(id, reason)
 	p.logf("  ⏸ paused — %s usage/rate limit reached during %s", prov, phase)
 	p.logf("  ↳ %s left resumable on its branch; rerun trau when the limit resets", id)
-	return &PausedError{ID: id, Phase: phase, Provider: prov, Reason: prov + " rate/usage limit reached"}
+	p.emitState(id, phase, "paused", "usage_window")
+	return &PausedError{ID: id, Phase: phase, Provider: prov, Reason: reason}
 }
 
 func isRateLimited(err error) bool {
@@ -1872,9 +1915,33 @@ func isRateLimited(err error) bool {
 // checkpoint and resumes from there once the provider is logged back in.
 func (p *Pipeline) pauseAuth(id, phase string, err error) error {
 	prov := providerOf(err)
+	reason := prov + " authentication required — re-login"
+	p.markPaused(id, reason)
 	p.logf("  ⏸ paused — %s needs re-authentication during %s (run the provider's /login)", prov, phase)
 	p.logf("  ↳ %s left resumable on its branch; rerun trau after re-authenticating %s", id, prov)
-	return &PausedError{ID: id, Phase: phase, Provider: prov, Reason: prov + " authentication required — re-login"}
+	p.emitState(id, phase, "paused", "reauth")
+	return &PausedError{ID: id, Phase: phase, Provider: prov, Reason: reason}
+}
+
+// markPaused records the blameless pause on the ticket's checkpoint so a
+// file-first reader (trau serve) can tell a pause apart from a fault while the
+// loop is stopped. The next attempt clears it in Resume once the ticket runs
+// again. Best-effort — a failed write never blocks the pause.
+func (p *Pipeline) markPaused(id, reason string) {
+	_ = p.State.Set(id, "FAILURE_CLASS", state.FailPaused)
+	_ = p.State.Set(id, "FAILURE_REASON", reason)
+}
+
+// clearFailureMarks drops a prior attempt's pause/fault marker as the ticket is
+// retried, so a resumed run that progresses no longer reads as failed. It only
+// writes when a marker is actually present, so a fresh ticket keeps its first
+// checkpoint being the build phase rather than an empty state file.
+func (p *Pipeline) clearFailureMarks(id string) {
+	if p.State.Get(id, "FAILURE_CLASS") == "" && p.State.Get(id, "FAILURE_REASON") == "" {
+		return
+	}
+	_ = p.State.Set(id, "FAILURE_CLASS", "")
+	_ = p.State.Set(id, "FAILURE_REASON", "")
 }
 
 // isAuthFailure reports whether err is (or wraps) the agent's auth/login-wall

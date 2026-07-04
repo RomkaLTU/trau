@@ -5,6 +5,8 @@ project_name: trau
 before:
   hooks:
     - go mod tidy
+    - npm --prefix web ci
+    - npm --prefix web run build
 
 builds:
   - id: trau

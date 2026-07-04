@@ -64,6 +64,34 @@ before. Enable it from the onboarding wizard (a toggle defaulting to off), or se
 `TIMELOG_*` keys yourself — see `trau.ini.example`. The number is an **estimate** of developer
 effort (a deterministic diffstat heuristic, or a cheap agent call), never the agent's wall-clock.
 
+### The web hub (`trau serve`)
+
+`trau serve` starts a local HTTP hub — a versioned JSON API under `/api/v1` and an embedded web
+UI at `/` — for watching every trau run on the machine:
+
+```bash
+trau serve                       # http://127.0.0.1:8728
+```
+
+Because the hub is a window onto an autonomous, merge-capable system, **exposing it is a safety
+decision**, and trau enforces an exposure policy:
+
+- **Loopback (the default) is open.** A `127.0.0.1` / `localhost` bind needs no token — nothing
+  off the machine can reach it.
+- **Any non-loopback bind requires a token.** Set `SERVE_TOKEN` (or `--bind` a routable address
+  with one configured). trau **refuses to start** exposed without a token, and every API request
+  must then carry it: `Authorization: Bearer <token>`, or the request gets a `401`.
+
+```bash
+SERVE_BIND=0.0.0.0 SERVE_TOKEN=$(openssl rand -hex 32) trau serve
+curl -H "Authorization: Bearer $SERVE_TOKEN" http://<host>:8728/api/v1/health
+```
+
+The **blessed remote path is a private network, not a public port.** Put the host on
+[Tailscale](https://tailscale.com) and reach the hub over your tailnet (e.g.
+`http://<machine>.<tailnet>.ts.net:8728`) — the token still applies, giving you defence in depth
+rather than a single open port to the internet.
+
 ## Troubleshooting
 
 Start with the preflight check — it catches the common setup problems before a run can fail

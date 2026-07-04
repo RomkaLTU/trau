@@ -30,6 +30,9 @@ var (
 type Client struct {
 	apiKey string
 	http   *http.Client
+	// Endpoint overrides the GraphQL endpoint when non-empty; the zero value
+	// targets Linear's public API.
+	Endpoint string
 }
 
 // New returns a client that uses apiKey. An empty apiKey makes every method
@@ -355,14 +358,16 @@ type CreateIssueInput struct {
 	ProjectID   string
 }
 
-// CreateIssue creates a new issue and returns its identifier.
-func (c *Client) CreateIssue(ctx context.Context, in CreateIssueInput) (string, error) {
+// CreateIssue creates a new issue and returns its identifier and URL. Label names
+// that do not exist in the team are dropped — Linear can only attach labels that
+// already exist.
+func (c *Client) CreateIssue(ctx context.Context, in CreateIssueInput) (identifier, url string, err error) {
 	if c.apiKey == "" {
-		return "", ErrNotEnabled
+		return "", "", ErrNotEnabled
 	}
 	labels, err := c.teamLabels(ctx, in.TeamID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var labelIDs []string
 	for _, name := range in.Labels {
@@ -384,12 +389,29 @@ func (c *Client) CreateIssue(ctx context.Context, in CreateIssueInput) (string, 
 	}
 	var dst issueCreateResponse
 	if err := c.do(ctx, issueCreateMutation, vars, &dst); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if dst.Data.IssueCreate.Issue.Identifier == "" {
-		return "", errors.New("linear: create issue returned no identifier")
+		return "", "", errors.New("linear: create issue returned no identifier")
 	}
-	return dst.Data.IssueCreate.Issue.Identifier, nil
+	return dst.Data.IssueCreate.Issue.Identifier, dst.Data.IssueCreate.Issue.URL, nil
+}
+
+// CreateDocument creates a document under a project from markdown content and
+// returns its URL. content is stored verbatim, so the markdown round-trips.
+func (c *Client) CreateDocument(ctx context.Context, projectID, title, content string) (string, error) {
+	if c.apiKey == "" {
+		return "", ErrNotEnabled
+	}
+	vars := map[string]any{"projectId": projectID, "title": title, "content": content}
+	var dst documentCreateResponse
+	if err := c.do(ctx, documentCreateMutation, vars, &dst); err != nil {
+		return "", err
+	}
+	if dst.Data.DocumentCreate.Document.URL == "" {
+		return "", errors.New("linear: create document returned no url")
+	}
+	return dst.Data.DocumentCreate.Document.URL, nil
 }
 
 // ProjectByName resolves a project by its exact name (case-insensitive) and returns
@@ -467,7 +489,11 @@ func (c *Client) do(ctx context.Context, query string, vars map[string]any, dst 
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	target := endpoint
+	if c.Endpoint != "" {
+		target = c.Endpoint
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -585,9 +611,25 @@ type issueLabelCreateResponse struct {
 type issueCreateResponse struct {
 	Data struct {
 		IssueCreate struct {
-			Success bool      `json:"success"`
-			Issue   issueNode `json:"issue"`
+			Success bool `json:"success"`
+			Issue   struct {
+				ID         string `json:"id"`
+				Identifier string `json:"identifier"`
+				URL        string `json:"url"`
+			} `json:"issue"`
 		} `json:"issueCreate"`
+	} `json:"data"`
+}
+
+type documentCreateResponse struct {
+	Data struct {
+		DocumentCreate struct {
+			Success  bool `json:"success"`
+			Document struct {
+				ID  string `json:"id"`
+				URL string `json:"url"`
+			} `json:"document"`
+		} `json:"documentCreate"`
 	} `json:"data"`
 }
 

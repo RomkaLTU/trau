@@ -169,6 +169,21 @@ type Config struct {
 
 	RunsDir string
 
+	// ServeBind and ServePort address the `trau serve` HTTP hub. The default
+	// 127.0.0.1:8728 keeps it loopback-only; widen ServeBind (e.g. 0.0.0.0)
+	// deliberately to expose it on the network. A non-loopback bind requires
+	// ServeToken: trau refuses to start exposed without one, and the API then
+	// demands it as a bearer token.
+	ServeBind  string
+	ServePort  int
+	ServeToken string
+
+	// ServeWorkspace allowlists the repo roots the hub may start loops in. It is
+	// empty by default: with no allowlist the hub is observe-only and refuses
+	// every start. Repos it discovers through the registry but that are not
+	// listed here stay observe-only too.
+	ServeWorkspace []string
+
 	// Spend ceilings off the normalized token/cost ledger. Zero = no cap
 	// (back-compat: a config with no MAX_* knobs enforces nothing). USD caps use
 	// the notional cost estimate; token caps the raw total. See internal/budget.
@@ -245,6 +260,10 @@ func Defaults() Config {
 		TimelogOutputFormat:   "default",
 		TimelogEstimator:      "heuristic",
 		RunsDir:               ".trau/runs",
+		ServeBind:             "127.0.0.1",
+		ServePort:             8728,
+		ServeToken:            "",
+		ServeWorkspace:        nil,
 		MaxTicketUSD:          0,
 		MaxTicketTokens:       0,
 		MaxDailyUSD:           0,
@@ -614,6 +633,13 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		sources["NOTIFY"] = src.name
 	}
 	str("RUNS_DIR", &c.RunsDir)
+	str("SERVE_BIND", &c.ServeBind)
+	num("SERVE_PORT", &c.ServePort)
+	str("SERVE_TOKEN", &c.ServeToken)
+	if v, src := get("SERVE_WORKSPACE"); v != "" {
+		c.ServeWorkspace = splitCSV(v)
+		sources["SERVE_WORKSPACE"] = src.name
+	}
 	fnum("MAX_TICKET_USD", &c.MaxTicketUSD)
 	num("MAX_TICKET_TOKENS", &c.MaxTicketTokens)
 	fnum("MAX_DAILY_USD", &c.MaxDailyUSD)
@@ -1048,6 +1074,10 @@ func KnownKeys() []KeyMeta {
 		{Key: "TIMELOG_OUTPUT_FORMAT", Default: "default", Description: "Time-log export rendering: default (JSON) | jira-worklog | toggl-csv | plain", Options: []string{"default", "jira-worklog", "toggl-csv", "plain"}},
 		{Key: "TIMELOG_ESTIMATOR", Default: "heuristic", Description: "Per-ticket effort estimate: heuristic (deterministic table) | agent (cheap agent call)", Options: []string{"heuristic", "agent"}},
 		{Key: "RUNS_DIR", Default: ".trau/runs", Description: "Directory for run artifacts"},
+		{Key: "SERVE_BIND", Default: "127.0.0.1", Description: "Bind address for `trau serve` (use 0.0.0.0 to expose on the network)"},
+		{Key: "SERVE_PORT", Default: "8728", Description: "Port for `trau serve`"},
+		{Key: "SERVE_TOKEN", Advanced: true, Description: "Bearer token required for non-loopback `trau serve` binds; mandatory once SERVE_BIND leaves loopback"},
+		{Key: "SERVE_WORKSPACE", Advanced: true, Description: "Comma-separated repo roots the hub may start loops in; repos outside this allowlist are observe-only. Empty = the hub starts nothing"},
 		{Key: "MAX_TICKET_USD", Description: "Per-ticket USD spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_TICKET_TOKENS", Description: "Per-ticket token spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_DAILY_USD", Description: "Per-day USD spend cap across all tickets; reaching it stops the run (empty = no cap)"},
@@ -1111,6 +1141,18 @@ func KnownKeys() []KeyMeta {
 	}
 	return keys
 }
+
+// secretKeys are the credential-typed configuration keys. Their values are
+// masked in any surface that exposes config over the wire and must never be
+// serialized into an API response.
+var secretKeys = map[string]bool{
+	"LINEAR_API_KEY": true,
+	"JIRA_API_TOKEN": true,
+	"SERVE_TOKEN":    true,
+}
+
+// IsSecretKey reports whether key holds a credential (API key or token).
+func IsSecretKey(key string) bool { return secretKeys[key] }
 
 // ProviderTuningMeta enumerates the execution knobs a provider exposes, so the
 // settings UI can offer valid pickers instead of free text. Models are
@@ -1515,6 +1557,14 @@ func keyValue(cfg Config, key string) string {
 		return cfg.TimelogEstimator
 	case "RUNS_DIR":
 		return cfg.RunsDir
+	case "SERVE_BIND":
+		return cfg.ServeBind
+	case "SERVE_PORT":
+		return intValue(cfg.ServePort)
+	case "SERVE_TOKEN":
+		return cfg.ServeToken
+	case "SERVE_WORKSPACE":
+		return strings.Join(cfg.ServeWorkspace, ",")
 	case "MAX_TICKET_USD":
 		return floatValue(cfg.MaxTicketUSD)
 	case "MAX_TICKET_TOKENS":

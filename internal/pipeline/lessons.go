@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 // lesson is one repair-experiment record in the durable lessons ledger: what
@@ -26,6 +27,7 @@ type lesson struct {
 	Result       string   `json:"result"`
 	Lesson       string   `json:"lesson"`
 	Tags         []string `json:"tags,omitempty"`
+	RecordedAt   string   `json:"recorded_at,omitempty"`
 }
 
 const (
@@ -173,6 +175,7 @@ func (p *Pipeline) recordLesson(ctx context.Context, id string, v verdict, attem
 			l.Tags = mergeTags(l.Tags, tags)
 		}
 	}
+	l.RecordedAt = time.Now().UTC().Format(time.RFC3339)
 	p.appendLesson(l)
 	p.logf("  ↳ lesson recorded (%s/%s): %s", l.FailureType, result, truncateLesson(l.Lesson, 80))
 }

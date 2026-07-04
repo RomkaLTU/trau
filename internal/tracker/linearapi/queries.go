@@ -201,6 +201,20 @@ mutation IssueCreate($teamId: String!, $title: String!, $description: String, $l
     issue {
       id
       identifier
+      url
+    }
+  }
+}
+`
+
+	// documentCreateMutation creates a project document from markdown content.
+	documentCreateMutation = `
+mutation DocumentCreate($projectId: String!, $title: String!, $content: String!) {
+  documentCreate(input: { projectId: $projectId, title: $title, content: $content }) {
+    success
+    document {
+      id
+      url
     }
   }
 }

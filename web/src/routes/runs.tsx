@@ -1,0 +1,312 @@
+import { useState, type ComponentType } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { Link, createFileRoute } from '@tanstack/react-router'
+import {
+  CircleCheck,
+  CircleDot,
+  GitPullRequest,
+  Pause,
+  Plus,
+  ShieldAlert,
+  TriangleAlert,
+  X,
+  type LucideProps,
+} from 'lucide-react'
+
+import { Badge } from '@/components/ui/badge'
+import {
+  Card,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card'
+import {
+  CheckpointControls,
+  ReconcileButton,
+} from '@/components/checkpoint-controls'
+import { EventFeed } from '@/components/event-feed'
+import { NewIssueForm } from '@/components/new-issue-form'
+import { cn } from '@/lib/utils'
+import {
+  reposQueryOptions,
+  runsQueryOptions,
+  type FailureClass,
+  type Run,
+} from '@/lib/runs'
+
+export const Route = createFileRoute('/runs')({
+  component: Runs,
+  loader: ({ context }) => context.queryClient.ensureQueryData(reposQueryOptions),
+})
+
+type Tone = 'flow' | 'success' | 'danger'
+
+interface PhaseMeta {
+  label: string
+  icon: ComponentType<LucideProps>
+  tone: Tone
+}
+
+const PHASE_META: Record<string, PhaseMeta> = {
+  building: { label: 'Building', icon: CircleDot, tone: 'flow' },
+  built: { label: 'Built', icon: CircleDot, tone: 'flow' },
+  handed_off: { label: 'Handed off', icon: CircleDot, tone: 'flow' },
+  verified: { label: 'Verified', icon: CircleDot, tone: 'flow' },
+  pr_open: { label: 'PR open', icon: GitPullRequest, tone: 'flow' },
+  merged: { label: 'Merged', icon: CircleCheck, tone: 'success' },
+  quarantined: { label: 'Quarantined', icon: ShieldAlert, tone: 'danger' },
+}
+
+function phaseMeta(phase: string): PhaseMeta {
+  return (
+    PHASE_META[phase] ?? {
+      label: phase === '' ? 'Queued' : phase.replace(/_/g, ' '),
+      icon: CircleDot,
+      tone: 'flow',
+    }
+  )
+}
+
+const headerTone: Record<Tone, string> = {
+  flow: 'text-muted-foreground',
+  success: 'text-emerald-600 dark:text-emerald-400',
+  danger: 'text-destructive',
+}
+
+function Runs() {
+  const { data, error, isPending } = useQuery(reposQueryOptions)
+  const [selected, setSelected] = useState<string | null>(null)
+
+  const repos = data?.repos ?? []
+  const active =
+    selected && repos.some((r) => r.name === selected)
+      ? selected
+      : repos.find((r) => r.live)?.name ?? repos[0]?.name ?? null
+  const activeLive = repos.find((r) => r.name === active)?.live ?? false
+
+  return (
+    <div className="flex flex-col gap-6">
+      {error && <p className="text-sm text-destructive">{String(error)}</p>}
+      {isPending && !error && (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      )}
+
+      {data && repos.length === 0 && (
+        <Card className="max-w-md">
+          <CardHeader>
+            <CardTitle>Runs</CardTitle>
+            <CardDescription>
+              No repos yet. Runs appear here once a trau loop runs in a repo on
+              this machine.
+            </CardDescription>
+          </CardHeader>
+        </Card>
+      )}
+
+      {repos.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2">
+          {repos.map((repo) => (
+            <button
+              key={repo.root}
+              type="button"
+              title={repo.root}
+              onClick={() => setSelected(repo.name)}
+              className={cn(
+                'flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors',
+                repo.name === active
+                  ? 'border-transparent bg-accent text-accent-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {repo.name}
+              {repo.live && (
+                <span className="size-1.5 rounded-full bg-emerald-500" />
+              )}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {active && (
+        <div className="flex flex-wrap items-start gap-3">
+          <NewIssuePanel repo={active} />
+          <ReconcileButton repo={active} live={activeLive} />
+        </div>
+      )}
+      {active && <Board repo={active} live={activeLive} />}
+      {active && <EventFeed repo={active} />}
+    </div>
+  )
+}
+
+function NewIssuePanel({ repo }: { repo: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="flex flex-col gap-3">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex w-fit items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+      >
+        {open ? <X className="size-4" /> : <Plus className="size-4" />}
+        {open ? 'Cancel' : 'New issue'}
+      </button>
+      {open && <NewIssueForm repo={repo} />}
+    </div>
+  )
+}
+
+function Board({ repo, live }: { repo: string; live: boolean }) {
+  const { data, error, isPending } = useQuery(runsQueryOptions(repo))
+  const runs = data?.runs ?? []
+
+  if (error) return <p className="text-sm text-destructive">{String(error)}</p>
+  if (isPending) return <p className="text-sm text-muted-foreground">Loading…</p>
+  if (runs.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        No runs recorded for {repo} yet.
+      </p>
+    )
+  }
+
+  const order: string[] = []
+  const byPhase: Record<string, Run[]> = {}
+  for (const run of runs) {
+    if (!byPhase[run.phase]) {
+      byPhase[run.phase] = []
+      order.push(run.phase)
+    }
+    byPhase[run.phase].push(run)
+  }
+
+  return (
+    <div className="overflow-x-auto pb-2">
+      <div className="flex min-w-max gap-4">
+        {order.map((phase) => (
+          <PhaseColumn
+            key={phase}
+            repo={repo}
+            phase={phase}
+            runs={byPhase[phase]}
+            live={live}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function PhaseColumn({
+  repo,
+  phase,
+  runs,
+  live,
+}: {
+  repo: string
+  phase: string
+  runs: Run[]
+  live: boolean
+}) {
+  const meta = phaseMeta(phase)
+  const Icon = meta.icon
+  return (
+    <section className="flex w-64 shrink-0 flex-col gap-2">
+      <div className="flex items-center justify-between px-1">
+        <span className={cn('flex items-center gap-2 text-sm font-medium', headerTone[meta.tone])}>
+          <Icon className="size-4" />
+          {meta.label}
+        </span>
+        <span className="text-xs tabular-nums text-muted-foreground">{runs.length}</span>
+      </div>
+      <div className="flex flex-col gap-2">
+        {runs.map((run) => (
+          <RunCard key={run.ticket} repo={repo} run={run} live={live} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+const failureStyle: Record<FailureClass, { badge: string; icon: ComponentType<LucideProps>; label: string }> = {
+  paused: {
+    badge: 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400',
+    icon: Pause,
+    label: 'paused',
+  },
+  faulted: {
+    badge: 'border-destructive/40 bg-destructive/10 text-destructive',
+    icon: TriangleAlert,
+    label: 'faulted',
+  },
+  gave_up: {
+    badge: 'border-destructive/40 bg-destructive/10 text-destructive',
+    icon: ShieldAlert,
+    label: 'quarantined',
+  },
+}
+
+function RunCard({ repo, run, live }: { repo: string; run: Run; live: boolean }) {
+  const fail = run.failure_class ? failureStyle[run.failure_class] : null
+  return (
+    <div
+      className={cn(
+        'rounded-lg border bg-card p-3 text-card-foreground shadow-xs transition-colors hover:border-ring/50',
+        run.phase === 'merged' && 'border-l-2 border-l-emerald-500/60',
+        run.phase === 'quarantined' && 'border-l-2 border-l-destructive',
+      )}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <Link
+          to="/runs/$repo/$ticket"
+          params={{ repo, ticket: run.ticket }}
+          className="font-mono text-sm font-medium hover:underline"
+        >
+          {run.ticket}
+        </Link>
+        {fail && (
+          <Badge variant="outline" className={fail.badge}>
+            <fail.icon className="size-3" />
+            {fail.label}
+          </Badge>
+        )}
+      </div>
+
+      {run.title && (
+        <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{run.title}</p>
+      )}
+
+      {run.failure_reason && (
+        <p className="mt-2 text-xs text-muted-foreground">{run.failure_reason}</p>
+      )}
+
+      {(run.branch || run.pr_url) && (
+        <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          {run.branch && <span className="truncate font-mono">{run.branch}</span>}
+          {run.pr_url && (
+            <a
+              href={run.pr_url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-foreground hover:underline"
+            >
+              <GitPullRequest className="size-3" />
+              {run.pr ? `PR #${run.pr}` : 'PR'}
+            </a>
+          )}
+        </div>
+      )}
+
+      {!live && (
+        <div className="mt-3 border-t pt-3">
+          <CheckpointControls
+            repo={repo}
+            ticket={run.ticket}
+            phase={run.phase}
+            live={false}
+          />
+        </div>
+      )}
+    </div>
+  )
+}

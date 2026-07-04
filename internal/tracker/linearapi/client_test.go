@@ -1,9 +1,51 @@
 package linearapi
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+// graphReq is one recorded GraphQL request against the fake Linear API.
+type graphReq struct {
+	Query     string         `json:"query"`
+	Variables map[string]any `json:"variables"`
+}
+
+// fakeLinear stands in for Linear's GraphQL endpoint, dispatching on the
+// operation name in each query and recording every request for assertions.
+func fakeLinear(t *testing.T) (*Client, *[]graphReq) {
+	t.Helper()
+	var reqs []graphReq
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req graphReq
+		_ = json.Unmarshal(body, &req)
+		reqs = append(reqs, req)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.Query, "TeamLabels"):
+			_, _ = io.WriteString(w, `{"data":{"issueLabels":{"nodes":[{"id":"lbl-ready","name":"ready-for-agent"}]}}}`)
+		case strings.Contains(req.Query, "mutation IssueCreate"):
+			_, _ = io.WriteString(w, `{"data":{"issueCreate":{"success":true,"issue":{"id":"iss-1","identifier":"COD-42","url":"https://linear.app/acme/issue/COD-42"}}}}`)
+		case strings.Contains(req.Query, "query Issue"):
+			_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"id":"iss-1","identifier":"COD-42","team":{"id":"team-1","key":"COD"}}]}}}`)
+		case strings.Contains(req.Query, "mutation CommentCreate"):
+			_, _ = io.WriteString(w, `{"data":{"commentCreate":{"success":true}}}`)
+		default:
+			t.Errorf("unexpected GraphQL query: %s", req.Query)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	c := New("lin_key")
+	c.Endpoint = srv.URL
+	return c, &reqs
+}
 
 func TestSortChildrenForRun(t *testing.T) {
 	refs := []IssueRef{
@@ -29,6 +71,61 @@ func TestSortChildrenForRun(t *testing.T) {
 			t.Fatalf("order = %v, want %v", got, want)
 		}
 	}
+}
+
+func TestCreateIssueResolvesLabelsAndReturnsURL(t *testing.T) {
+	c, reqs := fakeLinear(t)
+
+	id, url, err := c.CreateIssue(context.Background(), CreateIssueInput{TeamID: "team-1", Title: "Something broke", Description: "Details here", Labels: []string{"ready-for-agent", "unknown-label"}})
+	if err != nil {
+		t.Fatalf("CreateIssue error: %v", err)
+	}
+	if id != "COD-42" {
+		t.Errorf("identifier = %q, want COD-42", id)
+	}
+	if url != "https://linear.app/acme/issue/COD-42" {
+		t.Errorf("url = %q, want the issue url", url)
+	}
+
+	create := lastMatching(*reqs, "mutation IssueCreate")
+	if create == nil {
+		t.Fatal("no IssueCreate mutation was sent")
+	}
+	if create.Variables["title"] != "Something broke" || create.Variables["description"] != "Details here" {
+		t.Errorf("create vars = %+v, want the drafted title/description", create.Variables)
+	}
+	labelIDs, _ := create.Variables["labelIds"].([]any)
+	if len(labelIDs) != 1 || labelIDs[0] != "lbl-ready" {
+		t.Errorf("labelIds = %v, want only the resolved ready label id (unknown labels dropped)", labelIDs)
+	}
+}
+
+func TestAddCommentPostsBody(t *testing.T) {
+	c, reqs := fakeLinear(t)
+
+	if err := c.AddComment(context.Background(), "COD-42", "a follow-up note"); err != nil {
+		t.Fatalf("AddComment error: %v", err)
+	}
+
+	comment := lastMatching(*reqs, "mutation CommentCreate")
+	if comment == nil {
+		t.Fatal("no CommentCreate mutation was sent")
+	}
+	if comment.Variables["issueId"] != "iss-1" {
+		t.Errorf("issueId = %v, want the resolved issue id", comment.Variables["issueId"])
+	}
+	if comment.Variables["body"] != "a follow-up note" {
+		t.Errorf("body = %v, want the comment text", comment.Variables["body"])
+	}
+}
+
+func lastMatching(reqs []graphReq, needle string) *graphReq {
+	for i := len(reqs) - 1; i >= 0; i-- {
+		if strings.Contains(reqs[i].Query, needle) {
+			return &reqs[i]
+		}
+	}
+	return nil
 }
 
 func TestStateIsTerminal(t *testing.T) {
