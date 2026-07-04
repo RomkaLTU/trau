@@ -57,7 +57,7 @@ func (g *GitHub) leafSubIssues(ctx context.Context, parent string) (map[string]b
 	}
 	leaves := make(map[string]bool, len(subs))
 	for _, s := range subs {
-		if s.ID != "" && !s.HasChildren {
+		if s.ID != "" && !s.HasChildren && !s.Done {
 			leaves[s.ID] = true
 		}
 	}
@@ -104,8 +104,9 @@ func (g *GitHub) SubIssues(ctx context.Context, id string) ([]SubIssue, error) {
 
 func (g *GitHub) subIssuesPrompt(id string) string {
 	return fmt.Sprintf("Use the GitHub MCP. Inspect issue %s in repository %q for task-list items, sub-issue references, or linked child issues. "+
-		"Respond with exactly one final line of JSON: SUB_ISSUES=[{\"id\":\"%s-414\",\"title\":\"...\",\"hasChildren\":false}, ...] "+
-		"using each child's mapped identifier, title, and whether it has its own child issues (hasChildren boolean). "+
+		"Respond with exactly one final line of JSON: SUB_ISSUES=[{\"id\":\"%s-414\",\"title\":\"...\",\"hasChildren\":false,\"done\":false}, ...] "+
+		"using each child's mapped identifier, title, whether it has its own child issues (hasChildren boolean), "+
+		"and whether it is closed (done boolean). "+
 		"If there are none, respond SUB_ISSUES=[]. No other output.", id, g.Repo, prefixOf(id))
 }
 
