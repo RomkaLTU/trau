@@ -3,8 +3,6 @@ trau.ini
 .trau.ini
 
 # Agentic / internal files — kept out of the public repo
-AGENTS.md
-CLAUDE.md
 tasks/
 runs/
 /.agents/
