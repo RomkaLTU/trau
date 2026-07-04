@@ -1847,9 +1847,10 @@ func (a *appActions) ListPlans() []tui.PlanSession {
 // ResumePlan re-enters the plan session at dir at the step its checkpoint dictates,
 // rebuilding it from the durable artifacts alone: a round re-runs to re-ask the
 // pending questions (or draft the PRD at the cap), a drafted PRD reopens for review,
-// a published session re-drafts its slices, and a step not yet wired surfaces a
-// graceful note. Only the round and slice steps build the runner; the rest read
-// from disk.
+// an approved-but-unpublished PRD retries the publish and flows into slicing, a
+// published session re-drafts its slices, and a terminal session surfaces a
+// graceful note. Only the round and slice steps build the runner for an agent;
+// review reads from disk and publish drives the tracker directly.
 func (a *appActions) ResumePlan(ctx context.Context, dir string) (tui.PlanOutcome, error) {
 	sess := planning.OpenSession(dir)
 	switch planning.ResumeStepFor(sess.Phase()) {
@@ -1863,6 +1864,18 @@ func (a *appActions) ResumePlan(ctx context.Context, dir string) (tui.PlanOutcom
 			return tui.PlanOutcome{}, fmt.Errorf("planning: session at %s is under review with no drafted PRD", dir)
 		}
 		return tui.PlanOutcome{Status: string(planning.StatusPRD), SessionDir: dir, Title: prd.Title, Markdown: prd.Markdown}, nil
+	case planning.StepPublish:
+		if err := a.ensure(); err != nil {
+			return tui.PlanOutcome{}, err
+		}
+		res, err := a.planOrchestrator().Publish(ctx, sess, a.tracker)
+		if err != nil {
+			return tui.PlanOutcome{}, err
+		}
+		if !res.Published {
+			return tui.PlanOutcome{SessionDir: dir, Note: "✓ PRD approved. This tracker can't publish plans, so it stays local at prd_ready."}, nil
+		}
+		return a.SlicePlan(ctx, dir)
 	case planning.StepSlice:
 		return a.SlicePlan(ctx, dir)
 	default:
@@ -1877,12 +1890,9 @@ func (a *appActions) AbortPlan(_ context.Context, dir string) error {
 	return planning.OpenSession(dir).Abort()
 }
 
-// resumeNote is the graceful line the Plan screen shows for a session whose resume
-// step is past the review loop this slice wires up.
+// resumeNote is the graceful line the Plan screen shows for a terminal session.
 func resumeNote(phase string) string {
 	switch phase {
-	case planning.PhasePRDReady:
-		return "This PRD is approved. Publishing it to the tracker is a later step."
 	case planning.PhaseSliced:
 		return "This plan session is complete — all its slices were published."
 	case planning.PhaseAborted:
@@ -1925,7 +1935,13 @@ func (a *appActions) runPlanRound(run func(*planning.Orchestrator) (*planning.Ro
 	defer a.sink.SetTicket("")
 	rr, err := run(a.planOrchestrator())
 	if err != nil {
-		return tui.PlanOutcome{}, err
+		// The session (when one exists) survives the failure, so the outcome
+		// carries its dir and the Plan screen can say the work is resumable.
+		out := tui.PlanOutcome{}
+		if rr != nil && rr.Session != nil {
+			out.SessionDir = rr.Session.Dir()
+		}
+		return out, err
 	}
 	return planOutcome(rr), nil
 }
