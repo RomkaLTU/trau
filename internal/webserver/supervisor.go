@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"syscall"
@@ -17,12 +18,13 @@ type SpawnSpec struct {
 }
 
 // Supervisor is the hub's process-control seam. It isolates OS process
-// management — spawning children and signalling processes — so the control
-// layer never reaches for os/exec or syscall directly and tests can drive it
-// with a fake that records spawns and signals instead of touching real
-// processes.
+// management — spawning children, running one to completion, and signalling
+// processes — so the control layer never reaches for os/exec or syscall
+// directly and tests can drive it with a fake that records the calls instead of
+// touching real processes.
 type Supervisor interface {
 	Spawn(SpawnSpec) (pid int, err error)
+	Capture(context.Context, SpawnSpec) (stdout []byte, err error)
 	Signal(pid int, sig syscall.Signal) error
 }
 
@@ -49,6 +51,21 @@ func (osSupervisor) Spawn(spec SpawnSpec) (int, error) {
 	}
 	go func() { _ = cmd.Wait() }()
 	return cmd.Process.Pid, nil
+}
+
+// Capture runs the hub's own binary to completion in spec.Dir and returns its
+// stdout, which is byte-stable for scripted modes like --dry-run. It is the
+// synchronous counterpart to Spawn: used for read-only previews that must hand a
+// result back to the caller rather than detach and be watched.
+func (osSupervisor) Capture(ctx context.Context, spec SpawnSpec) ([]byte, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.CommandContext(ctx, exe, spec.Args...)
+	cmd.Dir = spec.Dir
+	cmd.Env = spec.Env
+	return cmd.Output()
 }
 
 func (osSupervisor) Signal(pid int, sig syscall.Signal) error {

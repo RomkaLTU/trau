@@ -2,6 +2,7 @@ package webserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -21,15 +22,19 @@ type signalCall struct {
 	sig syscall.Signal
 }
 
-// fakeSupervisor records spawns and signals instead of touching real processes,
-// so the control layer's OS interactions are asserted without launching anything.
+// fakeSupervisor records spawns, captures, and signals instead of touching real
+// processes, so the control layer's OS interactions are asserted without
+// launching anything.
 type fakeSupervisor struct {
-	mu        sync.Mutex
-	spawns    []SpawnSpec
-	signals   []signalCall
-	pid       int
-	spawnErr  error
-	signalErr error
+	mu         sync.Mutex
+	spawns     []SpawnSpec
+	captures   []SpawnSpec
+	signals    []signalCall
+	pid        int
+	spawnErr   error
+	captureOut []byte
+	captureErr error
+	signalErr  error
 }
 
 func (f *fakeSupervisor) Spawn(spec SpawnSpec) (int, error) {
@@ -41,6 +46,16 @@ func (f *fakeSupervisor) Spawn(spec SpawnSpec) (int, error) {
 	}
 	f.pid++
 	return 40000 + f.pid, nil
+}
+
+func (f *fakeSupervisor) Capture(_ context.Context, spec SpawnSpec) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.captures = append(f.captures, spec)
+	if f.captureErr != nil {
+		return nil, f.captureErr
+	}
+	return f.captureOut, nil
 }
 
 func (f *fakeSupervisor) Signal(pid int, sig syscall.Signal) error {
@@ -289,6 +304,205 @@ func TestInstancesFlagAllowedRepos(t *testing.T) {
 	if v, ok := byRoot[fresh]; !ok || !v.Allowed || v.Live {
 		t.Errorf("fresh allowlisted repo view = %+v (present=%v), want allowed, not live, startable before first run", v, ok)
 	}
+}
+
+func TestStartRunsSingleTicket(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-693"})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("run-ticket status = %d, want 202", res.StatusCode)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-693", "--once"})
+}
+
+func TestStartRunsEpic(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Epic: "COD-530"})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("run-epic status = %d, want 202", res.StatusCode)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-530"})
+}
+
+func TestStartProviderOverrideIsPerRun(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	overridden := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-693", Provider: "codex"})
+	_ = overridden.Body.Close()
+	plain := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-694"})
+	_ = plain.Body.Close()
+
+	if len(fake.spawns) != 2 {
+		t.Fatalf("spawns = %d, want 2", len(fake.spawns))
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-693", "--once", "--provider", "codex"})
+	if hasArg(fake.spawns[1].Args, "--provider") {
+		t.Errorf("second run carried a --provider override: %v — an override must apply only to the run it was submitted with", fake.spawns[1].Args)
+	}
+}
+
+func TestStartRejectsTicketAndEpicTogether(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-1", Epic: "COD-2"})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 when ticket and epic are both set", res.StatusCode)
+	}
+	if len(fake.spawns) != 0 {
+		t.Errorf("spawns = %d, want 0 for a rejected request", len(fake.spawns))
+	}
+}
+
+func TestStartRejectsMalformedTicket(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "--force"})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a non-ticket value", res.StatusCode)
+	}
+	if len(fake.spawns) != 0 {
+		t.Errorf("spawns = %d, want 0 (never launch a run for a malformed ticket)", len(fake.spawns))
+	}
+}
+
+func TestStartRejectsBlankTicket(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "   "})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a whitespace-only ticket", res.StatusCode)
+	}
+	if len(fake.spawns) != 0 {
+		t.Errorf("spawns = %d, want 0 (a blank ticket must not fall through to a plain pick-next loop)", len(fake.spawns))
+	}
+}
+
+func TestDryRunReturnsNextTicket(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureOut = []byte("12:00:00 [claude] Asking linear for the next eligible ticket…\n12:00:01 Next up: COD-42\n")
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/dry-run", nil)
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("dry-run status = %d, want 200", res.StatusCode)
+	}
+	var out DryRunResult
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode dry-run result: %v", err)
+	}
+	if out.Ticket != "COD-42" {
+		t.Errorf("Ticket = %q, want COD-42", out.Ticket)
+	}
+	if out.RepoRoot != root {
+		t.Errorf("RepoRoot = %q, want %q", out.RepoRoot, root)
+	}
+	if len(fake.captures) != 1 {
+		t.Fatalf("captures = %d, want 1", len(fake.captures))
+	}
+	assertArgs(t, fake.captures[0].Args, []string{"--repo", root, "--dry-run", "--no-tui"})
+	if len(fake.spawns) != 0 {
+		t.Errorf("dry-run spawned a loop (%d) — a preview must have no side effects", len(fake.spawns))
+	}
+}
+
+func TestDryRunNothingEligible(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureOut = []byte("12:00:00 [claude] Asking linear for the next eligible ticket…\n12:00:01 Nothing eligible right now.\n")
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/dry-run", nil)
+	defer func() { _ = res.Body.Close() }()
+	var out DryRunResult
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode dry-run result: %v", err)
+	}
+	if out.Ticket != "" {
+		t.Errorf("Ticket = %q, want empty when nothing is eligible", out.Ticket)
+	}
+}
+
+func TestDryRunRefusedForNonAllowlistedRepo(t *testing.T) {
+	allowed := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{allowed})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/stranger/dry-run", nil)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("dry-run status = %d, want 403 for an observe-only repo", res.StatusCode)
+	}
+	if len(fake.captures) != 0 {
+		t.Errorf("captures = %d, want 0 for a refused repo", len(fake.captures))
+	}
+}
+
+func TestDryRunReportsCaptureFailure(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureErr = os.ErrPermission
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/dry-run", nil)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("dry-run status = %d, want 502 when the preview fails", res.StatusCode)
+	}
+}
+
+func TestDryRunRequiresTokenWhenExposed(t *testing.T) {
+	s := New("1.2.3", "0.0.0.0", "s3cret", []string{"/repo/acme"})
+	fake := &fakeSupervisor{}
+	s.sup = fake
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/dry-run", nil)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("unauthenticated dry-run = %d, want 401 on an exposed bind", res.StatusCode)
+	}
+	if len(fake.captures) != 0 {
+		t.Errorf("token gate let a dry-run through: captures=%d", len(fake.captures))
+	}
+}
+
+func assertArgs(t *testing.T, got, want []string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("args = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("args[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+func hasArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
 }
 
 func hasEnv(env []string, want string) bool {
