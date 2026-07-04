@@ -8,35 +8,39 @@ import (
 )
 
 func TestQASpaceTypedIntoOnboardingAPIKeyField(t *testing.T) {
-	m := newOnboardingModel(context.Background(), &fakeOnboardActions{}, DefaultStyles(), 80, 24)
-	m.step = onboardLinearAPIKey
-	m.apiKeyInputFocused = true
-	m.apiKey.Focus()
+	m := formModel(&fakeOnboardActions{repoRoot: t.TempDir()}, "linear")
+	m = pressKey(m, tea.KeyEnter) // tracker → ai provider
+	m = pressKey(m, tea.KeyEnter) // → linear key
+	if m.focusedKey() != keyLinearKey {
+		t.Fatalf("focused key = %q, want %q", m.focusedKey(), keyLinearKey)
+	}
 
 	m = typeRunes(m, "lin_api")
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
 	m = typeRunes(m, "x-1._Z")
 
-	if got := m.apiKey.Value(); got != "lin_api x-1._Z" {
+	if got := m.fv.linearKey; got != "lin_api x-1._Z" {
 		t.Fatalf("api key value = %q, space or punctuation was eaten", got)
 	}
-	if m.step != onboardLinearAPIKey {
-		t.Fatalf("space navigated away from the API key step: step=%d", m.step)
+	if m.focusedKey() != keyLinearKey {
+		t.Fatalf("space navigated away from the API key step: %q", m.focusedKey())
 	}
 }
 
 func TestQASpaceTypedIntoJiraFields(t *testing.T) {
-	m := newOnboardingModel(context.Background(), &fakeOnboardActions{}, DefaultStyles(), 80, 24)
-	m.step = onboardJiraCreds
-	m.jiraFieldCursor = 0
-	m.focusJiraField()
+	m := formModel(&fakeOnboardActions{repoRoot: t.TempDir()}, "jira")
+	m = pressKey(m, tea.KeyEnter)
+	m = pressKey(m, tea.KeyEnter) // → jira base URL
+	if m.focusedKey() != keyJiraBase {
+		t.Fatalf("focused key = %q, want %q", m.focusedKey(), keyJiraBase)
+	}
 
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeySpace, Text: " "})
-	if got := m.jiraBaseURL.Value(); got != " " {
+	if got := m.fv.jiraBase; got != " " {
 		t.Fatalf("jira base URL value = %q, space was eaten", got)
 	}
-	if m.jiraFieldCursor != 0 {
-		t.Fatalf("space moved the jira field cursor to %d", m.jiraFieldCursor)
+	if m.focusedKey() != keyJiraBase {
+		t.Fatalf("space moved off the jira base field: %q", m.focusedKey())
 	}
 }
 
@@ -76,18 +80,19 @@ func TestQASpaceTogglesSettingsBool(t *testing.T) {
 }
 
 func TestQATypingJIntoTextFieldDoesNotNavigate(t *testing.T) {
-	m := newOnboardingModel(context.Background(), &fakeOnboardActions{}, DefaultStyles(), 80, 24)
-	m.step = onboardBaseBranch
-	m.baseBranchInputFocused = true
-	m.baseBranch.Focus()
-	before := m.branchingCursor
+	m := formModel(&fakeOnboardActions{repoRoot: t.TempDir()}, "github")
+	m = pressKey(m, tea.KeyEnter)
+	m = pressKey(m, tea.KeyEnter) // → base branch (linear + jira groups hidden for github)
+	if m.focusedKey() != keyBaseBranch {
+		t.Fatalf("focused key = %q, want %q", m.focusedKey(), keyBaseBranch)
+	}
 
 	m = typeRunes(m, "jk")
-	if got := m.baseBranch.Value(); got != "jk" {
+	if got := m.fv.baseBranch; got != "jk" {
 		t.Fatalf("base branch value = %q, j/k were treated as navigation", got)
 	}
-	if m.branchingCursor != before {
-		t.Fatal("typing j/k into the focused base-branch field moved the branching cursor")
+	if m.focusedKey() != keyBaseBranch {
+		t.Fatal("typing j/k moved off the base-branch field")
 	}
 }
 

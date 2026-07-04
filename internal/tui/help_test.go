@@ -199,12 +199,18 @@ func TestEditingGatesHelp(t *testing.T) {
 	am, _ := helpApp(t).selectAction(actOnboarding)
 	m := am.(appModel)
 
-	m.onboard.step = onboardWelcome
+	m.onboard.phase = phaseWelcome
 	if m.editing() {
 		t.Error("welcome step should not gate help")
 	}
 
-	m.onboard.step = onboardJiraCreds
+	// Drive the onboarding form to a focused text field (jira base URL).
+	m.onboard.fv.tracker = "jira"
+	m.onboard.phase = phaseForm
+	m.onboard.form = m.onboard.newForm()
+	m.onboard = driveCmds(m.onboard, m.onboard.form.Init())
+	m.onboard = pressKey(m.onboard, tea.KeyEnter) // tracker → ai provider
+	m.onboard = pressKey(m.onboard, tea.KeyEnter) // → jira base URL
 	if !m.editing() {
 		t.Fatal("jira-creds step has a focused text field and should gate help")
 	}
