@@ -22,13 +22,19 @@ type commentCall struct {
 type fakeWriter struct {
 	created    []tracker.IssueDraft
 	comments   []commentCall
+	published  []tracker.DocumentDraft
 	issue      tracker.NewIssue
+	doc        tracker.PublishedDocument
 	createErr  error
 	commentErr error
+	publishErr error
 }
 
 func newFakeWriter() *fakeWriter {
-	return &fakeWriter{issue: tracker.NewIssue{Identifier: "COD-42", URL: "https://linear.app/acme/issue/COD-42"}}
+	return &fakeWriter{
+		issue: tracker.NewIssue{Identifier: "COD-42", URL: "https://linear.app/acme/issue/COD-42"},
+		doc:   tracker.PublishedDocument{URL: "https://linear.app/acme/document/prd-abc123", Kind: tracker.DocumentKindDocument},
+	}
 }
 
 func (f *fakeWriter) CreateIssue(_ context.Context, d tracker.IssueDraft) (tracker.NewIssue, error) {
@@ -42,6 +48,14 @@ func (f *fakeWriter) CreateIssue(_ context.Context, d tracker.IssueDraft) (track
 func (f *fakeWriter) AddComment(_ context.Context, id, body string) error {
 	f.comments = append(f.comments, commentCall{id: id, body: body})
 	return f.commentErr
+}
+
+func (f *fakeWriter) PublishDocument(_ context.Context, d tracker.DocumentDraft) (tracker.PublishedDocument, error) {
+	f.published = append(f.published, d)
+	if f.publishErr != nil {
+		return tracker.PublishedDocument{}, f.publishErr
+	}
+	return f.doc, nil
 }
 
 // issuesServer builds a server with one exited repo ("acme") and a Writer

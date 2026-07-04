@@ -69,6 +69,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos", s.handleRepos)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/dry-run", s.handleDryRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues", s.handleCreateIssue)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/prd", s.handlePublishPRD)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs", s.handleRuns)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}", s.handleRunDetail)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/comment", s.handleRunComment)

@@ -189,4 +189,29 @@ mutation IssueCreate($teamId: ID!, $title: String!, $description: String, $label
   }
 }
 `
+
+	// projectByNameQuery resolves a project's id from its exact name.
+	projectByNameQuery = `
+query ProjectByName($name: String!) {
+  projects(filter: { name: { eq: $name } }, first: 1) {
+    nodes {
+      id
+      name
+    }
+  }
+}
+`
+
+	// documentCreateMutation creates a project document from markdown content.
+	documentCreateMutation = `
+mutation DocumentCreate($projectId: String!, $title: String!, $content: String!) {
+  documentCreate(input: { projectId: $projectId, title: $title, content: $content }) {
+    success
+    document {
+      id
+      url
+    }
+  }
+}
+`
 )

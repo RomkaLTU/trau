@@ -34,13 +34,35 @@ type NewIssue struct {
 	URL        string
 }
 
+// DocumentDraft is a PRD to publish: a title and its markdown body.
+type DocumentDraft struct {
+	Title    string
+	Markdown string
+}
+
+// The kinds a PublishedDocument can take, by where the PRD landed.
+const (
+	DocumentKindDocument = "document" // a Linear project document
+	DocumentKindIssue    = "issue"    // the Jira issue-description fallback
+)
+
+// PublishedDocument identifies published PRD output. URL links to it; Identifier
+// carries the issue key for the Jira fallback and is empty for a Linear document;
+// Kind is one of the DocumentKind constants.
+type PublishedDocument struct {
+	URL        string
+	Identifier string
+	Kind       string
+}
+
 // Writer creates tracker work directly through a provider's REST/GraphQL API,
 // with no agent process and no MCP. It is the seam the serve hub uses to file
-// issues and comment on existing tickets from the UI, using the repo's own
-// tracker credentials.
+// issues, comment on existing tickets and publish PRDs from the UI, using the
+// repo's own tracker credentials.
 type Writer interface {
 	CreateIssue(ctx context.Context, draft IssueDraft) (NewIssue, error)
 	AddComment(ctx context.Context, id, body string) error
+	PublishDocument(ctx context.Context, draft DocumentDraft) (PublishedDocument, error)
 }
 
 // NewWriter builds a direct Writer for the provider from cfg, or
@@ -53,7 +75,7 @@ func NewWriter(provider string, cfg Config) (Writer, error) {
 		if strings.TrimSpace(cfg.APIKey) == "" {
 			return nil, ErrWriterUnavailable
 		}
-		return &linearWriter{client: linearapi.New(cfg.APIKey), team: cfg.Team}, nil
+		return &linearWriter{client: linearapi.New(cfg.APIKey), team: cfg.Team, project: cfg.Project}, nil
 	case "jira":
 		if cfg.BaseURL == "" || cfg.Email == "" || cfg.APIKey == "" {
 			return nil, ErrWriterUnavailable
@@ -72,8 +94,9 @@ func NewWriter(provider string, cfg Config) (Writer, error) {
 }
 
 type linearWriter struct {
-	client *linearapi.Client
-	team   string
+	client  *linearapi.Client
+	team    string
+	project string
 }
 
 func (w *linearWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIssue, error) {
@@ -90,6 +113,21 @@ func (w *linearWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIs
 
 func (w *linearWriter) AddComment(ctx context.Context, id, body string) error {
 	return w.client.AddComment(ctx, id, body)
+}
+
+func (w *linearWriter) PublishDocument(ctx context.Context, draft DocumentDraft) (PublishedDocument, error) {
+	if strings.TrimSpace(w.project) == "" {
+		return PublishedDocument{}, errors.New("tracker: no Linear project configured for this repo (set PROJECT) — a PRD document needs a project to live under")
+	}
+	project, err := w.client.ProjectByName(ctx, w.project)
+	if err != nil {
+		return PublishedDocument{}, err
+	}
+	url, err := w.client.CreateDocument(ctx, project.ID, draft.Title, draft.Markdown)
+	if err != nil {
+		return PublishedDocument{}, err
+	}
+	return PublishedDocument{URL: url, Kind: DocumentKindDocument}, nil
 }
 
 type jiraWriter struct {
@@ -109,4 +147,12 @@ func (w *jiraWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIssu
 
 func (w *jiraWriter) AddComment(ctx context.Context, id, body string) error {
 	return w.client.AddComment(ctx, id, body)
+}
+
+func (w *jiraWriter) PublishDocument(ctx context.Context, draft DocumentDraft) (PublishedDocument, error) {
+	key, err := w.client.CreateIssue(ctx, w.project, w.issueType, draft.Title, draft.Markdown, nil)
+	if err != nil {
+		return PublishedDocument{}, err
+	}
+	return PublishedDocument{URL: w.baseURL + "/browse/" + key, Identifier: key, Kind: DocumentKindIssue}, nil
 }

@@ -378,6 +378,40 @@ func (c *Client) CreateIssue(ctx context.Context, teamID, title, description str
 	return dst.Data.IssueCreate.Issue.Identifier, dst.Data.IssueCreate.Issue.URL, nil
 }
 
+// ProjectByName resolves a project by its exact name, returning ErrNotFound when
+// no project matches. Publishing a PRD document needs the project's id.
+func (c *Client) ProjectByName(ctx context.Context, name string) (*Project, error) {
+	if c.apiKey == "" {
+		return nil, ErrNotEnabled
+	}
+	var dst projectsQueryResponse
+	if err := c.do(ctx, projectByNameQuery, map[string]any{"name": strings.TrimSpace(name)}, &dst); err != nil {
+		return nil, err
+	}
+	if len(dst.Data.Projects.Nodes) == 0 {
+		return nil, ErrNotFound
+	}
+	n := dst.Data.Projects.Nodes[0]
+	return &Project{ID: n.ID, Name: n.Name}, nil
+}
+
+// CreateDocument creates a document under a project from markdown content and
+// returns its URL. content is stored verbatim, so the markdown round-trips.
+func (c *Client) CreateDocument(ctx context.Context, projectID, title, content string) (string, error) {
+	if c.apiKey == "" {
+		return "", ErrNotEnabled
+	}
+	vars := map[string]any{"projectId": projectID, "title": title, "content": content}
+	var dst documentCreateResponse
+	if err := c.do(ctx, documentCreateMutation, vars, &dst); err != nil {
+		return "", err
+	}
+	if dst.Data.DocumentCreate.Document.URL == "" {
+		return "", errors.New("linear: create document returned no url")
+	}
+	return dst.Data.DocumentCreate.Document.URL, nil
+}
+
 // workflowStates returns the workflow states for a team.
 func (c *Client) workflowStates(ctx context.Context, teamID string) ([]State, error) {
 	var dst workflowStatesQueryResponse
@@ -555,6 +589,26 @@ type issueCreateResponse struct {
 				URL        string `json:"url"`
 			} `json:"issue"`
 		} `json:"issueCreate"`
+	} `json:"data"`
+}
+
+type projectsQueryResponse struct {
+	Data struct {
+		Projects struct {
+			Nodes []projectNode `json:"nodes"`
+		} `json:"projects"`
+	} `json:"data"`
+}
+
+type documentCreateResponse struct {
+	Data struct {
+		DocumentCreate struct {
+			Success  bool `json:"success"`
+			Document struct {
+				ID  string `json:"id"`
+				URL string `json:"url"`
+			} `json:"document"`
+		} `json:"documentCreate"`
 	} `json:"data"`
 }
 
