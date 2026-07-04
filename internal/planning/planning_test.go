@@ -3,10 +3,10 @@ package planning
 import "testing"
 
 // TestPhaseOrder pins the plan-session lifecycle ranking the resume logic keys
-// off: drafting → questions → prd_ready → published → sliced, with aborted as a
-// terminal side-exit ranked above the forward phases.
+// off: drafting → questions → prd_review → prd_ready → published → sliced, with
+// aborted as a terminal side-exit ranked above the forward phases.
 func TestPhaseOrder(t *testing.T) {
-	forward := []string{PhaseDrafting, PhaseQuestions, PhasePRDReady, PhasePublished, PhaseSliced}
+	forward := []string{PhaseDrafting, PhaseQuestions, PhaseReview, PhasePRDReady, PhasePublished, PhaseSliced}
 	for i := 1; i < len(forward); i++ {
 		if PhaseRank(forward[i-1]) >= PhaseRank(forward[i]) {
 			t.Errorf("phase %q should rank below %q", forward[i-1], forward[i])
@@ -24,6 +24,7 @@ func TestTerminal(t *testing.T) {
 	terminal := map[string]bool{
 		PhaseDrafting:  false,
 		PhaseQuestions: false,
+		PhaseReview:    false,
 		PhasePRDReady:  false,
 		PhasePublished: false,
 		PhaseSliced:    true,

@@ -31,7 +31,8 @@ const (
 	planRunning                   // round in flight
 	planQuestions                 // answering a round of questions
 	planPRD                       // PRD in a scrollable viewport
-	planNote                      // graceful message (non-PRD result or error)
+	planRevise                    // entering a free-text change request
+	planNote                      // graceful message (approval, non-PRD result, or error)
 )
 
 // planModel is the Plan screen: paste/type a raw idea (or a file path), run one
@@ -46,12 +47,14 @@ type planModel struct {
 	inited     bool
 	step       planStep
 	idea       textarea.Model
+	changeNote textarea.Model
 	viewport   viewport.Model
 	pform      *planForm
 	sessionDir string
 	title      string
 	note       string
 	badIdea    bool
+	badNote    bool
 	cancelled  bool
 }
 
@@ -63,6 +66,8 @@ type planDoneMsg struct {
 type planFormSubmitMsg struct{}
 
 type planFormCancelMsg struct{}
+
+type planApprovedMsg struct{ err error }
 
 // planAccessibleDoneMsg carries the answers collected by the accessible runner
 // after the TUI resumed from tea.Exec, or the error it failed with.
@@ -76,14 +81,18 @@ func newPlanModel(ctx context.Context, actions Actions, styles Styles, w, h int)
 	ta.Placeholder = "Paste or type a raw idea — or give a path to a file containing one…"
 	ta.Focus()
 
+	cn := textarea.New()
+	cn.Placeholder = "Describe the changes you want — the planner will revise the PRD…"
+
 	m := planModel{
-		styles:   styles,
-		actions:  actions,
-		ctx:      ctx,
-		inited:   true,
-		step:     planInput,
-		idea:     ta,
-		viewport: viewport.New(),
+		styles:     styles,
+		actions:    actions,
+		ctx:        ctx,
+		inited:     true,
+		step:       planInput,
+		idea:       ta,
+		changeNote: cn,
+		viewport:   viewport.New(),
 	}
 	m.relayout(w, h)
 	return m
@@ -114,6 +123,8 @@ func (m *planModel) relayout(w, h int) {
 	}
 	m.idea.SetWidth(innerW)
 	m.idea.SetHeight(taH)
+	m.changeNote.SetWidth(innerW)
+	m.changeNote.SetHeight(taH)
 }
 
 func (m planModel) Init() tea.Cmd { return textarea.Blink }
@@ -187,6 +198,17 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 		}
 		return m, nil
 
+	case planApprovedMsg:
+		if m.step != planPRD {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.step, m.note = planNote, "✗ "+msg.err.Error()
+			return m, nil
+		}
+		m.step, m.note = planNote, "✓ PRD approved — checkpoint advanced to prd_ready. Publishing to the tracker is a later step."
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -199,6 +221,8 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 		m, cmd = m.passToForm(msg)
 	case planPRD:
 		m.viewport, cmd = m.viewport.Update(msg)
+	case planRevise:
+		m.changeNote, cmd = m.changeNote.Update(msg)
 	}
 	return m, cmd
 }
@@ -252,11 +276,38 @@ func (m planModel) handleKey(msg tea.KeyPressMsg) (planModel, tea.Cmd) {
 			return m, textarea.Blink
 		}
 		if m.step == planPRD {
+			switch msg.String() {
+			case "a":
+				return m, m.approvePlanCmd()
+			case "r":
+				m.step, m.badNote = planRevise, false
+				m.changeNote.Reset()
+				m.changeNote.Focus()
+				return m, textarea.Blink
+			}
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
 			return m, cmd
 		}
 		return m, nil
+
+	case planRevise:
+		switch msg.String() {
+		case "esc":
+			m.step, m.badNote = planPRD, false
+			return m, nil
+		case "ctrl+d":
+			if strings.TrimSpace(m.changeNote.Value()) == "" {
+				m.badNote = true
+				return m, nil
+			}
+			m.step, m.badNote = planRunning, false
+			return m, m.revisePlanCmd()
+		}
+		m.badNote = false
+		var cmd tea.Cmd
+		m.changeNote, cmd = m.changeNote.Update(msg)
+		return m, cmd
 	}
 	return m, nil
 }
@@ -283,6 +334,21 @@ func (m planModel) answerPlanCmd(answers []PlanAnswer) tea.Cmd {
 	return func() tea.Msg {
 		out, err := actions.AnswerPlan(ctx, dir, answers)
 		return planDoneMsg{out: out, err: err}
+	}
+}
+
+func (m planModel) revisePlanCmd() tea.Cmd {
+	actions, ctx, dir, note := m.actions, m.ctx, m.sessionDir, m.changeNote.Value()
+	return func() tea.Msg {
+		out, err := actions.RevisePlan(ctx, dir, note)
+		return planDoneMsg{out: out, err: err}
+	}
+}
+
+func (m planModel) approvePlanCmd() tea.Cmd {
+	actions, ctx, dir := m.actions, m.ctx, m.sessionDir
+	return func() tea.Msg {
+		return planApprovedMsg{err: actions.ApprovePlan(ctx, dir)}
 	}
 }
 
@@ -363,7 +429,7 @@ func (m planModel) Cancelled() bool { return m.cancelled }
 // answer): the idea textarea, or a text/Other field of the question form.
 func (m planModel) editing() bool {
 	switch m.step {
-	case planInput:
+	case planInput, planRevise:
 		return true
 	case planQuestions:
 		return m.pform != nil && m.pform.editing()
@@ -395,6 +461,12 @@ func (m planModel) body(spinner string) string {
 		return intro + "\n\n" + m.pform.form.View()
 	case planPRD:
 		return m.viewport.View()
+	case planRevise:
+		rows := []string{s.Subtle.Render("Describe the changes you want. ctrl+d revises the PRD; esc keeps it."), m.changeNote.View()}
+		if m.badNote {
+			rows = append(rows, "", s.Error.Render("Type the changes you want first."))
+		}
+		return strings.Join(rows, "\n")
 	case planNote:
 		return s.Subtle.Width(m.width - 2).Render(m.note)
 	default:
@@ -424,8 +496,13 @@ func (m planModel) help() screenHelp {
 		}}
 	case planPRD:
 		return screenHelp{title: "Plan", columns: []helpColumn{
+			group("Review", fk("a", "approve"), fk("r", "request changes")),
 			group("Read PRD", fk("f/b/u/d", "scroll"), xk("g/G", "jump")),
 			group("Actions", fk("e", "new idea"), fk("esc/q", "back")),
+		}}
+	case planRevise:
+		return screenHelp{title: "Plan · request changes", columns: []helpColumn{
+			group("Actions", fk("ctrl+d", "revise PRD"), fk("esc", "cancel")),
 		}}
 	case planNote:
 		return screenHelp{title: "Plan", columns: []helpColumn{

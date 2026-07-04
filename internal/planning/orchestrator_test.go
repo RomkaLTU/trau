@@ -48,7 +48,7 @@ func (r *scriptedRunner) Run(ctx context.Context, prompt, label string) (agent.R
 }
 
 // TestRunRoundPRD is the orchestrator-level tracer: idea → fake Runner returning a
-// scripted prd payload → the checkpoint progresses to prd_ready and the PRD is
+// scripted prd payload → the checkpoint rests at prd_review and the PRD is
 // persisted, with no real agent or TUI.
 func TestRunRoundPRD(t *testing.T) {
 	root := t.TempDir()
@@ -71,8 +71,8 @@ func TestRunRoundPRD(t *testing.T) {
 	}
 
 	sess := rr.Session
-	if got := sess.Phase(); got != PhasePRDReady {
-		t.Errorf("checkpoint phase = %q, want %q", got, PhasePRDReady)
+	if got := sess.Phase(); got != PhaseReview {
+		t.Errorf("checkpoint phase = %q, want %q", got, PhaseReview)
 	}
 	if got := strings.TrimSpace(sess.Idea()); got != "let users export widgets" {
 		t.Errorf("idea snapshot = %q", got)
@@ -148,7 +148,7 @@ func TestRunRoundRunnerError(t *testing.T) {
 // conversation: a scripted fake Runner returns questions → questions → prd across
 // three fresh processes. It asserts the transcript accumulates both answered
 // rounds, that the third round re-reads them, that the round cap forces the PRD,
-// and that the checkpoint progresses drafting → questions → prd_ready.
+// and that the checkpoint progresses drafting → questions → prd_review.
 func TestMultiRoundToPRD(t *testing.T) {
 	root := t.TempDir()
 	runner := &scriptedRunner{finals: []string{
@@ -192,8 +192,8 @@ func TestMultiRoundToPRD(t *testing.T) {
 	if rr.Payload.Status != StatusPRD {
 		t.Fatalf("round 3 status = %q, want prd", rr.Payload.Status)
 	}
-	if got := rr.Session.Phase(); got != PhasePRDReady {
-		t.Errorf("round 3 phase = %q, want prd_ready", got)
+	if got := rr.Session.Phase(); got != PhaseReview {
+		t.Errorf("round 3 phase = %q, want prd_review", got)
 	}
 
 	transcript, err := sess.Transcript()
@@ -247,6 +247,120 @@ func TestRoundCapRejectsQuestions(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "round cap") {
 		t.Errorf("error = %v, want a round-cap rejection", err)
+	}
+}
+
+// TestReviseThenApprove is the orchestrator-level tracer for the review loop: a
+// first round drafts a PRD resting at prd_review, a request-changes note runs a
+// revision round whose fresh prompt carries the note and the prior PRD, the revised
+// PRD replaces the durable copy, and approval advances the checkpoint to prd_ready.
+func TestReviseThenApprove(t *testing.T) {
+	root := t.TempDir()
+	runner := &scriptedRunner{finals: []string{
+		`{"status":"prd","prd":{"title":"Export","markdown":"# Export v1\n\nfirst draft"}}`,
+		`{"status":"prd","prd":{"title":"Export","markdown":"# Export v2\n\nrevised with CSV"}}`,
+	}}
+	o := NewOrchestrator(runner, root).WithClock(fixedClock())
+
+	rr, err := o.RunRound(context.Background(), "let users export widgets")
+	if err != nil {
+		t.Fatalf("RunRound: %v", err)
+	}
+	sess := rr.Session
+	if got := sess.Phase(); got != PhaseReview {
+		t.Fatalf("after draft phase = %q, want prd_review", got)
+	}
+	if prd, _ := sess.PRD(); !strings.Contains(prd.Markdown, "Export v1") {
+		t.Fatalf("draft PRD not persisted: %q", prd.Markdown)
+	}
+
+	rr, err = o.ReviseRound(context.Background(), sess, "also support CSV export")
+	if err != nil {
+		t.Fatalf("ReviseRound: %v", err)
+	}
+	if rr.Payload.Status != StatusPRD {
+		t.Fatalf("revision status = %q, want prd", rr.Payload.Status)
+	}
+	if got := sess.Phase(); got != PhaseReview {
+		t.Errorf("after revision phase = %q, want prd_review (still under review)", got)
+	}
+	prd, ok := sess.PRD()
+	if !ok || !strings.Contains(prd.Markdown, "Export v2") {
+		t.Fatalf("revised PRD did not replace the durable copy: %q", prd.Markdown)
+	}
+	if strings.Contains(prd.Markdown, "Export v1") {
+		t.Error("durable PRD still holds the pre-revision draft")
+	}
+
+	revisePrompt := runner.prompts[1]
+	if !strings.Contains(revisePrompt, "also support CSV export") {
+		t.Error("revision prompt did not carry the change note")
+	}
+	if !strings.Contains(revisePrompt, "Export v1") {
+		t.Error("revision prompt did not carry the prior PRD to revise")
+	}
+
+	if err := sess.Approve(); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	if got := sess.Phase(); got != PhasePRDReady {
+		t.Errorf("after approve phase = %q, want prd_ready", got)
+	}
+	if final, _ := sess.PRD(); !strings.Contains(final.Markdown, "Export v2") {
+		t.Errorf("approved PRD = %q, want the revised copy", final.Markdown)
+	}
+	if _, err := os.Stat(filepath.Join(sess.Dir(), prdFile)); err != nil {
+		t.Errorf("prd.md not on disk: %v", err)
+	}
+}
+
+// TestReviseRejectsQuestions checks a revision that comes back as questions is
+// rejected rather than surfaced, leaving the durable PRD untouched — a revision
+// must return a PRD.
+func TestReviseRejectsQuestions(t *testing.T) {
+	root := t.TempDir()
+	runner := &scriptedRunner{finals: []string{
+		`{"status":"prd","prd":{"title":"T","markdown":"# T\n\nbody"}}`,
+		`{"status":"questions","questions":[{"id":"q1","text":"scope?","kind":"single","options":[{"label":"a"},{"label":"b"}]}]}`,
+	}}
+	o := NewOrchestrator(runner, root).WithClock(fixedClock())
+
+	rr, err := o.RunRound(context.Background(), "an idea")
+	if err != nil {
+		t.Fatalf("RunRound: %v", err)
+	}
+	if _, err := o.ReviseRound(context.Background(), rr.Session, "tighten scope"); err == nil {
+		t.Fatal("ReviseRound should reject a questions payload")
+	}
+	if got := rr.Session.Phase(); got != PhaseReview {
+		t.Errorf("phase after rejected revision = %q, want prd_review", got)
+	}
+	if prd, _ := rr.Session.PRD(); !strings.Contains(prd.Markdown, "body") {
+		t.Errorf("durable PRD changed after a rejected revision: %q", prd.Markdown)
+	}
+}
+
+// TestReviseAndApproveGuards covers the no-PRD and empty-note paths.
+func TestReviseAndApproveGuards(t *testing.T) {
+	root := t.TempDir()
+	o := NewOrchestrator(&fakeRunner{}, root).WithClock(fixedClock())
+	sess, err := newSession(root, "an idea", fixedClock())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := o.ReviseRound(context.Background(), sess, "change it"); err == nil {
+		t.Error("ReviseRound without a PRD should error")
+	}
+	if err := sess.Approve(); err == nil {
+		t.Error("Approve without a PRD should error")
+	}
+
+	if err := sess.savePRD(PRD{Title: "T", Markdown: "# T"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := o.ReviseRound(context.Background(), sess, "  "); err == nil {
+		t.Error("ReviseRound with an empty note should error")
 	}
 }
 

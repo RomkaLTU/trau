@@ -81,6 +81,15 @@ type Actions interface {
 	// session at dir, then runs the next planning round as a fresh process and
 	// returns its outcome. It is cancellable via ctx.
 	AnswerPlan(ctx context.Context, dir string, answers []PlanAnswer) (PlanOutcome, error)
+
+	// RevisePlan records a free-text change request against the drafted PRD in the
+	// plan session at dir and runs a fresh revision round, returning the revised PRD
+	// outcome. It is cancellable via ctx.
+	RevisePlan(ctx context.Context, dir, note string) (PlanOutcome, error)
+
+	// ApprovePlan approves the drafted PRD in the plan session at dir, advancing the
+	// session checkpoint to prd_ready. It is cancellable via ctx.
+	ApprovePlan(ctx context.Context, dir string) error
 }
 
 // ListedTicket is one eligible ticket returned by a fast list operation.
