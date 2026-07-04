@@ -95,3 +95,38 @@ func TestCheckJiraLiveAuth401(t *testing.T) {
 		t.Errorf("check message leaked the token: %q", c.Message)
 	}
 }
+
+func TestCheckLinearProjectSkippedForNonLinear(t *testing.T) {
+	rr := newTestRunner()
+	checkLinearProject(context.Background(), config.Config{TrackerProvider: "jira"}, rr)
+	if len(rr.r.Checks) != 0 {
+		t.Errorf("expected no linear project check for jira provider, got %+v", rr.r.Checks)
+	}
+}
+
+func TestCheckLinearProjectPassWhenScoped(t *testing.T) {
+	rr := newTestRunner()
+	checkLinearProject(context.Background(), config.Config{TrackerProvider: "linear", Project: "trau"}, rr)
+	c := lastCheck(t, rr)
+	if c.Status != pass {
+		t.Errorf("status = %q, want pass", c.Status)
+	}
+	if !strings.Contains(c.Message, "PROJECT=trau") {
+		t.Errorf("message %q should name the configured project", c.Message)
+	}
+}
+
+// TestCheckLinearProjectWarnsWhenUnset is the COD-158-in-trau guard: with
+// PROJECT empty every cross-project pick guard is off, and doctor must say so
+// (here without an API key, so the generic warning applies).
+func TestCheckLinearProjectWarnsWhenUnset(t *testing.T) {
+	rr := newTestRunner()
+	checkLinearProject(context.Background(), config.Config{TrackerProvider: "linear", LinearTeam: "COD"}, rr)
+	c := lastCheck(t, rr)
+	if c.Status != warn {
+		t.Errorf("status = %q, want warn", c.Status)
+	}
+	if !strings.Contains(c.Message, "cross-project") || !strings.Contains(c.Message, "PROJECT") {
+		t.Errorf("message %q should explain the disabled cross-project guards", c.Message)
+	}
+}
