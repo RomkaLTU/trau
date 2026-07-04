@@ -6,6 +6,7 @@ import {
   CircleCheck,
   CircleX,
   FileText,
+  Flame,
   GitBranch,
   GitPullRequest,
   ListChecks,
@@ -22,6 +23,7 @@ import { cn } from '@/lib/utils'
 import { addComment } from '@/lib/issues'
 import {
   runDetailQueryOptions,
+  type Anomaly,
   type PhaseCost,
   type RunDetail,
   type Rubric,
@@ -34,7 +36,9 @@ export const Route = createFileRoute('/runs_/$repo/$ticket')({
 
 function RunDetailPage() {
   const { repo, ticket } = Route.useParams()
-  const { data, error, isPending } = useQuery(runDetailQueryOptions(repo, ticket))
+  const { data, error, isPending } = useQuery(
+    runDetailQueryOptions(repo, ticket),
+  )
 
   return (
     <div className="flex flex-col gap-6">
@@ -47,7 +51,9 @@ function RunDetailPage() {
       </Link>
 
       {error && <p className="text-sm text-destructive">{String(error)}</p>}
-      {isPending && !error && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {isPending && !error && (
+        <p className="text-sm text-muted-foreground">Loading…</p>
+      )}
       {data && <Detail repo={repo} run={data} />}
     </div>
   )
@@ -57,6 +63,7 @@ function Detail({ repo, run }: { repo: string; run: RunDetail }) {
   return (
     <div className="flex flex-col gap-8">
       <Header repo={repo} run={run} />
+      <Anomalies anomalies={run.anomalies} />
       <Costs costs={run.costs} present={run.artifacts.tokens} />
       <Handoff markdown={run.handoff} present={run.artifacts.handoff} />
       <RubricPanel rubric={run.rubric} present={run.artifacts.rubric} />
@@ -156,13 +163,19 @@ function Header({ repo, run }: { repo: string; run: RunDetail }) {
                 : 'border-destructive/40 bg-destructive/10 text-destructive',
             )}
           >
-            {run.failure_class === 'gave_up' ? 'quarantined' : run.failure_class}
+            {run.failure_class === 'gave_up'
+              ? 'quarantined'
+              : run.failure_class}
           </Badge>
         )}
       </div>
 
-      {run.title && <p className="text-sm text-muted-foreground">{run.title}</p>}
-      {run.failure_reason && <p className="text-sm text-destructive">{run.failure_reason}</p>}
+      {run.title && (
+        <p className="text-sm text-muted-foreground">{run.title}</p>
+      )}
+      {run.failure_reason && (
+        <p className="text-sm text-destructive">{run.failure_reason}</p>
+      )}
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
         <span className="text-foreground/70">{repo}</span>
@@ -183,7 +196,9 @@ function Header({ repo, run }: { repo: string; run: RunDetail }) {
             {run.pr ? `PR #${run.pr}` : 'PR'}
           </a>
         )}
-        {run.updated_at && <span className="tabular-nums">Updated {run.updated_at}</span>}
+        {run.updated_at && (
+          <span className="tabular-nums">Updated {run.updated_at}</span>
+        )}
       </div>
     </header>
   )
@@ -215,6 +230,41 @@ function Section({
       </h2>
       {children}
     </section>
+  )
+}
+
+function Anomalies({ anomalies }: { anomalies?: Anomaly[] }) {
+  if (!anomalies || anomalies.length === 0) return null
+  return (
+    <Section icon={Flame} title="Cost anomalies">
+      <div className="flex flex-col gap-2">
+        {anomalies.map((a) => (
+          <div
+            key={a.phase}
+            className="flex flex-col gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-mono text-xs font-medium">{a.phase}</span>
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {cost(a.cost_usd, true)} · {num(a.output)} output · {a.turns}{' '}
+                turns
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {a.reasons.map((r, i) => (
+                <Badge
+                  key={i}
+                  variant="outline"
+                  className="border-amber-500/40 text-amber-700 dark:text-amber-300"
+                >
+                  {r}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Section>
   )
 }
 
@@ -260,24 +310,42 @@ function CostTable({ costs }: { costs: PhaseCost[] }) {
           {costs.map((c) => (
             <tr key={c.phase} className="border-b last:border-b-0">
               <td className="px-3 py-2 font-mono text-xs">{c.phase}</td>
-              <td className="px-3 py-2 text-right tabular-nums">{num(c.input)}</td>
-              <td className="px-3 py-2 text-right tabular-nums">{num(c.output)}</td>
+              <td className="px-3 py-2 text-right tabular-nums">
+                {num(c.input)}
+              </td>
+              <td className="px-3 py-2 text-right tabular-nums">
+                {num(c.output)}
+              </td>
               <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
                 {num(c.cache_read + c.cache_creation)}
               </td>
-              <td className="px-3 py-2 text-right font-medium tabular-nums">{num(c.total)}</td>
-              <td className="px-3 py-2 text-right tabular-nums">{cost(c.cost_usd, c.metered)}</td>
+              <td className="px-3 py-2 text-right font-medium tabular-nums">
+                {num(c.total)}
+              </td>
+              <td className="px-3 py-2 text-right tabular-nums">
+                {cost(c.cost_usd, c.metered)}
+              </td>
             </tr>
           ))}
         </tbody>
         <tfoot>
           <tr className="bg-muted/40 font-medium">
             <td className="px-3 py-2 text-xs">Total</td>
-            <td className="px-3 py-2 text-right tabular-nums">{num(totals.input)}</td>
-            <td className="px-3 py-2 text-right tabular-nums">{num(totals.output)}</td>
-            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{num(totals.cache)}</td>
-            <td className="px-3 py-2 text-right tabular-nums">{num(totals.total)}</td>
-            <td className="px-3 py-2 text-right tabular-nums">{cost(totals.usd, totals.metered)}</td>
+            <td className="px-3 py-2 text-right tabular-nums">
+              {num(totals.input)}
+            </td>
+            <td className="px-3 py-2 text-right tabular-nums">
+              {num(totals.output)}
+            </td>
+            <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">
+              {num(totals.cache)}
+            </td>
+            <td className="px-3 py-2 text-right tabular-nums">
+              {num(totals.total)}
+            </td>
+            <td className="px-3 py-2 text-right tabular-nums">
+              {cost(totals.usd, totals.metered)}
+            </td>
           </tr>
         </tfoot>
       </table>
@@ -285,11 +353,19 @@ function CostTable({ costs }: { costs: PhaseCost[] }) {
   )
 }
 
-function Handoff({ markdown, present }: { markdown?: string; present: boolean }) {
+function Handoff({
+  markdown,
+  present,
+}: {
+  markdown?: string
+  present: boolean
+}) {
   return (
     <Section icon={FileText} title="Handoff brief">
       {!present || !markdown ? (
-        <Empty>No handoff brief yet — this run has not reached the handoff phase.</Empty>
+        <Empty>
+          No handoff brief yet — this run has not reached the handoff phase.
+        </Empty>
       ) : (
         <div className="rounded-lg border bg-card p-4">
           <Markdown>{markdown}</Markdown>
@@ -299,7 +375,13 @@ function Handoff({ markdown, present }: { markdown?: string; present: boolean })
   )
 }
 
-function RubricPanel({ rubric, present }: { rubric?: Rubric; present: boolean }) {
+function RubricPanel({
+  rubric,
+  present,
+}: {
+  rubric?: Rubric
+  present: boolean
+}) {
   const groups: { label: string; items?: string[] }[] = [
     { label: 'Acceptance criteria', items: rubric?.acceptance_criteria },
     { label: 'Required tests', items: rubric?.required_tests },
@@ -335,9 +417,18 @@ function RubricPanel({ rubric, present }: { rubric?: Rubric; present: boolean })
   )
 }
 
-function VerdictPanel({ verdict, present }: { verdict?: Verdict; present: boolean }) {
+function VerdictPanel({
+  verdict,
+  present,
+}: {
+  verdict?: Verdict
+  present: boolean
+}) {
   return (
-    <Section icon={verdict?.pass ? CircleCheck : CircleX} title="Verify verdict">
+    <Section
+      icon={verdict?.pass ? CircleCheck : CircleX}
+      title="Verify verdict"
+    >
       {!present || !verdict ? (
         <Empty>Not verified yet — no verdict recorded for this run.</Empty>
       ) : (
@@ -381,7 +472,9 @@ function VerdictPanel({ verdict, present }: { verdict?: Verdict; present: boolea
                     <CircleX className="size-4 shrink-0 text-destructive" />
                   )}
                   <span className="font-mono text-xs">{c.name}</span>
-                  {c.detail && <span className="text-muted-foreground">— {c.detail}</span>}
+                  {c.detail && (
+                    <span className="text-muted-foreground">— {c.detail}</span>
+                  )}
                 </div>
               ))}
             </div>
