@@ -8,6 +8,7 @@ import {
   Boxes,
   DollarSign,
   LayoutDashboard,
+  Lightbulb,
   ListChecks,
   Settings,
   type LucideIcon,
@@ -24,6 +25,7 @@ const nav: NavItem[] = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, exact: true },
   { to: '/instances', label: 'Instances', icon: Boxes },
   { to: '/runs', label: 'Runs', icon: ListChecks },
+  { to: '/lessons', label: 'Lessons', icon: Lightbulb },
   { to: '/costs', label: 'Costs', icon: DollarSign },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]
