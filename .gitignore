@@ -24,3 +24,5 @@ coverage.txt
 
 # IDE
 /.idea/
+# trau run artifacts and project config (do not commit)
+.trau/runs/
