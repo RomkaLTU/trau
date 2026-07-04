@@ -6,8 +6,10 @@ import {
   CircleDot,
   GitPullRequest,
   Pause,
+  Plus,
   ShieldAlert,
   TriangleAlert,
+  X,
   type LucideProps,
 } from 'lucide-react'
 
@@ -19,6 +21,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { EventFeed } from '@/components/event-feed'
+import { NewIssueForm } from '@/components/new-issue-form'
 import { cn } from '@/lib/utils'
 import {
   reposQueryOptions,
@@ -119,8 +122,26 @@ function Runs() {
         </div>
       )}
 
+      {active && <NewIssuePanel repo={active} />}
       {active && <Board repo={active} />}
       {active && <EventFeed repo={active} />}
+    </div>
+  )
+}
+
+function NewIssuePanel({ repo }: { repo: string }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="flex flex-col gap-3">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="inline-flex w-fit items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+      >
+        {open ? <X className="size-4" /> : <Plus className="size-4" />}
+        {open ? 'Cancel' : 'New issue'}
+      </button>
+      {open && <NewIssueForm repo={repo} />}
     </div>
   )
 }

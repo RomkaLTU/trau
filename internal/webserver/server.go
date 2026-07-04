@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
 // APIPrefix is the mount path for the versioned JSON API.
@@ -26,6 +28,7 @@ type Server struct {
 	token     string
 	workspace []string
 	sup       Supervisor
+	newWriter func(config.Config) (tracker.Writer, error)
 }
 
 // New builds a Server that reports version and treats now as its start time. It
@@ -43,6 +46,7 @@ func New(version, bind, token string, workspace []string) *Server {
 		token:     token,
 		workspace: normalizeRoots(workspace),
 		sup:       newOSSupervisor(),
+		newWriter: defaultWriter,
 	}
 }
 
@@ -62,8 +66,10 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/instances", s.handleInstances)
 	mux.HandleFunc(APIPrefix+"/instances/{pid}/stop", s.handleStopInstance)
 	mux.HandleFunc(APIPrefix+"/repos", s.handleRepos)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues", s.handleCreateIssue)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs", s.handleRuns)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}", s.handleRunDetail)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/comment", s.handleRunComment)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/lessons", s.handleLessons)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/config", s.handleConfig)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/events", s.handleEvents)

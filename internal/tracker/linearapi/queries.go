@@ -176,7 +176,7 @@ mutation IssueLabelCreate($name: String!, $teamId: ID!) {
 }
 `
 
-	// issueCreateMutation creates a new issue (used for filing bugs).
+	// issueCreateMutation creates a new issue.
 	issueCreateMutation = `
 mutation IssueCreate($teamId: ID!, $title: String!, $description: String, $labelIds: [ID!]) {
   issueCreate(input: { teamId: $teamId, title: $title, description: $description, labelIds: $labelIds }) {
@@ -184,6 +184,7 @@ mutation IssueCreate($teamId: ID!, $title: String!, $description: String, $label
     issue {
       id
       identifier
+      url
     }
   }
 }
