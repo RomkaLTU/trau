@@ -1727,19 +1727,69 @@ func (a *appActions) StartPlan(ctx context.Context, idea string) (tui.PlanOutcom
 	if err := a.ensure(); err != nil {
 		return tui.PlanOutcome{}, err
 	}
-	orch := planning.NewOrchestrator(a.runner, filepath.Join(a.cfg.RunsDir, "_plans"))
-	rr, err := orch.RunRound(ctx, idea)
+	rr, err := a.planOrchestrator().RunRound(ctx, idea)
 	if err != nil {
 		return tui.PlanOutcome{}, err
 	}
-	return planOutcome(rr.Payload), nil
+	return planOutcome(rr), nil
 }
 
-// planOutcome projects a planning payload onto the TUI's Plan screen outcome.
-func planOutcome(p planning.Payload) tui.PlanOutcome {
-	out := tui.PlanOutcome{Status: string(p.Status)}
-	if p.Status == planning.StatusPRD && p.PRD != nil {
-		out.Title, out.Markdown = p.PRD.Title, p.PRD.Markdown
+// AnswerPlan records the answers to the previous round's questions on the plan
+// session at dir and runs the next planning round as a fresh process, exactly
+// like the first — the session's durable transcript is the only continuity.
+func (a *appActions) AnswerPlan(ctx context.Context, dir string, answers []tui.PlanAnswer) (tui.PlanOutcome, error) {
+	if err := a.ensure(); err != nil {
+		return tui.PlanOutcome{}, err
+	}
+	rr, err := a.planOrchestrator().AnswerRound(ctx, planning.OpenSession(dir), planAnswers(answers))
+	if err != nil {
+		return tui.PlanOutcome{}, err
+	}
+	return planOutcome(rr), nil
+}
+
+func (a *appActions) planOrchestrator() *planning.Orchestrator {
+	return planning.NewOrchestrator(a.runner, filepath.Join(a.cfg.RunsDir, "_plans")).
+		WithMaxRounds(a.cfg.MaxPlanRounds)
+}
+
+// planOutcome projects a planning round onto the TUI's Plan screen outcome.
+func planOutcome(rr *planning.RoundResult) tui.PlanOutcome {
+	p := rr.Payload
+	out := tui.PlanOutcome{Status: string(p.Status), SessionDir: rr.Session.Dir()}
+	switch p.Status {
+	case planning.StatusPRD:
+		if p.PRD != nil {
+			out.Title, out.Markdown = p.PRD.Title, p.PRD.Markdown
+		}
+	case planning.StatusQuestions:
+		out.Questions = planQuestions(p.Questions)
+	}
+	return out
+}
+
+func planQuestions(in []planning.Question) []tui.PlanQuestion {
+	out := make([]tui.PlanQuestion, len(in))
+	for i, q := range in {
+		pq := tui.PlanQuestion{
+			ID:      q.ID,
+			Header:  q.Header,
+			Text:    q.Text,
+			Kind:    string(q.ResolvedKind()),
+			Default: q.Default,
+		}
+		for _, o := range q.Options {
+			pq.Options = append(pq.Options, tui.PlanOption{Label: o.Label, Description: o.Description})
+		}
+		out[i] = pq
+	}
+	return out
+}
+
+func planAnswers(in []tui.PlanAnswer) []planning.Answer {
+	out := make([]planning.Answer, len(in))
+	for i, a := range in {
+		out[i] = planning.Answer{ID: a.ID, Question: a.Question, Values: a.Values, Skipped: a.Skipped}
 	}
 	return out
 }

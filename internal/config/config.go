@@ -86,9 +86,13 @@ type Config struct {
 
 	Routes map[string]string
 
-	MaxIterations  int
-	MaxRepairs     int
-	MaxBugfixes    int
+	MaxIterations int
+	MaxRepairs    int
+	MaxBugfixes   int
+	// MaxPlanRounds caps how many rounds of clarifying questions a planning
+	// session may ask before the agent must draft the PRD with its remaining
+	// assumptions listed explicitly.
+	MaxPlanRounds  int
 	AutoMerge      bool
 	MergeMethod    string
 	CITimeout      int
@@ -214,6 +218,7 @@ func Defaults() Config {
 		MaxIterations:         15,
 		MaxRepairs:            2,
 		MaxBugfixes:           2,
+		MaxPlanRounds:         3,
 		AutoMerge:             true,
 		MergeMethod:           "squash",
 		CITimeout:             600,
@@ -525,6 +530,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	num("MAX_ITERATIONS", &c.MaxIterations)
 	num("MAX_REPAIRS", &c.MaxRepairs)
 	num("MAX_BUGFIXES", &c.MaxBugfixes)
+	num("MAX_PLAN_ROUNDS", &c.MaxPlanRounds)
 	if v, src := get("AUTO_MERGE"); v != "" {
 		c.AutoMerge = v == "1"
 		sources["AUTO_MERGE"] = src.name
@@ -1017,6 +1023,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "MAX_ITERATIONS", Default: "15", Description: "Maximum tickets per run"},
 		{Key: "MAX_REPAIRS", Default: "2", Description: "Verify-fail quick repair attempts before bugfix"},
 		{Key: "MAX_BUGFIXES", Default: "2", Description: "Comprehensive bugfix passes after quick repairs are exhausted"},
+		{Key: "MAX_PLAN_ROUNDS", Default: "3", Description: "Rounds of clarifying questions a planning session may ask before the PRD is forced"},
 		{Key: "AUTO_MERGE", Default: "1", Description: "Merge on green CI (1 = yes, 0 = no)", Bool: true},
 		{Key: "MERGE_METHOD", Default: "squash", Description: "Merge strategy: squash | merge | rebase", Options: []string{"squash", "merge", "rebase"}},
 		{Key: "CI_TIMEOUT", Default: "600", Description: "Seconds to wait for CI checks"},
@@ -1428,6 +1435,8 @@ func keyValue(cfg Config, key string) string {
 		return strconv.Itoa(cfg.MaxRepairs)
 	case "MAX_BUGFIXES":
 		return strconv.Itoa(cfg.MaxBugfixes)
+	case "MAX_PLAN_ROUNDS":
+		return strconv.Itoa(cfg.MaxPlanRounds)
 	case "AUTO_MERGE":
 		if cfg.AutoMerge {
 			return "1"

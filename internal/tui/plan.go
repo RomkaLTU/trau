@@ -7,26 +7,31 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/huh/v2"
 )
 
 // PlanOutcome is a planning round's result surfaced to the Plan screen. Status is
-// the payload status; for a PRD, Title and Markdown carry the document. For the
-// other statuses — not yet actioned in this slice — Note holds a graceful one-line
-// message so the screen can flag rather than crash on them.
+// the payload status; for a PRD, Title and Markdown carry the document; for
+// questions, Questions carries them. SessionDir is the durable plan session the
+// round ran under, so the next round can be answered against it. Note holds a
+// graceful one-line message for a status the screen does not action.
 type PlanOutcome struct {
-	Status   string
-	Title    string
-	Markdown string
-	Note     string
+	Status     string
+	SessionDir string
+	Title      string
+	Markdown   string
+	Questions  []PlanQuestion
+	Note       string
 }
 
 type planStep int
 
 const (
-	planInput   planStep = iota // idea entry
-	planRunning                 // round in flight
-	planPRD                     // PRD in a scrollable viewport
-	planNote                    // graceful message (non-PRD result or error)
+	planInput     planStep = iota // idea entry
+	planRunning                   // round in flight
+	planQuestions                 // answering a round of questions
+	planPRD                       // PRD in a scrollable viewport
+	planNote                      // graceful message (non-PRD result or error)
 )
 
 // planModel is the Plan screen: paste/type a raw idea (or a file path), run one
@@ -38,19 +43,32 @@ type planModel struct {
 	width   int
 	height  int
 
-	inited    bool
-	step      planStep
-	idea      textarea.Model
-	viewport  viewport.Model
-	title     string
-	note      string
-	badIdea   bool
-	cancelled bool
+	inited     bool
+	step       planStep
+	idea       textarea.Model
+	viewport   viewport.Model
+	pform      *planForm
+	sessionDir string
+	title      string
+	note       string
+	badIdea    bool
+	cancelled  bool
 }
 
 type planDoneMsg struct {
 	out PlanOutcome
 	err error
+}
+
+type planFormSubmitMsg struct{}
+
+type planFormCancelMsg struct{}
+
+// planAccessibleDoneMsg carries the answers collected by the accessible runner
+// after the TUI resumed from tea.Exec, or the error it failed with.
+type planAccessibleDoneMsg struct {
+	answers []PlanAnswer
+	err     error
 }
 
 func newPlanModel(ctx context.Context, actions Actions, styles Styles, w, h int) planModel {
@@ -110,6 +128,9 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.relayout(msg.Width, msg.Height)
+		if m.pform != nil {
+			m.pform.form = m.pform.form.WithWidth(m.formWidth())
+		}
 		return m, nil
 
 	case planDoneMsg:
@@ -120,14 +141,50 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 			m.step, m.note = planNote, "✗ "+msg.err.Error()
 			return m, nil
 		}
-		if msg.out.Status == "prd" {
+		m.sessionDir = msg.out.SessionDir
+		switch msg.out.Status {
+		case "prd":
 			m.step = planPRD
 			m.title = msg.out.Title
 			m.viewport.SetContent(m.prdBody(msg.out))
 			m.viewport.GotoTop()
 			return m, nil
+		case "questions":
+			if accessibleRequested() {
+				return m, m.accessiblePlanCmd(msg.out.Questions)
+			}
+			m.pform = newPlanForm(msg.out.Questions, m.formWidth())
+			m.step = planQuestions
+			return m, m.pform.form.Init()
+		default:
+			m.step, m.note = planNote, planStatusNote(msg.out)
+			return m, nil
 		}
-		m.step, m.note = planNote, planStatusNote(msg.out)
+
+	case planFormSubmitMsg:
+		if m.step != planQuestions {
+			return m, nil
+		}
+		answers := m.pform.answers()
+		m.step = planRunning
+		return m, m.answerPlanCmd(answers)
+
+	case planAccessibleDoneMsg:
+		if m.step != planRunning {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.step, m.note = planNote, "✗ "+msg.err.Error()
+			return m, nil
+		}
+		return m, m.answerPlanCmd(msg.answers)
+
+	case planFormCancelMsg:
+		if m.step == planQuestions {
+			m.step = planInput
+			m.idea.Focus()
+			return m, textarea.Blink
+		}
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -138,6 +195,8 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 	switch m.step {
 	case planInput:
 		m.idea, cmd = m.idea.Update(msg)
+	case planQuestions:
+		m, cmd = m.passToForm(msg)
 	case planPRD:
 		m.viewport, cmd = m.viewport.Update(msg)
 	}
@@ -170,6 +229,17 @@ func (m planModel) handleKey(msg tea.KeyPressMsg) (planModel, tea.Cmd) {
 			m.idea.Focus()
 		}
 		return m, nil
+
+	case planQuestions:
+		if m.isFormBackKey(msg) {
+			if m.pform.onFirstField() {
+				m.step = planInput
+				m.idea.Focus()
+				return m, textarea.Blink
+			}
+			return m.passToForm(planFormBackKey())
+		}
+		return m.passToForm(msg)
 
 	case planPRD, planNote:
 		switch msg.String() {
@@ -208,6 +278,61 @@ func (m planModel) startPlanCmd() tea.Cmd {
 	}
 }
 
+func (m planModel) answerPlanCmd(answers []PlanAnswer) tea.Cmd {
+	actions, ctx, dir := m.actions, m.ctx, m.sessionDir
+	return func() tea.Msg {
+		out, err := actions.AnswerPlan(ctx, dir, answers)
+		return planDoneMsg{out: out, err: err}
+	}
+}
+
+// accessiblePlanCmd releases the terminal and runs the question round through
+// huh's accessible prompts, returning the answers once the TUI resumes.
+func (m planModel) accessiblePlanCmd(questions []PlanQuestion) tea.Cmd {
+	exec := &accessiblePlanExec{ctx: m.ctx, questions: questions}
+	return tea.Exec(exec, func(err error) tea.Msg {
+		return planAccessibleDoneMsg{answers: exec.answers, err: err}
+	})
+}
+
+// passToForm drives the embedded question form; pform is pointer-shared so its
+// state survives the value-copy of planModel through the update loop.
+func (m planModel) passToForm(msg tea.Msg) (planModel, tea.Cmd) {
+	fm, cmd := m.pform.form.Update(msg)
+	if f, ok := fm.(*huh.Form); ok {
+		m.pform.form = f
+	}
+	return m, cmd
+}
+
+// isFormBackKey reports whether the key steps back in the question form: esc
+// always, and ← / q only when a text field is not capturing the keystroke.
+func (m planModel) isFormBackKey(msg tea.KeyPressMsg) bool {
+	switch msg.String() {
+	case "esc":
+		return true
+	case "left", "q":
+		return !m.pform.editing()
+	}
+	return false
+}
+
+// planFormBackKey is the shift+tab huh reads as "previous field/group".
+func planFormBackKey() tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
+}
+
+func (m planModel) formWidth() int {
+	w := m.width - 4
+	if w > 72 {
+		w = 72
+	}
+	if w < 24 {
+		w = 24
+	}
+	return w
+}
+
 // prdBody is the PRD viewport content: the title as a heading over the markdown.
 func (m planModel) prdBody(out PlanOutcome) string {
 	title := strings.TrimSpace(out.Title)
@@ -217,15 +342,13 @@ func (m planModel) prdBody(out PlanOutcome) string {
 	return m.styles.SummaryTitle.Render(title) + "\n\n" + out.Markdown
 }
 
-// planStatusNote flags a non-PRD result gracefully — the question and slice rounds
-// that would act on these statuses are later slices.
+// planStatusNote flags a result the Plan screen does not action gracefully — the
+// slice round that would publish slices is a later slice.
 func planStatusNote(out PlanOutcome) string {
 	if out.Note != "" {
 		return out.Note
 	}
 	switch out.Status {
-	case "questions":
-		return "The planner returned questions. Interactive question rounds aren't wired up yet — refine the idea and try again."
 	case "slices":
 		return "The planner returned slices rather than a PRD. Slice publishing isn't wired up yet."
 	default:
@@ -235,9 +358,18 @@ func planStatusNote(out PlanOutcome) string {
 
 func (m planModel) Cancelled() bool { return m.cancelled }
 
-// editing reports whether the idea textarea owns input, so the global ? and :
-// overlays stay closed (both are valid characters in a raw idea).
-func (m planModel) editing() bool { return m.step == planInput }
+// editing reports whether a free-text field owns input, so the global ? and :
+// overlays stay closed (both are valid characters in a raw idea or a typed
+// answer): the idea textarea, or a text/Other field of the question form.
+func (m planModel) editing() bool {
+	switch m.step {
+	case planInput:
+		return true
+	case planQuestions:
+		return m.pform != nil && m.pform.editing()
+	}
+	return false
+}
 
 func (m planModel) view(spinner string) string {
 	s := m.styles
@@ -254,7 +386,13 @@ func (m planModel) body(spinner string) string {
 	s := m.styles
 	switch m.step {
 	case planRunning:
-		return spinner + " " + s.Subtle.Render("running a planning round — a fresh agent is drafting your PRD…")
+		return spinner + " " + s.Subtle.Render("running a planning round — a fresh agent is reading the idea and your answers…")
+	case planQuestions:
+		if m.pform == nil {
+			return ""
+		}
+		intro := s.Subtle.Render("The planner needs a few answers. Pick Other to type your own, or Skip to take the default.")
+		return intro + "\n\n" + m.pform.form.View()
 	case planPRD:
 		return m.viewport.View()
 	case planNote:
@@ -277,6 +415,12 @@ func (m planModel) help() screenHelp {
 	case planRunning:
 		return screenHelp{title: "Plan", columns: []helpColumn{
 			group("Session", fk("esc", "cancel")),
+		}}
+	case planQuestions:
+		return screenHelp{title: "Plan · questions", columns: []helpColumn{
+			group("Navigate", fk("↑↓", "move"), fk("tab", "next field")),
+			group("Answer", fk("x", "toggle (multi)"), fk("enter", "select/submit")),
+			group("Actions", fk("esc/←", "back")),
 		}}
 	case planPRD:
 		return screenHelp{title: "Plan", columns: []helpColumn{
