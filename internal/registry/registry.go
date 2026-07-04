@@ -1,0 +1,272 @@
+// Package registry is the machine-local instance registry: every trau loop
+// best-effort records itself under the user's trau home on start and clears the
+// record on clean exit, so `trau serve` can list the loops running on this
+// machine. Registration must never block or fail a loop — an unwritable registry
+// is silently ignored — so every write here is best-effort by design.
+package registry
+
+import (
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"sync"
+	"syscall"
+	"time"
+)
+
+const heartbeatInterval = 30 * time.Second
+
+// Home returns the trau home directory that roots the registry: $TRAU_HOME when
+// set, else ~/.trau. An empty string means neither is resolvable, in which case
+// registration is skipped entirely.
+func Home() string {
+	if h := os.Getenv("TRAU_HOME"); h != "" {
+		return h
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".trau")
+}
+
+// Entry is one loop's record: enough to identify the process, find its run
+// artifacts, and probe whether it is still alive.
+type Entry struct {
+	PID       int       `json:"pid"`
+	RepoRoot  string    `json:"repo_root"`
+	RunsDir   string    `json:"runs_dir"`
+	StartedAt time.Time `json:"started_at"`
+	Heartbeat time.Time `json:"heartbeat"`
+}
+
+// Repo is a repository the hub has seen a loop run in. It outlives the loop so a
+// repo's runs stay browsable after the loop exits.
+type Repo struct {
+	Name    string `json:"name"`
+	Root    string `json:"root"`
+	RunsDir string `json:"runs_dir"`
+}
+
+// Handle is a live registration. Deregister is safe to call on a nil or
+// never-registered Handle, so callers can register unconditionally and defer the
+// cleanup without checking whether the write actually landed.
+type Handle struct {
+	path  string
+	entry Entry
+	stop  chan struct{}
+	once  sync.Once
+}
+
+var reposMu sync.Mutex
+
+func instancesDir(home string) string { return filepath.Join(home, "instances") }
+
+func reposFile(home string) string { return filepath.Join(home, "repos.json") }
+
+// Register records the calling process as a live loop under home and heartbeats
+// the entry until Deregister. It is best-effort: any failure yields a no-op
+// Handle and the loop carries on. A relative runsDir is resolved against
+// repoRoot so the hub, running elsewhere, can find it.
+func Register(home, repoRoot, runsDir string) *Handle {
+	h := &Handle{}
+	if home == "" {
+		return h
+	}
+	if runsDir != "" && !filepath.IsAbs(runsDir) && repoRoot != "" {
+		runsDir = filepath.Join(repoRoot, runsDir)
+	}
+	dir := instancesDir(home)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return h
+	}
+	now := time.Now()
+	h.entry = Entry{
+		PID:       os.Getpid(),
+		RepoRoot:  repoRoot,
+		RunsDir:   runsDir,
+		StartedAt: now,
+		Heartbeat: now,
+	}
+	h.path = filepath.Join(dir, entryName(h.entry.PID))
+	if writeJSON(h.path, h.entry) != nil {
+		h.path = ""
+		return h
+	}
+	h.stop = make(chan struct{})
+	go h.beat()
+	return h
+}
+
+func (h *Handle) beat() {
+	t := time.NewTicker(heartbeatInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-h.stop:
+			return
+		case <-t.C:
+			h.entry.Heartbeat = time.Now()
+			_ = writeJSON(h.path, h.entry)
+		}
+	}
+}
+
+// Deregister stops the heartbeat and removes the entry. Best-effort and
+// idempotent.
+func (h *Handle) Deregister() {
+	if h == nil {
+		return
+	}
+	h.once.Do(func() {
+		if h.stop != nil {
+			close(h.stop)
+		}
+		if h.path != "" {
+			_ = os.Remove(h.path)
+		}
+	})
+}
+
+// Live returns the entries whose process is still alive, reaping the files of any
+// that are not. It is the hub's read side of the registry.
+func Live(home string) []Entry {
+	if home == "" {
+		return nil
+	}
+	dir := instancesDir(home)
+	names, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil {
+		return nil
+	}
+	live := make([]Entry, 0, len(names))
+	for _, name := range names {
+		var e Entry
+		if !readJSON(name, &e) {
+			continue
+		}
+		if alive(e.PID) {
+			live = append(live, e)
+			continue
+		}
+		_ = os.Remove(name)
+	}
+	sort.Slice(live, func(i, j int) bool {
+		return live[i].StartedAt.Before(live[j].StartedAt)
+	})
+	return live
+}
+
+// RememberRepos folds the repos of the given entries into the persistent
+// known-repos set. The hub owns this file, so writes are serialized here rather
+// than across loops. Best-effort.
+func RememberRepos(home string, entries []Entry) {
+	if home == "" || len(entries) == 0 {
+		return
+	}
+	reposMu.Lock()
+	defer reposMu.Unlock()
+
+	known := loadRepos(home)
+	changed := false
+	for _, e := range entries {
+		if e.RepoRoot == "" {
+			continue
+		}
+		if _, ok := known[e.RepoRoot]; ok {
+			continue
+		}
+		known[e.RepoRoot] = Repo{
+			Name:    filepath.Base(e.RepoRoot),
+			Root:    e.RepoRoot,
+			RunsDir: e.RunsDir,
+		}
+		changed = true
+	}
+	if changed {
+		_ = writeJSON(reposFile(home), known)
+	}
+}
+
+// Repos returns the known repos, sorted by name, that the hub has seen a loop run
+// in — including repos whose loop has since exited.
+func Repos(home string) []Repo {
+	if home == "" {
+		return nil
+	}
+	reposMu.Lock()
+	known := loadRepos(home)
+	reposMu.Unlock()
+
+	repos := make([]Repo, 0, len(known))
+	for _, r := range known {
+		repos = append(repos, r)
+	}
+	sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
+	return repos
+}
+
+func loadRepos(home string) map[string]Repo {
+	known := map[string]Repo{}
+	_ = readJSONMap(reposFile(home), &known)
+	return known
+}
+
+func entryName(pid int) string {
+	return strconv.Itoa(pid) + ".json"
+}
+
+// alive reports whether pid names a running process, treating a
+// permission-denied probe as alive (the process exists, we just may not own it).
+func alive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	err = p.Signal(syscall.Signal(0))
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func writeJSON(path string, v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+func readJSON(path string, v *Entry) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(data, v) == nil
+}
+
+func readJSONMap(path string, v *map[string]Repo) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(data, v) == nil
+}
