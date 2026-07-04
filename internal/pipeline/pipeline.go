@@ -854,6 +854,21 @@ func (p *Pipeline) persistHandoff(id string) {
 	_ = os.WriteFile(filepath.Join(dir, "handoff.md"), data, 0o644)
 }
 
+// persistVerdict mirrors the graded verify verdict into runs/<ID>/verdict.json so
+// the last QA outcome survives a reboot and is readable out of band (the web hub
+// renders it on the run detail page). Best-effort and silent.
+func (p *Pipeline) persistVerdict(id string, v verdict) {
+	dir := filepath.Join(p.RunsDir, id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(dir, "verdict.json"), data, 0o644)
+}
+
 // restoreHandoff copies the durable runs/<ID>/handoff.md back to /tmp when /tmp
 // lost it (wiped on reboot), so a resumed verify reuses the exact brief the
 // handoff produced — and the matching rubric — instead of regenerating a fresh
@@ -931,6 +946,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 		if err != nil {
 			return err
 		}
+		p.persistVerdict(id, v)
 		if v.Pass {
 			passed = true
 			break

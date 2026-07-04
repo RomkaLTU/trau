@@ -1,6 +1,6 @@
 import { useState, type ComponentType } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { createFileRoute } from '@tanstack/react-router'
+import { Link, createFileRoute } from '@tanstack/react-router'
 import {
   CircleCheck,
   CircleDot,
@@ -153,14 +153,14 @@ function Board({ repo }: { repo: string }) {
     <div className="overflow-x-auto pb-2">
       <div className="flex min-w-max gap-4">
         {order.map((phase) => (
-          <PhaseColumn key={phase} phase={phase} runs={byPhase[phase]} />
+          <PhaseColumn key={phase} repo={repo} phase={phase} runs={byPhase[phase]} />
         ))}
       </div>
     </div>
   )
 }
 
-function PhaseColumn({ phase, runs }: { phase: string; runs: Run[] }) {
+function PhaseColumn({ repo, phase, runs }: { repo: string; phase: string; runs: Run[] }) {
   const meta = phaseMeta(phase)
   const Icon = meta.icon
   return (
@@ -174,7 +174,7 @@ function PhaseColumn({ phase, runs }: { phase: string; runs: Run[] }) {
       </div>
       <div className="flex flex-col gap-2">
         {runs.map((run) => (
-          <RunCard key={run.ticket} run={run} />
+          <RunCard key={run.ticket} repo={repo} run={run} />
         ))}
       </div>
     </section>
@@ -199,18 +199,24 @@ const failureStyle: Record<FailureClass, { badge: string; icon: ComponentType<Lu
   },
 }
 
-function RunCard({ run }: { run: Run }) {
+function RunCard({ repo, run }: { repo: string; run: Run }) {
   const fail = run.failure_class ? failureStyle[run.failure_class] : null
   return (
     <div
       className={cn(
-        'rounded-lg border bg-card p-3 text-card-foreground shadow-xs',
+        'rounded-lg border bg-card p-3 text-card-foreground shadow-xs transition-colors hover:border-ring/50',
         run.phase === 'merged' && 'border-l-2 border-l-emerald-500/60',
         run.phase === 'quarantined' && 'border-l-2 border-l-destructive',
       )}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="font-mono text-sm font-medium">{run.ticket}</span>
+        <Link
+          to="/runs/$repo/$ticket"
+          params={{ repo, ticket: run.ticket }}
+          className="font-mono text-sm font-medium hover:underline"
+        >
+          {run.ticket}
+        </Link>
         {fail && (
           <Badge variant="outline" className={fail.badge}>
             <fail.icon className="size-3" />

@@ -194,6 +194,76 @@ func (s *Sink) Total(id string) (tokens int, cost float64, metered bool) {
 	return tokens, math.Round(sum*100) / 100, metered
 }
 
+// PhaseTotal is one phase's summed token + cost spend across all of its logged
+// calls in a ticket's tokens.jsonl. Metered carries the same lower-bound contract
+// as Total: false when any of the phase's lines recorded no per-call cost, so Cost
+// is then a floor rather than a measured total.
+type PhaseTotal struct {
+	Phase         string
+	Input         int
+	Output        int
+	CacheRead     int
+	CacheCreation int
+	Reasoning     int
+	Total         int
+	Cost          float64
+	Turns         int
+	Calls         int
+	Metered       bool
+}
+
+// PhaseTotals breaks a ticket's spend down by phase, one row per distinct phase
+// label in runs/<id>/tokens.jsonl, in the order each phase first appears in the
+// log. Costs sum raw then round once to cents per phase, matching Total. A
+// missing, empty, or unreadable file yields nil — never an error — so callers can
+// render an empty table unconditionally. Malformed lines are skipped.
+func (s *Sink) PhaseTotals(id string) []PhaseTotal {
+	f, err := os.Open(filepath.Join(s.root, id, "tokens.jsonl"))
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+
+	var out []PhaseTotal
+	idx := map[string]int{}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		b := bytes.TrimSpace(sc.Bytes())
+		if len(b) == 0 {
+			continue
+		}
+		var ln line
+		if err := json.Unmarshal(b, &ln); err != nil {
+			continue
+		}
+		i, ok := idx[ln.Phase]
+		if !ok {
+			i = len(out)
+			idx[ln.Phase] = i
+			out = append(out, PhaseTotal{Phase: ln.Phase, Metered: true})
+		}
+		p := &out[i]
+		p.Input += ln.Input
+		p.Output += ln.Output
+		p.CacheRead += ln.CacheRead
+		p.CacheCreation += ln.CacheCreation
+		p.Reasoning += ln.Reasoning
+		p.Total += ln.Total
+		p.Turns += ln.Turns
+		p.Calls++
+		if ln.CostUSD != nil {
+			p.Cost += *ln.CostUSD
+		} else {
+			p.Metered = false
+		}
+	}
+	for i := range out {
+		out[i].Cost = math.Round(out[i].Cost*100) / 100
+	}
+	return out
+}
+
 // DayTotal sums token + cost spend across ALL buckets for calls whose timestamp
 // falls on the given local date (YYYY-MM-DD) — the per-day window the budget caps
 // enforce. It globs runs/<bucket>/tokens.jsonl (including the _loop bucket, since

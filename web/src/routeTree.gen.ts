@@ -15,6 +15,7 @@ import { Route as LessonsRouteImport } from './routes/lessons'
 import { Route as InstancesRouteImport } from './routes/instances'
 import { Route as CostsRouteImport } from './routes/costs'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as RunsRepoTicketRouteImport } from './routes/runs_.$repo.$ticket'
 
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
@@ -46,6 +47,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const RunsRepoTicketRoute = RunsRepoTicketRouteImport.update({
+  id: '/runs_/$repo/$ticket',
+  path: '/runs/$repo/$ticket',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -54,6 +60,7 @@ export interface FileRoutesByFullPath {
   '/lessons': typeof LessonsRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
+  '/runs/$repo/$ticket': typeof RunsRepoTicketRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -62,6 +69,7 @@ export interface FileRoutesByTo {
   '/lessons': typeof LessonsRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
+  '/runs/$repo/$ticket': typeof RunsRepoTicketRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -71,12 +79,27 @@ export interface FileRoutesById {
   '/lessons': typeof LessonsRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
+  '/runs_/$repo/$ticket': typeof RunsRepoTicketRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/costs' | '/instances' | '/lessons' | '/runs' | '/settings'
+  fullPaths:
+    | '/'
+    | '/costs'
+    | '/instances'
+    | '/lessons'
+    | '/runs'
+    | '/settings'
+    | '/runs/$repo/$ticket'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/costs' | '/instances' | '/lessons' | '/runs' | '/settings'
+  to:
+    | '/'
+    | '/costs'
+    | '/instances'
+    | '/lessons'
+    | '/runs'
+    | '/settings'
+    | '/runs/$repo/$ticket'
   id:
     | '__root__'
     | '/'
@@ -85,6 +108,7 @@ export interface FileRouteTypes {
     | '/lessons'
     | '/runs'
     | '/settings'
+    | '/runs_/$repo/$ticket'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -94,6 +118,7 @@ export interface RootRouteChildren {
   LessonsRoute: typeof LessonsRoute
   RunsRoute: typeof RunsRoute
   SettingsRoute: typeof SettingsRoute
+  RunsRepoTicketRoute: typeof RunsRepoTicketRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -140,6 +165,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/runs_/$repo/$ticket': {
+      id: '/runs_/$repo/$ticket'
+      path: '/runs/$repo/$ticket'
+      fullPath: '/runs/$repo/$ticket'
+      preLoaderRoute: typeof RunsRepoTicketRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -150,6 +182,7 @@ const rootRouteChildren: RootRouteChildren = {
   LessonsRoute: LessonsRoute,
   RunsRoute: RunsRoute,
   SettingsRoute: SettingsRoute,
+  RunsRepoTicketRoute: RunsRepoTicketRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
