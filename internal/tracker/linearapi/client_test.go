@@ -1,6 +1,9 @@
 package linearapi
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSortChildrenForRun(t *testing.T) {
 	refs := []IssueRef{
@@ -40,6 +43,29 @@ func TestStateIsTerminal(t *testing.T) {
 	for typ, want := range cases {
 		if got := (State{Type: typ}).IsTerminal(); got != want {
 			t.Errorf("State{%q}.IsTerminal() = %v, want %v", typ, got, want)
+		}
+	}
+}
+
+// TestMutationsDeclareStringVariables guards the GraphQL variable types against
+// Linear's schema: mutation arguments and input-object fields are String-typed
+// (teamId: String!, labelIds: [String!], parentId: String, …), and Linear rejects
+// an ID-typed variable in those positions with GRAPHQL_VALIDATION_FAILED
+// ("Variable "$teamId" of type "ID!" used in position expecting type "String!"").
+// Only filter comparators (IDComparator.eq) take ID, so ID belongs in queries
+// alone — a mutation declaring an ID variable is always a live-API failure.
+func TestMutationsDeclareStringVariables(t *testing.T) {
+	mutations := map[string]string{
+		"issueUpdate":      issueUpdateMutation,
+		"commentCreate":    commentCreateMutation,
+		"issueLabelCreate": issueLabelCreateMutation,
+		"issueCreate":      issueCreateMutation,
+	}
+	for name, q := range mutations {
+		for _, bad := range []string{": ID", ": [ID"} {
+			if strings.Contains(q, bad) {
+				t.Errorf("%s declares an ID-typed variable (%q) — Linear mutations take String types", name, bad)
+			}
 		}
 	}
 }
