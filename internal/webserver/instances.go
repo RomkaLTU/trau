@@ -24,11 +24,13 @@ type Instance struct {
 }
 
 // RepoView is a repo the hub knows about, flagged with whether a loop is
-// currently running in it. Repos linger here after their loop exits so their
-// runs stay browsable.
+// currently running in it and whether the hub may start one there. Repos linger
+// here after their loop exits so their runs stay browsable; an unallowed repo is
+// observe-only.
 type RepoView struct {
 	registry.Repo
-	Live bool `json:"live"`
+	Live    bool `json:"live"`
+	Allowed bool `json:"allowed"`
 }
 
 // InstancesResponse is the /api/v1/instances resource: the live loops and every
@@ -39,19 +41,23 @@ type InstancesResponse struct {
 }
 
 func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
+	switch r.Method {
+	case http.MethodGet:
+		s.listInstances(w, r)
+	case http.MethodPost:
+		s.startInstance(w, r)
+	default:
+		w.Header().Set("Allow", "GET, POST")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
 	}
+}
 
+func (s *Server) listInstances(w http.ResponseWriter, _ *http.Request) {
 	entries := registry.Live(s.home)
 	registry.RememberRepos(s.home, entries)
 
-	liveRoots := make(map[string]bool, len(entries))
 	instances := make([]Instance, 0, len(entries))
 	for _, e := range entries {
-		liveRoots[e.RepoRoot] = true
 		inst := Instance{
 			PID:       e.PID,
 			Repo:      filepath.Base(e.RepoRoot),
@@ -67,13 +73,7 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 		instances = append(instances, inst)
 	}
 
-	known := registry.Repos(s.home)
-	repos := make([]RepoView, 0, len(known))
-	for _, repo := range known {
-		repos = append(repos, RepoView{Repo: repo, Live: liveRoots[repo.Root]})
-	}
-
-	writeJSON(w, http.StatusOK, InstancesResponse{Instances: instances, Repos: repos})
+	writeJSON(w, http.StatusOK, InstancesResponse{Instances: instances, Repos: s.repoViews()})
 }
 
 type runInfo struct {

@@ -380,6 +380,11 @@ RUNS_DIR=runs
 SERVE_BIND=127.0.0.1
 SERVE_PORT=8728
 SERVE_TOKEN=                  # required once SERVE_BIND leaves loopback; a long random secret (never commit)
+#
+# The hub may only START loops in repos on this allowlist. Everything else it
+# discovers through the registry is observe-only. Empty (the default) means the
+# hub starts nothing; stopping an already-running loop works regardless.
+# SERVE_WORKSPACE=/Users/me/Projects/salonradar,/Users/me/Projects/loop
 
 # COST NOTE: the "~$X est" in the closing recap (and --status) is a NOTIONAL
 # API-list estimate, not a bill — no provider cost is reported for interactive

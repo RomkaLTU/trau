@@ -63,8 +63,10 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 // repoViews lists every repo the hub knows, flagging the ones a loop is running
-// in right now. It folds the live loops' repos into the persistent set first, so
-// a repo appears the moment its loop starts and lingers after it exits.
+// in right now and the ones the hub is allowed to start a loop in. It folds the
+// live loops' repos into the persistent set first, so a repo appears the moment
+// its loop starts and lingers after it exits, then merges in allowlisted repos
+// that have never run so they are startable before their first loop.
 func (s *Server) repoViews() []RepoView {
 	entries := registry.Live(s.home)
 	registry.RememberRepos(s.home, entries)
@@ -72,11 +74,20 @@ func (s *Server) repoViews() []RepoView {
 	for _, e := range entries {
 		live[e.RepoRoot] = true
 	}
+	seen := make(map[string]bool)
 	known := registry.Repos(s.home)
-	views := make([]RepoView, 0, len(known))
+	views := make([]RepoView, 0, len(known)+len(s.workspace))
 	for _, repo := range known {
-		views = append(views, RepoView{Repo: repo, Live: live[repo.Root]})
+		seen[repo.Root] = true
+		views = append(views, RepoView{Repo: repo, Live: live[repo.Root], Allowed: s.allows(repo.Root)})
 	}
+	for _, root := range s.workspace {
+		if seen[root] {
+			continue
+		}
+		views = append(views, RepoView{Repo: workspaceRepo(root), Allowed: true})
+	}
+	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
 	return views
 }
 

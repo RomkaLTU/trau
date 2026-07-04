@@ -18,26 +18,31 @@ const APIPrefix = "/api/v1"
 
 // Server serves the JSON API and the embedded SPA.
 type Server struct {
-	version string
-	started time.Time
-	assets  fs.FS
-	home    string
-	bind    string
-	token   string
+	version   string
+	started   time.Time
+	assets    fs.FS
+	home      string
+	bind      string
+	token     string
+	workspace []string
+	sup       Supervisor
 }
 
 // New builds a Server that reports version and treats now as its start time. It
 // reads the instance registry from the machine's trau home. bind and token
 // carry the exposure policy: on a non-loopback bind every API request must
-// present token as a bearer credential.
-func New(version, bind, token string) *Server {
+// present token as a bearer credential. workspace is the allowlist of repo roots
+// the hub may start loops in; anything outside it is observe-only.
+func New(version, bind, token string, workspace []string) *Server {
 	return &Server{
-		version: version,
-		started: time.Now(),
-		assets:  assetsFS(),
-		home:    registry.Home(),
-		bind:    bind,
-		token:   token,
+		version:   version,
+		started:   time.Now(),
+		assets:    assetsFS(),
+		home:      registry.Home(),
+		bind:      bind,
+		token:     token,
+		workspace: normalizeRoots(workspace),
+		sup:       newOSSupervisor(),
 	}
 }
 
@@ -55,6 +60,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(APIPrefix+"/health", s.handleHealth)
 	mux.HandleFunc(APIPrefix+"/instances", s.handleInstances)
+	mux.HandleFunc(APIPrefix+"/instances/{pid}/stop", s.handleStopInstance)
 	mux.HandleFunc(APIPrefix+"/repos", s.handleRepos)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs", s.handleRuns)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}", s.handleRunDetail)

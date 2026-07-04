@@ -17,7 +17,7 @@ import (
 
 func instancesServer(t *testing.T, home string) *httptest.Server {
 	t.Helper()
-	s := New("1.2.3", "127.0.0.1", "")
+	s := New("1.2.3", "127.0.0.1", "", nil)
 	s.home = home
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
@@ -157,14 +157,21 @@ func TestInstancesRetainsExitedRepos(t *testing.T) {
 	}
 }
 
-func TestInstancesRejectsNonGET(t *testing.T) {
+func TestInstancesRejectsUnsupportedMethod(t *testing.T) {
 	ts := instancesServer(t, t.TempDir())
-	res, err := http.Post(ts.URL+APIPrefix+"/instances", "application/json", nil)
+	req, err := http.NewRequest(http.MethodPut, ts.URL+APIPrefix+"/instances", nil)
 	if err != nil {
-		t.Fatalf("POST instances: %v", err)
+		t.Fatalf("new PUT request: %v", err)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT instances: %v", err)
 	}
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("POST status = %d, want 405", res.StatusCode)
+		t.Errorf("PUT status = %d, want 405", res.StatusCode)
+	}
+	if allow := res.Header.Get("Allow"); allow != "GET, POST" {
+		t.Errorf("Allow = %q, want \"GET, POST\"", allow)
 	}
 }

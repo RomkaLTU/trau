@@ -168,6 +168,12 @@ type Config struct {
 	ServePort  int
 	ServeToken string
 
+	// ServeWorkspace allowlists the repo roots the hub may start loops in. It is
+	// empty by default: with no allowlist the hub is observe-only and refuses
+	// every start. Repos it discovers through the registry but that are not
+	// listed here stay observe-only too.
+	ServeWorkspace []string
+
 	// Spend ceilings off the normalized token/cost ledger. Zero = no cap
 	// (back-compat: a config with no MAX_* knobs enforces nothing). USD caps use
 	// the notional cost estimate; token caps the raw total. See internal/budget.
@@ -246,6 +252,7 @@ func Defaults() Config {
 		ServeBind:             "127.0.0.1",
 		ServePort:             8728,
 		ServeToken:            "",
+		ServeWorkspace:        nil,
 		MaxTicketUSD:          0,
 		MaxTicketTokens:       0,
 		MaxDailyUSD:           0,
@@ -617,6 +624,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("SERVE_BIND", &c.ServeBind)
 	num("SERVE_PORT", &c.ServePort)
 	str("SERVE_TOKEN", &c.ServeToken)
+	if v, src := get("SERVE_WORKSPACE"); v != "" {
+		c.ServeWorkspace = splitCSV(v)
+		sources["SERVE_WORKSPACE"] = src.name
+	}
 	fnum("MAX_TICKET_USD", &c.MaxTicketUSD)
 	num("MAX_TICKET_TOKENS", &c.MaxTicketTokens)
 	fnum("MAX_DAILY_USD", &c.MaxDailyUSD)
@@ -1053,6 +1064,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "SERVE_BIND", Default: "127.0.0.1", Description: "Bind address for `trau serve` (use 0.0.0.0 to expose on the network)"},
 		{Key: "SERVE_PORT", Default: "8728", Description: "Port for `trau serve`"},
 		{Key: "SERVE_TOKEN", Advanced: true, Description: "Bearer token required for non-loopback `trau serve` binds; mandatory once SERVE_BIND leaves loopback"},
+		{Key: "SERVE_WORKSPACE", Advanced: true, Description: "Comma-separated repo roots the hub may start loops in; repos outside this allowlist are observe-only. Empty = the hub starts nothing"},
 		{Key: "MAX_TICKET_USD", Description: "Per-ticket USD spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_TICKET_TOKENS", Description: "Per-ticket token spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_DAILY_USD", Description: "Per-day USD spend cap across all tickets; reaching it stops the run (empty = no cap)"},
@@ -1514,6 +1526,8 @@ func keyValue(cfg Config, key string) string {
 		return intValue(cfg.ServePort)
 	case "SERVE_TOKEN":
 		return cfg.ServeToken
+	case "SERVE_WORKSPACE":
+		return strings.Join(cfg.ServeWorkspace, ",")
 	case "MAX_TICKET_USD":
 		return floatValue(cfg.MaxTicketUSD)
 	case "MAX_TICKET_TOKENS":
