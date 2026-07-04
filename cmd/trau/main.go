@@ -400,7 +400,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		t, c := 0, 0.0
 		metered := true
 		for _, id := range ids {
-			tk, cs, m := sink.Total(id)
+			tk, cs, m := sink.SessionTotal(id)
 			t += tk
 			c += cs
 			metered = metered && m
@@ -409,7 +409,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	result := func(id string, elapsed time.Duration) console.TicketResult {
-		tk, cs, metered := sink.Total(id)
+		tk, cs, metered := sink.SessionTotal(id)
 		return console.TicketResult{
 			ID:            id,
 			Title:         p.State.Get(id, "TITLE"),
@@ -856,7 +856,11 @@ func (e *realEngine) flagCostAnomalies(id string) {
 	if len(anomalies) == 0 {
 		return
 	}
-	_ = e.pipe.State.Set(id, "ANOMALIES", strconv.Itoa(len(anomalies)))
+	// Stamp only tickets that still have a checkpoint — a refusal reset just
+	// removed the state file, and recreating it here would leave a ghost row.
+	if e.pipe.State.Get(id, "PHASE") != "" {
+		_ = e.pipe.State.Set(id, "ANOMALIES", strconv.Itoa(len(anomalies)))
+	}
 	phases := make([]string, len(anomalies))
 	for i, a := range anomalies {
 		phases[i] = a.Phase
@@ -1806,7 +1810,7 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 		t, c := 0, 0.0
 		metered := true
 		for _, id := range ids {
-			tk, cs, m := a.sink.Total(id)
+			tk, cs, m := a.sink.SessionTotal(id)
 			t += tk
 			c += cs
 			metered = metered && m
@@ -1814,7 +1818,7 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 		return t, math.Round(c*100) / 100, metered
 	}
 	result := func(id string, elapsed time.Duration) console.TicketResult {
-		tk, cs, metered := a.sink.Total(id)
+		tk, cs, metered := a.sink.SessionTotal(id)
 		return console.TicketResult{
 			ID:            id,
 			Title:         a.store.Get(id, "TITLE"),
@@ -1909,7 +1913,7 @@ func (a *appActions) RunTicket(ctx context.Context, id, provider string, r conso
 		if err := a.pipe.Resume(ctx, id, phase); err != nil && !errors.Is(err, pipeline.ErrAlreadyDone) {
 			lerr = err
 		}
-		tk, cs, metered := a.sink.Total(id)
+		tk, cs, metered := a.sink.SessionTotal(id)
 		r.TicketDone(console.TicketResult{
 			ID:            id,
 			Title:         a.store.Get(id, "TITLE"),
@@ -1924,7 +1928,7 @@ func (a *appActions) RunTicket(ctx context.Context, id, provider string, r conso
 		})
 	}
 
-	tk, cs, metered := a.sink.Total(id)
+	tk, cs, metered := a.sink.SessionTotal(id)
 	r.LoopDone(applyFault(console.SessionSummary{
 		Tickets:     1,
 		TotalTokens: tk,

@@ -226,3 +226,56 @@ func TestFormatPair(t *testing.T) {
 		}
 	}
 }
+
+// TestSessionTotalExcludesPriorRuns is the $101.55-banner regression guard: a
+// resumed ticket's tokens.jsonl carries earlier sessions' spend, so the session
+// summary must report only what THIS process appended while Total keeps the
+// lifetime view.
+func TestSessionTotalExcludesPriorRuns(t *testing.T) {
+	dir := t.TempDir()
+	prior := New(dir).WithClock(fixedClock(time.Date(2026, 7, 4, 20, 30, 0, 0, time.UTC)))
+	prior.SetTicket("COD-702")
+	prior.Append("build", Record{Output: 262_000, Turns: 225, CostUSD: ptr(57.88)})
+	prior.Append("verify", Record{Output: 66_000, Turns: 72, CostUSD: ptr(11.19)})
+
+	s := New(dir).WithClock(fixedClock(time.Date(2026, 7, 4, 22, 27, 0, 0, time.UTC)))
+	s.SetTicket("COD-702")
+	s.Append("status", Record{Output: 1_100, Turns: 7, CostUSD: ptr(1.08)})
+
+	tk, cost, metered := s.SessionTotal("COD-702")
+	if tk != 1_100 || cost != 1.08 || !metered {
+		t.Errorf("SessionTotal = (%d, %v, %v), want only this process's (1100, 1.08, true)", tk, cost, metered)
+	}
+	ltk, lcost, _ := s.Total("COD-702")
+	if ltk != 262_000+66_000+1_100 {
+		t.Errorf("Total tokens = %d, want the lifetime sum %d", ltk, 262_000+66_000+1_100)
+	}
+	if lcost != 70.15 {
+		t.Errorf("Total cost = %v, want lifetime 70.15", lcost)
+	}
+}
+
+func TestSessionTotalUnknownTicketIsZero(t *testing.T) {
+	s := New(t.TempDir())
+	if tk, cost, metered := s.SessionTotal("COD-404"); tk != 0 || cost != 0 || !metered {
+		t.Errorf("SessionTotal(unknown) = (%d, %v, %v), want (0, 0, true)", tk, cost, metered)
+	}
+}
+
+// TestFlagIgnoresPriorRunSpend: resuming a ticket whose earlier sessions blew
+// the rails must not re-flag those phases — only spend recorded by this process
+// counts, so a cheap 27s reconcile run flags nothing.
+func TestFlagIgnoresPriorRunSpend(t *testing.T) {
+	dir := t.TempDir()
+	prior := New(dir).WithClock(fixedClock(time.Date(2026, 7, 4, 20, 30, 0, 0, time.UTC)))
+	prior.SetTicket("COD-702")
+	prior.Append("build", Record{Output: 262_000, Turns: 225, CostUSD: ptr(57.88)})
+
+	s := New(dir).WithClock(fixedClock(time.Date(2026, 7, 4, 22, 27, 0, 0, time.UTC)))
+	s.SetTicket("COD-702")
+	s.Append("status", Record{Output: 1_100, Turns: 7, CostUSD: ptr(1.08)})
+
+	if got := s.Flag("COD-702"); len(got) != 0 {
+		t.Errorf("Flag re-flagged prior-run spend: %+v", got)
+	}
+}

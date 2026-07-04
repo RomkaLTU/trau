@@ -1,7 +1,6 @@
 package tokens
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -32,48 +31,21 @@ type Anomaly struct {
 
 // Flag detects post-run cost anomalies for id and records them to
 // runs/<id>/anomalies.jsonl, returning the trips. It sums each phase's
-// output/turns/cost from tokens.jsonl and flags any phase over a soft threshold.
-// I/O errors are swallowed (same contract as Append): flagging never aborts the loop.
+// output/turns/cost recorded by THIS process — spend loaded from an earlier
+// run's tokens.jsonl is never re-flagged on resume — and flags any phase over a
+// soft threshold. I/O errors are swallowed (same contract as Append): flagging
+// never aborts the loop.
 func (s *Sink) Flag(id string) []Anomaly {
-	f, err := os.Open(filepath.Join(s.root, id, "tokens.jsonl"))
-	if err != nil {
+	s.mu.Lock()
+	sp := s.session[id]
+	s.mu.Unlock()
+	if sp == nil {
 		return nil
-	}
-	defer func() { _ = f.Close() }()
-
-	type agg struct {
-		output, turns int
-		cost          float64
-	}
-	byPhase := map[string]*agg{}
-	var order []string
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		b := bytes.TrimSpace(sc.Bytes())
-		if len(b) == 0 {
-			continue
-		}
-		var ln line
-		if err := json.Unmarshal(b, &ln); err != nil {
-			continue
-		}
-		a := byPhase[ln.Phase]
-		if a == nil {
-			a = &agg{}
-			byPhase[ln.Phase] = a
-			order = append(order, ln.Phase)
-		}
-		a.output += ln.Output
-		a.turns += ln.Turns
-		if ln.CostUSD != nil {
-			a.cost += *ln.CostUSD
-		}
 	}
 
 	var anomalies []Anomaly
-	for _, phase := range order {
-		a := byPhase[phase]
+	for _, phase := range sp.order {
+		a := sp.phases[phase]
 		var reasons []string
 		if a.cost > anomalyCostUSD {
 			reasons = append(reasons, fmt.Sprintf("cost $%.2f > $%.2f", a.cost, anomalyCostUSD))
