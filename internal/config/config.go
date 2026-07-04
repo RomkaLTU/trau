@@ -1119,6 +1119,18 @@ func KnownKeys() []KeyMeta {
 	return keys
 }
 
+// secretKeys are the credential-typed configuration keys. Their values are
+// masked in any surface that exposes config over the wire and must never be
+// serialized into an API response.
+var secretKeys = map[string]bool{
+	"LINEAR_API_KEY": true,
+	"JIRA_API_TOKEN": true,
+	"SERVE_TOKEN":    true,
+}
+
+// IsSecretKey reports whether key holds a credential (API key or token).
+func IsSecretKey(key string) bool { return secretKeys[key] }
+
 // ProviderTuningMeta enumerates the execution knobs a provider exposes, so the
 // settings UI can offer valid pickers instead of free text. Models are
 // suggestions (custom values are still allowed); Efforts is the exact set the
