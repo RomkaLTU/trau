@@ -298,6 +298,10 @@ type Pipeline struct {
 	LessonsDistill bool
 	Sleep          func(time.Duration)
 	Renderer       console.Renderer
+	// Events is the durable event log. Lifecycle transitions the dashboard recap
+	// and browser notifications key off — merge, quarantine, fault, pause — are
+	// emitted here as state_change events; nil in modes that keep no durable log.
+	Events *event.Log
 
 	// Now supplies the current time for the per-day budget window; nil defaults
 	// to time.Now (overridable in tests).
@@ -498,6 +502,7 @@ func (p *Pipeline) fault(ctx context.Context, id string, err error) error {
 	_ = p.State.Set(id, "FAILURE_REASON", reason)
 	_ = p.State.Set(id, "FAILURE_CLASS", state.FailFaulted)
 	p.logf("  ⚠ %s could not finish during %s — work saved, ticket left resumable", id, NextPhaseLabel(phase))
+	p.emitState(id, phase, "faulted", NextPhaseLabel(phase))
 	return &FaultError{ID: id, Phase: phase, Err: err}
 }
 
@@ -1013,6 +1018,7 @@ func (p *Pipeline) giveUp(ctx context.Context, id, reason string) error {
 		return fmt.Errorf("give up %s: checkpoint quarantined: %w", id, err)
 	}
 	_ = p.State.Set(id, "FAILURE_REASON", reason)
+	p.emitState(id, state.Quarantined, "quarantined", reason)
 	p.logf("  ✗ quarantining %s: %s", id, reason)
 	if err := p.Tracker.Quarantine(ctx, id, reason); err != nil {
 		p.logf("  quarantine MCP error (continuing): %v", err)
@@ -1136,6 +1142,7 @@ func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
 		return fmt.Errorf("merge %s: checkpoint merged: %w", id, err)
 	}
 	p.emitEvent("ci", map[string]any{"state": "merged"})
+	p.emitState(id, state.Merged, "merged", "")
 	p.recordTimelog(ctx, id)
 	p.logf(logFmt, id)
 	return nil
@@ -1524,6 +1531,21 @@ func (p *Pipeline) emitEvent(kind string, fields map[string]any) {
 	}
 }
 
+// emitState records a durable state_change for id — the signal the dashboard
+// recap and browser notifications consume. state ∈ {merged, quarantined, faulted,
+// paused}; reason distinguishes a blameless pause (usage_window vs reauth) and
+// carries the give-up text for a quarantine. No-op without a durable log.
+func (p *Pipeline) emitState(id, phase, st, reason string) {
+	if p.Events == nil {
+		return
+	}
+	fields := map[string]any{"ticket": id, "state": st}
+	if reason != "" {
+		fields["reason"] = reason
+	}
+	p.Events.Emit("state_change", phase, "", fields)
+}
+
 // logAgentErr surfaces an agent failure as a single clean line: a paused glyph for
 // provider rate/usage limits, an error glyph otherwise.
 func (p *Pipeline) logAgentErr(phase string, err error) {
@@ -1649,6 +1671,7 @@ func (p *Pipeline) pause(id, phase string, err error) error {
 	p.markPaused(id, reason)
 	p.logf("  ⏸ paused — %s usage/rate limit reached during %s", prov, phase)
 	p.logf("  ↳ %s left resumable on its branch; rerun trau when the limit resets", id)
+	p.emitState(id, phase, "paused", "usage_window")
 	return &PausedError{ID: id, Phase: phase, Provider: prov, Reason: reason}
 }
 
@@ -1667,6 +1690,7 @@ func (p *Pipeline) pauseAuth(id, phase string, err error) error {
 	p.markPaused(id, reason)
 	p.logf("  ⏸ paused — %s needs re-authentication during %s (run the provider's /login)", prov, phase)
 	p.logf("  ↳ %s left resumable on its branch; rerun trau after re-authenticating %s", id, prov)
+	p.emitState(id, phase, "paused", "reauth")
 	return &PausedError{ID: id, Phase: phase, Provider: prov, Reason: reason}
 }
 

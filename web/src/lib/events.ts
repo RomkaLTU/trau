@@ -10,6 +10,10 @@ export interface FeedEvent {
   fields?: Record<string, unknown>
 }
 
+export interface RepoFeedEvent extends FeedEvent {
+  repo: string
+}
+
 export interface EventsResponse {
   repo: string
   events: FeedEvent[]
@@ -77,9 +81,11 @@ export function useEventFeed(repo: string): EventFeed {
 }
 
 type EventListener = (ev: FeedEvent) => void
+type AllListener = (ev: RepoFeedEvent) => void
 type StatusListener = (status: FeedStatus) => void
 
 const feedListeners = new Map<string, Set<EventListener>>()
+const allListeners = new Set<AllListener>()
 const feedStatusListeners = new Set<StatusListener>()
 let feedSource: EventSource | null = null
 let feedStatus: FeedStatus = 'connecting'
@@ -108,12 +114,36 @@ function subscribeFeed(
     listeners.delete(onEvent)
     if (listeners.size === 0) feedListeners.delete(repo)
     feedStatusListeners.delete(onStatus)
-    feedRefs--
-    if (feedRefs === 0 && feedSource) {
-      feedSource.close()
-      feedSource = null
-      feedStatus = 'connecting'
-    }
+    releaseFeed()
+  }
+}
+
+// subscribeAllEvents taps the same machine-wide EventSource but receives every
+// repo's frames, each carrying its repo tag. It backs the away recap and browser
+// notifications, which reason across all repos rather than one.
+export function subscribeAllEvents(
+  onEvent: AllListener,
+  onStatus: StatusListener,
+): () => void {
+  allListeners.add(onEvent)
+  feedStatusListeners.add(onStatus)
+  feedRefs++
+  openFeedSource()
+  onStatus(feedStatus)
+
+  return () => {
+    allListeners.delete(onEvent)
+    feedStatusListeners.delete(onStatus)
+    releaseFeed()
+  }
+}
+
+function releaseFeed() {
+  feedRefs--
+  if (feedRefs === 0 && feedSource) {
+    feedSource.close()
+    feedSource = null
+    feedStatus = 'connecting'
   }
 }
 
@@ -130,9 +160,11 @@ function openFeedSource() {
     } catch {
       return
     }
-    const listeners = msg.repo ? feedListeners.get(msg.repo) : undefined
-    if (!listeners) return
-    for (const notify of listeners) notify(msg)
+    if (!msg.repo) return
+    const tagged = msg as RepoFeedEvent
+    for (const notify of allListeners) notify(tagged)
+    const listeners = feedListeners.get(msg.repo)
+    if (listeners) for (const notify of listeners) notify(tagged)
   }
   feedSource = source
 }
