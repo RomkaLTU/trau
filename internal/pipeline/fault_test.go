@@ -79,6 +79,9 @@ func TestUnexpectedErrorFaultsBlamelessly(t *testing.T) {
 	if got := p.State.Get(id, "PHASE"); got != state.Building {
 		t.Errorf("PHASE = %q, want it left at its checkpoint (%q)", got, state.Building)
 	}
+	if got := p.State.Get(id, "FAILURE_CLASS"); got != state.FailFaulted {
+		t.Errorf("FAILURE_CLASS = %q, want %q so a file-first reader flags the fault", got, state.FailFaulted)
+	}
 
 	if git.addAll == 0 || len(git.commitMsgs) != 1 {
 		t.Fatalf("WIP not committed: addAll=%d commits=%v", git.addAll, git.commitMsgs)

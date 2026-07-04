@@ -88,6 +88,30 @@ func TestStaleCheckpoint(t *testing.T) {
 	}
 }
 
+func TestFailureClass(t *testing.T) {
+	tests := []struct {
+		name   string
+		phase  string
+		stored string
+		reason string
+		want   string
+	}{
+		{"quarantined is a give-up", Quarantined, "", "verify dead end", FailGaveUp},
+		{"quarantined wins over any marker", Quarantined, FailPaused, "x", FailGaveUp},
+		{"merged has no failure even with stale marker", Merged, FailPaused, "x", ""},
+		{"stored paused marker wins", Built, FailPaused, "rate limit", FailPaused},
+		{"stored faulted marker wins", HandedOff, FailFaulted, "boom", FailFaulted},
+		{"bare reason with no marker reads as fault", Verified, "", "unexpected error", FailFaulted},
+		{"healthy in-flight has no class", Built, "", "", ""},
+		{"unstarted has no class", "", "", "", ""},
+	}
+	for _, tc := range tests {
+		if got := FailureClass(tc.phase, tc.stored, tc.reason); got != tc.want {
+			t.Errorf("%s: FailureClass(%q, %q, %q) = %q, want %q", tc.name, tc.phase, tc.stored, tc.reason, got, tc.want)
+		}
+	}
+}
+
 // --- Get / Set ------------------------------------------------------------
 
 func newStore(t *testing.T) *Store {

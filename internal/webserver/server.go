@@ -40,6 +40,8 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(APIPrefix+"/health", s.handleHealth)
 	mux.HandleFunc(APIPrefix+"/instances", s.handleInstances)
+	mux.HandleFunc(APIPrefix+"/repos", s.handleRepos)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs", s.handleRuns)
 	mux.HandleFunc("/api/", handleAPINotFound)
 	mux.Handle("/", s.spa())
 	return mux
