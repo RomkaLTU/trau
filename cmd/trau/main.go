@@ -69,6 +69,7 @@ Usage:
   trau <ID>                  run a single ticket (e.g. ENG-123), or its sub-issues if it is an epic
   trau doctor                preflight check: git/gh/provider/config/labels/write perms
   trau watch                 tail a running loop's live agent activity (headless counterpart to the TUI 'w' key)
+  trau serve                 start the local web hub — HTTP API + embedded UI on 127.0.0.1:8728 (--bind, --port)
   trau --status [--json]     show saved ticket checkpoints with token/cost totals
   trau --dry-run             print the next eligible ticket without doing any work
   trau --reset <ID>          drop the branch + state and re-queue the ticket (refuses if already merged; --force overrides)
@@ -158,6 +159,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	if len(args) > 0 && args[0] == "watch" {
 		return runWatch(ctx, args[1:], stdout, stderr)
+	}
+
+	if len(args) > 0 && args[0] == "serve" {
+		return runServe(ctx, args[1:], stderr)
 	}
 
 	opts, err := config.ParseArgs(args)

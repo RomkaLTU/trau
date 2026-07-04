@@ -22,5 +22,10 @@ runs/
 *.out
 coverage.txt
 
+# SPA toolchain (web/ is the Vite source; internal/webserver/dist is the
+# embedded build output and IS tracked so `go build`/`go test` always compile)
+/web/node_modules/
+/web/.vite/
+
 # IDE
 /.idea/

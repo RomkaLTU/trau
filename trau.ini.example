@@ -366,6 +366,13 @@ KIMI_MODEL=
 # run the loop from varying directories.
 RUNS_DIR=runs
 
+# --- serve (trau serve HTTP hub) ---
+# `trau serve` starts a local HTTP server: a versioned JSON API under /api/v1
+# and an embedded web UI at /. The default bind is loopback-only; set
+# SERVE_BIND=0.0.0.0 to expose it on the network.
+SERVE_BIND=127.0.0.1
+SERVE_PORT=8728
+
 # COST NOTE: the "~$X est" in the closing recap (and --status) is a NOTIONAL
 # API-list estimate, not a bill — no provider cost is reported for interactive
 # Claude runs, so trau prices tokens itself. Most of the token TOTAL is
