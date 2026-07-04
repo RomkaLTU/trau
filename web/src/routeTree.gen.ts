@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RunsRouteImport } from './routes/runs'
+import { Route as LessonsRouteImport } from './routes/lessons'
 import { Route as InstancesRouteImport } from './routes/instances'
 import { Route as CostsRouteImport } from './routes/costs'
 import { Route as IndexRouteImport } from './routes/index'
@@ -23,6 +24,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const RunsRoute = RunsRouteImport.update({
   id: '/runs',
   path: '/runs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LessonsRoute = LessonsRouteImport.update({
+  id: '/lessons',
+  path: '/lessons',
   getParentRoute: () => rootRouteImport,
 } as any)
 const InstancesRoute = InstancesRouteImport.update({
@@ -45,6 +51,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
+  '/lessons': typeof LessonsRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
 }
@@ -52,6 +59,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
+  '/lessons': typeof LessonsRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
 }
@@ -60,21 +68,30 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
+  '/lessons': typeof LessonsRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/costs' | '/instances' | '/runs' | '/settings'
+  fullPaths: '/' | '/costs' | '/instances' | '/lessons' | '/runs' | '/settings'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/costs' | '/instances' | '/runs' | '/settings'
-  id: '__root__' | '/' | '/costs' | '/instances' | '/runs' | '/settings'
+  to: '/' | '/costs' | '/instances' | '/lessons' | '/runs' | '/settings'
+  id:
+    | '__root__'
+    | '/'
+    | '/costs'
+    | '/instances'
+    | '/lessons'
+    | '/runs'
+    | '/settings'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CostsRoute: typeof CostsRoute
   InstancesRoute: typeof InstancesRoute
+  LessonsRoute: typeof LessonsRoute
   RunsRoute: typeof RunsRoute
   SettingsRoute: typeof SettingsRoute
 }
@@ -93,6 +110,13 @@ declare module '@tanstack/react-router' {
       path: '/runs'
       fullPath: '/runs'
       preLoaderRoute: typeof RunsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/lessons': {
+      id: '/lessons'
+      path: '/lessons'
+      fullPath: '/lessons'
+      preLoaderRoute: typeof LessonsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/instances': {
@@ -123,6 +147,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CostsRoute: CostsRoute,
   InstancesRoute: InstancesRoute,
+  LessonsRoute: LessonsRoute,
   RunsRoute: RunsRoute,
   SettingsRoute: SettingsRoute,
 }
