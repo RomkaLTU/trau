@@ -71,6 +71,14 @@ func (f *fakeAppActions) ApprovePlan(context.Context, string) (PublishOutcome, e
 	return PublishOutcome{}, nil
 }
 
+func (f *fakeAppActions) SlicePlan(context.Context, string) (PlanOutcome, error) {
+	return PlanOutcome{Status: "slices", Epic: "COD-1", Slices: []PlanSlice{{Title: "First slice"}}}, nil
+}
+
+func (f *fakeAppActions) CreateSlices(context.Context, string, []PlanSlice) (SliceOutcome, error) {
+	return SliceOutcome{Epic: "COD-1", Children: []string{"COD-2"}, Created: true}, nil
+}
+
 func (f *fakeAppActions) ListPlans() []PlanSession { return nil }
 
 func (f *fakeAppActions) ResumePlan(context.Context, string) (PlanOutcome, error) {

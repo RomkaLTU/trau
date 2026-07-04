@@ -123,6 +123,47 @@ Put the entire revised PRD in the "markdown" field.
 	return b.String()
 }
 
+// BuildSlicePrompt is the provider-agnostic prompt for the slice round: it frames
+// the approved, published PRD (read fresh from disk — no agent session is ever
+// resumed), bakes in the /to-issues tracer-bullet vertical-slice conventions as
+// plain Go text, and specifies the slices shape of the [Payload] output contract.
+// The drafts it returns are reviewed in the TUI before anything is created, so it
+// only drafts — it never touches the tracker.
+func BuildSlicePrompt(prd string) string {
+	var b strings.Builder
+	b.WriteString(`You are breaking an approved PRD (product requirements document) into tracer-bullet issues — the draft child issues of the tracker epic that carries the PRD.
+
+Explore the repository to ground the slices in the actual codebase: use the project's domain vocabulary (CONTEXT.md / glossary) in titles and descriptions, and respect any ADRs in the area each slice touches.
+
+The approved PRD:
+<prd>
+`)
+	b.WriteString(strings.TrimSpace(prd))
+	b.WriteString(`
+</prd>
+
+Break the PRD into tracer-bullet vertical slices:
+- Each slice is a thin vertical slice that cuts through ALL integration layers end-to-end (schema, API, UI, tests) — never a horizontal slice of one layer.
+- A completed slice is demoable or verifiable on its own.
+- Prefer many thin slices over few thick ones.
+- Order the slices so every slice comes after the slices it depends on.
+
+Each slice's "description" is Markdown following this structure:
+
+## What to build
+A concise description of the vertical slice: the end-to-end behavior, not layer-by-layer implementation. Do NOT include file paths or code snippets — they go stale.
+
+## Acceptance criteria
+A "- [ ]" checklist of verifiable criteria.
+
+Each slice's "after" lists the exact titles of the earlier slices it is blocked by — empty when it can start immediately. Leave "labels" empty unless a specific extra tracker label is warranted: trau itself labels every created slice ready and parents it under the epic.
+
+Return your result as a single JSON object — the planning payload:
+{"status":"slices","slices":[{"title":"<short descriptive name>","description":"<the markdown above>","labels":[],"after":["<title of an earlier slice>"]}]}
+`)
+	return b.String()
+}
+
 // renderTranscript flattens the accumulated Q&A into plain text the fresh round
 // re-reads. Multi-select answers are joined; a skipped answer is flagged as its
 // default so the agent knows it was not an explicit choice.

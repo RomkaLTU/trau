@@ -93,15 +93,27 @@ type Actions interface {
 	// skipped and the plan stayed local. It is cancellable via ctx.
 	ApprovePlan(ctx context.Context, dir string) (PublishOutcome, error)
 
+	// SlicePlan runs the slice round on the published plan session at dir: a fresh
+	// agent process drafts the epic's tracer-bullet child issues and returns them
+	// for the review list. Drafts only — nothing is created or persisted until
+	// CreateSlices. It is cancellable via ctx.
+	SlicePlan(ctx context.Context, dir string) (PlanOutcome, error)
+
+	// CreateSlices creates the reviewed slice drafts as children of the plan
+	// session's published epic — in the reviewed order, each carrying the
+	// configured ready label — and advances the checkpoint to sliced. It is
+	// cancellable via ctx.
+	CreateSlices(ctx context.Context, dir string, slices []PlanSlice) (SliceOutcome, error)
+
 	// ListPlans returns every durable plan session for the Plan screen's list,
 	// resumable ones first. It reads local session state directly, so it needs no
 	// context and never blocks on the network.
 	ListPlans() []PlanSession
 
 	// ResumePlan re-enters the plan session at dir at the step its checkpoint
-	// dictates — re-asking the pending questions, reopening the PRD for review, or a
-	// note for a step not yet wired — and returns the outcome the Plan screen
-	// renders. It is cancellable via ctx.
+	// dictates — re-asking the pending questions, reopening the PRD for review,
+	// re-drafting the slices, or a note for a step not yet wired — and returns the
+	// outcome the Plan screen renders. It is cancellable via ctx.
 	ResumePlan(ctx context.Context, dir string) (PlanOutcome, error)
 
 	// AbortPlan marks the plan session at dir aborted — a terminal side-exit that

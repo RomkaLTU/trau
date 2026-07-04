@@ -145,6 +145,10 @@ func (s *Session) markPublished(epic string) error {
 	return s.setPhase(PhasePublished)
 }
 
+// markSliced advances the checkpoint to sliced — the terminal happy end: every
+// reviewed slice was created as a child of the published epic.
+func (s *Session) markSliced() error { return s.setPhase(PhaseSliced) }
+
 // Abort marks the session aborted — a terminal side-exit reachable from any phase.
 // It only flips the checkpoint; it never touches the tracker, so any issues an
 // already-published session created are left untouched, and the publish and slice
