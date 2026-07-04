@@ -50,6 +50,7 @@ type Record struct {
 	CostUSD       *float64
 	Turns         int
 	IsError       bool
+	Provider      string
 	Model         string
 	Context       int
 	Skills        []string
@@ -67,6 +68,7 @@ type line struct {
 	CostUSD       *float64 `json:"cost_usd"`
 	Turns         int      `json:"turns"`
 	IsError       bool     `json:"is_error"`
+	Provider      string   `json:"provider,omitempty"`
 	Model         string   `json:"model,omitempty"`
 	Context       int      `json:"context,omitempty"`
 	Skills        []string `json:"skills,omitempty"`
@@ -136,6 +138,7 @@ func (s *Sink) Append(phase string, rec Record) {
 		CostUSD:       rec.CostUSD,
 		Turns:         rec.Turns,
 		IsError:       rec.IsError,
+		Provider:      rec.Provider,
 		Model:         rec.Model,
 		Context:       rec.Context,
 		Skills:        rec.Skills,
@@ -380,6 +383,87 @@ func (s *Sink) Rollup(from, to string) []DayPhaseCost {
 	return out
 }
 
+// DetailCost is the analytics reader's finest grain: one (date, provider, model,
+// phase) cell of spend under a runs root, keeping the model and its resolved
+// provider so callers can regroup and filter along any dimension. Cost is left
+// unrounded so a caller folding cells across repos rounds once at the end;
+// Metered is false when any contributing line carried no per-call cost.
+type DetailCost struct {
+	Date     string
+	Phase    string
+	Provider string
+	Model    string
+	Tokens   int
+	Cost     float64
+	Metered  bool
+}
+
+// RollupDetail scans every runs/<bucket>/tokens.jsonl under the root and returns
+// one cell per (local date, provider, model, phase) within [from, to] inclusive.
+// Each line's provider is the one recorded inline, falling back to [ProviderForModel]
+// for historical lines logged before the provider was persisted. It is the
+// analytics endpoint's per-repo reader; summing cells across any subset of
+// dimensions yields that grouping's spend. A root with no in-window logs yields
+// nil — never an error. Malformed lines are skipped.
+func (s *Sink) RollupDetail(from, to string) []DetailCost {
+	matches, _ := filepath.Glob(filepath.Join(s.root, "*", "tokens.jsonl"))
+
+	type key struct{ date, provider, model, phase string }
+	cells := map[key]*DetailCost{}
+	var order []key
+	for _, path := range matches {
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			b := bytes.TrimSpace(sc.Bytes())
+			if len(b) == 0 {
+				continue
+			}
+			var ln line
+			if err := json.Unmarshal(b, &ln); err != nil {
+				continue
+			}
+			if len(ln.TS) < 10 {
+				continue
+			}
+			date := ln.TS[:10]
+			if date < from || date > to {
+				continue
+			}
+			provider := ln.Provider
+			if provider == "" {
+				provider = ProviderForModel(ln.Model)
+			}
+			k := key{date, provider, ln.Model, ln.Phase}
+			c := cells[k]
+			if c == nil {
+				c = &DetailCost{Date: date, Provider: provider, Model: ln.Model, Phase: ln.Phase, Metered: true}
+				cells[k] = c
+				order = append(order, k)
+			}
+			c.Tokens += ln.Total
+			if ln.CostUSD != nil {
+				c.Cost += *ln.CostUSD
+			} else {
+				c.Metered = false
+			}
+		}
+		_ = f.Close()
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	out := make([]DetailCost, 0, len(order))
+	for _, k := range order {
+		out = append(out, *cells[k])
+	}
+	return out
+}
+
 // Pair returns Total(id) rendered as the "<tokens> <cost>" string that --status
 // consumes (e.g. "0 0", "15234 1.2").
 func (s *Sink) Pair(id string) string {
@@ -438,4 +522,27 @@ func rateFor(model string) (modelRate, bool) {
 		}
 	}
 	return modelRate{}, false
+}
+
+// ProviderForModel maps a recorded model id back to the provider that served it,
+// mirroring the built-in provider set (claude / codex / kimi). It is the read-side
+// fallback for historical token lines logged before the provider was recorded
+// inline; an unrecognized or empty model yields "" so callers bucket it as unknown.
+func ProviderForModel(model string) string {
+	m := strings.ToLower(model)
+	switch {
+	case m == "":
+		return ""
+	case strings.Contains(m, "claude"), strings.Contains(m, "opus"),
+		strings.Contains(m, "sonnet"), strings.Contains(m, "haiku"),
+		strings.Contains(m, "fable"), strings.Contains(m, "mythos"):
+		return "claude"
+	case strings.Contains(m, "gpt"), strings.Contains(m, "codex"):
+		return "codex"
+	case strings.Contains(m, "kimi"), strings.Contains(m, "k2"),
+		strings.Contains(m, "moonshot"):
+		return "kimi"
+	default:
+		return ""
+	}
 }

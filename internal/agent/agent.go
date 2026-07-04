@@ -418,6 +418,7 @@ func (c *ClaudeInteractive) record(label string, res Result) {
 		CostUSD:       &cost,
 		Turns:         res.NumTurns,
 		IsError:       res.IsError,
+		Provider:      "claude",
 		Model:         model,
 		Context:       res.Context,
 		Skills:        res.Skills,
@@ -825,6 +826,7 @@ func (c *Codex) record(label string, res Result) {
 		CostUSD:       nil,
 		Turns:         res.NumTurns,
 		IsError:       res.IsError,
+		Provider:      "codex",
 		Model:         c.Model,
 	})
 }
@@ -1100,6 +1102,7 @@ func (c *Kimi) record(label string, res Result) {
 		CostUSD:       nil,
 		Turns:         res.NumTurns,
 		IsError:       res.IsError,
+		Provider:      "kimi",
 		Model:         model,
 	})
 }
