@@ -104,7 +104,7 @@ func (w *linearWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIs
 	if err != nil {
 		return NewIssue{}, err
 	}
-	id, url, err := w.client.CreateIssue(ctx, team.ID, draft.Title, draft.Description, draft.Labels)
+	id, url, err := w.client.CreateIssue(ctx, linearapi.CreateIssueInput{TeamID: team.ID, Title: draft.Title, Description: draft.Description, Labels: draft.Labels})
 	if err != nil {
 		return NewIssue{}, err
 	}
@@ -138,7 +138,7 @@ type jiraWriter struct {
 }
 
 func (w *jiraWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIssue, error) {
-	key, err := w.client.CreateIssue(ctx, w.project, w.issueType, draft.Title, draft.Description, draft.Labels)
+	key, err := w.client.CreateIssue(ctx, w.project, w.issueType, draft.Title, draft.Description, draft.Labels, "")
 	if err != nil {
 		return NewIssue{}, err
 	}
@@ -150,7 +150,7 @@ func (w *jiraWriter) AddComment(ctx context.Context, id, body string) error {
 }
 
 func (w *jiraWriter) PublishDocument(ctx context.Context, draft DocumentDraft) (PublishedDocument, error) {
-	key, err := w.client.CreateIssue(ctx, w.project, w.issueType, draft.Title, draft.Markdown, nil)
+	key, err := w.client.CreateIssue(ctx, w.project, w.issueType, draft.Title, draft.Markdown, nil, "")
 	if err != nil {
 		return PublishedDocument{}, err
 	}

@@ -243,6 +243,47 @@ func IsCrossProject(err error) bool {
 	return errors.As(err, &c)
 }
 
+// RefusedError signals that the build agent declined to implement a ticket in
+// this repository (its final output carried the REFUSED sentinel): the ticket
+// targets a different codebase. It is the agent-level backstop behind
+// EnsureOwnedProject for setups without a configured PROJECT. The handler resets
+// the ticket — empty branch dropped, checkpoint cleared, tracker restored — so
+// nothing half-started lingers here, and the loop stops with guidance instead of
+// re-picking the same ticket forever.
+type RefusedError struct {
+	ID     string
+	Reason string
+}
+
+func (e *RefusedError) Error() string {
+	return fmt.Sprintf("build agent refused %s: %s", e.ID, e.Reason)
+}
+
+// AsRefused extracts the *RefusedError from err (traversing wraps), or nil when
+// err is not a refusal.
+func AsRefused(err error) *RefusedError {
+	var r *RefusedError
+	if errors.As(err, &r) {
+		return r
+	}
+	return nil
+}
+
+// parseRefusal recovers the build agent's refusal from its final output: the
+// last line starting with the REFUSED: sentinel, with the reason after the
+// colon. Line-anchored and case-sensitive so prose mentioning the word can't
+// trip it.
+func parseRefusal(out string) (reason string, ok bool) {
+	lines := strings.Split(out, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if rest, found := strings.CutPrefix(line, "REFUSED:"); found {
+			return strings.TrimSpace(rest), true
+		}
+	}
+	return "", false
+}
+
 // Pipeline holds the collaborators a ticket run needs. One Pipeline is
 // constructed per process and reused across tickets.
 type Pipeline struct {
@@ -382,6 +423,7 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 			pr = " (PR #" + pr + ")"
 		}
 		p.logf("  ✓ %s is already merged%s — skipping; `trau --clear %s` to run it again", id, pr, id)
+		p.clearFailure(id)
 		return ErrAlreadyDone
 	}
 	p.clearFailureMarks(id)
@@ -429,9 +471,6 @@ func (p *Pipeline) runPhases(ctx context.Context, id string, fi int) error {
 		if err := p.build(ctx, id, fi == 1); err != nil {
 			return err
 		}
-		if err := p.assertRepoChanged(ctx, id); err != nil {
-			return err
-		}
 	}
 	if fi < 3 {
 		if err := p.Handoff(ctx, id); err != nil {
@@ -469,13 +508,31 @@ func (p *Pipeline) runPhases(ctx context.Context, id string, fi int) error {
 //     which preserves the WIP on the branch without quarantining or filing a bug.
 func (p *Pipeline) classifyPhaseErr(ctx context.Context, id string, err error) error {
 	switch {
-	case err == nil, errors.Is(err, ErrAlreadyDone), IsPaused(err):
+	case err == nil, errors.Is(err, ErrAlreadyDone):
+		p.clearFailure(id)
+		return err
+	case IsPaused(err):
 		return err
 	case isGiveUp(err):
 		return p.handleGiveUp(ctx, id, err)
+	case AsRefused(err) != nil:
+		return p.handleRefusal(ctx, id, err)
 	default:
 		return p.fault(ctx, id, err)
 	}
+}
+
+// handleRefusal undoes a refused ticket's scaffolding — the pre-cut empty branch,
+// the checkpoint, the tracker's In Progress — via Reset, so the ticket is left
+// exactly as runnable from its owning repo as before the pick. The refusal
+// passes through for the loop driver to stop on with guidance.
+func (p *Pipeline) handleRefusal(ctx context.Context, id string, err error) error {
+	r := AsRefused(err)
+	p.logf("  ✗ build refused %s: %s", id, r.Reason)
+	if rerr := p.Reset(ctx, id); rerr != nil {
+		p.logf("  reset after refusal error (continuing): %v", rerr)
+	}
+	return err
 }
 
 func isGiveUp(err error) bool {
@@ -489,6 +546,13 @@ func (p *Pipeline) handleGiveUp(ctx context.Context, id string, err error) error
 		return p.giveUp(ctx, id, g.Reason)
 	}
 	return err
+}
+
+// clearFailure drops a stale FAILURE_REASON once a run ends successfully — the
+// recorded reason describes why the ticket is stuck, so it must not outlive the
+// attempt that resolved it (e.g. a merge fault cleared by a manual merge).
+func (p *Pipeline) clearFailure(id string) {
+	_ = p.State.Unset(id, "FAILURE_REASON")
 }
 
 // fault preserves the partial work of a ticket aborted by an unexpected error and
@@ -702,7 +766,14 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 		note = resumeNote
 	}
 	note += buildLessonsNote(p.recallLessons(p.lessonQuery(id)))
-	if _, err := p.agentStep(ctx, id, "build", buildInstruction(id, branch, note, p.ticketContext(ctx, id))); err != nil {
+	out, err := p.agentStep(ctx, id, "build", buildInstruction(id, branch, note, p.ticketContext(ctx, id)))
+	if err != nil {
+		return err
+	}
+	if rerr := p.checkRefusal(ctx, out, id); rerr != nil {
+		return rerr
+	}
+	if err := p.assertRepoChanged(ctx, id); err != nil {
 		return err
 	}
 
@@ -710,6 +781,22 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 		return fmt.Errorf("build %s: checkpoint built: %w", id, err)
 	}
 	return nil
+}
+
+// checkRefusal honors the build agent's REFUSED sentinel — its declaration that
+// the ticket targets a different repository/codebase — but only when the agent
+// backed it up by leaving the working tree untouched. A refusal accompanied by
+// changes is a contradiction; the changes win and the run proceeds normally.
+func (p *Pipeline) checkRefusal(ctx context.Context, out, id string) error {
+	reason, ok := parseRefusal(out)
+	if !ok {
+		return nil
+	}
+	if dirty, err := p.Git.WorktreeDirty(ctx); err != nil || dirty {
+		p.logf("  ⚠ build replied REFUSED but left changes — keeping them and continuing")
+		return nil
+	}
+	return &RefusedError{ID: id, Reason: reason}
 }
 
 func (p *Pipeline) resolveBuildBranch(ctx context.Context, id string) (string, error) {
@@ -777,10 +864,12 @@ func featureBranch(id, title string) string {
 // assertRepoChanged catches a build that produced nothing in the managed repo —
 // the agent escaped its working directory or built in the wrong repository — and
 // faults (resumable, WIP preserved) instead of advancing to a hollow handoff or
-// empty PR. Build leaves its work uncommitted (the commit phase runs later), so
-// "nothing here" means BOTH a clean working tree (untracked files included) AND no
-// commits on the branch beyond base. REQUIRE_REPO_CHANGES=0 disables it for the
-// rare legitimately no-op ticket.
+// empty PR. It runs inside build BEFORE the built checkpoint, so a tripped guard
+// leaves the ticket at building and a resume re-runs build (and the guard) rather
+// than marching an empty branch into handoff. Build leaves its work uncommitted
+// (the commit phase runs later), so "nothing here" means BOTH a clean working tree
+// (untracked files included) AND no commits on the branch beyond base.
+// REQUIRE_REPO_CHANGES=0 disables it for the rare legitimately no-op ticket.
 func (p *Pipeline) assertRepoChanged(ctx context.Context, id string) error {
 	if !p.RequireRepoChanges {
 		return nil
@@ -1103,7 +1192,9 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 // CI; on green it squash-merges and deletes the branch when AutoMerge is set (else
 // it stops at the open PR), moves the ticket to Done, and checkpoints merged. A CI
 // failure or timeout gives up — preserving the branch and quarantining without
-// aborting the loop.
+// aborting the loop. A merge GitHub refuses as "not mergeable" (the base moved
+// under the PR) goes through recoverUnmergeablePR — sync, agent-resolved
+// conflicts, one more CI gate — before it too becomes a give-up, never a fault.
 func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 	pr := p.State.Get(id, "PR")
 	if prState, _ := p.GitHub.PRState(ctx, pr); prState == "MERGED" {
@@ -1123,15 +1214,133 @@ func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 		return nil
 	}
 	p.phaseStart("merge")
-	if err := p.retryGH(ctx, "gh pr merge", func() error {
+	err := p.mergePR(ctx, pr)
+	if unmergeablePR(err) {
+		err = p.recoverUnmergeablePR(ctx, id, pr, err)
+	}
+	if err != nil {
+		if isGiveUp(err) {
+			return err
+		}
+		return fmt.Errorf("merge %s: %w", id, err)
+	}
+	return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+}
+
+// mergePR merges pr with the transient-retry guard, adopting a merge a prior
+// attempt (or a racing actor) already completed.
+func (p *Pipeline) mergePR(ctx context.Context, pr string) error {
+	return p.retryGH(ctx, "gh pr merge", func() error {
 		if st, _ := p.GitHub.PRState(ctx, pr); st == "MERGED" {
 			return nil
 		}
 		return p.GitHub.Merge(ctx, pr, p.MergeMethod, true)
-	}); err != nil {
-		return fmt.Errorf("merge %s: %w", id, err)
+	})
+}
+
+// recoverUnmergeablePR handles GitHub's deterministic "not mergeable" refusal:
+// the PR's base moved after it opened — in the epic flow, typically a sibling
+// squash-merging into the epic branch — and now conflicts with it. The recovery
+// mirrors the epic finalize sync: merge the remote base INTO the feature branch
+// (an agent resolves real conflicts, bounded by MaxRepairs), push the merge
+// commit, re-gate CI, and retry the merge. A PR that stays unmergeable is a
+// verified dead end → give-up (quarantine + needs-human, session keeps going),
+// NOT an "unexpected error" fault that stops the whole session.
+func (p *Pipeline) recoverUnmergeablePR(ctx context.Context, id, pr string, mergeErr error) error {
+	base, err := p.buildBase(ctx)
+	if err != nil {
+		return err
 	}
-	return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+	branch := p.State.Get(id, "BRANCH")
+	if branch == "" {
+		branch, _ = p.Git.FindFeatureBranch(ctx, id)
+	}
+	if branch == "" {
+		return p.giveUp(ctx, id, fmt.Sprintf("PR %s conflicts with %s and no feature branch was found to sync — resolve manually (%v)", pr, base, mergeErr))
+	}
+	p.logf("  ⚠ PR %s is not mergeable — syncing %s with %s to resolve", pr, branch, base)
+	if err := p.checkoutExisting(ctx, branch); err != nil {
+		return p.giveUp(ctx, id, fmt.Sprintf("PR %s conflicts with %s and branch %s could not be checked out to sync — resolve manually", pr, base, branch))
+	}
+	synced, err := p.syncBranchWithBase(ctx, id, branch, base, "merge-sync")
+	if err != nil {
+		return err
+	}
+	if !synced {
+		return p.giveUp(ctx, id, fmt.Sprintf("PR %s conflicts with %s and the conflicts could not be auto-resolved — resolve manually", pr, base))
+	}
+	if err := p.pollCI(ctx, pr); err != nil {
+		p.logf("  ✗ CI after conflict sync: %v", err)
+		return p.giveUp(ctx, id, "CI not green after syncing the PR with "+base)
+	}
+	// The sync just pushed a new PR head and GitHub recomputes mergeability
+	// asynchronously, so a stale "not mergeable" right after the push gets a few
+	// paced retries before it is believed.
+	for attempt := 0; ; attempt++ {
+		err := p.mergePR(ctx, pr)
+		switch {
+		case err == nil:
+			return nil
+		case !unmergeablePR(err):
+			return err
+		case attempt >= 2:
+			return p.giveUp(ctx, id, fmt.Sprintf("PR %s is still not mergeable after syncing with %s: %v", pr, base, err))
+		}
+		p.logf("  ⟳ PR %s still reports not mergeable — waiting for GitHub to recompute (%d/2)", pr, attempt+1)
+		p.sleep(5)
+	}
+}
+
+// checkoutExisting checks out branch, adopting it from the remote when it is
+// missing locally (e.g. a resume in a fresh clone).
+func (p *Pipeline) checkoutExisting(ctx context.Context, branch string) error {
+	if exists, _ := p.Git.BranchExists(ctx, branch); exists {
+		return p.Git.Checkout(ctx, branch, false)
+	}
+	return p.Git.CheckoutRemoteBranch(ctx, p.Remote, branch)
+}
+
+// syncBranchWithBase merges the remote base into the checked-out branch so its PR
+// becomes mergeable again. A clean merge is pushed; a conflict is resolved by a
+// bounded repair-agent loop (labeled label<N>), then the merge is completed and
+// pushed. Returns false (with the merge aborted) when the conflicts could not be
+// resolved, so the caller leaves the PR to a human instead of shipping a broken
+// merge.
+func (p *Pipeline) syncBranchWithBase(ctx context.Context, id, branch, base, label string) (bool, error) {
+	conflicted, err := p.Git.MergeRemote(ctx, p.Remote, base)
+	if err != nil {
+		return false, fmt.Errorf("merge %s into %s: %w", base, branch, err)
+	}
+	if !conflicted {
+		if err := p.Git.Push(ctx, p.Remote, branch, false); err != nil {
+			p.logf("  push synced branch %s error (continuing): %v", branch, err)
+		}
+		return true, nil
+	}
+
+	p.phaseStart(label)
+	p.logf("  ⚠ %s conflicts with %s — resolving merge conflicts", branch, base)
+	maxAttempts := p.MaxRepairs
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if _, err := p.agentStep(ctx, id, fmt.Sprintf("%s%d", label, attempt), resolveConflictsInstruction(id, base, branch)); err != nil {
+			return false, err
+		}
+		if unmerged, _ := p.Git.Unmerged(ctx); strings.TrimSpace(unmerged) == "" {
+			if err := p.Git.ContinueMerge(ctx); err != nil {
+				return false, fmt.Errorf("complete merge: %w", err)
+			}
+			if err := p.Git.Push(ctx, p.Remote, branch, false); err != nil {
+				p.logf("  push synced branch %s error (continuing): %v", branch, err)
+			}
+			return true, nil
+		}
+		p.logf("  ⚠ conflicts remain after attempt %d/%d", attempt, maxAttempts)
+	}
+	_ = p.Git.MergeAbort(ctx)
+	return false, nil
 }
 
 func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
@@ -1237,6 +1446,26 @@ func retryableGH(err error) bool {
 		}
 	}
 	return true
+}
+
+// unmergeablePR reports whether a gh pr merge failure means GitHub refused the
+// PR in its current state ("not mergeable": conflicting with its base, or still
+// recomputing mergeability after a push) — the one class of deterministic merge
+// failure the pipeline can fix itself by syncing the branch with its base. A
+// policy block ("the base branch policy prohibits the merge") also matches: the
+// sync is then a no-op and the bounded retries funnel it into a clear give-up
+// instead of an "unexpected error" fault.
+func unmergeablePR(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, marker := range []string{"not mergeable", "merge conflict", "cannot be cleanly created"} {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // pushOutcome classifies why a deliverable push failed, so the commit phase can
@@ -1719,7 +1948,7 @@ func (p *Pipeline) clearFailureMarks(id string) {
 // sentinel — a provider state that retrying can't fix and that isn't the ticket's
 // fault, so the loop pauses blamelessly rather than burning retries.
 func isAuthFailure(err error) bool {
-	return errors.Is(err, agent.ErrAuthRequired)
+	return agent.IsAuthRequired(err)
 }
 
 // guardBudget enforces the configured spend ceilings before an agent call. It
@@ -1795,7 +2024,7 @@ const resumeNote = " A previous attempt may have left partial work on this branc
 const codeStyleNote = " Write it the way a senior engineer on this project would: clean, idiomatic, and matching the surrounding file's conventions. Do NOT add explanatory or narrating comments — no comment that restates what the code does, no section banners, no ticket IDs in comments, no multi-line 'why' essays; let clear names carry the meaning and keep a comment only where a genuinely non-obvious decision truly needs one, matching the file's existing comment density rather than exceeding it. Skip the AI tells: no over-defensive guards for cases that can't occur, no redundant error/nil checks the codebase doesn't already use, no belt-and-suspenders boilerplate a human wouldn't bother to write."
 
 func buildInstruction(id, branch, note, ticketCtx string) string {
-	return "Implement " + id + " on branch " + branch + " (already checked out). This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Always include the project's test skill (e.g. pest-testing); add domain skills based on what the ticket actually touches (e.g. inertia-react-development and tailwindcss-development for UI, medialibrary-development for uploads, pennant-development for feature flags, the relevant *-development skill for each area)." + note + " Implement the ticket fully and run only the tests relevant to this slice (the new or changed test files for this ticket) — not the entire suite." + codeStyleNote + " Do not commit, push, or open a PR — stop after implementation." + ticketCtx
+	return "Implement " + id + " on branch " + branch + " (already checked out). This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Always include the project's test skill (e.g. pest-testing); add domain skills based on what the ticket actually touches (e.g. inertia-react-development and tailwindcss-development for UI, medialibrary-development for uploads, pennant-development for feature flags, the relevant *-development skill for each area)." + note + " Implement the ticket fully and run only the tests relevant to this slice (the new or changed test files for this ticket) — not the entire suite." + codeStyleNote + " Do not commit, push, or open a PR — stop after implementation. If the ticket clearly belongs to a DIFFERENT repository or codebase — the files, directories, or stack it references do not exist here and are not something this ticket asks you to create — do NOT implement anything and do NOT modify any files; end your reply with a final line 'REFUSED: <one short sentence naming what the ticket actually targets>'." + ticketCtx
 }
 
 // ticketContext returns a prompt block carrying the ticket's title and full
@@ -2200,12 +2429,10 @@ func topFailures(v verdict) []string {
 // agentErrSummary condenses a multi-line agent error into one human line and flags
 // provider rate/usage limits. The full detail stays in the provider's own log.
 func agentErrSummary(err error) (msg string, rateLimited bool) {
-	s := err.Error()
-	low := strings.ToLower(s)
-	if strings.Contains(low, "rate_limit") || strings.Contains(low, "rate limit") ||
-		strings.Contains(low, "usage limit") || strings.Contains(low, "quota") || strings.Contains(s, "429") {
+	if agent.IsRateLimited(err) {
 		return "provider usage/rate limit reached — see provider log", true
 	}
+	s := err.Error()
 	for _, ln := range strings.Split(s, "\n") {
 		ln = strings.TrimSpace(ln)
 		if strings.HasPrefix(strings.ToLower(ln), "error:") {

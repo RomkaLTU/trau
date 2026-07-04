@@ -46,7 +46,7 @@ func fakeLinearWriter(t *testing.T) (*linearWriter, *[]linearGraphReq) {
 			_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"id":"iss-1","identifier":"COD-42","team":{"id":"team-1","key":"COD"}}]}}}`)
 		case strings.Contains(req.Query, "mutation CommentCreate"):
 			_, _ = io.WriteString(w, `{"data":{"commentCreate":{"success":true}}}`)
-		case strings.Contains(req.Query, "query ProjectByName"):
+		case strings.Contains(req.Query, "query ProjectsByName"):
 			_, _ = io.WriteString(w, `{"data":{"projects":{"nodes":[{"id":"proj-1","name":"Trau"}]}}}`)
 		case strings.Contains(req.Query, "mutation DocumentCreate"):
 			_, _ = io.WriteString(w, `{"data":{"documentCreate":{"success":true,"document":{"id":"doc-1","url":"https://linear.app/acme/document/prd-abc123"}}}}`)
@@ -124,7 +124,7 @@ func TestLinearWriterPublishDocument(t *testing.T) {
 		t.Errorf("identifier = %q, want empty for a Linear document", got.Identifier)
 	}
 
-	lookup := lastLinearReq(*reqs, "query ProjectByName")
+	lookup := lastLinearReq(*reqs, "query ProjectsByName")
 	if lookup == nil || lookup.Variables["name"] != "Trau" {
 		t.Fatalf("ProjectByName not sent with the repo's project name: %+v", lookup)
 	}

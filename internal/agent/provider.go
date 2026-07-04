@@ -19,10 +19,13 @@ type BackendParams struct {
 	Effort   string
 	Dir      string
 	Preamble string
-	Timeout  time.Duration
-	Cols     int
-	Rows     int
-	SizeFn   func() (cols, rows int)
+	// PlanPreamble, when set, replaces Preamble for the plan phase only (calls
+	// whose label routes to PhasePlan). Empty keeps every phase on Preamble.
+	PlanPreamble string
+	Timeout      time.Duration
+	Cols         int
+	Rows         int
+	SizeFn       func() (cols, rows int)
 	// StallWindow kills+fails a call that produces no transcript output for this
 	// long, before Timeout. Zero disables the watchdog (wait the full Timeout).
 	StallWindow time.Duration
@@ -94,6 +97,7 @@ var claudeSpec = Spec{
 			Effort:          p.Effort,
 			DisallowedTools: p.Extra["disallowed_tools"],
 			Preamble:        p.Preamble,
+			PlanPreamble:    p.PlanPreamble,
 			ResultDir:       p.Extra["result_dir"],
 			Dir:             p.Dir,
 			Cols:            p.Cols,
@@ -113,19 +117,20 @@ var codexSpec = Spec{
 	NeedsSkills: true,
 	New: func(p BackendParams) (Runner, error) {
 		return &Codex{
-			Bin:       p.Bin,
-			Flags:     p.Flags,
-			Profile:   p.Extra["profile"],
-			Model:     p.Model,
-			Effort:    p.Effort,
-			Preamble:  p.Preamble,
-			Dir:       p.Dir,
-			ResultDir: p.Extra["result_dir"],
-			Cols:      p.Cols,
-			Rows:      p.Rows,
-			SizeFn:    p.SizeFn,
-			Log:       p.Log,
-			Tokens:    p.Tokens,
+			Bin:          p.Bin,
+			Flags:        p.Flags,
+			Profile:      p.Extra["profile"],
+			Model:        p.Model,
+			Effort:       p.Effort,
+			Preamble:     p.Preamble,
+			PlanPreamble: p.PlanPreamble,
+			Dir:          p.Dir,
+			ResultDir:    p.Extra["result_dir"],
+			Cols:         p.Cols,
+			Rows:         p.Rows,
+			SizeFn:       p.SizeFn,
+			Log:          p.Log,
+			Tokens:       p.Tokens,
 		}, nil
 	},
 }
@@ -136,18 +141,19 @@ var kimiSpec = Spec{
 	NeedsSkills: true,
 	New: func(p BackendParams) (Runner, error) {
 		return &Kimi{
-			Bin:       p.Bin,
-			Flags:     p.Flags,
-			Model:     p.Model,
-			Preamble:  p.Preamble,
-			Dir:       p.Dir,
-			ResultDir: p.Extra["result_dir"],
-			Cols:      p.Cols,
-			Rows:      p.Rows,
-			SizeFn:    p.SizeFn,
-			Timeout:   p.Timeout,
-			Log:       p.Log,
-			Tokens:    p.Tokens,
+			Bin:          p.Bin,
+			Flags:        p.Flags,
+			Model:        p.Model,
+			Preamble:     p.Preamble,
+			PlanPreamble: p.PlanPreamble,
+			Dir:          p.Dir,
+			ResultDir:    p.Extra["result_dir"],
+			Cols:         p.Cols,
+			Rows:         p.Rows,
+			SizeFn:       p.SizeFn,
+			Timeout:      p.Timeout,
+			Log:          p.Log,
+			Tokens:       p.Tokens,
 		}, nil
 	},
 }

@@ -37,6 +37,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
+	"github.com/RomkaLTU/trau/internal/planning"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
@@ -276,14 +277,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			dt, dc, dm := sink.DayTotal(today)
 			report = budget.Report{Date: today, Limits: lim, Today: budget.Spend{Tokens: dt, Cost: dc, Metered: dm}}
 		}
+		planBucket := state.Bucket{ID: tokens.PlanBucket, Label: "planning"}
 		if opts.JSON {
-			return store.StatusJSON(stdout, sink.Total, report, reconciledIDs(reconciled))
+			return store.StatusJSON(stdout, sink.Total, report, reconciledIDs(reconciled), planBucket)
 		}
 		for _, rt := range reconciled {
 			con.Logf("↳ %s is %s on the tracker — cleared stale %s checkpoint", rt.ID, rt.Status, rt.Phase)
 		}
 		con.Logf("Saved ticket checkpoints:")
-		store.Status(stdout, sink.Total)
+		store.Status(stdout, sink.Total, planBucket)
 		if r, ok := report.(budget.Report); ok {
 			_, _ = fmt.Fprintf(stdout, "  %s\n", r.Summary())
 		}
@@ -409,7 +411,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		t, c := 0, 0.0
 		metered := true
 		for _, id := range ids {
-			tk, cs, m := sink.Total(id)
+			tk, cs, m := sink.SessionTotal(id)
 			t += tk
 			c += cs
 			metered = metered && m
@@ -418,7 +420,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	result := func(id string, elapsed time.Duration) console.TicketResult {
-		tk, cs, metered := sink.Total(id)
+		tk, cs, metered := sink.SessionTotal(id)
 		return console.TicketResult{
 			ID:            id,
 			Title:         p.State.Get(id, "TITLE"),
@@ -866,7 +868,11 @@ func (e *realEngine) flagCostAnomalies(id string) {
 	if len(anomalies) == 0 {
 		return
 	}
-	_ = e.pipe.State.Set(id, "ANOMALIES", strconv.Itoa(len(anomalies)))
+	// Stamp only tickets that still have a checkpoint — a refusal reset just
+	// removed the state file, and recreating it here would leave a ghost row.
+	if e.pipe.State.Get(id, "PHASE") != "" {
+		_ = e.pipe.State.Set(id, "ANOMALIES", strconv.Itoa(len(anomalies)))
+	}
 	phases := make([]string, len(anomalies))
 	for i, a := range anomalies {
 		phases[i] = a.Phase
@@ -897,16 +903,24 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 		defer cancel()
 		go p.Poller.Run(pctx)
 	}
-	// crossStop surfaces an ownership refusal (the ticket belongs to another Linear
-	// project) and signals the loop to stop cleanly — nothing was touched, so the
-	// user just runs it from the owning repo or clears a stray checkpoint here.
+	// crossStop surfaces an ownership refusal — the config-level guard (the ticket
+	// belongs to another Linear project) or the build agent's REFUSED backstop —
+	// and signals the loop to stop cleanly rather than re-pick the same foreign
+	// ticket. Either way the ticket is left runnable from the repo that owns it.
 	crossStop := func(id string, err error) bool {
-		if !pipeline.IsCrossProject(err) {
+		switch {
+		case pipeline.IsCrossProject(err):
+			con.Logf("✗ %v", err)
+			con.Logf("  ↳ run it from the repo that owns that project, or `trau --clear %s` to drop a stray checkpoint here", id)
+			return true
+		case pipeline.AsRefused(err) != nil:
+			r := pipeline.AsRefused(err)
+			con.Logf("✗ %s: build agent refused — %s", id, r.Reason)
+			con.Logf("  ↳ ticket reset (branch dropped, tracker restored) — run it from the repo it belongs to, and set PROJECT in this repo's .trau.ini so foreign tickets are never picked here")
+			return true
+		default:
 			return false
 		}
-		con.Logf("✗ %v", err)
-		con.Logf("  ↳ run it from the repo that owns that project, or `trau --clear %s` to drop a stray checkpoint here", id)
-		return true
 	}
 	// doneSkipped remembers picks that turned out to be already merged. Pick
 	// offering such an id a second time means the tracker is not converging —
@@ -1085,6 +1099,7 @@ type appActions struct {
 
 	built    bool
 	buildErr error
+	runner   agent.Runner
 	pipe     *pipeline.Pipeline
 	tracker  tracker.Tracker
 	eng      *realEngine
@@ -1653,6 +1668,7 @@ func (a *appActions) ensure() error {
 		a.buildErr = err
 		return err
 	}
+	a.runner = runner
 	a.tracker, err = buildTracker(a.cfg, runner)
 	if err != nil {
 		a.buildErr = err
@@ -1751,6 +1767,259 @@ func (a *appActions) CheckoutBranch(ctx context.Context, id string) (string, err
 	return a.pipe.CheckoutBranch(ctx, id)
 }
 
+// StartPlan runs one planning round on the raw idea through the same provider-
+// agnostic Runner seam the pipeline uses, routed by the "plan" phase. Sessions live
+// under the runs area (in _plans/), well away from ticket state. It returns the
+// outcome the Plan screen renders.
+func (a *appActions) StartPlan(ctx context.Context, idea string) (tui.PlanOutcome, error) {
+	return a.runPlanRound(func(o *planning.Orchestrator) (*planning.RoundResult, error) {
+		return o.RunRound(ctx, idea)
+	})
+}
+
+// AnswerPlan records the answers to the previous round's questions on the plan
+// session at dir and runs the next planning round as a fresh process, exactly
+// like the first — the session's durable transcript is the only continuity.
+func (a *appActions) AnswerPlan(ctx context.Context, dir string, answers []tui.PlanAnswer) (tui.PlanOutcome, error) {
+	return a.runPlanRound(func(o *planning.Orchestrator) (*planning.RoundResult, error) {
+		return o.AnswerRound(ctx, planning.OpenSession(dir), planAnswers(answers))
+	})
+}
+
+// RevisePlan records a free-text change request against the drafted PRD in the plan
+// session at dir and runs a fresh revision round, exactly like every other round —
+// the revised PRD replaces the durable copy and the outcome re-renders.
+func (a *appActions) RevisePlan(ctx context.Context, dir, note string) (tui.PlanOutcome, error) {
+	return a.runPlanRound(func(o *planning.Orchestrator) (*planning.RoundResult, error) {
+		return o.ReviseRound(ctx, planning.OpenSession(dir), note)
+	})
+}
+
+// ApprovePlan approves the drafted PRD in the plan session at dir, advancing the
+// checkpoint to prd_ready, then publishes it to the tracker as an epic. A tracker
+// without the hierarchical-create capability degrades gracefully: publish is
+// skipped and the plan stays local at prd_ready.
+func (a *appActions) ApprovePlan(ctx context.Context, dir string) (tui.PublishOutcome, error) {
+	if err := a.ensure(); err != nil {
+		return tui.PublishOutcome{}, err
+	}
+	sess := planning.OpenSession(dir)
+	if err := sess.Approve(); err != nil {
+		return tui.PublishOutcome{}, err
+	}
+	res, err := a.planOrchestrator().Publish(ctx, sess, a.tracker)
+	if err != nil {
+		return tui.PublishOutcome{}, err
+	}
+	return tui.PublishOutcome{Epic: res.Epic, Published: res.Published}, nil
+}
+
+// SlicePlan runs the slice round on the published plan session at dir: a fresh
+// agent process routed by the "slice" phase re-reads the published PRD and drafts
+// the epic's tracer-bullet child issues for the review list. Drafts only —
+// nothing is created until CreateSlices confirms the review.
+func (a *appActions) SlicePlan(ctx context.Context, dir string) (tui.PlanOutcome, error) {
+	return a.runPlanRound(func(o *planning.Orchestrator) (*planning.RoundResult, error) {
+		return o.SliceRound(ctx, planning.OpenSession(dir))
+	})
+}
+
+// CreateSlices creates the reviewed slice drafts as children of the plan session's
+// published epic in the reviewed order, each carrying the configured ready label
+// (the epic itself never gets it), and advances the checkpoint to sliced. No agent
+// runs — the tracker is driven directly — but ensure() still wires it. The outcome
+// carries any children created even on error, so the surface can tell an untouched
+// tracker from a partial creation.
+func (a *appActions) CreateSlices(ctx context.Context, dir string, slices []tui.PlanSlice) (tui.SliceOutcome, error) {
+	if err := a.ensure(); err != nil {
+		return tui.SliceOutcome{}, err
+	}
+	sess := planning.OpenSession(dir)
+	res, err := a.planOrchestrator().CreateSlices(ctx, sess, a.tracker, reviewedSlices(slices), a.cfg.ReadyLabel)
+	return tui.SliceOutcome{Epic: sess.Epic(), Children: res.Children, Created: res.Created}, err
+}
+
+// ListPlans projects every durable plan session onto the Plan screen's list. It
+// reads local session state under _plans/ directly — no runner is built and no
+// tracker is touched.
+func (a *appActions) ListPlans() []tui.PlanSession {
+	infos := planning.List(a.plansRoot())
+	out := make([]tui.PlanSession, len(infos))
+	for i, si := range infos {
+		out[i] = tui.PlanSession{
+			Dir:       si.Dir,
+			Phase:     si.Phase,
+			Title:     si.Title,
+			Idea:      si.Idea,
+			Updated:   si.Updated,
+			Resumable: si.Resumable(),
+		}
+	}
+	return out
+}
+
+// ResumePlan re-enters the plan session at dir at the step its checkpoint dictates,
+// rebuilding it from the durable artifacts alone: a round re-runs to re-ask the
+// pending questions (or draft the PRD at the cap), a drafted PRD reopens for review,
+// an approved-but-unpublished PRD retries the publish and flows into slicing, a
+// published session re-drafts its slices, and a terminal session surfaces a
+// graceful note. Only the round and slice steps build the runner for an agent;
+// review reads from disk and publish drives the tracker directly.
+func (a *appActions) ResumePlan(ctx context.Context, dir string) (tui.PlanOutcome, error) {
+	sess := planning.OpenSession(dir)
+	switch planning.ResumeStepFor(sess.Phase()) {
+	case planning.StepRound:
+		return a.runPlanRound(func(o *planning.Orchestrator) (*planning.RoundResult, error) {
+			return o.ResumeRound(ctx, sess)
+		})
+	case planning.StepReview:
+		prd, ok := sess.PRD()
+		if !ok {
+			return tui.PlanOutcome{}, fmt.Errorf("planning: session at %s is under review with no drafted PRD", dir)
+		}
+		return tui.PlanOutcome{Status: string(planning.StatusPRD), SessionDir: dir, Title: prd.Title, Markdown: prd.Markdown}, nil
+	case planning.StepPublish:
+		if err := a.ensure(); err != nil {
+			return tui.PlanOutcome{}, err
+		}
+		res, err := a.planOrchestrator().Publish(ctx, sess, a.tracker)
+		if err != nil {
+			return tui.PlanOutcome{}, err
+		}
+		if !res.Published {
+			return tui.PlanOutcome{SessionDir: dir, Note: "✓ PRD approved. This tracker can't publish plans, so it stays local at prd_ready."}, nil
+		}
+		return a.SlicePlan(ctx, dir)
+	case planning.StepSlice:
+		return a.SlicePlan(ctx, dir)
+	default:
+		return tui.PlanOutcome{SessionDir: dir, Note: resumeNote(sess.Phase())}, nil
+	}
+}
+
+// AbortPlan marks the plan session at dir aborted — terminal. It is a pure local
+// checkpoint write that builds no runner and touches no tracker, so a session can
+// always be abandoned even when provider config is broken.
+func (a *appActions) AbortPlan(_ context.Context, dir string) error {
+	return planning.OpenSession(dir).Abort()
+}
+
+// resumeNote is the graceful line the Plan screen shows for a terminal session.
+func resumeNote(phase string) string {
+	switch phase {
+	case planning.PhaseSliced:
+		return "This plan session is complete — all its slices were published."
+	case planning.PhaseAborted:
+		return "This plan session was aborted."
+	default:
+		return "This plan session has nothing left to resume."
+	}
+}
+
+func (a *appActions) plansRoot() string { return filepath.Join(a.cfg.RunsDir, "_plans") }
+
+// planOrchestrator builds the plan orchestrator with the same transient-failure
+// recovery the pipeline gives its phases — retries, fallback providers, and a
+// blameless pause on a rate/usage limit or auth wall — so an infra blip in a
+// planning round never burns a question round.
+func (a *appActions) planOrchestrator() *planning.Orchestrator {
+	return planning.NewOrchestrator(a.runner, a.plansRoot()).
+		WithMaxRounds(a.cfg.MaxPlanRounds).
+		WithRecovery(a.cfg.AgentRetries, a.cfg.AgentBackoff, a.planFallback())
+}
+
+// planFallback resolves the fallback-provider chain for the plan phase, reusing the
+// pipeline's configured resolver so planning and the pipeline fail over identically.
+func (a *appActions) planFallback() []agent.Runner {
+	if a.pipe == nil || a.pipe.Fallback == nil {
+		return nil
+	}
+	return a.pipe.Fallback(agent.PhasePlan)
+}
+
+// runPlanRound points the token sink at the planning bucket for the span of one
+// round — planning calls carry no ticket — then restores the loop default, so
+// planning spend lands under runs/_plans/ and surfaces as the planning row in
+// session totals and --status.
+func (a *appActions) runPlanRound(run func(*planning.Orchestrator) (*planning.RoundResult, error)) (tui.PlanOutcome, error) {
+	if err := a.ensure(); err != nil {
+		return tui.PlanOutcome{}, err
+	}
+	a.sink.SetTicket(tokens.PlanBucket)
+	defer a.sink.SetTicket("")
+	rr, err := run(a.planOrchestrator())
+	if err != nil {
+		// The session (when one exists) survives the failure, so the outcome
+		// carries its dir and the Plan screen can say the work is resumable.
+		out := tui.PlanOutcome{}
+		if rr != nil && rr.Session != nil {
+			out.SessionDir = rr.Session.Dir()
+		}
+		return out, err
+	}
+	return planOutcome(rr), nil
+}
+
+// planOutcome projects a planning round onto the TUI's Plan screen outcome.
+func planOutcome(rr *planning.RoundResult) tui.PlanOutcome {
+	p := rr.Payload
+	out := tui.PlanOutcome{Status: string(p.Status), SessionDir: rr.Session.Dir()}
+	switch p.Status {
+	case planning.StatusPRD:
+		if p.PRD != nil {
+			out.Title, out.Markdown = p.PRD.Title, p.PRD.Markdown
+		}
+	case planning.StatusQuestions:
+		out.Questions = planQuestions(p.Questions)
+	case planning.StatusSlices:
+		out.Epic = rr.Session.Epic()
+		out.Slices = planSliceDrafts(p.Slices)
+	}
+	return out
+}
+
+func planSliceDrafts(in []planning.Slice) []tui.PlanSlice {
+	out := make([]tui.PlanSlice, len(in))
+	for i, s := range in {
+		out[i] = tui.PlanSlice{Title: s.Title, Description: s.Description, Labels: s.Labels, After: s.After}
+	}
+	return out
+}
+
+func reviewedSlices(in []tui.PlanSlice) []planning.Slice {
+	out := make([]planning.Slice, len(in))
+	for i, s := range in {
+		out[i] = planning.Slice{Title: s.Title, Description: s.Description, Labels: s.Labels, After: s.After}
+	}
+	return out
+}
+
+func planQuestions(in []planning.Question) []tui.PlanQuestion {
+	out := make([]tui.PlanQuestion, len(in))
+	for i, q := range in {
+		pq := tui.PlanQuestion{
+			ID:      q.ID,
+			Header:  q.Header,
+			Text:    q.Text,
+			Kind:    string(q.ResolvedKind()),
+			Default: q.Default,
+		}
+		for _, o := range q.Options {
+			pq.Options = append(pq.Options, tui.PlanOption{Label: o.Label, Description: o.Description})
+		}
+		out[i] = pq
+	}
+	return out
+}
+
+func planAnswers(in []tui.PlanAnswer) []planning.Answer {
+	out := make([]planning.Answer, len(in))
+	for i, a := range in {
+		out[i] = planning.Answer{ID: a.ID, Question: a.Question, Values: a.Values, Skipped: a.Skipped}
+	}
+	return out
+}
+
 // RunLoop runs the autonomous loop with the configured defaults (MAX_ITERATIONS,
 // resume in-flight work first), routing its progress to the dashboard renderer r,
 // and always closes with r.LoopDone so the shell flips to the summary. A non-empty
@@ -1812,7 +2081,7 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 		t, c := 0, 0.0
 		metered := true
 		for _, id := range ids {
-			tk, cs, m := a.sink.Total(id)
+			tk, cs, m := a.sink.SessionTotal(id)
 			t += tk
 			c += cs
 			metered = metered && m
@@ -1820,7 +2089,7 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 		return t, math.Round(c*100) / 100, metered
 	}
 	result := func(id string, elapsed time.Duration) console.TicketResult {
-		tk, cs, metered := a.sink.Total(id)
+		tk, cs, metered := a.sink.SessionTotal(id)
 		return console.TicketResult{
 			ID:            id,
 			Title:         a.store.Get(id, "TITLE"),
@@ -1915,7 +2184,7 @@ func (a *appActions) RunTicket(ctx context.Context, id, provider string, r conso
 		if err := a.pipe.Resume(ctx, id, phase); err != nil && !errors.Is(err, pipeline.ErrAlreadyDone) {
 			lerr = err
 		}
-		tk, cs, metered := a.sink.Total(id)
+		tk, cs, metered := a.sink.SessionTotal(id)
 		r.TicketDone(console.TicketResult{
 			ID:            id,
 			Title:         a.store.Get(id, "TITLE"),
@@ -1930,7 +2199,7 @@ func (a *appActions) RunTicket(ctx context.Context, id, provider string, r conso
 		})
 	}
 
-	tk, cs, metered := a.sink.Total(id)
+	tk, cs, metered := a.sink.SessionTotal(id)
 	r.LoopDone(applyFault(console.SessionSummary{
 		Tickets:     1,
 		TotalTokens: tk,
@@ -2068,20 +2337,21 @@ func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort
 		}
 	}
 	return spec.New(agent.BackendParams{
-		Bin:         pc.bin,
-		Flags:       strings.Fields(pc.flags),
-		Model:       model,
-		Effort:      effort,
-		Dir:         cfg.RepoRoot,
-		Preamble:    config.Preamble,
-		Cols:        cfg.AgentCols,
-		Rows:        cfg.AgentRows,
-		SizeFn:      sizeFn,
-		Timeout:     time.Duration(cfg.AgentTimeout) * time.Second,
-		StallWindow: time.Duration(cfg.AgentStallWindow) * time.Second,
-		Log:         log,
-		Tokens:      sink,
-		Extra:       pc.extra,
+		Bin:          pc.bin,
+		Flags:        strings.Fields(pc.flags),
+		Model:        model,
+		Effort:       effort,
+		Dir:          cfg.RepoRoot,
+		Preamble:     config.Preamble,
+		PlanPreamble: config.PlanningPreamble,
+		Cols:         cfg.AgentCols,
+		Rows:         cfg.AgentRows,
+		SizeFn:       sizeFn,
+		Timeout:      time.Duration(cfg.AgentTimeout) * time.Second,
+		StallWindow:  time.Duration(cfg.AgentStallWindow) * time.Second,
+		Log:          log,
+		Tokens:       sink,
+		Extra:        pc.extra,
 	})
 }
 

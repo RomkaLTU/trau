@@ -128,6 +128,19 @@ query Teams {
 }
 `
 
+	// projectsByNameQuery resolves a project's node id from its name, so the create
+	// path can place an issue inside the bound PROJECT.
+	projectsByNameQuery = `
+query ProjectsByName($name: String!) {
+  projects(filter: { name: { eq: $name } }) {
+    nodes {
+      id
+      name
+    }
+  }
+}
+`
+
 	// workflowStatesQuery maps status names to state IDs for a team.
 	workflowStatesQuery = `
 query WorkflowStates($teamId: ID!) {
@@ -141,9 +154,12 @@ query WorkflowStates($teamId: ID!) {
 }
 `
 
-	// issueUpdateMutation replaces the issue's state and label set.
+	// issueUpdateMutation replaces the issue's state and label set. Linear's
+	// mutation arguments and input fields are String-typed, not ID-typed — an
+	// ID-typed variable fails GraphQL validation ("Variable of type ID! used in
+	// position expecting type String!"); only filter comparators take ID.
 	issueUpdateMutation = `
-mutation IssueUpdate($id: ID!, $stateId: ID, $labelIds: [ID!]) {
+mutation IssueUpdate($id: String!, $stateId: String, $labelIds: [String!]) {
   issueUpdate(id: $id, input: { stateId: $stateId, labelIds: $labelIds }) {
     success
     issue {
@@ -156,7 +172,7 @@ mutation IssueUpdate($id: ID!, $stateId: ID, $labelIds: [ID!]) {
 
 	// commentCreateMutation adds a comment to an issue.
 	commentCreateMutation = `
-mutation CommentCreate($issueId: ID!, $body: String!) {
+mutation CommentCreate($issueId: String!, $body: String!) {
   commentCreate(input: { issueId: $issueId, body: $body }) {
     success
   }
@@ -165,7 +181,7 @@ mutation CommentCreate($issueId: ID!, $body: String!) {
 
 	// issueLabelCreateMutation creates a label inside a team.
 	issueLabelCreateMutation = `
-mutation IssueLabelCreate($name: String!, $teamId: ID!) {
+mutation IssueLabelCreate($name: String!, $teamId: String!) {
   issueLabelCreate(input: { name: $name, teamId: $teamId }) {
     success
     issueLabel {
@@ -176,27 +192,16 @@ mutation IssueLabelCreate($name: String!, $teamId: ID!) {
 }
 `
 
-	// issueCreateMutation creates a new issue.
+	// issueCreateMutation creates a new issue. parentId nests it under an epic and
+	// projectId places it in a project; both are optional and omitted when empty.
 	issueCreateMutation = `
-mutation IssueCreate($teamId: ID!, $title: String!, $description: String, $labelIds: [ID!]) {
-  issueCreate(input: { teamId: $teamId, title: $title, description: $description, labelIds: $labelIds }) {
+mutation IssueCreate($teamId: String!, $title: String!, $description: String, $labelIds: [String!], $parentId: String, $projectId: String) {
+  issueCreate(input: { teamId: $teamId, title: $title, description: $description, labelIds: $labelIds, parentId: $parentId, projectId: $projectId }) {
     success
     issue {
       id
       identifier
       url
-    }
-  }
-}
-`
-
-	// projectByNameQuery resolves a project's id from its exact name.
-	projectByNameQuery = `
-query ProjectByName($name: String!) {
-  projects(filter: { name: { eq: $name } }, first: 1) {
-    nodes {
-      id
-      name
     }
   }
 }

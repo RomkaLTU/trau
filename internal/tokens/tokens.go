@@ -36,6 +36,13 @@ import (
 
 const loopBucket = "_loop"
 
+// PlanBucket is the shared token bucket for the planning module. Planning agent
+// calls carry no ticket, so [Sink.SetTicket] points them here — runs/_plans/ —
+// keeping planning spend out of _loop and letting --status surface it as one
+// planning row folded into the session total. It sits alongside the per-session
+// plan directories under runs/_plans/, which never hold a tokens.jsonl of their own.
+const PlanBucket = "_plans"
+
 // Record is one call's raw, already-normalized counts, handed to [Sink.Append].
 // Input is the NON-cached input portion (see the package doc). CostUSD is a
 // pointer so a provider that reports no per-call cost (codex on a ChatGPT-plan
@@ -84,11 +91,29 @@ type Sink struct {
 	mu     sync.Mutex
 	bucket string
 	now    func() time.Time
+	// session holds only what THIS process appended, per bucket — the persisted
+	// tokens.jsonl accumulates across runs, so a resumed ticket's file also
+	// carries earlier sessions' spend. Session views (SessionTotal, Flag) read
+	// this ledger so a 4-minute rerun never reports a prior run's dollars.
+	session map[string]*sessionSpend
+}
+
+type sessionSpend struct {
+	tokens  int
+	cost    float64
+	metered bool
+	phases  map[string]*phaseSpend
+	order   []string
+}
+
+type phaseSpend struct {
+	output, turns int
+	cost          float64
 }
 
 // New returns a Sink rooting per-ticket artifacts at root (the runs/ directory).
 func New(root string) *Sink {
-	return &Sink{root: root, now: time.Now}
+	return &Sink{root: root, now: time.Now, session: map[string]*sessionSpend{}}
 }
 
 // WithClock overrides the timestamp source; intended for deterministic tests.
@@ -126,6 +151,7 @@ func (s *Sink) Append(phase string, rec Record) {
 	if bucket == "" {
 		bucket = loopBucket
 	}
+	s.recordSession(bucket, phase, rec, total)
 	ln := line{
 		TS:            s.now().Format("2006-01-02T15:04:05"),
 		Phase:         phase,
@@ -157,6 +183,50 @@ func (s *Sink) Append(phase string, rec Record) {
 	}
 	defer func() { _ = f.Close() }()
 	_, _ = f.Write(append(data, '\n'))
+}
+
+// recordSession folds one appended call into the in-memory session ledger.
+// Caller holds s.mu.
+func (s *Sink) recordSession(bucket, phase string, rec Record, total int) {
+	if s.session == nil {
+		s.session = map[string]*sessionSpend{}
+	}
+	sp := s.session[bucket]
+	if sp == nil {
+		sp = &sessionSpend{metered: true, phases: map[string]*phaseSpend{}}
+		s.session[bucket] = sp
+	}
+	sp.tokens += total
+	if rec.CostUSD != nil {
+		sp.cost += *rec.CostUSD
+	} else {
+		sp.metered = false
+	}
+	ps := sp.phases[phase]
+	if ps == nil {
+		ps = &phaseSpend{}
+		sp.phases[phase] = ps
+		sp.order = append(sp.order, phase)
+	}
+	ps.output += rec.Output
+	ps.turns += rec.Turns
+	if rec.CostUSD != nil {
+		ps.cost += *rec.CostUSD
+	}
+}
+
+// SessionTotal sums the token + cost spend THIS process recorded for id,
+// following Total's metered contract. Unlike Total it excludes spend loaded
+// from earlier runs' tokens.jsonl, so the end-of-session summary reflects what
+// the session actually spent.
+func (s *Sink) SessionTotal(id string) (tokens int, cost float64, metered bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sp := s.session[id]
+	if sp == nil {
+		return 0, 0, true
+	}
+	return sp.tokens, math.Round(sp.cost*100) / 100, sp.metered
 }
 
 // Total sums a ticket's logged token + cost spend across all phases from

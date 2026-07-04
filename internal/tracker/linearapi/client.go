@@ -345,28 +345,47 @@ func (c *Client) EnsureLabel(ctx context.Context, teamID, name string) error {
 	return c.do(ctx, issueLabelCreateMutation, map[string]any{"name": name, "teamId": teamID}, &dst)
 }
 
-// CreateIssue creates a new issue in the team and returns its identifier and URL.
-// Label names that do not exist in the team are dropped — Linear can only attach
-// labels that already exist.
-func (c *Client) CreateIssue(ctx context.Context, teamID, title, description string, labelNames []string) (identifier, url string, err error) {
+// CreateIssueInput describes an issue to create. TeamID is required; Labels are
+// resolved by name against the team's label set (unknown names skipped); ParentID
+// nests the issue under an epic and ProjectID places it in a project, both omitted
+// when empty.
+type CreateIssueInput struct {
+	TeamID      string
+	Title       string
+	Description string
+	Labels      []string
+	ParentID    string
+	ProjectID   string
+}
+
+// CreateIssue creates a new issue and returns its identifier and URL. Label names
+// that do not exist in the team are dropped — Linear can only attach labels that
+// already exist.
+func (c *Client) CreateIssue(ctx context.Context, in CreateIssueInput) (identifier, url string, err error) {
 	if c.apiKey == "" {
 		return "", "", ErrNotEnabled
 	}
-	labels, err := c.teamLabels(ctx, teamID)
+	labels, err := c.teamLabels(ctx, in.TeamID)
 	if err != nil {
 		return "", "", err
 	}
 	var labelIDs []string
-	for _, name := range labelNames {
+	for _, name := range in.Labels {
 		if id, ok := labels[name]; ok {
 			labelIDs = append(labelIDs, id)
 		}
 	}
 	vars := map[string]any{
-		"teamId":      teamID,
-		"title":       title,
-		"description": description,
+		"teamId":      in.TeamID,
+		"title":       in.Title,
+		"description": in.Description,
 		"labelIds":    labelIDs,
+	}
+	if in.ParentID != "" {
+		vars["parentId"] = in.ParentID
+	}
+	if in.ProjectID != "" {
+		vars["projectId"] = in.ProjectID
 	}
 	var dst issueCreateResponse
 	if err := c.do(ctx, issueCreateMutation, vars, &dst); err != nil {
@@ -376,23 +395,6 @@ func (c *Client) CreateIssue(ctx context.Context, teamID, title, description str
 		return "", "", errors.New("linear: create issue returned no identifier")
 	}
 	return dst.Data.IssueCreate.Issue.Identifier, dst.Data.IssueCreate.Issue.URL, nil
-}
-
-// ProjectByName resolves a project by its exact name, returning ErrNotFound when
-// no project matches. Publishing a PRD document needs the project's id.
-func (c *Client) ProjectByName(ctx context.Context, name string) (*Project, error) {
-	if c.apiKey == "" {
-		return nil, ErrNotEnabled
-	}
-	var dst projectsQueryResponse
-	if err := c.do(ctx, projectByNameQuery, map[string]any{"name": strings.TrimSpace(name)}, &dst); err != nil {
-		return nil, err
-	}
-	if len(dst.Data.Projects.Nodes) == 0 {
-		return nil, ErrNotFound
-	}
-	n := dst.Data.Projects.Nodes[0]
-	return &Project{ID: n.ID, Name: n.Name}, nil
 }
 
 // CreateDocument creates a document under a project from markdown content and
@@ -410,6 +412,25 @@ func (c *Client) CreateDocument(ctx context.Context, projectID, title, content s
 		return "", errors.New("linear: create document returned no url")
 	}
 	return dst.Data.DocumentCreate.Document.URL, nil
+}
+
+// ProjectByName resolves a project by its exact name (case-insensitive) and returns
+// it, or ErrNotFound when no project matches.
+func (c *Client) ProjectByName(ctx context.Context, name string) (*Project, error) {
+	if c.apiKey == "" {
+		return nil, ErrNotEnabled
+	}
+	name = strings.TrimSpace(name)
+	var dst projectsQueryResponse
+	if err := c.do(ctx, projectsByNameQuery, map[string]any{"name": name}, &dst); err != nil {
+		return nil, err
+	}
+	for _, n := range dst.Data.Projects.Nodes {
+		if strings.EqualFold(strings.TrimSpace(n.Name), name) {
+			return &Project{ID: n.ID, Name: n.Name}, nil
+		}
+	}
+	return nil, ErrNotFound
 }
 
 // workflowStates returns the workflow states for a team.
@@ -543,6 +564,14 @@ type teamsQueryResponse struct {
 	} `json:"data"`
 }
 
+type projectsQueryResponse struct {
+	Data struct {
+		Projects struct {
+			Nodes []projectNode `json:"nodes"`
+		} `json:"projects"`
+	} `json:"data"`
+}
+
 type workflowStatesQueryResponse struct {
 	Data struct {
 		WorkflowStates struct {
@@ -589,14 +618,6 @@ type issueCreateResponse struct {
 				URL        string `json:"url"`
 			} `json:"issue"`
 		} `json:"issueCreate"`
-	} `json:"data"`
-}
-
-type projectsQueryResponse struct {
-	Data struct {
-		Projects struct {
-			Nodes []projectNode `json:"nodes"`
-		} `json:"projects"`
 	} `json:"data"`
 }
 

@@ -139,6 +139,39 @@ func TestAppendBucketRouting(t *testing.T) {
 	}
 }
 
+// TestPlanBucketRouting checks planning calls land in the dedicated planning
+// bucket: SetTicket(PlanBucket) points appends at runs/_plans/tokens.jsonl, its
+// spend sums under Total(PlanBucket), and it counts toward the day window like any
+// other bucket — the ledger side of the planning-parity requirement.
+func TestPlanBucketRouting(t *testing.T) {
+	dir := t.TempDir()
+	clk := time.Date(2026, 6, 24, 9, 0, 0, 0, time.UTC)
+	s := New(dir).WithClock(func() time.Time { return clk })
+
+	s.SetTicket(PlanBucket)
+	s.Append("plan", Record{Input: 200, Output: 100, CostUSD: ptr(0.30)})
+	s.Append("plan", Record{Input: 100, CostUSD: ptr(0.10)})
+
+	if _, err := os.Stat(filepath.Join(dir, PlanBucket, "tokens.jsonl")); err != nil {
+		t.Fatalf("planning-bucket ledger missing: %v", err)
+	}
+	tok, cost, metered := s.Total(PlanBucket)
+	if tok != 400 {
+		t.Errorf("planning tokens = %d, want 400", tok)
+	}
+	if cost != 0.40 {
+		t.Errorf("planning cost = %v, want 0.40", cost)
+	}
+	if !metered {
+		t.Error("metered should be true (every planning line carried a cost)")
+	}
+
+	dt, dc, _ := s.DayTotal("2026-06-24")
+	if dt != 400 || dc != 0.40 {
+		t.Errorf("day total = (%d, %v), want (400, 0.4) — planning counts toward the day", dt, dc)
+	}
+}
+
 // --- DayTotal -------------------------------------------------------------
 
 func TestDayTotalFiltersByDateAcrossBuckets(t *testing.T) {
@@ -224,5 +257,58 @@ func TestFormatPair(t *testing.T) {
 		if got := FormatPair(tc.tokens, tc.cost); got != tc.want {
 			t.Errorf("FormatPair(%d,%v) = %q, want %q", tc.tokens, tc.cost, got, tc.want)
 		}
+	}
+}
+
+// TestSessionTotalExcludesPriorRuns is the $101.55-banner regression guard: a
+// resumed ticket's tokens.jsonl carries earlier sessions' spend, so the session
+// summary must report only what THIS process appended while Total keeps the
+// lifetime view.
+func TestSessionTotalExcludesPriorRuns(t *testing.T) {
+	dir := t.TempDir()
+	prior := New(dir).WithClock(fixedClock(time.Date(2026, 7, 4, 20, 30, 0, 0, time.UTC)))
+	prior.SetTicket("COD-702")
+	prior.Append("build", Record{Output: 262_000, Turns: 225, CostUSD: ptr(57.88)})
+	prior.Append("verify", Record{Output: 66_000, Turns: 72, CostUSD: ptr(11.19)})
+
+	s := New(dir).WithClock(fixedClock(time.Date(2026, 7, 4, 22, 27, 0, 0, time.UTC)))
+	s.SetTicket("COD-702")
+	s.Append("status", Record{Output: 1_100, Turns: 7, CostUSD: ptr(1.08)})
+
+	tk, cost, metered := s.SessionTotal("COD-702")
+	if tk != 1_100 || cost != 1.08 || !metered {
+		t.Errorf("SessionTotal = (%d, %v, %v), want only this process's (1100, 1.08, true)", tk, cost, metered)
+	}
+	ltk, lcost, _ := s.Total("COD-702")
+	if ltk != 262_000+66_000+1_100 {
+		t.Errorf("Total tokens = %d, want the lifetime sum %d", ltk, 262_000+66_000+1_100)
+	}
+	if lcost != 70.15 {
+		t.Errorf("Total cost = %v, want lifetime 70.15", lcost)
+	}
+}
+
+func TestSessionTotalUnknownTicketIsZero(t *testing.T) {
+	s := New(t.TempDir())
+	if tk, cost, metered := s.SessionTotal("COD-404"); tk != 0 || cost != 0 || !metered {
+		t.Errorf("SessionTotal(unknown) = (%d, %v, %v), want (0, 0, true)", tk, cost, metered)
+	}
+}
+
+// TestFlagIgnoresPriorRunSpend: resuming a ticket whose earlier sessions blew
+// the rails must not re-flag those phases — only spend recorded by this process
+// counts, so a cheap 27s reconcile run flags nothing.
+func TestFlagIgnoresPriorRunSpend(t *testing.T) {
+	dir := t.TempDir()
+	prior := New(dir).WithClock(fixedClock(time.Date(2026, 7, 4, 20, 30, 0, 0, time.UTC)))
+	prior.SetTicket("COD-702")
+	prior.Append("build", Record{Output: 262_000, Turns: 225, CostUSD: ptr(57.88)})
+
+	s := New(dir).WithClock(fixedClock(time.Date(2026, 7, 4, 22, 27, 0, 0, time.UTC)))
+	s.SetTicket("COD-702")
+	s.Append("status", Record{Output: 1_100, Turns: 7, CostUSD: ptr(1.08)})
+
+	if got := s.Flag("COD-702"); len(got) != 0 {
+		t.Errorf("Flag re-flagged prior-run spend: %+v", got)
 	}
 }

@@ -76,7 +76,10 @@ PROVIDER=claude
 # KIMI_MODEL=kimi-for-coding
 
 # Per-provider phase tuning for this project. Phases: BUILD HANDOFF VERIFY REPAIR
-# BUGFIX CLEANUP LINTFIX SIZEJUDGE COMMIT PICK. Model/effort are provider-specific.
+# BUGFIX CLEANUP LINTFIX SIZEJUDGE COMMIT PLAN SLICE PICK. Model/effort are provider-specific.
+# PLAN and SLICE are the planning module's rounds; they are never seeded, so each stays
+# on the provider default model unless you set CLAUDE_PLAN_MODEL / CODEX_PLAN_MODEL /
+# KIMI_PLAN_MODEL (and the matching *_SLICE_MODEL keys).
 #
 # On Claude, the cheap judgment/cleanup phases are seeded so they don't ride the
 # Opus default: CLEANUP, SIZEJUDGE, COMMIT, and HANDOFF -> sonnet, LINTFIX -> haiku
@@ -122,6 +125,7 @@ PROVIDER=claude
 MAX_ITERATIONS=15
 MAX_REPAIRS=2                # quick verify-fail self-heal attempts before bugfix (0 = none)
 MAX_BUGFIXES=2               # comprehensive bugfix passes after quick repairs (0 = none)
+MAX_PLAN_ROUNDS=3            # rounds of clarifying questions a plan may ask before the PRD is forced
 AUTO_MERGE=1                 # 1 = merge on green CI; 0 = stop at the PR for you
 EPIC_FLOW=1                  # 1 = run sub-issues on an epic branch, then close the parent and open the
                              #     epic-to-BASE_BRANCH PR only after every direct child is closed

@@ -71,6 +71,62 @@ type Actions interface {
 	// to run the loop. When true, the menu shell starts in the onboarding wizard
 	// instead of the hero-card menu.
 	OnboardingNeeded() bool
+
+	// StartPlan runs one planning round on the raw idea — literal multi-line text,
+	// or a path to a file containing the idea — and returns the outcome for the Plan
+	// screen to render. It is cancellable via ctx.
+	StartPlan(ctx context.Context, idea string) (PlanOutcome, error)
+
+	// AnswerPlan records the answers to the previous round's questions on the plan
+	// session at dir, then runs the next planning round as a fresh process and
+	// returns its outcome. It is cancellable via ctx.
+	AnswerPlan(ctx context.Context, dir string, answers []PlanAnswer) (PlanOutcome, error)
+
+	// RevisePlan records a free-text change request against the drafted PRD in the
+	// plan session at dir and runs a fresh revision round, returning the revised PRD
+	// outcome. It is cancellable via ctx.
+	RevisePlan(ctx context.Context, dir, note string) (PlanOutcome, error)
+
+	// ApprovePlan approves the drafted PRD in the plan session at dir, advancing the
+	// checkpoint to prd_ready, then publishes it to the tracker as an epic when the
+	// tracker supports it. The outcome reports the created epic, or that publish was
+	// skipped and the plan stayed local. It is cancellable via ctx.
+	ApprovePlan(ctx context.Context, dir string) (PublishOutcome, error)
+
+	// SlicePlan runs the slice round on the published plan session at dir: a fresh
+	// agent process drafts the epic's tracer-bullet child issues and returns them
+	// for the review list. Drafts only — nothing is created or persisted until
+	// CreateSlices. It is cancellable via ctx.
+	SlicePlan(ctx context.Context, dir string) (PlanOutcome, error)
+
+	// CreateSlices creates the reviewed slice drafts as children of the plan
+	// session's published epic — in the reviewed order, each carrying the
+	// configured ready label — and advances the checkpoint to sliced. It is
+	// cancellable via ctx.
+	CreateSlices(ctx context.Context, dir string, slices []PlanSlice) (SliceOutcome, error)
+
+	// ListPlans returns every durable plan session for the Plan screen's list,
+	// resumable ones first. It reads local session state directly, so it needs no
+	// context and never blocks on the network.
+	ListPlans() []PlanSession
+
+	// ResumePlan re-enters the plan session at dir at the step its checkpoint
+	// dictates — re-asking the pending questions, reopening the PRD for review,
+	// re-drafting the slices, or a note for a step not yet wired — and returns the
+	// outcome the Plan screen renders. It is cancellable via ctx.
+	ResumePlan(ctx context.Context, dir string) (PlanOutcome, error)
+
+	// AbortPlan marks the plan session at dir aborted — a terminal side-exit that
+	// writes nothing to the tracker. It is cancellable via ctx.
+	AbortPlan(ctx context.Context, dir string) error
+}
+
+// PublishOutcome reports what approving a PRD did with the tracker. Epic is the
+// created epic identifier; Published is false when the tracker lacks the
+// hierarchical-create capability and the plan stayed local at prd_ready.
+type PublishOutcome struct {
+	Epic      string
+	Published bool
 }
 
 // ListedTicket is one eligible ticket returned by a fast list operation.
@@ -166,6 +222,7 @@ const (
 	viewRunning
 	viewError
 	viewSettings
+	viewPlan
 )
 
 type menuAction int
@@ -174,6 +231,7 @@ const (
 	actRun menuAction = iota
 	actRunOnce
 	actDryRun
+	actPlan
 	actStatus
 	actLogs
 	actReset
@@ -251,11 +309,16 @@ type appModel struct {
 	loopSetup loopSetupModel
 	runOnce   runOnceModel
 	settings  settingsHubModel
+	plan      planModel
 
 	help    helpModel
 	palette paletteModel
 
 	mouseOff bool
+
+	// focused tracks terminal focus so screens that fire desktop nudges (the Plan
+	// screen) only do so while the user is away. The terminal starts focused.
+	focused bool
 
 	// notifier is the desktop notifier each fresh dashboard reports through
 	// (nil = NOTIFY off); see internal/notify and model.notifier.
@@ -267,6 +330,7 @@ func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
 		{actRun, "Run loop", "next ready ticket → PR"},
 		{actRunOnce, "Run once", "pick one ticket to run"},
 		{actDryRun, "Dry run", "preview the next ticket"},
+		{actPlan, "Plan", "raw idea → PRD"},
 		{actMore, "More…", "status · reset · version"},
 		{actQuit, "Quit", ""},
 	}
@@ -303,6 +367,7 @@ func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
 		info:      info,
 		reset:     ti,
 		spin:      s,
+		focused:   true,
 	}
 	if info.Notify {
 		m.notifier = notify.OS()
@@ -348,13 +413,16 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runOnce, _ = m.runOnce.Update(msg)
 		m.settings, _ = m.settings.Update(msg)
 		m.logs, _ = m.logs.Update(msg, m.actions.LogContent)
+		m.plan, _ = m.plan.Update(msg)
 		return m, nil
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
 	case tea.FocusMsg, tea.BlurMsg:
-		// The away-recap only lives on the running dashboard, so only track focus
+		_, m.focused = msg.(tea.FocusMsg)
+		m.plan.focused = m.focused
+		// The away-recap only lives on the running dashboard, so only route focus
 		// there. Elsewhere a blur/focus can't produce a recap the user would see, and
 		// routing it would let one linger for the next time the dashboard is shown.
 		if m.view != viewRunning {
@@ -375,6 +443,15 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.(type) {
 		case ticketMsg, ticketDoneMsg:
 			m.dash = m.dash.withQueue(m.buildQueueRows())
+		}
+		// The Plan screen tails its own agent, so feed it the transcript-path event
+		// while it is open.
+		if m.view == viewPlan {
+			if _, ok := msg.(eventMsg); ok {
+				var pcmd tea.Cmd
+				m.plan, pcmd = m.plan.Update(msg)
+				cmd = tea.Batch(cmd, pcmd)
+			}
 		}
 		return m, cmd
 
@@ -429,6 +506,10 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dash, cmd = applyDashCmd(m.dash, msg)
 			cmds = append(cmds, cmd)
 		}
+		if m.view == viewPlan {
+			m.plan, cmd = m.plan.Update(msg)
+			cmds = append(cmds, cmd)
+		}
 		return m, tea.Batch(cmds...)
 	}
 
@@ -449,6 +530,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runOnce, cmd = m.runOnce.Update(msg)
 	case viewSettings:
 		m.settings, cmd = m.settings.Update(msg)
+	case viewPlan:
+		m.plan, cmd = m.plan.Update(msg)
 	case viewRunning:
 		m.dash, cmd = applyDashCmd(m.dash, msg)
 	}
@@ -563,6 +646,11 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.runOnce, cmd = m.runOnce.Update(msg)
 		return m.afterRunOnce(cmd)
 
+	case viewPlan:
+		var cmd tea.Cmd
+		m.plan, cmd = m.plan.Update(msg)
+		return m.afterPlan(cmd)
+
 	case viewStatus:
 		return m.handleStatusKey(msg)
 
@@ -676,6 +764,15 @@ func (m appModel) afterRunOnce(cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	return m.startRunTicket(m.runOnce.Selected(), m.runOnce.Provider())
 }
 
+// afterPlan returns to the menu once the Plan screen backs out; otherwise it keeps
+// the screen active and propagates its command (starting a round, scrolling).
+func (m appModel) afterPlan(cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	if m.plan.Cancelled() {
+		return m.toMenu(), nil
+	}
+	return m, cmd
+}
+
 func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// ctrl+c is the emergency stop and always wins, even mid-filter, so it can't be
 	// swallowed by the filter input.
@@ -755,6 +852,13 @@ func (m appModel) selectAction(a menuAction) (tea.Model, tea.Cmd) {
 		m.runOnce = newRunOnceModel(m.baseCtx, m.actions, m.styles, m.info, m.width, m.height)
 		m.view = viewRunOnce
 		return m, textinput.Blink
+
+	case actPlan:
+		m.plan = newPlanModel(m.baseCtx, m.actions, m.styles, m.width, m.height)
+		m.plan.notifier = m.notifier
+		m.plan.focused = m.focused
+		m.view = viewPlan
+		return m, m.plan.Init()
 
 	case actMore:
 		m.view = viewMore
@@ -1110,6 +1214,8 @@ func (m appModel) renderScreen() string {
 		return m.renderCard("Run loop", m.loopSetup.body(m.spin.View()), m.loopSetup.hint())
 	case viewRunOnce:
 		return m.renderCard("Run once", m.runOnce.body(m.spin.View()), m.runOnce.hint())
+	case viewPlan:
+		return m.plan.view(m.spin.View())
 	case viewMore:
 		return m.renderMore()
 	case viewSettings:
@@ -1329,6 +1435,8 @@ func (m appModel) helpFor() screenHelp {
 		return m.loopSetup.help()
 	case viewRunOnce:
 		return m.runOnce.help()
+	case viewPlan:
+		return m.plan.help()
 	case viewSettings:
 		return m.settings.help()
 	case viewOnboarding:
@@ -1352,6 +1460,8 @@ func (m appModel) editing() bool {
 		return m.onboard.editing()
 	case viewSettings:
 		return m.settings.editing()
+	case viewPlan:
+		return m.plan.editing()
 	case viewRunning:
 		return m.dash.filterActive() || m.dash.peeking()
 	}

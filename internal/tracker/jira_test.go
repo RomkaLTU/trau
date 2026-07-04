@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -791,6 +792,117 @@ func TestBugContent(t *testing.T) {
 	_, missing := bugContent("PROJ-7", filepath.Join(dir, "gone.json"))
 	if !strings.Contains(missing, "runs/PROJ-7/") {
 		t.Errorf("missing-verdict description should still point at the run: %q", missing)
+	}
+}
+
+// jiraCreateServer serves createmeta with Epic and Task types and captures the
+// create POST body, answering with the given key.
+func jiraCreateServer(key string, req *jiraCreateRequest) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"values":[{"id":"10000","name":"Epic"},{"id":"10001","name":"Task"}]}`))
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, req)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"10500","key":"` + key + `"}`))
+	}))
+}
+
+type jiraCreateRequest struct {
+	Fields struct {
+		Project struct {
+			Key string `json:"key"`
+		} `json:"project"`
+		IssueType struct {
+			ID string `json:"id"`
+		} `json:"issuetype"`
+		Parent *struct {
+			Key string `json:"key"`
+		} `json:"parent"`
+		Summary string   `json:"summary"`
+		Labels  []string `json:"labels"`
+	} `json:"fields"`
+}
+
+// A parentless spec creates an Epic in the configured team key's project, with
+// no parent field and no labels — the epic never carries the ready label.
+func TestJiraCreateIssueEpicUsesAPI(t *testing.T) {
+	var req jiraCreateRequest
+	srv := jiraCreateServer("PROJ-800", &req)
+	defer srv.Close()
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	key, err := j.CreateIssue(context.Background(), IssueSpec{
+		Title:       "Export widgets",
+		Description: "# Export widgets\n\nThe full PRD body.",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue error: %v", err)
+	}
+	if key != "PROJ-800" {
+		t.Errorf("CreateIssue = %q, want PROJ-800", key)
+	}
+	if req.Fields.Project.Key != "PROJ" {
+		t.Errorf("project key = %q, want the team key PROJ", req.Fields.Project.Key)
+	}
+	if req.Fields.IssueType.ID != "10000" {
+		t.Errorf("issuetype id = %q, want 10000 (Epic)", req.Fields.IssueType.ID)
+	}
+	if req.Fields.Parent != nil {
+		t.Errorf("epic carried parent %+v, want none", req.Fields.Parent)
+	}
+	if len(req.Fields.Labels) != 0 {
+		t.Errorf("epic labels = %v, want none", req.Fields.Labels)
+	}
+	if runner.calls["create_issue"] != 0 {
+		t.Errorf("expected no MCP call, got %d create_issue calls", runner.calls["create_issue"])
+	}
+}
+
+// A spec with a parent creates a Task nested under the epic via the unified
+// parent field, carrying the drafted labels (the ready label among them).
+func TestJiraCreateIssueChildUsesAPI(t *testing.T) {
+	var req jiraCreateRequest
+	srv := jiraCreateServer("PROJ-801", &req)
+	defer srv.Close()
+	j := &Jira{Runner: &recordingRunner{}, Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	key, err := j.CreateIssue(context.Background(), IssueSpec{
+		Title:       "csv download",
+		Description: "## What to build\n\ncsv",
+		Labels:      []string{"backend", "ready-for-agent"},
+		Parent:      "PROJ-800",
+	})
+	if err != nil {
+		t.Fatalf("CreateIssue error: %v", err)
+	}
+	if key != "PROJ-801" {
+		t.Errorf("CreateIssue = %q, want PROJ-801", key)
+	}
+	if req.Fields.IssueType.ID != "10001" {
+		t.Errorf("issuetype id = %q, want 10001 (Task)", req.Fields.IssueType.ID)
+	}
+	if req.Fields.Parent == nil || req.Fields.Parent.Key != "PROJ-800" {
+		t.Errorf("parent = %+v, want the epic PROJ-800", req.Fields.Parent)
+	}
+	if len(req.Fields.Labels) != 2 || req.Fields.Labels[1] != "ready-for-agent" {
+		t.Errorf("labels = %v, want the drafted labels plus ready", req.Fields.Labels)
+	}
+}
+
+// Without a token CreateIssue is API-only (no MCP fallback): the error surfaces
+// and the runner is never asked to create as a different Atlassian identity.
+func TestJiraCreateIssueNoTokenErrors(t *testing.T) {
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ"}
+	if _, err := j.CreateIssue(context.Background(), IssueSpec{Title: "Export widgets"}); err == nil {
+		t.Fatal("CreateIssue without a token should error, got nil")
+	}
+	if len(runner.calls) != 0 {
+		t.Errorf("CreateIssue must not fall back to the MCP, got calls %v", runner.calls)
 	}
 }
 
