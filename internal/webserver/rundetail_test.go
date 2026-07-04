@@ -190,6 +190,38 @@ func TestRunDetailPartialEarlyPhaseRun(t *testing.T) {
 	}
 }
 
+// TestRunDetailSurfacesAnomalies covers the run-detail side of the anomalies
+// list: a run whose phase tripped a soft cost threshold carries its flagged
+// anomalies, and a quiet run carries none.
+func TestRunDetailSurfacesAnomalies(t *testing.T) {
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	seedCheckpoint(t, runsDir, "COD-9", map[string]string{"PHASE": state.Building})
+
+	sink := tokens.New(runsDir)
+	sink.SetTicket("COD-9")
+	sink.Append("cleanup", tokens.Record{Output: 120_000, Turns: 8, CostUSD: usd(6.50)})
+	sink.Flag("COD-9")
+
+	ts := instancesServer(t, home)
+	d := getRunDetail(t, ts, "acme", "COD-9")
+
+	if len(d.Anomalies) != 1 {
+		t.Fatalf("anomalies = %d, want the single cleanup trip", len(d.Anomalies))
+	}
+	if a := d.Anomalies[0]; a.Phase != "cleanup" || a.CostUSD != 6.5 || len(a.Reasons) == 0 {
+		t.Errorf("anomaly = %+v, want cleanup at $6.50 with reasons", a)
+	}
+
+	seedCheckpoint(t, runsDir, "COD-10", map[string]string{"PHASE": state.Building})
+	seedTokens(t, runsDir, "COD-10", []phaseCall{
+		{"build", tokens.Record{Output: 100, Turns: 2, CostUSD: usd(0.10)}},
+	})
+	if quiet := getRunDetail(t, ts, "acme", "COD-10"); len(quiet.Anomalies) != 0 {
+		t.Errorf("quiet run anomalies = %+v, want none", quiet.Anomalies)
+	}
+}
+
 // TestRunDetailUnknownRun404 covers the miss: a ticket with no checkpoint under a
 // known repo is a JSON 404, not the SPA shell.
 func TestRunDetailUnknownRun404(t *testing.T) {

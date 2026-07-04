@@ -45,15 +45,27 @@ export interface Artifacts {
   tokens: boolean
 }
 
+export interface Anomaly {
+  phase: string
+  output: number
+  turns: number
+  cost_usd: number
+  reasons: string[]
+}
+
 export interface RunDetail extends Run {
   costs: PhaseCost[]
+  anomalies?: Anomaly[]
   handoff?: string
   rubric?: Rubric
   verdict?: Verdict
   artifacts: Artifacts
 }
 
-async function fetchRunDetail(repo: string, ticket: string): Promise<RunDetail> {
+async function fetchRunDetail(
+  repo: string,
+  ticket: string,
+): Promise<RunDetail> {
   const res = await fetch(
     `/api/v1/repos/${encodeURIComponent(repo)}/runs/${encodeURIComponent(ticket)}`,
   )

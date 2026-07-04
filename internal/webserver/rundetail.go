@@ -18,11 +18,23 @@ import (
 // omits them, and Artifacts records which ones are present.
 type RunDetail struct {
 	RunView
-	Costs     []PhaseCost  `json:"costs"`
-	Handoff   string       `json:"handoff,omitempty"`
-	Rubric    *RubricView  `json:"rubric,omitempty"`
-	Verdict   *VerdictView `json:"verdict,omitempty"`
-	Artifacts ArtifactSet  `json:"artifacts"`
+	Costs     []PhaseCost   `json:"costs"`
+	Anomalies []AnomalyView `json:"anomalies,omitempty"`
+	Handoff   string        `json:"handoff,omitempty"`
+	Rubric    *RubricView   `json:"rubric,omitempty"`
+	Verdict   *VerdictView  `json:"verdict,omitempty"`
+	Artifacts ArtifactSet   `json:"artifacts"`
+}
+
+// AnomalyView is one flagged cost anomaly for a run, read from
+// runs/<ID>/anomalies.jsonl: the phase that cleared a soft threshold, its
+// output/turns/cost, and the human reasons it was flagged.
+type AnomalyView struct {
+	Phase   string   `json:"phase"`
+	Output  int      `json:"output"`
+	Turns   int      `json:"turns"`
+	CostUSD float64  `json:"cost_usd"`
+	Reasons []string `json:"reasons"`
 }
 
 // PhaseCost is one phase's summed token + cost spend, read from the run's
@@ -120,11 +132,12 @@ func runDetail(runsDir, ticket string) RunDetail {
 	rubric := readRubric(runsDir, ticket)
 	verdict := readVerdict(runsDir, ticket)
 	return RunDetail{
-		RunView: runView(store, ticket),
-		Costs:   costs,
-		Handoff: handoff,
-		Rubric:  rubric,
-		Verdict: verdict,
+		RunView:   runView(store, ticket),
+		Costs:     costs,
+		Anomalies: anomalyViews(runsDir, ticket),
+		Handoff:   handoff,
+		Rubric:    rubric,
+		Verdict:   verdict,
 		Artifacts: ArtifactSet{
 			Handoff: hasHandoff,
 			Rubric:  rubric != nil,
@@ -152,6 +165,26 @@ func phaseCosts(runsDir, ticket string) []PhaseCost {
 			Metered:       t.Metered,
 			Calls:         t.Calls,
 			Turns:         t.Turns,
+		})
+	}
+	return out
+}
+
+// anomalyViews reads the run's flagged cost anomalies from anomalies.jsonl. A
+// run that never tripped a threshold yields nil.
+func anomalyViews(runsDir, ticket string) []AnomalyView {
+	flagged := tokens.New(runsDir).Anomalies(ticket)
+	if len(flagged) == 0 {
+		return nil
+	}
+	out := make([]AnomalyView, 0, len(flagged))
+	for _, a := range flagged {
+		out = append(out, AnomalyView{
+			Phase:   a.Phase,
+			Output:  a.Output,
+			Turns:   a.Turns,
+			CostUSD: a.Cost,
+			Reasons: a.Reasons,
 		})
 	}
 	return out

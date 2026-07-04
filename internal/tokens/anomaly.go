@@ -100,6 +100,34 @@ func (s *Sink) Flag(id string) []Anomaly {
 	return anomalies
 }
 
+// Anomalies reads a ticket's flagged cost anomalies back from
+// runs/<id>/anomalies.jsonl (the snapshot Flag last wrote). A missing or
+// unreadable file yields nil — a run that never tripped a threshold, not an
+// error — and malformed lines are skipped.
+func (s *Sink) Anomalies(id string) []Anomaly {
+	f, err := os.Open(filepath.Join(s.root, id, "anomalies.jsonl"))
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+
+	var out []Anomaly
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		b := bytes.TrimSpace(sc.Bytes())
+		if len(b) == 0 {
+			continue
+		}
+		var a Anomaly
+		if err := json.Unmarshal(b, &a); err != nil {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 // writeAnomalies overwrites runs/<id>/anomalies.jsonl with one line per anomaly so
 // a re-run (resume) reflects current totals rather than appending duplicates. A run
 // with no anomalies leaves any prior file untouched.

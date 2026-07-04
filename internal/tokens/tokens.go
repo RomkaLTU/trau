@@ -307,6 +307,79 @@ func (s *Sink) DayTotal(date string) (tokens int, cost float64, metered bool) {
 	return tokens, math.Round(sum*100) / 100, metered
 }
 
+// DayPhaseCost is one (local date, phase) cell of spend, summed across every
+// bucket under a runs root. Cost is left unrounded so a caller folding cells
+// across repos rounds once at the end; Metered is false when any contributing
+// line carried no per-call cost, so Cost is then a lower bound.
+type DayPhaseCost struct {
+	Date    string
+	Phase   string
+	Tokens  int
+	Cost    float64
+	Metered bool
+}
+
+// Rollup scans every runs/<bucket>/tokens.jsonl under the root and returns one
+// cell per (local date, phase) whose date falls within [from, to] inclusive
+// (YYYY-MM-DD bounds, compared lexically). It is the machine-wide costs page's
+// per-repo reader: summing cells over phase gives a day's spend, over date gives
+// a phase's spend, and over both a repo's window total. A runs root with no
+// in-window logs yields nil — never an error. Malformed lines are skipped.
+func (s *Sink) Rollup(from, to string) []DayPhaseCost {
+	matches, _ := filepath.Glob(filepath.Join(s.root, "*", "tokens.jsonl"))
+
+	type key struct{ date, phase string }
+	cells := map[key]*DayPhaseCost{}
+	var order []key
+	for _, path := range matches {
+		f, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			b := bytes.TrimSpace(sc.Bytes())
+			if len(b) == 0 {
+				continue
+			}
+			var ln line
+			if err := json.Unmarshal(b, &ln); err != nil {
+				continue
+			}
+			if len(ln.TS) < 10 {
+				continue
+			}
+			date := ln.TS[:10]
+			if date < from || date > to {
+				continue
+			}
+			k := key{date, ln.Phase}
+			c := cells[k]
+			if c == nil {
+				c = &DayPhaseCost{Date: date, Phase: ln.Phase, Metered: true}
+				cells[k] = c
+				order = append(order, k)
+			}
+			c.Tokens += ln.Total
+			if ln.CostUSD != nil {
+				c.Cost += *ln.CostUSD
+			} else {
+				c.Metered = false
+			}
+		}
+		_ = f.Close()
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	out := make([]DayPhaseCost, 0, len(order))
+	for _, k := range order {
+		out = append(out, *cells[k])
+	}
+	return out
+}
+
 // Pair returns Total(id) rendered as the "<tokens> <cost>" string that --status
 // consumes (e.g. "0 0", "15234 1.2").
 func (s *Sink) Pair(id string) string {
