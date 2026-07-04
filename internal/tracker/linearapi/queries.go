@@ -128,6 +128,19 @@ query Teams {
 }
 `
 
+	// projectsByNameQuery resolves a project's node id from its name, so the create
+	// path can place an issue inside the bound PROJECT.
+	projectsByNameQuery = `
+query ProjectsByName($name: String!) {
+  projects(filter: { name: { eq: $name } }) {
+    nodes {
+      id
+      name
+    }
+  }
+}
+`
+
 	// workflowStatesQuery maps status names to state IDs for a team.
 	workflowStatesQuery = `
 query WorkflowStates($teamId: ID!) {
@@ -176,10 +189,11 @@ mutation IssueLabelCreate($name: String!, $teamId: ID!) {
 }
 `
 
-	// issueCreateMutation creates a new issue (used for filing bugs).
+	// issueCreateMutation creates a new issue. parentId nests it under an epic and
+	// projectId places it in a project; both are optional and omitted when empty.
 	issueCreateMutation = `
-mutation IssueCreate($teamId: ID!, $title: String!, $description: String, $labelIds: [ID!]) {
-  issueCreate(input: { teamId: $teamId, title: $title, description: $description, labelIds: $labelIds }) {
+mutation IssueCreate($teamId: ID!, $title: String!, $description: String, $labelIds: [ID!], $parentId: ID, $projectId: ID) {
+  issueCreate(input: { teamId: $teamId, title: $title, description: $description, labelIds: $labelIds, parentId: $parentId, projectId: $projectId }) {
     success
     issue {
       id

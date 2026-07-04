@@ -13,7 +13,12 @@ import (
 // AccessibleOnboardingRequested reports whether the environment asked for huh's
 // accessible (screen-reader) prompts instead of the animated wizard: a non-empty
 // ACCESSIBLE flag, or a dumb terminal.
-func AccessibleOnboardingRequested() bool {
+func AccessibleOnboardingRequested() bool { return accessibleRequested() }
+
+// accessibleRequested reports whether the environment asked for huh's accessible
+// (screen-reader) prompts instead of the full-screen TUI: a non-empty ACCESSIBLE
+// flag, or a dumb terminal.
+func accessibleRequested() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("ACCESSIBLE"))) {
 	case "", "0", "false", "no":
 	default:

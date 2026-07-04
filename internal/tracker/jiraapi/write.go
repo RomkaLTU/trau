@@ -88,8 +88,9 @@ type commentRequest struct {
 // CreateIssue creates a new issue and returns its key. The issue type is resolved
 // by name to its project-specific id via createmeta so the create references a
 // stable id rather than a name a project may spell differently; the description
-// is sent as an ADF document.
-func (c *Client) CreateIssue(ctx context.Context, projectKey, issueType, summary, description string, labels []string) (string, error) {
+// is sent as an ADF document. A non-empty parent key sets the unified parent
+// field so the issue nests under an epic at creation time.
+func (c *Client) CreateIssue(ctx context.Context, projectKey, issueType, summary, description string, labels []string, parent string) (string, error) {
 	if !c.enabled() {
 		return "", ErrNotEnabled
 	}
@@ -101,13 +102,17 @@ func (c *Client) CreateIssue(ctx context.Context, projectKey, issueType, summary
 	if err != nil {
 		return "", err
 	}
-	body, err := json.Marshal(createIssueRequest{Fields: createFields{
-		Project:     projectKeyRef{Key: projectKey},
+	fields := createFields{
+		Project:     keyRef{Key: projectKey},
 		IssueType:   idRef{ID: typeID},
 		Summary:     summary,
 		Description: buildADF(description),
 		Labels:      labels,
-	}})
+	}
+	if parent = strings.TrimSpace(parent); parent != "" {
+		fields.Parent = &keyRef{Key: parent}
+	}
+	body, err := json.Marshal(createIssueRequest{Fields: fields})
 	if err != nil {
 		return "", err
 	}
@@ -149,14 +154,15 @@ type createIssueRequest struct {
 }
 
 type createFields struct {
-	Project     projectKeyRef `json:"project"`
-	IssueType   idRef         `json:"issuetype"`
-	Summary     string        `json:"summary"`
-	Description adfDoc        `json:"description"`
-	Labels      []string      `json:"labels,omitempty"`
+	Project     keyRef   `json:"project"`
+	IssueType   idRef    `json:"issuetype"`
+	Parent      *keyRef  `json:"parent,omitempty"`
+	Summary     string   `json:"summary"`
+	Description adfDoc   `json:"description"`
+	Labels      []string `json:"labels,omitempty"`
 }
 
-type projectKeyRef struct {
+type keyRef struct {
 	Key string `json:"key"`
 }
 

@@ -36,6 +36,13 @@ import (
 
 const loopBucket = "_loop"
 
+// PlanBucket is the shared token bucket for the planning module. Planning agent
+// calls carry no ticket, so [Sink.SetTicket] points them here — runs/_plans/ —
+// keeping planning spend out of _loop and letting --status surface it as one
+// planning row folded into the session total. It sits alongside the per-session
+// plan directories under runs/_plans/, which never hold a tokens.jsonl of their own.
+const PlanBucket = "_plans"
+
 // Record is one call's raw, already-normalized counts, handed to [Sink.Append].
 // Input is the NON-cached input portion (see the package doc). CostUSD is a
 // pointer so a provider that reports no per-call cost (codex on a ChatGPT-plan

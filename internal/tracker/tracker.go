@@ -185,6 +185,26 @@ type IssueParenter interface {
 	ParentIssue(ctx context.Context, id string) (string, error)
 }
 
+// IssueSpec describes an issue to create through the hierarchical-create
+// capability: a title and description, any labels, an optional parent identifier to
+// nest it under an epic, and an optional project name to place it in. An empty
+// Project defers to the tracker's own PROJECT binding.
+type IssueSpec struct {
+	Title       string
+	Description string
+	Labels      []string
+	Parent      string
+	Project     string
+}
+
+// HierarchicalCreator is the optional capability of creating an issue with a full
+// hierarchy — title, description, labels, an optional parent, and a project.
+// Publishing an approved PRD uses it to create the epic that carries the plan. A
+// tracker that lacks it makes publish a graceful no-op rather than a blocker.
+type HierarchicalCreator interface {
+	CreateIssue(ctx context.Context, spec IssueSpec) (string, error)
+}
+
 // Team is a selectable project-management container — a Linear team or a Jira
 // project — that the onboarding wizard can list and let the user pick.
 type Team struct {

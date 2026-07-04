@@ -885,6 +885,45 @@ func (l *Linear) IssueDetail(ctx context.Context, id string) (IssueDetail, error
 	return IssueDetail{Title: issue.Title, Description: issue.Description}, nil
 }
 
+// CreateIssue creates a new issue through the hierarchical-create capability: the
+// title and description, any labels, an optional parent to nest it under, and a
+// project. When spec.Project is empty the issue lands in the tracker's bound PROJECT
+// (config.PROJECT), so the cross-project ownership guard keeps holding for the work
+// it will later pick. Publishing a plan uses it to create the epic that carries the
+// PRD as its description. This always uses the direct API — a multi-line PRD body
+// does not survive a single-line MCP sentinel.
+func (l *Linear) CreateIssue(ctx context.Context, spec IssueSpec) (string, error) {
+	team, err := l.api().TeamByKey(ctx, l.Team)
+	if err != nil {
+		return "", err
+	}
+	in := linearapi.CreateIssueInput{
+		TeamID:      team.ID,
+		Title:       spec.Title,
+		Description: spec.Description,
+		Labels:      spec.Labels,
+	}
+	if parent := strings.TrimSpace(spec.Parent); parent != "" {
+		issue, err := l.api().Issue(ctx, parent)
+		if err != nil {
+			return "", fmt.Errorf("resolve parent %s: %w", parent, err)
+		}
+		in.ParentID = issue.ID
+	}
+	project := strings.TrimSpace(spec.Project)
+	if project == "" {
+		project = strings.TrimSpace(l.Project)
+	}
+	if project != "" {
+		p, err := l.api().ProjectByName(ctx, project)
+		if err != nil {
+			return "", fmt.Errorf("resolve project %q: %w", project, err)
+		}
+		in.ProjectID = p.ID
+	}
+	return l.api().CreateIssue(ctx, in)
+}
+
 func (l *Linear) quarantinePrompt(id, reason string) string {
 	return fmt.Sprintf("Use the Linear MCP on issue %s: remove the label '%s', add the label '%s', and add a comment: \"Trau loop stopped: %s (see runs/%s/).\" Reply DONE.",
 		id, l.ReadyLabel, l.QuarantineLabel, reason, id)
