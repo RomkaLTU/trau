@@ -907,6 +907,10 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 		con.Logf("  ↳ run it from the repo that owns that project, or `trau --clear %s` to drop a stray checkpoint here", id)
 		return true
 	}
+	// doneSkipped remembers picks that turned out to be already merged. Pick
+	// offering such an id a second time means the tracker is not converging —
+	// stop cleanly instead of spending a pick agent per spin.
+	doneSkipped := map[string]bool{}
 	for {
 		select {
 		case <-ctx.Done():
@@ -961,6 +965,14 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 			if crossStop(p.ForcedID, err) {
 				return processed, err
 			}
+			if errors.Is(err, pipeline.ErrAlreadyDone) {
+				con.Logf("  %s already done — nothing to do (`trau --clear %s` to run it again)", p.ForcedID, p.ForcedID)
+				if p.Once {
+					break
+				}
+				p.ForcedID = ""
+				continue
+			}
 			processed = append(processed, p.ForcedID)
 			con.TicketDone(result(p.ForcedID, time.Since(t0)))
 			if pipeline.IsFault(err) {
@@ -992,6 +1004,15 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 			}
 			if crossStop(id, err) {
 				return processed, err
+			}
+			if errors.Is(err, pipeline.ErrAlreadyDone) {
+				if doneSkipped[id] {
+					con.Logf("  %s already done — picked again after being skipped; stopping so the pick loop can't spin", id)
+					break
+				}
+				doneSkipped[id] = true
+				con.Logf("  %s already done — skipping", id)
+				continue
 			}
 			processed = append(processed, id)
 			con.TicketDone(result(id, time.Since(t0)))

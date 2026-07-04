@@ -290,3 +290,51 @@ func TestParentIssueTopLevelReturnsEmpty(t *testing.T) {
 		t.Errorf("ParentIssue = %q, want empty (top-level issue)", got)
 	}
 }
+
+func TestParseSubIssuesReadsDone(t *testing.T) {
+	subs, ok := parseSubIssuesJSON(`SUB_ISSUES=[{"id":"COD-1","title":"open","hasChildren":false,"done":false},{"id":"COD-2","title":"shipped","hasChildren":false,"done":true}]`)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if len(subs) != 2 {
+		t.Fatalf("expected 2 sub-issues, got %d", len(subs))
+	}
+	if subs[0].Done {
+		t.Errorf("first sub-issue should be open, got %+v", subs[0])
+	}
+	if !subs[1].Done {
+		t.Errorf("second sub-issue should be done, got %+v", subs[1])
+	}
+}
+
+// TestPickParentScopeExcludesDoneLeaves is the COD-708 regression guard: a leaf
+// the tracker already considers finished must never survive the leaf filter,
+// even when the pick agent returns it — a merged ticket that gets re-picked
+// re-enters build and faults on its merge-deleted branch.
+func TestPickParentScopeExcludesDoneLeaves(t *testing.T) {
+	tests := []struct {
+		name string
+		pick string
+		want string
+	}{
+		{name: "agent picks the done leaf", pick: "PICK=COD-681", want: ""},
+		{name: "agent picks the open leaf", pick: "PICK=COD-682", want: "COD-682"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &recordingRunner{responses: map[string]agent.Result{
+				"sub_issues": {Final: `SUB_ISSUES=[{"id":"COD-681","title":"shipped","hasChildren":false,"done":true},{"id":"COD-682","title":"open","hasChildren":false,"done":false}]`},
+				"pick":       {Final: tt.pick},
+			}}
+			l := &Linear{Runner: runner, ReadyLabel: "ready-for-agent", Team: "COD"}
+
+			id, err := l.Pick(context.Background(), Scope{Parent: "COD-530", Team: "COD", Prefix: "COD"})
+			if err != nil {
+				t.Fatalf("Pick returned error: %v", err)
+			}
+			if id != tt.want {
+				t.Fatalf("Pick = %q, want %q", id, tt.want)
+			}
+		})
+	}
+}

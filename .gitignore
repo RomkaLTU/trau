@@ -3,8 +3,6 @@ trau.ini
 .trau.ini
 
 # Agentic / internal files — kept out of the public repo
-AGENTS.md
-CLAUDE.md
 tasks/
 runs/
 /.agents/
@@ -29,3 +27,5 @@ coverage.txt
 
 # IDE
 /.idea/
+# trau run artifacts and project config (do not commit)
+.trau/runs/
