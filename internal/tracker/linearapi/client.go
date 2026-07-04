@@ -30,6 +30,9 @@ var (
 type Client struct {
 	apiKey string
 	http   *http.Client
+	// Endpoint overrides the GraphQL endpoint when non-empty; the zero value
+	// targets Linear's public API.
+	Endpoint string
 }
 
 // New returns a client that uses apiKey. An empty apiKey makes every method
@@ -342,14 +345,16 @@ func (c *Client) EnsureLabel(ctx context.Context, teamID, name string) error {
 	return c.do(ctx, issueLabelCreateMutation, map[string]any{"name": name, "teamId": teamID}, &dst)
 }
 
-// CreateIssue creates a new issue in the team and returns its identifier.
-func (c *Client) CreateIssue(ctx context.Context, teamID, title, description string, labelNames []string) (string, error) {
+// CreateIssue creates a new issue in the team and returns its identifier and URL.
+// Label names that do not exist in the team are dropped — Linear can only attach
+// labels that already exist.
+func (c *Client) CreateIssue(ctx context.Context, teamID, title, description string, labelNames []string) (identifier, url string, err error) {
 	if c.apiKey == "" {
-		return "", ErrNotEnabled
+		return "", "", ErrNotEnabled
 	}
 	labels, err := c.teamLabels(ctx, teamID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var labelIDs []string
 	for _, name := range labelNames {
@@ -365,12 +370,12 @@ func (c *Client) CreateIssue(ctx context.Context, teamID, title, description str
 	}
 	var dst issueCreateResponse
 	if err := c.do(ctx, issueCreateMutation, vars, &dst); err != nil {
-		return "", err
+		return "", "", err
 	}
 	if dst.Data.IssueCreate.Issue.Identifier == "" {
-		return "", errors.New("linear: create issue returned no identifier")
+		return "", "", errors.New("linear: create issue returned no identifier")
 	}
-	return dst.Data.IssueCreate.Issue.Identifier, nil
+	return dst.Data.IssueCreate.Issue.Identifier, dst.Data.IssueCreate.Issue.URL, nil
 }
 
 // workflowStates returns the workflow states for a team.
@@ -429,7 +434,11 @@ func (c *Client) do(ctx context.Context, query string, vars map[string]any, dst 
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	target := endpoint
+	if c.Endpoint != "" {
+		target = c.Endpoint
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -539,8 +548,12 @@ type issueLabelCreateResponse struct {
 type issueCreateResponse struct {
 	Data struct {
 		IssueCreate struct {
-			Success bool      `json:"success"`
-			Issue   issueNode `json:"issue"`
+			Success bool `json:"success"`
+			Issue   struct {
+				ID         string `json:"id"`
+				Identifier string `json:"identifier"`
+				URL        string `json:"url"`
+			} `json:"issue"`
 		} `json:"issueCreate"`
 	} `json:"data"`
 }

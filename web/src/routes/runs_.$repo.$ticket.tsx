@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import {
   ArrowLeft,
@@ -8,12 +9,17 @@ import {
   GitBranch,
   GitPullRequest,
   ListChecks,
+  MessageSquarePlus,
   Receipt,
+  Send,
+  TicketPlus,
 } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Markdown } from '@/components/markdown'
+import { NewIssueForm, type IssueDefaults } from '@/components/new-issue-form'
 import { cn } from '@/lib/utils'
+import { addComment } from '@/lib/issues'
 import {
   runDetailQueryOptions,
   type PhaseCost,
@@ -55,7 +61,81 @@ function Detail({ repo, run }: { repo: string; run: RunDetail }) {
       <Handoff markdown={run.handoff} present={run.artifacts.handoff} />
       <RubricPanel rubric={run.rubric} present={run.artifacts.rubric} />
       <VerdictPanel verdict={run.verdict} present={run.artifacts.verdict} />
+      <CommentSection repo={repo} ticket={run.ticket} />
+      <FollowUpSection repo={repo} run={run} />
     </div>
+  )
+}
+
+function CommentSection({ repo, ticket }: { repo: string; ticket: string }) {
+  const [body, setBody] = useState('')
+  const mutation = useMutation({
+    mutationFn: (text: string) => addComment(repo, ticket, text),
+    onSuccess: () => setBody(''),
+  })
+
+  return (
+    <Section icon={MessageSquarePlus} title="Comment on this ticket">
+      <div className="flex flex-col gap-3 rounded-lg border bg-card p-4">
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          placeholder={`Add a comment to ${ticket}…`}
+          rows={3}
+          className="w-full resize-y rounded-md border bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+        />
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => body.trim() !== '' && mutation.mutate(body.trim())}
+            disabled={mutation.isPending || body.trim() === ''}
+            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            <Send className="size-4" />
+            {mutation.isPending ? 'Posting…' : 'Post comment'}
+          </button>
+          {mutation.isSuccess && (
+            <span className="text-xs text-emerald-600 dark:text-emerald-400">
+              Comment posted.
+            </span>
+          )}
+          {mutation.error && (
+            <span className="text-xs text-destructive">
+              {String((mutation.error as Error).message)}
+            </span>
+          )}
+        </div>
+      </div>
+    </Section>
+  )
+}
+
+// followUpDefaults pre-fills a new-issue form with the run's context so a
+// follow-up filed from a quarantined or faulted run carries the ticket it came
+// from and why it stopped.
+function followUpDefaults(repo: string, run: RunDetail): IssueDefaults {
+  const lines = [
+    `Filed from the trau hub while reviewing **${run.ticket}**${
+      run.title ? ` — ${run.title}` : ''
+    }.`,
+    '',
+    `- Repo: \`${repo}\``,
+    `- Phase: ${run.phase === '' ? 'queued' : run.phase.replace(/_/g, ' ')}`,
+  ]
+  if (run.failure_reason) {
+    lines.push(`- Failure reason: ${run.failure_reason}`)
+  }
+  return {
+    title: `Follow-up: ${run.ticket}`,
+    description: lines.join('\n'),
+  }
+}
+
+function FollowUpSection({ repo, run }: { repo: string; run: RunDetail }) {
+  return (
+    <Section icon={TicketPlus} title="File a follow-up issue">
+      <NewIssueForm repo={repo} defaults={followUpDefaults(repo, run)} />
+    </Section>
   )
 }
 
