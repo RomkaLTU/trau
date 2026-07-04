@@ -1784,12 +1784,22 @@ func (a *appActions) RevisePlan(ctx context.Context, dir, note string) (tui.Plan
 }
 
 // ApprovePlan approves the drafted PRD in the plan session at dir, advancing the
-// checkpoint to prd_ready and recording it as final.
-func (a *appActions) ApprovePlan(_ context.Context, dir string) error {
+// checkpoint to prd_ready, then publishes it to the tracker as an epic. A tracker
+// without the hierarchical-create capability degrades gracefully: publish is
+// skipped and the plan stays local at prd_ready.
+func (a *appActions) ApprovePlan(ctx context.Context, dir string) (tui.PublishOutcome, error) {
 	if err := a.ensure(); err != nil {
-		return err
+		return tui.PublishOutcome{}, err
 	}
-	return planning.OpenSession(dir).Approve()
+	sess := planning.OpenSession(dir)
+	if err := sess.Approve(); err != nil {
+		return tui.PublishOutcome{}, err
+	}
+	res, err := a.planOrchestrator().Publish(ctx, sess, a.tracker)
+	if err != nil {
+		return tui.PublishOutcome{}, err
+	}
+	return tui.PublishOutcome{Epic: res.Epic, Published: res.Published}, nil
 }
 
 func (a *appActions) planOrchestrator() *planning.Orchestrator {

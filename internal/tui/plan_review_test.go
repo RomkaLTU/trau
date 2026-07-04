@@ -12,10 +12,11 @@ import (
 // session dir, returning a revised PRD from RevisePlan.
 type planReviewFake struct {
 	fakeAppActions
-	reviseDir  string
-	reviseNote string
-	approveDir string
-	approved   bool
+	reviseDir      string
+	reviseNote     string
+	approveDir     string
+	approved       bool
+	publishSkipped bool
 }
 
 func (f *planReviewFake) RevisePlan(_ context.Context, dir, note string) (PlanOutcome, error) {
@@ -23,9 +24,12 @@ func (f *planReviewFake) RevisePlan(_ context.Context, dir, note string) (PlanOu
 	return PlanOutcome{Status: "prd", SessionDir: dir, Title: "Widgets v2", Markdown: "# Widgets v2\n\nrevised"}, nil
 }
 
-func (f *planReviewFake) ApprovePlan(_ context.Context, dir string) error {
+func (f *planReviewFake) ApprovePlan(_ context.Context, dir string) (PublishOutcome, error) {
 	f.approveDir, f.approved = dir, true
-	return nil
+	if f.publishSkipped {
+		return PublishOutcome{}, nil
+	}
+	return PublishOutcome{Epic: "COD-900", Published: true}, nil
 }
 
 // prdModel returns a Plan screen already showing a drafted PRD in the viewport.
@@ -151,7 +155,26 @@ func TestPlanApprove(t *testing.T) {
 	if m.step != planNote {
 		t.Fatalf("after approval step = %v, want planNote", m.step)
 	}
-	if !strings.Contains(m.note, "approved") {
-		t.Errorf("approval note = %q, want an approval confirmation", m.note)
+	if !strings.Contains(m.note, "approved") || !strings.Contains(m.note, "COD-900") {
+		t.Errorf("approval note = %q, want an approval + published-epic confirmation", m.note)
+	}
+}
+
+// TestPlanApproveWithoutPublish covers the graceful-degradation message: a tracker
+// that cannot publish leaves the plan local and says so.
+func TestPlanApproveWithoutPublish(t *testing.T) {
+	fake := &planReviewFake{}
+	fake.publishSkipped = true
+	m := prdModel(t, fake)
+
+	_, cmd := m.handleKey(tea.KeyPressMsg{Code: 'a', Text: "a"})
+	msg := cmd().(planApprovedMsg)
+	m, _ = m.Update(msg)
+
+	if m.step != planNote {
+		t.Fatalf("after approval step = %v, want planNote", m.step)
+	}
+	if !strings.Contains(m.note, "approved") || !strings.Contains(m.note, "prd_ready") {
+		t.Errorf("note = %q, want a graceful stays-local message", m.note)
 	}
 }
