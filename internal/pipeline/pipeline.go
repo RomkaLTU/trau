@@ -378,6 +378,7 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 			pr = " (PR #" + pr + ")"
 		}
 		p.logf("  ✓ %s is already merged%s — skipping; `trau --clear %s` to run it again", id, pr, id)
+		p.clearFailure(id)
 		return ErrAlreadyDone
 	}
 	if p.Tokens != nil {
@@ -464,7 +465,10 @@ func (p *Pipeline) runPhases(ctx context.Context, id string, fi int) error {
 //     which preserves the WIP on the branch without quarantining or filing a bug.
 func (p *Pipeline) classifyPhaseErr(ctx context.Context, id string, err error) error {
 	switch {
-	case err == nil, errors.Is(err, ErrAlreadyDone), IsPaused(err):
+	case err == nil, errors.Is(err, ErrAlreadyDone):
+		p.clearFailure(id)
+		return err
+	case IsPaused(err):
 		return err
 	case isGiveUp(err):
 		return p.handleGiveUp(ctx, id, err)
@@ -484,6 +488,13 @@ func (p *Pipeline) handleGiveUp(ctx context.Context, id string, err error) error
 		return p.giveUp(ctx, id, g.Reason)
 	}
 	return err
+}
+
+// clearFailure drops a stale FAILURE_REASON once a run ends successfully — the
+// recorded reason describes why the ticket is stuck, so it must not outlive the
+// attempt that resolved it (e.g. a merge fault cleared by a manual merge).
+func (p *Pipeline) clearFailure(id string) {
+	_ = p.State.Unset(id, "FAILURE_REASON")
 }
 
 // fault preserves the partial work of a ticket aborted by an unexpected error and
