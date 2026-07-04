@@ -380,6 +380,7 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 		p.logf("  ✓ %s is already merged%s — skipping; `trau --clear %s` to run it again", id, pr, id)
 		return ErrAlreadyDone
 	}
+	p.clearFailureMarks(id)
 	if p.Tokens != nil {
 		p.Tokens.SetTicket(id)
 	}
@@ -495,6 +496,7 @@ func (p *Pipeline) fault(ctx context.Context, id string, err error) error {
 	p.finalizeFault(ctx, id)
 	reason := fmt.Sprintf("unexpected error during %s: %v", NextPhaseLabel(phase), err)
 	_ = p.State.Set(id, "FAILURE_REASON", reason)
+	_ = p.State.Set(id, "FAILURE_CLASS", state.FailFaulted)
 	p.logf("  ⚠ %s could not finish during %s — work saved, ticket left resumable", id, NextPhaseLabel(phase))
 	return &FaultError{ID: id, Phase: phase, Err: err}
 }
@@ -1627,9 +1629,11 @@ func providerLabel(r agent.Runner) string {
 // last checkpoint, so a later run resumes it from there once the limit clears.
 func (p *Pipeline) pause(id, phase string, err error) error {
 	prov := providerOf(err)
+	reason := prov + " rate/usage limit reached"
+	p.markPaused(id, reason)
 	p.logf("  ⏸ paused — %s usage/rate limit reached during %s", prov, phase)
 	p.logf("  ↳ %s left resumable on its branch; rerun trau when the limit resets", id)
-	return &PausedError{ID: id, Phase: phase, Provider: prov, Reason: prov + " rate/usage limit reached"}
+	return &PausedError{ID: id, Phase: phase, Provider: prov, Reason: reason}
 }
 
 func isRateLimited(err error) bool {
@@ -1643,9 +1647,32 @@ func isRateLimited(err error) bool {
 // checkpoint and resumes from there once the provider is logged back in.
 func (p *Pipeline) pauseAuth(id, phase string, err error) error {
 	prov := providerOf(err)
+	reason := prov + " authentication required — re-login"
+	p.markPaused(id, reason)
 	p.logf("  ⏸ paused — %s needs re-authentication during %s (run the provider's /login)", prov, phase)
 	p.logf("  ↳ %s left resumable on its branch; rerun trau after re-authenticating %s", id, prov)
-	return &PausedError{ID: id, Phase: phase, Provider: prov, Reason: prov + " authentication required — re-login"}
+	return &PausedError{ID: id, Phase: phase, Provider: prov, Reason: reason}
+}
+
+// markPaused records the blameless pause on the ticket's checkpoint so a
+// file-first reader (trau serve) can tell a pause apart from a fault while the
+// loop is stopped. The next attempt clears it in Resume once the ticket runs
+// again. Best-effort — a failed write never blocks the pause.
+func (p *Pipeline) markPaused(id, reason string) {
+	_ = p.State.Set(id, "FAILURE_CLASS", state.FailPaused)
+	_ = p.State.Set(id, "FAILURE_REASON", reason)
+}
+
+// clearFailureMarks drops a prior attempt's pause/fault marker as the ticket is
+// retried, so a resumed run that progresses no longer reads as failed. It only
+// writes when a marker is actually present, so a fresh ticket keeps its first
+// checkpoint being the build phase rather than an empty state file.
+func (p *Pipeline) clearFailureMarks(id string) {
+	if p.State.Get(id, "FAILURE_CLASS") == "" && p.State.Get(id, "FAILURE_REASON") == "" {
+		return
+	}
+	_ = p.State.Set(id, "FAILURE_CLASS", "")
+	_ = p.State.Set(id, "FAILURE_REASON", "")
 }
 
 // isAuthFailure reports whether err is (or wraps) the agent's auth/login-wall

@@ -82,6 +82,36 @@ func StaleCheckpoint(phase string, trackerDone bool) bool {
 	return trackerDone && Reconcilable(phase)
 }
 
+// Failure classes written to the FAILURE_CLASS key when a ticket stops short of
+// merged. FailGaveUp is never stored — a Quarantined phase already carries it —
+// but is returned by FailureClass so every surface names the three the same way.
+const (
+	FailPaused  = "paused"  // a blameless provider rate/usage or auth wall
+	FailFaulted = "faulted" // an unexpected error; work preserved, still resumable
+	FailGaveUp  = "gave_up" // a verified dead end; quarantined and needs a human
+)
+
+// FailureClass classifies a checkpoint's failure from its durable fields: a
+// quarantined phase is a give-up regardless of the rest; a merged phase has no
+// failure even if a stale marker lingers; otherwise the stored FAILURE_CLASS
+// marker (paused/faulted) wins, and a bare FAILURE_REASON with no marker reads as
+// a fault so checkpoints written before the marker existed still classify. A
+// healthy in-flight phase returns "".
+func FailureClass(phase, stored, reason string) string {
+	switch {
+	case phase == Quarantined:
+		return FailGaveUp
+	case phase == Merged:
+		return ""
+	case stored != "":
+		return stored
+	case reason != "":
+		return FailFaulted
+	default:
+		return ""
+	}
+}
+
 // Store reads and writes per-ticket checkpoints under a runs/ root (the same
 // root the token sink uses).
 type Store struct {
