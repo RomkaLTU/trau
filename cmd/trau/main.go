@@ -271,14 +271,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			dt, dc, dm := sink.DayTotal(today)
 			report = budget.Report{Date: today, Limits: lim, Today: budget.Spend{Tokens: dt, Cost: dc, Metered: dm}}
 		}
+		planBucket := state.Bucket{ID: tokens.PlanBucket, Label: "planning"}
 		if opts.JSON {
-			return store.StatusJSON(stdout, sink.Total, report, reconciledIDs(reconciled))
+			return store.StatusJSON(stdout, sink.Total, report, reconciledIDs(reconciled), planBucket)
 		}
 		for _, rt := range reconciled {
 			con.Logf("↳ %s is %s on the tracker — cleared stale %s checkpoint", rt.ID, rt.Status, rt.Phase)
 		}
 		con.Logf("Saved ticket checkpoints:")
-		store.Status(stdout, sink.Total)
+		store.Status(stdout, sink.Total, planBucket)
 		if r, ok := report.(budget.Report); ok {
 			_, _ = fmt.Fprintf(stdout, "  %s\n", r.Summary())
 		}
@@ -1745,42 +1746,27 @@ func (a *appActions) CheckoutBranch(ctx context.Context, id string) (string, err
 // under the runs area (in _plans/), well away from ticket state. It returns the
 // outcome the Plan screen renders.
 func (a *appActions) StartPlan(ctx context.Context, idea string) (tui.PlanOutcome, error) {
-	if err := a.ensure(); err != nil {
-		return tui.PlanOutcome{}, err
-	}
-	rr, err := a.planOrchestrator().RunRound(ctx, idea)
-	if err != nil {
-		return tui.PlanOutcome{}, err
-	}
-	return planOutcome(rr), nil
+	return a.runPlanRound(func(o *planning.Orchestrator) (*planning.RoundResult, error) {
+		return o.RunRound(ctx, idea)
+	})
 }
 
 // AnswerPlan records the answers to the previous round's questions on the plan
 // session at dir and runs the next planning round as a fresh process, exactly
 // like the first — the session's durable transcript is the only continuity.
 func (a *appActions) AnswerPlan(ctx context.Context, dir string, answers []tui.PlanAnswer) (tui.PlanOutcome, error) {
-	if err := a.ensure(); err != nil {
-		return tui.PlanOutcome{}, err
-	}
-	rr, err := a.planOrchestrator().AnswerRound(ctx, planning.OpenSession(dir), planAnswers(answers))
-	if err != nil {
-		return tui.PlanOutcome{}, err
-	}
-	return planOutcome(rr), nil
+	return a.runPlanRound(func(o *planning.Orchestrator) (*planning.RoundResult, error) {
+		return o.AnswerRound(ctx, planning.OpenSession(dir), planAnswers(answers))
+	})
 }
 
 // RevisePlan records a free-text change request against the drafted PRD in the plan
 // session at dir and runs a fresh revision round, exactly like every other round —
 // the revised PRD replaces the durable copy and the outcome re-renders.
 func (a *appActions) RevisePlan(ctx context.Context, dir, note string) (tui.PlanOutcome, error) {
-	if err := a.ensure(); err != nil {
-		return tui.PlanOutcome{}, err
-	}
-	rr, err := a.planOrchestrator().ReviseRound(ctx, planning.OpenSession(dir), note)
-	if err != nil {
-		return tui.PlanOutcome{}, err
-	}
-	return planOutcome(rr), nil
+	return a.runPlanRound(func(o *planning.Orchestrator) (*planning.RoundResult, error) {
+		return o.ReviseRound(ctx, planning.OpenSession(dir), note)
+	})
 }
 
 // ApprovePlan approves the drafted PRD in the plan session at dir, advancing the
@@ -1802,9 +1788,108 @@ func (a *appActions) ApprovePlan(ctx context.Context, dir string) (tui.PublishOu
 	return tui.PublishOutcome{Epic: res.Epic, Published: res.Published}, nil
 }
 
+// ListPlans projects every durable plan session onto the Plan screen's list. It
+// reads local session state under _plans/ directly — no runner is built and no
+// tracker is touched.
+func (a *appActions) ListPlans() []tui.PlanSession {
+	infos := planning.List(a.plansRoot())
+	out := make([]tui.PlanSession, len(infos))
+	for i, si := range infos {
+		out[i] = tui.PlanSession{
+			Dir:       si.Dir,
+			Phase:     si.Phase,
+			Title:     si.Title,
+			Idea:      si.Idea,
+			Updated:   si.Updated,
+			Resumable: si.Resumable(),
+		}
+	}
+	return out
+}
+
+// ResumePlan re-enters the plan session at dir at the step its checkpoint dictates,
+// rebuilding it from the durable artifacts alone: a round re-runs to re-ask the
+// pending questions (or draft the PRD at the cap), a drafted PRD reopens for review,
+// and a step not yet wired surfaces a graceful note. Only the round step builds the
+// runner; the rest read from disk.
+func (a *appActions) ResumePlan(ctx context.Context, dir string) (tui.PlanOutcome, error) {
+	sess := planning.OpenSession(dir)
+	switch planning.ResumeStepFor(sess.Phase()) {
+	case planning.StepRound:
+		return a.runPlanRound(func(o *planning.Orchestrator) (*planning.RoundResult, error) {
+			return o.ResumeRound(ctx, sess)
+		})
+	case planning.StepReview:
+		prd, ok := sess.PRD()
+		if !ok {
+			return tui.PlanOutcome{}, fmt.Errorf("planning: session at %s is under review with no drafted PRD", dir)
+		}
+		return tui.PlanOutcome{Status: string(planning.StatusPRD), SessionDir: dir, Title: prd.Title, Markdown: prd.Markdown}, nil
+	default:
+		return tui.PlanOutcome{SessionDir: dir, Note: resumeNote(sess.Phase())}, nil
+	}
+}
+
+// AbortPlan marks the plan session at dir aborted — terminal. It is a pure local
+// checkpoint write that builds no runner and touches no tracker, so a session can
+// always be abandoned even when provider config is broken.
+func (a *appActions) AbortPlan(_ context.Context, dir string) error {
+	return planning.OpenSession(dir).Abort()
+}
+
+// resumeNote is the graceful line the Plan screen shows for a session whose resume
+// step is past the review loop this slice wires up.
+func resumeNote(phase string) string {
+	switch phase {
+	case planning.PhasePRDReady:
+		return "This PRD is approved. Publishing it to the tracker is a later step."
+	case planning.PhasePublished:
+		return "This PRD is published. Reviewing its slices is a later step."
+	case planning.PhaseSliced:
+		return "This plan session is complete — all its slices were published."
+	case planning.PhaseAborted:
+		return "This plan session was aborted."
+	default:
+		return "This plan session has nothing left to resume."
+	}
+}
+
+func (a *appActions) plansRoot() string { return filepath.Join(a.cfg.RunsDir, "_plans") }
+
+// planOrchestrator builds the plan orchestrator with the same transient-failure
+// recovery the pipeline gives its phases — retries, fallback providers, and a
+// blameless pause on a rate/usage limit or auth wall — so an infra blip in a
+// planning round never burns a question round.
 func (a *appActions) planOrchestrator() *planning.Orchestrator {
-	return planning.NewOrchestrator(a.runner, filepath.Join(a.cfg.RunsDir, "_plans")).
-		WithMaxRounds(a.cfg.MaxPlanRounds)
+	return planning.NewOrchestrator(a.runner, a.plansRoot()).
+		WithMaxRounds(a.cfg.MaxPlanRounds).
+		WithRecovery(a.cfg.AgentRetries, a.cfg.AgentBackoff, a.planFallback())
+}
+
+// planFallback resolves the fallback-provider chain for the plan phase, reusing the
+// pipeline's configured resolver so planning and the pipeline fail over identically.
+func (a *appActions) planFallback() []agent.Runner {
+	if a.pipe == nil || a.pipe.Fallback == nil {
+		return nil
+	}
+	return a.pipe.Fallback(agent.PhasePlan)
+}
+
+// runPlanRound points the token sink at the planning bucket for the span of one
+// round — planning calls carry no ticket — then restores the loop default, so
+// planning spend lands under runs/_plans/ and surfaces as the planning row in
+// session totals and --status.
+func (a *appActions) runPlanRound(run func(*planning.Orchestrator) (*planning.RoundResult, error)) (tui.PlanOutcome, error) {
+	if err := a.ensure(); err != nil {
+		return tui.PlanOutcome{}, err
+	}
+	a.sink.SetTicket(tokens.PlanBucket)
+	defer a.sink.SetTicket("")
+	rr, err := run(a.planOrchestrator())
+	if err != nil {
+		return tui.PlanOutcome{}, err
+	}
+	return planOutcome(rr), nil
 }
 
 // planOutcome projects a planning round onto the TUI's Plan screen outcome.

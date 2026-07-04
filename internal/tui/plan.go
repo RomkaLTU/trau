@@ -4,11 +4,19 @@ import (
 	"context"
 	"strings"
 
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
+
+	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/notify"
 )
+
+// planQuestionsNotify is the desktop nudge fired when a planning question round
+// arrives while the terminal is unfocused, so a long round never silently stalls.
+const planQuestionsNotify = "planning needs answers — a question round is waiting"
 
 // PlanOutcome is a planning round's result surfaced to the Plan screen. Status is
 // the payload status; for a PRD, Title and Markdown carry the document; for
@@ -24,6 +32,19 @@ type PlanOutcome struct {
 	Note       string
 }
 
+// PlanSession is one durable plan session projected onto the Plan screen's list:
+// where it lives, its checkpoint phase, and the labels a row shows. Resumable is
+// false for a terminal (sliced or aborted) session, which lists for inspection or
+// cleanup rather than resume.
+type PlanSession struct {
+	Dir       string
+	Phase     string
+	Title     string
+	Idea      string
+	Updated   string
+	Resumable bool
+}
+
 type planStep int
 
 const (
@@ -33,6 +54,7 @@ const (
 	planPRD                       // PRD in a scrollable viewport
 	planRevise                    // entering a free-text change request
 	planNote                      // graceful message (approval, non-PRD result, or error)
+	planList                      // choosing a saved session to resume, abort, or inspect
 )
 
 // planModel is the Plan screen: paste/type a raw idea (or a file path), run one
@@ -50,12 +72,21 @@ type planModel struct {
 	changeNote textarea.Model
 	viewport   viewport.Model
 	pform      *planForm
+	sessions   []PlanSession
+	listCursor int
 	sessionDir string
 	title      string
 	note       string
 	badIdea    bool
 	badNote    bool
 	cancelled  bool
+
+	// stream is the w-attach live tail of the planning agent during a round;
+	// notifier posts the desktop nudge when a question round lands while the
+	// terminal is unfocused (focused tracks that, fed from the app shell).
+	stream   liveStream
+	notifier notify.Notifier
+	focused  bool
 }
 
 type planDoneMsg struct {
@@ -71,6 +102,8 @@ type planApprovedMsg struct {
 	out PublishOutcome
 	err error
 }
+
+type planAbortDoneMsg struct{ err error }
 
 // planAccessibleDoneMsg carries the answers collected by the accessible runner
 // after the TUI resumed from tea.Exec, or the error it failed with.
@@ -96,6 +129,11 @@ func newPlanModel(ctx context.Context, actions Actions, styles Styles, w, h int)
 		idea:       ta,
 		changeNote: cn,
 		viewport:   viewport.New(),
+		focused:    true,
+	}
+	m.sessions = actions.ListPlans()
+	if len(m.sessions) > 0 {
+		m.step = planList
 	}
 	m.relayout(w, h)
 	return m
@@ -151,8 +189,9 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 		if m.step != planRunning {
 			return m, nil
 		}
+		m.stream.reset()
 		if msg.err != nil {
-			m.step, m.note = planNote, "✗ "+msg.err.Error()
+			m.step, m.note = planNote, planErrNote(msg.err)
 			return m, nil
 		}
 		m.sessionDir = msg.out.SessionDir
@@ -164,16 +203,38 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 			m.viewport.GotoTop()
 			return m, nil
 		case "questions":
+			var cmds []tea.Cmd
+			if !m.focused {
+				cmds = append(cmds, notifyCmd(m.notifier, "trau", planQuestionsNotify))
+			}
 			if accessibleRequested() {
-				return m, m.accessiblePlanCmd(msg.out.Questions)
+				cmds = append(cmds, m.accessiblePlanCmd(msg.out.Questions))
+				return m, tea.Batch(cmds...)
 			}
 			m.pform = newPlanForm(msg.out.Questions, m.formWidth())
 			m.step = planQuestions
-			return m, m.pform.form.Init()
+			cmds = append(cmds, m.pform.form.Init())
+			return m, tea.Batch(cmds...)
 		default:
 			m.step, m.note = planNote, planStatusNote(msg.out)
 			return m, nil
 		}
+
+	case eventMsg:
+		if m.step == planRunning && msg.ev.Kind == event.KindAgentStart {
+			if p := strField(msg.ev.Fields, "transcript_path"); p != "" {
+				m.stream.setPath(p, intField(msg.ev.Fields, "cols"), intField(msg.ev.Fields, "rows"))
+				return m, m.stream.pump()
+			}
+		}
+		return m, nil
+
+	case streamDataMsg:
+		m.stream.write(msg)
+		return m, nil
+
+	case spinner.TickMsg:
+		return m, m.stream.pump()
 
 	case planFormSubmitMsg:
 		if m.step != planQuestions {
@@ -212,6 +273,18 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 		m.step, m.note = planNote, planPublishNote(msg.out)
 		return m, nil
 
+	case planAbortDoneMsg:
+		if msg.err != nil {
+			m.step, m.note = planNote, "✗ "+msg.err.Error()
+			return m, nil
+		}
+		m.sessions = m.actions.ListPlans()
+		if m.listCursor >= len(m.sessions) {
+			m.listCursor = len(m.sessions) - 1
+		}
+		m.step = planList
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -232,9 +305,16 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 
 func (m planModel) handleKey(msg tea.KeyPressMsg) (planModel, tea.Cmd) {
 	switch m.step {
+	case planList:
+		return m.handleListKey(msg)
+
 	case planInput:
 		switch msg.String() {
 		case "esc":
+			if len(m.sessions) > 0 {
+				m.step = planList
+				return m, nil
+			}
 			m.cancelled = true
 			return m, nil
 		case "ctrl+d":
@@ -251,7 +331,20 @@ func (m planModel) handleKey(msg tea.KeyPressMsg) (planModel, tea.Cmd) {
 		return m, cmd
 
 	case planRunning:
+		switch msg.String() {
+		case "w":
+			if m.stream.toggle() {
+				return m, m.stream.pump()
+			}
+			return m, nil
+		case "esc", "q":
+			if m.stream.attached {
+				m.stream.attached = false
+				return m, nil
+			}
+		}
 		if isBack(msg) {
+			m.stream.reset()
 			m.step = planInput
 			m.idea.Focus()
 		}
@@ -315,6 +408,53 @@ func (m planModel) handleKey(msg tea.KeyPressMsg) (planModel, tea.Cmd) {
 	return m, nil
 }
 
+// handleListKey drives the saved-session list: move the cursor, resume or abort
+// the selected session, start a fresh idea, or back out to the menu.
+func (m planModel) handleListKey(msg tea.KeyPressMsg) (planModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.cancelled = true
+		return m, nil
+	case "up", "k":
+		if m.listCursor > 0 {
+			m.listCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.listCursor < len(m.sessions)-1 {
+			m.listCursor++
+		}
+		return m, nil
+	case "n":
+		m.step = planInput
+		m.idea.Reset()
+		m.idea.Focus()
+		return m, textarea.Blink
+	case "enter":
+		sess := m.selectedSession()
+		if sess == nil {
+			return m, nil
+		}
+		m.sessionDir = sess.Dir
+		m.step = planRunning
+		return m, m.resumePlanCmd(sess.Dir)
+	case "x":
+		sess := m.selectedSession()
+		if sess == nil || !sess.Resumable {
+			return m, nil
+		}
+		return m, m.abortPlanCmd(sess.Dir)
+	}
+	return m, nil
+}
+
+func (m planModel) selectedSession() *PlanSession {
+	if m.listCursor < 0 || m.listCursor >= len(m.sessions) {
+		return nil
+	}
+	return &m.sessions[m.listCursor]
+}
+
 func (m planModel) handleMouseClick(msg tea.MouseClickMsg) (planModel, tea.Cmd) {
 	if m.step != planPRD {
 		return m, nil
@@ -364,6 +504,21 @@ func planPublishNote(out PublishOutcome) string {
 		return "✓ PRD approved and published as epic " + out.Epic + " — checkpoint advanced to published."
 	}
 	return "✓ PRD approved. This tracker can't publish plans, so it stays local at prd_ready."
+}
+
+func (m planModel) resumePlanCmd(dir string) tea.Cmd {
+	actions, ctx := m.actions, m.ctx
+	return func() tea.Msg {
+		out, err := actions.ResumePlan(ctx, dir)
+		return planDoneMsg{out: out, err: err}
+	}
+}
+
+func (m planModel) abortPlanCmd(dir string) tea.Cmd {
+	actions, ctx := m.actions, m.ctx
+	return func() tea.Msg {
+		return planAbortDoneMsg{err: actions.AbortPlan(ctx, dir)}
+	}
 }
 
 // accessiblePlanCmd releases the terminal and runs the question round through
@@ -422,6 +577,16 @@ func (m planModel) prdBody(out PlanOutcome) string {
 	return m.styles.SummaryTitle.Render(title) + "\n\n" + out.Markdown
 }
 
+// planErrNote frames a failed round: a blameless provider pause reads as a paused
+// glyph and stays resumable, everything else as a plain error.
+func planErrNote(err error) string {
+	msg := err.Error()
+	if strings.HasPrefix(msg, "planning paused:") {
+		return "⏸ " + strings.TrimPrefix(msg, "planning paused: ") + " — resume this session once the provider recovers."
+	}
+	return "✗ " + msg
+}
+
 // planStatusNote flags a result the Plan screen does not action gracefully — the
 // slice round that would publish slices is a later slice.
 func planStatusNote(out PlanOutcome) string {
@@ -465,8 +630,16 @@ func (m planModel) view(spinner string) string {
 func (m planModel) body(spinner string) string {
 	s := m.styles
 	switch m.step {
+	case planList:
+		return m.listBody()
 	case planRunning:
-		return spinner + " " + s.Subtle.Render("running a planning round — a fresh agent is reading the idea and your answers…")
+		if m.stream.attached {
+			if body := m.stream.view(m.width-2, m.height-4); body != "" {
+				return body
+			}
+			return s.Subtle.Render("◉ attached — waiting for the planning agent…  w detaches")
+		}
+		return spinner + " " + s.Subtle.Render("running a planning round — a fresh agent is reading the idea and your answers…  w attaches the live agent view")
 	case planQuestions:
 		if m.pform == nil {
 			return ""
@@ -492,14 +665,37 @@ func (m planModel) body(spinner string) string {
 	}
 }
 
+// listBody renders the saved-session list: each row is its checkpoint state
+// (the phase) beside the PRD title, or the idea's first line before one exists.
+func (m planModel) listBody() string {
+	s := m.styles
+	intro := s.Subtle.Render("Resume an in-flight plan session, abort one, or start a new idea.")
+	rows := make([]string, 0, len(m.sessions))
+	for i, sess := range m.sessions {
+		label := strings.TrimSpace(sess.Title)
+		if label == "" {
+			label = sess.Idea
+		}
+		rows = append(rows, listRow(s, i == m.listCursor, sess.Phase, truncate(label, m.width-20), 12))
+	}
+	return intro + "\n\n" + strings.Join(rows, "\n")
+}
+
 func (m planModel) hint() string { return m.help().footer() }
 
 // help is the Plan screen's key legend per step: the single source for its footer
 // and the ? overlay.
 func (m planModel) help() screenHelp {
 	switch m.step {
+	case planList:
+		return screenHelp{title: "Plan · sessions", columns: []helpColumn{
+			group("Navigate", fk("↑↓", "move")),
+			group("Session", fk("enter", "resume"), fk("x", "abort"), fk("n", "new idea")),
+			group("Actions", fk("esc/q", "back")),
+		}}
 	case planRunning:
 		return screenHelp{title: "Plan", columns: []helpColumn{
+			group("Live", fk("w", "attach agent view")),
 			group("Session", fk("esc", "cancel")),
 		}}
 	case planQuestions:
