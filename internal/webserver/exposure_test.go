@@ -22,7 +22,7 @@ var apiRoutes = []string{
 
 func exposedServer(t *testing.T, bind, token string) *httptest.Server {
 	t.Helper()
-	ts := httptest.NewServer(New("1.2.3", bind, token).Handler())
+	ts := httptest.NewServer(New("1.2.3", bind, token, nil).Handler())
 	t.Cleanup(ts.Close)
 	return ts
 }
