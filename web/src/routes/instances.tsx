@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { EventFeed } from '@/components/event-feed'
+import { RunControls } from '@/components/run-controls'
 import { instancesQueryOptions, type Instance } from '@/lib/instances'
 
 export const Route = createFileRoute('/instances')({
@@ -44,6 +45,7 @@ function Instances() {
   const now = useNow(1000)
 
   const instances = data?.instances ?? []
+  const allowedRepos = (data?.repos ?? []).filter((repo) => repo.allowed)
   const idleRepos = (data?.repos ?? []).filter((repo) => !repo.live)
 
   return (
@@ -70,6 +72,19 @@ function Instances() {
             <InstanceCard key={instance.pid} instance={instance} now={now} />
           ))}
         </div>
+      )}
+
+      {allowedRepos.length > 0 && (
+        <section className="flex flex-col gap-3">
+          <h2 className="text-sm font-medium text-muted-foreground">
+            Start a run
+          </h2>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {allowedRepos.map((repo) => (
+              <RunControls key={repo.root} repo={repo.name} />
+            ))}
+          </div>
+        </section>
       )}
 
       {idleRepos.length > 0 && (
