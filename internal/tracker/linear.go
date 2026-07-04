@@ -100,7 +100,7 @@ func (l *Linear) leafSubIssues(ctx context.Context, parent string) (map[string]b
 	}
 	leaves := make(map[string]bool, len(subs))
 	for _, s := range subs {
-		if s.ID != "" && !s.HasChildren {
+		if s.ID != "" && !s.HasChildren && !s.Done {
 			leaves[s.ID] = true
 		}
 	}
@@ -323,8 +323,9 @@ func (l *Linear) subIssuesAPI(ctx context.Context, id string) ([]SubIssue, error
 
 func (l *Linear) subIssuesPrompt(id string) string {
 	return fmt.Sprintf("Use the Linear MCP. List the direct sub-issues (children) of issue %s. "+
-		"Respond with exactly one final line of JSON: SUB_ISSUES=[{\"id\":\"%s-494\",\"title\":\"...\",\"hasChildren\":false}, ...] "+
-		"using each child's identifier, title, and whether it has its own sub-issues (hasChildren boolean). "+
+		"Respond with exactly one final line of JSON: SUB_ISSUES=[{\"id\":\"%s-494\",\"title\":\"...\",\"hasChildren\":false,\"done\":false}, ...] "+
+		"using each child's identifier, title, whether it has its own sub-issues (hasChildren boolean), "+
+		"and whether its workflow state is completed or canceled (done boolean). "+
 		"If there are none, respond SUB_ISSUES=[]. No other output.", id, prefixOf(id))
 }
 

@@ -145,7 +145,8 @@ type GitHub interface {
 // ErrCIFailed and ErrCITimeout are the two non-green outcomes of pollCI; both map
 // to the same "CI not green" give-up reason but are distinguished in the log line.
 // ErrAlreadyDone is returned by CIAndMerge when it reconciles a ticket whose PR
-// was already merged, so the outer loop can skip counting it and keep picking.
+// was already merged, and by Resume when the ticket's checkpoint is already
+// merged, so the outer loop can skip counting it and keep picking.
 var (
 	ErrCIFailed    = errors.New("a required CI check failed")
 	ErrCITimeout   = errors.New("CI timed out waiting for required checks")
@@ -357,16 +358,27 @@ func (p *Pipeline) EnsureOwnedProject(ctx context.Context, id string) error {
 	return nil
 }
 
-// Resume runs a ticket through the phases not yet checkpointed. It buckets token
-// logs to the ticket, restores the recorded feature branch (auto-resetting the
-// ticket when that branch is gone), then runs each phase whose rank exceeds the
-// resume point (fi = Idx(from)); from="" runs everything fresh. A *GiveUpError
+// Resume runs a ticket through the phases not yet checkpointed. A checkpoint
+// already at merged short-circuits to ErrAlreadyDone — a stale tracker or a
+// bad pick must never rebuild delivered work (`trau --clear` is the explicit
+// override). Otherwise it buckets token logs to the ticket, restores the
+// recorded feature branch (auto-resetting the ticket when that branch is
+// gone), then runs each phase whose rank exceeds the resume point
+// (fi = Idx(from)); from="" runs everything fresh. A *GiveUpError
 // from build (no feature branch) is funneled into giveUp here; verify and the CI
 // gate run giveUp themselves and return the resulting *GiveUpError, which passes
 // straight through.
 func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 	if err := p.EnsureOwnedProject(ctx, id); err != nil {
 		return err
+	}
+	if p.State.Get(id, "PHASE") == state.Merged {
+		pr := p.State.Get(id, "PR")
+		if pr != "" {
+			pr = " (PR #" + pr + ")"
+		}
+		p.logf("  ✓ %s is already merged%s — skipping; `trau --clear %s` to run it again", id, pr, id)
+		return ErrAlreadyDone
 	}
 	if p.Tokens != nil {
 		p.Tokens.SetTicket(id)
@@ -699,10 +711,19 @@ func (p *Pipeline) resolveBuildBranch(ctx context.Context, id string) (string, e
 		branch, _ = p.Git.FindFeatureBranch(ctx, id)
 	}
 	if branch != "" {
-		if err := p.Git.Checkout(ctx, branch, false); err != nil {
-			return "", fmt.Errorf("build %s: checkout %s: %w", id, branch, err)
+		if exists, _ := p.Git.BranchExists(ctx, branch); exists {
+			if err := p.Git.Checkout(ctx, branch, false); err != nil {
+				return "", fmt.Errorf("build %s: checkout %s: %w", id, branch, err)
+			}
+			return branch, nil
 		}
-		return branch, nil
+		if remote, _ := p.Git.RemoteBranchExists(ctx, p.Remote, branch); remote {
+			if err := p.Git.CheckoutRemoteBranch(ctx, p.Remote, branch); err == nil {
+				p.logf("  ↳ recorded branch %s was missing locally — adopted %s/%s", branch, p.Remote, branch)
+				return branch, nil
+			}
+		}
+		p.logf("  ⚠ recorded branch %s is gone (likely deleted by a completed merge) — starting fresh", branch)
 	}
 
 	title, err := p.Tracker.Title(ctx, id)

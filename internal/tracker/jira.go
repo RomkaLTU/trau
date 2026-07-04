@@ -235,7 +235,7 @@ func (j *Jira) leafSubIssues(ctx context.Context, parent string) (map[string]boo
 	}
 	leaves := make(map[string]bool, len(subs))
 	for _, s := range subs {
-		if s.ID != "" && !s.HasChildren {
+		if s.ID != "" && !s.HasChildren && !s.Done {
 			leaves[s.ID] = true
 		}
 	}
@@ -353,8 +353,9 @@ func (j *Jira) subIssuesAPI(ctx context.Context, id string) ([]SubIssue, error) 
 
 func (j *Jira) subIssuesPrompt(id string) string {
 	return fmt.Sprintf("Use the Jira (Rovo) MCP. List the direct sub-tasks (children) of issue %s. "+
-		"Respond with exactly one final line of JSON: SUB_ISSUES=[{\"id\":\"%s-414\",\"title\":\"...\",\"hasChildren\":false}, ...] "+
-		"using each child's identifier, title, and whether it has its own sub-tasks (hasChildren boolean). "+
+		"Respond with exactly one final line of JSON: SUB_ISSUES=[{\"id\":\"%s-414\",\"title\":\"...\",\"hasChildren\":false,\"done\":false}, ...] "+
+		"using each child's identifier, title, whether it has its own sub-tasks (hasChildren boolean), "+
+		"and whether its status is Done/Closed/Canceled (done boolean). "+
 		"If there are none, respond SUB_ISSUES=[]. No other output.", id, prefixOf(id))
 }
 
