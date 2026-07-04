@@ -90,6 +90,21 @@ type Actions interface {
 	// ApprovePlan approves the drafted PRD in the plan session at dir, advancing the
 	// session checkpoint to prd_ready. It is cancellable via ctx.
 	ApprovePlan(ctx context.Context, dir string) error
+
+	// ListPlans returns every durable plan session for the Plan screen's list,
+	// resumable ones first. It reads local session state directly, so it needs no
+	// context and never blocks on the network.
+	ListPlans() []PlanSession
+
+	// ResumePlan re-enters the plan session at dir at the step its checkpoint
+	// dictates — re-asking the pending questions, reopening the PRD for review, or a
+	// note for a step not yet wired — and returns the outcome the Plan screen
+	// renders. It is cancellable via ctx.
+	ResumePlan(ctx context.Context, dir string) (PlanOutcome, error)
+
+	// AbortPlan marks the plan session at dir aborted — a terminal side-exit that
+	// writes nothing to the tracker. It is cancellable via ctx.
+	AbortPlan(ctx context.Context, dir string) error
 }
 
 // ListedTicket is one eligible ticket returned by a fast list operation.
