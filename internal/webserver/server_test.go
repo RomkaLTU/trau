@@ -104,11 +104,26 @@ func TestServesEmbeddedSPA(t *testing.T) {
 
 func TestSPAFallbackServesShell(t *testing.T) {
 	ts := newTestServer(t)
-	res, body := get(t, ts, "/some/client/route")
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("unknown route status = %d, want 200 (SPA shell)", res.StatusCode)
+	for _, route := range []string{"/some/client/route", "/settings", "/runs/deep/link"} {
+		res, body := get(t, ts, route)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200 (SPA shell)", route, res.StatusCode)
+		}
+		if !strings.Contains(body, `<div id="root">`) {
+			t.Errorf("%s did not fall back to the SPA shell: %q", route, body)
+		}
 	}
-	if !strings.Contains(body, `<div id="root">`) {
-		t.Errorf("unknown route did not fall back to the SPA shell: %q", body)
+}
+
+func TestSPAShellIsSelfContained(t *testing.T) {
+	ts := newTestServer(t)
+	_, body := get(t, ts, "/")
+	if !strings.Contains(body, "/assets/index.js") {
+		t.Errorf("shell does not reference the embedded bundle: %q", body)
+	}
+	for _, ext := range []string{"http://", "https://", "//cdn", "fonts.googleapis", "fonts.gstatic"} {
+		if strings.Contains(body, ext) {
+			t.Errorf("shell references external resource %q, want a self-contained bundle", ext)
+		}
 	}
 }
