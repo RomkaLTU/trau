@@ -7,6 +7,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/pipeline"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
@@ -68,5 +69,72 @@ func TestLeafSubsFiltersNestedEpics(t *testing.T) {
 		if s.ID == "COD-500" {
 			t.Fatalf("nested epic COD-500 should be filtered out")
 		}
+	}
+}
+
+// alreadyDoneEngine feeds a scripted pick sequence; Process returns
+// ErrAlreadyDone for ids in done and succeeds otherwise.
+type alreadyDoneEngine struct {
+	loopEngine
+	picks   []string
+	done    map[string]bool
+	handled []string
+}
+
+func (e *alreadyDoneEngine) Pick(context.Context) (string, error) {
+	if len(e.picks) == 0 {
+		return "", nil
+	}
+	id := e.picks[0]
+	e.picks = e.picks[1:]
+	return id, nil
+}
+
+func (e *alreadyDoneEngine) Process(_ context.Context, id, _ string) error {
+	e.handled = append(e.handled, id)
+	if e.done[id] {
+		return pipeline.ErrAlreadyDone
+	}
+	return nil
+}
+
+// TestRunLoopSkipsAlreadyDonePick is the COD-708 regression guard: a picked
+// ticket whose checkpoint is already merged must be skipped (not counted, not
+// faulted) and the loop must keep going.
+func TestRunLoopSkipsAlreadyDonePick(t *testing.T) {
+	eng := &alreadyDoneEngine{picks: []string{"COD-1", "COD-2"}, done: map[string]bool{"COD-1": true}}
+	processed, err := runLoop(context.Background(), eng, loopParams{Max: 5}, noopRenderer{}, func(id string, elapsed time.Duration) console.TicketResult {
+		return console.TicketResult{ID: id}
+	})
+	if err != nil {
+		t.Fatalf("runLoop returned error: %v", err)
+	}
+	if len(processed) != 1 || processed[0] != "COD-2" {
+		t.Fatalf("expected only COD-2 processed, got %v", processed)
+	}
+	if !eng.finalized {
+		t.Fatal("expected runLoop to finalize")
+	}
+}
+
+// TestRunLoopStopsWhenDonePickRepeats: if pick offers the same already-done id
+// twice, the tracker is not converging — stop cleanly instead of spending a
+// pick agent per spin.
+func TestRunLoopStopsWhenDonePickRepeats(t *testing.T) {
+	eng := &alreadyDoneEngine{picks: []string{"COD-1", "COD-1", "COD-3"}, done: map[string]bool{"COD-1": true}}
+	processed, err := runLoop(context.Background(), eng, loopParams{Max: 5}, noopRenderer{}, func(id string, elapsed time.Duration) console.TicketResult {
+		return console.TicketResult{ID: id}
+	})
+	if err != nil {
+		t.Fatalf("runLoop returned error: %v", err)
+	}
+	if len(processed) != 0 {
+		t.Fatalf("expected no processed tickets, got %v", processed)
+	}
+	if len(eng.handled) != 2 || eng.handled[0] != "COD-1" || eng.handled[1] != "COD-1" {
+		t.Fatalf("expected exactly two COD-1 attempts before stopping, got %v", eng.handled)
+	}
+	if !eng.finalized {
+		t.Fatal("expected runLoop to finalize on clean stop")
 	}
 }
