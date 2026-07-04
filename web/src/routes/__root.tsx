@@ -11,6 +11,7 @@ import {
   Lightbulb,
   ListChecks,
   Settings,
+  SquareTerminal,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -24,6 +25,7 @@ interface NavItem {
 const nav: NavItem[] = [
   { to: '/', label: 'Overview', icon: LayoutDashboard, exact: true },
   { to: '/instances', label: 'Instances', icon: Boxes },
+  { to: '/terminal', label: 'Terminal', icon: SquareTerminal },
   { to: '/runs', label: 'Runs', icon: ListChecks },
   { to: '/lessons', label: 'Lessons', icon: Lightbulb },
   { to: '/costs', label: 'Costs', icon: DollarSign },

@@ -61,6 +61,8 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/lessons", s.handleLessons)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/events", s.handleEvents)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/events/stream", s.handleEventStream)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/transcripts", s.handleTranscripts)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/transcript/stream", s.handleTranscriptStream)
 	mux.HandleFunc(APIPrefix+"/events/stream", s.handleAllEventStream)
 	mux.HandleFunc("/api/", handleAPINotFound)
 

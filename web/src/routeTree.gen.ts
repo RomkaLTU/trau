@@ -9,6 +9,7 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as TerminalRouteImport } from './routes/terminal'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RunsRouteImport } from './routes/runs'
 import { Route as LessonsRouteImport } from './routes/lessons'
@@ -17,6 +18,11 @@ import { Route as CostsRouteImport } from './routes/costs'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as RunsRepoTicketRouteImport } from './routes/runs_.$repo.$ticket'
 
+const TerminalRoute = TerminalRouteImport.update({
+  id: '/terminal',
+  path: '/terminal',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -60,6 +66,7 @@ export interface FileRoutesByFullPath {
   '/lessons': typeof LessonsRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
+  '/terminal': typeof TerminalRoute
   '/runs/$repo/$ticket': typeof RunsRepoTicketRoute
 }
 export interface FileRoutesByTo {
@@ -69,6 +76,7 @@ export interface FileRoutesByTo {
   '/lessons': typeof LessonsRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
+  '/terminal': typeof TerminalRoute
   '/runs/$repo/$ticket': typeof RunsRepoTicketRoute
 }
 export interface FileRoutesById {
@@ -79,6 +87,7 @@ export interface FileRoutesById {
   '/lessons': typeof LessonsRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
+  '/terminal': typeof TerminalRoute
   '/runs_/$repo/$ticket': typeof RunsRepoTicketRoute
 }
 export interface FileRouteTypes {
@@ -90,6 +99,7 @@ export interface FileRouteTypes {
     | '/lessons'
     | '/runs'
     | '/settings'
+    | '/terminal'
     | '/runs/$repo/$ticket'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -99,6 +109,7 @@ export interface FileRouteTypes {
     | '/lessons'
     | '/runs'
     | '/settings'
+    | '/terminal'
     | '/runs/$repo/$ticket'
   id:
     | '__root__'
@@ -108,6 +119,7 @@ export interface FileRouteTypes {
     | '/lessons'
     | '/runs'
     | '/settings'
+    | '/terminal'
     | '/runs_/$repo/$ticket'
   fileRoutesById: FileRoutesById
 }
@@ -118,11 +130,19 @@ export interface RootRouteChildren {
   LessonsRoute: typeof LessonsRoute
   RunsRoute: typeof RunsRoute
   SettingsRoute: typeof SettingsRoute
+  TerminalRoute: typeof TerminalRoute
   RunsRepoTicketRoute: typeof RunsRepoTicketRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/terminal': {
+      id: '/terminal'
+      path: '/terminal'
+      fullPath: '/terminal'
+      preLoaderRoute: typeof TerminalRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings': {
       id: '/settings'
       path: '/settings'
@@ -182,6 +202,7 @@ const rootRouteChildren: RootRouteChildren = {
   LessonsRoute: LessonsRoute,
   RunsRoute: RunsRoute,
   SettingsRoute: SettingsRoute,
+  TerminalRoute: TerminalRoute,
   RunsRepoTicketRoute: RunsRepoTicketRoute,
 }
 export const routeTree = rootRouteImport
