@@ -8,15 +8,26 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 
+NPM      ?= npm
+WEB_DIR  := web
+WEB_DIST := internal/webserver/dist/index.html
+WEB_SRC  := $(shell find $(WEB_DIR)/src $(WEB_DIR)/index.html $(WEB_DIR)/package.json $(WEB_DIR)/vite.config.ts 2>/dev/null)
+
 export CGO_ENABLED := 0
 
-.PHONY: all build vet test lint fmt dist clean
+.PHONY: all build web vet test lint fmt dist clean
 
 all: build
 
-## build: compile for the host platform into bin/
-build:
+## build: compile the SPA + binary for the host platform into bin/
+build: web
 	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o bin/$(BINARY) $(PKG)
+
+## web: build the embedded SPA (only when its sources change)
+web: $(WEB_DIST)
+
+$(WEB_DIST): $(WEB_SRC)
+	cd $(WEB_DIR) && $(NPM) ci && $(NPM) run build
 
 ## vet: static checks
 vet:
@@ -35,7 +46,7 @@ fmt:
 	gofmt -w .
 
 ## dist: cross-compile the release matrix into dist/
-dist: dist/$(BINARY)-darwin-arm64 dist/$(BINARY)-linux-amd64
+dist: web dist/$(BINARY)-darwin-arm64 dist/$(BINARY)-linux-amd64
 
 dist/$(BINARY)-darwin-arm64:
 	GOOS=darwin GOARCH=arm64 go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $@ $(PKG)

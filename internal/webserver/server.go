@@ -1,0 +1,88 @@
+// Package webserver is the trau serve HTTP hub: a versioned JSON API under
+// /api/v1 and the embedded web UI at /. It is entirely self-contained — the SPA
+// is compiled into the binary via go:embed, so it makes no external requests.
+package webserver
+
+import (
+	"encoding/json"
+	"io/fs"
+	"net/http"
+	"strings"
+	"time"
+)
+
+// APIPrefix is the mount path for the versioned JSON API.
+const APIPrefix = "/api/v1"
+
+// Server serves the JSON API and the embedded SPA.
+type Server struct {
+	version string
+	started time.Time
+	assets  fs.FS
+}
+
+// New builds a Server that reports version and treats now as its start time.
+func New(version string) *Server {
+	return &Server{
+		version: version,
+		started: time.Now(),
+		assets:  assetsFS(),
+	}
+}
+
+// Handler returns the fully wired HTTP handler.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc(APIPrefix+"/health", s.handleHealth)
+	mux.HandleFunc("/api/", handleAPINotFound)
+	mux.Handle("/", s.spa())
+	return mux
+}
+
+// Health is the /api/v1/health resource.
+type Health struct {
+	Status        string  `json:"status"`
+	Version       string  `json:"version"`
+	UptimeSeconds float64 `json:"uptime_seconds"`
+}
+
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	writeJSON(w, http.StatusOK, Health{
+		Status:        "ok",
+		Version:       s.version,
+		UptimeSeconds: time.Since(s.started).Seconds(),
+	})
+}
+
+// handleAPINotFound keeps the /api namespace JSON-only so an unknown API path
+// returns a 404 resource instead of leaking the SPA shell.
+func handleAPINotFound(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+}
+
+// spa serves the embedded assets, falling back to the SPA shell for paths that
+// don't map to a file so client-side routing keeps working.
+func (s *Server) spa() http.Handler {
+	files := http.FileServerFS(s.assets)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		name := strings.TrimPrefix(r.URL.Path, "/")
+		if name != "" {
+			if _, err := fs.Stat(s.assets, name); err != nil {
+				r = r.Clone(r.Context())
+				r.URL.Path = "/"
+			}
+		}
+		files.ServeHTTP(w, r)
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
