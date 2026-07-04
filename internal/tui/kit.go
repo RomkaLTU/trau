@@ -134,6 +134,69 @@ func cardBodyBudget(h, extra int) int {
 	return b
 }
 
+// cardMaxWidth caps card growth on very wide terminals so a centered card keeps
+// comfortable margins and readable line lengths.
+const cardMaxWidth = 100
+
+// cardContentWidth is a card's inner content width on a termW-wide terminal:
+// the width (capped at cardMaxWidth) minus the border and padding. It depends
+// only on the terminal size, never on the content, so a line laid out to it
+// fixes the card width and a centered card never shifts as its content changes.
+func cardContentWidth(termW int) int {
+	w := termW
+	if w > cardMaxWidth {
+		w = cardMaxWidth
+	}
+	w -= 6 // 1-cell border + 2-cell padding on each side
+	if w < 1 {
+		w = 1
+	}
+	return w
+}
+
+// descReserve is the number of rows to reserve for a description footer: the
+// tallest wrap height among descs at the given width, clamped to [1, maxLines].
+func descReserve(descs []string, width, maxLines int) int {
+	n := 1
+	for _, d := range descs {
+		if d == "" {
+			continue
+		}
+		if h := lipgloss.Height(lipgloss.Wrap(d, width, "")); h > n {
+			n = h
+		}
+	}
+	if n > maxLines {
+		n = maxLines
+	}
+	return n
+}
+
+// descBlock lays a description out as exactly `lines` rows, word-wrapped to
+// width and each row padded to width (short text blank-padded, overflow
+// dropped), so the block's width and height are constant regardless of the text.
+func descBlock(style lipgloss.Style, desc string, width, lines int) []string {
+	if width < 1 {
+		width = 1
+	}
+	if lines < 1 {
+		lines = 1
+	}
+	var wrapped []string
+	if desc != "" {
+		wrapped = strings.Split(lipgloss.Wrap(desc, width, ""), "\n")
+	}
+	out := make([]string, lines)
+	for i := range out {
+		text := ""
+		if i < len(wrapped) {
+			text = wrapped[i]
+		}
+		out[i] = style.Render(pad(text, width))
+	}
+	return out
+}
+
 // scrollToCursor windows lines to at most height rows, edge-scrolling so the row
 // at index anchor stays visible. Content that already fits is returned unchanged,
 // so a terminal tall enough to show everything looks identical. This is the

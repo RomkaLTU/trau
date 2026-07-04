@@ -443,15 +443,24 @@ func (m settingsModel) renderList() string {
 		list = append(list, markRow(zoneSetRow, i, row))
 	}
 
-	// The focused key's description is a fixed footer so it stays visible however
-	// far the list scrolls.
+	// The focused key's description is a fixed-size footer: a constant width and
+	// row count keep the card the same size on every key, so the centered card
+	// never shifts as the cursor moves between short and long descriptions.
+	inner := cardContentWidth(m.width)
 	var footer []string
 	if len(m.filtered) == 0 {
 		footer = append(footer, s.Subtle.Render("No settings to show."))
-	} else if m.cursor < len(m.filtered) {
-		if d := m.filtered[m.cursor].Description; d != "" {
-			footer = append(footer, "", s.Help.Render(d))
+	} else {
+		descs := make([]string, len(m.filtered))
+		for i, it := range m.filtered {
+			descs[i] = it.Description
 		}
+		d := ""
+		if m.cursor < len(m.filtered) {
+			d = m.filtered[m.cursor].Description
+		}
+		footer = append(footer, "")
+		footer = append(footer, descBlock(s.Help, d, inner, descReserve(descs, inner, 3))...)
 	}
 
 	// Scroll the list to follow the cursor; the header and description stay put.
