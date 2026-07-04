@@ -887,16 +887,24 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 		defer cancel()
 		go p.Poller.Run(pctx)
 	}
-	// crossStop surfaces an ownership refusal (the ticket belongs to another Linear
-	// project) and signals the loop to stop cleanly — nothing was touched, so the
-	// user just runs it from the owning repo or clears a stray checkpoint here.
+	// crossStop surfaces an ownership refusal — the config-level guard (the ticket
+	// belongs to another Linear project) or the build agent's REFUSED backstop —
+	// and signals the loop to stop cleanly rather than re-pick the same foreign
+	// ticket. Either way the ticket is left runnable from the repo that owns it.
 	crossStop := func(id string, err error) bool {
-		if !pipeline.IsCrossProject(err) {
+		switch {
+		case pipeline.IsCrossProject(err):
+			con.Logf("✗ %v", err)
+			con.Logf("  ↳ run it from the repo that owns that project, or `trau --clear %s` to drop a stray checkpoint here", id)
+			return true
+		case pipeline.AsRefused(err) != nil:
+			r := pipeline.AsRefused(err)
+			con.Logf("✗ %s: build agent refused — %s", id, r.Reason)
+			con.Logf("  ↳ ticket reset (branch dropped, tracker restored) — run it from the repo it belongs to, and set PROJECT in this repo's .trau.ini so foreign tickets are never picked here")
+			return true
+		default:
 			return false
 		}
-		con.Logf("✗ %v", err)
-		con.Logf("  ↳ run it from the repo that owns that project, or `trau --clear %s` to drop a stray checkpoint here", id)
-		return true
 	}
 	// doneSkipped remembers picks that turned out to be already merged. Pick
 	// offering such an id a second time means the tracker is not converging —
