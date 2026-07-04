@@ -11,6 +11,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { EventFeed } from '@/components/event-feed'
 import { instancesQueryOptions, type Instance } from '@/lib/instances'
 
 export const Route = createFileRoute('/instances')({
@@ -134,6 +135,7 @@ function InstanceCard({
             </span>
           </Row>
         </dl>
+        <EventFeed repo={instance.repo} limit={5} className="mt-4" />
       </CardContent>
     </Card>
   )

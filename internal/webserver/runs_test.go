@@ -30,6 +30,28 @@ func seedRepo(t *testing.T, home, name string) string {
 	return runsDir
 }
 
+// seedRepos writes a repos.json naming several exited repos and returns each
+// repo's runs dir by name, for exercising the machine-wide multiplex.
+func seedRepos(t *testing.T, home string, names ...string) map[string]string {
+	t.Helper()
+	repos := map[string]registry.Repo{}
+	dirs := map[string]string{}
+	for _, name := range names {
+		root := filepath.Join(t.TempDir(), name)
+		runsDir := filepath.Join(root, ".trau", "runs")
+		repos[root] = registry.Repo{Name: name, Root: root, RunsDir: runsDir}
+		dirs[name] = runsDir
+	}
+	data, err := json.Marshal(repos)
+	if err != nil {
+		t.Fatalf("marshal repos: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "repos.json"), data, 0o644); err != nil {
+		t.Fatalf("seed repos.json: %v", err)
+	}
+	return dirs
+}
+
 // seedCheckpoint writes one ticket's durable state file, key by key, exactly as
 // the pipeline does — so the fixtures are the real on-disk shape, not a mock.
 func seedCheckpoint(t *testing.T, runsDir, id string, kv map[string]string) {
