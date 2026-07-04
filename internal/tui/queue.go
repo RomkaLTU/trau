@@ -252,7 +252,9 @@ func renderQueue(s Styles, spinFrame string, rows []QueueRow, cursor, width, hei
 		lines = append(lines, line)
 		// Needs-human rows always surface their reason so a failure is never
 		// hidden behind the cursor; any other reason-bearing row shows it too.
-		if r.FailureReason != "" {
+		// Terminal-success rows suppress it — a merged ticket may carry a stale
+		// reason from an earlier attempt that was resolved outside trau.
+		if r.FailureReason != "" && recoverableRow(r) {
 			lines = append(lines, s.Subtle.Render("    "+truncate("↳ "+oneLine(r.FailureReason), width-4)))
 		}
 	}

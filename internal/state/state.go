@@ -158,12 +158,48 @@ func (s *Store) Set(id, key, value string) error {
 	kept = append(kept, "UPDATED="+s.now().Format("2006-01-02 15:04:05"))
 	out := strings.Join(kept, "\n") + "\n"
 
+	return s.write(id, out)
+}
+
+// Unset removes key from ticket id's state file and refreshes the UPDATED
+// timestamp. A missing file or absent key is a no-op, so callers can clear
+// best-effort without dirtying untouched state.
+func (s *Store) Unset(id, key string) error {
+	data, err := os.ReadFile(s.file(id))
+	if err != nil {
+		return nil
+	}
+	var kept []string
+	found := false
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, key+"=") {
+			found = true
+			continue
+		}
+		if strings.HasPrefix(line, "UPDATED=") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !found {
+		return nil
+	}
+	kept = append(kept, "UPDATED="+s.now().Format("2006-01-02 15:04:05"))
+	return s.write(id, strings.Join(kept, "\n")+"\n")
+}
+
+// write lands content atomically at runs/<ID>/state (temp file + rename).
+func (s *Store) write(id, content string) error {
+	dir := filepath.Join(s.root, id)
 	tmp, err := os.CreateTemp(dir, "state-*")
 	if err != nil {
 		return err
 	}
 	tmpName := tmp.Name()
-	if _, err := tmp.WriteString(out); err != nil {
+	if _, err := tmp.WriteString(content); err != nil {
 		_ = tmp.Close()
 		_ = os.Remove(tmpName)
 		return err

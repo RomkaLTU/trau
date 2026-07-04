@@ -321,3 +321,42 @@ func TestStatusEmptyGolden(t *testing.T) {
 		t.Errorf("empty Status mismatch.\n--- got ---\n%s\n--- want ---\n%s", buf.String(), want)
 	}
 }
+
+func TestUnsetRemovesKeyAndPreservesOthers(t *testing.T) {
+	s := newStore(t)
+	_ = s.Set("COD-1", "PHASE", Merged)
+	_ = s.Set("COD-1", "FAILURE_REASON", "unexpected error during CI/merge: boom")
+
+	if err := s.Unset("COD-1", "FAILURE_REASON"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Get("COD-1", "FAILURE_REASON"); got != "" {
+		t.Errorf("FAILURE_REASON = %q after Unset, want empty", got)
+	}
+	if got := s.Get("COD-1", "PHASE"); got != Merged {
+		t.Errorf("PHASE = %q, want it preserved across the Unset", got)
+	}
+	data, _ := os.ReadFile(filepath.Join(s.Root(), "COD-1", "state"))
+	if strings.Contains(string(data), "FAILURE_REASON") {
+		t.Errorf("state file still mentions FAILURE_REASON:\n%s", data)
+	}
+	if !strings.Contains(string(data), "UPDATED=") {
+		t.Errorf("state file lost its UPDATED stamp:\n%s", data)
+	}
+}
+
+func TestUnsetAbsentKeyOrFileIsNoOp(t *testing.T) {
+	s := newStore(t)
+	if err := s.Unset("COD-404", "FAILURE_REASON"); err != nil {
+		t.Fatalf("Unset on a missing file = %v, want nil", err)
+	}
+	_ = s.Set("COD-1", "PHASE", Built)
+	before, _ := os.ReadFile(filepath.Join(s.Root(), "COD-1", "state"))
+	if err := s.Unset("COD-1", "FAILURE_REASON"); err != nil {
+		t.Fatalf("Unset on an absent key = %v, want nil", err)
+	}
+	after, _ := os.ReadFile(filepath.Join(s.Root(), "COD-1", "state"))
+	if string(before) != string(after) {
+		t.Errorf("Unset of an absent key rewrote the file:\nbefore: %s\nafter: %s", before, after)
+	}
+}

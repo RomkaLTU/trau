@@ -402,7 +402,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		t, c := 0, 0.0
 		metered := true
 		for _, id := range ids {
-			tk, cs, m := sink.Total(id)
+			tk, cs, m := sink.SessionTotal(id)
 			t += tk
 			c += cs
 			metered = metered && m
@@ -411,7 +411,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	result := func(id string, elapsed time.Duration) console.TicketResult {
-		tk, cs, metered := sink.Total(id)
+		tk, cs, metered := sink.SessionTotal(id)
 		return console.TicketResult{
 			ID:            id,
 			Title:         p.State.Get(id, "TITLE"),
@@ -858,7 +858,11 @@ func (e *realEngine) flagCostAnomalies(id string) {
 	if len(anomalies) == 0 {
 		return
 	}
-	_ = e.pipe.State.Set(id, "ANOMALIES", strconv.Itoa(len(anomalies)))
+	// Stamp only tickets that still have a checkpoint — a refusal reset just
+	// removed the state file, and recreating it here would leave a ghost row.
+	if e.pipe.State.Get(id, "PHASE") != "" {
+		_ = e.pipe.State.Set(id, "ANOMALIES", strconv.Itoa(len(anomalies)))
+	}
 	phases := make([]string, len(anomalies))
 	for i, a := range anomalies {
 		phases[i] = a.Phase
@@ -889,16 +893,24 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 		defer cancel()
 		go p.Poller.Run(pctx)
 	}
-	// crossStop surfaces an ownership refusal (the ticket belongs to another Linear
-	// project) and signals the loop to stop cleanly — nothing was touched, so the
-	// user just runs it from the owning repo or clears a stray checkpoint here.
+	// crossStop surfaces an ownership refusal — the config-level guard (the ticket
+	// belongs to another Linear project) or the build agent's REFUSED backstop —
+	// and signals the loop to stop cleanly rather than re-pick the same foreign
+	// ticket. Either way the ticket is left runnable from the repo that owns it.
 	crossStop := func(id string, err error) bool {
-		if !pipeline.IsCrossProject(err) {
+		switch {
+		case pipeline.IsCrossProject(err):
+			con.Logf("✗ %v", err)
+			con.Logf("  ↳ run it from the repo that owns that project, or `trau --clear %s` to drop a stray checkpoint here", id)
+			return true
+		case pipeline.AsRefused(err) != nil:
+			r := pipeline.AsRefused(err)
+			con.Logf("✗ %s: build agent refused — %s", id, r.Reason)
+			con.Logf("  ↳ ticket reset (branch dropped, tracker restored) — run it from the repo it belongs to, and set PROJECT in this repo's .trau.ini so foreign tickets are never picked here")
+			return true
+		default:
 			return false
 		}
-		con.Logf("✗ %v", err)
-		con.Logf("  ↳ run it from the repo that owns that project, or `trau --clear %s` to drop a stray checkpoint here", id)
-		return true
 	}
 	// doneSkipped remembers picks that turned out to be already merged. Pick
 	// offering such an id a second time means the tracker is not converging —
@@ -2039,7 +2051,7 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 		t, c := 0, 0.0
 		metered := true
 		for _, id := range ids {
-			tk, cs, m := a.sink.Total(id)
+			tk, cs, m := a.sink.SessionTotal(id)
 			t += tk
 			c += cs
 			metered = metered && m
@@ -2047,7 +2059,7 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 		return t, math.Round(c*100) / 100, metered
 	}
 	result := func(id string, elapsed time.Duration) console.TicketResult {
-		tk, cs, metered := a.sink.Total(id)
+		tk, cs, metered := a.sink.SessionTotal(id)
 		return console.TicketResult{
 			ID:            id,
 			Title:         a.store.Get(id, "TITLE"),
@@ -2142,7 +2154,7 @@ func (a *appActions) RunTicket(ctx context.Context, id, provider string, r conso
 		if err := a.pipe.Resume(ctx, id, phase); err != nil && !errors.Is(err, pipeline.ErrAlreadyDone) {
 			lerr = err
 		}
-		tk, cs, metered := a.sink.Total(id)
+		tk, cs, metered := a.sink.SessionTotal(id)
 		r.TicketDone(console.TicketResult{
 			ID:            id,
 			Title:         a.store.Get(id, "TITLE"),
@@ -2157,7 +2169,7 @@ func (a *appActions) RunTicket(ctx context.Context, id, provider string, r conso
 		})
 	}
 
-	tk, cs, metered := a.sink.Total(id)
+	tk, cs, metered := a.sink.SessionTotal(id)
 	r.LoopDone(applyFault(console.SessionSummary{
 		Tickets:     1,
 		TotalTokens: tk,

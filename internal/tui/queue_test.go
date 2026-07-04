@@ -202,3 +202,18 @@ func TestResetConfirmGuardStatus(t *testing.T) {
 		t.Error("esc should not issue a reset command")
 	}
 }
+
+// TestMergedRowSuppressesStaleReason: a ticket that faulted, was resolved
+// outside trau (e.g. its PR merged by hand), and then reconciled to merged
+// keeps its old FAILURE_REASON on disk — the recap must not render that stale
+// error under a ✓ merged row.
+func TestMergedRowSuppressesStaleReason(t *testing.T) {
+	s := DefaultStyles()
+	rows := []QueueRow{
+		{ID: "COD-702", Phase: state.Merged, FailureReason: "unexpected error during CI/merge: gh pr merge: exit status 1"},
+	}
+	out := ansi.Strip(renderQueue(s, "*", rows, 0, 80, 0, false, ""))
+	if strings.Contains(out, "gh pr merge") {
+		t.Errorf("merged row rendered its stale failure reason:\n%s", out)
+	}
+}

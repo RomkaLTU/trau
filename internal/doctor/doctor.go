@@ -48,6 +48,7 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkProvider(ctx, cfg, rr)
 	checkConfig(ctx, cfg, sources, repoRoot, rr)
 	checkLinearLabels(ctx, cfg, rr)
+	checkLinearProject(ctx, cfg, rr)
 	checkJira(ctx, cfg, rr)
 	checkWritePerms(cfg, repoRoot, rr)
 
@@ -251,6 +252,50 @@ func checkLinearLabels(ctx context.Context, cfg config.Config, rr *runner) {
 		return
 	}
 	rr.add("linear labels", pass, fmt.Sprintf("%s and %s exist in team %q", cfg.ReadyLabel, cfg.QuarantineLabel, cfg.LinearTeam), "")
+}
+
+// checkLinearProject flags the cross-project pick hole: with PROJECT unset,
+// every ownership guard (the pick's project filter, the pre-branch refusal) is
+// disabled, and on a Linear team hosting several projects the loop can pick a
+// ticket that belongs to a different repo. With an API key the ready queue is
+// inspected so the warning is precise; without one the hole is reported as-is.
+func checkLinearProject(ctx context.Context, cfg config.Config, rr *runner) {
+	if cfg.TrackerProvider != "linear" {
+		return
+	}
+	if proj := strings.TrimSpace(cfg.Project); proj != "" {
+		rr.add("linear project", pass, fmt.Sprintf("PROJECT=%s — picks are scoped to this repo's project", proj), "")
+		return
+	}
+	suggestion := "set PROJECT=<Linear project name> in this repo's .trau.ini so tickets from other projects are refused"
+	if strings.TrimSpace(cfg.LinearAPIKey) == "" || strings.TrimSpace(cfg.LinearTeam) == "" {
+		rr.add("linear project", warn, "PROJECT is empty — cross-project guards are off, any ticket in the team can be picked here", suggestion)
+		return
+	}
+	client := linearapi.New(cfg.LinearAPIKey)
+	team, err := client.TeamByKey(ctx, cfg.LinearTeam)
+	if err != nil {
+		rr.add("linear project", warn, "PROJECT is empty — cross-project guards are off, any ticket in the team can be picked here", suggestion)
+		return
+	}
+	candidates, err := client.Pick(ctx, team.ID, cfg.ReadyLabel)
+	if err != nil {
+		rr.add("linear project", warn, "PROJECT is empty — cross-project guards are off, any ticket in the team can be picked here", suggestion)
+		return
+	}
+	projects := map[string]bool{}
+	var names []string
+	for _, c := range candidates {
+		if name := strings.TrimSpace(c.Project.Name); name != "" && !projects[name] {
+			projects[name] = true
+			names = append(names, name)
+		}
+	}
+	if len(names) > 1 {
+		rr.add("linear project", warn, fmt.Sprintf("PROJECT is empty and the ready queue spans %d projects (%s) — a ticket from another repo's project can be picked here", len(names), strings.Join(names, ", ")), suggestion)
+		return
+	}
+	rr.add("linear project", warn, "PROJECT is empty — the ready queue is currently single-project, but nothing stops a foreign ticket from being picked here later", suggestion)
 }
 
 // checkJira validates the Jira REST credentials and, when they are present,
