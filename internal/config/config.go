@@ -31,6 +31,12 @@ import (
 // question — there is no human to answer one.
 const Preamble = "[Unattended run] You are running headless inside an automated loop — no human is watching and no input is possible. Never call AskUserQuestion or wait for a reply. When a choice arises, take the most reasonable / recommended default, proceed, and note the assumption in one line. If you truly cannot proceed safely, stop and say why. Do ALL work inline in THIS single agent: the Agent and Workflow tools (subagent spawning and multi-agent fan-out) are intentionally disabled for this loop, because each phase already runs as its own isolated process and fanning out only multiplies token cost without adding any isolation. Do not try to spawn subagents or parallel workers; if you genuinely believe one is unavoidable, stop and explain why in your final summary instead of working around it. (The TaskCreate/TaskUpdate todo-list tools are fine — they do not spawn anything.)"
 
+// PlanningPreamble is the plan-phase variant of Preamble. The planning agent
+// still runs headless with no human at the keyboard, but instead of forcing a
+// default when a decision is needed it asks through the structured payload — so
+// this invites questions via the payload and forbids asking in prose.
+const PlanningPreamble = "[Planning run] You are running headless inside trau's planning module — no human is watching this process and you cannot block on input. Do not ask questions in prose and never call AskUserQuestion. When you need a decision from the user, express it as a structured question in the JSON payload you return (status \"questions\", each entry with a short header, options, and a default) — trau renders it and collects the answer in a later round. Otherwise proceed straight to the requested output. Do ALL work inline in THIS single agent: subagent spawning and multi-agent fan-out are disabled; do not spawn subagents or parallel workers. (The TaskCreate/TaskUpdate todo-list tools are fine — they do not spawn anything.)"
+
 // Config is the resolved loop configuration. Field defaults and names track the
 // trau.ini knobs documented in trau.ini.example.
 type Config struct {
@@ -646,7 +652,7 @@ func ValidatePrefix(id, prefix string) error {
 	return nil
 }
 
-var phases = []string{"build", "handoff", "verify", "repair", "bugfix", "cleanup", "lintfix", "commit", "pick"}
+var phases = []string{"build", "handoff", "verify", "repair", "bugfix", "cleanup", "lintfix", "commit", "plan", "pick"}
 
 // ThemeRoles are the semantic color roles a THEME_<ROLE> config key can
 // override with a hex value.
@@ -1055,6 +1061,8 @@ func KnownKeys() []KeyMeta {
 		{Key: "CLAUDE_LINTFIX_EFFORT", Advanced: true, Description: "Claude effort for lintfix phase"},
 		{Key: "CLAUDE_COMMIT_MODEL", Advanced: true, Description: "Claude model for commit phase (defaults to sonnet)"},
 		{Key: "CLAUDE_COMMIT_EFFORT", Advanced: true, Description: "Claude effort for commit phase"},
+		{Key: "CLAUDE_PLAN_MODEL", Advanced: true, Description: "Claude model for planning phase (defaults to the provider default)"},
+		{Key: "CLAUDE_PLAN_EFFORT", Advanced: true, Description: "Claude effort for planning phase"},
 		{Key: "CLAUDE_PICK_MODEL", Advanced: true, Description: "Claude model for pick phase"},
 		{Key: "CLAUDE_PICK_EFFORT", Advanced: true, Description: "Claude effort for pick phase"},
 		{Key: "CODEX_BUILD_MODEL", Advanced: true, Description: "Codex model for build phase"},
@@ -1069,6 +1077,8 @@ func KnownKeys() []KeyMeta {
 		{Key: "CODEX_BUGFIX_EFFORT", Advanced: true, Description: "Codex effort for comprehensive bugfix phase"},
 		{Key: "CODEX_COMMIT_MODEL", Advanced: true, Description: "Codex model for commit phase"},
 		{Key: "CODEX_COMMIT_EFFORT", Advanced: true, Description: "Codex effort for commit phase"},
+		{Key: "CODEX_PLAN_MODEL", Advanced: true, Description: "Codex model for planning phase"},
+		{Key: "CODEX_PLAN_EFFORT", Advanced: true, Description: "Codex effort for planning phase"},
 		{Key: "CODEX_PICK_MODEL", Advanced: true, Description: "Codex model for pick phase"},
 		{Key: "CODEX_PICK_EFFORT", Advanced: true, Description: "Codex effort for pick phase"},
 		{Key: "KIMI_BUILD_MODEL", Advanced: true, Description: "Kimi model for build phase"},
@@ -1077,6 +1087,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "KIMI_REPAIR_MODEL", Advanced: true, Description: "Kimi model for repair phase"},
 		{Key: "KIMI_BUGFIX_MODEL", Advanced: true, Description: "Kimi model for comprehensive bugfix phase"},
 		{Key: "KIMI_COMMIT_MODEL", Advanced: true, Description: "Kimi model for commit phase"},
+		{Key: "KIMI_PLAN_MODEL", Advanced: true, Description: "Kimi model for planning phase"},
 		{Key: "KIMI_PICK_MODEL", Advanced: true, Description: "Kimi model for pick phase"},
 	}
 	for _, role := range ThemeRoles {
@@ -1498,15 +1509,15 @@ func keyValue(cfg Config, key string) string {
 		return floatValue(cfg.MaxDailyUSD)
 	case "MAX_DAILY_TOKENS":
 		return intValue(cfg.MaxDailyTokens)
-	case "CLAUDE_BUILD_MODEL", "CLAUDE_HANDOFF_MODEL", "CLAUDE_VERIFY_MODEL", "CLAUDE_REPAIR_MODEL", "CLAUDE_BUGFIX_MODEL", "CLAUDE_CLEANUP_MODEL", "CLAUDE_LINTFIX_MODEL", "CLAUDE_COMMIT_MODEL", "CLAUDE_PICK_MODEL":
+	case "CLAUDE_BUILD_MODEL", "CLAUDE_HANDOFF_MODEL", "CLAUDE_VERIFY_MODEL", "CLAUDE_REPAIR_MODEL", "CLAUDE_BUGFIX_MODEL", "CLAUDE_CLEANUP_MODEL", "CLAUDE_LINTFIX_MODEL", "CLAUDE_COMMIT_MODEL", "CLAUDE_PLAN_MODEL", "CLAUDE_PICK_MODEL":
 		return phaseRouteModel(cfg.Routes, "claude", key)
-	case "CLAUDE_BUILD_EFFORT", "CLAUDE_HANDOFF_EFFORT", "CLAUDE_VERIFY_EFFORT", "CLAUDE_REPAIR_EFFORT", "CLAUDE_BUGFIX_EFFORT", "CLAUDE_CLEANUP_EFFORT", "CLAUDE_LINTFIX_EFFORT", "CLAUDE_COMMIT_EFFORT", "CLAUDE_PICK_EFFORT":
+	case "CLAUDE_BUILD_EFFORT", "CLAUDE_HANDOFF_EFFORT", "CLAUDE_VERIFY_EFFORT", "CLAUDE_REPAIR_EFFORT", "CLAUDE_BUGFIX_EFFORT", "CLAUDE_CLEANUP_EFFORT", "CLAUDE_LINTFIX_EFFORT", "CLAUDE_COMMIT_EFFORT", "CLAUDE_PLAN_EFFORT", "CLAUDE_PICK_EFFORT":
 		return phaseRouteEffort(cfg.Routes, "claude", key)
-	case "CODEX_BUILD_MODEL", "CODEX_HANDOFF_MODEL", "CODEX_VERIFY_MODEL", "CODEX_REPAIR_MODEL", "CODEX_BUGFIX_MODEL", "CODEX_COMMIT_MODEL", "CODEX_PICK_MODEL":
+	case "CODEX_BUILD_MODEL", "CODEX_HANDOFF_MODEL", "CODEX_VERIFY_MODEL", "CODEX_REPAIR_MODEL", "CODEX_BUGFIX_MODEL", "CODEX_COMMIT_MODEL", "CODEX_PLAN_MODEL", "CODEX_PICK_MODEL":
 		return phaseRouteModel(cfg.Routes, "codex", key)
-	case "CODEX_BUILD_EFFORT", "CODEX_HANDOFF_EFFORT", "CODEX_VERIFY_EFFORT", "CODEX_REPAIR_EFFORT", "CODEX_BUGFIX_EFFORT", "CODEX_COMMIT_EFFORT", "CODEX_PICK_EFFORT":
+	case "CODEX_BUILD_EFFORT", "CODEX_HANDOFF_EFFORT", "CODEX_VERIFY_EFFORT", "CODEX_REPAIR_EFFORT", "CODEX_BUGFIX_EFFORT", "CODEX_COMMIT_EFFORT", "CODEX_PLAN_EFFORT", "CODEX_PICK_EFFORT":
 		return phaseRouteEffort(cfg.Routes, "codex", key)
-	case "KIMI_BUILD_MODEL", "KIMI_HANDOFF_MODEL", "KIMI_VERIFY_MODEL", "KIMI_REPAIR_MODEL", "KIMI_BUGFIX_MODEL", "KIMI_COMMIT_MODEL", "KIMI_PICK_MODEL":
+	case "KIMI_BUILD_MODEL", "KIMI_HANDOFF_MODEL", "KIMI_VERIFY_MODEL", "KIMI_REPAIR_MODEL", "KIMI_BUGFIX_MODEL", "KIMI_COMMIT_MODEL", "KIMI_PLAN_MODEL", "KIMI_PICK_MODEL":
 		return phaseRouteModel(cfg.Routes, "kimi", key)
 	}
 	if role, ok := strings.CutPrefix(key, "THEME_"); ok {

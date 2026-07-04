@@ -55,13 +55,17 @@ func (f *fakeAppActions) RunTicket(context.Context, string, string, console.Rend
 
 func (f *fakeAppActions) OnboardingNeeded() bool { return false }
 
+func (f *fakeAppActions) StartPlan(context.Context, string) (PlanOutcome, error) {
+	return PlanOutcome{Status: "prd", Title: "Draft PRD", Markdown: "# Draft PRD\n\nbody"}, nil
+}
+
 // TestScreensRenderAcrossSizes walks the menu shell into every view at the
 // three reference terminal sizes and renders each one, so a regression in any
 // screen's layout code fails here instead of at runtime.
 func TestScreensRenderAcrossSizes(t *testing.T) {
 	sizes := [][2]int{{80, 24}, {120, 40}, {200, 60}}
 	actions := []menuAction{
-		actRun, actRunOnce, actDryRun, actStatus, actLogs,
+		actRun, actRunOnce, actDryRun, actPlan, actStatus, actLogs,
 		actReset, actVersion, actOnboarding, actSettings, actMore,
 	}
 	for _, sz := range sizes {

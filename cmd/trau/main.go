@@ -37,6 +37,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
+	"github.com/RomkaLTU/trau/internal/planning"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -1050,6 +1051,7 @@ type appActions struct {
 
 	built    bool
 	buildErr error
+	runner   agent.Runner
 	pipe     *pipeline.Pipeline
 	tracker  tracker.Tracker
 	eng      *realEngine
@@ -1618,6 +1620,7 @@ func (a *appActions) ensure() error {
 		a.buildErr = err
 		return err
 	}
+	a.runner = runner
 	a.tracker, err = buildTracker(a.cfg, runner)
 	if err != nil {
 		a.buildErr = err
@@ -1714,6 +1717,31 @@ func (a *appActions) CheckoutBranch(ctx context.Context, id string) (string, err
 		return "", err
 	}
 	return a.pipe.CheckoutBranch(ctx, id)
+}
+
+// StartPlan runs one planning round on the raw idea through the same provider-
+// agnostic Runner seam the pipeline uses, routed by the "plan" phase. Sessions live
+// under the runs area (in _plans/), well away from ticket state. It returns the
+// outcome the Plan screen renders.
+func (a *appActions) StartPlan(ctx context.Context, idea string) (tui.PlanOutcome, error) {
+	if err := a.ensure(); err != nil {
+		return tui.PlanOutcome{}, err
+	}
+	orch := planning.NewOrchestrator(a.runner, filepath.Join(a.cfg.RunsDir, "_plans"))
+	rr, err := orch.RunRound(ctx, idea)
+	if err != nil {
+		return tui.PlanOutcome{}, err
+	}
+	return planOutcome(rr.Payload), nil
+}
+
+// planOutcome projects a planning payload onto the TUI's Plan screen outcome.
+func planOutcome(p planning.Payload) tui.PlanOutcome {
+	out := tui.PlanOutcome{Status: string(p.Status)}
+	if p.Status == planning.StatusPRD && p.PRD != nil {
+		out.Title, out.Markdown = p.PRD.Title, p.PRD.Markdown
+	}
+	return out
 }
 
 // RunLoop runs the autonomous loop with the configured defaults (MAX_ITERATIONS,
@@ -2033,20 +2061,21 @@ func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort
 		}
 	}
 	return spec.New(agent.BackendParams{
-		Bin:         pc.bin,
-		Flags:       strings.Fields(pc.flags),
-		Model:       model,
-		Effort:      effort,
-		Dir:         cfg.RepoRoot,
-		Preamble:    config.Preamble,
-		Cols:        cfg.AgentCols,
-		Rows:        cfg.AgentRows,
-		SizeFn:      sizeFn,
-		Timeout:     time.Duration(cfg.AgentTimeout) * time.Second,
-		StallWindow: time.Duration(cfg.AgentStallWindow) * time.Second,
-		Log:         log,
-		Tokens:      sink,
-		Extra:       pc.extra,
+		Bin:          pc.bin,
+		Flags:        strings.Fields(pc.flags),
+		Model:        model,
+		Effort:       effort,
+		Dir:          cfg.RepoRoot,
+		Preamble:     config.Preamble,
+		PlanPreamble: config.PlanningPreamble,
+		Cols:         cfg.AgentCols,
+		Rows:         cfg.AgentRows,
+		SizeFn:       sizeFn,
+		Timeout:      time.Duration(cfg.AgentTimeout) * time.Second,
+		StallWindow:  time.Duration(cfg.AgentStallWindow) * time.Second,
+		Log:          log,
+		Tokens:       sink,
+		Extra:        pc.extra,
 	})
 }
 

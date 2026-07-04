@@ -76,7 +76,9 @@ PROVIDER=claude
 # KIMI_MODEL=kimi-for-coding
 
 # Per-provider phase tuning for this project. Phases: BUILD HANDOFF VERIFY REPAIR
-# BUGFIX CLEANUP LINTFIX SIZEJUDGE COMMIT PICK. Model/effort are provider-specific.
+# BUGFIX CLEANUP LINTFIX SIZEJUDGE COMMIT PLAN PICK. Model/effort are provider-specific.
+# PLAN is the planning module's phase; it is never seeded, so it stays on the
+# provider default model unless you set CLAUDE_PLAN_MODEL / CODEX_PLAN_MODEL / KIMI_PLAN_MODEL.
 #
 # On Claude, the cheap judgment/cleanup phases are seeded so they don't ride the
 # Opus default: CLEANUP, SIZEJUDGE, COMMIT, and HANDOFF -> sonnet, LINTFIX -> haiku
