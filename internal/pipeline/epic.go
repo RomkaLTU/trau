@@ -150,15 +150,23 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 	return nil
 }
 
-// syncEpicBest keeps the epic branch current with the base between children: a
-// clean merge of the remote base is pushed so the next child branches off an
-// up-to-date epic. A conflicting merge is aborted and deferred to the
-// authoritative finalize sync (which runs a resolving agent). Best-effort by
-// design — any failure is logged, never blocking the child about to branch off.
+// syncEpicBest keeps the epic branch current between children: the local epic is
+// first fast-forwarded from the REMOTE epic — siblings squash-merge into the
+// remote, so a stale local epic would hand the next child a base missing that
+// (squashed) work, tempting its build agent to merge the sibling's raw feature
+// branch and poisoning the child's PR with commits the epic only ever contains in
+// squashed form (a guaranteed merge conflict). Then a clean merge of the remote
+// base is pushed so the next child branches off an up-to-date epic. A conflicting
+// merge is aborted and deferred to the authoritative finalize sync (which runs a
+// resolving agent). Best-effort by design — any failure is logged, never blocking
+// the child about to branch off.
 func (p *Pipeline) syncEpicBest(ctx context.Context, epic string) {
 	if err := p.Git.Checkout(ctx, epic, false); err != nil {
 		p.logf("  epic sync skipped (checkout %s: %v)", epic, err)
 		return
+	}
+	if err := p.Git.Pull(ctx, p.Remote, epic); err != nil {
+		p.logf("  epic pull from %s skipped (%v)", p.Remote, err)
 	}
 	conflicted, err := p.Git.MergeRemote(ctx, p.Remote, p.Base)
 	switch {
@@ -175,48 +183,21 @@ func (p *Pipeline) syncEpicBest(ctx context.Context, epic string) {
 }
 
 // syncEpicForMerge brings the base into the epic branch before the epic ships to
-// main so the epic PR is mergeable. A clean merge is pushed; a drift conflict is
-// resolved by a bounded repair-agent loop, then the merge is completed and pushed.
-// Returns false (with the merge aborted) when the conflicts could not be resolved,
-// so the caller leaves the PR open for a human instead of shipping a broken merge.
+// main so the epic PR is mergeable. The local epic is first fast-forwarded from
+// the remote epic (children squash-merged into the remote; pushing a stale local
+// epic would be rejected as non-fast-forward). A clean merge is pushed; a drift
+// conflict is resolved by a bounded repair-agent loop, then the merge is completed
+// and pushed. Returns false (with the merge aborted) when the conflicts could not
+// be resolved, so the caller leaves the PR open for a human instead of shipping a
+// broken merge.
 func (p *Pipeline) syncEpicForMerge(ctx context.Context, epic string) (bool, error) {
 	if err := p.Git.Checkout(ctx, epic, false); err != nil {
 		return false, fmt.Errorf("checkout %s: %w", epic, err)
 	}
-	conflicted, err := p.Git.MergeRemote(ctx, p.Remote, p.Base)
-	if err != nil {
-		return false, fmt.Errorf("merge %s into %s: %w", p.Base, epic, err)
+	if err := p.Git.Pull(ctx, p.Remote, epic); err != nil {
+		p.logf("  epic pull from %s skipped (%v)", p.Remote, err)
 	}
-	if !conflicted {
-		if err := p.Git.Push(ctx, p.Remote, epic, false); err != nil {
-			p.logf("  push synced epic branch error (continuing): %v", err)
-		}
-		return true, nil
-	}
-
-	p.phaseStart("epic-sync")
-	p.logf("  ⚠ epic %s drifted from %s — resolving merge conflicts", epic, p.Base)
-	maxAttempts := p.MaxRepairs
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if _, err := p.agentStep(ctx, p.EpicID, fmt.Sprintf("epic-sync%d", attempt), epicResolveInstruction(p.EpicID, p.Base, epic)); err != nil {
-			return false, err
-		}
-		if unmerged, _ := p.Git.Unmerged(ctx); strings.TrimSpace(unmerged) == "" {
-			if err := p.Git.ContinueMerge(ctx); err != nil {
-				return false, fmt.Errorf("complete merge: %w", err)
-			}
-			if err := p.Git.Push(ctx, p.Remote, epic, false); err != nil {
-				p.logf("  push synced epic branch error (continuing): %v", err)
-			}
-			return true, nil
-		}
-		p.logf("  ⚠ conflicts remain after attempt %d/%d", attempt, maxAttempts)
-	}
-	_ = p.Git.MergeAbort(ctx)
-	return false, nil
+	return p.syncBranchWithBase(ctx, p.EpicID, epic, p.Base, "epic-sync")
 }
 
 // epicCIAndMerge gates the epic PR on CI and, when AUTO_MERGE is set, squash-merges
@@ -275,8 +256,8 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 	return true, nil
 }
 
-func epicResolveInstruction(epicID, base, branch string) string {
-	return "The epic integration branch " + branch + " is mid-merge with " + base + " and has conflicts. Resolve EVERY conflicted file so the branch combines the epic's work with the latest " + base + ": run `git diff --name-only --diff-filter=U` to list them, edit each to keep BOTH sides' intent (never drop the epic's feature work, and never drop " + base + "'s newer changes), then `git add` each resolved file. Run the relevant tests to confirm the combined result builds. Do NOT run `git commit`, `git merge --continue`, push, or open a PR — leave the resolved merge staged for the loop to finalize. Refs: " + epicID + "."
+func resolveConflictsInstruction(id, base, branch string) string {
+	return "The branch " + branch + " is mid-merge with " + base + " and has conflicts. Resolve EVERY conflicted file so the branch combines its own work with the latest " + base + ": run `git diff --name-only --diff-filter=U` to list them, edit each to keep BOTH sides' intent (never drop this branch's feature work, and never drop " + base + "'s newer changes; when both sides carry the SAME change — e.g. " + base + " already received it as a squash-merge — keep exactly one copy), then `git add` each resolved file. Run the relevant tests to confirm the combined result builds. Do NOT run `git commit`, `git merge --continue`, push, or open a PR — leave the resolved merge staged for the loop to finalize. Refs: " + id + "."
 }
 
 func epicRepairInstruction(epicID, prURL, branch string) string {

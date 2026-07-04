@@ -1079,7 +1079,9 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 // CI; on green it squash-merges and deletes the branch when AutoMerge is set (else
 // it stops at the open PR), moves the ticket to Done, and checkpoints merged. A CI
 // failure or timeout gives up — preserving the branch and quarantining without
-// aborting the loop.
+// aborting the loop. A merge GitHub refuses as "not mergeable" (the base moved
+// under the PR) goes through recoverUnmergeablePR — sync, agent-resolved
+// conflicts, one more CI gate — before it too becomes a give-up, never a fault.
 func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 	pr := p.State.Get(id, "PR")
 	if prState, _ := p.GitHub.PRState(ctx, pr); prState == "MERGED" {
@@ -1099,15 +1101,133 @@ func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 		return nil
 	}
 	p.phaseStart("merge")
-	if err := p.retryGH(ctx, "gh pr merge", func() error {
+	err := p.mergePR(ctx, pr)
+	if unmergeablePR(err) {
+		err = p.recoverUnmergeablePR(ctx, id, pr, err)
+	}
+	if err != nil {
+		if isGiveUp(err) {
+			return err
+		}
+		return fmt.Errorf("merge %s: %w", id, err)
+	}
+	return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+}
+
+// mergePR merges pr with the transient-retry guard, adopting a merge a prior
+// attempt (or a racing actor) already completed.
+func (p *Pipeline) mergePR(ctx context.Context, pr string) error {
+	return p.retryGH(ctx, "gh pr merge", func() error {
 		if st, _ := p.GitHub.PRState(ctx, pr); st == "MERGED" {
 			return nil
 		}
 		return p.GitHub.Merge(ctx, pr, p.MergeMethod, true)
-	}); err != nil {
-		return fmt.Errorf("merge %s: %w", id, err)
+	})
+}
+
+// recoverUnmergeablePR handles GitHub's deterministic "not mergeable" refusal:
+// the PR's base moved after it opened — in the epic flow, typically a sibling
+// squash-merging into the epic branch — and now conflicts with it. The recovery
+// mirrors the epic finalize sync: merge the remote base INTO the feature branch
+// (an agent resolves real conflicts, bounded by MaxRepairs), push the merge
+// commit, re-gate CI, and retry the merge. A PR that stays unmergeable is a
+// verified dead end → give-up (quarantine + needs-human, session keeps going),
+// NOT an "unexpected error" fault that stops the whole session.
+func (p *Pipeline) recoverUnmergeablePR(ctx context.Context, id, pr string, mergeErr error) error {
+	base, err := p.buildBase(ctx)
+	if err != nil {
+		return err
 	}
-	return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+	branch := p.State.Get(id, "BRANCH")
+	if branch == "" {
+		branch, _ = p.Git.FindFeatureBranch(ctx, id)
+	}
+	if branch == "" {
+		return p.giveUp(ctx, id, fmt.Sprintf("PR %s conflicts with %s and no feature branch was found to sync — resolve manually (%v)", pr, base, mergeErr))
+	}
+	p.logf("  ⚠ PR %s is not mergeable — syncing %s with %s to resolve", pr, branch, base)
+	if err := p.checkoutExisting(ctx, branch); err != nil {
+		return p.giveUp(ctx, id, fmt.Sprintf("PR %s conflicts with %s and branch %s could not be checked out to sync — resolve manually", pr, base, branch))
+	}
+	synced, err := p.syncBranchWithBase(ctx, id, branch, base, "merge-sync")
+	if err != nil {
+		return err
+	}
+	if !synced {
+		return p.giveUp(ctx, id, fmt.Sprintf("PR %s conflicts with %s and the conflicts could not be auto-resolved — resolve manually", pr, base))
+	}
+	if err := p.pollCI(ctx, pr); err != nil {
+		p.logf("  ✗ CI after conflict sync: %v", err)
+		return p.giveUp(ctx, id, "CI not green after syncing the PR with "+base)
+	}
+	// The sync just pushed a new PR head and GitHub recomputes mergeability
+	// asynchronously, so a stale "not mergeable" right after the push gets a few
+	// paced retries before it is believed.
+	for attempt := 0; ; attempt++ {
+		err := p.mergePR(ctx, pr)
+		switch {
+		case err == nil:
+			return nil
+		case !unmergeablePR(err):
+			return err
+		case attempt >= 2:
+			return p.giveUp(ctx, id, fmt.Sprintf("PR %s is still not mergeable after syncing with %s: %v", pr, base, err))
+		}
+		p.logf("  ⟳ PR %s still reports not mergeable — waiting for GitHub to recompute (%d/2)", pr, attempt+1)
+		p.sleep(5)
+	}
+}
+
+// checkoutExisting checks out branch, adopting it from the remote when it is
+// missing locally (e.g. a resume in a fresh clone).
+func (p *Pipeline) checkoutExisting(ctx context.Context, branch string) error {
+	if exists, _ := p.Git.BranchExists(ctx, branch); exists {
+		return p.Git.Checkout(ctx, branch, false)
+	}
+	return p.Git.CheckoutRemoteBranch(ctx, p.Remote, branch)
+}
+
+// syncBranchWithBase merges the remote base into the checked-out branch so its PR
+// becomes mergeable again. A clean merge is pushed; a conflict is resolved by a
+// bounded repair-agent loop (labeled label<N>), then the merge is completed and
+// pushed. Returns false (with the merge aborted) when the conflicts could not be
+// resolved, so the caller leaves the PR to a human instead of shipping a broken
+// merge.
+func (p *Pipeline) syncBranchWithBase(ctx context.Context, id, branch, base, label string) (bool, error) {
+	conflicted, err := p.Git.MergeRemote(ctx, p.Remote, base)
+	if err != nil {
+		return false, fmt.Errorf("merge %s into %s: %w", base, branch, err)
+	}
+	if !conflicted {
+		if err := p.Git.Push(ctx, p.Remote, branch, false); err != nil {
+			p.logf("  push synced branch %s error (continuing): %v", branch, err)
+		}
+		return true, nil
+	}
+
+	p.phaseStart(label)
+	p.logf("  ⚠ %s conflicts with %s — resolving merge conflicts", branch, base)
+	maxAttempts := p.MaxRepairs
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if _, err := p.agentStep(ctx, id, fmt.Sprintf("%s%d", label, attempt), resolveConflictsInstruction(id, base, branch)); err != nil {
+			return false, err
+		}
+		if unmerged, _ := p.Git.Unmerged(ctx); strings.TrimSpace(unmerged) == "" {
+			if err := p.Git.ContinueMerge(ctx); err != nil {
+				return false, fmt.Errorf("complete merge: %w", err)
+			}
+			if err := p.Git.Push(ctx, p.Remote, branch, false); err != nil {
+				p.logf("  push synced branch %s error (continuing): %v", branch, err)
+			}
+			return true, nil
+		}
+		p.logf("  ⚠ conflicts remain after attempt %d/%d", attempt, maxAttempts)
+	}
+	_ = p.Git.MergeAbort(ctx)
+	return false, nil
 }
 
 func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
@@ -1212,6 +1332,26 @@ func retryableGH(err error) bool {
 		}
 	}
 	return true
+}
+
+// unmergeablePR reports whether a gh pr merge failure means GitHub refused the
+// PR in its current state ("not mergeable": conflicting with its base, or still
+// recomputing mergeability after a push) — the one class of deterministic merge
+// failure the pipeline can fix itself by syncing the branch with its base. A
+// policy block ("the base branch policy prohibits the merge") also matches: the
+// sync is then a no-op and the bounded retries funnel it into a clear give-up
+// instead of an "unexpected error" fault.
+func unmergeablePR(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, marker := range []string{"not mergeable", "merge conflict", "cannot be cleanly created"} {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // pushOutcome classifies why a deliverable push failed, so the commit phase can
