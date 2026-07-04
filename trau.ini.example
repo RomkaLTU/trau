@@ -368,10 +368,18 @@ RUNS_DIR=runs
 
 # --- serve (trau serve HTTP hub) ---
 # `trau serve` starts a local HTTP server: a versioned JSON API under /api/v1
-# and an embedded web UI at /. The default bind is loopback-only; set
-# SERVE_BIND=0.0.0.0 to expose it on the network.
+# and an embedded web UI at /. The hub controls an autonomous, merge-capable
+# system, so exposing it is a safety decision, not a convenience toggle.
+#
+# The default bind is loopback-only and needs no token. Any non-loopback bind
+# (e.g. SERVE_BIND=0.0.0.0) REQUIRES a bearer token: trau refuses to start
+# exposed without SERVE_TOKEN, and every API request must then send
+# `Authorization: Bearer <token>` or gets a 401. The blessed remote path is a
+# private network — put the host on Tailscale and reach it over the tailnet
+# rather than opening a port to the public internet.
 SERVE_BIND=127.0.0.1
 SERVE_PORT=8728
+SERVE_TOKEN=                  # required once SERVE_BIND leaves loopback; a long random secret (never commit)
 
 # COST NOTE: the "~$X est" in the closing recap (and --status) is a NOTIONAL
 # API-list estimate, not a bill — no provider cost is reported for interactive

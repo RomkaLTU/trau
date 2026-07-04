@@ -44,5 +44,6 @@ The target repo is never the trau source tree — it resolves via `--repo` flag 
 - **stdout is byte-stable** — all diagnostics (`--verbose`, `--debug`) go to stderr only; `--json` output must not change.
 - Best-effort operations (logging, notify, timelog, gitignore maintenance) must **never abort the loop** — swallow-and-continue is the convention.
 - Quarantine is idempotent.
+- **`trau serve` exposure is fail-closed** (`internal/webserver`): a loopback bind is open and tokenless; any non-loopback bind requires `SERVE_TOKEN` — the server refuses to start exposed without one, and the whole API is gated behind `Authorization: Bearer <token>` (401 otherwise). The blessed remote path is a private network / Tailscale, never a public port.
 - Tests: table-driven with subtests; hand-rolled fakes shared across the package — `fakeGit`/`fakeRunner`/`fakeTracker`/`newTestPipeline` live in `internal/pipeline/verify_pause_test.go` and other test files embed/extend them. Golden files only in `internal/state/testdata`. No tests hit real providers or trackers; everything goes through the interface seams.
 - Architecture decisions live in `docs/adr/`; add an ADR for decisions of that scope.

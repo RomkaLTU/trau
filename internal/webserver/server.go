@@ -22,21 +22,36 @@ type Server struct {
 	started time.Time
 	assets  fs.FS
 	home    string
+	bind    string
+	token   string
 }
 
 // New builds a Server that reports version and treats now as its start time. It
-// reads the instance registry from the machine's trau home.
-func New(version string) *Server {
+// reads the instance registry from the machine's trau home. bind and token
+// carry the exposure policy: on a non-loopback bind every API request must
+// present token as a bearer credential.
+func New(version, bind, token string) *Server {
 	return &Server{
 		version: version,
 		started: time.Now(),
 		assets:  assetsFS(),
 		home:    registry.Home(),
+		bind:    bind,
+		token:   token,
 	}
 }
 
-// Handler returns the fully wired HTTP handler.
+// Handler returns the fully wired HTTP handler. On a non-loopback bind the API
+// namespace is gated behind the bearer token; the embedded SPA shell stays
+// public so a browser can still load it and prompt for the token.
 func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("/api/", s.apiHandler())
+	mux.Handle("/", s.spa())
+	return mux
+}
+
+func (s *Server) apiHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(APIPrefix+"/health", s.handleHealth)
 	mux.HandleFunc(APIPrefix+"/instances", s.handleInstances)
@@ -46,8 +61,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/events/stream", s.handleEventStream)
 	mux.HandleFunc(APIPrefix+"/events/stream", s.handleAllEventStream)
 	mux.HandleFunc("/api/", handleAPINotFound)
-	mux.Handle("/", s.spa())
-	return mux
+
+	var h http.Handler = mux
+	if !Loopback(s.bind) && s.token != "" {
+		h = requireToken(s.token, h)
+	}
+	return h
 }
 
 // Health is the /api/v1/health resource.

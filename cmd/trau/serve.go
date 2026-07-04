@@ -84,8 +84,12 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) error {
 		cfg.ServePort = port
 	}
 
+	if err := webserver.CheckExposure(cfg.ServeBind, cfg.ServeToken); err != nil {
+		return console.Actionable(err, "start serve", "set SERVE_TOKEN to a secret, or keep SERVE_BIND on loopback (127.0.0.1)")
+	}
+
 	addr := net.JoinHostPort(cfg.ServeBind, strconv.Itoa(cfg.ServePort))
-	srv := &http.Server{Addr: addr, Handler: webserver.New(version).Handler()}
+	srv := &http.Server{Addr: addr, Handler: webserver.New(version, cfg.ServeBind, cfg.ServeToken).Handler()}
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
