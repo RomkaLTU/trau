@@ -20,6 +20,10 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import {
+  CheckpointControls,
+  ReconcileButton,
+} from '@/components/checkpoint-controls'
 import { EventFeed } from '@/components/event-feed'
 import { NewIssueForm } from '@/components/new-issue-form'
 import { cn } from '@/lib/utils'
@@ -78,6 +82,7 @@ function Runs() {
     selected && repos.some((r) => r.name === selected)
       ? selected
       : repos.find((r) => r.live)?.name ?? repos[0]?.name ?? null
+  const activeLive = repos.find((r) => r.name === active)?.live ?? false
 
   return (
     <div className="flex flex-col gap-6">
@@ -122,8 +127,13 @@ function Runs() {
         </div>
       )}
 
-      {active && <NewIssuePanel repo={active} />}
-      {active && <Board repo={active} />}
+      {active && (
+        <div className="flex flex-wrap items-start gap-3">
+          <NewIssuePanel repo={active} />
+          <ReconcileButton repo={active} live={activeLive} />
+        </div>
+      )}
+      {active && <Board repo={active} live={activeLive} />}
       {active && <EventFeed repo={active} />}
     </div>
   )
@@ -146,7 +156,7 @@ function NewIssuePanel({ repo }: { repo: string }) {
   )
 }
 
-function Board({ repo }: { repo: string }) {
+function Board({ repo, live }: { repo: string; live: boolean }) {
   const { data, error, isPending } = useQuery(runsQueryOptions(repo))
   const runs = data?.runs ?? []
 
@@ -174,14 +184,30 @@ function Board({ repo }: { repo: string }) {
     <div className="overflow-x-auto pb-2">
       <div className="flex min-w-max gap-4">
         {order.map((phase) => (
-          <PhaseColumn key={phase} repo={repo} phase={phase} runs={byPhase[phase]} />
+          <PhaseColumn
+            key={phase}
+            repo={repo}
+            phase={phase}
+            runs={byPhase[phase]}
+            live={live}
+          />
         ))}
       </div>
     </div>
   )
 }
 
-function PhaseColumn({ repo, phase, runs }: { repo: string; phase: string; runs: Run[] }) {
+function PhaseColumn({
+  repo,
+  phase,
+  runs,
+  live,
+}: {
+  repo: string
+  phase: string
+  runs: Run[]
+  live: boolean
+}) {
   const meta = phaseMeta(phase)
   const Icon = meta.icon
   return (
@@ -195,7 +221,7 @@ function PhaseColumn({ repo, phase, runs }: { repo: string; phase: string; runs:
       </div>
       <div className="flex flex-col gap-2">
         {runs.map((run) => (
-          <RunCard key={run.ticket} repo={repo} run={run} />
+          <RunCard key={run.ticket} repo={repo} run={run} live={live} />
         ))}
       </div>
     </section>
@@ -220,7 +246,7 @@ const failureStyle: Record<FailureClass, { badge: string; icon: ComponentType<Lu
   },
 }
 
-function RunCard({ repo, run }: { repo: string; run: Run }) {
+function RunCard({ repo, run, live }: { repo: string; run: Run; live: boolean }) {
   const fail = run.failure_class ? failureStyle[run.failure_class] : null
   return (
     <div
@@ -268,6 +294,17 @@ function RunCard({ repo, run }: { repo: string; run: Run }) {
               {run.pr ? `PR #${run.pr}` : 'PR'}
             </a>
           )}
+        </div>
+      )}
+
+      {!live && (
+        <div className="mt-3 border-t pt-3">
+          <CheckpointControls
+            repo={repo}
+            ticket={run.ticket}
+            phase={run.phase}
+            live={false}
+          />
         </div>
       )}
     </div>

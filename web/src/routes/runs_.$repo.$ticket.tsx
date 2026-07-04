@@ -12,15 +12,18 @@ import {
   ListChecks,
   MessageSquarePlus,
   Receipt,
+  RotateCcw,
   Send,
   TicketPlus,
 } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
+import { CheckpointControls } from '@/components/checkpoint-controls'
 import { Markdown } from '@/components/markdown'
 import { NewIssueForm, type IssueDefaults } from '@/components/new-issue-form'
 import { cn } from '@/lib/utils'
 import { addComment } from '@/lib/issues'
+import { reposQueryOptions } from '@/lib/runs'
 import {
   runDetailQueryOptions,
   type Anomaly,
@@ -68,9 +71,32 @@ function Detail({ repo, run }: { repo: string; run: RunDetail }) {
       <Handoff markdown={run.handoff} present={run.artifacts.handoff} />
       <RubricPanel rubric={run.rubric} present={run.artifacts.rubric} />
       <VerdictPanel verdict={run.verdict} present={run.artifacts.verdict} />
+      <CheckpointSection repo={repo} run={run} />
       <CommentSection repo={repo} ticket={run.ticket} />
       <FollowUpSection repo={repo} run={run} />
     </div>
+  )
+}
+
+function CheckpointSection({ repo, run }: { repo: string; run: RunDetail }) {
+  const { data } = useQuery(reposQueryOptions)
+  const live = data?.repos.find((r) => r.name === repo)?.live ?? false
+
+  return (
+    <Section icon={RotateCcw} title="Checkpoint">
+      <div className="flex flex-col gap-3 rounded-lg border bg-card p-4">
+        <p className="text-sm text-muted-foreground">
+          Reset drops the branch and re-queues {run.ticket} on the tracker. Clear
+          forgets the local checkpoint only — for a ticket finished out-of-band.
+        </p>
+        <CheckpointControls
+          repo={repo}
+          ticket={run.ticket}
+          phase={run.phase}
+          live={live}
+        />
+      </div>
+    </Section>
   )
 }
 
