@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/RomkaLTU/trau/internal/registry"
 )
 
 // APIPrefix is the mount path for the versioned JSON API.
@@ -19,14 +21,17 @@ type Server struct {
 	version string
 	started time.Time
 	assets  fs.FS
+	home    string
 }
 
-// New builds a Server that reports version and treats now as its start time.
+// New builds a Server that reports version and treats now as its start time. It
+// reads the instance registry from the machine's trau home.
 func New(version string) *Server {
 	return &Server{
 		version: version,
 		started: time.Now(),
 		assets:  assetsFS(),
+		home:    registry.Home(),
 	}
 }
 
@@ -34,6 +39,7 @@ func New(version string) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(APIPrefix+"/health", s.handleHealth)
+	mux.HandleFunc(APIPrefix+"/instances", s.handleInstances)
 	mux.HandleFunc("/api/", handleAPINotFound)
 	mux.Handle("/", s.spa())
 	return mux

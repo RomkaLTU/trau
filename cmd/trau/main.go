@@ -37,6 +37,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
+	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -398,6 +399,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		budgetSuffix = " · " + lim.Summary()
 	}
 	con.Logf("provider=%s · AUTO_MERGE=%v · max=%d%s%s", cfg.Provider, cfg.AutoMerge, maxIter, parentSuffix, budgetSuffix)
+
+	reg := registry.Register(registry.Home(), repoRoot, cfg.RunsDir)
+	defer reg.Deregister()
 
 	eng := &realEngine{pipe: p, tracker: pm, scope: scope, sink: sink, log: log}
 
@@ -1040,6 +1044,10 @@ func runSession(ctx context.Context, cfg config.Config, opts config.Options, std
 			_, _ = fmt.Fprintf(stdout, "Wrote %s\n", res.ConfigPath)
 		}
 	}
+
+	reg := registry.Register(registry.Home(), cfg.RepoRoot, cfg.RunsDir)
+	defer reg.Deregister()
+
 	return tui.RunSession(ctx, stdout, holder, acts)
 }
 
