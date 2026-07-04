@@ -254,16 +254,48 @@ func (s *Store) RemoveState(id string) error {
 	return nil
 }
 
+// Bucket is a non-ticket token bucket surfaced in --status beside the saved ticket
+// rows — the planning bucket, whose spend carries no ticket checkpoint of its own.
+// ID is the runs/ bucket dir passed to the total func; Label is the row/JSON name.
+// Its tokens fold into the grand total. A bucket with no logged spend is omitted.
+type Bucket struct {
+	ID    string
+	Label string
+}
+
+type bucketRow struct {
+	label   string
+	tokens  int
+	cost    float64
+	metered bool
+}
+
+// bucketRows resolves each extra bucket's spend via total, dropping the ones with
+// no logged tokens so an unused bucket never clutters the report.
+func bucketRows(extra []Bucket, total func(id string) (int, float64, bool)) []bucketRow {
+	rows := make([]bucketRow, 0, len(extra))
+	for _, b := range extra {
+		tok, cost, metered := total(b.ID)
+		if tok == 0 {
+			continue
+		}
+		rows = append(rows, bucketRow{label: b.Label, tokens: tok, cost: cost, metered: metered})
+	}
+	return rows
+}
+
 // Status writes the --status report to w: a header, one row per ticket with
-// saved state (ID, PHASE, TOKENS, COST, PR), and a grand-total row. total
-// supplies each ticket's (tokens, cost) — the caller
-// injects tokens.Sink.Total, keeping this package independent of the tokens
-// package. It never errors; an empty runs/ prints a "no saved state" line.
-func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost float64, metered bool)) {
+// saved state (ID, PHASE, TOKENS, COST, PR), a row per non-ticket bucket that has
+// spend (extra, e.g. the planning bucket), and a grand-total row. total supplies
+// each id's (tokens, cost) — the caller injects tokens.Sink.Total, keeping this
+// package independent of the tokens package. It never errors; an empty runs/ with
+// no bucket spend prints a "no saved state" line.
+func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost float64, metered bool), extra ...Bucket) {
 	_, _ = fmt.Fprintf(w, "  %-10s %-12s %12s %9s %5s  %s\n", "ID", "PHASE", "TOKENS", "COST", "ANOM", "PR")
 
 	ids := s.Tickets()
-	if len(ids) == 0 {
+	buckets := bucketRows(extra, total)
+	if len(ids) == 0 && len(buckets) == 0 {
 		_, _ = fmt.Fprintf(w, "  (no saved ticket state in %s)\n", s.root)
 		return
 	}
@@ -282,6 +314,12 @@ func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost floa
 		grandCost = math.Round((grandCost+cost)*100) / 100
 		grandMetered = grandMetered && metered
 	}
+	for _, b := range buckets {
+		_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s %5s  %s\n", b.label, "", b.tokens, fmtCostCell(b.cost, b.metered), "", "")
+		grandTokens += b.tokens
+		grandCost = math.Round((grandCost+b.cost)*100) / 100
+		grandMetered = grandMetered && b.metered
+	}
 	_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s\n", "TOTAL", "", grandTokens, fmtCostCell(grandCost, grandMetered))
 }
 
@@ -292,7 +330,7 @@ func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost floa
 // only the JSON document. budget, when non-nil, is marshaled under a "budget" key
 // (the configured caps + the day's spend); state takes it as any so it need not
 // depend on the budget package.
-func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost float64, metered bool), budget any, reconciled []string) error {
+func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost float64, metered bool), budget any, reconciled []string, extra ...Bucket) error {
 	type ticket struct {
 		ID            string  `json:"id"`
 		Title         string  `json:"title,omitempty"`
@@ -304,8 +342,15 @@ func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost 
 		CostMeasured  bool    `json:"cost_measured"`
 		Anomalies     int     `json:"anomalies,omitempty"`
 	}
+	type bucket struct {
+		Label        string  `json:"label"`
+		Tokens       int     `json:"tokens"`
+		Cost         float64 `json:"cost"`
+		CostMeasured bool    `json:"cost_measured"`
+	}
 	var report struct {
 		Tickets []ticket `json:"tickets"`
+		Buckets []bucket `json:"buckets,omitempty"`
 		Total   struct {
 			Tokens       int     `json:"tokens"`
 			Cost         float64 `json:"cost"`
@@ -335,6 +380,12 @@ func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost 
 		report.Total.Tokens += tok
 		report.Total.Cost = math.Round((report.Total.Cost+cost)*100) / 100
 		report.Total.CostMeasured = report.Total.CostMeasured && metered
+	}
+	for _, b := range bucketRows(extra, total) {
+		report.Buckets = append(report.Buckets, bucket{Label: b.label, Tokens: b.tokens, Cost: b.cost, CostMeasured: b.metered})
+		report.Total.Tokens += b.tokens
+		report.Total.Cost = math.Round((report.Total.Cost+b.cost)*100) / 100
+		report.Total.CostMeasured = report.Total.CostMeasured && b.metered
 	}
 
 	enc := json.NewEncoder(w)

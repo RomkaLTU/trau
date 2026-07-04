@@ -275,6 +275,38 @@ func TestStatusGolden(t *testing.T) {
 	}
 }
 
+// TestStatusPlanningBucket checks a non-ticket bucket (planning) with spend is
+// rendered as its own row and folded into the grand total, while a bucket with no
+// spend is omitted entirely.
+func TestStatusPlanningBucket(t *testing.T) {
+	s := newStore(t)
+	_ = s.Set("COD-1", "PHASE", Verified)
+
+	total := func(id string) (int, float64, bool) {
+		switch id {
+		case "COD-1":
+			return 1000, 0.10, true
+		case "_plans":
+			return 500, 0.05, true
+		}
+		return 0, 0, true
+	}
+
+	var buf bytes.Buffer
+	s.Status(&buf, total, Bucket{ID: "_plans", Label: "planning"}, Bucket{ID: "_empty", Label: "empty"})
+	out := buf.String()
+
+	if !strings.Contains(out, "planning") {
+		t.Errorf("planning row missing:\n%s", out)
+	}
+	if strings.Contains(out, "empty") {
+		t.Errorf("a zero-spend bucket must not render:\n%s", out)
+	}
+	if !strings.Contains(out, "TOTAL") || !strings.Contains(out, "1500") {
+		t.Errorf("grand total should fold in the planning bucket (1500):\n%s", out)
+	}
+}
+
 func TestStatusEmptyGolden(t *testing.T) {
 	s := newStore(t)
 	var buf bytes.Buffer

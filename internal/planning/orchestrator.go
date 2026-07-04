@@ -2,6 +2,7 @@ package planning
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -25,6 +26,10 @@ type Orchestrator struct {
 	root      string
 	now       func() time.Time
 	maxRounds int
+
+	retries     int
+	backoffSecs int
+	fallback    []agent.Runner
 }
 
 // NewOrchestrator returns an Orchestrator that roots plan sessions under root
@@ -51,6 +56,105 @@ func (o *Orchestrator) roundCap() int {
 		return defaultMaxRounds
 	}
 	return o.maxRounds
+}
+
+// WithRecovery folds a planning round's agent call into the same transient-failure
+// recovery the pipeline gives its phases: retries transient failures up to retries
+// times on a fresh process, then falls back across the given providers, backing off
+// backoffSecs*(attempt+1) between attempts. A provider rate/usage limit or auth wall
+// short-circuits to a blameless [PausedError] instead — the session keeps its
+// checkpoint and resumes once the limit clears, never burning a question round.
+func (o *Orchestrator) WithRecovery(retries, backoffSecs int, fallback []agent.Runner) *Orchestrator {
+	if retries < 0 {
+		retries = 0
+	}
+	o.retries = retries
+	o.backoffSecs = backoffSecs
+	o.fallback = fallback
+	return o
+}
+
+// PausedError marks a planning round stopped blamelessly on a provider rate/usage
+// limit or auth wall. The session stays at its last checkpoint, so a later resume
+// re-runs the round once the provider recovers — no question round is consumed.
+type PausedError struct {
+	Provider string
+	Reason   string
+}
+
+func (e *PausedError) Error() string { return "planning paused: " + e.Reason }
+
+// IsPaused reports whether err is (or wraps) a *PausedError.
+func IsPaused(err error) bool {
+	var pe *PausedError
+	return errors.As(err, &pe)
+}
+
+// runRound drives a single round's agent call through bounded transient-failure
+// recovery: the primary runner first, each retried on a fresh process up to
+// o.retries times, then the configured fallback providers. A rate/usage limit or
+// auth wall pauses immediately (never retried); an outer-context cancellation stops
+// without burning retries. The last error surfaces when the whole chain is spent.
+func (o *Orchestrator) runRound(ctx context.Context, prompt string) (agent.Result, error) {
+	chain := []agent.Runner{o.runner}
+	for _, r := range o.fallback {
+		if r != nil {
+			chain = append(chain, r)
+		}
+	}
+
+	var lastErr error
+	for _, runner := range chain {
+		for attempt := 0; ; attempt++ {
+			res, err := runner.Run(ctx, prompt, agent.PhasePlan)
+			if err == nil {
+				return res, nil
+			}
+			if agent.IsRateLimited(err) || agent.IsAuthRequired(err) {
+				return res, pausedError(runner, err)
+			}
+			lastErr = err
+			if ctx.Err() != nil {
+				return res, err
+			}
+			if attempt >= o.retries {
+				break
+			}
+			o.backoff(attempt)
+		}
+	}
+	return agent.Result{}, lastErr
+}
+
+// backoff sleeps a growing delay before a transient retry: backoffSecs*(n+1)
+// seconds. Zero backoffSecs is instant.
+func (o *Orchestrator) backoff(n int) {
+	if o.backoffSecs <= 0 {
+		return
+	}
+	time.Sleep(time.Duration(o.backoffSecs*(n+1)) * time.Second)
+}
+
+// pausedError builds the blameless *PausedError for a round that hit a provider
+// rate/usage limit or auth wall, attributing the provider so the surface can say
+// what to wait on or re-authenticate.
+func pausedError(runner agent.Runner, err error) error {
+	prov := providerName(runner)
+	if agent.IsAuthRequired(err) {
+		return &PausedError{Provider: prov, Reason: prov + " authentication required — re-login"}
+	}
+	return &PausedError{Provider: prov, Reason: prov + " rate/usage limit reached"}
+}
+
+// providerName names the backend a runner dispatches to, for a pause message;
+// backends and the Router implement Provider(). Defaults to "provider".
+func providerName(runner agent.Runner) string {
+	if pv, ok := runner.(interface{ Provider() string }); ok {
+		if name := pv.Provider(); name != "" {
+			return name
+		}
+	}
+	return "provider"
 }
 
 // RoundResult is the outcome of one planning round: the durable session it ran
@@ -109,7 +213,7 @@ func (o *Orchestrator) ReviseRound(ctx context.Context, sess *Session, note stri
 		return &RoundResult{Session: sess}, err
 	}
 
-	res, err := o.runner.Run(ctx, BuildRevisionPrompt(sess.Idea(), transcript, prd.Markdown, note), agent.PhasePlan)
+	res, err := o.runRound(ctx, BuildRevisionPrompt(sess.Idea(), transcript, prd.Markdown, note))
 	if err != nil {
 		return &RoundResult{Session: sess}, err
 	}
@@ -146,7 +250,7 @@ func (o *Orchestrator) round(ctx context.Context, sess *Session) (*RoundResult, 
 	}
 	capped := len(transcript) >= o.roundCap()
 
-	res, err := o.runner.Run(ctx, BuildPrompt(sess.Idea(), transcript, capped), agent.PhasePlan)
+	res, err := o.runRound(ctx, BuildPrompt(sess.Idea(), transcript, capped))
 	if err != nil {
 		return &RoundResult{Session: sess}, err
 	}

@@ -139,6 +139,39 @@ func TestAppendBucketRouting(t *testing.T) {
 	}
 }
 
+// TestPlanBucketRouting checks planning calls land in the dedicated planning
+// bucket: SetTicket(PlanBucket) points appends at runs/_plans/tokens.jsonl, its
+// spend sums under Total(PlanBucket), and it counts toward the day window like any
+// other bucket — the ledger side of the planning-parity requirement.
+func TestPlanBucketRouting(t *testing.T) {
+	dir := t.TempDir()
+	clk := time.Date(2026, 6, 24, 9, 0, 0, 0, time.UTC)
+	s := New(dir).WithClock(func() time.Time { return clk })
+
+	s.SetTicket(PlanBucket)
+	s.Append("plan", Record{Input: 200, Output: 100, CostUSD: ptr(0.30)})
+	s.Append("plan", Record{Input: 100, CostUSD: ptr(0.10)})
+
+	if _, err := os.Stat(filepath.Join(dir, PlanBucket, "tokens.jsonl")); err != nil {
+		t.Fatalf("planning-bucket ledger missing: %v", err)
+	}
+	tok, cost, metered := s.Total(PlanBucket)
+	if tok != 400 {
+		t.Errorf("planning tokens = %d, want 400", tok)
+	}
+	if cost != 0.40 {
+		t.Errorf("planning cost = %v, want 0.40", cost)
+	}
+	if !metered {
+		t.Error("metered should be true (every planning line carried a cost)")
+	}
+
+	dt, dc, _ := s.DayTotal("2026-06-24")
+	if dt != 400 || dc != 0.40 {
+		t.Errorf("day total = (%d, %v), want (400, 0.4) — planning counts toward the day", dt, dc)
+	}
+}
+
 // --- DayTotal -------------------------------------------------------------
 
 func TestDayTotalFiltersByDateAcrossBuckets(t *testing.T) {
