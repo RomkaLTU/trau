@@ -6,6 +6,7 @@ import {
 } from '@tanstack/react-router'
 import {
   Boxes,
+  ChartColumn,
   DollarSign,
   FileText,
   LayoutDashboard,
@@ -33,6 +34,7 @@ const nav: NavItem[] = [
   { to: '/prd', label: 'PRD', icon: FileText },
   { to: '/lessons', label: 'Lessons', icon: Lightbulb },
   { to: '/costs', label: 'Costs', icon: DollarSign },
+  { to: '/analytics', label: 'Analytics', icon: ChartColumn },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]
 

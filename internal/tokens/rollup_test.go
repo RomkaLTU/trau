@@ -84,6 +84,56 @@ func TestRollupEmpty(t *testing.T) {
 	}
 }
 
+// TestRollupDetailKeepsProviderAndModel confirms the detail rollup splits cells by
+// (date, provider, model, phase), resolving the provider inline when recorded and
+// falling back to model derivation for lines that predate the inline field.
+func TestRollupDetailKeepsProviderAndModel(t *testing.T) {
+	dir := t.TempDir()
+	s := New(dir).WithClock(fixedClock(time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)))
+	s.SetTicket("COD-1")
+	s.Append("build", Record{Input: 100, Output: 50, CostUSD: ptr(0.10), Model: "claude-opus-4-8"})
+	s.Append("build", Record{Input: 40, Output: 20, CostUSD: ptr(0.05), Model: "gpt-5.4"})
+	s.Append("verify", Record{Input: 200, Output: 100, CostUSD: ptr(0.20), Provider: "kimi", Model: "turbo"})
+
+	cells := New(dir).RollupDetail("2026-07-01", "2026-07-01")
+	if len(cells) != 3 {
+		t.Fatalf("RollupDetail = %d cells, want 3 (one per provider/model/phase): %+v", len(cells), cells)
+	}
+	by := map[string]DetailCost{}
+	for _, c := range cells {
+		by[c.Provider+"/"+c.Model] = c
+	}
+	if c := by["claude/claude-opus-4-8"]; c.Phase != "build" || c.Tokens != 150 || !approx(c.Cost, 0.10) {
+		t.Errorf("opus cell = %+v, want build tokens 150 cost 0.10 provider claude", c)
+	}
+	if c := by["codex/gpt-5.4"]; c.Tokens != 60 || !approx(c.Cost, 0.05) {
+		t.Errorf("gpt cell = %+v, want tokens 60 cost 0.05 provider codex (derived)", c)
+	}
+	if c := by["kimi/turbo"]; c.Tokens != 300 {
+		t.Errorf("kimi cell = %+v, want the inline provider to win over the unmappable model", c)
+	}
+}
+
+func TestProviderForModel(t *testing.T) {
+	cases := map[string]string{
+		"claude-opus-4-8":    "claude",
+		"claude-sonnet-5":    "claude",
+		"claude-haiku-4-5":   "claude",
+		"claude-fable-5":     "claude",
+		"gpt-5.4":            "codex",
+		"gpt-5.4-mini":       "codex",
+		"kimi-k2":            "kimi",
+		"moonshot-v1":        "kimi",
+		"":                   "",
+		"some-unknown-model": "",
+	}
+	for model, want := range cases {
+		if got := ProviderForModel(model); got != want {
+			t.Errorf("ProviderForModel(%q) = %q, want %q", model, got, want)
+		}
+	}
+}
+
 // TestAnomaliesRoundTrip confirms the reader returns the same trips Flag wrote to
 // anomalies.jsonl, and nil for a ticket that never tripped a threshold.
 func TestAnomaliesRoundTrip(t *testing.T) {

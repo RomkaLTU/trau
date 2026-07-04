@@ -107,10 +107,12 @@ type spend struct {
 	metered bool
 }
 
-func (b *spend) add(c tokens.DayPhaseCost) {
-	b.tokens += c.Tokens
-	b.cost += c.Cost
-	b.metered = b.metered && c.Metered
+func (b *spend) add(c tokens.DayPhaseCost) { b.addRaw(c.Tokens, c.Cost, c.Metered) }
+
+func (b *spend) addRaw(tokens int, cost float64, metered bool) {
+	b.tokens += tokens
+	b.cost += cost
+	b.metered = b.metered && metered
 }
 
 // costs folds every repo's rollup over [from, to] into the machine-wide daily,

@@ -16,6 +16,7 @@ import { Route as PrdRouteImport } from './routes/prd'
 import { Route as LessonsRouteImport } from './routes/lessons'
 import { Route as InstancesRouteImport } from './routes/instances'
 import { Route as CostsRouteImport } from './routes/costs'
+import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as RunsRepoTicketRouteImport } from './routes/runs_.$repo.$ticket'
 
@@ -54,6 +55,11 @@ const CostsRoute = CostsRouteImport.update({
   path: '/costs',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AnalyticsRoute = AnalyticsRouteImport.update({
+  id: '/analytics',
+  path: '/analytics',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -67,6 +73,7 @@ const RunsRepoTicketRoute = RunsRepoTicketRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/analytics': typeof AnalyticsRoute
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
@@ -78,6 +85,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/analytics': typeof AnalyticsRoute
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
@@ -90,6 +98,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/analytics': typeof AnalyticsRoute
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
@@ -103,6 +112,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/analytics'
     | '/costs'
     | '/instances'
     | '/lessons'
@@ -114,6 +124,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/analytics'
     | '/costs'
     | '/instances'
     | '/lessons'
@@ -125,6 +136,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/analytics'
     | '/costs'
     | '/instances'
     | '/lessons'
@@ -137,6 +149,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AnalyticsRoute: typeof AnalyticsRoute
   CostsRoute: typeof CostsRoute
   InstancesRoute: typeof InstancesRoute
   LessonsRoute: typeof LessonsRoute
@@ -198,6 +211,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CostsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/analytics': {
+      id: '/analytics'
+      path: '/analytics'
+      fullPath: '/analytics'
+      preLoaderRoute: typeof AnalyticsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -217,6 +237,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AnalyticsRoute: AnalyticsRoute,
   CostsRoute: CostsRoute,
   InstancesRoute: InstancesRoute,
   LessonsRoute: LessonsRoute,
