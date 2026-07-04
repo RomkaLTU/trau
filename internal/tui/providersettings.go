@@ -467,10 +467,15 @@ func (m providerSettingsModel) renderBrowse() string {
 		}
 	}
 
-	footer := []string{"", s.Help.Render("Effective: " + m.effectiveRoutes(p, hasEffort))}
-	if d := m.cursorDesc(p); d != "" {
-		footer = append(footer, "", s.Help.Render(d))
+	// The focused row's description is a fixed-size footer so the centered card
+	// keeps a constant size as the cursor moves between rows.
+	inner := cardContentWidth(m.width)
+	descs := make([]string, len(m.rows))
+	for i := range m.rows {
+		descs[i] = m.descForRow(p, i)
 	}
+	footer := []string{"", s.Help.Render("Effective: " + m.effectiveRoutes(p, hasEffort)), ""}
+	footer = append(footer, descBlock(s.Help, m.cursorDesc(p), inner, descReserve(descs, inner, 3))...)
 
 	midBudget := cardBodyBudget(m.height, 0) - len(header) - len(footer)
 	mid = scrollToCursor(mid, cursorLine, midBudget)
@@ -551,10 +556,14 @@ func (m providerSettingsModel) renderPhaseRow(focused bool, ph ProviderPhaseTuni
 }
 
 func (m providerSettingsModel) cursorDesc(p ProviderTuning) string {
-	if m.cursor >= len(m.rows) {
+	return m.descForRow(p, m.cursor)
+}
+
+func (m providerSettingsModel) descForRow(p ProviderTuning, i int) string {
+	if i < 0 || i >= len(m.rows) {
 		return ""
 	}
-	switch m.rows[m.cursor].kind {
+	switch m.rows[i].kind {
 	case rowEffort:
 		return effortDesc(p.Name)
 	case rowModel:
