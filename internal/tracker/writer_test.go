@@ -46,6 +46,10 @@ func fakeLinearWriter(t *testing.T) (*linearWriter, *[]linearGraphReq) {
 			_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"id":"iss-1","identifier":"COD-42","team":{"id":"team-1","key":"COD"}}]}}}`)
 		case strings.Contains(req.Query, "mutation CommentCreate"):
 			_, _ = io.WriteString(w, `{"data":{"commentCreate":{"success":true}}}`)
+		case strings.Contains(req.Query, "query ProjectByName"):
+			_, _ = io.WriteString(w, `{"data":{"projects":{"nodes":[{"id":"proj-1","name":"Trau"}]}}}`)
+		case strings.Contains(req.Query, "mutation DocumentCreate"):
+			_, _ = io.WriteString(w, `{"data":{"documentCreate":{"success":true,"document":{"id":"doc-1","url":"https://linear.app/acme/document/prd-abc123"}}}}`)
 		default:
 			t.Errorf("unexpected GraphQL query: %s", req.Query)
 			w.WriteHeader(http.StatusInternalServerError)
@@ -54,7 +58,7 @@ func fakeLinearWriter(t *testing.T) (*linearWriter, *[]linearGraphReq) {
 	t.Cleanup(srv.Close)
 	client := linearapi.New("lin_key")
 	client.Endpoint = srv.URL
-	return &linearWriter{client: client, team: "COD"}, &reqs
+	return &linearWriter{client: client, team: "COD", project: "Trau"}, &reqs
 }
 
 func TestLinearWriterCreateIssue(t *testing.T) {
@@ -102,6 +106,51 @@ func TestLinearWriterAddComment(t *testing.T) {
 	}
 }
 
+func TestLinearWriterPublishDocument(t *testing.T) {
+	w, reqs := fakeLinearWriter(t)
+
+	md := "# Payments PRD\n\nGoals and non-goals, verbatim **markdown**.\n\n- one\n- two\n"
+	got, err := w.PublishDocument(context.Background(), DocumentDraft{Title: "Payments PRD", Markdown: md})
+	if err != nil {
+		t.Fatalf("PublishDocument error: %v", err)
+	}
+	if got.Kind != DocumentKindDocument {
+		t.Errorf("kind = %q, want %q", got.Kind, DocumentKindDocument)
+	}
+	if got.URL != "https://linear.app/acme/document/prd-abc123" {
+		t.Errorf("url = %q, want the created document url", got.URL)
+	}
+	if got.Identifier != "" {
+		t.Errorf("identifier = %q, want empty for a Linear document", got.Identifier)
+	}
+
+	lookup := lastLinearReq(*reqs, "query ProjectByName")
+	if lookup == nil || lookup.Variables["name"] != "Trau" {
+		t.Fatalf("ProjectByName not sent with the repo's project name: %+v", lookup)
+	}
+	create := lastLinearReq(*reqs, "mutation DocumentCreate")
+	if create == nil {
+		t.Fatal("no DocumentCreate mutation was sent")
+	}
+	if create.Variables["projectId"] != "proj-1" {
+		t.Errorf("projectId = %v, want the resolved project id", create.Variables["projectId"])
+	}
+	if create.Variables["title"] != "Payments PRD" {
+		t.Errorf("title = %v, want the drafted title", create.Variables["title"])
+	}
+	if create.Variables["content"] != md {
+		t.Errorf("content = %q, want the markdown preserved byte-for-byte", create.Variables["content"])
+	}
+}
+
+func TestLinearWriterPublishNeedsProject(t *testing.T) {
+	w, _ := fakeLinearWriter(t)
+	w.project = ""
+	if _, err := w.PublishDocument(context.Background(), DocumentDraft{Title: "x", Markdown: "y"}); err == nil {
+		t.Error("PublishDocument without a configured project should error")
+	}
+}
+
 func lastLinearReq(reqs []linearGraphReq, needle string) *linearGraphReq {
 	for i := len(reqs) - 1; i >= 0; i-- {
 		if strings.Contains(reqs[i].Query, needle) {
@@ -128,6 +177,7 @@ func fakeJiraWriter(t *testing.T) (*jiraWriter, *jiraCapture) {
 			w.WriteHeader(http.StatusCreated)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issue"):
 			body, _ := io.ReadAll(r.Body)
+			rec.createRaw = string(body)
 			_ = json.Unmarshal(body, &rec.create)
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"id":"10500","key":"PROJ-500"}`))
@@ -153,6 +203,7 @@ type jiraCapture struct {
 			Labels    []string             `json:"labels"`
 		} `json:"fields"`
 	}
+	createRaw   string
 	commentPath string
 	commentBody string
 }
@@ -198,6 +249,36 @@ func TestJiraWriterAddComment(t *testing.T) {
 	}
 	if !strings.Contains(rec.commentBody, "a note") {
 		t.Errorf("comment body = %q, want it to carry the note text", rec.commentBody)
+	}
+}
+
+func TestJiraWriterPublishDocument(t *testing.T) {
+	w, rec := fakeJiraWriter(t)
+
+	md := "# Payments PRD\n\nBody line with **markdown** and `code`."
+	got, err := w.PublishDocument(context.Background(), DocumentDraft{Title: "Payments PRD", Markdown: md})
+	if err != nil {
+		t.Fatalf("PublishDocument error: %v", err)
+	}
+	if got.Kind != DocumentKindIssue {
+		t.Errorf("kind = %q, want %q (the Jira fallback)", got.Kind, DocumentKindIssue)
+	}
+	if got.Identifier != "PROJ-500" {
+		t.Errorf("identifier = %q, want the created issue key", got.Identifier)
+	}
+	if !strings.HasSuffix(got.URL, "/browse/PROJ-500") {
+		t.Errorf("url = %q, want it to end with /browse/PROJ-500", got.URL)
+	}
+	if rec.create.Fields.Summary != "Payments PRD" {
+		t.Errorf("summary = %q, want the PRD title", rec.create.Fields.Summary)
+	}
+	if rec.create.Fields.IssueType.ID != "10001" {
+		t.Errorf("issuetype id = %q, want 10001 (Task, the fallback type)", rec.create.Fields.IssueType.ID)
+	}
+	for _, line := range []string{"# Payments PRD", "Body line with **markdown** and `code`."} {
+		if !strings.Contains(rec.createRaw, line) {
+			t.Errorf("create body missing PRD line %q; the description must carry the markdown", line)
+		}
 	}
 }
 

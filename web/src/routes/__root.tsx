@@ -7,6 +7,7 @@ import {
 import {
   Boxes,
   DollarSign,
+  FileText,
   LayoutDashboard,
   Lightbulb,
   ListChecks,
@@ -29,6 +30,7 @@ const nav: NavItem[] = [
   { to: '/instances', label: 'Instances', icon: Boxes },
   { to: '/terminal', label: 'Terminal', icon: SquareTerminal },
   { to: '/runs', label: 'Runs', icon: ListChecks },
+  { to: '/prd', label: 'PRD', icon: FileText },
   { to: '/lessons', label: 'Lessons', icon: Lightbulb },
   { to: '/costs', label: 'Costs', icon: DollarSign },
   { to: '/settings', label: 'Settings', icon: Settings },
