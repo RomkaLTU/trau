@@ -20,6 +20,7 @@ func TestRouteKey(t *testing.T) {
 		{"cleanup", PhaseCleanup},
 		{"lintfix", PhaseLintfix},
 		{"commit", PhaseCommit},
+		{"plan", PhasePlan},
 		{"pick", PhasePick},
 		{"status", PhasePick},
 		{"", PhasePick},

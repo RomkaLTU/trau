@@ -16,11 +16,14 @@ const (
 	PhaseCleanup = "cleanup"
 	PhaseLintfix = "lintfix"
 	PhaseCommit  = "commit"
+	PhasePlan    = "plan"
 	PhasePick    = "pick"
 )
 
 // Phases lists the routable phase keys in pipeline order (loop-level "pick" last).
-var Phases = []string{PhaseBuild, PhaseHandoff, PhaseVerify, PhaseRepair, PhaseBugfix, PhaseCleanup, PhaseLintfix, PhaseCommit, PhasePick}
+// "plan" is the planning module's entrypoint — routable like any phase, but not
+// part of the build→PR pipeline chain.
+var Phases = []string{PhaseBuild, PhaseHandoff, PhaseVerify, PhaseRepair, PhaseBugfix, PhaseCleanup, PhaseLintfix, PhaseCommit, PhasePlan, PhasePick}
 
 // RouteKey normalizes a per-call label (the tag passed to Run) to its routable
 // phase. The pipeline emits dynamic labels — "verify-retry2", "repair1" — and the
@@ -44,9 +47,22 @@ func RouteKey(label string) string {
 		return PhaseLintfix
 	case strings.HasPrefix(label, PhaseCommit):
 		return PhaseCommit
+	case strings.HasPrefix(label, PhasePlan):
+		return PhasePlan
 	default:
 		return PhasePick
 	}
+}
+
+// preambleFor returns the preamble a call's prompt is prefixed with: the
+// plan-scoped variant when the call routes to the plan phase and one is set,
+// otherwise the default unattended preamble. It is the one seam that makes the
+// planning Preamble apply to the plan label only, leaving pipeline phases strict.
+func preambleFor(base, plan, label string) string {
+	if plan != "" && RouteKey(label) == PhasePlan {
+		return plan
+	}
+	return base
 }
 
 // Router dispatches each agent call to a per-phase backend Runner, falling back

@@ -71,6 +71,11 @@ type Actions interface {
 	// to run the loop. When true, the menu shell starts in the onboarding wizard
 	// instead of the hero-card menu.
 	OnboardingNeeded() bool
+
+	// StartPlan runs one planning round on the raw idea — literal multi-line text,
+	// or a path to a file containing the idea — and returns the outcome for the Plan
+	// screen to render. It is cancellable via ctx.
+	StartPlan(ctx context.Context, idea string) (PlanOutcome, error)
 }
 
 // ListedTicket is one eligible ticket returned by a fast list operation.
@@ -166,6 +171,7 @@ const (
 	viewRunning
 	viewError
 	viewSettings
+	viewPlan
 )
 
 type menuAction int
@@ -174,6 +180,7 @@ const (
 	actRun menuAction = iota
 	actRunOnce
 	actDryRun
+	actPlan
 	actStatus
 	actLogs
 	actReset
@@ -251,6 +258,7 @@ type appModel struct {
 	loopSetup loopSetupModel
 	runOnce   runOnceModel
 	settings  settingsHubModel
+	plan      planModel
 
 	help    helpModel
 	palette paletteModel
@@ -267,6 +275,7 @@ func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
 		{actRun, "Run loop", "next ready ticket → PR"},
 		{actRunOnce, "Run once", "pick one ticket to run"},
 		{actDryRun, "Dry run", "preview the next ticket"},
+		{actPlan, "Plan", "raw idea → PRD"},
 		{actMore, "More…", "status · reset · version"},
 		{actQuit, "Quit", ""},
 	}
@@ -348,6 +357,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runOnce, _ = m.runOnce.Update(msg)
 		m.settings, _ = m.settings.Update(msg)
 		m.logs, _ = m.logs.Update(msg, m.actions.LogContent)
+		m.plan, _ = m.plan.Update(msg)
 		return m, nil
 
 	case tea.KeyPressMsg:
@@ -449,6 +459,8 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.runOnce, cmd = m.runOnce.Update(msg)
 	case viewSettings:
 		m.settings, cmd = m.settings.Update(msg)
+	case viewPlan:
+		m.plan, cmd = m.plan.Update(msg)
 	case viewRunning:
 		m.dash, cmd = applyDashCmd(m.dash, msg)
 	}
@@ -563,6 +575,11 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.runOnce, cmd = m.runOnce.Update(msg)
 		return m.afterRunOnce(cmd)
 
+	case viewPlan:
+		var cmd tea.Cmd
+		m.plan, cmd = m.plan.Update(msg)
+		return m.afterPlan(cmd)
+
 	case viewStatus:
 		return m.handleStatusKey(msg)
 
@@ -676,6 +693,15 @@ func (m appModel) afterRunOnce(cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	return m.startRunTicket(m.runOnce.Selected(), m.runOnce.Provider())
 }
 
+// afterPlan returns to the menu once the Plan screen backs out; otherwise it keeps
+// the screen active and propagates its command (starting a round, scrolling).
+func (m appModel) afterPlan(cmd tea.Cmd) (tea.Model, tea.Cmd) {
+	if m.plan.Cancelled() {
+		return m.toMenu(), nil
+	}
+	return m, cmd
+}
+
 func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// ctrl+c is the emergency stop and always wins, even mid-filter, so it can't be
 	// swallowed by the filter input.
@@ -755,6 +781,11 @@ func (m appModel) selectAction(a menuAction) (tea.Model, tea.Cmd) {
 		m.runOnce = newRunOnceModel(m.baseCtx, m.actions, m.styles, m.info, m.width, m.height)
 		m.view = viewRunOnce
 		return m, textinput.Blink
+
+	case actPlan:
+		m.plan = newPlanModel(m.baseCtx, m.actions, m.styles, m.width, m.height)
+		m.view = viewPlan
+		return m, m.plan.Init()
 
 	case actMore:
 		m.view = viewMore
@@ -1110,6 +1141,8 @@ func (m appModel) renderScreen() string {
 		return m.renderCard("Run loop", m.loopSetup.body(m.spin.View()), m.loopSetup.hint())
 	case viewRunOnce:
 		return m.renderCard("Run once", m.runOnce.body(m.spin.View()), m.runOnce.hint())
+	case viewPlan:
+		return m.plan.view(m.spin.View())
 	case viewMore:
 		return m.renderMore()
 	case viewSettings:
@@ -1329,6 +1362,8 @@ func (m appModel) helpFor() screenHelp {
 		return m.loopSetup.help()
 	case viewRunOnce:
 		return m.runOnce.help()
+	case viewPlan:
+		return m.plan.help()
 	case viewSettings:
 		return m.settings.help()
 	case viewOnboarding:
@@ -1352,6 +1387,8 @@ func (m appModel) editing() bool {
 		return m.onboard.editing()
 	case viewSettings:
 		return m.settings.editing()
+	case viewPlan:
+		return m.plan.editing()
 	case viewRunning:
 		return m.dash.filterActive() || m.dash.peeking()
 	}
