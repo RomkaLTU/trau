@@ -66,7 +66,7 @@ func (m model) spanPaneTitle() string {
 func (m model) tierTitle() string {
 	switch m.tier {
 	case tierFeed:
-		return "Activity feed"
+		return fmt.Sprintf("Activity feed · %d/%d", doneSteps(m.steps), len(m.steps))
 	case tierRaw:
 		return "Raw log"
 	default:

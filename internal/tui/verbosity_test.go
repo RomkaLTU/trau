@@ -17,28 +17,21 @@ func pressDash(m model, msg tea.KeyPressMsg) model {
 	return nm.(model)
 }
 
-// v cycles the pane through spans → feed → raw → spans, and the pane title names
-// the active tier at each step.
+// v cycles the pane through feed → raw → spans → feed, and the pane title names
+// the active tier at each step. The feed is the default so a fresh dashboard
+// opens on the live activity, not the mostly-empty span fold.
 func TestVerbosityTierCycling(t *testing.T) {
 	m := initialModel(nil)
-	if m.tier != tierSpans {
-		t.Fatalf("default tier = %v, want spans", m.tier)
-	}
-	if !strings.HasPrefix(m.tierTitle(), "Pipeline") {
-		t.Errorf("spans title = %q, want Pipeline prefix", m.tierTitle())
-	}
-
-	m = pressDash(m, keyRune('v'))
 	if m.tier != tierFeed {
-		t.Fatalf("after 1st v, tier = %v, want feed", m.tier)
+		t.Fatalf("default tier = %v, want feed", m.tier)
 	}
-	if m.tierTitle() != "Activity feed" {
-		t.Errorf("feed title = %q", m.tierTitle())
+	if !strings.HasPrefix(m.tierTitle(), "Activity feed") {
+		t.Errorf("feed title = %q, want Activity feed prefix", m.tierTitle())
 	}
 
 	m = pressDash(m, keyRune('v'))
 	if m.tier != tierRaw {
-		t.Fatalf("after 2nd v, tier = %v, want raw", m.tier)
+		t.Fatalf("after 1st v, tier = %v, want raw", m.tier)
 	}
 	if m.tierTitle() != "Raw log" {
 		t.Errorf("raw title = %q", m.tierTitle())
@@ -46,7 +39,15 @@ func TestVerbosityTierCycling(t *testing.T) {
 
 	m = pressDash(m, keyRune('v'))
 	if m.tier != tierSpans {
-		t.Fatalf("after 3rd v, tier = %v, want spans (wrapped)", m.tier)
+		t.Fatalf("after 2nd v, tier = %v, want spans", m.tier)
+	}
+	if !strings.HasPrefix(m.tierTitle(), "Pipeline") {
+		t.Errorf("spans title = %q, want Pipeline prefix", m.tierTitle())
+	}
+
+	m = pressDash(m, keyRune('v'))
+	if m.tier != tierFeed {
+		t.Fatalf("after 3rd v, tier = %v, want feed (wrapped)", m.tier)
 	}
 }
 
@@ -140,6 +141,7 @@ func TestFilterInputLifecycle(t *testing.T) {
 // / is inert on the span tier — there is nothing to filter there.
 func TestSlashInertOnSpanTier(t *testing.T) {
 	m := initialModel(nil)
+	m.tier = tierSpans
 	m = pressDash(m, keyRune('/'))
 	if m.filterActive() {
 		t.Error("/ should not open the filter on the span tier")
@@ -149,10 +151,10 @@ func TestSlashInertOnSpanTier(t *testing.T) {
 // The chosen tier and filter survive a ticket transition within a run.
 func TestTierSurvivesTicketTransition(t *testing.T) {
 	m := initialModel(nil)
-	m = pressDash(m, keyRune('v')) // feed
+	m = pressDash(m, keyRune('v')) // raw
 	m.filter = "verify"
 	m.startTicket("COD-1")
-	if m.tier != tierFeed {
+	if m.tier != tierRaw {
 		t.Errorf("tier reset on ticket start: %v", m.tier)
 	}
 	if m.filter != "verify" {
@@ -169,7 +171,7 @@ func TestFilterInputOwnsKeysInAppShell(t *testing.T) {
 	napp, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
 	app = napp.(appModel)
 	app.view = viewRunning
-	app.dash = app.dash.cycleTier() // feed
+	app.dash = app.dash.cycleTier() // raw
 	app.dash.filtering = true
 
 	if !app.editing() {

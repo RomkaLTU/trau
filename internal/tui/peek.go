@@ -18,7 +18,7 @@ import (
 
 const (
 	peekMinRows = 3
-	peekMaxRows = 16
+	peekMaxRows = 20
 )
 
 // peeking reports whether the preview overlay is open, so the app shell routes
@@ -180,8 +180,8 @@ func (m model) renderPeekPanel(w, hgt int) string {
 		return ""
 	}
 	innerW := w - 8
-	if innerW > 64 {
-		innerW = 64
+	if innerW > 96 {
+		innerW = 96
 	}
 	if innerW < 24 {
 		innerW = 24

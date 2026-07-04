@@ -262,7 +262,7 @@ func setMouseEnabled(on bool) { zone.SetEnabled(on) }
 // overlayMouseOff floats the mouse-off indicator over the bottom-right of the frame
 // so the mode shows on every screen without threading the flag through each footer.
 func overlayMouseOff(s Styles, base string, w, h int) string {
-	tag := s.Subtle.Render(" mouse off · ctrl+t to select ")
+	tag := s.Subtle.Render(" mouse off — select/copy text · ctrl+t mouse on ")
 	tw := lipgloss.Width(tag)
 	if w < tw || h < 2 {
 		return base

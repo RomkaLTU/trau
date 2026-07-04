@@ -27,11 +27,10 @@ import (
 const maxLogLines = 1000
 
 const (
-	leftPaneW = 32 // pipeline pane total width (incl. borders)
-	hudH      = 4  // usage strip: title row + 2 content rows + bottom border
-	headerH   = 2  // brand row + rule
-	footerH   = 1
-	panelGap  = 1 // vertical blank line between stacked regions
+	hudH     = 4 // usage strip: title row + 2 content rows + bottom border
+	headerH  = 2 // brand row + rule
+	footerH  = 1
+	panelGap = 1 // vertical blank line between stacked regions
 
 	// The running body splits into the span pane (left) and the queue rail
 	// (right). The rail takes ~a third of the width, clamped, and is dropped
@@ -80,7 +79,7 @@ func (m model) runningHelp() screenHelp {
 			fk("l", "jump to logs"),
 		),
 		group("View",
-			fk("v", "cycle spans/feed/raw"),
+			fk("v", "cycle feed/raw/spans"),
 			fk("/", "filter feed/raw"),
 			xk("esc", "clear filter"),
 		),
@@ -93,6 +92,7 @@ func (m model) runningHelp() screenHelp {
 		group("Session",
 			fk("q", "quit/stop"),
 			xk("ctrl+c", "force quit"),
+			xk("ctrl+t", "toggle mouse (select text)"),
 		),
 	}}
 }
@@ -101,7 +101,7 @@ func (m model) runningHelp() screenHelp {
 // selected rail row, plus watch and stop. A pending reset shows the confirm.
 func (m model) runningHint() string {
 	if m.streaming {
-		return "esc detach · f follow · q stop"
+		return "esc detach · f follow · ctrl+t select · q stop"
 	}
 	if m.filtering {
 		return "type to filter · enter apply · esc clear"
@@ -144,7 +144,7 @@ func (m model) summaryHelp() screenHelp {
 			fk("b", "checkout branch"),
 			fk("x", "reset ticket"),
 		),
-		group("Session", fk("esc/q", "close")),
+		group("Session", fk("esc/q", "close"), xk("ctrl+t", "toggle mouse (select text)")),
 	}}
 }
 
@@ -165,8 +165,8 @@ type model struct {
 	usage     usageStats
 	win       usage.Window
 
-	// verbosity ladder (v cycles): the span pane can show the folded spans
-	// (default), the full classified activity feed, or the raw pre-classification
+	// verbosity ladder (v cycles): the span pane can show the classified activity
+	// feed (default), the folded spans, or the raw pre-classification
 	// lines. raw retains the sanitized lines exactly as addLog received them so the
 	// raw tier can show what classification collapsed. filter narrows the feed/raw
 	// tiers live; filtering is true while its input is capturing keys.
@@ -306,6 +306,7 @@ func initialModel(onInterrupt func()) model {
 		steps:       phaseSteps(),
 		spin:        s,
 		viewport:    vp,
+		tier:        tierFeed,
 		feed:        make([]feedEntry, 0, maxLogLines),
 		raw:         make([]string, 0, maxLogLines),
 		following:   true,
@@ -625,16 +626,15 @@ func (m model) dims() dims {
 	return dims{bodyH: bodyH, bodyW: bodyW, spanW: spanW, railW: railW, vpW: vpW, vpH: vpH}
 }
 
+// LiveAgentSize is the agent pty size: the inner box of the attached live view,
+// which owns the full body width (see renderStream), so the transcript renders
+// edge to edge when attached.
 func LiveAgentSize(termW, termH int) (cols, rows int) {
 	bodyH := termH - headerH - hudH - footerH - 3*panelGap
 	if bodyH < 6 {
 		bodyH = 6
 	}
-	rightW := termW - leftPaneW
-	if rightW < 24 {
-		rightW = 24
-	}
-	cols = rightW - 4
+	cols = termW - 4
 	if cols < 12 {
 		cols = 12
 	}

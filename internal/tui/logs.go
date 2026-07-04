@@ -249,7 +249,7 @@ func (m logsModel) help() screenHelp {
 			xk("shift+↑↓", "half-page"),
 			fk("g/G", "jump"),
 		),
-		group("Session", fk("esc/q", "back")),
+		group("Session", fk("esc/q", "back"), xk("ctrl+t", "toggle mouse (select text)")),
 	}}
 }
 
