@@ -69,6 +69,14 @@ func (f *fakeAppActions) RevisePlan(context.Context, string, string) (PlanOutcom
 
 func (f *fakeAppActions) ApprovePlan(context.Context, string) error { return nil }
 
+func (f *fakeAppActions) ListPlans() []PlanSession { return nil }
+
+func (f *fakeAppActions) ResumePlan(context.Context, string) (PlanOutcome, error) {
+	return PlanOutcome{Status: "prd", Title: "Draft PRD", Markdown: "# Draft PRD\n\nbody"}, nil
+}
+
+func (f *fakeAppActions) AbortPlan(context.Context, string) error { return nil }
+
 // TestScreensRenderAcrossSizes walks the menu shell into every view at the
 // three reference terminal sizes and renders each one, so a regression in any
 // screen's layout code fails here instead of at runtime.

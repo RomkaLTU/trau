@@ -131,6 +131,12 @@ func (s *Session) Approve() error {
 	return s.setPhase(PhasePRDReady)
 }
 
+// Abort marks the session aborted — a terminal side-exit reachable from any phase.
+// It only flips the checkpoint; it never touches the tracker, so any issues an
+// already-published session created are left untouched, and the publish and slice
+// steps refuse a Terminal session so nothing further is ever created from it.
+func (s *Session) Abort() error { return s.setPhase(PhaseAborted) }
+
 // get returns the value of a state key, or "" when the file or key is absent.
 func (s *Session) get(key string) string {
 	data, err := os.ReadFile(filepath.Join(s.dir, stateFile))

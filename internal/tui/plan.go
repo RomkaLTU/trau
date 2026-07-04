@@ -24,6 +24,19 @@ type PlanOutcome struct {
 	Note       string
 }
 
+// PlanSession is one durable plan session projected onto the Plan screen's list:
+// where it lives, its checkpoint phase, and the labels a row shows. Resumable is
+// false for a terminal (sliced or aborted) session, which lists for inspection or
+// cleanup rather than resume.
+type PlanSession struct {
+	Dir       string
+	Phase     string
+	Title     string
+	Idea      string
+	Updated   string
+	Resumable bool
+}
+
 type planStep int
 
 const (
@@ -33,6 +46,7 @@ const (
 	planPRD                       // PRD in a scrollable viewport
 	planRevise                    // entering a free-text change request
 	planNote                      // graceful message (approval, non-PRD result, or error)
+	planList                      // choosing a saved session to resume, abort, or inspect
 )
 
 // planModel is the Plan screen: paste/type a raw idea (or a file path), run one
@@ -50,6 +64,8 @@ type planModel struct {
 	changeNote textarea.Model
 	viewport   viewport.Model
 	pform      *planForm
+	sessions   []PlanSession
+	listCursor int
 	sessionDir string
 	title      string
 	note       string
@@ -68,6 +84,8 @@ type planFormSubmitMsg struct{}
 type planFormCancelMsg struct{}
 
 type planApprovedMsg struct{ err error }
+
+type planAbortDoneMsg struct{ err error }
 
 // planAccessibleDoneMsg carries the answers collected by the accessible runner
 // after the TUI resumed from tea.Exec, or the error it failed with.
@@ -93,6 +111,10 @@ func newPlanModel(ctx context.Context, actions Actions, styles Styles, w, h int)
 		idea:       ta,
 		changeNote: cn,
 		viewport:   viewport.New(),
+	}
+	m.sessions = actions.ListPlans()
+	if len(m.sessions) > 0 {
+		m.step = planList
 	}
 	m.relayout(w, h)
 	return m
@@ -209,6 +231,18 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 		m.step, m.note = planNote, "✓ PRD approved — checkpoint advanced to prd_ready. Publishing to the tracker is a later step."
 		return m, nil
 
+	case planAbortDoneMsg:
+		if msg.err != nil {
+			m.step, m.note = planNote, "✗ "+msg.err.Error()
+			return m, nil
+		}
+		m.sessions = m.actions.ListPlans()
+		if m.listCursor >= len(m.sessions) {
+			m.listCursor = len(m.sessions) - 1
+		}
+		m.step = planList
+		return m, nil
+
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
@@ -229,9 +263,16 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 
 func (m planModel) handleKey(msg tea.KeyPressMsg) (planModel, tea.Cmd) {
 	switch m.step {
+	case planList:
+		return m.handleListKey(msg)
+
 	case planInput:
 		switch msg.String() {
 		case "esc":
+			if len(m.sessions) > 0 {
+				m.step = planList
+				return m, nil
+			}
 			m.cancelled = true
 			return m, nil
 		case "ctrl+d":
@@ -312,6 +353,53 @@ func (m planModel) handleKey(msg tea.KeyPressMsg) (planModel, tea.Cmd) {
 	return m, nil
 }
 
+// handleListKey drives the saved-session list: move the cursor, resume or abort
+// the selected session, start a fresh idea, or back out to the menu.
+func (m planModel) handleListKey(msg tea.KeyPressMsg) (planModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.cancelled = true
+		return m, nil
+	case "up", "k":
+		if m.listCursor > 0 {
+			m.listCursor--
+		}
+		return m, nil
+	case "down", "j":
+		if m.listCursor < len(m.sessions)-1 {
+			m.listCursor++
+		}
+		return m, nil
+	case "n":
+		m.step = planInput
+		m.idea.Reset()
+		m.idea.Focus()
+		return m, textarea.Blink
+	case "enter":
+		sess := m.selectedSession()
+		if sess == nil {
+			return m, nil
+		}
+		m.sessionDir = sess.Dir
+		m.step = planRunning
+		return m, m.resumePlanCmd(sess.Dir)
+	case "x":
+		sess := m.selectedSession()
+		if sess == nil || !sess.Resumable {
+			return m, nil
+		}
+		return m, m.abortPlanCmd(sess.Dir)
+	}
+	return m, nil
+}
+
+func (m planModel) selectedSession() *PlanSession {
+	if m.listCursor < 0 || m.listCursor >= len(m.sessions) {
+		return nil
+	}
+	return &m.sessions[m.listCursor]
+}
+
 func (m planModel) handleMouseClick(msg tea.MouseClickMsg) (planModel, tea.Cmd) {
 	if m.step != planPRD {
 		return m, nil
@@ -349,6 +437,21 @@ func (m planModel) approvePlanCmd() tea.Cmd {
 	actions, ctx, dir := m.actions, m.ctx, m.sessionDir
 	return func() tea.Msg {
 		return planApprovedMsg{err: actions.ApprovePlan(ctx, dir)}
+	}
+}
+
+func (m planModel) resumePlanCmd(dir string) tea.Cmd {
+	actions, ctx := m.actions, m.ctx
+	return func() tea.Msg {
+		out, err := actions.ResumePlan(ctx, dir)
+		return planDoneMsg{out: out, err: err}
+	}
+}
+
+func (m planModel) abortPlanCmd(dir string) tea.Cmd {
+	actions, ctx := m.actions, m.ctx
+	return func() tea.Msg {
+		return planAbortDoneMsg{err: actions.AbortPlan(ctx, dir)}
 	}
 }
 
@@ -451,6 +554,8 @@ func (m planModel) view(spinner string) string {
 func (m planModel) body(spinner string) string {
 	s := m.styles
 	switch m.step {
+	case planList:
+		return m.listBody()
 	case planRunning:
 		return spinner + " " + s.Subtle.Render("running a planning round — a fresh agent is reading the idea and your answers…")
 	case planQuestions:
@@ -478,12 +583,34 @@ func (m planModel) body(spinner string) string {
 	}
 }
 
+// listBody renders the saved-session list: each row is its checkpoint state
+// (the phase) beside the PRD title, or the idea's first line before one exists.
+func (m planModel) listBody() string {
+	s := m.styles
+	intro := s.Subtle.Render("Resume an in-flight plan session, abort one, or start a new idea.")
+	rows := make([]string, 0, len(m.sessions))
+	for i, sess := range m.sessions {
+		label := strings.TrimSpace(sess.Title)
+		if label == "" {
+			label = sess.Idea
+		}
+		rows = append(rows, listRow(s, i == m.listCursor, sess.Phase, truncate(label, m.width-20), 12))
+	}
+	return intro + "\n\n" + strings.Join(rows, "\n")
+}
+
 func (m planModel) hint() string { return m.help().footer() }
 
 // help is the Plan screen's key legend per step: the single source for its footer
 // and the ? overlay.
 func (m planModel) help() screenHelp {
 	switch m.step {
+	case planList:
+		return screenHelp{title: "Plan · sessions", columns: []helpColumn{
+			group("Navigate", fk("↑↓", "move")),
+			group("Session", fk("enter", "resume"), fk("x", "abort"), fk("n", "new idea")),
+			group("Actions", fk("esc/q", "back")),
+		}}
 	case planRunning:
 		return screenHelp{title: "Plan", columns: []helpColumn{
 			group("Session", fk("esc", "cancel")),

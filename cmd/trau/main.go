@@ -1792,8 +1792,81 @@ func (a *appActions) ApprovePlan(_ context.Context, dir string) error {
 	return planning.OpenSession(dir).Approve()
 }
 
+// ListPlans projects every durable plan session onto the Plan screen's list. It
+// reads local session state under _plans/ directly — no runner is built and no
+// tracker is touched.
+func (a *appActions) ListPlans() []tui.PlanSession {
+	infos := planning.List(a.plansRoot())
+	out := make([]tui.PlanSession, len(infos))
+	for i, si := range infos {
+		out[i] = tui.PlanSession{
+			Dir:       si.Dir,
+			Phase:     si.Phase,
+			Title:     si.Title,
+			Idea:      si.Idea,
+			Updated:   si.Updated,
+			Resumable: si.Resumable(),
+		}
+	}
+	return out
+}
+
+// ResumePlan re-enters the plan session at dir at the step its checkpoint dictates,
+// rebuilding it from the durable artifacts alone: a round re-runs to re-ask the
+// pending questions (or draft the PRD at the cap), a drafted PRD reopens for review,
+// and a step not yet wired surfaces a graceful note. Only the round step builds the
+// runner; the rest read from disk.
+func (a *appActions) ResumePlan(ctx context.Context, dir string) (tui.PlanOutcome, error) {
+	sess := planning.OpenSession(dir)
+	switch planning.ResumeStepFor(sess.Phase()) {
+	case planning.StepRound:
+		if err := a.ensure(); err != nil {
+			return tui.PlanOutcome{}, err
+		}
+		rr, err := a.planOrchestrator().ResumeRound(ctx, sess)
+		if err != nil {
+			return tui.PlanOutcome{}, err
+		}
+		return planOutcome(rr), nil
+	case planning.StepReview:
+		prd, ok := sess.PRD()
+		if !ok {
+			return tui.PlanOutcome{}, fmt.Errorf("planning: session at %s is under review with no drafted PRD", dir)
+		}
+		return tui.PlanOutcome{Status: string(planning.StatusPRD), SessionDir: dir, Title: prd.Title, Markdown: prd.Markdown}, nil
+	default:
+		return tui.PlanOutcome{SessionDir: dir, Note: resumeNote(sess.Phase())}, nil
+	}
+}
+
+// AbortPlan marks the plan session at dir aborted — terminal. It is a pure local
+// checkpoint write that builds no runner and touches no tracker, so a session can
+// always be abandoned even when provider config is broken.
+func (a *appActions) AbortPlan(_ context.Context, dir string) error {
+	return planning.OpenSession(dir).Abort()
+}
+
+// resumeNote is the graceful line the Plan screen shows for a session whose resume
+// step is past the review loop this slice wires up.
+func resumeNote(phase string) string {
+	switch phase {
+	case planning.PhasePRDReady:
+		return "This PRD is approved. Publishing it to the tracker is a later step."
+	case planning.PhasePublished:
+		return "This PRD is published. Reviewing its slices is a later step."
+	case planning.PhaseSliced:
+		return "This plan session is complete — all its slices were published."
+	case planning.PhaseAborted:
+		return "This plan session was aborted."
+	default:
+		return "This plan session has nothing left to resume."
+	}
+}
+
+func (a *appActions) plansRoot() string { return filepath.Join(a.cfg.RunsDir, "_plans") }
+
 func (a *appActions) planOrchestrator() *planning.Orchestrator {
-	return planning.NewOrchestrator(a.runner, filepath.Join(a.cfg.RunsDir, "_plans")).
+	return planning.NewOrchestrator(a.runner, a.plansRoot()).
 		WithMaxRounds(a.cfg.MaxPlanRounds)
 }
 

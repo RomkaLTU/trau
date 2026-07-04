@@ -126,6 +126,13 @@ func (o *Orchestrator) ReviseRound(ctx context.Context, sess *Session, note stri
 	return &RoundResult{Session: sess, Payload: payload}, nil
 }
 
+// ResumeRound re-runs a session's current round as a fresh process, rebuilding
+// the pending step from the idea and settled transcript alone — nothing already
+// answered is replayed, and nothing unanswered was ever persisted to lose.
+func (o *Orchestrator) ResumeRound(ctx context.Context, sess *Session) (*RoundResult, error) {
+	return o.round(ctx, sess)
+}
+
 // round runs one planning round against the session's accumulated context: it
 // builds the prompt from the idea and transcript, runs a fresh agent process,
 // validates the payload, enforces the round cap, and checkpoints the outcome —
