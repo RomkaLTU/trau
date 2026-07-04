@@ -127,7 +127,7 @@ func TestCreateIssueResolvesTypeAndPosts(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	key, err := New(srv.URL, "me@acme.com", "tok").CreateIssue(context.Background(), "PROJ", "Bug", "It broke", "Line one\nLine two", []string{"HITL"})
+	key, err := New(srv.URL, "me@acme.com", "tok").CreateIssue(context.Background(), "PROJ", "Bug", "It broke", "Line one\nLine two", []string{"HITL"}, "")
 	if err != nil {
 		t.Fatalf("CreateIssue error: %v", err)
 	}
@@ -139,6 +139,9 @@ func TestCreateIssueResolvesTypeAndPosts(t *testing.T) {
 	}
 	if req.Fields.Project.Key != "PROJ" {
 		t.Errorf("project key = %q, want PROJ", req.Fields.Project.Key)
+	}
+	if req.Fields.Parent != nil {
+		t.Errorf("parent = %+v, want the field omitted for an empty parent", req.Fields.Parent)
 	}
 	if req.Fields.IssueType.ID != "10004" {
 		t.Errorf("issuetype id = %q, want 10004 (Bug)", req.Fields.IssueType.ID)
@@ -155,6 +158,34 @@ func TestCreateIssueResolvesTypeAndPosts(t *testing.T) {
 	}
 }
 
+// A non-empty parent lands as the unified parent field on the create POST, so
+// the issue nests under its epic at creation time.
+func TestCreateIssueSetsParent(t *testing.T) {
+	var req createIssueRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"values":[{"id":"10001","name":"Task"}]}`))
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"10501","key":"PROJ-501"}`))
+	}))
+	defer srv.Close()
+
+	key, err := New(srv.URL, "me@acme.com", "tok").CreateIssue(context.Background(), "PROJ", "Task", "Child", "body", nil, "PROJ-500")
+	if err != nil {
+		t.Fatalf("CreateIssue error: %v", err)
+	}
+	if key != "PROJ-501" {
+		t.Errorf("key = %q, want PROJ-501", key)
+	}
+	if req.Fields.Parent == nil || req.Fields.Parent.Key != "PROJ-500" {
+		t.Errorf("parent = %+v, want key PROJ-500", req.Fields.Parent)
+	}
+}
+
 // An issue type the project lacks is a real error, surfaced to the caller.
 func TestCreateIssueUnknownType(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -166,16 +197,16 @@ func TestCreateIssueUnknownType(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := New(srv.URL, "me@acme.com", "tok").CreateIssue(context.Background(), "PROJ", "Bug", "s", "d", nil); err == nil {
+	if _, err := New(srv.URL, "me@acme.com", "tok").CreateIssue(context.Background(), "PROJ", "Bug", "s", "d", nil, ""); err == nil {
 		t.Fatal("CreateIssue with an unknown type should error, got nil")
 	}
 }
 
 func TestCreateIssueDisabled(t *testing.T) {
-	if _, err := New("", "", "").CreateIssue(context.Background(), "PROJ", "Bug", "s", "d", nil); !errors.Is(err, ErrNotEnabled) {
+	if _, err := New("", "", "").CreateIssue(context.Background(), "PROJ", "Bug", "s", "d", nil, ""); !errors.Is(err, ErrNotEnabled) {
 		t.Errorf("no token: err = %v, want ErrNotEnabled", err)
 	}
-	if _, err := New("https://x.atlassian.net", "me@acme.com", "tok").CreateIssue(context.Background(), " ", "Bug", "s", "d", nil); !errors.Is(err, ErrNotEnabled) {
+	if _, err := New("https://x.atlassian.net", "me@acme.com", "tok").CreateIssue(context.Background(), " ", "Bug", "s", "d", nil, ""); !errors.Is(err, ErrNotEnabled) {
 		t.Errorf("empty project: err = %v, want ErrNotEnabled", err)
 	}
 }

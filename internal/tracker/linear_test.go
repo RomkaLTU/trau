@@ -218,13 +218,18 @@ func TestPickParentScopeNoLeaves(t *testing.T) {
 type recordingRunner struct {
 	responses map[string]agent.Result
 	calls     map[string]int
+	prompts   map[string]string
 }
 
-func (r *recordingRunner) Run(_ context.Context, _ string, label string) (agent.Result, error) {
+func (r *recordingRunner) Run(_ context.Context, prompt string, label string) (agent.Result, error) {
 	if r.calls == nil {
 		r.calls = make(map[string]int)
 	}
+	if r.prompts == nil {
+		r.prompts = make(map[string]string)
+	}
 	r.calls[label]++
+	r.prompts[label] = prompt
 	res, ok := r.responses[label]
 	if !ok {
 		return agent.Result{}, fmt.Errorf("no fake response for label %q", label)
