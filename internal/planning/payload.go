@@ -80,6 +80,8 @@ type PRD struct {
 }
 
 // Slice is one independently-grabbable unit of work a PRD was broken into.
+// After lists the titles of earlier slices this one is blocked by; the drafts
+// carry no identifiers until they are created, so titles are the references.
 type Slice struct {
 	Title       string   `json:"title"`
 	Description string   `json:"description"`
@@ -125,18 +127,39 @@ func (p Payload) validate() error {
 			return fmt.Errorf("planning payload: status %q missing prd markdown", p.Status)
 		}
 	case StatusSlices:
-		if len(p.Slices) == 0 {
-			return fmt.Errorf("planning payload: status %q has no slices", p.Status)
-		}
-		for i, s := range p.Slices {
-			if strings.TrimSpace(s.Title) == "" {
-				return fmt.Errorf("planning payload: slice %d missing title", i)
-			}
+		if err := ValidateSlices(p.Slices); err != nil {
+			return err
 		}
 	case "":
 		return fmt.Errorf("planning payload: missing status")
 	default:
 		return fmt.Errorf("planning payload: unknown status %q", p.Status)
+	}
+	return nil
+}
+
+// ValidateSlices checks a slice list is creatable: non-empty, every slice titled,
+// and every "after" reference naming a slice that comes earlier in the order —
+// children are created front to back, so a reference to a later (or unknown)
+// slice could never resolve to a created issue. It runs both on the agent's
+// payload and again on the reviewed drafts, whose edits, drops, and reorders can
+// break references the payload had intact.
+func ValidateSlices(slices []Slice) error {
+	if len(slices) == 0 {
+		return fmt.Errorf("planning payload: status %q has no slices", StatusSlices)
+	}
+	earlier := make(map[string]bool, len(slices))
+	for i, s := range slices {
+		title := strings.TrimSpace(s.Title)
+		if title == "" {
+			return fmt.Errorf("planning payload: slice %d missing title", i)
+		}
+		for _, ref := range s.After {
+			if !earlier[strings.TrimSpace(ref)] {
+				return fmt.Errorf("planning payload: slice %d (%s) has unknown \"after\" reference %q — it must name an earlier slice", i, title, ref)
+			}
+		}
+		earlier[title] = true
 	}
 	return nil
 }

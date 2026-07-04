@@ -1788,6 +1788,31 @@ func (a *appActions) ApprovePlan(ctx context.Context, dir string) (tui.PublishOu
 	return tui.PublishOutcome{Epic: res.Epic, Published: res.Published}, nil
 }
 
+// SlicePlan runs the slice round on the published plan session at dir: a fresh
+// agent process routed by the "slice" phase re-reads the published PRD and drafts
+// the epic's tracer-bullet child issues for the review list. Drafts only —
+// nothing is created until CreateSlices confirms the review.
+func (a *appActions) SlicePlan(ctx context.Context, dir string) (tui.PlanOutcome, error) {
+	return a.runPlanRound(func(o *planning.Orchestrator) (*planning.RoundResult, error) {
+		return o.SliceRound(ctx, planning.OpenSession(dir))
+	})
+}
+
+// CreateSlices creates the reviewed slice drafts as children of the plan session's
+// published epic in the reviewed order, each carrying the configured ready label
+// (the epic itself never gets it), and advances the checkpoint to sliced. No agent
+// runs — the tracker is driven directly — but ensure() still wires it. The outcome
+// carries any children created even on error, so the surface can tell an untouched
+// tracker from a partial creation.
+func (a *appActions) CreateSlices(ctx context.Context, dir string, slices []tui.PlanSlice) (tui.SliceOutcome, error) {
+	if err := a.ensure(); err != nil {
+		return tui.SliceOutcome{}, err
+	}
+	sess := planning.OpenSession(dir)
+	res, err := a.planOrchestrator().CreateSlices(ctx, sess, a.tracker, reviewedSlices(slices), a.cfg.ReadyLabel)
+	return tui.SliceOutcome{Epic: sess.Epic(), Children: res.Children, Created: res.Created}, err
+}
+
 // ListPlans projects every durable plan session onto the Plan screen's list. It
 // reads local session state under _plans/ directly — no runner is built and no
 // tracker is touched.
@@ -1810,8 +1835,9 @@ func (a *appActions) ListPlans() []tui.PlanSession {
 // ResumePlan re-enters the plan session at dir at the step its checkpoint dictates,
 // rebuilding it from the durable artifacts alone: a round re-runs to re-ask the
 // pending questions (or draft the PRD at the cap), a drafted PRD reopens for review,
-// and a step not yet wired surfaces a graceful note. Only the round step builds the
-// runner; the rest read from disk.
+// a published session re-drafts its slices, and a step not yet wired surfaces a
+// graceful note. Only the round and slice steps build the runner; the rest read
+// from disk.
 func (a *appActions) ResumePlan(ctx context.Context, dir string) (tui.PlanOutcome, error) {
 	sess := planning.OpenSession(dir)
 	switch planning.ResumeStepFor(sess.Phase()) {
@@ -1825,6 +1851,8 @@ func (a *appActions) ResumePlan(ctx context.Context, dir string) (tui.PlanOutcom
 			return tui.PlanOutcome{}, fmt.Errorf("planning: session at %s is under review with no drafted PRD", dir)
 		}
 		return tui.PlanOutcome{Status: string(planning.StatusPRD), SessionDir: dir, Title: prd.Title, Markdown: prd.Markdown}, nil
+	case planning.StepSlice:
+		return a.SlicePlan(ctx, dir)
 	default:
 		return tui.PlanOutcome{SessionDir: dir, Note: resumeNote(sess.Phase())}, nil
 	}
@@ -1843,8 +1871,6 @@ func resumeNote(phase string) string {
 	switch phase {
 	case planning.PhasePRDReady:
 		return "This PRD is approved. Publishing it to the tracker is a later step."
-	case planning.PhasePublished:
-		return "This PRD is published. Reviewing its slices is a later step."
 	case planning.PhaseSliced:
 		return "This plan session is complete — all its slices were published."
 	case planning.PhaseAborted:
@@ -1903,6 +1929,25 @@ func planOutcome(rr *planning.RoundResult) tui.PlanOutcome {
 		}
 	case planning.StatusQuestions:
 		out.Questions = planQuestions(p.Questions)
+	case planning.StatusSlices:
+		out.Epic = rr.Session.Epic()
+		out.Slices = planSliceDrafts(p.Slices)
+	}
+	return out
+}
+
+func planSliceDrafts(in []planning.Slice) []tui.PlanSlice {
+	out := make([]tui.PlanSlice, len(in))
+	for i, s := range in {
+		out[i] = tui.PlanSlice{Title: s.Title, Description: s.Description, Labels: s.Labels, After: s.After}
+	}
+	return out
+}
+
+func reviewedSlices(in []tui.PlanSlice) []planning.Slice {
+	out := make([]planning.Slice, len(in))
+	for i, s := range in {
+		out[i] = planning.Slice{Title: s.Title, Description: s.Description, Labels: s.Labels, After: s.After}
 	}
 	return out
 }

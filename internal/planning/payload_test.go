@@ -38,6 +38,11 @@ func TestParseValid(t *testing.T) {
 			raw:  `{"status":"slices","slices":[{"title":"first slice"}]}`,
 			want: StatusSlices,
 		},
+		{
+			name: "slices with after references",
+			raw:  `{"status":"slices","slices":[{"title":"first"},{"title":"second","after":["first"]}]}`,
+			want: StatusSlices,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -90,6 +95,7 @@ func TestParseRejects(t *testing.T) {
 		{"option-less multi select", `{"status":"questions","questions":[{"id":"q1","text":"pick?","kind":"multi"}]}`},
 		{"slices empty", `{"status":"slices","slices":[]}`},
 		{"slice missing title", `{"status":"slices","slices":[{"description":"x"}]}`},
+		{"slice unknown after reference", `{"status":"slices","slices":[{"title":"first","after":["nowhere"]}]}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

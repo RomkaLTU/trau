@@ -2,10 +2,12 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
@@ -18,17 +20,24 @@ import (
 // arrives while the terminal is unfocused, so a long round never silently stalls.
 const planQuestionsNotify = "planning needs answers — a question round is waiting"
 
+// planSlicesNotify is the same nudge for the slice round: drafted slices are
+// waiting for review.
+const planSlicesNotify = "planning drafted slices — a review is waiting"
+
 // PlanOutcome is a planning round's result surfaced to the Plan screen. Status is
 // the payload status; for a PRD, Title and Markdown carry the document; for
-// questions, Questions carries them. SessionDir is the durable plan session the
-// round ran under, so the next round can be answered against it. Note holds a
-// graceful one-line message for a status the screen does not action.
+// questions, Questions carries them; for slices, Slices carries the drafts and
+// Epic the published epic they would be created under. SessionDir is the durable
+// plan session the round ran under, so the next round can be answered against it.
+// Note holds a graceful one-line message for a status the screen does not action.
 type PlanOutcome struct {
 	Status     string
 	SessionDir string
+	Epic       string
 	Title      string
 	Markdown   string
 	Questions  []PlanQuestion
+	Slices     []PlanSlice
 	Note       string
 }
 
@@ -53,6 +62,8 @@ const (
 	planQuestions                 // answering a round of questions
 	planPRD                       // PRD in a scrollable viewport
 	planRevise                    // entering a free-text change request
+	planSlices                    // reviewing drafted slices before anything is created
+	planCreating                  // creating the confirmed slices as children of the epic
 	planNote                      // graceful message (approval, non-PRD result, or error)
 	planList                      // choosing a saved session to resume, abort, or inspect
 )
@@ -72,6 +83,7 @@ type planModel struct {
 	changeNote textarea.Model
 	viewport   viewport.Model
 	pform      *planForm
+	slices     sliceReview
 	sessions   []PlanSession
 	listCursor int
 	sessionDir string
@@ -104,6 +116,11 @@ type planApprovedMsg struct {
 }
 
 type planAbortDoneMsg struct{ err error }
+
+type planSlicesDoneMsg struct {
+	out SliceOutcome
+	err error
+}
 
 // planAccessibleDoneMsg carries the answers collected by the accessible runner
 // after the TUI resumed from tea.Exec, or the error it failed with.
@@ -215,6 +232,13 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 			m.step = planQuestions
 			cmds = append(cmds, m.pform.form.Init())
 			return m, tea.Batch(cmds...)
+		case "slices":
+			m.slices = newSliceReview(msg.out.Epic, msg.out.Slices)
+			m.step = planSlices
+			if !m.focused {
+				return m, notifyCmd(m.notifier, "trau", planSlicesNotify)
+			}
+			return m, nil
 		default:
 			m.step, m.note = planNote, planStatusNote(msg.out)
 			return m, nil
@@ -270,7 +294,24 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 			m.step, m.note = planNote, "✗ "+msg.err.Error()
 			return m, nil
 		}
+		if msg.out.Published {
+			m.step = planRunning
+			return m, m.slicePlanCmd()
+		}
 		m.step, m.note = planNote, planPublishNote(msg.out)
+		return m, nil
+
+	case planSlicesDoneMsg:
+		if m.step != planCreating {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.step = planSlices
+			m.slices.err = msg.err.Error()
+			m.slices.created = msg.out.Children
+			return m, nil
+		}
+		m.step, m.note = planNote, sliceCreatedNote(msg.out)
 		return m, nil
 
 	case planAbortDoneMsg:
@@ -299,6 +340,10 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 		m.viewport, cmd = m.viewport.Update(msg)
 	case planRevise:
 		m.changeNote, cmd = m.changeNote.Update(msg)
+	case planSlices:
+		if m.slices.editing {
+			m.slices.input, cmd = m.slices.input.Update(msg)
+		}
 	}
 	return m, cmd
 }
@@ -404,6 +449,57 @@ func (m planModel) handleKey(msg tea.KeyPressMsg) (planModel, tea.Cmd) {
 		var cmd tea.Cmd
 		m.changeNote, cmd = m.changeNote.Update(msg)
 		return m, cmd
+
+	case planSlices:
+		return m.handleSlicesKey(msg)
+	}
+	return m, nil
+}
+
+// handleSlicesKey drives the slice review list: move the cursor, reorder, drop,
+// retitle, confirm the creation, or cancel with nothing created. While the inline
+// title editor is open it owns every key except its enter/esc exits.
+func (m planModel) handleSlicesKey(msg tea.KeyPressMsg) (planModel, tea.Cmd) {
+	if m.slices.editing {
+		switch msg.String() {
+		case "enter":
+			m.slices.commitEdit()
+			return m, nil
+		case "esc":
+			m.slices.cancelEdit()
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.slices.input, cmd = m.slices.input.Update(msg)
+		return m, cmd
+	}
+	switch msg.String() {
+	case "esc", "q":
+		m.sessions = m.actions.ListPlans()
+		m.listCursor = 0
+		m.step = planList
+		return m, nil
+	case "up", "k":
+		m.slices.move(-1)
+	case "down", "j":
+		m.slices.move(1)
+	case "shift+up", "K":
+		m.slices.moveRow(-1)
+	case "shift+down", "J":
+		m.slices.moveRow(1)
+	case "e", "enter":
+		m.slices.startEdit()
+		return m, textinput.Blink
+	case "x":
+		m.slices.toggleDrop()
+	case "c":
+		kept := m.slices.kept()
+		if len(kept) == 0 {
+			m.slices.err = "Nothing to create — every slice is dropped."
+			return m, nil
+		}
+		m.step = planCreating
+		return m, m.createSlicesCmd(kept)
 	}
 	return m, nil
 }
@@ -496,14 +592,39 @@ func (m planModel) approvePlanCmd() tea.Cmd {
 	}
 }
 
-// planPublishNote is the message shown after approving a PRD: the epic it was
-// published as, or a graceful note that the tracker cannot publish so the plan stays
-// local at prd_ready.
+// planPublishNote is the message shown when approving a PRD could not publish it:
+// the tracker lacks the capability, so the plan stays local at prd_ready. A
+// published approval flows straight into the slice round instead of a note.
 func planPublishNote(out PublishOutcome) string {
 	if out.Published {
 		return "✓ PRD approved and published as epic " + out.Epic + " — checkpoint advanced to published."
 	}
 	return "✓ PRD approved. This tracker can't publish plans, so it stays local at prd_ready."
+}
+
+// sliceCreatedNote is the message shown after a confirmed review created the
+// epic's children, closing the plan session.
+func sliceCreatedNote(out SliceOutcome) string {
+	if !out.Created {
+		return "Nothing created — this tracker can't create child issues, so the plan stays at published."
+	}
+	return fmt.Sprintf("✓ Created %d child issues under epic %s — checkpoint advanced to sliced. trau %s builds them.", len(out.Children), out.Epic, out.Epic)
+}
+
+func (m planModel) slicePlanCmd() tea.Cmd {
+	actions, ctx, dir := m.actions, m.ctx, m.sessionDir
+	return func() tea.Msg {
+		out, err := actions.SlicePlan(ctx, dir)
+		return planDoneMsg{out: out, err: err}
+	}
+}
+
+func (m planModel) createSlicesCmd(slices []PlanSlice) tea.Cmd {
+	actions, ctx, dir := m.actions, m.ctx, m.sessionDir
+	return func() tea.Msg {
+		out, err := actions.CreateSlices(ctx, dir, slices)
+		return planSlicesDoneMsg{out: out, err: err}
+	}
 }
 
 func (m planModel) resumePlanCmd(dir string) tea.Cmd {
@@ -587,31 +708,28 @@ func planErrNote(err error) string {
 	return "✗ " + msg
 }
 
-// planStatusNote flags a result the Plan screen does not action gracefully — the
-// slice round that would publish slices is a later slice.
+// planStatusNote flags a result the Plan screen does not action gracefully.
 func planStatusNote(out PlanOutcome) string {
 	if out.Note != "" {
 		return out.Note
 	}
-	switch out.Status {
-	case "slices":
-		return "The planner returned slices rather than a PRD. Slice publishing isn't wired up yet."
-	default:
-		return "The planner returned an unexpected result. Refine the idea and try again."
-	}
+	return "The planner returned an unexpected result. Refine the idea and try again."
 }
 
 func (m planModel) Cancelled() bool { return m.cancelled }
 
 // editing reports whether a free-text field owns input, so the global ? and :
 // overlays stay closed (both are valid characters in a raw idea or a typed
-// answer): the idea textarea, or a text/Other field of the question form.
+// answer): the idea textarea, a text/Other field of the question form, or the
+// slice review's inline title editor.
 func (m planModel) editing() bool {
 	switch m.step {
 	case planInput, planRevise:
 		return true
 	case planQuestions:
 		return m.pform != nil && m.pform.editing()
+	case planSlices:
+		return m.slices.editing
 	}
 	return false
 }
@@ -619,8 +737,11 @@ func (m planModel) editing() bool {
 func (m planModel) view(spinner string) string {
 	s := m.styles
 	title := "plan"
-	if m.step == planPRD && strings.TrimSpace(m.title) != "" {
+	switch {
+	case m.step == planPRD && strings.TrimSpace(m.title) != "":
 		title = "plan · " + truncate(m.title, m.width-16)
+	case (m.step == planSlices || m.step == planCreating) && m.slices.epic != "":
+		title = "plan · slices · " + m.slices.epic
 	}
 	header := s.Header.Render("⬡ trau") + "  " + s.SummaryTitle.Render(title)
 	sep := s.Separator.Render(strings.Repeat("─", m.width))
@@ -648,6 +769,10 @@ func (m planModel) body(spinner string) string {
 		return intro + "\n\n" + m.pform.form.View()
 	case planPRD:
 		return m.viewport.View()
+	case planSlices:
+		return m.slices.view(s, m.width)
+	case planCreating:
+		return spinner + " " + s.Subtle.Render(fmt.Sprintf("creating %d child issues under epic %s…", len(m.slices.kept()), m.slices.epic))
 	case planRevise:
 		rows := []string{s.Subtle.Render("Describe the changes you want. ctrl+d revises the PRD; esc keeps it."), m.changeNote.View()}
 		if m.badNote {
@@ -714,6 +839,19 @@ func (m planModel) help() screenHelp {
 		return screenHelp{title: "Plan · request changes", columns: []helpColumn{
 			group("Actions", fk("ctrl+d", "revise PRD"), fk("esc", "cancel")),
 		}}
+	case planSlices:
+		if m.slices.editing {
+			return screenHelp{title: "Plan · slices", columns: []helpColumn{
+				group("Edit title", fk("enter", "apply"), fk("esc", "keep old")),
+			}}
+		}
+		return screenHelp{title: "Plan · slices", columns: []helpColumn{
+			group("Navigate", fk("↑↓", "move"), fk("K/J", "reorder")),
+			group("Slice", fk("e/enter", "edit title"), fk("x", "drop/keep")),
+			group("Actions", fk("c", "create children"), fk("esc/q", "cancel")),
+		}}
+	case planCreating:
+		return screenHelp{title: "Plan · slices"}
 	case planNote:
 		return screenHelp{title: "Plan", columns: []helpColumn{
 			group("Actions", fk("e", "new idea"), fk("esc/q", "back")),

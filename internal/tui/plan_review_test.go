@@ -17,6 +17,7 @@ type planReviewFake struct {
 	approveDir     string
 	approved       bool
 	publishSkipped bool
+	sliceDir       string
 }
 
 func (f *planReviewFake) RevisePlan(_ context.Context, dir, note string) (PlanOutcome, error) {
@@ -30,6 +31,11 @@ func (f *planReviewFake) ApprovePlan(_ context.Context, dir string) (PublishOutc
 		return PublishOutcome{}, nil
 	}
 	return PublishOutcome{Epic: "COD-900", Published: true}, nil
+}
+
+func (f *planReviewFake) SlicePlan(_ context.Context, dir string) (PlanOutcome, error) {
+	f.sliceDir = dir
+	return PlanOutcome{Status: "slices", SessionDir: dir, Epic: "COD-900", Slices: []PlanSlice{{Title: "first slice"}}}, nil
 }
 
 // prdModel returns a Plan screen already showing a drafted PRD in the viewport.
@@ -133,7 +139,8 @@ func TestPlanRequestChangesCancel(t *testing.T) {
 }
 
 // TestPlanApprove approves the drafted PRD: a advances the checkpoint via
-// ApprovePlan and lands the screen on the approval confirmation.
+// ApprovePlan, and a published approval flows straight into the slice round whose
+// drafts land in the review list.
 func TestPlanApprove(t *testing.T) {
 	fake := &planReviewFake{}
 	m := prdModel(t, fake)
@@ -151,12 +158,24 @@ func TestPlanApprove(t *testing.T) {
 		t.Errorf("ApprovePlan not called with the session dir (approved=%v dir=%q)", fake.approved, fake.approveDir)
 	}
 
-	m, _ = m.Update(msg)
-	if m.step != planNote {
-		t.Fatalf("after approval step = %v, want planNote", m.step)
+	m, cmd = m.Update(msg)
+	if m.step != planRunning {
+		t.Fatalf("after publish step = %v, want planRunning (the slice round)", m.step)
 	}
-	if !strings.Contains(m.note, "approved") || !strings.Contains(m.note, "COD-900") {
-		t.Errorf("approval note = %q, want an approval + published-epic confirmation", m.note)
+	if cmd == nil {
+		t.Fatal("a published approval should return the SlicePlan cmd")
+	}
+	done, ok := cmd().(planDoneMsg)
+	if !ok || fake.sliceDir != "/plans/session-1" {
+		t.Fatalf("SlicePlan not driven against the session dir (msg ok=%v dir=%q)", ok, fake.sliceDir)
+	}
+
+	m, _ = m.Update(done)
+	if m.step != planSlices {
+		t.Fatalf("after slice drafts step = %v, want planSlices", m.step)
+	}
+	if !strings.Contains(m.body("·"), "first slice") {
+		t.Error("review list did not render the drafted slice")
 	}
 }
 

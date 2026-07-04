@@ -17,13 +17,14 @@ const (
 	PhaseLintfix = "lintfix"
 	PhaseCommit  = "commit"
 	PhasePlan    = "plan"
+	PhaseSlice   = "slice"
 	PhasePick    = "pick"
 )
 
 // Phases lists the routable phase keys in pipeline order (loop-level "pick" last).
-// "plan" is the planning module's entrypoint — routable like any phase, but not
-// part of the build→PR pipeline chain.
-var Phases = []string{PhaseBuild, PhaseHandoff, PhaseVerify, PhaseRepair, PhaseBugfix, PhaseCleanup, PhaseLintfix, PhaseCommit, PhasePlan, PhasePick}
+// "plan" and "slice" are the planning module's rounds — routable like any phase,
+// but not part of the build→PR pipeline chain.
+var Phases = []string{PhaseBuild, PhaseHandoff, PhaseVerify, PhaseRepair, PhaseBugfix, PhaseCleanup, PhaseLintfix, PhaseCommit, PhasePlan, PhaseSlice, PhasePick}
 
 // RouteKey normalizes a per-call label (the tag passed to Run) to its routable
 // phase. The pipeline emits dynamic labels — "verify-retry2", "repair1" — and the
@@ -49,17 +50,20 @@ func RouteKey(label string) string {
 		return PhaseCommit
 	case strings.HasPrefix(label, PhasePlan):
 		return PhasePlan
+	case strings.HasPrefix(label, PhaseSlice):
+		return PhaseSlice
 	default:
 		return PhasePick
 	}
 }
 
 // preambleFor returns the preamble a call's prompt is prefixed with: the
-// plan-scoped variant when the call routes to the plan phase and one is set,
-// otherwise the default unattended preamble. It is the one seam that makes the
-// planning Preamble apply to the plan label only, leaving pipeline phases strict.
+// plan-scoped variant when the call routes to a planning round (plan or slice)
+// and one is set, otherwise the default unattended preamble. It is the one seam
+// that scopes the planning Preamble to the planning labels, leaving pipeline
+// phases strict.
 func preambleFor(base, plan, label string) string {
-	if plan != "" && RouteKey(label) == PhasePlan {
+	if key := RouteKey(label); plan != "" && (key == PhasePlan || key == PhaseSlice) {
 		return plan
 	}
 	return base

@@ -93,10 +93,11 @@ func IsPaused(err error) bool {
 
 // runRound drives a single round's agent call through bounded transient-failure
 // recovery: the primary runner first, each retried on a fresh process up to
-// o.retries times, then the configured fallback providers. A rate/usage limit or
+// o.retries times, then the configured fallback providers. label routes the call
+// (plan for the PRD rounds, slice for the slice round). A rate/usage limit or
 // auth wall pauses immediately (never retried); an outer-context cancellation stops
 // without burning retries. The last error surfaces when the whole chain is spent.
-func (o *Orchestrator) runRound(ctx context.Context, prompt string) (agent.Result, error) {
+func (o *Orchestrator) runRound(ctx context.Context, prompt, label string) (agent.Result, error) {
 	chain := []agent.Runner{o.runner}
 	for _, r := range o.fallback {
 		if r != nil {
@@ -107,7 +108,7 @@ func (o *Orchestrator) runRound(ctx context.Context, prompt string) (agent.Resul
 	var lastErr error
 	for _, runner := range chain {
 		for attempt := 0; ; attempt++ {
-			res, err := runner.Run(ctx, prompt, agent.PhasePlan)
+			res, err := runner.Run(ctx, prompt, label)
 			if err == nil {
 				return res, nil
 			}
@@ -214,7 +215,7 @@ func (o *Orchestrator) ReviseRound(ctx context.Context, sess *Session, note stri
 		return &RoundResult{Session: sess}, err
 	}
 
-	res, err := o.runRound(ctx, BuildRevisionPrompt(sess.Idea(), transcript, prd.Markdown, note))
+	res, err := o.runRound(ctx, BuildRevisionPrompt(sess.Idea(), transcript, prd.Markdown, note), agent.PhasePlan)
 	if err != nil {
 		return &RoundResult{Session: sess}, err
 	}
@@ -266,6 +267,125 @@ func (o *Orchestrator) Publish(ctx context.Context, sess *Session, tr tracker.Tr
 	return PublishResult{Epic: epic, Published: true}, nil
 }
 
+// SliceRound runs the slice round on a published session: a fresh agent process
+// routed by the "slice" phase re-reads the published PRD from disk and drafts the
+// epic's tracer-bullet child issues. The drafts are ephemeral — nothing is
+// persisted and no checkpoint moves — because they exist to be reviewed in the
+// TUI; only a confirmed review creates anything (see [Orchestrator.CreateSlices]).
+// A payload that is not slices is rejected, and re-running the round is always
+// safe.
+func (o *Orchestrator) SliceRound(ctx context.Context, sess *Session) (*RoundResult, error) {
+	if Terminal(sess.Phase()) {
+		return &RoundResult{Session: sess}, fmt.Errorf("planning: session is %s — nothing to slice", sess.Phase())
+	}
+	if sess.Epic() == "" {
+		return &RoundResult{Session: sess}, fmt.Errorf("planning: no published epic to slice")
+	}
+	prd, ok := sess.PRD()
+	if !ok {
+		return &RoundResult{Session: sess}, fmt.Errorf("planning: no PRD to slice")
+	}
+
+	res, err := o.runRound(ctx, BuildSlicePrompt(prd.Markdown), agent.PhaseSlice)
+	if err != nil {
+		return &RoundResult{Session: sess}, err
+	}
+	payload, err := Parse(res.Final)
+	if err != nil {
+		return &RoundResult{Session: sess}, err
+	}
+	if payload.Status != StatusSlices {
+		return &RoundResult{Session: sess, Payload: payload}, fmt.Errorf("planning: slice round returned %q, want slices", payload.Status)
+	}
+	return &RoundResult{Session: sess, Payload: payload}, nil
+}
+
+// SlicesResult reports what creating the reviewed slices did with the tracker.
+// Children are the created issue identifiers in creation order; Created is false
+// when the tracker lacks the hierarchical-create capability and nothing was made.
+type SlicesResult struct {
+	Children []string
+	Created  bool
+}
+
+// CreateSlices creates the reviewed slice drafts as children of the session's
+// published epic, in the reviewed order, each carrying the configured ready label
+// on top of its own labels — the epic itself is never labeled ready. Every child
+// is created without a project so the tracker places it in its bound PROJECT,
+// keeping the ownership guard holding for the loop that will later pick it. An
+// "after" dependency renders as a "## Blocked by" section referencing the already
+// created identifiers, which is why validation requires references to point
+// earlier. Once every child exists the checkpoint advances to sliced; a mid-list
+// failure leaves the session at published so the review can be redone. A tracker
+// without the capability creates nothing and reports the skip, mirroring Publish.
+func (o *Orchestrator) CreateSlices(ctx context.Context, sess *Session, tr tracker.Tracker, slices []Slice, readyLabel string) (SlicesResult, error) {
+	if Terminal(sess.Phase()) {
+		return SlicesResult{}, fmt.Errorf("planning: session is %s — nothing to slice", sess.Phase())
+	}
+	epic := sess.Epic()
+	if epic == "" {
+		return SlicesResult{}, fmt.Errorf("planning: no published epic to attach slices to")
+	}
+	if err := ValidateSlices(slices); err != nil {
+		return SlicesResult{}, err
+	}
+	creator, ok := tr.(tracker.HierarchicalCreator)
+	if !ok {
+		return SlicesResult{}, nil
+	}
+
+	created := make(map[string]string, len(slices))
+	var children []string
+	for i, s := range slices {
+		id, err := creator.CreateIssue(ctx, tracker.IssueSpec{
+			Title:       s.Title,
+			Description: sliceDescription(s, created),
+			Labels:      withReadyLabel(s.Labels, readyLabel),
+			Parent:      epic,
+		})
+		if err != nil {
+			return SlicesResult{Children: children}, fmt.Errorf("create slice %d (%s): %w", i, s.Title, err)
+		}
+		created[strings.TrimSpace(s.Title)] = id
+		children = append(children, id)
+	}
+	if err := sess.markSliced(); err != nil {
+		return SlicesResult{Children: children, Created: true}, fmt.Errorf("checkpoint sliced: %w", err)
+	}
+	return SlicesResult{Children: children, Created: true}, nil
+}
+
+// sliceDescription renders a slice's issue body: its drafted description plus, for
+// a slice with "after" dependencies, a "## Blocked by" section listing the real
+// identifiers its blockers were created under.
+func sliceDescription(s Slice, created map[string]string) string {
+	if len(s.After) == 0 {
+		return s.Description
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(s.Description, "\n"))
+	b.WriteString("\n\n## Blocked by\n")
+	for _, ref := range s.After {
+		b.WriteString("\n* " + created[strings.TrimSpace(ref)])
+	}
+	return b.String()
+}
+
+// withReadyLabel returns the slice's labels with the configured ready label
+// appended once, so a reviewed draft that already carries it is not doubled.
+func withReadyLabel(labels []string, ready string) []string {
+	ready = strings.TrimSpace(ready)
+	if ready == "" {
+		return labels
+	}
+	for _, l := range labels {
+		if l == ready {
+			return labels
+		}
+	}
+	return append(append([]string{}, labels...), ready)
+}
+
 // ResumeRound re-runs a session's current round as a fresh process, rebuilding
 // the pending step from the idea and settled transcript alone — nothing already
 // answered is replayed, and nothing unanswered was ever persisted to lose.
@@ -286,7 +406,7 @@ func (o *Orchestrator) round(ctx context.Context, sess *Session) (*RoundResult, 
 	}
 	capped := len(transcript) >= o.roundCap()
 
-	res, err := o.runRound(ctx, BuildPrompt(sess.Idea(), transcript, capped))
+	res, err := o.runRound(ctx, BuildPrompt(sess.Idea(), transcript, capped), agent.PhasePlan)
 	if err != nil {
 		return &RoundResult{Session: sess}, err
 	}

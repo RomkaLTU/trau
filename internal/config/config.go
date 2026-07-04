@@ -658,7 +658,7 @@ func ValidatePrefix(id, prefix string) error {
 	return nil
 }
 
-var phases = []string{"build", "handoff", "verify", "repair", "bugfix", "cleanup", "lintfix", "commit", "plan", "pick"}
+var phases = []string{"build", "handoff", "verify", "repair", "bugfix", "cleanup", "lintfix", "commit", "plan", "slice", "pick"}
 
 // ThemeRoles are the semantic color roles a THEME_<ROLE> config key can
 // override with a hex value.
@@ -1070,6 +1070,8 @@ func KnownKeys() []KeyMeta {
 		{Key: "CLAUDE_COMMIT_EFFORT", Advanced: true, Description: "Claude effort for commit phase"},
 		{Key: "CLAUDE_PLAN_MODEL", Advanced: true, Description: "Claude model for planning phase (defaults to the provider default)"},
 		{Key: "CLAUDE_PLAN_EFFORT", Advanced: true, Description: "Claude effort for planning phase"},
+		{Key: "CLAUDE_SLICE_MODEL", Advanced: true, Description: "Claude model for slice phase (defaults to the provider default)"},
+		{Key: "CLAUDE_SLICE_EFFORT", Advanced: true, Description: "Claude effort for slice phase"},
 		{Key: "CLAUDE_PICK_MODEL", Advanced: true, Description: "Claude model for pick phase"},
 		{Key: "CLAUDE_PICK_EFFORT", Advanced: true, Description: "Claude effort for pick phase"},
 		{Key: "CODEX_BUILD_MODEL", Advanced: true, Description: "Codex model for build phase"},
@@ -1086,6 +1088,8 @@ func KnownKeys() []KeyMeta {
 		{Key: "CODEX_COMMIT_EFFORT", Advanced: true, Description: "Codex effort for commit phase"},
 		{Key: "CODEX_PLAN_MODEL", Advanced: true, Description: "Codex model for planning phase"},
 		{Key: "CODEX_PLAN_EFFORT", Advanced: true, Description: "Codex effort for planning phase"},
+		{Key: "CODEX_SLICE_MODEL", Advanced: true, Description: "Codex model for slice phase"},
+		{Key: "CODEX_SLICE_EFFORT", Advanced: true, Description: "Codex effort for slice phase"},
 		{Key: "CODEX_PICK_MODEL", Advanced: true, Description: "Codex model for pick phase"},
 		{Key: "CODEX_PICK_EFFORT", Advanced: true, Description: "Codex effort for pick phase"},
 		{Key: "KIMI_BUILD_MODEL", Advanced: true, Description: "Kimi model for build phase"},
@@ -1095,6 +1099,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "KIMI_BUGFIX_MODEL", Advanced: true, Description: "Kimi model for comprehensive bugfix phase"},
 		{Key: "KIMI_COMMIT_MODEL", Advanced: true, Description: "Kimi model for commit phase"},
 		{Key: "KIMI_PLAN_MODEL", Advanced: true, Description: "Kimi model for planning phase"},
+		{Key: "KIMI_SLICE_MODEL", Advanced: true, Description: "Kimi model for slice phase"},
 		{Key: "KIMI_PICK_MODEL", Advanced: true, Description: "Kimi model for pick phase"},
 	}
 	for _, role := range ThemeRoles {
@@ -1518,15 +1523,15 @@ func keyValue(cfg Config, key string) string {
 		return floatValue(cfg.MaxDailyUSD)
 	case "MAX_DAILY_TOKENS":
 		return intValue(cfg.MaxDailyTokens)
-	case "CLAUDE_BUILD_MODEL", "CLAUDE_HANDOFF_MODEL", "CLAUDE_VERIFY_MODEL", "CLAUDE_REPAIR_MODEL", "CLAUDE_BUGFIX_MODEL", "CLAUDE_CLEANUP_MODEL", "CLAUDE_LINTFIX_MODEL", "CLAUDE_COMMIT_MODEL", "CLAUDE_PLAN_MODEL", "CLAUDE_PICK_MODEL":
+	case "CLAUDE_BUILD_MODEL", "CLAUDE_HANDOFF_MODEL", "CLAUDE_VERIFY_MODEL", "CLAUDE_REPAIR_MODEL", "CLAUDE_BUGFIX_MODEL", "CLAUDE_CLEANUP_MODEL", "CLAUDE_LINTFIX_MODEL", "CLAUDE_COMMIT_MODEL", "CLAUDE_PLAN_MODEL", "CLAUDE_SLICE_MODEL", "CLAUDE_PICK_MODEL":
 		return phaseRouteModel(cfg.Routes, "claude", key)
-	case "CLAUDE_BUILD_EFFORT", "CLAUDE_HANDOFF_EFFORT", "CLAUDE_VERIFY_EFFORT", "CLAUDE_REPAIR_EFFORT", "CLAUDE_BUGFIX_EFFORT", "CLAUDE_CLEANUP_EFFORT", "CLAUDE_LINTFIX_EFFORT", "CLAUDE_COMMIT_EFFORT", "CLAUDE_PLAN_EFFORT", "CLAUDE_PICK_EFFORT":
+	case "CLAUDE_BUILD_EFFORT", "CLAUDE_HANDOFF_EFFORT", "CLAUDE_VERIFY_EFFORT", "CLAUDE_REPAIR_EFFORT", "CLAUDE_BUGFIX_EFFORT", "CLAUDE_CLEANUP_EFFORT", "CLAUDE_LINTFIX_EFFORT", "CLAUDE_COMMIT_EFFORT", "CLAUDE_PLAN_EFFORT", "CLAUDE_SLICE_EFFORT", "CLAUDE_PICK_EFFORT":
 		return phaseRouteEffort(cfg.Routes, "claude", key)
-	case "CODEX_BUILD_MODEL", "CODEX_HANDOFF_MODEL", "CODEX_VERIFY_MODEL", "CODEX_REPAIR_MODEL", "CODEX_BUGFIX_MODEL", "CODEX_COMMIT_MODEL", "CODEX_PLAN_MODEL", "CODEX_PICK_MODEL":
+	case "CODEX_BUILD_MODEL", "CODEX_HANDOFF_MODEL", "CODEX_VERIFY_MODEL", "CODEX_REPAIR_MODEL", "CODEX_BUGFIX_MODEL", "CODEX_COMMIT_MODEL", "CODEX_PLAN_MODEL", "CODEX_SLICE_MODEL", "CODEX_PICK_MODEL":
 		return phaseRouteModel(cfg.Routes, "codex", key)
-	case "CODEX_BUILD_EFFORT", "CODEX_HANDOFF_EFFORT", "CODEX_VERIFY_EFFORT", "CODEX_REPAIR_EFFORT", "CODEX_BUGFIX_EFFORT", "CODEX_COMMIT_EFFORT", "CODEX_PLAN_EFFORT", "CODEX_PICK_EFFORT":
+	case "CODEX_BUILD_EFFORT", "CODEX_HANDOFF_EFFORT", "CODEX_VERIFY_EFFORT", "CODEX_REPAIR_EFFORT", "CODEX_BUGFIX_EFFORT", "CODEX_COMMIT_EFFORT", "CODEX_PLAN_EFFORT", "CODEX_SLICE_EFFORT", "CODEX_PICK_EFFORT":
 		return phaseRouteEffort(cfg.Routes, "codex", key)
-	case "KIMI_BUILD_MODEL", "KIMI_HANDOFF_MODEL", "KIMI_VERIFY_MODEL", "KIMI_REPAIR_MODEL", "KIMI_BUGFIX_MODEL", "KIMI_COMMIT_MODEL", "KIMI_PLAN_MODEL", "KIMI_PICK_MODEL":
+	case "KIMI_BUILD_MODEL", "KIMI_HANDOFF_MODEL", "KIMI_VERIFY_MODEL", "KIMI_REPAIR_MODEL", "KIMI_BUGFIX_MODEL", "KIMI_COMMIT_MODEL", "KIMI_PLAN_MODEL", "KIMI_SLICE_MODEL", "KIMI_PICK_MODEL":
 		return phaseRouteModel(cfg.Routes, "kimi", key)
 	}
 	if role, ok := strings.CutPrefix(key, "THEME_"); ok {
