@@ -18,6 +18,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { EventFeed } from '@/components/event-feed'
 import { cn } from '@/lib/utils'
 import {
   reposQueryOptions,
@@ -119,6 +120,7 @@ function Runs() {
       )}
 
       {active && <Board repo={active} />}
+      {active && <EventFeed repo={active} />}
     </div>
   )
 }
