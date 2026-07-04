@@ -30,16 +30,41 @@ type Payload struct {
 	Slices    []Slice    `json:"slices,omitempty"`
 }
 
+// QuestionKind is how a Question is answered: a single-select, a multi-select, or
+// free text. It selects the huh field the TUI renders and how the answer resolves.
+type QuestionKind string
+
+const (
+	KindSingle QuestionKind = "single"
+	KindMulti  QuestionKind = "multi"
+	KindText   QuestionKind = "text"
+)
+
 // Question is one structured question the agent asks through the payload rather
 // than in prose, mirroring the AskUserQuestion contract the TUI already renders.
+// The TUI always adds an "Other" free-text escape and a skip-to-default, so the
+// agent lists neither.
 type Question struct {
-	ID         string   `json:"id"`
-	Header     string   `json:"header"`
-	Text       string   `json:"text"`
-	Options    []Option `json:"options"`
-	Multi      bool     `json:"multi"`
-	AllowOther bool     `json:"allow_other"`
-	Default    string   `json:"default"`
+	ID      string       `json:"id"`
+	Header  string       `json:"header"`
+	Text    string       `json:"text"`
+	Kind    QuestionKind `json:"kind,omitempty"`
+	Options []Option     `json:"options,omitempty"`
+	Default string       `json:"default,omitempty"`
+}
+
+// ResolvedKind is the question's kind with the agent's omission filled in: an
+// explicit valid kind wins, otherwise a question with options is a single-select
+// and one without is free text.
+func (q Question) ResolvedKind() QuestionKind {
+	switch q.Kind {
+	case KindSingle, KindMulti, KindText:
+		return q.Kind
+	}
+	if len(q.Options) > 0 {
+		return KindSingle
+	}
+	return KindText
 }
 
 // Option is one selectable answer to a Question.
@@ -90,6 +115,9 @@ func (p Payload) validate() error {
 		for i, q := range p.Questions {
 			if strings.TrimSpace(q.ID) == "" || strings.TrimSpace(q.Text) == "" {
 				return fmt.Errorf("planning payload: question %d missing id or text", i)
+			}
+			if k := q.ResolvedKind(); (k == KindSingle || k == KindMulti) && len(q.Options) == 0 {
+				return fmt.Errorf("planning payload: question %d is a %s select with no options", i, k)
 			}
 		}
 	case StatusPRD:

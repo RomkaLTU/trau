@@ -124,6 +124,7 @@ PROVIDER=claude
 MAX_ITERATIONS=15
 MAX_REPAIRS=2                # quick verify-fail self-heal attempts before bugfix (0 = none)
 MAX_BUGFIXES=2               # comprehensive bugfix passes after quick repairs (0 = none)
+MAX_PLAN_ROUNDS=3            # rounds of clarifying questions a plan may ask before the PRD is forced
 AUTO_MERGE=1                 # 1 = merge on green CI; 0 = stop at the PR for you
 EPIC_FLOW=1                  # 1 = run sub-issues on an epic branch, then close the parent and open the
                              #     epic-to-BASE_BRANCH PR only after every direct child is closed

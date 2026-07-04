@@ -10,14 +10,21 @@ import (
 	"github.com/RomkaLTU/trau/internal/agent"
 )
 
+// defaultMaxRounds caps how many rounds of questions a plan session may ask
+// before the agent is forced to draft the PRD with explicit assumptions. Small
+// by design; overridden per-orchestrator from the MAX_PLAN_ROUNDS knob.
+const defaultMaxRounds = 3
+
 // Orchestrator runs planning rounds under a plans root using the provider-agnostic
 // agent Runner seam. It owns session creation and checkpoint progression; each
 // round is a fresh isolated process routed by the "plan" phase — never a resumed
-// session — exactly like every pipeline phase.
+// session — exactly like every pipeline phase. The "conversation" across rounds
+// is the durable transcript on disk, not a live agent session.
 type Orchestrator struct {
-	runner agent.Runner
-	root   string
-	now    func() time.Time
+	runner    agent.Runner
+	root      string
+	now       func() time.Time
+	maxRounds int
 }
 
 // NewOrchestrator returns an Orchestrator that roots plan sessions under root
@@ -32,6 +39,20 @@ func (o *Orchestrator) WithClock(now func() time.Time) *Orchestrator {
 	return o
 }
 
+// WithMaxRounds caps the number of question rounds a session may take before the
+// PRD is forced. A value <= 0 keeps the default.
+func (o *Orchestrator) WithMaxRounds(n int) *Orchestrator {
+	o.maxRounds = n
+	return o
+}
+
+func (o *Orchestrator) roundCap() int {
+	if o.maxRounds <= 0 {
+		return defaultMaxRounds
+	}
+	return o.maxRounds
+}
+
 // RoundResult is the outcome of one planning round: the durable session it ran
 // under and the validated payload the agent returned.
 type RoundResult struct {
@@ -40,12 +61,8 @@ type RoundResult struct {
 }
 
 // RunRound starts a durable plan session from idea (raw text, or a path to a file
-// containing the idea), runs one planning round as a fresh agent process through
-// the Runner seam, validates the returned payload, and — when the agent returns a
-// PRD — persists it and advances the checkpoint to prd_ready. Other statuses are
-// returned without a checkpoint advance; the rounds that act on them are later
-// slices. The session is returned even on failure so a caller can surface where
-// the work stopped.
+// containing the idea) and runs its first planning round. The session is returned
+// even on failure so a caller can surface where the work stopped.
 func (o *Orchestrator) RunRound(ctx context.Context, idea string) (*RoundResult, error) {
 	text, err := resolveIdea(idea)
 	if err != nil {
@@ -55,7 +72,37 @@ func (o *Orchestrator) RunRound(ctx context.Context, idea string) (*RoundResult,
 	if err != nil {
 		return nil, err
 	}
-	res, err := o.runner.Run(ctx, BuildPrompt(text), agent.PhasePlan)
+	return o.round(ctx, sess)
+}
+
+// AnswerRound records answers to the previous round's questions on the session's
+// durable transcript, then runs the next planning round as a fresh agent process
+// that re-reads the accumulated idea + transcript. No agent session is resumed.
+func (o *Orchestrator) AnswerRound(ctx context.Context, sess *Session, answers []Answer) (*RoundResult, error) {
+	prior, err := sess.Transcript()
+	if err != nil {
+		return &RoundResult{Session: sess}, err
+	}
+	if err := sess.AppendRound(QARound{Round: len(prior) + 1, Answers: answers}); err != nil {
+		return &RoundResult{Session: sess}, err
+	}
+	return o.round(ctx, sess)
+}
+
+// round runs one planning round against the session's accumulated context: it
+// builds the prompt from the idea and transcript, runs a fresh agent process,
+// validates the payload, enforces the round cap, and checkpoints the outcome —
+// PhaseQuestions for a questions payload, and a persisted PRD advancing to
+// prd_ready for a PRD. At the cap the prompt forces a PRD, and a stray questions
+// payload is rejected rather than asked.
+func (o *Orchestrator) round(ctx context.Context, sess *Session) (*RoundResult, error) {
+	transcript, err := sess.Transcript()
+	if err != nil {
+		return &RoundResult{Session: sess}, err
+	}
+	capped := len(transcript) >= o.roundCap()
+
+	res, err := o.runner.Run(ctx, BuildPrompt(sess.Idea(), transcript, capped), agent.PhasePlan)
 	if err != nil {
 		return &RoundResult{Session: sess}, err
 	}
@@ -63,7 +110,17 @@ func (o *Orchestrator) RunRound(ctx context.Context, idea string) (*RoundResult,
 	if err != nil {
 		return &RoundResult{Session: sess}, err
 	}
-	if payload.Status == StatusPRD {
+
+	if capped && payload.Status == StatusQuestions {
+		return &RoundResult{Session: sess}, fmt.Errorf("planning: round cap of %d reached, question payload rejected", o.roundCap())
+	}
+
+	switch payload.Status {
+	case StatusQuestions:
+		if err := sess.setPhase(PhaseQuestions); err != nil {
+			return &RoundResult{Session: sess, Payload: payload}, fmt.Errorf("checkpoint questions: %w", err)
+		}
+	case StatusPRD:
 		if err := sess.savePRD(*payload.PRD); err != nil {
 			return &RoundResult{Session: sess, Payload: payload}, fmt.Errorf("persist prd: %w", err)
 		}

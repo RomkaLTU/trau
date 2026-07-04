@@ -76,6 +76,11 @@ type Actions interface {
 	// or a path to a file containing the idea — and returns the outcome for the Plan
 	// screen to render. It is cancellable via ctx.
 	StartPlan(ctx context.Context, idea string) (PlanOutcome, error)
+
+	// AnswerPlan records the answers to the previous round's questions on the plan
+	// session at dir, then runs the next planning round as a fresh process and
+	// returns its outcome. It is cancellable via ctx.
+	AnswerPlan(ctx context.Context, dir string, answers []PlanAnswer) (PlanOutcome, error)
 }
 
 // ListedTicket is one eligible ticket returned by a fast list operation.
