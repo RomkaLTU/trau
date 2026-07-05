@@ -47,6 +47,11 @@ type Spec struct {
 	// skills are found, trau warns the user at onboarding and at loop start.
 	NeedsSkills bool
 
+	// ReportsSkills is true when the provider's Result carries the skills a
+	// session actually loaded, so the pipeline can warn when a build in a
+	// skill-equipped repo used none.
+	ReportsSkills bool
+
 	New func(BackendParams) (Runner, error)
 }
 
@@ -87,8 +92,9 @@ func DefaultRegistry() Registry {
 }
 
 var claudeSpec = Spec{
-	Name:      "claude",
-	KeyPrefix: "CLAUDE",
+	Name:          "claude",
+	KeyPrefix:     "CLAUDE",
+	ReportsSkills: true,
 	New: func(p BackendParams) (Runner, error) {
 		return &ClaudeInteractive{
 			Bin:             p.Bin,

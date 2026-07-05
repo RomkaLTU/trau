@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
 )
 
@@ -185,6 +186,12 @@ type onboardingModel struct {
 	systemCheckDone    bool
 	systemCheckStarted bool
 	mcp                *mcpProbe
+
+	// skillsOffer holds the curated recommendations offered for one-key install
+	// when a readiness pass finds no skills; refreshed each time a pass ends.
+	skillsOffer      []agent.SkillRecommendation
+	skillsInstalling bool
+	skillsInstallErr string
 
 	// ciHasPRDet records whether a pull_request-triggered workflow was detected
 	// locally; it seeds the CI merge-gate default synchronously before the async
@@ -370,6 +377,7 @@ func (m onboardingModel) updateSystemCheckPhase(msg tea.Msg) (onboardingModel, t
 		return m.advanceSystemCheck(), m.nextSystemCheckCmd()
 	case systemCheckDoneMsg:
 		m.systemCheckDone = true
+		m.skillsOffer = m.skillsInstallOffer()
 		cmd := m.systemCheckBar.SetPercent(1.0)
 		if m.systemChecksPass() {
 			return m, tea.Batch(cmd, tea.Tick(900*time.Millisecond, func(time.Time) tea.Msg {
@@ -377,6 +385,18 @@ func (m onboardingModel) updateSystemCheckPhase(msg tea.Msg) (onboardingModel, t
 			}))
 		}
 		return m, cmd
+	case skillsInstallDoneMsg:
+		m.skillsInstalling = false
+		if msg.err != nil {
+			m.skillsInstallErr = msg.err.Error()
+			return m, nil
+		}
+		m.skillsOffer = nil
+		m.resetSystemChecks()
+		m.systemCheckBar = newSystemCheckBar()
+		m.systemChecks[0].status = checkRunning
+		m.systemCheckStarted = true
+		return m, tea.Batch(m.systemCheckSpin.Tick, m.runSystemChecksCmd())
 	case systemCheckAdvanceStepMsg:
 		if m.phase == phaseSystemCheck && m.systemChecksPass() {
 			m.phase = phaseWelcome
