@@ -18,6 +18,7 @@ type fakeOnboardActions struct {
 	prefill   OnboardingPrefill
 	teams     []DetectedTeam
 	detectErr error
+	ciDet     CIDetection
 	gotSetup  ProjectSetup
 }
 
@@ -33,6 +34,8 @@ func (f *fakeOnboardActions) SetupProject(_ context.Context, s ProjectSetup) (Se
 	f.gotSetup = s
 	return SetupResult{ConfigPath: "/tmp/.trau.ini"}, nil
 }
+
+func (f *fakeOnboardActions) DetectCI(context.Context, string) CIDetection { return f.ciDet }
 
 func typeRunes(m onboardingModel, s string) onboardingModel {
 	for _, r := range s {
