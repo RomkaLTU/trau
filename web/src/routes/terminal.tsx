@@ -9,6 +9,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { Terminal } from '@/components/terminal'
+import { RepoPicker } from '@/components/trau'
 import { instancesQueryOptions, type RepoView } from '@/lib/instances'
 import {
   transcriptsQueryOptions,
@@ -59,23 +60,15 @@ function TerminalPage() {
       {repo && (
         <>
           <div className="flex flex-wrap items-end gap-4">
-            <Field label="Repo">
-              <select
-                className={selectClass}
-                value={repo}
-                onChange={(e) => {
-                  setRepo(e.target.value)
-                  setID(FOLLOW_NEWEST)
-                }}
-              >
-                {repos.map((r) => (
-                  <option key={r.name} value={r.name}>
-                    {r.name}
-                    {r.live ? ' • live' : ''}
-                  </option>
-                ))}
-              </select>
-            </Field>
+            <RepoPicker
+              repos={repos.map((r) => r.name)}
+              value={repo}
+              onChange={(name) => {
+                setRepo(name)
+                setID(FOLLOW_NEWEST)
+              }}
+              label="repo"
+            />
             <PhaseField repo={repo} value={id} onChange={setID} />
           </div>
           <Terminal
