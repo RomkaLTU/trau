@@ -103,6 +103,12 @@ type Config struct {
 	// a build that left the managed repo unchanged faults instead of advancing to a
 	// hollow handoff or empty PR. Set 0 for the rare legitimately no-op ticket.
 	RequireRepoChanges bool
+	// AutoStash gates the fresh-pick WIP guard: when on (default), starting a fresh
+	// ticket with uncommitted tracked changes stashes them (recording their branch)
+	// and restores them when the run ends, instead of aborting. Set 0 to keep the old
+	// behavior — abort rather than touch your WIP. Untracked tooling always rides
+	// along either way.
+	AutoStash bool
 	// LintFix gates the pre-verify lint-fix step: when on (default), the project's
 	// automated lint/format fixers run over the working tree just before verify so
 	// the verify gate isn't spent self-healing mechanical style noise. LintFixCmd, if
@@ -241,6 +247,7 @@ func Defaults() Config {
 		ExpectedChecks:        "",
 		RequireCI:             true,
 		RequireRepoChanges:    true,
+		AutoStash:             true,
 		LintFix:               true,
 		Cleanup:               true,
 		BrowserVerify:         "auto",
@@ -565,6 +572,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("REQUIRE_REPO_CHANGES"); v != "" {
 		c.RequireRepoChanges = v == "1"
 		sources["REQUIRE_REPO_CHANGES"] = src.name
+	}
+	if v, src := get("AUTO_STASH"); v != "" {
+		c.AutoStash = v == "1"
+		sources["AUTO_STASH"] = src.name
 	}
 	if v, src := get("LINT_FIX"); v != "" {
 		c.LintFix = v == "1"
@@ -1056,6 +1067,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "CI_POLL", Default: "30", Description: "Seconds between CI polls"},
 		{Key: "EXPECTED_CHECKS", Description: "Required CI check names (comma-separated)"},
 		{Key: "REQUIRE_CI", Default: "1", Description: "Gate merge on CI; set 0 for repos with no PR CI (1 = yes, 0 = no)", Bool: true},
+		{Key: "AUTO_STASH", Default: "1", Description: "Stash uncommitted tracked WIP before a fresh run and restore it when the run ends; 0 aborts instead (1 = yes, 0 = no)", Bool: true},
 		{Key: "SPLIT_LABEL", Advanced: true, Default: "needs-split", Description: "Managed label marking a ticket a human should split into smaller slices before the loop builds it"},
 		{Key: "LINT_FIX", Default: "1", Description: "Run the project's lint/format autofixers before verify so verify isn't spent self-healing style noise (1 = yes, 0 = no)", Bool: true},
 		{Key: "LINT_FIX_CMD", Description: "Deterministic lint-fix command run before verify (e.g. vendor/bin/pint, npm run lint:fix). Empty = a cheap agent auto-detects and runs the project's fixers"},
@@ -1499,6 +1511,11 @@ func keyValue(cfg Config, key string) string {
 		return cfg.ExpectedChecks
 	case "REQUIRE_CI":
 		if cfg.RequireCI {
+			return "1"
+		}
+		return "0"
+	case "AUTO_STASH":
+		if cfg.AutoStash {
 			return "1"
 		}
 		return "0"
