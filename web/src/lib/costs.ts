@@ -1,5 +1,6 @@
 import { queryOptions } from '@tanstack/react-query'
 
+import { apiFetch } from './api'
 import type { Anomaly } from './rundetail'
 
 export interface CostSpend {
@@ -54,7 +55,7 @@ export interface CostsResponse {
 }
 
 async function fetchCosts(days: number): Promise<CostsResponse> {
-  const res = await fetch(`/api/v1/costs?days=${days}`)
+  const res = await apiFetch(`/api/v1/costs?days=${days}`)
   if (!res.ok) {
     throw new Error(`costs request failed: ${res.status}`)
   }

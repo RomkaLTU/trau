@@ -4,6 +4,7 @@ import { SquareTerminal } from 'lucide-react'
 import '@xterm/xterm/css/xterm.css'
 
 import { cn } from '@/lib/utils'
+import { streamSSE } from '@/lib/sse'
 import {
   decodeChunk,
   transcriptStreamURL,
@@ -18,11 +19,11 @@ const THEME = {
 }
 
 // Terminal renders a repo's live agent transcript in an embedded xterm.js. It
-// holds one EventSource for the whole component lifetime — a single connection
-// per selected repo, so switching phases never leaks connections into the
-// browser's per-origin cap. The stream sizes the emulator from the meta frame's
-// recorded PTY dimensions and clears it on a reset (a new phase or an in-place
-// truncation) before the fresh bytes land.
+// holds one fetch-based SSE stream for the whole component lifetime — a single
+// connection per selected repo, so switching phases never leaks connections into
+// the browser's per-origin cap. The stream sizes the emulator from the meta
+// frame's recorded PTY dimensions and clears it on a reset (a new phase or an
+// in-place truncation) before the fresh bytes land.
 export function Terminal({
   repo,
   id,
@@ -65,26 +66,31 @@ export function Terminal({
     term.reset()
     setStatus('connecting')
 
-    const source = new EventSource(transcriptStreamURL(repo, id))
-    source.onopen = () => setStatus('live')
-    source.onerror = () => setStatus('error')
-    source.addEventListener('meta', (e) => {
-      let meta: TranscriptMeta
-      try {
-        meta = JSON.parse((e as MessageEvent).data)
-      } catch {
-        return
-      }
-      if (meta.id !== followedID.current) {
-        term.reset()
-        followedID.current = meta.id
-      }
-      term.resize(Math.max(1, meta.cols), Math.max(1, meta.rows))
+    const close = streamSSE(transcriptStreamURL(repo, id), {
+      onOpen: () => setStatus('live'),
+      onError: () => setStatus('error'),
+      onMessage: ({ event, data }) => {
+        if (event === 'meta') {
+          let meta: TranscriptMeta
+          try {
+            meta = JSON.parse(data)
+          } catch {
+            return
+          }
+          if (meta.id !== followedID.current) {
+            term.reset()
+            followedID.current = meta.id
+          }
+          term.resize(Math.max(1, meta.cols), Math.max(1, meta.rows))
+        } else if (event === 'reset') {
+          term.reset()
+        } else {
+          term.write(decodeChunk(data))
+        }
+      },
     })
-    source.addEventListener('reset', () => term.reset())
-    source.onmessage = (e) => term.write(decodeChunk(e.data))
 
-    return () => source.close()
+    return () => close()
   }, [repo, id])
 
   return (

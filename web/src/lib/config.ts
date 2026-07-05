@@ -1,5 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
 
+import { apiFetch } from './api'
+
 export interface ConfigKey {
   key: string
   value: string
@@ -27,7 +29,7 @@ export interface ConfigWrite {
 }
 
 async function fetchConfig(repo: string): Promise<ConfigResponse> {
-  const res = await fetch(`/api/v1/repos/${encodeURIComponent(repo)}/config`)
+  const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(repo)}/config`)
   if (!res.ok) {
     throw new Error(`config request failed: ${res.status}`)
   }
@@ -38,7 +40,7 @@ export async function writeConfig(
   repo: string,
   body: ConfigWrite,
 ): Promise<ConfigKey> {
-  const res = await fetch(`/api/v1/repos/${encodeURIComponent(repo)}/config`, {
+  const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(repo)}/config`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

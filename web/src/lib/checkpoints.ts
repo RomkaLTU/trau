@@ -1,3 +1,5 @@
+import { apiFetch } from './api'
+
 export interface ResetResult {
   status: string
   ticket: string
@@ -30,7 +32,7 @@ export class CheckpointError extends Error {
 }
 
 async function post<T>(url: string, body?: unknown): Promise<T> {
-  const res = await fetch(url, {
+  const res = await apiFetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
