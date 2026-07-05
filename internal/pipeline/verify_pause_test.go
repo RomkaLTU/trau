@@ -69,6 +69,8 @@ func (fakeGit) DeletePushedBranch(context.Context, string, string) error {
 }
 func (fakeGit) StatusPorcelain(context.Context) (string, error)           { return "", nil }
 func (fakeGit) WorktreeDirty(context.Context) (bool, error)               { return true, nil }
+func (fakeGit) Stash(context.Context, string) error                       { return nil }
+func (fakeGit) StashPop(context.Context) error                            { return nil }
 func (fakeGit) Commits(context.Context, string, string) ([]string, error) { return nil, nil }
 func (fakeGit) Pull(context.Context, string, string) error                { return nil }
 func (fakeGit) MergeRemote(context.Context, string, string) (bool, error) { return false, nil }
