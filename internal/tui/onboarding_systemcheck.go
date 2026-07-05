@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -45,6 +46,8 @@ type systemCheckAdvanceMsg struct{}
 type systemCheckDoneMsg struct{}
 
 type systemCheckAdvanceStepMsg struct{}
+
+type skillsInstallDoneMsg struct{ err error }
 
 func (m *onboardingModel) resetSystemChecks() {
 	m.systemChecks = []systemCheck{
@@ -156,6 +159,35 @@ func runSystemCheck(name string, probe *mcpProbe, ghReady, linearAPIReady bool, 
 		return runTrackerCheck(name, probe, ghReady, linearAPIReady)
 	}
 	return checkFailed, fmt.Errorf("unknown check %q", name)
+}
+
+// skillsInstallOffer returns the curated recommendations to offer for one-key
+// install: only when the readiness pass found no skills and the detected
+// project type has a pinned recommended set.
+func (m onboardingModel) skillsInstallOffer() []agent.SkillRecommendation {
+	if m.checkStatusFor("skills") == checkDone {
+		return nil
+	}
+	r := agent.CheckSkillReadiness(m.repoRoot)
+	if r.HasSkills {
+		return nil
+	}
+	return r.Missing
+}
+
+func (m onboardingModel) installSkillsCmd() tea.Cmd {
+	recs := m.skillsOffer
+	root := m.repoRoot
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		for _, rec := range recs {
+			if err := agent.InstallSkill(ctx, root, rec); err != nil {
+				return skillsInstallDoneMsg{err: err}
+			}
+		}
+		return skillsInstallDoneMsg{}
+	}
 }
 
 func runSkillsCheck(prefillProvider, repoRoot string) (checkStatus, error) {
@@ -277,7 +309,15 @@ func (m onboardingModel) handleSystemCheck(msg tea.KeyPressMsg) (onboardingModel
 		m.done = true
 		return m, nil
 	}
+	if msg.String() == "i" && m.systemCheckDone && !m.skillsInstalling && len(m.skillsOffer) > 0 {
+		m.skillsInstalling = true
+		m.skillsInstallErr = ""
+		return m, tea.Batch(m.systemCheckSpin.Tick, m.installSkillsCmd())
+	}
 	if msg.String() == "enter" {
+		if m.skillsInstalling {
+			return m, nil
+		}
 		if !m.systemCheckStarted {
 			m.systemCheckStarted = true
 			m.systemChecks[0].status = checkRunning
@@ -396,6 +436,15 @@ func (m onboardingModel) renderSystemCheck() string {
 		} else {
 			rows = append(rows, s.Error.Render("✗ Some required tools are missing."))
 			rows = append(rows, s.Subtle.Render("Install them, then press enter to re-check."))
+			switch {
+			case m.skillsInstalling:
+				rows = append(rows, s.Info.Render(m.systemCheckSpin.View()+" installing recommended skills…"))
+			case len(m.skillsOffer) > 0:
+				rows = append(rows, s.Info.Render("Press i to install the recommended skills for this project (npx skills add)."))
+				if m.skillsInstallErr != "" {
+					rows = append(rows, s.Error.Render("✗ "+m.skillsInstallErr))
+				}
+			}
 		}
 	}
 

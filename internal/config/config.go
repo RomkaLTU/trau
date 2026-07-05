@@ -109,6 +109,11 @@ type Config struct {
 	// behavior — abort rather than touch your WIP. Untracked tooling always rides
 	// along either way.
 	AutoStash bool
+	// AutoInstallSkills opts into installing the curated recommended skill set
+	// for the repo's detected project type at loop start when no skills are
+	// present. Only the pinned recommendations are installed — never skill
+	// search results. Installed files land untracked in the target repo.
+	AutoInstallSkills bool
 	// LintFix gates the pre-verify lint-fix step: when on (default), the project's
 	// automated lint/format fixers run over the working tree just before verify so
 	// the verify gate isn't spent self-healing mechanical style noise. LintFixCmd, if
@@ -576,6 +581,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("AUTO_STASH"); v != "" {
 		c.AutoStash = v == "1"
 		sources["AUTO_STASH"] = src.name
+	}
+	if v, src := get("AUTO_INSTALL_SKILLS"); v != "" {
+		c.AutoInstallSkills = v == "1"
+		sources["AUTO_INSTALL_SKILLS"] = src.name
 	}
 	if v, src := get("LINT_FIX"); v != "" {
 		c.LintFix = v == "1"
@@ -1068,6 +1077,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "EXPECTED_CHECKS", Description: "Required CI check names (comma-separated)"},
 		{Key: "REQUIRE_CI", Default: "1", Description: "Gate merge on CI; set 0 for repos with no PR CI (1 = yes, 0 = no)", Bool: true},
 		{Key: "AUTO_STASH", Default: "1", Description: "Stash uncommitted tracked WIP before a fresh run and restore it when the run ends; 0 aborts instead (1 = yes, 0 = no)", Bool: true},
+		{Key: "AUTO_INSTALL_SKILLS", Default: "0", Description: "Install the recommended skill set for the repo's project type at loop start when no skills are present (opt-in; 1 = yes, 0 = no)", Bool: true},
 		{Key: "SPLIT_LABEL", Advanced: true, Default: "needs-split", Description: "Managed label marking a ticket a human should split into smaller slices before the loop builds it"},
 		{Key: "LINT_FIX", Default: "1", Description: "Run the project's lint/format autofixers before verify so verify isn't spent self-healing style noise (1 = yes, 0 = no)", Bool: true},
 		{Key: "LINT_FIX_CMD", Description: "Deterministic lint-fix command run before verify (e.g. vendor/bin/pint, npm run lint:fix). Empty = a cheap agent auto-detects and runs the project's fixers"},
@@ -1516,6 +1526,11 @@ func keyValue(cfg Config, key string) string {
 		return "0"
 	case "AUTO_STASH":
 		if cfg.AutoStash {
+			return "1"
+		}
+		return "0"
+	case "AUTO_INSTALL_SKILLS":
+		if cfg.AutoInstallSkills {
 			return "1"
 		}
 		return "0"

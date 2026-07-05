@@ -1,9 +1,13 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // SkillSearchPaths lists the repo-relative directories where agent skills may
@@ -169,6 +173,36 @@ func MissingSkillsMessage(r SkillReadiness) string {
 		msg += " ..."
 	}
 	return msg
+}
+
+// InstallSkill installs one recommended skill into repoRoot via the skills.sh
+// CLI. The CLI writes into .agents/skills/<name> (the universal directory,
+// first in SkillSearchPaths) and records the pin in skills-lock.json.
+func InstallSkill(ctx context.Context, repoRoot string, rec SkillRecommendation) error {
+	cmd := exec.CommandContext(ctx, "npx", skillInstallArgs(rec)...)
+	cmd.Dir = repoRoot
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("install skill %s: %w: %s", rec.Name, err, lastOutputLine(out))
+	}
+	return nil
+}
+
+func skillInstallArgs(rec SkillRecommendation) []string {
+	repo, skill, ok := strings.Cut(rec.Package, "@")
+	if !ok {
+		return []string{"-y", "skills", "add", rec.Package, "-y"}
+	}
+	return []string{"-y", "skills", "add", repo, "-s", skill, "-y"}
+}
+
+func lastOutputLine(out []byte) string {
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if len(last) > 200 {
+		last = last[:200]
+	}
+	return last
 }
 
 func skillInstalled(repoRoot, name string) bool {

@@ -346,6 +346,10 @@ type Pipeline struct {
 	// they were on) instead of aborting, and RestoreWIP pops them back at session
 	// end. When off, a dirty tracked tree aborts the run as before.
 	AutoStash bool
+	// SkillsExpected reports whether a build run by the named provider is
+	// expected to load repo skills (the provider reports skill usage and the
+	// repo has skills installed). Nil disables the post-build no-skills warning.
+	SkillsExpected func(provider string) bool
 	// Cleanup gates the pre-verify slop-cleanup step (config CLEANUP).
 	Cleanup        bool
 	CITimeout      int
@@ -370,6 +374,12 @@ type Pipeline struct {
 	// auto-stashed it, so RestoreWIP can check that branch back out and pop the stash
 	// at session end. Empty means nothing was stashed this run.
 	stashedBranch string
+
+	// buildProvider/buildSkills capture, from the last build agent call, which
+	// provider ran and which skills its session loaded — the inputs to the
+	// post-build no-skills warning.
+	buildProvider string
+	buildSkills   []string
 
 	// OwnedProject is the Linear project this repo is bound to (config PROJECT).
 	// When set, Resume refuses any ticket whose project differs — before any
@@ -871,11 +881,22 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	if err := p.assertRepoChanged(ctx, id); err != nil {
 		return err
 	}
+	p.warnBuildWithoutSkills()
 
 	if err := p.State.Set(id, "PHASE", state.Built); err != nil {
 		return fmt.Errorf("build %s: checkpoint built: %w", id, err)
 	}
 	return nil
+}
+
+// warnBuildWithoutSkills flags a build that loaded no skills in a repo that has
+// them. Advisory only — the run proceeds; the warning makes a silently
+// skill-less build visible instead of trusting the prompt's self-selection.
+func (p *Pipeline) warnBuildWithoutSkills() {
+	if p.SkillsExpected == nil || len(p.buildSkills) > 0 || !p.SkillsExpected(p.buildProvider) {
+		return
+	}
+	p.logf("  ⚠ build loaded no skills — the repo has skills installed but the agent used none")
 }
 
 // checkRefusal honors the build agent's REFUSED sentinel — its declaration that
@@ -1796,6 +1817,13 @@ func (p *Pipeline) agentPhaseOn(ctx context.Context, id, phase, prompt string, r
 	stop := p.spin(label)
 	res, err := runner.Run(ctx, prompt, phase)
 	stop()
+	if phase == "build" {
+		p.buildSkills = res.Skills
+		p.buildProvider = ""
+		if pr, ok := runner.(agent.PhaseRoute); ok {
+			p.buildProvider, _, _ = pr.Route(phase)
+		}
+	}
 	p.writeTranscript(id, phase, res.Final)
 	return res.Final, err
 }

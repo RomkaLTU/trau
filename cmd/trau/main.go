@@ -740,6 +740,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		LintFix:            cfg.LintFix,
 		LintFixCmd:         cfg.LintFixCmd,
 		Cleanup:            cfg.Cleanup,
+		SkillsExpected:     skillsExpected(repoRoot),
 		CITimeout:          cfg.CITimeout,
 		CIPoll:             cfg.CIPoll,
 		Lessons:            cfg.Lessons,
@@ -754,6 +755,22 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		TimelogOutputFormat: cfg.TimelogOutputFormat,
 		TimelogEstimator:    cfg.TimelogEstimator,
 	}, nil
+}
+
+// skillsExpected gates the pipeline's post-build no-skills warning: true only
+// for a provider that reports skill usage, in a repo that has skills installed.
+// Skills are re-checked per call so an install after startup (onboarding,
+// AUTO_INSTALL_SKILLS) is seen without restarting.
+func skillsExpected(repoRoot string) func(string) bool {
+	reg := agent.DefaultRegistry()
+	return func(provider string) bool {
+		spec, ok := reg.Lookup(provider)
+		if !ok || !spec.ReportsSkills {
+			return false
+		}
+		has, _ := agent.CheckSkills(repoRoot)
+		return has
+	}
 }
 
 // buildPanel constructs the cross-vendor verify panel from VERIFY_PANEL — one
@@ -2445,18 +2462,20 @@ func buildRouter(cfg config.Config, log *event.Log, sink agent.TokenSink, stderr
 		used[provider] = true
 	}
 
-	emitProviderNotes(reg, used, cfg.RepoRoot, stderr)
+	emitProviderNotes(reg, used, cfg, stderr)
 	if len(routes) == 0 {
 		return def, nil
 	}
 	return agent.NewRouter(def, routes), nil
 }
 
-func emitProviderNotes(reg agent.Registry, used map[string]bool, repoRoot string, stderr io.Writer) {
+func emitProviderNotes(reg agent.Registry, used map[string]bool, cfg config.Config, stderr io.Writer) {
 	if stderr == nil {
 		return
 	}
+	repoRoot := cfg.RepoRoot
 	con := console.New(stderr, stderr)
+	autoInstallSkills(cfg, con)
 	for _, name := range reg.Names() {
 		if !used[name] {
 			continue
@@ -2480,6 +2499,31 @@ func emitProviderNotes(reg agent.Registry, used map[string]bool, repoRoot string
 		if name == "kimi" {
 			con.Logf("↳ %s: token usage is recovered from the session log; per-call dollar cost is not metered (shown as n/a)", name)
 		}
+	}
+}
+
+// autoInstallSkills installs the curated recommended skill set at loop start
+// when AUTO_INSTALL_SKILLS is on and the repo has none. Only the pinned
+// recommendations for the detected project type are installed — never skill
+// search results. Failures warn and continue; the loop runs either way.
+func autoInstallSkills(cfg config.Config, con *console.Console) {
+	if !cfg.AutoInstallSkills {
+		return
+	}
+	r := agent.CheckSkillReadiness(cfg.RepoRoot)
+	if r.HasSkills || len(r.Missing) == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	for _, rec := range r.Missing {
+		con.Logf("↳ installing skill %s (%s)", rec.Name, rec.Package)
+		if err := agent.InstallSkill(ctx, cfg.RepoRoot, rec); err != nil {
+			con.Logf("⚠ %v", err)
+		}
+	}
+	if has, dirs := agent.CheckSkills(cfg.RepoRoot); has {
+		con.Logf("↳ skills installed into %s — review and commit them", strings.Join(dirs, ", "))
 	}
 }
 
