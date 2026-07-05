@@ -2989,13 +2989,29 @@ func withStderr(err error) error {
 }
 
 // PRURL returns the open PR's URL for branch, or "" when none exists. A gh error
-// (no PR found) is swallowed to "".
+// (no PR found) is swallowed to "". The state filter is load-bearing: gh's branch
+// lookup falls back to the most recent merged/closed PR when the branch has no
+// open one, and adopting a merged PR here is how a rebuilt ticket got marked Done
+// with its redo commits stranded on the branch (COD-750).
 func (g ExecGitHub) PRURL(ctx context.Context, branch string) (string, error) {
-	out, err := g.output(ctx, "pr", "view", branch, "--json", "url", "-q", ".url")
+	out, err := g.output(ctx, "pr", "view", branch, "--json", "url,state")
 	if err != nil {
 		return "", nil
 	}
-	return out, nil
+	return parseOpenPRURL(out), nil
+}
+
+// parseOpenPRURL extracts the URL from a `gh pr view --json url,state` payload,
+// returning "" unless the PR is OPEN; malformed JSON reads as not-open.
+func parseOpenPRURL(out string) string {
+	var pr struct {
+		URL   string `json:"url"`
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal([]byte(out), &pr); err != nil || pr.State != "OPEN" {
+		return ""
+	}
+	return pr.URL
 }
 
 // PRState returns the PR's state (OPEN, MERGED, …), or "" when unknown (a gh error
