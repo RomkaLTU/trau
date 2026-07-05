@@ -12,10 +12,10 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as TerminalRouteImport } from './routes/terminal'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RunsRouteImport } from './routes/runs'
-import { Route as PrdRouteImport } from './routes/prd'
 import { Route as LessonsRouteImport } from './routes/lessons'
 import { Route as InstancesRouteImport } from './routes/instances'
 import { Route as CostsRouteImport } from './routes/costs'
+import { Route as AuthorRouteImport } from './routes/author'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as RunsRepoTicketRouteImport } from './routes/runs_.$repo.$ticket'
 import { Route as LiveRepoTicketRouteImport } from './routes/live.$repo.$ticket'
@@ -35,11 +35,6 @@ const RunsRoute = RunsRouteImport.update({
   path: '/runs',
   getParentRoute: () => rootRouteImport,
 } as any)
-const PrdRoute = PrdRouteImport.update({
-  id: '/prd',
-  path: '/prd',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const LessonsRoute = LessonsRouteImport.update({
   id: '/lessons',
   path: '/lessons',
@@ -53,6 +48,11 @@ const InstancesRoute = InstancesRouteImport.update({
 const CostsRoute = CostsRouteImport.update({
   id: '/costs',
   path: '/costs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthorRoute = AuthorRouteImport.update({
+  id: '/author',
+  path: '/author',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -73,10 +73,10 @@ const LiveRepoTicketRoute = LiveRepoTicketRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/author': typeof AuthorRoute
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
-  '/prd': typeof PrdRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
   '/terminal': typeof TerminalRoute
@@ -85,10 +85,10 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/author': typeof AuthorRoute
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
-  '/prd': typeof PrdRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
   '/terminal': typeof TerminalRoute
@@ -98,10 +98,10 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/author': typeof AuthorRoute
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
-  '/prd': typeof PrdRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
   '/terminal': typeof TerminalRoute
@@ -112,10 +112,10 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/author'
     | '/costs'
     | '/instances'
     | '/lessons'
-    | '/prd'
     | '/runs'
     | '/settings'
     | '/terminal'
@@ -124,10 +124,10 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/author'
     | '/costs'
     | '/instances'
     | '/lessons'
-    | '/prd'
     | '/runs'
     | '/settings'
     | '/terminal'
@@ -136,10 +136,10 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/author'
     | '/costs'
     | '/instances'
     | '/lessons'
-    | '/prd'
     | '/runs'
     | '/settings'
     | '/terminal'
@@ -149,10 +149,10 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AuthorRoute: typeof AuthorRoute
   CostsRoute: typeof CostsRoute
   InstancesRoute: typeof InstancesRoute
   LessonsRoute: typeof LessonsRoute
-  PrdRoute: typeof PrdRoute
   RunsRoute: typeof RunsRoute
   SettingsRoute: typeof SettingsRoute
   TerminalRoute: typeof TerminalRoute
@@ -183,13 +183,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RunsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/prd': {
-      id: '/prd'
-      path: '/prd'
-      fullPath: '/prd'
-      preLoaderRoute: typeof PrdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/lessons': {
       id: '/lessons'
       path: '/lessons'
@@ -209,6 +202,13 @@ declare module '@tanstack/react-router' {
       path: '/costs'
       fullPath: '/costs'
       preLoaderRoute: typeof CostsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/author': {
+      id: '/author'
+      path: '/author'
+      fullPath: '/author'
+      preLoaderRoute: typeof AuthorRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -237,10 +237,10 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AuthorRoute: AuthorRoute,
   CostsRoute: CostsRoute,
   InstancesRoute: InstancesRoute,
   LessonsRoute: LessonsRoute,
-  PrdRoute: PrdRoute,
   RunsRoute: RunsRoute,
   SettingsRoute: SettingsRoute,
   TerminalRoute: TerminalRoute,

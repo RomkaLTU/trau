@@ -3,13 +3,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { Check, Lock, Pencil, Search, X } from 'lucide-react'
 
-import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import {
-  Card,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
+  EmptyState,
+  Eyebrow,
+  RepoPicker,
+  SegmentedControl,
+  TerminalCard,
+} from '@/components/trau'
 import { cn } from '@/lib/utils'
 import { reposQueryOptions } from '@/lib/runs'
 import {
@@ -37,53 +38,53 @@ function Settings() {
 
   return (
     <div className="flex flex-col gap-6">
-      {error && <p className="text-sm text-destructive">{String(error)}</p>}
+      <header className="flex flex-col gap-2">
+        <Eyebrow glyph="action" className="text-primary">
+          CONFIGURE
+        </Eyebrow>
+        <h1 className="text-balance text-2xl font-semibold tracking-tight text-foreground">
+          Settings
+        </h1>
+        <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
+          Layered config resolved from project → user → default. Edit any key and
+          choose which layer the change writes to.
+        </p>
+      </header>
+
+      {error && (
+        <p className="font-mono text-sm text-destructive">{String(error)}</p>
+      )}
       {isPending && !error && (
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <p className="font-mono text-sm text-muted-foreground">Loading…</p>
       )}
 
       {data && repos.length === 0 && (
-        <Card className="max-w-md">
-          <CardHeader>
-            <CardTitle>Settings</CardTitle>
-            <CardDescription>
-              No repos yet. A repo's layered config appears here once a trau
-              loop has run in it.
-            </CardDescription>
-          </CardHeader>
-        </Card>
+        <EmptyState
+          className="min-h-[300px]"
+          message="No repos yet. A repo's layered config appears here once a trau loop has run in it."
+        />
       )}
 
-      {repos.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          {repos.map((repo) => (
-            <button
-              key={repo.root}
-              type="button"
-              title={repo.root}
-              onClick={() => setSelected(repo.name)}
-              className={cn(
-                'flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors',
-                repo.name === active
-                  ? 'border-transparent bg-accent text-accent-foreground'
-                  : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              {repo.name}
-              {repo.live && (
-                <span className="size-1.5 rounded-full bg-emerald-500" />
-              )}
-            </button>
-          ))}
-        </div>
+      {active && (
+        <ConfigList
+          repo={active}
+          repos={repos.map((r) => r.name)}
+          onRepoChange={setSelected}
+        />
       )}
-
-      {active && <ConfigList repo={active} />}
     </div>
   )
 }
 
-function ConfigList({ repo }: { repo: string }) {
+function ConfigList({
+  repo,
+  repos,
+  onRepoChange,
+}: {
+  repo: string
+  repos: string[]
+  onRepoChange: (repo: string) => void
+}) {
   const { data, error, isPending } = useQuery(configQueryOptions(repo))
   const [query, setQuery] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -103,65 +104,91 @@ function ConfigList({ repo }: { repo: string }) {
     })
   }, [keys, query, showAdvanced])
 
-  if (error) return <p className="text-sm text-destructive">{String(error)}</p>
-  if (isPending)
-    return <p className="text-sm text-muted-foreground">Loading…</p>
-
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative w-full max-w-sm">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search settings…"
-            className="h-9 w-full rounded-md border bg-transparent pl-9 pr-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
-          />
-        </div>
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
+    <>
+      <div className="flex flex-wrap items-end gap-6">
+        <label className="flex flex-col gap-1.5">
+          <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+            search
+          </span>
+          <div className="relative w-72 max-w-full">
+            <Search
+              className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="search settings…"
+              aria-label="Search settings"
+              autoComplete="off"
+              spellCheck={false}
+              className="w-full rounded-md border border-border bg-input py-1.5 pl-8 pr-2.5 font-mono text-sm text-foreground placeholder:text-faint focus-visible:border-ring focus-visible:outline-none"
+            />
+          </div>
+        </label>
+        <RepoPicker repos={repos} value={repo} onChange={onRepoChange} label="repo" />
+        <label className="flex cursor-pointer items-center gap-2 font-mono text-xs text-muted-foreground">
           <input
             type="checkbox"
             checked={showAdvanced}
             onChange={(e) => setShowAdvanced(e.target.checked)}
-            className="size-4 accent-primary"
+            className="size-3.5 accent-primary"
           />
-          Show advanced
+          show advanced
         </label>
-        <span className="ml-auto text-xs tabular-nums text-muted-foreground">
-          {filtered.length} / {keys.length}
-        </span>
-      </div>
-
-      <div className="divide-y rounded-lg border bg-card">
-        {filtered.map((item) => (
-          <ConfigRow key={item.key} repo={repo} item={item} layers={layers} />
-        ))}
-        {filtered.length === 0 && (
-          <p className="px-4 py-6 text-sm text-muted-foreground">
-            No settings match “{query}”.
-          </p>
+        {keys.length > 0 && (
+          <span className="ml-auto font-mono text-xs tabular-nums text-muted-foreground">
+            {filtered.length} / {keys.length}
+          </span>
         )}
       </div>
-    </div>
+
+      {error && (
+        <p className="font-mono text-sm text-destructive">{String(error)}</p>
+      )}
+      {isPending && !error && (
+        <p className="font-mono text-sm text-muted-foreground">Loading…</p>
+      )}
+
+      {!isPending && !error && (
+        <TerminalCard title="trau.ini" bodyClassName="p-0">
+          <div className="divide-y divide-border/60">
+            {filtered.map((item) => (
+              <ConfigRow key={item.key} repo={repo} item={item} layers={layers} />
+            ))}
+            {filtered.length === 0 && (
+              <p className="px-4 py-6 font-mono text-sm text-muted-foreground">
+                No settings match “{query}”.
+              </p>
+            )}
+          </div>
+        </TerminalCard>
+      )}
+    </>
   )
 }
 
-const layerStyle: Record<string, string> = {
-  project: 'border-sky-500/40 bg-sky-500/10 text-sky-600 dark:text-sky-400',
-  user: 'border-violet-500/40 bg-violet-500/10 text-violet-600 dark:text-violet-400',
-  'env var':
-    'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400',
-  local: 'border-teal-500/40 bg-teal-500/10 text-teal-600 dark:text-teal-400',
-  CLI: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
+const LAYER_STYLES: Record<string, string> = {
+  project: 'border-teal/50 bg-teal/12 text-teal',
+  user: 'border-info/50 bg-info/12 text-info',
+  default: 'border-faint/50 bg-faint/12 text-faint',
+  'env var': 'border-warn/50 bg-warn/12 text-warn',
+  local: 'border-done/50 bg-done/12 text-done',
+  CLI: 'border-primary/50 bg-primary/12 text-primary',
 }
 
-function LayerBadge({ layer }: { layer: string }) {
+function SourceChip({ source }: { source: string }) {
   return (
-    <Badge variant="outline" className={cn('font-normal', layerStyle[layer])}>
-      {layer}
-    </Badge>
+    <span
+      className={cn(
+        'inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[0.65rem]',
+        LAYER_STYLES[source] ?? LAYER_STYLES.default,
+      )}
+    >
+      {source}
+    </span>
   )
 }
 
@@ -202,17 +229,14 @@ function ConfigRow({
 
   return (
     <div className="flex flex-col gap-2 px-4 py-3">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="font-mono text-sm font-medium">{item.key}</span>
-        <LayerBadge layer={item.layer} />
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <span className="font-mono text-sm text-foreground">{item.key}</span>
+        <SourceChip source={item.layer} />
         {item.secret && (
-          <Badge
-            variant="outline"
-            className="gap-1 font-normal text-muted-foreground"
-          >
-            <Lock className="size-3" />
+          <span className="inline-flex items-center gap-1 rounded border border-border bg-secondary/40 px-1.5 py-0.5 font-mono text-[0.65rem] text-muted-foreground">
+            <Lock className="size-3" aria-hidden="true" />
             secret
-          </Badge>
+          </span>
         )}
         {!editing && (
           <span
@@ -227,14 +251,16 @@ function ConfigRow({
           </span>
         )}
         {!editing && item.editable && (
-          <button
-            type="button"
+          <Button
+            variant="ghost"
+            size="sm"
+            className="font-mono text-muted-foreground hover:text-foreground"
             onClick={startEdit}
-            className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             aria-label={`Edit ${item.key}`}
           >
-            <Pencil className="size-4" />
-          </button>
+            <Pencil className="size-3.5" aria-hidden="true" />
+            edit
+          </Button>
         )}
         {!editing && !item.editable && (
           <Lock
@@ -245,68 +271,66 @@ function ConfigRow({
       </div>
 
       {item.description && !editing && (
-        <p className="text-xs text-muted-foreground">{item.description}</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {item.description}
+        </p>
       )}
 
       {editing && (
-        <div className="flex flex-col gap-3 rounded-md border bg-background p-3">
+        <div className="flex flex-col gap-3 rounded-md border border-border bg-input/40 p-3">
           {item.description && (
-            <p className="text-xs text-muted-foreground">{item.description}</p>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {item.description}
+            </p>
           )}
           <ValueEditor item={item} value={draft} onChange={setDraft} />
 
           <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-2 text-xs text-muted-foreground">
-              Write to
-              <select
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+                write to
+              </span>
+              <SegmentedControl
+                aria-label="Write to layer"
+                options={layers.map((l) => ({ value: l, label: l }))}
                 value={layer}
-                onChange={(e) => setLayer(e.target.value)}
-                className="h-8 rounded-md border bg-transparent px-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-              >
-                {layers.map((l) => (
-                  <option key={l} value={l}>
-                    {l === 'project'
-                      ? 'project (repo)'
-                      : l === 'user'
-                        ? 'user (~/)'
-                        : l}
-                  </option>
-                ))}
-              </select>
-            </label>
+                onChange={setLayer}
+              />
+            </div>
 
             <div className="ml-auto flex items-center gap-2">
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="sm"
+                className="font-mono"
                 onClick={() => setEditing(false)}
                 disabled={mutation.isPending}
-                className="flex items-center gap-1 rounded-md border px-2.5 py-1 text-sm text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
               >
-                <X className="size-4" />
+                <X className="size-3.5" aria-hidden="true" />
                 Cancel
-              </button>
-              <button
-                type="button"
+              </Button>
+              <Button
+                size="sm"
+                className="font-mono"
                 onClick={() =>
                   mutation.mutate({ key: item.key, value: draft, layer })
                 }
                 disabled={mutation.isPending}
-                className="flex items-center gap-1 rounded-md bg-primary px-2.5 py-1 text-sm text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
               >
-                <Check className="size-4" />
+                <Check className="size-3.5" aria-hidden="true" />
                 {mutation.isPending ? 'Saving…' : 'Save'}
-              </button>
+              </Button>
             </div>
           </div>
 
           {mutation.error && (
-            <p className="text-xs text-destructive">
+            <p className="font-mono text-xs text-fail">
               {String((mutation.error as Error).message)}
             </p>
           )}
           {hasDefault(item) && (
-            <p className="text-xs text-muted-foreground">
-              Default: <span className="font-mono">{item.default}</span>
+            <p className="font-mono text-xs text-muted-foreground">
+              default: <span className="text-foreground">{item.default}</span>
             </p>
           )}
         </div>
@@ -330,23 +354,15 @@ function ValueEditor({
 }) {
   if (item.bool) {
     return (
-      <div className="flex gap-2">
-        {(['1', '0'] as const).map((v) => (
-          <button
-            key={v}
-            type="button"
-            onClick={() => onChange(v)}
-            className={cn(
-              'rounded-md border px-3 py-1 text-sm transition-colors',
-              value === v
-                ? 'border-transparent bg-accent text-accent-foreground'
-                : 'text-muted-foreground hover:text-foreground',
-            )}
-          >
-            {v === '1' ? 'on' : 'off'}
-          </button>
-        ))}
-      </div>
+      <SegmentedControl
+        aria-label={`${item.key} value`}
+        options={[
+          { value: '1', label: 'on' },
+          { value: '0', label: 'off' },
+        ]}
+        value={value === '1' ? '1' : '0'}
+        onChange={onChange}
+      />
     )
   }
 
@@ -355,7 +371,7 @@ function ValueEditor({
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="h-9 w-full max-w-xs rounded-md border bg-transparent px-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        className="w-full max-w-xs rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground focus-visible:border-ring focus-visible:outline-none"
       >
         {item.options.map((o) => (
           <option key={o} value={o}>
@@ -372,7 +388,7 @@ function ValueEditor({
       value={value}
       onChange={(e) => onChange(e.target.value)}
       placeholder={item.default ?? ''}
-      className="h-9 w-full max-w-md rounded-md border bg-transparent px-3 font-mono text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+      className="w-full max-w-md rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground placeholder:text-faint focus-visible:border-ring focus-visible:outline-none"
     />
   )
 }
