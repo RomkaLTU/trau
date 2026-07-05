@@ -4,7 +4,9 @@ export { PageHeader } from './page-header'
 export { Eyebrow, type EyebrowGlyph } from './eyebrow'
 export { StatusPill, type RunState } from './status-pill'
 export { TerminalCard } from './terminal-card'
+export { PhaseStepper } from './phase-stepper'
 export { RunOnce } from './run-once'
+export { Loop } from './loop'
 export { StatTile } from './stat-tile'
 export {
   SegmentedControl,

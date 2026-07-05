@@ -13,6 +13,7 @@ import { Route as TerminalRouteImport } from './routes/terminal'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RunsRouteImport } from './routes/runs'
 import { Route as RunOnceRouteImport } from './routes/run-once'
+import { Route as LoopRouteImport } from './routes/loop'
 import { Route as LessonsRouteImport } from './routes/lessons'
 import { Route as InstancesRouteImport } from './routes/instances'
 import { Route as CostsRouteImport } from './routes/costs'
@@ -39,6 +40,11 @@ const RunsRoute = RunsRouteImport.update({
 const RunOnceRoute = RunOnceRouteImport.update({
   id: '/run-once',
   path: '/run-once',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoopRoute = LoopRouteImport.update({
+  id: '/loop',
+  path: '/loop',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LessonsRoute = LessonsRouteImport.update({
@@ -83,6 +89,7 @@ export interface FileRoutesByFullPath {
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
+  '/loop': typeof LoopRoute
   '/run-once': typeof RunOnceRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
@@ -96,6 +103,7 @@ export interface FileRoutesByTo {
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
+  '/loop': typeof LoopRoute
   '/run-once': typeof RunOnceRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
@@ -110,6 +118,7 @@ export interface FileRoutesById {
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
+  '/loop': typeof LoopRoute
   '/run-once': typeof RunOnceRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
@@ -125,6 +134,7 @@ export interface FileRouteTypes {
     | '/costs'
     | '/instances'
     | '/lessons'
+    | '/loop'
     | '/run-once'
     | '/runs'
     | '/settings'
@@ -138,6 +148,7 @@ export interface FileRouteTypes {
     | '/costs'
     | '/instances'
     | '/lessons'
+    | '/loop'
     | '/run-once'
     | '/runs'
     | '/settings'
@@ -151,6 +162,7 @@ export interface FileRouteTypes {
     | '/costs'
     | '/instances'
     | '/lessons'
+    | '/loop'
     | '/run-once'
     | '/runs'
     | '/settings'
@@ -165,6 +177,7 @@ export interface RootRouteChildren {
   CostsRoute: typeof CostsRoute
   InstancesRoute: typeof InstancesRoute
   LessonsRoute: typeof LessonsRoute
+  LoopRoute: typeof LoopRoute
   RunOnceRoute: typeof RunOnceRoute
   RunsRoute: typeof RunsRoute
   SettingsRoute: typeof SettingsRoute
@@ -201,6 +214,13 @@ declare module '@tanstack/react-router' {
       path: '/run-once'
       fullPath: '/run-once'
       preLoaderRoute: typeof RunOnceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/loop': {
+      id: '/loop'
+      path: '/loop'
+      fullPath: '/loop'
+      preLoaderRoute: typeof LoopRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/lessons': {
@@ -261,6 +281,7 @@ const rootRouteChildren: RootRouteChildren = {
   CostsRoute: CostsRoute,
   InstancesRoute: InstancesRoute,
   LessonsRoute: LessonsRoute,
+  LoopRoute: LoopRoute,
   RunOnceRoute: RunOnceRoute,
   RunsRoute: RunsRoute,
   SettingsRoute: SettingsRoute,

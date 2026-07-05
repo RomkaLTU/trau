@@ -50,6 +50,8 @@ export interface StartRequest {
   ticket?: string
   epic?: string
   provider?: string
+  max?: number
+  no_resume?: boolean
 }
 
 export interface StartResult {
