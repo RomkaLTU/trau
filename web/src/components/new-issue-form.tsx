@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Check, ExternalLink, Plus } from 'lucide-react'
 
+import { cn } from '@/lib/utils'
 import { configQueryOptions } from '@/lib/config'
 import { createIssue, type CreatedIssue, type IssueDraft } from '@/lib/issues'
 
@@ -35,10 +36,12 @@ export function NewIssueForm({
   repo,
   defaults,
   onCreated,
+  bare = false,
 }: {
   repo: string
   defaults?: IssueDefaults
   onCreated?: (issue: CreatedIssue) => void
+  bare?: boolean
 }) {
   const [title, setTitle] = useState(defaults?.title ?? '')
   const [description, setDescription] = useState(defaults?.description ?? '')
@@ -68,7 +71,12 @@ export function NewIssueForm({
 
   if (mutation.data) {
     return (
-      <div className="flex flex-col gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-4 text-sm">
+      <div
+        className={cn(
+          'flex flex-col gap-2 text-sm',
+          !bare && 'rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-4',
+        )}
+      >
         <span className="text-emerald-600 dark:text-emerald-400">
           Created {mutation.data.provider} issue
         </span>
@@ -93,7 +101,7 @@ export function NewIssueForm({
   }
 
   return (
-    <div className="flex flex-col gap-3 rounded-lg border bg-card p-4">
+    <div className={cn('flex flex-col gap-3', !bare && 'rounded-lg border bg-card p-4')}>
       <input
         type="text"
         value={title}
