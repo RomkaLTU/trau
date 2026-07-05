@@ -204,11 +204,11 @@ function LoopCard({ loop, now }: { loop: LiveLoop; now: number }) {
           {loop.ticket && (
             <Button asChild variant="outline" size="sm" className="font-mono">
               <Link
-                to="/runs/$repo/$ticket"
+                to="/live/$repo/$ticket"
                 params={{ repo: loop.repo, ticket: loop.ticket }}
               >
                 <Eye className="size-4" aria-hidden="true" />
-                View
+                Watch
               </Link>
             </Button>
           )}
@@ -296,7 +296,7 @@ export function NeedsAttention() {
                 {run.failure_reason || run.title || run.repo}
               </p>
               <Link
-                to="/runs/$repo/$ticket"
+                to="/live/$repo/$ticket"
                 params={{ repo: run.repo, ticket: run.ticket }}
                 className="w-fit font-mono text-xs text-teal underline-offset-4 hover:underline"
               >
