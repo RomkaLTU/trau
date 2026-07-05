@@ -35,6 +35,7 @@ type loopEngine struct {
 func (l *loopEngine) ResumeTarget() (string, string)                  { return "", "" }
 func (l *loopEngine) InferredResume(context.Context) (string, string) { return "", "" }
 func (l *loopEngine) EnsureCleanBase(context.Context) error           { return nil }
+func (l *loopEngine) RestoreWIP(context.Context)                      {}
 func (l *loopEngine) Pick(context.Context) (string, error)            { return "", nil }
 func (l *loopEngine) Process(context.Context, string, string) error   { return nil }
 func (l *loopEngine) Finalize(context.Context) error {

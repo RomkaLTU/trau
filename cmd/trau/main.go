@@ -736,6 +736,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		ExpectedChecks:     cfg.ExpectedChecks,
 		RequireCI:          cfg.RequireCI,
 		RequireRepoChanges: cfg.RequireRepoChanges,
+		AutoStash:          cfg.AutoStash,
 		LintFix:            cfg.LintFix,
 		LintFixCmd:         cfg.LintFixCmd,
 		Cleanup:            cfg.Cleanup,
@@ -822,6 +823,10 @@ type engine interface {
 
 	EnsureCleanBase(ctx context.Context) error
 
+	// RestoreWIP undoes any EnsureCleanBase auto-stash at session end, popping the
+	// user's WIP back onto its original branch. No-op when nothing was stashed.
+	RestoreWIP(ctx context.Context)
+
 	Pick(ctx context.Context) (string, error)
 
 	Process(ctx context.Context, id, from string) error
@@ -850,6 +855,7 @@ func (e *realEngine) InferredResume(ctx context.Context) (string, string) {
 	return e.pipe.InferredResume(ctx)
 }
 func (e *realEngine) EnsureCleanBase(ctx context.Context) error { return e.pipe.EnsureCleanBase(ctx) }
+func (e *realEngine) RestoreWIP(ctx context.Context)            { e.pipe.RestoreWIP(ctx) }
 func (e *realEngine) Pick(ctx context.Context) (string, error)  { return e.tracker.Pick(ctx, e.scope) }
 func (e *realEngine) Process(ctx context.Context, id, from string) error {
 	err := e.pipe.Resume(ctx, id, from)
@@ -897,6 +903,9 @@ type loopParams struct {
 
 func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer, result func(id string, elapsed time.Duration) console.TicketResult) ([]string, error) {
 	var processed []string
+	// Put any WIP that EnsureCleanBase auto-stashed on a fresh pick back where it
+	// came from once the loop ends (no-op when nothing was stashed).
+	defer eng.RestoreWIP(ctx)
 	// Poll the provider usage window for the run's lifetime, stopping when the loop
 	// returns. Windows reach the renderer over the event log; nil when disabled.
 	if p.Poller != nil {
@@ -2306,6 +2315,11 @@ func (a *appActions) RunTicket(ctx context.Context, id, provider string, r conso
 		a.runEpicLoop(ctx, id, r, 1)
 		return
 	}
+
+	// A fresh leaf run auto-stashes any uncommitted WIP in EnsureCleanBase below;
+	// restore it once this ticket is done (no-op when nothing was stashed, and when
+	// resuming an existing checkpoint).
+	defer a.pipe.RestoreWIP(ctx)
 
 	// Leaf ticket: under epic flow, if it belongs to an epic, build it ON the epic
 	// branch (and have its PR target that branch) instead of branching off the base.
