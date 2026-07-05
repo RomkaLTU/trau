@@ -19,6 +19,7 @@ export interface ConfigKey {
 export interface ConfigResponse {
   repo: string
   layers: string[]
+  providers: string[]
   keys: ConfigKey[]
 }
 
