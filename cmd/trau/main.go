@@ -76,6 +76,7 @@ Usage:
   trau --status [--json]     show saved ticket checkpoints with token/cost totals
   trau --dry-run             print the next eligible ticket without doing any work
   trau --list-eligible [--json]  list the repo's eligible ready tickets (ID, title, labels)
+  trau --list-epic <ID> [--json]  list an epic's sub-issues and their states (ID, title, state)
   trau --reset <ID>          drop the branch + state and re-queue the ticket (refuses if already merged; --force overrides)
   trau --clear <ID>          drop only the local checkpoint (no git, no re-queue) — for tickets finished out-of-band
 
@@ -88,11 +89,12 @@ Flags:
   --repo <path>     target app repo (else TRAU_REPO_ROOT, else the cwd git top-level)
   --dry-run         print the next eligible ticket and exit
   --list-eligible   list the eligible ready tickets and exit (--json for machine-readable output)
+  --list-epic <ID>  list an epic's sub-issues and their states and exit (--json for machine-readable output)
   --reset <ID>      reset a ticket and exit
   --clear <ID>      drop a ticket's local checkpoint without touching git or the tracker (a.k.a. --forget)
   --force           with --reset, reset even a ticket whose code is already merged
   --status          print saved checkpoints (auto-reconciles stale in-flight/quarantined rows against the tracker) and exit
-  --json            emit --status or --list-eligible as machine-readable JSON
+  --json            emit --status, --list-eligible, or --list-epic as machine-readable JSON
   --no-tui          force plain console output (disable the Bubble Tea TUI)
   --verbose         extra stderr diagnostics (what the loop is doing)
   --debug           very verbose stderr diagnostics, incl. git/gh commands invoked
@@ -332,6 +334,26 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 				suffix = "  [" + strings.Join(t.Labels, ", ") + "]"
 			}
 			con.Logf("%s  %s%s", t.ID, t.Title, suffix)
+		}
+		return nil
+	}
+
+	if opts.ListEpicID != "" {
+		listCtx, cancel := context.WithTimeout(ctx, listEpicTimeout)
+		defer cancel()
+		subs, err := pm.SubIssues(listCtx, opts.ListEpicID)
+		if err != nil {
+			return fmt.Errorf("list sub-issues for %s: %w", opts.ListEpicID, err)
+		}
+		if opts.JSON {
+			return writeEpicSubIssuesJSON(stdout, subs)
+		}
+		if len(subs) == 0 {
+			con.Logf("%s has no sub-issues.", opts.ListEpicID)
+			return nil
+		}
+		for _, s := range subs {
+			con.Logf("%s  %s  [%s]", s.ID, s.Title, subIssueState(s))
 		}
 		return nil
 	}
@@ -691,6 +713,43 @@ func writeEligibleJSON(w io.Writer, tickets []tracker.ListedTicket) error {
 			labels = []string{}
 		}
 		out = append(out, eligibleTicket{ID: t.ID, Title: t.Title, Labels: labels})
+	}
+	return json.NewEncoder(w).Encode(out)
+}
+
+// listEpicTimeout bounds --list-epic so a hung sub-issue listing surfaces as a
+// clean error instead of stalling the caller (the serve hub captures this).
+const listEpicTimeout = 90 * time.Second
+
+// epicSubIssue is the machine-readable shape of one epic sub-issue under
+// --list-epic --json. It is the stable contract the serve hub parses to preview
+// an epic before a loop is launched against it.
+type epicSubIssue struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	State string `json:"state"`
+}
+
+// subIssueState collapses a sub-issue's tracker facts into the preview's state
+// vocabulary: done for finished work, epic for a nested parent the loop never
+// runs as a leaf, and todo for a buildable open child.
+func subIssueState(s tracker.SubIssue) string {
+	switch {
+	case s.Done:
+		return "done"
+	case s.HasChildren:
+		return "epic"
+	default:
+		return "todo"
+	}
+}
+
+// writeEpicSubIssuesJSON emits an epic's sub-issues as a JSON array on stdout,
+// keeping the stream byte-stable so the serve hub can parse it.
+func writeEpicSubIssuesJSON(w io.Writer, subs []tracker.SubIssue) error {
+	out := make([]epicSubIssue, 0, len(subs))
+	for _, s := range subs {
+		out = append(out, epicSubIssue{ID: s.ID, Title: s.Title, State: subIssueState(s)})
 	}
 	return json.NewEncoder(w).Encode(out)
 }

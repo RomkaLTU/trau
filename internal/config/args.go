@@ -20,6 +20,7 @@ type Options struct {
 	Max          int
 	DryRun       bool
 	ListEligible bool
+	ListEpicID   string
 	ResetID      string
 	ClearID      string
 	Force        bool
@@ -72,6 +73,12 @@ func ParseArgs(args []string) (Options, error) {
 			o.DryRun = true
 		case a == "--list-eligible":
 			o.ListEligible = true
+		case a == "--list-epic":
+			v, err := next(a)
+			if err != nil {
+				return o, err
+			}
+			o.ListEpicID = v
 		case a == "--reset":
 			v, err := next(a)
 			if err != nil {
@@ -120,13 +127,13 @@ func ParseArgs(args []string) (Options, error) {
 	}
 
 	modes := 0
-	for _, on := range []bool{o.Status, o.ResetID != "", o.ClearID != "", o.DryRun, o.ListEligible} {
+	for _, on := range []bool{o.Status, o.ResetID != "", o.ClearID != "", o.DryRun, o.ListEligible, o.ListEpicID != ""} {
 		if on {
 			modes++
 		}
 	}
 	if modes > 1 {
-		return o, fmt.Errorf("--status, --reset, --clear, --dry-run, and --list-eligible are mutually exclusive")
+		return o, fmt.Errorf("--status, --reset, --clear, --dry-run, --list-eligible, and --list-epic are mutually exclusive")
 	}
 
 	return o, nil
