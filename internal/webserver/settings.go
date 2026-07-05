@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
@@ -61,12 +62,14 @@ type ConfigKeyView struct {
 }
 
 // ConfigResponse is the /api/v1/repos/{repo}/config resource: every known config
-// key with its effective value and originating layer, plus the layers an edit
-// may write to.
+// key with its effective value and originating layer, the layers an edit may
+// write to, and the providers a run may be launched with so the provider-override
+// select is server-driven instead of hardcoded in the web.
 type ConfigResponse struct {
-	Repo   string          `json:"repo"`
-	Layers []string        `json:"layers"`
-	Keys   []ConfigKeyView `json:"keys"`
+	Repo      string          `json:"repo"`
+	Layers    []string        `json:"layers"`
+	Providers []string        `json:"providers"`
+	Keys      []ConfigKeyView `json:"keys"`
 }
 
 // ConfigWriteRequest is the body of a settings edit: the key, its new value, and
@@ -100,7 +103,7 @@ func (s *Server) getConfig(w http.ResponseWriter, repo registry.Repo) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "load config: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, ConfigResponse{Repo: repo.Name, Layers: configWriteLayers, Keys: views})
+	writeJSON(w, http.StatusOK, ConfigResponse{Repo: repo.Name, Layers: configWriteLayers, Providers: agent.DefaultRegistry().Names(), Keys: views})
 }
 
 func (s *Server) putConfig(w http.ResponseWriter, r *http.Request, repo registry.Repo) {

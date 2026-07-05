@@ -113,6 +113,9 @@ func TestConfigProvenance(t *testing.T) {
 	if strings.Join(out.Layers, ",") != "project,user" {
 		t.Errorf("layers = %v, want [project user]", out.Layers)
 	}
+	if strings.Join(out.Providers, ",") != "claude,codex,kimi" {
+		t.Errorf("providers = %v, want the server-driven [claude codex kimi]", out.Providers)
+	}
 
 	iter := mustKey(t, out.Keys, "MAX_ITERATIONS")
 	if iter.Value != "7" || iter.Layer != "project" {
