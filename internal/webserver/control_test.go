@@ -631,6 +631,184 @@ func TestParseEligibleTickets(t *testing.T) {
 	})
 }
 
+func TestEpicPreviewReturnsSubIssues(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureOut = []byte(`[{"id":"COD-1","title":"First","state":"done"},{"id":"COD-2","title":"Second","state":"todo"}]`)
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/epics/COD-530")
+	if err != nil {
+		t.Fatalf("GET epic preview: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("epic preview status = %d, want 200", res.StatusCode)
+	}
+	var out EpicPreviewResult
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode epic preview result: %v", err)
+	}
+	if out.RepoRoot != root {
+		t.Errorf("RepoRoot = %q, want %q", out.RepoRoot, root)
+	}
+	if out.Epic != "COD-530" {
+		t.Errorf("Epic = %q, want COD-530", out.Epic)
+	}
+	if len(out.SubIssues) != 2 {
+		t.Fatalf("SubIssues = %d, want 2", len(out.SubIssues))
+	}
+	if out.SubIssues[0].ID != "COD-1" || out.SubIssues[0].State != "done" {
+		t.Errorf("SubIssues[0] = %+v, want COD-1/done", out.SubIssues[0])
+	}
+	if out.SubIssues[1].State != "todo" {
+		t.Errorf("SubIssues[1].State = %q, want todo", out.SubIssues[1].State)
+	}
+	if len(fake.captures) != 1 {
+		t.Fatalf("captures = %d, want 1", len(fake.captures))
+	}
+	assertArgs(t, fake.captures[0].Args, []string{"--repo", root, "--list-epic", "COD-530", "--json", "--no-tui"})
+	if len(fake.spawns) != 0 {
+		t.Errorf("epic preview spawned a loop (%d) — previewing must have no side effects", len(fake.spawns))
+	}
+}
+
+func TestEpicPreviewChildlessEpic(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureOut = []byte("[]\n")
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/epics/COD-530")
+	if err != nil {
+		t.Fatalf("GET epic preview: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	var out EpicPreviewResult
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode epic preview result: %v", err)
+	}
+	if out.SubIssues == nil {
+		t.Errorf("SubIssues = nil, want an empty array for a childless epic")
+	}
+	if len(out.SubIssues) != 0 {
+		t.Errorf("SubIssues = %v, want empty", out.SubIssues)
+	}
+}
+
+func TestEpicPreviewRejectsMalformedEpic(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/epics/not-an-epic!")
+	if err != nil {
+		t.Fatalf("GET epic preview: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("epic preview status = %d, want 400 for a malformed epic id", res.StatusCode)
+	}
+	if len(fake.captures) != 0 {
+		t.Errorf("captures = %d, want 0 (never run the binary for a malformed epic id)", len(fake.captures))
+	}
+}
+
+func TestEpicPreviewRefusedForNonAllowlistedRepo(t *testing.T) {
+	allowed := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{allowed})
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/stranger/epics/COD-530")
+	if err != nil {
+		t.Fatalf("GET epic preview: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("epic preview status = %d, want 403 for an observe-only repo", res.StatusCode)
+	}
+	if len(fake.captures) != 0 {
+		t.Errorf("captures = %d, want 0 for a refused repo", len(fake.captures))
+	}
+}
+
+func TestEpicPreviewReportsCaptureFailure(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureErr = os.ErrPermission
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/epics/COD-530")
+	if err != nil {
+		t.Fatalf("GET epic preview: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("epic preview status = %d, want 502 when the preview fails (unknown epic / tracker unavailable)", res.StatusCode)
+	}
+}
+
+func TestEpicPreviewReportsMalformedOutput(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureOut = []byte("not json at all")
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/epics/COD-530")
+	if err != nil {
+		t.Fatalf("GET epic preview: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("epic preview status = %d, want 502 when the output cannot be parsed", res.StatusCode)
+	}
+}
+
+func TestEpicPreviewRejectsNonGET(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/epics/COD-530", nil)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST epic preview = %d, want 405", res.StatusCode)
+	}
+	if len(fake.captures) != 0 {
+		t.Errorf("captures = %d, want 0 for a rejected method", len(fake.captures))
+	}
+}
+
+func TestEpicPreviewRequiresTokenWhenExposed(t *testing.T) {
+	s := New("1.2.3", "0.0.0.0", "s3cret", []string{"/repo/acme"})
+	fake := &fakeSupervisor{}
+	s.sup = fake
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/epics/COD-530")
+	if err != nil {
+		t.Fatalf("GET epic preview: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("unauthenticated epic preview = %d, want 401 on an exposed bind", res.StatusCode)
+	}
+	if len(fake.captures) != 0 {
+		t.Errorf("token gate let an epic preview through: captures=%d", len(fake.captures))
+	}
+}
+
+func TestParseEpicSubIssues(t *testing.T) {
+	t.Run("empty output is a childless epic", func(t *testing.T) {
+		out, err := parseEpicSubIssues([]byte("  \n"))
+		if err != nil {
+			t.Fatalf("parseEpicSubIssues(blank): %v", err)
+		}
+		if out == nil || len(out) != 0 {
+			t.Errorf("got %+v, want an empty non-nil slice", out)
+		}
+	})
+	t.Run("malformed output errors", func(t *testing.T) {
+		if _, err := parseEpicSubIssues([]byte("garbage")); err == nil {
+			t.Error("parseEpicSubIssues(garbage) should error, not return no sub-issues")
+		}
+	})
+}
+
 func assertArgs(t *testing.T, got, want []string) {
 	t.Helper()
 	if len(got) != len(want) {
