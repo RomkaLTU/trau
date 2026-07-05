@@ -70,6 +70,19 @@ export async function startInstance(req: StartRequest): Promise<StartResult> {
   return res.json()
 }
 
+export interface StopResult {
+  status: string
+  signal: string
+}
+
+export async function stopInstance(pid: number): Promise<StopResult> {
+  const res = await apiFetch(`/api/v1/instances/${pid}/stop`, { method: 'POST' })
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'stop failed'))
+  }
+  return res.json()
+}
+
 export interface DryRunResult {
   repo: string
   repo_root: string

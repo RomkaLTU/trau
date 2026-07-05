@@ -1,6 +1,5 @@
 import { Link } from '@tanstack/react-router'
 import {
-  Boxes,
   ChartColumn,
   DollarSign,
   FileText,
@@ -38,7 +37,6 @@ const GROUPS: NavGroup[] = [
         exact: true,
         attention: true,
       },
-      { label: 'Instances', icon: Boxes, to: '/instances' },
     ],
   },
   {
