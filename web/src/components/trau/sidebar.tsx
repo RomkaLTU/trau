@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   Lightbulb,
   ListChecks,
+  Play,
   Settings,
   SquareTerminal,
   type LucideIcon,
@@ -38,6 +39,7 @@ const GROUPS: NavGroup[] = [
         exact: true,
         attention: true,
       },
+      { label: 'Run once', icon: Play, to: '/run-once' },
     ],
   },
   {

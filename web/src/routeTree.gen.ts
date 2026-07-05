@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as TerminalRouteImport } from './routes/terminal'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RunsRouteImport } from './routes/runs'
+import { Route as RunOnceRouteImport } from './routes/run-once'
 import { Route as LessonsRouteImport } from './routes/lessons'
 import { Route as InstancesRouteImport } from './routes/instances'
 import { Route as CostsRouteImport } from './routes/costs'
@@ -33,6 +34,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const RunsRoute = RunsRouteImport.update({
   id: '/runs',
   path: '/runs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RunOnceRoute = RunOnceRouteImport.update({
+  id: '/run-once',
+  path: '/run-once',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LessonsRoute = LessonsRouteImport.update({
@@ -77,6 +83,7 @@ export interface FileRoutesByFullPath {
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
+  '/run-once': typeof RunOnceRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
   '/terminal': typeof TerminalRoute
@@ -89,6 +96,7 @@ export interface FileRoutesByTo {
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
+  '/run-once': typeof RunOnceRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
   '/terminal': typeof TerminalRoute
@@ -102,6 +110,7 @@ export interface FileRoutesById {
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
+  '/run-once': typeof RunOnceRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
   '/terminal': typeof TerminalRoute
@@ -116,6 +125,7 @@ export interface FileRouteTypes {
     | '/costs'
     | '/instances'
     | '/lessons'
+    | '/run-once'
     | '/runs'
     | '/settings'
     | '/terminal'
@@ -128,6 +138,7 @@ export interface FileRouteTypes {
     | '/costs'
     | '/instances'
     | '/lessons'
+    | '/run-once'
     | '/runs'
     | '/settings'
     | '/terminal'
@@ -140,6 +151,7 @@ export interface FileRouteTypes {
     | '/costs'
     | '/instances'
     | '/lessons'
+    | '/run-once'
     | '/runs'
     | '/settings'
     | '/terminal'
@@ -153,6 +165,7 @@ export interface RootRouteChildren {
   CostsRoute: typeof CostsRoute
   InstancesRoute: typeof InstancesRoute
   LessonsRoute: typeof LessonsRoute
+  RunOnceRoute: typeof RunOnceRoute
   RunsRoute: typeof RunsRoute
   SettingsRoute: typeof SettingsRoute
   TerminalRoute: typeof TerminalRoute
@@ -181,6 +194,13 @@ declare module '@tanstack/react-router' {
       path: '/runs'
       fullPath: '/runs'
       preLoaderRoute: typeof RunsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/run-once': {
+      id: '/run-once'
+      path: '/run-once'
+      fullPath: '/run-once'
+      preLoaderRoute: typeof RunOnceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/lessons': {
@@ -241,6 +261,7 @@ const rootRouteChildren: RootRouteChildren = {
   CostsRoute: CostsRoute,
   InstancesRoute: InstancesRoute,
   LessonsRoute: LessonsRoute,
+  RunOnceRoute: RunOnceRoute,
   RunsRoute: RunsRoute,
   SettingsRoute: SettingsRoute,
   TerminalRoute: TerminalRoute,

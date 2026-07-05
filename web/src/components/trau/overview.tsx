@@ -230,7 +230,7 @@ export function LiveLoops() {
         actions={
           <>
             <Button asChild size="sm" className="font-mono">
-              <Link to="/instances">
+              <Link to="/run-once">
                 <Play className="size-4" aria-hidden="true" />
                 Run once
               </Link>
@@ -316,7 +316,7 @@ export function QuickLaunch() {
       <div className="flex flex-col gap-4 sm:flex-row">
         <div className="flex flex-1 flex-col gap-2">
           <Button asChild className="w-full font-mono">
-            <Link to="/instances">
+            <Link to="/run-once">
               <Play className="size-4" aria-hidden="true" />
               Run once
             </Link>
