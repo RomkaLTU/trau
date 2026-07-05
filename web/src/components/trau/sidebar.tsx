@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import {
   DollarSign,
+  FilePlus,
   FileText,
   LayoutDashboard,
   Lightbulb,
@@ -16,6 +17,7 @@ interface NavItem {
   label: string
   icon: LucideIcon
   to: string
+  search?: Record<string, string>
   exact?: boolean
   attention?: boolean
 }
@@ -49,7 +51,15 @@ const GROUPS: NavGroup[] = [
   },
   {
     label: 'AUTHOR',
-    items: [{ label: 'PRD', icon: FileText, to: '/prd' }],
+    items: [
+      { label: 'PRD', icon: FileText, to: '/author', search: { tab: 'prd' } },
+      {
+        label: 'New issue',
+        icon: FilePlus,
+        to: '/author',
+        search: { tab: 'issue' },
+      },
+    ],
   },
   {
     label: 'CONFIGURE',
@@ -83,9 +93,10 @@ export function Sidebar() {
               {group.items.map((item) => {
                 const badge = item.attention && attention > 0 ? attention : null
                 return (
-                  <li key={item.to}>
+                  <li key={item.label}>
                     <Link
                       to={item.to}
+                      search={item.search}
                       activeOptions={{ exact: item.exact ?? false }}
                       className="group relative flex items-center gap-2.5 rounded-md px-2 py-1.5 font-mono text-sm text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
                       activeProps={{
