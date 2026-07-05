@@ -63,6 +63,9 @@ type formValues struct {
 	labels     string
 	timelog    bool
 	requireCI  bool
+	// expectedChecks holds the required status-check names detected on GitHub;
+	// written to EXPECTED_CHECKS so the gate waits for exactly those checks.
+	expectedChecks []string
 
 	writeConfirm bool
 
@@ -231,10 +234,18 @@ func (m onboardingModel) newForm() *huh.Form {
 }
 
 func (m onboardingModel) ciDescription() string {
-	if m.ciHasPRDet {
+	switch m.ciDet.Source {
+	case "branch-protection":
+		if len(m.ciDet.expectedChecksLabel()) > 0 {
+			return "Auto-detected on GitHub — PRs require: " + m.ciDet.expectedChecksLabel() +
+				".\nPre-selected below; press enter to accept or change it."
+		}
+		return "Auto-detected on GitHub — this branch requires PR status checks.\nPre-selected below; press enter to accept or change it."
+	case "workflows":
 		return "Detected a pull_request-triggered workflow in .github/workflows.\nChange later in Settings or via REQUIRE_CI in .trau.ini."
+	default:
+		return "No pull_request-triggered workflow found — PRs would get zero checks,\nread by the gate as never-green. Skip only if this repo has no PR CI."
 	}
-	return "No pull_request-triggered workflow found — PRs would get zero checks,\nread by the gate as never-green. Skip only if this repo has no PR CI."
 }
 
 // detectTeamOptions runs the async tracker probe (huh shows a loading spinner)
@@ -444,6 +455,7 @@ func projectSetupFrom(fv *formValues) ProjectSetup {
 		EpicFlow:        fv.epicFlow,
 		Timelog:         fv.timelog,
 		RequireCI:       fv.requireCI,
+		ExpectedChecks:  fv.expectedChecks,
 		LinearAPIKey:    strings.TrimSpace(fv.linearKey),
 		JiraBaseURL:     strings.TrimSpace(fv.jiraBase),
 		JiraEmail:       strings.TrimSpace(fv.jiraEmail),

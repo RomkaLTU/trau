@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1249,6 +1250,11 @@ func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (
 		"EPIC_FLOW":        boolEnvValue(setup.EpicFlow),
 		"REQUIRE_CI":       boolEnvValue(setup.RequireCI),
 	}
+	if len(setup.ExpectedChecks) > 0 {
+		// Detection found the exact required checks — pin the gate to them so it
+		// waits for those specific checks instead of any-green.
+		values["EXPECTED_CHECKS"] = strings.Join(setup.ExpectedChecks, ",")
+	}
 	if setup.Timelog {
 		// Opting in writes the master toggle plus sensible defaults for the rest, so
 		// the feature is fully configured. Leaving it off writes nothing — the keys
@@ -1449,6 +1455,152 @@ func parseRepoSlug(remote string) string {
 		return ""
 	}
 	return parts[len(parts)-2] + "/" + parts[len(parts)-1]
+}
+
+// DetectCI probes whether this repo gates PRs on CI for the onboarding wizard,
+// reading GitHub's required checks off the repo resolved from the git remote and
+// falling back to the local .github/workflows scan. It never errors.
+func (a *appActions) DetectCI(ctx context.Context, baseBranch string) tui.CIDetection {
+	return detectCIGate(ctx, a.cfg.RepoRoot, baseBranch)
+}
+
+// detectCIGate layers CI-gate signals from most to least authoritative:
+// branch-protection / ruleset required checks (literally the merge gate GitHub
+// enforces, which also names the checks) then the local pull_request workflow
+// scan. It deliberately does NOT trust check runs on the base-branch tip: a
+// push-only workflow produces runs on main while PRs receive zero checks — the
+// exact false positive REQUIRE_CI exists to avoid. When nothing authoritative is
+// found the local guess stays a question rather than an auto-decision.
+func detectCIGate(ctx context.Context, repoRoot, baseBranch string) tui.CIDetection {
+	fallback := tui.CIDetection{Gate: config.HasPullRequestCI(repoRoot), Source: "none"}
+	if fallback.Gate {
+		fallback.Source = "workflows"
+	}
+	if repoRoot == "" {
+		return fallback
+	}
+	if _, err := exec.LookPath("gh"); err != nil {
+		return fallback
+	}
+	slug, err := detectGitHubRepo(repoRoot)
+	if err != nil || slug == "" {
+		return fallback
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+
+	branch := strings.TrimSpace(baseBranch)
+	if branch == "" {
+		branch = ghDefaultBranch(ctx, repoRoot, slug)
+	}
+	if checks, found := ghRequiredChecks(ctx, repoRoot, slug, branch); found && len(checks) > 0 {
+		return tui.CIDetection{Gate: true, Confident: true, ExpectedChecks: checks, Source: "branch-protection"}
+	}
+	return fallback
+}
+
+// ghDefaultBranch resolves the repo's default branch so protection lookups target
+// the branch PRs actually merge into; it defaults to "main" on any failure.
+func ghDefaultBranch(ctx context.Context, repoRoot, slug string) string {
+	out, err := ghAPI(ctx, repoRoot, "repos/"+slug, "-q", ".default_branch")
+	if err != nil {
+		return "main"
+	}
+	if b := strings.TrimSpace(string(out)); b != "" {
+		return b
+	}
+	return "main"
+}
+
+// ghRequiredChecks unions the required status-check names from classic branch
+// protection and repository rulesets for branch. found reports whether either
+// source declared required checks, so an empty result reads as "protected but no
+// checks required" rather than "unknown".
+func ghRequiredChecks(ctx context.Context, repoRoot, slug, branch string) ([]string, bool) {
+	esc := strings.ReplaceAll(branch, "/", "%2F")
+	var names []string
+	found := false
+	if out, err := ghAPI(ctx, repoRoot, fmt.Sprintf("repos/%s/branches/%s/protection/required_status_checks", slug, esc)); err == nil {
+		found = true
+		names = append(names, parseProtectionChecks(out)...)
+	}
+	if out, err := ghAPI(ctx, repoRoot, fmt.Sprintf("repos/%s/rules/branches/%s", slug, esc)); err == nil {
+		if rc := parseRulesetChecks(out); len(rc) > 0 {
+			found = true
+			names = append(names, rc...)
+		}
+	}
+	return dedupeChecks(names), found
+}
+
+// parseProtectionChecks extracts required check names from the classic
+// branch-protection required_status_checks payload, tolerating both the modern
+// checks[].context and the deprecated contexts[] shapes.
+func parseProtectionChecks(data []byte) []string {
+	var resp struct {
+		Contexts []string `json:"contexts"`
+		Checks   []struct {
+			Context string `json:"context"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil
+	}
+	names := append([]string{}, resp.Contexts...)
+	for _, c := range resp.Checks {
+		names = append(names, c.Context)
+	}
+	return names
+}
+
+// parseRulesetChecks extracts required check names from the active branch rules
+// payload (the rulesets feature), reading required_status_checks rules.
+func parseRulesetChecks(data []byte) []string {
+	var rules []struct {
+		Type       string `json:"type"`
+		Parameters struct {
+			RequiredStatusChecks []struct {
+				Context string `json:"context"`
+			} `json:"required_status_checks"`
+		} `json:"parameters"`
+	}
+	if err := json.Unmarshal(data, &rules); err != nil {
+		return nil
+	}
+	var names []string
+	for _, r := range rules {
+		if r.Type != "required_status_checks" {
+			continue
+		}
+		for _, c := range r.Parameters.RequiredStatusChecks {
+			names = append(names, c.Context)
+		}
+	}
+	return names
+}
+
+func dedupeChecks(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
+}
+
+// ghAPI runs `gh api` in repoRoot and returns stdout; a non-2xx response (404
+// when a branch is unprotected, 403 without admin) surfaces as an error so
+// callers fall back rather than read it as "no checks".
+func ghAPI(ctx context.Context, repoRoot string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "gh", append([]string{"api"}, args...)...)
+	cmd.Dir = repoRoot
+	return cmd.Output()
 }
 
 // MenuInfo builds the landing-screen context from config + saved state (no heavy

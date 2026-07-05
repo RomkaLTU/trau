@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"charm.land/huh/v2"
-	"github.com/RomkaLTU/trau/internal/config"
 )
 
 // AccessibleOnboardingRequested reports whether the environment asked for huh's
@@ -48,7 +47,9 @@ func RunAccessibleOnboarding(ctx context.Context, actions OnboardingActions) (Se
 	fv.teamManual = p.Team
 	fv.epicFlow = p.EpicFlow
 	fv.timelog = p.Timelog
-	fv.requireCI = config.HasPullRequestCI(actions.RepoRoot())
+	ciDet := actions.DetectCI(ctx, fv.baseBranch)
+	fv.requireCI = ciDet.Gate
+	fv.expectedChecks = ciDet.ExpectedChecks
 	fv.linearKey = p.LinearAPIKey
 	fv.jiraBase = p.JiraBaseURL
 	fv.jiraEmail = p.JiraEmail

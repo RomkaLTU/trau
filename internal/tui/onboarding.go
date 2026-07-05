@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ type ProjectSetup struct {
 	EpicFlow        bool
 	Timelog         bool
 	RequireCI       bool
+	ExpectedChecks  []string
 	LinearAPIKey    string
 	JiraBaseURL     string
 	JiraEmail       string
@@ -64,6 +66,32 @@ type TeamDetection struct {
 	Label    string
 	Teams    []DetectedTeam
 	AutoFill bool
+}
+
+// CIDetection is the result of probing whether this repo gates PRs on CI. Gate
+// is the recommended REQUIRE_CI value. Confident is set only when the answer
+// came from an authoritative GitHub source (branch-protection or ruleset
+// required checks) rather than the local-workflow guess, so the wizard can
+// present it as auto-detected instead of a question. ExpectedChecks carries the
+// required status-check names when GitHub exposed them, seeding EXPECTED_CHECKS.
+// Source labels the winning signal for the description line: "branch-protection",
+// "workflows" (local .github/workflows fallback), or "none".
+type CIDetection struct {
+	Gate           bool
+	Confident      bool
+	ExpectedChecks []string
+	Source         string
+}
+
+// expectedChecksLabel renders the required checks for the description line,
+// capping the list so a repo with many checks cannot overflow the form.
+func (d CIDetection) expectedChecksLabel() string {
+	const max = 3
+	names := d.ExpectedChecks
+	if len(names) <= max {
+		return strings.Join(names, ", ")
+	}
+	return strings.Join(names[:max], ", ") + fmt.Sprintf(" +%d more", len(names)-max)
 }
 
 // OnboardingPrefill carries existing configuration so the onboarding wizard
@@ -109,6 +137,14 @@ type OnboardingActions interface {
 	// SetupProject writes the project env file (and optionally creates Linear
 	// labels) from the values collected in the wizard.
 	SetupProject(ctx context.Context, setup ProjectSetup) (SetupResult, error)
+
+	// DetectCI probes whether this repo gates PRs on CI, using the GitHub repo the
+	// wizard already resolves from the git remote: it reads the branch-protection
+	// and ruleset required checks for baseBranch, and falls back to the local
+	// .github/workflows scan when gh is unavailable or the repo is unreachable. A
+	// blank baseBranch lets detection use the repo's default branch. It never
+	// errors — an undetectable repo returns the local-workflow guess.
+	DetectCI(ctx context.Context, baseBranch string) CIDetection
 }
 
 // onboardPhase is the wizard's outer state. The animated system check and the
@@ -150,9 +186,17 @@ type onboardingModel struct {
 	systemCheckStarted bool
 	mcp                *mcpProbe
 
-	// ciHasPRDet records whether a pull_request-triggered workflow was detected,
-	// used to default the CI merge-gate choice.
+	// ciHasPRDet records whether a pull_request-triggered workflow was detected
+	// locally; it seeds the CI merge-gate default synchronously before the async
+	// GitHub probe (ciDet) lands.
 	ciHasPRDet bool
+
+	// ciDet holds the async CI-gate probe result (branch-protection / rulesets,
+	// falling back to local workflows); ciDetDone reports whether it has landed.
+	// The probe is kicked off at Init and lands during the system-check screen,
+	// well before the form is built, so newForm reads a settled value.
+	ciDet     CIDetection
+	ciDetDone bool
 
 	writing bool
 	result  SetupResult
@@ -192,8 +236,18 @@ func newOnboardingModelWithPrefill(ctx context.Context, actions OnboardingAction
 		m.phase = phaseNoRepo
 	}
 	m.ciHasPRDet = config.HasPullRequestCI(m.repoRoot)
+	m.ciDet = CIDetection{Gate: m.ciHasPRDet, Source: ciWorkflowSource(m.ciHasPRDet)}
 	m.applyPrefill(prefill)
 	return m
+}
+
+// ciWorkflowSource labels the local-workflow fallback: a detected pull_request
+// trigger reads as "workflows", nothing found as "none".
+func ciWorkflowSource(hasPR bool) string {
+	if hasPR {
+		return "workflows"
+	}
+	return "none"
 }
 
 // applyPrefill seeds the form's bound values from the current configuration so
@@ -216,10 +270,25 @@ func (m *onboardingModel) applyPrefill(p OnboardingPrefill) {
 }
 
 func (m onboardingModel) Init() tea.Cmd {
+	var cmds []tea.Cmd
 	if m.phase == phaseSystemCheck {
-		return m.systemCheckSpin.Tick
+		cmds = append(cmds, m.systemCheckSpin.Tick)
 	}
-	return nil
+	if m.repoRoot != "" {
+		cmds = append(cmds, m.detectCICmd())
+	}
+	return tea.Batch(cmds...)
+}
+
+type ciDetectedMsg struct{ det CIDetection }
+
+// detectCICmd probes the CI merge gate off the main loop so the gh calls never
+// block the UI; the result lands as a ciDetectedMsg.
+func (m onboardingModel) detectCICmd() tea.Cmd {
+	actions, ctx, base := m.actions, m.ctx, m.fv.baseBranch
+	return func() tea.Msg {
+		return ciDetectedMsg{det: actions.DetectCI(ctx, base)}
+	}
 }
 
 func (m onboardingModel) Update(msg tea.Msg) (onboardingModel, tea.Cmd) {
@@ -233,6 +302,13 @@ func (m onboardingModel) Update(msg tea.Msg) (onboardingModel, tea.Cmd) {
 		return m, nil
 	case setupDoneMsg:
 		return m.applySetupDone(msg), nil
+	case ciDetectedMsg:
+		m.ciDet = msg.det
+		m.ciDetDone = true
+		m.ciHasPRDet = msg.det.Gate
+		m.fv.requireCI = msg.det.Gate
+		m.fv.expectedChecks = msg.det.ExpectedChecks
+		return m, nil
 	case formCompletedMsg:
 		m.phase = phaseWriting
 		m.writing = true
