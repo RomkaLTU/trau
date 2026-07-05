@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { queryOptions, useQuery } from '@tanstack/react-query'
 
+import { apiFetch } from './api'
+import { streamSSE } from './sse'
+
 export interface FeedEvent {
   id: string
   ts: string
@@ -22,7 +25,7 @@ export interface EventsResponse {
 const FEED_CAP = 500
 
 async function fetchRecentEvents(repo: string): Promise<EventsResponse> {
-  const res = await fetch(`/api/v1/repos/${encodeURIComponent(repo)}/events`)
+  const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(repo)}/events`)
   if (!res.ok) {
     throw new Error(`events request failed: ${res.status}`)
   }
@@ -87,12 +90,12 @@ type StatusListener = (status: FeedStatus) => void
 const feedListeners = new Map<string, Set<EventListener>>()
 const allListeners = new Set<AllListener>()
 const feedStatusListeners = new Set<StatusListener>()
-let feedSource: EventSource | null = null
+let feedClose: (() => void) | null = null
 let feedStatus: FeedStatus = 'connecting'
 let feedRefs = 0
 
-// subscribeFeed hangs every repo's feed off a single machine-wide EventSource, so
-// a monitor watching more repos than the browser's per-origin connection cap does
+// subscribeFeed hangs every repo's feed off a single machine-wide stream, so a
+// monitor watching more repos than the browser's per-origin connection cap does
 // not leave later feeds stuck connecting. Frames are routed by their repo tag.
 function subscribeFeed(
   repo: string,
@@ -118,8 +121,8 @@ function subscribeFeed(
   }
 }
 
-// subscribeAllEvents taps the same machine-wide EventSource but receives every
-// repo's frames, each carrying its repo tag. It backs the away recap and browser
+// subscribeAllEvents taps the same machine-wide stream but receives every repo's
+// frames, each carrying its repo tag. It backs the away recap and browser
 // notifications, which reason across all repos rather than one.
 export function subscribeAllEvents(
   onEvent: AllListener,
@@ -140,33 +143,34 @@ export function subscribeAllEvents(
 
 function releaseFeed() {
   feedRefs--
-  if (feedRefs === 0 && feedSource) {
-    feedSource.close()
-    feedSource = null
+  if (feedRefs === 0 && feedClose) {
+    feedClose()
+    feedClose = null
     feedStatus = 'connecting'
   }
 }
 
 function openFeedSource() {
-  if (feedSource) return
+  if (feedClose) return
   setFeedStatus('connecting')
-  const source = new EventSource('/api/v1/events/stream')
-  source.onopen = () => setFeedStatus('live')
-  source.onerror = () => setFeedStatus('error')
-  source.onmessage = (e) => {
-    let msg: FeedEvent & { repo?: string }
-    try {
-      msg = JSON.parse(e.data)
-    } catch {
-      return
-    }
-    if (!msg.repo) return
-    const tagged = msg as RepoFeedEvent
-    for (const notify of allListeners) notify(tagged)
-    const listeners = feedListeners.get(msg.repo)
-    if (listeners) for (const notify of listeners) notify(tagged)
-  }
-  feedSource = source
+  feedClose = streamSSE('/api/v1/events/stream', {
+    onOpen: () => setFeedStatus('live'),
+    onError: () => setFeedStatus('error'),
+    onMessage: ({ event, data }) => {
+      if (event !== 'message') return
+      let msg: FeedEvent & { repo?: string }
+      try {
+        msg = JSON.parse(data)
+      } catch {
+        return
+      }
+      if (!msg.repo) return
+      const tagged = msg as RepoFeedEvent
+      for (const notify of allListeners) notify(tagged)
+      const listeners = feedListeners.get(msg.repo)
+      if (listeners) for (const notify of listeners) notify(tagged)
+    },
+  })
 }
 
 function setFeedStatus(status: FeedStatus) {

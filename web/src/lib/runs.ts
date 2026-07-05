@@ -1,5 +1,6 @@
 import { queryOptions } from '@tanstack/react-query'
 
+import { apiFetch } from './api'
 import type { RepoView } from './instances'
 
 export type FailureClass = 'paused' | 'faulted' | 'gave_up'
@@ -28,7 +29,7 @@ export interface RunsResponse {
 }
 
 async function fetchRepos(): Promise<ReposResponse> {
-  const res = await fetch('/api/v1/repos')
+  const res = await apiFetch('/api/v1/repos')
   if (!res.ok) {
     throw new Error(`repos request failed: ${res.status}`)
   }
@@ -36,7 +37,7 @@ async function fetchRepos(): Promise<ReposResponse> {
 }
 
 async function fetchRuns(repo: string): Promise<RunsResponse> {
-  const res = await fetch(`/api/v1/repos/${encodeURIComponent(repo)}/runs`)
+  const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(repo)}/runs`)
   if (!res.ok) {
     throw new Error(`runs request failed: ${res.status}`)
   }

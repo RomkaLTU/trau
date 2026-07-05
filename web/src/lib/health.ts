@@ -1,5 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
 
+import { apiFetch } from './api'
+
 export interface Health {
   status: string
   version: string
@@ -7,7 +9,7 @@ export interface Health {
 }
 
 async function fetchHealth(): Promise<Health> {
-  const res = await fetch('/api/v1/health')
+  const res = await apiFetch('/api/v1/health')
   if (!res.ok) {
     throw new Error(`health request failed: ${res.status}`)
   }

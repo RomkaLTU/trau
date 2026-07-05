@@ -1,5 +1,6 @@
 import { queryOptions } from '@tanstack/react-query'
 
+import { apiFetch } from './api'
 import type { CostSpend } from './costs'
 
 export type GroupBy = 'provider' | 'repo' | 'model' | 'phase'
@@ -63,7 +64,7 @@ function buildQuery(p: AnalyticsParams): string {
 }
 
 async function fetchTimeseries(p: AnalyticsParams): Promise<TimeseriesResponse> {
-  const res = await fetch(`/api/v1/costs/timeseries?${buildQuery(p)}`)
+  const res = await apiFetch(`/api/v1/costs/timeseries?${buildQuery(p)}`)
   if (!res.ok) {
     throw new Error(`timeseries request failed: ${res.status}`)
   }

@@ -1,3 +1,5 @@
+import { apiFetch } from './api'
+
 export interface PublishPRDRequest {
   title: string
   markdown: string
@@ -19,7 +21,7 @@ export async function publishPRD(
   repo: string,
   req: PublishPRDRequest,
 ): Promise<PublishedPRD> {
-  const res = await fetch(`/api/v1/repos/${encodeURIComponent(repo)}/prd`, {
+  const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(repo)}/prd`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
