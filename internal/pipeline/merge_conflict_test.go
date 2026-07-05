@@ -11,10 +11,10 @@ import (
 	"github.com/RomkaLTU/trau/internal/state"
 )
 
-// notMergeableErr mirrors gh's real refusal, stderr included (see withStderr) —
+// errNotMergeable mirrors gh's real refusal, stderr included (see withStderr) —
 // the exact failure COD-702 hit when a sibling squash-merged into the epic
 // branch after its PR opened.
-var notMergeableErr = errors.New("gh pr merge: exit status 1: X Pull request RomkaLTU/trau#105 is not mergeable: the merge commit cannot be cleanly created")
+var errNotMergeable = errors.New("gh pr merge: exit status 1: X Pull request RomkaLTU/trau#105 is not mergeable: the merge commit cannot be cleanly created")
 
 func TestUnmergeablePR(t *testing.T) {
 	cases := []struct {
@@ -23,7 +23,7 @@ func TestUnmergeablePR(t *testing.T) {
 		want bool
 	}{
 		{"nil", nil, false},
-		{"conflicting", notMergeableErr, true},
+		{"conflicting", errNotMergeable, true},
 		{"policy block", errors.New("X Pull request #7 is not mergeable: the base branch policy prohibits the merge"), true},
 		{"merge conflict", errors.New("merge conflict between branches"), true},
 		{"transient", errors.New("dial tcp: i/o timeout"), false},
@@ -137,7 +137,7 @@ func seedPROpen(t *testing.T, p *Pipeline, id, pr, branch string) {
 func TestCIAndMergeUnmergeableSyncsBaseAndMerges(t *testing.T) {
 	id := "COD-90702"
 	git := &mergeGit{branch: "feature/COD-90702-x"}
-	gh := &mergeGitHub{mergeErrs: []error{notMergeableErr}}
+	gh := &mergeGitHub{mergeErrs: []error{errNotMergeable}}
 	tr := &fakeTracker{}
 	p := newMergePipeline(t, git, gh, tr)
 	seedPROpen(t, p, id, "105", git.branch)
@@ -166,7 +166,7 @@ func TestCIAndMergeUnmergeableSyncsBaseAndMerges(t *testing.T) {
 func TestCIAndMergeEpicChildConflictResolvedByAgent(t *testing.T) {
 	id := "COD-90702"
 	git := &mergeGit{branch: "feature/COD-90702-x", conflicted: true}
-	gh := &mergeGitHub{mergeErrs: []error{notMergeableErr}}
+	gh := &mergeGitHub{mergeErrs: []error{errNotMergeable}}
 	tr := &fakeTracker{}
 	p := newMergePipeline(t, git, gh, tr)
 	p.EpicID = "COD-90697"
@@ -191,7 +191,7 @@ func TestCIAndMergeEpicChildConflictResolvedByAgent(t *testing.T) {
 func TestCIAndMergeUnresolvedConflictGivesUp(t *testing.T) {
 	id := "COD-90702"
 	git := &mergeGit{branch: "feature/COD-90702-x", conflicted: true, unmergedLeft: 99}
-	gh := &mergeGitHub{mergeErrs: []error{notMergeableErr}}
+	gh := &mergeGitHub{mergeErrs: []error{errNotMergeable}}
 	tr := &fakeTracker{}
 	p := newMergePipeline(t, git, gh, tr)
 	seedPROpen(t, p, id, "105", git.branch)

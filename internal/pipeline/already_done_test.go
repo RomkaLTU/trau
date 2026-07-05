@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/state"
+	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
 // TestResumeSkipsMergedCheckpoint is the COD-708 regression guard: a ticket
@@ -97,4 +98,111 @@ func TestResolveBuildBranchWithMissingRecordedBranch(t *testing.T) {
 			}
 		})
 	}
+}
+
+// statusTracker extends fakeTracker with a canned IssueStatus answer.
+type statusTracker struct {
+	fakeTracker
+	status    tracker.IssueStatus
+	statusErr error
+}
+
+func (t *statusTracker) IssueStatus(context.Context, string) (tracker.IssueStatus, error) {
+	return t.status, t.statusErr
+}
+
+// doneFailTracker simulates a swallowed mark-done failure (e.g. a transient 429).
+type doneFailTracker struct{ fakeTracker }
+
+func (t *doneFailTracker) SetStatus(context.Context, string, string, string) error {
+	return errors.New("429 rate limited")
+}
+
+// TestResumeRebuildsReopenedTicket is the COD-747 guard: a merged checkpoint
+// whose ticket trau marked Done and a human then reopened in the tracker must
+// clear the delivered checkpoint and rebuild instead of skipping.
+func TestResumeRebuildsReopenedTicket(t *testing.T) {
+	id := "COD-90747"
+	p := newTestPipeline(t, fakeRunner{err: errors.New("boom")}, &statusTracker{status: tracker.StatusOpen})
+	for k, v := range map[string]string{"PHASE": state.Merged, "PR": "90", "TRACKER_DONE": "1"} {
+		if err := p.State.Set(id, k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := p.Resume(context.Background(), id, "")
+	if errors.Is(err, ErrAlreadyDone) {
+		t.Fatal("reopened ticket must rebuild, got ErrAlreadyDone")
+	}
+	if got := p.State.Get(id, "PHASE"); got == state.Merged {
+		t.Fatalf("merged checkpoint must be cleared, got PHASE=%q", got)
+	}
+}
+
+// TestResumeKeepsMergedSkipUnlessAffirmativelyReopened locks the fail-safe side
+// of COD-747: no TRACKER_DONE marker (the Done write may have failed), a status
+// lookup error, or a still-terminal status must all keep today's skip.
+func TestResumeKeepsMergedSkipUnlessAffirmativelyReopened(t *testing.T) {
+	tests := []struct {
+		name   string
+		marker bool
+		status tracker.IssueStatus
+		err    error
+	}{
+		{name: "no marker after failed mark-done", marker: false, status: tracker.StatusOpen},
+		{name: "still done in tracker", marker: true, status: tracker.StatusDone},
+		{name: "canceled in tracker", marker: true, status: tracker.StatusCanceled},
+		{name: "unknown status", marker: true, status: tracker.StatusUnknown},
+		{name: "status lookup error", marker: true, status: tracker.StatusOpen, err: errors.New("tracker down")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id := "COD-90748"
+			p := newTestPipeline(t, fakeRunner{}, &statusTracker{status: tt.status, statusErr: tt.err})
+			if err := p.State.Set(id, "PHASE", state.Merged); err != nil {
+				t.Fatal(err)
+			}
+			if tt.marker {
+				if err := p.State.Set(id, "TRACKER_DONE", "1"); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := p.Resume(context.Background(), id, ""); !errors.Is(err, ErrAlreadyDone) {
+				t.Fatalf("expected ErrAlreadyDone, got %v", err)
+			}
+			if got := p.State.Get(id, "PHASE"); got != state.Merged {
+				t.Fatalf("merged checkpoint must stay untouched, got PHASE=%q", got)
+			}
+		})
+	}
+}
+
+// TestMarkDoneRecordsTrackerDone: the marker is written only when the tracker
+// positively reached Done, so a swallowed SetStatus failure can never later
+// read as a human reopen.
+func TestMarkDoneRecordsTrackerDone(t *testing.T) {
+	t.Run("marker on success", func(t *testing.T) {
+		id := "COD-90749"
+		p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+		if err := p.markDone(context.Background(), id, "merged %s"); err != nil {
+			t.Fatal(err)
+		}
+		if got := p.State.Get(id, "TRACKER_DONE"); got != "1" {
+			t.Fatalf("TRACKER_DONE = %q, want \"1\"", got)
+		}
+	})
+	t.Run("no marker when SetStatus fails", func(t *testing.T) {
+		id := "COD-90750"
+		p := newTestPipeline(t, fakeRunner{}, &doneFailTracker{})
+		if err := p.markDone(context.Background(), id, "merged %s"); err != nil {
+			t.Fatal(err)
+		}
+		if got := p.State.Get(id, "TRACKER_DONE"); got != "" {
+			t.Fatalf("TRACKER_DONE = %q, want unset", got)
+		}
+		if got := p.State.Get(id, "PHASE"); got != state.Merged {
+			t.Fatalf("PHASE = %q, want merged despite tracker failure", got)
+		}
+	})
 }

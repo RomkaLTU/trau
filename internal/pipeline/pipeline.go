@@ -426,8 +426,10 @@ func (p *Pipeline) EnsureOwnedProject(ctx context.Context, id string) error {
 // Resume runs a ticket through the phases not yet checkpointed. A checkpoint
 // already at merged short-circuits to ErrAlreadyDone — a stale tracker or a
 // bad pick must never rebuild delivered work (`trau --clear` is the explicit
-// override). Otherwise it buckets token logs to the ticket, restores the
-// recorded feature branch (auto-resetting the ticket when that branch is
+// override) — unless the tracker affirmatively shows the ticket reopened after
+// trau marked it Done, in which case the delivered checkpoint is cleared and the
+// ticket rebuilds fresh. Otherwise it buckets token logs to the ticket, restores
+// the recorded feature branch (auto-resetting the ticket when that branch is
 // gone), then runs each phase whose rank exceeds the resume point
 // (fi = Idx(from)); from="" runs everything fresh. A *GiveUpError
 // from build (no feature branch) is funneled into giveUp here; verify and the CI
@@ -438,13 +440,18 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 		return err
 	}
 	if p.State.Get(id, "PHASE") == state.Merged {
-		pr := p.State.Get(id, "PR")
-		if pr != "" {
-			pr = " (PR #" + pr + ")"
+		if !p.reopenedInTracker(ctx, id) {
+			pr := p.State.Get(id, "PR")
+			if pr != "" {
+				pr = " (PR #" + pr + ")"
+			}
+			p.logf("  ✓ %s is already merged%s — skipping; `trau --clear %s` to run it again", id, pr, id)
+			p.clearFailure(id)
+			return ErrAlreadyDone
 		}
-		p.logf("  ✓ %s is already merged%s — skipping; `trau --clear %s` to run it again", id, pr, id)
-		p.clearFailure(id)
-		return ErrAlreadyDone
+		p.logf("  ↻ %s was delivered but reopened in the tracker — clearing the merged checkpoint to rebuild", id)
+		p.resetLocal(ctx, id)
+		from = ""
 	}
 	p.clearFailureMarks(id)
 	if p.Tokens != nil {
@@ -479,6 +486,23 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 	}
 
 	return p.classifyPhaseErr(ctx, id, p.runPhases(ctx, id, fi))
+}
+
+// reopenedInTracker reports whether a merged ticket should rebuild: trau saw the
+// tracker reach Done (TRACKER_DONE) and the tracker now affirmatively reports the
+// issue open again. Anything uncertain — no marker, no status capability, a lookup
+// error, an unknown status — reads as not-reopened, so delivered work is never
+// rebuilt on doubt.
+func (p *Pipeline) reopenedInTracker(ctx context.Context, id string) bool {
+	if p.State.Get(id, "TRACKER_DONE") != "1" {
+		return false
+	}
+	statuser, ok := p.Tracker.(tracker.IssueStatuser)
+	if !ok {
+		return false
+	}
+	st, err := statuser.IssueStatus(ctx, id)
+	return err == nil && st == tracker.StatusOpen
 }
 
 // runPhases runs each phase whose rank exceeds the resume point fi, returning the
@@ -762,6 +786,13 @@ func (p *Pipeline) RestoreWIP(ctx context.Context) {
 // that already pruned the branch must not stop the reset. The recorded BRANCH is
 // preferred; with none, the first matching feature/<id>-* branch is used.
 func (p *Pipeline) Reset(ctx context.Context, id string) error {
+	p.resetLocal(ctx, id)
+	return p.Tracker.Reset(ctx, id)
+}
+
+// resetLocal is Reset without the tracker step — used when the tracker already
+// reflects the desired status (a user restore) and must be left untouched.
+func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 	branch := p.State.Get(id, "BRANCH")
 	if branch == "" {
 		branch, _ = p.Git.FindFeatureBranch(ctx, id)
@@ -780,7 +811,6 @@ func (p *Pipeline) Reset(ctx context.Context, id string) error {
 	} else {
 		p.logf("  reset %s: cleared saved state", id)
 	}
-	return p.Tracker.Reset(ctx, id)
 }
 
 // CheckoutBranch checks out ticket id's recorded feature branch in the target repo
@@ -1411,6 +1441,8 @@ func (p *Pipeline) syncBranchWithBase(ctx context.Context, id, branch, base, lab
 func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
 	if err := p.Tracker.SetStatus(ctx, id, "Done", ""); err != nil {
 		p.logf("  status (Done) error: %v", err)
+	} else if err := p.State.Set(id, "TRACKER_DONE", "1"); err != nil {
+		p.logf("  checkpoint TRACKER_DONE error (continuing): %v", err)
 	}
 	if err := p.State.Set(id, "PHASE", state.Merged); err != nil {
 		return fmt.Errorf("merge %s: checkpoint merged: %w", id, err)
