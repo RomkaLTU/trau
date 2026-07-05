@@ -23,22 +23,6 @@ export const Route = createFileRoute('/prd')({
     context.queryClient.ensureQueryData(reposQueryOptions),
 })
 
-function useColorMode(): 'light' | 'dark' {
-  const [mode, setMode] = useState<'light' | 'dark'>(() =>
-    typeof window !== 'undefined' &&
-    window.matchMedia('(prefers-color-scheme: dark)').matches
-      ? 'dark'
-      : 'light',
-  )
-  useEffect(() => {
-    const m = window.matchMedia('(prefers-color-scheme: dark)')
-    const apply = () => setMode(m.matches ? 'dark' : 'light')
-    m.addEventListener('change', apply)
-    return () => m.removeEventListener('change', apply)
-  }, [])
-  return mode
-}
-
 function PRD() {
   const { data, error, isPending } = useQuery(reposQueryOptions)
   const [selected, setSelected] = useState<string | null>(null)
@@ -103,7 +87,6 @@ function Editor({ repo }: { repo: string }) {
   const [draft, setDraft] = useState<PRDDraft>(
     () => loadDraft(repo) ?? { title: '', markdown: '' },
   )
-  const mode = useColorMode()
 
   useEffect(() => {
     if (draftIsEmpty(draft)) {
@@ -161,7 +144,7 @@ function Editor({ repo }: { repo: string }) {
         placeholder="PRD title"
         className="h-10 w-full rounded-md border bg-transparent px-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
       />
-      <div data-color-mode={mode} className="overflow-hidden rounded-md border">
+      <div data-color-mode="dark" className="overflow-hidden rounded-md border">
         <MDEditor
           value={draft.markdown}
           onChange={(v) => setDraft((d) => ({ ...d, markdown: v ?? '' }))}

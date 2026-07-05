@@ -45,7 +45,7 @@ export function Terminal({
       disableStdin: true,
       fontSize: 12,
       fontFamily:
-        'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+        '"Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
       scrollback: 5000,
       theme: THEME,
     })
