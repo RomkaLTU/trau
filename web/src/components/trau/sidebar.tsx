@@ -1,6 +1,5 @@
 import { Link } from '@tanstack/react-router'
 import {
-  ChartColumn,
   DollarSign,
   FileText,
   LayoutDashboard,
@@ -45,7 +44,6 @@ const GROUPS: NavGroup[] = [
       { label: 'Runs', icon: ListChecks, to: '/runs' },
       { label: 'Terminal', icon: SquareTerminal, to: '/terminal' },
       { label: 'Costs', icon: DollarSign, to: '/costs' },
-      { label: 'Analytics', icon: ChartColumn, to: '/analytics' },
       { label: 'Lessons', icon: Lightbulb, to: '/lessons' },
     ],
   },
@@ -83,8 +81,7 @@ export function Sidebar() {
             </p>
             <ul className="flex flex-col gap-0.5">
               {group.items.map((item) => {
-                const badge =
-                  item.attention && attention > 0 ? attention : null
+                const badge = item.attention && attention > 0 ? attention : null
                 return (
                   <li key={item.to}>
                     <Link
