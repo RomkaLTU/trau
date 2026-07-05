@@ -1,187 +1,277 @@
-import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { createFileRoute } from '@tanstack/react-router'
-import { Search } from 'lucide-react'
+import { useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { createFileRoute } from "@tanstack/react-router";
+import { ChevronDown, Search } from "lucide-react";
 
-import { Badge } from '@/components/ui/badge'
 import {
-  Card,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
-import { cn } from '@/lib/utils'
-import { reposQueryOptions } from '@/lib/runs'
-import { lessonsQueryOptions, type Lesson } from '@/lib/lessons'
+  EmptyState,
+  Eyebrow,
+  RepoPicker,
+  TerminalCard,
+} from "@/components/trau";
+import { cn } from "@/lib/utils";
+import { reposQueryOptions } from "@/lib/runs";
+import { lessonsQueryOptions, type Lesson } from "@/lib/lessons";
 
-export const Route = createFileRoute('/lessons')({
+export const Route = createFileRoute("/lessons")({
   component: Lessons,
-  loader: ({ context }) => context.queryClient.ensureQueryData(reposQueryOptions),
-})
+  loader: ({ context }) =>
+    context.queryClient.ensureQueryData(reposQueryOptions),
+});
 
 function Lessons() {
-  const { data, error, isPending } = useQuery(reposQueryOptions)
-  const [selected, setSelected] = useState<string | null>(null)
+  const { data, error, isPending } = useQuery(reposQueryOptions);
+  const [selected, setSelected] = useState<string | null>(null);
 
-  const repos = data?.repos ?? []
+  const repos = data?.repos ?? [];
   const active =
     selected && repos.some((r) => r.name === selected)
       ? selected
-      : repos.find((r) => r.live)?.name ?? repos[0]?.name ?? null
+      : (repos.find((r) => r.live)?.name ?? repos[0]?.name ?? null);
 
   return (
     <div className="flex flex-col gap-6">
-      {error && <p className="text-sm text-destructive">{String(error)}</p>}
+      <header className="flex flex-col gap-2">
+        <Eyebrow glyph="done" className="text-done">
+          LESSONS
+        </Eyebrow>
+        <h1 className="text-balance text-2xl font-semibold tracking-tight text-foreground">
+          Lessons
+        </h1>
+        <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
+          Browse and search the lessons ledger the agent accumulates across
+          runs.
+        </p>
+      </header>
+
+      {error && (
+        <p className="font-mono text-sm text-destructive">{String(error)}</p>
+      )}
       {isPending && !error && (
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <p className="font-mono text-sm text-muted-foreground">Loading…</p>
       )}
 
       {data && repos.length === 0 && (
-        <Card className="max-w-md">
-          <CardHeader>
-            <CardTitle>Lessons</CardTitle>
-            <CardDescription>
-              No repos yet. Lessons appear here once a trau loop records what it
-              learned while repairing a run.
-            </CardDescription>
-          </CardHeader>
-        </Card>
+        <EmptyState
+          className="min-h-[300px]"
+          message="No lessons learned yet — the herd is still young. They appear here once a trau loop records what it learned while repairing a run."
+        />
       )}
 
-      {repos.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          {repos.map((repo) => (
-            <button
-              key={repo.root}
-              type="button"
-              title={repo.root}
-              onClick={() => setSelected(repo.name)}
-              className={cn(
-                'flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors',
-                repo.name === active
-                  ? 'border-transparent bg-accent text-accent-foreground'
-                  : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              {repo.name}
-              {repo.live && (
-                <span className="size-1.5 rounded-full bg-emerald-500" />
-              )}
-            </button>
-          ))}
-        </div>
+      {active && (
+        <LessonList
+          repo={active}
+          repos={repos.map((r) => r.name)}
+          onRepoChange={setSelected}
+        />
       )}
-
-      {active && <LessonList repo={active} />}
     </div>
-  )
+  );
 }
 
-function LessonList({ repo }: { repo: string }) {
-  const { data, error, isPending } = useQuery(lessonsQueryOptions(repo))
-  const [query, setQuery] = useState('')
+function LessonList({
+  repo,
+  repos,
+  onRepoChange,
+}: {
+  repo: string;
+  repos: string[];
+  onRepoChange: (repo: string) => void;
+}) {
+  const { data, error, isPending } = useQuery(lessonsQueryOptions(repo));
+  const [query, setQuery] = useState("");
 
-  const lessons = data?.lessons ?? []
+  const lessons = data?.lessons ?? [];
   const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return lessons
-    return lessons.filter((l) => haystack(l).includes(q))
-  }, [lessons, query])
-
-  if (error) return <p className="text-sm text-destructive">{String(error)}</p>
-  if (isPending) return <p className="text-sm text-muted-foreground">Loading…</p>
-  if (lessons.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        No lessons recorded for {repo} yet.
-      </p>
-    )
-  }
+    const q = query.trim().toLowerCase();
+    if (!q) return lessons;
+    return lessons.filter((l) => haystack(l).includes(q));
+  }, [lessons, query]);
 
   return (
-    <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-3">
-        <div className="relative w-full max-w-sm">
-          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search lessons…"
-            className="h-9 w-full rounded-md border bg-transparent pl-9 pr-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
-          />
-        </div>
-        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-          {filtered.length} / {lessons.length}
-        </span>
-      </div>
-
-      {filtered.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          No lessons match “{query}”.
-        </p>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {filtered.map((lesson, i) => (
-            <LessonCard key={`${lesson.recorded_at ?? ''}-${lesson.ticket ?? ''}-${i}`} lesson={lesson} />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
-const resultStyle: Record<string, string> = {
-  repaired:
-    'border-emerald-500/40 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400',
-  quarantined: 'border-destructive/40 bg-destructive/10 text-destructive',
-}
-
-function LessonCard({ lesson }: { lesson: Lesson }) {
-  return (
-    <div className="rounded-lg border bg-card p-4 text-card-foreground shadow-xs">
-      <div className="flex flex-wrap items-center gap-2">
-        {lesson.ticket && (
-          <span className="font-mono text-sm font-medium">{lesson.ticket}</span>
-        )}
-        {lesson.failure_type && (
-          <Badge variant="outline">{lesson.failure_type}</Badge>
-        )}
-        {lesson.result && (
-          <Badge variant="outline" className={resultStyle[lesson.result]}>
-            {lesson.result}
-          </Badge>
-        )}
-        {lesson.recorded_at && (
-          <span className="ml-auto text-xs tabular-nums text-muted-foreground">
-            {formatRecordedAt(lesson.recorded_at)}
+    <>
+      <div className="flex flex-wrap items-end gap-6">
+        <label className="flex flex-col gap-1.5">
+          <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+            search
+          </span>
+          <div className="relative w-72 max-w-full">
+            <Search
+              className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="search lessons…"
+              aria-label="Search lessons"
+              autoComplete="off"
+              spellCheck={false}
+              className="w-full rounded-md border border-border bg-input py-1.5 pl-8 pr-2.5 font-mono text-sm text-foreground placeholder:text-faint focus-visible:border-ring focus-visible:outline-none"
+            />
+          </div>
+        </label>
+        <RepoPicker
+          repos={repos}
+          value={repo}
+          onChange={onRepoChange}
+          label="repo"
+        />
+        {lessons.length > 0 && (
+          <span className="ml-auto font-mono text-xs tabular-nums text-muted-foreground">
+            {filtered.length} / {lessons.length}
           </span>
         )}
       </div>
 
-      <p className="mt-2 text-sm">{lesson.lesson}</p>
-
-      {lesson.evidence && lesson.evidence.length > 0 && (
-        <ul className="mt-3 flex flex-col gap-1 border-l-2 border-border pl-3">
-          {lesson.evidence.map((line, i) => (
-            <li key={i} className="text-xs text-muted-foreground">
-              {line}
-            </li>
-          ))}
-        </ul>
+      {error && (
+        <p className="font-mono text-sm text-destructive">{String(error)}</p>
+      )}
+      {isPending && !error && (
+        <p className="font-mono text-sm text-muted-foreground">Loading…</p>
       )}
 
-      {lesson.tags && lesson.tags.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-1.5">
-          {lesson.tags.map((tag) => (
-            <Badge key={tag} variant="secondary" className="font-normal">
-              {tag}
-            </Badge>
+      {!isPending && !error && lessons.length === 0 && (
+        <EmptyState
+          className="min-h-[300px]"
+          message={`No lessons recorded for ${repo} yet — the herd is still young.`}
+        />
+      )}
+
+      {lessons.length > 0 && filtered.length === 0 && (
+        <p className="py-8 text-center font-mono text-sm text-muted-foreground">
+          No lessons match “{query}”.
+        </p>
+      )}
+
+      {filtered.length > 0 && (
+        <div className="flex flex-col gap-4">
+          {filtered.map((lesson, i) => (
+            <LessonCard
+              key={`${lesson.recorded_at ?? ""}-${lesson.ticket ?? ""}-${i}`}
+              lesson={lesson}
+            />
           ))}
         </div>
       )}
+    </>
+  );
+}
+
+const RESULT_CHIP: Record<string, string> = {
+  repaired: "border-done/40 bg-done/10 text-done",
+  quarantined: "border-fail/40 bg-fail/10 text-fail",
+};
+
+function LessonCard({ lesson }: { lesson: Lesson }) {
+  const [open, setOpen] = useState(false);
+  const hasDetail = Boolean(
+    lesson.phase || lesson.attempted_fix || (lesson.evidence?.length ?? 0) > 0,
+  );
+  const title =
+    [formatRecordedAt(lesson.recorded_at), lesson.ticket]
+      .filter(Boolean)
+      .join(" · ") || "lesson";
+
+  return (
+    <TerminalCard title={title}>
+      <div className="flex flex-col gap-3">
+        <p className="text-pretty font-sans text-sm leading-relaxed text-foreground">
+          {lesson.lesson}
+        </p>
+
+        <div className="flex flex-wrap items-center gap-2">
+          {lesson.result && (
+            <span
+              className={cn(
+                "inline-flex items-center rounded-md border px-2 py-0.5 font-mono text-[0.7rem]",
+                RESULT_CHIP[lesson.result] ??
+                  "border-border bg-secondary/50 text-muted-foreground",
+              )}
+            >
+              {lesson.result}
+            </span>
+          )}
+          {lesson.failure_type && <Chip>{lesson.failure_type}</Chip>}
+          {lesson.tags?.map((tag) => (
+            <Chip key={tag}>{tag}</Chip>
+          ))}
+
+          {hasDetail && (
+            <button
+              type="button"
+              onClick={() => setOpen((o) => !o)}
+              aria-expanded={open}
+              className="ml-auto inline-flex items-center gap-1 font-mono text-xs text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {open ? "less" : "details"}
+              <ChevronDown
+                className={cn(
+                  "size-3.5 transition-transform",
+                  open && "rotate-180",
+                )}
+                aria-hidden="true"
+              />
+            </button>
+          )}
+        </div>
+
+        {open && hasDetail && (
+          <div className="flex flex-col gap-3 border-t border-border/60 pt-3">
+            {lesson.phase && <Detail label="phase">{lesson.phase}</Detail>}
+            {lesson.attempted_fix && (
+              <Detail label="attempted fix">{lesson.attempted_fix}</Detail>
+            )}
+            {lesson.evidence && lesson.evidence.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+                  evidence
+                </span>
+                <ul className="flex flex-col gap-1 border-l-2 border-border pl-3">
+                  {lesson.evidence.map((line, i) => (
+                    <li
+                      key={i}
+                      className="font-mono text-xs text-muted-foreground"
+                    >
+                      {line}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </TerminalCard>
+  );
+}
+
+function Chip({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center rounded-md border border-border bg-secondary/50 px-2 py-0.5 font-mono text-[0.7rem] text-muted-foreground">
+      {children}
+    </span>
+  );
+}
+
+function Detail({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+        {label}
+      </span>
+      <p className="text-pretty font-sans text-sm leading-relaxed text-muted-foreground">
+        {children}
+      </p>
     </div>
-  )
+  );
 }
 
 function haystack(l: Lesson): string {
@@ -196,11 +286,12 @@ function haystack(l: Lesson): string {
     ...(l.evidence ?? []),
   ]
     .filter(Boolean)
-    .join(' ')
-    .toLowerCase()
+    .join(" ")
+    .toLowerCase();
 }
 
-function formatRecordedAt(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString()
+function formatRecordedAt(iso?: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
