@@ -1,25 +1,31 @@
-import { useEffect, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
-import { ExternalLink, Play, RotateCcw, ScrollText, Square } from 'lucide-react'
+import { useEffect, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
+import {
+  ExternalLink,
+  Play,
+  RotateCcw,
+  ScrollText,
+  Square,
+} from "lucide-react";
 
-import { Button } from '@/components/ui/button'
-import { ConfirmDialog } from '@/components/trau/confirm-dialog'
-import { ForceResetDialog } from '@/components/trau/force-reset-dialog'
-import { Eyebrow } from '@/components/trau/eyebrow'
-import { StatusPill } from '@/components/trau/status-pill'
-import { TerminalCard } from '@/components/trau/terminal-card'
-import { Terminal } from '@/components/terminal'
-import { cn } from '@/lib/utils'
-import { useEventFeed, type FeedEvent } from '@/lib/events'
-import { CheckpointError, resetRun } from '@/lib/checkpoints'
+import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/trau/confirm-dialog";
+import { ForceResetDialog } from "@/components/trau/force-reset-dialog";
+import { Eyebrow } from "@/components/trau/eyebrow";
+import { StatusPill } from "@/components/trau/status-pill";
+import { TerminalCard } from "@/components/trau/terminal-card";
+import { Terminal } from "@/components/terminal";
+import { cn } from "@/lib/utils";
+import { useEventFeed, type FeedEvent } from "@/lib/events";
+import { CheckpointError, resetRun } from "@/lib/checkpoints";
 import {
   instancesQueryOptions,
   startInstance,
   stopInstance,
   type Instance,
-} from '@/lib/instances'
-import { runDetailQueryOptions, type RunDetail } from '@/lib/rundetail'
+} from "@/lib/instances";
+import { runDetailQueryOptions, type RunDetail } from "@/lib/rundetail";
 import {
   deriveElapsedMs,
   deriveVariant,
@@ -34,44 +40,49 @@ import {
   type RunPhaseState,
   type RunPhaseStep,
   type RunVariant,
-} from '@/lib/runlive'
+} from "@/lib/runlive";
 
 function useNow(intervalMs: number): number {
-  const [now, setNow] = useState(() => Date.now())
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs)
-    return () => clearInterval(id)
-  }, [intervalMs])
-  return now
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
 }
 
 function elapsedSince(fromISO: string, now: number): string {
-  return formatDuration(Math.max(0, now - new Date(fromISO).getTime()))
+  return formatDuration(Math.max(0, now - new Date(fromISO).getTime()));
 }
 
 const PHASE_GLYPH: Record<RunPhaseState, string> = {
-  done: '✓',
-  active: '●',
-  todo: '○',
-  fail: '✗',
-}
+  done: "✓",
+  active: "●",
+  todo: "○",
+  fail: "✗",
+};
 
 const PHASE_TEXT: Record<RunPhaseState, string> = {
-  done: 'text-done',
-  active: 'text-teal',
-  todo: 'text-faint',
-  fail: 'text-fail',
-}
+  done: "text-done",
+  active: "text-teal",
+  todo: "text-faint",
+  fail: "text-fail",
+};
 
 function PhaseStepper({ steps }: { steps: RunPhaseStep[] }) {
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-2 font-mono text-xs">
       {steps.map((step, i) => (
         <span key={step.label} className="inline-flex items-center gap-2">
-          <span className={cn('inline-flex items-center gap-1', PHASE_TEXT[step.state])}>
+          <span
+            className={cn(
+              "inline-flex items-center gap-1",
+              PHASE_TEXT[step.state],
+            )}
+          >
             <span aria-hidden="true">{PHASE_GLYPH[step.state]}</span>
             {step.label}
-            {step.state === 'active' && (
+            {step.state === "active" && (
               <span className="cursor-block text-teal" aria-hidden="true">
                 ▍
               </span>
@@ -85,109 +96,126 @@ function PhaseStepper({ steps }: { steps: RunPhaseStep[] }) {
         </span>
       ))}
     </div>
-  )
+  );
 }
 
 function clock(ts: string): string {
-  const d = new Date(ts)
-  if (Number.isNaN(d.getTime())) return ''
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function fieldStr(ev: FeedEvent, key: string): string {
-  const v = ev.fields?.[key]
-  return typeof v === 'string' ? v : ''
+  const v = ev.fields?.[key];
+  return typeof v === "string" ? v : "";
 }
 
 function fieldNum(ev: FeedEvent, key: string): number | undefined {
-  const v = ev.fields?.[key]
-  return typeof v === 'number' ? v : undefined
+  const v = ev.fields?.[key];
+  return typeof v === "number" ? v : undefined;
 }
 
 interface ActivityRow {
-  glyph: string
-  glyphClass: string
-  text: string
+  glyph: string;
+  glyphClass: string;
+  text: string;
 }
 
 function activityRow(ev: FeedEvent): ActivityRow {
   switch (ev.kind) {
-    case 'agent_start':
+    case "agent_start":
       return {
-        glyph: '▸',
-        glyphClass: 'text-primary',
-        text: ev.phase ? `phase ${ev.phase} started` : 'agent started',
-      }
-    case 'agent_call': {
+        glyph: "▸",
+        glyphClass: "text-primary",
+        text: ev.phase ? `phase ${ev.phase} started` : "agent started",
+      };
+    case "agent_call": {
       if (ev.fields?.is_error === true) {
-        const err = fieldStr(ev, 'error')
+        const err = fieldStr(ev, "error");
         return {
-          glyph: '✗',
-          glyphClass: 'text-fail',
-          text: err ? `${fieldStr(ev, 'provider')} error — ${err}` : 'agent call failed',
-        }
+          glyph: "✗",
+          glyphClass: "text-fail",
+          text: err
+            ? `${fieldStr(ev, "provider")} error — ${err}`
+            : "agent call failed",
+        };
       }
-      const provider = fieldStr(ev, 'provider')
-      const cost = fieldNum(ev, 'cost_usd')
+      const provider = fieldStr(ev, "provider");
+      const cost = fieldNum(ev, "cost_usd");
       if (cost) {
         return {
-          glyph: '●',
-          glyphClass: 'text-teal',
-          text: `$${cost.toFixed(2)} spent${provider ? ` (${provider})` : ''}`,
-        }
+          glyph: "●",
+          glyphClass: "text-teal",
+          text: `$${cost.toFixed(2)} spent${provider ? ` (${provider})` : ""}`,
+        };
       }
-      const model = fieldStr(ev, 'model')
+      const model = fieldStr(ev, "model");
       return {
-        glyph: '●',
-        glyphClass: 'text-teal',
-        text: [provider, model].filter(Boolean).join(' · ') || 'agent call',
-      }
+        glyph: "●",
+        glyphClass: "text-teal",
+        text: [provider, model].filter(Boolean).join(" · ") || "agent call",
+      };
     }
-    case 'usage_window': {
-      const provider = fieldStr(ev, 'provider')
-      const label = fieldStr(ev, 'label')
-      const util = fieldNum(ev, 'utilization')
+    case "usage_window": {
+      const provider = fieldStr(ev, "provider");
+      const label = fieldStr(ev, "label");
+      const util = fieldNum(ev, "utilization");
       return {
-        glyph: '●',
-        glyphClass: 'text-info',
-        text: util !== undefined
-          ? `${provider} ${label} ${Math.round(util)}%`.trim()
-          : `${provider} usage`.trim(),
-      }
+        glyph: "●",
+        glyphClass: "text-info",
+        text:
+          util !== undefined
+            ? `${provider} ${label} ${Math.round(util)}%`.trim()
+            : `${provider} usage`.trim(),
+      };
     }
-    case 'cost_anomaly':
-      return { glyph: '⚠', glyphClass: 'text-warn', text: ev.msg || 'cost anomaly' }
-    case 'pr_open': {
-      const n = fieldNum(ev, 'number')
-      return { glyph: '●', glyphClass: 'text-info', text: n ? `PR #${n} opened` : 'PR opened' }
+    case "cost_anomaly":
+      return {
+        glyph: "⚠",
+        glyphClass: "text-warn",
+        text: ev.msg || "cost anomaly",
+      };
+    case "pr_open": {
+      const n = fieldNum(ev, "number");
+      return {
+        glyph: "●",
+        glyphClass: "text-info",
+        text: n ? `PR #${n} opened` : "PR opened",
+      };
     }
-    case 'state_change': {
-      const state = fieldStr(ev, 'state')
-      const reason = fieldStr(ev, 'reason')
+    case "state_change": {
+      const state = fieldStr(ev, "state");
+      const reason = fieldStr(ev, "reason");
       const glyphClass =
-        state === 'merged'
-          ? 'text-done'
-          : state === 'paused'
-            ? 'text-warn'
-            : 'text-fail'
-      const glyph = state === 'merged' ? '✓' : state === 'paused' ? '⚠' : '✗'
+        state === "merged"
+          ? "text-done"
+          : state === "paused"
+            ? "text-warn"
+            : "text-fail";
+      const glyph = state === "merged" ? "✓" : state === "paused" ? "⚠" : "✗";
       return {
         glyph,
         glyphClass,
-        text: [fieldStr(ev, 'ticket'), state, reason].filter(Boolean).join(' · '),
-      }
+        text: [fieldStr(ev, "ticket"), state, reason]
+          .filter(Boolean)
+          .join(" · "),
+      };
     }
     default:
-      return { glyph: '●', glyphClass: 'text-muted-foreground', text: ev.msg || ev.kind }
+      return {
+        glyph: "●",
+        glyphClass: "text-muted-foreground",
+        text: ev.msg || ev.kind,
+      };
   }
 }
 
 function ActivityFeed({ events }: { events: FeedEvent[] }) {
-  const rows = events.slice(0, 40)
+  const rows = events.slice(0, 40);
   return (
     <TerminalCard title="activity" bodyClassName="p-0">
       {rows.length === 0 ? (
@@ -197,7 +225,7 @@ function ActivityFeed({ events }: { events: FeedEvent[] }) {
       ) : (
         <ul className="flex flex-col">
           {rows.map((ev) => {
-            const row = activityRow(ev)
+            const row = activityRow(ev);
             return (
               <li
                 key={ev.id}
@@ -206,17 +234,20 @@ function ActivityFeed({ events }: { events: FeedEvent[] }) {
                 <span className="shrink-0 tabular-nums text-muted-foreground">
                   {clock(ev.ts)}
                 </span>
-                <span className={cn('shrink-0', row.glyphClass)} aria-hidden="true">
+                <span
+                  className={cn("shrink-0", row.glyphClass)}
+                  aria-hidden="true"
+                >
                   {row.glyph}
                 </span>
                 <span className="text-pretty text-foreground">{row.text}</span>
               </li>
-            )
+            );
           })}
         </ul>
       )}
     </TerminalCard>
-  )
+  );
 }
 
 function RecapRow({
@@ -224,20 +255,20 @@ function RecapRow({
   children,
   valueClassName,
 }: {
-  label: string
-  children: React.ReactNode
-  valueClassName?: string
+  label: string;
+  children: React.ReactNode;
+  valueClassName?: string;
 }) {
   return (
     <div className="flex items-center justify-between gap-4 border-b border-border/60 py-2.5 last:border-0">
       <span className="font-mono text-[0.7rem] uppercase tracking-[0.18em] text-muted-foreground">
         {label}
       </span>
-      <span className={cn('font-mono text-sm text-foreground', valueClassName)}>
+      <span className={cn("font-mono text-sm text-foreground", valueClassName)}>
         {children}
       </span>
     </div>
-  )
+  );
 }
 
 function Recap({
@@ -246,14 +277,14 @@ function Recap({
   elapsed,
   actions,
 }: {
-  run: RunDetail
-  variant: RunVariant
-  elapsed: string | null
-  actions: React.ReactNode
+  run: RunDetail;
+  variant: RunVariant;
+  elapsed: string | null;
+  actions: React.ReactNode;
 }) {
-  const pill = headerPill(variant, run.phase, run.failure_class)
-  const totals = sumCosts(run.costs)
-  const failed = variant === 'failure'
+  const pill = headerPill(variant, run.phase, run.failure_class);
+  const totals = sumCosts(run.costs);
+  const failed = variant === "failure";
   return (
     <TerminalCard title="recap">
       <div className="flex flex-col gap-4">
@@ -261,7 +292,10 @@ function Recap({
           <StatusPill state={pill.state} label={pill.label} />
         </div>
         <div className="flex flex-col">
-          <RecapRow label="phase reached" valueClassName={failed ? 'text-fail' : 'text-done'}>
+          <RecapRow
+            label="phase reached"
+            valueClassName={failed ? "text-fail" : "text-done"}
+          >
             {phaseLabel(run.phase)}
           </RecapRow>
           {run.pr && run.pr_url && (
@@ -284,7 +318,9 @@ function Recap({
           {run.artifacts.tokens && (
             <>
               <RecapRow label="tokens">{formatTokens(totals.tokens)}</RecapRow>
-              <RecapRow label="cost">{formatCostUSD(totals.usd, totals.metered)}</RecapRow>
+              <RecapRow label="cost">
+                {formatCostUSD(totals.usd, totals.metered)}
+              </RecapRow>
             </>
           )}
           {elapsed && <RecapRow label="elapsed">{elapsed}</RecapRow>}
@@ -292,7 +328,7 @@ function Recap({
         <div className="flex flex-wrap items-center gap-2">{actions}</div>
       </div>
     </TerminalCard>
-  )
+  );
 }
 
 function PausedBanner({
@@ -300,76 +336,88 @@ function PausedBanner({
   onResume,
   resuming,
 }: {
-  reason: string
-  onResume: () => void
-  resuming: boolean
+  reason: string;
+  onResume: () => void;
+  resuming: boolean;
 }) {
-  const banner = pauseBanner(reason)
+  const banner = pauseBanner(reason);
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-warn/40 bg-warn/10 px-4 py-3">
       <span className="inline-flex items-center gap-2 font-mono text-sm text-warn">
         <span aria-hidden="true">⚠</span>
         {banner.headline}
       </span>
-      <p className="font-sans text-sm leading-relaxed text-muted-foreground">{banner.hint}</p>
+      <p className="font-sans text-sm leading-relaxed text-muted-foreground">
+        {banner.hint}
+      </p>
       <div className="mt-2">
-        <Button size="sm" className="font-mono" disabled={resuming} onClick={onResume}>
+        <Button
+          size="sm"
+          className="font-mono"
+          disabled={resuming}
+          onClick={onResume}
+        >
           <Play className="size-4" aria-hidden="true" />
-          {resuming ? 'Resuming…' : 'Resume'}
+          {resuming ? "Resuming…" : "Resume"}
         </Button>
       </div>
     </div>
-  )
+  );
 }
 
 export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
-  const queryClient = useQueryClient()
-  const now = useNow(1000)
-  const [stopOpen, setStopOpen] = useState(false)
-  const [resetOpen, setResetOpen] = useState(false)
+  const queryClient = useQueryClient();
+  const now = useNow(1000);
+  const [stopOpen, setStopOpen] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
 
-  const { data: instData } = useQuery(instancesQueryOptions)
-  const { data: run } = useQuery(runDetailQueryOptions(repo, ticket))
-  const feed = useEventFeed(repo)
+  const { data: instData } = useQuery(instancesQueryOptions);
+  const { data: run } = useQuery(runDetailQueryOptions(repo, ticket));
+  const feed = useEventFeed(repo);
 
   const instance: Instance | undefined = instData?.instances.find(
     (i) => i.repo === repo && i.ticket === ticket,
-  )
-  const live = instance !== undefined
-  const phase = instance?.phase || run?.phase || ''
-  const variant = deriveVariant({ phase, failureClass: run?.failure_class, live })
-  const pill = headerPill(variant, phase, run?.failure_class)
-  const steps = runPhaseSteps(phase, variant)
+  );
+  const live = instance !== undefined;
+  const phase = instance?.phase || run?.phase || "";
+  const variant = deriveVariant({
+    phase,
+    failureClass: run?.failure_class,
+    live,
+  });
+  const pill = headerPill(variant, phase, run?.failure_class);
+  const steps = runPhaseSteps(phase, variant);
 
   const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ['instances'] })
-    void queryClient.invalidateQueries({ queryKey: ['repos'] })
-    void queryClient.invalidateQueries({ queryKey: ['runs', repo] })
-    void queryClient.invalidateQueries({ queryKey: ['run', repo, ticket] })
-  }
+    void queryClient.invalidateQueries({ queryKey: ["instances"] });
+    void queryClient.invalidateQueries({ queryKey: ["repos"] });
+    void queryClient.invalidateQueries({ queryKey: ["runs", repo] });
+    void queryClient.invalidateQueries({ queryKey: ["run", repo, ticket] });
+  };
 
   const stop = useMutation({
     mutationFn: () => stopInstance(instance!.pid),
     onSuccess: invalidate,
-  })
+  });
   const resume = useMutation({
     mutationFn: () => startInstance({ repo, ticket }),
     onSuccess: invalidate,
-  })
+  });
   const reset = useMutation({
     mutationFn: (force: boolean) => resetRun(repo, ticket, force),
     onSuccess: () => {
-      setResetOpen(false)
-      invalidate()
+      setResetOpen(false);
+      invalidate();
     },
     onError: (err) => {
-      if (err instanceof CheckpointError && err.requiresForce) setResetOpen(true)
+      if (err instanceof CheckpointError && err.requiresForce)
+        setResetOpen(true);
     },
-  })
+  });
 
-  const elapsedMs = deriveElapsedMs(feed.events, ticket)
-  const recapElapsed = elapsedMs !== null ? formatDuration(elapsedMs) : null
-  const isRecap = variant === 'success' || variant === 'failure'
+  const elapsedMs = deriveElapsedMs(feed.events, ticket);
+  const recapElapsed = elapsedMs !== null ? formatDuration(elapsedMs) : null;
+  const isRecap = variant === "success" || variant === "failure";
 
   const openPR =
     run && run.pr && run.pr_url ? (
@@ -379,7 +427,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
           Open PR
         </a>
       </Button>
-    ) : null
+    ) : null;
   const viewLog = (
     <Button asChild variant="outline" size="sm" className="font-mono">
       <Link to="/runs/$repo/$ticket" params={{ repo, ticket }}>
@@ -387,7 +435,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         View log
       </Link>
     </Button>
-  )
+  );
   const resumeBtn = (
     <Button
       variant="outline"
@@ -397,9 +445,9 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
       onClick={() => resume.mutate()}
     >
       <Play className="size-4" aria-hidden="true" />
-      {resume.isPending ? 'Resuming…' : 'Resume'}
+      {resume.isPending ? "Resuming…" : "Resume"}
     </Button>
-  )
+  );
   const forceResetBtn = (
     <Button
       variant="ghost"
@@ -410,14 +458,19 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
       <RotateCcw className="size-4" aria-hidden="true" />
       Reset
     </Button>
-  )
+  );
   const plainResetBtn = (
     <ConfirmDialog
       windowTitle="confirm"
       trigger={
-        <Button variant="ghost" size="sm" className="font-mono" disabled={reset.isPending}>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="font-mono"
+          disabled={reset.isPending}
+        >
           <RotateCcw className="size-4" aria-hidden="true" />
-          {reset.isPending ? 'Resetting…' : 'Reset'}
+          {reset.isPending ? "Resetting…" : "Reset"}
         </Button>
       }
       title={`Reset ${ticket}?`}
@@ -425,10 +478,10 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
       confirmLabel="Reset"
       onConfirm={() => reset.mutate(false)}
     />
-  )
+  );
 
   const recapActions =
-    variant === 'success' ? (
+    variant === "success" ? (
       <>
         {openPR}
         {viewLog}
@@ -440,14 +493,17 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         {resumeBtn}
         {plainResetBtn}
       </>
-    )
+    );
 
   return (
     <>
       <header className="flex flex-col gap-4 border-b border-border px-8 py-6">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex flex-col gap-2">
-            <Eyebrow glyph={isRecap ? 'done' : 'active'} className={isRecap ? undefined : 'text-teal'}>
+            <Eyebrow
+              glyph={isRecap ? "done" : "active"}
+              className={isRecap ? undefined : "text-teal"}
+            >
               RUN
             </Eyebrow>
             <div className="flex flex-wrap items-center gap-3">
@@ -484,12 +540,14 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         {instance && (
           <div className="flex items-center gap-6 font-mono text-xs text-muted-foreground">
             <span>
-              elapsed{' '}
-              <span className="text-foreground">{elapsedSince(instance.started_at, now)}</span>
+              elapsed{" "}
+              <span className="text-foreground">
+                {elapsedSince(instance.started_at, now)}
+              </span>
             </span>
             {instance.phase_since && (
               <span>
-                in phase{' '}
+                in phase{" "}
                 <span className="text-foreground">
                   {elapsedSince(instance.phase_since, now)}
                 </span>
@@ -500,9 +558,9 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
       </header>
 
       <div className="flex flex-col gap-6 p-8">
-        {variant === 'paused' && (
+        {variant === "paused" && (
           <PausedBanner
-            reason={run?.failure_reason ?? ''}
+            reason={run?.failure_reason ?? ""}
             onResume={() => resume.mutate()}
             resuming={resume.isPending}
           />
@@ -514,7 +572,9 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
           </p>
         )}
         {reset.error &&
-          !(reset.error instanceof CheckpointError && reset.error.requiresForce) && (
+          !(
+            reset.error instanceof CheckpointError && reset.error.requiresForce
+          ) && (
             <p className="font-mono text-sm text-destructive">
               {(reset.error as Error).message}
             </p>
@@ -527,9 +587,16 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
           <div className="flex flex-col gap-2 lg:col-span-2">
-            <Eyebrow glyph={isRecap ? 'done' : 'active'}>{isRecap ? 'RECAP' : 'ACTIVITY'}</Eyebrow>
+            <Eyebrow glyph={isRecap ? "done" : "active"}>
+              {isRecap ? "RECAP" : "ACTIVITY"}
+            </Eyebrow>
             {isRecap && run ? (
-              <Recap run={run} variant={variant} elapsed={recapElapsed} actions={recapActions} />
+              <Recap
+                run={run}
+                variant={variant}
+                elapsed={recapElapsed}
+                actions={recapActions}
+              />
             ) : (
               <ActivityFeed events={feed.events} />
             )}
@@ -537,7 +604,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
 
           <div className="flex flex-col gap-2 lg:col-span-3">
             <Eyebrow glyph="partial">TRANSCRIPT</Eyebrow>
-            <Terminal repo={repo} />
+            <Terminal repo={repo} live={live} />
           </div>
         </div>
       </div>
@@ -560,5 +627,5 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         onConfirm={() => reset.mutate(true)}
       />
     </>
-  )
+  );
 }
