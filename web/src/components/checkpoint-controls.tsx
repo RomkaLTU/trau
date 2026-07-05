@@ -1,57 +1,9 @@
-import type { ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 
-import { Button, buttonVariants } from '@/components/ui/button'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from '@/components/ui/alert-dialog'
+import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/trau'
 import { clearRun, reconcileRepo, resetRun } from '@/lib/checkpoints'
-
-function ConfirmDialog({
-  trigger,
-  title,
-  description,
-  confirmLabel,
-  destructive = false,
-  onConfirm,
-}: {
-  trigger: ReactNode
-  title: string
-  description: string
-  confirmLabel: string
-  destructive?: boolean
-  onConfirm: () => void
-}) {
-  return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>{trigger}</AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{title}</AlertDialogTitle>
-          <AlertDialogDescription>{description}</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            onClick={onConfirm}
-            className={destructive ? buttonVariants({ variant: 'destructive' }) : undefined}
-          >
-            {confirmLabel}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  )
-}
 
 function actionError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
