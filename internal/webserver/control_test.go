@@ -484,6 +484,153 @@ func TestDryRunRequiresTokenWhenExposed(t *testing.T) {
 	}
 }
 
+func TestEligibleReturnsTickets(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureOut = []byte(`[{"id":"COD-1","title":"First","labels":["ready-for-agent","Feature"]},{"id":"COD-2","title":"Second","labels":[]}]`)
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/eligible")
+	if err != nil {
+		t.Fatalf("GET eligible: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("eligible status = %d, want 200", res.StatusCode)
+	}
+	var out EligibleResult
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode eligible result: %v", err)
+	}
+	if out.RepoRoot != root {
+		t.Errorf("RepoRoot = %q, want %q", out.RepoRoot, root)
+	}
+	if len(out.Tickets) != 2 {
+		t.Fatalf("Tickets = %d, want 2", len(out.Tickets))
+	}
+	if out.Tickets[0].ID != "COD-1" || out.Tickets[0].Title != "First" {
+		t.Errorf("Tickets[0] = %+v, want COD-1/First", out.Tickets[0])
+	}
+	if len(out.Tickets[0].Labels) != 2 || out.Tickets[0].Labels[0] != "ready-for-agent" {
+		t.Errorf("Tickets[0].Labels = %v, want [ready-for-agent Feature]", out.Tickets[0].Labels)
+	}
+	if len(fake.captures) != 1 {
+		t.Fatalf("captures = %d, want 1", len(fake.captures))
+	}
+	assertArgs(t, fake.captures[0].Args, []string{"--repo", root, "--list-eligible", "--json", "--no-tui"})
+	if len(fake.spawns) != 0 {
+		t.Errorf("eligible spawned a loop (%d) — listing must have no side effects", len(fake.spawns))
+	}
+}
+
+func TestEligibleEmptyQueue(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureOut = []byte("[]\n")
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/eligible")
+	if err != nil {
+		t.Fatalf("GET eligible: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	var out EligibleResult
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode eligible result: %v", err)
+	}
+	if out.Tickets == nil {
+		t.Errorf("Tickets = nil, want an empty array for an empty queue")
+	}
+	if len(out.Tickets) != 0 {
+		t.Errorf("Tickets = %v, want empty", out.Tickets)
+	}
+}
+
+func TestEligibleRefusedForNonAllowlistedRepo(t *testing.T) {
+	allowed := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{allowed})
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/stranger/eligible")
+	if err != nil {
+		t.Fatalf("GET eligible: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("eligible status = %d, want 403 for an observe-only repo", res.StatusCode)
+	}
+	if len(fake.captures) != 0 {
+		t.Errorf("captures = %d, want 0 for a refused repo", len(fake.captures))
+	}
+}
+
+func TestEligibleReportsCaptureFailure(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureErr = os.ErrPermission
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/eligible")
+	if err != nil {
+		t.Fatalf("GET eligible: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("eligible status = %d, want 502 when the listing fails", res.StatusCode)
+	}
+}
+
+func TestEligibleReportsMalformedOutput(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureOut = []byte("not json at all")
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/eligible")
+	if err != nil {
+		t.Fatalf("GET eligible: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("eligible status = %d, want 502 when the output cannot be parsed", res.StatusCode)
+	}
+}
+
+func TestEligibleRejectsNonGET(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/eligible", nil)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST eligible = %d, want 405", res.StatusCode)
+	}
+	if len(fake.captures) != 0 {
+		t.Errorf("captures = %d, want 0 for a rejected method", len(fake.captures))
+	}
+}
+
+func TestParseEligibleTickets(t *testing.T) {
+	t.Run("normalizes null labels to empty", func(t *testing.T) {
+		out, err := parseEligibleTickets([]byte(`[{"id":"COD-1","title":"A"}]`))
+		if err != nil {
+			t.Fatalf("parseEligibleTickets: %v", err)
+		}
+		if len(out) != 1 || out[0].Labels == nil {
+			t.Errorf("got %+v, want one ticket with a non-nil Labels", out)
+		}
+	})
+	t.Run("empty output is an empty queue", func(t *testing.T) {
+		out, err := parseEligibleTickets([]byte("  \n"))
+		if err != nil {
+			t.Fatalf("parseEligibleTickets(blank): %v", err)
+		}
+		if out == nil || len(out) != 0 {
+			t.Errorf("got %+v, want an empty non-nil slice", out)
+		}
+	})
+	t.Run("malformed output errors", func(t *testing.T) {
+		if _, err := parseEligibleTickets([]byte("garbage")); err == nil {
+			t.Error("parseEligibleTickets(garbage) should error, not return no tickets")
+		}
+	})
+}
+
 func assertArgs(t *testing.T, got, want []string) {
 	t.Helper()
 	if len(got) != len(want) {

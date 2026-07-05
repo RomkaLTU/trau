@@ -75,6 +75,7 @@ func TestEligiblePostsJQLAndParses(t *testing.T) {
 		{"key":"PROJ-1","fields":{
 			"summary":"First","status":{"name":"To Do","statusCategory":{"key":"new"}},
 			"issuetype":{"hierarchyLevel":0},
+			"labels":["ready-for-agent","backend"],
 			"issuelinks":[{"type":{"name":"Blocks","inward":"is blocked by"},"inwardIssue":{"key":"PROJ-9","fields":{"status":{"statusCategory":{"key":"done"}}}}}]
 		}},
 		{"key":"PROJ-2","fields":{
@@ -125,6 +126,9 @@ func TestEligiblePostsJQLAndParses(t *testing.T) {
 	}
 	if cands[0].Key != "PROJ-1" || cands[0].StatusName != "To Do" || cands[0].IsEpic {
 		t.Errorf("candidate[0] = %+v, want PROJ-1 non-epic To Do", cands[0])
+	}
+	if len(cands[0].Labels) != 2 || cands[0].Labels[0] != "ready-for-agent" || cands[0].Labels[1] != "backend" {
+		t.Errorf("candidate[0].Labels = %v, want [ready-for-agent backend]", cands[0].Labels)
 	}
 	if len(cands[0].BlockedBy) != 1 || cands[0].BlockedBy[0].Key != "PROJ-9" || !cands[0].BlockedBy[0].Resolved {
 		t.Errorf("candidate[0] blockers = %+v, want one resolved PROJ-9", cands[0].BlockedBy)

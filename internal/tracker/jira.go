@@ -214,7 +214,7 @@ func (j *Jira) listEligibleAPI(ctx context.Context, scope Scope) ([]ListedTicket
 		if !strings.HasPrefix(c.Key, prefix+"-") {
 			continue
 		}
-		out = append(out, ListedTicket{ID: c.Key, Title: c.Summary, State: c.StatusName})
+		out = append(out, ListedTicket{ID: c.Key, Title: c.Summary, State: c.StatusName, Labels: c.Labels})
 	}
 	return out, nil
 }
@@ -223,7 +223,7 @@ func (j *Jira) listEligiblePrompt(scope Scope) string {
 	pfx := scope.prefix()
 	return fmt.Sprintf("Use the Jira (Rovo) MCP. List eligible issues in project %q that carry the label '%s', "+
 		"are unstarted (status category To Do — not In Progress, Done or Closed), have every 'is blocked by' issue resolved (Done/Closed), and match key prefix %s-. "+
-		"Respond with exactly one final line of JSON: ELIGIBLE=[{\"id\":\"%s-123\",\"title\":\"...\"}, ...] "+
+		"Respond with exactly one final line of JSON: ELIGIBLE=[{\"id\":\"%s-123\",\"title\":\"...\",\"labels\":[\"label-a\",\"label-b\"]}, ...] "+
 		"or ELIGIBLE=[]. No other output.",
 		j.pickProject(scope), j.ReadyLabel, pfx, pfx)
 }

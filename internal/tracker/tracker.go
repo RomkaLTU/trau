@@ -69,11 +69,14 @@ type SubIssue struct {
 	HasChildren bool
 }
 
-// ListedTicket is one eligible ticket returned by a fast list operation.
+// ListedTicket is one eligible ticket returned by a fast list operation. Labels
+// carries the issue's label names so a picker can show what marks a ticket beyond
+// the ready label it was selected on.
 type ListedTicket struct {
-	ID    string
-	Title string
-	State string
+	ID     string
+	Title  string
+	State  string
+	Labels []string
 }
 
 // TicketLister is the optional capability of enumerating eligible tickets
