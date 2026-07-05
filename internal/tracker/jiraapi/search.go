@@ -23,7 +23,7 @@ const (
 // eligibleFields and childFields are the field sets each search needs;
 // /search/jql returns ID-only issues without them.
 var (
-	eligibleFields = []string{"summary", "status", "issuetype", "issuelinks"}
+	eligibleFields = []string{"summary", "status", "issuetype", "issuelinks", "labels"}
 	childFields    = []string{"summary", "status", "issuetype", "subtasks"}
 )
 
@@ -35,6 +35,7 @@ type Candidate struct {
 	Summary    string
 	StatusName string
 	IsEpic     bool // issuetype.hierarchyLevel > 0 — a container, never a buildable leaf
+	Labels     []string
 	BlockedBy  []Blocker
 }
 
@@ -173,6 +174,7 @@ type searchIssue struct {
 		} `json:"issuetype"`
 		Subtasks   []json.RawMessage `json:"subtasks"`
 		IssueLinks []issueLink       `json:"issuelinks"`
+		Labels     []string          `json:"labels"`
 	} `json:"fields"`
 }
 
@@ -206,6 +208,7 @@ func (r *searchIssue) toCandidate() Candidate {
 	if it := r.Fields.IssueType; it != nil {
 		cand.IsEpic = it.HierarchyLevel > 0
 	}
+	cand.Labels = r.Fields.Labels
 	cand.BlockedBy = blockersFromLinks(r.Fields.IssueLinks)
 	return cand
 }

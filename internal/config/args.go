@@ -15,22 +15,23 @@ var reBareID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
 // Options holds the parsed CLI flags. Zero values mean "not set";
 // Max is -1 when unset so the config default applies.
 type Options struct {
-	Parent   string
-	Once     bool
-	Max      int
-	DryRun   bool
-	ResetID  string
-	ClearID  string
-	Force    bool
-	NoResume bool
-	Status   bool
-	Provider string
-	Confirm  bool
-	Repo     string
-	NoTUI    bool
-	JSON     bool
-	Verbose  bool
-	Debug    bool
+	Parent       string
+	Once         bool
+	Max          int
+	DryRun       bool
+	ListEligible bool
+	ResetID      string
+	ClearID      string
+	Force        bool
+	NoResume     bool
+	Status       bool
+	Provider     string
+	Confirm      bool
+	Repo         string
+	NoTUI        bool
+	JSON         bool
+	Verbose      bool
+	Debug        bool
 }
 
 // ParseArgs parses the CLI argument vector. It returns an error on an unknown
@@ -69,6 +70,8 @@ func ParseArgs(args []string) (Options, error) {
 			o.Max = n
 		case a == "--dry-run":
 			o.DryRun = true
+		case a == "--list-eligible":
+			o.ListEligible = true
 		case a == "--reset":
 			v, err := next(a)
 			if err != nil {
@@ -117,13 +120,13 @@ func ParseArgs(args []string) (Options, error) {
 	}
 
 	modes := 0
-	for _, on := range []bool{o.Status, o.ResetID != "", o.ClearID != "", o.DryRun} {
+	for _, on := range []bool{o.Status, o.ResetID != "", o.ClearID != "", o.DryRun, o.ListEligible} {
 		if on {
 			modes++
 		}
 	}
 	if modes > 1 {
-		return o, fmt.Errorf("--status, --reset, --clear, and --dry-run are mutually exclusive")
+		return o, fmt.Errorf("--status, --reset, --clear, --dry-run, and --list-eligible are mutually exclusive")
 	}
 
 	return o, nil

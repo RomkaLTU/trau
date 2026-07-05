@@ -211,16 +211,24 @@ func (l *Linear) listEligibleAPI(ctx context.Context, scope Scope) ([]ListedTick
 		if !inProject(c.Project.Name, scope.Project) {
 			continue
 		}
-		out = append(out, ListedTicket{ID: c.Identifier, Title: c.Title, State: c.State.Name})
+		out = append(out, ListedTicket{ID: c.Identifier, Title: c.Title, State: c.State.Name, Labels: labelNames(c.Labels)})
 	}
 	return out, nil
+}
+
+func labelNames(labels []linearapi.Label) []string {
+	out := make([]string, 0, len(labels))
+	for _, l := range labels {
+		out = append(out, l.Name)
+	}
+	return out
 }
 
 func (l *Linear) listEligiblePrompt(scope Scope) string {
 	pfx := scope.prefix()
 	return fmt.Sprintf("Use the Linear MCP. List eligible issues in %s that carry the label '%s', "+
 		"are unstarted, have all 'blocked by' issues completed, and match prefix %s-.%s "+
-		"Respond with exactly one final line of JSON: ELIGIBLE=[{\"id\":\"%s-123\",\"title\":\"...\"}, ...] "+
+		"Respond with exactly one final line of JSON: ELIGIBLE=[{\"id\":\"%s-123\",\"title\":\"...\",\"labels\":[\"label-a\",\"label-b\"]}, ...] "+
 		"or ELIGIBLE=[]. No other output.",
 		scope.clause(), l.ReadyLabel, pfx, scope.projectClause(), pfx)
 }

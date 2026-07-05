@@ -32,6 +32,8 @@ func fakeLinear(t *testing.T) (*Client, *[]graphReq) {
 			_, _ = io.WriteString(w, `{"data":{"issueLabels":{"nodes":[{"id":"lbl-ready","name":"ready-for-agent"}]}}}`)
 		case strings.Contains(req.Query, "mutation IssueCreate"):
 			_, _ = io.WriteString(w, `{"data":{"issueCreate":{"success":true,"issue":{"id":"iss-1","identifier":"COD-42","url":"https://linear.app/acme/issue/COD-42"}}}}`)
+		case strings.Contains(req.Query, "query PickIssues"):
+			_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"id":"i1","identifier":"COD-1","title":"First","priority":2,"state":{"id":"s1","name":"Todo","type":"unstarted"},"labels":{"nodes":[{"id":"l1","name":"ready-for-agent"},{"id":"l2","name":"Feature"}]}}]}}}`)
 		case strings.Contains(req.Query, "query Issue"):
 			_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"id":"iss-1","identifier":"COD-42","team":{"id":"team-1","key":"COD"}}]}}}`)
 		case strings.Contains(req.Query, "mutation CommentCreate"):
@@ -45,6 +47,24 @@ func fakeLinear(t *testing.T) (*Client, *[]graphReq) {
 	c := New("lin_key")
 	c.Endpoint = srv.URL
 	return c, &reqs
+}
+
+func TestPickReturnsLabels(t *testing.T) {
+	c, _ := fakeLinear(t)
+	cands, err := c.Pick(context.Background(), "team-1", "ready-for-agent")
+	if err != nil {
+		t.Fatalf("Pick: %v", err)
+	}
+	if len(cands) != 1 || cands[0].Identifier != "COD-1" {
+		t.Fatalf("candidates = %+v, want one COD-1", cands)
+	}
+	names := make([]string, len(cands[0].Labels))
+	for i, l := range cands[0].Labels {
+		names[i] = l.Name
+	}
+	if len(names) != 2 || names[0] != "ready-for-agent" || names[1] != "Feature" {
+		t.Errorf("labels = %v, want [ready-for-agent Feature]", names)
+	}
 }
 
 func TestSortChildrenForRun(t *testing.T) {

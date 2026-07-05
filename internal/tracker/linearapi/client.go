@@ -723,7 +723,10 @@ type pickNode struct {
 	DueDate    string      `json:"dueDate"`
 	State      stateNode   `json:"state"`
 	Project    projectNode `json:"project"`
-	Children   struct {
+	Labels     struct {
+		Nodes []labelNode `json:"nodes"`
+	} `json:"labels"`
+	Children struct {
 		Nodes []issueRefNode `json:"nodes"`
 	} `json:"children"`
 	InverseRelations struct {
@@ -773,6 +776,9 @@ func nodeToPickCandidate(n *pickNode) PickCandidate {
 			State:      State{ID: n.State.ID, Name: n.State.Name, Type: n.State.Type},
 			Project:    Project(n.Project),
 		},
+	}
+	for _, l := range n.Labels.Nodes {
+		c.Labels = append(c.Labels, Label(l))
 	}
 	for _, s := range n.Children.Nodes {
 		c.Children = append(c.Children, IssueRef{ID: s.ID, Identifier: s.Identifier, Title: s.Title})
