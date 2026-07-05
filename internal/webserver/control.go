@@ -42,13 +42,18 @@ var reTicketID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
 // target, either by its allowlisted root or its base name. The optional targets
 // mirror the CLI: Ticket runs one specific ticket (the --once equivalent), Epic
 // drives an epic's sub-issues (the --parent equivalent); they are mutually
-// exclusive. Provider is an ephemeral per-run override of the configured routing
-// — it applies only to this spawn and never persists to config.
+// exclusive, and with neither set the hub launches the bare ready-queue loop
+// (plain trau). Max caps iterations (--max); NoResume skips resuming any
+// in-flight checkpoint (--no-resume). Provider is an ephemeral per-run override
+// of the configured routing — it applies only to this spawn and never persists
+// to config.
 type StartRequest struct {
 	Repo     string `json:"repo"`
 	Ticket   string `json:"ticket,omitempty"`
 	Epic     string `json:"epic,omitempty"`
 	Provider string `json:"provider,omitempty"`
+	Max      int    `json:"max,omitempty"`
+	NoResume bool   `json:"no_resume,omitempty"`
 }
 
 // StartResult is returned when the hub spawns a loop, carrying the child's PID so
@@ -94,6 +99,10 @@ func (s *Server) startInstance(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("epic %q is not a valid ticket identifier", req.Epic)})
 		return
 	}
+	if req.Max < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "max must not be negative"})
+		return
+	}
 	root, ok := s.allowedRoot(req.Repo)
 	if !ok {
 		writeJSON(w, http.StatusForbidden, map[string]string{
@@ -108,6 +117,12 @@ func (s *Server) startInstance(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "--parent", ticket, "--once")
 	case epic != "":
 		args = append(args, "--parent", epic)
+	}
+	if req.NoResume {
+		args = append(args, "--no-resume")
+	}
+	if req.Max > 0 {
+		args = append(args, "--max", strconv.Itoa(req.Max))
 	}
 	if provider := strings.TrimSpace(req.Provider); provider != "" {
 		args = append(args, "--provider", provider)

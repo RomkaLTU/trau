@@ -336,6 +336,79 @@ func TestStartRunsEpic(t *testing.T) {
 	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-530"})
 }
 
+func TestStartBareLoopWhenNeitherTicketNorEpic(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("bare-loop status = %d, want 202", res.StatusCode)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui"})
+	if hasArg(fake.spawns[0].Args, "--parent") || hasArg(fake.spawns[0].Args, "--once") {
+		t.Errorf("bare loop carried a target flag: %v — no ticket or epic means the plain ready-queue loop", fake.spawns[0].Args)
+	}
+}
+
+func TestStartHonorsMaxAndNoResume(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Max: 3, NoResume: true})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", res.StatusCode)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--no-resume", "--max", "3"})
+}
+
+func TestStartMaxAndNoResumeApplyToSingleTicket(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-693", Max: 5, NoResume: true})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", res.StatusCode)
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-693", "--once", "--no-resume", "--max", "5"})
+}
+
+func TestStartOmitsMaxWhenZero(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Max: 0})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", res.StatusCode)
+	}
+	if hasArg(fake.spawns[0].Args, "--max") {
+		t.Errorf("args carried --max for an unset (zero) cap: %v", fake.spawns[0].Args)
+	}
+}
+
+func TestStartRejectsNegativeMax(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Max: -1})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a negative max", res.StatusCode)
+	}
+	if len(fake.spawns) != 0 {
+		t.Errorf("spawns = %d, want 0 for a rejected request", len(fake.spawns))
+	}
+}
+
 func TestStartProviderOverrideIsPerRun(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "acme")
 	fake, ts := controlServer(t, t.TempDir(), []string{root})
