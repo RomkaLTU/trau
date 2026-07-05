@@ -1,5 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
 
+import { apiFetch } from './api'
+
 export interface Instance {
   pid: number
   repo: string
@@ -25,7 +27,7 @@ export interface InstancesResponse {
 }
 
 async function fetchInstances(): Promise<InstancesResponse> {
-  const res = await fetch('/api/v1/instances')
+  const res = await apiFetch('/api/v1/instances')
   if (!res.ok) {
     throw new Error(`instances request failed: ${res.status}`)
   }
@@ -48,6 +50,8 @@ export interface StartRequest {
   ticket?: string
   epic?: string
   provider?: string
+  max?: number
+  no_resume?: boolean
 }
 
 export interface StartResult {
@@ -57,13 +61,26 @@ export interface StartResult {
 }
 
 export async function startInstance(req: StartRequest): Promise<StartResult> {
-  const res = await fetch('/api/v1/instances', {
+  const res = await apiFetch('/api/v1/instances', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
   })
   if (!res.ok) {
     throw new Error(await errorMessage(res, 'start failed'))
+  }
+  return res.json()
+}
+
+export interface StopResult {
+  status: string
+  signal: string
+}
+
+export async function stopInstance(pid: number): Promise<StopResult> {
+  const res = await apiFetch(`/api/v1/instances/${pid}/stop`, { method: 'POST' })
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'stop failed'))
   }
   return res.json()
 }
@@ -75,7 +92,7 @@ export interface DryRunResult {
 }
 
 export async function dryRun(repo: string): Promise<DryRunResult> {
-  const res = await fetch(
+  const res = await apiFetch(
     `/api/v1/repos/${encodeURIComponent(repo)}/dry-run`,
     { method: 'POST' },
   )

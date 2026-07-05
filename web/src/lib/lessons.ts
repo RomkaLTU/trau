@@ -1,5 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
 
+import { apiFetch } from './api'
+
 export interface Lesson {
   ticket?: string
   phase?: string
@@ -18,7 +20,7 @@ export interface LessonsResponse {
 }
 
 async function fetchLessons(repo: string): Promise<LessonsResponse> {
-  const res = await fetch(`/api/v1/repos/${encodeURIComponent(repo)}/lessons`)
+  const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(repo)}/lessons`)
   if (!res.ok) {
     throw new Error(`lessons request failed: ${res.status}`)
   }

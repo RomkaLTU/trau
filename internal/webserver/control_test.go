@@ -336,6 +336,79 @@ func TestStartRunsEpic(t *testing.T) {
 	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-530"})
 }
 
+func TestStartBareLoopWhenNeitherTicketNorEpic(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("bare-loop status = %d, want 202", res.StatusCode)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui"})
+	if hasArg(fake.spawns[0].Args, "--parent") || hasArg(fake.spawns[0].Args, "--once") {
+		t.Errorf("bare loop carried a target flag: %v — no ticket or epic means the plain ready-queue loop", fake.spawns[0].Args)
+	}
+}
+
+func TestStartHonorsMaxAndNoResume(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Max: 3, NoResume: true})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", res.StatusCode)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--no-resume", "--max", "3"})
+}
+
+func TestStartMaxAndNoResumeApplyToSingleTicket(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-693", Max: 5, NoResume: true})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", res.StatusCode)
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-693", "--once", "--no-resume", "--max", "5"})
+}
+
+func TestStartOmitsMaxWhenZero(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Max: 0})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", res.StatusCode)
+	}
+	if hasArg(fake.spawns[0].Args, "--max") {
+		t.Errorf("args carried --max for an unset (zero) cap: %v", fake.spawns[0].Args)
+	}
+}
+
+func TestStartRejectsNegativeMax(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Max: -1})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a negative max", res.StatusCode)
+	}
+	if len(fake.spawns) != 0 {
+		t.Errorf("spawns = %d, want 0 for a rejected request", len(fake.spawns))
+	}
+}
+
 func TestStartProviderOverrideIsPerRun(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "acme")
 	fake, ts := controlServer(t, t.TempDir(), []string{root})
@@ -482,6 +555,331 @@ func TestDryRunRequiresTokenWhenExposed(t *testing.T) {
 	if len(fake.captures) != 0 {
 		t.Errorf("token gate let a dry-run through: captures=%d", len(fake.captures))
 	}
+}
+
+func TestEligibleReturnsTickets(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureOut = []byte(`[{"id":"COD-1","title":"First","labels":["ready-for-agent","Feature"]},{"id":"COD-2","title":"Second","labels":[]}]`)
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/eligible")
+	if err != nil {
+		t.Fatalf("GET eligible: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("eligible status = %d, want 200", res.StatusCode)
+	}
+	var out EligibleResult
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode eligible result: %v", err)
+	}
+	if out.RepoRoot != root {
+		t.Errorf("RepoRoot = %q, want %q", out.RepoRoot, root)
+	}
+	if len(out.Tickets) != 2 {
+		t.Fatalf("Tickets = %d, want 2", len(out.Tickets))
+	}
+	if out.Tickets[0].ID != "COD-1" || out.Tickets[0].Title != "First" {
+		t.Errorf("Tickets[0] = %+v, want COD-1/First", out.Tickets[0])
+	}
+	if len(out.Tickets[0].Labels) != 2 || out.Tickets[0].Labels[0] != "ready-for-agent" {
+		t.Errorf("Tickets[0].Labels = %v, want [ready-for-agent Feature]", out.Tickets[0].Labels)
+	}
+	if len(fake.captures) != 1 {
+		t.Fatalf("captures = %d, want 1", len(fake.captures))
+	}
+	assertArgs(t, fake.captures[0].Args, []string{"--repo", root, "--list-eligible", "--json", "--no-tui"})
+	if len(fake.spawns) != 0 {
+		t.Errorf("eligible spawned a loop (%d) — listing must have no side effects", len(fake.spawns))
+	}
+}
+
+func TestEligibleEmptyQueue(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureOut = []byte("[]\n")
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/eligible")
+	if err != nil {
+		t.Fatalf("GET eligible: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	var out EligibleResult
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode eligible result: %v", err)
+	}
+	if out.Tickets == nil {
+		t.Errorf("Tickets = nil, want an empty array for an empty queue")
+	}
+	if len(out.Tickets) != 0 {
+		t.Errorf("Tickets = %v, want empty", out.Tickets)
+	}
+}
+
+func TestEligibleRefusedForNonAllowlistedRepo(t *testing.T) {
+	allowed := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{allowed})
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/stranger/eligible")
+	if err != nil {
+		t.Fatalf("GET eligible: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("eligible status = %d, want 403 for an observe-only repo", res.StatusCode)
+	}
+	if len(fake.captures) != 0 {
+		t.Errorf("captures = %d, want 0 for a refused repo", len(fake.captures))
+	}
+}
+
+func TestEligibleReportsCaptureFailure(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureErr = os.ErrPermission
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/eligible")
+	if err != nil {
+		t.Fatalf("GET eligible: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("eligible status = %d, want 502 when the listing fails", res.StatusCode)
+	}
+}
+
+func TestEligibleReportsMalformedOutput(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureOut = []byte("not json at all")
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/eligible")
+	if err != nil {
+		t.Fatalf("GET eligible: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("eligible status = %d, want 502 when the output cannot be parsed", res.StatusCode)
+	}
+}
+
+func TestEligibleRejectsNonGET(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/eligible", nil)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST eligible = %d, want 405", res.StatusCode)
+	}
+	if len(fake.captures) != 0 {
+		t.Errorf("captures = %d, want 0 for a rejected method", len(fake.captures))
+	}
+}
+
+func TestParseEligibleTickets(t *testing.T) {
+	t.Run("normalizes null labels to empty", func(t *testing.T) {
+		out, err := parseEligibleTickets([]byte(`[{"id":"COD-1","title":"A"}]`))
+		if err != nil {
+			t.Fatalf("parseEligibleTickets: %v", err)
+		}
+		if len(out) != 1 || out[0].Labels == nil {
+			t.Errorf("got %+v, want one ticket with a non-nil Labels", out)
+		}
+	})
+	t.Run("empty output is an empty queue", func(t *testing.T) {
+		out, err := parseEligibleTickets([]byte("  \n"))
+		if err != nil {
+			t.Fatalf("parseEligibleTickets(blank): %v", err)
+		}
+		if out == nil || len(out) != 0 {
+			t.Errorf("got %+v, want an empty non-nil slice", out)
+		}
+	})
+	t.Run("malformed output errors", func(t *testing.T) {
+		if _, err := parseEligibleTickets([]byte("garbage")); err == nil {
+			t.Error("parseEligibleTickets(garbage) should error, not return no tickets")
+		}
+	})
+}
+
+func TestEpicPreviewReturnsSubIssues(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureOut = []byte(`[{"id":"COD-1","title":"First","state":"done"},{"id":"COD-2","title":"Second","state":"todo"}]`)
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/epics/COD-530")
+	if err != nil {
+		t.Fatalf("GET epic preview: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("epic preview status = %d, want 200", res.StatusCode)
+	}
+	var out EpicPreviewResult
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode epic preview result: %v", err)
+	}
+	if out.RepoRoot != root {
+		t.Errorf("RepoRoot = %q, want %q", out.RepoRoot, root)
+	}
+	if out.Epic != "COD-530" {
+		t.Errorf("Epic = %q, want COD-530", out.Epic)
+	}
+	if len(out.SubIssues) != 2 {
+		t.Fatalf("SubIssues = %d, want 2", len(out.SubIssues))
+	}
+	if out.SubIssues[0].ID != "COD-1" || out.SubIssues[0].State != "done" {
+		t.Errorf("SubIssues[0] = %+v, want COD-1/done", out.SubIssues[0])
+	}
+	if out.SubIssues[1].State != "todo" {
+		t.Errorf("SubIssues[1].State = %q, want todo", out.SubIssues[1].State)
+	}
+	if len(fake.captures) != 1 {
+		t.Fatalf("captures = %d, want 1", len(fake.captures))
+	}
+	assertArgs(t, fake.captures[0].Args, []string{"--repo", root, "--list-epic", "COD-530", "--json", "--no-tui"})
+	if len(fake.spawns) != 0 {
+		t.Errorf("epic preview spawned a loop (%d) — previewing must have no side effects", len(fake.spawns))
+	}
+}
+
+func TestEpicPreviewChildlessEpic(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureOut = []byte("[]\n")
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/epics/COD-530")
+	if err != nil {
+		t.Fatalf("GET epic preview: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	var out EpicPreviewResult
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode epic preview result: %v", err)
+	}
+	if out.SubIssues == nil {
+		t.Errorf("SubIssues = nil, want an empty array for a childless epic")
+	}
+	if len(out.SubIssues) != 0 {
+		t.Errorf("SubIssues = %v, want empty", out.SubIssues)
+	}
+}
+
+func TestEpicPreviewRejectsMalformedEpic(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/epics/not-an-epic!")
+	if err != nil {
+		t.Fatalf("GET epic preview: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("epic preview status = %d, want 400 for a malformed epic id", res.StatusCode)
+	}
+	if len(fake.captures) != 0 {
+		t.Errorf("captures = %d, want 0 (never run the binary for a malformed epic id)", len(fake.captures))
+	}
+}
+
+func TestEpicPreviewRefusedForNonAllowlistedRepo(t *testing.T) {
+	allowed := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{allowed})
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/stranger/epics/COD-530")
+	if err != nil {
+		t.Fatalf("GET epic preview: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("epic preview status = %d, want 403 for an observe-only repo", res.StatusCode)
+	}
+	if len(fake.captures) != 0 {
+		t.Errorf("captures = %d, want 0 for a refused repo", len(fake.captures))
+	}
+}
+
+func TestEpicPreviewReportsCaptureFailure(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureErr = os.ErrPermission
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/epics/COD-530")
+	if err != nil {
+		t.Fatalf("GET epic preview: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("epic preview status = %d, want 502 when the preview fails (unknown epic / tracker unavailable)", res.StatusCode)
+	}
+}
+
+func TestEpicPreviewReportsMalformedOutput(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+	fake.captureOut = []byte("not json at all")
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/epics/COD-530")
+	if err != nil {
+		t.Fatalf("GET epic preview: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("epic preview status = %d, want 502 when the output cannot be parsed", res.StatusCode)
+	}
+}
+
+func TestEpicPreviewRejectsNonGET(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, t.TempDir(), []string{root})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/epics/COD-530", nil)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST epic preview = %d, want 405", res.StatusCode)
+	}
+	if len(fake.captures) != 0 {
+		t.Errorf("captures = %d, want 0 for a rejected method", len(fake.captures))
+	}
+}
+
+func TestEpicPreviewRequiresTokenWhenExposed(t *testing.T) {
+	s := New("1.2.3", "0.0.0.0", "s3cret", []string{"/repo/acme"})
+	fake := &fakeSupervisor{}
+	s.sup = fake
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/epics/COD-530")
+	if err != nil {
+		t.Fatalf("GET epic preview: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("unauthenticated epic preview = %d, want 401 on an exposed bind", res.StatusCode)
+	}
+	if len(fake.captures) != 0 {
+		t.Errorf("token gate let an epic preview through: captures=%d", len(fake.captures))
+	}
+}
+
+func TestParseEpicSubIssues(t *testing.T) {
+	t.Run("empty output is a childless epic", func(t *testing.T) {
+		out, err := parseEpicSubIssues([]byte("  \n"))
+		if err != nil {
+			t.Fatalf("parseEpicSubIssues(blank): %v", err)
+		}
+		if out == nil || len(out) != 0 {
+			t.Errorf("got %+v, want an empty non-nil slice", out)
+		}
+	})
+	t.Run("malformed output errors", func(t *testing.T) {
+		if _, err := parseEpicSubIssues([]byte("garbage")); err == nil {
+			t.Error("parseEpicSubIssues(garbage) should error, not return no sub-issues")
+		}
+	})
 }
 
 func assertArgs(t *testing.T, got, want []string) {

@@ -1,5 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
 
+import { apiFetch } from './api'
+
 export interface TranscriptView {
   id: string
   label: string
@@ -16,7 +18,7 @@ export interface TranscriptsResponse {
 }
 
 async function fetchTranscripts(repo: string): Promise<TranscriptsResponse> {
-  const res = await fetch(
+  const res = await apiFetch(
     `/api/v1/repos/${encodeURIComponent(repo)}/transcripts`,
   )
   if (!res.ok) {

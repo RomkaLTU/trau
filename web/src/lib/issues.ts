@@ -1,3 +1,5 @@
+import { apiFetch } from './api'
+
 export interface IssueDraft {
   title: string
   description?: string
@@ -19,7 +21,7 @@ export async function createIssue(
   repo: string,
   draft: IssueDraft,
 ): Promise<CreatedIssue> {
-  const res = await fetch(`/api/v1/repos/${encodeURIComponent(repo)}/issues`, {
+  const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(repo)}/issues`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(draft),
@@ -35,7 +37,7 @@ export async function addComment(
   ticket: string,
   body: string,
 ): Promise<void> {
-  const res = await fetch(
+  const res = await apiFetch(
     `/api/v1/repos/${encodeURIComponent(repo)}/runs/${encodeURIComponent(
       ticket,
     )}/comment`,

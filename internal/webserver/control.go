@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,6 +22,16 @@ import (
 // request forever.
 const dryRunTimeout = 2 * time.Minute
 
+// eligibleTimeout bounds an eligible-ticket listing: it drives a fresh trau to
+// enumerate the repo's ready queue through the tracker, so it must outlast a
+// tracker query but never hang the request.
+const eligibleTimeout = 2 * time.Minute
+
+// epicPreviewTimeout bounds an epic sub-issue preview: it drives a fresh trau to
+// list an epic's children through the tracker, so it must outlast a tracker query
+// but never hang the request.
+const epicPreviewTimeout = 2 * time.Minute
+
 // reTicketID matches a bare tracker identifier of any prefix (ACME-42, TMS-456).
 // The exact prefix is validated against the target repo's config by the spawned
 // loop; the hub only rejects shapes that are clearly not a ticket before it
@@ -31,13 +42,18 @@ var reTicketID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
 // target, either by its allowlisted root or its base name. The optional targets
 // mirror the CLI: Ticket runs one specific ticket (the --once equivalent), Epic
 // drives an epic's sub-issues (the --parent equivalent); they are mutually
-// exclusive. Provider is an ephemeral per-run override of the configured routing
-// — it applies only to this spawn and never persists to config.
+// exclusive, and with neither set the hub launches the bare ready-queue loop
+// (plain trau). Max caps iterations (--max); NoResume skips resuming any
+// in-flight checkpoint (--no-resume). Provider is an ephemeral per-run override
+// of the configured routing — it applies only to this spawn and never persists
+// to config.
 type StartRequest struct {
 	Repo     string `json:"repo"`
 	Ticket   string `json:"ticket,omitempty"`
 	Epic     string `json:"epic,omitempty"`
 	Provider string `json:"provider,omitempty"`
+	Max      int    `json:"max,omitempty"`
+	NoResume bool   `json:"no_resume,omitempty"`
 }
 
 // StartResult is returned when the hub spawns a loop, carrying the child's PID so
@@ -83,6 +99,10 @@ func (s *Server) startInstance(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("epic %q is not a valid ticket identifier", req.Epic)})
 		return
 	}
+	if req.Max < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "max must not be negative"})
+		return
+	}
 	root, ok := s.allowedRoot(req.Repo)
 	if !ok {
 		writeJSON(w, http.StatusForbidden, map[string]string{
@@ -97,6 +117,12 @@ func (s *Server) startInstance(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "--parent", ticket, "--once")
 	case epic != "":
 		args = append(args, "--parent", epic)
+	}
+	if req.NoResume {
+		args = append(args, "--no-resume")
+	}
+	if req.Max > 0 {
+		args = append(args, "--max", strconv.Itoa(req.Max))
 	}
 	if provider := strings.TrimSpace(req.Provider); provider != "" {
 		args = append(args, "--provider", provider)
@@ -192,6 +218,162 @@ func parseNextTicket(stdout []byte) string {
 		}
 	}
 	return ""
+}
+
+// EligibleTicket is one ready ticket a repo could pick next: its identifier,
+// title, and label names. It powers the Run once ticket picker so the operator
+// chooses from the queue instead of typing an ID blind.
+type EligibleTicket struct {
+	ID     string   `json:"id"`
+	Title  string   `json:"title"`
+	Labels []string `json:"labels"`
+}
+
+// EligibleResult is the outcome of an eligible-ticket listing: the repo and its
+// ready queue, empty when nothing is eligible.
+type EligibleResult struct {
+	Repo     string           `json:"repo"`
+	RepoRoot string           `json:"repo_root"`
+	Tickets  []EligibleTicket `json:"tickets"`
+}
+
+// handleEligible lists an allowlisted repo's eligible ready tickets by driving a
+// fresh trau with --list-eligible --json and returning what it enumerated. Like a
+// dry-run it is gated on the workspace allowlist — listing still runs the binary
+// in the repo — and reads only: it never spawns a loop or touches the tracker.
+func (s *Server) handleEligible(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	root, ok := s.allowedRoot(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": fmt.Sprintf("repo %q is not on the serve workspace allowlist and is observe-only; add its root to SERVE_WORKSPACE to list its eligible tickets", r.PathValue("repo")),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), eligibleTimeout)
+	defer cancel()
+	out, err := s.sup.Capture(ctx, SpawnSpec{
+		Dir:  root,
+		Args: []string{"--repo", root, "--list-eligible", "--json", "--no-tui"},
+		Env:  childEnv(s.home),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "listing eligible tickets failed: " + err.Error()})
+		return
+	}
+	tickets, err := parseEligibleTickets(out)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "listing eligible tickets failed: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, EligibleResult{Repo: filepath.Base(root), RepoRoot: root, Tickets: tickets})
+}
+
+// parseEligibleTickets decodes the JSON array a --list-eligible --json emitted on
+// stdout. Empty output means an empty queue; a body that is not the expected JSON
+// array is an error so a broken capture surfaces cleanly instead of as no tickets.
+func parseEligibleTickets(stdout []byte) ([]EligibleTicket, error) {
+	trimmed := bytes.TrimSpace(stdout)
+	if len(trimmed) == 0 {
+		return []EligibleTicket{}, nil
+	}
+	var tickets []EligibleTicket
+	if err := json.Unmarshal(trimmed, &tickets); err != nil {
+		return nil, fmt.Errorf("unexpected eligible-ticket output")
+	}
+	out := make([]EligibleTicket, 0, len(tickets))
+	for _, t := range tickets {
+		if t.Labels == nil {
+			t.Labels = []string{}
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+// EpicSubIssue is one child of an epic: its identifier, title, and preview state
+// (done, epic for a nested parent, or todo for a buildable child).
+type EpicSubIssue struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	State string `json:"state"`
+}
+
+// EpicPreviewResult is the outcome of an epic preview: the repo, the previewed
+// epic, and its direct sub-issues, empty when the epic has no children.
+type EpicPreviewResult struct {
+	Repo      string         `json:"repo"`
+	RepoRoot  string         `json:"repo_root"`
+	Epic      string         `json:"epic"`
+	SubIssues []EpicSubIssue `json:"sub_issues"`
+}
+
+// handleEpicPreview lists an allowlisted repo's epic sub-issues and their states
+// by driving a fresh trau with --list-epic <id> --json. Like a dry-run it is
+// gated on the workspace allowlist — previewing still runs the binary in the repo
+// — and reads only: it never spawns a loop or touches the tracker. It powers the
+// Loop screen's epic scoping, so the operator sees what an epic contains before
+// launching a run against it.
+func (s *Server) handleEpicPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	epic := strings.TrimSpace(r.PathValue("epic"))
+	if !reTicketID.MatchString(epic) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("epic %q is not a valid ticket identifier", epic)})
+		return
+	}
+	root, ok := s.allowedRoot(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": fmt.Sprintf("repo %q is not on the serve workspace allowlist and is observe-only; add its root to SERVE_WORKSPACE to preview its epics", r.PathValue("repo")),
+		})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), epicPreviewTimeout)
+	defer cancel()
+	out, err := s.sup.Capture(ctx, SpawnSpec{
+		Dir:  root,
+		Args: []string{"--repo", root, "--list-epic", epic, "--json", "--no-tui"},
+		Env:  childEnv(s.home),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "epic preview failed: " + err.Error()})
+		return
+	}
+	subs, err := parseEpicSubIssues(out)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "epic preview failed: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, EpicPreviewResult{Repo: filepath.Base(root), RepoRoot: root, Epic: epic, SubIssues: subs})
+}
+
+// parseEpicSubIssues decodes the JSON array a --list-epic --json emitted on
+// stdout. Empty output means an epic with no children; a body that is not the
+// expected JSON array is an error so a broken capture surfaces cleanly instead of
+// as no sub-issues.
+func parseEpicSubIssues(stdout []byte) ([]EpicSubIssue, error) {
+	trimmed := bytes.TrimSpace(stdout)
+	if len(trimmed) == 0 {
+		return []EpicSubIssue{}, nil
+	}
+	var subs []EpicSubIssue
+	if err := json.Unmarshal(trimmed, &subs); err != nil {
+		return nil, fmt.Errorf("unexpected epic sub-issue output")
+	}
+	if subs == nil {
+		subs = []EpicSubIssue{}
+	}
+	return subs, nil
 }
 
 func (s *Server) registered(pid int) bool {

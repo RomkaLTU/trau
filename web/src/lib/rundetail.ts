@@ -1,5 +1,6 @@
 import { queryOptions } from '@tanstack/react-query'
 
+import { apiFetch } from './api'
 import type { Run } from './runs'
 
 export interface PhaseCost {
@@ -66,7 +67,7 @@ async function fetchRunDetail(
   repo: string,
   ticket: string,
 ): Promise<RunDetail> {
-  const res = await fetch(
+  const res = await apiFetch(
     `/api/v1/repos/${encodeURIComponent(repo)}/runs/${encodeURIComponent(ticket)}`,
   )
   if (!res.ok) {

@@ -12,13 +12,15 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as TerminalRouteImport } from './routes/terminal'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RunsRouteImport } from './routes/runs'
-import { Route as PrdRouteImport } from './routes/prd'
+import { Route as RunOnceRouteImport } from './routes/run-once'
+import { Route as LoopRouteImport } from './routes/loop'
 import { Route as LessonsRouteImport } from './routes/lessons'
 import { Route as InstancesRouteImport } from './routes/instances'
 import { Route as CostsRouteImport } from './routes/costs'
-import { Route as AnalyticsRouteImport } from './routes/analytics'
+import { Route as AuthorRouteImport } from './routes/author'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as RunsRepoTicketRouteImport } from './routes/runs_.$repo.$ticket'
+import { Route as LiveRepoTicketRouteImport } from './routes/live.$repo.$ticket'
 
 const TerminalRoute = TerminalRouteImport.update({
   id: '/terminal',
@@ -35,9 +37,14 @@ const RunsRoute = RunsRouteImport.update({
   path: '/runs',
   getParentRoute: () => rootRouteImport,
 } as any)
-const PrdRoute = PrdRouteImport.update({
-  id: '/prd',
-  path: '/prd',
+const RunOnceRoute = RunOnceRouteImport.update({
+  id: '/run-once',
+  path: '/run-once',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoopRoute = LoopRouteImport.update({
+  id: '/loop',
+  path: '/loop',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LessonsRoute = LessonsRouteImport.update({
@@ -55,9 +62,9 @@ const CostsRoute = CostsRouteImport.update({
   path: '/costs',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AnalyticsRoute = AnalyticsRouteImport.update({
-  id: '/analytics',
-  path: '/analytics',
+const AuthorRoute = AuthorRouteImport.update({
+  id: '/author',
+  path: '/author',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -70,93 +77,112 @@ const RunsRepoTicketRoute = RunsRepoTicketRouteImport.update({
   path: '/runs/$repo/$ticket',
   getParentRoute: () => rootRouteImport,
 } as any)
+const LiveRepoTicketRoute = LiveRepoTicketRouteImport.update({
+  id: '/live/$repo/$ticket',
+  path: '/live/$repo/$ticket',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/analytics': typeof AnalyticsRoute
+  '/author': typeof AuthorRoute
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
-  '/prd': typeof PrdRoute
+  '/loop': typeof LoopRoute
+  '/run-once': typeof RunOnceRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
   '/terminal': typeof TerminalRoute
+  '/live/$repo/$ticket': typeof LiveRepoTicketRoute
   '/runs/$repo/$ticket': typeof RunsRepoTicketRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/analytics': typeof AnalyticsRoute
+  '/author': typeof AuthorRoute
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
-  '/prd': typeof PrdRoute
+  '/loop': typeof LoopRoute
+  '/run-once': typeof RunOnceRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
   '/terminal': typeof TerminalRoute
+  '/live/$repo/$ticket': typeof LiveRepoTicketRoute
   '/runs/$repo/$ticket': typeof RunsRepoTicketRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/analytics': typeof AnalyticsRoute
+  '/author': typeof AuthorRoute
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
-  '/prd': typeof PrdRoute
+  '/loop': typeof LoopRoute
+  '/run-once': typeof RunOnceRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
   '/terminal': typeof TerminalRoute
+  '/live/$repo/$ticket': typeof LiveRepoTicketRoute
   '/runs_/$repo/$ticket': typeof RunsRepoTicketRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/analytics'
+    | '/author'
     | '/costs'
     | '/instances'
     | '/lessons'
-    | '/prd'
+    | '/loop'
+    | '/run-once'
     | '/runs'
     | '/settings'
     | '/terminal'
+    | '/live/$repo/$ticket'
     | '/runs/$repo/$ticket'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/analytics'
+    | '/author'
     | '/costs'
     | '/instances'
     | '/lessons'
-    | '/prd'
+    | '/loop'
+    | '/run-once'
     | '/runs'
     | '/settings'
     | '/terminal'
+    | '/live/$repo/$ticket'
     | '/runs/$repo/$ticket'
   id:
     | '__root__'
     | '/'
-    | '/analytics'
+    | '/author'
     | '/costs'
     | '/instances'
     | '/lessons'
-    | '/prd'
+    | '/loop'
+    | '/run-once'
     | '/runs'
     | '/settings'
     | '/terminal'
+    | '/live/$repo/$ticket'
     | '/runs_/$repo/$ticket'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  AnalyticsRoute: typeof AnalyticsRoute
+  AuthorRoute: typeof AuthorRoute
   CostsRoute: typeof CostsRoute
   InstancesRoute: typeof InstancesRoute
   LessonsRoute: typeof LessonsRoute
-  PrdRoute: typeof PrdRoute
+  LoopRoute: typeof LoopRoute
+  RunOnceRoute: typeof RunOnceRoute
   RunsRoute: typeof RunsRoute
   SettingsRoute: typeof SettingsRoute
   TerminalRoute: typeof TerminalRoute
+  LiveRepoTicketRoute: typeof LiveRepoTicketRoute
   RunsRepoTicketRoute: typeof RunsRepoTicketRoute
 }
 
@@ -183,11 +209,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RunsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/prd': {
-      id: '/prd'
-      path: '/prd'
-      fullPath: '/prd'
-      preLoaderRoute: typeof PrdRouteImport
+    '/run-once': {
+      id: '/run-once'
+      path: '/run-once'
+      fullPath: '/run-once'
+      preLoaderRoute: typeof RunOnceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/loop': {
+      id: '/loop'
+      path: '/loop'
+      fullPath: '/loop'
+      preLoaderRoute: typeof LoopRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/lessons': {
@@ -211,11 +244,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CostsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/analytics': {
-      id: '/analytics'
-      path: '/analytics'
-      fullPath: '/analytics'
-      preLoaderRoute: typeof AnalyticsRouteImport
+    '/author': {
+      id: '/author'
+      path: '/author'
+      fullPath: '/author'
+      preLoaderRoute: typeof AuthorRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -232,19 +265,28 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof RunsRepoTicketRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/live/$repo/$ticket': {
+      id: '/live/$repo/$ticket'
+      path: '/live/$repo/$ticket'
+      fullPath: '/live/$repo/$ticket'
+      preLoaderRoute: typeof LiveRepoTicketRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  AnalyticsRoute: AnalyticsRoute,
+  AuthorRoute: AuthorRoute,
   CostsRoute: CostsRoute,
   InstancesRoute: InstancesRoute,
   LessonsRoute: LessonsRoute,
-  PrdRoute: PrdRoute,
+  LoopRoute: LoopRoute,
+  RunOnceRoute: RunOnceRoute,
   RunsRoute: RunsRoute,
   SettingsRoute: SettingsRoute,
   TerminalRoute: TerminalRoute,
+  LiveRepoTicketRoute: LiveRepoTicketRoute,
   RunsRepoTicketRoute: RunsRepoTicketRoute,
 }
 export const routeTree = rootRouteImport

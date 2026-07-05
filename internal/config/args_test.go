@@ -33,10 +33,70 @@ func TestParseArgsClearMutuallyExclusive(t *testing.T) {
 		{"--clear", "COD-1", "--status"},
 		{"--clear", "COD-1", "--reset", "COD-2"},
 		{"--clear", "COD-1", "--dry-run"},
+		{"--clear", "COD-1", "--list-eligible"},
 	}
 	for _, args := range pairs {
 		if _, err := ParseArgs(args); err == nil {
 			t.Errorf("ParseArgs(%v) should reject combining --clear with another mode", args)
+		}
+	}
+}
+
+func TestParseArgsListEligible(t *testing.T) {
+	o, err := ParseArgs([]string{"--list-eligible", "--json"})
+	if err != nil {
+		t.Fatalf("ParseArgs(--list-eligible --json): %v", err)
+	}
+	if !o.ListEligible {
+		t.Error("ListEligible = false, want true")
+	}
+	if !o.JSON {
+		t.Error("JSON = false, want true")
+	}
+}
+
+func TestParseArgsListEligibleMutuallyExclusive(t *testing.T) {
+	pairs := [][]string{
+		{"--list-eligible", "--status"},
+		{"--list-eligible", "--dry-run"},
+		{"--list-eligible", "--reset", "COD-2"},
+	}
+	for _, args := range pairs {
+		if _, err := ParseArgs(args); err == nil {
+			t.Errorf("ParseArgs(%v) should reject combining --list-eligible with another mode", args)
+		}
+	}
+}
+
+func TestParseArgsListEpic(t *testing.T) {
+	o, err := ParseArgs([]string{"--list-epic", "COD-530", "--json"})
+	if err != nil {
+		t.Fatalf("ParseArgs(--list-epic COD-530 --json): %v", err)
+	}
+	if o.ListEpicID != "COD-530" {
+		t.Errorf("ListEpicID = %q, want COD-530", o.ListEpicID)
+	}
+	if !o.JSON {
+		t.Error("JSON = false, want true")
+	}
+}
+
+func TestParseArgsListEpicRequiresValue(t *testing.T) {
+	if _, err := ParseArgs([]string{"--list-epic"}); err == nil {
+		t.Error("ParseArgs(--list-epic) without a value should error")
+	}
+}
+
+func TestParseArgsListEpicMutuallyExclusive(t *testing.T) {
+	pairs := [][]string{
+		{"--list-epic", "COD-1", "--status"},
+		{"--list-epic", "COD-1", "--dry-run"},
+		{"--list-epic", "COD-1", "--list-eligible"},
+		{"--list-epic", "COD-1", "--reset", "COD-2"},
+	}
+	for _, args := range pairs {
+		if _, err := ParseArgs(args); err == nil {
+			t.Errorf("ParseArgs(%v) should reject combining --list-epic with another mode", args)
 		}
 	}
 }

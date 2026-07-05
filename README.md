@@ -73,6 +73,10 @@ UI at `/` — for watching every trau run on the machine:
 trau serve                       # http://127.0.0.1:8728
 ```
 
+The hub mirrors the CLI/TUI, not the other way round — [`docs/cli-web-parity.md`](docs/cli-web-parity.md)
+maps every operation to its web surface and names the deliberate gaps (`doctor`, onboarding, the
+interactive planning flow).
+
 Because the hub is a window onto an autonomous, merge-capable system, **exposing it is a safety
 decision**, and trau enforces an exposure policy:
 

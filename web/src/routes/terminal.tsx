@@ -1,155 +1,188 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { createFileRoute } from '@tanstack/react-router'
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { Link, createFileRoute } from "@tanstack/react-router";
+import { Play } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
-import { Terminal } from '@/components/terminal'
-import { instancesQueryOptions, type RepoView } from '@/lib/instances'
+  EmptyState,
+  Eyebrow,
+  RepoPicker,
+  SegmentedControl,
+  TerminalCard,
+  type SegmentOption,
+} from "@/components/trau";
+import { Terminal } from "@/components/terminal";
+import { instancesQueryOptions, type RepoView } from "@/lib/instances";
 import {
   transcriptsQueryOptions,
   type TranscriptView,
-} from '@/lib/transcripts'
+} from "@/lib/transcripts";
 
-export const Route = createFileRoute('/terminal')({
+export const Route = createFileRoute("/terminal")({
   component: TerminalPage,
   loader: ({ context }) =>
     context.queryClient.ensureQueryData(instancesQueryOptions),
-})
+});
 
-const FOLLOW_NEWEST = ''
+const FOLLOW_NEWEST = "";
 
 function TerminalPage() {
-  const { data, error, isPending } = useQuery(instancesQueryOptions)
-  const repos = useMemo(() => sortRepos(data?.repos ?? []), [data])
+  const { data, error, isPending } = useQuery(instancesQueryOptions);
+  const repos = useMemo(() => sortRepos(data?.repos ?? []), [data]);
 
-  const [repo, setRepo] = useState('')
-  const [id, setID] = useState(FOLLOW_NEWEST)
+  const [repo, setRepo] = useState("");
+  const [id, setID] = useState(FOLLOW_NEWEST);
 
   useEffect(() => {
-    if (repos.length === 0) return
+    if (repos.length === 0) return;
     if (!repos.some((r) => r.name === repo)) {
-      setRepo(repos[0].name)
-      setID(FOLLOW_NEWEST)
+      setRepo(repos[0].name);
+      setID(FOLLOW_NEWEST);
     }
-  }, [repos, repo])
+  }, [repos, repo]);
 
   return (
     <div className="flex flex-col gap-6">
-      {error && <p className="text-sm text-destructive">{String(error)}</p>}
+      <header className="flex flex-col gap-2">
+        <Eyebrow glyph="active" className="text-teal">
+          TERMINAL
+        </Eyebrow>
+        <h1 className="text-balance text-2xl font-semibold tracking-tight text-foreground">
+          Terminal
+        </h1>
+        <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
+          Watch live phase transcripts, like tailing the agent’s terminal.
+        </p>
+      </header>
+
+      {error && (
+        <p className="font-mono text-sm text-destructive">{String(error)}</p>
+      )}
       {isPending && !error && (
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <p className="font-mono text-sm text-muted-foreground">Loading…</p>
       )}
 
       {data && repos.length === 0 && (
-        <Card className="max-w-md">
-          <CardHeader>
-            <CardTitle>Terminal</CardTitle>
-            <CardDescription>
-              No repos have run a trau loop on this machine yet.
-            </CardDescription>
-          </CardHeader>
-        </Card>
+        <TerminalCard title="terminal">
+          <p className="font-sans text-sm leading-relaxed text-muted-foreground">
+            No repos have run a trau loop on this machine yet.
+          </p>
+        </TerminalCard>
       )}
 
       {repo && (
-        <>
-          <div className="flex flex-wrap items-end gap-4">
-            <Field label="Repo">
-              <select
-                className={selectClass}
-                value={repo}
-                onChange={(e) => {
-                  setRepo(e.target.value)
-                  setID(FOLLOW_NEWEST)
-                }}
-              >
-                {repos.map((r) => (
-                  <option key={r.name} value={r.name}>
-                    {r.name}
-                    {r.live ? ' • live' : ''}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <PhaseField repo={repo} value={id} onChange={setID} />
-          </div>
-          <Terminal
-            key={`${repo}:${id || 'newest'}`}
-            repo={repo}
-            id={id || undefined}
-          />
-        </>
+        <Panel
+          repos={repos}
+          repo={repo}
+          id={id}
+          onRepoChange={(name) => {
+            setRepo(name);
+            setID(FOLLOW_NEWEST);
+          }}
+          onPhaseChange={setID}
+        />
       )}
     </div>
-  )
+  );
 }
 
-function PhaseField({
+function Panel({
+  repos,
   repo,
-  value,
-  onChange,
+  id,
+  onRepoChange,
+  onPhaseChange,
 }: {
-  repo: string
-  value: string
-  onChange: (id: string) => void
+  repos: RepoView[];
+  repo: string;
+  id: string;
+  onRepoChange: (repo: string) => void;
+  onPhaseChange: (id: string) => void;
 }) {
-  const { data } = useQuery(transcriptsQueryOptions(repo))
-  const transcripts = data?.transcripts ?? []
+  const { data } = useQuery(transcriptsQueryOptions(repo));
+  const transcripts = data?.transcripts ?? [];
+
+  const repoLive = repos.find((r) => r.name === repo)?.live ?? false;
+  const newestID = transcripts[0]?.id;
+  const streaming = repoLive && (id === FOLLOW_NEWEST || id === newestID);
+  const label =
+    id === FOLLOW_NEWEST
+      ? "newest"
+      : (transcripts.find((t) => t.id === id)?.label ?? id);
 
   return (
-    <Field label="Phase">
-      <select
-        className={selectClass}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      >
-        <option value={FOLLOW_NEWEST}>Live — newest</option>
-        {transcripts.map((t) => (
-          <option key={t.id} value={t.id}>
-            {phaseOption(t)}
-          </option>
-        ))}
-      </select>
-    </Field>
-  )
+    <>
+      <div className="flex flex-wrap items-end gap-6">
+        <RepoPicker
+          repos={repos.map((r) => r.name)}
+          value={repo}
+          onChange={onRepoChange}
+          label="repo"
+        />
+        <div className="flex flex-col gap-1.5">
+          <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+            phase
+          </span>
+          <SegmentedControl
+            aria-label="Phase"
+            options={phaseOptions(transcripts)}
+            value={id}
+            onChange={onPhaseChange}
+          />
+        </div>
+      </div>
+
+      {transcripts.length === 0 ? (
+        <EmptyState
+          className="min-h-[360px]"
+          message={`Nothing streaming for ${repo} yet.`}
+          actions={
+            <Button asChild size="sm" className="font-mono">
+              <Link to="/instances">
+                <Play className="size-4" aria-hidden="true" />
+                Run once
+              </Link>
+            </Button>
+          }
+        />
+      ) : (
+        <Terminal
+          key={`${repo}:${id || "newest"}`}
+          repo={repo}
+          id={id || undefined}
+          title={`${repo} · ${label}.log`}
+          live={streaming}
+          className="min-h-[420px]"
+        />
+      )}
+    </>
+  );
 }
 
-function phaseOption(t: TranscriptView): string {
-  const when = new Date(t.modified)
-  const time = Number.isNaN(when.getTime())
-    ? ''
-    : ` · ${when.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-  return `${t.label}${t.live ? ' (newest)' : ''}${time}`
-}
+const MAX_PHASES = 6;
 
-function Field({
-  label,
-  children,
-}: {
-  label: string
-  children: React.ReactNode
-}) {
-  return (
-    <label className="flex flex-col gap-1.5 text-sm">
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
-      {children}
-    </label>
-  )
+// phaseOptions collapses reruns of the same phase to their newest entry so the
+// segmented control stays a phase switch, not a run archive.
+function phaseOptions(transcripts: TranscriptView[]): SegmentOption<string>[] {
+  const options: SegmentOption<string>[] = [
+    { value: FOLLOW_NEWEST, label: "newest" },
+  ];
+  const seen = new Set<string>();
+  for (const t of transcripts) {
+    if (seen.has(t.label)) continue;
+    seen.add(t.label);
+    options.push({ value: t.id, label: t.label });
+    if (options.length > MAX_PHASES) break;
+  }
+  return options;
 }
-
-const selectClass =
-  'h-9 rounded-md border bg-background px-3 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-ring'
 
 // sortRepos floats live repos to the top so the default selection is one that is
 // actively producing a transcript.
 function sortRepos(repos: RepoView[]): RepoView[] {
   return [...repos].sort((a, b) => {
-    if (a.live !== b.live) return a.live ? -1 : 1
-    return a.name.localeCompare(b.name)
-  })
+    if (a.live !== b.live) return a.live ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
 }

@@ -1,66 +1,55 @@
-import { useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 
-import { Badge } from '@/components/ui/badge'
+import { Eyebrow } from '@/components/trau/eyebrow'
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card'
-import { healthQueryOptions } from '@/lib/health'
+  LiveLoops,
+  NeedsAttention,
+  QuickLaunch,
+  StatTiles,
+} from '@/components/trau/overview'
+import { instancesQueryOptions } from '@/lib/instances'
+import { reposQueryOptions } from '@/lib/runs'
 
 export const Route = createFileRoute('/')({
   component: Overview,
-  loader: ({ context }) => context.queryClient.ensureQueryData(healthQueryOptions),
+  loader: ({ context }) =>
+    Promise.all([
+      context.queryClient.ensureQueryData(instancesQueryOptions),
+      context.queryClient.ensureQueryData(reposQueryOptions),
+    ]),
 })
 
-function formatUptime(seconds: number): string {
-  const s = Math.floor(seconds)
-  const h = Math.floor(s / 3600)
-  const m = Math.floor((s % 3600) / 60)
-  const rem = s % 60
-  if (h > 0) return `${h}h ${m}m ${rem}s`
-  if (m > 0) return `${m}m ${rem}s`
-  return `${rem}s`
-}
-
 function Overview() {
-  const { data: health, error, isPending } = useQuery(healthQueryOptions)
-
   return (
-    <Card className="max-w-md">
-      <CardHeader>
-        <CardTitle>Server health</CardTitle>
-        <CardDescription>Live status of the trau serve hub</CardDescription>
-      </CardHeader>
-      <CardContent>
-        {error && <p className="text-sm text-destructive">{String(error)}</p>}
-        {isPending && !error && (
-          <p className="text-sm text-muted-foreground">Loading…</p>
-        )}
-        {health && (
-          <dl className="flex flex-col gap-3 text-sm">
-            <div className="flex items-center justify-between">
-              <dt className="text-muted-foreground">Status</dt>
-              <dd>
-                <Badge variant={health.status === 'ok' ? 'default' : 'destructive'}>
-                  {health.status}
-                </Badge>
-              </dd>
-            </div>
-            <div className="flex items-center justify-between">
-              <dt className="text-muted-foreground">Version</dt>
-              <dd className="font-mono tabular-nums">{health.version}</dd>
-            </div>
-            <div className="flex items-center justify-between">
-              <dt className="text-muted-foreground">Uptime</dt>
-              <dd className="tabular-nums">{formatUptime(health.uptime_seconds)}</dd>
-            </div>
-          </dl>
-        )}
-      </CardContent>
-    </Card>
+    <div className="flex flex-col gap-8">
+      <header className="flex flex-col gap-2">
+        <Eyebrow glyph="active" className="text-teal">
+          OVERVIEW
+        </Eyebrow>
+        <h1 className="text-balance text-2xl font-semibold tracking-tight text-foreground">
+          What trau is doing, and what needs you
+        </h1>
+      </header>
+
+      <StatTiles />
+
+      <div className="grid grid-cols-1 gap-8 lg:grid-cols-5">
+        <div className="flex flex-col gap-2 lg:col-span-3">
+          <Eyebrow glyph="active">LIVE LOOPS</Eyebrow>
+          <LiveLoops />
+        </div>
+
+        <div className="flex flex-col gap-6 lg:col-span-2">
+          <div className="flex flex-col gap-2">
+            <Eyebrow glyph="warn">NEEDS ATTENTION</Eyebrow>
+            <NeedsAttention />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Eyebrow glyph="action">QUICK LAUNCH</Eyebrow>
+            <QuickLaunch />
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }
