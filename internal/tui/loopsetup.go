@@ -45,6 +45,11 @@ type loopSetupModel struct {
 	cancelled bool
 	single    bool
 	selected  string // single sub-issue ID to run instead of the loop
+
+	// loopArmed guards the biggest blast radius in the app: a blank-input enter
+	// starts the whole ready queue. The first such enter arms this; the confirming
+	// second enter starts. Any other key (esc included) disarms.
+	loopArmed bool
 }
 
 type subIssuesLoadedMsg struct {
@@ -129,6 +134,17 @@ func (m loopSetupModel) handleMouseClick(msg tea.MouseClickMsg) (loopSetupModel,
 func (m loopSetupModel) handleKey(msg tea.KeyPressMsg) (loopSetupModel, tea.Cmd) {
 	switch m.step {
 	case loopConfirm:
+		// A whole-ready-queue start is armed: the confirming second enter starts it;
+		// esc or any other key disarms and is then handled normally below (so typing
+		// an epic id both disarms and enters the id).
+		if m.loopArmed {
+			m.loopArmed = false
+			if msg.String() == "enter" {
+				m.epic = ""
+				m.done = true
+				return m, nil
+			}
+		}
 		switch msg.String() {
 		case "ctrl+c", "esc":
 			m.cancelled, m.done = true, true
@@ -136,8 +152,7 @@ func (m loopSetupModel) handleKey(msg tea.KeyPressMsg) (loopSetupModel, tea.Cmd)
 		case "enter":
 			raw := strings.TrimSpace(m.input.Value())
 			if raw == "" {
-				m.epic = ""
-				m.done = true
+				m.loopArmed = true
 				return m, nil
 			}
 			id := extractTicketID(raw, m.info.Prefix)
@@ -251,6 +266,8 @@ func (m loopSetupModel) renderConfirm() string {
 		s.Help.Render("epic → its sub-issues · issue → just that one · blank → ready queue"),
 	}
 	switch {
+	case m.loopArmed:
+		rows = append(rows, "", s.Warning.Render("⚠ start the loop over the whole ready queue — every ready ticket runs."))
 	case m.badID:
 		rows = append(rows, "", s.Error.Render("Couldn't read an epic ID — try "+exampleID(m.info.Prefix)+"."))
 	case m.loadErr != nil:
@@ -356,6 +373,9 @@ func (m loopSetupModel) hint() string {
 	if m.step == loopLoading {
 		return "loading… · esc/q cancel"
 	}
+	if m.loopArmed {
+		return "⚠ start the loop over the whole ready queue? enter again to start · esc back"
+	}
 	return m.help().footer()
 }
 
@@ -380,7 +400,7 @@ func (m loopSetupModel) help() screenHelp {
 		}}
 	default: // loopConfirm
 		return screenHelp{title: "Run loop", columns: []helpColumn{
-			group("Actions", fk("enter", "start"), fk("type", "epic to preview")),
+			group("Actions", fk("enter", "start ready queue (confirm)"), fk("type", "epic to preview")),
 			group("Session", fk("esc", "back")),
 		}}
 	}

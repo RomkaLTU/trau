@@ -93,11 +93,14 @@ func TestKeyContractPerScreen(t *testing.T) {
 			afterEnter: viewLogs,
 		},
 		{
-			name:       "loop setup",
-			setup:      open(viewMenu, actRun),
+			name:  "loop setup",
+			setup: open(viewMenu, actRun),
+			// A blank-input enter arms the whole-ready-queue confirm rather than
+			// starting, so one enter stays on the screen (armed). The full
+			// arm→confirm→start path is covered by TestRunLoopBlankEnterConfirms.
 			afterEsc:   viewMenu,
 			typesQInto: func(m appModel) string { return m.loopSetup.input.Value() },
-			afterEnter: viewRunning,
+			afterEnter: viewRunLoop,
 		},
 		{
 			name:       "run once",

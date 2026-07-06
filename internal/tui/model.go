@@ -90,7 +90,7 @@ func (m model) runningHelp() screenHelp {
 			xk("esc", "detach live view"),
 		),
 		group("Session",
-			fk("q", "quit/stop"),
+			fk("q", "stop run (q again to confirm)"),
 			xk("ctrl+c", "force quit"),
 			xk("ctrl+t", "toggle mouse (select text)"),
 		),
@@ -227,9 +227,12 @@ type model struct {
 	queueCursor int
 	// recoveryNote is a transient line shown under the queue after a recovery key
 	// (b/x) acts; confirmResetID, when non-empty, is the ticket awaiting a second
-	// keypress to confirm a destructive reset.
+	// keypress to confirm a destructive reset. confirmStop is the same two-key
+	// guard for stopping a live run (q) — armed by the first q, cleared by the
+	// confirming second q or any disarming key.
 	recoveryNote   string
 	confirmResetID string
+	confirmStop    bool
 
 	// Ambient signals (COD-671): notifier posts desktop notifications on the AFK
 	// events that need a human (nil = disabled). blurAt/blurSnapshot capture focus
@@ -479,9 +482,24 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 		if m.onInterrupt != nil {
 			m.onInterrupt()
 		}
+		m.confirmStop = false
 		m.stopping = true
-		m.banner = "⏹ stopping after this phase… (ctrl+c again to force quit)"
+		m.banner = "⏹ interrupting the current phase — progress saved · ctrl+c again to force quit"
 		m.bannerErr = false
+		return m, nil, true
+	}
+
+	// A stop is armed (a prior q): the confirming second q cancels the run; esc or
+	// any other key disarms. The disarming key is swallowed — it can't also act —
+	// mirroring the reset guard. ctrl+c is handled above, so it always bypasses this.
+	if m.confirmStop {
+		m.confirmStop = false
+		if key.Matches(msg, m.keys.Quit) {
+			if m.onInterrupt != nil {
+				m.onInterrupt()
+			}
+			m = m.markStopping()
+		}
 		return m, nil, true
 	}
 
@@ -498,12 +516,9 @@ func (m model) handleKey(msg tea.KeyPressMsg) (model, tea.Cmd, bool) {
 
 	switch {
 	case key.Matches(msg, m.keys.Quit):
-		if m.onInterrupt != nil {
-			m.onInterrupt()
-		}
-		m.stopping = true
-		m.banner = "⏹ stopping after this phase… (ctrl+c again to force quit)"
-		m.bannerErr = false
+		// First q arms the stop; the confirming second q (handled above) cancels the
+		// run. ctrl+c is the unguarded emergency stop and never reaches this case.
+		m.confirmStop = true
 		return m, nil, true
 	case key.Matches(msg, m.keys.Follow):
 		m.following = true
@@ -878,6 +893,21 @@ func (m model) clearResetConfirm() model {
 	return m
 }
 
+// stopArmed reports whether a stop is awaiting its confirming second keypress.
+func (m model) stopArmed() bool { return m.confirmStop }
+
+// armStop arms the two-keypress guard before cancelling a live run.
+func (m model) armStop() model {
+	m.confirmStop = true
+	return m
+}
+
+// disarmStop cancels a pending stop confirmation.
+func (m model) disarmStop() model {
+	m.confirmStop = false
+	return m
+}
+
 // applyRecovery folds a recovery action's outcome into the recap: it shows the
 // note and, on a successful reset, relabels that ticket's row so the recap
 // reflects it will be re-picked.
@@ -951,7 +981,7 @@ func (m model) railVisible() bool { return !m.streaming && m.dims().railW > 0 }
 
 func (m model) markStopping() model {
 	m.stopping = true
-	m.banner = "⏹ stopping after this phase…"
+	m.banner = "⏹ interrupts the current phase — progress is saved and resumable"
 	m.bannerErr = false
 	return m
 }
@@ -1226,6 +1256,14 @@ func fmtCountdown(d time.Duration) string {
 }
 
 func (m model) renderFooter() string {
+	// An armed stop owns the footer: the confirm prompt must be visible even over an
+	// outcome banner, so it wins ahead of everything else. The q/esc segments are
+	// zoned so a second click composes the confirm (or a click elsewhere disarms).
+	if m.confirmStop {
+		return m.styles.Warning.Render("⚠ stop the run? " +
+			zone.Mark(zoneFooterVerb+"q", "q again to confirm") + " · " +
+			zone.Mark(zoneFooterVerb+"esc", "esc cancel"))
+	}
 	// The away-recap takes the footer while it's up: it's transient and dismissed
 	// on the next key, so it briefly overlays the outcome banner rather than
 	// competing for a second line.
