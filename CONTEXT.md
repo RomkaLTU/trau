@@ -32,3 +32,19 @@ _Avoid_: backup, secondary provider
 **Provider override**:
 An ephemeral, single-run swap of the default Provider chosen from the Run once screen before launching a ticket. Applies to that one run and reverts to the config default afterward. Changes only the default Provider — Routes and Fallback providers are unaffected.
 _Avoid_: route (that's per-phase), fallback (that's failover), setting the provider (that's persisted config)
+
+**Run once**:
+A single-ticket run launched from the Run once screen (or `trau <ID>`); it ends after that ticket. The loop's counterpart for one deliberate ticket.
+_Avoid_: task, single task, one-off
+
+**Stop**:
+Ending a live run (loop or Run once) from the TUI. Interrupts the in-flight phase; progress is checkpointed and resumable.
+_Avoid_: quit (that's exiting the app), cancel, kill
+
+**Quit**:
+Exiting the TUI when nothing is live (menu or summary). Harmless — no run is affected.
+_Avoid_: stop (that's ending a live run), exit
+
+**Force quit**:
+The second ctrl+c during a live run — the emergency escape that abandons the graceful Stop. Always available, never intercepted.
+_Avoid_: quit (bare), hard exit
