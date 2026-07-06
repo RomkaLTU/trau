@@ -318,16 +318,33 @@ func TestProviderTabClickSwitches(t *testing.T) {
 	}
 }
 
-// TestFooterVerbClickFiresKey drives a real click on the q-stop footer verb of the
-// running dashboard and checks it stops the loop, same as pressing q.
+// TestFooterVerbClickFiresKey drives real clicks on the q-stop footer verb of the
+// running dashboard: the first arms the two-key stop confirm, the second confirms
+// it — the same compose the keyboard gets, since a click synthesizes a q keypress.
 func TestFooterVerbClickFiresKey(t *testing.T) {
 	app := runningApp(120, 30, []QueueRow{{ID: "COD-1", Phase: state.Quarantined, FailureReason: "boom"}})
 	app.styles = DefaultStyles()
 
+	// The q verb moves between the normal footer (far right) and the armed confirm
+	// (inline); clear any stale coords so each locate resolves the current frame.
+	zone.Clear(zoneFooterVerb + "q")
 	z := locateZone(t, app.View, zoneFooterVerb+"q")
-	next, _ := app.Update(clickAt(z))
-	if !next.(appModel).dash.stopping {
-		t.Error("clicking the q-stop footer verb must stop the loop, like pressing q")
+	armed, _ := app.Update(clickAt(z))
+	app = armed.(appModel)
+	if app.dash.stopping {
+		t.Error("one q-stop click must only arm the confirm, not stop the loop")
+	}
+	if !app.dash.stopArmed() {
+		t.Error("clicking the q-stop footer verb must arm the stop confirm")
+	}
+
+	// The armed footer re-marks q on its "q again to confirm" segment, at a new
+	// position; drop the stale coords so the second locate resolves it fresh.
+	zone.Clear(zoneFooterVerb + "q")
+	z = locateZone(t, app.View, zoneFooterVerb+"q")
+	confirmed, _ := app.Update(clickAt(z))
+	if !confirmed.(appModel).dash.stopping {
+		t.Error("a second q-stop click must confirm the stop, like pressing q twice")
 	}
 }
 

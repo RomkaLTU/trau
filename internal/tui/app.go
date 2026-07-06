@@ -741,7 +741,7 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // and the read-only verbs (o open, l logs); the mutating verbs are withheld live
 // (queueVerbs) since they would disturb the running ticket, so they act only from
 // the recap/Status. Everything else — watch, follow, page, exit stream — goes to
-// the dash. q/ctrl+c stop the loop.
+// the dash. q arms a two-key stop confirm; ctrl+c is the unguarded emergency stop.
 // afterLoopSetup starts the run the loop-setup step resolved to, once its Update
 // reports Done — the single dispatch both the keyboard and a click drive through.
 func (m appModel) afterLoopSetup(cmd tea.Cmd) (tea.Model, tea.Cmd) {
@@ -782,12 +782,25 @@ func (m appModel) afterPlan(cmd tea.Cmd) (tea.Model, tea.Cmd) {
 
 func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// ctrl+c is the emergency stop and always wins, even mid-filter, so it can't be
-	// swallowed by the filter input.
+	// swallowed by the filter input. It bypasses the two-key stop guard entirely.
 	if msg.String() == "ctrl+c" {
 		if m.loopCancel != nil {
 			m.loopCancel()
 		}
-		m.dash = m.dash.markStopping()
+		m.dash = m.dash.disarmStop().markStopping()
+		return m, nil
+	}
+	// A stop is armed (a prior q): the confirming second q cancels the run; esc or
+	// any other key disarms. The disarming key is swallowed — it can't also act —
+	// mirroring the reset guard.
+	if m.dash.stopArmed() {
+		m.dash = m.dash.disarmStop()
+		if msg.String() == "q" {
+			if m.loopCancel != nil {
+				m.loopCancel()
+			}
+			m.dash = m.dash.markStopping()
+		}
 		return m, nil
 	}
 	m.dash = m.dash.clearToast().dismissRecap()
@@ -807,10 +820,7 @@ func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	if msg.String() == "q" {
-		if m.loopCancel != nil {
-			m.loopCancel()
-		}
-		m.dash = m.dash.markStopping()
+		m.dash = m.dash.armStop()
 		return m, nil
 	}
 	// When the rail isn't drawn — watch mode is full-screen, or the terminal is
