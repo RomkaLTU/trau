@@ -85,6 +85,18 @@ export async function stopInstance(pid: number): Promise<StopResult> {
   return res.json()
 }
 
+export async function registerRepo(path: string): Promise<RepoView> {
+  const res = await apiFetch('/api/v1/repos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'register failed'))
+  }
+  return res.json()
+}
+
 export interface DryRunResult {
   repo: string
   repo_root: string

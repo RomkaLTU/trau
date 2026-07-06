@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { EventFeed } from '@/components/event-feed'
+import { RegisterRepoForm } from '@/components/register-repo-form'
 import { RunControls } from '@/components/run-controls'
 import { instancesQueryOptions, type Instance } from '@/lib/instances'
 
@@ -72,6 +73,17 @@ function Instances() {
             <InstanceCard key={instance.pid} instance={instance} now={now} />
           ))}
         </div>
+      )}
+
+      {data && (
+        <section className="flex flex-col gap-3">
+          <h2 className="text-sm font-medium text-muted-foreground">
+            Add a repo
+          </h2>
+          <div className="max-w-md">
+            <RegisterRepoForm />
+          </div>
+        </section>
       )}
 
       {allowedRepos.length > 0 && (
