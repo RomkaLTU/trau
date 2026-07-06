@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 )
 
@@ -62,29 +63,29 @@ func (j *Jira) Pick(ctx context.Context, scope Scope) (string, error) {
 		} else if !j.canFallback(err) {
 			return "", err
 		}
-	} else {
-		leaves, err := j.leafSubIssues(ctx, scope.Parent)
-		if err != nil {
-			return "", fmt.Errorf("pick %s: list children: %w", scope.Parent, err)
-		}
-		if len(leaves) == 0 {
-			return "", nil
-		}
-		if id, err := j.pickEpicAPI(ctx, scope, leaves); err == nil {
-			return id, nil
-		} else if !j.canFallback(err) {
-			return "", err
-		}
-		res, err := j.Runner.Run(ctx, j.epicPickPrompt(scope, leaves), "pick")
-		if id, matched := parsePick(res.Final, scope.prefix()); matched && leaves[id] {
-			return id, nil
-		}
-		if err != nil {
-			return "", err
-		}
-		return "", nil
+		return j.pickTeamMCP(ctx, scope)
 	}
 
+	leaves, err := j.leafSubIssues(ctx, scope.Parent)
+	if err != nil {
+		return "", fmt.Errorf("pick %s: list children: %w", scope.Parent, err)
+	}
+	if len(leaves) == 0 {
+		return "", nil
+	}
+	if id, err := j.pickEpicAPI(ctx, scope, leaves); err == nil {
+		return id, nil
+	} else if !j.canFallback(err) {
+		return "", err
+	}
+	return j.pickEpicMCP(ctx, scope, leaves)
+}
+
+// pickTeamMCP runs the whole-project pick through the Jira (Rovo) MCP agent. A
+// parsed pick (including a determined NONE) is returned as-is and a runner error
+// is surfaced; a runner success with no recoverable pick is an explicit error
+// rather than a silent empty queue.
+func (j *Jira) pickTeamMCP(ctx context.Context, scope Scope) (string, error) {
 	res, err := j.Runner.Run(ctx, j.pickPrompt(scope), "pick")
 	if id, matched := parsePick(res.Final, scope.prefix()); matched {
 		return id, nil
@@ -92,7 +93,35 @@ func (j *Jira) Pick(ctx context.Context, scope Scope) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return "", nil
+	logger.Debugf("pick: unparseable agent output for project %s: %q", j.pickProject(scope), res.Final)
+	return "", fmt.Errorf("could not parse pick from agent output")
+}
+
+// pickEpicMCP runs the epic-scoped pick through the Jira (Rovo) MCP agent when
+// the REST API is unavailable. It restricts the answer to the confirmed leaf set
+// (matched case-insensitively), treats an out-of-set answer as "nothing here",
+// surfaces a NONE-while-leaves-remain discrepancy under --verbose, and turns a
+// runner-success-but-unparseable answer into an explicit error.
+func (j *Jira) pickEpicMCP(ctx context.Context, scope Scope, leaves map[string]bool) (string, error) {
+	res, err := j.Runner.Run(ctx, j.epicPickPrompt(scope, leaves), "pick")
+	id, matched := parsePick(res.Final, scope.prefix())
+	if matched {
+		if id == "" {
+			if len(leaves) > 0 {
+				logger.Verbosef("pick: agent answered NONE for epic %s while %d leaf sub-issue(s) remain in the confirmed set", scope.Parent, len(leaves))
+			}
+			return "", nil
+		}
+		if canonical, ok := matchLeaf(leaves, id); ok {
+			return canonical, nil
+		}
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	logger.Debugf("pick: unparseable agent output for epic %s: %q", scope.Parent, res.Final)
+	return "", fmt.Errorf("could not parse pick from agent output")
 }
 
 // pickAPI selects the highest-ranked eligible ticket via /search/jql. The query
@@ -252,7 +281,7 @@ func (j *Jira) pickPrompt(scope Scope) string {
 		"(b) are NOT started — status is 'To Do', 'Backlog', or 'Open' (exclude In Progress, Done, Closed, Canceled); "+
 		"(c) have every linked blocker issue in a Done/Closed state. "+
 		"Among %s, pick the best one to start next by considering, in order: priority (Highest > High > Medium > Low > Lowest), due date (sooner is better), then the lowest issue key number as a tie-breaker. "+
-		"Respond with exactly one final line: 'PICK=<IDENTIFIER>' (e.g. PICK=%s-414) or 'PICK=NONE'. No other output.",
+		"Respond with the result as the sentinel 'PICK=<IDENTIFIER>' (e.g. PICK=%s-414) or 'PICK=NONE', or as a JSON object {\"pick\":\"<IDENTIFIER>\"} / {\"pick\":\"NONE\"}. No other output.",
 		project, j.ReadyLabel, scope.clause(), scope.prefix())
 }
 
@@ -267,7 +296,7 @@ func (j *Jira) epicPickPrompt(scope Scope, leaves map[string]bool) string {
 		"(b) is NOT started — status is 'To Do', 'Backlog', or 'Open' (exclude In Progress, Done, Closed, Canceled); "+
 		"(c) has every linked blocker issue in a Done/Closed state. "+
 		"Pick the best one to start next by considering, in order: priority (Highest > High > Medium > Low > Lowest), due date (sooner is better), then the lowest issue key number as a tie-breaker. "+
-		"Respond with exactly one final line: 'PICK=<IDENTIFIER>' (e.g. PICK=%s-414) or 'PICK=NONE'. No other output.",
+		"Respond with the result as the sentinel 'PICK=<IDENTIFIER>' (e.g. PICK=%s-414) or 'PICK=NONE', or as a JSON object {\"pick\":\"<IDENTIFIER>\"} / {\"pick\":\"NONE\"}. No other output.",
 		scope.Parent, strings.Join(ids, ", "), j.ReadyLabel, scope.prefix())
 }
 

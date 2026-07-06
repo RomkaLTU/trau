@@ -428,7 +428,7 @@ func (c *ClaudeInteractive) record(label string, res Result) {
 
 func resultInstruction(path string) string {
 	return "Do not rely on stdout as the machine-readable response. When this phase is complete, write your result to exactly this file path, creating parent directories if needed: " + path + "\n" +
-		"Write either the exact requested sentinel/text or a small JSON object requested by the task. After the file is written, stop working and leave the session idle; the loop will close the terminal."
+		"Write the result in the form the task requests — the requested sentinel/text, or a small JSON object when the task offers one (for a pick, either 'PICK=<ID>'/'PICK=NONE' or {\"pick\":\"<ID>\"}/{\"pick\":\"NONE\"} is accepted). After the file is written, stop working and leave the session idle; the loop will close the terminal."
 }
 
 // On-disk layout of agent transcripts, shared with `trau watch` (COD-628) so the
