@@ -19,6 +19,9 @@ func recordNotifier(calls *[]string) notify.Notifier {
 }
 
 func TestAmbientTitle(t *testing.T) {
+	setScreenRepo("salonradar")
+	defer setScreenRepo("")
+
 	running := initialModel(nil)
 	running.currentTicket = "COD-217"
 	running.steps = startPhase(phaseSteps(), "verify", time.Now())
@@ -47,12 +50,12 @@ func TestAmbientTitle(t *testing.T) {
 		m    model
 		want string
 	}{
-		{"idle", initialModel(nil), "trau"},
-		{"running phase", running, "trau ✻ COD-217 verify"},
-		{"paused mid-run", pausedRun, "trau ⚠ paused"},
-		{"summary merged", summaryMerged, "trau ✓ 2 merged"},
-		{"summary paused", summaryPaused, "trau ⚠ paused"},
-		{"summary fault", summaryFault, "trau ⚠ needs attention"},
+		{"idle", initialModel(nil), "⬡ salonradar"},
+		{"running phase", running, "⬡ salonradar ✻ COD-217 verify"},
+		{"paused mid-run", pausedRun, "⬡ salonradar ⚠ paused"},
+		{"summary merged", summaryMerged, "⬡ salonradar ✓ 2 merged"},
+		{"summary paused", summaryPaused, "⬡ salonradar ⚠ paused"},
+		{"summary fault", summaryFault, "⬡ salonradar ⚠ needs attention"},
 	}
 	for _, c := range cases {
 		if got := c.m.ambientTitle(); got != c.want {
@@ -62,12 +65,15 @@ func TestAmbientTitle(t *testing.T) {
 }
 
 func TestViewSetsTitleAndFocus(t *testing.T) {
+	setScreenRepo("salonradar")
+	defer setScreenRepo("")
+
 	m := freshDash(120, 40, "main")
 	m.currentTicket = "COD-5"
 	m.steps = startPhase(phaseSteps(), "build", time.Now())
 	v := m.View()
-	if v.WindowTitle != "trau ✻ COD-5 build" {
-		t.Errorf("WindowTitle = %q, want %q", v.WindowTitle, "trau ✻ COD-5 build")
+	if v.WindowTitle != "⬡ salonradar ✻ COD-5 build" {
+		t.Errorf("WindowTitle = %q, want %q", v.WindowTitle, "⬡ salonradar ✻ COD-5 build")
 	}
 	if !v.ReportFocus {
 		t.Error("ReportFocus should be enabled so focus/blur reach Update")

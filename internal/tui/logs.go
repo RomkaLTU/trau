@@ -240,7 +240,7 @@ func (m logsModel) View() string {
 	rightPanel := titledPanel(m.styles, m.logTitle(), m.viewport.View(), rightW, bodyH)
 	body := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, " ", rightPanel)
 
-	header := m.styles.Header.Render("⬡ trau") + "  " + m.styles.SummaryTitle.Render("logs")
+	header := m.styles.Header.Render(brandMark()) + "  " + m.styles.SummaryTitle.Render("logs")
 	sep := m.styles.Separator.Render(strings.Repeat("─", m.width))
 	hint := m.styles.Help.Render(m.help().footer())
 	if m.copied != "" {

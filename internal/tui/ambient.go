@@ -25,25 +25,26 @@ const livePhasePrefix = "@"
 // backgrounded trau tab communicates at a glance. It reuses the glyph vocabulary
 // the HUD and summary already speak: ✻ working, ⚠ needs attention, ✓ done.
 func (m model) ambientTitle() string {
+	mark := brandMark()
 	switch {
 	case m.state == stateSummary:
 		switch {
 		case m.summary.Paused:
-			return "trau ⚠ paused"
+			return mark + " ⚠ paused"
 		case m.summary.Fault:
-			return "trau ⚠ needs attention"
+			return mark + " ⚠ needs attention"
 		default:
-			return fmt.Sprintf("trau ✓ %d merged", m.mergedCount())
+			return fmt.Sprintf("%s ✓ %d merged", mark, m.mergedCount())
 		}
 	case m.paused:
-		return "trau ⚠ paused"
+		return mark + " ⚠ paused"
 	case m.currentTicket != "":
 		if i := activeIndex(m.steps); i >= 0 {
-			return fmt.Sprintf("trau ✻ %s %s", m.currentTicket, m.steps[i].key)
+			return fmt.Sprintf("%s ✻ %s %s", mark, m.currentTicket, m.steps[i].key)
 		}
-		return "trau ✻ " + m.currentTicket
+		return mark + " ✻ " + m.currentTicket
 	default:
-		return "trau"
+		return mark
 	}
 }
 

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -146,7 +147,12 @@ type ProviderChoice struct {
 
 // MenuInfo is the at-a-glance context shown on the landing screen.
 type MenuInfo struct {
-	Version       string
+	Version string
+	// Repo is the basename of the resolved repo root — the location label every
+	// trau surface marks itself with. RepoPath is the full resolved root, shown
+	// (~-abbreviated) only in the menu context block.
+	Repo          string
+	RepoPath      string
 	Provider      string
 	Model         string
 	Base          string
@@ -345,6 +351,7 @@ func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
 	}
 
 	info := actions.MenuInfo()
+	setScreenRepo(info.Repo)
 
 	ti := textinput.New()
 	ti.Placeholder = exampleID(info.Prefix)
@@ -1150,9 +1157,9 @@ func (m appModel) View() tea.View {
 	v.AltScreen = true
 	// The tab reflects run state only while the dashboard is up; on the menu and
 	// other screens the run isn't live (you can't leave a running dashboard without
-	// stopping it), so the title rests at plain "trau" rather than freezing on the
+	// stopping it), so the title rests at the repo mark rather than freezing on the
 	// last run's summary.
-	v.WindowTitle = "trau"
+	v.WindowTitle = brandMark()
 	if m.view == viewRunning {
 		v.WindowTitle = m.dash.ambientTitle()
 	}
@@ -1285,10 +1292,14 @@ func (m appModel) menuRows(items []menuItem, cursor int, zonePrefix string) []st
 	return rows
 }
 
-// contextLines is the at-a-glance MenuInfo, split across two rows so every
-// field stays visible inside menuCardW even with a long model name. Row 1 is
-// provider · model; row 2 is base · auto-merge · in-flight · done.
+// contextLines is the at-a-glance MenuInfo. The ~-abbreviated repo path leads
+// (menu only), then two rows so every field stays visible inside menuCardW even
+// with a long model name: provider · model, then base · auto-merge · in-flight · done.
 func (m appModel) contextLines() []string {
+	var lines []string
+	if p := abbreviateHome(m.info.RepoPath); p != "" {
+		lines = append(lines, p)
+	}
 	top := []string{firstNonEmpty(m.info.Provider, "?")}
 	if m.info.Model != "" {
 		top = append(top, m.info.Model)
@@ -1308,10 +1319,26 @@ func (m appModel) contextLines() []string {
 		fmt.Sprintf("%d done", m.info.Done),
 	)
 
-	return []string{
+	return append(lines,
 		strings.Join(top, " · "),
 		strings.Join(bottom, " · "),
+	)
+}
+
+// abbreviateHome rewrites a leading home directory as ~ for the menu path row.
+func abbreviateHome(path string) string {
+	if path == "" {
+		return ""
 	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if path == home {
+			return "~"
+		}
+		if strings.HasPrefix(path, home+string(os.PathSeparator)) {
+			return "~" + path[len(home):]
+		}
+	}
+	return path
 }
 
 func (m appModel) renderCard(title, body, hint string) string {

@@ -808,7 +808,16 @@ func newRenderer(stdout, stderr io.Writer, cfg config.Config, opts config.Option
 	if !console.IsTerminal(stdout) {
 		return console.New(stdout, stderr)
 	}
-	return tui.New(stdout, stderr, onInterrupt, cfg.Notify)
+	return tui.New(stdout, stderr, onInterrupt, cfg.Notify, repoName(cfg.RepoRoot))
+}
+
+// repoName is the repo folder name the TUI marks itself with — the basename of the
+// resolved repo root, or "" when no repo was resolved.
+func repoName(root string) string {
+	if root == "" {
+		return ""
+	}
+	return filepath.Base(root)
 }
 
 func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *tokens.Sink, log *event.Log, con console.Renderer) (*pipeline.Pipeline, error) {
@@ -1782,6 +1791,8 @@ func (a *appActions) MenuInfo() tui.MenuInfo {
 	}
 	return tui.MenuInfo{
 		Version:       version,
+		Repo:          repoName(a.cfg.RepoRoot),
+		RepoPath:      a.cfg.RepoRoot,
 		Provider:      a.cfg.Provider,
 		Model:         modelEffortTag(model, effort),
 		Base:          a.cfg.BaseBranch,

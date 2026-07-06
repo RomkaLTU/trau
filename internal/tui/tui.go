@@ -25,7 +25,8 @@ type TUI struct {
 // onInterrupt is invoked the first time the user asks to quit during a run, so
 // the loop can stop gracefully and the program can show its summary instead of
 // being killed mid-flight; pass nil to disable graceful stop.
-func New(stdout, _ io.Writer, onInterrupt func(), notifyOn bool) *TUI {
+func New(stdout, _ io.Writer, onInterrupt func(), notifyOn bool, repo string) *TUI {
+	setScreenRepo(repo)
 	m := initialModel(onInterrupt)
 	if notifyOn {
 		m.notifier = notify.OS()
