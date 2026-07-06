@@ -3,10 +3,67 @@ package tracker
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 )
+
+// richPickPayload and minimalPickPayload are the two real pick result-file
+// payloads captured from the M4C-54 incident (see the COD ticket): a rich JSON
+// object with a reason and a nested candidates map, and the minimal one-field
+// form. The rich payload used to defeat parsePickJSON (it unmarshalled into
+// map[string]*string, which the nested candidates object breaks), silently
+// yielding "0 tickets" even though the agent picked correctly.
+const richPickPayload = `{
+  "pick": "M4C-105",
+  "reason": "Qualifying issues (ready-for-agent + not-started + all blockers Done): M4C-105, M4C-106, M4C-108 — all Medium priority, no due date. M4C-107 excluded (no 'ready-for-agent' label). Tie broken by lowest issue number.",
+  "candidates": {
+    "M4C-105": {"label_ready_for_agent": true, "stateType": "unstarted", "blockedBy": [], "priority": "Medium", "dueDate": null, "qualifies": true},
+    "M4C-106": {"label_ready_for_agent": true, "stateType": "unstarted", "blockedBy": [], "priority": "Medium", "dueDate": null, "qualifies": true},
+    "M4C-107": {"label_ready_for_agent": false, "stateType": "backlog", "blockedBy": [], "priority": "Low", "dueDate": null, "qualifies": false},
+    "M4C-108": {"label_ready_for_agent": true, "stateType": "backlog", "blockedBy": [], "priority": "Medium", "dueDate": null, "qualifies": true}
+  }
+}`
+
+const minimalPickPayload = `{"pick": "M4C-105"}`
+
+func TestParsePick(t *testing.T) {
+	tests := []struct {
+		name    string
+		text    string
+		prefix  string
+		want    string
+		matched bool
+	}{
+		{"rich JSON payload", richPickPayload, "M4C", "M4C-105", true},
+		{"minimal JSON payload", minimalPickPayload, "M4C", "M4C-105", true},
+		{"issue key variant", `{"issue": "M4C-42"}`, "M4C", "M4C-42", true},
+		{"JSON none", `{"pick": "NONE"}`, "M4C", "", true},
+		{"JSON empty string is nothing eligible", `{"pick": ""}`, "M4C", "", true},
+		{"JSON null is nothing eligible", `{"pick": null}`, "M4C", "", true},
+		{"JSON lowercase id accepted", `{"pick": "m4c-105"}`, "M4C", "m4c-105", true},
+		{"JSON with surrounding noise still parses via sentinel", "here you go\nPICK=M4C-9", "M4C", "M4C-9", true},
+		{"sentinel plain", "PICK=COD-414", "COD", "COD-414", true},
+		{"sentinel none", "PICK=NONE", "COD", "", true},
+		{"sentinel with line prefix", "The winner is PICK=COD-7 today", "COD", "COD-7", true},
+		{"sentinel last wins", "PICK=COD-1\nPICK=COD-2", "COD", "COD-2", true},
+		{"no sentinel, no json", "I could not decide which ticket to pick", "COD", "", false},
+		{"json without pick or issue key", `{"selection": "COD-1"}`, "COD", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, matched := parsePick(tc.text, tc.prefix)
+			if got != tc.want || matched != tc.matched {
+				t.Errorf("parsePick(%q, %q) = (%q, %v), want (%q, %v)", tc.text, tc.prefix, got, matched, tc.want, tc.matched)
+			}
+		})
+	}
+}
 
 func TestParseIssueStatus(t *testing.T) {
 	tests := []struct {
@@ -341,5 +398,292 @@ func TestPickParentScopeExcludesDoneLeaves(t *testing.T) {
 				t.Fatalf("Pick = %q, want %q", id, tt.want)
 			}
 		})
+	}
+}
+
+// TestPickEpicMCPMatchesLeafCaseInsensitively covers the MCP fallback guard: an
+// agent that answers with a lowercase identifier (or the rich JSON payload from
+// the M4C-54 incident) must still resolve to the canonical leaf, not be dropped.
+func TestPickEpicMCPMatchesLeafCaseInsensitively(t *testing.T) {
+	tests := []struct {
+		name string
+		pick string
+		want string
+	}{
+		{"lowercase JSON id", `{"pick":"m4c-105"}`, "M4C-105"},
+		{"rich JSON payload", richPickPayload, "M4C-105"},
+		{"minimal JSON payload", minimalPickPayload, "M4C-105"},
+		{"uppercase sentinel", "PICK=M4C-105", "M4C-105"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &recordingRunner{responses: map[string]agent.Result{
+				"sub_issues": {Final: `SUB_ISSUES=[{"id":"M4C-105","title":"leaf","hasChildren":false,"done":false}]`},
+				"pick":       {Final: tt.pick},
+			}}
+			l := &Linear{Runner: runner, ReadyLabel: "ready-for-agent", Team: "M4C"}
+
+			id, err := l.Pick(context.Background(), Scope{Parent: "M4C-54", Team: "M4C", Prefix: "M4C"})
+			if err != nil {
+				t.Fatalf("Pick returned error: %v", err)
+			}
+			if id != tt.want {
+				t.Fatalf("Pick = %q, want %q (canonical leaf)", id, tt.want)
+			}
+		})
+	}
+}
+
+// TestPickEpicMCPUnparseableSurfacesError is the core of the incident fix: when
+// the runner succeeds but its output carries no recoverable pick, Pick must
+// surface an explicit error rather than "" — a silent 0-ticket session is
+// indistinguishable from a genuinely empty queue and hides ready work.
+func TestPickEpicMCPUnparseableSurfacesError(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{
+		"sub_issues": {Final: `SUB_ISSUES=[{"id":"M4C-105","title":"leaf","hasChildren":false,"done":false}]`},
+		"pick":       {Final: "I looked but could not decide on a ticket."},
+	}}
+	l := &Linear{Runner: runner, ReadyLabel: "ready-for-agent", Team: "M4C"}
+
+	id, err := l.Pick(context.Background(), Scope{Parent: "M4C-54", Team: "M4C", Prefix: "M4C"})
+	if err == nil {
+		t.Fatalf("expected an explicit parse error, got id=%q err=nil", id)
+	}
+	if id != "" {
+		t.Fatalf("id = %q, want empty on parse failure", id)
+	}
+	if !strings.Contains(err.Error(), "could not parse pick") {
+		t.Fatalf("err = %v, want it to mention 'could not parse pick'", err)
+	}
+}
+
+// TestPickEpicMCPNoneWhileLeavesRemain: an agent NONE answer while the confirmed
+// leaf set is non-empty is a legitimate "everything left is blocked" result, so
+// Pick returns "" with no error (the discrepancy is only logged to stderr).
+func TestPickEpicMCPNoneWhileLeavesRemain(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{
+		"sub_issues": {Final: `SUB_ISSUES=[{"id":"M4C-105","title":"leaf","hasChildren":false,"done":false}]`},
+		"pick":       {Final: `{"pick":"NONE"}`},
+	}}
+	l := &Linear{Runner: runner, ReadyLabel: "ready-for-agent", Team: "M4C"}
+
+	id, err := l.Pick(context.Background(), Scope{Parent: "M4C-54", Team: "M4C", Prefix: "M4C"})
+	if err != nil {
+		t.Fatalf("Pick returned error: %v", err)
+	}
+	if id != "" {
+		t.Fatalf("id = %q, want empty on NONE", id)
+	}
+}
+
+// TestPickTeamMCPUnparseableSurfacesError is the team-queue analogue: an
+// unparseable MCP pick surfaces an explicit error, never a silent empty queue.
+func TestPickTeamMCPUnparseableSurfacesError(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{
+		"pick": {Final: "no clear sentinel here"},
+	}}
+	l := &Linear{Runner: runner, ReadyLabel: "ready-for-agent", Team: "COD"}
+
+	id, err := l.Pick(context.Background(), Scope{Team: "COD", Prefix: "COD"})
+	if err == nil || id != "" {
+		t.Fatalf("Pick = (%q, %v), want (\"\", non-nil error)", id, err)
+	}
+	if !strings.Contains(err.Error(), "could not parse pick") {
+		t.Fatalf("err = %v, want 'could not parse pick'", err)
+	}
+}
+
+// linCand builds one PickIssues node for the fake Linear server. blockerStates
+// lists the workflow-state type of each "blocked by" issue (empty = unblocked);
+// childCount>0 marks the node a non-leaf epic container.
+func linCand(id string, priority int, blockerStates []string, childCount int) string {
+	blockers := make([]string, 0, len(blockerStates))
+	for i, st := range blockerStates {
+		blockers = append(blockers, fmt.Sprintf(`{"type":"blocks","issue":{"id":"blk-%d","identifier":"BLK-%d","state":{"type":%q}}}`, i, i, st))
+	}
+	kids := make([]string, 0, childCount)
+	for i := 0; i < childCount; i++ {
+		kids = append(kids, fmt.Sprintf(`{"id":"kid-%d"}`, i))
+	}
+	return fmt.Sprintf(`{"id":"iss-%s","identifier":%q,"priority":%d,"state":{"type":"unstarted"},"project":{"name":""},"labels":{"nodes":[{"id":"l","name":"ready-for-agent"}]},"children":{"nodes":[%s]},"inverseRelations":{"nodes":[%s]}}`,
+		id, id, priority, strings.Join(kids, ","), strings.Join(blockers, ","))
+}
+
+// linChild builds one Issue-query child node for a parent's leaf enumeration.
+func linChild(id string) string {
+	return fmt.Sprintf(`{"id":"c-%s","identifier":%q,"state":{"type":"unstarted"},"children":{"nodes":[]}}`, id, id)
+}
+
+// fakeLinearPick returns a Linear wired to a fake GraphQL endpoint that answers
+// the Teams, Issue (parent children) and PickIssues queries from the given node
+// fragments, so the deterministic API pick path can be exercised without network.
+func fakeLinearPick(t *testing.T, childrenNodes, pickNodes string) *Linear {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		q := string(body)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(q, "query Teams"):
+			_, _ = io.WriteString(w, `{"data":{"teams":{"nodes":[{"id":"team-1","key":"COD","name":"Codesome"}]}}}`)
+		case strings.Contains(q, "query Issue"):
+			_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"id":"epic-1","identifier":"COD-530","team":{"id":"team-1","key":"COD"},"children":{"nodes":[`+childrenNodes+`]}}]}}}`)
+		case strings.Contains(q, "query PickIssues"):
+			_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[`+pickNodes+`]}}}`)
+		default:
+			t.Errorf("unexpected GraphQL query: %s", q)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &Linear{ReadyLabel: "ready-for-agent", Team: "COD", APIKey: "lin_key", endpoint: srv.URL}
+}
+
+// TestPickEpicAPIEnforcesBlockerOrder verifies the deterministic epic pick makes
+// the blocker gate and run order code-enforced: a leaf blocked by an open sibling
+// is invisible, ties fall to the lowest number only among unblocked peers, a
+// canceled blocker no longer blocks, and the pick follows the dependency chain as
+// blockers finish. No pick agent is ever consulted.
+func TestPickEpicAPIEnforcesBlockerOrder(t *testing.T) {
+	// Both COD-701 and COD-702 are confirmed leaves of the epic.
+	children := linChild("COD-701") + "," + linChild("COD-702")
+
+	tests := []struct {
+		name  string
+		picks string
+		want  string
+	}{
+		{
+			name:  "blocked lower number is skipped for the free peer",
+			picks: linCand("COD-701", 3, []string{"unstarted"}, 0) + "," + linCand("COD-702", 3, nil, 0),
+			want:  "COD-702",
+		},
+		{
+			name:  "once the blocker completes the chain advances to COD-701",
+			picks: linCand("COD-701", 3, []string{"completed"}, 0) + "," + linCand("COD-702", 3, nil, 0),
+			want:  "COD-701",
+		},
+		{
+			name:  "a canceled blocker no longer blocks",
+			picks: linCand("COD-701", 3, []string{"canceled"}, 0) + "," + linCand("COD-702", 3, []string{"unstarted"}, 0),
+			want:  "COD-701",
+		},
+		{
+			name:  "priority outranks number, number only tie-breaks unblocked peers",
+			picks: linCand("COD-701", 3, nil, 0) + "," + linCand("COD-702", 2, nil, 0),
+			want:  "COD-702", // higher priority (2=high) beats the lower-numbered medium
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			l := fakeLinearPick(t, children, tt.picks)
+			id, err := l.Pick(context.Background(), Scope{Parent: "COD-530", Team: "COD", Prefix: "COD"})
+			if err != nil {
+				t.Fatalf("Pick error: %v", err)
+			}
+			if id != tt.want {
+				t.Fatalf("Pick = %q, want %q", id, tt.want)
+			}
+		})
+	}
+}
+
+// TestPickEpicAPINeverPicksNonLeafOrOutOfSet: a ready candidate that is not in the
+// epic's confirmed leaf set — an unrelated leaf or a nested epic — is never
+// returned even when it sorts first, because the deterministic path intersects
+// candidates with the leaf set.
+func TestPickEpicAPINeverPicksNonLeafOrOutOfSet(t *testing.T) {
+	children := linChild("COD-701") // only COD-701 is a leaf of this epic
+	// COD-700 sorts first (urgent) but is a nested epic and not in the leaf set;
+	// COD-900 is an unrelated ready leaf, also not in this epic.
+	picks := linCand("COD-700", 1, nil, 2) + "," + linCand("COD-900", 1, nil, 0) + "," + linCand("COD-701", 3, nil, 0)
+
+	l := fakeLinearPick(t, children, picks)
+	id, err := l.Pick(context.Background(), Scope{Parent: "COD-530", Team: "COD", Prefix: "COD"})
+	if err != nil {
+		t.Fatalf("Pick error: %v", err)
+	}
+	if id != "COD-701" {
+		t.Fatalf("Pick = %q, want COD-701 (out-of-set and nested-epic candidates skipped)", id)
+	}
+}
+
+// TestPickTeamAPISkipsEpicAndBlocked exercises the team-queue deterministic path:
+// an epic container and a blocked ticket are skipped in run order, and the first
+// eligible leaf is returned — without consulting the pick agent.
+func TestPickTeamAPISkipsEpicAndBlocked(t *testing.T) {
+	// COD-700 urgent epic (skip), COD-701 high but blocked (skip), COD-702 medium leaf (pick).
+	picks := linCand("COD-700", 1, nil, 2) + "," + linCand("COD-701", 2, []string{"started"}, 0) + "," + linCand("COD-702", 3, nil, 0)
+	l := fakeLinearPick(t, "", picks)
+
+	id, err := l.Pick(context.Background(), Scope{Team: "COD", Prefix: "COD"})
+	if err != nil {
+		t.Fatalf("Pick error: %v", err)
+	}
+	if id != "COD-702" {
+		t.Fatalf("Pick = %q, want COD-702 (epic + blocked skipped)", id)
+	}
+}
+
+func TestAllBlockersCompleted(t *testing.T) {
+	ref := func(stateType string) linearapi.IssueRef {
+		return linearapi.IssueRef{State: linearapi.State{Type: stateType}}
+	}
+	tests := []struct {
+		name string
+		refs []linearapi.IssueRef
+		want bool
+	}{
+		{"no blockers", nil, true},
+		{"single completed", []linearapi.IssueRef{ref("completed")}, true},
+		{"single canceled unblocks", []linearapi.IssueRef{ref("canceled")}, true},
+		{"completed and canceled", []linearapi.IssueRef{ref("completed"), ref("canceled")}, true},
+		{"one still unstarted blocks", []linearapi.IssueRef{ref("completed"), ref("unstarted")}, false},
+		{"started blocks", []linearapi.IssueRef{ref("started")}, false},
+		{"backlog blocks", []linearapi.IssueRef{ref("backlog")}, false},
+	}
+	for _, tc := range tests {
+		if got := allBlockersCompleted(tc.refs); got != tc.want {
+			t.Errorf("%s: allBlockersCompleted = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestSelectEligibleLeaf(t *testing.T) {
+	cand := func(id string, children int, blocked bool, project string) linearapi.PickCandidate {
+		c := linearapi.PickCandidate{Issue: linearapi.Issue{
+			Identifier: id,
+			State:      linearapi.State{Type: "unstarted"},
+			Project:    linearapi.Project{Name: project},
+		}}
+		for i := 0; i < children; i++ {
+			c.Children = append(c.Children, linearapi.IssueRef{ID: fmt.Sprintf("k%d", i)})
+		}
+		if blocked {
+			c.BlockedBy = []linearapi.IssueRef{{State: linearapi.State{Type: "unstarted"}}}
+		}
+		return c
+	}
+
+	leaves := map[string]bool{"COD-2": true, "COD-3": true}
+	candidates := []linearapi.PickCandidate{
+		cand("COD-1", 2, false, ""), // epic, and not in leaf set
+		cand("COD-2", 0, true, ""),  // leaf but blocked
+		cand("COD-3", 0, false, ""), // eligible leaf
+	}
+
+	// Epic scope: only COD-3 survives the intersection + gate.
+	if got := selectEligibleLeaf(candidates, "COD", "", leaves); got != "COD-3" {
+		t.Errorf("epic selectEligibleLeaf = %q, want COD-3", got)
+	}
+	// Team scope (nil leaves): COD-1 skipped as an epic, COD-2 skipped as blocked,
+	// COD-3 chosen.
+	if got := selectEligibleLeaf(candidates, "COD", "", nil); got != "COD-3" {
+		t.Errorf("team selectEligibleLeaf = %q, want COD-3", got)
+	}
+	// A scoped project filters out a candidate in a different project.
+	scoped := []linearapi.PickCandidate{cand("COD-3", 0, false, "other")}
+	if got := selectEligibleLeaf(scoped, "COD", "trau", nil); got != "" {
+		t.Errorf("project-scoped selectEligibleLeaf = %q, want empty (wrong project)", got)
 	}
 }

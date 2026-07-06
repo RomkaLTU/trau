@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 )
 
@@ -24,10 +25,17 @@ type Linear struct {
 	Team            string
 	Project         string
 	APIKey          string
+	// endpoint overrides the Linear GraphQL endpoint; empty targets the public
+	// API. It exists so tests can point the direct-API path at a fake server.
+	endpoint string
 }
 
 func (l *Linear) api() *linearapi.Client {
-	return linearapi.New(l.APIKey)
+	c := linearapi.New(l.APIKey)
+	if l.endpoint != "" {
+		c.Endpoint = l.endpoint
+	}
+	return c
 }
 
 // shouldFallback reports whether a direct-API error should cause the caller to
@@ -46,40 +54,47 @@ func shouldFallback(err error) bool {
 }
 
 // Pick returns the next eligible ticket identifier, or "" when nothing is
-// eligible (the agent answered PICK=NONE). It surfaces a runner error only when
-// the agent produced no sentinel at all, so a genuine failure is visible rather
-// than silently reported as "nothing eligible".
+// eligible. It never reports a successful-but-unparseable agent answer as an
+// empty queue: when the MCP runner succeeds yet no PICK sentinel or JSON pick can
+// be recovered, it returns an explicit error so "0 tickets while ready work
+// exists" is visible rather than indistinguishable from a genuinely empty queue.
+//
+// When the Linear API key is configured both the team-queue and epic-scoped picks
+// resolve entirely over GraphQL, so the blocker gate (allBlockersCompleted) and
+// run ordering are code-enforced. The MCP agent path is used only when the direct
+// API is unavailable or errors.
 func (l *Linear) Pick(ctx context.Context, scope Scope) (string, error) {
-	// Sub-issue selection (epic scope) is not mapped to the GraphQL API, so it always
-	// goes through the MCP. Only the team-queue pick uses the fast API path.
 	if scope.Parent == "" {
 		if id, err := l.pickAPI(ctx, scope); err == nil {
 			return id, nil
 		} else if !shouldFallback(err) {
 			return "", err
 		}
-	} else {
-		// Epic scope: harden the pick so a nested epic (a sub-issue that itself has
-		// children) is never selected as a leaf. We first enumerate the parent's
-		// children and restrict the agent to confirmed leaves, then verify the
-		// returned id is actually in that set.
-		leaves, err := l.leafSubIssues(ctx, scope.Parent)
-		if err != nil {
-			return "", fmt.Errorf("pick %s: list children: %w", scope.Parent, err)
-		}
-		if len(leaves) == 0 {
-			return "", nil
-		}
-		res, err := l.Runner.Run(ctx, l.epicPickPrompt(scope, leaves), "pick")
-		if id, matched := parsePick(res.Final, scope.prefix()); matched && leaves[id] {
-			return id, nil
-		}
-		if err != nil {
-			return "", err
-		}
-		return "", nil
+		return l.pickTeamMCP(ctx, scope)
 	}
 
+	// Epic scope: restrict the pick to the parent's confirmed leaf sub-issues so a
+	// nested epic (a sub-issue that itself has children) is never selected as a leaf.
+	leaves, err := l.leafSubIssues(ctx, scope.Parent)
+	if err != nil {
+		return "", fmt.Errorf("pick %s: list children: %w", scope.Parent, err)
+	}
+	if len(leaves) == 0 {
+		return "", nil
+	}
+	if id, err := l.pickEpicAPI(ctx, scope, leaves); err == nil {
+		return id, nil
+	} else if !shouldFallback(err) {
+		return "", err
+	}
+	return l.pickEpicMCP(ctx, scope, leaves)
+}
+
+// pickTeamMCP runs the whole-team pick through the Linear MCP agent. A parsed
+// pick (including a determined NONE) is returned as-is and a runner error is
+// surfaced; a runner success with no recoverable pick is an explicit error rather
+// than a silent empty queue.
+func (l *Linear) pickTeamMCP(ctx context.Context, scope Scope) (string, error) {
 	res, err := l.Runner.Run(ctx, l.pickPrompt(scope), "pick")
 	if id, matched := parsePick(res.Final, scope.prefix()); matched {
 		return id, nil
@@ -87,7 +102,37 @@ func (l *Linear) Pick(ctx context.Context, scope Scope) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return "", nil
+	logger.Debugf("pick: unparseable agent output for team %s: %q", scope.Team, res.Final)
+	return "", fmt.Errorf("could not parse pick from agent output")
+}
+
+// pickEpicMCP runs the epic-scoped pick through the Linear MCP agent when the
+// direct API is unavailable. It restricts the answer to the confirmed leaf set
+// (matched case-insensitively), treats an out-of-set answer as "nothing here",
+// surfaces a NONE-while-leaves-remain discrepancy under --verbose, and turns a
+// runner-success-but-unparseable answer into an explicit error.
+func (l *Linear) pickEpicMCP(ctx context.Context, scope Scope, leaves map[string]bool) (string, error) {
+	res, err := l.Runner.Run(ctx, l.epicPickPrompt(scope, leaves), "pick")
+	id, matched := parsePick(res.Final, scope.prefix())
+	if matched {
+		if id == "" {
+			if len(leaves) > 0 {
+				logger.Verbosef("pick: agent answered NONE for epic %s while %d leaf sub-issue(s) remain in the confirmed set", scope.Parent, len(leaves))
+			}
+			return "", nil
+		}
+		if canonical, ok := matchLeaf(leaves, id); ok {
+			return canonical, nil
+		}
+		// A pick outside the confirmed leaf set (nested epic, finished, or
+		// hallucinated) is rejected rather than run.
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	logger.Debugf("pick: unparseable agent output for epic %s: %q", scope.Parent, res.Final)
+	return "", fmt.Errorf("could not parse pick from agent output")
 }
 
 // leafSubIssues returns the set of direct children of parent that are themselves
@@ -108,38 +153,92 @@ func (l *Linear) leafSubIssues(ctx context.Context, parent string) (map[string]b
 }
 
 func (l *Linear) pickAPI(ctx context.Context, scope Scope) (string, error) {
+	candidates, err := l.readyCandidates(ctx)
+	if err != nil {
+		return "", err
+	}
+	return selectEligibleLeaf(candidates, scope.prefix(), scope.Project, nil), nil
+}
+
+// pickEpicAPI selects the highest-ranked eligible leaf sub-issue of an epic over
+// GraphQL. It runs the same team-wide ready query as the team pick — already
+// ordered by priority, due date, then number — and returns the first candidate
+// that is both in the epic's confirmed leaf set and passes the shared
+// eligibility predicate. This makes the blocker gate code-enforced for epic runs
+// instead of trusting the agent to honour a prompt clause.
+func (l *Linear) pickEpicAPI(ctx context.Context, scope Scope, leaves map[string]bool) (string, error) {
+	candidates, err := l.readyCandidates(ctx)
+	if err != nil {
+		return "", err
+	}
+	return selectEligibleLeaf(candidates, scope.prefix(), scope.Project, leaves), nil
+}
+
+// readyCandidates fetches the team's ready-labelled issues, ordered by the loop's
+// run rules. It requires a configured team; without one the direct API is not
+// enabled and the caller falls back to the MCP.
+func (l *Linear) readyCandidates(ctx context.Context) ([]linearapi.PickCandidate, error) {
 	if strings.TrimSpace(l.Team) == "" {
-		return "", linearapi.ErrNotEnabled
+		return nil, linearapi.ErrNotEnabled
 	}
 	team, err := l.api().TeamByKey(ctx, l.Team)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	candidates, err := l.api().Pick(ctx, team.ID, l.ReadyLabel)
-	if err != nil {
-		return "", err
-	}
-	prefix := scope.prefix()
+	return l.api().Pick(ctx, team.ID, l.ReadyLabel)
+}
+
+// selectEligibleLeaf returns the identifier of the first run-ordered candidate
+// that passes the shared eligibility predicate. When leaves is non-nil the
+// candidate must also be in that confirmed leaf set (epic scope); nil leaves
+// means no epic restriction (team scope). Candidates are assumed pre-sorted by
+// the loop's run order, so the first match is the highest-priority, soonest-due,
+// lowest-numbered unblocked leaf.
+func selectEligibleLeaf(candidates []linearapi.PickCandidate, prefix, scopeProject string, leaves map[string]bool) string {
 	for _, c := range candidates {
-		if !c.State.IsUnstarted() {
+		if leaves != nil && !leaves[c.Identifier] {
 			continue
 		}
-		if len(c.Children) > 0 {
-			// Epics are containers, not buildable leaves — never pick one directly.
-			continue
+		if eligibleLeaf(c, prefix, scopeProject) {
+			return c.Identifier
 		}
-		if !allBlockersCompleted(c.BlockedBy) {
-			continue
-		}
-		if !strings.HasPrefix(c.Identifier, prefix+"-") {
-			continue
-		}
-		if !inProject(c.Project.Name, scope.Project) {
-			continue
-		}
-		return c.Identifier, nil
 	}
-	return "", nil
+	return ""
+}
+
+// eligibleLeaf is the single eligibility predicate shared by the team-queue and
+// epic-scoped API picks so the two can never drift: the candidate must be
+// unstarted, a buildable leaf (not an epic container), have every blocker
+// finished, carry the scope's identifier prefix, and belong to the owned project.
+func eligibleLeaf(c linearapi.PickCandidate, prefix, scopeProject string) bool {
+	if !c.State.IsUnstarted() {
+		return false
+	}
+	if len(c.Children) > 0 {
+		return false
+	}
+	if !allBlockersCompleted(c.BlockedBy) {
+		return false
+	}
+	if !strings.HasPrefix(c.Identifier, prefix+"-") {
+		return false
+	}
+	return inProject(c.Project.Name, scopeProject)
+}
+
+// matchLeaf reports whether id names one of the confirmed leaves, matching
+// case-insensitively, and returns the canonical identifier from the leaf set so
+// downstream work always uses the tracker's own casing.
+func matchLeaf(leaves map[string]bool, id string) (string, bool) {
+	if leaves[id] {
+		return id, true
+	}
+	for leaf := range leaves {
+		if strings.EqualFold(leaf, id) {
+			return leaf, true
+		}
+	}
+	return "", false
 }
 
 // inProject reports whether a candidate's project matches the scope's owned
@@ -153,9 +252,14 @@ func inProject(candidate, scopeProject string) bool {
 	return strings.EqualFold(strings.TrimSpace(candidate), want)
 }
 
+// allBlockersCompleted reports whether every "blocked by" issue has reached a
+// terminal state. A canceled blocker counts as no-longer-blocking: it will never
+// complete, so a dependent leaf that waits on it would otherwise be stranded
+// forever. Only a still-live (backlog/unstarted/started) blocker holds the
+// dependent back.
 func allBlockersCompleted(refs []linearapi.IssueRef) bool {
 	for _, r := range refs {
-		if !r.State.IsCompleted() {
+		if !r.State.IsTerminal() {
 			return false
 		}
 	}
@@ -393,7 +497,7 @@ func (l *Linear) pickPrompt(scope Scope) string {
 		"(c) have every 'blocked by' issue in a completed/Done state; "+
 		"(d) are leaf issues — exclude any epic/parent that has its own sub-issues.%s "+
 		"Pick the best one to start next by considering, in order: priority (Urgent > High > Medium > Low), due date (sooner is better), then the lowest issue number as a tie-breaker. "+
-		"Respond with exactly one final line: 'PICK=<IDENTIFIER>' (e.g. PICK=%s-414) or 'PICK=NONE'. No other output.",
+		"Respond with the result as the sentinel 'PICK=<IDENTIFIER>' (e.g. PICK=%s-414) or 'PICK=NONE', or as a JSON object {\"pick\":\"<IDENTIFIER>\"} / {\"pick\":\"NONE\"}. No other output.",
 		scope.clause(), l.ReadyLabel, scope.projectClause(), scope.prefix())
 }
 
@@ -408,7 +512,7 @@ func (l *Linear) epicPickPrompt(scope Scope, leaves map[string]bool) string {
 		"(b) is NOT started — workflow state type is 'backlog' or 'unstarted' (exclude started, completed, canceled); "+
 		"(c) has every 'blocked by' issue in a completed/Done state. "+
 		"Pick the best one to start next by considering, in order: priority (Urgent > High > Medium > Low), due date (sooner is better), then the lowest issue number as a tie-breaker. "+
-		"Respond with exactly one final line: 'PICK=<IDENTIFIER>' (e.g. PICK=%s-414) or 'PICK=NONE'. No other output.",
+		"Respond with the result as the sentinel 'PICK=<IDENTIFIER>' (e.g. PICK=%s-414) or 'PICK=NONE', or as a JSON object {\"pick\":\"<IDENTIFIER>\"} / {\"pick\":\"NONE\"}. No other output.",
 		scope.Parent, strings.Join(ids, ", "), l.ReadyLabel, scope.prefix())
 }
 
@@ -428,22 +532,34 @@ func parsePick(text, prefix string) (id string, matched bool) {
 	return last, true
 }
 
+// parsePickJSON extracts a pick from a JSON result-file payload, tolerating the
+// rich shapes agents actually emit: extra keys (reason), nested objects
+// (candidates), and a lowercase identifier. It unmarshals into RawMessage so a
+// nested value under an unrelated key never defeats the whole parse, then reads
+// the string under "pick" (or "issue"). An empty/"NONE" value is a determined
+// "nothing eligible" (matched, ""); a non-string or non-matching value yields
+// unmatched so the caller can still try the PICK= sentinel.
 func parsePickJSON(text, prefix string) (id string, matched bool) {
-	var result map[string]*string
+	var result map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(strings.TrimSpace(text)), &result); err != nil {
 		return "", false
 	}
 	for _, key := range []string{"pick", "issue"} {
-		v, ok := result[key]
+		raw, ok := result[key]
 		if !ok {
 			continue
 		}
-		if v == nil || *v == "" || *v == "NONE" {
+		var v string
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return "", false
+		}
+		v = strings.TrimSpace(v)
+		if v == "" || strings.EqualFold(v, "NONE") {
 			return "", true
 		}
-		re := regexp.MustCompile(`^` + regexp.QuoteMeta(prefix) + `-[0-9]+$`)
-		if re.MatchString(*v) {
-			return *v, true
+		re := regexp.MustCompile(`(?i)^` + regexp.QuoteMeta(prefix) + `-[0-9]+$`)
+		if re.MatchString(v) {
+			return v, true
 		}
 		return "", false
 	}
