@@ -5,6 +5,14 @@ build → verify → handoff pipeline via an AI coding agent, and opens a PR.
 
 ## Language
 
+**Repo**:
+The target codebase trau builds, branches, and opens PRs against — resolved at launch, not necessarily the shell's cwd. Identified on screen by its folder name. Several Repos can share one Project (e.g. the m4c repos), so the Repo is the only unambiguous "where am I" signal.
+_Avoid_: project (that's the tracker binding), workspace, target, directory, cwd
+
+**Project**:
+The tracker (Linear/Jira) project a Repo is bound to via the `PROJECT` config key — it scopes the ready queue and guards cross-project runs. May be empty; never use it to identify which Repo trau is operating on.
+_Avoid_: repo, board
+
 **Provider**:
 The AI coding backend that executes a phase — a vendor + its CLI. The known set is `claude`, `codex`, `kimi`. Selected by the `PROVIDER` config key or the `--provider` flag.
 _Avoid_: agent, model, vendor, backend (when you mean the named provider)
