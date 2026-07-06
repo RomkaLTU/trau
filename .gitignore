@@ -2,12 +2,15 @@
 trau.ini
 .trau.ini
 
-# Agentic / internal files — kept out of the public repo
+# Agentic / internal files — kept out of the public repo (present locally)
 tasks/
 runs/
 /.agents/
 /.claude/
 /.serena/
+/AGENTS.md
+/CLAUDE.md
+/CONTEXT.md
 
 # Per-developer dev-flow config (bind it to your own tracker/team locally)
 /.dev-flow/
@@ -24,6 +27,8 @@ coverage.txt
 # embedded build output and IS tracked so `go build`/`go test` always compile)
 /web/node_modules/
 /web/.vite/
+# npm is canonical here (web/package-lock.json is tracked); ignore stray pnpm locks
+/web/pnpm-lock.yaml
 
 # IDE
 /.idea/
