@@ -826,7 +826,7 @@ func (m planModel) view(spinner string) string {
 	case (m.step == planSlices || m.step == planCreating) && m.slices.epic != "":
 		title = "plan · slices · " + m.slices.epic
 	}
-	header := s.Header.Render("⬡ trau") + "  " + s.SummaryTitle.Render(title)
+	header := s.Header.Render(brandMark()) + "  " + s.SummaryTitle.Render(title)
 	sep := s.Separator.Render(strings.Repeat("─", m.width))
 	return header + "\n" + sep + "\n" + m.body(spinner) + "\n" + sep + "\n" + s.Help.Render(m.hint())
 }

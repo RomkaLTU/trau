@@ -11,6 +11,24 @@ import (
 // their own container, cursor, or radio, so the UI reads as one language and
 // later redesign slices change one place.
 
+// repoNameMax caps a rendered repo name so a pathological folder name stays a tag.
+const repoNameMax = 24
+
+// screenRepo is the resolved repo name every card screen pins "⬡ <repo>" top-left,
+// set once at startup (see setScreenRepo). Empty renders no tag.
+var screenRepo string
+
+func setScreenRepo(name string) { screenRepo = truncate(name, repoNameMax) }
+
+// brandMark is the "⬡ <repo>" header mark, falling back to the bare brand when the
+// repo is unknown.
+func brandMark() string {
+	if screenRepo == "" {
+		return "⬡ trau"
+	}
+	return "⬡ " + screenRepo
+}
+
 // titledPanel draws a rounded box of total width w and height h with the title
 // woven into the top border. body is pre-rendered (and may carry ANSI); its lines
 // are padded/truncated to the inner width and the block to h-2 rows. It is the
@@ -69,9 +87,24 @@ func hintBar(s Styles, hint string) string {
 }
 
 // cardView is the common card screen: a card centered over the viewport with a
-// hint bar beneath it.
+// hint bar beneath it and the repo location tag pinned top-left.
 func cardView(s Styles, w, h int, body, hint string) string {
-	return centerScreen(w, h, cardBox(s, w, body), hintBar(s, hint))
+	return overlayRepoTag(s, centerScreen(w, h, cardBox(s, w, body), hintBar(s, hint)), w, h)
+}
+
+// overlayRepoTag pins the subtle "⬡ <repo>" location tag top-left of a card screen,
+// outside the centered card. An unset repo renders no tag.
+func overlayRepoTag(s Styles, base string, w, h int) string {
+	if screenRepo == "" {
+		return base
+	}
+	tag := s.Subtle.Render("⬡ " + screenRepo)
+	if w < lipgloss.Width(tag) || h < 1 {
+		return base
+	}
+	baseLayer := lipgloss.NewLayer(padToSize(base, w, h))
+	overlay := lipgloss.NewLayer(tag).X(0).Y(0).Z(1)
+	return lipgloss.NewCompositor(baseLayer, overlay).Render()
 }
 
 // titledCardView is cardView with a SummaryTitle heading prepended to body.

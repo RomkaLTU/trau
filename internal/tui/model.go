@@ -1033,7 +1033,7 @@ func (m model) renderRail(d dims) string {
 // renderHeader lays out the run-level context row. The left core and right cluster
 // always show; the title, then the binding, yield first to keep it legible at 80 cols.
 func (m model) renderHeader() string {
-	left := m.styles.Header.Render("⬡ trau")
+	left := m.styles.Header.Render(brandMark())
 	if c := m.ticketCounter(); c != "" {
 		left += "  " + m.styles.Subtle.Render(c)
 	}
