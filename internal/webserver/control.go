@@ -385,30 +385,22 @@ func (s *Server) registered(pid int) bool {
 	return false
 }
 
-// allows reports whether the hub may start a loop in root.
-func (s *Server) allows(root string) bool {
-	target := filepath.Clean(root)
-	for _, r := range s.workspace {
-		if r == target {
-			return true
-		}
-	}
-	return false
-}
-
 // allowedRoot resolves a start request's repo identifier to an allowlisted root.
 // It matches an allowlisted root path exactly, or an unambiguous base name, so
-// the UI can start a loop by either the path it shows or the short repo name.
+// the UI can start a loop by either the path it shows or the short repo name. The
+// allowlist is the effective merge of the SERVE_WORKSPACE seed and the registered
+// set, read per request so a just-registered repo is startable without a restart.
 func (s *Server) allowedRoot(ident string) (string, bool) {
 	ident = strings.TrimSpace(ident)
 	cleaned := filepath.Clean(ident)
-	for _, r := range s.workspace {
+	roots := s.effectiveRoots()
+	for _, r := range roots {
 		if r == cleaned {
 			return r, true
 		}
 	}
 	var match string
-	for _, r := range s.workspace {
+	for _, r := range roots {
 		if filepath.Base(r) == ident {
 			if match != "" {
 				return "", false

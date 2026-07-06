@@ -40,12 +40,15 @@ type RunsResponse struct {
 }
 
 func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, ReposResponse{Repos: s.repoViews()})
+	case http.MethodPost:
+		s.registerRepo(w, r)
+	default:
+		w.Header().Set("Allow", "GET, POST")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
 	}
-	writeJSON(w, http.StatusOK, ReposResponse{Repos: s.repoViews()})
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
@@ -74,14 +77,19 @@ func (s *Server) repoViews() []RepoView {
 	for _, e := range entries {
 		live[e.RepoRoot] = true
 	}
+	roots := s.effectiveRoots()
+	allowed := make(map[string]bool, len(roots))
+	for _, root := range roots {
+		allowed[root] = true
+	}
 	seen := make(map[string]bool)
 	known := registry.Repos(s.home)
-	views := make([]RepoView, 0, len(known)+len(s.workspace))
+	views := make([]RepoView, 0, len(known)+len(roots))
 	for _, repo := range known {
 		seen[repo.Root] = true
-		views = append(views, RepoView{Repo: repo, Live: live[repo.Root], Allowed: s.allows(repo.Root)})
+		views = append(views, RepoView{Repo: repo, Live: live[repo.Root], Allowed: allowed[repo.Root]})
 	}
-	for _, root := range s.workspace {
+	for _, root := range roots {
 		if seen[root] {
 			continue
 		}

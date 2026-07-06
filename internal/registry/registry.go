@@ -63,9 +63,13 @@ type Handle struct {
 
 var reposMu sync.Mutex
 
+var workspaceMu sync.Mutex
+
 func instancesDir(home string) string { return filepath.Join(home, "instances") }
 
 func reposFile(home string) string { return filepath.Join(home, "repos.json") }
+
+func workspaceFile(home string) string { return filepath.Join(home, "workspace.json") }
 
 // Register records the calling process as a live loop under home and heartbeats
 // the entry until Deregister. It is best-effort: any failure yields a no-op
@@ -213,6 +217,59 @@ func loadRepos(home string) map[string]Repo {
 	known := map[string]Repo{}
 	_ = readJSONMap(reposFile(home), &known)
 	return known
+}
+
+// registered is the on-disk shape of workspace.json: the hub-owned set of repo
+// roots registered from the web as startable, kept separate from the config
+// allowlist so a registration survives a serve restart without a config edit.
+type registered struct {
+	Repos []string `json:"repos"`
+}
+
+// RegisteredRepos returns the repo roots registered as startable from the web,
+// in the order they were added. The hub merges these with the static
+// SERVE_WORKSPACE seed to form the effective allowlist, read fresh per request so
+// a registration takes effect without restarting serve.
+func RegisteredRepos(home string) []string {
+	if home == "" {
+		return nil
+	}
+	workspaceMu.Lock()
+	defer workspaceMu.Unlock()
+	return loadWorkspace(home).Repos
+}
+
+// RegisterRepo persists root as a startable repo under the trau home, returning
+// without error when it is already registered. Unlike loop registration this is a
+// deliberate, user-initiated write, so a failure to persist is reported rather
+// than swallowed.
+func RegisterRepo(home, root string) error {
+	if home == "" {
+		return errors.New("no trau home to register into")
+	}
+	workspaceMu.Lock()
+	defer workspaceMu.Unlock()
+	ws := loadWorkspace(home)
+	for _, r := range ws.Repos {
+		if r == root {
+			return nil
+		}
+	}
+	ws.Repos = append(ws.Repos, root)
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		return err
+	}
+	return writeJSON(workspaceFile(home), ws)
+}
+
+func loadWorkspace(home string) registered {
+	var ws registered
+	data, err := os.ReadFile(workspaceFile(home))
+	if err != nil {
+		return registered{}
+	}
+	_ = json.Unmarshal(data, &ws)
+	return ws
 }
 
 func entryName(pid int) string {
