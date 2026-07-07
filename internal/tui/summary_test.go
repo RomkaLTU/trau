@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -34,6 +35,63 @@ func TestTotalsLineCountsIncompleteSeparately(t *testing.T) {
 	if strings.Contains(got, "2 quarantined") {
 		t.Errorf("totalsLine = %q: an incomplete ticket must not be counted as quarantined", got)
 	}
+}
+
+// TestRecapCopyYanksFaultMessage drives y on a failed recap row: it copies the
+// ticket's fault message over OSC52 and names the artifact in the toast.
+func TestRecapCopyYanksFaultMessage(t *testing.T) {
+	d := freshDash(100, 30, "")
+	d.results = []console.TicketResult{
+		{ID: "COD-1", Phase: state.Quarantined, FailureReason: "PHPStan boom"},
+	}
+	sm, _ := d.enterSummary(console.SessionSummary{Tickets: 1})
+	d = sm.(model)
+
+	nm, cmd, handled := d.handleKey(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	if !handled {
+		t.Fatal("y must be handled on the recap")
+	}
+	if cmd == nil {
+		t.Fatal("y must return an OSC52 SetClipboard command")
+	}
+	if got := fmt.Sprintf("%s", cmd()); got != "PHPStan boom" {
+		t.Fatalf("y on a failed recap row must copy the fault message, got %q", got)
+	}
+	if !strings.Contains(nm.toast, "failure reason") {
+		t.Fatalf("y must set a copy toast naming the artifact, got %q", nm.toast)
+	}
+}
+
+// TestCopyKeySurfacedInEveryView guards the AC that the copy key is listed in the
+// recap footer, the recap ? overlay, and the live dashboard ? overlay.
+func TestCopyKeySurfacedInEveryView(t *testing.T) {
+	d := freshDash(100, 30, "")
+	d.results = []console.TicketResult{
+		{ID: "COD-1", Phase: state.Quarantined, FailureReason: "boom"},
+	}
+	sm, _ := d.enterSummary(console.SessionSummary{Tickets: 1})
+	d = sm.(model)
+
+	if hint := d.summaryHint(); !strings.Contains(hint, "y copy") {
+		t.Errorf("recap footer must list the copy key, got %q", hint)
+	}
+	if !helpLists(d.summaryHelp(), "y") {
+		t.Error("recap ? overlay must list the copy key")
+	}
+	if !helpLists(d.runningHelp(), "y") {
+		t.Error("dashboard ? overlay must list the copy key")
+	}
+}
+
+func helpLists(h screenHelp, key string) bool {
+	for _, c := range h.columns {
+		for _, k := range c.keys {
+			if k.key == key {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // TestResizeKeepsRecapSelection checks that resizing during the recap keeps the

@@ -1861,6 +1861,7 @@ func (a *appActions) LogRuns() []tui.LogRun {
 			Phase:         a.store.Get(id, "PHASE"),
 			Updated:       updated,
 			FailureReason: a.store.Get(id, "FAILURE_REASON"),
+			Path:          filepath.Join(a.store.Root(), id),
 		})
 	}
 	sort.Slice(runs, func(i, j int) bool {

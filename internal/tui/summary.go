@@ -229,6 +229,10 @@ func (m model) summaryHint() string {
 	}
 	sel, hasSel := m.selectedRow()
 	parts := append([]string{"↑↓ move"}, queueVerbHints(sel, hasSel, false)...)
+	if hasSel {
+		_, label := copyArtifact(sel)
+		parts = append(parts, "y copy "+label)
+	}
 	parts = append(parts, "esc/q close")
 	return strings.Join(markVerbs(parts), " · ")
 }

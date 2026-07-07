@@ -20,6 +20,7 @@ type LogRun struct {
 	Phase         string
 	Updated       time.Time
 	FailureReason string
+	Path          string
 }
 
 // logsModel is the dedicated log-inspector view: a run list on the left and the
@@ -148,6 +149,12 @@ func (m logsModel) Update(msg tea.Msg, contentFn func(string) string) (logsModel
 				}
 			}
 			return m, nil
+		case "Y":
+			if r, ok := m.selected(); ok && r.Path != "" {
+				m.copied = "✓ copied " + r.ID + " log path"
+				return m, tea.SetClipboard(r.Path)
+			}
+			return m, nil
 		case "up", "k":
 			m.moveCursor(-1, contentFn)
 			return m, nil
@@ -263,7 +270,7 @@ func (m logsModel) help() screenHelp {
 			xk("shift+↑↓", "half-page"),
 			fk("g/G", "jump"),
 		),
-		group("Session", fk("y", "copy log"), fk("esc/q", "back"), xk("ctrl+t", "toggle mouse (select text)"), xk("⇧ drag", "select text (⌥ on iTerm2/Terminal.app)")),
+		group("Session", fk("y", "copy log"), xk("Y", "copy path"), fk("esc/q", "back"), xk("ctrl+t", "toggle mouse (select text)"), xk("⇧ drag", "select text (⌥ on iTerm2/Terminal.app)")),
 	}}
 }
 
