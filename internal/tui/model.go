@@ -77,6 +77,7 @@ func (m model) runningHelp() screenHelp {
 			fk("enter", "attach active / peek"),
 			fk("o", "open PR"),
 			fk("l", "jump to logs"),
+			fk("y", "copy ticket ID"),
 		),
 		group("View",
 			fk("v", "cycle feed/raw/spans"),
@@ -145,7 +146,7 @@ func (m model) summaryHelp() screenHelp {
 			fk("b", "checkout branch"),
 			fk("x", "reset ticket"),
 		),
-		group("Session", fk("esc/q", "close"), xk("ctrl+t", "toggle mouse (select text)"), xk("⇧ drag", "select text (⌥ on iTerm2/Terminal.app)")),
+		group("Session", fk("y", "copy fault message"), fk("esc/q", "close"), xk("ctrl+t", "toggle mouse (select text)"), xk("⇧ drag", "select text (⌥ on iTerm2/Terminal.app)")),
 	}}
 }
 
