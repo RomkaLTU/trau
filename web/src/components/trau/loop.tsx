@@ -5,6 +5,7 @@ import { ExternalLink, Minus, Plus, Square } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { useActiveRepo } from '@/components/trau/active-repo'
+import { TargetRepoField } from '@/components/trau/target-repo-field'
 import { ConfirmDialog } from '@/components/trau/confirm-dialog'
 import { Eyebrow } from '@/components/trau/eyebrow'
 import { PhaseStepper } from '@/components/trau/phase-stepper'
@@ -337,6 +338,8 @@ function LaunchForm({
           })
         }}
       >
+        <TargetRepoField repo={repo} />
+
         <div className="flex flex-col gap-1.5">
           <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
             scope
