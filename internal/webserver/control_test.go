@@ -70,7 +70,7 @@ func (f *fakeSupervisor) Signal(pid int, sig syscall.Signal) error {
 
 func controlServer(t *testing.T, home string, workspace []string) (*fakeSupervisor, *httptest.Server) {
 	t.Helper()
-	s := New("1.2.3", "127.0.0.1", "", workspace)
+	s := New("1.2.3", "127.0.0.1", "", workspace, false)
 	s.home = home
 	fake := &fakeSupervisor{}
 	s.sup = fake
@@ -257,7 +257,7 @@ func TestStopRejectsNonPOST(t *testing.T) {
 }
 
 func TestControlEndpointsRequireTokenWhenExposed(t *testing.T) {
-	s := New("1.2.3", "0.0.0.0", "s3cret", []string{"/repo/acme"})
+	s := New("1.2.3", "0.0.0.0", "s3cret", []string{"/repo/acme"}, false)
 	fake := &fakeSupervisor{}
 	s.sup = fake
 	ts := httptest.NewServer(s.Handler())
@@ -541,7 +541,7 @@ func TestDryRunReportsCaptureFailure(t *testing.T) {
 }
 
 func TestDryRunRequiresTokenWhenExposed(t *testing.T) {
-	s := New("1.2.3", "0.0.0.0", "s3cret", []string{"/repo/acme"})
+	s := New("1.2.3", "0.0.0.0", "s3cret", []string{"/repo/acme"}, false)
 	fake := &fakeSupervisor{}
 	s.sup = fake
 	ts := httptest.NewServer(s.Handler())
@@ -846,7 +846,7 @@ func TestEpicPreviewRejectsNonGET(t *testing.T) {
 }
 
 func TestEpicPreviewRequiresTokenWhenExposed(t *testing.T) {
-	s := New("1.2.3", "0.0.0.0", "s3cret", []string{"/repo/acme"})
+	s := New("1.2.3", "0.0.0.0", "s3cret", []string{"/repo/acme"}, false)
 	fake := &fakeSupervisor{}
 	s.sup = fake
 	ts := httptest.NewServer(s.Handler())

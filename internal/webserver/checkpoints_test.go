@@ -264,7 +264,7 @@ func TestCheckpointMutationsRejectNonPOST(t *testing.T) {
 }
 
 func TestCheckpointMutationsRequireTokenWhenExposed(t *testing.T) {
-	s := New("1.2.3", "0.0.0.0", "s3cret", nil)
+	s := New("1.2.3", "0.0.0.0", "s3cret", nil, false)
 	fake := &fakeSupervisor{}
 	s.sup = fake
 	ts := httptest.NewServer(s.Handler())

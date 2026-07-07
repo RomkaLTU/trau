@@ -92,8 +92,9 @@ plain-language refusal rather than a raw error.
 ## Serve
 
 `trau serve` is not mapped — it *is* the hub every surface above renders inside.
-Its exposure policy (loopback open, any routable bind requires `SERVE_TOKEN`) is
-a `serve`-only concern with no in-app control.
+Its exposure policy (loopback open, any routable bind requires `SERVE_TOKEN`, and
+repo (un)registration on such a bind additionally requires `SERVE_ALLOW_REGISTER`)
+is a `serve`-only concern with no in-app control.
 
 ## Deliberate gaps
 

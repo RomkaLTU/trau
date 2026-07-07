@@ -17,7 +17,7 @@ import (
 
 func instancesServer(t *testing.T, home string) *httptest.Server {
 	t.Helper()
-	s := New("1.2.3", "127.0.0.1", "", nil)
+	s := New("1.2.3", "127.0.0.1", "", nil, false)
 	s.home = home
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)

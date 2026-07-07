@@ -85,6 +85,10 @@ decision**, and trau enforces an exposure policy:
 - **Any non-loopback bind requires a token.** Set `SERVE_TOKEN` (or `--bind` a routable address
   with one configured). trau **refuses to start** exposed without a token, and every API request
   must then carry it: `Authorization: Bearer <token>`, or the request gets a `401`.
+- **Registering repos over the API is fail-closed when exposed.** On a non-loopback bind,
+  (un)registering a repo also needs `SERVE_ALLOW_REGISTER=1` on top of the token — otherwise the
+  request gets a `403`, so a leaked token can't widen the set of directories trau will run agents
+  in. Loopback binds ignore the key and stay open.
 
 ```bash
 SERVE_BIND=0.0.0.0 SERVE_TOKEN=$(openssl rand -hex 32) trau serve

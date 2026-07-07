@@ -184,10 +184,13 @@ type Config struct {
 	// 127.0.0.1:8728 keeps it loopback-only; widen ServeBind (e.g. 0.0.0.0)
 	// deliberately to expose it on the network. A non-loopback bind requires
 	// ServeToken: trau refuses to start exposed without one, and the API then
-	// demands it as a bearer token.
-	ServeBind  string
-	ServePort  int
-	ServeToken string
+	// demands it as a bearer token. ServeAllowRegister additionally opens repo
+	// (un)registration on an exposed bind; it defaults closed so a leaked token
+	// cannot widen the hub's startable-repo set. Loopback binds ignore it.
+	ServeBind          string
+	ServePort          int
+	ServeToken         string
+	ServeAllowRegister bool
 
 	// ServeWorkspace allowlists the repo roots the hub may start loops in. It is
 	// empty by default: with no allowlist the hub is observe-only and refuses
@@ -275,6 +278,7 @@ func Defaults() Config {
 		ServeBind:             "127.0.0.1",
 		ServePort:             8728,
 		ServeToken:            "",
+		ServeAllowRegister:    false,
 		ServeWorkspace:        nil,
 		MaxTicketUSD:          0,
 		MaxTicketTokens:       0,
@@ -656,6 +660,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("SERVE_BIND", &c.ServeBind)
 	num("SERVE_PORT", &c.ServePort)
 	str("SERVE_TOKEN", &c.ServeToken)
+	if v, src := get("SERVE_ALLOW_REGISTER"); v != "" {
+		c.ServeAllowRegister = v == "1"
+		sources["SERVE_ALLOW_REGISTER"] = src.name
+	}
 	if v, src := get("SERVE_WORKSPACE"); v != "" {
 		c.ServeWorkspace = splitCSV(v)
 		sources["SERVE_WORKSPACE"] = src.name
@@ -1099,6 +1107,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "SERVE_BIND", Default: "127.0.0.1", Description: "Bind address for `trau serve` (use 0.0.0.0 to expose on the network)"},
 		{Key: "SERVE_PORT", Default: "8728", Description: "Port for `trau serve`"},
 		{Key: "SERVE_TOKEN", Advanced: true, Description: "Bearer token required for non-loopback `trau serve` binds; mandatory once SERVE_BIND leaves loopback"},
+		{Key: "SERVE_ALLOW_REGISTER", Default: "0", Advanced: true, Bool: true, Description: "Allow repo (un)registration on a non-loopback `trau serve` bind, on top of SERVE_TOKEN; loopback binds are always open (1 = yes, 0 = no)"},
 		{Key: "SERVE_WORKSPACE", Advanced: true, Description: "Comma-separated repo roots the hub may start loops in; repos outside this allowlist are observe-only. Empty = the hub starts nothing"},
 		{Key: "MAX_TICKET_USD", Description: "Per-ticket USD spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_TICKET_TOKENS", Description: "Per-ticket token spend cap; over it the ticket is quarantined (empty = no cap)"},
@@ -1595,6 +1604,11 @@ func keyValue(cfg Config, key string) string {
 		return intValue(cfg.ServePort)
 	case "SERVE_TOKEN":
 		return cfg.ServeToken
+	case "SERVE_ALLOW_REGISTER":
+		if cfg.ServeAllowRegister {
+			return "1"
+		}
+		return "0"
 	case "SERVE_WORKSPACE":
 		return strings.Join(cfg.ServeWorkspace, ",")
 	case "MAX_TICKET_USD":

@@ -17,16 +17,29 @@ type RegisterRepoRequest struct {
 	Path string `json:"path"`
 }
 
+// denyRegistrationIfExposed enforces the exposure gate shared by register and
+// unregister: loopback binds are always open, but on a non-loopback bind the
+// bearer token alone is not enough — SERVE_ALLOW_REGISTER must be set to change
+// the startable-repo set. It reports whether it wrote a 403 refusal that names
+// the key, so callers return early on true.
+func (s *Server) denyRegistrationIfExposed(w http.ResponseWriter, action string) bool {
+	if Loopback(s.bind) || s.allowRegister {
+		return false
+	}
+	writeJSON(w, http.StatusForbidden, map[string]string{
+		"error": fmt.Sprintf("%s on an exposed bind requires SERVE_ALLOW_REGISTER=1 in addition to SERVE_TOKEN; set it to open registration deliberately, or register from a loopback trau serve on the host", action),
+	})
+	return true
+}
+
 // registerRepo makes a repo startable from the hub by persisting its root to the
 // hub-owned workspace.json. It is fail-closed on exposure: on a non-loopback bind
-// registration is refused outright, so a leaked bearer token can never widen the
-// set of directories trau will run agents in. On loopback the caller already owns
-// the machine, so registration is open.
+// registration is refused unless SERVE_ALLOW_REGISTER is set, so a leaked bearer
+// token can never widen the set of directories trau will run agents in by
+// default. On loopback the caller already owns the machine, so registration is
+// open.
 func (s *Server) registerRepo(w http.ResponseWriter, r *http.Request) {
-	if !Loopback(s.bind) {
-		writeJSON(w, http.StatusForbidden, map[string]string{
-			"error": "registering a repo is refused on an exposed bind; register from a loopback trau serve on the host instead",
-		})
+	if s.denyRegistrationIfExposed(w, "registering a repo") {
 		return
 	}
 	var req RegisterRepoRequest
@@ -60,8 +73,13 @@ func (s *Server) handleRepo(w http.ResponseWriter, r *http.Request) {
 // events, and transcripts stay browsable exactly as they do after any loop
 // exits, and nothing on disk in the repo is removed. A repo granted by the
 // static SERVE_WORKSPACE seed is config-owned, not registry-owned, so the
-// attempt is refused rather than silently doing nothing.
+// attempt is refused rather than silently doing nothing. It follows the same
+// exposure gate as registration: refused on a non-loopback bind unless
+// SERVE_ALLOW_REGISTER is set.
 func (s *Server) unregisterRepo(w http.ResponseWriter, r *http.Request) {
+	if s.denyRegistrationIfExposed(w, "unregistering a repo") {
+		return
+	}
 	name := r.PathValue("repo")
 	if _, ok := matchRoot(s.workspace, name); ok {
 		writeJSON(w, http.StatusConflict, map[string]string{
