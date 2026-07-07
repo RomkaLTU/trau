@@ -19,7 +19,9 @@ function BacklogPage() {
         </h1>
         <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
           Browse the Active repo's full tracker backlog — every ticket, grouped
-          by status. Editing stays in Linear/Jira.
+          by status. File new issues, stack an epic's sub-issues, or publish a
+          PRD straight to the tracker. Editing existing tickets stays in
+          Linear/Jira.
         </p>
       </header>
 
