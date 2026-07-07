@@ -25,6 +25,7 @@ const (
 var (
 	eligibleFields = []string{"summary", "status", "issuetype", "issuelinks", "labels"}
 	childFields    = []string{"summary", "status", "issuetype", "subtasks"}
+	backlogFields  = []string{"summary", "status", "issuetype", "labels", "parent", "resolution"}
 )
 
 // Candidate is one issue from the eligibility search. It is returned in JQL order;
@@ -103,6 +104,45 @@ func (c *Client) SubIssues(ctx context.Context, parentKey string) ([]Child, erro
 	return out, nil
 }
 
+// BacklogIssue is one issue in a project's full backlog, carrying the fields the
+// backlog board needs: display status and its stable category, resolution (to
+// tell a canceled done-issue from a completed one), epic-type flag, epic parent,
+// and labels.
+type BacklogIssue struct {
+	Key            string
+	Summary        string
+	StatusName     string
+	StatusCategory string
+	Resolution     string
+	IsEpic         bool
+	ParentKey      string
+	Labels         []string
+}
+
+// Backlog returns every issue in a project, ordered newest first, applying no
+// label or status filter — the backlog board shows the whole project, not just
+// the ready queue. It needs a project key; an empty one yields ErrNotEnabled so
+// the caller falls back to the MCP rather than issuing a project-less query.
+func (c *Client) Backlog(ctx context.Context, project string) ([]BacklogIssue, error) {
+	if !c.enabled() {
+		return nil, ErrNotEnabled
+	}
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return nil, ErrNotEnabled
+	}
+	jql := "project = " + jqlQuote(project) + " ORDER BY created DESC"
+	raws, err := c.search(ctx, jql, backlogFields)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BacklogIssue, 0, len(raws))
+	for i := range raws {
+		out = append(out, raws[i].toBacklog())
+	}
+	return out, nil
+}
+
 // eligibleJQL builds the ready-queue query: the project's issues that carry the
 // ready label, sit in the To-Do status category (unstarted — not In Progress or
 // Done), and are unresolved, ordered by priority, soonest due date, then key.
@@ -175,6 +215,12 @@ type searchIssue struct {
 		Subtasks   []json.RawMessage `json:"subtasks"`
 		IssueLinks []issueLink       `json:"issuelinks"`
 		Labels     []string          `json:"labels"`
+		Parent     *struct {
+			Key string `json:"key"`
+		} `json:"parent"`
+		Resolution *struct {
+			Name string `json:"name"`
+		} `json:"resolution"`
 	} `json:"fields"`
 }
 
@@ -225,6 +271,24 @@ func (r *searchIssue) toChild() Child {
 		ch.HasChildren = true
 	}
 	return ch
+}
+
+func (r *searchIssue) toBacklog() BacklogIssue {
+	b := BacklogIssue{Key: r.Key, Summary: r.Fields.Summary, Labels: r.Fields.Labels}
+	if s := r.Fields.Status; s != nil {
+		b.StatusName = s.Name
+		b.StatusCategory = s.StatusCategory.Key
+	}
+	if it := r.Fields.IssueType; it != nil {
+		b.IsEpic = it.HierarchyLevel > 0
+	}
+	if p := r.Fields.Parent; p != nil {
+		b.ParentKey = p.Key
+	}
+	if res := r.Fields.Resolution; res != nil {
+		b.Resolution = res.Name
+	}
+	return b
 }
 
 // blockersFromLinks extracts the "is blocked by" links: for those the blocking

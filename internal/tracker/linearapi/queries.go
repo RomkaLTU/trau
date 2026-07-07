@@ -121,6 +121,47 @@ query PickIssues($teamId: ID!, $labelName: String!) {
 }
 `
 
+	// backlogQuery loads a team's full issue set for the backlog board — every
+	// issue, not just the ready-labelled queue — with the fields the board needs:
+	// workflow state, project (for the owned-project filter), parent (epic), labels,
+	// and whether the issue is itself a parent. It pages with a cursor so the whole
+	// backlog is returned, not just the first page.
+	backlogQuery = `
+query Backlog($teamId: ID!, $after: String) {
+  issues(first: 100, after: $after, filter: { team: { id: { eq: $teamId } } }) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      identifier
+      title
+      state {
+        name
+        type
+      }
+      project {
+        name
+      }
+      parent {
+        identifier
+      }
+      labels {
+        nodes {
+          id
+          name
+        }
+      }
+      children {
+        nodes {
+          id
+        }
+      }
+    }
+  }
+}
+`
+
 	// teamsQuery lists teams the key can see.
 	teamsQuery = `
 query Teams {

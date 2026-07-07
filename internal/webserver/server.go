@@ -30,6 +30,7 @@ type Server struct {
 	workspace     []string
 	sup           Supervisor
 	newWriter     func(config.Config) (tracker.Writer, error)
+	newReader     func(config.Config) (tracker.Reader, error)
 }
 
 // New builds a Server that reports version and treats now as its start time. It
@@ -51,6 +52,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool) *S
 		workspace:     normalizeRoots(workspace),
 		sup:           newOSSupervisor(),
 		newWriter:     defaultWriter,
+		newReader:     defaultReader,
 	}
 }
 
@@ -75,6 +77,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}", s.handleRepo)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/dry-run", s.handleDryRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/eligible", s.handleEligible)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/backlog", s.handleBacklog)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/epics/{epic}", s.handleEpicPreview)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues", s.handleCreateIssue)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/prd", s.handlePublishPRD)
