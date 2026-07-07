@@ -7,9 +7,9 @@ import { Button } from '@/components/ui/button'
 import {
   EmptyState,
   Eyebrow,
-  RepoPicker,
   SegmentedControl,
   TerminalCard,
+  useActiveRepo,
 } from '@/components/trau'
 import { cn } from '@/lib/utils'
 import { reposQueryOptions } from '@/lib/runs'
@@ -27,14 +27,7 @@ export const Route = createFileRoute('/settings')({
 })
 
 function Settings() {
-  const { data, error, isPending } = useQuery(reposQueryOptions)
-  const [selected, setSelected] = useState<string | null>(null)
-
-  const repos = data?.repos ?? []
-  const active =
-    selected && repos.some((r) => r.name === selected)
-      ? selected
-      : (repos.find((r) => r.live)?.name ?? repos[0]?.name ?? null)
+  const { repo: active, repos } = useActiveRepo()
 
   return (
     <div className="flex flex-col gap-6">
@@ -51,40 +44,19 @@ function Settings() {
         </p>
       </header>
 
-      {error && (
-        <p className="font-mono text-sm text-destructive">{String(error)}</p>
-      )}
-      {isPending && !error && (
-        <p className="font-mono text-sm text-muted-foreground">Loading…</p>
-      )}
-
-      {data && repos.length === 0 && (
+      {repos.length === 0 && (
         <EmptyState
           className="min-h-[300px]"
           message="No repos yet. A repo's layered config appears here once a trau loop has run in it."
         />
       )}
 
-      {active && (
-        <ConfigList
-          repo={active}
-          repos={repos.map((r) => r.name)}
-          onRepoChange={setSelected}
-        />
-      )}
+      {active && <ConfigList repo={active} />}
     </div>
   )
 }
 
-function ConfigList({
-  repo,
-  repos,
-  onRepoChange,
-}: {
-  repo: string
-  repos: string[]
-  onRepoChange: (repo: string) => void
-}) {
+function ConfigList({ repo }: { repo: string }) {
   const { data, error, isPending } = useQuery(configQueryOptions(repo))
   const [query, setQuery] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -128,7 +100,6 @@ function ConfigList({
             />
           </div>
         </label>
-        <RepoPicker repos={repos} value={repo} onChange={onRepoChange} label="repo" />
         <label className="flex cursor-pointer items-center gap-2 font-mono text-xs text-muted-foreground">
           <input
             type="checkbox"

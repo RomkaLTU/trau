@@ -4,6 +4,7 @@ import { Link } from '@tanstack/react-router'
 import { Eye, Play, RefreshCw, Square } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { useActiveRepo } from '@/components/trau/active-repo'
 import { EmptyState } from '@/components/trau/empty-state'
 import { StatTile } from '@/components/trau/stat-tile'
 import { StatusPill, type RunState } from '@/components/trau/status-pill'
@@ -45,9 +46,10 @@ function money(usd: number): string {
 }
 
 export function StatTiles() {
-  const spend = useTodaySpend()
-  const loops = useLiveLoops()
-  const attention = useAttentionRuns()
+  const { repo } = useActiveRepo()
+  const spend = useTodaySpend(repo)
+  const loops = useLiveLoops(repo)
+  const attention = useAttentionRuns(repo)
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -220,7 +222,8 @@ function LoopCard({ loop, now }: { loop: LiveLoop; now: number }) {
 }
 
 export function LiveLoops() {
-  const loops = useLiveLoops()
+  const { repo } = useActiveRepo()
+  const loops = useLiveLoops(repo)
   const now = useNow(1000)
 
   if (loops.length === 0) {
@@ -236,7 +239,7 @@ export function LiveLoops() {
               </Link>
             </Button>
             <Button asChild variant="outline" size="sm" className="font-mono">
-              <Link to="/instances">
+              <Link to="/loop">
                 <RefreshCw className="size-4" aria-hidden="true" />
                 Start loop
               </Link>
@@ -266,7 +269,8 @@ const ATTENTION_META: Record<
 }
 
 export function NeedsAttention() {
-  const attention = useAttentionRuns()
+  const { repo } = useActiveRepo()
+  const attention = useAttentionRuns(repo)
 
   if (attention.length === 0) {
     return (
@@ -327,7 +331,7 @@ export function QuickLaunch() {
         </div>
         <div className="flex flex-1 flex-col gap-2">
           <Button asChild variant="outline" className="w-full font-mono">
-            <Link to="/instances">
+            <Link to="/loop">
               <RefreshCw className="size-4" aria-hidden="true" />
               Start loop
             </Link>

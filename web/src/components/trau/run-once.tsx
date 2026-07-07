@@ -1,15 +1,15 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 
 import { Button } from '@/components/ui/button'
+import { useActiveRepo } from './active-repo'
 import { RepoPicker } from './repo-picker'
 import { TerminalCard } from './terminal-card'
 import { cn } from '@/lib/utils'
 import { configQueryOptions } from '@/lib/config'
 import { eligibleQueryOptions } from '@/lib/eligible'
 import { dryRun, startInstance } from '@/lib/instances'
-import { reposQueryOptions } from '@/lib/runs'
 
 const NO_OVERRIDE = 'default'
 
@@ -20,16 +20,10 @@ function actionError(error: unknown): string {
 export function RunOnce() {
   const navigate = useNavigate()
 
-  const reposQuery = useQuery(reposQueryOptions)
-  const repos = (reposQuery.data?.repos ?? [])
-    .filter((r) => r.allowed)
-    .map((r) => r.name)
-
-  const [selectedRepo, setSelectedRepo] = useState<string | null>(null)
-  const repo =
-    selectedRepo && repos.includes(selectedRepo)
-      ? selectedRepo
-      : repos[0] ?? ''
+  const { repo: activeRepo, repos: allRepos } = useActiveRepo()
+  const startable = allRepos.filter((r) => r.allowed).map((r) => r.name)
+  const repo = activeRepo ?? ''
+  const canRun = repo !== '' && startable.includes(repo)
 
   const [selected, setSelected] = useState<string | null>(null)
   const [manualId, setManualId] = useState('')
@@ -60,12 +54,13 @@ export function RunOnce() {
     },
   })
 
-  function pickRepo(next: string) {
-    setSelectedRepo(next)
+  useEffect(() => {
     setSelected(null)
     setManualId('')
-    preview.reset()
-  }
+    setProvider(NO_OVERRIDE)
+  }, [repo])
+
+  if (!canRun) return <NotStartableNotice repo={repo} />
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-11">
@@ -78,8 +73,6 @@ export function RunOnce() {
               if (ticket) start.mutate()
             }}
           >
-            <RepoPicker repos={repos} value={repo} onChange={pickRepo} />
-
             <div className="flex flex-col gap-1.5">
               <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
                 eligible tickets
@@ -294,5 +287,22 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
       <dt className="w-20 text-muted-foreground">{label}</dt>
       <dd className="text-foreground">{value}</dd>
     </div>
+  )
+}
+
+function NotStartableNotice({ repo }: { repo: string }) {
+  return (
+    <TerminalCard title="run-once" className="max-w-3xl">
+      <div className="flex flex-col items-start gap-4">
+        <p className="font-sans text-sm leading-relaxed text-muted-foreground">
+          {repo
+            ? `${repo} isn't registered as startable — register it to run a ticket here.`
+            : 'No repo checked out yet. Register a repo to run a ticket.'}
+        </p>
+        <Button asChild variant="outline" size="sm" className="font-mono">
+          <Link to="/instances">Manage repos</Link>
+        </Button>
+      </div>
+    </TerminalCard>
   )
 }

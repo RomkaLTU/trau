@@ -5,10 +5,10 @@ import { Link, createFileRoute } from '@tanstack/react-router'
 import {
   Eyebrow,
   NoticeBanner,
-  RepoPicker,
   RunActionsMenu,
   StatusPill,
   TerminalCard,
+  useActiveRepo,
   type CheckpointNotice,
 } from '@/components/trau'
 import { boardColumns, boardPill, type BoardColumn } from '@/lib/board'
@@ -20,15 +20,9 @@ export const Route = createFileRoute('/runs')({
 })
 
 function Runs() {
-  const { data, error, isPending } = useQuery(reposQueryOptions)
-  const [selected, setSelected] = useState<string | null>(null)
+  const { repo: active, repos } = useActiveRepo()
   const [notice, setNotice] = useState<CheckpointNotice | null>(null)
 
-  const repos = data?.repos ?? []
-  const active =
-    selected && repos.some((r) => r.name === selected)
-      ? selected
-      : repos.find((r) => r.live)?.name ?? repos[0]?.name ?? null
   const live = repos.find((r) => r.name === active)?.live ?? false
 
   return (
@@ -45,24 +39,10 @@ function Runs() {
             Every tracked run, grouped by pipeline phase.
           </p>
         </div>
-        {active && (
-          <div className="flex items-end gap-3">
-            {live && <StatusPill state="active" label="live" className="mb-1.5" />}
-            <RepoPicker
-              repos={repos.map((r) => r.name)}
-              value={active}
-              onChange={(name) => setSelected(name)}
-            />
-          </div>
-        )}
+        {live && <StatusPill state="active" label="live" className="mb-1.5" />}
       </header>
 
-      {error && <p className="font-mono text-sm text-destructive">{String(error)}</p>}
-      {isPending && !error && (
-        <p className="font-mono text-sm text-muted-foreground">Loading…</p>
-      )}
-
-      {data && repos.length === 0 && (
+      {repos.length === 0 && (
         <TerminalCard title="runs">
           <p className="font-sans text-sm leading-relaxed text-muted-foreground">
             No repos yet. Runs appear here once a trau loop runs in a repo on this machine.

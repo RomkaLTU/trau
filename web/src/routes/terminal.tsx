@@ -7,9 +7,9 @@ import { Button } from "@/components/ui/button";
 import {
   EmptyState,
   Eyebrow,
-  RepoPicker,
   SegmentedControl,
   TerminalCard,
+  useActiveRepo,
   type SegmentOption,
 } from "@/components/trau";
 import { Terminal } from "@/components/terminal";
@@ -28,19 +28,15 @@ export const Route = createFileRoute("/terminal")({
 const FOLLOW_NEWEST = "";
 
 function TerminalPage() {
+  const { repo } = useActiveRepo();
   const { data, error, isPending } = useQuery(instancesQueryOptions);
-  const repos = useMemo(() => sortRepos(data?.repos ?? []), [data]);
+  const repos = useMemo(() => data?.repos ?? [], [data]);
 
-  const [repo, setRepo] = useState("");
   const [id, setID] = useState(FOLLOW_NEWEST);
 
   useEffect(() => {
-    if (repos.length === 0) return;
-    if (!repos.some((r) => r.name === repo)) {
-      setRepo(repos[0].name);
-      setID(FOLLOW_NEWEST);
-    }
-  }, [repos, repo]);
+    setID(FOLLOW_NEWEST);
+  }, [repo]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -72,16 +68,7 @@ function TerminalPage() {
       )}
 
       {repo && (
-        <Panel
-          repos={repos}
-          repo={repo}
-          id={id}
-          onRepoChange={(name) => {
-            setRepo(name);
-            setID(FOLLOW_NEWEST);
-          }}
-          onPhaseChange={setID}
-        />
+        <Panel repos={repos} repo={repo} id={id} onPhaseChange={setID} />
       )}
     </div>
   );
@@ -91,13 +78,11 @@ function Panel({
   repos,
   repo,
   id,
-  onRepoChange,
   onPhaseChange,
 }: {
   repos: RepoView[];
   repo: string;
   id: string;
-  onRepoChange: (repo: string) => void;
   onPhaseChange: (id: string) => void;
 }) {
   const { data } = useQuery(transcriptsQueryOptions(repo));
@@ -114,12 +99,6 @@ function Panel({
   return (
     <>
       <div className="flex flex-wrap items-end gap-6">
-        <RepoPicker
-          repos={repos.map((r) => r.name)}
-          value={repo}
-          onChange={onRepoChange}
-          label="repo"
-        />
         <div className="flex flex-col gap-1.5">
           <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
             phase
@@ -139,7 +118,7 @@ function Panel({
           message={`Nothing streaming for ${repo} yet.`}
           actions={
             <Button asChild size="sm" className="font-mono">
-              <Link to="/instances">
+              <Link to="/run-once">
                 <Play className="size-4" aria-hidden="true" />
                 Run once
               </Link>
@@ -176,13 +155,4 @@ function phaseOptions(transcripts: TranscriptView[]): SegmentOption<string>[] {
     if (options.length > MAX_PHASES) break;
   }
   return options;
-}
-
-// sortRepos floats live repos to the top so the default selection is one that is
-// actively producing a transcript.
-function sortRepos(repos: RepoView[]): RepoView[] {
-  return [...repos].sort((a, b) => {
-    if (a.live !== b.live) return a.live ? -1 : 1;
-    return a.name.localeCompare(b.name);
-  });
 }

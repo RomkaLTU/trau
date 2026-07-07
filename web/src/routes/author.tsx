@@ -10,9 +10,9 @@ import { Button } from '@/components/ui/button'
 import {
   EmptyState,
   Eyebrow,
-  RepoPicker,
   SegmentedControl,
   TerminalCard,
+  useActiveRepo,
 } from '@/components/trau'
 import { cn } from '@/lib/utils'
 import { reposQueryOptions } from '@/lib/runs'
@@ -46,15 +46,7 @@ export const Route = createFileRoute('/author')({
 function Author() {
   const { tab } = Route.useSearch()
   const navigate = useNavigate({ from: Route.fullPath })
-  const { data, error, isPending } = useQuery(reposQueryOptions)
-  const [selected, setSelected] = useState<string | null>(null)
-
-  const repos = data?.repos ?? []
-  const repoNames = repos.map((r) => r.name)
-  const active =
-    selected && repos.some((r) => r.name === selected)
-      ? selected
-      : (repos.find((r) => r.live)?.name ?? repos[0]?.name ?? null)
+  const { repo: active, repos } = useActiveRepo()
 
   const setTab = (next: AuthorTab) =>
     navigate({ search: (prev) => ({ ...prev, tab: next }) })
@@ -80,35 +72,15 @@ function Author() {
         onChange={setTab}
       />
 
-      {error && (
-        <p className="font-mono text-sm text-destructive">{String(error)}</p>
-      )}
-      {isPending && !error && (
-        <p className="font-mono text-sm text-muted-foreground">Loading…</p>
-      )}
-
-      {data && repos.length === 0 && (
+      {repos.length === 0 && (
         <EmptyState
           className="min-h-[300px]"
           message="No repos yet. Issues and PRDs are filed to a repo's configured tracker, so one needs to appear here first."
         />
       )}
 
-      {active && tab === 'issue' && (
-        <NewIssuePanel
-          repo={active}
-          repos={repoNames}
-          onRepoChange={setSelected}
-        />
-      )}
-      {active && tab === 'prd' && (
-        <PrdPanel
-          key={active}
-          repo={active}
-          repos={repoNames}
-          onRepoChange={setSelected}
-        />
-      )}
+      {active && tab === 'issue' && <NewIssuePanel repo={active} />}
+      {active && tab === 'prd' && <PrdPanel key={active} repo={active} />}
     </div>
   )
 }
@@ -128,15 +100,7 @@ function useManagedLabels(repo: string): { ready?: string; suggested: string[] }
 const LABEL_FIELD =
   'font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground'
 
-function NewIssuePanel({
-  repo,
-  repos,
-  onRepoChange,
-}: {
-  repo: string
-  repos: string[]
-  onRepoChange: (repo: string) => void
-}) {
+function NewIssuePanel({ repo }: { repo: string }) {
   const { ready, suggested } = useManagedLabels(repo)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
@@ -185,13 +149,6 @@ function NewIssuePanel({
       <div className="lg:col-span-6">
         <TerminalCard title="new-issue">
           <form className="flex flex-col gap-6" onSubmit={submit}>
-            <RepoPicker
-              repos={repos}
-              value={repo}
-              onChange={onRepoChange}
-              label="repo"
-            />
-
             <div className="flex flex-col gap-1.5">
               <label htmlFor="issue-title" className={LABEL_FIELD}>
                 title
@@ -351,15 +308,7 @@ function NewIssuePanel({
   )
 }
 
-function PrdPanel({
-  repo,
-  repos,
-  onRepoChange,
-}: {
-  repo: string
-  repos: string[]
-  onRepoChange: (repo: string) => void
-}) {
+function PrdPanel({ repo }: { repo: string }) {
   const [draft, setDraft] = useState<PRDDraft>(
     () => loadDraft(repo) ?? { title: '', markdown: '' },
   )
@@ -383,12 +332,6 @@ function PrdPanel({
       mutation.data.kind === 'issue' ? 'issue' : 'project document'
     return (
       <div className="flex flex-col gap-6">
-        <RepoPicker
-          repos={repos}
-          value={repo}
-          onChange={onRepoChange}
-          label="repo"
-        />
         <TerminalCard title="published">
           <div className="flex flex-col gap-3 font-mono text-sm">
             <span className="inline-flex items-center gap-2 text-done">
@@ -425,29 +368,21 @@ function PrdPanel({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <RepoPicker
-          repos={repos}
-          value={repo}
-          onChange={onRepoChange}
-          label="repo"
-        />
-        <div className="flex items-center gap-3">
-          <Button
-            size="sm"
-            className="font-mono"
-            onClick={() => mutation.mutate()}
-            disabled={mutation.isPending || !canPublish}
-          >
-            <Send className="size-3.5" aria-hidden="true" />
-            {mutation.isPending ? 'Publishing…' : 'Publish PRD'}
-          </Button>
-          {mutation.error && (
-            <p className="font-mono text-xs text-fail">
-              {String((mutation.error as Error).message)}
-            </p>
-          )}
-        </div>
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        <Button
+          size="sm"
+          className="font-mono"
+          onClick={() => mutation.mutate()}
+          disabled={mutation.isPending || !canPublish}
+        >
+          <Send className="size-3.5" aria-hidden="true" />
+          {mutation.isPending ? 'Publishing…' : 'Publish PRD'}
+        </Button>
+        {mutation.error && (
+          <p className="font-mono text-xs text-fail">
+            {String((mutation.error as Error).message)}
+          </p>
+        )}
       </div>
 
       <input

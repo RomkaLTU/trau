@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { Outlet, createRootRouteWithContext } from '@tanstack/react-router'
 
+import { ActiveRepoProvider } from '@/components/trau/active-repo'
 import { AppShell } from '@/components/trau/app-shell'
 import { AwayRecap } from '@/components/away-recap'
 
@@ -10,11 +11,13 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 
 function RootLayout() {
   return (
-    <AppShell>
-      <div className="mx-auto max-w-5xl px-6 py-8">
-        <AwayRecap />
-        <Outlet />
-      </div>
-    </AppShell>
+    <ActiveRepoProvider>
+      <AppShell>
+        <div className="mx-auto max-w-5xl px-6 py-8">
+          <AwayRecap />
+          <Outlet />
+        </div>
+      </AppShell>
+    </ActiveRepoProvider>
   )
 }

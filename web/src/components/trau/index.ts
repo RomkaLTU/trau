@@ -1,5 +1,7 @@
 export { AppShell } from './app-shell'
 export { Sidebar } from './sidebar'
+export { ActiveRepoProvider, useActiveRepo } from './active-repo'
+export { RepoSwitcher } from './repo-switcher'
 export { PageHeader } from './page-header'
 export { Eyebrow, type EyebrowGlyph } from './eyebrow'
 export { StatusPill, type RunState } from './status-pill'

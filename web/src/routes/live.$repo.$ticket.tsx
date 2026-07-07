@@ -1,6 +1,8 @@
+import { useEffect } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { ArrowLeft } from 'lucide-react'
 
+import { useActiveRepo } from '@/components/trau'
 import { RunView } from '@/components/trau/run-view'
 
 export const Route = createFileRoute('/live/$repo/$ticket')({
@@ -9,6 +11,12 @@ export const Route = createFileRoute('/live/$repo/$ticket')({
 
 function LiveRunPage() {
   const { repo, ticket } = Route.useParams()
+  const { setRepo } = useActiveRepo()
+
+  useEffect(() => {
+    setRepo(repo)
+  }, [repo, setRepo])
+
   return (
     <div className="flex flex-col gap-4">
       <Link
