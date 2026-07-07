@@ -23,9 +23,15 @@ const (
 	KindEpic   Kind = "epic"
 )
 
-// StatusPending marks a queued item the hub has not started draining. It is the
-// only status registration produces; draining lands the terminal states.
-const StatusPending = "pending"
+// The statuses an item moves through as the hub drains the queue: registration
+// lands it Pending, draining marks it Running, and the child's outcome settles
+// it Done or Failed.
+const (
+	StatusPending = "pending"
+	StatusRunning = "running"
+	StatusDone    = "done"
+	StatusFailed  = "failed"
+)
 
 // SubIssue is one child an epic item carries, captured when the epic is queued
 // so the queue records what an epic run will cover.
@@ -36,12 +42,14 @@ type SubIssue struct {
 }
 
 // Item is one queued unit of work — a run-once ticket or an epic. Its position
-// is implicit in the queue's order.
+// is implicit in the queue's order. PID is the child the hub spawned to run it,
+// set while Running so a resumed hub can tell whether that child is still alive.
 type Item struct {
 	Kind      Kind       `json:"kind"`
 	ID        string     `json:"id"`
 	Title     string     `json:"title,omitempty"`
 	Status    string     `json:"status"`
+	PID       int        `json:"pid,omitempty"`
 	SubIssues []SubIssue `json:"sub_issues,omitempty"`
 	QueuedAt  time.Time  `json:"queued_at"`
 }
@@ -52,6 +60,9 @@ var (
 	ErrAlreadyQueued = errors.New("already in the queue")
 	// ErrNotQueued is returned when removing an item the queue does not hold.
 	ErrNotQueued = errors.New("not in the queue")
+	// ErrRunning is returned when removing an item the hub is currently
+	// draining, so a running child is never orphaned by a dequeue.
+	ErrRunning = errors.New("cannot remove a running item")
 )
 
 var mu sync.Mutex
@@ -67,7 +78,8 @@ func NewStore(root string) *Store {
 }
 
 type file struct {
-	Items []Item `json:"items"`
+	Draining bool   `json:"draining,omitempty"`
+	Items    []Item `json:"items"`
 }
 
 // Load returns the queue in registration order, empty when nothing has been
@@ -75,7 +87,23 @@ type file struct {
 func (s *Store) Load() ([]Item, error) {
 	mu.Lock()
 	defer mu.Unlock()
-	return s.load()
+	f, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	return f.Items, nil
+}
+
+// Snapshot returns the queue in registration order along with whether the hub is
+// draining it, the two facts the Queue view and the drainer both read.
+func (s *Store) Snapshot() ([]Item, bool, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	f, err := s.load()
+	if err != nil {
+		return nil, false, err
+	}
+	return f.Items, f.Draining, nil
 }
 
 // Add appends item to the end of the queue, stamping it pending and recording
@@ -84,37 +112,41 @@ func (s *Store) Load() ([]Item, error) {
 func (s *Store) Add(item Item) ([]Item, error) {
 	mu.Lock()
 	defer mu.Unlock()
-	items, err := s.load()
+	f, err := s.load()
 	if err != nil {
 		return nil, err
 	}
-	for _, it := range items {
+	for _, it := range f.Items {
 		if it.ID == item.ID {
 			return nil, ErrAlreadyQueued
 		}
 	}
 	item.Status = StatusPending
 	item.QueuedAt = time.Now().UTC()
-	items = append(items, item)
-	if err := s.save(items); err != nil {
+	f.Items = append(f.Items, item)
+	if err := s.save(f); err != nil {
 		return nil, err
 	}
-	return items, nil
+	return f.Items, nil
 }
 
 // Remove drops the queued item with id, keeping the order of the rest, and
-// returns the resulting queue. It reports ErrNotQueued when nothing matches.
+// returns the resulting queue. It reports ErrNotQueued when nothing matches and
+// ErrRunning when the item is currently being drained.
 func (s *Store) Remove(id string) ([]Item, error) {
 	mu.Lock()
 	defer mu.Unlock()
-	items, err := s.load()
+	f, err := s.load()
 	if err != nil {
 		return nil, err
 	}
-	kept := make([]Item, 0, len(items))
+	kept := make([]Item, 0, len(f.Items))
 	found := false
-	for _, it := range items {
+	for _, it := range f.Items {
 		if it.ID == id {
+			if it.Status == StatusRunning {
+				return nil, ErrRunning
+			}
 			found = true
 			continue
 		}
@@ -123,36 +155,82 @@ func (s *Store) Remove(id string) ([]Item, error) {
 	if !found {
 		return nil, ErrNotQueued
 	}
-	if err := s.save(kept); err != nil {
+	f.Items = kept
+	if err := s.save(f); err != nil {
 		return nil, err
-	}
-	return kept, nil
-}
-
-func (s *Store) load() ([]Item, error) {
-	data, err := os.ReadFile(s.path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []Item{}, nil
-		}
-		return nil, err
-	}
-	var f file
-	if err := json.Unmarshal(data, &f); err != nil {
-		return nil, err
-	}
-	if f.Items == nil {
-		return []Item{}, nil
 	}
 	return f.Items, nil
 }
 
-func (s *Store) save(items []Item) error {
+// SetDraining records whether the hub is draining this queue. It survives a
+// serve restart with the rest of the file, so a resumed hub picks draining back
+// up where it left off.
+func (s *Store) SetDraining(draining bool) error {
+	mu.Lock()
+	defer mu.Unlock()
+	f, err := s.load()
+	if err != nil {
+		return err
+	}
+	if f.Draining == draining {
+		return nil
+	}
+	f.Draining = draining
+	return s.save(f)
+}
+
+// MarkRunning moves an item to running and records the child that runs it, so a
+// resumed hub can probe whether that child is still alive.
+func (s *Store) MarkRunning(id string, pid int) error {
+	return s.setStatus(id, StatusRunning, pid)
+}
+
+// Finish settles a running item at its terminal status and clears its child pid.
+func (s *Store) Finish(id, status string) error {
+	return s.setStatus(id, status, 0)
+}
+
+func (s *Store) setStatus(id, status string, pid int) error {
+	mu.Lock()
+	defer mu.Unlock()
+	f, err := s.load()
+	if err != nil {
+		return err
+	}
+	for i := range f.Items {
+		if f.Items[i].ID == id {
+			f.Items[i].Status = status
+			f.Items[i].PID = pid
+			return s.save(f)
+		}
+	}
+	return ErrNotQueued
+}
+
+func (s *Store) load() (file, error) {
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return file{Items: []Item{}}, nil
+		}
+		return file{}, err
+	}
+	var f file
+	if err := json.Unmarshal(data, &f); err != nil {
+		return file{}, err
+	}
+	if f.Items == nil {
+		f.Items = []Item{}
+	}
+	return f, nil
+}
+
+func (s *Store) save(f file) error {
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(file{Items: items}, "", "  ")
+	data, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		return err
 	}

@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+
+	"github.com/RomkaLTU/trau/internal/queue"
 )
 
 // queueServer builds a server whose allowlist holds one Registered repo whose
@@ -226,6 +228,29 @@ func TestDequeueUnknownItem(t *testing.T) {
 	res, _ := deleteReq(t, ts, APIPrefix+"/repos/acme/queue/COD-404")
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 for an item not in the queue", res.StatusCode)
+	}
+}
+
+// TestDequeueRunningRefused proves the backend, not just the disabled UI button,
+// rejects removing an item the hub is draining — so a Remove that races the
+// drainer promoting the item to running cannot orphan the just-spawned child.
+func TestDequeueRunningRefused(t *testing.T) {
+	_, root, ts := queueServer(t, "acme")
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: "COD-1"})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("enqueue = %d, want 201", res.StatusCode)
+	}
+	if err := queue.NewStore(root).MarkRunning("COD-1", 4242); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+
+	del, body := deleteReq(t, ts, APIPrefix+"/repos/acme/queue/COD-1")
+	if del.StatusCode != http.StatusConflict {
+		t.Fatalf("delete running = %d, want 409 (body %q)", del.StatusCode, body)
+	}
+	if _, out := getQueue(t, ts, "acme"); len(out.Items) != 1 || out.Items[0].ID != "COD-1" {
+		t.Errorf("queue = %+v, want the running COD-1 kept", out.Items)
 	}
 }
 

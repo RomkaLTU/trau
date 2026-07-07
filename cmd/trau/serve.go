@@ -89,7 +89,9 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) error {
 	}
 
 	addr := net.JoinHostPort(cfg.ServeBind, strconv.Itoa(cfg.ServePort))
-	srv := &http.Server{Addr: addr, Handler: webserver.New(version, cfg.ServeBind, cfg.ServeToken, cfg.ServeWorkspace, cfg.ServeAllowRegister).Handler()}
+	hub := webserver.New(version, cfg.ServeBind, cfg.ServeToken, cfg.ServeWorkspace, cfg.ServeAllowRegister)
+	hub.Start(ctx)
+	srv := &http.Server{Addr: addr, Handler: hub.Handler()}
 
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {

@@ -36,10 +36,18 @@ type QueueItemView struct {
 }
 
 // QueueResponse is the /repos/{repo}/queue resource: the repo's queue in
-// registration order.
+// registration order and whether the hub is currently draining it.
 type QueueResponse struct {
-	Repo  string          `json:"repo"`
-	Items []QueueItemView `json:"items"`
+	Repo     string          `json:"repo"`
+	Draining bool            `json:"draining"`
+	Items    []QueueItemView `json:"items"`
+}
+
+// DrainRequest is the body of POST /repos/{repo}/queue/drain: whether the hub
+// should be draining the repo's queue. Setting it true starts sequential
+// execution; false pauses it, taking effect after the current child exits.
+type DrainRequest struct {
+	Draining bool `json:"draining"`
 }
 
 func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +71,40 @@ func (s *Server) handleQueueItem(w http.ResponseWriter, r *http.Request) {
 	s.dequeue(w, r)
 }
 
+// handleQueueDrain starts or pauses draining a repo's queue. Starting flips the
+// persisted draining flag and launches the drain loop; pausing clears the flag
+// and the loop stops after the current child exits — there is no mid-run kill
+// (Stop remains the per-run action). It is gated on the workspace allowlist like
+// registration: only a Registered repo can be drained.
+func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	name := r.PathValue("repo")
+	root, ok := s.allowedRoot(name)
+	if !ok {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": fmt.Sprintf("repo %q is observe-only; only a Registered repo can be drained — register it first", name),
+		})
+		return
+	}
+	var req DrainRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if err := queue.NewStore(root).SetDraining(req.Draining); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "set draining: " + err.Error()})
+		return
+	}
+	if req.Draining {
+		s.drain.ensure(s.drainCtx, root)
+	}
+	s.writeQueue(w, http.StatusOK, root)
+}
+
 // viewQueue lists a repo's queue scoped to the Active repo, in registration
 // order with each item's position. It reads whatever queue file exists, so an
 // observe-only repo the hub has seen run answers an empty queue rather than an
@@ -73,12 +115,20 @@ func (s *Server) viewQueue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
 		return
 	}
-	items, err := queue.NewStore(root).Load()
+	s.writeQueue(w, http.StatusOK, root)
+}
+
+// writeQueue answers with the repo's current queue: its items in registration
+// order and whether the hub is draining it. Every handler that mutates the queue
+// ends here, so the response always reflects the persisted draining flag rather
+// than the caller's local view of it.
+func (s *Server) writeQueue(w http.ResponseWriter, status int, root string) {
+	items, draining, err := queue.NewStore(root).Snapshot()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read queue: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, QueueResponse{Repo: filepath.Base(root), Items: queueItemViews(items)})
+	writeJSON(w, status, QueueResponse{Repo: filepath.Base(root), Draining: draining, Items: queueItemViews(items)})
 }
 
 // enqueue registers a ticket or epic for execution. It is gated on the workspace
@@ -120,20 +170,19 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		}
 		item.SubIssues = toQueueSubIssues(subs)
 	}
-	items, err := queue.NewStore(root).Add(item)
-	if errors.Is(err, queue.ErrAlreadyQueued) {
+	if _, err := queue.NewStore(root).Add(item); errors.Is(err, queue.ErrAlreadyQueued) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s is already in the queue", id)})
 		return
-	}
-	if err != nil {
+	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "enqueue: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, QueueResponse{Repo: filepath.Base(root), Items: queueItemViews(items)})
+	s.writeQueue(w, http.StatusCreated, root)
 }
 
-// dequeue removes a pending item from the queue by identifier, returning the
-// resulting queue. It reports 404 when the item is not queued.
+// dequeue removes a pending or terminal item from the queue by identifier,
+// returning the resulting queue. It reports 404 when the item is not queued and
+// 409 when it is running, so a running child is never orphaned by a dequeue.
 func (s *Server) dequeue(w http.ResponseWriter, r *http.Request) {
 	root, ok := s.queueRoot(r.PathValue("repo"))
 	if !ok {
@@ -141,16 +190,17 @@ func (s *Server) dequeue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))
-	items, err := queue.NewStore(root).Remove(id)
-	if errors.Is(err, queue.ErrNotQueued) {
+	if _, err := queue.NewStore(root).Remove(id); errors.Is(err, queue.ErrNotQueued) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("%s is not in the queue", id)})
 		return
-	}
-	if err != nil {
+	} else if errors.Is(err, queue.ErrRunning) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s is running and cannot be removed", id)})
+		return
+	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "dequeue: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, QueueResponse{Repo: filepath.Base(root), Items: queueItemViews(items)})
+	s.writeQueue(w, http.StatusOK, root)
 }
 
 // queueRoot resolves a repo identifier to its root for queue operations: a
