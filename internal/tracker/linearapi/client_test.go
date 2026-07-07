@@ -139,6 +139,52 @@ func TestAddCommentPostsBody(t *testing.T) {
 	}
 }
 
+func TestTeamBacklogPaginatesAndMaps(t *testing.T) {
+	var afters []any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req graphReq
+		_ = json.Unmarshal(body, &req)
+		afters = append(afters, req.Variables["after"])
+		w.Header().Set("Content-Type", "application/json")
+		if req.Variables["after"] == nil {
+			_, _ = io.WriteString(w, `{"data":{"issues":{"pageInfo":{"hasNextPage":true,"endCursor":"cur-1"},"nodes":[
+				{"identifier":"COD-10","title":"Epic","state":{"name":"Backlog","type":"backlog"},"project":{"name":"Trau Web"},"parent":{"identifier":""},"labels":{"nodes":[{"id":"l1","name":"epic"}]},"children":{"nodes":[{"id":"c1"}]}}
+			]}}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"data":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[
+			{"identifier":"COD-11","title":"Child","state":{"name":"Todo","type":"unstarted"},"project":{"name":"Trau Web"},"parent":{"identifier":"COD-10"},"labels":{"nodes":[{"id":"l2","name":"ready-for-agent"}]},"children":{"nodes":[]}}
+		]}}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New("lin_key")
+	c.Endpoint = srv.URL
+	issues, err := c.TeamBacklog(context.Background(), "team-1")
+	if err != nil {
+		t.Fatalf("TeamBacklog: %v", err)
+	}
+
+	if len(afters) != 2 || afters[0] != nil || afters[1] != "cur-1" {
+		t.Fatalf("pagination cursors = %v, want [<nil> cur-1]", afters)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("issues = %d, want 2 across both pages", len(issues))
+	}
+	epic := issues[0]
+	if epic.Identifier != "COD-10" || epic.State.Type != "backlog" || !epic.HasChildren || epic.ParentID != "" {
+		t.Errorf("epic = %+v, want COD-10 backlog with children and no parent", epic)
+	}
+	if epic.ProjectName != "Trau Web" || len(epic.Labels) != 1 || epic.Labels[0].Name != "epic" {
+		t.Errorf("epic project/labels = %+v", epic)
+	}
+	child := issues[1]
+	if child.Identifier != "COD-11" || child.ParentID != "COD-10" || child.HasChildren {
+		t.Errorf("child = %+v, want COD-11 parented to COD-10 with no children", child)
+	}
+}
+
 func lastMatching(reqs []graphReq, needle string) *graphReq {
 	for i := len(reqs) - 1; i >= 0; i-- {
 		if strings.Contains(reqs[i].Query, needle) {

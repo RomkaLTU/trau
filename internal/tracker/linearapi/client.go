@@ -216,6 +216,53 @@ func issueNumber(id string) int {
 	return n
 }
 
+// BacklogIssue is one issue in a team's full backlog, carrying the fields the
+// backlog board needs: workflow state, owning project, epic parent, labels, and
+// whether the issue is itself a parent of sub-issues.
+type BacklogIssue struct {
+	Identifier  string
+	Title       string
+	State       State
+	ProjectName string
+	ParentID    string
+	Labels      []Label
+	HasChildren bool
+}
+
+// backlogMaxPages bounds the cursor-pagination loop so a huge team can't spin the
+// backlog fetch indefinitely.
+const backlogMaxPages = 100
+
+// TeamBacklog returns every issue in a team, paging through the cursor until the
+// last page (or backlogMaxPages). Unlike Pick it applies no label or state
+// filter — the backlog board shows the whole team, and the caller narrows to the
+// owned project.
+func (c *Client) TeamBacklog(ctx context.Context, teamID string) ([]BacklogIssue, error) {
+	if c.apiKey == "" {
+		return nil, ErrNotEnabled
+	}
+	var out []BacklogIssue
+	after := ""
+	for page := 0; page < backlogMaxPages; page++ {
+		vars := map[string]any{"teamId": teamID}
+		if after != "" {
+			vars["after"] = after
+		}
+		var dst backlogQueryResponse
+		if err := c.do(ctx, backlogQuery, vars, &dst); err != nil {
+			return nil, err
+		}
+		for i := range dst.Data.Issues.Nodes {
+			out = append(out, dst.Data.Issues.Nodes[i].toBacklogIssue())
+		}
+		if !dst.Data.Issues.PageInfo.HasNextPage || dst.Data.Issues.PageInfo.EndCursor == "" {
+			break
+		}
+		after = dst.Data.Issues.PageInfo.EndCursor
+	}
+	return out, nil
+}
+
 // ListTeams returns all teams visible to the API key.
 func (c *Client) ListTeams(ctx context.Context) ([]Team, error) {
 	if c.apiKey == "" {
@@ -556,6 +603,18 @@ type pickQueryResponse struct {
 	} `json:"data"`
 }
 
+type backlogQueryResponse struct {
+	Data struct {
+		Issues struct {
+			PageInfo struct {
+				HasNextPage bool   `json:"hasNextPage"`
+				EndCursor   string `json:"endCursor"`
+			} `json:"pageInfo"`
+			Nodes []backlogNode `json:"nodes"`
+		} `json:"issues"`
+	} `json:"data"`
+}
+
 type teamsQueryResponse struct {
 	Data struct {
 		Teams struct {
@@ -713,6 +772,39 @@ type issueNode struct {
 	InverseRelations struct {
 		Nodes []relationNode `json:"nodes"`
 	} `json:"inverseRelations"`
+}
+
+type backlogNode struct {
+	Identifier string      `json:"identifier"`
+	Title      string      `json:"title"`
+	State      stateNode   `json:"state"`
+	Project    projectNode `json:"project"`
+	Parent     struct {
+		Identifier string `json:"identifier"`
+	} `json:"parent"`
+	Labels struct {
+		Nodes []labelNode `json:"nodes"`
+	} `json:"labels"`
+	Children struct {
+		Nodes []struct {
+			ID string `json:"id"`
+		} `json:"nodes"`
+	} `json:"children"`
+}
+
+func (n *backlogNode) toBacklogIssue() BacklogIssue {
+	iss := BacklogIssue{
+		Identifier:  n.Identifier,
+		Title:       n.Title,
+		State:       State(n.State),
+		ProjectName: n.Project.Name,
+		ParentID:    n.Parent.Identifier,
+		HasChildren: len(n.Children.Nodes) > 0,
+	}
+	for _, l := range n.Labels.Nodes {
+		iss.Labels = append(iss.Labels, Label(l))
+	}
+	return iss
 }
 
 type pickNode struct {

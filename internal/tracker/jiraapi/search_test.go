@@ -37,6 +37,56 @@ func TestEligibleJQL(t *testing.T) {
 	}
 }
 
+func TestBacklogPostsJQLAndMaps(t *testing.T) {
+	const payload = `{"issues":[
+		{"key":"PROJ-1","fields":{
+			"summary":"An epic","status":{"name":"In Progress","statusCategory":{"key":"indeterminate"}},
+			"issuetype":{"hierarchyLevel":1},"labels":["epic"]
+		}},
+		{"key":"PROJ-2","fields":{
+			"summary":"Ready child","status":{"name":"To Do","statusCategory":{"key":"new"}},
+			"issuetype":{"hierarchyLevel":0},"labels":["ready-for-agent"],
+			"parent":{"key":"PROJ-1"}
+		}},
+		{"key":"PROJ-3","fields":{
+			"summary":"Abandoned","status":{"name":"Closed","statusCategory":{"key":"done"}},
+			"issuetype":{"hierarchyLevel":0},"resolution":{"name":"Won't Do"}
+		}}
+	]}`
+
+	var gotReq searchRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotReq)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	items, err := New(srv.URL, "me@acme.com", "tok").Backlog(context.Background(), "PROJ")
+	if err != nil {
+		t.Fatalf("Backlog error: %v", err)
+	}
+	if !strings.Contains(gotReq.JQL, `project = "PROJ"`) || strings.Contains(gotReq.JQL, "labels =") || strings.Contains(gotReq.JQL, "statusCategory") {
+		t.Errorf("backlog JQL should scope to project only, got %q", gotReq.JQL)
+	}
+	if !reflect.DeepEqual(gotReq.Fields, backlogFields) {
+		t.Errorf("request fields = %v, want %v", gotReq.Fields, backlogFields)
+	}
+	if len(items) != 3 {
+		t.Fatalf("items = %d, want 3", len(items))
+	}
+	if !items[0].IsEpic || items[0].StatusCategory != "indeterminate" || items[0].ParentKey != "" {
+		t.Errorf("items[0] = %+v, want the epic", items[0])
+	}
+	if items[1].ParentKey != "PROJ-1" || items[1].IsEpic || len(items[1].Labels) != 1 || items[1].Labels[0] != "ready-for-agent" {
+		t.Errorf("items[1] = %+v, want ready child parented to PROJ-1", items[1])
+	}
+	if items[2].StatusCategory != "done" || items[2].Resolution != "Won't Do" {
+		t.Errorf("items[2] = %+v, want a done/won't-do resolution", items[2])
+	}
+}
+
 func TestJQLQuote(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{`PROJ`, `"PROJ"`},
