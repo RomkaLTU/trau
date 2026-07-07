@@ -1509,7 +1509,7 @@ func menuHelp() screenHelp {
 	return screenHelp{title: "Menu", columns: []helpColumn{
 		group("Navigate", fk("↑↓", "move"), xk("j/k", "move")),
 		group("Actions", fk("enter", "select"), fk("q", "quit")),
-		group("Global", xk("ctrl+p / :", "command palette"), xk("ctrl+t", "toggle mouse (select text)")),
+		group("Global", xk("ctrl+p / :", "command palette"), xk("ctrl+t", "toggle mouse (select text)"), xk("⇧ drag", "select text (⌥ on iTerm2/Terminal.app)")),
 	}}
 }
 
@@ -1530,7 +1530,7 @@ func statusHelp() screenHelp {
 			fk("b", "checkout branch"),
 			fk("x", "reset"),
 		),
-		group("Session", fk("R", "reconcile"), fk("esc/q", "back"), xk("ctrl+t", "toggle mouse (select text)")),
+		group("Session", fk("R", "reconcile"), fk("esc/q", "back"), xk("ctrl+t", "toggle mouse (select text)"), xk("⇧ drag", "select text (⌥ on iTerm2/Terminal.app)")),
 	}}
 }
 

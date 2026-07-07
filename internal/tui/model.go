@@ -93,6 +93,7 @@ func (m model) runningHelp() screenHelp {
 			fk("q", "stop run (q again to confirm)"),
 			xk("ctrl+c", "force quit"),
 			xk("ctrl+t", "toggle mouse (select text)"),
+			xk("⇧ drag", "select text (⌥ on iTerm2/Terminal.app)"),
 		),
 	}}
 }
@@ -144,7 +145,7 @@ func (m model) summaryHelp() screenHelp {
 			fk("b", "checkout branch"),
 			fk("x", "reset ticket"),
 		),
-		group("Session", fk("esc/q", "close"), xk("ctrl+t", "toggle mouse (select text)")),
+		group("Session", fk("esc/q", "close"), xk("ctrl+t", "toggle mouse (select text)"), xk("⇧ drag", "select text (⌥ on iTerm2/Terminal.app)")),
 	}}
 }
 

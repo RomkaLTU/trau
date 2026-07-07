@@ -263,7 +263,7 @@ func (m logsModel) help() screenHelp {
 			xk("shift+↑↓", "half-page"),
 			fk("g/G", "jump"),
 		),
-		group("Session", fk("y", "copy log"), fk("esc/q", "back"), xk("ctrl+t", "toggle mouse (select text)")),
+		group("Session", fk("y", "copy log"), fk("esc/q", "back"), xk("ctrl+t", "toggle mouse (select text)"), xk("⇧ drag", "select text (⌥ on iTerm2/Terminal.app)")),
 	}}
 }
 
