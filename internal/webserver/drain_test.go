@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/queue"
+	"github.com/RomkaLTU/trau/internal/state"
 )
 
 // drainServer builds a server whose allowlist holds one Registered repo, with a
@@ -24,7 +25,7 @@ func drainServer(t *testing.T, name string) (*Server, *fakeSupervisor, string) {
 	s.sup = fake
 	s.drain.repoLive = func(string) bool { return false }
 	s.drain.alive = func(int) bool { return false }
-	s.drain.outcome = func(string, queue.Item) string { return queue.StatusDone }
+	s.drain.outcome = func(string, queue.Item) (string, string) { return "", "" }
 	return s, fake, root
 }
 
@@ -46,8 +47,12 @@ func seedQueue(t *testing.T, root string, draining bool, items ...queue.Item) {
 			if err := st.MarkRunning(it.ID, it.PID); err != nil {
 				t.Fatalf("seed running %s: %v", it.ID, err)
 			}
+		case queue.StatusPaused:
+			if err := st.Pause(it.ID, it.Reason); err != nil {
+				t.Fatalf("seed paused %s: %v", it.ID, err)
+			}
 		case queue.StatusDone, queue.StatusFailed:
-			if err := st.Finish(it.ID, it.Status); err != nil {
+			if err := st.Finish(it.ID, it.Status, it.Reason); err != nil {
 				t.Fatalf("seed finish %s: %v", it.ID, err)
 			}
 		}
@@ -77,6 +82,26 @@ func statusOf(t *testing.T, root, id string) string {
 	return ""
 }
 
+func reasonOf(t *testing.T, root, id string) string {
+	t.Helper()
+	for _, it := range snapshot(t, root) {
+		if it.ID == id {
+			return it.Reason
+		}
+	}
+	t.Fatalf("item %s missing from queue", id)
+	return ""
+}
+
+func drainingOf(t *testing.T, root string) bool {
+	t.Helper()
+	_, draining, err := queue.NewStore(root).Snapshot()
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	return draining
+}
+
 func countStatus(t *testing.T, root, status string) int {
 	t.Helper()
 	n := 0
@@ -99,19 +124,23 @@ func runningItem(t *testing.T, root string) (queue.Item, bool) {
 
 // TestDrainTickDecisions table-drives one tick over staged queue states: it
 // covers spawning the next pending item, waiting on a live child, settling a
-// finished one to done or failed, the single-child guarantee, waiting on an
-// external live run, and pausing.
+// finished one, the three failure classes (give-up settles failed and drains on;
+// fault and provider pause park the item and stop the drain), the single-child
+// guarantee, waiting on an external live run, and pausing.
 func TestDrainTickDecisions(t *testing.T) {
 	tests := []struct {
-		name       string
-		items      []queue.Item
-		draining   bool
-		alive      map[int]bool
-		repoLive   bool
-		outcome    string
-		wantAction drainAction
-		wantSpawns int
-		wantStatus map[string]string
+		name          string
+		items         []queue.Item
+		draining      bool
+		alive         map[int]bool
+		repoLive      bool
+		outcomeClass  string
+		outcomeReason string
+		wantAction    drainAction
+		wantSpawns    int
+		wantStatus    map[string]string
+		wantReason    map[string]string
+		wantDraining  *bool
 	}{
 		{
 			name:       "spawns the first pending item",
@@ -120,6 +149,15 @@ func TestDrainTickDecisions(t *testing.T) {
 			wantAction: drainSpawn,
 			wantSpawns: 1,
 			wantStatus: map[string]string{"COD-1": queue.StatusRunning, "COD-2": queue.StatusPending},
+		},
+		{
+			name:       "re-attempts a paused item ahead of a pending one",
+			items:      []queue.Item{{ID: "COD-1", Status: queue.StatusPaused, Reason: "was faulted"}, {ID: "COD-2"}},
+			draining:   true,
+			wantAction: drainSpawn,
+			wantSpawns: 1,
+			wantStatus: map[string]string{"COD-1": queue.StatusRunning, "COD-2": queue.StatusPending},
+			wantReason: map[string]string{"COD-1": ""},
 		},
 		{
 			name:       "waits while the child is alive",
@@ -139,13 +177,40 @@ func TestDrainTickDecisions(t *testing.T) {
 			wantStatus: map[string]string{"COD-1": queue.StatusDone},
 		},
 		{
-			name:       "settles a finished child to failed",
-			items:      []queue.Item{{ID: "COD-1", Status: queue.StatusRunning, PID: 7}},
-			draining:   true,
-			outcome:    queue.StatusFailed,
-			wantAction: drainReconcile,
-			wantSpawns: 0,
-			wantStatus: map[string]string{"COD-1": queue.StatusFailed},
+			name:          "give-up settles failed and keeps draining",
+			items:         []queue.Item{{ID: "COD-1", Status: queue.StatusRunning, PID: 7}},
+			draining:      true,
+			outcomeClass:  state.FailGaveUp,
+			outcomeReason: "verify never went green",
+			wantAction:    drainReconcile,
+			wantSpawns:    0,
+			wantStatus:    map[string]string{"COD-1": queue.StatusFailed},
+			wantReason:    map[string]string{"COD-1": "verify never went green"},
+			wantDraining:  boolPtr(true),
+		},
+		{
+			name:          "fault pauses the queue and parks the item",
+			items:         []queue.Item{{ID: "COD-1", Status: queue.StatusRunning, PID: 7}, {ID: "COD-2"}},
+			draining:      true,
+			outcomeClass:  state.FailFaulted,
+			outcomeReason: "unexpected error during handoff",
+			wantAction:    drainReconcile,
+			wantSpawns:    0,
+			wantStatus:    map[string]string{"COD-1": queue.StatusPaused, "COD-2": queue.StatusPending},
+			wantReason:    map[string]string{"COD-1": "unexpected error during handoff"},
+			wantDraining:  boolPtr(false),
+		},
+		{
+			name:          "provider pause stops the queue with its reason",
+			items:         []queue.Item{{ID: "COD-1", Status: queue.StatusRunning, PID: 7}},
+			draining:      true,
+			outcomeClass:  state.FailPaused,
+			outcomeReason: "claude authentication required — re-login",
+			wantAction:    drainReconcile,
+			wantSpawns:    0,
+			wantStatus:    map[string]string{"COD-1": queue.StatusPaused},
+			wantReason:    map[string]string{"COD-1": "claude authentication required — re-login"},
+			wantDraining:  boolPtr(false),
 		},
 		{
 			name:       "never spawns a second child while one runs",
@@ -195,8 +260,10 @@ func TestDrainTickDecisions(t *testing.T) {
 			s, fake, root := drainServer(t, "acme")
 			s.drain.repoLive = func(string) bool { return tc.repoLive }
 			s.drain.alive = func(pid int) bool { return tc.alive[pid] }
-			if tc.outcome != "" {
-				s.drain.outcome = func(string, queue.Item) string { return tc.outcome }
+			if tc.outcomeClass != "" {
+				s.drain.outcome = func(string, queue.Item) (string, string) {
+					return tc.outcomeClass, tc.outcomeReason
+				}
 			}
 			seedQueue(t, root, tc.draining, tc.items...)
 
@@ -215,8 +282,139 @@ func TestDrainTickDecisions(t *testing.T) {
 					t.Errorf("%s status = %q, want %q", id, got, want)
 				}
 			}
+			for id, want := range tc.wantReason {
+				if got := reasonOf(t, root, id); got != want {
+					t.Errorf("%s reason = %q, want %q", id, got, want)
+				}
+			}
+			if tc.wantDraining != nil {
+				if got := drainingOf(t, root); got != *tc.wantDraining {
+					t.Errorf("draining = %v, want %v", got, *tc.wantDraining)
+				}
+			}
 		})
 	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// TestClassifyDrainOutcome table-drives the outcome-class → queue-action mapping
+// for every class the loop records: a clean finish and a give-up drain on (done /
+// failed), while a fault and a provider pause park the item and stop the drain.
+func TestClassifyDrainOutcome(t *testing.T) {
+	tests := []struct {
+		name       string
+		class      string
+		wantStatus string
+		wantPause  bool
+	}{
+		{name: "clean finish settles done", class: "", wantStatus: queue.StatusDone, wantPause: false},
+		{name: "give-up settles failed and drains on", class: state.FailGaveUp, wantStatus: queue.StatusFailed, wantPause: false},
+		{name: "fault pauses the queue", class: state.FailFaulted, wantStatus: queue.StatusPaused, wantPause: true},
+		{name: "provider pause pauses the queue", class: state.FailPaused, wantStatus: queue.StatusPaused, wantPause: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			status, pause := classifyDrainOutcome(tc.class)
+			if status != tc.wantStatus || pause != tc.wantPause {
+				t.Errorf("classifyDrainOutcome(%q) = (%q, %v), want (%q, %v)", tc.class, status, pause, tc.wantStatus, tc.wantPause)
+			}
+		})
+	}
+}
+
+// TestCheckpointOutcomeReadsRecordedState proves the outcome is read from the
+// run's recorded checkpoint — its phase and the loop's own failure marker/reason
+// — and never from agent output.
+func TestCheckpointOutcomeReadsRecordedState(t *testing.T) {
+	tests := []struct {
+		name       string
+		phase      string
+		failClass  string
+		reason     string
+		wantClass  string
+		wantReason string
+	}{
+		{name: "merged is a clean finish", phase: state.Merged, wantClass: "", wantReason: ""},
+		{name: "quarantine reads as give-up", phase: state.Quarantined, reason: "verify never went green", wantClass: state.FailGaveUp, wantReason: "verify never went green"},
+		{name: "fault marker reads as fault", phase: state.HandedOff, failClass: state.FailFaulted, reason: "unexpected error during handoff", wantClass: state.FailFaulted, wantReason: "unexpected error during handoff"},
+		{name: "pause marker reads as provider pause", phase: state.Building, failClass: state.FailPaused, reason: "claude authentication required", wantClass: state.FailPaused, wantReason: "claude authentication required"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, root := drainServer(t, "acme")
+			st := state.NewStore(filepath.Join(root, ".trau", "runs"))
+			if err := st.Set("COD-1", "PHASE", tc.phase); err != nil {
+				t.Fatalf("seed phase: %v", err)
+			}
+			if tc.failClass != "" {
+				if err := st.Set("COD-1", "FAILURE_CLASS", tc.failClass); err != nil {
+					t.Fatalf("seed class: %v", err)
+				}
+			}
+			if tc.reason != "" {
+				if err := st.Set("COD-1", "FAILURE_REASON", tc.reason); err != nil {
+					t.Fatalf("seed reason: %v", err)
+				}
+			}
+			class, reason := s.drain.checkpointOutcome(root, queue.Item{ID: "COD-1"})
+			if class != tc.wantClass || reason != tc.wantReason {
+				t.Errorf("checkpointOutcome = (%q, %q), want (%q, %q)", class, reason, tc.wantClass, tc.wantReason)
+			}
+		})
+	}
+}
+
+// TestDrainPauseAndResumeReattemptsItem faults an in-flight child: the queue
+// pauses with the item parked and its reason surfaced, stays stopped until a
+// resume, then re-attempts that same item before the one behind it.
+func TestDrainPauseAndResumeReattemptsItem(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	class, reason := state.FailFaulted, "unexpected error during handoff"
+	s.drain.outcome = func(string, queue.Item) (string, string) { return class, reason }
+	seedQueue(t, root, true,
+		queue.Item{ID: "COD-1", Status: queue.StatusRunning, PID: 7},
+		queue.Item{ID: "COD-2"},
+	)
+
+	if act, _ := s.drain.tick(root); act != drainReconcile {
+		t.Fatalf("settle tick = %q, want reconcile", act)
+	}
+	if got := statusOf(t, root, "COD-1"); got != queue.StatusPaused {
+		t.Fatalf("COD-1 = %q, want paused", got)
+	}
+	if got := reasonOf(t, root, "COD-1"); got != reason {
+		t.Errorf("COD-1 reason = %q, want the fault reason", got)
+	}
+	if drainingOf(t, root) {
+		t.Error("queue still draining after a fault, want it paused")
+	}
+
+	if act, _ := s.drain.tick(root); act != drainStop {
+		t.Fatalf("tick while paused = %q, want stop", act)
+	}
+	if len(fake.spawns) != 0 {
+		t.Fatalf("spawns = %d while paused, want none", len(fake.spawns))
+	}
+
+	class = ""
+	if err := queue.NewStore(root).SetDraining(true); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if act, _ := s.drain.tick(root); act != drainSpawn {
+		t.Fatalf("resume tick = %q, want it to re-attempt the paused item", act)
+	}
+	running, ok := runningItem(t, root)
+	if !ok || running.ID != "COD-1" {
+		t.Fatalf("re-attempted item = %+v, want COD-1", running)
+	}
+	if running.Reason != "" {
+		t.Errorf("re-attempted COD-1 reason = %q, want it cleared", running.Reason)
+	}
+	if got := statusOf(t, root, "COD-2"); got != queue.StatusPending {
+		t.Errorf("COD-2 = %q, want it still pending behind COD-1", got)
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once"})
 }
 
 // TestDrainRunsSequentially drives a full drain of three items to completion,

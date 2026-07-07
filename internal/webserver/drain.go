@@ -37,7 +37,7 @@ type drainer struct {
 	poll     time.Duration
 	alive    func(pid int) bool
 	repoLive func(root string) bool
-	outcome  func(root string, it queue.Item) string
+	outcome  func(root string, it queue.Item) (class, reason string)
 
 	mu     sync.Mutex
 	active map[string]context.CancelFunc
@@ -90,9 +90,10 @@ func (d *drainer) run(ctx context.Context, root string) {
 	}
 }
 
-// tick advances a repo's queue by one decision: it launches the next pending
-// item, settles a finished one, or waits, never spawning a second child while
-// one is in flight. It is the whole drain policy, pure enough to table-test.
+// tick advances a repo's queue by one decision: it launches the next runnable
+// item, settles a finished one per the failure taxonomy — pausing the drain on a
+// fault or provider pause — or waits, never spawning a second child while one is
+// in flight. It is the whole drain policy, pure enough to table-test.
 func (d *drainer) tick(root string) (drainAction, error) {
 	store := queue.NewStore(root)
 	items, draining, err := store.Snapshot()
@@ -103,7 +104,12 @@ func (d *drainer) tick(root string) (drainAction, error) {
 		if d.alive(running.PID) {
 			return drainWait, nil
 		}
-		if err := store.Finish(running.ID, d.outcome(root, running)); err != nil {
+		class, reason := d.outcome(root, running)
+		if status, pause := classifyDrainOutcome(class); pause {
+			if err := store.Pause(running.ID, reason); err != nil {
+				return drainWait, err
+			}
+		} else if err := store.Finish(running.ID, status, reason); err != nil {
 			return drainWait, err
 		}
 		return drainReconcile, nil
@@ -114,18 +120,34 @@ func (d *drainer) tick(root string) (drainAction, error) {
 	if d.repoLive(root) {
 		return drainWait, nil
 	}
-	pending, ok := firstWithStatus(items, queue.StatusPending)
+	next, ok := firstRunnable(items)
 	if !ok {
 		return drainWait, nil
 	}
-	pid, err := d.srv.sup.Spawn(d.spec(root, pending))
+	pid, err := d.srv.sup.Spawn(d.spec(root, next))
 	if err != nil {
 		return drainWait, err
 	}
-	if err := store.MarkRunning(pending.ID, pid); err != nil {
+	if err := store.MarkRunning(next.ID, pid); err != nil {
 		return drainWait, err
 	}
 	return drainSpawn, nil
+}
+
+// classifyDrainOutcome maps a finished child's failure class — as the loop
+// recorded it (state.FailureClass) — to what the queue does with the item: a
+// give-up is a settled dead end the queue moves past, while a fault or a provider
+// pause parks the item and stops the drain for the operator to resume. A clean
+// finish (no failure class) settles done.
+func classifyDrainOutcome(class string) (status string, pause bool) {
+	switch class {
+	case state.FailFaulted, state.FailPaused:
+		return queue.StatusPaused, true
+	case state.FailGaveUp:
+		return queue.StatusFailed, false
+	default:
+		return queue.StatusDone, false
+	}
 }
 
 // spec is the launch a queued item spawns: a ticket runs as the existing
@@ -141,15 +163,19 @@ func (d *drainer) spec(root string, it queue.Item) SpawnSpec {
 	return SpawnSpec{Dir: root, Args: args, Env: childEnv(d.srv.home)}
 }
 
-// checkpointOutcome reads the finished child's checkpoint to settle its item.
-// The nuanced fault/pause taxonomy is a later slice; here a quarantined ticket
-// is the only failure, and anything else counts as done so the queue moves on.
-func (d *drainer) checkpointOutcome(root string, it queue.Item) string {
+// checkpointOutcome reads the finished child's recorded checkpoint — its phase
+// and the loop's own failure marker/reason, never agent output — and returns the
+// loop's failure class plus the reason to surface. A merged or healthy run
+// classifies as no failure ("").
+func (d *drainer) checkpointOutcome(root string, it queue.Item) (class, reason string) {
 	store := state.NewStore(filepath.Join(root, ".trau", "runs"))
-	if store.Get(it.ID, "PHASE") == state.Quarantined {
-		return queue.StatusFailed
+	phase := store.Get(it.ID, "PHASE")
+	reason = store.Get(it.ID, "FAILURE_REASON")
+	class = state.FailureClass(phase, store.Get(it.ID, "FAILURE_CLASS"), reason)
+	if class == "" {
+		reason = ""
 	}
-	return queue.StatusDone
+	return class, reason
 }
 
 // repoHasLiveInstance reports whether any loop — a manual loop or a Run once —
@@ -167,6 +193,18 @@ func (d *drainer) repoHasLiveInstance(root string) bool {
 func firstWithStatus(items []queue.Item, status string) (queue.Item, bool) {
 	for _, it := range items {
 		if it.Status == status {
+			return it, true
+		}
+	}
+	return queue.Item{}, false
+}
+
+// firstRunnable returns the next item the drain should launch: the first that is
+// pending or paused. A paused item sits ahead of any pending one behind it — the
+// drain stopped when it paused — so a resume re-attempts it before moving on.
+func firstRunnable(items []queue.Item) (queue.Item, bool) {
+	for _, it := range items {
+		if it.Status == queue.StatusPending || it.Status == queue.StatusPaused {
 			return it, true
 		}
 	}

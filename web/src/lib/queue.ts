@@ -16,6 +16,7 @@ export interface QueueItem {
   id: string
   title?: string
   status: string
+  reason?: string
   sub_issues?: QueueSubIssue[]
   queued_at?: string
 }

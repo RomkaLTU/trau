@@ -31,6 +31,7 @@ type QueueItemView struct {
 	ID        string           `json:"id"`
 	Title     string           `json:"title,omitempty"`
 	Status    string           `json:"status"`
+	Reason    string           `json:"reason,omitempty"`
 	SubIssues []queue.SubIssue `json:"sub_issues,omitempty"`
 	QueuedAt  string           `json:"queued_at,omitempty"`
 }
@@ -225,6 +226,7 @@ func queueItemViews(items []queue.Item) []QueueItemView {
 			ID:        it.ID,
 			Title:     it.Title,
 			Status:    it.Status,
+			Reason:    it.Reason,
 			SubIssues: it.SubIssues,
 		}
 		if !it.QueuedAt.IsZero() {
