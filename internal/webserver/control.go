@@ -338,7 +338,20 @@ func (s *Server) handleEpicPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), epicPreviewTimeout)
+	subs, err := s.listEpicSubIssues(r.Context(), root, epic)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "epic preview failed: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, EpicPreviewResult{Repo: filepath.Base(root), RepoRoot: root, Epic: epic, SubIssues: subs})
+}
+
+// listEpicSubIssues drives a fresh trau with --list-epic <id> --json in root and
+// decodes the sub-issues it prints. It is the read-only preview the epic preview
+// endpoint and Queue registration share, so an epic reads the same wherever the
+// hub surfaces it.
+func (s *Server) listEpicSubIssues(ctx context.Context, root, epic string) ([]EpicSubIssue, error) {
+	ctx, cancel := context.WithTimeout(ctx, epicPreviewTimeout)
 	defer cancel()
 	out, err := s.sup.Capture(ctx, SpawnSpec{
 		Dir:  root,
@@ -346,15 +359,9 @@ func (s *Server) handleEpicPreview(w http.ResponseWriter, r *http.Request) {
 		Env:  childEnv(s.home),
 	})
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "epic preview failed: " + err.Error()})
-		return
+		return nil, err
 	}
-	subs, err := parseEpicSubIssues(out)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "epic preview failed: " + err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, EpicPreviewResult{Repo: filepath.Base(root), RepoRoot: root, Epic: epic, SubIssues: subs})
+	return parseEpicSubIssues(out)
 }
 
 // parseEpicSubIssues decodes the JSON array a --list-epic --json emitted on

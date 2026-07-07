@@ -1,7 +1,15 @@
 import { useMemo, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { FilePlus, FileText, ListTree, Play, Plus, RefreshCw } from 'lucide-react'
+import {
+  FilePlus,
+  FileText,
+  ListPlus,
+  ListTree,
+  Play,
+  Plus,
+  RefreshCw,
+} from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { BacklogCreate, type CreateMode } from './backlog-create'
@@ -19,6 +27,7 @@ import {
   type StatusGroupKey,
 } from '@/lib/backlog'
 import { startInstance } from '@/lib/instances'
+import { enqueue } from '@/lib/queue'
 
 interface CreateTarget {
   mode: CreateMode
@@ -59,11 +68,24 @@ export function Backlog() {
     [items],
   )
 
+  const queryClient = useQueryClient()
+
   const start = useMutation({
     mutationFn: (ticket: string) => startInstance({ repo, ticket }),
     onSuccess: (_res, ticket) => {
       void navigate({ to: '/live/$repo/$ticket', params: { repo, ticket } })
     },
+  })
+
+  const queueWork = useMutation({
+    mutationFn: (item: BacklogEntry) =>
+      enqueue(repo, {
+        kind: item.has_children ? 'epic' : 'ticket',
+        id: item.id,
+        title: item.title,
+      }),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['queue', repo] }),
   })
 
   if (repo === '') {
@@ -157,6 +179,12 @@ export function Backlog() {
         </p>
       )}
 
+      {queueWork.error && (
+        <p className="font-mono text-xs text-destructive">
+          {actionError(queueWork.error)}
+        </p>
+      )}
+
       {groups.length === 0 ? (
         <EmptyState message={`No tickets in ${repo}'s Project backlog.`} />
       ) : (
@@ -178,7 +206,11 @@ export function Backlog() {
                   }
                   canRun={canRun}
                   launching={start.isPending && start.variables === item.id}
+                  queuing={
+                    queueWork.isPending && queueWork.variables?.id === item.id
+                  }
                   onRun={() => start.mutate(item.id)}
+                  onQueue={() => queueWork.mutate(item)}
                   onAddSub={() => openCreate('issue', item.id)}
                 />
               ))}
@@ -195,14 +227,18 @@ function BacklogRow({
   parentTitle,
   canRun,
   launching,
+  queuing,
   onRun,
+  onQueue,
   onAddSub,
 }: {
   item: BacklogEntry
   parentTitle?: string
   canRun: boolean
   launching: boolean
+  queuing: boolean
   onRun: () => void
+  onQueue: () => void
   onAddSub: () => void
 }) {
   return (
@@ -256,6 +292,19 @@ function BacklogRow({
           state={GROUP_PILL[item.group as StatusGroupKey] ?? 'info'}
           label={item.status || item.group}
         />
+        {canRun && (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="font-mono"
+            onClick={onQueue}
+            disabled={queuing}
+          >
+            <ListPlus className="size-3.5" aria-hidden="true" />
+            {queuing ? 'Queuing…' : item.has_children ? 'Queue epic' : 'Queue'}
+          </Button>
+        )}
         {item.has_children ? (
           <Button
             type="button"
