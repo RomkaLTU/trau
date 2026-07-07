@@ -14,6 +14,7 @@ import {
 import { EventFeed } from '@/components/event-feed'
 import { RegisterRepoForm } from '@/components/register-repo-form'
 import { RunControls } from '@/components/run-controls'
+import { UnregisterRepoButton } from '@/components/unregister-repo-button'
 import { instancesQueryOptions, type Instance } from '@/lib/instances'
 
 export const Route = createFileRoute('/instances')({
@@ -93,7 +94,10 @@ function Instances() {
           </h2>
           <div className="grid gap-4 sm:grid-cols-2">
             {allowedRepos.map((repo) => (
-              <RunControls key={repo.root} repo={repo.name} />
+              <div key={repo.root} className="flex flex-col gap-2">
+                <RunControls repo={repo.name} />
+                {repo.registered && <UnregisterRepoButton repo={repo.name} />}
+              </div>
             ))}
           </div>
         </section>

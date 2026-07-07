@@ -26,11 +26,14 @@ type Instance struct {
 // RepoView is a repo the hub knows about, flagged with whether a loop is
 // currently running in it and whether the hub may start one there. Repos linger
 // here after their loop exits so their runs stay browsable; an unallowed repo is
-// observe-only.
+// observe-only. Registered marks a repo whose startability comes from a web
+// registration rather than the SERVE_WORKSPACE seed, so the UI offers unregister
+// only where it applies.
 type RepoView struct {
 	registry.Repo
-	Live    bool `json:"live"`
-	Allowed bool `json:"allowed"`
+	Live       bool `json:"live"`
+	Allowed    bool `json:"allowed"`
+	Registered bool `json:"registered"`
 }
 
 // InstancesResponse is the /api/v1/instances resource: the live loops and every

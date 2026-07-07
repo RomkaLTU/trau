@@ -391,9 +391,18 @@ func (s *Server) registered(pid int) bool {
 // allowlist is the effective merge of the SERVE_WORKSPACE seed and the registered
 // set, read per request so a just-registered repo is startable without a restart.
 func (s *Server) allowedRoot(ident string) (string, bool) {
+	return matchRoot(s.effectiveRoots(), ident)
+}
+
+// matchRoot resolves a repo identifier against a set of roots: an exact cleaned
+// path, or an unambiguous base name. An ambiguous base name matches nothing, so
+// a caller never acts on the wrong repo when two roots share a directory name.
+func matchRoot(roots []string, ident string) (string, bool) {
 	ident = strings.TrimSpace(ident)
+	if ident == "" {
+		return "", false
+	}
 	cleaned := filepath.Clean(ident)
-	roots := s.effectiveRoots()
 	for _, r := range roots {
 		if r == cleaned {
 			return r, true

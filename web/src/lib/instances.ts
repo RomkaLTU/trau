@@ -19,6 +19,7 @@ export interface RepoView {
   runs_dir: string
   live: boolean
   allowed: boolean
+  registered: boolean
 }
 
 export interface InstancesResponse {
@@ -93,6 +94,16 @@ export async function registerRepo(path: string): Promise<RepoView> {
   })
   if (!res.ok) {
     throw new Error(await errorMessage(res, 'register failed'))
+  }
+  return res.json()
+}
+
+export async function unregisterRepo(repo: string): Promise<RepoView> {
+  const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(repo)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'unregister failed'))
   }
   return res.json()
 }

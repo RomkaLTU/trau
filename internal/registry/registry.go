@@ -262,6 +262,33 @@ func RegisterRepo(home, root string) error {
 	return writeJSON(workspaceFile(home), ws)
 }
 
+// UnregisterRepo removes root from the startable set under the trau home,
+// reporting whether it was present. It only revokes startability: the repo's run
+// artifacts and known-repos history are left untouched, so it lingers exactly as
+// any repo does once its loop exits.
+func UnregisterRepo(home, root string) (bool, error) {
+	if home == "" {
+		return false, errors.New("no trau home to unregister from")
+	}
+	workspaceMu.Lock()
+	defer workspaceMu.Unlock()
+	ws := loadWorkspace(home)
+	kept := make([]string, 0, len(ws.Repos))
+	found := false
+	for _, r := range ws.Repos {
+		if r == root {
+			found = true
+			continue
+		}
+		kept = append(kept, r)
+	}
+	if !found {
+		return false, nil
+	}
+	ws.Repos = kept
+	return true, writeJSON(workspaceFile(home), ws)
+}
+
 func loadWorkspace(home string) registered {
 	var ws registered
 	data, err := os.ReadFile(workspaceFile(home))

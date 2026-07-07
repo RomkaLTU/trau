@@ -43,7 +43,47 @@ func (s *Server) registerRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to register repo: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, RepoView{Repo: workspaceRepo(root), Allowed: true})
+	writeJSON(w, http.StatusCreated, RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: true})
+}
+
+func (s *Server) handleRepo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.Header().Set("Allow", http.MethodDelete)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	s.unregisterRepo(w, r)
+}
+
+// unregisterRepo reverses a web registration, dropping the repo back to
+// observe-only. Only the hub-owned registered set is touched: the repo's runs,
+// events, and transcripts stay browsable exactly as they do after any loop
+// exits, and nothing on disk in the repo is removed. A repo granted by the
+// static SERVE_WORKSPACE seed is config-owned, not registry-owned, so the
+// attempt is refused rather than silently doing nothing.
+func (s *Server) unregisterRepo(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("repo")
+	if _, ok := matchRoot(s.workspace, name); ok {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("repo %q is granted by the SERVE_WORKSPACE config and cannot be unregistered over the API; remove its root from SERVE_WORKSPACE instead", name),
+		})
+		return
+	}
+	root, ok := matchRoot(registry.RegisteredRepos(s.home), name)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("repo %q is not registered", name)})
+		return
+	}
+	removed, err := registry.UnregisterRepo(s.home, root)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to unregister repo: " + err.Error()})
+		return
+	}
+	if !removed {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("repo %q is not registered", name)})
+		return
+	}
+	writeJSON(w, http.StatusOK, RepoView{Repo: workspaceRepo(root), Allowed: false})
 }
 
 // validateRepoPath normalizes a registration path and rejects anything that is

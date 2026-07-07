@@ -7,7 +7,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/RomkaLTU/trau/internal/registry"
 )
 
 // gitRepo makes a directory that looks like a git toplevel by planting a .git
@@ -195,6 +198,133 @@ func TestRegisterRefusedOnNonLoopbackBind(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, "workspace.json")); !os.IsNotExist(err) {
 		t.Errorf("refused registration must not persist, workspace.json exists")
+	}
+}
+
+func TestUnregisterRepo(t *testing.T) {
+	base := t.TempDir()
+	registered := gitRepo(t, base, "registered", "dir")
+	seeded := gitRepo(t, base, "seeded", "dir")
+
+	cases := []struct {
+		name       string
+		target     string
+		wantStatus int
+		errSubstr  string
+		verify     func(t *testing.T, home string, ts *httptest.Server)
+	}{
+		{
+			name:       "web-registered repo drops to observe-only",
+			target:     "registered",
+			wantStatus: http.StatusOK,
+			verify: func(t *testing.T, home string, ts *httptest.Server) {
+				if allowedRepoNames(t, ts)["registered"] {
+					t.Error("unregistered repo still reported allowed")
+				}
+				res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: "registered"})
+				_ = res.Body.Close()
+				if res.StatusCode != http.StatusForbidden {
+					t.Errorf("post-unregister start = %d, want 403", res.StatusCode)
+				}
+				if roots := registry.RegisteredRepos(home); len(roots) != 0 {
+					t.Errorf("workspace.json still lists %v", roots)
+				}
+				if _, err := os.Stat(filepath.Join(registered, ".git")); err != nil {
+					t.Errorf("repo on disk was touched: %v", err)
+				}
+			},
+		},
+		{
+			name:       "config-owned seed repo is refused",
+			target:     "seeded",
+			wantStatus: http.StatusConflict,
+			errSubstr:  "SERVE_WORKSPACE",
+			verify: func(t *testing.T, _ string, ts *httptest.Server) {
+				if !allowedRepoNames(t, ts)["seeded"] {
+					t.Error("refused seed repo lost its allowlist entry")
+				}
+			},
+		},
+		{
+			name:       "unknown repo is not found",
+			target:     "ghost",
+			wantStatus: http.StatusNotFound,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			_, ts := controlServer(t, home, []string{seeded})
+			res := postJSON(t, ts.URL+APIPrefix+"/repos", RegisterRepoRequest{Path: registered})
+			_ = res.Body.Close()
+			if res.StatusCode != http.StatusCreated {
+				t.Fatalf("register precondition = %d, want 201", res.StatusCode)
+			}
+
+			res, body := deleteReq(t, ts, APIPrefix+"/repos/"+tc.target)
+			if res.StatusCode != tc.wantStatus {
+				t.Fatalf("DELETE %s = %d, want %d (%s)", tc.target, res.StatusCode, tc.wantStatus, body)
+			}
+			if tc.errSubstr != "" && !strings.Contains(body, tc.errSubstr) {
+				t.Errorf("error %q does not name %q", body, tc.errSubstr)
+			}
+			if tc.verify != nil {
+				tc.verify(t, home, ts)
+			}
+		})
+	}
+}
+
+func TestUnregisterPersistsAcrossRestart(t *testing.T) {
+	home := t.TempDir()
+	repo := gitRepo(t, t.TempDir(), "acme", "dir")
+
+	_, ts := controlServer(t, home, nil)
+	res := postJSON(t, ts.URL+APIPrefix+"/repos", RegisterRepoRequest{Path: repo})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("register = %d, want 201", res.StatusCode)
+	}
+	res, body := deleteReq(t, ts, APIPrefix+"/repos/acme")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("unregister = %d, want 200 (%s)", res.StatusCode, body)
+	}
+
+	fake, ts2 := controlServer(t, home, nil)
+	res = postJSON(t, ts2.URL+APIPrefix+"/instances", StartRequest{Repo: "acme"})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("post-restart start = %d, want 403", res.StatusCode)
+	}
+	if len(fake.spawns) != 0 {
+		t.Fatalf("post-restart spawns = %d, want 0", len(fake.spawns))
+	}
+}
+
+func TestUnregisterKeepsRepoBrowsable(t *testing.T) {
+	home := t.TempDir()
+	repo := gitRepo(t, t.TempDir(), "acme", "dir")
+	registry.RememberRepos(home, []registry.Entry{{RepoRoot: repo, RunsDir: filepath.Join(repo, ".trau", "runs")}})
+
+	_, ts := controlServer(t, home, nil)
+	res := postJSON(t, ts.URL+APIPrefix+"/repos", RegisterRepoRequest{Path: repo})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("register = %d, want 201", res.StatusCode)
+	}
+
+	res, body := deleteReq(t, ts, APIPrefix+"/repos/acme")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("unregister = %d, want 200 (%s)", res.StatusCode, body)
+	}
+
+	runsRes, _ := get(t, ts, APIPrefix+"/repos/acme/runs")
+	if runsRes.StatusCode != http.StatusOK {
+		t.Errorf("runs no longer browsable after unregister: %d", runsRes.StatusCode)
+	}
+	if allowedRepoNames(t, ts)["acme"] {
+		t.Error("repo still allowed after unregister, want observe-only")
 	}
 }
 

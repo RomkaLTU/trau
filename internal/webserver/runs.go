@@ -82,18 +82,22 @@ func (s *Server) repoViews() []RepoView {
 	for _, root := range roots {
 		allowed[root] = true
 	}
+	registered := make(map[string]bool)
+	for _, root := range registry.RegisteredRepos(s.home) {
+		registered[root] = true
+	}
 	seen := make(map[string]bool)
 	known := registry.Repos(s.home)
 	views := make([]RepoView, 0, len(known)+len(roots))
 	for _, repo := range known {
 		seen[repo.Root] = true
-		views = append(views, RepoView{Repo: repo, Live: live[repo.Root], Allowed: allowed[repo.Root]})
+		views = append(views, RepoView{Repo: repo, Live: live[repo.Root], Allowed: allowed[repo.Root], Registered: registered[repo.Root]})
 	}
 	for _, root := range roots {
 		if seen[root] {
 			continue
 		}
-		views = append(views, RepoView{Repo: workspaceRepo(root), Allowed: true})
+		views = append(views, RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: registered[root]})
 	}
 	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
 	return views
