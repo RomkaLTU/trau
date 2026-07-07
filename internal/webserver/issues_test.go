@@ -114,6 +114,26 @@ func TestCreateIssueFilesAndReturnsLink(t *testing.T) {
 	}
 }
 
+func TestCreateIssueUnderParent(t *testing.T) {
+	fake := newFakeWriter()
+	_, ts := issuesServer(t, fake, nil)
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/issues", CreateIssueRequest{
+		Title:  "Sub-issue of the epic",
+		Parent: "  COD-1  ",
+	})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", res.StatusCode)
+	}
+	if len(fake.created) != 1 {
+		t.Fatalf("CreateIssue calls = %d, want 1", len(fake.created))
+	}
+	if fake.created[0].Parent != "COD-1" {
+		t.Errorf("draft parent = %q, want the trimmed COD-1 so the child nests under the epic", fake.created[0].Parent)
+	}
+}
+
 func TestCreateIssueRequiresTitle(t *testing.T) {
 	fake := newFakeWriter()
 	_, ts := issuesServer(t, fake, nil)

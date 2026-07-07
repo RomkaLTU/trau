@@ -1,9 +1,10 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { ListTree, Play, RefreshCw } from 'lucide-react'
+import { FilePlus, FileText, ListTree, Play, Plus, RefreshCw } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { BacklogCreate, type CreateMode } from './backlog-create'
 import { EmptyState } from './empty-state'
 import { StatusPill, type RunState } from './status-pill'
 import { TerminalCard } from './terminal-card'
@@ -13,10 +14,17 @@ import {
   BacklogUnavailableError,
   backlogQueryOptions,
   groupBacklog,
+  parentOptions,
   type BacklogEntry,
   type StatusGroupKey,
 } from '@/lib/backlog'
 import { startInstance } from '@/lib/instances'
+
+interface CreateTarget {
+  mode: CreateMode
+  parent?: string
+  seq: number
+}
 
 const GROUP_PILL: Record<StatusGroupKey, RunState> = {
   started: 'active',
@@ -38,9 +46,14 @@ export function Backlog() {
   const startable = repos.filter((r) => r.allowed).map((r) => r.name)
   const canRun = repo !== '' && startable.includes(repo)
 
+  const [creating, setCreating] = useState<CreateTarget | null>(null)
+  const openCreate = (mode: CreateMode, parent?: string) =>
+    setCreating((prev) => ({ mode, parent, seq: (prev?.seq ?? 0) + 1 }))
+
   const backlog = useQuery(backlogQueryOptions(repo))
   const items = backlog.data?.items ?? []
   const groups = useMemo(() => groupBacklog(items), [items])
+  const parents = useMemo(() => parentOptions(items), [items])
   const titleById = useMemo(
     () => new Map(items.map((it) => [it.id, it.title])),
     [items],
@@ -89,21 +102,54 @@ export function Backlog() {
           {items.length} ticket{items.length === 1 ? '' : 's'}
           {backlog.data?.provider ? ` · ${backlog.data.provider}` : ''}
         </p>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="font-mono"
-          onClick={() => void backlog.refetch()}
-          disabled={backlog.isFetching}
-        >
-          <RefreshCw
-            className={cn('size-3.5', backlog.isFetching && 'animate-spin')}
-            aria-hidden="true"
-          />
-          {backlog.isFetching ? 'Refreshing…' : 'Refresh'}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="font-mono"
+            onClick={() => openCreate('issue')}
+          >
+            <FilePlus className="size-3.5" aria-hidden="true" />
+            New issue
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="font-mono"
+            onClick={() => openCreate('prd')}
+          >
+            <FileText className="size-3.5" aria-hidden="true" />
+            Publish PRD
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="font-mono"
+            onClick={() => void backlog.refetch()}
+            disabled={backlog.isFetching}
+          >
+            <RefreshCw
+              className={cn('size-3.5', backlog.isFetching && 'animate-spin')}
+              aria-hidden="true"
+            />
+            {backlog.isFetching ? 'Refreshing…' : 'Refresh'}
+          </Button>
+        </div>
       </div>
+
+      {creating && (
+        <BacklogCreate
+          key={creating.seq}
+          repo={repo}
+          initialMode={creating.mode}
+          seedParent={creating.parent}
+          parents={parents}
+          onClose={() => setCreating(null)}
+        />
+      )}
 
       {start.error && (
         <p className="font-mono text-xs text-destructive">
@@ -133,6 +179,7 @@ export function Backlog() {
                   canRun={canRun}
                   launching={start.isPending && start.variables === item.id}
                   onRun={() => start.mutate(item.id)}
+                  onAddSub={() => openCreate('issue', item.id)}
                 />
               ))}
             </ul>
@@ -149,12 +196,14 @@ function BacklogRow({
   canRun,
   launching,
   onRun,
+  onAddSub,
 }: {
   item: BacklogEntry
   parentTitle?: string
   canRun: boolean
   launching: boolean
   onRun: () => void
+  onAddSub: () => void
 }) {
   return (
     <li
@@ -207,18 +256,31 @@ function BacklogRow({
           state={GROUP_PILL[item.group as StatusGroupKey] ?? 'info'}
           label={item.status || item.group}
         />
-        {canRun && !item.has_children && (
+        {item.has_children ? (
           <Button
             type="button"
             size="sm"
             variant="outline"
             className="font-mono"
-            onClick={onRun}
-            disabled={launching}
+            onClick={onAddSub}
           >
-            <Play className="size-3.5" aria-hidden="true" />
-            {launching ? 'Launching…' : 'Run once'}
+            <Plus className="size-3.5" aria-hidden="true" />
+            Add sub-issue
           </Button>
+        ) : (
+          canRun && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="font-mono"
+              onClick={onRun}
+              disabled={launching}
+            >
+              <Play className="size-3.5" aria-hidden="true" />
+              {launching ? 'Launching…' : 'Run once'}
+            </Button>
+          )
         )}
       </div>
     </li>

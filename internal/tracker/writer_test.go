@@ -91,6 +91,44 @@ func TestLinearWriterCreateIssue(t *testing.T) {
 	}
 }
 
+func TestLinearWriterCreateUnderParent(t *testing.T) {
+	cases := []struct {
+		name       string
+		parent     string
+		wantParent string
+	}{
+		{name: "top-level issue nests under nothing", parent: "", wantParent: ""},
+		{name: "sub-issue resolves the epic and nests under it", parent: "COD-9", wantParent: "iss-1"},
+		{name: "whitespace parent is treated as top-level", parent: "   ", wantParent: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, reqs := fakeLinearWriter(t)
+
+			if _, err := w.CreateIssue(context.Background(), IssueDraft{Title: "child", Parent: tc.parent}); err != nil {
+				t.Fatalf("CreateIssue error: %v", err)
+			}
+
+			resolved := lastLinearReq(*reqs, "query Issue") != nil
+			if resolved != (tc.wantParent != "") {
+				t.Errorf("parent lookup sent = %v, want %v", resolved, tc.wantParent != "")
+			}
+			create := lastLinearReq(*reqs, "mutation IssueCreate")
+			if create == nil {
+				t.Fatal("no IssueCreate mutation was sent")
+			}
+			got := create.Variables["parentId"]
+			if tc.wantParent == "" {
+				if got != nil {
+					t.Errorf("parentId = %v, want it omitted for a top-level issue", got)
+				}
+			} else if got != tc.wantParent {
+				t.Errorf("parentId = %v, want %q (the resolved epic id)", got, tc.wantParent)
+			}
+		})
+	}
+}
+
 func TestLinearWriterAddComment(t *testing.T) {
 	w, reqs := fakeLinearWriter(t)
 
@@ -201,6 +239,7 @@ type jiraCapture struct {
 			IssueType struct{ ID string }  `json:"issuetype"`
 			Summary   string               `json:"summary"`
 			Labels    []string             `json:"labels"`
+			Parent    struct{ Key string } `json:"parent"`
 		} `json:"fields"`
 	}
 	createRaw   string
@@ -235,6 +274,33 @@ func TestJiraWriterCreateIssue(t *testing.T) {
 	}
 	if len(rec.create.Fields.Labels) != 1 || rec.create.Fields.Labels[0] != "ready-for-agent" {
 		t.Errorf("labels = %v, want [ready-for-agent]", rec.create.Fields.Labels)
+	}
+}
+
+func TestJiraWriterCreateUnderParent(t *testing.T) {
+	cases := []struct {
+		name       string
+		parent     string
+		wantParent string
+	}{
+		{name: "top-level issue nests under nothing", parent: "", wantParent: ""},
+		{name: "sub-issue nests under the epic key", parent: "PROJ-1", wantParent: "PROJ-1"},
+		{name: "whitespace parent is treated as top-level", parent: "  ", wantParent: ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, rec := fakeJiraWriter(t)
+
+			if _, err := w.CreateIssue(context.Background(), IssueDraft{Title: "child", Parent: tc.parent}); err != nil {
+				t.Fatalf("CreateIssue error: %v", err)
+			}
+			if rec.create.Fields.Parent.Key != tc.wantParent {
+				t.Errorf("parent key = %q, want %q", rec.create.Fields.Parent.Key, tc.wantParent)
+			}
+			if tc.wantParent == "" && strings.Contains(rec.createRaw, `"parent"`) {
+				t.Errorf("create body carried a parent for a top-level issue: %s", rec.createRaw)
+			}
+		})
 	}
 }
 

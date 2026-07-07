@@ -4,6 +4,7 @@ export interface IssueDraft {
   title: string
   description?: string
   labels?: string[]
+  parent?: string
 }
 
 export interface CreatedIssue {

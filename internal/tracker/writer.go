@@ -21,11 +21,13 @@ var ErrWriterUnavailable = errors.New("tracker: no direct API credentials config
 const jiraDefaultIssueType = "Task"
 
 // IssueDraft is a new issue to create: a title, an optional markdown description,
-// and any labels to apply (e.g. the ready label).
+// any labels to apply (e.g. the ready label), and an optional parent to nest the
+// issue under so an epic and its sub-issues can be filed from the board.
 type IssueDraft struct {
 	Title       string
 	Description string
 	Labels      []string
+	Parent      string
 }
 
 // NewIssue identifies a freshly created issue: its human identifier and a link.
@@ -104,7 +106,15 @@ func (w *linearWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIs
 	if err != nil {
 		return NewIssue{}, err
 	}
-	id, url, err := w.client.CreateIssue(ctx, linearapi.CreateIssueInput{TeamID: team.ID, Title: draft.Title, Description: draft.Description, Labels: draft.Labels})
+	in := linearapi.CreateIssueInput{TeamID: team.ID, Title: draft.Title, Description: draft.Description, Labels: draft.Labels}
+	if parent := strings.TrimSpace(draft.Parent); parent != "" {
+		issue, err := w.client.Issue(ctx, parent)
+		if err != nil {
+			return NewIssue{}, fmt.Errorf("resolve parent %s: %w", parent, err)
+		}
+		in.ParentID = issue.ID
+	}
+	id, url, err := w.client.CreateIssue(ctx, in)
 	if err != nil {
 		return NewIssue{}, err
 	}
@@ -138,7 +148,7 @@ type jiraWriter struct {
 }
 
 func (w *jiraWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIssue, error) {
-	key, err := w.client.CreateIssue(ctx, w.project, w.issueType, draft.Title, draft.Description, draft.Labels, "")
+	key, err := w.client.CreateIssue(ctx, w.project, w.issueType, draft.Title, draft.Description, draft.Labels, strings.TrimSpace(draft.Parent))
 	if err != nil {
 		return NewIssue{}, err
 	}

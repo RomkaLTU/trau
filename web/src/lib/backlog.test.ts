@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { groupBacklog, type BacklogEntry } from './backlog'
+import { groupBacklog, parentOptions, type BacklogEntry } from './backlog'
 
 function entry(over: Partial<BacklogEntry>): BacklogEntry {
   return {
@@ -44,5 +44,18 @@ describe('groupBacklog', () => {
     const groups = groupBacklog([entry({ id: 'COD-9', group: 'weird' })])
     expect(groups.map((g) => g.key)).toEqual(['unknown'])
     expect(groups[0].label).toBe('Other')
+  })
+})
+
+describe('parentOptions', () => {
+  it('lists epics first, then most recent, carrying the epic flag', () => {
+    const options = parentOptions([
+      entry({ id: 'COD-10' }),
+      entry({ id: 'COD-30', has_children: true }),
+      entry({ id: 'COD-20' }),
+    ])
+    expect(options.map((o) => o.id)).toEqual(['COD-30', 'COD-20', 'COD-10'])
+    expect(options.find((o) => o.id === 'COD-30')?.isEpic).toBe(true)
+    expect(options.find((o) => o.id === 'COD-20')?.isEpic).toBe(false)
   })
 })

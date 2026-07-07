@@ -116,3 +116,18 @@ export function groupBacklog(items: BacklogEntry[]): BacklogGroup[] {
   }
   return groups
 }
+
+export interface ParentOption {
+  id: string
+  title: string
+  isEpic: boolean
+}
+
+// parentOptions lists the issues a new issue can nest under, epics first since
+// they are the usual target, then the rest by most recent — so building an epic
+// and stacking its sub-issues stays a few clicks on the board.
+export function parentOptions(items: BacklogEntry[]): ParentOption[] {
+  return [...items]
+    .sort(compareBoard)
+    .map((it) => ({ id: it.id, title: it.title, isEpic: it.has_children }))
+}
