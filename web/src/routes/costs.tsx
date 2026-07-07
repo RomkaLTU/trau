@@ -15,10 +15,10 @@ import {
 import {
   Eyebrow,
   EmptyState,
-  RepoPicker,
   SegmentedControl,
   StatTile,
   TerminalCard,
+  useActiveRepo,
 } from '@/components/trau'
 import { cn } from '@/lib/utils'
 import {
@@ -42,8 +42,6 @@ import {
 export const Route = createFileRoute('/costs')({
   component: Costs,
 })
-
-const ALL_REPOS = 'all repos'
 
 const WINDOWS: { value: number; label: string }[] = [
   { value: 1, label: '24h' },
@@ -74,12 +72,12 @@ function seriesLabel(key: string): string {
 }
 
 function Costs() {
+  const { repo } = useActiveRepo()
   const [days, setDays] = useState(7)
-  const [groupBy, setGroupBy] = useState<GroupBy>('repo')
-  const [repo, setRepo] = useState(ALL_REPOS)
+  const [groupBy, setGroupBy] = useState<GroupBy>('provider')
   const [compare, setCompare] = useState(false)
 
-  const repos = repo === ALL_REPOS ? undefined : [repo]
+  const repos = repo ? [repo] : undefined
   const { data, error, isPending } = useQuery(
     timeseriesQueryOptions({ days, groupBy, repos }),
   )
@@ -91,10 +89,7 @@ function Costs() {
   const costs = useQuery(costsQueryOptions(days))
 
   const windowLabel = WINDOWS.find((w) => w.value === days)?.label ?? `${days}d`
-  const repoOptions = [ALL_REPOS, ...(data?.facets.repos ?? [])]
-  const anomalies = (costs.data?.anomalies ?? []).filter(
-    (a) => repo === ALL_REPOS || a.repo === repo,
-  )
+  const anomalies = (costs.data?.anomalies ?? []).filter((a) => a.repo === repo)
 
   return (
     <div className="flex flex-col gap-6">
@@ -111,7 +106,6 @@ function Costs() {
       </header>
 
       <div className="flex flex-wrap items-end gap-4">
-        <RepoPicker repos={repoOptions} value={repo} onChange={setRepo} />
         <Field label="window">
           <SegmentedControl
             aria-label="Time window"
@@ -439,7 +433,7 @@ function StatTiles({
       <StatTile
         label={`total (${label})`}
         value={money(data.totals.cost_usd, data.totals.metered)}
-        hint={`across ${data.facets.repos.length} repos`}
+        hint={`across ${data.facets.providers.length} providers`}
       />
       <StatTile
         label={`tokens (${label})`}

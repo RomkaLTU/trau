@@ -6,8 +6,8 @@ import { ChevronDown, Search } from "lucide-react";
 import {
   EmptyState,
   Eyebrow,
-  RepoPicker,
   TerminalCard,
+  useActiveRepo,
 } from "@/components/trau";
 import { cn } from "@/lib/utils";
 import { reposQueryOptions } from "@/lib/runs";
@@ -20,14 +20,7 @@ export const Route = createFileRoute("/lessons")({
 });
 
 function Lessons() {
-  const { data, error, isPending } = useQuery(reposQueryOptions);
-  const [selected, setSelected] = useState<string | null>(null);
-
-  const repos = data?.repos ?? [];
-  const active =
-    selected && repos.some((r) => r.name === selected)
-      ? selected
-      : (repos.find((r) => r.live)?.name ?? repos[0]?.name ?? null);
+  const { repo: active, repos } = useActiveRepo();
 
   return (
     <div className="flex flex-col gap-6">
@@ -44,40 +37,19 @@ function Lessons() {
         </p>
       </header>
 
-      {error && (
-        <p className="font-mono text-sm text-destructive">{String(error)}</p>
-      )}
-      {isPending && !error && (
-        <p className="font-mono text-sm text-muted-foreground">Loading…</p>
-      )}
-
-      {data && repos.length === 0 && (
+      {repos.length === 0 && (
         <EmptyState
           className="min-h-[300px]"
           message="No lessons learned yet — the herd is still young. They appear here once a trau loop records what it learned while repairing a run."
         />
       )}
 
-      {active && (
-        <LessonList
-          repo={active}
-          repos={repos.map((r) => r.name)}
-          onRepoChange={setSelected}
-        />
-      )}
+      {active && <LessonList repo={active} />}
     </div>
   );
 }
 
-function LessonList({
-  repo,
-  repos,
-  onRepoChange,
-}: {
-  repo: string;
-  repos: string[];
-  onRepoChange: (repo: string) => void;
-}) {
+function LessonList({ repo }: { repo: string }) {
   const { data, error, isPending } = useQuery(lessonsQueryOptions(repo));
   const [query, setQuery] = useState("");
 
@@ -112,12 +84,6 @@ function LessonList({
             />
           </div>
         </label>
-        <RepoPicker
-          repos={repos}
-          value={repo}
-          onChange={onRepoChange}
-          label="repo"
-        />
         {lessons.length > 0 && (
           <span className="ml-auto font-mono text-xs tabular-nums text-muted-foreground">
             {filtered.length} / {lessons.length}

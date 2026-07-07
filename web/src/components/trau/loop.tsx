@@ -4,10 +4,10 @@ import { Link } from '@tanstack/react-router'
 import { ExternalLink, Minus, Plus, Square } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { useActiveRepo } from '@/components/trau/active-repo'
 import { ConfirmDialog } from '@/components/trau/confirm-dialog'
 import { Eyebrow } from '@/components/trau/eyebrow'
 import { PhaseStepper } from '@/components/trau/phase-stepper'
-import { RepoPicker } from '@/components/trau/repo-picker'
 import { SegmentedControl } from '@/components/trau/segmented-control'
 import { StatusPill } from '@/components/trau/status-pill'
 import { TerminalCard } from '@/components/trau/terminal-card'
@@ -306,15 +306,11 @@ function EpicPreview({ repo, epic }: { repo: string; epic: string }) {
 
 function LaunchForm({
   repo,
-  repos,
-  onRepoChange,
   onStart,
   starting,
   error,
 }: {
   repo: string
-  repos: string[]
-  onRepoChange: (repo: string) => void
   onStart: (opts: StartOptions) => void
   starting: boolean
   error: unknown
@@ -341,8 +337,6 @@ function LaunchForm({
           })
         }}
       >
-        <RepoPicker repos={repos} value={repo} onChange={onRepoChange} />
-
         <div className="flex flex-col gap-1.5">
           <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
             scope
@@ -643,16 +637,12 @@ function HaltBanner({ repo, halt }: { repo: string; halt: LoopHalt }) {
 
 export function Loop() {
   const queryClient = useQueryClient()
+  const { repo: activeRepo, repos: allRepos } = useActiveRepo()
   const { data: instData } = useQuery(instancesQueryOptions)
 
-  const repos = (instData?.repos ?? [])
-    .filter((r) => r.allowed)
-    .map((r) => r.name)
-  const [selectedRepo, setSelectedRepo] = useState<string | null>(null)
-  const repo =
-    selectedRepo && repos.includes(selectedRepo)
-      ? selectedRepo
-      : repos[0] ?? ''
+  const startable = allRepos.filter((r) => r.allowed).map((r) => r.name)
+  const repo = activeRepo ?? ''
+  const canRun = repo !== '' && startable.includes(repo)
 
   const liveInstance = instData?.instances.find((i) => i.repo === repo)
   const feed = useEventFeed(repo)
@@ -688,14 +678,13 @@ export function Loop() {
     onSuccess: invalidate,
   })
 
-  const running = liveInstance !== undefined || justStarted
-
-  function pickRepo(next: string) {
-    setSelectedRepo(next)
+  useEffect(() => {
     start.reset()
     stop.reset()
     setJustStarted(false)
-  }
+  }, [repo])
+
+  const running = liveInstance !== undefined || justStarted
 
   if (running) {
     if (!liveInstance) return <LaunchingCard repo={repo} />
@@ -710,17 +699,34 @@ export function Loop() {
     )
   }
 
+  if (!canRun) return <NotStartableNotice repo={repo} />
+
   return (
     <div className="flex flex-col gap-6">
       {halt ? <HaltBanner repo={repo} halt={halt} /> : null}
       <LaunchForm
         repo={repo}
-        repos={repos}
-        onRepoChange={pickRepo}
         onStart={(opts) => start.mutate(opts)}
         starting={start.isPending}
         error={start.error}
       />
     </div>
+  )
+}
+
+function NotStartableNotice({ repo }: { repo: string }) {
+  return (
+    <TerminalCard title="loop" className="max-w-3xl">
+      <div className="flex flex-col items-start gap-4">
+        <p className="font-sans text-sm leading-relaxed text-muted-foreground">
+          {repo
+            ? `${repo} isn't registered as startable — register it to graze its ready queue.`
+            : 'No repo checked out yet. Register a repo to start a loop.'}
+        </p>
+        <Button asChild variant="outline" size="sm" className="font-mono">
+          <Link to="/instances">Manage repos</Link>
+        </Button>
+      </div>
+    </TerminalCard>
   )
 }

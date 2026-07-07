@@ -1,29 +1,21 @@
-import { useQueries, useQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 
-import { reposQueryOptions, runsQueryOptions, type Run } from './runs'
+import { runsQueryOptions, type Run } from './runs'
 
 export interface AttentionRun extends Run {
   repo: string
 }
 
-export function useAttentionRuns(): AttentionRun[] {
-  const { data } = useQuery(reposQueryOptions)
-  const repos = data?.repos ?? []
-
-  const results = useQueries({
-    queries: repos.map((repo) => runsQueryOptions(repo.name)),
-  })
+export function useAttentionRuns(repo: string | null): AttentionRun[] {
+  const { data } = useQuery(runsQueryOptions(repo ?? ''))
 
   const attention: AttentionRun[] = []
-  results.forEach((result, i) => {
-    const repo = repos[i]?.name ?? ''
-    for (const run of result.data?.runs ?? []) {
-      if (run.failure_class) attention.push({ ...run, repo })
-    }
-  })
+  for (const run of data?.runs ?? []) {
+    if (run.failure_class) attention.push({ ...run, repo: repo ?? '' })
+  }
   return attention
 }
 
-export function useAttentionCount(): number {
-  return useAttentionRuns().length
+export function useAttentionCount(repo: string | null): number {
+  return useAttentionRuns(repo).length
 }

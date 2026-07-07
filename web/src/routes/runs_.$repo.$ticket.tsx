@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, createFileRoute } from '@tanstack/react-router'
 import { ArrowLeft, ExternalLink, GitBranch, Send } from 'lucide-react'
@@ -10,6 +10,7 @@ import {
   RunActionsRow,
   StatusPill,
   TerminalCard,
+  useActiveRepo,
   type CheckpointNotice,
 } from '@/components/trau'
 import { Markdown } from '@/components/markdown'
@@ -33,8 +34,13 @@ export const Route = createFileRoute('/runs_/$repo/$ticket')({
 
 function RunDetailPage() {
   const { repo, ticket } = Route.useParams()
+  const { setRepo } = useActiveRepo()
   const { data, error, isPending } = useQuery(runDetailQueryOptions(repo, ticket))
   const [notice, setNotice] = useState<CheckpointNotice | null>(null)
+
+  useEffect(() => {
+    setRepo(repo)
+  }, [repo, setRepo])
 
   return (
     <div className="flex flex-col gap-6">

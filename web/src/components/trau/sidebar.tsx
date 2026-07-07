@@ -13,6 +13,8 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 
+import { useActiveRepo } from '@/components/trau/active-repo'
+import { RepoSwitcher } from '@/components/trau/repo-switcher'
 import { useAttentionCount } from '@/lib/attention'
 
 interface NavItem {
@@ -72,7 +74,8 @@ const GROUPS: NavGroup[] = [
 ]
 
 export function Sidebar() {
-  const attention = useAttentionCount()
+  const { repo } = useActiveRepo()
+  const attention = useAttentionCount(repo)
   const host = window.location.host
 
   return (
@@ -86,6 +89,8 @@ export function Sidebar() {
           <span className="cursor-block text-primary">▍</span>
         </Link>
       </div>
+
+      <RepoSwitcher />
 
       <nav className="flex-1 overflow-y-auto px-3 py-2">
         {GROUPS.map((group) => (
