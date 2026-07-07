@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { Check, ChevronsUpDown, Plus } from 'lucide-react'
+import { Check, ChevronsUpDown, GitBranch, Plus } from 'lucide-react'
 
 import { useActiveRepo } from '@/components/trau/active-repo'
+import type { RepoView } from '@/lib/instances'
 import { cn } from '@/lib/utils'
 
 export function RepoSwitcher() {
@@ -29,84 +30,122 @@ export function RepoSwitcher() {
   const active = repos.find((r) => r.name === repo)
 
   return (
-    <div className="px-3 pb-3" ref={ref}>
-      <p className="px-2 pb-1.5 font-mono text-[0.65rem] uppercase tracking-[0.2em] text-muted-foreground">
-        Repo
-      </p>
-      <div className="relative">
-        <button
-          type="button"
-          onClick={() => setOpen((o) => !o)}
-          aria-haspopup="listbox"
-          aria-expanded={open}
-          className="flex w-full items-center justify-between gap-2 rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground hover:border-ring/50"
-        >
-          <span className="flex min-w-0 items-center gap-2">
-            {active?.live && (
-              <span
-                className="size-1.5 shrink-0 rounded-full bg-teal"
-                aria-hidden="true"
-              />
-            )}
-            <span className="truncate">{repo ?? 'no repo'}</span>
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="flex w-full items-center gap-2.5 rounded-md border border-border bg-input px-2.5 py-2 text-left transition-colors hover:border-ring/50"
+      >
+        <RepoIcon live={active?.live ?? false} />
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate font-mono text-sm text-foreground">
+            {repo ?? 'no repo'}
           </span>
-          <ChevronsUpDown
-            className="size-3.5 shrink-0 text-muted-foreground"
-            aria-hidden="true"
-          />
-        </button>
+          <span className="truncate font-mono text-[0.65rem] text-muted-foreground">
+            {active ? active.root : `${repos.length} registered`}
+          </span>
+        </span>
+        <ChevronsUpDown
+          className="size-3.5 shrink-0 text-muted-foreground"
+          aria-hidden="true"
+        />
+      </button>
 
-        {open && (
-          <ul
-            role="listbox"
-            className="absolute z-30 mt-1 w-full overflow-hidden rounded-md border border-border bg-popover py-1 shadow-lg"
+      {open && (
+        <div
+          role="listbox"
+          className="absolute left-0 right-0 z-30 mt-1 overflow-hidden rounded-md border border-border bg-popover py-1 shadow-lg"
+        >
+          <p className="px-2.5 pb-1 pt-1.5 font-mono text-[0.6rem] uppercase tracking-[0.2em] text-muted-foreground">
+            repos
+          </p>
+          {repos.length === 0 ? (
+            <p className="px-2.5 py-1.5 font-mono text-xs text-muted-foreground">
+              no repos yet
+            </p>
+          ) : (
+            repos.map((r) => (
+              <RepoOption
+                key={r.name}
+                repo={r}
+                active={r.name === repo}
+                onSelect={() => {
+                  setRepo(r.name)
+                  setOpen(false)
+                }}
+              />
+            ))
+          )}
+
+          <div className="my-1 h-px bg-border" aria-hidden="true" />
+
+          <Link
+            to="/instances"
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2 px-2.5 py-1.5 font-mono text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
           >
-            {repos.length === 0 ? (
-              <li className="px-2.5 py-1.5 font-mono text-xs text-muted-foreground">
-                no repos yet
-              </li>
-            ) : (
-              repos.map((r) => (
-                <li key={r.name} role="option" aria-selected={r.name === repo}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setRepo(r.name)
-                      setOpen(false)
-                    }}
-                    className={cn(
-                      'flex w-full items-center gap-2 px-2.5 py-1.5 text-left font-mono text-sm hover:bg-secondary',
-                      r.name === repo ? 'text-primary' : 'text-foreground',
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        'size-1.5 shrink-0 rounded-full',
-                        r.live ? 'bg-teal' : 'border border-border',
-                      )}
-                      aria-hidden="true"
-                    />
-                    <span className="flex-1 truncate">{r.name}</span>
-                    {r.name === repo && (
-                      <Check className="size-3.5 shrink-0" aria-hidden="true" />
-                    )}
-                  </button>
-                </li>
-              ))
-            )}
-            <li className="mt-1 border-t border-border pt-1">
-              <Link
-                to="/instances"
-                onClick={() => setOpen(false)}
-                className="flex items-center gap-2 px-2.5 py-1.5 font-mono text-xs text-muted-foreground hover:bg-secondary hover:text-foreground"
-              >
-                <Plus className="size-3.5" aria-hidden="true" />
-                Add / manage repos
-              </Link>
-            </li>
-          </ul>
-        )}
-      </div>
+            <Plus className="size-3.5" aria-hidden="true" />
+            Add / manage repos
+          </Link>
+        </div>
+      )}
     </div>
+  )
+}
+
+function RepoOption({
+  repo,
+  active,
+  onSelect,
+}: {
+  repo: RepoView
+  active: boolean
+  onSelect: () => void
+}) {
+  return (
+    <button
+      type="button"
+      role="option"
+      aria-selected={active}
+      onClick={onSelect}
+      className={cn(
+        'flex w-full items-center gap-2.5 px-2.5 py-1.5 text-left transition-colors hover:bg-secondary',
+        active && 'bg-secondary/60',
+      )}
+    >
+      <RepoIcon live={repo.live} />
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span
+          className={cn(
+            'truncate font-mono text-sm',
+            active ? 'text-primary' : 'text-foreground',
+          )}
+        >
+          {repo.name}
+        </span>
+        <span className="truncate font-mono text-[0.65rem] text-muted-foreground">
+          {repo.root}
+        </span>
+      </span>
+      {active && (
+        <Check className="size-3.5 shrink-0 text-primary" aria-hidden="true" />
+      )}
+    </button>
+  )
+}
+
+function RepoIcon({ live }: { live: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        'flex size-7 shrink-0 items-center justify-center rounded-md border bg-secondary',
+        live ? 'border-teal/50 text-teal' : 'border-border text-primary',
+      )}
+    >
+      <GitBranch className="size-3.5" />
+    </span>
   )
 }

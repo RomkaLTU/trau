@@ -84,17 +84,16 @@ export function Sidebar() {
 
   return (
     <aside className="fixed inset-y-0 left-0 z-10 flex w-60 flex-col border-r border-border bg-card">
-      <div className="flex h-14 items-center px-5">
+      <div className="flex flex-col gap-3 border-b border-border px-3 py-3">
         <Link
           to="/"
-          className="font-mono text-lg font-medium tracking-tight text-foreground"
+          className="px-1 font-mono text-lg font-medium tracking-tight text-foreground"
         >
           trau
           <span className="cursor-block text-primary">▍</span>
         </Link>
+        <RepoSwitcher />
       </div>
-
-      <RepoSwitcher />
 
       <nav className="flex-1 overflow-y-auto px-3 py-2">
         {GROUPS.map((group) => (
