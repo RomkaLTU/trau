@@ -25,10 +25,12 @@ const (
 
 // The statuses an item moves through as the hub drains the queue: registration
 // lands it Pending, draining marks it Running, and the child's outcome settles
-// it Done or Failed.
+// it Done, Failed, or — when the run faults or a provider pauses — Paused, parked
+// at the front for a resume to re-attempt.
 const (
 	StatusPending = "pending"
 	StatusRunning = "running"
+	StatusPaused  = "paused"
 	StatusDone    = "done"
 	StatusFailed  = "failed"
 )
@@ -49,6 +51,7 @@ type Item struct {
 	ID        string     `json:"id"`
 	Title     string     `json:"title,omitempty"`
 	Status    string     `json:"status"`
+	Reason    string     `json:"reason,omitempty"`
 	PID       int        `json:"pid,omitempty"`
 	SubIssues []SubIssue `json:"sub_issues,omitempty"`
 	QueuedAt  time.Time  `json:"queued_at"`
@@ -180,17 +183,41 @@ func (s *Store) SetDraining(draining bool) error {
 }
 
 // MarkRunning moves an item to running and records the child that runs it, so a
-// resumed hub can probe whether that child is still alive.
+// resumed hub can probe whether that child is still alive. It clears any prior
+// attempt's reason so a re-attempted item shows no stale fault while it runs.
 func (s *Store) MarkRunning(id string, pid int) error {
-	return s.setStatus(id, StatusRunning, pid)
+	return s.settle(id, StatusRunning, "", pid)
 }
 
-// Finish settles a running item at its terminal status and clears its child pid.
-func (s *Store) Finish(id, status string) error {
-	return s.setStatus(id, status, 0)
+// Finish settles a running item at its terminal status with the reason recorded
+// on its checkpoint and clears its child pid.
+func (s *Store) Finish(id, status, reason string) error {
+	return s.settle(id, status, reason, 0)
 }
 
-func (s *Store) setStatus(id, status string, pid int) error {
+// Pause parks a running item back at the front as paused, records the surfaced
+// reason, and stops the drain — all in one write, so a reader never catches the
+// item paused while the queue still reads as draining. A resume re-attempts it.
+func (s *Store) Pause(id, reason string) error {
+	mu.Lock()
+	defer mu.Unlock()
+	f, err := s.load()
+	if err != nil {
+		return err
+	}
+	for i := range f.Items {
+		if f.Items[i].ID == id {
+			f.Items[i].Status = StatusPaused
+			f.Items[i].Reason = reason
+			f.Items[i].PID = 0
+			f.Draining = false
+			return s.save(f)
+		}
+	}
+	return ErrNotQueued
+}
+
+func (s *Store) settle(id, status, reason string, pid int) error {
 	mu.Lock()
 	defer mu.Unlock()
 	f, err := s.load()
@@ -200,6 +227,7 @@ func (s *Store) setStatus(id, status string, pid int) error {
 	for i := range f.Items {
 		if f.Items[i].ID == id {
 			f.Items[i].Status = status
+			f.Items[i].Reason = reason
 			f.Items[i].PID = pid
 			return s.save(f)
 		}

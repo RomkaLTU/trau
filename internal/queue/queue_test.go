@@ -242,7 +242,7 @@ func TestRemoveRunningRefused(t *testing.T) {
 	if _, err := s.Remove("COD-1"); err != nil {
 		t.Fatalf("Remove pending alongside a running item: %v", err)
 	}
-	if err := s.Finish("COD-2", StatusDone); err != nil {
+	if err := s.Finish("COD-2", StatusDone, ""); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 	if _, err := s.Remove("COD-2"); err != nil {
@@ -322,7 +322,7 @@ func TestStatusTransitions(t *testing.T) {
 		t.Fatalf("running item = %+v, want running with pid 4242", items[0])
 	}
 
-	if err := s.Finish("COD-1", StatusDone); err != nil {
+	if err := s.Finish("COD-1", StatusDone, ""); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 	items, _, _ = NewStore(root).Snapshot()
@@ -331,12 +331,75 @@ func TestStatusTransitions(t *testing.T) {
 	}
 }
 
+// TestPauseParksItemAndStopsDraining proves a paused item survives a reload
+// carrying its reason, that pausing clears the draining flag in the same write,
+// and that a re-attempt via MarkRunning drops the stale reason.
+func TestPauseParksItemAndStopsDraining(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	mustAdd(t, s, Item{Kind: KindTicket, ID: "COD-1"})
+	mustAdd(t, s, Item{Kind: KindTicket, ID: "COD-2"})
+	if err := s.SetDraining(true); err != nil {
+		t.Fatalf("SetDraining: %v", err)
+	}
+	if err := s.MarkRunning("COD-1", 4242); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+
+	if err := s.Pause("COD-1", "claude needs re-authentication"); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	items, draining, err := NewStore(root).Snapshot()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if draining {
+		t.Error("draining still set after a pause, want it cleared in the same write")
+	}
+	if items[0].Status != StatusPaused || items[0].Reason != "claude needs re-authentication" || items[0].PID != 0 {
+		t.Fatalf("paused item = %+v, want paused with reason and no pid", items[0])
+	}
+	if items[1].Status != StatusPending {
+		t.Errorf("COD-2 status = %q, want it left pending behind the paused item", items[1].Status)
+	}
+
+	if err := s.MarkRunning("COD-1", 99); err != nil {
+		t.Fatalf("re-attempt MarkRunning: %v", err)
+	}
+	items, _, _ = NewStore(root).Snapshot()
+	if items[0].Status != StatusRunning || items[0].Reason != "" {
+		t.Errorf("re-attempted item = %+v, want running with the stale reason cleared", items[0])
+	}
+}
+
+// TestFinishRecordsReason proves a give-up outcome settles an item failed while
+// carrying the reason the Queue view surfaces.
+func TestFinishRecordsReason(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	mustAdd(t, s, Item{Kind: KindTicket, ID: "COD-1"})
+	if err := s.MarkRunning("COD-1", 7); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	if err := s.Finish("COD-1", StatusFailed, "verify never went green"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	items, _, _ := NewStore(root).Snapshot()
+	if items[0].Status != StatusFailed || items[0].Reason != "verify never went green" {
+		t.Fatalf("failed item = %+v, want failed carrying its reason", items[0])
+	}
+}
+
 func TestSetStatusUnknownItem(t *testing.T) {
 	s := newStore(t)
 	if err := s.MarkRunning("COD-404", 1); !errors.Is(err, ErrNotQueued) {
 		t.Fatalf("MarkRunning unknown = %v, want ErrNotQueued", err)
 	}
-	if err := s.Finish("COD-404", StatusDone); !errors.Is(err, ErrNotQueued) {
+	if err := s.Finish("COD-404", StatusDone, ""); !errors.Is(err, ErrNotQueued) {
 		t.Fatalf("Finish unknown = %v, want ErrNotQueued", err)
+	}
+	if err := s.Pause("COD-404", "x"); !errors.Is(err, ErrNotQueued) {
+		t.Fatalf("Pause unknown = %v, want ErrNotQueued", err)
 	}
 }

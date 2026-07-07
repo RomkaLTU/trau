@@ -24,6 +24,7 @@ function actionError(error: unknown): string {
 const STATUS_STATE: Record<string, RunState> = {
   pending: 'todo',
   running: 'active',
+  paused: 'warn',
   done: 'success',
   failed: 'fail',
 }
@@ -175,6 +176,7 @@ function QueueRow({
 }) {
   const isEpic = item.kind === 'epic'
   const isRunning = item.status === 'running'
+  const isPaused = item.status === 'paused'
   return (
     <li className="flex flex-col gap-2 rounded-md border border-border bg-secondary/20 px-3 py-3 sm:flex-row sm:items-start sm:gap-4">
       <span className="w-6 shrink-0 pt-0.5 font-mono text-sm text-muted-foreground tabular-nums">
@@ -227,6 +229,18 @@ function QueueRow({
               </li>
             ))}
           </ul>
+        )}
+
+        {item.reason && (
+          <p
+            className={cn(
+              'font-mono text-xs',
+              isPaused ? 'text-warn' : 'text-muted-foreground',
+            )}
+          >
+            {isPaused ? 'Paused — resume to re-attempt: ' : ''}
+            {item.reason}
+          </p>
         )}
       </div>
 
