@@ -20,33 +20,37 @@ const APIPrefix = "/api/v1"
 
 // Server serves the JSON API and the embedded SPA.
 type Server struct {
-	version   string
-	started   time.Time
-	assets    fs.FS
-	home      string
-	bind      string
-	token     string
-	workspace []string
-	sup       Supervisor
-	newWriter func(config.Config) (tracker.Writer, error)
+	version       string
+	started       time.Time
+	assets        fs.FS
+	home          string
+	bind          string
+	token         string
+	allowRegister bool
+	workspace     []string
+	sup           Supervisor
+	newWriter     func(config.Config) (tracker.Writer, error)
 }
 
 // New builds a Server that reports version and treats now as its start time. It
 // reads the instance registry from the machine's trau home. bind and token
 // carry the exposure policy: on a non-loopback bind every API request must
-// present token as a bearer credential. workspace is the allowlist of repo roots
-// the hub may start loops in; anything outside it is observe-only.
-func New(version, bind, token string, workspace []string) *Server {
+// present token as a bearer credential. allowRegister opens repo (un)registration
+// on such a bind; loopback binds ignore it and stay open. workspace is the
+// allowlist of repo roots the hub may start loops in; anything outside it is
+// observe-only.
+func New(version, bind, token string, workspace []string, allowRegister bool) *Server {
 	return &Server{
-		version:   version,
-		started:   time.Now(),
-		assets:    assetsFS(),
-		home:      registry.Home(),
-		bind:      bind,
-		token:     token,
-		workspace: normalizeRoots(workspace),
-		sup:       newOSSupervisor(),
-		newWriter: defaultWriter,
+		version:       version,
+		started:       time.Now(),
+		assets:        assetsFS(),
+		home:          registry.Home(),
+		bind:          bind,
+		token:         token,
+		allowRegister: allowRegister,
+		workspace:     normalizeRoots(workspace),
+		sup:           newOSSupervisor(),
+		newWriter:     defaultWriter,
 	}
 }
 

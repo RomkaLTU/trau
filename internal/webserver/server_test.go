@@ -11,7 +11,7 @@ import (
 
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	ts := httptest.NewServer(New("1.2.3", "127.0.0.1", "", nil).Handler())
+	ts := httptest.NewServer(New("1.2.3", "127.0.0.1", "", nil, false).Handler())
 	t.Cleanup(ts.Close)
 	return ts
 }

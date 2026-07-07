@@ -3,10 +3,12 @@ package webserver
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -167,37 +169,101 @@ func TestRegistrationPersistsAcrossRestart(t *testing.T) {
 	}
 }
 
-func TestRegisterRefusedOnNonLoopbackBind(t *testing.T) {
-	home := t.TempDir()
-	repo := gitRepo(t, t.TempDir(), "acme", "dir")
-
-	s := New("1.2.3", "0.0.0.0", "secret", nil)
-	s.home = home
-	fake := &fakeSupervisor{}
-	s.sup = fake
-	ts := httptest.NewServer(s.Handler())
-	t.Cleanup(ts.Close)
-
-	buf, err := json.Marshal(RegisterRepoRequest{Path: repo})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
+// authReq issues method against url with an optional bearer token and JSON body,
+// reading the whole response so it can assert on both status and message.
+func authReq(t *testing.T, method, url, token string, body any) (*http.Response, string) {
+	t.Helper()
+	var payload io.Reader
+	if body != nil {
+		buf, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+		payload = bytes.NewReader(buf)
 	}
-	req, err := http.NewRequest(http.MethodPost, ts.URL+APIPrefix+"/repos", bytes.NewReader(buf))
+	req, err := http.NewRequest(method, url, payload)
 	if err != nil {
-		t.Fatalf("new request: %v", err)
+		t.Fatalf("new %s %s: %v", method, url, err)
 	}
-	req.Header.Set("Authorization", "Bearer secret")
-	req.Header.Set("Content-Type", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("do request: %v", err)
+		t.Fatalf("%s %s: %v", method, url, err)
 	}
+	data, err := io.ReadAll(res.Body)
 	_ = res.Body.Close()
-	if res.StatusCode != http.StatusForbidden {
-		t.Fatalf("non-loopback register = %d, want 403", res.StatusCode)
+	if err != nil {
+		t.Fatalf("read %s body: %v", url, err)
 	}
-	if _, err := os.Stat(filepath.Join(home, "workspace.json")); !os.IsNotExist(err) {
-		t.Errorf("refused registration must not persist, workspace.json exists")
+	return res, string(data)
+}
+
+// TestRegistrationExposureGate covers the bind × token × SERVE_ALLOW_REGISTER
+// matrix for both register and unregister: loopback is always open, an exposed
+// bind needs the key on top of a valid token, and the token gate still runs first.
+func TestRegistrationExposureGate(t *testing.T) {
+	cases := []struct {
+		name           string
+		bind           string
+		serverToken    string
+		reqToken       string
+		allowRegister  bool
+		wantRegister   int
+		wantUnregister int
+		namesKey       bool
+	}{
+		{"loopback open without key", "127.0.0.1", "", "", false, http.StatusCreated, http.StatusOK, false},
+		{"loopback ignores key", "127.0.0.1", "", "", true, http.StatusCreated, http.StatusOK, false},
+		{"exposed token, key off, refused", "0.0.0.0", "s3cret", "s3cret", false, http.StatusForbidden, http.StatusForbidden, true},
+		{"exposed token, key on, allowed", "0.0.0.0", "s3cret", "s3cret", true, http.StatusCreated, http.StatusOK, false},
+		{"exposed missing token, key off", "0.0.0.0", "s3cret", "", false, http.StatusUnauthorized, http.StatusUnauthorized, false},
+		{"exposed missing token, key on", "0.0.0.0", "s3cret", "", true, http.StatusUnauthorized, http.StatusUnauthorized, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			base := t.TempDir()
+			toRegister := gitRepo(t, base, "toregister", "dir")
+			toUnregister := gitRepo(t, base, "tounregister", "dir")
+			if err := registry.RegisterRepo(home, toUnregister); err != nil {
+				t.Fatalf("seed unregister target: %v", err)
+			}
+
+			s := New("1.2.3", tc.bind, tc.serverToken, nil, tc.allowRegister)
+			s.home = home
+			s.sup = &fakeSupervisor{}
+			ts := httptest.NewServer(s.Handler())
+			t.Cleanup(ts.Close)
+
+			res, body := authReq(t, http.MethodPost, ts.URL+APIPrefix+"/repos", tc.reqToken, RegisterRepoRequest{Path: toRegister})
+			if res.StatusCode != tc.wantRegister {
+				t.Fatalf("register = %d, want %d (%s)", res.StatusCode, tc.wantRegister, body)
+			}
+			if tc.namesKey && !strings.Contains(body, "SERVE_ALLOW_REGISTER") {
+				t.Errorf("register refusal %q does not name SERVE_ALLOW_REGISTER", body)
+			}
+			if got := slices.Contains(registry.RegisteredRepos(home), toRegister); got != (tc.wantRegister == http.StatusCreated) {
+				t.Errorf("registered(%s) = %v after register status %d", toRegister, got, tc.wantRegister)
+			}
+
+			res, body = authReq(t, http.MethodDelete, ts.URL+APIPrefix+"/repos/tounregister", tc.reqToken, nil)
+			if res.StatusCode != tc.wantUnregister {
+				t.Fatalf("unregister = %d, want %d (%s)", res.StatusCode, tc.wantUnregister, body)
+			}
+			if tc.namesKey && !strings.Contains(body, "SERVE_ALLOW_REGISTER") {
+				t.Errorf("unregister refusal %q does not name SERVE_ALLOW_REGISTER", body)
+			}
+			stillRegistered := slices.Contains(registry.RegisteredRepos(home), toUnregister)
+			if wantStill := tc.wantUnregister != http.StatusOK; stillRegistered != wantStill {
+				t.Errorf("registered(%s) = %v after unregister status %d", toUnregister, stillRegistered, tc.wantUnregister)
+			}
+		})
 	}
 }
 
