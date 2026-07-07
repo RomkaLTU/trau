@@ -4,6 +4,7 @@
 package webserver
 
 import (
+	"context"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
@@ -29,6 +31,8 @@ type Server struct {
 	allowRegister bool
 	workspace     []string
 	sup           Supervisor
+	drain         *drainer
+	drainCtx      context.Context
 	newWriter     func(config.Config) (tracker.Writer, error)
 	newReader     func(config.Config) (tracker.Reader, error)
 }
@@ -41,7 +45,7 @@ type Server struct {
 // allowlist of repo roots the hub may start loops in; anything outside it is
 // observe-only.
 func New(version, bind, token string, workspace []string, allowRegister bool) *Server {
-	return &Server{
+	s := &Server{
 		version:       version,
 		started:       time.Now(),
 		assets:        assetsFS(),
@@ -51,8 +55,28 @@ func New(version, bind, token string, workspace []string, allowRegister bool) *S
 		allowRegister: allowRegister,
 		workspace:     normalizeRoots(workspace),
 		sup:           newOSSupervisor(),
+		drainCtx:      context.Background(),
 		newWriter:     defaultWriter,
 		newReader:     defaultReader,
+	}
+	s.drain = newDrainer(s)
+	return s
+}
+
+// Start resumes draining any allowlisted repo whose queue was left draining, so
+// a serve restart picks the Queue back up instead of stalling it. ctx governs
+// the drain loops: cancelling it stops the loops between children without
+// killing a child already in flight. Call it once before serving.
+func (s *Server) Start(ctx context.Context) {
+	s.drainCtx = ctx
+	for _, root := range s.effectiveRoots() {
+		items, draining, err := queue.NewStore(root).Snapshot()
+		if err != nil {
+			continue
+		}
+		if _, running := firstWithStatus(items, queue.StatusRunning); draining || running {
+			s.drain.ensure(ctx, root)
+		}
 	}
 }
 
@@ -82,6 +106,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues", s.handleCreateIssue)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/prd", s.handlePublishPRD)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue", s.handleQueue)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/drain", s.handleQueueDrain)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}", s.handleQueueItem)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs", s.handleRuns)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}", s.handleRunDetail)

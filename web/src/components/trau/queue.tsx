@@ -1,15 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ListTree, RefreshCw, Trash2 } from 'lucide-react'
+import { ListTree, Pause, Play, RefreshCw, Trash2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { EmptyState } from './empty-state'
-import { StatusPill } from './status-pill'
+import { StatusPill, type RunState } from './status-pill'
 import { TerminalCard } from './terminal-card'
 import { useActiveRepo } from './active-repo'
 import { cn } from '@/lib/utils'
 import {
   dequeue,
+  drain,
   queueCounts,
   queueQueryOptions,
   type QueueItem,
@@ -20,6 +21,17 @@ function actionError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+const STATUS_STATE: Record<string, RunState> = {
+  pending: 'todo',
+  running: 'active',
+  done: 'success',
+  failed: 'fail',
+}
+
+function statusState(status: string): RunState {
+  return STATUS_STATE[status] ?? 'info'
+}
+
 export function Queue() {
   const { repo: activeRepo } = useActiveRepo()
   const repo = activeRepo ?? ''
@@ -28,9 +40,15 @@ export function Queue() {
   const queue = useQuery(queueQueryOptions(repo))
   const items = queue.data?.items ?? []
   const counts = queueCounts(items)
+  const draining = queue.data?.draining ?? false
 
   const remove = useMutation({
     mutationFn: (id: string) => dequeue(repo, id),
+    onSuccess: (res) => queryClient.setQueryData<QueueResponse>(['queue', repo], res),
+  })
+
+  const toggleDrain = useMutation({
+    mutationFn: (next: boolean) => drain(repo, next),
     onSuccess: (res) => queryClient.setQueryData<QueueResponse>(['queue', repo], res),
   })
 
@@ -62,27 +80,55 @@ export function Queue() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="font-mono text-xs text-muted-foreground">
-          {counts.total} item{counts.total === 1 ? '' : 's'}
-          {counts.epics > 0
-            ? ` · ${counts.tickets} ticket${counts.tickets === 1 ? '' : 's'}, ${counts.epics} epic${counts.epics === 1 ? '' : 's'}`
-            : ''}
-        </p>
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="font-mono"
-          onClick={() => void queue.refetch()}
-          disabled={queue.isFetching}
-        >
-          <RefreshCw
-            className={cn('size-3.5', queue.isFetching && 'animate-spin')}
-            aria-hidden="true"
-          />
-          {queue.isFetching ? 'Refreshing…' : 'Refresh'}
-        </Button>
+        <div className="flex items-center gap-2">
+          <p className="font-mono text-xs text-muted-foreground">
+            {counts.total} item{counts.total === 1 ? '' : 's'}
+            {counts.epics > 0
+              ? ` · ${counts.tickets} ticket${counts.tickets === 1 ? '' : 's'}, ${counts.epics} epic${counts.epics === 1 ? '' : 's'}`
+              : ''}
+          </p>
+          {draining && (
+            <StatusPill state="active" label="draining" className="text-[0.65rem]" />
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant={draining ? 'outline' : 'default'}
+            size="sm"
+            className="font-mono"
+            onClick={() => toggleDrain.mutate(!draining)}
+            disabled={toggleDrain.isPending || (!draining && counts.total === 0)}
+          >
+            {draining ? (
+              <Pause className="size-3.5" aria-hidden="true" />
+            ) : (
+              <Play className="size-3.5" aria-hidden="true" />
+            )}
+            {draining ? 'Pause' : 'Start'}
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="font-mono"
+            onClick={() => void queue.refetch()}
+            disabled={queue.isFetching}
+          >
+            <RefreshCw
+              className={cn('size-3.5', queue.isFetching && 'animate-spin')}
+              aria-hidden="true"
+            />
+            {queue.isFetching ? 'Refreshing…' : 'Refresh'}
+          </Button>
+        </div>
       </div>
+
+      {toggleDrain.error && (
+        <p className="font-mono text-xs text-destructive">
+          {actionError(toggleDrain.error)}
+        </p>
+      )}
 
       {remove.error && (
         <p className="font-mono text-xs text-destructive">
@@ -104,6 +150,7 @@ export function Queue() {
           {items.map((item) => (
             <QueueRow
               key={item.id}
+              repo={repo}
               item={item}
               removing={remove.isPending && remove.variables === item.id}
               onRemove={() => remove.mutate(item.id)}
@@ -116,15 +163,18 @@ export function Queue() {
 }
 
 function QueueRow({
+  repo,
   item,
   removing,
   onRemove,
 }: {
+  repo: string
   item: QueueItem
   removing: boolean
   onRemove: () => void
 }) {
   const isEpic = item.kind === 'epic'
+  const isRunning = item.status === 'running'
   return (
     <li className="flex flex-col gap-2 rounded-md border border-border bg-secondary/20 px-3 py-3 sm:flex-row sm:items-start sm:gap-4">
       <span className="w-6 shrink-0 pt-0.5 font-mono text-sm text-muted-foreground tabular-nums">
@@ -133,7 +183,17 @@ function QueueRow({
 
       <div className="flex flex-1 flex-col gap-1.5">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-sm text-primary">{item.id}</span>
+          {isRunning ? (
+            <Link
+              to="/runs/$repo/$ticket"
+              params={{ repo, ticket: item.id }}
+              className="font-mono text-sm text-primary underline-offset-2 hover:underline"
+            >
+              {item.id}
+            </Link>
+          ) : (
+            <span className="font-mono text-sm text-primary">{item.id}</span>
+          )}
           {item.title && (
             <span className="font-sans text-sm text-foreground">
               {item.title}
@@ -171,14 +231,14 @@ function QueueRow({
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
-        <StatusPill state="info" label={item.status} />
+        <StatusPill state={statusState(item.status)} label={item.status} />
         <Button
           type="button"
           size="sm"
           variant="outline"
           className="font-mono"
           onClick={onRemove}
-          disabled={removing}
+          disabled={removing || isRunning}
         >
           <Trash2 className="size-3.5" aria-hidden="true" />
           {removing ? 'Removing…' : 'Remove'}

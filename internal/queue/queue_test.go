@@ -219,3 +219,124 @@ func TestRemove(t *testing.T) {
 		})
 	}
 }
+
+// TestRemoveRunningRefused asserts a running item cannot be dequeued — the guard
+// that keeps a Remove race from orphaning a just-spawned child — while pending
+// and terminal items around it stay removable.
+func TestRemoveRunningRefused(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	mustAdd(t, s, Item{Kind: KindTicket, ID: "COD-1"})
+	mustAdd(t, s, Item{Kind: KindTicket, ID: "COD-2"})
+	if err := s.MarkRunning("COD-2", 4242); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+
+	if _, err := s.Remove("COD-2"); !errors.Is(err, ErrRunning) {
+		t.Fatalf("Remove running = %v, want ErrRunning", err)
+	}
+	if got := ids(mustLoad(t, root)); !equalIDs(got, []string{"COD-1", "COD-2"}) {
+		t.Errorf("queue = %v, want the running item kept", got)
+	}
+
+	if _, err := s.Remove("COD-1"); err != nil {
+		t.Fatalf("Remove pending alongside a running item: %v", err)
+	}
+	if err := s.Finish("COD-2", StatusDone); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if _, err := s.Remove("COD-2"); err != nil {
+		t.Fatalf("Remove after finish = %v, want a settled item removable", err)
+	}
+}
+
+func mustLoad(t *testing.T, root string) []Item {
+	t.Helper()
+	items, err := NewStore(root).Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	return items
+}
+
+func status(t *testing.T, s *Store, id string) string {
+	t.Helper()
+	items, _, err := s.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	for _, it := range items {
+		if it.ID == id {
+			return it.Status
+		}
+	}
+	t.Fatalf("item %s not in queue", id)
+	return ""
+}
+
+// TestDrainingSurvivesReloadAndMutation proves the draining flag persists like
+// the items do — across a fresh Store on the same root (a serve restart) — and
+// is not clobbered when the queue is otherwise mutated.
+func TestDrainingSurvivesReloadAndMutation(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	mustAdd(t, s, Item{Kind: KindTicket, ID: "COD-1"})
+
+	if _, draining, err := s.Snapshot(); err != nil || draining {
+		t.Fatalf("fresh queue draining = %v (err %v), want false", draining, err)
+	}
+	if err := s.SetDraining(true); err != nil {
+		t.Fatalf("SetDraining: %v", err)
+	}
+
+	if _, draining, err := NewStore(root).Snapshot(); err != nil || !draining {
+		t.Fatalf("reloaded draining = %v (err %v), want true after a restart", draining, err)
+	}
+
+	mustAdd(t, s, Item{Kind: KindTicket, ID: "COD-2"})
+	if _, err := s.Remove("COD-1"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, draining, err := s.Snapshot(); err != nil || !draining {
+		t.Fatalf("draining = %v after add/remove, want it preserved", draining)
+	}
+}
+
+// TestStatusTransitions walks an item pending → running → terminal, asserting
+// the running child's pid is recorded then cleared, and that the transition
+// persists across a reload.
+func TestStatusTransitions(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	mustAdd(t, s, Item{Kind: KindTicket, ID: "COD-1"})
+
+	if got := status(t, s, "COD-1"); got != StatusPending {
+		t.Fatalf("new item status = %q, want pending", got)
+	}
+
+	if err := s.MarkRunning("COD-1", 4242); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	items, _, _ := NewStore(root).Snapshot()
+	if items[0].Status != StatusRunning || items[0].PID != 4242 {
+		t.Fatalf("running item = %+v, want running with pid 4242", items[0])
+	}
+
+	if err := s.Finish("COD-1", StatusDone); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	items, _, _ = NewStore(root).Snapshot()
+	if items[0].Status != StatusDone || items[0].PID != 0 {
+		t.Fatalf("finished item = %+v, want done with the pid cleared", items[0])
+	}
+}
+
+func TestSetStatusUnknownItem(t *testing.T) {
+	s := newStore(t)
+	if err := s.MarkRunning("COD-404", 1); !errors.Is(err, ErrNotQueued) {
+		t.Fatalf("MarkRunning unknown = %v, want ErrNotQueued", err)
+	}
+	if err := s.Finish("COD-404", StatusDone); !errors.Is(err, ErrNotQueued) {
+		t.Fatalf("Finish unknown = %v, want ErrNotQueued", err)
+	}
+}

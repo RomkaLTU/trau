@@ -22,6 +22,7 @@ export interface QueueItem {
 
 export interface QueueResponse {
   repo: string
+  draining: boolean
   items: QueueItem[]
 }
 
@@ -77,6 +78,24 @@ export async function dequeue(
   )
   if (!res.ok) {
     throw new Error(await errorMessage(res, 'remove from queue failed'))
+  }
+  return res.json()
+}
+
+export async function drain(
+  repo: string,
+  draining: boolean,
+): Promise<QueueResponse> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/queue/drain`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ draining }),
+    },
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'queue drain failed'))
   }
   return res.json()
 }

@@ -303,6 +303,10 @@ func entryName(pid int) string {
 	return strconv.Itoa(pid) + ".json"
 }
 
+// Alive reports whether pid names a running process. The hub uses it to tell
+// whether a child it recorded against a queued item is still running.
+func Alive(pid int) bool { return alive(pid) }
+
 // alive reports whether pid names a running process, treating a
 // permission-denied probe as alive (the process exists, we just may not own it).
 func alive(pid int) bool {
