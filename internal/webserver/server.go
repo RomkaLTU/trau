@@ -68,6 +68,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/costs", s.handleCosts)
 	mux.HandleFunc(APIPrefix+"/costs/timeseries", s.handleTimeseries)
 	mux.HandleFunc(APIPrefix+"/repos", s.handleRepos)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}", s.handleRepo)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/dry-run", s.handleDryRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/eligible", s.handleEligible)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/epics/{epic}", s.handleEpicPreview)

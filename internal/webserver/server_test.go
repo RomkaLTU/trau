@@ -30,6 +30,24 @@ func get(t *testing.T, ts *httptest.Server, path string) (*http.Response, string
 	return res, string(body)
 }
 
+func deleteReq(t *testing.T, ts *httptest.Server, path string) (*http.Response, string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, ts.URL+path, nil)
+	if err != nil {
+		t.Fatalf("new DELETE %s: %v", path, err)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE %s: %v", path, err)
+	}
+	body, err := io.ReadAll(res.Body)
+	_ = res.Body.Close()
+	if err != nil {
+		t.Fatalf("read %s body: %v", path, err)
+	}
+	return res, string(body)
+}
+
 func TestHealthResource(t *testing.T) {
 	ts := newTestServer(t)
 

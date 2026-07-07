@@ -19,6 +19,7 @@ export interface RepoView {
   runs_dir: string
   live: boolean
   allowed: boolean
+  registered: boolean
 }
 
 export interface InstancesResponse {
@@ -81,6 +82,28 @@ export async function stopInstance(pid: number): Promise<StopResult> {
   const res = await apiFetch(`/api/v1/instances/${pid}/stop`, { method: 'POST' })
   if (!res.ok) {
     throw new Error(await errorMessage(res, 'stop failed'))
+  }
+  return res.json()
+}
+
+export async function registerRepo(path: string): Promise<RepoView> {
+  const res = await apiFetch('/api/v1/repos', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'register failed'))
+  }
+  return res.json()
+}
+
+export async function unregisterRepo(repo: string): Promise<RepoView> {
+  const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(repo)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'unregister failed'))
   }
   return res.json()
 }
