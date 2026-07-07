@@ -13,6 +13,7 @@ import { Route as TerminalRouteImport } from './routes/terminal'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as RunsRouteImport } from './routes/runs'
 import { Route as RunOnceRouteImport } from './routes/run-once'
+import { Route as QueueRouteImport } from './routes/queue'
 import { Route as LoopRouteImport } from './routes/loop'
 import { Route as LessonsRouteImport } from './routes/lessons'
 import { Route as InstancesRouteImport } from './routes/instances'
@@ -41,6 +42,11 @@ const RunsRoute = RunsRouteImport.update({
 const RunOnceRoute = RunOnceRouteImport.update({
   id: '/run-once',
   path: '/run-once',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const QueueRoute = QueueRouteImport.update({
+  id: '/queue',
+  path: '/queue',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoopRoute = LoopRouteImport.update({
@@ -97,6 +103,7 @@ export interface FileRoutesByFullPath {
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
   '/loop': typeof LoopRoute
+  '/queue': typeof QueueRoute
   '/run-once': typeof RunOnceRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
@@ -112,6 +119,7 @@ export interface FileRoutesByTo {
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
   '/loop': typeof LoopRoute
+  '/queue': typeof QueueRoute
   '/run-once': typeof RunOnceRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
@@ -128,6 +136,7 @@ export interface FileRoutesById {
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
   '/loop': typeof LoopRoute
+  '/queue': typeof QueueRoute
   '/run-once': typeof RunOnceRoute
   '/runs': typeof RunsRoute
   '/settings': typeof SettingsRoute
@@ -145,6 +154,7 @@ export interface FileRouteTypes {
     | '/instances'
     | '/lessons'
     | '/loop'
+    | '/queue'
     | '/run-once'
     | '/runs'
     | '/settings'
@@ -160,6 +170,7 @@ export interface FileRouteTypes {
     | '/instances'
     | '/lessons'
     | '/loop'
+    | '/queue'
     | '/run-once'
     | '/runs'
     | '/settings'
@@ -175,6 +186,7 @@ export interface FileRouteTypes {
     | '/instances'
     | '/lessons'
     | '/loop'
+    | '/queue'
     | '/run-once'
     | '/runs'
     | '/settings'
@@ -191,6 +203,7 @@ export interface RootRouteChildren {
   InstancesRoute: typeof InstancesRoute
   LessonsRoute: typeof LessonsRoute
   LoopRoute: typeof LoopRoute
+  QueueRoute: typeof QueueRoute
   RunOnceRoute: typeof RunOnceRoute
   RunsRoute: typeof RunsRoute
   SettingsRoute: typeof SettingsRoute
@@ -227,6 +240,13 @@ declare module '@tanstack/react-router' {
       path: '/run-once'
       fullPath: '/run-once'
       preLoaderRoute: typeof RunOnceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/queue': {
+      id: '/queue'
+      path: '/queue'
+      fullPath: '/queue'
+      preLoaderRoute: typeof QueueRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/loop': {
@@ -303,6 +323,7 @@ const rootRouteChildren: RootRouteChildren = {
   InstancesRoute: InstancesRoute,
   LessonsRoute: LessonsRoute,
   LoopRoute: LoopRoute,
+  QueueRoute: QueueRoute,
   RunOnceRoute: RunOnceRoute,
   RunsRoute: RunsRoute,
   SettingsRoute: SettingsRoute,
