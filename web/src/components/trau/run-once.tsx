@@ -5,6 +5,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { Button } from '@/components/ui/button'
 import { useActiveRepo } from './active-repo'
 import { RepoPicker } from './repo-picker'
+import { TargetRepoField } from './target-repo-field'
 import { TerminalCard } from './terminal-card'
 import { cn } from '@/lib/utils'
 import { configQueryOptions } from '@/lib/config'
@@ -73,6 +74,8 @@ export function RunOnce() {
               if (ticket) start.mutate()
             }}
           >
+            <TargetRepoField repo={repo} />
+
             <div className="flex flex-col gap-1.5">
               <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
                 eligible tickets
