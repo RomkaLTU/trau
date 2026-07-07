@@ -962,7 +962,7 @@ func (m planModel) help() screenHelp {
 		return screenHelp{title: "Plan", columns: []helpColumn{
 			group("Review", fk("a", "approve & publish"), fk("r", "request changes")),
 			group("Read PRD", fk("y", "copy PRD"), fk("f/b/u/d", "scroll"), xk("g/G", "jump")),
-			group("Actions", fk("e", "new idea"), fk("esc/q", "sessions"), xk("ctrl+t", "toggle mouse (select text)")),
+			group("Actions", fk("e", "new idea"), fk("esc/q", "sessions"), xk("ctrl+t", "toggle mouse (select text)"), xk("⇧ drag", "select text (⌥ on iTerm2/Terminal.app)")),
 		}}
 	case planPublishing:
 		return screenHelp{title: "Plan · publishing"}
@@ -990,7 +990,7 @@ func (m planModel) help() screenHelp {
 	default:
 		return screenHelp{title: "Plan", columns: []helpColumn{
 			group("Actions", fk("ctrl+d", "start planning"), fk("esc", "back")),
-			group("Global", xk("ctrl+t", "toggle mouse (select text)")),
+			group("Global", xk("ctrl+t", "toggle mouse (select text)"), xk("⇧ drag", "select text (⌥ on iTerm2/Terminal.app)")),
 		}}
 	}
 }

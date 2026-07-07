@@ -96,6 +96,39 @@ func TestMouseOffOverlayIndicator(t *testing.T) {
 	}
 }
 
+// TestSelectionBypassDocumented pins that every screen carrying the mouse toggle
+// also documents the modifier-drag bypass, so users can copy without toggling and
+// discover the ⌥ variant on iTerm2 / Terminal.app.
+func TestSelectionBypassDocumented(t *testing.T) {
+	bypass := func(h screenHelp) (helpKey, bool) {
+		for _, c := range h.columns {
+			for _, k := range c.keys {
+				if strings.Contains(k.key, "drag") {
+					return k, true
+				}
+			}
+		}
+		return helpKey{}, false
+	}
+	m := initialModel(nil)
+	helps := map[string]screenHelp{
+		"menu":    menuHelp(),
+		"status":  statusHelp(),
+		"running": m.runningHelp(),
+		"summary": m.summaryHelp(),
+	}
+	for name, h := range helps {
+		k, ok := bypass(h)
+		if !ok {
+			t.Errorf("%s help must document the shift/option-drag selection bypass", name)
+			continue
+		}
+		if !strings.Contains(k.desc, "⌥") {
+			t.Errorf("%s bypass help should note the ⌥ (Option) variant, got desc %q", name, k.desc)
+		}
+	}
+}
+
 // TestCopyKeyYanksSelectedArtifact drives y on the live rail: it sets the copy
 // toast, returns an OSC52 command, and the next key dismisses the toast.
 func TestCopyKeyYanksSelectedArtifact(t *testing.T) {
