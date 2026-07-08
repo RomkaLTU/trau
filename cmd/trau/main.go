@@ -821,6 +821,13 @@ func repoName(root string) string {
 }
 
 func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *tokens.Sink, log *event.Log, con console.Renderer) (*pipeline.Pipeline, error) {
+	wireCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if added, err := pipeline.EnsureRepoConfigInclude(wireCtx, repoRoot); err != nil {
+		return nil, fmt.Errorf("wire %s into the repo's local git config: %w", pipeline.RepoConfigFile, err)
+	} else if added {
+		fmt.Fprintf(os.Stderr, "wired %s into the repo's local git config (include.path)\n", pipeline.RepoConfigFile)
+	}
 	var verifyChecks []checks.Check
 	if cfg.VerifyChecks {
 		loaded, _, err := checks.Load(repoRoot)
