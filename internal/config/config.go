@@ -1100,7 +1100,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "EPIC_FLOW", Default: "1", Description: "Process epic sub-issues (1 = yes, 0 = no)", Bool: true},
 		{Key: "NOTIFY", Default: "0", Description: "Desktop notifications on pause, quarantine, and session end (opt-in; 1 = yes, 0 = no)", Bool: true},
 		{Key: "TIMELOG_ENABLED", Default: "0", Description: "Write a per-ticket effort time log (JSON) after merge (opt-in; 1 = yes, 0 = no)", Bool: true},
-		{Key: "TIMELOG_STORAGE", Default: "repo", Description: "Time-log location: repo (<repo>/.dev-flow/time/) | user (~/.dev-flow/time/<repo>/) | none", Options: []string{"repo", "user", "none"}},
+		{Key: "TIMELOG_STORAGE", Default: "repo", Description: "Time-log location: repo (<repo>/.trau/time/) | user (~/.trau/time/<repo>/) | none", Options: []string{"repo", "user", "none"}},
 		{Key: "TIMELOG_OUTPUT_FORMAT", Default: "default", Description: "Time-log export rendering: default (JSON) | jira-worklog | toggl-csv | plain", Options: []string{"default", "jira-worklog", "toggl-csv", "plain"}},
 		{Key: "TIMELOG_ESTIMATOR", Default: "heuristic", Description: "Per-ticket effort estimate: heuristic (deterministic table) | agent (cheap agent call)", Options: []string{"heuristic", "agent"}},
 		{Key: "RUNS_DIR", Default: ".trau/runs", Description: "Directory for run artifacts"},

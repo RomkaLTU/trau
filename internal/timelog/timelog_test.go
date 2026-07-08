@@ -160,15 +160,72 @@ func TestPathStorageModes(t *testing.T) {
 	if got := Path(StorageRepo, "/repo", " "); got != "" {
 		t.Fatalf("blank ticket should be empty, got %q", got)
 	}
-	if got := Path(StorageRepo, "/repo/app", "COD-1"); got != "/repo/app/.dev-flow/time/COD-1.json" {
+	if got := Path(StorageRepo, "/repo/app", "COD-1"); got != "/repo/app/.trau/time/COD-1.json" {
 		t.Fatalf("repo path = %q", got)
 	}
 
 	t.Setenv("HOME", "/home/dev")
 	got := Path(StorageUser, "/work/salonradar", "COD-9")
-	want := "/home/dev/.dev-flow/time/salonradar/COD-9.json"
+	want := "/home/dev/.trau/time/salonradar/COD-9.json"
 	if got != want {
 		t.Fatalf("user path = %q, want %q", got, want)
+	}
+}
+
+// TestMigrateLegacy guards the .dev-flow/time -> .trau/time rename: legacy logs
+// move to the new location so Record keeps appending to them, a log already
+// written at the new location is never clobbered (its legacy counterpart stays
+// put), and emptied legacy directories are pruned.
+func TestMigrateLegacy(t *testing.T) {
+	repo := t.TempDir()
+	legacy := filepath.Join(repo, ".dev-flow", "time")
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "COD-1.json"), []byte(`{"ticketId":"COD-1"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "COD-2.json"), []byte(`{"ticketId":"legacy"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	newDir := filepath.Join(repo, ".trau", "time")
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newDir, "COD-2.json"), []byte(`{"ticketId":"new"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MigrateLegacy(StorageRepo, repo); err != nil {
+		t.Fatalf("MigrateLegacy: %v", err)
+	}
+
+	if got := mustReadFile(t, filepath.Join(newDir, "COD-1.json")); got != `{"ticketId":"COD-1"}` {
+		t.Fatalf("COD-1 not migrated, got %q", got)
+	}
+	if got := mustReadFile(t, filepath.Join(newDir, "COD-2.json")); got != `{"ticketId":"new"}` {
+		t.Fatalf("existing new-location log clobbered, got %q", got)
+	}
+	if got := mustReadFile(t, filepath.Join(legacy, "COD-2.json")); got != `{"ticketId":"legacy"}` {
+		t.Fatalf("conflicting legacy log should stay put, got %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(legacy, "COD-1.json")); !os.IsNotExist(err) {
+		t.Fatalf("migrated legacy file should be gone: %v", err)
+	}
+
+	// Second run with the conflict resolved: the dir empties out and is pruned.
+	if err := os.Remove(filepath.Join(legacy, "COD-2.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateLegacy(StorageRepo, repo); err != nil {
+		t.Fatalf("second MigrateLegacy: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".dev-flow")); !os.IsNotExist(err) {
+		t.Fatalf("emptied .dev-flow should be pruned: %v", err)
+	}
+	// No legacy dir at all is a no-op, not an error.
+	if err := MigrateLegacy(StorageRepo, repo); err != nil {
+		t.Fatalf("MigrateLegacy without legacy dir: %v", err)
 	}
 }
 
@@ -183,11 +240,11 @@ func TestEnsureGitignore(t *testing.T) {
 		t.Fatalf("EnsureGitignore: %v", err)
 	}
 	content := mustReadFile(t, gi)
-	if !strings.Contains(content, ".dev-flow/time/") {
-		t.Fatalf("expected .dev-flow/time/ ignored, got:\n%s", content)
+	if !strings.Contains(content, ".trau/time/") {
+		t.Fatalf("expected .trau/time/ ignored, got:\n%s", content)
 	}
-	if strings.Contains(content, "\n.dev-flow\n") || content == ".dev-flow\n" {
-		t.Fatalf("must not blanket-ignore .dev-flow/, got:\n%s", content)
+	if strings.Contains(content, "\n.trau\n") || content == ".trau\n" {
+		t.Fatalf("must not blanket-ignore .trau/, got:\n%s", content)
 	}
 
 	// Idempotent: a second call adds nothing.
@@ -202,14 +259,30 @@ func TestEnsureGitignore(t *testing.T) {
 func TestEnsureGitignoreRespectsExistingCoverage(t *testing.T) {
 	dir := t.TempDir()
 	gi := filepath.Join(dir, ".gitignore")
-	if err := os.WriteFile(gi, []byte(".dev-flow/\n"), 0o644); err != nil {
+	if err := os.WriteFile(gi, []byte(".trau/\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := EnsureGitignore(dir); err != nil {
 		t.Fatalf("EnsureGitignore: %v", err)
 	}
-	if content := mustReadFile(t, gi); content != ".dev-flow/\n" {
-		t.Fatalf("should leave existing .dev-flow/ coverage untouched, got:\n%s", content)
+	if content := mustReadFile(t, gi); content != ".trau/\n" {
+		t.Fatalf("should leave existing .trau/ coverage untouched, got:\n%s", content)
+	}
+}
+
+// A legacy .dev-flow entry no longer covers the new location: EnsureGitignore
+// must still add .trau/time/.
+func TestEnsureGitignoreLegacyEntryDoesNotCover(t *testing.T) {
+	dir := t.TempDir()
+	gi := filepath.Join(dir, ".gitignore")
+	if err := os.WriteFile(gi, []byte(".dev-flow/time/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureGitignore(dir); err != nil {
+		t.Fatalf("EnsureGitignore: %v", err)
+	}
+	if content := mustReadFile(t, gi); !strings.Contains(content, ".trau/time/") {
+		t.Fatalf("expected .trau/time/ added alongside legacy entry, got:\n%s", content)
 	}
 }
 

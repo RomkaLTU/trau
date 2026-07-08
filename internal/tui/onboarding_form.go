@@ -193,7 +193,7 @@ func (m onboardingModel) newForm() *huh.Form {
 		huh.NewSelect[bool]().
 			Key(keyTimelog).
 			Title("Time tracking (optional)").
-			Description("Write a per-ticket effort estimate to .dev-flow/time/<TICKET>.json after\nmerge. Off by default; it estimates human effort, not agent time.").
+			Description("Write a per-ticket effort estimate to .trau/time/<TICKET>.json after\nmerge. Off by default; it estimates human effort, not agent time.").
 			Options(
 				huh.NewOption("No — don't track time (default)", false),
 				huh.NewOption("Yes — log estimated dev time per ticket", true),

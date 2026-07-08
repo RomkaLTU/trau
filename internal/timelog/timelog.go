@@ -1,5 +1,6 @@
 // Package timelog writes per-ticket human-effort time logs as JSON under
-// <repo>/.dev-flow/time/<TICKET>.json, a format other time-tracking tools can read.
+// <repo>/.trau/time/<TICKET>.json, a format other time-tracking tools can read
+// (the JSON schema stays dev-flow-compatible; only the directory moved).
 //
 // The feature is opt-in (off by default) and best-effort: callers gather the
 // inputs, call Record, and log-and-continue on any error. Nothing here ever blocks
@@ -19,8 +20,8 @@ import (
 
 // Storage modes.
 const (
-	StorageRepo = "repo" // <repoRoot>/.dev-flow/time/<TICKET>.json (default)
-	StorageUser = "user" // ~/.dev-flow/time/<repo-slug>/<TICKET>.json
+	StorageRepo = "repo" // <repoRoot>/.trau/time/<TICKET>.json (default)
+	StorageUser = "user" // ~/.trau/time/<repo-slug>/<TICKET>.json
 	StorageNone = "none" // persist nothing
 )
 
@@ -70,8 +71,8 @@ type Log struct {
 // storage mode, or "" when nothing should be persisted (mode "none", or a root
 // that cannot be resolved):
 //
-//	repo -> <repoRoot>/.dev-flow/time/<TICKET>.json
-//	user -> ~/.dev-flow/time/<repo-slug>/<TICKET>.json
+//	repo -> <repoRoot>/.trau/time/<TICKET>.json
+//	user -> ~/.trau/time/<repo-slug>/<TICKET>.json
 func Path(storage, repoRoot, ticketID string) string {
 	ticketID = strings.TrimSpace(ticketID)
 	if ticketID == "" {
@@ -85,13 +86,72 @@ func Path(storage, repoRoot, ticketID string) string {
 		if err != nil || home == "" {
 			return ""
 		}
-		return filepath.Join(home, ".dev-flow", "time", repoSlug(repoRoot), ticketID+".json")
+		return filepath.Join(home, ".trau", "time", repoSlug(repoRoot), ticketID+".json")
 	default: // repo (also the empty/unknown fallback)
 		if strings.TrimSpace(repoRoot) == "" {
 			return ""
 		}
-		return filepath.Join(repoRoot, ".dev-flow", "time", ticketID+".json")
+		return filepath.Join(repoRoot, ".trau", "time", ticketID+".json")
 	}
+}
+
+// MigrateLegacy moves time logs from the pre-rename location (.dev-flow/time/)
+// to the current one (.trau/time/) so upgraded installs keep appending to their
+// existing per-ticket logs instead of forking new ones. Files already present at
+// the new location win; their legacy counterparts are left in place. Emptied
+// legacy directories are pruned. Best-effort: callers log-and-continue on error.
+func MigrateLegacy(storage, repoRoot string) error {
+	var legacy, dir string
+	var prune []string
+	switch storage {
+	case StorageUser:
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return nil
+		}
+		slug := repoSlug(repoRoot)
+		legacy = filepath.Join(home, ".dev-flow", "time", slug)
+		dir = filepath.Join(home, ".trau", "time", slug)
+		prune = []string{legacy, filepath.Join(home, ".dev-flow", "time"), filepath.Join(home, ".dev-flow")}
+	case StorageRepo:
+		if strings.TrimSpace(repoRoot) == "" {
+			return nil
+		}
+		legacy = filepath.Join(repoRoot, ".dev-flow", "time")
+		dir = filepath.Join(repoRoot, ".trau", "time")
+		prune = []string{legacy, filepath.Join(repoRoot, ".dev-flow")}
+	default:
+		return nil
+	}
+
+	entries, err := os.ReadDir(legacy)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	var firstErr error
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		dst := filepath.Join(dir, e.Name())
+		if _, err := os.Stat(dst); err == nil {
+			continue // never clobber a log already written at the new location
+		}
+		if err := os.Rename(filepath.Join(legacy, e.Name()), dst); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	// Remove refuses non-empty directories, so this only prunes what emptied out.
+	for _, p := range prune {
+		_ = os.Remove(p)
+	}
+	return firstErr
 }
 
 // repoSlug derives a stable per-repo directory name from the repo root.
@@ -151,15 +211,15 @@ func hasEntry(entries []Entry, e Entry) bool {
 	return false
 }
 
-// EnsureGitignore adds ".dev-flow/time/" to the target repo's .gitignore when it is
+// EnsureGitignore adds ".trau/time/" to the target repo's .gitignore when it is
 // not already ignored, so per-developer effort numbers are never committed. It does
-// NOT blanket-ignore .dev-flow/ — a project's .dev-flow/config.json is not trau's to
-// ignore. Best-effort: the .gitignore is created when missing.
+// NOT blanket-ignore .trau/ — the project's .trau/checks/ verify library is meant to
+// be committed. Best-effort: the .gitignore is created when missing.
 func EnsureGitignore(repoRoot string) error {
 	if strings.TrimSpace(repoRoot) == "" {
 		return nil
 	}
-	const want = ".dev-flow/time/"
+	const want = ".trau/time/"
 	gi := filepath.Join(repoRoot, ".gitignore")
 	data, err := os.ReadFile(gi)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -179,7 +239,7 @@ func EnsureGitignore(repoRoot string) error {
 }
 
 // gitignoreCovers reports whether content already ignores the time-log dir, treating
-// either the time dir or the whole .dev-flow dir (with or without a trailing slash or
+// either the time dir or the whole .trau dir (with or without a trailing slash or
 // leading slash) as sufficient coverage.
 func gitignoreCovers(content string) bool {
 	for _, raw := range strings.Split(content, "\n") {
@@ -190,7 +250,7 @@ func gitignoreCovers(content string) bool {
 		line = strings.TrimPrefix(line, "/")
 		line = strings.TrimSuffix(line, "/")
 		switch line {
-		case ".dev-flow/time", ".dev-flow":
+		case ".trau/time", ".trau":
 			return true
 		}
 	}
