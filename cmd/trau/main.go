@@ -1859,6 +1859,7 @@ func (a *appActions) StatusRows() []tui.StatusRow {
 			PRURL:         a.store.Get(id, "PR_URL"),
 			Branch:        a.store.Get(id, "BRANCH"),
 			FailureReason: a.store.Get(id, "FAILURE_REASON"),
+			FailureClass:  state.FailureClass(a.store.Get(id, "PHASE"), a.store.Get(id, "FAILURE_CLASS"), a.store.Get(id, "FAILURE_REASON")),
 			Tokens:        tok,
 			Cost:          cost,
 			CostMetered:   metered,
