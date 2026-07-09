@@ -185,6 +185,31 @@ func TestStartRefusedWhenAllowlistEmpty(t *testing.T) {
 	}
 }
 
+func TestStartRefusedWhenRepoIsLive(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(t.TempDir(), "acme")
+	runsDir := filepath.Join(root, ".trau", "runs")
+	fake, ts := controlServer(t, home, []string{root})
+	markLive(t, home, root, runsDir)
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("start status = %d, want 409 while a loop is live in the repo", res.StatusCode)
+	}
+	var body struct {
+		Error string `json:"error"`
+		Live  bool   `json:"live"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&body)
+	if !body.Live {
+		t.Errorf("409 body = %+v, want live:true so the UI can disable resume", body)
+	}
+	if len(fake.spawns) != 0 {
+		t.Errorf("spawns = %d, want 0 (a second loop must not enter a live working tree)", len(fake.spawns))
+	}
+}
+
 func TestStartReportsSpawnFailure(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "acme")
 	fake, ts := controlServer(t, t.TempDir(), []string{root})

@@ -110,6 +110,16 @@ func (s *Server) startInstance(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// Refuse when a loop already holds this working tree: a second loop into the
+	// same repo corrupts the first's checkpoint and branch — the same hazard the
+	// checkpoint mutations guard with refuseWhenLive and the drainer with repoLive.
+	if e, live := s.liveInstance(root); live {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": fmt.Sprintf("%s already has a live loop (pid %d) — stop it before starting another run in the same working tree", filepath.Base(root), e.PID),
+			"live":  true,
+		})
+		return
+	}
 
 	args := []string{"--repo", root, "--no-tui"}
 	switch {
