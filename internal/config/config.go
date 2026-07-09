@@ -198,6 +198,11 @@ type Config struct {
 	// listed here stay observe-only too.
 	ServeWorkspace []string
 
+	// ServeAutostart lets the first interactive TUI session bring the hub up;
+	// ServeOpen opens the browser on a fresh spawn. Both default on (ADR 0004).
+	ServeAutostart bool
+	ServeOpen      bool
+
 	// Spend ceilings off the normalized token/cost ledger. Zero = no cap
 	// (back-compat: a config with no MAX_* knobs enforces nothing). USD caps use
 	// the notional cost estimate; token caps the raw total. See internal/budget.
@@ -280,6 +285,8 @@ func Defaults() Config {
 		ServeToken:            "",
 		ServeAllowRegister:    false,
 		ServeWorkspace:        nil,
+		ServeAutostart:        true,
+		ServeOpen:             true,
 		MaxTicketUSD:          0,
 		MaxTicketTokens:       0,
 		MaxDailyUSD:           0,
@@ -667,6 +674,14 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("SERVE_WORKSPACE"); v != "" {
 		c.ServeWorkspace = splitCSV(v)
 		sources["SERVE_WORKSPACE"] = src.name
+	}
+	if v, src := get("SERVE_AUTOSTART"); v != "" {
+		c.ServeAutostart = v == "1"
+		sources["SERVE_AUTOSTART"] = src.name
+	}
+	if v, src := get("SERVE_OPEN"); v != "" {
+		c.ServeOpen = v == "1"
+		sources["SERVE_OPEN"] = src.name
 	}
 	fnum("MAX_TICKET_USD", &c.MaxTicketUSD)
 	num("MAX_TICKET_TOKENS", &c.MaxTicketTokens)
@@ -1109,6 +1124,8 @@ func KnownKeys() []KeyMeta {
 		{Key: "SERVE_TOKEN", Advanced: true, Description: "Bearer token required for non-loopback `trau serve` binds; mandatory once SERVE_BIND leaves loopback"},
 		{Key: "SERVE_ALLOW_REGISTER", Default: "0", Advanced: true, Bool: true, Description: "Allow repo (un)registration on a non-loopback `trau serve` bind, on top of SERVE_TOKEN; loopback binds are always open (1 = yes, 0 = no)"},
 		{Key: "SERVE_WORKSPACE", Advanced: true, Description: "Comma-separated repo roots the hub may start loops in; repos outside this allowlist are observe-only. Empty = the hub starts nothing"},
+		{Key: "SERVE_AUTOSTART", Default: "1", Advanced: true, Bool: true, Description: "Bring the web UI hub up automatically on the first interactive TUI session when none is running (1 = yes, 0 = no)"},
+		{Key: "SERVE_OPEN", Default: "1", Advanced: true, Bool: true, Description: "Open the browser when autostart freshly spawns the hub (1 = yes, 0 = no); the daemon still starts when 0"},
 		{Key: "MAX_TICKET_USD", Description: "Per-ticket USD spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_TICKET_TOKENS", Description: "Per-ticket token spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_DAILY_USD", Description: "Per-day USD spend cap across all tickets; reaching it stops the run (empty = no cap)"},
@@ -1611,6 +1628,16 @@ func keyValue(cfg Config, key string) string {
 		return "0"
 	case "SERVE_WORKSPACE":
 		return strings.Join(cfg.ServeWorkspace, ",")
+	case "SERVE_AUTOSTART":
+		if cfg.ServeAutostart {
+			return "1"
+		}
+		return "0"
+	case "SERVE_OPEN":
+		if cfg.ServeOpen {
+			return "1"
+		}
+		return "0"
 	case "MAX_TICKET_USD":
 		return floatValue(cfg.MaxTicketUSD)
 	case "MAX_TICKET_TOKENS":

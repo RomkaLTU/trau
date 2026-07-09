@@ -397,6 +397,19 @@ SERVE_ALLOW_REGISTER=0
 # discovers through the registry is observe-only. Empty (the default) means the
 # hub starts nothing; stopping an already-running loop works regardless.
 # SERVE_WORKSPACE=/Users/me/Projects/salonradar,/Users/me/Projects/loop
+#
+# The first interactive TUI session brings the hub up on its own (one per
+# machine) so the web UI is there whenever you work with trau; it reuses any hub
+# already on the port and inherits the SERVE_* settings above, so an autostarted
+# hub is identical to one you start by hand. It persists until reboot or an
+# explicit stop. Set 0 to never autostart (start it yourself with `trau serve`);
+# `--no-serve` disables it for one run.
+SERVE_AUTOSTART=1
+#
+# When autostart freshly spawns the hub it also opens the browser (health-gated,
+# best-effort — skipped over SSH or without a display). Set 0 to keep the daemon
+# but not launch a browser; the TUI still prints the Web UI URL.
+SERVE_OPEN=1
 
 # COST NOTE: the "~$X est" in the closing recap (and --status) is a NOTIONAL
 # API-list estimate, not a bill — no provider cost is reported for interactive

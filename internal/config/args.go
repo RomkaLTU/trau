@@ -30,6 +30,7 @@ type Options struct {
 	Confirm      bool
 	Repo         string
 	NoTUI        bool
+	NoServe      bool
 	JSON         bool
 	Verbose      bool
 	Debug        bool
@@ -99,6 +100,8 @@ func ParseArgs(args []string) (Options, error) {
 			o.Status = true
 		case a == "--no-tui":
 			o.NoTUI = true
+		case a == "--no-serve":
+			o.NoServe = true
 		case a == "--json":
 			o.JSON = true
 		case a == "--verbose":

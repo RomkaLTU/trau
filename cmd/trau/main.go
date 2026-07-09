@@ -244,7 +244,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		cfg.TUI && !opts.NoTUI &&
 		console.IsTerminal(stdout)
 
-	if len(args) == 0 && cfg.TUI && !opts.NoTUI && console.IsTerminal(stdout) && os.Getenv("TRAU_LOG_JSON") != "1" {
+	if menuOnlyArgs(args) && cfg.TUI && !opts.NoTUI && console.IsTerminal(stdout) && os.Getenv("TRAU_LOG_JSON") != "1" {
 		return runSession(ctx, cfg, opts, stdout, stderr)
 	}
 
@@ -1210,6 +1210,17 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 	return processed, nil
 }
 
+// menuOnlyArgs reports whether the argv requests the interactive menu rather
+// than a headless action: a bare invocation, or a lone --no-serve.
+func menuOnlyArgs(args []string) bool {
+	for _, a := range args {
+		if a != "--no-serve" {
+			return false
+		}
+	}
+	return true
+}
+
 func runSession(ctx context.Context, cfg config.Config, opts config.Options, stdout, stderr io.Writer) error {
 	holder := tui.NewRenderer()
 
@@ -1246,6 +1257,8 @@ func runSession(ctx context.Context, cfg config.Config, opts config.Options, std
 
 	reg := registry.Register(registry.Home(), cfg.RepoRoot, cfg.RunsDir)
 	defer reg.Deregister()
+
+	maybeAutostartHub(ctx, cfg, opts.NoServe, stderr)
 
 	return tui.RunSession(ctx, stdout, holder, acts)
 }
