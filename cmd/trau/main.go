@@ -244,7 +244,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		cfg.TUI && !opts.NoTUI &&
 		console.IsTerminal(stdout)
 
-	if len(args) == 0 && cfg.TUI && !opts.NoTUI && console.IsTerminal(stdout) && os.Getenv("TRAU_LOG_JSON") != "1" {
+	if menuOnlyArgs(args) && cfg.TUI && !opts.NoTUI && console.IsTerminal(stdout) && os.Getenv("TRAU_LOG_JSON") != "1" {
 		return runSession(ctx, cfg, opts, stdout, stderr)
 	}
 
@@ -821,6 +821,13 @@ func repoName(root string) string {
 }
 
 func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *tokens.Sink, log *event.Log, con console.Renderer) (*pipeline.Pipeline, error) {
+	wireCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if added, err := pipeline.EnsureRepoConfigInclude(wireCtx, repoRoot); err != nil {
+		return nil, fmt.Errorf("wire %s into the repo's local git config: %w", pipeline.RepoConfigFile, err)
+	} else if added {
+		fmt.Fprintf(os.Stderr, "wired %s into the repo's local git config (include.path)\n", pipeline.RepoConfigFile)
+	}
 	var verifyChecks []checks.Check
 	if cfg.VerifyChecks {
 		loaded, _, err := checks.Load(repoRoot)
@@ -1203,6 +1210,17 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 	return processed, nil
 }
 
+// menuOnlyArgs reports whether the argv requests the interactive menu rather
+// than a headless action: a bare invocation, or a lone --no-serve.
+func menuOnlyArgs(args []string) bool {
+	for _, a := range args {
+		if a != "--no-serve" {
+			return false
+		}
+	}
+	return true
+}
+
 func runSession(ctx context.Context, cfg config.Config, opts config.Options, stdout, stderr io.Writer) error {
 	holder := tui.NewRenderer()
 
@@ -1239,6 +1257,8 @@ func runSession(ctx context.Context, cfg config.Config, opts config.Options, std
 
 	reg := registry.Register(registry.Home(), cfg.RepoRoot, cfg.RunsDir)
 	defer reg.Deregister()
+
+	maybeAutostartHub(ctx, cfg, opts.NoServe, stderr)
 
 	return tui.RunSession(ctx, stdout, holder, acts)
 }

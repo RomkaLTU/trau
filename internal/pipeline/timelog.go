@@ -41,6 +41,9 @@ func (p *Pipeline) recordTimelog(ctx context.Context, id string) {
 	if path == "" {
 		return
 	}
+	if err := timelog.MigrateLegacy(p.TimelogStorage, repoRoot); err != nil {
+		p.logf("  timelog legacy migration error (continuing): %v", err)
+	}
 
 	branch := p.State.Get(id, "BRANCH")
 	if branch == "" {
@@ -91,7 +94,7 @@ func (p *Pipeline) recordTimelog(ctx context.Context, id string) {
 	if err := timelog.WriteExport(path, p.TimelogOutputFormat); err != nil {
 		p.logf("  timelog export error (continuing): %v", err)
 	}
-	p.logf("  ⏱ logged ~%s effort for %s (.dev-flow/time)", humanMinutes(minutes), id)
+	p.logf("  ⏱ logged ~%s effort for %s (.trau/time)", humanMinutes(minutes), id)
 }
 
 // timelogBase returns the branch the merged work diverged from: the epic

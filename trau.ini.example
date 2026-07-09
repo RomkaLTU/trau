@@ -239,23 +239,25 @@ LESSONS_DISTILL=0
 # --- time tracking (opt-in, OFF by default) ---
 # Optional per-ticket time tracking. When enabled, trau writes a per-ticket
 # human-EFFORT estimate after a ticket merges to
-# <repo>/.dev-flow/time/<TICKET>.json, as JSON that other time-tracking tools can
-# read. This is OFF by default: with TIMELOG_ENABLED=0 (or unset) NONE of this
-# runs and trau behaves exactly as before — no .dev-flow/ writes, no estimation,
-# zero overhead. The first-run onboarding wizard offers a toggle (defaulting to
-# off). The number is an ESTIMATE of senior-developer effort, never agent wall-clock.
+# <repo>/.trau/time/<TICKET>.json, as JSON that other time-tracking tools can
+# read (the schema stays dev-flow-compatible; logs from the old .dev-flow/time/
+# location are migrated automatically on the next write). This is OFF by
+# default: with TIMELOG_ENABLED=0 (or unset) NONE of this runs and trau behaves
+# exactly as before — no time-log writes, no estimation, zero overhead. The
+# first-run onboarding wizard offers a toggle (defaulting to off). The number is
+# an ESTIMATE of senior-developer effort, never agent wall-clock.
 TIMELOG_ENABLED=0            # 1 = write the per-ticket effort log after merge; 0 = off (default)
-TIMELOG_STORAGE=repo         # repo  -> <repo>/.dev-flow/time/<TICKET>.json (default; per-repo, where tools read)
-                             # user  -> ~/.dev-flow/time/<repo-slug>/<TICKET>.json
+TIMELOG_STORAGE=repo         # repo  -> <repo>/.trau/time/<TICKET>.json (default; per-repo, where tools read)
+                             # user  -> ~/.trau/time/<repo-slug>/<TICKET>.json
                              # none  -> persist nothing
 TIMELOG_OUTPUT_FORMAT=default # export rendering: default (canonical JSON) | jira-worklog | toggl-csv | plain.
                              # The persisted file is always JSON; a non-default value also writes a
                              # copy-paste sibling export next to it.
 TIMELOG_ESTIMATOR=heuristic  # heuristic = deterministic diffstat/file/commit -> minutes table (default,
                              #             no extra agent cost); agent = a cheap agent call estimates minutes
-# With TIMELOG_STORAGE=repo, trau adds `.dev-flow/time/` to the target repo's
+# With TIMELOG_STORAGE=repo, trau adds `.trau/time/` to the target repo's
 # .gitignore if absent (effort numbers are per-developer / sensitive); it never
-# blanket-ignores .dev-flow/ (a project's .dev-flow/config.json is not trau's to ignore).
+# blanket-ignores .trau/ (a project's .trau/checks/ verify library is meant to be committed).
 
 # =============================================================================
 # USER / MACHINE KNOBS (put these in ~/.trau.ini)
@@ -395,6 +397,19 @@ SERVE_ALLOW_REGISTER=0
 # discovers through the registry is observe-only. Empty (the default) means the
 # hub starts nothing; stopping an already-running loop works regardless.
 # SERVE_WORKSPACE=/Users/me/Projects/salonradar,/Users/me/Projects/loop
+#
+# The first interactive TUI session brings the hub up on its own (one per
+# machine) so the web UI is there whenever you work with trau; it reuses any hub
+# already on the port and inherits the SERVE_* settings above, so an autostarted
+# hub is identical to one you start by hand. It persists until reboot or an
+# explicit stop. Set 0 to never autostart (start it yourself with `trau serve`);
+# `--no-serve` disables it for one run.
+SERVE_AUTOSTART=1
+#
+# When autostart freshly spawns the hub it also opens the browser (health-gated,
+# best-effort — skipped over SSH or without a display). Set 0 to keep the daemon
+# but not launch a browser; the TUI still prints the Web UI URL.
+SERVE_OPEN=1
 
 # COST NOTE: the "~$X est" in the closing recap (and --status) is a NOTIONAL
 # API-list estimate, not a bill — no provider cost is reported for interactive
