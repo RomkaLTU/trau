@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import { Eye, Play, RefreshCw, Square } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -11,7 +11,7 @@ import { StatusPill, type RunState } from '@/components/trau/status-pill'
 import { TerminalCard } from '@/components/trau/terminal-card'
 import { cn } from '@/lib/utils'
 import { useAttentionRuns } from '@/lib/attention'
-import { stopInstance } from '@/lib/instances'
+import { startInstance, stopInstance } from '@/lib/instances'
 import {
   phasePill,
   phaseSteps,
@@ -261,16 +261,34 @@ export function LiveLoops() {
 
 const ATTENTION_META: Record<
   FailureClass,
-  { pill: { state: RunState; label: string }; action: string }
+  { pill: { state: RunState; label: string }; action: string; resume: boolean }
 > = {
-  paused: { pill: { state: 'warn', label: 'paused' }, action: 'Resume' },
-  faulted: { pill: { state: 'fail', label: 'fault' }, action: 'View run' },
-  gave_up: { pill: { state: 'fail', label: 'quarantined' }, action: 'Reset' },
+  // paused/faulted resume from the checkpoint (start a run); quarantined keeps the
+  // Reset navigation to the live view's action menu, where the destructive reset
+  // stays behind its own confirm.
+  paused: { pill: { state: 'warn', label: 'paused' }, action: 'Resume', resume: true },
+  faulted: { pill: { state: 'fail', label: 'fault' }, action: 'Resume', resume: true },
+  gave_up: { pill: { state: 'fail', label: 'quarantined' }, action: 'Reset', resume: false },
 }
 
 export function NeedsAttention() {
-  const { repo } = useActiveRepo()
+  const { repo, repos } = useActiveRepo()
   const attention = useAttentionRuns(repo)
+  const navigate = useNavigate()
+
+  // A loop already holding this repo's working tree makes a resume unsafe — the
+  // server refuses it with a 409, so the client disables the action to match.
+  const isLive = repos.find((r) => r.name === repo)?.live ?? false
+
+  const resume = useMutation({
+    mutationFn: (ticket: string) => startInstance({ repo: repo ?? '', ticket }),
+    onSuccess: (_res, ticket) => {
+      void navigate({
+        to: '/live/$repo/$ticket',
+        params: { repo: repo ?? '', ticket },
+      })
+    },
+  })
 
   if (attention.length === 0) {
     return (
@@ -287,6 +305,8 @@ export function NeedsAttention() {
       <ul className="flex flex-col">
         {attention.map((run) => {
           const meta = ATTENTION_META[run.failure_class!]
+          const pending = resume.isPending && resume.variables === run.ticket
+          const failed = resume.isError && resume.variables === run.ticket
           return (
             <li
               key={`${run.repo} ${run.ticket}`}
@@ -299,13 +319,39 @@ export function NeedsAttention() {
               <p className="text-pretty font-sans text-sm leading-relaxed text-muted-foreground">
                 {run.failure_reason || run.title || run.repo}
               </p>
-              <Link
-                to="/live/$repo/$ticket"
-                params={{ repo: run.repo, ticket: run.ticket }}
-                className="w-fit font-mono text-xs text-teal underline-offset-4 hover:underline"
-              >
-                {meta.action} →
-              </Link>
+              {meta.resume ? (
+                <>
+                  <Button
+                    variant="link"
+                    size="sm"
+                    className="h-auto w-fit p-0 font-mono text-xs text-teal"
+                    disabled={isLive || pending}
+                    onClick={() => resume.mutate(run.ticket)}
+                  >
+                    {pending ? 'Resuming…' : `${meta.action} →`}
+                  </Button>
+                  {isLive ? (
+                    <span className="font-mono text-[0.65rem] text-muted-foreground">
+                      a loop is live in this repo — stop it before resuming
+                    </span>
+                  ) : null}
+                  {failed ? (
+                    <span className="font-mono text-[0.65rem] text-destructive">
+                      {resume.error instanceof Error
+                        ? resume.error.message
+                        : 'resume failed'}
+                    </span>
+                  ) : null}
+                </>
+              ) : (
+                <Link
+                  to="/live/$repo/$ticket"
+                  params={{ repo: run.repo, ticket: run.ticket }}
+                  className="w-fit font-mono text-xs text-teal underline-offset-4 hover:underline"
+                >
+                  {meta.action} →
+                </Link>
+              )}
             </li>
           )
         })}

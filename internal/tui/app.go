@@ -203,6 +203,7 @@ type StatusRow struct {
 	PRURL         string
 	Branch        string
 	FailureReason string
+	FailureClass  string
 	Tokens        int
 	Cost          float64
 	// CostMetered is false when some phase logged tokens but no per-call dollar
@@ -223,6 +224,7 @@ const (
 	viewVersion
 	viewDryRun
 	viewReset
+	viewHandle
 	viewRunLoop
 	viewRunOnce
 	viewRunning
@@ -247,6 +249,7 @@ const (
 	actMore
 	actBack
 	actQuit
+	actHandle
 )
 
 type menuItem struct {
@@ -294,6 +297,13 @@ type appModel struct {
 	subReturn  appView
 	info       MenuInfo
 
+	// attnRows are the needs-attention checkpoints backing the conditional top-of-
+	// menu Handle item; handleRow is the ticket the Handle confirm screen acts on,
+	// with handleConfirm arming its two-key destructive reset.
+	attnRows      []QueueRow
+	handleRow     QueueRow
+	handleConfirm bool
+
 	statusRows      []QueueRow
 	statusCursor    int
 	statusConfirmID string
@@ -331,8 +341,10 @@ type appModel struct {
 	notifier notify.Notifier
 }
 
-func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
-	items := []menuItem{
+// baseMenuItems is the static main-menu action list. The Handle recovery item is
+// prepended dynamically by withMenuItems when a checkpoint needs attention.
+func baseMenuItems() []menuItem {
+	return []menuItem{
 		{actRun, "Run loop", "next ready ticket → PR"},
 		{actRunOnce, "Run once", "pick one ticket to run"},
 		{actDryRun, "Dry run", "preview the next ticket"},
@@ -340,6 +352,10 @@ func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
 		{actMore, "More…", "status · reset · version"},
 		{actQuit, "Quit", ""},
 	}
+}
+
+func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
+	items := baseMenuItems()
 	moreItems := []menuItem{
 		{actStatus, "Status", "saved checkpoints + tokens"},
 		{actLogs, "Logs", "inspect per-ticket phase logs"},
@@ -376,6 +392,7 @@ func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
 		spin:      s,
 		focused:   true,
 	}
+	m = m.withMenuItems()
 	if info.Notify {
 		m.notifier = notify.OS()
 	}
@@ -627,9 +644,7 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "esc", "q":
-			m.view = viewMenu
-			m.info = m.actions.MenuInfo()
-			return m, nil
+			return m.toMainMenu(), nil
 		case "enter":
 			return m.selectAction(m.moreItems[m.moreCursor].action)
 		case "up", "k":
@@ -660,6 +675,9 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case viewStatus:
 		return m.handleStatusKey(msg)
+
+	case viewHandle:
+		return m.handleHandleKey(msg)
 
 	case viewLogs:
 		if isBack(msg) {
@@ -854,7 +872,88 @@ func (m appModel) toMenu() appModel {
 	m.result = ""
 	m.busy = false
 	m.info = m.actions.MenuInfo()
+	return m.withMenuItems()
+}
+
+// toMainMenu returns to the top-level menu unconditionally (unlike toMenu, which
+// honors a viewMore subReturn), refreshing the context line and the Handle item.
+func (m appModel) toMainMenu() appModel {
+	m.view = viewMenu
+	m.info = m.actions.MenuInfo()
+	return m.withMenuItems()
+}
+
+// withMenuItems rebuilds the main-menu list from the current checkpoints: the
+// static actions, topped by a Handle recovery item whenever one or more tickets
+// carry a classified failure. Called on every entry to the menu so the item
+// appears and vanishes as tickets fault and recover; the cursor rests on it when
+// present so recovery is one keypress away.
+func (m appModel) withMenuItems() appModel {
+	m.attnRows = m.attentionRows()
+	items := baseMenuItems()
+	if len(m.attnRows) > 0 {
+		items = append([]menuItem{m.handleItem()}, items...)
+		m.cursor = 0
+	}
+	m.items = items
+	if m.cursor >= len(items) {
+		m.cursor = len(items) - 1
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	}
 	return m
+}
+
+// attentionRows returns the checkpoints carrying a classified failure, in
+// attention order (needs-human first, then by id), backing the Handle item.
+func (m appModel) attentionRows() []QueueRow {
+	var rows []QueueRow
+	for _, r := range m.buildQueueRows() {
+		if r.needsAttention() {
+			rows = append(rows, r)
+		}
+	}
+	sortQueue(rows)
+	return rows
+}
+
+// handleItem builds the top-of-menu recovery entry: a single stuck ticket names
+// its id and class; several collapse to a count. The class glyph and color are
+// applied in menuRows so the row reads ⚠/⏸ like the queue rail.
+func (m appModel) handleItem() menuItem {
+	if len(m.attnRows) == 1 {
+		r := m.attnRows[0]
+		return menuItem{action: actHandle, title: "Handle " + r.ID + " — " + failureLabel(r.FailureClass)}
+	}
+	return menuItem{action: actHandle, title: fmt.Sprintf("Handle %d tickets — need attention", len(m.attnRows))}
+}
+
+// openHandle enters the Handle confirm screen for row, remembering where to
+// return (the main menu, or Status when reached from a needs-attention row).
+func (m appModel) openHandle(row QueueRow, ret appView) appModel {
+	m.handleRow = row
+	m.handleConfirm = false
+	m.busy = false
+	m.result = ""
+	m.subReturn = ret
+	m.view = viewHandle
+	return m
+}
+
+// exitHandle leaves the Handle confirm, clearing its transient state and routing
+// back to wherever it was opened from — reloading Status rows so a completed reset
+// is reflected there.
+func (m appModel) exitHandle() appModel {
+	m.handleConfirm = false
+	m.busy = false
+	m.result = ""
+	if m.subReturn == viewStatus {
+		m.view = viewStatus
+		m.statusConfirmID = ""
+		return m.loadStatusRows()
+	}
+	return m.toMainMenu()
 }
 
 func (m appModel) selectAction(a menuAction) (tea.Model, tea.Cmd) {
@@ -883,9 +982,7 @@ func (m appModel) selectAction(a menuAction) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case actBack:
-		m.view = viewMenu
-		m.info = m.actions.MenuInfo()
-		return m, nil
+		return m.toMainMenu(), nil
 
 	case actStatus:
 		m.statusCursor = 0
@@ -929,6 +1026,12 @@ func (m appModel) selectAction(a menuAction) (tea.Model, tea.Cmd) {
 		m.busy = false
 		m.view = viewReset
 		return m, textinput.Blink
+
+	case actHandle:
+		if len(m.attnRows) == 1 {
+			return m.openHandle(m.attnRows[0], viewMenu), nil
+		}
+		return m.selectAction(actStatus)
 
 	case actQuit:
 		return m, tea.Quit
@@ -1027,6 +1130,8 @@ func (m appModel) handleStatusKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case msg.String() == "down" || msg.String() == "j":
 		m.moveStatusCursor(1)
 		return m, nil
+	case msg.String() == "enter" && hasSel && sel.needsAttention():
+		return m.openHandle(sel, viewStatus), nil
 	case msg.String() == "R":
 		ctx, cancel := context.WithCancel(m.baseCtx)
 		m.statusCancel = cancel
@@ -1047,6 +1152,65 @@ func (m appModel) handleStatusKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+// handleHandleKey drives the Handle confirm — the guided recovery for one stuck
+// ticket. Per class it offers resume (paused/faulted) and the destructive reset
+// (faulted/quarantined); the reset arms a two-key confirm. A finished reset shows
+// its result until dismissed. esc/q cancels back to wherever it was opened from.
+func (m appModel) handleHandleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "ctrl+c" {
+		return m, tea.Quit
+	}
+	if m.busy {
+		return m, nil
+	}
+	if m.result != "" {
+		if isBack(msg) || msg.String() == "enter" {
+			return m.exitHandle(), nil
+		}
+		return m, nil
+	}
+	// A destructive reset is armed (a prior x): the confirming x/y runs it; any
+	// other key disarms, mirroring the Status reset guard.
+	if m.handleConfirm {
+		m.handleConfirm = false
+		if msg.String() == "x" || msg.String() == "y" {
+			m.busy = true
+			return m, tea.Batch(m.spin.Tick, m.resetCmd(m.handleRow.ID))
+		}
+		return m, nil
+	}
+	switch msg.String() {
+	case "esc", "q":
+		return m.exitHandle(), nil
+	case "r":
+		if m.handleRow.canResume() {
+			return m.startRunTicket(m.handleRow.ID, "")
+		}
+	case "x":
+		if m.handleRow.canReset() {
+			m.handleConfirm = true
+		}
+	}
+	return m, nil
+}
+
+// handleHint is the Handle confirm footer: the per-class verbs, or the two-key
+// prompt while a destructive reset is armed.
+func (m appModel) handleHint() string {
+	if m.handleConfirm {
+		return "⚠ reset " + m.handleRow.ID + "? x again to confirm · esc cancel"
+	}
+	var parts []string
+	if m.handleRow.canResume() {
+		parts = append(parts, "r resume")
+	}
+	if m.handleRow.canReset() {
+		parts = append(parts, "x reset")
+	}
+	parts = append(parts, "esc cancel")
+	return strings.Join(markVerbs(parts), " · ")
 }
 
 // moveStatusCursor shifts the Status selection by delta, clamped to the
@@ -1227,6 +1391,8 @@ func (m appModel) renderScreen() string {
 		return m.renderBusy("Dry run", "asking Linear for the next eligible ticket")
 	case viewReset:
 		return m.renderReset()
+	case viewHandle:
+		return m.renderHandle()
 	case viewRunLoop:
 		return m.renderCard("Run loop", m.loopSetup.body(m.spin.View()), m.loopSetup.hint())
 	case viewRunOnce:
@@ -1297,9 +1463,32 @@ func (m appModel) menuRows(items []menuItem, cursor int, zonePrefix string) []st
 		if it.action == actMore {
 			rows = append(rows, s.Help.Render(strings.Repeat("─", menuCardW)))
 		}
-		rows = append(rows, markRow(zonePrefix, i, listRow(s, i == cursor, it.title, it.desc, 14)))
+		var row string
+		if it.action == actHandle {
+			row = m.handleMenuRow(i == cursor, it)
+		} else {
+			row = listRow(s, i == cursor, it.title, it.desc, 14)
+		}
+		rows = append(rows, markRow(zonePrefix, i, row))
 	}
 	return rows
+}
+
+// handleMenuRow renders the prominent top-of-menu recovery entry with its class
+// glyph colored like the rail (⚠ faulted/quarantined, ⏸ paused) and the label in
+// the warning tone, brightening under the cursor.
+func (m appModel) handleMenuRow(focused bool, it menuItem) string {
+	s := m.styles
+	class := ""
+	if len(m.attnRows) == 1 {
+		class = m.attnRows[0].FailureClass
+	}
+	glyph, glyphStyle := attentionGlyph(s, class)
+	labelStyle := s.Warning
+	if focused {
+		labelStyle = s.Header
+	}
+	return cursorMarker(s, focused) + glyphStyle.Render(glyph) + " " + labelStyle.Render(it.title)
 }
 
 // contextLines is the at-a-glance MenuInfo. The ~-abbreviated repo path leads
@@ -1383,6 +1572,27 @@ func (m appModel) renderReset() string {
 	return m.renderCard("Reset ticket", body, hint)
 }
 
+// renderHandle draws the Handle confirm card: the ticket's class glyph, phase and
+// failure reason, then the per-class verbs (or the reset progress/result).
+func (m appModel) renderHandle() string {
+	s := m.styles
+	r := m.handleRow
+	title := "Handle " + r.ID
+	switch {
+	case m.busy:
+		return m.renderCard(title, m.spin.View()+" "+s.Subtle.Render("resetting…"), "working…")
+	case m.result != "":
+		return m.renderCard(title, m.result, "esc/q back")
+	}
+	glyph, glyphStyle := attentionGlyph(s, r.FailureClass)
+	head := glyphStyle.Render(glyph) + " " + s.Header.Render(r.ID) + "  " + s.Subtle.Render(failureLabel(r.FailureClass))
+	lines := []string{head, s.Subtle.Render("phase: " + prettyPhase(r.Phase))}
+	if r.FailureReason != "" {
+		lines = append(lines, "", s.Warning.Render(oneLine(r.FailureReason)))
+	}
+	return m.renderCard(title, strings.Join(lines, "\n"), m.handleHint())
+}
+
 // toQueueRows projects saved checkpoints onto the shared queue model, dating each
 // row by time since its last checkpoint update.
 func toQueueRows(src []StatusRow) []QueueRow {
@@ -1399,6 +1609,7 @@ func toQueueRows(src []StatusRow) []QueueRow {
 			PRURL:         r.PRURL,
 			Branch:        r.Branch,
 			FailureReason: r.FailureReason,
+			FailureClass:  r.FailureClass,
 			Tokens:        r.Tokens,
 			Cost:          r.Cost,
 			CostMetered:   r.CostMetered,
@@ -1462,6 +1673,8 @@ func (m appModel) helpFor() screenHelp {
 		return m.logs.help()
 	case viewReset:
 		return resetHelp()
+	case viewHandle:
+		return m.handleHelp()
 	case viewVersion:
 		return leafHelp("Version")
 	case viewDryRun:
@@ -1529,6 +1742,7 @@ func statusHelp() screenHelp {
 			fk("r", "resume"),
 			fk("b", "checkout branch"),
 			fk("x", "reset"),
+			xk("enter", "handle (guided recovery)"),
 		),
 		group("Session", fk("R", "reconcile"), fk("esc/q", "back"), xk("ctrl+t", "toggle mouse (select text)"), xk("⇧ drag", "select text (⌥ on iTerm2/Terminal.app)")),
 	}}
@@ -1537,6 +1751,22 @@ func statusHelp() screenHelp {
 func resetHelp() screenHelp {
 	return screenHelp{title: "Reset ticket", columns: []helpColumn{
 		group("Actions", fk("enter", "confirm"), fk("esc", "back")),
+	}}
+}
+
+// handleHelp is the Handle confirm's legend, listing only the verbs its ticket's
+// class actually offers so the ? overlay matches the footer.
+func (m appModel) handleHelp() screenHelp {
+	var recover []helpKey
+	if m.handleRow.canResume() {
+		recover = append(recover, fk("r", "resume from checkpoint"))
+	}
+	if m.handleRow.canReset() {
+		recover = append(recover, fk("x", "reset (destructive)"))
+	}
+	return screenHelp{title: "Handle " + m.handleRow.ID, columns: []helpColumn{
+		group("Recover", recover...),
+		group("Actions", fk("esc/q", "cancel")),
 	}}
 }
 

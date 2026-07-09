@@ -26,9 +26,13 @@ type QueueRow struct {
 	PRURL         string
 	Branch        string
 	FailureReason string
-	Tokens        int
-	Cost          float64
-	CostMetered   bool
+	// FailureClass is the checkpoint's classified failure (state.FailPaused /
+	// FailFaulted / FailGaveUp), or "" when the row has no failure. It drives which
+	// recovery the Handle confirm offers per class — resume vs the destructive reset.
+	FailureClass string
+	Tokens       int
+	Cost         float64
+	CostMetered  bool
 
 	// Age is the row's measured elapsed (recap) or time-since-last-update
 	// (live/browse). Live marks the actively-running ticket so its glyph
@@ -114,10 +118,53 @@ func queueVerbs(r QueueRow, live bool) (open, logs, resume, branch, reset bool) 
 	rec := recoverableRow(r)
 	open = r.PRURL != ""
 	logs = true
-	resume = rec && !live
+	// Quarantined is terminal (rank 9): pipeline.Resume would run zero phases, so
+	// resume is a no-op trap. Withhold it here so Status and the recap footers agree
+	// with the Handle confirm's reset-only rule for quarantined.
+	resume = rec && !live && r.Phase != state.Quarantined
 	branch = rec && r.Branch != "" && !live
 	reset = rec && !live && !r.Live
 	return open, logs, resume, branch, reset
+}
+
+// needsAttention reports whether the row carries a classified failure — the
+// single predicate the main-menu Handle item and the attention buckets share.
+func (r QueueRow) needsAttention() bool { return r.FailureClass != "" }
+
+// canResume reports whether the Handle confirm should offer Resume for this row's
+// failure class: paused (re-run after the human clears the block) and faulted
+// (resume from the preserved checkpoint). Quarantined (gave_up) is terminal.
+func (r QueueRow) canResume() bool {
+	return r.FailureClass == state.FailPaused || r.FailureClass == state.FailFaulted
+}
+
+// canReset reports whether the Handle confirm should offer the destructive Reset:
+// faulted and quarantined (gave_up). Paused is blameless and is never offered a
+// Reset — the human re-logs-in or waits out the limit, then resumes.
+func (r QueueRow) canReset() bool {
+	return r.FailureClass == state.FailFaulted || r.FailureClass == state.FailGaveUp
+}
+
+// failureLabel is the short class name shown on the menu Handle item and the
+// confirm header: quarantined reads friendlier than its stored "gave_up".
+func failureLabel(class string) string {
+	switch class {
+	case state.FailPaused:
+		return "paused"
+	case state.FailGaveUp:
+		return "quarantined"
+	default:
+		return "faulted"
+	}
+}
+
+// attentionGlyph is the class-colored mark for the menu Handle item, matching the
+// rail: ⏸ for a paused row, ⚠ for faulted/quarantined.
+func attentionGlyph(s Styles, class string) (string, lipgloss.Style) {
+	if class == state.FailPaused {
+		return "⏸", s.Warning
+	}
+	return "⚠", s.Error
 }
 
 // queueVerbHints lists the applicable recovery-verb hints for the selected row,
