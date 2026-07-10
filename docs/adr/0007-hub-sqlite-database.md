@@ -66,28 +66,38 @@ imported once, then deleted:
 - **Issue store** — an `issues` table (plus comments and per-repo sync
   cursors). Every issue row carries a `source` binding (`internal` | `linear`
   | `jira`); synced and internal issues share one table, one backlog, one
-  search index. **The store is the single working copy trau processes from**:
-  pick, prompt-building (title, description, comments), status transitions,
-  labels, and trau-written comments all go against the store through the hub
-  API — the pipeline makes no tracker calls at run time.
-  - **Internal issues** (`source=internal`) exist only here: created and
-    edited through the hub API/web UI, identified by a repo-scoped
-    `ISSUE_PREFIX` + sequence, runnable by the loop — so a repo needs no
-    external tracker at all.
-  - **Synced issues** converge with their external tracker in both
-    directions. Inbound: a hub background loop syncs each registered repo's
-    Project — full pull first, then incremental by tracker `updatedAt`
-    cursor, server-side Project filtering (never the whole-team walk) —
-    including issue metadata and comments. Outbound: trau's writes land in
-    the store and push to the tracker write-through, backed by a
-    pending-changes outbox so a tracker outage queues the push (the run
-    continues) instead of stopping the loop. Comments are append-only both
-    ways and never conflict; fields resolve last-write-wins by timestamp with
-    anomalies logged. Run once resolves an ID from the store first and falls
-    back to the tracker (fetch, sync in, then process from the store),
-    subject to the Project ownership guard. Because pick's done-guards read
-    the store, pick nudges a sync first so stale state cannot re-pick a
-    finished ticket.
+  search index. **The store is the working copy trau reads**: pick
+  eligibility, prompt-building (title, description, comments), backlog, and
+  search are all store reads through the hub API — the pipeline makes no
+  tracker read calls at run time.
+  - **Internal issues** (`source=internal`) exist only here — they are never
+    pushed to any external system. Created and edited through the hub API/web
+    UI, identified by a repo-scoped `ISSUE_PREFIX` + sequence, runnable by
+    the loop — so a repo needs no external tracker at all. Tickets trau
+    itself files (the verify loop's bug reports) become internal issues,
+    never external ones.
+  - **Synced issues: sync is one-way, inbound.** The external tracker owns
+    issue content — title, description, comments, and metadata flow tracker →
+    store only. Trau never edits content and never creates or deletes issues
+    in the external tracker. Its only writes to a synced issue are
+    operational — workflow status and settings (labels) — performed directly
+    against the tracker API as today, with the store row updated in the same
+    motion; the next sync pass confirms. No outbound sync engine and no
+    conflict policy: content has a single writer.
+  - **Lifecycle and reconciliation.** Incremental `updatedAt`-cursor pulls
+    (server-side Project filtering — never the whole-team walk) catch edits
+    to existing tickets, but deletions, archives, and moves out of the
+    Project never appear in an updated-since query. A periodic
+    reconciliation sweep therefore diffs the Project's full identifier set
+    against the store: missing issues are tombstoned locally with defined
+    cascades — dropped from the Queue and boards, run artifacts and
+    checkpoints untouched, internal issues never affected. A force-resync
+    drops a repo's synced rows and re-pulls clean (internal issues
+    preserved). Pick nudges a sync first so a ticket finished, reopened, or
+    deleted out-of-band cannot be picked from stale state; Run once resolves
+    an ID from the store first and falls back to the tracker (fetch, sync
+    in, then process from the store), subject to the Project ownership
+    guard.
 - **Search** — FTS5 virtual tables over the issue store (and later, derived
   run history).
 
@@ -112,11 +122,12 @@ and rebuilt from the files. Deleting `trau.db` must never lose run history.
 
 ### 4. Explicitly out of scope
 
-- **Merge sophistication beyond last-write-wins** (field-level three-way
-  merge, CRDTs, offline multi-writer reconciliation). v1 conflict policy is
-  deliberately simple: append-only comments, last-write-wins fields, logged
-  anomalies. Also deferred: attachment sync and webhook-driven (push) sync —
-  polling cursors are enough at this scale.
+- **Outbound sync — permanently, by design, not deferred.** Trau does not
+  edit synced-issue content, and does not create or delete issues in the
+  external tracker; its tracker writes stay what they are today (status,
+  labels). If a future need arises it requires a new ADR. Deferred (not
+  rejected): attachment sync and webhook-driven (push) sync — polling
+  cursors are enough at this scale.
 - Loops writing to the database directly (rejected: worse failure blast
   radius mid-run, loss of file forensics, buys nothing the ingestion path
   doesn't).
@@ -128,22 +139,22 @@ and rebuilt from the files. Deleting `trau.db` must never lose run history.
 ## Consequences
 
 - **Positive:** trau runs with no external tracker (internal issues,
-  loop-runnable end to end); the pipeline loses its runtime tracker
-  dependency — a tracker outage or rate limit no longer stops a run (writes
-  queue in the outbox and drain later), and tracker-caused pauses largely
-  disappear by construction; instant backlog paint from the issue store (the
-  measured 2.5–6.6 s fetch leaves the request path); real `LIMIT/OFFSET`
-  pagination and SQL aggregation for events/costs/runs; FTS5 search becomes a
-  feature, not a project; hub JSON read-modify-rewrite code retires;
-  transactional queue operations.
+  loop-runnable end to end); the pipeline's run-time tracker dependency
+  shrinks to status/label writes — every read (pick, prompts, backlog,
+  search) is local, so tracker latency and read rate limits leave the run
+  path; instant backlog paint from the issue store (the measured 2.5–6.6 s
+  fetch leaves the request path); real `LIMIT/OFFSET` pagination and SQL
+  aggregation for events/costs/runs; FTS5 search becomes a feature, not a
+  project; hub JSON read-modify-rewrite code retires; transactional queue
+  operations.
 - **Negative / accepted:** ~+10 MB binary from the pure-Go driver; an
   ingestion/invalidation layer to maintain; two representations of run
   history (one mechanism — offset-tail ingestion — not per-feature sync);
   the SSE resume-cursor contract migrates from byte offsets to rowid cursors
-  where endpoints move onto derived tables; a sync engine (inbound cursor +
-  outbound outbox) whose failure modes — echo loops, stale-store picks,
-  stuck outbox rows — are ours to own and surface; issue processing is only
-  as fresh as the last sync, mitigated by sync-before-pick and
-  stale-triggered refresh.
+  where endpoints move onto derived tables; an inbound sync + reconciliation
+  layer whose failure modes — stale-store reads, missed deletions between
+  sweeps — are ours to own and surface; issue reads are only as fresh as the
+  last sync, mitigated by sync-before-pick, stale-triggered refresh, and the
+  reconciliation sweep.
 - ADR 0003 §1–2 (registration semantics, fail-closed exposure) stand. §3
   stands for run artifacts; for hub-owned state it is superseded by this ADR.
