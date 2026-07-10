@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -305,19 +306,21 @@ func TestClassifyDrainOutcome(t *testing.T) {
 	tests := []struct {
 		name       string
 		class      string
+		onFault    string
 		wantStatus string
 		wantPause  bool
 	}{
 		{name: "clean finish settles done", class: "", wantStatus: queue.StatusDone, wantPause: false},
 		{name: "give-up settles failed and drains on", class: state.FailGaveUp, wantStatus: queue.StatusFailed, wantPause: false},
-		{name: "fault pauses the queue", class: state.FailFaulted, wantStatus: queue.StatusPaused, wantPause: true},
-		{name: "provider pause pauses the queue", class: state.FailPaused, wantStatus: queue.StatusPaused, wantPause: true},
+		{name: "fault pauses the queue by default", class: state.FailFaulted, onFault: queue.OnFaultHalt, wantStatus: queue.StatusPaused, wantPause: true},
+		{name: "fault skips on on-fault=skip", class: state.FailFaulted, onFault: queue.OnFaultSkip, wantStatus: queue.StatusFailed, wantPause: false},
+		{name: "provider pause parks regardless of on-fault", class: state.FailPaused, onFault: queue.OnFaultSkip, wantStatus: queue.StatusPaused, wantPause: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			status, pause := classifyDrainOutcome(tc.class)
+			status, pause := classifyDrainOutcome(tc.class, tc.onFault)
 			if status != tc.wantStatus || pause != tc.wantPause {
-				t.Errorf("classifyDrainOutcome(%q) = (%q, %v), want (%q, %v)", tc.class, status, pause, tc.wantStatus, tc.wantPause)
+				t.Errorf("classifyDrainOutcome(%q, %q) = (%q, %v), want (%q, %v)", tc.class, tc.onFault, status, pause, tc.wantStatus, tc.wantPause)
 			}
 		})
 	}
@@ -414,7 +417,7 @@ func TestDrainPauseAndResumeReattemptsItem(t *testing.T) {
 	if got := statusOf(t, root, "COD-2"); got != queue.StatusPending {
 		t.Errorf("COD-2 = %q, want it still pending behind COD-1", got)
 	}
-	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once"})
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once", "--drain-report", reportPath(root)})
 }
 
 // TestDrainRunsSequentially drives a full drain of three items to completion,
@@ -471,8 +474,103 @@ func TestDrainRunsSequentially(t *testing.T) {
 	if done := countStatus(t, root, queue.StatusDone); done != 3 {
 		t.Errorf("done = %d, want all three settled", done)
 	}
-	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once"})
-	assertArgs(t, fake.spawns[2].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-3"})
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once", "--drain-report", reportPath(root)})
+	assertArgs(t, fake.spawns[2].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-3", "--drain-report", reportPath(root)})
+}
+
+func mustWriteReport(t *testing.T, root string, rep queue.DrainReport) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(reportPath(root)), 0o755); err != nil {
+		t.Fatalf("mkdir runs: %v", err)
+	}
+	if err := queue.WriteReport(reportPath(root), rep); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+}
+
+// TestDrainSkipsDuplicateTicket proves a standalone ticket an earlier queued
+// epic already covers is skipped, not run — first occurrence wins.
+func TestDrainSkipsDuplicateTicket(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	seedQueue(t, root, true,
+		queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusDone, SubIssues: []queue.SubIssue{{ID: "COD-2"}}},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
+	)
+	act, err := s.drain.tick(root)
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if act != drainReconcile {
+		t.Fatalf("act = %q, want reconcile — a duplicate is skipped, not spawned", act)
+	}
+	if got := statusOf(t, root, "COD-2"); got != queue.StatusSkipped {
+		t.Errorf("COD-2 = %q, want skipped as a duplicate", got)
+	}
+	if reasonOf(t, root, "COD-2") == "" {
+		t.Error("skipped COD-2 missing a duplicate reason")
+	}
+	if len(fake.spawns) != 0 {
+		t.Errorf("spawns = %d, want none — the duplicate must not run", len(fake.spawns))
+	}
+}
+
+// TestDrainCleansUpReportOnReconcile proves a finished child's drain report is
+// consumed and removed when the drain reconciles it to a clean finish.
+func TestDrainCleansUpReportOnReconcile(t *testing.T) {
+	s, _, root := drainServer(t, "acme")
+	seedQueue(t, root, true, queue.Item{ID: "COD-1", Status: queue.StatusRunning, PID: 4242})
+	mustWriteReport(t, root, queue.DrainReport{})
+	if act, _ := s.drain.tick(root); act != drainReconcile {
+		t.Fatalf("act = %q, want reconcile of the finished child", act)
+	}
+	if got := statusOf(t, root, "COD-1"); got != queue.StatusDone {
+		t.Errorf("COD-1 = %q, want done", got)
+	}
+	if _, err := os.Stat(reportPath(root)); !os.IsNotExist(err) {
+		t.Error("drain report not cleaned up after reconcile")
+	}
+}
+
+// TestDrainReportFaultParksEpic proves a fault the child reports parks the item
+// even when its own checkpoint reads clean — the case of an epic whose fault
+// lives on a sub-issue.
+func TestDrainReportFaultParksEpic(t *testing.T) {
+	s, _, root := drainServer(t, "acme")
+	s.drain.outcome = func(string, queue.Item) (string, string) { return "", "" }
+	seedQueue(t, root, true, queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusRunning, PID: 7})
+	mustWriteReport(t, root, queue.DrainReport{Class: state.FailFaulted, Reason: "sub-issue faulted"})
+	if act, _ := s.drain.tick(root); act != drainReconcile {
+		t.Fatalf("act = %q, want reconcile", act)
+	}
+	if got := statusOf(t, root, "COD-1"); got != queue.StatusPaused {
+		t.Errorf("COD-1 = %q, want paused — the child reported a fault the epic checkpoint hides", got)
+	}
+	if drainingOf(t, root) {
+		t.Error("draining still set after a fault park")
+	}
+}
+
+// TestDrainOnFaultSkipContinues proves on-fault=skip settles the faulted item
+// failed and keeps draining instead of parking the queue.
+func TestDrainOnFaultSkipContinues(t *testing.T) {
+	s, _, root := drainServer(t, "acme")
+	seedQueue(t, root, true,
+		queue.Item{ID: "COD-1", Status: queue.StatusRunning, PID: 7},
+		queue.Item{ID: "COD-2"},
+	)
+	if err := queue.NewStore(root).SetOptions(false, queue.OnFaultSkip); err != nil {
+		t.Fatalf("set options: %v", err)
+	}
+	mustWriteReport(t, root, queue.DrainReport{Class: state.FailFaulted, Reason: "boom"})
+	if act, _ := s.drain.tick(root); act != drainReconcile {
+		t.Fatalf("act = %q, want reconcile", act)
+	}
+	if got := statusOf(t, root, "COD-1"); got != queue.StatusFailed {
+		t.Errorf("COD-1 = %q, want failed and skipped past on on-fault=skip", got)
+	}
+	if !drainingOf(t, root) {
+		t.Error("draining cleared on on-fault=skip, want the drain to keep going")
+	}
 }
 
 // TestDrainPauseTakesEffectAfterCurrentChild pauses while a child is in flight:

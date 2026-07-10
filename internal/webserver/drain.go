@@ -2,6 +2,8 @@ package webserver
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -100,12 +102,16 @@ func (d *drainer) tick(root string) (drainAction, error) {
 	if err != nil {
 		return drainWait, err
 	}
+	meta, err := store.Meta()
+	if err != nil {
+		return drainWait, err
+	}
 	if running, ok := firstWithStatus(items, queue.StatusRunning); ok {
 		if d.alive(running.PID) {
 			return drainWait, nil
 		}
-		class, reason := d.outcome(root, running)
-		if status, pause := classifyDrainOutcome(class); pause {
+		class, reason := d.reconcileOutcome(root, running)
+		if status, pause := classifyDrainOutcome(class, meta.OnFault); pause {
 			if err := store.Pause(running.ID, reason); err != nil {
 				return drainWait, err
 			}
@@ -124,7 +130,16 @@ func (d *drainer) tick(root string) (drainAction, error) {
 	if !ok {
 		return drainWait, nil
 	}
-	pid, err := d.srv.sup.Spawn(d.spec(root, next))
+	// Global dedup: a standalone ticket an earlier queued epic already covers
+	// is skipped, not run twice. First occurrence wins.
+	if reason, dup := duplicateReason(items, next); dup {
+		if err := store.MarkSkipped(next.ID, reason); err != nil {
+			return drainWait, err
+		}
+		return drainReconcile, nil
+	}
+	_ = os.Remove(reportPath(root))
+	pid, err := d.srv.sup.Spawn(d.spec(root, next, meta.NoResume))
 	if err != nil {
 		return drainWait, err
 	}
@@ -134,14 +149,65 @@ func (d *drainer) tick(root string) (drainAction, error) {
 	return drainSpawn, nil
 }
 
+// reconcileOutcome settles a finished child, returning the failure class and
+// reason. The child's own report is authoritative for a pause or fault (it
+// catches an epic whose fault lives on a sub-issue), while a give-up and a clean
+// finish fall through to the checkpoint-derived outcome.
+func (d *drainer) reconcileOutcome(root string, it queue.Item) (class, reason string) {
+	class, reason = d.outcome(root, it)
+	if rep, ok := queue.ReadReport(reportPath(root)); ok {
+		_ = os.Remove(reportPath(root))
+		if rep.Class != "" {
+			class, reason = rep.Class, rep.Reason
+		}
+	}
+	return class, reason
+}
+
+// duplicateReason reports whether a next-to-run ticket is already covered by an
+// earlier queued epic, so the drain skips it instead of running it twice. Only a
+// standalone ticket can be a duplicate; epics dedup their shared leaves through
+// tracker state as they run.
+func duplicateReason(items []queue.Item, next queue.Item) (string, bool) {
+	if next.Kind != queue.KindTicket {
+		return "", false
+	}
+	for _, it := range items {
+		if it.ID == next.ID {
+			break
+		}
+		if it.Kind != queue.KindEpic {
+			continue
+		}
+		for _, sub := range it.SubIssues {
+			if sub.ID == next.ID {
+				return fmt.Sprintf("duplicate of %s sub-issue", it.ID), true
+			}
+		}
+	}
+	return "", false
+}
+
+// reportPath is where a queued child writes its drain report; one path per repo
+// is safe because the drain runs children strictly one at a time.
+func reportPath(root string) string {
+	return filepath.Join(root, ".trau", "runs", ".drain-report")
+}
+
 // classifyDrainOutcome maps a finished child's failure class — as the loop
-// recorded it (state.FailureClass) — to what the queue does with the item: a
-// give-up is a settled dead end the queue moves past, while a fault or a provider
-// pause parks the item and stops the drain for the operator to resume. A clean
-// finish (no failure class) settles done.
-func classifyDrainOutcome(class string) (status string, pause bool) {
+// recorded it (state.FailureClass) — to what the queue does with the item. A
+// provider pause always parks the item and stops the drain for a resume. A fault
+// halts the same way by default, or — when the queue was started on-fault=skip —
+// settles the item failed and lets the drain move on. A give-up is a settled
+// dead end the queue moves past; a clean finish settles done.
+func classifyDrainOutcome(class, onFault string) (status string, pause bool) {
 	switch class {
-	case state.FailFaulted, state.FailPaused:
+	case state.FailPaused:
+		return queue.StatusPaused, true
+	case state.FailFaulted:
+		if onFault == queue.OnFaultSkip {
+			return queue.StatusFailed, false
+		}
 		return queue.StatusPaused, true
 	case state.FailGaveUp:
 		return queue.StatusFailed, false
@@ -152,14 +218,19 @@ func classifyDrainOutcome(class string) (status string, pause bool) {
 
 // spec is the launch a queued item spawns: a ticket runs as the existing
 // run-once, an epic as the existing epic flow, matching the /instances start
-// paths byte for byte so a queued run is indistinguishable from a manual one.
-func (d *drainer) spec(root string, it queue.Item) SpawnSpec {
+// paths so a queued run is indistinguishable from a manual one. noResume ignores
+// stored checkpoints, and every child leaves a drain report for its outcome.
+func (d *drainer) spec(root string, it queue.Item, noResume bool) SpawnSpec {
 	args := []string{"--repo", root, "--no-tui"}
 	if it.Kind == queue.KindEpic {
 		args = append(args, "--parent", it.ID)
 	} else {
 		args = append(args, "--parent", it.ID, "--once")
 	}
+	if noResume {
+		args = append(args, "--no-resume")
+	}
+	args = append(args, "--drain-report", reportPath(root))
 	return SpawnSpec{Dir: root, Args: args, Env: childEnv(d.srv.home)}
 }
 
