@@ -120,7 +120,31 @@ from them. Derived tables are versioned separately and are **never
 migrated**: on schema mismatch (or deletion, or corruption) they are dropped
 and rebuilt from the files. Deleting `trau.db` must never lose run history.
 
-### 4. Explicitly out of scope
+### 4. Upgrade from the flat-file era
+
+A new binary starting over an existing file-era installation must converge on
+its own — no manual migration step.
+
+- **Backfill.** On first open, each authoritative domain imports its legacy
+  file: `~/.trau/repos.json` and `~/.trau/workspace.json` seed the
+  registration tables; each known repo's `.trau/queue.json` seeds the queue
+  tables. Import is transactional — the legacy file is deleted only after the
+  importing transaction commits; a failed import aborts serve startup with a
+  clear message naming the file, leaving it untouched. Legacy files
+  discovered late (a repo registered after the upgrade that still carries a
+  `queue.json`) import on first touch under the same rules.
+- **Cleanup.** After successful import the legacy JSON files are removed;
+  fresh installs never create them. `trau doctor` flags any legacy file still
+  present so a half-upgraded state is visible. Run artifacts are not legacy —
+  events, checkpoints, token and pty logs stay on disk as the durable source
+  (§3) and are never touched by the migration; the issue store needs no
+  backfill because it never had a file predecessor (the first sync populates
+  it).
+- **Downgrade** (accepted, zero users): an older binary simply recreates the
+  JSON files empty — web registrations and queued items would need re-adding;
+  run history is unaffected either way.
+
+### 5. Explicitly out of scope
 
 - **Outbound sync — permanently, by design, not deferred.** Trau does not
   edit synced-issue content, and does not create or delete issues in the
