@@ -131,6 +131,11 @@ EPIC_FLOW=1                  # 1 = run sub-issues on an epic branch, then close 
                              #     epic-to-BASE_BRANCH PR only after every direct child is closed
                              # 0 = always process the passed ticket as a standalone branch from BASE_BRANCH
 MERGE_METHOD=squash          # squash | merge | rebase
+DETERMINISTIC_COMMIT=1        # 1 = for squash repos, stage and commit the slice deterministically
+                             #     (templated Conventional Commit with a Refs trailer, no commit agent)
+                             #     since the squash collapses the message anyway — saves one agent spawn
+                             #     per ticket. 0 restores the agent commit where commit conventions need
+                             #     judgment. Non-squash methods always use the agent commit.
 CI_TIMEOUT=600               # seconds to wait for required checks to appear AND finish
 CI_POLL=30                   # seconds between check polls
 EXPECTED_CHECKS=             # named checks (substring, case-insensitive) that must be PRESENT

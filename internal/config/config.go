@@ -92,13 +92,20 @@ type Config struct {
 	// MaxPlanRounds caps how many rounds of clarifying questions a planning
 	// session may ask before the agent must draft the PRD with its remaining
 	// assumptions listed explicitly.
-	MaxPlanRounds  int
-	AutoMerge      bool
-	MergeMethod    string
-	CITimeout      int
-	CIPoll         int
-	ExpectedChecks string
-	RequireCI      bool
+	MaxPlanRounds int
+	AutoMerge     bool
+	MergeMethod   string
+	// DeterministicCommit makes a squash-merge repo's commit phase stage and commit
+	// the slice with a templated Conventional Commit (type from the ticket kind,
+	// subject from its title, a Refs trailer) instead of spawning a commit agent —
+	// the squash discards the message anyway. On (default) for squash repos; set 0 to
+	// restore the agent commit where commit conventions need judgment. Non-squash
+	// merge methods always use the agent commit (they may split into atomic commits).
+	DeterministicCommit bool
+	CITimeout           int
+	CIPoll              int
+	ExpectedChecks      string
+	RequireCI           bool
 	// RequireRepoChanges gates the post-build empty-diff guard: when on (default),
 	// a build that left the managed repo unchanged faults instead of advancing to a
 	// hollow handoff or empty PR. Set 0 for the rare legitimately no-op ticket.
@@ -264,6 +271,7 @@ func Defaults() Config {
 		MaxPlanRounds:         3,
 		AutoMerge:             true,
 		MergeMethod:           "squash",
+		DeterministicCommit:   true,
 		CITimeout:             600,
 		CIPoll:                30,
 		ExpectedChecks:        "",
@@ -588,6 +596,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		sources["AUTO_MERGE"] = src.name
 	}
 	str("MERGE_METHOD", &c.MergeMethod)
+	if v, src := get("DETERMINISTIC_COMMIT"); v != "" {
+		c.DeterministicCommit = v == "1"
+		sources["DETERMINISTIC_COMMIT"] = src.name
+	}
 	num("CI_TIMEOUT", &c.CITimeout)
 	num("CI_POLL", &c.CIPoll)
 	str("EXPECTED_CHECKS", &c.ExpectedChecks)
@@ -1113,6 +1125,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "MAX_PLAN_ROUNDS", Default: "3", Description: "Rounds of clarifying questions a planning session may ask before the PRD is forced"},
 		{Key: "AUTO_MERGE", Default: "1", Description: "Merge on green CI (1 = yes, 0 = no)", Bool: true},
 		{Key: "MERGE_METHOD", Default: "squash", Description: "Merge strategy: squash | merge | rebase", Options: []string{"squash", "merge", "rebase"}},
+		{Key: "DETERMINISTIC_COMMIT", Default: "1", Description: "For squash-merge repos, stage and commit the slice deterministically (templated Conventional Commit, no commit agent) since the squash discards the message; 0 restores the agent commit (1 = yes, 0 = no)", Bool: true},
 		{Key: "CI_TIMEOUT", Default: "600", Description: "Seconds to wait for CI checks"},
 		{Key: "CI_POLL", Default: "30", Description: "Seconds between CI polls"},
 		{Key: "EXPECTED_CHECKS", Description: "Required CI check names (comma-separated)"},
@@ -1559,6 +1572,11 @@ func keyValue(cfg Config, key string) string {
 		return "0"
 	case "MERGE_METHOD":
 		return cfg.MergeMethod
+	case "DETERMINISTIC_COMMIT":
+		if cfg.DeterministicCommit {
+			return "1"
+		}
+		return "0"
 	case "CI_TIMEOUT":
 		return strconv.Itoa(cfg.CITimeout)
 	case "CI_POLL":
