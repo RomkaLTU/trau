@@ -185,15 +185,14 @@ func TestHandoffAndCleanupResumeSkipsHandoff(t *testing.T) {
 	}
 }
 
-// TestHandoffAndCleanupTinyDiffSkipsCleanup guards the tiny-diff skip under the
-// overlap: cleanup is dropped for a small working tree while handoff still runs
-// alongside lintfix and the checkpoint still lands.
-func TestHandoffAndCleanupTinyDiffSkipsCleanup(t *testing.T) {
+// TestHandoffAndCleanupTinyDiffSkipsHandoffAndCleanup guards the tiny-diff gate under
+// the overlap: for a small working tree neither the standalone handoff agent nor
+// cleanup runs — only lintfix — no QA brief is written, and the checkpoint still lands
+// so verify (which later derives its own checklist) is reached.
+func TestHandoffAndCleanupTinyDiffSkipsHandoffAndCleanup(t *testing.T) {
 	id := "COD-79802"
 	cleanTmp(t, id)
-	r := &overlapRunner{hooks: map[string]func(context.Context) (agent.Result, error){
-		"handoff": writeBriefHook(id),
-	}}
+	r := &overlapRunner{}
 	p := newTestPipeline(t, r, &fakeTracker{})
 	p.Git = sizeGit{files: 3, lines: 40}
 	p.LintFix = true
@@ -203,14 +202,17 @@ func TestHandoffAndCleanupTinyDiffSkipsCleanup(t *testing.T) {
 		t.Fatalf("handoffAndCleanup: %v", err)
 	}
 
+	if got := r.count("handoff"); got != 0 {
+		t.Errorf("handoff ran %d times on a tiny diff, want 0 (verify derives its own checklist)", got)
+	}
 	if got := r.count("cleanup"); got != 0 {
 		t.Errorf("cleanup ran %d times on a tiny diff, want 0", got)
 	}
-	if got := r.count("handoff"); got != 1 {
-		t.Errorf("handoff ran %d times, want 1", got)
-	}
 	if got := r.count("lintfix"); got != 1 {
 		t.Errorf("lintfix ran %d times, want 1", got)
+	}
+	if _, err := os.Stat(handoffPath(id)); !os.IsNotExist(err) {
+		t.Errorf("a QA brief was written for a tiny diff (stat err = %v), want none", err)
 	}
 	if got := p.State.Get(id, "PHASE"); got != state.HandedOff {
 		t.Errorf("PHASE = %q, want %q", got, state.HandedOff)
