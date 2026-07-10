@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/RomkaLTU/trau/internal/registry"
 )
 
 // RegisterRepoRequest is the body of POST /api/v1/repos: the absolute path to a
@@ -33,9 +31,9 @@ func (s *Server) denyRegistrationIfExposed(w http.ResponseWriter, action string)
 }
 
 // registerRepo makes a repo startable from the hub by persisting its root to the
-// hub-owned workspace.json. It is fail-closed on exposure: on a non-loopback bind
-// registration is refused unless SERVE_ALLOW_REGISTER is set, so a leaked bearer
-// token can never widen the set of directories trau will run agents in by
+// hub-owned registration store. It is fail-closed on exposure: on a non-loopback
+// bind registration is refused unless SERVE_ALLOW_REGISTER is set, so a leaked
+// bearer token can never widen the set of directories trau will run agents in by
 // default. On loopback the caller already owns the machine, so registration is
 // open.
 func (s *Server) registerRepo(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +50,7 @@ func (s *Server) registerRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := registry.RegisterRepo(s.home, root); err != nil {
+	if err := s.repos.Register(root); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to register repo: " + err.Error()})
 		return
 	}
@@ -87,12 +85,13 @@ func (s *Server) unregisterRepo(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	root, ok := matchRoot(registry.RegisteredRepos(s.home), name)
+	registered, _ := s.repos.Registered()
+	root, ok := matchRoot(registered, name)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("repo %q is not registered", name)})
 		return
 	}
-	removed, err := registry.UnregisterRepo(s.home, root)
+	removed, err := s.repos.Unregister(root)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to unregister repo: " + err.Error()})
 		return
@@ -137,7 +136,7 @@ func validateRepoPath(path string) (string, error) {
 // merged with the repos registered from the web. Reading it fresh on every call
 // is what lets a registration take effect without restarting serve.
 func (s *Server) effectiveRoots() []string {
-	registered := registry.RegisteredRepos(s.home)
+	registered, _ := s.repos.Registered()
 	if len(registered) == 0 {
 		return s.workspace
 	}

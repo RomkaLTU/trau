@@ -16,7 +16,7 @@ import (
 func queueServer(t *testing.T, name string) (*fakeSupervisor, string, *httptest.Server) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), name)
-	s := New("1.2.3", "127.0.0.1", "", []string{root}, false)
+	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testRegistrations(t))
 	s.home = t.TempDir()
 	fake := &fakeSupervisor{}
 	s.sup = fake
@@ -329,7 +329,7 @@ func TestDequeueRunningRefused(t *testing.T) {
 // one registered.
 func TestQueuePersistsAcrossServers(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "acme")
-	first := New("1.2.3", "127.0.0.1", "", []string{root}, false)
+	first := New("1.2.3", "127.0.0.1", "", []string{root}, false, testRegistrations(t))
 	first.home = t.TempDir()
 	first.sup = &fakeSupervisor{}
 	ts1 := httptest.NewServer(first.Handler())
@@ -341,7 +341,7 @@ func TestQueuePersistsAcrossServers(t *testing.T) {
 		t.Fatalf("enqueue = %d, want 201", res.StatusCode)
 	}
 
-	second := New("1.2.3", "127.0.0.1", "", []string{root}, false)
+	second := New("1.2.3", "127.0.0.1", "", []string{root}, false, testRegistrations(t))
 	second.home = t.TempDir()
 	second.sup = &fakeSupervisor{}
 	ts2 := httptest.NewServer(second.Handler())
@@ -384,7 +384,7 @@ func TestQueueRejectsUnsupportedMethod(t *testing.T) {
 
 func TestQueueRequiresTokenWhenExposed(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "acme")
-	s := New("1.2.3", "0.0.0.0", "s3cret", []string{root}, false)
+	s := New("1.2.3", "0.0.0.0", "s3cret", []string{root}, false, testRegistrations(t))
 	s.sup = &fakeSupervisor{}
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)

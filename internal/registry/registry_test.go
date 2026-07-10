@@ -176,22 +176,3 @@ func TestSetStateNilAndUnregisteredHandleNoOp(t *testing.T) {
 		t.Errorf("unregistered SetState mutated entry: %+v", unregistered.entry)
 	}
 }
-
-func TestReposOutliveTheLoop(t *testing.T) {
-	home := t.TempDir()
-	h := Register(home, "/repo/acme", "/repo/acme/.trau/runs")
-
-	RememberRepos(home, Live(home))
-	h.Deregister()
-
-	if live := Live(home); len(live) != 0 {
-		t.Fatalf("Live after Deregister = %d, want 0", len(live))
-	}
-	repos := Repos(home)
-	if len(repos) != 1 {
-		t.Fatalf("Repos after loop exit = %d, want 1", len(repos))
-	}
-	if repos[0].Name != "acme" || repos[0].Root != "/repo/acme" {
-		t.Errorf("repo = %+v, want name acme root /repo/acme", repos[0])
-	}
-}

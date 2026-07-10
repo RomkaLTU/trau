@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"testing"
 
@@ -12,7 +11,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/state"
 )
 
-// seedRepo writes a repos.json naming one exited repo and returns its runs dir,
+// seedRepo records one exited repo in the known set and returns its runs dir,
 // so the runs surface is exercised with no live loop — the "browsable after the
 // loop exited" case.
 func seedRepo(t *testing.T, home, name string) string {
@@ -20,34 +19,26 @@ func seedRepo(t *testing.T, home, name string) string {
 	root := filepath.Join(t.TempDir(), name)
 	runsDir := filepath.Join(root, ".trau", "runs")
 	repo := registry.Repo{Name: name, Root: root, RunsDir: runsDir}
-	data, err := json.Marshal(map[string]registry.Repo{root: repo})
-	if err != nil {
-		t.Fatalf("marshal repos: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, "repos.json"), data, 0o644); err != nil {
-		t.Fatalf("seed repos.json: %v", err)
+	if err := testRegistrationsAt(t, home).Remember([]registry.Repo{repo}); err != nil {
+		t.Fatalf("seed known repo: %v", err)
 	}
 	return runsDir
 }
 
-// seedRepos writes a repos.json naming several exited repos and returns each
+// seedRepos records several exited repos in the known set and returns each
 // repo's runs dir by name, for exercising the machine-wide multiplex.
 func seedRepos(t *testing.T, home string, names ...string) map[string]string {
 	t.Helper()
-	repos := map[string]registry.Repo{}
+	repos := make([]registry.Repo, 0, len(names))
 	dirs := map[string]string{}
 	for _, name := range names {
 		root := filepath.Join(t.TempDir(), name)
 		runsDir := filepath.Join(root, ".trau", "runs")
-		repos[root] = registry.Repo{Name: name, Root: root, RunsDir: runsDir}
+		repos = append(repos, registry.Repo{Name: name, Root: root, RunsDir: runsDir})
 		dirs[name] = runsDir
 	}
-	data, err := json.Marshal(repos)
-	if err != nil {
-		t.Fatalf("marshal repos: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, "repos.json"), data, 0o644); err != nil {
-		t.Fatalf("seed repos.json: %v", err)
+	if err := testRegistrationsAt(t, home).Remember(repos); err != nil {
+		t.Fatalf("seed known repos: %v", err)
 	}
 	return dirs
 }

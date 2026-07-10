@@ -257,28 +257,25 @@ func TestCostsRejectsNonGET(t *testing.T) {
 	}
 }
 
-// writeRepoConfig writes a <repo>/.trau.ini for a repo named in repos.json, so a
-// budget cap resolves through the same layered config the loop reads.
+// writeRepoConfig writes a <repo>/.trau.ini for a known repo, so a budget cap
+// resolves through the same layered config the loop reads.
 func writeRepoConfig(t *testing.T, home, name, body string) {
 	t.Helper()
-	var repos map[string]interface{}
-	data, err := os.ReadFile(home + "/repos.json")
+	known, err := testRegistrationsAt(t, home).Known()
 	if err != nil {
-		t.Fatalf("read repos.json: %v", err)
+		t.Fatalf("read known repos: %v", err)
 	}
-	if err := json.Unmarshal(data, &repos); err != nil {
-		t.Fatalf("unmarshal repos.json: %v", err)
-	}
-	for root := range repos {
-		if entry, _ := repos[root].(map[string]interface{}); entry["name"] == name {
-			if err := os.MkdirAll(root, 0o755); err != nil {
-				t.Fatalf("mkdir %s root: %v", name, err)
-			}
-			if err := os.WriteFile(config.ProjectConfigPath(root), []byte(body), 0o644); err != nil {
-				t.Fatalf("write %s config: %v", name, err)
-			}
-			return
+	for _, repo := range known {
+		if repo.Name != name {
+			continue
 		}
+		if err := os.MkdirAll(repo.Root, 0o755); err != nil {
+			t.Fatalf("mkdir %s root: %v", name, err)
+		}
+		if err := os.WriteFile(config.ProjectConfigPath(repo.Root), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s config: %v", name, err)
+		}
+		return
 	}
-	t.Fatalf("repo %q not found in repos.json", name)
+	t.Fatalf("repo %q not found in known repos", name)
 }

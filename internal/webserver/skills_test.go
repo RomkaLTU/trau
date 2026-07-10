@@ -18,7 +18,7 @@ import (
 
 func skillsServer(t *testing.T, home string) *Server {
 	t.Helper()
-	s := New("1.2.3", "127.0.0.1", "", nil, false)
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testRegistrationsAt(t, home))
 	s.home = home
 	return s
 }

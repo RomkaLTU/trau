@@ -13,7 +13,10 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
+	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/webserver"
 )
 
@@ -24,7 +27,7 @@ const serveShutdownTimeout = 5 * time.Second
 // web UI. Bind address and port come from the layered config (SERVE_BIND /
 // SERVE_PORT), overridable with --bind / --port. It blocks until the context is
 // cancelled (Ctrl-C / SIGTERM), then drains connections gracefully.
-func runServe(ctx context.Context, args []string, stderr io.Writer) error {
+func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) {
 	var (
 		bind, repo     string
 		port           = -1
@@ -88,8 +91,23 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) error {
 		return console.Actionable(err, "start serve", "set SERVE_TOKEN to a secret, or keep SERVE_BIND on loopback (127.0.0.1)")
 	}
 
+	home := registry.Home()
+	db, err := hubdb.Open(home)
+	if err != nil {
+		return console.Actionable(err, "open hub database",
+			fmt.Sprintf("move %s aside (mv %s %s.bak) and restart to recreate it", hubdb.Path(home), hubdb.Path(home), hubdb.Path(home)))
+	}
+	defer func() { err = errors.Join(err, db.Close()) }()
+	logger.Verbosef("hub database ready at %s (schema v%d)", db.Path(), db.Version())
+
+	repos := hubstore.NewRegistrations(db.SQL())
+	if err := repos.ImportLegacy(home); err != nil {
+		return console.Actionable(err, "import legacy registration state",
+			"fix or move the named file aside, then restart trau serve")
+	}
+
 	addr := net.JoinHostPort(cfg.ServeBind, strconv.Itoa(cfg.ServePort))
-	hub := webserver.New(version, cfg.ServeBind, cfg.ServeToken, cfg.ServeWorkspace, cfg.ServeAllowRegister)
+	hub := webserver.New(version, cfg.ServeBind, cfg.ServeToken, cfg.ServeWorkspace, cfg.ServeAllowRegister, repos)
 	hub.Start(ctx)
 	srv := &http.Server{Addr: addr, Handler: hub.Handler()}
 

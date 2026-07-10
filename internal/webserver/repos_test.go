@@ -102,8 +102,11 @@ func TestRegisterThenStartWithoutRestart(t *testing.T) {
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("register = %d, want 201", res.StatusCode)
 	}
-	if _, err := os.Stat(filepath.Join(home, "workspace.json")); err != nil {
-		t.Errorf("registration not persisted to workspace.json: %v", err)
+	if _, err := os.Stat(filepath.Join(home, "workspace.json")); !os.IsNotExist(err) {
+		t.Errorf("registration created a legacy workspace.json; storage must be the hub database")
+	}
+	if roots, _ := testRegistrationsAt(t, home).Registered(); !slices.Contains(roots, repo) {
+		t.Errorf("registration not persisted to the hub database")
 	}
 	if _, err := os.Stat(filepath.Join(home, ".trau.ini")); !os.IsNotExist(err) {
 		t.Errorf("registration must not touch .trau.ini")
@@ -231,11 +234,12 @@ func TestRegistrationExposureGate(t *testing.T) {
 			base := t.TempDir()
 			toRegister := gitRepo(t, base, "toregister", "dir")
 			toUnregister := gitRepo(t, base, "tounregister", "dir")
-			if err := registry.RegisterRepo(home, toUnregister); err != nil {
+			store := testRegistrationsAt(t, home)
+			if err := store.Register(toUnregister); err != nil {
 				t.Fatalf("seed unregister target: %v", err)
 			}
 
-			s := New("1.2.3", tc.bind, tc.serverToken, nil, tc.allowRegister)
+			s := New("1.2.3", tc.bind, tc.serverToken, nil, tc.allowRegister, store)
 			s.home = home
 			s.sup = &fakeSupervisor{}
 			ts := httptest.NewServer(s.Handler())
@@ -248,7 +252,8 @@ func TestRegistrationExposureGate(t *testing.T) {
 			if tc.namesKey && !strings.Contains(body, "SERVE_ALLOW_REGISTER") {
 				t.Errorf("register refusal %q does not name SERVE_ALLOW_REGISTER", body)
 			}
-			if got := slices.Contains(registry.RegisteredRepos(home), toRegister); got != (tc.wantRegister == http.StatusCreated) {
+			registered, _ := store.Registered()
+			if got := slices.Contains(registered, toRegister); got != (tc.wantRegister == http.StatusCreated) {
 				t.Errorf("registered(%s) = %v after register status %d", toRegister, got, tc.wantRegister)
 			}
 
@@ -259,7 +264,8 @@ func TestRegistrationExposureGate(t *testing.T) {
 			if tc.namesKey && !strings.Contains(body, "SERVE_ALLOW_REGISTER") {
 				t.Errorf("unregister refusal %q does not name SERVE_ALLOW_REGISTER", body)
 			}
-			stillRegistered := slices.Contains(registry.RegisteredRepos(home), toUnregister)
+			registered, _ = store.Registered()
+			stillRegistered := slices.Contains(registered, toUnregister)
 			if wantStill := tc.wantUnregister != http.StatusOK; stillRegistered != wantStill {
 				t.Errorf("registered(%s) = %v after unregister status %d", toUnregister, stillRegistered, tc.wantUnregister)
 			}
@@ -292,8 +298,8 @@ func TestUnregisterRepo(t *testing.T) {
 				if res.StatusCode != http.StatusForbidden {
 					t.Errorf("post-unregister start = %d, want 403", res.StatusCode)
 				}
-				if roots := registry.RegisteredRepos(home); len(roots) != 0 {
-					t.Errorf("workspace.json still lists %v", roots)
+				if roots, _ := testRegistrationsAt(t, home).Registered(); len(roots) != 0 {
+					t.Errorf("registration store still lists %v", roots)
 				}
 				if _, err := os.Stat(filepath.Join(registered, ".git")); err != nil {
 					t.Errorf("repo on disk was touched: %v", err)
@@ -371,7 +377,9 @@ func TestUnregisterPersistsAcrossRestart(t *testing.T) {
 func TestUnregisterKeepsRepoBrowsable(t *testing.T) {
 	home := t.TempDir()
 	repo := gitRepo(t, t.TempDir(), "acme", "dir")
-	registry.RememberRepos(home, []registry.Entry{{RepoRoot: repo, RunsDir: filepath.Join(repo, ".trau", "runs")}})
+	if err := testRegistrationsAt(t, home).Remember([]registry.Repo{{Name: filepath.Base(repo), Root: repo, RunsDir: filepath.Join(repo, ".trau", "runs")}}); err != nil {
+		t.Fatalf("seed known repo: %v", err)
+	}
 
 	_, ts := controlServer(t, home, nil)
 	res := postJSON(t, ts.URL+APIPrefix+"/repos", RegisterRepoRequest{Path: repo})

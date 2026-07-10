@@ -71,6 +71,7 @@ func TestPlanListEntry(t *testing.T) {
 // TestPlanListResumeQuestions resumes the selected in-flight session; a questions
 // outcome rebuilds the huh form against that session's dir.
 func TestPlanListResumeQuestions(t *testing.T) {
+	useInteractivePlanMode(t)
 	fake := twoSessionFake()
 	fake.resumeOut = PlanOutcome{
 		Status:    "questions",

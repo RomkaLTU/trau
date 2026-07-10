@@ -26,12 +26,8 @@ func seedConfigRepo(t *testing.T, home, name string) string {
 		t.Fatalf("mkdir repo root: %v", err)
 	}
 	repo := registry.Repo{Name: name, Root: root, RunsDir: filepath.Join(root, ".trau", "runs")}
-	data, err := json.Marshal(map[string]registry.Repo{root: repo})
-	if err != nil {
-		t.Fatalf("marshal repos: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, "repos.json"), data, 0o644); err != nil {
-		t.Fatalf("seed repos.json: %v", err)
+	if err := testRegistrationsAt(t, home).Remember([]registry.Repo{repo}); err != nil {
+		t.Fatalf("seed known repo: %v", err)
 	}
 	return root
 }

@@ -13,6 +13,9 @@ import (
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 )
@@ -51,6 +54,8 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkLinearProject(ctx, cfg, rr)
 	checkJira(ctx, cfg, rr)
 	checkWritePerms(cfg, repoRoot, rr)
+	checkHubDatabase(rr)
+	checkLegacyRegistration(rr)
 
 	w.blank()
 	if rr.r.Errors > 0 {
@@ -359,6 +364,36 @@ func checkWritePerms(cfg config.Config, repoRoot string, rr *runner) {
 	} else {
 		rr.add("write: runs dir", pass, fmt.Sprintf("%s is writable", runsDir), "")
 	}
+}
+
+// checkHubDatabase reports the hub SQLite database (opened only by `trau serve`)
+// read-only: its path, applied schema version, and whether it opens cleanly. A
+// database that has not been created yet is fine — serve creates it on start.
+func checkHubDatabase(rr *runner) {
+	h := hubdb.CheckHealth(registry.Home())
+	switch {
+	case h.Err != nil:
+		rr.add("hub database", fail, fmt.Sprintf("%s cannot be opened: %v", h.Path, h.Err),
+			fmt.Sprintf("move %s aside and restart `trau serve` to recreate it", h.Path))
+	case !h.Exists:
+		rr.add("hub database", pass, fmt.Sprintf("%s (created on first `trau serve`)", h.Path), "")
+	default:
+		rr.add("hub database", pass, fmt.Sprintf("%s (schema v%d, healthy)", h.Path, h.Version), "")
+	}
+}
+
+// checkLegacyRegistration flags a repos.json or workspace.json left behind by the
+// file era. The hub imports and deletes these on first serve start (ADR 0007);
+// one still present means a half-completed upgrade.
+func checkLegacyRegistration(rr *runner) {
+	leftover := hubstore.LegacyFiles(registry.Home())
+	if len(leftover) == 0 {
+		rr.add("legacy registration", pass, "no legacy registration files", "")
+		return
+	}
+	rr.add("legacy registration", warn,
+		fmt.Sprintf("legacy registration file(s) still present: %s", strings.Join(leftover, ", ")),
+		"start `trau serve` once to import and remove them")
 }
 
 func probeWrite(path string) error {

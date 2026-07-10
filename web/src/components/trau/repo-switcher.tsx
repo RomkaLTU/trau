@@ -96,7 +96,7 @@ export function RepoSwitcher() {
         )}
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="truncate font-mono text-sm text-foreground">
-            {isAll ? 'All projects' : (repo ?? 'no repo')}
+            {isAll ? 'All repos' : (repo ?? 'no repo')}
           </span>
           <span className="truncate font-mono text-[0.65rem] text-muted-foreground">
             {isAll
@@ -122,7 +122,7 @@ export function RepoSwitcher() {
               <p className="px-2.5 pb-1 pt-1.5 font-mono text-[0.6rem] uppercase tracking-[0.2em] text-muted-foreground">
                 scope
               </p>
-              <AllProjectsOption
+              <AllReposOption
                 count={repos.length}
                 active={isAll}
                 onSelect={() => {
@@ -171,7 +171,7 @@ export function RepoSwitcher() {
   )
 }
 
-function AllProjectsOption({
+function AllReposOption({
   count,
   active,
   onSelect,
@@ -204,7 +204,7 @@ function AllProjectsOption({
             active ? 'text-primary' : 'text-foreground',
           )}
         >
-          All projects
+          All repos
         </span>
         <span className="truncate font-mono text-[0.65rem] text-muted-foreground">
           {count} repos · operate pages ask you to pick one

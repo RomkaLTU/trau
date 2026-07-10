@@ -208,11 +208,10 @@ func (s *Server) pumpAll(ctx context.Context, w io.Writer, flusher http.Flusher)
 	}
 }
 
-// streamRepos resolves the repos the multiplex tails, remembering live loops'
-// repos first so a just-started loop joins the stream — mirroring findRepo.
+// streamRepos resolves the repos the multiplex tails, unioning live loops' repos
+// so a just-started loop joins the stream — mirroring findRepo.
 func (s *Server) streamRepos() []registry.Repo {
-	registry.RememberRepos(s.home, registry.Live(s.home))
-	return registry.Repos(s.home)
+	return s.knownRepos(registry.Live(s.home))
 }
 
 // emitFrom reads every complete event appended since offset, writes one SSE frame

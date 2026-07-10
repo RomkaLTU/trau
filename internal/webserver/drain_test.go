@@ -20,7 +20,7 @@ import (
 func drainServer(t *testing.T, name string) (*Server, *fakeSupervisor, string) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), name)
-	s := New("1.2.3", "127.0.0.1", "", []string{root}, false)
+	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testRegistrations(t))
 	s.home = t.TempDir()
 	fake := &fakeSupervisor{}
 	s.sup = fake
@@ -643,7 +643,7 @@ func TestDrainPauseTakesEffectAfterCurrentChild(t *testing.T) {
 // repo so the item is settled and the queue continues.
 func TestDrainResumeSettlesLeftoverRunning(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "acme")
-	first := New("1.2.3", "127.0.0.1", "", []string{root}, false)
+	first := New("1.2.3", "127.0.0.1", "", []string{root}, false, testRegistrations(t))
 	first.home = t.TempDir()
 	first.sup = &fakeSupervisor{}
 	seedQueue(t, root, true,
@@ -651,7 +651,7 @@ func TestDrainResumeSettlesLeftoverRunning(t *testing.T) {
 		queue.Item{ID: "COD-2"},
 	)
 
-	second := New("1.2.3", "127.0.0.1", "", []string{root}, false)
+	second := New("1.2.3", "127.0.0.1", "", []string{root}, false, testRegistrations(t))
 	second.home = first.home
 	second.sup = &fakeSupervisor{}
 	second.drain.alive = func(int) bool { return false }
@@ -676,7 +676,7 @@ func TestDrainResumeSettlesLeftoverRunning(t *testing.T) {
 
 func TestDrainEndpointStartsAndPauses(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "acme")
-	s := New("1.2.3", "127.0.0.1", "", []string{root}, false)
+	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testRegistrations(t))
 	s.home = t.TempDir()
 	s.sup = &fakeSupervisor{}
 	ctx, cancel := context.WithCancel(context.Background())

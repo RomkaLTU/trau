@@ -38,6 +38,7 @@ func drainNotifies(cmd tea.Cmd) {
 // terminal is unfocused fires the desktop nudge, so a long round never silently
 // stalls the session.
 func TestPlanQuestionsNotifyWhenUnfocused(t *testing.T) {
+	useInteractivePlanMode(t)
 	var calls []string
 	m := newPlanModel(context.Background(), &planFake{}, DefaultStyles(), 100, 40)
 	m.notifier = recordNotifier(&calls)
@@ -61,6 +62,7 @@ func TestPlanQuestionsNotifyWhenUnfocused(t *testing.T) {
 // TestPlanQuestionsSilentWhenFocused checks the nudge is suppressed while the user
 // is at the keyboard — they can already see the round arrive.
 func TestPlanQuestionsSilentWhenFocused(t *testing.T) {
+	useInteractivePlanMode(t)
 	var calls []string
 	m := newPlanModel(context.Background(), &planFake{}, DefaultStyles(), 100, 40)
 	m.notifier = recordNotifier(&calls)
