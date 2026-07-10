@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
@@ -24,6 +25,10 @@ type RunDetail struct {
 	Rubric    *RubricView   `json:"rubric,omitempty"`
 	Verdict   *VerdictView  `json:"verdict,omitempty"`
 	Artifacts ArtifactSet   `json:"artifacts"`
+	// NoSkills is true when this run's build loaded no skills in a repo that has
+	// skills installed — the durable build_no_skills warning, surfaced so the
+	// page can flag a silently skill-less build.
+	NoSkills bool `json:"no_skills,omitempty"`
 }
 
 // AnomalyView is one flagged cost anomaly for a run, read from
@@ -144,7 +149,27 @@ func runDetail(runsDir, ticket string) RunDetail {
 			Verdict: verdict != nil,
 			Tokens:  len(costs) > 0,
 		},
+		NoSkills: hasNoSkillsWarning(runsDir, ticket),
 	}
+}
+
+// hasNoSkillsWarning reports whether the repo event log carries a build_no_skills
+// warning for ticket — a build that used none of the repo's installed skills.
+func hasNoSkillsWarning(runsDir, ticket string) bool {
+	events, _ := readFeed(eventsPath(runsDir))
+	for _, ev := range events {
+		if ev.Kind == event.KindBuildNoSkills && strField(ev.Fields, "ticket") == ticket {
+			return true
+		}
+	}
+	return false
+}
+
+func strField(fields map[string]any, key string) string {
+	if s, ok := fields[key].(string); ok {
+		return s
+	}
+	return ""
 }
 
 // phaseCosts reads the run's per-phase token/cost breakdown, in the order each

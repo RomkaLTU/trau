@@ -15,6 +15,10 @@ import (
 // KindAgentStart marks the start of an agent run, carrying its live transcript path.
 const KindAgentStart = "agent_start"
 
+// KindBuildNoSkills marks a build that loaded no skills in a repo that has skills
+// installed — the agent skipped the skills the repo expected it to use.
+const KindBuildNoSkills = "build_no_skills"
+
 // Event is one structured log record. Fields carries action-specific detail
 // (token counts, ids, durations) so the schema can grow without churning the
 // envelope.

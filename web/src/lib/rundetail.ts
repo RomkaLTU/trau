@@ -61,6 +61,7 @@ export interface RunDetail extends Run {
   rubric?: Rubric
   verdict?: Verdict
   artifacts: Artifacts
+  no_skills?: boolean
 }
 
 async function fetchRunDetail(
