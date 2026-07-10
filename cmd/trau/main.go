@@ -513,7 +513,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			rep.Class = state.FailFaulted
 			rep.Reason = lerr.Error()
 		}
-		_ = queue.WriteReport(opts.DrainReport, rep)
+		if werr := queue.WriteReport(opts.DrainReport, rep); werr != nil {
+			logger.Verbosef("drain report write failed: %v", werr)
+			log.Emit("drain_report_error", "", fmt.Sprintf("drain report write failed: %v", werr),
+				map[string]any{"path": opts.DrainReport, "error": werr.Error()})
+		}
 	}
 
 	tk, cost, metered := total(processed)

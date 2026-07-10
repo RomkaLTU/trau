@@ -466,7 +466,7 @@ func workspaceRepo(root string) registry.Repo {
 	return registry.Repo{
 		Name:    filepath.Base(root),
 		Root:    root,
-		RunsDir: filepath.Join(root, ".trau", "runs"),
+		RunsDir: repoRunsDir(root),
 	}
 }
 
