@@ -290,10 +290,12 @@ function PausedBanner({
   reason,
   onResume,
   resuming,
+  gated,
 }: {
   reason: string;
   onResume: () => void;
   resuming: boolean;
+  gated: boolean;
 }) {
   const banner = pauseBanner(reason);
   return (
@@ -309,13 +311,19 @@ function PausedBanner({
         <Button
           size="sm"
           className="font-mono"
-          disabled={resuming}
+          disabled={resuming || gated}
           onClick={onResume}
         >
           <Play className="size-4" aria-hidden="true" />
           {resuming ? "Resuming…" : "Resume"}
         </Button>
       </div>
+      {gated && (
+        <p className="mt-1 font-mono text-[0.65rem] text-muted-foreground">
+          trau is parked on this ticket’s recap in the TUI — handle it there, or
+          stop it above to resume from here
+        </p>
+      )}
     </div>
   );
 }
@@ -334,14 +342,13 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
     (i) => i.repo === repo && i.ticket === ticket,
   );
   const live = instance !== undefined;
-  const phase =
-    (instance?.session_state === "working" ? instance.phase : "") ||
-    run?.phase ||
-    "";
+  const working = instance?.session_state === "working";
+  const parkedHere = instance?.session_state === "parked";
+  const phase = (working ? instance.phase : "") || run?.phase || "";
   const variant = deriveVariant({
     phase,
     failureClass: run?.failure_class,
-    live,
+    working,
   });
   const pill = headerPill(variant, phase, run?.failure_class);
   const steps = runPhaseSteps(phase, variant);
@@ -399,13 +406,19 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
       variant="outline"
       size="sm"
       className="font-mono"
-      disabled={resume.isPending}
+      disabled={resume.isPending || parkedHere}
       onClick={() => resume.mutate()}
     >
       <Play className="size-4" aria-hidden="true" />
       {resume.isPending ? "Resuming…" : "Resume"}
     </Button>
   );
+  const parkedGate = parkedHere ? (
+    <p className="w-full font-mono text-[0.65rem] text-muted-foreground">
+      trau is parked on this ticket’s recap in the TUI — handle it there, or
+      stop it above to resume from here
+    </p>
+  ) : null;
   const forceResetBtn = (
     <Button
       variant="ghost"
@@ -450,6 +463,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         {viewLog}
         {resumeBtn}
         {plainResetBtn}
+        {parkedGate}
       </>
     );
 
@@ -521,6 +535,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
             reason={run?.failure_reason ?? ""}
             onResume={() => resume.mutate()}
             resuming={resume.isPending}
+            gated={parkedHere}
           />
         )}
 

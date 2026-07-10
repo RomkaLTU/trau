@@ -1,13 +1,35 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Check, ChevronsUpDown, GitBranch, Plus } from 'lucide-react'
+import { AlertTriangle, Check, ChevronsUpDown, Circle, GitBranch, Plus } from 'lucide-react'
 
 import { useActiveRepo } from '@/components/trau/active-repo'
-import type { RepoView } from '@/lib/instances'
+import { instancesQueryOptions, type RepoView } from '@/lib/instances'
+import {
+  repoBadgeState,
+  toSessionState,
+  type RepoBadgeState,
+} from '@/lib/overview'
 import { cn } from '@/lib/utils'
+
+function useRepoBadgeStates(): Map<string, RepoBadgeState> {
+  const { data } = useQuery(instancesQueryOptions)
+  return useMemo(() => {
+    const byRepo = new Map<string, ReturnType<typeof toSessionState>[]>()
+    for (const inst of data?.instances ?? []) {
+      const states = byRepo.get(inst.repo) ?? []
+      states.push(toSessionState(inst.session_state))
+      byRepo.set(inst.repo, states)
+    }
+    const badges = new Map<string, RepoBadgeState>()
+    for (const [name, states] of byRepo) badges.set(name, repoBadgeState(states))
+    return badges
+  }, [data])
+}
 
 export function RepoSwitcher() {
   const { repo, repos, setRepo } = useActiveRepo()
+  const badges = useRepoBadgeStates()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -38,7 +60,7 @@ export function RepoSwitcher() {
         aria-expanded={open}
         className="flex w-full items-center gap-2.5 rounded-md border border-border bg-input px-2.5 py-2 text-left transition-colors hover:border-ring/50"
       >
-        <RepoIcon live={active?.live ?? false} />
+        <RepoIcon state={repo ? (badges.get(repo) ?? 'none') : 'none'} />
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="truncate font-mono text-sm text-foreground">
             {repo ?? 'no repo'}
@@ -70,6 +92,7 @@ export function RepoSwitcher() {
               <RepoOption
                 key={r.name}
                 repo={r}
+                state={badges.get(r.name) ?? 'none'}
                 active={r.name === repo}
                 onSelect={() => {
                   setRepo(r.name)
@@ -97,10 +120,12 @@ export function RepoSwitcher() {
 
 function RepoOption({
   repo,
+  state,
   active,
   onSelect,
 }: {
   repo: RepoView
+  state: RepoBadgeState
   active: boolean
   onSelect: () => void
 }) {
@@ -115,7 +140,7 @@ function RepoOption({
         active && 'bg-secondary/60',
       )}
     >
-      <RepoIcon live={repo.live} />
+      <RepoIcon state={state} />
       <span className="flex min-w-0 flex-1 flex-col">
         <span
           className={cn(
@@ -136,16 +161,30 @@ function RepoOption({
   )
 }
 
-function RepoIcon({ live }: { live: boolean }) {
+function RepoIcon({ state }: { state: RepoBadgeState }) {
+  const box =
+    state === 'active'
+      ? 'border-teal/50 text-teal'
+      : state === 'parked'
+        ? 'border-warn/50 text-warn'
+        : state === 'idle'
+          ? 'border-border text-muted-foreground'
+          : 'border-border text-primary'
   return (
     <span
       aria-hidden="true"
       className={cn(
         'flex size-7 shrink-0 items-center justify-center rounded-md border bg-secondary',
-        live ? 'border-teal/50 text-teal' : 'border-border text-primary',
+        box,
       )}
     >
-      <GitBranch className="size-3.5" />
+      {state === 'parked' ? (
+        <AlertTriangle className="size-3.5" />
+      ) : state === 'idle' ? (
+        <Circle className="size-2 fill-current" />
+      ) : (
+        <GitBranch className="size-3.5" />
+      )}
     </span>
   )
 }

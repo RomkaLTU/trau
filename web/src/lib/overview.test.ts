@@ -7,6 +7,8 @@ import {
   phasePill,
   phaseRank,
   phaseSteps,
+  repoBadgeState,
+  sessionStatePill,
   type LiveLoop,
   type PhaseState,
   type SessionState,
@@ -166,5 +168,43 @@ describe("loopCardView", () => {
     expect(view.pill).toEqual({ state: "todo", label: "unknown" });
     expect(view.showStop).toBe(true);
     expect(view.copy).toMatch(/predates session reporting/i);
+  });
+});
+
+describe("sessionStatePill", () => {
+  it("keeps working and grazing on the teal active palette", () => {
+    expect(sessionStatePill("working")).toEqual({ state: "active", label: "working" });
+    expect(sessionStatePill("grazing")).toEqual({ state: "active", label: "grazing" });
+  });
+
+  it("reads parked as a warn, needs-you pill", () => {
+    expect(sessionStatePill("parked")).toEqual({ state: "warn", label: "parked" });
+  });
+
+  it("dims idle and unknown", () => {
+    expect(sessionStatePill("idle")).toEqual({ state: "todo", label: "idle" });
+    expect(sessionStatePill("unknown")).toEqual({ state: "todo", label: "unknown" });
+  });
+});
+
+describe("repoBadgeState", () => {
+  it("has no badge without a live instance", () => {
+    expect(repoBadgeState([])).toBe("none");
+  });
+
+  it("reads any active instance as active", () => {
+    expect(repoBadgeState(["parked", "working"])).toBe("active");
+    expect(repoBadgeState(["grazing"])).toBe("active");
+    expect(repoBadgeState(["stopping"])).toBe("active");
+  });
+
+  it("reads a repo whose only instance is parked as needs-you, not busy", () => {
+    expect(repoBadgeState(["parked"])).toBe("parked");
+    expect(repoBadgeState(["idle", "parked"])).toBe("parked");
+  });
+
+  it("dims a repo with only idle or unknown instances", () => {
+    expect(repoBadgeState(["idle"])).toBe("idle");
+    expect(repoBadgeState(["unknown"])).toBe("idle");
   });
 });

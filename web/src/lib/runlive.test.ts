@@ -16,21 +16,21 @@ import {
 } from '@/lib/runlive'
 
 describe('deriveVariant', () => {
-  it('is live whenever an instance is running, whatever the checkpoint says', () => {
-    expect(deriveVariant({ phase: 'merged', live: true })).toBe('live')
-    expect(deriveVariant({ phase: 'verified', failureClass: 'paused', live: true })).toBe('live')
+  it('is live only while an instance is working the ticket', () => {
+    expect(deriveVariant({ phase: 'merged', working: true })).toBe('live')
+    expect(deriveVariant({ phase: 'verified', failureClass: 'paused', working: true })).toBe('live')
   })
 
   it('reads a stopped run from its checkpoint', () => {
-    expect(deriveVariant({ phase: 'merged', live: false })).toBe('success')
-    expect(deriveVariant({ phase: 'verified', failureClass: 'paused', live: false })).toBe('paused')
-    expect(deriveVariant({ phase: 'built', failureClass: 'faulted', live: false })).toBe('failure')
-    expect(deriveVariant({ phase: 'quarantined', failureClass: 'gave_up', live: false })).toBe('failure')
+    expect(deriveVariant({ phase: 'merged', working: false })).toBe('success')
+    expect(deriveVariant({ phase: 'verified', failureClass: 'paused', working: false })).toBe('paused')
+    expect(deriveVariant({ phase: 'built', failureClass: 'faulted', working: false })).toBe('failure')
+    expect(deriveVariant({ phase: 'quarantined', failureClass: 'gave_up', working: false })).toBe('failure')
   })
 
   it('falls back to live for an in-flight run with no instance yet', () => {
-    expect(deriveVariant({ phase: 'building', live: false })).toBe('live')
-    expect(deriveVariant({ phase: '', live: false })).toBe('live')
+    expect(deriveVariant({ phase: 'building', working: false })).toBe('live')
+    expect(deriveVariant({ phase: '', working: false })).toBe('live')
   })
 })
 

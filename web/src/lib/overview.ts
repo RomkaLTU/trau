@@ -75,7 +75,7 @@ export interface LiveLoop {
   failureReason?: string;
 }
 
-function sessionState(raw: string): SessionState {
+export function toSessionState(raw: string): SessionState {
   switch (raw) {
     case "working":
     case "grazing":
@@ -99,7 +99,7 @@ export function useLiveLoops(repo: string | null): LiveLoop[] {
   }
 
   return instances.map((inst) => {
-    const state = sessionState(inst.session_state);
+    const state = toSessionState(inst.session_state);
     const run = inst.ticket ? byTicket.get(inst.ticket) : undefined;
     return {
       repo: inst.repo,
@@ -141,6 +141,35 @@ export function attentionPill(cls: FailureClass): {
     case "gave_up":
       return { state: "fail", label: "quarantined" };
   }
+}
+
+export function sessionStatePill(state: SessionState): {
+  state: RunState;
+  label: string;
+} {
+  switch (state) {
+    case "working":
+      return { state: "active", label: "working" };
+    case "grazing":
+      return { state: "active", label: "grazing" };
+    case "parked":
+      return { state: "warn", label: "parked" };
+    case "stopping":
+      return { state: "todo", label: "stopping…" };
+    case "idle":
+      return { state: "todo", label: "idle" };
+    case "unknown":
+      return { state: "todo", label: "unknown" };
+  }
+}
+
+export type RepoBadgeState = "active" | "parked" | "idle" | "none";
+
+export function repoBadgeState(states: SessionState[]): RepoBadgeState {
+  if (states.length === 0) return "none";
+  if (states.some(isActiveState)) return "active";
+  if (states.some((s) => s === "parked")) return "parked";
+  return "idle";
 }
 
 export interface LoopCardView {

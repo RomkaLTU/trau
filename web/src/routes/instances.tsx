@@ -14,8 +14,10 @@ import {
 import { EventFeed } from '@/components/event-feed'
 import { RegisterRepoForm } from '@/components/register-repo-form'
 import { RunControls } from '@/components/run-controls'
+import { StatusPill } from '@/components/trau/status-pill'
 import { UnregisterRepoButton } from '@/components/unregister-repo-button'
 import { instancesQueryOptions, type Instance } from '@/lib/instances'
+import { sessionStatePill, toSessionState } from '@/lib/overview'
 
 export const Route = createFileRoute('/instances')({
   component: Instances,
@@ -128,12 +130,15 @@ function InstanceCard({
   instance: Instance
   now: number
 }) {
+  const state = toSessionState(instance.session_state)
+  const pill = sessionStatePill(state)
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
+        <CardTitle className="flex flex-wrap items-center gap-2">
           <Boxes className="size-4 text-muted-foreground" />
           {instance.repo}
+          <StatusPill state={pill.state} label={pill.label} />
         </CardTitle>
         <CardDescription className="font-mono">PID {instance.pid}</CardDescription>
       </CardHeader>
@@ -144,11 +149,13 @@ function InstanceCard({
               <Row label="Ticket">
                 <span className="font-mono">{instance.ticket}</span>
               </Row>
-              <Row label="Phase">
-                <Badge variant="secondary">{instance.phase}</Badge>
-              </Row>
+              {state === 'working' && instance.phase && (
+                <Row label="Phase">
+                  <Badge variant="secondary">{instance.phase}</Badge>
+                </Row>
+              )}
               {instance.state_since && (
-                <Row label="Elapsed">
+                <Row label="In state">
                   <span className="tabular-nums">
                     {formatElapsed(instance.state_since, now)}
                   </span>
