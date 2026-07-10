@@ -19,6 +19,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/sync/errgroup"
 
@@ -336,16 +338,20 @@ type Pipeline struct {
 	// composition root so the pipeline stays provider-agnostic.
 	Fallback func(phase string) []agent.Runner
 
-	Checks         []checks.Check
-	VerifyPanel    []Verifier
-	PanelPolicy    string
-	PanelParallel  bool
-	BrowserVerify  string
-	AppURL         string
-	AutoMerge      bool
-	MergeMethod    string
-	ExpectedChecks string
-	RequireCI      bool
+	Checks        []checks.Check
+	VerifyPanel   []Verifier
+	PanelPolicy   string
+	PanelParallel bool
+	BrowserVerify string
+	AppURL        string
+	AutoMerge     bool
+	MergeMethod   string
+	// DeterministicCommit routes a squash repo's commit phase through a templated
+	// Conventional Commit instead of a commit agent (config DETERMINISTIC_COMMIT).
+	// Non-squash merge methods always use the agent commit.
+	DeterministicCommit bool
+	ExpectedChecks      string
+	RequireCI           bool
 	// RequireRepoChanges gates the post-build empty-diff guard (config
 	// REQUIRE_REPO_CHANGES, default on). When set, a build that left the managed
 	// repo unchanged faults instead of advancing to a hollow handoff or empty PR.
@@ -1362,8 +1368,7 @@ func (p *Pipeline) finalizeFailed(ctx context.Context, id string) {
 // quarantining — the WIP stays on the branch for a later resume.
 func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	p.phaseStart("commit")
-	rubricRef, _ := p.activeRubric(id)
-	if _, err := p.agentStep(ctx, id, "commit", commitInstruction(id, commitRubricNote(rubricRef), p.MergeMethod == "squash")); err != nil {
+	if err := p.commitSlice(ctx, id); err != nil {
 		return err
 	}
 	if err := p.pushDeliverable(ctx, id, "HEAD"); err != nil {
@@ -1409,6 +1414,53 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 		p.logf("  status (In Review) error: %v", err)
 	}
 	return nil
+}
+
+// commitSlice records the verified slice. A squash repo takes the deterministic
+// path — the squash collapses the message anyway, so a full commit agent is pure
+// overhead — while other merge methods keep the agent commit, which may split the
+// work into atomic commits. DeterministicCommit=false restores the agent commit for
+// squash repos whose commit conventions need judgment.
+func (p *Pipeline) commitSlice(ctx context.Context, id string) error {
+	if p.MergeMethod == "squash" && p.DeterministicCommit {
+		return p.deterministicCommit(ctx, id)
+	}
+	rubricRef, _ := p.activeRubric(id)
+	_, err := p.agentStep(ctx, id, "commit", commitInstruction(id, commitRubricNote(rubricRef), p.MergeMethod == "squash"))
+	return err
+}
+
+// deterministicCommit stages the slice and commits it with a templated Conventional
+// Commit, no agent. Under the clean-base invariant the whole dirty tree is this
+// slice's work (user WIP was autostashed), so AddAll (git add -A) stages every
+// tracked change plus untracked non-ignored files. Hooks run (noVerify=false): a
+// pre-commit rejection surfaces as a phase error and classifies through the normal
+// fault path with the WIP left intact, exactly like an agent commit that fails.
+func (p *Pipeline) deterministicCommit(ctx context.Context, id string) error {
+	if err := p.Git.AddAll(ctx); err != nil {
+		return fmt.Errorf("commit %s: stage: %w", id, err)
+	}
+	msg := deterministicCommitMessage(id, p.commitTitle(ctx, id))
+	if err := p.Git.Commit(ctx, msg, false); err != nil {
+		return fmt.Errorf("commit %s: %w", id, err)
+	}
+	p.logf("  committed %s", strings.SplitN(msg, "\n", 2)[0])
+	return nil
+}
+
+// commitTitle resolves the slice's title for the commit subject: the checkpointed
+// TITLE (set when the branch was cut) first, then a fresh tracker lookup as a
+// fallback. Empty is tolerated — deterministicCommitMessage falls back to the id.
+func (p *Pipeline) commitTitle(ctx context.Context, id string) string {
+	if t := strings.TrimSpace(p.State.Get(id, "TITLE")); t != "" {
+		return t
+	}
+	t, err := p.Tracker.Title(ctx, id)
+	if err != nil {
+		p.logf("  title lookup for commit subject failed (using id): %v", err)
+		return ""
+	}
+	return strings.TrimSpace(t)
 }
 
 // CIAndMerge is the CI gate + merge. It reconciles first: a PR a prior run
@@ -2405,6 +2457,61 @@ func commitInstruction(id, rubricNote string, squash bool) string {
 		split += " The merge method is squash, so skip splitting entirely and make ONE commit."
 	}
 	return "Commit the implementation for " + id + ". Verify has already passed on this working tree — do NOT run tests, re-verify behavior, or re-analyze the diff for correctness; just stage and commit, and do NOT emit a status report (your final message is only the commit subject line(s)). Stage and commit ONLY files that are part of " + id + "; never commit unrelated untracked files or tooling (e.g. scripts/, *.env)." + rubricNote + " " + split + " Use Conventional Commits: '<type>(scope): <subject>' (type ∈ feat|fix|refactor|docs|style|test|chore), imperative mood, subject under 72 characters, with a 'Refs: " + id + "' trailer; match the project's existing git-log style if it differs. The commit message must contain ONLY the subject and body: do NOT add any 'Co-authored-by:'/'Co-Authored-By:' trailer, a '🤖 Generated with Claude Code' line, or any mention of AI/assistant authorship, and remove them if your environment adds them by default."
+}
+
+// deterministicCommitMessage builds the templated Conventional Commit for a squash
+// slice: '<type>: <subject>' with a 'Refs: <id>' trailer. The type is inferred from
+// the title, the subject is the title truncated to 72 chars, and an empty title
+// falls back to the id. No scope and no AI/authorship trailers, matching the commit
+// rule the agent path enforces.
+func deterministicCommitMessage(id, title string) string {
+	subject := commitSubject(title)
+	if subject == "" {
+		subject = id
+	}
+	return commitType(title) + ": " + subject + "\n\nRefs: " + id
+}
+
+// commitType maps a ticket title to a Conventional Commit type. The loop always cuts
+// feature/ branches, so the signal is the title's leading verb; unknown verbs are a
+// feature by default.
+func commitType(title string) string {
+	first := ""
+	if fields := strings.Fields(strings.ToLower(title)); len(fields) > 0 {
+		first = strings.TrimFunc(fields[0], func(r rune) bool { return !unicode.IsLetter(r) })
+	}
+	switch first {
+	case "fix", "fixes", "fixed", "bug", "bugfix", "hotfix":
+		return "fix"
+	case "refactor", "refactors":
+		return "refactor"
+	case "docs", "document", "documentation":
+		return "docs"
+	case "test", "tests":
+		return "test"
+	case "chore":
+		return "chore"
+	default:
+		return "feat"
+	}
+}
+
+// commitSubject normalizes the title's whitespace and truncates it to 72 runes,
+// backing off to the last word boundary rather than cutting a word in half.
+func commitSubject(title string) string {
+	const max = 72
+	s := strings.Join(strings.Fields(title), " ")
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	runes := []rune(s)
+	cut := string(runes[:max])
+	if !unicode.IsSpace(runes[max]) {
+		if i := strings.LastIndexByte(cut, ' '); i > 0 {
+			cut = cut[:i]
+		}
+	}
+	return strings.TrimRight(cut, " ")
 }
 
 func repairInstruction(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, ticketCtx string) string {
