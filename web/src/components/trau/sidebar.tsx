@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import {
   DollarSign,
   FilePlus,
@@ -9,6 +9,7 @@ import {
   ListChecks,
   ListOrdered,
   ListTree,
+  Lock,
   Play,
   RefreshCw,
   Settings,
@@ -28,6 +29,8 @@ interface NavItem {
   search?: Record<string, string>
   exact?: boolean
   attention?: boolean
+  /** Page acts on a single repo — the link is disabled under "All projects". */
+  requiresProject?: boolean
 }
 
 interface NavGroup {
@@ -46,8 +49,8 @@ const GROUPS: NavGroup[] = [
         exact: true,
         attention: true,
       },
-      { label: 'Loop', icon: RefreshCw, to: '/loop' },
-      { label: 'Run once', icon: Play, to: '/run-once' },
+      { label: 'Loop', icon: RefreshCw, to: '/loop', requiresProject: true },
+      { label: 'Run once', icon: Play, to: '/run-once', requiresProject: true },
       { label: 'Backlog', icon: ListTree, to: '/backlog' },
       { label: 'Queue', icon: ListOrdered, to: '/queue' },
     ],
@@ -56,7 +59,12 @@ const GROUPS: NavGroup[] = [
     label: 'OBSERVE',
     items: [
       { label: 'Runs', icon: ListChecks, to: '/runs' },
-      { label: 'Terminal', icon: SquareTerminal, to: '/terminal' },
+      {
+        label: 'Terminal',
+        icon: SquareTerminal,
+        to: '/terminal',
+        requiresProject: true,
+      },
       { label: 'Costs', icon: DollarSign, to: '/costs' },
       { label: 'Lessons', icon: Lightbulb, to: '/lessons' },
     ],
@@ -64,12 +72,19 @@ const GROUPS: NavGroup[] = [
   {
     label: 'AUTHOR',
     items: [
-      { label: 'PRD', icon: FileText, to: '/author', search: { tab: 'prd' } },
+      {
+        label: 'PRD',
+        icon: FileText,
+        to: '/author',
+        search: { tab: 'prd' },
+        requiresProject: true,
+      },
       {
         label: 'New issue',
         icon: FilePlus,
         to: '/author',
         search: { tab: 'issue' },
+        requiresProject: true,
       },
     ],
   },
@@ -80,8 +95,19 @@ const GROUPS: NavGroup[] = [
 ]
 
 export function Sidebar() {
-  const { repo } = useActiveRepo()
+  const { repo, isAll, autoScope, openSwitcher } = useActiveRepo()
+  const navigate = useNavigate()
   const attention = useAttentionCount(repo)
+
+  // A gated nav click auto-scopes to a lone/last-used repo and follows the link,
+  // or opens the switcher when there's a real choice — never a dead end.
+  function recoverTo(item: NavItem) {
+    if (autoScope()) {
+      void navigate({ to: item.to, search: item.search })
+    } else {
+      openSwitcher()
+    }
+  }
   const host = window.location.host
   const health = useQuery(healthQueryOptions)
   const webVersion = `${__WEB_VERSION__}·${__WEB_BUILD__}`
@@ -109,6 +135,26 @@ export function Sidebar() {
             <ul className="flex flex-col gap-0.5">
               {group.items.map((item) => {
                 const badge = item.attention && attention > 0 ? attention : null
+                const disabled = isAll && item.requiresProject
+
+                if (disabled) {
+                  return (
+                    <li key={item.label}>
+                      <button
+                        type="button"
+                        onClick={() => recoverTo(item)}
+                        aria-disabled="true"
+                        title="Select a project to use this page"
+                        className="group relative flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left font-mono text-sm text-muted-foreground/40 transition-colors hover:text-muted-foreground/70"
+                      >
+                        <item.icon className="size-4" aria-hidden="true" />
+                        <span className="flex-1">{item.label}</span>
+                        <Lock className="size-3" aria-hidden="true" />
+                      </button>
+                    </li>
+                  )
+                }
+
                 return (
                   <li key={item.label}>
                     <Link

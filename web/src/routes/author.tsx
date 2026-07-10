@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import {
   EmptyState,
   Eyebrow,
+  ProjectScopeGate,
   SegmentedControl,
   TerminalCard,
   useActiveRepo,
@@ -79,8 +80,15 @@ function Author() {
         />
       )}
 
-      {active && tab === 'issue' && <NewIssuePanel repo={active} />}
-      {active && tab === 'prd' && <PrdPanel key={active} repo={active} />}
+      {repos.length > 0 && (
+        <ProjectScopeGate
+          action={tab === 'prd' ? 'write a PRD' : 'file an issue'}
+          className="min-h-[300px]"
+        >
+          {active && tab === 'issue' && <NewIssuePanel repo={active} />}
+          {active && tab === 'prd' && <PrdPanel key={active} repo={active} />}
+        </ProjectScopeGate>
+      )}
     </div>
   )
 }

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import {
   EmptyState,
   Eyebrow,
+  ProjectScopeGate,
   SegmentedControl,
   TerminalCard,
   useActiveRepo,
@@ -67,8 +68,12 @@ function TerminalPage() {
         </TerminalCard>
       )}
 
-      {repo && (
-        <Panel repos={repos} repo={repo} id={id} onPhaseChange={setID} />
+      {data && repos.length > 0 && (
+        <ProjectScopeGate action="watch a transcript" className="min-h-[300px]">
+          {repo && (
+            <Panel repos={repos} repo={repo} id={id} onPhaseChange={setID} />
+          )}
+        </ProjectScopeGate>
       )}
     </div>
   );
