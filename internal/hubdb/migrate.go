@@ -78,16 +78,14 @@ func applyMigration(db *sql.DB, m migration) error {
 		return err
 	}
 	if _, err := tx.Exec(m.sql); err != nil {
-		_ = tx.Rollback()
-		return err
+		return errors.Join(err, tx.Rollback())
 	}
 	if _, err := tx.Exec(
 		`INSERT INTO meta(key, value) VALUES(?, ?)
 		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
 		schemaVersionKey, strconv.Itoa(m.version),
 	); err != nil {
-		_ = tx.Rollback()
-		return err
+		return errors.Join(err, tx.Rollback())
 	}
 	return tx.Commit()
 }

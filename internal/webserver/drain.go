@@ -26,7 +26,7 @@ const (
 	drainSpawn     drainAction = "spawn"     // a pending item's child was launched
 	drainReconcile drainAction = "reconcile" // a finished child settled its item
 	drainWait      drainAction = "wait"      // a child or another run is in flight
-	drainStop      drainAction = "stop"      // draining is off; the loop exits
+	drainStop      drainAction = "stop"      // draining is off or the queue ran dry; the loop exits
 )
 
 // drainer executes each Repo's queue one child run at a time. It owns no queue
@@ -94,8 +94,10 @@ func (d *drainer) run(ctx context.Context, root string) {
 
 // tick advances a repo's queue by one decision: it launches the next runnable
 // item, settles a finished one per the failure taxonomy — pausing the drain on a
-// fault or provider pause — or waits, never spawning a second child while one is
-// in flight. It is the whole drain policy, pure enough to table-test.
+// fault or provider pause — waits, never spawning a second child while one is in
+// flight, or finishes the drain once the queue has run dry so a completed queue
+// reads stopped instead of idling armed. It is the whole drain policy, pure
+// enough to table-test.
 func (d *drainer) tick(root string) (drainAction, error) {
 	store := queue.NewStore(root)
 	items, draining, err := store.Snapshot()
@@ -123,11 +125,18 @@ func (d *drainer) tick(root string) (drainAction, error) {
 	if !draining {
 		return drainStop, nil
 	}
-	if d.repoLive(root) {
-		return drainWait, nil
-	}
 	next, ok := firstRunnable(items)
 	if !ok {
+		finished, err := store.FinishDraining()
+		if err != nil {
+			return drainWait, err
+		}
+		if finished {
+			return drainStop, nil
+		}
+		return drainWait, nil
+	}
+	if d.repoLive(root) {
 		return drainWait, nil
 	}
 	// Global dedup: a standalone ticket an earlier queued epic already covers

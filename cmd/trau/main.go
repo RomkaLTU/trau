@@ -893,6 +893,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		LintFixCmd:         cfg.LintFixCmd,
 		Cleanup:            cfg.Cleanup,
 		SkillsExpected:     skillsExpected(repoRoot),
+		RequiredSkills:     cfg.RequiredSkills,
 		CITimeout:          cfg.CITimeout,
 		CIPoll:             cfg.CIPoll,
 		Lessons:            cfg.Lessons,
@@ -2693,6 +2694,7 @@ func emitProviderNotes(reg agent.Registry, used map[string]bool, cfg config.Conf
 	repoRoot := cfg.RepoRoot
 	con := console.New(stderr, stderr)
 	autoInstallSkills(cfg, con)
+	warnMissingRequiredSkills(cfg, con)
 	for _, name := range reg.Names() {
 		if !used[name] {
 			continue
@@ -2717,6 +2719,18 @@ func emitProviderNotes(reg agent.Registry, used map[string]bool, cfg config.Conf
 			con.Logf("↳ %s: token usage is recovered from the session log; per-call dollar cost is not metered (shown as n/a)", name)
 		}
 	}
+}
+
+// warnMissingRequiredSkills flags REQUIRED_SKILLS names that are not installed
+// in the repo, so a mistyped or uninstalled skill surfaces at loop start rather
+// than silently dropping out of the build prompt. Advisory only — the run
+// proceeds and the build prompt names whichever required skills are present.
+func warnMissingRequiredSkills(cfg config.Config, con *console.Console) {
+	missing := agent.MissingRequiredSkills(cfg.RepoRoot, cfg.RequiredSkills)
+	if len(missing) == 0 {
+		return
+	}
+	con.Logf("⚠ REQUIRED_SKILLS not installed in this repo: %s — the build prompt can only name installed skills; install them or fix REQUIRED_SKILLS", strings.Join(missing, ", "))
 }
 
 // autoInstallSkills installs the curated recommended skill set at loop start

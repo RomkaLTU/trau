@@ -50,8 +50,7 @@ func Open(home string) (*DB, error) {
 	}
 	version, err := migrate(db)
 	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("open %s: %w", path, err)
+		return nil, fmt.Errorf("open %s: %w", path, errors.Join(err, db.Close()))
 	}
 	return &DB{sql: db, path: path, version: version}, nil
 }
@@ -94,9 +93,8 @@ func CheckHealth(home string) Health {
 		h.Err = err
 		return h
 	}
-	defer db.Close()
-	version, err := readVersion(db)
-	if err != nil {
+	version, readErr := readVersion(db)
+	if err := errors.Join(readErr, db.Close()); err != nil {
 		h.Err = err
 		return h
 	}

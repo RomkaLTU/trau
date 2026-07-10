@@ -127,7 +127,8 @@ func runningItem(t *testing.T, root string) (queue.Item, bool) {
 // covers spawning the next pending item, waiting on a live child, settling a
 // finished one, the three failure classes (give-up settles failed and drains on;
 // fault and provider pause park the item and stop the drain), the single-child
-// guarantee, waiting on an external live run, and pausing.
+// guarantee, waiting on an external live run, pausing, and finishing the drain
+// when the queue runs dry.
 func TestDrainTickDecisions(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -248,12 +249,30 @@ func TestDrainTickDecisions(t *testing.T) {
 			wantStatus: map[string]string{"COD-1": queue.StatusDone},
 		},
 		{
-			name:       "idles when the queue is drained but still running",
-			items:      []queue.Item{{ID: "COD-1", Status: queue.StatusDone}},
-			draining:   true,
-			wantAction: drainWait,
-			wantSpawns: 0,
-			wantStatus: map[string]string{"COD-1": queue.StatusDone},
+			name:         "finishes the drain when the queue runs dry",
+			items:        []queue.Item{{ID: "COD-1", Status: queue.StatusDone}},
+			draining:     true,
+			wantAction:   drainStop,
+			wantSpawns:   0,
+			wantStatus:   map[string]string{"COD-1": queue.StatusDone},
+			wantDraining: boolPtr(false),
+		},
+		{
+			name:         "runs dry even while an external run is live",
+			items:        []queue.Item{{ID: "COD-1", Status: queue.StatusDone}},
+			draining:     true,
+			repoLive:     true,
+			wantAction:   drainStop,
+			wantSpawns:   0,
+			wantStatus:   map[string]string{"COD-1": queue.StatusDone},
+			wantDraining: boolPtr(false),
+		},
+		{
+			name:         "an armed empty queue keeps idling for items",
+			draining:     true,
+			wantAction:   drainWait,
+			wantSpawns:   0,
+			wantDraining: boolPtr(true),
 		},
 	}
 	for _, tc := range tests {
@@ -473,6 +492,12 @@ func TestDrainRunsSequentially(t *testing.T) {
 	}
 	if done := countStatus(t, root, queue.StatusDone); done != 3 {
 		t.Errorf("done = %d, want all three settled", done)
+	}
+	if act, _ := s.drain.tick(root); act != drainStop {
+		t.Fatalf("tick after the queue ran dry = %q, want stop", act)
+	}
+	if drainingOf(t, root) {
+		t.Error("draining still set after the queue ran dry, want the drain finished")
 	}
 	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once", "--drain-report", reportPath(root)})
 	assertArgs(t, fake.spawns[2].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-3", "--drain-report", reportPath(root)})

@@ -35,13 +35,13 @@ func NewRegistrations(db *sql.DB) *Registrations {
 }
 
 // Known returns the repos the hub has seen a loop run in, sorted by name.
-func (r *Registrations) Known() ([]registry.Repo, error) {
+func (r *Registrations) Known() (repos []registry.Repo, err error) {
 	rows, err := r.db.Query(`SELECT root, name, runs_dir FROM known_repos ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var repos []registry.Repo
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	repos = []registry.Repo{}
 	for rows.Next() {
 		var repo registry.Repo
 		if err := rows.Scan(&repo.Root, &repo.Name, &repo.RunsDir); err != nil {
@@ -70,8 +70,7 @@ func (r *Registrations) Remember(repos []registry.Repo) error {
 			`INSERT INTO known_repos(root, name, runs_dir) VALUES(?, ?, ?) ON CONFLICT(root) DO NOTHING`,
 			repo.Root, repo.Name, repo.RunsDir,
 		); err != nil {
-			_ = tx.Rollback()
-			return err
+			return errors.Join(err, tx.Rollback())
 		}
 	}
 	return tx.Commit()
@@ -79,13 +78,13 @@ func (r *Registrations) Remember(repos []registry.Repo) error {
 
 // Registered returns the repo roots registered as startable from the web, in the
 // order they were added.
-func (r *Registrations) Registered() ([]string, error) {
+func (r *Registrations) Registered() (roots []string, err error) {
 	rows, err := r.db.Query(`SELECT root FROM registered_repos ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var roots []string
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	roots = []string{}
 	for rows.Next() {
 		var root string
 		if err := rows.Scan(&root); err != nil {
@@ -182,8 +181,7 @@ func (r *Registrations) importRegistered(path string) error {
 		if _, err := tx.Exec(
 			`INSERT INTO registered_repos(root) VALUES(?) ON CONFLICT(root) DO NOTHING`, root,
 		); err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("import legacy %s: %w", path, err)
+			return fmt.Errorf("import legacy %s: %w", path, errors.Join(err, tx.Rollback()))
 		}
 	}
 	if err := tx.Commit(); err != nil {

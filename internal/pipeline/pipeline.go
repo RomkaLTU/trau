@@ -360,6 +360,11 @@ type Pipeline struct {
 	// expected to load repo skills (the provider reports skill usage and the
 	// repo has skills installed). Nil disables the post-build no-skills warning.
 	SkillsExpected func(provider string) bool
+	// RequiredSkills names the skills the build prompt tells the agent to load
+	// before implementing (config REQUIRED_SKILLS). Only names installed in the
+	// repo are surfaced in the prompt; the rest stay self-selected. Empty leaves
+	// selection entirely to the agent.
+	RequiredSkills []string
 	// Cleanup gates the pre-verify slop-cleanup step (config CLEANUP).
 	Cleanup        bool
 	CITimeout      int
@@ -898,7 +903,8 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 		note = resumeNote
 	}
 	note += buildLessonsNote(p.recallLessons(p.lessonQuery(id)))
-	out, err := p.agentStep(ctx, id, "build", buildInstruction(id, branch, note, p.ticketContext(ctx, id)))
+	skillsNote := skillsPrompt(agent.InstalledSkillNames(p.RepoRoot), p.RequiredSkills)
+	out, err := p.agentStep(ctx, id, "build", buildInstruction(id, branch, skillsNote, note, p.ticketContext(ctx, id)))
 	if err != nil {
 		return err
 	}
@@ -908,7 +914,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	if err := p.assertRepoChanged(ctx, id); err != nil {
 		return err
 	}
-	p.warnBuildWithoutSkills()
+	p.warnBuildWithoutSkills(id)
 
 	if err := p.setPhase(id, state.Built); err != nil {
 		return fmt.Errorf("build %s: checkpoint built: %w", id, err)
@@ -916,14 +922,21 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	return nil
 }
 
+const noSkillsWarning = "build loaded no skills — the repo has skills installed but the agent used none"
+
 // warnBuildWithoutSkills flags a build that loaded no skills in a repo that has
 // them. Advisory only — the run proceeds; the warning makes a silently
-// skill-less build visible instead of trusting the prompt's self-selection.
-func (p *Pipeline) warnBuildWithoutSkills() {
+// skill-less build visible instead of trusting the prompt's self-selection. It
+// prints to the console/TUI and, in serve mode, records a durable event so the
+// web UI surfaces the same warning a headless run would otherwise bury.
+func (p *Pipeline) warnBuildWithoutSkills(id string) {
 	if p.SkillsExpected == nil || len(p.buildSkills) > 0 || !p.SkillsExpected(p.buildProvider) {
 		return
 	}
-	p.logf("  ⚠ build loaded no skills — the repo has skills installed but the agent used none")
+	p.logf("  ⚠ %s", noSkillsWarning)
+	if p.Events != nil {
+		p.Events.Emit(event.KindBuildNoSkills, "build", noSkillsWarning, map[string]any{"ticket": id})
+	}
 }
 
 // checkRefusal honors the build agent's REFUSED sentinel — its declaration that
@@ -2189,8 +2202,46 @@ const resumeNote = " A previous attempt may have left partial work on this branc
 
 const codeStyleNote = " Write it the way a senior engineer on this project would: clean, idiomatic, and matching the surrounding file's conventions. Do NOT add explanatory or narrating comments — no comment that restates what the code does, no section banners, no ticket IDs in comments, no multi-line 'why' essays; let clear names carry the meaning and keep a comment only where a genuinely non-obvious decision truly needs one, matching the file's existing comment density rather than exceeding it. Skip the AI tells: no over-defensive guards for cases that can't occur, no redundant error/nil checks the codebase doesn't already use, no belt-and-suspenders boilerplate a human wouldn't bother to write."
 
-func buildInstruction(id, branch, note, ticketCtx string) string {
-	return "Implement " + id + " on branch " + branch + " (already checked out). This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Always include the project's test skill (e.g. pest-testing); add domain skills based on what the ticket actually touches (e.g. inertia-react-development and tailwindcss-development for UI, medialibrary-development for uploads, pennant-development for feature flags, the relevant *-development skill for each area)." + note + " Implement the ticket fully and run only the tests relevant to this slice (the new or changed test files for this ticket) — not the entire suite." + codeStyleNote + " Do not commit, push, or open a PR — stop after implementation. If the ticket clearly belongs to a DIFFERENT repository or codebase — the files, directories, or stack it references do not exist here and are not something this ticket asks you to create — do NOT implement anything and do NOT modify any files; end your reply with a final line 'REFUSED: <one short sentence naming what the ticket actually targets>'." + ticketCtx
+// selfSelectSkillsNote is the trust-based instruction used when the repo has no
+// installed skills to name. Claude Code stopped honoring this generic self-
+// selection in 2.1.202, which is why a skill-equipped repo names its skills
+// explicitly instead (see skillsPrompt).
+const selfSelectSkillsNote = "This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Always include the project's test skill (e.g. pest-testing); add domain skills based on what the ticket actually touches (e.g. inertia-react-development and tailwindcss-development for UI, medialibrary-development for uploads, pennant-development for feature flags, the relevant *-development skill for each area)."
+
+// skillsPrompt composes the build-prompt sentence that tells the agent which
+// installed skills to load. With no installed skills it returns the generic
+// self-selection note unchanged. With skills present it names them, and when
+// required names any of those, instructs loading exactly those first. Required
+// names that are not installed are dropped here (they can't be loaded) and
+// surfaced by the loop-start warning instead.
+func skillsPrompt(installed, required []string) string {
+	if len(installed) == 0 {
+		return selfSelectSkillsNote
+	}
+	have := "This is an unattended run: this repo has skills: " + strings.Join(installed, ", ") + ". "
+	req := intersect(required, installed)
+	if len(req) > 0 {
+		return have + "Load these required skills with the Skill tool before implementing: " + strings.Join(req, ", ") + "; then load any of the remaining skills relevant to this ticket. Do NOT pause to ask which skills to load."
+	}
+	return have + "Load the ones relevant to this ticket with the Skill tool before implementing — do NOT pause to ask which skills to load."
+}
+
+func intersect(want, have []string) []string {
+	set := make(map[string]struct{}, len(have))
+	for _, h := range have {
+		set[h] = struct{}{}
+	}
+	var out []string
+	for _, w := range want {
+		if _, ok := set[w]; ok {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+func buildInstruction(id, branch, skillsNote, note, ticketCtx string) string {
+	return "Implement " + id + " on branch " + branch + " (already checked out). " + skillsNote + note + " Implement the ticket fully and run only the tests relevant to this slice (the new or changed test files for this ticket) — not the entire suite." + codeStyleNote + " Do not commit, push, or open a PR — stop after implementation. If the ticket clearly belongs to a DIFFERENT repository or codebase — the files, directories, or stack it references do not exist here and are not something this ticket asks you to create — do NOT implement anything and do NOT modify any files; end your reply with a final line 'REFUSED: <one short sentence naming what the ticket actually targets>'." + ticketCtx
 }
 
 // ticketContext returns a prompt block carrying the ticket's title and full

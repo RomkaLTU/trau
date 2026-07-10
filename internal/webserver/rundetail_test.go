@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
@@ -219,6 +220,49 @@ func TestRunDetailSurfacesAnomalies(t *testing.T) {
 	})
 	if quiet := getRunDetail(t, ts, "acme", "COD-10"); len(quiet.Anomalies) != 0 {
 		t.Errorf("quiet run anomalies = %+v, want none", quiet.Anomalies)
+	}
+}
+
+// seedEvents appends the given events as JSON lines to runs/events.jsonl, the
+// same repo-wide log the pipeline writes and the detail resource scans.
+func seedEvents(t *testing.T, runsDir string, events ...event.Event) {
+	t.Helper()
+	f, err := os.OpenFile(eventsPath(runsDir), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("open events log: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	for _, ev := range events {
+		line, err := json.Marshal(ev)
+		if err != nil {
+			t.Fatalf("marshal event: %v", err)
+		}
+		if _, err := f.Write(append(line, '\n')); err != nil {
+			t.Fatalf("write event: %v", err)
+		}
+	}
+}
+
+// TestRunDetailSurfacesNoSkillsWarning covers the run-detail side of the
+// skill-less build warning: a run with a build_no_skills event in the repo log
+// carries no_skills, and a run without one does not — even when another ticket in
+// the same log was flagged.
+func TestRunDetailSurfacesNoSkillsWarning(t *testing.T) {
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	seedCheckpoint(t, runsDir, "COD-200", map[string]string{"PHASE": state.Built})
+	seedCheckpoint(t, runsDir, "COD-201", map[string]string{"PHASE": state.Built})
+	seedEvents(t, runsDir,
+		event.Event{Kind: event.KindAgentStart, Phase: "build", Fields: map[string]any{"ticket": "COD-200"}},
+		event.Event{Kind: event.KindBuildNoSkills, Phase: "build", Fields: map[string]any{"ticket": "COD-200"}},
+	)
+
+	ts := instancesServer(t, home)
+	if d := getRunDetail(t, ts, "acme", "COD-200"); !d.NoSkills {
+		t.Error("no_skills = false, want the flagged build surfaced")
+	}
+	if d := getRunDetail(t, ts, "acme", "COD-201"); d.NoSkills {
+		t.Error("no_skills = true for an unflagged run, want false")
 	}
 }
 

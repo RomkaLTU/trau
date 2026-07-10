@@ -27,7 +27,7 @@ const serveShutdownTimeout = 5 * time.Second
 // web UI. Bind address and port come from the layered config (SERVE_BIND /
 // SERVE_PORT), overridable with --bind / --port. It blocks until the context is
 // cancelled (Ctrl-C / SIGTERM), then drains connections gracefully.
-func runServe(ctx context.Context, args []string, stderr io.Writer) error {
+func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) {
 	var (
 		bind, repo     string
 		port           = -1
@@ -97,7 +97,7 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) error {
 		return console.Actionable(err, "open hub database",
 			fmt.Sprintf("move %s aside (mv %s %s.bak) and restart to recreate it", hubdb.Path(home), hubdb.Path(home), hubdb.Path(home)))
 	}
-	defer db.Close()
+	defer func() { err = errors.Join(err, db.Close()) }()
 	logger.Verbosef("hub database ready at %s (schema v%d)", db.Path(), db.Version())
 
 	repos := hubstore.NewRegistrations(db.SQL())
