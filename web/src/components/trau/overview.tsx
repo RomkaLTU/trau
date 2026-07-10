@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Eye, Play, Plus, RefreshCw, Square } from "lucide-react";
+import { Eye, Play, RefreshCw, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useActiveRepo } from "@/components/trau/active-repo";
@@ -10,13 +10,12 @@ import { Eyebrow } from "@/components/trau/eyebrow";
 import { StatusPill, type RunState } from "@/components/trau/status-pill";
 import { TerminalCard } from "@/components/trau/terminal-card";
 import { cn } from "@/lib/utils";
-import { useAttentionRuns, type AttentionRun } from "@/lib/attention";
+import { useAttentionRuns } from "@/lib/attention";
 import { costsQueryOptions } from "@/lib/costs";
 import { startInstance, stopInstance } from "@/lib/instances";
 import {
   activeLoopCount,
   attentionPill,
-  isActiveState,
   loopCardView,
   phasePill,
   phaseSteps,
@@ -25,11 +24,10 @@ import {
   useRepoActivity,
   type LiveLoop,
   type PhaseState,
-  type RepoActivity,
 } from "@/lib/overview";
 import { runsQueryOptions, type FailureClass, type Run } from "@/lib/runs";
 
-function useNow(intervalMs: number): number {
+export function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), intervalMs);
@@ -38,7 +36,7 @@ function useNow(intervalMs: number): number {
   return now;
 }
 
-function elapsed(fromISO: string, now: number): string {
+export function elapsed(fromISO: string, now: number): string {
   const s = Math.max(0, Math.floor((now - new Date(fromISO).getTime()) / 1000));
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
@@ -142,7 +140,6 @@ export function PulseStrip() {
     </div>
   );
 }
-
 /* ---------- launch actions (header) ---------- */
 
 export function LaunchActions() {
@@ -178,7 +175,7 @@ const PHASE_GLYPH: Record<PhaseState, string> = {
   todo: "○",
 };
 
-function PhaseStepper({ phase }: { phase: string }) {
+export function PhaseStepper({ phase }: { phase: string }) {
   const steps = phaseSteps(phase);
   return (
     <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-xs">
@@ -215,7 +212,7 @@ function MetaItem({ label, value }: { label: string; value: string }) {
   );
 }
 
-function MetaInline({ label, value }: { label: string; value: string }) {
+export function MetaInline({ label, value }: { label: string; value: string }) {
   return (
     <span className="flex items-baseline gap-1.5">
       <span className="font-mono text-[0.6rem] uppercase tracking-[0.18em] text-muted-foreground">
@@ -230,7 +227,7 @@ function actionError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function StopButton({
+export function StopButton({
   pid,
   repo,
   disabled = false,
@@ -397,7 +394,7 @@ function LiveLoops() {
 
 /* ---------- single-repo focus: needs attention ---------- */
 
-const ATTENTION_META: Record<
+export const ATTENTION_META: Record<
   FailureClass,
   { action: string; resume: boolean }
 > = {
@@ -599,7 +596,7 @@ function RecentRunsPanel({ repo }: { repo: string }) {
   );
 }
 
-function RepoFocus({ repo }: { repo: string }) {
+export function RepoFocus({ repo }: { repo: string }) {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-2">
@@ -620,9 +617,9 @@ function RepoFocus({ repo }: { repo: string }) {
   );
 }
 
-/* ---------- multi-repo board ---------- */
+/* ---------- shared overview panel ---------- */
 
-function Panel({
+export function Panel({
   title,
   count,
   children,
@@ -651,269 +648,4 @@ function Panel({
       <div className={bodyClassName}>{children}</div>
     </section>
   );
-}
-
-function BoardLoopActivity({ loop, now }: { loop: LiveLoop; now: number }) {
-  const view = loopCardView(loop.sessionState, {
-    phase: loop.phase,
-    failureClass: loop.failureClass,
-  });
-  return (
-    <div className="flex flex-col gap-2.5">
-      <div className="flex flex-wrap items-center gap-2">
-        <StatusPill state={view.pill.state} label={view.pill.label} />
-        {loop.ticket ? (
-          <Link
-            to="/live/$repo/$ticket"
-            params={{ repo: loop.repo, ticket: loop.ticket }}
-            className="font-mono text-sm text-primary hover:underline"
-          >
-            {loop.ticket}
-          </Link>
-        ) : null}
-        {loop.title ? (
-          <p className="text-pretty font-sans text-sm leading-relaxed text-foreground">
-            {loop.title}
-          </p>
-        ) : view.copy ? (
-          <span className="font-sans text-sm text-muted-foreground">
-            {view.copy}
-          </span>
-        ) : null}
-      </div>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        {view.showStepper ? <PhaseStepper phase={loop.phase} /> : null}
-        <MetaInline label="elapsed" value={elapsed(loop.startedAt, now)} />
-      </div>
-    </div>
-  );
-}
-
-function BoardAttentionActivity({ item }: { item: AttentionRun }) {
-  const cls = item.failure_class!;
-  const pill = attentionPill(cls);
-  const action = ATTENTION_META[cls].action;
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <StatusPill state={pill.state} label={pill.label} />
-      <span className="font-mono text-sm text-primary">{item.ticket}</span>
-      <p className="text-pretty font-sans text-sm leading-relaxed text-muted-foreground">
-        {item.failure_reason || item.title || item.repo}
-      </p>
-      <Link
-        to="/live/$repo/$ticket"
-        params={{ repo: item.repo, ticket: item.ticket }}
-        className="font-mono text-xs text-teal underline-offset-4 hover:underline"
-      >
-        {action} →
-      </Link>
-    </div>
-  );
-}
-
-function IdleActivity() {
-  return (
-    <div className="flex items-center gap-2">
-      <StatusPill state="todo" label="idle" />
-      <span className="font-sans text-sm text-muted-foreground">
-        No active work. Launch a run or start a loop.
-      </span>
-    </div>
-  );
-}
-
-function boardRank(a: RepoActivity): number {
-  if (activeLoopCount(a.loops) > 0) return 0;
-  if (a.attention.length > 0) return 1;
-  return 2;
-}
-
-function RepoStateDot({ activity }: { activity: RepoActivity }) {
-  if (activeLoopCount(activity.loops) > 0) {
-    return (
-      <span aria-hidden="true" className="text-teal">
-        ●
-      </span>
-    );
-  }
-  if (activity.attention.length > 0) {
-    return (
-      <span aria-hidden="true" className="text-warn">
-        ⚠
-      </span>
-    );
-  }
-  return (
-    <span aria-hidden="true" className="text-faint">
-      ○
-    </span>
-  );
-}
-
-function RepoActions({
-  activity,
-  primary,
-}: {
-  activity: RepoActivity;
-  primary: LiveLoop | null;
-}) {
-  const { setRepo } = useActiveRepo();
-  const navigate = useNavigate();
-
-  if (primary) {
-    const view = loopCardView(primary.sessionState, {
-      phase: primary.phase,
-      failureClass: primary.failureClass,
-    });
-    return (
-      <div className="flex items-center gap-2">
-        {view.showWatch && primary.ticket ? (
-          <Button asChild variant="outline" size="sm" className="font-mono">
-            <Link
-              to="/live/$repo/$ticket"
-              params={{ repo: primary.repo, ticket: primary.ticket }}
-            >
-              <Eye className="size-4" aria-hidden="true" />
-              View
-            </Link>
-          </Button>
-        ) : null}
-        {view.showStop ? (
-          <StopButton
-            pid={primary.pid}
-            repo={primary.repo}
-            disabled={view.stopDisabled}
-          />
-        ) : null}
-      </div>
-    );
-  }
-
-  const focus = (to: "/run-once" | "/loop") => {
-    setRepo(activity.repo.name);
-    void navigate({ to });
-  };
-
-  return (
-    <div className="flex items-center gap-2">
-      <Button
-        variant="outline"
-        size="sm"
-        className="font-mono"
-        onClick={() => focus("/run-once")}
-      >
-        <Play className="size-4" aria-hidden="true" />
-        Run once
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="font-mono"
-        onClick={() => focus("/loop")}
-      >
-        <RefreshCw className="size-4" aria-hidden="true" />
-        Loop
-      </Button>
-    </div>
-  );
-}
-
-function RepoRow({ activity, now }: { activity: RepoActivity; now: number }) {
-  const primary =
-    activity.loops.find((l) => isActiveState(l.sessionState)) ??
-    activity.loops[0] ??
-    null;
-  // A parked/faulted loop shows up in both feeds; keep it in the loop row and
-  // drop the duplicate attention entry so a repo isn't listed twice.
-  const liveTickets = new Set(
-    activity.loops.map((l) => l.ticket).filter(Boolean),
-  );
-  const attention = activity.attention.filter(
-    (a) => !liveTickets.has(a.ticket),
-  );
-  const idle = !primary && attention.length === 0;
-
-  return (
-    <li className="flex flex-col gap-4 px-5 py-4 lg:grid lg:grid-cols-[13rem_1fr_auto] lg:items-start lg:gap-6">
-      <div className="flex flex-col gap-1">
-        <div className="flex items-center gap-2 font-mono text-sm text-foreground">
-          <RepoStateDot activity={activity} />
-          {activity.repo.name}
-        </div>
-        <span className="truncate font-mono text-[0.65rem] text-muted-foreground">
-          {activity.repo.root}
-        </span>
-        <span className="font-mono text-[0.65rem] text-faint">
-          {activity.metered ? "" : "≥ "}${activity.spend.toFixed(2)} today
-        </span>
-      </div>
-
-      <div className="flex min-w-0 flex-col gap-3">
-        {primary ? <BoardLoopActivity loop={primary} now={now} /> : null}
-        {attention.map((item) => (
-          <BoardAttentionActivity key={item.ticket} item={item} />
-        ))}
-        {idle ? <IdleActivity /> : null}
-      </div>
-
-      <div className="lg:pt-0.5">
-        <RepoActions activity={activity} primary={primary} />
-      </div>
-    </li>
-  );
-}
-
-function RepoBoard() {
-  const activity = useRepoActivity();
-  const now = useNow(1000);
-  const rows = [...activity].sort((a, b) => boardRank(a) - boardRank(b));
-
-  return (
-    <Panel title="repos" count={rows.length}>
-      <ul className="flex flex-col divide-y divide-border/60">
-        {rows.map((row) => (
-          <RepoRow key={row.repo.name} activity={row} now={now} />
-        ))}
-      </ul>
-    </Panel>
-  );
-}
-
-/* ---------- scope-aware entry point ---------- */
-
-export function OverviewBoard() {
-  const { repo, repos, isAll } = useActiveRepo();
-
-  if (repos.length === 0) {
-    return (
-      <EmptyState
-        message="No repos yet. Register a repo to check it out and start driving loops from here."
-        actions={
-          <Button asChild size="sm" className="font-mono">
-            <Link to="/instances">
-              <Plus className="size-4" aria-hidden="true" />
-              Add a repo
-            </Link>
-          </Button>
-        }
-      />
-    );
-  }
-
-  if (isAll) {
-    return (
-      <div className="flex flex-col gap-2">
-        <Eyebrow glyph="active">REPOS</Eyebrow>
-        <RepoBoard />
-      </div>
-    );
-  }
-
-  if (!repo) {
-    return (
-      <EmptyState message="Pick a repo from the switcher to focus it, or choose All repos." />
-    );
-  }
-
-  return <RepoFocus repo={repo} />;
 }

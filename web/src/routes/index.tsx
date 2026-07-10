@@ -3,9 +3,9 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Eyebrow } from '@/components/trau/eyebrow'
 import {
   LaunchActions,
-  OverviewBoard,
   PulseStrip,
 } from '@/components/trau/overview'
+import { OverviewBoard } from '@/components/trau/overview-repo-board'
 import { instancesQueryOptions } from '@/lib/instances'
 import { reposQueryOptions } from '@/lib/runs'
 
