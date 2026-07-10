@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { Boxes } from 'lucide-react'
+import { Boxes, FolderClock } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import {
@@ -51,7 +51,7 @@ function Instances() {
 
   const instances = data?.instances ?? []
   const allowedRepos = (data?.repos ?? []).filter((repo) => repo.allowed)
-  const idleRepos = (data?.repos ?? []).filter((repo) => !repo.live)
+  const observeOnlyRepos = (data?.repos ?? []).filter((repo) => !repo.allowed)
 
   return (
     <div className="flex flex-col gap-6">
@@ -106,25 +106,41 @@ function Instances() {
         </section>
       )}
 
-      {idleRepos.length > 0 && (
-        <section className="flex flex-col gap-2">
-          <h2 className="text-sm font-medium text-muted-foreground">
-            Previously seen repos
-          </h2>
-          <div className="flex flex-wrap items-center gap-2">
-            {idleRepos.map((repo) => (
-              <div key={repo.root} className="flex items-center gap-1.5">
-                <Badge variant="outline" title={repo.root}>
-                  {repo.name}
-                </Badge>
-                {!repo.allowed && (
-                  <MakeStartableButton
-                    root={repo.root}
-                    size="sm"
-                    variant="outline"
-                    className="h-6 px-2 text-xs font-mono"
-                  />
-                )}
+      {observeOnlyRepos.length > 0 && (
+        <section className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1">
+            <h2 className="flex items-center gap-2 text-sm font-medium text-foreground">
+              <FolderClock className="size-4 text-muted-foreground" />
+              Observe-only repos
+            </h2>
+            <p className="max-w-2xl text-xs text-muted-foreground">
+              trau has seen these repos but isn&rsquo;t allowed to start loops in
+              them yet. Make one startable to move it up to{' '}
+              <span className="text-foreground">Start a run</span>.
+            </p>
+          </div>
+          <div className="flex flex-col gap-2">
+            {observeOnlyRepos.map((repo) => (
+              <div
+                key={repo.root}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3"
+              >
+                <div className="flex min-w-0 flex-col gap-0.5">
+                  <span className="truncate font-mono text-sm text-foreground">
+                    {repo.name}
+                  </span>
+                  <span
+                    className="truncate font-mono text-xs text-muted-foreground"
+                    title={repo.root}
+                  >
+                    {repo.root}
+                  </span>
+                </div>
+                <MakeStartableButton
+                  root={repo.root}
+                  size="sm"
+                  variant="default"
+                />
               </div>
             ))}
           </div>

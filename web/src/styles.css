@@ -86,6 +86,12 @@
   body {
     @apply bg-background text-foreground;
   }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  label:has(input[type="checkbox"], input[type="radio"]),
+  summary {
+    cursor: pointer;
+  }
 }
 
 .furrow-grid {
