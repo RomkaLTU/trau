@@ -16,6 +16,12 @@ type planFake struct {
 	gotAnswers []PlanAnswer
 }
 
+func useInteractivePlanMode(t *testing.T) {
+	t.Helper()
+	t.Setenv("ACCESSIBLE", "")
+	t.Setenv("TERM", "xterm-256color")
+}
+
 func (f *planFake) StartPlan(context.Context, string) (PlanOutcome, error) {
 	return PlanOutcome{
 		Status:     "questions",
@@ -37,6 +43,7 @@ func (f *planFake) AnswerPlan(_ context.Context, dir string, answers []PlanAnswe
 // round: a questions outcome renders the huh form, submitting resolves answers
 // against the session dir, and the follow-up PRD outcome lands in the viewport.
 func TestPlanQuestionRoundToPRD(t *testing.T) {
+	useInteractivePlanMode(t)
 	fake := &planFake{}
 	m := newPlanModel(context.Background(), fake, DefaultStyles(), 100, 40)
 	m.idea.SetValue("let users export widgets")
