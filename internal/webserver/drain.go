@@ -322,12 +322,14 @@ func (d *drainer) checkpointOutcome(runsDir string, it queue.Item) (class, reaso
 	return class, reason
 }
 
-// repoHasLiveInstance reports whether any loop — a manual loop or a Run once —
-// is already live in root, so the drainer waits for it instead of spawning a
-// second child in the same repo.
+// repoHasLiveInstance reports whether a loop — a manual loop or a Run once — is
+// already running in root, so the drainer waits for it instead of spawning a
+// second child in the same repo. An idle instance is an open dashboard, not a
+// run, and does not block; every other state (or a legacy entry with no state)
+// means a run is in flight or holding WIP.
 func (d *drainer) repoHasLiveInstance(root string) bool {
 	for _, e := range registry.Live(d.srv.home) {
-		if e.RepoRoot == root {
+		if e.RepoRoot == root && e.SessionState != registry.StateIdle {
 			return true
 		}
 	}

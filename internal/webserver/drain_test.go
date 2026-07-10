@@ -7,9 +7,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/queue"
+	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 )
 
@@ -870,5 +872,75 @@ func TestDrainEndpointRejectsUnsupportedMethod(t *testing.T) {
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("GET status = %d, want 405", res.StatusCode)
+	}
+}
+
+func writeInstanceEntry(t *testing.T, home string, e registry.Entry) {
+	t.Helper()
+	dir := filepath.Join(home, "instances")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir instances: %v", err)
+	}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal entry: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(e.PID)+".json"), data, 0o644); err != nil {
+		t.Fatalf("write entry: %v", err)
+	}
+}
+
+func TestRepoHasLiveInstanceIgnoresIdle(t *testing.T) {
+	cases := []struct {
+		name      string
+		state     string
+		otherRepo bool
+		blocks    bool
+	}{
+		{name: "idle dashboard does not block", state: registry.StateIdle, blocks: false},
+		{name: "grazing loop blocks", state: registry.StateGrazing, blocks: true},
+		{name: "working loop blocks", state: registry.StateWorking, blocks: true},
+		{name: "parked WIP blocks", state: registry.StateParked, blocks: true},
+		{name: "stopping loop blocks", state: registry.StateStopping, blocks: true},
+		{name: "legacy entry without state blocks", state: "", blocks: true},
+		{name: "working loop in another repo does not block", state: registry.StateWorking, otherRepo: true, blocks: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _, root := drainServer(t, "acme")
+			entryRoot := root
+			if tc.otherRepo {
+				entryRoot = filepath.Join(t.TempDir(), "elsewhere")
+			}
+			writeInstanceEntry(t, s.home, registry.Entry{
+				PID:          os.Getpid(),
+				RepoRoot:     entryRoot,
+				SessionState: tc.state,
+			})
+			if got := s.drain.repoHasLiveInstance(root); got != tc.blocks {
+				t.Errorf("repoHasLiveInstance = %v, want %v", got, tc.blocks)
+			}
+		})
+	}
+}
+
+func TestTickSpawnsDespiteIdleInstance(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	s.drain.repoLive = s.drain.repoHasLiveInstance
+	writeInstanceEntry(t, s.home, registry.Entry{
+		PID:          os.Getpid(),
+		RepoRoot:     root,
+		SessionState: registry.StateIdle,
+	})
+	seedQueue(t, root, true, queue.Item{ID: "COD-1"})
+	act, err := s.drain.tick(root)
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if act != drainSpawn {
+		t.Fatalf("tick = %q, want %q — an idle instance must not hold the queue", act, drainSpawn)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawned %d children, want 1", len(fake.spawns))
 	}
 }
