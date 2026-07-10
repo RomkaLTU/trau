@@ -13,7 +13,7 @@ function RootLayout() {
   return (
     <ActiveRepoProvider>
       <AppShell>
-        <div className="mx-auto max-w-5xl px-6 py-8">
+        <div className="w-full px-6 py-8">
           <AwayRecap />
           <Outlet />
         </div>
