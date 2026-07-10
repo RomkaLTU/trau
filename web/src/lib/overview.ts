@@ -84,9 +84,9 @@ export function useLiveLoops(repo: string | null): LiveLoop[] {
     pid: inst.pid,
     ticket: inst.ticket,
     title: inst.ticket ? titles.get(inst.ticket) : undefined,
-    phase: inst.phase ?? '',
+    phase: inst.session_state === 'working' ? (inst.phase ?? '') : '',
     startedAt: inst.started_at,
-    phaseSince: inst.phase_since,
+    phaseSince: inst.state_since,
   }))
 }
 

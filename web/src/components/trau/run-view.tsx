@@ -334,7 +334,10 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
     (i) => i.repo === repo && i.ticket === ticket,
   );
   const live = instance !== undefined;
-  const phase = instance?.phase || run?.phase || "";
+  const phase =
+    (instance?.session_state === "working" ? instance.phase : "") ||
+    run?.phase ||
+    "";
   const variant = deriveVariant({
     phase,
     failureClass: run?.failure_class,
@@ -500,11 +503,11 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
                 {elapsedSince(instance.started_at, now)}
               </span>
             </span>
-            {instance.phase_since && (
+            {instance.state_since && (
               <span>
                 in phase{" "}
                 <span className="text-foreground">
-                  {elapsedSince(instance.phase_since, now)}
+                  {elapsedSince(instance.state_since, now)}
                 </span>
               </span>
             )}
