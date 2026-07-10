@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
+  ChevronRight,
   ExternalLink,
   Play,
   RotateCcw,
@@ -170,38 +171,92 @@ function activityRow(ev: FeedEvent): ActivityRow {
 }
 
 function ActivityFeed({ events }: { events: FeedEvent[] }) {
+  const [open, setOpen] = useState(false);
   const rows = events.slice(0, 40);
+  const latest = events[0];
+  const latestRow = latest ? activityRow(latest) : null;
+
   return (
-    <TerminalCard title="activity" bodyClassName="p-0">
-      {rows.length === 0 ? (
-        <p className="px-4 py-6 text-center font-mono text-xs text-muted-foreground">
-          Waiting for activity…
-        </p>
-      ) : (
-        <ul className="flex flex-col">
-          {rows.map((ev) => {
-            const row = activityRow(ev);
-            return (
-              <li
-                key={ev.id}
-                className="flex items-start gap-3 border-b border-border/60 px-4 py-3 font-mono text-xs last:border-0"
-              >
-                <span className="shrink-0 tabular-nums text-muted-foreground">
-                  {clock(ev.ts)}
-                </span>
-                <span
-                  className={cn("shrink-0", row.glyphClass)}
-                  aria-hidden="true"
-                >
-                  {row.glyph}
-                </span>
-                <span className="text-pretty text-foreground">{row.text}</span>
-              </li>
-            );
-          })}
-        </ul>
+    <section className="overflow-hidden rounded-lg border border-border bg-card">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-4 px-4 py-2.5 text-left transition-colors hover:bg-secondary/40"
+      >
+        <span className="flex min-w-0 items-center gap-3 font-mono text-xs">
+          <ChevronRight
+            className={cn(
+              "size-3.5 shrink-0 text-muted-foreground transition-transform",
+              open && "rotate-90",
+            )}
+            aria-hidden="true"
+          />
+          <span className="shrink-0 text-muted-foreground">
+            activity ({events.length})
+          </span>
+          {!open && (
+            <span className="flex min-w-0 items-center gap-2 text-faint">
+              {latest && latestRow ? (
+                <>
+                  <span className="shrink-0 tabular-nums">
+                    {clock(latest.ts)}
+                  </span>
+                  <span
+                    className={cn("shrink-0", latestRow.glyphClass)}
+                    aria-hidden="true"
+                  >
+                    {latestRow.glyph}
+                  </span>
+                  <span className="truncate text-muted-foreground">
+                    {latestRow.text}
+                  </span>
+                </>
+              ) : (
+                <span className="truncate">waiting for activity…</span>
+              )}
+            </span>
+          )}
+        </span>
+        <span className="shrink-0 font-mono text-[0.65rem] uppercase tracking-[0.18em] text-faint">
+          {open ? "hide" : "show"}
+        </span>
+      </button>
+      {open && (
+        <div className="border-t border-border">
+          {rows.length === 0 ? (
+            <p className="px-4 py-6 text-center font-mono text-xs text-muted-foreground">
+              Waiting for activity…
+            </p>
+          ) : (
+            <ul className="flex flex-col">
+              {rows.map((ev) => {
+                const row = activityRow(ev);
+                return (
+                  <li
+                    key={ev.id}
+                    className="flex items-start gap-3 border-b border-border/60 px-4 py-3 font-mono text-xs last:border-0"
+                  >
+                    <span className="shrink-0 tabular-nums text-muted-foreground">
+                      {clock(ev.ts)}
+                    </span>
+                    <span
+                      className={cn("shrink-0", row.glyphClass)}
+                      aria-hidden="true"
+                    >
+                      {row.glyph}
+                    </span>
+                    <span className="text-pretty text-foreground">
+                      {row.text}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
       )}
-    </TerminalCard>
+    </section>
   );
 }
 
@@ -558,28 +613,33 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
           </p>
         )}
 
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
-          <div className="flex flex-col gap-2 lg:col-span-2">
-            <Eyebrow glyph={isRecap ? "done" : "active"}>
-              {isRecap ? "RECAP" : "ACTIVITY"}
-            </Eyebrow>
-            {isRecap && run ? (
+        {isRecap && run ? (
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-5">
+            <div className="flex flex-col gap-2 lg:col-span-2">
+              <Eyebrow glyph="done">RECAP</Eyebrow>
               <Recap
                 run={run}
                 variant={variant}
                 elapsed={recapElapsed}
                 actions={recapActions}
               />
-            ) : (
-              <ActivityFeed events={feed.events} />
-            )}
-          </div>
+            </div>
 
-          <div className="flex flex-col gap-2 lg:col-span-3">
-            <Eyebrow glyph="partial">TRANSCRIPT</Eyebrow>
-            <Terminal repo={repo} live={live} />
+            <div className="flex flex-col gap-2 lg:col-span-3">
+              <Eyebrow glyph="partial">TRANSCRIPT</Eyebrow>
+              <Terminal repo={repo} live={live} />
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="flex flex-col gap-6">
+            <div className="flex flex-col gap-2">
+              <Eyebrow glyph="active">TRANSCRIPT</Eyebrow>
+              <Terminal repo={repo} live={live} tall />
+            </div>
+
+            <ActivityFeed events={feed.events} />
+          </div>
+        )}
       </div>
 
       <ConfirmDialog

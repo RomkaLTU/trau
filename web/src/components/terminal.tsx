@@ -3,6 +3,7 @@ import { Terminal as Xterm } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 
 import { TerminalCard } from "@/components/trau/terminal-card";
+import { cn } from "@/lib/utils";
 import { streamSSE } from "@/lib/sse";
 import {
   decodeChunk,
@@ -29,12 +30,14 @@ export function Terminal({
   id,
   title,
   live = true,
+  tall = false,
   className,
 }: {
   repo: string;
   id?: string;
   title?: string;
   live?: boolean;
+  tall?: boolean;
   className?: string;
 }) {
   const holder = useRef<HTMLDivElement>(null);
@@ -102,13 +105,13 @@ export function Terminal({
       title={title ?? `${repo} · ${id ?? "newest"}`}
       scanlines
       bodyClassName="p-0"
-      className={className}
+      className={cn(tall && "min-h-[55vh]", className)}
     >
       <div className="flex flex-col">
         <div
           ref={holder}
           className="overflow-auto bg-[#14110e] p-3"
-          style={{ height: "32rem" }}
+          style={{ height: tall ? "60vh" : "32rem" }}
         />
         <StatusLine status={status} live={live} />
       </div>
