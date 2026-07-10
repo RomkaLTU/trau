@@ -463,11 +463,11 @@ function RunningView({
                 {elapsedSince(instance.started_at, now)}
               </span>
             </span>
-            {instance.phase_since ? (
+            {instance.state_since ? (
               <span>
                 in phase{' '}
                 <span className="text-foreground">
-                  {elapsedSince(instance.phase_since, now)}
+                  {elapsedSince(instance.state_since, now)}
                 </span>
               </span>
             ) : null}

@@ -8,9 +8,10 @@ export interface Instance {
   repo_root: string
   runs_dir: string
   started_at: string
+  session_state: string
   ticket?: string
   phase?: string
-  phase_since?: string
+  state_since?: string
 }
 
 export interface RepoView {

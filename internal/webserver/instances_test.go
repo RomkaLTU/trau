@@ -70,25 +70,22 @@ func getInstances(t *testing.T, ts *httptest.Server) InstancesResponse {
 	return out
 }
 
-func TestInstancesListsLiveReapsDeadAndDerivesRun(t *testing.T) {
+func TestInstancesEchoesReportedWorkingStateReapsDead(t *testing.T) {
 	home := t.TempDir()
 	repoRoot := filepath.Join(t.TempDir(), "acme")
 	runsDir := filepath.Join(repoRoot, ".trau", "runs")
-
-	store := state.NewStore(runsDir)
-	if err := store.Set("COD-42", "PHASE", state.Building); err != nil {
-		t.Fatalf("seed active checkpoint: %v", err)
-	}
-	if err := store.Set("COD-1", "PHASE", state.Merged); err != nil {
-		t.Fatalf("seed terminal checkpoint: %v", err)
-	}
+	stateSince := time.Now().Add(-90 * time.Second)
 
 	writeEntry(t, home, registry.Entry{
-		PID:       os.Getpid(),
-		RepoRoot:  repoRoot,
-		RunsDir:   runsDir,
-		StartedAt: time.Now().Add(-2 * time.Minute),
-		Heartbeat: time.Now(),
+		PID:          os.Getpid(),
+		RepoRoot:     repoRoot,
+		RunsDir:      runsDir,
+		StartedAt:    time.Now().Add(-2 * time.Minute),
+		Heartbeat:    time.Now(),
+		SessionState: registry.StateWorking,
+		Ticket:       "COD-42",
+		Phase:        state.Building,
+		StateSince:   stateSince,
 	})
 	deadFile := writeEntry(t, home, registry.Entry{
 		PID:      deadPID(t),
@@ -109,17 +106,17 @@ func TestInstancesListsLiveReapsDeadAndDerivesRun(t *testing.T) {
 	if inst.Repo != "acme" {
 		t.Errorf("Repo = %q, want acme", inst.Repo)
 	}
-	if inst.StartedAt == "" {
-		t.Errorf("StartedAt is empty")
+	if inst.SessionState != registry.StateWorking {
+		t.Errorf("SessionState = %q, want %q", inst.SessionState, registry.StateWorking)
 	}
 	if inst.Ticket != "COD-42" {
-		t.Errorf("Ticket = %q, want COD-42 (newest in-flight)", inst.Ticket)
+		t.Errorf("Ticket = %q, want COD-42", inst.Ticket)
 	}
 	if inst.Phase != state.Building {
 		t.Errorf("Phase = %q, want %q", inst.Phase, state.Building)
 	}
-	if inst.PhaseSince == "" {
-		t.Errorf("PhaseSince is empty, want the checkpoint time")
+	if want := stateSince.UTC().Format(time.RFC3339); inst.StateSince != want {
+		t.Errorf("StateSince = %q, want %q (reported transition time)", inst.StateSince, want)
 	}
 
 	if _, err := os.Stat(deadFile); !os.IsNotExist(err) {
@@ -128,6 +125,78 @@ func TestInstancesListsLiveReapsDeadAndDerivesRun(t *testing.T) {
 
 	if len(out.Repos) != 1 || !out.Repos[0].Live || out.Repos[0].Root != repoRoot {
 		t.Errorf("repos = %+v, want one live repo at %s", out.Repos, repoRoot)
+	}
+}
+
+func TestInstancesParkedEntrySurfacesReportedTicket(t *testing.T) {
+	home := t.TempDir()
+	repoRoot := filepath.Join(t.TempDir(), "acme")
+
+	writeEntry(t, home, registry.Entry{
+		PID:          os.Getpid(),
+		RepoRoot:     repoRoot,
+		RunsDir:      filepath.Join(repoRoot, ".trau", "runs"),
+		StartedAt:    time.Now().Add(-2 * time.Minute),
+		Heartbeat:    time.Now(),
+		SessionState: registry.StateParked,
+		Ticket:       "COD-42",
+		StateSince:   time.Now().Add(-30 * time.Second),
+	})
+
+	ts := instancesServer(t, home)
+	out := getInstances(t, ts)
+
+	if len(out.Instances) != 1 {
+		t.Fatalf("live instances = %d, want 1", len(out.Instances))
+	}
+	inst := out.Instances[0]
+	if inst.SessionState != registry.StateParked {
+		t.Errorf("SessionState = %q, want %q", inst.SessionState, registry.StateParked)
+	}
+	if inst.Ticket != "COD-42" {
+		t.Errorf("Ticket = %q, want COD-42", inst.Ticket)
+	}
+	if inst.Phase != "" {
+		t.Errorf("Phase = %q, want empty (parked reports no phase)", inst.Phase)
+	}
+}
+
+func TestInstancesLegacyEntryReportsUnknownWithoutDeriving(t *testing.T) {
+	home := t.TempDir()
+	repoRoot := filepath.Join(t.TempDir(), "acme")
+	runsDir := filepath.Join(repoRoot, ".trau", "runs")
+
+	store := state.NewStore(runsDir)
+	if err := store.Set("COD-42", "PHASE", state.Building); err != nil {
+		t.Fatalf("seed in-flight checkpoint: %v", err)
+	}
+
+	writeEntry(t, home, registry.Entry{
+		PID:       os.Getpid(),
+		RepoRoot:  repoRoot,
+		RunsDir:   runsDir,
+		StartedAt: time.Now().Add(-2 * time.Minute),
+		Heartbeat: time.Now(),
+	})
+
+	ts := instancesServer(t, home)
+	out := getInstances(t, ts)
+
+	if len(out.Instances) != 1 {
+		t.Fatalf("live instances = %d, want 1", len(out.Instances))
+	}
+	inst := out.Instances[0]
+	if inst.SessionState != "unknown" {
+		t.Errorf("SessionState = %q, want unknown", inst.SessionState)
+	}
+	if inst.Ticket != "" {
+		t.Errorf("Ticket = %q, want empty (no derivation from checkpoint)", inst.Ticket)
+	}
+	if inst.Phase != "" {
+		t.Errorf("Phase = %q, want empty", inst.Phase)
+	}
+	if inst.StateSince != "" {
+		t.Errorf("StateSince = %q, want empty", inst.StateSince)
 	}
 }
 

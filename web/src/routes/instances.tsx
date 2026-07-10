@@ -147,10 +147,10 @@ function InstanceCard({
               <Row label="Phase">
                 <Badge variant="secondary">{instance.phase}</Badge>
               </Row>
-              {instance.phase_since && (
+              {instance.state_since && (
                 <Row label="Elapsed">
                   <span className="tabular-nums">
-                    {formatElapsed(instance.phase_since, now)}
+                    {formatElapsed(instance.state_since, now)}
                   </span>
                 </Row>
               )}
