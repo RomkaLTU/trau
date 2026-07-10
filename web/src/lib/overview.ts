@@ -1,9 +1,15 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 
 import type { RunState } from "@/components/trau/status-pill";
 import { costsQueryOptions } from "./costs";
-import { instancesQueryOptions } from "./instances";
-import { runsQueryOptions, type FailureClass, type Run } from "./runs";
+import type { AttentionRun } from "./attention";
+import { instancesQueryOptions, type Instance, type RepoView } from "./instances";
+import {
+  reposQueryOptions,
+  runsQueryOptions,
+  type FailureClass,
+  type Run,
+} from "./runs";
 
 const PHASE_RANK: Record<string, number> = {
   building: 1,
@@ -88,6 +94,22 @@ export function toSessionState(raw: string): SessionState {
   }
 }
 
+export function makeLiveLoop(inst: Instance, run: Run | undefined): LiveLoop {
+  const state = toSessionState(inst.session_state);
+  return {
+    repo: inst.repo,
+    pid: inst.pid,
+    ticket: inst.ticket,
+    title: run?.title,
+    sessionState: state,
+    phase: state === "working" ? (inst.phase ?? "") : "",
+    startedAt: inst.started_at,
+    stateSince: inst.state_since,
+    failureClass: run?.failure_class,
+    failureReason: run?.failure_reason,
+  };
+}
+
 export function useLiveLoops(repo: string | null): LiveLoop[] {
   const { data } = useQuery(instancesQueryOptions);
   const instances = (data?.instances ?? []).filter((i) => i.repo === repo);
@@ -98,22 +120,70 @@ export function useLiveLoops(repo: string | null): LiveLoop[] {
     byTicket.set(run.ticket, run);
   }
 
-  return instances.map((inst) => {
-    const state = toSessionState(inst.session_state);
-    const run = inst.ticket ? byTicket.get(inst.ticket) : undefined;
+  return instances.map((inst) =>
+    makeLiveLoop(inst, inst.ticket ? byTicket.get(inst.ticket) : undefined),
+  );
+}
+
+// useRunsByRepo fans out the per-repo runs endpoint across every repo so the
+// multi-repo board can join loop titles and surface attention/recent runs in
+// one place. React Query dedupes each key, so screens already reading a single
+// repo's runs share these fetches.
+export function useRunsByRepo(names: string[]): Map<string, Run[]> {
+  const results = useQueries({
+    queries: names.map((name) => runsQueryOptions(name)),
+  });
+  const byRepo = new Map<string, Run[]>();
+  names.forEach((name, i) => {
+    byRepo.set(name, results[i]?.data?.runs ?? []);
+  });
+  return byRepo;
+}
+
+export interface RepoActivity {
+  repo: RepoView;
+  loops: LiveLoop[];
+  attention: AttentionRun[];
+  spend: number;
+  metered: boolean;
+}
+
+// useRepoActivity aggregates the global instances/costs feeds plus per-repo runs
+// into one row per registered repo — the data behind the Overview board and the
+// pulse strip's running/needs-you/idle/spend tallies.
+export function useRepoActivity(): RepoActivity[] {
+  const { data: reposData } = useQuery(reposQueryOptions);
+  const repos = reposData?.repos ?? [];
+  const { data: instData } = useQuery(instancesQueryOptions);
+  const { data: costs } = useQuery(costsQueryOptions(1));
+  const runsByRepo = useRunsByRepo(repos.map((r) => r.name));
+
+  return repos.map((repo) => {
+    const runs = runsByRepo.get(repo.name) ?? [];
+    const byTicket = new Map<string, Run>(runs.map((r) => [r.ticket, r]));
+    const loops = (instData?.instances ?? [])
+      .filter((inst) => inst.repo === repo.name)
+      .map((inst) =>
+        makeLiveLoop(inst, inst.ticket ? byTicket.get(inst.ticket) : undefined),
+      );
+    const attention: AttentionRun[] = runs
+      .filter((run) => run.failure_class)
+      .map((run) => ({ ...run, repo: repo.name }));
+    const cost = costs?.repos.find((c) => c.repo === repo.name);
     return {
-      repo: inst.repo,
-      pid: inst.pid,
-      ticket: inst.ticket,
-      title: run?.title,
-      sessionState: state,
-      phase: state === "working" ? (inst.phase ?? "") : "",
-      startedAt: inst.started_at,
-      stateSince: inst.state_since,
-      failureClass: run?.failure_class,
-      failureReason: run?.failure_reason,
+      repo,
+      loops,
+      attention,
+      spend: cost?.cost_usd ?? 0,
+      metered: cost?.metered ?? true,
     };
   });
+}
+
+export function recentRuns(runs: Run[], limit = 6): Run[] {
+  return [...runs]
+    .sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""))
+    .slice(0, limit);
 }
 
 const ACTIVE_STATES = new Set<SessionState>(["grazing", "working", "stopping"]);
