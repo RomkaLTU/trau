@@ -185,6 +185,35 @@ func (s *Store) Remove(id string) ([]Item, error) {
 	return f.Items, nil
 }
 
+// FinishDraining clears the draining flag once the queue has run dry — at
+// least one item, none of them pending, paused, or running — and reports
+// whether it did, so a completed queue reads stopped instead of idling armed.
+// An armed empty queue is left waiting for items. The check and the write share
+// one lock, so an item queued after the drain's last snapshot keeps the queue
+// armed rather than being stranded.
+func (s *Store) FinishDraining() (bool, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	f, err := s.load()
+	if err != nil {
+		return false, err
+	}
+	if !f.Draining || len(f.Items) == 0 {
+		return false, nil
+	}
+	for _, it := range f.Items {
+		switch it.Status {
+		case StatusPending, StatusPaused, StatusRunning:
+			return false, nil
+		}
+	}
+	f.Draining = false
+	if err := s.save(f); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // SetDraining records whether the hub is draining this queue. It survives a
 // serve restart with the rest of the file, so a resumed hub picks draining back
 // up where it left off.
@@ -210,7 +239,9 @@ func (s *Store) MarkRunning(id string, pid int) error {
 }
 
 // Finish settles a running item at its terminal status with the reason recorded
-// on its checkpoint and clears its child pid.
+// on its checkpoint and clears its child pid. Settling an item done also settles
+// its carried sub-issues done — a clean epic finish means the run drained them
+// all — while any other outcome leaves their enqueue-time states alone.
 func (s *Store) Finish(id, status, reason string) error {
 	return s.settle(id, status, reason, 0)
 }
@@ -345,6 +376,11 @@ func (s *Store) settle(id, status, reason string, pid int) error {
 			f.Items[i].Status = status
 			f.Items[i].Reason = reason
 			f.Items[i].PID = pid
+			if status == StatusDone {
+				for j := range f.Items[i].SubIssues {
+					f.Items[i].SubIssues[j].State = "done"
+				}
+			}
 			return s.save(f)
 		}
 	}

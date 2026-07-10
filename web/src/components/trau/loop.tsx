@@ -88,10 +88,10 @@ function subGlyph(state: string) {
   return SUB_GLYPH[state] ?? SUB_GLYPH.todo
 }
 
-function epicCounts(item: QueueItem): { remaining: number; total: number } {
+function epicCounts(item: QueueItem): { done: number; total: number } {
   const subs = item.sub_issues ?? []
   return {
-    remaining: subs.filter((s) => s.state !== 'done').length,
+    done: subs.filter((s) => s.state === 'done').length,
     total: subs.length,
   }
 }
@@ -189,7 +189,7 @@ function QueueBuilderRow({
   onRemove: () => void
 }) {
   const isEpic = item.kind === 'epic'
-  const { remaining, total } = epicCounts(item)
+  const { done, total } = epicCounts(item)
   const subs = item.sub_issues ?? []
 
   return (
@@ -223,7 +223,7 @@ function QueueBuilderRow({
         </span>
 
         {isEpic ? (
-          <StatusPill state="info" label={`epic · ${remaining}/${total}`} />
+          <StatusPill state="info" label={`epic · ${done}/${total}`} />
         ) : (
           <StatusPill state="todo" label="ticket" />
         )}
@@ -622,7 +622,7 @@ function RunningQueueView({
         <TerminalCard title="queue" bodyClassName="p-0">
           <ul className="flex flex-col">
             {items.map((item) => {
-              const { remaining, total } = epicCounts(item)
+              const { done: subsDone, total } = epicCounts(item)
               return (
                 <li
                   key={item.id}
@@ -639,7 +639,7 @@ function RunningQueueView({
                     ) : null}
                     {item.kind === 'epic' ? (
                       <span className="font-mono text-xs text-muted-foreground">
-                        epic · {remaining}/{total}
+                        epic · {subsDone}/{total}
                       </span>
                     ) : null}
                     {item.reason ? (

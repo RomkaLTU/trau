@@ -532,3 +532,128 @@ func TestRestartResetsQueue(t *testing.T) {
 		t.Errorf("COD-3 = %+v, want pending with reason cleared", byID["COD-3"])
 	}
 }
+
+// TestFinishDraining proves the drain completes only when the queue has truly
+// run dry — at least one item and none of them pending, paused, or running.
+// Anything still runnable keeps the flag set, and so does an armed empty queue
+// waiting for items.
+func TestFinishDraining(t *testing.T) {
+	type seed struct{ id, status string }
+	tests := []struct {
+		name     string
+		draining bool
+		items    []seed
+		want     bool
+	}{
+		{
+			name:     "all settled finishes the drain",
+			draining: true,
+			items:    []seed{{"COD-1", StatusDone}, {"COD-2", StatusFailed}, {"COD-3", StatusSkipped}},
+			want:     true,
+		},
+		{
+			name:     "a pending item keeps it armed",
+			draining: true,
+			items:    []seed{{"COD-1", StatusDone}, {"COD-2", StatusPending}},
+			want:     false,
+		},
+		{
+			name:     "a paused item keeps it armed",
+			draining: true,
+			items:    []seed{{"COD-1", StatusPaused}},
+			want:     false,
+		},
+		{
+			name:     "a running item keeps it armed",
+			draining: true,
+			items:    []seed{{"COD-1", StatusRunning}},
+			want:     false,
+		},
+		{
+			name:     "an armed empty queue keeps waiting",
+			draining: true,
+			want:     false,
+		},
+		{
+			name:     "an idle queue has no drain to finish",
+			draining: false,
+			items:    []seed{{"COD-1", StatusDone}},
+			want:     false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			s := NewStore(root)
+			for _, it := range tc.items {
+				mustAdd(t, s, Item{Kind: KindTicket, ID: it.id})
+				switch it.status {
+				case StatusPending:
+				case StatusRunning:
+					if err := s.MarkRunning(it.id, 7); err != nil {
+						t.Fatalf("MarkRunning %s: %v", it.id, err)
+					}
+				case StatusPaused:
+					if err := s.MarkRunning(it.id, 7); err != nil {
+						t.Fatalf("MarkRunning %s: %v", it.id, err)
+					}
+					if err := s.Pause(it.id, "parked"); err != nil {
+						t.Fatalf("Pause %s: %v", it.id, err)
+					}
+				default:
+					if err := s.Finish(it.id, it.status, ""); err != nil {
+						t.Fatalf("Finish %s: %v", it.id, err)
+					}
+				}
+			}
+			if err := s.SetDraining(tc.draining); err != nil {
+				t.Fatalf("SetDraining: %v", err)
+			}
+
+			got, err := s.FinishDraining()
+			if err != nil {
+				t.Fatalf("FinishDraining: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("FinishDraining = %v, want %v", got, tc.want)
+			}
+			wantFlag := tc.draining && !tc.want
+			if _, draining, _ := NewStore(root).Snapshot(); draining != wantFlag {
+				t.Errorf("draining after = %v, want %v", draining, wantFlag)
+			}
+		})
+	}
+}
+
+// TestFinishDoneSettlesEpicSubIssues proves a clean epic finish settles the
+// carried sub-issues done — the run drained them all — while a failed finish
+// leaves their enqueue-time states alone, since a fault says nothing about
+// which children completed.
+func TestFinishDoneSettlesEpicSubIssues(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	mustAdd(t, s, Item{Kind: KindEpic, ID: "COD-1", SubIssues: []SubIssue{
+		{ID: "COD-2", Title: "first", State: "todo"},
+		{ID: "COD-3", Title: "second", State: "done"},
+	}})
+	mustAdd(t, s, Item{Kind: KindEpic, ID: "COD-4", SubIssues: []SubIssue{
+		{ID: "COD-5", Title: "third", State: "todo"},
+	}})
+
+	if err := s.Finish("COD-1", StatusDone, ""); err != nil {
+		t.Fatalf("Finish done epic: %v", err)
+	}
+	if err := s.Finish("COD-4", StatusFailed, "gave up"); err != nil {
+		t.Fatalf("Finish failed epic: %v", err)
+	}
+
+	items := mustLoad(t, root)
+	for _, sub := range items[0].SubIssues {
+		if sub.State != "done" {
+			t.Errorf("done epic sub %s state = %q, want done", sub.ID, sub.State)
+		}
+	}
+	if got := items[1].SubIssues[0].State; got != "todo" {
+		t.Errorf("failed epic sub state = %q, want its enqueue-time state kept", got)
+	}
+}
