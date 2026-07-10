@@ -21,6 +21,7 @@ export { DataTable, type Column } from './data-table'
 export { EmptyState } from './empty-state'
 export { ConfirmDialog } from './confirm-dialog'
 export { ForceResetDialog } from './force-reset-dialog'
+export { NoSkillsBanner } from './no-skills-banner'
 export {
   RunActionsMenu,
   RunActionsRow,

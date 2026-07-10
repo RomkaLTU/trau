@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
@@ -35,6 +36,10 @@ type Server struct {
 	drainCtx      context.Context
 	newWriter     func(config.Config) (tracker.Writer, error)
 	newReader     func(config.Config) (tracker.Reader, error)
+	installSkill  func(ctx context.Context, repoRoot, pkg string) error
+	removeSkill   func(ctx context.Context, repoRoot, name string) error
+	skillsMu      sync.Mutex
+	skillsCache   map[string]skillsCacheEntry
 }
 
 // New builds a Server that reports version and treats now as its start time. It
@@ -58,6 +63,9 @@ func New(version, bind, token string, workspace []string, allowRegister bool) *S
 		drainCtx:      context.Background(),
 		newWriter:     defaultWriter,
 		newReader:     defaultReader,
+		installSkill:  defaultInstallSkill,
+		removeSkill:   defaultRemoveSkill,
+		skillsCache:   map[string]skillsCacheEntry{},
 	}
 	s.drain = newDrainer(s)
 	return s
@@ -117,6 +125,10 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/clear", s.handleClearRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/reconcile", s.handleReconcileRepo)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/lessons", s.handleLessons)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills", s.handleSkills)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills/search", s.handleSkillsSearch)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills/{name}", s.handleSkillItem)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills/{$}", s.handleSkillItem)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/config", s.handleConfig)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/events", s.handleEvents)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/events/stream", s.handleEventStream)
