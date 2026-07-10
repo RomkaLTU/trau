@@ -1,3 +1,4 @@
+import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
   DollarSign,
@@ -18,6 +19,7 @@ import {
 import { useActiveRepo } from '@/components/trau/active-repo'
 import { RepoSwitcher } from '@/components/trau/repo-switcher'
 import { useAttentionCount } from '@/lib/attention'
+import { healthQueryOptions } from '@/lib/health'
 
 interface NavItem {
   label: string
@@ -81,6 +83,9 @@ export function Sidebar() {
   const { repo } = useActiveRepo()
   const attention = useAttentionCount(repo)
   const host = window.location.host
+  const health = useQuery(healthQueryOptions)
+  const webVersion = `${__WEB_VERSION__}·${__WEB_BUILD__}`
+  const cliVersion = health.data?.version
 
   return (
     <aside className="fixed inset-y-0 left-0 z-10 flex w-60 flex-col border-r border-border bg-card">
@@ -142,11 +147,24 @@ export function Sidebar() {
         ))}
       </nav>
 
-      <div className="border-t border-border px-5 py-3">
+      <div className="flex flex-col gap-2 border-t border-border px-5 py-3">
         <span className="inline-flex items-center gap-2 font-mono text-xs text-teal">
           <span aria-hidden="true">●</span>
           {host ? `serving ${host}` : 'serving'}
         </span>
+        <dl className="grid grid-cols-[2rem_1fr] gap-x-2 font-mono text-[0.65rem] leading-relaxed text-muted-foreground">
+          <dt className="text-muted-foreground/60">web</dt>
+          <dd className="truncate text-foreground/75" title={webVersion}>
+            {webVersion}
+          </dd>
+          <dt className="text-muted-foreground/60">cli</dt>
+          <dd
+            className="truncate text-foreground/75"
+            title={cliVersion ?? 'unavailable'}
+          >
+            {cliVersion ?? '—'}
+          </dd>
+        </dl>
       </div>
     </aside>
   )
