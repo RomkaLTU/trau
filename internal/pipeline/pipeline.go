@@ -551,18 +551,8 @@ func (p *Pipeline) runPhases(ctx context.Context, id string, fi int) error {
 			return err
 		}
 	}
-	if fi < 3 {
-		if err := p.Handoff(ctx, id); err != nil {
-			return err
-		}
-	}
 	if fi < 4 {
-		if err := p.lintFix(ctx, id); err != nil {
-			return err
-		}
-		if p.Cleanup && p.skipCleanup(ctx, id) {
-			p.logf("  ↳ cleanup: skipped for tiny diff — build's inline style note already covers slop")
-		} else if err := p.cleanup(ctx, id); err != nil {
+		if err := p.handoffAndCleanup(ctx, id, fi < 3); err != nil {
 			return err
 		}
 		if err := p.Verify(ctx, id); err != nil {
@@ -1074,9 +1064,60 @@ func (p *Pipeline) repoLabel() string {
 	return filepath.Base(p.RepoRoot)
 }
 
+// handoffAndCleanup overlaps the handoff brief with the lintfix→cleanup chain.
+// Handoff only reads the tree to write the QA brief while lintfix and cleanup make
+// behavior-preserving edits, so the two sides run concurrently after build and
+// verify waits for both — saving roughly one agent-phase of wall clock per ticket.
+// A fatal outcome (pause, give-up, fault) from either side cancels the other through
+// the shared errgroup context and propagates unchanged, classified exactly as the
+// sequential pipeline classified it; cleanup still fails open on a non-fatal agent
+// error. The handed_off checkpoint is written only once BOTH sides finish, so a crash
+// mid-overlap resumes from build and re-runs both. runHandoff is false when the
+// ticket resumes from an existing handed_off checkpoint — handoff is already durable,
+// so only the lintfix→cleanup chain runs.
+func (p *Pipeline) handoffAndCleanup(ctx context.Context, id string, runHandoff bool) error {
+	if !runHandoff {
+		return p.lintFixAndCleanup(ctx, id)
+	}
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return p.handoffWork(gctx, id) })
+	g.Go(func() error { return p.lintFixAndCleanup(gctx, id) })
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	return p.checkpointHandoff(id)
+}
+
+// lintFixAndCleanup runs the pre-verify style chain: the project's autofixers, then
+// the slop-cleanup pass unless the diff is tiny enough to skip it. Both steps make
+// only behavior-preserving edits and fail open on a non-fatal agent error; only a
+// provider pause or budget give-up propagates.
+func (p *Pipeline) lintFixAndCleanup(ctx context.Context, id string) error {
+	if err := p.lintFix(ctx, id); err != nil {
+		return err
+	}
+	if p.Cleanup && p.skipCleanup(ctx, id) {
+		p.logf("  ↳ cleanup: skipped for tiny diff — build's inline style note already covers slop")
+		return nil
+	}
+	return p.cleanup(ctx, id)
+}
+
 // Handoff runs the handoff skill to write the QA brief to exactly
-// /tmp/handoff-<ID>.md, then checkpoints handed_off.
+// /tmp/handoff-<ID>.md, then checkpoints handed_off. The normal pipeline overlaps the
+// brief-writing work with the lintfix→cleanup chain (handoffAndCleanup); this
+// sequential form is the direct entry point.
 func (p *Pipeline) Handoff(ctx context.Context, id string) error {
+	if err := p.handoffWork(ctx, id); err != nil {
+		return err
+	}
+	return p.checkpointHandoff(id)
+}
+
+// handoffWork runs the handoff agent and persists the brief + rubric, but does NOT
+// checkpoint — the overlap orchestrator writes handed_off only after the concurrent
+// lintfix→cleanup chain has also finished.
+func (p *Pipeline) handoffWork(ctx context.Context, id string) error {
 	p.phaseStart("handoff")
 	if _, err := p.agentStep(ctx, id, "handoff", handoffTail(id, p.ticketContext(ctx, id))); err != nil {
 		return err
@@ -1089,6 +1130,10 @@ func (p *Pipeline) Handoff(ctx context.Context, id string) error {
 	if _, ok := p.activeRubric(id); !ok {
 		p.logf("  ⚠ handoff wrote no usable rubric — verify will grade from the brief alone")
 	}
+	return nil
+}
+
+func (p *Pipeline) checkpointHandoff(id string) error {
 	if err := p.setPhase(id, state.HandedOff); err != nil {
 		return fmt.Errorf("handoff %s: checkpoint handed_off: %w", id, err)
 	}
