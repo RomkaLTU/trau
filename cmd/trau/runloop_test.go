@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/pipeline"
+	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
@@ -55,6 +57,118 @@ func (noopRenderer) SetTitle(string)                 {}
 func (noopRenderer) PhaseStart(string)               {}
 func (noopRenderer) TicketDone(console.TicketResult) {}
 func (noopRenderer) Wait()                           {}
+
+type stateRec struct{ state, ticket, phase string }
+
+func recorder(recs *[]stateRec) func(string, string, string) {
+	return func(state, ticket, phase string) {
+		*recs = append(*recs, stateRec{state, ticket, phase})
+	}
+}
+
+// TestRunLoopReportsGrazingThenWorking pins the loop-engine transition mapping:
+// grazing before each fresh pick, working when a ticket is picked up, and a
+// trailing grazing when the queue drains.
+func TestRunLoopReportsGrazingThenWorking(t *testing.T) {
+	eng := &alreadyDoneEngine{picks: []string{"COD-1", "COD-2"}}
+	var recs []stateRec
+	_, err := runLoop(context.Background(), eng, loopParams{Max: 5, Report: recorder(&recs)}, noopRenderer{}, func(id string, _ time.Duration) console.TicketResult {
+		return console.TicketResult{ID: id}
+	})
+	if err != nil {
+		t.Fatalf("runLoop returned error: %v", err)
+	}
+	want := []stateRec{
+		{registry.StateGrazing, "", ""},
+		{registry.StateWorking, "COD-1", ""},
+		{registry.StateGrazing, "", ""},
+		{registry.StateWorking, "COD-2", ""},
+		{registry.StateGrazing, "", ""},
+	}
+	if !reflect.DeepEqual(recs, want) {
+		t.Fatalf("transition sequence = %v, want %v", recs, want)
+	}
+}
+
+// TestRunLoopReportsWorkingOnResume: a resumed ticket goes straight to working
+// with its checkpoint phase — no grazing, since the loop isn't picking.
+func TestRunLoopReportsWorkingOnResume(t *testing.T) {
+	eng := &resumeOnceEngine{}
+	var recs []stateRec
+	_, err := runLoop(context.Background(), eng, loopParams{Max: 1, Report: recorder(&recs)}, noopRenderer{}, func(id string, _ time.Duration) console.TicketResult {
+		return console.TicketResult{ID: id}
+	})
+	if err != nil {
+		t.Fatalf("runLoop returned error: %v", err)
+	}
+	want := []stateRec{{registry.StateWorking, "COD-9", "built"}}
+	if !reflect.DeepEqual(recs, want) {
+		t.Fatalf("transition sequence = %v, want %v", recs, want)
+	}
+}
+
+// TestRunLoopReportsStoppingOnCancel: a cancelled context stops the loop and
+// reports stopping before returning.
+func TestRunLoopReportsStoppingOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var recs []stateRec
+	_, err := runLoop(ctx, &loopEngine{}, loopParams{Max: 5, Report: recorder(&recs)}, noopRenderer{}, func(string, time.Duration) console.TicketResult {
+		return console.TicketResult{}
+	})
+	if err != nil {
+		t.Fatalf("runLoop returned error: %v", err)
+	}
+	if len(recs) != 1 || recs[0].state != registry.StateStopping {
+		t.Fatalf("expected a single stopping report, got %v", recs)
+	}
+}
+
+// TestReportAfterRunParks pins the single-ticket recap mapping: a fault, pause,
+// or give-up parks the recap-alive session on its ticket, while a clean finish
+// falls back to idle.
+func TestReportAfterRunParks(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantState  string
+		wantTicket string
+	}{
+		{"clean", nil, registry.StateIdle, ""},
+		{"fault", &pipeline.FaultError{ID: "COD-1"}, registry.StateParked, "COD-1"},
+		{"pause", &pipeline.PausedError{ID: "COD-2"}, registry.StateParked, "COD-2"},
+		{"giveup", &pipeline.GiveUpError{ID: "COD-3"}, registry.StateParked, "COD-3"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			h := registry.Register(home, t.TempDir(), "")
+			defer h.Deregister()
+			(&appActions{reg: h}).reportAfterRun(tc.err)
+
+			live := registry.Live(home)
+			if len(live) != 1 {
+				t.Fatalf("expected 1 live entry, got %d", len(live))
+			}
+			if e := live[0]; e.SessionState != tc.wantState || e.Ticket != tc.wantTicket || e.Phase != "" {
+				t.Fatalf("reportAfterRun(%v) = {%s %s %q}, want {%s %s \"\"}", tc.err, e.SessionState, e.Ticket, e.Phase, tc.wantState, tc.wantTicket)
+			}
+		})
+	}
+}
+
+type resumeOnceEngine struct {
+	loopEngine
+	resumed bool
+}
+
+func (e *resumeOnceEngine) ResumeTarget() (string, string) {
+	if e.resumed {
+		return "", ""
+	}
+	e.resumed = true
+	return "COD-9", "built"
+}
 
 func TestLeafSubsFiltersNestedEpics(t *testing.T) {
 	subs := []tracker.SubIssue{

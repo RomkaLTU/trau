@@ -122,6 +122,28 @@ type Actions interface {
 	AbortPlan(ctx context.Context, dir string) error
 }
 
+// sessionReporter is the optional capability an Actions implementation exposes so
+// the menu shell can report the transitions only it sees — back to idle on a
+// return to a browse screen, and stopping the moment a run is interrupted. The
+// run-driven grazing/working/parked states are reported by the loop and pipeline,
+// not here. A non-implementing Actions makes these calls no-ops.
+type sessionReporter interface {
+	ReportIdle()
+	ReportStopping()
+}
+
+func (m appModel) reportIdle() {
+	if r, ok := m.actions.(sessionReporter); ok {
+		r.ReportIdle()
+	}
+}
+
+func (m appModel) reportStopping() {
+	if r, ok := m.actions.(sessionReporter); ok {
+		r.ReportStopping()
+	}
+}
+
 // PublishOutcome reports what approving a PRD did with the tracker. Epic is the
 // created epic identifier; Published is false when the tracker lacks the
 // hierarchical-create capability and the plan stayed local at prd_ready.
@@ -805,6 +827,7 @@ func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.loopCancel != nil {
 			m.loopCancel()
 		}
+		m.reportStopping()
 		m.dash = m.dash.disarmStop().markStopping()
 		return m, nil
 	}
@@ -817,6 +840,7 @@ func (m appModel) handleRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.loopCancel != nil {
 				m.loopCancel()
 			}
+			m.reportStopping()
 			m.dash = m.dash.markStopping()
 		}
 		return m, nil
@@ -871,6 +895,7 @@ func (m appModel) toMenu() appModel {
 	}
 	m.result = ""
 	m.busy = false
+	m.reportIdle()
 	m.info = m.actions.MenuInfo()
 	return m.withMenuItems()
 }
@@ -879,6 +904,7 @@ func (m appModel) toMenu() appModel {
 // honors a viewMore subReturn), refreshing the context line and the Handle item.
 func (m appModel) toMainMenu() appModel {
 	m.view = viewMenu
+	m.reportIdle()
 	m.info = m.actions.MenuInfo()
 	return m.withMenuItems()
 }
