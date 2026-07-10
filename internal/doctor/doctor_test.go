@@ -5,10 +5,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 )
 
@@ -113,6 +115,56 @@ func TestCheckLinearProjectPassWhenScoped(t *testing.T) {
 	}
 	if !strings.Contains(c.Message, "PROJECT=trau") {
 		t.Errorf("message %q should name the configured project", c.Message)
+	}
+}
+
+func TestCheckHubDatabaseNotYetCreated(t *testing.T) {
+	t.Setenv("TRAU_HOME", t.TempDir())
+	rr := newTestRunner()
+	checkHubDatabase(rr)
+	c := lastCheck(t, rr)
+	if c.Status != pass {
+		t.Errorf("status = %q, want pass", c.Status)
+	}
+	if !strings.Contains(c.Message, hubdb.Filename) {
+		t.Errorf("message %q should name the database path", c.Message)
+	}
+}
+
+func TestCheckHubDatabaseHealthy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TRAU_HOME", home)
+	db, err := hubdb.Open(home)
+	if err != nil {
+		t.Fatalf("open hub db: %v", err)
+	}
+	_ = db.Close()
+
+	rr := newTestRunner()
+	checkHubDatabase(rr)
+	c := lastCheck(t, rr)
+	if c.Status != pass {
+		t.Errorf("status = %q msg=%q, want pass", c.Status, c.Message)
+	}
+	if !strings.Contains(c.Message, "schema v") || !strings.Contains(c.Message, "healthy") {
+		t.Errorf("message %q should report the schema version and health", c.Message)
+	}
+}
+
+func TestCheckHubDatabaseCorrupt(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TRAU_HOME", home)
+	if err := os.WriteFile(hubdb.Path(home), []byte(strings.Repeat("garbage ", 64)), 0o644); err != nil {
+		t.Fatalf("seed corrupt file: %v", err)
+	}
+	rr := newTestRunner()
+	checkHubDatabase(rr)
+	c := lastCheck(t, rr)
+	if c.Status != fail {
+		t.Errorf("status = %q, want fail", c.Status)
+	}
+	if !strings.Contains(c.Message, "cannot be opened") {
+		t.Errorf("message %q should explain the open failure", c.Message)
 	}
 }
 

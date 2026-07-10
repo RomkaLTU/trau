@@ -13,7 +13,9 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
+	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/webserver"
 )
 
@@ -87,6 +89,15 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) error {
 	if err := webserver.CheckExposure(cfg.ServeBind, cfg.ServeToken); err != nil {
 		return console.Actionable(err, "start serve", "set SERVE_TOKEN to a secret, or keep SERVE_BIND on loopback (127.0.0.1)")
 	}
+
+	home := registry.Home()
+	db, err := hubdb.Open(home)
+	if err != nil {
+		return console.Actionable(err, "open hub database",
+			fmt.Sprintf("move %s aside (mv %s %s.bak) and restart to recreate it", hubdb.Path(home), hubdb.Path(home), hubdb.Path(home)))
+	}
+	defer db.Close()
+	logger.Verbosef("hub database ready at %s (schema v%d)", db.Path(), db.Version())
 
 	addr := net.JoinHostPort(cfg.ServeBind, strconv.Itoa(cfg.ServePort))
 	hub := webserver.New(version, cfg.ServeBind, cfg.ServeToken, cfg.ServeWorkspace, cfg.ServeAllowRegister)
