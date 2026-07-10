@@ -15,8 +15,10 @@ import (
 // fakeReader stands in for a direct tracker client so the backlog endpoint is
 // asserted without any network.
 type fakeReader struct {
-	items []tracker.BacklogItem
-	err   error
+	items    []tracker.BacklogItem
+	err      error
+	issue    tracker.IssueSummary
+	issueErr error
 }
 
 func (f *fakeReader) Backlog(context.Context) ([]tracker.BacklogItem, error) {
@@ -24,6 +26,13 @@ func (f *fakeReader) Backlog(context.Context) ([]tracker.BacklogItem, error) {
 		return nil, f.err
 	}
 	return f.items, nil
+}
+
+func (f *fakeReader) Issue(context.Context, string) (tracker.IssueSummary, error) {
+	if f.issueErr != nil {
+		return tracker.IssueSummary{}, f.issueErr
+	}
+	return f.issue, nil
 }
 
 // backlogServer builds a server with one exited repo ("acme") and a Reader

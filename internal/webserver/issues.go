@@ -77,6 +77,80 @@ func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, CreatedIssue{Identifier: issue.Identifier, URL: issue.URL, Provider: provider})
 }
 
+// IssueResponse is the /repos/{repo}/issues/{id} resource: one ticket read
+// directly from the repo's tracker so the run-once form can confirm its title,
+// status and labels before launching. Group is the normalized status bucket the
+// form uses to warn about an unusual status (already done, in progress).
+type IssueResponse struct {
+	Repo     string   `json:"repo"`
+	Provider string   `json:"provider"`
+	ID       string   `json:"id"`
+	Title    string   `json:"title"`
+	Status   string   `json:"status"`
+	Group    string   `json:"group"`
+	Labels   []string `json:"labels"`
+	Ready    bool     `json:"ready"`
+	Parent   string   `json:"parent,omitempty"`
+	// Project is the ticket's own tracker project; InProject reports whether it
+	// matches the repo's configured project, so a cross-project ticket can be
+	// shown but refused rather than launched into the wrong repo.
+	Project   string `json:"project,omitempty"`
+	InProject bool   `json:"in_project"`
+}
+
+// handleIssue fetches a single ticket by identifier straight from the repo's
+// tracker API — no agent, no MCP — so the run-once form can show the ticket and
+// its status for confirmation. A repo with no direct tracker credentials answers
+// 422; an unknown identifier answers 404 so the form shows a not-found state.
+func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	repo, ok := s.findRepo(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ticket id is required"})
+		return
+	}
+	provider, reader, err := s.readerFor(repo)
+	if err != nil {
+		writeReaderErr(w, err)
+		return
+	}
+	item, err := reader.Issue(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, tracker.ErrIssueNotFound) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": id + " not found in this repo's tracker"})
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "fetch issue: " + err.Error()})
+		return
+	}
+	labels := item.Labels
+	if labels == nil {
+		labels = []string{}
+	}
+	writeJSON(w, http.StatusOK, IssueResponse{
+		Repo:      repo.Name,
+		Provider:  provider,
+		ID:        item.ID,
+		Title:     item.Title,
+		Status:    item.Status,
+		Group:     string(item.Group),
+		Labels:    labels,
+		Ready:     item.Ready,
+		Parent:    item.Parent,
+		Project:   item.Project,
+		InProject: item.InProject,
+	})
+}
+
 // handleRunComment adds a comment to the run's existing ticket, so a follow-up
 // observed from a run's detail view lands on the same ticket in the tracker.
 func (s *Server) handleRunComment(w http.ResponseWriter, r *http.Request) {
