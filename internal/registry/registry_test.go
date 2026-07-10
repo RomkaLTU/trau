@@ -4,7 +4,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 // deadPID starts a child, kills and reaps it, and returns a PID that is now
@@ -88,6 +90,90 @@ func TestRelativeRunsDirResolvedAgainstRepoRoot(t *testing.T) {
 	}
 	if want := "/repo/acme/.trau/runs"; live[0].RunsDir != want {
 		t.Errorf("RunsDir = %q, want %q", live[0].RunsDir, want)
+	}
+}
+
+func TestRegisterSeedsIdle(t *testing.T) {
+	home := t.TempDir()
+	h := Register(home, "/repo/acme", ".trau/runs")
+	defer h.Deregister()
+
+	e := Live(home)[0]
+	if e.SessionState != StateIdle {
+		t.Errorf("SessionState = %q, want %q", e.SessionState, StateIdle)
+	}
+	if e.StateSince.IsZero() {
+		t.Errorf("StateSince is zero, want stamped at registration")
+	}
+}
+
+func TestSetStatePersistsAllFields(t *testing.T) {
+	home := t.TempDir()
+	h := Register(home, "/repo/acme", ".trau/runs")
+	defer h.Deregister()
+
+	h.SetState(StateWorking, "COD-765", "building")
+	e := Live(home)[0]
+	if e.SessionState != StateWorking || e.Ticket != "COD-765" || e.Phase != "building" {
+		t.Fatalf("after SetState = %+v, want working/COD-765/building", e)
+	}
+	since := e.StateSince
+	if since.IsZero() {
+		t.Fatal("StateSince is zero after SetState")
+	}
+
+	h.SetState(StateWorking, "COD-765", "testing")
+	if e := Live(home)[0]; !e.StateSince.Equal(since) {
+		t.Errorf("StateSince moved on same-state SetState: %v -> %v", since, e.StateSince)
+	}
+
+	h.SetState(StateParked, "COD-765", "")
+	e = Live(home)[0]
+	if e.SessionState != StateParked || e.Phase != "" {
+		t.Errorf("after park = %+v, want parked with no phase", e)
+	}
+	if e.StateSince.Equal(since) {
+		t.Errorf("StateSince did not move on a state change")
+	}
+}
+
+func TestSetStateSurvivesConcurrentHeartbeat(t *testing.T) {
+	home := t.TempDir()
+	h := Register(home, "/repo/acme", ".trau/runs")
+	defer h.Deregister()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			h.mu.Lock()
+			h.entry.Heartbeat = time.Now()
+			_ = writeJSON(h.path, h.entry)
+			h.mu.Unlock()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			h.SetState(StateWorking, "COD-765", "building")
+		}
+	}()
+	wg.Wait()
+
+	if e := Live(home)[0]; e.SessionState != StateWorking || e.Ticket != "COD-765" || e.Phase != "building" {
+		t.Errorf("after concurrent beat+SetState = %+v, want working state intact", e)
+	}
+}
+
+func TestSetStateNilAndUnregisteredHandleNoOp(t *testing.T) {
+	var nilHandle *Handle
+	nilHandle.SetState(StateWorking, "COD-765", "building")
+
+	unregistered := &Handle{}
+	unregistered.SetState(StateWorking, "COD-765", "building")
+	if unregistered.entry.SessionState != "" {
+		t.Errorf("unregistered SetState mutated entry: %+v", unregistered.entry)
 	}
 }
 
