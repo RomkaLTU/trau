@@ -12,6 +12,7 @@ import {
   CardTitle,
 } from '@/components/ui/card'
 import { EventFeed } from '@/components/event-feed'
+import { MakeStartableButton } from '@/components/make-startable-button'
 import { RegisterRepoForm } from '@/components/register-repo-form'
 import { RunControls } from '@/components/run-controls'
 import { StatusPill } from '@/components/trau/status-pill'
@@ -110,11 +111,21 @@ function Instances() {
           <h2 className="text-sm font-medium text-muted-foreground">
             Previously seen repos
           </h2>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {idleRepos.map((repo) => (
-              <Badge key={repo.root} variant="outline" title={repo.root}>
-                {repo.name}
-              </Badge>
+              <div key={repo.root} className="flex items-center gap-1.5">
+                <Badge variant="outline" title={repo.root}>
+                  {repo.name}
+                </Badge>
+                {!repo.allowed && (
+                  <MakeStartableButton
+                    root={repo.root}
+                    size="sm"
+                    variant="outline"
+                    className="h-6 px-2 text-xs font-mono"
+                  />
+                )}
+              </div>
             ))}
           </div>
         </section>

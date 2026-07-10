@@ -3,6 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 
 import { Button } from '@/components/ui/button'
+import { MakeStartableButton } from '@/components/make-startable-button'
 import { useActiveRepo } from './active-repo'
 import { RepoPicker } from './repo-picker'
 import { TargetRepoField } from './target-repo-field'
@@ -61,7 +62,13 @@ export function RunOnce() {
     setProvider(NO_OVERRIDE)
   }, [repo])
 
-  if (!canRun) return <NotStartableNotice repo={repo} />
+  if (!canRun)
+    return (
+      <NotStartableNotice
+        repo={repo}
+        root={allRepos.find((r) => r.name === repo)?.root}
+      />
+    )
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-11">
@@ -293,18 +300,23 @@ function SummaryRow({ label, value }: { label: string; value: string }) {
   )
 }
 
-function NotStartableNotice({ repo }: { repo: string }) {
+function NotStartableNotice({ repo, root }: { repo: string; root?: string }) {
   return (
     <TerminalCard title="run-once" className="max-w-3xl">
       <div className="flex flex-col items-start gap-4">
         <p className="font-sans text-sm leading-relaxed text-muted-foreground">
           {repo
-            ? `${repo} isn't registered as startable — register it to run a ticket here.`
+            ? `${repo} is observe-only — the hub can browse its runs but isn't cleared to start loops here yet.`
             : 'No repo checked out yet. Register a repo to run a ticket.'}
         </p>
-        <Button asChild variant="outline" size="sm" className="font-mono">
-          <Link to="/instances">Manage repos</Link>
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {root && (
+            <MakeStartableButton root={root} name={repo} className="font-mono" />
+          )}
+          <Button asChild variant="outline" size="sm" className="font-mono">
+            <Link to="/instances">Manage repos</Link>
+          </Button>
+        </div>
       </div>
     </TerminalCard>
   )
