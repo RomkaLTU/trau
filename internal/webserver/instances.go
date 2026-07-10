@@ -57,7 +57,6 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listInstances(w http.ResponseWriter, _ *http.Request) {
 	entries := registry.Live(s.home)
-	registry.RememberRepos(s.home, entries)
 
 	instances := make([]Instance, 0, len(entries))
 	for _, e := range entries {

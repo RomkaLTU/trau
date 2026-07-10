@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -115,6 +116,32 @@ func TestCheckLinearProjectPassWhenScoped(t *testing.T) {
 	}
 	if !strings.Contains(c.Message, "PROJECT=trau") {
 		t.Errorf("message %q should name the configured project", c.Message)
+	}
+}
+
+func TestCheckLegacyRegistrationClean(t *testing.T) {
+	t.Setenv("TRAU_HOME", t.TempDir())
+	rr := newTestRunner()
+	checkLegacyRegistration(rr)
+	if c := lastCheck(t, rr); c.Status != pass {
+		t.Errorf("status = %q, want pass on a fresh home", c.Status)
+	}
+}
+
+func TestCheckLegacyRegistrationFlagsLeftover(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TRAU_HOME", home)
+	if err := os.WriteFile(filepath.Join(home, "workspace.json"), []byte(`{"repos":[]}`), 0o644); err != nil {
+		t.Fatalf("seed legacy file: %v", err)
+	}
+	rr := newTestRunner()
+	checkLegacyRegistration(rr)
+	c := lastCheck(t, rr)
+	if c.Status != warn {
+		t.Errorf("status = %q, want warn with a leftover legacy file", c.Status)
+	}
+	if !strings.Contains(c.Message, "workspace.json") {
+		t.Errorf("message %q should name the leftover file", c.Message)
 	}
 }
 

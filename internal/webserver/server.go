@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -30,6 +32,7 @@ type Server struct {
 	token         string
 	allowRegister bool
 	workspace     []string
+	repos         *hubstore.Registrations
 	sup           Supervisor
 	drain         *drainer
 	drainCtx      context.Context
@@ -43,8 +46,9 @@ type Server struct {
 // present token as a bearer credential. allowRegister opens repo (un)registration
 // on such a bind; loopback binds ignore it and stay open. workspace is the
 // allowlist of repo roots the hub may start loops in; anything outside it is
-// observe-only.
-func New(version, bind, token string, workspace []string, allowRegister bool) *Server {
+// observe-only. repos is the hub-owned registration store backed by the hub
+// database.
+func New(version, bind, token string, workspace []string, allowRegister bool, repos *hubstore.Registrations) *Server {
 	s := &Server{
 		version:       version,
 		started:       time.Now(),
@@ -54,6 +58,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool) *S
 		token:         token,
 		allowRegister: allowRegister,
 		workspace:     normalizeRoots(workspace),
+		repos:         repos,
 		sup:           newOSSupervisor(),
 		drainCtx:      context.Background(),
 		newWriter:     defaultWriter,
@@ -63,10 +68,16 @@ func New(version, bind, token string, workspace []string, allowRegister bool) *S
 	return s
 }
 
+// repoSweepInterval bounds how often the hub folds live loops into the known-repos
+// set off the request path, so a repo lingers after its loop exits without any
+// read handler having to write.
+const repoSweepInterval = 30 * time.Second
+
 // Start resumes draining any allowlisted repo whose queue was left draining, so
-// a serve restart picks the Queue back up instead of stalling it. ctx governs
-// the drain loops: cancelling it stops the loops between children without
-// killing a child already in flight. Call it once before serving.
+// a serve restart picks the Queue back up instead of stalling it, and launches
+// the known-repos sweep. ctx governs both: cancelling it stops the drain loops
+// between children without killing a child already in flight, and ends the sweep.
+// Call it once before serving.
 func (s *Server) Start(ctx context.Context) {
 	s.drainCtx = ctx
 	for _, root := range s.effectiveRoots() {
@@ -78,6 +89,45 @@ func (s *Server) Start(ctx context.Context) {
 			s.drain.ensure(ctx, root)
 		}
 	}
+	go s.sweepKnownRepos(ctx)
+}
+
+// sweepKnownRepos periodically records the repos of the currently live loops in
+// the known set. This is the write side of the known-repos state, kept off every
+// read handler so a GET never mutates registration state as a side effect.
+func (s *Server) sweepKnownRepos(ctx context.Context) {
+	s.rememberLiveRepos()
+	t := time.NewTicker(repoSweepInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.rememberLiveRepos()
+		}
+	}
+}
+
+func (s *Server) rememberLiveRepos() {
+	_ = s.repos.Remember(reposFromEntries(registry.Live(s.home)))
+}
+
+// reposFromEntries projects live registry entries onto known-repo rows, naming a
+// repo by its root's base and skipping entries with no repo root.
+func reposFromEntries(entries []registry.Entry) []registry.Repo {
+	repos := make([]registry.Repo, 0, len(entries))
+	for _, e := range entries {
+		if e.RepoRoot == "" {
+			continue
+		}
+		repos = append(repos, registry.Repo{
+			Name:    filepath.Base(e.RepoRoot),
+			Root:    e.RepoRoot,
+			RunsDir: e.RunsDir,
+		})
+	}
+	return repos
 }
 
 // Handler returns the fully wired HTTP handler. On a non-loopback bind the API
