@@ -56,7 +56,7 @@ export function RunControls({ repo }: { repo: string }) {
             className={`rounded px-2.5 py-1 text-xs transition-colors ${
               mode === m
                 ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:text-foreground'
+                : 'text-muted-foreground hover:bg-accent hover:text-foreground'
             }`}
           >
             {modeCopy[m].label}
@@ -85,7 +85,7 @@ export function RunControls({ repo }: { repo: string }) {
           type="button"
           onClick={submit}
           disabled={start.isPending || id.trim() === ''}
-          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground shadow-xs transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <CirclePlay className="size-4" />
           {start.isPending ? 'Starting…' : 'Run'}
@@ -94,7 +94,7 @@ export function RunControls({ repo }: { repo: string }) {
           type="button"
           onClick={() => preview.mutate()}
           disabled={preview.isPending}
-          className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+          className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm text-muted-foreground shadow-xs transition-all hover:border-primary/50 hover:bg-accent hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
         >
           <FlaskConical className="size-4" />
           {preview.isPending ? 'Previewing…' : 'Preview next'}
