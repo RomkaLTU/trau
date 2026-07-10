@@ -17,7 +17,7 @@ import (
 
 func instancesServer(t *testing.T, home string) *httptest.Server {
 	t.Helper()
-	s := New("1.2.3", "127.0.0.1", "", nil, false)
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testRegistrationsAt(t, home))
 	s.home = home
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
@@ -203,16 +203,15 @@ func TestInstancesLegacyEntryReportsUnknownWithoutDeriving(t *testing.T) {
 func TestInstancesRetainsExitedRepos(t *testing.T) {
 	home := t.TempDir()
 	gone := registry.Repo{Name: "gone", Root: "/repo/gone", RunsDir: "/repo/gone/.trau/runs"}
-	seed := map[string]registry.Repo{gone.Root: gone}
-	data, err := json.Marshal(seed)
-	if err != nil {
-		t.Fatalf("marshal repos: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, "repos.json"), data, 0o644); err != nil {
-		t.Fatalf("seed repos.json: %v", err)
-	}
 
-	ts := instancesServer(t, home)
+	store := testRegistrations(t)
+	if err := store.Remember([]registry.Repo{gone}); err != nil {
+		t.Fatalf("seed known repo: %v", err)
+	}
+	s := New("1.2.3", "127.0.0.1", "", nil, false, store)
+	s.home = home
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
 	out := getInstances(t, ts)
 
 	if len(out.Instances) != 0 {

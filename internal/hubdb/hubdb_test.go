@@ -3,6 +3,7 @@ package hubdb
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -57,8 +58,8 @@ func TestOpenCreatesAndMigrates(t *testing.T) {
 	if err := db.SQL().QueryRow(`SELECT value FROM meta WHERE key = ?`, schemaVersionKey).Scan(&stored); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if stored != "1" {
-		t.Fatalf("meta schema_version = %q, want 1", stored)
+	if want := strconv.Itoa(currentVersion(t)); stored != want {
+		t.Fatalf("meta schema_version = %q, want %q", stored, want)
 	}
 }
 

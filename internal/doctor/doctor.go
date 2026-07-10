@@ -14,6 +14,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
@@ -54,6 +55,7 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkJira(ctx, cfg, rr)
 	checkWritePerms(cfg, repoRoot, rr)
 	checkHubDatabase(rr)
+	checkLegacyRegistration(rr)
 
 	w.blank()
 	if rr.r.Errors > 0 {
@@ -378,6 +380,20 @@ func checkHubDatabase(rr *runner) {
 	default:
 		rr.add("hub database", pass, fmt.Sprintf("%s (schema v%d, healthy)", h.Path, h.Version), "")
 	}
+}
+
+// checkLegacyRegistration flags a repos.json or workspace.json left behind by the
+// file era. The hub imports and deletes these on first serve start (ADR 0007);
+// one still present means a half-completed upgrade.
+func checkLegacyRegistration(rr *runner) {
+	leftover := hubstore.LegacyFiles(registry.Home())
+	if len(leftover) == 0 {
+		rr.add("legacy registration", pass, "no legacy registration files", "")
+		return
+	}
+	rr.add("legacy registration", warn,
+		fmt.Sprintf("legacy registration file(s) still present: %s", strings.Join(leftover, ", ")),
+		"start `trau serve` once to import and remove them")
 }
 
 func probeWrite(path string) error {

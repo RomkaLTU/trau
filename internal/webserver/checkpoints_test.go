@@ -13,21 +13,15 @@ import (
 	"github.com/RomkaLTU/trau/internal/state"
 )
 
-// checkpointRepo registers one exited repo in the hub's repos.json and returns
-// its root and runs dir, so a checkpoint mutation resolves the repo the same way
-// it would for a repo whose loop has since exited.
+// checkpointRepo records one exited repo in the hub's known set and returns its
+// root and runs dir, so a checkpoint mutation resolves the repo the same way it
+// would for a repo whose loop has since exited.
 func checkpointRepo(t *testing.T, home, name string) (root, runsDir string) {
 	t.Helper()
 	root = filepath.Join(t.TempDir(), name)
 	runsDir = filepath.Join(root, ".trau", "runs")
-	data, err := json.Marshal(map[string]registry.Repo{
-		root: {Name: name, Root: root, RunsDir: runsDir},
-	})
-	if err != nil {
-		t.Fatalf("marshal repos: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(home, "repos.json"), data, 0o644); err != nil {
-		t.Fatalf("seed repos.json: %v", err)
+	if err := testRegistrationsAt(t, home).Remember([]registry.Repo{{Name: name, Root: root, RunsDir: runsDir}}); err != nil {
+		t.Fatalf("seed known repo: %v", err)
 	}
 	return root, runsDir
 }
@@ -264,7 +258,7 @@ func TestCheckpointMutationsRejectNonPOST(t *testing.T) {
 }
 
 func TestCheckpointMutationsRequireTokenWhenExposed(t *testing.T) {
-	s := New("1.2.3", "0.0.0.0", "s3cret", nil, false)
+	s := New("1.2.3", "0.0.0.0", "s3cret", nil, false, testRegistrations(t))
 	fake := &fakeSupervisor{}
 	s.sup = fake
 	ts := httptest.NewServer(s.Handler())

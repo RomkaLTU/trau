@@ -14,8 +14,30 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
+
+// testRegistrations returns a registration store over a throwaway hub database,
+// for servers whose registration state need not survive the test.
+func testRegistrations(t *testing.T) *hubstore.Registrations {
+	t.Helper()
+	return testRegistrationsAt(t, t.TempDir())
+}
+
+// testRegistrationsAt returns a registration store over the hub database under
+// home, so two stores opened at the same home share state — the way a serve
+// restart re-opens the same database.
+func testRegistrationsAt(t *testing.T, home string) *hubstore.Registrations {
+	t.Helper()
+	db, err := hubdb.Open(home)
+	if err != nil {
+		t.Fatalf("open hub db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return hubstore.NewRegistrations(db.SQL())
+}
 
 type signalCall struct {
 	pid int
@@ -70,7 +92,7 @@ func (f *fakeSupervisor) Signal(pid int, sig syscall.Signal) error {
 
 func controlServer(t *testing.T, home string, workspace []string) (*fakeSupervisor, *httptest.Server) {
 	t.Helper()
-	s := New("1.2.3", "127.0.0.1", "", workspace, false)
+	s := New("1.2.3", "127.0.0.1", "", workspace, false, testRegistrationsAt(t, home))
 	s.home = home
 	fake := &fakeSupervisor{}
 	s.sup = fake
@@ -282,7 +304,7 @@ func TestStopRejectsNonPOST(t *testing.T) {
 }
 
 func TestControlEndpointsRequireTokenWhenExposed(t *testing.T) {
-	s := New("1.2.3", "0.0.0.0", "s3cret", []string{"/repo/acme"}, false)
+	s := New("1.2.3", "0.0.0.0", "s3cret", []string{"/repo/acme"}, false, testRegistrations(t))
 	fake := &fakeSupervisor{}
 	s.sup = fake
 	ts := httptest.NewServer(s.Handler())
@@ -566,7 +588,7 @@ func TestDryRunReportsCaptureFailure(t *testing.T) {
 }
 
 func TestDryRunRequiresTokenWhenExposed(t *testing.T) {
-	s := New("1.2.3", "0.0.0.0", "s3cret", []string{"/repo/acme"}, false)
+	s := New("1.2.3", "0.0.0.0", "s3cret", []string{"/repo/acme"}, false, testRegistrations(t))
 	fake := &fakeSupervisor{}
 	s.sup = fake
 	ts := httptest.NewServer(s.Handler())
@@ -871,7 +893,7 @@ func TestEpicPreviewRejectsNonGET(t *testing.T) {
 }
 
 func TestEpicPreviewRequiresTokenWhenExposed(t *testing.T) {
-	s := New("1.2.3", "0.0.0.0", "s3cret", []string{"/repo/acme"}, false)
+	s := New("1.2.3", "0.0.0.0", "s3cret", []string{"/repo/acme"}, false, testRegistrations(t))
 	fake := &fakeSupervisor{}
 	s.sup = fake
 	ts := httptest.NewServer(s.Handler())

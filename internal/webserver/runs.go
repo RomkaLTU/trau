@@ -66,13 +66,13 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 }
 
 // repoViews lists every repo the hub knows, flagging the ones a loop is running
-// in right now and the ones the hub is allowed to start a loop in. It folds the
-// live loops' repos into the persistent set first, so a repo appears the moment
+// in right now and the ones the hub is allowed to start a loop in. It unions the
+// live loops' repos with the persisted known set, so a repo appears the moment
 // its loop starts and lingers after it exits, then merges in allowlisted repos
-// that have never run so they are startable before their first loop.
+// that have never run so they are startable before their first loop. It is a
+// pure read: the known set is persisted off the request path by the sweep.
 func (s *Server) repoViews() []RepoView {
 	entries := registry.Live(s.home)
-	registry.RememberRepos(s.home, entries)
 	live := make(map[string]bool, len(entries))
 	for _, e := range entries {
 		live[e.RepoRoot] = true
@@ -83,11 +83,13 @@ func (s *Server) repoViews() []RepoView {
 		allowed[root] = true
 	}
 	registered := make(map[string]bool)
-	for _, root := range registry.RegisteredRepos(s.home) {
-		registered[root] = true
+	if roots, err := s.repos.Registered(); err == nil {
+		for _, root := range roots {
+			registered[root] = true
+		}
 	}
 	seen := make(map[string]bool)
-	known := registry.Repos(s.home)
+	known := s.knownRepos(entries)
 	views := make([]RepoView, 0, len(known)+len(roots))
 	for _, repo := range known {
 		seen[repo.Root] = true
@@ -103,14 +105,38 @@ func (s *Server) repoViews() []RepoView {
 	return views
 }
 
-// findRepo resolves a {repo} path segment to a known repo by name, remembering
-// any live loops' repos first so a just-started loop's repo is resolvable.
+// knownRepos is the repos the hub has seen a loop run in: the persisted known set
+// unioned with the currently live loops, sorted by name. Reading it never writes;
+// the sweep persists live loops so they linger after exit. entries is the live
+// snapshot the caller already read, folded in so a just-started loop resolves
+// before the next sweep.
+func (s *Server) knownRepos(entries []registry.Entry) []registry.Repo {
+	byRoot := make(map[string]registry.Repo)
+	if persisted, err := s.repos.Known(); err == nil {
+		for _, repo := range persisted {
+			byRoot[repo.Root] = repo
+		}
+	}
+	for _, repo := range reposFromEntries(entries) {
+		if _, ok := byRoot[repo.Root]; !ok {
+			byRoot[repo.Root] = repo
+		}
+	}
+	repos := make([]registry.Repo, 0, len(byRoot))
+	for _, repo := range byRoot {
+		repos = append(repos, repo)
+	}
+	sort.Slice(repos, func(i, j int) bool { return repos[i].Name < repos[j].Name })
+	return repos
+}
+
+// findRepo resolves a {repo} path segment to a known repo by name, unioning any
+// live loops' repos so a just-started loop's repo is resolvable.
 func (s *Server) findRepo(name string) (registry.Repo, bool) {
 	if name == "" {
 		return registry.Repo{}, false
 	}
-	registry.RememberRepos(s.home, registry.Live(s.home))
-	for _, repo := range registry.Repos(s.home) {
+	for _, repo := range s.knownRepos(registry.Live(s.home)) {
 		if repo.Name == name {
 			return repo, true
 		}

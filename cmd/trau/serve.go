@@ -14,6 +14,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/webserver"
@@ -99,8 +100,14 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) error {
 	defer db.Close()
 	logger.Verbosef("hub database ready at %s (schema v%d)", db.Path(), db.Version())
 
+	repos := hubstore.NewRegistrations(db.SQL())
+	if err := repos.ImportLegacy(home); err != nil {
+		return console.Actionable(err, "import legacy registration state",
+			"fix or move the named file aside, then restart trau serve")
+	}
+
 	addr := net.JoinHostPort(cfg.ServeBind, strconv.Itoa(cfg.ServePort))
-	hub := webserver.New(version, cfg.ServeBind, cfg.ServeToken, cfg.ServeWorkspace, cfg.ServeAllowRegister)
+	hub := webserver.New(version, cfg.ServeBind, cfg.ServeToken, cfg.ServeWorkspace, cfg.ServeAllowRegister, repos)
 	hub.Start(ctx)
 	srv := &http.Server{Addr: addr, Handler: hub.Handler()}
 
