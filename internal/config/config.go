@@ -139,6 +139,10 @@ type Config struct {
 
 	VerifyPanel       []string
 	VerifyPanelPolicy string
+	// PanelParallel runs the cross-vendor verify panel members concurrently
+	// (default on). Repos where concurrent member test runs collide (shared DB,
+	// ports, build artifacts) set PANEL_PARALLEL=0 to restore sequential runs.
+	PanelParallel bool
 
 	TUI bool
 
@@ -272,6 +276,7 @@ func Defaults() Config {
 		AppURL:                "http://localhost",
 		VerifyChecks:          true,
 		VerifyPanelPolicy:     "unanimous",
+		PanelParallel:         true,
 		TUI:                   true,
 		Theme:                 "default",
 		EpicFlow:              true,
@@ -626,6 +631,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		sources["VERIFY_PANEL"] = src.name
 	}
 	str("VERIFY_PANEL_POLICY", &c.VerifyPanelPolicy)
+	if v, src := get("PANEL_PARALLEL"); v != "" {
+		c.PanelParallel = v == "1"
+		sources["PANEL_PARALLEL"] = src.name
+	}
 	if v, src := get("TRAU_TUI"); v != "" {
 		c.TUI = v == "1"
 		sources["TRAU_TUI"] = src.name
@@ -1120,6 +1129,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "VERIFY_CHECKS", Default: "1", Description: "Run the pluggable verify-check library (.trau/checks); 1 = yes, 0 = no", Bool: true},
 		{Key: "VERIFY_PANEL", Description: "Cross-vendor verify panel: comma-separated provider:model:effort verifiers (e.g. claude,codex:gpt-5.5,kimi). Empty = single verifier"},
 		{Key: "VERIFY_PANEL_POLICY", Default: "unanimous", Description: "Panel verdict merge policy: unanimous | majority | any-pass", Options: []string{"unanimous", "majority", "any-pass"}},
+		{Key: "PANEL_PARALLEL", Default: "1", Description: "Run verify panel members concurrently so panel wall clock is the slowest member, not the sum; set 0 when concurrent member test runs collide (shared DB, ports, build artifacts) (1 = yes, 0 = no)", Bool: true},
 		{Key: "TRAU_TUI", Default: "1", Description: "Enable Bubble Tea TUI (1 = yes, 0 = no)", Bool: true},
 		{Key: "THEME", Default: "default", Description: "TUI color theme preset", Options: []string{"default", "catppuccin", "dracula", "gruvbox", "nord"}},
 		{Key: "EPIC_FLOW", Default: "1", Description: "Process epic sub-issues (1 = yes, 0 = no)", Bool: true},
@@ -1597,6 +1607,11 @@ func keyValue(cfg Config, key string) string {
 		return strings.Join(cfg.VerifyPanel, ",")
 	case "VERIFY_PANEL_POLICY":
 		return cfg.VerifyPanelPolicy
+	case "PANEL_PARALLEL":
+		if cfg.PanelParallel {
+			return "1"
+		}
+		return "0"
 	case "TRAU_TUI":
 		if cfg.TUI {
 			return "1"

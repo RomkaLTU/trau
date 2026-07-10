@@ -881,6 +881,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		Checks:             verifyChecks,
 		VerifyPanel:        panel,
 		PanelPolicy:        cfg.VerifyPanelPolicy,
+		PanelParallel:      cfg.PanelParallel,
 		BrowserVerify:      cfg.BrowserVerify,
 		AppURL:             cfg.AppURL,
 		AutoMerge:          cfg.AutoMerge,

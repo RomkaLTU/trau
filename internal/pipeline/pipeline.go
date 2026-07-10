@@ -20,6 +20,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/budget"
 	"github.com/RomkaLTU/trau/internal/checks"
@@ -337,6 +339,7 @@ type Pipeline struct {
 	Checks         []checks.Check
 	VerifyPanel    []Verifier
 	PanelPolicy    string
+	PanelParallel  bool
 	BrowserVerify  string
 	AppURL         string
 	AutoMerge      bool
@@ -2470,20 +2473,23 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 // runPanel runs each configured verifier as a fresh, isolated process against the
 // same handoff brief and on-disk code, gates each verdict by the check library,
 // merges them by the configured policy, and writes the merged verdict to
-// verifyPath(id). A provider pause or budget give-up from any member is
-// propagated so the loop stops cleanly (the ticket stays resumable on its branch)
-// instead of being recorded as a dissenting fail; a plain timeout/crash counts as
-// that member failing.
+// verifyPath(id). Members run concurrently when PanelParallel is on so panel wall
+// clock is the slowest member rather than the sum; results stay position-indexed
+// so the merge is identical to the sequential path. A provider pause or budget
+// give-up from any member is propagated so the loop stops cleanly (the ticket
+// stays resumable on its branch) instead of being recorded as a dissenting fail;
+// a plain timeout/crash counts as that member failing.
 func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, checksFragment, rubricNote, lessonsNote string) (verdict, error) {
-	results := make([]panelResult, 0, len(p.VerifyPanel))
-	for _, m := range p.VerifyPanel {
+	results := make([]panelResult, len(p.VerifyPanel))
+	member := func(ctx context.Context, i int) error {
+		m := p.VerifyPanel[i]
 		memberPath := verifyMemberPath(id, m.Name)
 		_ = os.Remove(memberPath)
 		memberLabel := label + "-" + m.Name
 		prompt := verifyTail(id, handoff, memberPath, note, checksFragment, rubricNote, lessonsNote)
 		_, agentErr := p.agentStepOn(ctx, id, memberLabel, prompt, m.Runner)
 		if agentErr != nil && isFatalAgentErr(agentErr) {
-			return verdict{}, agentErr
+			return agentErr
 		}
 		v, ok := readVerdict(memberPath)
 		if agentErr != nil || !ok {
@@ -2498,13 +2504,39 @@ func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, check
 		for _, w := range warnings {
 			p.logf("  ⚠ %s: %s", m.Name, w)
 		}
-		results = append(results, panelResult{Name: m.Name, Verdict: v})
+		results[i] = panelResult{Name: m.Name, Verdict: v}
 		p.logf("  ↳ %s: %s", m.Name, passFailLine(v))
+		return nil
+	}
+	if err := p.fanOutPanel(ctx, member); err != nil {
+		return verdict{}, err
 	}
 	merged := mergeVerdicts(p.PanelPolicy, results)
 	_ = writeVerdictFile(verifyPath(id), merged)
 	p.logf("  ↳ panel verdict: %s", merged.Summary)
 	return merged, nil
+}
+
+// fanOutPanel runs member across every panel index, concurrently when
+// PanelParallel is on and there are 2+ members, sequentially otherwise. Members
+// are isolated (distinct verdict files, phase-labeled logs), so the only
+// cross-member coupling is a fatal error: it cancels the errgroup context and
+// aborts the still-running members before propagating.
+func (p *Pipeline) fanOutPanel(ctx context.Context, member func(context.Context, int) error) error {
+	n := len(p.VerifyPanel)
+	if !p.PanelParallel || n < 2 {
+		for i := range n {
+			if err := member(ctx, i); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	g, gctx := errgroup.WithContext(ctx)
+	for i := range n {
+		g.Go(func() error { return member(gctx, i) })
+	}
+	return g.Wait()
 }
 
 // isFatalAgentErr reports whether an agent error must abort the panel and the
