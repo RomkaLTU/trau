@@ -2,7 +2,16 @@ import type { RepoView } from './instances'
 
 type Store = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 
-const ACTIVE_REPO_KEY = 'trau.active-repo'
+// SCOPE_KEY reuses the original active-repo key so an existing concrete selection
+// keeps working; its value is now either a repo name or the ALL_SCOPE sentinel.
+// LAST_REPO_KEY remembers the last concrete repo so acting on a gated page from
+// "All projects" can auto-scope back to it.
+const SCOPE_KEY = 'trau.active-repo'
+const LAST_REPO_KEY = 'trau.last-repo'
+
+// ALL_SCOPE is the sentinel scope that spans every repo. Operate/author pages are
+// gated under it; observe pages that already read across repos keep working.
+export const ALL_SCOPE = 'all'
 
 function browserStore(): Store | null {
   try {
@@ -12,24 +21,61 @@ function browserStore(): Store | null {
   }
 }
 
-export function loadStoredRepo(): string | null {
-  return browserStore()?.getItem(ACTIVE_REPO_KEY) ?? null
+export function loadStoredScope(): string | null {
+  return browserStore()?.getItem(SCOPE_KEY) ?? null
 }
 
-export function storeRepo(name: string | null): void {
+export function storeScope(scope: string | null): void {
   const store = browserStore()
   if (!store) return
-  if (name) store.setItem(ACTIVE_REPO_KEY, name)
-  else store.removeItem(ACTIVE_REPO_KEY)
+  if (scope) store.setItem(SCOPE_KEY, scope)
+  else store.removeItem(SCOPE_KEY)
+  if (scope && scope !== ALL_SCOPE) store.setItem(LAST_REPO_KEY, scope)
 }
 
-// resolveActiveRepo keeps the checked-out repo when it still exists, and
-// otherwise falls back to a live repo, then the first repo, then nothing —
-// so a repo that vanishes (unregistered/unknown) never leaves the shell stuck.
-export function resolveActiveRepo(
+export function loadLastRepo(): string | null {
+  return browserStore()?.getItem(LAST_REPO_KEY) ?? null
+}
+
+export interface ResolvedScope {
+  scope: string
+  repo: string | null
+  isAll: boolean
+}
+
+// resolveScope turns the stored scope and the live repo set into the active
+// scope. A stored concrete repo (still registered) or a lone repo resolves to
+// that repo, so the operate pages are never needlessly gated — auto-scope is the
+// bigger win over a dead link. "All projects" only sticks when it was the
+// explicit choice and more than one repo is registered. With no repos the shell
+// has nothing to scope: repo is null and the gate stays off so pages can show a
+// register prompt instead.
+export function resolveScope(
   repos: readonly RepoView[],
   stored: string | null,
+): ResolvedScope {
+  if (repos.length === 0) {
+    return { scope: ALL_SCOPE, repo: null, isAll: false }
+  }
+  if (stored && stored !== ALL_SCOPE && repos.some((r) => r.name === stored)) {
+    return { scope: stored, repo: stored, isAll: false }
+  }
+  if (stored === ALL_SCOPE && repos.length > 1) {
+    return { scope: ALL_SCOPE, repo: null, isAll: true }
+  }
+  const primary = repos.find((r) => r.live)?.name ?? repos[0].name
+  return { scope: primary, repo: primary, isAll: false }
+}
+
+// autoScopeTarget picks the repo to jump to when the user acts on a gated page
+// from "All projects": a lone repo, else the most recently used repo when it is
+// still registered. It returns null when there's a genuine choice to make, so the
+// caller opens the switcher instead of guessing.
+export function autoScopeTarget(
+  repos: readonly RepoView[],
+  lastRepo: string | null,
 ): string | null {
-  if (stored && repos.some((r) => r.name === stored)) return stored
-  return repos.find((r) => r.live)?.name ?? repos[0]?.name ?? null
+  if (repos.length === 1) return repos[0].name
+  if (lastRepo && repos.some((r) => r.name === lastRepo)) return lastRepo
+  return null
 }
