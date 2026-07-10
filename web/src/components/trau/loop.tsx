@@ -4,6 +4,7 @@ import { Link } from '@tanstack/react-router'
 import { ExternalLink, Minus, Plus, Square } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { MakeStartableButton } from '@/components/make-startable-button'
 import { useActiveRepo } from '@/components/trau/active-repo'
 import { TargetRepoField } from '@/components/trau/target-repo-field'
 import { ConfirmDialog } from '@/components/trau/confirm-dialog'
@@ -702,7 +703,13 @@ export function Loop() {
     )
   }
 
-  if (!canRun) return <NotStartableNotice repo={repo} />
+  if (!canRun)
+    return (
+      <NotStartableNotice
+        repo={repo}
+        root={allRepos.find((r) => r.name === repo)?.root}
+      />
+    )
 
   return (
     <div className="flex flex-col gap-6">
@@ -717,18 +724,23 @@ export function Loop() {
   )
 }
 
-function NotStartableNotice({ repo }: { repo: string }) {
+function NotStartableNotice({ repo, root }: { repo: string; root?: string }) {
   return (
     <TerminalCard title="loop" className="max-w-3xl">
       <div className="flex flex-col items-start gap-4">
         <p className="font-sans text-sm leading-relaxed text-muted-foreground">
           {repo
-            ? `${repo} isn't registered as startable — register it to graze its ready queue.`
+            ? `${repo} is observe-only — the hub can browse its runs but isn't cleared to start loops here yet.`
             : 'No repo checked out yet. Register a repo to start a loop.'}
         </p>
-        <Button asChild variant="outline" size="sm" className="font-mono">
-          <Link to="/instances">Manage repos</Link>
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {root && (
+            <MakeStartableButton root={root} name={repo} className="font-mono" />
+          )}
+          <Button asChild variant="outline" size="sm" className="font-mono">
+            <Link to="/instances">Manage repos</Link>
+          </Button>
+        </div>
       </div>
     </TerminalCard>
   )
