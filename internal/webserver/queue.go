@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/queue"
+	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
-// QueueRequest is the body of POST /repos/{repo}/queue: the kind of work to
-// register — a run-once ticket or an epic — and its tracker identifier, with an
-// optional title carried from the board so the queued row reads without a
-// second tracker call.
+// QueueRequest is the body of POST /repos/{repo}/queue: the tracker identifier
+// to register, an optional title, and an optional kind. Kind may be "ticket" or
+// "epic"; left empty or "auto" the hub resolves it by looking the id up in the
+// tracker, so the Loop card can add a bare id without knowing what it is.
 type QueueRequest struct {
 	Kind  string `json:"kind"`
 	ID    string `json:"id"`
@@ -46,9 +47,19 @@ type QueueResponse struct {
 
 // DrainRequest is the body of POST /repos/{repo}/queue/drain: whether the hub
 // should be draining the repo's queue. Setting it true starts sequential
-// execution; false pauses it, taking effect after the current child exits.
+// execution; false pauses it, taking effect after the current child exits. On a
+// start it also carries the run-level knobs — whether to ignore stored
+// checkpoints, and what a fault does to the rest of the queue.
 type DrainRequest struct {
-	Draining bool `json:"draining"`
+	Draining bool   `json:"draining"`
+	NoResume bool   `json:"no_resume,omitempty"`
+	OnFault  string `json:"on_fault,omitempty"`
+}
+
+// MoveRequest is the body of POST /repos/{repo}/queue/{id}/move: the direction
+// to shift the item, -1 toward the front or 1 toward the back.
+type MoveRequest struct {
+	Dir int `json:"dir"`
 }
 
 func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +107,28 @@ func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
-	if err := queue.NewStore(root).SetDraining(req.Draining); err != nil {
+	store := queue.NewStore(root)
+	if req.Draining {
+		onFault := strings.TrimSpace(req.OnFault)
+		if onFault == "" {
+			onFault = queue.OnFaultHalt
+		}
+		if onFault != queue.OnFaultHalt && onFault != queue.OnFaultSkip {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("on_fault %q must be %q or %q", req.OnFault, queue.OnFaultHalt, queue.OnFaultSkip)})
+			return
+		}
+		if req.NoResume {
+			if err := store.Restart(); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "restart queue: " + err.Error()})
+				return
+			}
+		}
+		if err := store.SetOptions(req.NoResume, onFault); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "set options: " + err.Error()})
+			return
+		}
+	}
+	if err := store.SetDraining(req.Draining); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "set draining: " + err.Error()})
 		return
 	}
@@ -104,6 +136,74 @@ func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
 		s.drain.ensure(s.drainCtx, root)
 	}
 	s.writeQueue(w, http.StatusOK, root)
+}
+
+// handleQueueMove reorders a pending item one slot up or down. It is gated like
+// a dequeue on any repo whose queue the hub can see, reports 404 for an unknown
+// item and 409 for the running one, and answers with the reordered queue.
+func (s *Server) handleQueueMove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	root, ok := s.queueRoot(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	var req MoveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if req.Dir != -1 && req.Dir != 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "dir must be -1 (up) or 1 (down)"})
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	if _, err := queue.NewStore(root).Move(id, req.Dir); errors.Is(err, queue.ErrNotQueued) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("%s is not in the queue", id)})
+		return
+	} else if errors.Is(err, queue.ErrRunning) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s is running and cannot be reordered", id)})
+		return
+	} else if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "reorder: " + err.Error()})
+		return
+	}
+	s.writeQueue(w, http.StatusOK, root)
+}
+
+// validateQueueTarget confirms a to-be-queued id exists in the repo's tracker
+// and belongs to this repo's project, returning its title. It is best-effort: a
+// repo without direct tracker credentials cannot be checked, so it passes and
+// the id is queued unvalidated; a definite not-found or cross-project answer is
+// refused with a clear status and ok=false.
+func (s *Server) validateQueueTarget(w http.ResponseWriter, r *http.Request, name, id string) (string, bool) {
+	repo, ok := s.findRepo(name)
+	if !ok {
+		return "", true
+	}
+	_, reader, err := s.readerFor(repo)
+	if err != nil {
+		return "", true
+	}
+	item, err := reader.Issue(r.Context(), id)
+	if errors.Is(err, tracker.ErrIssueNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": id + " not found in this repo's tracker"})
+		return "", false
+	}
+	if err != nil {
+		return "", true
+	}
+	if !item.InProject {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("%s belongs to project %q, not this repo's project — refusing to queue a cross-project ticket", id, item.Project),
+		})
+		return "", false
+	}
+	return item.Title, true
 }
 
 // viewQueue lists a repo's queue scoped to the Active repo, in registration
@@ -157,20 +257,35 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("id %q is not a valid ticket identifier", req.ID)})
 		return
 	}
-	kind := queue.Kind(strings.TrimSpace(req.Kind))
-	if kind != queue.KindTicket && kind != queue.KindEpic {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("kind %q must be %q or %q", req.Kind, queue.KindTicket, queue.KindEpic)})
+	hint := queue.Kind(strings.TrimSpace(req.Kind))
+	if hint != "" && hint != "auto" && hint != queue.KindTicket && hint != queue.KindEpic {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("kind %q must be %q, %q, or empty to auto-detect", req.Kind, queue.KindTicket, queue.KindEpic)})
 		return
 	}
-	item := queue.Item{Kind: kind, ID: id, Title: strings.TrimSpace(req.Title)}
-	if kind == queue.KindEpic {
+
+	item := queue.Item{ID: id, Title: strings.TrimSpace(req.Title), Kind: hint}
+	if title, ok := s.validateQueueTarget(w, r, name, id); !ok {
+		return
+	} else if item.Title == "" {
+		item.Title = title
+	}
+
+	// Resolve kind: an explicit ticket stays a ticket; otherwise (epic or
+	// auto) list the children — any child makes it an epic carrying them.
+	if hint != queue.KindTicket {
 		subs, err := s.listEpicSubIssues(r.Context(), root, id)
 		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "epic preview failed: " + err.Error()})
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "resolve item: " + err.Error()})
 			return
 		}
-		item.SubIssues = toQueueSubIssues(subs)
+		if len(subs) > 0 {
+			item.Kind = queue.KindEpic
+			item.SubIssues = toQueueSubIssues(subs)
+		} else {
+			item.Kind = queue.KindTicket
+		}
 	}
+
 	if _, err := queue.NewStore(root).Add(item); errors.Is(err, queue.ErrAlreadyQueued) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s is already in the queue", id)})
 		return

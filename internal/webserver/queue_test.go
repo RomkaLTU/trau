@@ -187,7 +187,6 @@ func TestEnqueueRejectsBadInput(t *testing.T) {
 		{name: "malformed id", req: QueueRequest{Kind: "ticket", ID: "not-a-ticket!"}},
 		{name: "empty id", req: QueueRequest{Kind: "ticket", ID: "  "}},
 		{name: "unknown kind", req: QueueRequest{Kind: "story", ID: "COD-1"}},
-		{name: "empty kind", req: QueueRequest{Kind: "", ID: "COD-1"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -197,6 +196,77 @@ func TestEnqueueRejectsBadInput(t *testing.T) {
 				t.Fatalf("status = %d, want 400", res.StatusCode)
 			}
 		})
+	}
+}
+
+// TestEnqueueAutoDetectsKind proves a request that omits kind is resolved by
+// listing the id's children: no children makes it a ticket, any child makes it
+// an epic carrying them — so the Loop card can add a bare id.
+func TestEnqueueAutoDetectsKind(t *testing.T) {
+	t.Run("no children is a ticket", func(t *testing.T) {
+		_, _, ts := queueServer(t, "acme")
+		res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{ID: "COD-1"})
+		defer func() { _ = res.Body.Close() }()
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("status = %d, want 201", res.StatusCode)
+		}
+		var out QueueResponse
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(out.Items) != 1 || out.Items[0].Kind != "ticket" {
+			t.Errorf("item = %+v, want a ticket", out.Items)
+		}
+	})
+	t.Run("children make it an epic", func(t *testing.T) {
+		fake, _, ts := queueServer(t, "acme")
+		fake.captureOut = []byte(`[{"id":"COD-12","title":"First","state":"todo"}]`)
+		res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{ID: "COD-10"})
+		defer func() { _ = res.Body.Close() }()
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("status = %d, want 201", res.StatusCode)
+		}
+		var out QueueResponse
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(out.Items) != 1 || out.Items[0].Kind != "epic" || len(out.Items[0].SubIssues) != 1 {
+			t.Errorf("item = %+v, want an epic carrying its one sub-issue", out.Items)
+		}
+	})
+}
+
+// TestQueueMoveReorders drives the reorder endpoint: a valid move returns the
+// reordered queue, an unknown id 404s, and a bad direction 400s.
+func TestQueueMoveReorders(t *testing.T) {
+	_, _, ts := queueServer(t, "acme")
+	for _, id := range []string{"COD-1", "COD-2", "COD-3"} {
+		res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: id})
+		_ = res.Body.Close()
+	}
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/COD-3/move", MoveRequest{Dir: -1})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("move status = %d, want 200", res.StatusCode)
+	}
+	var out QueueResponse
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Items) != 3 || out.Items[1].ID != "COD-3" || out.Items[2].ID != "COD-2" {
+		t.Errorf("order = %+v, want COD-1 COD-3 COD-2 after moving COD-3 up", out.Items)
+	}
+
+	miss := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/COD-9/move", MoveRequest{Dir: -1})
+	_ = miss.Body.Close()
+	if miss.StatusCode != http.StatusNotFound {
+		t.Errorf("move absent = %d, want 404", miss.StatusCode)
+	}
+	bad := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/COD-1/move", MoveRequest{Dir: 0})
+	_ = bad.Body.Close()
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Errorf("move dir 0 = %d, want 400", bad.StatusCode)
 	}
 }
 
