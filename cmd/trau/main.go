@@ -39,6 +39,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
 	"github.com/RomkaLTU/trau/internal/planning"
+	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
@@ -501,6 +502,19 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		Poller:       usagePoller(cfg, log),
 		Report:       reg.SetState,
 	}, con, result)
+
+	if opts.DrainReport != "" {
+		var rep queue.DrainReport
+		switch {
+		case pipeline.IsPaused(lerr):
+			rep.Class = state.FailPaused
+			rep.Reason = lerr.Error()
+		case pipeline.IsFault(lerr):
+			rep.Class = state.FailFaulted
+			rep.Reason = lerr.Error()
+		}
+		_ = queue.WriteReport(opts.DrainReport, rep)
+	}
 
 	tk, cost, metered := total(processed)
 	con.LoopDone(applyFault(console.SessionSummary{

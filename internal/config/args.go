@@ -34,6 +34,10 @@ type Options struct {
 	JSON         bool
 	Verbose      bool
 	Debug        bool
+	// DrainReport is an internal path the hub's queue drainer passes so a
+	// headless child writes how many leaf tickets it processed, letting the
+	// drain tally a whole-queue iteration cap across items. Not user-facing.
+	DrainReport string
 }
 
 // ParseArgs parses the CLI argument vector. It returns an error on an unknown
@@ -120,6 +124,12 @@ func ParseArgs(args []string) (Options, error) {
 				return o, err
 			}
 			o.Repo = v
+		case a == "--drain-report":
+			v, err := next(a)
+			if err != nil {
+				return o, err
+			}
+			o.DrainReport = v
 		case a == "--yes":
 			o.Confirm = true
 		case reBareID.MatchString(a):
