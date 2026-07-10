@@ -13,15 +13,36 @@ WEB_DIR  := web
 WEB_DIST := internal/webserver/dist/index.html
 WEB_SRC  := $(shell find $(WEB_DIR)/src $(WEB_DIR)/index.html $(WEB_DIR)/package.json $(WEB_DIR)/vite.config.ts 2>/dev/null)
 
+# Local dev hub (see `make reset`). Override the port if you run serve elsewhere:
+#   make reset SERVE_PORT=8730
+SERVE_PORT ?= 8728
+SERVE_LOG  ?= /tmp/trau-serve.log
+
 export CGO_ENABLED := 0
 
-.PHONY: all build web vet test lint fmt dist clean
+.PHONY: all build reset web vet test lint fmt dist clean
 
 all: build
 
 ## build: compile the SPA + binary for the host platform into bin/
 build: web
 	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o bin/$(BINARY) $(PKG)
+
+## reset: rebuild the dev binary + restart the local web hub (detached) from it
+reset: build
+	@pids=$$(lsof -ti tcp:$(SERVE_PORT) -sTCP:LISTEN 2>/dev/null); \
+	if [ -n "$$pids" ]; then \
+		echo "→ stopping hub on :$(SERVE_PORT) (pid $$pids)"; \
+		kill $$pids 2>/dev/null || true; \
+		for i in 1 2 3 4 5 6 7 8 9 10; do lsof -ti tcp:$(SERVE_PORT) -sTCP:LISTEN >/dev/null 2>&1 || break; sleep 0.3; done; \
+	fi
+	@nohup ./bin/$(BINARY) serve >$(SERVE_LOG) 2>&1 & \
+	sleep 1; \
+	if lsof -ti tcp:$(SERVE_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
+		echo "→ hub live: http://127.0.0.1:$(SERVE_PORT)  (dev build $(VERSION); logs: $(SERVE_LOG))"; \
+	else \
+		echo "✗ hub failed to start — tail of $(SERVE_LOG):"; tail -n 15 $(SERVE_LOG); exit 1; \
+	fi
 
 ## web: build the embedded SPA (only when its sources change)
 web: $(WEB_DIST)
