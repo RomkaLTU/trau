@@ -403,3 +403,132 @@ func TestSetStatusUnknownItem(t *testing.T) {
 		t.Fatalf("Pause unknown = %v, want ErrNotQueued", err)
 	}
 }
+
+// TestMoveReordersPendingItems walks an item up and down, persists each move,
+// no-ops past the ends, and reports ErrNotQueued for an absent id.
+func TestMoveReordersPendingItems(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	for _, id := range []string{"COD-1", "COD-2", "COD-3"} {
+		mustAdd(t, s, Item{Kind: KindTicket, ID: id})
+	}
+
+	if _, err := s.Move("COD-3", -1); err != nil {
+		t.Fatalf("Move up: %v", err)
+	}
+	if got := ids(mustLoad(t, root)); !equalIDs(got, []string{"COD-1", "COD-3", "COD-2"}) {
+		t.Errorf("after up = %v, want COD-1 COD-3 COD-2", got)
+	}
+
+	if _, err := s.Move("COD-1", 1); err != nil {
+		t.Fatalf("Move down: %v", err)
+	}
+	if got := ids(mustLoad(t, root)); !equalIDs(got, []string{"COD-3", "COD-1", "COD-2"}) {
+		t.Errorf("after down = %v, want COD-3 COD-1 COD-2", got)
+	}
+
+	if _, err := s.Move("COD-3", -1); err != nil {
+		t.Fatalf("Move past front: %v", err)
+	}
+	if got := ids(mustLoad(t, root)); !equalIDs(got, []string{"COD-3", "COD-1", "COD-2"}) {
+		t.Errorf("past front changed order to %v", got)
+	}
+
+	if _, err := s.Move("COD-404", -1); !errors.Is(err, ErrNotQueued) {
+		t.Fatalf("Move absent = %v, want ErrNotQueued", err)
+	}
+}
+
+// TestMoveRunningItem proves the running item cannot move and a pending item
+// cannot jump over it, so a reorder never disturbs the run in flight.
+func TestMoveRunningItem(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	for _, id := range []string{"COD-1", "COD-2", "COD-3"} {
+		mustAdd(t, s, Item{Kind: KindTicket, ID: id})
+	}
+	if err := s.MarkRunning("COD-2", 42); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	if _, err := s.Move("COD-2", -1); !errors.Is(err, ErrRunning) {
+		t.Fatalf("Move running = %v, want ErrRunning", err)
+	}
+	if _, err := s.Move("COD-3", -1); err != nil {
+		t.Fatalf("Move over running: %v", err)
+	}
+	if got := ids(mustLoad(t, root)); !equalIDs(got, []string{"COD-1", "COD-2", "COD-3"}) {
+		t.Errorf("order = %v, want unchanged; COD-3 may not jump the running COD-2", got)
+	}
+}
+
+// TestMarkSkipped settles an item skipped carrying its reason and reports
+// ErrNotQueued for an unknown id.
+func TestMarkSkipped(t *testing.T) {
+	s := newStore(t)
+	mustAdd(t, s, Item{Kind: KindTicket, ID: "COD-1"})
+	if err := s.MarkSkipped("COD-1", "duplicate"); err != nil {
+		t.Fatalf("MarkSkipped: %v", err)
+	}
+	if got := status(t, s, "COD-1"); got != StatusSkipped {
+		t.Fatalf("status = %q, want skipped", got)
+	}
+	if err := s.MarkSkipped("COD-404", "x"); !errors.Is(err, ErrNotQueued) {
+		t.Fatalf("MarkSkipped unknown = %v, want ErrNotQueued", err)
+	}
+}
+
+// TestOptionsRoundTrip persists the run-level knobs across a reload.
+func TestOptionsRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	mustAdd(t, s, Item{Kind: KindTicket, ID: "COD-1"})
+
+	if err := s.SetOptions(true, OnFaultSkip); err != nil {
+		t.Fatalf("SetOptions: %v", err)
+	}
+
+	meta, err := NewStore(root).Meta()
+	if err != nil {
+		t.Fatalf("Meta: %v", err)
+	}
+	if !meta.NoResume || meta.OnFault != OnFaultSkip {
+		t.Fatalf("meta = %+v, want noResume / skip", meta)
+	}
+}
+
+// TestRestartResetsQueue proves skip-resume returns every non-running item to
+// pending, clears reasons, and leaves a running item untouched.
+func TestRestartResetsQueue(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	for _, id := range []string{"COD-1", "COD-2", "COD-3"} {
+		mustAdd(t, s, Item{Kind: KindTicket, ID: id})
+	}
+	if err := s.Finish("COD-1", StatusDone, ""); err != nil {
+		t.Fatalf("Finish COD-1: %v", err)
+	}
+	if err := s.MarkRunning("COD-2", 42); err != nil {
+		t.Fatalf("MarkRunning COD-2: %v", err)
+	}
+	if err := s.Finish("COD-3", StatusFailed, "gave up"); err != nil {
+		t.Fatalf("Finish COD-3: %v", err)
+	}
+
+	if err := s.Restart(); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+
+	byID := map[string]Item{}
+	for _, it := range mustLoad(t, root) {
+		byID[it.ID] = it
+	}
+	if byID["COD-1"].Status != StatusPending {
+		t.Errorf("COD-1 = %q, want reset to pending", byID["COD-1"].Status)
+	}
+	if byID["COD-2"].Status != StatusRunning {
+		t.Errorf("COD-2 = %q, want the running item left alone", byID["COD-2"].Status)
+	}
+	if byID["COD-3"].Status != StatusPending || byID["COD-3"].Reason != "" {
+		t.Errorf("COD-3 = %+v, want pending with reason cleared", byID["COD-3"])
+	}
+}

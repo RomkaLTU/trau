@@ -33,6 +33,16 @@ const (
 	StatusPaused  = "paused"
 	StatusDone    = "done"
 	StatusFailed  = "failed"
+	// StatusSkipped marks an item the drain passed over without running: a
+	// duplicate of work already claimed elsewhere in the same queue.
+	StatusSkipped = "skipped"
+)
+
+// OnFault selects what a fault does to the rest of the queue: halt parks the
+// item and stops the drain for a human, skip settles it failed and continues.
+const (
+	OnFaultHalt = "halt"
+	OnFaultSkip = "skip"
 )
 
 // SubIssue is one child an epic item carries, captured when the epic is queued
@@ -82,7 +92,17 @@ func NewStore(root string) *Store {
 
 type file struct {
 	Draining bool   `json:"draining,omitempty"`
+	NoResume bool   `json:"no_resume,omitempty"`
+	OnFault  string `json:"on_fault,omitempty"`
 	Items    []Item `json:"items"`
+}
+
+// Meta is the queue's run-level configuration, read alongside its items to drive
+// the drain: whether to ignore stored checkpoints and what a fault does.
+type Meta struct {
+	Draining bool
+	NoResume bool
+	OnFault  string
 }
 
 // Load returns the queue in registration order, empty when nothing has been
@@ -217,6 +237,102 @@ func (s *Store) Pause(id, reason string) error {
 	return ErrNotQueued
 }
 
+// Move shifts the item with id one slot toward the front (dir -1) or back
+// (dir +1), returning the resulting queue. A running item cannot move and the
+// running item cannot be jumped over, so a reorder never disturbs the run in
+// flight. Moving past either end is a no-op, not an error.
+func (s *Store) Move(id string, dir int) ([]Item, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	f, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	idx := -1
+	for i := range f.Items {
+		if f.Items[i].ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return nil, ErrNotQueued
+	}
+	if f.Items[idx].Status == StatusRunning {
+		return nil, ErrRunning
+	}
+	target := idx + dir
+	if target < 0 || target >= len(f.Items) {
+		return f.Items, nil
+	}
+	if f.Items[target].Status == StatusRunning {
+		return f.Items, nil
+	}
+	f.Items[idx], f.Items[target] = f.Items[target], f.Items[idx]
+	if err := s.save(f); err != nil {
+		return nil, err
+	}
+	return f.Items, nil
+}
+
+// MarkSkipped settles an item as skipped with the reason it was passed over,
+// clearing any child pid. The drain uses it to record a duplicate it did not
+// run.
+func (s *Store) MarkSkipped(id, reason string) error {
+	return s.settle(id, StatusSkipped, reason, 0)
+}
+
+// Meta returns the queue's run-level configuration.
+func (s *Store) Meta() (Meta, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	f, err := s.load()
+	if err != nil {
+		return Meta{}, err
+	}
+	return Meta{
+		Draining: f.Draining,
+		NoResume: f.NoResume,
+		OnFault:  f.OnFault,
+	}, nil
+}
+
+// SetOptions records the run-level knobs a drain start carries: whether children
+// ignore stored checkpoints, and what a fault does to the rest of the queue.
+func (s *Store) SetOptions(noResume bool, onFault string) error {
+	mu.Lock()
+	defer mu.Unlock()
+	f, err := s.load()
+	if err != nil {
+		return err
+	}
+	f.NoResume = noResume
+	f.OnFault = onFault
+	return s.save(f)
+}
+
+// Restart resets the queue for a fresh drain from the top: every item that is
+// not currently running returns to pending with its reason and child pid
+// cleared. It backs skip-resume, which discards any stored position before
+// draining.
+func (s *Store) Restart() error {
+	mu.Lock()
+	defer mu.Unlock()
+	f, err := s.load()
+	if err != nil {
+		return err
+	}
+	for i := range f.Items {
+		if f.Items[i].Status == StatusRunning {
+			continue
+		}
+		f.Items[i].Status = StatusPending
+		f.Items[i].Reason = ""
+		f.Items[i].PID = 0
+	}
+	return s.save(f)
+}
+
 func (s *Store) settle(id, status, reason string, pid int) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -251,6 +367,39 @@ func (s *Store) load() (file, error) {
 		f.Items = []Item{}
 	}
 	return f, nil
+}
+
+// DrainReport is what a headless queue-member child leaves for the hub drainer
+// on exit: when the run ended on a fault or provider pause, the failure class
+// and reason. It lets the drain settle an item — including an epic whose fault
+// lives on a sub-issue's checkpoint, not the epic's — from the child's own
+// outcome rather than the epic checkpoint, which never shows it.
+type DrainReport struct {
+	Class  string `json:"class,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// WriteReport writes a drain report to path.
+func WriteReport(path string, r DrainReport) error {
+	data, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// ReadReport reads a drain report from path, reporting ok=false when the file is
+// absent or unreadable so the drain falls back to checkpoint-derived outcome.
+func ReadReport(path string) (DrainReport, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return DrainReport{}, false
+	}
+	var r DrainReport
+	if err := json.Unmarshal(data, &r); err != nil {
+		return DrainReport{}, false
+	}
+	return r, true
 }
 
 func (s *Store) save(f file) error {
