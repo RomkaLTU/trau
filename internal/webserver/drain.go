@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -39,7 +40,7 @@ type drainer struct {
 	poll     time.Duration
 	alive    func(pid int) bool
 	repoLive func(root string) bool
-	outcome  func(root string, it queue.Item) (class, reason string)
+	outcome  func(runsDir string, it queue.Item) (class, reason string)
 
 	mu     sync.Mutex
 	active map[string]context.CancelFunc
@@ -99,6 +100,7 @@ func (d *drainer) run(ctx context.Context, root string) {
 // reads stopped instead of idling armed. It is the whole drain policy, pure
 // enough to table-test.
 func (d *drainer) tick(root string) (drainAction, error) {
+	runsDir := repoRunsDir(root)
 	store := queue.NewStore(root)
 	items, draining, err := store.Snapshot()
 	if err != nil {
@@ -112,7 +114,7 @@ func (d *drainer) tick(root string) (drainAction, error) {
 		if d.alive(running.PID) {
 			return drainWait, nil
 		}
-		class, reason := d.reconcileOutcome(root, running)
+		class, reason := d.reconcileOutcome(runsDir, running)
 		if status, pause := classifyDrainOutcome(class, meta.OnFault); pause {
 			if err := store.Pause(running.ID, reason); err != nil {
 				return drainWait, err
@@ -147,8 +149,8 @@ func (d *drainer) tick(root string) (drainAction, error) {
 		}
 		return drainReconcile, nil
 	}
-	_ = os.Remove(reportPath(root))
-	pid, err := d.srv.sup.Spawn(d.spec(root, next, meta.NoResume))
+	_ = os.Remove(reportPath(runsDir))
+	pid, err := d.srv.sup.Spawn(d.spec(root, runsDir, next, meta.NoResume))
 	if err != nil {
 		return drainWait, err
 	}
@@ -162,10 +164,10 @@ func (d *drainer) tick(root string) (drainAction, error) {
 // reason. The child's own report is authoritative for a pause or fault (it
 // catches an epic whose fault lives on a sub-issue), while a give-up and a clean
 // finish fall through to the checkpoint-derived outcome.
-func (d *drainer) reconcileOutcome(root string, it queue.Item) (class, reason string) {
-	class, reason = d.outcome(root, it)
-	if rep, ok := queue.ReadReport(reportPath(root)); ok {
-		_ = os.Remove(reportPath(root))
+func (d *drainer) reconcileOutcome(runsDir string, it queue.Item) (class, reason string) {
+	class, reason = d.outcome(runsDir, it)
+	if rep, ok := queue.ReadReport(reportPath(runsDir)); ok {
+		_ = os.Remove(reportPath(runsDir))
 		if rep.Class != "" {
 			class, reason = rep.Class, rep.Reason
 		}
@@ -197,10 +199,38 @@ func duplicateReason(items []queue.Item, next queue.Item) (string, bool) {
 	return "", false
 }
 
-// reportPath is where a queued child writes its drain report; one path per repo
-// is safe because the drain runs children strictly one at a time.
-func reportPath(root string) string {
-	return filepath.Join(root, ".trau", "runs", ".drain-report")
+// reportPath is where a queued child writes its drain report, under the repo's
+// resolved runs dir; one path per repo is safe because the drain runs children
+// strictly one at a time.
+func reportPath(runsDir string) string {
+	return filepath.Join(runsDir, ".drain-report")
+}
+
+// repoRunsDir resolves the runs dir a loop child launched in root writes to,
+// mirroring how the child itself resolves config: the repo-root .trau.ini and
+// ~/.trau.ini layers plus the repo-root-local trau.ini the child reads because it
+// runs with root as its working directory. A relative RUNS_DIR resolves against
+// the repo root; an unset value or a config error falls back to the default. This
+// is what keeps the drainer reading checkpoints and writing the drain report
+// where the child actually put them, not a hardcoded .trau/runs.
+func repoRunsDir(root string) string {
+	projectPath := config.ProjectConfigPath(root)
+	var userPath string
+	if home, err := os.UserHomeDir(); err == nil {
+		userPath = config.ProjectConfigPath(home)
+	}
+	localPath := config.LocalConfigPath()
+	if !filepath.IsAbs(localPath) {
+		localPath = filepath.Join(root, localPath)
+	}
+	runsDir := config.Defaults().RunsDir
+	if cfg, err := config.LoadLayered(projectPath, userPath, localPath, ""); err == nil && cfg.RunsDir != "" {
+		runsDir = cfg.RunsDir
+	}
+	if !filepath.IsAbs(runsDir) {
+		runsDir = filepath.Join(root, runsDir)
+	}
+	return runsDir
 }
 
 // classifyDrainOutcome maps a finished child's failure class — as the loop
@@ -229,7 +259,7 @@ func classifyDrainOutcome(class, onFault string) (status string, pause bool) {
 // run-once, an epic as the existing epic flow, matching the /instances start
 // paths so a queued run is indistinguishable from a manual one. noResume ignores
 // stored checkpoints, and every child leaves a drain report for its outcome.
-func (d *drainer) spec(root string, it queue.Item, noResume bool) SpawnSpec {
+func (d *drainer) spec(root, runsDir string, it queue.Item, noResume bool) SpawnSpec {
 	args := []string{"--repo", root, "--no-tui"}
 	if it.Kind == queue.KindEpic {
 		args = append(args, "--parent", it.ID)
@@ -239,7 +269,7 @@ func (d *drainer) spec(root string, it queue.Item, noResume bool) SpawnSpec {
 	if noResume {
 		args = append(args, "--no-resume")
 	}
-	args = append(args, "--drain-report", reportPath(root))
+	args = append(args, "--drain-report", reportPath(runsDir))
 	return SpawnSpec{Dir: root, Args: args, Env: childEnv(d.srv.home)}
 }
 
@@ -247,8 +277,8 @@ func (d *drainer) spec(root string, it queue.Item, noResume bool) SpawnSpec {
 // and the loop's own failure marker/reason, never agent output — and returns the
 // loop's failure class plus the reason to surface. A merged or healthy run
 // classifies as no failure ("").
-func (d *drainer) checkpointOutcome(root string, it queue.Item) (class, reason string) {
-	store := state.NewStore(filepath.Join(root, ".trau", "runs"))
+func (d *drainer) checkpointOutcome(runsDir string, it queue.Item) (class, reason string) {
+	store := state.NewStore(runsDir)
 	phase := store.Get(it.ID, "PHASE")
 	reason = store.Get(it.ID, "FAILURE_REASON")
 	class = state.FailureClass(phase, store.Get(it.ID, "FAILURE_CLASS"), reason)
