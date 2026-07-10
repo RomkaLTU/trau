@@ -1,28 +1,33 @@
-import { useEffect, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState, type ReactNode } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Eye, Play, RefreshCw, Square } from "lucide-react";
+import { Eye, Play, Plus, RefreshCw, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useActiveRepo } from "@/components/trau/active-repo";
 import { EmptyState } from "@/components/trau/empty-state";
-import { StatTile } from "@/components/trau/stat-tile";
-import { StatusPill } from "@/components/trau/status-pill";
+import { Eyebrow } from "@/components/trau/eyebrow";
+import { StatusPill, type RunState } from "@/components/trau/status-pill";
 import { TerminalCard } from "@/components/trau/terminal-card";
 import { cn } from "@/lib/utils";
-import { useAttentionRuns } from "@/lib/attention";
+import { useAttentionRuns, type AttentionRun } from "@/lib/attention";
+import { costsQueryOptions } from "@/lib/costs";
 import { startInstance, stopInstance } from "@/lib/instances";
 import {
   activeLoopCount,
   attentionPill,
+  isActiveState,
   loopCardView,
+  phasePill,
   phaseSteps,
+  recentRuns,
   useLiveLoops,
-  useTodaySpend,
+  useRepoActivity,
   type LiveLoop,
   type PhaseState,
+  type RepoActivity,
 } from "@/lib/overview";
-import type { FailureClass } from "@/lib/runs";
+import { runsQueryOptions, type FailureClass, type Run } from "@/lib/runs";
 
 function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());
@@ -43,51 +48,123 @@ function elapsed(fromISO: string, now: number): string {
   return `${rem}s`;
 }
 
-function money(usd: number): string {
-  return `$${usd.toFixed(2)}`;
+// ago renders a compact "time since" for finished runs — days collapse to a
+// single unit, everything under a day keeps hours + zero-padded minutes.
+function ago(fromISO: string | undefined, now: number): string {
+  if (!fromISO) return "";
+  const s = Math.max(0, Math.floor((now - new Date(fromISO).getTime()) / 1000));
+  const d = Math.floor(s / 86400);
+  if (d > 0) return `${d}d`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  if (m > 0) return `${m}m`;
+  return `${s}s`;
 }
 
-export function StatTiles() {
-  const { repo } = useActiveRepo();
-  const spend = useTodaySpend(repo);
-  const loops = useLiveLoops(repo);
-  const attention = useAttentionRuns(repo);
+/* ---------- pulse strip ---------- */
+
+export function PulseStrip() {
+  const { repo, isAll } = useActiveRepo();
+  const activity = useRepoActivity();
+  const { data: costs } = useQuery(costsQueryOptions(1));
+
+  const scoped = isAll ? activity : activity.filter((a) => a.repo.name === repo);
+  const running = scoped.reduce((n, a) => n + activeLoopCount(a.loops), 0);
+  const attention = scoped.reduce((n, a) => n + a.attention.length, 0);
+  const idle = scoped.filter((a) => activeLoopCount(a.loops) === 0).length;
+  const spend = scoped.reduce((s, a) => s + a.spend, 0);
+  const metered = scoped.every((a) => a.metered);
+
+  const repoBudget = isAll
+    ? undefined
+    : costs?.repos.find((c) => c.repo === repo)?.daily_budget_usd;
+  const budget = repoBudget ?? costs?.budget.daily_usd;
+  const spendPct = budget ? Math.min(100, (spend / budget) * 100) : 0;
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-      <StatTile
-        label="spend today"
-        value={
-          <>
-            {spend.metered ? "" : "≥ "}
-            {money(spend.cost)}
-            {spend.budget ? (
-              <span className="text-sm text-muted-foreground">
-                {" "}
-                / {money(spend.budget)}
-              </span>
-            ) : null}
-          </>
-        }
-        progress={
-          spend.budget ? { value: spend.cost, max: spend.budget } : undefined
-        }
-        hint={spend.budget ? undefined : "no daily cap set"}
-      />
-      <StatTile
-        label="active loops"
-        value={activeLoopCount(loops)}
-        hint="running now"
-      />
-      <StatTile
-        label="needs attention"
-        value={attention.length}
-        valueClassName={attention.length > 0 ? "text-warn" : undefined}
-        hint="waiting on you"
-      />
+    <div className="flex flex-col gap-3 rounded-lg border border-border bg-card px-4 py-3 sm:flex-row sm:items-center sm:gap-6">
+      <div className="flex items-center gap-6">
+        <div className="flex items-center gap-2 font-mono text-sm">
+          <span aria-hidden="true" className="text-teal">
+            ●
+          </span>
+          <span className="text-foreground">{running}</span>
+          <span className="text-muted-foreground">running</span>
+        </div>
+        <div className="flex items-center gap-2 font-mono text-sm">
+          <span
+            aria-hidden="true"
+            className={attention > 0 ? "text-warn" : "text-faint"}
+          >
+            ⚠
+          </span>
+          <span className={attention > 0 ? "text-warn" : "text-foreground"}>
+            {attention}
+          </span>
+          <span className="text-muted-foreground">need you</span>
+        </div>
+        <div className="flex items-center gap-2 font-mono text-sm">
+          <span aria-hidden="true" className="text-faint">
+            ○
+          </span>
+          <span className="text-foreground">{idle}</span>
+          <span className="text-muted-foreground">idle</span>
+        </div>
+      </div>
+
+      <div className="flex flex-1 items-center gap-3 sm:justify-end">
+        <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+          spend today
+        </span>
+        {budget ? (
+          <div
+            className="h-1 w-24 overflow-hidden rounded-full bg-secondary"
+            role="progressbar"
+            aria-valuenow={Number(spend.toFixed(2))}
+            aria-valuemin={0}
+            aria-valuemax={budget}
+            aria-label="spend today"
+          >
+            <div
+              className="h-full rounded-full bg-primary"
+              style={{ width: `${spendPct}%` }}
+            />
+          </div>
+        ) : null}
+        <span className="font-mono text-sm text-foreground">
+          {metered ? "" : "≥ "}${spend.toFixed(2)}
+          {budget ? (
+            <span className="text-muted-foreground"> / ${budget.toFixed(0)}</span>
+          ) : null}
+        </span>
+      </div>
     </div>
   );
 }
+
+/* ---------- launch actions (header) ---------- */
+
+export function LaunchActions() {
+  return (
+    <div className="flex items-center gap-2">
+      <Button asChild className="font-mono">
+        <Link to="/run-once">
+          <Play className="size-4" aria-hidden="true" />
+          Run once
+        </Link>
+      </Button>
+      <Button asChild variant="outline" className="font-mono">
+        <Link to="/loop">
+          <RefreshCw className="size-4" aria-hidden="true" />
+          Start loop
+        </Link>
+      </Button>
+    </div>
+  );
+}
+
+/* ---------- phase stepper ---------- */
 
 const PHASE_TEXT: Record<PhaseState, string> = {
   done: "text-done",
@@ -138,6 +215,17 @@ function MetaItem({ label, value }: { label: string; value: string }) {
   );
 }
 
+function MetaInline({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="flex items-baseline gap-1.5">
+      <span className="font-mono text-[0.6rem] uppercase tracking-[0.18em] text-muted-foreground">
+        {label}
+      </span>
+      <span className="font-mono text-xs text-foreground">{value}</span>
+    </span>
+  );
+}
+
 function actionError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -178,6 +266,8 @@ function StopButton({
     </div>
   );
 }
+
+/* ---------- single-repo focus: live loop card ---------- */
 
 function LoopCard({ loop, now }: { loop: LiveLoop; now: number }) {
   const view = loopCardView(loop.sessionState, {
@@ -267,7 +357,7 @@ function LoopCard({ loop, now }: { loop: LiveLoop; now: number }) {
   );
 }
 
-export function LiveLoops() {
+function LiveLoops() {
   const { repo } = useActiveRepo();
   const loops = useLiveLoops(repo);
   const now = useNow(1000);
@@ -305,6 +395,8 @@ export function LiveLoops() {
   );
 }
 
+/* ---------- single-repo focus: needs attention ---------- */
+
 const ATTENTION_META: Record<
   FailureClass,
   { action: string; resume: boolean }
@@ -323,7 +415,7 @@ function liveGateMessage(loop: LiveLoop | undefined): string {
   return `a loop is ${label}${loop.ticket ? ` ${loop.ticket}` : ""} in this repo…`;
 }
 
-export function NeedsAttention() {
+function NeedsAttention() {
   const { repo, repos } = useActiveRepo();
   const attention = useAttentionRuns(repo);
   const loops = useLiveLoops(repo);
@@ -459,33 +551,369 @@ export function NeedsAttention() {
   );
 }
 
-export function QuickLaunch() {
+/* ---------- single-repo focus: recent runs ---------- */
+
+function runPill(run: Run): { state: RunState; label: string } {
+  return run.failure_class ? attentionPill(run.failure_class) : phasePill(run.phase);
+}
+
+function RecentRunsPanel({ repo }: { repo: string }) {
+  const { data } = useQuery(runsQueryOptions(repo));
+  const now = useNow(30_000);
+  const runs = recentRuns(data?.runs ?? []);
+
   return (
-    <TerminalCard title="quick-launch">
-      <div className="flex flex-col gap-4 sm:flex-row">
-        <div className="flex flex-1 flex-col gap-2">
-          <Button asChild className="w-full font-mono">
-            <Link to="/run-once">
-              <Play className="size-4" aria-hidden="true" />
-              Run once
-            </Link>
-          </Button>
-          <span className="font-mono text-[0.65rem] text-muted-foreground">
-            one ticket, full pipeline
-          </span>
+    <Panel title="recent runs" count={runs.length}>
+      {runs.length === 0 ? (
+        <p className="px-5 py-6 font-sans text-sm text-muted-foreground">
+          No runs recorded for this repo yet.
+        </p>
+      ) : (
+        <ul className="flex flex-col divide-y divide-border/60">
+          {runs.map((run) => {
+            const pill = runPill(run);
+            return (
+              <li key={run.ticket}>
+                <Link
+                  to="/runs/$repo/$ticket"
+                  params={{ repo, ticket: run.ticket }}
+                  className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-5 py-3 transition-colors hover:bg-secondary/40"
+                >
+                  <span className="font-mono text-sm text-primary">
+                    {run.ticket}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-sans text-sm text-foreground">
+                    {run.title ?? run.ticket}
+                  </span>
+                  <StatusPill state={pill.state} label={pill.label} />
+                  <span className="w-14 text-right font-mono text-[0.7rem] text-muted-foreground">
+                    {ago(run.updated_at, now)}
+                  </span>
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Panel>
+  );
+}
+
+function RepoFocus({ repo }: { repo: string }) {
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-2">
+        <Eyebrow glyph="active">LIVE LOOPS</Eyebrow>
+        <LiveLoops />
+      </div>
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="flex flex-col gap-2">
+          <Eyebrow glyph="warn">NEEDS ATTENTION</Eyebrow>
+          <NeedsAttention />
         </div>
-        <div className="flex flex-1 flex-col gap-2">
-          <Button asChild variant="outline" className="w-full font-mono">
-            <Link to="/loop">
-              <RefreshCw className="size-4" aria-hidden="true" />
-              Start loop
-            </Link>
-          </Button>
-          <span className="font-mono text-[0.65rem] text-muted-foreground">
-            graze the ready queue
-          </span>
+        <div className="flex flex-col gap-2">
+          <Eyebrow glyph="action">RECENT RUNS</Eyebrow>
+          <RecentRunsPanel repo={repo} />
         </div>
       </div>
-    </TerminalCard>
+    </div>
   );
+}
+
+/* ---------- multi-repo board ---------- */
+
+function Panel({
+  title,
+  count,
+  children,
+  bodyClassName,
+}: {
+  title: string;
+  count?: number;
+  children: ReactNode;
+  bodyClassName?: string;
+}) {
+  return (
+    <section className="overflow-hidden rounded-lg border border-border bg-card">
+      <header className="flex items-center gap-3 border-b border-border px-5 py-2.5">
+        <div className="flex items-center gap-1.5" aria-hidden="true">
+          <span className="size-2.5 rounded-full bg-fail" />
+          <span className="size-2.5 rounded-full bg-warn" />
+          <span className="size-2.5 rounded-full bg-done" />
+        </div>
+        <span className="font-mono text-xs text-muted-foreground">{title}</span>
+        {typeof count === "number" ? (
+          <span className="ml-auto font-mono text-[0.65rem] text-faint">
+            {count}
+          </span>
+        ) : null}
+      </header>
+      <div className={bodyClassName}>{children}</div>
+    </section>
+  );
+}
+
+function BoardLoopActivity({ loop, now }: { loop: LiveLoop; now: number }) {
+  const view = loopCardView(loop.sessionState, {
+    phase: loop.phase,
+    failureClass: loop.failureClass,
+  });
+  return (
+    <div className="flex flex-col gap-2.5">
+      <div className="flex flex-wrap items-center gap-2">
+        <StatusPill state={view.pill.state} label={view.pill.label} />
+        {loop.ticket ? (
+          <Link
+            to="/live/$repo/$ticket"
+            params={{ repo: loop.repo, ticket: loop.ticket }}
+            className="font-mono text-sm text-primary hover:underline"
+          >
+            {loop.ticket}
+          </Link>
+        ) : null}
+        {loop.title ? (
+          <p className="text-pretty font-sans text-sm leading-relaxed text-foreground">
+            {loop.title}
+          </p>
+        ) : view.copy ? (
+          <span className="font-sans text-sm text-muted-foreground">
+            {view.copy}
+          </span>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        {view.showStepper ? <PhaseStepper phase={loop.phase} /> : null}
+        <MetaInline label="elapsed" value={elapsed(loop.startedAt, now)} />
+      </div>
+    </div>
+  );
+}
+
+function BoardAttentionActivity({ item }: { item: AttentionRun }) {
+  const cls = item.failure_class!;
+  const pill = attentionPill(cls);
+  const action = ATTENTION_META[cls].action;
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <StatusPill state={pill.state} label={pill.label} />
+      <span className="font-mono text-sm text-primary">{item.ticket}</span>
+      <p className="text-pretty font-sans text-sm leading-relaxed text-muted-foreground">
+        {item.failure_reason || item.title || item.repo}
+      </p>
+      <Link
+        to="/live/$repo/$ticket"
+        params={{ repo: item.repo, ticket: item.ticket }}
+        className="font-mono text-xs text-teal underline-offset-4 hover:underline"
+      >
+        {action} →
+      </Link>
+    </div>
+  );
+}
+
+function IdleActivity() {
+  return (
+    <div className="flex items-center gap-2">
+      <StatusPill state="todo" label="idle" />
+      <span className="font-sans text-sm text-muted-foreground">
+        No active work. Launch a run or start a loop.
+      </span>
+    </div>
+  );
+}
+
+function boardRank(a: RepoActivity): number {
+  if (activeLoopCount(a.loops) > 0) return 0;
+  if (a.attention.length > 0) return 1;
+  return 2;
+}
+
+function RepoStateDot({ activity }: { activity: RepoActivity }) {
+  if (activeLoopCount(activity.loops) > 0) {
+    return (
+      <span aria-hidden="true" className="text-teal">
+        ●
+      </span>
+    );
+  }
+  if (activity.attention.length > 0) {
+    return (
+      <span aria-hidden="true" className="text-warn">
+        ⚠
+      </span>
+    );
+  }
+  return (
+    <span aria-hidden="true" className="text-faint">
+      ○
+    </span>
+  );
+}
+
+function RepoActions({
+  activity,
+  primary,
+}: {
+  activity: RepoActivity;
+  primary: LiveLoop | null;
+}) {
+  const { setRepo } = useActiveRepo();
+  const navigate = useNavigate();
+
+  if (primary) {
+    const view = loopCardView(primary.sessionState, {
+      phase: primary.phase,
+      failureClass: primary.failureClass,
+    });
+    return (
+      <div className="flex items-center gap-2">
+        {view.showWatch && primary.ticket ? (
+          <Button asChild variant="outline" size="sm" className="font-mono">
+            <Link
+              to="/live/$repo/$ticket"
+              params={{ repo: primary.repo, ticket: primary.ticket }}
+            >
+              <Eye className="size-4" aria-hidden="true" />
+              View
+            </Link>
+          </Button>
+        ) : null}
+        {view.showStop ? (
+          <StopButton
+            pid={primary.pid}
+            repo={primary.repo}
+            disabled={view.stopDisabled}
+          />
+        ) : null}
+      </div>
+    );
+  }
+
+  const focus = (to: "/run-once" | "/loop") => {
+    setRepo(activity.repo.name);
+    void navigate({ to });
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      <Button
+        variant="outline"
+        size="sm"
+        className="font-mono"
+        onClick={() => focus("/run-once")}
+      >
+        <Play className="size-4" aria-hidden="true" />
+        Run once
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="font-mono"
+        onClick={() => focus("/loop")}
+      >
+        <RefreshCw className="size-4" aria-hidden="true" />
+        Loop
+      </Button>
+    </div>
+  );
+}
+
+function RepoRow({ activity, now }: { activity: RepoActivity; now: number }) {
+  const primary =
+    activity.loops.find((l) => isActiveState(l.sessionState)) ??
+    activity.loops[0] ??
+    null;
+  // A parked/faulted loop shows up in both feeds; keep it in the loop row and
+  // drop the duplicate attention entry so a repo isn't listed twice.
+  const liveTickets = new Set(
+    activity.loops.map((l) => l.ticket).filter(Boolean),
+  );
+  const attention = activity.attention.filter(
+    (a) => !liveTickets.has(a.ticket),
+  );
+  const idle = !primary && attention.length === 0;
+
+  return (
+    <li className="flex flex-col gap-4 px-5 py-4 lg:grid lg:grid-cols-[13rem_1fr_auto] lg:items-start lg:gap-6">
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-2 font-mono text-sm text-foreground">
+          <RepoStateDot activity={activity} />
+          {activity.repo.name}
+        </div>
+        <span className="truncate font-mono text-[0.65rem] text-muted-foreground">
+          {activity.repo.root}
+        </span>
+        <span className="font-mono text-[0.65rem] text-faint">
+          {activity.metered ? "" : "≥ "}${activity.spend.toFixed(2)} today
+        </span>
+      </div>
+
+      <div className="flex min-w-0 flex-col gap-3">
+        {primary ? <BoardLoopActivity loop={primary} now={now} /> : null}
+        {attention.map((item) => (
+          <BoardAttentionActivity key={item.ticket} item={item} />
+        ))}
+        {idle ? <IdleActivity /> : null}
+      </div>
+
+      <div className="lg:pt-0.5">
+        <RepoActions activity={activity} primary={primary} />
+      </div>
+    </li>
+  );
+}
+
+function RepoBoard() {
+  const activity = useRepoActivity();
+  const now = useNow(1000);
+  const rows = [...activity].sort((a, b) => boardRank(a) - boardRank(b));
+
+  return (
+    <Panel title="repos" count={rows.length}>
+      <ul className="flex flex-col divide-y divide-border/60">
+        {rows.map((row) => (
+          <RepoRow key={row.repo.name} activity={row} now={now} />
+        ))}
+      </ul>
+    </Panel>
+  );
+}
+
+/* ---------- scope-aware entry point ---------- */
+
+export function OverviewBoard() {
+  const { repo, repos, isAll } = useActiveRepo();
+
+  if (repos.length === 0) {
+    return (
+      <EmptyState
+        message="No repos yet. Register a repo to check it out and start driving loops from here."
+        actions={
+          <Button asChild size="sm" className="font-mono">
+            <Link to="/instances">
+              <Plus className="size-4" aria-hidden="true" />
+              Add a repo
+            </Link>
+          </Button>
+        }
+      />
+    );
+  }
+
+  if (isAll) {
+    return (
+      <div className="flex flex-col gap-2">
+        <Eyebrow glyph="active">REPOS</Eyebrow>
+        <RepoBoard />
+      </div>
+    );
+  }
+
+  if (!repo) {
+    return (
+      <EmptyState message="Pick a repo from the switcher to focus it, or choose All repos." />
+    );
+  }
+
+  return <RepoFocus repo={repo} />;
 }
