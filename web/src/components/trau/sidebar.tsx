@@ -9,6 +9,7 @@ import {
   ListChecks,
   Lock,
   Play,
+  Puzzle,
   RefreshCw,
   Settings,
   SquareTerminal,
@@ -86,7 +87,10 @@ const GROUPS: NavGroup[] = [
   },
   {
     label: 'CONFIGURE',
-    items: [{ label: 'Settings', icon: Settings, to: '/settings' }],
+    items: [
+      { label: 'Skills', icon: Puzzle, to: '/skills' },
+      { label: 'Settings', icon: Settings, to: '/settings' },
+    ],
   },
 ]
 
