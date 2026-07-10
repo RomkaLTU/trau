@@ -8,11 +8,11 @@ export type RunVariant = 'live' | 'success' | 'failure' | 'paused'
 export interface VariantInput {
   phase: string
   failureClass?: FailureClass
-  live: boolean
+  working: boolean
 }
 
-export function deriveVariant({ phase, failureClass, live }: VariantInput): RunVariant {
-  if (live) return 'live'
+export function deriveVariant({ phase, failureClass, working }: VariantInput): RunVariant {
+  if (working) return 'live'
   if (phase === 'merged') return 'success'
   if (failureClass === 'paused') return 'paused'
   if (failureClass === 'faulted' || failureClass === 'gave_up') return 'failure'

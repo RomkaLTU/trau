@@ -460,6 +460,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	reg := registry.Register(registry.Home(), repoRoot, cfg.RunsDir)
 	defer reg.Deregister()
+	p.OnPhase = func(id, phase string) { reg.SetState(registry.StateWorking, id, phase) }
 
 	eng := &realEngine{pipe: p, tracker: pm, scope: scope, sink: sink, log: log}
 
@@ -498,6 +499,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		ParentSuffix: parentSuffix,
 		ForcedID:     forcedID,
 		Poller:       usagePoller(cfg, log),
+		Report:       reg.SetState,
 	}, con, result)
 
 	tk, cost, metered := total(processed)
@@ -1052,10 +1054,17 @@ type loopParams struct {
 	ParentSuffix string
 	ForcedID     string
 	Poller       *probe.Poller
+	// Report, when set, records the loop's session-state transitions to the
+	// instance registry; nil disables reporting.
+	Report func(state, ticket, phase string)
 }
 
 func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer, result func(id string, elapsed time.Duration) console.TicketResult) ([]string, error) {
 	var processed []string
+	report := p.Report
+	if report == nil {
+		report = func(string, string, string) {}
+	}
 	// Put any WIP that EnsureCleanBase auto-stashed on a fresh pick back where it
 	// came from once the loop ends (no-op when nothing was stashed).
 	defer eng.RestoreWIP(ctx)
@@ -1092,6 +1101,7 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 	for {
 		select {
 		case <-ctx.Done():
+			report(registry.StateStopping, "", "")
 			con.Logf("⏹ interrupted — stopping")
 			return processed, nil
 		default:
@@ -1116,6 +1126,7 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 
 		if rid != "" {
 			con.Logf("↻ [%d] resuming %s", len(processed)+1, rid)
+			report(registry.StateWorking, rid, rphase)
 			t0 := time.Now()
 			err := eng.Process(ctx, rid, rphase)
 			if pipeline.IsPaused(err) {
@@ -1135,6 +1146,7 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 			}
 		} else if p.ForcedID != "" {
 			con.Logf("▶ [%d] %s", len(processed)+1, p.ForcedID)
+			report(registry.StateWorking, p.ForcedID, "")
 			t0 := time.Now()
 			err := eng.Process(ctx, p.ForcedID, "")
 			if pipeline.IsPaused(err) {
@@ -1163,6 +1175,7 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 
 			p.ForcedID = ""
 		} else {
+			report(registry.StateGrazing, "", "")
 			if err := eng.EnsureCleanBase(ctx); err != nil {
 				return processed, err
 			}
@@ -1175,6 +1188,7 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 				break
 			}
 			con.Logf("▶ [%d] %s", len(processed)+1, id)
+			report(registry.StateWorking, id, "")
 			t0 := time.Now()
 			err = eng.Process(ctx, id, "")
 			if pipeline.IsPaused(err) {
@@ -1257,6 +1271,7 @@ func runSession(ctx context.Context, cfg config.Config, opts config.Options, std
 
 	reg := registry.Register(registry.Home(), cfg.RepoRoot, cfg.RunsDir)
 	defer reg.Deregister()
+	acts.reg = reg
 
 	maybeAutostartHub(ctx, cfg, opts.NoServe, stderr)
 
@@ -1279,6 +1294,7 @@ type appActions struct {
 	pipe     *pipeline.Pipeline
 	tracker  tracker.Tracker
 	eng      *realEngine
+	reg      *registry.Handle
 }
 
 // RepoRoot returns the resolved target repo root, or "" when none was found.
@@ -2016,8 +2032,39 @@ func (a *appActions) ensure() error {
 		return err
 	}
 	a.pipe = pipe
+	a.pipe.OnPhase = func(id, phase string) { a.reg.SetState(registry.StateWorking, id, phase) }
 	a.eng = &realEngine{pipe: a.pipe, tracker: a.tracker, scope: a.scope, sink: a.sink, log: a.log}
 	return nil
+}
+
+// ReportIdle marks the session idle — the TUI is back on the menu with nothing
+// live. It is the tui.sessionReporter hook the menu shell calls on every return
+// to a browse screen.
+func (a *appActions) ReportIdle() { a.reg.SetState(registry.StateIdle, "", "") }
+
+// ReportStopping marks a graceful stop in flight, reported the moment the user
+// interrupts a run — before the loop unwinds — so the hub stops counting the
+// session as actively working.
+func (a *appActions) ReportStopping() { a.reg.SetState(registry.StateStopping, "", "") }
+
+// reportAfterRun settles the session state once a run returns: parked, naming
+// the ticket a fault, pause, or give-up left on the recap for a human, or idle
+// when the run finished cleanly. The failure class and reason stay on the
+// checkpoint.
+func (a *appActions) reportAfterRun(err error) {
+	if f := pipeline.AsFault(err); f != nil {
+		a.reg.SetState(registry.StateParked, f.ID, "")
+		return
+	}
+	if p := pipeline.AsPaused(err); p != nil {
+		a.reg.SetState(registry.StateParked, p.ID, "")
+		return
+	}
+	if g := pipeline.AsGiveUp(err); g != nil {
+		a.reg.SetState(registry.StateParked, g.ID, "")
+		return
+	}
+	a.reg.SetState(registry.StateIdle, "", "")
 }
 
 func (a *appActions) DryRun(ctx context.Context) (string, error) {
@@ -2435,7 +2482,8 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 		}
 	}
 	start := time.Now()
-	processed, lerr := runLoop(ctx, a.eng, loopParams{Max: max, Poller: usagePoller(a.cfg, a.log)}, r, result)
+	processed, lerr := runLoop(ctx, a.eng, loopParams{Max: max, Poller: usagePoller(a.cfg, a.log), Report: a.reg.SetState}, r, result)
+	a.reportAfterRun(lerr)
 	tk, cost, metered := total(processed)
 	r.LoopDone(applyFault(console.SessionSummary{
 		Tickets:     len(processed),
@@ -2517,6 +2565,7 @@ func (a *appActions) RunTicket(ctx context.Context, id, provider string, r conso
 	}
 	if lerr == nil {
 		r.Logf("▶ %s", id)
+		a.reg.SetState(registry.StateWorking, id, phase)
 		if err := a.pipe.Resume(ctx, id, phase); err != nil && !errors.Is(err, pipeline.ErrAlreadyDone) {
 			lerr = err
 		}
@@ -2535,6 +2584,7 @@ func (a *appActions) RunTicket(ctx context.Context, id, provider string, r conso
 		})
 	}
 
+	a.reportAfterRun(lerr)
 	tk, cs, metered := a.sink.SessionTotal(id)
 	r.LoopDone(applyFault(console.SessionSummary{
 		Tickets:     1,
