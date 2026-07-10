@@ -28,6 +28,7 @@ var safeEditKeys = map[string]bool{
 	"LINT_FIX":          true,
 	"CLEANUP":           true,
 	"VERIFY_CHECKS":     true,
+	"REQUIRED_SKILLS":   true,
 	"BROWSER_VERIFY":    true,
 	"NOTIFY":            true,
 	"EPIC_FLOW":         true,
