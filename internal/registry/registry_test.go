@@ -123,8 +123,8 @@ func TestSetStatePersistsAllFields(t *testing.T) {
 	}
 
 	h.SetState(StateWorking, "COD-765", "testing")
-	if e := Live(home)[0]; !e.StateSince.Equal(since) {
-		t.Errorf("StateSince moved on same-state SetState: %v -> %v", since, e.StateSince)
+	if e := Live(home)[0]; e.StateSince.Equal(since) {
+		t.Errorf("StateSince did not move on a phase change: %v", since)
 	}
 
 	h.SetState(StateParked, "COD-765", "")

@@ -140,16 +140,17 @@ func (h *Handle) beat() {
 }
 
 // SetState records what the session is doing and rewrites the entry file at
-// once, without waiting for the next heartbeat. StateSince advances only when
-// the state actually changes. Best-effort and safe on a nil or never-registered
-// Handle.
+// once, without waiting for the next heartbeat. StateSince advances whenever the
+// reported activity changes — the state, ticket, or phase — so it reads as "in
+// this phase since", the timestamp the hub shows instead of a file mtime.
+// Best-effort and safe on a nil or never-registered Handle.
 func (h *Handle) SetState(state, ticket, phase string) {
 	if h == nil || h.path == "" {
 		return
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.entry.SessionState != state {
+	if h.entry.SessionState != state || h.entry.Ticket != ticket || h.entry.Phase != phase {
 		h.entry.StateSince = time.Now()
 	}
 	h.entry.SessionState = state

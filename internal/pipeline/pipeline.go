@@ -207,6 +207,16 @@ func IsPaused(err error) bool {
 	return errors.As(err, &p)
 }
 
+// AsPaused extracts the *PausedError from err (traversing wraps), or nil when err
+// is not a pause. Callers use it to name the ticket a blameless pause left parked.
+func AsPaused(err error) *PausedError {
+	var p *PausedError
+	if errors.As(err, &p) {
+		return p
+	}
+	return nil
+}
+
 // FaultError signals a ticket hit an UNEXPECTED error mid-phase — an agent crash
 // or timeout, a failed git push, an infra hiccup — that is neither a blameless
 // rate-limit pause nor a verified give-up. Unlike a give-up it does NOT file a
@@ -362,6 +372,13 @@ type Pipeline struct {
 	// and browser notifications key off — merge, quarantine, fault, pause — are
 	// emitted here as state_change events; nil in modes that keep no durable log.
 	Events *event.Log
+
+	// OnPhase, when set, is called each time a ticket enters a checkpoint phase,
+	// carrying the ticket and the phase just written (state.Building, …). The
+	// composition root wires it to the instance registry so the hub sees a
+	// reported working state whose state_since is the phase transition, not a file
+	// mtime. Nil disables reporting.
+	OnPhase func(id, phase string)
 
 	// Now supplies the current time for the per-day budget window; nil defaults
 	// to time.Now (overridable in tests).
@@ -654,6 +671,16 @@ func AsFault(err error) *FaultError {
 	return nil
 }
 
+// AsGiveUp extracts the *GiveUpError from err (traversing wraps), or nil when err
+// is not a give-up. Callers use it to name the ticket a quarantine left parked.
+func AsGiveUp(err error) *GiveUpError {
+	var g *GiveUpError
+	if errors.As(err, &g) {
+		return g
+	}
+	return nil
+}
+
 // NextPhaseLabel maps a checkpoint phase to the human name of the phase that runs
 // next from it ("built" → "handoff", "" → "startup"). It is the phase a fault
 // died in and the phase a resume continues into — the same mapping serves both
@@ -854,7 +881,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	_ = os.Remove(verifyPath(id))
 	_ = os.Remove(rubricPath(id))
 
-	if err := p.State.Set(id, "PHASE", state.Building); err != nil {
+	if err := p.setPhase(id, state.Building); err != nil {
 		return fmt.Errorf("build %s: checkpoint building: %w", id, err)
 	}
 
@@ -883,7 +910,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	}
 	p.warnBuildWithoutSkills()
 
-	if err := p.State.Set(id, "PHASE", state.Built); err != nil {
+	if err := p.setPhase(id, state.Built); err != nil {
 		return fmt.Errorf("build %s: checkpoint built: %w", id, err)
 	}
 	return nil
@@ -1046,7 +1073,7 @@ func (p *Pipeline) Handoff(ctx context.Context, id string) error {
 	if _, ok := p.activeRubric(id); !ok {
 		p.logf("  ⚠ handoff wrote no usable rubric — verify will grade from the brief alone")
 	}
-	if err := p.State.Set(id, "PHASE", state.HandedOff); err != nil {
+	if err := p.setPhase(id, state.HandedOff); err != nil {
 		return fmt.Errorf("handoff %s: checkpoint handed_off: %w", id, err)
 	}
 	return nil
@@ -1205,7 +1232,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	} else {
 		p.logf("  ✓ verify passed")
 	}
-	if err := p.State.Set(id, "PHASE", state.Verified); err != nil {
+	if err := p.setPhase(id, state.Verified); err != nil {
 		return fmt.Errorf("verify %s: checkpoint verified: %w", id, err)
 	}
 	return nil
@@ -1294,7 +1321,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	if err := p.State.Set(id, "PR_URL", prURL); err != nil {
 		return fmt.Errorf("commit %s: record PR_URL: %w", id, err)
 	}
-	if err := p.State.Set(id, "PHASE", state.PROpen); err != nil {
+	if err := p.setPhase(id, state.PROpen); err != nil {
 		return fmt.Errorf("commit %s: checkpoint pr_open: %w", id, err)
 	}
 	if err := p.Tracker.SetStatus(ctx, id, "In Review", "Attach this PR link to the issue: "+prURL+"."); err != nil {
@@ -2136,6 +2163,20 @@ func (p *Pipeline) phaseStart(phase string) {
 	if p.Renderer != nil {
 		p.Renderer.PhaseStart(phase)
 	}
+}
+
+// setPhase writes the checkpoint phase and, on success, reports it through
+// OnPhase so the instance registry can advance the session's working state. It
+// carries only the working phases; the terminal merged/quarantined writes stay
+// direct, since parked/idle is decided once the run ends.
+func (p *Pipeline) setPhase(id, phase string) error {
+	if err := p.State.Set(id, "PHASE", phase); err != nil {
+		return err
+	}
+	if p.OnPhase != nil {
+		p.OnPhase(id, phase)
+	}
+	return nil
 }
 
 func (p *Pipeline) setTitle(title string) {
