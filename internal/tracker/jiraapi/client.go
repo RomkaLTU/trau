@@ -112,6 +112,7 @@ type Issue struct {
 	Resolution  string // resolution.name, "" while unresolved
 	Project     Project
 	Parent      string // parent issue key, "" when top-level
+	Labels      []string
 }
 
 // Status is an issue's workflow status. Category is the stable statusCategory.key
@@ -140,7 +141,7 @@ func (c *Client) Issue(ctx context.Context, key string) (*Issue, error) {
 		return nil, ErrNotFound
 	}
 	var dst issueResponse
-	path := "/issue/" + url.PathEscape(key) + "?fields=summary,description,status,resolution,project,parent"
+	path := "/issue/" + url.PathEscape(key) + "?fields=summary,description,status,resolution,project,parent,labels"
 	if err := c.do(ctx, http.MethodGet, path, nil, &dst); err != nil {
 		return nil, err
 	}
@@ -169,6 +170,7 @@ type issueResponse struct {
 		Parent *struct {
 			Key string `json:"key"`
 		} `json:"parent"`
+		Labels []string `json:"labels"`
 	} `json:"fields"`
 }
 
@@ -192,6 +194,7 @@ func (r *issueResponse) toIssue() *Issue {
 	if p := r.Fields.Parent; p != nil {
 		iss.Parent = p.Key
 	}
+	iss.Labels = r.Fields.Labels
 	return iss
 }
 

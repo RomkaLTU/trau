@@ -42,11 +42,11 @@ func TestIssueSendsBasicAuthAndReturnsSummary(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotPath = r.URL.Path
-		if got := r.URL.Query().Get("fields"); got != "summary,description,status,resolution,project,parent" {
+		if got := r.URL.Query().Get("fields"); got != "summary,description,status,resolution,project,parent,labels" {
 			t.Errorf("fields query = %q, want the widened field set", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"key":"PROJ-414","fields":{"summary":"Ship the thing"}}`))
+		_, _ = w.Write([]byte(`{"key":"PROJ-414","fields":{"summary":"Ship the thing","labels":["ready-for-agent"]}}`))
 	}))
 	defer srv.Close()
 
@@ -63,6 +63,9 @@ func TestIssueSendsBasicAuthAndReturnsSummary(t *testing.T) {
 	}
 	if issue.Summary != "Ship the thing" {
 		t.Errorf("summary = %q, want %q", issue.Summary, "Ship the thing")
+	}
+	if len(issue.Labels) != 1 || issue.Labels[0] != "ready-for-agent" {
+		t.Errorf("labels = %v, want [ready-for-agent]", issue.Labels)
 	}
 }
 
