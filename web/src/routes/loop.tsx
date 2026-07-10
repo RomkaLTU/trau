@@ -22,7 +22,8 @@ function LoopPage() {
           Loop
         </h1>
         <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
-          Graze a repo's ready queue, or drive an epic — one ticket at a time.
+          Build one ordered queue of tickets and epics, then run it top to
+          bottom — one ticket at a time.
         </p>
       </header>
 

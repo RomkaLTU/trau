@@ -10,7 +10,6 @@ export { TerminalCard } from './terminal-card'
 export { PhaseStepper } from './phase-stepper'
 export { RunOnce } from './run-once'
 export { Loop } from './loop'
-export { Backlog } from './backlog'
 export { StatTile } from './stat-tile'
 export {
   SegmentedControl,

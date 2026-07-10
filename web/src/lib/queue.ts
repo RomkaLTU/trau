@@ -1,6 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
+import type { Run } from './runs'
 
 export type QueueKind = 'ticket' | 'epic'
 
@@ -49,8 +50,10 @@ export const queueQueryOptions = (repo: string) =>
   })
 
 export interface EnqueueRequest {
-  kind: QueueKind
   id: string
+  // kind is optional: omit it and the hub resolves ticket vs epic by looking
+  // the id up in the tracker.
+  kind?: QueueKind
   title?: string
 }
 
@@ -69,6 +72,25 @@ export async function enqueue(
   return res.json()
 }
 
+export async function moveQueueItem(
+  repo: string,
+  id: string,
+  dir: -1 | 1,
+): Promise<QueueResponse> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/queue/${encodeURIComponent(id)}/move`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dir }),
+    },
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'reorder failed'))
+  }
+  return res.json()
+}
+
 export async function dequeue(
   repo: string,
   id: string,
@@ -83,22 +105,59 @@ export async function dequeue(
   return res.json()
 }
 
+export type OnFault = 'halt' | 'skip'
+
+// DrainOptions are the run-level knobs a Start carries: whether to ignore stored
+// checkpoints, and what a fault does to the rest of the queue.
+export interface DrainOptions {
+  no_resume?: boolean
+  on_fault?: OnFault
+}
+
 export async function drain(
   repo: string,
   draining: boolean,
+  opts: DrainOptions = {},
 ): Promise<QueueResponse> {
   const res = await apiFetch(
     `/api/v1/repos/${encodeURIComponent(repo)}/queue/drain`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ draining }),
+      body: JSON.stringify({ draining, ...opts }),
     },
   )
   if (!res.ok) {
     throw new Error(await errorMessage(res, 'queue drain failed'))
   }
   return res.json()
+}
+
+// skipResumeApplies reports whether the Skip resume toggle would change anything
+// for this queue, so the Loop card can hide a no-op control. It applies when the
+// queue has already executed (any item past pending — Start restarts it from the
+// top) or when a queued ticket or epic sub-issue has an in-flight, non-terminal
+// run whose stored checkpoint a fresh Start would otherwise resume.
+export function skipResumeApplies(items: QueueItem[], runs: Run[]): boolean {
+  if (items.some((it) => it.status !== 'pending')) return true
+  const inFlight = new Set(runs.filter((r) => !r.terminal).map((r) => r.ticket))
+  if (inFlight.size === 0) return false
+  return items.some(
+    (it) =>
+      inFlight.has(it.id) ||
+      (it.sub_issues ?? []).some((s) => inFlight.has(s.id)),
+  )
+}
+
+// queueExecutable estimates how many leaf tickets a Start will run: each ticket
+// counts once, each epic by its not-done sub-issues (the count resolves lazily
+// at run time, so this is the launch-time estimate).
+export function queueExecutable(items: QueueItem[]): number {
+  return items.reduce((n, it) => {
+    if (it.kind !== 'epic') return n + 1
+    const subs = it.sub_issues ?? []
+    return n + subs.filter((s) => s.state !== 'done').length
+  }, 0)
 }
 
 export interface QueueCounts {

@@ -1,31 +1,10 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 
-import { Backlog } from '@/components/trau/backlog'
-import { Eyebrow } from '@/components/trau/eyebrow'
-
+// The Backlog board was retired: build the queue on the Loop card (which resolves
+// bare ids and lists eligible work), and file issues under Author. Old links land
+// on Loop.
 export const Route = createFileRoute('/backlog')({
-  component: BacklogPage,
+  beforeLoad: () => {
+    throw redirect({ to: '/loop' })
+  },
 })
-
-function BacklogPage() {
-  return (
-    <div className="flex flex-col gap-8">
-      <header className="flex flex-col gap-2">
-        <Eyebrow glyph="idle" className="text-info">
-          BACKLOG BOARD
-        </Eyebrow>
-        <h1 className="text-balance text-2xl font-semibold tracking-tight text-foreground">
-          Backlog
-        </h1>
-        <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
-          Browse the Active repo's full tracker backlog — every ticket, grouped
-          by status. File new issues, stack an epic's sub-issues, or publish a
-          PRD straight to the tracker. Editing existing tickets stays in
-          Linear/Jira.
-        </p>
-      </header>
-
-      <Backlog />
-    </div>
-  )
-}

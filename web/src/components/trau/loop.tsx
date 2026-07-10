@@ -1,7 +1,17 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ExternalLink, Minus, Plus, Square } from 'lucide-react'
+import {
+  ArrowDown,
+  ArrowUp,
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  ListPlus,
+  Plus,
+  Square,
+  X,
+} from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { MakeStartableButton } from '@/components/make-startable-button'
@@ -11,24 +21,27 @@ import { ConfirmDialog } from '@/components/trau/confirm-dialog'
 import { Eyebrow } from '@/components/trau/eyebrow'
 import { PhaseStepper } from '@/components/trau/phase-stepper'
 import { SegmentedControl } from '@/components/trau/segmented-control'
-import { StatusPill } from '@/components/trau/status-pill'
+import { StatusPill, type RunState } from '@/components/trau/status-pill'
 import { TerminalCard } from '@/components/trau/terminal-card'
 import { cn } from '@/lib/utils'
 import { eligibleQueryOptions } from '@/lib/eligible'
-import {
-  epicPreviewQueryOptions,
-  isTicketId,
-  type EpicSubIssue,
-} from '@/lib/epic'
 import { useEventFeed } from '@/lib/events'
-import {
-  instancesQueryOptions,
-  startInstance,
-  stopInstance,
-  type Instance,
-} from '@/lib/instances'
+import { instancesQueryOptions, type Instance } from '@/lib/instances'
 import { deriveLoopHalt, type LoopHalt } from '@/lib/loop'
+import {
+  dequeue,
+  drain,
+  enqueue,
+  moveQueueItem,
+  queueExecutable,
+  queueQueryOptions,
+  skipResumeApplies,
+  type OnFault,
+  type QueueItem,
+  type QueueResponse,
+} from '@/lib/queue'
 import { pauseKind, phaseLabel, runPhaseSteps } from '@/lib/runlive'
+import { runsQueryOptions } from '@/lib/runs'
 
 function actionError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -43,15 +56,6 @@ function useNow(intervalMs: number): number {
   return now
 }
 
-function useDebounced<T>(value: T, ms: number): T {
-  const [debounced, setDebounced] = useState(value)
-  useEffect(() => {
-    const id = setTimeout(() => setDebounced(value), ms)
-    return () => clearTimeout(id)
-  }, [value, ms])
-  return debounced
-}
-
 function elapsedSince(fromISO: string, now: number): string {
   const s = Math.max(0, Math.floor((now - new Date(fromISO).getTime()) / 1000))
   const h = Math.floor(s / 3600)
@@ -61,63 +65,35 @@ function elapsedSince(fromISO: string, now: number): string {
   return `${m}m ${String(sec).padStart(2, '0')}s`
 }
 
-type Scope = 'ready' | 'epic'
+const STATUS_STATE: Record<string, RunState> = {
+  pending: 'todo',
+  running: 'active',
+  paused: 'warn',
+  done: 'success',
+  failed: 'fail',
+  skipped: 'info',
+}
 
-const SCOPE_OPTIONS: { value: Scope; label: string }[] = [
-  { value: 'ready', label: 'Ready queue' },
-  { value: 'epic', label: 'Epic' },
-]
+function statusState(status: string): RunState {
+  return STATUS_STATE[status] ?? 'info'
+}
 
-const SUB_GLYPH: Record<
-  EpicSubIssue['state'],
-  { glyph: string; className: string; label: string }
-> = {
+const SUB_GLYPH: Record<string, { glyph: string; className: string; label: string }> = {
   done: { glyph: '✓', className: 'text-done', label: 'done' },
   epic: { glyph: '◆', className: 'text-info', label: 'epic' },
   todo: { glyph: '○', className: 'text-faint', label: 'todo' },
 }
 
-interface StartOptions {
-  epic?: string
-  max: number
-  noResume: boolean
+function subGlyph(state: string) {
+  return SUB_GLYPH[state] ?? SUB_GLYPH.todo
 }
 
-function MaxIterationsStepper({
-  value,
-  onChange,
-}: {
-  value: number
-  onChange: (n: number) => void
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
-        max iterations
-      </span>
-      <div className="inline-flex w-fit items-center overflow-hidden rounded-md border border-border bg-input">
-        <button
-          type="button"
-          onClick={() => onChange(Math.max(1, value - 1))}
-          aria-label="Decrease max iterations"
-          className="flex size-8 items-center justify-center text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-        >
-          <Minus className="size-3.5" aria-hidden="true" />
-        </button>
-        <span className="w-10 text-center font-mono text-sm tabular-nums text-foreground">
-          {value}
-        </span>
-        <button
-          type="button"
-          onClick={() => onChange(Math.min(99, value + 1))}
-          aria-label="Increase max iterations"
-          className="flex size-8 items-center justify-center text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-        >
-          <Plus className="size-3.5" aria-hidden="true" />
-        </button>
-      </div>
-    </div>
-  )
+function epicCounts(item: QueueItem): { remaining: number; total: number } {
+  const subs = item.sub_issues ?? []
+  return {
+    remaining: subs.filter((s) => s.state !== 'done').length,
+    total: subs.length,
+  }
 }
 
 function SkipResumeToggle({
@@ -154,245 +130,387 @@ function SkipResumeToggle({
         <span className="font-mono text-sm text-foreground">skip resume</span>
       </div>
       <p className="font-sans text-xs leading-relaxed text-muted-foreground">
-        Start fresh; ignore existing checkpoints.
+        This queue has prior progress. Start fresh from the top; ignore stored
+        checkpoints.
       </p>
     </div>
   )
 }
 
-function TicketRows({
-  rows,
-  more,
+const ON_FAULT_OPTIONS: { value: OnFault; label: string }[] = [
+  { value: 'halt', label: 'Halt' },
+  { value: 'skip', label: 'Skip & continue' },
+]
+
+function OnFaultToggle({
+  value,
+  onChange,
 }: {
-  rows: { id: string; title: string; badge: React.ReactNode }[]
-  more?: number
+  value: OnFault
+  onChange: (v: OnFault) => void
 }) {
   return (
-    <div className="overflow-hidden rounded-md border border-border">
-      <table className="w-full border-collapse text-left">
-        <thead>
-          <tr className="border-b border-border bg-secondary/40">
-            <th className="px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
-              Ticket
-            </th>
-            <th className="px-3 py-2 font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
-              Title
-            </th>
-            <th className="px-3 py-2 text-right font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
-              State
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.id} className="border-b border-border/60 last:border-0">
-              <td className="px-3 py-2 font-mono text-sm text-primary">
-                {row.id}
-              </td>
-              <td className="px-3 py-2 font-sans text-sm text-foreground">
-                {row.title}
-              </td>
-              <td className="px-3 py-2 text-right">{row.badge}</td>
-            </tr>
-          ))}
-          {more && more > 0 ? (
-            <tr>
-              <td
-                colSpan={3}
-                className="px-3 py-2 font-mono text-xs text-muted-foreground"
+    <div className="flex flex-col gap-1.5">
+      <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+        on fault
+      </span>
+      <SegmentedControl
+        aria-label="On fault"
+        options={ON_FAULT_OPTIONS}
+        value={value}
+        onChange={onChange}
+      />
+      <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+        {value === 'halt'
+          ? 'A fault parks the queue for you to intervene.'
+          : 'A fault settles the item failed and the queue drains on. Queue order is not dependency-aware: items that depend on a skipped ticket may fail.'}
+      </p>
+    </div>
+  )
+}
+
+function QueueBuilderRow({
+  item,
+  index,
+  count,
+  expanded,
+  busy,
+  onToggle,
+  onMove,
+  onRemove,
+}: {
+  item: QueueItem
+  index: number
+  count: number
+  expanded: boolean
+  busy: boolean
+  onToggle: () => void
+  onMove: (dir: -1 | 1) => void
+  onRemove: () => void
+}) {
+  const isEpic = item.kind === 'epic'
+  const { remaining, total } = epicCounts(item)
+  const subs = item.sub_issues ?? []
+
+  return (
+    <li className="border-b border-border/60 last:border-0">
+      <div className="flex items-center gap-3 px-3 py-2.5">
+        <span className="w-5 shrink-0 text-right font-mono text-xs text-faint">
+          {index + 1}
+        </span>
+
+        {isEpic ? (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded={expanded}
+            aria-label={expanded ? `Collapse ${item.id}` : `Expand ${item.id}`}
+            className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+          >
+            {expanded ? (
+              <ChevronDown className="size-3.5" aria-hidden="true" />
+            ) : (
+              <ChevronRight className="size-3.5" aria-hidden="true" />
+            )}
+          </button>
+        ) : (
+          <span className="w-3.5 shrink-0" aria-hidden="true" />
+        )}
+
+        <span className="shrink-0 font-mono text-sm text-primary">{item.id}</span>
+        <span className="min-w-0 flex-1 truncate font-sans text-sm text-foreground">
+          {item.title || '—'}
+        </span>
+
+        {isEpic ? (
+          <StatusPill state="info" label={`epic · ${remaining}/${total}`} />
+        ) : (
+          <StatusPill state="todo" label="ticket" />
+        )}
+
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => onMove(-1)}
+            disabled={index === 0 || busy}
+            aria-label={`Move ${item.id} up`}
+            className="flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+          >
+            <ArrowUp className="size-3.5" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onMove(1)}
+            disabled={index === count - 1 || busy}
+            aria-label={`Move ${item.id} down`}
+            className="flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:pointer-events-none disabled:opacity-30"
+          >
+            <ArrowDown className="size-3.5" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            onClick={onRemove}
+            disabled={busy}
+            aria-label={`Remove ${item.id} from queue`}
+            className="flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-fail disabled:pointer-events-none disabled:opacity-30"
+          >
+            <X className="size-3.5" aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+
+      {isEpic && expanded && subs.length > 0 && (
+        <ul className="border-t border-border/60 bg-secondary/20">
+          {subs.map((sub) => {
+            const styles = subGlyph(sub.state)
+            return (
+              <li
+                key={sub.id}
+                className="flex items-center gap-3 border-b border-border/40 py-1.5 pl-14 pr-3 last:border-0"
               >
-                …{more} more
-              </td>
-            </tr>
-          ) : null}
-        </tbody>
-      </table>
-    </div>
+                <span className="shrink-0 font-mono text-xs text-primary/80">
+                  {sub.id}
+                </span>
+                <span className="min-w-0 flex-1 truncate font-sans text-xs text-muted-foreground">
+                  {sub.title}
+                </span>
+                <span
+                  className={cn(
+                    'inline-flex shrink-0 items-center gap-1.5 font-mono text-xs',
+                    styles.className,
+                  )}
+                >
+                  <span aria-hidden="true">{styles.glyph}</span>
+                  {styles.label}
+                </span>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </li>
   )
 }
 
-function ReadyPreview({ repo }: { repo: string }) {
+function LaunchQueueCard({ repo }: { repo: string }) {
+  const queryClient = useQueryClient()
+  const queue = useQuery(queueQueryOptions(repo))
   const eligible = useQuery(eligibleQueryOptions(repo))
-  const tickets = eligible.data?.tickets ?? []
+  const runs = useQuery(runsQueryOptions(repo))
 
-  if (eligible.isLoading) {
-    return (
-      <p className="font-mono text-sm text-muted-foreground">
-        Reading the ready queue…
-      </p>
-    )
-  }
-  if (eligible.error) {
-    return (
-      <p className="font-mono text-sm text-destructive">
-        {actionError(eligible.error)}
-      </p>
-    )
-  }
-  if (tickets.length === 0) {
-    return (
-      <p className="font-sans text-sm text-muted-foreground">
-        Queue is empty — mark tickets ready-for-agent to fill the range.
-      </p>
-    )
-  }
-  return (
-    <TicketRows
-      rows={tickets.slice(0, 8).map((t) => ({
-        id: t.id,
-        title: t.title,
-        badge: <StatusPill state="todo" label="ready" />,
-      }))}
-      more={tickets.length - 8}
-    />
-  )
-}
-
-function EpicPreview({ repo, epic }: { repo: string; epic: string }) {
-  const valid = isTicketId(epic)
-  const preview = useQuery(epicPreviewQueryOptions(repo, epic))
-
-  if (!valid) {
-    return (
-      <p className="font-sans text-sm text-muted-foreground">
-        Enter an epic id to preview its sub-issues.
-      </p>
-    )
-  }
-  if (preview.isLoading) {
-    return (
-      <p className="font-mono text-sm text-muted-foreground">
-        Listing {epic}…
-      </p>
-    )
-  }
-  if (preview.error) {
-    return (
-      <p className="font-mono text-sm text-destructive">
-        {actionError(preview.error)}
-      </p>
-    )
-  }
-  const subs = preview.data?.sub_issues ?? []
-  if (subs.length === 0) {
-    return (
-      <p className="font-sans text-sm text-muted-foreground">
-        {epic} has no sub-issues.
-      </p>
-    )
-  }
-  return (
-    <TicketRows
-      rows={subs.slice(0, 12).map((sub) => {
-        const styles = SUB_GLYPH[sub.state]
-        return {
-          id: sub.id,
-          title: sub.title,
-          badge: (
-            <span
-              className={cn(
-                'inline-flex items-center gap-1.5 font-mono text-xs',
-                styles.className,
-              )}
-            >
-              <span aria-hidden="true">{styles.glyph}</span>
-              {styles.label}
-            </span>
-          ),
-        }
-      })}
-      more={subs.length - 12}
-    />
-  )
-}
-
-function LaunchForm({
-  repo,
-  onStart,
-  starting,
-  error,
-}: {
-  repo: string
-  onStart: (opts: StartOptions) => void
-  starting: boolean
-  error: unknown
-}) {
-  const [scope, setScope] = useState<Scope>('ready')
-  const [epicId, setEpicId] = useState('')
-  const [maxIter, setMaxIter] = useState(10)
+  const items = queue.data?.items ?? []
+  const skipResumeShown = skipResumeApplies(items, runs.data?.runs ?? [])
+  const [draft, setDraft] = useState('')
+  const [expandedIds, setExpandedIds] = useState<string[]>([])
   const [skipResume, setSkipResume] = useState(false)
+  const [onFault, setOnFault] = useState<OnFault>('halt')
 
-  const debouncedEpic = useDebounced(epicId.trim().toUpperCase(), 350)
-  const epicReady = scope === 'ready' || isTicketId(debouncedEpic)
+  const setQueue = (res: QueueResponse) =>
+    queryClient.setQueryData<QueueResponse>(['queue', repo], res)
+
+  const add = useMutation({
+    mutationFn: (id: string) => enqueue(repo, { id }),
+    onSuccess: (res) => {
+      setQueue(res)
+      setDraft('')
+    },
+  })
+
+  const addAll = useMutation({
+    mutationFn: async () => {
+      const queued = new Set(items.map((i) => i.id))
+      const pending = (eligible.data?.tickets ?? []).filter(
+        (t) => !queued.has(t.id),
+      )
+      let last: QueueResponse | undefined
+      for (const t of pending) {
+        last = await enqueue(repo, { id: t.id, kind: 'ticket', title: t.title })
+      }
+      return last
+    },
+    onSuccess: (res) => {
+      if (res) setQueue(res)
+    },
+  })
+
+  const move = useMutation({
+    mutationFn: (vars: { id: string; dir: -1 | 1 }) =>
+      moveQueueItem(repo, vars.id, vars.dir),
+    onSuccess: setQueue,
+  })
+
+  const remove = useMutation({
+    mutationFn: (id: string) => dequeue(repo, id),
+    onSuccess: setQueue,
+  })
+
+  const start = useMutation({
+    mutationFn: () =>
+      drain(repo, true, {
+        no_resume: skipResume && skipResumeShown,
+        on_fault: onFault,
+      }),
+    onSuccess: setQueue,
+  })
+
+  const executable = queueExecutable(items)
+  const eligibleToAdd = (eligible.data?.tickets ?? []).filter(
+    (t) => !items.some((i) => i.id === t.id),
+  ).length
+
+  const busy = move.isPending || remove.isPending || add.isPending || addAll.isPending
+
+  const submitAdd = () => {
+    const id = draft.trim().toUpperCase()
+    if (id) add.mutate(id)
+  }
+
+  const toggleExpand = (id: string) =>
+    setExpandedIds((prev) =>
+      prev.includes(id) ? prev.filter((e) => e !== id) : [...prev, id],
+    )
 
   return (
     <TerminalCard title="loop-launch" className="max-w-3xl">
-      <form
-        className="flex flex-col gap-6"
-        onSubmit={(e) => {
-          e.preventDefault()
-          if (!epicReady || starting) return
-          onStart({
-            epic: scope === 'epic' ? debouncedEpic : undefined,
-            max: maxIter,
-            noResume: skipResume,
-          })
-        }}
-      >
-        <TargetRepoField repo={repo} />
-
+      <form className="flex flex-col gap-6" onSubmit={(e) => e.preventDefault()}>
         <div className="flex flex-col gap-1.5">
-          <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
-            scope
-          </span>
-          <SegmentedControl
-            aria-label="Loop scope"
-            options={SCOPE_OPTIONS}
-            value={scope}
-            onChange={setScope}
-          />
+          <label className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+            repo
+          </label>
+          <TargetRepoField repo={repo} />
         </div>
 
-        {scope === 'epic' ? (
-          <div className="flex flex-col gap-3">
-            <div className="flex flex-col gap-1.5">
-              <label
-                htmlFor="epic-id"
-                className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground"
-              >
-                epic id
-              </label>
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-1.5">
+            <label
+              htmlFor="queue-add"
+              className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground"
+            >
+              queue
+            </label>
+            <div className="flex flex-wrap items-center gap-2">
               <input
-                id="epic-id"
-                value={epicId}
-                onChange={(e) => setEpicId(e.target.value)}
-                placeholder="COD-###"
+                id="queue-add"
+                value={draft}
+                onChange={(e) => {
+                  setDraft(e.target.value)
+                  if (add.error) add.reset()
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                    e.preventDefault()
+                    submitAdd()
+                  }
+                }}
+                placeholder="COD-### (ticket or epic)"
                 className="w-56 rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:outline-none"
               />
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="font-mono"
+                onClick={submitAdd}
+                disabled={add.isPending || draft.trim() === ''}
+              >
+                <Plus className="size-4" aria-hidden="true" />
+                {add.isPending ? 'Adding…' : 'Add'}
+              </Button>
+              {eligibleToAdd > 0 && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="font-mono"
+                  onClick={() => addAll.mutate()}
+                  disabled={addAll.isPending}
+                >
+                  <ListPlus className="size-4" aria-hidden="true" />
+                  {addAll.isPending
+                    ? 'Adding…'
+                    : `Add all eligible (${eligibleToAdd})`}
+                </Button>
+              )}
             </div>
-            <EpicPreview repo={repo} epic={debouncedEpic} />
+            {add.error ? (
+              <p className="font-mono text-xs text-fail" role="alert">
+                {actionError(add.error)}
+              </p>
+            ) : (
+              <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+                Mix tickets and epics. Epics expand into their remaining
+                sub-issues at run time. Runs top to bottom.
+              </p>
+            )}
+            {addAll.error ? (
+              <p className="font-mono text-xs text-fail" role="alert">
+                {actionError(addAll.error)}
+              </p>
+            ) : null}
+            {move.error ? (
+              <p className="font-mono text-xs text-fail" role="alert">
+                {actionError(move.error)}
+              </p>
+            ) : null}
+            {remove.error ? (
+              <p className="font-mono text-xs text-fail" role="alert">
+                {actionError(remove.error)}
+              </p>
+            ) : null}
           </div>
-        ) : (
-          <ReadyPreview repo={repo} />
-        )}
+
+          {items.length === 0 ? (
+            <div className="rounded-md border border-dashed border-border px-4 py-8 text-center">
+              <p className="font-sans text-sm text-muted-foreground">
+                Queue is empty — add a ticket or epic above.
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-hidden rounded-md border border-border">
+              <ul className="flex flex-col">
+                {items.map((item, index) => (
+                  <QueueBuilderRow
+                    key={item.id}
+                    item={item}
+                    index={index}
+                    count={items.length}
+                    expanded={expandedIds.includes(item.id)}
+                    busy={busy}
+                    onToggle={() => toggleExpand(item.id)}
+                    onMove={(dir) => move.mutate({ id: item.id, dir })}
+                    onRemove={() => remove.mutate(item.id)}
+                  />
+                ))}
+              </ul>
+              <div className="border-t border-border bg-secondary/40 px-3 py-2 font-mono text-xs text-muted-foreground">
+                {items.length} {items.length === 1 ? 'item' : 'items'} ·{' '}
+                {executable} executable {executable === 1 ? 'ticket' : 'tickets'} ·
+                runs top to bottom
+              </div>
+            </div>
+          )}
+        </div>
 
         <div className="flex flex-col gap-4 border-t border-border pt-4">
-          <MaxIterationsStepper value={maxIter} onChange={setMaxIter} />
-          <SkipResumeToggle value={skipResume} onChange={setSkipResume} />
+          <OnFaultToggle value={onFault} onChange={setOnFault} />
+          {skipResumeShown ? (
+            <SkipResumeToggle value={skipResume} onChange={setSkipResume} />
+          ) : null}
         </div>
 
         <div className="flex flex-col gap-2 border-t border-border pt-4">
           <Button
-            type="submit"
+            type="button"
             size="sm"
             className="w-fit font-mono"
-            disabled={!repo || !epicReady || starting}
+            onClick={() => start.mutate()}
+            disabled={items.length === 0 || start.isPending}
           >
-            {starting ? 'Starting…' : 'Start loop'}
+            {start.isPending ? 'Starting…' : 'Start queue'}
           </Button>
-          {error ? (
+          {start.error ? (
             <p className="font-mono text-xs text-destructive">
-              {actionError(error)}
+              {actionError(start.error)}
             </p>
           ) : null}
         </div>
@@ -401,106 +519,147 @@ function LaunchForm({
   )
 }
 
-function RunningView({
+function RunningQueueView({
   repo,
+  queue,
   instance,
+  halt,
   onStop,
   stopping,
   stopError,
 }: {
   repo: string
-  instance: Instance
+  queue: QueueResponse
+  instance?: Instance
+  halt: LoopHalt | null
   onStop: () => void
   stopping: boolean
   stopError: unknown
 }) {
   const now = useNow(1000)
-  const eligible = useQuery(eligibleQueryOptions(repo))
-  const current = instance.ticket
-  const queue = (eligible.data?.tickets ?? []).filter((t) => t.id !== current)
+  const items = queue.items
+  const running = items.find((i) => i.status === 'running')
+  const currentId = running?.id ?? instance?.ticket
+  const done = items.filter(
+    (i) => i.status === 'done' || i.status === 'failed' || i.status === 'skipped',
+  ).length
 
   return (
     <div className="flex flex-col gap-6">
+      {halt ? <HaltBanner repo={repo} halt={halt} /> : null}
+
       <TerminalCard title="loop" className="max-w-3xl">
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <span className="inline-flex items-center gap-2 font-mono text-sm text-muted-foreground">
-              running in <span className="text-foreground">{repo}</span>
+            <span className="font-mono text-sm text-muted-foreground">
+              <span className="text-foreground">
+                {done}/{items.length}
+              </span>{' '}
+              items done
             </span>
-            {instance.phase ? (
+            {instance?.phase ? (
               <StatusPill state="active" label={phaseLabel(instance.phase)} />
             ) : (
-              <StatusPill state="todo" label="idle" />
+              <StatusPill state="active" label="draining" />
             )}
           </div>
 
-          {current ? (
+          {currentId ? (
             <>
               <div className="flex flex-wrap items-center gap-3">
-                <span className="font-mono text-sm text-primary">{current}</span>
+                <span className="font-mono text-sm text-primary">
+                  {currentId}
+                </span>
+                {running?.title ? (
+                  <span className="font-sans text-base text-foreground">
+                    {running.title}
+                  </span>
+                ) : null}
                 <Link
                   to="/live/$repo/$ticket"
-                  params={{ repo, ticket: current }}
+                  params={{ repo, ticket: currentId }}
                   className="inline-flex items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline"
                 >
                   <ExternalLink className="size-3.5" aria-hidden="true" />
                   View run
                 </Link>
               </div>
-              <div className="rounded-md border border-border bg-secondary/30 px-4 py-3">
-                <PhaseStepper steps={runPhaseSteps(instance.phase ?? '', 'live')} />
-              </div>
+              {instance?.phase ? (
+                <div className="rounded-md border border-border bg-secondary/30 px-4 py-3">
+                  <PhaseStepper steps={runPhaseSteps(instance.phase, 'live')} />
+                </div>
+              ) : null}
             </>
           ) : (
             <p className="font-sans text-sm text-muted-foreground">
-              Idle — picking the next ticket from the queue.
+              Idle — picking the next item from the queue.
             </p>
           )}
 
-          <div className="flex flex-wrap items-center gap-6 font-mono text-xs text-muted-foreground">
-            <span>
-              elapsed{' '}
-              <span className="text-foreground">
-                {elapsedSince(instance.started_at, now)}
-              </span>
-            </span>
-            {instance.state_since ? (
+          {instance ? (
+            <div className="flex flex-wrap items-center gap-6 font-mono text-xs text-muted-foreground">
               <span>
-                in phase{' '}
+                elapsed{' '}
                 <span className="text-foreground">
-                  {elapsedSince(instance.state_since, now)}
+                  {elapsedSince(instance.started_at, now)}
                 </span>
               </span>
-            ) : null}
-          </div>
+              {instance.state_since ? (
+                <span>
+                  in phase{' '}
+                  <span className="text-foreground">
+                    {elapsedSince(instance.state_since, now)}
+                  </span>
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </TerminalCard>
 
       <div className="flex max-w-3xl flex-col gap-2">
-        <Eyebrow glyph="idle">REMAINING QUEUE</Eyebrow>
+        <Eyebrow glyph="idle">QUEUE</Eyebrow>
         <TerminalCard title="queue" bodyClassName="p-0">
-          {queue.length === 0 ? (
-            <p className="px-4 py-6 text-center font-mono text-xs text-muted-foreground">
-              Queue empty — nothing else ready.
-            </p>
-          ) : (
-            <ul className="flex flex-col">
-              {queue.map((t) => (
+          <ul className="flex flex-col">
+            {items.map((item) => {
+              const { remaining, total } = epicCounts(item)
+              return (
                 <li
-                  key={t.id}
+                  key={item.id}
                   className="flex items-center justify-between gap-4 border-b border-border/60 px-4 py-2.5 last:border-0"
                 >
-                  <span className="flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-sm text-primary">{t.id}</span>
-                    <span className="font-sans text-sm text-foreground">
-                      {t.title}
+                  <span className="flex min-w-0 flex-wrap items-center gap-2">
+                    <span className="font-mono text-sm text-primary">
+                      {item.id}
                     </span>
+                    {item.title ? (
+                      <span className="truncate font-sans text-sm text-foreground">
+                        {item.title}
+                      </span>
+                    ) : null}
+                    {item.kind === 'epic' ? (
+                      <span className="font-mono text-xs text-muted-foreground">
+                        epic · {remaining}/{total}
+                      </span>
+                    ) : null}
+                    {item.reason ? (
+                      <span className="font-mono text-xs text-muted-foreground">
+                        {item.reason}
+                      </span>
+                    ) : null}
                   </span>
-                  <StatusPill state="todo" label="todo" />
+                  <StatusPill
+                    state={statusState(item.status)}
+                    label={
+                      item.status === 'skipped' && item.reason
+                        ? 'skipped · duplicate'
+                        : item.status
+                    }
+                  />
                 </li>
-              ))}
-            </ul>
-          )}
+              )
+            })}
+          </ul>
         </TerminalCard>
       </div>
 
@@ -520,33 +679,17 @@ function RunningView({
               disabled={stopping}
             >
               <Square className="size-4" aria-hidden="true" />
-              {stopping ? 'Stopping…' : 'Stop loop'}
+              {stopping ? 'Stopping…' : 'Stop queue'}
             </Button>
           }
-          title={`Stop the loop on ${repo}?`}
-          description="The current ticket finishes its checkpoint, then the loop stops. Work in progress is preserved."
-          confirmLabel="Stop loop"
+          title={`Stop the queue on ${repo}?`}
+          description="The current ticket finishes its checkpoint, then the queue stops. Work in progress is preserved — Start again to resume where it left off."
+          confirmLabel="Stop queue"
           destructive
           onConfirm={onStop}
         />
       </div>
     </div>
-  )
-}
-
-function LaunchingCard({ repo }: { repo: string }) {
-  return (
-    <TerminalCard title="loop" className="max-w-3xl">
-      <div className="flex items-center gap-2 font-mono text-sm text-muted-foreground">
-        <span aria-hidden="true">○</span>
-        <span>
-          starting the loop on <span className="text-foreground">{repo}</span>…
-        </span>
-        <span className="cursor-block text-primary" aria-hidden="true">
-          ▍
-        </span>
-      </div>
-    </TerminalCard>
   )
 }
 
@@ -566,20 +709,20 @@ function haltNotice(halt: LoopHalt): HaltNotice {
             tone: 'warn',
             glyph: '⚠',
             headline: 'paused — re-authentication needed',
-            hint: 'This is not a failure. Re-login to the provider, then the loop resumes.',
+            hint: 'This is not a failure. Re-login to the provider, then the queue resumes.',
           }
         : {
             tone: 'warn',
             glyph: '⚠',
             headline: 'paused — rate limit reached',
-            hint: "This is not a failure. The loop resumes on its own once the provider's usage window clears.",
+            hint: "This is not a failure. The queue resumes on its own once the provider's usage window clears.",
           }
     case 'budget':
       return {
         tone: 'warn',
         glyph: '⚠',
         headline: 'budget stop',
-        hint: `${halt.reason || 'The budget cap was reached'}. The loop stops for the day — raise BUDGET in Settings to keep going.`,
+        hint: `${halt.reason || 'The budget cap was reached'}. The queue stops for the day — raise BUDGET in Settings to keep going.`,
       }
     case 'fault':
       return {
@@ -641,61 +784,48 @@ function HaltBanner({ repo, halt }: { repo: string; halt: LoopHalt }) {
 
 export function Loop() {
   const queryClient = useQueryClient()
-  const { repo: activeRepo, repos: allRepos } = useActiveRepo()
-  const { data: instData } = useQuery(instancesQueryOptions)
-
-  const startable = allRepos.filter((r) => r.allowed).map((r) => r.name)
+  const { repo: activeRepo, repos } = useActiveRepo()
   const repo = activeRepo ?? ''
+
+  const startable = repos.filter((r) => r.allowed).map((r) => r.name)
   const canRun = repo !== '' && startable.includes(repo)
 
+  const queue = useQuery({
+    ...queueQueryOptions(repo),
+    refetchInterval: (q) => (q.state.data?.draining ? 3000 : false),
+  })
+  const { data: instData } = useQuery(instancesQueryOptions)
   const liveInstance = instData?.instances.find((i) => i.repo === repo)
   const feed = useEventFeed(repo)
   const halt = deriveLoopHalt(feed.events)
 
-  const [justStarted, setJustStarted] = useState(false)
-  useEffect(() => {
-    if (liveInstance) setJustStarted(false)
-  }, [liveInstance])
-
-  const invalidate = () => {
-    void queryClient.invalidateQueries({ queryKey: ['instances'] })
-    void queryClient.invalidateQueries({ queryKey: ['repos'] })
-  }
-
-  const start = useMutation({
-    mutationFn: (opts: StartOptions) =>
-      startInstance({
-        repo,
-        epic: opts.epic,
-        max: opts.max,
-        no_resume: opts.noResume,
-      }),
-    onSuccess: () => {
-      invalidate()
-      setJustStarted(true)
-      window.setTimeout(() => setJustStarted(false), 15_000)
-    },
-  })
-
   const stop = useMutation({
-    mutationFn: () => stopInstance(liveInstance!.pid),
-    onSuccess: invalidate,
+    mutationFn: () => drain(repo, false),
+    onSuccess: (res) =>
+      queryClient.setQueryData<QueueResponse>(['queue', repo], res),
   })
 
   useEffect(() => {
-    start.reset()
     stop.reset()
-    setJustStarted(false)
   }, [repo])
 
-  const running = liveInstance !== undefined || justStarted
-
-  if (running) {
-    if (!liveInstance) return <LaunchingCard repo={repo} />
+  if (!canRun) {
     return (
-      <RunningView
+      <NotStartableNotice
         repo={repo}
+        root={repos.find((r) => r.name === repo)?.root}
+      />
+    )
+  }
+
+  const draining = queue.data?.draining ?? false
+  if (draining && queue.data) {
+    return (
+      <RunningQueueView
+        repo={repo}
+        queue={queue.data}
         instance={liveInstance}
+        halt={halt}
         onStop={() => stop.mutate()}
         stopping={stop.isPending}
         stopError={stop.error}
@@ -703,23 +833,10 @@ export function Loop() {
     )
   }
 
-  if (!canRun)
-    return (
-      <NotStartableNotice
-        repo={repo}
-        root={allRepos.find((r) => r.name === repo)?.root}
-      />
-    )
-
   return (
     <div className="flex flex-col gap-6">
       {halt ? <HaltBanner repo={repo} halt={halt} /> : null}
-      <LaunchForm
-        repo={repo}
-        onStart={(opts) => start.mutate(opts)}
-        starting={start.isPending}
-        error={start.error}
-      />
+      <LaunchQueueCard repo={repo} />
     </div>
   )
 }

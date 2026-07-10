@@ -7,8 +7,6 @@ import {
   LayoutDashboard,
   Lightbulb,
   ListChecks,
-  ListOrdered,
-  ListTree,
   Lock,
   Play,
   RefreshCw,
@@ -51,8 +49,6 @@ const GROUPS: NavGroup[] = [
       },
       { label: 'Loop', icon: RefreshCw, to: '/loop', requiresProject: true },
       { label: 'Run once', icon: Play, to: '/run-once', requiresProject: true },
-      { label: 'Backlog', icon: ListTree, to: '/backlog' },
-      { label: 'Queue', icon: ListOrdered, to: '/queue' },
     ],
   },
   {
