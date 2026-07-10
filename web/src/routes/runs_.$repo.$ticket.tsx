@@ -6,6 +6,7 @@ import { ArrowLeft, ExternalLink, GitBranch, Send } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Eyebrow,
+  NoSkillsBanner,
   NoticeBanner,
   RunActionsRow,
   StatusPill,
@@ -130,6 +131,8 @@ function Detail({
       />
 
       {notice && <NoticeBanner notice={notice} onDismiss={onDismiss} />}
+
+      {run.no_skills && <NoSkillsBanner />}
 
       {run.failure_reason && (
         <div className="rounded-lg border border-fail/40 bg-fail/10 px-4 py-3">

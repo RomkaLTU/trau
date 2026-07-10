@@ -914,7 +914,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	if err := p.assertRepoChanged(ctx, id); err != nil {
 		return err
 	}
-	p.warnBuildWithoutSkills()
+	p.warnBuildWithoutSkills(id)
 
 	if err := p.setPhase(id, state.Built); err != nil {
 		return fmt.Errorf("build %s: checkpoint built: %w", id, err)
@@ -922,14 +922,21 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	return nil
 }
 
+const noSkillsWarning = "build loaded no skills — the repo has skills installed but the agent used none"
+
 // warnBuildWithoutSkills flags a build that loaded no skills in a repo that has
 // them. Advisory only — the run proceeds; the warning makes a silently
-// skill-less build visible instead of trusting the prompt's self-selection.
-func (p *Pipeline) warnBuildWithoutSkills() {
+// skill-less build visible instead of trusting the prompt's self-selection. It
+// prints to the console/TUI and, in serve mode, records a durable event so the
+// web UI surfaces the same warning a headless run would otherwise bury.
+func (p *Pipeline) warnBuildWithoutSkills(id string) {
 	if p.SkillsExpected == nil || len(p.buildSkills) > 0 || !p.SkillsExpected(p.buildProvider) {
 		return
 	}
-	p.logf("  ⚠ build loaded no skills — the repo has skills installed but the agent used none")
+	p.logf("  ⚠ %s", noSkillsWarning)
+	if p.Events != nil {
+		p.Events.Emit(event.KindBuildNoSkills, "build", noSkillsWarning, map[string]any{"ticket": id})
+	}
 }
 
 // checkRefusal honors the build agent's REFUSED sentinel — its declaration that
