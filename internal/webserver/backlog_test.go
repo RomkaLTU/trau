@@ -42,7 +42,7 @@ func backlogServer(t *testing.T, fake tracker.Reader, readerErr error) *httptest
 	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()
 	seedRepo(t, home, "acme")
-	s := New("1.2.3", "127.0.0.1", "", nil, false, testRegistrationsAt(t, home))
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
 	s.home = home
 	s.newReader = func(config.Config) (tracker.Reader, error) {
 		if readerErr != nil {
@@ -143,7 +143,7 @@ func TestBacklogRejectsNonGET(t *testing.T) {
 }
 
 func TestBacklogRequiresTokenWhenExposed(t *testing.T) {
-	s := New("1.2.3", "0.0.0.0", "s3cret", nil, false, testRegistrations(t))
+	s := New("1.2.3", "0.0.0.0", "s3cret", nil, false, testStores(t))
 	fake := &fakeReader{}
 	s.newReader = func(config.Config) (tracker.Reader, error) { return fake, nil }
 	ts := httptest.NewServer(s.Handler())

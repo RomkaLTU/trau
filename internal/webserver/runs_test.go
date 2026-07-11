@@ -19,7 +19,7 @@ func seedRepo(t *testing.T, home, name string) string {
 	root := filepath.Join(t.TempDir(), name)
 	runsDir := filepath.Join(root, ".trau", "runs")
 	repo := registry.Repo{Name: name, Root: root, RunsDir: runsDir}
-	if err := testRegistrationsAt(t, home).Remember([]registry.Repo{repo}); err != nil {
+	if err := testStoresAt(t, home).Registrations().Remember([]registry.Repo{repo}); err != nil {
 		t.Fatalf("seed known repo: %v", err)
 	}
 	return runsDir
@@ -37,7 +37,7 @@ func seedRepos(t *testing.T, home string, names ...string) map[string]string {
 		repos = append(repos, registry.Repo{Name: name, Root: root, RunsDir: runsDir})
 		dirs[name] = runsDir
 	}
-	if err := testRegistrationsAt(t, home).Remember(repos); err != nil {
+	if err := testStoresAt(t, home).Registrations().Remember(repos); err != nil {
 		t.Fatalf("seed known repos: %v", err)
 	}
 	return dirs

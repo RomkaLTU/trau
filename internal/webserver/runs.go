@@ -83,7 +83,7 @@ func (s *Server) repoViews() []RepoView {
 		allowed[root] = true
 	}
 	registered := make(map[string]bool)
-	if roots, err := s.repos.Registered(); err == nil {
+	if roots, err := s.stores.Registrations().Registered(); err == nil {
 		for _, root := range roots {
 			registered[root] = true
 		}
@@ -112,7 +112,7 @@ func (s *Server) repoViews() []RepoView {
 // before the next sweep.
 func (s *Server) knownRepos(entries []registry.Entry) []registry.Repo {
 	byRoot := make(map[string]registry.Repo)
-	if persisted, err := s.repos.Known(); err == nil {
+	if persisted, err := s.stores.Registrations().Known(); err == nil {
 		for _, repo := range persisted {
 			byRoot[repo.Root] = repo
 		}

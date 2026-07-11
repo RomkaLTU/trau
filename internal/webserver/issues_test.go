@@ -66,7 +66,7 @@ func issuesServer(t *testing.T, fake tracker.Writer, writerErr error) (string, *
 	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()
 	runsDir := seedRepo(t, home, "acme")
-	s := New("1.2.3", "127.0.0.1", "", nil, false, testRegistrationsAt(t, home))
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
 	s.home = home
 	s.newWriter = func(config.Config) (tracker.Writer, error) {
 		if writerErr != nil {
@@ -240,7 +240,7 @@ func TestRunCommentRequiresBody(t *testing.T) {
 }
 
 func TestIssueEndpointsRequireTokenWhenExposed(t *testing.T) {
-	s := New("1.2.3", "0.0.0.0", "s3cret", nil, false, testRegistrations(t))
+	s := New("1.2.3", "0.0.0.0", "s3cret", nil, false, testStores(t))
 	fake := newFakeWriter()
 	s.newWriter = func(config.Config) (tracker.Writer, error) { return fake, nil }
 	ts := httptest.NewServer(s.Handler())

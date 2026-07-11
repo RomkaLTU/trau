@@ -22,7 +22,7 @@ import (
 func drainServer(t *testing.T, name string) (*Server, *fakeSupervisor, string) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), name)
-	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testRegistrations(t))
+	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
 	s.home = t.TempDir()
 	fake := &fakeSupervisor{}
 	s.sup = fake
@@ -32,11 +32,12 @@ func drainServer(t *testing.T, name string) (*Server, *fakeSupervisor, string) {
 	return s, fake, root
 }
 
-// seedQueue writes a queue file through the store's own API so a case can stage
-// items already running or finished, then sets the draining flag.
-func seedQueue(t *testing.T, root string, draining bool, items ...queue.Item) {
+// seedQueue writes the queue through the store's own API so a case can stage
+// items already running or finished, then sets the draining flag. It uses the
+// server's own queue store so the drainer and the test read the same database.
+func seedQueue(t *testing.T, s *Server, root string, draining bool, items ...queue.Item) {
 	t.Helper()
-	st := queue.NewStore(root)
+	st := s.stores.Queue(root)
 	for _, it := range items {
 		base := queue.Item{Kind: it.Kind, ID: it.ID, Title: it.Title, SubIssues: it.SubIssues}
 		if base.Kind == "" {
@@ -65,18 +66,18 @@ func seedQueue(t *testing.T, root string, draining bool, items ...queue.Item) {
 	}
 }
 
-func snapshot(t *testing.T, root string) []queue.Item {
+func snapshot(t *testing.T, s *Server, root string) []queue.Item {
 	t.Helper()
-	items, _, err := queue.NewStore(root).Snapshot()
+	items, _, err := s.stores.Queue(root).Snapshot()
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
 	return items
 }
 
-func statusOf(t *testing.T, root, id string) string {
+func statusOf(t *testing.T, s *Server, root, id string) string {
 	t.Helper()
-	for _, it := range snapshot(t, root) {
+	for _, it := range snapshot(t, s, root) {
 		if it.ID == id {
 			return it.Status
 		}
@@ -85,9 +86,9 @@ func statusOf(t *testing.T, root, id string) string {
 	return ""
 }
 
-func reasonOf(t *testing.T, root, id string) string {
+func reasonOf(t *testing.T, s *Server, root, id string) string {
 	t.Helper()
-	for _, it := range snapshot(t, root) {
+	for _, it := range snapshot(t, s, root) {
 		if it.ID == id {
 			return it.Reason
 		}
@@ -96,19 +97,19 @@ func reasonOf(t *testing.T, root, id string) string {
 	return ""
 }
 
-func drainingOf(t *testing.T, root string) bool {
+func drainingOf(t *testing.T, s *Server, root string) bool {
 	t.Helper()
-	_, draining, err := queue.NewStore(root).Snapshot()
+	_, draining, err := s.stores.Queue(root).Snapshot()
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
 	return draining
 }
 
-func countStatus(t *testing.T, root, status string) int {
+func countStatus(t *testing.T, s *Server, root, status string) int {
 	t.Helper()
 	n := 0
-	for _, it := range snapshot(t, root) {
+	for _, it := range snapshot(t, s, root) {
 		if it.Status == status {
 			n++
 		}
@@ -116,8 +117,8 @@ func countStatus(t *testing.T, root, status string) int {
 	return n
 }
 
-func runningItem(t *testing.T, root string) (queue.Item, bool) {
-	for _, it := range snapshot(t, root) {
+func runningItem(t *testing.T, s *Server, root string) (queue.Item, bool) {
+	for _, it := range snapshot(t, s, root) {
 		if it.Status == queue.StatusRunning {
 			return it, true
 		}
@@ -300,7 +301,7 @@ func TestDrainTickDecisions(t *testing.T) {
 					return tc.outcomeClass, tc.outcomeReason
 				}
 			}
-			seedQueue(t, root, tc.draining, tc.items...)
+			seedQueue(t, s, root, tc.draining, tc.items...)
 			if tc.report != nil {
 				mustWriteReport(t, root, *tc.report)
 			}
@@ -316,17 +317,17 @@ func TestDrainTickDecisions(t *testing.T) {
 				t.Errorf("spawns = %d, want %d", len(fake.spawns), tc.wantSpawns)
 			}
 			for id, want := range tc.wantStatus {
-				if got := statusOf(t, root, id); got != want {
+				if got := statusOf(t, s, root, id); got != want {
 					t.Errorf("%s status = %q, want %q", id, got, want)
 				}
 			}
 			for id, want := range tc.wantReason {
-				if got := reasonOf(t, root, id); got != want {
+				if got := reasonOf(t, s, root, id); got != want {
 					t.Errorf("%s reason = %q, want %q", id, got, want)
 				}
 			}
 			if tc.wantDraining != nil {
-				if got := drainingOf(t, root); got != *tc.wantDraining {
+				if got := drainingOf(t, s, root); got != *tc.wantDraining {
 					t.Errorf("draining = %v, want %v", got, *tc.wantDraining)
 				}
 			}
@@ -414,7 +415,7 @@ func TestDrainPauseAndResumeReattemptsItem(t *testing.T) {
 	s, fake, root := drainServer(t, "acme")
 	class, reason := state.FailFaulted, "unexpected error during handoff"
 	s.drain.outcome = func(string, queue.Item) (string, string) { return class, reason }
-	seedQueue(t, root, true,
+	seedQueue(t, s, root, true,
 		queue.Item{ID: "COD-1", Status: queue.StatusRunning, PID: 7},
 		queue.Item{ID: "COD-2"},
 	)
@@ -422,13 +423,13 @@ func TestDrainPauseAndResumeReattemptsItem(t *testing.T) {
 	if act, _ := s.drain.tick(root); act != drainReconcile {
 		t.Fatalf("settle tick = %q, want reconcile", act)
 	}
-	if got := statusOf(t, root, "COD-1"); got != queue.StatusPaused {
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusPaused {
 		t.Fatalf("COD-1 = %q, want paused", got)
 	}
-	if got := reasonOf(t, root, "COD-1"); got != reason {
+	if got := reasonOf(t, s, root, "COD-1"); got != reason {
 		t.Errorf("COD-1 reason = %q, want the fault reason", got)
 	}
-	if drainingOf(t, root) {
+	if drainingOf(t, s, root) {
 		t.Error("queue still draining after a fault, want it paused")
 	}
 
@@ -440,20 +441,20 @@ func TestDrainPauseAndResumeReattemptsItem(t *testing.T) {
 	}
 
 	class = ""
-	if err := queue.NewStore(root).SetDraining(true); err != nil {
+	if err := s.stores.Queue(root).SetDraining(true); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if act, _ := s.drain.tick(root); act != drainSpawn {
 		t.Fatalf("resume tick = %q, want it to re-attempt the paused item", act)
 	}
-	running, ok := runningItem(t, root)
+	running, ok := runningItem(t, s, root)
 	if !ok || running.ID != "COD-1" {
 		t.Fatalf("re-attempted item = %+v, want COD-1", running)
 	}
 	if running.Reason != "" {
 		t.Errorf("re-attempted COD-1 reason = %q, want it cleared", running.Reason)
 	}
-	if got := statusOf(t, root, "COD-2"); got != queue.StatusPending {
+	if got := statusOf(t, s, root, "COD-2"); got != queue.StatusPending {
 		t.Errorf("COD-2 = %q, want it still pending behind COD-1", got)
 	}
 	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once", "--drain-report", reportPath(repoRunsDir(root))})
@@ -466,31 +467,31 @@ func TestDrainRunsSequentially(t *testing.T) {
 	s, fake, root := drainServer(t, "acme")
 	alive := map[int]bool{}
 	s.drain.alive = func(pid int) bool { return alive[pid] }
-	seedQueue(t, root, true,
+	seedQueue(t, s, root, true,
 		queue.Item{ID: "COD-1"},
 		queue.Item{ID: "COD-2"},
 		queue.Item{Kind: queue.KindEpic, ID: "COD-3"},
 	)
 
 	var order []string
-	for step := 0; step < 30 && countStatus(t, root, queue.StatusDone) < 3; step++ {
+	for step := 0; step < 30 && countStatus(t, s, root, queue.StatusDone) < 3; step++ {
 		act, err := s.drain.tick(root)
 		if err != nil {
 			t.Fatalf("tick: %v", err)
 		}
 		switch act {
 		case drainSpawn:
-			it, ok := runningItem(t, root)
+			it, ok := runningItem(t, s, root)
 			if !ok {
 				t.Fatal("spawn reported but nothing is running")
 			}
 			order = append(order, it.ID)
-			if n := countStatus(t, root, queue.StatusRunning); n != 1 {
+			if n := countStatus(t, s, root, queue.StatusRunning); n != 1 {
 				t.Fatalf("running items = %d after a spawn, want exactly 1", n)
 			}
 			alive[it.PID] = true
 		case drainWait:
-			if it, ok := runningItem(t, root); ok {
+			if it, ok := runningItem(t, s, root); ok {
 				alive[it.PID] = false
 				mustWriteReport(t, root, queue.DrainReport{})
 			}
@@ -511,13 +512,13 @@ func TestDrainRunsSequentially(t *testing.T) {
 	if len(fake.spawns) != 3 {
 		t.Errorf("spawns = %d, want one per item", len(fake.spawns))
 	}
-	if done := countStatus(t, root, queue.StatusDone); done != 3 {
+	if done := countStatus(t, s, root, queue.StatusDone); done != 3 {
 		t.Errorf("done = %d, want all three settled", done)
 	}
 	if act, _ := s.drain.tick(root); act != drainStop {
 		t.Fatalf("tick after the queue ran dry = %q, want stop", act)
 	}
-	if drainingOf(t, root) {
+	if drainingOf(t, s, root) {
 		t.Error("draining still set after the queue ran dry, want the drain finished")
 	}
 	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once", "--drain-report", reportPath(repoRunsDir(root))})
@@ -538,7 +539,7 @@ func mustWriteReport(t *testing.T, root string, rep queue.DrainReport) {
 // epic already covers is skipped, not run — first occurrence wins.
 func TestDrainSkipsDuplicateTicket(t *testing.T) {
 	s, fake, root := drainServer(t, "acme")
-	seedQueue(t, root, true,
+	seedQueue(t, s, root, true,
 		queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusDone, SubIssues: []queue.SubIssue{{ID: "COD-2"}}},
 		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
 	)
@@ -549,10 +550,10 @@ func TestDrainSkipsDuplicateTicket(t *testing.T) {
 	if act != drainReconcile {
 		t.Fatalf("act = %q, want reconcile — a duplicate is skipped, not spawned", act)
 	}
-	if got := statusOf(t, root, "COD-2"); got != queue.StatusSkipped {
+	if got := statusOf(t, s, root, "COD-2"); got != queue.StatusSkipped {
 		t.Errorf("COD-2 = %q, want skipped as a duplicate", got)
 	}
-	if reasonOf(t, root, "COD-2") == "" {
+	if reasonOf(t, s, root, "COD-2") == "" {
 		t.Error("skipped COD-2 missing a duplicate reason")
 	}
 	if len(fake.spawns) != 0 {
@@ -564,12 +565,12 @@ func TestDrainSkipsDuplicateTicket(t *testing.T) {
 // consumed and removed when the drain reconciles it to a clean finish.
 func TestDrainCleansUpReportOnReconcile(t *testing.T) {
 	s, _, root := drainServer(t, "acme")
-	seedQueue(t, root, true, queue.Item{ID: "COD-1", Status: queue.StatusRunning, PID: 4242})
+	seedQueue(t, s, root, true, queue.Item{ID: "COD-1", Status: queue.StatusRunning, PID: 4242})
 	mustWriteReport(t, root, queue.DrainReport{})
 	if act, _ := s.drain.tick(root); act != drainReconcile {
 		t.Fatalf("act = %q, want reconcile of the finished child", act)
 	}
-	if got := statusOf(t, root, "COD-1"); got != queue.StatusDone {
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusDone {
 		t.Errorf("COD-1 = %q, want done", got)
 	}
 	if _, err := os.Stat(reportPath(repoRunsDir(root))); !os.IsNotExist(err) {
@@ -583,15 +584,15 @@ func TestDrainCleansUpReportOnReconcile(t *testing.T) {
 func TestDrainReportFaultParksEpic(t *testing.T) {
 	s, _, root := drainServer(t, "acme")
 	s.drain.outcome = func(string, queue.Item) (string, string) { return "", "" }
-	seedQueue(t, root, true, queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusRunning, PID: 7})
+	seedQueue(t, s, root, true, queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusRunning, PID: 7})
 	mustWriteReport(t, root, queue.DrainReport{Class: state.FailFaulted, Reason: "sub-issue faulted"})
 	if act, _ := s.drain.tick(root); act != drainReconcile {
 		t.Fatalf("act = %q, want reconcile", act)
 	}
-	if got := statusOf(t, root, "COD-1"); got != queue.StatusPaused {
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusPaused {
 		t.Errorf("COD-1 = %q, want paused — the child reported a fault the epic checkpoint hides", got)
 	}
-	if drainingOf(t, root) {
+	if drainingOf(t, s, root) {
 		t.Error("draining still set after a fault park")
 	}
 }
@@ -603,7 +604,7 @@ func TestDrainReportFaultParksEpic(t *testing.T) {
 // settle it done, which would stamp every carried sub-issue done.
 func TestDrainNoReportPausesEpicWithoutFanout(t *testing.T) {
 	s, _, root := drainServer(t, "acme")
-	seedQueue(t, root, true, queue.Item{
+	seedQueue(t, s, root, true, queue.Item{
 		Kind:      queue.KindEpic,
 		ID:        "COD-1",
 		Status:    queue.StatusRunning,
@@ -613,16 +614,16 @@ func TestDrainNoReportPausesEpicWithoutFanout(t *testing.T) {
 	if act, _ := s.drain.tick(root); act != drainReconcile {
 		t.Fatalf("act = %q, want reconcile", act)
 	}
-	if got := statusOf(t, root, "COD-1"); got != queue.StatusPaused {
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusPaused {
 		t.Errorf("COD-1 = %q, want paused — a dead epic child with no report must not settle done", got)
 	}
-	if reasonOf(t, root, "COD-1") == "" {
+	if reasonOf(t, s, root, "COD-1") == "" {
 		t.Error("paused COD-1 missing the outcome-unknown reason")
 	}
-	if drainingOf(t, root) {
+	if drainingOf(t, s, root) {
 		t.Error("draining still set after parking an unknown outcome")
 	}
-	for _, it := range snapshot(t, root) {
+	for _, it := range snapshot(t, s, root) {
 		if it.ID != "COD-1" {
 			continue
 		}
@@ -643,14 +644,14 @@ func TestDrainNoReportMergedTicketSettlesDone(t *testing.T) {
 	if err := state.NewStore(repoRunsDir(root)).Set("COD-1", "PHASE", state.Merged); err != nil {
 		t.Fatalf("seed merged checkpoint: %v", err)
 	}
-	seedQueue(t, root, true, queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusRunning, PID: 7})
+	seedQueue(t, s, root, true, queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusRunning, PID: 7})
 	if act, _ := s.drain.tick(root); act != drainReconcile {
 		t.Fatalf("act = %q, want reconcile", act)
 	}
-	if got := statusOf(t, root, "COD-1"); got != queue.StatusDone {
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusDone {
 		t.Errorf("COD-1 = %q, want done — a merged checkpoint is clean-finish evidence even with the report lost", got)
 	}
-	if !drainingOf(t, root) {
+	if !drainingOf(t, s, root) {
 		t.Error("draining cleared on a clean finish, want the drain to keep going")
 	}
 }
@@ -686,17 +687,17 @@ func TestDrainHonorsConfiguredRunsDir(t *testing.T) {
 	if err := st.Set("COD-1", "FAILURE_REASON", "context canceled"); err != nil {
 		t.Fatalf("seed reason: %v", err)
 	}
-	seedQueue(t, root, true, queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusRunning, PID: 7})
+	seedQueue(t, s, root, true, queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusRunning, PID: 7})
 	if act, _ := s.drain.tick(root); act != drainReconcile {
 		t.Fatalf("act = %q, want reconcile", act)
 	}
-	if got := statusOf(t, root, "COD-1"); got != queue.StatusPaused {
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusPaused {
 		t.Errorf("COD-1 = %q, want paused — a fault recorded under the configured RUNS_DIR must not settle done", got)
 	}
-	if got := reasonOf(t, root, "COD-1"); got != "context canceled" {
+	if got := reasonOf(t, s, root, "COD-1"); got != "context canceled" {
 		t.Errorf("COD-1 reason = %q, want the fault reason surfaced", got)
 	}
-	if drainingOf(t, root) {
+	if drainingOf(t, s, root) {
 		t.Error("draining still set after a fault park")
 	}
 }
@@ -705,21 +706,21 @@ func TestDrainHonorsConfiguredRunsDir(t *testing.T) {
 // failed and keeps draining instead of parking the queue.
 func TestDrainOnFaultSkipContinues(t *testing.T) {
 	s, _, root := drainServer(t, "acme")
-	seedQueue(t, root, true,
+	seedQueue(t, s, root, true,
 		queue.Item{ID: "COD-1", Status: queue.StatusRunning, PID: 7},
 		queue.Item{ID: "COD-2"},
 	)
-	if err := queue.NewStore(root).SetOptions(false, queue.OnFaultSkip); err != nil {
+	if err := s.stores.Queue(root).SetOptions(false, queue.OnFaultSkip); err != nil {
 		t.Fatalf("set options: %v", err)
 	}
 	mustWriteReport(t, root, queue.DrainReport{Class: state.FailFaulted, Reason: "boom"})
 	if act, _ := s.drain.tick(root); act != drainReconcile {
 		t.Fatalf("act = %q, want reconcile", act)
 	}
-	if got := statusOf(t, root, "COD-1"); got != queue.StatusFailed {
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusFailed {
 		t.Errorf("COD-1 = %q, want failed and skipped past on on-fault=skip", got)
 	}
-	if !drainingOf(t, root) {
+	if !drainingOf(t, s, root) {
 		t.Error("draining cleared on on-fault=skip, want the drain to keep going")
 	}
 }
@@ -731,21 +732,21 @@ func TestDrainPauseTakesEffectAfterCurrentChild(t *testing.T) {
 	s, _, root := drainServer(t, "acme")
 	alive := map[int]bool{}
 	s.drain.alive = func(pid int) bool { return alive[pid] }
-	seedQueue(t, root, true, queue.Item{ID: "COD-1"}, queue.Item{ID: "COD-2"})
+	seedQueue(t, s, root, true, queue.Item{ID: "COD-1"}, queue.Item{ID: "COD-2"})
 
 	if act, _ := s.drain.tick(root); act != drainSpawn {
 		t.Fatalf("first tick = %q, want spawn", act)
 	}
-	running, _ := runningItem(t, root)
+	running, _ := runningItem(t, s, root)
 	alive[running.PID] = true
 
-	if err := queue.NewStore(root).SetDraining(false); err != nil {
+	if err := s.stores.Queue(root).SetDraining(false); err != nil {
 		t.Fatalf("pause: %v", err)
 	}
 	if act, _ := s.drain.tick(root); act != drainWait {
 		t.Fatalf("tick while the child runs = %q, want wait (no mid-run kill)", act)
 	}
-	if statusOf(t, root, "COD-1") != queue.StatusRunning {
+	if statusOf(t, s, root, "COD-1") != queue.StatusRunning {
 		t.Error("COD-1 must keep running until its child exits")
 	}
 
@@ -757,10 +758,10 @@ func TestDrainPauseTakesEffectAfterCurrentChild(t *testing.T) {
 	if act, _ := s.drain.tick(root); act != drainStop {
 		t.Fatalf("tick once settled = %q, want stop (pause took effect)", act)
 	}
-	if statusOf(t, root, "COD-1") != queue.StatusDone {
+	if statusOf(t, s, root, "COD-1") != queue.StatusDone {
 		t.Error("COD-1 should be settled done")
 	}
-	if statusOf(t, root, "COD-2") != queue.StatusPending {
+	if statusOf(t, s, root, "COD-2") != queue.StatusPending {
 		t.Error("COD-2 should stay pending for a later start")
 	}
 }
@@ -770,42 +771,43 @@ func TestDrainPauseTakesEffectAfterCurrentChild(t *testing.T) {
 // report still on disk. The resume settles the leftover done from that report
 // and the queue continues.
 func TestDrainResumeSettlesLeftoverRunning(t *testing.T) {
+	home := t.TempDir()
 	root := filepath.Join(t.TempDir(), "acme")
-	first := New("1.2.3", "127.0.0.1", "", []string{root}, false, testRegistrations(t))
-	first.home = t.TempDir()
+	first := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStoresAt(t, home))
+	first.home = home
 	first.sup = &fakeSupervisor{}
-	seedQueue(t, root, true,
+	seedQueue(t, first, root, true,
 		queue.Item{ID: "COD-1", Status: queue.StatusRunning, PID: 999999},
 		queue.Item{ID: "COD-2"},
 	)
 
-	second := New("1.2.3", "127.0.0.1", "", []string{root}, false, testRegistrations(t))
-	second.home = first.home
+	second := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStoresAt(t, home))
+	second.home = home
 	second.sup = &fakeSupervisor{}
 	second.drain.alive = func(int) bool { return false }
 	second.drain.repoLive = func(string) bool { return false }
 
-	if _, running := firstWithStatus(snapshot(t, root), queue.StatusRunning); !running {
+	if _, running := firstWithStatus(snapshot(t, second, root), queue.StatusRunning); !running {
 		t.Fatal("precondition: COD-1 should be persisted as running")
 	}
 	mustWriteReport(t, root, queue.DrainReport{})
 	if act, _ := second.drain.tick(root); act != drainReconcile {
 		t.Fatalf("first resumed tick = %q, want it to settle the leftover run", act)
 	}
-	if statusOf(t, root, "COD-1") != queue.StatusDone {
-		t.Errorf("leftover COD-1 = %q, want settled done", statusOf(t, root, "COD-1"))
+	if statusOf(t, second, root, "COD-1") != queue.StatusDone {
+		t.Errorf("leftover COD-1 = %q, want settled done", statusOf(t, second, root, "COD-1"))
 	}
 	if act, _ := second.drain.tick(root); act != drainSpawn {
 		t.Fatalf("next tick = %q, want it to continue with COD-2", act)
 	}
-	if statusOf(t, root, "COD-2") != queue.StatusRunning {
+	if statusOf(t, second, root, "COD-2") != queue.StatusRunning {
 		t.Error("COD-2 should now be running")
 	}
 }
 
 func TestDrainEndpointStartsAndPauses(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "acme")
-	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testRegistrations(t))
+	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
 	s.home = t.TempDir()
 	s.sup = &fakeSupervisor{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -826,7 +828,7 @@ func TestDrainEndpointStartsAndPauses(t *testing.T) {
 	if !out.Draining {
 		t.Error("response draining = false, want true after start")
 	}
-	if _, draining, _ := queue.NewStore(root).Snapshot(); !draining {
+	if _, draining, _ := s.stores.Queue(root).Snapshot(); !draining {
 		t.Error("draining flag not persisted after start")
 	}
 	s.drain.mu.Lock()
@@ -845,7 +847,7 @@ func TestDrainEndpointStartsAndPauses(t *testing.T) {
 	if paused.Draining {
 		t.Error("response draining = true, want false after pause")
 	}
-	if _, draining, _ := queue.NewStore(root).Snapshot(); draining {
+	if _, draining, _ := s.stores.Queue(root).Snapshot(); draining {
 		t.Error("draining flag not cleared after pause")
 	}
 }
@@ -932,7 +934,7 @@ func TestTickSpawnsDespiteIdleInstance(t *testing.T) {
 		RepoRoot:     root,
 		SessionState: registry.StateIdle,
 	})
-	seedQueue(t, root, true, queue.Item{ID: "COD-1"})
+	seedQueue(t, s, root, true, queue.Item{ID: "COD-1"})
 	act, err := s.drain.tick(root)
 	if err != nil {
 		t.Fatalf("tick: %v", err)

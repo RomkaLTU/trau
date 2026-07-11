@@ -107,7 +107,7 @@ func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
-	store := queue.NewStore(root)
+	store := s.stores.Queue(root)
 	if req.Draining {
 		onFault := strings.TrimSpace(req.OnFault)
 		if onFault == "" {
@@ -162,7 +162,7 @@ func (s *Server) handleQueueMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))
-	if _, err := queue.NewStore(root).Move(id, req.Dir); errors.Is(err, queue.ErrNotQueued) {
+	if _, err := s.stores.Queue(root).Move(id, req.Dir); errors.Is(err, queue.ErrNotQueued) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("%s is not in the queue", id)})
 		return
 	} else if errors.Is(err, queue.ErrRunning) {
@@ -224,7 +224,7 @@ func (s *Server) viewQueue(w http.ResponseWriter, r *http.Request) {
 // ends here, so the response always reflects the persisted draining flag rather
 // than the caller's local view of it.
 func (s *Server) writeQueue(w http.ResponseWriter, status int, root string) {
-	items, draining, err := queue.NewStore(root).Snapshot()
+	items, draining, err := s.stores.Queue(root).Snapshot()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read queue: " + err.Error()})
 		return
@@ -286,7 +286,7 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if _, err := queue.NewStore(root).Add(item); errors.Is(err, queue.ErrAlreadyQueued) {
+	if _, err := s.stores.Queue(root).Add(item); errors.Is(err, queue.ErrAlreadyQueued) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s is already in the queue", id)})
 		return
 	} else if err != nil {
@@ -306,7 +306,7 @@ func (s *Server) dequeue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))
-	if _, err := queue.NewStore(root).Remove(id); errors.Is(err, queue.ErrNotQueued) {
+	if _, err := s.stores.Queue(root).Remove(id); errors.Is(err, queue.ErrNotQueued) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("%s is not in the queue", id)})
 		return
 	} else if errors.Is(err, queue.ErrRunning) {
