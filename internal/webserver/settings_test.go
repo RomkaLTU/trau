@@ -26,7 +26,7 @@ func seedConfigRepo(t *testing.T, home, name string) string {
 		t.Fatalf("mkdir repo root: %v", err)
 	}
 	repo := registry.Repo{Name: name, Root: root, RunsDir: filepath.Join(root, ".trau", "runs")}
-	if err := testRegistrationsAt(t, home).Remember([]registry.Repo{repo}); err != nil {
+	if err := testStoresAt(t, home).Registrations().Remember([]registry.Repo{repo}); err != nil {
 		t.Fatalf("seed known repo: %v", err)
 	}
 	return root

@@ -6,8 +6,6 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
-
-	"github.com/RomkaLTU/trau/internal/queue"
 )
 
 // queueServer builds a server whose allowlist holds one Registered repo whose
@@ -16,7 +14,7 @@ import (
 func queueServer(t *testing.T, name string) (*fakeSupervisor, string, *httptest.Server) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), name)
-	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testRegistrations(t))
+	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
 	s.home = t.TempDir()
 	fake := &fakeSupervisor{}
 	s.sup = fake
@@ -305,13 +303,18 @@ func TestDequeueUnknownItem(t *testing.T) {
 // rejects removing an item the hub is draining — so a Remove that races the
 // drainer promoting the item to running cannot orphan the just-spawned child.
 func TestDequeueRunningRefused(t *testing.T) {
-	_, root, ts := queueServer(t, "acme")
+	root := filepath.Join(t.TempDir(), "acme")
+	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
+	s.home = t.TempDir()
+	s.sup = &fakeSupervisor{}
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
 	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: "COD-1"})
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("enqueue = %d, want 201", res.StatusCode)
 	}
-	if err := queue.NewStore(root).MarkRunning("COD-1", 4242); err != nil {
+	if err := s.stores.Queue(root).MarkRunning("COD-1", 4242); err != nil {
 		t.Fatalf("MarkRunning: %v", err)
 	}
 
@@ -325,12 +328,13 @@ func TestDequeueRunningRefused(t *testing.T) {
 }
 
 // TestQueuePersistsAcrossServers proves the queue survives a serve restart: a
-// second server, sharing only the repo root on disk, reads the item the first
-// one registered.
+// second server, sharing the same hub database, reads the item the first one
+// registered.
 func TestQueuePersistsAcrossServers(t *testing.T) {
+	home := t.TempDir()
 	root := filepath.Join(t.TempDir(), "acme")
-	first := New("1.2.3", "127.0.0.1", "", []string{root}, false, testRegistrations(t))
-	first.home = t.TempDir()
+	first := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStoresAt(t, home))
+	first.home = home
 	first.sup = &fakeSupervisor{}
 	ts1 := httptest.NewServer(first.Handler())
 	defer ts1.Close()
@@ -341,8 +345,8 @@ func TestQueuePersistsAcrossServers(t *testing.T) {
 		t.Fatalf("enqueue = %d, want 201", res.StatusCode)
 	}
 
-	second := New("1.2.3", "127.0.0.1", "", []string{root}, false, testRegistrations(t))
-	second.home = t.TempDir()
+	second := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStoresAt(t, home))
+	second.home = home
 	second.sup = &fakeSupervisor{}
 	ts2 := httptest.NewServer(second.Handler())
 	defer ts2.Close()
@@ -384,7 +388,7 @@ func TestQueueRejectsUnsupportedMethod(t *testing.T) {
 
 func TestQueueRequiresTokenWhenExposed(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "acme")
-	s := New("1.2.3", "0.0.0.0", "s3cret", []string{root}, false, testRegistrations(t))
+	s := New("1.2.3", "0.0.0.0", "s3cret", []string{root}, false, testStores(t))
 	s.sup = &fakeSupervisor{}
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)

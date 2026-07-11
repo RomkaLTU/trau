@@ -50,7 +50,7 @@ func (s *Server) registerRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := s.repos.Register(root); err != nil {
+	if err := s.stores.Registrations().Register(root); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to register repo: " + err.Error()})
 		return
 	}
@@ -85,13 +85,13 @@ func (s *Server) unregisterRepo(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	registered, _ := s.repos.Registered()
+	registered, _ := s.stores.Registrations().Registered()
 	root, ok := matchRoot(registered, name)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("repo %q is not registered", name)})
 		return
 	}
-	removed, err := s.repos.Unregister(root)
+	removed, err := s.stores.Registrations().Unregister(root)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to unregister repo: " + err.Error()})
 		return
@@ -136,7 +136,7 @@ func validateRepoPath(path string) (string, error) {
 // merged with the repos registered from the web. Reading it fresh on every call
 // is what lets a registration take effect without restarting serve.
 func (s *Server) effectiveRoots() []string {
-	registered, _ := s.repos.Registered()
+	registered, _ := s.stores.Registrations().Registered()
 	if len(registered) == 0 {
 		return s.workspace
 	}

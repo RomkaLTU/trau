@@ -20,7 +20,7 @@ func checkpointRepo(t *testing.T, home, name string) (root, runsDir string) {
 	t.Helper()
 	root = filepath.Join(t.TempDir(), name)
 	runsDir = filepath.Join(root, ".trau", "runs")
-	if err := testRegistrationsAt(t, home).Remember([]registry.Repo{{Name: name, Root: root, RunsDir: runsDir}}); err != nil {
+	if err := testStoresAt(t, home).Registrations().Remember([]registry.Repo{{Name: name, Root: root, RunsDir: runsDir}}); err != nil {
 		t.Fatalf("seed known repo: %v", err)
 	}
 	return root, runsDir
@@ -258,7 +258,7 @@ func TestCheckpointMutationsRejectNonPOST(t *testing.T) {
 }
 
 func TestCheckpointMutationsRequireTokenWhenExposed(t *testing.T) {
-	s := New("1.2.3", "0.0.0.0", "s3cret", nil, false, testRegistrations(t))
+	s := New("1.2.3", "0.0.0.0", "s3cret", nil, false, testStores(t))
 	fake := &fakeSupervisor{}
 	s.sup = fake
 	ts := httptest.NewServer(s.Handler())

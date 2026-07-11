@@ -261,7 +261,7 @@ func TestCostsRejectsNonGET(t *testing.T) {
 // resolves through the same layered config the loop reads.
 func writeRepoConfig(t *testing.T, home, name, body string) {
 	t.Helper()
-	known, err := testRegistrationsAt(t, home).Known()
+	known, err := testStoresAt(t, home).Registrations().Known()
 	if err != nil {
 		t.Fatalf("read known repos: %v", err)
 	}

@@ -33,7 +33,7 @@ type Server struct {
 	token         string
 	allowRegister bool
 	workspace     []string
-	repos         *hubstore.Registrations
+	stores        *hubstore.Stores
 	sup           Supervisor
 	drain         *drainer
 	drainCtx      context.Context
@@ -51,9 +51,9 @@ type Server struct {
 // present token as a bearer credential. allowRegister opens repo (un)registration
 // on such a bind; loopback binds ignore it and stay open. workspace is the
 // allowlist of repo roots the hub may start loops in; anything outside it is
-// observe-only. repos is the hub-owned registration store backed by the hub
-// database.
-func New(version, bind, token string, workspace []string, allowRegister bool, repos *hubstore.Registrations) *Server {
+// observe-only. stores is the hub-owned store set backed by the hub database:
+// repo registrations and the per-repo queues.
+func New(version, bind, token string, workspace []string, allowRegister bool, stores *hubstore.Stores) *Server {
 	s := &Server{
 		version:       version,
 		started:       time.Now(),
@@ -63,7 +63,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, re
 		token:         token,
 		allowRegister: allowRegister,
 		workspace:     normalizeRoots(workspace),
-		repos:         repos,
+		stores:        stores,
 		sup:           newOSSupervisor(),
 		drainCtx:      context.Background(),
 		newWriter:     defaultWriter,
@@ -89,7 +89,7 @@ const repoSweepInterval = 30 * time.Second
 func (s *Server) Start(ctx context.Context) {
 	s.drainCtx = ctx
 	for _, root := range s.effectiveRoots() {
-		items, draining, err := queue.NewStore(root).Snapshot()
+		items, draining, err := s.stores.Queue(root).Snapshot()
 		if err != nil {
 			continue
 		}
@@ -118,7 +118,7 @@ func (s *Server) sweepKnownRepos(ctx context.Context) {
 }
 
 func (s *Server) rememberLiveRepos() {
-	_ = s.repos.Remember(reposFromEntries(registry.Live(s.home)))
+	_ = s.stores.Registrations().Remember(reposFromEntries(registry.Live(s.home)))
 }
 
 // reposFromEntries projects live registry entries onto known-repo rows, naming a

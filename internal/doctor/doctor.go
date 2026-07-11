@@ -56,6 +56,7 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkWritePerms(cfg, repoRoot, rr)
 	checkHubDatabase(rr)
 	checkLegacyRegistration(rr)
+	checkLegacyQueue(repoRoot, rr)
 
 	w.blank()
 	if rr.r.Errors > 0 {
@@ -394,6 +395,23 @@ func checkLegacyRegistration(rr *runner) {
 	rr.add("legacy registration", warn,
 		fmt.Sprintf("legacy registration file(s) still present: %s", strings.Join(leftover, ", ")),
 		"start `trau serve` once to import and remove them")
+}
+
+// checkLegacyQueue flags a repo's file-era .trau/queue.json left behind by the
+// upgrade to the hub database (ADR 0007). The hub imports and deletes it on
+// first touch; one still present means a half-completed upgrade.
+func checkLegacyQueue(repoRoot string, rr *runner) {
+	if repoRoot == "" {
+		return
+	}
+	path, present := hubstore.LegacyQueueFile(repoRoot)
+	if !present {
+		rr.add("legacy queue", pass, "no legacy queue file", "")
+		return
+	}
+	rr.add("legacy queue", warn,
+		fmt.Sprintf("legacy queue file still present: %s", path),
+		"start `trau serve` once to import and remove it")
 }
 
 func probeWrite(path string) error {

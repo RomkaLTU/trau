@@ -145,6 +145,41 @@ func TestCheckLegacyRegistrationFlagsLeftover(t *testing.T) {
 	}
 }
 
+func TestCheckLegacyQueueClean(t *testing.T) {
+	rr := newTestRunner()
+	checkLegacyQueue(t.TempDir(), rr)
+	if c := lastCheck(t, rr); c.Status != pass {
+		t.Errorf("status = %q, want pass on a repo with no queue.json", c.Status)
+	}
+}
+
+func TestCheckLegacyQueueFlagsLeftover(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, ".trau"), 0o755); err != nil {
+		t.Fatalf("mkdir .trau: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, ".trau", "queue.json"), []byte(`{"items":[]}`), 0o644); err != nil {
+		t.Fatalf("seed legacy queue: %v", err)
+	}
+	rr := newTestRunner()
+	checkLegacyQueue(repoRoot, rr)
+	c := lastCheck(t, rr)
+	if c.Status != warn {
+		t.Errorf("status = %q, want warn with a leftover queue.json", c.Status)
+	}
+	if !strings.Contains(c.Message, "queue.json") {
+		t.Errorf("message %q should name the leftover file", c.Message)
+	}
+}
+
+func TestCheckLegacyQueueSkippedWithoutRepo(t *testing.T) {
+	rr := newTestRunner()
+	checkLegacyQueue("", rr)
+	if len(rr.r.Checks) != 0 {
+		t.Errorf("expected no queue check without a repo root, got %+v", rr.r.Checks)
+	}
+}
+
 func TestCheckHubDatabaseNotYetCreated(t *testing.T) {
 	t.Setenv("TRAU_HOME", t.TempDir())
 	rr := newTestRunner()

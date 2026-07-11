@@ -17,7 +17,7 @@ import (
 
 func instancesServer(t *testing.T, home string) *httptest.Server {
 	t.Helper()
-	s := New("1.2.3", "127.0.0.1", "", nil, false, testRegistrationsAt(t, home))
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
 	s.home = home
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
@@ -204,8 +204,8 @@ func TestInstancesRetainsExitedRepos(t *testing.T) {
 	home := t.TempDir()
 	gone := registry.Repo{Name: "gone", Root: "/repo/gone", RunsDir: "/repo/gone/.trau/runs"}
 
-	store := testRegistrations(t)
-	if err := store.Remember([]registry.Repo{gone}); err != nil {
+	store := testStores(t)
+	if err := store.Registrations().Remember([]registry.Repo{gone}); err != nil {
 		t.Fatalf("seed known repo: %v", err)
 	}
 	s := New("1.2.3", "127.0.0.1", "", nil, false, store)

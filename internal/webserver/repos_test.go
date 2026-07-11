@@ -105,7 +105,7 @@ func TestRegisterThenStartWithoutRestart(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, "workspace.json")); !os.IsNotExist(err) {
 		t.Errorf("registration created a legacy workspace.json; storage must be the hub database")
 	}
-	if roots, _ := testRegistrationsAt(t, home).Registered(); !slices.Contains(roots, repo) {
+	if roots, _ := testStoresAt(t, home).Registrations().Registered(); !slices.Contains(roots, repo) {
 		t.Errorf("registration not persisted to the hub database")
 	}
 	if _, err := os.Stat(filepath.Join(home, ".trau.ini")); !os.IsNotExist(err) {
@@ -234,8 +234,8 @@ func TestRegistrationExposureGate(t *testing.T) {
 			base := t.TempDir()
 			toRegister := gitRepo(t, base, "toregister", "dir")
 			toUnregister := gitRepo(t, base, "tounregister", "dir")
-			store := testRegistrationsAt(t, home)
-			if err := store.Register(toUnregister); err != nil {
+			store := testStoresAt(t, home)
+			if err := store.Registrations().Register(toUnregister); err != nil {
 				t.Fatalf("seed unregister target: %v", err)
 			}
 
@@ -252,7 +252,7 @@ func TestRegistrationExposureGate(t *testing.T) {
 			if tc.namesKey && !strings.Contains(body, "SERVE_ALLOW_REGISTER") {
 				t.Errorf("register refusal %q does not name SERVE_ALLOW_REGISTER", body)
 			}
-			registered, _ := store.Registered()
+			registered, _ := store.Registrations().Registered()
 			if got := slices.Contains(registered, toRegister); got != (tc.wantRegister == http.StatusCreated) {
 				t.Errorf("registered(%s) = %v after register status %d", toRegister, got, tc.wantRegister)
 			}
@@ -264,7 +264,7 @@ func TestRegistrationExposureGate(t *testing.T) {
 			if tc.namesKey && !strings.Contains(body, "SERVE_ALLOW_REGISTER") {
 				t.Errorf("unregister refusal %q does not name SERVE_ALLOW_REGISTER", body)
 			}
-			registered, _ = store.Registered()
+			registered, _ = store.Registrations().Registered()
 			stillRegistered := slices.Contains(registered, toUnregister)
 			if wantStill := tc.wantUnregister != http.StatusOK; stillRegistered != wantStill {
 				t.Errorf("registered(%s) = %v after unregister status %d", toUnregister, stillRegistered, tc.wantUnregister)
@@ -298,7 +298,7 @@ func TestUnregisterRepo(t *testing.T) {
 				if res.StatusCode != http.StatusForbidden {
 					t.Errorf("post-unregister start = %d, want 403", res.StatusCode)
 				}
-				if roots, _ := testRegistrationsAt(t, home).Registered(); len(roots) != 0 {
+				if roots, _ := testStoresAt(t, home).Registrations().Registered(); len(roots) != 0 {
 					t.Errorf("registration store still lists %v", roots)
 				}
 				if _, err := os.Stat(filepath.Join(registered, ".git")); err != nil {
@@ -377,7 +377,7 @@ func TestUnregisterPersistsAcrossRestart(t *testing.T) {
 func TestUnregisterKeepsRepoBrowsable(t *testing.T) {
 	home := t.TempDir()
 	repo := gitRepo(t, t.TempDir(), "acme", "dir")
-	if err := testRegistrationsAt(t, home).Remember([]registry.Repo{{Name: filepath.Base(repo), Root: repo, RunsDir: filepath.Join(repo, ".trau", "runs")}}); err != nil {
+	if err := testStoresAt(t, home).Registrations().Remember([]registry.Repo{{Name: filepath.Base(repo), Root: repo, RunsDir: filepath.Join(repo, ".trau", "runs")}}); err != nil {
 		t.Fatalf("seed known repo: %v", err)
 	}
 
