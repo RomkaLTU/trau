@@ -33,7 +33,9 @@
 # Run `trau` with no arguments inside a repo that has no .trau.ini to start it.
 
 # --- project-management backend ---
-TRACKER_PROVIDER=linear      # linear | jira | github
+TRACKER_PROVIDER=linear      # linear | jira | github | internal
+                             # internal = trau's own issues in the hub (ADR 0007), no external tracker.
+                             # A repo with no Linear/Jira/GitHub configured uses internal automatically.
 LINEAR_TEAM=YourTeam         # your Linear team name, Jira project key, or GitHub repo slug (required for whole-team picks)
 ISSUE_PREFIX=                # ticket-ID prefix for parsing, branch inference, and sentinels
                              # (e.g. COD, TMS, ENG). Empty = derive from the team key above; falls back to COD.

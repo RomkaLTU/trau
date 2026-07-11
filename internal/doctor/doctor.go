@@ -163,14 +163,17 @@ func checkConfig(ctx context.Context, cfg config.Config, sources map[string]conf
 	}
 	rr.add("repo", pass, repoRoot, "")
 
-	switch cfg.TrackerProvider {
+	provider := cfg.EffectiveTrackerProvider()
+	switch provider {
+	case "internal":
+		rr.add("tracker", pass, "internal (no external tracker configured — issues live in the hub)", "")
 	case "linear", "jira", "github":
-		rr.add("tracker", pass, cfg.TrackerProvider, "")
+		rr.add("tracker", pass, provider, "")
 	default:
-		rr.add("tracker", fail, fmt.Sprintf("unknown tracker provider %q", cfg.TrackerProvider), "set TRACKER_PROVIDER to linear | jira | github")
+		rr.add("tracker", fail, fmt.Sprintf("unknown tracker provider %q", cfg.TrackerProvider), "set TRACKER_PROVIDER to linear | jira | github | internal")
 	}
 
-	if cfg.TrackerProvider == "linear" && strings.TrimSpace(cfg.LinearTeam) == "" {
+	if provider == "linear" && strings.TrimSpace(cfg.LinearTeam) == "" {
 		rr.add("linear team", fail, "LINEAR_TEAM is empty", "set LINEAR_TEAM in trau.ini or environment")
 	}
 

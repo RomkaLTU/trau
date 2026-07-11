@@ -1,0 +1,109 @@
+package hubclient
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestInternalIssueDecodesResponse(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != apiPrefix+"/repos/acme/issues/internal/ACME-1" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, Issue{ID: "ACME-1", Title: "Add search", State: "started", Parent: "ACME-9"})
+	}))
+	defer ts.Close()
+
+	iss, err := New(ts.URL, "").InternalIssue(context.Background(), "acme", "ACME-1")
+	if err != nil {
+		t.Fatalf("InternalIssue: %v", err)
+	}
+	if iss.ID != "ACME-1" || iss.Title != "Add search" || iss.State != "started" || iss.Parent != "ACME-9" {
+		t.Fatalf("issue = %+v", iss)
+	}
+}
+
+func TestInternalIssueNotFound(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "nope"})
+	}))
+	defer ts.Close()
+
+	if _, err := New(ts.URL, "").InternalIssue(context.Background(), "acme", "ACME-1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestBacklogSendsFilters(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("source") != "internal" || q.Get("label") != "ready-for-agent" {
+			t.Errorf("query = %v, want the internal+ready filter", q)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items": []BacklogItem{{ID: "ACME-2", Group: "unstarted", Ready: true}},
+		})
+	}))
+	defer ts.Close()
+
+	items, err := New(ts.URL, "").Backlog(context.Background(), "acme", BacklogQuery{Source: "internal", Label: "ready-for-agent"})
+	if err != nil {
+		t.Fatalf("Backlog: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "ACME-2" {
+		t.Fatalf("items = %+v", items)
+	}
+}
+
+func TestTransitionSendsBodyAndBearer(t *testing.T) {
+	var got Transition
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("authorization = %q, want the bearer token", r.Header.Get("Authorization"))
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		writeJSON(w, http.StatusOK, Issue{ID: "ACME-1", State: "done"})
+	}))
+	defer ts.Close()
+
+	iss, err := New(ts.URL, "secret").TransitionInternalIssue(context.Background(), "acme", "ACME-1", Transition{
+		State: "done", AddLabels: []string{"needs-human"}, Comment: "done",
+	})
+	if err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	if iss.State != "done" {
+		t.Fatalf("issue = %+v", iss)
+	}
+	if got.State != "done" || len(got.AddLabels) != 1 || got.Comment != "done" {
+		t.Fatalf("sent body = %+v", got)
+	}
+}
+
+func TestNon2xxCarriesHubError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "boom"})
+	}))
+	defer ts.Close()
+
+	_, err := New(ts.URL, "").InternalIssue(context.Background(), "acme", "ACME-1")
+	if err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want a non-nil, non-ErrNotFound error", err)
+	}
+	if got := err.Error(); !strings.Contains(got, "boom") {
+		t.Fatalf("err = %q, want it to carry the hub message", got)
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}

@@ -150,6 +150,44 @@ func TestGetInternalIssueNotFound(t *testing.T) {
 	}
 }
 
+func TestTransitionInternalIssueAppliesStatusAndLabels(t *testing.T) {
+	ts, _, _ := internalIssueServer(t, false)
+	_, created := createInternal(t, ts, "acme", InternalIssueRequest{
+		Title: "Runnable", State: "unstarted", Labels: []string{"ready-for-agent"},
+	})
+
+	url := ts.URL + APIPrefix + "/repos/acme/issues/internal/" + created.ID + "/transition"
+	res := postJSON(t, url, InternalTransitionRequest{
+		State:        "started",
+		AddLabels:    []string{"needs-human"},
+		RemoveLabels: []string{"ready-for-agent"},
+		Comment:      "Trau loop stopped.",
+	})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	var out InternalIssueResponse
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.State != "started" || len(out.Labels) != 1 || out.Labels[0] != "needs-human" {
+		t.Fatalf("transitioned = %+v, want started with only needs-human", out)
+	}
+}
+
+func TestTransitionInternalIssueRejectsSyncedTicket(t *testing.T) {
+	ts, root, store := internalIssueServer(t, false)
+	if _, _, err := store.Upsert(root, "linear", []hubstore.Issue{{Identifier: "COD-1", Title: "Synced"}}); err != nil {
+		t.Fatalf("seed synced: %v", err)
+	}
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/issues/internal/COD-1/transition", InternalTransitionRequest{State: "done"})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 — a synced ticket is not transitioned here", res.StatusCode)
+	}
+}
+
 func TestEnqueueInternalIssueSkipsTracker(t *testing.T) {
 	ts, _, _ := internalIssueServer(t, true)
 

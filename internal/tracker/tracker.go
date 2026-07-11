@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/hubclient"
 )
 
 // DefaultPrefix is the issue-identifier prefix assumed as a last resort when none
@@ -56,6 +57,13 @@ type Config struct {
 	// Linear and GitHub providers.
 	BaseURL string
 	Email   string
+	// Repo, HubBaseURL, and HubToken wire the internal provider to the serve hub:
+	// the hub-registered repo name it addresses, the hub origin
+	// (e.g. http://127.0.0.1:8728), and the bearer token for an exposed hub. All
+	// three are unused by the external providers.
+	Repo       string
+	HubBaseURL string
+	HubToken   string
 }
 
 // SubIssue is a lightweight identifier+title pair for an issue's children. Done
@@ -311,8 +319,15 @@ func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 		}, nil
 	case "github":
 		return &GitHub{Runner: runner, Repo: cfg.Team, ReadyLabel: cfg.ReadyLabel, QuarantineLabel: cfg.QuarantineLabel, SplitLabel: cfg.SplitLabel}, nil
+	case "internal":
+		return &Internal{
+			Hub:             hubclient.New(cfg.HubBaseURL, cfg.HubToken),
+			Repo:            cfg.Repo,
+			ReadyLabel:      cfg.ReadyLabel,
+			QuarantineLabel: cfg.QuarantineLabel,
+		}, nil
 	default:
-		return nil, fmt.Errorf("unknown tracker provider %q (expected: linear | jira | github)", provider)
+		return nil, fmt.Errorf("unknown tracker provider %q (expected: linear | jira | github | internal)", provider)
 	}
 }
 

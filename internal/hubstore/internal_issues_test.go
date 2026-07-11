@@ -143,6 +143,73 @@ func TestCreateInternalWithParentMarksEpic(t *testing.T) {
 	}
 }
 
+func TestTransitionInternalAppliesStateLabelsAndComment(t *testing.T) {
+	s := testIssues(t)
+	iss, err := s.CreateInternal("/repo/loop", "LOOP", InternalDraft{
+		Title:  "Add search",
+		State:  "unstarted",
+		Labels: []string{"ready-for-agent"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := s.TransitionInternal("/repo/loop", iss.Identifier, InternalTransition{
+		State:        "started",
+		AddLabels:    []string{"needs-human"},
+		RemoveLabels: []string{"ready-for-agent"},
+		Comment:      "Trau loop stopped: verify dead end.",
+	})
+	if err != nil {
+		t.Fatalf("transition: %v", err)
+	}
+	if got.StatusGroup != "started" || got.Status != "In Progress" {
+		t.Fatalf("state = %q/%q, want started/In Progress", got.StatusGroup, got.Status)
+	}
+	if !reflect.DeepEqual(got.Labels, []string{"needs-human"}) {
+		t.Fatalf("labels = %v, want the ready label dropped and needs-human added", got.Labels)
+	}
+	persisted, _ := s.List("/repo/loop")
+	if len(persisted) != 1 || len(persisted[0].Comments) != 1 {
+		t.Fatalf("persisted = %+v, want one issue with one comment", persisted)
+	}
+	if c := persisted[0].Comments[0]; c.Author != internalCommentAuthor || c.Body != "Trau loop stopped: verify dead end." {
+		t.Fatalf("comment = %+v, want the loop's authored body", c)
+	}
+}
+
+func TestTransitionInternalLeavesStateWhenEmpty(t *testing.T) {
+	s := testIssues(t)
+	iss, err := s.CreateInternal("/repo/loop", "LOOP", InternalDraft{Title: "T", State: "started"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	got, err := s.TransitionInternal("/repo/loop", iss.Identifier, InternalTransition{AddLabels: []string{"x"}})
+	if err != nil {
+		t.Fatalf("transition: %v", err)
+	}
+	if got.StatusGroup != "started" {
+		t.Fatalf("state = %q, want it left at started when no State is passed", got.StatusGroup)
+	}
+}
+
+func TestTransitionInternalRejectsSyncedIssue(t *testing.T) {
+	s := testIssues(t)
+	if _, _, err := s.Upsert("/repo/loop", "linear", []Issue{{Identifier: "COD-1", Title: "Synced"}}); err != nil {
+		t.Fatalf("seed synced: %v", err)
+	}
+	_, err := s.TransitionInternal("/repo/loop", "COD-1", InternalTransition{State: "done"})
+	if !errors.Is(err, ErrInternalIssueNotFound) {
+		t.Fatalf("err = %v, want ErrInternalIssueNotFound — a synced ticket is not written here", err)
+	}
+}
+
+func TestMergeLabelsIsCaseInsensitive(t *testing.T) {
+	got := mergeLabels([]string{"Ready-For-Agent", "feature"}, []string{"needs-human", "FEATURE"}, []string{"ready-for-agent"})
+	if !reflect.DeepEqual(got, []string{"feature", "needs-human"}) {
+		t.Fatalf("merged = %v, want ready dropped, feature deduped, needs-human added", got)
+	}
+}
+
 func TestInternalIssuesAreRepoScoped(t *testing.T) {
 	s := testIssues(t)
 	a, err := s.CreateInternal("/repo/a", "LOOP", InternalDraft{Title: "A"})
