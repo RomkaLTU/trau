@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
 
@@ -99,8 +100,10 @@ func (s *Server) timeseries(from, to string, days int, groupBy string, filter co
 	total := spend{metered: true}
 	facetRepos, facetProviders, facetModels, facetPhases := set{}, set{}, set{}, set{}
 
+	cells := s.costCellsByRepo(from, to)
 	for _, rv := range s.repoViews() {
-		for _, c := range tokens.New(rv.RunsDir).RollupDetail(from, to) {
+		for _, cell := range cells[rv.Root] {
+			c := detailCost(cell)
 			facetRepos.add(rv.Name)
 			facetProviders.add(orUnknown(c.Provider))
 			facetModels.add(orUnknown(c.Model))
@@ -146,6 +149,25 @@ func (s *Server) timeseries(from, to string, days int, groupBy string, filter co
 			Models:    facetModels.sorted(),
 			Phases:    facetPhases.sorted(),
 		},
+	}
+}
+
+// detailCost resolves a derived cost cell into the analytics grain, applying the
+// read-side provider fallback for older lines logged before the provider was
+// recorded inline — mirroring tokens.RollupDetail.
+func detailCost(c hubstore.CostCell) tokens.DetailCost {
+	provider := c.Provider
+	if provider == "" {
+		provider = tokens.ProviderForModel(c.Model)
+	}
+	return tokens.DetailCost{
+		Date:     c.Date,
+		Phase:    c.Phase,
+		Provider: provider,
+		Model:    c.Model,
+		Tokens:   c.Tokens,
+		Cost:     c.Cost,
+		Metered:  c.Metered,
 	}
 }
 

@@ -24,6 +24,23 @@ func instancesServer(t *testing.T, home string) *httptest.Server {
 	return ts
 }
 
+// ingestedServer is instancesServer with the derived projection ensured and one
+// ingest pass run, mirroring serve startup, so the costs, timeseries, and runs
+// endpoints — which serve from the derived tables — see the fixtures seeded before
+// it is built.
+func ingestedServer(t *testing.T, home string) *httptest.Server {
+	t.Helper()
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+	s.home = home
+	if err := s.stores.EnsureDerivedSchema(); err != nil {
+		t.Fatalf("ensure derived schema: %v", err)
+	}
+	s.ingestPass()
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
 func writeEntry(t *testing.T, home string, e registry.Entry) string {
 	t.Helper()
 	dir := filepath.Join(home, "instances")

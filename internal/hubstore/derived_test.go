@@ -270,3 +270,65 @@ func TestCursorsZeroWhenAbsent(t *testing.T) {
 		t.Fatalf("Checkpoint(absent) ok=%v err=%v; want false, nil", ok, err)
 	}
 }
+
+func TestCostCellsAggregatesWindow(t *testing.T) {
+	_, d := testDerived(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Two tickets in repoA fold into one (day, provider, model, phase) cell; a
+	// nil-cost call reads as unmetered; repoB's June call falls outside the window.
+	must(d.IngestTokens("repoA", "COD-1", false, []TokenRow{
+		{Seq: 10, TS: "2026-07-10T09:00:00", Phase: "build", Total: 100, CostUSD: floatPtr(0.5), Provider: "claude", Model: "opus"},
+		{Seq: 20, TS: "2026-07-10T10:00:00", Phase: "build", Total: 50, CostUSD: floatPtr(0.25), Provider: "claude", Model: "opus"},
+		{Seq: 30, TS: "2026-07-11T09:00:00", Phase: "verify", Total: 25, CostUSD: nil, Provider: "claude", Model: "opus"},
+	}, 30))
+	must(d.IngestTokens("repoA", "COD-9", false, []TokenRow{
+		{Seq: 10, TS: "2026-07-10T11:00:00", Phase: "build", Total: 10, CostUSD: floatPtr(0.125), Provider: "claude", Model: "opus"},
+	}, 10))
+	must(d.IngestTokens("repoB", "COD-2", false, []TokenRow{
+		{Seq: 10, TS: "2026-07-11T09:00:00", Phase: "build", Total: 200, CostUSD: floatPtr(0.5), Provider: "codex", Model: "gpt"},
+		{Seq: 20, TS: "2026-06-01T09:00:00", Phase: "build", Total: 999, CostUSD: floatPtr(9.99), Provider: "codex", Model: "gpt"},
+	}, 20))
+
+	cells, err := d.CostCells("2026-07-10", "2026-07-11")
+	if err != nil {
+		t.Fatalf("CostCells: %v", err)
+	}
+	want := []CostCell{
+		{Repo: "repoA", Date: "2026-07-10", Phase: "build", Provider: "claude", Model: "opus", Tokens: 160, Cost: 0.875, Metered: true},
+		{Repo: "repoA", Date: "2026-07-11", Phase: "verify", Provider: "claude", Model: "opus", Tokens: 25, Cost: 0, Metered: false},
+		{Repo: "repoB", Date: "2026-07-11", Phase: "build", Provider: "codex", Model: "gpt", Tokens: 200, Cost: 0.5, Metered: true},
+	}
+	if !reflect.DeepEqual(cells, want) {
+		t.Fatalf("cells = %+v, want %+v", cells, want)
+	}
+}
+
+func TestCheckpointsListsRepoByTicket(t *testing.T) {
+	_, d := testDerived(t)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(d.UpsertCheckpoint("repoA", "COD-2", CheckpointRow{Phase: "built", Data: `{"PHASE":"built"}`}, 1, 1))
+	must(d.UpsertCheckpoint("repoA", "COD-1", CheckpointRow{Phase: "merged", Title: "First", Data: `{"PHASE":"merged"}`}, 1, 1))
+	must(d.UpsertCheckpoint("repoB", "COD-3", CheckpointRow{Phase: "verified", Data: `{}`}, 1, 1))
+
+	got, err := d.Checkpoints("repoA")
+	if err != nil {
+		t.Fatalf("Checkpoints: %v", err)
+	}
+	want := []TicketCheckpoint{
+		{Ticket: "COD-1", CheckpointRow: CheckpointRow{Phase: "merged", Title: "First", Data: `{"PHASE":"merged"}`}},
+		{Ticket: "COD-2", CheckpointRow: CheckpointRow{Phase: "built", Data: `{"PHASE":"built"}`}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("checkpoints = %+v, want %+v", got, want)
+	}
+}
