@@ -77,6 +77,13 @@ func TestTicketContextNote(t *testing.T) {
 		t.Errorf("empty detail should inject nothing, got %q", empty)
 	}
 
+	// Comments read from the store are injected alongside the description.
+	withComments := ticketContextNote("TMS-1121", tracker.IssueDetail{
+		Title:    "Model gateway",
+		Comments: []tracker.IssueComment{{Author: "ada", Body: "watch the timeout"}},
+	})
+	mustContain(t, "ticketContextNote comments", withComments, "Comments", "ada", "watch the timeout")
+
 	// The build instruction carries the injected block through to the agent.
 	build := buildInstruction("TMS-1121", "feature/x", selfSelectSkillsNote, "", got)
 	mustContain(t, "buildInstruction", build, "Model gateway", "stop after implementation.")

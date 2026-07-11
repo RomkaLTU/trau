@@ -37,6 +37,68 @@ func sampleIssue() Issue {
 	}
 }
 
+func TestFindReturnsIssueWithComments(t *testing.T) {
+	store := testIssues(t)
+	if _, _, err := store.Upsert("acme", "linear", []Issue{sampleIssue()}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	iss, found, err := store.Find("acme", "COD-1")
+	if err != nil || !found {
+		t.Fatalf("find: found=%v err=%v", found, err)
+	}
+	if iss.Description != "Body" {
+		t.Errorf("description = %q, want the stored body", iss.Description)
+	}
+	if len(iss.Comments) != 1 || iss.Comments[0].Body != "looks good" {
+		t.Errorf("comments = %+v, want the stored comment attached", iss.Comments)
+	}
+}
+
+func TestFindMissReturnsNotFound(t *testing.T) {
+	store := testIssues(t)
+	if _, found, err := store.Find("acme", "COD-404"); found || err != nil {
+		t.Fatalf("find miss = found %v err %v, want false/nil", found, err)
+	}
+}
+
+func TestUpdateSyncedMirrorsStatusAndLabels(t *testing.T) {
+	store := testIssues(t)
+	if _, _, err := store.Upsert("acme", "linear", []Issue{{
+		Identifier:  "COD-1",
+		Title:       "Fix",
+		Status:      "Todo",
+		StatusGroup: "unstarted",
+		Labels:      []string{"ready-for-agent"},
+	}}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	iss, found, err := store.UpdateSynced("acme", "COD-1", SyncedPatch{
+		Status:       "In Progress",
+		StatusGroup:  "started",
+		AddLabels:    []string{"in-progress"},
+		RemoveLabels: []string{"ready-for-agent"},
+	})
+	if err != nil || !found {
+		t.Fatalf("update synced: found=%v err=%v", found, err)
+	}
+	if iss.Status != "In Progress" || iss.StatusGroup != "started" {
+		t.Errorf("status/group = %q/%q, want In Progress/started", iss.Status, iss.StatusGroup)
+	}
+	if !reflect.DeepEqual(iss.Labels, []string{"in-progress"}) {
+		t.Errorf("labels = %v, want the ready→in-progress swap", iss.Labels)
+	}
+}
+
+func TestUpdateSyncedNeverTouchesInternal(t *testing.T) {
+	store := testIssues(t)
+	if _, err := store.CreateInternal("acme", "LOOP", InternalDraft{Title: "internal only"}); err != nil {
+		t.Fatalf("create internal: %v", err)
+	}
+	if _, found, err := store.UpdateSynced("acme", "LOOP-1", SyncedPatch{StatusGroup: "started"}); found || err != nil {
+		t.Fatalf("update synced on internal = found %v err %v, want false/nil (internal content is never mirrored)", found, err)
+	}
+}
+
 func TestUpsertStoresIssuesAndComments(t *testing.T) {
 	s := testIssues(t)
 	n, c, err := s.Upsert("/repo/acme", "linear", []Issue{sampleIssue()})

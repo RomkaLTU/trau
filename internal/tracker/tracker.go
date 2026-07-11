@@ -126,11 +126,19 @@ type Tracker interface {
 }
 
 // IssueDetail is the ticket content injected into the build/handoff prompts: the
-// title plus the full description (which, for Linear/Jira, embeds the acceptance
-// criteria as markdown).
+// title, the full description (which, for Linear/Jira, embeds the acceptance
+// criteria as markdown), and the issue's comments as read from the store.
 type IssueDetail struct {
 	Title       string
 	Description string
+	Comments    []IssueComment
+}
+
+// IssueComment is one comment on an issue — an author and a body — injected into
+// the prompt alongside the description.
+type IssueComment struct {
+	Author string
+	Body   string
 }
 
 // IssueDetailer is the optional capability of returning an issue's title and full
