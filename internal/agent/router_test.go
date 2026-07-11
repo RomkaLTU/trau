@@ -33,6 +33,37 @@ func TestRouteKey(t *testing.T) {
 	}
 }
 
+// TestMechanicalPhase pins which phases are mechanical (tracker-free, MCP-strippable).
+// The five mechanical prefixes and their dynamic suffixes match; the tracker-reading
+// phases — build/handoff/verify and pick — must not, or stripping MCP would break the
+// MCP ticket-read fallback (build/handoff/verify) or ticket selection (pick).
+func TestMechanicalPhase(t *testing.T) {
+	cases := []struct {
+		label string
+		want  bool
+	}{
+		{"cleanup", true},
+		{"commit", true},
+		{"repair1", true},
+		{"bugfix2", true},
+		{"push-repair1", true},
+		{"build", false},
+		{"handoff", false},
+		{"verify", false},
+		{"verify-retry2", false},
+		{"lintfix", false},
+		{"plan", false},
+		{"slice", false},
+		{"pick", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := MechanicalPhase(tc.label); got != tc.want {
+			t.Errorf("MechanicalPhase(%q) = %v, want %v", tc.label, got, tc.want)
+		}
+	}
+}
+
 // TestPreambleFor pins the planning Preamble's scope: the plan-scoped variant
 // covers both planning labels (plan and slice) and nothing else.
 func TestPreambleFor(t *testing.T) {

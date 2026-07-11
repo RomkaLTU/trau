@@ -866,45 +866,47 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		return nil, err
 	}
 	return &pipeline.Pipeline{
-		Runner:             runner,
-		State:              state.NewStore(cfg.RunsDir),
-		Git:                pipeline.ExecGit{Repo: repoRoot},
-		GitHub:             pipeline.ExecGitHub{Repo: repoRoot},
-		Tracker:            pm,
-		Tokens:             sink,
-		Budget:             budgetLimits(cfg),
-		RunsDir:            cfg.RunsDir,
-		Base:               cfg.BaseBranch,
-		Remote:             cfg.Remote,
-		Prefix:             cfg.IssuePrefix,
-		MaxRepairs:         cfg.MaxRepairs,
-		MaxBugfixes:        cfg.MaxBugfixes,
-		AgentRetries:       cfg.AgentRetries,
-		AgentBackoff:       cfg.AgentBackoff,
-		Fallback:           fallback,
-		Checks:             verifyChecks,
-		VerifyPanel:        panel,
-		PanelPolicy:        cfg.VerifyPanelPolicy,
-		BrowserVerify:      cfg.BrowserVerify,
-		AppURL:             cfg.AppURL,
-		AutoMerge:          cfg.AutoMerge,
-		MergeMethod:        cfg.MergeMethod,
-		ExpectedChecks:     cfg.ExpectedChecks,
-		RequireCI:          cfg.RequireCI,
-		RequireRepoChanges: cfg.RequireRepoChanges,
-		AutoStash:          cfg.AutoStash,
-		LintFix:            cfg.LintFix,
-		LintFixCmd:         cfg.LintFixCmd,
-		Cleanup:            cfg.Cleanup,
-		SkillsExpected:     skillsExpected(repoRoot),
-		RequiredSkills:     cfg.RequiredSkills,
-		CITimeout:          cfg.CITimeout,
-		CIPoll:             cfg.CIPoll,
-		Lessons:            cfg.Lessons,
-		LessonsDistill:     cfg.LessonsDistill,
-		Renderer:           con,
-		Events:             log,
-		OwnedProject:       cfg.Project,
+		Runner:              runner,
+		State:               state.NewStore(cfg.RunsDir),
+		Git:                 pipeline.ExecGit{Repo: repoRoot},
+		GitHub:              pipeline.ExecGitHub{Repo: repoRoot},
+		Tracker:             pm,
+		Tokens:              sink,
+		Budget:              budgetLimits(cfg),
+		RunsDir:             cfg.RunsDir,
+		Base:                cfg.BaseBranch,
+		Remote:              cfg.Remote,
+		Prefix:              cfg.IssuePrefix,
+		MaxRepairs:          cfg.MaxRepairs,
+		MaxBugfixes:         cfg.MaxBugfixes,
+		AgentRetries:        cfg.AgentRetries,
+		AgentBackoff:        cfg.AgentBackoff,
+		Fallback:            fallback,
+		Checks:              verifyChecks,
+		VerifyPanel:         panel,
+		PanelPolicy:         cfg.VerifyPanelPolicy,
+		PanelParallel:       cfg.PanelParallel,
+		BrowserVerify:       cfg.BrowserVerify,
+		AppURL:              cfg.AppURL,
+		AutoMerge:           cfg.AutoMerge,
+		MergeMethod:         cfg.MergeMethod,
+		DeterministicCommit: cfg.DeterministicCommit,
+		ExpectedChecks:      cfg.ExpectedChecks,
+		RequireCI:           cfg.RequireCI,
+		RequireRepoChanges:  cfg.RequireRepoChanges,
+		AutoStash:           cfg.AutoStash,
+		LintFix:             cfg.LintFix,
+		LintFixCmd:          cfg.LintFixCmd,
+		Cleanup:             cfg.Cleanup,
+		SkillsExpected:      skillsExpected(repoRoot),
+		RequiredSkills:      cfg.RequiredSkills,
+		CITimeout:           cfg.CITimeout,
+		CIPoll:              cfg.CIPoll,
+		Lessons:             cfg.Lessons,
+		LessonsDistill:      cfg.LessonsDistill,
+		Renderer:            con,
+		Events:              log,
+		OwnedProject:        cfg.Project,
 
 		RepoRoot:            repoRoot,
 		TimelogEnabled:      cfg.TimelogEnabled,
@@ -949,7 +951,7 @@ func buildPanel(cfg config.Config, log *event.Log, sink agent.TokenSink) ([]pipe
 		if err != nil {
 			return nil, fmt.Errorf("verify panel %q: %w", spec, err)
 		}
-		runner, err := buildBackend(reg, cfg, provider, model, effort, log, sink)
+		runner, err := buildBackend(reg, cfg, provider, model, effort, agent.PhaseVerify, log, sink)
 		if err != nil {
 			return nil, fmt.Errorf("verify panel %q: %w", spec, err)
 		}
@@ -981,7 +983,7 @@ func buildFallback(cfg config.Config, log *event.Log, sink agent.TokenSink) (fun
 		if err != nil {
 			return nil, fmt.Errorf("fallback provider %q: %w", spec, err)
 		}
-		b, err := buildBackend(reg, cfg, provider, model, effort, log, sink)
+		b, err := buildBackend(reg, cfg, provider, model, effort, "", log, sink)
 		if err != nil {
 			return nil, fmt.Errorf("fallback provider %q: %w", spec, err)
 		}
@@ -2665,18 +2667,37 @@ func buildRouter(cfg config.Config, log *event.Log, sink agent.TokenSink, stderr
 	used := map[string]bool{cfg.Provider: true}
 
 	defPC := providerConfigFor(cfg, cfg.Provider)
-	def, err := buildBackend(reg, cfg, cfg.Provider, defPC.model, defPC.effort, log, sink)
+	def, err := buildBackend(reg, cfg, cfg.Provider, defPC.model, defPC.effort, "", log, sink)
 	if err != nil {
 		return nil, err
 	}
 
-	routes := map[string]agent.Runner{}
+	specs := map[string]string{}
 	for phase, spec := range cfg.Routes {
+		specs[phase] = spec
+	}
+	// A Claude phase whose per-phase disallowed-tools resolve differently from the
+	// provider default needs its own backend so its tool policy — and the preamble
+	// derived from it — diverge from the default backend that serves the unrouted
+	// phases. This is what routes build/verify through the Explore opt-in.
+	if cfg.Provider == "claude" {
+		for _, phase := range agent.Phases {
+			if _, ok := specs[phase]; ok {
+				continue
+			}
+			if cfg.PhaseDisallowedTools(phase) != cfg.ClaudeDisallowedTools {
+				specs[phase] = cfg.Provider
+			}
+		}
+	}
+
+	routes := map[string]agent.Runner{}
+	for phase, spec := range specs {
 		provider, model, effort, err := parseRoute(reg, spec, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("%s phase route: %w", phase, err)
 		}
-		b, err := buildBackend(reg, cfg, provider, model, effort, log, sink)
+		b, err := buildBackend(reg, cfg, provider, model, effort, phase, log, sink)
 		if err != nil {
 			return nil, fmt.Errorf("%s phase route %q: %w", phase, spec, err)
 		}
@@ -2762,12 +2783,15 @@ func autoInstallSkills(cfg config.Config, con *console.Console) {
 	}
 }
 
-func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort string, log *event.Log, sink agent.TokenSink) (agent.Runner, error) {
+func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort, phase string, log *event.Log, sink agent.TokenSink) (agent.Runner, error) {
 	spec, ok := reg.Lookup(provider)
 	if !ok {
 		return nil, fmt.Errorf("unknown provider %q (expected: %s)", provider, strings.Join(reg.Names(), " | "))
 	}
 	pc := providerConfigFor(cfg, provider)
+	if provider == "claude" {
+		pc.extra["disallowed_tools"] = cfg.PhaseDisallowedTools(phase)
+	}
 	if _, err := exec.LookPath(pc.bin); err != nil {
 		return nil, fmt.Errorf("provider %q: %q not found on PATH", provider, pc.bin)
 	}
@@ -2782,21 +2806,22 @@ func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort
 		}
 	}
 	return spec.New(agent.BackendParams{
-		Bin:          pc.bin,
-		Flags:        strings.Fields(pc.flags),
-		Model:        model,
-		Effort:       effort,
-		Dir:          cfg.RepoRoot,
-		Preamble:     config.Preamble,
-		PlanPreamble: config.PlanningPreamble,
-		Cols:         cfg.AgentCols,
-		Rows:         cfg.AgentRows,
-		SizeFn:       sizeFn,
-		Timeout:      time.Duration(cfg.AgentTimeout) * time.Second,
-		StallWindow:  time.Duration(cfg.AgentStallWindow) * time.Second,
-		Log:          log,
-		Tokens:       sink,
-		Extra:        pc.extra,
+		Bin:                pc.bin,
+		Flags:              strings.Fields(pc.flags),
+		Model:              model,
+		Effort:             effort,
+		Dir:                cfg.RepoRoot,
+		Preamble:           cfg.PhasePreamble(provider, phase),
+		PlanPreamble:       config.PlanningPreamble,
+		Cols:               cfg.AgentCols,
+		Rows:               cfg.AgentRows,
+		SizeFn:             sizeFn,
+		Timeout:            time.Duration(cfg.AgentTimeout) * time.Second,
+		StallWindow:        time.Duration(cfg.AgentStallWindow) * time.Second,
+		StripMechanicalMCP: cfg.StripMechanicalMCP,
+		Log:                log,
+		Tokens:             sink,
+		Extra:              pc.extra,
 	})
 }
 

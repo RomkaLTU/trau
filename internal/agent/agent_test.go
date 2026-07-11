@@ -84,6 +84,37 @@ func TestClaudeInteractiveStallWindowKills(t *testing.T) {
 	}
 }
 
+// TestClaudeArgsStripMechanicalMCP pins the COD-801 flag gating: with stripping on,
+// only mechanical phases get --strict-mcp-config (build/handoff/verify keep their MCP
+// config); with the opt-out off, no phase gets the flag.
+func TestClaudeArgsStripMechanicalMCP(t *testing.T) {
+	has := func(args []string) bool {
+		for _, a := range args {
+			if a == "--strict-mcp-config" {
+				return true
+			}
+		}
+		return false
+	}
+
+	on := &ClaudeInteractive{Bin: "claude", StripMechanicalMCP: true}
+	for _, label := range []string{"cleanup", "commit", "repair1", "bugfix2", "push-repair1"} {
+		if !has(on.args("prompt", "sid", label)) {
+			t.Errorf("StripMechanicalMCP on: %q should pass --strict-mcp-config", label)
+		}
+	}
+	for _, label := range []string{"build", "handoff", "verify", "pick"} {
+		if has(on.args("prompt", "sid", label)) {
+			t.Errorf("StripMechanicalMCP on: %q must keep its MCP config", label)
+		}
+	}
+
+	off := &ClaudeInteractive{Bin: "claude", StripMechanicalMCP: false}
+	if has(off.args("prompt", "sid", "cleanup")) {
+		t.Error("opt-out off: cleanup must not pass --strict-mcp-config")
+	}
+}
+
 // scriptedSession emits a fixed prologue on its first Read, then blocks like a
 // hung agent (the auth-wall idle) until Kill/Close. It lets a test feed the
 // terminal output that should trip the auth watchdog.

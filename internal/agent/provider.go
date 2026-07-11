@@ -23,9 +23,13 @@ type BackendParams struct {
 	// whose label routes to PhasePlan). Empty keeps every phase on Preamble.
 	PlanPreamble string
 	Timeout      time.Duration
-	Cols         int
-	Rows         int
-	SizeFn       func() (cols, rows int)
+	// StripMechanicalMCP launches mechanical phases (see agent.MechanicalPhase)
+	// with the target repo's MCP servers stripped, where the provider CLI supports
+	// it (Claude's --strict-mcp-config). Providers without an equivalent ignore it.
+	StripMechanicalMCP bool
+	Cols               int
+	Rows               int
+	SizeFn             func() (cols, rows int)
 	// StallWindow kills+fails a call that produces no transcript output for this
 	// long, before Timeout. Zero disables the watchdog (wait the full Timeout).
 	StallWindow time.Duration
@@ -97,22 +101,23 @@ var claudeSpec = Spec{
 	ReportsSkills: true,
 	New: func(p BackendParams) (Runner, error) {
 		return &ClaudeInteractive{
-			Bin:             p.Bin,
-			Flags:           p.Flags,
-			Model:           p.Model,
-			Effort:          p.Effort,
-			DisallowedTools: p.Extra["disallowed_tools"],
-			Preamble:        p.Preamble,
-			PlanPreamble:    p.PlanPreamble,
-			ResultDir:       p.Extra["result_dir"],
-			Dir:             p.Dir,
-			Cols:            p.Cols,
-			Rows:            p.Rows,
-			SizeFn:          p.SizeFn,
-			Timeout:         p.Timeout,
-			StallWindow:     p.StallWindow,
-			Log:             p.Log,
-			Tokens:          p.Tokens,
+			Bin:                p.Bin,
+			Flags:              p.Flags,
+			Model:              p.Model,
+			Effort:             p.Effort,
+			DisallowedTools:    p.Extra["disallowed_tools"],
+			StripMechanicalMCP: p.StripMechanicalMCP,
+			Preamble:           p.Preamble,
+			PlanPreamble:       p.PlanPreamble,
+			ResultDir:          p.Extra["result_dir"],
+			Dir:                p.Dir,
+			Cols:               p.Cols,
+			Rows:               p.Rows,
+			SizeFn:             p.SizeFn,
+			Timeout:            p.Timeout,
+			StallWindow:        p.StallWindow,
+			Log:                p.Log,
+			Tokens:             p.Tokens,
 		}, nil
 	},
 }

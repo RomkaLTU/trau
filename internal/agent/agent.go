@@ -126,25 +126,26 @@ func (s *ptySession) Kill() error {
 // file as the machine protocol. It deliberately does not pass -p/--print or
 // --output-format; stdout is terminal UI only, never parsed for correctness.
 type ClaudeInteractive struct {
-	Bin             string
-	Flags           []string
-	Model           string
-	Effort          string
-	DisallowedTools string
-	Preamble        string
-	PlanPreamble    string
-	ResultDir       string
-	Dir             string
-	Cols            int
-	Rows            int
-	SizeFn          func() (cols, rows int)
-	Timeout         time.Duration
-	StallWindow     time.Duration
-	TrustPromptWait time.Duration
-	Log             *event.Log
-	Tokens          TokenSink
-	now             func() time.Time
-	start           terminalStarter
+	Bin                string
+	Flags              []string
+	Model              string
+	Effort             string
+	DisallowedTools    string
+	StripMechanicalMCP bool
+	Preamble           string
+	PlanPreamble       string
+	ResultDir          string
+	Dir                string
+	Cols               int
+	Rows               int
+	SizeFn             func() (cols, rows int)
+	Timeout            time.Duration
+	StallWindow        time.Duration
+	TrustPromptWait    time.Duration
+	Log                *event.Log
+	Tokens             TokenSink
+	now                func() time.Time
+	start              terminalStarter
 }
 
 func (c *ClaudeInteractive) Provider() string { return "claude" }
@@ -154,7 +155,7 @@ func (c *ClaudeInteractive) Route(string) (string, string, string) {
 	return "claude", c.Model, c.Effort
 }
 
-func (c *ClaudeInteractive) args(prompt, sessionID string) []string {
+func (c *ClaudeInteractive) args(prompt, sessionID, label string) []string {
 	args := append([]string{}, c.Flags...)
 	if c.Model != "" {
 		args = append(args, "--model", c.Model)
@@ -164,6 +165,12 @@ func (c *ClaudeInteractive) args(prompt, sessionID string) []string {
 	}
 	if c.DisallowedTools != "" {
 		args = append(args, "--disallowedTools="+c.DisallowedTools)
+	}
+	// --strict-mcp-config with no --mcp-config loads zero MCP servers, so a
+	// mechanical phase pays none of the repo MCP config's startup latency or
+	// schema tokens. Claude-only; other providers have no equivalent.
+	if c.StripMechanicalMCP && MechanicalPhase(label) {
+		args = append(args, "--strict-mcp-config")
 	}
 	if sessionID != "" {
 		args = append(args, "--session-id", sessionID)
@@ -194,7 +201,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	cols, rows := c.resolveSize()
 
 	start := c.clock()
-	sess, err := starter(ctx, c.Bin, c.Dir, c.args(full, sessionID), cols, rows)
+	sess, err := starter(ctx, c.Bin, c.Dir, c.args(full, sessionID, label), cols, rows)
 	if err != nil {
 		res := Result{IsError: true}
 		c.emit(label, res, c.clock().Sub(start), err)

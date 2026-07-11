@@ -37,6 +37,13 @@ const Preamble = "[Unattended run] You are running headless inside an automated 
 // this invites questions via the payload and forbids asking in prose.
 const PlanningPreamble = "[Planning run] You are running headless inside trau's planning module — no human is watching this process and you cannot block on input. Do not ask questions in prose and never call AskUserQuestion. When you need a decision from the user, express it as a structured question in the JSON payload you return (status \"questions\", each entry with a short header, options, and a default) — trau renders it and collects the answer in a later round. Otherwise proceed straight to the requested output. Do ALL work inline in THIS single agent: subagent spawning and multi-agent fan-out are disabled; do not spawn subagents or parallel workers. (The TaskCreate/TaskUpdate todo-list tools are fine — they do not spawn anything.)"
 
+// ExplorePreamble replaces Preamble for a phase whose tool policy permits the
+// Agent tool — i.e. read-only exploration subagents are allowed (see
+// ExploreSubagents / PhaseDisallowedTools). It invites the Explore agent type for
+// parallel read-only investigation while still forbidding write-capable fan-out,
+// so the preamble never contradicts the phase's effective disallowed-tools set.
+const ExplorePreamble = "[Unattended run] You are running headless inside an automated loop — no human is watching and no input is possible. Never call AskUserQuestion or wait for a reply. When a choice arises, take the most reasonable / recommended default, proceed, and note the assumption in one line. If you truly cannot proceed safely, stop and say why. You may dispatch read-only exploration subagents (the Explore agent type) to investigate the codebase in parallel and keep your own context lean — but do the actual implementation and every write inline in THIS agent. Multi-agent fan-out (the Workflow tool) and write-capable subagents stay disabled: they multiply token cost and let unobserved workers mutate the tree. (The TaskCreate/TaskUpdate todo-list tools are fine — they do not spawn anything.)"
+
 // Config is the resolved loop configuration. Field defaults and names track the
 // trau.ini knobs documented in trau.ini.example.
 type Config struct {
@@ -71,6 +78,11 @@ type Config struct {
 	ClaudeModel           string
 	ClaudeEffort          string
 	ClaudeDisallowedTools string
+	// ClaudePhaseDisallowedTools holds explicit per-phase
+	// CLAUDE_<PHASE>_DISALLOWED_TOOLS overrides keyed by canonical phase. A phase
+	// absent here inherits ClaudeDisallowedTools (or the ExploreSubagents seed for
+	// build/verify) — see PhaseDisallowedTools.
+	ClaudePhaseDisallowedTools map[string]string
 
 	CodexConfig  string
 	CodexBin     string
@@ -92,13 +104,20 @@ type Config struct {
 	// MaxPlanRounds caps how many rounds of clarifying questions a planning
 	// session may ask before the agent must draft the PRD with its remaining
 	// assumptions listed explicitly.
-	MaxPlanRounds  int
-	AutoMerge      bool
-	MergeMethod    string
-	CITimeout      int
-	CIPoll         int
-	ExpectedChecks string
-	RequireCI      bool
+	MaxPlanRounds int
+	AutoMerge     bool
+	MergeMethod   string
+	// DeterministicCommit makes a squash-merge repo's commit phase stage and commit
+	// the slice with a templated Conventional Commit (type from the ticket kind,
+	// subject from its title, a Refs trailer) instead of spawning a commit agent —
+	// the squash discards the message anyway. On (default) for squash repos; set 0 to
+	// restore the agent commit where commit conventions need judgment. Non-squash
+	// merge methods always use the agent commit (they may split into atomic commits).
+	DeterministicCommit bool
+	CITimeout           int
+	CIPoll              int
+	ExpectedChecks      string
+	RequireCI           bool
 	// RequireRepoChanges gates the post-build empty-diff guard: when on (default),
 	// a build that left the managed repo unchanged faults instead of advancing to a
 	// hollow handoff or empty PR. Set 0 for the rare legitimately no-op ticket.
@@ -132,6 +151,21 @@ type Config struct {
 	// dead code, over-defensive scaffolding — before verify grades the result. Set
 	// Cleanup 0 to skip it.
 	Cleanup bool
+	// StripMechanicalMCP launches the mechanical phases (cleanup, commit, repair,
+	// bugfix, push-repair) with the target repo's MCP servers stripped, where the
+	// provider CLI supports it (Claude's --strict-mcp-config) — those phases never
+	// read the tracker, so the server schemas only cost startup latency and context
+	// tokens. On by default; set 0 to restore full MCP everywhere for repos whose
+	// hooks or tests depend on MCP tooling in those phases.
+	StripMechanicalMCP bool
+
+	// ExploreSubagents opts the build and verify phases into read-only exploration
+	// subagents (Claude's Explore agent type): those phases drop the Agent tool from
+	// their disallowed set so the orchestrator can fan investigation out and keep its
+	// own context lean on large tickets, while write-capable fan-out (the Workflow
+	// tool) stays blocked in every phase. Off by default; an explicit
+	// CLAUDE_<PHASE>_DISALLOWED_TOOLS override still wins per phase.
+	ExploreSubagents bool
 
 	BrowserVerify string
 	AppURL        string
@@ -139,6 +173,10 @@ type Config struct {
 
 	VerifyPanel       []string
 	VerifyPanelPolicy string
+	// PanelParallel runs the cross-vendor verify panel members concurrently
+	// (default on). Repos where concurrent member test runs collide (shared DB,
+	// ports, build artifacts) set PANEL_PARALLEL=0 to restore sequential runs.
+	PanelParallel bool
 
 	TUI bool
 
@@ -260,6 +298,7 @@ func Defaults() Config {
 		MaxPlanRounds:         3,
 		AutoMerge:             true,
 		MergeMethod:           "squash",
+		DeterministicCommit:   true,
 		CITimeout:             600,
 		CIPoll:                30,
 		ExpectedChecks:        "",
@@ -268,10 +307,13 @@ func Defaults() Config {
 		AutoStash:             true,
 		LintFix:               true,
 		Cleanup:               true,
+		StripMechanicalMCP:    true,
+		ExploreSubagents:      false,
 		BrowserVerify:         "auto",
 		AppURL:                "http://localhost",
 		VerifyChecks:          true,
 		VerifyPanelPolicy:     "unanimous",
+		PanelParallel:         true,
 		TUI:                   true,
 		Theme:                 "default",
 		EpicFlow:              true,
@@ -570,6 +612,18 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if len(routes) > 0 {
 		c.Routes = routes
 	}
+	if c.Provider == "claude" {
+		for _, ph := range phases {
+			key := "CLAUDE_" + strings.ToUpper(ph) + "_DISALLOWED_TOOLS"
+			if v, src := phaseGet(key); v != "" {
+				if c.ClaudePhaseDisallowedTools == nil {
+					c.ClaudePhaseDisallowedTools = map[string]string{}
+				}
+				c.ClaudePhaseDisallowedTools[ph] = v
+				sources[key] = src
+			}
+		}
+	}
 	if v, src := get("FALLBACK_PROVIDERS"); v != "" {
 		c.FallbackProviders = splitCSV(v)
 		sources["FALLBACK_PROVIDERS"] = src.name
@@ -583,6 +637,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		sources["AUTO_MERGE"] = src.name
 	}
 	str("MERGE_METHOD", &c.MergeMethod)
+	if v, src := get("DETERMINISTIC_COMMIT"); v != "" {
+		c.DeterministicCommit = v == "1"
+		sources["DETERMINISTIC_COMMIT"] = src.name
+	}
 	num("CI_TIMEOUT", &c.CITimeout)
 	num("CI_POLL", &c.CIPoll)
 	str("EXPECTED_CHECKS", &c.ExpectedChecks)
@@ -615,6 +673,14 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		c.Cleanup = v == "1"
 		sources["CLEANUP"] = src.name
 	}
+	if v, src := get("STRIP_MECHANICAL_MCP"); v != "" {
+		c.StripMechanicalMCP = v == "1"
+		sources["STRIP_MECHANICAL_MCP"] = src.name
+	}
+	if v, src := get("EXPLORE_SUBAGENTS"); v != "" {
+		c.ExploreSubagents = v == "1"
+		sources["EXPLORE_SUBAGENTS"] = src.name
+	}
 	str("BROWSER_VERIFY", &c.BrowserVerify)
 	str("APP_URL", &c.AppURL)
 	if v, src := get("VERIFY_CHECKS"); v != "" {
@@ -626,6 +692,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		sources["VERIFY_PANEL"] = src.name
 	}
 	str("VERIFY_PANEL_POLICY", &c.VerifyPanelPolicy)
+	if v, src := get("PANEL_PARALLEL"); v != "" {
+		c.PanelParallel = v == "1"
+		sources["PANEL_PARALLEL"] = src.name
+	}
 	if v, src := get("TRAU_TUI"); v != "" {
 		c.TUI = v == "1"
 		sources["TRAU_TUI"] = src.name
@@ -836,6 +906,55 @@ func routeSpec(provider, model, effort string) string {
 		return provider + ":" + model
 	}
 	return provider
+}
+
+// PhaseDisallowedTools resolves the Claude disallowed-tools string for a phase,
+// mirroring the per-phase model/effort resolution: an explicit
+// CLAUDE_<PHASE>_DISALLOWED_TOOLS override wins, else the ExploreSubagents opt-in
+// drops the Agent tool from the default for build and verify (permitting read-only
+// exploration subagents there), else the provider default. Workflow is never
+// dropped, so write-capable fan-out stays blocked in every phase.
+func (c Config) PhaseDisallowedTools(phase string) string {
+	if v, ok := c.ClaudePhaseDisallowedTools[phase]; ok {
+		return v
+	}
+	if c.ExploreSubagents && (phase == "build" || phase == "verify") {
+		return dropTool(c.ClaudeDisallowedTools, "Agent")
+	}
+	return c.ClaudeDisallowedTools
+}
+
+// PhasePreamble returns the unattended preamble for a phase, kept in lockstep with
+// its effective tool policy: the Explore-permitting variant when the phase's Claude
+// disallowed-tools set leaves the Agent tool enabled, otherwise the standard
+// fan-out-disabled text. Non-Claude phases always take the standard preamble.
+func (c Config) PhasePreamble(provider, phase string) string {
+	if provider == "claude" && exploreAllowed(c.PhaseDisallowedTools(phase)) {
+		return ExplorePreamble
+	}
+	return Preamble
+}
+
+func dropTool(list, tool string) string {
+	parts := strings.Split(list, ",")
+	kept := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" || strings.EqualFold(p, tool) {
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return strings.Join(kept, ",")
+}
+
+func exploreAllowed(disallowed string) bool {
+	for _, p := range strings.Split(disallowed, ",") {
+		if strings.EqualFold(strings.TrimSpace(p), "Agent") {
+			return false
+		}
+	}
+	return true
 }
 
 // ResolveRepoRoot locates the target app repo, per ADR 0001 §2: the --repo flag
@@ -1104,6 +1223,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "MAX_PLAN_ROUNDS", Default: "3", Description: "Rounds of clarifying questions a planning session may ask before the PRD is forced"},
 		{Key: "AUTO_MERGE", Default: "1", Description: "Merge on green CI (1 = yes, 0 = no)", Bool: true},
 		{Key: "MERGE_METHOD", Default: "squash", Description: "Merge strategy: squash | merge | rebase", Options: []string{"squash", "merge", "rebase"}},
+		{Key: "DETERMINISTIC_COMMIT", Default: "1", Description: "For squash-merge repos, stage and commit the slice deterministically (templated Conventional Commit, no commit agent) since the squash discards the message; 0 restores the agent commit (1 = yes, 0 = no)", Bool: true},
 		{Key: "CI_TIMEOUT", Default: "600", Description: "Seconds to wait for CI checks"},
 		{Key: "CI_POLL", Default: "30", Description: "Seconds between CI polls"},
 		{Key: "EXPECTED_CHECKS", Description: "Required CI check names (comma-separated)"},
@@ -1115,11 +1235,14 @@ func KnownKeys() []KeyMeta {
 		{Key: "LINT_FIX", Default: "1", Description: "Run the project's lint/format autofixers before verify so verify isn't spent self-healing style noise (1 = yes, 0 = no)", Bool: true},
 		{Key: "LINT_FIX_CMD", Description: "Deterministic lint-fix command run before verify (e.g. vendor/bin/pint, npm run lint:fix). Empty = a cheap agent auto-detects and runs the project's fixers"},
 		{Key: "CLEANUP", Default: "1", Description: "Strip AI-slop (unnecessary comments, dead code, over-defensive scaffolding) from the slice's diff before verify (1 = yes, 0 = no)", Bool: true},
+		{Key: "STRIP_MECHANICAL_MCP", Advanced: true, Default: "1", Description: "Launch the mechanical phases (cleanup, commit, repair, bugfix, push-repair) with the repo's MCP servers stripped where the provider supports it (Claude's --strict-mcp-config), since they never read the tracker; 0 restores full MCP everywhere (1 = yes, 0 = no)", Bool: true},
+		{Key: "EXPLORE_SUBAGENTS", Advanced: true, Default: "0", Description: "Let the build and verify phases dispatch read-only exploration subagents (Claude's Explore agent type) by dropping the Agent tool from their disallowed set, keeping the orchestrator's context lean on large tickets; write-capable fan-out (Workflow) stays blocked everywhere (1 = yes, 0 = no)", Bool: true},
 		{Key: "BROWSER_VERIFY", Default: "auto", Description: "Browser verify: auto | always | never", Options: []string{"auto", "always", "never"}},
 		{Key: "APP_URL", Default: "http://localhost", Description: "Local app URL for browser verify"},
 		{Key: "VERIFY_CHECKS", Default: "1", Description: "Run the pluggable verify-check library (.trau/checks); 1 = yes, 0 = no", Bool: true},
 		{Key: "VERIFY_PANEL", Description: "Cross-vendor verify panel: comma-separated provider:model:effort verifiers (e.g. claude,codex:gpt-5.5,kimi). Empty = single verifier"},
 		{Key: "VERIFY_PANEL_POLICY", Default: "unanimous", Description: "Panel verdict merge policy: unanimous | majority | any-pass", Options: []string{"unanimous", "majority", "any-pass"}},
+		{Key: "PANEL_PARALLEL", Default: "1", Description: "Run verify panel members concurrently so panel wall clock is the slowest member, not the sum; set 0 when concurrent member test runs collide (shared DB, ports, build artifacts) (1 = yes, 0 = no)", Bool: true},
 		{Key: "TRAU_TUI", Default: "1", Description: "Enable Bubble Tea TUI (1 = yes, 0 = no)", Bool: true},
 		{Key: "THEME", Default: "default", Description: "TUI color theme preset", Options: []string{"default", "catppuccin", "dracula", "gruvbox", "nord"}},
 		{Key: "EPIC_FLOW", Default: "1", Description: "Process epic sub-issues (1 = yes, 0 = no)", Bool: true},
@@ -1162,6 +1285,17 @@ func KnownKeys() []KeyMeta {
 		{Key: "CLAUDE_SLICE_EFFORT", Advanced: true, Description: "Claude effort for slice phase"},
 		{Key: "CLAUDE_PICK_MODEL", Advanced: true, Description: "Claude model for pick phase"},
 		{Key: "CLAUDE_PICK_EFFORT", Advanced: true, Description: "Claude effort for pick phase"},
+		{Key: "CLAUDE_BUILD_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for build phase (overrides CLAUDE_DISALLOWED_TOOLS and the EXPLORE_SUBAGENTS seed)"},
+		{Key: "CLAUDE_HANDOFF_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for handoff phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
+		{Key: "CLAUDE_VERIFY_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for verify phase (overrides CLAUDE_DISALLOWED_TOOLS and the EXPLORE_SUBAGENTS seed)"},
+		{Key: "CLAUDE_REPAIR_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for repair phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
+		{Key: "CLAUDE_BUGFIX_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for comprehensive bugfix phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
+		{Key: "CLAUDE_CLEANUP_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for cleanup phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
+		{Key: "CLAUDE_LINTFIX_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for lintfix phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
+		{Key: "CLAUDE_COMMIT_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for commit phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
+		{Key: "CLAUDE_PLAN_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for planning phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
+		{Key: "CLAUDE_SLICE_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for slice phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
+		{Key: "CLAUDE_PICK_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for pick phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
 		{Key: "CODEX_BUILD_MODEL", Advanced: true, Description: "Codex model for build phase"},
 		{Key: "CODEX_BUILD_EFFORT", Advanced: true, Description: "Codex effort for build phase"},
 		{Key: "CODEX_HANDOFF_MODEL", Advanced: true, Description: "Codex model for handoff phase"},
@@ -1549,6 +1683,11 @@ func keyValue(cfg Config, key string) string {
 		return "0"
 	case "MERGE_METHOD":
 		return cfg.MergeMethod
+	case "DETERMINISTIC_COMMIT":
+		if cfg.DeterministicCommit {
+			return "1"
+		}
+		return "0"
 	case "CI_TIMEOUT":
 		return strconv.Itoa(cfg.CITimeout)
 	case "CI_POLL":
@@ -1584,6 +1723,16 @@ func keyValue(cfg Config, key string) string {
 			return "1"
 		}
 		return "0"
+	case "STRIP_MECHANICAL_MCP":
+		if cfg.StripMechanicalMCP {
+			return "1"
+		}
+		return "0"
+	case "EXPLORE_SUBAGENTS":
+		if cfg.ExploreSubagents {
+			return "1"
+		}
+		return "0"
 	case "BROWSER_VERIFY":
 		return cfg.BrowserVerify
 	case "APP_URL":
@@ -1597,6 +1746,11 @@ func keyValue(cfg Config, key string) string {
 		return strings.Join(cfg.VerifyPanel, ",")
 	case "VERIFY_PANEL_POLICY":
 		return cfg.VerifyPanelPolicy
+	case "PANEL_PARALLEL":
+		if cfg.PanelParallel {
+			return "1"
+		}
+		return "0"
 	case "TRAU_TUI":
 		if cfg.TUI {
 			return "1"
@@ -1662,6 +1816,11 @@ func keyValue(cfg Config, key string) string {
 		return phaseRouteModel(cfg.Routes, "claude", key)
 	case "CLAUDE_BUILD_EFFORT", "CLAUDE_HANDOFF_EFFORT", "CLAUDE_VERIFY_EFFORT", "CLAUDE_REPAIR_EFFORT", "CLAUDE_BUGFIX_EFFORT", "CLAUDE_CLEANUP_EFFORT", "CLAUDE_LINTFIX_EFFORT", "CLAUDE_COMMIT_EFFORT", "CLAUDE_PLAN_EFFORT", "CLAUDE_SLICE_EFFORT", "CLAUDE_PICK_EFFORT":
 		return phaseRouteEffort(cfg.Routes, "claude", key)
+	case "CLAUDE_BUILD_DISALLOWED_TOOLS", "CLAUDE_HANDOFF_DISALLOWED_TOOLS", "CLAUDE_VERIFY_DISALLOWED_TOOLS", "CLAUDE_REPAIR_DISALLOWED_TOOLS", "CLAUDE_BUGFIX_DISALLOWED_TOOLS", "CLAUDE_CLEANUP_DISALLOWED_TOOLS", "CLAUDE_LINTFIX_DISALLOWED_TOOLS", "CLAUDE_COMMIT_DISALLOWED_TOOLS", "CLAUDE_PLAN_DISALLOWED_TOOLS", "CLAUDE_SLICE_DISALLOWED_TOOLS", "CLAUDE_PICK_DISALLOWED_TOOLS":
+		if phase := phaseFromRouteKey(key); phase != "" {
+			return cfg.PhaseDisallowedTools(phase)
+		}
+		return ""
 	case "CODEX_BUILD_MODEL", "CODEX_HANDOFF_MODEL", "CODEX_VERIFY_MODEL", "CODEX_REPAIR_MODEL", "CODEX_BUGFIX_MODEL", "CODEX_COMMIT_MODEL", "CODEX_PLAN_MODEL", "CODEX_SLICE_MODEL", "CODEX_PICK_MODEL":
 		return phaseRouteModel(cfg.Routes, "codex", key)
 	case "CODEX_BUILD_EFFORT", "CODEX_HANDOFF_EFFORT", "CODEX_VERIFY_EFFORT", "CODEX_REPAIR_EFFORT", "CODEX_BUGFIX_EFFORT", "CODEX_COMMIT_EFFORT", "CODEX_PLAN_EFFORT", "CODEX_SLICE_EFFORT", "CODEX_PICK_EFFORT":

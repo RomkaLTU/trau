@@ -102,3 +102,30 @@ func TestSkipCleanup(t *testing.T) {
 		})
 	}
 }
+
+// TestSkipHandoff covers the same gate applied to the handoff phase: a tiny diff skips
+// the standalone handoff agent, a larger diff still runs it, and every absent-signal
+// path fails open to the full handoff + verify chain.
+func TestSkipHandoff(t *testing.T) {
+	cases := []struct {
+		name string
+		git  Git
+		want bool
+	}{
+		{name: "tiny skips", git: sizeGit{files: 3, lines: 40}, want: true},
+		{name: "too many files runs", git: sizeGit{files: smallSliceMaxFiles + 1, lines: 10}, want: false},
+		{name: "too many lines runs", git: sizeGit{files: 2, lines: smallSliceMaxLines + 1}, want: false},
+		{name: "git cannot size fails open", git: fakeGit{}, want: false},
+		{name: "measure error fails open", git: sizeGit{err: context.DeadlineExceeded}, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+			p.Git = tc.git
+
+			if got := p.skipHandoff(context.Background(), "COD-79900"); got != tc.want {
+				t.Errorf("skipHandoff = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
