@@ -102,6 +102,67 @@ func TestNon2xxCarriesHubError(t *testing.T) {
 	}
 }
 
+func TestIssueReadsStorePath(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != apiPrefix+"/repos/acme/issues/COD-1" {
+			t.Errorf("request = %s %q", r.Method, r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, Issue{
+			ID: "COD-1", Title: "Fix", Description: "body", Group: "unstarted", InProject: true,
+			Comments: []Comment{{Author: "ada", Body: "note"}},
+		})
+	}))
+	defer ts.Close()
+
+	iss, err := New(ts.URL, "").Issue(context.Background(), "acme", "COD-1")
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if iss.Description != "body" || !iss.InProject || len(iss.Comments) != 1 {
+		t.Fatalf("issue = %+v", iss)
+	}
+}
+
+func TestMirrorSyncedPostsMutation(t *testing.T) {
+	var got SyncedMirror
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != apiPrefix+"/repos/acme/issues/COD-1" {
+			t.Errorf("request = %s %q", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		writeJSON(w, http.StatusOK, Issue{ID: "COD-1"})
+	}))
+	defer ts.Close()
+
+	if err := New(ts.URL, "").MirrorSynced(context.Background(), "acme", "COD-1", SyncedMirror{Status: "Done", StatusGroup: "completed"}); err != nil {
+		t.Fatalf("MirrorSynced: %v", err)
+	}
+	if got.Status != "Done" || got.StatusGroup != "completed" {
+		t.Fatalf("sent mirror = %+v", got)
+	}
+}
+
+func TestSyncPostsToRepo(t *testing.T) {
+	called := false
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		if r.Method != http.MethodPost || r.URL.Path != apiPrefix+"/repos/acme/sync" {
+			t.Errorf("request = %s %q", r.Method, r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"issues": 0})
+	}))
+	defer ts.Close()
+
+	if err := New(ts.URL, "").Sync(context.Background(), "acme"); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if !called {
+		t.Fatal("sync endpoint was not called")
+	}
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
