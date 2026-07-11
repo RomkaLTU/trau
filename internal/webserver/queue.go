@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
@@ -264,25 +265,52 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	item := queue.Item{ID: id, Title: strings.TrimSpace(req.Title), Kind: hint}
-	if title, ok := s.validateQueueTarget(w, r, name, id); !ok {
-		return
-	} else if item.Title == "" {
-		item.Title = title
-	}
 
-	// Resolve kind: an explicit ticket stays a ticket; otherwise (epic or
-	// auto) list the children — any child makes it an epic carrying them.
-	if hint != queue.KindTicket {
-		subs, err := s.listEpicSubIssues(r.Context(), root, id)
-		if err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "resolve item: " + err.Error()})
-			return
+	iss, internal, err := s.stores.Issues().Internal(root, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read issue: " + err.Error()})
+		return
+	}
+	if internal {
+		// An internal issue is authoritative in the store and never in the tracker,
+		// so resolve its title and epic children locally and skip the tracker
+		// validation the synced path runs.
+		if item.Title == "" {
+			item.Title = iss.Title
 		}
-		if len(subs) > 0 {
-			item.Kind = queue.KindEpic
-			item.SubIssues = toQueueSubIssues(subs)
-		} else {
-			item.Kind = queue.KindTicket
+		if hint != queue.KindTicket {
+			children, err := s.stores.Issues().InternalChildren(root, id)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "resolve item: " + err.Error()})
+				return
+			}
+			if len(children) > 0 {
+				item.Kind = queue.KindEpic
+				item.SubIssues = internalSubIssues(children)
+			} else {
+				item.Kind = queue.KindTicket
+			}
+		}
+	} else {
+		if title, ok := s.validateQueueTarget(w, r, name, id); !ok {
+			return
+		} else if item.Title == "" {
+			item.Title = title
+		}
+		// Resolve kind: an explicit ticket stays a ticket; otherwise (epic or
+		// auto) list the children — any child makes it an epic carrying them.
+		if hint != queue.KindTicket {
+			subs, err := s.listEpicSubIssues(r.Context(), root, id)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "resolve item: " + err.Error()})
+				return
+			}
+			if len(subs) > 0 {
+				item.Kind = queue.KindEpic
+				item.SubIssues = toQueueSubIssues(subs)
+			} else {
+				item.Kind = queue.KindTicket
+			}
 		}
 	}
 
@@ -356,6 +384,21 @@ func toQueueSubIssues(subs []EpicSubIssue) []queue.SubIssue {
 	out := make([]queue.SubIssue, 0, len(subs))
 	for _, sub := range subs {
 		out = append(out, queue.SubIssue{ID: sub.ID, Title: sub.Title, State: sub.State})
+	}
+	return out
+}
+
+// internalSubIssues maps an internal epic's children onto queue sub-issues,
+// marking each done when its state group is terminal so a queued internal epic
+// records the same shape a synced one does.
+func internalSubIssues(children []hubstore.Issue) []queue.SubIssue {
+	out := make([]queue.SubIssue, 0, len(children))
+	for _, c := range children {
+		state := "todo"
+		if c.StatusGroup == "done" || c.StatusGroup == "canceled" {
+			state = "done"
+		}
+		out = append(out, queue.SubIssue{ID: c.Identifier, Title: c.Title, State: state})
 	}
 	return out
 }

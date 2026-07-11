@@ -169,6 +169,8 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/epics/{epic}", s.handleEpicPreview)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues", s.handleCreateIssue)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/search", s.handleIssueSearch)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/internal", s.handleCreateInternalIssue)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/internal/{id}", s.handleInternalIssue)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/{id}", s.handleIssue)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/prd", s.handlePublishPRD)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue", s.handleQueue)

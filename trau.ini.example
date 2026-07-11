@@ -36,7 +36,9 @@
 TRACKER_PROVIDER=linear      # linear | jira | github
 LINEAR_TEAM=YourTeam         # your Linear team name, Jira project key, or GitHub repo slug (required for whole-team picks)
 ISSUE_PREFIX=                # ticket-ID prefix for parsing, branch inference, and sentinels
-                             # (e.g. COD, TMS, ENG). Empty = derive from the team key above; falls back to COD
+                             # (e.g. COD, TMS, ENG). Empty = derive from the team key above; falls back to COD.
+                             # Also names internally-created issues (LOOP-12); when unset, those default to
+                             # the repo directory name, sanitized uppercase — never the team key
 READY_LABEL=ready-for-agent
 QUARANTINE_LABEL=needs-human
 SPLIT_LABEL=needs-split      # label the pre-flight size judge applies to a ticket it flags as
