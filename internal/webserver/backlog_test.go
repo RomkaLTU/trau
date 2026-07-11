@@ -3,12 +3,14 @@ package webserver
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
@@ -64,13 +66,17 @@ func (f *fakeReader) SyncPull(_ context.Context, _ tracker.ProjectBinding, since
 	return f.synced, nil
 }
 
-// backlogServer builds a server with one exited repo ("acme") and a Reader
-// factory returning fake (or readerErr when set).
-func backlogServer(t *testing.T, fake tracker.Reader, readerErr error) *httptest.Server {
+// backlogServer builds a hub with one exited repo ("acme") and a Reader factory
+// returning fake (or readerErr when set), and returns the server, its test HTTP
+// server, the repo root, and an issue store at the same home so a test can seed
+// the store and drive GET /backlog. The reader still backs the run-once issue
+// endpoint, so its factory is wired even though the backlog now serves the store.
+func backlogServer(t *testing.T, fake tracker.Reader, readerErr error) (*Server, *httptest.Server, string, *hubstore.Issues) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()
-	seedRepo(t, home, "acme")
+	runsDir := seedRepo(t, home, "acme")
+	root := filepath.Dir(filepath.Dir(runsDir))
 	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
 	s.home = home
 	s.newReader = func(config.Config) (tracker.Reader, error) {
@@ -81,7 +87,7 @@ func backlogServer(t *testing.T, fake tracker.Reader, readerErr error) *httptest
 	}
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
-	return ts
+	return s, ts, root, testStoresAt(t, home).Issues()
 }
 
 func getBacklog(t *testing.T, ts *httptest.Server, repo string) (*http.Response, BacklogResponse) {
@@ -99,12 +105,18 @@ func getBacklog(t *testing.T, ts *httptest.Server, repo string) (*http.Response,
 	return res, out
 }
 
-func TestBacklogListsItems(t *testing.T) {
-	fake := &fakeReader{items: []tracker.BacklogItem{
-		{ID: "COD-10", Title: "Epic", Status: "Backlog", Group: tracker.StatusGroupBacklog, HasChildren: true},
-		{ID: "COD-11", Title: "Child", Status: "Todo", Group: tracker.StatusGroupUnstarted, Parent: "COD-10", Labels: []string{"ready-for-agent"}, Ready: true},
-	}}
-	ts := backlogServer(t, fake, nil)
+func backlogFixture() []hubstore.Issue {
+	return []hubstore.Issue{
+		{Identifier: "COD-10", Title: "Epic", Status: "Backlog", StatusGroup: "backlog", HasChildren: true},
+		{Identifier: "COD-11", Title: "Child", Status: "Todo", StatusGroup: "unstarted", Parent: "COD-10", Labels: []string{"ready-for-agent"}},
+	}
+}
+
+func TestBacklogServesStoredIssues(t *testing.T) {
+	_, ts, root, store := backlogServer(t, nil, nil)
+	if _, _, err := store.Upsert(root, "linear", backlogFixture()); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
 
 	res, out := getBacklog(t, ts, "acme")
 	defer func() { _ = res.Body.Close() }()
@@ -118,8 +130,8 @@ func TestBacklogListsItems(t *testing.T) {
 		t.Fatalf("items = %d, want 2", len(out.Items))
 	}
 	epic := out.Items[0]
-	if epic.ID != "COD-10" || epic.Group != "backlog" || !epic.HasChildren {
-		t.Errorf("epic entry = %+v, want the COD-10 backlog epic", epic)
+	if epic.ID != "COD-10" || epic.Group != "backlog" || !epic.HasChildren || epic.Source != "linear" {
+		t.Errorf("epic entry = %+v, want the COD-10 backlog epic synced from linear", epic)
 	}
 	if epic.Labels == nil {
 		t.Error("labels serialized as null, want an empty array")
@@ -130,8 +142,131 @@ func TestBacklogListsItems(t *testing.T) {
 	}
 }
 
+func TestBacklogIncludesInternalIssues(t *testing.T) {
+	_, ts, root, store := backlogServer(t, nil, nil)
+	if _, _, err := store.Upsert(root, "linear", []hubstore.Issue{
+		{Identifier: "COD-1", Title: "Synced", Status: "Todo", StatusGroup: "unstarted"},
+	}); err != nil {
+		t.Fatalf("seed synced: %v", err)
+	}
+	if _, _, err := store.Upsert(root, "internal", []hubstore.Issue{
+		{Identifier: "COD-2", Title: "Internal", Status: "Todo", StatusGroup: "unstarted"},
+	}); err != nil {
+		t.Fatalf("seed internal: %v", err)
+	}
+
+	res, out := getBacklog(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	sources := map[string]string{}
+	for _, it := range out.Items {
+		sources[it.ID] = it.Source
+	}
+	if sources["COD-1"] != "linear" || sources["COD-2"] != "internal" {
+		t.Fatalf("sources = %v, want COD-1 linear and COD-2 internal so the board can tell them apart", sources)
+	}
+}
+
+func TestBacklogReportsFreshness(t *testing.T) {
+	_, ts, root, store := backlogServer(t, nil, nil)
+	if _, _, err := store.Upsert(root, "linear", backlogFixture()); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	if err := store.RecordResult(root, hubstore.SyncResult{Issues: 2, SyncedAt: nowStamp()}); err != nil {
+		t.Fatalf("record sync: %v", err)
+	}
+
+	res, out := getBacklog(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	if out.Freshness == nil {
+		t.Fatal("freshness absent after a recorded sync")
+	}
+	if out.Freshness.LastSyncedAt == "" || out.Freshness.LastIssues != 2 {
+		t.Fatalf("freshness = %+v, want a synced time and two issues", out.Freshness)
+	}
+}
+
+func TestBacklogFreshnessAbsentUntilSynced(t *testing.T) {
+	_, ts, _, _ := backlogServer(t, nil, nil)
+
+	res, out := getBacklog(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 even with an empty store", res.StatusCode)
+	}
+	if len(out.Items) != 0 {
+		t.Fatalf("items = %d, want none before any sync", len(out.Items))
+	}
+	if out.Freshness != nil {
+		t.Fatalf("freshness = %+v, want none before any sync", out.Freshness)
+	}
+}
+
+func TestBacklogStaleTriggersBackgroundSync(t *testing.T) {
+	fake := &fakeReader{synced: syncedFixture()}
+	s, ts, root, store := backlogServer(t, fake, nil)
+	s.syncer.ctx = context.Background()
+	s.syncer.interval = time.Minute
+
+	res, _ := getBacklog(t, ts, "acme")
+	_ = res.Body.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		st, err := store.SyncState(root)
+		if err != nil {
+			t.Fatalf("read sync state: %v", err)
+		}
+		if st.LastSyncedAt != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("a stale backlog read did not trigger a background sync")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	items, err := store.Backlog(root)
+	if err != nil {
+		t.Fatalf("read backlog: %v", err)
+	}
+	if len(items) != 1 || items[0].Identifier != "COD-1" {
+		t.Fatalf("store = %+v, want the issue the background sync pulled", items)
+	}
+}
+
+func TestBacklogFreshDoesNotResync(t *testing.T) {
+	fake := &fakeReader{synced: []tracker.SyncedIssue{
+		{ID: "COD-9", Title: "Would only appear from a resync", UpdatedAt: "2026-07-10T12:00:00Z"},
+	}}
+	s, ts, root, store := backlogServer(t, fake, nil)
+	s.syncer.ctx = context.Background()
+	s.syncer.interval = time.Minute
+	if _, _, err := store.Upsert(root, "linear", []hubstore.Issue{
+		{Identifier: "COD-1", Title: "Already here", Status: "Todo", StatusGroup: "unstarted"},
+	}); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	if err := store.RecordResult(root, hubstore.SyncResult{Issues: 1, SyncedAt: nowStamp()}); err != nil {
+		t.Fatalf("record sync: %v", err)
+	}
+
+	res, out := getBacklog(t, ts, "acme")
+	_ = res.Body.Close()
+	if len(out.Items) != 1 || out.Items[0].ID != "COD-1" {
+		t.Fatalf("items = %+v, want only the freshly-synced COD-1", out.Items)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	items, err := store.Backlog(root)
+	if err != nil {
+		t.Fatalf("read backlog: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("store = %+v, want no resync of a fresh store", items)
+	}
+}
+
 func TestBacklogUnknownRepo(t *testing.T) {
-	ts := backlogServer(t, &fakeReader{}, nil)
+	_, ts, _, _ := backlogServer(t, nil, nil)
 	res, _ := getBacklog(t, ts, "nope")
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
@@ -139,31 +274,8 @@ func TestBacklogUnknownRepo(t *testing.T) {
 	}
 }
 
-func TestBacklogWithoutCredentials(t *testing.T) {
-	ts := backlogServer(t, nil, tracker.ErrReaderUnavailable)
-	res, _ := getBacklog(t, ts, "acme")
-	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422 when the repo has no direct tracker credentials", res.StatusCode)
-	}
-	var body map[string]string
-	_ = json.NewDecoder(res.Body).Decode(&body)
-	if body["error"] == "" {
-		t.Error("422 body missing a config hint")
-	}
-}
-
-func TestBacklogTrackerFailureIsBadGateway(t *testing.T) {
-	ts := backlogServer(t, &fakeReader{err: errors.New("linear: 500")}, nil)
-	res, _ := getBacklog(t, ts, "acme")
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502 when the tracker API errors", res.StatusCode)
-	}
-}
-
 func TestBacklogRejectsNonGET(t *testing.T) {
-	ts := backlogServer(t, &fakeReader{}, nil)
+	_, ts, _, _ := backlogServer(t, nil, nil)
 	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/backlog", map[string]string{})
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusMethodNotAllowed {
@@ -173,8 +285,6 @@ func TestBacklogRejectsNonGET(t *testing.T) {
 
 func TestBacklogRequiresTokenWhenExposed(t *testing.T) {
 	s := New("1.2.3", "0.0.0.0", "s3cret", nil, false, testStores(t))
-	fake := &fakeReader{}
-	s.newReader = func(config.Config) (tracker.Reader, error) { return fake, nil }
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 

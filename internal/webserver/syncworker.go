@@ -18,6 +18,11 @@ const syncBackoffCap = 30 * time.Minute
 // sync goroutine for the life of the hub.
 const syncOnceTimeout = 2 * time.Minute
 
+// backlogStaleAfter is how old a repo's last sync may be before a backlog read
+// triggers a background refresh. Kept below the periodic interval so an open board
+// revalidates promptly while a just-synced store is left alone.
+const backlogStaleAfter = 60 * time.Second
+
 // repoSync is one repo's background-sync state: whether a pull is in flight right
 // now, how many times in a row it has failed, and the earliest time it is due for
 // another attempt (pushed into the future while backing off).
@@ -34,8 +39,10 @@ type repoSync struct {
 type syncer struct {
 	srv *Server
 
-	mu    sync.Mutex
-	state map[string]*repoSync
+	mu       sync.Mutex
+	state    map[string]*repoSync
+	ctx      context.Context
+	interval time.Duration
 }
 
 func newSyncer(s *Server) *syncer {
@@ -49,6 +56,10 @@ func (sy *syncer) run(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		return
 	}
+	sy.mu.Lock()
+	sy.ctx = ctx
+	sy.interval = interval
+	sy.mu.Unlock()
 	sy.tick(ctx, interval)
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -132,6 +143,44 @@ func (sy *syncer) syncing(root string) bool {
 	defer sy.mu.Unlock()
 	st := sy.state[root]
 	return st != nil && st.syncing
+}
+
+// refreshIfStale fires a background sync for root when its last sync predates
+// backlogStaleAfter and one is not already in flight, so a backlog read past the
+// threshold revalidates the store without blocking the response
+// (stale-while-revalidate). It reuses the periodic loop's claim/settle bookkeeping
+// — the same overlap guard and backoff — and runs under the syncer's own context
+// so the pull outlives the request that triggered it. It is a no-op when the
+// background sync is disabled or has not started yet.
+func (sy *syncer) refreshIfStale(root, lastSyncedAt string) {
+	if !backlogStale(lastSyncedAt) {
+		return
+	}
+	sy.mu.Lock()
+	ctx, interval := sy.ctx, sy.interval
+	sy.mu.Unlock()
+	if ctx == nil || interval <= 0 {
+		return
+	}
+	if !sy.claim(root, time.Now()) {
+		return
+	}
+	go sy.syncOne(ctx, interval, root)
+}
+
+// backlogStale reports whether a store last synced at lastSyncedAt — an
+// RFC3339Nano stamp, empty when never synced — is old enough to revalidate. A
+// never-synced or unparseable stamp is always stale, so a fresh board pulls on
+// first view.
+func backlogStale(lastSyncedAt string) bool {
+	if lastSyncedAt == "" {
+		return true
+	}
+	t, err := time.Parse(time.RFC3339Nano, lastSyncedAt)
+	if err != nil {
+		return true
+	}
+	return time.Since(t) > backlogStaleAfter
 }
 
 // syncBackoff spaces out a failing repo's retries: the interval doubled once per

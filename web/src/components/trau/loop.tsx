@@ -4,12 +4,15 @@ import { Link } from '@tanstack/react-router'
 import {
   ArrowDown,
   ArrowUp,
+  Check,
   ChevronDown,
   ChevronRight,
   ExternalLink,
   ListPlus,
   Plus,
+  RefreshCw,
   Square,
+  TriangleAlert,
   X,
 } from 'lucide-react'
 
@@ -26,7 +29,11 @@ import { TerminalCard } from '@/components/trau/terminal-card'
 import { cn } from '@/lib/utils'
 import { eligibleQueryOptions } from '@/lib/eligible'
 import { useEventFeed } from '@/lib/events'
-import { instancesQueryOptions, type Instance } from '@/lib/instances'
+import {
+  instancesQueryOptions,
+  type Instance,
+  type RepoFreshness,
+} from '@/lib/instances'
 import { deriveLoopHalt, type LoopHalt } from '@/lib/loop'
 import {
   dequeue,
@@ -63,6 +70,41 @@ function elapsedSince(fromISO: string, now: number): string {
   const sec = s % 60
   if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`
   return `${m}m ${String(sec).padStart(2, '0')}s`
+}
+
+// SyncFreshness shows the issue store's synced-ness for the loop card: a spinner
+// while a background sync runs, the last-synced age once it lands, or a warning
+// when the last sync failed. It stays silent for a repo that has never synced, so
+// a repo with no tracker shows nothing rather than a misleading state.
+function SyncFreshness({ freshness }: { freshness?: RepoFreshness }) {
+  const now = useNow(30_000)
+  if (!freshness) return null
+  if (freshness.syncing) {
+    return (
+      <span className="inline-flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
+        <RefreshCw className="size-3 animate-spin" aria-hidden="true" />
+        syncing…
+      </span>
+    )
+  }
+  if (freshness.last_error) {
+    return (
+      <span
+        className="inline-flex items-center gap-1.5 font-mono text-xs text-warn"
+        title={freshness.last_error}
+      >
+        <TriangleAlert className="size-3" aria-hidden="true" />
+        sync failed
+      </span>
+    )
+  }
+  if (!freshness.last_synced_at) return null
+  return (
+    <span className="inline-flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
+      <Check className="size-3 text-done" aria-hidden="true" />
+      synced {elapsedSince(freshness.last_synced_at, now)} ago
+    </span>
+  )
 }
 
 const STATUS_STATE: Record<string, RunState> = {
@@ -292,7 +334,13 @@ function QueueBuilderRow({
   )
 }
 
-function LaunchQueueCard({ repo }: { repo: string }) {
+function LaunchQueueCard({
+  repo,
+  freshness,
+}: {
+  repo: string
+  freshness?: RepoFreshness
+}) {
   const queryClient = useQueryClient()
   const queue = useQuery(queueQueryOptions(repo))
   const eligible = useQuery(eligibleQueryOptions(repo))
@@ -374,9 +422,12 @@ function LaunchQueueCard({ repo }: { repo: string }) {
     <TerminalCard title="loop-launch" className="max-w-3xl">
       <form className="flex flex-col gap-6" onSubmit={(e) => e.preventDefault()}>
         <div className="flex flex-col gap-1.5">
-          <label className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
-            repo
-          </label>
+          <div className="flex items-center justify-between gap-3">
+            <label className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+              repo
+            </label>
+            <SyncFreshness freshness={freshness} />
+          </div>
           <TargetRepoField repo={repo} />
         </div>
 
@@ -836,7 +887,10 @@ export function Loop() {
   return (
     <div className="flex flex-col gap-6">
       {halt ? <HaltBanner repo={repo} halt={halt} /> : null}
-      <LaunchQueueCard repo={repo} />
+      <LaunchQueueCard
+        repo={repo}
+        freshness={repos.find((r) => r.name === repo)?.freshness}
+      />
     </div>
   )
 }
