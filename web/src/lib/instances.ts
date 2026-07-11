@@ -14,6 +14,18 @@ export interface Instance {
   state_since?: string
 }
 
+// RepoFreshness is a repo's issue-store sync state: when it last synced from the
+// tracker, whether a background sync is running right now, the last sync error,
+// and the counts the last good sync wrote. Absent for a repo that has never
+// synced and is not syncing.
+export interface RepoFreshness {
+  last_synced_at?: string
+  syncing: boolean
+  last_error?: string
+  last_issues?: number
+  last_comments?: number
+}
+
 export interface RepoView {
   name: string
   root: string
@@ -21,6 +33,7 @@ export interface RepoView {
   live: boolean
   allowed: boolean
   registered: boolean
+  freshness?: RepoFreshness
 }
 
 export interface InstancesResponse {

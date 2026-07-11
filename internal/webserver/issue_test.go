@@ -37,7 +37,7 @@ func TestIssueReturnsTicket(t *testing.T) {
 		Project:   "trau",
 		InProject: true,
 	}}
-	ts := backlogServer(t, fake, nil)
+	_, ts, _, _ := backlogServer(t, fake, nil)
 
 	res, out := getIssue(t, ts, "acme", "COD-712")
 	defer func() { _ = res.Body.Close() }()
@@ -71,7 +71,7 @@ func TestIssueCrossProjectIsReturnedNotHidden(t *testing.T) {
 		Project:   "M4C",
 		InProject: false,
 	}}
-	ts := backlogServer(t, fake, nil)
+	_, ts, _, _ := backlogServer(t, fake, nil)
 
 	res, out := getIssue(t, ts, "acme", "M4C-54")
 	defer func() { _ = res.Body.Close() }()
@@ -87,7 +87,7 @@ func TestIssueCrossProjectIsReturnedNotHidden(t *testing.T) {
 }
 
 func TestIssueNotFound(t *testing.T) {
-	ts := backlogServer(t, &fakeReader{issueErr: tracker.ErrIssueNotFound}, nil)
+	_, ts, _, _ := backlogServer(t, &fakeReader{issueErr: tracker.ErrIssueNotFound}, nil)
 	res, _ := getIssue(t, ts, "acme", "COD-999")
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
@@ -96,7 +96,7 @@ func TestIssueNotFound(t *testing.T) {
 }
 
 func TestIssueUnknownRepo(t *testing.T) {
-	ts := backlogServer(t, &fakeReader{}, nil)
+	_, ts, _, _ := backlogServer(t, &fakeReader{}, nil)
 	res, _ := getIssue(t, ts, "nope", "COD-1")
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
@@ -105,7 +105,7 @@ func TestIssueUnknownRepo(t *testing.T) {
 }
 
 func TestIssueWithoutCredentials(t *testing.T) {
-	ts := backlogServer(t, nil, tracker.ErrReaderUnavailable)
+	_, ts, _, _ := backlogServer(t, nil, tracker.ErrReaderUnavailable)
 	res, _ := getIssue(t, ts, "acme", "COD-1")
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusUnprocessableEntity {
@@ -118,7 +118,7 @@ func TestIssueLabelsNeverNull(t *testing.T) {
 		BacklogItem: tracker.BacklogItem{ID: "COD-5", Title: "No labels", Status: "Todo", Group: tracker.StatusGroupUnstarted},
 		InProject:   true,
 	}}
-	ts := backlogServer(t, fake, nil)
+	_, ts, _, _ := backlogServer(t, fake, nil)
 	res, out := getIssue(t, ts, "acme", "COD-5")
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {

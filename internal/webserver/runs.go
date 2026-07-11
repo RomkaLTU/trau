@@ -55,32 +55,43 @@ func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
 }
 
 // withFreshness attaches each repo's issue-store sync freshness — last synced,
-// currently syncing, last error, and the last good counts — read from the sync
-// bookkeeping and the background syncer. A repo that has never synced and is not
-// syncing carries no freshness, so the field stays absent for repos with no
-// tracker. It is applied only here so the shared repoViews path stays a pure read
-// for the other endpoints.
+// currently syncing, last error, and the last good counts. A repo that has never
+// synced and is not syncing carries no freshness, so the field stays absent for
+// repos with no tracker. It is applied only here so the shared repoViews path
+// stays a pure read for the other endpoints.
 func (s *Server) withFreshness(views []RepoView) []RepoView {
-	store := s.stores.Issues()
 	for i := range views {
-		root := views[i].Root
-		syncing := s.syncer.syncing(root)
-		st, err := store.SyncState(root)
-		if err != nil {
-			continue
-		}
-		if st.LastSyncedAt == "" && st.LastError == "" && !syncing {
-			continue
-		}
-		views[i].Freshness = &RepoFreshness{
-			LastSyncedAt: st.LastSyncedAt,
-			Syncing:      syncing,
-			LastError:    st.LastError,
-			LastIssues:   st.LastIssues,
-			LastComments: st.LastComments,
-		}
+		views[i].Freshness = s.freshnessFor(views[i].Root)
 	}
 	return views
+}
+
+// freshnessFor reads a repo's issue-store sync state and folds in the live syncing
+// flag, returning nil for a repo that has never synced and is not syncing.
+func (s *Server) freshnessFor(root string) *RepoFreshness {
+	st, err := s.stores.Issues().SyncState(root)
+	if err != nil {
+		return nil
+	}
+	return s.freshnessFrom(root, st)
+}
+
+// freshnessFrom builds a repo's freshness from an already-read sync state, folding
+// in whether a background sync is running right now. It returns nil for a repo
+// that has never synced and is not syncing, so the field stays absent where there
+// is no tracker.
+func (s *Server) freshnessFrom(root string, st hubstore.SyncState) *RepoFreshness {
+	syncing := s.syncer.syncing(root)
+	if st.LastSyncedAt == "" && st.LastError == "" && !syncing {
+		return nil
+	}
+	return &RepoFreshness{
+		LastSyncedAt: st.LastSyncedAt,
+		Syncing:      syncing,
+		LastError:    st.LastError,
+		LastIssues:   st.LastIssues,
+		LastComments: st.LastComments,
+	}
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {

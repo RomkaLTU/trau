@@ -161,6 +161,23 @@ func (s *Issues) List(repo string) (issues []Issue, err error) {
 	return s.attachComments(repo, issues, ids)
 }
 
+// Backlog returns a repo's stored issues for the board, ordered by identifier.
+// Unlike List it does not attach comments: the board renders only each issue's
+// summary row, so skipping the per-repo comment join keeps the read lean.
+func (s *Issues) Backlog(repo string) (issues []Issue, err error) {
+	rows, err := s.db.Query(
+		`SELECT `+issueColumns+` FROM issues WHERE repo = ? ORDER BY identifier`,
+		repo,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	issues, _, err = scanIssues(repo, rows)
+	return issues, err
+}
+
 // scanIssues reads issue rows selected in issueColumns order into a slice and an
 // id→index map its caller can join comments onto.
 func scanIssues(repo string, rows *sql.Rows) ([]Issue, map[int64]int, error) {
