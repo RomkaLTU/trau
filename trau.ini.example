@@ -274,7 +274,19 @@ TIMELOG_ESTIMATOR=heuristic  # heuristic = deterministic diffstat/file/commit ->
 # sandboxed checkouts — these disable approval prompts.
 CLAUDE_BIN=claude
 CLAUDE_FLAGS=--dangerously-skip-permissions
+# Tools blocked inside every phase. Agent (subagent spawning) and Workflow (multi-
+# agent fan-out) are off by default: each phase already runs as its own isolated
+# process, so fan-out only multiplies token cost. Resolve per phase like the model
+# keys — CLAUDE_<PHASE>_DISALLOWED_TOOLS overrides this default for one phase
+# (e.g. CLAUDE_BUILD_DISALLOWED_TOOLS=Workflow).
 CLAUDE_DISALLOWED_TOOLS=Agent,Workflow
+
+# Opt the build and verify phases into read-only exploration subagents (Claude's
+# Explore agent type): those phases drop Agent from their disallowed set so the
+# orchestrator can fan investigation out and keep its own context lean on large
+# tickets, while write-capable fan-out (Workflow) stays blocked in every phase. Off
+# by default; an explicit CLAUDE_<PHASE>_DISALLOWED_TOOLS still wins per phase.
+# EXPLORE_SUBAGENTS=0
 
 CODEX_BIN=codex
 CODEX_FLAGS=--dangerously-bypass-approvals-and-sandbox
