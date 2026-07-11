@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
+	"unicode"
 )
 
 // Issues is the hub's authoritative issue store: one table holding both synced
@@ -137,13 +139,14 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 	return len(issues), commentCount, nil
 }
 
+const issueColumns = `id, source, identifier, title, description, status, status_group,
+	priority, labels, parent, has_children, due_date, external_id, url,
+	created_at, updated_at`
+
 // List returns a repo's stored issues with their comments, ordered by identifier.
 func (s *Issues) List(repo string) (issues []Issue, err error) {
 	rows, err := s.db.Query(
-		`SELECT id, source, identifier, title, description, status, status_group,
-			priority, labels, parent, has_children, due_date, external_id, url,
-			created_at, updated_at
-		 FROM issues WHERE repo = ? ORDER BY identifier`,
+		`SELECT `+issueColumns+` FROM issues WHERE repo = ? ORDER BY identifier`,
 		repo,
 	)
 	if err != nil {
@@ -151,7 +154,17 @@ func (s *Issues) List(repo string) (issues []Issue, err error) {
 	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
 
-	issues = []Issue{}
+	issues, ids, err := scanIssues(repo, rows)
+	if err != nil {
+		return nil, err
+	}
+	return s.attachComments(repo, issues, ids)
+}
+
+// scanIssues reads issue rows selected in issueColumns order into a slice and an
+// id→index map its caller can join comments onto.
+func scanIssues(repo string, rows *sql.Rows) ([]Issue, map[int64]int, error) {
+	issues := []Issue{}
 	ids := map[int64]int{}
 	for rows.Next() {
 		var (
@@ -160,12 +173,12 @@ func (s *Issues) List(repo string) (issues []Issue, err error) {
 			hasCh  int
 			iss    = Issue{Repo: repo}
 		)
-		if scanErr := rows.Scan(
+		if err := rows.Scan(
 			&id, &iss.Source, &iss.Identifier, &iss.Title, &iss.Description,
 			&iss.Status, &iss.StatusGroup, &iss.Priority, &labels, &iss.Parent,
 			&hasCh, &iss.DueDate, &iss.ExternalID, &iss.URL, &iss.CreatedAt, &iss.UpdatedAt,
-		); scanErr != nil {
-			return nil, scanErr
+		); err != nil {
+			return nil, nil, err
 		}
 		iss.HasChildren = hasCh != 0
 		iss.Labels = decodeLabels(labels)
@@ -173,10 +186,7 @@ func (s *Issues) List(repo string) (issues []Issue, err error) {
 		ids[id] = len(issues)
 		issues = append(issues, iss)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return s.attachComments(repo, issues, ids)
+	return issues, ids, rows.Err()
 }
 
 func (s *Issues) attachComments(repo string, issues []Issue, byID map[int64]int) (_ []Issue, err error) {
@@ -203,6 +213,71 @@ func (s *Issues) attachComments(repo string, issues []Issue, byID map[int64]int)
 		}
 	}
 	return issues, rows.Err()
+}
+
+// defaultSearchLimit caps how many ranked matches a single search returns; the
+// entry point is a type-ahead, not a full listing.
+const defaultSearchLimit = 20
+
+// Search returns a repo's issues matching query, ranked best-first over the FTS5
+// index of identifier, title, description, and labels. Identifier and title
+// outweigh description so a hit in either surfaces above a body-only mention. A
+// query that reduces to no searchable tokens — blank, or all punctuation —
+// returns no matches rather than an error, so the caller need not pre-validate.
+func (s *Issues) Search(repo, query string, limit int) (issues []Issue, err error) {
+	match := buildMatchQuery(query)
+	if match == "" {
+		return []Issue{}, nil
+	}
+	if limit <= 0 || limit > defaultSearchLimit {
+		limit = defaultSearchLimit
+	}
+	rows, err := s.db.Query(
+		`SELECT `+prefixColumns("i")+`
+		 FROM issues_fts f JOIN issues i ON i.id = f.rowid
+		 WHERE issues_fts MATCH ? AND i.repo = ?
+		 ORDER BY bm25(issues_fts, 10.0, 5.0, 1.0, 3.0)
+		 LIMIT ?`,
+		match, repo, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	issues, _, err = scanIssues(repo, rows)
+	return issues, err
+}
+
+// buildMatchQuery turns free-form user input into a safe FTS5 MATCH expression:
+// each run of letters and digits becomes a quoted prefix term, ANDed together.
+// Quoting neutralizes every FTS5 operator, so quotes, hyphens, and ticket-style
+// ids like ABC-123 (two terms, "abc" and "123") never trip the query parser.
+func buildMatchQuery(query string) string {
+	terms := strings.FieldsFunc(query, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+	if len(terms) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, t := range terms {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteByte('"')
+		b.WriteString(t)
+		b.WriteString(`"*`)
+	}
+	return b.String()
+}
+
+func prefixColumns(alias string) string {
+	cols := strings.Split(issueColumns, ",")
+	for i, c := range cols {
+		cols[i] = alias + "." + strings.TrimSpace(c)
+	}
+	return strings.Join(cols, ", ")
 }
 
 // SyncState returns a repo's sync bookkeeping, zero-valued when it has never
