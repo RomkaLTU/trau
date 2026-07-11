@@ -19,6 +19,12 @@ type fakeReader struct {
 	err      error
 	issue    tracker.IssueSummary
 	issueErr error
+
+	binding      tracker.ProjectBinding
+	bindingErr   error
+	bindingCalls int
+	synced       []tracker.SyncedIssue
+	syncErr      error
 }
 
 func (f *fakeReader) Backlog(context.Context) ([]tracker.BacklogItem, error) {
@@ -33,6 +39,25 @@ func (f *fakeReader) Issue(context.Context, string) (tracker.IssueSummary, error
 		return tracker.IssueSummary{}, f.issueErr
 	}
 	return f.issue, nil
+}
+
+func (f *fakeReader) ResolveBinding(context.Context) (tracker.ProjectBinding, error) {
+	f.bindingCalls++
+	if f.bindingErr != nil {
+		return tracker.ProjectBinding{}, f.bindingErr
+	}
+	binding := f.binding
+	if !binding.Resolved() {
+		binding.ProjectID = "proj-1"
+	}
+	return binding, nil
+}
+
+func (f *fakeReader) SyncPull(context.Context, tracker.ProjectBinding) ([]tracker.SyncedIssue, error) {
+	if f.syncErr != nil {
+		return nil, f.syncErr
+	}
+	return f.synced, nil
 }
 
 // backlogServer builds a server with one exited repo ("acme") and a Reader

@@ -72,6 +72,14 @@ type Reader interface {
 	// project is returned with InProject false rather than hidden, so the caller
 	// can explain why it cannot be run here.
 	Issue(ctx context.Context, id string) (IssueSummary, error)
+	// ResolveBinding resolves the repo's configured team/project to the tracker's
+	// stable ids, so the hub caches them and later syncs skip the lookup (ADR
+	// 0007). Callers persist the result and pass it back to SyncPull.
+	ResolveBinding(ctx context.Context) (ProjectBinding, error)
+	// SyncPull returns every issue in the repo's Project — description and comments
+	// included — through one server-side Project-filtered query, never the
+	// whole-team walk. binding carries the ids resolved by ResolveBinding.
+	SyncPull(ctx context.Context, binding ProjectBinding) ([]SyncedIssue, error)
 }
 
 // NewReader builds a direct Reader for the provider from cfg, or

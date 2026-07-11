@@ -7,17 +7,21 @@ import "database/sql"
 // stores so the web server depends on a single hub-owned object rather than the
 // raw database handle. The caller owns the database's lifecycle.
 type Stores struct {
-	db    *sql.DB
-	repos *Registrations
+	db     *sql.DB
+	repos  *Registrations
+	issues *Issues
 }
 
 // NewStores builds the hub store set over db.
 func NewStores(db *sql.DB) *Stores {
-	return &Stores{db: db, repos: NewRegistrations(db)}
+	return &Stores{db: db, repos: NewRegistrations(db), issues: NewIssues(db)}
 }
 
 // Registrations returns the registration store.
 func (s *Stores) Registrations() *Registrations { return s.repos }
+
+// Issues returns the issue store.
+func (s *Stores) Issues() *Issues { return s.issues }
 
 // Queue returns the queue store for a repo root.
 func (s *Stores) Queue(root string) *Queue { return NewQueue(s.db, root) }
