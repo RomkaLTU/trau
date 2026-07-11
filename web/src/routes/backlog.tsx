@@ -1,12 +1,17 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { FilePlus, ListPlus, Pencil } from 'lucide-react'
+import { FilePlus, ListPlus, Pencil, Search } from 'lucide-react'
 
 import { PageHeader, ProjectScopeGate, useActiveRepo } from '@/components/trau'
+import {
+  SegmentedControl,
+  type SegmentOption,
+} from '@/components/trau/segmented-control'
 import { InternalIssueForm } from '@/components/internal-issue-form'
+import { Button } from '@/components/ui/button'
 import { backlogQueryOptions, type BacklogEntry } from '@/lib/backlog'
-import { internalIssueQueryOptions } from '@/lib/issues'
+import { INTERNAL_STATES, internalIssueQueryOptions } from '@/lib/issues'
 import { enqueue } from '@/lib/queue'
 import { cn } from '@/lib/utils'
 
@@ -14,13 +19,60 @@ export const Route = createFileRoute('/backlog')({
   component: BacklogPage,
 })
 
+const PAGE_SIZE = 50
+
+type SourceFilter = 'all' | 'internal' | 'synced'
+
+const SOURCE_OPTIONS: readonly SegmentOption<SourceFilter>[] = [
+  { value: 'all', label: 'All' },
+  { value: 'internal', label: 'Internal' },
+  { value: 'synced', label: 'Synced' },
+]
+
+const selectClass =
+  'h-9 rounded-md border bg-transparent px-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50'
+
 function BacklogPage() {
   const { repo: activeRepo } = useActiveRepo()
   const repo = activeRepo ?? ''
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
-  const backlog = useQuery(backlogQueryOptions(repo))
+
+  const [text, setText] = useState('')
+  const [debouncedText, setDebouncedText] = useState('')
+  const [label, setLabel] = useState('')
+  const [debouncedLabel, setDebouncedLabel] = useState('')
+  const [state, setState] = useState('')
+  const [source, setSource] = useState<SourceFilter>('all')
+  const [page, setPage] = useState(0)
+
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedText(text.trim()), 150)
+    return () => clearTimeout(id)
+  }, [text])
+  useEffect(() => {
+    const id = setTimeout(() => setDebouncedLabel(label.trim()), 150)
+    return () => clearTimeout(id)
+  }, [label])
+  useEffect(() => {
+    setPage(0)
+  }, [debouncedText, debouncedLabel, state, source])
+
+  const backlog = useQuery(
+    backlogQueryOptions(repo, {
+      q: debouncedText,
+      label: debouncedLabel,
+      state,
+      source: source === 'all' ? '' : source,
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+    }),
+  )
   const items = backlog.data?.items ?? []
+  const total = backlog.data?.total ?? 0
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+  const hasFilters =
+    debouncedText !== '' || debouncedLabel !== '' || state !== '' || source !== 'all'
 
   return (
     <ProjectScopeGate action="manage the backlog">
@@ -52,6 +104,46 @@ function BacklogPage() {
           />
         )}
 
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex min-w-56 flex-1 items-center gap-2 rounded-md border border-border bg-input px-2.5 py-1.5">
+            <Search className="size-4 shrink-0 text-muted-foreground" />
+            <input
+              type="text"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="Search id or title…"
+              className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+            />
+          </div>
+          <select
+            value={state}
+            onChange={(e) => setState(e.target.value)}
+            aria-label="State"
+            className={selectClass}
+          >
+            <option value="">All states</option>
+            {INTERNAL_STATES.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+          <input
+            type="text"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder="Label…"
+            aria-label="Label"
+            className={cn(selectClass, 'w-40')}
+          />
+          <SegmentedControl
+            aria-label="Source"
+            options={SOURCE_OPTIONS}
+            value={source}
+            onChange={setSource}
+          />
+        </div>
+
         {backlog.isLoading && (
           <p className="text-sm text-muted-foreground">Loading backlog…</p>
         )}
@@ -77,10 +169,44 @@ function BacklogPage() {
             ))}
             {items.length === 0 && (
               <li className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
-                No issues yet — create one to get started.
+                {hasFilters
+                  ? 'No issues match these filters.'
+                  : 'No issues yet — create one to get started.'}
               </li>
             )}
           </ul>
+        )}
+
+        {total > PAGE_SIZE && (
+          <div className="flex items-center justify-between pt-1">
+            <p className="text-xs text-muted-foreground">
+              Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of{' '}
+              {total}
+            </p>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+              >
+                Previous
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                Page {page + 1} of {pageCount}
+              </span>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+                disabled={page >= pageCount - 1}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
         )}
       </div>
     </ProjectScopeGate>

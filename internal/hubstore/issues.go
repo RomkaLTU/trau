@@ -169,21 +169,87 @@ func (s *Issues) List(repo string) (issues []Issue, err error) {
 	return s.attachComments(repo, issues, ids)
 }
 
-// Backlog returns a repo's stored issues for the board, ordered by identifier.
-// Unlike List it does not attach comments: the board renders only each issue's
-// summary row, so skipping the per-repo comment join keeps the read lean.
-func (s *Issues) Backlog(repo string) (issues []Issue, err error) {
-	rows, err := s.db.Query(
-		`SELECT `+issueColumns+` FROM issues WHERE repo = ? ORDER BY identifier`,
-		repo,
-	)
+// BacklogFilter narrows a backlog listing. Group matches the workflow state group
+// (backlog | unstarted | started | completed | canceled); Label matches an issue
+// carrying that label name, case-insensitively; Source is "internal" for
+// internally-created issues or "synced" for tracker tickets; Text is a
+// case-insensitive substring over identifier and title. A zero-valued field is
+// ignored, so the zero filter selects the whole board. Limit and Offset paginate
+// the ordered matches; a Limit of zero returns every match.
+type BacklogFilter struct {
+	Group  string
+	Label  string
+	Source string
+	Text   string
+	Limit  int
+	Offset int
+}
+
+// Backlog returns a repo's stored issues for the board, ordered by identifier and
+// without comments — the whole board, equivalent to an empty BacklogFilter.
+func (s *Issues) Backlog(repo string) ([]Issue, error) {
+	issues, _, err := s.BacklogPage(repo, BacklogFilter{})
+	return issues, err
+}
+
+// BacklogPage returns the repo's stored issues matching filter, ordered by
+// identifier and paginated, together with the total number of matches before
+// pagination so the board can page without counting the rows itself. The filters
+// compose in the WHERE clause and are pushed into the query rather than applied
+// after loading everything; comments are not attached (the board renders summary
+// rows only).
+func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue, total int, err error) {
+	where := []string{"repo = ?"}
+	args := []any{repo}
+	if group := strings.TrimSpace(filter.Group); group != "" {
+		where = append(where, "status_group = ?")
+		args = append(args, group)
+	}
+	switch strings.TrimSpace(filter.Source) {
+	case "internal":
+		where = append(where, "source = 'internal'")
+	case "synced":
+		where = append(where, "source <> 'internal'")
+	}
+	if label := strings.TrimSpace(filter.Label); label != "" {
+		where = append(where, "EXISTS (SELECT 1 FROM json_each(labels) WHERE lower(value) = lower(?))")
+		args = append(args, label)
+	}
+	if text := strings.TrimSpace(filter.Text); text != "" {
+		like := "%" + escapeLike(text) + "%"
+		where = append(where, `(identifier LIKE ? ESCAPE '\' OR title LIKE ? ESCAPE '\')`)
+		args = append(args, like, like)
+	}
+	clause := strings.Join(where, " AND ")
+
+	if err = s.db.QueryRow(`SELECT count(*) FROM issues WHERE `+clause, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	query := `SELECT ` + issueColumns + ` FROM issues WHERE ` + clause + ` ORDER BY identifier`
+	if filter.Limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, filter.Limit)
+		if filter.Offset > 0 {
+			query += ` OFFSET ?`
+			args = append(args, filter.Offset)
+		}
+	}
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
 
 	issues, _, err = scanIssues(repo, rows)
-	return issues, err
+	return issues, total, err
+}
+
+// escapeLike escapes the SQLite LIKE metacharacters so a filter term matches
+// literally — a user typing "%" or "_" narrows the board instead of matching
+// everything.
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
 // scanIssues reads issue rows selected in issueColumns order into a slice and an
