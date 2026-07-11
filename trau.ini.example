@@ -342,6 +342,15 @@ AGENT_TIMEOUT=900
 AGENT_COLS=120
 AGENT_ROWS=40
 
+# Launch the mechanical phases — cleanup, commit, repair, bugfix, push-repair — with
+# the target repo's MCP servers stripped, where the provider CLI supports it (Claude's
+# --strict-mcp-config). Those phases never read the tracker, so the MCP server schemas
+# only cost startup latency and context tokens; build, handoff, and verify keep the
+# full MCP config (they fall back to MCP ticket reads). Providers with no strip
+# mechanism run unchanged. Set 0 to restore full MCP everywhere if a repo's hooks or
+# tests depend on MCP tooling in those phases.
+STRIP_MECHANICAL_MCP=1
+
 # --- transient-failure recovery (COD-583) ---
 # A transient agent-step failure — a stalled subprocess, a hard timeout, or a
 # non-rate-limit crash — self-heals instead of parking the ticket: the step is

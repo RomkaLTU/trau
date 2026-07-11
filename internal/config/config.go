@@ -139,6 +139,13 @@ type Config struct {
 	// dead code, over-defensive scaffolding — before verify grades the result. Set
 	// Cleanup 0 to skip it.
 	Cleanup bool
+	// StripMechanicalMCP launches the mechanical phases (cleanup, commit, repair,
+	// bugfix, push-repair) with the target repo's MCP servers stripped, where the
+	// provider CLI supports it (Claude's --strict-mcp-config) — those phases never
+	// read the tracker, so the server schemas only cost startup latency and context
+	// tokens. On by default; set 0 to restore full MCP everywhere for repos whose
+	// hooks or tests depend on MCP tooling in those phases.
+	StripMechanicalMCP bool
 
 	BrowserVerify string
 	AppURL        string
@@ -280,6 +287,7 @@ func Defaults() Config {
 		AutoStash:             true,
 		LintFix:               true,
 		Cleanup:               true,
+		StripMechanicalMCP:    true,
 		BrowserVerify:         "auto",
 		AppURL:                "http://localhost",
 		VerifyChecks:          true,
@@ -631,6 +639,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("CLEANUP"); v != "" {
 		c.Cleanup = v == "1"
 		sources["CLEANUP"] = src.name
+	}
+	if v, src := get("STRIP_MECHANICAL_MCP"); v != "" {
+		c.StripMechanicalMCP = v == "1"
+		sources["STRIP_MECHANICAL_MCP"] = src.name
 	}
 	str("BROWSER_VERIFY", &c.BrowserVerify)
 	str("APP_URL", &c.AppURL)
@@ -1137,6 +1149,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "LINT_FIX", Default: "1", Description: "Run the project's lint/format autofixers before verify so verify isn't spent self-healing style noise (1 = yes, 0 = no)", Bool: true},
 		{Key: "LINT_FIX_CMD", Description: "Deterministic lint-fix command run before verify (e.g. vendor/bin/pint, npm run lint:fix). Empty = a cheap agent auto-detects and runs the project's fixers"},
 		{Key: "CLEANUP", Default: "1", Description: "Strip AI-slop (unnecessary comments, dead code, over-defensive scaffolding) from the slice's diff before verify (1 = yes, 0 = no)", Bool: true},
+		{Key: "STRIP_MECHANICAL_MCP", Advanced: true, Default: "1", Description: "Launch the mechanical phases (cleanup, commit, repair, bugfix, push-repair) with the repo's MCP servers stripped where the provider supports it (Claude's --strict-mcp-config), since they never read the tracker; 0 restores full MCP everywhere (1 = yes, 0 = no)", Bool: true},
 		{Key: "BROWSER_VERIFY", Default: "auto", Description: "Browser verify: auto | always | never", Options: []string{"auto", "always", "never"}},
 		{Key: "APP_URL", Default: "http://localhost", Description: "Local app URL for browser verify"},
 		{Key: "VERIFY_CHECKS", Default: "1", Description: "Run the pluggable verify-check library (.trau/checks); 1 = yes, 0 = no", Bool: true},
@@ -1609,6 +1622,11 @@ func keyValue(cfg Config, key string) string {
 		return cfg.LintFixCmd
 	case "CLEANUP":
 		if cfg.Cleanup {
+			return "1"
+		}
+		return "0"
+	case "STRIP_MECHANICAL_MCP":
+		if cfg.StripMechanicalMCP {
 			return "1"
 		}
 		return "0"
