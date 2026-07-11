@@ -370,6 +370,37 @@ func (d *Derived) Events(repo string) (rows []EventRow, err error) {
 	return rows, q.Err()
 }
 
+// RecentEvents returns up to limit of repo's events, newest first. A positive
+// before pages to older events by bounding the result to seq below it; 0 returns
+// the latest page. Ordering is by seq — the line-end byte offset — so reversing
+// the result yields the feed's chronological order. The (repo, seq) primary key
+// serves the ordering and the limit from an index, never a full scan.
+func (d *Derived) RecentEvents(repo string, limit int, before int64) (rows []EventRow, err error) {
+	query := `SELECT seq, ts, kind, phase, msg, fields FROM events WHERE repo = ?`
+	args := []any{repo}
+	if before > 0 {
+		query += ` AND seq < ?`
+		args = append(args, before)
+	}
+	query += ` ORDER BY seq DESC LIMIT ?`
+	args = append(args, limit)
+
+	q, err := d.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, q.Close()) }()
+	rows = []EventRow{}
+	for q.Next() {
+		var r EventRow
+		if err := q.Scan(&r.Seq, &r.TS, &r.Kind, &r.Phase, &r.Msg, &r.Fields); err != nil {
+			return nil, err
+		}
+		rows = append(rows, r)
+	}
+	return rows, q.Err()
+}
+
 // TokenCalls returns a ticket's ingested token calls in append order.
 func (d *Derived) TokenCalls(repo, ticket string) (rows []TokenRow, err error) {
 	q, err := d.db.Query(

@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/registry"
 )
 
 // fastPoll tightens the tail poll so the streaming tests observe an appended
@@ -363,5 +365,209 @@ func TestRecentEventsRejectsNonGET(t *testing.T) {
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("POST status = %d, want 405", res.StatusCode)
+	}
+}
+
+// dbEventsServer wires a server over a hub database with the derived projection
+// ensured and one known repo, plus an httptest server over its handler. It
+// returns the server — so a test can drive an ingest pass to populate the
+// projection — and the repo's runs dir.
+func dbEventsServer(t *testing.T, name string) (*Server, *httptest.Server, string) {
+	t.Helper()
+	home := t.TempDir()
+	stores := testStoresAt(t, home)
+	if err := stores.EnsureDerivedSchema(); err != nil {
+		t.Fatalf("ensure derived schema: %v", err)
+	}
+	root := filepath.Join(t.TempDir(), name)
+	repo := registry.Repo{Name: name, Root: root, RunsDir: filepath.Join(root, ".trau", "runs")}
+	if err := stores.Registrations().Remember([]registry.Repo{repo}); err != nil {
+		t.Fatalf("remember repo: %v", err)
+	}
+	s := New("test", "127.0.0.1", "", nil, false, stores)
+	s.home = home
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return s, ts, repo.RunsDir
+}
+
+func msgLine(events []FeedEvent) string {
+	var b strings.Builder
+	for _, ev := range events {
+		b.WriteString(ev.Msg)
+	}
+	return b.String()
+}
+
+// TestEventsPaginateFromDatabase drives the list endpoint off the derived
+// projection: the file is deleted after ingest so a hit can only be served from
+// the database, then the cursor walks from the newest page to the oldest with no
+// overlap and stable order, and an event's fields survive the round trip.
+func TestEventsPaginateFromDatabase(t *testing.T) {
+	s, ts, runsDir := dbEventsServer(t, "acme")
+	for i := 1; i <= 5; i++ {
+		appendEvent(t, runsDir, event.Event{
+			Time:   fmt.Sprintf("t%d", i),
+			Kind:   "agent_call",
+			Msg:    strconv.Itoa(i),
+			Fields: map[string]any{"n": float64(i)},
+		})
+	}
+	s.ingestPass()
+	if err := os.Remove(eventsPath(runsDir)); err != nil {
+		t.Fatalf("remove events file: %v", err)
+	}
+
+	p0 := getEvents(t, ts, "acme", "limit=2")
+	if got := msgLine(p0.Events); got != "45" {
+		t.Fatalf("page 0 = %q, want 45", got)
+	}
+	if p0.Cursor == "" {
+		t.Fatal("page 0 missing cursor for older page")
+	}
+
+	p1 := getEvents(t, ts, "acme", "limit=2&cursor="+p0.Cursor)
+	if got := msgLine(p1.Events); got != "23" {
+		t.Fatalf("page 1 = %q, want 23", got)
+	}
+	if offset(t, p1.Events[len(p1.Events)-1].ID) >= offset(t, p0.Events[0].ID) {
+		t.Errorf("page 1 overlaps page 0: %s !< %s", p1.Events[len(p1.Events)-1].ID, p0.Events[0].ID)
+	}
+
+	p2 := getEvents(t, ts, "acme", "limit=2&cursor="+p1.Cursor)
+	if got := msgLine(p2.Events); got != "1" {
+		t.Fatalf("page 2 = %q, want 1", got)
+	}
+	if p2.Cursor != "" {
+		t.Errorf("last page cursor = %q, want empty", p2.Cursor)
+	}
+	if p2.Events[0].Fields["n"] != float64(1) {
+		t.Errorf("fields not preserved from db: %v", p2.Events[0].Fields)
+	}
+}
+
+// TestEventStreamBackfillsFromDatabase connects fresh with the file deleted after
+// ingest, so the replayed backfill can only come from the derived projection —
+// no full log parse — with the event fields intact.
+func TestEventStreamBackfillsFromDatabase(t *testing.T) {
+	fastPoll(t)
+	s, ts, runsDir := dbEventsServer(t, "acme")
+	appendEvent(t, runsDir, event.Event{Time: "t1", Kind: "agent_call", Msg: "a", Fields: map[string]any{"k": "v"}})
+	appendEvent(t, runsDir, event.Event{Time: "t2", Kind: "usage_window", Msg: "b"})
+	s.ingestPass()
+	if err := os.Remove(eventsPath(runsDir)); err != nil {
+		t.Fatalf("remove events file: %v", err)
+	}
+
+	r := openStream(t, ts, "acme", nil)
+	f1 := decodeFrame(t, nextData(t, r))
+	f2 := decodeFrame(t, nextData(t, r))
+	if f1.Msg != "a" || f2.Msg != "b" {
+		t.Fatalf("backfill from db = %q,%q, want a,b (file deleted)", f1.Msg, f2.Msg)
+	}
+	if f1.Fields["k"] != "v" {
+		t.Errorf("fields not preserved from db: %v", f1.Fields)
+	}
+	if offset(t, f2.ID) <= offset(t, f1.ID) {
+		t.Errorf("ids not increasing: %s then %s", f1.ID, f2.ID)
+	}
+}
+
+// TestEventStreamBackfillHandsOffToLiveTail is the resume-boundary contract: the
+// backfill is served from the projection, then an event appended past the
+// projection's cursor surfaces via the live file tail with a strictly larger id
+// and no repeat of the backfilled events — nothing dropped, nothing duplicated.
+func TestEventStreamBackfillHandsOffToLiveTail(t *testing.T) {
+	fastPoll(t)
+	s, ts, runsDir := dbEventsServer(t, "acme")
+	appendEvent(t, runsDir, event.Event{Time: "t1", Kind: "agent_call", Msg: "a"})
+	appendEvent(t, runsDir, event.Event{Time: "t2", Kind: "usage_window", Msg: "b"})
+	s.ingestPass()
+
+	r := openStream(t, ts, "acme", nil)
+	f1 := decodeFrame(t, nextData(t, r))
+	f2 := decodeFrame(t, nextData(t, r))
+	if f1.Msg != "a" || f2.Msg != "b" {
+		t.Fatalf("backfill msgs = %q,%q, want a,b", f1.Msg, f2.Msg)
+	}
+
+	appendEvent(t, runsDir, event.Event{Time: "t3", Kind: "cost_anomaly", Msg: "c"})
+	f3 := decodeFrame(t, nextData(t, r))
+	if f3.Msg != "c" {
+		t.Fatalf("streamed msg = %q, want c (no replay of a/b)", f3.Msg)
+	}
+	if offset(t, f3.ID) <= offset(t, f2.ID) {
+		t.Errorf("appended id %s not past backfill id %s", f3.ID, f2.ID)
+	}
+}
+
+// TestEventStreamResumeAfterDatabaseList covers a reconnect whose cursor came
+// from the database-served list: resuming from the id of the second event
+// delivers only the third — the earlier events are neither lost nor replayed.
+func TestEventStreamResumeAfterDatabaseList(t *testing.T) {
+	fastPoll(t)
+	s, ts, runsDir := dbEventsServer(t, "acme")
+	appendEvent(t, runsDir, event.Event{Time: "t1", Kind: "agent_call", Msg: "a"})
+	appendEvent(t, runsDir, event.Event{Time: "t2", Kind: "agent_call", Msg: "b"})
+	appendEvent(t, runsDir, event.Event{Time: "t3", Kind: "cost_anomaly", Msg: "c"})
+	s.ingestPass()
+
+	recent := getEvents(t, ts, "acme", "")
+	if len(recent.Events) != 3 {
+		t.Fatalf("list = %d events, want 3", len(recent.Events))
+	}
+	r := openStream(t, ts, "acme", http.Header{"Last-Event-ID": {recent.Events[1].ID}})
+	f := decodeFrame(t, nextData(t, r))
+	if f.Msg != "c" {
+		t.Fatalf("resumed msg = %q, want c (no replay of a/b)", f.Msg)
+	}
+	if f.ID != recent.Events[2].ID {
+		t.Errorf("resumed id = %q, want %q", f.ID, recent.Events[2].ID)
+	}
+}
+
+// TestAllEventStreamBackfillsFromDatabase confirms the machine-wide multiplex
+// backfills each repo from the projection: with both files deleted after ingest,
+// the tagged backfill still arrives.
+func TestAllEventStreamBackfillsFromDatabase(t *testing.T) {
+	fastPoll(t)
+	home := t.TempDir()
+	stores := testStoresAt(t, home)
+	if err := stores.EnsureDerivedSchema(); err != nil {
+		t.Fatalf("ensure derived schema: %v", err)
+	}
+	repos := map[string]registry.Repo{}
+	list := make([]registry.Repo, 0, 2)
+	for _, name := range []string{"alpha", "bravo"} {
+		root := filepath.Join(t.TempDir(), name)
+		repo := registry.Repo{Name: name, Root: root, RunsDir: filepath.Join(root, ".trau", "runs")}
+		repos[name] = repo
+		list = append(list, repo)
+	}
+	if err := stores.Registrations().Remember(list); err != nil {
+		t.Fatalf("remember repos: %v", err)
+	}
+	appendEvent(t, repos["alpha"].RunsDir, event.Event{Time: "t1", Kind: "agent_call", Msg: "a"})
+	appendEvent(t, repos["bravo"].RunsDir, event.Event{Time: "t1", Kind: "usage_window", Msg: "b"})
+
+	s := New("test", "127.0.0.1", "", nil, false, stores)
+	s.home = home
+	s.ingestPass()
+	for _, repo := range repos {
+		if err := os.Remove(eventsPath(repo.RunsDir)); err != nil {
+			t.Fatalf("remove events file: %v", err)
+		}
+	}
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	r := openAllStream(t, ts, nil)
+	backfill := map[string]string{}
+	for i := 0; i < 2; i++ {
+		rf := decodeRepoFrame(t, nextData(t, r))
+		backfill[rf.Repo] = rf.Msg
+	}
+	if backfill["alpha"] != "a" || backfill["bravo"] != "b" {
+		t.Fatalf("multiplexed backfill from db = %v, want alpha:a bravo:b (files deleted)", backfill)
 	}
 }
