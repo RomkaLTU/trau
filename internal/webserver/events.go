@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
@@ -37,10 +39,13 @@ type FeedEvent struct {
 }
 
 // EventsResponse is the /api/v1/repos/{repo}/events resource: the repo's most
-// recent events in chronological order, for the feed's initial render.
+// recent events in chronological order, for the feed's initial render. Cursor,
+// when set, is the id an older page is fetched with via ?cursor; it is absent on
+// the last page.
 type EventsResponse struct {
 	Repo   string      `json:"repo"`
 	Events []FeedEvent `json:"events"`
+	Cursor string      `json:"cursor,omitempty"`
 }
 
 // repoEvent tags a FeedEvent with its repo for the machine-wide /events/stream
@@ -63,14 +68,32 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit := clampLimit(r.URL.Query().Get("limit"))
-	events, _ := readFeed(eventsPath(repo.RunsDir))
-	if len(events) > limit {
-		events = events[len(events)-limit:]
+	before, _ := parseOffset(r.URL.Query().Get("cursor"))
+	events, cursor := s.recentEvents(repo, limit, before)
+	writeJSON(w, http.StatusOK, EventsResponse{Repo: repo.Name, Events: events, Cursor: cursor})
+}
+
+// recentEvents serves a page of repo's events from the derived projection: up to
+// limit events ending at before, newest bounded first but returned in
+// chronological order, and the cursor for the next older page (empty on the last
+// one). Until the projection has ingested the repo the latest page falls back to
+// the durable file so the first render is never empty; older pages, which the
+// file cannot key, stay empty.
+func (s *Server) recentEvents(repo registry.Repo, limit int, before int64) ([]FeedEvent, string) {
+	rows, err := s.stores.Derived().RecentEvents(repo.Root, limit, before)
+	if err != nil {
+		logger.Verbosef("events query %s: %v", repo.Name, err)
+		rows = nil
 	}
-	if events == nil {
-		events = []FeedEvent{}
+	if len(rows) == 0 && before == 0 {
+		return fileFeed(eventsPath(repo.RunsDir), limit), ""
 	}
-	writeJSON(w, http.StatusOK, EventsResponse{Repo: repo.Name, Events: events})
+	events := feedFromRows(rows)
+	cursor := ""
+	if len(events) == limit {
+		cursor = events[0].ID
+	}
+	return events, cursor
 }
 
 func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
@@ -91,7 +114,20 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Accel-Buffering", "no")
 
 	path := eventsPath(repo.RunsDir)
-	pump(r.Context(), w, flusher, path, resumeOffset(r, path))
+	off, resumed := explicitResume(r)
+	if !resumed {
+		backfill, start := s.streamBackfill(repo)
+		for _, ev := range backfill {
+			if emitEvent(w, "", ev) != nil {
+				return
+			}
+		}
+		if len(backfill) > 0 {
+			flusher.Flush()
+		}
+		off = start
+	}
+	pump(r.Context(), w, flusher, path, off)
 }
 
 func (s *Server) handleAllEventStream(w http.ResponseWriter, r *http.Request) {
@@ -114,18 +150,88 @@ func (s *Server) handleAllEventStream(w http.ResponseWriter, r *http.Request) {
 	s.pumpAll(r.Context(), w, flusher)
 }
 
-// resumeOffset picks where the stream starts reading: the Last-Event-ID header on
-// a browser reconnect, then an explicit ?since cursor handed over from the recent
-// resource, else the start of the last defaultBackfill events so a fresh
-// connection paints a populated feed.
-func resumeOffset(r *http.Request, path string) int64 {
+// explicitResume reports where a reconnecting client resumes from — the
+// Last-Event-ID header a browser replays, then an explicit ?since cursor handed
+// over from the recent resource — and whether one was given. Both are byte
+// offsets into the file the live tail reads directly, so a reconnect never
+// re-parses the log. Without one the caller backfills from the projection.
+func explicitResume(r *http.Request) (int64, bool) {
 	if off, ok := parseOffset(r.Header.Get("Last-Event-ID")); ok {
-		return off
+		return off, true
 	}
 	if off, ok := parseOffset(r.URL.Query().Get("since")); ok {
-		return off
+		return off, true
 	}
-	return backfillStart(path, defaultBackfill)
+	return 0, false
+}
+
+// streamBackfill serves a fresh connection's initial events from the derived
+// projection — repo's most recent events — and returns the offset the live file
+// tail resumes from: the byte offset just past the last event served, so tailing
+// picks up only what the projection has yet to ingest, with neither gap nor
+// repeat. Until the projection has ingested the repo it returns no events and the
+// file's own tail-start, so the connection still paints a populated feed.
+func (s *Server) streamBackfill(repo registry.Repo) ([]FeedEvent, int64) {
+	rows, err := s.stores.Derived().RecentEvents(repo.Root, defaultBackfill, 0)
+	if err != nil {
+		logger.Verbosef("events backfill %s: %v", repo.Name, err)
+		rows = nil
+	}
+	if len(rows) == 0 {
+		return nil, backfillStart(eventsPath(repo.RunsDir), defaultBackfill)
+	}
+	return feedFromRows(rows), rows[0].Seq
+}
+
+// feedFromRows reverses the newest-first rows into the feed's chronological order,
+// reconstructing each FeedEvent so its JSON is identical to the file-served shape.
+func feedFromRows(rows []hubstore.EventRow) []FeedEvent {
+	out := make([]FeedEvent, len(rows))
+	for i, row := range rows {
+		out[len(rows)-1-i] = feedEventFromRow(row)
+	}
+	return out
+}
+
+func feedEventFromRow(row hubstore.EventRow) FeedEvent {
+	return FeedEvent{
+		ID: strconv.FormatInt(row.Seq, 10),
+		Event: event.Event{
+			Time:   row.TS,
+			Kind:   row.Kind,
+			Phase:  row.Phase,
+			Msg:    row.Msg,
+			Fields: unmarshalFields(row.Fields),
+		},
+	}
+}
+
+// unmarshalFields restores the event fields the ingester stored as a JSON string,
+// leaving an empty column as a nil map so omitempty drops it exactly as the
+// file-served event does.
+func unmarshalFields(s string) map[string]any {
+	if s == "" {
+		return nil
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(s), &m) != nil {
+		return nil
+	}
+	return m
+}
+
+// fileFeed is the cold-start fallback: until the projection has ingested a repo,
+// the last limit events are read straight from the durable file so the first
+// render is never empty.
+func fileFeed(path string, limit int) []FeedEvent {
+	events, _ := readFeed(path)
+	if len(events) > limit {
+		events = events[len(events)-limit:]
+	}
+	if events == nil {
+		events = []FeedEvent{}
+	}
+	return events
 }
 
 // pump tails path from offset, emitting each new event as an SSE frame until the
@@ -179,7 +285,17 @@ func (s *Server) pumpAll(ctx context.Context, w io.Writer, flusher http.Flusher)
 			path := eventsPath(repo.RunsDir)
 			off, seen := offsets[repo.Name]
 			if !seen {
-				off = backfillStart(path, defaultBackfill)
+				backfill, start := s.streamBackfill(repo)
+				for _, ev := range backfill {
+					if emitEvent(w, repo.Name, ev) != nil {
+						return
+					}
+				}
+				if len(backfill) > 0 {
+					flusher.Flush()
+					wrote = true
+				}
+				off = start
 			}
 			next, n, err := emitFrom(w, flusher, path, repo.Name, off)
 			if err != nil {

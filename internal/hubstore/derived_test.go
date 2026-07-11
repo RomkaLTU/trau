@@ -3,6 +3,7 @@ package hubstore
 import (
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/hubdb"
@@ -112,6 +113,60 @@ func TestEnsureSchemaRebuildsOnMissingTable(t *testing.T) {
 	}
 	if _, err := d.Events("repo"); err != nil {
 		t.Fatalf("events table not rebuilt: %v", err)
+	}
+}
+
+func TestRecentEventsLimitAndCursor(t *testing.T) {
+	_, d := testDerived(t)
+	rows := make([]EventRow, 5)
+	for i := range rows {
+		rows[i] = EventRow{Seq: int64((i + 1) * 10), Kind: "phase", Msg: strconv.Itoa(i + 1)}
+	}
+	if err := d.IngestEvents("repo", false, rows, 50); err != nil {
+		t.Fatalf("IngestEvents: %v", err)
+	}
+
+	page, err := d.RecentEvents("repo", 2, 0)
+	if err != nil {
+		t.Fatalf("RecentEvents: %v", err)
+	}
+	if got := seqLine(page); got != "5040" {
+		t.Fatalf("latest page seqs = %q, want 5040 (newest first)", got)
+	}
+
+	older, err := d.RecentEvents("repo", 2, page[len(page)-1].Seq)
+	if err != nil {
+		t.Fatalf("RecentEvents older: %v", err)
+	}
+	if got := seqLine(older); got != "3020" {
+		t.Fatalf("older page seqs = %q, want 3020", got)
+	}
+
+	last, err := d.RecentEvents("repo", 2, older[len(older)-1].Seq)
+	if err != nil {
+		t.Fatalf("RecentEvents last: %v", err)
+	}
+	if got := seqLine(last); got != "10" {
+		t.Fatalf("last page seqs = %q, want 10", got)
+	}
+}
+
+func seqLine(rows []EventRow) string {
+	var b strings.Builder
+	for _, r := range rows {
+		b.WriteString(strconv.FormatInt(r.Seq, 10))
+	}
+	return b.String()
+}
+
+func TestRecentEventsEmptyRepo(t *testing.T) {
+	_, d := testDerived(t)
+	got, err := d.RecentEvents("repo", 10, 0)
+	if err != nil {
+		t.Fatalf("RecentEvents: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("recent events = %d, want 0", len(got))
 	}
 }
 
