@@ -203,6 +203,29 @@ type CheckpointRow struct {
 	Data          string
 }
 
+// TicketCheckpoint pairs a checkpoint projection with the ticket it belongs to,
+// for the run board's whole-repo read.
+type TicketCheckpoint struct {
+	Ticket string
+	CheckpointRow
+}
+
+// CostCell is one aggregated slice of token spend from token_calls, grouped by
+// repo, local date, provider, model, and phase. Provider and Model are as the call
+// logged them — the read-side provider fallback for older, provider-less lines is
+// the caller's to apply. Cost sums the per-call cost and is a lower bound when
+// Metered is false: some contributing call recorded no per-call cost.
+type CostCell struct {
+	Repo     string
+	Date     string
+	Phase    string
+	Provider string
+	Model    string
+	Tokens   int
+	Cost     float64
+	Metered  bool
+}
+
 // EventCursor returns the byte offset ingestion last read repo's events.jsonl to,
 // or 0 when it has none.
 func (d *Derived) EventCursor(repo string) (int64, error) {
@@ -444,4 +467,66 @@ func (d *Derived) Checkpoint(repo, ticket string) (CheckpointRow, bool, error) {
 		return CheckpointRow{}, false, err
 	}
 	return cp, true, nil
+}
+
+// Checkpoints returns every ingested checkpoint for repo, each tagged with its
+// ticket and ordered by ticket. It backs the run board's whole-repo read from the
+// projection, replacing a per-field re-read of each state file on every poll.
+func (d *Derived) Checkpoints(repo string) (rows []TicketCheckpoint, err error) {
+	q, err := d.db.Query(
+		`SELECT ticket, phase, title, branch, pr, pr_url, failure_reason, updated_at, data
+		 FROM checkpoints WHERE repo = ? ORDER BY ticket`, repo,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, q.Close()) }()
+	rows = []TicketCheckpoint{}
+	for q.Next() {
+		var r TicketCheckpoint
+		if err := q.Scan(
+			&r.Ticket, &r.Phase, &r.Title, &r.Branch, &r.PR, &r.PRURL,
+			&r.FailureReason, &r.UpdatedAt, &r.Data,
+		); err != nil {
+			return nil, err
+		}
+		rows = append(rows, r)
+	}
+	return rows, q.Err()
+}
+
+// CostCells aggregates the token calls whose local date falls within [from, to]
+// inclusive into one cell per (repo, date, provider, model, phase), summing tokens
+// and cost in SQL. The date is the ts's YYYY-MM-DD prefix compared lexically, so
+// the window is filtered in the query rather than by scanning every call. A cell is
+// metered only when every call folded into it recorded a per-call cost.
+func (d *Derived) CostCells(from, to string) (cells []CostCell, err error) {
+	q, err := d.db.Query(
+		`SELECT repo, substr(ts, 1, 10) AS day, phase, provider, model,
+		        SUM(total), SUM(cost_usd), SUM(cost_usd IS NULL)
+		 FROM token_calls
+		 WHERE length(ts) >= 10 AND substr(ts, 1, 10) >= ? AND substr(ts, 1, 10) <= ?
+		 GROUP BY repo, day, phase, provider, model
+		 ORDER BY repo, day, phase, provider, model`,
+		from, to,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, q.Close()) }()
+	cells = []CostCell{}
+	for q.Next() {
+		var (
+			c         CostCell
+			cost      sql.NullFloat64
+			unmetered int
+		)
+		if err := q.Scan(&c.Repo, &c.Date, &c.Phase, &c.Provider, &c.Model, &c.Tokens, &cost, &unmetered); err != nil {
+			return nil, err
+		}
+		c.Cost = cost.Float64
+		c.Metered = unmetered == 0
+		cells = append(cells, c)
+	}
+	return cells, q.Err()
 }

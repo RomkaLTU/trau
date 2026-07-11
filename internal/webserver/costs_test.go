@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,6 +13,24 @@ import (
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
+
+// removeGlob deletes every file matching pattern, failing if none matched so a
+// "served from the database, not the files" test cannot pass vacuously.
+func removeGlob(t *testing.T, pattern string) {
+	t.Helper()
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		t.Fatalf("glob %s: %v", pattern, err)
+	}
+	if len(matches) == 0 {
+		t.Fatalf("glob %s matched nothing to remove", pattern)
+	}
+	for _, m := range matches {
+		if err := os.Remove(m); err != nil {
+			t.Fatalf("remove %s: %v", m, err)
+		}
+	}
+}
 
 // seedDayTokens appends a run's calls dated on a specific day through the real
 // Sink, so the rollup reads the exact on-disk log shape the pipeline writes.
@@ -96,7 +115,7 @@ func TestCostsRollupAcrossReposAndDays(t *testing.T) {
 		{"build", tokens.Record{Input: 9000, Output: 999, CostUSD: usd(9.99)}},
 	})
 
-	ts := instancesServer(t, home)
+	ts := ingestedServer(t, home)
 	c := getCosts(t, ts, "?days=7")
 
 	if c.WindowDays != 7 || c.From != fmtDay(-6) || c.To != fmtDay(0) {
@@ -164,7 +183,7 @@ func TestCostsWindowSelectable(t *testing.T) {
 		{"build", tokens.Record{Input: 500, Output: 500, CostUSD: usd(1.00)}},
 	})
 
-	ts := instancesServer(t, home)
+	ts := ingestedServer(t, home)
 
 	narrow := getCosts(t, ts, "?days=7")
 	if narrow.Totals.CostUSD != 0.20 {
@@ -196,7 +215,7 @@ func TestCostsBudgetCapsAsContext(t *testing.T) {
 		{"build", tokens.Record{Input: 100, Output: 100, CostUSD: usd(0.40)}},
 	})
 
-	ts := instancesServer(t, home)
+	ts := ingestedServer(t, home)
 	c := getCosts(t, ts, "?days=7")
 
 	byRepo := repoCostByName(c.Repos)
@@ -229,7 +248,7 @@ func TestCostsSurfacesAnomaliesAcrossRepos(t *testing.T) {
 	sink.Append("cleanup", tokens.Record{Output: 120_000, Turns: 8, CostUSD: usd(6.50)})
 	sink.Flag("COD-9")
 
-	ts := instancesServer(t, home)
+	ts := ingestedServer(t, home)
 	c := getCosts(t, ts, "?days=7")
 
 	if len(c.Anomalies) != 1 {
@@ -241,6 +260,26 @@ func TestCostsSurfacesAnomaliesAcrossRepos(t *testing.T) {
 	}
 	if len(a.Reasons) == 0 {
 		t.Error("anomaly carries no reasons, want the tripped thresholds")
+	}
+}
+
+// TestCostsServedFromDatabaseNotTokenLogs proves the totals endpoint reads the
+// derived token_calls table, not the token logs: once the spend is ingested,
+// deleting every tokens.jsonl leaves the totals intact.
+func TestCostsServedFromDatabaseNotTokenLogs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	dirs := seedRepos(t, home, "acme")
+	seedDayTokens(t, dirs["acme"], "COD-1", time.Now(), []phaseCall{
+		{"build", tokens.Record{Input: 100, Output: 100, CostUSD: usd(0.40)}},
+	})
+
+	ts := ingestedServer(t, home)
+	removeGlob(t, filepath.Join(dirs["acme"], "*", "tokens.jsonl"))
+
+	c := getCosts(t, ts, "?days=7")
+	if c.Totals.Tokens != 200 || c.Totals.CostUSD != 0.40 {
+		t.Fatalf("totals after deleting the token logs = %+v, want tokens 200 cost 0.40 (served from the db)", c.Totals)
 	}
 }
 

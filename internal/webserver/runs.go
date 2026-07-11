@@ -1,9 +1,12 @@
 package webserver
 
 import (
+	"encoding/json"
 	"net/http"
 	"sort"
 
+	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 )
@@ -91,7 +94,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
 		return
 	}
-	writeJSON(w, http.StatusOK, RunsResponse{Repo: repo.Name, Runs: collectRuns(repo.RunsDir)})
+	writeJSON(w, http.StatusOK, RunsResponse{Repo: repo.Name, Runs: s.collectRuns(repo.Root)})
 }
 
 // repoViews lists every repo the hub knows, flagging the ones a loop is running
@@ -173,20 +176,48 @@ func (s *Server) findRepo(name string) (registry.Repo, bool) {
 	return registry.Repo{}, false
 }
 
-// collectRuns reads every checkpoint under runsDir into a board-ordered run list.
-// It is file-first: the runs read the same whether the loop is live, exited, or
-// never controlled by this hub.
-func collectRuns(runsDir string) []RunView {
-	store := state.NewStore(runsDir)
-	ids := store.Tickets()
-	runs := make([]RunView, 0, len(ids))
-	for _, id := range ids {
-		runs = append(runs, runView(store, id))
+// collectRuns reads every checkpoint the projection holds for root into a
+// board-ordered run list. It derives from the derived checkpoints table, not the
+// state files, so a poll never re-reads a checkpoint per field.
+func (s *Server) collectRuns(root string) []RunView {
+	rows, err := s.stores.Derived().Checkpoints(root)
+	if err != nil {
+		logger.Verbosef("checkpoints %s: %v", root, err)
+		rows = nil
+	}
+	runs := make([]RunView, 0, len(rows))
+	for _, tc := range rows {
+		runs = append(runs, runViewFromCheckpoint(tc))
 	}
 	sortRuns(runs)
 	return runs
 }
 
+func runViewFromCheckpoint(tc hubstore.TicketCheckpoint) RunView {
+	phase := tc.Phase
+	reason := tc.FailureReason
+	class := state.FailureClass(phase, checkpointField(tc.Data, "FAILURE_CLASS"), reason)
+	if phase == state.Merged {
+		reason = ""
+	}
+	return RunView{
+		Ticket:        tc.Ticket,
+		Title:         tc.Title,
+		Phase:         phase,
+		PhaseRank:     state.Idx(phase),
+		Terminal:      state.Terminal(phase),
+		Branch:        tc.Branch,
+		PR:            tc.PR,
+		PRURL:         tc.PRURL,
+		FailureClass:  class,
+		FailureReason: reason,
+		UpdatedAt:     tc.UpdatedAt,
+	}
+}
+
+// runView builds one ticket's row straight from its state file. The run board
+// derives from the projection, but the on-demand run detail already reads the
+// ticket's artifacts from disk, so it reads the checkpoint from the same file.
 func runView(store *state.Store, id string) RunView {
 	phase := store.Get(id, "PHASE")
 	reason := store.Get(id, "FAILURE_REASON")
@@ -207,6 +238,20 @@ func runView(store *state.Store, id string) RunView {
 		FailureReason: reason,
 		UpdatedAt:     store.Get(id, "UPDATED"),
 	}
+}
+
+// checkpointField pulls one raw state key out of a checkpoint's JSON data blob,
+// the board's source for fields it does not project into a column (the stored
+// failure class). A missing key or unparseable blob reads as empty.
+func checkpointField(data, key string) string {
+	if data == "" {
+		return ""
+	}
+	var m map[string]string
+	if json.Unmarshal([]byte(data), &m) != nil {
+		return ""
+	}
+	return m[key]
 }
 
 // sortRuns orders the board by phase rank, then by ticket so the column contents

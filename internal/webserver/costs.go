@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
@@ -107,18 +109,18 @@ type spend struct {
 	metered bool
 }
 
-func (b *spend) add(c tokens.DayPhaseCost) { b.addRaw(c.Tokens, c.Cost, c.Metered) }
-
 func (b *spend) addRaw(tokens int, cost float64, metered bool) {
 	b.tokens += tokens
 	b.cost += cost
 	b.metered = b.metered && metered
 }
 
-// costs folds every repo's rollup over [from, to] into the machine-wide daily,
-// per-repo, and per-phase views, with budget caps and flagged anomalies attached.
+// costs folds the derived per-call spend over [from, to] into the machine-wide
+// daily, per-repo, and per-phase views, with budget caps and flagged anomalies
+// attached.
 func (s *Server) costs(days int, from, to string) CostsResponse {
 	repos := s.repoViews()
+	cells := s.costCellsByRepo(from, to)
 
 	daily := map[string]*spend{}
 	phases := map[string]*spend{}
@@ -128,22 +130,22 @@ func (s *Server) costs(days int, from, to string) CostsResponse {
 	var budget CostBudget
 
 	for _, rv := range repos {
-		cells := tokens.New(rv.RunsDir).Rollup(from, to)
+		repoCells := cells[rv.Root]
 		rc := RepoCost{Repo: rv.Name, Metered: true}
-		for _, c := range cells {
-			bucket(daily, c.Date).add(c)
-			bucket(phases, c.Phase).add(c)
+		for _, c := range repoCells {
+			bucket(daily, c.Date).addRaw(c.Tokens, c.Cost, c.Metered)
+			bucket(phases, c.Phase).addRaw(c.Tokens, c.Cost, c.Metered)
 			rc.Tokens += c.Tokens
 			rc.CostUSD += c.Cost
 			rc.Metered = rc.Metered && c.Metered
-			total.add(c)
+			total.addRaw(c.Tokens, c.Cost, c.Metered)
 		}
 		rc.CostUSD = round2(rc.CostUSD)
 		rc.DailyBudgetUSD, rc.DailyBudgetTokens = s.repoDailyBudget(rv.Repo)
 		budget.DailyUSD += rc.DailyBudgetUSD
 		budget.DailyTokens += rc.DailyBudgetTokens
 
-		if len(cells) > 0 || rc.DailyBudgetUSD > 0 || rc.DailyBudgetTokens > 0 {
+		if len(repoCells) > 0 || rc.DailyBudgetUSD > 0 || rc.DailyBudgetTokens > 0 {
 			repoCosts = append(repoCosts, rc)
 		}
 		anomalies = append(anomalies, repoAnomalies(rv)...)
@@ -164,6 +166,23 @@ func (s *Server) costs(days int, from, to string) CostsResponse {
 		Phases:     phaseSeries(phases),
 		Anomalies:  anomalies,
 	}
+}
+
+// costCellsByRepo aggregates the window's token spend once in SQL and groups the
+// resulting cells by repo root, so the costs and timeseries endpoints fold the
+// derived token_calls table instead of scanning every repo's token logs on each
+// request. A query error is logged and read as no spend.
+func (s *Server) costCellsByRepo(from, to string) map[string][]hubstore.CostCell {
+	cells, err := s.stores.Derived().CostCells(from, to)
+	if err != nil {
+		logger.Verbosef("cost cells [%s, %s]: %v", from, to, err)
+		return nil
+	}
+	byRepo := make(map[string][]hubstore.CostCell)
+	for _, c := range cells {
+		byRepo[c.Repo] = append(byRepo[c.Repo], c)
+	}
+	return byRepo
 }
 
 func bucket(m map[string]*spend, key string) *spend {
