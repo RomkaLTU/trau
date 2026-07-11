@@ -213,6 +213,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		cfg.RepoRoot = repoRoot
 	}
 
+	if cfg.EffectiveTrackerProvider() == "internal" {
+		// Internal issue IDs are minted with the repo-derived InternalPrefix, not the
+		// COD fallback ResolvePrefix lands on with no team; align id parsing, branch
+		// inference, and scope so the CLI and resume paths recognize them.
+		cfg.IssuePrefix = config.InternalPrefix(cfg.IssuePrefixConfigured, repoName(cfg.RepoRoot))
+	}
+
 	if note := tui.SetTheme(cfg.Theme, cfg.ThemeColors); note != "" {
 		_, _ = fmt.Fprintln(stderr, note)
 	}
@@ -306,6 +313,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	pm, err := buildTracker(cfg, runner)
 	if err != nil {
 		return usageError{err}
+	}
+	var reg *registry.Handle
+	if cfg.EffectiveTrackerProvider() == "internal" {
+		ensureHubForInternal(ctx, cfg, stderr)
+		// Register before the standalone hub-backed commands (--list-eligible,
+		// --dry-run, --reset) so the hub can resolve this repo, the same way the loop
+		// path does before Pick. The main loop reuses this handle below.
+		reg = registry.Register(registry.Home(), cfg.RepoRoot, cfg.RunsDir)
+		defer reg.Deregister()
 	}
 
 	if opts.ListEligible {
@@ -459,8 +475,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	con.Logf("provider=%s · AUTO_MERGE=%v · max=%d%s%s", cfg.Provider, cfg.AutoMerge, maxIter, parentSuffix, budgetSuffix)
 
-	reg := registry.Register(registry.Home(), repoRoot, cfg.RunsDir)
-	defer reg.Deregister()
+	if reg == nil {
+		reg = registry.Register(registry.Home(), repoRoot, cfg.RunsDir)
+		defer reg.Deregister()
+	}
 	p.OnPhase = func(id, phase string) { reg.SetState(registry.StateWorking, id, phase) }
 
 	eng := &realEngine{pipe: p, tracker: pm, scope: scope, sink: sink, log: log}
@@ -583,6 +601,7 @@ func runDoctor(ctx context.Context, args []string, stderr io.Writer) error {
 }
 
 func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, error) {
+	provider := cfg.EffectiveTrackerProvider()
 	tc := tracker.Config{
 		Team:            cfg.LinearTeam,
 		Project:         cfg.Project,
@@ -591,7 +610,8 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		SplitLabel:      cfg.SplitLabel,
 		APIKey:          cfg.LinearAPIKey,
 	}
-	if cfg.TrackerProvider == "jira" {
+	switch provider {
+	case "jira":
 		tc.APIKey = cfg.JiraAPIToken
 		tc.BaseURL = cfg.JiraBaseURL
 		tc.Email = cfg.JiraEmail
@@ -603,8 +623,15 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		if jiraRESTComplete(cfg) {
 			runner = nil
 		}
+	case "internal":
+		// The internal provider drives issues through the hub over HTTP, never the
+		// database — so it needs the hub's origin, an optional bearer token, and the
+		// hub-registered repo name, but no agent runner.
+		tc.Repo = repoName(cfg.RepoRoot)
+		tc.HubBaseURL = hubBaseURL(cfg)
+		tc.HubToken = cfg.ServeToken
 	}
-	return tracker.New(cfg.TrackerProvider, runner, tc)
+	return tracker.New(provider, runner, tc)
 }
 
 // jiraRESTComplete reports whether cfg carries a full set of Jira REST credentials

@@ -801,6 +801,25 @@ func ResolvePrefix(prefix, team string) string {
 	return "COD"
 }
 
+// EffectiveTrackerProvider resolves the tracker provider the loop actually uses.
+// An explicit choice — internal, jira, or github — is honored as-is. The default,
+// linear, falls back to the internal provider when no Linear configuration is
+// present, so a repo with no external tracker configured runs its own internal
+// issues through the hub (ADR 0007) instead of failing to reach a tracker.
+func (c Config) EffectiveTrackerProvider() string {
+	switch p := strings.ToLower(strings.TrimSpace(c.TrackerProvider)); p {
+	case "internal":
+		return "internal"
+	case "jira", "github":
+		return p
+	default:
+		if strings.TrimSpace(c.LinearTeam) != "" || strings.TrimSpace(c.LinearAPIKey) != "" {
+			return "linear"
+		}
+		return "internal"
+	}
+}
+
 // InternalPrefix resolves the prefix for internally-created issue identifiers
 // (ADR 0007). An explicitly configured ISSUE_PREFIX wins; with none set it derives
 // from the repo directory name, sanitized to an uppercase, branch- and
@@ -1233,7 +1252,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "JIRA_BASE_URL", Advanced: true, Description: "Jira Cloud site base URL for the direct REST adapter (e.g. https://acme.atlassian.net)"},
 		{Key: "JIRA_EMAIL", Advanced: true, Description: "Atlassian account email for Jira REST Basic auth"},
 		{Key: "JIRA_API_TOKEN", Advanced: true, Description: "Classic (unscoped) Jira API token; enables direct REST calls with MCP fallback"},
-		{Key: "TRACKER_PROVIDER", Default: "linear", Description: "Ticket backend: linear | jira | github", Options: []string{"linear", "jira", "github"}},
+		{Key: "TRACKER_PROVIDER", Default: "linear", Description: "Ticket backend: linear | jira | github | internal (internal issues in the hub, no external tracker)", Options: []string{"linear", "jira", "github", "internal"}},
 		{Key: "READY_LABEL", Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
 		{Key: "QUARANTINE_LABEL", Default: "needs-human", Description: "Label applied when a ticket fails"},
 		{Key: "PROJECT", Description: "Linear project this repo owns — scopes the ready queue, guards cross-project runs, and targets filed bugs"},

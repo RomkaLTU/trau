@@ -137,6 +137,56 @@ func (s *Server) updateInternalIssue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toInternalIssueResponse(repo.Name, iss))
 }
 
+// InternalTransitionRequest is the body of POST
+// /repos/{repo}/issues/internal/{id}/transition: a loop-driven write to an
+// internal issue. An empty state leaves the workflow state unchanged; add_labels
+// and remove_labels apply case-insensitively; a non-empty comment is appended.
+type InternalTransitionRequest struct {
+	State        string   `json:"state"`
+	AddLabels    []string `json:"add_labels"`
+	RemoveLabels []string `json:"remove_labels"`
+	Comment      string   `json:"comment"`
+}
+
+// handleInternalTransition applies a loop's status/label/comment write to an
+// internal issue through the store (ADR 0007) — the seam the internal tracker
+// provider uses so the loop drives internal issues without ever opening the
+// database. Only source=internal issues are addressable; a synced or missing id
+// answers 404.
+func (s *Server) handleInternalTransition(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	repo, ok := s.findRepo(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	var req InternalTransitionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	iss, err := s.stores.Issues().TransitionInternal(repo.Root, id, hubstore.InternalTransition{
+		State:        strings.TrimSpace(req.State),
+		AddLabels:    cleanLabels(req.AddLabels),
+		RemoveLabels: cleanLabels(req.RemoveLabels),
+		Comment:      req.Comment,
+	})
+	if errors.Is(err, hubstore.ErrInternalIssueNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": id + " is not an internal issue in this repo"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "transition issue: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, toInternalIssueResponse(repo.Name, iss))
+}
+
 // internalPrefix resolves the repo's internal-issue identifier prefix from its
 // layered config, deriving from the repo name when ISSUE_PREFIX is unset. A config
 // error degrades to the repo-name default rather than failing the create.

@@ -141,6 +141,116 @@ func (s *Issues) UpdateInternal(repo, identifier string, d InternalDraft) (Issue
 	}, nil
 }
 
+// InternalTransition is a loop-driven write to an internal issue: an optional new
+// workflow state, label additions and removals, and an optional comment to append.
+// It is the single operation the internal tracker provider uses to move status,
+// (un)set the ready/quarantine labels, and record progress — applied in one
+// transaction so a quarantine or reset lands atomically.
+type InternalTransition struct {
+	State        string
+	AddLabels    []string
+	RemoveLabels []string
+	Comment      string
+}
+
+// TransitionInternal applies t to an existing internal issue and returns the
+// updated row. It only ever touches a source=internal issue — a missing or synced
+// identifier yields ErrInternalIssueNotFound. An empty State leaves the workflow
+// state unchanged; label deltas apply case-insensitively; a non-empty Comment is
+// appended as a new comment authored by the loop.
+func (s *Issues) TransitionInternal(repo, identifier string, t InternalTransition) (Issue, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Issue{}, err
+	}
+	var (
+		id          int64
+		title       string
+		description string
+		status      string
+		group       string
+		labelsRaw   string
+		parent      string
+	)
+	err = tx.QueryRow(
+		`SELECT id, title, description, status, status_group, labels, parent
+		 FROM issues WHERE repo = ? AND identifier = ? AND source = ?`,
+		repo, identifier, SourceInternal,
+	).Scan(&id, &title, &description, &status, &group, &labelsRaw, &parent)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Issue{}, errors.Join(ErrInternalIssueNotFound, tx.Rollback())
+	}
+	if err != nil {
+		return Issue{}, errors.Join(err, tx.Rollback())
+	}
+
+	if strings.TrimSpace(t.State) != "" {
+		group, status = normalizeState(t.State)
+	}
+	labels := mergeLabels(decodeLabels(labelsRaw), t.AddLabels, t.RemoveLabels)
+	labelsJSON, err := json.Marshal(labels)
+	if err != nil {
+		return Issue{}, errors.Join(err, tx.Rollback())
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.Exec(
+		`UPDATE issues SET status = ?, status_group = ?, labels = ?, updated_at = ? WHERE id = ?`,
+		status, group, string(labelsJSON), now, id,
+	); err != nil {
+		return Issue{}, errors.Join(err, tx.Rollback())
+	}
+	if body := strings.TrimSpace(t.Comment); body != "" {
+		if _, err := tx.Exec(
+			`INSERT INTO issue_comments(issue_id, external_id, author, body, created_at, updated_at)
+			 VALUES(?, ?, ?, ?, ?, ?)`,
+			id, fmt.Sprintf("trau-%d", time.Now().UnixNano()), internalCommentAuthor, body, now, now,
+		); err != nil {
+			return Issue{}, errors.Join(err, tx.Rollback())
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return Issue{}, err
+	}
+	return Issue{
+		Repo: repo, Source: SourceInternal, Identifier: identifier,
+		Title: title, Description: description, Status: status, StatusGroup: group,
+		Labels: labels, Parent: parent, UpdatedAt: now, Comments: []Comment{},
+	}, nil
+}
+
+// internalCommentAuthor names the loop as the author of comments it appends to an
+// internal issue through a transition.
+const internalCommentAuthor = "trau"
+
+// mergeLabels applies add/remove deltas to a label set case-insensitively: it
+// drops any label named in remove, then appends any add label not already present,
+// preserving order and the original casing of the surviving labels.
+func mergeLabels(existing, add, remove []string) []string {
+	drop := make(map[string]bool, len(remove))
+	for _, r := range remove {
+		if key := strings.ToLower(strings.TrimSpace(r)); key != "" {
+			drop[key] = true
+		}
+	}
+	out := make([]string, 0, len(existing)+len(add))
+	seen := make(map[string]bool, len(existing)+len(add))
+	keep := func(label string) {
+		key := strings.ToLower(strings.TrimSpace(label))
+		if key == "" || drop[key] || seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, strings.TrimSpace(label))
+	}
+	for _, l := range existing {
+		keep(l)
+	}
+	for _, a := range add {
+		keep(a)
+	}
+	return out
+}
+
 // Internal returns a single internal issue by identifier, reporting found=false
 // when no internal issue owns it. Synced tickets are invisible here — this is the
 // getter the edit form reads, and only internal issues are editable.

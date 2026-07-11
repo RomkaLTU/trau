@@ -6,6 +6,29 @@ import (
 	"testing"
 )
 
+func TestEffectiveTrackerProvider(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{"default linear with no config falls back to internal", Config{TrackerProvider: "linear"}, "internal"},
+		{"empty provider with no config falls back to internal", Config{}, "internal"},
+		{"linear with a team stays linear", Config{TrackerProvider: "linear", LinearTeam: "COD"}, "linear"},
+		{"linear with an api key stays linear", Config{TrackerProvider: "linear", LinearAPIKey: "k"}, "linear"},
+		{"explicit internal is honored", Config{TrackerProvider: "internal"}, "internal"},
+		{"explicit jira is honored", Config{TrackerProvider: "jira"}, "jira"},
+		{"explicit github is honored", Config{TrackerProvider: "github"}, "github"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.EffectiveTrackerProvider(); got != tc.want {
+				t.Fatalf("EffectiveTrackerProvider() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveConfigItemsLayerPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	local := filepath.Join(dir, "trau.ini")
