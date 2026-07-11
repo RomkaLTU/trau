@@ -83,7 +83,10 @@ type SyncResult struct {
 // transaction: issues by (repo, identifier), comments by (issue_id, external_id),
 // so re-running a sync updates in place rather than duplicating. Issues missing
 // from a later pull are left intact — deletion reconciliation is a separate slice.
-// It returns the number of issues and comments written.
+// An identifier already held by an internal issue is never overwritten: inbound
+// sync only ever writes tracker content, so the conflict update skips a
+// source=internal row (ADR 0007). It returns the number of issues and comments
+// written.
 func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commentCount int, err error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -96,7 +99,7 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 			return 0, 0, errors.Join(err, tx.Rollback())
 		}
 		var id int64
-		if err := tx.QueryRow(
+		err = tx.QueryRow(
 			`INSERT INTO issues(
 				repo, source, identifier, title, description, status, status_group,
 				priority, labels, parent, has_children, due_date, external_id, url,
@@ -111,12 +114,17 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 				external_id = excluded.external_id, url = excluded.url,
 				created_at = excluded.created_at, updated_at = excluded.updated_at,
 				synced_at = excluded.synced_at
+			 WHERE issues.source <> 'internal'
 			 RETURNING id`,
 			repo, source, iss.Identifier, iss.Title, iss.Description, iss.Status,
 			iss.StatusGroup, iss.Priority, string(labels), iss.Parent,
 			boolToInt(iss.HasChildren), iss.DueDate, iss.ExternalID, iss.URL,
 			iss.CreatedAt, iss.UpdatedAt, syncedAt,
-		).Scan(&id); err != nil {
+		).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
 			return 0, 0, errors.Join(err, tx.Rollback())
 		}
 		for _, c := range iss.Comments {

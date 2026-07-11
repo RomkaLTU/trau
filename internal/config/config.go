@@ -47,16 +47,22 @@ const ExplorePreamble = "[Unattended run] You are running headless inside an aut
 // Config is the resolved loop configuration. Field defaults and names track the
 // trau.ini knobs documented in trau.ini.example.
 type Config struct {
-	LinearTeam      string
-	IssuePrefix     string
-	LinearAPIKey    string
-	JiraBaseURL     string
-	JiraEmail       string
-	JiraAPIToken    string
-	ReadyLabel      string
-	QuarantineLabel string
-	SplitLabel      string
-	Project         string
+	LinearTeam  string
+	IssuePrefix string
+	// IssuePrefixConfigured is ISSUE_PREFIX exactly as set in config (uppercased,
+	// empty when unset), captured before ResolvePrefix fills in a team- or
+	// fallback-derived value. The internal issue store reads it to tell an explicit
+	// prefix from a derived one, so an unset prefix names internal issues after the
+	// repo rather than the tracker team key (see InternalPrefix).
+	IssuePrefixConfigured string
+	LinearAPIKey          string
+	JiraBaseURL           string
+	JiraEmail             string
+	JiraAPIToken          string
+	ReadyLabel            string
+	QuarantineLabel       string
+	SplitLabel            string
+	Project               string
 
 	BaseBranch string
 	Remote     string
@@ -774,6 +780,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	fnum("MAX_DAILY_USD", &c.MaxDailyUSD)
 	num("MAX_DAILY_TOKENS", &c.MaxDailyTokens)
 
+	c.IssuePrefixConfigured = strings.ToUpper(strings.TrimSpace(c.IssuePrefix))
 	c.IssuePrefix = ResolvePrefix(c.IssuePrefix, c.LinearTeam)
 
 	return c, sources, nil
@@ -792,6 +799,39 @@ func ResolvePrefix(prefix, team string) string {
 		return t
 	}
 	return "COD"
+}
+
+// InternalPrefix resolves the prefix for internally-created issue identifiers
+// (ADR 0007). An explicitly configured ISSUE_PREFIX wins; with none set it derives
+// from the repo directory name, sanitized to an uppercase, branch- and
+// filesystem-safe token — never the tracker team key, so an internal id like
+// LOOP-12 cannot collide with the external tracker's own COD-12. It falls back to
+// "ISSUE" when nothing usable survives.
+func InternalPrefix(configured, repoName string) string {
+	if p := sanitizePrefix(configured); p != "" {
+		return p
+	}
+	if p := sanitizePrefix(repoName); p != "" {
+		return p
+	}
+	return "ISSUE"
+}
+
+// sanitizePrefix reduces s to the uppercase [A-Z][A-Z0-9]* token an issue
+// identifier's prefix must be: it uppercases, keeps only letters and digits, and
+// drops leading digits so the result always starts with a letter (the id shape
+// downstream regexes and git branch names require). Empty when nothing survives.
+func sanitizePrefix(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(strings.TrimSpace(s)) {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9' && b.Len() > 0:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // ValidatePrefix checks that a ticket id supplied on the command line matches the
