@@ -146,3 +146,25 @@ func TestProjectIssuesUnparseableCursorFallsBackToFullPull(t *testing.T) {
 		t.Fatalf("filter = %#v, want no updatedAt clause for an unparseable cursor", filter)
 	}
 }
+
+func TestProjectIssueIDsReturnsIdentifiersOnly(t *testing.T) {
+	const payload = `{"data":{"issues":{
+		"pageInfo":{"hasNextPage":false,"endCursor":""},
+		"nodes":[{"identifier":"COD-1"},{"identifier":"COD-2"},{"identifier":""}]
+	}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, payload)
+	}))
+	defer srv.Close()
+
+	c := New("lin_key")
+	c.Endpoint = srv.URL
+	ids, err := c.ProjectIssueIDs(context.Background(), "team-1", "proj-1")
+	if err != nil {
+		t.Fatalf("ProjectIssueIDs: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != "COD-1" || ids[1] != "COD-2" {
+		t.Fatalf("ids = %v, want [COD-1 COD-2] (blank identifiers dropped)", ids)
+	}
+}

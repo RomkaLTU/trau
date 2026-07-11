@@ -282,3 +282,34 @@ func TestSubIssuesParsesChildren(t *testing.T) {
 		t.Errorf("children = %+v, want %+v", children, want)
 	}
 }
+
+func TestProjectKeysRequestsNoFieldsAndReturnsKeys(t *testing.T) {
+	var gotReq searchRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotReq)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"issues":[{"key":"PROJ-1"},{"key":"PROJ-2"}]}`)
+	}))
+	defer srv.Close()
+
+	keys, err := New(srv.URL, "me@acme.com", "tok").ProjectKeys(context.Background(), "PROJ")
+	if err != nil {
+		t.Fatalf("ProjectKeys: %v", err)
+	}
+	if !reflect.DeepEqual(keys, []string{"PROJ-1", "PROJ-2"}) {
+		t.Fatalf("keys = %v, want [PROJ-1 PROJ-2]", keys)
+	}
+	if len(gotReq.Fields) != 0 {
+		t.Fatalf("request asked for fields %v, want an id-only request", gotReq.Fields)
+	}
+	if !strings.Contains(gotReq.JQL, `project = "PROJ"`) {
+		t.Fatalf("JQL = %q, want a project clause", gotReq.JQL)
+	}
+}
+
+func TestProjectKeysRejectsEmptyProject(t *testing.T) {
+	if _, err := New("http://x", "me@acme.com", "tok").ProjectKeys(context.Background(), "  "); err != ErrNotEnabled {
+		t.Fatalf("err = %v, want ErrNotEnabled", err)
+	}
+}

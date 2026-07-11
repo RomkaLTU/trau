@@ -62,6 +62,7 @@ export interface RunDetail extends Run {
   verdict?: Verdict
   artifacts: Artifacts
   no_skills?: boolean
+  removed?: boolean
 }
 
 async function fetchRunDetail(

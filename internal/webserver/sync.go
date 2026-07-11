@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
@@ -46,6 +48,108 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleForceResync drops a repo's synced issues and cursor and re-pulls the
+// Project clean — POST /repos/{repo}/resync, the recovery path when the store's
+// sync state is doubted (ADR 0007). Internal issues are preserved, and the pull
+// converges to the same content a fresh sync would; the response is that pull's
+// counts. Unknown repos 404, a repo without direct tracker credentials 422 (with
+// the store left untouched), and a tracker error 502.
+func (s *Server) handleForceResync(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	repo, ok := s.findRepo(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	resp, err := s.forceResync(r.Context(), repo)
+	if err != nil {
+		if errors.Is(err, tracker.ErrReaderUnavailable) {
+			writeReaderErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "resync failed: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// forceResync drops the repo's synced rows and cursor, then re-pulls the Project
+// from an empty cursor — a full pull that re-populates the store with only the
+// issues the tracker still holds, so deleted or moved-out tickets simply vanish
+// (ADR 0007). Internal issues are preserved. It checks the reader is usable before
+// dropping anything, so a repo without direct credentials is refused with the store
+// intact rather than emptied with nothing to re-pull it.
+func (s *Server) forceResync(ctx context.Context, repo registry.Repo) (SyncResponse, error) {
+	if _, _, err := s.readerFor(repo); err != nil {
+		return SyncResponse{}, err
+	}
+	if err := s.stores.Issues().DropSynced(repo.Root); err != nil {
+		return SyncResponse{}, err
+	}
+	return s.syncRepo(ctx, repo)
+}
+
+// reconcileRepo diffs the repo's Project identifier set against the store and
+// tombstones the synced issues the tracker no longer returns — those deleted,
+// archived, or moved out of the Project, which an incremental SyncPull never
+// reports (ADR 0007). Tombstoned issues are dropped from the Queue and the backlog
+// board but keep their run artifacts and checkpoints; internal issues are never
+// touched. A sweep failure is recorded on the same per-repo error surface as sync
+// so a broken tracker backs off. An empty identifier set is treated as a no-op
+// rather than tombstoning the whole store — it guards against a misresolved binding
+// (a wrong project key returns zero) wiping every synced row.
+func (s *Server) reconcileRepo(ctx context.Context, repo registry.Repo) error {
+	_, reader, err := s.readerFor(repo)
+	if err != nil {
+		return err
+	}
+	store := s.stores.Issues()
+	state, err := store.SyncState(repo.Root)
+	if err != nil {
+		return err
+	}
+	binding, err := s.resolveBinding(ctx, store, repo.Root, state.Binding, reader)
+	if err != nil {
+		_ = store.RecordError(repo.Root, err.Error())
+		return err
+	}
+	live, err := reader.ProjectIdentifiers(ctx, binding)
+	if err != nil {
+		_ = store.RecordError(repo.Root, err.Error())
+		return err
+	}
+	if len(live) == 0 {
+		return nil
+	}
+	tombstoned, err := store.Reconcile(repo.Root, live)
+	if err != nil {
+		return err
+	}
+	s.dropFromQueue(repo.Root, tombstoned)
+	return nil
+}
+
+// dropFromQueue removes each tombstoned identifier from the repo's Queue,
+// tolerating the ones that were never queued or are mid-run — the cascade prunes
+// only what it safely can, leaving a running item to settle on its own.
+func (s *Server) dropFromQueue(root string, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	q := s.stores.Queue(root)
+	for _, id := range ids {
+		switch _, err := q.Remove(id); {
+		case err == nil, errors.Is(err, queue.ErrNotQueued), errors.Is(err, queue.ErrRunning):
+		default:
+			logger.Verbosef("reconcile %s: drop %s from queue: %v", root, id, err)
+		}
+	}
 }
 
 // syncRepo resolves the repo's tracker binding (caching it on first use so later

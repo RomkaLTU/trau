@@ -435,6 +435,14 @@ SERVE_ALLOW_REGISTER=0
 # disable it and rely on on-demand pulls only.
 SERVE_SYNC_INTERVAL=120        # seconds between background issue-store refreshes
 #
+# Incremental sync catches edits, but a ticket deleted, archived, or moved out of
+# the Project never shows up in an updated-since pull. A periodic reconciliation
+# sweep diffs the Project's full identifier set against the store and tombstones
+# the ones that vanished — dropped from the board and Queue, run artifacts kept,
+# internal issues never touched. The sweep runs on the sync tick, so it is bounded
+# below by SERVE_SYNC_INTERVAL; set 0 to disable it.
+SERVE_RECONCILE_INTERVAL=900   # seconds between reconciliation sweeps
+#
 # The first interactive TUI session brings the hub up on its own (one per
 # machine) so the web UI is there whenever you work with trau; it reuses any hub
 # already on the port and inherits the SERVE_* settings above, so an autostarted

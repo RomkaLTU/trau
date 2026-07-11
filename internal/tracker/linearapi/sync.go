@@ -77,6 +77,56 @@ func (c *Client) ProjectIssues(ctx context.Context, teamID, projectID, since str
 	return out, nil
 }
 
+// ProjectIssueIDs returns just the human identifiers of every issue in a project
+// (or a whole team when only teamID is set), paging the cursor to the end. It is
+// the cheap full-set fetch a reconciliation sweep diffs against the local store —
+// identifier-only, never the full-content ProjectIssues pull.
+func (c *Client) ProjectIssueIDs(ctx context.Context, teamID, projectID string) ([]string, error) {
+	if c.apiKey == "" {
+		return nil, ErrNotEnabled
+	}
+	filter := issueFilter(teamID, projectID, "")
+	if filter == nil {
+		return nil, ErrNotEnabled
+	}
+	var out []string
+	after := ""
+	for page := 0; page < syncMaxPages; page++ {
+		vars := map[string]any{"filter": filter}
+		if after != "" {
+			vars["after"] = after
+		}
+		var dst identifiersResponse
+		if err := c.do(ctx, identifiersQuery, vars, &dst); err != nil {
+			return nil, err
+		}
+		for _, n := range dst.Data.Issues.Nodes {
+			if n.Identifier != "" {
+				out = append(out, n.Identifier)
+			}
+		}
+		if !dst.Data.Issues.PageInfo.HasNextPage || dst.Data.Issues.PageInfo.EndCursor == "" {
+			break
+		}
+		after = dst.Data.Issues.PageInfo.EndCursor
+	}
+	return out, nil
+}
+
+type identifiersResponse struct {
+	Data struct {
+		Issues struct {
+			PageInfo struct {
+				HasNextPage bool   `json:"hasNextPage"`
+				EndCursor   string `json:"endCursor"`
+			} `json:"pageInfo"`
+			Nodes []struct {
+				Identifier string `json:"identifier"`
+			} `json:"nodes"`
+		} `json:"issues"`
+	} `json:"data"`
+}
+
 func issueFilter(teamID, projectID, since string) map[string]any {
 	var filter map[string]any
 	switch {

@@ -220,6 +220,24 @@ query SyncIssues($filter: IssueFilter!, $after: String) {
 }
 `
 
+	// identifiersQuery pulls only the human identifier of a Project's (or team's)
+	// issues — the cheap full set a reconciliation sweep diffs against the local
+	// store. The filter is an IssueFilter variable so it serves a project-scoped
+	// and a team-scoped pull, and it pages the cursor to the end.
+	identifiersQuery = `
+query ProjectIdentifiers($filter: IssueFilter!, $after: String) {
+  issues(first: 250, after: $after, filter: $filter) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      identifier
+    }
+  }
+}
+`
+
 	// teamsQuery lists teams the key can see.
 	teamsQuery = `
 query Teams {

@@ -116,7 +116,7 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 
 	addr := net.JoinHostPort(cfg.ServeBind, strconv.Itoa(cfg.ServePort))
 	hub := webserver.New(version, cfg.ServeBind, cfg.ServeToken, cfg.ServeWorkspace, cfg.ServeAllowRegister, stores)
-	hub.Start(ctx, time.Duration(cfg.ServeSyncInterval)*time.Second)
+	hub.Start(ctx, time.Duration(cfg.ServeSyncInterval)*time.Second, time.Duration(cfg.ServeReconcileInterval)*time.Second)
 	srv := &http.Server{Addr: addr, Handler: hub.Handler()}
 
 	ln, err := net.Listen("tcp", addr)

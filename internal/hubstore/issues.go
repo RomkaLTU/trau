@@ -39,6 +39,7 @@ type Issue struct {
 	URL         string
 	CreatedAt   string
 	UpdatedAt   string
+	DeletedAt   string
 	Comments    []Comment
 }
 
@@ -82,8 +83,10 @@ type SyncResult struct {
 // Upsert idempotently writes issues and their comments for a repo under one
 // transaction: issues by (repo, identifier), comments by (issue_id, external_id),
 // so re-running a sync updates in place rather than duplicating. Issues missing
-// from a later pull are left intact — deletion reconciliation is a separate slice.
-// An identifier already held by an internal issue is never overwritten: inbound
+// from a later pull are left intact; a previously tombstoned issue that a pull
+// returns again is revived (its deleted_at cleared), so an issue moved back into
+// the Project un-tombstones on the next sync. An identifier already held by an
+// internal issue is never overwritten: inbound
 // sync only ever writes tracker content, so the conflict update skips a
 // source=internal row (ADR 0007). It returns the number of issues and comments
 // written.
@@ -113,7 +116,7 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 				has_children = excluded.has_children, due_date = excluded.due_date,
 				external_id = excluded.external_id, url = excluded.url,
 				created_at = excluded.created_at, updated_at = excluded.updated_at,
-				synced_at = excluded.synced_at
+				synced_at = excluded.synced_at, deleted_at = ''
 			 WHERE issues.source <> 'internal'
 			 RETURNING id`,
 			repo, source, iss.Identifier, iss.Title, iss.Description, iss.Status,
@@ -149,7 +152,7 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 
 const issueColumns = `id, source, identifier, title, description, status, status_group,
 	priority, labels, parent, has_children, due_date, external_id, url,
-	created_at, updated_at`
+	created_at, updated_at, deleted_at`
 
 // List returns a repo's stored issues with their comments, ordered by identifier.
 func (s *Issues) List(repo string) (issues []Issue, err error) {
@@ -194,12 +197,13 @@ func (s *Issues) Backlog(repo string) ([]Issue, error) {
 
 // BacklogPage returns the repo's stored issues matching filter, ordered by
 // identifier and paginated, together with the total number of matches before
-// pagination so the board can page without counting the rows itself. The filters
-// compose in the WHERE clause and are pushed into the query rather than applied
-// after loading everything; comments are not attached (the board renders summary
-// rows only).
+// pagination so the board can page without counting the rows itself. Tombstoned
+// issues — synced tickets removed from the tracker — are excluded from the board.
+// The filters compose in the WHERE clause and are pushed into the query rather
+// than applied after loading everything; comments are not attached (the board
+// renders summary rows only).
 func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue, total int, err error) {
-	where := []string{"repo = ?"}
+	where := []string{"repo = ?", "deleted_at = ''"}
 	args := []any{repo}
 	if group := strings.TrimSpace(filter.Group); group != "" {
 		where = append(where, "status_group = ?")
@@ -268,6 +272,7 @@ func scanIssues(repo string, rows *sql.Rows) ([]Issue, map[int64]int, error) {
 			&id, &iss.Source, &iss.Identifier, &iss.Title, &iss.Description,
 			&iss.Status, &iss.StatusGroup, &iss.Priority, &labels, &iss.Parent,
 			&hasCh, &iss.DueDate, &iss.ExternalID, &iss.URL, &iss.CreatedAt, &iss.UpdatedAt,
+			&iss.DeletedAt,
 		); err != nil {
 			return nil, nil, err
 		}
@@ -326,7 +331,7 @@ func (s *Issues) Search(repo, query string, limit int) (issues []Issue, err erro
 	rows, err := s.db.Query(
 		`SELECT `+prefixColumns("i")+`
 		 FROM issues_fts f JOIN issues i ON i.id = f.rowid
-		 WHERE issues_fts MATCH ? AND i.repo = ?
+		 WHERE issues_fts MATCH ? AND i.repo = ? AND i.deleted_at = ''
 		 ORDER BY bm25(issues_fts, 10.0, 5.0, 1.0, 3.0)
 		 LIMIT ?`,
 		match, repo, limit,
@@ -430,6 +435,120 @@ func (s *Issues) RecordError(repo, msg string) error {
 		repo, msg,
 	)
 	return err
+}
+
+// Get returns a repo's stored issue by identifier regardless of source, without
+// its comments, and whether it was found. It answers by-id lookups — like run
+// detail — that need an issue's stored state, including whether it was tombstoned
+// (DeletedAt set) after being removed from the tracker.
+func (s *Issues) Get(repo, identifier string) (iss Issue, found bool, err error) {
+	rows, err := s.db.Query(
+		`SELECT `+issueColumns+` FROM issues WHERE repo = ? AND identifier = ?`,
+		repo, identifier,
+	)
+	if err != nil {
+		return Issue{}, false, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	issues, _, err := scanIssues(repo, rows)
+	if err != nil {
+		return Issue{}, false, err
+	}
+	if len(issues) == 0 {
+		return Issue{}, false, nil
+	}
+	return issues[0], true, nil
+}
+
+// Reconcile tombstones the repo's synced issues the tracker no longer returns and
+// revives any that reappeared, given live — the Project's current full identifier
+// set. A tombstoned issue keeps its row (a run may still reference it) but its
+// deleted_at is stamped, excluding it from the board and search; a revived issue
+// has deleted_at cleared. Internal issues are never touched (ADR 0007). It returns
+// the identifiers it newly tombstoned so the caller can drop them from the Queue.
+// Callers must not pass an empty live set for a Project that still has issues: it
+// would tombstone every synced row.
+func (s *Issues) Reconcile(repo string, live []string) (tombstoned []string, err error) {
+	liveSet := make(map[string]struct{}, len(live))
+	for _, id := range live {
+		liveSet[id] = struct{}{}
+	}
+	rows, err := s.db.Query(
+		`SELECT identifier, deleted_at FROM issues WHERE repo = ? AND source <> 'internal'`,
+		repo,
+	)
+	if err != nil {
+		return nil, err
+	}
+	var toRevive []string
+	for rows.Next() {
+		var identifier, deletedAt string
+		if err := rows.Scan(&identifier, &deletedAt); err != nil {
+			return nil, errors.Join(err, rows.Close())
+		}
+		_, alive := liveSet[identifier]
+		switch {
+		case !alive && deletedAt == "":
+			tombstoned = append(tombstoned, identifier)
+		case alive && deletedAt != "":
+			toRevive = append(toRevive, identifier)
+		}
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, err
+	}
+	if len(tombstoned) == 0 && len(toRevive) == 0 {
+		return nil, nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	stamp := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, id := range tombstoned {
+		if _, err := tx.Exec(
+			`UPDATE issues SET deleted_at = ? WHERE repo = ? AND identifier = ? AND source <> 'internal'`,
+			stamp, repo, id,
+		); err != nil {
+			return nil, errors.Join(err, tx.Rollback())
+		}
+	}
+	for _, id := range toRevive {
+		if _, err := tx.Exec(
+			`UPDATE issues SET deleted_at = '' WHERE repo = ? AND identifier = ? AND source <> 'internal'`,
+			repo, id,
+		); err != nil {
+			return nil, errors.Join(err, tx.Rollback())
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return tombstoned, nil
+}
+
+// DropSynced deletes a repo's synced issues and resets its sync cursor so the next
+// pull re-populates the Project from scratch — the force-resync recovery path when
+// sync state is doubted (ADR 0007). Internal issues are preserved; comments cascade
+// with their issue through the foreign key. The cached team/project binding is
+// kept, so the re-pull reuses it without re-resolving.
+func (s *Issues) DropSynced(repo string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM issues WHERE repo = ? AND source <> 'internal'`, repo); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	if _, err := tx.Exec(
+		`UPDATE issue_sync SET cursor = '', last_synced_at = '', last_issues = 0, last_comments = 0, last_error = ''
+		 WHERE repo = ?`,
+		repo,
+	); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	return tx.Commit()
 }
 
 func labelList(labels []string) []string {

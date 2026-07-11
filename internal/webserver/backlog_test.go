@@ -30,6 +30,10 @@ type fakeReader struct {
 	syncErr      error
 	syncSince    string
 	syncCalls    int
+
+	identifiers     []string
+	identifiersErr  error
+	identifierCalls int
 }
 
 func (f *fakeReader) Backlog(context.Context) ([]tracker.BacklogItem, error) {
@@ -65,6 +69,14 @@ func (f *fakeReader) SyncPull(_ context.Context, _ tracker.ProjectBinding, since
 		return nil, f.syncErr
 	}
 	return f.synced, nil
+}
+
+func (f *fakeReader) ProjectIdentifiers(_ context.Context, _ tracker.ProjectBinding) ([]string, error) {
+	f.identifierCalls++
+	if f.identifiersErr != nil {
+		return nil, f.identifiersErr
+	}
+	return f.identifiers, nil
 }
 
 // backlogServer builds a hub with one exited repo ("acme") and a Reader factory
