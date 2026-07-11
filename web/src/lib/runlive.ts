@@ -3,19 +3,41 @@ import type { PhaseCost } from '@/lib/rundetail'
 import type { FailureClass } from '@/lib/runs'
 import { phasePill, phaseSteps } from '@/lib/overview'
 
-export type RunVariant = 'live' | 'success' | 'failure' | 'paused'
+export type RunVariant =
+  | 'starting'
+  | 'live'
+  | 'failed_to_start'
+  | 'success'
+  | 'failure'
+  | 'paused'
 
 export interface VariantInput {
   phase: string
   failureClass?: FailureClass
   working: boolean
+  // live is true when an instance for this run is registered (working or not);
+  // hasCheckpoint is true when the run has durable checkpoint state; spawnFailed
+  // is true when the hub reported this run's child died before either appeared.
+  live?: boolean
+  hasCheckpoint?: boolean
+  spawnFailed?: boolean
 }
 
-export function deriveVariant({ phase, failureClass, working }: VariantInput): RunVariant {
+export function deriveVariant({
+  phase,
+  failureClass,
+  working,
+  live,
+  hasCheckpoint,
+  spawnFailed,
+}: VariantInput): RunVariant {
   if (working) return 'live'
   if (phase === 'merged') return 'success'
   if (failureClass === 'paused') return 'paused'
   if (failureClass === 'faulted' || failureClass === 'gave_up') return 'failure'
+  // No checkpoint and no live process: the run has not landed yet. A reported
+  // child death makes it failed-to-start; otherwise it is still launching.
+  if (!hasCheckpoint && !live) return spawnFailed ? 'failed_to_start' : 'starting'
   return 'live'
 }
 
@@ -52,6 +74,10 @@ export function headerPill(
       return failureClass === 'gave_up'
         ? { state: 'fail', label: 'quarantined' }
         : { state: 'fail', label: 'fault' }
+    case 'failed_to_start':
+      return { state: 'fail', label: 'failed to start' }
+    case 'starting':
+      return { state: 'active', label: 'starting' }
     default:
       return phasePill(phase)
   }

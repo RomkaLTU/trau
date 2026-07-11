@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/state"
 )
 
 // testRegistrations returns a registration store over a throwaway hub database,
@@ -48,26 +50,36 @@ type signalCall struct {
 // processes, so the control layer's OS interactions are asserted without
 // launching anything.
 type fakeSupervisor struct {
-	mu         sync.Mutex
-	spawns     []SpawnSpec
-	captures   []SpawnSpec
-	signals    []signalCall
-	pid        int
-	spawnErr   error
-	captureOut []byte
-	captureErr error
-	signalErr  error
+	mu            sync.Mutex
+	spawns        []SpawnSpec
+	captures      []SpawnSpec
+	signals       []signalCall
+	pid           int
+	spawnErr      error
+	captureOut    []byte
+	captureErr    error
+	signalErr     error
+	onExitOutcome *SpawnOutcome
 }
 
 func (f *fakeSupervisor) Spawn(spec SpawnSpec) (int, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.spawns = append(f.spawns, spec)
 	if f.spawnErr != nil {
-		return 0, f.spawnErr
+		err := f.spawnErr
+		f.mu.Unlock()
+		return 0, err
 	}
 	f.pid++
-	return 40000 + f.pid, nil
+	pid := 40000 + f.pid
+	outcome := f.onExitOutcome
+	f.mu.Unlock()
+	if outcome != nil && spec.OnExit != nil {
+		out := *outcome
+		out.PID = pid
+		spec.OnExit(out)
+	}
+	return pid, nil
 }
 
 func (f *fakeSupervisor) Capture(_ context.Context, spec SpawnSpec) ([]byte, error) {
@@ -241,6 +253,77 @@ func TestStartReportsSpawnFailure(t *testing.T) {
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusInternalServerError {
 		t.Fatalf("start status = %d, want 500 when spawn fails", res.StatusCode)
+	}
+}
+
+// findSpawnFailed returns the spawn_failed event recorded for ticket under
+// runsDir, if any — the durable record a dead-on-arrival child leaves for the run
+// page to read.
+func findSpawnFailed(t *testing.T, runsDir, ticket string) (FeedEvent, bool) {
+	t.Helper()
+	events, _ := readFeed(eventsPath(runsDir))
+	for _, ev := range events {
+		if ev.Kind == "spawn_failed" && strField(ev.Fields, "ticket") == ticket {
+			return ev, true
+		}
+	}
+	return FeedEvent{}, false
+}
+
+func TestStartRecordsDeadOnArrivalChild(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, home, []string{root})
+	fake.onExitOutcome = &SpawnOutcome{
+		ExitCode: 1,
+		Stderr:   "booting\nunknown provider \"claudew\" (expected: claude | codex | kimi)\n",
+	}
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-786"})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("start status = %d, want 202", res.StatusCode)
+	}
+
+	ev, ok := findSpawnFailed(t, repoRunsDir(root), "COD-786")
+	if !ok {
+		t.Fatal("no spawn_failed event recorded for a child that died before registering")
+	}
+	if got := strField(ev.Fields, "error"); !strings.Contains(got, "claudew") {
+		t.Errorf("spawn_failed error = %q, want the captured provider error", got)
+	}
+	if code, ok := ev.Fields["exit_code"].(float64); !ok || code != 1 {
+		t.Errorf("spawn_failed exit_code = %v, want 1", ev.Fields["exit_code"])
+	}
+}
+
+func TestStartRecordsNoSpawnFailedOnCleanExit(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(t.TempDir(), "acme")
+	fake, ts := controlServer(t, home, []string{root})
+	fake.onExitOutcome = &SpawnOutcome{ExitCode: 0}
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-786"})
+	_ = res.Body.Close()
+
+	if _, ok := findSpawnFailed(t, repoRunsDir(root), "COD-786"); ok {
+		t.Error("a clean exit recorded a spawn_failed event — only a dead-on-arrival child should")
+	}
+}
+
+func TestStartRecordsNoSpawnFailedWhenCheckpointExists(t *testing.T) {
+	home := t.TempDir()
+	root := filepath.Join(t.TempDir(), "acme")
+	runsDir := repoRunsDir(root)
+	seedCheckpoint(t, runsDir, "COD-786", map[string]string{"PHASE": state.Built})
+	fake, ts := controlServer(t, home, []string{root})
+	fake.onExitOutcome = &SpawnOutcome{ExitCode: 1, Stderr: "faulted late"}
+
+	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-786"})
+	_ = res.Body.Close()
+
+	if _, ok := findSpawnFailed(t, runsDir, "COD-786"); ok {
+		t.Error("a run that left a checkpoint recorded a spawn_failed event — its fault surfaces through the checkpoint")
 	}
 }
 

@@ -28,9 +28,26 @@ describe('deriveVariant', () => {
     expect(deriveVariant({ phase: 'quarantined', failureClass: 'gave_up', working: false })).toBe('failure')
   })
 
-  it('falls back to live for an in-flight run with no instance yet', () => {
-    expect(deriveVariant({ phase: 'building', working: false })).toBe('live')
-    expect(deriveVariant({ phase: '', working: false })).toBe('live')
+  it('reads a stopped in-flight run with a checkpoint or instance as live', () => {
+    expect(deriveVariant({ phase: 'building', working: false, hasCheckpoint: true })).toBe('live')
+    expect(deriveVariant({ phase: 'built', working: false, live: true })).toBe('live')
+  })
+
+  it('is starting before a checkpoint or instance exists', () => {
+    expect(deriveVariant({ phase: '', working: false })).toBe('starting')
+    expect(deriveVariant({ phase: 'building', working: false })).toBe('starting')
+  })
+
+  it('is failed_to_start when the child died before landing', () => {
+    expect(deriveVariant({ phase: '', working: false, spawnFailed: true })).toBe('failed_to_start')
+  })
+
+  it('never lets a stale spawn failure override a run that then landed', () => {
+    expect(deriveVariant({ phase: '', working: false, spawnFailed: true, live: true })).toBe('live')
+    expect(
+      deriveVariant({ phase: 'building', working: false, spawnFailed: true, hasCheckpoint: true }),
+    ).toBe('live')
+    expect(deriveVariant({ phase: 'merged', working: false, spawnFailed: true })).toBe('success')
   })
 })
 
@@ -78,6 +95,14 @@ describe('headerPill', () => {
 
   it('derives a live pill from the phase', () => {
     expect(headerPill('live', 'building')).toEqual({ state: 'active', label: 'build' })
+  })
+
+  it('labels the launch and dead-on-arrival states', () => {
+    expect(headerPill('starting', '')).toEqual({ state: 'active', label: 'starting' })
+    expect(headerPill('failed_to_start', '')).toEqual({
+      state: 'fail',
+      label: 'failed to start',
+    })
   })
 })
 

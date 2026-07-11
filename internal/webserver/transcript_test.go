@@ -182,6 +182,56 @@ func TestTranscriptStreamFollowsNewest(t *testing.T) {
 	}
 }
 
+// TestTranscriptStreamSinceSkipsPriorSession covers the time bound: a fresh run
+// page passes the run's start as since, so follow mode ignores a prior run's
+// transcript and waits for this run's own first session before streaming.
+func TestTranscriptStreamSinceSkipsPriorSession(t *testing.T) {
+	fastPoll(t)
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	writeTranscript(t, runsDir, "100-build", 80, 24, "previous run output")
+
+	ts := instancesServer(t, home)
+	r := openTranscriptStream(t, ts, "acme", "since=150", nil)
+
+	writeTranscript(t, runsDir, "200-verify", 100, 30, "this run output")
+
+	if meta := nextTFrame(t, r).meta(t); meta.ID != "200-verify" {
+		t.Fatalf("followed id = %q, want 200-verify — the prior 100-build session predates since", meta.ID)
+	}
+	if got := nextTFrame(t, r).chunk(t); got != "this run output" {
+		t.Fatalf("followed chunk = %q, want 'this run output'", got)
+	}
+}
+
+func TestNewestTranscriptSinceBound(t *testing.T) {
+	dir := t.TempDir()
+	for _, stem := range []string{"100-build", "300-verify"} {
+		if err := os.WriteFile(filepath.Join(dir, stem+agent.TranscriptExt), []byte("x"), 0o644); err != nil {
+			t.Fatalf("write transcript: %v", err)
+		}
+	}
+
+	if got := newestTranscript(dir, 0); got == "" {
+		t.Error("since=0 returned nothing, want a transcript (no bound)")
+	}
+	if got := filepath.Base(newestTranscript(dir, 200)); got != "300-verify"+agent.TranscriptExt {
+		t.Errorf("since=200 → %q, want 300-verify (100-build predates it)", got)
+	}
+	if got := newestTranscript(dir, 400); got != "" {
+		t.Errorf("since=400 → %q, want empty (both sessions predate it)", got)
+	}
+}
+
+func TestTranscriptStartNanos(t *testing.T) {
+	if n, ok := transcriptStartNanos("1752230400000000000-build"); !ok || n != 1752230400000000000 {
+		t.Errorf("start = %d ok=%v, want the unix-nano prefix", n, ok)
+	}
+	if _, ok := transcriptStartNanos("nostamp"); ok {
+		t.Error("a stem with no numeric prefix should report ok=false")
+	}
+}
+
 // TestTranscriptStreamPinnedReplaysFinished covers replay: a pinned id streams
 // that finished phase's transcript in full, not the newest one.
 func TestTranscriptStreamPinnedReplaysFinished(t *testing.T) {

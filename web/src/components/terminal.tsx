@@ -28,6 +28,7 @@ const THEME = {
 export function Terminal({
   repo,
   id,
+  since,
   title,
   live = true,
   tall = false,
@@ -35,6 +36,7 @@ export function Terminal({
 }: {
   repo: string;
   id?: string;
+  since?: string;
   title?: string;
   live?: boolean;
   tall?: boolean;
@@ -73,7 +75,7 @@ export function Terminal({
     term.reset();
     setStatus("connecting");
 
-    const close = streamSSE(transcriptStreamURL(repo, id), {
+    const close = streamSSE(transcriptStreamURL(repo, id, since), {
       onOpen: () => setStatus("live"),
       onError: () => setStatus("error"),
       onMessage: ({ event, data }) => {
@@ -98,7 +100,7 @@ export function Terminal({
     });
 
     return () => close();
-  }, [repo, id]);
+  }, [repo, id, since]);
 
   return (
     <TerminalCard
