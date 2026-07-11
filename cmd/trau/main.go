@@ -2784,21 +2784,22 @@ func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort
 		}
 	}
 	return spec.New(agent.BackendParams{
-		Bin:          pc.bin,
-		Flags:        strings.Fields(pc.flags),
-		Model:        model,
-		Effort:       effort,
-		Dir:          cfg.RepoRoot,
-		Preamble:     config.Preamble,
-		PlanPreamble: config.PlanningPreamble,
-		Cols:         cfg.AgentCols,
-		Rows:         cfg.AgentRows,
-		SizeFn:       sizeFn,
-		Timeout:      time.Duration(cfg.AgentTimeout) * time.Second,
-		StallWindow:  time.Duration(cfg.AgentStallWindow) * time.Second,
-		Log:          log,
-		Tokens:       sink,
-		Extra:        pc.extra,
+		Bin:                pc.bin,
+		Flags:              strings.Fields(pc.flags),
+		Model:              model,
+		Effort:             effort,
+		Dir:                cfg.RepoRoot,
+		Preamble:           config.Preamble,
+		PlanPreamble:       config.PlanningPreamble,
+		Cols:               cfg.AgentCols,
+		Rows:               cfg.AgentRows,
+		SizeFn:             sizeFn,
+		Timeout:            time.Duration(cfg.AgentTimeout) * time.Second,
+		StallWindow:        time.Duration(cfg.AgentStallWindow) * time.Second,
+		StripMechanicalMCP: cfg.StripMechanicalMCP,
+		Log:                log,
+		Tokens:             sink,
+		Extra:              pc.extra,
 	})
 }
 

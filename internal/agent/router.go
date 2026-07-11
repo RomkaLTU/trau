@@ -57,6 +57,26 @@ func RouteKey(label string) string {
 	}
 }
 
+// mechanicalPhasePrefixes name the pipeline phases that never read the tracker —
+// cleanup, commit, repair, bugfix, and push-repair work purely from the code, the
+// verdict/brief files, and the prompt. They are matched by raw-label prefix (not
+// RouteKey) so push-repair, which RouteKey buckets under pick, is classified as
+// mechanical without dragging the tracker-reading pick along with it.
+var mechanicalPhasePrefixes = []string{PhaseCleanup, PhaseCommit, PhaseRepair, PhaseBugfix, "push-repair"}
+
+// MechanicalPhase reports whether label names a mechanical phase — one a backend
+// may launch with its tracker MCP servers stripped, since it consults only the
+// code and files on disk. Build, handoff, and verify are not mechanical: they fall
+// back to MCP ticket reads when REST ticket-content injection is unavailable.
+func MechanicalPhase(label string) bool {
+	for _, p := range mechanicalPhasePrefixes {
+		if strings.HasPrefix(label, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // preambleFor returns the preamble a call's prompt is prefixed with: the
 // plan-scoped variant when the call routes to a planning round (plan or slice)
 // and one is set, otherwise the default unattended preamble. It is the one seam
