@@ -54,6 +54,10 @@ func (s *Server) registerRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to register repo: " + err.Error()})
 		return
 	}
+	// Seed the issue store from the tracker as the repo comes online (ADR 0007).
+	// A repo without direct tracker credentials still registers, so the pull is
+	// best-effort and its outcome is recorded on the sync bookkeeping row.
+	_, _ = s.syncRepo(r.Context(), workspaceRepo(root))
 	writeJSON(w, http.StatusCreated, RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: true})
 }
 

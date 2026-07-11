@@ -104,6 +104,7 @@ func (f *fakeSupervisor) Signal(pid int, sig syscall.Signal) error {
 
 func controlServer(t *testing.T, home string, workspace []string) (*fakeSupervisor, *httptest.Server) {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 	s := New("1.2.3", "127.0.0.1", "", workspace, false, testStoresAt(t, home))
 	s.home = home
 	fake := &fakeSupervisor{}

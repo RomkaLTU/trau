@@ -1,0 +1,204 @@
+package webserver
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"testing"
+
+	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/tracker"
+)
+
+// syncServer builds a hub with one exited repo ("acme"), a Reader factory
+// returning fake, and returns the server plus the repo root and issue store so a
+// test can drive POST /sync and assert what it wrote.
+func syncServer(t *testing.T, fake tracker.Reader) (*httptest.Server, string, *hubstore.Issues) {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	root := filepath.Dir(filepath.Dir(runsDir))
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+	s.home = home
+	s.newReader = func(config.Config) (tracker.Reader, error) { return fake, nil }
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return ts, root, testStoresAt(t, home).Issues()
+}
+
+func postSync(t *testing.T, ts *httptest.Server, repo string) (*http.Response, SyncResponse) {
+	t.Helper()
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/sync", nil)
+	var out SyncResponse
+	if res.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+			t.Fatalf("decode sync response: %v", err)
+		}
+	}
+	return res, out
+}
+
+func syncedFixture() []tracker.SyncedIssue {
+	return []tracker.SyncedIssue{
+		{
+			ID:          "COD-1",
+			ExternalID:  "iss-1",
+			Title:       "First",
+			Description: "Body",
+			Status:      "In Progress",
+			Group:       tracker.StatusGroupStarted,
+			Labels:      []string{"ready-for-agent"},
+			Parent:      "COD-9",
+			UpdatedAt:   "2026-07-10T12:00:00Z",
+			Comments: []tracker.SyncedComment{
+				{ExternalID: "c1", Author: "Ada", Body: "looks good"},
+			},
+		},
+	}
+}
+
+func TestSyncPullsIssuesAndRecordsOutcome(t *testing.T) {
+	fake := &fakeReader{synced: syncedFixture()}
+	ts, root, store := syncServer(t, fake)
+
+	res, out := postSync(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	if out.Issues != 1 || out.Comments != 1 || out.Provider != "linear" || out.SyncedAt == "" {
+		t.Fatalf("response = %+v, want 1 issue/1 comment/linear/timestamp", out)
+	}
+
+	stored, err := store.List(root)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(stored) != 1 || stored[0].Identifier != "COD-1" || len(stored[0].Comments) != 1 {
+		t.Fatalf("store = %+v, want COD-1 with one comment", stored)
+	}
+	if stored[0].Source != "linear" {
+		t.Fatalf("source = %q, want linear", stored[0].Source)
+	}
+
+	st, err := store.SyncState(root)
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	if st.LastIssues != 1 || st.LastComments != 1 || st.LastSyncedAt == "" || st.Cursor != "2026-07-10T12:00:00Z" {
+		t.Fatalf("recorded outcome = %+v, want counts/cursor/timestamp", st)
+	}
+}
+
+func TestSyncIsIdempotentAndCachesBinding(t *testing.T) {
+	fake := &fakeReader{synced: syncedFixture()}
+	ts, root, store := syncServer(t, fake)
+
+	for i := 0; i < 2; i++ {
+		res, _ := postSync(t, ts, "acme")
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("sync %d status = %d, want 200", i, res.StatusCode)
+		}
+		_ = res.Body.Close()
+	}
+
+	stored, err := store.List(root)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("issues = %d after two syncs, want 1 (upsert must not duplicate)", len(stored))
+	}
+	if fake.bindingCalls != 1 {
+		t.Fatalf("ResolveBinding called %d times, want 1 (binding must be cached)", fake.bindingCalls)
+	}
+}
+
+func TestSyncUnknownRepo(t *testing.T) {
+	ts, _, _ := syncServer(t, &fakeReader{})
+	res, _ := postSync(t, ts, "ghost")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", res.StatusCode)
+	}
+}
+
+func TestSyncRejectsNonPOST(t *testing.T) {
+	ts, _, _ := syncServer(t, &fakeReader{})
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/sync")
+	if err != nil {
+		t.Fatalf("GET sync: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", res.StatusCode)
+	}
+}
+
+func TestSyncWithoutCredentials(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	seedRepo(t, home, "acme")
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+	s.home = home
+	s.newReader = func(config.Config) (tracker.Reader, error) { return nil, tracker.ErrReaderUnavailable }
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	res, _ := postSync(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", res.StatusCode)
+	}
+}
+
+func TestSyncTrackerErrorRecordsAndReports(t *testing.T) {
+	fake := &fakeReader{syncErr: errors.New("linear: 500")}
+	ts, root, store := syncServer(t, fake)
+
+	res, _ := postSync(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", res.StatusCode)
+	}
+	st, err := store.SyncState(root)
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	if st.LastError == "" {
+		t.Fatalf("last error not recorded: %+v", st)
+	}
+}
+
+func TestRegisterTriggersSync(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	base := t.TempDir()
+	root := gitRepo(t, base, "acme", "dir")
+
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+	s.home = home
+	s.newReader = func(config.Config) (tracker.Reader, error) {
+		return &fakeReader{synced: syncedFixture()}, nil
+	}
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos", RegisterRepoRequest{Path: root})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("register status = %d, want 201", res.StatusCode)
+	}
+
+	stored, err := testStoresAt(t, home).Issues().List(root)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(stored) != 1 || stored[0].Identifier != "COD-1" {
+		t.Fatalf("register did not seed the issue store: %+v", stored)
+	}
+}
