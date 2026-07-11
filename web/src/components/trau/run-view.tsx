@@ -142,6 +142,12 @@ function activityRow(ev: FeedEvent): ActivityRow {
         glyphClass: "text-warn",
         text: ev.msg || "build loaded no skills",
       };
+    case "spawn_failed":
+      return {
+        glyph: "✗",
+        glyphClass: "text-fail",
+        text: fieldStr(ev, "error") || ev.msg || "loop failed to start",
+      };
     case "pr_open": {
       const n = fieldNum(ev, "number");
       return {
@@ -390,6 +396,60 @@ function PausedBanner({
   );
 }
 
+function FailedToStartBanner({
+  error,
+  onRetry,
+  retrying,
+}: {
+  error: string;
+  onRetry: () => void;
+  retrying: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-fail/40 bg-fail/10 px-4 py-3">
+      <span className="inline-flex items-center gap-2 font-mono text-sm text-fail">
+        <span aria-hidden="true">✗</span>
+        failed to start
+      </span>
+      <p className="font-sans text-sm leading-relaxed text-muted-foreground">
+        The loop exited before it could run — it never registered or wrote a
+        checkpoint. This is the error it reported:
+      </p>
+      <pre className="overflow-x-auto rounded-md border border-border bg-secondary/40 px-3 py-2 font-mono text-xs text-foreground">
+        {error || "no error output was captured"}
+      </pre>
+      <div className="mt-1">
+        <Button
+          size="sm"
+          className="font-mono"
+          disabled={retrying}
+          onClick={onRetry}
+        >
+          <Play className="size-4" aria-hidden="true" />
+          {retrying ? "Retrying…" : "Retry"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function StartingPlaceholder() {
+  return (
+    <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-border bg-card px-4 py-12 text-center">
+      <span className="inline-flex items-center gap-2 font-mono text-sm text-teal">
+        <span className="cursor-block" aria-hidden="true">
+          ▍
+        </span>
+        starting…
+      </span>
+      <p className="max-w-md font-sans text-sm leading-relaxed text-muted-foreground">
+        Launching the loop. The transcript appears here once this run's first
+        agent session begins.
+      </p>
+    </div>
+  );
+}
+
 export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   const queryClient = useQueryClient();
   const now = useNow(1000);
@@ -407,10 +467,16 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   const working = instance?.session_state === "working";
   const parkedHere = instance?.session_state === "parked";
   const phase = (working ? instance.phase : "") || run?.phase || "";
+  const spawnFailure = feed.events.find(
+    (ev) => ev.kind === "spawn_failed" && fieldStr(ev, "ticket") === ticket,
+  );
   const variant = deriveVariant({
     phase,
     failureClass: run?.failure_class,
     working,
+    live,
+    hasCheckpoint: run !== undefined,
+    spawnFailed: spawnFailure !== undefined,
   });
   const pill = headerPill(variant, phase, run?.failure_class);
   const steps = runPhaseSteps(phase, variant);
@@ -644,10 +710,25 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
           </div>
         ) : (
           <div className="flex flex-col gap-6">
-            <div className="flex flex-col gap-2">
-              <Eyebrow glyph="active">TRANSCRIPT</Eyebrow>
-              <Terminal repo={repo} live={live} tall />
-            </div>
+            {variant === "failed_to_start" ? (
+              <FailedToStartBanner
+                error={fieldStr(spawnFailure!, "error")}
+                onRetry={() => resume.mutate()}
+                retrying={resume.isPending}
+              />
+            ) : variant === "starting" ? (
+              <StartingPlaceholder />
+            ) : (
+              <div className="flex flex-col gap-2">
+                <Eyebrow glyph="active">TRANSCRIPT</Eyebrow>
+                <Terminal
+                  repo={repo}
+                  since={instance?.started_at}
+                  live={live}
+                  tall
+                />
+              </div>
+            )}
 
             <ActivityFeed events={feed.events} />
           </div>

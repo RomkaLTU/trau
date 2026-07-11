@@ -102,16 +102,24 @@ func (s *Server) handleTranscriptStream(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	pumpTranscript(r.Context(), w, flusher, resultsDir(repo.RunsDir), id, resumeCursor(r))
+	// The since bound applies only to follow mode: a pinned id is an explicit
+	// request for that one transcript, whenever its session ran.
+	var sinceNanos int64
+	if id == "" {
+		sinceNanos = parseSinceNanos(r.URL.Query().Get("since"))
+	}
+	pumpTranscript(r.Context(), w, flusher, resultsDir(repo.RunsDir), id, resumeCursor(r), sinceNanos)
 }
 
 // pumpTranscript streams a repo's transcript as raw PTY bytes until the client
 // disconnects. With no pinned id it follows the newest transcript, re-resolving
 // each tick so it advances across phase boundaries; a pinned id replays one
-// finished phase. It reuses agent.ReadTail — the same incremental-tail seam the
+// finished phase. A non-zero sinceNanos bounds follow mode to sessions that
+// started at or after it, so a fresh run page never time-travels into a previous
+// run's transcript. It reuses agent.ReadTail — the same incremental-tail seam the
 // TUI live view and `trau watch` use — so an in-place truncation on phase reuse
 // surfaces as a reset frame rather than a corrupt stream.
-func pumpTranscript(ctx context.Context, w io.Writer, flusher http.Flusher, resultsDir, pinned string, resume transcriptCursor) {
+func pumpTranscript(ctx context.Context, w io.Writer, flusher http.Flusher, resultsDir, pinned string, resume transcriptCursor, sinceNanos int64) {
 	flusher.Flush()
 	ticker := time.NewTicker(streamPollInterval)
 	defer ticker.Stop()
@@ -121,7 +129,7 @@ func pumpTranscript(ctx context.Context, w io.Writer, flusher http.Flusher, resu
 	idle := 0
 	for {
 		wrote := false
-		if path, stem := resolveTranscript(resultsDir, pinned); path != "" {
+		if path, stem := resolveTranscript(resultsDir, pinned, sinceNanos); path != "" {
 			if stem != curStem {
 				cols, rows := transcriptDims(path)
 				if err := writeTranscriptMeta(w, stem, cols, rows); err != nil {
@@ -170,9 +178,10 @@ func pumpTranscript(ctx context.Context, w io.Writer, flusher http.Flusher, resu
 }
 
 // resolveTranscript picks the transcript the stream follows this tick: the pinned
-// id when given, else the newest under resultsDir. An empty path means nothing to
-// stream yet — the loop has not started a phase — so the connection idles open.
-func resolveTranscript(resultsDir, pinned string) (path, stem string) {
+// id when given, else the newest under resultsDir at or after sinceNanos. An empty
+// path means nothing to stream yet — the loop has not started a phase this run —
+// so the connection idles open.
+func resolveTranscript(resultsDir, pinned string, sinceNanos int64) (path, stem string) {
 	if pinned != "" {
 		p := filepath.Join(resultsDir, pinned+agent.TranscriptExt)
 		if fileExists(p) {
@@ -180,7 +189,7 @@ func resolveTranscript(resultsDir, pinned string) (path, stem string) {
 		}
 		return "", ""
 	}
-	p := newestTranscript(resultsDir)
+	p := newestTranscript(resultsDir, sinceNanos)
 	if p == "" {
 		return "", ""
 	}
@@ -226,8 +235,10 @@ func listTranscripts(dir string) []TranscriptView {
 
 // newestTranscript returns the most-recently-modified transcript under dir, or ""
 // when none exists — mirroring the resolution `trau watch` uses so the hub follows
-// the same file.
-func newestTranscript(dir string) string {
+// the same file. A non-zero sinceNanos excludes any session whose start (the
+// unix-nano stem prefix) predates it, so follow mode never surfaces a run older
+// than the caller's bound.
+func newestTranscript(dir string, sinceNanos int64) string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""
@@ -237,6 +248,12 @@ func newestTranscript(dir string) string {
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), agent.TranscriptExt) {
 			continue
+		}
+		if sinceNanos > 0 {
+			start, ok := transcriptStartNanos(strings.TrimSuffix(e.Name(), agent.TranscriptExt))
+			if !ok || start < sinceNanos {
+				continue
+			}
 		}
 		info, err := e.Info()
 		if err != nil {
@@ -248,6 +265,37 @@ func newestTranscript(dir string) string {
 		}
 	}
 	return newest
+}
+
+// transcriptStartNanos reads the session-start time encoded in a transcript stem,
+// which the agent names <unix-nano>-<label>. It reports false when the stem has no
+// leading nanosecond timestamp — a shape the since bound treats as out of range.
+func transcriptStartNanos(stem string) (int64, bool) {
+	digits := stem
+	if i := strings.IndexByte(stem, '-'); i >= 0 {
+		digits = stem[:i]
+	}
+	n, err := strconv.ParseInt(digits, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// parseSinceNanos reads the follow-mode since bound: an RFC3339 timestamp (as the
+// run page passes an instance's started_at) or a bare unix-nano value. Anything
+// unparseable is no bound, so a malformed since never blanks the stream.
+func parseSinceNanos(raw string) int64 {
+	if raw == "" {
+		return 0
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t.UnixNano()
+	}
+	if n, err := strconv.ParseInt(raw, 10, 64); err == nil && n > 0 {
+		return n
+	}
+	return 0
 }
 
 func transcriptDims(path string) (cols, rows int) {

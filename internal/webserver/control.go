@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
@@ -138,16 +139,61 @@ func (s *Server) startInstance(w http.ResponseWriter, r *http.Request) {
 		args = append(args, "--provider", provider)
 	}
 
-	pid, err := s.sup.Spawn(SpawnSpec{
-		Dir:  root,
-		Args: args,
-		Env:  childEnv(s.home),
-	})
+	spec := SpawnSpec{Dir: root, Args: args, Env: childEnv(s.home)}
+	// A run-once child targets one ticket, so a death before it registers can be
+	// pinned to that ticket's run page. Capture the outcome and, when it dies on
+	// arrival, record the error where the page can read it.
+	if ticket != "" {
+		runsDir := repoRunsDir(root)
+		spec.OnExit = func(out SpawnOutcome) { recordSpawnOutcome(runsDir, ticket, out) }
+	}
+
+	pid, err := s.sup.Spawn(spec)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to start loop: " + err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusAccepted, StartResult{PID: pid, Repo: filepath.Base(root), RepoRoot: root})
+}
+
+// recordSpawnOutcome captures a run-once child's exit as a durable repo event
+// when it dies on arrival: a non-zero exit with no checkpoint means the child
+// never got far enough to record anything itself, so the hub records the exit
+// code and stderr tail as a spawn_failed event the run page can surface. A clean
+// exit, or one that left a checkpoint behind (a real run that then faulted),
+// needs no synthetic event — its outcome is already on disk.
+func recordSpawnOutcome(runsDir, ticket string, out SpawnOutcome) {
+	if out.ExitCode == 0 || runExists(runsDir, ticket) {
+		return
+	}
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		return
+	}
+	f, err := os.OpenFile(eventsPath(runsDir), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	event.New(f).Emit(event.KindSpawnFailed, "", "loop failed to start", map[string]any{
+		"ticket":    ticket,
+		"pid":       out.PID,
+		"exit_code": out.ExitCode,
+		"error":     spawnErrorText(out.Stderr, out.ExitCode),
+	})
+}
+
+// spawnErrorText distils a child's stderr tail into a single-line error for the
+// run page: the last non-empty line, which for a startup failure is the message
+// printed just before exit ("unknown provider …"), past any earlier log noise.
+// It falls back to naming the exit code when the child printed nothing.
+func spawnErrorText(stderr string, exitCode int) string {
+	lines := strings.Split(stderr, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if trimmed := strings.TrimSpace(lines[i]); trimmed != "" {
+			return trimmed
+		}
+	}
+	return fmt.Sprintf("child exited with status %d without output", exitCode)
 }
 
 // handleStopInstance sends SIGTERM to a registered loop, hub-started or not, so a

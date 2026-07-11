@@ -56,8 +56,17 @@ export function decodeChunk(b64: string): Uint8Array {
 }
 
 // transcriptStreamURL follows the newest transcript for a repo, or replays one
-// finished phase when an id is given.
-export function transcriptStreamURL(repo: string, id?: string): string {
+// finished phase when an id is given. In follow mode a since bound (a run's start
+// time) keeps the stream from serving a session older than this run.
+export function transcriptStreamURL(
+  repo: string,
+  id?: string,
+  since?: string,
+): string {
   const base = `/api/v1/repos/${encodeURIComponent(repo)}/transcript/stream`
-  return id ? `${base}?id=${encodeURIComponent(id)}` : base
+  const params = new URLSearchParams()
+  if (id) params.set('id', id)
+  else if (since) params.set('since', since)
+  const query = params.toString()
+  return query ? `${base}?${query}` : base
 }

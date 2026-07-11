@@ -19,6 +19,11 @@ const KindAgentStart = "agent_start"
 // installed — the agent skipped the skills the repo expected it to use.
 const KindBuildNoSkills = "build_no_skills"
 
+// KindSpawnFailed marks a hub-spawned child that exited before it could register
+// or write a checkpoint — dead on arrival. It carries the child's exit code and a
+// tail of its stderr so the failure is diagnosable from the web UI.
+const KindSpawnFailed = "spawn_failed"
+
 // Event is one structured log record. Fields carries action-specific detail
 // (token counts, ids, durations) so the schema can grow without churning the
 // envelope.
