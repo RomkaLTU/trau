@@ -98,6 +98,7 @@ func (s *Server) Start(ctx context.Context) {
 		}
 	}
 	go s.sweepKnownRepos(ctx)
+	go s.runIngest(ctx)
 }
 
 // sweepKnownRepos periodically records the repos of the currently live loops in

@@ -215,6 +215,69 @@ func (s *Sink) recordSession(bucket, phase string, rec Record, total int) {
 	}
 }
 
+// Call is one decoded token line tagged with the byte offset at its line end —
+// the resume cursor the hub's derived-table ingestion tails by. Fields mirror the
+// persisted schema (see the package doc); CostUSD is nil for an unmetered call.
+type Call struct {
+	Offset        int64
+	TS            string
+	Phase         string
+	Input         int
+	Output        int
+	CacheRead     int
+	CacheCreation int
+	Reasoning     int
+	Total         int
+	CostUSD       *float64
+	Turns         int
+	IsError       bool
+	Provider      string
+	Model         string
+	Context       int
+	Skills        []string
+}
+
+// ScanCalls decodes the complete newline-terminated lines from r, starting at byte
+// offset base, into one Call each tagged with the offset at its line end, and
+// returns the offset after the last complete line. A trailing line without a
+// newline is a half-written record left for the next read; a malformed line is
+// skipped. It mirrors the event feed's offset tail so the hub can ingest token
+// calls incrementally by persisted offset.
+func ScanCalls(r *bufio.Reader, base int64) ([]Call, int64) {
+	off := base
+	var out []Call
+	for {
+		b, err := r.ReadBytes('\n')
+		if err != nil {
+			break
+		}
+		off += int64(len(b))
+		var ln line
+		if json.Unmarshal(b[:len(b)-1], &ln) != nil {
+			continue
+		}
+		out = append(out, Call{
+			Offset:        off,
+			TS:            ln.TS,
+			Phase:         ln.Phase,
+			Input:         ln.Input,
+			Output:        ln.Output,
+			CacheRead:     ln.CacheRead,
+			CacheCreation: ln.CacheCreation,
+			Reasoning:     ln.Reasoning,
+			Total:         ln.Total,
+			CostUSD:       ln.CostUSD,
+			Turns:         ln.Turns,
+			IsError:       ln.IsError,
+			Provider:      ln.Provider,
+			Model:         ln.Model,
+			Context:       ln.Context,
+			Skills:        ln.Skills,
+		})
+	}
+	return out, off
+}
+
 // SessionTotal sums the token + cost spend THIS process recorded for id,
 // following Total's metered contract. Unlike Total it excludes spend loaded
 // from earlier runs' tokens.jsonl, so the end-of-session summary reflects what
