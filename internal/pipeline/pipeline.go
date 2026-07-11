@@ -846,6 +846,7 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 	_ = os.Remove(handoffPath(id))
 	_ = os.Remove(verifyPath(id))
 	_ = os.Remove(rubricPath(id))
+	_ = os.Remove(buildNotesPath(id))
 	_ = p.State.RemoveState(id)
 	if branch != "" {
 		p.logf("  reset %s: cleared saved state + branch %s", id, branch)
@@ -884,6 +885,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	_ = os.Remove(handoffPath(id))
 	_ = os.Remove(verifyPath(id))
 	_ = os.Remove(rubricPath(id))
+	_ = os.Remove(buildNotesPath(id))
 
 	if err := p.setPhase(id, state.Building); err != nil {
 		return fmt.Errorf("build %s: checkpoint building: %w", id, err)
@@ -914,6 +916,10 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 		return err
 	}
 	p.warnBuildWithoutSkills(id)
+	p.persistBuildNotes(id)
+	if fi, err := os.Stat(buildNotesPath(id)); err == nil && fi.Size() > 0 {
+		p.logf("  ↳ build notes: %s captured for cleanup/repair", fmtBytes(fi.Size()))
+	}
 
 	if err := p.setPhase(id, state.Built); err != nil {
 		return fmt.Errorf("build %s: checkpoint built: %w", id, err)
@@ -1250,6 +1256,8 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	}
 	rubricVerify := verifyRubricNote(rubricRef)
 	rubricRepair := repairRubricNote(rubricRef)
+	notesRef, _ := p.activeBuildNotes(id)
+	notesRepair := buildNotesNote(notesRef)
 	lessonsVerify := verifyLessonsNote(p.recallLessons(p.lessonQuery(id)))
 
 	checksFragment := checks.Render(p.Checks)
@@ -1284,7 +1292,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 			for _, fl := range topFailures(v) {
 				p.logf("  ↳ %s", fl)
 			}
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, ticketCtx)); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
 				return err
 			}
 			continue
@@ -1296,7 +1304,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 			for _, fl := range topFailures(v) {
 				p.logf("  ↳ %s", fl)
 			}
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, ticketCtx)); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
 				return err
 			}
 			continue
@@ -1782,7 +1790,8 @@ func (p *Pipeline) pushDeliverable(ctx context.Context, id, ref string) error {
 		}
 		repairs++
 		p.logf("  ⚠ push rejected by a pre-push gate — repair attempt %d/%d", repairs, p.MaxRepairs)
-		if _, err := p.agentStep(ctx, id, fmt.Sprintf("push-repair%d", repairs), pushRepairInstruction(id, err.Error())); err != nil {
+		notesRef, _ := p.activeBuildNotes(id)
+		if _, err := p.agentStep(ctx, id, fmt.Sprintf("push-repair%d", repairs), pushRepairInstruction(id, err.Error(), buildNotesNote(notesRef))); err != nil {
 			return err
 		}
 	}
@@ -2361,7 +2370,7 @@ func intersect(want, have []string) []string {
 }
 
 func buildInstruction(id, branch, skillsNote, note, ticketCtx string) string {
-	return "Implement " + id + " on branch " + branch + " (already checked out). " + skillsNote + note + " Implement the ticket fully and run only the tests relevant to this slice (the new or changed test files for this ticket) — not the entire suite." + codeStyleNote + " Do not commit, push, or open a PR — stop after implementation. If the ticket clearly belongs to a DIFFERENT repository or codebase — the files, directories, or stack it references do not exist here and are not something this ticket asks you to create — do NOT implement anything and do NOT modify any files; end your reply with a final line 'REFUSED: <one short sentence naming what the ticket actually targets>'." + ticketCtx
+	return "Implement " + id + " on branch " + branch + " (already checked out). " + skillsNote + note + " Implement the ticket fully and run only the tests relevant to this slice (the new or changed test files for this ticket) — not the entire suite." + codeStyleNote + " Do not commit, push, or open a PR — stop after implementation. If the ticket clearly belongs to a DIFFERENT repository or codebase — the files, directories, or stack it references do not exist here and are not something this ticket asks you to create — do NOT implement anything and do NOT modify any files; end your reply with a final line 'REFUSED: <one short sentence naming what the ticket actually targets>'." + buildNotesInstruction(id) + ticketCtx
 }
 
 // ticketContext returns a prompt block carrying the ticket's title and full
@@ -2514,22 +2523,22 @@ func commitSubject(title string) string {
 	return strings.TrimRight(cut, " ")
 }
 
-func repairInstruction(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, ticketCtx string) string {
+func repairInstruction(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) string {
 	brief := "QA brief: " + handoff + ". "
 	if handoff == "" {
 		brief = ""
 	}
 	return id + " verification FAILED. QA verdict file: " + verdict + ". " + brief + "Failures:\n" +
-		fails + "\n\nYou are on branch " + branch + " with this slice's implementation uncommitted." + rubricNote + lessonsNote + " If this is a DEFECT IN THIS SLICE'S OWN code, find the root cause and fix it with minimal, targeted changes, then run the relevant Pest tests to confirm. If the failure is actually a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — change nothing and say so clearly." + codeStyleNote + " Do not commit, push, or open a PR." + ticketCtx
+		fails + "\n\nYou are on branch " + branch + " with this slice's implementation uncommitted." + rubricNote + lessonsNote + notesNote + " If this is a DEFECT IN THIS SLICE'S OWN code, find the root cause and fix it with minimal, targeted changes, then run the relevant Pest tests to confirm. If the failure is actually a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — change nothing and say so clearly." + codeStyleNote + " Do not commit, push, or open a PR." + ticketCtx
 }
 
-func bugfixInstruction(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, ticketCtx string) string {
+func bugfixInstruction(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) string {
 	brief := "QA brief: " + handoff + ". "
 	if handoff == "" {
 		brief = ""
 	}
 	return id + " verification FAILED after initial quick repairs. QA verdict file: " + verdict + ". " + brief + "Failures:\n" +
-		fails + "\n\nYou are on branch " + branch + " with this slice's implementation uncommitted." + rubricNote + lessonsNote + " This is a comprehensive bug-fix pass: read the full verdict, identify every failure that is a DEFECT IN THIS SLICE'S OWN code, and fix ALL of them with minimal, targeted changes. Do not stop after the first fix. Run the relevant tests (and browser checks if applicable) to confirm every failure is resolved before finishing. If a failure is a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — note it clearly." + codeStyleNote + " Do not commit, push, or open a PR." + ticketCtx
+		fails + "\n\nYou are on branch " + branch + " with this slice's implementation uncommitted." + rubricNote + lessonsNote + notesNote + " This is a comprehensive bug-fix pass: read the full verdict, identify every failure that is a DEFECT IN THIS SLICE'S OWN code, and fix ALL of them with minimal, targeted changes. Do not stop after the first fix. Run the relevant tests (and browser checks if applicable) to confirm every failure is resolved before finishing. If a failure is a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — note it clearly." + codeStyleNote + " Do not commit, push, or open a PR." + ticketCtx
 }
 
 // pushRepairInstruction hands the verbatim pre-push rejection to a repair agent.
@@ -2537,8 +2546,8 @@ func bugfixInstruction(id, verdict, handoff, branch, fails, rubricNote, lessonsN
 // problem AND fold the fix into what gets pushed (amend or a follow-up commit); the
 // loop re-pushes after it finishes. The output is passed raw and unparsed — the
 // agent reads the hook's own report rather than trau guessing at its format.
-func pushRepairInstruction(id, hookOutput string) string {
-	return id + "'s commit is on the feature branch but `git push` was REJECTED by a local pre-push hook — a quality gate the repo runs before allowing a push (tests, linters, static analysis, etc.). This is deterministic feedback about the committed code, NOT an infra error. Rejection output:\n\n" + hookOutput + "\n\nRead the output, find the root cause in THIS slice's code, and fix it with minimal, targeted changes. Then COMMIT the fix so it becomes part of what gets pushed — amend the existing commit or add a follow-up commit, matching the repo's commit style. If the failure is a pre-existing or out-of-scope problem NOT caused by this slice, do NOT hack around it — say so clearly and change nothing." + codeStyleNote + " Do NOT run `git push` or open a PR yourself — the loop re-pushes once you finish."
+func pushRepairInstruction(id, hookOutput, notesNote string) string {
+	return id + "'s commit is on the feature branch but `git push` was REJECTED by a local pre-push hook — a quality gate the repo runs before allowing a push (tests, linters, static analysis, etc.). This is deterministic feedback about the committed code, NOT an infra error. Rejection output:\n\n" + hookOutput + "\n\nRead the output, find the root cause in THIS slice's code, and fix it with minimal, targeted changes. Then COMMIT the fix so it becomes part of what gets pushed — amend the existing commit or add a follow-up commit, matching the repo's commit style. If the failure is a pre-existing or out-of-scope problem NOT caused by this slice, do NOT hack around it — say so clearly and change nothing." + notesNote + codeStyleNote + " Do NOT run `git push` or open a PR yourself — the loop re-pushes once you finish."
 }
 
 type verdict struct {

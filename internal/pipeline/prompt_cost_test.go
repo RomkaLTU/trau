@@ -13,7 +13,7 @@ import (
 // per-ticket cost regresses (M4C-88: cleanup/commit each emitted ~115K output
 // tokens narrating and re-running the suite).
 func TestCleanupInstructionStaysLean(t *testing.T) {
-	got := cleanupInstruction("COD-640")
+	got := cleanupInstruction("COD-640", "")
 	mustNotContain(t, "cleanupInstruction", got, "run only the tests", "run the tests")
 	mustContain(t, "cleanupInstruction", got,
 		"do NOT emit a JSON or prose report",
