@@ -121,6 +121,109 @@ func TestIssuesAreScopedByRepo(t *testing.T) {
 	}
 }
 
+func seedBacklog(t *testing.T, s *Issues, repo string) {
+	t.Helper()
+	synced := []Issue{
+		{Identifier: "COD-1", Title: "Login epic", Status: "Backlog", StatusGroup: "backlog", HasChildren: true, Labels: []string{"feature"}},
+		{Identifier: "COD-2", Title: "Fix logout bug", Status: "Todo", StatusGroup: "unstarted", Labels: []string{"bug", "ready-for-agent"}},
+		{Identifier: "COD-3", Title: "Dashboard polish", Status: "In Progress", StatusGroup: "started", Labels: []string{"Feature"}},
+	}
+	if _, _, err := s.Upsert(repo, "linear", synced); err != nil {
+		t.Fatalf("seed synced: %v", err)
+	}
+	internal := []Issue{
+		{Identifier: "COD-100", Title: "Internal login note", Status: "Todo", StatusGroup: "unstarted", Labels: []string{"chore"}},
+	}
+	if _, _, err := s.Upsert(repo, "internal", internal); err != nil {
+		t.Fatalf("seed internal: %v", err)
+	}
+}
+
+func idsOf(issues []Issue) []string {
+	out := make([]string, 0, len(issues))
+	for _, iss := range issues {
+		out = append(out, iss.Identifier)
+	}
+	return out
+}
+
+func TestBacklogPageFilters(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/acme"
+	seedBacklog(t, s, repo)
+
+	tests := []struct {
+		name   string
+		filter BacklogFilter
+		want   []string
+	}{
+		{"unfiltered", BacklogFilter{}, []string{"COD-1", "COD-100", "COD-2", "COD-3"}},
+		{"state group", BacklogFilter{Group: "unstarted"}, []string{"COD-100", "COD-2"}},
+		{"source internal", BacklogFilter{Source: "internal"}, []string{"COD-100"}},
+		{"source synced", BacklogFilter{Source: "synced"}, []string{"COD-1", "COD-2", "COD-3"}},
+		{"label case-insensitive", BacklogFilter{Label: "feature"}, []string{"COD-1", "COD-3"}},
+		{"text over id and title", BacklogFilter{Text: "login"}, []string{"COD-1", "COD-100"}},
+		{"filters compose", BacklogFilter{Source: "synced", Text: "login"}, []string{"COD-1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, total, err := s.BacklogPage(repo, tt.filter)
+			if err != nil {
+				t.Fatalf("BacklogPage: %v", err)
+			}
+			if total != len(tt.want) {
+				t.Errorf("total = %d, want %d", total, len(tt.want))
+			}
+			if !reflect.DeepEqual(idsOf(got), tt.want) {
+				t.Errorf("ids = %v, want %v", idsOf(got), tt.want)
+			}
+		})
+	}
+}
+
+func TestBacklogPagePaginates(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/acme"
+	seedBacklog(t, s, repo)
+
+	first, total, err := s.BacklogPage(repo, BacklogFilter{Limit: 2})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if total != 4 {
+		t.Fatalf("total = %d, want 4 (the full count, not the page size)", total)
+	}
+	if !reflect.DeepEqual(idsOf(first), []string{"COD-1", "COD-100"}) {
+		t.Fatalf("first page = %v, want the first two by identifier", idsOf(first))
+	}
+
+	second, _, err := s.BacklogPage(repo, BacklogFilter{Limit: 2, Offset: 2})
+	if err != nil {
+		t.Fatalf("second page: %v", err)
+	}
+	if !reflect.DeepEqual(idsOf(second), []string{"COD-2", "COD-3"}) {
+		t.Fatalf("second page = %v, want the next two", idsOf(second))
+	}
+}
+
+func TestBacklogPageTextEscapesWildcards(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/acme"
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-1", Title: "100% coverage", StatusGroup: "backlog"},
+		{Identifier: "COD-2", Title: "plain title", StatusGroup: "backlog"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, total, err := s.BacklogPage(repo, BacklogFilter{Text: "100%"})
+	if err != nil {
+		t.Fatalf("BacklogPage: %v", err)
+	}
+	if total != 1 || !reflect.DeepEqual(idsOf(got), []string{"COD-1"}) {
+		t.Fatalf("ids = %v (total %d), want only COD-1 — the %% must match literally", idsOf(got), total)
+	}
+}
+
 func TestRecordErrorPreservesLastGoodSync(t *testing.T) {
 	s := testIssues(t)
 

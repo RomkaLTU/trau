@@ -3,6 +3,8 @@ package webserver
 import (
 	"errors"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/config"
@@ -29,16 +31,23 @@ type BacklogEntry struct {
 	Ready       bool     `json:"ready"`
 }
 
-// BacklogResponse is the full Project backlog for a repo, served from the hub's
-// issue store — no live tracker call on the request path (ADR 0007). Provider is
-// the repo's configured tracker; Freshness carries the store's last-synced and
-// syncing state so the board can show synced-ness without blocking.
+// BacklogResponse is a repo's Project backlog served from the hub's issue store —
+// no live tracker call on the request path (ADR 0007). Provider is the repo's
+// configured tracker; Items is the requested page of matches; Total is the number
+// of matches before pagination so the board can page; Freshness carries the
+// store's last-synced and syncing state so the board can show synced-ness without
+// blocking.
 type BacklogResponse struct {
 	Repo      string         `json:"repo"`
 	Provider  string         `json:"provider"`
 	Items     []BacklogEntry `json:"items"`
+	Total     int            `json:"total"`
 	Freshness *RepoFreshness `json:"freshness,omitempty"`
 }
+
+// maxBacklogLimit caps a single backlog page so a caller cannot ask the store for
+// an unbounded slab; a request without a limit is still served in full (Limit 0).
+const maxBacklogLimit = 500
 
 // handleBacklog lists a repo's full Project backlog — every ticket with its
 // workflow status, not just the eligible queue — straight from the hub's issue
@@ -59,7 +68,7 @@ func (s *Server) handleBacklog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	store := s.stores.Issues()
-	items, err := store.Backlog(repo.Root)
+	items, total, err := store.BacklogPage(repo.Root, backlogFilter(r.URL.Query()))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list backlog: " + err.Error()})
 		return
@@ -75,8 +84,46 @@ func (s *Server) handleBacklog(w http.ResponseWriter, r *http.Request) {
 		Repo:      repo.Name,
 		Provider:  provider,
 		Items:     toBacklogEntries(items, readyLabel),
+		Total:     total,
 		Freshness: s.freshnessFrom(repo.Root, state),
 	})
+}
+
+// backlogFilter reads the board's filter and pagination controls off the query
+// string: state (workflow state group), label, source (internal | synced), q
+// (substring text match), and limit/offset. Absent or malformed values fall back
+// to the zero filter, so a bare request is the unfiltered board.
+func backlogFilter(q url.Values) hubstore.BacklogFilter {
+	return hubstore.BacklogFilter{
+		Group:  strings.TrimSpace(q.Get("state")),
+		Label:  strings.TrimSpace(q.Get("label")),
+		Source: strings.TrimSpace(q.Get("source")),
+		Text:   strings.TrimSpace(q.Get("q")),
+		Limit:  backlogLimit(q.Get("limit")),
+		Offset: backlogOffset(q.Get("offset")),
+	}
+}
+
+// backlogLimit parses a page size, clamped to maxBacklogLimit. An absent or
+// non-positive value yields 0, which the store reads as "no limit".
+func backlogLimit(raw string) int {
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	if n > maxBacklogLimit {
+		return maxBacklogLimit
+	}
+	return n
+}
+
+// backlogOffset parses a page offset; an absent or negative value yields 0.
+func backlogOffset(raw string) int {
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 // backlogConfig resolves the repo's ready label and tracker provider from its

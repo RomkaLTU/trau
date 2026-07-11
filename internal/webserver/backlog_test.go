@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -103,6 +104,105 @@ func getBacklog(t *testing.T, ts *httptest.Server, repo string) (*http.Response,
 		}
 	}
 	return res, out
+}
+
+func getBacklogQuery(t *testing.T, ts *httptest.Server, repo, query string) BacklogResponse {
+	t.Helper()
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/" + repo + "/backlog?" + query)
+	if err != nil {
+		t.Fatalf("GET backlog?%s: %v", query, err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for ?%s", res.StatusCode, query)
+	}
+	var out BacklogResponse
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode backlog: %v", err)
+	}
+	return out
+}
+
+func filterFixture() []hubstore.Issue {
+	return []hubstore.Issue{
+		{Identifier: "COD-1", Title: "Login epic", Status: "Backlog", StatusGroup: "backlog", Labels: []string{"feature"}},
+		{Identifier: "COD-2", Title: "Fix logout bug", Status: "Todo", StatusGroup: "unstarted", Labels: []string{"bug"}},
+		{Identifier: "COD-3", Title: "Dashboard polish", Status: "In Progress", StatusGroup: "started", Labels: []string{"feature"}},
+	}
+}
+
+func idSet(items []BacklogEntry) []string {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		out = append(out, it.ID)
+	}
+	return out
+}
+
+func TestBacklogAppliesQueryFilters(t *testing.T) {
+	_, ts, root, store := backlogServer(t, nil, nil)
+	if _, _, err := store.Upsert(root, "linear", filterFixture()); err != nil {
+		t.Fatalf("seed synced: %v", err)
+	}
+	if _, _, err := store.Upsert(root, "internal", []hubstore.Issue{
+		{Identifier: "COD-9", Title: "Login note", StatusGroup: "unstarted"},
+	}); err != nil {
+		t.Fatalf("seed internal: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{"state group", "state=unstarted", []string{"COD-2", "COD-9"}},
+		{"label", "label=feature", []string{"COD-1", "COD-3"}},
+		{"source internal", "source=internal", []string{"COD-9"}},
+		{"text over id and title", "q=login", []string{"COD-1", "COD-9"}},
+		{"filters compose", "source=synced&q=log", []string{"COD-1", "COD-2"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := getBacklogQuery(t, ts, "acme", tt.query)
+			if got := idSet(out.Items); !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("items = %v, want %v", got, tt.want)
+			}
+			if out.Total != len(tt.want) {
+				t.Errorf("total = %d, want %d", out.Total, len(tt.want))
+			}
+		})
+	}
+}
+
+func TestBacklogPaginatesWithTotal(t *testing.T) {
+	_, ts, root, store := backlogServer(t, nil, nil)
+	if _, _, err := store.Upsert(root, "linear", filterFixture()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	first := getBacklogQuery(t, ts, "acme", "limit=2")
+	if got := idSet(first.Items); !reflect.DeepEqual(got, []string{"COD-1", "COD-2"}) {
+		t.Fatalf("first page = %v, want the first two", got)
+	}
+	if first.Total != 3 {
+		t.Fatalf("total = %d, want the full count of 3", first.Total)
+	}
+
+	second := getBacklogQuery(t, ts, "acme", "limit=2&offset=2")
+	if got := idSet(second.Items); !reflect.DeepEqual(got, []string{"COD-3"}) {
+		t.Fatalf("second page = %v, want the remaining one", got)
+	}
+}
+
+func TestBacklogDefaultViewUnpaginated(t *testing.T) {
+	_, ts, root, store := backlogServer(t, nil, nil)
+	if _, _, err := store.Upsert(root, "linear", filterFixture()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	out := getBacklogQuery(t, ts, "acme", "")
+	if len(out.Items) != 3 || out.Total != 3 {
+		t.Fatalf("default view = %d items, total %d, want all 3", len(out.Items), out.Total)
+	}
 }
 
 func backlogFixture() []hubstore.Issue {
