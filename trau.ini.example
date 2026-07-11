@@ -424,6 +424,13 @@ SERVE_ALLOW_REGISTER=0
 # hub starts nothing; stopping an already-running loop works regardless.
 # SERVE_WORKSPACE=/Users/me/Projects/salonradar,/Users/me/Projects/loop
 #
+# The hub refreshes each repo's local issue store from its tracker in the
+# background on this cadence (incremental pulls off the stored cursor, so an edit
+# in the tracker shows up within one interval, hands-off). A repo with a broken
+# tracker config backs off on its own without stalling the others. Set 0 to
+# disable it and rely on on-demand pulls only.
+SERVE_SYNC_INTERVAL=120        # seconds between background issue-store refreshes
+#
 # The first interactive TUI session brings the hub up on its own (one per
 # machine) so the web UI is there whenever you work with trau; it reuses any hub
 # already on the port and inherits the SERVE_* settings above, so an autostarted

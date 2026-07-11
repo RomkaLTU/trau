@@ -25,6 +25,8 @@ type fakeReader struct {
 	bindingCalls int
 	synced       []tracker.SyncedIssue
 	syncErr      error
+	syncSince    string
+	syncCalls    int
 }
 
 func (f *fakeReader) Backlog(context.Context) ([]tracker.BacklogItem, error) {
@@ -53,7 +55,9 @@ func (f *fakeReader) ResolveBinding(context.Context) (tracker.ProjectBinding, er
 	return binding, nil
 }
 
-func (f *fakeReader) SyncPull(context.Context, tracker.ProjectBinding) ([]tracker.SyncedIssue, error) {
+func (f *fakeReader) SyncPull(_ context.Context, _ tracker.ProjectBinding, since string) ([]tracker.SyncedIssue, error) {
+	f.syncCalls++
+	f.syncSince = since
 	if f.syncErr != nil {
 		return nil, f.syncErr
 	}

@@ -70,8 +70,8 @@ func (r *linearReader) ResolveBinding(ctx context.Context) (ProjectBinding, erro
 	return b, nil
 }
 
-func (r *linearReader) SyncPull(ctx context.Context, binding ProjectBinding) ([]SyncedIssue, error) {
-	issues, err := r.client.ProjectIssues(ctx, binding.TeamID, binding.ProjectID)
+func (r *linearReader) SyncPull(ctx context.Context, binding ProjectBinding, since string) ([]SyncedIssue, error) {
+	issues, err := r.client.ProjectIssues(ctx, binding.TeamID, binding.ProjectID, since)
 	if err != nil {
 		return nil, err
 	}
@@ -119,12 +119,12 @@ func (r *jiraReader) ResolveBinding(ctx context.Context) (ProjectBinding, error)
 	return ProjectBinding{ProjectID: key, Project: key}, nil
 }
 
-func (r *jiraReader) SyncPull(ctx context.Context, binding ProjectBinding) ([]SyncedIssue, error) {
+func (r *jiraReader) SyncPull(ctx context.Context, binding ProjectBinding, since string) ([]SyncedIssue, error) {
 	key := strings.TrimSpace(binding.ProjectID)
 	if key == "" {
 		key = strings.TrimSpace(r.project)
 	}
-	issues, err := r.client.SyncIssues(ctx, key)
+	issues, err := r.client.SyncIssues(ctx, key, since)
 	if err != nil {
 		return nil, err
 	}

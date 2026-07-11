@@ -49,25 +49,32 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 }
 
 // syncRepo resolves the repo's tracker binding (caching it on first use so later
-// syncs skip the team/project lookup), pulls every Project issue with its
-// comments, upserts them into the store, and records the outcome. It is the
-// shared core of the sync endpoint and the sync that fires on repo registration.
+// syncs skip the team/project lookup), pulls the Project's issues with their
+// comments, upserts them into the store, and records the outcome. The pull is
+// incremental off the stored cursor — only issues updated since the last sync —
+// falling back to a full Project pull when the cursor is empty. It is the shared
+// core of the sync endpoint, the sync that fires on repo registration, and the
+// background sync loop.
 func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse, error) {
 	provider, reader, err := s.readerFor(repo)
 	if err != nil {
 		return SyncResponse{}, err
 	}
 	store := s.stores.Issues()
-
-	binding, err := s.resolveBinding(ctx, store, repo.Root, reader)
+	state, err := store.SyncState(repo.Root)
 	if err != nil {
-		_ = store.RecordResult(repo.Root, hubstore.SyncResult{Err: err.Error(), SyncedAt: nowStamp()})
 		return SyncResponse{}, err
 	}
 
-	pulled, err := reader.SyncPull(ctx, binding)
+	binding, err := s.resolveBinding(ctx, store, repo.Root, state.Binding, reader)
 	if err != nil {
-		_ = store.RecordResult(repo.Root, hubstore.SyncResult{Err: err.Error(), SyncedAt: nowStamp()})
+		_ = store.RecordError(repo.Root, err.Error())
+		return SyncResponse{}, err
+	}
+
+	pulled, err := reader.SyncPull(ctx, binding, state.Cursor)
+	if err != nil {
+		_ = store.RecordError(repo.Root, err.Error())
 		return SyncResponse{}, err
 	}
 
@@ -79,7 +86,7 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 	if err := store.RecordResult(repo.Root, hubstore.SyncResult{
 		Issues:   issues,
 		Comments: comments,
-		Cursor:   latestCursor(pulled),
+		Cursor:   advanceCursor(state.Cursor, pulled),
 		SyncedAt: syncedAt,
 	}); err != nil {
 		return SyncResponse{}, err
@@ -93,20 +100,16 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 	}, nil
 }
 
-func (s *Server) resolveBinding(ctx context.Context, store *hubstore.Issues, root string, reader tracker.Reader) (tracker.ProjectBinding, error) {
-	state, err := store.SyncState(root)
-	if err != nil {
-		return tracker.ProjectBinding{}, err
-	}
+func (s *Server) resolveBinding(ctx context.Context, store *hubstore.Issues, root string, cached hubstore.SyncBinding, reader tracker.Reader) (tracker.ProjectBinding, error) {
 	binding := tracker.ProjectBinding{
-		TeamID:    state.Binding.TeamID,
-		ProjectID: state.Binding.ProjectID,
-		Project:   state.Binding.Project,
+		TeamID:    cached.TeamID,
+		ProjectID: cached.ProjectID,
+		Project:   cached.Project,
 	}
 	if binding.Resolved() {
 		return binding, nil
 	}
-	binding, err = reader.ResolveBinding(ctx)
+	binding, err := reader.ResolveBinding(ctx)
 	if err != nil {
 		return tracker.ProjectBinding{}, err
 	}
@@ -153,10 +156,13 @@ func toStoredIssues(pulled []tracker.SyncedIssue) []hubstore.Issue {
 	return out
 }
 
-// latestCursor returns the newest updatedAt among the pulled issues, the cursor a
-// later incremental sync resumes from.
-func latestCursor(pulled []tracker.SyncedIssue) string {
-	cursor := ""
+// advanceCursor returns the cursor a later incremental sync resumes from: the
+// newest updatedAt among the pulled issues, never behind prev. Keeping prev when
+// an incremental pull returns nothing newer stops an empty pull from blanking the
+// cursor and forcing a full re-pull next time. Timestamps from one tracker share
+// a format, so the lexical max is the chronological one.
+func advanceCursor(prev string, pulled []tracker.SyncedIssue) string {
+	cursor := prev
 	for _, iss := range pulled {
 		if iss.UpdatedAt > cursor {
 			cursor = iss.UpdatedAt

@@ -253,6 +253,19 @@ func (s *Issues) RecordResult(repo string, r SyncResult) error {
 	return err
 }
 
+// RecordError stamps a failed sync's error on the repo's bookkeeping row without
+// touching the cursor, counts, or last-synced time, so a transient tracker
+// failure leaves the last good sync — and its incremental cursor — intact. A
+// later successful RecordResult clears the error.
+func (s *Issues) RecordError(repo, msg string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO issue_sync(repo, last_error) VALUES(?, ?)
+		 ON CONFLICT(repo) DO UPDATE SET last_error = excluded.last_error`,
+		repo, msg,
+	)
+	return err
+}
+
 func labelList(labels []string) []string {
 	if labels == nil {
 		return []string{}

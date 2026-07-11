@@ -241,6 +241,11 @@ type Config struct {
 	// listed here stay observe-only too.
 	ServeWorkspace []string
 
+	// ServeSyncInterval is how many seconds the hub waits between background
+	// refreshes of each repo's issue store from its tracker. Zero disables the
+	// background sync, leaving the store to on-demand pulls only.
+	ServeSyncInterval int
+
 	// ServeAutostart lets the first interactive TUI session bring the hub up;
 	// ServeOpen opens the browser on a fresh spawn. Both default on (ADR 0004).
 	ServeAutostart bool
@@ -332,6 +337,7 @@ func Defaults() Config {
 		ServeToken:            "",
 		ServeAllowRegister:    false,
 		ServeWorkspace:        nil,
+		ServeSyncInterval:     120,
 		ServeAutostart:        true,
 		ServeOpen:             true,
 		MaxTicketUSD:          0,
@@ -754,6 +760,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		c.ServeWorkspace = splitCSV(v)
 		sources["SERVE_WORKSPACE"] = src.name
 	}
+	num("SERVE_SYNC_INTERVAL", &c.ServeSyncInterval)
 	if v, src := get("SERVE_AUTOSTART"); v != "" {
 		c.ServeAutostart = v == "1"
 		sources["SERVE_AUTOSTART"] = src.name
@@ -1257,6 +1264,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "SERVE_TOKEN", Advanced: true, Description: "Bearer token required for non-loopback `trau serve` binds; mandatory once SERVE_BIND leaves loopback"},
 		{Key: "SERVE_ALLOW_REGISTER", Default: "0", Advanced: true, Bool: true, Description: "Allow repo (un)registration on a non-loopback `trau serve` bind, on top of SERVE_TOKEN; loopback binds are always open (1 = yes, 0 = no)"},
 		{Key: "SERVE_WORKSPACE", Advanced: true, Description: "Comma-separated repo roots the hub may start loops in; repos outside this allowlist are observe-only. Empty = the hub starts nothing"},
+		{Key: "SERVE_SYNC_INTERVAL", Default: "120", Advanced: true, Description: "Seconds between background refreshes of each repo's issue store from its tracker (0 = disable, on-demand pulls only)"},
 		{Key: "SERVE_AUTOSTART", Default: "1", Advanced: true, Bool: true, Description: "Bring the web UI hub up automatically on the first interactive TUI session when none is running (1 = yes, 0 = no)"},
 		{Key: "SERVE_OPEN", Default: "1", Advanced: true, Bool: true, Description: "Open the browser when autostart freshly spawns the hub (1 = yes, 0 = no); the daemon still starts when 0"},
 		{Key: "MAX_TICKET_USD", Description: "Per-ticket USD spend cap; over it the ticket is quarantined (empty = no cap)"},
@@ -1794,6 +1802,8 @@ func keyValue(cfg Config, key string) string {
 		return "0"
 	case "SERVE_WORKSPACE":
 		return strings.Join(cfg.ServeWorkspace, ",")
+	case "SERVE_SYNC_INTERVAL":
+		return intValue(cfg.ServeSyncInterval)
 	case "SERVE_AUTOSTART":
 		if cfg.ServeAutostart {
 			return "1"

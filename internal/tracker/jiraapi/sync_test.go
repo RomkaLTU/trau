@@ -37,7 +37,7 @@ func TestSyncIssuesFiltersByProjectAndMapsContent(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	issues, err := New(srv.URL, "me@acme.com", "tok").SyncIssues(context.Background(), "PROJ")
+	issues, err := New(srv.URL, "me@acme.com", "tok").SyncIssues(context.Background(), "PROJ", "")
 	if err != nil {
 		t.Fatalf("SyncIssues: %v", err)
 	}
@@ -65,8 +65,44 @@ func TestSyncIssuesFiltersByProjectAndMapsContent(t *testing.T) {
 }
 
 func TestSyncIssuesNeedsProject(t *testing.T) {
-	if _, err := New("https://acme.atlassian.net", "me@acme.com", "tok").SyncIssues(context.Background(), "  "); err != ErrNotEnabled {
+	if _, err := New("https://acme.atlassian.net", "me@acme.com", "tok").SyncIssues(context.Background(), "  ", ""); err != ErrNotEnabled {
 		t.Fatalf("SyncIssues with blank project = %v, want ErrNotEnabled", err)
+	}
+}
+
+func TestSyncIssuesIncrementalNarrowsJQL(t *testing.T) {
+	tests := []struct {
+		name  string
+		since string
+		want  string
+	}{
+		{name: "valid cursor", since: "2026-07-10T09:30:00.000+0000", want: `updated >= "2026-07-10 09:30"`},
+		{name: "unparseable cursor falls back to full pull", since: "not-a-timestamp", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var gotReq searchRequest
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &gotReq)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"issues":[]}`))
+			}))
+			defer srv.Close()
+
+			if _, err := New(srv.URL, "me@acme.com", "tok").SyncIssues(context.Background(), "PROJ", tt.since); err != nil {
+				t.Fatalf("SyncIssues: %v", err)
+			}
+			if tt.want == "" {
+				if strings.Contains(gotReq.JQL, "updated >=") {
+					t.Fatalf("JQL = %q, want no incremental clause for an unparseable cursor", gotReq.JQL)
+				}
+				return
+			}
+			if !strings.Contains(gotReq.JQL, tt.want) {
+				t.Fatalf("JQL = %q, want it to contain %q", gotReq.JQL, tt.want)
+			}
+		})
 	}
 }
 

@@ -36,6 +36,7 @@ type Server struct {
 	stores        *hubstore.Stores
 	sup           Supervisor
 	drain         *drainer
+	syncer        *syncer
 	drainCtx      context.Context
 	newWriter     func(config.Config) (tracker.Writer, error)
 	newReader     func(config.Config) (tracker.Reader, error)
@@ -73,6 +74,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		skillsCache:   map[string]skillsCacheEntry{},
 	}
 	s.drain = newDrainer(s)
+	s.syncer = newSyncer(s)
 	return s
 }
 
@@ -83,10 +85,12 @@ const repoSweepInterval = 30 * time.Second
 
 // Start resumes draining any allowlisted repo whose queue was left draining, so
 // a serve restart picks the Queue back up instead of stalling it, and launches
-// the known-repos sweep. ctx governs both: cancelling it stops the drain loops
-// between children without killing a child already in flight, and ends the sweep.
-// Call it once before serving.
-func (s *Server) Start(ctx context.Context) {
+// the known-repos sweep, the derived-table ingest, and the background issue-store
+// sync on syncInterval. ctx governs them all: cancelling it stops the drain loops
+// between children without killing a child already in flight, and ends the
+// tickers. A non-positive syncInterval disables the background sync. Call it once
+// before serving.
+func (s *Server) Start(ctx context.Context, syncInterval time.Duration) {
 	s.drainCtx = ctx
 	for _, root := range s.effectiveRoots() {
 		items, draining, err := s.stores.Queue(root).Snapshot()
@@ -99,6 +103,7 @@ func (s *Server) Start(ctx context.Context) {
 	}
 	go s.sweepKnownRepos(ctx)
 	go s.runIngest(ctx)
+	go s.syncer.run(ctx, syncInterval)
 }
 
 // sweepKnownRepos periodically records the repos of the currently live loops in

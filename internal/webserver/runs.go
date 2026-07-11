@@ -42,13 +42,42 @@ type RunsResponse struct {
 func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, ReposResponse{Repos: s.repoViews()})
+		writeJSON(w, http.StatusOK, ReposResponse{Repos: s.withFreshness(s.repoViews())})
 	case http.MethodPost:
 		s.registerRepo(w, r)
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
+}
+
+// withFreshness attaches each repo's issue-store sync freshness — last synced,
+// currently syncing, last error, and the last good counts — read from the sync
+// bookkeeping and the background syncer. A repo that has never synced and is not
+// syncing carries no freshness, so the field stays absent for repos with no
+// tracker. It is applied only here so the shared repoViews path stays a pure read
+// for the other endpoints.
+func (s *Server) withFreshness(views []RepoView) []RepoView {
+	store := s.stores.Issues()
+	for i := range views {
+		root := views[i].Root
+		syncing := s.syncer.syncing(root)
+		st, err := store.SyncState(root)
+		if err != nil {
+			continue
+		}
+		if st.LastSyncedAt == "" && st.LastError == "" && !syncing {
+			continue
+		}
+		views[i].Freshness = &RepoFreshness{
+			LastSyncedAt: st.LastSyncedAt,
+			Syncing:      syncing,
+			LastError:    st.LastError,
+			LastIssues:   st.LastIssues,
+			LastComments: st.LastComments,
+		}
+	}
+	return views
 }
 
 func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {

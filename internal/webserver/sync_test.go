@@ -118,6 +118,66 @@ func TestSyncIsIdempotentAndCachesBinding(t *testing.T) {
 	}
 }
 
+func TestSyncSecondPullIsIncremental(t *testing.T) {
+	fake := &fakeReader{synced: syncedFixture()}
+	ts, _, _ := syncServer(t, fake)
+
+	res, _ := postSync(t, ts, "acme")
+	_ = res.Body.Close()
+	if fake.syncSince != "" {
+		t.Fatalf("first pull since = %q, want a full pull", fake.syncSince)
+	}
+
+	res, _ = postSync(t, ts, "acme")
+	_ = res.Body.Close()
+	if fake.syncSince != "2026-07-10T12:00:00Z" {
+		t.Fatalf("second pull since = %q, want the stored cursor", fake.syncSince)
+	}
+}
+
+func TestSyncEmptyIncrementalPullKeepsCursor(t *testing.T) {
+	fake := &fakeReader{synced: syncedFixture()}
+	ts, root, store := syncServer(t, fake)
+
+	res, _ := postSync(t, ts, "acme")
+	_ = res.Body.Close()
+
+	fake.synced = nil
+	res, _ = postSync(t, ts, "acme")
+	_ = res.Body.Close()
+
+	st, err := store.SyncState(root)
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	if st.Cursor != "2026-07-10T12:00:00Z" {
+		t.Fatalf("cursor = %q, want it preserved when nothing changed", st.Cursor)
+	}
+}
+
+func TestSyncTrackerErrorKeepsLastGoodCursor(t *testing.T) {
+	fake := &fakeReader{synced: syncedFixture()}
+	ts, root, store := syncServer(t, fake)
+
+	res, _ := postSync(t, ts, "acme")
+	_ = res.Body.Close()
+
+	fake.syncErr = errors.New("linear: 500")
+	res, _ = postSync(t, ts, "acme")
+	_ = res.Body.Close()
+
+	st, err := store.SyncState(root)
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	if st.LastError == "" {
+		t.Fatalf("state = %+v, want the failure recorded", st)
+	}
+	if st.Cursor != "2026-07-10T12:00:00Z" || st.LastSyncedAt == "" {
+		t.Fatalf("state = %+v, want the last good cursor and synced time preserved", st)
+	}
+}
+
 func TestSyncUnknownRepo(t *testing.T) {
 	ts, _, _ := syncServer(t, &fakeReader{})
 	res, _ := postSync(t, ts, "ghost")
