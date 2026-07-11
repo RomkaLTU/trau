@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
@@ -29,6 +30,11 @@ type RunDetail struct {
 	// skills installed — the durable build_no_skills warning, surfaced so the
 	// page can flag a silently skill-less build.
 	NoSkills bool `json:"no_skills,omitempty"`
+	// Removed is true when the run's ticket is a synced issue the tracker no longer
+	// holds — deleted, archived, or moved out of the Project and tombstoned by a
+	// reconciliation sweep. The run detail still renders from its durable artifacts;
+	// the flag lets the page mark that the underlying ticket is gone.
+	Removed bool `json:"removed,omitempty"`
 }
 
 // AnomalyView is one flagged cost anomaly for a run, read from
@@ -112,7 +118,19 @@ func (s *Server) handleRunDetail(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown run"})
 		return
 	}
-	writeJSON(w, http.StatusOK, runDetail(repo.RunsDir, ticket))
+	writeJSON(w, http.StatusOK, s.runDetail(repo, ticket))
+}
+
+// runDetail assembles a ticket's run detail from its durable artifacts and marks
+// it removed when the ticket is a synced issue the tracker no longer holds — the
+// store's tombstone. The lookup degrades to not-removed on any store error so a
+// store hiccup never fails an otherwise-renderable run.
+func (s *Server) runDetail(repo registry.Repo, ticket string) RunDetail {
+	d := runDetail(repo.RunsDir, ticket)
+	if iss, ok, err := s.stores.Issues().Get(repo.Root, ticket); err == nil && ok && iss.DeletedAt != "" {
+		d.Removed = true
+	}
+	return d
 }
 
 // runExists reports whether ticket has a durable checkpoint under runsDir.

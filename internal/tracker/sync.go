@@ -82,6 +82,10 @@ func (r *linearReader) SyncPull(ctx context.Context, binding ProjectBinding, sin
 	return out, nil
 }
 
+func (r *linearReader) ProjectIdentifiers(ctx context.Context, binding ProjectBinding) ([]string, error) {
+	return r.client.ProjectIssueIDs(ctx, binding.TeamID, binding.ProjectID)
+}
+
 func linearSynced(iss *linearapi.SyncIssue) SyncedIssue {
 	out := SyncedIssue{
 		ID:          iss.Identifier,
@@ -133,6 +137,14 @@ func (r *jiraReader) SyncPull(ctx context.Context, binding ProjectBinding, since
 		out = append(out, jiraSynced(&issues[i]))
 	}
 	return out, nil
+}
+
+func (r *jiraReader) ProjectIdentifiers(ctx context.Context, binding ProjectBinding) ([]string, error) {
+	key := strings.TrimSpace(binding.ProjectID)
+	if key == "" {
+		key = strings.TrimSpace(r.project)
+	}
+	return r.client.ProjectKeys(ctx, key)
 }
 
 func jiraSynced(iss *jiraapi.SyncIssue) SyncedIssue {

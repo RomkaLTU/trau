@@ -88,9 +88,10 @@ const repoSweepInterval = 30 * time.Second
 // the known-repos sweep, the derived-table ingest, and the background issue-store
 // sync on syncInterval. ctx governs them all: cancelling it stops the drain loops
 // between children without killing a child already in flight, and ends the
-// tickers. A non-positive syncInterval disables the background sync. Call it once
-// before serving.
-func (s *Server) Start(ctx context.Context, syncInterval time.Duration) {
+// tickers. A non-positive syncInterval disables the background sync; each sync
+// tick also runs the reconciliation sweep for repos due on reconcileInterval, so a
+// disabled sync disables the sweep too. Call it once before serving.
+func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time.Duration) {
 	s.drainCtx = ctx
 	for _, root := range s.effectiveRoots() {
 		items, draining, err := s.stores.Queue(root).Snapshot()
@@ -103,7 +104,7 @@ func (s *Server) Start(ctx context.Context, syncInterval time.Duration) {
 	}
 	go s.sweepKnownRepos(ctx)
 	go s.runIngest(ctx)
-	go s.syncer.run(ctx, syncInterval)
+	go s.syncer.run(ctx, syncInterval, reconcileInterval)
 }
 
 // sweepKnownRepos periodically records the repos of the currently live loops in
@@ -184,6 +185,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/reset", s.handleResetRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/clear", s.handleClearRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/sync", s.handleSync)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/resync", s.handleForceResync)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/reconcile", s.handleReconcileRepo)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/lessons", s.handleLessons)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills", s.handleSkills)

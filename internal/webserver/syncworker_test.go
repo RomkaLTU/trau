@@ -70,6 +70,34 @@ func TestSyncerReaderUnavailableBacksOffWithoutFailure(t *testing.T) {
 	}
 }
 
+func TestReconcileDueSchedulesAndBacksOff(t *testing.T) {
+	sy := newSyncer(nil)
+	sy.reconcileEvery = time.Hour
+	root := "/repo/acme"
+	sy.claim(root, time.Now())
+
+	if !sy.reconcileDue(root) {
+		t.Fatal("the first sweep should be due immediately")
+	}
+	sy.settleReconcile(root, nil)
+	if sy.reconcileDue(root) {
+		t.Fatal("a swept repo should not be due again until the interval elapses")
+	}
+	sy.settleReconcile(root, errors.New("boom"))
+	if sy.reconcileDue(root) {
+		t.Fatal("a failed sweep should back off before its next attempt")
+	}
+}
+
+func TestReconcileDisabledWhenIntervalZero(t *testing.T) {
+	sy := newSyncer(nil)
+	root := "/repo/acme"
+	sy.claim(root, time.Now())
+	if sy.reconcileDue(root) {
+		t.Fatal("reconcile must stay off when its interval is zero")
+	}
+}
+
 func TestReposFreshnessSurfacesSyncState(t *testing.T) {
 	fake := &fakeReader{synced: syncedFixture()}
 	ts, _, _ := syncServer(t, fake)

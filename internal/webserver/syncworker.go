@@ -25,11 +25,15 @@ const backlogStaleAfter = 60 * time.Second
 
 // repoSync is one repo's background-sync state: whether a pull is in flight right
 // now, how many times in a row it has failed, and the earliest time it is due for
-// another attempt (pushed into the future while backing off).
+// another attempt (pushed into the future while backing off). The reconcile fields
+// track the reconciliation sweep's own cadence, which piggybacks on the sync tick:
+// reconcileAt is when the next sweep is due and reconcileFailures backs it off.
 type repoSync struct {
-	syncing     bool
-	failures    int
-	nextAttempt time.Time
+	syncing           bool
+	failures          int
+	nextAttempt       time.Time
+	reconcileAt       time.Time
+	reconcileFailures int
 }
 
 // syncer refreshes each allowlisted repo's issue store from its tracker on an
@@ -39,10 +43,11 @@ type repoSync struct {
 type syncer struct {
 	srv *Server
 
-	mu       sync.Mutex
-	state    map[string]*repoSync
-	ctx      context.Context
-	interval time.Duration
+	mu             sync.Mutex
+	state          map[string]*repoSync
+	ctx            context.Context
+	interval       time.Duration
+	reconcileEvery time.Duration
 }
 
 func newSyncer(s *Server) *syncer {
@@ -51,14 +56,18 @@ func newSyncer(s *Server) *syncer {
 
 // run refreshes every repo on interval for the life of ctx: an immediate pass
 // seeds freshness on startup, then a tick fires the due repos. A non-positive
-// interval disables the loop, leaving the store to on-demand pulls only.
-func (sy *syncer) run(ctx context.Context, interval time.Duration) {
+// interval disables the loop, leaving the store to on-demand pulls only. Each sync
+// tick also runs a reconciliation sweep for any repo whose sweep is due on
+// reconcileEvery, so the two share one ticker; a non-positive reconcileEvery
+// disables the sweep, and disabling the sync loop disables it too.
+func (sy *syncer) run(ctx context.Context, interval, reconcileEvery time.Duration) {
 	if interval <= 0 {
 		return
 	}
 	sy.mu.Lock()
 	sy.ctx = ctx
 	sy.interval = interval
+	sy.reconcileEvery = reconcileEvery
 	sy.mu.Unlock()
 	sy.tick(ctx, interval)
 	t := time.NewTicker(interval)
@@ -90,7 +99,48 @@ func (sy *syncer) syncOne(ctx context.Context, interval time.Duration, root stri
 	ctx, cancel := context.WithTimeout(ctx, syncOnceTimeout)
 	defer cancel()
 	_, err := sy.srv.syncRepo(ctx, workspaceRepo(root))
+	if err == nil && sy.reconcileDue(root) {
+		sy.settleReconcile(root, sy.srv.reconcileRepo(ctx, workspaceRepo(root)))
+	}
 	sy.settle(root, interval, err)
+}
+
+// reconcileDue reports whether root is due for a reconciliation sweep — the sweep
+// cadence is enabled and its next-attempt time has passed. The sweep piggybacks on
+// the sync tick, so it runs at most once per successful sync.
+func (sy *syncer) reconcileDue(root string) bool {
+	sy.mu.Lock()
+	defer sy.mu.Unlock()
+	if sy.reconcileEvery <= 0 {
+		return false
+	}
+	st := sy.state[root]
+	return st != nil && !time.Now().Before(st.reconcileAt)
+}
+
+// settleReconcile records a finished reconciliation sweep on the repo's cadence:
+// success schedules the next sweep a full interval out; a tracker failure backs it
+// off exponentially, sharing the sync backoff shape; a repo with no direct
+// credentials checks in rarely rather than every tick.
+func (sy *syncer) settleReconcile(root string, err error) {
+	sy.mu.Lock()
+	defer sy.mu.Unlock()
+	st := sy.state[root]
+	if st == nil {
+		return
+	}
+	now := time.Now()
+	switch {
+	case err == nil:
+		st.reconcileFailures = 0
+		st.reconcileAt = now.Add(sy.reconcileEvery)
+	case errors.Is(err, tracker.ErrReaderUnavailable):
+		st.reconcileFailures = 0
+		st.reconcileAt = now.Add(syncBackoffCap)
+	default:
+		st.reconcileFailures++
+		st.reconcileAt = now.Add(syncBackoff(sy.reconcileEvery, st.reconcileFailures))
+	}
 }
 
 // claim marks a repo as syncing if it is due and idle, reporting whether the

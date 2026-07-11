@@ -82,6 +82,12 @@ type Reader interface {
 	// since is a tracker timestamp the pull is incremental, returning only issues
 	// updated after it; an empty since is a full Project pull.
 	SyncPull(ctx context.Context, binding ProjectBinding, since string) ([]SyncedIssue, error)
+	// ProjectIdentifiers returns just the human identifiers of every issue in the
+	// repo's Project — the cheap full set (identifiers only) a reconciliation sweep
+	// diffs against the store to catch issues deleted, archived, or moved out of the
+	// Project, which an updated-since SyncPull never reports (ADR 0007). binding
+	// carries the ids resolved by ResolveBinding.
+	ProjectIdentifiers(ctx context.Context, binding ProjectBinding) ([]string, error)
 }
 
 // NewReader builds a direct Reader for the provider from cfg, or
