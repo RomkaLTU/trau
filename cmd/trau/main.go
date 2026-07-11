@@ -36,6 +36,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/doctor"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
 	"github.com/RomkaLTU/trau/internal/planning"
@@ -213,6 +214,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		cfg.RepoRoot = repoRoot
 	}
 
+	if cfg.EffectiveTrackerProvider() == "internal" {
+		// Internal issue IDs are minted with the repo-derived InternalPrefix, not the
+		// COD fallback ResolvePrefix lands on with no team; align id parsing, branch
+		// inference, and scope so the CLI and resume paths recognize them.
+		cfg.IssuePrefix = config.InternalPrefix(cfg.IssuePrefixConfigured, repoName(cfg.RepoRoot))
+	}
+
 	if note := tui.SetTheme(cfg.Theme, cfg.ThemeColors); note != "" {
 		_, _ = fmt.Fprintln(stderr, note)
 	}
@@ -306,6 +314,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	pm, err := buildTracker(cfg, runner)
 	if err != nil {
 		return usageError{err}
+	}
+	var reg *registry.Handle
+	if usesHubStore(cfg) {
+		ensureHubForStore(ctx, cfg, stderr)
+		// Register before the standalone hub-backed commands (--list-eligible,
+		// --dry-run, --reset) so the hub can resolve this repo, the same way the loop
+		// path does before Pick. The main loop reuses this handle below.
+		reg = registry.Register(registry.Home(), cfg.RepoRoot, cfg.RunsDir)
+		defer reg.Deregister()
 	}
 
 	if opts.ListEligible {
@@ -459,8 +476,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	con.Logf("provider=%s · AUTO_MERGE=%v · max=%d%s%s", cfg.Provider, cfg.AutoMerge, maxIter, parentSuffix, budgetSuffix)
 
-	reg := registry.Register(registry.Home(), repoRoot, cfg.RunsDir)
-	defer reg.Deregister()
+	if reg == nil {
+		reg = registry.Register(registry.Home(), repoRoot, cfg.RunsDir)
+		defer reg.Deregister()
+	}
 	p.OnPhase = func(id, phase string) { reg.SetState(registry.StateWorking, id, phase) }
 
 	eng := &realEngine{pipe: p, tracker: pm, scope: scope, sink: sink, log: log}
@@ -583,6 +602,7 @@ func runDoctor(ctx context.Context, args []string, stderr io.Writer) error {
 }
 
 func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, error) {
+	provider := cfg.EffectiveTrackerProvider()
 	tc := tracker.Config{
 		Team:            cfg.LinearTeam,
 		Project:         cfg.Project,
@@ -591,7 +611,8 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		SplitLabel:      cfg.SplitLabel,
 		APIKey:          cfg.LinearAPIKey,
 	}
-	if cfg.TrackerProvider == "jira" {
+	switch provider {
+	case "jira":
 		tc.APIKey = cfg.JiraAPIToken
 		tc.BaseURL = cfg.JiraBaseURL
 		tc.Email = cfg.JiraEmail
@@ -603,8 +624,49 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		if jiraRESTComplete(cfg) {
 			runner = nil
 		}
+	case "internal":
+		// The internal provider drives issues through the hub over HTTP, never the
+		// database — so it needs the hub's origin, an optional bearer token, and the
+		// hub-registered repo name, but no agent runner.
+		tc.Repo = repoName(cfg.RepoRoot)
+		tc.HubBaseURL = hubBaseURL(cfg)
+		tc.HubToken = cfg.ServeToken
 	}
-	return tracker.New(cfg.TrackerProvider, runner, tc)
+	pm, err := tracker.New(provider, runner, tc)
+	if err != nil {
+		return nil, err
+	}
+	// A synced tracker with direct read credentials reads every issue from the hub's
+	// store, not the tracker: the loop's status/label writes still land on the tracker
+	// (and, in the same motion, the store row), but pick, prompts, and status all read
+	// local (ADR 0007). Without direct credentials the provider keeps its agent/MCP path.
+	if storeBackedProvider(cfg) {
+		hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+		pm = tracker.NewStoreBacked(pm, hub, repoName(cfg.RepoRoot), cfg.ReadyLabel, cfg.QuarantineLabel)
+	}
+	return pm, nil
+}
+
+// storeBackedProvider reports whether the repo's synced tracker (Linear or Jira)
+// carries the direct read credentials the hub needs to sync its Project into the
+// store, so the pipeline reads every ticket from the store instead of the tracker
+// (ADR 0007). Without them the loop keeps reading through the provider's agent/MCP path.
+func storeBackedProvider(cfg config.Config) bool {
+	switch cfg.EffectiveTrackerProvider() {
+	case "linear":
+		return strings.TrimSpace(cfg.LinearAPIKey) != ""
+	case "jira":
+		return jiraRESTComplete(cfg)
+	default:
+		return false
+	}
+}
+
+// usesHubStore reports whether the repo's tracker reads through the hub's issue
+// store — the internal provider always, and a synced provider with direct read
+// credentials — so the loop must bring the hub up and register the repo first.
+func usesHubStore(cfg config.Config) bool {
+	return cfg.EffectiveTrackerProvider() == "internal" || storeBackedProvider(cfg)
 }
 
 // jiraRESTComplete reports whether cfg carries a full set of Jira REST credentials

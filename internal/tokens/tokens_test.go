@@ -1,9 +1,11 @@
 package tokens
 
 import (
+	"bufio"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -310,5 +312,56 @@ func TestFlagIgnoresPriorRunSpend(t *testing.T) {
 
 	if got := s.Flag("COD-702"); len(got) != 0 {
 		t.Errorf("Flag re-flagged prior-run spend: %+v", got)
+	}
+}
+
+// --- ScanCalls ------------------------------------------------------------
+
+func TestScanCalls(t *testing.T) {
+	cost := ptr(0.25)
+	firstLine := `{"ts":"2026-07-11T10:00:00","phase":"build","input":10,"output":20,"cache_read":5,"cache_creation":1,"reasoning":2,"total":36,"cost_usd":0.25,"turns":3,"is_error":false,"provider":"claude","model":"opus","context":1000,"skills":["golang-pro"]}` + "\n"
+	body := firstLine +
+		"{not json}\n" +
+		`{"ts":"2026-07-11T10:01:00","phase":"verify","input":1,"output":1,"total":2,"cost_usd":null,"is_error":true}` + "\n"
+
+	calls, off := ScanCalls(bufio.NewReader(strings.NewReader(body)), 0)
+	if off != int64(len(body)) {
+		t.Fatalf("offset = %d, want %d", off, len(body))
+	}
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2 (malformed line skipped)", len(calls))
+	}
+
+	first := calls[0]
+	if first.Offset != int64(len(firstLine)) {
+		t.Fatalf("first offset = %d, want %d (end of first line)", first.Offset, len(firstLine))
+	}
+	if first.Phase != "build" || first.Total != 36 || first.CacheRead != 5 || first.Reasoning != 2 ||
+		first.Provider != "claude" || first.Model != "opus" || first.Context != 1000 {
+		t.Fatalf("first call = %+v", first)
+	}
+	if first.CostUSD == nil || *first.CostUSD != *cost {
+		t.Fatalf("first cost = %v, want %v", first.CostUSD, cost)
+	}
+	if len(first.Skills) != 1 || first.Skills[0] != "golang-pro" {
+		t.Fatalf("first skills = %v, want [golang-pro]", first.Skills)
+	}
+
+	second := calls[1]
+	if !second.IsError || second.CostUSD != nil {
+		t.Fatalf("second call = %+v, want is_error and nil cost", second)
+	}
+}
+
+func TestScanCallsLeavesTornTrailingLine(t *testing.T) {
+	full := `{"ts":"t1","phase":"build","total":5}` + "\n"
+	partial := `{"ts":"t2","phase":"verify","total":9}` // no trailing newline
+
+	calls, off := ScanCalls(bufio.NewReader(strings.NewReader(full+partial)), 0)
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1 (torn line held back)", len(calls))
+	}
+	if off != int64(len(full)) {
+		t.Fatalf("offset = %d, want %d (before the torn line)", off, len(full))
 	}
 }

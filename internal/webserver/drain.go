@@ -101,7 +101,7 @@ func (d *drainer) run(ctx context.Context, root string) {
 // enough to table-test.
 func (d *drainer) tick(root string) (drainAction, error) {
 	runsDir := repoRunsDir(root)
-	store := queue.NewStore(root)
+	store := d.srv.stores.Queue(root)
 	items, draining, err := store.Snapshot()
 	if err != nil {
 		return drainWait, err

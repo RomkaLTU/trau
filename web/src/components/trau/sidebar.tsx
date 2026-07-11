@@ -7,6 +7,7 @@ import {
   LayoutDashboard,
   Lightbulb,
   ListChecks,
+  ListTodo,
   Lock,
   Play,
   Puzzle,
@@ -17,6 +18,7 @@ import {
 } from 'lucide-react'
 
 import { useActiveRepo } from '@/components/trau/active-repo'
+import { GlobalSearch } from '@/components/trau/global-search'
 import { RepoSwitcher } from '@/components/trau/repo-switcher'
 import { useAttentionCount } from '@/lib/attention'
 import { healthQueryOptions } from '@/lib/health'
@@ -49,6 +51,7 @@ const GROUPS: NavGroup[] = [
         attention: true,
       },
       { label: 'Loop', icon: RefreshCw, to: '/loop', requiresProject: true },
+      { label: 'Backlog', icon: ListTodo, to: '/backlog', requiresProject: true },
       { label: 'Run once', icon: Play, to: '/run-once', requiresProject: true },
     ],
   },
@@ -124,6 +127,7 @@ export function Sidebar() {
           <span className="cursor-block text-primary">▍</span>
         </Link>
         <RepoSwitcher />
+        <GlobalSearch />
       </div>
 
       <nav className="flex-1 overflow-y-auto px-3 py-2">

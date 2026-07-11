@@ -2394,16 +2394,17 @@ func (p *Pipeline) ticketContext(ctx context.Context, id string) string {
 	return ticketContextNote(id, detail)
 }
 
-// ticketContextNote renders the injected ticket block, or "" when there is no
-// title or description to inject.
+// ticketContextNote renders the injected ticket block — title, description, and
+// comments — or "" when there is no content to inject.
 func ticketContextNote(id string, detail tracker.IssueDetail) string {
 	title := strings.TrimSpace(detail.Title)
 	desc := strings.TrimSpace(detail.Description)
-	if title == "" && desc == "" {
+	comments := ticketComments(detail.Comments)
+	if title == "" && desc == "" && comments == "" {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("\n\nThe ticket content is provided below (fetched via the tracker API) — work from it directly and do NOT call the Jira/Atlassian or Linear MCP to read " + id + ".\n\n=== " + id)
+	b.WriteString("\n\nThe ticket content is provided below (read from the issue store) — work from it directly and do NOT call the Jira/Atlassian or Linear MCP to read " + id + ".\n\n=== " + id)
 	if title != "" {
 		b.WriteString(": " + title)
 	}
@@ -2411,7 +2412,28 @@ func ticketContextNote(id string, detail tracker.IssueDetail) string {
 	if desc != "" {
 		b.WriteString(desc + "\n")
 	}
+	if comments != "" {
+		b.WriteString("\n--- Comments ---\n" + comments)
+	}
 	b.WriteString("=== end " + id + " ===")
+	return b.String()
+}
+
+// ticketComments renders an issue's comments as a prompt block, each attributed to
+// its author, or "" when there are none.
+func ticketComments(comments []tracker.IssueComment) string {
+	var b strings.Builder
+	for _, c := range comments {
+		body := strings.TrimSpace(c.Body)
+		if body == "" {
+			continue
+		}
+		author := strings.TrimSpace(c.Author)
+		if author == "" {
+			author = "unknown"
+		}
+		fmt.Fprintf(&b, "%s: %s\n", author, body)
+	}
 	return b.String()
 }
 

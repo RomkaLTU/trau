@@ -1,9 +1,12 @@
 package webserver
 
 import (
+	"encoding/json"
 	"net/http"
 	"sort"
 
+	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 )
@@ -42,12 +45,52 @@ type RunsResponse struct {
 func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, ReposResponse{Repos: s.repoViews()})
+		writeJSON(w, http.StatusOK, ReposResponse{Repos: s.withFreshness(s.repoViews())})
 	case http.MethodPost:
 		s.registerRepo(w, r)
 	default:
 		w.Header().Set("Allow", "GET, POST")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+// withFreshness attaches each repo's issue-store sync freshness — last synced,
+// currently syncing, last error, and the last good counts. A repo that has never
+// synced and is not syncing carries no freshness, so the field stays absent for
+// repos with no tracker. It is applied only here so the shared repoViews path
+// stays a pure read for the other endpoints.
+func (s *Server) withFreshness(views []RepoView) []RepoView {
+	for i := range views {
+		views[i].Freshness = s.freshnessFor(views[i].Root)
+	}
+	return views
+}
+
+// freshnessFor reads a repo's issue-store sync state and folds in the live syncing
+// flag, returning nil for a repo that has never synced and is not syncing.
+func (s *Server) freshnessFor(root string) *RepoFreshness {
+	st, err := s.stores.Issues().SyncState(root)
+	if err != nil {
+		return nil
+	}
+	return s.freshnessFrom(root, st)
+}
+
+// freshnessFrom builds a repo's freshness from an already-read sync state, folding
+// in whether a background sync is running right now. It returns nil for a repo
+// that has never synced and is not syncing, so the field stays absent where there
+// is no tracker.
+func (s *Server) freshnessFrom(root string, st hubstore.SyncState) *RepoFreshness {
+	syncing := s.syncer.syncing(root)
+	if st.LastSyncedAt == "" && st.LastError == "" && !syncing {
+		return nil
+	}
+	return &RepoFreshness{
+		LastSyncedAt: st.LastSyncedAt,
+		Syncing:      syncing,
+		LastError:    st.LastError,
+		LastIssues:   st.LastIssues,
+		LastComments: st.LastComments,
 	}
 }
 
@@ -62,7 +105,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
 		return
 	}
-	writeJSON(w, http.StatusOK, RunsResponse{Repo: repo.Name, Runs: collectRuns(repo.RunsDir)})
+	writeJSON(w, http.StatusOK, RunsResponse{Repo: repo.Name, Runs: s.collectRuns(repo.Root)})
 }
 
 // repoViews lists every repo the hub knows, flagging the ones a loop is running
@@ -83,7 +126,7 @@ func (s *Server) repoViews() []RepoView {
 		allowed[root] = true
 	}
 	registered := make(map[string]bool)
-	if roots, err := s.repos.Registered(); err == nil {
+	if roots, err := s.stores.Registrations().Registered(); err == nil {
 		for _, root := range roots {
 			registered[root] = true
 		}
@@ -112,7 +155,7 @@ func (s *Server) repoViews() []RepoView {
 // before the next sweep.
 func (s *Server) knownRepos(entries []registry.Entry) []registry.Repo {
 	byRoot := make(map[string]registry.Repo)
-	if persisted, err := s.repos.Known(); err == nil {
+	if persisted, err := s.stores.Registrations().Known(); err == nil {
 		for _, repo := range persisted {
 			byRoot[repo.Root] = repo
 		}
@@ -144,20 +187,48 @@ func (s *Server) findRepo(name string) (registry.Repo, bool) {
 	return registry.Repo{}, false
 }
 
-// collectRuns reads every checkpoint under runsDir into a board-ordered run list.
-// It is file-first: the runs read the same whether the loop is live, exited, or
-// never controlled by this hub.
-func collectRuns(runsDir string) []RunView {
-	store := state.NewStore(runsDir)
-	ids := store.Tickets()
-	runs := make([]RunView, 0, len(ids))
-	for _, id := range ids {
-		runs = append(runs, runView(store, id))
+// collectRuns reads every checkpoint the projection holds for root into a
+// board-ordered run list. It derives from the derived checkpoints table, not the
+// state files, so a poll never re-reads a checkpoint per field.
+func (s *Server) collectRuns(root string) []RunView {
+	rows, err := s.stores.Derived().Checkpoints(root)
+	if err != nil {
+		logger.Verbosef("checkpoints %s: %v", root, err)
+		rows = nil
+	}
+	runs := make([]RunView, 0, len(rows))
+	for _, tc := range rows {
+		runs = append(runs, runViewFromCheckpoint(tc))
 	}
 	sortRuns(runs)
 	return runs
 }
 
+func runViewFromCheckpoint(tc hubstore.TicketCheckpoint) RunView {
+	phase := tc.Phase
+	reason := tc.FailureReason
+	class := state.FailureClass(phase, checkpointField(tc.Data, "FAILURE_CLASS"), reason)
+	if phase == state.Merged {
+		reason = ""
+	}
+	return RunView{
+		Ticket:        tc.Ticket,
+		Title:         tc.Title,
+		Phase:         phase,
+		PhaseRank:     state.Idx(phase),
+		Terminal:      state.Terminal(phase),
+		Branch:        tc.Branch,
+		PR:            tc.PR,
+		PRURL:         tc.PRURL,
+		FailureClass:  class,
+		FailureReason: reason,
+		UpdatedAt:     tc.UpdatedAt,
+	}
+}
+
+// runView builds one ticket's row straight from its state file. The run board
+// derives from the projection, but the on-demand run detail already reads the
+// ticket's artifacts from disk, so it reads the checkpoint from the same file.
 func runView(store *state.Store, id string) RunView {
 	phase := store.Get(id, "PHASE")
 	reason := store.Get(id, "FAILURE_REASON")
@@ -178,6 +249,20 @@ func runView(store *state.Store, id string) RunView {
 		FailureReason: reason,
 		UpdatedAt:     store.Get(id, "UPDATED"),
 	}
+}
+
+// checkpointField pulls one raw state key out of a checkpoint's JSON data blob,
+// the board's source for fields it does not project into a column (the stored
+// failure class). A missing key or unparseable blob reads as empty.
+func checkpointField(data, key string) string {
+	if data == "" {
+		return ""
+	}
+	var m map[string]string
+	if json.Unmarshal([]byte(data), &m) != nil {
+		return ""
+	}
+	return m[key]
 }
 
 // sortRuns orders the board by phase rank, then by ticket so the column contents

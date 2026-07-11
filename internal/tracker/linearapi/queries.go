@@ -162,6 +162,82 @@ query Backlog($teamId: ID!, $after: String) {
 }
 `
 
+	// syncQuery pulls a Project's (or a whole team's) issues with the full content
+	// the hub's issue store keeps: description, comments, and timestamps. The
+	// filter is passed as an IssueFilter variable so the same query serves a
+	// project-scoped and a team-scoped pull, and it pages the cursor to the end.
+	syncQuery = `
+query SyncIssues($filter: IssueFilter!, $after: String) {
+  issues(first: 100, after: $after, filter: $filter) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      id
+      identifier
+      title
+      description
+      priority
+      dueDate
+      url
+      createdAt
+      updatedAt
+      state {
+        name
+        type
+      }
+      project {
+        id
+        name
+      }
+      parent {
+        identifier
+      }
+      labels {
+        nodes {
+          name
+        }
+      }
+      children {
+        nodes {
+          id
+        }
+      }
+      comments {
+        nodes {
+          id
+          body
+          createdAt
+          updatedAt
+          user {
+            name
+          }
+        }
+      }
+    }
+  }
+}
+`
+
+	// identifiersQuery pulls only the human identifier of a Project's (or team's)
+	// issues — the cheap full set a reconciliation sweep diffs against the local
+	// store. The filter is an IssueFilter variable so it serves a project-scoped
+	// and a team-scoped pull, and it pages the cursor to the end.
+	identifiersQuery = `
+query ProjectIdentifiers($filter: IssueFilter!, $after: String) {
+  issues(first: 250, after: $after, filter: $filter) {
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+    nodes {
+      identifier
+    }
+  }
+}
+`
+
 	// teamsQuery lists teams the key can see.
 	teamsQuery = `
 query Teams {

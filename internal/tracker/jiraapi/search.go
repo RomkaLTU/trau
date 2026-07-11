@@ -143,6 +143,32 @@ func (c *Client) Backlog(ctx context.Context, project string) ([]BacklogIssue, e
 	return out, nil
 }
 
+// ProjectKeys returns just the issue keys of every issue in a project — the cheap
+// identifier-only full set a reconciliation sweep diffs against the local store.
+// /search/jql returns ID-only issues when no fields are requested, so this asks
+// for none. It needs a project key; an empty one yields ErrNotEnabled.
+func (c *Client) ProjectKeys(ctx context.Context, project string) ([]string, error) {
+	if !c.enabled() {
+		return nil, ErrNotEnabled
+	}
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return nil, ErrNotEnabled
+	}
+	jql := "project = " + jqlQuote(project) + " ORDER BY key ASC"
+	raws, err := c.search(ctx, jql, nil)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(raws))
+	for i := range raws {
+		if raws[i].Key != "" {
+			out = append(out, raws[i].Key)
+		}
+	}
+	return out, nil
+}
+
 // eligibleJQL builds the ready-queue query: the project's issues that carry the
 // ready label, sit in the To-Do status category (unstarted — not In Progress or
 // Done), and are unresolved, ordered by priority, soonest due date, then key.
@@ -194,7 +220,7 @@ func (c *Client) search(ctx context.Context, jql string, fields []string) ([]sea
 
 type searchRequest struct {
 	JQL           string   `json:"jql"`
-	Fields        []string `json:"fields"`
+	Fields        []string `json:"fields,omitempty"`
 	MaxResults    int      `json:"maxResults"`
 	NextPageToken string   `json:"nextPageToken,omitempty"`
 }

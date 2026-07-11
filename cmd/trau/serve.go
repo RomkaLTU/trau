@@ -100,15 +100,23 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 	defer func() { err = errors.Join(err, db.Close()) }()
 	logger.Verbosef("hub database ready at %s (schema v%d)", db.Path(), db.Version())
 
-	repos := hubstore.NewRegistrations(db.SQL())
-	if err := repos.ImportLegacy(home); err != nil {
+	stores := hubstore.NewStores(db.SQL())
+	if err := stores.Registrations().ImportLegacy(home); err != nil {
 		return console.Actionable(err, "import legacy registration state",
 			"fix or move the named file aside, then restart trau serve")
 	}
+	if err := stores.ImportLegacyQueues(); err != nil {
+		return console.Actionable(err, "import legacy queue state",
+			"fix or move the named queue.json aside, then restart trau serve")
+	}
+	if err := stores.EnsureDerivedSchema(); err != nil {
+		return console.Actionable(err, "prepare derived run-history tables",
+			"the run artifacts on disk are unaffected; move trau.db aside and restart to rebuild them")
+	}
 
 	addr := net.JoinHostPort(cfg.ServeBind, strconv.Itoa(cfg.ServePort))
-	hub := webserver.New(version, cfg.ServeBind, cfg.ServeToken, cfg.ServeWorkspace, cfg.ServeAllowRegister, repos)
-	hub.Start(ctx)
+	hub := webserver.New(version, cfg.ServeBind, cfg.ServeToken, cfg.ServeWorkspace, cfg.ServeAllowRegister, stores)
+	hub.Start(ctx, time.Duration(cfg.ServeSyncInterval)*time.Second, time.Duration(cfg.ServeReconcileInterval)*time.Second)
 	srv := &http.Server{Addr: addr, Handler: hub.Handler()}
 
 	ln, err := net.Listen("tcp", addr)

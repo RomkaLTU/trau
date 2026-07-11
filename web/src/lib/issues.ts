@@ -90,6 +90,97 @@ export async function createIssue(
   return res.json()
 }
 
+// InternalIssueDraft is the editable content of an issue that lives only in the
+// hub store (ADR 0007): title, markdown description, workflow state (a status
+// group), labels, and an optional parent identifier nesting it under an epic.
+export interface InternalIssueDraft {
+  title: string
+  description?: string
+  state?: string
+  labels?: string[]
+  parent?: string
+}
+
+// InternalIssue is a stored internal issue as the create/edit forms read it — its
+// allocated PREFIX-N identifier, content, normalized state and display status.
+export interface InternalIssue {
+  repo: string
+  id: string
+  title: string
+  description: string
+  state: string
+  status: string
+  labels: string[]
+  parent?: string
+  source: string
+  has_children: boolean
+}
+
+// InternalState is the set of workflow states an internal issue can hold; these
+// mirror the store's normalized status groups.
+export const INTERNAL_STATES = [
+  'backlog',
+  'unstarted',
+  'started',
+  'done',
+  'canceled',
+] as const
+
+export async function createInternalIssue(
+  repo: string,
+  draft: InternalIssueDraft,
+): Promise<InternalIssue> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/issues/internal`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(draft),
+    },
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'create issue failed'))
+  }
+  return res.json()
+}
+
+async function fetchInternalIssue(repo: string, id: string): Promise<InternalIssue> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/issues/internal/${encodeURIComponent(id)}`,
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'fetch issue failed'))
+  }
+  return res.json()
+}
+
+export const internalIssueQueryOptions = (repo: string, id: string) =>
+  queryOptions({
+    queryKey: ['internal-issue', repo, id],
+    queryFn: () => fetchInternalIssue(repo, id),
+    enabled: repo !== '' && id !== '',
+    retry: false,
+  })
+
+export async function updateInternalIssue(
+  repo: string,
+  id: string,
+  draft: InternalIssueDraft,
+): Promise<InternalIssue> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/issues/internal/${encodeURIComponent(id)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(draft),
+    },
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'update issue failed'))
+  }
+  return res.json()
+}
+
 export async function addComment(
   repo: string,
   ticket: string,

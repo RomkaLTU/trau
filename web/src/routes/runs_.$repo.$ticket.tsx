@@ -8,6 +8,7 @@ import {
   Eyebrow,
   NoSkillsBanner,
   NoticeBanner,
+  RemovedBanner,
   RunActionsRow,
   StatusPill,
   TerminalCard,
@@ -131,6 +132,8 @@ function Detail({
       />
 
       {notice && <NoticeBanner notice={notice} onDismiss={onDismiss} />}
+
+      {run.removed && <RemovedBanner />}
 
       {run.no_skills && <NoSkillsBanner />}
 

@@ -33,10 +33,14 @@
 # Run `trau` with no arguments inside a repo that has no .trau.ini to start it.
 
 # --- project-management backend ---
-TRACKER_PROVIDER=linear      # linear | jira | github
+TRACKER_PROVIDER=linear      # linear | jira | github | internal
+                             # internal = trau's own issues in the hub (ADR 0007), no external tracker.
+                             # A repo with no Linear/Jira/GitHub configured uses internal automatically.
 LINEAR_TEAM=YourTeam         # your Linear team name, Jira project key, or GitHub repo slug (required for whole-team picks)
 ISSUE_PREFIX=                # ticket-ID prefix for parsing, branch inference, and sentinels
-                             # (e.g. COD, TMS, ENG). Empty = derive from the team key above; falls back to COD
+                             # (e.g. COD, TMS, ENG). Empty = derive from the team key above; falls back to COD.
+                             # Also names internally-created issues (LOOP-12); when unset, those default to
+                             # the repo directory name, sanitized uppercase — never the team key
 READY_LABEL=ready-for-agent
 QUARANTINE_LABEL=needs-human
 SPLIT_LABEL=needs-split      # label the pre-flight size judge applies to a ticket it flags as
@@ -423,6 +427,21 @@ SERVE_ALLOW_REGISTER=0
 # discovers through the registry is observe-only. Empty (the default) means the
 # hub starts nothing; stopping an already-running loop works regardless.
 # SERVE_WORKSPACE=/Users/me/Projects/salonradar,/Users/me/Projects/loop
+#
+# The hub refreshes each repo's local issue store from its tracker in the
+# background on this cadence (incremental pulls off the stored cursor, so an edit
+# in the tracker shows up within one interval, hands-off). A repo with a broken
+# tracker config backs off on its own without stalling the others. Set 0 to
+# disable it and rely on on-demand pulls only.
+SERVE_SYNC_INTERVAL=120        # seconds between background issue-store refreshes
+#
+# Incremental sync catches edits, but a ticket deleted, archived, or moved out of
+# the Project never shows up in an updated-since pull. A periodic reconciliation
+# sweep diffs the Project's full identifier set against the store and tombstones
+# the ones that vanished — dropped from the board and Queue, run artifacts kept,
+# internal issues never touched. The sweep runs on the sync tick, so it is bounded
+# below by SERVE_SYNC_INTERVAL; set 0 to disable it.
+SERVE_RECONCILE_INTERVAL=900   # seconds between reconciliation sweeps
 #
 # The first interactive TUI session brings the hub up on its own (one per
 # machine) so the web UI is there whenever you work with trau; it reuses any hub

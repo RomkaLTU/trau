@@ -384,3 +384,38 @@ func TestUnsetAbsentKeyOrFileIsNoOp(t *testing.T) {
 		t.Errorf("Unset of an absent key rewrote the file:\nbefore: %s\nafter: %s", before, after)
 	}
 }
+
+func TestLoad(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	if err := s.Set("COD-1", "PHASE", "built"); err != nil {
+		t.Fatalf("set phase: %v", err)
+	}
+	if err := s.Set("COD-1", "PR_URL", "https://example.com/pr/1?a=b"); err != nil {
+		t.Fatalf("set pr_url: %v", err)
+	}
+
+	fields, size, mtime, ok := s.Load("COD-1")
+	if !ok {
+		t.Fatal("Load ok = false, want true")
+	}
+	if fields["PHASE"] != "built" {
+		t.Fatalf("PHASE = %q, want built", fields["PHASE"])
+	}
+	if fields["PR_URL"] != "https://example.com/pr/1?a=b" {
+		t.Fatalf("PR_URL = %q, want the full value including '='", fields["PR_URL"])
+	}
+	if _, hasUpdated := fields["UPDATED"]; !hasUpdated {
+		t.Fatal("UPDATED key missing from Load")
+	}
+	if size <= 0 || mtime <= 0 {
+		t.Fatalf("size=%d mtime=%d, want both positive", size, mtime)
+	}
+}
+
+func TestLoadMissing(t *testing.T) {
+	s := NewStore(t.TempDir())
+	if _, _, _, ok := s.Load("nope"); ok {
+		t.Fatal("Load(missing) ok = true, want false")
+	}
+}

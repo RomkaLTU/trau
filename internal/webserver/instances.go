@@ -28,12 +28,26 @@ type Instance struct {
 // here after their loop exits so their runs stay browsable; an unallowed repo is
 // observe-only. Registered marks a repo whose startability comes from a web
 // registration rather than the SERVE_WORKSPACE seed, so the UI offers unregister
-// only where it applies.
+// only where it applies. Freshness carries the issue-store sync state and is
+// attached only on the repos API, where the background sync surfaces it.
 type RepoView struct {
 	registry.Repo
-	Live       bool `json:"live"`
-	Allowed    bool `json:"allowed"`
-	Registered bool `json:"registered"`
+	Live       bool           `json:"live"`
+	Allowed    bool           `json:"allowed"`
+	Registered bool           `json:"registered"`
+	Freshness  *RepoFreshness `json:"freshness,omitempty"`
+}
+
+// RepoFreshness is a repo's issue-store freshness: when it last synced from the
+// tracker, whether a background sync is running right now, the error from the
+// last failed attempt (empty once a sync succeeds), and the counts the last good
+// sync wrote. It is absent for a repo that has never synced and is not syncing.
+type RepoFreshness struct {
+	LastSyncedAt string `json:"last_synced_at,omitempty"`
+	Syncing      bool   `json:"syncing"`
+	LastError    string `json:"last_error,omitempty"`
+	LastIssues   int    `json:"last_issues,omitempty"`
+	LastComments int    `json:"last_comments,omitempty"`
 }
 
 // InstancesResponse is the /api/v1/instances resource: the live loops and every

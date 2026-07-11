@@ -1,11 +1,13 @@
 package webserver
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
@@ -37,7 +39,7 @@ func TestIssueReturnsTicket(t *testing.T) {
 		Project:   "trau",
 		InProject: true,
 	}}
-	ts := backlogServer(t, fake, nil)
+	_, ts, _, _ := backlogServer(t, fake, nil)
 
 	res, out := getIssue(t, ts, "acme", "COD-712")
 	defer func() { _ = res.Body.Close() }()
@@ -71,7 +73,7 @@ func TestIssueCrossProjectIsReturnedNotHidden(t *testing.T) {
 		Project:   "M4C",
 		InProject: false,
 	}}
-	ts := backlogServer(t, fake, nil)
+	_, ts, _, _ := backlogServer(t, fake, nil)
 
 	res, out := getIssue(t, ts, "acme", "M4C-54")
 	defer func() { _ = res.Body.Close() }()
@@ -87,7 +89,7 @@ func TestIssueCrossProjectIsReturnedNotHidden(t *testing.T) {
 }
 
 func TestIssueNotFound(t *testing.T) {
-	ts := backlogServer(t, &fakeReader{issueErr: tracker.ErrIssueNotFound}, nil)
+	_, ts, _, _ := backlogServer(t, &fakeReader{issueErr: tracker.ErrIssueNotFound}, nil)
 	res, _ := getIssue(t, ts, "acme", "COD-999")
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
@@ -96,7 +98,7 @@ func TestIssueNotFound(t *testing.T) {
 }
 
 func TestIssueUnknownRepo(t *testing.T) {
-	ts := backlogServer(t, &fakeReader{}, nil)
+	_, ts, _, _ := backlogServer(t, &fakeReader{}, nil)
 	res, _ := getIssue(t, ts, "nope", "COD-1")
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
@@ -105,7 +107,7 @@ func TestIssueUnknownRepo(t *testing.T) {
 }
 
 func TestIssueWithoutCredentials(t *testing.T) {
-	ts := backlogServer(t, nil, tracker.ErrReaderUnavailable)
+	_, ts, _, _ := backlogServer(t, nil, tracker.ErrReaderUnavailable)
 	res, _ := getIssue(t, ts, "acme", "COD-1")
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusUnprocessableEntity {
@@ -113,12 +115,113 @@ func TestIssueWithoutCredentials(t *testing.T) {
 	}
 }
 
+func TestIssueServedFromStore(t *testing.T) {
+	// A stored synced issue is served from the store — content, comments, and all —
+	// without consulting the tracker reader (whose title differs to prove it).
+	fake := &fakeReader{issue: tracker.IssueSummary{
+		BacklogItem: tracker.BacklogItem{ID: "COD-712", Title: "Reader title"},
+		InProject:   true,
+	}}
+	_, ts, root, store := backlogServer(t, fake, nil)
+	if _, _, err := store.Upsert(root, "linear", []hubstore.Issue{{
+		Identifier:  "COD-712",
+		Title:       "Store title",
+		Description: "The full description.",
+		Status:      "Todo",
+		StatusGroup: "unstarted",
+		Labels:      []string{"ready-for-agent"},
+		Comments:    []hubstore.Comment{{ExternalID: "c1", Author: "alice", Body: "a comment"}},
+	}}); err != nil {
+		t.Fatalf("seed synced: %v", err)
+	}
+
+	res, out := getIssue(t, ts, "acme", "COD-712")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	if out.Title != "Store title" {
+		t.Errorf("title = %q, want the store title (reads must not hit the tracker)", out.Title)
+	}
+	if out.Description != "The full description." {
+		t.Errorf("description = %q, want the stored description", out.Description)
+	}
+	if len(out.Comments) != 1 || out.Comments[0].Body != "a comment" {
+		t.Errorf("comments = %+v, want the stored comment", out.Comments)
+	}
+	if out.Source != "linear" || !out.InProject {
+		t.Errorf("source/in_project = %q/%v, want linear/true", out.Source, out.InProject)
+	}
+}
+
+func TestIssueMirrorUpdatesSyncedRow(t *testing.T) {
+	_, ts, root, store := backlogServer(t, nil, nil)
+	if _, _, err := store.Upsert(root, "linear", []hubstore.Issue{{
+		Identifier:  "COD-712",
+		Title:       "Fix booking",
+		Status:      "Todo",
+		StatusGroup: "unstarted",
+		Labels:      []string{"ready-for-agent"},
+	}}); err != nil {
+		t.Fatalf("seed synced: %v", err)
+	}
+
+	res := postIssueMirror(t, ts, "acme", "COD-712", SyncedMirrorRequest{
+		Status:       "In Progress",
+		StatusGroup:  "started",
+		AddLabels:    []string{"in-progress"},
+		RemoveLabels: []string{"ready-for-agent"},
+	})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+
+	_, out := getIssue(t, ts, "acme", "COD-712")
+	if out.Status != "In Progress" || out.Group != "started" {
+		t.Errorf("status/group = %q/%q, want In Progress/started", out.Status, out.Group)
+	}
+	if hasLabel(out.Labels, "ready-for-agent") || !hasLabel(out.Labels, "in-progress") {
+		t.Errorf("labels = %v, want the ready→in-progress swap mirrored", out.Labels)
+	}
+}
+
+func TestIssueMirrorRejectsNonSynced(t *testing.T) {
+	_, ts, root, store := backlogServer(t, nil, nil)
+	if _, err := store.CreateInternal(root, "LOOP", hubstore.InternalDraft{Title: "internal only"}); err != nil {
+		t.Fatalf("seed internal: %v", err)
+	}
+
+	// An unknown identifier and an internal issue are both un-mirrorable: only synced
+	// rows carry a tracker write.
+	for _, id := range []string{"COD-999", "LOOP-1"} {
+		res := postIssueMirror(t, ts, "acme", id, SyncedMirrorRequest{StatusGroup: "started"})
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusNotFound {
+			t.Errorf("mirror %s status = %d, want 404", id, res.StatusCode)
+		}
+	}
+}
+
+func postIssueMirror(t *testing.T, ts *httptest.Server, repo, id string, req SyncedMirrorRequest) *http.Response {
+	t.Helper()
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal mirror: %v", err)
+	}
+	res, err := http.Post(ts.URL+APIPrefix+"/repos/"+repo+"/issues/"+id, "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST issue mirror: %v", err)
+	}
+	return res
+}
+
 func TestIssueLabelsNeverNull(t *testing.T) {
 	fake := &fakeReader{issue: tracker.IssueSummary{
 		BacklogItem: tracker.BacklogItem{ID: "COD-5", Title: "No labels", Status: "Todo", Group: tracker.StatusGroupUnstarted},
 		InProject:   true,
 	}}
-	ts := backlogServer(t, fake, nil)
+	_, ts, _, _ := backlogServer(t, fake, nil)
 	res, out := getIssue(t, ts, "acme", "COD-5")
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {

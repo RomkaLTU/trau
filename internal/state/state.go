@@ -162,6 +162,30 @@ func (s *Store) Get(id, key string) string {
 	return val
 }
 
+// Load reads ticket id's checkpoint into every key it holds (last write wins per
+// key) alongside the file's size and modification time in nanoseconds, and whether
+// the file exists. It is the hub ingestion's read side — the size/mtime are its
+// change signal — so a missing or unreadable file yields ok=false, never an error.
+func (s *Store) Load(id string) (fields map[string]string, size, modTimeNS int64, ok bool) {
+	info, err := os.Stat(s.file(id))
+	if err != nil {
+		return nil, 0, 0, false
+	}
+	data, err := os.ReadFile(s.file(id))
+	if err != nil {
+		return nil, 0, 0, false
+	}
+	fields = map[string]string{}
+	for _, line := range strings.Split(string(data), "\n") {
+		key, val, found := strings.Cut(line, "=")
+		if !found || key == "" {
+			continue
+		}
+		fields[key] = val
+	}
+	return fields, info.Size(), info.ModTime().UnixNano(), true
+}
+
 // Set upserts key=value and refreshes the UPDATED timestamp, last-write-wins per
 // key: existing key= and UPDATED= lines are dropped, every other line keeps its
 // order, then key=value and UPDATED= are appended. The write is atomic (temp

@@ -47,16 +47,22 @@ const ExplorePreamble = "[Unattended run] You are running headless inside an aut
 // Config is the resolved loop configuration. Field defaults and names track the
 // trau.ini knobs documented in trau.ini.example.
 type Config struct {
-	LinearTeam      string
-	IssuePrefix     string
-	LinearAPIKey    string
-	JiraBaseURL     string
-	JiraEmail       string
-	JiraAPIToken    string
-	ReadyLabel      string
-	QuarantineLabel string
-	SplitLabel      string
-	Project         string
+	LinearTeam  string
+	IssuePrefix string
+	// IssuePrefixConfigured is ISSUE_PREFIX exactly as set in config (uppercased,
+	// empty when unset), captured before ResolvePrefix fills in a team- or
+	// fallback-derived value. The internal issue store reads it to tell an explicit
+	// prefix from a derived one, so an unset prefix names internal issues after the
+	// repo rather than the tracker team key (see InternalPrefix).
+	IssuePrefixConfigured string
+	LinearAPIKey          string
+	JiraBaseURL           string
+	JiraEmail             string
+	JiraAPIToken          string
+	ReadyLabel            string
+	QuarantineLabel       string
+	SplitLabel            string
+	Project               string
 
 	BaseBranch string
 	Remote     string
@@ -241,6 +247,17 @@ type Config struct {
 	// listed here stay observe-only too.
 	ServeWorkspace []string
 
+	// ServeSyncInterval is how many seconds the hub waits between background
+	// refreshes of each repo's issue store from its tracker. Zero disables the
+	// background sync, leaving the store to on-demand pulls only.
+	ServeSyncInterval int
+
+	// ServeReconcileInterval is how many seconds the hub waits between
+	// reconciliation sweeps — the full-identifier diff that tombstones synced
+	// issues deleted, archived, or moved out of the Project. The sweep runs on the
+	// sync tick, so it is bounded below by ServeSyncInterval; zero disables it.
+	ServeReconcileInterval int
+
 	// ServeAutostart lets the first interactive TUI session bring the hub up;
 	// ServeOpen opens the browser on a fresh spawn. Both default on (ADR 0004).
 	ServeAutostart bool
@@ -259,85 +276,87 @@ type Config struct {
 // nor the environment supplies a value.
 func Defaults() Config {
 	return Config{
-		LinearTeam:            "",
-		IssuePrefix:           "",
-		ReadyLabel:            "ready-for-agent",
-		QuarantineLabel:       "needs-human",
-		SplitLabel:            "needs-split",
-		Project:               "",
-		BaseBranch:            "main",
-		Remote:                "origin",
-		RepoRoot:              "",
-		Provider:              "claude",
-		TrackerProvider:       "linear",
-		ClaudeConfig:          "",
-		ClaudeBin:             "claude",
-		ClaudeFlags:           "--dangerously-skip-permissions",
-		AgentTimeout:          3600,
-		AgentCols:             120,
-		AgentRows:             40,
-		AgentStallWindow:      180,
-		AgentRetries:          2,
-		AgentBackoff:          10,
-		ClaudeModel:           "",
-		ClaudeEffort:          "",
-		ClaudeDisallowedTools: "Agent,Workflow",
-		CodexConfig:           "",
-		CodexBin:              "codex",
-		CodexFlags:            "--dangerously-bypass-approvals-and-sandbox",
-		CodexProfile:          "",
-		CodexModel:            "",
-		CodexEffort:           "",
-		KimiConfig:            "",
-		KimiBin:               "kimi",
-		KimiFlags:             "",
-		KimiModel:             "",
-		MaxIterations:         15,
-		MaxRepairs:            2,
-		MaxBugfixes:           2,
-		MaxPlanRounds:         3,
-		AutoMerge:             true,
-		MergeMethod:           "squash",
-		DeterministicCommit:   true,
-		CITimeout:             600,
-		CIPoll:                30,
-		ExpectedChecks:        "",
-		RequireCI:             true,
-		RequireRepoChanges:    true,
-		AutoStash:             true,
-		LintFix:               true,
-		Cleanup:               true,
-		StripMechanicalMCP:    true,
-		ExploreSubagents:      false,
-		BrowserVerify:         "auto",
-		AppURL:                "http://localhost",
-		VerifyChecks:          true,
-		VerifyPanelPolicy:     "unanimous",
-		PanelParallel:         true,
-		TUI:                   true,
-		Theme:                 "default",
-		EpicFlow:              true,
-		UsageWindow:           true,
-		UsageWindowPTY:        false,
-		Notify:                false,
-		Lessons:               true,
-		LessonsDistill:        false,
-		TimelogEnabled:        false,
-		TimelogStorage:        "repo",
-		TimelogOutputFormat:   "default",
-		TimelogEstimator:      "heuristic",
-		RunsDir:               ".trau/runs",
-		ServeBind:             "127.0.0.1",
-		ServePort:             8728,
-		ServeToken:            "",
-		ServeAllowRegister:    false,
-		ServeWorkspace:        nil,
-		ServeAutostart:        true,
-		ServeOpen:             true,
-		MaxTicketUSD:          0,
-		MaxTicketTokens:       0,
-		MaxDailyUSD:           0,
-		MaxDailyTokens:        0,
+		LinearTeam:             "",
+		IssuePrefix:            "",
+		ReadyLabel:             "ready-for-agent",
+		QuarantineLabel:        "needs-human",
+		SplitLabel:             "needs-split",
+		Project:                "",
+		BaseBranch:             "main",
+		Remote:                 "origin",
+		RepoRoot:               "",
+		Provider:               "claude",
+		TrackerProvider:        "linear",
+		ClaudeConfig:           "",
+		ClaudeBin:              "claude",
+		ClaudeFlags:            "--dangerously-skip-permissions",
+		AgentTimeout:           3600,
+		AgentCols:              120,
+		AgentRows:              40,
+		AgentStallWindow:       180,
+		AgentRetries:           2,
+		AgentBackoff:           10,
+		ClaudeModel:            "",
+		ClaudeEffort:           "",
+		ClaudeDisallowedTools:  "Agent,Workflow",
+		CodexConfig:            "",
+		CodexBin:               "codex",
+		CodexFlags:             "--dangerously-bypass-approvals-and-sandbox",
+		CodexProfile:           "",
+		CodexModel:             "",
+		CodexEffort:            "",
+		KimiConfig:             "",
+		KimiBin:                "kimi",
+		KimiFlags:              "",
+		KimiModel:              "",
+		MaxIterations:          15,
+		MaxRepairs:             2,
+		MaxBugfixes:            2,
+		MaxPlanRounds:          3,
+		AutoMerge:              true,
+		MergeMethod:            "squash",
+		DeterministicCommit:    true,
+		CITimeout:              600,
+		CIPoll:                 30,
+		ExpectedChecks:         "",
+		RequireCI:              true,
+		RequireRepoChanges:     true,
+		AutoStash:              true,
+		LintFix:                true,
+		Cleanup:                true,
+		StripMechanicalMCP:     true,
+		ExploreSubagents:       false,
+		BrowserVerify:          "auto",
+		AppURL:                 "http://localhost",
+		VerifyChecks:           true,
+		VerifyPanelPolicy:      "unanimous",
+		PanelParallel:          true,
+		TUI:                    true,
+		Theme:                  "default",
+		EpicFlow:               true,
+		UsageWindow:            true,
+		UsageWindowPTY:         false,
+		Notify:                 false,
+		Lessons:                true,
+		LessonsDistill:         false,
+		TimelogEnabled:         false,
+		TimelogStorage:         "repo",
+		TimelogOutputFormat:    "default",
+		TimelogEstimator:       "heuristic",
+		RunsDir:                ".trau/runs",
+		ServeBind:              "127.0.0.1",
+		ServePort:              8728,
+		ServeToken:             "",
+		ServeAllowRegister:     false,
+		ServeWorkspace:         nil,
+		ServeSyncInterval:      120,
+		ServeReconcileInterval: 900,
+		ServeAutostart:         true,
+		ServeOpen:              true,
+		MaxTicketUSD:           0,
+		MaxTicketTokens:        0,
+		MaxDailyUSD:            0,
+		MaxDailyTokens:         0,
 	}
 }
 
@@ -754,6 +773,8 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		c.ServeWorkspace = splitCSV(v)
 		sources["SERVE_WORKSPACE"] = src.name
 	}
+	num("SERVE_SYNC_INTERVAL", &c.ServeSyncInterval)
+	num("SERVE_RECONCILE_INTERVAL", &c.ServeReconcileInterval)
 	if v, src := get("SERVE_AUTOSTART"); v != "" {
 		c.ServeAutostart = v == "1"
 		sources["SERVE_AUTOSTART"] = src.name
@@ -767,6 +788,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	fnum("MAX_DAILY_USD", &c.MaxDailyUSD)
 	num("MAX_DAILY_TOKENS", &c.MaxDailyTokens)
 
+	c.IssuePrefixConfigured = strings.ToUpper(strings.TrimSpace(c.IssuePrefix))
 	c.IssuePrefix = ResolvePrefix(c.IssuePrefix, c.LinearTeam)
 
 	return c, sources, nil
@@ -785,6 +807,58 @@ func ResolvePrefix(prefix, team string) string {
 		return t
 	}
 	return "COD"
+}
+
+// EffectiveTrackerProvider resolves the tracker provider the loop actually uses.
+// An explicit choice — internal, jira, or github — is honored as-is. The default,
+// linear, falls back to the internal provider when no Linear configuration is
+// present, so a repo with no external tracker configured runs its own internal
+// issues through the hub (ADR 0007) instead of failing to reach a tracker.
+func (c Config) EffectiveTrackerProvider() string {
+	switch p := strings.ToLower(strings.TrimSpace(c.TrackerProvider)); p {
+	case "internal":
+		return "internal"
+	case "jira", "github":
+		return p
+	default:
+		if strings.TrimSpace(c.LinearTeam) != "" || strings.TrimSpace(c.LinearAPIKey) != "" {
+			return "linear"
+		}
+		return "internal"
+	}
+}
+
+// InternalPrefix resolves the prefix for internally-created issue identifiers
+// (ADR 0007). An explicitly configured ISSUE_PREFIX wins; with none set it derives
+// from the repo directory name, sanitized to an uppercase, branch- and
+// filesystem-safe token — never the tracker team key, so an internal id like
+// LOOP-12 cannot collide with the external tracker's own COD-12. It falls back to
+// "ISSUE" when nothing usable survives.
+func InternalPrefix(configured, repoName string) string {
+	if p := sanitizePrefix(configured); p != "" {
+		return p
+	}
+	if p := sanitizePrefix(repoName); p != "" {
+		return p
+	}
+	return "ISSUE"
+}
+
+// sanitizePrefix reduces s to the uppercase [A-Z][A-Z0-9]* token an issue
+// identifier's prefix must be: it uppercases, keeps only letters and digits, and
+// drops leading digits so the result always starts with a letter (the id shape
+// downstream regexes and git branch names require). Empty when nothing survives.
+func sanitizePrefix(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToUpper(strings.TrimSpace(s)) {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9' && b.Len() > 0:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // ValidatePrefix checks that a ticket id supplied on the command line matches the
@@ -1186,7 +1260,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "JIRA_BASE_URL", Advanced: true, Description: "Jira Cloud site base URL for the direct REST adapter (e.g. https://acme.atlassian.net)"},
 		{Key: "JIRA_EMAIL", Advanced: true, Description: "Atlassian account email for Jira REST Basic auth"},
 		{Key: "JIRA_API_TOKEN", Advanced: true, Description: "Classic (unscoped) Jira API token; enables direct REST calls with MCP fallback"},
-		{Key: "TRACKER_PROVIDER", Default: "linear", Description: "Ticket backend: linear | jira | github", Options: []string{"linear", "jira", "github"}},
+		{Key: "TRACKER_PROVIDER", Default: "linear", Description: "Ticket backend: linear | jira | github | internal (internal issues in the hub, no external tracker)", Options: []string{"linear", "jira", "github", "internal"}},
 		{Key: "READY_LABEL", Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
 		{Key: "QUARANTINE_LABEL", Default: "needs-human", Description: "Label applied when a ticket fails"},
 		{Key: "PROJECT", Description: "Linear project this repo owns — scopes the ready queue, guards cross-project runs, and targets filed bugs"},
@@ -1257,6 +1331,8 @@ func KnownKeys() []KeyMeta {
 		{Key: "SERVE_TOKEN", Advanced: true, Description: "Bearer token required for non-loopback `trau serve` binds; mandatory once SERVE_BIND leaves loopback"},
 		{Key: "SERVE_ALLOW_REGISTER", Default: "0", Advanced: true, Bool: true, Description: "Allow repo (un)registration on a non-loopback `trau serve` bind, on top of SERVE_TOKEN; loopback binds are always open (1 = yes, 0 = no)"},
 		{Key: "SERVE_WORKSPACE", Advanced: true, Description: "Comma-separated repo roots the hub may start loops in; repos outside this allowlist are observe-only. Empty = the hub starts nothing"},
+		{Key: "SERVE_SYNC_INTERVAL", Default: "120", Advanced: true, Description: "Seconds between background refreshes of each repo's issue store from its tracker (0 = disable, on-demand pulls only)"},
+		{Key: "SERVE_RECONCILE_INTERVAL", Default: "900", Advanced: true, Description: "Seconds between reconciliation sweeps that tombstone synced issues deleted, archived, or moved out of the Project (runs on the sync tick; 0 = disable)"},
 		{Key: "SERVE_AUTOSTART", Default: "1", Advanced: true, Bool: true, Description: "Bring the web UI hub up automatically on the first interactive TUI session when none is running (1 = yes, 0 = no)"},
 		{Key: "SERVE_OPEN", Default: "1", Advanced: true, Bool: true, Description: "Open the browser when autostart freshly spawns the hub (1 = yes, 0 = no); the daemon still starts when 0"},
 		{Key: "MAX_TICKET_USD", Description: "Per-ticket USD spend cap; over it the ticket is quarantined (empty = no cap)"},
@@ -1794,6 +1870,10 @@ func keyValue(cfg Config, key string) string {
 		return "0"
 	case "SERVE_WORKSPACE":
 		return strings.Join(cfg.ServeWorkspace, ",")
+	case "SERVE_SYNC_INTERVAL":
+		return intValue(cfg.ServeSyncInterval)
+	case "SERVE_RECONCILE_INTERVAL":
+		return intValue(cfg.ServeReconcileInterval)
 	case "SERVE_AUTOSTART":
 		if cfg.ServeAutostart {
 			return "1"

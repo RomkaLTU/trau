@@ -19,7 +19,7 @@ func seedRepo(t *testing.T, home, name string) string {
 	root := filepath.Join(t.TempDir(), name)
 	runsDir := filepath.Join(root, ".trau", "runs")
 	repo := registry.Repo{Name: name, Root: root, RunsDir: runsDir}
-	if err := testRegistrationsAt(t, home).Remember([]registry.Repo{repo}); err != nil {
+	if err := testStoresAt(t, home).Registrations().Remember([]registry.Repo{repo}); err != nil {
 		t.Fatalf("seed known repo: %v", err)
 	}
 	return runsDir
@@ -37,7 +37,7 @@ func seedRepos(t *testing.T, home string, names ...string) map[string]string {
 		repos = append(repos, registry.Repo{Name: name, Root: root, RunsDir: runsDir})
 		dirs[name] = runsDir
 	}
-	if err := testRegistrationsAt(t, home).Remember(repos); err != nil {
+	if err := testStoresAt(t, home).Registrations().Remember(repos); err != nil {
 		t.Fatalf("seed known repos: %v", err)
 	}
 	return dirs
@@ -109,7 +109,7 @@ func TestRunsBoardCoversEveryPhaseAndFailureClass(t *testing.T) {
 		"FAILURE_REASON": "unexpected error during verify: boom",
 	})
 
-	ts := instancesServer(t, home)
+	ts := ingestedServer(t, home)
 	out := getRuns(t, ts, "acme")
 
 	if out.Repo != "acme" {
@@ -185,11 +185,35 @@ func TestRunsMergedDropsStaleFailure(t *testing.T) {
 		"FAILURE_REASON": "claude rate/usage limit reached",
 	})
 
-	ts := instancesServer(t, home)
+	ts := ingestedServer(t, home)
 	r := runByTicket(getRuns(t, ts, "acme").Runs)["COD-1"]
 
 	if !r.Terminal || r.FailureClass != "" || r.FailureReason != "" {
 		t.Errorf("merged run = %+v, want terminal with no failure flag", r)
+	}
+}
+
+// TestRunsServedFromDatabaseNotStateFiles proves the board reads the derived
+// checkpoints table, not the state files: once ingested, deleting every state
+// file leaves the board — including the failure class read from the data blob —
+// intact.
+func TestRunsServedFromDatabaseNotStateFiles(t *testing.T) {
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	seedCheckpoint(t, runsDir, "COD-1", map[string]string{
+		"PHASE": state.Built, "TITLE": "wire up the thing",
+		"FAILURE_CLASS": state.FailPaused, "FAILURE_REASON": "claude rate/usage limit reached",
+	})
+
+	ts := ingestedServer(t, home)
+	removeGlob(t, filepath.Join(runsDir, "*", "state"))
+
+	r := runByTicket(getRuns(t, ts, "acme").Runs)["COD-1"]
+	if r.Phase != state.Built || r.Title != "wire up the thing" {
+		t.Fatalf("run after deleting state files = %+v, want built/\"wire up the thing\" (served from the db)", r)
+	}
+	if r.FailureClass != state.FailPaused || r.FailureReason != "claude rate/usage limit reached" {
+		t.Fatalf("failure after deleting state files = %q/%q, want the paused class from the db data blob", r.FailureClass, r.FailureReason)
 	}
 }
 

@@ -33,9 +33,10 @@ type Server struct {
 	token         string
 	allowRegister bool
 	workspace     []string
-	repos         *hubstore.Registrations
+	stores        *hubstore.Stores
 	sup           Supervisor
 	drain         *drainer
+	syncer        *syncer
 	drainCtx      context.Context
 	newWriter     func(config.Config) (tracker.Writer, error)
 	newReader     func(config.Config) (tracker.Reader, error)
@@ -51,9 +52,9 @@ type Server struct {
 // present token as a bearer credential. allowRegister opens repo (un)registration
 // on such a bind; loopback binds ignore it and stay open. workspace is the
 // allowlist of repo roots the hub may start loops in; anything outside it is
-// observe-only. repos is the hub-owned registration store backed by the hub
-// database.
-func New(version, bind, token string, workspace []string, allowRegister bool, repos *hubstore.Registrations) *Server {
+// observe-only. stores is the hub-owned store set backed by the hub database:
+// repo registrations and the per-repo queues.
+func New(version, bind, token string, workspace []string, allowRegister bool, stores *hubstore.Stores) *Server {
 	s := &Server{
 		version:       version,
 		started:       time.Now(),
@@ -63,7 +64,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, re
 		token:         token,
 		allowRegister: allowRegister,
 		workspace:     normalizeRoots(workspace),
-		repos:         repos,
+		stores:        stores,
 		sup:           newOSSupervisor(),
 		drainCtx:      context.Background(),
 		newWriter:     defaultWriter,
@@ -73,6 +74,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, re
 		skillsCache:   map[string]skillsCacheEntry{},
 	}
 	s.drain = newDrainer(s)
+	s.syncer = newSyncer(s)
 	return s
 }
 
@@ -83,13 +85,16 @@ const repoSweepInterval = 30 * time.Second
 
 // Start resumes draining any allowlisted repo whose queue was left draining, so
 // a serve restart picks the Queue back up instead of stalling it, and launches
-// the known-repos sweep. ctx governs both: cancelling it stops the drain loops
-// between children without killing a child already in flight, and ends the sweep.
-// Call it once before serving.
-func (s *Server) Start(ctx context.Context) {
+// the known-repos sweep, the derived-table ingest, and the background issue-store
+// sync on syncInterval. ctx governs them all: cancelling it stops the drain loops
+// between children without killing a child already in flight, and ends the
+// tickers. A non-positive syncInterval disables the background sync; each sync
+// tick also runs the reconciliation sweep for repos due on reconcileInterval, so a
+// disabled sync disables the sweep too. Call it once before serving.
+func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time.Duration) {
 	s.drainCtx = ctx
 	for _, root := range s.effectiveRoots() {
-		items, draining, err := queue.NewStore(root).Snapshot()
+		items, draining, err := s.stores.Queue(root).Snapshot()
 		if err != nil {
 			continue
 		}
@@ -98,6 +103,8 @@ func (s *Server) Start(ctx context.Context) {
 		}
 	}
 	go s.sweepKnownRepos(ctx)
+	go s.runIngest(ctx)
+	go s.syncer.run(ctx, syncInterval, reconcileInterval)
 }
 
 // sweepKnownRepos periodically records the repos of the currently live loops in
@@ -118,7 +125,7 @@ func (s *Server) sweepKnownRepos(ctx context.Context) {
 }
 
 func (s *Server) rememberLiveRepos() {
-	_ = s.repos.Remember(reposFromEntries(registry.Live(s.home)))
+	_ = s.stores.Registrations().Remember(reposFromEntries(registry.Live(s.home)))
 }
 
 // reposFromEntries projects live registry entries onto known-repo rows, naming a
@@ -162,6 +169,10 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/backlog", s.handleBacklog)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/epics/{epic}", s.handleEpicPreview)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues", s.handleCreateIssue)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/search", s.handleIssueSearch)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/internal", s.handleCreateInternalIssue)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/internal/{id}", s.handleInternalIssue)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/internal/{id}/transition", s.handleInternalTransition)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/{id}", s.handleIssue)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/prd", s.handlePublishPRD)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue", s.handleQueue)
@@ -173,6 +184,8 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/comment", s.handleRunComment)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/reset", s.handleResetRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/clear", s.handleClearRun)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/sync", s.handleSync)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/resync", s.handleForceResync)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/reconcile", s.handleReconcileRepo)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/lessons", s.handleLessons)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills", s.handleSkills)

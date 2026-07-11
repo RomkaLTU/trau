@@ -71,6 +71,41 @@ func maybeAutostartHub(ctx context.Context, cfg config.Config, noServe bool, std
 	}()
 }
 
+// hubBaseURL is the origin of the serve hub the loop reaches over HTTP, derived
+// from the configured bind and port with a loopback bind normalized for dialing.
+func hubBaseURL(cfg config.Config) string {
+	return "http://" + net.JoinHostPort(dialHost(cfg.ServeBind), strconv.Itoa(cfg.ServePort))
+}
+
+// ensureHubForStore guarantees the serve hub the issue store depends on is
+// reachable before the loop reads or writes an issue — the internal provider always,
+// and a synced provider whose reads come from the store (ADR 0007). It probes the
+// configured hub; if none answers it autostarts one (subject to SERVE_AUTOSTART and
+// the exposure policy) and waits for it to become healthy. Best-effort: a hub that
+// cannot be brought up leaves the provider to fail its first call with a clear error
+// rather than aborting the run here.
+func ensureHubForStore(ctx context.Context, cfg config.Config, stderr io.Writer) {
+	healthURL := hubBaseURL(cfg) + webserver.APIPrefix + "/health"
+	if probeHub(ctx, healthURL, cfg.ServeToken).isHub {
+		return
+	}
+	if err := webserver.CheckExposure(cfg.ServeBind, cfg.ServeToken); err != nil {
+		_, _ = fmt.Fprintf(stderr, "trau: the issue store needs the web hub, but it can't autostart (%v)\n", err)
+		return
+	}
+	if !cfg.ServeAutostart {
+		_, _ = fmt.Fprintf(stderr, "trau: the issue store needs the web hub — start it with `trau serve` or set SERVE_AUTOSTART=1\n")
+		return
+	}
+	if err := spawnDetachedServe(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "trau: could not autostart the web hub for the issue store: %v\n", err)
+		return
+	}
+	if !waitHubHealthy(ctx, healthURL, cfg.ServeToken) {
+		_, _ = fmt.Fprintf(stderr, "trau: the web hub did not become ready in time; issue-store operations may fail until it does\n")
+	}
+}
+
 type hubStatus struct {
 	reachable bool
 	isHub     bool

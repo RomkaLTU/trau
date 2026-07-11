@@ -82,7 +82,7 @@ func TestTimeseriesGroupsByProvider(t *testing.T) {
 	home := t.TempDir()
 	_, fmtDay := seedAnalyticsFixture(t, home)
 
-	ts := instancesServer(t, home)
+	ts := ingestedServer(t, home)
 	r := getTimeseries(t, ts, "?days=7")
 
 	if r.GroupBy != "provider" || r.Days != 7 || r.From != fmtDay(-6) || r.To != fmtDay(0) {
@@ -146,7 +146,7 @@ func TestTimeseriesFilters(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()
 	seedAnalyticsFixture(t, home)
-	ts := instancesServer(t, home)
+	ts := ingestedServer(t, home)
 
 	only := getTimeseries(t, ts, "?days=7&provider=claude")
 	if len(only.Series) != 1 || only.Series[0].Key != "claude" {
@@ -186,7 +186,7 @@ func TestTimeseriesUnknownBucketFilter(t *testing.T) {
 		{"build", tokens.Record{Input: 300, Output: 200, CostUSD: usd(0.50), Model: "claude-opus-4-8"}},
 		{"", tokens.Record{Input: 60, Output: 40, CostUSD: usd(0.02), Model: "mystery-model"}},
 	})
-	ts := instancesServer(t, home)
+	ts := ingestedServer(t, home)
 
 	all := getTimeseries(t, ts, "?days=7")
 	if !contains(all.Facets.Providers, "unknown") || !contains(all.Facets.Phases, "unknown") {
@@ -222,7 +222,7 @@ func TestTimeseriesGroupByDimensions(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()
 	seedAnalyticsFixture(t, home)
-	ts := instancesServer(t, home)
+	ts := ingestedServer(t, home)
 
 	byRepo := getTimeseries(t, ts, "?days=7&group_by=repo")
 	m := seriesByKey(byRepo.Series)
@@ -268,7 +268,7 @@ func TestTimeseriesCompareWindows(t *testing.T) {
 		{"verify", tokens.Record{Input: 60, Output: 40, CostUSD: usd(0.10), Model: "claude-sonnet-5"}},
 	})
 
-	ts := instancesServer(t, home)
+	ts := ingestedServer(t, home)
 
 	recent := getTimeseries(t, ts, "?from="+fmtDay(-6)+"&to="+fmtDay(0))
 	if recent.Days != 7 {
@@ -309,7 +309,7 @@ func TestTimeseriesInlineProviderWins(t *testing.T) {
 		{"build", tokens.Record{Input: 100, Output: 100, CostUSD: usd(0.20), Provider: "kimi", Model: "turbo-preview"}},
 	})
 
-	ts := instancesServer(t, home)
+	ts := ingestedServer(t, home)
 	r := getTimeseries(t, ts, "?days=7")
 	if len(r.Series) != 1 || r.Series[0].Key != "kimi" {
 		t.Fatalf("series = %+v, want a single kimi series from the inline provider", r.Series)
