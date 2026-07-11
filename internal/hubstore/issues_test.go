@@ -121,6 +121,53 @@ func TestIssuesAreScopedByRepo(t *testing.T) {
 	}
 }
 
+func TestRecordErrorPreservesLastGoodSync(t *testing.T) {
+	s := testIssues(t)
+
+	if err := s.RecordResult("/repo/acme", SyncResult{
+		Issues: 3, Comments: 5, Cursor: "2026-07-10T00:00:00Z", SyncedAt: "2026-07-11T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("RecordResult: %v", err)
+	}
+	if err := s.RecordError("/repo/acme", "tracker: 401 unauthorized"); err != nil {
+		t.Fatalf("RecordError: %v", err)
+	}
+
+	st, err := s.SyncState("/repo/acme")
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	if st.LastError != "tracker: 401 unauthorized" {
+		t.Fatalf("last error = %q, want the recorded failure", st.LastError)
+	}
+	if st.Cursor != "2026-07-10T00:00:00Z" || st.LastSyncedAt != "2026-07-11T00:00:00Z" || st.LastIssues != 3 {
+		t.Fatalf("state = %+v, want the last good cursor/synced/counts preserved", st)
+	}
+
+	if err := s.RecordResult("/repo/acme", SyncResult{
+		Issues: 4, Cursor: "2026-07-12T00:00:00Z", SyncedAt: "2026-07-12T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("RecordResult after recovery: %v", err)
+	}
+	if st, _ := s.SyncState("/repo/acme"); st.LastError != "" {
+		t.Fatalf("last error = %q, want cleared once a sync succeeds", st.LastError)
+	}
+}
+
+func TestRecordErrorOnFirstSyncInserts(t *testing.T) {
+	s := testIssues(t)
+	if err := s.RecordError("/repo/acme", "boom"); err != nil {
+		t.Fatalf("RecordError: %v", err)
+	}
+	st, err := s.SyncState("/repo/acme")
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	if st.LastError != "boom" || st.LastSyncedAt != "" || st.Cursor != "" {
+		t.Fatalf("state = %+v, want just the error on a never-synced repo", st)
+	}
+}
+
 func TestSyncBindingAndResultRoundTrip(t *testing.T) {
 	s := testIssues(t)
 

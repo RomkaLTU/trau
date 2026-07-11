@@ -39,7 +39,7 @@ func TestProjectIssuesFiltersByProjectAndMapsComments(t *testing.T) {
 
 	c := New("lin_key")
 	c.Endpoint = srv.URL
-	issues, err := c.ProjectIssues(context.Background(), "team-1", "proj-1")
+	issues, err := c.ProjectIssues(context.Background(), "team-1", "proj-1", "")
 	if err != nil {
 		t.Fatalf("ProjectIssues: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestProjectIssuesFallsBackToTeamFilter(t *testing.T) {
 
 	c := New("lin_key")
 	c.Endpoint = srv.URL
-	if _, err := c.ProjectIssues(context.Background(), "team-1", ""); err != nil {
+	if _, err := c.ProjectIssues(context.Background(), "team-1", "", ""); err != nil {
 		t.Fatalf("ProjectIssues: %v", err)
 	}
 	filter, _ := req.Variables["filter"].(map[string]any)
@@ -93,7 +93,56 @@ func TestProjectIssuesFallsBackToTeamFilter(t *testing.T) {
 
 func TestProjectIssuesNeedsATarget(t *testing.T) {
 	c := New("lin_key")
-	if _, err := c.ProjectIssues(context.Background(), "", ""); err != ErrNotEnabled {
+	if _, err := c.ProjectIssues(context.Background(), "", "", ""); err != ErrNotEnabled {
 		t.Fatalf("ProjectIssues with no target = %v, want ErrNotEnabled", err)
+	}
+}
+
+func TestProjectIssuesIncrementalFiltersUpdatedSince(t *testing.T) {
+	var req graphReq
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}`)
+	}))
+	defer srv.Close()
+
+	c := New("lin_key")
+	c.Endpoint = srv.URL
+	if _, err := c.ProjectIssues(context.Background(), "team-1", "proj-1", "2026-07-10T12:00:00Z"); err != nil {
+		t.Fatalf("ProjectIssues: %v", err)
+	}
+	filter, _ := req.Variables["filter"].(map[string]any)
+	updated, ok := filter["updatedAt"].(map[string]any)
+	if !ok {
+		t.Fatalf("filter = %#v, want an updatedAt clause for an incremental pull", filter)
+	}
+	if updated["gt"] != "2026-07-10T12:00:00Z" {
+		t.Fatalf("updatedAt = %#v, want gt the cursor", updated)
+	}
+}
+
+func TestProjectIssuesUnparseableCursorFallsBackToFullPull(t *testing.T) {
+	var req graphReq
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":{"issues":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[]}}}`)
+	}))
+	defer srv.Close()
+
+	c := New("lin_key")
+	c.Endpoint = srv.URL
+	if _, err := c.ProjectIssues(context.Background(), "team-1", "proj-1", "not-a-timestamp"); err != nil {
+		t.Fatalf("ProjectIssues: %v", err)
+	}
+	filter, _ := req.Variables["filter"].(map[string]any)
+	if _, hasProject := filter["project"]; !hasProject {
+		t.Fatalf("filter = %#v, want the full project filter", filter)
+	}
+	if _, hasUpdated := filter["updatedAt"]; hasUpdated {
+		t.Fatalf("filter = %#v, want no updatedAt clause for an unparseable cursor", filter)
 	}
 }

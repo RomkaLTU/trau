@@ -1,6 +1,10 @@
 package linearapi
 
-import "context"
+import (
+	"context"
+	"strings"
+	"time"
+)
 
 // SyncIssue is one issue pulled for the hub's local store: the full content trau
 // keeps as its working copy, including the description, comments, and timestamps
@@ -40,11 +44,14 @@ const syncMaxPages = 100
 // ProjectIssues pulls every issue in a project (when projectID is set) or a whole
 // team (when only teamID is set) with the full content sync needs, through one
 // server-side filter — never a per-issue fetch. It pages the cursor to the end.
-func (c *Client) ProjectIssues(ctx context.Context, teamID, projectID string) ([]SyncIssue, error) {
+// A non-empty since narrows the server-side filter to issues updated after that
+// tracker timestamp, so an incremental sync fetches only what changed; a cursor
+// Linear cannot parse falls back to a full pull.
+func (c *Client) ProjectIssues(ctx context.Context, teamID, projectID, since string) ([]SyncIssue, error) {
 	if c.apiKey == "" {
 		return nil, ErrNotEnabled
 	}
-	filter := issueFilter(teamID, projectID)
+	filter := issueFilter(teamID, projectID, since)
 	if filter == nil {
 		return nil, ErrNotEnabled
 	}
@@ -70,14 +77,35 @@ func (c *Client) ProjectIssues(ctx context.Context, teamID, projectID string) ([
 	return out, nil
 }
 
-func issueFilter(teamID, projectID string) map[string]any {
-	if projectID != "" {
-		return map[string]any{"project": map[string]any{"id": map[string]any{"eq": projectID}}}
+func issueFilter(teamID, projectID, since string) map[string]any {
+	var filter map[string]any
+	switch {
+	case projectID != "":
+		filter = map[string]any{"project": map[string]any{"id": map[string]any{"eq": projectID}}}
+	case teamID != "":
+		filter = map[string]any{"team": map[string]any{"id": map[string]any{"eq": teamID}}}
+	default:
+		return nil
 	}
-	if teamID != "" {
-		return map[string]any{"team": map[string]any{"id": map[string]any{"eq": teamID}}}
+	if s := updatedSince(since); s != "" {
+		filter["updatedAt"] = map[string]any{"gt": s}
 	}
-	return nil
+	return filter
+}
+
+// updatedSince validates a stored cursor against the timestamp shape Linear's
+// `updatedAt` returns before it is used as a server-side `gt` filter. An empty or
+// unparseable cursor yields "" so the pull falls back to a full project rather
+// than sending an uncoercible value the API rejects on every subsequent tick.
+func updatedSince(since string) string {
+	since = strings.TrimSpace(since)
+	if since == "" {
+		return ""
+	}
+	if _, err := time.Parse(time.RFC3339, since); err != nil {
+		return ""
+	}
+	return since
 }
 
 type syncQueryResponse struct {

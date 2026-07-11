@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // SyncIssue is one issue pulled for the hub's local store: the full content trau
@@ -46,8 +47,11 @@ var syncFields = []string{
 // SyncIssues pulls every issue in a project with the full content sync needs —
 // description and comments — through a server-side JQL project filter, paging the
 // nextPageToken to the end. It needs a project key; an empty one yields
-// ErrNotEnabled rather than a project-less query.
-func (c *Client) SyncIssues(ctx context.Context, project string) ([]SyncIssue, error) {
+// ErrNotEnabled rather than a project-less query. A non-empty since narrows the
+// JQL to issues updated at or after that tracker timestamp, so an incremental
+// sync fetches only what changed; a cursor Jira cannot parse falls back to a full
+// pull.
+func (c *Client) SyncIssues(ctx context.Context, project, since string) ([]SyncIssue, error) {
 	if !c.enabled() {
 		return nil, ErrNotEnabled
 	}
@@ -55,7 +59,7 @@ func (c *Client) SyncIssues(ctx context.Context, project string) ([]SyncIssue, e
 	if project == "" {
 		return nil, ErrNotEnabled
 	}
-	jql := "project = " + jqlQuote(project) + " ORDER BY updated DESC"
+	jql := "project = " + jqlQuote(project) + jqlUpdatedSince(since) + " ORDER BY updated DESC"
 	var out []SyncIssue
 	token := ""
 	for page := 0; page < searchMaxPages; page++ {
@@ -81,6 +85,33 @@ func (c *Client) SyncIssues(ctx context.Context, project string) ([]SyncIssue, e
 		token = resp.NextPageToken
 	}
 	return out, nil
+}
+
+// jqlDateFormat is the minute-precision literal JQL compares dates against; Jira
+// rejects the second/offset precision its REST timestamps carry.
+const jqlDateFormat = "2006-01-02 15:04"
+
+// jiraUpdatedLayouts are the timestamp shapes Jira's REST `updated` field comes
+// back in, tried in order to parse a stored cursor.
+var jiraUpdatedLayouts = []string{"2006-01-02T15:04:05.000-0700", "2006-01-02T15:04:05-0700"}
+
+// jqlUpdatedSince builds the incremental `AND updated >= "..."` clause from a
+// stored cursor, keeping the cursor's own wall-clock so it matches the account
+// timezone JQL evaluates the literal in. It compares at minute precision with
+// `>=` so an issue on the boundary minute is re-fetched rather than skipped — the
+// upsert is idempotent. An empty or unparseable cursor yields no clause, so the
+// pull falls back to the full project.
+func jqlUpdatedSince(since string) string {
+	since = strings.TrimSpace(since)
+	if since == "" {
+		return ""
+	}
+	for _, layout := range jiraUpdatedLayouts {
+		if t, err := time.Parse(layout, since); err == nil {
+			return ` AND updated >= ` + jqlQuote(t.Format(jqlDateFormat))
+		}
+	}
+	return ""
 }
 
 type syncSearchResponse struct {
