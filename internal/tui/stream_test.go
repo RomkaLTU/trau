@@ -1,8 +1,7 @@
 package tui
 
 import (
-	"os"
-	"path/filepath"
+	"context"
 	"strings"
 	"testing"
 
@@ -11,85 +10,90 @@ import (
 	"github.com/RomkaLTU/trau/internal/event"
 )
 
-// TestReadTailReturnsRawDelta checks a delta read returns the raw bytes appended
-// since offset (unmodified, for the emulator) and advances the offset.
-func TestReadTailReturnsRawDelta(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "phase.pty.log")
-	if err := os.WriteFile(path, []byte("\x1b[31mhello\x1b[0m"), 0o644); err != nil {
-		t.Fatal(err)
+type fakeTranscriptSource struct {
+	delta    TranscriptDelta
+	err      error
+	gotID    string
+	gotAfter int64
+}
+
+func (f *fakeTranscriptSource) Chunks(_ context.Context, _, id string, after int64) (TranscriptDelta, error) {
+	f.gotID, f.gotAfter = id, after
+	return f.delta, f.err
+}
+
+// TestPollTranscriptFromSource checks the live view polls the wired hub source with
+// the current session/cursor and wraps its delta as the emulator message.
+func TestPollTranscriptFromSource(t *testing.T) {
+	src := &fakeTranscriptSource{delta: TranscriptDelta{ID: "1-build", Cols: 80, Rows: 24, Data: []byte("hi"), Seq: 3}}
+	SetTranscriptSource(src, "acme")
+	t.Cleanup(func() { SetTranscriptSource(nil, "") })
+
+	msg, ok := pollTranscript("1-build", 2)().(streamDataMsg)
+	if !ok {
+		t.Fatal("poll must produce a streamDataMsg")
 	}
-	first := readTail(path, 0)
-	if string(first.data) != "\x1b[31mhello\x1b[0m" {
-		t.Errorf("data = %q, want raw bytes unchanged", first.data)
+	if msg.id != "1-build" || string(msg.data) != "hi" || msg.seq != 3 {
+		t.Fatalf("delta = %+v, want the source's chunk", msg)
 	}
-	if again := readTail(path, first.offset); len(again.data) != 0 {
-		t.Errorf("expected empty delta at EOF, got %q", again.data)
-	}
-	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
-	_, _ = f.WriteString("\x1b[2Jmore")
-	_ = f.Close()
-	if d := readTail(path, first.offset); string(d.data) != "\x1b[2Jmore" {
-		t.Errorf("delta = %q, want only the new bytes", d.data)
+	if src.gotID != "1-build" || src.gotAfter != 2 {
+		t.Fatalf("source polled with id=%q after=%d, want 1-build/2", src.gotID, src.gotAfter)
 	}
 }
 
-// TestReadTailMissingFileIsNoOp checks a not-yet-created transcript is a no-op.
-func TestReadTailMissingFileIsNoOp(t *testing.T) {
-	got := readTail(filepath.Join(t.TempDir(), "absent.pty.log"), 7)
-	if len(got.data) != 0 || got.offset != 7 {
-		t.Errorf("missing file: got data=%q offset=%d, want empty at offset 7", got.data, got.offset)
+// TestPollTranscriptNoSource checks the empty-source guard idles at the cursor
+// instead of erroring, so a run without a hub leaves the pane blank.
+func TestPollTranscriptNoSource(t *testing.T) {
+	SetTranscriptSource(nil, "")
+	msg := pollTranscript("1-build", 5)().(streamDataMsg)
+	if len(msg.data) != 0 || msg.seq != 5 {
+		t.Fatalf("no source: got data=%q seq=%d, want empty at seq 5", msg.data, msg.seq)
 	}
 }
 
-// TestStreamDataTruncationResetsScreen checks a truncated delta rebuilds the
-// emulator before writing, so a phase that reused its transcript in place shows
-// only the new frame instead of splicing it onto the stale one.
-func TestStreamDataTruncationResetsScreen(t *testing.T) {
+// TestStreamDataAppends checks a matching-id delta lands in the emulator and
+// advances the cursor, while a stale-id delta is dropped.
+func TestStreamDataAppends(t *testing.T) {
 	m := initialModel(nil)
-	m.streamPath = "/runs/1-build.pty.log"
+	m.streamID = "1-build"
 	m.streamCols, m.streamRows = 80, 24
 	m.startStream()
 
-	nm, _ := m.Update(streamDataMsg{path: m.streamPath, offset: 5, data: []byte("AAAAA")})
+	nm, _ := m.Update(streamDataMsg{id: "1-build", seq: 4, data: []byte("AAAAA")})
 	m = nm.(model)
 	if !strings.Contains(strings.Join(m.stream.Lines(), ""), "AAAAA") {
-		t.Fatal("first frame must land in the emulator")
+		t.Fatal("matching-id delta must land in the emulator")
+	}
+	if m.streamSeq != 4 {
+		t.Errorf("streamSeq = %d, want 4 from the delta", m.streamSeq)
 	}
 
-	nm, _ = m.Update(streamDataMsg{path: m.streamPath, offset: 3, data: []byte("BBB"), truncated: true})
+	nm, _ = m.Update(streamDataMsg{id: "2-verify", seq: 1, data: []byte("BBB")})
 	m = nm.(model)
-	screen := strings.Join(m.stream.Lines(), "")
-	if strings.Contains(screen, "AAAAA") {
-		t.Errorf("truncation must reset the screen, still saw the stale frame:\n%s", screen)
-	}
-	if !strings.Contains(screen, "BBB") {
-		t.Errorf("truncation must write the fresh frame, got:\n%s", screen)
-	}
-	if m.streamOffset != 3 {
-		t.Errorf("streamOffset = %d, want 3 from the truncated delta", m.streamOffset)
+	if strings.Contains(strings.Join(m.stream.Lines(), ""), "BBB") {
+		t.Error("a delta for a stale session id must be dropped")
 	}
 }
 
-// TestApplyEventAgentStartTracksPath checks agent_start records the active
-// transcript path and updates it when a new phase opens a different file.
-func TestApplyEventAgentStartTracksPath(t *testing.T) {
+// TestApplyEventAgentStartTracksID checks agent_start records the active session id
+// and re-points (resetting the emulator) when a new phase starts.
+func TestApplyEventAgentStartTracksID(t *testing.T) {
 	m := initialModel(nil)
-	m.applyEvent(event.Event{Kind: event.KindAgentStart, Fields: map[string]any{"transcript_path": "/runs/1-build.pty.log"}})
-	if m.streamPath != "/runs/1-build.pty.log" {
-		t.Fatalf("streamPath = %q, want the build transcript", m.streamPath)
+	m.applyEvent(event.Event{Kind: event.KindAgentStart, Fields: map[string]any{"transcript_id": "1-build", "cols": 80, "rows": 24}})
+	if m.streamID != "1-build" {
+		t.Fatalf("streamID = %q, want the build session", m.streamID)
 	}
-	m.applyEvent(event.Event{Kind: event.KindAgentStart, Fields: map[string]any{"transcript_path": "/runs/2-verify.pty.log"}})
-	if m.streamPath != "/runs/2-verify.pty.log" {
-		t.Errorf("new phase must re-point, got %q", m.streamPath)
+	m.applyEvent(event.Event{Kind: event.KindAgentStart, Fields: map[string]any{"transcript_id": "2-verify"}})
+	if m.streamID != "2-verify" {
+		t.Errorf("new phase must re-point, got %q", m.streamID)
 	}
 }
 
-// TestWatchKeyTogglesStream checks w expands the full live screen when a
-// transcript is known and collapses it on the second press. The tail emulator
-// stays alive across the collapse so the span pane keeps showing live output.
+// TestWatchKeyTogglesStream checks w expands the full live screen when a session is
+// known and collapses it on the second press, keeping the emulator alive.
 func TestWatchKeyTogglesStream(t *testing.T) {
 	m := initialModel(nil)
-	m.streamPath = "/runs/1-build.pty.log"
+	m.streamID = "1-build"
 	w := tea.KeyPressMsg{Code: 'w', Text: "w"}
 
 	m, _, handled := m.handleKey(w)
@@ -105,8 +109,8 @@ func TestWatchKeyTogglesStream(t *testing.T) {
 	}
 }
 
-// TestRenderStreamPlaceholder checks the pane shows the live-view placeholder
-// when no live screen is active.
+// TestRenderStreamPlaceholder checks the pane shows the live-view placeholder when
+// no live screen is active.
 func TestRenderStreamPlaceholder(t *testing.T) {
 	m := initialModel(nil)
 	if out := m.renderStream(m.dims()); !strings.Contains(out, "live agent view") {

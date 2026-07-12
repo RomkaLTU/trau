@@ -288,7 +288,7 @@ func TestStatusGolden(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	s.Status(&buf, total)
+	WriteStatus(&buf, s, s.Root(), total)
 
 	want, err := os.ReadFile(filepath.Join("testdata", "status_rows.txt"))
 	if err != nil {
@@ -317,7 +317,7 @@ func TestStatusPlanningBucket(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	s.Status(&buf, total, Bucket{ID: "_plans", Label: "planning"}, Bucket{ID: "_empty", Label: "empty"})
+	WriteStatus(&buf, s, s.Root(), total, Bucket{ID: "_plans", Label: "planning"}, Bucket{ID: "_empty", Label: "empty"})
 	out := buf.String()
 
 	if !strings.Contains(out, "planning") {
@@ -334,7 +334,7 @@ func TestStatusPlanningBucket(t *testing.T) {
 func TestStatusEmptyGolden(t *testing.T) {
 	s := newStore(t)
 	var buf bytes.Buffer
-	s.Status(&buf, func(string) (int, float64, bool) { return 0, 0, true })
+	WriteStatus(&buf, s, s.Root(), func(string) (int, float64, bool) { return 0, 0, true })
 
 	raw, err := os.ReadFile(filepath.Join("testdata", "status_empty.txt"))
 	if err != nil {
@@ -395,7 +395,7 @@ func TestLoad(t *testing.T) {
 		t.Fatalf("set pr_url: %v", err)
 	}
 
-	fields, size, mtime, ok := s.Load("COD-1")
+	fields, ok := s.Load("COD-1")
 	if !ok {
 		t.Fatal("Load ok = false, want true")
 	}
@@ -408,14 +408,11 @@ func TestLoad(t *testing.T) {
 	if _, hasUpdated := fields["UPDATED"]; !hasUpdated {
 		t.Fatal("UPDATED key missing from Load")
 	}
-	if size <= 0 || mtime <= 0 {
-		t.Fatalf("size=%d mtime=%d, want both positive", size, mtime)
-	}
 }
 
 func TestLoadMissing(t *testing.T) {
 	s := NewStore(t.TempDir())
-	if _, _, _, ok := s.Load("nope"); ok {
+	if _, ok := s.Load("nope"); ok {
 		t.Fatal("Load(missing) ok = true, want false")
 	}
 }

@@ -9,19 +9,73 @@ import (
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubclient"
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
 
-// seedTokens appends the given per-phase calls to runs/<id>/tokens.jsonl through
-// the real Sink, so the detail resource reads the exact on-disk log shape the
-// pipeline writes.
-func seedTokens(t *testing.T, runsDir, id string, calls []phaseCall) {
+// seedTokenCalls appends the given per-phase calls to the authoritative token store
+// under the repo that owns runsDir, tagged with ts — the DB-first shape the loop now
+// posts (ADR 0008), replacing the old per-run tokens.jsonl.
+func seedTokenCalls(t *testing.T, home, runsDir, id, ts string, calls []phaseCall) {
 	t.Helper()
-	sink := tokens.New(runsDir)
-	sink.SetTicket(id)
+	root := filepath.Dir(filepath.Dir(runsDir))
+	rows := make([]hubstore.TokenCall, 0, len(calls))
 	for _, c := range calls {
-		sink.Append(c.phase, c.rec)
+		total := c.rec.Input + c.rec.Output + c.rec.CacheRead + c.rec.CacheCreation
+		if total <= 0 {
+			continue
+		}
+		rows = append(rows, hubstore.TokenCall{
+			Ticket:        id,
+			TS:            ts,
+			Phase:         c.phase,
+			Input:         c.rec.Input,
+			Output:        c.rec.Output,
+			CacheRead:     c.rec.CacheRead,
+			CacheCreation: c.rec.CacheCreation,
+			Reasoning:     c.rec.Reasoning,
+			Total:         total,
+			CostUSD:       c.rec.CostUSD,
+			Turns:         c.rec.Turns,
+			IsError:       c.rec.IsError,
+			Provider:      c.rec.Provider,
+			Model:         c.rec.Model,
+			Context:       c.rec.Context,
+		})
+	}
+	if err := testStoresAt(t, home).Tokens().Append(root, rows); err != nil {
+		t.Fatalf("seed token calls: %v", err)
+	}
+}
+
+// seedTokens appends the given per-phase calls at a fixed timestamp — for detail
+// tests where only the per-phase breakdown matters, not the date.
+func seedTokens(t *testing.T, home, runsDir, id string, calls []phaseCall) {
+	t.Helper()
+	seedTokenCalls(t, home, runsDir, id, "2026-07-12T12:00:00", calls)
+}
+
+// seedAnomalies detects and records the anomalies for the given per-phase spend on
+// the ticket, exercising DetectAnomalies plus the store round-trip.
+func seedAnomalies(t *testing.T, home, runsDir, id string, phases []tokens.PhaseSpend) {
+	t.Helper()
+	root := filepath.Dir(filepath.Dir(runsDir))
+	detected := tokens.DetectAnomalies(phases)
+	rows := make([]hubstore.Anomaly, len(detected))
+	for i, a := range detected {
+		rows[i] = hubstore.Anomaly{
+			TS:      "2026-07-12T12:00:00",
+			Phase:   a.Phase,
+			Output:  a.Output,
+			Turns:   a.Turns,
+			Cost:    a.Cost,
+			Reasons: a.Reasons,
+		}
+	}
+	if err := testStoresAt(t, home).Tokens().RecordAnomalies(root, id, rows); err != nil {
+		t.Fatalf("seed anomalies: %v", err)
 	}
 }
 
@@ -81,7 +135,7 @@ func TestRunDetailCompleteRun(t *testing.T) {
 		"BRANCH": "feature/COD-100-run-detail", "PR": "42",
 		"PR_URL": "https://github.com/acme/acme/pull/42",
 	})
-	seedTokens(t, runsDir, "COD-100", []phaseCall{
+	seedTokens(t, home, runsDir, "COD-100", []phaseCall{
 		{"build", tokens.Record{Input: 100, Output: 50, CacheRead: 10, CacheCreation: 5, CostUSD: usd(0.10), Turns: 3}},
 		{"build", tokens.Record{Input: 200, Output: 80, CacheRead: 20, CostUSD: usd(0.20), Turns: 4}},
 		{"handoff", tokens.Record{Input: 300, Output: 120, CostUSD: usd(0.05), Turns: 2}},
@@ -91,6 +145,7 @@ func TestRunDetailCompleteRun(t *testing.T) {
 	seedArtifact(t, runsDir, "COD-100", "handoff.md", "# QA brief\n\n- Check the detail renders.\n")
 	seedArtifact(t, runsDir, "COD-100", "rubric.json", `{"ticket":"COD-100","acceptance_criteria":["detail returns state keys","cost table sums exactly"],"non_goals":["editing runs"],"required_tests":["rundetail_test.go"],"ui_paths":["/runs/acme/COD-100"],"fail_conditions":["missing artifact errors"]}`)
 	seedArtifact(t, runsDir, "COD-100", "verdict.json", `{"pass":true,"summary":"all criteria hold","failures":[],"checks":[{"name":"tests","severity":"error","pass":true,"detail":"go test ok"}]}`)
+	seedArtifact(t, runsDir, "COD-100", "buildnotes.md", "files: internal/webserver/rundetail.go\ntest: rundetail_test.go\n")
 
 	ts := instancesServer(t, home)
 	d := getRunDetail(t, ts, "acme", "COD-100")
@@ -102,7 +157,7 @@ func TestRunDetailCompleteRun(t *testing.T) {
 		t.Errorf("PR reference = branch %q pr %q url %q, want carried through", d.Branch, d.PR, d.PRURL)
 	}
 
-	if !d.Artifacts.Handoff || !d.Artifacts.Rubric || !d.Artifacts.Verdict || !d.Artifacts.Tokens {
+	if !d.Artifacts.Handoff || !d.Artifacts.Rubric || !d.Artifacts.Verdict || !d.Artifacts.BuildNotes || !d.Artifacts.Tokens {
 		t.Errorf("artifacts = %+v, want all present", d.Artifacts)
 	}
 	if d.Handoff == "" {
@@ -113,6 +168,17 @@ func TestRunDetailCompleteRun(t *testing.T) {
 	}
 	if d.Verdict == nil || !d.Verdict.Pass || len(d.Verdict.Checks) != 1 {
 		t.Errorf("verdict = %+v, want a passing verdict with one check", d.Verdict)
+	}
+	if d.BuildNotes == "" {
+		t.Error("build notes missing, want the notes carried through from the store")
+	}
+
+	// The first GET folds the legacy files into the store and removes them: a
+	// completed run leaves no artifact files behind (AC #1, #4).
+	for _, name := range []string{"handoff.md", "rubric.json", "verdict.json", "buildnotes.md"} {
+		if _, err := os.Stat(filepath.Join(runsDir, "COD-100", name)); !os.IsNotExist(err) {
+			t.Errorf("legacy artifact %s survived the store cutover (err=%v)", name, err)
+		}
 	}
 
 	if len(d.Costs) != 4 {
@@ -145,6 +211,64 @@ func TestRunDetailCompleteRun(t *testing.T) {
 	}
 }
 
+// TestRunDetailReadsArtifactsFromStore covers the post-cutover path: artifacts
+// posted straight to the hub (no legacy files on disk) render on the detail page,
+// with build notes surfaced from the store.
+func TestRunDetailReadsArtifactsFromStore(t *testing.T) {
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	root := filepath.Dir(filepath.Dir(runsDir))
+	seedCheckpoint(t, runsDir, "COD-300", map[string]string{"PHASE": state.Verified, "TITLE": "store-native run"})
+
+	arts := testStoresAt(t, home).Artifacts()
+	_ = arts.Upsert(root, "COD-300", hubstore.ArtifactHandoff, "# brief from the hub")
+	_ = arts.Upsert(root, "COD-300", hubstore.ArtifactVerdict, `{"pass":false,"summary":"one failure","failures":["boom"]}`)
+	_ = arts.Upsert(root, "COD-300", hubstore.ArtifactBuildNotes, "notes straight to the store")
+
+	ts := instancesServer(t, home)
+	d := getRunDetail(t, ts, "acme", "COD-300")
+
+	if d.Handoff != "# brief from the hub" || !d.Artifacts.Handoff {
+		t.Errorf("handoff = %q present=%v, want the stored brief", d.Handoff, d.Artifacts.Handoff)
+	}
+	if d.Verdict == nil || d.Verdict.Pass || len(d.Verdict.Failures) != 1 {
+		t.Errorf("verdict = %+v, want a failing verdict with one failure", d.Verdict)
+	}
+	if d.BuildNotes != "notes straight to the store" || !d.Artifacts.BuildNotes {
+		t.Errorf("build notes = %q present=%v, want the stored notes", d.BuildNotes, d.Artifacts.BuildNotes)
+	}
+	if d.Rubric != nil || d.Artifacts.Rubric {
+		t.Errorf("rubric = %+v present=%v, want absent (never stored)", d.Rubric, d.Artifacts.Rubric)
+	}
+}
+
+// TestRunDetailArtifactPresentButEmpty covers the three-way present/empty/absent
+// distinction (ADR 0008): a rubric or verdict row that exists with empty or
+// malformed content flags present — so the page renders present-but-empty apart
+// from not-yet-produced — while its parsed field degrades to nil, not a 500.
+func TestRunDetailArtifactPresentButEmpty(t *testing.T) {
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	root := filepath.Dir(filepath.Dir(runsDir))
+	seedCheckpoint(t, runsDir, "COD-301", map[string]string{"PHASE": state.Verified})
+
+	arts := testStoresAt(t, home).Artifacts()
+	_ = arts.Upsert(root, "COD-301", hubstore.ArtifactRubric, "")
+	_ = arts.Upsert(root, "COD-301", hubstore.ArtifactVerdict, "{not valid json")
+
+	d := getRunDetail(t, instancesServer(t, home), "acme", "COD-301")
+
+	if !d.Artifacts.Rubric || d.Rubric != nil {
+		t.Errorf("rubric present=%v value=%+v, want present with a nil parse (empty content)", d.Artifacts.Rubric, d.Rubric)
+	}
+	if !d.Artifacts.Verdict || d.Verdict != nil {
+		t.Errorf("verdict present=%v value=%+v, want present with a nil parse (malformed content)", d.Artifacts.Verdict, d.Verdict)
+	}
+	if d.Artifacts.Handoff || d.Artifacts.BuildNotes {
+		t.Errorf("artifacts = %+v, want handoff/buildnotes absent (no row)", d.Artifacts)
+	}
+}
+
 // TestRunDetailPartialEarlyPhaseRun covers the degrade-gracefully contract: a run
 // still in its first phase has token spend but no handoff, rubric, verdict, or PR.
 // The resource returns 200 with those artifacts absent rather than erroring, and a
@@ -156,7 +280,7 @@ func TestRunDetailPartialEarlyPhaseRun(t *testing.T) {
 	seedCheckpoint(t, runsDir, "COD-101", map[string]string{
 		"PHASE": state.Building, "TITLE": "just started",
 	})
-	seedTokens(t, runsDir, "COD-101", []phaseCall{
+	seedTokens(t, home, runsDir, "COD-101", []phaseCall{
 		{"build", tokens.Record{Input: 100, Output: 50, Turns: 3}},
 	})
 
@@ -199,10 +323,9 @@ func TestRunDetailSurfacesAnomalies(t *testing.T) {
 	runsDir := seedRepo(t, home, "acme")
 	seedCheckpoint(t, runsDir, "COD-9", map[string]string{"PHASE": state.Building})
 
-	sink := tokens.New(runsDir)
-	sink.SetTicket("COD-9")
-	sink.Append("cleanup", tokens.Record{Output: 120_000, Turns: 8, CostUSD: usd(6.50)})
-	sink.Flag("COD-9")
+	seedAnomalies(t, home, runsDir, "COD-9", []tokens.PhaseSpend{
+		{Phase: "cleanup", Output: 120_000, Turns: 8, Cost: 6.50},
+	})
 
 	ts := instancesServer(t, home)
 	d := getRunDetail(t, ts, "acme", "COD-9")
@@ -214,8 +337,11 @@ func TestRunDetailSurfacesAnomalies(t *testing.T) {
 		t.Errorf("anomaly = %+v, want cleanup at $6.50 with reasons", a)
 	}
 
-	seedCheckpoint(t, runsDir, "COD-10", map[string]string{"PHASE": state.Building})
-	seedTokens(t, runsDir, "COD-10", []phaseCall{
+	root := filepath.Dir(filepath.Dir(runsDir))
+	if err := testStoresAt(t, home).Checkpoints().Upsert(root, "COD-10", map[string]string{"PHASE": state.Building}); err != nil {
+		t.Fatalf("seed checkpoint: %v", err)
+	}
+	seedTokens(t, home, runsDir, "COD-10", []phaseCall{
 		{"build", tokens.Record{Output: 100, Turns: 2, CostUSD: usd(0.10)}},
 	})
 	if quiet := getRunDetail(t, ts, "acme", "COD-10"); len(quiet.Anomalies) != 0 {
@@ -223,46 +349,57 @@ func TestRunDetailSurfacesAnomalies(t *testing.T) {
 	}
 }
 
-// seedEvents appends the given events as JSON lines to runs/events.jsonl, the
-// same repo-wide log the pipeline writes and the detail resource scans.
-func seedEvents(t *testing.T, runsDir string, events ...event.Event) {
-	t.Helper()
-	f, err := os.OpenFile(eventsPath(runsDir), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		t.Fatalf("open events log: %v", err)
-	}
-	defer func() { _ = f.Close() }()
-	for _, ev := range events {
-		line, err := json.Marshal(ev)
-		if err != nil {
-			t.Fatalf("marshal event: %v", err)
-		}
-		if _, err := f.Write(append(line, '\n')); err != nil {
-			t.Fatalf("write event: %v", err)
-		}
-	}
-}
-
 // TestRunDetailSurfacesNoSkillsWarning covers the run-detail side of the
-// skill-less build warning: a run with a build_no_skills event in the repo log
+// skill-less build warning: a run with a build_no_skills event in the table
 // carries no_skills, and a run without one does not — even when another ticket in
-// the same log was flagged.
+// the same repo was flagged.
 func TestRunDetailSurfacesNoSkillsWarning(t *testing.T) {
 	home := t.TempDir()
 	runsDir := seedRepo(t, home, "acme")
 	seedCheckpoint(t, runsDir, "COD-200", map[string]string{"PHASE": state.Built})
 	seedCheckpoint(t, runsDir, "COD-201", map[string]string{"PHASE": state.Built})
-	seedEvents(t, runsDir,
-		event.Event{Kind: event.KindAgentStart, Phase: "build", Fields: map[string]any{"ticket": "COD-200"}},
-		event.Event{Kind: event.KindBuildNoSkills, Phase: "build", Fields: map[string]any{"ticket": "COD-200"}},
-	)
 
 	ts := instancesServer(t, home)
+	postEvents(t, ts, "acme",
+		hubclient.Event{Kind: event.KindAgentStart, Phase: "build", Fields: `{"ticket":"COD-200"}`},
+		hubclient.Event{Kind: event.KindBuildNoSkills, Phase: "build", Fields: `{"ticket":"COD-200"}`},
+	)
+
 	if d := getRunDetail(t, ts, "acme", "COD-200"); !d.NoSkills {
 		t.Error("no_skills = false, want the flagged build surfaced")
 	}
 	if d := getRunDetail(t, ts, "acme", "COD-201"); d.NoSkills {
 		t.Error("no_skills = true for an unflagged run, want false")
+	}
+}
+
+// TestRunDetailServesHubOnlyCheckpoint covers the post-cutover run: a ticket that
+// exists only as an authoritative checkpoint row, with no legacy state file on
+// disk, still resolves to a 200 detail carrying its phase, branch, and PR — the
+// board and the detail page read the same table.
+func TestRunDetailServesHubOnlyCheckpoint(t *testing.T) {
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	root := filepath.Dir(filepath.Dir(runsDir))
+
+	if err := testStoresAt(t, home).Checkpoints().Upsert(root, "COD-7001", map[string]string{
+		"PHASE": state.PROpen, "TITLE": "hub-only run", "BRANCH": "feature/COD-7001",
+		"PR": "7", "PR_URL": "https://github.com/acme/acme/pull/7",
+	}); err != nil {
+		t.Fatalf("seed checkpoint row: %v", err)
+	}
+	if stateFileExists(runsDir, "COD-7001") {
+		t.Fatal("state file present, want a hub-only checkpoint with no file on disk")
+	}
+
+	ts := instancesServer(t, home)
+	d := getRunDetail(t, ts, "acme", "COD-7001")
+
+	if d.Ticket != "COD-7001" || d.Phase != state.PROpen || d.Title != "hub-only run" {
+		t.Errorf("detail = %+v, want the checkpoint's ticket/phase/title carried through", d.RunView)
+	}
+	if d.Branch != "feature/COD-7001" || d.PR != "7" || d.PRURL == "" {
+		t.Errorf("PR reference = branch %q pr %q url %q, want carried through", d.Branch, d.PR, d.PRURL)
 	}
 }
 

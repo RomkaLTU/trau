@@ -1,17 +1,13 @@
 // Package queue is the shared vocabulary of the per-Repo execution queue — the
-// item, sub-issue, status, and on-fault types the hub and its children both
-// speak — plus the drain-report file a queued child leaves for the hub on exit.
-// The queue itself, its order and drain state, lives in the hub database
-// (internal/hubstore, ADR 0007); only the `trau serve` process opens it. The
-// loop child never touches the queue: it only writes a drain report as a file,
-// so this package stays free of any database dependency.
+// item, sub-issue, status, on-fault, and drain-outcome types the hub and its
+// children both speak. The queue itself, its order and drain state, lives in the
+// hub database (internal/hubstore, ADR 0007); only the `trau serve` process opens
+// it. The loop child never touches the queue: it posts its exit outcome to the
+// hub over HTTP (ADR 0008), so this package stays free of any database dependency.
 package queue
 
 import (
-	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"time"
 )
 
@@ -87,38 +83,13 @@ var (
 	ErrRunning = errors.New("cannot remove a running item")
 )
 
-// DrainReport is what a headless queue-member child leaves for the hub drainer
-// on exit: when the run ended on a fault or provider pause, the failure class
-// and reason. It lets the drain settle an item — including an epic whose fault
-// lives on a sub-issue's checkpoint, not the epic's — from the child's own
-// outcome rather than the epic checkpoint, which never shows it.
+// DrainReport is how a headless queue-member child reports to the hub drainer how
+// it exited: when the run ended on a fault or provider pause, the failure class
+// and reason; both empty for a clean finish. It lets the drain settle an item —
+// including an epic whose fault lives on a sub-issue's checkpoint, not the epic's
+// — from the child's own outcome rather than the epic checkpoint, which never
+// shows it.
 type DrainReport struct {
 	Class  string `json:"class,omitempty"`
 	Reason string `json:"reason,omitempty"`
-}
-
-// WriteReport writes a drain report to path.
-func WriteReport(path string, r DrainReport) error {
-	data, err := json.Marshal(r)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
-}
-
-// ReadReport reads a drain report from path, reporting ok=false when the file is
-// absent or unreadable so the drain falls back to checkpoint-derived outcome.
-func ReadReport(path string) (DrainReport, bool) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return DrainReport{}, false
-	}
-	var r DrainReport
-	if err := json.Unmarshal(data, &r); err != nil {
-		return DrainReport{}, false
-	}
-	return r, true
 }

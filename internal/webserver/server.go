@@ -15,6 +15,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -25,25 +26,28 @@ const APIPrefix = "/api/v1"
 
 // Server serves the JSON API and the embedded SPA.
 type Server struct {
-	version       string
-	started       time.Time
-	assets        fs.FS
-	home          string
-	bind          string
-	token         string
-	allowRegister bool
-	workspace     []string
-	stores        *hubstore.Stores
-	sup           Supervisor
-	drain         *drainer
-	syncer        *syncer
-	drainCtx      context.Context
-	newWriter     func(config.Config) (tracker.Writer, error)
-	newReader     func(config.Config) (tracker.Reader, error)
-	installSkill  func(ctx context.Context, repoRoot, pkg string) error
-	removeSkill   func(ctx context.Context, repoRoot, name string) error
-	skillsMu      sync.Mutex
-	skillsCache   map[string]skillsCacheEntry
+	version          string
+	started          time.Time
+	assets           fs.FS
+	home             string
+	bind             string
+	token            string
+	allowRegister    bool
+	workspace        []string
+	stores           *hubstore.Stores
+	transcripts      *hubstore.Transcripts
+	events           *eventBroadcaster
+	transcriptEvents *transcriptBroadcaster
+	sup              Supervisor
+	drain            *drainer
+	syncer           *syncer
+	drainCtx         context.Context
+	newWriter        func(config.Config) (tracker.Writer, error)
+	newReader        func(config.Config) (tracker.Reader, error)
+	installSkill     func(ctx context.Context, repoRoot, pkg string) error
+	removeSkill      func(ctx context.Context, repoRoot, name string) error
+	skillsMu         sync.Mutex
+	skillsCache      map[string]skillsCacheEntry
 }
 
 // New builds a Server that reports version and treats now as its start time. It
@@ -52,26 +56,29 @@ type Server struct {
 // present token as a bearer credential. allowRegister opens repo (un)registration
 // on such a bind; loopback binds ignore it and stay open. workspace is the
 // allowlist of repo roots the hub may start loops in; anything outside it is
-// observe-only. stores is the hub-owned store set backed by the hub database:
-// repo registrations and the per-repo queues.
+// observe-only. stores is the hub-owned store set backed by the hub databases:
+// repo registrations, the per-repo queues, and the separate transcript chunk store.
 func New(version, bind, token string, workspace []string, allowRegister bool, stores *hubstore.Stores) *Server {
 	s := &Server{
-		version:       version,
-		started:       time.Now(),
-		assets:        assetsFS(),
-		home:          registry.Home(),
-		bind:          bind,
-		token:         token,
-		allowRegister: allowRegister,
-		workspace:     normalizeRoots(workspace),
-		stores:        stores,
-		sup:           newOSSupervisor(),
-		drainCtx:      context.Background(),
-		newWriter:     defaultWriter,
-		newReader:     defaultReader,
-		installSkill:  defaultInstallSkill,
-		removeSkill:   defaultRemoveSkill,
-		skillsCache:   map[string]skillsCacheEntry{},
+		version:          version,
+		started:          time.Now(),
+		assets:           assetsFS(),
+		home:             registry.Home(),
+		bind:             bind,
+		token:            token,
+		allowRegister:    allowRegister,
+		workspace:        normalizeRoots(workspace),
+		stores:           stores,
+		transcripts:      stores.Transcripts(),
+		events:           newEventBroadcaster(),
+		transcriptEvents: newTranscriptBroadcaster(),
+		sup:              newOSSupervisor(),
+		drainCtx:         context.Background(),
+		newWriter:        defaultWriter,
+		newReader:        defaultReader,
+		installSkill:     defaultInstallSkill,
+		removeSkill:      defaultRemoveSkill,
+		skillsCache:      map[string]skillsCacheEntry{},
 	}
 	s.drain = newDrainer(s)
 	s.syncer = newSyncer(s)
@@ -85,14 +92,18 @@ const repoSweepInterval = 30 * time.Second
 
 // Start resumes draining any allowlisted repo whose queue was left draining, so
 // a serve restart picks the Queue back up instead of stalling it, and launches
-// the known-repos sweep, the derived-table ingest, and the background issue-store
-// sync on syncInterval. ctx governs them all: cancelling it stops the drain loops
-// between children without killing a child already in flight, and ends the
-// tickers. A non-positive syncInterval disables the background sync; each sync
-// tick also runs the reconciliation sweep for repos due on reconcileInterval, so a
-// disabled sync disables the sweep too. Call it once before serving.
+// the known-repos sweep and the background issue-store sync on syncInterval. ctx
+// governs them all: cancelling it stops the drain loops between children without
+// killing a child already in flight, and ends the tickers. A non-positive
+// syncInterval disables the background sync; each sync tick also runs the
+// reconciliation sweep for repos due on reconcileInterval, so a disabled sync
+// disables the sweep too. Call it once before serving.
 func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time.Duration) {
 	s.drainCtx = ctx
+	s.importAllCheckpoints()
+	s.importAllArtifacts()
+	s.importAllLessons()
+	s.importAllPhaseLogs()
 	for _, root := range s.effectiveRoots() {
 		items, draining, err := s.stores.Queue(root).Snapshot()
 		if err != nil {
@@ -103,8 +114,43 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 		}
 	}
 	go s.sweepKnownRepos(ctx)
-	go s.runIngest(ctx)
 	go s.syncer.run(ctx, syncInterval, reconcileInterval)
+	go s.pruneRunData(ctx)
+}
+
+// runDataPruneInterval bounds how often the hub prunes run data past its retention
+// window, on top of the startup pass.
+const runDataPruneInterval = time.Hour
+
+// pruneRunData drops run data past its retention window on startup and on a
+// periodic timer (ADR 0008): transcript sessions from transcripts.db, reclaiming
+// their freed pages, and event and token-call rows from the authoritative store.
+// Checkpoints — the run summaries — are never pruned. Each pass is best-effort
+// hygiene, so a failure is logged and retried on the next tick rather than
+// surfaced.
+func (s *Server) pruneRunData(ctx context.Context) {
+	prune := func() {
+		if err := s.transcripts.Prune(); err != nil {
+			logger.Verbosef("prune transcripts: %v", err)
+		}
+		if err := s.stores.Events().Prune(); err != nil {
+			logger.Verbosef("prune events: %v", err)
+		}
+		if err := s.stores.Tokens().Prune(); err != nil {
+			logger.Verbosef("prune token calls: %v", err)
+		}
+	}
+	prune()
+	t := time.NewTicker(runDataPruneInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			prune()
+		}
+	}
 }
 
 // sweepKnownRepos periodically records the repos of the currently live loops in
@@ -125,7 +171,7 @@ func (s *Server) sweepKnownRepos(ctx context.Context) {
 }
 
 func (s *Server) rememberLiveRepos() {
-	_ = s.stores.Registrations().Remember(reposFromEntries(registry.Live(s.home)))
+	_ = s.stores.Registrations().Remember(reposFromEntries(s.liveInstances()))
 }
 
 // reposFromEntries projects live registry entries onto known-repo rows, naming a
@@ -159,6 +205,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(APIPrefix+"/health", s.handleHealth)
 	mux.HandleFunc(APIPrefix+"/instances", s.handleInstances)
+	mux.HandleFunc(APIPrefix+"/instances/{pid}", s.handleInstance)
 	mux.HandleFunc(APIPrefix+"/instances/{pid}/stop", s.handleStopInstance)
 	mux.HandleFunc(APIPrefix+"/costs", s.handleCosts)
 	mux.HandleFunc(APIPrefix+"/costs/timeseries", s.handleTimeseries)
@@ -179,8 +226,20 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/drain", s.handleQueueDrain)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}", s.handleQueueItem)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}/move", s.handleQueueMove)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/checkpoints", s.handleRepoCheckpoints)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs", s.handleRuns)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}", s.handleRunDetail)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/checkpoint", s.handleRunCheckpoint)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/artifacts", s.handleRunArtifacts)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/artifacts/{kind}", s.handleRunArtifact)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/drain-outcome", s.handleRunDrainOutcome)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/logs", s.handleRunPhaseLogs)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/logs/{phase}", s.handleRunPhaseLog)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/tokens", s.handleRunTokens)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/spend", s.handleRunSpend)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/anomalies", s.handleRunAnomalies)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/tokens", s.handleRepoTokens)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/tokens/day", s.handleTokenDay)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/comment", s.handleRunComment)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/reset", s.handleResetRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/clear", s.handleClearRun)
@@ -194,8 +253,10 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills/{$}", s.handleSkillItem)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/config", s.handleConfig)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/events", s.handleEvents)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/events/query", s.handleEventsQuery)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/events/stream", s.handleEventStream)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/transcripts", s.handleTranscripts)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/transcript/chunks", s.handleTranscriptChunks)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/transcript/stream", s.handleTranscriptStream)
 	mux.HandleFunc(APIPrefix+"/events/stream", s.handleAllEventStream)
 	mux.HandleFunc("/api/", handleAPINotFound)

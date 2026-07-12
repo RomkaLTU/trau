@@ -43,6 +43,7 @@ export interface Artifacts {
   handoff: boolean
   rubric: boolean
   verdict: boolean
+  build_notes: boolean
   tokens: boolean
 }
 
@@ -60,6 +61,7 @@ export interface RunDetail extends Run {
   handoff?: string
   rubric?: Rubric
   verdict?: Verdict
+  build_notes?: string
   artifacts: Artifacts
   no_skills?: boolean
   removed?: boolean

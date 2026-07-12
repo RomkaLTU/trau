@@ -38,7 +38,7 @@ func testStoresAt(t *testing.T, home string) *hubstore.Stores {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return hubstore.NewStores(db.SQL())
+	return hubstore.NewStores(db.SQL(), nil, hubstore.Retention{})
 }
 
 type signalCall struct {
@@ -257,18 +257,29 @@ func TestStartReportsSpawnFailure(t *testing.T) {
 	}
 }
 
-// findSpawnFailed returns the spawn_failed event recorded for ticket under
-// runsDir, if any — the durable record a dead-on-arrival child leaves for the run
-// page to read.
-func findSpawnFailed(t *testing.T, runsDir, ticket string) (FeedEvent, bool) {
+// findSpawnFailed returns the spawn_failed event recorded for ticket in the
+// authoritative events table, if any — the durable record a dead-on-arrival child
+// leaves for the run page to read.
+func findSpawnFailed(t *testing.T, home, root, ticket string) (FeedEvent, bool) {
 	t.Helper()
-	events, _ := readFeed(eventsPath(runsDir))
-	for _, ev := range events {
-		if ev.Kind == "spawn_failed" && strField(ev.Fields, "ticket") == ticket {
-			return ev, true
+	rows, err := testStoresAt(t, home).Events().Recent(root, 1000, 0)
+	if err != nil {
+		t.Fatalf("recent events: %v", err)
+	}
+	for _, row := range rows {
+		fe := feedEventFromRow(row)
+		if fe.Kind == "spawn_failed" && strField(fe.Fields, "ticket") == ticket {
+			return fe, true
 		}
 	}
 	return FeedEvent{}, false
+}
+
+func strField(fields map[string]any, key string) string {
+	if s, ok := fields[key].(string); ok {
+		return s
+	}
+	return ""
 }
 
 func TestStartRecordsDeadOnArrivalChild(t *testing.T) {
@@ -286,7 +297,7 @@ func TestStartRecordsDeadOnArrivalChild(t *testing.T) {
 		t.Fatalf("start status = %d, want 202", res.StatusCode)
 	}
 
-	ev, ok := findSpawnFailed(t, repoRunsDir(root), "COD-786")
+	ev, ok := findSpawnFailed(t, home, root, "COD-786")
 	if !ok {
 		t.Fatal("no spawn_failed event recorded for a child that died before registering")
 	}
@@ -307,7 +318,7 @@ func TestStartRecordsNoSpawnFailedOnCleanExit(t *testing.T) {
 	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-786"})
 	_ = res.Body.Close()
 
-	if _, ok := findSpawnFailed(t, repoRunsDir(root), "COD-786"); ok {
+	if _, ok := findSpawnFailed(t, home, root, "COD-786"); ok {
 		t.Error("a clean exit recorded a spawn_failed event — only a dead-on-arrival child should")
 	}
 }
@@ -315,15 +326,16 @@ func TestStartRecordsNoSpawnFailedOnCleanExit(t *testing.T) {
 func TestStartRecordsNoSpawnFailedWhenCheckpointExists(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(t.TempDir(), "acme")
-	runsDir := repoRunsDir(root)
-	seedCheckpoint(t, runsDir, "COD-786", map[string]string{"PHASE": state.Built})
+	if err := testStoresAt(t, home).Checkpoints().Upsert(root, "COD-786", map[string]string{"PHASE": state.Built}); err != nil {
+		t.Fatalf("seed checkpoint: %v", err)
+	}
 	fake, ts := controlServer(t, home, []string{root})
 	fake.onExitOutcome = &SpawnOutcome{ExitCode: 1, Stderr: "faulted late"}
 
 	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-786"})
 	_ = res.Body.Close()
 
-	if _, ok := findSpawnFailed(t, runsDir, "COD-786"); ok {
+	if _, ok := findSpawnFailed(t, home, root, "COD-786"); ok {
 		t.Error("a run that left a checkpoint recorded a spawn_failed event — its fault surfaces through the checkpoint")
 	}
 }

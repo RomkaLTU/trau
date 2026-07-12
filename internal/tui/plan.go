@@ -269,8 +269,8 @@ func (m planModel) Update(msg tea.Msg) (planModel, tea.Cmd) {
 
 	case eventMsg:
 		if m.step == planRunning && msg.ev.Kind == event.KindAgentStart {
-			if p := strField(msg.ev.Fields, "transcript_path"); p != "" {
-				m.stream.setPath(p, intField(msg.ev.Fields, "cols"), intField(msg.ev.Fields, "rows"))
+			if id := strField(msg.ev.Fields, "transcript_id"); id != "" {
+				m.stream.setID(id, intField(msg.ev.Fields, "cols"), intField(msg.ev.Fields, "rows"))
 				return m, m.stream.pump()
 			}
 		}

@@ -169,9 +169,9 @@ var (
 
 // Ledger is the pipeline's view of the token/cost sink: it points the bucket at
 // the current ticket (SetTicket) and reports accumulated spend for budget
-// enforcement (Total per ticket, DayTotal for the per-day window). *tokens.Sink
-// satisfies it; kept as a narrow interface so pipeline doesn't depend on the
-// tokens package.
+// enforcement (Total per ticket, DayTotal for the per-day window). The hub-backed
+// sink (internal/hubtokens) satisfies it; kept as a narrow interface so pipeline
+// doesn't depend on the tokens package.
 type Ledger interface {
 	SetTicket(id string)
 	Total(id string) (tokens int, cost float64, metered bool)
@@ -311,19 +311,22 @@ func parseRefusal(out string) (reason string, ok bool) {
 // Pipeline holds the collaborators a ticket run needs. One Pipeline is
 // constructed per process and reused across tickets.
 type Pipeline struct {
-	Runner      agent.Runner
-	State       *state.Store
-	Git         Git
-	GitHub      GitHub
-	Tracker     tracker.Tracker
-	Tokens      Ledger
-	Budget      budget.Limits
-	RunsDir     string
-	Base        string
-	Remote      string
-	Prefix      string
-	MaxRepairs  int
-	MaxBugfixes int
+	Runner       agent.Runner
+	State        state.Checkpoints
+	Artifacts    ArtifactStore
+	PhaseLogs    PhaseLogStore
+	LessonLedger LessonStore
+	Git          Git
+	GitHub       GitHub
+	Tracker      tracker.Tracker
+	Tokens       Ledger
+	Budget       budget.Limits
+	RunsDir      string
+	Base         string
+	Remote       string
+	Prefix       string
+	MaxRepairs   int
+	MaxBugfixes  int
 
 	// AgentRetries is how many times a TRANSIENT agent-step failure (timeout,
 	// output stall, non-rate-limit crash) is retried on a fresh process per
@@ -588,6 +591,8 @@ func (p *Pipeline) classifyPhaseErr(ctx context.Context, id string, err error) e
 		return err
 	case IsPaused(err):
 		return err
+	case errors.Is(err, state.ErrHubUnreachable):
+		return p.pauseHubUnreachable(id)
 	case isGiveUp(err):
 		return p.handleGiveUp(ctx, id, err)
 	case AsRefused(err) != nil:
@@ -847,6 +852,8 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 	_ = os.Remove(verifyPath(id))
 	_ = os.Remove(rubricPath(id))
 	_ = os.Remove(buildNotesPath(id))
+	p.clearArtifacts(id)
+	p.clearPhaseLogs(id)
 	_ = p.State.RemoveState(id)
 	if branch != "" {
 		p.logf("  reset %s: cleared saved state + branch %s", id, branch)
@@ -886,6 +893,8 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	_ = os.Remove(verifyPath(id))
 	_ = os.Remove(rubricPath(id))
 	_ = os.Remove(buildNotesPath(id))
+	p.clearArtifacts(id)
+	p.clearPhaseLogs(id)
 
 	if err := p.setPhase(id, state.Building); err != nil {
 		return fmt.Errorf("build %s: checkpoint building: %w", id, err)
@@ -1169,42 +1178,34 @@ func (p *Pipeline) persistHandoff(id string) {
 	if err != nil || len(data) == 0 {
 		return
 	}
-	dir := filepath.Join(p.RunsDir, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	_ = os.WriteFile(filepath.Join(dir, "handoff.md"), data, 0o644)
+	p.putArtifact(id, artifactHandoff, string(data))
 }
 
-// persistVerdict mirrors the graded verify verdict into runs/<ID>/verdict.json so
-// the last QA outcome survives a reboot and is readable out of band (the web hub
-// renders it on the run detail page). Best-effort and silent.
+// persistVerdict stores the graded verify verdict through the hub so the last QA
+// outcome survives a reboot and is readable out of band (the web hub renders it on
+// the run detail page). Best-effort and silent.
 func (p *Pipeline) persistVerdict(id string, v verdict) {
-	dir := filepath.Join(p.RunsDir, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
 	data, err := json.Marshal(v)
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(filepath.Join(dir, "verdict.json"), data, 0o644)
+	p.putArtifact(id, artifactVerdict, string(data))
 }
 
-// restoreHandoff copies the durable runs/<ID>/handoff.md back to /tmp when /tmp
-// lost it (wiped on reboot), so a resumed verify reuses the exact brief the
-// handoff produced — and the matching rubric — instead of regenerating a fresh
-// pair. Best-effort: it leaves /tmp untouched when a non-empty copy is already
-// there or no durable copy exists.
+// restoreHandoff copies the durable handoff brief back to /tmp when /tmp lost it
+// (wiped on reboot), so a resumed verify reuses the exact brief the handoff
+// produced — and the matching rubric — instead of regenerating a fresh pair.
+// Best-effort: it leaves /tmp untouched when a non-empty copy is already there or
+// the hub holds none.
 func (p *Pipeline) restoreHandoff(id string) {
 	if fi, err := os.Stat(handoffPath(id)); err == nil && fi.Size() > 0 {
 		return
 	}
-	data, err := os.ReadFile(filepath.Join(p.RunsDir, id, "handoff.md"))
-	if err != nil || len(data) == 0 {
+	content, ok := p.getArtifact(id, artifactHandoff)
+	if !ok || content == "" {
 		return
 	}
-	_ = os.WriteFile(handoffPath(id), data, 0o644)
+	_ = os.WriteFile(handoffPath(id), []byte(content), 0o644)
 }
 
 // Verify is the real test gate (EXPECTED_CHECKS is empty), run in a fresh,
@@ -1250,7 +1251,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	rubricRef, rubricOK := p.activeRubric(id)
 	switch {
 	case rubricOK:
-		p.logf("  ↳ rubric: runs/%s/rubric.json → verify", id)
+		p.logf("  ↳ rubric → verify")
 	case briefPresent:
 		p.logf("  ⚠ no usable rubric — verify grades from the brief alone")
 	}
@@ -1993,7 +1994,7 @@ func (p *Pipeline) agentPhaseOn(ctx context.Context, id, phase, prompt string, r
 			p.buildProvider, _, _ = pr.Route(phase)
 		}
 	}
-	p.writeTranscript(id, phase, res.Final)
+	p.putPhaseLog(id, phase, res.Final)
 	return res.Final, err
 }
 
@@ -2030,14 +2031,6 @@ func (p *Pipeline) spin(phase string) func() {
 		return func() {}
 	}
 	return p.Renderer.Spin(phase)
-}
-
-func (p *Pipeline) writeTranscript(id, phase, content string) {
-	dir := filepath.Join(p.RunsDir, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	_ = os.WriteFile(filepath.Join(dir, phase+".log"), []byte(content), 0o644)
 }
 
 func (p *Pipeline) logf(format string, a ...any) {
@@ -2217,6 +2210,22 @@ func (p *Pipeline) pauseAuth(id, phase string, err error) error {
 	return &PausedError{ID: id, Phase: phase, Provider: prov, Reason: reason}
 }
 
+// pauseHubUnreachable logs the blameless stop for a hub that stayed unreachable
+// past the write-retry window (ADR 0008 §3) and builds the *PausedError. The WIP
+// lives on the pushed feature branch and the last hub-persisted checkpoint is the
+// resume point; the pause itself cannot be recorded in the database — the
+// checkpoint writer is the hub — so it is surfaced in-process. A rerun once the
+// hub is back reconnects and continues from the last persisted checkpoint.
+func (p *Pipeline) pauseHubUnreachable(id string) error {
+	phase := p.State.Get(id, "PHASE")
+	reason := "hub unreachable — run data could not be saved"
+	p.markPaused(id, reason)
+	p.logf("  ⏸ paused — hub unreachable during %s; run data could not be saved", NextPhaseLabel(phase))
+	p.logf("  ↳ %s left resumable on its branch; rerun trau once the hub is back", id)
+	p.emitState(id, phase, "paused", "hub_unreachable")
+	return &PausedError{ID: id, Phase: phase, Provider: "hub", Reason: reason}
+}
+
 // markPaused records the blameless pause on the ticket's checkpoint so a
 // file-first reader (trau serve) can tell a pause apart from a fault while the
 // loop is stopped. The next attempt clears it in Resume once the ticket runs
@@ -2246,10 +2255,10 @@ func isAuthFailure(err error) bool {
 }
 
 // guardBudget enforces the configured spend ceilings before an agent call. It
-// reads the LIVE ledger totals (this ticket's runs/<ID>/tokens.jsonl and the day's
-// spend across all buckets) and, on the first cap reached, quarantines the ticket
-// via giveUp with a cost-overrun reason — halting before the next call adds to the
-// bill. A nil ledger or no configured cap is a no-op (back-compat).
+// reads the LIVE ledger totals from the hub (this ticket's total and the day's spend
+// across all buckets) and, on the first cap reached, quarantines the ticket via
+// giveUp with a cost-overrun reason — halting before the next call adds to the bill.
+// A nil ledger or no configured cap is a no-op (back-compat).
 func (p *Pipeline) guardBudget(ctx context.Context, id string) error {
 	if p.Tokens == nil || !p.Budget.Enabled() {
 		return nil
@@ -2262,8 +2271,8 @@ func (p *Pipeline) guardBudget(ctx context.Context, id string) error {
 	return p.giveUp(ctx, id, "budget cap reached — "+b.Reason())
 }
 
-// dailySpend reads the day's accumulated spend across every ticket bucket, keyed on
-// the local date from p.Now (defaulting to time.Now).
+// dailySpend reads the day's accumulated spend across every ticket bucket from the
+// hub, keyed on the local date from p.Now (defaulting to time.Now).
 func (p *Pipeline) dailySpend() budget.Spend {
 	now := time.Now
 	if p.Now != nil {

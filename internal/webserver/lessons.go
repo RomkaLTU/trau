@@ -1,19 +1,19 @@
 package webserver
 
 import (
-	"bufio"
-	"bytes"
 	"encoding/json"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
+
+	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/registry"
 )
 
-// LessonView is one distilled lesson from a repo's durable ledger
-// (runs/memory/lessons.jsonl): the takeaway plus the context a browser shows —
-// which ticket and phase produced it, the failure it came from, the evidence,
-// how it ended, and when it was recorded.
+// LessonView is one distilled lesson from a repo's durable ledger: the takeaway plus
+// the context a browser shows — which ticket and phase produced it, the failure it
+// came from, the evidence, how it ended, and when it was recorded. It is also the
+// wire shape the loop child posts a new lesson in.
 type LessonView struct {
 	Ticket       string   `json:"ticket,omitempty"`
 	Phase        string   `json:"phase,omitempty"`
@@ -33,52 +33,102 @@ type LessonsResponse struct {
 	Lessons []LessonView `json:"lessons"`
 }
 
+// handleLessons is the loop child's read/write seam for a repo's durable lessons
+// ledger and the browser's read of the same (COD-529, ADR 0008). The child posts a
+// distilled lesson with POST and recalls the recorded ones with GET; the child never
+// opens the database. On first touch of a repo any file-era ledger is folded in.
 func (s *Server) handleLessons(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
 	repo, ok := s.findRepo(r.PathValue("repo"))
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
 		return
 	}
-	writeJSON(w, http.StatusOK, LessonsResponse{Repo: repo.Name, Lessons: readLessons(lessonsPath(repo.RunsDir))})
+	s.importLessons(repo)
+	store := s.stores.Lessons()
+
+	switch r.Method {
+	case http.MethodGet:
+		lessons, err := store.All(repo.Root)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, LessonsResponse{Repo: repo.Name, Lessons: toLessonViews(lessons)})
+	case http.MethodPost:
+		var lv LessonView
+		if err := json.NewDecoder(r.Body).Decode(&lv); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+			return
+		}
+		if strings.TrimSpace(lv.Lesson) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "empty lesson"})
+			return
+		}
+		if err := store.Append(repo.Root, lessonFromView(lv)); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
 }
 
-// readLessons parses the repo's append-only JSONL ledger into a browsable list,
-// newest first, skipping any blank or malformed line so a single corrupt record
-// never breaks the page. A missing ledger reads as an empty list — a repo the loop
-// has not taught yet, not an error.
-func readLessons(path string) []LessonView {
-	out := []LessonView{}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return out
+// importLessons folds a repo's file-era ledger into the authoritative table on first
+// touch, best-effort. Like importArtifacts it skips a repo with a live loop — a
+// legacy loop mid-migration may still be appending its file, so the hub never touches
+// a live run's state — and leaves the file in place to retry on the next touch when
+// an import fails.
+func (s *Server) importLessons(repo registry.Repo) {
+	if _, live := s.liveInstance(repo.Root); live {
+		return
 	}
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := bytes.TrimSpace(sc.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-		var l LessonView
-		if err := json.Unmarshal(line, &l); err != nil {
-			continue
-		}
-		if strings.TrimSpace(l.Lesson) == "" {
-			continue
-		}
-		out = append(out, l)
+	runsDir := repo.RunsDir
+	if runsDir == "" {
+		runsDir = repoRunsDir(repo.Root)
 	}
-	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-		out[i], out[j] = out[j], out[i]
+	if err := s.stores.Lessons().ImportLegacy(repo.Root, runsDir); err != nil {
+		logger.Verbosef("import legacy lessons %s: %v", repo.Name, err)
+	}
+}
+
+// importAllLessons folds every known repo's file-era ledger into the table, off any
+// request path — the serve-startup counterpart to the per-repo lazy import.
+func (s *Server) importAllLessons() {
+	for _, repo := range s.knownRepos(s.liveInstances()) {
+		s.importLessons(repo)
+	}
+}
+
+func toLessonViews(lessons []hubstore.Lesson) []LessonView {
+	out := make([]LessonView, len(lessons))
+	for i, l := range lessons {
+		out[i] = LessonView{
+			Ticket:       l.Ticket,
+			Phase:        l.Phase,
+			FailureType:  l.FailureType,
+			AttemptedFix: l.AttemptedFix,
+			Evidence:     l.Evidence,
+			Result:       l.Result,
+			Lesson:       l.Lesson,
+			Tags:         l.Tags,
+			RecordedAt:   l.RecordedAt,
+		}
 	}
 	return out
 }
 
-func lessonsPath(runsDir string) string {
-	return filepath.Join(runsDir, "memory", "lessons.jsonl")
+func lessonFromView(v LessonView) hubstore.Lesson {
+	return hubstore.Lesson{
+		Ticket:       v.Ticket,
+		Phase:        v.Phase,
+		FailureType:  v.FailureType,
+		AttemptedFix: v.AttemptedFix,
+		Evidence:     v.Evidence,
+		Result:       v.Result,
+		Lesson:       v.Lesson,
+		Tags:         v.Tags,
+		RecordedAt:   v.RecordedAt,
+	}
 }

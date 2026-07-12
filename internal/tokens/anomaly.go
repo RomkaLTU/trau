@@ -1,19 +1,14 @@
 package tokens
 
 import (
-	"bufio"
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"math"
-	"os"
-	"path/filepath"
 )
 
-// Soft per-phase thresholds. They start loose — a slice that trips any of them
-// spent far more than its size implies — and are meant to be tuned down from
-// observed medians. Tickets fed to the loop are expected to be single-window by
-// construction, so these flat thresholds apply to every ticket.
+// Soft per-phase thresholds. They start loose — a slice that trips any of them spent
+// far more than its size implies — and are meant to be tuned down from observed
+// medians. Tickets fed to the loop are expected to be single-window by construction,
+// so these flat thresholds apply to every ticket.
 const (
 	anomalyOutputTokens = 25_000
 	anomalyTurns        = 25
@@ -30,99 +25,42 @@ type Anomaly struct {
 	Reasons []string `json:"reasons"`
 }
 
-// Flag detects post-run cost anomalies for id and records them to
-// runs/<id>/anomalies.jsonl, returning the trips. It sums each phase's
-// output/turns/cost recorded by THIS process — spend loaded from an earlier
-// run's tokens.jsonl is never re-flagged on resume — and flags any phase over a
-// soft threshold. I/O errors are swallowed (same contract as Append): flagging
-// never aborts the loop.
-func (s *Sink) Flag(id string) []Anomaly {
-	s.mu.Lock()
-	sp := s.session[id]
-	s.mu.Unlock()
-	if sp == nil {
-		return nil
-	}
+// PhaseSpend is one phase's accumulated output/turns/cost — the input to
+// [DetectAnomalies], folded by the sink from the phase's in-session calls.
+type PhaseSpend struct {
+	Phase  string
+	Output int
+	Turns  int
+	Cost   float64
+}
 
-	var anomalies []Anomaly
-	for _, phase := range sp.order {
-		a := sp.phases[phase]
+// DetectAnomalies flags each phase whose spend cleared a soft threshold, preserving
+// the given order, and returns one Anomaly per tripped phase with its reasons most
+// cost-relevant first. A phase under every threshold is dropped. Cost is rounded to
+// cents.
+func DetectAnomalies(phases []PhaseSpend) []Anomaly {
+	var out []Anomaly
+	for _, p := range phases {
 		var reasons []string
-		if a.cost > anomalyCostUSD {
-			reasons = append(reasons, fmt.Sprintf("cost $%.2f > $%.2f", a.cost, anomalyCostUSD))
+		if p.Cost > anomalyCostUSD {
+			reasons = append(reasons, fmt.Sprintf("cost $%.2f > $%.2f", p.Cost, anomalyCostUSD))
 		}
-		if a.output > anomalyOutputTokens {
-			reasons = append(reasons, fmt.Sprintf("output %d > %d", a.output, anomalyOutputTokens))
+		if p.Output > anomalyOutputTokens {
+			reasons = append(reasons, fmt.Sprintf("output %d > %d", p.Output, anomalyOutputTokens))
 		}
-		if a.turns > anomalyTurns {
-			reasons = append(reasons, fmt.Sprintf("turns %d > %d", a.turns, anomalyTurns))
+		if p.Turns > anomalyTurns {
+			reasons = append(reasons, fmt.Sprintf("turns %d > %d", p.Turns, anomalyTurns))
 		}
 		if len(reasons) == 0 {
 			continue
 		}
-		anomalies = append(anomalies, Anomaly{
-			Phase:   phase,
-			Output:  a.output,
-			Turns:   a.turns,
-			Cost:    math.Round(a.cost*100) / 100,
+		out = append(out, Anomaly{
+			Phase:   p.Phase,
+			Output:  p.Output,
+			Turns:   p.Turns,
+			Cost:    math.Round(p.Cost*100) / 100,
 			Reasons: reasons,
 		})
 	}
-
-	s.writeAnomalies(id, anomalies)
-	return anomalies
-}
-
-// Anomalies reads a ticket's flagged cost anomalies back from
-// runs/<id>/anomalies.jsonl (the snapshot Flag last wrote). A missing or
-// unreadable file yields nil — a run that never tripped a threshold, not an
-// error — and malformed lines are skipped.
-func (s *Sink) Anomalies(id string) []Anomaly {
-	f, err := os.Open(filepath.Join(s.root, id, "anomalies.jsonl"))
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = f.Close() }()
-
-	var out []Anomaly
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		b := bytes.TrimSpace(sc.Bytes())
-		if len(b) == 0 {
-			continue
-		}
-		var a Anomaly
-		if err := json.Unmarshal(b, &a); err != nil {
-			continue
-		}
-		out = append(out, a)
-	}
 	return out
-}
-
-// writeAnomalies overwrites runs/<id>/anomalies.jsonl with one line per anomaly so
-// a re-run (resume) reflects current totals rather than appending duplicates. A run
-// with no anomalies leaves any prior file untouched.
-func (s *Sink) writeAnomalies(id string, anomalies []Anomaly) {
-	if len(anomalies) == 0 {
-		return
-	}
-	dir := filepath.Join(s.root, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	var buf bytes.Buffer
-	ts := s.now().Format("2006-01-02T15:04:05")
-	for _, a := range anomalies {
-		data, err := json.Marshal(struct {
-			TS string `json:"ts"`
-			Anomaly
-		}{TS: ts, Anomaly: a})
-		if err != nil {
-			continue
-		}
-		buf.Write(append(data, '\n'))
-	}
-	_ = os.WriteFile(filepath.Join(dir, "anomalies.jsonl"), buf.Bytes(), 0o644)
 }

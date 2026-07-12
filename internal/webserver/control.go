@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
@@ -144,8 +146,7 @@ func (s *Server) startInstance(w http.ResponseWriter, r *http.Request) {
 	// pinned to that ticket's run page. Capture the outcome and, when it dies on
 	// arrival, record the error where the page can read it.
 	if ticket != "" {
-		runsDir := repoRunsDir(root)
-		spec.OnExit = func(out SpawnOutcome) { recordSpawnOutcome(runsDir, ticket, out) }
+		spec.OnExit = func(out SpawnOutcome) { s.recordSpawnOutcome(root, ticket, out) }
 	}
 
 	pid, err := s.sup.Spawn(spec)
@@ -160,26 +161,36 @@ func (s *Server) startInstance(w http.ResponseWriter, r *http.Request) {
 // when it dies on arrival: a non-zero exit with no checkpoint means the child
 // never got far enough to record anything itself, so the hub records the exit
 // code and stderr tail as a spawn_failed event the run page can surface. A clean
-// exit, or one that left a checkpoint behind (a real run that then faulted),
-// needs no synthetic event — its outcome is already on disk.
-func recordSpawnOutcome(runsDir, ticket string, out SpawnOutcome) {
-	if out.ExitCode == 0 || runExists(runsDir, ticket) {
+// exit, or one that left a checkpoint in the authoritative table (a real run that
+// then faulted), needs no synthetic event — its outcome is already recorded. The
+// event is appended to the authoritative table and fanned out live, the same path
+// a child's own events take (ADR 0008).
+func (s *Server) recordSpawnOutcome(root, ticket string, out SpawnOutcome) {
+	if out.ExitCode == 0 {
 		return
 	}
-	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+	if _, found, _ := s.stores.Checkpoints().One(root, ticket); found {
 		return
 	}
-	f, err := os.OpenFile(eventsPath(runsDir), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	defer func() { _ = f.Close() }()
-	event.New(f).Emit(event.KindSpawnFailed, "", "loop failed to start", map[string]any{
+	fields := marshalFields(map[string]any{
 		"ticket":    ticket,
 		"pid":       out.PID,
 		"exit_code": out.ExitCode,
 		"error":     spawnErrorText(out.Stderr, out.ExitCode),
 	})
+	rows, err := s.stores.Events().Append(root, []hubstore.NewEvent{{
+		TS:     time.Now().Format(time.RFC3339),
+		Kind:   event.KindSpawnFailed,
+		Msg:    "loop failed to start",
+		Fields: fields,
+	}})
+	if err != nil {
+		logger.Verbosef("record spawn failure %s/%s: %v", filepath.Base(root), ticket, err)
+		return
+	}
+	for _, row := range rows {
+		s.publishEvent(root, filepath.Base(root), row)
+	}
 }
 
 // spawnErrorText distils a child's stderr tail into a single-line error for the
@@ -440,7 +451,7 @@ func parseEpicSubIssues(stdout []byte) ([]EpicSubIssue, error) {
 }
 
 func (s *Server) registered(pid int) bool {
-	for _, e := range registry.Live(s.home) {
+	for _, e := range s.liveInstances() {
 		if e.PID == pid {
 			return true
 		}

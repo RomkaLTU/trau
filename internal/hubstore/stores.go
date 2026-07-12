@@ -2,20 +2,44 @@ package hubstore
 
 import "database/sql"
 
-// Stores is the hub's set of SQLite-backed stores, all over the one database the
-// serve process opens. It hands out the registration store and per-repo queue
-// stores so the web server depends on a single hub-owned object rather than the
-// raw database handle. The caller owns the database's lifecycle.
+// Stores is the hub's set of SQLite-backed stores. Every store but transcripts is
+// over the one authoritative database the serve process opens; transcripts live in
+// a separate transcripts database (ADR 0008 §4) so their bulk never bloats the hot
+// store, held here for one hub-owned object rather than raw handles. The caller
+// owns both databases' lifecycles.
 type Stores struct {
-	db      *sql.DB
-	repos   *Registrations
-	issues  *Issues
-	derived *Derived
+	db          *sql.DB
+	repos       *Registrations
+	issues      *Issues
+	tokens      *Tokens
+	checkpoints *Checkpoints
+	events      *Events
+	artifacts   *Artifacts
+	lessons     *Lessons
+	drains      *DrainOutcomes
+	phaseLogs   *PhaseLogs
+	instances   *Instances
+	transcripts *Transcripts
 }
 
-// NewStores builds the hub store set over db.
-func NewStores(db *sql.DB) *Stores {
-	return &Stores{db: db, repos: NewRegistrations(db), issues: NewIssues(db), derived: NewDerived(db)}
+// NewStores builds the hub store set over the authoritative database db and the
+// separate transcripts database, each authoritative store pruned to its retention
+// window. A nil transcriptsDB yields an inert transcript store (tests).
+func NewStores(db, transcriptsDB *sql.DB, retention Retention) *Stores {
+	return &Stores{
+		db:          db,
+		repos:       NewRegistrations(db),
+		issues:      NewIssues(db),
+		tokens:      NewTokens(db, retention.TokenCalls),
+		checkpoints: NewCheckpoints(db),
+		events:      NewEvents(db, retention.Events),
+		artifacts:   NewArtifacts(db),
+		lessons:     NewLessons(db),
+		drains:      NewDrainOutcomes(db),
+		phaseLogs:   NewPhaseLogs(db),
+		instances:   NewInstances(db),
+		transcripts: NewTranscripts(transcriptsDB, retention.Transcripts),
+	}
 }
 
 // Registrations returns the registration store.
@@ -24,13 +48,32 @@ func (s *Stores) Registrations() *Registrations { return s.repos }
 // Issues returns the issue store.
 func (s *Stores) Issues() *Issues { return s.issues }
 
-// Derived returns the rebuildable run-history projection store.
-func (s *Stores) Derived() *Derived { return s.derived }
+// Tokens returns the authoritative token-call and anomaly store.
+func (s *Stores) Tokens() *Tokens { return s.tokens }
 
-// EnsureDerivedSchema brings the derived run-history tables to their current
-// version, dropping and rebuilding them if they are stale, missing, or corrupt
-// (ADR 0007 §3). Authoritative tables are untouched.
-func (s *Stores) EnsureDerivedSchema() error { return s.derived.EnsureSchema() }
+// Checkpoints returns the authoritative per-ticket checkpoint store.
+func (s *Stores) Checkpoints() *Checkpoints { return s.checkpoints }
+
+// Events returns the authoritative event store.
+func (s *Stores) Events() *Events { return s.events }
+
+// Artifacts returns the authoritative per-run artifact store.
+func (s *Stores) Artifacts() *Artifacts { return s.artifacts }
+
+// Lessons returns the authoritative per-repo lessons ledger.
+func (s *Stores) Lessons() *Lessons { return s.lessons }
+
+// DrainOutcomes returns the store of how each queued child exited.
+func (s *Stores) DrainOutcomes() *DrainOutcomes { return s.drains }
+
+// PhaseLogs returns the authoritative per-run phase-log store.
+func (s *Stores) PhaseLogs() *PhaseLogs { return s.phaseLogs }
+
+// Instances returns the store of the live loops' presence.
+func (s *Stores) Instances() *Instances { return s.instances }
+
+// Transcripts returns the chunked transcript store over the transcripts database.
+func (s *Stores) Transcripts() *Transcripts { return s.transcripts }
 
 // Queue returns the queue store for a repo root.
 func (s *Stores) Queue(root string) *Queue { return NewQueue(s.db, root) }

@@ -209,10 +209,10 @@ type Config struct {
 	UsageWindow    bool
 	UsageWindowPTY bool
 
-	// Lessons enables the durable lessons memory: failure→fix records are appended
-	// to runs/memory/lessons.jsonl and relevant ones are recalled into later
-	// build/verify/repair prompts. LessonsDistill additionally runs a cheap agent
-	// pass to distill a richer takeaway (default off — the free mechanical record
+	// Lessons enables the durable lessons memory: failure→fix records are recorded
+	// through the hub into the per-repo lessons ledger and relevant ones are recalled
+	// into later build/verify/repair prompts. LessonsDistill additionally runs a cheap
+	// agent pass to distill a richer takeaway (default off — the free mechanical record
 	// is always written when Lessons is on).
 	Lessons        bool
 	LessonsDistill bool
@@ -262,6 +262,30 @@ type Config struct {
 	// ServeOpen opens the browser on a fresh spawn. Both default on (ADR 0004).
 	ServeAutostart bool
 	ServeOpen      bool
+
+	// HubWriteRetryWindow is how many seconds the loop child retries an
+	// unreachable hub before a run-data write pauses the run blamelessly
+	// (ADR 0008 §3). The child sends run data to the hub over HTTP and never
+	// opens a database.
+	HubWriteRetryWindow int
+
+	// HubWriteBufferBytes caps the child's in-memory buffer of unacknowledged
+	// run-data writes while the hub is unreachable (ADR 0008 §3). Events queue
+	// here and flush when the hub returns; over the cap the oldest queued events
+	// are dropped so the buffer can never grow without bound.
+	HubWriteBufferBytes int
+
+	// TranscriptRetention is how many transcript sessions per repo the hub keeps
+	// in transcripts.db before pruning the oldest (ADR 0008 §4). It bounds the
+	// bulk transcript store; an in-flight session is never pruned.
+	TranscriptRetention int
+
+	// EventRetention and TokenRetention bound how many event and token-call rows
+	// per repo the hub keeps in trau.db before pruning the oldest, ranked by row
+	// id (ADR 0008 §2). Checkpoints — the per-ticket run summaries — are never
+	// pruned. Zero disables pruning, keeping full forensic history.
+	EventRetention int
+	TokenRetention int
 
 	// Spend ceilings off the normalized token/cost ledger. Zero = no cap
 	// (back-compat: a config with no MAX_* knobs enforces nothing). USD caps use
@@ -353,6 +377,11 @@ func Defaults() Config {
 		ServeReconcileInterval: 900,
 		ServeAutostart:         true,
 		ServeOpen:              true,
+		HubWriteRetryWindow:    30,
+		HubWriteBufferBytes:    32 << 20,
+		TranscriptRetention:    50,
+		EventRetention:         5000,
+		TokenRetention:         5000,
 		MaxTicketUSD:           0,
 		MaxTicketTokens:        0,
 		MaxDailyUSD:            0,
@@ -783,6 +812,11 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		c.ServeOpen = v == "1"
 		sources["SERVE_OPEN"] = src.name
 	}
+	num("HUB_WRITE_RETRY_WINDOW", &c.HubWriteRetryWindow)
+	num("HUB_WRITE_BUFFER_BYTES", &c.HubWriteBufferBytes)
+	num("TRANSCRIPT_RETENTION", &c.TranscriptRetention)
+	num("EVENT_RETENTION", &c.EventRetention)
+	num("TOKEN_RETENTION", &c.TokenRetention)
 	fnum("MAX_TICKET_USD", &c.MaxTicketUSD)
 	num("MAX_TICKET_TOKENS", &c.MaxTicketTokens)
 	fnum("MAX_DAILY_USD", &c.MaxDailyUSD)
@@ -1335,6 +1369,11 @@ func KnownKeys() []KeyMeta {
 		{Key: "SERVE_RECONCILE_INTERVAL", Default: "900", Advanced: true, Description: "Seconds between reconciliation sweeps that tombstone synced issues deleted, archived, or moved out of the Project (runs on the sync tick; 0 = disable)"},
 		{Key: "SERVE_AUTOSTART", Default: "1", Advanced: true, Bool: true, Description: "Bring the web UI hub up automatically on the first interactive TUI session when none is running (1 = yes, 0 = no)"},
 		{Key: "SERVE_OPEN", Default: "1", Advanced: true, Bool: true, Description: "Open the browser when autostart freshly spawns the hub (1 = yes, 0 = no); the daemon still starts when 0"},
+		{Key: "HUB_WRITE_RETRY_WINDOW", Default: "30", Advanced: true, Description: "Seconds the loop retries an unreachable hub before a run-data write pauses the run blamelessly (ADR 0008)"},
+		{Key: "HUB_WRITE_BUFFER_BYTES", Default: "33554432", Advanced: true, Description: "Byte cap on the child's in-memory buffer of run-data writes queued while the hub is unreachable; over it the oldest queued events are dropped (ADR 0008)"},
+		{Key: "TRANSCRIPT_RETENTION", Default: "50", Advanced: true, Description: "Transcript sessions per repo the hub keeps in transcripts.db before pruning the oldest; an in-flight session is never pruned (ADR 0008)"},
+		{Key: "EVENT_RETENTION", Default: "5000", Advanced: true, Description: "Event rows per repo the hub keeps in trau.db before pruning the oldest; checkpoints (run summaries) are never pruned; 0 = keep all (ADR 0008)"},
+		{Key: "TOKEN_RETENTION", Default: "5000", Advanced: true, Description: "Token-call rows per repo the hub keeps in trau.db before pruning the oldest, anomalies alongside; 0 = keep all (ADR 0008)"},
 		{Key: "MAX_TICKET_USD", Description: "Per-ticket USD spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_TICKET_TOKENS", Description: "Per-ticket token spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_DAILY_USD", Description: "Per-day USD spend cap across all tickets; reaching it stops the run (empty = no cap)"},
@@ -1884,6 +1923,16 @@ func keyValue(cfg Config, key string) string {
 			return "1"
 		}
 		return "0"
+	case "HUB_WRITE_RETRY_WINDOW":
+		return intValue(cfg.HubWriteRetryWindow)
+	case "HUB_WRITE_BUFFER_BYTES":
+		return intValue(cfg.HubWriteBufferBytes)
+	case "TRANSCRIPT_RETENTION":
+		return intValue(cfg.TranscriptRetention)
+	case "EVENT_RETENTION":
+		return intValue(cfg.EventRetention)
+	case "TOKEN_RETENTION":
+		return intValue(cfg.TokenRetention)
 	case "MAX_TICKET_USD":
 		return floatValue(cfg.MaxTicketUSD)
 	case "MAX_TICKET_TOKENS":

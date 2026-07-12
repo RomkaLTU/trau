@@ -101,16 +101,18 @@ func newTestPipeline(t *testing.T, runner agent.Runner, tr tracker.Tracker) *Pip
 	t.Helper()
 	dir := t.TempDir()
 	return &Pipeline{
-		Runner:      runner,
-		Tracker:     tr,
-		Git:         fakeGit{},
-		State:       state.NewStore(dir),
-		RunsDir:     dir,
-		Base:        "main",
-		Prefix:      "COD",
-		Lessons:     true,
-		MaxRepairs:  0,
-		MaxBugfixes: 0,
+		Runner:       runner,
+		Tracker:      tr,
+		Git:          fakeGit{},
+		State:        state.NewStore(dir),
+		PhaseLogs:    newMemPhaseLogs(),
+		LessonLedger: &fakeLedger{},
+		RunsDir:      dir,
+		Base:         "main",
+		Prefix:       "COD",
+		Lessons:      true,
+		MaxRepairs:   0,
+		MaxBugfixes:  0,
 	}
 }
 
@@ -138,7 +140,7 @@ func TestVerifyRateLimitPausesInsteadOfQuarantine(t *testing.T) {
 	if got := p.State.Get(id, "PHASE"); got == state.Quarantined {
 		t.Errorf("PHASE = quarantined, want it left in-flight")
 	}
-	if lessons := readLessons(p.lessonsPath()); len(lessons) != 0 {
+	if lessons := p.LessonLedger.(*fakeLedger).records(); len(lessons) != 0 {
 		t.Errorf("recorded %d lessons on a rate-limit pause, want 0", len(lessons))
 	}
 }
@@ -170,7 +172,7 @@ func TestVerifyPlainFailureQuarantines(t *testing.T) {
 	if got := p.State.Get(id, "PHASE"); got != state.Quarantined {
 		t.Errorf("PHASE = %q, want quarantined", got)
 	}
-	if lessons := readLessons(p.lessonsPath()); len(lessons) != 1 {
+	if lessons := p.LessonLedger.(*fakeLedger).records(); len(lessons) != 1 {
 		t.Errorf("recorded %d lessons on a real quarantine, want 1", len(lessons))
 	}
 }

@@ -308,7 +308,8 @@ func (s *Server) handleRunComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ticket := r.PathValue("ticket")
-	if !runExists(repo.RunsDir, ticket) {
+	s.importCheckpoints(repo)
+	if _, found, _ := s.stores.Checkpoints().One(repo.Root, ticket); !found {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown run"})
 		return
 	}

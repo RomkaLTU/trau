@@ -3,7 +3,6 @@ package pipeline
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -11,7 +10,7 @@ import (
 // distills the ticket, PRD, and diff into explicit, checkable criteria so verify
 // grades against a first-class artifact rather than re-reading prose. It is a
 // companion to the QA brief (handoff.md), written in the same cold handoff
-// process and persisted under runs/<ID>/ so it survives a reboot and a resume.
+// process and persisted through the hub so it survives a reboot and a resume.
 type rubric struct {
 	Ticket             string   `json:"ticket"`
 	AcceptanceCriteria []string `json:"acceptance_criteria"`
@@ -61,39 +60,30 @@ func rubricValid(r rubric) bool {
 	return false
 }
 
-func (p *Pipeline) rubricRunsPath(id string) string {
-	return filepath.Join(p.RunsDir, id, "rubric.json")
-}
-
-// persistRubric mirrors the /tmp rubric into runs/<ID>/rubric.json so it
-// survives a reboot and a later resume. Best-effort and silent: a missing or
-// unparseable rubric simply isn't mirrored (the loop never blocks on it).
+// persistRubric stores the /tmp rubric through the hub so it survives a reboot
+// and a later resume. Best-effort and silent: a missing or unparseable rubric
+// simply isn't stored (the loop never blocks on it).
 func (p *Pipeline) persistRubric(id string) {
 	data, err := os.ReadFile(rubricPath(id))
 	if err != nil || len(data) == 0 {
 		return
 	}
-	dir := filepath.Join(p.RunsDir, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	_ = os.WriteFile(p.rubricRunsPath(id), data, 0o644)
+	p.putArtifact(id, artifactRubric, string(data))
 }
 
-// restoreRubric copies the durable runs/<ID>/rubric.json back to /tmp when /tmp
-// lost it (wiped on reboot), so a resume grades against the exact rubric the
-// handoff produced instead of regenerating a fresh one. Best-effort: it leaves
-// /tmp untouched when a non-empty copy is already there or no durable copy
-// exists.
+// restoreRubric copies the durable rubric back to /tmp when /tmp lost it (wiped
+// on reboot), so a resume grades against the exact rubric the handoff produced
+// instead of regenerating a fresh one. Best-effort: it leaves /tmp untouched when
+// a non-empty copy is already there or the hub holds none.
 func (p *Pipeline) restoreRubric(id string) {
 	if fi, err := os.Stat(rubricPath(id)); err == nil && fi.Size() > 0 {
 		return
 	}
-	data, err := os.ReadFile(p.rubricRunsPath(id))
-	if err != nil || len(data) == 0 {
+	content, ok := p.getArtifact(id, artifactRubric)
+	if !ok || content == "" {
 		return
 	}
-	_ = os.WriteFile(rubricPath(id), data, 0o644)
+	_ = os.WriteFile(rubricPath(id), []byte(content), 0o644)
 }
 
 // activeRubric returns the /tmp rubric path when a valid rubric is on disk for

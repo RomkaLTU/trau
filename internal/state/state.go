@@ -112,6 +112,25 @@ func FailureClass(phase, stored, reason string) string {
 	}
 }
 
+// ErrHubUnreachable is returned by a hub-backed Checkpoints implementation when
+// a write cannot reach the hub within its bounded retry window (ADR 0008 §3).
+// The pipeline classifies it as a blameless pause; the file-backed Store never
+// returns it.
+var ErrHubUnreachable = errors.New("state: hub unreachable")
+
+// Checkpoints is the per-ticket checkpoint surface the loop pipeline and the
+// resume scan depend on. Both the file-backed *Store and the hub-backed client
+// satisfy it, so the write path can move to the hub (ADR 0008) without touching
+// the callers. A hub-backed implementation's writes may return ErrHubUnreachable.
+type Checkpoints interface {
+	Get(id, key string) string
+	Set(id, key, value string) error
+	Unset(id, key string) error
+	RemoveState(id string) error
+	ResumeTargetFunc(keep func(id string) bool) (id, phase string)
+	Tickets() []string
+}
+
 // Store reads and writes per-ticket checkpoints under a runs/ root (the same
 // root the token sink uses).
 type Store struct {
@@ -163,17 +182,13 @@ func (s *Store) Get(id, key string) string {
 }
 
 // Load reads ticket id's checkpoint into every key it holds (last write wins per
-// key) alongside the file's size and modification time in nanoseconds, and whether
-// the file exists. It is the hub ingestion's read side — the size/mtime are its
-// change signal — so a missing or unreadable file yields ok=false, never an error.
-func (s *Store) Load(id string) (fields map[string]string, size, modTimeNS int64, ok bool) {
-	info, err := os.Stat(s.file(id))
-	if err != nil {
-		return nil, 0, 0, false
-	}
+// key) and whether the file exists. It backs the one-shot legacy import of file-era
+// state into the hub, so a missing or unreadable file yields ok=false, never an
+// error.
+func (s *Store) Load(id string) (fields map[string]string, ok bool) {
 	data, err := os.ReadFile(s.file(id))
 	if err != nil {
-		return nil, 0, 0, false
+		return nil, false
 	}
 	fields = map[string]string{}
 	for _, line := range strings.Split(string(data), "\n") {
@@ -183,7 +198,7 @@ func (s *Store) Load(id string) (fields map[string]string, size, modTimeNS int64
 		}
 		fields[key] = val
 	}
-	return fields, info.Size(), info.ModTime().UnixNano(), true
+	return fields, true
 }
 
 // Set upserts key=value and refreshes the UPDATED timestamp, last-write-wins per
@@ -293,12 +308,25 @@ func (s *Store) ResumeTarget() (id, phase string) {
 // is not part of the requested epic — even one in the same runs/ dir — is skipped
 // rather than resumed.
 func (s *Store) ResumeTargetFunc(keep func(id string) bool) (id, phase string) {
-	bestNum := math.MaxInt
+	phases := make(map[string]string)
 	for _, t := range s.Tickets() {
+		phases[t] = s.Get(t, "PHASE")
+	}
+	return PickResumeTarget(phases, keep)
+}
+
+// PickResumeTarget selects the resume target from a set of ticket→phase pairs:
+// the lowest-numbered ticket the keep predicate accepts whose phase is in-flight
+// (rank 1–5), or ("", "") when none. It orders by the numeric part of the id, so
+// COD-9 precedes COD-10, and skips terminal (rank ≥ 6) and unknown (0) phases. It
+// is the shared selection both the file-backed Store and the hub-backed client
+// reuse, so the ranking lives in one place.
+func PickResumeTarget(phases map[string]string, keep func(id string) bool) (id, phase string) {
+	bestNum := math.MaxInt
+	for t, ph := range phases {
 		if keep != nil && !keep(t) {
 			continue
 		}
-		ph := s.Get(t, "PHASE")
 		if rank := Idx(ph); rank == 0 || rank >= 6 {
 			continue
 		}
@@ -374,19 +402,22 @@ func bucketRows(extra []Bucket, total func(id string) (int, float64, bool)) []bu
 	return rows
 }
 
-// Status writes the --status report to w: a header, one row per ticket with
-// saved state (ID, PHASE, TOKENS, COST, PR), a row per non-ticket bucket that has
-// spend (extra, e.g. the planning bucket), and a grand-total row. total supplies
-// each id's (tokens, cost) — the caller injects tokens.Sink.Total, keeping this
-// package independent of the tokens package. It never errors; an empty runs/ with
-// no bucket spend prints a "no saved state" line.
-func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost float64, metered bool), extra ...Bucket) {
+// WriteStatus writes the --status report to w: a header, one row per ticket with
+// a saved checkpoint (ID, PHASE, TOKENS, COST, PR), a row per non-ticket bucket
+// that has spend (extra, e.g. the planning bucket), and a grand-total row. It
+// reads every ticket through cps — the authoritative checkpoint store — so the
+// plain and JSON reports render identically whether checkpoints live in the hub
+// or a legacy file store. total supplies each id's (tokens, cost); the caller
+// injects tokens.Sink.Total, keeping this package independent of the tokens
+// package. location names the runs dir for the empty-state line. It never errors;
+// no checkpoints and no bucket spend prints a "no saved state" line.
+func WriteStatus(w io.Writer, cps Checkpoints, location string, total func(id string) (tokens int, cost float64, metered bool), extra ...Bucket) {
 	_, _ = fmt.Fprintf(w, "  %-10s %-12s %12s %9s %5s  %s\n", "ID", "PHASE", "TOKENS", "COST", "ANOM", "PR")
 
-	ids := s.Tickets()
+	ids := cps.Tickets()
 	buckets := bucketRows(extra, total)
 	if len(ids) == 0 && len(buckets) == 0 {
-		_, _ = fmt.Fprintf(w, "  (no saved ticket state in %s)\n", s.root)
+		_, _ = fmt.Fprintf(w, "  (no saved ticket state in %s)\n", location)
 		return
 	}
 
@@ -394,12 +425,12 @@ func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost floa
 	var grandCost float64
 	grandMetered := true
 	for _, id := range ids {
-		phase := s.Get(id, "PHASE")
+		phase := cps.Get(id, "PHASE")
 		if phase == "" {
 			phase = "?"
 		}
 		tok, cost, metered := total(id)
-		_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s %5s  %s\n", id, phase, tok, fmtCostCell(cost, metered), s.Get(id, "ANOMALIES"), s.Get(id, "PR_URL"))
+		_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s %5s  %s\n", id, phase, tok, fmtCostCell(cost, metered), cps.Get(id, "ANOMALIES"), cps.Get(id, "PR_URL"))
 		grandTokens += tok
 		grandCost = math.Round((grandCost+cost)*100) / 100
 		grandMetered = grandMetered && metered
@@ -413,14 +444,14 @@ func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost floa
 	_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s\n", "TOTAL", "", grandTokens, fmtCostCell(grandCost, grandMetered))
 }
 
-// StatusJSON writes the saved checkpoints as a single machine-readable JSON
+// WriteStatusJSON writes the saved checkpoints as a single machine-readable JSON
 // object: a tickets array (id/title/phase/pr_url/tokens/cost) plus a summed
-// total. It mirrors Status's data but stays byte-stable for scripts piping
-// `trau --status --json` into jq. No header line is written, so stdout carries
-// only the JSON document. budget, when non-nil, is marshaled under a "budget" key
-// (the configured caps + the day's spend); state takes it as any so it need not
-// depend on the budget package.
-func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost float64, metered bool), budget any, reconciled []string, extra ...Bucket) error {
+// total. It reads every ticket through cps and mirrors WriteStatus's data but
+// stays byte-stable for scripts piping `trau --status --json` into jq. No header
+// line is written, so stdout carries only the JSON document. budget, when
+// non-nil, is marshaled under a "budget" key (the configured caps + the day's
+// spend); state takes it as any so it need not depend on the budget package.
+func WriteStatusJSON(w io.Writer, cps Checkpoints, total func(id string) (tokens int, cost float64, metered bool), budget any, reconciled []string, extra ...Bucket) error {
 	type ticket struct {
 		ID            string  `json:"id"`
 		Title         string  `json:"title,omitempty"`
@@ -454,18 +485,18 @@ func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost 
 	report.Total.CostMeasured = true
 	report.Budget = budget
 	report.Reconciled = reconciled
-	for _, id := range s.Tickets() {
+	for _, id := range cps.Tickets() {
 		tok, cost, metered := total(id)
 		report.Tickets = append(report.Tickets, ticket{
 			ID:            id,
-			Title:         s.Get(id, "TITLE"),
-			Phase:         s.Get(id, "PHASE"),
-			PRURL:         s.Get(id, "PR_URL"),
-			FailureReason: s.Get(id, "FAILURE_REASON"),
+			Title:         cps.Get(id, "TITLE"),
+			Phase:         cps.Get(id, "PHASE"),
+			PRURL:         cps.Get(id, "PR_URL"),
+			FailureReason: cps.Get(id, "FAILURE_REASON"),
 			Tokens:        tok,
 			Cost:          cost,
 			CostMeasured:  metered,
-			Anomalies:     atoiSafe(s.Get(id, "ANOMALIES")),
+			Anomalies:     atoiSafe(cps.Get(id, "ANOMALIES")),
 		})
 		report.Total.Tokens += tok
 		report.Total.Cost = math.Round((report.Total.Cost+cost)*100) / 100

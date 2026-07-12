@@ -1,4 +1,4 @@
-# Durable lessons memory (`runs/memory/lessons.jsonl`)
+# Durable lessons memory
 
 Trau's pipeline is fixed (build → handoff → verify → commit → PR → CI → merge), and
 each phase runs in its own fresh, isolated process — by design, so verify stays cold
@@ -8,18 +8,20 @@ next slice that hits the same wall starts from zero.
 
 The **lessons memory** closes that gap without breaking isolation. After a run actually
 learns something — verify passed only after a repair, or the slice was quarantined — the
-loop distills the experiment into a compact record and appends it to an on-disk ledger.
+loop distills the experiment into a compact record and records it in the per-repo ledger.
 Later runs recall only the records *relevant* to the slice in front of them and fold them
 into the build, verify, and repair prompts. Failed runs teach future runs.
 
 ## Where the ledger lives
 
-```
-runs/memory/lessons.jsonl
-```
+The ledger is a per-repo table in the serve hub's store (ADR 0008). The loop child posts
+each distilled lesson to the hub as verify records it and recalls the relevant ones from
+there for prompt injection — it never reads or writes a ledger file. The web UI serves the
+same records on the **Lessons** page.
 
-One JSON object per line (JSONL), appended in chronological order. `runs/` is gitignored,
-so the ledger is **run-scoped and local by default** (see [Committing vs keeping local](#committing-vs-keeping-local)).
+A repo that still has a file-era ledger (`runs/memory/lessons.jsonl`, one JSON object per
+line) has it folded into the store once, on the hub's first touch of the repo, after which
+the file is removed.
 
 ## What a record holds
 
@@ -93,20 +95,19 @@ Both knobs live in `trau.ini` (see `trau.ini.example`):
 
 Recording and recall are **best-effort and never block the loop**:
 
-- A malformed JSONL line is skipped on read; a missing ledger reads as empty.
+- A malformed line in a folded-in legacy ledger is skipped; a hub with no records reads as
+  an empty ledger.
 - A write failure is silent — the ledger is an optimization, not a checkpoint.
 - The feature adds no agent calls unless `LESSONS_DISTILL=1`, and even then only on
   failure-path tickets (a repaired success or a quarantine).
 
-## Committing vs keeping local
+## Sharing lessons across contributors
 
-The ledger lives under `runs/`, which is **gitignored**, so by default it is
-**run-scoped/local**. That is the right default while the loop and provider behavior churn:
-a lesson distilled today may be noise next week, and per-developer runs should not fight over
-a tracked file.
+The ledger lives in the hub store, private to the machine running the loop — it is not a
+tracked file, so per-developer runs never fight over it. That is the right default while the
+loop and provider behavior churn: a lesson distilled today may be noise next week.
 
-Keep the raw ledger **local** unless a lesson is **durable, repo-wide, and reviewed**. Only
-then promote a *curated digest* of those lessons into a **tracked** location — e.g. a committed
-`.trau/memory.md` — where it ships with the repo and applies to every contributor. Never blindly
-commit the raw `lessons.jsonl`: it is an unfiltered, machine-appended stream that can contain
-run-specific noise. Curate first, then commit the digest.
+To make a lesson **durable, repo-wide, and reviewed**, promote a *curated digest* of those
+lessons into a **tracked** location — e.g. a committed `.trau/memory.md` — where it ships with
+the repo and applies to every contributor. Curate first: the raw ledger is an unfiltered,
+machine-appended stream that can contain run-specific noise.

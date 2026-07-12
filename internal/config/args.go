@@ -34,9 +34,10 @@ type Options struct {
 	JSON         bool
 	Verbose      bool
 	Debug        bool
-	// DrainReport is an internal path the hub's queue drainer passes so a
-	// headless child writes how many leaf tickets it processed, letting the
-	// drain tally a whole-queue iteration cap across items. Not user-facing.
+	// DrainReport is the ticket a headless queue child reports its exit outcome
+	// under: the child posts its outcome — a fault or provider pause it hit, or a
+	// clean finish — to the hub keyed by this id so the drainer can settle the
+	// item. The hub's queue drainer passes it; not user-facing.
 	DrainReport string
 }
 

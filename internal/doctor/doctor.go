@@ -18,6 +18,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
+	"github.com/RomkaLTU/trau/internal/transcriptdb"
 )
 
 // Report is the outcome of a doctor run.
@@ -53,10 +54,12 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkLinearLabels(ctx, cfg, rr)
 	checkLinearProject(ctx, cfg, rr)
 	checkJira(ctx, cfg, rr)
-	checkWritePerms(cfg, repoRoot, rr)
+	checkWritePerms(repoRoot, rr)
 	checkHubDatabase(rr)
+	checkTranscriptDatabase(rr)
 	checkLegacyRegistration(rr)
 	checkLegacyQueue(repoRoot, rr)
+	checkLegacyRunData(cfg, repoRoot, rr)
 
 	w.blank()
 	if rr.r.Errors > 0 {
@@ -343,15 +346,21 @@ func checkJira(ctx context.Context, cfg config.Config, rr *runner) {
 	rr.add("jira auth", pass, fmt.Sprintf("authenticated to %s as %s", cfg.JiraBaseURL, cfg.JiraEmail), "")
 }
 
-func checkWritePerms(cfg config.Config, repoRoot string, rr *runner) {
-	if repoRoot != "" {
-		if err := probeWrite(filepath.Join(repoRoot, ".trau-doctor-write-test")); err != nil {
-			rr.add("write: repo", fail, fmt.Sprintf("cannot write inside repo root: %v", err), "check directory permissions")
-		} else {
-			rr.add("write: repo", pass, "repo root is writable", "")
-		}
+// checkWritePerms probes that the repo root is writable, where the loop stages
+// git work. The file-era runs-dir writability probe is gone: under ADR 0008 the
+// loop writes no durable run data to disk — it flows to the hub.
+func checkWritePerms(repoRoot string, rr *runner) {
+	if repoRoot == "" {
+		return
 	}
+	if err := probeWrite(filepath.Join(repoRoot, ".trau-doctor-write-test")); err != nil {
+		rr.add("write: repo", fail, fmt.Sprintf("cannot write inside repo root: %v", err), "check directory permissions")
+		return
+	}
+	rr.add("write: repo", pass, "repo root is writable", "")
+}
 
+func resolveRunsDir(cfg config.Config, repoRoot string) string {
 	runsDir := cfg.RunsDir
 	if runsDir == "" {
 		runsDir = ".trau/runs"
@@ -359,31 +368,94 @@ func checkWritePerms(cfg config.Config, repoRoot string, rr *runner) {
 	if !filepath.IsAbs(runsDir) && repoRoot != "" {
 		runsDir = filepath.Join(repoRoot, runsDir)
 	}
-	if err := os.MkdirAll(runsDir, 0o755); err != nil {
-		rr.add("write: runs dir", fail, fmt.Sprintf("cannot create runs dir %q: %v", runsDir, err), "check directory permissions or set RUNS_DIR")
-		return
-	}
-	if err := probeWrite(filepath.Join(runsDir, ".trau-doctor-write-test")); err != nil {
-		rr.add("write: runs dir", fail, fmt.Sprintf("cannot write to runs dir %q: %v", runsDir, err), "check directory permissions or set RUNS_DIR")
-	} else {
-		rr.add("write: runs dir", pass, fmt.Sprintf("%s is writable", runsDir), "")
+	return runsDir
+}
+
+// dbHealth is one database's health, projected off either database package so
+// reportDatabase can render both the same way.
+type dbHealth struct {
+	path      string
+	exists    bool
+	version   int
+	sizeBytes int64
+	err       error
+}
+
+// checkHubDatabase reports the authoritative hub database (opened only by `trau
+// serve`) read-only: its path, schema version, on-disk size, and integrity. A
+// database not yet created is fine — serve creates it on start.
+func checkHubDatabase(rr *runner) {
+	h := hubdb.CheckHealth(registry.Home())
+	reportDatabase("hub database", dbHealth{h.Path, h.Exists, h.Version, h.SizeBytes, h.Err},
+		fmt.Sprintf("move %s aside and restart `trau serve` to recreate it", h.Path), rr)
+}
+
+// checkTranscriptDatabase reports the separate transcript database the same way.
+// It is the one store safe to delete wholesale (ADR 0008 §4), so a bad file is
+// still only a failure the recreate hint clears.
+func checkTranscriptDatabase(rr *runner) {
+	h := transcriptdb.CheckHealth(registry.Home())
+	reportDatabase("transcript database", dbHealth{h.Path, h.Exists, h.Version, h.SizeBytes, h.Err},
+		fmt.Sprintf("delete %s and restart `trau serve` to recreate it empty (it holds only transcripts)", h.Path), rr)
+}
+
+func reportDatabase(name string, h dbHealth, failSuggestion string, rr *runner) {
+	switch {
+	case h.err != nil:
+		rr.add(name, fail, fmt.Sprintf("%s cannot be opened: %v", h.path, h.err), failSuggestion)
+	case !h.exists:
+		rr.add(name, pass, fmt.Sprintf("%s (created on first `trau serve`)", h.path), "")
+	default:
+		rr.add(name, pass, fmt.Sprintf("%s (schema v%d, %s, healthy)", h.path, h.version, humanBytes(h.sizeBytes)), "")
 	}
 }
 
-// checkHubDatabase reports the hub SQLite database (opened only by `trau serve`)
-// read-only: its path, applied schema version, and whether it opens cleanly. A
-// database that has not been created yet is fine — serve creates it on start.
-func checkHubDatabase(rr *runner) {
-	h := hubdb.CheckHealth(registry.Home())
-	switch {
-	case h.Err != nil:
-		rr.add("hub database", fail, fmt.Sprintf("%s cannot be opened: %v", h.Path, h.Err),
-			fmt.Sprintf("move %s aside and restart `trau serve` to recreate it", h.Path))
-	case !h.Exists:
-		rr.add("hub database", pass, fmt.Sprintf("%s (created on first `trau serve`)", h.Path), "")
-	default:
-		rr.add("hub database", pass, fmt.Sprintf("%s (schema v%d, healthy)", h.Path, h.Version), "")
+// checkLegacyRunData flags file-era run-data files left under the runs dir by the
+// pre-DB-first era (ADR 0008): per-ticket state, phase logs and artifacts, the
+// lessons ledger, and orphaned event/token streams. The hub imports the
+// importable ones on first serve touch; their presence means an unmigrated
+// install.
+func checkLegacyRunData(cfg config.Config, repoRoot string, rr *runner) {
+	runsDir := resolveRunsDir(cfg, repoRoot)
+	if runsDir == "" {
+		return
 	}
+	leftover := hubstore.LegacyRunDataFiles(runsDir)
+	if len(leftover) == 0 {
+		rr.add("legacy run data", pass, "no legacy run-data files", "")
+		return
+	}
+	rr.add("legacy run data", warn,
+		fmt.Sprintf("%d legacy run-data file(s) still present under %s (e.g. %s)", len(leftover), runsDir, sampleRunData(leftover)),
+		"start `trau serve` once to import checkpoints, artifacts, lessons, and phase logs; the rest is then safe to delete")
+}
+
+// sampleRunData names the first few leftover files by their ticket-dir/base so the
+// warning is concrete without dumping a long list.
+func sampleRunData(paths []string) string {
+	const max = 3
+	if len(paths) > max {
+		paths = paths[:max]
+	}
+	names := make([]string, len(paths))
+	for i, p := range paths {
+		names[i] = filepath.Join(filepath.Base(filepath.Dir(p)), filepath.Base(p))
+	}
+	return strings.Join(names, ", ")
+}
+
+// humanBytes renders a byte count with a binary unit suffix for the DB size line.
+func humanBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGT"[exp])
 }
 
 // checkLegacyRegistration flags a repos.json or workspace.json left behind by the

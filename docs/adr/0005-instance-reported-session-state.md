@@ -1,6 +1,6 @@
 # ADR 0005 — Live activity is reported by the instance, never derived from run artifacts
 
-- **Status:** Accepted
+- **Status:** Accepted (mechanism amended by ADR 0008 §7, 2026-07-12)
 - **Date:** 2026-07-10
 - **Deciders:** Romas (sole maintainer)
 - **Ticket:** COD-764
@@ -61,3 +61,18 @@ Boundaries that keep the two truths from ever disagreeing again:
 - A future reader wondering why the instances API doesn't just read the
   perfectly good checkpoint files: that was the original design, and it is the
   thing this ADR removes.
+
+## Amendment — mechanism moved to the hub (ADR 0008 §7, COD-830)
+
+This decision stands in full; only the *mechanism* changed. The registry entry
+and its heartbeat moved from per-PID `~/.trau/instances/<pid>.json` files
+(glob-read by the hub, `os.Remove`-reaped) to a **hub heartbeat HTTP API**: a
+loop `PUT`s its presence on start, on every session-state change, and on a timer,
+and `DELETE`s it on clean exit. The hub holds presence in its database keyed by
+PID and echoes the reported state exactly as before. Preserved unchanged:
+instance-reported `session_state`; the boundary that an entry says only *that* a
+session parked, never why; and **pid-only liveness via `signal 0`** — the hub
+reaps a dead PID (so a crashed loop that never deregistered ages out) but never
+reaps a live PID on heartbeat staleness, so the suspended-process repo-is-live
+guard this ADR rejected staleness reaping to protect still holds. The last
+per-PID file and its stale-file reaping are gone.

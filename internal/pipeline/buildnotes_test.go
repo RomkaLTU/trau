@@ -2,16 +2,67 @@ package pipeline
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
 const notesMarker = "The build agent left notes on this slice at"
 
+// memArtifacts is an in-memory ArtifactStore for the pipeline's persist/restore
+// tests — it stands in for the hub-backed store so a round-trip needs no serve
+// process.
+type memArtifacts struct{ m map[string]string }
+
+func newMemArtifacts() *memArtifacts { return &memArtifacts{m: map[string]string{}} }
+
+func (a *memArtifacts) Put(id, kind, content string) error {
+	a.m[id+"/"+kind] = content
+	return nil
+}
+
+func (a *memArtifacts) Get(id, kind string) (string, bool, error) {
+	c, ok := a.m[id+"/"+kind]
+	return c, ok, nil
+}
+
+func (a *memArtifacts) Remove(id string) error {
+	for k := range a.m {
+		if strings.HasPrefix(k, id+"/") {
+			delete(a.m, k)
+		}
+	}
+	return nil
+}
+
+// memPhaseLogs is an in-memory PhaseLogStore standing in for the hub-backed store
+// so a pipeline test can read back what a phase persisted without a serve process.
+type memPhaseLogs struct{ m map[string]string }
+
+func newMemPhaseLogs() *memPhaseLogs { return &memPhaseLogs{m: map[string]string{}} }
+
+func (l *memPhaseLogs) Put(id, phase, content string) error {
+	l.m[id+"/"+phase] = content
+	return nil
+}
+
+func (l *memPhaseLogs) Remove(id string) error {
+	for k := range l.m {
+		if strings.HasPrefix(k, id+"/") {
+			delete(l.m, k)
+		}
+	}
+	return nil
+}
+
+func (l *memPhaseLogs) get(id, phase string) (string, bool) {
+	c, ok := l.m[id+"/"+phase]
+	return c, ok
+}
+
 func TestBuildNotesPersistRestoreRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	p := &Pipeline{RunsDir: dir}
+	store := newMemArtifacts()
+	p := &Pipeline{RunsDir: dir, Artifacts: store}
 	id := "COD-802-roundtrip"
 	tmp := buildNotesPath(id)
 	t.Cleanup(func() { _ = os.Remove(tmp) })
@@ -22,17 +73,14 @@ func TestBuildNotesPersistRestoreRoundTrip(t *testing.T) {
 	}
 
 	p.persistBuildNotes(id)
-	durable := filepath.Join(dir, id, "buildnotes.md")
-	if got, err := os.ReadFile(durable); err != nil {
-		t.Fatalf("notes not persisted at %s: %v", durable, err)
-	} else if string(got) != body {
-		t.Fatalf("persisted notes = %q, want %q", got, body)
+	if got, ok := store.m[id+"/"+artifactBuildNotes]; !ok || got != body {
+		t.Fatalf("notes not persisted to the store: %q ok=%v, want %q", got, ok, body)
 	}
 
 	_ = os.Remove(tmp)
 	p.restoreBuildNotes(id)
 	if restored, err := os.ReadFile(tmp); err != nil {
-		t.Fatalf("notes not restored to /tmp after reboot: %v", err)
+		t.Fatalf("notes not restored to /tmp from the store: %v", err)
 	} else if string(restored) != body {
 		t.Fatalf("restored notes = %q, want %q", restored, body)
 	}

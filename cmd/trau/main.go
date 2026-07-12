@@ -25,7 +25,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -36,11 +35,18 @@ import (
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/doctor"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubartifact"
+	"github.com/RomkaLTU/trau/internal/hubcheckpoint"
 	"github.com/RomkaLTU/trau/internal/hubclient"
+	"github.com/RomkaLTU/trau/internal/hubevent"
+	"github.com/RomkaLTU/trau/internal/hublesson"
+	"github.com/RomkaLTU/trau/internal/hubphaselog"
+	"github.com/RomkaLTU/trau/internal/hubpresence"
+	"github.com/RomkaLTU/trau/internal/hubtokens"
+	"github.com/RomkaLTU/trau/internal/hubtranscript"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
 	"github.com/RomkaLTU/trau/internal/planning"
-	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
@@ -74,6 +80,7 @@ Usage:
   trau <ID>                  run a single ticket (e.g. ENG-123), or its sub-issues if it is an epic
   trau doctor                preflight check: git/gh/provider/config/labels/write perms
   trau watch                 tail a running loop's live agent activity (headless counterpart to the TUI 'w' key)
+  trau forensics <cmd>       read-only incident queries over the run history: runs, events, spend (see 'trau forensics --help')
   trau serve                 start the local web hub — HTTP API + embedded UI on 127.0.0.1:8728 (--bind, --port)
   trau --status [--json]     show saved ticket checkpoints with token/cost totals
   trau --dry-run             print the next eligible ticket without doing any work
@@ -151,6 +158,12 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	// forensics owns its subcommand args (including --help), so it is dispatched
+	// before the loop's global --version/--help scan claims them.
+	if len(args) > 0 && args[0] == "forensics" {
+		return runForensics(ctx, args[1:], stdout, stderr)
+	}
+
 	for _, a := range args {
 		switch a {
 		case "--version", "-v":
@@ -259,20 +272,28 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	con := newRenderer(stdout, stderr, cfg, opts, cancelLoop)
 
-	var log *event.Log
-	if os.Getenv("TRAU_LOG_JSON") == "1" {
-		log = event.New(stderr)
-	} else {
-		log = event.New(newEventFile(cfg.RunsDir)).WithHuman(con.Event)
-	}
+	log, flushEvents := newEventLog(cfg, stderr, con.Event)
+	defer flushEvents()
 
-	sink := tokens.New(cfg.RunsDir)
+	sink := newTokenSink(cfg)
+	defer sink.Close()
+
+	transcripts := newTranscriptSink(cfg)
+	defer transcripts.Close()
+	wireTUITranscripts(cfg)
 
 	if opts.ClearID != "" {
-		store := state.NewStore(cfg.RunsDir)
+		ensureHubForStore(ctx, cfg, stderr)
+		store := newCheckpointStore(cfg, cfg.RepoRoot)
 		was := store.Get(opts.ClearID, "PHASE")
 		if err := store.RemoveState(opts.ClearID); err != nil {
-			return console.Actionable(err, "clear "+opts.ClearID, "check write permissions on "+cfg.RunsDir)
+			return console.Actionable(err, "clear "+opts.ClearID, "check the web hub is reachable")
+		}
+		if err := newArtifactStore(cfg, cfg.RepoRoot).Remove(opts.ClearID); err != nil {
+			return console.Actionable(err, "clear "+opts.ClearID, "check the web hub is reachable")
+		}
+		if err := newPhaseLogStore(cfg, cfg.RepoRoot).Remove(opts.ClearID); err != nil {
+			return console.Actionable(err, "clear "+opts.ClearID, "check the web hub is reachable")
 		}
 		if was == "" {
 			con.Logf("No saved checkpoint for %s — nothing to clear.", opts.ClearID)
@@ -283,7 +304,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	if opts.Status {
-		store := state.NewStore(cfg.RunsDir)
+		ensureHubForStore(ctx, cfg, stderr)
+		store := newCheckpointStore(cfg, cfg.RepoRoot)
 		reconciled := reconcileCheckpoints(ctx, cfg, log, sink, store)
 		var report any
 		if lim := budgetLimits(cfg); lim.Enabled() {
@@ -293,20 +315,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		planBucket := state.Bucket{ID: tokens.PlanBucket, Label: "planning"}
 		if opts.JSON {
-			return store.StatusJSON(stdout, sink.Total, report, reconciledIDs(reconciled), planBucket)
+			return state.WriteStatusJSON(stdout, store, sink.Total, report, reconciledIDs(reconciled), planBucket)
 		}
 		for _, rt := range reconciled {
 			con.Logf("↳ %s is %s on the tracker — cleared stale %s checkpoint", rt.ID, rt.Status, rt.Phase)
 		}
 		con.Logf("Saved ticket checkpoints:")
-		store.Status(stdout, sink.Total, planBucket)
+		state.WriteStatus(stdout, store, cfg.RunsDir, sink.Total, planBucket)
 		if r, ok := report.(budget.Report); ok {
 			_, _ = fmt.Fprintf(stdout, "  %s\n", r.Summary())
 		}
 		return nil
 	}
 
-	runner, err := buildRouter(cfg, log, sink, stderr)
+	runner, err := buildRouter(cfg, log, sink, transcripts, stderr)
 	if err != nil {
 		return usageError{err}
 	}
@@ -315,13 +337,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return usageError{err}
 	}
-	var reg *registry.Handle
+	var reg *hubpresence.Handle
 	if usesHubStore(cfg) {
 		ensureHubForStore(ctx, cfg, stderr)
 		// Register before the standalone hub-backed commands (--list-eligible,
 		// --dry-run, --reset) so the hub can resolve this repo, the same way the loop
 		// path does before Pick. The main loop reuses this handle below.
-		reg = registry.Register(registry.Home(), cfg.RepoRoot, cfg.RunsDir)
+		reg = newPresence(cfg, cfg.RepoRoot)
 		defer reg.Deregister()
 	}
 
@@ -381,7 +403,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return console.Actionable(err, "resolve target repo", "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository")
 		}
-		pipe, err := buildPipeline(cfg, runner, repoRoot, pm, sink, log, con)
+		ensureHubForStore(ctx, cfg, stderr)
+		pipe, err := buildPipeline(cfg, runner, repoRoot, pm, sink, transcripts, log, con)
 		if err != nil {
 			return err
 		}
@@ -455,7 +478,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return console.Actionable(err, "resolve target repo", "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository")
 	}
 	logger.Verbosef("final repo root for pipeline: %s", repoRoot)
-	p, err := buildPipeline(cfg, runner, repoRoot, pm, sink, log, con)
+	// Checkpoints write through the hub now (ADR 0008), so the loop needs one up
+	// for every tracker — not only the hub-store providers ensured above. Idempotent.
+	ensureHubForStore(ctx, cfg, stderr)
+	p, err := buildPipeline(cfg, runner, repoRoot, pm, sink, transcripts, log, con)
 	if err != nil {
 		return err
 	}
@@ -477,7 +503,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	con.Logf("provider=%s · AUTO_MERGE=%v · max=%d%s%s", cfg.Provider, cfg.AutoMerge, maxIter, parentSuffix, budgetSuffix)
 
 	if reg == nil {
-		reg = registry.Register(registry.Home(), repoRoot, cfg.RunsDir)
+		reg = newPresence(cfg, repoRoot)
 		defer reg.Deregister()
 	}
 	p.OnPhase = func(id, phase string) { reg.SetState(registry.StateWorking, id, phase) }
@@ -523,19 +549,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}, con, result)
 
 	if opts.DrainReport != "" {
-		var rep queue.DrainReport
+		var class, reason string
 		switch {
 		case pipeline.IsPaused(lerr):
-			rep.Class = state.FailPaused
-			rep.Reason = lerr.Error()
+			class, reason = state.FailPaused, lerr.Error()
 		case pipeline.IsFault(lerr):
-			rep.Class = state.FailFaulted
-			rep.Reason = lerr.Error()
+			class, reason = state.FailFaulted, lerr.Error()
 		}
-		if werr := queue.WriteReport(opts.DrainReport, rep); werr != nil {
-			logger.Verbosef("drain report write failed: %v", werr)
-			log.Emit("drain_report_error", "", fmt.Sprintf("drain report write failed: %v", werr),
-				map[string]any{"path": opts.DrainReport, "error": werr.Error()})
+		hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+		if werr := hub.PutDrainOutcome(context.Background(), repoName(cfg.RepoRoot), opts.DrainReport, class, reason); werr != nil {
+			logger.Verbosef("drain report post failed: %v", werr)
+			log.Emit("drain_report_error", "", fmt.Sprintf("drain report post failed: %v", werr),
+				map[string]any{"ticket": opts.DrainReport, "error": werr.Error()})
 		}
 	}
 
@@ -699,11 +724,11 @@ func reconciledIDs(ts []reconciledTicket) []string {
 // reconciliation (the status report still prints). Each query is time-bounded so a
 // hung MCP call can't stall --status, and a query error or StatusUnknown leaves the
 // checkpoint intact rather than risk clearing live work.
-func reconcileCheckpoints(ctx context.Context, cfg config.Config, log *event.Log, sink *tokens.Sink, store *state.Store) []reconciledTicket {
+func reconcileCheckpoints(ctx context.Context, cfg config.Config, log *event.Log, sink *hubtokens.Sink, store state.Checkpoints) []reconciledTicket {
 	if !hasReconcileCandidate(store) {
 		return nil
 	}
-	runner, err := buildRouter(cfg, log, sink, io.Discard)
+	runner, err := buildRouter(cfg, log, sink, nil, io.Discard)
 	if err != nil {
 		logger.Verbosef("reconcile: provider unavailable, skipping (%v)", err)
 		return nil
@@ -724,7 +749,7 @@ func reconcileCheckpoints(ctx context.Context, cfg config.Config, log *event.Log
 // hasReconcileCandidate reports whether any saved checkpoint is in a reconcilable
 // (in-flight/quarantined) phase, so callers can skip building a provider/tracker
 // when there is nothing to cross-check.
-func hasReconcileCandidate(store *state.Store) bool {
+func hasReconcileCandidate(store state.Checkpoints) bool {
 	for _, id := range store.Tickets() {
 		if state.Reconcilable(store.Get(id, "PHASE")) {
 			return true
@@ -739,7 +764,7 @@ func hasReconcileCandidate(store *state.Store) bool {
 // caller; a query error or StatusUnknown leaves the checkpoint intact rather than
 // risk clearing live work. Shared by the --status CLI path and the TUI status
 // screen's on-demand reconcile.
-func reconcileWith(ctx context.Context, store *state.Store, statuser tracker.IssueStatuser) []reconciledTicket {
+func reconcileWith(ctx context.Context, store state.Checkpoints, statuser tracker.IssueStatuser) []reconciledTicket {
 	var cleared []reconciledTicket
 	for _, id := range store.Tickets() {
 		phase := store.Get(id, "PHASE")
@@ -902,7 +927,92 @@ func repoName(root string) string {
 	return filepath.Base(root)
 }
 
-func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *tokens.Sink, log *event.Log, con console.Renderer) (*pipeline.Pipeline, error) {
+// newCheckpointStore is the hub-backed client that writes every phase transition
+// to the serve hub over HTTP (ADR 0008); a hub unreachable past
+// HUB_WRITE_RETRY_WINDOW pauses the run.
+func newCheckpointStore(cfg config.Config, repoRoot string) state.Checkpoints {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	window := time.Duration(cfg.HubWriteRetryWindow) * time.Second
+	return hubcheckpoint.New(hub, repoName(repoRoot), window)
+}
+
+// newArtifactStore is the hub-backed client for the durable per-run phase
+// artifacts — handoff brief, verify rubric, verify verdict, build notes (ADR
+// 0008); the child posts each to the serve hub over HTTP and restores it on
+// resume, writing no run files.
+func newArtifactStore(cfg config.Config, repoRoot string) pipeline.ArtifactStore {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	window := time.Duration(cfg.HubWriteRetryWindow) * time.Second
+	return hubartifact.New(hub, repoName(repoRoot), window, hubclient.IsUnreachable)
+}
+
+// newPhaseLogStore is the hub-backed client for the per-phase agent logs the TUI
+// log inspector browses (ADR 0008); the child posts each phase's output to the
+// serve hub over HTTP and the inspector reads them back, writing no run files.
+func newPhaseLogStore(cfg config.Config, repoRoot string) *hubphaselog.Store {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	window := time.Duration(cfg.HubWriteRetryWindow) * time.Second
+	return hubphaselog.New(hub, repoName(repoRoot), window, hubclient.IsUnreachable)
+}
+
+// newLessonStore is the hub-backed client for the per-repo lessons ledger — the
+// distilled repair-experiment takeaways a failed or repaired run leaves for later
+// runs (COD-529, ADR 0008); the child posts each lesson to the serve hub over HTTP
+// and recalls the relevant ones for prompt injection, writing no ledger file.
+func newLessonStore(cfg config.Config, repoRoot string) pipeline.LessonStore {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	window := time.Duration(cfg.HubWriteRetryWindow) * time.Second
+	return hublesson.New(hub, repoName(repoRoot), window, hubclient.IsUnreachable)
+}
+
+// newPresence registers this loop with the serve hub over HTTP and heartbeats its
+// reported session state (ADR 0005, ADR 0008 §7); the hub holds presence and
+// reaps a dead PID via signal 0, so no per-PID instance file is written.
+// Best-effort — a hub that never answers only leaves the loop unlisted, never
+// blocks it.
+func newPresence(cfg config.Config, repoRoot string) *hubpresence.Handle {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	return hubpresence.Register(hub, repoRoot, cfg.RunsDir)
+}
+
+// newTokenSink is the hub-backed token/cost sink: the child posts every provider
+// call's usage to the serve hub over HTTP (ADR 0008) and reads ticket/day totals
+// back from it, writing no per-run token files. Close it to flush the tail before
+// the process exits.
+func newTokenSink(cfg config.Config) *hubtokens.Sink {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	window := time.Duration(cfg.HubWriteRetryWindow) * time.Second
+	return hubtokens.New(hub, repoName(cfg.RepoRoot), cfg.HubWriteBufferBytes, window)
+}
+
+// newTranscriptSink is the hub-backed transcript sink: the agent tees each phase's
+// PTY output to it and the child posts the chunks to the hub, writing no .pty.log
+// file (ADR 0008 §4). Close it to flush the tail before the process exits.
+func newTranscriptSink(cfg config.Config) *hubtranscript.Sink {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	window := time.Duration(cfg.HubWriteRetryWindow) * time.Second
+	return hubtranscript.New(hub, repoName(cfg.RepoRoot), cfg.HubWriteBufferBytes, window)
+}
+
+// tuiTranscriptSource adapts the hub client to the TUI live agent view: the view
+// polls the hub's chunk store for the running phase instead of tailing a file.
+type tuiTranscriptSource struct{ hub *hubclient.Client }
+
+func (s tuiTranscriptSource) Chunks(ctx context.Context, repo, id string, after int64) (tui.TranscriptDelta, error) {
+	p, err := s.hub.TranscriptChunks(ctx, repo, id, after, false, 0)
+	if err != nil {
+		return tui.TranscriptDelta{}, err
+	}
+	return tui.TranscriptDelta{ID: p.ID, Cols: p.Cols, Rows: p.Rows, Data: p.Data, Seq: p.Seq}, nil
+}
+
+// wireTUITranscripts points the TUI live view at the hub's transcript chunk store,
+// scoped to this run's repo. Called once before the program runs.
+func wireTUITranscripts(cfg config.Config) {
+	tui.SetTranscriptSource(tuiTranscriptSource{hub: hubclient.New(hubBaseURL(cfg), cfg.ServeToken)}, repoName(cfg.RepoRoot))
+}
+
+func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *hubtokens.Sink, transcripts agent.TranscriptSink, log *event.Log, con console.Renderer) (*pipeline.Pipeline, error) {
 	wireCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if added, err := pipeline.EnsureRepoConfigInclude(wireCtx, repoRoot); err != nil {
@@ -919,17 +1029,20 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		}
 		verifyChecks = loaded
 	}
-	panel, err := buildPanel(cfg, log, sink)
+	panel, err := buildPanel(cfg, log, sink, transcripts)
 	if err != nil {
 		return nil, err
 	}
-	fallback, err := buildFallback(cfg, log, sink)
+	fallback, err := buildFallback(cfg, log, sink, transcripts)
 	if err != nil {
 		return nil, err
 	}
 	return &pipeline.Pipeline{
 		Runner:              runner,
-		State:               state.NewStore(cfg.RunsDir),
+		State:               newCheckpointStore(cfg, repoRoot),
+		Artifacts:           newArtifactStore(cfg, repoRoot),
+		PhaseLogs:           newPhaseLogStore(cfg, repoRoot),
+		LessonLedger:        newLessonStore(cfg, repoRoot),
 		Git:                 pipeline.ExecGit{Repo: repoRoot},
 		GitHub:              pipeline.ExecGitHub{Repo: repoRoot},
 		Tracker:             pm,
@@ -1001,7 +1114,7 @@ func skillsExpected(repoRoot string) func(string) bool {
 // naming an unknown provider or whose binary is missing from PATH is a startup
 // error. Repeated providers get a numeric suffix (claude, claude2) so their
 // verdict files and ledger labels stay distinct.
-func buildPanel(cfg config.Config, log *event.Log, sink agent.TokenSink) ([]pipeline.Verifier, error) {
+func buildPanel(cfg config.Config, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink) ([]pipeline.Verifier, error) {
 	if len(cfg.VerifyPanel) == 0 {
 		return nil, nil
 	}
@@ -1013,7 +1126,7 @@ func buildPanel(cfg config.Config, log *event.Log, sink agent.TokenSink) ([]pipe
 		if err != nil {
 			return nil, fmt.Errorf("verify panel %q: %w", spec, err)
 		}
-		runner, err := buildBackend(reg, cfg, provider, model, effort, agent.PhaseVerify, log, sink)
+		runner, err := buildBackend(reg, cfg, provider, model, effort, agent.PhaseVerify, log, sink, transcripts)
 		if err != nil {
 			return nil, fmt.Errorf("verify panel %q: %w", spec, err)
 		}
@@ -1034,7 +1147,7 @@ func buildPanel(cfg config.Config, log *event.Log, sink agent.TokenSink) ([]pipe
 // chain is global, so every phase gets the same ordered providers. Returns nil when
 // no fallback is configured (retry-only). A spec naming an unknown provider or whose
 // binary is missing from PATH is a startup error, surfaced before any run begins.
-func buildFallback(cfg config.Config, log *event.Log, sink agent.TokenSink) (func(string) []agent.Runner, error) {
+func buildFallback(cfg config.Config, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink) (func(string) []agent.Runner, error) {
 	if len(cfg.FallbackProviders) == 0 {
 		return nil, nil
 	}
@@ -1045,7 +1158,7 @@ func buildFallback(cfg config.Config, log *event.Log, sink agent.TokenSink) (fun
 		if err != nil {
 			return nil, fmt.Errorf("fallback provider %q: %w", spec, err)
 		}
-		b, err := buildBackend(reg, cfg, provider, model, effort, "", log, sink)
+		b, err := buildBackend(reg, cfg, provider, model, effort, "", log, sink, transcripts)
 		if err != nil {
 			return nil, fmt.Errorf("fallback provider %q: %w", spec, err)
 		}
@@ -1078,7 +1191,7 @@ type realEngine struct {
 	pipe    *pipeline.Pipeline
 	tracker tracker.Tracker
 	scope   tracker.Scope
-	sink    *tokens.Sink
+	sink    *hubtokens.Sink
 	log     *event.Log
 	// resumeKeep, when set, restricts the resume scan to ids it accepts — the epic
 	// flow sets it to the epic's child set so a stale checkpoint for an unrelated
@@ -1102,7 +1215,7 @@ func (e *realEngine) Process(ctx context.Context, id, from string) error {
 }
 
 // flagCostAnomalies runs the post-run cost-anomaly check for a ticket the size
-// judge called one-window: it records any tripped phases to runs/<id>/anomalies.jsonl,
+// judge called one-window: it records any tripped phases through the hub (ADR 0008),
 // stamps the count onto the checkpoint (so --status can surface it), and emits one
 // summary event. A no-op when nothing tripped or the sink/log are unset.
 func (e *realEngine) flagCostAnomalies(id string) {
@@ -1321,27 +1434,28 @@ func menuOnlyArgs(args []string) bool {
 func runSession(ctx context.Context, cfg config.Config, opts config.Options, stdout, stderr io.Writer) error {
 	holder := tui.NewRenderer()
 
-	var log *event.Log
-	if os.Getenv("TRAU_LOG_JSON") == "1" {
-		log = event.New(stderr)
-	} else {
-		log = event.New(newEventFile(cfg.RunsDir)).WithHuman(holder.Event)
-	}
+	log, flushEvents := newEventLog(cfg, stderr, holder.Event)
+	defer flushEvents()
 
 	maxIter := cfg.MaxIterations
 	if opts.Max >= 0 {
 		maxIter = opts.Max
 	}
 	acts := &appActions{
-		cfg:     cfg,
-		opts:    opts,
-		stderr:  io.Discard,
-		log:     log,
-		sink:    tokens.New(cfg.RunsDir),
-		store:   state.NewStore(cfg.RunsDir),
-		scope:   scopeFor(cfg, ""),
-		maxIter: maxIter,
+		cfg:         cfg,
+		opts:        opts,
+		stderr:      io.Discard,
+		log:         log,
+		sink:        newTokenSink(cfg),
+		transcripts: newTranscriptSink(cfg),
+		store:       newCheckpointStore(cfg, cfg.RepoRoot),
+		logs:        newPhaseLogStore(cfg, cfg.RepoRoot),
+		scope:       scopeFor(cfg, ""),
+		maxIter:     maxIter,
 	}
+	defer acts.sink.Close()
+	defer acts.transcripts.Close()
+	wireTUITranscripts(cfg)
 	if tui.AccessibleOnboardingRequested() && acts.OnboardingNeeded() {
 		res, err := tui.RunAccessibleOnboarding(ctx, acts)
 		if err != nil {
@@ -1352,7 +1466,7 @@ func runSession(ctx context.Context, cfg config.Config, opts config.Options, std
 		}
 	}
 
-	reg := registry.Register(registry.Home(), cfg.RepoRoot, cfg.RunsDir)
+	reg := newPresence(cfg, cfg.RepoRoot)
 	defer reg.Deregister()
 	acts.reg = reg
 
@@ -1362,14 +1476,16 @@ func runSession(ctx context.Context, cfg config.Config, opts config.Options, std
 }
 
 type appActions struct {
-	cfg     config.Config
-	opts    config.Options
-	stderr  io.Writer
-	log     *event.Log
-	sink    *tokens.Sink
-	store   *state.Store
-	scope   tracker.Scope
-	maxIter int
+	cfg         config.Config
+	opts        config.Options
+	stderr      io.Writer
+	log         *event.Log
+	sink        *hubtokens.Sink
+	transcripts *hubtranscript.Sink
+	store       state.Checkpoints
+	logs        *hubphaselog.Store
+	scope       tracker.Scope
+	maxIter     int
 
 	built    bool
 	buildErr error
@@ -1377,7 +1493,7 @@ type appActions struct {
 	pipe     *pipeline.Pipeline
 	tracker  tracker.Tracker
 	eng      *realEngine
-	reg      *registry.Handle
+	reg      *hubpresence.Handle
 }
 
 // RepoRoot returns the resolved target repo root, or "" when none was found.
@@ -1587,7 +1703,7 @@ func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (
 		return res, nil
 	}
 
-	runner, err := buildRouter(a.cfg, a.log, a.sink, a.stderr)
+	runner, err := buildRouter(a.cfg, a.log, a.sink, a.transcripts, a.stderr)
 	if err != nil {
 		res.LabelErr = err
 		return res, nil
@@ -1642,7 +1758,7 @@ func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvide
 		restOnly := trackerProvider == "jira" && jiraRESTComplete(cfg)
 		var runner agent.Runner
 		if !restOnly {
-			r, err := buildRouter(cfg, a.log, a.sink, a.stderr)
+			r, err := buildRouter(cfg, a.log, a.sink, a.transcripts, a.stderr)
 			if err != nil {
 				return tui.TeamDetection{Label: label}, err
 			}
@@ -1901,7 +2017,7 @@ func (a *appActions) MenuInfo() tui.MenuInfo {
 		}
 	}
 	resume := tui.ResumeTarget{}
-	if id, phase := a.store.ResumeTarget(); id != "" {
+	if id, phase := a.store.ResumeTargetFunc(nil); id != "" {
 		resume = tui.ResumeTarget{
 			ID:    id,
 			Phase: pipeline.NextPhaseLabel(phase),
@@ -1981,7 +2097,7 @@ func (a *appActions) LogRuns() []tui.LogRun {
 			Phase:         a.store.Get(id, "PHASE"),
 			Updated:       updated,
 			FailureReason: a.store.Get(id, "FAILURE_REASON"),
-			Path:          filepath.Join(a.store.Root(), id),
+			Path:          filepath.Join(a.cfg.RunsDir, id),
 		})
 	}
 	sort.Slice(runs, func(i, j int) bool {
@@ -1995,8 +2111,7 @@ func (a *appActions) LogRuns() []tui.LogRun {
 // tail of the most recent phase log so the latest output/error is immediately
 // visible, then the full concatenated phase logs.
 func (a *appActions) LogContent(id string) string {
-	dir := filepath.Join(a.store.Root(), id)
-	entries, err := os.ReadDir(dir)
+	logs, err := a.logs.List(id)
 	if err != nil {
 		return ""
 	}
@@ -2007,50 +2122,20 @@ func (a *appActions) LogContent(id string) string {
 	}
 	failureReason := a.store.Get(id, "FAILURE_REASON")
 
-	type logFile struct {
-		name  string
-		phase string
-		mtime time.Time
-	}
-	var files []logFile
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		phase := strings.TrimSuffix(e.Name(), ".log")
-		files = append(files, logFile{
-			name:  e.Name(),
-			phase: phase,
-			mtime: info.ModTime(),
-		})
-	}
-
 	var b strings.Builder
 	_, _ = fmt.Fprintf(&b, "══ %s ══\nphase: %s\n", id, phase)
 	if failureReason != "" {
 		_, _ = fmt.Fprintf(&b, "failure: %s\n", failureReason)
 	}
 
-	if len(files) == 0 {
+	if len(logs) == 0 {
 		b.WriteString("\n(no phase logs)\n")
 		return b.String()
 	}
 
-	// Sort by modification time descending so the most recently written phase
-	// appears first. Filename is the tie-breaker for identical mtimes.
-	sort.Slice(files, func(i, j int) bool {
-		if !files[i].mtime.Equal(files[j].mtime) {
-			return files[i].mtime.After(files[j].mtime)
-		}
-		return files[i].name > files[j].name
-	})
-
-	// Show the tail of the most recent log up front.
-	latest, _ := os.ReadFile(filepath.Join(dir, files[0].name))
+	// The store returns logs most-recently-written first. Show the tail of the
+	// newest up front so the latest output/error is immediately visible.
+	latest := []byte(logs[0].Content)
 	b.WriteString("\n── latest output ──\n")
 	if len(latest) == 0 {
 		b.WriteString("(empty log)\n")
@@ -2060,13 +2145,12 @@ func (a *appActions) LogContent(id string) string {
 
 	// Then the full logs for deeper inspection.
 	b.WriteString("\n── full logs ──\n")
-	for _, f := range files {
-		data, err := os.ReadFile(filepath.Join(dir, f.name))
-		if err != nil || len(data) == 0 {
+	for _, l := range logs {
+		if l.Content == "" {
 			continue
 		}
-		_, _ = fmt.Fprintf(&b, "\n── %s ──\n", f.phase)
-		b.Write(data)
+		_, _ = fmt.Fprintf(&b, "\n── %s ──\n", l.Phase)
+		b.WriteString(l.Content)
 	}
 	return b.String()
 }
@@ -2093,7 +2177,7 @@ func (a *appActions) ensure() error {
 		return a.buildErr
 	}
 	a.built = true
-	runner, err := buildRouter(a.cfg, a.log, a.sink, a.stderr)
+	runner, err := buildRouter(a.cfg, a.log, a.sink, a.transcripts, a.stderr)
 	if err != nil {
 		a.buildErr = err
 		return err
@@ -2109,7 +2193,7 @@ func (a *appActions) ensure() error {
 		a.buildErr = err
 		return err
 	}
-	pipe, err := buildPipeline(a.cfg, runner, repoRoot, a.tracker, a.sink, a.log, nil)
+	pipe, err := buildPipeline(a.cfg, runner, repoRoot, a.tracker, a.sink, a.transcripts, a.log, nil)
 	if err != nil {
 		a.buildErr = err
 		return err
@@ -2724,12 +2808,12 @@ func providerConfigFor(cfg config.Config, provider string) providerConfig {
 	return providerConfig{extra: map[string]string{}}
 }
 
-func buildRouter(cfg config.Config, log *event.Log, sink agent.TokenSink, stderr io.Writer) (agent.Runner, error) {
+func buildRouter(cfg config.Config, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink, stderr io.Writer) (agent.Runner, error) {
 	reg := agent.DefaultRegistry()
 	used := map[string]bool{cfg.Provider: true}
 
 	defPC := providerConfigFor(cfg, cfg.Provider)
-	def, err := buildBackend(reg, cfg, cfg.Provider, defPC.model, defPC.effort, "", log, sink)
+	def, err := buildBackend(reg, cfg, cfg.Provider, defPC.model, defPC.effort, "", log, sink, transcripts)
 	if err != nil {
 		return nil, err
 	}
@@ -2759,7 +2843,7 @@ func buildRouter(cfg config.Config, log *event.Log, sink agent.TokenSink, stderr
 		if err != nil {
 			return nil, fmt.Errorf("%s phase route: %w", phase, err)
 		}
-		b, err := buildBackend(reg, cfg, provider, model, effort, phase, log, sink)
+		b, err := buildBackend(reg, cfg, provider, model, effort, phase, log, sink, transcripts)
 		if err != nil {
 			return nil, fmt.Errorf("%s phase route %q: %w", phase, spec, err)
 		}
@@ -2845,7 +2929,7 @@ func autoInstallSkills(cfg config.Config, con *console.Console) {
 	}
 }
 
-func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort, phase string, log *event.Log, sink agent.TokenSink) (agent.Runner, error) {
+func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort, phase string, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink) (agent.Runner, error) {
 	spec, ok := reg.Lookup(provider)
 	if !ok {
 		return nil, fmt.Errorf("unknown provider %q (expected: %s)", provider, strings.Join(reg.Names(), " | "))
@@ -2883,6 +2967,7 @@ func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort
 		StripMechanicalMCP: cfg.StripMechanicalMCP,
 		Log:                log,
 		Tokens:             sink,
+		Transcripts:        transcripts,
 		Extra:              pc.extra,
 	})
 }
@@ -2924,34 +3009,15 @@ func legacyRunsTracked() bool {
 	return exec.Command("git", "ls-files", "--error-unmatch", "runs").Run() == nil
 }
 
-func newEventFile(runsDir string) io.Writer {
-	return &eventFile{path: filepath.Join(runsDir, "events.jsonl")}
-}
-
-type eventFile struct {
-	path string
-	mu   sync.Mutex
-	f    *os.File
-	bad  bool
-}
-
-func (e *eventFile) Write(p []byte) (int, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.f == nil && !e.bad {
-		if err := os.MkdirAll(filepath.Dir(e.path), 0o755); err != nil {
-			e.bad = true
-			return len(p), nil
-		}
-		f, err := os.OpenFile(e.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err != nil {
-			e.bad = true
-			return len(p), nil
-		}
-		e.f = f
+// newEventLog builds the loop's event log and a close that flushes its tail before
+// the process exits. Normally events flow to the hub over HTTP (ADR 0008) — the
+// child writes no event-log file — and to human for the in-process feed. Under
+// TRAU_LOG_JSON the diagnostic stderr stream stands in and writes no run data.
+func newEventLog(cfg config.Config, stderr io.Writer, human func(event.Event)) (*event.Log, func()) {
+	if os.Getenv("TRAU_LOG_JSON") == "1" {
+		return event.New(stderr), func() {}
 	}
-	if e.f != nil {
-		_, _ = e.f.Write(p)
-	}
-	return len(p), nil
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	sink := hubevent.New(hub, repoName(cfg.RepoRoot), cfg.HubWriteBufferBytes, time.Duration(cfg.HubWriteRetryWindow)*time.Second)
+	return event.NewSink(sink).WithHuman(human), sink.Close
 }

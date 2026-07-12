@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubclient"
+	"github.com/RomkaLTU/trau/internal/hubpresence"
 	"github.com/RomkaLTU/trau/internal/pipeline"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -124,9 +127,34 @@ func TestRunLoopReportsStoppingOnCancel(t *testing.T) {
 	}
 }
 
+// fakePresenceClient records the last heartbeat a presence handle flushed, so a
+// test can assert what session state the loop reported without a live hub.
+type fakePresenceClient struct {
+	mu    sync.Mutex
+	last  hubclient.InstanceHeartbeat
+	calls int
+}
+
+func (f *fakePresenceClient) PutInstance(_ context.Context, _ int, hb hubclient.InstanceHeartbeat) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.last = hb
+	f.calls++
+	return nil
+}
+
+func (f *fakePresenceClient) DeleteInstance(context.Context, int) error { return nil }
+
+func (f *fakePresenceClient) snapshot() (hubclient.InstanceHeartbeat, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.last, f.calls
+}
+
 // TestReportAfterRunParks pins the single-ticket recap mapping: a fault, pause,
 // or give-up parks the recap-alive session on its ticket, while a clean finish
-// falls back to idle.
+// falls back to idle. The reported state reaches the hub through the presence
+// handle's background heartbeat, so the test waits for the flush.
 func TestReportAfterRunParks(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -141,17 +169,26 @@ func TestReportAfterRunParks(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			home := t.TempDir()
-			h := registry.Register(home, t.TempDir(), "")
+			fake := &fakePresenceClient{}
+			h := hubpresence.Register(fake, "/repo/acme", "")
 			defer h.Deregister()
 			(&appActions{reg: h}).reportAfterRun(tc.err)
 
-			live := registry.Live(home)
-			if len(live) != 1 {
-				t.Fatalf("expected 1 live entry, got %d", len(live))
+			deadline := time.Now().Add(time.Second)
+			var got hubclient.InstanceHeartbeat
+			for {
+				hb, calls := fake.snapshot()
+				got = hb
+				if calls > 0 && hb.SessionState == tc.wantState && hb.Ticket == tc.wantTicket {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("reportAfterRun(%v) reported {%s %s} not {%s %s} within 1s", tc.err, hb.SessionState, hb.Ticket, tc.wantState, tc.wantTicket)
+				}
+				time.Sleep(2 * time.Millisecond)
 			}
-			if e := live[0]; e.SessionState != tc.wantState || e.Ticket != tc.wantTicket || e.Phase != "" {
-				t.Fatalf("reportAfterRun(%v) = {%s %s %q}, want {%s %s \"\"}", tc.err, e.SessionState, e.Ticket, e.Phase, tc.wantState, tc.wantTicket)
+			if got.Phase != "" {
+				t.Errorf("reportAfterRun(%v) reported phase %q, want empty", tc.err, got.Phase)
 			}
 		})
 	}

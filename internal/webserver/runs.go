@@ -105,6 +105,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
 		return
 	}
+	s.importCheckpoints(repo)
 	writeJSON(w, http.StatusOK, RunsResponse{Repo: repo.Name, Runs: s.collectRuns(repo.Root)})
 }
 
@@ -115,7 +116,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 // that have never run so they are startable before their first loop. It is a
 // pure read: the known set is persisted off the request path by the sweep.
 func (s *Server) repoViews() []RepoView {
-	entries := registry.Live(s.home)
+	entries := s.liveInstances()
 	live := make(map[string]bool, len(entries))
 	for _, e := range entries {
 		live[e.RepoRoot] = true
@@ -179,7 +180,7 @@ func (s *Server) findRepo(name string) (registry.Repo, bool) {
 	if name == "" {
 		return registry.Repo{}, false
 	}
-	for _, repo := range s.knownRepos(registry.Live(s.home)) {
+	for _, repo := range s.knownRepos(s.liveInstances()) {
 		if repo.Name == name {
 			return repo, true
 		}
@@ -187,11 +188,11 @@ func (s *Server) findRepo(name string) (registry.Repo, bool) {
 	return registry.Repo{}, false
 }
 
-// collectRuns reads every checkpoint the projection holds for root into a
-// board-ordered run list. It derives from the derived checkpoints table, not the
-// state files, so a poll never re-reads a checkpoint per field.
+// collectRuns reads every checkpoint the authoritative table holds for root into
+// a board-ordered run list. The loop writes checkpoints straight to that table
+// over HTTP (ADR 0008), so a poll never re-reads a checkpoint per field.
 func (s *Server) collectRuns(root string) []RunView {
-	rows, err := s.stores.Derived().Checkpoints(root)
+	rows, err := s.stores.Checkpoints().All(root)
 	if err != nil {
 		logger.Verbosef("checkpoints %s: %v", root, err)
 		rows = nil
@@ -223,31 +224,6 @@ func runViewFromCheckpoint(tc hubstore.TicketCheckpoint) RunView {
 		FailureClass:  class,
 		FailureReason: reason,
 		UpdatedAt:     tc.UpdatedAt,
-	}
-}
-
-// runView builds one ticket's row straight from its state file. The run board
-// derives from the projection, but the on-demand run detail already reads the
-// ticket's artifacts from disk, so it reads the checkpoint from the same file.
-func runView(store *state.Store, id string) RunView {
-	phase := store.Get(id, "PHASE")
-	reason := store.Get(id, "FAILURE_REASON")
-	class := state.FailureClass(phase, store.Get(id, "FAILURE_CLASS"), reason)
-	if phase == state.Merged {
-		reason = ""
-	}
-	return RunView{
-		Ticket:        id,
-		Title:         store.Get(id, "TITLE"),
-		Phase:         phase,
-		PhaseRank:     state.Idx(phase),
-		Terminal:      state.Terminal(phase),
-		Branch:        store.Get(id, "BRANCH"),
-		PR:            store.Get(id, "PR"),
-		PRURL:         store.Get(id, "PR_URL"),
-		FailureClass:  class,
-		FailureReason: reason,
-		UpdatedAt:     store.Get(id, "UPDATED"),
 	}
 }
 

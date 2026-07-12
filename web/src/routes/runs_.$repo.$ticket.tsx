@@ -168,6 +168,14 @@ function Detail({
           <AnomaliesView anomalies={run.anomalies} />
         </TerminalCard>
 
+        <TerminalCard title="buildnotes.md" className="lg:col-span-2">
+          {run.artifacts.build_notes && run.build_notes ? (
+            <Markdown>{run.build_notes}</Markdown>
+          ) : (
+            <Empty>No build notes for this run — the build agent left none.</Empty>
+          )}
+        </TerminalCard>
+
         <TerminalCard title="comments" className="lg:col-span-2">
           <CommentComposer repo={repo} ticket={run.ticket} />
         </TerminalCard>
