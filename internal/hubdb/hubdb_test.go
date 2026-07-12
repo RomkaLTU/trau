@@ -1,6 +1,7 @@
 package hubdb
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -91,6 +92,46 @@ func TestOpenIdempotent(t *testing.T) {
 	}
 	if rows != 1 {
 		t.Fatalf("schema_version rows = %d, want 1", rows)
+	}
+}
+
+func TestOpenOverExistingDerivedCheckpoints(t *testing.T) {
+	home := t.TempDir()
+
+	seed, err := sql.Open("sqlite", Path(home))
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	for _, stmt := range []string{
+		`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT`,
+		`INSERT INTO meta(key, value) VALUES ('schema_version', '7')`,
+		`CREATE TABLE checkpoints (
+		     repo TEXT NOT NULL, ticket TEXT NOT NULL, phase TEXT NOT NULL DEFAULT '',
+		     title TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL DEFAULT '',
+		     pr TEXT NOT NULL DEFAULT '', pr_url TEXT NOT NULL DEFAULT '',
+		     failure_reason TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '',
+		     data TEXT NOT NULL DEFAULT '{}', PRIMARY KEY (repo, ticket)
+		 ) STRICT`,
+	} {
+		if _, err := seed.Exec(stmt); err != nil {
+			t.Fatalf("seed exec: %v", err)
+		}
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	db, err := Open(home)
+	if err != nil {
+		t.Fatalf("Open over a pre-existing derived checkpoints table: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if want := currentVersion(t); db.Version() != want {
+		t.Fatalf("version = %d, want %d", db.Version(), want)
+	}
+	if _, err := db.SQL().Exec(`INSERT INTO checkpoints(repo, ticket) VALUES('/repo', 'COD-1')`); err != nil {
+		t.Fatalf("insert into migrated checkpoints: %v", err)
 	}
 }
 

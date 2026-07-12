@@ -226,48 +226,13 @@ func TestIngestTokensRoundTrip(t *testing.T) {
 	}
 }
 
-func TestUpsertCheckpoint(t *testing.T) {
-	_, d := testDerived(t)
-	cp := CheckpointRow{Phase: "built", Title: "Do it", Branch: "feature/x", UpdatedAt: "2026-07-11 10:00:00", Data: `{"PHASE":"built"}`}
-	if err := d.UpsertCheckpoint("repo", "COD-1", cp, 128, 42); err != nil {
-		t.Fatalf("UpsertCheckpoint: %v", err)
-	}
-	size, mtime, err := d.CheckpointCursor("repo", "COD-1")
-	if err != nil || size != 128 || mtime != 42 {
-		t.Fatalf("CheckpointCursor = %d, %d, %v; want 128, 42, nil", size, mtime, err)
-	}
-	got, ok, err := d.Checkpoint("repo", "COD-1")
-	if err != nil || !ok {
-		t.Fatalf("Checkpoint ok=%v err=%v", ok, err)
-	}
-	if !reflect.DeepEqual(got, cp) {
-		t.Fatalf("checkpoint = %+v, want %+v", got, cp)
-	}
-
-	next := CheckpointRow{Phase: "merged", Title: "Do it", Data: `{"PHASE":"merged"}`}
-	if err := d.UpsertCheckpoint("repo", "COD-1", next, 200, 99); err != nil {
-		t.Fatalf("UpsertCheckpoint update: %v", err)
-	}
-	got, _, err = d.Checkpoint("repo", "COD-1")
-	if err != nil {
-		t.Fatalf("Checkpoint: %v", err)
-	}
-	if got.Phase != "merged" {
-		t.Fatalf("checkpoint phase after update = %q, want merged", got.Phase)
-	}
-}
-
 func TestCursorsZeroWhenAbsent(t *testing.T) {
 	_, d := testDerived(t)
 	if off, err := d.EventCursor("nope"); err != nil || off != 0 {
 		t.Fatalf("EventCursor(absent) = %d, %v; want 0, nil", off, err)
 	}
-	size, mtime, err := d.CheckpointCursor("nope", "x")
-	if err != nil || size != 0 || mtime != 0 {
-		t.Fatalf("CheckpointCursor(absent) = %d, %d, %v; want 0, 0, nil", size, mtime, err)
-	}
-	if _, ok, err := d.Checkpoint("nope", "x"); ok || err != nil {
-		t.Fatalf("Checkpoint(absent) ok=%v err=%v; want false, nil", ok, err)
+	if off, err := d.TokenCursor("nope", "x"); err != nil || off != 0 {
+		t.Fatalf("TokenCursor(absent) = %d, %v; want 0, nil", off, err)
 	}
 }
 
@@ -305,30 +270,5 @@ func TestCostCellsAggregatesWindow(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cells, want) {
 		t.Fatalf("cells = %+v, want %+v", cells, want)
-	}
-}
-
-func TestCheckpointsListsRepoByTicket(t *testing.T) {
-	_, d := testDerived(t)
-	must := func(err error) {
-		t.Helper()
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	must(d.UpsertCheckpoint("repoA", "COD-2", CheckpointRow{Phase: "built", Data: `{"PHASE":"built"}`}, 1, 1))
-	must(d.UpsertCheckpoint("repoA", "COD-1", CheckpointRow{Phase: "merged", Title: "First", Data: `{"PHASE":"merged"}`}, 1, 1))
-	must(d.UpsertCheckpoint("repoB", "COD-3", CheckpointRow{Phase: "verified", Data: `{}`}, 1, 1))
-
-	got, err := d.Checkpoints("repoA")
-	if err != nil {
-		t.Fatalf("Checkpoints: %v", err)
-	}
-	want := []TicketCheckpoint{
-		{Ticket: "COD-1", CheckpointRow: CheckpointRow{Phase: "merged", Title: "First", Data: `{"PHASE":"merged"}`}},
-		{Ticket: "COD-2", CheckpointRow: CheckpointRow{Phase: "built", Data: `{"PHASE":"built"}`}},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("checkpoints = %+v, want %+v", got, want)
 	}
 }

@@ -36,6 +36,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/doctor"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubcheckpoint"
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
@@ -381,6 +382,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return console.Actionable(err, "resolve target repo", "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository")
 		}
+		ensureHubForStore(ctx, cfg, stderr)
 		pipe, err := buildPipeline(cfg, runner, repoRoot, pm, sink, log, con)
 		if err != nil {
 			return err
@@ -455,6 +457,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return console.Actionable(err, "resolve target repo", "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository")
 	}
 	logger.Verbosef("final repo root for pipeline: %s", repoRoot)
+	// Checkpoints write through the hub now (ADR 0008), so the loop needs one up
+	// for every tracker — not only the hub-store providers ensured above. Idempotent.
+	ensureHubForStore(ctx, cfg, stderr)
 	p, err := buildPipeline(cfg, runner, repoRoot, pm, sink, log, con)
 	if err != nil {
 		return err
@@ -902,6 +907,15 @@ func repoName(root string) string {
 	return filepath.Base(root)
 }
 
+// newCheckpointStore is the hub-backed client that writes every phase transition
+// to the serve hub over HTTP (ADR 0008); a hub unreachable past
+// HUB_WRITE_RETRY_WINDOW pauses the run.
+func newCheckpointStore(cfg config.Config, repoRoot string) state.Checkpoints {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	window := time.Duration(cfg.HubWriteRetryWindow) * time.Second
+	return hubcheckpoint.New(hub, repoName(repoRoot), window)
+}
+
 func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *tokens.Sink, log *event.Log, con console.Renderer) (*pipeline.Pipeline, error) {
 	wireCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -929,7 +943,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 	}
 	return &pipeline.Pipeline{
 		Runner:              runner,
-		State:               state.NewStore(cfg.RunsDir),
+		State:               newCheckpointStore(cfg, repoRoot),
 		Git:                 pipeline.ExecGit{Repo: repoRoot},
 		GitHub:              pipeline.ExecGitHub{Repo: repoRoot},
 		Tracker:             pm,

@@ -266,6 +266,36 @@ func TestRunDetailSurfacesNoSkillsWarning(t *testing.T) {
 	}
 }
 
+// TestRunDetailServesHubOnlyCheckpoint covers the post-cutover run: a ticket that
+// exists only as an authoritative checkpoint row, with no legacy state file on
+// disk, still resolves to a 200 detail carrying its phase, branch, and PR — the
+// board and the detail page read the same table.
+func TestRunDetailServesHubOnlyCheckpoint(t *testing.T) {
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	root := filepath.Dir(filepath.Dir(runsDir))
+
+	if err := testStoresAt(t, home).Checkpoints().Upsert(root, "COD-7001", map[string]string{
+		"PHASE": state.PROpen, "TITLE": "hub-only run", "BRANCH": "feature/COD-7001",
+		"PR": "7", "PR_URL": "https://github.com/acme/acme/pull/7",
+	}); err != nil {
+		t.Fatalf("seed checkpoint row: %v", err)
+	}
+	if runExists(runsDir, "COD-7001") {
+		t.Fatal("state file present, want a hub-only checkpoint with no file on disk")
+	}
+
+	ts := instancesServer(t, home)
+	d := getRunDetail(t, ts, "acme", "COD-7001")
+
+	if d.Ticket != "COD-7001" || d.Phase != state.PROpen || d.Title != "hub-only run" {
+		t.Errorf("detail = %+v, want the checkpoint's ticket/phase/title carried through", d.RunView)
+	}
+	if d.Branch != "feature/COD-7001" || d.PR != "7" || d.PRURL == "" {
+		t.Errorf("PR reference = branch %q pr %q url %q, want carried through", d.Branch, d.PR, d.PRURL)
+	}
+}
+
 // TestRunDetailUnknownRun404 covers the miss: a ticket with no checkpoint under a
 // known repo is a JSON 404, not the SPA shell.
 func TestRunDetailUnknownRun404(t *testing.T) {

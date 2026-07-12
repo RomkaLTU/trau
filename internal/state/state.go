@@ -112,6 +112,25 @@ func FailureClass(phase, stored, reason string) string {
 	}
 }
 
+// ErrHubUnreachable is returned by a hub-backed Checkpoints implementation when
+// a write cannot reach the hub within its bounded retry window (ADR 0008 §3).
+// The pipeline classifies it as a blameless pause; the file-backed Store never
+// returns it.
+var ErrHubUnreachable = errors.New("state: hub unreachable")
+
+// Checkpoints is the per-ticket checkpoint surface the loop pipeline and the
+// resume scan depend on. Both the file-backed *Store and the hub-backed client
+// satisfy it, so the write path can move to the hub (ADR 0008) without touching
+// the callers. A hub-backed implementation's writes may return ErrHubUnreachable.
+type Checkpoints interface {
+	Get(id, key string) string
+	Set(id, key, value string) error
+	Unset(id, key string) error
+	RemoveState(id string) error
+	ResumeTargetFunc(keep func(id string) bool) (id, phase string)
+	Tickets() []string
+}
+
 // Store reads and writes per-ticket checkpoints under a runs/ root (the same
 // root the token sink uses).
 type Store struct {
@@ -293,12 +312,25 @@ func (s *Store) ResumeTarget() (id, phase string) {
 // is not part of the requested epic — even one in the same runs/ dir — is skipped
 // rather than resumed.
 func (s *Store) ResumeTargetFunc(keep func(id string) bool) (id, phase string) {
-	bestNum := math.MaxInt
+	phases := make(map[string]string)
 	for _, t := range s.Tickets() {
+		phases[t] = s.Get(t, "PHASE")
+	}
+	return PickResumeTarget(phases, keep)
+}
+
+// PickResumeTarget selects the resume target from a set of ticket→phase pairs:
+// the lowest-numbered ticket the keep predicate accepts whose phase is in-flight
+// (rank 1–5), or ("", "") when none. It orders by the numeric part of the id, so
+// COD-9 precedes COD-10, and skips terminal (rank ≥ 6) and unknown (0) phases. It
+// is the shared selection both the file-backed Store and the hub-backed client
+// reuse, so the ranking lives in one place.
+func PickResumeTarget(phases map[string]string, keep func(id string) bool) (id, phase string) {
+	bestNum := math.MaxInt
+	for t, ph := range phases {
 		if keep != nil && !keep(t) {
 			continue
 		}
-		ph := s.Get(t, "PHASE")
 		if rank := Idx(ph); rank == 0 || rank >= 6 {
 			continue
 		}

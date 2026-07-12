@@ -263,6 +263,12 @@ type Config struct {
 	ServeAutostart bool
 	ServeOpen      bool
 
+	// HubWriteRetryWindow is how many seconds the loop child retries an
+	// unreachable hub before a run-data write pauses the run blamelessly
+	// (ADR 0008 §3). The child sends run data to the hub over HTTP and never
+	// opens a database.
+	HubWriteRetryWindow int
+
 	// Spend ceilings off the normalized token/cost ledger. Zero = no cap
 	// (back-compat: a config with no MAX_* knobs enforces nothing). USD caps use
 	// the notional cost estimate; token caps the raw total. See internal/budget.
@@ -353,6 +359,7 @@ func Defaults() Config {
 		ServeReconcileInterval: 900,
 		ServeAutostart:         true,
 		ServeOpen:              true,
+		HubWriteRetryWindow:    30,
 		MaxTicketUSD:           0,
 		MaxTicketTokens:        0,
 		MaxDailyUSD:            0,
@@ -783,6 +790,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		c.ServeOpen = v == "1"
 		sources["SERVE_OPEN"] = src.name
 	}
+	num("HUB_WRITE_RETRY_WINDOW", &c.HubWriteRetryWindow)
 	fnum("MAX_TICKET_USD", &c.MaxTicketUSD)
 	num("MAX_TICKET_TOKENS", &c.MaxTicketTokens)
 	fnum("MAX_DAILY_USD", &c.MaxDailyUSD)
@@ -1335,6 +1343,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "SERVE_RECONCILE_INTERVAL", Default: "900", Advanced: true, Description: "Seconds between reconciliation sweeps that tombstone synced issues deleted, archived, or moved out of the Project (runs on the sync tick; 0 = disable)"},
 		{Key: "SERVE_AUTOSTART", Default: "1", Advanced: true, Bool: true, Description: "Bring the web UI hub up automatically on the first interactive TUI session when none is running (1 = yes, 0 = no)"},
 		{Key: "SERVE_OPEN", Default: "1", Advanced: true, Bool: true, Description: "Open the browser when autostart freshly spawns the hub (1 = yes, 0 = no); the daemon still starts when 0"},
+		{Key: "HUB_WRITE_RETRY_WINDOW", Default: "30", Advanced: true, Description: "Seconds the loop retries an unreachable hub before a run-data write pauses the run blamelessly (ADR 0008)"},
 		{Key: "MAX_TICKET_USD", Description: "Per-ticket USD spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_TICKET_TOKENS", Description: "Per-ticket token spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_DAILY_USD", Description: "Per-day USD spend cap across all tickets; reaching it stops the run (empty = no cap)"},
@@ -1884,6 +1893,8 @@ func keyValue(cfg Config, key string) string {
 			return "1"
 		}
 		return "0"
+	case "HUB_WRITE_RETRY_WINDOW":
+		return intValue(cfg.HubWriteRetryWindow)
 	case "MAX_TICKET_USD":
 		return floatValue(cfg.MaxTicketUSD)
 	case "MAX_TICKET_TOKENS":

@@ -36,6 +36,7 @@ func ingestedServer(t *testing.T, home string) *httptest.Server {
 		t.Fatalf("ensure derived schema: %v", err)
 	}
 	s.ingestPass()
+	s.importAllCheckpoints()
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return ts

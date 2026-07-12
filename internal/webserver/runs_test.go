@@ -206,11 +206,15 @@ func TestRunsServedFromDatabaseNotStateFiles(t *testing.T) {
 	})
 
 	ts := ingestedServer(t, home)
-	removeGlob(t, filepath.Join(runsDir, "*", "state"))
+	// The one-shot legacy import folds the state file into the authoritative table
+	// and removes it, so the board serves from the db with no file left behind.
+	if _, _, _, ok := state.NewStore(runsDir).Load("COD-1"); ok {
+		t.Fatalf("state file survived the import; the board must serve from the db")
+	}
 
 	r := runByTicket(getRuns(t, ts, "acme").Runs)["COD-1"]
 	if r.Phase != state.Built || r.Title != "wire up the thing" {
-		t.Fatalf("run after deleting state files = %+v, want built/\"wire up the thing\" (served from the db)", r)
+		t.Fatalf("run served from db = %+v, want built/\"wire up the thing\"", r)
 	}
 	if r.FailureClass != state.FailPaused || r.FailureReason != "claude rate/usage limit reached" {
 		t.Fatalf("failure after deleting state files = %q/%q, want the paused class from the db data blob", r.FailureClass, r.FailureReason)
