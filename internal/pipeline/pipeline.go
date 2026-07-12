@@ -313,6 +313,7 @@ func parseRefusal(out string) (reason string, ok bool) {
 type Pipeline struct {
 	Runner      agent.Runner
 	State       state.Checkpoints
+	Artifacts   ArtifactStore
 	Git         Git
 	GitHub      GitHub
 	Tracker     tracker.Tracker
@@ -849,6 +850,7 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 	_ = os.Remove(verifyPath(id))
 	_ = os.Remove(rubricPath(id))
 	_ = os.Remove(buildNotesPath(id))
+	p.clearArtifacts(id)
 	_ = p.State.RemoveState(id)
 	if branch != "" {
 		p.logf("  reset %s: cleared saved state + branch %s", id, branch)
@@ -888,6 +890,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	_ = os.Remove(verifyPath(id))
 	_ = os.Remove(rubricPath(id))
 	_ = os.Remove(buildNotesPath(id))
+	p.clearArtifacts(id)
 
 	if err := p.setPhase(id, state.Building); err != nil {
 		return fmt.Errorf("build %s: checkpoint building: %w", id, err)
@@ -1171,42 +1174,34 @@ func (p *Pipeline) persistHandoff(id string) {
 	if err != nil || len(data) == 0 {
 		return
 	}
-	dir := filepath.Join(p.RunsDir, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	_ = os.WriteFile(filepath.Join(dir, "handoff.md"), data, 0o644)
+	p.putArtifact(id, artifactHandoff, string(data))
 }
 
-// persistVerdict mirrors the graded verify verdict into runs/<ID>/verdict.json so
-// the last QA outcome survives a reboot and is readable out of band (the web hub
-// renders it on the run detail page). Best-effort and silent.
+// persistVerdict stores the graded verify verdict through the hub so the last QA
+// outcome survives a reboot and is readable out of band (the web hub renders it on
+// the run detail page). Best-effort and silent.
 func (p *Pipeline) persistVerdict(id string, v verdict) {
-	dir := filepath.Join(p.RunsDir, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
 	data, err := json.Marshal(v)
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(filepath.Join(dir, "verdict.json"), data, 0o644)
+	p.putArtifact(id, artifactVerdict, string(data))
 }
 
-// restoreHandoff copies the durable runs/<ID>/handoff.md back to /tmp when /tmp
-// lost it (wiped on reboot), so a resumed verify reuses the exact brief the
-// handoff produced — and the matching rubric — instead of regenerating a fresh
-// pair. Best-effort: it leaves /tmp untouched when a non-empty copy is already
-// there or no durable copy exists.
+// restoreHandoff copies the durable handoff brief back to /tmp when /tmp lost it
+// (wiped on reboot), so a resumed verify reuses the exact brief the handoff
+// produced — and the matching rubric — instead of regenerating a fresh pair.
+// Best-effort: it leaves /tmp untouched when a non-empty copy is already there or
+// the hub holds none.
 func (p *Pipeline) restoreHandoff(id string) {
 	if fi, err := os.Stat(handoffPath(id)); err == nil && fi.Size() > 0 {
 		return
 	}
-	data, err := os.ReadFile(filepath.Join(p.RunsDir, id, "handoff.md"))
-	if err != nil || len(data) == 0 {
+	content, ok := p.getArtifact(id, artifactHandoff)
+	if !ok || content == "" {
 		return
 	}
-	_ = os.WriteFile(handoffPath(id), data, 0o644)
+	_ = os.WriteFile(handoffPath(id), []byte(content), 0o644)
 }
 
 // Verify is the real test gate (EXPECTED_CHECKS is empty), run in a fresh,
@@ -1252,7 +1247,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	rubricRef, rubricOK := p.activeRubric(id)
 	switch {
 	case rubricOK:
-		p.logf("  ↳ rubric: runs/%s/rubric.json → verify", id)
+		p.logf("  ↳ rubric → verify")
 	case briefPresent:
 		p.logf("  ⚠ no usable rubric — verify grades from the brief alone")
 	}

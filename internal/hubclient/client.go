@@ -176,6 +176,11 @@ type appendEventsBody struct {
 	Events []Event `json:"events"`
 }
 
+// artifactBody carries a run artifact's content on the wire, both directions.
+type artifactBody struct {
+	Content string `json:"content"`
+}
+
 // TokenCall is one normalized provider call the loop child sends to the hub for the
 // authoritative token ledger (ADR 0008). Ticket buckets the call (a ticket id, or
 // _loop / _plans); CostUSD is nil for a call a provider reported no per-call cost
@@ -309,6 +314,38 @@ func (c *Client) Checkpoints(ctx context.Context, repo string) ([]Checkpoint, er
 	return out.Checkpoints, nil
 }
 
+// PutArtifact writes a ticket's phase artifact of the given kind to the hub, which
+// persists it in the authoritative artifacts table. A hub-connection failure
+// surfaces as an IsUnreachable error so the caller can retry; the request is
+// idempotent.
+func (c *Client) PutArtifact(ctx context.Context, repo, ticket, kind, content string) error {
+	return c.do(ctx, http.MethodPut, c.artifactPath(repo, ticket, kind), artifactBody{Content: content}, nil)
+}
+
+// GetArtifact reads a ticket's phase artifact of the given kind from the hub,
+// returning ok=false when the hub holds none.
+func (c *Client) GetArtifact(ctx context.Context, repo, ticket, kind string) (content string, ok bool, err error) {
+	var out artifactBody
+	err = c.do(ctx, http.MethodGet, c.artifactPath(repo, ticket, kind), nil, &out)
+	if errors.Is(err, ErrNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return out.Content, true, nil
+}
+
+// DeleteArtifacts drops every artifact the hub holds for a ticket — the
+// reset/clear/fresh-build sweep. A ticket with none is not an error.
+func (c *Client) DeleteArtifacts(ctx context.Context, repo, ticket string) error {
+	err := c.do(ctx, http.MethodDelete, c.artifactsPath(repo, ticket), nil, nil)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 // InternalIssue fetches a single internal issue, returning ErrNotFound when the
 // hub has no internal issue with that identifier.
 func (c *Client) InternalIssue(ctx context.Context, repo, id string) (Issue, error) {
@@ -390,6 +427,14 @@ func (c *Client) repoPath(repo, tail string) string {
 
 func (c *Client) checkpointPath(repo, ticket string) string {
 	return c.repoPath(repo, "runs/"+url.PathEscape(ticket)+"/checkpoint")
+}
+
+func (c *Client) artifactsPath(repo, ticket string) string {
+	return c.repoPath(repo, "runs/"+url.PathEscape(ticket)+"/artifacts")
+}
+
+func (c *Client) artifactPath(repo, ticket, kind string) string {
+	return c.artifactsPath(repo, ticket) + "/" + url.PathEscape(kind)
 }
 
 func (c *Client) issuePath(repo, id, verb string) string {

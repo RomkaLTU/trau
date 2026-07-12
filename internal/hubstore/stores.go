@@ -13,6 +13,7 @@ type Stores struct {
 	tokens      *Tokens
 	checkpoints *Checkpoints
 	events      *Events
+	artifacts   *Artifacts
 }
 
 // NewStores builds the hub store set over db.
@@ -24,6 +25,7 @@ func NewStores(db *sql.DB) *Stores {
 		tokens:      NewTokens(db),
 		checkpoints: NewCheckpoints(db),
 		events:      NewEvents(db),
+		artifacts:   NewArtifacts(db),
 	}
 }
 
@@ -41,6 +43,9 @@ func (s *Stores) Checkpoints() *Checkpoints { return s.checkpoints }
 
 // Events returns the authoritative event store.
 func (s *Stores) Events() *Events { return s.events }
+
+// Artifacts returns the authoritative per-run artifact store.
+func (s *Stores) Artifacts() *Artifacts { return s.artifacts }
 
 // Queue returns the queue store for a repo root.
 func (s *Stores) Queue(root string) *Queue { return NewQueue(s.db, root) }
