@@ -14,6 +14,8 @@ type Stores struct {
 	checkpoints *Checkpoints
 	events      *Events
 	artifacts   *Artifacts
+	drains      *DrainOutcomes
+	phaseLogs   *PhaseLogs
 }
 
 // NewStores builds the hub store set over db.
@@ -26,6 +28,8 @@ func NewStores(db *sql.DB) *Stores {
 		checkpoints: NewCheckpoints(db),
 		events:      NewEvents(db),
 		artifacts:   NewArtifacts(db),
+		drains:      NewDrainOutcomes(db),
+		phaseLogs:   NewPhaseLogs(db),
 	}
 }
 
@@ -46,6 +50,12 @@ func (s *Stores) Events() *Events { return s.events }
 
 // Artifacts returns the authoritative per-run artifact store.
 func (s *Stores) Artifacts() *Artifacts { return s.artifacts }
+
+// DrainOutcomes returns the store of how each queued child exited.
+func (s *Stores) DrainOutcomes() *DrainOutcomes { return s.drains }
+
+// PhaseLogs returns the authoritative per-run phase-log store.
+func (s *Stores) PhaseLogs() *PhaseLogs { return s.phaseLogs }
 
 // Queue returns the queue store for a repo root.
 func (s *Stores) Queue(root string) *Queue { return NewQueue(s.db, root) }

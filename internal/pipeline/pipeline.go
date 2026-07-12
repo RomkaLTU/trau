@@ -314,6 +314,7 @@ type Pipeline struct {
 	Runner      agent.Runner
 	State       state.Checkpoints
 	Artifacts   ArtifactStore
+	PhaseLogs   PhaseLogStore
 	Git         Git
 	GitHub      GitHub
 	Tracker     tracker.Tracker
@@ -851,6 +852,7 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 	_ = os.Remove(rubricPath(id))
 	_ = os.Remove(buildNotesPath(id))
 	p.clearArtifacts(id)
+	p.clearPhaseLogs(id)
 	_ = p.State.RemoveState(id)
 	if branch != "" {
 		p.logf("  reset %s: cleared saved state + branch %s", id, branch)
@@ -891,6 +893,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	_ = os.Remove(rubricPath(id))
 	_ = os.Remove(buildNotesPath(id))
 	p.clearArtifacts(id)
+	p.clearPhaseLogs(id)
 
 	if err := p.setPhase(id, state.Building); err != nil {
 		return fmt.Errorf("build %s: checkpoint building: %w", id, err)
@@ -1990,7 +1993,7 @@ func (p *Pipeline) agentPhaseOn(ctx context.Context, id, phase, prompt string, r
 			p.buildProvider, _, _ = pr.Route(phase)
 		}
 	}
-	p.writeTranscript(id, phase, res.Final)
+	p.putPhaseLog(id, phase, res.Final)
 	return res.Final, err
 }
 
@@ -2027,14 +2030,6 @@ func (p *Pipeline) spin(phase string) func() {
 		return func() {}
 	}
 	return p.Renderer.Spin(phase)
-}
-
-func (p *Pipeline) writeTranscript(id, phase, content string) {
-	dir := filepath.Join(p.RunsDir, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	_ = os.WriteFile(filepath.Join(dir, phase+".log"), []byte(content), 0o644)
 }
 
 func (p *Pipeline) logf(format string, a ...any) {

@@ -303,7 +303,9 @@ func TestDrainTickDecisions(t *testing.T) {
 			}
 			seedQueue(t, s, root, tc.draining, tc.items...)
 			if tc.report != nil {
-				mustWriteReport(t, root, *tc.report)
+				if it, ok := runningItem(t, s, root); ok {
+					seedOutcome(t, s, root, it.ID, *tc.report)
+				}
 			}
 
 			act, err := s.drain.tick(root)
@@ -452,7 +454,7 @@ func TestDrainPauseAndResumeReattemptsItem(t *testing.T) {
 	if got := statusOf(t, s, root, "COD-2"); got != queue.StatusPending {
 		t.Errorf("COD-2 = %q, want it still pending behind COD-1", got)
 	}
-	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once", "--drain-report", reportPath(repoRunsDir(root))})
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once", "--drain-report", "COD-1"})
 }
 
 // TestDrainRunsSequentially drives a full drain of three items to completion,
@@ -488,7 +490,7 @@ func TestDrainRunsSequentially(t *testing.T) {
 		case drainWait:
 			if it, ok := runningItem(t, s, root); ok {
 				alive[it.PID] = false
-				mustWriteReport(t, root, queue.DrainReport{})
+				seedOutcome(t, s, root, it.ID, queue.DrainReport{})
 			}
 		case drainStop:
 			t.Fatal("drain stopped before finishing the queue")
@@ -516,17 +518,17 @@ func TestDrainRunsSequentially(t *testing.T) {
 	if drainingOf(t, s, root) {
 		t.Error("draining still set after the queue ran dry, want the drain finished")
 	}
-	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once", "--drain-report", reportPath(repoRunsDir(root))})
-	assertArgs(t, fake.spawns[2].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-3", "--drain-report", reportPath(repoRunsDir(root))})
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once", "--drain-report", "COD-1"})
+	assertArgs(t, fake.spawns[2].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-3", "--drain-report", "COD-3"})
 }
 
-func mustWriteReport(t *testing.T, root string, rep queue.DrainReport) {
+// seedOutcome records a ticket's exit outcome through the hub store, the way a
+// queued child posts it, so a drain tick reconciles from the same database it
+// reads.
+func seedOutcome(t *testing.T, s *Server, root, ticket string, rep queue.DrainReport) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(reportPath(repoRunsDir(root))), 0o755); err != nil {
-		t.Fatalf("mkdir runs: %v", err)
-	}
-	if err := queue.WriteReport(reportPath(repoRunsDir(root)), rep); err != nil {
-		t.Fatalf("write report: %v", err)
+	if err := s.stores.DrainOutcomes().Upsert(root, ticket, rep.Class, rep.Reason); err != nil {
+		t.Fatalf("seed drain outcome: %v", err)
 	}
 }
 
@@ -561,15 +563,15 @@ func TestDrainSkipsDuplicateTicket(t *testing.T) {
 func TestDrainCleansUpReportOnReconcile(t *testing.T) {
 	s, _, root := drainServer(t, "acme")
 	seedQueue(t, s, root, true, queue.Item{ID: "COD-1", Status: queue.StatusRunning, PID: 4242})
-	mustWriteReport(t, root, queue.DrainReport{})
+	seedOutcome(t, s, root, "COD-1", queue.DrainReport{})
 	if act, _ := s.drain.tick(root); act != drainReconcile {
 		t.Fatalf("act = %q, want reconcile of the finished child", act)
 	}
 	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusDone {
 		t.Errorf("COD-1 = %q, want done", got)
 	}
-	if _, err := os.Stat(reportPath(repoRunsDir(root))); !os.IsNotExist(err) {
-		t.Error("drain report not cleaned up after reconcile")
+	if _, found, _ := s.stores.DrainOutcomes().One(root, "COD-1"); found {
+		t.Error("drain outcome not cleaned up after reconcile")
 	}
 }
 
@@ -580,7 +582,7 @@ func TestDrainReportFaultParksEpic(t *testing.T) {
 	s, _, root := drainServer(t, "acme")
 	s.drain.outcome = func(string, queue.Item) (string, string) { return "", "" }
 	seedQueue(t, s, root, true, queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusRunning, PID: 7})
-	mustWriteReport(t, root, queue.DrainReport{Class: state.FailFaulted, Reason: "sub-issue faulted"})
+	seedOutcome(t, s, root, "COD-1", queue.DrainReport{Class: state.FailFaulted, Reason: "sub-issue faulted"})
 	if act, _ := s.drain.tick(root); act != drainReconcile {
 		t.Fatalf("act = %q, want reconcile", act)
 	}
@@ -704,7 +706,7 @@ func TestDrainOnFaultSkipContinues(t *testing.T) {
 	if err := s.stores.Queue(root).SetOptions(false, queue.OnFaultSkip); err != nil {
 		t.Fatalf("set options: %v", err)
 	}
-	mustWriteReport(t, root, queue.DrainReport{Class: state.FailFaulted, Reason: "boom"})
+	seedOutcome(t, s, root, "COD-1", queue.DrainReport{Class: state.FailFaulted, Reason: "boom"})
 	if act, _ := s.drain.tick(root); act != drainReconcile {
 		t.Fatalf("act = %q, want reconcile", act)
 	}
@@ -742,7 +744,7 @@ func TestDrainPauseTakesEffectAfterCurrentChild(t *testing.T) {
 	}
 
 	alive[running.PID] = false
-	mustWriteReport(t, root, queue.DrainReport{})
+	seedOutcome(t, s, root, running.ID, queue.DrainReport{})
 	if act, _ := s.drain.tick(root); act != drainReconcile {
 		t.Fatalf("tick after the child exits = %q, want reconcile", act)
 	}
@@ -759,8 +761,8 @@ func TestDrainPauseTakesEffectAfterCurrentChild(t *testing.T) {
 
 // TestDrainResumeSettlesLeftoverRunning is the restart case: a hub comes up with
 // an item persisted as running whose child already exited cleanly, its drain
-// report still on disk. The resume settles the leftover done from that report
-// and the queue continues.
+// outcome still recorded in the store. The resume settles the leftover done from
+// that outcome and the queue continues.
 func TestDrainResumeSettlesLeftoverRunning(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(t.TempDir(), "acme")
@@ -781,7 +783,7 @@ func TestDrainResumeSettlesLeftoverRunning(t *testing.T) {
 	if _, running := firstWithStatus(snapshot(t, second, root), queue.StatusRunning); !running {
 		t.Fatal("precondition: COD-1 should be persisted as running")
 	}
-	mustWriteReport(t, root, queue.DrainReport{})
+	seedOutcome(t, second, root, "COD-1", queue.DrainReport{})
 	if act, _ := second.drain.tick(root); act != drainReconcile {
 		t.Fatalf("first resumed tick = %q, want it to settle the leftover run", act)
 	}
