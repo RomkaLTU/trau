@@ -145,6 +145,7 @@ func TestRunDetailCompleteRun(t *testing.T) {
 	seedArtifact(t, runsDir, "COD-100", "handoff.md", "# QA brief\n\n- Check the detail renders.\n")
 	seedArtifact(t, runsDir, "COD-100", "rubric.json", `{"ticket":"COD-100","acceptance_criteria":["detail returns state keys","cost table sums exactly"],"non_goals":["editing runs"],"required_tests":["rundetail_test.go"],"ui_paths":["/runs/acme/COD-100"],"fail_conditions":["missing artifact errors"]}`)
 	seedArtifact(t, runsDir, "COD-100", "verdict.json", `{"pass":true,"summary":"all criteria hold","failures":[],"checks":[{"name":"tests","severity":"error","pass":true,"detail":"go test ok"}]}`)
+	seedArtifact(t, runsDir, "COD-100", "buildnotes.md", "files: internal/webserver/rundetail.go\ntest: rundetail_test.go\n")
 
 	ts := instancesServer(t, home)
 	d := getRunDetail(t, ts, "acme", "COD-100")
@@ -156,7 +157,7 @@ func TestRunDetailCompleteRun(t *testing.T) {
 		t.Errorf("PR reference = branch %q pr %q url %q, want carried through", d.Branch, d.PR, d.PRURL)
 	}
 
-	if !d.Artifacts.Handoff || !d.Artifacts.Rubric || !d.Artifacts.Verdict || !d.Artifacts.Tokens {
+	if !d.Artifacts.Handoff || !d.Artifacts.Rubric || !d.Artifacts.Verdict || !d.Artifacts.BuildNotes || !d.Artifacts.Tokens {
 		t.Errorf("artifacts = %+v, want all present", d.Artifacts)
 	}
 	if d.Handoff == "" {
@@ -167,6 +168,17 @@ func TestRunDetailCompleteRun(t *testing.T) {
 	}
 	if d.Verdict == nil || !d.Verdict.Pass || len(d.Verdict.Checks) != 1 {
 		t.Errorf("verdict = %+v, want a passing verdict with one check", d.Verdict)
+	}
+	if d.BuildNotes == "" {
+		t.Error("build notes missing, want the notes carried through from the store")
+	}
+
+	// The first GET folds the legacy files into the store and removes them: a
+	// completed run leaves no artifact files behind (AC #1, #4).
+	for _, name := range []string{"handoff.md", "rubric.json", "verdict.json", "buildnotes.md"} {
+		if _, err := os.Stat(filepath.Join(runsDir, "COD-100", name)); !os.IsNotExist(err) {
+			t.Errorf("legacy artifact %s survived the store cutover (err=%v)", name, err)
+		}
 	}
 
 	if len(d.Costs) != 4 {
@@ -196,6 +208,64 @@ func TestRunDetailCompleteRun(t *testing.T) {
 	}
 	if c := byPhase["commit"]; c.Total != 70 || c.CostUSD != 0.01 {
 		t.Errorf("commit phase = %+v, want total 70 cost 0.01", c)
+	}
+}
+
+// TestRunDetailReadsArtifactsFromStore covers the post-cutover path: artifacts
+// posted straight to the hub (no legacy files on disk) render on the detail page,
+// with build notes surfaced from the store.
+func TestRunDetailReadsArtifactsFromStore(t *testing.T) {
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	root := filepath.Dir(filepath.Dir(runsDir))
+	seedCheckpoint(t, runsDir, "COD-300", map[string]string{"PHASE": state.Verified, "TITLE": "store-native run"})
+
+	arts := testStoresAt(t, home).Artifacts()
+	_ = arts.Upsert(root, "COD-300", hubstore.ArtifactHandoff, "# brief from the hub")
+	_ = arts.Upsert(root, "COD-300", hubstore.ArtifactVerdict, `{"pass":false,"summary":"one failure","failures":["boom"]}`)
+	_ = arts.Upsert(root, "COD-300", hubstore.ArtifactBuildNotes, "notes straight to the store")
+
+	ts := instancesServer(t, home)
+	d := getRunDetail(t, ts, "acme", "COD-300")
+
+	if d.Handoff != "# brief from the hub" || !d.Artifacts.Handoff {
+		t.Errorf("handoff = %q present=%v, want the stored brief", d.Handoff, d.Artifacts.Handoff)
+	}
+	if d.Verdict == nil || d.Verdict.Pass || len(d.Verdict.Failures) != 1 {
+		t.Errorf("verdict = %+v, want a failing verdict with one failure", d.Verdict)
+	}
+	if d.BuildNotes != "notes straight to the store" || !d.Artifacts.BuildNotes {
+		t.Errorf("build notes = %q present=%v, want the stored notes", d.BuildNotes, d.Artifacts.BuildNotes)
+	}
+	if d.Rubric != nil || d.Artifacts.Rubric {
+		t.Errorf("rubric = %+v present=%v, want absent (never stored)", d.Rubric, d.Artifacts.Rubric)
+	}
+}
+
+// TestRunDetailArtifactPresentButEmpty covers the three-way present/empty/absent
+// distinction (ADR 0008): a rubric or verdict row that exists with empty or
+// malformed content flags present — so the page renders present-but-empty apart
+// from not-yet-produced — while its parsed field degrades to nil, not a 500.
+func TestRunDetailArtifactPresentButEmpty(t *testing.T) {
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	root := filepath.Dir(filepath.Dir(runsDir))
+	seedCheckpoint(t, runsDir, "COD-301", map[string]string{"PHASE": state.Verified})
+
+	arts := testStoresAt(t, home).Artifacts()
+	_ = arts.Upsert(root, "COD-301", hubstore.ArtifactRubric, "")
+	_ = arts.Upsert(root, "COD-301", hubstore.ArtifactVerdict, "{not valid json")
+
+	d := getRunDetail(t, instancesServer(t, home), "acme", "COD-301")
+
+	if !d.Artifacts.Rubric || d.Rubric != nil {
+		t.Errorf("rubric present=%v value=%+v, want present with a nil parse (empty content)", d.Artifacts.Rubric, d.Rubric)
+	}
+	if !d.Artifacts.Verdict || d.Verdict != nil {
+		t.Errorf("verdict present=%v value=%+v, want present with a nil parse (malformed content)", d.Artifacts.Verdict, d.Verdict)
+	}
+	if d.Artifacts.Handoff || d.Artifacts.BuildNotes {
+		t.Errorf("artifacts = %+v, want handoff/buildnotes absent (no row)", d.Artifacts)
 	}
 }
 

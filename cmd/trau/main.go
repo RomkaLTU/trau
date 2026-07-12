@@ -35,6 +35,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/doctor"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubartifact"
 	"github.com/RomkaLTU/trau/internal/hubcheckpoint"
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/hubevent"
@@ -272,6 +273,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		store := newCheckpointStore(cfg, cfg.RepoRoot)
 		was := store.Get(opts.ClearID, "PHASE")
 		if err := store.RemoveState(opts.ClearID); err != nil {
+			return console.Actionable(err, "clear "+opts.ClearID, "check the web hub is reachable")
+		}
+		if err := newArtifactStore(cfg, cfg.RepoRoot).Remove(opts.ClearID); err != nil {
 			return console.Actionable(err, "clear "+opts.ClearID, "check the web hub is reachable")
 		}
 		if was == "" {
@@ -916,6 +920,16 @@ func newCheckpointStore(cfg config.Config, repoRoot string) state.Checkpoints {
 	return hubcheckpoint.New(hub, repoName(repoRoot), window)
 }
 
+// newArtifactStore is the hub-backed client for the durable per-run phase
+// artifacts — handoff brief, verify rubric, verify verdict, build notes (ADR
+// 0008); the child posts each to the serve hub over HTTP and restores it on
+// resume, writing no run files.
+func newArtifactStore(cfg config.Config, repoRoot string) pipeline.ArtifactStore {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	window := time.Duration(cfg.HubWriteRetryWindow) * time.Second
+	return hubartifact.New(hub, repoName(repoRoot), window, hubclient.IsUnreachable)
+}
+
 // newTokenSink is the hub-backed token/cost sink: the child posts every provider
 // call's usage to the serve hub over HTTP (ADR 0008) and reads ticket/day totals
 // back from it, writing no per-run token files. Close it to flush the tail before
@@ -954,6 +968,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 	return &pipeline.Pipeline{
 		Runner:              runner,
 		State:               newCheckpointStore(cfg, repoRoot),
+		Artifacts:           newArtifactStore(cfg, repoRoot),
 		Git:                 pipeline.ExecGit{Repo: repoRoot},
 		GitHub:              pipeline.ExecGitHub{Repo: repoRoot},
 		Tracker:             pm,

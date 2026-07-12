@@ -3,8 +3,6 @@ package webserver
 import (
 	"encoding/json"
 	"net/http"
-	"os"
-	"path/filepath"
 
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/hubstore"
@@ -14,18 +12,20 @@ import (
 
 // RunDetail is the /api/v1/repos/{repo}/runs/{ticket} resource: one ticket's
 // full drill-down. It carries the checkpoint state keys (embedded RunView), the
-// per-phase token/cost breakdown, and the QA artifacts — the handoff brief, the
-// acceptance rubric, and the verify verdict. Every artifact is optional: an
+// per-phase token/cost breakdown, and the phase artifacts — the handoff brief, the
+// acceptance rubric, the verify verdict, and the build notes — served from the
+// authoritative artifact store (ADR 0008). Every artifact is optional: an
 // early-phase run that has not been handed off, graded, or opened a PR yet simply
 // omits them, and Artifacts records which ones are present.
 type RunDetail struct {
 	RunView
-	Costs     []PhaseCost   `json:"costs"`
-	Anomalies []AnomalyView `json:"anomalies,omitempty"`
-	Handoff   string        `json:"handoff,omitempty"`
-	Rubric    *RubricView   `json:"rubric,omitempty"`
-	Verdict   *VerdictView  `json:"verdict,omitempty"`
-	Artifacts ArtifactSet   `json:"artifacts"`
+	Costs      []PhaseCost   `json:"costs"`
+	Anomalies  []AnomalyView `json:"anomalies,omitempty"`
+	Handoff    string        `json:"handoff,omitempty"`
+	Rubric     *RubricView   `json:"rubric,omitempty"`
+	Verdict    *VerdictView  `json:"verdict,omitempty"`
+	BuildNotes string        `json:"build_notes,omitempty"`
+	Artifacts  ArtifactSet   `json:"artifacts"`
 	// NoSkills is true when this run's build loaded no skills in a repo that has
 	// skills installed — the durable build_no_skills warning, surfaced so the
 	// page can flag a silently skill-less build.
@@ -65,7 +65,7 @@ type PhaseCost struct {
 }
 
 // RubricView is the structured acceptance rubric the handoff phase distilled,
-// read from runs/<ID>/rubric.json.
+// read from the artifact store.
 type RubricView struct {
 	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
 	NonGoals           []string `json:"non_goals,omitempty"`
@@ -74,9 +74,9 @@ type RubricView struct {
 	FailConditions     []string `json:"fail_conditions,omitempty"`
 }
 
-// VerdictView is the cold verifier's graded outcome, read from
-// runs/<ID>/verdict.json: whether the slice passed, a one-line summary, the
-// concrete failures, and any gated check results.
+// VerdictView is the cold verifier's graded outcome, read from the artifact
+// store: whether the slice passed, a one-line summary, the concrete failures, and
+// any gated check results.
 type VerdictView struct {
 	Pass     bool        `json:"pass"`
 	Summary  string      `json:"summary,omitempty"`
@@ -92,13 +92,14 @@ type CheckView struct {
 	Detail   string `json:"detail,omitempty"`
 }
 
-// ArtifactSet flags which per-run artifacts exist on disk so the page can render
+// ArtifactSet flags which per-run artifacts the store holds so the page can render
 // a present-but-empty section differently from a not-yet-produced one.
 type ArtifactSet struct {
-	Handoff bool `json:"handoff"`
-	Rubric  bool `json:"rubric"`
-	Verdict bool `json:"verdict"`
-	Tokens  bool `json:"tokens"`
+	Handoff    bool `json:"handoff"`
+	Rubric     bool `json:"rubric"`
+	Verdict    bool `json:"verdict"`
+	BuildNotes bool `json:"build_notes"`
+	Tokens     bool `json:"tokens"`
 }
 
 func (s *Server) handleRunDetail(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +115,7 @@ func (s *Server) handleRunDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	ticket := r.PathValue("ticket")
 	s.importCheckpoints(repo)
+	s.importArtifacts(repo)
 	view, ok := s.runViewFor(repo.Root, ticket)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown run"})
@@ -128,7 +130,7 @@ func (s *Server) handleRunDetail(w http.ResponseWriter, r *http.Request) {
 // not-removed on any store error so a store hiccup never fails an
 // otherwise-renderable run.
 func (s *Server) runDetail(repo registry.Repo, ticket string, view RunView) RunDetail {
-	d := runDetail(s.stores.Tokens(), repo.Root, repo.RunsDir, ticket, view, s.noSkillsWarning(repo, ticket))
+	d := runDetail(s.stores.Tokens(), s.stores.Artifacts(), repo.Root, ticket, view, s.noSkillsWarning(repo, ticket))
 	if iss, ok, err := s.stores.Issues().Get(repo.Root, ticket); err == nil && ok && iss.DeletedAt != "" {
 		d.Removed = true
 	}
@@ -166,23 +168,31 @@ func (s *Server) runViewFor(root, ticket string) (RunView, bool) {
 	return runViewFromCheckpoint(hubstore.TicketCheckpoint{Ticket: ticket, CheckpointRow: row}), true
 }
 
-func runDetail(toks *hubstore.Tokens, root, runsDir, ticket string, view RunView, noSkills bool) RunDetail {
+func runDetail(toks *hubstore.Tokens, arts *hubstore.Artifacts, root, ticket string, view RunView, noSkills bool) RunDetail {
 	costs := phaseCosts(toks, root, ticket)
-	handoff, hasHandoff := readArtifact(runsDir, ticket, "handoff.md")
-	rubric := readRubric(runsDir, ticket)
-	verdict := readVerdict(runsDir, ticket)
+	all, err := arts.All(root, ticket)
+	if err != nil {
+		logger.Verbosef("run artifacts %s/%s: %v", root, ticket, err)
+		all = map[string]string{}
+	}
+	handoff, hasHandoff := all[hubstore.ArtifactHandoff]
+	notes, hasNotes := all[hubstore.ArtifactBuildNotes]
+	rubricContent, hasRubric := all[hubstore.ArtifactRubric]
+	verdictContent, hasVerdict := all[hubstore.ArtifactVerdict]
 	return RunDetail{
-		RunView:   view,
-		Costs:     costs,
-		Anomalies: anomalyViews(toks, root, ticket),
-		Handoff:   handoff,
-		Rubric:    rubric,
-		Verdict:   verdict,
+		RunView:    view,
+		Costs:      costs,
+		Anomalies:  anomalyViews(toks, root, ticket),
+		Handoff:    handoff,
+		Rubric:     parseRubric(rubricContent),
+		Verdict:    parseVerdict(verdictContent),
+		BuildNotes: notes,
 		Artifacts: ArtifactSet{
-			Handoff: hasHandoff,
-			Rubric:  rubric != nil,
-			Verdict: verdict != nil,
-			Tokens:  len(costs) > 0,
+			Handoff:    hasHandoff,
+			Rubric:     hasRubric,
+			Verdict:    hasVerdict,
+			BuildNotes: hasNotes,
+			Tokens:     len(costs) > 0,
 		},
 		NoSkills: noSkills,
 	}
@@ -236,39 +246,27 @@ func anomalyViews(toks *hubstore.Tokens, root, ticket string) []AnomalyView {
 	return out
 }
 
-// readArtifact returns the text of runs/<ticket>/<name> and whether a non-empty
-// file was present.
-func readArtifact(runsDir, ticket, name string) (string, bool) {
-	data, err := os.ReadFile(filepath.Join(runsDir, ticket, name))
-	if err != nil || len(data) == 0 {
-		return "", false
-	}
-	return string(data), true
-}
-
-// readRubric parses runs/<ticket>/rubric.json. A missing or malformed rubric
-// reads as nil — degrade to "no rubric yet" rather than erroring the resource.
-func readRubric(runsDir, ticket string) *RubricView {
-	data, err := os.ReadFile(filepath.Join(runsDir, ticket, "rubric.json"))
-	if err != nil {
+// parseRubric parses a stored rubric artifact. Empty or malformed content reads
+// as nil — degrade to "no rubric yet" rather than erroring the resource.
+func parseRubric(content string) *RubricView {
+	if content == "" {
 		return nil
 	}
 	var rv RubricView
-	if err := json.Unmarshal(data, &rv); err != nil {
+	if err := json.Unmarshal([]byte(content), &rv); err != nil {
 		return nil
 	}
 	return &rv
 }
 
-// readVerdict parses runs/<ticket>/verdict.json. A missing or malformed verdict
-// reads as nil — a run that has not been graded yet, not an error.
-func readVerdict(runsDir, ticket string) *VerdictView {
-	data, err := os.ReadFile(filepath.Join(runsDir, ticket, "verdict.json"))
-	if err != nil {
+// parseVerdict parses a stored verdict artifact. Empty or malformed content reads
+// as nil — a run that has not been graded yet, not an error.
+func parseVerdict(content string) *VerdictView {
+	if content == "" {
 		return nil
 	}
 	var vv VerdictView
-	if err := json.Unmarshal(data, &vv); err != nil {
+	if err := json.Unmarshal([]byte(content), &vv); err != nil {
 		return nil
 	}
 	return &vv

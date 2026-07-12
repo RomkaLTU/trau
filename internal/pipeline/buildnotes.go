@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -36,38 +35,30 @@ func readBuildNotes(path string) (notes string, ok bool) {
 	return string(data), true
 }
 
-func (p *Pipeline) buildNotesRunsPath(id string) string {
-	return filepath.Join(p.RunsDir, id, "buildnotes.md")
-}
-
-// persistBuildNotes mirrors the /tmp notes into runs/<ID>/buildnotes.md so they
-// survive a reboot and a later resume. Best-effort and silent: absent or empty
-// notes simply aren't mirrored.
+// persistBuildNotes stores the /tmp notes through the hub so they survive a
+// reboot and a later resume. Best-effort and silent: absent or empty notes simply
+// aren't stored.
 func (p *Pipeline) persistBuildNotes(id string) {
 	data, err := os.ReadFile(buildNotesPath(id))
 	if err != nil || len(data) == 0 {
 		return
 	}
-	dir := filepath.Join(p.RunsDir, id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return
-	}
-	_ = os.WriteFile(p.buildNotesRunsPath(id), data, 0o644)
+	p.putArtifact(id, artifactBuildNotes, string(data))
 }
 
-// restoreBuildNotes copies the durable runs/<ID>/buildnotes.md back to /tmp when
-// /tmp lost it (wiped on reboot), so a resumed cleanup/repair reuses the exact
-// notes the build produced. Best-effort: it leaves /tmp untouched when a non-empty
-// copy is already there or no durable copy exists.
+// restoreBuildNotes copies the durable notes back to /tmp when /tmp lost it
+// (wiped on reboot), so a resumed cleanup/repair reuses the exact notes the build
+// produced. Best-effort: it leaves /tmp untouched when a non-empty copy is already
+// there or the hub holds none.
 func (p *Pipeline) restoreBuildNotes(id string) {
 	if fi, err := os.Stat(buildNotesPath(id)); err == nil && fi.Size() > 0 {
 		return
 	}
-	data, err := os.ReadFile(p.buildNotesRunsPath(id))
-	if err != nil || len(data) == 0 {
+	content, ok := p.getArtifact(id, artifactBuildNotes)
+	if !ok || content == "" {
 		return
 	}
-	_ = os.WriteFile(buildNotesPath(id), data, 0o644)
+	_ = os.WriteFile(buildNotesPath(id), []byte(content), 0o644)
 }
 
 // activeBuildNotes returns the /tmp notes path when non-empty notes are on disk
