@@ -80,6 +80,7 @@ Usage:
   trau <ID>                  run a single ticket (e.g. ENG-123), or its sub-issues if it is an epic
   trau doctor                preflight check: git/gh/provider/config/labels/write perms
   trau watch                 tail a running loop's live agent activity (headless counterpart to the TUI 'w' key)
+  trau forensics <cmd>       read-only incident queries over the run history: runs, events, spend (see 'trau forensics --help')
   trau serve                 start the local web hub — HTTP API + embedded UI on 127.0.0.1:8728 (--bind, --port)
   trau --status [--json]     show saved ticket checkpoints with token/cost totals
   trau --dry-run             print the next eligible ticket without doing any work
@@ -157,6 +158,12 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	// forensics owns its subcommand args (including --help), so it is dispatched
+	// before the loop's global --version/--help scan claims them.
+	if len(args) > 0 && args[0] == "forensics" {
+		return runForensics(ctx, args[1:], stdout, stderr)
+	}
+
 	for _, a := range args {
 		switch a {
 		case "--version", "-v":

@@ -136,6 +136,55 @@ func (s *Server) recentEvents(repo registry.Repo, limit int, before int64) ([]Fe
 	return events, cursor
 }
 
+// handleEventsQuery serves the forensics event read (GET): the repo's events
+// filtered by kind, ticket, a since timestamp, and a grep pattern, paged forward
+// past ?after for a follow tail. It answers in chronological order so a dump
+// reads top to bottom and a follow appends in arrival order.
+func (s *Server) handleEventsQuery(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.findRepo(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	q := r.URL.Query()
+	f := hubstore.EventFilter{Kind: q.Get("kind"), Ticket: q.Get("ticket"), Grep: q.Get("grep")}
+	if raw := q.Get("since"); raw != "" {
+		ts, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid since: want an RFC3339 timestamp"})
+			return
+		}
+		f.Since = ts
+	}
+	if after, ok := parseCursor(q.Get("after")); ok {
+		f.After = after
+	}
+	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 {
+		f.Limit = n
+	}
+	rows, err := s.stores.Events().Query(repo.Root, f)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, EventsResponse{Repo: repo.Name, Events: feedList(rows)})
+}
+
+// feedList maps already-chronological store rows to feed events, unlike feedFromRows
+// which reverses a newest-first page.
+func feedList(rows []hubstore.EventRow) []FeedEvent {
+	out := make([]FeedEvent, len(rows))
+	for i, row := range rows {
+		out[i] = feedEventFromRow(row)
+	}
+	return out
+}
+
 func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)

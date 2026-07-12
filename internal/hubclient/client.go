@@ -479,6 +479,116 @@ func (c *Client) Checkpoints(ctx context.Context, repo string) ([]Checkpoint, er
 	return out.Checkpoints, nil
 }
 
+// RunSummary is one ticket's run as the hub's run board reports it: its
+// checkpoint phase and the failure class/reason that flags a paused, faulted, or
+// quarantined run.
+type RunSummary struct {
+	Ticket        string `json:"ticket"`
+	Title         string `json:"title,omitempty"`
+	Phase         string `json:"phase"`
+	Terminal      bool   `json:"terminal"`
+	Branch        string `json:"branch,omitempty"`
+	PR            string `json:"pr,omitempty"`
+	PRURL         string `json:"pr_url,omitempty"`
+	FailureClass  string `json:"failure_class,omitempty"`
+	FailureReason string `json:"failure_reason,omitempty"`
+	UpdatedAt     string `json:"updated_at,omitempty"`
+}
+
+// Runs lists every run the hub holds for repo, in the board's phase order — the
+// forensics runs read.
+func (c *Client) Runs(ctx context.Context, repo string) ([]RunSummary, error) {
+	var out struct {
+		Runs []RunSummary `json:"runs"`
+	}
+	if err := c.do(ctx, http.MethodGet, c.repoPath(repo, "runs"), nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Runs, nil
+}
+
+// EventRecord is one persisted event as the forensics query returns it: the
+// ordering id, the envelope, and the decoded fields bag.
+type EventRecord struct {
+	ID     string         `json:"id"`
+	TS     string         `json:"ts"`
+	Kind   string         `json:"kind"`
+	Phase  string         `json:"phase,omitempty"`
+	Msg    string         `json:"msg,omitempty"`
+	Fields map[string]any `json:"fields,omitempty"`
+}
+
+// EventQuery narrows a forensics event read. After pages forward past an id for a
+// follow tail; Since is an RFC3339 lower bound, empty for none.
+type EventQuery struct {
+	Kind   string
+	Ticket string
+	Grep   string
+	Since  string
+	After  int64
+	Limit  int
+}
+
+// QueryEvents reads repo's events matching q from the hub, in chronological order.
+func (c *Client) QueryEvents(ctx context.Context, repo string, q EventQuery) ([]EventRecord, error) {
+	values := url.Values{}
+	if q.Kind != "" {
+		values.Set("kind", q.Kind)
+	}
+	if q.Ticket != "" {
+		values.Set("ticket", q.Ticket)
+	}
+	if q.Grep != "" {
+		values.Set("grep", q.Grep)
+	}
+	if q.Since != "" {
+		values.Set("since", q.Since)
+	}
+	if q.After > 0 {
+		values.Set("after", strconv.FormatInt(q.After, 10))
+	}
+	if q.Limit > 0 {
+		values.Set("limit", strconv.Itoa(q.Limit))
+	}
+	path := c.repoPath(repo, "events/query")
+	if enc := values.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	var out struct {
+		Events []EventRecord `json:"events"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Events, nil
+}
+
+// PhaseSpend is one phase's slice of a ticket's spend in a summary.
+type PhaseSpend struct {
+	Phase   string  `json:"phase"`
+	Tokens  int     `json:"tokens"`
+	Cost    float64 `json:"cost_usd"`
+	Turns   int     `json:"turns"`
+	Calls   int     `json:"calls"`
+	Metered bool    `json:"metered"`
+}
+
+// SpendSummary is a ticket's spend broken down by phase, with the same grand total
+// the status view reports.
+type SpendSummary struct {
+	Ticket string       `json:"ticket"`
+	Total  Spend        `json:"total"`
+	Phases []PhaseSpend `json:"phases"`
+}
+
+// TicketSpend reads a ticket's per-phase spend summary from the hub. The total
+// carries the same figures as TokenTotal, so a summary never drifts from status.
+func (c *Client) TicketSpend(ctx context.Context, repo, ticket string) (SpendSummary, error) {
+	var out SpendSummary
+	err := c.do(ctx, http.MethodGet, c.repoPath(repo, "runs/"+url.PathEscape(ticket)+"/spend"), nil, &out)
+	return out, err
+}
+
 // PutArtifact writes a ticket's phase artifact of the given kind to the hub, which
 // persists it in the authoritative artifacts table. A hub-connection failure
 // surfaces as an IsUnreachable error so the caller can retry; the request is

@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
+	"time"
 )
 
 // EventRow is one persisted event carrying the monotonic id that orders the feed
@@ -155,6 +157,162 @@ func (e *Events) HasKind(repo, kind, ticket string) (found bool, err error) {
 		}
 	}
 	return false, q.Err()
+}
+
+// EventFilter narrows a forensics event read. Kind is an exact match on
+// the kind column; Ticket matches events carrying the id in their fields or msg;
+// Since bounds events at or after a wall-clock time; Grep is a case-insensitive
+// substring over the whole event; After pages forward past an id for a follow tail;
+// Limit caps the rows returned.
+type EventFilter struct {
+	Kind   string
+	Ticket string
+	Grep   string
+	Since  time.Time
+	After  int64
+	Limit  int
+}
+
+const (
+	defaultEventQueryLimit = 200
+	maxEventQueryScan      = 10000
+)
+
+// Query returns repo's events matching f in chronological order. Without After it
+// returns the most recent matching window (newest bounded, then ordered oldest
+// first); with After it returns matching events with a larger id, the forward page
+// a follow tail polls. Kind filters in SQL; ticket, since, and grep filter in Go so
+// the fields JSON and timestamps are matched the way the old event-log grep did.
+func (e *Events) Query(repo string, f EventFilter) ([]EventRow, error) {
+	outLimit := f.Limit
+	if outLimit <= 0 {
+		outLimit = defaultEventQueryLimit
+	}
+	scan := outLimit
+	if f.Ticket != "" || f.Grep != "" || !f.Since.IsZero() {
+		scan = maxEventQueryScan
+	}
+
+	query := `SELECT id, ts, kind, phase, msg, fields FROM events WHERE repo = ?`
+	args := []any{repo}
+	if f.After > 0 {
+		query += ` AND id > ?`
+		args = append(args, f.After)
+	}
+	if f.Kind != "" {
+		query += ` AND kind = ?`
+		args = append(args, f.Kind)
+	}
+	order := "DESC"
+	if f.After > 0 {
+		order = "ASC"
+	}
+	query += ` ORDER BY id ` + order + ` LIMIT ?`
+	args = append(args, scan)
+
+	rows, err := e.scan(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	grep := strings.ToLower(f.Grep)
+	out := make([]EventRow, 0, min(len(rows), outLimit))
+	for _, r := range rows {
+		if !matchEvent(r, f, grep) {
+			continue
+		}
+		out = append(out, r)
+		if len(out) >= outLimit {
+			break
+		}
+	}
+	if f.After == 0 {
+		reverseEventRows(out)
+	}
+	return out, nil
+}
+
+// matchEvent applies the Go-side filters (ticket, since, grep) to a row already
+// narrowed by the SQL kind and cursor bounds. grep is pre-lowered.
+func matchEvent(r EventRow, f EventFilter, grep string) bool {
+	if f.Ticket != "" && !eventMatchesTicket(r, f.Ticket) {
+		return false
+	}
+	if !f.Since.IsZero() {
+		if ts, ok := parseEventTime(r.TS); ok && ts.Before(f.Since) {
+			return false
+		}
+	}
+	if grep != "" {
+		hay := strings.ToLower(r.Kind + " " + r.Phase + " " + r.Msg + " " + r.Fields)
+		if !strings.Contains(hay, grep) {
+			return false
+		}
+	}
+	return true
+}
+
+// eventMatchesTicket reports whether a row belongs to ticket. A structured ticket
+// or id in the fields JSON is authoritative; lacking one, the ticket must appear as
+// a whole token in the msg or fields — so a query for COD-1 does not bleed into
+// COD-10 the way a bare substring match would.
+func eventMatchesTicket(r EventRow, ticket string) bool {
+	if r.Fields != "" {
+		var m map[string]any
+		if json.Unmarshal([]byte(r.Fields), &m) == nil {
+			structured := false
+			for _, key := range []string{"ticket", "id"} {
+				if s, ok := m[key].(string); ok {
+					if s == ticket {
+						return true
+					}
+					structured = true
+				}
+			}
+			if structured {
+				return false
+			}
+		}
+	}
+	return containsTicketToken(r.Msg, ticket) || containsTicketToken(r.Fields, ticket)
+}
+
+// containsTicketToken reports whether ticket appears in s bounded by non-alphanumeric
+// characters, so it matches a whole id and not a longer one it is a prefix of.
+func containsTicketToken(s, ticket string) bool {
+	from := 0
+	for {
+		i := strings.Index(s[from:], ticket)
+		if i < 0 {
+			return false
+		}
+		start := from + i
+		end := start + len(ticket)
+		if (start == 0 || !isAlphanumeric(s[start-1])) && (end == len(s) || !isAlphanumeric(s[end])) {
+			return true
+		}
+		from = start + 1
+	}
+}
+
+func isAlphanumeric(b byte) bool {
+	return b >= '0' && b <= '9' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
+}
+
+// parseEventTime parses an event timestamp, accepting RFC3339 (what the loop emits)
+// and the zoneless form some fixtures use. ok is false when neither parses.
+func parseEventTime(ts string) (time.Time, bool) {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05"} {
+		if t, err := time.Parse(layout, ts); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func reverseEventRows(rows []EventRow) {
+	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+		rows[i], rows[j] = rows[j], rows[i]
+	}
 }
 
 func (e *Events) scan(query string, args ...any) (rows []EventRow, err error) {
