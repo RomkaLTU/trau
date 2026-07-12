@@ -96,11 +96,24 @@ type CostCell struct {
 // tables — not per-run log files — are the source of truth. They are real migrated
 // tables, never dropped and rebuilt.
 type Tokens struct {
-	db *sql.DB
+	db        *sql.DB
+	retention int
 }
 
-// NewTokens returns a Tokens store over db. The caller owns db's lifecycle.
-func NewTokens(db *sql.DB) *Tokens { return &Tokens{db: db} }
+// NewTokens returns a Tokens store over db, pruned to the most recent retention
+// token calls per repo. The caller owns db's lifecycle.
+func NewTokens(db *sql.DB, retention int) *Tokens { return &Tokens{db: db, retention: retention} }
+
+// Prune keeps the most recent retention token calls per repo and drops older
+// rows, ranked by the monotonic id (ADR 0008); flagged anomalies are pruned to
+// the same per-repo window so the sibling table cannot grow unbounded. A
+// non-positive retention disables pruning.
+func (t *Tokens) Prune() error {
+	if err := pruneKeepingRecent(t.db, "token_calls", t.retention); err != nil {
+		return err
+	}
+	return pruneKeepingRecent(t.db, "token_anomalies", t.retention)
+}
 
 // Append inserts calls for repo in arrival order in one transaction. Each row's id
 // is assigned in insertion order, which is what orders a ticket's phase breakdown.

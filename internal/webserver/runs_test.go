@@ -217,7 +217,7 @@ func TestRunsServedFromDatabaseNotStateFiles(t *testing.T) {
 	ts := ingestedServer(t, home)
 	// The one-shot legacy import folds the state file into the authoritative table
 	// and removes it, so the board serves from the db with no file left behind.
-	if _, _, _, ok := state.NewStore(runsDir).Load("COD-1"); ok {
+	if _, ok := state.NewStore(runsDir).Load("COD-1"); ok {
 		t.Fatalf("state file survived the import; the board must serve from the db")
 	}
 

@@ -109,7 +109,11 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 	defer func() { err = errors.Join(err, tdb.Close()) }()
 	logger.Verbosef("transcript database ready at %s (schema v%d)", tdb.Path(), tdb.Version())
 
-	stores := hubstore.NewStores(db.SQL(), tdb.SQL(), cfg.TranscriptRetention)
+	stores := hubstore.NewStores(db.SQL(), tdb.SQL(), hubstore.Retention{
+		Transcripts: cfg.TranscriptRetention,
+		Events:      cfg.EventRetention,
+		TokenCalls:  cfg.TokenRetention,
+	})
 	if err := stores.Registrations().ImportLegacy(home); err != nil {
 		return console.Actionable(err, "import legacy registration state",
 			"fix or move the named file aside, then restart trau serve")

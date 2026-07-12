@@ -395,7 +395,7 @@ func TestLoad(t *testing.T) {
 		t.Fatalf("set pr_url: %v", err)
 	}
 
-	fields, size, mtime, ok := s.Load("COD-1")
+	fields, ok := s.Load("COD-1")
 	if !ok {
 		t.Fatal("Load ok = false, want true")
 	}
@@ -408,14 +408,11 @@ func TestLoad(t *testing.T) {
 	if _, hasUpdated := fields["UPDATED"]; !hasUpdated {
 		t.Fatal("UPDATED key missing from Load")
 	}
-	if size <= 0 || mtime <= 0 {
-		t.Fatalf("size=%d mtime=%d, want both positive", size, mtime)
-	}
 }
 
 func TestLoadMissing(t *testing.T) {
 	s := NewStore(t.TempDir())
-	if _, _, _, ok := s.Load("nope"); ok {
+	if _, ok := s.Load("nope"); ok {
 		t.Fatal("Load(missing) ok = true, want false")
 	}
 }

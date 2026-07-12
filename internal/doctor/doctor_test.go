@@ -13,6 +13,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
+	"github.com/RomkaLTU/trau/internal/transcriptdb"
 )
 
 func newTestRunner() *runner {
@@ -242,5 +243,65 @@ func TestCheckLinearProjectWarnsWhenUnset(t *testing.T) {
 	}
 	if !strings.Contains(c.Message, "cross-project") || !strings.Contains(c.Message, "PROJECT") {
 		t.Errorf("message %q should explain the disabled cross-project guards", c.Message)
+	}
+}
+
+func TestCheckTranscriptDatabaseNotYetCreated(t *testing.T) {
+	t.Setenv("TRAU_HOME", t.TempDir())
+	rr := newTestRunner()
+	checkTranscriptDatabase(rr)
+	c := lastCheck(t, rr)
+	if c.Status != pass {
+		t.Errorf("status = %q, want pass", c.Status)
+	}
+	if !strings.Contains(c.Message, transcriptdb.Filename) {
+		t.Errorf("message %q should name the transcript database path", c.Message)
+	}
+}
+
+func TestCheckTranscriptDatabaseHealthy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TRAU_HOME", home)
+	db, err := transcriptdb.Open(home)
+	if err != nil {
+		t.Fatalf("open transcript db: %v", err)
+	}
+	_ = db.Close()
+
+	rr := newTestRunner()
+	checkTranscriptDatabase(rr)
+	c := lastCheck(t, rr)
+	if c.Status != pass {
+		t.Errorf("status = %q msg=%q, want pass", c.Status, c.Message)
+	}
+	if !strings.Contains(c.Message, "schema v") || !strings.Contains(c.Message, "healthy") {
+		t.Errorf("message %q should report the schema version and health", c.Message)
+	}
+}
+
+func TestCheckLegacyRunDataClean(t *testing.T) {
+	rr := newTestRunner()
+	checkLegacyRunData(config.Config{RunsDir: t.TempDir()}, "", rr)
+	if c := lastCheck(t, rr); c.Status != pass {
+		t.Errorf("status = %q, want pass on an empty runs dir", c.Status)
+	}
+}
+
+func TestCheckLegacyRunDataFlagsLeftover(t *testing.T) {
+	runsDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(runsDir, "COD-1"), 0o755); err != nil {
+		t.Fatalf("mkdir ticket dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runsDir, "COD-1", "state"), []byte("PHASE=built\n"), 0o644); err != nil {
+		t.Fatalf("seed legacy state file: %v", err)
+	}
+	rr := newTestRunner()
+	checkLegacyRunData(config.Config{RunsDir: runsDir}, "", rr)
+	c := lastCheck(t, rr)
+	if c.Status != warn {
+		t.Errorf("status = %q, want warn with a leftover run-data file", c.Status)
+	}
+	if !strings.Contains(c.Message, "COD-1/state") {
+		t.Errorf("message %q should sample the leftover file", c.Message)
 	}
 }
