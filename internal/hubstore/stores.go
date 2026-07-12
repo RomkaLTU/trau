@@ -7,15 +7,22 @@ import "database/sql"
 // stores so the web server depends on a single hub-owned object rather than the
 // raw database handle. The caller owns the database's lifecycle.
 type Stores struct {
-	db      *sql.DB
-	repos   *Registrations
-	issues  *Issues
-	derived *Derived
+	db          *sql.DB
+	repos       *Registrations
+	issues      *Issues
+	derived     *Derived
+	checkpoints *Checkpoints
 }
 
 // NewStores builds the hub store set over db.
 func NewStores(db *sql.DB) *Stores {
-	return &Stores{db: db, repos: NewRegistrations(db), issues: NewIssues(db), derived: NewDerived(db)}
+	return &Stores{
+		db:          db,
+		repos:       NewRegistrations(db),
+		issues:      NewIssues(db),
+		derived:     NewDerived(db),
+		checkpoints: NewCheckpoints(db),
+	}
 }
 
 // Registrations returns the registration store.
@@ -26,6 +33,9 @@ func (s *Stores) Issues() *Issues { return s.issues }
 
 // Derived returns the rebuildable run-history projection store.
 func (s *Stores) Derived() *Derived { return s.derived }
+
+// Checkpoints returns the authoritative per-ticket checkpoint store.
+func (s *Stores) Checkpoints() *Checkpoints { return s.checkpoints }
 
 // EnsureDerivedSchema brings the derived run-history tables to their current
 // version, dropping and rebuilding them if they are stale, missing, or corrupt

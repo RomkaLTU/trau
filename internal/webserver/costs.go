@@ -3,6 +3,7 @@ package webserver
 import (
 	"math"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"time"
@@ -11,7 +12,6 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
-	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
 
@@ -257,13 +257,15 @@ func sortAnomalies(anomalies []CostAnomaly) {
 }
 
 // repoAnomalies gathers every flagged anomaly across a repo's runs, located to
-// the ticket that produced it. Enumerating via the checkpoint store confines
-// reads to real run directories.
+// the ticket that produced it. It enumerates the per-ticket token logs, which
+// carry the anomalies, rather than the checkpoints — the loop no longer writes
+// checkpoint files (ADR 0008).
 func repoAnomalies(rv RepoView) []CostAnomaly {
-	store := state.NewStore(rv.RunsDir)
 	sink := tokens.New(rv.RunsDir)
 	var out []CostAnomaly
-	for _, id := range store.Tickets() {
+	matches, _ := filepath.Glob(filepath.Join(rv.RunsDir, "*", "tokens.jsonl"))
+	for _, m := range matches {
+		id := filepath.Base(filepath.Dir(m))
 		for _, a := range sink.Anomalies(id) {
 			out = append(out, CostAnomaly{
 				Repo:   rv.Name,

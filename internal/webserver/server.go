@@ -93,6 +93,7 @@ const repoSweepInterval = 30 * time.Second
 // disabled sync disables the sweep too. Call it once before serving.
 func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time.Duration) {
 	s.drainCtx = ctx
+	s.importAllCheckpoints()
 	for _, root := range s.effectiveRoots() {
 		items, draining, err := s.stores.Queue(root).Snapshot()
 		if err != nil {
@@ -179,8 +180,10 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/drain", s.handleQueueDrain)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}", s.handleQueueItem)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}/move", s.handleQueueMove)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/checkpoints", s.handleRepoCheckpoints)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs", s.handleRuns)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}", s.handleRunDetail)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/checkpoint", s.handleRunCheckpoint)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/comment", s.handleRunComment)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/reset", s.handleResetRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/clear", s.handleClearRun)

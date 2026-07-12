@@ -11,7 +11,6 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/registry"
-	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
 
@@ -65,13 +64,6 @@ func TestIngestPopulatesFromExistingFiles(t *testing.T) {
 	sink := tokens.New(f.runsDir)
 	sink.SetTicket("COD-1")
 	sink.Append("build", tokens.Record{Input: 10, Output: 20, CostUSD: floatPtr(0.5), Provider: "claude", Model: "opus"})
-	st := state.NewStore(f.runsDir)
-	if err := st.Set("COD-1", "PHASE", "built"); err != nil {
-		t.Fatalf("set phase: %v", err)
-	}
-	if err := st.Set("COD-1", "TITLE", "Do the thing"); err != nil {
-		t.Fatalf("set title: %v", err)
-	}
 
 	f.srv.ingestPass()
 
@@ -85,13 +77,6 @@ func TestIngestPopulatesFromExistingFiles(t *testing.T) {
 	if len(calls) != 1 || calls[0].Total != 30 || calls[0].Provider != "claude" {
 		t.Fatalf("token calls = %+v, want one 30-total claude call", calls)
 	}
-	cp, ok, err := f.derived().Checkpoint(f.repo.Root, "COD-1")
-	if err != nil || !ok {
-		t.Fatalf("Checkpoint ok=%v err=%v", ok, err)
-	}
-	if cp.Phase != "built" || cp.Title != "Do the thing" {
-		t.Fatalf("checkpoint = %+v, want phase=built title=\"Do the thing\"", cp)
-	}
 }
 
 func TestIngestStaysCurrentAsLoopAppends(t *testing.T) {
@@ -101,14 +86,11 @@ func TestIngestStaysCurrentAsLoopAppends(t *testing.T) {
 	sink := tokens.New(f.runsDir)
 	sink.SetTicket("COD-1")
 	sink.Append("build", tokens.Record{Input: 1, Output: 1, CostUSD: floatPtr(0.1)})
-	st := state.NewStore(f.runsDir)
-	_ = st.Set("COD-1", "PHASE", "building")
 	f.srv.ingestPass()
 
 	// The loop keeps appending after the first pass.
 	appendEvent(t, f.runsDir, event.Event{Time: "t2", Kind: "phase_end"})
 	sink.Append("verify", tokens.Record{Input: 2, Output: 2, CostUSD: floatPtr(0.2)})
-	_ = st.Set("COD-1", "PHASE", "verified")
 	f.srv.ingestPass()
 
 	if got := eventKinds(t, f.derived(), f.repo.Root); !reflect.DeepEqual(got, []string{"phase_start", "phase_end"}) {
@@ -120,10 +102,6 @@ func TestIngestStaysCurrentAsLoopAppends(t *testing.T) {
 	}
 	if len(calls) != 2 {
 		t.Fatalf("token calls = %d, want 2", len(calls))
-	}
-	cp, _, _ := f.derived().Checkpoint(f.repo.Root, "COD-1")
-	if cp.Phase != "verified" {
-		t.Fatalf("checkpoint phase = %q, want verified", cp.Phase)
 	}
 }
 
@@ -138,9 +116,8 @@ func TestIngestRebuildEquivalentAfterDatabaseDeleted(t *testing.T) {
 	sink := tokens.New(repo.RunsDir)
 	sink.SetTicket("COD-1")
 	sink.Append("build", tokens.Record{Input: 10, Output: 20, CostUSD: floatPtr(0.5)})
-	_ = state.NewStore(repo.RunsDir).Set("COD-1", "PHASE", "built")
 
-	pass := func() ([]hubstore.EventRow, []hubstore.TokenRow, hubstore.CheckpointRow) {
+	pass := func() ([]hubstore.EventRow, []hubstore.TokenRow) {
 		t.Helper()
 		db, err := hubdb.Open(home)
 		if err != nil {
@@ -166,14 +143,10 @@ func TestIngestRebuildEquivalentAfterDatabaseDeleted(t *testing.T) {
 		if err != nil {
 			t.Fatalf("TokenCalls: %v", err)
 		}
-		cp, _, err := stores.Derived().Checkpoint(repo.Root, "COD-1")
-		if err != nil {
-			t.Fatalf("Checkpoint: %v", err)
-		}
-		return evs, calls, cp
+		return evs, calls
 	}
 
-	evs1, calls1, cp1 := pass()
+	evs1, calls1 := pass()
 
 	// Delete the database entirely (and its WAL sidecars); run history lives in
 	// the files and must survive.
@@ -183,7 +156,7 @@ func TestIngestRebuildEquivalentAfterDatabaseDeleted(t *testing.T) {
 		}
 	}
 
-	evs2, calls2, cp2 := pass()
+	evs2, calls2 := pass()
 
 	if !reflect.DeepEqual(evs1, evs2) {
 		t.Fatalf("events not equivalent after rebuild:\n %+v\n %+v", evs1, evs2)
@@ -191,11 +164,8 @@ func TestIngestRebuildEquivalentAfterDatabaseDeleted(t *testing.T) {
 	if !reflect.DeepEqual(calls1, calls2) {
 		t.Fatalf("token calls not equivalent after rebuild:\n %+v\n %+v", calls1, calls2)
 	}
-	if !reflect.DeepEqual(cp1, cp2) {
-		t.Fatalf("checkpoint not equivalent after rebuild:\n %+v\n %+v", cp1, cp2)
-	}
-	if len(evs2) != 2 || len(calls2) != 1 || cp2.Phase != "built" {
-		t.Fatalf("rebuilt content lost history: events=%d calls=%d phase=%q", len(evs2), len(calls2), cp2.Phase)
+	if len(evs2) != 2 || len(calls2) != 1 {
+		t.Fatalf("rebuilt content lost history: events=%d calls=%d", len(evs2), len(calls2))
 	}
 }
 

@@ -15,15 +15,15 @@ const derivedVersion = 1
 const derivedVersionKey = "derived_version"
 
 const (
-	sourceEvents     = "events"
-	sourceTokens     = "tokens"
-	sourceCheckpoint = "checkpoint"
+	sourceEvents = "events"
+	sourceTokens = "tokens"
 )
 
 // derivedTables lists the derived tables in drop order. ingest_sources holds the
-// per-file byte offsets and checkpoint size/mtime the ingester tails by, so it is
-// wiped alongside the projection and every source re-reads from the start.
-var derivedTables = []string{"events", "token_calls", "checkpoints", "ingest_sources"}
+// per-file byte offsets the ingester tails by, so it is wiped alongside the
+// projection and every source re-reads from the start. Checkpoints are no longer
+// derived — they are an authoritative migrated table (ADR 0008, hubstore.Checkpoints).
+var derivedTables = []string{"events", "token_calls", "ingest_sources"}
 
 const derivedSchema = `
 CREATE TABLE events (
@@ -57,20 +57,6 @@ CREATE TABLE token_calls (
     context        INTEGER NOT NULL DEFAULT 0,
     skills         TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (repo, ticket, seq)
-) STRICT;
-
-CREATE TABLE checkpoints (
-    repo           TEXT NOT NULL,
-    ticket         TEXT NOT NULL,
-    phase          TEXT NOT NULL DEFAULT '',
-    title          TEXT NOT NULL DEFAULT '',
-    branch         TEXT NOT NULL DEFAULT '',
-    pr             TEXT NOT NULL DEFAULT '',
-    pr_url         TEXT NOT NULL DEFAULT '',
-    failure_reason TEXT NOT NULL DEFAULT '',
-    updated_at     TEXT NOT NULL DEFAULT '',
-    data           TEXT NOT NULL DEFAULT '{}',
-    PRIMARY KEY (repo, ticket)
 ) STRICT;
 
 CREATE TABLE ingest_sources (
@@ -190,26 +176,6 @@ type TokenRow struct {
 	Skills        string
 }
 
-// CheckpointRow is a ticket's checkpoint projection: the fields the run board
-// reads directly plus the full key set as JSON so nothing on disk is lost.
-type CheckpointRow struct {
-	Phase         string
-	Title         string
-	Branch        string
-	PR            string
-	PRURL         string
-	FailureReason string
-	UpdatedAt     string
-	Data          string
-}
-
-// TicketCheckpoint pairs a checkpoint projection with the ticket it belongs to,
-// for the run board's whole-repo read.
-type TicketCheckpoint struct {
-	Ticket string
-	CheckpointRow
-}
-
 // CostCell is one aggregated slice of token spend from token_calls, grouped by
 // repo, local date, provider, model, and phase. Provider and Model are as the call
 // logged them — the read-side provider fallback for older, provider-less lines is
@@ -248,20 +214,6 @@ func (d *Derived) offset(repo, kind, ticket string) (int64, error) {
 		return 0, nil
 	}
 	return off, err
-}
-
-// CheckpointCursor returns the size and modification time ingestion last saw for a
-// ticket's state file, both 0 when it has none — the change signal that lets an
-// unchanged checkpoint be skipped.
-func (d *Derived) CheckpointCursor(repo, ticket string) (size, mtime int64, err error) {
-	err = d.db.QueryRow(
-		`SELECT size, mtime FROM ingest_sources WHERE repo = ? AND kind = ? AND ticket = ?`,
-		repo, sourceCheckpoint, ticket,
-	).Scan(&size, &mtime)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, nil
-	}
-	return size, mtime, err
 }
 
 // IngestEvents appends repo's new event rows and advances its events cursor to
@@ -328,36 +280,6 @@ func (d *Derived) IngestTokens(repo, ticket string, resync bool, rows []TokenRow
 		}
 	}
 	if err := setOffset(tx, repo, sourceTokens, ticket, offset); err != nil {
-		return errors.Join(err, tx.Rollback())
-	}
-	return tx.Commit()
-}
-
-// UpsertCheckpoint writes a ticket's checkpoint row and records the state file's
-// size and mtime so an unchanged file is skipped on the next pass.
-func (d *Derived) UpsertCheckpoint(repo, ticket string, cp CheckpointRow, size, mtime int64) error {
-	tx, err := d.db.Begin()
-	if err != nil {
-		return err
-	}
-	if _, err := tx.Exec(
-		`INSERT INTO checkpoints(
-		     repo, ticket, phase, title, branch, pr, pr_url, failure_reason, updated_at, data)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(repo, ticket) DO UPDATE SET
-		     phase = excluded.phase, title = excluded.title, branch = excluded.branch,
-		     pr = excluded.pr, pr_url = excluded.pr_url, failure_reason = excluded.failure_reason,
-		     updated_at = excluded.updated_at, data = excluded.data`,
-		repo, ticket, cp.Phase, cp.Title, cp.Branch, cp.PR, cp.PRURL, cp.FailureReason, cp.UpdatedAt, cp.Data,
-	); err != nil {
-		return errors.Join(err, tx.Rollback())
-	}
-	if _, err := tx.Exec(
-		`INSERT INTO ingest_sources(repo, kind, ticket, size, mtime)
-		 VALUES(?, ?, ?, ?, ?)
-		 ON CONFLICT(repo, kind, ticket) DO UPDATE SET size = excluded.size, mtime = excluded.mtime`,
-		repo, sourceCheckpoint, ticket, size, mtime,
-	); err != nil {
 		return errors.Join(err, tx.Rollback())
 	}
 	return tx.Commit()
@@ -448,48 +370,6 @@ func (d *Derived) TokenCalls(repo, ticket string) (rows []TokenRow, err error) {
 			return nil, err
 		}
 		r.IsError = isError != 0
-		rows = append(rows, r)
-	}
-	return rows, q.Err()
-}
-
-// Checkpoint returns a ticket's checkpoint row and whether it has been ingested.
-func (d *Derived) Checkpoint(repo, ticket string) (CheckpointRow, bool, error) {
-	var cp CheckpointRow
-	err := d.db.QueryRow(
-		`SELECT phase, title, branch, pr, pr_url, failure_reason, updated_at, data
-		 FROM checkpoints WHERE repo = ? AND ticket = ?`, repo, ticket,
-	).Scan(&cp.Phase, &cp.Title, &cp.Branch, &cp.PR, &cp.PRURL, &cp.FailureReason, &cp.UpdatedAt, &cp.Data)
-	if errors.Is(err, sql.ErrNoRows) {
-		return CheckpointRow{}, false, nil
-	}
-	if err != nil {
-		return CheckpointRow{}, false, err
-	}
-	return cp, true, nil
-}
-
-// Checkpoints returns every ingested checkpoint for repo, each tagged with its
-// ticket and ordered by ticket. It backs the run board's whole-repo read from the
-// projection, replacing a per-field re-read of each state file on every poll.
-func (d *Derived) Checkpoints(repo string) (rows []TicketCheckpoint, err error) {
-	q, err := d.db.Query(
-		`SELECT ticket, phase, title, branch, pr, pr_url, failure_reason, updated_at, data
-		 FROM checkpoints WHERE repo = ? ORDER BY ticket`, repo,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { err = errors.Join(err, q.Close()) }()
-	rows = []TicketCheckpoint{}
-	for q.Next() {
-		var r TicketCheckpoint
-		if err := q.Scan(
-			&r.Ticket, &r.Phase, &r.Title, &r.Branch, &r.PR, &r.PRURL,
-			&r.FailureReason, &r.UpdatedAt, &r.Data,
-		); err != nil {
-			return nil, err
-		}
 		rows = append(rows, r)
 	}
 	return rows, q.Err()

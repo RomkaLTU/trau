@@ -22,9 +22,29 @@ import (
 // tracker package that in turn uses this client).
 const apiPrefix = "/api/v1"
 
-// ErrNotFound is returned when the hub has no internal issue with the requested
-// identifier — a 404 from a read or a transition.
-var ErrNotFound = errors.New("hubclient: internal issue not found")
+// ErrNotFound is returned when the hub has no resource with the requested
+// identifier — a 404 from a read, a transition, or a checkpoint fetch.
+var ErrNotFound = errors.New("hubclient: not found")
+
+// transportError wraps a failure to reach the hub at all — a dial or transport
+// error where the request never got an HTTP response, distinct from an error
+// status the hub returned. Its message and unwrap match the plain wrapping the
+// client used before, so string and errors.Is checks are unchanged.
+type transportError struct {
+	op  string
+	err error
+}
+
+func (e *transportError) Error() string { return e.op + ": " + e.err.Error() }
+func (e *transportError) Unwrap() error { return e.err }
+
+// IsUnreachable reports whether err is a hub-connection failure — the request
+// never reached the hub — as opposed to an error status the hub returned. Run
+// data writers retry on this before pausing the run (ADR 0008 §3).
+func IsUnreachable(err error) bool {
+	var te *transportError
+	return errors.As(err, &te)
+}
 
 // Client talks to a running serve hub over HTTP. base is the hub origin
 // (e.g. http://127.0.0.1:8728); token authenticates against an exposed hub and is
@@ -125,6 +145,63 @@ type SyncedMirror struct {
 	RemoveLabels []string `json:"remove_labels"`
 }
 
+// Checkpoint is a ticket's checkpoint as the hub stores it (ADR 0008). Data is
+// the full checkpoint key set (PHASE, BRANCH, PR, …); the hub derives the
+// projected columns from it, so a write only need populate Ticket and Data.
+type Checkpoint struct {
+	Ticket        string            `json:"ticket"`
+	Phase         string            `json:"phase"`
+	Title         string            `json:"title"`
+	Branch        string            `json:"branch"`
+	PR            string            `json:"pr"`
+	PRURL         string            `json:"pr_url"`
+	FailureReason string            `json:"failure_reason"`
+	UpdatedAt     string            `json:"updated_at"`
+	Data          map[string]string `json:"data"`
+}
+
+// PutCheckpoint writes a ticket's checkpoint to the hub, which persists it in the
+// authoritative checkpoints table. A hub-connection failure surfaces as an
+// IsUnreachable error so the caller can retry; the request is idempotent.
+func (c *Client) PutCheckpoint(ctx context.Context, repo, ticket string, cp Checkpoint) error {
+	return c.do(ctx, http.MethodPut, c.checkpointPath(repo, ticket), cp, nil)
+}
+
+// GetCheckpoint reads a ticket's checkpoint from the hub, returning ok=false when
+// the hub has no checkpoint for it.
+func (c *Client) GetCheckpoint(ctx context.Context, repo, ticket string) (cp Checkpoint, ok bool, err error) {
+	err = c.do(ctx, http.MethodGet, c.checkpointPath(repo, ticket), nil, &cp)
+	if errors.Is(err, ErrNotFound) {
+		return Checkpoint{}, false, nil
+	}
+	if err != nil {
+		return Checkpoint{}, false, err
+	}
+	return cp, true, nil
+}
+
+// DeleteCheckpoint drops a ticket's checkpoint from the hub. A missing checkpoint
+// is not an error — removal is idempotent.
+func (c *Client) DeleteCheckpoint(ctx context.Context, repo, ticket string) error {
+	err := c.do(ctx, http.MethodDelete, c.checkpointPath(repo, ticket), nil, nil)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
+// Checkpoints lists every checkpoint the hub holds for repo — the resume scan's
+// whole-repo read.
+func (c *Client) Checkpoints(ctx context.Context, repo string) ([]Checkpoint, error) {
+	var out struct {
+		Checkpoints []Checkpoint `json:"checkpoints"`
+	}
+	if err := c.do(ctx, http.MethodGet, c.repoPath(repo, "checkpoints"), nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Checkpoints, nil
+}
+
 // InternalIssue fetches a single internal issue, returning ErrNotFound when the
 // hub has no internal issue with that identifier.
 func (c *Client) InternalIssue(ctx context.Context, repo, id string) (Issue, error) {
@@ -204,6 +281,10 @@ func (c *Client) repoPath(repo, tail string) string {
 	return apiPrefix + "/repos/" + url.PathEscape(repo) + "/" + tail
 }
 
+func (c *Client) checkpointPath(repo, ticket string) string {
+	return c.repoPath(repo, "runs/"+url.PathEscape(ticket)+"/checkpoint")
+}
+
 func (c *Client) issuePath(repo, id, verb string) string {
 	path := c.repoPath(repo, "issues/internal/"+url.PathEscape(id))
 	if verb != "" {
@@ -236,7 +317,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("%s %s: %w", method, path, err)
+		return &transportError{op: method + " " + path, err: err}
 	}
 	defer func() { _ = resp.Body.Close() }()
 

@@ -12,7 +12,6 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
-	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
 
@@ -38,16 +37,16 @@ func (s *Server) runIngest(ctx context.Context) {
 	}
 }
 
-// ingestPass tails every known repo's events, token, and checkpoint files into the
-// derived tables. Ingestion is best-effort per repo and per source: a torn line,
+// ingestPass tails every known repo's events and token files into the derived
+// tables. Ingestion is best-effort per repo and per source: a torn line,
 // rewritten file, or read error is skipped or resynced, never propagated, so it
-// can never take the hub down (ADR 0007 §3).
+// can never take the hub down (ADR 0007 §3). Checkpoints are no longer tailed —
+// the loop writes them straight to the authoritative table over HTTP (ADR 0008).
 func (s *Server) ingestPass() {
 	d := s.stores.Derived()
 	for _, repo := range s.streamRepos() {
 		ingestEvents(d, repo)
 		ingestTokens(d, repo)
-		ingestCheckpoints(d, repo)
 	}
 }
 
@@ -167,40 +166,6 @@ func ingestTokenFile(d *hubstore.Derived, repo registry.Repo, ticket, path strin
 	}
 }
 
-func ingestCheckpoints(d *hubstore.Derived, repo registry.Repo) {
-	store := state.NewStore(repo.RunsDir)
-	for _, ticket := range store.Tickets() {
-		fields, size, mtime, ok := store.Load(ticket)
-		if !ok {
-			continue
-		}
-		prevSize, prevMtime, err := d.CheckpointCursor(repo.Root, ticket)
-		if err != nil {
-			logger.Verbosef("ingest checkpoint cursor %s/%s: %v", repo.Name, ticket, err)
-			continue
-		}
-		if prevSize == size && prevMtime == mtime {
-			continue
-		}
-		if err := d.UpsertCheckpoint(repo.Root, ticket, checkpointRow(fields), size, mtime); err != nil {
-			logger.Verbosef("ingest checkpoint %s/%s: %v", repo.Name, ticket, err)
-		}
-	}
-}
-
-func checkpointRow(f map[string]string) hubstore.CheckpointRow {
-	return hubstore.CheckpointRow{
-		Phase:         f["PHASE"],
-		Title:         f["TITLE"],
-		Branch:        f["BRANCH"],
-		PR:            f["PR"],
-		PRURL:         f["PR_URL"],
-		FailureReason: f["FAILURE_REASON"],
-		UpdatedAt:     f["UPDATED"],
-		Data:          marshalStringMap(f),
-	}
-}
-
 func marshalMap(m map[string]any) string {
 	if len(m) == 0 {
 		return ""
@@ -219,14 +184,6 @@ func marshalStrings(s []string) string {
 	b, err := json.Marshal(s)
 	if err != nil {
 		return ""
-	}
-	return string(b)
-}
-
-func marshalStringMap(m map[string]string) string {
-	b, err := json.Marshal(m)
-	if err != nil {
-		return "{}"
 	}
 	return string(b)
 }

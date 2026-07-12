@@ -105,6 +105,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
 		return
 	}
+	s.importCheckpoints(repo)
 	writeJSON(w, http.StatusOK, RunsResponse{Repo: repo.Name, Runs: s.collectRuns(repo.Root)})
 }
 
@@ -187,11 +188,11 @@ func (s *Server) findRepo(name string) (registry.Repo, bool) {
 	return registry.Repo{}, false
 }
 
-// collectRuns reads every checkpoint the projection holds for root into a
-// board-ordered run list. It derives from the derived checkpoints table, not the
-// state files, so a poll never re-reads a checkpoint per field.
+// collectRuns reads every checkpoint the authoritative table holds for root into
+// a board-ordered run list. The loop writes checkpoints straight to that table
+// over HTTP (ADR 0008), so a poll never re-reads a checkpoint per field.
 func (s *Server) collectRuns(root string) []RunView {
-	rows, err := s.stores.Derived().Checkpoints(root)
+	rows, err := s.stores.Checkpoints().All(root)
 	if err != nil {
 		logger.Verbosef("checkpoints %s: %v", root, err)
 		rows = nil
@@ -226,9 +227,9 @@ func runViewFromCheckpoint(tc hubstore.TicketCheckpoint) RunView {
 	}
 }
 
-// runView builds one ticket's row straight from its state file. The run board
-// derives from the projection, but the on-demand run detail already reads the
-// ticket's artifacts from disk, so it reads the checkpoint from the same file.
+// runView builds one ticket's row from its legacy state file — the fallback the
+// run detail page reads for a ticket that predates the hub cutover and has not
+// yet been folded into the authoritative checkpoints table.
 func runView(store *state.Store, id string) RunView {
 	phase := store.Get(id, "PHASE")
 	reason := store.Get(id, "FAILURE_REASON")

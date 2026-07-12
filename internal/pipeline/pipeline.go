@@ -312,7 +312,7 @@ func parseRefusal(out string) (reason string, ok bool) {
 // constructed per process and reused across tickets.
 type Pipeline struct {
 	Runner      agent.Runner
-	State       *state.Store
+	State       state.Checkpoints
 	Git         Git
 	GitHub      GitHub
 	Tracker     tracker.Tracker
@@ -588,6 +588,8 @@ func (p *Pipeline) classifyPhaseErr(ctx context.Context, id string, err error) e
 		return err
 	case IsPaused(err):
 		return err
+	case errors.Is(err, state.ErrHubUnreachable):
+		return p.pauseHubUnreachable(id)
 	case isGiveUp(err):
 		return p.handleGiveUp(ctx, id, err)
 	case AsRefused(err) != nil:
@@ -2215,6 +2217,22 @@ func (p *Pipeline) pauseAuth(id, phase string, err error) error {
 	p.logf("  ↳ %s left resumable on its branch; rerun trau after re-authenticating %s", id, prov)
 	p.emitState(id, phase, "paused", "reauth")
 	return &PausedError{ID: id, Phase: phase, Provider: prov, Reason: reason}
+}
+
+// pauseHubUnreachable logs the blameless stop for a hub that stayed unreachable
+// past the write-retry window (ADR 0008 §3) and builds the *PausedError. The WIP
+// lives on the pushed feature branch and the last hub-persisted checkpoint is the
+// resume point; the pause itself cannot be recorded in the database — the
+// checkpoint writer is the hub — so it is surfaced in-process. A rerun once the
+// hub is back reconnects and continues from the last persisted checkpoint.
+func (p *Pipeline) pauseHubUnreachable(id string) error {
+	phase := p.State.Get(id, "PHASE")
+	reason := "hub unreachable — run data could not be saved"
+	p.markPaused(id, reason)
+	p.logf("  ⏸ paused — hub unreachable during %s; run data could not be saved", NextPhaseLabel(phase))
+	p.logf("  ↳ %s left resumable on its branch; rerun trau once the hub is back", id)
+	p.emitState(id, phase, "paused", "hub_unreachable")
+	return &PausedError{ID: id, Phase: phase, Provider: "hub", Reason: reason}
 }
 
 // markPaused records the blameless pause on the ticket's checkpoint so a

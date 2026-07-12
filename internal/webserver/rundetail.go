@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
@@ -114,26 +115,46 @@ func (s *Server) handleRunDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ticket := r.PathValue("ticket")
-	if !runExists(repo.RunsDir, ticket) {
+	s.importCheckpoints(repo)
+	view, ok := s.runViewFor(repo.Root, repo.RunsDir, ticket)
+	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown run"})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.runDetail(repo, ticket))
+	writeJSON(w, http.StatusOK, s.runDetail(repo, ticket, view))
 }
 
-// runDetail assembles a ticket's run detail from its durable artifacts and marks
-// it removed when the ticket is a synced issue the tracker no longer holds — the
-// store's tombstone. The lookup degrades to not-removed on any store error so a
-// store hiccup never fails an otherwise-renderable run.
-func (s *Server) runDetail(repo registry.Repo, ticket string) RunDetail {
-	d := runDetail(repo.RunsDir, ticket)
+// runDetail assembles a ticket's run detail from its resolved checkpoint and its
+// durable artifacts, and marks it removed when the ticket is a synced issue the
+// tracker no longer holds — the store's tombstone. The lookup degrades to
+// not-removed on any store error so a store hiccup never fails an
+// otherwise-renderable run.
+func (s *Server) runDetail(repo registry.Repo, ticket string, view RunView) RunDetail {
+	d := runDetail(repo.RunsDir, ticket, view)
 	if iss, ok, err := s.stores.Issues().Get(repo.Root, ticket); err == nil && ok && iss.DeletedAt != "" {
 		d.Removed = true
 	}
 	return d
 }
 
-// runExists reports whether ticket has a durable checkpoint under runsDir.
+// runViewFor resolves a ticket's checkpoint row for the detail page: the
+// authoritative table first, then a not-yet-imported legacy state file, matching
+// how the board and every checkpoint mutation resolve a run. It reports false
+// only when the ticket has neither, so a run the hub has never seen still 404s.
+func (s *Server) runViewFor(root, runsDir, ticket string) (RunView, bool) {
+	if ticket == "" {
+		return RunView{}, false
+	}
+	if row, found, err := s.stores.Checkpoints().One(root, ticket); err == nil && found {
+		return runViewFromCheckpoint(hubstore.TicketCheckpoint{Ticket: ticket, CheckpointRow: row}), true
+	}
+	if runExists(runsDir, ticket) {
+		return runView(state.NewStore(runsDir), ticket), true
+	}
+	return RunView{}, false
+}
+
+// runExists reports whether ticket has a legacy state file under runsDir.
 // Resolving against the known tickets both confirms the run and confines reads to
 // a real run directory, so a traversal-shaped {ticket} never escapes runsDir.
 func runExists(runsDir, ticket string) bool {
@@ -148,14 +169,13 @@ func runExists(runsDir, ticket string) bool {
 	return false
 }
 
-func runDetail(runsDir, ticket string) RunDetail {
-	store := state.NewStore(runsDir)
+func runDetail(runsDir, ticket string, view RunView) RunDetail {
 	costs := phaseCosts(runsDir, ticket)
 	handoff, hasHandoff := readArtifact(runsDir, ticket, "handoff.md")
 	rubric := readRubric(runsDir, ticket)
 	verdict := readVerdict(runsDir, ticket)
 	return RunDetail{
-		RunView:   runView(store, ticket),
+		RunView:   view,
 		Costs:     costs,
 		Anomalies: anomalyViews(runsDir, ticket),
 		Handoff:   handoff,
