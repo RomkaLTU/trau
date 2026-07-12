@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
@@ -226,41 +227,22 @@ func TestRunDetailSurfacesAnomalies(t *testing.T) {
 	}
 }
 
-// seedEvents appends the given events as JSON lines to runs/events.jsonl, the
-// same repo-wide log the pipeline writes and the detail resource scans.
-func seedEvents(t *testing.T, runsDir string, events ...event.Event) {
-	t.Helper()
-	f, err := os.OpenFile(eventsPath(runsDir), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		t.Fatalf("open events log: %v", err)
-	}
-	defer func() { _ = f.Close() }()
-	for _, ev := range events {
-		line, err := json.Marshal(ev)
-		if err != nil {
-			t.Fatalf("marshal event: %v", err)
-		}
-		if _, err := f.Write(append(line, '\n')); err != nil {
-			t.Fatalf("write event: %v", err)
-		}
-	}
-}
-
 // TestRunDetailSurfacesNoSkillsWarning covers the run-detail side of the
-// skill-less build warning: a run with a build_no_skills event in the repo log
+// skill-less build warning: a run with a build_no_skills event in the table
 // carries no_skills, and a run without one does not — even when another ticket in
-// the same log was flagged.
+// the same repo was flagged.
 func TestRunDetailSurfacesNoSkillsWarning(t *testing.T) {
 	home := t.TempDir()
 	runsDir := seedRepo(t, home, "acme")
 	seedCheckpoint(t, runsDir, "COD-200", map[string]string{"PHASE": state.Built})
 	seedCheckpoint(t, runsDir, "COD-201", map[string]string{"PHASE": state.Built})
-	seedEvents(t, runsDir,
-		event.Event{Kind: event.KindAgentStart, Phase: "build", Fields: map[string]any{"ticket": "COD-200"}},
-		event.Event{Kind: event.KindBuildNoSkills, Phase: "build", Fields: map[string]any{"ticket": "COD-200"}},
-	)
 
 	ts := instancesServer(t, home)
+	postEvents(t, ts, "acme",
+		hubclient.Event{Kind: event.KindAgentStart, Phase: "build", Fields: `{"ticket":"COD-200"}`},
+		hubclient.Event{Kind: event.KindBuildNoSkills, Phase: "build", Fields: `{"ticket":"COD-200"}`},
+	)
+
 	if d := getRunDetail(t, ts, "acme", "COD-200"); !d.NoSkills {
 		t.Error("no_skills = false, want the flagged build surfaced")
 	}

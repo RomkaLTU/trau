@@ -17,6 +17,15 @@ import (
 	"github.com/RomkaLTU/trau/internal/agent"
 )
 
+// streamPollInterval is how often a file-backed live stream (the PTY transcript
+// tail) re-reads for appended bytes. A package var so streaming tests can tighten
+// it.
+var streamPollInterval = 500 * time.Millisecond
+
+// streamHeartbeatIdle is how many idle poll ticks a stream tolerates before
+// sending a keepalive comment.
+const streamHeartbeatIdle = 30
+
 // TranscriptView is one phase's raw PTY transcript as the replay picker sees it:
 // the id the stream pins to, the phase label parsed from the filename, the PTY
 // dimensions to size the terminal, and the size/mtime for ordering. Live marks

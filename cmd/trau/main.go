@@ -25,7 +25,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -38,6 +37,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/hubcheckpoint"
 	"github.com/RomkaLTU/trau/internal/hubclient"
+	"github.com/RomkaLTU/trau/internal/hubevent"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
 	"github.com/RomkaLTU/trau/internal/planning"
@@ -260,12 +260,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	con := newRenderer(stdout, stderr, cfg, opts, cancelLoop)
 
-	var log *event.Log
-	if os.Getenv("TRAU_LOG_JSON") == "1" {
-		log = event.New(stderr)
-	} else {
-		log = event.New(newEventFile(cfg.RunsDir)).WithHuman(con.Event)
-	}
+	log, flushEvents := newEventLog(cfg, stderr, con.Event)
+	defer flushEvents()
 
 	sink := tokens.New(cfg.RunsDir)
 
@@ -1337,12 +1333,8 @@ func menuOnlyArgs(args []string) bool {
 func runSession(ctx context.Context, cfg config.Config, opts config.Options, stdout, stderr io.Writer) error {
 	holder := tui.NewRenderer()
 
-	var log *event.Log
-	if os.Getenv("TRAU_LOG_JSON") == "1" {
-		log = event.New(stderr)
-	} else {
-		log = event.New(newEventFile(cfg.RunsDir)).WithHuman(holder.Event)
-	}
+	log, flushEvents := newEventLog(cfg, stderr, holder.Event)
+	defer flushEvents()
 
 	maxIter := cfg.MaxIterations
 	if opts.Max >= 0 {
@@ -2940,34 +2932,15 @@ func legacyRunsTracked() bool {
 	return exec.Command("git", "ls-files", "--error-unmatch", "runs").Run() == nil
 }
 
-func newEventFile(runsDir string) io.Writer {
-	return &eventFile{path: filepath.Join(runsDir, "events.jsonl")}
-}
-
-type eventFile struct {
-	path string
-	mu   sync.Mutex
-	f    *os.File
-	bad  bool
-}
-
-func (e *eventFile) Write(p []byte) (int, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.f == nil && !e.bad {
-		if err := os.MkdirAll(filepath.Dir(e.path), 0o755); err != nil {
-			e.bad = true
-			return len(p), nil
-		}
-		f, err := os.OpenFile(e.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-		if err != nil {
-			e.bad = true
-			return len(p), nil
-		}
-		e.f = f
+// newEventLog builds the loop's event log and a close that flushes its tail before
+// the process exits. Normally events flow to the hub over HTTP (ADR 0008) — the
+// child writes no event-log file — and to human for the in-process feed. Under
+// TRAU_LOG_JSON the diagnostic stderr stream stands in and writes no run data.
+func newEventLog(cfg config.Config, stderr io.Writer, human func(event.Event)) (*event.Log, func()) {
+	if os.Getenv("TRAU_LOG_JSON") == "1" {
+		return event.New(stderr), func() {}
 	}
-	if e.f != nil {
-		_, _ = e.f.Write(p)
-	}
-	return len(p), nil
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	sink := hubevent.New(hub, repoName(cfg.RepoRoot), cfg.HubWriteBufferBytes, time.Duration(cfg.HubWriteRetryWindow)*time.Second)
+	return event.NewSink(sink).WithHuman(human), sink.Close
 }

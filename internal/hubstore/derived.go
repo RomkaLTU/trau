@@ -14,29 +14,16 @@ const derivedVersion = 1
 
 const derivedVersionKey = "derived_version"
 
-const (
-	sourceEvents = "events"
-	sourceTokens = "tokens"
-)
+const sourceTokens = "tokens"
 
 // derivedTables lists the derived tables in drop order. ingest_sources holds the
 // per-file byte offsets the ingester tails by, so it is wiped alongside the
-// projection and every source re-reads from the start. Checkpoints are no longer
-// derived — they are an authoritative migrated table (ADR 0008, hubstore.Checkpoints).
-var derivedTables = []string{"events", "token_calls", "ingest_sources"}
+// projection and every source re-reads from the start. Checkpoints and events are
+// no longer derived — they are authoritative migrated tables (ADR 0008,
+// hubstore.Checkpoints and hubstore.Events).
+var derivedTables = []string{"token_calls", "ingest_sources"}
 
 const derivedSchema = `
-CREATE TABLE events (
-    repo   TEXT NOT NULL,
-    seq    INTEGER NOT NULL,
-    ts     TEXT NOT NULL DEFAULT '',
-    kind   TEXT NOT NULL DEFAULT '',
-    phase  TEXT NOT NULL DEFAULT '',
-    msg    TEXT NOT NULL DEFAULT '',
-    fields TEXT NOT NULL DEFAULT '',
-    PRIMARY KEY (repo, seq)
-) STRICT;
-
 CREATE TABLE token_calls (
     repo           TEXT NOT NULL,
     ticket         TEXT NOT NULL,
@@ -70,11 +57,11 @@ CREATE TABLE ingest_sources (
 ) STRICT;
 `
 
-// Derived is the hub's rebuildable projection of the run artifacts loops append
-// to files: events, per-call token spend, and checkpoints. Files stay the durable
-// source of truth (ADR 0007 §3); the hub tails them by byte offset into these
-// tables and, on any version mismatch or corruption, drops and rebuilds them
-// without ever touching the authoritative tables or the files.
+// Derived is the hub's rebuildable projection of the per-call token spend loops
+// append to files. Token files stay the durable source of truth (ADR 0007 §3);
+// the hub tails them by byte offset into these tables and, on any version mismatch
+// or corruption, drops and rebuilds them without ever touching the authoritative
+// tables or the files.
 type Derived struct {
 	db *sql.DB
 }
@@ -144,17 +131,6 @@ func (d *Derived) rebuild() error {
 	return tx.Commit()
 }
 
-// EventRow is one event line tagged with the byte offset at its line end, the
-// cursor the events feed resumes from.
-type EventRow struct {
-	Seq    int64
-	TS     string
-	Kind   string
-	Phase  string
-	Msg    string
-	Fields string
-}
-
 // TokenRow is one normalized token/cost call tagged with its line-end byte offset.
 // CostUSD is nil for a call a provider reported no per-call cost for.
 type TokenRow struct {
@@ -192,12 +168,6 @@ type CostCell struct {
 	Metered  bool
 }
 
-// EventCursor returns the byte offset ingestion last read repo's events.jsonl to,
-// or 0 when it has none.
-func (d *Derived) EventCursor(repo string) (int64, error) {
-	return d.offset(repo, sourceEvents, "")
-}
-
 // TokenCursor returns the byte offset ingestion last read a ticket's tokens.jsonl
 // to, or 0 when it has none.
 func (d *Derived) TokenCursor(repo, ticket string) (int64, error) {
@@ -214,38 +184,6 @@ func (d *Derived) offset(repo, kind, ticket string) (int64, error) {
 		return 0, nil
 	}
 	return off, err
-}
-
-// IngestEvents appends repo's new event rows and advances its events cursor to
-// offset in one transaction. When resync is set — the file was rewritten shorter
-// than the cursor — repo's existing events are dropped first and rows carries the
-// file re-read from the start.
-func (d *Derived) IngestEvents(repo string, resync bool, rows []EventRow, offset int64) error {
-	tx, err := d.db.Begin()
-	if err != nil {
-		return err
-	}
-	if resync {
-		if _, err := tx.Exec(`DELETE FROM events WHERE repo = ?`, repo); err != nil {
-			return errors.Join(err, tx.Rollback())
-		}
-	}
-	for _, r := range rows {
-		if _, err := tx.Exec(
-			`INSERT INTO events(repo, seq, ts, kind, phase, msg, fields)
-			 VALUES(?, ?, ?, ?, ?, ?, ?)
-			 ON CONFLICT(repo, seq) DO UPDATE SET
-			     ts = excluded.ts, kind = excluded.kind, phase = excluded.phase,
-			     msg = excluded.msg, fields = excluded.fields`,
-			repo, r.Seq, r.TS, r.Kind, r.Phase, r.Msg, r.Fields,
-		); err != nil {
-			return errors.Join(err, tx.Rollback())
-		}
-	}
-	if err := setOffset(tx, repo, sourceEvents, "", offset); err != nil {
-		return errors.Join(err, tx.Rollback())
-	}
-	return tx.Commit()
 }
 
 // IngestTokens appends a ticket's new token calls and advances its cursor to
@@ -293,57 +231,6 @@ func setOffset(tx *sql.Tx, repo, kind, ticket string, offset int64) error {
 		repo, kind, ticket, offset,
 	)
 	return err
-}
-
-// Events returns repo's ingested event rows in feed order.
-func (d *Derived) Events(repo string) (rows []EventRow, err error) {
-	q, err := d.db.Query(
-		`SELECT seq, ts, kind, phase, msg, fields FROM events WHERE repo = ? ORDER BY seq`, repo,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { err = errors.Join(err, q.Close()) }()
-	rows = []EventRow{}
-	for q.Next() {
-		var r EventRow
-		if err := q.Scan(&r.Seq, &r.TS, &r.Kind, &r.Phase, &r.Msg, &r.Fields); err != nil {
-			return nil, err
-		}
-		rows = append(rows, r)
-	}
-	return rows, q.Err()
-}
-
-// RecentEvents returns up to limit of repo's events, newest first. A positive
-// before pages to older events by bounding the result to seq below it; 0 returns
-// the latest page. Ordering is by seq — the line-end byte offset — so reversing
-// the result yields the feed's chronological order. The (repo, seq) primary key
-// serves the ordering and the limit from an index, never a full scan.
-func (d *Derived) RecentEvents(repo string, limit int, before int64) (rows []EventRow, err error) {
-	query := `SELECT seq, ts, kind, phase, msg, fields FROM events WHERE repo = ?`
-	args := []any{repo}
-	if before > 0 {
-		query += ` AND seq < ?`
-		args = append(args, before)
-	}
-	query += ` ORDER BY seq DESC LIMIT ?`
-	args = append(args, limit)
-
-	q, err := d.db.Query(query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { err = errors.Join(err, q.Close()) }()
-	rows = []EventRow{}
-	for q.Next() {
-		var r EventRow
-		if err := q.Scan(&r.Seq, &r.TS, &r.Kind, &r.Phase, &r.Msg, &r.Fields); err != nil {
-			return nil, err
-		}
-		rows = append(rows, r)
-	}
-	return rows, q.Err()
 }
 
 // TokenCalls returns a ticket's ingested token calls in append order.

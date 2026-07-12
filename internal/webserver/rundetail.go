@@ -130,11 +130,23 @@ func (s *Server) handleRunDetail(w http.ResponseWriter, r *http.Request) {
 // not-removed on any store error so a store hiccup never fails an
 // otherwise-renderable run.
 func (s *Server) runDetail(repo registry.Repo, ticket string, view RunView) RunDetail {
-	d := runDetail(repo.RunsDir, ticket, view)
+	d := runDetail(repo.RunsDir, ticket, view, s.noSkillsWarning(repo, ticket))
 	if iss, ok, err := s.stores.Issues().Get(repo.Root, ticket); err == nil && ok && iss.DeletedAt != "" {
 		d.Removed = true
 	}
 	return d
+}
+
+// noSkillsWarning reports whether the authoritative event table carries a
+// build_no_skills warning for ticket — a build that used none of the repo's
+// installed skills (ADR 0008). A store error degrades to no warning rather than
+// failing an otherwise-renderable run.
+func (s *Server) noSkillsWarning(repo registry.Repo, ticket string) bool {
+	has, err := s.stores.Events().HasKind(repo.Root, event.KindBuildNoSkills, ticket)
+	if err != nil {
+		logger.Verbosef("no-skills flag %s/%s: %v", repo.Name, ticket, err)
+	}
+	return has
 }
 
 // runViewFor resolves a ticket's checkpoint row for the detail page from the
@@ -156,7 +168,7 @@ func (s *Server) runViewFor(root, ticket string) (RunView, bool) {
 	return runViewFromCheckpoint(hubstore.TicketCheckpoint{Ticket: ticket, CheckpointRow: row}), true
 }
 
-func runDetail(runsDir, ticket string, view RunView) RunDetail {
+func runDetail(runsDir, ticket string, view RunView, noSkills bool) RunDetail {
 	costs := phaseCosts(runsDir, ticket)
 	handoff, hasHandoff := readArtifact(runsDir, ticket, "handoff.md")
 	rubric := readRubric(runsDir, ticket)
@@ -174,27 +186,8 @@ func runDetail(runsDir, ticket string, view RunView) RunDetail {
 			Verdict: verdict != nil,
 			Tokens:  len(costs) > 0,
 		},
-		NoSkills: hasNoSkillsWarning(runsDir, ticket),
+		NoSkills: noSkills,
 	}
-}
-
-// hasNoSkillsWarning reports whether the repo event log carries a build_no_skills
-// warning for ticket — a build that used none of the repo's installed skills.
-func hasNoSkillsWarning(runsDir, ticket string) bool {
-	events, _ := readFeed(eventsPath(runsDir))
-	for _, ev := range events {
-		if ev.Kind == event.KindBuildNoSkills && strField(ev.Fields, "ticket") == ticket {
-			return true
-		}
-	}
-	return false
-}
-
-func strField(fields map[string]any, key string) string {
-	if s, ok := fields[key].(string); ok {
-		return s
-	}
-	return ""
 }
 
 // phaseCosts reads the run's per-phase token/cost breakdown, in the order each

@@ -1,13 +1,11 @@
 package webserver
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -22,17 +20,16 @@ const (
 	defaultRecentEvents = 100
 	maxRecentEvents     = 1000
 	defaultBackfill     = 100
-	streamHeartbeatIdle = 30
 )
 
-// streamPollInterval is how often the tail loop re-reads the file for appended
-// events. A package var so streaming tests can tighten it.
-var streamPollInterval = 500 * time.Millisecond
+// streamHeartbeat is how long a live stream stays silent before sending a keepalive
+// comment. A package var so streaming tests can tighten it.
+var streamHeartbeat = 30 * time.Second
 
-// FeedEvent is one durable event tagged with its byte offset in events.jsonl. The
-// offset doubles as the resume cursor — it is the SSE frame id and the ?since
-// value — so a reconnecting client resumes exactly after the last event it saw,
-// losing and duplicating none.
+// FeedEvent is one persisted event tagged with the monotonic id that orders the
+// feed. The id doubles as the resume cursor — it is the SSE frame id and the
+// ?since / ?cursor value — so a reconnecting client resumes exactly after the last
+// event it saw, losing and duplicating none (ADR 0008).
 type FeedEvent struct {
 	ID string `json:"id"`
 	event.Event
@@ -56,7 +53,90 @@ type repoEvent struct {
 	FeedEvent
 }
 
+// handleEvents serves the repo's recent events (GET) and receives the loop child's
+// event batch (POST). Children POST events here instead of appending a log file
+// (ADR 0008); the hub appends them to the authoritative table and fans them out to
+// live streams.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.findRepo(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		limit := clampLimit(r.URL.Query().Get("limit"))
+		before, _ := parseCursor(r.URL.Query().Get("cursor"))
+		events, cursor := s.recentEvents(repo, limit, before)
+		writeJSON(w, http.StatusOK, EventsResponse{Repo: repo.Name, Events: events, Cursor: cursor})
+	case http.MethodPost:
+		s.appendEvents(w, r, repo)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+// appendEventInput is one event in an append batch, mirroring hubclient.Event.
+type appendEventInput struct {
+	TS     string `json:"ts"`
+	Kind   string `json:"kind"`
+	Phase  string `json:"phase"`
+	Msg    string `json:"msg"`
+	Fields string `json:"fields"`
+}
+
+// appendEvents persists a child's event batch to the authoritative table in order
+// and fans each row out to live subscribers. The ids the table assigns preserve
+// the batch's order, so a run's events never reorder under batching.
+func (s *Server) appendEvents(w http.ResponseWriter, r *http.Request, repo registry.Repo) {
+	var req struct {
+		Events []appendEventInput `json:"events"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	news := make([]hubstore.NewEvent, len(req.Events))
+	for i, e := range req.Events {
+		news[i] = hubstore.NewEvent{TS: e.TS, Kind: e.Kind, Phase: e.Phase, Msg: e.Msg, Fields: e.Fields}
+	}
+	rows, err := s.stores.Events().Append(repo.Root, news)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	for _, row := range rows {
+		s.publishEvent(repo.Root, repo.Name, row)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "count": len(rows)})
+}
+
+// publishEvent hands a persisted row to the live fan-out, tagged with the repo the
+// per-repo stream filters on and the name the machine-wide stream labels frames by.
+func (s *Server) publishEvent(root, name string, row hubstore.EventRow) {
+	s.events.publish(liveEvent{Root: root, Name: name, Event: feedEventFromRow(row)})
+}
+
+// recentEvents serves a page of repo's events from the authoritative table: up to
+// limit events ending at before, newest bounded first but returned in
+// chronological order, and the cursor for the next older page (empty on the last
+// one).
+func (s *Server) recentEvents(repo registry.Repo, limit int, before int64) ([]FeedEvent, string) {
+	rows, err := s.stores.Events().Recent(repo.Root, limit, before)
+	if err != nil {
+		logger.Verbosef("events query %s: %v", repo.Name, err)
+		return []FeedEvent{}, ""
+	}
+	events := feedFromRows(rows)
+	cursor := ""
+	if len(events) == limit && len(events) > 0 {
+		cursor = events[0].ID
+	}
+	return events, cursor
+}
+
+func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -67,67 +147,34 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
 		return
 	}
-	limit := clampLimit(r.URL.Query().Get("limit"))
-	before, _ := parseOffset(r.URL.Query().Get("cursor"))
-	events, cursor := s.recentEvents(repo, limit, before)
-	writeJSON(w, http.StatusOK, EventsResponse{Repo: repo.Name, Events: events, Cursor: cursor})
-}
-
-// recentEvents serves a page of repo's events from the derived projection: up to
-// limit events ending at before, newest bounded first but returned in
-// chronological order, and the cursor for the next older page (empty on the last
-// one). Until the projection has ingested the repo the latest page falls back to
-// the durable file so the first render is never empty; older pages, which the
-// file cannot key, stay empty.
-func (s *Server) recentEvents(repo registry.Repo, limit int, before int64) ([]FeedEvent, string) {
-	rows, err := s.stores.Derived().RecentEvents(repo.Root, limit, before)
-	if err != nil {
-		logger.Verbosef("events query %s: %v", repo.Name, err)
-		rows = nil
-	}
-	if len(rows) == 0 && before == 0 {
-		return fileFeed(eventsPath(repo.RunsDir), limit), ""
-	}
-	events := feedFromRows(rows)
-	cursor := ""
-	if len(events) == limit {
-		cursor = events[0].ID
-	}
-	return events, cursor
-}
-
-func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
-	repo, ok := s.findRepo(r.PathValue("repo"))
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
-		return
-	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
 		return
 	}
+	setSSEHeaders(w)
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
+	sub, ch := s.events.subscribe()
+	defer s.events.unsubscribe(sub)
 
-	path := eventsPath(repo.RunsDir)
-	off, resumed := explicitResume(r)
-	if !resumed {
-		backfill, start := s.streamBackfill(repo)
-		for _, ev := range backfill {
-			if emitEvent(w, "", ev) != nil {
-				return
-			}
-		}
-		if len(backfill) > 0 {
-			flusher.Flush()
-		}
-		off = start
+	after, resumed := eventResumeCursor(r)
+	var backfill []FeedEvent
+	if resumed {
+		backfill = s.eventsSince(repo, after)
+	} else {
+		backfill = s.recentFeed(repo, defaultBackfill)
 	}
-	pump(r.Context(), w, flusher, path, off)
+	last := after
+	for _, ev := range backfill {
+		if emitEvent(w, "", ev) != nil {
+			return
+		}
+		if id, ok := parseCursor(ev.ID); ok {
+			last = id
+		}
+	}
+	flusher.Flush()
+	s.streamLive(r.Context(), w, flusher, ch, repo.Root, last)
 }
 
 func (s *Server) handleAllEventStream(w http.ResponseWriter, r *http.Request) {
@@ -141,50 +188,152 @@ func (s *Server) handleAllEventStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
 		return
 	}
+	setSSEHeaders(w)
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
+	sub, ch := s.events.subscribe()
+	defer s.events.unsubscribe(sub)
 
-	s.pumpAll(r.Context(), w, flusher)
+	after, resumed := eventResumeCursor(r)
+	var backfill []liveEvent
+	if resumed {
+		backfill = s.allEventsSince(after)
+	} else {
+		backfill = s.recentAllFeed(defaultBackfill)
+	}
+	last := after
+	for _, ev := range backfill {
+		if emitEvent(w, ev.Name, ev.Event) != nil {
+			return
+		}
+		if id, ok := parseCursor(ev.Event.ID); ok {
+			last = id
+		}
+	}
+	flusher.Flush()
+	s.streamLive(r.Context(), w, flusher, ch, "", last)
 }
 
-// explicitResume reports where a reconnecting client resumes from — the
-// Last-Event-ID header a browser replays, then an explicit ?since cursor handed
-// over from the recent resource — and whether one was given. Both are byte
-// offsets into the file the live tail reads directly, so a reconnect never
-// re-parses the log. Without one the caller backfills from the projection.
-func explicitResume(r *http.Request) (int64, bool) {
-	if off, ok := parseOffset(r.Header.Get("Last-Event-ID")); ok {
-		return off, true
+// streamLive forwards live events to a connected client until it disconnects.
+// filterRoot, when set, keeps only that repo's events and emits untagged frames —
+// the per-repo stream; empty filterRoot emits every repo's events tagged with its
+// name — the machine-wide stream. Events already covered by the backfill (id at or
+// below last) are skipped, so backfill and live join without a gap or a repeat. A
+// silent stream sends a keepalive comment so its liveness is never in doubt.
+func (s *Server) streamLive(ctx context.Context, w io.Writer, flusher http.Flusher, ch <-chan liveEvent, filterRoot string, last int64) {
+	heartbeat := time.NewTicker(streamHeartbeat)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev := <-ch:
+			if filterRoot != "" && ev.Root != filterRoot {
+				continue
+			}
+			if id, ok := parseCursor(ev.Event.ID); ok {
+				if id <= last {
+					continue
+				}
+				last = id
+			}
+			tag := ""
+			if filterRoot == "" {
+				tag = ev.Name
+			}
+			if emitEvent(w, tag, ev.Event) != nil {
+				return
+			}
+			flusher.Flush()
+		case <-heartbeat.C:
+			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
 	}
-	if off, ok := parseOffset(r.URL.Query().Get("since")); ok {
-		return off, true
-	}
-	return 0, false
 }
 
-// streamBackfill serves a fresh connection's initial events from the derived
-// projection — repo's most recent events — and returns the offset the live file
-// tail resumes from: the byte offset just past the last event served, so tailing
-// picks up only what the projection has yet to ingest, with neither gap nor
-// repeat. Until the projection has ingested the repo it returns no events and the
-// file's own tail-start, so the connection still paints a populated feed.
-func (s *Server) streamBackfill(repo registry.Repo) ([]FeedEvent, int64) {
-	rows, err := s.stores.Derived().RecentEvents(repo.Root, defaultBackfill, 0)
+// recentFeed backfills a fresh per-repo connection with the repo's most recent
+// events in chronological order.
+func (s *Server) recentFeed(repo registry.Repo, limit int) []FeedEvent {
+	rows, err := s.stores.Events().Recent(repo.Root, limit, 0)
 	if err != nil {
 		logger.Verbosef("events backfill %s: %v", repo.Name, err)
-		rows = nil
+		return nil
 	}
-	if len(rows) == 0 {
-		return nil, backfillStart(eventsPath(repo.RunsDir), defaultBackfill)
-	}
-	return feedFromRows(rows), rows[0].Seq
+	return feedFromRows(rows)
 }
 
-// feedFromRows reverses the newest-first rows into the feed's chronological order,
-// reconstructing each FeedEvent so its JSON is identical to the file-served shape.
+// eventsSince backfills a reconnecting per-repo connection with everything the repo
+// recorded after the client's last-seen id.
+func (s *Server) eventsSince(repo registry.Repo, after int64) []FeedEvent {
+	rows, err := s.stores.Events().Since(repo.Root, after)
+	if err != nil {
+		logger.Verbosef("events resume %s: %v", repo.Name, err)
+		return nil
+	}
+	out := make([]FeedEvent, len(rows))
+	for i, row := range rows {
+		out[i] = feedEventFromRow(row)
+	}
+	return out
+}
+
+// recentAllFeed backfills a fresh machine-wide connection with the most recent
+// events across every repo, in chronological order.
+func (s *Server) recentAllFeed(limit int) []liveEvent {
+	rows, err := s.stores.Events().RecentAll(limit, 0)
+	if err != nil {
+		logger.Verbosef("all-events backfill: %v", err)
+		return nil
+	}
+	reverseRepoRows(rows)
+	return s.liveEventsFromRows(rows)
+}
+
+// allEventsSince backfills a reconnecting machine-wide connection with every repo's
+// events after the client's last-seen id.
+func (s *Server) allEventsSince(after int64) []liveEvent {
+	rows, err := s.stores.Events().SinceAll(after)
+	if err != nil {
+		logger.Verbosef("all-events resume: %v", err)
+		return nil
+	}
+	return s.liveEventsFromRows(rows)
+}
+
+// liveEventsFromRows resolves each store row's repo root to the display name the
+// machine-wide stream tags frames by, falling back to the root's base for a repo
+// the hub no longer tracks.
+func (s *Server) liveEventsFromRows(rows []hubstore.RepoEventRow) []liveEvent {
+	names := s.repoNames()
+	out := make([]liveEvent, 0, len(rows))
+	for _, r := range rows {
+		name := names[r.Repo]
+		if name == "" {
+			name = filepath.Base(r.Repo)
+		}
+		out = append(out, liveEvent{Root: r.Repo, Name: name, Event: feedEventFromRow(r.EventRow)})
+	}
+	return out
+}
+
+func (s *Server) repoNames() map[string]string {
+	repos := s.streamRepos()
+	m := make(map[string]string, len(repos))
+	for _, repo := range repos {
+		m[repo.Root] = repo.Name
+	}
+	return m
+}
+
+// streamRepos resolves the repos the machine-wide feed knows, unioning live loops'
+// repos so a just-started loop is named — mirroring findRepo.
+func (s *Server) streamRepos() []registry.Repo {
+	return s.knownRepos(registry.Live(s.home))
+}
+
+// feedFromRows reverses the newest-first rows into the feed's chronological order.
 func feedFromRows(rows []hubstore.EventRow) []FeedEvent {
 	out := make([]FeedEvent, len(rows))
 	for i, row := range rows {
@@ -193,9 +342,15 @@ func feedFromRows(rows []hubstore.EventRow) []FeedEvent {
 	return out
 }
 
+func reverseRepoRows(rows []hubstore.RepoEventRow) {
+	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+		rows[i], rows[j] = rows[j], rows[i]
+	}
+}
+
 func feedEventFromRow(row hubstore.EventRow) FeedEvent {
 	return FeedEvent{
-		ID: strconv.FormatInt(row.Seq, 10),
+		ID: strconv.FormatInt(row.ID, 10),
 		Event: event.Event{
 			Time:   row.TS,
 			Kind:   row.Kind,
@@ -206,9 +361,21 @@ func feedEventFromRow(row hubstore.EventRow) FeedEvent {
 	}
 }
 
-// unmarshalFields restores the event fields the ingester stored as a JSON string,
-// leaving an empty column as a nil map so omitempty drops it exactly as the
-// file-served event does.
+// marshalFields renders an event's fields bag to the JSON object string the store
+// keeps, collapsing an empty bag to the empty column.
+func marshalFields(m map[string]any) string {
+	if len(m) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// unmarshalFields restores the event fields the store holds as a JSON string,
+// leaving an empty column as a nil map so omitempty drops it from the wire shape.
 func unmarshalFields(s string) map[string]any {
 	if s == "" {
 		return nil
@@ -220,195 +387,37 @@ func unmarshalFields(s string) map[string]any {
 	return m
 }
 
-// fileFeed is the cold-start fallback: until the projection has ingested a repo,
-// the last limit events are read straight from the durable file so the first
-// render is never empty.
-func fileFeed(path string, limit int) []FeedEvent {
-	events, _ := readFeed(path)
-	if len(events) > limit {
-		events = events[len(events)-limit:]
-	}
-	if events == nil {
-		events = []FeedEvent{}
-	}
-	return events
+func setSSEHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	h.Set("X-Accel-Buffering", "no")
 }
 
-// pump tails path from offset, emitting each new event as an SSE frame until the
-// client disconnects. Between appends it sends a keepalive comment so the
-// connection — and its liveness — is not left silent.
-func pump(ctx context.Context, w io.Writer, flusher http.Flusher, path string, offset int64) {
-	flusher.Flush()
-	ticker := time.NewTicker(streamPollInterval)
-	defer ticker.Stop()
-	idle := 0
-	for {
-		next, wrote, err := emitFrom(w, flusher, path, "", offset)
-		if err != nil {
-			return
-		}
-		offset = next
-		switch {
-		case wrote:
-			idle = 0
-		case idle >= streamHeartbeatIdle:
-			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
-				return
-			}
-			flusher.Flush()
-			idle = 0
-		default:
-			idle++
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
+// eventResumeCursor reports where a reconnecting client resumes from — the
+// Last-Event-ID header a browser replays, then an explicit ?since cursor — and
+// whether one was given. Both are event ids the table backfills strictly after.
+// Without one the caller backfills the recent tail.
+func eventResumeCursor(r *http.Request) (int64, bool) {
+	if id, ok := parseCursor(r.Header.Get("Last-Event-ID")); ok {
+		return id, true
 	}
-}
-
-// pumpAll tails every known repo onto a single SSE stream, tagging each frame
-// with its repo. New repos that begin streaming after the connection opens are
-// picked up on the next poll and backfilled from their recent tail. One
-// connection serves the whole machine-wide monitor, so the number of repos never
-// runs into the browser's per-origin connection cap.
-func (s *Server) pumpAll(ctx context.Context, w io.Writer, flusher http.Flusher) {
-	flusher.Flush()
-	ticker := time.NewTicker(streamPollInterval)
-	defer ticker.Stop()
-	offsets := map[string]int64{}
-	idle := 0
-	for {
-		wrote := false
-		for _, repo := range s.streamRepos() {
-			path := eventsPath(repo.RunsDir)
-			off, seen := offsets[repo.Name]
-			if !seen {
-				backfill, start := s.streamBackfill(repo)
-				for _, ev := range backfill {
-					if emitEvent(w, repo.Name, ev) != nil {
-						return
-					}
-				}
-				if len(backfill) > 0 {
-					flusher.Flush()
-					wrote = true
-				}
-				off = start
-			}
-			next, n, err := emitFrom(w, flusher, path, repo.Name, off)
-			if err != nil {
-				return
-			}
-			offsets[repo.Name] = next
-			wrote = wrote || n
-		}
-		switch {
-		case wrote:
-			idle = 0
-		case idle >= streamHeartbeatIdle:
-			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
-				return
-			}
-			flusher.Flush()
-			idle = 0
-		default:
-			idle++
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
+	if id, ok := parseCursor(r.URL.Query().Get("since")); ok {
+		return id, true
 	}
-}
-
-// streamRepos resolves the repos the multiplex tails, unioning live loops' repos
-// so a just-started loop joins the stream — mirroring findRepo.
-func (s *Server) streamRepos() []registry.Repo {
-	return s.knownRepos(registry.Live(s.home))
-}
-
-// emitFrom reads every complete event appended since offset, writes one SSE frame
-// each, and returns the new offset. A missing file is not an error — the loop the
-// hub did not start may not have written events yet — so the connection stays open.
-// A non-empty repo tags each frame for the machine-wide multiplex.
-func emitFrom(w io.Writer, flusher http.Flusher, path, repo string, offset int64) (int64, bool, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return offset, false, nil
-	}
-	defer func() { _ = f.Close() }()
-
-	if info, err := f.Stat(); err == nil && offset > info.Size() {
-		offset = info.Size()
-	}
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return offset, false, nil
-	}
-
-	events, next := scanFeed(bufio.NewReader(f), offset)
-	for _, ev := range events {
-		if err := emitEvent(w, repo, ev); err != nil {
-			return next, false, err
-		}
-	}
-	if len(events) > 0 {
-		flusher.Flush()
-	}
-	return next, len(events) > 0, nil
-}
-
-// scanFeed parses the complete newline-terminated lines from r, tagging each with
-// the byte offset at its end — the cursor a client resumes from. A trailing line
-// without a newline is a half-written record and is left for the next read.
-func scanFeed(r *bufio.Reader, base int64) ([]FeedEvent, int64) {
-	off := base
-	var out []FeedEvent
-	for {
-		line, err := r.ReadBytes('\n')
-		if err != nil {
-			break
-		}
-		off += int64(len(line))
-		var ev event.Event
-		if json.Unmarshal(line[:len(line)-1], &ev) != nil {
-			continue
-		}
-		out = append(out, FeedEvent{ID: strconv.FormatInt(off, 10), Event: ev})
-	}
-	return out, off
-}
-
-// backfillStart returns the offset at which the last n events begin, or 0 when the
-// file holds n or fewer.
-func backfillStart(path string, n int) int64 {
-	events, _ := readFeed(path)
-	if len(events) <= n {
-		return 0
-	}
-	off, _ := parseOffset(events[len(events)-n-1].ID)
-	return off
-}
-
-func readFeed(path string) ([]FeedEvent, int64) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, 0
-	}
-	defer func() { _ = f.Close() }()
-	return scanFeed(bufio.NewReader(f), 0)
+	return 0, false
 }
 
 // emitEvent writes one SSE frame for ev. An untagged frame carries the bare
-// FeedEvent for the per-repo stream; a repo-tagged frame carries the repo and a
-// repo-qualified id for the machine-wide multiplex.
-func emitEvent(w io.Writer, repo string, ev FeedEvent) error {
-	if repo == "" {
+// FeedEvent for the per-repo stream; a tagged frame carries the repo name for the
+// machine-wide multiplex. Both use the event's global id as the frame id, so a
+// reconnect resumes from it on either stream.
+func emitEvent(w io.Writer, tag string, ev FeedEvent) error {
+	if tag == "" {
 		return writeSSE(w, ev.ID, ev)
 	}
-	return writeSSE(w, repo+":"+ev.ID, repoEvent{Repo: repo, FeedEvent: ev})
+	return writeSSE(w, ev.ID, repoEvent{Repo: tag, FeedEvent: ev})
 }
 
 func writeSSE(w io.Writer, id string, payload any) error {
@@ -420,19 +429,15 @@ func writeSSE(w io.Writer, id string, payload any) error {
 	return err
 }
 
-func eventsPath(runsDir string) string {
-	return filepath.Join(runsDir, "events.jsonl")
-}
-
-func parseOffset(s string) (int64, bool) {
+func parseCursor(s string) (int64, bool) {
 	if s == "" {
 		return 0, false
 	}
-	off, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || off < 0 {
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n < 0 {
 		return 0, false
 	}
-	return off, true
+	return n, true
 }
 
 func clampLimit(raw string) int {
