@@ -15,6 +15,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -25,26 +26,28 @@ const APIPrefix = "/api/v1"
 
 // Server serves the JSON API and the embedded SPA.
 type Server struct {
-	version       string
-	started       time.Time
-	assets        fs.FS
-	home          string
-	bind          string
-	token         string
-	allowRegister bool
-	workspace     []string
-	stores        *hubstore.Stores
-	events        *eventBroadcaster
-	sup           Supervisor
-	drain         *drainer
-	syncer        *syncer
-	drainCtx      context.Context
-	newWriter     func(config.Config) (tracker.Writer, error)
-	newReader     func(config.Config) (tracker.Reader, error)
-	installSkill  func(ctx context.Context, repoRoot, pkg string) error
-	removeSkill   func(ctx context.Context, repoRoot, name string) error
-	skillsMu      sync.Mutex
-	skillsCache   map[string]skillsCacheEntry
+	version          string
+	started          time.Time
+	assets           fs.FS
+	home             string
+	bind             string
+	token            string
+	allowRegister    bool
+	workspace        []string
+	stores           *hubstore.Stores
+	transcripts      *hubstore.Transcripts
+	events           *eventBroadcaster
+	transcriptEvents *transcriptBroadcaster
+	sup              Supervisor
+	drain            *drainer
+	syncer           *syncer
+	drainCtx         context.Context
+	newWriter        func(config.Config) (tracker.Writer, error)
+	newReader        func(config.Config) (tracker.Reader, error)
+	installSkill     func(ctx context.Context, repoRoot, pkg string) error
+	removeSkill      func(ctx context.Context, repoRoot, name string) error
+	skillsMu         sync.Mutex
+	skillsCache      map[string]skillsCacheEntry
 }
 
 // New builds a Server that reports version and treats now as its start time. It
@@ -53,27 +56,29 @@ type Server struct {
 // present token as a bearer credential. allowRegister opens repo (un)registration
 // on such a bind; loopback binds ignore it and stay open. workspace is the
 // allowlist of repo roots the hub may start loops in; anything outside it is
-// observe-only. stores is the hub-owned store set backed by the hub database:
-// repo registrations and the per-repo queues.
+// observe-only. stores is the hub-owned store set backed by the hub databases:
+// repo registrations, the per-repo queues, and the separate transcript chunk store.
 func New(version, bind, token string, workspace []string, allowRegister bool, stores *hubstore.Stores) *Server {
 	s := &Server{
-		version:       version,
-		started:       time.Now(),
-		assets:        assetsFS(),
-		home:          registry.Home(),
-		bind:          bind,
-		token:         token,
-		allowRegister: allowRegister,
-		workspace:     normalizeRoots(workspace),
-		stores:        stores,
-		events:        newEventBroadcaster(),
-		sup:           newOSSupervisor(),
-		drainCtx:      context.Background(),
-		newWriter:     defaultWriter,
-		newReader:     defaultReader,
-		installSkill:  defaultInstallSkill,
-		removeSkill:   defaultRemoveSkill,
-		skillsCache:   map[string]skillsCacheEntry{},
+		version:          version,
+		started:          time.Now(),
+		assets:           assetsFS(),
+		home:             registry.Home(),
+		bind:             bind,
+		token:            token,
+		allowRegister:    allowRegister,
+		workspace:        normalizeRoots(workspace),
+		stores:           stores,
+		transcripts:      stores.Transcripts(),
+		events:           newEventBroadcaster(),
+		transcriptEvents: newTranscriptBroadcaster(),
+		sup:              newOSSupervisor(),
+		drainCtx:         context.Background(),
+		newWriter:        defaultWriter,
+		newReader:        defaultReader,
+		installSkill:     defaultInstallSkill,
+		removeSkill:      defaultRemoveSkill,
+		skillsCache:      map[string]skillsCacheEntry{},
 	}
 	s.drain = newDrainer(s)
 	s.syncer = newSyncer(s)
@@ -110,6 +115,34 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 	}
 	go s.sweepKnownRepos(ctx)
 	go s.syncer.run(ctx, syncInterval, reconcileInterval)
+	go s.pruneTranscripts(ctx)
+}
+
+// transcriptPruneInterval bounds how often the hub prunes old transcript sessions
+// past the retention window, on top of the startup pass.
+const transcriptPruneInterval = time.Hour
+
+// pruneTranscripts drops transcript sessions past the retention window on startup
+// and on a periodic timer, reclaiming the freed pages (ADR 0008 §4). It is a
+// best-effort hygiene pass over the separate transcripts database, so a failure is
+// logged and retried on the next tick rather than surfaced.
+func (s *Server) pruneTranscripts(ctx context.Context) {
+	prune := func() {
+		if err := s.transcripts.Prune(); err != nil {
+			logger.Verbosef("prune transcripts: %v", err)
+		}
+	}
+	prune()
+	t := time.NewTicker(transcriptPruneInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			prune()
+		}
+	}
 }
 
 // sweepKnownRepos periodically records the repos of the currently live loops in
@@ -213,6 +246,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/events", s.handleEvents)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/events/stream", s.handleEventStream)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/transcripts", s.handleTranscripts)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/transcript/chunks", s.handleTranscriptChunks)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/transcript/stream", s.handleTranscriptStream)
 	mux.HandleFunc(APIPrefix+"/events/stream", s.handleAllEventStream)
 	mux.HandleFunc("/api/", handleAPINotFound)

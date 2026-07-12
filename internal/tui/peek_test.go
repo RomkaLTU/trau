@@ -116,7 +116,7 @@ func TestSpaceOpensPeekEscCloses(t *testing.T) {
 func TestEnterAttachesLiveElsePeeks(t *testing.T) {
 	liveDash := freshDash(120, 32, "").withQueue([]QueueRow{{ID: "COD-1", Phase: state.Building}})
 	liveDash.startTicket("COD-1")
-	liveDash.streamPath = "/runs/1-build.pty.log"
+	liveDash.streamID = "1-build"
 	if sel, _ := liveDash.selectedRow(); !sel.Live {
 		t.Fatalf("expected the live ticket selected, got %+v", sel)
 	}
@@ -170,7 +170,7 @@ func TestPeekIsModalQDoesNotStop(t *testing.T) {
 func TestAttachReframesPaneTitle(t *testing.T) {
 	d := freshDash(120, 32, "")
 	d.streaming = true
-	d.streamPath = "/runs/1-build.pty.log"
+	d.streamID = "1-build"
 	out := strip(d.render())
 	if !strings.Contains(out, "Attached") || !strings.Contains(out, "esc detach") {
 		t.Errorf("attached pane must show the attached state and detach hint, got:\n%s", out)

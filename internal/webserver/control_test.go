@@ -38,7 +38,7 @@ func testStoresAt(t *testing.T, home string) *hubstore.Stores {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return hubstore.NewStores(db.SQL())
+	return hubstore.NewStores(db.SQL(), nil, 0)
 }
 
 type signalCall struct {

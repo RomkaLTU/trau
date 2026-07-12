@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -213,36 +211,55 @@ func TestHasAuthFailure(t *testing.T) {
 	}
 }
 
-// TestLiveTranscriptTeesAndAnnounces is the COD-629 guard for the non-PTY
-// backends (codex/kimi): liveTranscript must open a tail-able .pty.log under
-// _agent-results, write the .size sidecar trau watch reads, and emit the
-// agent_start event the TUI live view follows — the contract that lets all three
-// providers share one viewer with no provider branching.
+type fakeTranscriptSink struct {
+	stem string
+	cols int
+	rows int
+	buf  bytes.Buffer
+}
+
+func (f *fakeTranscriptSink) Open(stem string, cols, rows int) io.WriteCloser {
+	f.stem, f.cols, f.rows = stem, cols, rows
+	return nopWriteCloser{&f.buf}
+}
+
+type nopWriteCloser struct{ io.Writer }
+
+func (nopWriteCloser) Close() error { return nil }
+
+// TestLiveTranscriptTeesAndAnnounces guards the non-PTY backends (codex/kimi):
+// liveTranscript must open a session writer on the sink keyed by the stem, tee the
+// agent's output to it, and emit the agent_start event carrying the transcript id
+// the TUI live view follows — the contract that lets all three providers share one
+// viewer with no provider branching (ADR 0008 §4).
 func TestLiveTranscriptTeesAndAnnounces(t *testing.T) {
-	dir := t.TempDir()
 	var events bytes.Buffer
 	now := time.Unix(0, 1234567890)
+	sink := &fakeTranscriptSink{}
 
-	f, ok := liveTranscript(event.New(&events), dir, "build", 100, 40, now)
-	if !ok || f == nil {
-		t.Fatalf("liveTranscript ok=%v file!=nil=%v, want a live file", ok, f != nil)
+	w, ok := liveTranscript(sink, event.New(&events), "build", 100, 40, now)
+	if !ok || w == nil {
+		t.Fatalf("liveTranscript ok=%v writer!=nil=%v, want a live writer", ok, w != nil)
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = w.Close() }()
 
-	want := filepath.Join(dir, ResultsSubdir, "1234567890-build"+TranscriptExt)
-	if f.Name() != want {
-		t.Errorf("live file = %q, want %q", f.Name(), want)
+	if sink.stem != "1234567890-build" {
+		t.Errorf("session stem = %q, want 1234567890-build", sink.stem)
 	}
-	if _, err := io.WriteString(f, "hello agent\n"); err != nil {
-		t.Fatalf("write live file: %v", err)
+	if sink.cols != 100 || sink.rows != 40 {
+		t.Errorf("session dims = %dx%d, want 100x40", sink.cols, sink.rows)
 	}
-	if b, err := os.ReadFile(want); err != nil || !strings.Contains(string(b), "hello agent") {
-		t.Errorf("live file not tail-able: err=%v contents=%q", err, b)
+	if _, err := io.WriteString(w, "hello agent\n"); err != nil {
+		t.Fatalf("write live transcript: %v", err)
 	}
-	if cols, rows, ok := ReadSize(want); !ok || cols != 100 || rows != 40 {
-		t.Errorf("size sidecar = %dx%d ok=%v, want 100x40", cols, rows, ok)
+	if !strings.Contains(sink.buf.String(), "hello agent") {
+		t.Errorf("agent output not teed to the sink: %q", sink.buf.String())
 	}
-	if s := events.String(); !strings.Contains(s, event.KindAgentStart) || !strings.Contains(s, want) {
-		t.Errorf("agent_start event must carry the transcript path; got: %s", s)
+	if s := events.String(); !strings.Contains(s, event.KindAgentStart) || !strings.Contains(s, "1234567890-build") {
+		t.Errorf("agent_start event must carry the transcript id; got: %s", s)
+	}
+
+	if _, ok := liveTranscript(nil, event.New(&events), "build", 100, 40, now); ok {
+		t.Error("a nil sink must disable capture")
 	}
 }

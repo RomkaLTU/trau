@@ -15,7 +15,7 @@ func testPhaseLogs(t *testing.T) *PhaseLogs {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewStores(db.SQL()).PhaseLogs()
+	return NewStores(db.SQL(), nil, 0).PhaseLogs()
 }
 
 func TestPhaseLogsUpsertListRemove(t *testing.T) {

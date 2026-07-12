@@ -2,10 +2,11 @@ package hubstore
 
 import "database/sql"
 
-// Stores is the hub's set of SQLite-backed stores, all over the one database the
-// serve process opens. It hands out the registration store and per-repo queue
-// stores so the web server depends on a single hub-owned object rather than the
-// raw database handle. The caller owns the database's lifecycle.
+// Stores is the hub's set of SQLite-backed stores. Every store but transcripts is
+// over the one authoritative database the serve process opens; transcripts live in
+// a separate transcripts database (ADR 0008 §4) so their bulk never bloats the hot
+// store, held here for one hub-owned object rather than raw handles. The caller
+// owns both databases' lifecycles.
 type Stores struct {
 	db          *sql.DB
 	repos       *Registrations
@@ -18,10 +19,13 @@ type Stores struct {
 	drains      *DrainOutcomes
 	phaseLogs   *PhaseLogs
 	instances   *Instances
+	transcripts *Transcripts
 }
 
-// NewStores builds the hub store set over db.
-func NewStores(db *sql.DB) *Stores {
+// NewStores builds the hub store set over the authoritative database db and the
+// separate transcripts database, pruned to transcriptRetention sessions per repo.
+// A nil transcriptsDB yields an inert transcript store (tests).
+func NewStores(db, transcriptsDB *sql.DB, transcriptRetention int) *Stores {
 	return &Stores{
 		db:          db,
 		repos:       NewRegistrations(db),
@@ -34,6 +38,7 @@ func NewStores(db *sql.DB) *Stores {
 		drains:      NewDrainOutcomes(db),
 		phaseLogs:   NewPhaseLogs(db),
 		instances:   NewInstances(db),
+		transcripts: NewTranscripts(transcriptsDB, transcriptRetention),
 	}
 }
 
@@ -66,6 +71,9 @@ func (s *Stores) PhaseLogs() *PhaseLogs { return s.phaseLogs }
 
 // Instances returns the store of the live loops' presence.
 func (s *Stores) Instances() *Instances { return s.instances }
+
+// Transcripts returns the chunked transcript store over the transcripts database.
+func (s *Stores) Transcripts() *Transcripts { return s.transcripts }
 
 // Queue returns the queue store for a repo root.
 func (s *Stores) Queue(root string) *Queue { return NewQueue(s.db, root) }

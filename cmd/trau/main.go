@@ -43,6 +43,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubphaselog"
 	"github.com/RomkaLTU/trau/internal/hubpresence"
 	"github.com/RomkaLTU/trau/internal/hubtokens"
+	"github.com/RomkaLTU/trau/internal/hubtranscript"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
 	"github.com/RomkaLTU/trau/internal/planning"
@@ -270,6 +271,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	sink := newTokenSink(cfg)
 	defer sink.Close()
 
+	transcripts := newTranscriptSink(cfg)
+	defer transcripts.Close()
+	wireTUITranscripts(cfg)
+
 	if opts.ClearID != "" {
 		ensureHubForStore(ctx, cfg, stderr)
 		store := newCheckpointStore(cfg, cfg.RepoRoot)
@@ -316,7 +321,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	runner, err := buildRouter(cfg, log, sink, stderr)
+	runner, err := buildRouter(cfg, log, sink, transcripts, stderr)
 	if err != nil {
 		return usageError{err}
 	}
@@ -392,7 +397,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return console.Actionable(err, "resolve target repo", "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository")
 		}
 		ensureHubForStore(ctx, cfg, stderr)
-		pipe, err := buildPipeline(cfg, runner, repoRoot, pm, sink, log, con)
+		pipe, err := buildPipeline(cfg, runner, repoRoot, pm, sink, transcripts, log, con)
 		if err != nil {
 			return err
 		}
@@ -469,7 +474,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	// Checkpoints write through the hub now (ADR 0008), so the loop needs one up
 	// for every tracker — not only the hub-store providers ensured above. Idempotent.
 	ensureHubForStore(ctx, cfg, stderr)
-	p, err := buildPipeline(cfg, runner, repoRoot, pm, sink, log, con)
+	p, err := buildPipeline(cfg, runner, repoRoot, pm, sink, transcripts, log, con)
 	if err != nil {
 		return err
 	}
@@ -716,7 +721,7 @@ func reconcileCheckpoints(ctx context.Context, cfg config.Config, log *event.Log
 	if !hasReconcileCandidate(store) {
 		return nil
 	}
-	runner, err := buildRouter(cfg, log, sink, io.Discard)
+	runner, err := buildRouter(cfg, log, sink, nil, io.Discard)
 	if err != nil {
 		logger.Verbosef("reconcile: provider unavailable, skipping (%v)", err)
 		return nil
@@ -973,7 +978,34 @@ func newTokenSink(cfg config.Config) *hubtokens.Sink {
 	return hubtokens.New(hub, repoName(cfg.RepoRoot), cfg.HubWriteBufferBytes, window)
 }
 
-func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *hubtokens.Sink, log *event.Log, con console.Renderer) (*pipeline.Pipeline, error) {
+// newTranscriptSink is the hub-backed transcript sink: the agent tees each phase's
+// PTY output to it and the child posts the chunks to the hub, writing no .pty.log
+// file (ADR 0008 §4). Close it to flush the tail before the process exits.
+func newTranscriptSink(cfg config.Config) *hubtranscript.Sink {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	window := time.Duration(cfg.HubWriteRetryWindow) * time.Second
+	return hubtranscript.New(hub, repoName(cfg.RepoRoot), cfg.HubWriteBufferBytes, window)
+}
+
+// tuiTranscriptSource adapts the hub client to the TUI live agent view: the view
+// polls the hub's chunk store for the running phase instead of tailing a file.
+type tuiTranscriptSource struct{ hub *hubclient.Client }
+
+func (s tuiTranscriptSource) Chunks(ctx context.Context, repo, id string, after int64) (tui.TranscriptDelta, error) {
+	p, err := s.hub.TranscriptChunks(ctx, repo, id, after, false, 0)
+	if err != nil {
+		return tui.TranscriptDelta{}, err
+	}
+	return tui.TranscriptDelta{ID: p.ID, Cols: p.Cols, Rows: p.Rows, Data: p.Data, Seq: p.Seq}, nil
+}
+
+// wireTUITranscripts points the TUI live view at the hub's transcript chunk store,
+// scoped to this run's repo. Called once before the program runs.
+func wireTUITranscripts(cfg config.Config) {
+	tui.SetTranscriptSource(tuiTranscriptSource{hub: hubclient.New(hubBaseURL(cfg), cfg.ServeToken)}, repoName(cfg.RepoRoot))
+}
+
+func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *hubtokens.Sink, transcripts agent.TranscriptSink, log *event.Log, con console.Renderer) (*pipeline.Pipeline, error) {
 	wireCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if added, err := pipeline.EnsureRepoConfigInclude(wireCtx, repoRoot); err != nil {
@@ -990,11 +1022,11 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		}
 		verifyChecks = loaded
 	}
-	panel, err := buildPanel(cfg, log, sink)
+	panel, err := buildPanel(cfg, log, sink, transcripts)
 	if err != nil {
 		return nil, err
 	}
-	fallback, err := buildFallback(cfg, log, sink)
+	fallback, err := buildFallback(cfg, log, sink, transcripts)
 	if err != nil {
 		return nil, err
 	}
@@ -1075,7 +1107,7 @@ func skillsExpected(repoRoot string) func(string) bool {
 // naming an unknown provider or whose binary is missing from PATH is a startup
 // error. Repeated providers get a numeric suffix (claude, claude2) so their
 // verdict files and ledger labels stay distinct.
-func buildPanel(cfg config.Config, log *event.Log, sink agent.TokenSink) ([]pipeline.Verifier, error) {
+func buildPanel(cfg config.Config, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink) ([]pipeline.Verifier, error) {
 	if len(cfg.VerifyPanel) == 0 {
 		return nil, nil
 	}
@@ -1087,7 +1119,7 @@ func buildPanel(cfg config.Config, log *event.Log, sink agent.TokenSink) ([]pipe
 		if err != nil {
 			return nil, fmt.Errorf("verify panel %q: %w", spec, err)
 		}
-		runner, err := buildBackend(reg, cfg, provider, model, effort, agent.PhaseVerify, log, sink)
+		runner, err := buildBackend(reg, cfg, provider, model, effort, agent.PhaseVerify, log, sink, transcripts)
 		if err != nil {
 			return nil, fmt.Errorf("verify panel %q: %w", spec, err)
 		}
@@ -1108,7 +1140,7 @@ func buildPanel(cfg config.Config, log *event.Log, sink agent.TokenSink) ([]pipe
 // chain is global, so every phase gets the same ordered providers. Returns nil when
 // no fallback is configured (retry-only). A spec naming an unknown provider or whose
 // binary is missing from PATH is a startup error, surfaced before any run begins.
-func buildFallback(cfg config.Config, log *event.Log, sink agent.TokenSink) (func(string) []agent.Runner, error) {
+func buildFallback(cfg config.Config, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink) (func(string) []agent.Runner, error) {
 	if len(cfg.FallbackProviders) == 0 {
 		return nil, nil
 	}
@@ -1119,7 +1151,7 @@ func buildFallback(cfg config.Config, log *event.Log, sink agent.TokenSink) (fun
 		if err != nil {
 			return nil, fmt.Errorf("fallback provider %q: %w", spec, err)
 		}
-		b, err := buildBackend(reg, cfg, provider, model, effort, "", log, sink)
+		b, err := buildBackend(reg, cfg, provider, model, effort, "", log, sink, transcripts)
 		if err != nil {
 			return nil, fmt.Errorf("fallback provider %q: %w", spec, err)
 		}
@@ -1403,17 +1435,20 @@ func runSession(ctx context.Context, cfg config.Config, opts config.Options, std
 		maxIter = opts.Max
 	}
 	acts := &appActions{
-		cfg:     cfg,
-		opts:    opts,
-		stderr:  io.Discard,
-		log:     log,
-		sink:    newTokenSink(cfg),
-		store:   newCheckpointStore(cfg, cfg.RepoRoot),
-		logs:    newPhaseLogStore(cfg, cfg.RepoRoot),
-		scope:   scopeFor(cfg, ""),
-		maxIter: maxIter,
+		cfg:         cfg,
+		opts:        opts,
+		stderr:      io.Discard,
+		log:         log,
+		sink:        newTokenSink(cfg),
+		transcripts: newTranscriptSink(cfg),
+		store:       newCheckpointStore(cfg, cfg.RepoRoot),
+		logs:        newPhaseLogStore(cfg, cfg.RepoRoot),
+		scope:       scopeFor(cfg, ""),
+		maxIter:     maxIter,
 	}
 	defer acts.sink.Close()
+	defer acts.transcripts.Close()
+	wireTUITranscripts(cfg)
 	if tui.AccessibleOnboardingRequested() && acts.OnboardingNeeded() {
 		res, err := tui.RunAccessibleOnboarding(ctx, acts)
 		if err != nil {
@@ -1434,15 +1469,16 @@ func runSession(ctx context.Context, cfg config.Config, opts config.Options, std
 }
 
 type appActions struct {
-	cfg     config.Config
-	opts    config.Options
-	stderr  io.Writer
-	log     *event.Log
-	sink    *hubtokens.Sink
-	store   state.Checkpoints
-	logs    *hubphaselog.Store
-	scope   tracker.Scope
-	maxIter int
+	cfg         config.Config
+	opts        config.Options
+	stderr      io.Writer
+	log         *event.Log
+	sink        *hubtokens.Sink
+	transcripts *hubtranscript.Sink
+	store       state.Checkpoints
+	logs        *hubphaselog.Store
+	scope       tracker.Scope
+	maxIter     int
 
 	built    bool
 	buildErr error
@@ -1660,7 +1696,7 @@ func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (
 		return res, nil
 	}
 
-	runner, err := buildRouter(a.cfg, a.log, a.sink, a.stderr)
+	runner, err := buildRouter(a.cfg, a.log, a.sink, a.transcripts, a.stderr)
 	if err != nil {
 		res.LabelErr = err
 		return res, nil
@@ -1715,7 +1751,7 @@ func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvide
 		restOnly := trackerProvider == "jira" && jiraRESTComplete(cfg)
 		var runner agent.Runner
 		if !restOnly {
-			r, err := buildRouter(cfg, a.log, a.sink, a.stderr)
+			r, err := buildRouter(cfg, a.log, a.sink, a.transcripts, a.stderr)
 			if err != nil {
 				return tui.TeamDetection{Label: label}, err
 			}
@@ -2134,7 +2170,7 @@ func (a *appActions) ensure() error {
 		return a.buildErr
 	}
 	a.built = true
-	runner, err := buildRouter(a.cfg, a.log, a.sink, a.stderr)
+	runner, err := buildRouter(a.cfg, a.log, a.sink, a.transcripts, a.stderr)
 	if err != nil {
 		a.buildErr = err
 		return err
@@ -2150,7 +2186,7 @@ func (a *appActions) ensure() error {
 		a.buildErr = err
 		return err
 	}
-	pipe, err := buildPipeline(a.cfg, runner, repoRoot, a.tracker, a.sink, a.log, nil)
+	pipe, err := buildPipeline(a.cfg, runner, repoRoot, a.tracker, a.sink, a.transcripts, a.log, nil)
 	if err != nil {
 		a.buildErr = err
 		return err
@@ -2765,12 +2801,12 @@ func providerConfigFor(cfg config.Config, provider string) providerConfig {
 	return providerConfig{extra: map[string]string{}}
 }
 
-func buildRouter(cfg config.Config, log *event.Log, sink agent.TokenSink, stderr io.Writer) (agent.Runner, error) {
+func buildRouter(cfg config.Config, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink, stderr io.Writer) (agent.Runner, error) {
 	reg := agent.DefaultRegistry()
 	used := map[string]bool{cfg.Provider: true}
 
 	defPC := providerConfigFor(cfg, cfg.Provider)
-	def, err := buildBackend(reg, cfg, cfg.Provider, defPC.model, defPC.effort, "", log, sink)
+	def, err := buildBackend(reg, cfg, cfg.Provider, defPC.model, defPC.effort, "", log, sink, transcripts)
 	if err != nil {
 		return nil, err
 	}
@@ -2800,7 +2836,7 @@ func buildRouter(cfg config.Config, log *event.Log, sink agent.TokenSink, stderr
 		if err != nil {
 			return nil, fmt.Errorf("%s phase route: %w", phase, err)
 		}
-		b, err := buildBackend(reg, cfg, provider, model, effort, phase, log, sink)
+		b, err := buildBackend(reg, cfg, provider, model, effort, phase, log, sink, transcripts)
 		if err != nil {
 			return nil, fmt.Errorf("%s phase route %q: %w", phase, spec, err)
 		}
@@ -2886,7 +2922,7 @@ func autoInstallSkills(cfg config.Config, con *console.Console) {
 	}
 }
 
-func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort, phase string, log *event.Log, sink agent.TokenSink) (agent.Runner, error) {
+func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort, phase string, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink) (agent.Runner, error) {
 	spec, ok := reg.Lookup(provider)
 	if !ok {
 		return nil, fmt.Errorf("unknown provider %q (expected: %s)", provider, strings.Join(reg.Names(), " | "))
@@ -2924,6 +2960,7 @@ func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort
 		StripMechanicalMCP: cfg.StripMechanicalMCP,
 		Log:                log,
 		Tokens:             sink,
+		Transcripts:        transcripts,
 		Extra:              pc.extra,
 	})
 }

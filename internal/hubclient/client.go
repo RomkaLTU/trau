@@ -7,6 +7,7 @@ package hubclient
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -177,6 +178,46 @@ type appendEventsBody struct {
 	Events []Event `json:"events"`
 }
 
+// TranscriptChunk is one ordered slice of an agent session's PTY output the child
+// posts to the hub (ADR 0008 §4). Stem is the transcript-session id; Seq orders
+// the chunk within the session; Data is the raw terminal bytes base64-encoded
+// (they carry control characters); Cols/Rows carry the session's dimensions.
+type TranscriptChunk struct {
+	Stem string `json:"stem"`
+	Seq  int64  `json:"seq"`
+	Cols int    `json:"cols,omitempty"`
+	Rows int    `json:"rows,omitempty"`
+	Data string `json:"data"`
+}
+
+type appendTranscriptBody struct {
+	Chunks []TranscriptChunk `json:"chunks"`
+}
+
+type transcriptChunkData struct {
+	Seq  int64  `json:"seq"`
+	Data string `json:"data"`
+}
+
+type transcriptChunksResponse struct {
+	ID     string                `json:"id"`
+	Cols   int                   `json:"cols"`
+	Rows   int                   `json:"rows"`
+	Chunks []transcriptChunkData `json:"chunks"`
+}
+
+// TranscriptPoll is one poll of a repo's live transcript as the Go pollers (the
+// TUI live view and `trau watch`) consume it: the resolved session id, its
+// dimensions, the decoded bytes appended since the caller's cursor, and the seq
+// to resume from. A changed ID means the follow target advanced to a new phase.
+type TranscriptPoll struct {
+	ID   string
+	Cols int
+	Rows int
+	Data []byte
+	Seq  int64
+}
+
 // artifactBody carries a run artifact's content on the wire, both directions.
 type artifactBody struct {
 	Content string `json:"content"`
@@ -298,6 +339,53 @@ type recordAnomaliesBody struct {
 // surfaces as an IsUnreachable error so the caller can retry.
 func (c *Client) AppendEvents(ctx context.Context, repo string, evs []Event) error {
 	return c.do(ctx, http.MethodPost, c.repoPath(repo, "events"), appendEventsBody{Events: evs}, nil)
+}
+
+// AppendTranscript posts a batch of transcript chunks for repo to the hub, which
+// appends them to the chunk store and fans them out to live subscribers. The batch
+// is sent whole so the hub preserves per-session order; a hub-connection failure
+// surfaces as an IsUnreachable error so the caller can retry.
+func (c *Client) AppendTranscript(ctx context.Context, repo string, chunks []TranscriptChunk) error {
+	return c.do(ctx, http.MethodPost, c.repoPath(repo, "transcripts"), appendTranscriptBody{Chunks: chunks}, nil)
+}
+
+// TranscriptChunks polls repo's live transcript for the chunks appended since
+// after. A non-empty id pins one session (replay); follow advances to the newest
+// session at or after since (the TUI/watch live tail). It returns the resolved
+// session id, its dimensions, and the decoded bytes, so the caller feeds a
+// terminal emulator without ever reading a file.
+func (c *Client) TranscriptChunks(ctx context.Context, repo, id string, after int64, follow bool, since int64) (TranscriptPoll, error) {
+	values := url.Values{}
+	if id != "" {
+		values.Set("id", id)
+	}
+	// Always sent, including 0 and -1: seqs start at 0, so a cursor of 0 (seq 0
+	// seen) must page past it rather than replay it.
+	values.Set("after", strconv.FormatInt(after, 10))
+	if follow {
+		values.Set("follow", "1")
+	}
+	if since > 0 {
+		values.Set("since", strconv.FormatInt(since, 10))
+	}
+	path := c.repoPath(repo, "transcript/chunks")
+	if enc := values.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	var body transcriptChunksResponse
+	if err := c.do(ctx, http.MethodGet, path, nil, &body); err != nil {
+		return TranscriptPoll{}, err
+	}
+	out := TranscriptPoll{ID: body.ID, Cols: body.Cols, Rows: body.Rows, Seq: after}
+	for _, ch := range body.Chunks {
+		data, err := base64.StdEncoding.DecodeString(ch.Data)
+		if err != nil {
+			continue
+		}
+		out.Data = append(out.Data, data...)
+		out.Seq = ch.Seq
+	}
+	return out, nil
 }
 
 // AppendTokenCalls posts a batch of token calls for repo to the hub, which appends
