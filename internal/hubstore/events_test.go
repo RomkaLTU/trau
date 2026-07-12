@@ -1,8 +1,10 @@
 package hubstore
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RomkaLTU/trau/internal/hubdb"
 )
@@ -231,4 +233,164 @@ func TestEventsPruneDisabled(t *testing.T) {
 	if rows, _ := e.Recent("a", 10, 0); len(rows) != 5 {
 		t.Fatalf("disabled retention pruned rows: got %d, want 5", len(rows))
 	}
+}
+
+// seedQueryEvents appends a small incident-shaped feed and returns the events store.
+func seedQueryEvents(t *testing.T) *Events {
+	t.Helper()
+	e := testEvents(t)
+	fields := func(m map[string]any) string {
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatalf("marshal fields: %v", err)
+		}
+		return string(b)
+	}
+	_, err := e.Append("acme", []NewEvent{
+		{TS: "2026-07-12T10:00:00Z", Kind: "agent_start", Phase: "build", Msg: "start"},
+		{TS: "2026-07-12T10:01:00Z", Kind: "state_change", Phase: "build", Fields: fields(map[string]any{"ticket": "COD-1", "state": "faulted", "reason": "boom"})},
+		{TS: "2026-07-12T10:02:00Z", Kind: "agent_call", Phase: "verify", Msg: "COD-1 verify call"},
+		{TS: "2026-07-12T10:03:00Z", Kind: "cost_anomaly", Msg: "COD-2: cost anomaly", Fields: fields(map[string]any{"id": "COD-2"})},
+		{TS: "2026-07-12T10:04:00Z", Kind: "state_change", Phase: "pr_open", Fields: fields(map[string]any{"ticket": "COD-2", "state": "merged"})},
+	})
+	if err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	return e
+}
+
+func msgsAndKinds(rows []EventRow) []string {
+	out := make([]string, len(rows))
+	for i, r := range rows {
+		out[i] = r.Kind
+	}
+	return out
+}
+
+func TestEventsQuery(t *testing.T) {
+	e := seedQueryEvents(t)
+
+	t.Run("no filter is chronological", func(t *testing.T) {
+		rows, err := e.Query("acme", EventFilter{})
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		if len(rows) != 5 {
+			t.Fatalf("rows = %d, want 5", len(rows))
+		}
+		for i := 1; i < len(rows); i++ {
+			if rows[i-1].ID >= rows[i].ID {
+				t.Fatalf("not chronological at %d: %d then %d", i, rows[i-1].ID, rows[i].ID)
+			}
+		}
+	})
+
+	t.Run("kind filter", func(t *testing.T) {
+		rows, err := e.Query("acme", EventFilter{Kind: "state_change"})
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		if got := msgsAndKinds(rows); len(got) != 2 || got[0] != "state_change" || got[1] != "state_change" {
+			t.Fatalf("kinds = %v, want two state_change", got)
+		}
+	})
+
+	t.Run("ticket matches fields and msg", func(t *testing.T) {
+		rows, err := e.Query("acme", EventFilter{Ticket: "COD-1"})
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		// The state_change carries COD-1 in fields.ticket; the agent_call mentions it in msg.
+		if got := msgsAndKinds(rows); len(got) != 2 {
+			t.Fatalf("COD-1 events = %v, want state_change + agent_call", got)
+		}
+
+		rows, err = e.Query("acme", EventFilter{Ticket: "COD-2"})
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		// cost_anomaly carries COD-2 in fields.id; the merge state_change in fields.ticket.
+		if len(rows) != 2 {
+			t.Fatalf("COD-2 events = %d, want 2", len(rows))
+		}
+	})
+
+	t.Run("ticket does not prefix-bleed into longer ids", func(t *testing.T) {
+		b := testEvents(t)
+		if _, err := b.Append("acme", []NewEvent{
+			{Kind: "state_change", Fields: `{"ticket":"COD-1"}`},
+			{Kind: "state_change", Fields: `{"ticket":"COD-10"}`},
+			{Kind: "agent_call", Msg: "COD-10 retry"},
+			{Kind: "cost_anomaly", Fields: `{"id":"COD-11"}`},
+		}); err != nil {
+			t.Fatalf("Append: %v", err)
+		}
+		rows, err := b.Query("acme", EventFilter{Ticket: "COD-1"})
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		if len(rows) != 1 || rows[0].Fields != `{"ticket":"COD-1"}` {
+			t.Fatalf("COD-1 query bled into longer ids: %v", rows)
+		}
+	})
+
+	t.Run("grep is case-insensitive over payload", func(t *testing.T) {
+		for _, pat := range []string{"faulted", "FAULTED", "boom"} {
+			rows, err := e.Query("acme", EventFilter{Grep: pat})
+			if err != nil {
+				t.Fatalf("Query %q: %v", pat, err)
+			}
+			if len(rows) != 1 || rows[0].Kind != "state_change" {
+				t.Fatalf("grep %q = %v, want the faulted state_change", pat, msgsAndKinds(rows))
+			}
+		}
+	})
+
+	t.Run("since bounds the window", func(t *testing.T) {
+		since, _ := time.Parse(time.RFC3339, "2026-07-12T10:03:00Z")
+		rows, err := e.Query("acme", EventFilter{Since: since})
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("since rows = %d, want 2 (the two at/after 10:03)", len(rows))
+		}
+		if rows[0].Kind != "cost_anomaly" {
+			t.Fatalf("first since row = %q, want cost_anomaly", rows[0].Kind)
+		}
+	})
+
+	t.Run("after pages forward", func(t *testing.T) {
+		all, err := e.Query("acme", EventFilter{})
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		third := all[2].ID
+		rows, err := e.Query("acme", EventFilter{After: third})
+		if err != nil {
+			t.Fatalf("Query after: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("after rows = %d, want 2", len(rows))
+		}
+		for _, r := range rows {
+			if r.ID <= third {
+				t.Fatalf("row id %d not past cursor %d", r.ID, third)
+			}
+		}
+	})
+
+	t.Run("limit keeps the newest", func(t *testing.T) {
+		rows, err := e.Query("acme", EventFilter{Limit: 2})
+		if err != nil {
+			t.Fatalf("Query: %v", err)
+		}
+		if len(rows) != 2 {
+			t.Fatalf("rows = %d, want 2", len(rows))
+		}
+		// Newest two, returned oldest first.
+		if rows[0].Kind != "cost_anomaly" || rows[1].Kind != "state_change" {
+			t.Fatalf("limited window = %v, want the newest two chronological", msgsAndKinds(rows))
+		}
+	})
 }

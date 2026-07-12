@@ -110,6 +110,56 @@ func (s *Server) handleRunTokens(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, spendResponse(sp))
 }
 
+// PhaseSpendView is one phase's slice of a ticket's spend in the summary.
+type PhaseSpendView struct {
+	Phase   string  `json:"phase"`
+	Tokens  int     `json:"tokens"`
+	CostUSD float64 `json:"cost_usd"`
+	Turns   int     `json:"turns"`
+	Calls   int     `json:"calls"`
+	Metered bool    `json:"metered"`
+}
+
+// SpendSummaryResponse is a ticket's spend broken down by phase alongside the same
+// grand total the status view reports — the forensics spend read.
+type SpendSummaryResponse struct {
+	Ticket string           `json:"ticket"`
+	Total  SpendResponse    `json:"total"`
+	Phases []PhaseSpendView `json:"phases"`
+}
+
+// handleRunSpend serves a ticket's spend summary (GET): the per-phase breakdown and
+// the grand total, both from the authoritative token_calls table so the total
+// matches the status view exactly.
+func (s *Server) handleRunSpend(w http.ResponseWriter, r *http.Request) {
+	repo, ticket, ok := s.tokenRoute(w, r, http.MethodGet)
+	if !ok {
+		return
+	}
+	total, err := s.stores.Tokens().Total(repo.Root, ticket)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	phases, err := s.stores.Tokens().PhaseTotals(repo.Root, ticket)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	out := SpendSummaryResponse{Ticket: ticket, Total: spendResponse(total), Phases: make([]PhaseSpendView, 0, len(phases))}
+	for _, p := range phases {
+		out.Phases = append(out.Phases, PhaseSpendView{
+			Phase:   p.Phase,
+			Tokens:  p.Total,
+			CostUSD: p.Cost,
+			Turns:   p.Turns,
+			Calls:   p.Calls,
+			Metered: p.Metered,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // handleTokenDay serves repo's summed spend for the ?date= local date, defaulting
 // to today — the budget day-cap read.
 func (s *Server) handleTokenDay(w http.ResponseWriter, r *http.Request) {
