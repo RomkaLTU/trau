@@ -109,10 +109,6 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 		return console.Actionable(err, "import legacy queue state",
 			"fix or move the named queue.json aside, then restart trau serve")
 	}
-	if err := stores.EnsureDerivedSchema(); err != nil {
-		return console.Actionable(err, "prepare derived run-history tables",
-			"the run artifacts on disk are unaffected; move trau.db aside and restart to rebuild them")
-	}
 
 	addr := net.JoinHostPort(cfg.ServeBind, strconv.Itoa(cfg.ServePort))
 	hub := webserver.New(version, cfg.ServeBind, cfg.ServeToken, cfg.ServeWorkspace, cfg.ServeAllowRegister, stores)

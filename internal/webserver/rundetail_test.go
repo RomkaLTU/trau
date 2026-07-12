@@ -10,19 +10,72 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/hubclient"
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
 
-// seedTokens appends the given per-phase calls to runs/<id>/tokens.jsonl through
-// the real Sink, so the detail resource reads the exact on-disk log shape the
-// pipeline writes.
-func seedTokens(t *testing.T, runsDir, id string, calls []phaseCall) {
+// seedTokenCalls appends the given per-phase calls to the authoritative token store
+// under the repo that owns runsDir, tagged with ts — the DB-first shape the loop now
+// posts (ADR 0008), replacing the old per-run tokens.jsonl.
+func seedTokenCalls(t *testing.T, home, runsDir, id, ts string, calls []phaseCall) {
 	t.Helper()
-	sink := tokens.New(runsDir)
-	sink.SetTicket(id)
+	root := filepath.Dir(filepath.Dir(runsDir))
+	rows := make([]hubstore.TokenCall, 0, len(calls))
 	for _, c := range calls {
-		sink.Append(c.phase, c.rec)
+		total := c.rec.Input + c.rec.Output + c.rec.CacheRead + c.rec.CacheCreation
+		if total <= 0 {
+			continue
+		}
+		rows = append(rows, hubstore.TokenCall{
+			Ticket:        id,
+			TS:            ts,
+			Phase:         c.phase,
+			Input:         c.rec.Input,
+			Output:        c.rec.Output,
+			CacheRead:     c.rec.CacheRead,
+			CacheCreation: c.rec.CacheCreation,
+			Reasoning:     c.rec.Reasoning,
+			Total:         total,
+			CostUSD:       c.rec.CostUSD,
+			Turns:         c.rec.Turns,
+			IsError:       c.rec.IsError,
+			Provider:      c.rec.Provider,
+			Model:         c.rec.Model,
+			Context:       c.rec.Context,
+		})
+	}
+	if err := testStoresAt(t, home).Tokens().Append(root, rows); err != nil {
+		t.Fatalf("seed token calls: %v", err)
+	}
+}
+
+// seedTokens appends the given per-phase calls at a fixed timestamp — for detail
+// tests where only the per-phase breakdown matters, not the date.
+func seedTokens(t *testing.T, home, runsDir, id string, calls []phaseCall) {
+	t.Helper()
+	seedTokenCalls(t, home, runsDir, id, "2026-07-12T12:00:00", calls)
+}
+
+// seedAnomalies detects and records the anomalies for the given per-phase spend on
+// the ticket, exercising DetectAnomalies plus the store round-trip.
+func seedAnomalies(t *testing.T, home, runsDir, id string, phases []tokens.PhaseSpend) {
+	t.Helper()
+	root := filepath.Dir(filepath.Dir(runsDir))
+	detected := tokens.DetectAnomalies(phases)
+	rows := make([]hubstore.Anomaly, len(detected))
+	for i, a := range detected {
+		rows[i] = hubstore.Anomaly{
+			TS:      "2026-07-12T12:00:00",
+			Phase:   a.Phase,
+			Output:  a.Output,
+			Turns:   a.Turns,
+			Cost:    a.Cost,
+			Reasons: a.Reasons,
+		}
+	}
+	if err := testStoresAt(t, home).Tokens().RecordAnomalies(root, id, rows); err != nil {
+		t.Fatalf("seed anomalies: %v", err)
 	}
 }
 
@@ -82,7 +135,7 @@ func TestRunDetailCompleteRun(t *testing.T) {
 		"BRANCH": "feature/COD-100-run-detail", "PR": "42",
 		"PR_URL": "https://github.com/acme/acme/pull/42",
 	})
-	seedTokens(t, runsDir, "COD-100", []phaseCall{
+	seedTokens(t, home, runsDir, "COD-100", []phaseCall{
 		{"build", tokens.Record{Input: 100, Output: 50, CacheRead: 10, CacheCreation: 5, CostUSD: usd(0.10), Turns: 3}},
 		{"build", tokens.Record{Input: 200, Output: 80, CacheRead: 20, CostUSD: usd(0.20), Turns: 4}},
 		{"handoff", tokens.Record{Input: 300, Output: 120, CostUSD: usd(0.05), Turns: 2}},
@@ -157,7 +210,7 @@ func TestRunDetailPartialEarlyPhaseRun(t *testing.T) {
 	seedCheckpoint(t, runsDir, "COD-101", map[string]string{
 		"PHASE": state.Building, "TITLE": "just started",
 	})
-	seedTokens(t, runsDir, "COD-101", []phaseCall{
+	seedTokens(t, home, runsDir, "COD-101", []phaseCall{
 		{"build", tokens.Record{Input: 100, Output: 50, Turns: 3}},
 	})
 
@@ -200,10 +253,9 @@ func TestRunDetailSurfacesAnomalies(t *testing.T) {
 	runsDir := seedRepo(t, home, "acme")
 	seedCheckpoint(t, runsDir, "COD-9", map[string]string{"PHASE": state.Building})
 
-	sink := tokens.New(runsDir)
-	sink.SetTicket("COD-9")
-	sink.Append("cleanup", tokens.Record{Output: 120_000, Turns: 8, CostUSD: usd(6.50)})
-	sink.Flag("COD-9")
+	seedAnomalies(t, home, runsDir, "COD-9", []tokens.PhaseSpend{
+		{Phase: "cleanup", Output: 120_000, Turns: 8, Cost: 6.50},
+	})
 
 	ts := instancesServer(t, home)
 	d := getRunDetail(t, ts, "acme", "COD-9")
@@ -219,7 +271,7 @@ func TestRunDetailSurfacesAnomalies(t *testing.T) {
 	if err := testStoresAt(t, home).Checkpoints().Upsert(root, "COD-10", map[string]string{"PHASE": state.Building}); err != nil {
 		t.Fatalf("seed checkpoint: %v", err)
 	}
-	seedTokens(t, runsDir, "COD-10", []phaseCall{
+	seedTokens(t, home, runsDir, "COD-10", []phaseCall{
 		{"build", tokens.Record{Output: 100, Turns: 2, CostUSD: usd(0.10)}},
 	})
 	if quiet := getRunDetail(t, ts, "acme", "COD-10"); len(quiet.Anomalies) != 0 {

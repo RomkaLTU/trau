@@ -53,21 +53,21 @@ func seedAnalyticsFixture(t *testing.T, home string) (dirs map[string]string, fm
 	day := func(n int) time.Time { return now.AddDate(0, 0, n) }
 	fmtDay = func(n int) string { return day(n).Format(dateLayout) }
 
-	seedDayTokens(t, dirs["acme"], "COD-1", day(0), []phaseCall{
+	seedDayTokens(t, home, dirs["acme"], "COD-1", day(0), []phaseCall{
 		{"build", tokens.Record{Input: 300, Output: 200, CostUSD: usd(0.50), Model: "claude-opus-4-8"}},
 		{"verify", tokens.Record{Input: 100, Output: 100, CostUSD: usd(0.20), Model: "gpt-5.4"}},
 	})
-	seedDayTokens(t, dirs["acme"], "COD-2", day(-1), []phaseCall{
+	seedDayTokens(t, home, dirs["acme"], "COD-2", day(-1), []phaseCall{
 		{"build", tokens.Record{Input: 60, Output: 40, CostUSD: usd(0.10), Model: "claude-sonnet-5"}},
 	})
-	seedDayTokens(t, dirs["beta"], "COD-3", day(0), []phaseCall{
+	seedDayTokens(t, home, dirs["beta"], "COD-3", day(0), []phaseCall{
 		{"build", tokens.Record{Input: 200, Output: 100, CostUSD: usd(0.30), Model: "kimi-k2"}},
 	})
-	seedDayTokens(t, dirs["beta"], "COD-3", day(-2), []phaseCall{
+	seedDayTokens(t, home, dirs["beta"], "COD-3", day(-2), []phaseCall{
 		{"commit", tokens.Record{Input: 30, Output: 20, CostUSD: usd(0.05), Model: "claude-haiku-4-5"}},
 	})
 	// Outside a 7-day window — must never contribute.
-	seedDayTokens(t, dirs["acme"], "COD-OLD", day(-40), []phaseCall{
+	seedDayTokens(t, home, dirs["acme"], "COD-OLD", day(-40), []phaseCall{
 		{"build", tokens.Record{Input: 9000, Output: 999, CostUSD: usd(9.99), Model: "claude-opus-4-8"}},
 	})
 	return dirs, fmtDay
@@ -182,7 +182,7 @@ func TestTimeseriesUnknownBucketFilter(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()
 	dirs := seedRepos(t, home, "acme")
-	seedDayTokens(t, dirs["acme"], "COD-1", time.Now(), []phaseCall{
+	seedDayTokens(t, home, dirs["acme"], "COD-1", time.Now(), []phaseCall{
 		{"build", tokens.Record{Input: 300, Output: 200, CostUSD: usd(0.50), Model: "claude-opus-4-8"}},
 		{"", tokens.Record{Input: 60, Output: 40, CostUSD: usd(0.02), Model: "mystery-model"}},
 	})
@@ -260,10 +260,10 @@ func TestTimeseriesCompareWindows(t *testing.T) {
 	day := func(n int) time.Time { return now.AddDate(0, 0, n) }
 	fmtDay := func(n int) string { return day(n).Format(dateLayout) }
 
-	seedDayTokens(t, dirs["acme"], "COD-NEW", day(-1), []phaseCall{
+	seedDayTokens(t, home, dirs["acme"], "COD-NEW", day(-1), []phaseCall{
 		{"build", tokens.Record{Input: 600, Output: 400, CostUSD: usd(1.00), Model: "claude-opus-4-8"}},
 	})
-	seedDayTokens(t, dirs["acme"], "COD-OLD", day(-8), []phaseCall{
+	seedDayTokens(t, home, dirs["acme"], "COD-OLD", day(-8), []phaseCall{
 		{"build", tokens.Record{Input: 500, Output: 300, CostUSD: usd(0.80), Model: "gpt-5.4"}},
 		{"verify", tokens.Record{Input: 60, Output: 40, CostUSD: usd(0.10), Model: "claude-sonnet-5"}},
 	})
@@ -305,7 +305,7 @@ func TestTimeseriesInlineProviderWins(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()
 	dirs := seedRepos(t, home, "acme")
-	seedDayTokens(t, dirs["acme"], "COD-1", time.Now(), []phaseCall{
+	seedDayTokens(t, home, dirs["acme"], "COD-1", time.Now(), []phaseCall{
 		{"build", tokens.Record{Input: 100, Output: 100, CostUSD: usd(0.20), Provider: "kimi", Model: "turbo-preview"}},
 	})
 

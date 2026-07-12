@@ -10,7 +10,6 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
-	"github.com/RomkaLTU/trau/internal/tokens"
 )
 
 // RunDetail is the /api/v1/repos/{repo}/runs/{ticket} resource: one ticket's
@@ -38,9 +37,8 @@ type RunDetail struct {
 	Removed bool `json:"removed,omitempty"`
 }
 
-// AnomalyView is one flagged cost anomaly for a run, read from
-// runs/<ID>/anomalies.jsonl: the phase that cleared a soft threshold, its
-// output/turns/cost, and the human reasons it was flagged.
+// AnomalyView is one flagged cost anomaly for a run: the phase that cleared a soft
+// threshold, its output/turns/cost, and the human reasons it was flagged.
 type AnomalyView struct {
 	Phase   string   `json:"phase"`
 	Output  int      `json:"output"`
@@ -49,9 +47,9 @@ type AnomalyView struct {
 	Reasons []string `json:"reasons"`
 }
 
-// PhaseCost is one phase's summed token + cost spend, read from the run's
-// tokens.jsonl. Metered is false when any of the phase's calls recorded no
-// per-call cost, so CostUSD is then a lower bound rather than a measured total.
+// PhaseCost is one phase's summed token + cost spend. Metered is false when any of
+// the phase's calls recorded no per-call cost, so CostUSD is then a lower bound
+// rather than a measured total.
 type PhaseCost struct {
 	Phase         string  `json:"phase"`
 	Input         int     `json:"input"`
@@ -130,7 +128,7 @@ func (s *Server) handleRunDetail(w http.ResponseWriter, r *http.Request) {
 // not-removed on any store error so a store hiccup never fails an
 // otherwise-renderable run.
 func (s *Server) runDetail(repo registry.Repo, ticket string, view RunView) RunDetail {
-	d := runDetail(repo.RunsDir, ticket, view, s.noSkillsWarning(repo, ticket))
+	d := runDetail(s.stores.Tokens(), repo.Root, repo.RunsDir, ticket, view, s.noSkillsWarning(repo, ticket))
 	if iss, ok, err := s.stores.Issues().Get(repo.Root, ticket); err == nil && ok && iss.DeletedAt != "" {
 		d.Removed = true
 	}
@@ -168,15 +166,15 @@ func (s *Server) runViewFor(root, ticket string) (RunView, bool) {
 	return runViewFromCheckpoint(hubstore.TicketCheckpoint{Ticket: ticket, CheckpointRow: row}), true
 }
 
-func runDetail(runsDir, ticket string, view RunView, noSkills bool) RunDetail {
-	costs := phaseCosts(runsDir, ticket)
+func runDetail(toks *hubstore.Tokens, root, runsDir, ticket string, view RunView, noSkills bool) RunDetail {
+	costs := phaseCosts(toks, root, ticket)
 	handoff, hasHandoff := readArtifact(runsDir, ticket, "handoff.md")
 	rubric := readRubric(runsDir, ticket)
 	verdict := readVerdict(runsDir, ticket)
 	return RunDetail{
 		RunView:   view,
 		Costs:     costs,
-		Anomalies: anomalyViews(runsDir, ticket),
+		Anomalies: anomalyViews(toks, root, ticket),
 		Handoff:   handoff,
 		Rubric:    rubric,
 		Verdict:   verdict,
@@ -190,10 +188,15 @@ func runDetail(runsDir, ticket string, view RunView, noSkills bool) RunDetail {
 	}
 }
 
-// phaseCosts reads the run's per-phase token/cost breakdown, in the order each
-// phase first appears in tokens.jsonl.
-func phaseCosts(runsDir, ticket string) []PhaseCost {
-	totals := tokens.New(runsDir).PhaseTotals(ticket)
+// phaseCosts reads the run's per-phase token/cost breakdown from the authoritative
+// store, in the order each phase first appears in the ticket's calls (ADR 0008). A
+// store error reads as no costs rather than failing the run.
+func phaseCosts(toks *hubstore.Tokens, root, ticket string) []PhaseCost {
+	totals, err := toks.PhaseTotals(root, ticket)
+	if err != nil {
+		logger.Verbosef("phase costs %s/%s: %v", root, ticket, err)
+		return nil
+	}
 	out := make([]PhaseCost, 0, len(totals))
 	for _, t := range totals {
 		out = append(out, PhaseCost{
@@ -213,11 +216,11 @@ func phaseCosts(runsDir, ticket string) []PhaseCost {
 	return out
 }
 
-// anomalyViews reads the run's flagged cost anomalies from anomalies.jsonl. A
-// run that never tripped a threshold yields nil.
-func anomalyViews(runsDir, ticket string) []AnomalyView {
-	flagged := tokens.New(runsDir).Anomalies(ticket)
-	if len(flagged) == 0 {
+// anomalyViews reads the run's flagged cost anomalies from the authoritative store
+// (ADR 0008). A run that never tripped a threshold, or a store error, yields nil.
+func anomalyViews(toks *hubstore.Tokens, root, ticket string) []AnomalyView {
+	flagged, err := toks.Anomalies(root, ticket)
+	if err != nil || len(flagged) == 0 {
 		return nil
 	}
 	out := make([]AnomalyView, 0, len(flagged))

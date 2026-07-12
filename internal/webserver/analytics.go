@@ -152,9 +152,9 @@ func (s *Server) timeseries(from, to string, days int, groupBy string, filter co
 	}
 }
 
-// detailCost resolves a derived cost cell into the analytics grain, applying the
+// detailCost resolves a store cost cell into the analytics grain, applying the
 // read-side provider fallback for older lines logged before the provider was
-// recorded inline — mirroring tokens.RollupDetail.
+// recorded inline.
 func detailCost(c hubstore.CostCell) tokens.DetailCost {
 	provider := c.Provider
 	if provider == "" {

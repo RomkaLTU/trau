@@ -14,33 +14,11 @@ import (
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
 
-// removeGlob deletes every file matching pattern, failing if none matched so a
-// "served from the database, not the files" test cannot pass vacuously.
-func removeGlob(t *testing.T, pattern string) {
+// seedDayTokens appends a run's calls dated on a specific day to the authoritative
+// token store, so the rollup reads the DB-first shape the loop now posts.
+func seedDayTokens(t *testing.T, home, runsDir, id string, day time.Time, calls []phaseCall) {
 	t.Helper()
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		t.Fatalf("glob %s: %v", pattern, err)
-	}
-	if len(matches) == 0 {
-		t.Fatalf("glob %s matched nothing to remove", pattern)
-	}
-	for _, m := range matches {
-		if err := os.Remove(m); err != nil {
-			t.Fatalf("remove %s: %v", m, err)
-		}
-	}
-}
-
-// seedDayTokens appends a run's calls dated on a specific day through the real
-// Sink, so the rollup reads the exact on-disk log shape the pipeline writes.
-func seedDayTokens(t *testing.T, runsDir, id string, day time.Time, calls []phaseCall) {
-	t.Helper()
-	sink := tokens.New(runsDir).WithClock(func() time.Time { return day })
-	sink.SetTicket(id)
-	for _, c := range calls {
-		sink.Append(c.phase, c.rec)
-	}
+	seedTokenCalls(t, home, runsDir, id, day.Format("2006-01-02T15:04:05"), calls)
 }
 
 func getCosts(t *testing.T, ts *httptest.Server, query string) CostsResponse {
@@ -97,21 +75,21 @@ func TestCostsRollupAcrossReposAndDays(t *testing.T) {
 	day := func(n int) time.Time { return now.AddDate(0, 0, n) }
 	fmtDay := func(n int) string { return day(n).Format(dateLayout) }
 
-	seedDayTokens(t, dirs["acme"], "COD-1", day(0), []phaseCall{
+	seedDayTokens(t, home, dirs["acme"], "COD-1", day(0), []phaseCall{
 		{"build", tokens.Record{Input: 300, Output: 200, CostUSD: usd(0.50)}},
 		{"verify", tokens.Record{Input: 100, Output: 100, CostUSD: usd(0.20)}},
 	})
-	seedDayTokens(t, dirs["acme"], "COD-2", day(-1), []phaseCall{
+	seedDayTokens(t, home, dirs["acme"], "COD-2", day(-1), []phaseCall{
 		{"build", tokens.Record{Input: 60, Output: 40, CostUSD: usd(0.10)}},
 	})
-	seedDayTokens(t, dirs["beta"], "COD-3", day(0), []phaseCall{
+	seedDayTokens(t, home, dirs["beta"], "COD-3", day(0), []phaseCall{
 		{"build", tokens.Record{Input: 200, Output: 100, CostUSD: usd(0.30)}},
 	})
-	seedDayTokens(t, dirs["beta"], "COD-3", day(-2), []phaseCall{
+	seedDayTokens(t, home, dirs["beta"], "COD-3", day(-2), []phaseCall{
 		{"commit", tokens.Record{Input: 30, Output: 20, CostUSD: usd(0.05)}},
 	})
 	// Well outside a 7-day window — must not appear anywhere.
-	seedDayTokens(t, dirs["acme"], "COD-OLD", day(-40), []phaseCall{
+	seedDayTokens(t, home, dirs["acme"], "COD-OLD", day(-40), []phaseCall{
 		{"build", tokens.Record{Input: 9000, Output: 999, CostUSD: usd(9.99)}},
 	})
 
@@ -176,10 +154,10 @@ func TestCostsWindowSelectable(t *testing.T) {
 	dirs := seedRepos(t, home, "acme")
 	now := time.Now()
 
-	seedDayTokens(t, dirs["acme"], "COD-1", now, []phaseCall{
+	seedDayTokens(t, home, dirs["acme"], "COD-1", now, []phaseCall{
 		{"build", tokens.Record{Input: 100, Output: 100, CostUSD: usd(0.20)}},
 	})
-	seedDayTokens(t, dirs["acme"], "COD-OLD", now.AddDate(0, 0, -40), []phaseCall{
+	seedDayTokens(t, home, dirs["acme"], "COD-OLD", now.AddDate(0, 0, -40), []phaseCall{
 		{"build", tokens.Record{Input: 500, Output: 500, CostUSD: usd(1.00)}},
 	})
 
@@ -211,7 +189,7 @@ func TestCostsBudgetCapsAsContext(t *testing.T) {
 	writeRepoConfig(t, home, "capped", "MAX_DAILY_USD=5\n")
 	writeRepoConfig(t, home, "quiet", "MAX_DAILY_USD=2\n")
 
-	seedDayTokens(t, dirs["capped"], "COD-1", time.Now(), []phaseCall{
+	seedDayTokens(t, home, dirs["capped"], "COD-1", time.Now(), []phaseCall{
 		{"build", tokens.Record{Input: 100, Output: 100, CostUSD: usd(0.40)}},
 	})
 
@@ -243,10 +221,9 @@ func TestCostsSurfacesAnomaliesAcrossRepos(t *testing.T) {
 	dirs := seedRepos(t, home, "acme")
 	seedCheckpoint(t, dirs["acme"], "COD-9", map[string]string{"PHASE": state.Building})
 
-	sink := tokens.New(dirs["acme"]).WithClock(func() time.Time { return time.Now() })
-	sink.SetTicket("COD-9")
-	sink.Append("cleanup", tokens.Record{Output: 120_000, Turns: 8, CostUSD: usd(6.50)})
-	sink.Flag("COD-9")
+	seedAnomalies(t, home, dirs["acme"], "COD-9", []tokens.PhaseSpend{
+		{Phase: "cleanup", Output: 120_000, Turns: 8, Cost: 6.50},
+	})
 
 	ts := ingestedServer(t, home)
 	c := getCosts(t, ts, "?days=7")
@@ -263,23 +240,24 @@ func TestCostsSurfacesAnomaliesAcrossRepos(t *testing.T) {
 	}
 }
 
-// TestCostsServedFromDatabaseNotTokenLogs proves the totals endpoint reads the
-// derived token_calls table, not the token logs: once the spend is ingested,
-// deleting every tokens.jsonl leaves the totals intact.
-func TestCostsServedFromDatabaseNotTokenLogs(t *testing.T) {
+// TestCostsServedFromDatabase proves the totals endpoint reads the authoritative
+// token_calls table: spend posted to the store surfaces in the rollup with no run
+// files on disk at all (ADR 0008).
+func TestCostsServedFromDatabase(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()
 	dirs := seedRepos(t, home, "acme")
-	seedDayTokens(t, dirs["acme"], "COD-1", time.Now(), []phaseCall{
+	seedDayTokens(t, home, dirs["acme"], "COD-1", time.Now(), []phaseCall{
 		{"build", tokens.Record{Input: 100, Output: 100, CostUSD: usd(0.40)}},
 	})
+	if _, err := os.Stat(filepath.Join(dirs["acme"], "COD-1", "tokens.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("token log present, want spend served straight from the store")
+	}
 
 	ts := ingestedServer(t, home)
-	removeGlob(t, filepath.Join(dirs["acme"], "*", "tokens.jsonl"))
-
 	c := getCosts(t, ts, "?days=7")
 	if c.Totals.Tokens != 200 || c.Totals.CostUSD != 0.40 {
-		t.Fatalf("totals after deleting the token logs = %+v, want tokens 200 cost 0.40 (served from the db)", c.Totals)
+		t.Fatalf("totals = %+v, want tokens 200 cost 0.40 (served from the db)", c.Totals)
 	}
 }
 

@@ -38,6 +38,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubcheckpoint"
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/hubevent"
+	"github.com/RomkaLTU/trau/internal/hubtokens"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
 	"github.com/RomkaLTU/trau/internal/planning"
@@ -263,7 +264,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	log, flushEvents := newEventLog(cfg, stderr, con.Event)
 	defer flushEvents()
 
-	sink := tokens.New(cfg.RunsDir)
+	sink := newTokenSink(cfg)
+	defer sink.Close()
 
 	if opts.ClearID != "" {
 		ensureHubForStore(ctx, cfg, stderr)
@@ -702,7 +704,7 @@ func reconciledIDs(ts []reconciledTicket) []string {
 // reconciliation (the status report still prints). Each query is time-bounded so a
 // hung MCP call can't stall --status, and a query error or StatusUnknown leaves the
 // checkpoint intact rather than risk clearing live work.
-func reconcileCheckpoints(ctx context.Context, cfg config.Config, log *event.Log, sink *tokens.Sink, store state.Checkpoints) []reconciledTicket {
+func reconcileCheckpoints(ctx context.Context, cfg config.Config, log *event.Log, sink *hubtokens.Sink, store state.Checkpoints) []reconciledTicket {
 	if !hasReconcileCandidate(store) {
 		return nil
 	}
@@ -914,7 +916,17 @@ func newCheckpointStore(cfg config.Config, repoRoot string) state.Checkpoints {
 	return hubcheckpoint.New(hub, repoName(repoRoot), window)
 }
 
-func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *tokens.Sink, log *event.Log, con console.Renderer) (*pipeline.Pipeline, error) {
+// newTokenSink is the hub-backed token/cost sink: the child posts every provider
+// call's usage to the serve hub over HTTP (ADR 0008) and reads ticket/day totals
+// back from it, writing no per-run token files. Close it to flush the tail before
+// the process exits.
+func newTokenSink(cfg config.Config) *hubtokens.Sink {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	window := time.Duration(cfg.HubWriteRetryWindow) * time.Second
+	return hubtokens.New(hub, repoName(cfg.RepoRoot), cfg.HubWriteBufferBytes, window)
+}
+
+func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *hubtokens.Sink, log *event.Log, con console.Renderer) (*pipeline.Pipeline, error) {
 	wireCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if added, err := pipeline.EnsureRepoConfigInclude(wireCtx, repoRoot); err != nil {
@@ -1090,7 +1102,7 @@ type realEngine struct {
 	pipe    *pipeline.Pipeline
 	tracker tracker.Tracker
 	scope   tracker.Scope
-	sink    *tokens.Sink
+	sink    *hubtokens.Sink
 	log     *event.Log
 	// resumeKeep, when set, restricts the resume scan to ids it accepts — the epic
 	// flow sets it to the epic's child set so a stale checkpoint for an unrelated
@@ -1114,7 +1126,7 @@ func (e *realEngine) Process(ctx context.Context, id, from string) error {
 }
 
 // flagCostAnomalies runs the post-run cost-anomaly check for a ticket the size
-// judge called one-window: it records any tripped phases to runs/<id>/anomalies.jsonl,
+// judge called one-window: it records any tripped phases through the hub (ADR 0008),
 // stamps the count onto the checkpoint (so --status can surface it), and emits one
 // summary event. A no-op when nothing tripped or the sink/log are unset.
 func (e *realEngine) flagCostAnomalies(id string) {
@@ -1345,11 +1357,12 @@ func runSession(ctx context.Context, cfg config.Config, opts config.Options, std
 		opts:    opts,
 		stderr:  io.Discard,
 		log:     log,
-		sink:    tokens.New(cfg.RunsDir),
+		sink:    newTokenSink(cfg),
 		store:   newCheckpointStore(cfg, cfg.RepoRoot),
 		scope:   scopeFor(cfg, ""),
 		maxIter: maxIter,
 	}
+	defer acts.sink.Close()
 	if tui.AccessibleOnboardingRequested() && acts.OnboardingNeeded() {
 		res, err := tui.RunAccessibleOnboarding(ctx, acts)
 		if err != nil {
@@ -1374,7 +1387,7 @@ type appActions struct {
 	opts    config.Options
 	stderr  io.Writer
 	log     *event.Log
-	sink    *tokens.Sink
+	sink    *hubtokens.Sink
 	store   state.Checkpoints
 	scope   tracker.Scope
 	maxIter int

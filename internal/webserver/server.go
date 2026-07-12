@@ -87,12 +87,12 @@ const repoSweepInterval = 30 * time.Second
 
 // Start resumes draining any allowlisted repo whose queue was left draining, so
 // a serve restart picks the Queue back up instead of stalling it, and launches
-// the known-repos sweep, the derived-table ingest, and the background issue-store
-// sync on syncInterval. ctx governs them all: cancelling it stops the drain loops
-// between children without killing a child already in flight, and ends the
-// tickers. A non-positive syncInterval disables the background sync; each sync
-// tick also runs the reconciliation sweep for repos due on reconcileInterval, so a
-// disabled sync disables the sweep too. Call it once before serving.
+// the known-repos sweep and the background issue-store sync on syncInterval. ctx
+// governs them all: cancelling it stops the drain loops between children without
+// killing a child already in flight, and ends the tickers. A non-positive
+// syncInterval disables the background sync; each sync tick also runs the
+// reconciliation sweep for repos due on reconcileInterval, so a disabled sync
+// disables the sweep too. Call it once before serving.
 func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time.Duration) {
 	s.drainCtx = ctx
 	s.importAllCheckpoints()
@@ -106,7 +106,6 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 		}
 	}
 	go s.sweepKnownRepos(ctx)
-	go s.runIngest(ctx)
 	go s.syncer.run(ctx, syncInterval, reconcileInterval)
 }
 
@@ -186,6 +185,10 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs", s.handleRuns)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}", s.handleRunDetail)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/checkpoint", s.handleRunCheckpoint)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/tokens", s.handleRunTokens)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/anomalies", s.handleRunAnomalies)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/tokens", s.handleRepoTokens)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/tokens/day", s.handleTokenDay)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/comment", s.handleRunComment)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/reset", s.handleResetRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/clear", s.handleClearRun)

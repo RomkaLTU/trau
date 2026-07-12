@@ -24,18 +24,14 @@ func instancesServer(t *testing.T, home string) *httptest.Server {
 	return ts
 }
 
-// ingestedServer is instancesServer with the derived projection ensured and one
-// ingest pass run, mirroring serve startup, so the costs, timeseries, and runs
-// endpoints — which serve from the derived tables — see the fixtures seeded before
-// it is built.
+// ingestedServer is instancesServer with the file-era checkpoints imported,
+// mirroring serve startup, so the costs, timeseries, and runs endpoints see the
+// fixtures — token calls seeded straight into the authoritative store and legacy
+// state files folded in — before it is built.
 func ingestedServer(t *testing.T, home string) *httptest.Server {
 	t.Helper()
 	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
 	s.home = home
-	if err := s.stores.EnsureDerivedSchema(); err != nil {
-		t.Fatalf("ensure derived schema: %v", err)
-	}
-	s.ingestPass()
 	s.importAllCheckpoints()
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)

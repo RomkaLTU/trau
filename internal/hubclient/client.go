@@ -176,12 +176,95 @@ type appendEventsBody struct {
 	Events []Event `json:"events"`
 }
 
+// TokenCall is one normalized provider call the loop child sends to the hub for the
+// authoritative token ledger (ADR 0008). Ticket buckets the call (a ticket id, or
+// _loop / _plans); CostUSD is nil for a call a provider reported no per-call cost
+// for. Skills is the call's skill list pre-marshalled to a JSON array string.
+type TokenCall struct {
+	Ticket        string   `json:"ticket"`
+	TS            string   `json:"ts"`
+	Phase         string   `json:"phase"`
+	Input         int      `json:"input"`
+	Output        int      `json:"output"`
+	CacheRead     int      `json:"cache_read"`
+	CacheCreation int      `json:"cache_creation"`
+	Reasoning     int      `json:"reasoning"`
+	Total         int      `json:"total"`
+	CostUSD       *float64 `json:"cost_usd"`
+	Turns         int      `json:"turns"`
+	IsError       bool     `json:"is_error"`
+	Provider      string   `json:"provider,omitempty"`
+	Model         string   `json:"model,omitempty"`
+	Context       int      `json:"context,omitempty"`
+	Skills        string   `json:"skills,omitempty"`
+}
+
+// Anomaly is one flagged cost anomaly the child records for a run: the phase that
+// cleared a soft threshold, its output/turns/cost, and the human reasons.
+type Anomaly struct {
+	TS      string   `json:"ts"`
+	Phase   string   `json:"phase"`
+	Output  int      `json:"output"`
+	Turns   int      `json:"turns"`
+	Cost    float64  `json:"cost_usd"`
+	Reasons []string `json:"reasons"`
+}
+
+// Spend is an accumulated (tokens, cost) figure the hub returns for a ticket total
+// or a day total. Metered is false when some call in the sum recorded no per-call
+// cost, so Cost is then a lower bound.
+type Spend struct {
+	Tokens  int     `json:"tokens"`
+	Cost    float64 `json:"cost_usd"`
+	Metered bool    `json:"metered"`
+}
+
+type appendTokensBody struct {
+	Calls []TokenCall `json:"calls"`
+}
+
+type recordAnomaliesBody struct {
+	Anomalies []Anomaly `json:"anomalies"`
+}
+
 // AppendEvents posts a batch of events for repo to the hub, which appends them to
 // the authoritative events table in order and fans them out to live streams. The
 // batch is sent whole so the hub preserves its order; a hub-connection failure
 // surfaces as an IsUnreachable error so the caller can retry.
 func (c *Client) AppendEvents(ctx context.Context, repo string, evs []Event) error {
 	return c.do(ctx, http.MethodPost, c.repoPath(repo, "events"), appendEventsBody{Events: evs}, nil)
+}
+
+// AppendTokenCalls posts a batch of token calls for repo to the hub, which appends
+// them to the authoritative token_calls table. Each call carries its own ticket, so
+// one batch may span buckets; a hub-connection failure surfaces as an IsUnreachable
+// error so the caller can retry.
+func (c *Client) AppendTokenCalls(ctx context.Context, repo string, calls []TokenCall) error {
+	return c.do(ctx, http.MethodPost, c.repoPath(repo, "tokens"), appendTokensBody{Calls: calls}, nil)
+}
+
+// TokenTotal reads a ticket's summed token + cost spend from the hub — the status
+// and budget ticket-cap read.
+func (c *Client) TokenTotal(ctx context.Context, repo, ticket string) (Spend, error) {
+	var sp Spend
+	err := c.do(ctx, http.MethodGet, c.repoPath(repo, "runs/"+url.PathEscape(ticket)+"/tokens"), nil, &sp)
+	return sp, err
+}
+
+// TokenDayTotal reads repo's summed spend for a local date (YYYY-MM-DD) from the
+// hub — the budget day-cap read.
+func (c *Client) TokenDayTotal(ctx context.Context, repo, date string) (Spend, error) {
+	var sp Spend
+	path := c.repoPath(repo, "tokens/day") + "?date=" + url.QueryEscape(date)
+	err := c.do(ctx, http.MethodGet, path, nil, &sp)
+	return sp, err
+}
+
+// RecordAnomalies records a ticket's flagged cost anomalies on the hub, replacing
+// any it already holds for the ticket. A hub-connection failure surfaces as an
+// IsUnreachable error so the caller can retry.
+func (c *Client) RecordAnomalies(ctx context.Context, repo, ticket string, anomalies []Anomaly) error {
+	return c.do(ctx, http.MethodPost, c.repoPath(repo, "runs/"+url.PathEscape(ticket)+"/anomalies"), recordAnomaliesBody{Anomalies: anomalies}, nil)
 }
 
 // PutCheckpoint writes a ticket's checkpoint to the hub, which persists it in the

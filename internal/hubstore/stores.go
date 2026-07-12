@@ -10,7 +10,7 @@ type Stores struct {
 	db          *sql.DB
 	repos       *Registrations
 	issues      *Issues
-	derived     *Derived
+	tokens      *Tokens
 	checkpoints *Checkpoints
 	events      *Events
 }
@@ -21,7 +21,7 @@ func NewStores(db *sql.DB) *Stores {
 		db:          db,
 		repos:       NewRegistrations(db),
 		issues:      NewIssues(db),
-		derived:     NewDerived(db),
+		tokens:      NewTokens(db),
 		checkpoints: NewCheckpoints(db),
 		events:      NewEvents(db),
 	}
@@ -33,19 +33,14 @@ func (s *Stores) Registrations() *Registrations { return s.repos }
 // Issues returns the issue store.
 func (s *Stores) Issues() *Issues { return s.issues }
 
-// Derived returns the rebuildable run-history projection store.
-func (s *Stores) Derived() *Derived { return s.derived }
+// Tokens returns the authoritative token-call and anomaly store.
+func (s *Stores) Tokens() *Tokens { return s.tokens }
 
 // Checkpoints returns the authoritative per-ticket checkpoint store.
 func (s *Stores) Checkpoints() *Checkpoints { return s.checkpoints }
 
 // Events returns the authoritative event store.
 func (s *Stores) Events() *Events { return s.events }
-
-// EnsureDerivedSchema brings the derived run-history tables to their current
-// version, dropping and rebuilding them if they are stale, missing, or corrupt
-// (ADR 0007 §3). Authoritative tables are untouched.
-func (s *Stores) EnsureDerivedSchema() error { return s.derived.EnsureSchema() }
 
 // Queue returns the queue store for a repo root.
 func (s *Stores) Queue(root string) *Queue { return NewQueue(s.db, root) }
