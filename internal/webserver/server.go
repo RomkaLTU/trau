@@ -97,6 +97,7 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 	s.drainCtx = ctx
 	s.importAllCheckpoints()
 	s.importAllArtifacts()
+	s.importAllLessons()
 	s.importAllPhaseLogs()
 	for _, root := range s.effectiveRoots() {
 		items, draining, err := s.stores.Queue(root).Snapshot()

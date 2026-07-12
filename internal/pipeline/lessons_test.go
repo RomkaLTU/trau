@@ -1,9 +1,10 @@
 package pipeline
 
 import (
-	"os"
-	"path/filepath"
+	"errors"
 	"testing"
+
+	"github.com/RomkaLTU/trau/internal/hubclient"
 )
 
 // newLesson-style helper for terser table rows.
@@ -11,9 +12,44 @@ func lsn(ticket, ftype, text string, tags ...string) lesson {
 	return lesson{Ticket: ticket, FailureType: ftype, Lesson: text, Tags: tags}
 }
 
-func TestAppendLessonRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	p := &Pipeline{RunsDir: dir, Lessons: true}
+// fakeLedger is an in-memory LessonStore holding records in append order (oldest
+// first), the order the hub-backed store returns them in for the relevance scan.
+type fakeLedger struct {
+	lessons []hubclient.Lesson
+	allErr  error
+}
+
+func (f *fakeLedger) Append(l hubclient.Lesson) error {
+	f.lessons = append(f.lessons, l)
+	return nil
+}
+
+func (f *fakeLedger) All() ([]hubclient.Lesson, error) {
+	if f.allErr != nil {
+		return nil, f.allErr
+	}
+	return append([]hubclient.Lesson(nil), f.lessons...), nil
+}
+
+func (f *fakeLedger) records() []lesson {
+	out := make([]lesson, len(f.lessons))
+	for i, w := range f.lessons {
+		out[i] = lessonFromWire(w)
+	}
+	return out
+}
+
+func seedLedger(lessons ...lesson) *fakeLedger {
+	f := &fakeLedger{}
+	for _, l := range lessons {
+		f.lessons = append(f.lessons, l.wire())
+	}
+	return f
+}
+
+func TestAppendLessonRecordsThroughLedger(t *testing.T) {
+	led := &fakeLedger{}
+	p := &Pipeline{Lessons: true, LessonLedger: led}
 
 	want := []lesson{
 		lsn("COD-1", "migration", "run migrations before seeding", "migration"),
@@ -23,15 +59,9 @@ func TestAppendLessonRoundTrip(t *testing.T) {
 		p.appendLesson(l)
 	}
 
-	// The ledger lands at the documented runs/memory/lessons.jsonl path.
-	path := filepath.Join(dir, "memory", "lessons.jsonl")
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("ledger not written at %s: %v", path, err)
-	}
-
-	got := readLessons(p.lessonsPath())
+	got := led.records()
 	if len(got) != len(want) {
-		t.Fatalf("readLessons returned %d records, want %d", len(got), len(want))
+		t.Fatalf("ledger holds %d records, want %d", len(got), len(want))
 	}
 	for i := range want {
 		if got[i].Ticket != want[i].Ticket || got[i].Lesson != want[i].Lesson {
@@ -41,46 +71,48 @@ func TestAppendLessonRoundTrip(t *testing.T) {
 }
 
 func TestAppendLessonDisabledIsNoOp(t *testing.T) {
-	dir := t.TempDir()
-	p := &Pipeline{RunsDir: dir, Lessons: false}
+	led := &fakeLedger{}
+	p := &Pipeline{Lessons: false, LessonLedger: led}
 	p.appendLesson(lsn("COD-1", "test", "nope"))
-	if got := readLessons(p.lessonsPath()); len(got) != 0 {
-		t.Fatalf("disabled pipeline wrote %d records, want 0", len(got))
+	if len(led.records()) != 0 {
+		t.Fatalf("disabled pipeline recorded %d records, want 0", len(led.records()))
 	}
+
+	// A nil ledger disables recording without a panic.
+	(&Pipeline{Lessons: true}).appendLesson(lsn("COD-1", "test", "nope"))
 }
 
-func TestReadLessonsSkipsMalformed(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "lessons.jsonl")
-	content := `{"ticket":"COD-1","lesson":"good one","failure_type":"test","tags":["test"]}
-this is not json at all
-{"ticket":"COD-2","lesson":"second good","failure_type":"ui"}
-
-{"ticket":"COD-3","lesson":"","failure_type":"build"}
-{broken json
-{"ticket":"COD-4","lesson":"third good"}
-`
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
+// TestRecallLessonsParity checks that recalling through the hub-backed ledger
+// selects exactly the lessons the file era did on identical inputs — the recall
+// runs the same relevance scan over the same records, so its output must match
+// relevantLessons run directly over that ledger.
+func TestRecallLessonsParity(t *testing.T) {
+	records := []lesson{
+		lsn("COD-1", "migration", "run migrations before seeding to avoid foreign key errors", "migration"),
+		lsn("COD-2", "test", "assertions on json shape need exact key casing", "test"),
+		lsn("COD-3", "migration", "newer migration takeaway", "migration"),
 	}
+	p := &Pipeline{Lessons: true, LessonLedger: seedLedger(records...)}
 
-	got := readLessons(path)
-	// Skips: the non-JSON line, the blank line, the empty-lesson record, and the
-	// broken-JSON line — keeping the three with real lessons.
-	if len(got) != 3 {
-		t.Fatalf("got %d records, want 3 (malformed/empty skipped): %+v", len(got), got)
-	}
-	wantTickets := []string{"COD-1", "COD-2", "COD-4"}
-	for i, w := range wantTickets {
-		if got[i].Ticket != w {
-			t.Errorf("record %d ticket = %s, want %s", i, got[i].Ticket, w)
+	for _, query := range []string{"migration foreign key constraint", "json assert casing", "ui browser selector"} {
+		want := relevantLessons(records, query, maxInjectedLessons)
+		got := p.recallLessons(query)
+		if len(got) != len(want) {
+			t.Fatalf("recall(%q) = %v, want %v", query, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("recall(%q)[%d] = %q, want %q", query, i, got[i], want[i])
+			}
 		}
 	}
-}
 
-func TestReadLessonsMissingFile(t *testing.T) {
-	if got := readLessons(filepath.Join(t.TempDir(), "nope.jsonl")); got != nil {
-		t.Fatalf("missing ledger should read as nil, got %+v", got)
+	// Disabled or ledger-less recall injects nothing.
+	if got := (&Pipeline{Lessons: false, LessonLedger: seedLedger(records...)}).recallLessons("migration"); got != nil {
+		t.Errorf("disabled recall = %v, want nil", got)
+	}
+	if got := (&Pipeline{Lessons: true, LessonLedger: &fakeLedger{allErr: errors.New("ledger unreachable")}}).recallLessons("migration"); got != nil {
+		t.Errorf("recall on a ledger error = %v, want nil", got)
 	}
 }
 

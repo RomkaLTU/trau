@@ -14,6 +14,7 @@ type Stores struct {
 	checkpoints *Checkpoints
 	events      *Events
 	artifacts   *Artifacts
+	lessons     *Lessons
 	drains      *DrainOutcomes
 	phaseLogs   *PhaseLogs
 	instances   *Instances
@@ -29,6 +30,7 @@ func NewStores(db *sql.DB) *Stores {
 		checkpoints: NewCheckpoints(db),
 		events:      NewEvents(db),
 		artifacts:   NewArtifacts(db),
+		lessons:     NewLessons(db),
 		drains:      NewDrainOutcomes(db),
 		phaseLogs:   NewPhaseLogs(db),
 		instances:   NewInstances(db),
@@ -52,6 +54,9 @@ func (s *Stores) Events() *Events { return s.events }
 
 // Artifacts returns the authoritative per-run artifact store.
 func (s *Stores) Artifacts() *Artifacts { return s.artifacts }
+
+// Lessons returns the authoritative per-repo lessons ledger.
+func (s *Stores) Lessons() *Lessons { return s.lessons }
 
 // DrainOutcomes returns the store of how each queued child exited.
 func (s *Stores) DrainOutcomes() *DrainOutcomes { return s.drains }

@@ -311,21 +311,22 @@ func parseRefusal(out string) (reason string, ok bool) {
 // Pipeline holds the collaborators a ticket run needs. One Pipeline is
 // constructed per process and reused across tickets.
 type Pipeline struct {
-	Runner      agent.Runner
-	State       state.Checkpoints
-	Artifacts   ArtifactStore
-	PhaseLogs   PhaseLogStore
-	Git         Git
-	GitHub      GitHub
-	Tracker     tracker.Tracker
-	Tokens      Ledger
-	Budget      budget.Limits
-	RunsDir     string
-	Base        string
-	Remote      string
-	Prefix      string
-	MaxRepairs  int
-	MaxBugfixes int
+	Runner       agent.Runner
+	State        state.Checkpoints
+	Artifacts    ArtifactStore
+	PhaseLogs    PhaseLogStore
+	LessonLedger LessonStore
+	Git          Git
+	GitHub       GitHub
+	Tracker      tracker.Tracker
+	Tokens       Ledger
+	Budget       budget.Limits
+	RunsDir      string
+	Base         string
+	Remote       string
+	Prefix       string
+	MaxRepairs   int
+	MaxBugfixes  int
 
 	// AgentRetries is how many times a TRANSIENT agent-step failure (timeout,
 	// output stall, non-rate-limit crash) is retried on a fresh process per

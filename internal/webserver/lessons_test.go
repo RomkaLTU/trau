@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,9 +10,9 @@ import (
 	"testing"
 )
 
-// seedLessonsFile writes raw JSONL to the repo's runs/memory/lessons.jsonl,
-// exactly as the loop appends it — so the fixture is the real on-disk shape, not
-// a mock.
+// seedLessonsFile writes raw JSONL to the repo's runs/memory/lessons.jsonl — the
+// file-era ledger shape the loop used to append — so the fixture drives the
+// first-touch legacy import the GET folds into the store.
 func seedLessonsFile(t *testing.T, runsDir, content string) {
 	t.Helper()
 	dir := filepath.Join(runsDir, "memory")
@@ -134,17 +135,75 @@ func TestLessonsUnknownRepo404(t *testing.T) {
 	}
 }
 
-// TestLessonsRejectsNonGET keeps the resource read-only.
-func TestLessonsRejectsNonGET(t *testing.T) {
+// TestLessonsRejectsUnsupportedMethods keeps the resource to GET (browse) and POST
+// (record) — PUT and DELETE are rejected.
+func TestLessonsRejectsUnsupportedMethods(t *testing.T) {
 	home := t.TempDir()
 	seedRepo(t, home, "acme")
 	ts := instancesServer(t, home)
-	res, err := http.Post(ts.URL+APIPrefix+"/repos/acme/lessons", "application/json", nil)
+	for _, method := range []string{http.MethodPut, http.MethodDelete} {
+		req, err := http.NewRequest(method, ts.URL+APIPrefix+"/repos/acme/lessons", nil)
+		if err != nil {
+			t.Fatalf("new %s request: %v", method, err)
+		}
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s lessons: %v", method, err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("%s status = %d, want 405", method, res.StatusCode)
+		}
+	}
+}
+
+// TestLessonsPostRecordsThroughStore checks that a lesson recorded through the
+// hub appears on the lessons page and writes no ledger file.
+func TestLessonsPostRecordsThroughStore(t *testing.T) {
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	ts := instancesServer(t, home)
+
+	body, err := json.Marshal(LessonView{
+		Ticket:      "COD-7",
+		Phase:       "verify",
+		FailureType: "migration",
+		Lesson:      "run migrations before seeding",
+		Tags:        []string{"migration"},
+	})
 	if err != nil {
-		t.Fatalf("POST lessons: %v", err)
+		t.Fatalf("marshal lesson: %v", err)
+	}
+	res, err := http.Post(ts.URL+APIPrefix+"/repos/acme/lessons", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST lesson: %v", err)
 	}
 	_ = res.Body.Close()
-	if res.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("POST status = %d, want 405", res.StatusCode)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("POST status = %d, want 200", res.StatusCode)
+	}
+
+	out := getLessons(t, ts, "acme")
+	if len(out.Lessons) != 1 || out.Lessons[0].Ticket != "COD-7" || out.Lessons[0].Lesson != "run migrations before seeding" {
+		t.Fatalf("lessons after POST = %+v, want the recorded lesson", out.Lessons)
+	}
+
+	if _, err := os.Stat(filepath.Join(runsDir, "memory", "lessons.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("recording wrote a ledger file (err=%v), want none", err)
+	}
+}
+
+// TestLessonsPostRejectsEmpty keeps a lesson with no takeaway out of the ledger.
+func TestLessonsPostRejectsEmpty(t *testing.T) {
+	home := t.TempDir()
+	seedRepo(t, home, "acme")
+	ts := instancesServer(t, home)
+	res, err := http.Post(ts.URL+APIPrefix+"/repos/acme/lessons", "application/json", bytes.NewReader([]byte(`{"lesson":""}`)))
+	if err != nil {
+		t.Fatalf("POST lesson: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("POST empty lesson status = %d, want 400", res.StatusCode)
 	}
 }
