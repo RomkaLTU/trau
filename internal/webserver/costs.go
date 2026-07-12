@@ -3,7 +3,6 @@ package webserver
 import (
 	"math"
 	"net/http"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"time"
@@ -12,7 +11,6 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
-	"github.com/RomkaLTU/trau/internal/tokens"
 )
 
 const (
@@ -22,7 +20,7 @@ const (
 )
 
 // CostsResponse is the /api/v1/costs resource: the machine-wide money view over a
-// rolling window. It folds every repo's per-run tokens.jsonl into daily,
+// rolling window. It folds every repo's token calls from the store into daily,
 // per-repo, and per-phase rollups, carries the configured daily budget caps as
 // context, and surfaces every flagged cost anomaly across repos.
 type CostsResponse struct {
@@ -148,7 +146,7 @@ func (s *Server) costs(days int, from, to string) CostsResponse {
 		if len(repoCells) > 0 || rc.DailyBudgetUSD > 0 || rc.DailyBudgetTokens > 0 {
 			repoCosts = append(repoCosts, rc)
 		}
-		anomalies = append(anomalies, repoAnomalies(rv)...)
+		anomalies = append(anomalies, s.repoAnomalies(rv)...)
 	}
 
 	total.cost = round2(total.cost)
@@ -170,10 +168,10 @@ func (s *Server) costs(days int, from, to string) CostsResponse {
 
 // costCellsByRepo aggregates the window's token spend once in SQL and groups the
 // resulting cells by repo root, so the costs and timeseries endpoints fold the
-// derived token_calls table instead of scanning every repo's token logs on each
-// request. A query error is logged and read as no spend.
+// authoritative token_calls table in one query. A query error is logged and read as
+// no spend.
 func (s *Server) costCellsByRepo(from, to string) map[string][]hubstore.CostCell {
-	cells, err := s.stores.Derived().CostCells(from, to)
+	cells, err := s.stores.Tokens().CostCells(from, to)
 	if err != nil {
 		logger.Verbosef("cost cells [%s, %s]: %v", from, to, err)
 		return nil
@@ -256,29 +254,28 @@ func sortAnomalies(anomalies []CostAnomaly) {
 	})
 }
 
-// repoAnomalies gathers every flagged anomaly across a repo's runs, located to
-// the ticket that produced it. It enumerates the per-ticket token logs, which
-// carry the anomalies, rather than the checkpoints — the loop no longer writes
-// checkpoint files (ADR 0008).
-func repoAnomalies(rv RepoView) []CostAnomaly {
-	sink := tokens.New(rv.RunsDir)
-	var out []CostAnomaly
-	matches, _ := filepath.Glob(filepath.Join(rv.RunsDir, "*", "tokens.jsonl"))
-	for _, m := range matches {
-		id := filepath.Base(filepath.Dir(m))
-		for _, a := range sink.Anomalies(id) {
-			out = append(out, CostAnomaly{
-				Repo:   rv.Name,
-				Ticket: id,
-				AnomalyView: AnomalyView{
-					Phase:   a.Phase,
-					Output:  a.Output,
-					Turns:   a.Turns,
-					CostUSD: a.Cost,
-					Reasons: a.Reasons,
-				},
-			})
-		}
+// repoAnomalies gathers every flagged anomaly across a repo's runs from the
+// authoritative store, located to the ticket that produced it (ADR 0008). A store
+// error reads as no anomalies rather than failing the page.
+func (s *Server) repoAnomalies(rv RepoView) []CostAnomaly {
+	flagged, err := s.stores.Tokens().RepoAnomalies(rv.Root)
+	if err != nil {
+		logger.Verbosef("repo anomalies %s: %v", rv.Name, err)
+		return nil
+	}
+	out := make([]CostAnomaly, 0, len(flagged))
+	for _, a := range flagged {
+		out = append(out, CostAnomaly{
+			Repo:   rv.Name,
+			Ticket: a.Ticket,
+			AnomalyView: AnomalyView{
+				Phase:   a.Phase,
+				Output:  a.Output,
+				Turns:   a.Turns,
+				CostUSD: a.Cost,
+				Reasons: a.Reasons,
+			},
+		})
 	}
 	return out
 }

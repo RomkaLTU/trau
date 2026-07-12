@@ -1,367 +1,80 @@
 package tokens
 
-import (
-	"bufio"
-	"math"
-	"os"
-	"path/filepath"
-	"strings"
-	"testing"
-	"time"
-)
+import "testing"
 
-func ptr(v float64) *float64 { return &v }
-
-func fixedClock(t time.Time) func() time.Time { return func() time.Time { return t } }
-
-// --- Append + Total -------------------------------------------------------
-
-func TestAppendTotalFormulaExcludesReasoning(t *testing.T) {
-	dir := t.TempDir()
-	s := New(dir).WithClock(fixedClock(time.Date(2026, 6, 24, 9, 0, 0, 0, time.UTC)))
-	s.SetTicket("COD-1")
-
-	// total = input + output + cache_read + cache_creation (reasoning is NOT summed).
-	s.Append("build", Record{Input: 100, Output: 50, CacheRead: 10, CacheCreation: 5, Reasoning: 9999, CostUSD: ptr(0.10)})
-
-	tok, cost, metered := s.Total("COD-1")
-	if tok != 165 {
-		t.Errorf("tokens = %d, want 165 (reasoning excluded)", tok)
-	}
-	if cost != 0.10 {
-		t.Errorf("cost = %v, want 0.10", cost)
-	}
-	if !metered {
-		t.Error("metered should be true when every line carried a cost")
-	}
-}
-
-func TestAppendDropsZeroTotal(t *testing.T) {
-	dir := t.TempDir()
-	s := New(dir).WithClock(fixedClock(time.Date(2026, 6, 24, 9, 0, 0, 0, time.UTC)))
-	s.SetTicket("COD-1")
-
-	// Only reasoning set → total 0 → dropped (no file, nothing logged).
-	s.Append("build", Record{Reasoning: 500})
-	if _, err := os.Stat(filepath.Join(dir, "COD-1", "tokens.jsonl")); !os.IsNotExist(err) {
-		t.Fatalf("zero-total call should not create a ledger file (err=%v)", err)
-	}
-	tok, _, _ := s.Total("COD-1")
-	if tok != 0 {
-		t.Errorf("tokens = %d, want 0", tok)
-	}
-}
-
-func TestTotalMeteredLowerBound(t *testing.T) {
-	dir := t.TempDir()
-	s := New(dir).WithClock(fixedClock(time.Date(2026, 6, 24, 9, 0, 0, 0, time.UTC)))
-	s.SetTicket("COD-1")
-
-	s.Append("build", Record{Input: 100, CostUSD: ptr(0.20)})
-	s.Append("verify", Record{Input: 100}) // no cost → subscription call
-
-	tok, cost, metered := s.Total("COD-1")
-	if tok != 200 {
-		t.Errorf("tokens = %d, want 200", tok)
-	}
-	if cost != 0.20 {
-		t.Errorf("cost = %v, want 0.20 (lower bound)", cost)
-	}
-	if metered {
-		t.Error("metered should be FALSE when any line lacked a per-call cost")
-	}
-}
-
-func TestTotalRoundsToCents(t *testing.T) {
-	dir := t.TempDir()
-	s := New(dir).WithClock(fixedClock(time.Date(2026, 6, 24, 9, 0, 0, 0, time.UTC)))
-	s.SetTicket("COD-1")
-	s.Append("a", Record{Input: 1, CostUSD: ptr(0.014)})
-	s.Append("b", Record{Input: 1, CostUSD: ptr(0.014)})
-
-	_, cost, _ := s.Total("COD-1")
-	if cost != 0.03 {
-		t.Errorf("cost = %v, want 0.03 (0.028 rounded once to cents)", cost)
-	}
-}
-
-func TestTotalMissingFileIsZero(t *testing.T) {
-	s := New(t.TempDir())
-	tok, cost, metered := s.Total("nope")
-	if tok != 0 || cost != 0 || !metered {
-		t.Errorf("missing ledger = (%d,%v,%v), want (0,0,true)", tok, cost, metered)
-	}
-}
-
-func TestTotalSkipsMalformedLines(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "COD-1"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	content := `{"phase":"build","total":100,"cost_usd":0.1}
-this is not json
-
-{"phase":"verify","total":50,"cost_usd":0.05}
-{broken
-`
-	if err := os.WriteFile(filepath.Join(dir, "COD-1", "tokens.jsonl"), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	s := New(dir)
-	tok, cost, _ := s.Total("COD-1")
-	if tok != 150 {
-		t.Errorf("tokens = %d, want 150 (malformed lines skipped)", tok)
-	}
-	if cost != 0.15 {
-		t.Errorf("cost = %v, want 0.15", cost)
-	}
-}
-
-func TestAppendBucketRouting(t *testing.T) {
-	dir := t.TempDir()
-	s := New(dir).WithClock(fixedClock(time.Date(2026, 6, 24, 9, 0, 0, 0, time.UTC)))
-
-	// No ticket set → falls back to the _loop bucket.
-	s.Append("pick", Record{Input: 10, CostUSD: ptr(0.01)})
-	if _, err := os.Stat(filepath.Join(dir, "_loop", "tokens.jsonl")); err != nil {
-		t.Fatalf("loop-bucket ledger missing: %v", err)
-	}
-
-	s.SetTicket("COD-7")
-	s.Append("build", Record{Input: 10, CostUSD: ptr(0.01)})
-	if _, err := os.Stat(filepath.Join(dir, "COD-7", "tokens.jsonl")); err != nil {
-		t.Fatalf("ticket-bucket ledger missing: %v", err)
-	}
-
-	// Clearing the ticket routes back to _loop.
-	s.SetTicket("")
-	s.Append("pick", Record{Input: 10, CostUSD: ptr(0.01)})
-	if tok, _, _ := s.Total("_loop"); tok != 20 {
-		t.Errorf("_loop tokens = %d, want 20", tok)
-	}
-}
-
-// TestPlanBucketRouting checks planning calls land in the dedicated planning
-// bucket: SetTicket(PlanBucket) points appends at runs/_plans/tokens.jsonl, its
-// spend sums under Total(PlanBucket), and it counts toward the day window like any
-// other bucket — the ledger side of the planning-parity requirement.
-func TestPlanBucketRouting(t *testing.T) {
-	dir := t.TempDir()
-	clk := time.Date(2026, 6, 24, 9, 0, 0, 0, time.UTC)
-	s := New(dir).WithClock(func() time.Time { return clk })
-
-	s.SetTicket(PlanBucket)
-	s.Append("plan", Record{Input: 200, Output: 100, CostUSD: ptr(0.30)})
-	s.Append("plan", Record{Input: 100, CostUSD: ptr(0.10)})
-
-	if _, err := os.Stat(filepath.Join(dir, PlanBucket, "tokens.jsonl")); err != nil {
-		t.Fatalf("planning-bucket ledger missing: %v", err)
-	}
-	tok, cost, metered := s.Total(PlanBucket)
-	if tok != 400 {
-		t.Errorf("planning tokens = %d, want 400", tok)
-	}
-	if cost != 0.40 {
-		t.Errorf("planning cost = %v, want 0.40", cost)
-	}
-	if !metered {
-		t.Error("metered should be true (every planning line carried a cost)")
-	}
-
-	dt, dc, _ := s.DayTotal("2026-06-24")
-	if dt != 400 || dc != 0.40 {
-		t.Errorf("day total = (%d, %v), want (400, 0.4) — planning counts toward the day", dt, dc)
-	}
-}
-
-// --- DayTotal -------------------------------------------------------------
-
-func TestDayTotalFiltersByDateAcrossBuckets(t *testing.T) {
-	dir := t.TempDir()
-	clk := time.Date(2026, 6, 24, 8, 0, 0, 0, time.UTC)
-	s := New(dir).WithClock(func() time.Time { return clk })
-
-	s.SetTicket("COD-1")
-	s.Append("build", Record{Input: 100, CostUSD: ptr(0.10)}) // 06-24
-
-	s.SetTicket("") // loop bucket, same day — still counts toward the day window
-	s.Append("pick", Record{Input: 50, CostUSD: ptr(0.05)})
-
-	clk = time.Date(2026, 6, 23, 8, 0, 0, 0, time.UTC)
-	s.SetTicket("COD-1")
-	s.Append("verify", Record{Input: 999, CostUSD: ptr(9.99)}) // 06-23, excluded
-
-	tok, cost, metered := s.DayTotal("2026-06-24")
-	if tok != 150 {
-		t.Errorf("day tokens = %d, want 150 (only 06-24 lines, across buckets)", tok)
-	}
-	if cost != 0.15 {
-		t.Errorf("day cost = %v, want 0.15", cost)
-	}
-	if !metered {
-		t.Error("metered should be true (all in-window lines had a cost)")
-	}
-}
-
-// --- EstimateCost ---------------------------------------------------------
-
-func approx(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
-
-func TestEstimateCostRatesAndCacheMultipliers(t *testing.T) {
-	// opus rate is {input:5, output:25} per 1M tokens.
-	if got := EstimateCost("claude-opus-4-8", 1_000_000, 0, 0, 0); !approx(got, 5) {
-		t.Errorf("input cost = %v, want 5", got)
-	}
-	if got := EstimateCost("claude-opus-4-8", 0, 1_000_000, 0, 0); !approx(got, 25) {
-		t.Errorf("output cost = %v, want 25", got)
-	}
-	// cache read bills at 0.1× input rate.
-	if got := EstimateCost("claude-opus-4-8", 0, 0, 1_000_000, 0); !approx(got, 0.5) {
-		t.Errorf("cache-read cost = %v, want 0.5", got)
-	}
-	// cache write bills at 1.25× input rate.
-	if got := EstimateCost("claude-opus-4-8", 0, 0, 0, 1_000_000); !approx(got, 6.25) {
-		t.Errorf("cache-write cost = %v, want 6.25", got)
-	}
-}
-
-func TestEstimateCostModelMatching(t *testing.T) {
+func TestEstimateCostByModelTier(t *testing.T) {
 	tests := []struct {
+		name  string
 		model string
-		want  float64 // cost of 1M input tokens
+		want  float64
 	}{
-		{"claude-sonnet-4-6", 3},
-		{"claude-haiku-4-5-20251001", 1},
-		{"claude-fable-5", 10},
-		{"claude-opus-4-8[1m]", 5},
-		{"gpt-5.5", 0}, // unknown provider → unpriced
-		{"", 0},        // empty model → 0, not a wrong number
-		{"kimi-k2", 0}, // unknown → 0
+		{"opus input+output", "claude-opus-4-8", 5 + 25},
+		{"sonnet cheaper", "claude-sonnet-5", 3 + 15},
+		{"haiku cheapest", "claude-haiku-4-5", 1 + 5},
+		{"unknown model is free", "some-mystery-model", 0},
 	}
 	for _, tc := range tests {
-		if got := EstimateCost(tc.model, 1_000_000, 0, 0, 0); !approx(got, tc.want) {
-			t.Errorf("EstimateCost(%q, 1M input) = %v, want %v", tc.model, got, tc.want)
+		t.Run(tc.name, func(t *testing.T) {
+			got := EstimateCost(tc.model, 1_000_000, 1_000_000, 0, 0)
+			if got != tc.want {
+				t.Errorf("EstimateCost(%q) = %v, want %v", tc.model, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEstimateCostCacheTiers(t *testing.T) {
+	// Cache reads bill at 0.1x input, 5-minute cache writes at 1.25x input.
+	got := EstimateCost("claude-opus-4-8", 0, 0, 1_000_000, 1_000_000)
+	want := 5*0.1 + 5*1.25
+	if got != want {
+		t.Errorf("cache cost = %v, want %v", got, want)
+	}
+}
+
+func TestProviderForModel(t *testing.T) {
+	tests := map[string]string{
+		"claude-opus-4-8": "claude",
+		"claude-sonnet-5": "claude",
+		"fable-5":         "claude",
+		"gpt-5.4":         "codex",
+		"codex-mini":      "codex",
+		"kimi-k2":         "kimi",
+		"moonshot-v1":     "kimi",
+		"":                "",
+		"llama-3":         "",
+	}
+	for model, want := range tests {
+		if got := ProviderForModel(model); got != want {
+			t.Errorf("ProviderForModel(%q) = %q, want %q", model, got, want)
 		}
 	}
 }
 
-func TestFormatPair(t *testing.T) {
-	tests := []struct {
-		tokens int
-		cost   float64
-		want   string
-	}{
-		{0, 0, "0 0"},
-		{15234, 1.2, "15234 1.2"},
-		{100, 1.25, "100 1.25"},
+func TestDetectAnomaliesTripsHotPhases(t *testing.T) {
+	phases := []PhaseSpend{
+		{Phase: "build", Output: 500, Turns: 4, Cost: 0.30},       // quiet
+		{Phase: "cleanup", Output: 120_000, Turns: 8, Cost: 6.50}, // cost + output
+		{Phase: "verify", Output: 100, Turns: 40, Cost: 0.10},     // turns only
 	}
-	for _, tc := range tests {
-		if got := FormatPair(tc.tokens, tc.cost); got != tc.want {
-			t.Errorf("FormatPair(%d,%v) = %q, want %q", tc.tokens, tc.cost, got, tc.want)
-		}
+	got := DetectAnomalies(phases)
+	if len(got) != 2 {
+		t.Fatalf("anomalies = %d, want 2 (cleanup and verify), got %+v", len(got), got)
 	}
-}
-
-// TestSessionTotalExcludesPriorRuns is the $101.55-banner regression guard: a
-// resumed ticket's tokens.jsonl carries earlier sessions' spend, so the session
-// summary must report only what THIS process appended while Total keeps the
-// lifetime view.
-func TestSessionTotalExcludesPriorRuns(t *testing.T) {
-	dir := t.TempDir()
-	prior := New(dir).WithClock(fixedClock(time.Date(2026, 7, 4, 20, 30, 0, 0, time.UTC)))
-	prior.SetTicket("COD-702")
-	prior.Append("build", Record{Output: 262_000, Turns: 225, CostUSD: ptr(57.88)})
-	prior.Append("verify", Record{Output: 66_000, Turns: 72, CostUSD: ptr(11.19)})
-
-	s := New(dir).WithClock(fixedClock(time.Date(2026, 7, 4, 22, 27, 0, 0, time.UTC)))
-	s.SetTicket("COD-702")
-	s.Append("status", Record{Output: 1_100, Turns: 7, CostUSD: ptr(1.08)})
-
-	tk, cost, metered := s.SessionTotal("COD-702")
-	if tk != 1_100 || cost != 1.08 || !metered {
-		t.Errorf("SessionTotal = (%d, %v, %v), want only this process's (1100, 1.08, true)", tk, cost, metered)
+	if got[0].Phase != "cleanup" {
+		t.Errorf("first anomaly = %q, want cleanup (order preserved)", got[0].Phase)
 	}
-	ltk, lcost, _ := s.Total("COD-702")
-	if ltk != 262_000+66_000+1_100 {
-		t.Errorf("Total tokens = %d, want the lifetime sum %d", ltk, 262_000+66_000+1_100)
+	if got[0].Cost != 6.5 || len(got[0].Reasons) != 2 {
+		t.Errorf("cleanup anomaly = %+v, want $6.50 with cost+output reasons", got[0])
 	}
-	if lcost != 70.15 {
-		t.Errorf("Total cost = %v, want lifetime 70.15", lcost)
+	if got[1].Phase != "verify" || len(got[1].Reasons) != 1 {
+		t.Errorf("verify anomaly = %+v, want a single turns reason", got[1])
 	}
 }
 
-func TestSessionTotalUnknownTicketIsZero(t *testing.T) {
-	s := New(t.TempDir())
-	if tk, cost, metered := s.SessionTotal("COD-404"); tk != 0 || cost != 0 || !metered {
-		t.Errorf("SessionTotal(unknown) = (%d, %v, %v), want (0, 0, true)", tk, cost, metered)
-	}
-}
-
-// TestFlagIgnoresPriorRunSpend: resuming a ticket whose earlier sessions blew
-// the rails must not re-flag those phases — only spend recorded by this process
-// counts, so a cheap 27s reconcile run flags nothing.
-func TestFlagIgnoresPriorRunSpend(t *testing.T) {
-	dir := t.TempDir()
-	prior := New(dir).WithClock(fixedClock(time.Date(2026, 7, 4, 20, 30, 0, 0, time.UTC)))
-	prior.SetTicket("COD-702")
-	prior.Append("build", Record{Output: 262_000, Turns: 225, CostUSD: ptr(57.88)})
-
-	s := New(dir).WithClock(fixedClock(time.Date(2026, 7, 4, 22, 27, 0, 0, time.UTC)))
-	s.SetTicket("COD-702")
-	s.Append("status", Record{Output: 1_100, Turns: 7, CostUSD: ptr(1.08)})
-
-	if got := s.Flag("COD-702"); len(got) != 0 {
-		t.Errorf("Flag re-flagged prior-run spend: %+v", got)
-	}
-}
-
-// --- ScanCalls ------------------------------------------------------------
-
-func TestScanCalls(t *testing.T) {
-	cost := ptr(0.25)
-	firstLine := `{"ts":"2026-07-11T10:00:00","phase":"build","input":10,"output":20,"cache_read":5,"cache_creation":1,"reasoning":2,"total":36,"cost_usd":0.25,"turns":3,"is_error":false,"provider":"claude","model":"opus","context":1000,"skills":["golang-pro"]}` + "\n"
-	body := firstLine +
-		"{not json}\n" +
-		`{"ts":"2026-07-11T10:01:00","phase":"verify","input":1,"output":1,"total":2,"cost_usd":null,"is_error":true}` + "\n"
-
-	calls, off := ScanCalls(bufio.NewReader(strings.NewReader(body)), 0)
-	if off != int64(len(body)) {
-		t.Fatalf("offset = %d, want %d", off, len(body))
-	}
-	if len(calls) != 2 {
-		t.Fatalf("calls = %d, want 2 (malformed line skipped)", len(calls))
-	}
-
-	first := calls[0]
-	if first.Offset != int64(len(firstLine)) {
-		t.Fatalf("first offset = %d, want %d (end of first line)", first.Offset, len(firstLine))
-	}
-	if first.Phase != "build" || first.Total != 36 || first.CacheRead != 5 || first.Reasoning != 2 ||
-		first.Provider != "claude" || first.Model != "opus" || first.Context != 1000 {
-		t.Fatalf("first call = %+v", first)
-	}
-	if first.CostUSD == nil || *first.CostUSD != *cost {
-		t.Fatalf("first cost = %v, want %v", first.CostUSD, cost)
-	}
-	if len(first.Skills) != 1 || first.Skills[0] != "golang-pro" {
-		t.Fatalf("first skills = %v, want [golang-pro]", first.Skills)
-	}
-
-	second := calls[1]
-	if !second.IsError || second.CostUSD != nil {
-		t.Fatalf("second call = %+v, want is_error and nil cost", second)
-	}
-}
-
-func TestScanCallsLeavesTornTrailingLine(t *testing.T) {
-	full := `{"ts":"t1","phase":"build","total":5}` + "\n"
-	partial := `{"ts":"t2","phase":"verify","total":9}` // no trailing newline
-
-	calls, off := ScanCalls(bufio.NewReader(strings.NewReader(full+partial)), 0)
-	if len(calls) != 1 {
-		t.Fatalf("calls = %d, want 1 (torn line held back)", len(calls))
-	}
-	if off != int64(len(full)) {
-		t.Fatalf("offset = %d, want %d (before the torn line)", off, len(full))
+func TestDetectAnomaliesQuiet(t *testing.T) {
+	got := DetectAnomalies([]PhaseSpend{{Phase: "build", Output: 100, Turns: 2, Cost: 0.10}})
+	if got != nil {
+		t.Errorf("quiet phases flagged %+v, want none", got)
 	}
 }

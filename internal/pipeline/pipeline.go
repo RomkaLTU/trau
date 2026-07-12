@@ -169,9 +169,9 @@ var (
 
 // Ledger is the pipeline's view of the token/cost sink: it points the bucket at
 // the current ticket (SetTicket) and reports accumulated spend for budget
-// enforcement (Total per ticket, DayTotal for the per-day window). *tokens.Sink
-// satisfies it; kept as a narrow interface so pipeline doesn't depend on the
-// tokens package.
+// enforcement (Total per ticket, DayTotal for the per-day window). The hub-backed
+// sink (internal/hubtokens) satisfies it; kept as a narrow interface so pipeline
+// doesn't depend on the tokens package.
 type Ledger interface {
 	SetTicket(id string)
 	Total(id string) (tokens int, cost float64, metered bool)
@@ -2264,10 +2264,10 @@ func isAuthFailure(err error) bool {
 }
 
 // guardBudget enforces the configured spend ceilings before an agent call. It
-// reads the LIVE ledger totals (this ticket's runs/<ID>/tokens.jsonl and the day's
-// spend across all buckets) and, on the first cap reached, quarantines the ticket
-// via giveUp with a cost-overrun reason — halting before the next call adds to the
-// bill. A nil ledger or no configured cap is a no-op (back-compat).
+// reads the LIVE ledger totals from the hub (this ticket's total and the day's spend
+// across all buckets) and, on the first cap reached, quarantines the ticket via
+// giveUp with a cost-overrun reason — halting before the next call adds to the bill.
+// A nil ledger or no configured cap is a no-op (back-compat).
 func (p *Pipeline) guardBudget(ctx context.Context, id string) error {
 	if p.Tokens == nil || !p.Budget.Enabled() {
 		return nil
@@ -2280,8 +2280,8 @@ func (p *Pipeline) guardBudget(ctx context.Context, id string) error {
 	return p.giveUp(ctx, id, "budget cap reached — "+b.Reason())
 }
 
-// dailySpend reads the day's accumulated spend across every ticket bucket, keyed on
-// the local date from p.Now (defaulting to time.Now).
+// dailySpend reads the day's accumulated spend across every ticket bucket from the
+// hub, keyed on the local date from p.Now (defaulting to time.Now).
 func (p *Pipeline) dailySpend() budget.Spend {
 	now := time.Now
 	if p.Now != nil {
