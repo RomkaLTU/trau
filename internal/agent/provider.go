@@ -35,6 +35,7 @@ type BackendParams struct {
 	StallWindow time.Duration
 	Log         *event.Log
 	Tokens      TokenSink
+	Transcripts TranscriptSink
 	Extra       map[string]string
 }
 
@@ -118,6 +119,7 @@ var claudeSpec = Spec{
 			StallWindow:        p.StallWindow,
 			Log:                p.Log,
 			Tokens:             p.Tokens,
+			Transcripts:        p.Transcripts,
 		}, nil
 	},
 }
@@ -142,6 +144,7 @@ var codexSpec = Spec{
 			SizeFn:       p.SizeFn,
 			Log:          p.Log,
 			Tokens:       p.Tokens,
+			Transcripts:  p.Transcripts,
 		}, nil
 	},
 }
@@ -165,6 +168,7 @@ var kimiSpec = Spec{
 			Timeout:      p.Timeout,
 			Log:          p.Log,
 			Tokens:       p.Tokens,
+			Transcripts:  p.Transcripts,
 		}, nil
 	},
 }

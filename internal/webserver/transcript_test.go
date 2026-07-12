@@ -2,84 +2,192 @@ package webserver
 
 import (
 	"bufio"
+	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/hubclient"
+	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/transcriptdb"
 )
 
-// fastPoll tightens the transcript tail poll so the streaming tests observe an
-// appended chunk within a few milliseconds instead of the production half-second.
-func fastPoll(t *testing.T) {
+// transcriptServer builds a hub over a real transcripts database with one
+// registered repo, so the transcript handlers exercise the chunk store end to end.
+func transcriptServer(t *testing.T) *httptest.Server {
 	t.Helper()
-	prev := streamPollInterval
-	streamPollInterval = 10 * time.Millisecond
-	t.Cleanup(func() { streamPollInterval = prev })
-}
-
-// writeTranscript writes a phase transcript and its dimensions sidecar under a
-// repo's agent-results directory, exactly as a running loop's agent does — so the
-// stream is exercised against real on-disk files, the "loop the hub did not
-// start" case. It returns the transcript path so a test can append to it live.
-func writeTranscript(t *testing.T, runsDir, stem string, cols, rows int, content string) string {
-	t.Helper()
-	dir := resultsDir(runsDir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir results: %v", err)
-	}
-	path := filepath.Join(dir, stem+agent.TranscriptExt)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write transcript: %v", err)
-	}
-	if err := os.WriteFile(path+agent.SizeExt, []byte(fmt.Sprintf("%d %d\n", cols, rows)), 0o644); err != nil {
-		t.Fatalf("write size: %v", err)
-	}
-	return path
-}
-
-// appendTranscript appends raw bytes to a transcript, as a phase does while the
-// agent keeps producing output mid-request.
-func appendTranscript(t *testing.T, path, content string) {
-	t.Helper()
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	home := t.TempDir()
+	db, err := hubdb.Open(home)
 	if err != nil {
-		t.Fatalf("open transcript: %v", err)
+		t.Fatalf("open hub db: %v", err)
 	}
-	if _, err := f.Write([]byte(content)); err != nil {
-		t.Fatalf("append transcript: %v", err)
+	t.Cleanup(func() { _ = db.Close() })
+	tdb, err := transcriptdb.Open(home)
+	if err != nil {
+		t.Fatalf("open transcript db: %v", err)
 	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("close transcript: %v", err)
+	t.Cleanup(func() { _ = tdb.Close() })
+	stores := hubstore.NewStores(db.SQL(), tdb.SQL(), 50)
+	repo := registry.Repo{Name: "acme", Root: filepath.Join(home, "acme"), RunsDir: filepath.Join(home, "acme", ".trau", "runs")}
+	if err := stores.Registrations().Remember([]registry.Repo{repo}); err != nil {
+		t.Fatalf("remember repo: %v", err)
 	}
+	ts := httptest.NewServer(New("1.2.3", "127.0.0.1", "", nil, false, stores).Handler())
+	t.Cleanup(ts.Close)
+	return ts
 }
 
-func setMtime(t *testing.T, path string, mod time.Time) {
+func chunk(stem string, seq int64, cols, rows int, data string) hubclient.TranscriptChunk {
+	return hubclient.TranscriptChunk{Stem: stem, Seq: seq, Cols: cols, Rows: rows, Data: base64.StdEncoding.EncodeToString([]byte(data))}
+}
+
+func postChunks(t *testing.T, ts *httptest.Server, repo string, chunks ...hubclient.TranscriptChunk) {
 	t.Helper()
-	if err := os.Chtimes(path, mod, mod); err != nil {
-		t.Fatalf("chtimes: %v", err)
+	body, err := json.Marshal(struct {
+		Chunks []hubclient.TranscriptChunk `json:"chunks"`
+	}{Chunks: chunks})
+	if err != nil {
+		t.Fatalf("marshal chunks: %v", err)
+	}
+	res, err := http.Post(ts.URL+APIPrefix+"/repos/"+repo+"/transcripts", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST transcripts: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("POST transcripts status = %d, want 200", res.StatusCode)
 	}
 }
 
-type ttFrame struct {
-	event string
-	id    string
-	data  string
+// TestTranscriptsListFromStore checks a posted session surfaces in the list with
+// its label, dimensions, byte size, and the newest marked live.
+func TestTranscriptsListFromStore(t *testing.T) {
+	ts := transcriptServer(t)
+	postChunks(t, ts, "acme", chunk("100-build", 0, 80, 24, "hello"))
+
+	_, body := get(t, ts, APIPrefix+"/repos/acme/transcripts")
+	var out TranscriptsResponse
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(out.Transcripts) != 1 {
+		t.Fatalf("got %d transcripts, want 1", len(out.Transcripts))
+	}
+	v := out.Transcripts[0]
+	if v.ID != "100-build" || v.Label != "build" || v.Cols != 80 || v.Rows != 24 || v.Size != 5 || !v.Live {
+		t.Errorf("view = %+v, want the build session sized 80x24, 5 bytes, live", v)
+	}
 }
 
-// nextTFrame reads the next non-keepalive SSE frame, capturing its event type,
-// id, and data lines.
-func nextTFrame(t *testing.T, r *bufio.Reader) ttFrame {
+// TestTranscriptChunksPoll checks the poll serves a pinned session from the cursor
+// and that follow resolves the newest session.
+func TestTranscriptChunksPoll(t *testing.T) {
+	ts := transcriptServer(t)
+	postChunks(t, ts, "acme", chunk("100-build", 0, 80, 24, "AAA"), chunk("100-build", 1, 80, 24, "BBB"))
+
+	from := pollChunks(t, ts, "?id=100-build&after=-1")
+	if from.ID != "100-build" || from.Cols != 80 || from.Rows != 24 {
+		t.Fatalf("poll meta = %+v, want the build session 80x24", from)
+	}
+	if len(from.Chunks) != 2 || decode(t, from.Chunks[0].Data) != "AAA" || decode(t, from.Chunks[1].Data) != "BBB" {
+		t.Fatalf("poll from top = %+v, want AAA then BBB", from.Chunks)
+	}
+
+	after := pollChunks(t, ts, "?id=100-build&after=0")
+	if len(after.Chunks) != 1 || decode(t, after.Chunks[0].Data) != "BBB" {
+		t.Fatalf("poll after seq 0 = %+v, want only BBB", after.Chunks)
+	}
+
+	postChunks(t, ts, "acme", chunk("200-verify", 0, 100, 40, "V"))
+	follow := pollChunks(t, ts, "?follow=1&after=-1")
+	if follow.ID != "200-verify" || len(follow.Chunks) != 1 || decode(t, follow.Chunks[0].Data) != "V" {
+		t.Fatalf("follow poll = %+v, want the newest verify session", follow)
+	}
+}
+
+// TestTranscriptChunksClientCursor checks the Go client's poll pages strictly past
+// the seq it last saw — a cursor of 0 must not replay seq 0 — which is what keeps
+// the TUI and watch live views from re-writing the first chunk each tick.
+func TestTranscriptChunksClientCursor(t *testing.T) {
+	ts := transcriptServer(t)
+	postChunks(t, ts, "acme", chunk("100-build", 0, 80, 24, "AAA"), chunk("100-build", 1, 80, 24, "BBB"))
+
+	hub := hubclient.New(ts.URL, "")
+	poll, err := hub.TranscriptChunks(context.Background(), "acme", "100-build", 0, false, 0)
+	if err != nil {
+		t.Fatalf("poll: %v", err)
+	}
+	if string(poll.Data) != "BBB" || poll.Seq != 1 {
+		t.Fatalf("poll after seq 0 = %q at seq %d, want only BBB at seq 1", poll.Data, poll.Seq)
+	}
+}
+
+// TestTranscriptStreamBackfills checks the SSE stream replays a stored session's
+// meta and chunk frames from the store.
+func TestTranscriptStreamBackfills(t *testing.T) {
+	ts := transcriptServer(t)
+	postChunks(t, ts, "acme", chunk("100-build", 0, 80, 24, "hello world"))
+
+	r := openSSE(t, ts, APIPrefix+"/repos/acme/transcript/stream?id=100-build", nil)
+	if meta := nextMetaFrame(t, r); meta.ID != "100-build" || meta.Cols != 80 || meta.Rows != 24 {
+		t.Fatalf("meta frame = %+v, want the build session 80x24", meta)
+	}
+	if got := nextChunkFrame(t, r); got != "hello world" {
+		t.Fatalf("chunk frame = %q, want the stored bytes", got)
+	}
+}
+
+func pollChunks(t *testing.T, ts *httptest.Server, query string) transcriptChunksResponse {
+	t.Helper()
+	_, body := get(t, ts, APIPrefix+"/repos/acme/transcript/chunks"+query)
+	var out transcriptChunksResponse
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode poll: %v", err)
+	}
+	return out
+}
+
+func decode(t *testing.T, b64 string) string {
+	t.Helper()
+	b, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		t.Fatalf("decode chunk %q: %v", b64, err)
+	}
+	return string(b)
+}
+
+func nextMetaFrame(t *testing.T, r *bufio.Reader) transcriptMeta {
+	t.Helper()
+	event, data := readFrame(t, r)
+	if event != "meta" {
+		t.Fatalf("first frame event = %q, want meta", event)
+	}
+	var m transcriptMeta
+	if err := json.Unmarshal([]byte(data), &m); err != nil {
+		t.Fatalf("decode meta %q: %v", data, err)
+	}
+	return m
+}
+
+func nextChunkFrame(t *testing.T, r *bufio.Reader) string {
+	t.Helper()
+	_, data := readFrame(t, r)
+	return decode(t, data)
+}
+
+// readFrame reads one SSE frame, returning its event type (empty for a plain data
+// frame) and the data payload, skipping keepalive comments.
+func readFrame(t *testing.T, r *bufio.Reader) (event, data string) {
 	t.Helper()
 	for {
-		var f ttFrame
+		event, data = "", ""
 		for {
 			line, err := r.ReadString('\n')
 			if err != nil {
@@ -91,301 +199,13 @@ func nextTFrame(t *testing.T, r *bufio.Reader) ttFrame {
 			}
 			switch {
 			case strings.HasPrefix(line, "event:"):
-				f.event = strings.TrimSpace(line[len("event:"):])
-			case strings.HasPrefix(line, "id:"):
-				f.id = strings.TrimSpace(line[len("id:"):])
+				event = strings.TrimSpace(line[len("event:"):])
 			case strings.HasPrefix(line, "data:"):
-				f.data = strings.TrimSpace(line[len("data:"):])
+				data = strings.TrimSpace(line[len("data:"):])
 			}
 		}
-		if f.event == "" && f.id == "" && f.data == "" {
-			continue
-		}
-		return f
-	}
-}
-
-func (f ttFrame) meta(t *testing.T) transcriptMeta {
-	t.Helper()
-	if f.event != "meta" {
-		t.Fatalf("frame event = %q, want meta", f.event)
-	}
-	var m transcriptMeta
-	if err := json.Unmarshal([]byte(f.data), &m); err != nil {
-		t.Fatalf("decode meta %q: %v", f.data, err)
-	}
-	return m
-}
-
-func (f ttFrame) chunk(t *testing.T) string {
-	t.Helper()
-	if f.event != "" {
-		t.Fatalf("frame event = %q, want a chunk", f.event)
-	}
-	b, err := base64.StdEncoding.DecodeString(f.data)
-	if err != nil {
-		t.Fatalf("decode chunk %q: %v", f.data, err)
-	}
-	return string(b)
-}
-
-func openTranscriptStream(t *testing.T, ts *httptest.Server, repo, query string, header http.Header) *bufio.Reader {
-	t.Helper()
-	path := APIPrefix + "/repos/" + repo + "/transcript/stream"
-	if query != "" {
-		path += "?" + query
-	}
-	return openSSE(t, ts, path, header)
-}
-
-// TestTranscriptStreamReplaysThenTailsAppends is the streaming contract test: a
-// fresh connection sizes the terminal from the recorded dimensions, replays the
-// existing transcript, then delivers bytes appended mid-request as the next chunk.
-func TestTranscriptStreamReplaysThenTailsAppends(t *testing.T) {
-	fastPoll(t)
-	home := t.TempDir()
-	runsDir := seedRepo(t, home, "acme")
-	writeTranscript(t, runsDir, "100-build", 120, 40, "hello")
-
-	ts := instancesServer(t, home)
-	r := openTranscriptStream(t, ts, "acme", "", nil)
-
-	meta := nextTFrame(t, r).meta(t)
-	if meta.ID != "100-build" || meta.Cols != 120 || meta.Rows != 40 {
-		t.Fatalf("meta = %+v, want id=100-build cols=120 rows=40", meta)
-	}
-	if got := nextTFrame(t, r).chunk(t); got != "hello" {
-		t.Fatalf("replay chunk = %q, want hello", got)
-	}
-
-	appendTranscript(t, filepath.Join(resultsDir(runsDir), "100-build"+agent.TranscriptExt), " world")
-
-	f := nextTFrame(t, r)
-	if got := f.chunk(t); got != " world" {
-		t.Fatalf("appended chunk = %q, want ' world'", got)
-	}
-	if f.id != "100-build:11" {
-		t.Errorf("appended chunk id = %q, want 100-build:11", f.id)
-	}
-}
-
-// TestTranscriptStreamFollowsNewest covers the default follow mode: with no id it
-// tails the newest transcript, so a later phase's transcript is the one streamed.
-func TestTranscriptStreamFollowsNewest(t *testing.T) {
-	fastPoll(t)
-	home := t.TempDir()
-	runsDir := seedRepo(t, home, "acme")
-	old := writeTranscript(t, runsDir, "100-build", 80, 24, "build output")
-	newer := writeTranscript(t, runsDir, "200-verify", 100, 30, "verify output")
-	setMtime(t, old, time.Now().Add(-time.Minute))
-	setMtime(t, newer, time.Now())
-
-	ts := instancesServer(t, home)
-	r := openTranscriptStream(t, ts, "acme", "", nil)
-
-	if meta := nextTFrame(t, r).meta(t); meta.ID != "200-verify" {
-		t.Fatalf("followed id = %q, want newest 200-verify", meta.ID)
-	}
-	if got := nextTFrame(t, r).chunk(t); got != "verify output" {
-		t.Fatalf("followed chunk = %q, want 'verify output'", got)
-	}
-}
-
-// TestTranscriptStreamSinceSkipsPriorSession covers the time bound: a fresh run
-// page passes the run's start as since, so follow mode ignores a prior run's
-// transcript and waits for this run's own first session before streaming.
-func TestTranscriptStreamSinceSkipsPriorSession(t *testing.T) {
-	fastPoll(t)
-	home := t.TempDir()
-	runsDir := seedRepo(t, home, "acme")
-	writeTranscript(t, runsDir, "100-build", 80, 24, "previous run output")
-
-	ts := instancesServer(t, home)
-	r := openTranscriptStream(t, ts, "acme", "since=150", nil)
-
-	writeTranscript(t, runsDir, "200-verify", 100, 30, "this run output")
-
-	if meta := nextTFrame(t, r).meta(t); meta.ID != "200-verify" {
-		t.Fatalf("followed id = %q, want 200-verify — the prior 100-build session predates since", meta.ID)
-	}
-	if got := nextTFrame(t, r).chunk(t); got != "this run output" {
-		t.Fatalf("followed chunk = %q, want 'this run output'", got)
-	}
-}
-
-func TestNewestTranscriptSinceBound(t *testing.T) {
-	dir := t.TempDir()
-	for _, stem := range []string{"100-build", "300-verify"} {
-		if err := os.WriteFile(filepath.Join(dir, stem+agent.TranscriptExt), []byte("x"), 0o644); err != nil {
-			t.Fatalf("write transcript: %v", err)
+		if data != "" {
+			return event, data
 		}
 	}
-
-	if got := newestTranscript(dir, 0); got == "" {
-		t.Error("since=0 returned nothing, want a transcript (no bound)")
-	}
-	if got := filepath.Base(newestTranscript(dir, 200)); got != "300-verify"+agent.TranscriptExt {
-		t.Errorf("since=200 → %q, want 300-verify (100-build predates it)", got)
-	}
-	if got := newestTranscript(dir, 400); got != "" {
-		t.Errorf("since=400 → %q, want empty (both sessions predate it)", got)
-	}
-}
-
-func TestTranscriptStartNanos(t *testing.T) {
-	if n, ok := transcriptStartNanos("1752230400000000000-build"); !ok || n != 1752230400000000000 {
-		t.Errorf("start = %d ok=%v, want the unix-nano prefix", n, ok)
-	}
-	if _, ok := transcriptStartNanos("nostamp"); ok {
-		t.Error("a stem with no numeric prefix should report ok=false")
-	}
-}
-
-// TestTranscriptStreamPinnedReplaysFinished covers replay: a pinned id streams
-// that finished phase's transcript in full, not the newest one.
-func TestTranscriptStreamPinnedReplaysFinished(t *testing.T) {
-	fastPoll(t)
-	home := t.TempDir()
-	runsDir := seedRepo(t, home, "acme")
-	old := writeTranscript(t, runsDir, "100-build", 80, 24, "build output")
-	newer := writeTranscript(t, runsDir, "200-verify", 100, 30, "verify output")
-	setMtime(t, old, time.Now().Add(-time.Minute))
-	setMtime(t, newer, time.Now())
-
-	ts := instancesServer(t, home)
-	r := openTranscriptStream(t, ts, "acme", "id=100-build", nil)
-
-	if meta := nextTFrame(t, r).meta(t); meta.ID != "100-build" || meta.Cols != 80 {
-		t.Fatalf("pinned meta = %+v, want 100-build cols=80", meta)
-	}
-	if got := nextTFrame(t, r).chunk(t); got != "build output" {
-		t.Fatalf("pinned chunk = %q, want 'build output'", got)
-	}
-}
-
-// TestTranscriptStreamResetsOnTruncation covers the phase-reuse case: when a
-// transcript is truncated in place and rewritten, the stream emits a reset so the
-// client clears its emulator, then streams the fresh content.
-func TestTranscriptStreamResetsOnTruncation(t *testing.T) {
-	fastPoll(t)
-	home := t.TempDir()
-	runsDir := seedRepo(t, home, "acme")
-	path := writeTranscript(t, runsDir, "100-build", 80, 24, "long original output")
-
-	ts := instancesServer(t, home)
-	r := openTranscriptStream(t, ts, "acme", "", nil)
-
-	nextTFrame(t, r).meta(t)
-	if got := nextTFrame(t, r).chunk(t); got != "long original output" {
-		t.Fatalf("initial chunk = %q", got)
-	}
-
-	if err := os.WriteFile(path, []byte("new"), 0o644); err != nil {
-		t.Fatalf("truncate transcript: %v", err)
-	}
-
-	if f := nextTFrame(t, r); f.event != "reset" {
-		t.Fatalf("frame event = %q, want reset after truncation", f.event)
-	}
-	if got := nextTFrame(t, r).chunk(t); got != "new" {
-		t.Fatalf("post-truncation chunk = %q, want new", got)
-	}
-}
-
-// TestTranscriptStreamResumesFromCursor covers a browser reconnect: a client that
-// resumes from a byte offset in a transcript receives only the bytes past it, with
-// no replay of what it already rendered.
-func TestTranscriptStreamResumesFromCursor(t *testing.T) {
-	fastPoll(t)
-	home := t.TempDir()
-	runsDir := seedRepo(t, home, "acme")
-	writeTranscript(t, runsDir, "100-build", 80, 24, "hello world")
-
-	ts := instancesServer(t, home)
-	r := openTranscriptStream(t, ts, "acme", "", http.Header{"Last-Event-ID": {"100-build:5"}})
-
-	nextTFrame(t, r).meta(t)
-	if got := nextTFrame(t, r).chunk(t); got != " world" {
-		t.Fatalf("resumed chunk = %q, want ' world' (no replay of 'hello')", got)
-	}
-}
-
-// TestTranscriptsListNewestFirst covers the replay picker resource: the repo's
-// transcripts, newest first, with the newest flagged live and the phase label
-// recovered from the filename.
-func TestTranscriptsListNewestFirst(t *testing.T) {
-	home := t.TempDir()
-	runsDir := seedRepo(t, home, "acme")
-	old := writeTranscript(t, runsDir, "100-build", 80, 24, "a")
-	newer := writeTranscript(t, runsDir, "200-verify", 100, 30, "bb")
-	setMtime(t, old, time.Now().Add(-time.Minute))
-	setMtime(t, newer, time.Now())
-
-	ts := instancesServer(t, home)
-	out := getTranscripts(t, ts, "acme")
-
-	if out.Repo != "acme" || len(out.Transcripts) != 2 {
-		t.Fatalf("transcripts = %+v, want 2 for acme", out)
-	}
-	first, second := out.Transcripts[0], out.Transcripts[1]
-	if first.ID != "200-verify" || !first.Live || first.Label != "verify" || first.Cols != 100 {
-		t.Errorf("newest = %+v, want 200-verify live label=verify cols=100", first)
-	}
-	if second.ID != "100-build" || second.Live || second.Label != "build" {
-		t.Errorf("second = %+v, want 100-build not-live label=build", second)
-	}
-}
-
-func TestTranscriptsEmpty(t *testing.T) {
-	home := t.TempDir()
-	seedRepo(t, home, "acme")
-	ts := instancesServer(t, home)
-	if out := getTranscripts(t, ts, "acme"); out.Transcripts == nil || len(out.Transcripts) != 0 {
-		t.Errorf("transcripts = %v, want empty non-nil slice", out.Transcripts)
-	}
-}
-
-func TestTranscriptUnknownRepo404(t *testing.T) {
-	ts := instancesServer(t, t.TempDir())
-	for _, path := range []string{"/repos/ghost/transcripts", "/repos/ghost/transcript/stream"} {
-		res, err := http.Get(ts.URL + APIPrefix + path)
-		if err != nil {
-			t.Fatalf("GET %s: %v", path, err)
-		}
-		_ = res.Body.Close()
-		if res.StatusCode != http.StatusNotFound {
-			t.Errorf("%s status = %d, want 404", path, res.StatusCode)
-		}
-	}
-}
-
-func TestTranscriptStreamRejectsTraversalID(t *testing.T) {
-	home := t.TempDir()
-	seedRepo(t, home, "acme")
-	ts := instancesServer(t, home)
-	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/transcript/stream?id=../../etc/passwd")
-	if err != nil {
-		t.Fatalf("GET stream: %v", err)
-	}
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusBadRequest {
-		t.Errorf("traversal id status = %d, want 400", res.StatusCode)
-	}
-}
-
-func getTranscripts(t *testing.T, ts *httptest.Server, repo string) TranscriptsResponse {
-	t.Helper()
-	res, err := http.Get(ts.URL + APIPrefix + "/repos/" + repo + "/transcripts")
-	if err != nil {
-		t.Fatalf("GET transcripts: %v", err)
-	}
-	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", res.StatusCode)
-	}
-	var out TranscriptsResponse
-	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
-		t.Fatalf("decode transcripts: %v", err)
-	}
-	return out
 }

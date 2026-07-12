@@ -17,6 +17,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/transcriptdb"
 	"github.com/RomkaLTU/trau/internal/webserver"
 )
 
@@ -100,7 +101,15 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 	defer func() { err = errors.Join(err, db.Close()) }()
 	logger.Verbosef("hub database ready at %s (schema v%d)", db.Path(), db.Version())
 
-	stores := hubstore.NewStores(db.SQL())
+	tdb, err := transcriptdb.Open(home)
+	if err != nil {
+		return console.Actionable(err, "open transcript database",
+			fmt.Sprintf("delete %s and restart to recreate it empty (it holds only transcripts)", transcriptdb.Path(home)))
+	}
+	defer func() { err = errors.Join(err, tdb.Close()) }()
+	logger.Verbosef("transcript database ready at %s (schema v%d)", tdb.Path(), tdb.Version())
+
+	stores := hubstore.NewStores(db.SQL(), tdb.SQL(), cfg.TranscriptRetention)
 	if err := stores.Registrations().ImportLegacy(home); err != nil {
 		return console.Actionable(err, "import legacy registration state",
 			"fix or move the named file aside, then restart trau serve")

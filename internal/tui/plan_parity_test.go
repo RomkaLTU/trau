@@ -3,8 +3,6 @@ package tui
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -102,19 +100,18 @@ func TestPlanErrNote(t *testing.T) {
 // transcript during a round and renders it, the same tail the dashboard gives
 // pipeline phases.
 func TestPlanLiveTailDuringRound(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "round.pty.log")
-	if err := os.WriteFile(path, []byte("drafting the PRD\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	src := &fakeTranscriptSource{delta: TranscriptDelta{ID: "1-round", Cols: 80, Rows: 24, Data: []byte("drafting the PRD\n")}}
+	SetTranscriptSource(src, "acme")
+	t.Cleanup(func() { SetTranscriptSource(nil, "") })
 
 	m := newPlanModel(context.Background(), &planFake{}, DefaultStyles(), 100, 40)
 	m.step = planRunning
 
 	m, _ = m.Update(eventMsg{ev: event.Event{Kind: event.KindAgentStart, Fields: map[string]any{
-		"transcript_path": path, "cols": 80, "rows": 24,
+		"transcript_id": "1-round", "cols": 80, "rows": 24,
 	}}})
-	if m.stream.path != path {
-		t.Fatalf("stream did not pick up the transcript path: %q", m.stream.path)
+	if m.stream.id != "1-round" {
+		t.Fatalf("stream did not pick up the transcript id: %q", m.stream.id)
 	}
 
 	m, cmd := m.handleKey(tea.KeyPressMsg{Code: 'w'})
@@ -122,7 +119,7 @@ func TestPlanLiveTailDuringRound(t *testing.T) {
 		t.Fatal("w did not attach the live view")
 	}
 	if cmd == nil {
-		t.Fatal("attach should start tailing the transcript")
+		t.Fatal("attach should start polling the transcript")
 	}
 
 	data, ok := cmd().(streamDataMsg)

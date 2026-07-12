@@ -9,30 +9,30 @@ import (
 	"github.com/RomkaLTU/trau/internal/vterm"
 )
 
-// liveStream tails an agent PTY transcript into a virtual terminal so the Plan
-// screen's w-attach view renders the planning agent legibly, the same live tail
-// the running dashboard gives pipeline phases. It reuses the shared readTail seam
-// and streamDataMsg; a fresh planning round replaces the path and resets the
-// emulator. attached toggles whether the view is shown; the tail keeps updating
-// underneath either way so re-attaching lands on the current screen.
+// liveStream polls an agent transcript from the hub into a virtual terminal so the
+// Plan screen's w-attach view renders the planning agent legibly, the same live
+// tail the running dashboard gives pipeline phases. It reuses the shared
+// pollTranscript seam and streamDataMsg; a fresh planning round replaces the id and
+// resets the emulator. attached toggles whether the view is shown; the tail keeps
+// updating underneath either way so re-attaching lands on the current screen.
 type liveStream struct {
 	attached bool
-	path     string
+	id       string
 	cols     int
 	rows     int
-	offset   int64
+	seq      int64
 	screen   *vterm.Screen
 	reading  bool
 }
 
-// setPath points the tail at a round's transcript, emitted on the agent's
-// KindAgentStart event. A repeat of the current path is ignored; a new path resets
-// the emulator when attached so the fresh screen reconstructs from the top.
-func (s *liveStream) setPath(path string, cols, rows int) {
-	if path == "" || path == s.path {
+// setID points the tail at a round's transcript session, emitted on the agent's
+// KindAgentStart event. A repeat of the current id is ignored; a new id resets the
+// emulator when attached so the fresh screen reconstructs from the top.
+func (s *liveStream) setID(id string, cols, rows int) {
+	if id == "" || id == s.id {
 		return
 	}
-	s.path, s.cols, s.rows = path, cols, rows
+	s.id, s.cols, s.rows = id, cols, rows
 	if s.attached {
 		s.open()
 	}
@@ -46,7 +46,7 @@ func (s *liveStream) toggle() bool {
 		return false
 	}
 	s.attached = true
-	if s.screen == nil && s.path != "" {
+	if s.screen == nil && s.id != "" {
 		s.open()
 	}
 	return s.attached
@@ -57,7 +57,7 @@ func (s *liveStream) open() {
 		s.screen.Close()
 	}
 	s.screen = vterm.New(s.cols, s.rows)
-	s.offset = 0
+	s.seq = -1
 }
 
 // reset tears the tail down between rounds, leaving nothing to render.
@@ -68,35 +68,29 @@ func (s *liveStream) reset() {
 	s.screen = nil
 	s.attached = false
 	s.reading = false
-	s.offset = 0
-	s.path = ""
+	s.seq = -1
+	s.id = ""
 }
 
-// write applies a transcript delta to the emulator, resetting the screen first
-// when the file was truncated (a reused transcript). Deltas for a stale path are
+// write applies a transcript delta to the emulator. Deltas for a stale id are
 // dropped.
 func (s *liveStream) write(msg streamDataMsg) {
 	s.reading = false
-	if msg.path != s.path || s.screen == nil {
+	if msg.id != s.id || s.screen == nil {
 		return
 	}
-	if msg.truncated {
-		s.screen.Close()
-		s.screen = vterm.New(s.cols, s.rows)
-	}
 	s.screen.Write(msg.data)
-	s.offset = msg.offset
+	s.seq = msg.seq
 }
 
-// pump schedules the next transcript read when attached and not already reading,
-// so the emulator keeps up with the live agent between ticks.
+// pump schedules the next transcript poll when attached and not already reading, so
+// the emulator keeps up with the live agent between ticks.
 func (s *liveStream) pump() tea.Cmd {
 	if !s.attached || s.screen == nil || s.reading {
 		return nil
 	}
 	s.reading = true
-	path, offset := s.path, s.offset
-	return func() tea.Msg { return readTail(path, offset) }
+	return pollTranscript(s.id, s.seq)
 }
 
 // view renders the current screen clipped to w×h; empty until the first delta.

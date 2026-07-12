@@ -15,7 +15,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	zone "github.com/lrstanley/bubblezone/v2"
 
-	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/notify"
@@ -198,13 +197,13 @@ type model struct {
 	stopping    bool
 	paused      bool
 
-	// live agent tail (w toggle): feeds streamPath's transcript into a virtual
-	// terminal so Claude's full-screen TUI renders legibly
+	// live agent tail (w toggle): polls streamID's transcript from the hub into a
+	// virtual terminal so Claude's full-screen TUI renders legibly (ADR 0008 §4)
 	streaming     bool
-	streamPath    string
+	streamID      string
 	streamCols    int
 	streamRows    int
-	streamOffset  int64
+	streamSeq     int64
 	stream        *vterm.Screen
 	streamReading bool
 
@@ -255,10 +254,11 @@ type (
 	ticketDoneMsg struct{ r console.TicketResult }
 	loopDoneMsg   struct{ s console.SessionSummary }
 	streamDataMsg struct {
-		path      string
-		offset    int64
-		data      []byte
-		truncated bool
+		id   string
+		seq  int64
+		cols int
+		rows int
+		data []byte
 	}
 	// recoveryDoneMsg carries the outcome of a summary recovery action (b/x): note
 	// is the line to surface; resetID, when set and err is nil, marks the ticket
@@ -383,13 +383,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case streamDataMsg:
 		m.streamReading = false
-		if msg.path == m.streamPath && m.stream != nil {
-			if msg.truncated {
-				m.stream.Close()
-				m.stream = vterm.New(m.streamCols, m.streamRows)
-			}
+		if msg.id == m.streamID && m.stream != nil {
 			m.stream.Write(msg.data)
-			m.streamOffset = msg.offset
+			m.streamSeq = msg.seq
 			m.refreshBody()
 		}
 
@@ -581,7 +577,7 @@ func (m *model) startStream() {
 		m.stream.Close()
 	}
 	m.stream = vterm.New(m.streamCols, m.streamRows)
-	m.streamOffset = 0
+	m.streamSeq = -1
 }
 
 // stopStream tears down the tail emulator (between tickets), leaving the loop
@@ -593,7 +589,7 @@ func (m *model) stopStream() {
 		m.stream.Close()
 		m.stream = nil
 	}
-	m.streamOffset = 0
+	m.streamSeq = -1
 }
 
 func (m *model) relayout() {
@@ -716,18 +712,9 @@ func (m *model) refreshBody() {
 	}
 }
 
-// tailReadCmd reads the next transcript delta from the current path/offset.
+// tailReadCmd polls the next transcript delta for the current session/seq.
 func (m model) tailReadCmd() tea.Cmd {
-	path, offset := m.streamPath, m.streamOffset
-	return func() tea.Msg { return readTail(path, offset) }
-}
-
-// readTail reads the next transcript delta through the shared agent.ReadTail seam
-// and wraps it as the emulator message. Truncation (a reused phase file) is
-// surfaced so the stream handler can reset the screen before writing.
-func readTail(path string, offset int64) streamDataMsg {
-	data, next, truncated := agent.ReadTail(path, offset)
-	return streamDataMsg{path: path, offset: next, data: data, truncated: truncated}
+	return pollTranscript(m.streamID, m.streamSeq)
 }
 
 // renderStream is the live pane body, or a placeholder when no transcript is
@@ -805,12 +792,12 @@ func (m model) classifyLine(line string) (glyph string, style lipgloss.Style, te
 
 func (m *model) applyEvent(ev event.Event) {
 	if ev.Kind == event.KindAgentStart {
-		if p := strField(ev.Fields, "transcript_path"); p != "" && p != m.streamPath {
-			m.streamPath = p
+		if id := strField(ev.Fields, "transcript_id"); id != "" && id != m.streamID {
+			m.streamID = id
 			m.streamCols = intField(ev.Fields, "cols")
 			m.streamRows = intField(ev.Fields, "rows")
 			if idx := activeIndex(m.steps); idx >= 0 {
-				m.steps[idx].transcript = p
+				m.steps[idx].transcript = id
 			}
 			m.startStream()
 		}
@@ -872,7 +859,7 @@ func (m *model) startTicket(id string) {
 	m.ciState = ""
 	m.ciEvery = 0
 	m.steps = phaseSteps()
-	m.streamPath = ""
+	m.streamID = ""
 	m.stopStream()
 	if !m.stopping {
 		m.banner = ""

@@ -17,7 +17,7 @@ func testInstances(t *testing.T) *Instances {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewStores(db.SQL()).Instances()
+	return NewStores(db.SQL(), nil, 0).Instances()
 }
 
 func countInstances(t *testing.T, in *Instances) int {

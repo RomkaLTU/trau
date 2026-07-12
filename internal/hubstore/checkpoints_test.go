@@ -14,7 +14,7 @@ func testCheckpoints(t *testing.T) *Checkpoints {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewStores(db.SQL()).Checkpoints()
+	return NewStores(db.SQL(), nil, 0).Checkpoints()
 }
 
 func TestCheckpointUpsertProjectsColumns(t *testing.T) {

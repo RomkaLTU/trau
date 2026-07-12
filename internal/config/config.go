@@ -275,6 +275,11 @@ type Config struct {
 	// are dropped so the buffer can never grow without bound.
 	HubWriteBufferBytes int
 
+	// TranscriptRetention is how many transcript sessions per repo the hub keeps
+	// in transcripts.db before pruning the oldest (ADR 0008 §4). It bounds the
+	// bulk transcript store; an in-flight session is never pruned.
+	TranscriptRetention int
+
 	// Spend ceilings off the normalized token/cost ledger. Zero = no cap
 	// (back-compat: a config with no MAX_* knobs enforces nothing). USD caps use
 	// the notional cost estimate; token caps the raw total. See internal/budget.
@@ -367,6 +372,7 @@ func Defaults() Config {
 		ServeOpen:              true,
 		HubWriteRetryWindow:    30,
 		HubWriteBufferBytes:    32 << 20,
+		TranscriptRetention:    50,
 		MaxTicketUSD:           0,
 		MaxTicketTokens:        0,
 		MaxDailyUSD:            0,
@@ -799,6 +805,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	}
 	num("HUB_WRITE_RETRY_WINDOW", &c.HubWriteRetryWindow)
 	num("HUB_WRITE_BUFFER_BYTES", &c.HubWriteBufferBytes)
+	num("TRANSCRIPT_RETENTION", &c.TranscriptRetention)
 	fnum("MAX_TICKET_USD", &c.MaxTicketUSD)
 	num("MAX_TICKET_TOKENS", &c.MaxTicketTokens)
 	fnum("MAX_DAILY_USD", &c.MaxDailyUSD)
@@ -1353,6 +1360,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "SERVE_OPEN", Default: "1", Advanced: true, Bool: true, Description: "Open the browser when autostart freshly spawns the hub (1 = yes, 0 = no); the daemon still starts when 0"},
 		{Key: "HUB_WRITE_RETRY_WINDOW", Default: "30", Advanced: true, Description: "Seconds the loop retries an unreachable hub before a run-data write pauses the run blamelessly (ADR 0008)"},
 		{Key: "HUB_WRITE_BUFFER_BYTES", Default: "33554432", Advanced: true, Description: "Byte cap on the child's in-memory buffer of run-data writes queued while the hub is unreachable; over it the oldest queued events are dropped (ADR 0008)"},
+		{Key: "TRANSCRIPT_RETENTION", Default: "50", Advanced: true, Description: "Transcript sessions per repo the hub keeps in transcripts.db before pruning the oldest; an in-flight session is never pruned (ADR 0008)"},
 		{Key: "MAX_TICKET_USD", Description: "Per-ticket USD spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_TICKET_TOKENS", Description: "Per-ticket token spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_DAILY_USD", Description: "Per-day USD spend cap across all tickets; reaching it stops the run (empty = no cap)"},
@@ -1906,6 +1914,8 @@ func keyValue(cfg Config, key string) string {
 		return intValue(cfg.HubWriteRetryWindow)
 	case "HUB_WRITE_BUFFER_BYTES":
 		return intValue(cfg.HubWriteBufferBytes)
+	case "TRANSCRIPT_RETENTION":
+		return intValue(cfg.TranscriptRetention)
 	case "MAX_TICKET_USD":
 		return floatValue(cfg.MaxTicketUSD)
 	case "MAX_TICKET_TOKENS":

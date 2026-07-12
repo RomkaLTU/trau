@@ -39,6 +39,14 @@ type TokenSink interface {
 	Append(phase string, rec tokens.Record)
 }
 
+// TranscriptSink captures an agent call's live PTY output. Open returns a writer
+// for one transcript session keyed by stem and sized cols×rows; the agent tees the
+// raw terminal bytes to it, and the hub persists and fans them out (ADR 0008 §4).
+// internal/hubtranscript implements it; a nil sink disables capture (e.g. tests).
+type TranscriptSink interface {
+	Open(stem string, cols, rows int) io.WriteCloser
+}
+
 // Usage is the normalized per-call token accounting. Input is stored as the
 // non-cached portion so totals mean the same thing across providers.
 type Usage struct {
@@ -144,6 +152,7 @@ type ClaudeInteractive struct {
 	TrustPromptWait    time.Duration
 	Log                *event.Log
 	Tokens             TokenSink
+	Transcripts        TranscriptSink
 	now                func() time.Time
 	start              terminalStarter
 }
@@ -188,7 +197,6 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	if err != nil {
 		return Result{}, err
 	}
-	transcriptPath := transcriptPathFor(resultPath)
 	full := preambleFor(c.Preamble, c.PlanPreamble, label) + "\n\n" + prompt + "\n\n" + resultInstruction(resultPath)
 
 	sessionID, _ := newUUID()
@@ -199,6 +207,9 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	}
 
 	cols, rows := c.resolveSize()
+	stem := newTranscriptStem(label, c.clock())
+	transcript, closeTranscript := c.openTranscript(stem, cols, rows)
+	defer closeTranscript()
 
 	start := c.clock()
 	sess, err := starter(ctx, c.Bin, c.Dir, c.args(full, sessionID, label), cols, rows)
@@ -216,18 +227,17 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	var lastActivity atomic.Int64
 	lastActivity.Store(start.UnixNano())
 
-	writeSize(transcriptPath, cols, rows)
 	if c.Log != nil {
 		c.Log.Emit(event.KindAgentStart, label, "", map[string]any{
-			"transcript_path": transcriptPath,
-			"cols":            cols,
-			"rows":            rows,
+			"transcript_id": stem,
+			"cols":          cols,
+			"rows":          rows,
 		})
 	}
 
 	trustPrompt := make(chan struct{}, 1)
 	authPrompt := make(chan struct{}, 1)
-	go drainTranscript(sess, transcriptPath, trustPrompt, authPrompt, func() {
+	go drainWithTrustSignal(transcript, sess, trustPrompt, authPrompt, func() {
 		lastActivity.Store(c.clock().UnixNano())
 	})
 
@@ -438,13 +448,12 @@ func resultInstruction(path string) string {
 		"Write the result in the form the task requests — the requested sentinel/text, or a small JSON object when the task offers one (for a pick, either 'PICK=<ID>'/'PICK=NONE' or {\"pick\":\"<ID>\"}/{\"pick\":\"NONE\"} is accepted). After the file is written, stop working and leave the session idle; the loop will close the terminal."
 }
 
-// On-disk layout of agent transcripts, shared with `trau watch` (COD-628) so the
-// watcher resolves the same files the loop writes.
+// ResultsSubdir holds the ephemeral agent-interface result files
+// (<stem>.result.json) the CLI writes and the loop reads back (ADR 0008 §6). PTY
+// transcripts no longer land on disk — they stream to the hub (ADR 0008 §4).
 const (
 	ResultsSubdir = "_agent-results"
-	TranscriptExt = ".pty.log"
 	resultExt     = ".result.json"
-	SizeExt       = ".size"
 )
 
 const (
@@ -472,72 +481,41 @@ func resolveSize(sizeFn func() (int, int), cols, rows int) (int, int) {
 	return effectiveSize(cols, rows)
 }
 
-func transcriptPathFor(resultPath string) string {
-	return strings.TrimSuffix(resultPath, resultExt) + TranscriptExt
+// newTranscriptStem names a transcript session <unix-nano>-<label>: the session
+// id the hub keys chunks by and the consumers pin their replay to. The nanosecond
+// prefix is the session-start time the follow-mode since bound orders on.
+func newTranscriptStem(label string, now time.Time) string {
+	return fmt.Sprintf("%d-%s", now.UnixNano(), safeLabel(label))
 }
 
-func sizePathFor(transcriptPath string) string { return transcriptPath + SizeExt }
-
-func writeSize(transcriptPath string, cols, rows int) {
-	_ = os.WriteFile(sizePathFor(transcriptPath), []byte(fmt.Sprintf("%d %d\n", cols, rows)), 0o644)
+// openTranscript returns the writer the agent tees PTY output to for this session,
+// plus a close. With no sink configured it discards, so a run without a hub still
+// works (its live tail is simply unavailable).
+func (c *ClaudeInteractive) openTranscript(stem string, cols, rows int) (io.Writer, func()) {
+	if c.Transcripts == nil {
+		return io.Discard, func() {}
+	}
+	w := c.Transcripts.Open(stem, cols, rows)
+	return w, func() { _ = w.Close() }
 }
 
-func ReadSize(transcriptPath string) (cols, rows int, ok bool) {
-	b, err := os.ReadFile(sizePathFor(transcriptPath))
-	if err != nil {
-		return 0, 0, false
-	}
-	if _, err := fmt.Sscanf(string(b), "%d %d", &cols, &rows); err != nil || cols <= 0 || rows <= 0 {
-		return 0, 0, false
-	}
-	return cols, rows, true
-}
-
-func agentTranscriptPath(resultDir, label string, now time.Time) (string, error) {
-	root := resultDir
-	if root == "" {
-		root = filepath.Join(os.TempDir(), "trau-agent-results")
-	}
-	dir := filepath.Join(root, ResultsSubdir)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("create result dir: %w", err)
-	}
-	name := fmt.Sprintf("%d-%s%s", now.UnixNano(), safeLabel(label), TranscriptExt)
-	abs, err := filepath.Abs(filepath.Join(dir, name))
-	if err != nil {
-		return "", fmt.Errorf("resolve transcript path: %w", err)
-	}
-	return abs, nil
-}
-
-func liveTranscript(log *event.Log, resultDir, label string, cols, rows int, now time.Time) (*os.File, bool) {
-	path, err := agentTranscriptPath(resultDir, label, now)
-	if err != nil {
+// liveTranscript starts a transcript session for a stdout-piped backend (Codex,
+// Kimi), emitting the agent-start event and returning the writer to tee output to.
+// ok is false when no sink is configured, so the caller tees nothing.
+func liveTranscript(sink TranscriptSink, log *event.Log, label string, cols, rows int, now time.Time) (io.WriteCloser, bool) {
+	if sink == nil {
 		return nil, false
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		return nil, false
-	}
-	writeSize(path, cols, rows)
+	stem := newTranscriptStem(label, now)
+	w := sink.Open(stem, cols, rows)
 	if log != nil {
 		log.Emit(event.KindAgentStart, label, "", map[string]any{
-			"transcript_path": path,
-			"cols":            cols,
-			"rows":            rows,
+			"transcript_id": stem,
+			"cols":          cols,
+			"rows":          rows,
 		})
 	}
-	return f, true
-}
-
-func drainTranscript(r io.Reader, path string, trustPrompt, authPrompt chan<- struct{}, onActivity func()) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
-	if err != nil {
-		drainWithTrustSignal(io.Discard, r, trustPrompt, authPrompt, onActivity)
-		return
-	}
-	defer func() { _ = f.Close() }()
-	drainWithTrustSignal(f, r, trustPrompt, authPrompt, onActivity)
+	return w, true
 }
 
 func drainWithTrustSignal(dst io.Writer, src io.Reader, trustPrompt, authPrompt chan<- struct{}, onActivity func()) {
@@ -690,6 +668,7 @@ type Codex struct {
 	SizeFn       func() (cols, rows int)
 	Log          *event.Log
 	Tokens       TokenSink
+	Transcripts  TranscriptSink
 	now          func() time.Time
 }
 
@@ -770,7 +749,7 @@ func (c *Codex) Run(ctx context.Context, prompt, label string) (Result, error) {
 	var stdout bytes.Buffer
 	sink := io.Writer(&stdout)
 	cols, rows := resolveSize(c.SizeFn, c.Cols, c.Rows)
-	if live, ok := liveTranscript(c.Log, c.ResultDir, label, cols, rows, c.clock()); ok {
+	if live, ok := liveTranscript(c.Transcripts, c.Log, label, cols, rows, c.clock()); ok {
 		defer func() { _ = live.Close() }()
 		sink = io.MultiWriter(&stdout, live)
 	}
@@ -875,6 +854,7 @@ type Kimi struct {
 	SessionsDir  string
 	Log          *event.Log
 	Tokens       TokenSink
+	Transcripts  TranscriptSink
 	now          func() time.Time
 }
 
@@ -1031,7 +1011,7 @@ func (c *Kimi) Run(ctx context.Context, prompt, label string) (Result, error) {
 	var stdout, stderr bytes.Buffer
 	sink := io.Writer(&stdout)
 	cols, rows := resolveSize(c.SizeFn, c.Cols, c.Rows)
-	if live, ok := liveTranscript(c.Log, c.ResultDir, label, cols, rows, c.clock()); ok {
+	if live, ok := liveTranscript(c.Transcripts, c.Log, label, cols, rows, c.clock()); ok {
 		defer func() { _ = live.Close() }()
 		sink = io.MultiWriter(&stdout, live)
 	}

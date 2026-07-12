@@ -45,7 +45,7 @@ func (m model) canPeek() bool {
 // starts the tail emulator when it isn't already following the current phase.
 func (m model) attach() (model, tea.Cmd, bool) {
 	m.streaming = true
-	if m.stream == nil && m.streamPath != "" {
+	if m.stream == nil && m.streamID != "" {
 		m.startStream()
 		m.streamReading = true
 		return m, m.tailReadCmd(), true

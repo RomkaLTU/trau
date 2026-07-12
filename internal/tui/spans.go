@@ -170,7 +170,7 @@ func (m model) phaseTailLines(idx, n int) []string {
 // or, failing that, the feed lines tagged with the phase (PR/CI/merge).
 func (m model) liveTail(idx, n int) []string {
 	st := m.steps[idx]
-	if st.transcript != "" && st.transcript == m.streamPath && m.stream != nil {
+	if st.transcript != "" && st.transcript == m.streamID && m.stream != nil {
 		return vtermTail(m.stream, n)
 	}
 	return m.feedTail(st.label, n)
