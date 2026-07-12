@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/queue"
@@ -870,18 +869,12 @@ func TestDrainEndpointRejectsUnsupportedMethod(t *testing.T) {
 	}
 }
 
-func writeInstanceEntry(t *testing.T, home string, e registry.Entry) {
+// writeInstanceEntry seeds a loop's presence into the server's own store so the
+// drainer reads the same database (mirroring seedQueue).
+func writeInstanceEntry(t *testing.T, s *Server, e registry.Entry) {
 	t.Helper()
-	dir := filepath.Join(home, "instances")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("mkdir instances: %v", err)
-	}
-	data, err := json.Marshal(e)
-	if err != nil {
-		t.Fatalf("marshal entry: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(e.PID)+".json"), data, 0o644); err != nil {
-		t.Fatalf("write entry: %v", err)
+	if err := s.stores.Instances().Upsert(e); err != nil {
+		t.Fatalf("upsert instance: %v", err)
 	}
 }
 
@@ -907,7 +900,7 @@ func TestRepoHasLiveInstanceIgnoresIdle(t *testing.T) {
 			if tc.otherRepo {
 				entryRoot = filepath.Join(t.TempDir(), "elsewhere")
 			}
-			writeInstanceEntry(t, s.home, registry.Entry{
+			writeInstanceEntry(t, s, registry.Entry{
 				PID:          os.Getpid(),
 				RepoRoot:     entryRoot,
 				SessionState: tc.state,
@@ -922,7 +915,7 @@ func TestRepoHasLiveInstanceIgnoresIdle(t *testing.T) {
 func TestTickSpawnsDespiteIdleInstance(t *testing.T) {
 	s, fake, root := drainServer(t, "acme")
 	s.drain.repoLive = s.drain.repoHasLiveInstance
-	writeInstanceEntry(t, s.home, registry.Entry{
+	writeInstanceEntry(t, s, registry.Entry{
 		PID:          os.Getpid(),
 		RepoRoot:     root,
 		SessionState: registry.StateIdle,

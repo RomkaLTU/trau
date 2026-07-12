@@ -40,6 +40,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/hubevent"
 	"github.com/RomkaLTU/trau/internal/hubphaselog"
+	"github.com/RomkaLTU/trau/internal/hubpresence"
 	"github.com/RomkaLTU/trau/internal/hubtokens"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
@@ -323,13 +324,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return usageError{err}
 	}
-	var reg *registry.Handle
+	var reg *hubpresence.Handle
 	if usesHubStore(cfg) {
 		ensureHubForStore(ctx, cfg, stderr)
 		// Register before the standalone hub-backed commands (--list-eligible,
 		// --dry-run, --reset) so the hub can resolve this repo, the same way the loop
 		// path does before Pick. The main loop reuses this handle below.
-		reg = registry.Register(registry.Home(), cfg.RepoRoot, cfg.RunsDir)
+		reg = newPresence(cfg, cfg.RepoRoot)
 		defer reg.Deregister()
 	}
 
@@ -489,7 +490,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	con.Logf("provider=%s · AUTO_MERGE=%v · max=%d%s%s", cfg.Provider, cfg.AutoMerge, maxIter, parentSuffix, budgetSuffix)
 
 	if reg == nil {
-		reg = registry.Register(registry.Home(), repoRoot, cfg.RunsDir)
+		reg = newPresence(cfg, repoRoot)
 		defer reg.Deregister()
 	}
 	p.OnPhase = func(id, phase string) { reg.SetState(registry.StateWorking, id, phase) }
@@ -939,6 +940,16 @@ func newPhaseLogStore(cfg config.Config, repoRoot string) *hubphaselog.Store {
 	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
 	window := time.Duration(cfg.HubWriteRetryWindow) * time.Second
 	return hubphaselog.New(hub, repoName(repoRoot), window, hubclient.IsUnreachable)
+}
+
+// newPresence registers this loop with the serve hub over HTTP and heartbeats its
+// reported session state (ADR 0005, ADR 0008 §7); the hub holds presence and
+// reaps a dead PID via signal 0, so no per-PID instance file is written.
+// Best-effort — a hub that never answers only leaves the loop unlisted, never
+// blocks it.
+func newPresence(cfg config.Config, repoRoot string) *hubpresence.Handle {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	return hubpresence.Register(hub, repoRoot, cfg.RunsDir)
 }
 
 // newTokenSink is the hub-backed token/cost sink: the child posts every provider
@@ -1401,7 +1412,7 @@ func runSession(ctx context.Context, cfg config.Config, opts config.Options, std
 		}
 	}
 
-	reg := registry.Register(registry.Home(), cfg.RepoRoot, cfg.RunsDir)
+	reg := newPresence(cfg, cfg.RepoRoot)
 	defer reg.Deregister()
 	acts.reg = reg
 
@@ -1427,7 +1438,7 @@ type appActions struct {
 	pipe     *pipeline.Pipeline
 	tracker  tracker.Tracker
 	eng      *realEngine
-	reg      *registry.Handle
+	reg      *hubpresence.Handle
 }
 
 // RepoRoot returns the resolved target repo root, or "" when none was found.

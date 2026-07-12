@@ -1,10 +1,13 @@
 package webserver
 
 import (
+	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
@@ -57,6 +60,20 @@ type InstancesResponse struct {
 	Repos     []RepoView `json:"repos"`
 }
 
+// instanceHeartbeatBody is a loop's reported presence on a register or heartbeat.
+// It mirrors hubclient.InstanceHeartbeat: the hub keys presence by the {pid} path
+// segment and stamps its own last-seen, so the body carries only what the loop
+// reports.
+type instanceHeartbeatBody struct {
+	RepoRoot     string    `json:"repo_root"`
+	RunsDir      string    `json:"runs_dir"`
+	StartedAt    time.Time `json:"started_at"`
+	SessionState string    `json:"session_state"`
+	Ticket       string    `json:"ticket,omitempty"`
+	Phase        string    `json:"phase,omitempty"`
+	StateSince   time.Time `json:"state_since,omitzero"`
+}
+
 func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -69,8 +86,69 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleInstance is a loop's presence seam (ADR 0008 §7): the loop PUTs its
+// heartbeat — on start, on every session-state change, and on a timer — keyed by
+// its PID, and DELETEs it on clean exit. The hub echoes the reported state and
+// reaps a dead PID via signal 0, so a crashed loop that never DELETEs still ages
+// out. Presence is best-effort on the loop side; the hub answers plainly.
+func (s *Server) handleInstance(w http.ResponseWriter, r *http.Request) {
+	pid, err := strconv.Atoi(r.PathValue("pid"))
+	if err != nil || pid <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid pid"})
+		return
+	}
+	instances := s.stores.Instances()
+
+	switch r.Method {
+	case http.MethodPut:
+		var req instanceHeartbeatBody
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+			return
+		}
+		entry := registry.Entry{
+			PID:          pid,
+			RepoRoot:     req.RepoRoot,
+			RunsDir:      req.RunsDir,
+			StartedAt:    req.StartedAt,
+			Heartbeat:    time.Now(),
+			SessionState: req.SessionState,
+			Ticket:       req.Ticket,
+			Phase:        req.Phase,
+			StateSince:   req.StateSince,
+		}
+		if err := instances.Upsert(entry); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "pid": pid})
+	case http.MethodDelete:
+		if err := instances.Remove(pid); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "removed", "pid": pid})
+	default:
+		w.Header().Set("Allow", "PUT, DELETE")
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+// liveInstances is the hub's read of the live loops on this machine, from the
+// authoritative presence store: the entries whose PID still passes signal 0, with
+// the dead ones reaped. A store error reads as no live loops, keeping every
+// consumer's fail-safe (nothing live) the same as the file-era empty glob.
+func (s *Server) liveInstances() []registry.Entry {
+	entries, err := s.stores.Instances().Live()
+	if err != nil {
+		logger.Verbosef("instances live: %v", err)
+		return nil
+	}
+	return entries
+}
+
 func (s *Server) listInstances(w http.ResponseWriter, _ *http.Request) {
-	entries := registry.Live(s.home)
+	entries := s.liveInstances()
 
 	instances := make([]Instance, 0, len(entries))
 	for _, e := range entries {

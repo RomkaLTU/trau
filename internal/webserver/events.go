@@ -330,7 +330,7 @@ func (s *Server) repoNames() map[string]string {
 // streamRepos resolves the repos the machine-wide feed knows, unioning live loops'
 // repos so a just-started loop is named — mirroring findRepo.
 func (s *Server) streamRepos() []registry.Repo {
-	return s.knownRepos(registry.Live(s.home))
+	return s.knownRepos(s.liveInstances())
 }
 
 // feedFromRows reverses the newest-first rows into the feed's chronological order.

@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -227,6 +228,20 @@ type TokenCall struct {
 	Skills        string   `json:"skills,omitempty"`
 }
 
+// InstanceHeartbeat is a loop's presence as it reports it to the hub (ADR 0005,
+// ADR 0008 §7): its repo, where its runs land, when it started, and the session
+// state it is reporting. The hub keys presence by PID, stamps its own last-seen
+// heartbeat, and reaps a dead PID via signal 0.
+type InstanceHeartbeat struct {
+	RepoRoot     string    `json:"repo_root"`
+	RunsDir      string    `json:"runs_dir"`
+	StartedAt    time.Time `json:"started_at"`
+	SessionState string    `json:"session_state"`
+	Ticket       string    `json:"ticket,omitempty"`
+	Phase        string    `json:"phase,omitempty"`
+	StateSince   time.Time `json:"state_since,omitzero"`
+}
+
 // Anomaly is one flagged cost anomaly the child records for a run: the phase that
 // cleared a soft threshold, its output/turns/cost, and the human reasons.
 type Anomaly struct {
@@ -293,6 +308,23 @@ func (c *Client) TokenDayTotal(ctx context.Context, repo, date string) (Spend, e
 // IsUnreachable error so the caller can retry.
 func (c *Client) RecordAnomalies(ctx context.Context, repo, ticket string, anomalies []Anomaly) error {
 	return c.do(ctx, http.MethodPost, c.repoPath(repo, "runs/"+url.PathEscape(ticket)+"/anomalies"), recordAnomaliesBody{Anomalies: anomalies}, nil)
+}
+
+// PutInstance registers or refreshes this loop's presence with the hub, keyed by
+// pid — sent on start, on every session-state change, and on the heartbeat timer.
+// Presence is best-effort, so the caller ignores the returned error.
+func (c *Client) PutInstance(ctx context.Context, pid int, hb InstanceHeartbeat) error {
+	return c.do(ctx, http.MethodPut, c.instancePath(pid), hb, nil)
+}
+
+// DeleteInstance drops this loop's presence from the hub — the deregister on clean
+// exit. A missing entry is not an error.
+func (c *Client) DeleteInstance(ctx context.Context, pid int) error {
+	err := c.do(ctx, http.MethodDelete, c.instancePath(pid), nil, nil)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
 }
 
 // PutCheckpoint writes a ticket's checkpoint to the hub, which persists it in the
@@ -486,6 +518,10 @@ func (c *Client) TransitionInternalIssue(ctx context.Context, repo, id string, t
 
 func (c *Client) repoPath(repo, tail string) string {
 	return apiPrefix + "/repos/" + url.PathEscape(repo) + "/" + tail
+}
+
+func (c *Client) instancePath(pid int) string {
+	return apiPrefix + "/instances/" + strconv.Itoa(pid)
 }
 
 func (c *Client) checkpointPath(repo, ticket string) string {

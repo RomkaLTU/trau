@@ -129,7 +129,7 @@ func (s *Server) sweepKnownRepos(ctx context.Context) {
 }
 
 func (s *Server) rememberLiveRepos() {
-	_ = s.stores.Registrations().Remember(reposFromEntries(registry.Live(s.home)))
+	_ = s.stores.Registrations().Remember(reposFromEntries(s.liveInstances()))
 }
 
 // reposFromEntries projects live registry entries onto known-repo rows, naming a
@@ -163,6 +163,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(APIPrefix+"/health", s.handleHealth)
 	mux.HandleFunc(APIPrefix+"/instances", s.handleInstances)
+	mux.HandleFunc(APIPrefix+"/instances/{pid}", s.handleInstance)
 	mux.HandleFunc(APIPrefix+"/instances/{pid}/stop", s.handleStopInstance)
 	mux.HandleFunc(APIPrefix+"/costs", s.handleCosts)
 	mux.HandleFunc(APIPrefix+"/costs/timeseries", s.handleTimeseries)
