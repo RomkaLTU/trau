@@ -100,7 +100,6 @@ func (d *drainer) run(ctx context.Context, root string) {
 // reads stopped instead of idling armed. It is the whole drain policy, pure
 // enough to table-test.
 func (d *drainer) tick(root string) (drainAction, error) {
-	runsDir := repoRunsDir(root)
 	store := d.srv.stores.Queue(root)
 	items, draining, err := store.Snapshot()
 	if err != nil {
@@ -114,7 +113,7 @@ func (d *drainer) tick(root string) (drainAction, error) {
 		if d.alive(running.PID) {
 			return drainWait, nil
 		}
-		class, reason := d.reconcileOutcome(root, runsDir, running)
+		class, reason := d.reconcileOutcome(root, running)
 		if status, pause := classifyDrainOutcome(class, meta.OnFault); pause {
 			if err := store.Pause(running.ID, reason); err != nil {
 				return drainWait, err
@@ -149,8 +148,8 @@ func (d *drainer) tick(root string) (drainAction, error) {
 		}
 		return drainReconcile, nil
 	}
-	_ = os.Remove(reportPath(runsDir))
-	pid, err := d.srv.sup.Spawn(d.spec(root, runsDir, next, meta.NoResume))
+	_ = d.srv.stores.DrainOutcomes().Remove(root, next.ID)
+	pid, err := d.srv.sup.Spawn(d.spec(root, next, meta.NoResume))
 	if err != nil {
 		return drainWait, err
 	}
@@ -167,22 +166,26 @@ func (d *drainer) tick(root string) (drainAction, error) {
 const classUnknown = "unknown"
 
 // reconcileOutcome settles a finished child, returning the failure class and
-// reason. Every hub-spawned child writes a drain report on every exit — a clean
-// finish writes an empty class — so the report's presence is itself evidence:
+// reason. Every hub-spawned child posts a drain outcome on every exit — a clean
+// finish posts an empty class — so a recorded outcome's presence is itself
+// evidence:
 //
-//   - report present, non-empty class → the child's own outcome is authoritative
+//   - outcome present, non-empty class → the child's own outcome is authoritative
 //     (it catches an epic whose fault lives on a sub-issue's checkpoint);
-//   - report present, empty class → a clean finish; the checkpoint-derived
+//   - outcome present, empty class → a clean finish; the checkpoint-derived
 //     outcome (a give-up, or "" for done) stands;
-//   - report absent → the child died without recording an outcome (SIGKILL,
-//     crash, or a failed write). A checkpoint failure class still stands, and a
+//   - outcome absent → the child died without recording an outcome (SIGKILL,
+//     crash, or a failed post). A checkpoint failure class still stands, and a
 //     ticket the checkpoint proves merged still settles done, but otherwise the
 //     outcome is unknown (classUnknown) and must not settle done — an epic never
 //     has a checkpoint of its own, so a dead epic child lands here.
-func (d *drainer) reconcileOutcome(root, runsDir string, it queue.Item) (class, reason string) {
+//
+// A hub store read error reads as absent, keeping the safe path: never settle
+// done on missing evidence.
+func (d *drainer) reconcileOutcome(root string, it queue.Item) (class, reason string) {
 	class, reason = d.outcome(root, it)
-	if rep, ok := queue.ReadReport(reportPath(runsDir)); ok {
-		_ = os.Remove(reportPath(runsDir))
+	if rep, found, err := d.srv.stores.DrainOutcomes().One(root, it.ID); err == nil && found {
+		_ = d.srv.stores.DrainOutcomes().Remove(root, it.ID)
 		if rep.Class != "" {
 			class, reason = rep.Class, rep.Reason
 		}
@@ -230,20 +233,13 @@ func duplicateReason(items []queue.Item, next queue.Item) (string, bool) {
 	return "", false
 }
 
-// reportPath is where a queued child writes its drain report, under the repo's
-// resolved runs dir; one path per repo is safe because the drain runs children
-// strictly one at a time.
-func reportPath(runsDir string) string {
-	return filepath.Join(runsDir, ".drain-report")
-}
-
 // repoRunsDir resolves the runs dir a loop child launched in root writes to,
 // mirroring how the child itself resolves config: the repo-root .trau.ini and
 // ~/.trau.ini layers plus the repo-root-local trau.ini the child reads because it
 // runs with root as its working directory. A relative RUNS_DIR resolves against
-// the repo root; an unset value or a config error falls back to the default. This
-// is what keeps the drainer reading checkpoints and writing the drain report
-// where the child actually put them, not a hardcoded .trau/runs.
+// the repo root; an unset value or a config error falls back to the default. It
+// is what keeps the hub folding a repo's file-era run data in from where the
+// child actually put it, not a hardcoded .trau/runs.
 func repoRunsDir(root string) string {
 	projectPath := config.ProjectConfigPath(root)
 	var userPath string
@@ -293,8 +289,9 @@ func classifyDrainOutcome(class, onFault string) (status string, pause bool) {
 // spec is the launch a queued item spawns: a ticket runs as the existing
 // run-once, an epic as the existing epic flow, matching the /instances start
 // paths so a queued run is indistinguishable from a manual one. noResume ignores
-// stored checkpoints, and every child leaves a drain report for its outcome.
-func (d *drainer) spec(root, runsDir string, it queue.Item, noResume bool) SpawnSpec {
+// stored checkpoints. --drain-report carries the ticket the child reports its
+// exit outcome under, so the child posts to the hub keyed by it.
+func (d *drainer) spec(root string, it queue.Item, noResume bool) SpawnSpec {
 	args := []string{"--repo", root, "--no-tui"}
 	if it.Kind == queue.KindEpic {
 		args = append(args, "--parent", it.ID)
@@ -304,7 +301,7 @@ func (d *drainer) spec(root, runsDir string, it queue.Item, noResume bool) Spawn
 	if noResume {
 		args = append(args, "--no-resume")
 	}
-	args = append(args, "--drain-report", reportPath(runsDir))
+	args = append(args, "--drain-report", it.ID)
 	return SpawnSpec{Dir: root, Args: args, Env: childEnv(d.srv.home)}
 }
 

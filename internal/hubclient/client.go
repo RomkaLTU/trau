@@ -181,6 +181,29 @@ type artifactBody struct {
 	Content string `json:"content"`
 }
 
+// drainOutcomeBody carries a queued child's exit outcome on the wire: the failure
+// class and reason, both empty for a clean finish.
+type drainOutcomeBody struct {
+	Class  string `json:"class,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// phaseLogBody carries a phase log's content on a write.
+type phaseLogBody struct {
+	Content string `json:"content"`
+}
+
+// PhaseLog is one phase's stored agent output as the hub returns it in a list.
+type PhaseLog struct {
+	Phase   string    `json:"phase"`
+	Content string    `json:"content"`
+	Updated time.Time `json:"updated"`
+}
+
+type phaseLogsBody struct {
+	Logs []PhaseLog `json:"logs"`
+}
+
 // TokenCall is one normalized provider call the loop child sends to the hub for the
 // authoritative token ledger (ADR 0008). Ticket buckets the call (a ticket id, or
 // _loop / _plans); CostUSD is nil for a call a provider reported no per-call cost
@@ -346,6 +369,46 @@ func (c *Client) DeleteArtifacts(ctx context.Context, repo, ticket string) error
 	return err
 }
 
+// PutDrainOutcome records a queued child's exit outcome — the failure class and
+// reason it hit, both empty for a clean finish — with the hub, keyed by ticket.
+// The drainer reads it to settle the item. A hub-connection failure surfaces as
+// an IsUnreachable error so the caller can retry; the request is idempotent.
+func (c *Client) PutDrainOutcome(ctx context.Context, repo, ticket, class, reason string) error {
+	return c.do(ctx, http.MethodPut, c.drainOutcomePath(repo, ticket), drainOutcomeBody{Class: class, Reason: reason}, nil)
+}
+
+// PutPhaseLog stores a ticket's log for a phase with the hub, replacing any prior
+// content for that phase. The inspector reads it back with PhaseLogs. A
+// hub-connection failure surfaces as an IsUnreachable error so the caller can
+// retry; the request is idempotent.
+func (c *Client) PutPhaseLog(ctx context.Context, repo, ticket, phase, content string) error {
+	return c.do(ctx, http.MethodPut, c.phaseLogPath(repo, ticket, phase), phaseLogBody{Content: content}, nil)
+}
+
+// PhaseLogs returns a ticket's stored phase logs, most-recently-written first. A
+// ticket with none yields an empty slice, not an error.
+func (c *Client) PhaseLogs(ctx context.Context, repo, ticket string) ([]PhaseLog, error) {
+	var out phaseLogsBody
+	err := c.do(ctx, http.MethodGet, c.phaseLogsPath(repo, ticket), nil, &out)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return out.Logs, nil
+}
+
+// DeletePhaseLogs drops every phase log the hub holds for a ticket — the
+// reset/clear/fresh-build sweep. A ticket with none is not an error.
+func (c *Client) DeletePhaseLogs(ctx context.Context, repo, ticket string) error {
+	err := c.do(ctx, http.MethodDelete, c.phaseLogsPath(repo, ticket), nil, nil)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 // InternalIssue fetches a single internal issue, returning ErrNotFound when the
 // hub has no internal issue with that identifier.
 func (c *Client) InternalIssue(ctx context.Context, repo, id string) (Issue, error) {
@@ -435,6 +498,18 @@ func (c *Client) artifactsPath(repo, ticket string) string {
 
 func (c *Client) artifactPath(repo, ticket, kind string) string {
 	return c.artifactsPath(repo, ticket) + "/" + url.PathEscape(kind)
+}
+
+func (c *Client) drainOutcomePath(repo, ticket string) string {
+	return c.repoPath(repo, "runs/"+url.PathEscape(ticket)+"/drain-outcome")
+}
+
+func (c *Client) phaseLogsPath(repo, ticket string) string {
+	return c.repoPath(repo, "runs/"+url.PathEscape(ticket)+"/logs")
+}
+
+func (c *Client) phaseLogPath(repo, ticket, phase string) string {
+	return c.phaseLogsPath(repo, ticket) + "/" + url.PathEscape(phase)
 }
 
 func (c *Client) issuePath(repo, id, verb string) string {

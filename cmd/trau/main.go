@@ -39,11 +39,11 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubcheckpoint"
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/hubevent"
+	"github.com/RomkaLTU/trau/internal/hubphaselog"
 	"github.com/RomkaLTU/trau/internal/hubtokens"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
 	"github.com/RomkaLTU/trau/internal/planning"
-	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
@@ -276,6 +276,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return console.Actionable(err, "clear "+opts.ClearID, "check the web hub is reachable")
 		}
 		if err := newArtifactStore(cfg, cfg.RepoRoot).Remove(opts.ClearID); err != nil {
+			return console.Actionable(err, "clear "+opts.ClearID, "check the web hub is reachable")
+		}
+		if err := newPhaseLogStore(cfg, cfg.RepoRoot).Remove(opts.ClearID); err != nil {
 			return console.Actionable(err, "clear "+opts.ClearID, "check the web hub is reachable")
 		}
 		if was == "" {
@@ -532,19 +535,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}, con, result)
 
 	if opts.DrainReport != "" {
-		var rep queue.DrainReport
+		var class, reason string
 		switch {
 		case pipeline.IsPaused(lerr):
-			rep.Class = state.FailPaused
-			rep.Reason = lerr.Error()
+			class, reason = state.FailPaused, lerr.Error()
 		case pipeline.IsFault(lerr):
-			rep.Class = state.FailFaulted
-			rep.Reason = lerr.Error()
+			class, reason = state.FailFaulted, lerr.Error()
 		}
-		if werr := queue.WriteReport(opts.DrainReport, rep); werr != nil {
-			logger.Verbosef("drain report write failed: %v", werr)
-			log.Emit("drain_report_error", "", fmt.Sprintf("drain report write failed: %v", werr),
-				map[string]any{"path": opts.DrainReport, "error": werr.Error()})
+		hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+		if werr := hub.PutDrainOutcome(context.Background(), repoName(cfg.RepoRoot), opts.DrainReport, class, reason); werr != nil {
+			logger.Verbosef("drain report post failed: %v", werr)
+			log.Emit("drain_report_error", "", fmt.Sprintf("drain report post failed: %v", werr),
+				map[string]any{"ticket": opts.DrainReport, "error": werr.Error()})
 		}
 	}
 
@@ -930,6 +932,15 @@ func newArtifactStore(cfg config.Config, repoRoot string) pipeline.ArtifactStore
 	return hubartifact.New(hub, repoName(repoRoot), window, hubclient.IsUnreachable)
 }
 
+// newPhaseLogStore is the hub-backed client for the per-phase agent logs the TUI
+// log inspector browses (ADR 0008); the child posts each phase's output to the
+// serve hub over HTTP and the inspector reads them back, writing no run files.
+func newPhaseLogStore(cfg config.Config, repoRoot string) *hubphaselog.Store {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	window := time.Duration(cfg.HubWriteRetryWindow) * time.Second
+	return hubphaselog.New(hub, repoName(repoRoot), window, hubclient.IsUnreachable)
+}
+
 // newTokenSink is the hub-backed token/cost sink: the child posts every provider
 // call's usage to the serve hub over HTTP (ADR 0008) and reads ticket/day totals
 // back from it, writing no per-run token files. Close it to flush the tail before
@@ -969,6 +980,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		Runner:              runner,
 		State:               newCheckpointStore(cfg, repoRoot),
 		Artifacts:           newArtifactStore(cfg, repoRoot),
+		PhaseLogs:           newPhaseLogStore(cfg, repoRoot),
 		Git:                 pipeline.ExecGit{Repo: repoRoot},
 		GitHub:              pipeline.ExecGitHub{Repo: repoRoot},
 		Tracker:             pm,
@@ -1374,6 +1386,7 @@ func runSession(ctx context.Context, cfg config.Config, opts config.Options, std
 		log:     log,
 		sink:    newTokenSink(cfg),
 		store:   newCheckpointStore(cfg, cfg.RepoRoot),
+		logs:    newPhaseLogStore(cfg, cfg.RepoRoot),
 		scope:   scopeFor(cfg, ""),
 		maxIter: maxIter,
 	}
@@ -1404,6 +1417,7 @@ type appActions struct {
 	log     *event.Log
 	sink    *hubtokens.Sink
 	store   state.Checkpoints
+	logs    *hubphaselog.Store
 	scope   tracker.Scope
 	maxIter int
 
@@ -2031,8 +2045,7 @@ func (a *appActions) LogRuns() []tui.LogRun {
 // tail of the most recent phase log so the latest output/error is immediately
 // visible, then the full concatenated phase logs.
 func (a *appActions) LogContent(id string) string {
-	dir := filepath.Join(a.cfg.RunsDir, id)
-	entries, err := os.ReadDir(dir)
+	logs, err := a.logs.List(id)
 	if err != nil {
 		return ""
 	}
@@ -2043,50 +2056,20 @@ func (a *appActions) LogContent(id string) string {
 	}
 	failureReason := a.store.Get(id, "FAILURE_REASON")
 
-	type logFile struct {
-		name  string
-		phase string
-		mtime time.Time
-	}
-	var files []logFile
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
-			continue
-		}
-		info, err := e.Info()
-		if err != nil {
-			continue
-		}
-		phase := strings.TrimSuffix(e.Name(), ".log")
-		files = append(files, logFile{
-			name:  e.Name(),
-			phase: phase,
-			mtime: info.ModTime(),
-		})
-	}
-
 	var b strings.Builder
 	_, _ = fmt.Fprintf(&b, "══ %s ══\nphase: %s\n", id, phase)
 	if failureReason != "" {
 		_, _ = fmt.Fprintf(&b, "failure: %s\n", failureReason)
 	}
 
-	if len(files) == 0 {
+	if len(logs) == 0 {
 		b.WriteString("\n(no phase logs)\n")
 		return b.String()
 	}
 
-	// Sort by modification time descending so the most recently written phase
-	// appears first. Filename is the tie-breaker for identical mtimes.
-	sort.Slice(files, func(i, j int) bool {
-		if !files[i].mtime.Equal(files[j].mtime) {
-			return files[i].mtime.After(files[j].mtime)
-		}
-		return files[i].name > files[j].name
-	})
-
-	// Show the tail of the most recent log up front.
-	latest, _ := os.ReadFile(filepath.Join(dir, files[0].name))
+	// The store returns logs most-recently-written first. Show the tail of the
+	// newest up front so the latest output/error is immediately visible.
+	latest := []byte(logs[0].Content)
 	b.WriteString("\n── latest output ──\n")
 	if len(latest) == 0 {
 		b.WriteString("(empty log)\n")
@@ -2096,13 +2079,12 @@ func (a *appActions) LogContent(id string) string {
 
 	// Then the full logs for deeper inspection.
 	b.WriteString("\n── full logs ──\n")
-	for _, f := range files {
-		data, err := os.ReadFile(filepath.Join(dir, f.name))
-		if err != nil || len(data) == 0 {
+	for _, l := range logs {
+		if l.Content == "" {
 			continue
 		}
-		_, _ = fmt.Fprintf(&b, "\n── %s ──\n", f.phase)
-		b.Write(data)
+		_, _ = fmt.Fprintf(&b, "\n── %s ──\n", l.Phase)
+		b.WriteString(l.Content)
 	}
 	return b.String()
 }

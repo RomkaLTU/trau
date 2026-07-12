@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -141,14 +140,15 @@ func TestHandoffAndCleanupOverlaps(t *testing.T) {
 	if got := p.State.Get(id, "PHASE"); got != state.HandedOff {
 		t.Errorf("PHASE = %q, want %q after both sides finish", got, state.HandedOff)
 	}
+	logs := p.PhaseLogs.(*memPhaseLogs)
 	for phase, want := range map[string]string{"handoff": "handoff-ok", "lintfix": "lintfix-ok", "cleanup": "cleanup-ok"} {
-		data, err := os.ReadFile(filepath.Join(p.RunsDir, id, phase+".log"))
-		if err != nil {
-			t.Errorf("read %s transcript: %v", phase, err)
+		got, ok := logs.get(id, phase)
+		if !ok {
+			t.Errorf("no stored %s transcript", phase)
 			continue
 		}
-		if string(data) != want {
-			t.Errorf("%s transcript = %q, want %q", phase, string(data), want)
+		if got != want {
+			t.Errorf("%s transcript = %q, want %q", phase, got, want)
 		}
 	}
 }

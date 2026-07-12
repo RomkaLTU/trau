@@ -34,6 +34,31 @@ func (a *memArtifacts) Remove(id string) error {
 	return nil
 }
 
+// memPhaseLogs is an in-memory PhaseLogStore standing in for the hub-backed store
+// so a pipeline test can read back what a phase persisted without a serve process.
+type memPhaseLogs struct{ m map[string]string }
+
+func newMemPhaseLogs() *memPhaseLogs { return &memPhaseLogs{m: map[string]string{}} }
+
+func (l *memPhaseLogs) Put(id, phase, content string) error {
+	l.m[id+"/"+phase] = content
+	return nil
+}
+
+func (l *memPhaseLogs) Remove(id string) error {
+	for k := range l.m {
+		if strings.HasPrefix(k, id+"/") {
+			delete(l.m, k)
+		}
+	}
+	return nil
+}
+
+func (l *memPhaseLogs) get(id, phase string) (string, bool) {
+	c, ok := l.m[id+"/"+phase]
+	return c, ok
+}
+
 func TestBuildNotesPersistRestoreRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	store := newMemArtifacts()

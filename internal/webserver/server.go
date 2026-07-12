@@ -97,6 +97,7 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 	s.drainCtx = ctx
 	s.importAllCheckpoints()
 	s.importAllArtifacts()
+	s.importAllPhaseLogs()
 	for _, root := range s.effectiveRoots() {
 		items, draining, err := s.stores.Queue(root).Snapshot()
 		if err != nil {
@@ -188,6 +189,9 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/checkpoint", s.handleRunCheckpoint)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/artifacts", s.handleRunArtifacts)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/artifacts/{kind}", s.handleRunArtifact)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/drain-outcome", s.handleRunDrainOutcome)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/logs", s.handleRunPhaseLogs)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/logs/{phase}", s.handleRunPhaseLog)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/tokens", s.handleRunTokens)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/anomalies", s.handleRunAnomalies)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/tokens", s.handleRepoTokens)

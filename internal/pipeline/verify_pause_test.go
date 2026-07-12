@@ -105,6 +105,7 @@ func newTestPipeline(t *testing.T, runner agent.Runner, tr tracker.Tracker) *Pip
 		Tracker:     tr,
 		Git:         fakeGit{},
 		State:       state.NewStore(dir),
+		PhaseLogs:   newMemPhaseLogs(),
 		RunsDir:     dir,
 		Base:        "main",
 		Prefix:      "COD",
