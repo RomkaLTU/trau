@@ -328,7 +328,7 @@ func (d *drainer) checkpointOutcome(root string, it queue.Item) (class, reason s
 // run, and does not block; every other state (or a legacy entry with no state)
 // means a run is in flight or holding WIP.
 func (d *drainer) repoHasLiveInstance(root string) bool {
-	for _, e := range registry.Live(d.srv.home) {
+	for _, e := range d.srv.liveInstances() {
 		if e.RepoRoot == root && e.SessionState != registry.StateIdle {
 			return true
 		}

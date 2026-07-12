@@ -153,7 +153,7 @@ func (s *Server) importCheckpoints(repo registry.Repo) {
 // table, off any request path — the serve-startup counterpart to the per-repo
 // lazy import.
 func (s *Server) importAllCheckpoints() {
-	for _, repo := range s.knownRepos(registry.Live(s.home)) {
+	for _, repo := range s.knownRepos(s.liveInstances()) {
 		s.importCheckpoints(repo)
 	}
 }
@@ -323,7 +323,7 @@ func (s *Server) refuseWhenLive(w http.ResponseWriter, repo registry.Repo) bool 
 // running loop.
 func (s *Server) liveInstance(root string) (registry.Entry, bool) {
 	cleaned := filepath.Clean(root)
-	for _, e := range registry.Live(s.home) {
+	for _, e := range s.liveInstances() {
 		if filepath.Clean(e.RepoRoot) == cleaned {
 			return e, true
 		}

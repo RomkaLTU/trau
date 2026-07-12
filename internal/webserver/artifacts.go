@@ -108,7 +108,7 @@ func (s *Server) importArtifacts(repo registry.Repo) {
 // importAllArtifacts folds every known repo's file-era artifacts into the table,
 // off any request path — the serve-startup counterpart to the per-repo lazy import.
 func (s *Server) importAllArtifacts() {
-	for _, repo := range s.knownRepos(registry.Live(s.home)) {
+	for _, repo := range s.knownRepos(s.liveInstances()) {
 		s.importArtifacts(repo)
 	}
 }

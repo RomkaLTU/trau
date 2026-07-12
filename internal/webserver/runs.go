@@ -116,7 +116,7 @@ func (s *Server) handleRuns(w http.ResponseWriter, r *http.Request) {
 // that have never run so they are startable before their first loop. It is a
 // pure read: the known set is persisted off the request path by the sweep.
 func (s *Server) repoViews() []RepoView {
-	entries := registry.Live(s.home)
+	entries := s.liveInstances()
 	live := make(map[string]bool, len(entries))
 	for _, e := range entries {
 		live[e.RepoRoot] = true
@@ -180,7 +180,7 @@ func (s *Server) findRepo(name string) (registry.Repo, bool) {
 	if name == "" {
 		return registry.Repo{}, false
 	}
-	for _, repo := range s.knownRepos(registry.Live(s.home)) {
+	for _, repo := range s.knownRepos(s.liveInstances()) {
 		if repo.Name == name {
 			return repo, true
 		}

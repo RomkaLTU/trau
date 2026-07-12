@@ -451,7 +451,7 @@ func parseEpicSubIssues(stdout []byte) ([]EpicSubIssue, error) {
 }
 
 func (s *Server) registered(pid int) bool {
-	for _, e := range registry.Live(s.home) {
+	for _, e := range s.liveInstances() {
 		if e.PID == pid {
 			return true
 		}
