@@ -270,10 +270,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	sink := tokens.New(cfg.RunsDir)
 
 	if opts.ClearID != "" {
-		store := state.NewStore(cfg.RunsDir)
+		ensureHubForStore(ctx, cfg, stderr)
+		store := newCheckpointStore(cfg, cfg.RepoRoot)
 		was := store.Get(opts.ClearID, "PHASE")
 		if err := store.RemoveState(opts.ClearID); err != nil {
-			return console.Actionable(err, "clear "+opts.ClearID, "check write permissions on "+cfg.RunsDir)
+			return console.Actionable(err, "clear "+opts.ClearID, "check the web hub is reachable")
 		}
 		if was == "" {
 			con.Logf("No saved checkpoint for %s — nothing to clear.", opts.ClearID)
@@ -284,7 +285,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	if opts.Status {
-		store := state.NewStore(cfg.RunsDir)
+		ensureHubForStore(ctx, cfg, stderr)
+		store := newCheckpointStore(cfg, cfg.RepoRoot)
 		reconciled := reconcileCheckpoints(ctx, cfg, log, sink, store)
 		var report any
 		if lim := budgetLimits(cfg); lim.Enabled() {
@@ -294,13 +296,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		planBucket := state.Bucket{ID: tokens.PlanBucket, Label: "planning"}
 		if opts.JSON {
-			return store.StatusJSON(stdout, sink.Total, report, reconciledIDs(reconciled), planBucket)
+			return state.WriteStatusJSON(stdout, store, sink.Total, report, reconciledIDs(reconciled), planBucket)
 		}
 		for _, rt := range reconciled {
 			con.Logf("↳ %s is %s on the tracker — cleared stale %s checkpoint", rt.ID, rt.Status, rt.Phase)
 		}
 		con.Logf("Saved ticket checkpoints:")
-		store.Status(stdout, sink.Total, planBucket)
+		state.WriteStatus(stdout, store, cfg.RunsDir, sink.Total, planBucket)
 		if r, ok := report.(budget.Report); ok {
 			_, _ = fmt.Fprintf(stdout, "  %s\n", r.Summary())
 		}
@@ -704,7 +706,7 @@ func reconciledIDs(ts []reconciledTicket) []string {
 // reconciliation (the status report still prints). Each query is time-bounded so a
 // hung MCP call can't stall --status, and a query error or StatusUnknown leaves the
 // checkpoint intact rather than risk clearing live work.
-func reconcileCheckpoints(ctx context.Context, cfg config.Config, log *event.Log, sink *tokens.Sink, store *state.Store) []reconciledTicket {
+func reconcileCheckpoints(ctx context.Context, cfg config.Config, log *event.Log, sink *tokens.Sink, store state.Checkpoints) []reconciledTicket {
 	if !hasReconcileCandidate(store) {
 		return nil
 	}
@@ -729,7 +731,7 @@ func reconcileCheckpoints(ctx context.Context, cfg config.Config, log *event.Log
 // hasReconcileCandidate reports whether any saved checkpoint is in a reconcilable
 // (in-flight/quarantined) phase, so callers can skip building a provider/tracker
 // when there is nothing to cross-check.
-func hasReconcileCandidate(store *state.Store) bool {
+func hasReconcileCandidate(store state.Checkpoints) bool {
 	for _, id := range store.Tickets() {
 		if state.Reconcilable(store.Get(id, "PHASE")) {
 			return true
@@ -744,7 +746,7 @@ func hasReconcileCandidate(store *state.Store) bool {
 // caller; a query error or StatusUnknown leaves the checkpoint intact rather than
 // risk clearing live work. Shared by the --status CLI path and the TUI status
 // screen's on-demand reconcile.
-func reconcileWith(ctx context.Context, store *state.Store, statuser tracker.IssueStatuser) []reconciledTicket {
+func reconcileWith(ctx context.Context, store state.Checkpoints, statuser tracker.IssueStatuser) []reconciledTicket {
 	var cleared []reconciledTicket
 	for _, id := range store.Tickets() {
 		phase := store.Get(id, "PHASE")
@@ -1352,7 +1354,7 @@ func runSession(ctx context.Context, cfg config.Config, opts config.Options, std
 		stderr:  io.Discard,
 		log:     log,
 		sink:    tokens.New(cfg.RunsDir),
-		store:   state.NewStore(cfg.RunsDir),
+		store:   newCheckpointStore(cfg, cfg.RepoRoot),
 		scope:   scopeFor(cfg, ""),
 		maxIter: maxIter,
 	}
@@ -1381,7 +1383,7 @@ type appActions struct {
 	stderr  io.Writer
 	log     *event.Log
 	sink    *tokens.Sink
-	store   *state.Store
+	store   state.Checkpoints
 	scope   tracker.Scope
 	maxIter int
 
@@ -1915,7 +1917,7 @@ func (a *appActions) MenuInfo() tui.MenuInfo {
 		}
 	}
 	resume := tui.ResumeTarget{}
-	if id, phase := a.store.ResumeTarget(); id != "" {
+	if id, phase := a.store.ResumeTargetFunc(nil); id != "" {
 		resume = tui.ResumeTarget{
 			ID:    id,
 			Phase: pipeline.NextPhaseLabel(phase),
@@ -1995,7 +1997,7 @@ func (a *appActions) LogRuns() []tui.LogRun {
 			Phase:         a.store.Get(id, "PHASE"),
 			Updated:       updated,
 			FailureReason: a.store.Get(id, "FAILURE_REASON"),
-			Path:          filepath.Join(a.store.Root(), id),
+			Path:          filepath.Join(a.cfg.RunsDir, id),
 		})
 	}
 	sort.Slice(runs, func(i, j int) bool {
@@ -2009,7 +2011,7 @@ func (a *appActions) LogRuns() []tui.LogRun {
 // tail of the most recent phase log so the latest output/error is immediately
 // visible, then the full concatenated phase logs.
 func (a *appActions) LogContent(id string) string {
-	dir := filepath.Join(a.store.Root(), id)
+	dir := filepath.Join(a.cfg.RunsDir, id)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return ""

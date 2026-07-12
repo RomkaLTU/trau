@@ -406,19 +406,22 @@ func bucketRows(extra []Bucket, total func(id string) (int, float64, bool)) []bu
 	return rows
 }
 
-// Status writes the --status report to w: a header, one row per ticket with
-// saved state (ID, PHASE, TOKENS, COST, PR), a row per non-ticket bucket that has
-// spend (extra, e.g. the planning bucket), and a grand-total row. total supplies
-// each id's (tokens, cost) — the caller injects tokens.Sink.Total, keeping this
-// package independent of the tokens package. It never errors; an empty runs/ with
-// no bucket spend prints a "no saved state" line.
-func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost float64, metered bool), extra ...Bucket) {
+// WriteStatus writes the --status report to w: a header, one row per ticket with
+// a saved checkpoint (ID, PHASE, TOKENS, COST, PR), a row per non-ticket bucket
+// that has spend (extra, e.g. the planning bucket), and a grand-total row. It
+// reads every ticket through cps — the authoritative checkpoint store — so the
+// plain and JSON reports render identically whether checkpoints live in the hub
+// or a legacy file store. total supplies each id's (tokens, cost); the caller
+// injects tokens.Sink.Total, keeping this package independent of the tokens
+// package. location names the runs dir for the empty-state line. It never errors;
+// no checkpoints and no bucket spend prints a "no saved state" line.
+func WriteStatus(w io.Writer, cps Checkpoints, location string, total func(id string) (tokens int, cost float64, metered bool), extra ...Bucket) {
 	_, _ = fmt.Fprintf(w, "  %-10s %-12s %12s %9s %5s  %s\n", "ID", "PHASE", "TOKENS", "COST", "ANOM", "PR")
 
-	ids := s.Tickets()
+	ids := cps.Tickets()
 	buckets := bucketRows(extra, total)
 	if len(ids) == 0 && len(buckets) == 0 {
-		_, _ = fmt.Fprintf(w, "  (no saved ticket state in %s)\n", s.root)
+		_, _ = fmt.Fprintf(w, "  (no saved ticket state in %s)\n", location)
 		return
 	}
 
@@ -426,12 +429,12 @@ func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost floa
 	var grandCost float64
 	grandMetered := true
 	for _, id := range ids {
-		phase := s.Get(id, "PHASE")
+		phase := cps.Get(id, "PHASE")
 		if phase == "" {
 			phase = "?"
 		}
 		tok, cost, metered := total(id)
-		_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s %5s  %s\n", id, phase, tok, fmtCostCell(cost, metered), s.Get(id, "ANOMALIES"), s.Get(id, "PR_URL"))
+		_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s %5s  %s\n", id, phase, tok, fmtCostCell(cost, metered), cps.Get(id, "ANOMALIES"), cps.Get(id, "PR_URL"))
 		grandTokens += tok
 		grandCost = math.Round((grandCost+cost)*100) / 100
 		grandMetered = grandMetered && metered
@@ -445,14 +448,14 @@ func (s *Store) Status(w io.Writer, total func(id string) (tokens int, cost floa
 	_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s\n", "TOTAL", "", grandTokens, fmtCostCell(grandCost, grandMetered))
 }
 
-// StatusJSON writes the saved checkpoints as a single machine-readable JSON
+// WriteStatusJSON writes the saved checkpoints as a single machine-readable JSON
 // object: a tickets array (id/title/phase/pr_url/tokens/cost) plus a summed
-// total. It mirrors Status's data but stays byte-stable for scripts piping
-// `trau --status --json` into jq. No header line is written, so stdout carries
-// only the JSON document. budget, when non-nil, is marshaled under a "budget" key
-// (the configured caps + the day's spend); state takes it as any so it need not
-// depend on the budget package.
-func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost float64, metered bool), budget any, reconciled []string, extra ...Bucket) error {
+// total. It reads every ticket through cps and mirrors WriteStatus's data but
+// stays byte-stable for scripts piping `trau --status --json` into jq. No header
+// line is written, so stdout carries only the JSON document. budget, when
+// non-nil, is marshaled under a "budget" key (the configured caps + the day's
+// spend); state takes it as any so it need not depend on the budget package.
+func WriteStatusJSON(w io.Writer, cps Checkpoints, total func(id string) (tokens int, cost float64, metered bool), budget any, reconciled []string, extra ...Bucket) error {
 	type ticket struct {
 		ID            string  `json:"id"`
 		Title         string  `json:"title,omitempty"`
@@ -486,18 +489,18 @@ func (s *Store) StatusJSON(w io.Writer, total func(id string) (tokens int, cost 
 	report.Total.CostMeasured = true
 	report.Budget = budget
 	report.Reconciled = reconciled
-	for _, id := range s.Tickets() {
+	for _, id := range cps.Tickets() {
 		tok, cost, metered := total(id)
 		report.Tickets = append(report.Tickets, ticket{
 			ID:            id,
-			Title:         s.Get(id, "TITLE"),
-			Phase:         s.Get(id, "PHASE"),
-			PRURL:         s.Get(id, "PR_URL"),
-			FailureReason: s.Get(id, "FAILURE_REASON"),
+			Title:         cps.Get(id, "TITLE"),
+			Phase:         cps.Get(id, "PHASE"),
+			PRURL:         cps.Get(id, "PR_URL"),
+			FailureReason: cps.Get(id, "FAILURE_REASON"),
 			Tokens:        tok,
 			Cost:          cost,
 			CostMeasured:  metered,
-			Anomalies:     atoiSafe(s.Get(id, "ANOMALIES")),
+			Anomalies:     atoiSafe(cps.Get(id, "ANOMALIES")),
 		})
 		report.Total.Tokens += tok
 		report.Total.Cost = math.Round((report.Total.Cost+cost)*100) / 100

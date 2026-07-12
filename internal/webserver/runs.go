@@ -227,31 +227,6 @@ func runViewFromCheckpoint(tc hubstore.TicketCheckpoint) RunView {
 	}
 }
 
-// runView builds one ticket's row from its legacy state file — the fallback the
-// run detail page reads for a ticket that predates the hub cutover and has not
-// yet been folded into the authoritative checkpoints table.
-func runView(store *state.Store, id string) RunView {
-	phase := store.Get(id, "PHASE")
-	reason := store.Get(id, "FAILURE_REASON")
-	class := state.FailureClass(phase, store.Get(id, "FAILURE_CLASS"), reason)
-	if phase == state.Merged {
-		reason = ""
-	}
-	return RunView{
-		Ticket:        id,
-		Title:         store.Get(id, "TITLE"),
-		Phase:         phase,
-		PhaseRank:     state.Idx(phase),
-		Terminal:      state.Terminal(phase),
-		Branch:        store.Get(id, "BRANCH"),
-		PR:            store.Get(id, "PR"),
-		PRURL:         store.Get(id, "PR_URL"),
-		FailureClass:  class,
-		FailureReason: reason,
-		UpdatedAt:     store.Get(id, "UPDATED"),
-	}
-}
-
 // checkpointField pulls one raw state key out of a checkpoint's JSON data blob,
 // the board's source for fields it does not project into a column (the stored
 // failure class). A missing key or unparseable blob reads as empty.

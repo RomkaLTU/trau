@@ -40,7 +40,7 @@ type drainer struct {
 	poll     time.Duration
 	alive    func(pid int) bool
 	repoLive func(root string) bool
-	outcome  func(runsDir string, it queue.Item) (class, reason string)
+	outcome  func(root string, it queue.Item) (class, reason string)
 
 	mu     sync.Mutex
 	active map[string]context.CancelFunc
@@ -114,7 +114,7 @@ func (d *drainer) tick(root string) (drainAction, error) {
 		if d.alive(running.PID) {
 			return drainWait, nil
 		}
-		class, reason := d.reconcileOutcome(runsDir, running)
+		class, reason := d.reconcileOutcome(root, runsDir, running)
 		if status, pause := classifyDrainOutcome(class, meta.OnFault); pause {
 			if err := store.Pause(running.ID, reason); err != nil {
 				return drainWait, err
@@ -179,8 +179,8 @@ const classUnknown = "unknown"
 //     ticket the checkpoint proves merged still settles done, but otherwise the
 //     outcome is unknown (classUnknown) and must not settle done — an epic never
 //     has a checkpoint of its own, so a dead epic child lands here.
-func (d *drainer) reconcileOutcome(runsDir string, it queue.Item) (class, reason string) {
-	class, reason = d.outcome(runsDir, it)
+func (d *drainer) reconcileOutcome(root, runsDir string, it queue.Item) (class, reason string) {
+	class, reason = d.outcome(root, it)
 	if rep, ok := queue.ReadReport(reportPath(runsDir)); ok {
 		_ = os.Remove(reportPath(runsDir))
 		if rep.Class != "" {
@@ -188,7 +188,7 @@ func (d *drainer) reconcileOutcome(runsDir string, it queue.Item) (class, reason
 		}
 		return class, reason
 	}
-	if class == "" && !d.cleanFinish(runsDir, it) {
+	if class == "" && !d.cleanFinish(root, it) {
 		return classUnknown, "child exited without a drain report — outcome unknown"
 	}
 	return class, reason
@@ -196,13 +196,14 @@ func (d *drainer) reconcileOutcome(runsDir string, it queue.Item) (class, reason
 
 // cleanFinish reports whether a report-absent child nonetheless left durable
 // proof on its checkpoint that it finished cleanly: a ticket item whose phase
-// reached merged. An epic has no checkpoint of its own, so its only clean-finish
-// proof is a present, empty report; a report-absent epic is never a clean finish.
-func (d *drainer) cleanFinish(runsDir string, it queue.Item) bool {
+// reached merged in the authoritative checkpoints table. An epic has no
+// checkpoint of its own, so its only clean-finish proof is a present, empty
+// report; a report-absent epic is never a clean finish.
+func (d *drainer) cleanFinish(root string, it queue.Item) bool {
 	if it.Kind == queue.KindEpic {
 		return false
 	}
-	return state.NewStore(runsDir).Get(it.ID, "PHASE") == state.Merged
+	return d.srv.stores.Checkpoints().Phase(root, it.ID) == state.Merged
 }
 
 // duplicateReason reports whether a next-to-run ticket is already covered by an
@@ -307,19 +308,21 @@ func (d *drainer) spec(root, runsDir string, it queue.Item, noResume bool) Spawn
 	return SpawnSpec{Dir: root, Args: args, Env: childEnv(d.srv.home)}
 }
 
-// checkpointOutcome reads the finished child's recorded checkpoint — its phase
-// and the loop's own failure marker/reason, never agent output — and returns the
-// loop's failure class plus the reason to surface. A merged or healthy run
-// classifies as no failure ("").
-func (d *drainer) checkpointOutcome(runsDir string, it queue.Item) (class, reason string) {
-	store := state.NewStore(runsDir)
-	phase := store.Get(it.ID, "PHASE")
-	reason = store.Get(it.ID, "FAILURE_REASON")
-	class = state.FailureClass(phase, store.Get(it.ID, "FAILURE_CLASS"), reason)
-	if class == "" {
-		reason = ""
+// checkpointOutcome reads the finished child's recorded checkpoint from the
+// authoritative table — its phase and the loop's own failure marker/reason, never
+// agent output — and returns the loop's failure class plus the reason to surface.
+// A merged or healthy run, or a ticket with no checkpoint, classifies as no
+// failure ("").
+func (d *drainer) checkpointOutcome(root string, it queue.Item) (class, reason string) {
+	row, found, err := d.srv.stores.Checkpoints().One(root, it.ID)
+	if err != nil || !found {
+		return "", ""
 	}
-	return class, reason
+	class = state.FailureClass(row.Phase, checkpointField(row.Data, "FAILURE_CLASS"), row.FailureReason)
+	if class == "" {
+		return "", ""
+	}
+	return class, row.FailureReason
 }
 
 // repoHasLiveInstance reports whether a loop — a manual loop or a Run once — is
