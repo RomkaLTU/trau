@@ -69,15 +69,18 @@ func (d *DB) Close() error { return d.sql.Close() }
 
 // Health describes the hub database's state for `trau doctor`.
 type Health struct {
-	Path    string
-	Exists  bool
-	Version int
-	Err     error
+	Path      string
+	Exists    bool
+	Version   int
+	SizeBytes int64
+	Err       error
 }
 
-// CheckHealth reports the hub database's path, applied schema version, and open
-// health under home without creating or migrating anything. A missing file is
-// not an error: the hub creates it at serve startup.
+// CheckHealth reports the hub database's path, applied schema version, on-disk
+// size, and integrity under home without creating or migrating anything. It opens
+// the file read-only and runs SQLite's quick_check (ADR 0008 §5), folding a failed
+// check into Err. A missing file is not an error: the hub creates it at serve
+// startup.
 func CheckHealth(home string) Health {
 	h := Health{Path: Path(home)}
 	if home == "" {
@@ -88,13 +91,14 @@ func CheckHealth(home string) Health {
 		return h
 	}
 	h.Exists = true
+	h.SizeBytes = dbSize(h.Path)
 	db, err := openReadOnly(h.Path)
 	if err != nil {
 		h.Err = err
 		return h
 	}
 	version, readErr := readVersion(db)
-	if err := errors.Join(readErr, db.Close()); err != nil {
+	if err := errors.Join(readErr, integrityCheck(db), db.Close()); err != nil {
 		h.Err = err
 		return h
 	}
@@ -105,4 +109,29 @@ func CheckHealth(home string) Health {
 func openReadOnly(path string) (*sql.DB, error) {
 	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&_pragma=busy_timeout(2000)"}
 	return sql.Open("sqlite", u.String())
+}
+
+// dbSize sums the database file and its WAL/SHM sidecars — the on-disk footprint
+// doctor reports. A missing sidecar contributes nothing.
+func dbSize(path string) int64 {
+	var total int64
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if info, err := os.Stat(p); err == nil {
+			total += info.Size()
+		}
+	}
+	return total
+}
+
+// integrityCheck runs SQLite's quick_check and returns an error unless it reports
+// "ok" — the corruption probe ADR 0008 §5 gives doctor over the databases.
+func integrityCheck(db *sql.DB) error {
+	var result string
+	if err := db.QueryRow(`PRAGMA quick_check`).Scan(&result); err != nil {
+		return err
+	}
+	if result != "ok" {
+		return fmt.Errorf("integrity check: %s", result)
+	}
+	return nil
 }

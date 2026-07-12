@@ -14,7 +14,7 @@ func testCheckpoints(t *testing.T) *Checkpoints {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewStores(db.SQL(), nil, 0).Checkpoints()
+	return NewStores(db.SQL(), nil, Retention{}).Checkpoints()
 }
 
 func TestCheckpointUpsertProjectsColumns(t *testing.T) {
@@ -107,7 +107,7 @@ func TestCheckpointImportLegacyIsIdempotent(t *testing.T) {
 	if !ok || row.Phase != state.Verified || row.Branch != "feature/COD-1" {
 		t.Fatalf("imported row = %+v, ok=%v", row, ok)
 	}
-	if _, _, _, exists := state.NewStore(runsDir).Load("COD-1"); exists {
+	if _, exists := state.NewStore(runsDir).Load("COD-1"); exists {
 		t.Fatalf("legacy state file was not removed after import")
 	}
 
@@ -133,7 +133,7 @@ func TestCheckpointImportLegacyIsIdempotent(t *testing.T) {
 	if err := c.ImportLegacy(root, runsDir); err != nil {
 		t.Fatalf("guarded ImportLegacy: %v", err)
 	}
-	if _, _, _, exists := state.NewStore(runsDir).Load("COD-1"); !exists {
+	if _, exists := state.NewStore(runsDir).Load("COD-1"); !exists {
 		t.Fatalf("guarded ImportLegacy touched disk; file should remain")
 	}
 }
@@ -158,7 +158,7 @@ func TestCheckpointImportLegacyDoesNotClobberProgressed(t *testing.T) {
 	if got := c.Phase(root, "COD-1"); got != state.Merged {
 		t.Fatalf("import clobbered a progressed checkpoint: phase = %q, want %q", got, state.Merged)
 	}
-	if _, _, _, exists := state.NewStore(runsDir).Load("COD-1"); exists {
+	if _, exists := state.NewStore(runsDir).Load("COD-1"); exists {
 		t.Fatalf("superseded legacy state file was not removed")
 	}
 }

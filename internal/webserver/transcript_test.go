@@ -34,7 +34,7 @@ func transcriptServer(t *testing.T) *httptest.Server {
 		t.Fatalf("open transcript db: %v", err)
 	}
 	t.Cleanup(func() { _ = tdb.Close() })
-	stores := hubstore.NewStores(db.SQL(), tdb.SQL(), 50)
+	stores := hubstore.NewStores(db.SQL(), tdb.SQL(), hubstore.Retention{Transcripts: 50})
 	repo := registry.Repo{Name: "acme", Root: filepath.Join(home, "acme"), RunsDir: filepath.Join(home, "acme", ".trau", "runs")}
 	if err := stores.Registrations().Remember([]registry.Repo{repo}); err != nil {
 		t.Fatalf("remember repo: %v", err)

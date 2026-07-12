@@ -15,7 +15,7 @@ func testArtifacts(t *testing.T) *Artifacts {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewStores(db.SQL(), nil, 0).Artifacts()
+	return NewStores(db.SQL(), nil, Retention{}).Artifacts()
 }
 
 func TestArtifactUpsertOneAll(t *testing.T) {

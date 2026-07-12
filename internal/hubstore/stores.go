@@ -23,22 +23,22 @@ type Stores struct {
 }
 
 // NewStores builds the hub store set over the authoritative database db and the
-// separate transcripts database, pruned to transcriptRetention sessions per repo.
-// A nil transcriptsDB yields an inert transcript store (tests).
-func NewStores(db, transcriptsDB *sql.DB, transcriptRetention int) *Stores {
+// separate transcripts database, each authoritative store pruned to its retention
+// window. A nil transcriptsDB yields an inert transcript store (tests).
+func NewStores(db, transcriptsDB *sql.DB, retention Retention) *Stores {
 	return &Stores{
 		db:          db,
 		repos:       NewRegistrations(db),
 		issues:      NewIssues(db),
-		tokens:      NewTokens(db),
+		tokens:      NewTokens(db, retention.TokenCalls),
 		checkpoints: NewCheckpoints(db),
-		events:      NewEvents(db),
+		events:      NewEvents(db, retention.Events),
 		artifacts:   NewArtifacts(db),
 		lessons:     NewLessons(db),
 		drains:      NewDrainOutcomes(db),
 		phaseLogs:   NewPhaseLogs(db),
 		instances:   NewInstances(db),
-		transcripts: NewTranscripts(transcriptsDB, transcriptRetention),
+		transcripts: NewTranscripts(transcriptsDB, retention.Transcripts),
 	}
 }
 

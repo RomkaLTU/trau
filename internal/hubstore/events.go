@@ -38,11 +38,20 @@ type NewEvent struct {
 // event here over HTTP, so the table — not a per-repo log file — is the feed's
 // source of truth. It is a real migrated table, never dropped and rebuilt.
 type Events struct {
-	db *sql.DB
+	db        *sql.DB
+	retention int
 }
 
-// NewEvents returns an Events store over db. The caller owns db's lifecycle.
-func NewEvents(db *sql.DB) *Events { return &Events{db: db} }
+// NewEvents returns an Events store over db, pruned to the most recent retention
+// events per repo. The caller owns db's lifecycle.
+func NewEvents(db *sql.DB, retention int) *Events { return &Events{db: db, retention: retention} }
+
+// Prune keeps the most recent retention events per repo and drops older rows,
+// ranked by the monotonic id (ADR 0008). Checkpoints — the run summaries — are
+// untouched. A non-positive retention disables pruning.
+func (e *Events) Prune() error {
+	return pruneKeepingRecent(e.db, "events", e.retention)
+}
 
 // Append inserts evs for repo in arrival order in one transaction and returns each
 // row with its assigned id, so the caller can fan the batch out to live streams.

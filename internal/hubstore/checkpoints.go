@@ -139,7 +139,7 @@ func (c *Checkpoints) ImportLegacy(root, runsDir string) error {
 	}
 	fs := state.NewStore(runsDir)
 	for _, ticket := range fs.Tickets() {
-		data, _, _, ok := fs.Load(ticket)
+		data, ok := fs.Load(ticket)
 		if !ok {
 			continue
 		}

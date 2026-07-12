@@ -13,7 +13,7 @@ func testTokens(t *testing.T) *Tokens {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewTokens(db.SQL())
+	return NewTokens(db.SQL(), 0)
 }
 
 func usd(v float64) *float64 { return &v }
@@ -211,5 +211,47 @@ func TestTokensAnomaliesRoundTrip(t *testing.T) {
 	}
 	if byTicket["COD-9"] != "verify" || byTicket["COD-10"] != "build" {
 		t.Errorf("repo anomalies located wrong: %+v", byTicket)
+	}
+}
+
+func TestTokensPruneKeepsRecentPerRepo(t *testing.T) {
+	db, err := hubdb.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open hub db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	tk := NewTokens(db.SQL(), 2)
+
+	const repo = "/repos/acme"
+	for _, id := range []string{"COD-1", "COD-2", "COD-3", "COD-4"} {
+		appendCalls(t, tk, repo, TokenCall{Ticket: id, Phase: "build", Input: 100, Output: 50})
+	}
+	appendCalls(t, tk, "/repos/other", TokenCall{Ticket: "OTH-1", Phase: "build", Input: 10, Output: 5})
+
+	for _, id := range []string{"COD-1", "COD-2", "COD-3"} {
+		if err := tk.RecordAnomalies(repo, id, []Anomaly{{Phase: "build", Output: 999, Reasons: []string{"spike"}}}); err != nil {
+			t.Fatalf("RecordAnomalies %s: %v", id, err)
+		}
+	}
+
+	if err := tk.Prune(); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+
+	for _, id := range []string{"COD-1", "COD-2"} {
+		if sp, _ := tk.Total(repo, id); sp.Tokens != 0 {
+			t.Fatalf("ticket %s survived prune with %d tokens, want 0", id, sp.Tokens)
+		}
+	}
+	for _, id := range []string{"COD-3", "COD-4"} {
+		if sp, _ := tk.Total(repo, id); sp.Tokens == 0 {
+			t.Fatalf("ticket %s pruned, want it kept", id)
+		}
+	}
+	if sp, _ := tk.Total("/repos/other", "OTH-1"); sp.Tokens == 0 {
+		t.Fatalf("other repo under the window pruned, want kept")
+	}
+	if an, _ := tk.RepoAnomalies(repo); len(an) != 2 {
+		t.Fatalf("anomalies after prune = %d, want 2", len(an))
 	}
 }

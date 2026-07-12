@@ -14,7 +14,7 @@ func testDrainOutcomes(t *testing.T) *DrainOutcomes {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewStores(db.SQL(), nil, 0).DrainOutcomes()
+	return NewStores(db.SQL(), nil, Retention{}).DrainOutcomes()
 }
 
 func TestDrainOutcomeUpsertOneRemove(t *testing.T) {

@@ -14,7 +14,7 @@ func testEvents(t *testing.T) *Events {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewEvents(db.SQL())
+	return NewEvents(db.SQL(), 0)
 }
 
 func appendKinds(t *testing.T, e *Events, repo string, kinds ...string) []EventRow {
@@ -184,5 +184,51 @@ func TestEventsAppendEmpty(t *testing.T) {
 	}
 	if len(rows) != 0 {
 		t.Fatalf("Append(nil) = %d rows, want 0", len(rows))
+	}
+}
+
+func TestEventsPruneKeepsRecentPerRepo(t *testing.T) {
+	db, err := hubdb.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open hub db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	e := NewEvents(db.SQL(), 3)
+
+	appendKinds(t, e, "a", "1", "2", "3", "4", "5")
+	appendKinds(t, e, "b", "x", "y")
+
+	if err := e.Prune(); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+
+	rows, err := e.Recent("a", 10, 0)
+	if err != nil {
+		t.Fatalf("Recent a: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("repo a events after prune = %d, want 3", len(rows))
+	}
+	if rows[0].Kind != "5" || rows[2].Kind != "3" {
+		t.Fatalf("repo a kept wrong window: newest %q oldest %q, want 5..3", rows[0].Kind, rows[2].Kind)
+	}
+	if under, _ := e.Recent("b", 10, 0); len(under) != 2 {
+		t.Fatalf("repo b under the window pruned: got %d, want 2", len(under))
+	}
+}
+
+func TestEventsPruneDisabled(t *testing.T) {
+	db, err := hubdb.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open hub db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	e := NewEvents(db.SQL(), 0)
+	appendKinds(t, e, "a", "1", "2", "3", "4", "5")
+	if err := e.Prune(); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if rows, _ := e.Recent("a", 10, 0); len(rows) != 5 {
+		t.Fatalf("disabled retention pruned rows: got %d, want 5", len(rows))
 	}
 }

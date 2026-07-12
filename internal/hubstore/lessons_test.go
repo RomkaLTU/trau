@@ -15,7 +15,7 @@ func testLessons(t *testing.T) *Lessons {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewStores(db.SQL(), nil, 0).Lessons()
+	return NewStores(db.SQL(), nil, Retention{}).Lessons()
 }
 
 func TestLessonAppendAllNewestFirst(t *testing.T) {

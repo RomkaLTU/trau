@@ -115,25 +115,33 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 	}
 	go s.sweepKnownRepos(ctx)
 	go s.syncer.run(ctx, syncInterval, reconcileInterval)
-	go s.pruneTranscripts(ctx)
+	go s.pruneRunData(ctx)
 }
 
-// transcriptPruneInterval bounds how often the hub prunes old transcript sessions
-// past the retention window, on top of the startup pass.
-const transcriptPruneInterval = time.Hour
+// runDataPruneInterval bounds how often the hub prunes run data past its retention
+// window, on top of the startup pass.
+const runDataPruneInterval = time.Hour
 
-// pruneTranscripts drops transcript sessions past the retention window on startup
-// and on a periodic timer, reclaiming the freed pages (ADR 0008 §4). It is a
-// best-effort hygiene pass over the separate transcripts database, so a failure is
-// logged and retried on the next tick rather than surfaced.
-func (s *Server) pruneTranscripts(ctx context.Context) {
+// pruneRunData drops run data past its retention window on startup and on a
+// periodic timer (ADR 0008): transcript sessions from transcripts.db, reclaiming
+// their freed pages, and event and token-call rows from the authoritative store.
+// Checkpoints — the run summaries — are never pruned. Each pass is best-effort
+// hygiene, so a failure is logged and retried on the next tick rather than
+// surfaced.
+func (s *Server) pruneRunData(ctx context.Context) {
 	prune := func() {
 		if err := s.transcripts.Prune(); err != nil {
 			logger.Verbosef("prune transcripts: %v", err)
 		}
+		if err := s.stores.Events().Prune(); err != nil {
+			logger.Verbosef("prune events: %v", err)
+		}
+		if err := s.stores.Tokens().Prune(); err != nil {
+			logger.Verbosef("prune token calls: %v", err)
+		}
 	}
 	prune()
-	t := time.NewTicker(transcriptPruneInterval)
+	t := time.NewTicker(runDataPruneInterval)
 	defer t.Stop()
 	for {
 		select {
