@@ -269,6 +269,12 @@ type Config struct {
 	// opens a database.
 	HubWriteRetryWindow int
 
+	// HubWriteBufferBytes caps the child's in-memory buffer of unacknowledged
+	// run-data writes while the hub is unreachable (ADR 0008 §3). Events queue
+	// here and flush when the hub returns; over the cap the oldest queued events
+	// are dropped so the buffer can never grow without bound.
+	HubWriteBufferBytes int
+
 	// Spend ceilings off the normalized token/cost ledger. Zero = no cap
 	// (back-compat: a config with no MAX_* knobs enforces nothing). USD caps use
 	// the notional cost estimate; token caps the raw total. See internal/budget.
@@ -360,6 +366,7 @@ func Defaults() Config {
 		ServeAutostart:         true,
 		ServeOpen:              true,
 		HubWriteRetryWindow:    30,
+		HubWriteBufferBytes:    32 << 20,
 		MaxTicketUSD:           0,
 		MaxTicketTokens:        0,
 		MaxDailyUSD:            0,
@@ -791,6 +798,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		sources["SERVE_OPEN"] = src.name
 	}
 	num("HUB_WRITE_RETRY_WINDOW", &c.HubWriteRetryWindow)
+	num("HUB_WRITE_BUFFER_BYTES", &c.HubWriteBufferBytes)
 	fnum("MAX_TICKET_USD", &c.MaxTicketUSD)
 	num("MAX_TICKET_TOKENS", &c.MaxTicketTokens)
 	fnum("MAX_DAILY_USD", &c.MaxDailyUSD)
@@ -1344,6 +1352,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "SERVE_AUTOSTART", Default: "1", Advanced: true, Bool: true, Description: "Bring the web UI hub up automatically on the first interactive TUI session when none is running (1 = yes, 0 = no)"},
 		{Key: "SERVE_OPEN", Default: "1", Advanced: true, Bool: true, Description: "Open the browser when autostart freshly spawns the hub (1 = yes, 0 = no); the daemon still starts when 0"},
 		{Key: "HUB_WRITE_RETRY_WINDOW", Default: "30", Advanced: true, Description: "Seconds the loop retries an unreachable hub before a run-data write pauses the run blamelessly (ADR 0008)"},
+		{Key: "HUB_WRITE_BUFFER_BYTES", Default: "33554432", Advanced: true, Description: "Byte cap on the child's in-memory buffer of run-data writes queued while the hub is unreachable; over it the oldest queued events are dropped (ADR 0008)"},
 		{Key: "MAX_TICKET_USD", Description: "Per-ticket USD spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_TICKET_TOKENS", Description: "Per-ticket token spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_DAILY_USD", Description: "Per-day USD spend cap across all tickets; reaching it stops the run (empty = no cap)"},
@@ -1895,6 +1904,8 @@ func keyValue(cfg Config, key string) string {
 		return "0"
 	case "HUB_WRITE_RETRY_WINDOW":
 		return intValue(cfg.HubWriteRetryWindow)
+	case "HUB_WRITE_BUFFER_BYTES":
+		return intValue(cfg.HubWriteBufferBytes)
 	case "MAX_TICKET_USD":
 		return floatValue(cfg.MaxTicketUSD)
 	case "MAX_TICKET_TOKENS":

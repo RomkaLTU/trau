@@ -160,6 +160,30 @@ type Checkpoint struct {
 	Data          map[string]string `json:"data"`
 }
 
+// Event is one event the loop child sends to the hub for the authoritative event
+// feed (ADR 0008). The hub assigns the id and ordering; the child supplies only
+// the content. Fields is the event's fields bag pre-marshalled to a JSON object
+// string, or empty for none.
+type Event struct {
+	TS     string `json:"ts"`
+	Kind   string `json:"kind"`
+	Phase  string `json:"phase,omitempty"`
+	Msg    string `json:"msg,omitempty"`
+	Fields string `json:"fields,omitempty"`
+}
+
+type appendEventsBody struct {
+	Events []Event `json:"events"`
+}
+
+// AppendEvents posts a batch of events for repo to the hub, which appends them to
+// the authoritative events table in order and fans them out to live streams. The
+// batch is sent whole so the hub preserves its order; a hub-connection failure
+// surfaces as an IsUnreachable error so the caller can retry.
+func (c *Client) AppendEvents(ctx context.Context, repo string, evs []Event) error {
+	return c.do(ctx, http.MethodPost, c.repoPath(repo, "events"), appendEventsBody{Events: evs}, nil)
+}
+
 // PutCheckpoint writes a ticket's checkpoint to the hub, which persists it in the
 // authoritative checkpoints table. A hub-connection failure surfaces as an
 // IsUnreachable error so the caller can retry; the request is idempotent.

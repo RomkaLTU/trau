@@ -3,7 +3,6 @@ package hubstore
 import (
 	"reflect"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/hubdb"
@@ -42,18 +41,18 @@ func TestEnsureSchemaStampsVersion(t *testing.T) {
 
 func TestEnsureSchemaPreservesDataWhenCurrent(t *testing.T) {
 	stores, d := testDerived(t)
-	if err := d.IngestEvents("repo", false, []EventRow{{Seq: 10, Kind: "phase"}}, 10); err != nil {
-		t.Fatalf("IngestEvents: %v", err)
+	if err := d.IngestTokens("repo", "COD-1", false, []TokenRow{{Seq: 10, Phase: "build"}}, 10); err != nil {
+		t.Fatalf("IngestTokens: %v", err)
 	}
 	if err := stores.EnsureDerivedSchema(); err != nil {
 		t.Fatalf("EnsureDerivedSchema: %v", err)
 	}
-	evs, err := d.Events("repo")
+	calls, err := d.TokenCalls("repo", "COD-1")
 	if err != nil {
-		t.Fatalf("Events: %v", err)
+		t.Fatalf("TokenCalls: %v", err)
 	}
-	if len(evs) != 1 {
-		t.Fatalf("events after re-ensure = %d, want 1 (no rebuild when version matches)", len(evs))
+	if len(calls) != 1 {
+		t.Fatalf("token calls after re-ensure = %d, want 1 (no rebuild when version matches)", len(calls))
 	}
 }
 
@@ -65,8 +64,8 @@ func TestEnsureSchemaRebuildsOnVersionMismatch(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 	// Derived state that a rebuild must drop.
-	if err := d.IngestEvents("repo", false, []EventRow{{Seq: 5, Kind: "phase"}}, 5); err != nil {
-		t.Fatalf("IngestEvents: %v", err)
+	if err := d.IngestTokens("repo", "COD-1", false, []TokenRow{{Seq: 5, Phase: "build"}}, 5); err != nil {
+		t.Fatalf("IngestTokens: %v", err)
 	}
 
 	// Simulate a derived-schema version bump: the stored version no longer
@@ -80,12 +79,12 @@ func TestEnsureSchemaRebuildsOnVersionMismatch(t *testing.T) {
 		t.Fatalf("EnsureDerivedSchema after bump: %v", err)
 	}
 
-	evs, err := d.Events("repo")
+	calls, err := d.TokenCalls("repo", "COD-1")
 	if err != nil {
-		t.Fatalf("Events: %v", err)
+		t.Fatalf("TokenCalls: %v", err)
 	}
-	if len(evs) != 0 {
-		t.Fatalf("derived events survived rebuild = %d, want 0", len(evs))
+	if len(calls) != 0 {
+		t.Fatalf("derived token calls survived rebuild = %d, want 0", len(calls))
 	}
 	registered, err := stores.Registrations().Registered()
 	if err != nil {
@@ -105,103 +104,14 @@ func TestEnsureSchemaRebuildsOnVersionMismatch(t *testing.T) {
 
 func TestEnsureSchemaRebuildsOnMissingTable(t *testing.T) {
 	stores, d := testDerived(t)
-	if _, err := d.db.Exec(`DROP TABLE events`); err != nil {
-		t.Fatalf("drop events: %v", err)
+	if _, err := d.db.Exec(`DROP TABLE token_calls`); err != nil {
+		t.Fatalf("drop token_calls: %v", err)
 	}
 	if err := stores.EnsureDerivedSchema(); err != nil {
 		t.Fatalf("EnsureDerivedSchema: %v", err)
 	}
-	if _, err := d.Events("repo"); err != nil {
-		t.Fatalf("events table not rebuilt: %v", err)
-	}
-}
-
-func TestRecentEventsLimitAndCursor(t *testing.T) {
-	_, d := testDerived(t)
-	rows := make([]EventRow, 5)
-	for i := range rows {
-		rows[i] = EventRow{Seq: int64((i + 1) * 10), Kind: "phase", Msg: strconv.Itoa(i + 1)}
-	}
-	if err := d.IngestEvents("repo", false, rows, 50); err != nil {
-		t.Fatalf("IngestEvents: %v", err)
-	}
-
-	page, err := d.RecentEvents("repo", 2, 0)
-	if err != nil {
-		t.Fatalf("RecentEvents: %v", err)
-	}
-	if got := seqLine(page); got != "5040" {
-		t.Fatalf("latest page seqs = %q, want 5040 (newest first)", got)
-	}
-
-	older, err := d.RecentEvents("repo", 2, page[len(page)-1].Seq)
-	if err != nil {
-		t.Fatalf("RecentEvents older: %v", err)
-	}
-	if got := seqLine(older); got != "3020" {
-		t.Fatalf("older page seqs = %q, want 3020", got)
-	}
-
-	last, err := d.RecentEvents("repo", 2, older[len(older)-1].Seq)
-	if err != nil {
-		t.Fatalf("RecentEvents last: %v", err)
-	}
-	if got := seqLine(last); got != "10" {
-		t.Fatalf("last page seqs = %q, want 10", got)
-	}
-}
-
-func seqLine(rows []EventRow) string {
-	var b strings.Builder
-	for _, r := range rows {
-		b.WriteString(strconv.FormatInt(r.Seq, 10))
-	}
-	return b.String()
-}
-
-func TestRecentEventsEmptyRepo(t *testing.T) {
-	_, d := testDerived(t)
-	got, err := d.RecentEvents("repo", 10, 0)
-	if err != nil {
-		t.Fatalf("RecentEvents: %v", err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("recent events = %d, want 0", len(got))
-	}
-}
-
-func TestIngestEventsAppendThenResync(t *testing.T) {
-	_, d := testDerived(t)
-
-	first := []EventRow{
-		{Seq: 20, TS: "t1", Kind: "phase_start", Phase: "build", Msg: "go", Fields: `{"a":1}`},
-		{Seq: 40, TS: "t2", Kind: "phase_end", Phase: "build"},
-	}
-	if err := d.IngestEvents("repo", false, first, 40); err != nil {
-		t.Fatalf("IngestEvents: %v", err)
-	}
-	if off, err := d.EventCursor("repo"); err != nil || off != 40 {
-		t.Fatalf("EventCursor = %d, %v; want 40, nil", off, err)
-	}
-	got, err := d.Events("repo")
-	if err != nil {
-		t.Fatalf("Events: %v", err)
-	}
-	if !reflect.DeepEqual(got, first) {
-		t.Fatalf("events = %+v, want %+v", got, first)
-	}
-
-	// A rewrite shorter than the cursor resyncs: old rows dropped, new set kept.
-	rewritten := []EventRow{{Seq: 15, TS: "t3", Kind: "phase_start", Phase: "verify"}}
-	if err := d.IngestEvents("repo", true, rewritten, 15); err != nil {
-		t.Fatalf("IngestEvents resync: %v", err)
-	}
-	got, err = d.Events("repo")
-	if err != nil {
-		t.Fatalf("Events: %v", err)
-	}
-	if !reflect.DeepEqual(got, rewritten) {
-		t.Fatalf("events after resync = %+v, want %+v", got, rewritten)
+	if _, err := d.TokenCalls("repo", "COD-1"); err != nil {
+		t.Fatalf("token_calls table not rebuilt: %v", err)
 	}
 }
 
@@ -228,9 +138,6 @@ func TestIngestTokensRoundTrip(t *testing.T) {
 
 func TestCursorsZeroWhenAbsent(t *testing.T) {
 	_, d := testDerived(t)
-	if off, err := d.EventCursor("nope"); err != nil || off != 0 {
-		t.Fatalf("EventCursor(absent) = %d, %v; want 0, nil", off, err)
-	}
 	if off, err := d.TokenCursor("nope", "x"); err != nil || off != 0 {
 		t.Fatalf("TokenCursor(absent) = %d, %v; want 0, nil", off, err)
 	}

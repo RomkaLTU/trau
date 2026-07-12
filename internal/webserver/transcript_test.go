@@ -16,6 +16,15 @@ import (
 	"github.com/RomkaLTU/trau/internal/agent"
 )
 
+// fastPoll tightens the transcript tail poll so the streaming tests observe an
+// appended chunk within a few milliseconds instead of the production half-second.
+func fastPoll(t *testing.T) {
+	t.Helper()
+	prev := streamPollInterval
+	streamPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { streamPollInterval = prev })
+}
+
 // writeTranscript writes a phase transcript and its dimensions sidecar under a
 // repo's agent-results directory, exactly as a running loop's agent does — so the
 // stream is exercised against real on-disk files, the "loop the hub did not

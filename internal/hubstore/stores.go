@@ -12,6 +12,7 @@ type Stores struct {
 	issues      *Issues
 	derived     *Derived
 	checkpoints *Checkpoints
+	events      *Events
 }
 
 // NewStores builds the hub store set over db.
@@ -22,6 +23,7 @@ func NewStores(db *sql.DB) *Stores {
 		issues:      NewIssues(db),
 		derived:     NewDerived(db),
 		checkpoints: NewCheckpoints(db),
+		events:      NewEvents(db),
 	}
 }
 
@@ -36,6 +38,9 @@ func (s *Stores) Derived() *Derived { return s.derived }
 
 // Checkpoints returns the authoritative per-ticket checkpoint store.
 func (s *Stores) Checkpoints() *Checkpoints { return s.checkpoints }
+
+// Events returns the authoritative event store.
+func (s *Stores) Events() *Events { return s.events }
 
 // EnsureDerivedSchema brings the derived run-history tables to their current
 // version, dropping and rebuilding them if they are stale, missing, or corrupt

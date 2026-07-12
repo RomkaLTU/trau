@@ -34,6 +34,7 @@ type Server struct {
 	allowRegister bool
 	workspace     []string
 	stores        *hubstore.Stores
+	events        *eventBroadcaster
 	sup           Supervisor
 	drain         *drainer
 	syncer        *syncer
@@ -65,6 +66,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		allowRegister: allowRegister,
 		workspace:     normalizeRoots(workspace),
 		stores:        stores,
+		events:        newEventBroadcaster(),
 		sup:           newOSSupervisor(),
 		drainCtx:      context.Background(),
 		newWriter:     defaultWriter,
