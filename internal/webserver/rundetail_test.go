@@ -214,7 +214,10 @@ func TestRunDetailSurfacesAnomalies(t *testing.T) {
 		t.Errorf("anomaly = %+v, want cleanup at $6.50 with reasons", a)
 	}
 
-	seedCheckpoint(t, runsDir, "COD-10", map[string]string{"PHASE": state.Building})
+	root := filepath.Dir(filepath.Dir(runsDir))
+	if err := testStoresAt(t, home).Checkpoints().Upsert(root, "COD-10", map[string]string{"PHASE": state.Building}); err != nil {
+		t.Fatalf("seed checkpoint: %v", err)
+	}
 	seedTokens(t, runsDir, "COD-10", []phaseCall{
 		{"build", tokens.Record{Output: 100, Turns: 2, CostUSD: usd(0.10)}},
 	})
@@ -281,7 +284,7 @@ func TestRunDetailServesHubOnlyCheckpoint(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed checkpoint row: %v", err)
 	}
-	if runExists(runsDir, "COD-7001") {
+	if stateFileExists(runsDir, "COD-7001") {
 		t.Fatal("state file present, want a hub-only checkpoint with no file on disk")
 	}
 

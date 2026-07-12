@@ -8,8 +8,8 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
-	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
 
@@ -116,7 +116,7 @@ func (s *Server) handleRunDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	ticket := r.PathValue("ticket")
 	s.importCheckpoints(repo)
-	view, ok := s.runViewFor(repo.Root, repo.RunsDir, ticket)
+	view, ok := s.runViewFor(repo.Root, ticket)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown run"})
 		return
@@ -137,36 +137,23 @@ func (s *Server) runDetail(repo registry.Repo, ticket string, view RunView) RunD
 	return d
 }
 
-// runViewFor resolves a ticket's checkpoint row for the detail page: the
-// authoritative table first, then a not-yet-imported legacy state file, matching
-// how the board and every checkpoint mutation resolve a run. It reports false
-// only when the ticket has neither, so a run the hub has never seen still 404s.
-func (s *Server) runViewFor(root, runsDir, ticket string) (RunView, bool) {
+// runViewFor resolves a ticket's checkpoint row for the detail page from the
+// authoritative checkpoints table (ADR 0008) — the same table the board reads.
+// Legacy state files are folded in by the caller's importCheckpoints before this
+// runs, so a hub-only or imported ticket resolves here; a run the hub has never
+// seen reports false and 404s.
+func (s *Server) runViewFor(root, ticket string) (RunView, bool) {
 	if ticket == "" {
 		return RunView{}, false
 	}
-	if row, found, err := s.stores.Checkpoints().One(root, ticket); err == nil && found {
-		return runViewFromCheckpoint(hubstore.TicketCheckpoint{Ticket: ticket, CheckpointRow: row}), true
+	row, found, err := s.stores.Checkpoints().One(root, ticket)
+	if err != nil {
+		logger.Verbosef("run detail %s/%s: %v", root, ticket, err)
 	}
-	if runExists(runsDir, ticket) {
-		return runView(state.NewStore(runsDir), ticket), true
+	if !found {
+		return RunView{}, false
 	}
-	return RunView{}, false
-}
-
-// runExists reports whether ticket has a legacy state file under runsDir.
-// Resolving against the known tickets both confirms the run and confines reads to
-// a real run directory, so a traversal-shaped {ticket} never escapes runsDir.
-func runExists(runsDir, ticket string) bool {
-	if ticket == "" {
-		return false
-	}
-	for _, id := range state.NewStore(runsDir).Tickets() {
-		if id == ticket {
-			return true
-		}
-	}
-	return false
+	return runViewFromCheckpoint(hubstore.TicketCheckpoint{Ticket: ticket, CheckpointRow: row}), true
 }
 
 func runDetail(runsDir, ticket string, view RunView) RunDetail {

@@ -190,11 +190,8 @@ func (s *Server) handleResetRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	repo, ticket, ok := s.checkpointTarget(w, r)
+	repo, ticket, ok := s.mutableCheckpoint(w, r)
 	if !ok {
-		return
-	}
-	if s.refuseWhenLive(w, repo) {
 		return
 	}
 	var req ResetRequest
@@ -235,20 +232,14 @@ func (s *Server) handleClearRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	repo, ticket, ok := s.checkpointTarget(w, r)
+	repo, ticket, ok := s.mutableCheckpoint(w, r)
 	if !ok {
-		return
-	}
-	if s.refuseWhenLive(w, repo) {
 		return
 	}
 	was := s.stores.Checkpoints().Phase(repo.Root, ticket)
 	if err := s.stores.Checkpoints().Remove(repo.Root, ticket); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "clear failed: " + err.Error()})
 		return
-	}
-	if err := state.NewStore(repo.RunsDir).RemoveState(ticket); err != nil {
-		logger.Verbosef("clear %s/%s: drop legacy state file: %v", repo.Name, ticket, err)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cleared", "ticket": ticket, "was": was})
 }
@@ -285,19 +276,26 @@ func (s *Server) handleReconcileRepo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ReconcileResult{Repo: repo.Name, Reconciled: parseReconciled(out)})
 }
 
-// checkpointTarget resolves the {repo} and {ticket} path segments to a known repo
-// and an existing run, writing the 404 and reporting false when either misses so
-// a mutation never runs against a repo the hub does not own or a ticket with no
-// checkpoint.
-func (s *Server) checkpointTarget(w http.ResponseWriter, r *http.Request) (registry.Repo, string, bool) {
+// mutableCheckpoint resolves the {repo} and {ticket} path segments for a
+// checkpoint mutation and enforces the invariants every mutation shares: it 404s
+// an unknown repo, refuses with a conflict while a loop is live in the repo — so
+// the browser can never corrupt a running session's state — and 404s a ticket
+// the checkpoints table has no row for. The live check must run before the
+// existence lookup: importCheckpoints no-ops while a loop is live, so the table
+// can still be missing a not-yet-imported checkpoint and would otherwise 404
+// instead of reporting the conflict.
+func (s *Server) mutableCheckpoint(w http.ResponseWriter, r *http.Request) (registry.Repo, string, bool) {
 	repo, ok := s.findRepo(r.PathValue("repo"))
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
 		return registry.Repo{}, "", false
 	}
+	if s.refuseWhenLive(w, repo) {
+		return registry.Repo{}, "", false
+	}
 	ticket := r.PathValue("ticket")
 	s.importCheckpoints(repo)
-	if _, found, _ := s.stores.Checkpoints().One(repo.Root, ticket); !found && !runExists(repo.RunsDir, ticket) {
+	if _, found, _ := s.stores.Checkpoints().One(repo.Root, ticket); !found {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown run"})
 		return registry.Repo{}, "", false
 	}

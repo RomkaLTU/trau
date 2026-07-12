@@ -288,7 +288,7 @@ func TestStatusGolden(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	s.Status(&buf, total)
+	WriteStatus(&buf, s, s.Root(), total)
 
 	want, err := os.ReadFile(filepath.Join("testdata", "status_rows.txt"))
 	if err != nil {
@@ -317,7 +317,7 @@ func TestStatusPlanningBucket(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	s.Status(&buf, total, Bucket{ID: "_plans", Label: "planning"}, Bucket{ID: "_empty", Label: "empty"})
+	WriteStatus(&buf, s, s.Root(), total, Bucket{ID: "_plans", Label: "planning"}, Bucket{ID: "_empty", Label: "empty"})
 	out := buf.String()
 
 	if !strings.Contains(out, "planning") {
@@ -334,7 +334,7 @@ func TestStatusPlanningBucket(t *testing.T) {
 func TestStatusEmptyGolden(t *testing.T) {
 	s := newStore(t)
 	var buf bytes.Buffer
-	s.Status(&buf, func(string) (int, float64, bool) { return 0, 0, true })
+	WriteStatus(&buf, s, s.Root(), func(string) (int, float64, bool) { return 0, 0, true })
 
 	raw, err := os.ReadFile(filepath.Join("testdata", "status_empty.txt"))
 	if err != nil {

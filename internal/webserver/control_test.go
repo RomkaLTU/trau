@@ -316,7 +316,9 @@ func TestStartRecordsNoSpawnFailedWhenCheckpointExists(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(t.TempDir(), "acme")
 	runsDir := repoRunsDir(root)
-	seedCheckpoint(t, runsDir, "COD-786", map[string]string{"PHASE": state.Built})
+	if err := testStoresAt(t, home).Checkpoints().Upsert(root, "COD-786", map[string]string{"PHASE": state.Built}); err != nil {
+		t.Fatalf("seed checkpoint: %v", err)
+	}
 	fake, ts := controlServer(t, home, []string{root})
 	fake.onExitOutcome = &SpawnOutcome{ExitCode: 1, Stderr: "faulted late"}
 

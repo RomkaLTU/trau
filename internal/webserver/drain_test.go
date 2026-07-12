@@ -385,22 +385,17 @@ func TestCheckpointOutcomeReadsRecordedState(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _, root := drainServer(t, "acme")
-			runsDir := repoRunsDir(root)
-			st := state.NewStore(runsDir)
-			if err := st.Set("COD-1", "PHASE", tc.phase); err != nil {
-				t.Fatalf("seed phase: %v", err)
-			}
+			data := map[string]string{"PHASE": tc.phase}
 			if tc.failClass != "" {
-				if err := st.Set("COD-1", "FAILURE_CLASS", tc.failClass); err != nil {
-					t.Fatalf("seed class: %v", err)
-				}
+				data["FAILURE_CLASS"] = tc.failClass
 			}
 			if tc.reason != "" {
-				if err := st.Set("COD-1", "FAILURE_REASON", tc.reason); err != nil {
-					t.Fatalf("seed reason: %v", err)
-				}
+				data["FAILURE_REASON"] = tc.reason
 			}
-			class, reason := s.drain.checkpointOutcome(runsDir, queue.Item{ID: "COD-1"})
+			if err := s.stores.Checkpoints().Upsert(root, "COD-1", data); err != nil {
+				t.Fatalf("seed checkpoint: %v", err)
+			}
+			class, reason := s.drain.checkpointOutcome(root, queue.Item{ID: "COD-1"})
 			if class != tc.wantClass || reason != tc.wantReason {
 				t.Errorf("checkpointOutcome = (%q, %q), want (%q, %q)", class, reason, tc.wantClass, tc.wantReason)
 			}
@@ -641,7 +636,7 @@ func TestDrainNoReportPausesEpicWithoutFanout(t *testing.T) {
 // absence, so a lost report never re-pauses an already-merged ticket.
 func TestDrainNoReportMergedTicketSettlesDone(t *testing.T) {
 	s, _, root := drainServer(t, "acme")
-	if err := state.NewStore(repoRunsDir(root)).Set("COD-1", "PHASE", state.Merged); err != nil {
+	if err := s.stores.Checkpoints().Upsert(root, "COD-1", map[string]string{"PHASE": state.Merged}); err != nil {
 		t.Fatalf("seed merged checkpoint: %v", err)
 	}
 	seedQueue(t, s, root, true, queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusRunning, PID: 7})
@@ -656,12 +651,11 @@ func TestDrainNoReportMergedTicketSettlesDone(t *testing.T) {
 	}
 }
 
-// TestDrainHonorsConfiguredRunsDir is the COD-811 regression: a repo whose
-// cwd-local trau.ini sets a non-default RUNS_DIR has its child record checkpoints
-// under that dir. The drainer must resolve the same dir — not a hardcoded
-// .trau/runs — or it reads an empty tree, sees no failure class, and settles a
-// faulted epic done. Here the fault lives in the configured dir, so the epic must
-// park.
+// TestDrainHonorsConfiguredRunsDir descends from the COD-811 regression: a repo
+// whose cwd-local trau.ini sets a non-default RUNS_DIR must still resolve that
+// dir for its drain report (repoRunsDir), not a hardcoded .trau/runs. Checkpoints
+// now live in the authoritative table (dir-independent), so a fault recorded
+// there must park a faulted epic regardless of the runs dir.
 func TestDrainHonorsConfiguredRunsDir(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("TRAU_ENV", "")
@@ -677,15 +671,12 @@ func TestDrainHonorsConfiguredRunsDir(t *testing.T) {
 	if want := filepath.Join(root, "runs"); runsDir != want {
 		t.Fatalf("repoRunsDir = %q, want %q from the configured RUNS_DIR", runsDir, want)
 	}
-	st := state.NewStore(runsDir)
-	if err := st.Set("COD-1", "PHASE", state.HandedOff); err != nil {
-		t.Fatalf("seed phase: %v", err)
-	}
-	if err := st.Set("COD-1", "FAILURE_CLASS", state.FailFaulted); err != nil {
-		t.Fatalf("seed class: %v", err)
-	}
-	if err := st.Set("COD-1", "FAILURE_REASON", "context canceled"); err != nil {
-		t.Fatalf("seed reason: %v", err)
+	if err := s.stores.Checkpoints().Upsert(root, "COD-1", map[string]string{
+		"PHASE":          state.HandedOff,
+		"FAILURE_CLASS":  state.FailFaulted,
+		"FAILURE_REASON": "context canceled",
+	}); err != nil {
+		t.Fatalf("seed fault checkpoint: %v", err)
 	}
 	seedQueue(t, s, root, true, queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusRunning, PID: 7})
 	if act, _ := s.drain.tick(root); act != drainReconcile {

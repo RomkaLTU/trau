@@ -114,7 +114,7 @@ func TestClearDropsLocalCheckpointOnly(t *testing.T) {
 	if body["was"] != state.Quarantined {
 		t.Errorf("clear reported was = %q, want the dropped phase %q", body["was"], state.Quarantined)
 	}
-	if runExists(runsDir, "COD-1") {
+	if stateFileExists(runsDir, "COD-1") {
 		t.Errorf("checkpoint still present after clear")
 	}
 	if len(fake.captures) != 0 || len(fake.spawns) != 0 {
@@ -199,7 +199,7 @@ func TestCheckpointMutationsRefusedWhileLive(t *testing.T) {
 	if len(fake.captures) != 0 {
 		t.Errorf("captures = %d, want 0 (no mutation reaches the repo while a loop is live)", len(fake.captures))
 	}
-	if !runExists(runsDir, "COD-1") {
+	if !stateFileExists(runsDir, "COD-1") {
 		t.Errorf("checkpoint was dropped while a loop was live — the guard must leave state untouched")
 	}
 }

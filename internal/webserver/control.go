@@ -145,7 +145,7 @@ func (s *Server) startInstance(w http.ResponseWriter, r *http.Request) {
 	// arrival, record the error where the page can read it.
 	if ticket != "" {
 		runsDir := repoRunsDir(root)
-		spec.OnExit = func(out SpawnOutcome) { recordSpawnOutcome(runsDir, ticket, out) }
+		spec.OnExit = func(out SpawnOutcome) { s.recordSpawnOutcome(root, runsDir, ticket, out) }
 	}
 
 	pid, err := s.sup.Spawn(spec)
@@ -160,10 +160,13 @@ func (s *Server) startInstance(w http.ResponseWriter, r *http.Request) {
 // when it dies on arrival: a non-zero exit with no checkpoint means the child
 // never got far enough to record anything itself, so the hub records the exit
 // code and stderr tail as a spawn_failed event the run page can surface. A clean
-// exit, or one that left a checkpoint behind (a real run that then faulted),
-// needs no synthetic event — its outcome is already on disk.
-func recordSpawnOutcome(runsDir, ticket string, out SpawnOutcome) {
-	if out.ExitCode == 0 || runExists(runsDir, ticket) {
+// exit, or one that left a checkpoint in the authoritative table (a real run that
+// then faulted), needs no synthetic event — its outcome is already recorded.
+func (s *Server) recordSpawnOutcome(root, runsDir, ticket string, out SpawnOutcome) {
+	if out.ExitCode == 0 {
+		return
+	}
+	if _, found, _ := s.stores.Checkpoints().One(root, ticket); found {
 		return
 	}
 	if err := os.MkdirAll(runsDir, 0o755); err != nil {
