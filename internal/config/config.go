@@ -209,10 +209,10 @@ type Config struct {
 	UsageWindow    bool
 	UsageWindowPTY bool
 
-	// Lessons enables the durable lessons memory: failure→fix records are appended
-	// to runs/memory/lessons.jsonl and relevant ones are recalled into later
-	// build/verify/repair prompts. LessonsDistill additionally runs a cheap agent
-	// pass to distill a richer takeaway (default off — the free mechanical record
+	// Lessons enables the durable lessons memory: failure→fix records are recorded
+	// through the hub into the per-repo lessons ledger and relevant ones are recalled
+	// into later build/verify/repair prompts. LessonsDistill additionally runs a cheap
+	// agent pass to distill a richer takeaway (default off — the free mechanical record
 	// is always written when Lessons is on).
 	Lessons        bool
 	LessonsDistill bool

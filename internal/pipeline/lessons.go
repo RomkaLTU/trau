@@ -1,16 +1,26 @@
 package pipeline
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/RomkaLTU/trau/internal/hubclient"
 )
+
+// LessonStore is the pipeline's seam for the durable per-repo lessons ledger. Verify
+// appends the lesson it distilled; a later build/verify/repair recalls the relevant
+// ones. The hub-backed implementation (internal/hublesson) drives it over HTTP so the
+// child reads and writes no ledger file, returning the ledger in append order (oldest
+// first) so recall selects and tie-breaks exactly as it did against the file. Nil
+// disables the ledger — recall injects nothing and records are dropped.
+type LessonStore interface {
+	Append(l hubclient.Lesson) error
+	All() ([]hubclient.Lesson, error)
+}
 
 // lesson is one repair-experiment record in the durable lessons ledger: what
 // failed, what was tried, the evidence, how it ended, and the distilled takeaway
@@ -80,11 +90,35 @@ var lessonStopwords = map[string]bool{
 	"fix": true, "fixed": true, "quarantined": true, "repaired": true,
 }
 
-func (p *Pipeline) lessonsPath() string {
-	return filepath.Join(p.RunsDir, "memory", "lessons.jsonl")
+func lessonDistillPath(id string) string { return "/tmp/lesson-" + id + ".json" }
+
+func (l lesson) wire() hubclient.Lesson {
+	return hubclient.Lesson{
+		Ticket:       l.Ticket,
+		Phase:        l.Phase,
+		FailureType:  l.FailureType,
+		AttemptedFix: l.AttemptedFix,
+		Evidence:     l.Evidence,
+		Result:       l.Result,
+		Lesson:       l.Lesson,
+		Tags:         l.Tags,
+		RecordedAt:   l.RecordedAt,
+	}
 }
 
-func lessonDistillPath(id string) string { return "/tmp/lesson-" + id + ".json" }
+func lessonFromWire(w hubclient.Lesson) lesson {
+	return lesson{
+		Ticket:       w.Ticket,
+		Phase:        w.Phase,
+		FailureType:  w.FailureType,
+		AttemptedFix: w.AttemptedFix,
+		Evidence:     w.Evidence,
+		Result:       w.Result,
+		Lesson:       w.Lesson,
+		Tags:         w.Tags,
+		RecordedAt:   w.RecordedAt,
+	}
+}
 
 // classifyFailure derives a coarse failure_type plus retrieval tags from a
 // verdict. The type is the first category whose keywords appear in the failure
@@ -219,64 +253,40 @@ func (p *Pipeline) distillLesson(ctx context.Context, id string, l lesson) (stri
 	return strings.TrimSpace(out.Lesson), out.Tags, true
 }
 
-// appendLesson appends one record as a JSON line to the durable lessons ledger.
-// Best-effort and silent: a write failure never blocks the loop — the ledger is
-// an optimization, not a checkpoint.
+// appendLesson records one distilled lesson in the repo's durable ledger through
+// the hub. Best-effort and silent: a write failure never blocks the loop — the
+// ledger is an optimization, not a checkpoint, and a dropped record is re-produced
+// the next time a similar failure recurs.
 func (p *Pipeline) appendLesson(l lesson) {
-	if !p.Lessons {
+	if !p.Lessons || p.LessonLedger == nil {
 		return
 	}
-	path := p.lessonsPath()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return
-	}
-	data, err := json.Marshal(l)
-	if err != nil {
-		return
-	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	defer func() { _ = f.Close() }()
-	_, _ = f.Write(append(data, '\n'))
-}
-
-// readLessons parses the JSONL ledger, skipping any blank or malformed line so a
-// single corrupt record never poisons retrieval. A missing file reads as an empty
-// ledger — the loop simply has nothing to recall yet.
-func readLessons(path string) []lesson {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	var out []lesson
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := bytes.TrimSpace(sc.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-		var l lesson
-		if err := json.Unmarshal(line, &l); err != nil {
-			continue
-		}
-		if strings.TrimSpace(l.Lesson) == "" {
-			continue
-		}
-		out = append(out, l)
-	}
-	return out
+	_ = p.LessonLedger.Append(l.wire())
 }
 
 // recallLessons reads the ledger and returns the distilled lesson lines relevant
 // to query, capped at maxInjectedLessons. A no-op (nil) when lessons are disabled.
 func (p *Pipeline) recallLessons(query string) []string {
-	if !p.Lessons {
+	if !p.Lessons || p.LessonLedger == nil {
 		return nil
 	}
-	return relevantLessons(readLessons(p.lessonsPath()), query, maxInjectedLessons)
+	return relevantLessons(p.ledger(), query, maxInjectedLessons)
+}
+
+// ledger reads the repo's recorded lessons from the hub in append order (oldest
+// first), the order the relevance scan was tuned against, so recall selects and
+// tie-breaks identically to the file era. A hub error reads as an empty ledger — the
+// loop simply recalls nothing rather than blocking.
+func (p *Pipeline) ledger() []lesson {
+	wire, err := p.LessonLedger.All()
+	if err != nil {
+		return nil
+	}
+	out := make([]lesson, len(wire))
+	for i, w := range wire {
+		out[i] = lessonFromWire(w)
+	}
+	return out
 }
 
 // lessonQuery is the relevance key for the build/verify phases: the ticket title

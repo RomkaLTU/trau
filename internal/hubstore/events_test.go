@@ -44,7 +44,7 @@ func TestEventsAppendAssignsMonotonicIDs(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("appended rows = %d, want 3", len(rows))
 	}
-	if !(rows[0].ID < rows[1].ID && rows[1].ID < rows[2].ID) {
+	if rows[0].ID >= rows[1].ID || rows[1].ID >= rows[2].ID {
 		t.Fatalf("ids not monotonic: %d, %d, %d", rows[0].ID, rows[1].ID, rows[2].ID)
 	}
 	// A second batch keeps climbing from where the first left off.

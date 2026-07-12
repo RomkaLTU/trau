@@ -39,6 +39,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubcheckpoint"
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/hubevent"
+	"github.com/RomkaLTU/trau/internal/hublesson"
 	"github.com/RomkaLTU/trau/internal/hubphaselog"
 	"github.com/RomkaLTU/trau/internal/hubpresence"
 	"github.com/RomkaLTU/trau/internal/hubtokens"
@@ -942,6 +943,16 @@ func newPhaseLogStore(cfg config.Config, repoRoot string) *hubphaselog.Store {
 	return hubphaselog.New(hub, repoName(repoRoot), window, hubclient.IsUnreachable)
 }
 
+// newLessonStore is the hub-backed client for the per-repo lessons ledger — the
+// distilled repair-experiment takeaways a failed or repaired run leaves for later
+// runs (COD-529, ADR 0008); the child posts each lesson to the serve hub over HTTP
+// and recalls the relevant ones for prompt injection, writing no ledger file.
+func newLessonStore(cfg config.Config, repoRoot string) pipeline.LessonStore {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	window := time.Duration(cfg.HubWriteRetryWindow) * time.Second
+	return hublesson.New(hub, repoName(repoRoot), window, hubclient.IsUnreachable)
+}
+
 // newPresence registers this loop with the serve hub over HTTP and heartbeats its
 // reported session state (ADR 0005, ADR 0008 §7); the hub holds presence and
 // reaps a dead PID via signal 0, so no per-PID instance file is written.
@@ -992,6 +1003,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		State:               newCheckpointStore(cfg, repoRoot),
 		Artifacts:           newArtifactStore(cfg, repoRoot),
 		PhaseLogs:           newPhaseLogStore(cfg, repoRoot),
+		LessonLedger:        newLessonStore(cfg, repoRoot),
 		Git:                 pipeline.ExecGit{Repo: repoRoot},
 		GitHub:              pipeline.ExecGitHub{Repo: repoRoot},
 		Tracker:             pm,

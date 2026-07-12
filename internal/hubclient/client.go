@@ -182,6 +182,28 @@ type artifactBody struct {
 	Content string `json:"content"`
 }
 
+// Lesson is one distilled repair-experiment record in a repo's durable ledger, as
+// the child posts it and reads it back (COD-529, ADR 0008). The takeaway plus the
+// context it came from — the ticket and phase, the failure type, the evidence, how
+// the repair ended, and when it was recorded.
+type Lesson struct {
+	Ticket       string   `json:"ticket,omitempty"`
+	Phase        string   `json:"phase,omitempty"`
+	FailureType  string   `json:"failure_type,omitempty"`
+	AttemptedFix string   `json:"attempted_fix,omitempty"`
+	Evidence     []string `json:"evidence,omitempty"`
+	Result       string   `json:"result,omitempty"`
+	Lesson       string   `json:"lesson"`
+	Tags         []string `json:"tags,omitempty"`
+	RecordedAt   string   `json:"recorded_at,omitempty"`
+}
+
+// lessonsBody carries a repo's ledger on a read; it decodes the lessons the hub
+// returns and ignores the response's other fields.
+type lessonsBody struct {
+	Lessons []Lesson `json:"lessons"`
+}
+
 // drainOutcomeBody carries a queued child's exit outcome on the wire: the failure
 // class and reason, both empty for a clean finish.
 type drainOutcomeBody struct {
@@ -399,6 +421,28 @@ func (c *Client) DeleteArtifacts(ctx context.Context, repo, ticket string) error
 		return nil
 	}
 	return err
+}
+
+// AppendLesson records one distilled lesson for repo with the hub, which appends it
+// to the authoritative per-repo lessons ledger. A hub-connection failure surfaces as
+// an IsUnreachable error so the caller can retry.
+func (c *Client) AppendLesson(ctx context.Context, repo string, l Lesson) error {
+	return c.do(ctx, http.MethodPost, c.repoPath(repo, "lessons"), l, nil)
+}
+
+// Lessons returns every lesson the hub holds for repo, most recent first — the ledger
+// the child recalls prompt-injection lessons from. A repo with none yields an empty
+// slice, not an error.
+func (c *Client) Lessons(ctx context.Context, repo string) ([]Lesson, error) {
+	var out lessonsBody
+	err := c.do(ctx, http.MethodGet, c.repoPath(repo, "lessons"), nil, &out)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return out.Lessons, nil
 }
 
 // PutDrainOutcome records a queued child's exit outcome — the failure class and
