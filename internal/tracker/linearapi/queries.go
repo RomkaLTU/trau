@@ -93,6 +93,10 @@ query PickIssues($teamId: ID!, $labelName: String!) {
         id
         name
       }
+      parent {
+        id
+        identifier
+      }
       labels {
         nodes {
           id

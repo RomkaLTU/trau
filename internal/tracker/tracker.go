@@ -79,12 +79,17 @@ type SubIssue struct {
 
 // ListedTicket is one eligible ticket returned by a fast list operation. Labels
 // carries the issue's label names so a picker can show what marks a ticket beyond
-// the ready label it was selected on.
+// the ready label it was selected on. Parent is the immediate epic's identifier
+// (empty for a top-level ticket) and HasChildren flags a ticket that is itself a
+// parent/epic, so a consumer can group sub-issues under their epic without a
+// second lookup.
 type ListedTicket struct {
-	ID     string
-	Title  string
-	State  string
-	Labels []string
+	ID          string
+	Title       string
+	State       string
+	Labels      []string
+	Parent      string
+	HasChildren bool
 }
 
 // TicketLister is the optional capability of enumerating eligible tickets

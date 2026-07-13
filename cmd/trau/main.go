@@ -368,12 +368,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			con.Logf("Nothing eligible right now.")
 			return nil
 		}
-		for _, t := range tickets {
-			suffix := ""
-			if len(t.Labels) > 0 {
-				suffix = "  [" + strings.Join(t.Labels, ", ") + "]"
-			}
-			con.Logf("%s  %s%s", t.ID, t.Title, suffix)
+		for _, line := range groupEligibleLines(tickets) {
+			con.Logf("%s", line)
 		}
 		return nil
 	}
@@ -802,16 +798,21 @@ const listEligibleTimeout = 90 * time.Second
 
 // eligibleTicket is the machine-readable shape of one eligible ticket under
 // --list-eligible --json: the fields a picker needs to offer a ticket without a
-// blind ID. It is the stable contract the serve hub parses.
+// blind ID. It is the stable contract the serve hub parses. Parent carries the
+// immediate epic's identifier (empty for a top-level ticket) and HasChildren
+// marks a listed epic, so a consumer can group sub-issues under their parent.
 type eligibleTicket struct {
-	ID     string   `json:"id"`
-	Title  string   `json:"title"`
-	Labels []string `json:"labels"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Labels      []string `json:"labels"`
+	Parent      string   `json:"parent"`
+	HasChildren bool     `json:"has_children"`
 }
 
 // writeEligibleJSON emits the eligible tickets as a JSON array on stdout, keeping
-// the stream byte-stable: labels is always an array (never null) so the shape
-// does not vary with whether a ticket carries extra labels.
+// the stream byte-stable: labels is always an array (never null) and parent /
+// has_children are always present, so the shape does not vary with whether a
+// ticket carries extra labels or sits under an epic.
 func writeEligibleJSON(w io.Writer, tickets []tracker.ListedTicket) error {
 	out := make([]eligibleTicket, 0, len(tickets))
 	for _, t := range tickets {
@@ -819,9 +820,83 @@ func writeEligibleJSON(w io.Writer, tickets []tracker.ListedTicket) error {
 		if labels == nil {
 			labels = []string{}
 		}
-		out = append(out, eligibleTicket{ID: t.ID, Title: t.Title, Labels: labels})
+		out = append(out, eligibleTicket{
+			ID:          t.ID,
+			Title:       t.Title,
+			Labels:      labels,
+			Parent:      t.Parent,
+			HasChildren: t.HasChildren,
+		})
 	}
 	return json.NewEncoder(w).Encode(out)
+}
+
+// eligibleLine renders one eligible ticket as the "ID  Title  [labels]" form the
+// human --list-eligible output has always printed, dropping the bracket when the
+// ticket carries no labels.
+func eligibleLine(t tracker.ListedTicket) string {
+	if len(t.Labels) == 0 {
+		return fmt.Sprintf("%s  %s", t.ID, t.Title)
+	}
+	return fmt.Sprintf("%s  %s  [%s]", t.ID, t.Title, strings.Join(t.Labels, ", "))
+}
+
+// groupEligibleLines formats the eligible queue for human --list-eligible output.
+// With no ticket under an epic the result is the flat list, byte-for-byte as
+// before. Once any ticket carries a parent, sub-issues are grouped and indented
+// beneath their epic heading — the epic's own line when it is itself eligible,
+// otherwise a bare epic id — while top-level tickets stay flat.
+func groupEligibleLines(tickets []tracker.ListedTicket) []string {
+	childrenByParent := map[string][]tracker.ListedTicket{}
+	for _, t := range tickets {
+		if t.Parent != "" {
+			childrenByParent[t.Parent] = append(childrenByParent[t.Parent], t)
+		}
+	}
+
+	lines := make([]string, 0, len(tickets))
+	if len(childrenByParent) == 0 {
+		for _, t := range tickets {
+			lines = append(lines, eligibleLine(t))
+		}
+		return lines
+	}
+
+	byID := make(map[string]tracker.ListedTicket, len(tickets))
+	for _, t := range tickets {
+		byID[t.ID] = t
+	}
+	epicBlock := func(parent string) []string {
+		block := make([]string, 0, len(childrenByParent[parent])+1)
+		if epic, ok := byID[parent]; ok {
+			block = append(block, eligibleLine(epic))
+		} else {
+			block = append(block, parent)
+		}
+		for _, c := range childrenByParent[parent] {
+			block = append(block, "  "+eligibleLine(c))
+		}
+		return block
+	}
+
+	emitted := map[string]bool{}
+	for _, t := range tickets {
+		switch {
+		case t.Parent != "":
+			if !emitted[t.Parent] {
+				emitted[t.Parent] = true
+				lines = append(lines, epicBlock(t.Parent)...)
+			}
+		case len(childrenByParent[t.ID]) > 0:
+			if !emitted[t.ID] {
+				emitted[t.ID] = true
+				lines = append(lines, epicBlock(t.ID)...)
+			}
+		default:
+			lines = append(lines, eligibleLine(t))
+		}
+	}
+	return lines
 }
 
 // listEpicTimeout bounds --list-epic so a hung sub-issue listing surfaces as a
