@@ -19,13 +19,14 @@ import { Markdown } from '@/components/markdown'
 import { cn } from '@/lib/utils'
 import { boardPill } from '@/lib/board'
 import { addComment } from '@/lib/issues'
-import { formatCostUSD } from '@/lib/runlive'
+import { formatCostUSD, formatDuration } from '@/lib/runlive'
 import {
   runDetailQueryOptions,
   type Anomaly,
   type PhaseCost,
   type RunDetail,
   type Rubric,
+  type StepDuration,
   type Verdict,
 } from '@/lib/rundetail'
 
@@ -160,7 +161,11 @@ function Detail({
         </TerminalCard>
 
         <TerminalCard title="costs">
-          <CostsView costs={run.costs} present={run.artifacts.tokens} />
+          <CostsView
+            costs={run.costs}
+            durations={run.durations}
+            present={run.artifacts.tokens}
+          />
         </TerminalCard>
 
         <TerminalCard title="anomalies">
@@ -268,31 +273,71 @@ function VerdictView({ verdict, present }: { verdict?: Verdict; present: boolean
   )
 }
 
-function CostsView({ costs, present }: { costs: PhaseCost[]; present: boolean }) {
+function CostsView({
+  costs,
+  durations,
+  present,
+}: {
+  costs: PhaseCost[]
+  durations?: StepDuration[]
+  present: boolean
+}) {
   if (!present || costs.length === 0) {
     return <Empty>No token spend recorded for this run yet.</Empty>
   }
   const totalUsd = costs.reduce((acc, c) => acc + c.cost_usd, 0)
   const metered = costs.every((c) => c.metered)
   return (
-    <table className="w-full border-collapse font-mono text-sm">
-      <tbody>
-        {costs.map((c) => (
-          <tr key={c.phase} className="border-b border-border/60">
-            <td className="py-2 text-muted-foreground">{c.phase}</td>
-            <td className="py-2 text-right tabular-nums text-foreground">
-              {formatCostUSD(c.cost_usd, c.metered)}
+    <div className="flex flex-col gap-4">
+      <table className="w-full border-collapse font-mono text-sm">
+        <tbody>
+          {costs.map((c) => (
+            <tr key={c.phase} className="border-b border-border/60">
+              <td className="py-2 text-muted-foreground">{c.phase}</td>
+              <td className="py-2 text-right tabular-nums text-foreground">
+                {formatCostUSD(c.cost_usd, c.metered)}
+              </td>
+            </tr>
+          ))}
+          <tr>
+            <td className="py-2 text-foreground">total</td>
+            <td className="py-2 text-right tabular-nums text-primary">
+              {formatCostUSD(totalUsd, metered)}
             </td>
           </tr>
-        ))}
-        <tr>
-          <td className="py-2 text-foreground">total</td>
-          <td className="py-2 text-right tabular-nums text-primary">
-            {formatCostUSD(totalUsd, metered)}
-          </td>
-        </tr>
-      </tbody>
-    </table>
+        </tbody>
+      </table>
+      <StepDurations durations={durations} />
+    </div>
+  )
+}
+
+// StepDurations renders the run's wall-clock grouped by Step (Build/Verify/Ship),
+// derived hub-side from activity_change deltas — CI wait folded into Ship, visible
+// for the first time. It renders nothing for a run predating the signal, so an old
+// run shows no durations rather than a guess.
+function StepDurations({ durations }: { durations?: StepDuration[] }) {
+  if (!durations || durations.length === 0) {
+    return null
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+        duration by step
+      </p>
+      <table className="w-full border-collapse font-mono text-sm">
+        <tbody>
+          {durations.map((d) => (
+            <tr key={d.step} className="border-b border-border/60">
+              <td className="py-2 text-muted-foreground">{d.step}</td>
+              <td className="py-2 text-right tabular-nums text-foreground">
+                {formatDuration(d.duration_ms)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 
