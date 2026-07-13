@@ -23,7 +23,7 @@ const (
 // eligibleFields and childFields are the field sets each search needs;
 // /search/jql returns ID-only issues without them.
 var (
-	eligibleFields = []string{"summary", "status", "issuetype", "issuelinks", "labels"}
+	eligibleFields = []string{"summary", "status", "issuetype", "issuelinks", "labels", "parent"}
 	childFields    = []string{"summary", "status", "issuetype", "subtasks"}
 	backlogFields  = []string{"summary", "status", "issuetype", "labels", "parent", "resolution"}
 )
@@ -35,7 +35,8 @@ type Candidate struct {
 	Key        string
 	Summary    string
 	StatusName string
-	IsEpic     bool // issuetype.hierarchyLevel > 0 — a container, never a buildable leaf
+	IsEpic     bool   // issuetype.hierarchyLevel > 0 — a container, never a buildable leaf
+	ParentKey  string // unified parent field — the epic this candidate sits under, empty at top level
 	Labels     []string
 	BlockedBy  []Blocker
 }
@@ -279,6 +280,9 @@ func (r *searchIssue) toCandidate() Candidate {
 	}
 	if it := r.Fields.IssueType; it != nil {
 		cand.IsEpic = it.HierarchyLevel > 0
+	}
+	if p := r.Fields.Parent; p != nil {
+		cand.ParentKey = p.Key
 	}
 	cand.Labels = r.Fields.Labels
 	cand.BlockedBy = blockersFromLinks(r.Fields.IssueLinks)

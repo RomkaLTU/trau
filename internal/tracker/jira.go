@@ -243,7 +243,14 @@ func (j *Jira) listEligibleAPI(ctx context.Context, scope Scope) ([]ListedTicket
 		if !strings.HasPrefix(c.Key, prefix+"-") {
 			continue
 		}
-		out = append(out, ListedTicket{ID: c.Key, Title: c.Summary, State: c.StatusName, Labels: c.Labels})
+		out = append(out, ListedTicket{
+			ID:          c.Key,
+			Title:       c.Summary,
+			State:       c.StatusName,
+			Labels:      c.Labels,
+			Parent:      c.ParentKey,
+			HasChildren: c.IsEpic,
+		})
 	}
 	return out, nil
 }
@@ -252,9 +259,10 @@ func (j *Jira) listEligiblePrompt(scope Scope) string {
 	pfx := scope.prefix()
 	return fmt.Sprintf("Use the Jira (Rovo) MCP. List eligible issues in project %q that carry the label '%s', "+
 		"are unstarted (status category To Do — not In Progress, Done or Closed), have every 'is blocked by' issue resolved (Done/Closed), and match key prefix %s-. "+
-		"Respond with exactly one final line of JSON: ELIGIBLE=[{\"id\":\"%s-123\",\"title\":\"...\",\"labels\":[\"label-a\",\"label-b\"]}, ...] "+
+		"For each issue include its immediate parent epic's key as 'parent' (empty string when it has none). "+
+		"Respond with exactly one final line of JSON: ELIGIBLE=[{\"id\":\"%s-123\",\"title\":\"...\",\"parent\":\"%s-100\",\"labels\":[\"label-a\",\"label-b\"]}, ...] "+
 		"or ELIGIBLE=[]. No other output.",
-		j.pickProject(scope), j.ReadyLabel, pfx, pfx)
+		j.pickProject(scope), j.ReadyLabel, pfx, pfx, pfx)
 }
 
 func (j *Jira) leafSubIssues(ctx context.Context, parent string) (map[string]bool, error) {
