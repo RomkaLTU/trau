@@ -476,6 +476,39 @@ func TestJiraListEligibleFallsBackWithoutToken(t *testing.T) {
 	}
 }
 
+// hierarchyPayload carries a child under an epic, a top-level leaf, and the epic
+// itself — so the eligible listing's parent/has_children threading can be asserted.
+const hierarchyPayload = `{"issues":[
+	{"key":"PROJ-6","fields":{"summary":"Child","status":{"name":"To Do","statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},"parent":{"key":"PROJ-5"},"issuelinks":[]}},
+	{"key":"PROJ-1","fields":{"summary":"Top","status":{"name":"To Do","statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},"issuelinks":[]}},
+	{"key":"PROJ-5","fields":{"summary":"Epic","status":{"name":"To Do","statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":1},"issuelinks":[]}}
+]}`
+
+func TestJiraListEligibleThreadsHierarchy(t *testing.T) {
+	srv := jiraIssueServer(hierarchyPayload)
+	defer srv.Close()
+	j := &Jira{Runner: &recordingRunner{}, Team: "PROJ", ReadyLabel: "ready-for-agent", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	list, err := j.ListEligible(context.Background(), Scope{Team: "PROJ", Prefix: "PROJ"})
+	if err != nil {
+		t.Fatalf("ListEligible error: %v", err)
+	}
+	byID := make(map[string]ListedTicket, len(list))
+	for _, tk := range list {
+		byID[tk.ID] = tk
+	}
+
+	if sub := byID["PROJ-6"]; sub.Parent != "PROJ-5" || sub.HasChildren {
+		t.Errorf("sub-issue = %+v, want Parent PROJ-5 and HasChildren false", sub)
+	}
+	if top := byID["PROJ-1"]; top.Parent != "" || top.HasChildren {
+		t.Errorf("top-level = %+v, want empty Parent and HasChildren false", top)
+	}
+	if epic := byID["PROJ-5"]; !epic.HasChildren || epic.Parent != "" {
+		t.Errorf("epic = %+v, want HasChildren true and empty Parent", epic)
+	}
+}
+
 func TestJiraSubIssuesUsesAPI(t *testing.T) {
 	const payload = `{"issues":[
 		{"key":"PROJ-10","fields":{"summary":"Leaf","status":{"statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},"subtasks":[]}},
