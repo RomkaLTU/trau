@@ -896,7 +896,6 @@ func (p *Pipeline) Build(ctx context.Context, id string) error {
 }
 
 func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
-	p.phaseStart("build")
 	p.setActivity(id, activity.Build, "")
 
 	_ = os.Remove(handoffPath(id))
@@ -1161,7 +1160,6 @@ func (p *Pipeline) Handoff(ctx context.Context, id string) error {
 // checkpoint — the overlap orchestrator writes handed_off only after the concurrent
 // lintfix→cleanup chain has also finished.
 func (p *Pipeline) handoffWork(ctx context.Context, id string) error {
-	p.phaseStart("handoff")
 	p.setActivity(id, activity.Handoff, "")
 	if _, err := p.agentStep(ctx, id, "handoff", handoffTail(id, p.ticketContext(ctx, id))); err != nil {
 		return err
@@ -1228,8 +1226,6 @@ func (p *Pipeline) restoreHandoff(id string) {
 // verified; on exhaustion it files a last-resort HITL blocker issue and
 // quarantines the original ticket.
 func (p *Pipeline) Verify(ctx context.Context, id string) error {
-	p.phaseStart("verify")
-
 	p.restoreHandoff(id)
 	p.restoreRubric(id)
 
@@ -1390,7 +1386,6 @@ func (p *Pipeline) finalizeFailed(ctx context.Context, id string) {
 // A push/PR failure aborts this ticket (returned to the caller) without
 // quarantining — the WIP stays on the branch for a later resume.
 func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
-	p.phaseStart("commit")
 	p.setActivity(id, activity.Commit, "")
 	if err := p.commitSlice(ctx, id); err != nil {
 		return err
@@ -1399,7 +1394,6 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 		return err
 	}
 
-	p.phaseStart("pr")
 	p.setActivity(id, activity.PR, "")
 	branch := p.State.Get(id, "BRANCH")
 	if branch == "" {
@@ -1505,7 +1499,6 @@ func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 		return ErrAlreadyDone
 	}
 
-	p.phaseStart("ci")
 	p.setActivity(id, activity.CIWait, "")
 	if err := p.pollCI(ctx, pr); err != nil {
 		p.logf("  ✗ CI: %v", err)
@@ -1515,7 +1508,6 @@ func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 		p.logf("  green CI — leaving merge to you (AUTO_MERGE=0)")
 		return nil
 	}
-	p.phaseStart("merge")
 	p.setActivity(id, activity.Merge, "")
 	err := p.mergePR(ctx, pr)
 	if unmergeablePR(err) {
@@ -1623,7 +1615,6 @@ func (p *Pipeline) syncBranchWithBase(ctx context.Context, id, branch, base, lab
 		return true, nil
 	}
 
-	p.phaseStart(label)
 	p.setActivity(id, activity.Merge, label)
 	p.logf("  ⚠ %s conflicts with %s — resolving merge conflicts", branch, base)
 	maxAttempts := p.MaxRepairs
@@ -2331,19 +2322,18 @@ func providerOf(err error) string {
 	return "provider"
 }
 
-func (p *Pipeline) phaseStart(phase string) {
-	if p.Renderer != nil {
-		p.Renderer.PhaseStart(phase)
-	}
-}
-
 // setActivity reports the present-tense pipeline work the session is doing now
-// (ADR 0009): it advances the presence heartbeat through OnActivity and emits an
-// activity_change event on the durable log, so per-activity wall-clock — including
-// non-agent waits like CI, invisible to agent_call durations — derives from event
-// timestamp deltas. detail carries the raw call label (e.g. repair2), empty when
-// there is none. Checkpoint phases are untouched; Activity is its own signal.
+// (ADR 0009): it drives the live stepper through the renderer, advances the
+// presence heartbeat through OnActivity, and emits an activity_change event on the
+// durable log, so per-activity wall-clock — including non-agent waits like CI,
+// invisible to agent_call durations — derives from event timestamp deltas. One
+// writer, two displays: the TUI stepper and the web read the same signal. detail
+// carries the raw call label (e.g. repair2), empty when there is none. Checkpoint
+// phases are untouched; Activity is its own signal.
 func (p *Pipeline) setActivity(id string, act activity.Activity, detail string) {
+	if p.Renderer != nil {
+		p.Renderer.Activity(act, detail)
+	}
 	if p.OnActivity != nil {
 		p.OnActivity(id, string(act), detail)
 	}

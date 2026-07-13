@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/activity"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/hubclient"
@@ -51,15 +52,15 @@ func (l *loopEngine) BudgetExhausted() (string, bool) { return "", false }
 
 type noopRenderer struct{}
 
-func (noopRenderer) Logf(string, ...any)             {}
-func (noopRenderer) LoopDone(console.SessionSummary) {}
-func (noopRenderer) Event(event.Event)               {}
-func (noopRenderer) Spin(string) func()              { return func() {} }
-func (noopRenderer) SetTicket(string)                {}
-func (noopRenderer) SetTitle(string)                 {}
-func (noopRenderer) PhaseStart(string)               {}
-func (noopRenderer) TicketDone(console.TicketResult) {}
-func (noopRenderer) Wait()                           {}
+func (noopRenderer) Logf(string, ...any)                {}
+func (noopRenderer) LoopDone(console.SessionSummary)    {}
+func (noopRenderer) Event(event.Event)                  {}
+func (noopRenderer) Spin(string) func()                 { return func() {} }
+func (noopRenderer) SetTicket(string)                   {}
+func (noopRenderer) SetTitle(string)                    {}
+func (noopRenderer) Activity(activity.Activity, string) {}
+func (noopRenderer) TicketDone(console.TicketResult)    {}
+func (noopRenderer) Wait()                              {}
 
 type stateRec struct{ state, ticket, phase string }
 

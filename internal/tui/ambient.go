@@ -17,8 +17,8 @@ import (
 // away-recap banner. Brief tab switches shouldn't nag.
 const recapAwayThreshold = 3 * time.Minute
 
-// livePhasePrefix marks a snapshot entry as a live phase (an active step key)
-// rather than a terminal state phase, so the two never collide in the recap diff.
+// livePhasePrefix marks a snapshot entry as a live Activity rather than a terminal
+// state phase, so the two never collide in the recap diff.
 const livePhasePrefix = "@"
 
 // ambientTitle renders the terminal tab title from the run's live state so a
@@ -40,7 +40,7 @@ func (m model) ambientTitle() string {
 		return mark + " ⚠ paused"
 	case m.currentTicket != "":
 		if i := activeIndex(m.steps); i >= 0 {
-			return fmt.Sprintf("%s ✻ %s %s", mark, m.currentTicket, m.steps[i].key)
+			return fmt.Sprintf("%s ✻ %s %s", mark, m.currentTicket, m.steps[i].act)
 		}
 		return mark + " ✻ " + m.currentTicket
 	default:
@@ -127,7 +127,7 @@ func (m model) recapSnapshot() map[string]string {
 	}
 	if m.currentTicket != "" {
 		if i := activeIndex(m.steps); i >= 0 {
-			snap[m.currentTicket] = livePhasePrefix + m.steps[i].key
+			snap[m.currentTicket] = livePhasePrefix + string(m.steps[i].act)
 		}
 	}
 	return snap

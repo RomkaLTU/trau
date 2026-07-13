@@ -23,3 +23,32 @@ const (
 	CIWait  Activity = "ci-wait"
 	Merge   Activity = "merge"
 )
+
+// Step is a display grouping of Activities: the three phases every surface shows
+// (ADR 0009). Its value is the display label. The Activity→Step map lives here so
+// the TUI and web read the same grouping and cannot drift from the pipeline that
+// writes the Activities; it stays a display concern and never crosses the wire.
+type Step string
+
+const (
+	StepBuild  Step = "Build"
+	StepVerify Step = "Verify"
+	StepShip   Step = "Ship"
+)
+
+// Steps is the canonical Step order.
+var Steps = []Step{StepBuild, StepVerify, StepShip}
+
+// StepOf groups an Activity into its Step. Build absorbs the concurrent build tail
+// (lintfix, cleanup, handoff); Verify holds the self-heal loop; Ship covers commit
+// through merge.
+func StepOf(a Activity) Step {
+	switch a {
+	case Verify, Repair, Bugfix:
+		return StepVerify
+	case Commit, PR, CIWait, Merge:
+		return StepShip
+	default:
+		return StepBuild
+	}
+}

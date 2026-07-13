@@ -20,6 +20,7 @@ import (
 
 	"github.com/charmbracelet/x/term"
 
+	"github.com/RomkaLTU/trau/internal/activity"
 	"github.com/RomkaLTU/trau/internal/event"
 )
 
@@ -36,7 +37,7 @@ const (
 
 // Renderer is the narrow seam between the loop and its human-facing display.
 // Both the plain console and the Bubble Tea TUI implement it. The plain Console
-// implements the display-only hooks (SetTitle/PhaseStart/TicketDone) as no-ops —
+// implements the display-only hooks (SetTitle/Activity/TicketDone) as no-ops —
 // it already narrates per-phase and per-ticket inline — while the TUI uses them
 // to drive the live pipeline stepper and the end-of-session summary.
 type Renderer interface {
@@ -46,7 +47,7 @@ type Renderer interface {
 	Spin(phase string) (stop func())
 	SetTicket(id string)
 	SetTitle(title string)
-	PhaseStart(phase string)
+	Activity(a activity.Activity, detail string)
 	TicketDone(r TicketResult)
 	Wait()
 }
@@ -321,9 +322,9 @@ func (c *Console) SetTicket(id string) {}
 // per-phase log lines, so the title adds nothing in plain mode.
 func (c *Console) SetTitle(title string) {}
 
-// PhaseStart is a no-op for the plain console; each phase already prints its own
-// "▸ <phase>" progress line, so the stepper signal is redundant here.
-func (c *Console) PhaseStart(phase string) {}
+// Activity is a no-op for the plain console; each phase already prints its own
+// "▸ <phase>" progress line, so the present-tense stepper signal is redundant here.
+func (c *Console) Activity(a activity.Activity, detail string) {}
 
 // TicketDone is a no-op for the plain console; per-ticket outcomes are already
 // narrated inline (merged/quarantined lines) as they happen.

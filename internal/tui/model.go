@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	zone "github.com/lrstanley/bubblezone/v2"
 
+	"github.com/RomkaLTU/trau/internal/activity"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/notify"
@@ -158,7 +159,7 @@ type model struct {
 	height  int
 	started time.Time
 
-	steps     []phaseStep
+	steps     []stepRow
 	spin      spinner.Model
 	viewport  viewport.Model
 	feed      []feedEntry
@@ -246,11 +247,14 @@ type model struct {
 }
 
 type (
-	logMsg        struct{ line string }
-	eventMsg      struct{ ev event.Event }
-	ticketMsg     struct{ id string }
-	titleMsg      struct{ title string }
-	phaseStartMsg struct{ phase string }
+	logMsg      struct{ line string }
+	eventMsg    struct{ ev event.Event }
+	ticketMsg   struct{ id string }
+	titleMsg    struct{ title string }
+	activityMsg struct {
+		act    activity.Activity
+		detail string
+	}
 	ticketDoneMsg struct{ r console.TicketResult }
 	loopDoneMsg   struct{ s console.SessionSummary }
 	streamDataMsg struct {
@@ -308,7 +312,7 @@ func initialModel(onInterrupt func()) model {
 		keys:        defaultKeyMap(),
 		state:       stateRunning,
 		started:     time.Now(),
-		steps:       phaseSteps(),
+		steps:       stepRows(),
 		spin:        s,
 		viewport:    vp,
 		tier:        tierFeed,
@@ -367,8 +371,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case titleMsg:
 		m.currentTitle = msg.title
 
-	case phaseStartMsg:
-		m.steps = startPhase(m.steps, msg.phase, time.Now())
+	case activityMsg:
+		m.steps = advanceActivity(m.steps, msg.act, msg.detail, time.Now())
 
 	case ticketDoneMsg:
 		m.finishTicket(msg.r)
@@ -659,8 +663,7 @@ func LiveAgentSize(termW, termH int) (cols, rows int) {
 }
 
 // addLog turns one raw pipeline line into an activity-feed entry. Continuation
-// lines (↳) hang under the previous entry as detail; a "self-heal attempt N/M"
-// line also lights up a sub-step under the active pipeline phase.
+// lines (↳) hang under the previous entry as detail.
 func (m *model) addLog(line string) {
 	m.appendRaw(line)
 	glyph, style, text, isSub := m.classifyLine(line)
@@ -671,11 +674,6 @@ func (m *model) addLog(line string) {
 		m.appendFeed(feedEntry{glyph: "↳", gstyle: m.styles.Subtle, text: text, sub: true})
 	} else {
 		m.appendFeed(feedEntry{glyph: glyph, gstyle: style, phase: m.activePhase(), text: text})
-	}
-	if c, ok := parseChildSpan(line); ok {
-		if idx := activeIndex(m.steps); idx >= 0 {
-			m.steps[idx].subs = upsertChildSpan(m.steps[idx].subs, c)
-		}
 	}
 	m.refreshBody()
 }
@@ -740,7 +738,7 @@ func (m model) renderStream(d dims) string {
 // feed's phase column. Empty between tickets / before the first phase.
 func (m model) activePhase() string {
 	if idx := activeIndex(m.steps); idx >= 0 {
-		return m.steps[idx].label
+		return string(m.steps[idx].step)
 	}
 	return ""
 }
@@ -858,7 +856,7 @@ func (m *model) startTicket(id string) {
 	m.prURL = ""
 	m.ciState = ""
 	m.ciEvery = 0
-	m.steps = phaseSteps()
+	m.steps = stepRows()
 	m.streamID = ""
 	m.stopStream()
 	if !m.stopping {
