@@ -55,45 +55,13 @@ func (f *fakeAppActions) RunTicket(context.Context, string, string, console.Rend
 
 func (f *fakeAppActions) OnboardingNeeded() bool { return false }
 
-func (f *fakeAppActions) StartPlan(context.Context, string) (PlanOutcome, error) {
-	return PlanOutcome{Status: "prd", Title: "Draft PRD", Markdown: "# Draft PRD\n\nbody"}, nil
-}
-
-func (f *fakeAppActions) AnswerPlan(context.Context, string, []PlanAnswer) (PlanOutcome, error) {
-	return PlanOutcome{Status: "prd", Title: "Draft PRD", Markdown: "# Draft PRD\n\nbody"}, nil
-}
-
-func (f *fakeAppActions) RevisePlan(context.Context, string, string) (PlanOutcome, error) {
-	return PlanOutcome{Status: "prd", Title: "Draft PRD", Markdown: "# Draft PRD\n\nrevised"}, nil
-}
-
-func (f *fakeAppActions) ApprovePlan(context.Context, string) (PublishOutcome, error) {
-	return PublishOutcome{}, nil
-}
-
-func (f *fakeAppActions) SlicePlan(context.Context, string) (PlanOutcome, error) {
-	return PlanOutcome{Status: "slices", Epic: "COD-1", Slices: []PlanSlice{{Title: "First slice"}}}, nil
-}
-
-func (f *fakeAppActions) CreateSlices(context.Context, string, []PlanSlice) (SliceOutcome, error) {
-	return SliceOutcome{Epic: "COD-1", Children: []string{"COD-2"}, Created: true}, nil
-}
-
-func (f *fakeAppActions) ListPlans() []PlanSession { return nil }
-
-func (f *fakeAppActions) ResumePlan(context.Context, string) (PlanOutcome, error) {
-	return PlanOutcome{Status: "prd", Title: "Draft PRD", Markdown: "# Draft PRD\n\nbody"}, nil
-}
-
-func (f *fakeAppActions) AbortPlan(context.Context, string) error { return nil }
-
 // TestScreensRenderAcrossSizes walks the menu shell into every view at the
 // three reference terminal sizes and renders each one, so a regression in any
 // screen's layout code fails here instead of at runtime.
 func TestScreensRenderAcrossSizes(t *testing.T) {
 	sizes := [][2]int{{80, 24}, {120, 40}, {200, 60}}
 	actions := []menuAction{
-		actRun, actRunOnce, actDryRun, actPlan, actStatus, actLogs,
+		actRun, actRunOnce, actDryRun, actStatus, actLogs,
 		actReset, actVersion, actOnboarding, actSettings, actMore,
 	}
 	for _, sz := range sizes {

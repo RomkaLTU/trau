@@ -19,10 +19,7 @@ type BackendParams struct {
 	Effort   string
 	Dir      string
 	Preamble string
-	// PlanPreamble, when set, replaces Preamble for the plan phase only (calls
-	// whose label routes to PhasePlan). Empty keeps every phase on Preamble.
-	PlanPreamble string
-	Timeout      time.Duration
+	Timeout  time.Duration
 	// StripMechanicalMCP launches mechanical phases (see agent.MechanicalPhase)
 	// with the target repo's MCP servers stripped, where the provider CLI supports
 	// it (Claude's --strict-mcp-config). Providers without an equivalent ignore it.
@@ -109,7 +106,6 @@ var claudeSpec = Spec{
 			DisallowedTools:    p.Extra["disallowed_tools"],
 			StripMechanicalMCP: p.StripMechanicalMCP,
 			Preamble:           p.Preamble,
-			PlanPreamble:       p.PlanPreamble,
 			ResultDir:          p.Extra["result_dir"],
 			Dir:                p.Dir,
 			Cols:               p.Cols,
@@ -130,21 +126,20 @@ var codexSpec = Spec{
 	NeedsSkills: true,
 	New: func(p BackendParams) (Runner, error) {
 		return &Codex{
-			Bin:          p.Bin,
-			Flags:        p.Flags,
-			Profile:      p.Extra["profile"],
-			Model:        p.Model,
-			Effort:       p.Effort,
-			Preamble:     p.Preamble,
-			PlanPreamble: p.PlanPreamble,
-			Dir:          p.Dir,
-			ResultDir:    p.Extra["result_dir"],
-			Cols:         p.Cols,
-			Rows:         p.Rows,
-			SizeFn:       p.SizeFn,
-			Log:          p.Log,
-			Tokens:       p.Tokens,
-			Transcripts:  p.Transcripts,
+			Bin:         p.Bin,
+			Flags:       p.Flags,
+			Profile:     p.Extra["profile"],
+			Model:       p.Model,
+			Effort:      p.Effort,
+			Preamble:    p.Preamble,
+			Dir:         p.Dir,
+			ResultDir:   p.Extra["result_dir"],
+			Cols:        p.Cols,
+			Rows:        p.Rows,
+			SizeFn:      p.SizeFn,
+			Log:         p.Log,
+			Tokens:      p.Tokens,
+			Transcripts: p.Transcripts,
 		}, nil
 	},
 }
@@ -155,20 +150,19 @@ var kimiSpec = Spec{
 	NeedsSkills: true,
 	New: func(p BackendParams) (Runner, error) {
 		return &Kimi{
-			Bin:          p.Bin,
-			Flags:        p.Flags,
-			Model:        p.Model,
-			Preamble:     p.Preamble,
-			PlanPreamble: p.PlanPreamble,
-			Dir:          p.Dir,
-			ResultDir:    p.Extra["result_dir"],
-			Cols:         p.Cols,
-			Rows:         p.Rows,
-			SizeFn:       p.SizeFn,
-			Timeout:      p.Timeout,
-			Log:          p.Log,
-			Tokens:       p.Tokens,
-			Transcripts:  p.Transcripts,
+			Bin:         p.Bin,
+			Flags:       p.Flags,
+			Model:       p.Model,
+			Preamble:    p.Preamble,
+			Dir:         p.Dir,
+			ResultDir:   p.Extra["result_dir"],
+			Cols:        p.Cols,
+			Rows:        p.Rows,
+			SizeFn:      p.SizeFn,
+			Timeout:     p.Timeout,
+			Log:         p.Log,
+			Tokens:      p.Tokens,
+			Transcripts: p.Transcripts,
 		}, nil
 	},
 }

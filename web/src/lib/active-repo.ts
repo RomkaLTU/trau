@@ -9,7 +9,7 @@ type Store = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 const SCOPE_KEY = 'trau.active-repo'
 const LAST_REPO_KEY = 'trau.last-repo'
 
-// ALL_SCOPE is the sentinel scope that spans every repo. Operate/author pages are
+// ALL_SCOPE is the sentinel scope that spans every repo. Operate pages are
 // gated under it; observe pages that already read across repos keep working.
 export const ALL_SCOPE = 'all'
 

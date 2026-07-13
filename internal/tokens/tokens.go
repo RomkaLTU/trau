@@ -16,11 +16,6 @@ package tokens
 
 import "strings"
 
-// PlanBucket is the shared token bucket for the planning module. Planning agent
-// calls carry no ticket, so the sink points them here, keeping planning spend out of
-// the _loop bucket and letting --status surface it as one planning row.
-const PlanBucket = "_plans"
-
 // Record is one call's raw, already-normalized counts, handed to the sink's Append.
 // Input is the NON-cached input portion (see the package doc). CostUSD is a pointer
 // so a provider that reports no per-call cost (codex on a ChatGPT-plan login) records

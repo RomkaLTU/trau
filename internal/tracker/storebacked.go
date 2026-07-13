@@ -290,17 +290,6 @@ func (in *StoreBacked) FileBug(ctx context.Context, id, verdictPath string) (str
 	return iss.ID, nil
 }
 
-// CreateIssue delegates a hierarchical create (publishing a plan) to the external
-// tracker, which owns issue creation for a synced repo. A tracker without the
-// capability makes publish a graceful no-op.
-func (in *StoreBacked) CreateIssue(ctx context.Context, spec IssueSpec) (string, error) {
-	creator, ok := in.Writes.(HierarchicalCreator)
-	if !ok {
-		return "", errors.New("tracker: hierarchical create not supported")
-	}
-	return creator.CreateIssue(ctx, spec)
-}
-
 // EnsureLabels provisions the managed labels on the external tracker — synced
 // issues carry real tracker labels, so they must exist there.
 func (in *StoreBacked) EnsureLabels(ctx context.Context) error {

@@ -62,12 +62,6 @@ var allowedReaders = map[string]string{
 	"internal/hubstore/queue.go":          "legacy queue.json import",
 	"internal/hubstore/registrations.go":  "legacy registration import",
 	"internal/hubstore/legacy_rundata.go": "doctor leftover-run-data probe",
-
-	// Out of scope: the planning module is being removed wholesale (COD-810).
-	"internal/planning/planning.go":     "planning module (COD-810 removal)",
-	"internal/planning/orchestrator.go": "planning module (COD-810 removal)",
-	"internal/planning/sessions.go":     "planning module (COD-810 removal)",
-	"internal/planning/transcript.go":   "planning module (COD-810 removal)",
 }
 
 func TestNoRuntimeFileReadsOutsideExemptions(t *testing.T) {

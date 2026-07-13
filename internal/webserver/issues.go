@@ -13,70 +13,9 @@ import (
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
-// CreateIssueRequest is the body of POST /repos/{repo}/issues: a title, an
-// optional markdown description, any labels to apply (e.g. the ready label), and
-// an optional parent identifier that nests the new issue under an epic so an epic
-// and its sub-issues can be filed from the board.
-type CreateIssueRequest struct {
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	Labels      []string `json:"labels"`
-	Parent      string   `json:"parent"`
-}
-
-// CreatedIssue is returned when the hub files a new issue: the tracker's own
-// identifier and a link to it, plus the provider that created it.
-type CreatedIssue struct {
-	Identifier string `json:"identifier"`
-	URL        string `json:"url"`
-	Provider   string `json:"provider"`
-}
-
 // CommentRequest is the body of POST /repos/{repo}/runs/{ticket}/comment.
 type CommentRequest struct {
 	Body string `json:"body"`
-}
-
-// handleCreateIssue files a new issue in the repo's configured tracker directly
-// through its REST/GraphQL API — no agent, no MCP. The write is gated by the same
-// exposure token as every other API request.
-func (s *Server) handleCreateIssue(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-	repo, ok := s.findRepo(r.PathValue("repo"))
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
-		return
-	}
-	var req CreateIssueRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
-		return
-	}
-	title := strings.TrimSpace(req.Title)
-	if title == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "title is required"})
-		return
-	}
-	provider, writer, err := s.writerFor(repo)
-	if err != nil {
-		writeWriterErr(w, err)
-		return
-	}
-	issue, err := writer.CreateIssue(r.Context(), tracker.IssueDraft{
-		Title:       title,
-		Description: req.Description,
-		Labels:      cleanLabels(req.Labels),
-		Parent:      strings.TrimSpace(req.Parent),
-	})
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "create issue: " + err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusCreated, CreatedIssue{Identifier: issue.Identifier, URL: issue.URL, Provider: provider})
 }
 
 // IssueResponse is the /repos/{repo}/issues/{id} resource: one ticket read from

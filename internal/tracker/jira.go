@@ -553,21 +553,6 @@ func (j *Jira) parentIssuePrompt(id string) string {
 		"Respond with exactly one final line: 'PARENT=<key>' (or 'PARENT=NONE' if it has no parent). No other output.", id)
 }
 
-// CreateIssue creates a new issue through the hierarchical-create capability: an
-// Epic when the spec has no parent, otherwise a Task nested under the parent via
-// the unified parent field set at creation time. The configured team key doubles
-// as the Jira project key, so the spec's project is ignored — a Jira issue's
-// project is fixed by that key. Like IssueDetail it is API-only: a multi-line PRD
-// body does not survive a single-line MCP sentinel.
-func (j *Jira) CreateIssue(ctx context.Context, spec IssueSpec) (string, error) {
-	issueType := "Epic"
-	parent := strings.TrimSpace(spec.Parent)
-	if parent != "" {
-		issueType = "Task"
-	}
-	return j.api().CreateIssue(ctx, strings.TrimSpace(j.Team), issueType, spec.Title, spec.Description, spec.Labels, parent)
-}
-
 // IssueDetail returns the title and full description of issue id for build-prompt
 // context. Like Linear it is API-only: a multi-line ADF description cannot survive
 // a single-line MCP sentinel, so an unconfigured or failing API leaves the pipeline

@@ -16,11 +16,10 @@ import {
   type CheckpointNotice,
 } from '@/components/trau'
 import { Markdown } from '@/components/markdown'
-import { NewIssueForm, type IssueDefaults } from '@/components/new-issue-form'
 import { cn } from '@/lib/utils'
 import { boardPill } from '@/lib/board'
 import { addComment } from '@/lib/issues'
-import { formatCostUSD, phaseLabel } from '@/lib/runlive'
+import { formatCostUSD } from '@/lib/runlive'
 import {
   runDetailQueryOptions,
   type Anomaly,
@@ -178,10 +177,6 @@ function Detail({
 
         <TerminalCard title="comments" className="lg:col-span-2">
           <CommentComposer repo={repo} ticket={run.ticket} />
-        </TerminalCard>
-
-        <TerminalCard title="follow-up" className="lg:col-span-2">
-          <NewIssueForm repo={repo} defaults={followUpDefaults(repo, run)} bare />
         </TerminalCard>
       </div>
     </div>
@@ -364,22 +359,4 @@ function CommentComposer({ repo, ticket }: { repo: string; ticket: string }) {
       </div>
     </div>
   )
-}
-
-function followUpDefaults(repo: string, run: RunDetail): IssueDefaults {
-  const lines = [
-    `Filed from the trau hub while reviewing **${run.ticket}**${
-      run.title ? ` — ${run.title}` : ''
-    }.`,
-    '',
-    `- Repo: \`${repo}\``,
-    `- Phase: ${phaseLabel(run.phase)}`,
-  ]
-  if (run.failure_reason) {
-    lines.push(`- Failure reason: ${run.failure_reason}`)
-  }
-  return {
-    title: `Follow-up: ${run.ticket}`,
-    description: lines.join('\n'),
-  }
 }

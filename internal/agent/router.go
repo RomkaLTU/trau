@@ -16,15 +16,11 @@ const (
 	PhaseCleanup = "cleanup"
 	PhaseLintfix = "lintfix"
 	PhaseCommit  = "commit"
-	PhasePlan    = "plan"
-	PhaseSlice   = "slice"
 	PhasePick    = "pick"
 )
 
 // Phases lists the routable phase keys in pipeline order (loop-level "pick" last).
-// "plan" and "slice" are the planning module's rounds — routable like any phase,
-// but not part of the build→PR pipeline chain.
-var Phases = []string{PhaseBuild, PhaseHandoff, PhaseVerify, PhaseRepair, PhaseBugfix, PhaseCleanup, PhaseLintfix, PhaseCommit, PhasePlan, PhaseSlice, PhasePick}
+var Phases = []string{PhaseBuild, PhaseHandoff, PhaseVerify, PhaseRepair, PhaseBugfix, PhaseCleanup, PhaseLintfix, PhaseCommit, PhasePick}
 
 // RouteKey normalizes a per-call label (the tag passed to Run) to its routable
 // phase. The pipeline emits dynamic labels — "verify-retry2", "repair1" — and the
@@ -48,10 +44,6 @@ func RouteKey(label string) string {
 		return PhaseLintfix
 	case strings.HasPrefix(label, PhaseCommit):
 		return PhaseCommit
-	case strings.HasPrefix(label, PhasePlan):
-		return PhasePlan
-	case strings.HasPrefix(label, PhaseSlice):
-		return PhaseSlice
 	default:
 		return PhasePick
 	}
@@ -75,18 +67,6 @@ func MechanicalPhase(label string) bool {
 		}
 	}
 	return false
-}
-
-// preambleFor returns the preamble a call's prompt is prefixed with: the
-// plan-scoped variant when the call routes to a planning round (plan or slice)
-// and one is set, otherwise the default unattended preamble. It is the one seam
-// that scopes the planning Preamble to the planning labels, leaving pipeline
-// phases strict.
-func preambleFor(base, plan, label string) string {
-	if key := RouteKey(label); plan != "" && (key == PhasePlan || key == PhaseSlice) {
-		return plan
-	}
-	return base
 }
 
 // Router dispatches each agent call to a per-phase backend Runner, falling back

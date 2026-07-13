@@ -141,7 +141,6 @@ type ClaudeInteractive struct {
 	DisallowedTools    string
 	StripMechanicalMCP bool
 	Preamble           string
-	PlanPreamble       string
 	ResultDir          string
 	Dir                string
 	Cols               int
@@ -197,7 +196,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	if err != nil {
 		return Result{}, err
 	}
-	full := preambleFor(c.Preamble, c.PlanPreamble, label) + "\n\n" + prompt + "\n\n" + resultInstruction(resultPath)
+	full := c.Preamble + "\n\n" + prompt + "\n\n" + resultInstruction(resultPath)
 
 	sessionID, _ := newUUID()
 
@@ -654,22 +653,21 @@ func safeLabel(label string) string {
 // --disallowedTools block has no codex equivalent — the Preamble covers fan-out
 // denial instead.
 type Codex struct {
-	Bin          string
-	Flags        []string
-	Profile      string
-	Model        string
-	Effort       string
-	Preamble     string
-	PlanPreamble string
-	Dir          string
-	ResultDir    string
-	Cols         int
-	Rows         int
-	SizeFn       func() (cols, rows int)
-	Log          *event.Log
-	Tokens       TokenSink
-	Transcripts  TranscriptSink
-	now          func() time.Time
+	Bin         string
+	Flags       []string
+	Profile     string
+	Model       string
+	Effort      string
+	Preamble    string
+	Dir         string
+	ResultDir   string
+	Cols        int
+	Rows        int
+	SizeFn      func() (cols, rows int)
+	Log         *event.Log
+	Tokens      TokenSink
+	Transcripts TranscriptSink
+	now         func() time.Time
 }
 
 // Provider names the backend for logging and routing attribution.
@@ -736,7 +734,7 @@ func parseCodexUsage(stream []byte) (Usage, int) {
 // message, so dumping stdout here would be wrong; the -o file is the only source
 // of the final message.
 func (c *Codex) Run(ctx context.Context, prompt, label string) (Result, error) {
-	full := preambleFor(c.Preamble, c.PlanPreamble, label) + "\n\n" + prompt
+	full := c.Preamble + "\n\n" + prompt
 
 	msg, err := os.CreateTemp("", "trau-codex-msg-*")
 	if err != nil {
@@ -840,22 +838,21 @@ func (c *Codex) clock() time.Time {
 // tokens but no per-call dollar cost (a subscription plan, like codex), so spend
 // is reported as unmetered rather than a misleading $0.
 type Kimi struct {
-	Bin          string
-	Flags        []string
-	Model        string
-	Preamble     string
-	PlanPreamble string
-	Dir          string
-	ResultDir    string
-	Cols         int
-	Rows         int
-	SizeFn       func() (cols, rows int)
-	Timeout      time.Duration
-	SessionsDir  string
-	Log          *event.Log
-	Tokens       TokenSink
-	Transcripts  TranscriptSink
-	now          func() time.Time
+	Bin         string
+	Flags       []string
+	Model       string
+	Preamble    string
+	Dir         string
+	ResultDir   string
+	Cols        int
+	Rows        int
+	SizeFn      func() (cols, rows int)
+	Timeout     time.Duration
+	SessionsDir string
+	Log         *event.Log
+	Tokens      TokenSink
+	Transcripts TranscriptSink
+	now         func() time.Time
 }
 
 // Provider names the backend for logging and routing attribution.
@@ -1006,7 +1003,7 @@ func (c *Kimi) Run(ctx context.Context, prompt, label string) (Result, error) {
 		ctx, cancel = context.WithTimeout(ctx, c.Timeout)
 		defer cancel()
 	}
-	full := preambleFor(c.Preamble, c.PlanPreamble, label) + "\n\n" + prompt
+	full := c.Preamble + "\n\n" + prompt
 
 	var stdout, stderr bytes.Buffer
 	sink := io.Writer(&stdout)

@@ -13,15 +13,14 @@ import (
 )
 
 var (
-	_ Tracker             = (*StoreBacked)(nil)
-	_ TicketLister        = (*StoreBacked)(nil)
-	_ IssueDetailer       = (*StoreBacked)(nil)
-	_ IssueStatuser       = (*StoreBacked)(nil)
-	_ IssueParenter       = (*StoreBacked)(nil)
-	_ IssueProjecter      = (*StoreBacked)(nil)
-	_ IssueLabeler        = (*StoreBacked)(nil)
-	_ HierarchicalCreator = (*StoreBacked)(nil)
-	_ TeamLister          = (*StoreBacked)(nil)
+	_ Tracker        = (*StoreBacked)(nil)
+	_ TicketLister   = (*StoreBacked)(nil)
+	_ IssueDetailer  = (*StoreBacked)(nil)
+	_ IssueStatuser  = (*StoreBacked)(nil)
+	_ IssueParenter  = (*StoreBacked)(nil)
+	_ IssueProjecter = (*StoreBacked)(nil)
+	_ IssueLabeler   = (*StoreBacked)(nil)
+	_ TeamLister     = (*StoreBacked)(nil)
 )
 
 type recordedMirror struct {

@@ -20,7 +20,6 @@ import { Route as LessonsRouteImport } from './routes/lessons'
 import { Route as InstancesRouteImport } from './routes/instances'
 import { Route as CostsRouteImport } from './routes/costs'
 import { Route as BacklogRouteImport } from './routes/backlog'
-import { Route as AuthorRouteImport } from './routes/author'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as RunsRepoTicketRouteImport } from './routes/runs_.$repo.$ticket'
 import { Route as LiveRepoTicketRouteImport } from './routes/live.$repo.$ticket'
@@ -80,11 +79,6 @@ const BacklogRoute = BacklogRouteImport.update({
   path: '/backlog',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AuthorRoute = AuthorRouteImport.update({
-  id: '/author',
-  path: '/author',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -103,7 +97,6 @@ const LiveRepoTicketRoute = LiveRepoTicketRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/author': typeof AuthorRoute
   '/backlog': typeof BacklogRoute
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
@@ -120,7 +113,6 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/author': typeof AuthorRoute
   '/backlog': typeof BacklogRoute
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
@@ -138,7 +130,6 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/author': typeof AuthorRoute
   '/backlog': typeof BacklogRoute
   '/costs': typeof CostsRoute
   '/instances': typeof InstancesRoute
@@ -157,7 +148,6 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/author'
     | '/backlog'
     | '/costs'
     | '/instances'
@@ -174,7 +164,6 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/author'
     | '/backlog'
     | '/costs'
     | '/instances'
@@ -191,7 +180,6 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
-    | '/author'
     | '/backlog'
     | '/costs'
     | '/instances'
@@ -209,7 +197,6 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  AuthorRoute: typeof AuthorRoute
   BacklogRoute: typeof BacklogRoute
   CostsRoute: typeof CostsRoute
   InstancesRoute: typeof InstancesRoute
@@ -304,13 +291,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BacklogRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/author': {
-      id: '/author'
-      path: '/author'
-      fullPath: '/author'
-      preLoaderRoute: typeof AuthorRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/': {
       id: '/'
       path: '/'
@@ -337,7 +317,6 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  AuthorRoute: AuthorRoute,
   BacklogRoute: BacklogRoute,
   CostsRoute: CostsRoute,
   InstancesRoute: InstancesRoute,
