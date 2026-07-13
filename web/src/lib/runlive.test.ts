@@ -11,7 +11,7 @@ import {
   pauseBanner,
   pauseKind,
   phaseLabel,
-  runPhaseSteps,
+  runSteps,
   sumCosts,
 } from '@/lib/runlive'
 
@@ -51,33 +51,53 @@ describe('deriveVariant', () => {
   })
 })
 
-describe('runPhaseSteps', () => {
-  const states = (phase: string, variant: Parameters<typeof runPhaseSteps>[1]) =>
-    Object.fromEntries(runPhaseSteps(phase, variant).map((s) => [s.label, s.state]))
+describe('runSteps', () => {
+  const states = (
+    variant: Parameters<typeof runSteps>[0],
+    phase: string,
+    activity?: string,
+    detail?: string,
+  ) => Object.fromEntries(runSteps(variant, phase, activity, detail).steps.map((s) => [s.label, s.state]))
 
-  it('marks the reached phase active while live', () => {
-    expect(states('handed_off', 'live')).toEqual({
-      build: 'done',
-      handoff: 'active',
-      verify: 'todo',
-      pr: 'todo',
-      merge: 'todo',
+  it('drives a live run off its Activity, with the sub-label the active Step shows', () => {
+    const { steps, subLabel } = runSteps('live', 'handed_off', 'repair', 'repair2')
+    expect(Object.fromEntries(steps.map((s) => [s.label, s.state]))).toEqual({
+      Build: 'done',
+      Verify: 'active',
+      Ship: 'todo',
     })
+    expect(subLabel).toBe('Verify · repair 2')
   })
 
-  it('completes every step on success', () => {
-    expect(new Set(runPhaseSteps('merged', 'success').map((s) => s.state))).toEqual(
+  it('falls back to the corrected checkpoint when a live run reports no Activity', () => {
+    const { steps, subLabel } = runSteps('live', 'handed_off')
+    expect(Object.fromEntries(steps.map((s) => [s.label, s.state]))).toEqual({
+      Build: 'done',
+      Verify: 'active',
+      Ship: 'todo',
+    })
+    expect(subLabel).toBeUndefined()
+  })
+
+  it('completes every Step on success', () => {
+    expect(new Set(runSteps('success', 'merged').steps.map((s) => s.state))).toEqual(
       new Set(['done']),
     )
   })
 
-  it('turns the reached phase into a fail marker on failure', () => {
-    expect(states('handed_off', 'failure')).toEqual({
-      build: 'done',
-      handoff: 'fail',
-      verify: 'todo',
-      pr: 'todo',
-      merge: 'todo',
+  it('marks the Step a failed run stopped in', () => {
+    expect(states('failure', 'verified')).toEqual({
+      Build: 'done',
+      Verify: 'done',
+      Ship: 'fail',
+    })
+  })
+
+  it('shows a paused run the Step it paused in', () => {
+    expect(states('paused', 'handed_off')).toEqual({
+      Build: 'done',
+      Verify: 'active',
+      Ship: 'todo',
     })
   })
 })

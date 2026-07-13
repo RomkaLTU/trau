@@ -26,10 +26,13 @@ import {
   type LiveLoop,
   type RepoActivity,
 } from '@/lib/overview'
+import { liveSteps } from '@/lib/steps'
 
 function BoardLoopActivity({ loop, now }: { loop: LiveLoop; now: number }) {
   const view = loopCardView(loop.sessionState, {
     phase: loop.phase,
+    activity: loop.activity,
+    detail: loop.detail,
     failureClass: loop.failureClass,
   })
   return (
@@ -56,7 +59,9 @@ function BoardLoopActivity({ loop, now }: { loop: LiveLoop; now: number }) {
         ) : null}
       </div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-        {view.showStepper ? <PhaseStepper phase={loop.phase} /> : null}
+        {view.showStepper ? (
+          <PhaseStepper {...liveSteps(loop.activity, loop.detail, loop.phase)} />
+        ) : null}
         <MetaInline label="elapsed" value={elapsed(loop.startedAt, now)} />
       </div>
     </div>
@@ -137,6 +142,8 @@ function RepoActions({
   if (primary) {
     const view = loopCardView(primary.sessionState, {
       phase: primary.phase,
+      activity: primary.activity,
+      detail: primary.detail,
       failureClass: primary.failureClass,
     })
     return (

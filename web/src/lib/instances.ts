@@ -11,6 +11,8 @@ export interface Instance {
   session_state: string
   ticket?: string
   phase?: string
+  activity?: string
+  detail?: string
   state_since?: string
 }
 
