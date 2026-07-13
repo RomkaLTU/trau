@@ -266,6 +266,8 @@ function QueueBuilderRow({
 
         {isEpic ? (
           <StatusPill state="info" label={`epic · ${done}/${total}`} />
+        ) : item.status !== 'pending' ? (
+          <StatusPill state={statusState(item.status)} label={item.status} />
         ) : (
           <StatusPill state="todo" label="ticket" />
         )}

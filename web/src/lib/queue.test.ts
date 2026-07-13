@@ -53,6 +53,17 @@ describe('queueExecutable', () => {
     ).toBe(2)
   })
 
+  it('excludes settled tickets from the estimate', () => {
+    expect(
+      queueExecutable([
+        item({ id: 'COD-1', kind: 'ticket', status: 'done' }),
+        item({ id: 'COD-2', kind: 'ticket', status: 'failed' }),
+        item({ id: 'COD-3', kind: 'ticket', status: 'skipped' }),
+        item({ id: 'COD-4', kind: 'ticket', status: 'pending' }),
+      ]),
+    ).toBe(1)
+  })
+
   it('counts an epic by its not-done sub-issues', () => {
     expect(
       queueExecutable([

@@ -149,12 +149,19 @@ export function skipResumeApplies(items: QueueItem[], runs: Run[]): boolean {
   )
 }
 
-// queueExecutable estimates how many leaf tickets a Start will run: each ticket
-// counts once, each epic by its not-done sub-issues (the count resolves lazily
-// at run time, so this is the launch-time estimate).
+// queueTerminal reports whether an item has already settled: the drain only
+// launches pending or paused items, so a done, failed, or skipped one no longer
+// contributes work to a Start.
+export function queueTerminal(status: string): boolean {
+  return status === 'done' || status === 'failed' || status === 'skipped'
+}
+
+// queueExecutable estimates how many leaf tickets a Start will run: each
+// unsettled ticket counts once, each epic by its not-done sub-issues (the count
+// resolves lazily at run time, so this is the launch-time estimate).
 export function queueExecutable(items: QueueItem[]): number {
   return items.reduce((n, it) => {
-    if (it.kind !== 'epic') return n + 1
+    if (it.kind !== 'epic') return n + (queueTerminal(it.status) ? 0 : 1)
     const subs = it.sub_issues ?? []
     return n + subs.filter((s) => s.state !== 'done').length
   }, 0)
