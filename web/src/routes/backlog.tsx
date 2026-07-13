@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useQueryStates } from 'nuqs'
@@ -37,12 +37,15 @@ import {
 } from '@/components/ui/popover'
 import {
   backlogQueryOptions,
+  backlogSections,
+  hiddenStateGroups,
   STATE_GROUPS,
   type BacklogEntry,
 } from '@/lib/backlog'
 import {
   backlogFilterParsers,
   backlogParamsFromFilters,
+  effectiveStateGroups,
   hasActiveFilters,
   toggleStateGroup,
 } from '@/lib/backlog-filters'
@@ -92,16 +95,24 @@ function BacklogPage() {
     backlogQueryOptions(repo, backlogParamsFromFilters(filters, PAGE_SIZE)),
   )
   const items = backlog.data?.items ?? []
+  const counts = backlog.data?.counts ?? {}
   const total = backlog.data?.total ?? 0
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const hasFilters = hasActiveFilters(filters)
+  const sections = backlogSections(
+    items,
+    counts,
+    effectiveStateGroups(state),
+    (page - 1) * PAGE_SIZE,
+  )
+  const hidden = hiddenStateGroups(counts, effectiveStateGroups(state))
 
   return (
     <ProjectScopeGate action="manage the backlog">
       <PageHeader
         eyebrow={repo || 'backlog'}
         title="Backlog"
-        description="Every issue in this repo's store — synced tickets and issues created inside trau."
+        description="In-progress, todo and backlog work — done and canceled are hidden until you filter for them."
         actions={
           <button
             type="button"
@@ -166,27 +177,67 @@ function BacklogPage() {
         )}
 
         {backlog.data && (
-          <ul className="flex flex-col gap-2">
-            {items.map((entry) => (
-              <BacklogRow
-                key={entry.id}
-                repo={repo}
-                entry={entry}
-                editing={editing === entry.id}
-                onToggleEdit={() =>
-                  setEditing((cur) => (cur === entry.id ? null : entry.id))
-                }
-                onEditDone={() => setEditing(null)}
-              />
+          <div className="flex flex-col gap-6">
+            {sections.map((section) => (
+              <section key={section.group} className="flex flex-col gap-2">
+                {!section.continuation && (
+                  <div className="flex items-baseline gap-1.5 px-1">
+                    <h2 className="text-sm font-semibold text-foreground">
+                      {section.label}
+                    </h2>
+                    <span aria-hidden className="text-muted-foreground/50">
+                      ·
+                    </span>
+                    <span className="text-xs tabular-nums text-muted-foreground">
+                      {section.count}
+                    </span>
+                  </div>
+                )}
+                <ul className="flex flex-col gap-2">
+                  {section.items.map((entry) => (
+                    <BacklogRow
+                      key={entry.id}
+                      repo={repo}
+                      entry={entry}
+                      editing={editing === entry.id}
+                      onToggleEdit={() =>
+                        setEditing((cur) => (cur === entry.id ? null : entry.id))
+                      }
+                      onEditDone={() => setEditing(null)}
+                    />
+                  ))}
+                </ul>
+              </section>
             ))}
+
             {items.length === 0 && (
-              <li className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+              <p className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
                 {hasFilters
                   ? 'No issues match these filters.'
                   : 'No issues yet — create one to get started.'}
-              </li>
+              </p>
             )}
-          </ul>
+
+            {hidden.length > 0 && (
+              <p className="px-1 text-xs text-muted-foreground">
+                {hidden.map((h, i) => (
+                  <Fragment key={h.group}>
+                    {i > 0 && (
+                      <span className="px-1 text-muted-foreground/50">·</span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setFilters({ state: [h.group], page: null })}
+                      className="tabular-nums underline-offset-2 transition-colors hover:text-foreground hover:underline"
+                    >
+                      {h.count} {h.group}
+                    </button>
+                  </Fragment>
+                ))}
+                {' hidden'}
+              </p>
+            )}
+          </div>
         )}
 
         {total > PAGE_SIZE && (
