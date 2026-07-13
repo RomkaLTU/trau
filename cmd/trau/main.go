@@ -802,16 +802,21 @@ const listEligibleTimeout = 90 * time.Second
 
 // eligibleTicket is the machine-readable shape of one eligible ticket under
 // --list-eligible --json: the fields a picker needs to offer a ticket without a
-// blind ID. It is the stable contract the serve hub parses.
+// blind ID. It is the stable contract the serve hub parses. Parent carries the
+// immediate epic's identifier (empty for a top-level ticket) and HasChildren
+// marks a listed epic, so a consumer can group sub-issues under their parent.
 type eligibleTicket struct {
-	ID     string   `json:"id"`
-	Title  string   `json:"title"`
-	Labels []string `json:"labels"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Labels      []string `json:"labels"`
+	Parent      string   `json:"parent"`
+	HasChildren bool     `json:"has_children"`
 }
 
 // writeEligibleJSON emits the eligible tickets as a JSON array on stdout, keeping
-// the stream byte-stable: labels is always an array (never null) so the shape
-// does not vary with whether a ticket carries extra labels.
+// the stream byte-stable: labels is always an array (never null) and parent /
+// has_children are always present, so the shape does not vary with whether a
+// ticket carries extra labels or sits under an epic.
 func writeEligibleJSON(w io.Writer, tickets []tracker.ListedTicket) error {
 	out := make([]eligibleTicket, 0, len(tickets))
 	for _, t := range tickets {
@@ -819,7 +824,13 @@ func writeEligibleJSON(w io.Writer, tickets []tracker.ListedTicket) error {
 		if labels == nil {
 			labels = []string{}
 		}
-		out = append(out, eligibleTicket{ID: t.ID, Title: t.Title, Labels: labels})
+		out = append(out, eligibleTicket{
+			ID:          t.ID,
+			Title:       t.Title,
+			Labels:      labels,
+			Parent:      t.Parent,
+			HasChildren: t.HasChildren,
+		})
 	}
 	return json.NewEncoder(w).Encode(out)
 }

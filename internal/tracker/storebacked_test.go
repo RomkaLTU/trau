@@ -137,6 +137,27 @@ func TestStoreBackedPickNudgesSyncThenSelects(t *testing.T) {
 	}
 }
 
+func TestStoreBackedListEligibleThreadsParent(t *testing.T) {
+	hub := newFakeStoreHub()
+	hub.backlog = []hubclient.BacklogItem{
+		{ID: "COD-806", Source: "linear", Group: "unstarted", Ready: true, Parent: "COD-805"},
+		{ID: "COD-810", Source: "linear", Group: "backlog", Ready: true},
+	}
+	got, err := newStoreBacked(hub, &fakeWrites{}).ListEligible(context.Background(), Scope{})
+	if err != nil {
+		t.Fatalf("ListEligible: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListEligible = %d tickets, want 2", len(got))
+	}
+	if got[0].ID != "COD-806" || got[0].Parent != "COD-805" {
+		t.Errorf("sub-issue = %+v, want COD-806 with Parent COD-805", got[0])
+	}
+	if got[1].ID != "COD-810" || got[1].Parent != "" {
+		t.Errorf("top-level = %+v, want COD-810 with empty Parent", got[1])
+	}
+}
+
 func TestStoreBackedPickFailsWhenSyncFails(t *testing.T) {
 	hub := newFakeStoreHub()
 	hub.syncErr = errors.New("hub unreachable")

@@ -687,3 +687,69 @@ func TestSelectEligibleLeaf(t *testing.T) {
 		t.Errorf("project-scoped selectEligibleLeaf = %q, want empty (wrong project)", got)
 	}
 }
+
+// linCandHier builds one PickIssues node carrying an explicit parent and child
+// count, so the eligible listing's hierarchy threading can be asserted. parentJSON
+// is the raw "parent" value (an object or "null"); childCount>0 marks an epic.
+func linCandHier(id, parentJSON string, childCount int) string {
+	kids := make([]string, 0, childCount)
+	for i := 0; i < childCount; i++ {
+		kids = append(kids, fmt.Sprintf(`{"id":"kid-%d"}`, i))
+	}
+	return fmt.Sprintf(`{"id":"iss-%s","identifier":%q,"priority":3,"state":{"type":"unstarted"},"project":{"name":""},"parent":%s,"labels":{"nodes":[{"id":"l","name":"ready-for-agent"}]},"children":{"nodes":[%s]},"inverseRelations":{"nodes":[]}}`,
+		id, id, parentJSON, strings.Join(kids, ","))
+}
+
+// TestListEligibleAPIThreadsHierarchy verifies the deterministic eligible listing
+// carries epic hierarchy: a sub-issue reports its parent epic, a top-level ticket
+// reports an empty parent, and a ready-labelled epic reports has-children.
+func TestListEligibleAPIThreadsHierarchy(t *testing.T) {
+	picks := strings.Join([]string{
+		linCandHier("COD-806", `{"id":"epic-1","identifier":"COD-805"}`, 0),
+		linCandHier("COD-810", `null`, 0),
+		linCandHier("COD-805", `null`, 2),
+	}, ",")
+	l := fakeLinearPick(t, "", picks)
+
+	got, err := l.ListEligible(context.Background(), Scope{Team: "COD", Prefix: "COD"})
+	if err != nil {
+		t.Fatalf("ListEligible error: %v", err)
+	}
+	byID := make(map[string]ListedTicket, len(got))
+	for _, tk := range got {
+		byID[tk.ID] = tk
+	}
+
+	if sub := byID["COD-806"]; sub.Parent != "COD-805" || sub.HasChildren {
+		t.Errorf("sub-issue = %+v, want Parent COD-805 and HasChildren false", sub)
+	}
+	if top := byID["COD-810"]; top.Parent != "" || top.HasChildren {
+		t.Errorf("top-level = %+v, want empty Parent and HasChildren false", top)
+	}
+	if epic := byID["COD-805"]; !epic.HasChildren || epic.Parent != "" {
+		t.Errorf("epic = %+v, want HasChildren true and empty Parent", epic)
+	}
+}
+
+// TestParseEligibleParentOptional confirms the MCP fallback parser reads a parent
+// when present and stays additive: output without a parent still parses, leaving
+// the field empty rather than failing.
+func TestParseEligibleParentOptional(t *testing.T) {
+	withParent := `ELIGIBLE=[{"id":"COD-806","title":"Sub","parent":"COD-805","labels":["ready-for-agent"]}]`
+	list, ok := parseEligible(withParent)
+	if !ok || len(list) != 1 {
+		t.Fatalf("parseEligible(withParent) = (%v, %v), want one ticket", list, ok)
+	}
+	if list[0].Parent != "COD-805" {
+		t.Errorf("Parent = %q, want COD-805", list[0].Parent)
+	}
+
+	oldShape := `ELIGIBLE=[{"id":"COD-810","title":"Top","labels":["ready-for-agent"]}]`
+	list, ok = parseEligible(oldShape)
+	if !ok || len(list) != 1 {
+		t.Fatalf("parseEligible(oldShape) = (%v, %v), want one ticket", list, ok)
+	}
+	if list[0].Parent != "" {
+		t.Errorf("Parent = %q, want empty for old-shape output", list[0].Parent)
+	}
+}

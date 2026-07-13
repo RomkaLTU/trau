@@ -315,7 +315,14 @@ func (l *Linear) listEligibleAPI(ctx context.Context, scope Scope) ([]ListedTick
 		if !inProject(c.Project.Name, scope.Project) {
 			continue
 		}
-		out = append(out, ListedTicket{ID: c.Identifier, Title: c.Title, State: c.State.Name, Labels: labelNames(c.Labels)})
+		out = append(out, ListedTicket{
+			ID:          c.Identifier,
+			Title:       c.Title,
+			State:       c.State.Name,
+			Labels:      labelNames(c.Labels),
+			Parent:      c.Parent.Identifier,
+			HasChildren: len(c.Children) > 0,
+		})
 	}
 	return out, nil
 }
@@ -332,9 +339,10 @@ func (l *Linear) listEligiblePrompt(scope Scope) string {
 	pfx := scope.prefix()
 	return fmt.Sprintf("Use the Linear MCP. List eligible issues in %s that carry the label '%s', "+
 		"are unstarted, have all 'blocked by' issues completed, and match prefix %s-.%s "+
-		"Respond with exactly one final line of JSON: ELIGIBLE=[{\"id\":\"%s-123\",\"title\":\"...\",\"labels\":[\"label-a\",\"label-b\"]}, ...] "+
+		"For each issue include its immediate parent epic's identifier as 'parent' (empty string when it has none). "+
+		"Respond with exactly one final line of JSON: ELIGIBLE=[{\"id\":\"%s-123\",\"title\":\"...\",\"parent\":\"%s-100\",\"labels\":[\"label-a\",\"label-b\"]}, ...] "+
 		"or ELIGIBLE=[]. No other output.",
-		scope.clause(), l.ReadyLabel, pfx, scope.projectClause(), pfx)
+		scope.clause(), l.ReadyLabel, pfx, scope.projectClause(), pfx, pfx)
 }
 
 func parseEligible(text string) ([]ListedTicket, bool) {
