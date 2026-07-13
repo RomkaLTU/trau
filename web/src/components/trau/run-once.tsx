@@ -1,4 +1,9 @@
-import { useEffect, useState, type KeyboardEvent } from 'react'
+import {
+  useEffect,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { AlertTriangle, ArrowRight, Info } from 'lucide-react'
@@ -12,6 +17,11 @@ import { TargetRepoField } from './target-repo-field'
 import { TerminalCard } from './terminal-card'
 import { cn } from '@/lib/utils'
 import { configQueryOptions } from '@/lib/config'
+import {
+  eligibleQueryOptions,
+  groupEligible,
+  type EligibleTicket,
+} from '@/lib/eligible'
 import { IssueFetchError, issueQueryOptions, type Issue } from '@/lib/issues'
 import { startInstance } from '@/lib/instances'
 
@@ -170,6 +180,15 @@ export function RunOnce() {
               Press Enter to fetch the ticket for confirmation before anything runs.
             </p>
           </div>
+
+          <EligiblePicker
+            repo={repo}
+            selectedId={submittedId}
+            onPick={(id) => {
+              setTicketId(id)
+              setSubmittedId(id)
+            }}
+          />
 
           {issue.isFetching && submittedId && (
             <div
@@ -376,6 +395,140 @@ function FetchError({ error, id }: { error: unknown; id: string }) {
 
   return (
     <p className="font-mono text-sm text-destructive">{actionError(error)}</p>
+  )
+}
+
+// EligiblePicker lists the repo's ready queue so an operator can choose a ticket
+// instead of typing an id blind. Sub-issues are shown grouped under their epic
+// heading; picking any row just fills the id above and fetches it for the same
+// confirm step a typed id goes through — the grouping is display only.
+function EligiblePicker({
+  repo,
+  selectedId,
+  onPick,
+}: {
+  repo: string
+  selectedId: string
+  onPick: (id: string) => void
+}) {
+  const eligible = useQuery(eligibleQueryOptions(repo))
+  const rows = groupEligible(eligible.data?.tickets ?? [])
+
+  let body: ReactNode
+  if (eligible.isLoading) {
+    body = (
+      <div
+        aria-busy="true"
+        className="h-8 animate-pulse rounded-md bg-muted"
+      />
+    )
+  } else if (eligible.isError) {
+    body = (
+      <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+        Couldn't list eligible tickets — type an id above instead.
+      </p>
+    )
+  } else if (rows.length === 0) {
+    body = (
+      <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+        Nothing eligible right now.
+      </p>
+    )
+  } else {
+    body = (
+      <ul className="flex flex-col gap-1">
+        {rows.map((row) =>
+          row.kind === 'ticket' ? (
+            <li key={row.ticket.id}>
+              <PickRow
+                ticket={row.ticket}
+                selected={row.ticket.id === selectedId}
+                onPick={onPick}
+              />
+            </li>
+          ) : (
+            <li key={row.epicId} className="flex flex-col gap-1">
+              {row.epic ? (
+                <PickRow
+                  ticket={row.epic}
+                  isEpic
+                  selected={row.epic.id === selectedId}
+                  onPick={onPick}
+                />
+              ) : (
+                <div className="flex items-center gap-2 px-2 py-1 font-mono text-xs text-info">
+                  <span aria-hidden="true">◆</span>
+                  <span>{row.epicId}</span>
+                </div>
+              )}
+              <ul className="ml-2 flex flex-col gap-1 border-l border-border pl-2">
+                {row.children.map((child) => (
+                  <li key={child.id}>
+                    <PickRow
+                      ticket={child}
+                      selected={child.id === selectedId}
+                      onPick={onPick}
+                    />
+                  </li>
+                ))}
+              </ul>
+            </li>
+          ),
+        )}
+      </ul>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+        or pick from the queue
+      </span>
+      {body}
+    </div>
+  )
+}
+
+function PickRow({
+  ticket,
+  selected,
+  isEpic = false,
+  onPick,
+}: {
+  ticket: EligibleTicket
+  selected: boolean
+  isEpic?: boolean
+  onPick: (id: string) => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onPick(ticket.id)}
+      aria-pressed={selected}
+      className={cn(
+        'flex w-full items-center gap-2 rounded-md border px-2 py-1 text-left transition-colors',
+        selected
+          ? 'border-primary/50 bg-primary/5'
+          : 'border-transparent hover:border-border hover:bg-secondary/40',
+      )}
+    >
+      {isEpic && (
+        <span className="text-info" aria-hidden="true">
+          ◆
+        </span>
+      )}
+      <span
+        className={cn(
+          'shrink-0 font-mono text-xs',
+          isEpic ? 'text-info' : 'text-primary',
+        )}
+      >
+        {ticket.id}
+      </span>
+      <span className="min-w-0 truncate font-sans text-xs text-foreground">
+        {ticket.title}
+      </span>
+    </button>
   )
 }
 
