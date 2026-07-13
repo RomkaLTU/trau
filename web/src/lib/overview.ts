@@ -10,6 +10,7 @@ import {
   type FailureClass,
   type Run,
 } from "./runs";
+import { stepPill } from "./steps";
 
 const PHASE_RANK: Record<string, number> = {
   building: 1,
@@ -22,29 +23,6 @@ const PHASE_RANK: Record<string, number> = {
 
 export function phaseRank(phase: string): number {
   return PHASE_RANK[phase] ?? 0;
-}
-
-const PHASE_SEQUENCE: { label: string; min: number; max: number }[] = [
-  { label: "build", min: 1, max: 2 },
-  { label: "handoff", min: 3, max: 3 },
-  { label: "verify", min: 4, max: 4 },
-  { label: "pr", min: 5, max: 5 },
-  { label: "merge", min: 6, max: 6 },
-];
-
-export type PhaseState = "done" | "active" | "todo";
-
-export interface PhaseStep {
-  label: string;
-  state: PhaseState;
-}
-
-export function phaseSteps(phase: string): PhaseStep[] {
-  const rank = phaseRank(phase);
-  return PHASE_SEQUENCE.map(({ label, min, max }) => ({
-    label,
-    state: rank > max ? "done" : rank >= min ? "active" : "todo",
-  }));
 }
 
 export function phasePill(phase: string): { state: RunState; label: string } {
@@ -75,6 +53,8 @@ export interface LiveLoop {
   title?: string;
   sessionState: SessionState;
   phase: string;
+  activity?: string;
+  detail?: string;
   startedAt: string;
   stateSince?: string;
   failureClass?: FailureClass;
@@ -103,6 +83,8 @@ export function makeLiveLoop(inst: Instance, run: Run | undefined): LiveLoop {
     title: run?.title,
     sessionState: state,
     phase: state === "working" ? (inst.phase ?? "") : "",
+    activity: state === "working" ? (inst.activity ?? "") : "",
+    detail: state === "working" ? (inst.detail ?? "") : "",
     startedAt: inst.started_at,
     stateSince: inst.state_since,
     failureClass: run?.failure_class,
@@ -254,12 +236,17 @@ export interface LoopCardView {
 
 export function loopCardView(
   state: SessionState,
-  opts: { phase?: string; failureClass?: FailureClass } = {},
+  opts: {
+    phase?: string;
+    activity?: string;
+    detail?: string;
+    failureClass?: FailureClass;
+  } = {},
 ): LoopCardView {
   switch (state) {
     case "working":
       return {
-        pill: phasePill(opts.phase ?? ""),
+        pill: stepPill(opts.activity, opts.phase ?? ""),
         showStepper: true,
         showWatch: true,
         showStop: true,

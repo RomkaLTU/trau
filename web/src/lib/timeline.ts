@@ -2,7 +2,7 @@ import type { RunState } from '@/components/trau/status-pill'
 import type { Instance } from './instances'
 import type { QueueItem } from './queue'
 import type { FailureClass, Run } from './runs'
-import { phaseLabel } from './runlive'
+import { stepPill } from './steps'
 
 export type TicketStatus =
   | 'done'
@@ -20,6 +20,8 @@ export interface TimelineTicket {
   failureClass?: FailureClass
   reason?: string
   phase?: string
+  activity?: string
+  detail?: string
   hasRun: boolean
   completedAt?: string
 }
@@ -88,6 +90,9 @@ function resolve(leaf: Leaf, run: Run | undefined, instance?: Instance): Timelin
     hasRun: run !== undefined,
   }
   const isCurrent = instance?.ticket === leaf.id
+  const working = isCurrent && instance?.session_state === 'working'
+  const activity = working ? instance?.activity : undefined
+  const detail = working ? instance?.detail : undefined
 
   if (run) {
     if (run.failure_class === 'paused') {
@@ -99,10 +104,10 @@ function resolve(leaf: Leaf, run: Run | undefined, instance?: Instance): Timelin
     if (run.terminal) {
       return { ...base, status: 'done', phase: run.phase, completedAt: run.updated_at }
     }
-    return { ...base, status: 'running', phase: isCurrent && instance?.phase ? instance.phase : run.phase }
+    return { ...base, status: 'running', phase: isCurrent && instance?.phase ? instance.phase : run.phase, activity, detail }
   }
 
-  if (isCurrent) return { ...base, status: 'running', phase: instance?.phase }
+  if (isCurrent) return { ...base, status: 'running', phase: instance?.phase, activity, detail }
 
   switch (leaf.snapshotState) {
     case 'done':
@@ -184,7 +189,7 @@ export function ticketPill(t: TimelineTicket): { state: RunState; label: string 
     case 'done':
       return { state: 'success', label: t.hasRun ? 'merged' : 'done' }
     case 'running':
-      return { state: 'active', label: phaseLabel(t.phase ?? '') }
+      return stepPill(t.activity, t.phase ?? '')
     case 'paused':
       return { state: 'warn', label: 'paused' }
     case 'failed':

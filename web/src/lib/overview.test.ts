@@ -6,17 +6,11 @@ import {
   loopCardView,
   phasePill,
   phaseRank,
-  phaseSteps,
   repoBadgeState,
   sessionStatePill,
   type LiveLoop,
-  type PhaseState,
   type SessionState,
 } from "@/lib/overview";
-
-function states(phase: string): Record<string, PhaseState> {
-  return Object.fromEntries(phaseSteps(phase).map((s) => [s.label, s.state]));
-}
 
 describe("phaseRank", () => {
   it("ranks the checkpoint pipeline in order", () => {
@@ -31,40 +25,6 @@ describe("phaseRank", () => {
   it("treats unknown/empty phases as rank 0", () => {
     expect(phaseRank("")).toBe(0);
     expect(phaseRank("quarantined")).toBe(0);
-  });
-});
-
-describe("phaseSteps", () => {
-  it("marks the current phase active and prior phases done", () => {
-    expect(states("handed_off")).toEqual({
-      build: "done",
-      handoff: "active",
-      verify: "todo",
-      pr: "todo",
-      merge: "todo",
-    });
-  });
-
-  it("groups building and built under a single active build step", () => {
-    expect(states("building").build).toBe("active");
-    expect(states("built").build).toBe("active");
-  });
-
-  it("completes every prior step once merged", () => {
-    expect(states("pr_open")).toEqual({
-      build: "done",
-      handoff: "done",
-      verify: "done",
-      pr: "active",
-      merge: "todo",
-    });
-    expect(states("merged").merge).toBe("active");
-  });
-
-  it("leaves every step todo for an unknown phase", () => {
-    expect(new Set(phaseSteps("").map((s) => s.state))).toEqual(
-      new Set(["todo"]),
-    );
   });
 });
 
@@ -118,13 +78,20 @@ describe("active loop counting", () => {
 });
 
 describe("loopCardView", () => {
-  it("shows the phase pill and stepper while working", () => {
+  it("labels the working pill by the corrected Step, not the checkpoint rank", () => {
     const view = loopCardView("working", { phase: "handed_off" });
-    expect(view.pill).toEqual({ state: "active", label: "handoff" });
+    expect(view.pill).toEqual({ state: "active", label: "verify" });
     expect(view.showStepper).toBe(true);
     expect(view.showWatch).toBe(true);
     expect(view.showStop).toBe(true);
     expect(view.stopDisabled).toBe(false);
+  });
+
+  it("prefers the live Activity over the checkpoint for the working pill", () => {
+    expect(loopCardView("working", { phase: "handed_off", activity: "ci-wait" }).pill).toEqual({
+      state: "active",
+      label: "ship",
+    });
   });
 
   it("maps a parked failure class to the attention pill with Watch + Stop", () => {

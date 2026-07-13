@@ -116,6 +116,16 @@ describe('buildTimeline', () => {
     expect(tl.pending.map((p) => (p.kind === 'ticket' ? p.ticket.id : p.id))).toEqual(['COD-1'])
   })
 
+  it('carries the working instance Activity onto the running ticket', () => {
+    const tl = buildTimeline(
+      [item({ id: 'COD-1' })],
+      [],
+      instance({ ticket: 'COD-1', phase: 'handed_off', activity: 'repair', detail: 'repair2' }),
+    )
+    expect(tl.running?.activity).toBe('repair')
+    expect(tl.running?.detail).toBe('repair2')
+  })
+
   it('groups an epic pending children under a header with live progress', () => {
     const tl = buildTimeline(
       [
@@ -230,7 +240,8 @@ describe('ticketPill', () => {
   it('maps each status to the matching pill state', () => {
     expect(ticketPill(ticket({ id: 'a', title: '', status: 'done', hasRun: true }))).toEqual({ state: 'success', label: 'merged' })
     expect(ticketPill(ticket({ id: 'a', title: '', status: 'done', hasRun: false }))).toEqual({ state: 'success', label: 'done' })
-    expect(ticketPill(ticket({ id: 'a', title: '', status: 'running', phase: 'verified', hasRun: true }))).toEqual({ state: 'active', label: 'verify' })
+    expect(ticketPill(ticket({ id: 'a', title: '', status: 'running', phase: 'verified', hasRun: true }))).toEqual({ state: 'active', label: 'ship' })
+    expect(ticketPill(ticket({ id: 'a', title: '', status: 'running', phase: 'handed_off', activity: 'repair', hasRun: true }))).toEqual({ state: 'active', label: 'verify' })
     expect(ticketPill(ticket({ id: 'a', title: '', status: 'paused', hasRun: true }))).toEqual({ state: 'warn', label: 'paused' })
     expect(ticketPill(ticket({ id: 'a', title: '', status: 'failed', failureClass: 'gave_up', hasRun: true }))).toEqual({ state: 'fail', label: 'quarantined' })
     expect(ticketPill(ticket({ id: 'a', title: '', status: 'failed', failureClass: 'faulted', hasRun: true }))).toEqual({ state: 'fail', label: 'fault' })
