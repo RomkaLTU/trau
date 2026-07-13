@@ -1,8 +1,12 @@
 package tui
 
-import "time"
+import (
+	"time"
 
-// stepState is the lifecycle of one pipeline phase as the stepper sees it.
+	"github.com/RomkaLTU/trau/internal/activity"
+)
+
+// stepState is the lifecycle of one Step as the stepper sees it.
 type stepState int
 
 const (
@@ -12,41 +16,35 @@ const (
 	stepFailed                   // the ticket gave up while on this step
 )
 
-// phaseStep is one row of the pipeline stepper. The order of phaseSteps() is the
-// canonical pipeline order; keys match the strings the pipeline passes to
-// PhaseStart.
-type phaseStep struct {
-	key          string
-	label        string
+// stepRow is one row of the three-Step stepper (Build → Verify → Ship, ADR 0009).
+// The present-tense Activity within the active Step drives the sub-label; an
+// Activity change that stays inside the same Step updates only the sub-label,
+// leaving took running so re-verify/repair/bugfix never reset the Step timer.
+type stepRow struct {
+	step         activity.Step
 	state        stepState
-	tag          string        // model/effort recovered from the phase's agent_call
-	took         time.Duration // wall-clock once the step leaves "active"
+	act          activity.Activity // present-tense Activity within this Step
+	detail       string            // raw call label behind act, e.g. "repair2"
+	tag          string            // model/effort recovered from the step's agent_call
+	took         time.Duration     // wall-clock once the step leaves "active"
 	start        time.Time
-	subs         []childSpan // self-heal attempts nested under the active phase
-	transcript   string      // pty transcript this phase owns, tailed for its live span
-	tailSnapshot []string    // last tail lines frozen when the phase failed
+	transcript   string   // pty transcript this step owns, tailed for its live span
+	tailSnapshot []string // last tail lines frozen when the step failed
 }
 
-// phaseSteps returns a fresh, all-pending stepper in pipeline order. Build →
-// handoff → verify map 1:1 to phase functions; commit/pr and ci/merge are the two
-// halves of CommitAndPR and CIAndMerge, surfaced separately so progress reads
-// finer than the five state checkpoints.
-func phaseSteps() []phaseStep {
-	return []phaseStep{
-		{key: "build", label: "Build"},
-		{key: "handoff", label: "Handoff"},
-		{key: "verify", label: "Verify"},
-		{key: "commit", label: "Commit"},
-		{key: "pr", label: "PR"},
-		{key: "ci", label: "CI"},
-		{key: "merge", label: "Merge"},
+// stepRows returns a fresh, all-pending stepper in canonical Step order.
+func stepRows() []stepRow {
+	rows := make([]stepRow, len(activity.Steps))
+	for i, s := range activity.Steps {
+		rows[i] = stepRow{step: s}
 	}
+	return rows
 }
 
-// stepIndex returns the position of key in steps, or -1.
-func stepIndex(steps []phaseStep, key string) int {
-	for i := range steps {
-		if steps[i].key == key {
+// stepIndexOf returns the position of step s, or -1.
+func stepIndexOf(rows []stepRow, s activity.Step) int {
+	for i := range rows {
+		if rows[i].step == s {
 			return i
 		}
 	}
@@ -54,68 +52,76 @@ func stepIndex(steps []phaseStep, key string) int {
 }
 
 // activeIndex returns the index of the currently-active step, or -1.
-func activeIndex(steps []phaseStep) int {
-	for i := range steps {
-		if steps[i].state == stepActive {
+func activeIndex(rows []stepRow) int {
+	for i := range rows {
+		if rows[i].state == stepActive {
 			return i
 		}
 	}
 	return -1
 }
 
-// startPhase marks key active: it closes out the previously-active step and any
-// still-pending earlier steps (completed in a prior resume) as done, then lights
-// up key. now is the moment the phase began.
-func startPhase(steps []phaseStep, key string, now time.Time) []phaseStep {
-	idx := stepIndex(steps, key)
+// advanceActivity records the present-tense Activity on the stepper: it lights up
+// the Activity's Step — closing out any earlier steps as done and stamping the
+// previous step's elapsed — then stores act+detail for the sub-label. An Activity
+// that stays within the already-active Step updates only the sub-label, so the Step
+// timer keeps running across re-verify/repair/bugfix. A stale Activity for an
+// already-finished Step is ignored.
+func advanceActivity(rows []stepRow, act activity.Activity, detail string, now time.Time) []stepRow {
+	idx := stepIndexOf(rows, activity.StepOf(act))
 	if idx < 0 {
-		return steps
+		return rows
 	}
-	for i := range steps {
-		switch {
-		case i < idx && steps[i].state == stepPending:
-			steps[i].state = stepDone
-		case i < idx && steps[i].state == stepActive:
-			steps[i].state = stepDone
-			steps[i].took = now.Sub(steps[i].start)
+	cur := activeIndex(rows)
+	if cur >= 0 && idx < cur {
+		return rows
+	}
+	if idx != cur {
+		for i := 0; i < idx; i++ {
+			if rows[i].state == stepActive {
+				rows[i].took = now.Sub(rows[i].start)
+			}
+			rows[i].state = stepDone
 		}
+		rows[idx].state = stepActive
+		rows[idx].start = now
 	}
-	steps[idx].state = stepActive
-	steps[idx].start = now
-	return steps
+	rows[idx].act = act
+	rows[idx].detail = detail
+	return rows
 }
 
-// finalize closes the stepper when a ticket reaches a terminal state. ok marks
-// the active step done; a quarantine marks it failed. now stamps the elapsed.
-func finalize(steps []phaseStep, ok bool, now time.Time) []phaseStep {
-	idx := activeIndex(steps)
+// finalize closes the stepper when a ticket reaches a terminal state. ok marks the
+// active step done; a quarantine marks it failed. now stamps the elapsed.
+func finalize(rows []stepRow, ok bool, now time.Time) []stepRow {
+	idx := activeIndex(rows)
 	if idx < 0 {
-		return steps
+		return rows
 	}
 	if ok {
-		steps[idx].state = stepDone
+		rows[idx].state = stepDone
 	} else {
-		steps[idx].state = stepFailed
+		rows[idx].state = stepFailed
 	}
-	steps[idx].took = now.Sub(steps[idx].start)
-	return steps
+	rows[idx].took = now.Sub(rows[idx].start)
+	return rows
 }
 
-// doneSteps counts the phases that have finished, for the pane's "n/N" heading.
-func doneSteps(steps []phaseStep) int {
+// doneSteps counts the Steps that have finished, for the pane's "n/N" heading.
+func doneSteps(rows []stepRow) int {
 	done := 0
-	for i := range steps {
-		if steps[i].state == stepDone {
+	for i := range rows {
+		if rows[i].state == stepDone {
 			done++
 		}
 	}
 	return done
 }
 
-// failedIndex returns the index of the phase that gave up, or -1.
-func failedIndex(steps []phaseStep) int {
-	for i := range steps {
-		if steps[i].state == stepFailed {
+// failedIndex returns the index of the Step that gave up, or -1.
+func failedIndex(rows []stepRow) int {
+	for i := range rows {
+		if rows[i].state == stepFailed {
 			return i
 		}
 	}

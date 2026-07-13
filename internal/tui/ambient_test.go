@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/activity"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/notify"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -24,7 +25,7 @@ func TestAmbientTitle(t *testing.T) {
 
 	running := initialModel(nil)
 	running.currentTicket = "COD-217"
-	running.steps = startPhase(phaseSteps(), "verify", time.Now())
+	running.steps = advanceActivity(stepRows(), activity.Verify, "", time.Now())
 
 	pausedRun := initialModel(nil)
 	pausedRun.paused = true
@@ -70,7 +71,7 @@ func TestViewSetsTitleAndFocus(t *testing.T) {
 
 	m := freshDash(120, 40, "main")
 	m.currentTicket = "COD-5"
-	m.steps = startPhase(phaseSteps(), "build", time.Now())
+	m.steps = advanceActivity(stepRows(), activity.Build, "", time.Now())
 	v := m.View()
 	if v.WindowTitle != "⬡ salonradar ✻ COD-5 build" {
 		t.Errorf("WindowTitle = %q, want %q", v.WindowTitle, "⬡ salonradar ✻ COD-5 build")
@@ -216,7 +217,7 @@ func TestRecapFocusThreshold(t *testing.T) {
 	base := func() model {
 		m := initialModel(nil)
 		m.currentTicket = "COD-1"
-		m.steps = startPhase(phaseSteps(), "verify", time.Now())
+		m.steps = advanceActivity(stepRows(), activity.Verify, "", time.Now())
 		m.blurSnapshot = map[string]string{"COD-1": "@build"}
 		return m
 	}
@@ -247,7 +248,7 @@ func TestRecapFocusThreshold(t *testing.T) {
 func TestBlurSnapshotsState(t *testing.T) {
 	m := initialModel(nil)
 	m.currentTicket = "COD-1"
-	m.steps = startPhase(phaseSteps(), "handoff", time.Now())
+	m.steps = advanceActivity(stepRows(), activity.Handoff, "", time.Now())
 	m.results = []console.TicketResult{{ID: "COD-0", Phase: state.Merged}}
 	m.onBlur()
 	if m.blurAt.IsZero() {

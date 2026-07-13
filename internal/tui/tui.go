@@ -8,6 +8,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	zone "github.com/lrstanley/bubblezone/v2"
 
+	"github.com/RomkaLTU/trau/internal/activity"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/notify"
@@ -101,12 +102,14 @@ func (t *TUI) SetTitle(title string) {
 	t.prog.Send(titleMsg{title: title})
 }
 
-// PhaseStart advances the pipeline stepper to the named phase.
-func (t *TUI) PhaseStart(phase string) {
+// Activity advances the pipeline stepper to the present-tense Activity, driving
+// both the active Step and its live sub-label from the one signal the pipeline
+// writes (ADR 0009).
+func (t *TUI) Activity(a activity.Activity, detail string) {
 	if t == nil || t.prog == nil {
 		return
 	}
-	t.prog.Send(phaseStartMsg{phase: phase})
+	t.prog.Send(activityMsg{act: a, detail: detail})
 }
 
 // TicketDone records a ticket's outcome for the end-of-session summary.
