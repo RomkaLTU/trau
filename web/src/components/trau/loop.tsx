@@ -27,7 +27,7 @@ import { SegmentedControl } from '@/components/trau/segmented-control'
 import { StatusPill, type RunState } from '@/components/trau/status-pill'
 import { TerminalCard } from '@/components/trau/terminal-card'
 import { cn } from '@/lib/utils'
-import { eligibleQueryOptions } from '@/lib/eligible'
+import { addAllLabel, eligibleQueryOptions, planAddAll } from '@/lib/eligible'
 import { useEventFeed } from '@/lib/events'
 import {
   instancesQueryOptions,
@@ -347,6 +347,7 @@ function LaunchQueueCard({
   const runs = useQuery(runsQueryOptions(repo))
 
   const items = queue.data?.items ?? []
+  const addAllPlan = planAddAll(eligible.data?.tickets ?? [], items)
   const skipResumeShown = skipResumeApplies(items, runs.data?.runs ?? [])
   const [draft, setDraft] = useState('')
   const [expandedIds, setExpandedIds] = useState<string[]>([])
@@ -366,18 +367,15 @@ function LaunchQueueCard({
 
   const addAll = useMutation({
     mutationFn: async () => {
-      const queued = new Set(items.map((i) => i.id))
-      const pending = (eligible.data?.tickets ?? []).filter(
-        (t) => !queued.has(t.id),
-      )
-      let last: QueueResponse | undefined
-      for (const t of pending) {
-        last = await enqueue(repo, { id: t.id, kind: 'ticket', title: t.title })
+      const errors: string[] = []
+      for (const it of addAllPlan.items) {
+        try {
+          setQueue(await enqueue(repo, { id: it.id, kind: it.kind }))
+        } catch (err) {
+          errors.push(`${it.id}: ${actionError(err)}`)
+        }
       }
-      return last
-    },
-    onSuccess: (res) => {
-      if (res) setQueue(res)
+      if (errors.length > 0) throw new Error(errors.join('\n'))
     },
   })
 
@@ -402,9 +400,6 @@ function LaunchQueueCard({
   })
 
   const executable = queueExecutable(items)
-  const eligibleToAdd = (eligible.data?.tickets ?? []).filter(
-    (t) => !items.some((i) => i.id === t.id),
-  ).length
 
   const busy = move.isPending || remove.isPending || add.isPending || addAll.isPending
 
@@ -467,7 +462,7 @@ function LaunchQueueCard({
                 <Plus className="size-4" aria-hidden="true" />
                 {add.isPending ? 'Adding…' : 'Add'}
               </Button>
-              {eligibleToAdd > 0 && (
+              {addAllPlan.items.length > 0 && (
                 <Button
                   type="button"
                   variant="ghost"
@@ -477,9 +472,7 @@ function LaunchQueueCard({
                   disabled={addAll.isPending}
                 >
                   <ListPlus className="size-4" aria-hidden="true" />
-                  {addAll.isPending
-                    ? 'Adding…'
-                    : `Add all eligible (${eligibleToAdd})`}
+                  {addAll.isPending ? 'Adding…' : addAllLabel(addAllPlan)}
                 </Button>
               )}
             </div>
