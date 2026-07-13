@@ -28,8 +28,8 @@ func NewInstances(db *sql.DB) *Instances {
 // Upsert records or refreshes a loop's presence, keyed by PID.
 func (in *Instances) Upsert(e registry.Entry) error {
 	_, err := in.db.Exec(
-		`INSERT INTO instances(pid, repo_root, runs_dir, started_at, heartbeat, session_state, ticket, phase, state_since)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO instances(pid, repo_root, runs_dir, started_at, heartbeat, session_state, ticket, phase, activity, detail, state_since)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(pid) DO UPDATE SET
 		   repo_root = excluded.repo_root,
 		   runs_dir = excluded.runs_dir,
@@ -38,10 +38,12 @@ func (in *Instances) Upsert(e registry.Entry) error {
 		   session_state = excluded.session_state,
 		   ticket = excluded.ticket,
 		   phase = excluded.phase,
+		   activity = excluded.activity,
+		   detail = excluded.detail,
 		   state_since = excluded.state_since`,
 		e.PID, e.RepoRoot, e.RunsDir,
 		formatInstanceTime(e.StartedAt), formatInstanceTime(e.Heartbeat),
-		e.SessionState, e.Ticket, e.Phase, formatInstanceTime(e.StateSince),
+		e.SessionState, e.Ticket, e.Phase, e.Activity, e.Detail, formatInstanceTime(e.StateSince),
 	)
 	return err
 }
@@ -58,7 +60,7 @@ func (in *Instances) Remove(pid int) error {
 // side of presence.
 func (in *Instances) Live() ([]registry.Entry, error) {
 	rows, err := in.db.Query(
-		`SELECT pid, repo_root, runs_dir, started_at, heartbeat, session_state, ticket, phase, state_since FROM instances`)
+		`SELECT pid, repo_root, runs_dir, started_at, heartbeat, session_state, ticket, phase, activity, detail, state_since FROM instances`)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +70,7 @@ func (in *Instances) Live() ([]registry.Entry, error) {
 			e                              registry.Entry
 			started, heartbeat, stateSince string
 		)
-		if err := rows.Scan(&e.PID, &e.RepoRoot, &e.RunsDir, &started, &heartbeat, &e.SessionState, &e.Ticket, &e.Phase, &stateSince); err != nil {
+		if err := rows.Scan(&e.PID, &e.RepoRoot, &e.RunsDir, &started, &heartbeat, &e.SessionState, &e.Ticket, &e.Phase, &e.Activity, &e.Detail, &stateSince); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}

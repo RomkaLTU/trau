@@ -17,6 +17,11 @@ export interface PhaseCost {
   turns: number
 }
 
+export interface StepDuration {
+  step: string
+  duration_ms: number
+}
+
 export interface Rubric {
   acceptance_criteria?: string[]
   non_goals?: string[]
@@ -57,6 +62,7 @@ export interface Anomaly {
 
 export interface RunDetail extends Run {
   costs: PhaseCost[]
+  durations?: StepDuration[]
   anomalies?: Anomaly[]
   handoff?: string
   rubric?: Rubric

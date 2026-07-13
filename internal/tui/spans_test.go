@@ -8,6 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/RomkaLTU/trau/internal/activity"
 	"github.com/RomkaLTU/trau/internal/vterm"
 )
 
@@ -26,78 +27,75 @@ func TestFoldedSpanComposesDurationAndTag(t *testing.T) {
 	}
 }
 
-// A folded non-agent phase carries just its duration when no model tag is known.
+// A folded non-agent Step carries just its duration when no model tag is known.
 func TestFoldedSpanWithoutTag(t *testing.T) {
 	m := initialModel(nil)
-	m.steps[4].state = stepDone // PR
-	m.steps[4].took = time.Second
+	m.steps[2].state = stepDone // Ship
+	m.steps[2].took = time.Second
 
-	if got, want := strip(m.foldedSpan(m.steps[4], 80)), "✓ PR  1s"; got != want {
+	if got, want := strip(m.foldedSpan(m.steps[2], 80)), "✓ Ship  1s"; got != want {
 		t.Fatalf("folded = %q, want %q", got, want)
 	}
 }
 
-// spanDetail ticks live elapsed while the phase is active.
+// spanDetail ticks live elapsed while the Step is active.
 func TestSpanDetailActiveUsesLiveElapsed(t *testing.T) {
-	st := phaseStep{state: stepActive, start: time.Now().Add(-90 * time.Second), tag: "sonnet"}
+	st := stepRow{state: stepActive, start: time.Now().Add(-90 * time.Second), tag: "sonnet"}
 	if got := spanDetail(st); !strings.HasPrefix(got, "1m3") || !strings.HasSuffix(got, "sonnet") {
 		t.Fatalf("detail = %q, want live elapsed + tag", got)
 	}
 }
 
-// renderSpanList folds done phases, expands the active one, and collapses the
-// remaining pending phases onto one compact row.
+// renderSpanList folds done Steps, expands the active one, and collapses the
+// remaining pending Steps onto one compact row.
 func TestRenderSpanListFoldExpandPending(t *testing.T) {
 	m := initialModel(nil)
-	m.steps = startPhase(m.steps, "handoff", time.Now()) // build done, handoff active
+	m.steps = advanceActivity(m.steps, activity.Verify, "", time.Now()) // build done, verify active
 	out := strip(m.renderSpanList(80))
 	lines := strings.Split(out, "\n")
 
 	if !strings.HasPrefix(lines[0], "✓ Build") {
 		t.Errorf("line 0 should fold Build, got %q", lines[0])
 	}
-	if !strings.Contains(out, "Handoff") {
-		t.Errorf("active Handoff missing:\n%s", out)
+	if !strings.Contains(out, "Verify") {
+		t.Errorf("active Verify missing:\n%s", out)
 	}
 	last := lines[len(lines)-1]
-	for _, p := range []string{"○ Verify", "○ Commit", "○ PR", "○ CI", "○ Merge"} {
-		if !strings.Contains(last, p) {
-			t.Errorf("pending row missing %q, got %q", p, last)
-		}
+	if !strings.Contains(last, "○ Ship") {
+		t.Errorf("pending row missing %q, got %q", "○ Ship", last)
 	}
 }
 
-// A fold transition: an active phase re-renders as a folded one-liner once the
-// next phase starts.
+// A fold transition: an active Step re-renders as a folded one-liner once the next
+// Step starts.
 func TestSpanFoldTransition(t *testing.T) {
 	m := initialModel(nil)
-	m.steps = startPhase(m.steps, "build", time.Now().Add(-time.Minute))
+	m.steps = advanceActivity(m.steps, activity.Build, "", time.Now().Add(-time.Minute))
 	if before := strip(m.renderSpanList(80)); strings.HasPrefix(before, "✓ Build") {
 		t.Fatalf("Build should still be active, got %q", before)
 	}
-	m.steps = startPhase(m.steps, "handoff", time.Now())
+	m.steps = advanceActivity(m.steps, activity.Verify, "", time.Now())
 	if after := strip(m.renderSpanList(80)); !strings.HasPrefix(after, "✓ Build") {
-		t.Fatalf("Build should have folded after handoff started, got %q", after)
+		t.Fatalf("Build should have folded after verify started, got %q", after)
 	}
 }
 
-// Child spans render indented under the active phase with their counters.
-func TestRenderSpanListShowsChildSpans(t *testing.T) {
+// The active Step shows its live Activity sub-label ("Verify · repair 2"), the
+// same string the web stepper renders for the same run.
+func TestRenderSpanListShowsActivitySubLabel(t *testing.T) {
 	m := initialModel(nil)
-	m.steps = startPhase(m.steps, "verify", time.Now())
-	idx := activeIndex(m.steps)
-	m.steps[idx].subs = []childSpan{{kind: "repair", label: "repair 2/3", detail: "lint"}}
+	m.steps = advanceActivity(m.steps, activity.Repair, "repair2", time.Now())
 
 	out := strip(m.renderSpanList(80))
-	if !strings.Contains(out, "↻ repair 2/3 · lint") {
-		t.Fatalf("child span missing:\n%s", out)
+	if !strings.Contains(out, "Verify · repair 2") {
+		t.Fatalf("activity sub-label missing:\n%s", out)
 	}
 }
 
-// A failed phase stays expanded and re-surfaces its preserved tail.
+// A failed Step stays expanded and re-surfaces its preserved tail.
 func TestRenderSpanListFailedKeepsTail(t *testing.T) {
 	m := initialModel(nil)
-	m.steps = startPhase(m.steps, "verify", time.Now())
+	m.steps = advanceActivity(m.steps, activity.Verify, "", time.Now())
 	m.steps = finalize(m.steps, false, time.Now())
 	idx := failedIndex(m.steps)
 	m.steps[idx].tailSnapshot = []string{"panic: boom", "  goroutine 1"}
@@ -113,50 +111,23 @@ func TestRenderSpanListFailedKeepsTail(t *testing.T) {
 	}
 }
 
-func TestParseChildSpan(t *testing.T) {
+// activityText spaces a letter/digit boundary so a raw call label reads cleanly,
+// leaving bare Activities and hyphenated names untouched — matching the web.
+func TestActivityText(t *testing.T) {
 	cases := []struct {
-		line       string
-		wantKind   string
-		wantLabel  string
-		wantDetail string
-		wantOK     bool
+		act    activity.Activity
+		detail string
+		want   string
 	}{
-		{"  ⚠ verify failed — self-heal attempt 2/3", "repair", "repair 2/3", "", true},
-		{"  ⚠ repairs exhausted — comprehensive bugfix attempt 1/2", "bugfix", "bugfix 1/2", "", true},
-		{"  ⚠ push rejected by a pre-push gate — repair attempt 3/3", "repair", "repair 3/3", "push", true},
-		{"  ⤳ verify: kimi exhausted — falling back to claude", "fallback", "fallback", "claude", true},
-		{"  ↻ verify failed (timeout) — retrying 2/3", "retry", "retry 2/3", "", true},
-		{"  ⟳ gh pr merge failed (boom) — retrying in 2s (2/2)", "retry", "retry 2/2", "", true},
-		{"  ✓ verify passed", "", "", "", false},
-		{"  ↻ adopted in-progress branch feature/x (checkpoint: build)", "", "", "", false},
-		{"  ⚠ epic CI red — repair attempt 1/2", "", "", "", false}, // not a pre-push repair
+		{activity.Repair, "repair2", "repair 2"},
+		{activity.Bugfix, "bugfix10", "bugfix 10"},
+		{activity.Verify, "", "verify"},
+		{activity.CIWait, "", "ci-wait"},
 	}
 	for _, c := range cases {
-		got, ok := parseChildSpan(c.line)
-		if ok != c.wantOK {
-			t.Errorf("parseChildSpan(%q) ok = %v, want %v", c.line, ok, c.wantOK)
-			continue
+		if got := activityText(c.act, c.detail); got != c.want {
+			t.Errorf("activityText(%q, %q) = %q, want %q", c.act, c.detail, got, c.want)
 		}
-		if !ok {
-			continue
-		}
-		if got.kind != c.wantKind || got.label != c.wantLabel || got.detail != c.wantDetail {
-			t.Errorf("parseChildSpan(%q) = %+v, want {%s %s %s}", c.line, got, c.wantKind, c.wantLabel, c.wantDetail)
-		}
-	}
-}
-
-// upsertChildSpan updates a climbing counter in place and appends new kinds.
-func TestUpsertChildSpan(t *testing.T) {
-	var subs []childSpan
-	subs = upsertChildSpan(subs, childSpan{kind: "repair", label: "repair 1/3"})
-	subs = upsertChildSpan(subs, childSpan{kind: "repair", label: "repair 2/3"})
-	if len(subs) != 1 || subs[0].label != "repair 2/3" {
-		t.Fatalf("repair should update in place, got %+v", subs)
-	}
-	subs = upsertChildSpan(subs, childSpan{kind: "fallback", label: "fallback", detail: "claude"})
-	if len(subs) != 2 {
-		t.Fatalf("distinct kind should append, got %+v", subs)
 	}
 }
 
@@ -184,7 +155,7 @@ func TestFeedTailFiltersAndWindows(t *testing.T) {
 // the trailing SGR reset survives and no line exceeds the pane.
 func TestRenderSpanListNarrowWidthNoOverflow(t *testing.T) {
 	m := initialModel(nil)
-	m.steps = startPhase(m.steps, "verify", time.Now())
+	m.steps = advanceActivity(m.steps, activity.Verify, "", time.Now())
 	m.steps[0].tag = "claude-opus-4-8 @high"
 	m.steps[0].took = 6*time.Minute + 2*time.Second
 	idx := activeIndex(m.steps)

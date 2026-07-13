@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/RomkaLTU/trau/internal/activity"
 	"github.com/RomkaLTU/trau/internal/state"
 )
 
@@ -25,7 +26,7 @@ func TestPeekContentByRowState(t *testing.T) {
 	// Live: a running ticket whose active-phase tail is surfaced.
 	live := initialModel(nil)
 	live.startTicket("COD-1")
-	live.steps = startPhase(live.steps, "build", time.Now())
+	live.steps = advanceActivity(live.steps, activity.Build, "", time.Now())
 	live.addLog("· hello-from-agent")
 
 	liveTitle, liveBody := live.peekContent(QueueRow{ID: "COD-1", Live: true}, 60, 10)

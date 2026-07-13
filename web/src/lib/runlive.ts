@@ -1,7 +1,7 @@
 import type { RunState } from '@/components/trau/status-pill'
 import type { PhaseCost } from '@/lib/rundetail'
 import type { FailureClass } from '@/lib/runs'
-import { phasePill, phaseSteps } from '@/lib/overview'
+import { checkpointSteps, liveSteps, stepPill, type LiveSteps } from '@/lib/steps'
 
 export type RunVariant =
   | 'starting'
@@ -41,29 +41,32 @@ export function deriveVariant({
   return 'live'
 }
 
-export type RunPhaseState = 'done' | 'active' | 'todo' | 'fail'
-
-export interface RunPhaseStep {
-  label: string
-  state: RunPhaseState
-}
-
-export function runPhaseSteps(phase: string, variant: RunVariant): RunPhaseStep[] {
-  const base = phaseSteps(phase)
-  if (variant === 'success') return base.map((s) => ({ label: s.label, state: 'done' }))
-  if (variant === 'failure') {
-    return base.map((s) => ({
-      label: s.label,
-      state: s.state === 'active' ? 'fail' : s.state,
-    }))
+// runSteps builds the run view's Build/Verify/Ship stepper: a live run reads its
+// present-tense Activity (with sub-label), a stopped run its checkpoint. Success
+// completes every Step; failure marks the Step the run stopped in.
+export function runSteps(
+  variant: RunVariant,
+  phase: string,
+  activity?: string,
+  detail?: string,
+): LiveSteps {
+  switch (variant) {
+    case 'live':
+      return liveSteps(activity, detail, phase)
+    case 'success':
+      return { steps: checkpointSteps('merged') }
+    case 'failure':
+      return { steps: checkpointSteps(phase, true) }
+    default:
+      return { steps: checkpointSteps(phase) }
   }
-  return base
 }
 
 export function headerPill(
   variant: RunVariant,
   phase: string,
   failureClass?: FailureClass,
+  activity?: string,
 ): { state: RunState; label: string } {
   switch (variant) {
     case 'success':
@@ -79,7 +82,7 @@ export function headerPill(
     case 'starting':
       return { state: 'active', label: 'starting' }
     default:
-      return phasePill(phase)
+      return stepPill(activity, phase)
   }
 }
 

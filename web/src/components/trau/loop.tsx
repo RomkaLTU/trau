@@ -47,7 +47,8 @@ import {
   type QueueItem,
   type QueueResponse,
 } from '@/lib/queue'
-import { pauseKind, phaseLabel, runPhaseSteps } from '@/lib/runlive'
+import { pauseKind, runSteps } from '@/lib/runlive'
+import { stepName } from '@/lib/steps'
 import { runsQueryOptions } from '@/lib/runs'
 import {
   buildTimeline,
@@ -659,8 +660,8 @@ function RunningRow({
           View run
         </Link>
       </div>
-      {phase ? (
-        <PhaseStepper steps={runPhaseSteps(phase, 'live')} />
+      {phase || live?.activity ? (
+        <PhaseStepper {...runSteps('live', phase ?? '', live?.activity, live?.detail)} />
       ) : (
         <p className="font-sans text-sm text-muted-foreground">
           Picking the next ticket…
@@ -786,8 +787,11 @@ function RunningQueueView({
               <StatusPill
                 state="active"
                 label={
-                  timeline.running?.phase
-                    ? phaseLabel(timeline.running.phase)
+                  timeline.running
+                    ? stepName(
+                        timeline.running.activity,
+                        timeline.running.phase ?? '',
+                      ).toLowerCase() || 'draining'
                     : 'draining'
                 }
               />

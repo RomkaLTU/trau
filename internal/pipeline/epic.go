@@ -211,7 +211,6 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 		return true, nil
 	}
 
-	p.phaseStart("epic-ci")
 	for repair := 0; ; {
 		if err := p.pollCI(ctx, pr); err == nil {
 			break
@@ -243,7 +242,6 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 		p.logf("  ✓ epic CI green — leaving merge to you (AUTO_MERGE=0): %s", prURL)
 		return false, nil
 	}
-	p.phaseStart("epic-merge")
 	if err := p.retryGH(ctx, "gh pr merge", func() error {
 		if st, _ := p.GitHub.PRState(ctx, pr); st == "MERGED" {
 			return nil

@@ -3,6 +3,7 @@ package pipeline
 import (
 	"os"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -36,16 +37,25 @@ func (a *memArtifacts) Remove(id string) error {
 
 // memPhaseLogs is an in-memory PhaseLogStore standing in for the hub-backed store
 // so a pipeline test can read back what a phase persisted without a serve process.
-type memPhaseLogs struct{ m map[string]string }
+// Its mutex mirrors the real store's concurrency safety: the overlapped build tail
+// (handoff ∥ lintfix→cleanup) persists phase logs from two goroutines at once.
+type memPhaseLogs struct {
+	mu sync.Mutex
+	m  map[string]string
+}
 
 func newMemPhaseLogs() *memPhaseLogs { return &memPhaseLogs{m: map[string]string{}} }
 
 func (l *memPhaseLogs) Put(id, phase, content string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.m[id+"/"+phase] = content
 	return nil
 }
 
 func (l *memPhaseLogs) Remove(id string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	for k := range l.m {
 		if strings.HasPrefix(k, id+"/") {
 			delete(l.m, k)
@@ -55,6 +65,8 @@ func (l *memPhaseLogs) Remove(id string) error {
 }
 
 func (l *memPhaseLogs) get(id, phase string) (string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	c, ok := l.m[id+"/"+phase]
 	return c, ok
 }

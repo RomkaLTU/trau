@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/RomkaLTU/trau/internal/activity"
 	"github.com/RomkaLTU/trau/internal/state"
 )
 
@@ -40,7 +41,7 @@ func TestLiveOverlayMarksActiveTicket(t *testing.T) {
 		{ID: "COD-1", Phase: state.Verified, FailureReason: "stale"},
 	})
 	d.startTicket("COD-1")
-	d.steps = startPhase(d.steps, "verify", time.Now())
+	d.steps = advanceActivity(d.steps, activity.Verify, "", time.Now())
 
 	rows := d.liveQueueRows()
 	var got *QueueRow

@@ -89,6 +89,30 @@ func (h *Handle) SetState(state, ticket, phase string) {
 	h.entry.SessionState = state
 	h.entry.Ticket = ticket
 	h.entry.Phase = phase
+	if state != registry.StateWorking {
+		h.entry.Activity = ""
+		h.entry.Detail = ""
+	}
+	h.mu.Unlock()
+	h.nudge()
+}
+
+// SetActivity records the present-tense pipeline work a Working session is doing
+// right now (ADR 0009) and flushes it without waiting for the next heartbeat.
+// StateSince advances when the activity or its detail changes, so it reads as "in
+// this activity since". The session state, ticket, and phase are left as SetState
+// set them; a move off the Working state clears the activity there. Best-effort and
+// safe on a nil or never-registered Handle.
+func (h *Handle) SetActivity(activity, detail string) {
+	if h == nil || h.client == nil {
+		return
+	}
+	h.mu.Lock()
+	if h.entry.Activity != activity || h.entry.Detail != detail {
+		h.entry.StateSince = time.Now()
+	}
+	h.entry.Activity = activity
+	h.entry.Detail = detail
 	h.mu.Unlock()
 	h.nudge()
 }

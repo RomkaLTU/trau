@@ -19,13 +19,14 @@ import (
 // omits them, and Artifacts records which ones are present.
 type RunDetail struct {
 	RunView
-	Costs      []PhaseCost   `json:"costs"`
-	Anomalies  []AnomalyView `json:"anomalies,omitempty"`
-	Handoff    string        `json:"handoff,omitempty"`
-	Rubric     *RubricView   `json:"rubric,omitempty"`
-	Verdict    *VerdictView  `json:"verdict,omitempty"`
-	BuildNotes string        `json:"build_notes,omitempty"`
-	Artifacts  ArtifactSet   `json:"artifacts"`
+	Costs      []PhaseCost    `json:"costs"`
+	Durations  []StepDuration `json:"durations,omitempty"`
+	Anomalies  []AnomalyView  `json:"anomalies,omitempty"`
+	Handoff    string         `json:"handoff,omitempty"`
+	Rubric     *RubricView    `json:"rubric,omitempty"`
+	Verdict    *VerdictView   `json:"verdict,omitempty"`
+	BuildNotes string         `json:"build_notes,omitempty"`
+	Artifacts  ArtifactSet    `json:"artifacts"`
 	// NoSkills is true when this run's build loaded no skills in a repo that has
 	// skills installed — the durable build_no_skills warning, surfaced so the
 	// page can flag a silently skill-less build.
@@ -130,7 +131,7 @@ func (s *Server) handleRunDetail(w http.ResponseWriter, r *http.Request) {
 // not-removed on any store error so a store hiccup never fails an
 // otherwise-renderable run.
 func (s *Server) runDetail(repo registry.Repo, ticket string, view RunView) RunDetail {
-	d := runDetail(s.stores.Tokens(), s.stores.Artifacts(), repo.Root, ticket, view, s.noSkillsWarning(repo, ticket))
+	d := runDetail(s.stores.Tokens(), s.stores.Artifacts(), s.stores.Events(), repo.Root, ticket, view, s.noSkillsWarning(repo, ticket))
 	if iss, ok, err := s.stores.Issues().Get(repo.Root, ticket); err == nil && ok && iss.DeletedAt != "" {
 		d.Removed = true
 	}
@@ -168,7 +169,7 @@ func (s *Server) runViewFor(root, ticket string) (RunView, bool) {
 	return runViewFromCheckpoint(hubstore.TicketCheckpoint{Ticket: ticket, CheckpointRow: row}), true
 }
 
-func runDetail(toks *hubstore.Tokens, arts *hubstore.Artifacts, root, ticket string, view RunView, noSkills bool) RunDetail {
+func runDetail(toks *hubstore.Tokens, arts *hubstore.Artifacts, evs *hubstore.Events, root, ticket string, view RunView, noSkills bool) RunDetail {
 	costs := phaseCosts(toks, root, ticket)
 	all, err := arts.All(root, ticket)
 	if err != nil {
@@ -182,6 +183,7 @@ func runDetail(toks *hubstore.Tokens, arts *hubstore.Artifacts, root, ticket str
 	return RunDetail{
 		RunView:    view,
 		Costs:      costs,
+		Durations:  runStepDurations(evs, root, ticket),
 		Anomalies:  anomalyViews(toks, root, ticket),
 		Handoff:    handoff,
 		Rubric:     parseRubric(rubricContent),

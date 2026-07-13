@@ -38,7 +38,7 @@ import {
   headerPill,
   pauseBanner,
   phaseLabel,
-  runPhaseSteps,
+  runSteps,
   sumCosts,
   type RunVariant,
 } from "@/lib/runlive";
@@ -478,8 +478,10 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
     hasCheckpoint: run !== undefined,
     spawnFailed: spawnFailure !== undefined,
   });
-  const pill = headerPill(variant, phase, run?.failure_class);
-  const steps = runPhaseSteps(phase, variant);
+  const activity = working ? instance.activity : undefined;
+  const detail = working ? instance.detail : undefined;
+  const pill = headerPill(variant, phase, run?.failure_class, activity);
+  const { steps, subLabel } = runSteps(variant, phase, activity, detail);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ["instances"] });
@@ -637,7 +639,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         </div>
 
         <div className="rounded-md border border-border bg-secondary/30 px-4 py-3">
-          <PhaseStepper steps={steps} />
+          <PhaseStepper steps={steps} subLabel={subLabel} />
         </div>
 
         {instance && (

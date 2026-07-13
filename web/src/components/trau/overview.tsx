@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useActiveRepo } from "@/components/trau/active-repo";
 import { EmptyState } from "@/components/trau/empty-state";
 import { Eyebrow } from "@/components/trau/eyebrow";
+import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { StatusPill, type RunState } from "@/components/trau/status-pill";
 import { TerminalCard } from "@/components/trau/terminal-card";
 import { cn } from "@/lib/utils";
@@ -18,14 +19,15 @@ import {
   attentionPill,
   loopCardView,
   phasePill,
-  phaseSteps,
   recentRuns,
   useLiveLoops,
   useRepoActivity,
   type LiveLoop,
-  type PhaseState,
 } from "@/lib/overview";
 import { runsQueryOptions, type FailureClass, type Run } from "@/lib/runs";
+import { liveSteps } from "@/lib/steps";
+
+export { PhaseStepper };
 
 export function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());
@@ -161,46 +163,6 @@ export function LaunchActions() {
   );
 }
 
-/* ---------- phase stepper ---------- */
-
-const PHASE_TEXT: Record<PhaseState, string> = {
-  done: "text-done",
-  active: "text-teal",
-  todo: "text-faint",
-};
-
-const PHASE_GLYPH: Record<PhaseState, string> = {
-  done: "✓",
-  active: "●",
-  todo: "○",
-};
-
-export function PhaseStepper({ phase }: { phase: string }) {
-  const steps = phaseSteps(phase);
-  return (
-    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 font-mono text-xs">
-      {steps.map((step, i) => (
-        <span key={step.label} className="inline-flex items-center gap-1.5">
-          <span
-            className={cn(
-              "inline-flex items-center gap-1",
-              PHASE_TEXT[step.state],
-            )}
-          >
-            <span aria-hidden="true">{PHASE_GLYPH[step.state]}</span>
-            {step.label}
-          </span>
-          {i < steps.length - 1 && (
-            <span className="text-faint" aria-hidden="true">
-              →
-            </span>
-          )}
-        </span>
-      ))}
-    </div>
-  );
-}
-
 function MetaItem({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col gap-0.5">
@@ -269,6 +231,8 @@ export function StopButton({
 function LoopCard({ loop, now }: { loop: LiveLoop; now: number }) {
   const view = loopCardView(loop.sessionState, {
     phase: loop.phase,
+    activity: loop.activity,
+    detail: loop.detail,
     failureClass: loop.failureClass,
   });
   return (
@@ -325,7 +289,7 @@ function LoopCard({ loop, now }: { loop: LiveLoop; now: number }) {
 
         {view.showStepper && (
           <div className="rounded-md border border-border bg-secondary/30 px-3 py-2.5">
-            <PhaseStepper phase={loop.phase} />
+            <PhaseStepper {...liveSteps(loop.activity, loop.detail, loop.phase)} />
           </div>
         )}
 

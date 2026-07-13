@@ -23,6 +23,8 @@ type Instance struct {
 	SessionState string `json:"session_state"`
 	Ticket       string `json:"ticket,omitempty"`
 	Phase        string `json:"phase,omitempty"`
+	Activity     string `json:"activity,omitempty"`
+	Detail       string `json:"detail,omitempty"`
 	StateSince   string `json:"state_since,omitempty"`
 }
 
@@ -71,6 +73,8 @@ type instanceHeartbeatBody struct {
 	SessionState string    `json:"session_state"`
 	Ticket       string    `json:"ticket,omitempty"`
 	Phase        string    `json:"phase,omitempty"`
+	Activity     string    `json:"activity,omitempty"`
+	Detail       string    `json:"detail,omitempty"`
 	StateSince   time.Time `json:"state_since,omitzero"`
 }
 
@@ -115,6 +119,8 @@ func (s *Server) handleInstance(w http.ResponseWriter, r *http.Request) {
 			SessionState: req.SessionState,
 			Ticket:       req.Ticket,
 			Phase:        req.Phase,
+			Activity:     req.Activity,
+			Detail:       req.Detail,
 			StateSince:   req.StateSince,
 		}
 		if err := instances.Upsert(entry); err != nil {
@@ -165,6 +171,8 @@ func (s *Server) listInstances(w http.ResponseWriter, _ *http.Request) {
 			inst.SessionState = e.SessionState
 			inst.Ticket = e.Ticket
 			inst.Phase = e.Phase
+			inst.Activity = e.Activity
+			inst.Detail = e.Detail
 			if !e.StateSince.IsZero() {
 				inst.StateSince = e.StateSince.UTC().Format(time.RFC3339)
 			}
