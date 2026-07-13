@@ -815,7 +815,11 @@ type pickNode struct {
 	DueDate    string      `json:"dueDate"`
 	State      stateNode   `json:"state"`
 	Project    projectNode `json:"project"`
-	Labels     struct {
+	Parent     struct {
+		ID         string `json:"id"`
+		Identifier string `json:"identifier"`
+	} `json:"parent"`
+	Labels struct {
 		Nodes []labelNode `json:"nodes"`
 	} `json:"labels"`
 	Children struct {
@@ -867,6 +871,7 @@ func nodeToPickCandidate(n *pickNode) PickCandidate {
 			DueDate:    n.DueDate,
 			State:      State{ID: n.State.ID, Name: n.State.Name, Type: n.State.Type},
 			Project:    Project(n.Project),
+			Parent:     IssueRef{ID: n.Parent.ID, Identifier: n.Parent.Identifier},
 		},
 	}
 	for _, l := range n.Labels.Nodes {

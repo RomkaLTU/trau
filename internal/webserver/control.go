@@ -288,12 +288,16 @@ func parseNextTicket(stdout []byte) string {
 }
 
 // EligibleTicket is one ready ticket a repo could pick next: its identifier,
-// title, and label names. It powers the Run once ticket picker so the operator
-// chooses from the queue instead of typing an ID blind.
+// title, label names, immediate epic parent (empty for a top-level ticket), and
+// whether it is itself a parent/epic. It powers the Run once ticket picker so the
+// operator chooses from the queue instead of typing an ID blind, and can group
+// sub-issues under their epic.
 type EligibleTicket struct {
-	ID     string   `json:"id"`
-	Title  string   `json:"title"`
-	Labels []string `json:"labels"`
+	ID          string   `json:"id"`
+	Title       string   `json:"title"`
+	Labels      []string `json:"labels"`
+	Parent      string   `json:"parent"`
+	HasChildren bool     `json:"has_children"`
 }
 
 // EligibleResult is the outcome of an eligible-ticket listing: the repo and its

@@ -77,7 +77,13 @@ func (in *StoreBacked) ListEligible(ctx context.Context, scope Scope) ([]ListedT
 	}
 	out := make([]ListedTicket, 0, len(candidates))
 	for _, it := range candidates {
-		out = append(out, ListedTicket{ID: it.ID, Title: it.Title, Labels: it.Labels})
+		out = append(out, ListedTicket{
+			ID:          it.ID,
+			Title:       it.Title,
+			Labels:      it.Labels,
+			Parent:      it.Parent,
+			HasChildren: it.HasChildren,
+		})
 	}
 	return out, nil
 }

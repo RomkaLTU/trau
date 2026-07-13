@@ -703,7 +703,7 @@ func TestDryRunRequiresTokenWhenExposed(t *testing.T) {
 func TestEligibleReturnsTickets(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "acme")
 	fake, ts := controlServer(t, t.TempDir(), []string{root})
-	fake.captureOut = []byte(`[{"id":"COD-1","title":"First","labels":["ready-for-agent","Feature"]},{"id":"COD-2","title":"Second","labels":[]}]`)
+	fake.captureOut = []byte(`[{"id":"COD-1","title":"First","labels":["ready-for-agent","Feature"],"parent":"COD-805","has_children":false},{"id":"COD-2","title":"Second","labels":[],"parent":"","has_children":true}]`)
 
 	res, err := http.Get(ts.URL + APIPrefix + "/repos/acme/eligible")
 	if err != nil {
@@ -728,6 +728,12 @@ func TestEligibleReturnsTickets(t *testing.T) {
 	}
 	if len(out.Tickets[0].Labels) != 2 || out.Tickets[0].Labels[0] != "ready-for-agent" {
 		t.Errorf("Tickets[0].Labels = %v, want [ready-for-agent Feature]", out.Tickets[0].Labels)
+	}
+	if out.Tickets[0].Parent != "COD-805" || out.Tickets[0].HasChildren {
+		t.Errorf("Tickets[0] hierarchy = (%q, %v), want (COD-805, false)", out.Tickets[0].Parent, out.Tickets[0].HasChildren)
+	}
+	if out.Tickets[1].Parent != "" || !out.Tickets[1].HasChildren {
+		t.Errorf("Tickets[1] hierarchy = (%q, %v), want (empty, true)", out.Tickets[1].Parent, out.Tickets[1].HasChildren)
 	}
 	if len(fake.captures) != 1 {
 		t.Fatalf("captures = %d, want 1", len(fake.captures))
