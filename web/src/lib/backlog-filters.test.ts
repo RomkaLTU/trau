@@ -4,6 +4,7 @@ import {
   backlogFilterParsers,
   backlogParamsFromFilters,
   hasActiveFilters,
+  toggleStateGroup,
   type BacklogFilters,
 } from './backlog-filters'
 
@@ -61,6 +62,25 @@ describe('hasActiveFilters', () => {
 
   it('ignores the page number', () => {
     expect(hasActiveFilters(filters({ page: 4 }))).toBe(false)
+  })
+})
+
+describe('toggleStateGroup', () => {
+  it('adds a group that is not yet selected', () => {
+    expect(toggleStateGroup(['started'], 'done')).toEqual(['started', 'done'])
+  })
+
+  it('removes a group that is already selected', () => {
+    expect(toggleStateGroup(['started', 'done'], 'started')).toEqual(['done'])
+  })
+
+  it('returns survivors in STATE_GROUPS order regardless of click order', () => {
+    expect(toggleStateGroup(['done'], 'backlog')).toEqual(['backlog', 'done'])
+    expect(toggleStateGroup(['canceled', 'backlog'], 'started')).toEqual([
+      'backlog',
+      'started',
+      'canceled',
+    ])
   })
 })
 

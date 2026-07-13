@@ -17,6 +17,20 @@ export interface BacklogEntry {
   ready: boolean
 }
 
+// STATE_GROUPS is the board's normalized status vocabulary: every BacklogEntry
+// lands in exactly one, and the state filter selects over them. `unknown` is the
+// normalization fallback for a status that maps to no other group.
+export const STATE_GROUPS = [
+  'backlog',
+  'unstarted',
+  'started',
+  'done',
+  'canceled',
+  'unknown',
+] as const
+
+export type StateGroup = (typeof STATE_GROUPS)[number]
+
 export interface RepoFreshness {
   last_synced_at?: string
   syncing: boolean

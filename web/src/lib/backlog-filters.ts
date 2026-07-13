@@ -7,7 +7,7 @@ import {
   parseAsStringLiteral,
 } from 'nuqs'
 
-import type { BacklogParams } from './backlog'
+import { STATE_GROUPS, type BacklogParams } from './backlog'
 
 export const SOURCE_VALUES = ['internal', 'synced'] as const
 
@@ -45,6 +45,20 @@ export function backlogParamsFromFilters(
     limit: pageSize,
     offset: (filters.page - 1) * pageSize,
   }
+}
+
+// toggleStateGroup adds or removes a group from the multi-select state filter,
+// always returning the survivors in STATE_GROUPS order so the serialized `state`
+// param — and the backlog query key derived from it — stays stable regardless of
+// the order the user clicked.
+export function toggleStateGroup(current: string[], group: string): string[] {
+  const next = new Set(current)
+  if (next.has(group)) {
+    next.delete(group)
+  } else {
+    next.add(group)
+  }
+  return STATE_GROUPS.filter((g) => next.has(g))
 }
 
 export function hasActiveFilters(filters: BacklogFilters): boolean {
