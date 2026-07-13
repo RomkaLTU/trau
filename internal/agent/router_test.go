@@ -20,8 +20,6 @@ func TestRouteKey(t *testing.T) {
 		{"cleanup", PhaseCleanup},
 		{"lintfix", PhaseLintfix},
 		{"commit", PhaseCommit},
-		{"plan", PhasePlan},
-		{"slice", PhaseSlice},
 		{"pick", PhasePick},
 		{"status", PhasePick},
 		{"", PhasePick},
@@ -52,34 +50,12 @@ func TestMechanicalPhase(t *testing.T) {
 		{"verify", false},
 		{"verify-retry2", false},
 		{"lintfix", false},
-		{"plan", false},
-		{"slice", false},
 		{"pick", false},
 		{"", false},
 	}
 	for _, tc := range cases {
 		if got := MechanicalPhase(tc.label); got != tc.want {
 			t.Errorf("MechanicalPhase(%q) = %v, want %v", tc.label, got, tc.want)
-		}
-	}
-}
-
-// TestPreambleFor pins the planning Preamble's scope: the plan-scoped variant
-// covers both planning labels (plan and slice) and nothing else.
-func TestPreambleFor(t *testing.T) {
-	cases := []struct {
-		label string
-		want  string
-	}{
-		{"plan", "planning"},
-		{"slice", "planning"},
-		{"build", "base"},
-		{"verify-retry2", "base"},
-		{"", "base"},
-	}
-	for _, tc := range cases {
-		if got := preambleFor("base", "planning", tc.label); got != tc.want {
-			t.Errorf("preambleFor(%q) = %q, want %q", tc.label, got, tc.want)
 		}
 	}
 }

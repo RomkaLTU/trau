@@ -3,7 +3,6 @@ package tracker
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -175,47 +174,6 @@ func (g *GitHub) Quarantine(ctx context.Context, id, reason string) error {
 func (g *GitHub) quarantinePrompt(id, reason string) string {
 	return fmt.Sprintf("Use the GitHub MCP on issue %s in repository %q: remove the label '%s', add the label '%s', and add a comment: \"Trau loop stopped: %s (see runs/%s/).\" Reply DONE.",
 		id, g.Repo, g.ReadyLabel, g.QuarantineLabel, reason, id)
-}
-
-// CreateIssue creates a new issue through the hierarchical-create capability via
-// the GitHub MCP: the epic when the spec has no parent, otherwise a child linked
-// as a sub-issue of it, carrying the spec's labels. The multi-line body rides in
-// the prompt; only the single-line CREATED= sentinel needs to come back. A parse
-// failure is surfaced — a create whose identifier is lost cannot be recorded.
-func (g *GitHub) CreateIssue(ctx context.Context, spec IssueSpec) (string, error) {
-	prefix := DefaultPrefix
-	if parent := strings.TrimSpace(spec.Parent); parent != "" {
-		prefix = prefixOf(parent)
-	}
-	res, err := g.Runner.Run(ctx, g.createIssuePrompt(spec, prefix), "create_issue")
-	if id, ok := parseCreated(res.Final, prefix); ok {
-		return id, nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return "", fmt.Errorf("could not parse created issue for %q", spec.Title)
-}
-
-func (g *GitHub) createIssuePrompt(spec IssueSpec, prefix string) string {
-	prompt := fmt.Sprintf("Use the GitHub MCP. Create a NEW issue in repository %q titled %q with the body below.", g.Repo, spec.Title)
-	if len(spec.Labels) > 0 {
-		prompt += fmt.Sprintf(" Apply the labels %s.", quoteLabels(spec.Labels))
-	}
-	if parent := strings.TrimSpace(spec.Parent); parent != "" {
-		prompt += fmt.Sprintf(" Link it as a sub-issue (child) of issue %s.", parent)
-	}
-	prompt += fmt.Sprintf(" Map the created GitHub issue #N to the configured prefix by responding with exactly one final line: 'CREATED=%s-N' (e.g. CREATED=%s-414). No other output.", prefix, prefix)
-	return prompt + "\n\nIssue body:\n\n" + spec.Description
-}
-
-func parseCreated(text, prefix string) (id string, matched bool) {
-	re := regexp.MustCompile(`CREATED=(` + regexp.QuoteMeta(prefix) + `-[0-9]+)`)
-	ms := re.FindAllStringSubmatch(text, -1)
-	if len(ms) == 0 {
-		return "", false
-	}
-	return ms[len(ms)-1][1], true
 }
 
 // FileBug files a NEW GitHub issue as a last-resort HITL blocker for a QA failure

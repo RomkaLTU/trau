@@ -7,12 +7,11 @@ every run and reads the same `.trau/runs/` event stream the TUI reads, so the tw
 never diverge on behavior, only on ergonomics.
 
 Verified against the shipped web-wiring slices COD-736–745 (Overview, Loop, Run
-once, Runs board + detail, Terminal, Costs, Lessons, Settings, Author) on
+once, Runs board + detail, Terminal, Costs, Lessons, Settings) on
 2026-07-05. Re-verify this map whenever a screen's actions change.
 
 Web locations are given as **Screen → control**; routes are shown where they
-help. Screen names match the sidebar nav (OPERATE · OBSERVE · AUTHOR ·
-CONFIGURE).
+help. Screen names match the sidebar nav (OPERATE · OBSERVE · CONFIGURE).
 
 ## Run and loop
 
@@ -74,13 +73,6 @@ plain-language refusal rather than a raw error.
 | CLI / TUI | Web surface |
 | --- | --- |
 | TUI *Settings* (edit `.ini`) · the layered config precedence | **Settings** — layered config resolved project → user → default; edit any key and choose which layer the write lands in. |
-
-## Author
-
-| CLI / TUI | Web surface |
-| --- | --- |
-| file a single issue to the tracker | **Author → New issue** — title, markdown body, labels → filed to the repo's configured tracker. |
-| publish a PRD (the terminal publish step of the TUI *Plan* flow) | **Author → PRD** — write a PRD in the editor and publish it as a Linear project document, or a Jira issue for a Jira-configured repo. |
 
 ## Costs and lessons
 

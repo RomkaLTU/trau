@@ -242,21 +242,6 @@ func (in *Internal) AddLabel(ctx context.Context, id, label string) error {
 	return err
 }
 
-// CreateIssue files an internal issue for the hierarchical-create capability
-// (publishing a plan), nesting it under spec.Parent when set.
-func (in *Internal) CreateIssue(ctx context.Context, spec IssueSpec) (string, error) {
-	iss, err := in.Hub.CreateInternalIssue(ctx, in.Repo, hubclient.InternalDraft{
-		Title:       spec.Title,
-		Description: spec.Description,
-		Labels:      spec.Labels,
-		Parent:      spec.Parent,
-	})
-	if err != nil {
-		return "", err
-	}
-	return iss.ID, nil
-}
-
 // EnsureLabels is a no-op for internal issues: labels are free-form strings on the
 // issue row, so there is nothing to provision.
 func (in *Internal) EnsureLabels(context.Context) error { return nil }

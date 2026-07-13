@@ -13,13 +13,12 @@ import (
 )
 
 var (
-	_ Tracker             = (*Internal)(nil)
-	_ TicketLister        = (*Internal)(nil)
-	_ IssueDetailer       = (*Internal)(nil)
-	_ IssueStatuser       = (*Internal)(nil)
-	_ IssueParenter       = (*Internal)(nil)
-	_ IssueLabeler        = (*Internal)(nil)
-	_ HierarchicalCreator = (*Internal)(nil)
+	_ Tracker       = (*Internal)(nil)
+	_ TicketLister  = (*Internal)(nil)
+	_ IssueDetailer = (*Internal)(nil)
+	_ IssueStatuser = (*Internal)(nil)
+	_ IssueParenter = (*Internal)(nil)
+	_ IssueLabeler  = (*Internal)(nil)
 )
 
 type recordedTransition struct {

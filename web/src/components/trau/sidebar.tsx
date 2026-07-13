@@ -2,8 +2,6 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import {
   DollarSign,
-  FilePlus,
-  FileText,
   LayoutDashboard,
   Lightbulb,
   ListChecks,
@@ -67,25 +65,6 @@ const GROUPS: NavGroup[] = [
       },
       { label: 'Costs', icon: DollarSign, to: '/costs' },
       { label: 'Lessons', icon: Lightbulb, to: '/lessons' },
-    ],
-  },
-  {
-    label: 'AUTHOR',
-    items: [
-      {
-        label: 'PRD',
-        icon: FileText,
-        to: '/author',
-        search: { tab: 'prd' },
-        requiresProject: true,
-      },
-      {
-        label: 'New issue',
-        icon: FilePlus,
-        to: '/author',
-        search: { tab: 'issue' },
-        requiresProject: true,
-      },
     ],
   },
   {

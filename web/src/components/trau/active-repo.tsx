@@ -24,7 +24,7 @@ interface ActiveRepoValue {
   scope: string
   // repo is the concrete resolved repo, or null under "All projects" / no repos.
   repo: string | null
-  // isAll is true under "All projects" — operate/author pages gate on it.
+  // isAll is true under "All projects" — operate pages gate on it.
   isAll: boolean
   repos: RepoView[]
   setScope: (scope: string) => void
