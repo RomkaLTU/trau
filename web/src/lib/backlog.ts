@@ -31,6 +31,9 @@ export interface BacklogResponse {
   items: BacklogEntry[]
   // total is the number of matches before pagination, so the board can page.
   total: number
+  // counts is the per-status-group match totals with the state filter ignored, so
+  // section headers and the hidden-count hint hold whichever groups are on screen.
+  counts: Record<string, number>
   freshness?: RepoFreshness
 }
 

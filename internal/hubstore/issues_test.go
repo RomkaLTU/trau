@@ -219,17 +219,17 @@ func TestBacklogPageFilters(t *testing.T) {
 		filter BacklogFilter
 		want   []string
 	}{
-		{"unfiltered", BacklogFilter{}, []string{"COD-1", "COD-100", "COD-2", "COD-3"}},
-		{"state group", BacklogFilter{Group: "unstarted"}, []string{"COD-100", "COD-2"}},
+		{"unfiltered", BacklogFilter{}, []string{"COD-3", "COD-2", "COD-100", "COD-1"}},
+		{"state group", BacklogFilter{Groups: []string{"unstarted"}}, []string{"COD-2", "COD-100"}},
 		{"source internal", BacklogFilter{Source: "internal"}, []string{"COD-100"}},
-		{"source synced", BacklogFilter{Source: "synced"}, []string{"COD-1", "COD-2", "COD-3"}},
-		{"label case-insensitive", BacklogFilter{Label: "feature"}, []string{"COD-1", "COD-3"}},
-		{"text over id and title", BacklogFilter{Text: "login"}, []string{"COD-1", "COD-100"}},
+		{"source synced", BacklogFilter{Source: "synced"}, []string{"COD-3", "COD-2", "COD-1"}},
+		{"label case-insensitive", BacklogFilter{Label: "feature"}, []string{"COD-3", "COD-1"}},
+		{"text over id and title", BacklogFilter{Text: "login"}, []string{"COD-100", "COD-1"}},
 		{"filters compose", BacklogFilter{Source: "synced", Text: "login"}, []string{"COD-1"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, total, err := s.BacklogPage(repo, tt.filter)
+			got, total, _, err := s.BacklogPage(repo, tt.filter)
 			if err != nil {
 				t.Fatalf("BacklogPage: %v", err)
 			}
@@ -248,22 +248,22 @@ func TestBacklogPagePaginates(t *testing.T) {
 	repo := "/repo/acme"
 	seedBacklog(t, s, repo)
 
-	first, total, err := s.BacklogPage(repo, BacklogFilter{Limit: 2})
+	first, total, _, err := s.BacklogPage(repo, BacklogFilter{Limit: 2})
 	if err != nil {
 		t.Fatalf("first page: %v", err)
 	}
 	if total != 4 {
 		t.Fatalf("total = %d, want 4 (the full count, not the page size)", total)
 	}
-	if !reflect.DeepEqual(idsOf(first), []string{"COD-1", "COD-100"}) {
-		t.Fatalf("first page = %v, want the first two by identifier", idsOf(first))
+	if !reflect.DeepEqual(idsOf(first), []string{"COD-3", "COD-2"}) {
+		t.Fatalf("first page = %v, want the first two in display order", idsOf(first))
 	}
 
-	second, _, err := s.BacklogPage(repo, BacklogFilter{Limit: 2, Offset: 2})
+	second, _, _, err := s.BacklogPage(repo, BacklogFilter{Limit: 2, Offset: 2})
 	if err != nil {
 		t.Fatalf("second page: %v", err)
 	}
-	if !reflect.DeepEqual(idsOf(second), []string{"COD-2", "COD-3"}) {
+	if !reflect.DeepEqual(idsOf(second), []string{"COD-100", "COD-1"}) {
 		t.Fatalf("second page = %v, want the next two", idsOf(second))
 	}
 }
@@ -277,12 +277,100 @@ func TestBacklogPageTextEscapesWildcards(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	got, total, err := s.BacklogPage(repo, BacklogFilter{Text: "100%"})
+	got, total, _, err := s.BacklogPage(repo, BacklogFilter{Text: "100%"})
 	if err != nil {
 		t.Fatalf("BacklogPage: %v", err)
 	}
 	if total != 1 || !reflect.DeepEqual(idsOf(got), []string{"COD-1"}) {
 		t.Fatalf("ids = %v (total %d), want only COD-1 — the %% must match literally", idsOf(got), total)
+	}
+}
+
+func TestBacklogPageGroupsFilter(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/groups"
+	seedBacklog(t, s, repo)
+
+	tests := []struct {
+		name   string
+		groups []string
+		want   []string
+	}{
+		{"single group unchanged", []string{"unstarted"}, []string{"COD-2", "COD-100"}},
+		{"union of groups", []string{"started", "unstarted"}, []string{"COD-3", "COD-2", "COD-100"}},
+		{"blank entries dropped", []string{"", "started"}, []string{"COD-3"}},
+		{"all blank means every group", []string{"", "  "}, []string{"COD-3", "COD-2", "COD-100", "COD-1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, total, _, err := s.BacklogPage(repo, BacklogFilter{Groups: tt.groups})
+			if err != nil {
+				t.Fatalf("BacklogPage: %v", err)
+			}
+			if total != len(tt.want) || !reflect.DeepEqual(idsOf(got), tt.want) {
+				t.Errorf("ids = %v (total %d), want %v", idsOf(got), total, tt.want)
+			}
+		})
+	}
+}
+
+func TestBacklogPageOrdersByGroupThenNumericIdentifier(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/order"
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-2", StatusGroup: "started"},
+		{Identifier: "COD-10", StatusGroup: "started"},
+		{Identifier: "COD-9", StatusGroup: "unstarted"},
+		{Identifier: "COD-100", StatusGroup: "unstarted"},
+		{Identifier: "COD-3", StatusGroup: "backlog"},
+		{Identifier: "COD-8", StatusGroup: "unknown"},
+		{Identifier: "COD-5", StatusGroup: "done"},
+		{Identifier: "COD-7", StatusGroup: "canceled"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, _, _, err := s.BacklogPage(repo, BacklogFilter{})
+	if err != nil {
+		t.Fatalf("BacklogPage: %v", err)
+	}
+	want := []string{"COD-2", "COD-10", "COD-9", "COD-100", "COD-3", "COD-8", "COD-5", "COD-7"}
+	if !reflect.DeepEqual(idsOf(got), want) {
+		t.Fatalf("order = %v, want group precedence then numeric-aware identifier %v", idsOf(got), want)
+	}
+}
+
+func TestBacklogPageCountsIgnoreState(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/counts"
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-1", Title: "a", StatusGroup: "started", Labels: []string{"feature"}},
+		{Identifier: "COD-2", Title: "b", StatusGroup: "unstarted", Labels: []string{"feature"}},
+		{Identifier: "COD-3", Title: "c", StatusGroup: "unstarted"},
+		{Identifier: "COD-4", Title: "d", StatusGroup: "done", Labels: []string{"feature"}},
+		{Identifier: "COD-5", Title: "e", StatusGroup: "canceled"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, total, counts, err := s.BacklogPage(repo, BacklogFilter{Groups: []string{"started"}})
+	if err != nil {
+		t.Fatalf("BacklogPage: %v", err)
+	}
+	if total != 1 || !reflect.DeepEqual(idsOf(got), []string{"COD-1"}) {
+		t.Fatalf("page = %v (total %d), want only the started COD-1", idsOf(got), total)
+	}
+	wantCounts := map[string]int{"started": 1, "unstarted": 2, "done": 1, "canceled": 1}
+	if !reflect.DeepEqual(counts, wantCounts) {
+		t.Fatalf("counts = %v, want every group counted despite the started-only page %v", counts, wantCounts)
+	}
+
+	_, _, labelled, err := s.BacklogPage(repo, BacklogFilter{Label: "feature"})
+	if err != nil {
+		t.Fatalf("BacklogPage label: %v", err)
+	}
+	if want := (map[string]int{"started": 1, "unstarted": 1, "done": 1}); !reflect.DeepEqual(labelled, want) {
+		t.Fatalf("counts = %v, want only the feature-labelled rows per group %v", labelled, want)
 	}
 }
 
