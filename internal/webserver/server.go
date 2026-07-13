@@ -214,6 +214,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/dry-run", s.handleDryRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/eligible", s.handleEligible)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/backlog", s.handleBacklog)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/labels", s.handleLabels)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/epics/{epic}", s.handleEpicPreview)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/search", s.handleIssueSearch)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/internal", s.handleCreateInternalIssue)

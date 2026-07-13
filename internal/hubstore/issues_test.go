@@ -374,6 +374,54 @@ func TestBacklogPageCountsIgnoreState(t *testing.T) {
 	}
 }
 
+func TestLabelsFacet(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/labels"
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-1", Title: "a", StatusGroup: "backlog", Labels: []string{"Feature", "bug"}},
+		{Identifier: "COD-2", Title: "b", StatusGroup: "unstarted", Labels: []string{"feature"}},
+		{Identifier: "COD-3", Title: "c", StatusGroup: "started", Labels: []string{"bug", "ready-for-agent"}},
+		{Identifier: "COD-4", Title: "d", StatusGroup: "backlog", Labels: []string{"stale"}},
+	}); err != nil {
+		t.Fatalf("seed synced: %v", err)
+	}
+	if _, _, err := s.Upsert(repo, "internal", []Issue{
+		{Identifier: "COD-100", Title: "note", StatusGroup: "unstarted", Labels: []string{"feature", "chore"}},
+	}); err != nil {
+		t.Fatalf("seed internal: %v", err)
+	}
+	if _, err := s.Reconcile(repo, []string{"COD-1", "COD-2", "COD-3"}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	got, err := s.Labels(repo)
+	if err != nil {
+		t.Fatalf("Labels: %v", err)
+	}
+	want := []LabelCount{
+		{Name: "bug", Count: 2},
+		{Name: "chore", Count: 1},
+		{Name: "Feature", Count: 3},
+		{Name: "ready-for-agent", Count: 1},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("labels = %+v, want %+v\n"+
+			"expected case-insensitive grouping (Feature/feature merged), distinct issue counts, "+
+			"the tombstoned stale label excluded, and internal labels counted", got, want)
+	}
+}
+
+func TestLabelsFacetEmptyRepo(t *testing.T) {
+	s := testIssues(t)
+	got, err := s.Labels("/repo/empty")
+	if err != nil {
+		t.Fatalf("Labels: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("labels = %+v, want an empty slice for a repo with no issues", got)
+	}
+}
+
 func TestRecordErrorPreservesLastGoodSync(t *testing.T) {
 	s := testIssues(t)
 

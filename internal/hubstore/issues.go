@@ -304,6 +304,41 @@ func (s *Issues) backlogCounts(clause string, args []any) (counts map[string]int
 	return counts, rows.Err()
 }
 
+// LabelCount is one distinct label carried by a repo's issues and the number of
+// issues carrying it.
+type LabelCount struct {
+	Name  string
+	Count int
+}
+
+// Labels returns the distinct label names carried by a repo's stored issues with
+// their issue counts, straight from the labels column (json_each) with no
+// tracker call (ADR 0007). Labels are grouped case-insensitively, consistent
+// with the board's label filter, and tombstoned issues are excluded.
+func (s *Issues) Labels(repo string) (labels []LabelCount, err error) {
+	rows, err := s.db.Query(
+		`SELECT min(value), count(DISTINCT i.id)
+		 FROM issues i, json_each(i.labels)
+		 WHERE i.repo = ? AND i.deleted_at = ''
+		 GROUP BY lower(value)
+		 ORDER BY lower(value)`,
+		repo,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	labels = []LabelCount{}
+	for rows.Next() {
+		var lc LabelCount
+		if scanErr := rows.Scan(&lc.Name, &lc.Count); scanErr != nil {
+			return nil, scanErr
+		}
+		labels = append(labels, lc)
+	}
+	return labels, rows.Err()
+}
+
 // cleanGroups trims the requested state groups and drops blanks, so a stray empty
 // value narrows nothing rather than matching a nonexistent group.
 func cleanGroups(groups []string) []string {

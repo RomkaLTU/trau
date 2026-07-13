@@ -93,6 +93,53 @@ func (s *Server) handleBacklog(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// LabelFacet is one entry on the board's label combobox: a distinct label name
+// carried by the repo's stored issues and how many of them carry it.
+type LabelFacet struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
+// LabelsResponse is a repo's distinct issue labels with counts, served from the
+// hub's issue store.
+type LabelsResponse struct {
+	Repo   string       `json:"repo"`
+	Labels []LabelFacet `json:"labels"`
+}
+
+// handleLabels serves the facet the board's label combobox filters on, straight
+// from the hub's issue store with no tracker call on the request path (ADR 0007).
+func (s *Server) handleLabels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	repo, ok := s.findRepo(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	labels, err := s.stores.Issues().Labels(repo.Root)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list labels: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, LabelsResponse{
+		Repo:   repo.Name,
+		Labels: toLabelFacets(labels),
+	})
+}
+
+// toLabelFacets maps the store's label counts onto the JSON facet rows.
+func toLabelFacets(labels []hubstore.LabelCount) []LabelFacet {
+	out := make([]LabelFacet, 0, len(labels))
+	for _, l := range labels {
+		out = append(out, LabelFacet{Name: l.Name, Count: l.Count})
+	}
+	return out
+}
+
 // backlogFilter reads the board's filter and pagination controls off the query
 // string: state (one or more workflow state groups, comma-separated and/or
 // repeated), label, source (internal | synced), q (substring text match), and
