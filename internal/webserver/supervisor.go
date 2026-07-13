@@ -3,8 +3,10 @@ package webserver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 )
 
@@ -131,7 +133,26 @@ func (osSupervisor) Capture(ctx context.Context, spec SpawnSpec) ([]byte, error)
 	cmd := exec.CommandContext(ctx, exe, spec.Args...)
 	cmd.Dir = spec.Dir
 	cmd.Env = spec.Env
-	return cmd.Output()
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, captureError(err)
+	}
+	return out, nil
+}
+
+// captureError decorates a capture failure with the child's first stderr line,
+// so a refused or crashed child reports why instead of a bare "exit status 1".
+func captureError(err error) error {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		return err
+	}
+	for _, line := range strings.Split(string(ee.Stderr), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			return fmt.Errorf("%w: %s", err, line)
+		}
+	}
+	return err
 }
 
 func (osSupervisor) Signal(pid int, sig syscall.Signal) error {

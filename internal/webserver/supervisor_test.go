@@ -57,3 +57,18 @@ func TestSpawnErrorTextFallsBackToExitCode(t *testing.T) {
 		t.Errorf("error text = %q, want a fallback naming exit status 2", got)
 	}
 }
+
+func TestCaptureErrorSurfacesFirstStderrLine(t *testing.T) {
+	_, err := exec.Command("sh", "-c", "echo 'trau: refusing to start a nested Trau loop' >&2; echo '  → run trau doctor' >&2; exit 1").Output()
+	got := captureError(err)
+	if got == nil || !strings.Contains(got.Error(), "refusing to start a nested Trau loop") {
+		t.Errorf("captureError = %v, want the child's first stderr line surfaced", got)
+	}
+}
+
+func TestCaptureErrorKeepsSilentExitUnchanged(t *testing.T) {
+	_, err := exec.Command("sh", "-c", "exit 1").Output()
+	if got := captureError(err); got != err {
+		t.Errorf("captureError = %v, want the original error when stderr is empty", got)
+	}
+}

@@ -157,13 +157,21 @@ func waitHubHealthy(ctx context.Context, url, token string) bool {
 // spawnDetachedServe starts `trau serve` in its own process group so the hub
 // outlives the loop that launched it; its net.Listen on the port is the
 // singleton lock. nil std streams route the child's output to the null device.
+// TRAU_ACTIVE is stripped so the hub — and everything it later spawns — is not
+// marked as running inside the loop that autostarted it.
 func spawnDetachedServe() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
 	cmd := exec.Command(exe, "serve")
-	cmd.Env = os.Environ()
+	env := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "TRAU_ACTIVE=") {
+			env = append(env, kv)
+		}
+	}
+	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		return err

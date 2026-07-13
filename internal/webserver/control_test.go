@@ -1060,3 +1060,33 @@ func hasEnv(env []string, want string) bool {
 	}
 	return false
 }
+
+// TestChildEnvStripsNestedLoopMarker locks the fix for hub spawns dying on the
+// nested-loop guard: a hub autostarted from inside a loop inherits TRAU_ACTIVE,
+// and passing it on made every --list-epic / start child refuse with exit 1.
+func TestChildEnvStripsNestedLoopMarker(t *testing.T) {
+	t.Setenv("TRAU_ACTIVE", "1")
+	t.Setenv("TRAU_HOME", "/elsewhere")
+	env := childEnv("/hub-home")
+	var home string
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "TRAU_ACTIVE=") {
+			t.Errorf("childEnv kept %q; a hub spawn must not look like a nested loop", kv)
+		}
+		if strings.HasPrefix(kv, "TRAU_HOME=") {
+			home = kv
+		}
+	}
+	if home != "TRAU_HOME=/hub-home" {
+		t.Errorf("childEnv home = %q, want the hub's home pinned", home)
+	}
+}
+
+func TestChildEnvStripsNestedLoopMarkerWithoutHome(t *testing.T) {
+	t.Setenv("TRAU_ACTIVE", "1")
+	for _, kv := range childEnv("") {
+		if strings.HasPrefix(kv, "TRAU_ACTIVE=") {
+			t.Errorf("childEnv kept %q with no home override", kv)
+		}
+	}
+}

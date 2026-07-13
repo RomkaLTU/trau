@@ -532,18 +532,24 @@ func workspaceRepo(root string) registry.Repo {
 }
 
 // childEnv is the environment a spawned loop inherits, pinned to the hub's trau
-// home so the child registers into the same registry the hub reads.
+// home so the child registers into the same registry the hub reads. TRAU_ACTIVE
+// is stripped: the hub may carry it from the loop that started it, but hub
+// spawns are deliberate top-level runs, and inheriting the marker would trip the
+// child's nested-loop guard.
 func childEnv(home string) []string {
 	env := os.Environ()
-	if home == "" {
-		return env
-	}
 	out := make([]string, 0, len(env)+1)
 	for _, kv := range env {
-		if strings.HasPrefix(kv, "TRAU_HOME=") {
+		if strings.HasPrefix(kv, "TRAU_ACTIVE=") {
+			continue
+		}
+		if home != "" && strings.HasPrefix(kv, "TRAU_HOME=") {
 			continue
 		}
 		out = append(out, kv)
 	}
-	return append(out, "TRAU_HOME="+home)
+	if home != "" {
+		out = append(out, "TRAU_HOME="+home)
+	}
+	return out
 }

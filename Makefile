@@ -36,7 +36,7 @@ reset: build
 		kill $$pids 2>/dev/null || true; \
 		for i in 1 2 3 4 5 6 7 8 9 10; do lsof -ti tcp:$(SERVE_PORT) -sTCP:LISTEN >/dev/null 2>&1 || break; sleep 0.3; done; \
 	fi
-	@nohup ./bin/$(BINARY) serve >$(SERVE_LOG) 2>&1 & \
+	@nohup env -u TRAU_ACTIVE ./bin/$(BINARY) serve >$(SERVE_LOG) 2>&1 & \
 	sleep 1; \
 	if lsof -ti tcp:$(SERVE_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
 		echo "→ hub live: http://127.0.0.1:$(SERVE_PORT)  (dev build $(VERSION); logs: $(SERVE_LOG))"; \
