@@ -2,20 +2,36 @@ import { queryOptions } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
 
-// Issue is one ticket read straight from the repo's tracker, so the run-once
-// form can confirm it before launching. Group is the normalized status bucket
-// (backlog | unstarted | started | done | canceled | unknown) the form uses to
-// warn about an unusual status.
+// IssueComment is one comment on an issue as the store returns it: author, body
+// (markdown), and the tracker's created timestamp.
+export interface IssueComment {
+  author: string
+  body: string
+  created_at?: string
+}
+
+// Issue is one ticket read store-first from the hub's issue store (ADR 0007): the
+// run-once form confirms it before launching, and the backlog drawer reads its
+// full content in place. Group is the normalized status bucket (backlog |
+// unstarted | started | done | canceled | unknown) the form uses to warn about an
+// unusual status. Description and comments are the stored content; source and url
+// come from the store (a synced ticket carries the tracker url, an internal one
+// does not).
 export interface Issue {
   repo: string
   provider: string
   id: string
   title: string
+  description: string
   status: string
   group: string
   labels: string[]
   ready: boolean
   parent?: string
+  source?: string
+  has_children: boolean
+  comments: IssueComment[]
+  url?: string
   // project is the ticket's own tracker project; in_project reports whether it
   // matches the repo's configured project, so a cross-project ticket can be
   // shown but refused rather than launched into the wrong repo.

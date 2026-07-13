@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useQueryStates } from 'nuqs'
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs'
 import {
   Check,
   ChevronsUpDown,
@@ -19,6 +19,7 @@ import {
   type SegmentOption,
 } from '@/components/trau/segmented-control'
 import { InternalIssueForm } from '@/components/internal-issue-form'
+import { IssueDrawer } from '@/components/issue-drawer'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import {
@@ -78,6 +79,13 @@ function BacklogPage() {
     history: 'push',
   })
   const { q, state, label, source, page } = filters
+
+  // The peeked issue is its own history entry so browser Back closes the drawer
+  // without unwinding a filter change; a cold ?issue= link opens it over the list.
+  const [peek, setPeek] = useQueryState(
+    'issue',
+    parseAsString.withOptions({ history: 'push' }),
+  )
 
   const [text, setText] = useState(q)
 
@@ -200,6 +208,7 @@ function BacklogPage() {
                       repo={repo}
                       entry={entry}
                       editing={editing === entry.id}
+                      onOpen={() => void setPeek(entry.id)}
                       onToggleEdit={() =>
                         setEditing((cur) => (cur === entry.id ? null : entry.id))
                       }
@@ -272,6 +281,15 @@ function BacklogPage() {
           </div>
         )}
       </div>
+
+      <IssueDrawer
+        repo={repo}
+        issueId={peek}
+        onOpenChange={(open) => {
+          if (!open) void setPeek(null)
+        }}
+        onSelectIssue={(id) => void setPeek(id)}
+      />
     </ProjectScopeGate>
   )
 }
@@ -437,12 +455,14 @@ function BacklogRow({
   repo,
   entry,
   editing,
+  onOpen,
   onToggleEdit,
   onEditDone,
 }: {
   repo: string
   entry: BacklogEntry
   editing: boolean
+  onOpen: () => void
   onToggleEdit: () => void
   onEditDone: () => void
 }) {
@@ -458,28 +478,35 @@ function BacklogRow({
   })
 
   return (
-    <li className="rounded-lg border bg-card">
+    <li className="rounded-lg border bg-card transition-colors hover:border-ring/40">
       <div className="flex flex-wrap items-center gap-3 px-4 py-3">
-        <span className="font-mono text-sm font-medium text-foreground">{entry.id}</span>
-        <span className="min-w-0 flex-1 truncate text-sm text-foreground">{entry.title}</span>
-        {entry.ready && (
-          <span className="rounded-full border border-emerald-500/40 bg-emerald-500/5 px-2 py-0.5 text-xs text-emerald-600 dark:text-emerald-400">
-            ready
-          </span>
-        )}
-        <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
-          {entry.group}
-        </span>
-        <span
-          className={cn(
-            'rounded-full px-2 py-0.5 font-mono text-xs',
-            internal
-              ? 'border border-primary/40 bg-primary/5 text-primary'
-              : 'border text-muted-foreground',
-          )}
+        <button
+          type="button"
+          onClick={onOpen}
+          aria-label={`Open ${entry.id}`}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left"
         >
-          {entry.source}
-        </span>
+          <span className="font-mono text-sm font-medium text-foreground">{entry.id}</span>
+          <span className="min-w-0 flex-1 truncate text-sm text-foreground">{entry.title}</span>
+          {entry.ready && (
+            <span className="rounded-full border border-emerald-500/40 bg-emerald-500/5 px-2 py-0.5 text-xs text-emerald-600 dark:text-emerald-400">
+              ready
+            </span>
+          )}
+          <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
+            {entry.group}
+          </span>
+          <span
+            className={cn(
+              'rounded-full px-2 py-0.5 font-mono text-xs',
+              internal
+                ? 'border border-primary/40 bg-primary/5 text-primary'
+                : 'border text-muted-foreground',
+            )}
+          >
+            {entry.source}
+          </span>
+        </button>
         {internal && (
           <button
             type="button"
