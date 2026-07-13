@@ -1,0 +1,57 @@
+import {
+  createParser,
+  type inferParserType,
+  parseAsArrayOf,
+  parseAsInteger,
+  parseAsString,
+  parseAsStringLiteral,
+} from 'nuqs'
+
+import type { BacklogParams } from './backlog'
+
+export const SOURCE_VALUES = ['internal', 'synced'] as const
+
+// Reject non-positive pages so a malformed ?page=0/-1 falls back to 1 instead of
+// deriving a negative offset.
+const parseAsPage = createParser({
+  parse(value) {
+    const n = parseAsInteger.parse(value)
+    return n !== null && n >= 1 ? n : null
+  },
+  serialize: parseAsInteger.serialize,
+}).withDefault(1)
+
+// state is array-typed so the planned-first slice can later default it to a group
+// set; today's single-value select feeds it a one-element array.
+export const backlogFilterParsers = {
+  q: parseAsString.withDefault(''),
+  state: parseAsArrayOf(parseAsString, ',').withDefault([]),
+  label: parseAsString.withDefault(''),
+  source: parseAsStringLiteral(SOURCE_VALUES),
+  page: parseAsPage,
+}
+
+export type BacklogFilters = inferParserType<typeof backlogFilterParsers>
+
+export function backlogParamsFromFilters(
+  filters: BacklogFilters,
+  pageSize: number,
+): BacklogParams {
+  return {
+    q: filters.q,
+    label: filters.label,
+    state: filters.state.join(','),
+    source: filters.source ?? '',
+    limit: pageSize,
+    offset: (filters.page - 1) * pageSize,
+  }
+}
+
+export function hasActiveFilters(filters: BacklogFilters): boolean {
+  return (
+    filters.q !== '' ||
+    filters.label !== '' ||
+    filters.state.length > 0 ||
+    filters.source !== null
+  )
+}

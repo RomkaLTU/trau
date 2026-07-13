@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryStates } from 'nuqs'
 import { FilePlus, ListPlus, Pencil, Search } from 'lucide-react'
 
 import { PageHeader, ProjectScopeGate, useActiveRepo } from '@/components/trau'
@@ -11,6 +12,11 @@ import {
 import { InternalIssueForm } from '@/components/internal-issue-form'
 import { Button } from '@/components/ui/button'
 import { backlogQueryOptions, type BacklogEntry } from '@/lib/backlog'
+import {
+  backlogFilterParsers,
+  backlogParamsFromFilters,
+  hasActiveFilters,
+} from '@/lib/backlog-filters'
 import { INTERNAL_STATES, internalIssueQueryOptions } from '@/lib/issues'
 import { enqueue } from '@/lib/queue'
 import { cn } from '@/lib/utils'
@@ -38,41 +44,39 @@ function BacklogPage() {
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
 
-  const [text, setText] = useState('')
-  const [debouncedText, setDebouncedText] = useState('')
-  const [label, setLabel] = useState('')
-  const [debouncedLabel, setDebouncedLabel] = useState('')
-  const [state, setState] = useState('')
-  const [source, setSource] = useState<SourceFilter>('all')
-  const [page, setPage] = useState(0)
+  const [filters, setFilters] = useQueryStates(backlogFilterParsers, {
+    history: 'push',
+  })
+  const { q, state, label, source, page } = filters
+
+  const [text, setText] = useState(q)
+  const [labelText, setLabelText] = useState(label)
+
+  useEffect(() => setText(q), [q])
+  useEffect(() => setLabelText(label), [label])
 
   useEffect(() => {
-    const id = setTimeout(() => setDebouncedText(text.trim()), 150)
+    const id = setTimeout(() => {
+      const next = text.trim()
+      if (next !== q) setFilters({ q: next, page: null }, { history: 'replace' })
+    }, 150)
     return () => clearTimeout(id)
-  }, [text])
+  }, [text, q, setFilters])
   useEffect(() => {
-    const id = setTimeout(() => setDebouncedLabel(label.trim()), 150)
+    const id = setTimeout(() => {
+      const next = labelText.trim()
+      if (next !== label) setFilters({ label: next, page: null }, { history: 'replace' })
+    }, 150)
     return () => clearTimeout(id)
-  }, [label])
-  useEffect(() => {
-    setPage(0)
-  }, [debouncedText, debouncedLabel, state, source])
+  }, [labelText, label, setFilters])
 
   const backlog = useQuery(
-    backlogQueryOptions(repo, {
-      q: debouncedText,
-      label: debouncedLabel,
-      state,
-      source: source === 'all' ? '' : source,
-      limit: PAGE_SIZE,
-      offset: page * PAGE_SIZE,
-    }),
+    backlogQueryOptions(repo, backlogParamsFromFilters(filters, PAGE_SIZE)),
   )
   const items = backlog.data?.items ?? []
   const total = backlog.data?.total ?? 0
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const hasFilters =
-    debouncedText !== '' || debouncedLabel !== '' || state !== '' || source !== 'all'
+  const hasFilters = hasActiveFilters(filters)
 
   return (
     <ProjectScopeGate action="manage the backlog">
@@ -116,8 +120,11 @@ function BacklogPage() {
             />
           </div>
           <select
-            value={state}
-            onChange={(e) => setState(e.target.value)}
+            value={state[0] ?? ''}
+            onChange={(e) => {
+              const v = e.target.value
+              setFilters({ state: v ? [v] : null, page: null })
+            }}
             aria-label="State"
             className={selectClass}
           >
@@ -130,8 +137,8 @@ function BacklogPage() {
           </select>
           <input
             type="text"
-            value={label}
-            onChange={(e) => setLabel(e.target.value)}
+            value={labelText}
+            onChange={(e) => setLabelText(e.target.value)}
             placeholder="Label…"
             aria-label="Label"
             className={cn(selectClass, 'w-40')}
@@ -139,8 +146,8 @@ function BacklogPage() {
           <SegmentedControl
             aria-label="Source"
             options={SOURCE_OPTIONS}
-            value={source}
-            onChange={setSource}
+            value={source ?? 'all'}
+            onChange={(v) => setFilters({ source: v === 'all' ? null : v, page: null })}
           />
         </div>
 
@@ -180,7 +187,7 @@ function BacklogPage() {
         {total > PAGE_SIZE && (
           <div className="flex items-center justify-between pt-1">
             <p className="text-xs text-muted-foreground">
-              Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of{' '}
+              Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of{' '}
               {total}
             </p>
             <div className="flex items-center gap-2">
@@ -188,20 +195,20 @@ function BacklogPage() {
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-                disabled={page === 0}
+                onClick={() => setFilters({ page: Math.max(1, page - 1) })}
+                disabled={page <= 1}
               >
                 Previous
               </Button>
               <span className="text-xs text-muted-foreground">
-                Page {page + 1} of {pageCount}
+                Page {page} of {pageCount}
               </span>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
-                disabled={page >= pageCount - 1}
+                onClick={() => setFilters({ page: Math.min(pageCount, page + 1) })}
+                disabled={page >= pageCount}
               >
                 Next
               </Button>
