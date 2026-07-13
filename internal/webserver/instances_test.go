@@ -283,6 +283,37 @@ func TestInstanceHeartbeatRegistersThenDeregisters(t *testing.T) {
 	}
 }
 
+func TestInstanceHeartbeatCarriesActivity(t *testing.T) {
+	home := t.TempDir()
+	ts := instancesServer(t, home)
+	pid := os.Getpid()
+	repoRoot := filepath.Join(t.TempDir(), "acme")
+
+	res := putJSON(t, ts.URL+APIPrefix+"/instances/"+strconv.Itoa(pid), instanceHeartbeatBody{
+		RepoRoot:     repoRoot,
+		RunsDir:      filepath.Join(repoRoot, ".trau", "runs"),
+		StartedAt:    time.Now().Add(-time.Minute),
+		SessionState: registry.StateWorking,
+		Ticket:       "COD-9",
+		Phase:        state.HandedOff,
+		Activity:     "repair",
+		Detail:       "repair2",
+		StateSince:   time.Now().Add(-10 * time.Second),
+	})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("PUT instance status = %d, want 200", res.StatusCode)
+	}
+	_ = res.Body.Close()
+
+	out := getInstances(t, ts)
+	if len(out.Instances) != 1 {
+		t.Fatalf("instances after register = %d, want 1", len(out.Instances))
+	}
+	if inst := out.Instances[0]; inst.Activity != "repair" || inst.Detail != "repair2" {
+		t.Errorf("activity/detail = %q/%q, want repair/repair2", inst.Activity, inst.Detail)
+	}
+}
+
 func TestInstanceHeartbeatRejectsInvalidPID(t *testing.T) {
 	ts := instancesServer(t, t.TempDir())
 	res := putJSON(t, ts.URL+APIPrefix+"/instances/not-a-pid", instanceHeartbeatBody{})

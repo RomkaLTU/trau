@@ -500,6 +500,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		defer reg.Deregister()
 	}
 	p.OnPhase = func(id, phase string) { reg.SetState(registry.StateWorking, id, phase) }
+	p.OnActivity = func(_, activity, detail string) { reg.SetActivity(activity, detail) }
 
 	eng := &realEngine{pipe: p, tracker: pm, scope: scope, sink: sink, log: log}
 
@@ -2272,6 +2273,7 @@ func (a *appActions) ensure() error {
 	}
 	a.pipe = pipe
 	a.pipe.OnPhase = func(id, phase string) { a.reg.SetState(registry.StateWorking, id, phase) }
+	a.pipe.OnActivity = func(_, activity, detail string) { a.reg.SetActivity(activity, detail) }
 	a.eng = &realEngine{pipe: a.pipe, tracker: a.tracker, scope: a.scope, sink: a.sink, log: a.log}
 	return nil
 }

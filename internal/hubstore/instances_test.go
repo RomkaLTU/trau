@@ -92,6 +92,52 @@ func TestInstancesUpsertRoundTripsAndRemoves(t *testing.T) {
 	}
 }
 
+func TestInstancesActivityRoundTrip(t *testing.T) {
+	in := testInstances(t)
+	in.alive = func(int) bool { return true }
+
+	e := registry.Entry{
+		PID:          7,
+		RepoRoot:     "/repo/acme",
+		StartedAt:    time.Now(),
+		Heartbeat:    time.Now(),
+		SessionState: registry.StateWorking,
+		Ticket:       "COD-9",
+		Phase:        state.HandedOff,
+		Activity:     "repair",
+		Detail:       "repair2",
+	}
+	if err := in.Upsert(e); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+
+	live, err := in.Live()
+	if err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+	if len(live) != 1 {
+		t.Fatalf("Live = %d entries, want 1", len(live))
+	}
+	if got := live[0]; got.Activity != "repair" || got.Detail != "repair2" {
+		t.Errorf("activity/detail = %q/%q, want repair/repair2", got.Activity, got.Detail)
+	}
+
+	// A later report advances the activity and clears the label; the columns update
+	// in place under the PID key.
+	e.Activity = "ci-wait"
+	e.Detail = ""
+	if err := in.Upsert(e); err != nil {
+		t.Fatalf("re-Upsert: %v", err)
+	}
+	live, err = in.Live()
+	if err != nil {
+		t.Fatalf("Live after re-upsert: %v", err)
+	}
+	if got := live[0]; got.Activity != "ci-wait" || got.Detail != "" {
+		t.Errorf("activity/detail after advance = %q/%q, want ci-wait/empty", got.Activity, got.Detail)
+	}
+}
+
 func TestInstancesLiveReapsDeadPID(t *testing.T) {
 	in := testInstances(t)
 	in.alive = func(pid int) bool { return pid == 100 }

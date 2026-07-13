@@ -109,12 +109,72 @@ func TestSetStateFlushesReportedActivity(t *testing.T) {
 	}
 }
 
+func TestSetActivityFlushesAndAdvancesStateSince(t *testing.T) {
+	f := &fakeClient{}
+	h := Register(f, "/repo/acme", "")
+	defer h.Deregister()
+
+	h.SetState(registry.StateWorking, "COD-9", "building")
+	waitFor(t, func() bool {
+		hb, ok := f.last()
+		return ok && hb.SessionState == registry.StateWorking
+	})
+
+	h.SetActivity("build", "")
+	waitFor(t, func() bool {
+		hb, ok := f.last()
+		return ok && hb.Activity == "build"
+	})
+	build, _ := f.last()
+	if build.Detail != "" {
+		t.Errorf("Detail = %q, want empty for a label-less activity", build.Detail)
+	}
+
+	h.SetActivity("repair", "repair1")
+	waitFor(t, func() bool {
+		hb, ok := f.last()
+		return ok && hb.Activity == "repair" && hb.Detail == "repair1"
+	})
+	repair, _ := f.last()
+	if !repair.StateSince.After(build.StateSince) {
+		t.Errorf("StateSince did not advance on an activity change: %v then %v", build.StateSince, repair.StateSince)
+	}
+	if repair.Ticket != "COD-9" || repair.Phase != "building" {
+		t.Errorf("activity change disturbed the reported ticket/phase: %+v", repair)
+	}
+}
+
+func TestNonWorkingStateClearsActivity(t *testing.T) {
+	f := &fakeClient{}
+	h := Register(f, "/repo/acme", "")
+	defer h.Deregister()
+
+	h.SetState(registry.StateWorking, "COD-9", "building")
+	h.SetActivity("build", "notes")
+	waitFor(t, func() bool {
+		hb, ok := f.last()
+		return ok && hb.Activity == "build" && hb.Detail == "notes"
+	})
+
+	h.SetState(registry.StateIdle, "", "")
+	waitFor(t, func() bool {
+		hb, ok := f.last()
+		return ok && hb.SessionState == registry.StateIdle
+	})
+	idle, _ := f.last()
+	if idle.Activity != "" || idle.Detail != "" {
+		t.Errorf("idle report kept activity/detail: %q/%q, want both cleared", idle.Activity, idle.Detail)
+	}
+}
+
 func TestNilAndUnregisteredHandleNoOp(t *testing.T) {
 	var nilHandle *Handle
 	nilHandle.SetState(registry.StateWorking, "COD-1", "building")
+	nilHandle.SetActivity("build", "")
 	nilHandle.Deregister()
 
 	unregistered := Register(nil, "/repo/acme", "")
 	unregistered.SetState(registry.StateWorking, "COD-1", "building")
+	unregistered.SetActivity("build", "")
 	unregistered.Deregister()
 }

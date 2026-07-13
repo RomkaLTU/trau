@@ -24,6 +24,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/RomkaLTU/trau/internal/activity"
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/budget"
 	"github.com/RomkaLTU/trau/internal/checks"
@@ -396,6 +397,14 @@ type Pipeline struct {
 	// reported working state whose state_since is the phase transition, not a file
 	// mtime. Nil disables reporting.
 	OnPhase func(id, phase string)
+
+	// OnActivity, when set, is called at the start of each present-tense pipeline
+	// activity (ADR 0009) — build, verify, repair, ci-wait, merge, … — carrying the
+	// ticket, the activity, and a free-text detail (the raw call label, e.g.
+	// repair2). The composition root wires it to the instance registry so the
+	// heartbeat reports what the Working session is doing right now, ahead of the
+	// past-tense checkpoint. Nil disables reporting.
+	OnActivity func(id, activity, detail string)
 
 	// Now supplies the current time for the per-day budget window; nil defaults
 	// to time.Now (overridable in tests).
@@ -888,6 +897,7 @@ func (p *Pipeline) Build(ctx context.Context, id string) error {
 
 func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	p.phaseStart("build")
+	p.setActivity(id, activity.Build, "")
 
 	_ = os.Remove(handoffPath(id))
 	_ = os.Remove(verifyPath(id))
@@ -1152,6 +1162,7 @@ func (p *Pipeline) Handoff(ctx context.Context, id string) error {
 // lintfix→cleanup chain has also finished.
 func (p *Pipeline) handoffWork(ctx context.Context, id string) error {
 	p.phaseStart("handoff")
+	p.setActivity(id, activity.Handoff, "")
 	if _, err := p.agentStep(ctx, id, "handoff", handoffTail(id, p.ticketContext(ctx, id))); err != nil {
 		return err
 	}
@@ -1275,6 +1286,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	label := "verify"
 	var lastFail verdict
 	for {
+		p.setActivity(id, activity.Verify, "")
 		v, err := p.verifyAttempt(ctx, id, label, handoff, note, checksFragment, rubricVerify, lessonsVerify, ticketCtx)
 		if err != nil {
 			return err
@@ -1293,6 +1305,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 			for _, fl := range topFailures(v) {
 				p.logf("  ↳ %s", fl)
 			}
+			p.setActivity(id, activity.Repair, fmt.Sprintf("repair%d", repairAttempt))
 			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
 				return err
 			}
@@ -1305,6 +1318,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 			for _, fl := range topFailures(v) {
 				p.logf("  ↳ %s", fl)
 			}
+			p.setActivity(id, activity.Bugfix, fmt.Sprintf("bugfix%d", bugfixAttempt))
 			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
 				return err
 			}
@@ -1377,6 +1391,7 @@ func (p *Pipeline) finalizeFailed(ctx context.Context, id string) {
 // quarantining — the WIP stays on the branch for a later resume.
 func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	p.phaseStart("commit")
+	p.setActivity(id, activity.Commit, "")
 	if err := p.commitSlice(ctx, id); err != nil {
 		return err
 	}
@@ -1385,6 +1400,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	}
 
 	p.phaseStart("pr")
+	p.setActivity(id, activity.PR, "")
 	branch := p.State.Get(id, "BRANCH")
 	if branch == "" {
 		if b, err := p.Git.CurrentBranch(ctx); err == nil {
@@ -1490,6 +1506,7 @@ func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 	}
 
 	p.phaseStart("ci")
+	p.setActivity(id, activity.CIWait, "")
 	if err := p.pollCI(ctx, pr); err != nil {
 		p.logf("  ✗ CI: %v", err)
 		return p.giveUp(ctx, id, "CI not green")
@@ -1499,6 +1516,7 @@ func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 		return nil
 	}
 	p.phaseStart("merge")
+	p.setActivity(id, activity.Merge, "")
 	err := p.mergePR(ctx, pr)
 	if unmergeablePR(err) {
 		err = p.recoverUnmergeablePR(ctx, id, pr, err)
@@ -1554,6 +1572,7 @@ func (p *Pipeline) recoverUnmergeablePR(ctx context.Context, id, pr string, merg
 	if !synced {
 		return p.giveUp(ctx, id, fmt.Sprintf("PR %s conflicts with %s and the conflicts could not be auto-resolved — resolve manually", pr, base))
 	}
+	p.setActivity(id, activity.CIWait, "")
 	if err := p.pollCI(ctx, pr); err != nil {
 		p.logf("  ✗ CI after conflict sync: %v", err)
 		return p.giveUp(ctx, id, "CI not green after syncing the PR with "+base)
@@ -1561,6 +1580,7 @@ func (p *Pipeline) recoverUnmergeablePR(ctx context.Context, id, pr string, merg
 	// The sync just pushed a new PR head and GitHub recomputes mergeability
 	// asynchronously, so a stale "not mergeable" right after the push gets a few
 	// paced retries before it is believed.
+	p.setActivity(id, activity.Merge, "")
 	for attempt := 0; ; attempt++ {
 		err := p.mergePR(ctx, pr)
 		switch {
@@ -1604,6 +1624,7 @@ func (p *Pipeline) syncBranchWithBase(ctx context.Context, id, branch, base, lab
 	}
 
 	p.phaseStart(label)
+	p.setActivity(id, activity.Merge, label)
 	p.logf("  ⚠ %s conflicts with %s — resolving merge conflicts", branch, base)
 	maxAttempts := p.MaxRepairs
 	if maxAttempts < 1 {
@@ -2313,6 +2334,25 @@ func providerOf(err error) string {
 func (p *Pipeline) phaseStart(phase string) {
 	if p.Renderer != nil {
 		p.Renderer.PhaseStart(phase)
+	}
+}
+
+// setActivity reports the present-tense pipeline work the session is doing now
+// (ADR 0009): it advances the presence heartbeat through OnActivity and emits an
+// activity_change event on the durable log, so per-activity wall-clock — including
+// non-agent waits like CI, invisible to agent_call durations — derives from event
+// timestamp deltas. detail carries the raw call label (e.g. repair2), empty when
+// there is none. Checkpoint phases are untouched; Activity is its own signal.
+func (p *Pipeline) setActivity(id string, act activity.Activity, detail string) {
+	if p.OnActivity != nil {
+		p.OnActivity(id, string(act), detail)
+	}
+	if p.Events != nil {
+		fields := map[string]any{"ticket": id, "activity": string(act)}
+		if detail != "" {
+			fields["detail"] = detail
+		}
+		p.Events.Emit("activity_change", "", "", fields)
 	}
 }
 
