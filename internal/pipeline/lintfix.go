@@ -4,6 +4,8 @@ import (
 	"context"
 	"os/exec"
 	"strings"
+
+	"github.com/RomkaLTU/trau/internal/activity"
 )
 
 // lintFix runs the project's automated lint/format fixers over the working tree
@@ -15,6 +17,7 @@ func (p *Pipeline) lintFix(ctx context.Context, id string) error {
 	if !p.LintFix {
 		return nil
 	}
+	p.setActivity(id, activity.LintFix, "")
 	if strings.TrimSpace(p.LintFixCmd) != "" {
 		return p.lintFixCmd(ctx)
 	}

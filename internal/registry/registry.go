@@ -50,6 +50,8 @@ type Entry struct {
 	SessionState string    `json:"session_state,omitempty"`
 	Ticket       string    `json:"ticket,omitempty"`
 	Phase        string    `json:"phase,omitempty"`
+	Activity     string    `json:"activity,omitempty"`
+	Detail       string    `json:"detail,omitempty"`
 	StateSince   time.Time `json:"state_since,omitzero"`
 }
 

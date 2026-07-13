@@ -1,6 +1,10 @@
 package pipeline
 
-import "context"
+import (
+	"context"
+
+	"github.com/RomkaLTU/trau/internal/activity"
+)
 
 // cleanup strips AI-slop from the slice's diff before verify. It fails open:
 // only a fatal agent error (pause/give-up) propagates.
@@ -8,6 +12,7 @@ func (p *Pipeline) cleanup(ctx context.Context, id string) error {
 	if !p.Cleanup {
 		return nil
 	}
+	p.setActivity(id, activity.Cleanup, "")
 	p.logf("  ↳ cleanup: stripping unnecessary comments and slop from the diff")
 	notesRef, _ := p.activeBuildNotes(id)
 	_, err := p.agentStep(ctx, id, "cleanup", cleanupInstruction(id, buildNotesNote(notesRef)))
