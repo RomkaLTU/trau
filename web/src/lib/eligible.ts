@@ -100,3 +100,54 @@ export function addAllLabel(plan: AddAllPlan): string {
   if (plan.tickets > 0) parts.push(plural(plan.tickets, 'ticket'))
   return `Add all eligible (${parts.join(' + ')})`
 }
+
+export type EligibleRow =
+  | { kind: 'ticket'; ticket: EligibleTicket }
+  | {
+      kind: 'epic'
+      epicId: string
+      epic: EligibleTicket | null
+      children: EligibleTicket[]
+    }
+
+// groupEligible arranges the flat eligible list into display rows: sub-issues
+// nest under an epic row headed by the epic itself (when it is eligible too) or
+// a bare epic id (when only its children are eligible); top-level tickets stay
+// standalone. Rows keep first-appearance order, so the list reads the same way
+// the tracker returned it — this is presentation only, it never drops a ticket.
+export function groupEligible(tickets: EligibleTicket[]): EligibleRow[] {
+  const byId = new Map<string, EligibleTicket>()
+  for (const t of tickets) byId.set(t.id, t)
+
+  const childrenByParent = new Map<string, EligibleTicket[]>()
+  for (const t of tickets) {
+    if (!t.parent) continue
+    const arr = childrenByParent.get(t.parent) ?? []
+    arr.push(t)
+    childrenByParent.set(t.parent, arr)
+  }
+
+  const rows: EligibleRow[] = []
+  const emitted = new Set<string>()
+  const emitEpic = (epicId: string) => {
+    if (emitted.has(epicId)) return
+    emitted.add(epicId)
+    rows.push({
+      kind: 'epic',
+      epicId,
+      epic: byId.get(epicId) ?? null,
+      children: childrenByParent.get(epicId) ?? [],
+    })
+  }
+
+  for (const t of tickets) {
+    if (t.parent) {
+      emitEpic(t.parent)
+    } else if ((childrenByParent.get(t.id)?.length ?? 0) > 0) {
+      emitEpic(t.id)
+    } else {
+      rows.push({ kind: 'ticket', ticket: t })
+    }
+  }
+  return rows
+}

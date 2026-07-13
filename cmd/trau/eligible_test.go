@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -55,5 +56,59 @@ func TestWriteEligibleJSONEmpty(t *testing.T) {
 	}
 	if got := bytes.TrimSpace(buf.Bytes()); string(got) != "[]" {
 		t.Errorf("empty queue = %q, want []", got)
+	}
+}
+
+func TestGroupEligibleLinesFlatWhenNoParent(t *testing.T) {
+	tickets := []tracker.ListedTicket{
+		{ID: "COD-1", Title: "First", Labels: []string{"ready-for-agent", "Feature"}},
+		{ID: "COD-2", Title: "Second"},
+		{ID: "COD-3", Title: "An epic", HasChildren: true},
+	}
+	want := []string{
+		"COD-1  First  [ready-for-agent, Feature]",
+		"COD-2  Second",
+		"COD-3  An epic",
+	}
+	got := groupEligibleLines(tickets)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("flat output = %#v, want %#v", got, want)
+	}
+}
+
+func TestGroupEligibleLinesGroupsUnderEpics(t *testing.T) {
+	tickets := []tracker.ListedTicket{
+		{ID: "COD-100", Title: "Epic one", Labels: []string{"epic"}, HasChildren: true},
+		{ID: "COD-101", Title: "Child A", Labels: []string{"ready-for-agent"}, Parent: "COD-100"},
+		{ID: "COD-102", Title: "Child B", Parent: "COD-100"},
+		{ID: "COD-4", Title: "Top-level"},
+		{ID: "COD-201", Title: "Orphan child", Parent: "COD-200"},
+	}
+	want := []string{
+		"COD-100  Epic one  [epic]",
+		"  COD-101  Child A  [ready-for-agent]",
+		"  COD-102  Child B",
+		"COD-4  Top-level",
+		"COD-200",
+		"  COD-201  Orphan child",
+	}
+	got := groupEligibleLines(tickets)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("grouped output = %#v, want %#v", got, want)
+	}
+}
+
+func TestGroupEligibleLinesChildBeforeEpic(t *testing.T) {
+	tickets := []tracker.ListedTicket{
+		{ID: "COD-11", Title: "Child", Parent: "COD-10"},
+		{ID: "COD-10", Title: "Epic", HasChildren: true},
+	}
+	want := []string{
+		"COD-10  Epic",
+		"  COD-11  Child",
+	}
+	got := groupEligibleLines(tickets)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("child-before-epic output = %#v, want %#v", got, want)
 	}
 }

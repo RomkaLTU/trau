@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { addAllLabel, planAddAll, type EligibleTicket } from './eligible'
+import {
+  addAllLabel,
+  groupEligible,
+  planAddAll,
+  type EligibleTicket,
+} from './eligible'
 import type { QueueItem } from './queue'
 
 function ticket(over: Partial<EligibleTicket>): EligibleTicket {
@@ -102,6 +107,48 @@ describe('planAddAll', () => {
       ],
     )
     expect(plan.items).toEqual([])
+  })
+})
+
+describe('groupEligible', () => {
+  it('leaves a parentless list as standalone ticket rows in order', () => {
+    const rows = groupEligible([
+      ticket({ id: 'COD-1' }),
+      ticket({ id: 'COD-2', has_children: true }),
+    ])
+    expect(rows).toEqual([
+      { kind: 'ticket', ticket: ticket({ id: 'COD-1' }) },
+      { kind: 'ticket', ticket: ticket({ id: 'COD-2', has_children: true }) },
+    ])
+  })
+
+  it('nests sub-issues under their epic and keeps top-level tickets flat', () => {
+    const epic = ticket({ id: 'COD-100', has_children: true })
+    const a = ticket({ id: 'COD-101', parent: 'COD-100' })
+    const b = ticket({ id: 'COD-102', parent: 'COD-100' })
+    const solo = ticket({ id: 'COD-4' })
+    const rows = groupEligible([epic, a, b, solo])
+    expect(rows).toEqual([
+      { kind: 'epic', epicId: 'COD-100', epic, children: [a, b] },
+      { kind: 'ticket', ticket: solo },
+    ])
+  })
+
+  it('heads a group with a bare epic id when the epic itself is not eligible', () => {
+    const child = ticket({ id: 'COD-201', parent: 'COD-200' })
+    const rows = groupEligible([child])
+    expect(rows).toEqual([
+      { kind: 'epic', epicId: 'COD-200', epic: null, children: [child] },
+    ])
+  })
+
+  it('emits the epic once when a child precedes its epic in the list', () => {
+    const child = ticket({ id: 'COD-11', parent: 'COD-10' })
+    const epic = ticket({ id: 'COD-10', has_children: true })
+    const rows = groupEligible([child, epic])
+    expect(rows).toEqual([
+      { kind: 'epic', epicId: 'COD-10', epic, children: [child] },
+    ])
   })
 })
 
