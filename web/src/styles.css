@@ -6,6 +6,39 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
+  color-scheme: light;
+
+  --background: #faf8f5;
+  --foreground: #1c1714;
+  --card: #ffffff;
+  --card-foreground: #1c1714;
+  --popover: #ffffff;
+  --popover-foreground: #1c1714;
+  --primary: #d95e0a;
+  --primary-foreground: #ffffff;
+  --secondary: #f1ece6;
+  --secondary-foreground: #1c1714;
+  --muted: #f1ece6;
+  --muted-foreground: #6f655b;
+  --accent: #f1ece6;
+  --accent-foreground: #1c1714;
+  --destructive: #d92650;
+  --border: #e6ded4;
+  --input: #ece6df;
+  --ring: #d95e0a;
+
+  --brand: #d95e0a;
+  --teal: #0a9d86;
+  --done: #0f9d63;
+  --fail: #d92650;
+  --warn: #b7791f;
+  --info: #0284c7;
+  --faint: #b3a99d;
+
+  --radius: 0.875rem;
+}
+
+.dark {
   color-scheme: dark;
 
   --background: #0c0a09;
@@ -34,8 +67,6 @@
   --warn: #f9d423;
   --info: #00aaff;
   --faint: #555555;
-
-  --radius: 0.875rem;
 }
 
 @theme inline {
@@ -154,6 +185,19 @@ body::before {
   background-image:
     radial-gradient(
       ellipse 120% 80% at 50% -10%,
+      rgba(217, 94, 10, 0.05),
+      transparent 55%
+    ),
+    radial-gradient(
+      ellipse 100% 90% at 100% 100%,
+      rgba(10, 157, 134, 0.04),
+      transparent 60%
+    );
+}
+.dark body::before {
+  background-image:
+    radial-gradient(
+      ellipse 120% 80% at 50% -10%,
       rgba(255, 122, 24, 0.07),
       transparent 55%
     ),
@@ -177,7 +221,7 @@ body::before {
       transparent 22px
     );
 }
-body::after {
+.dark body::after {
   content: "";
   position: fixed;
   inset: 0;

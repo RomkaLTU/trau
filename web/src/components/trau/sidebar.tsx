@@ -18,6 +18,7 @@ import {
 import { useActiveRepo } from '@/components/trau/active-repo'
 import { GlobalSearch } from '@/components/trau/global-search'
 import { RepoSwitcher } from '@/components/trau/repo-switcher'
+import { ThemeToggle } from '@/components/trau/theme-toggle'
 import { useAttentionCount } from '@/lib/attention'
 import { healthQueryOptions } from '@/lib/health'
 
@@ -176,7 +177,13 @@ export function Sidebar() {
         ))}
       </nav>
 
-      <div className="flex flex-col gap-2 border-t border-border px-5 py-3">
+      <div className="flex flex-col gap-3 border-t border-border px-5 py-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="font-mono text-[0.65rem] uppercase tracking-[0.2em] text-muted-foreground">
+            theme
+          </span>
+          <ThemeToggle />
+        </div>
         <span className="inline-flex items-center gap-2 font-mono text-xs text-teal">
           <span aria-hidden="true">●</span>
           {host ? `serving ${host}` : 'serving'}
