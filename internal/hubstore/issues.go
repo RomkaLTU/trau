@@ -172,15 +172,16 @@ func (s *Issues) List(repo string) (issues []Issue, err error) {
 	return s.attachComments(repo, issues, ids)
 }
 
-// BacklogFilter narrows a backlog listing. Group matches the workflow state group
-// (backlog | unstarted | started | completed | canceled); Label matches an issue
-// carrying that label name, case-insensitively; Source is "internal" for
-// internally-created issues or "synced" for tracker tickets; Text is a
-// case-insensitive substring over identifier and title. A zero-valued field is
-// ignored, so the zero filter selects the whole board. Limit and Offset paginate
-// the ordered matches; a Limit of zero returns every match.
+// BacklogFilter narrows a backlog listing. Groups matches the workflow state
+// groups to union (backlog | unstarted | started | done | canceled | unknown);
+// Label matches an issue carrying that label name, case-insensitively; Source is
+// "internal" for internally-created issues or "synced" for tracker tickets; Text
+// is a case-insensitive substring over identifier and title. A zero-valued field
+// is ignored, so the zero filter selects the whole board — an empty Groups means
+// every group. Limit and Offset paginate the ordered matches; a Limit of zero
+// returns every match.
 type BacklogFilter struct {
-	Group  string
+	Groups []string
 	Label  string
 	Source string
 	Text   string
@@ -188,27 +189,44 @@ type BacklogFilter struct {
 	Offset int
 }
 
-// Backlog returns a repo's stored issues for the board, ordered by identifier and
+// backlogOrderBy sorts the board by workflow progress — active work first, then
+// not-yet-started, backlog, and finally the closed groups — and within a group by
+// numeric-aware identifier so COD-9 precedes COD-100 rather than sorting
+// lexicographically.
+const backlogOrderBy = `ORDER BY
+	CASE status_group
+		WHEN 'started' THEN 0
+		WHEN 'unstarted' THEN 1
+		WHEN 'backlog' THEN 2
+		WHEN 'unknown' THEN 3
+		WHEN 'done' THEN 4
+		WHEN 'canceled' THEN 5
+		ELSE 6
+	END,
+	substr(identifier, 1, instr(identifier, '-')),
+	CAST(substr(identifier, instr(identifier, '-') + 1) AS INTEGER),
+	identifier`
+
+// Backlog returns a repo's stored issues for the board in display order and
 // without comments — the whole board, equivalent to an empty BacklogFilter.
 func (s *Issues) Backlog(repo string) ([]Issue, error) {
-	issues, _, err := s.BacklogPage(repo, BacklogFilter{})
+	issues, _, _, err := s.BacklogPage(repo, BacklogFilter{})
 	return issues, err
 }
 
-// BacklogPage returns the repo's stored issues matching filter, ordered by
-// identifier and paginated, together with the total number of matches before
-// pagination so the board can page without counting the rows itself. Tombstoned
-// issues — synced tickets removed from the tracker — are excluded from the board.
-// The filters compose in the WHERE clause and are pushed into the query rather
-// than applied after loading everything; comments are not attached (the board
-// renders summary rows only).
-func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue, total int, err error) {
+// BacklogPage returns the repo's stored issues matching filter, ordered by group
+// precedence (started, unstarted, backlog, unknown, done, canceled) then
+// numeric-aware identifier, and paginated. It also returns the total number of
+// matches before pagination so the board can page without counting the rows
+// itself, and per-status-group counts computed over the same filters with the
+// state selection ignored — so section headers and the hidden-count hint hold
+// whichever groups are on screen. Tombstoned issues — synced tickets removed from
+// the tracker — are excluded from the board. The filters compose in the WHERE
+// clause and are pushed into the query rather than applied after loading
+// everything; comments are not attached (the board renders summary rows only).
+func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue, total int, counts map[string]int, err error) {
 	where := []string{"repo = ?", "deleted_at = ''"}
 	args := []any{repo}
-	if group := strings.TrimSpace(filter.Group); group != "" {
-		where = append(where, "status_group = ?")
-		args = append(args, group)
-	}
 	switch strings.TrimSpace(filter.Source) {
 	case "internal":
 		where = append(where, "source = 'internal'")
@@ -224,13 +242,26 @@ func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue,
 		where = append(where, `(identifier LIKE ? ESCAPE '\' OR title LIKE ? ESCAPE '\')`)
 		args = append(args, like, like)
 	}
-	clause := strings.Join(where, " AND ")
+	baseClause := strings.Join(where, " AND ")
 
-	if err = s.db.QueryRow(`SELECT count(*) FROM issues WHERE `+clause, args...).Scan(&total); err != nil {
-		return nil, 0, err
+	counts, err = s.backlogCounts(baseClause, args)
+	if err != nil {
+		return nil, 0, nil, err
 	}
 
-	query := `SELECT ` + issueColumns + ` FROM issues WHERE ` + clause + ` ORDER BY identifier`
+	clause := baseClause
+	if groups := cleanGroups(filter.Groups); len(groups) > 0 {
+		clause += " AND status_group IN (" + strings.TrimSuffix(strings.Repeat("?,", len(groups)), ",") + ")"
+		for _, g := range groups {
+			args = append(args, g)
+		}
+	}
+
+	if err = s.db.QueryRow(`SELECT count(*) FROM issues WHERE `+clause, args...).Scan(&total); err != nil {
+		return nil, 0, nil, err
+	}
+
+	query := `SELECT ` + issueColumns + ` FROM issues WHERE ` + clause + ` ` + backlogOrderBy
 	if filter.Limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, filter.Limit)
@@ -241,12 +272,83 @@ func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue,
 	}
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
 
 	issues, _, err = scanIssues(repo, rows)
-	return issues, total, err
+	return issues, total, counts, err
+}
+
+// backlogCounts returns per-status-group match totals for the given WHERE clause
+// and its args — the board's non-state filters — with the state selection left
+// out, so the section headers and the "N done · M canceled hidden" hint stay
+// correct regardless of pagination or which groups are on screen.
+func (s *Issues) backlogCounts(clause string, args []any) (counts map[string]int, err error) {
+	rows, err := s.db.Query(`SELECT status_group, count(*) FROM issues WHERE `+clause+` GROUP BY status_group`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	counts = map[string]int{}
+	for rows.Next() {
+		var (
+			group string
+			n     int
+		)
+		if scanErr := rows.Scan(&group, &n); scanErr != nil {
+			return nil, scanErr
+		}
+		counts[group] = n
+	}
+	return counts, rows.Err()
+}
+
+// LabelCount is one distinct label carried by a repo's issues and the number of
+// issues carrying it.
+type LabelCount struct {
+	Name  string
+	Count int
+}
+
+// Labels returns the distinct label names carried by a repo's stored issues with
+// their issue counts, straight from the labels column (json_each) with no
+// tracker call (ADR 0007). Labels are grouped case-insensitively, consistent
+// with the board's label filter, and tombstoned issues are excluded.
+func (s *Issues) Labels(repo string) (labels []LabelCount, err error) {
+	rows, err := s.db.Query(
+		`SELECT min(value), count(DISTINCT i.id)
+		 FROM issues i, json_each(i.labels)
+		 WHERE i.repo = ? AND i.deleted_at = ''
+		 GROUP BY lower(value)
+		 ORDER BY lower(value)`,
+		repo,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	labels = []LabelCount{}
+	for rows.Next() {
+		var lc LabelCount
+		if scanErr := rows.Scan(&lc.Name, &lc.Count); scanErr != nil {
+			return nil, scanErr
+		}
+		labels = append(labels, lc)
+	}
+	return labels, rows.Err()
+}
+
+// cleanGroups trims the requested state groups and drops blanks, so a stray empty
+// value narrows nothing rather than matching a nonexistent group.
+func cleanGroups(groups []string) []string {
+	out := make([]string, 0, len(groups))
+	for _, g := range groups {
+		if g = strings.TrimSpace(g); g != "" {
+			out = append(out, g)
+		}
+	}
+	return out
 }
 
 // escapeLike escapes the SQLite LIKE metacharacters so a filter term matches

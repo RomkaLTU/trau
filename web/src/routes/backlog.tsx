@@ -1,7 +1,17 @@
-import { useEffect, useState } from 'react'
+import { Fragment, useEffect, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { FilePlus, ListPlus, Pencil, Search } from 'lucide-react'
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs'
+import {
+  Check,
+  ChevronsUpDown,
+  FilePlus,
+  ListFilter,
+  ListPlus,
+  Pencil,
+  Search,
+  Tag,
+} from 'lucide-react'
 
 import { PageHeader, ProjectScopeGate, useActiveRepo } from '@/components/trau'
 import {
@@ -9,9 +19,39 @@ import {
   type SegmentOption,
 } from '@/components/trau/segmented-control'
 import { InternalIssueForm } from '@/components/internal-issue-form'
+import { IssueDrawer } from '@/components/issue-drawer'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { backlogQueryOptions, type BacklogEntry } from '@/lib/backlog'
-import { INTERNAL_STATES, internalIssueQueryOptions } from '@/lib/issues'
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from '@/components/ui/command'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
+import {
+  backlogQueryOptions,
+  backlogSections,
+  hiddenStateGroups,
+  STATE_GROUPS,
+  type BacklogEntry,
+} from '@/lib/backlog'
+import {
+  backlogFilterParsers,
+  backlogParamsFromFilters,
+  effectiveStateGroups,
+  hasActiveFilters,
+  toggleStateGroup,
+} from '@/lib/backlog-filters'
+import { internalIssueQueryOptions } from '@/lib/issues'
+import { labelsQueryOptions } from '@/lib/labels'
 import { enqueue } from '@/lib/queue'
 import { cn } from '@/lib/utils'
 
@@ -29,57 +69,58 @@ const SOURCE_OPTIONS: readonly SegmentOption<SourceFilter>[] = [
   { value: 'synced', label: 'Synced' },
 ]
 
-const selectClass =
-  'h-9 rounded-md border bg-transparent px-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50'
-
 function BacklogPage() {
   const { repo: activeRepo } = useActiveRepo()
   const repo = activeRepo ?? ''
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
 
-  const [text, setText] = useState('')
-  const [debouncedText, setDebouncedText] = useState('')
-  const [label, setLabel] = useState('')
-  const [debouncedLabel, setDebouncedLabel] = useState('')
-  const [state, setState] = useState('')
-  const [source, setSource] = useState<SourceFilter>('all')
-  const [page, setPage] = useState(0)
+  const [filters, setFilters] = useQueryStates(backlogFilterParsers, {
+    history: 'push',
+  })
+  const { q, state, label, source, page } = filters
+
+  // The peeked issue is its own history entry so browser Back closes the drawer
+  // without unwinding a filter change; a cold ?issue= link opens it over the list.
+  const [peek, setPeek] = useQueryState(
+    'issue',
+    parseAsString.withOptions({ history: 'push' }),
+  )
+
+  const [text, setText] = useState(q)
+
+  useEffect(() => setText(q), [q])
 
   useEffect(() => {
-    const id = setTimeout(() => setDebouncedText(text.trim()), 150)
+    const id = setTimeout(() => {
+      const next = text.trim()
+      if (next !== q) setFilters({ q: next, page: null }, { history: 'replace' })
+    }, 150)
     return () => clearTimeout(id)
-  }, [text])
-  useEffect(() => {
-    const id = setTimeout(() => setDebouncedLabel(label.trim()), 150)
-    return () => clearTimeout(id)
-  }, [label])
-  useEffect(() => {
-    setPage(0)
-  }, [debouncedText, debouncedLabel, state, source])
+  }, [text, q, setFilters])
 
   const backlog = useQuery(
-    backlogQueryOptions(repo, {
-      q: debouncedText,
-      label: debouncedLabel,
-      state,
-      source: source === 'all' ? '' : source,
-      limit: PAGE_SIZE,
-      offset: page * PAGE_SIZE,
-    }),
+    backlogQueryOptions(repo, backlogParamsFromFilters(filters, PAGE_SIZE)),
   )
   const items = backlog.data?.items ?? []
+  const counts = backlog.data?.counts ?? {}
   const total = backlog.data?.total ?? 0
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const hasFilters =
-    debouncedText !== '' || debouncedLabel !== '' || state !== '' || source !== 'all'
+  const hasFilters = hasActiveFilters(filters)
+  const sections = backlogSections(
+    items,
+    counts,
+    effectiveStateGroups(state),
+    (page - 1) * PAGE_SIZE,
+  )
+  const hidden = hiddenStateGroups(counts, effectiveStateGroups(state))
 
   return (
     <ProjectScopeGate action="manage the backlog">
       <PageHeader
         eyebrow={repo || 'backlog'}
         title="Backlog"
-        description="Every issue in this repo's store — synced tickets and issues created inside trau."
+        description="In-progress, todo and backlog work — done and canceled are hidden until you filter for them."
         actions={
           <button
             type="button"
@@ -115,32 +156,22 @@ function BacklogPage() {
               className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
             />
           </div>
-          <select
+          <StateFilter
             value={state}
-            onChange={(e) => setState(e.target.value)}
-            aria-label="State"
-            className={selectClass}
-          >
-            <option value="">All states</option>
-            {INTERNAL_STATES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-          <input
-            type="text"
+            onChange={(next) =>
+              setFilters({ state: next.length ? next : null, page: null })
+            }
+          />
+          <LabelFilter
+            repo={repo}
             value={label}
-            onChange={(e) => setLabel(e.target.value)}
-            placeholder="Label…"
-            aria-label="Label"
-            className={cn(selectClass, 'w-40')}
+            onChange={(next) => setFilters({ label: next || null, page: null })}
           />
           <SegmentedControl
             aria-label="Source"
             options={SOURCE_OPTIONS}
-            value={source}
-            onChange={setSource}
+            value={source ?? 'all'}
+            onChange={(v) => setFilters({ source: v === 'all' ? null : v, page: null })}
           />
         </div>
 
@@ -154,33 +185,74 @@ function BacklogPage() {
         )}
 
         {backlog.data && (
-          <ul className="flex flex-col gap-2">
-            {items.map((entry) => (
-              <BacklogRow
-                key={entry.id}
-                repo={repo}
-                entry={entry}
-                editing={editing === entry.id}
-                onToggleEdit={() =>
-                  setEditing((cur) => (cur === entry.id ? null : entry.id))
-                }
-                onEditDone={() => setEditing(null)}
-              />
+          <div className="flex flex-col gap-6">
+            {sections.map((section) => (
+              <section key={section.group} className="flex flex-col gap-2">
+                {!section.continuation && (
+                  <div className="flex items-baseline gap-1.5 px-1">
+                    <h2 className="text-sm font-semibold text-foreground">
+                      {section.label}
+                    </h2>
+                    <span aria-hidden className="text-muted-foreground/50">
+                      ·
+                    </span>
+                    <span className="text-xs tabular-nums text-muted-foreground">
+                      {section.count}
+                    </span>
+                  </div>
+                )}
+                <ul className="flex flex-col gap-2">
+                  {section.items.map((entry) => (
+                    <BacklogRow
+                      key={entry.id}
+                      repo={repo}
+                      entry={entry}
+                      editing={editing === entry.id}
+                      onOpen={() => void setPeek(entry.id)}
+                      onToggleEdit={() =>
+                        setEditing((cur) => (cur === entry.id ? null : entry.id))
+                      }
+                      onEditDone={() => setEditing(null)}
+                    />
+                  ))}
+                </ul>
+              </section>
             ))}
+
             {items.length === 0 && (
-              <li className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+              <p className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
                 {hasFilters
                   ? 'No issues match these filters.'
                   : 'No issues yet — create one to get started.'}
-              </li>
+              </p>
             )}
-          </ul>
+
+            {hidden.length > 0 && (
+              <p className="px-1 text-xs text-muted-foreground">
+                {hidden.map((h, i) => (
+                  <Fragment key={h.group}>
+                    {i > 0 && (
+                      <span className="px-1 text-muted-foreground/50">·</span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setFilters({ state: [h.group], page: null })}
+                      className="tabular-nums underline-offset-2 transition-colors hover:text-foreground hover:underline"
+                    >
+                      {h.count} {h.group}
+                    </button>
+                  </Fragment>
+                ))}
+                {' hidden'}
+              </p>
+            )}
+          </div>
         )}
 
         {total > PAGE_SIZE && (
           <div className="flex items-center justify-between pt-1">
             <p className="text-xs text-muted-foreground">
-              Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of{' '}
+              Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of{' '}
               {total}
             </p>
             <div className="flex items-center gap-2">
@@ -188,20 +260,20 @@ function BacklogPage() {
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-                disabled={page === 0}
+                onClick={() => setFilters({ page: Math.max(1, page - 1) })}
+                disabled={page <= 1}
               >
                 Previous
               </Button>
               <span className="text-xs text-muted-foreground">
-                Page {page + 1} of {pageCount}
+                Page {page} of {pageCount}
               </span>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
-                disabled={page >= pageCount - 1}
+                onClick={() => setFilters({ page: Math.min(pageCount, page + 1) })}
+                disabled={page >= pageCount}
               >
                 Next
               </Button>
@@ -209,7 +281,173 @@ function BacklogPage() {
           </div>
         )}
       </div>
+
+      <IssueDrawer
+        repo={repo}
+        issueId={peek}
+        onOpenChange={(open) => {
+          if (!open) void setPeek(null)
+        }}
+        onSelectIssue={(id) => void setPeek(id)}
+      />
     </ProjectScopeGate>
+  )
+}
+
+function StateFilter({
+  value,
+  onChange,
+}: {
+  value: string[]
+  onChange: (next: string[]) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const selected = new Set(value)
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" className="h-9" aria-label="State">
+          <ListFilter className="text-muted-foreground" />
+          State
+          {value.length > 0 && (
+            <Badge variant="secondary" className="ml-0.5 tabular-nums">
+              {value.length}
+            </Badge>
+          )}
+          <ChevronsUpDown className="text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-52 p-0">
+        <Command>
+          <CommandInput placeholder="Filter states…" />
+          <CommandList>
+            <CommandEmpty>No states.</CommandEmpty>
+            <CommandGroup>
+              {STATE_GROUPS.map((group) => {
+                const active = selected.has(group)
+                return (
+                  <CommandItem
+                    key={group}
+                    value={group}
+                    onSelect={() => onChange(toggleStateGroup(value, group))}
+                  >
+                    <span
+                      className={cn(
+                        'flex size-4 items-center justify-center rounded-[4px] border',
+                        active
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-border',
+                      )}
+                    >
+                      {active && <Check className="size-3 text-primary-foreground" />}
+                    </span>
+                    {group}
+                  </CommandItem>
+                )
+              })}
+            </CommandGroup>
+            {value.length > 0 && (
+              <>
+                <CommandSeparator />
+                <CommandGroup>
+                  <CommandItem
+                    onSelect={() => onChange([])}
+                    className="justify-center text-center text-muted-foreground"
+                  >
+                    Clear states
+                  </CommandItem>
+                </CommandGroup>
+              </>
+            )}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function LabelFilter({
+  repo,
+  value,
+  onChange,
+}: {
+  repo: string
+  value: string
+  onChange: (next: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const labels = useQuery(labelsQueryOptions(repo))
+  const facets = labels.data?.labels ?? []
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-9 w-48 justify-between"
+          aria-label="Label"
+        >
+          <span className="flex min-w-0 items-center gap-1.5">
+            <Tag className="text-muted-foreground" />
+            <span className={cn('truncate', !value && 'text-muted-foreground')}>
+              {value || 'Label'}
+            </span>
+          </span>
+          <ChevronsUpDown className="text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-56 p-0">
+        <Command>
+          <CommandInput placeholder="Search labels…" />
+          <CommandList>
+            <CommandEmpty>
+              {labels.isLoading ? 'Loading labels…' : 'No labels found.'}
+            </CommandEmpty>
+            <CommandGroup>
+              {facets.map((facet) => (
+                <CommandItem
+                  key={facet.name}
+                  value={facet.name}
+                  onSelect={() => {
+                    onChange(facet.name === value ? '' : facet.name)
+                    setOpen(false)
+                  }}
+                >
+                  <Check
+                    className={cn(
+                      'size-4',
+                      value === facet.name ? 'opacity-100' : 'opacity-0',
+                    )}
+                  />
+                  <span className="flex-1 truncate">{facet.name}</span>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {facet.count}
+                  </span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+            {value && (
+              <>
+                <CommandSeparator />
+                <CommandGroup>
+                  <CommandItem
+                    onSelect={() => {
+                      onChange('')
+                      setOpen(false)
+                    }}
+                    className="justify-center text-center text-muted-foreground"
+                  >
+                    Clear label
+                  </CommandItem>
+                </CommandGroup>
+              </>
+            )}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   )
 }
 
@@ -217,12 +455,14 @@ function BacklogRow({
   repo,
   entry,
   editing,
+  onOpen,
   onToggleEdit,
   onEditDone,
 }: {
   repo: string
   entry: BacklogEntry
   editing: boolean
+  onOpen: () => void
   onToggleEdit: () => void
   onEditDone: () => void
 }) {
@@ -238,28 +478,35 @@ function BacklogRow({
   })
 
   return (
-    <li className="rounded-lg border bg-card">
+    <li className="rounded-lg border bg-card transition-colors hover:border-ring/40">
       <div className="flex flex-wrap items-center gap-3 px-4 py-3">
-        <span className="font-mono text-sm font-medium text-foreground">{entry.id}</span>
-        <span className="min-w-0 flex-1 truncate text-sm text-foreground">{entry.title}</span>
-        {entry.ready && (
-          <span className="rounded-full border border-emerald-500/40 bg-emerald-500/5 px-2 py-0.5 text-xs text-emerald-600 dark:text-emerald-400">
-            ready
-          </span>
-        )}
-        <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
-          {entry.group}
-        </span>
-        <span
-          className={cn(
-            'rounded-full px-2 py-0.5 font-mono text-xs',
-            internal
-              ? 'border border-primary/40 bg-primary/5 text-primary'
-              : 'border text-muted-foreground',
-          )}
+        <button
+          type="button"
+          onClick={onOpen}
+          aria-label={`Open ${entry.id}`}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left"
         >
-          {entry.source}
-        </span>
+          <span className="font-mono text-sm font-medium text-foreground">{entry.id}</span>
+          <span className="min-w-0 flex-1 truncate text-sm text-foreground">{entry.title}</span>
+          {entry.ready && (
+            <span className="rounded-full border border-emerald-500/40 bg-emerald-500/5 px-2 py-0.5 text-xs text-emerald-600 dark:text-emerald-400">
+              ready
+            </span>
+          )}
+          <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
+            {entry.group}
+          </span>
+          <span
+            className={cn(
+              'rounded-full px-2 py-0.5 font-mono text-xs',
+              internal
+                ? 'border border-primary/40 bg-primary/5 text-primary'
+                : 'border text-muted-foreground',
+            )}
+          >
+            {entry.source}
+          </span>
+        </button>
         {internal && (
           <button
             type="button"

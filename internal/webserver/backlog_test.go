@@ -168,10 +168,10 @@ func TestBacklogAppliesQueryFilters(t *testing.T) {
 		want  []string
 	}{
 		{"state group", "state=unstarted", []string{"COD-2", "COD-9"}},
-		{"label", "label=feature", []string{"COD-1", "COD-3"}},
+		{"label", "label=feature", []string{"COD-3", "COD-1"}},
 		{"source internal", "source=internal", []string{"COD-9"}},
-		{"text over id and title", "q=login", []string{"COD-1", "COD-9"}},
-		{"filters compose", "source=synced&q=log", []string{"COD-1", "COD-2"}},
+		{"text over id and title", "q=login", []string{"COD-9", "COD-1"}},
+		{"filters compose", "source=synced&q=log", []string{"COD-2", "COD-1"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -186,6 +186,30 @@ func TestBacklogAppliesQueryFilters(t *testing.T) {
 	}
 }
 
+func TestBacklogUnionsStateGroupsAndReportsCounts(t *testing.T) {
+	_, ts, root, store := backlogServer(t, nil, nil)
+	if _, _, err := store.Upsert(root, "linear", append(filterFixture(),
+		hubstore.Issue{Identifier: "COD-4", Title: "Shipped", StatusGroup: "done"},
+		hubstore.Issue{Identifier: "COD-5", Title: "Dropped", StatusGroup: "canceled"},
+	)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	wantCounts := map[string]int{"backlog": 1, "unstarted": 1, "started": 1, "done": 1, "canceled": 1}
+	for _, query := range []string{"state=started,unstarted", "state=started&state=unstarted"} {
+		out := getBacklogQuery(t, ts, "acme", query)
+		if got := idSet(out.Items); !reflect.DeepEqual(got, []string{"COD-3", "COD-2"}) {
+			t.Errorf("?%s items = %v, want the started∪unstarted union", query, got)
+		}
+		if out.Total != 2 {
+			t.Errorf("?%s total = %d, want 2", query, out.Total)
+		}
+		if !reflect.DeepEqual(out.Counts, wantCounts) {
+			t.Errorf("?%s counts = %v, want every group counted regardless of the state selection %v", query, out.Counts, wantCounts)
+		}
+	}
+}
+
 func TestBacklogPaginatesWithTotal(t *testing.T) {
 	_, ts, root, store := backlogServer(t, nil, nil)
 	if _, _, err := store.Upsert(root, "linear", filterFixture()); err != nil {
@@ -193,15 +217,15 @@ func TestBacklogPaginatesWithTotal(t *testing.T) {
 	}
 
 	first := getBacklogQuery(t, ts, "acme", "limit=2")
-	if got := idSet(first.Items); !reflect.DeepEqual(got, []string{"COD-1", "COD-2"}) {
-		t.Fatalf("first page = %v, want the first two", got)
+	if got := idSet(first.Items); !reflect.DeepEqual(got, []string{"COD-3", "COD-2"}) {
+		t.Fatalf("first page = %v, want the first two in display order", got)
 	}
 	if first.Total != 3 {
 		t.Fatalf("total = %d, want the full count of 3", first.Total)
 	}
 
 	second := getBacklogQuery(t, ts, "acme", "limit=2&offset=2")
-	if got := idSet(second.Items); !reflect.DeepEqual(got, []string{"COD-3"}) {
+	if got := idSet(second.Items); !reflect.DeepEqual(got, []string{"COD-1"}) {
 		t.Fatalf("second page = %v, want the remaining one", got)
 	}
 }
@@ -241,14 +265,18 @@ func TestBacklogServesStoredIssues(t *testing.T) {
 	if len(out.Items) != 2 {
 		t.Fatalf("items = %d, want 2", len(out.Items))
 	}
-	epic := out.Items[0]
-	if epic.ID != "COD-10" || epic.Group != "backlog" || !epic.HasChildren || epic.Source != "linear" {
+	byID := map[string]BacklogEntry{}
+	for _, it := range out.Items {
+		byID[it.ID] = it
+	}
+	epic := byID["COD-10"]
+	if epic.Group != "backlog" || !epic.HasChildren || epic.Source != "linear" {
 		t.Errorf("epic entry = %+v, want the COD-10 backlog epic synced from linear", epic)
 	}
 	if epic.Labels == nil {
 		t.Error("labels serialized as null, want an empty array")
 	}
-	child := out.Items[1]
+	child := byID["COD-11"]
 	if child.Parent != "COD-10" || !child.Ready || child.Group != "unstarted" {
 		t.Errorf("child entry = %+v, want ready unstarted child of COD-10", child)
 	}
