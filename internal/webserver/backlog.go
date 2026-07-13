@@ -34,7 +34,9 @@ type BacklogEntry struct {
 // BacklogResponse is a repo's Project backlog served from the hub's issue store —
 // no live tracker call on the request path (ADR 0007). Provider is the repo's
 // configured tracker; Items is the requested page of matches; Total is the number
-// of matches before pagination so the board can page; Freshness carries the
+// of matches before pagination so the board can page; Counts is the per-status-group
+// match totals with the state filter ignored, so the board's section headers and
+// hidden-count hint hold whichever groups are on screen; Freshness carries the
 // store's last-synced and syncing state so the board can show synced-ness without
 // blocking.
 type BacklogResponse struct {
@@ -42,6 +44,7 @@ type BacklogResponse struct {
 	Provider  string         `json:"provider"`
 	Items     []BacklogEntry `json:"items"`
 	Total     int            `json:"total"`
+	Counts    map[string]int `json:"counts"`
 	Freshness *RepoFreshness `json:"freshness,omitempty"`
 }
 
@@ -68,7 +71,7 @@ func (s *Server) handleBacklog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	store := s.stores.Issues()
-	items, total, err := store.BacklogPage(repo.Root, backlogFilter(r.URL.Query()))
+	items, total, counts, err := store.BacklogPage(repo.Root, backlogFilter(r.URL.Query()))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list backlog: " + err.Error()})
 		return
@@ -85,23 +88,47 @@ func (s *Server) handleBacklog(w http.ResponseWriter, r *http.Request) {
 		Provider:  provider,
 		Items:     toBacklogEntries(items, readyLabel),
 		Total:     total,
+		Counts:    counts,
 		Freshness: s.freshnessFrom(repo.Root, state),
 	})
 }
 
 // backlogFilter reads the board's filter and pagination controls off the query
-// string: state (workflow state group), label, source (internal | synced), q
-// (substring text match), and limit/offset. Absent or malformed values fall back
-// to the zero filter, so a bare request is the unfiltered board.
+// string: state (one or more workflow state groups, comma-separated and/or
+// repeated), label, source (internal | synced), q (substring text match), and
+// limit/offset. Absent or malformed values fall back to the zero filter, so a
+// bare request is the unfiltered board.
 func backlogFilter(q url.Values) hubstore.BacklogFilter {
 	return hubstore.BacklogFilter{
-		Group:  strings.TrimSpace(q.Get("state")),
+		Groups: stateGroups(q["state"]),
 		Label:  strings.TrimSpace(q.Get("label")),
 		Source: strings.TrimSpace(q.Get("source")),
 		Text:   strings.TrimSpace(q.Get("q")),
 		Limit:  backlogLimit(q.Get("limit")),
 		Offset: backlogOffset(q.Get("offset")),
 	}
+}
+
+// stateGroups flattens the repeated and/or comma-separated state params into the
+// distinct status groups to union, dropping blanks so state=&state=started reads
+// as just started and an absent state means every group.
+func stateGroups(values []string) []string {
+	groups := []string{}
+	seen := map[string]struct{}{}
+	for _, v := range values {
+		for _, g := range strings.Split(v, ",") {
+			g = strings.TrimSpace(g)
+			if g == "" {
+				continue
+			}
+			if _, dup := seen[g]; dup {
+				continue
+			}
+			seen[g] = struct{}{}
+			groups = append(groups, g)
+		}
+	}
+	return groups
 }
 
 // backlogLimit parses a page size, clamped to maxBacklogLimit. An absent or
