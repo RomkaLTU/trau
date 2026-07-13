@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   backlogFilterParsers,
   backlogParamsFromFilters,
+  effectiveStateGroups,
   hasActiveFilters,
   toggleStateGroup,
   type BacklogFilters,
@@ -15,11 +16,11 @@ function filters(over: Partial<BacklogFilters> = {}): BacklogFilters {
 }
 
 describe('backlogParamsFromFilters', () => {
-  it('maps the default filters to an unfiltered first page', () => {
+  it('sends the planned-first default when no state is selected', () => {
     expect(backlogParamsFromFilters(filters(), PAGE_SIZE)).toEqual({
       q: '',
       label: '',
-      state: '',
+      state: 'started,unstarted,backlog,unknown',
       source: '',
       limit: 50,
       offset: 0,
@@ -43,6 +44,21 @@ describe('backlogParamsFromFilters', () => {
         PAGE_SIZE,
       ),
     ).toMatchObject({ q: 'auth', label: 'bug', source: 'internal' })
+  })
+})
+
+describe('effectiveStateGroups', () => {
+  it('falls back to the planned default when nothing is selected', () => {
+    expect(effectiveStateGroups([])).toEqual([
+      'started',
+      'unstarted',
+      'backlog',
+      'unknown',
+    ])
+  })
+
+  it('keeps an explicit selection untouched', () => {
+    expect(effectiveStateGroups(['done'])).toEqual(['done'])
   })
 })
 

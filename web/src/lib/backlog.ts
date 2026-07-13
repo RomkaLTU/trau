@@ -97,3 +97,106 @@ export const backlogQueryOptions = (repo: string, params: BacklogParams = {}) =>
     staleTime: 15_000,
     placeholderData: keepPreviousData,
   })
+
+const SECTION_LABELS: Record<string, string> = {
+  started: 'In Progress',
+  unstarted: 'Todo',
+  backlog: 'Backlog',
+  unknown: 'Other',
+  done: 'Done',
+  canceled: 'Canceled',
+}
+
+export function sectionLabel(group: string): string {
+  return SECTION_LABELS[group] ?? group
+}
+
+const TERMINAL_GROUPS = ['done', 'canceled'] as const
+
+// GROUP_PRECEDENCE mirrors the hub's backlog ordering, so the board can locate
+// where each group begins in the full result and tell a fresh section from one
+// that merely continues across a page boundary.
+const GROUP_PRECEDENCE = [
+  'started',
+  'unstarted',
+  'backlog',
+  'unknown',
+  'done',
+  'canceled',
+] as const
+
+export interface BacklogSection {
+  group: string
+  label: string
+  count: number
+  items: BacklogEntry[]
+  // continuation is true when the group already began on an earlier page, so the
+  // board renders its rows without repeating the header.
+  continuation: boolean
+}
+
+function groupStartOffset(
+  group: string,
+  counts: Record<string, number>,
+  activeGroups: string[],
+): number {
+  const active = new Set(activeGroups)
+  let start = 0
+  for (const g of GROUP_PRECEDENCE) {
+    if (g === group) break
+    if (active.has(g)) start += counts[g] ?? 0
+  }
+  return start
+}
+
+// backlogSections splits the hub-ordered rows into contiguous group segments so
+// the board can render one header per group boundary. A group split across pages
+// keeps a single header: the first segment of a page is flagged as a continuation
+// when the page starts past that group's global offset.
+export function backlogSections(
+  items: BacklogEntry[],
+  counts: Record<string, number>,
+  activeGroups: string[] = [],
+  offset = 0,
+): BacklogSection[] {
+  const sections: BacklogSection[] = []
+  for (const entry of items) {
+    const last = sections[sections.length - 1]
+    if (last && last.group === entry.group) {
+      last.items.push(entry)
+      continue
+    }
+    sections.push({
+      group: entry.group,
+      label: sectionLabel(entry.group),
+      count: counts[entry.group] ?? 0,
+      items: [entry],
+      continuation: false,
+    })
+  }
+  const first = sections[0]
+  if (first && offset > groupStartOffset(first.group, counts, activeGroups)) {
+    first.continuation = true
+  }
+  return sections
+}
+
+export interface HiddenGroupCount {
+  group: string
+  count: number
+}
+
+export function hiddenStateGroups(
+  counts: Record<string, number>,
+  activeGroups: string[],
+): HiddenGroupCount[] {
+  const active = new Set(activeGroups)
+  const hidden: HiddenGroupCount[] = []
+  for (const group of TERMINAL_GROUPS) {
+    const count = counts[group] ?? 0
+    if (count > 0 && !active.has(group)) {
+      hidden.push({ group, count })
+    }
+  }
+  return hidden
+}

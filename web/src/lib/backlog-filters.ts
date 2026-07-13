@@ -7,9 +7,22 @@ import {
   parseAsStringLiteral,
 } from 'nuqs'
 
-import { STATE_GROUPS, type BacklogParams } from './backlog'
+import { STATE_GROUPS, type BacklogParams, type StateGroup } from './backlog'
 
 export const SOURCE_VALUES = ['internal', 'synced'] as const
+
+// The hub reads an empty state filter as "every group", so the planned-first
+// default is sent explicitly to keep done and canceled off the board.
+export const DEFAULT_STATE_GROUPS: readonly StateGroup[] = [
+  'started',
+  'unstarted',
+  'backlog',
+  'unknown',
+]
+
+export function effectiveStateGroups(state: string[]): string[] {
+  return state.length > 0 ? state : [...DEFAULT_STATE_GROUPS]
+}
 
 // Reject non-positive pages so a malformed ?page=0/-1 falls back to 1 instead of
 // deriving a negative offset.
@@ -40,7 +53,7 @@ export function backlogParamsFromFilters(
   return {
     q: filters.q,
     label: filters.label,
-    state: filters.state.join(','),
+    state: effectiveStateGroups(filters.state).join(','),
     source: filters.source ?? '',
     limit: pageSize,
     offset: (filters.page - 1) * pageSize,
