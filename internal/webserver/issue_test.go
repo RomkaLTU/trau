@@ -130,6 +130,7 @@ func TestIssueServedFromStore(t *testing.T) {
 		Status:      "Todo",
 		StatusGroup: "unstarted",
 		Labels:      []string{"ready-for-agent"},
+		URL:         "https://linear.app/acme/issue/COD-712",
 		Comments:    []hubstore.Comment{{ExternalID: "c1", Author: "alice", Body: "a comment"}},
 	}}); err != nil {
 		t.Fatalf("seed synced: %v", err)
@@ -151,6 +152,9 @@ func TestIssueServedFromStore(t *testing.T) {
 	}
 	if out.Source != "linear" || !out.InProject {
 		t.Errorf("source/in_project = %q/%v, want linear/true", out.Source, out.InProject)
+	}
+	if out.URL != "https://linear.app/acme/issue/COD-712" {
+		t.Errorf("url = %q, want the stored tracker url", out.URL)
 	}
 }
 
