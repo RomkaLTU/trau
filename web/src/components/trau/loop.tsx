@@ -49,6 +49,12 @@ import {
 } from '@/lib/queue'
 import { pauseKind, phaseLabel, runPhaseSteps } from '@/lib/runlive'
 import { runsQueryOptions } from '@/lib/runs'
+import {
+  buildTimeline,
+  ticketPill,
+  type PendingEntry,
+  type TimelineTicket,
+} from '@/lib/timeline'
 
 function actionError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -565,6 +571,175 @@ function LaunchQueueCard({
   )
 }
 
+function EpicTag({ id }: { id: string }) {
+  return (
+    <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[0.7rem] text-info">
+      <span aria-hidden="true">◆</span>
+      {id}
+    </span>
+  )
+}
+
+function TicketReason({ children }: { children: string }) {
+  return (
+    <p className="text-pretty font-mono text-[0.7rem] leading-relaxed text-muted-foreground">
+      {children}
+    </p>
+  )
+}
+
+function SettledRow({ repo, ticket }: { repo: string; ticket: TimelineTicket }) {
+  const pill = ticketPill(ticket)
+  const head = (
+    <div className="flex items-center gap-3">
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+        {ticket.epicId ? <EpicTag id={ticket.epicId} /> : null}
+        <span className="font-mono text-sm text-primary">{ticket.id}</span>
+        {ticket.title ? (
+          <span className="min-w-0 truncate font-sans text-sm text-foreground">
+            {ticket.title}
+          </span>
+        ) : null}
+      </div>
+      <StatusPill state={pill.state} label={pill.label} className="shrink-0" />
+    </div>
+  )
+  const reason = ticket.reason ? <TicketReason>{ticket.reason}</TicketReason> : null
+
+  if (ticket.hasRun) {
+    return (
+      <li className="border-b border-border/60 last:border-0">
+        <Link
+          to="/runs/$repo/$ticket"
+          params={{ repo, ticket: ticket.id }}
+          className="flex flex-col gap-1.5 px-4 py-2.5 transition-colors hover:bg-secondary/40"
+        >
+          {head}
+          {reason}
+        </Link>
+      </li>
+    )
+  }
+  return (
+    <li className="flex flex-col gap-1.5 border-b border-border/60 px-4 py-2.5 last:border-0">
+      {head}
+      {reason}
+    </li>
+  )
+}
+
+function RunningRow({
+  repo,
+  ticket,
+  instance,
+  now,
+}: {
+  repo: string
+  ticket: TimelineTicket
+  instance?: Instance
+  now: number
+}) {
+  const live = instance?.ticket === ticket.id ? instance : undefined
+  const phase = live?.phase ?? ticket.phase
+
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-teal/40 bg-teal/5 px-4 py-3">
+      <div className="flex flex-wrap items-center gap-3">
+        {ticket.epicId ? <EpicTag id={ticket.epicId} /> : null}
+        <span className="font-mono text-sm text-primary">{ticket.id}</span>
+        {ticket.title ? (
+          <span className="font-sans text-base text-foreground">{ticket.title}</span>
+        ) : null}
+        <Link
+          to="/live/$repo/$ticket"
+          params={{ repo, ticket: ticket.id }}
+          className="inline-flex items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline"
+        >
+          <ExternalLink className="size-3.5" aria-hidden="true" />
+          View run
+        </Link>
+      </div>
+      {phase ? (
+        <PhaseStepper steps={runPhaseSteps(phase, 'live')} />
+      ) : (
+        <p className="font-sans text-sm text-muted-foreground">
+          Picking the next ticket…
+        </p>
+      )}
+      {live ? (
+        <div className="flex flex-wrap items-center gap-6 font-mono text-xs text-muted-foreground">
+          <span>
+            elapsed{' '}
+            <span className="text-foreground">
+              {elapsedSince(live.started_at, now)}
+            </span>
+          </span>
+          {live.state_since ? (
+            <span>
+              in phase{' '}
+              <span className="text-foreground">
+                {elapsedSince(live.state_since, now)}
+              </span>
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function PendingTicketRow({ ticket }: { ticket: TimelineTicket }) {
+  return (
+    <li className="flex items-center gap-3 border-b border-border/60 px-4 py-2.5 last:border-0">
+      {ticket.epicId ? <EpicTag id={ticket.epicId} /> : null}
+      <span className="font-mono text-sm text-primary">{ticket.id}</span>
+      <span className="min-w-0 flex-1 truncate font-sans text-sm text-muted-foreground">
+        {ticket.title || '—'}
+      </span>
+      <StatusPill state="todo" label="pending" className="shrink-0" />
+    </li>
+  )
+}
+
+function PendingEpicGroup({
+  entry,
+}: {
+  entry: Extract<PendingEntry, { kind: 'epic' }>
+}) {
+  return (
+    <li className="border-b border-border/60 last:border-0">
+      <div className="flex items-center gap-3 px-4 py-2.5">
+        <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sm text-info">
+          <span aria-hidden="true">◆</span>
+          {entry.id}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-sans text-sm text-foreground">
+          {entry.title || '—'}
+        </span>
+        <StatusPill
+          state="info"
+          label={`epic · ${entry.done}/${entry.total}`}
+          className="shrink-0"
+        />
+      </div>
+      <ul className="border-t border-border/60 bg-secondary/20">
+        {entry.children.map((child) => (
+          <li
+            key={child.id}
+            className="flex items-center gap-3 border-b border-border/40 py-1.5 pl-12 pr-4 last:border-0"
+          >
+            <span className="font-mono text-xs text-primary/80">{child.id}</span>
+            <span className="min-w-0 flex-1 truncate font-sans text-xs text-muted-foreground">
+              {child.title || '—'}
+            </span>
+            <StatusPill state="todo" label="pending" className="shrink-0" />
+          </li>
+        ))}
+      </ul>
+    </li>
+  )
+}
+
 function RunningQueueView({
   repo,
   queue,
@@ -583,131 +758,96 @@ function RunningQueueView({
   stopError: unknown
 }) {
   const now = useNow(1000)
-  const items = queue.items
-  const running = items.find((i) => i.status === 'running')
-  const currentId = running?.id ?? instance?.ticket
-  const done = items.filter(
-    (i) => i.status === 'done' || i.status === 'failed' || i.status === 'skipped',
-  ).length
+  const runs = useQuery(runsQueryOptions(repo))
+  const timeline = buildTimeline(queue.items, runs.data?.runs ?? [], instance)
 
   return (
     <div className="flex flex-col gap-6">
       {halt ? <HaltBanner repo={repo} halt={halt} /> : null}
 
       <TerminalCard title="loop" className="max-w-3xl">
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="font-mono text-sm text-muted-foreground">
               <span className="text-foreground">
-                {done}/{items.length}
+                {timeline.done}/{timeline.total}
               </span>{' '}
-              items done
+              tickets done
             </span>
-            {instance?.phase ? (
-              <StatusPill state="active" label={phaseLabel(instance.phase)} />
-            ) : (
-              <StatusPill state="active" label="draining" />
-            )}
+            <div className="flex items-center gap-4">
+              {timeline.elapsedAnchor ? (
+                <span className="font-mono text-xs text-muted-foreground">
+                  elapsed{' '}
+                  <span className="text-foreground">
+                    {elapsedSince(timeline.elapsedAnchor, now)}
+                  </span>
+                </span>
+              ) : null}
+              <StatusPill
+                state="active"
+                label={
+                  timeline.running?.phase
+                    ? phaseLabel(timeline.running.phase)
+                    : 'draining'
+                }
+              />
+            </div>
           </div>
 
-          {currentId ? (
-            <>
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="font-mono text-sm text-primary">
-                  {currentId}
-                </span>
-                {running?.title ? (
-                  <span className="font-sans text-base text-foreground">
-                    {running.title}
-                  </span>
-                ) : null}
-                <Link
-                  to="/live/$repo/$ticket"
-                  params={{ repo, ticket: currentId }}
-                  className="inline-flex items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline"
-                >
-                  <ExternalLink className="size-3.5" aria-hidden="true" />
-                  View run
-                </Link>
+          {timeline.settled.length > 0 ? (
+            <section className="flex flex-col gap-2">
+              <Eyebrow glyph="done">FINISHED</Eyebrow>
+              <div className="overflow-hidden rounded-md border border-border">
+                <ul className="flex flex-col">
+                  {timeline.settled.map((ticket) => (
+                    <SettledRow key={ticket.id} repo={repo} ticket={ticket} />
+                  ))}
+                </ul>
               </div>
-              {instance?.phase ? (
-                <div className="rounded-md border border-border bg-secondary/30 px-4 py-3">
-                  <PhaseStepper steps={runPhaseSteps(instance.phase, 'live')} />
-                </div>
-              ) : null}
-            </>
-          ) : (
-            <p className="font-sans text-sm text-muted-foreground">
-              Idle — picking the next item from the queue.
-            </p>
-          )}
+            </section>
+          ) : null}
 
-          {instance ? (
-            <div className="flex flex-wrap items-center gap-6 font-mono text-xs text-muted-foreground">
-              <span>
-                elapsed{' '}
-                <span className="text-foreground">
-                  {elapsedSince(instance.started_at, now)}
-                </span>
-              </span>
-              {instance.state_since ? (
-                <span>
-                  in phase{' '}
-                  <span className="text-foreground">
-                    {elapsedSince(instance.state_since, now)}
-                  </span>
-                </span>
-              ) : null}
-            </div>
+          <section className="flex flex-col gap-2">
+            <Eyebrow glyph="active">RUNNING</Eyebrow>
+            {timeline.running ? (
+              <RunningRow
+                repo={repo}
+                ticket={timeline.running}
+                instance={instance}
+                now={now}
+              />
+            ) : (
+              <p className="font-sans text-sm text-muted-foreground">
+                Idle — picking the next ticket from the queue.
+              </p>
+            )}
+          </section>
+
+          {timeline.pending.length > 0 ? (
+            <section className="flex flex-col gap-2">
+              <Eyebrow glyph="idle">REMAINING</Eyebrow>
+              <div className="overflow-hidden rounded-md border border-border">
+                <ul className="flex flex-col">
+                  {timeline.pending.map((entry) =>
+                    entry.kind === 'epic' ? (
+                      <PendingEpicGroup key={entry.id} entry={entry} />
+                    ) : (
+                      <PendingTicketRow
+                        key={entry.ticket.id}
+                        ticket={entry.ticket}
+                      />
+                    ),
+                  )}
+                </ul>
+              </div>
+              <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+                Remaining tickets — the pick order is decided at run time, not
+                promised here.
+              </p>
+            </section>
           ) : null}
         </div>
       </TerminalCard>
-
-      <div className="flex max-w-3xl flex-col gap-2">
-        <Eyebrow glyph="idle">QUEUE</Eyebrow>
-        <TerminalCard title="queue" bodyClassName="p-0">
-          <ul className="flex flex-col">
-            {items.map((item) => {
-              const { done: subsDone, total } = epicCounts(item)
-              return (
-                <li
-                  key={item.id}
-                  className="flex items-center justify-between gap-4 border-b border-border/60 px-4 py-2.5 last:border-0"
-                >
-                  <span className="flex min-w-0 flex-wrap items-center gap-2">
-                    <span className="font-mono text-sm text-primary">
-                      {item.id}
-                    </span>
-                    {item.title ? (
-                      <span className="truncate font-sans text-sm text-foreground">
-                        {item.title}
-                      </span>
-                    ) : null}
-                    {item.kind === 'epic' ? (
-                      <span className="font-mono text-xs text-muted-foreground">
-                        epic · {subsDone}/{total}
-                      </span>
-                    ) : null}
-                    {item.reason ? (
-                      <span className="font-mono text-xs text-muted-foreground">
-                        {item.reason}
-                      </span>
-                    ) : null}
-                  </span>
-                  <StatusPill
-                    state={statusState(item.status)}
-                    label={
-                      item.status === 'skipped' && item.reason
-                        ? 'skipped · duplicate'
-                        : item.status
-                    }
-                  />
-                </li>
-              )
-            })}
-          </ul>
-        </TerminalCard>
-      </div>
 
       <div className="flex max-w-3xl flex-col items-end gap-2">
         {stopError ? (

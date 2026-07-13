@@ -1,0 +1,199 @@
+import type { RunState } from '@/components/trau/status-pill'
+import type { Instance } from './instances'
+import type { QueueItem } from './queue'
+import type { FailureClass, Run } from './runs'
+import { phaseLabel } from './runlive'
+
+export type TicketStatus =
+  | 'done'
+  | 'running'
+  | 'paused'
+  | 'failed'
+  | 'skipped'
+  | 'pending'
+
+export interface TimelineTicket {
+  id: string
+  title: string
+  status: TicketStatus
+  epicId?: string
+  failureClass?: FailureClass
+  reason?: string
+  phase?: string
+  hasRun: boolean
+  completedAt?: string
+}
+
+export type PendingEntry =
+  | { kind: 'ticket'; ticket: TimelineTicket }
+  | {
+      kind: 'epic'
+      id: string
+      title: string
+      done: number
+      total: number
+      children: TimelineTicket[]
+    }
+
+// Timeline is the client-side join of a draining queue's snapshot with its live
+// run records: settled tickets in the order they actually completed, the one
+// running ticket, and the remaining set in snapshot order. Epic group headers do
+// not count toward done/total — only leaf tickets do.
+export interface Timeline {
+  total: number
+  done: number
+  settled: TimelineTicket[]
+  running?: TimelineTicket
+  pending: PendingEntry[]
+  elapsedAnchor?: string
+}
+
+interface Leaf {
+  id: string
+  title: string
+  snapshotState: string
+  epicId?: string
+  reason?: string
+}
+
+function flatten(items: QueueItem[]): Leaf[] {
+  const leaves: Leaf[] = []
+  for (const item of items) {
+    if (item.kind === 'epic') {
+      for (const sub of item.sub_issues ?? []) {
+        leaves.push({
+          id: sub.id,
+          title: sub.title,
+          snapshotState: sub.state,
+          epicId: item.id,
+        })
+      }
+      continue
+    }
+    leaves.push({
+      id: item.id,
+      title: item.title ?? '',
+      snapshotState: item.status,
+      reason: item.reason,
+    })
+  }
+  return leaves
+}
+
+function resolve(leaf: Leaf, run: Run | undefined, instance?: Instance): TimelineTicket {
+  const base = {
+    id: leaf.id,
+    title: leaf.title,
+    epicId: leaf.epicId,
+    hasRun: run !== undefined,
+  }
+  const isCurrent = instance?.ticket === leaf.id
+
+  if (run) {
+    if (run.failure_class === 'paused') {
+      return { ...base, status: 'paused', failureClass: 'paused', reason: run.failure_reason, phase: run.phase, completedAt: run.updated_at }
+    }
+    if (run.failure_class === 'faulted' || run.failure_class === 'gave_up') {
+      return { ...base, status: 'failed', failureClass: run.failure_class, reason: run.failure_reason, phase: run.phase, completedAt: run.updated_at }
+    }
+    if (run.terminal) {
+      return { ...base, status: 'done', phase: run.phase, completedAt: run.updated_at }
+    }
+    return { ...base, status: 'running', phase: isCurrent && instance?.phase ? instance.phase : run.phase }
+  }
+
+  if (isCurrent) return { ...base, status: 'running', phase: instance?.phase }
+
+  switch (leaf.snapshotState) {
+    case 'done':
+    case 'merged':
+      return { ...base, status: 'done' }
+    case 'failed':
+    case 'faulted':
+      return { ...base, status: 'failed', reason: leaf.reason }
+    case 'skipped':
+      return { ...base, status: 'skipped', reason: leaf.reason }
+    case 'paused':
+      return { ...base, status: 'paused', reason: leaf.reason }
+    case 'running':
+      return { ...base, status: 'running' }
+    default:
+      return { ...base, status: 'pending' }
+  }
+}
+
+function isSettled(status: TicketStatus): boolean {
+  return status === 'done' || status === 'failed' || status === 'skipped' || status === 'paused'
+}
+
+export function buildTimeline(
+  items: QueueItem[],
+  runs: Run[],
+  instance?: Instance,
+): Timeline {
+  const byTicket = new Map(runs.map((r) => [r.ticket, r]))
+  const leaves = flatten(items)
+  const tickets = leaves.map((leaf) => resolve(leaf, byTicket.get(leaf.id), instance))
+  const byId = new Map(tickets.map((t) => [t.id, t]))
+
+  const settled = tickets
+    .filter((t) => isSettled(t.status))
+    .sort((a, b) => (a.completedAt ?? '').localeCompare(b.completedAt ?? ''))
+
+  const running =
+    tickets.find((t) => t.status === 'running' && t.id === instance?.ticket) ??
+    tickets.find((t) => t.status === 'running')
+
+  const remains = (t: TimelineTicket | undefined): t is TimelineTicket =>
+    t !== undefined && !isSettled(t.status) && t !== running
+
+  const pending: PendingEntry[] = []
+  for (const item of items) {
+    if (item.kind === 'epic') {
+      const subs = item.sub_issues ?? []
+      const children = subs.map((s) => byId.get(s.id)).filter(remains)
+      if (children.length > 0) {
+        const done = subs.filter((s) => byId.get(s.id)?.status === 'done').length
+        pending.push({ kind: 'epic', id: item.id, title: item.title ?? '', done, total: subs.length, children })
+      }
+      continue
+    }
+    const t = byId.get(item.id)
+    if (remains(t)) pending.push({ kind: 'ticket', ticket: t })
+  }
+
+  const leafIds = new Set(leaves.map((l) => l.id))
+  let elapsedAnchor = instance?.started_at
+  for (const r of runs) {
+    if (!leafIds.has(r.ticket) || !r.updated_at) continue
+    if (!elapsedAnchor || r.updated_at < elapsedAnchor) elapsedAnchor = r.updated_at
+  }
+
+  return {
+    total: tickets.length,
+    done: tickets.filter((t) => t.status === 'done').length,
+    settled,
+    running,
+    pending,
+    elapsedAnchor,
+  }
+}
+
+export function ticketPill(t: TimelineTicket): { state: RunState; label: string } {
+  switch (t.status) {
+    case 'done':
+      return { state: 'success', label: t.hasRun ? 'merged' : 'done' }
+    case 'running':
+      return { state: 'active', label: phaseLabel(t.phase ?? '') }
+    case 'paused':
+      return { state: 'warn', label: 'paused' }
+    case 'failed':
+      return t.failureClass === 'gave_up'
+        ? { state: 'fail', label: 'quarantined' }
+        : { state: 'fail', label: 'fault' }
+    case 'skipped':
+      return { state: 'info', label: 'skipped' }
+    case 'pending':
+      return { state: 'todo', label: 'pending' }
+  }
+}
