@@ -2,7 +2,16 @@ import { useEffect, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useQueryStates } from 'nuqs'
-import { FilePlus, ListPlus, Pencil, Search } from 'lucide-react'
+import {
+  Check,
+  ChevronsUpDown,
+  FilePlus,
+  ListFilter,
+  ListPlus,
+  Pencil,
+  Search,
+  Tag,
+} from 'lucide-react'
 
 import { PageHeader, ProjectScopeGate, useActiveRepo } from '@/components/trau'
 import {
@@ -10,14 +19,35 @@ import {
   type SegmentOption,
 } from '@/components/trau/segmented-control'
 import { InternalIssueForm } from '@/components/internal-issue-form'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { backlogQueryOptions, type BacklogEntry } from '@/lib/backlog'
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+  CommandSeparator,
+} from '@/components/ui/command'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
+import {
+  backlogQueryOptions,
+  STATE_GROUPS,
+  type BacklogEntry,
+} from '@/lib/backlog'
 import {
   backlogFilterParsers,
   backlogParamsFromFilters,
   hasActiveFilters,
+  toggleStateGroup,
 } from '@/lib/backlog-filters'
-import { INTERNAL_STATES, internalIssueQueryOptions } from '@/lib/issues'
+import { internalIssueQueryOptions } from '@/lib/issues'
+import { labelsQueryOptions } from '@/lib/labels'
 import { enqueue } from '@/lib/queue'
 import { cn } from '@/lib/utils'
 
@@ -35,9 +65,6 @@ const SOURCE_OPTIONS: readonly SegmentOption<SourceFilter>[] = [
   { value: 'synced', label: 'Synced' },
 ]
 
-const selectClass =
-  'h-9 rounded-md border bg-transparent px-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50'
-
 function BacklogPage() {
   const { repo: activeRepo } = useActiveRepo()
   const repo = activeRepo ?? ''
@@ -50,10 +77,8 @@ function BacklogPage() {
   const { q, state, label, source, page } = filters
 
   const [text, setText] = useState(q)
-  const [labelText, setLabelText] = useState(label)
 
   useEffect(() => setText(q), [q])
-  useEffect(() => setLabelText(label), [label])
 
   useEffect(() => {
     const id = setTimeout(() => {
@@ -62,13 +87,6 @@ function BacklogPage() {
     }, 150)
     return () => clearTimeout(id)
   }, [text, q, setFilters])
-  useEffect(() => {
-    const id = setTimeout(() => {
-      const next = labelText.trim()
-      if (next !== label) setFilters({ label: next, page: null }, { history: 'replace' })
-    }, 150)
-    return () => clearTimeout(id)
-  }, [labelText, label, setFilters])
 
   const backlog = useQuery(
     backlogQueryOptions(repo, backlogParamsFromFilters(filters, PAGE_SIZE)),
@@ -119,29 +137,16 @@ function BacklogPage() {
               className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
             />
           </div>
-          <select
-            value={state[0] ?? ''}
-            onChange={(e) => {
-              const v = e.target.value
-              setFilters({ state: v ? [v] : null, page: null })
-            }}
-            aria-label="State"
-            className={selectClass}
-          >
-            <option value="">All states</option>
-            {INTERNAL_STATES.map((s) => (
-              <option key={s} value={s}>
-                {s}
-              </option>
-            ))}
-          </select>
-          <input
-            type="text"
-            value={labelText}
-            onChange={(e) => setLabelText(e.target.value)}
-            placeholder="Label…"
-            aria-label="Label"
-            className={cn(selectClass, 'w-40')}
+          <StateFilter
+            value={state}
+            onChange={(next) =>
+              setFilters({ state: next.length ? next : null, page: null })
+            }
+          />
+          <LabelFilter
+            repo={repo}
+            value={label}
+            onChange={(next) => setFilters({ label: next || null, page: null })}
           />
           <SegmentedControl
             aria-label="Source"
@@ -217,6 +222,163 @@ function BacklogPage() {
         )}
       </div>
     </ProjectScopeGate>
+  )
+}
+
+function StateFilter({
+  value,
+  onChange,
+}: {
+  value: string[]
+  onChange: (next: string[]) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const selected = new Set(value)
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" className="h-9" aria-label="State">
+          <ListFilter className="text-muted-foreground" />
+          State
+          {value.length > 0 && (
+            <Badge variant="secondary" className="ml-0.5 tabular-nums">
+              {value.length}
+            </Badge>
+          )}
+          <ChevronsUpDown className="text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-52 p-0">
+        <Command>
+          <CommandInput placeholder="Filter states…" />
+          <CommandList>
+            <CommandEmpty>No states.</CommandEmpty>
+            <CommandGroup>
+              {STATE_GROUPS.map((group) => {
+                const active = selected.has(group)
+                return (
+                  <CommandItem
+                    key={group}
+                    value={group}
+                    onSelect={() => onChange(toggleStateGroup(value, group))}
+                  >
+                    <span
+                      className={cn(
+                        'flex size-4 items-center justify-center rounded-[4px] border',
+                        active
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-border',
+                      )}
+                    >
+                      {active && <Check className="size-3 text-primary-foreground" />}
+                    </span>
+                    {group}
+                  </CommandItem>
+                )
+              })}
+            </CommandGroup>
+            {value.length > 0 && (
+              <>
+                <CommandSeparator />
+                <CommandGroup>
+                  <CommandItem
+                    onSelect={() => onChange([])}
+                    className="justify-center text-center text-muted-foreground"
+                  >
+                    Clear states
+                  </CommandItem>
+                </CommandGroup>
+              </>
+            )}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function LabelFilter({
+  repo,
+  value,
+  onChange,
+}: {
+  repo: string
+  value: string
+  onChange: (next: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const labels = useQuery(labelsQueryOptions(repo))
+  const facets = labels.data?.labels ?? []
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-9 w-48 justify-between"
+          aria-label="Label"
+        >
+          <span className="flex min-w-0 items-center gap-1.5">
+            <Tag className="text-muted-foreground" />
+            <span className={cn('truncate', !value && 'text-muted-foreground')}>
+              {value || 'Label'}
+            </span>
+          </span>
+          <ChevronsUpDown className="text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-56 p-0">
+        <Command>
+          <CommandInput placeholder="Search labels…" />
+          <CommandList>
+            <CommandEmpty>
+              {labels.isLoading ? 'Loading labels…' : 'No labels found.'}
+            </CommandEmpty>
+            <CommandGroup>
+              {facets.map((facet) => (
+                <CommandItem
+                  key={facet.name}
+                  value={facet.name}
+                  onSelect={() => {
+                    onChange(facet.name === value ? '' : facet.name)
+                    setOpen(false)
+                  }}
+                >
+                  <Check
+                    className={cn(
+                      'size-4',
+                      value === facet.name ? 'opacity-100' : 'opacity-0',
+                    )}
+                  />
+                  <span className="flex-1 truncate">{facet.name}</span>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {facet.count}
+                  </span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+            {value && (
+              <>
+                <CommandSeparator />
+                <CommandGroup>
+                  <CommandItem
+                    onSelect={() => {
+                      onChange('')
+                      setOpen(false)
+                    }}
+                    className="justify-center text-center text-muted-foreground"
+                  >
+                    Clear label
+                  </CommandItem>
+                </CommandGroup>
+              </>
+            )}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   )
 }
 
