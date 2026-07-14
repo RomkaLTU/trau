@@ -89,7 +89,8 @@ func mustKey(t *testing.T, keys []ConfigKeyView, key string) ConfigKeyView {
 // TestConfigProvenance is the contract for the provenance display: every known
 // key resolves to its effective value with the layer that supplied it — a
 // project-file value reads from the project layer, an untouched key from the
-// default layer — and the whitelist flags which keys the surface may edit.
+// default layer — and the catalog flags which keys the surface may edit and how
+// to render them (Section, kind, pickers).
 func TestConfigProvenance(t *testing.T) {
 	home := t.TempDir()
 	root := seedConfigRepo(t, home, "acme")
@@ -129,6 +130,16 @@ func TestConfigProvenance(t *testing.T) {
 	bin := mustKey(t, out.Keys, "CLAUDE_BIN")
 	if bin.Editable {
 		t.Errorf("CLAUDE_BIN should be read-only over the settings surface")
+	}
+
+	if iter.Group == "" || iter.Kind != "int" {
+		t.Errorf("MAX_ITERATIONS group/kind = %q/%q, want a Section and int", iter.Group, iter.Kind)
+	}
+	if model := mustKey(t, out.Keys, "CLAUDE_MODEL"); len(model.Suggestions) == 0 {
+		t.Errorf("CLAUDE_MODEL should carry model suggestions over the wire")
+	}
+	if effort := mustKey(t, out.Keys, "CLAUDE_EFFORT"); len(effort.Options) == 0 {
+		t.Errorf("CLAUDE_EFFORT should carry effort options over the wire")
 	}
 }
 
@@ -201,7 +212,7 @@ func TestConfigWriteRejections(t *testing.T) {
 	}{
 		{"unknown key", ConfigWriteRequest{Key: "NOT_A_KEY", Value: "x", Layer: "project"}, http.StatusBadRequest},
 		{"read-only key", ConfigWriteRequest{Key: "CLAUDE_BIN", Value: "/bin/sh", Layer: "project"}, http.StatusForbidden},
-		{"secret key", ConfigWriteRequest{Key: "LINEAR_API_KEY", Value: "sk-nope", Layer: "user"}, http.StatusForbidden},
+		{"read-only secret", ConfigWriteRequest{Key: "SERVE_TOKEN", Value: "sk-nope", Layer: "user"}, http.StatusForbidden},
 		{"bad layer", ConfigWriteRequest{Key: "NOTIFY", Value: "1", Layer: "env"}, http.StatusBadRequest},
 		{"bad bool value", ConfigWriteRequest{Key: "NOTIFY", Value: "yes", Layer: "project"}, http.StatusBadRequest},
 		{"bad option value", ConfigWriteRequest{Key: "MERGE_METHOD", Value: "octopus", Layer: "project"}, http.StatusBadRequest},
@@ -226,7 +237,8 @@ func TestConfigWriteRejections(t *testing.T) {
 
 // TestConfigSecretRedaction is the contract for credential handling: a secret's
 // value never appears in a response body — only whether it is set and the layer
-// it came from — and the key is read-only.
+// it came from. A settable secret (LINEAR_API_KEY) is write-only: editable so it
+// can be rotated, never echoed back. SERVE_TOKEN stays fully read-only.
 func TestConfigSecretRedaction(t *testing.T) {
 	home := t.TempDir()
 	seedConfigRepo(t, home, "acme")
@@ -255,8 +267,8 @@ func TestConfigSecretRedaction(t *testing.T) {
 	if set.Layer != "env var" {
 		t.Errorf("secret layer = %q, want env var provenance", set.Layer)
 	}
-	if set.Editable {
-		t.Errorf("secret keys must be read-only")
+	if !set.Editable {
+		t.Errorf("LINEAR_API_KEY should be web-editable (write-only rotation)")
 	}
 
 	unset := mustKey(t, out.Keys, "SERVE_TOKEN")
@@ -265,6 +277,9 @@ func TestConfigSecretRedaction(t *testing.T) {
 	}
 	if unset.Layer != "default" {
 		t.Errorf("unset secret layer = %q, want default", unset.Layer)
+	}
+	if unset.Editable {
+		t.Errorf("SERVE_TOKEN guards the settings surface and must stay read-only")
 	}
 }
 
