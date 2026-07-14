@@ -296,6 +296,28 @@ func TestGrillMCPFinishSessionValidation(t *testing.T) {
 			},
 			false,
 		},
+		{"create without title", map[string]any{"disposition": "create", "proposed_description": "body", "summary": "s"}, true},
+		{"create without description", map[string]any{"disposition": "create", "title": "New feature", "summary": "s"}, true},
+		{"valid create single", map[string]any{"disposition": "create", "title": "New feature", "proposed_description": "body", "summary": "s"}, false},
+		{
+			"create epic bad sub_issue",
+			map[string]any{"disposition": "create", "title": "New epic", "proposed_description": "epic", "sub_issues": []any{map[string]any{"title": "A"}}, "summary": "s"},
+			true,
+		},
+		{
+			"valid create epic",
+			map[string]any{
+				"disposition":          "create",
+				"title":                "New epic",
+				"proposed_description": "epic",
+				"sub_issues": []any{
+					map[string]any{"title": "A", "description": "da"},
+					map[string]any{"title": "B", "description": "db", "blocked_by": []any{0}},
+				},
+				"summary": "s",
+			},
+			false,
+		},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -386,6 +408,43 @@ func TestGrillMCPSplitFinish(t *testing.T) {
 	}
 	if !slices.Contains(outcome.SubIssues[1].Labels, "frontend") {
 		t.Fatalf("second sub-issue labels = %v, want its proposed labels", outcome.SubIssues[1].Labels)
+	}
+}
+
+func TestGrillMCPCreateFinish(t *testing.T) {
+	ts, _, repo := grillServer(t)
+	sess := createGrill(t, ts, repo, "")
+
+	msg := mcpJSON(t, mcpURL(ts, sess.ID), toolCall("finish_session", map[string]any{
+		"disposition":          "create",
+		"title":                "Add a dark-mode toggle",
+		"proposed_description": "As a user I can toggle dark mode from settings.",
+		"labels":               []any{"ready-for-agent", "frontend"},
+		"summary":              "Specced the toggle.",
+	}))
+	if tr := toolResult(t, msg); tr.IsError {
+		t.Fatalf("valid create returned an error: %+v", tr)
+	}
+
+	detail := grillDetail(t, ts, sess.ID)
+	if detail.Session.State != hubstore.GrillFinished {
+		t.Fatalf("session state = %q, want finished", detail.Session.State)
+	}
+	last := detail.Messages[len(detail.Messages)-1]
+	var outcome struct {
+		Disposition         string   `json:"disposition"`
+		Title               string   `json:"title"`
+		ProposedDescription string   `json:"proposed_description"`
+		Labels              []string `json:"labels"`
+	}
+	if err := json.Unmarshal(last.Payload, &outcome); err != nil {
+		t.Fatalf("decode outcome payload: %v", err)
+	}
+	if outcome.Disposition != "create" || outcome.Title != "Add a dark-mode toggle" || outcome.ProposedDescription == "" {
+		t.Fatalf("outcome = %+v, want a create with title and description", outcome)
+	}
+	if !slices.Contains(outcome.Labels, "frontend") {
+		t.Fatalf("outcome labels = %v, want the proposed labels", outcome.Labels)
 	}
 }
 

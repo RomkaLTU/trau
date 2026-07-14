@@ -320,6 +320,26 @@ func (g *Grill) UpdateChain(id int64, sessionChain string) (GrillSession, bool, 
 	return sess, true, nil
 }
 
+// SetIssue anchors a session to issueID and bumps its updated_at — the create-apply
+// flow calls it once the parent issue is filed so a retry reuses that issue instead
+// of filing it a second time. It reports whether the session exists.
+func (g *Grill) SetIssue(id int64, issueID string) (GrillSession, bool, error) {
+	sess, found, err := g.Session(id)
+	if err != nil || !found {
+		return GrillSession{}, found, err
+	}
+	now := formatGrillTime(time.Now())
+	if _, err := g.db.Exec(
+		`UPDATE grill_sessions SET issue_id = ?, updated_at = ? WHERE id = ?`,
+		issueID, now, id,
+	); err != nil {
+		return GrillSession{}, false, err
+	}
+	sess.IssueID = issueID
+	sess.UpdatedAt = now
+	return sess, true, nil
+}
+
 // Prune keeps the most recent retention sessions per repo and drops the settled
 // ones beyond that window, ranked by id (grilling-prd.md — the transcript retention
 // pattern). Active sessions past the window are kept so a long-parked session is

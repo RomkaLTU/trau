@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { parseAsString, useQueryState } from 'nuqs'
-import { ChevronLeft, Flame, SkipForward } from 'lucide-react'
+import { ChevronLeft, Flame, SkipForward, Sparkles } from 'lucide-react'
 
-import { GrillPanel } from '@/components/grill-panel'
+import { AuthoringDrawer, GrillPanel } from '@/components/grill-panel'
 import { Markdown } from '@/components/markdown'
 import { Button } from '@/components/ui/button'
 import {
@@ -81,6 +81,7 @@ function InboxPage() {
     .filter((item) => item.attention === 'open')
     .map((item) => item.entry.id)
 
+  const [authoring, setAuthoring] = useState(false)
   const [passSummary, setPassSummary] = useState<string | null>(null)
   const pregrillAll = useMutation({
     mutationFn: () => pregrillIssues(repo, untouchedIds),
@@ -95,19 +96,29 @@ function InboxPage() {
         title="Triage inbox"
         description="Work through unclear issues in one sitting — the ones with a question waiting on you come first."
         actions={
-          untouchedIds.length > 0 ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => pregrillAll.mutate()}
-              disabled={pregrillAll.isPending}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setAuthoring(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-muted"
             >
-              <Flame />
-              {pregrillAll.isPending
-                ? 'Pre-grilling…'
-                : `Pre-grill all (${untouchedIds.length})`}
-            </Button>
-          ) : null
+              <Sparkles className="size-4" />
+              New issue (grilled)
+            </button>
+            {untouchedIds.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => pregrillAll.mutate()}
+                disabled={pregrillAll.isPending}
+              >
+                <Flame />
+                {pregrillAll.isPending
+                  ? 'Pre-grilling…'
+                  : `Pre-grill all (${untouchedIds.length})`}
+              </Button>
+            )}
+          </div>
         }
       />
 
@@ -168,6 +179,16 @@ function InboxPage() {
         items={items}
         issueId={peek}
         onNavigate={(id) => void setPeek(id)}
+      />
+
+      <AuthoringDrawer
+        repo={repo}
+        open={authoring}
+        onOpenChange={setAuthoring}
+        onCreated={() => {
+          void queryClient.invalidateQueries({ queryKey: ['backlog', repo] })
+          void queryClient.invalidateQueries({ queryKey: ['grill', repo] })
+        }}
       />
     </ProjectScopeGate>
   )

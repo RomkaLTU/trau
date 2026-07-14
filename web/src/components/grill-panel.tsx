@@ -21,6 +21,12 @@ import {
 import { Markdown } from '@/components/markdown'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet'
 import { StatusPill, type RunState } from '@/components/trau'
 import {
   abandonGrill,
@@ -139,6 +145,116 @@ export function GrillPanel({
         )}
       </div>
     </PanelFrame>
+  )
+}
+
+// AuthoringPanel is the from-scratch entry: the user types a one-line idea, a
+// repo-anchored authoring session starts, and the same conversation surface takes
+// over — ending in a create proposal reviewed before anything is filed.
+export function AuthoringPanel({
+  repo,
+  onClose,
+  onCreated,
+}: {
+  repo: string
+  onClose: () => void
+  // onCreated fires once a create outcome lands on the tracker, so the caller can
+  // refresh the board.
+  onCreated?: () => void
+}) {
+  const queryClient = useQueryClient()
+  const [idea, setIdea] = useState('')
+
+  const create = useMutation({
+    mutationFn: (seed: string) => startGrillSession(repo, '', seed),
+    onSuccess: (sess) => {
+      queryClient.setQueryData<GrillListResponse>(['grill', repo], (prev) =>
+        prev
+          ? { ...prev, sessions: [sess, ...prev.sessions.filter((s) => s.id !== sess.id)] }
+          : { repo, sessions: [sess] },
+      )
+    },
+  })
+
+  if (create.data) {
+    return (
+      <GrillConversation
+        key={create.data.id}
+        repo={repo}
+        initial={create.data}
+        onClose={onClose}
+        onApplied={onCreated}
+      />
+    )
+  }
+
+  const start = () => {
+    const seed = idea.trim()
+    if (seed === '' || create.isPending) return
+    create.mutate(seed)
+  }
+
+  return (
+    <PanelFrame onClose={onClose}>
+      <div className="flex flex-1 flex-col gap-3 px-4 py-4">
+        <p className="text-sm text-muted-foreground">
+          Describe the idea in a line or two. A repo-aware agent will interview you toward a
+          fully-specified issue, then propose it for review before anything is filed.
+        </p>
+        <textarea
+          value={idea}
+          onChange={(e) => setIdea(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+              e.preventDefault()
+              start()
+            }
+          }}
+          placeholder="e.g. Add a dark-mode toggle to the settings page"
+          rows={3}
+          className="w-full resize-y rounded-md border bg-card px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+        />
+        <div>
+          <Button size="sm" onClick={start} disabled={idea.trim() === '' || create.isPending}>
+            {create.isPending ? <Loader2 className="animate-spin" /> : <Sparkles />}
+            Start grilling
+          </Button>
+        </div>
+        {create.error && <ErrorNote message={(create.error as Error).message} />}
+      </div>
+    </PanelFrame>
+  )
+}
+
+// AuthoringDrawer hosts a from-scratch grilling session in the same right-side
+// offcanvas the issue drawer uses — no anchor issue, just the repo and an idea.
+// Shared by the backlog board and the triage inbox.
+export function AuthoringDrawer({
+  repo,
+  open,
+  onOpenChange,
+  onCreated,
+}: {
+  repo: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onCreated?: () => void
+}) {
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="w-full gap-0 p-0 sm:max-w-xl">
+        <SheetHeader className="sr-only">
+          <SheetTitle>New grilled issue</SheetTitle>
+        </SheetHeader>
+        {open && (
+          <AuthoringPanel
+            repo={repo}
+            onClose={() => onOpenChange(false)}
+            onCreated={onCreated}
+          />
+        )}
+      </SheetContent>
+    </Sheet>
   )
 }
 
@@ -303,6 +419,10 @@ function MessageRow({ message }: { message: GrillMessage }) {
       return <Bubble role="agent">{questionPayload(message).text}</Bubble>
     case 'answer':
       return <Bubble role="user">{answerText(message)}</Bubble>
+    // The seed idea of an authoring session rides as an info message; render it as
+    // the user's opening turn so the conversation reads from the top.
+    case 'info':
+      return <Bubble role={message.role === 'user' ? 'user' : 'agent'}>{answerText(message)}</Bubble>
     case 'outcome':
       return <OutcomeProposal outcome={outcomePayload(message)} />
     default:
@@ -469,6 +589,13 @@ function OutcomeReview({
   const issue = useQuery(issueQueryOptions(repo, issueId))
   const isRewrite = outcome.disposition === 'rewrite'
   const isSplit = outcome.disposition === 'split'
+  const isCreate = outcome.disposition === 'create'
+  // A create outcome files an epic when it carries a breakdown, a single issue
+  // otherwise.
+  const isCreateEpic = isCreate && (outcome.sub_issues?.length ?? 0) > 0
+  const carriesDescription = isRewrite || isSplit || isCreate
+  const carriesSubs = isSplit || isCreateEpic
+  const [title, setTitle] = useState(outcome.title ?? '')
   const [draft, setDraft] = useState(outcome.proposed_description ?? '')
   const [editing, setEditing] = useState(false)
   const [subs, setSubs] = useState<SubIssueDraft[]>(() => toSubDrafts(outcome.sub_issues ?? []))
@@ -480,7 +607,12 @@ function OutcomeReview({
   // unclear set once its triage labels are gone.
   const apply = useMutation({
     mutationFn: () =>
-      applyGrill(session.id, isRewrite || isSplit ? draft : '', isSplit ? toSubIssues(subs) : undefined),
+      applyGrill(
+        session.id,
+        carriesDescription ? draft : '',
+        carriesSubs ? toSubIssues(subs) : undefined,
+        isCreate ? title.trim() : undefined,
+      ),
     onSuccess: (res) => {
       onSession(res.session)
       if (res.applied) {
@@ -503,7 +635,9 @@ function OutcomeReview({
   const failedSteps = apply.data && !apply.data.applied ? apply.data.steps : []
   const busy = apply.isPending || discard.isPending
   const splitReady = subsAreComplete(subs)
-  const blockApply = busy || (isSplit && !splitReady)
+  const createReady =
+    title.trim() !== '' && draft.trim() !== '' && (!isCreateEpic || subsAreComplete(subs))
+  const blockApply = busy || (isSplit && !splitReady) || (isCreate && !createReady)
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-info/40 bg-info/5 p-3">
@@ -532,6 +666,20 @@ function OutcomeReview({
           onEdit={() => setEditing(true)}
           onPreview={() => setEditing(false)}
           subs={subs}
+          onSubsChange={setSubs}
+        />
+      ) : isCreate ? (
+        <CreateBody
+          title={title}
+          draft={draft}
+          editing={editing}
+          isEpic={isCreateEpic}
+          labels={outcome.labels ?? []}
+          subs={subs}
+          onTitleChange={setTitle}
+          onDraftChange={setDraft}
+          onEdit={() => setEditing(true)}
+          onPreview={() => setEditing(false)}
           onSubsChange={setSubs}
         />
       ) : (
@@ -647,6 +795,97 @@ function SplitBody({
   subs: SubIssueDraft[]
   onSubsChange: (subs: SubIssueDraft[]) => void
 }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <RewriteBody
+        current={current}
+        draft={draft}
+        editing={editing}
+        loading={loading}
+        onChange={onDraftChange}
+        onEdit={onEdit}
+        onPreview={onPreview}
+      />
+      <SubIssueList subs={subs} onSubsChange={onSubsChange} />
+    </div>
+  )
+}
+
+// CreateBody is the create review: an editable title, the new issue's description
+// (edited or previewed as markdown — no diff, since nothing exists to compare
+// against), and for an epic the proposed slices as editable cards. A single issue
+// shows its proposed labels instead.
+function CreateBody({
+  title,
+  draft,
+  editing,
+  isEpic,
+  labels,
+  subs,
+  onTitleChange,
+  onDraftChange,
+  onEdit,
+  onPreview,
+  onSubsChange,
+}: {
+  title: string
+  draft: string
+  editing: boolean
+  isEpic: boolean
+  labels: string[]
+  subs: SubIssueDraft[]
+  onTitleChange: (text: string) => void
+  onDraftChange: (text: string) => void
+  onEdit: () => void
+  onPreview: () => void
+  onSubsChange: (subs: SubIssueDraft[]) => void
+}) {
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col gap-1">
+        <span className="text-xs font-medium text-muted-foreground">Title</span>
+        <input
+          value={title}
+          onChange={(e) => onTitleChange(e.target.value)}
+          placeholder="Issue title"
+          className={subInputClass}
+        />
+      </div>
+      <NewBody
+        draft={draft}
+        editing={editing}
+        onChange={onDraftChange}
+        onEdit={onEdit}
+        onPreview={onPreview}
+      />
+      {isEpic ? (
+        <SubIssueList subs={subs} onSubsChange={onSubsChange} />
+      ) : (
+        labels.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-[11px] text-muted-foreground">Labels</span>
+            {labels.map((l) => (
+              <Badge key={l} variant="secondary">
+                {l}
+              </Badge>
+            ))}
+          </div>
+        )
+      )}
+    </div>
+  )
+}
+
+// SubIssueList is the shared editable list of proposed slices — the split parent's
+// children and the create-epic parent's children both use it: add, remove, edit, and
+// re-wire the sibling blocking relations before Apply files them.
+function SubIssueList({
+  subs,
+  onSubsChange,
+}: {
+  subs: SubIssueDraft[]
+  onSubsChange: (subs: SubIssueDraft[]) => void
+}) {
   const update = (key: string, patch: Partial<SubIssueDraft>) =>
     onSubsChange(subs.map((s) => (s.key === key ? { ...s, ...patch } : s)))
   const add = () =>
@@ -667,44 +906,31 @@ function SplitBody({
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      <RewriteBody
-        current={current}
-        draft={draft}
-        editing={editing}
-        loading={loading}
-        onChange={onDraftChange}
-        onEdit={onEdit}
-        onPreview={onPreview}
-      />
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-medium text-muted-foreground">
-            Sub-issues ({subs.length})
-          </span>
-          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={add}>
-            <Plus />
-            Add
-          </Button>
-        </div>
-        {subs.length === 0 ? (
-          <p className="text-xs text-muted-foreground">
-            Add at least one sub-issue before applying.
-          </p>
-        ) : (
-          subs.map((sub, i) => (
-            <SubIssueCard
-              key={sub.key}
-              index={i}
-              sub={sub}
-              siblings={subs}
-              onChange={update}
-              onRemove={remove}
-              onToggleDep={toggleDep}
-            />
-          ))
-        )}
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-muted-foreground">
+          Sub-issues ({subs.length})
+        </span>
+        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={add}>
+          <Plus />
+          Add
+        </Button>
       </div>
+      {subs.length === 0 ? (
+        <p className="text-xs text-muted-foreground">Add at least one sub-issue before applying.</p>
+      ) : (
+        subs.map((sub, i) => (
+          <SubIssueCard
+            key={sub.key}
+            index={i}
+            sub={sub}
+            siblings={subs}
+            onChange={update}
+            onRemove={remove}
+            onToggleDep={toggleDep}
+          />
+        ))
+      )}
     </div>
   )
 }
@@ -830,6 +1056,58 @@ function RewriteBody({
   )
 }
 
+// NewBody shows a created issue's description with an edit/preview toggle. There is
+// nothing on the tracker to diff against, so preview renders the draft as markdown
+// rather than an old→new diff.
+function NewBody({
+  draft,
+  editing,
+  onChange,
+  onEdit,
+  onPreview,
+}: {
+  draft: string
+  editing: boolean
+  onChange: (text: string) => void
+  onEdit: () => void
+  onPreview: () => void
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-muted-foreground">Description</span>
+        {editing ? (
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onPreview}>
+            <Eye />
+            Preview
+          </Button>
+        ) : (
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onEdit}>
+            <Pencil />
+            Edit
+          </Button>
+        )}
+      </div>
+      {editing ? (
+        <textarea
+          value={draft}
+          onChange={(e) => onChange(e.target.value)}
+          rows={10}
+          className="min-h-40 w-full resize-y rounded-md border bg-card px-3 py-2 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        />
+      ) : draft.trim() === '' ? (
+        <p className="rounded-md border bg-card px-3 py-2 text-xs text-muted-foreground">
+          No description yet — add one before applying.
+        </p>
+      ) : (
+        <div className="max-h-72 overflow-auto rounded-md border bg-card px-3 py-2 text-sm">
+          <Markdown>{draft}</Markdown>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function DiffView({ current, next }: { current: string; next: string }) {
   const lines = diffLines(current, next)
   if (!diffHasChanges(lines)) {
@@ -922,7 +1200,9 @@ function AppliedCard({ outcome, steps }: { outcome: OutcomePayload; steps: Grill
       <p className="text-xs leading-relaxed text-muted-foreground">
         {outcome.disposition === 'no_change'
           ? 'Session closed out — nothing was written to the tracker.'
-          : 'The outcome was written to the tracker. This issue is cleared.'}
+          : outcome.disposition === 'create'
+            ? 'The new issue was filed on the tracker.'
+            : 'The outcome was written to the tracker. This issue is cleared.'}
       </p>
       {steps.length > 0 && <StepList steps={steps} />}
     </div>
@@ -932,6 +1212,7 @@ function AppliedCard({ outcome, steps }: { outcome: OutcomePayload; steps: Grill
 function applyLabel(disposition: string, result?: GrillApplyResponse): string {
   if (result && !result.applied) return 'Retry'
   if (disposition === 'no_change') return 'Close out'
+  if (disposition === 'create') return 'Create'
   return 'Apply'
 }
 

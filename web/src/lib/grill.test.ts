@@ -200,6 +200,46 @@ describe('outcomePayload', () => {
     expect(p.sub_issues?.[0].description).toBe('')
     expect(p.sub_issues?.[0].blocked_by).toEqual([1])
   })
+
+  it('parses a single-issue create with title and labels', () => {
+    const p = outcomePayload(
+      msg({
+        kind: 'outcome',
+        payload: {
+          disposition: 'create',
+          title: 'Add dark mode',
+          proposed_description: 'toggle in settings',
+          labels: ['ready-for-agent', 'frontend'],
+          summary: 's',
+        },
+      }),
+    )
+    expect(p.disposition).toBe('create')
+    expect(p.title).toBe('Add dark mode')
+    expect(p.labels).toEqual(['ready-for-agent', 'frontend'])
+    expect(p.sub_issues).toBeUndefined()
+  })
+
+  it('parses a create-epic proposal with a breakdown', () => {
+    const p = outcomePayload(
+      msg({
+        kind: 'outcome',
+        payload: {
+          disposition: 'create',
+          title: 'Checkout redesign',
+          proposed_description: 'epic',
+          summary: 's',
+          sub_issues: [
+            { title: 'Cart', description: 'rebuild cart' },
+            { title: 'Payment', description: 'wire payment', blocked_by: [0] },
+          ],
+        },
+      }),
+    )
+    expect(p.title).toBe('Checkout redesign')
+    expect(p.sub_issues).toHaveLength(2)
+    expect(p.sub_issues?.[1].blocked_by).toEqual([0])
+  })
 })
 
 describe('grillReducer', () => {

@@ -27,12 +27,13 @@ const (
 	rpcInternalError  = -32603
 )
 
-// Grilling outcome dispositions a child can finish a session with. create arrives
-// with its apply flow later.
+// Grilling outcome dispositions a child can finish a session with. create files a
+// brand-new issue (or epic) from an authoring session with no anchor.
 const (
 	grillDispRewrite    = "rewrite"
 	grillDispSplit      = "split"
 	grillDispNeedsSplit = "needs_split"
+	grillDispCreate     = "create"
 	grillDispNoChange   = "no_change"
 )
 
@@ -120,17 +121,20 @@ var grillMCPTools = []mcpTool{
 		Description: "End the grilling session with a proposed outcome for the user to review. disposition is one of: " +
 			"\"rewrite\" (replace the issue description — requires proposed_description), \"split\" (the issue is epic-shaped; " +
 			"convert it to an epic and propose fully-specified sub-issues — requires proposed_description framing the epic and " +
-			"a non-empty sub_issues breakdown), \"needs_split\" (too large to slice confidently; just flag it for splitting), or " +
-			"\"no_change\" (the issue is already clear enough). summary captures the key clarifications reached. Nothing is " +
-			"written to the tracker until the user approves.",
+			"a non-empty sub_issues breakdown), \"needs_split\" (too large to slice confidently; just flag it for splitting), " +
+			"\"create\" (author a brand-new issue from a from-scratch session — requires title and proposed_description; add a " +
+			"sub_issues breakdown to file it as an epic instead of a single issue), or \"no_change\" (nothing needs writing). " +
+			"summary captures the key clarifications reached. Nothing is written to the tracker until the user approves.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "disposition": {"type": "string", "enum": ["rewrite", "split", "needs_split", "no_change"], "description": "The proposed outcome."},
-    "proposed_description": {"type": "string", "description": "Required when disposition is rewrite (the full replacement issue description) or split (the parent rewrite framing the epic goal)."},
+    "disposition": {"type": "string", "enum": ["rewrite", "split", "needs_split", "create", "no_change"], "description": "The proposed outcome."},
+    "title": {"type": "string", "description": "Required when disposition is create: the title of the new issue (or epic) to file."},
+    "proposed_description": {"type": "string", "description": "Required when disposition is rewrite (the full replacement issue description), split (the parent rewrite framing the epic goal), or create (the full description of the new issue or epic)."},
+    "labels": {"type": "array", "items": {"type": "string"}, "description": "Optional labels for the created issue when disposition is create. A single issue defaults to the ready-for-agent label; an epic parent gets none by default."},
     "sub_issues": {
       "type": "array",
-      "description": "Required when disposition is split: the proposed epic breakdown, one implementable slice per agent session. Each becomes a child of this issue.",
+      "description": "Required for split, optional for create: the proposed breakdown, one implementable slice per agent session. Each becomes a child of the parent (the grilled issue for split, the newly created epic for create).",
       "items": {
         "type": "object",
         "properties": {
@@ -353,7 +357,9 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, args json.RawMessage) {
 	var a struct {
 		Disposition         string          `json:"disposition"`
+		Title               string          `json:"title"`
 		ProposedDescription string          `json:"proposed_description"`
+		Labels              []string        `json:"labels"`
 		SubIssues           []grillSubIssue `json:"sub_issues"`
 		Summary             string          `json:"summary"`
 	}
@@ -363,16 +369,21 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 	}
 	disposition := strings.TrimSpace(a.Disposition)
 	if !validGrillDisposition(disposition) {
-		respondRPCJSON(w, rpcID, grillToolError("disposition must be one of: rewrite, split, needs_split, no_change"))
+		respondRPCJSON(w, rpcID, grillToolError("disposition must be one of: rewrite, split, needs_split, create, no_change"))
 		return
 	}
 	proposed := strings.TrimSpace(a.ProposedDescription)
-	if (disposition == grillDispRewrite || disposition == grillDispSplit) && proposed == "" {
+	if needsProposedDescription(disposition) && proposed == "" {
 		respondRPCJSON(w, rpcID, grillToolError("disposition "+disposition+" requires proposed_description"))
 		return
 	}
+	title := strings.TrimSpace(a.Title)
+	if disposition == grillDispCreate && title == "" {
+		respondRPCJSON(w, rpcID, grillToolError("disposition create requires a title for the new issue"))
+		return
+	}
 	var subIssues []grillSubIssue
-	if disposition == grillDispSplit {
+	if disposition == grillDispSplit || (disposition == grillDispCreate && len(a.SubIssues) > 0) {
 		var msg string
 		subIssues, msg = normalizeSplitSubIssues(a.SubIssues)
 		if msg != "" {
@@ -400,10 +411,12 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 	}
 	outcome, _ := json.Marshal(struct {
 		Disposition         string          `json:"disposition"`
+		Title               string          `json:"title,omitempty"`
 		ProposedDescription string          `json:"proposed_description,omitempty"`
+		Labels              []string        `json:"labels,omitempty"`
 		SubIssues           []grillSubIssue `json:"sub_issues,omitempty"`
 		Summary             string          `json:"summary"`
-	}{Disposition: disposition, ProposedDescription: proposed, SubIssues: subIssues, Summary: summary})
+	}{Disposition: disposition, Title: title, ProposedDescription: proposed, Labels: trimLabels(a.Labels), SubIssues: subIssues, Summary: summary})
 
 	msg, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
 		Role:    hubstore.GrillRoleAgent,
@@ -471,7 +484,17 @@ func (s *Server) grillAskUnavailable(sid int64) mcpToolResult {
 
 func validGrillDisposition(d string) bool {
 	switch d {
-	case grillDispRewrite, grillDispSplit, grillDispNeedsSplit, grillDispNoChange:
+	case grillDispRewrite, grillDispSplit, grillDispNeedsSplit, grillDispCreate, grillDispNoChange:
+		return true
+	}
+	return false
+}
+
+// needsProposedDescription reports whether a disposition must carry a
+// proposed_description: the ones that write or file an issue body.
+func needsProposedDescription(d string) bool {
+	switch d {
+	case grillDispRewrite, grillDispSplit, grillDispCreate:
 		return true
 	}
 	return false

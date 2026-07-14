@@ -469,6 +469,187 @@ func TestGrillApplySplitRelationRetry(t *testing.T) {
 	}
 }
 
+func TestGrillApplyCreateSingle(t *testing.T) {
+	fake := newFakeWriter()
+	fake.createQueue = []fakeCreate{{issue: tracker.NewIssue{Identifier: "COD-100"}}}
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispCreate,
+		Title:               "Add dark mode toggle",
+		ProposedDescription: "As a user I can toggle dark mode in settings.",
+		Summary:             "specced the toggle",
+	})
+
+	res, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if res.StatusCode != http.StatusOK || !out.Applied || out.Session.State != hubstore.GrillApplied {
+		t.Fatalf("apply = %+v (status %d), want applied", out, res.StatusCode)
+	}
+	if len(fake.created) != 1 {
+		t.Fatalf("created = %d, want 1 standalone issue", len(fake.created))
+	}
+	if fake.created[0].Title != "Add dark mode toggle" || fake.created[0].Parent != "" {
+		t.Fatalf("created draft = %+v, want a titled top-level issue", fake.created[0])
+	}
+	if got := fake.created[0].Labels; !slices.Equal(got, []string{"ready-for-agent"}) {
+		t.Errorf("single-issue labels = %v, want the default ready label", got)
+	}
+	if len(fake.comments) != 1 || fake.comments[0].id != "COD-100" {
+		t.Fatalf("comment = %+v, want the summary on the created issue", fake.comments)
+	}
+	if len(fake.labels) != 0 {
+		t.Errorf("label calls = %d, want 0 — a new issue has no triage labels to strip", len(fake.labels))
+	}
+	wantSteps := []string{"issue: Add dark mode toggle", "comment"}
+	gotSteps := make([]string, 0, len(out.Steps))
+	for _, s := range out.Steps {
+		gotSteps = append(gotSteps, s.Step)
+	}
+	if !slices.Equal(gotSteps, wantSteps) {
+		t.Fatalf("steps = %v, want %v", gotSteps, wantSteps)
+	}
+	if out.Session.IssueID != "COD-100" {
+		t.Errorf("session anchor = %q, want the created issue COD-100", out.Session.IssueID)
+	}
+	if iss, found, err := stores.Issues().Get(root, "COD-100"); err != nil || !found || iss.Title != "Add dark mode toggle" {
+		t.Errorf("mirrored issue = (%+v, found=%v, err=%v), want the created issue in the store", iss, found, err)
+	}
+}
+
+func TestGrillApplyCreateEpic(t *testing.T) {
+	fake := newFakeWriter()
+	fake.createQueue = []fakeCreate{
+		{issue: tracker.NewIssue{Identifier: "COD-200"}},
+		{issue: tracker.NewIssue{Identifier: "COD-201"}},
+		{issue: tracker.NewIssue{Identifier: "COD-202"}},
+	}
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispCreate,
+		Title:               "Checkout redesign",
+		ProposedDescription: "Epic: redesign the checkout.",
+		Summary:             "authored an epic",
+		SubIssues: []grillSubIssue{
+			{Title: "Cart page", Description: "rebuild the cart"},
+			{Title: "Payment", Description: "wire the payment step", BlockedBy: []int{0}},
+		},
+	})
+
+	res, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if res.StatusCode != http.StatusOK || !out.Applied || out.Session.State != hubstore.GrillApplied {
+		t.Fatalf("apply = %+v (status %d), want applied", out, res.StatusCode)
+	}
+	if len(fake.created) != 3 {
+		t.Fatalf("created = %d, want 3 (epic parent + 2 children)", len(fake.created))
+	}
+	if fake.created[0].Parent != "" || fake.created[0].Title != "Checkout redesign" {
+		t.Errorf("parent draft = %+v, want a top-level epic", fake.created[0])
+	}
+	if len(fake.created[0].Labels) != 0 {
+		t.Errorf("epic parent labels = %v, want none — readiness lives on the children", fake.created[0].Labels)
+	}
+	for _, d := range fake.created[1:] {
+		if d.Parent != "COD-200" {
+			t.Errorf("child %q parent = %q, want COD-200", d.Title, d.Parent)
+		}
+		if !slices.Equal(d.Labels, []string{"ready-for-agent"}) {
+			t.Errorf("child %q labels = %v, want the default ready label", d.Title, d.Labels)
+		}
+	}
+	if want := []linkCall{{blocker: "COD-201", blocked: "COD-202"}}; !slices.Equal(fake.links, want) {
+		t.Fatalf("links = %+v, want %+v", fake.links, want)
+	}
+	if len(fake.comments) != 1 || fake.comments[0].id != "COD-200" {
+		t.Fatalf("comment = %+v, want the summary on the epic", fake.comments)
+	}
+	wantSteps := []string{"epic: Checkout redesign", "sub-issue: Cart page", "sub-issue: Payment", "relations", "comment"}
+	gotSteps := make([]string, 0, len(out.Steps))
+	for _, s := range out.Steps {
+		gotSteps = append(gotSteps, s.Step)
+	}
+	if !slices.Equal(gotSteps, wantSteps) {
+		t.Fatalf("steps = %v, want %v", gotSteps, wantSteps)
+	}
+	kids, err := stores.Issues().Children(root, "COD-200")
+	if err != nil {
+		t.Fatalf("children: %v", err)
+	}
+	if len(kids) != 2 {
+		t.Fatalf("stored children = %d, want 2 (clobber guard)", len(kids))
+	}
+}
+
+func TestGrillApplyCreatePartialRetry(t *testing.T) {
+	fake := newFakeWriter()
+	// Pass 1: the epic parent and first child land; the second child fails.
+	fake.createQueue = []fakeCreate{
+		{issue: tracker.NewIssue{Identifier: "COD-300"}},
+		{issue: tracker.NewIssue{Identifier: "COD-301"}},
+		{err: errString("linear: 502")},
+	}
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispCreate,
+		Title:               "New epic",
+		ProposedDescription: "Epic body.",
+		Summary:             "two slices",
+		SubIssues: []grillSubIssue{
+			{Title: "S1", Description: "d1"},
+			{Title: "S2", Description: "d2", BlockedBy: []int{0}},
+		},
+	})
+
+	_, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if out.Applied || out.Session.State != hubstore.GrillFinished {
+		t.Fatalf("partial apply = %+v, want not applied and still finished", out)
+	}
+	// The session anchors to the created epic so a retry never files a second parent.
+	if out.Session.IssueID != "COD-300" {
+		t.Fatalf("anchor after partial = %q, want COD-300", out.Session.IssueID)
+	}
+
+	// Pass 2: only the missing child is created; the parent and first child are reused.
+	fake.created = nil
+	fake.createIdx = 0
+	fake.createQueue = []fakeCreate{{issue: tracker.NewIssue{Identifier: "COD-302"}}}
+	fake.links = nil
+
+	_, out = applyGrill(t, ts, sid, GrillApplyRequest{})
+	if !out.Applied || out.Session.State != hubstore.GrillApplied {
+		t.Fatalf("retry = %+v, want applied", out)
+	}
+	if len(fake.created) != 1 || fake.created[0].Title != "S2" {
+		t.Fatalf("retry created = %+v, want only the missing S2", fake.created)
+	}
+	if want := []linkCall{{blocker: "COD-301", blocked: "COD-302"}}; !slices.Equal(fake.links, want) {
+		t.Fatalf("retry links = %+v, want the deferred relation %+v", fake.links, want)
+	}
+	kids, err := stores.Issues().Children(root, "COD-300")
+	if err != nil {
+		t.Fatalf("children: %v", err)
+	}
+	if len(kids) != 2 {
+		t.Fatalf("stored children after retry = %d, want 2", len(kids))
+	}
+}
+
+func TestGrillApplyCreateNotAnchoredRewrite(t *testing.T) {
+	fake := newFakeWriter()
+	ts, stores, root := grillApplyServer(t, fake)
+	// An authoring session that finishes with a rewrite has nothing to write to.
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispRewrite,
+		ProposedDescription: "a body",
+		Summary:             "s",
+	})
+	res, _ := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("apply unanchored rewrite = %d, want 422", res.StatusCode)
+	}
+	if len(fake.created)+len(fake.descriptions) != 0 {
+		t.Errorf("wrote to the tracker for an unanchored non-create outcome")
+	}
+}
+
 func TestGrillApplyStateGuards(t *testing.T) {
 	fake := newFakeWriter()
 	ts, stores, root := grillApplyServer(t, fake)
