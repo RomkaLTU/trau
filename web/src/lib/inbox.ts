@@ -8,6 +8,7 @@ import {
   grillSessionsQueryOptions,
   isAwaitingAnswer,
   type GrillSession,
+  type PregrillResponse,
 } from './grill'
 
 // InboxAttention is why an unclear issue is in the inbox, driven by its active
@@ -186,4 +187,22 @@ export function useInbox(repo: string): InboxData {
 
 export function useInboxCounts(repo: string): InboxCounts {
   return inboxCounts(useInbox(repo).items)
+}
+
+// summarisePregrill turns a pre-grill pass response into a one-line recap for the
+// inbox toolbar, naming only the outcomes that occurred.
+export function summarisePregrill(res: PregrillResponse): string {
+  const counts = { question_parked: 0, rewrite_drafted: 0, clear: 0, error: 0, skipped: 0 }
+  for (const r of res.results) counts[r.outcome]++
+  const parts: string[] = []
+  if (counts.question_parked) parts.push(`${counts.question_parked} question${plural(counts.question_parked)} parked`)
+  if (counts.rewrite_drafted) parts.push(`${counts.rewrite_drafted} rewrite${plural(counts.rewrite_drafted)} drafted`)
+  if (counts.clear) parts.push(`${counts.clear} already clear`)
+  if (counts.error) parts.push(`${counts.error} error${plural(counts.error)}`)
+  if (counts.skipped) parts.push(`${counts.skipped} skipped`)
+  return parts.length > 0 ? `Pre-grill pass: ${parts.join(' · ')}` : 'Pre-grill pass: nothing to do.'
+}
+
+function plural(n: number): string {
+  return n === 1 ? '' : 's'
 }

@@ -164,6 +164,42 @@ export async function startGrillSession(repo: string, issueId: string): Promise<
   return res.json()
 }
 
+// PregrillOutcome is one issue's result from an AFK pre-grill pass: a question was
+// parked for the user, a rewrite proposal was drafted, the issue was already clear,
+// the turn errored, or the issue was skipped (active session or past the pass limit).
+export type PregrillOutcome =
+  | 'question_parked'
+  | 'rewrite_drafted'
+  | 'clear'
+  | 'error'
+  | 'skipped'
+
+export interface PregrillResult {
+  issue_id: string
+  session_id?: string
+  outcome: PregrillOutcome
+  detail?: string
+}
+
+export interface PregrillResponse {
+  repo: string
+  max: number
+  results: PregrillResult[]
+}
+
+// pregrillIssues runs the bounded, sequential AFK pre-grill pass over issueIds. The
+// hub caps the number of turns at GRILL_PREGRILL_MAX and skips issues that already
+// have an active session; each grilled issue lands in the inbox as its outcome.
+export async function pregrillIssues(repo: string, issueIds: string[]): Promise<PregrillResponse> {
+  const res = await apiFetch(`${base(repo)}/pregrill`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ issue_ids: issueIds }),
+  })
+  if (!res.ok) throw new Error(await errorMessage(res, 'pre-grill failed'))
+  return res.json()
+}
+
 export async function answerGrill(sid: string, text: string): Promise<GrillAnswerResponse> {
   const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/answer`, {
     method: 'POST',

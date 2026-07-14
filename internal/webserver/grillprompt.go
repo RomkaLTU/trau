@@ -28,6 +28,32 @@ func grillIssuePrompt(issueID, title, description string) string {
 	return b.String()
 }
 
+// grillPregrillPrompt is the first-turn prompt for an AFK pre-grill pass: no user
+// is present, so the agent reads the repo and either finishes with a rewrite or
+// no_change, or lodges its single opening question via ask_user — which parks at
+// once — and ends its turn. The parked question waits for a live session later.
+func grillPregrillPrompt(issueID, title, description string) string {
+	var b strings.Builder
+	b.WriteString("You are triaging a software issue ahead of time so an autonomous coding agent can later implement it without guessing. ")
+	b.WriteString("You are running inside the repository this issue belongs to; read the code before you decide.\n\n")
+	b.WriteString("No user is available to answer right now — this is an unattended pass.\n\n")
+	b.WriteString("The issue under discussion:\n")
+	b.WriteString(issueID)
+	if t := strings.TrimSpace(title); t != "" {
+		b.WriteString(" — ")
+		b.WriteString(t)
+	}
+	b.WriteString("\n\n")
+	if d := strings.TrimSpace(description); d != "" {
+		b.WriteString(d)
+	} else {
+		b.WriteString("(no description yet)")
+	}
+	b.WriteString("\n\n")
+	b.WriteString(grillPregrillRules)
+	return b.String()
+}
+
 // grillAuthoringPrompt is the first-turn prompt for a session anchored to the repo
 // alone (no issue). Full from-scratch authoring lands in a later slice; here the
 // agent still interviews toward a clear specification and proposes a rewrite.
@@ -49,3 +75,12 @@ const grillPromptRules = `How to run the session:
   - "needs_split" — the work is too large for one ticket but you cannot confidently slice it yet; just flag it for a human to split.
   - "no_change" — the issue was already clear enough and needs no rewrite.
   Always include a short summary of the clarifications you reached. Nothing is written to the tracker until the user approves.`
+
+const grillPregrillRules = `How to run this unattended pass:
+- First read the repository to understand the issue as far as you can on your own; settle anything you can answer yourself instead of asking.
+- If the issue is already clear enough to implement, call finish_session now:
+  - "rewrite" — you can write a complete, unambiguous issue description; pass it as proposed_description. This is the common case when the issue only needed tightening.
+  - "no_change" — the issue was already clear enough as written; say why in summary.
+- Otherwise, ask the SINGLE most important opening question by calling ask_user exactly once. No user is present, so the call returns a park instruction: when it does, end your turn immediately without asking again. The question is saved and a live session resumes with the user's answer when they return.
+- Ask your one opening question or finish — never both, and never call ask_user more than once or wait for an answer.
+Always include a short summary of what you found. Nothing is written to the tracker until the user approves.`

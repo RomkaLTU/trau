@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { parseAsString, useQueryState } from 'nuqs'
-import { ChevronLeft, SkipForward } from 'lucide-react'
+import { ChevronLeft, Flame, SkipForward } from 'lucide-react'
 
 import { GrillPanel } from '@/components/grill-panel'
 import { Markdown } from '@/components/markdown'
@@ -21,12 +21,13 @@ import {
   useActiveRepo,
   type RunState,
 } from '@/components/trau'
-import { GRILLABLE_LABELS } from '@/lib/grill'
+import { GRILLABLE_LABELS, pregrillIssues } from '@/lib/grill'
 import {
   inboxPosition,
   inboxSections,
   nextIssueId,
   prevIssueId,
+  summarisePregrill,
   useInbox,
   type InboxAttention,
   type InboxItem,
@@ -68,6 +69,7 @@ function InboxPage() {
   const { repo: activeRepo } = useActiveRepo()
   const repo = activeRepo ?? ''
   const { items, isLoading, error } = useInbox(repo)
+  const queryClient = useQueryClient()
 
   const [peek, setPeek] = useQueryState(
     'issue',
@@ -75,6 +77,16 @@ function InboxPage() {
   )
 
   const sections = inboxSections(items)
+  const untouchedIds = items
+    .filter((item) => item.attention === 'open')
+    .map((item) => item.entry.id)
+
+  const [passSummary, setPassSummary] = useState<string | null>(null)
+  const pregrillAll = useMutation({
+    mutationFn: () => pregrillIssues(repo, untouchedIds),
+    onSuccess: (res) => setPassSummary(summarisePregrill(res)),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ['grill', repo] }),
+  })
 
   return (
     <ProjectScopeGate action="triage unclear issues">
@@ -82,9 +94,35 @@ function InboxPage() {
         eyebrow={repo || 'inbox'}
         title="Triage inbox"
         description="Work through unclear issues in one sitting — the ones with a question waiting on you come first."
+        actions={
+          untouchedIds.length > 0 ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => pregrillAll.mutate()}
+              disabled={pregrillAll.isPending}
+            >
+              <Flame />
+              {pregrillAll.isPending
+                ? 'Pre-grilling…'
+                : `Pre-grill all (${untouchedIds.length})`}
+            </Button>
+          ) : null
+        }
       />
 
       <div className="flex flex-col gap-6 px-8 py-6">
+        {(passSummary || pregrillAll.error) && (
+          <p
+            className={cn(
+              'text-sm',
+              pregrillAll.error ? 'text-destructive' : 'text-muted-foreground',
+            )}
+          >
+            {pregrillAll.error ? pregrillAll.error.message : passSummary}
+          </p>
+        )}
+
         {isLoading && items.length === 0 && (
           <p className="text-sm text-muted-foreground">Loading inbox…</p>
         )}
@@ -113,6 +151,7 @@ function InboxPage() {
                 {section.items.map((item) => (
                   <InboxRow
                     key={item.entry.id}
+                    repo={repo}
                     item={item}
                     active={peek === item.entry.id}
                     onOpen={() => void setPeek(item.entry.id)}
@@ -135,10 +174,12 @@ function InboxPage() {
 }
 
 function InboxRow({
+  repo,
   item,
   active,
   onOpen,
 }: {
+  repo: string
   item: InboxItem
   active: boolean
   onOpen: () => void
@@ -148,15 +189,17 @@ function InboxRow({
   const labels = entry.labels.filter((l) => GRILLABLE_LABELS.includes(l))
 
   return (
-    <li>
+    <li
+      className={cn(
+        'flex items-center gap-1 rounded-lg border bg-card pr-2 transition-colors hover:border-ring/40',
+        active && 'border-ring/60 bg-secondary/40',
+      )}
+    >
       <button
         type="button"
         onClick={onOpen}
         aria-label={`Open ${entry.id}`}
-        className={cn(
-          'flex w-full items-center gap-3 rounded-lg border bg-card px-4 py-3 text-left transition-colors hover:border-ring/40',
-          active && 'border-ring/60 bg-secondary/40',
-        )}
+        className="flex min-w-0 flex-1 items-center gap-3 rounded-lg px-4 py-3 text-left"
       >
         <span className="font-mono text-sm font-medium text-foreground">{entry.id}</span>
         <span className="min-w-0 flex-1 truncate text-sm text-foreground">{entry.title}</span>
@@ -170,7 +213,30 @@ function InboxRow({
         ))}
         <StatusPill state={pill.state} label={pill.label} />
       </button>
+      {item.attention === 'open' && <PregrillButton repo={repo} issueId={entry.id} />}
     </li>
+  )
+}
+
+function PregrillButton({ repo, issueId }: { repo: string; issueId: string }) {
+  const queryClient = useQueryClient()
+  const pregrill = useMutation({
+    mutationFn: () => pregrillIssues(repo, [issueId]),
+    onSettled: () => void queryClient.invalidateQueries({ queryKey: ['grill', repo] }),
+  })
+
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="size-8 shrink-0"
+      onClick={() => pregrill.mutate()}
+      disabled={pregrill.isPending}
+      aria-label={`Pre-grill ${issueId}`}
+      title="Pre-grill — ask an opening question ahead of time"
+    >
+      <Flame className={cn(pregrill.isPending && 'animate-pulse')} />
+    </Button>
   )
 }
 
