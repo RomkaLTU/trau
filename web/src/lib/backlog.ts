@@ -5,6 +5,10 @@ import { apiFetch } from './api'
 // BacklogEntry is one issue on the board, served from the hub's issue store.
 // source distinguishes an internally-created issue (`internal`) from a synced
 // tracker ticket (`linear` | `jira`); only internal issues are editable in place.
+// children_settled/children_total report an epic's settled (done + canceled) and
+// total sub-issue counts over all children in the store, and are present only on
+// an epic row (has_children) so the board can show its progress without a second
+// call.
 export interface BacklogEntry {
   id: string
   title: string
@@ -14,6 +18,8 @@ export interface BacklogEntry {
   source: string
   parent?: string
   has_children: boolean
+  children_settled?: number
+  children_total?: number
   ready: boolean
 }
 
@@ -179,6 +185,42 @@ export function backlogSections(
     first.continuation = true
   }
   return sections
+}
+
+export interface EpicRowNode {
+  kind: 'epic'
+  entry: BacklogEntry
+  children: BacklogEntry[]
+}
+
+export interface FlatRowNode {
+  kind: 'flat'
+  entry: BacklogEntry
+}
+
+export type BacklogRowNode = EpicRowNode | FlatRowNode
+
+// nestBacklogRows groups one section's hub-ordered rows into epic nodes and flat
+// rows for status-true nesting. The hub orders each status group by family key
+// with an epic immediately ahead of its same-group sub-issues, so an epic's
+// children are the contiguous run of rows naming it as parent. A sub-issue whose
+// epic row is absent — paged out, filtered away, or diverged into another
+// section — stays a flat row and keeps its breadcrumb chip.
+export function nestBacklogRows(items: BacklogEntry[]): BacklogRowNode[] {
+  const nodes: BacklogRowNode[] = []
+  for (const entry of items) {
+    const last = nodes[nodes.length - 1]
+    if (entry.parent && last?.kind === 'epic' && last.entry.id === entry.parent) {
+      last.children.push(entry)
+      continue
+    }
+    if (entry.has_children) {
+      nodes.push({ kind: 'epic', entry, children: [] })
+      continue
+    }
+    nodes.push({ kind: 'flat', entry })
+  }
+  return nodes
 }
 
 export interface HiddenGroupCount {
