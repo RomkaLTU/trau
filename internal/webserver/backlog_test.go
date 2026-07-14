@@ -90,6 +90,7 @@ func backlogServer(t *testing.T, fake tracker.Reader, readerErr error) (*Server,
 	home := t.TempDir()
 	runsDir := seedRepo(t, home, "acme")
 	root := filepath.Dir(filepath.Dir(runsDir))
+	writeRepoINI(t, root, "LINEAR_TEAM=COD\n")
 	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
 	s.home = home
 	s.newReader = func(config.Config) (tracker.Reader, error) {

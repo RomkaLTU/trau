@@ -875,6 +875,49 @@ func (c Config) EffectiveTrackerProvider() string {
 	}
 }
 
+// ResolveSyncProvider resolves the tracker provider a hub-side sync should use for
+// a repo, given which layer supplied each config value. It honors an explicit
+// TRACKER_PROVIDER through EffectiveTrackerProvider; only when the provider is unset
+// and the project layer alone carries full Jira credentials does it override the
+// default linear pick — a project-layer signal outweighs a user-layer LINEAR_API_KEY
+// that would otherwise make linear look configured for every repo on the machine.
+// The inference is per-resolution and is never written back to config.
+func (c Config) ResolveSyncProvider(sources map[string]Layer) string {
+	if !c.TrackerProviderExplicit(sources) && c.hasProjectJiraCreds(sources) {
+		return "jira"
+	}
+	return c.EffectiveTrackerProvider()
+}
+
+// TrackerProviderExplicit reports whether TRACKER_PROVIDER was set by a config layer
+// rather than left at its default, so a caller can tell an explicit tracker choice
+// from an inferred one.
+func (c Config) TrackerProviderExplicit(sources map[string]Layer) bool {
+	switch sources["TRACKER_PROVIDER"] {
+	case "", LayerDefault:
+		return false
+	default:
+		return true
+	}
+}
+
+// HasJiraCredentials reports whether the resolved config carries the full set of
+// direct Jira REST credentials, whichever layer supplied them.
+func (c Config) HasJiraCredentials() bool {
+	return strings.TrimSpace(c.JiraBaseURL) != "" &&
+		strings.TrimSpace(c.JiraEmail) != "" &&
+		strings.TrimSpace(c.JiraAPIToken) != ""
+}
+
+// hasProjectJiraCreds reports whether the project layer alone supplies the full set
+// of direct Jira REST credentials — the signal that a repo configured outside the
+// wizard means to use Jira even with no explicit TRACKER_PROVIDER.
+func (c Config) hasProjectJiraCreds(sources map[string]Layer) bool {
+	return sources["JIRA_BASE_URL"] == LayerProject &&
+		sources["JIRA_EMAIL"] == LayerProject &&
+		sources["JIRA_API_TOKEN"] == LayerProject
+}
+
 // InternalPrefix resolves the prefix for internally-created issue identifiers
 // (ADR 0007). An explicitly configured ISSUE_PREFIX wins; with none set it derives
 // from the repo directory name, sanitized to an uppercase, branch- and

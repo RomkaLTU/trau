@@ -2,6 +2,7 @@ package webserver
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -217,17 +218,63 @@ func (s *Server) backlogConfig(repo registry.Repo) (readyLabel, provider string)
 	return cfg.ReadyLabel, cfg.TrackerProvider
 }
 
-// readerFor resolves the repo's layered config and builds a direct tracker Reader
-// from it, returning the provider name alongside so the board can label which
-// tracker answered.
-func (s *Server) readerFor(repo registry.Repo) (string, tracker.Reader, error) {
+// trackerResolution is the outcome of resolving a repo's tracker for a hub-side
+// sync: the reader and the provider that answered, plus the config signals that
+// turn a downstream binding or pull failure into an actionable error when the
+// provider had to be inferred from credentials rather than set explicitly.
+type trackerResolution struct {
+	provider  string
+	reader    tracker.Reader
+	explicit  bool
+	jiraCreds bool
+}
+
+// resolveReader resolves the repo's layered config, settles the effective tracker
+// provider (inferring jira when the project layer carries Jira credentials but no
+// TRACKER_PROVIDER is set), and builds a direct Reader for it.
+func (s *Server) resolveReader(repo registry.Repo) (trackerResolution, error) {
 	projectPath, userPath := s.repoConfigPaths(repo)
-	cfg, err := config.LoadLayered(projectPath, userPath, "", "")
+	cfg, sources, err := config.LoadLayeredWithSources(projectPath, userPath, "", "")
 	if err != nil {
-		return "", nil, err
+		return trackerResolution{}, err
 	}
+	cfg.TrackerProvider = cfg.ResolveSyncProvider(sources)
 	reader, err := s.newReader(cfg)
-	return cfg.TrackerProvider, reader, err
+	return trackerResolution{
+		provider:  cfg.TrackerProvider,
+		reader:    reader,
+		explicit:  cfg.TrackerProviderExplicit(sources),
+		jiraCreds: cfg.HasJiraCredentials(),
+	}, err
+}
+
+// actionableErr rewrites a binding or pull failure into one that names what to fix
+// when the tracker provider was inferred rather than set. An explicit provider — or
+// a failure the resolution cannot explain — is returned unchanged, so a repo that
+// names its tracker still surfaces the tracker's own error.
+func (r trackerResolution) actionableErr(err error) error {
+	if err == nil || r.explicit {
+		return err
+	}
+	switch r.provider {
+	case "jira":
+		if errors.Is(err, tracker.ErrReaderUnavailable) {
+			return fmt.Errorf("inferred jira from project-layer credentials but no Jira project key is set — set PROJECT: %w", err)
+		}
+	case "linear":
+		if r.jiraCreds {
+			return fmt.Errorf("repo has Jira credentials but TRACKER_PROVIDER is unset — set TRACKER_PROVIDER=jira (tried linear: %v)", err)
+		}
+	}
+	return err
+}
+
+// readerFor resolves the repo's tracker and returns the provider name and Reader,
+// so a caller that only labels the answering tracker need not carry the full
+// resolution.
+func (s *Server) readerFor(repo registry.Repo) (string, tracker.Reader, error) {
+	res, err := s.resolveReader(repo)
+	return res.provider, res.reader, err
 }
 
 // writeReaderErr maps a Reader build failure to a response. A repo with no direct
@@ -245,8 +292,15 @@ func writeReaderErr(w http.ResponseWriter, err error) {
 }
 
 // defaultReader builds a direct tracker Reader from a repo's resolved config,
-// mapping the provider's credentials the same way the loop's tracker is wired.
+// mapping the provider's credentials the same way the loop's tracker is wired. It
+// resolves the provider through EffectiveTrackerProvider so a repo with no external
+// tracker configured reports no credentials rather than reaching for a linear
+// reader it cannot build.
 func defaultReader(cfg config.Config) (tracker.Reader, error) {
+	provider := cfg.EffectiveTrackerProvider()
+	if provider == "internal" {
+		return nil, tracker.ErrReaderUnavailable
+	}
 	tc := tracker.Config{
 		Team:            cfg.LinearTeam,
 		Project:         cfg.Project,
@@ -255,12 +309,12 @@ func defaultReader(cfg config.Config) (tracker.Reader, error) {
 		SplitLabel:      cfg.SplitLabel,
 		APIKey:          cfg.LinearAPIKey,
 	}
-	if cfg.TrackerProvider == "jira" {
+	if provider == "jira" {
 		tc.APIKey = cfg.JiraAPIToken
 		tc.BaseURL = cfg.JiraBaseURL
 		tc.Email = cfg.JiraEmail
 	}
-	return tracker.NewReader(cfg.TrackerProvider, tc)
+	return tracker.NewReader(provider, tc)
 }
 
 // toBacklogEntries maps the stored issues onto the JSON board rows, deriving the
