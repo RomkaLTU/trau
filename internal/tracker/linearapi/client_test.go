@@ -219,11 +219,12 @@ func TestStateIsTerminal(t *testing.T) {
 // alone — a mutation declaring an ID variable is always a live-API failure.
 func TestMutationsDeclareStringVariables(t *testing.T) {
 	mutations := map[string]string{
-		"issueUpdate":      issueUpdateMutation,
-		"issueDescription": issueDescriptionMutation,
-		"commentCreate":    commentCreateMutation,
-		"issueLabelCreate": issueLabelCreateMutation,
-		"issueCreate":      issueCreateMutation,
+		"issueUpdate":         issueUpdateMutation,
+		"issueDescription":    issueDescriptionMutation,
+		"commentCreate":       commentCreateMutation,
+		"issueLabelCreate":    issueLabelCreateMutation,
+		"issueCreate":         issueCreateMutation,
+		"issueRelationCreate": issueRelationCreateMutation,
 	}
 	for name, q := range mutations {
 		for _, bad := range []string{": ID", ": [ID"} {
@@ -231,6 +232,52 @@ func TestMutationsDeclareStringVariables(t *testing.T) {
 				t.Errorf("%s declares an ID-typed variable (%q) — Linear mutations take String types", name, bad)
 			}
 		}
+	}
+}
+
+// CreateBlockRelation resolves both human identifiers to node ids and writes a
+// "blocks" relation from the blocker to the blocked issue.
+func TestCreateBlockRelationResolvesIDs(t *testing.T) {
+	var mutation graphReq
+	seen := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req graphReq
+		_ = json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.Query, "query Issue"):
+			node := "iss-blocked"
+			ident := "COD-2"
+			if req.Variables["number"] == float64(1) {
+				node, ident = "iss-blocker", "COD-1"
+			}
+			_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"id":"`+node+`","identifier":"`+ident+`","team":{"id":"team-1","key":"COD"}}]}}}`)
+		case strings.Contains(req.Query, "mutation IssueRelationCreate"):
+			mutation, seen = req, true
+			_, _ = io.WriteString(w, `{"data":{"issueRelationCreate":{"success":true}}}`)
+		default:
+			t.Errorf("unexpected query: %s", req.Query)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New("lin_key")
+	c.Endpoint = srv.URL
+	if err := c.CreateBlockRelation(context.Background(), "COD-1", "COD-2"); err != nil {
+		t.Fatalf("CreateBlockRelation: %v", err)
+	}
+	if !seen {
+		t.Fatal("relation mutation was not sent")
+	}
+	if mutation.Variables["issueId"] != "iss-blocker" {
+		t.Errorf("issueId var = %v, want the blocker node iss-blocker", mutation.Variables["issueId"])
+	}
+	if mutation.Variables["relatedIssueId"] != "iss-blocked" {
+		t.Errorf("relatedIssueId var = %v, want the blocked node iss-blocked", mutation.Variables["relatedIssueId"])
+	}
+	if mutation.Variables["type"] != "blocks" {
+		t.Errorf("type var = %v, want blocks", mutation.Variables["type"])
 	}
 }
 

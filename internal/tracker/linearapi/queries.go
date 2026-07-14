@@ -348,6 +348,18 @@ mutation IssueCreate($teamId: String!, $title: String!, $description: String, $l
 }
 `
 
+	// issueRelationCreateMutation links two issues. type "blocks" means issueId
+	// blocks relatedIssueId, so relatedIssueId reads issueId as a blocker in its
+	// inverseRelations — the direction blockers() interprets. The same String!
+	// typing note as issueUpdateMutation applies.
+	issueRelationCreateMutation = `
+mutation IssueRelationCreate($issueId: String!, $relatedIssueId: String!, $type: String!) {
+  issueRelationCreate(input: { issueId: $issueId, relatedIssueId: $relatedIssueId, type: $type }) {
+    success
+  }
+}
+`
+
 	// documentCreateMutation creates a project document from markdown content.
 	documentCreateMutation = `
 mutation DocumentCreate($projectId: String!, $title: String!, $content: String!) {

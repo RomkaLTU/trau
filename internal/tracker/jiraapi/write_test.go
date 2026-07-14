@@ -141,6 +141,48 @@ func TestAddCommentPostsADF(t *testing.T) {
 	}
 }
 
+// LinkBlocks POSTs a "Blocks" link with the blocker as the outward issue and the
+// blocked sibling as the inward issue — the direction blockersFromLinks reads back.
+func TestLinkBlocksPostsBlocksLink(t *testing.T) {
+	var (
+		method string
+		path   string
+		req    issueLinkRequest
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	if err := New(srv.URL, "me@acme.com", "tok").LinkBlocks(context.Background(), "PROJ-1", "PROJ-2"); err != nil {
+		t.Fatalf("LinkBlocks error: %v", err)
+	}
+	if method != http.MethodPost {
+		t.Errorf("method = %q, want POST", method)
+	}
+	if path != "/rest/api/3/issueLink" {
+		t.Errorf("path = %q, want /rest/api/3/issueLink", path)
+	}
+	if req.Type.Name != "Blocks" {
+		t.Errorf("link type = %q, want Blocks", req.Type.Name)
+	}
+	if req.OutwardIssue.Key != "PROJ-1" {
+		t.Errorf("outward (blocker) = %q, want PROJ-1", req.OutwardIssue.Key)
+	}
+	if req.InwardIssue.Key != "PROJ-2" {
+		t.Errorf("inward (blocked) = %q, want PROJ-2", req.InwardIssue.Key)
+	}
+}
+
+func TestLinkBlocksDisabledWithoutToken(t *testing.T) {
+	if err := New("https://acme.atlassian.net", "me@acme.com", "").LinkBlocks(context.Background(), "PROJ-1", "PROJ-2"); !errors.Is(err, ErrNotEnabled) {
+		t.Fatalf("LinkBlocks without token = %v, want ErrNotEnabled", err)
+	}
+}
+
 // CreateIssue resolves the issue type id via createmeta, then POSTs the issue
 // with the resolved id, the project key, an ADF description and the labels,
 // returning the new key.

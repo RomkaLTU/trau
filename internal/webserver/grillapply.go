@@ -29,9 +29,21 @@ var grillTriageLabels = []string{"needs-triage", "needs-info"}
 
 // GrillApplyRequest is the body of POST /grill/{sid}/apply. ProposedDescription is
 // the possibly user-edited replacement from the review UI; empty falls back to the
-// description the agent proposed in the outcome.
+// description the agent proposed in the outcome. SubIssues carries the user-edited
+// split breakdown; nil falls back to the agent's proposal.
 type GrillApplyRequest struct {
-	ProposedDescription string `json:"proposed_description"`
+	ProposedDescription string          `json:"proposed_description"`
+	SubIssues           []grillSubIssue `json:"sub_issues"`
+}
+
+// grillSubIssue is one proposed slice of a split: a fully-specified child issue
+// with optional labels (defaulting to the ready label at apply time) and
+// blocked_by indices referencing earlier siblings in the same proposal.
+type grillSubIssue struct {
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Labels      []string `json:"labels,omitempty"`
+	BlockedBy   []int    `json:"blocked_by,omitempty"`
 }
 
 // GrillApplyStep is one apply step's outcome. Error is set only when Status is
@@ -52,9 +64,10 @@ type GrillApplyResponse struct {
 }
 
 type grillOutcome struct {
-	Disposition         string `json:"disposition"`
-	ProposedDescription string `json:"proposed_description"`
-	Summary             string `json:"summary"`
+	Disposition         string          `json:"disposition"`
+	ProposedDescription string          `json:"proposed_description"`
+	SubIssues           []grillSubIssue `json:"sub_issues"`
+	Summary             string          `json:"summary"`
 }
 
 // handleGrillApply writes a finished session's proposed outcome to the tracker
@@ -136,14 +149,35 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 	if description == "" {
 		description = outcome.ProposedDescription
 	}
-	plan := grillApplyPlan{
-		disposition: outcome.Disposition,
-		description: description,
-		comment:     composeGrillSummary(outcome.Summary, msgs),
-	}
-	plan.addLabels, plan.removeLabels = grillLabelTransition(outcome.Disposition, cfg)
+	comment := composeGrillSummary(outcome.Summary, msgs)
 
-	steps, applied := s.applyGrillOutcome(r.Context(), writer, repo.Root, issueID, plan)
+	var (
+		steps   []GrillApplyStep
+		applied bool
+	)
+	if outcome.Disposition == grillDispSplit {
+		subs := req.SubIssues
+		if len(subs) == 0 {
+			subs = outcome.SubIssues
+		}
+		_, remove := grillLabelTransition(grillDispSplit, cfg)
+		plan := grillSplitPlan{
+			description:  description,
+			comment:      comment,
+			subIssues:    subs,
+			readyLabel:   cfg.ReadyLabel,
+			removeLabels: remove,
+		}
+		steps, applied = s.applyGrillSplit(r.Context(), writer, repo.Root, cfg.TrackerProvider, issueID, plan)
+	} else {
+		plan := grillApplyPlan{
+			disposition: outcome.Disposition,
+			description: description,
+			comment:     comment,
+		}
+		plan.addLabels, plan.removeLabels = grillLabelTransition(outcome.Disposition, cfg)
+		steps, applied = s.applyGrillOutcome(r.Context(), writer, repo.Root, issueID, plan)
+	}
 	if applied {
 		s.settleGrillApplied(w, &sess, steps)
 		return
@@ -221,9 +255,172 @@ func (s *Server) applyGrillOutcome(ctx context.Context, writer tracker.Writer, r
 	return steps, allOK
 }
 
+// grillSplitPlan is the resolved write plan for a split: the parent's epic-framing
+// description, the summary comment, the proposed sub-issues, the label a sub-issue
+// defaults to, and the labels to strip from the parent now that it is a specified
+// epic.
+type grillSplitPlan struct {
+	description  string
+	comment      string
+	subIssues    []grillSubIssue
+	readyLabel   string
+	removeLabels []string
+}
+
+// applyGrillSplit converts the parent into an epic and creates its proposed
+// sub-issues. Steps run in order — parent description, one per sub-issue, sibling
+// blocking relations, summary comment, parent labels — each reported independently,
+// so a partial apply stays finished and re-apply retries. A sub-issue already
+// present under the parent (matched by title in the store) is reused rather than
+// created again, so a retry after a partial run adds only the missing slices and
+// never a duplicate. Each created sub-issue is mirrored into the store as it lands,
+// both for that dedup and so the next inbound sync sees no divergence (ADR 0007).
+func (s *Server) applyGrillSplit(ctx context.Context, writer tracker.Writer, root, provider, parentID string, plan grillSplitPlan) ([]GrillApplyStep, bool) {
+	steps := make([]GrillApplyStep, 0, len(plan.subIssues)+4)
+	allOK := true
+	record := func(name string, err error) {
+		step := GrillApplyStep{Step: name, Status: grillStepOK}
+		if err != nil {
+			step.Status = grillStepFailed
+			step.Error = err.Error()
+			allOK = false
+		}
+		steps = append(steps, step)
+	}
+
+	patch := hubstore.SyncedPatch{}
+	if err := writer.UpdateDescription(ctx, parentID, plan.description); err != nil {
+		record("description", err)
+	} else {
+		record("description", nil)
+		patch.Description = plan.description
+	}
+
+	existing := s.grillExistingChildren(root, parentID)
+	ids := make([]string, len(plan.subIssues))
+	for i, sub := range plan.subIssues {
+		if id, ok := existing[strings.ToLower(strings.TrimSpace(sub.Title))]; ok {
+			ids[i] = id
+			record(grillSubIssueStep(sub.Title), nil)
+			continue
+		}
+		labels := sub.Labels
+		if len(labels) == 0 {
+			labels = []string{plan.readyLabel}
+		}
+		created, err := writer.CreateIssue(ctx, tracker.IssueDraft{
+			Title:       sub.Title,
+			Description: sub.Description,
+			Labels:      labels,
+			Parent:      parentID,
+		})
+		record(grillSubIssueStep(sub.Title), err)
+		if err != nil {
+			continue
+		}
+		ids[i] = created.Identifier
+		s.mirrorCreatedSubIssue(root, provider, parentID, created.Identifier, sub, labels)
+	}
+
+	if wired, relErr := s.wireGrillBlocks(ctx, writer, root, plan.subIssues, ids); wired {
+		record("relations", relErr)
+	}
+
+	record("comment", writer.AddComment(ctx, parentID, plan.comment))
+
+	if err := writer.UpdateLabels(ctx, parentID, nil, plan.removeLabels); err != nil {
+		record("labels", err)
+	} else {
+		record("labels", nil)
+		patch.RemoveLabels = plan.removeLabels
+	}
+
+	if patch.Description != "" || len(patch.RemoveLabels) > 0 {
+		if _, _, err := s.stores.Issues().UpdateSynced(root, parentID, patch); err != nil {
+			logger.Verbosef("grill apply %s: mirror synced row: %v", parentID, err)
+		}
+	}
+	return steps, allOK
+}
+
+// grillExistingChildren maps a parent's already-created children by lowercased
+// title to identifier, so a retry reuses a slice an earlier run created instead of
+// filing it twice.
+func (s *Server) grillExistingChildren(root, parentID string) map[string]string {
+	children, err := s.stores.Issues().Children(root, parentID)
+	if err != nil {
+		logger.Verbosef("grill apply %s: read children: %v", parentID, err)
+		return nil
+	}
+	out := make(map[string]string, len(children))
+	for _, c := range children {
+		out[strings.ToLower(strings.TrimSpace(c.Title))] = c.Identifier
+	}
+	return out
+}
+
+// mirrorCreatedSubIssue inserts a freshly created sub-issue into the store so the
+// board shows it under the epic at once and the next inbound sync reconciles it in
+// place rather than as a divergence (ADR 0007).
+func (s *Server) mirrorCreatedSubIssue(root, provider, parentID, identifier string, sub grillSubIssue, labels []string) {
+	if _, _, err := s.stores.Issues().Upsert(root, provider, []hubstore.Issue{{
+		Identifier:  identifier,
+		Title:       sub.Title,
+		Description: sub.Description,
+		StatusGroup: "unstarted",
+		Labels:      labels,
+		Parent:      parentID,
+	}}); err != nil {
+		logger.Verbosef("grill apply %s: mirror sub-issue %s: %v", parentID, identifier, err)
+	}
+}
+
+// wireGrillBlocks files the blocking relations between sibling sub-issues: for each
+// slice, every blocked_by sibling that now has an identifier blocks it. A relation
+// already written on an earlier pass is skipped and one that lands is recorded, so
+// a retry re-attempts only the relations that never landed — including one whose
+// slice was created earlier but whose link write failed — and never duplicates a
+// relation that did. It reports whether any relation was attempted and the first
+// error, if any.
+func (s *Server) wireGrillBlocks(ctx context.Context, writer tracker.Writer, root string, subs []grillSubIssue, ids []string) (attempted bool, err error) {
+	done, loadErr := s.stores.Grill().BlockRelations(root)
+	if loadErr != nil {
+		logger.Verbosef("grill apply: read wired relations: %v", loadErr)
+	}
+	for i, sub := range subs {
+		if ids[i] == "" {
+			continue
+		}
+		for _, dep := range sub.BlockedBy {
+			if dep < 0 || dep >= len(ids) || ids[dep] == "" || done[[2]string{ids[dep], ids[i]}] {
+				continue
+			}
+			attempted = true
+			if linkErr := writer.LinkBlocks(ctx, ids[dep], ids[i]); linkErr != nil {
+				if err == nil {
+					err = linkErr
+				}
+				continue
+			}
+			if markErr := s.stores.Grill().MarkBlockRelation(root, ids[dep], ids[i]); markErr != nil {
+				logger.Verbosef("grill apply: record wired relation %s->%s: %v", ids[dep], ids[i], markErr)
+			}
+		}
+	}
+	return attempted, err
+}
+
+// grillSubIssueStep names the apply step for one proposed slice so the review UI
+// can show which slice failed.
+func grillSubIssueStep(title string) string {
+	return "sub-issue: " + strings.TrimSpace(title)
+}
+
 // grillLabelTransition resolves the label delta for a disposition: a clarified
 // issue leaves the triage inbox, then a rewrite becomes ready for an agent while a
-// needs_split is flagged for splitting.
+// needs_split is flagged for splitting. A split turns the issue into a specified
+// epic, so it sheds the split flag too and gains nothing — the readiness moves to
+// its sub-issues.
 func grillLabelTransition(disposition string, cfg config.Config) (add, remove []string) {
 	remove = grillTriageLabels
 	switch disposition {
@@ -231,6 +428,8 @@ func grillLabelTransition(disposition string, cfg config.Config) (add, remove []
 		add = []string{cfg.ReadyLabel}
 	case grillDispNeedsSplit:
 		add = []string{cfg.SplitLabel}
+	case grillDispSplit:
+		remove = append(append([]string{}, grillTriageLabels...), cfg.SplitLabel)
 	}
 	return add, remove
 }

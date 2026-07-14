@@ -241,6 +241,38 @@ func (g *Grill) AppendMessage(sessionID int64, nm NewGrillMessage) (GrillMessage
 	return GrillMessage{ID: id, SessionID: sessionID, Role: nm.Role, Kind: nm.Kind, Payload: payload, CreatedAt: now}, true, nil
 }
 
+// MarkBlockRelation records that a split apply has written the blocker→blocked
+// relation to the tracker, so a retry skips it rather than filing a duplicate
+// link. It is idempotent on the (repo, blocker, blocked) key.
+func (g *Grill) MarkBlockRelation(repo, blocker, blocked string) error {
+	_, err := g.db.Exec(
+		`INSERT INTO grill_relations(repo, blocker, blocked) VALUES(?, ?, ?)
+		 ON CONFLICT(repo, blocker, blocked) DO NOTHING`,
+		repo, blocker, blocked,
+	)
+	return err
+}
+
+// BlockRelations returns the blocking relations already written for a repo, keyed
+// by [blocker, blocked] identifier pair, so an apply re-attempts only the ones
+// that never landed.
+func (g *Grill) BlockRelations(repo string) (out map[[2]string]bool, err error) {
+	q, err := g.db.Query(`SELECT blocker, blocked FROM grill_relations WHERE repo = ?`, repo)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, q.Close()) }()
+	out = map[[2]string]bool{}
+	for q.Next() {
+		var blocker, blocked string
+		if err := q.Scan(&blocker, &blocked); err != nil {
+			return nil, err
+		}
+		out[[2]string{blocker, blocked}] = true
+	}
+	return out, q.Err()
+}
+
 // Transition moves a session to state, enforcing the legal state machine, and sets
 // its parked_reason (the cause a stalled/parked session carries; empty clears it).
 // It returns ErrGrillNotFound for an unknown id and ErrGrillTransition for an

@@ -27,10 +27,11 @@ const (
 	rpcInternalError  = -32603
 )
 
-// Grilling outcome dispositions a child can finish a session with. split and
-// create arrive with their apply flows later.
+// Grilling outcome dispositions a child can finish a session with. create arrives
+// with its apply flow later.
 const (
 	grillDispRewrite    = "rewrite"
+	grillDispSplit      = "split"
 	grillDispNeedsSplit = "needs_split"
 	grillDispNoChange   = "no_change"
 )
@@ -117,14 +118,30 @@ var grillMCPTools = []mcpTool{
 	{
 		Name: "finish_session",
 		Description: "End the grilling session with a proposed outcome for the user to review. disposition is one of: " +
-			"\"rewrite\" (replace the issue description — requires proposed_description), \"needs_split\" (the issue is too " +
-			"large; flag it for splitting), or \"no_change\" (the issue is already clear enough). summary captures the key " +
-			"clarifications reached. Nothing is written to the tracker until the user approves.",
+			"\"rewrite\" (replace the issue description — requires proposed_description), \"split\" (the issue is epic-shaped; " +
+			"convert it to an epic and propose fully-specified sub-issues — requires proposed_description framing the epic and " +
+			"a non-empty sub_issues breakdown), \"needs_split\" (too large to slice confidently; just flag it for splitting), or " +
+			"\"no_change\" (the issue is already clear enough). summary captures the key clarifications reached. Nothing is " +
+			"written to the tracker until the user approves.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {
-    "disposition": {"type": "string", "enum": ["rewrite", "needs_split", "no_change"], "description": "The proposed outcome."},
-    "proposed_description": {"type": "string", "description": "Required when disposition is rewrite: the full replacement issue description."},
+    "disposition": {"type": "string", "enum": ["rewrite", "split", "needs_split", "no_change"], "description": "The proposed outcome."},
+    "proposed_description": {"type": "string", "description": "Required when disposition is rewrite (the full replacement issue description) or split (the parent rewrite framing the epic goal)."},
+    "sub_issues": {
+      "type": "array",
+      "description": "Required when disposition is split: the proposed epic breakdown, one implementable slice per agent session. Each becomes a child of this issue.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string", "description": "The sub-issue title."},
+          "description": {"type": "string", "description": "The full, unambiguous slice description an agent can implement without guessing."},
+          "labels": {"type": "array", "items": {"type": "string"}, "description": "Labels for the sub-issue. Defaults to the ready-for-agent label when omitted."},
+          "blocked_by": {"type": "array", "items": {"type": "integer"}, "description": "Zero-based indices of sibling sub-issues in this array that must finish before this one can start."}
+        },
+        "required": ["title", "description"]
+      }
+    },
     "summary": {"type": "string", "description": "A short summary of the clarifications reached during the session."}
   },
   "required": ["disposition", "summary"]
@@ -324,9 +341,10 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 // failures come back as a tool error the agent can correct, not a protocol error.
 func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, args json.RawMessage) {
 	var a struct {
-		Disposition         string `json:"disposition"`
-		ProposedDescription string `json:"proposed_description"`
-		Summary             string `json:"summary"`
+		Disposition         string          `json:"disposition"`
+		ProposedDescription string          `json:"proposed_description"`
+		SubIssues           []grillSubIssue `json:"sub_issues"`
+		Summary             string          `json:"summary"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		respondRPCJSON(w, rpcID, grillToolError("finish_session arguments were not valid JSON"))
@@ -334,13 +352,22 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 	}
 	disposition := strings.TrimSpace(a.Disposition)
 	if !validGrillDisposition(disposition) {
-		respondRPCJSON(w, rpcID, grillToolError("disposition must be one of: rewrite, needs_split, no_change"))
+		respondRPCJSON(w, rpcID, grillToolError("disposition must be one of: rewrite, split, needs_split, no_change"))
 		return
 	}
 	proposed := strings.TrimSpace(a.ProposedDescription)
-	if disposition == grillDispRewrite && proposed == "" {
-		respondRPCJSON(w, rpcID, grillToolError("disposition rewrite requires proposed_description"))
+	if (disposition == grillDispRewrite || disposition == grillDispSplit) && proposed == "" {
+		respondRPCJSON(w, rpcID, grillToolError("disposition "+disposition+" requires proposed_description"))
 		return
+	}
+	var subIssues []grillSubIssue
+	if disposition == grillDispSplit {
+		var msg string
+		subIssues, msg = normalizeSplitSubIssues(a.SubIssues)
+		if msg != "" {
+			respondRPCJSON(w, rpcID, grillToolError(msg))
+			return
+		}
 	}
 	summary := strings.TrimSpace(a.Summary)
 	if summary == "" {
@@ -361,10 +388,11 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 		return
 	}
 	outcome, _ := json.Marshal(struct {
-		Disposition         string `json:"disposition"`
-		ProposedDescription string `json:"proposed_description,omitempty"`
-		Summary             string `json:"summary"`
-	}{Disposition: disposition, ProposedDescription: proposed, Summary: summary})
+		Disposition         string          `json:"disposition"`
+		ProposedDescription string          `json:"proposed_description,omitempty"`
+		SubIssues           []grillSubIssue `json:"sub_issues,omitempty"`
+		Summary             string          `json:"summary"`
+	}{Disposition: disposition, ProposedDescription: proposed, SubIssues: subIssues, Summary: summary})
 
 	msg, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
 		Role:    hubstore.GrillRoleAgent,
@@ -432,10 +460,62 @@ func (s *Server) grillAskUnavailable(sid int64) mcpToolResult {
 
 func validGrillDisposition(d string) bool {
 	switch d {
-	case grillDispRewrite, grillDispNeedsSplit, grillDispNoChange:
+	case grillDispRewrite, grillDispSplit, grillDispNeedsSplit, grillDispNoChange:
 		return true
 	}
 	return false
+}
+
+// normalizeSplitSubIssues trims a split proposal's sub-issues and validates it:
+// at least one slice, each with a title and description, and blocked_by indices
+// that reference a real sibling and never the slice itself. It returns the
+// cleaned slice, or a tool-error message the agent can correct.
+func normalizeSplitSubIssues(in []grillSubIssue) ([]grillSubIssue, string) {
+	if len(in) == 0 {
+		return nil, "disposition split requires a non-empty sub_issues breakdown"
+	}
+	out := make([]grillSubIssue, len(in))
+	for i, sub := range in {
+		title := strings.TrimSpace(sub.Title)
+		if title == "" {
+			return nil, fmt.Sprintf("sub_issue %d is missing a title", i+1)
+		}
+		desc := strings.TrimSpace(sub.Description)
+		if desc == "" {
+			return nil, fmt.Sprintf("sub_issue %d (%q) is missing a description", i+1, title)
+		}
+		blockedBy := make([]int, 0, len(sub.BlockedBy))
+		seen := make(map[int]bool, len(sub.BlockedBy))
+		for _, dep := range sub.BlockedBy {
+			if dep == i {
+				return nil, fmt.Sprintf("sub_issue %d (%q) cannot be blocked by itself", i+1, title)
+			}
+			if dep < 0 || dep >= len(in) {
+				return nil, fmt.Sprintf("sub_issue %d (%q) has an out-of-range blocked_by index %d", i+1, title, dep)
+			}
+			if !seen[dep] {
+				seen[dep] = true
+				blockedBy = append(blockedBy, dep)
+			}
+		}
+		out[i] = grillSubIssue{Title: title, Description: desc, Labels: trimLabels(sub.Labels), BlockedBy: blockedBy}
+	}
+	return out, ""
+}
+
+// trimLabels drops blank label names, returning nil when none remain so the
+// stored proposal carries no empty labels array.
+func trimLabels(labels []string) []string {
+	out := make([]string, 0, len(labels))
+	for _, l := range labels {
+		if l = strings.TrimSpace(l); l != "" {
+			out = append(out, l)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func grillFinishable(state string) bool {

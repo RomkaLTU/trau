@@ -168,22 +168,32 @@ func TestGrillApplyLabelMatrix(t *testing.T) {
 	tests := []struct {
 		name        string
 		disposition string
+		subIssues   []grillSubIssue
+		createQueue []fakeCreate
 		wantDesc    bool
 		wantAdd     []string
 		wantRemove  []string
 		wantWrites  bool
 	}{
-		{"rewrite", grillDispRewrite, true, []string{"ready-for-agent"}, []string{"needs-triage", "needs-info"}, true},
-		{"needs_split", grillDispNeedsSplit, false, []string{"needs-split"}, []string{"needs-triage", "needs-info"}, true},
-		{"no_change", grillDispNoChange, false, nil, nil, false},
+		{"rewrite", grillDispRewrite, nil, nil, true, []string{"ready-for-agent"}, []string{"needs-triage", "needs-info"}, true},
+		{
+			"split", grillDispSplit,
+			[]grillSubIssue{{Title: "Slice A", Description: "do a"}},
+			[]fakeCreate{{issue: tracker.NewIssue{Identifier: "COD-2"}}},
+			true, nil, []string{"needs-triage", "needs-info", "needs-split"}, true,
+		},
+		{"needs_split", grillDispNeedsSplit, nil, nil, false, []string{"needs-split"}, []string{"needs-triage", "needs-info"}, true},
+		{"no_change", grillDispNoChange, nil, nil, false, nil, nil, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := newFakeWriter()
+			fake.createQueue = tc.createQueue
 			ts, stores, root := grillApplyServer(t, fake)
 			sid := seedFinishedGrill(t, stores, root, "COD-1", grillOutcome{
 				Disposition:         tc.disposition,
 				ProposedDescription: "body",
+				SubIssues:           tc.subIssues,
 				Summary:             "done",
 			})
 
@@ -251,6 +261,211 @@ func TestGrillApplySyncNoClobber(t *testing.T) {
 	}
 	if !hasLabel(iss.Labels, "ready-for-agent") {
 		t.Errorf("stored labels missing ready-for-agent: %v", iss.Labels)
+	}
+}
+
+func TestGrillApplySplitHierarchyAndRelations(t *testing.T) {
+	fake := newFakeWriter()
+	fake.createQueue = []fakeCreate{
+		{issue: tracker.NewIssue{Identifier: "COD-2"}},
+		{issue: tracker.NewIssue{Identifier: "COD-3"}},
+		{issue: tracker.NewIssue{Identifier: "COD-4"}},
+	}
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "COD-1", grillOutcome{
+		Disposition:         grillDispSplit,
+		ProposedDescription: "Epic goal framing.",
+		Summary:             "sliced into three",
+		SubIssues: []grillSubIssue{
+			{Title: "Slice A", Description: "do a"},
+			{Title: "Slice B", Description: "do b", BlockedBy: []int{0}},
+			{Title: "Slice C", Description: "do c", Labels: []string{"custom"}, BlockedBy: []int{0, 1}},
+		},
+	})
+
+	res, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if res.StatusCode != http.StatusOK || !out.Applied || out.Session.State != hubstore.GrillApplied {
+		t.Fatalf("apply = %+v (status %d), want applied", out, res.StatusCode)
+	}
+	if len(fake.descriptions) != 1 || fake.descriptions[0].id != "COD-1" || fake.descriptions[0].body != "Epic goal framing." {
+		t.Fatalf("parent description = %+v", fake.descriptions)
+	}
+	if len(fake.created) != 3 {
+		t.Fatalf("created = %d, want 3 children", len(fake.created))
+	}
+	for i, d := range fake.created {
+		if d.Parent != "COD-1" {
+			t.Errorf("sub-issue %d parent = %q, want COD-1", i, d.Parent)
+		}
+	}
+	if got := fake.created[0].Labels; !slices.Equal(got, []string{"ready-for-agent"}) {
+		t.Errorf("slice A labels = %v, want the default ready label", got)
+	}
+	if got := fake.created[2].Labels; !slices.Equal(got, []string{"custom"}) {
+		t.Errorf("slice C labels = %v, want its proposed labels", got)
+	}
+	// Blocking relations: blocker first. B←A, C←A, C←B.
+	wantLinks := []linkCall{
+		{blocker: "COD-2", blocked: "COD-3"},
+		{blocker: "COD-2", blocked: "COD-4"},
+		{blocker: "COD-3", blocked: "COD-4"},
+	}
+	if !slices.Equal(fake.links, wantLinks) {
+		t.Fatalf("links = %+v, want %+v", fake.links, wantLinks)
+	}
+	if len(fake.labels) != 1 {
+		t.Fatalf("label calls = %d, want 1 (parent only)", len(fake.labels))
+	}
+	if fake.labels[0].add != nil {
+		t.Errorf("parent add labels = %v, want none", fake.labels[0].add)
+	}
+	if want := []string{"needs-triage", "needs-info", "needs-split"}; !slices.Equal(fake.labels[0].remove, want) {
+		t.Errorf("parent remove labels = %v, want %v", fake.labels[0].remove, want)
+	}
+	wantSteps := []string{
+		"description", "sub-issue: Slice A", "sub-issue: Slice B", "sub-issue: Slice C",
+		"relations", "comment", "labels",
+	}
+	gotSteps := make([]string, 0, len(out.Steps))
+	for _, s := range out.Steps {
+		gotSteps = append(gotSteps, s.Step)
+		if s.Status != grillStepOK {
+			t.Errorf("step %s = %+v, want ok", s.Step, s)
+		}
+	}
+	if !slices.Equal(gotSteps, wantSteps) {
+		t.Fatalf("steps = %v, want %v", gotSteps, wantSteps)
+	}
+	kids, err := stores.Issues().Children(root, "COD-1")
+	if err != nil {
+		t.Fatalf("children: %v", err)
+	}
+	if len(kids) != 3 {
+		t.Fatalf("stored children = %d, want 3 (clobber guard)", len(kids))
+	}
+}
+
+func TestGrillApplySplitPartialRetry(t *testing.T) {
+	fake := newFakeWriter()
+	// Pass 1: three creates land, the last two fail.
+	fake.createQueue = []fakeCreate{
+		{issue: tracker.NewIssue{Identifier: "COD-2"}},
+		{issue: tracker.NewIssue{Identifier: "COD-3"}},
+		{issue: tracker.NewIssue{Identifier: "COD-4"}},
+		{err: errString("linear: 502")},
+		{err: errString("linear: 502")},
+	}
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "COD-1", grillOutcome{
+		Disposition:         grillDispSplit,
+		ProposedDescription: "Epic goal.",
+		Summary:             "five slices",
+		SubIssues: []grillSubIssue{
+			{Title: "S1", Description: "d1"},
+			{Title: "S2", Description: "d2", BlockedBy: []int{0}},
+			{Title: "S3", Description: "d3"},
+			{Title: "S4", Description: "d4", BlockedBy: []int{2}},
+			{Title: "S5", Description: "d5", BlockedBy: []int{3}},
+		},
+	})
+
+	_, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if out.Applied || out.Session.State != hubstore.GrillFinished {
+		t.Fatalf("partial apply = %+v, want not applied and still finished", out)
+	}
+	if len(fake.created) != 5 {
+		t.Fatalf("pass 1 create attempts = %d, want 5", len(fake.created))
+	}
+	if st, _ := stepStatus(out.Steps, "sub-issue: S4"); st != grillStepFailed {
+		t.Errorf("S4 step = %q, want failed", st)
+	}
+
+	// Pass 2: only the two missing slices are created; the three already filed are reused.
+	fake.created = nil
+	fake.createIdx = 0
+	fake.createQueue = []fakeCreate{
+		{issue: tracker.NewIssue{Identifier: "COD-5"}},
+		{issue: tracker.NewIssue{Identifier: "COD-6"}},
+	}
+	fake.links = nil
+
+	_, out = applyGrill(t, ts, sid, GrillApplyRequest{})
+	if !out.Applied || out.Session.State != hubstore.GrillApplied {
+		t.Fatalf("retry = %+v, want applied", out)
+	}
+	if len(fake.created) != 2 {
+		t.Fatalf("retry create attempts = %d, want 2 (only the missing slices, no duplicates)", len(fake.created))
+	}
+	if titles := []string{fake.created[0].Title, fake.created[1].Title}; !slices.Equal(titles, []string{"S4", "S5"}) {
+		t.Fatalf("retry created = %v, want [S4 S5]", titles)
+	}
+	// The freshly created slices get their relations wired now; the reused ones are not re-linked.
+	wantLinks := []linkCall{
+		{blocker: "COD-4", blocked: "COD-5"},
+		{blocker: "COD-5", blocked: "COD-6"},
+	}
+	if !slices.Equal(fake.links, wantLinks) {
+		t.Fatalf("retry links = %+v, want %+v", fake.links, wantLinks)
+	}
+	kids, err := stores.Issues().Children(root, "COD-1")
+	if err != nil {
+		t.Fatalf("children: %v", err)
+	}
+	if len(kids) != 5 {
+		t.Fatalf("stored children after retry = %d, want 5", len(kids))
+	}
+}
+
+func TestGrillApplySplitRelationRetry(t *testing.T) {
+	fake := newFakeWriter()
+	// Pass 1: both slices are created, but the link between them fails.
+	fake.createQueue = []fakeCreate{
+		{issue: tracker.NewIssue{Identifier: "COD-2"}},
+		{issue: tracker.NewIssue{Identifier: "COD-3"}},
+	}
+	fake.linkErr = errString("linear: 502")
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "COD-1", grillOutcome{
+		Disposition:         grillDispSplit,
+		ProposedDescription: "Epic goal.",
+		Summary:             "two slices",
+		SubIssues: []grillSubIssue{
+			{Title: "S1", Description: "d1"},
+			{Title: "S2", Description: "d2", BlockedBy: []int{0}},
+		},
+	})
+
+	_, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if out.Applied || out.Session.State != hubstore.GrillFinished {
+		t.Fatalf("partial apply = %+v, want not applied and still finished", out)
+	}
+	if st, ok := stepStatus(out.Steps, "relations"); !ok || st != grillStepFailed {
+		t.Errorf("relations step = %q (present %v), want failed", st, ok)
+	}
+	if want := []linkCall{{blocker: "COD-2", blocked: "COD-3"}}; !slices.Equal(fake.links, want) {
+		t.Fatalf("pass 1 links = %+v, want %+v", fake.links, want)
+	}
+
+	// Pass 2: both slices already exist, so nothing is re-created; the link that
+	// failed before is re-attempted and now lands.
+	fake.linkErr = nil
+	fake.created = nil
+	fake.createIdx = 0
+	fake.createQueue = nil
+	fake.links = nil
+
+	_, out = applyGrill(t, ts, sid, GrillApplyRequest{})
+	if !out.Applied || out.Session.State != hubstore.GrillApplied {
+		t.Fatalf("retry = %+v, want applied", out)
+	}
+	if len(fake.created) != 0 {
+		t.Fatalf("retry created %d issues, want 0 (both slices reused)", len(fake.created))
+	}
+	if want := []linkCall{{blocker: "COD-2", blocked: "COD-3"}}; !slices.Equal(fake.links, want) {
+		t.Fatalf("retry links = %+v, want the failed relation re-attempted %+v", fake.links, want)
+	}
+	if st, ok := stepStatus(out.Steps, "relations"); !ok || st != grillStepOK {
+		t.Errorf("retry relations step = %q (present %v), want ok", st, ok)
 	}
 }
 

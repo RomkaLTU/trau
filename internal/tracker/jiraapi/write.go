@@ -152,6 +152,40 @@ func (c *Client) CreateIssue(ctx context.Context, projectKey, issueType, summary
 	return resp.Key, nil
 }
 
+// LinkBlocks records a "Blocks" link where blocker blocks blocked. Jira's Blocks
+// type reads outward as "blocks" and inward as "is blocked by", so the blocker is
+// the outward issue and the blocked sibling the inward issue — the same direction
+// blockersFromLinks reads back. Success is a 201.
+func (c *Client) LinkBlocks(ctx context.Context, blocker, blocked string) error {
+	if !c.enabled() {
+		return ErrNotEnabled
+	}
+	blocker = strings.TrimSpace(blocker)
+	blocked = strings.TrimSpace(blocked)
+	if blocker == "" || blocked == "" {
+		return ErrNotFound
+	}
+	body, err := json.Marshal(issueLinkRequest{
+		Type:         linkTypeRef{Name: "Blocks"},
+		OutwardIssue: keyRef{Key: blocker},
+		InwardIssue:  keyRef{Key: blocked},
+	})
+	if err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodPost, "/issueLink", body, nil)
+}
+
+type issueLinkRequest struct {
+	Type         linkTypeRef `json:"type"`
+	InwardIssue  keyRef      `json:"inwardIssue"`
+	OutwardIssue keyRef      `json:"outwardIssue"`
+}
+
+type linkTypeRef struct {
+	Name string `json:"name"`
+}
+
 // resolveIssueType returns the id of the named issue type in a project via
 // createmeta. An unmatched name is a real error the caller surfaces.
 func (c *Client) resolveIssueType(ctx context.Context, projectKey, name string) (string, error) {

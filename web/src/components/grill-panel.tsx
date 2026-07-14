@@ -9,9 +9,11 @@ import {
   Loader2,
   PauseCircle,
   Pencil,
+  Plus,
   Send,
   Sparkles,
   Trash2,
+  X,
   XCircle,
   type LucideIcon,
 } from 'lucide-react'
@@ -50,6 +52,7 @@ import {
   type GrillState,
   type OutcomePayload,
   type QuestionPayload,
+  type SubIssueProposal,
 } from '@/lib/grill'
 import { issueQueryOptions } from '@/lib/issues'
 import { streamSSE } from '@/lib/sse'
@@ -465,8 +468,10 @@ function OutcomeReview({
   const queryClient = useQueryClient()
   const issue = useQuery(issueQueryOptions(repo, issueId))
   const isRewrite = outcome.disposition === 'rewrite'
+  const isSplit = outcome.disposition === 'split'
   const [draft, setDraft] = useState(outcome.proposed_description ?? '')
   const [editing, setEditing] = useState(false)
+  const [subs, setSubs] = useState<SubIssueDraft[]>(() => toSubDrafts(outcome.sub_issues ?? []))
 
   // The session's new state rides onSession (and the hub's SSE state frame), so the
   // grill list is left to go stale on its own — invalidating it here would drop the
@@ -474,7 +479,8 @@ function OutcomeReview({
   // the issue and board are refreshed, which is what makes the issue leave the
   // unclear set once its triage labels are gone.
   const apply = useMutation({
-    mutationFn: () => applyGrill(session.id, isRewrite ? draft : ''),
+    mutationFn: () =>
+      applyGrill(session.id, isRewrite || isSplit ? draft : '', isSplit ? toSubIssues(subs) : undefined),
     onSuccess: (res) => {
       onSession(res.session)
       if (res.applied) {
@@ -496,6 +502,8 @@ function OutcomeReview({
 
   const failedSteps = apply.data && !apply.data.applied ? apply.data.steps : []
   const busy = apply.isPending || discard.isPending
+  const splitReady = subsAreComplete(subs)
+  const blockApply = busy || (isSplit && !splitReady)
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-info/40 bg-info/5 p-3">
@@ -513,6 +521,18 @@ function OutcomeReview({
           onChange={setDraft}
           onEdit={() => setEditing(true)}
           onPreview={() => setEditing(false)}
+        />
+      ) : isSplit ? (
+        <SplitBody
+          current={issue.data?.description ?? ''}
+          draft={draft}
+          editing={editing}
+          loading={issue.isLoading}
+          onDraftChange={setDraft}
+          onEdit={() => setEditing(true)}
+          onPreview={() => setEditing(false)}
+          subs={subs}
+          onSubsChange={setSubs}
         />
       ) : (
         <p className="text-xs leading-relaxed text-muted-foreground">
@@ -532,7 +552,7 @@ function OutcomeReview({
       )}
 
       <div className="flex items-center gap-2">
-        <Button size="sm" onClick={() => apply.mutate()} disabled={busy}>
+        <Button size="sm" onClick={() => apply.mutate()} disabled={blockApply}>
           {apply.isPending ? <Loader2 className="animate-spin" /> : <Check />}
           {applyLabel(outcome.disposition, apply.data)}
         </Button>
@@ -543,6 +563,220 @@ function OutcomeReview({
           </Button>
         )}
       </div>
+    </div>
+  )
+}
+
+// SubIssueDraft is the review UI's editable form of a proposed slice. blockedBy
+// holds the keys of blocking siblings, not their indices, so adding or removing a
+// card never silently rewires a dependency.
+interface SubIssueDraft {
+  key: string
+  title: string
+  description: string
+  labels: string[]
+  blockedBy: string[]
+}
+
+let subKeySeq = 0
+
+function newSubKey(): string {
+  subKeySeq += 1
+  return `sub-new-${subKeySeq}`
+}
+
+// toSubDrafts turns the agent's index-referenced proposal into editable cards keyed
+// by a stable key, resolving each blocked_by index to the sibling's key and dropping
+// any out-of-range or self reference.
+function toSubDrafts(proposals: SubIssueProposal[]): SubIssueDraft[] {
+  const keys = proposals.map((_, i) => `sub-${i}`)
+  return proposals.map((p, i) => ({
+    key: keys[i],
+    title: p.title,
+    description: p.description,
+    labels: p.labels ?? [],
+    blockedBy: (p.blocked_by ?? [])
+      .filter((idx) => idx >= 0 && idx < keys.length && idx !== i)
+      .map((idx) => keys[idx]),
+  }))
+}
+
+// toSubIssues converts the cards back to the wire proposal, resolving each blocking
+// key to its current index and trimming the text the hub will validate again.
+function toSubIssues(drafts: SubIssueDraft[]): SubIssueProposal[] {
+  const indexByKey = new Map(drafts.map((d, i) => [d.key, i]))
+  return drafts.map((d, i) => {
+    const blocked_by = d.blockedBy
+      .map((k) => indexByKey.get(k))
+      .filter((idx): idx is number => idx !== undefined && idx !== i)
+    const sub: SubIssueProposal = { title: d.title.trim(), description: d.description.trim() }
+    if (d.labels.length > 0) sub.labels = d.labels
+    if (blocked_by.length > 0) sub.blocked_by = blocked_by
+    return sub
+  })
+}
+
+function subsAreComplete(subs: SubIssueDraft[]): boolean {
+  return subs.length > 0 && subs.every((s) => s.title.trim() !== '' && s.description.trim() !== '')
+}
+
+const subInputClass =
+  'w-full rounded-md border bg-card px-2 py-1 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50'
+
+// SplitBody is the split review: the parent's epic-framing description shown as an
+// editable old→new diff, then the proposed slices as cards the user can edit, add,
+// remove, and re-wire before Apply files them.
+function SplitBody({
+  current,
+  draft,
+  editing,
+  loading,
+  onDraftChange,
+  onEdit,
+  onPreview,
+  subs,
+  onSubsChange,
+}: {
+  current: string
+  draft: string
+  editing: boolean
+  loading: boolean
+  onDraftChange: (text: string) => void
+  onEdit: () => void
+  onPreview: () => void
+  subs: SubIssueDraft[]
+  onSubsChange: (subs: SubIssueDraft[]) => void
+}) {
+  const update = (key: string, patch: Partial<SubIssueDraft>) =>
+    onSubsChange(subs.map((s) => (s.key === key ? { ...s, ...patch } : s)))
+  const add = () =>
+    onSubsChange([...subs, { key: newSubKey(), title: '', description: '', labels: [], blockedBy: [] }])
+  const remove = (key: string) =>
+    onSubsChange(
+      subs
+        .filter((s) => s.key !== key)
+        .map((s) => ({ ...s, blockedBy: s.blockedBy.filter((k) => k !== key) })),
+    )
+  const toggleDep = (key: string, depKey: string) => {
+    const sub = subs.find((s) => s.key === key)
+    if (!sub) return
+    const blockedBy = sub.blockedBy.includes(depKey)
+      ? sub.blockedBy.filter((k) => k !== depKey)
+      : [...sub.blockedBy, depKey]
+    update(key, { blockedBy })
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <RewriteBody
+        current={current}
+        draft={draft}
+        editing={editing}
+        loading={loading}
+        onChange={onDraftChange}
+        onEdit={onEdit}
+        onPreview={onPreview}
+      />
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-muted-foreground">
+            Sub-issues ({subs.length})
+          </span>
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={add}>
+            <Plus />
+            Add
+          </Button>
+        </div>
+        {subs.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            Add at least one sub-issue before applying.
+          </p>
+        ) : (
+          subs.map((sub, i) => (
+            <SubIssueCard
+              key={sub.key}
+              index={i}
+              sub={sub}
+              siblings={subs}
+              onChange={update}
+              onRemove={remove}
+              onToggleDep={toggleDep}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SubIssueCard({
+  index,
+  sub,
+  siblings,
+  onChange,
+  onRemove,
+  onToggleDep,
+}: {
+  index: number
+  sub: SubIssueDraft
+  siblings: SubIssueDraft[]
+  onChange: (key: string, patch: Partial<SubIssueDraft>) => void
+  onRemove: (key: string) => void
+  onToggleDep: (key: string, depKey: string) => void
+}) {
+  return (
+    <div className="flex flex-col gap-2 rounded-md border bg-card px-3 py-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-muted-foreground">Slice {index + 1}</span>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 px-2 text-xs text-muted-foreground"
+          onClick={() => onRemove(sub.key)}
+        >
+          <X />
+          Remove
+        </Button>
+      </div>
+      <input
+        value={sub.title}
+        onChange={(e) => onChange(sub.key, { title: e.target.value })}
+        placeholder="Title"
+        className={subInputClass}
+      />
+      <textarea
+        value={sub.description}
+        onChange={(e) => onChange(sub.key, { description: e.target.value })}
+        rows={3}
+        placeholder="Description an agent can implement without guessing"
+        className={cn(subInputClass, 'min-h-20 resize-y font-mono text-xs')}
+      />
+      {siblings.length > 1 && (
+        <div className="flex flex-col gap-1">
+          <span className="text-[11px] text-muted-foreground">Blocked by</span>
+          <div className="flex flex-wrap gap-1">
+            {siblings.map((other, oi) => {
+              if (other.key === sub.key) return null
+              const on = sub.blockedBy.includes(other.key)
+              return (
+                <button
+                  key={other.key}
+                  type="button"
+                  onClick={() => onToggleDep(sub.key, other.key)}
+                  className={cn(
+                    'rounded border px-2 py-0.5 text-[11px]',
+                    on
+                      ? 'border-info/50 bg-info/10 text-foreground'
+                      : 'border-border text-muted-foreground',
+                  )}
+                >
+                  #{oi + 1} {other.title.trim() || 'untitled'}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -649,6 +883,7 @@ const STEP_LABELS: Record<string, string> = {
   description: 'Description',
   comment: 'Summary comment',
   labels: 'Labels',
+  relations: 'Blocking relations',
 }
 
 function StepList({ steps }: { steps: GrillApplyStep[] }) {
