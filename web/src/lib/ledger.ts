@@ -5,6 +5,10 @@ export type LedgerBucket = 'active' | 'needs-you' | 'merged' | 'stopped'
 export type LedgerTab = 'all' | LedgerBucket
 
 export interface LedgerRow {
+  // repo the run belongs to. Under "All projects" the ledger merges rows from
+  // several repos, so every action and link reads the repo off the row rather
+  // than a page-wide scope.
+  repo: string
   run: Run
   // instance is the Working instance holding this ticket, present only for a live
   // row. A grazing or parked loop is between tickets and does not hold one.
@@ -24,7 +28,25 @@ export function joinInstances(
       working.set(inst.ticket, inst)
     }
   }
-  return runs.map((run) => ({ run, instance: working.get(run.ticket) }))
+  return runs.map((run) => ({ repo, run, instance: working.get(run.ticket) }))
+}
+
+// mergeLedger folds every repo's runs into one ledger, joining each against the
+// machine-wide instances by (repo, ticket). Under "All projects" the buckets,
+// counts, sort, cap, and needs-you strip all read this merged set; the single
+// repo view is just the one-element case.
+export function mergeLedger(
+  repos: readonly string[],
+  runsByRepo: ReadonlyMap<string, Run[]>,
+  instances: Instance[],
+): LedgerRow[] {
+  const rows: LedgerRow[] = []
+  for (const repo of repos) {
+    for (const row of joinInstances(runsByRepo.get(repo) ?? [], instances, repo)) {
+      rows.push(row)
+    }
+  }
+  return rows
 }
 
 // bucketOf assigns each row to exactly one bucket by precedence: a live loop

@@ -7,6 +7,7 @@ import {
   capMerged,
   formatAge,
   joinInstances,
+  mergeLedger,
   rowsForTab,
   sortRows,
   type LedgerRow,
@@ -32,6 +33,7 @@ function instance(partial: Partial<Instance>): Instance {
 
 function row(partial: Partial<Run> & { ticket: string }, live = false): LedgerRow {
   return {
+    repo: 'repo',
     run: run(partial),
     instance: live ? instance({ ticket: partial.ticket }) : undefined,
   }
@@ -59,6 +61,54 @@ describe('joinInstances', () => {
       'repo',
     )
     expect(rows[0].instance).toBeUndefined()
+  })
+
+  it('stamps every row with its repo', () => {
+    const rows = joinInstances([run({ ticket: 'A-1' })], [], 'salonradar')
+    expect(rows[0].repo).toBe('salonradar')
+  })
+})
+
+describe('mergeLedger', () => {
+  it('folds every repo into one ledger, each row keeping its repo', () => {
+    const rows = mergeLedger(
+      ['salonradar', 'trucknet'],
+      new Map([
+        ['salonradar', [run({ ticket: 'COD-1' })]],
+        ['trucknet', [run({ ticket: 'TMS-1' }), run({ ticket: 'TMS-2' })]],
+      ]),
+      [],
+    )
+    expect(rows.map((r) => [r.repo, r.run.ticket])).toEqual([
+      ['salonradar', 'COD-1'],
+      ['trucknet', 'TMS-1'],
+      ['trucknet', 'TMS-2'],
+    ])
+  })
+
+  it('joins instances by (repo, ticket), not ticket alone', () => {
+    const rows = mergeLedger(
+      ['salonradar', 'trucknet'],
+      new Map([
+        ['salonradar', [run({ ticket: 'X-1' })]],
+        ['trucknet', [run({ ticket: 'X-1' })]],
+      ]),
+      [instance({ repo: 'trucknet', ticket: 'X-1', session_state: 'working' })],
+    )
+    const salon = rows.find((r) => r.repo === 'salonradar')
+    const truck = rows.find((r) => r.repo === 'trucknet')
+    expect(salon?.instance).toBeUndefined()
+    expect(truck?.instance?.repo).toBe('trucknet')
+  })
+
+  it('treats a repo with no fetched runs as empty', () => {
+    const rows = mergeLedger(
+      ['salonradar', 'trucknet'],
+      new Map([['salonradar', [run({ ticket: 'COD-1' })]]]),
+      [],
+    )
+    expect(rows).toHaveLength(1)
+    expect(rows[0].repo).toBe('salonradar')
   })
 })
 

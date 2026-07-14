@@ -121,6 +121,33 @@ function subscribeFeed(
   }
 }
 
+// useAllEvents mirrors useEventFeed across every repo at once, backing the "All
+// projects" ledger where activity lines can come from any repo. It taps the
+// machine-wide stream only while enabled; each frame keeps its repo tag so
+// callers can key by (repo, ticket).
+export function useAllEvents(enabled: boolean): RepoFeedEvent[] {
+  const [byId, setById] = useState<Map<string, RepoFeedEvent>>(() => new Map())
+
+  useEffect(() => {
+    if (!enabled) {
+      setById(new Map())
+      return
+    }
+    return subscribeAllEvents(
+      (ev) => setById((prev) => mergeEvents(prev, [ev])),
+      () => {},
+    )
+  }, [enabled])
+
+  return useMemo(
+    () =>
+      [...byId.values()]
+        .sort((a, b) => Number(b.id) - Number(a.id))
+        .slice(0, FEED_CAP),
+    [byId],
+  )
+}
+
 // subscribeAllEvents taps the same machine-wide stream but receives every repo's
 // frames, each carrying its repo tag. It backs the away recap and browser
 // notifications, which reason across all repos rather than one.
@@ -178,10 +205,10 @@ function setFeedStatus(status: FeedStatus) {
   for (const notify of feedStatusListeners) notify(status)
 }
 
-function mergeEvents(
-  prev: Map<string, FeedEvent>,
-  incoming: FeedEvent[],
-): Map<string, FeedEvent> {
+function mergeEvents<T extends FeedEvent>(
+  prev: Map<string, T>,
+  incoming: T[],
+): Map<string, T> {
   let changed = false
   const next = new Map(prev)
   for (const ev of incoming) {
