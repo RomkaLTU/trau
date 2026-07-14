@@ -1365,6 +1365,14 @@ var configSections = []string{
 	sectionPaths,
 }
 
+// ConfigSections returns the canonical catalog Section order shared by the web
+// and TUI settings surfaces.
+func ConfigSections() []string {
+	out := make([]string, len(configSections))
+	copy(out, configSections)
+	return out
+}
+
 // KnownKeys returns the canonical list of editable configuration keys. The
 // order is the order the editor presents them; advanced keys are hidden behind
 // a toggle by default.

@@ -112,6 +112,12 @@ func titledCardView(s Styles, w, h int, title, body, hint string) string {
 	return cardView(s, w, h, s.SummaryTitle.Render(title)+"\n\n"+body, hint)
 }
 
+// sectionHeader renders a muted uppercase eyebrow that groups the rows beneath
+// it. The two leading cells align it with the cursorMarker gutter of the rows.
+func sectionHeader(s Styles, title string) string {
+	return "  " + s.PaneTitle.Render(strings.ToUpper(title))
+}
+
 // cursorMarker is the leading glyph of a selectable row: a pointer when focused,
 // two blank cells otherwise. The single source of the ▸ cursor idiom.
 func cursorMarker(s Styles, focused bool) string {

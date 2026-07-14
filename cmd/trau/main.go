@@ -1603,6 +1603,12 @@ func (a *appActions) ConfigLayers() []string {
 	return []string{"project", "user"}
 }
 
+// ConfigSections returns the catalog Section names in display order so the
+// settings editor can group keys under headers.
+func (a *appActions) ConfigSections() []string {
+	return config.ConfigSections()
+}
+
 // ConfigItems returns every known config key with its effective value and the
 // layer that supplied it, so the settings editor can show precedence.
 func (a *appActions) ConfigItems() []tui.ConfigItem {
@@ -1617,6 +1623,7 @@ func (a *appActions) ConfigItems() []tui.ConfigItem {
 			Key:         it.Key,
 			Value:       it.Value,
 			Layer:       string(it.Layer),
+			Group:       it.Group,
 			Advanced:    it.Advanced,
 			Options:     it.Options,
 			Bool:        it.Bool,
