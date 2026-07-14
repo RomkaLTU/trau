@@ -5,6 +5,7 @@ import { parseAsString, useQueryState, useQueryStates } from 'nuqs'
 import {
   Check,
   ChevronsUpDown,
+  CornerDownRight,
   FilePlus,
   ListFilter,
   ListPlus,
@@ -209,6 +210,7 @@ function BacklogPage() {
                       entry={entry}
                       editing={editing === entry.id}
                       onOpen={() => void setPeek(entry.id)}
+                      onOpenParent={(id) => void setPeek(id)}
                       onToggleEdit={() =>
                         setEditing((cur) => (cur === entry.id ? null : entry.id))
                       }
@@ -456,6 +458,7 @@ function BacklogRow({
   entry,
   editing,
   onOpen,
+  onOpenParent,
   onToggleEdit,
   onEditDone,
 }: {
@@ -463,6 +466,7 @@ function BacklogRow({
   entry: BacklogEntry
   editing: boolean
   onOpen: () => void
+  onOpenParent: (id: string) => void
   onToggleEdit: () => void
   onEditDone: () => void
 }) {
@@ -480,6 +484,17 @@ function BacklogRow({
   return (
     <li className="rounded-lg border bg-card transition-colors hover:border-ring/40">
       <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+        {entry.parent && (
+          <button
+            type="button"
+            onClick={() => onOpenParent(entry.parent!)}
+            aria-label={`Open epic ${entry.parent}`}
+            className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:border-ring/40 hover:text-foreground"
+          >
+            <CornerDownRight className="size-3" aria-hidden />
+            {entry.parent}
+          </button>
+        )}
         <button
           type="button"
           onClick={onOpen}
