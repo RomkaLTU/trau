@@ -86,6 +86,15 @@ func sessionTranscriptPath(configDir, sessionID string) (string, bool) {
 	return matches[0], true
 }
 
+// SessionExists reports whether a transcript for sessionID is present on disk in
+// Claude Code's config root. The grill runner gates a --resume on it: a chain id
+// whose transcript was pruned or never landed falls back to a fresh first turn
+// rather than a doomed resume.
+func SessionExists(sessionID string) bool {
+	_, ok := sessionTranscriptPath(claudeConfigDir(), sessionID)
+	return ok
+}
+
 // readSessionStats locates and parses the transcript for sessionID. ok is false
 // when the file is missing or yields no usage-bearing line — callers leave the
 // result un-enriched (the prior zero behavior) rather than failing.

@@ -219,10 +219,12 @@ func TestStateIsTerminal(t *testing.T) {
 // alone — a mutation declaring an ID variable is always a live-API failure.
 func TestMutationsDeclareStringVariables(t *testing.T) {
 	mutations := map[string]string{
-		"issueUpdate":      issueUpdateMutation,
-		"commentCreate":    commentCreateMutation,
-		"issueLabelCreate": issueLabelCreateMutation,
-		"issueCreate":      issueCreateMutation,
+		"issueUpdate":         issueUpdateMutation,
+		"issueDescription":    issueDescriptionMutation,
+		"commentCreate":       commentCreateMutation,
+		"issueLabelCreate":    issueLabelCreateMutation,
+		"issueCreate":         issueCreateMutation,
+		"issueRelationCreate": issueRelationCreateMutation,
 	}
 	for name, q := range mutations {
 		for _, bad := range []string{": ID", ": [ID"} {
@@ -231,4 +233,153 @@ func TestMutationsDeclareStringVariables(t *testing.T) {
 			}
 		}
 	}
+}
+
+// CreateBlockRelation resolves both human identifiers to node ids and writes a
+// "blocks" relation from the blocker to the blocked issue.
+func TestCreateBlockRelationResolvesIDs(t *testing.T) {
+	var mutation graphReq
+	seen := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req graphReq
+		_ = json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.Query, "query Issue"):
+			node := "iss-blocked"
+			ident := "COD-2"
+			if req.Variables["number"] == float64(1) {
+				node, ident = "iss-blocker", "COD-1"
+			}
+			_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"id":"`+node+`","identifier":"`+ident+`","team":{"id":"team-1","key":"COD"}}]}}}`)
+		case strings.Contains(req.Query, "mutation IssueRelationCreate"):
+			mutation, seen = req, true
+			_, _ = io.WriteString(w, `{"data":{"issueRelationCreate":{"success":true}}}`)
+		default:
+			t.Errorf("unexpected query: %s", req.Query)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New("lin_key")
+	c.Endpoint = srv.URL
+	if err := c.CreateBlockRelation(context.Background(), "COD-1", "COD-2"); err != nil {
+		t.Fatalf("CreateBlockRelation: %v", err)
+	}
+	if !seen {
+		t.Fatal("relation mutation was not sent")
+	}
+	if mutation.Variables["issueId"] != "iss-blocker" {
+		t.Errorf("issueId var = %v, want the blocker node iss-blocker", mutation.Variables["issueId"])
+	}
+	if mutation.Variables["relatedIssueId"] != "iss-blocked" {
+		t.Errorf("relatedIssueId var = %v, want the blocked node iss-blocked", mutation.Variables["relatedIssueId"])
+	}
+	if mutation.Variables["type"] != "blocks" {
+		t.Errorf("type var = %v, want blocks", mutation.Variables["type"])
+	}
+}
+
+// UpdateDescription resolves the human identifier to its node id, then mutates the
+// description on that id.
+func TestUpdateDescriptionMutatesResolvedID(t *testing.T) {
+	var mutation graphReq
+	seen := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req graphReq
+		_ = json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.Query, "query Issue"):
+			_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"id":"iss-1","identifier":"COD-42","team":{"id":"team-1","key":"COD"}}]}}}`)
+		case strings.Contains(req.Query, "mutation IssueUpdateDescription"):
+			mutation, seen = req, true
+			_, _ = io.WriteString(w, `{"data":{"issueUpdate":{"success":true,"issue":{"id":"iss-1","identifier":"COD-42"}}}}`)
+		default:
+			t.Errorf("unexpected query: %s", req.Query)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New("lin_key")
+	c.Endpoint = srv.URL
+	if err := c.UpdateDescription(context.Background(), "COD-42", "fresh body"); err != nil {
+		t.Fatalf("UpdateDescription: %v", err)
+	}
+	if !seen {
+		t.Fatal("description mutation was not sent")
+	}
+	if mutation.Variables["id"] != "iss-1" {
+		t.Errorf("id var = %v, want the resolved node id iss-1", mutation.Variables["id"])
+	}
+	if mutation.Variables["description"] != "fresh body" {
+		t.Errorf("description var = %v, want fresh body", mutation.Variables["description"])
+	}
+}
+
+// UpdateLabels reads the issue's current labels, drops the removed ones, keeps the
+// rest, appends the added ones, and writes the merged set as label ids — Linear
+// replaces the whole set on update.
+func TestUpdateLabelsMergesSet(t *testing.T) {
+	teamLabels := `{"data":{"issueLabels":{"nodes":[
+		{"id":"l-ready","name":"ready-for-agent"},
+		{"id":"l-feat","name":"Feature"},
+		{"id":"l-triage","name":"needs-triage"}
+	]}}}`
+	issue := `{"data":{"issues":{"nodes":[{"id":"iss-1","identifier":"COD-42","team":{"id":"team-1","key":"COD"},"labels":{"nodes":[
+		{"id":"l-triage","name":"needs-triage"},
+		{"id":"l-feat","name":"Feature"}
+	]}}]}}}`
+	var update graphReq
+	seen := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req graphReq
+		_ = json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.Query, "TeamLabels"):
+			_, _ = io.WriteString(w, teamLabels)
+		case strings.Contains(req.Query, "query Issue"):
+			_, _ = io.WriteString(w, issue)
+		case strings.Contains(req.Query, "mutation IssueUpdate"):
+			update, seen = req, true
+			_, _ = io.WriteString(w, `{"data":{"issueUpdate":{"success":true,"issue":{"id":"iss-1","identifier":"COD-42"}}}}`)
+		default:
+			t.Errorf("unexpected query: %s", req.Query)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New("lin_key")
+	c.Endpoint = srv.URL
+	if err := c.UpdateLabels(context.Background(), "COD-42", []string{"ready-for-agent"}, []string{"needs-triage", "needs-info"}); err != nil {
+		t.Fatalf("UpdateLabels: %v", err)
+	}
+	if !seen {
+		t.Fatal("label update mutation was not sent")
+	}
+	ids := toStringSet(update.Variables["labelIds"])
+	if ids["l-triage"] {
+		t.Errorf("labelIds still carry the removed needs-triage: %v", update.Variables["labelIds"])
+	}
+	if !ids["l-feat"] || !ids["l-ready"] {
+		t.Errorf("labelIds = %v, want the kept Feature and added ready-for-agent", update.Variables["labelIds"])
+	}
+}
+
+func toStringSet(v any) map[string]bool {
+	out := map[string]bool{}
+	items, ok := v.([]any)
+	if !ok {
+		return out
+	}
+	for _, it := range items {
+		if s, ok := it.(string); ok {
+			out[s] = true
+		}
+	}
+	return out
 }

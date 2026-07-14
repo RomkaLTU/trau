@@ -38,6 +38,11 @@ type Server struct {
 	transcripts      *hubstore.Transcripts
 	events           *eventBroadcaster
 	transcriptEvents *transcriptBroadcaster
+	grillEvents      *grillBroadcaster
+	startGrill       func(ctx context.Context, sess hubstore.GrillSession)
+	runGrillTurn     func(ctx context.Context, sess hubstore.GrillSession)
+	pregrillMu       sync.Mutex
+	pregrill         map[int64]bool
 	sup              Supervisor
 	drain            *drainer
 	syncer           *syncer
@@ -72,6 +77,8 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		transcripts:      stores.Transcripts(),
 		events:           newEventBroadcaster(),
 		transcriptEvents: newTranscriptBroadcaster(),
+		grillEvents:      newGrillBroadcaster(),
+		pregrill:         map[int64]bool{},
 		sup:              newOSSupervisor(),
 		drainCtx:         context.Background(),
 		newWriter:        defaultWriter,
@@ -122,6 +129,10 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 // window, on top of the startup pass.
 const runDataPruneInterval = time.Hour
 
+// grillIdleAbandon is how long a parked grill session may sit untouched before the
+// sweep settles it as abandoned (grilling-prd.md).
+const grillIdleAbandon = 30 * 24 * time.Hour
+
 // pruneRunData drops run data past its retention window on startup and on a
 // periodic timer (ADR 0008): transcript sessions from transcripts.db, reclaiming
 // their freed pages, and event and token-call rows from the authoritative store.
@@ -138,6 +149,10 @@ func (s *Server) pruneRunData(ctx context.Context) {
 		}
 		if err := s.stores.Tokens().Prune(); err != nil {
 			logger.Verbosef("prune token calls: %v", err)
+		}
+		s.sweepIdleGrill()
+		if err := s.stores.Grill().Prune(); err != nil {
+			logger.Verbosef("prune grill sessions: %v", err)
 		}
 	}
 	prune()
@@ -257,6 +272,14 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/transcripts", s.handleTranscripts)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/transcript/chunks", s.handleTranscriptChunks)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/transcript/stream", s.handleTranscriptStream)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/grill", s.handleRepoGrill)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/grill/pregrill", s.handleRepoPregrill)
+	mux.HandleFunc(APIPrefix+"/grill/{sid}", s.handleGrillSession)
+	mux.HandleFunc(APIPrefix+"/grill/{sid}/answer", s.handleGrillAnswer)
+	mux.HandleFunc(APIPrefix+"/grill/{sid}/apply", s.handleGrillApply)
+	mux.HandleFunc(APIPrefix+"/grill/{sid}/abandon", s.handleGrillAbandon)
+	mux.HandleFunc(APIPrefix+"/grill/{sid}/stream", s.handleGrillStream)
+	mux.HandleFunc(APIPrefix+"/grill/{sid}/mcp", s.handleGrillMCP)
 	mux.HandleFunc(APIPrefix+"/events/stream", s.handleAllEventStream)
 	mux.HandleFunc("/api/", handleAPINotFound)
 

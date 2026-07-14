@@ -297,6 +297,20 @@ mutation IssueUpdate($id: String!, $stateId: String, $labelIds: [String!]) {
 }
 `
 
+	// issueDescriptionMutation replaces the issue's description. The same String!
+	// typing note as issueUpdateMutation applies.
+	issueDescriptionMutation = `
+mutation IssueUpdateDescription($id: String!, $description: String!) {
+  issueUpdate(id: $id, input: { description: $description }) {
+    success
+    issue {
+      id
+      identifier
+    }
+  }
+}
+`
+
 	// commentCreateMutation adds a comment to an issue.
 	commentCreateMutation = `
 mutation CommentCreate($issueId: String!, $body: String!) {
@@ -330,6 +344,18 @@ mutation IssueCreate($teamId: String!, $title: String!, $description: String, $l
       identifier
       url
     }
+  }
+}
+`
+
+	// issueRelationCreateMutation links two issues. type "blocks" means issueId
+	// blocks relatedIssueId, so relatedIssueId reads issueId as a blocker in its
+	// inverseRelations — the direction blockers() interprets. The same String!
+	// typing note as issueUpdateMutation applies.
+	issueRelationCreateMutation = `
+mutation IssueRelationCreate($issueId: String!, $relatedIssueId: String!, $type: String!) {
+  issueRelationCreate(input: { issueId: $issueId, relatedIssueId: $relatedIssueId, type: $type }) {
+    success
   }
 }
 `

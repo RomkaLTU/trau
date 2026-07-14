@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
@@ -113,6 +114,7 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 		Transcripts: cfg.TranscriptRetention,
 		Events:      cfg.EventRetention,
 		TokenCalls:  cfg.TokenRetention,
+		Grill:       cfg.GrillRetention,
 	})
 	if err := stores.Registrations().ImportLegacy(home); err != nil {
 		return console.Actionable(err, "import legacy registration state",
@@ -125,6 +127,8 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 
 	addr := net.JoinHostPort(cfg.ServeBind, strconv.Itoa(cfg.ServePort))
 	hub := webserver.New(version, cfg.ServeBind, cfg.ServeToken, cfg.ServeWorkspace, cfg.ServeAllowRegister, stores)
+	grillBase := "http://" + net.JoinHostPort(grillReachableHost(cfg.ServeBind), strconv.Itoa(cfg.ServePort))
+	hub.EnableGrilling(ctx, grillBase)
 	hub.Start(ctx, time.Duration(cfg.ServeSyncInterval)*time.Second, time.Duration(cfg.ServeReconcileInterval)*time.Second)
 	srv := &http.Server{Addr: addr, Handler: hub.Handler()}
 
@@ -147,6 +151,19 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 			return nil
 		}
 		return err
+	}
+}
+
+// grillReachableHost is the host a hub-local grilling child dials to reach the
+// hub's own API. A wildcard bind (empty, 0.0.0.0, ::) listens on every interface
+// but is not itself dialable, so the child uses loopback; any other bind is a
+// concrete address it can reach directly.
+func grillReachableHost(bind string) string {
+	switch strings.TrimSpace(bind) {
+	case "", "0.0.0.0", "::":
+		return "127.0.0.1"
+	default:
+		return bind
 	}
 }
 

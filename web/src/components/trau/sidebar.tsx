@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import {
   DollarSign,
+  Inbox,
   LayoutDashboard,
   Lightbulb,
   ListChecks,
@@ -21,6 +22,8 @@ import { RepoSwitcher } from '@/components/trau/repo-switcher'
 import { ThemeToggle } from '@/components/trau/theme-toggle'
 import { useAttentionCount } from '@/lib/attention'
 import { healthQueryOptions } from '@/lib/health'
+import { useInboxCounts } from '@/lib/inbox'
+import { cn } from '@/lib/utils'
 
 interface NavItem {
   label: string
@@ -29,6 +32,8 @@ interface NavItem {
   search?: Record<string, string>
   exact?: boolean
   attention?: boolean
+  /** Show the triage inbox count — total, with the awaiting-answer count emphasized. */
+  inbox?: boolean
   /** Page acts on a single repo — the link is disabled under "All projects". */
   requiresProject?: boolean
 }
@@ -51,6 +56,13 @@ const GROUPS: NavGroup[] = [
       },
       { label: 'Loop', icon: RefreshCw, to: '/loop', requiresProject: true },
       { label: 'Backlog', icon: ListTodo, to: '/backlog', requiresProject: true },
+      {
+        label: 'Inbox',
+        icon: Inbox,
+        to: '/inbox',
+        requiresProject: true,
+        inbox: true,
+      },
       { label: 'Run once', icon: Play, to: '/run-once', requiresProject: true },
     ],
   },
@@ -77,10 +89,47 @@ const GROUPS: NavGroup[] = [
   },
 ]
 
+interface NavBadge {
+  count: number
+  tone: 'warn' | 'muted'
+  title?: string
+}
+
+// navBadge resolves an item's count pill: the attention item counts faulted runs;
+// the inbox item shows its total, but emphasizes the parked-awaiting-answer count
+// as the warn-toned "a question is waiting for you" signal when there is one.
+function navBadge(
+  item: NavItem,
+  attention: number,
+  inbox: { total: number; awaiting: number },
+): NavBadge | null {
+  if (item.attention) {
+    return attention > 0 ? { count: attention, tone: 'warn' } : null
+  }
+  if (item.inbox) {
+    if (inbox.awaiting > 0) {
+      return {
+        count: inbox.awaiting,
+        tone: 'warn',
+        title: `${inbox.awaiting} question${inbox.awaiting === 1 ? '' : 's'} waiting on you`,
+      }
+    }
+    if (inbox.total > 0) {
+      return {
+        count: inbox.total,
+        tone: 'muted',
+        title: `${inbox.total} issue${inbox.total === 1 ? '' : 's'} to triage`,
+      }
+    }
+  }
+  return null
+}
+
 export function Sidebar() {
   const { repo, isAll, autoScope, openSwitcher } = useActiveRepo()
   const navigate = useNavigate()
   const attention = useAttentionCount(repo)
+  const inbox = useInboxCounts(repo ?? '')
 
   // A gated nav click auto-scopes to a lone/last-used repo and follows the link,
   // or opens the switcher when there's a real choice — never a dead end.
@@ -118,7 +167,7 @@ export function Sidebar() {
             </p>
             <ul className="flex flex-col gap-0.5">
               {group.items.map((item) => {
-                const badge = item.attention && attention > 0 ? attention : null
+                const badge = navBadge(item, attention, inbox)
                 const disabled = isAll && item.requiresProject
 
                 if (disabled) {
@@ -162,8 +211,16 @@ export function Sidebar() {
                           <item.icon className="size-4" aria-hidden="true" />
                           <span className="flex-1">{item.label}</span>
                           {badge ? (
-                            <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-full border border-warn/50 bg-warn/12 px-1 font-mono text-[0.65rem] text-warn">
-                              {badge}
+                            <span
+                              title={badge.title}
+                              className={cn(
+                                'inline-flex h-4 min-w-4 items-center justify-center rounded-full border px-1 font-mono text-[0.65rem]',
+                                badge.tone === 'warn'
+                                  ? 'border-warn/50 bg-warn/12 text-warn'
+                                  : 'border-border bg-muted/60 text-muted-foreground',
+                              )}
+                            >
+                              {badge.count}
                             </span>
                           ) : null}
                         </>

@@ -85,6 +85,32 @@ type commentRequest struct {
 	Body adfDoc `json:"body"`
 }
 
+// UpdateDescription replaces an issue's description in one PUT /issue call. The v3
+// description field is an ADF document built from the plain (possibly multi-line)
+// text, the same shape CreateIssue sends. Success is a 204.
+func (c *Client) UpdateDescription(ctx context.Context, key, description string) error {
+	if !c.enabled() {
+		return ErrNotEnabled
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ErrNotFound
+	}
+	body, err := json.Marshal(descriptionUpdateRequest{Fields: descriptionFields{Description: buildADF(description)}})
+	if err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodPut, "/issue/"+url.PathEscape(key), body, nil)
+}
+
+type descriptionUpdateRequest struct {
+	Fields descriptionFields `json:"fields"`
+}
+
+type descriptionFields struct {
+	Description adfDoc `json:"description"`
+}
+
 // CreateIssue creates a new issue and returns its key. The issue type is resolved
 // by name to its project-specific id via createmeta so the create references a
 // stable id rather than a name a project may spell differently; the description
@@ -124,6 +150,40 @@ func (c *Client) CreateIssue(ctx context.Context, projectKey, issueType, summary
 		return "", errors.New("jira: create issue returned no key")
 	}
 	return resp.Key, nil
+}
+
+// LinkBlocks records a "Blocks" link where blocker blocks blocked. Jira's Blocks
+// type reads outward as "blocks" and inward as "is blocked by", so the blocker is
+// the outward issue and the blocked sibling the inward issue — the same direction
+// blockersFromLinks reads back. Success is a 201.
+func (c *Client) LinkBlocks(ctx context.Context, blocker, blocked string) error {
+	if !c.enabled() {
+		return ErrNotEnabled
+	}
+	blocker = strings.TrimSpace(blocker)
+	blocked = strings.TrimSpace(blocked)
+	if blocker == "" || blocked == "" {
+		return ErrNotFound
+	}
+	body, err := json.Marshal(issueLinkRequest{
+		Type:         linkTypeRef{Name: "Blocks"},
+		OutwardIssue: keyRef{Key: blocker},
+		InwardIssue:  keyRef{Key: blocked},
+	})
+	if err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodPost, "/issueLink", body, nil)
+}
+
+type issueLinkRequest struct {
+	Type         linkTypeRef `json:"type"`
+	InwardIssue  keyRef      `json:"inwardIssue"`
+	OutwardIssue keyRef      `json:"outwardIssue"`
+}
+
+type linkTypeRef struct {
+	Name string `json:"name"`
 }
 
 // resolveIssueType returns the id of the named issue type in a project via

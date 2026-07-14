@@ -13,10 +13,12 @@ import {
   ListPlus,
   Pencil,
   Search,
+  Sparkles,
   Tag,
 } from 'lucide-react'
 
 import { PageHeader, ProjectScopeGate, useActiveRepo } from '@/components/trau'
+import { AuthoringDrawer } from '@/components/grill-panel'
 import {
   SegmentedControl,
   type SegmentOption,
@@ -100,7 +102,9 @@ function useExpandedEpics(repo: string) {
 function BacklogPage() {
   const { repo: activeRepo } = useActiveRepo()
   const repo = activeRepo ?? ''
+  const queryClient = useQueryClient()
   const [creating, setCreating] = useState(false)
+  const [authoring, setAuthoring] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
   const { expanded, toggle } = useExpandedEpics(repo)
 
@@ -172,17 +176,27 @@ function BacklogPage() {
         title="Backlog"
         description="In-progress, todo and backlog work — done and canceled are hidden until you filter for them."
         actions={
-          <button
-            type="button"
-            onClick={() => {
-              setEditing(null)
-              setCreating((v) => !v)
-            }}
-            className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground transition-opacity hover:opacity-90"
-          >
-            <FilePlus className="size-4" />
-            New issue
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setAuthoring(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-muted"
+            >
+              <Sparkles className="size-4" />
+              New issue (grilled)
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEditing(null)
+                setCreating((v) => !v)
+              }}
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground transition-opacity hover:opacity-90"
+            >
+              <FilePlus className="size-4" />
+              New issue
+            </button>
+          </div>
         }
       />
 
@@ -342,6 +356,15 @@ function BacklogPage() {
           if (!open) void setPeek(null)
         }}
         onSelectIssue={(id) => void setPeek(id)}
+      />
+
+      <AuthoringDrawer
+        repo={repo}
+        open={authoring}
+        onOpenChange={setAuthoring}
+        onCreated={() =>
+          void queryClient.invalidateQueries({ queryKey: ['backlog', repo] })
+        }
       />
     </ProjectScopeGate>
   )

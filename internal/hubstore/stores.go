@@ -20,6 +20,7 @@ type Stores struct {
 	phaseLogs   *PhaseLogs
 	instances   *Instances
 	transcripts *Transcripts
+	grill       *Grill
 }
 
 // NewStores builds the hub store set over the authoritative database db and the
@@ -39,6 +40,7 @@ func NewStores(db, transcriptsDB *sql.DB, retention Retention) *Stores {
 		phaseLogs:   NewPhaseLogs(db),
 		instances:   NewInstances(db),
 		transcripts: NewTranscripts(transcriptsDB, retention.Transcripts),
+		grill:       NewGrill(db, retention.Grill),
 	}
 }
 
@@ -74,6 +76,9 @@ func (s *Stores) Instances() *Instances { return s.instances }
 
 // Transcripts returns the chunked transcript store over the transcripts database.
 func (s *Stores) Transcripts() *Transcripts { return s.transcripts }
+
+// Grill returns the web grilling session store.
+func (s *Stores) Grill() *Grill { return s.grill }
 
 // Queue returns the queue store for a repo root.
 func (s *Stores) Queue(root string) *Queue { return NewQueue(s.db, root) }

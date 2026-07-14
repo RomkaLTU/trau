@@ -71,6 +71,44 @@ func TestUpdateLabelsDisabledWithoutToken(t *testing.T) {
 	}
 }
 
+// UpdateDescription PUTs the issue with an ADF description that round-trips back to
+// the plain text, the fields-verb whole-value set CreateIssue uses.
+func TestUpdateDescriptionPutsADF(t *testing.T) {
+	var (
+		method string
+		path   string
+		req    descriptionUpdateRequest
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	err := New(srv.URL, "me@acme.com", "tok").UpdateDescription(context.Background(), "PROJ-7", "Line one\nLine two")
+	if err != nil {
+		t.Fatalf("UpdateDescription error: %v", err)
+	}
+	if method != http.MethodPut {
+		t.Errorf("method = %q, want PUT", method)
+	}
+	if path != "/rest/api/3/issue/PROJ-7" {
+		t.Errorf("path = %q, want /rest/api/3/issue/PROJ-7", path)
+	}
+	raw, _ := json.Marshal(req.Fields.Description)
+	if got := adfToText(raw); got != "Line one\nLine two" {
+		t.Errorf("description = %q, want two lines", got)
+	}
+}
+
+func TestUpdateDescriptionDisabledWithoutToken(t *testing.T) {
+	if err := New("", "", "").UpdateDescription(context.Background(), "PROJ-7", "body"); !errors.Is(err, ErrNotEnabled) {
+		t.Errorf("UpdateDescription err = %v, want ErrNotEnabled", err)
+	}
+}
+
 // AddComment posts the standalone comment endpoint with an ADF body that
 // round-trips back to the plain text.
 func TestAddCommentPostsADF(t *testing.T) {
@@ -100,6 +138,48 @@ func TestAddCommentPostsADF(t *testing.T) {
 	raw, _ := json.Marshal(req.Body)
 	if got := adfToText(raw); got != "Trau loop stopped: boom" {
 		t.Errorf("comment body = %q, want %q", got, "Trau loop stopped: boom")
+	}
+}
+
+// LinkBlocks POSTs a "Blocks" link with the blocker as the outward issue and the
+// blocked sibling as the inward issue — the direction blockersFromLinks reads back.
+func TestLinkBlocksPostsBlocksLink(t *testing.T) {
+	var (
+		method string
+		path   string
+		req    issueLinkRequest
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	if err := New(srv.URL, "me@acme.com", "tok").LinkBlocks(context.Background(), "PROJ-1", "PROJ-2"); err != nil {
+		t.Fatalf("LinkBlocks error: %v", err)
+	}
+	if method != http.MethodPost {
+		t.Errorf("method = %q, want POST", method)
+	}
+	if path != "/rest/api/3/issueLink" {
+		t.Errorf("path = %q, want /rest/api/3/issueLink", path)
+	}
+	if req.Type.Name != "Blocks" {
+		t.Errorf("link type = %q, want Blocks", req.Type.Name)
+	}
+	if req.OutwardIssue.Key != "PROJ-1" {
+		t.Errorf("outward (blocker) = %q, want PROJ-1", req.OutwardIssue.Key)
+	}
+	if req.InwardIssue.Key != "PROJ-2" {
+		t.Errorf("inward (blocked) = %q, want PROJ-2", req.InwardIssue.Key)
+	}
+}
+
+func TestLinkBlocksDisabledWithoutToken(t *testing.T) {
+	if err := New("https://acme.atlassian.net", "me@acme.com", "").LinkBlocks(context.Background(), "PROJ-1", "PROJ-2"); !errors.Is(err, ErrNotEnabled) {
+		t.Fatalf("LinkBlocks without token = %v, want ErrNotEnabled", err)
 	}
 }
 

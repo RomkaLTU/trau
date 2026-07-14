@@ -368,6 +368,62 @@ func (c *Client) AddComment(ctx context.Context, identifier, body string) error 
 	return c.do(ctx, commentCreateMutation, map[string]any{"issueId": issue.ID, "body": body}, &dst)
 }
 
+// UpdateDescription replaces the issue's description. The human identifier is
+// resolved to the issue's node id first, the same as AddComment.
+func (c *Client) UpdateDescription(ctx context.Context, identifier, description string) error {
+	if c.apiKey == "" {
+		return ErrNotEnabled
+	}
+	issue, err := c.Issue(ctx, identifier)
+	if err != nil {
+		return err
+	}
+	var dst issueUpdateResponse
+	return c.do(ctx, issueDescriptionMutation, map[string]any{"id": issue.ID, "description": description}, &dst)
+}
+
+// UpdateLabels adds and removes named labels on an issue, leaving the rest of its
+// label set intact. Linear's issueUpdate replaces the whole set, so this reads the
+// issue's current labels, applies the ops, and writes the merged set back. Added
+// labels are created in the team first, since Linear can only attach labels that
+// already exist; an add already present or a remove already absent is a no-op.
+func (c *Client) UpdateLabels(ctx context.Context, identifier string, add, remove []string) error {
+	if c.apiKey == "" {
+		return ErrNotEnabled
+	}
+	issue, err := c.Issue(ctx, identifier)
+	if err != nil {
+		return err
+	}
+	drop := make(map[string]bool, len(remove))
+	for _, name := range remove {
+		if name = strings.TrimSpace(name); name != "" {
+			drop[name] = true
+		}
+	}
+	names := make([]string, 0, len(issue.Labels)+len(add))
+	present := make(map[string]bool, len(issue.Labels))
+	for _, label := range issue.Labels {
+		if drop[label.Name] {
+			continue
+		}
+		names = append(names, label.Name)
+		present[label.Name] = true
+	}
+	for _, name := range add {
+		name = strings.TrimSpace(name)
+		if name == "" || present[name] {
+			continue
+		}
+		if err := c.EnsureLabel(ctx, issue.Team.ID, name); err != nil {
+			return err
+		}
+		names = append(names, name)
+		present[name] = true
+	}
+	return c.SetStatus(ctx, identifier, "", names)
+}
+
 // Labels returns a name->id map of the labels defined in the team.
 func (c *Client) Labels(ctx context.Context, teamID string) (map[string]string, error) {
 	if c.apiKey == "" {
@@ -442,6 +498,30 @@ func (c *Client) CreateIssue(ctx context.Context, in CreateIssueInput) (identifi
 		return "", "", errors.New("linear: create issue returned no identifier")
 	}
 	return dst.Data.IssueCreate.Issue.Identifier, dst.Data.IssueCreate.Issue.URL, nil
+}
+
+// CreateBlockRelation records that blocker blocks blocked, resolving both human
+// identifiers to node ids first. Written as a "blocks" relation from blocker, so
+// blocked reads it as a blocker in its inverseRelations — the direction blockers()
+// interprets.
+func (c *Client) CreateBlockRelation(ctx context.Context, blocker, blocked string) error {
+	if c.apiKey == "" {
+		return ErrNotEnabled
+	}
+	b, err := c.Issue(ctx, blocker)
+	if err != nil {
+		return fmt.Errorf("resolve blocker %s: %w", blocker, err)
+	}
+	d, err := c.Issue(ctx, blocked)
+	if err != nil {
+		return fmt.Errorf("resolve blocked %s: %w", blocked, err)
+	}
+	var dst issueRelationCreateResponse
+	return c.do(ctx, issueRelationCreateMutation, map[string]any{
+		"issueId":        b.ID,
+		"relatedIssueId": d.ID,
+		"type":           "blocks",
+	}, &dst)
 }
 
 // CreateDocument creates a document under a project from markdown content and
@@ -689,6 +769,14 @@ type documentCreateResponse struct {
 				URL string `json:"url"`
 			} `json:"document"`
 		} `json:"documentCreate"`
+	} `json:"data"`
+}
+
+type issueRelationCreateResponse struct {
+	Data struct {
+		IssueRelationCreate struct {
+			Success bool `json:"success"`
+		} `json:"issueRelationCreate"`
 	} `json:"data"`
 }
 
