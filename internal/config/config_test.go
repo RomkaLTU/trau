@@ -197,6 +197,54 @@ func TestWriteConfigLayerPreservesComments(t *testing.T) {
 	}
 }
 
+func TestDeleteConfigLayerRemovesKey(t *testing.T) {
+	dir := t.TempDir()
+	project := filepath.Join(dir, ".trau.ini")
+	user := filepath.Join(dir, "user.ini")
+
+	original := "# machine config\nLINEAR_API_KEY=old\n# provider flags\nCLAUDE_FLAGS=--foo\n"
+	if err := os.WriteFile(user, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteConfigLayer("user", "", project, user, "LINEAR_API_KEY"); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(string(content), "LINEAR_API_KEY") {
+		t.Fatalf("unset left the key behind: %q", content)
+	}
+	if !contains(string(content), "# machine config") || !contains(string(content), "# provider flags") {
+		t.Fatalf("unset dropped comments: %q", content)
+	}
+	if !contains(string(content), "CLAUDE_FLAGS=--foo") {
+		t.Fatalf("unset dropped an unrelated key: %q", content)
+	}
+
+	if err := os.WriteFile(project, []byte("BASE_BRANCH=develop\nREMOTE=origin\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteConfigLayer("project", "", project, user, "BASE_BRANCH"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseEnvFile(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["BASE_BRANCH"]; ok {
+		t.Fatalf("project unset left BASE_BRANCH behind: %v", got)
+	}
+	if got["REMOTE"] != "origin" {
+		t.Fatalf("project unset dropped an unrelated key: %v", got)
+	}
+
+	if err := DeleteConfigLayer("user", "", project, filepath.Join(dir, "absent.ini"), "ANYTHING"); err != nil {
+		t.Fatalf("unset of a missing file should be a no-op, got %v", err)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr))
 }
@@ -390,5 +438,71 @@ func TestLoadThemeDefault(t *testing.T) {
 	}
 	if cfg.ThemeColors != nil {
 		t.Errorf("ThemeColors = %v, want nil", cfg.ThemeColors)
+	}
+}
+
+func TestKnownKeysCatalogMetadata(t *testing.T) {
+	keys := KnownKeys()
+	byKey := make(map[string]KeyMeta, len(keys))
+	sections := map[string]bool{}
+	for _, s := range configSections {
+		sections[s] = true
+	}
+
+	for _, m := range keys {
+		byKey[m.Key] = m
+		if m.Group == "" {
+			t.Errorf("%s has no Section", m.Key)
+			continue
+		}
+		if !sections[m.Group] {
+			t.Errorf("%s has Section %q outside the catalog set", m.Key, m.Group)
+		}
+	}
+
+	editable := []string{
+		"MAX_ITERATIONS", "THEME", "PROJECT", "LINEAR_API_KEY", "JIRA_API_TOKEN",
+		"GRILL_MODEL", "TRANSCRIPT_RETENTION", "SERVE_AUTOSTART",
+		"CLAUDE_MODEL", "CLAUDE_BUILD_MODEL", "THEME_BRAND",
+	}
+	for _, k := range editable {
+		if !byKey[k].WebEditable {
+			t.Errorf("%s should be web-editable", k)
+		}
+	}
+
+	readOnly := []string{
+		"CLAUDE_BIN", "CODEX_BIN", "KIMI_BIN", "CLAUDE_FLAGS", "CODEX_FLAGS",
+		"CLAUDE_CONFIG", "LINT_FIX_CMD", "SERVE_BIND", "SERVE_PORT", "SERVE_TOKEN",
+		"SERVE_ALLOW_REGISTER", "RUNS_DIR", "TRAU_REPO_ROOT", "SERVE_WORKSPACE",
+	}
+	for _, k := range readOnly {
+		if byKey[k].WebEditable {
+			t.Errorf("%s must stay read-only over the web", k)
+		}
+	}
+
+	kinds := map[string]string{
+		"MAX_ITERATIONS":  "int",
+		"CI_TIMEOUT":      "int",
+		"GRILL_RETENTION": "int",
+		"THEME_BRAND":     "color",
+		"MAX_TICKET_USD":  "",
+	}
+	for k, want := range kinds {
+		if got := byKey[k].Kind; got != want {
+			t.Errorf("%s Kind = %q, want %q", k, got, want)
+		}
+	}
+
+	for _, k := range []string{"CLAUDE_MODEL", "CODEX_MODEL", "CLAUDE_BUILD_MODEL", "CODEX_PICK_MODEL"} {
+		if len(byKey[k].Suggestions) == 0 {
+			t.Errorf("%s should carry model suggestions", k)
+		}
+	}
+	for _, k := range []string{"CLAUDE_EFFORT", "CODEX_EFFORT", "CLAUDE_BUILD_EFFORT", "CODEX_VERIFY_EFFORT"} {
+		if len(byKey[k].Options) == 0 {
+			t.Errorf("%s should carry effort options", k)
+		}
 	}
 }

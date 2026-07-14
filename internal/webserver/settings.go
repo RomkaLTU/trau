@@ -5,39 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
-
-// safeEditKeys is the whitelist of configuration keys the settings surface may
-// write. It is deliberately limited to operational knobs a loop re-reads on its
-// next start; credentials, identity, filesystem paths, provider binaries and
-// flags, and the serve exposure keys stay read-only over the wire.
-var safeEditKeys = map[string]bool{
-	"MAX_ITERATIONS":    true,
-	"MAX_REPAIRS":       true,
-	"MAX_BUGFIXES":      true,
-	"AUTO_MERGE":        true,
-	"MERGE_METHOD":      true,
-	"REQUIRE_CI":        true,
-	"CI_TIMEOUT":        true,
-	"CI_POLL":           true,
-	"LINT_FIX":          true,
-	"CLEANUP":           true,
-	"VERIFY_CHECKS":     true,
-	"REQUIRED_SKILLS":   true,
-	"BROWSER_VERIFY":    true,
-	"NOTIFY":            true,
-	"EPIC_FLOW":         true,
-	"THEME":             true,
-	"MAX_TICKET_USD":    true,
-	"MAX_TICKET_TOKENS": true,
-	"MAX_DAILY_USD":     true,
-	"MAX_DAILY_TOKENS":  true,
-}
 
 // configWriteLayers are the layers a settings edit may target, lowest to highest
 // precedence. The hub never writes the cwd-local layer — it has no bearing on a
@@ -52,9 +26,12 @@ type ConfigKeyView struct {
 	Key         string   `json:"key"`
 	Value       string   `json:"value"`
 	Layer       string   `json:"layer"`
+	Group       string   `json:"group"`
+	Kind        string   `json:"kind,omitempty"`
 	Default     string   `json:"default,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Options     []string `json:"options,omitempty"`
+	Suggestions []string `json:"suggestions,omitempty"`
 	Bool        bool     `json:"bool,omitempty"`
 	Advanced    bool     `json:"advanced,omitempty"`
 	Editable    bool     `json:"editable"`
@@ -74,11 +51,14 @@ type ConfigResponse struct {
 }
 
 // ConfigWriteRequest is the body of a settings edit: the key, its new value, and
-// the layer to persist it to.
+// the layer to persist it to. Unset deletes the key's line from the layer's file
+// to restore inheritance; Value is ignored when it is set. Saving an empty Value
+// instead writes an explicit "KEY=" — the two operations stay distinct.
 type ConfigWriteRequest struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
 	Layer string `json:"layer"`
+	Unset bool   `json:"unset"`
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
@@ -119,7 +99,7 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request, repo registry
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("unknown config key %q", key)})
 		return
 	}
-	if !safeEditKeys[key] {
+	if !meta.WebEditable {
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": fmt.Sprintf("config key %q is read-only over the settings surface", key),
 		})
@@ -129,15 +109,22 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request, repo registry
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "layer must be project or user"})
 		return
 	}
-	if err := validateValue(meta, req.Value); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-		return
-	}
 
 	projectPath, userPath := s.repoConfigPaths(repo)
-	if err := config.WriteConfigLayer(req.Layer, "", projectPath, userPath, key, req.Value); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "write config: " + err.Error()})
-		return
+	if req.Unset {
+		if err := config.DeleteConfigLayer(req.Layer, "", projectPath, userPath, key); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unset config: " + err.Error()})
+			return
+		}
+	} else {
+		if err := validateValue(meta, req.Value); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := config.WriteConfigLayer(req.Layer, "", projectPath, userPath, key, req.Value); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "write config: " + err.Error()})
+			return
+		}
 	}
 
 	views, err := s.resolveConfig(repo)
@@ -179,12 +166,15 @@ func configKeyView(it config.ConfigItem) ConfigKeyView {
 	v := ConfigKeyView{
 		Key:         it.Key,
 		Layer:       string(it.Layer),
+		Group:       it.Group,
+		Kind:        it.Kind,
 		Default:     it.Default,
 		Description: it.Description,
 		Options:     it.Options,
+		Suggestions: it.Suggestions,
 		Bool:        it.Bool,
 		Advanced:    it.Advanced,
-		Editable:    safeEditKeys[it.Key],
+		Editable:    it.WebEditable,
 		Secret:      config.IsSecretKey(it.Key),
 	}
 	if v.Secret {
@@ -212,11 +202,28 @@ func knownKey(key string) (config.KeyMeta, bool) {
 	return config.KeyMeta{}, false
 }
 
-// validateValue guards the write path against values a loop couldn't use: a
-// toggle key only takes 0/1, and an enumerated key only its listed options.
+// validateValue guards the write path against values a loop couldn't use. A
+// secret must carry a value — clearing a credential is an unset, not an empty
+// write — while an empty value on any other key is the explicit "cleared, fall
+// back" write and skips the type checks. Otherwise a toggle takes 0/1, an
+// enumerated key (including effort) one of its options, and an int or color key a
+// value of that shape. Model keys carry only non-binding Suggestions, so a custom
+// value always passes.
 func validateValue(meta config.KeyMeta, value string) error {
-	if meta.Bool && value != "0" && value != "1" {
-		return fmt.Errorf("%s takes 0 or 1", meta.Key)
+	if config.IsSecretKey(meta.Key) {
+		if value == "" {
+			return fmt.Errorf("%s cannot be saved empty; unset it to remove", meta.Key)
+		}
+		return nil
+	}
+	if value == "" {
+		return nil
+	}
+	if meta.Bool {
+		if value != "0" && value != "1" {
+			return fmt.Errorf("%s takes 0 or 1", meta.Key)
+		}
+		return nil
 	}
 	if len(meta.Options) > 0 {
 		for _, o := range meta.Options {
@@ -226,5 +233,30 @@ func validateValue(meta config.KeyMeta, value string) error {
 		}
 		return fmt.Errorf("%s must be one of: %s", meta.Key, strings.Join(meta.Options, ", "))
 	}
+	switch meta.Kind {
+	case "int":
+		if _, err := strconv.Atoi(value); err != nil {
+			return fmt.Errorf("%s must be a whole number", meta.Key)
+		}
+	case "color":
+		if !isHexColor(value) {
+			return fmt.Errorf("%s must be a hex color like #7D56F4", meta.Key)
+		}
+	}
 	return nil
+}
+
+// isHexColor reports whether s is a #rrggbb hex color.
+func isHexColor(s string) bool {
+	if len(s) != 7 || s[0] != '#' {
+		return false
+	}
+	for _, c := range s[1:] {
+		switch {
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }

@@ -11,6 +11,7 @@ import (
 
 type fakeSettingsActions struct {
 	items      []ConfigItem
+	sections   []string
 	tunings    []ProviderTuning
 	saveCalled bool
 	savedKey   string
@@ -19,6 +20,8 @@ type fakeSettingsActions struct {
 }
 
 func (f *fakeSettingsActions) ConfigItems() []ConfigItem { return f.items }
+
+func (f *fakeSettingsActions) ConfigSections() []string { return f.sections }
 
 func (f *fakeSettingsActions) SaveConfigItem(key, value, layer string) error {
 	f.saveCalled = true
@@ -167,6 +170,78 @@ func TestSettingsSave(t *testing.T) {
 	}
 	if done.key != "BASE_BRANCH" || done.value != "develop" || done.layer != "project" {
 		t.Fatalf("unexpected save msg: %+v", done)
+	}
+}
+
+func TestSettingsGroupsBySections(t *testing.T) {
+	sections := []string{"Tracker & issues", "Git & merge", "Providers & models"}
+	acts := &fakeSettingsActions{
+		sections: sections,
+		items: []ConfigItem{
+			{Key: "REMOTE", Group: "Git & merge", Value: "origin", Layer: "project"},
+			{Key: "PROVIDER", Group: "Providers & models", Value: "claude", Layer: "default"},
+			{Key: "LINEAR_TEAM", Group: "Tracker & issues", Value: "COD", Layer: "project"},
+			{Key: "BASE_BRANCH", Group: "Git & merge", Value: "main", Layer: "project"},
+		},
+	}
+	m := newSettingsModel(acts, DefaultStyles(), 100, 60)
+
+	// Keys are regrouped into catalog Section order and keep their relative order
+	// within a Section, so the cursor indexes straight into the displayed sequence.
+	want := []string{"LINEAR_TEAM", "REMOTE", "BASE_BRANCH", "PROVIDER"}
+	got := make([]string, len(m.filtered))
+	for i, it := range m.filtered {
+		got[i] = it.Key
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("grouped key order = %v, want %v", got, want)
+	}
+
+	// Section headers render, uppercased, in catalog order.
+	view := m.View()
+	assertOrder(t, view, "TRACKER & ISSUES", "GIT & MERGE", "PROVIDERS & MODELS")
+
+	// No fallback bucket appears when every key names a known Section.
+	if strings.Contains(view, "OTHER") {
+		t.Errorf("unexpected OTHER section for fully-catalogued keys:\n%s", view)
+	}
+
+	// Cursor moves only over key rows: one 'j' from the last key of Git & merge
+	// (BASE_BRANCH) lands on the next Section's first key (PROVIDER), never a header.
+	m.cursor = 2
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'j', Text: "j"})
+	if m.cursor != 3 || m.filtered[m.cursor].Key != "PROVIDER" {
+		t.Fatalf("crossing a Section boundary landed on %d (%s), want PROVIDER at 3",
+			m.cursor, m.filtered[m.cursor].Key)
+	}
+}
+
+func TestSettingsUnknownGroupBucketsToOther(t *testing.T) {
+	acts := &fakeSettingsActions{
+		sections: []string{"Git & merge"},
+		items: []ConfigItem{
+			{Key: "BASE_BRANCH", Group: "Git & merge", Value: "main", Layer: "project"},
+			{Key: "MYSTERY", Group: "Not a section", Value: "x", Layer: "project"},
+		},
+	}
+	m := newSettingsModel(acts, DefaultStyles(), 100, 60)
+	if last := m.filtered[len(m.filtered)-1]; last.Key != "MYSTERY" || m.rowSection[len(m.filtered)-1] != otherSection {
+		t.Fatalf("drift key not bucketed to Other last: %+v (%s)", last, m.rowSection[len(m.filtered)-1])
+	}
+	if !strings.Contains(m.View(), "OTHER") {
+		t.Errorf("expected OTHER header for a key with an unknown Group:\n%s", m.View())
+	}
+}
+
+func assertOrder(t *testing.T, s string, subs ...string) {
+	t.Helper()
+	prev := 0
+	for _, sub := range subs {
+		i := strings.Index(s[prev:], sub)
+		if i < 0 {
+			t.Fatalf("missing or out-of-order section header %q in:\n%s", sub, s)
+		}
+		prev += i + len(sub)
 	}
 }
 

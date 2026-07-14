@@ -15,6 +15,7 @@ type ConfigItem struct {
 	Key      string
 	Value    string
 	Layer    string
+	Group    string
 	Advanced bool
 	// Options enumerates the allowed values; when non-empty the editor offers
 	// a picker instead of a free-text field.
@@ -70,6 +71,10 @@ type SettingsActions interface {
 	// ordered from lowest to highest precedence.
 	ConfigLayers() []string
 
+	// ConfigSections returns the catalog Section names in display order; the
+	// editor groups keys under these headers.
+	ConfigSections() []string
+
 	// ProviderTunings returns per-provider execution tuning (model/effort and
 	// per-phase overrides) for the provider settings panel.
 	ProviderTunings() []ProviderTuning
@@ -82,6 +87,10 @@ const (
 	settingsEdit
 	settingsSaving
 )
+
+// otherSection is the catalog-drift fallback bucket for a key whose Group names
+// no known Section. It renders last; its presence signals a catalog gap.
+const otherSection = "Other"
 
 // editKind selects which input widget the edit screen presents for a key.
 type editKind int
@@ -100,7 +109,12 @@ type settingsModel struct {
 	height   int
 	items    []ConfigItem
 	filtered []ConfigItem
-	cursor   int
+	// rowSection is the Section each filtered row belongs to, parallel to
+	// filtered; renderList injects a header wherever it changes.
+	rowSection   []string
+	sections     []string
+	knownSection map[string]bool
+	cursor       int
 
 	title string
 
@@ -129,15 +143,22 @@ func newSettingsModel(actions SettingsActions, styles Styles, width, height int)
 	ti.SetWidth(40)
 	ti.Prompt = "Value: "
 
+	sections := actions.ConfigSections()
+	known := make(map[string]bool, len(sections))
+	for _, s := range sections {
+		known[s] = true
+	}
 	m := settingsModel{
-		styles:     styles,
-		actions:    actions,
-		width:      width,
-		height:     height,
-		items:      actions.ConfigItems(),
-		title:      "Settings",
-		editInput:  ti,
-		editLayers: actions.ConfigLayers(),
+		styles:       styles,
+		actions:      actions,
+		width:        width,
+		height:       height,
+		items:        actions.ConfigItems(),
+		sections:     sections,
+		knownSection: known,
+		title:        "Settings",
+		editInput:    ti,
+		editLayers:   actions.ConfigLayers(),
 	}
 	m.rebuildFiltered()
 	return m
@@ -379,13 +400,30 @@ type saveConfigDoneMsg struct {
 	err   error
 }
 
+// rebuildFiltered regroups the visible keys into catalog Section order so the
+// cursor indexes straight into the displayed sequence. Keys keep their relative
+// order within a Section; a key whose Group names no known Section falls into
+// the Other bucket, which renders last. Empty Sections are skipped by renderList.
 func (m *settingsModel) rebuildFiltered() {
-	m.filtered = m.filtered[:0]
+	buckets := make(map[string][]ConfigItem)
 	for _, it := range m.items {
 		if it.Advanced && !m.showAdvanced {
 			continue
 		}
-		m.filtered = append(m.filtered, it)
+		sec := it.Group
+		if !m.knownSection[sec] {
+			sec = otherSection
+		}
+		buckets[sec] = append(buckets[sec], it)
+	}
+
+	m.filtered = m.filtered[:0]
+	m.rowSection = m.rowSection[:0]
+	for _, sec := range append(append([]string{}, m.sections...), otherSection) {
+		for _, it := range buckets[sec] {
+			m.filtered = append(m.filtered, it)
+			m.rowSection = append(m.rowSection, sec)
+		}
 	}
 	if m.cursor >= len(m.filtered) {
 		m.cursor = max(0, len(m.filtered)-1)
@@ -425,8 +463,14 @@ func (m settingsModel) renderList() string {
 	}
 
 	keyW, layerW := m.listColumnWidths()
-	list := make([]string, 0, len(m.filtered))
+	list := make([]string, 0, len(m.filtered)+len(m.sections))
+	focusedLine := 0
+	prevSection := ""
 	for i, it := range m.filtered {
+		if sec := m.rowSection[i]; sec != prevSection {
+			list = append(list, sectionHeader(s, sec))
+			prevSection = sec
+		}
 		focused := i == m.cursor
 		keyStyle := s.Subtle
 		valStyle := lipgloss.NewStyle()
@@ -435,6 +479,7 @@ func (m settingsModel) renderList() string {
 			keyStyle = s.Header
 			valStyle = lipgloss.NewStyle().Foreground(theme.Brand)
 			layerStyle = s.Subtle
+			focusedLine = len(list)
 		}
 		row := cursorMarker(s, focused) +
 			keyStyle.Render(padRight(it.Key, keyW)) + "  " +
@@ -464,8 +509,9 @@ func (m settingsModel) renderList() string {
 	}
 
 	// Scroll the list to follow the cursor; the header and description stay put.
+	// Section headers add lines, so anchor on the focused row's real line index.
 	listBudget := cardBodyBudget(m.height, 0) - len(header) - len(footer)
-	list = scrollToCursor(list, m.cursor, listBudget)
+	list = scrollToCursor(list, focusedLine, listBudget)
 
 	body := make([]string, 0, len(header)+len(list)+len(footer))
 	body = append(body, header...)

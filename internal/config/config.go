@@ -428,12 +428,21 @@ type ConfigItem struct {
 	Key      string
 	Value    string
 	Layer    Layer
+	Group    string
 	Advanced bool
 	// Options enumerates the allowed values for a key. When non-empty the
 	// editor presents a picker instead of a free-text field.
 	Options []string
+	// Suggestions are non-binding picker hints (model ids); unlike Options a
+	// custom value stays valid.
+	Suggestions []string
 	// Bool marks a 1/0 toggle key. The editor renders it as an on/off switch.
 	Bool bool
+	// Kind is the value's editor type ("int", "color") when it is neither a
+	// bool nor an options enum; empty is free text.
+	Kind string
+	// WebEditable reports whether the settings surface may write the key.
+	WebEditable bool
 	// Description and Default carry the key's metadata so the editor can
 	// explain what it does and what value it falls back to.
 	Description string
@@ -1244,6 +1253,35 @@ func WriteEnvFile(path string, values map[string]string) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 }
 
+// DeleteEnvKey removes key from an env file, dropping only its line and leaving
+// every comment, blank line, and unrelated key untouched. A missing file or an
+// absent key is a no-op. It is the unset counterpart to WriteEnvFile: writing an
+// empty value keeps an explicit "KEY=" line, delete restores inheritance from a
+// lower layer or the built-in default.
+func DeleteEnvKey(path, key string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	var lines []string
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			if eq := strings.IndexByte(line, '='); eq > 0 && strings.TrimSpace(line[:eq]) == key {
+				continue
+			}
+		}
+		lines = append(lines, raw)
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+}
+
 // splitCSV parses a comma-separated knob into a trimmed, non-empty list.
 func splitCSV(s string) []string {
 	var out []string
@@ -1277,6 +1315,7 @@ func unquote(v string) string {
 // KeyMeta describes a single known configuration key for the settings editor.
 type KeyMeta struct {
 	Key         string
+	Group       string
 	Default     string
 	Advanced    bool
 	Description string
@@ -1285,6 +1324,53 @@ type KeyMeta struct {
 	Options []string
 	// Bool marks a 1/0 toggle key, rendered as an on/off switch.
 	Bool bool
+	// Kind is the value's editor type when it is neither a bool nor an options
+	// enum: "int" for whole numbers, "color" for a hex swatch. Empty is free text.
+	Kind string
+	// WebEditable gates whether the settings surface may write the key. It is
+	// fail-closed: a key that never sets it is read-only over the web.
+	WebEditable bool
+	// Suggestions are non-binding picker hints for a free-text key (model ids);
+	// unlike Options a custom value stays valid.
+	Suggestions []string
+}
+
+// Config Sections group the key catalog for the settings surface. Clients own
+// section order and copy; the catalog owns which Section a key belongs to.
+const (
+	sectionTracker   = "Tracker & issues"
+	sectionGit       = "Git & merge"
+	sectionCI        = "CI"
+	sectionProviders = "Providers & models"
+	sectionRouting   = "Per-phase routing"
+	sectionPipeline  = "Pipeline behavior"
+	sectionVerify    = "Verification"
+	sectionCost      = "Cost caps"
+	sectionGrilling  = "Grilling & triage"
+	sectionSkills    = "Skills"
+	sectionAgent     = "Agent runtime"
+	sectionHub       = "Hub & web server"
+	sectionRetention = "Retention"
+	sectionTUI       = "TUI & notifications"
+	sectionTimeLog   = "Time logging"
+	sectionPaths     = "Paths & misc"
+)
+
+// configSections lists every catalog Section. The catalog test holds each known
+// key to naming one of these.
+var configSections = []string{
+	sectionTracker, sectionGit, sectionCI, sectionProviders, sectionRouting,
+	sectionPipeline, sectionVerify, sectionCost, sectionGrilling, sectionSkills,
+	sectionAgent, sectionHub, sectionRetention, sectionTUI, sectionTimeLog,
+	sectionPaths,
+}
+
+// ConfigSections returns the canonical catalog Section order shared by the web
+// and TUI settings surfaces.
+func ConfigSections() []string {
+	out := make([]string, len(configSections))
+	copy(out, configSections)
+	return out
 }
 
 // KnownKeys returns the canonical list of editable configuration keys. The
@@ -1292,155 +1378,201 @@ type KeyMeta struct {
 // a toggle by default.
 func KnownKeys() []KeyMeta {
 	keys := []KeyMeta{
-		{Key: "LINEAR_TEAM", Description: "Linear team / Jira project / GitHub repo"},
-		{Key: "ISSUE_PREFIX", Description: "Issue-ID prefix for ticket parsing (default: the team key, e.g. COD, TMS, ENG)"},
-		{Key: "LINEAR_API_KEY", Advanced: true, Description: "Linear personal API key"},
-		{Key: "JIRA_BASE_URL", Advanced: true, Description: "Jira Cloud site base URL for the direct REST adapter (e.g. https://acme.atlassian.net)"},
-		{Key: "JIRA_EMAIL", Advanced: true, Description: "Atlassian account email for Jira REST Basic auth"},
-		{Key: "JIRA_API_TOKEN", Advanced: true, Description: "Classic (unscoped) Jira API token; enables direct REST calls with MCP fallback"},
-		{Key: "TRACKER_PROVIDER", Default: "linear", Description: "Ticket backend: linear | jira | github | internal (internal issues in the hub, no external tracker)", Options: []string{"linear", "jira", "github", "internal"}},
-		{Key: "READY_LABEL", Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
-		{Key: "QUARANTINE_LABEL", Default: "needs-human", Description: "Label applied when a ticket fails"},
-		{Key: "PROJECT", Description: "Linear project this repo owns — scopes the ready queue, guards cross-project runs, and targets filed bugs"},
-		{Key: "BASE_BRANCH", Default: "main", Description: "Default git base branch"},
-		{Key: "REMOTE", Default: "origin", Description: "Git remote name"},
-		{Key: "TRAU_REPO_ROOT", Description: "Target app repo path"},
-		{Key: "PROVIDER", Default: "claude", Description: "AI provider: claude | codex | kimi", Options: []string{"claude", "codex", "kimi"}},
-		{Key: "CLAUDE_CONFIG", Advanced: true, Description: "Provider-local Claude config file"},
-		{Key: "CODEX_CONFIG", Advanced: true, Description: "Provider-local Codex config file"},
-		{Key: "KIMI_CONFIG", Advanced: true, Description: "Provider-local Kimi config file"},
-		{Key: "CLAUDE_BIN", Advanced: true, Default: "claude", Description: "Claude Code binary"},
-		{Key: "CLAUDE_FLAGS", Advanced: true, Default: "--dangerously-skip-permissions", Description: "Extra flags passed to Claude"},
-		{Key: "AGENT_TIMEOUT", Advanced: true, Default: "3600", Description: "Per-agent call hard timeout in seconds — a backstop for runaway calls; unproductive hangs are killed earlier by AGENT_STALL_WINDOW"},
-		{Key: "AGENT_COLS", Advanced: true, Default: "120", Description: "Width (columns) of the agent PTY; the live view (TUI w / trau watch) reconstructs at this size"},
-		{Key: "AGENT_ROWS", Advanced: true, Default: "40", Description: "Height (rows) of the agent PTY; the live view reconstructs at this size"},
-		{Key: "AGENT_STALL_WINDOW", Advanced: true, Default: "180", Description: "Kill+recover an agent step that emits no output for this many seconds, before AGENT_TIMEOUT (0 = disabled)"},
-		{Key: "AGENT_RETRIES", Advanced: true, Default: "2", Description: "Transient-failure retries (timeout/stall/crash) per provider before falling back / parking the ticket"},
-		{Key: "AGENT_BACKOFF", Advanced: true, Default: "10", Description: "Base seconds to wait between transient agent-step retries"},
-		{Key: "FALLBACK_PROVIDERS", Advanced: true, Description: "Ordered provider[:model[:effort]] specs to try after the primary's retries are exhausted (e.g. codex,kimi). Empty = retry-only, no provider fallback"},
-		{Key: "CLAUDE_MODEL", Advanced: true, Description: "Default Claude model"},
-		{Key: "GRILL_MODEL", Advanced: true, Description: "Claude model for the hub's grilling agent; empty falls back to CLAUDE_MODEL"},
-		{Key: "CLAUDE_EFFORT", Advanced: true, Description: "Default Claude reasoning effort"},
-		{Key: "CLAUDE_DISALLOWED_TOOLS", Advanced: true, Default: "Agent,Workflow", Description: "Tools disabled inside agents"},
-		{Key: "CODEX_BIN", Advanced: true, Default: "codex", Description: "Codex binary"},
-		{Key: "CODEX_FLAGS", Advanced: true, Default: "--dangerously-bypass-approvals-and-sandbox", Description: "Extra flags passed to Codex"},
-		{Key: "CODEX_PROFILE", Advanced: true, Description: "Codex exec profile"},
-		{Key: "CODEX_MODEL", Advanced: true, Default: CodexDefaultModel, Description: "Default Codex model"},
-		{Key: "CODEX_EFFORT", Advanced: true, Default: CodexDefaultEffort, Description: "Default Codex reasoning effort"},
-		{Key: "KIMI_BIN", Advanced: true, Default: "kimi", Description: "Kimi binary"},
-		{Key: "KIMI_FLAGS", Advanced: true, Description: "Extra flags passed to Kimi"},
-		{Key: "KIMI_MODEL", Advanced: true, Description: "Default Kimi model alias (from your kimi config.toml [models.*])"},
-		{Key: "MAX_ITERATIONS", Default: "15", Description: "Maximum tickets per run"},
-		{Key: "MAX_REPAIRS", Default: "2", Description: "Verify-fail quick repair attempts before bugfix"},
-		{Key: "MAX_BUGFIXES", Default: "2", Description: "Comprehensive bugfix passes after quick repairs are exhausted"},
-		{Key: "AUTO_MERGE", Default: "1", Description: "Merge on green CI (1 = yes, 0 = no)", Bool: true},
-		{Key: "MERGE_METHOD", Default: "squash", Description: "Merge strategy: squash | merge | rebase", Options: []string{"squash", "merge", "rebase"}},
-		{Key: "DETERMINISTIC_COMMIT", Default: "1", Description: "For squash-merge repos, stage and commit the slice deterministically (templated Conventional Commit, no commit agent) since the squash discards the message; 0 restores the agent commit (1 = yes, 0 = no)", Bool: true},
-		{Key: "CI_TIMEOUT", Default: "600", Description: "Seconds to wait for CI checks"},
-		{Key: "CI_POLL", Default: "30", Description: "Seconds between CI polls"},
-		{Key: "EXPECTED_CHECKS", Description: "Required CI check names (comma-separated)"},
-		{Key: "REQUIRE_CI", Default: "1", Description: "Gate merge on CI; set 0 for repos with no PR CI (1 = yes, 0 = no)", Bool: true},
-		{Key: "AUTO_STASH", Default: "1", Description: "Stash uncommitted tracked WIP before a fresh run and restore it when the run ends; 0 aborts instead (1 = yes, 0 = no)", Bool: true},
-		{Key: "AUTO_INSTALL_SKILLS", Default: "0", Description: "Install the recommended skill set for the repo's project type at loop start when no skills are present (opt-in; 1 = yes, 0 = no)", Bool: true},
-		{Key: "REQUIRED_SKILLS", Description: "Skill names (comma-separated) the build agent must load before implementing; the rest stay self-selected. Names not installed in the repo warn at loop start. Empty = fully self-selected"},
-		{Key: "SPLIT_LABEL", Advanced: true, Default: "needs-split", Description: "Managed label marking a ticket a human should split into smaller slices before the loop builds it"},
-		{Key: "LINT_FIX", Default: "1", Description: "Run the project's lint/format autofixers before verify so verify isn't spent self-healing style noise (1 = yes, 0 = no)", Bool: true},
-		{Key: "LINT_FIX_CMD", Description: "Deterministic lint-fix command run before verify (e.g. vendor/bin/pint, npm run lint:fix). Empty = a cheap agent auto-detects and runs the project's fixers"},
-		{Key: "CLEANUP", Default: "1", Description: "Strip AI-slop (unnecessary comments, dead code, over-defensive scaffolding) from the slice's diff before verify (1 = yes, 0 = no)", Bool: true},
-		{Key: "STRIP_MECHANICAL_MCP", Advanced: true, Default: "1", Description: "Launch the mechanical phases (cleanup, commit, repair, bugfix, push-repair) with the repo's MCP servers stripped where the provider supports it (Claude's --strict-mcp-config), since they never read the tracker; 0 restores full MCP everywhere (1 = yes, 0 = no)", Bool: true},
-		{Key: "EXPLORE_SUBAGENTS", Advanced: true, Default: "0", Description: "Let the build and verify phases dispatch read-only exploration subagents (Claude's Explore agent type) by dropping the Agent tool from their disallowed set, keeping the orchestrator's context lean on large tickets; write-capable fan-out (Workflow) stays blocked everywhere (1 = yes, 0 = no)", Bool: true},
-		{Key: "BROWSER_VERIFY", Default: "auto", Description: "Browser verify: auto | always | never", Options: []string{"auto", "always", "never"}},
-		{Key: "APP_URL", Default: "http://localhost", Description: "Local app URL for browser verify"},
-		{Key: "VERIFY_CHECKS", Default: "1", Description: "Run the pluggable verify-check library (.trau/checks); 1 = yes, 0 = no", Bool: true},
-		{Key: "VERIFY_PANEL", Description: "Cross-vendor verify panel: comma-separated provider:model:effort verifiers (e.g. claude,codex:gpt-5.6-sol,kimi). Empty = single verifier"},
-		{Key: "VERIFY_PANEL_POLICY", Default: "unanimous", Description: "Panel verdict merge policy: unanimous | majority | any-pass", Options: []string{"unanimous", "majority", "any-pass"}},
-		{Key: "PANEL_PARALLEL", Default: "1", Description: "Run verify panel members concurrently so panel wall clock is the slowest member, not the sum; set 0 when concurrent member test runs collide (shared DB, ports, build artifacts) (1 = yes, 0 = no)", Bool: true},
-		{Key: "TRAU_TUI", Default: "1", Description: "Enable Bubble Tea TUI (1 = yes, 0 = no)", Bool: true},
-		{Key: "THEME", Default: "default", Description: "TUI color theme preset", Options: []string{"default", "catppuccin", "dracula", "gruvbox", "nord"}},
-		{Key: "EPIC_FLOW", Default: "1", Description: "Process epic sub-issues (1 = yes, 0 = no)", Bool: true},
-		{Key: "NOTIFY", Default: "0", Description: "Desktop notifications on pause, quarantine, and session end (opt-in; 1 = yes, 0 = no)", Bool: true},
-		{Key: "TIMELOG_ENABLED", Default: "0", Description: "Write a per-ticket effort time log (JSON) after merge (opt-in; 1 = yes, 0 = no)", Bool: true},
-		{Key: "TIMELOG_STORAGE", Default: "repo", Description: "Time-log location: repo (<repo>/.trau/time/) | user (~/.trau/time/<repo>/) | none", Options: []string{"repo", "user", "none"}},
-		{Key: "TIMELOG_OUTPUT_FORMAT", Default: "default", Description: "Time-log export rendering: default (JSON) | jira-worklog | toggl-csv | plain", Options: []string{"default", "jira-worklog", "toggl-csv", "plain"}},
-		{Key: "TIMELOG_ESTIMATOR", Default: "heuristic", Description: "Per-ticket effort estimate: heuristic (deterministic table) | agent (cheap agent call)", Options: []string{"heuristic", "agent"}},
-		{Key: "RUNS_DIR", Default: ".trau/runs", Description: "Directory for run artifacts"},
-		{Key: "SERVE_BIND", Default: "127.0.0.1", Description: "Bind address for `trau serve` (use 0.0.0.0 to expose on the network)"},
-		{Key: "SERVE_PORT", Default: "8728", Description: "Port for `trau serve`"},
-		{Key: "SERVE_TOKEN", Advanced: true, Description: "Bearer token required for non-loopback `trau serve` binds; mandatory once SERVE_BIND leaves loopback"},
-		{Key: "SERVE_ALLOW_REGISTER", Default: "0", Advanced: true, Bool: true, Description: "Allow repo (un)registration on a non-loopback `trau serve` bind, on top of SERVE_TOKEN; loopback binds are always open (1 = yes, 0 = no)"},
-		{Key: "SERVE_WORKSPACE", Advanced: true, Description: "Comma-separated repo roots the hub may start loops in; repos outside this allowlist are observe-only. Empty = the hub starts nothing"},
-		{Key: "SERVE_SYNC_INTERVAL", Default: "120", Advanced: true, Description: "Seconds between background refreshes of each repo's issue store from its tracker (0 = disable, on-demand pulls only)"},
-		{Key: "SERVE_RECONCILE_INTERVAL", Default: "900", Advanced: true, Description: "Seconds between reconciliation sweeps that tombstone synced issues deleted, archived, or moved out of the Project (runs on the sync tick; 0 = disable)"},
-		{Key: "SERVE_AUTOSTART", Default: "1", Advanced: true, Bool: true, Description: "Bring the web UI hub up automatically on the first interactive TUI session when none is running (1 = yes, 0 = no)"},
-		{Key: "SERVE_OPEN", Default: "1", Advanced: true, Bool: true, Description: "Open the browser when autostart freshly spawns the hub (1 = yes, 0 = no); the daemon still starts when 0"},
-		{Key: "HUB_WRITE_RETRY_WINDOW", Default: "30", Advanced: true, Description: "Seconds the loop retries an unreachable hub before a run-data write pauses the run blamelessly (ADR 0008)"},
-		{Key: "HUB_WRITE_BUFFER_BYTES", Default: "33554432", Advanced: true, Description: "Byte cap on the child's in-memory buffer of run-data writes queued while the hub is unreachable; over it the oldest queued events are dropped (ADR 0008)"},
-		{Key: "TRANSCRIPT_RETENTION", Default: "50", Advanced: true, Description: "Transcript sessions per repo the hub keeps in transcripts.db before pruning the oldest; an in-flight session is never pruned (ADR 0008)"},
-		{Key: "EVENT_RETENTION", Default: "5000", Advanced: true, Description: "Event rows per repo the hub keeps in trau.db before pruning the oldest; checkpoints (run summaries) are never pruned; 0 = keep all (ADR 0008)"},
-		{Key: "TOKEN_RETENTION", Default: "5000", Advanced: true, Description: "Token-call rows per repo the hub keeps in trau.db before pruning the oldest, anomalies alongside; 0 = keep all (ADR 0008)"},
-		{Key: "GRILL_RETENTION", Default: "50", Advanced: true, Description: "Grilling sessions per repo the hub keeps in trau.db before pruning the oldest settled ones; active sessions are kept; 0 = keep all"},
-		{Key: "GRILL_PREGRILL_MAX", Default: "5", Advanced: true, Description: "Issues one AFK pre-grill pass grills in a single sequential sweep; 0 or less uses the default"},
-		{Key: "MAX_TICKET_USD", Description: "Per-ticket USD spend cap; over it the ticket is quarantined (empty = no cap)"},
-		{Key: "MAX_TICKET_TOKENS", Description: "Per-ticket token spend cap; over it the ticket is quarantined (empty = no cap)"},
-		{Key: "MAX_DAILY_USD", Description: "Per-day USD spend cap across all tickets; reaching it stops the run (empty = no cap)"},
-		{Key: "MAX_DAILY_TOKENS", Description: "Per-day token spend cap across all tickets; reaching it stops the run (empty = no cap)"},
-		{Key: "CLAUDE_BUILD_MODEL", Advanced: true, Description: "Claude model for build phase"},
-		{Key: "CLAUDE_BUILD_EFFORT", Advanced: true, Description: "Claude effort for build phase"},
-		{Key: "CLAUDE_HANDOFF_MODEL", Advanced: true, Description: "Claude model for handoff phase (defaults to sonnet)"},
-		{Key: "CLAUDE_HANDOFF_EFFORT", Advanced: true, Description: "Claude effort for handoff phase"},
-		{Key: "CLAUDE_VERIFY_MODEL", Advanced: true, Description: "Claude model for verify phase"},
-		{Key: "CLAUDE_VERIFY_EFFORT", Advanced: true, Description: "Claude effort for verify phase"},
-		{Key: "CLAUDE_REPAIR_MODEL", Advanced: true, Description: "Claude model for repair phase"},
-		{Key: "CLAUDE_REPAIR_EFFORT", Advanced: true, Description: "Claude effort for repair phase"},
-		{Key: "CLAUDE_BUGFIX_MODEL", Advanced: true, Description: "Claude model for comprehensive bugfix phase"},
-		{Key: "CLAUDE_BUGFIX_EFFORT", Advanced: true, Description: "Claude effort for comprehensive bugfix phase"},
-		{Key: "CLAUDE_CLEANUP_MODEL", Advanced: true, Description: "Claude model for cleanup phase (defaults to sonnet)"},
-		{Key: "CLAUDE_CLEANUP_EFFORT", Advanced: true, Description: "Claude effort for cleanup phase"},
-		{Key: "CLAUDE_LINTFIX_MODEL", Advanced: true, Description: "Claude model for lintfix phase (defaults to haiku)"},
-		{Key: "CLAUDE_LINTFIX_EFFORT", Advanced: true, Description: "Claude effort for lintfix phase"},
-		{Key: "CLAUDE_COMMIT_MODEL", Advanced: true, Description: "Claude model for commit phase (defaults to sonnet)"},
-		{Key: "CLAUDE_COMMIT_EFFORT", Advanced: true, Description: "Claude effort for commit phase"},
-		{Key: "CLAUDE_PICK_MODEL", Advanced: true, Description: "Claude model for pick phase"},
-		{Key: "CLAUDE_PICK_EFFORT", Advanced: true, Description: "Claude effort for pick phase"},
-		{Key: "CLAUDE_BUILD_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for build phase (overrides CLAUDE_DISALLOWED_TOOLS and the EXPLORE_SUBAGENTS seed)"},
-		{Key: "CLAUDE_HANDOFF_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for handoff phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
-		{Key: "CLAUDE_VERIFY_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for verify phase (overrides CLAUDE_DISALLOWED_TOOLS and the EXPLORE_SUBAGENTS seed)"},
-		{Key: "CLAUDE_REPAIR_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for repair phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
-		{Key: "CLAUDE_BUGFIX_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for comprehensive bugfix phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
-		{Key: "CLAUDE_CLEANUP_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for cleanup phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
-		{Key: "CLAUDE_LINTFIX_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for lintfix phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
-		{Key: "CLAUDE_COMMIT_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for commit phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
-		{Key: "CLAUDE_PICK_DISALLOWED_TOOLS", Advanced: true, Description: "Claude disallowed tools for pick phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
-		{Key: "CODEX_BUILD_MODEL", Advanced: true, Description: "Codex model for build phase"},
-		{Key: "CODEX_BUILD_EFFORT", Advanced: true, Description: "Codex effort for build phase"},
-		{Key: "CODEX_HANDOFF_MODEL", Advanced: true, Description: "Codex model for handoff phase"},
-		{Key: "CODEX_HANDOFF_EFFORT", Advanced: true, Description: "Codex effort for handoff phase"},
-		{Key: "CODEX_VERIFY_MODEL", Advanced: true, Description: "Codex model for verify phase"},
-		{Key: "CODEX_VERIFY_EFFORT", Advanced: true, Description: "Codex effort for verify phase"},
-		{Key: "CODEX_REPAIR_MODEL", Advanced: true, Description: "Codex model for repair phase"},
-		{Key: "CODEX_REPAIR_EFFORT", Advanced: true, Description: "Codex effort for repair phase"},
-		{Key: "CODEX_BUGFIX_MODEL", Advanced: true, Description: "Codex model for comprehensive bugfix phase"},
-		{Key: "CODEX_BUGFIX_EFFORT", Advanced: true, Description: "Codex effort for comprehensive bugfix phase"},
-		{Key: "CODEX_COMMIT_MODEL", Advanced: true, Description: "Codex model for commit phase"},
-		{Key: "CODEX_COMMIT_EFFORT", Advanced: true, Description: "Codex effort for commit phase"},
-		{Key: "CODEX_PICK_MODEL", Advanced: true, Description: "Codex model for pick phase"},
-		{Key: "CODEX_PICK_EFFORT", Advanced: true, Description: "Codex effort for pick phase"},
-		{Key: "KIMI_BUILD_MODEL", Advanced: true, Description: "Kimi model for build phase"},
-		{Key: "KIMI_HANDOFF_MODEL", Advanced: true, Description: "Kimi model for handoff phase"},
-		{Key: "KIMI_VERIFY_MODEL", Advanced: true, Description: "Kimi model for verify phase"},
-		{Key: "KIMI_REPAIR_MODEL", Advanced: true, Description: "Kimi model for repair phase"},
-		{Key: "KIMI_BUGFIX_MODEL", Advanced: true, Description: "Kimi model for comprehensive bugfix phase"},
-		{Key: "KIMI_COMMIT_MODEL", Advanced: true, Description: "Kimi model for commit phase"},
-		{Key: "KIMI_PICK_MODEL", Advanced: true, Description: "Kimi model for pick phase"},
+		{Key: "LINEAR_TEAM", Group: sectionTracker, WebEditable: true, Description: "Linear team / Jira project / GitHub repo"},
+		{Key: "ISSUE_PREFIX", Group: sectionTracker, WebEditable: true, Description: "Issue-ID prefix for ticket parsing (default: the team key, e.g. COD, TMS, ENG)"},
+		{Key: "LINEAR_API_KEY", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Linear personal API key"},
+		{Key: "JIRA_BASE_URL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Jira Cloud site base URL for the direct REST adapter (e.g. https://acme.atlassian.net)"},
+		{Key: "JIRA_EMAIL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Atlassian account email for Jira REST Basic auth"},
+		{Key: "JIRA_API_TOKEN", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Classic (unscoped) Jira API token; enables direct REST calls with MCP fallback"},
+		{Key: "TRACKER_PROVIDER", Group: sectionTracker, WebEditable: true, Default: "linear", Description: "Ticket backend: linear | jira | github | internal (internal issues in the hub, no external tracker)", Options: []string{"linear", "jira", "github", "internal"}},
+		{Key: "READY_LABEL", Group: sectionTracker, WebEditable: true, Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
+		{Key: "QUARANTINE_LABEL", Group: sectionTracker, WebEditable: true, Default: "needs-human", Description: "Label applied when a ticket fails"},
+		{Key: "PROJECT", Group: sectionTracker, WebEditable: true, Description: "Linear project this repo owns — scopes the ready queue, guards cross-project runs, and targets filed bugs"},
+		{Key: "BASE_BRANCH", Group: sectionGit, Default: "main", Description: "Default git base branch"},
+		{Key: "REMOTE", Group: sectionGit, Default: "origin", Description: "Git remote name"},
+		{Key: "TRAU_REPO_ROOT", Group: sectionPaths, Description: "Target app repo path"},
+		{Key: "PROVIDER", Group: sectionProviders, Default: "claude", Description: "AI provider: claude | codex | kimi", Options: []string{"claude", "codex", "kimi"}},
+		{Key: "CLAUDE_CONFIG", Group: sectionProviders, Advanced: true, Description: "Provider-local Claude config file"},
+		{Key: "CODEX_CONFIG", Group: sectionProviders, Advanced: true, Description: "Provider-local Codex config file"},
+		{Key: "KIMI_CONFIG", Group: sectionProviders, Advanced: true, Description: "Provider-local Kimi config file"},
+		{Key: "CLAUDE_BIN", Group: sectionProviders, Advanced: true, Default: "claude", Description: "Claude Code binary"},
+		{Key: "CLAUDE_FLAGS", Group: sectionProviders, Advanced: true, Default: "--dangerously-skip-permissions", Description: "Extra flags passed to Claude"},
+		{Key: "AGENT_TIMEOUT", Group: sectionAgent, Kind: "int", WebEditable: true, Advanced: true, Default: "3600", Description: "Per-agent call hard timeout in seconds — a backstop for runaway calls; unproductive hangs are killed earlier by AGENT_STALL_WINDOW"},
+		{Key: "AGENT_COLS", Group: sectionAgent, Kind: "int", WebEditable: true, Advanced: true, Default: "120", Description: "Width (columns) of the agent PTY; the live view (TUI w / trau watch) reconstructs at this size"},
+		{Key: "AGENT_ROWS", Group: sectionAgent, Kind: "int", WebEditable: true, Advanced: true, Default: "40", Description: "Height (rows) of the agent PTY; the live view reconstructs at this size"},
+		{Key: "AGENT_STALL_WINDOW", Group: sectionAgent, Kind: "int", WebEditable: true, Advanced: true, Default: "180", Description: "Kill+recover an agent step that emits no output for this many seconds, before AGENT_TIMEOUT (0 = disabled)"},
+		{Key: "AGENT_RETRIES", Group: sectionAgent, Kind: "int", WebEditable: true, Advanced: true, Default: "2", Description: "Transient-failure retries (timeout/stall/crash) per provider before falling back / parking the ticket"},
+		{Key: "AGENT_BACKOFF", Group: sectionAgent, Kind: "int", WebEditable: true, Advanced: true, Default: "10", Description: "Base seconds to wait between transient agent-step retries"},
+		{Key: "FALLBACK_PROVIDERS", Group: sectionProviders, Advanced: true, Description: "Ordered provider[:model[:effort]] specs to try after the primary's retries are exhausted (e.g. codex,kimi). Empty = retry-only, no provider fallback"},
+		{Key: "CLAUDE_MODEL", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Default Claude model"},
+		{Key: "GRILL_MODEL", Group: sectionGrilling, WebEditable: true, Advanced: true, Description: "Claude model for the hub's grilling agent; empty falls back to CLAUDE_MODEL"},
+		{Key: "CLAUDE_EFFORT", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Default Claude reasoning effort"},
+		{Key: "CLAUDE_DISALLOWED_TOOLS", Group: sectionProviders, Advanced: true, Default: "Agent,Workflow", Description: "Tools disabled inside agents"},
+		{Key: "CODEX_BIN", Group: sectionProviders, Advanced: true, Default: "codex", Description: "Codex binary"},
+		{Key: "CODEX_FLAGS", Group: sectionProviders, Advanced: true, Default: "--dangerously-bypass-approvals-and-sandbox", Description: "Extra flags passed to Codex"},
+		{Key: "CODEX_PROFILE", Group: sectionProviders, Advanced: true, Description: "Codex exec profile"},
+		{Key: "CODEX_MODEL", Group: sectionProviders, WebEditable: true, Advanced: true, Default: CodexDefaultModel, Description: "Default Codex model"},
+		{Key: "CODEX_EFFORT", Group: sectionProviders, WebEditable: true, Advanced: true, Default: CodexDefaultEffort, Description: "Default Codex reasoning effort"},
+		{Key: "KIMI_BIN", Group: sectionProviders, Advanced: true, Default: "kimi", Description: "Kimi binary"},
+		{Key: "KIMI_FLAGS", Group: sectionProviders, Advanced: true, Description: "Extra flags passed to Kimi"},
+		{Key: "KIMI_MODEL", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Default Kimi model alias (from your kimi config.toml [models.*])"},
+		{Key: "MAX_ITERATIONS", Group: sectionPipeline, Kind: "int", WebEditable: true, Default: "15", Description: "Maximum tickets per run"},
+		{Key: "MAX_REPAIRS", Group: sectionPipeline, Kind: "int", WebEditable: true, Default: "2", Description: "Verify-fail quick repair attempts before bugfix"},
+		{Key: "MAX_BUGFIXES", Group: sectionPipeline, Kind: "int", WebEditable: true, Default: "2", Description: "Comprehensive bugfix passes after quick repairs are exhausted"},
+		{Key: "AUTO_MERGE", Group: sectionGit, WebEditable: true, Default: "1", Description: "Merge on green CI (1 = yes, 0 = no)", Bool: true},
+		{Key: "MERGE_METHOD", Group: sectionGit, WebEditable: true, Default: "squash", Description: "Merge strategy: squash | merge | rebase", Options: []string{"squash", "merge", "rebase"}},
+		{Key: "DETERMINISTIC_COMMIT", Group: sectionGit, Default: "1", Description: "For squash-merge repos, stage and commit the slice deterministically (templated Conventional Commit, no commit agent) since the squash discards the message; 0 restores the agent commit (1 = yes, 0 = no)", Bool: true},
+		{Key: "CI_TIMEOUT", Group: sectionCI, Kind: "int", WebEditable: true, Default: "600", Description: "Seconds to wait for CI checks"},
+		{Key: "CI_POLL", Group: sectionCI, Kind: "int", WebEditable: true, Default: "30", Description: "Seconds between CI polls"},
+		{Key: "EXPECTED_CHECKS", Group: sectionCI, WebEditable: true, Description: "Required CI check names (comma-separated)"},
+		{Key: "REQUIRE_CI", Group: sectionCI, WebEditable: true, Default: "1", Description: "Gate merge on CI; set 0 for repos with no PR CI (1 = yes, 0 = no)", Bool: true},
+		{Key: "AUTO_STASH", Group: sectionGit, Default: "1", Description: "Stash uncommitted tracked WIP before a fresh run and restore it when the run ends; 0 aborts instead (1 = yes, 0 = no)", Bool: true},
+		{Key: "AUTO_INSTALL_SKILLS", Group: sectionSkills, WebEditable: true, Default: "0", Description: "Install the recommended skill set for the repo's project type at loop start when no skills are present (opt-in; 1 = yes, 0 = no)", Bool: true},
+		{Key: "REQUIRED_SKILLS", Group: sectionSkills, WebEditable: true, Description: "Skill names (comma-separated) the build agent must load before implementing; the rest stay self-selected. Names not installed in the repo warn at loop start. Empty = fully self-selected"},
+		{Key: "SPLIT_LABEL", Group: sectionTracker, WebEditable: true, Advanced: true, Default: "needs-split", Description: "Managed label marking a ticket a human should split into smaller slices before the loop builds it"},
+		{Key: "LINT_FIX", Group: sectionPipeline, WebEditable: true, Default: "1", Description: "Run the project's lint/format autofixers before verify so verify isn't spent self-healing style noise (1 = yes, 0 = no)", Bool: true},
+		{Key: "LINT_FIX_CMD", Group: sectionPipeline, Description: "Deterministic lint-fix command run before verify (e.g. vendor/bin/pint, npm run lint:fix). Empty = a cheap agent auto-detects and runs the project's fixers"},
+		{Key: "CLEANUP", Group: sectionPipeline, WebEditable: true, Default: "1", Description: "Strip AI-slop (unnecessary comments, dead code, over-defensive scaffolding) from the slice's diff before verify (1 = yes, 0 = no)", Bool: true},
+		{Key: "STRIP_MECHANICAL_MCP", Group: sectionPipeline, WebEditable: true, Advanced: true, Default: "1", Description: "Launch the mechanical phases (cleanup, commit, repair, bugfix, push-repair) with the repo's MCP servers stripped where the provider supports it (Claude's --strict-mcp-config), since they never read the tracker; 0 restores full MCP everywhere (1 = yes, 0 = no)", Bool: true},
+		{Key: "EXPLORE_SUBAGENTS", Group: sectionAgent, WebEditable: true, Advanced: true, Default: "0", Description: "Let the build and verify phases dispatch read-only exploration subagents (Claude's Explore agent type) by dropping the Agent tool from their disallowed set, keeping the orchestrator's context lean on large tickets; write-capable fan-out (Workflow) stays blocked everywhere (1 = yes, 0 = no)", Bool: true},
+		{Key: "BROWSER_VERIFY", Group: sectionVerify, WebEditable: true, Default: "auto", Description: "Browser verify: auto | always | never", Options: []string{"auto", "always", "never"}},
+		{Key: "APP_URL", Group: sectionVerify, WebEditable: true, Default: "http://localhost", Description: "Local app URL for browser verify"},
+		{Key: "VERIFY_CHECKS", Group: sectionVerify, WebEditable: true, Default: "1", Description: "Run the pluggable verify-check library (.trau/checks); 1 = yes, 0 = no", Bool: true},
+		{Key: "VERIFY_PANEL", Group: sectionVerify, WebEditable: true, Description: "Cross-vendor verify panel: comma-separated provider:model:effort verifiers (e.g. claude,codex:gpt-5.6-sol,kimi). Empty = single verifier"},
+		{Key: "VERIFY_PANEL_POLICY", Group: sectionVerify, WebEditable: true, Default: "unanimous", Description: "Panel verdict merge policy: unanimous | majority | any-pass", Options: []string{"unanimous", "majority", "any-pass"}},
+		{Key: "PANEL_PARALLEL", Group: sectionVerify, WebEditable: true, Default: "1", Description: "Run verify panel members concurrently so panel wall clock is the slowest member, not the sum; set 0 when concurrent member test runs collide (shared DB, ports, build artifacts) (1 = yes, 0 = no)", Bool: true},
+		{Key: "TRAU_TUI", Group: sectionTUI, Default: "1", Description: "Enable Bubble Tea TUI (1 = yes, 0 = no)", Bool: true},
+		{Key: "THEME", Group: sectionTUI, WebEditable: true, Default: "default", Description: "TUI color theme preset", Options: []string{"default", "catppuccin", "dracula", "gruvbox", "nord"}},
+		{Key: "EPIC_FLOW", Group: sectionPipeline, WebEditable: true, Default: "1", Description: "Process epic sub-issues (1 = yes, 0 = no)", Bool: true},
+		{Key: "NOTIFY", Group: sectionTUI, WebEditable: true, Default: "0", Description: "Desktop notifications on pause, quarantine, and session end (opt-in; 1 = yes, 0 = no)", Bool: true},
+		{Key: "TIMELOG_ENABLED", Group: sectionTimeLog, WebEditable: true, Default: "0", Description: "Write a per-ticket effort time log (JSON) after merge (opt-in; 1 = yes, 0 = no)", Bool: true},
+		{Key: "TIMELOG_STORAGE", Group: sectionTimeLog, WebEditable: true, Default: "repo", Description: "Time-log location: repo (<repo>/.trau/time/) | user (~/.trau/time/<repo>/) | none", Options: []string{"repo", "user", "none"}},
+		{Key: "TIMELOG_OUTPUT_FORMAT", Group: sectionTimeLog, WebEditable: true, Default: "default", Description: "Time-log export rendering: default (JSON) | jira-worklog | toggl-csv | plain", Options: []string{"default", "jira-worklog", "toggl-csv", "plain"}},
+		{Key: "TIMELOG_ESTIMATOR", Group: sectionTimeLog, WebEditable: true, Default: "heuristic", Description: "Per-ticket effort estimate: heuristic (deterministic table) | agent (cheap agent call)", Options: []string{"heuristic", "agent"}},
+		{Key: "RUNS_DIR", Group: sectionPaths, Default: ".trau/runs", Description: "Directory for run artifacts"},
+		{Key: "SERVE_BIND", Group: sectionHub, Default: "127.0.0.1", Description: "Bind address for `trau serve` (use 0.0.0.0 to expose on the network)"},
+		{Key: "SERVE_PORT", Group: sectionHub, Kind: "int", Default: "8728", Description: "Port for `trau serve`"},
+		{Key: "SERVE_TOKEN", Group: sectionHub, Advanced: true, Description: "Bearer token required for non-loopback `trau serve` binds; mandatory once SERVE_BIND leaves loopback"},
+		{Key: "SERVE_ALLOW_REGISTER", Group: sectionHub, Default: "0", Advanced: true, Bool: true, Description: "Allow repo (un)registration on a non-loopback `trau serve` bind, on top of SERVE_TOKEN; loopback binds are always open (1 = yes, 0 = no)"},
+		{Key: "SERVE_WORKSPACE", Group: sectionHub, Advanced: true, Description: "Comma-separated repo roots the hub may start loops in; repos outside this allowlist are observe-only. Empty = the hub starts nothing"},
+		{Key: "SERVE_SYNC_INTERVAL", Group: sectionHub, Kind: "int", WebEditable: true, Default: "120", Advanced: true, Description: "Seconds between background refreshes of each repo's issue store from its tracker (0 = disable, on-demand pulls only)"},
+		{Key: "SERVE_RECONCILE_INTERVAL", Group: sectionHub, Kind: "int", WebEditable: true, Default: "900", Advanced: true, Description: "Seconds between reconciliation sweeps that tombstone synced issues deleted, archived, or moved out of the Project (runs on the sync tick; 0 = disable)"},
+		{Key: "SERVE_AUTOSTART", Group: sectionHub, WebEditable: true, Default: "1", Advanced: true, Bool: true, Description: "Bring the web UI hub up automatically on the first interactive TUI session when none is running (1 = yes, 0 = no)"},
+		{Key: "SERVE_OPEN", Group: sectionHub, WebEditable: true, Default: "1", Advanced: true, Bool: true, Description: "Open the browser when autostart freshly spawns the hub (1 = yes, 0 = no); the daemon still starts when 0"},
+		{Key: "HUB_WRITE_RETRY_WINDOW", Group: sectionHub, Kind: "int", WebEditable: true, Default: "30", Advanced: true, Description: "Seconds the loop retries an unreachable hub before a run-data write pauses the run blamelessly (ADR 0008)"},
+		{Key: "HUB_WRITE_BUFFER_BYTES", Group: sectionHub, Kind: "int", WebEditable: true, Default: "33554432", Advanced: true, Description: "Byte cap on the child's in-memory buffer of run-data writes queued while the hub is unreachable; over it the oldest queued events are dropped (ADR 0008)"},
+		{Key: "TRANSCRIPT_RETENTION", Group: sectionRetention, Kind: "int", WebEditable: true, Default: "50", Advanced: true, Description: "Transcript sessions per repo the hub keeps in transcripts.db before pruning the oldest; an in-flight session is never pruned (ADR 0008)"},
+		{Key: "EVENT_RETENTION", Group: sectionRetention, Kind: "int", WebEditable: true, Default: "5000", Advanced: true, Description: "Event rows per repo the hub keeps in trau.db before pruning the oldest; checkpoints (run summaries) are never pruned; 0 = keep all (ADR 0008)"},
+		{Key: "TOKEN_RETENTION", Group: sectionRetention, Kind: "int", WebEditable: true, Default: "5000", Advanced: true, Description: "Token-call rows per repo the hub keeps in trau.db before pruning the oldest, anomalies alongside; 0 = keep all (ADR 0008)"},
+		{Key: "GRILL_RETENTION", Group: sectionRetention, Kind: "int", WebEditable: true, Default: "50", Advanced: true, Description: "Grilling sessions per repo the hub keeps in trau.db before pruning the oldest settled ones; active sessions are kept; 0 = keep all"},
+		{Key: "GRILL_PREGRILL_MAX", Group: sectionGrilling, Kind: "int", WebEditable: true, Default: "5", Advanced: true, Description: "Issues one AFK pre-grill pass grills in a single sequential sweep; 0 or less uses the default"},
+		{Key: "MAX_TICKET_USD", Group: sectionCost, WebEditable: true, Description: "Per-ticket USD spend cap; over it the ticket is quarantined (empty = no cap)"},
+		{Key: "MAX_TICKET_TOKENS", Group: sectionCost, Kind: "int", WebEditable: true, Description: "Per-ticket token spend cap; over it the ticket is quarantined (empty = no cap)"},
+		{Key: "MAX_DAILY_USD", Group: sectionCost, WebEditable: true, Description: "Per-day USD spend cap across all tickets; reaching it stops the run (empty = no cap)"},
+		{Key: "MAX_DAILY_TOKENS", Group: sectionCost, Kind: "int", WebEditable: true, Description: "Per-day token spend cap across all tickets; reaching it stops the run (empty = no cap)"},
+		{Key: "CLAUDE_BUILD_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for build phase"},
+		{Key: "CLAUDE_BUILD_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for build phase"},
+		{Key: "CLAUDE_HANDOFF_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for handoff phase (defaults to sonnet)"},
+		{Key: "CLAUDE_HANDOFF_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for handoff phase"},
+		{Key: "CLAUDE_VERIFY_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for verify phase"},
+		{Key: "CLAUDE_VERIFY_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for verify phase"},
+		{Key: "CLAUDE_REPAIR_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for repair phase"},
+		{Key: "CLAUDE_REPAIR_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for repair phase"},
+		{Key: "CLAUDE_BUGFIX_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for comprehensive bugfix phase"},
+		{Key: "CLAUDE_BUGFIX_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for comprehensive bugfix phase"},
+		{Key: "CLAUDE_CLEANUP_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for cleanup phase (defaults to sonnet)"},
+		{Key: "CLAUDE_CLEANUP_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for cleanup phase"},
+		{Key: "CLAUDE_LINTFIX_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for lintfix phase (defaults to haiku)"},
+		{Key: "CLAUDE_LINTFIX_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for lintfix phase"},
+		{Key: "CLAUDE_COMMIT_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for commit phase (defaults to sonnet)"},
+		{Key: "CLAUDE_COMMIT_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for commit phase"},
+		{Key: "CLAUDE_PICK_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for pick phase"},
+		{Key: "CLAUDE_PICK_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for pick phase"},
+		{Key: "CLAUDE_BUILD_DISALLOWED_TOOLS", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude disallowed tools for build phase (overrides CLAUDE_DISALLOWED_TOOLS and the EXPLORE_SUBAGENTS seed)"},
+		{Key: "CLAUDE_HANDOFF_DISALLOWED_TOOLS", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude disallowed tools for handoff phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
+		{Key: "CLAUDE_VERIFY_DISALLOWED_TOOLS", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude disallowed tools for verify phase (overrides CLAUDE_DISALLOWED_TOOLS and the EXPLORE_SUBAGENTS seed)"},
+		{Key: "CLAUDE_REPAIR_DISALLOWED_TOOLS", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude disallowed tools for repair phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
+		{Key: "CLAUDE_BUGFIX_DISALLOWED_TOOLS", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude disallowed tools for comprehensive bugfix phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
+		{Key: "CLAUDE_CLEANUP_DISALLOWED_TOOLS", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude disallowed tools for cleanup phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
+		{Key: "CLAUDE_LINTFIX_DISALLOWED_TOOLS", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude disallowed tools for lintfix phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
+		{Key: "CLAUDE_COMMIT_DISALLOWED_TOOLS", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude disallowed tools for commit phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
+		{Key: "CLAUDE_PICK_DISALLOWED_TOOLS", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude disallowed tools for pick phase (defaults to CLAUDE_DISALLOWED_TOOLS)"},
+		{Key: "CODEX_BUILD_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex model for build phase"},
+		{Key: "CODEX_BUILD_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex effort for build phase"},
+		{Key: "CODEX_HANDOFF_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex model for handoff phase"},
+		{Key: "CODEX_HANDOFF_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex effort for handoff phase"},
+		{Key: "CODEX_VERIFY_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex model for verify phase"},
+		{Key: "CODEX_VERIFY_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex effort for verify phase"},
+		{Key: "CODEX_REPAIR_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex model for repair phase"},
+		{Key: "CODEX_REPAIR_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex effort for repair phase"},
+		{Key: "CODEX_BUGFIX_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex model for comprehensive bugfix phase"},
+		{Key: "CODEX_BUGFIX_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex effort for comprehensive bugfix phase"},
+		{Key: "CODEX_COMMIT_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex model for commit phase"},
+		{Key: "CODEX_COMMIT_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex effort for commit phase"},
+		{Key: "CODEX_PICK_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex model for pick phase"},
+		{Key: "CODEX_PICK_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex effort for pick phase"},
+		{Key: "KIMI_BUILD_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Kimi model for build phase"},
+		{Key: "KIMI_HANDOFF_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Kimi model for handoff phase"},
+		{Key: "KIMI_VERIFY_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Kimi model for verify phase"},
+		{Key: "KIMI_REPAIR_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Kimi model for repair phase"},
+		{Key: "KIMI_BUGFIX_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Kimi model for comprehensive bugfix phase"},
+		{Key: "KIMI_COMMIT_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Kimi model for commit phase"},
+		{Key: "KIMI_PICK_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Kimi model for pick phase"},
 	}
 	for _, role := range ThemeRoles {
 		keys = append(keys, KeyMeta{
 			Key:         "THEME_" + strings.ToUpper(role),
+			Group:       sectionTUI,
+			Kind:        "color",
+			WebEditable: true,
 			Advanced:    true,
 			Description: "Hex override for the theme's " + role + " color (e.g. #7D56F4)",
 		})
 	}
+	enrichProviderPickers(keys)
 	return keys
+}
+
+// enrichProviderPickers fills each model key with its provider's suggested model
+// ids and each effort key with the provider's exact effort set, sourced from the
+// provider catalog (kimi models resolve live from the user's config aliases).
+// Model suggestions stay non-binding; effort options validate strictly on write.
+func enrichProviderPickers(keys []KeyMeta) {
+	metas := map[string]ProviderTuningMeta{}
+	for _, m := range ProviderTuningMetas() {
+		metas[m.Name] = m
+	}
+	if kimi, ok := metas["kimi"]; ok {
+		kimi.Models = KimiModelAliases()
+		metas["kimi"] = kimi
+	}
+	for i := range keys {
+		provider := tuningProviderFor(keys[i].Key)
+		if provider == "" {
+			continue
+		}
+		switch {
+		case strings.HasSuffix(keys[i].Key, "_MODEL"):
+			keys[i].Suggestions = metas[provider].Models
+		case strings.HasSuffix(keys[i].Key, "_EFFORT"):
+			keys[i].Options = metas[provider].Efforts
+		}
+	}
+}
+
+// tuningProviderFor maps a model/effort key to the provider whose catalog feeds
+// its picker. GRILL_MODEL is a Claude model despite its prefix.
+func tuningProviderFor(key string) string {
+	switch {
+	case key == "GRILL_MODEL" || strings.HasPrefix(key, "CLAUDE_"):
+		return "claude"
+	case strings.HasPrefix(key, "CODEX_"):
+		return "codex"
+	case strings.HasPrefix(key, "KIMI_"):
+		return "kimi"
+	default:
+		return ""
+	}
 }
 
 // secretKeys are the credential-typed configuration keys. Their values are
@@ -1675,8 +1807,9 @@ func ResolveConfigItems(cfg Config, localPath, projectPath, userPath string, pro
 		sources["TRAU_REPO_ROOT"] = LayerCLI
 	}
 
-	items := make([]ConfigItem, 0, len(KnownKeys()))
-	for _, meta := range KnownKeys() {
+	known := KnownKeys()
+	items := make([]ConfigItem, 0, len(known))
+	for _, meta := range known {
 		value := keyValue(cfg, meta.Key)
 		if value == "" {
 			value = meta.Default
@@ -1689,9 +1822,13 @@ func ResolveConfigItems(cfg Config, localPath, projectPath, userPath string, pro
 			Key:         meta.Key,
 			Value:       value,
 			Layer:       layer,
+			Group:       meta.Group,
 			Advanced:    meta.Advanced,
 			Options:     meta.Options,
+			Suggestions: meta.Suggestions,
 			Bool:        meta.Bool,
+			Kind:        meta.Kind,
+			WebEditable: meta.WebEditable,
 			Description: meta.Description,
 			Default:     meta.Default,
 		})
@@ -2046,6 +2183,23 @@ func WriteConfigLayer(layer, localPath, projectPath, userPath, key, value string
 		return WriteProjectEnv(projectPath, map[string]string{key: value})
 	case "user":
 		return WriteEnvFile(userPath, map[string]string{key: value})
+	default:
+		return fmt.Errorf("unsupported config layer %q (expected local|project|user)", layer)
+	}
+}
+
+// DeleteConfigLayer removes key from the named layer's config file so the
+// resolver falls back to a lower-precedence layer or the built-in default. It is
+// the unset counterpart to WriteConfigLayer; layer must be local, project, or
+// user.
+func DeleteConfigLayer(layer, localPath, projectPath, userPath, key string) error {
+	switch layer {
+	case "local":
+		return DeleteEnvKey(localPath, key)
+	case "project":
+		return DeleteEnvKey(projectPath, key)
+	case "user":
+		return DeleteEnvKey(userPath, key)
 	default:
 		return fmt.Errorf("unsupported config layer %q (expected local|project|user)", layer)
 	}

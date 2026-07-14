@@ -6,9 +6,12 @@ export interface ConfigKey {
   key: string
   value: string
   layer: string
+  group?: string
+  kind?: string
   default?: string
   description?: string
   options?: string[]
+  suggestions?: string[]
   bool?: boolean
   advanced?: boolean
   editable: boolean
@@ -27,6 +30,7 @@ export interface ConfigWrite {
   key: string
   value: string
   layer: string
+  unset?: boolean
 }
 
 async function fetchConfig(repo: string): Promise<ConfigResponse> {
