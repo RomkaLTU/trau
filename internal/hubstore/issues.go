@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 	"unicode"
@@ -41,6 +42,12 @@ type Issue struct {
 	UpdatedAt   string
 	DeletedAt   string
 	Comments    []Comment
+
+	// ChildrenSettled and ChildrenTotal are populated by BacklogPage for epic
+	// rows only (HasChildren): the epic's settled (done + canceled) and total
+	// sub-issue counts over every child in the store, not the requested page.
+	ChildrenSettled int
+	ChildrenTotal   int
 }
 
 // Comment is one comment on an issue, keyed by its external tracker id.
@@ -189,11 +196,28 @@ type BacklogFilter struct {
 	Offset int
 }
 
+// familyKey groups a row with its epic: a sub-issue keys on its parent, a
+// top-level issue on its own identifier. parent is NOT NULL DEFAULT '' in the
+// schema, so NULLIF collapses the empty top-level case to the row's identifier.
+const familyKey = `COALESCE(NULLIF(parent, ''), identifier)`
+
+// numericIdentOrder renders the ORDER BY terms that sort an identifier expression
+// numerically — the "COD-" prefix, then the trailing number as an integer, then
+// the raw value — so COD-9 precedes COD-100 rather than sorting lexicographically.
+func numericIdentOrder(expr string) string {
+	return fmt.Sprintf(
+		"substr(%[1]s, 1, instr(%[1]s, '-')), CAST(substr(%[1]s, instr(%[1]s, '-') + 1) AS INTEGER), %[1]s",
+		expr,
+	)
+}
+
 // backlogOrderBy sorts the board by workflow progress — active work first, then
 // not-yet-started, backlog, and finally the closed groups — and within a group by
-// numeric-aware identifier so COD-9 precedes COD-100 rather than sorting
-// lexicographically.
-const backlogOrderBy = `ORDER BY
+// family: each row's epic key (numeric-aware), the epic ahead of its sub-issues,
+// then the row's own numeric-aware identifier. A sub-issue in the same group as
+// its epic lands immediately after it; sub-issues whose epic sits elsewhere
+// cluster under their shared epic key.
+var backlogOrderBy = `ORDER BY
 	CASE status_group
 		WHEN 'started' THEN 0
 		WHEN 'unstarted' THEN 1
@@ -203,9 +227,9 @@ const backlogOrderBy = `ORDER BY
 		WHEN 'canceled' THEN 5
 		ELSE 6
 	END,
-	substr(identifier, 1, instr(identifier, '-')),
-	CAST(substr(identifier, instr(identifier, '-') + 1) AS INTEGER),
-	identifier`
+	` + numericIdentOrder(familyKey) + `,
+	CASE WHEN parent = '' THEN 0 ELSE 1 END,
+	` + numericIdentOrder("identifier")
 
 // Backlog returns a repo's stored issues for the board in display order and
 // without comments — the whole board, equivalent to an empty BacklogFilter.
@@ -277,7 +301,60 @@ func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue,
 	defer func() { err = errors.Join(err, rows.Close()) }()
 
 	issues, _, err = scanIssues(repo, rows)
-	return issues, total, counts, err
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	if err = s.attachChildCounts(repo, issues); err != nil {
+		return nil, 0, nil, err
+	}
+	return issues, total, counts, nil
+}
+
+// attachChildCounts fills ChildrenSettled/ChildrenTotal on the epic rows of a
+// page. The counts cover every one of the epic's children in the store —
+// settled = done + canceled, the terminal groups the queue drain settles — so a
+// collapsed epic's progress is whole even when the request's filters or
+// pagination hide the children themselves.
+func (s *Issues) attachChildCounts(repo string, issues []Issue) (err error) {
+	byEpic := map[string]int{}
+	epics := make([]any, 0, len(issues))
+	for i, iss := range issues {
+		if iss.HasChildren {
+			byEpic[iss.Identifier] = i
+			epics = append(epics, iss.Identifier)
+		}
+	}
+	if len(epics) == 0 {
+		return nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(epics)), ",")
+	args := append([]any{repo}, epics...)
+	rows, err := s.db.Query(
+		`SELECT parent, count(*),
+			sum(CASE WHEN status_group IN ('done', 'canceled') THEN 1 ELSE 0 END)
+		 FROM issues
+		 WHERE repo = ? AND deleted_at = '' AND parent IN (`+placeholders+`)
+		 GROUP BY parent`,
+		args...,
+	)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var (
+			parent         string
+			total, settled int
+		)
+		if scanErr := rows.Scan(&parent, &total, &settled); scanErr != nil {
+			return scanErr
+		}
+		if i, ok := byEpic[parent]; ok {
+			issues[i].ChildrenTotal = total
+			issues[i].ChildrenSettled = settled
+		}
+	}
+	return rows.Err()
 }
 
 // backlogCounts returns per-status-group match totals for the given WHERE clause

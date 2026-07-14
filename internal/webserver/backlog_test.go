@@ -282,6 +282,71 @@ func TestBacklogServesStoredIssues(t *testing.T) {
 	}
 }
 
+func TestBacklogEpicChildCounts(t *testing.T) {
+	_, ts, root, store := backlogServer(t, nil, nil)
+	if _, _, err := store.Upsert(root, "linear", []hubstore.Issue{
+		{Identifier: "COD-10", Title: "Epic", StatusGroup: "backlog", HasChildren: true},
+		{Identifier: "COD-11", Title: "Done child", StatusGroup: "done", Parent: "COD-10"},
+		{Identifier: "COD-12", Title: "Todo child", StatusGroup: "unstarted", Parent: "COD-10"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	out := getBacklogQuery(t, ts, "acme", "")
+	byID := map[string]BacklogEntry{}
+	for _, it := range out.Items {
+		byID[it.ID] = it
+	}
+	epic := byID["COD-10"]
+	if epic.ChildrenTotal == nil || *epic.ChildrenTotal != 2 {
+		t.Fatalf("epic children_total = %v, want 2", epic.ChildrenTotal)
+	}
+	if epic.ChildrenSettled == nil || *epic.ChildrenSettled != 1 {
+		t.Fatalf("epic children_settled = %v, want 1 (the done child of two)", epic.ChildrenSettled)
+	}
+	if c := byID["COD-11"]; c.ChildrenSettled != nil || c.ChildrenTotal != nil {
+		t.Fatalf("child carries counts %v/%v, want none", c.ChildrenSettled, c.ChildrenTotal)
+	}
+
+	fields := backlogItemFields(t, ts, "acme")
+	if _, ok := fields["COD-10"]["children_total"]; !ok {
+		t.Error("epic COD-10 JSON missing children_total")
+	}
+	if _, ok := fields["COD-11"]["children_total"]; ok {
+		t.Error("child COD-11 JSON carries children_total, want it omitted on a non-epic")
+	}
+	if _, ok := fields["COD-11"]["children_settled"]; ok {
+		t.Error("child COD-11 JSON carries children_settled, want it omitted on a non-epic")
+	}
+}
+
+// backlogItemFields fetches the board and returns each item's raw JSON fields
+// keyed by id, so a test can assert on the wire shape — which keys are present
+// or omitted — rather than the decoded struct.
+func backlogItemFields(t *testing.T, ts *httptest.Server, repo string) map[string]map[string]json.RawMessage {
+	t.Helper()
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/" + repo + "/backlog")
+	if err != nil {
+		t.Fatalf("GET backlog: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	var envelope struct {
+		Items []map[string]json.RawMessage `json:"items"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode backlog items: %v", err)
+	}
+	byID := map[string]map[string]json.RawMessage{}
+	for _, item := range envelope.Items {
+		var id string
+		if err := json.Unmarshal(item["id"], &id); err != nil {
+			t.Fatalf("decode item id: %v", err)
+		}
+		byID[id] = item
+	}
+	return byID
+}
+
 func TestBacklogIncludesInternalIssues(t *testing.T) {
 	_, ts, root, store := backlogServer(t, nil, nil)
 	if _, _, err := store.Upsert(root, "linear", []hubstore.Issue{

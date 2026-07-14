@@ -1,10 +1,13 @@
-import { Fragment, useEffect, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { parseAsString, useQueryState, useQueryStates } from 'nuqs'
 import {
   Check,
+  ChevronDown,
+  ChevronRight,
   ChevronsUpDown,
+  CornerDownRight,
   FilePlus,
   ListFilter,
   ListPlus,
@@ -40,9 +43,11 @@ import {
   backlogQueryOptions,
   backlogSections,
   hiddenStateGroups,
+  nestBacklogRows,
   STATE_GROUPS,
   type BacklogEntry,
 } from '@/lib/backlog'
+import { loadExpandedEpics, storeExpandedEpics } from '@/lib/backlog-expanded'
 import {
   backlogFilterParsers,
   backlogParamsFromFilters,
@@ -69,11 +74,35 @@ const SOURCE_OPTIONS: readonly SegmentOption<SourceFilter>[] = [
   { value: 'synced', label: 'Synced' },
 ]
 
+function useExpandedEpics(repo: string) {
+  const [expanded, setExpanded] = useState<Set<string>>(() =>
+    loadExpandedEpics(repo),
+  )
+
+  useEffect(() => setExpanded(loadExpandedEpics(repo)), [repo])
+
+  const toggle = useCallback(
+    (id: string) => {
+      setExpanded((cur) => {
+        const next = new Set(cur)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
+        storeExpandedEpics(repo, next)
+        return next
+      })
+    },
+    [repo],
+  )
+
+  return { expanded, toggle }
+}
+
 function BacklogPage() {
   const { repo: activeRepo } = useActiveRepo()
   const repo = activeRepo ?? ''
   const [creating, setCreating] = useState(false)
   const [editing, setEditing] = useState<string | null>(null)
+  const { expanded, toggle } = useExpandedEpics(repo)
 
   const [filters, setFilters] = useQueryStates(backlogFilterParsers, {
     history: 'push',
@@ -114,6 +143,27 @@ function BacklogPage() {
     (page - 1) * PAGE_SIZE,
   )
   const hidden = hiddenStateGroups(counts, effectiveStateGroups(state))
+
+  const renderRow = (
+    entry: BacklogEntry,
+    extra?: { nested?: boolean; expanded?: boolean; onToggle?: () => void },
+  ) => (
+    <BacklogRow
+      key={entry.id}
+      repo={repo}
+      entry={entry}
+      editing={editing === entry.id}
+      nested={extra?.nested}
+      expanded={extra?.expanded}
+      onToggle={extra?.onToggle}
+      onOpen={() => void setPeek(entry.id)}
+      onOpenParent={(id) => void setPeek(id)}
+      onToggleEdit={() =>
+        setEditing((cur) => (cur === entry.id ? null : entry.id))
+      }
+      onEditDone={() => setEditing(null)}
+    />
+  )
 
   return (
     <ProjectScopeGate action="manage the backlog">
@@ -202,19 +252,22 @@ function BacklogPage() {
                   </div>
                 )}
                 <ul className="flex flex-col gap-2">
-                  {section.items.map((entry) => (
-                    <BacklogRow
-                      key={entry.id}
-                      repo={repo}
-                      entry={entry}
-                      editing={editing === entry.id}
-                      onOpen={() => void setPeek(entry.id)}
-                      onToggleEdit={() =>
-                        setEditing((cur) => (cur === entry.id ? null : entry.id))
-                      }
-                      onEditDone={() => setEditing(null)}
-                    />
-                  ))}
+                  {nestBacklogRows(section.items).map((node) =>
+                    node.kind === 'epic' ? (
+                      <Fragment key={node.entry.id}>
+                        {renderRow(node.entry, {
+                          expanded: expanded.has(node.entry.id),
+                          onToggle: () => toggle(node.entry.id),
+                        })}
+                        {expanded.has(node.entry.id) &&
+                          node.children.map((child) =>
+                            renderRow(child, { nested: true }),
+                          )}
+                      </Fragment>
+                    ) : (
+                      renderRow(node.entry)
+                    ),
+                  )}
                 </ul>
               </section>
             ))}
@@ -455,19 +508,29 @@ function BacklogRow({
   repo,
   entry,
   editing,
+  nested = false,
+  expanded,
   onOpen,
+  onOpenParent,
+  onToggle,
   onToggleEdit,
   onEditDone,
 }: {
   repo: string
   entry: BacklogEntry
   editing: boolean
+  nested?: boolean
+  expanded?: boolean
   onOpen: () => void
+  onOpenParent: (id: string) => void
+  onToggle?: () => void
   onToggleEdit: () => void
   onEditDone: () => void
 }) {
   const queryClient = useQueryClient()
   const internal = entry.source === 'internal'
+  const isEpic = entry.has_children && !nested
+  const { children_settled: settled, children_total: total } = entry
   const issueQuery = useQuery({
     ...internalIssueQueryOptions(repo, entry.id),
     enabled: editing && internal,
@@ -478,8 +541,39 @@ function BacklogRow({
   })
 
   return (
-    <li className="rounded-lg border bg-card transition-colors hover:border-ring/40">
+    <li
+      className={cn(
+        'rounded-lg border bg-card transition-colors hover:border-ring/40',
+        nested && 'ml-6',
+      )}
+    >
       <div className="flex flex-wrap items-center gap-3 px-4 py-3">
+        {isEpic && (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded={expanded}
+            aria-label={expanded ? `Collapse ${entry.id}` : `Expand ${entry.id}`}
+            className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            {expanded ? (
+              <ChevronDown className="size-4" aria-hidden />
+            ) : (
+              <ChevronRight className="size-4" aria-hidden />
+            )}
+          </button>
+        )}
+        {!nested && entry.parent && (
+          <button
+            type="button"
+            onClick={() => onOpenParent(entry.parent!)}
+            aria-label={`Open epic ${entry.parent}`}
+            className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:border-ring/40 hover:text-foreground"
+          >
+            <CornerDownRight className="size-3" aria-hidden />
+            {entry.parent}
+          </button>
+        )}
         <button
           type="button"
           onClick={onOpen}
@@ -488,6 +582,17 @@ function BacklogRow({
         >
           <span className="font-mono text-sm font-medium text-foreground">{entry.id}</span>
           <span className="min-w-0 flex-1 truncate text-sm text-foreground">{entry.title}</span>
+          {isEpic && settled != null && total != null && (
+            <span
+              className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-xs text-muted-foreground"
+              aria-label={`${settled} of ${total} settled`}
+            >
+              <span aria-hidden>◑</span>
+              <span className="tabular-nums">
+                {settled}/{total}
+              </span>
+            </span>
+          )}
           {entry.ready && (
             <span className="rounded-full border border-emerald-500/40 bg-emerald-500/5 px-2 py-0.5 text-xs text-emerald-600 dark:text-emerald-400">
               ready

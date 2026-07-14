@@ -18,17 +18,21 @@ import (
 // carries the repo's ready label. Source distinguishes an internally-created issue
 // from a synced tracker ticket (internal | linear | jira). Parent names the epic a
 // sub-issue belongs to and is omitted for a top-level issue; HasChildren marks an
-// epic.
+// epic. ChildrenSettled/ChildrenTotal report the epic's settled (done + canceled)
+// and total sub-issue counts over all children in the store, and are present
+// only on an epic row so the board can show its progress without a second call.
 type BacklogEntry struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Status      string   `json:"status"`
-	Group       string   `json:"group"`
-	Labels      []string `json:"labels"`
-	Source      string   `json:"source"`
-	Parent      string   `json:"parent,omitempty"`
-	HasChildren bool     `json:"has_children"`
-	Ready       bool     `json:"ready"`
+	ID              string   `json:"id"`
+	Title           string   `json:"title"`
+	Status          string   `json:"status"`
+	Group           string   `json:"group"`
+	Labels          []string `json:"labels"`
+	Source          string   `json:"source"`
+	Parent          string   `json:"parent,omitempty"`
+	HasChildren     bool     `json:"has_children"`
+	ChildrenSettled *int     `json:"children_settled,omitempty"`
+	ChildrenTotal   *int     `json:"children_total,omitempty"`
+	Ready           bool     `json:"ready"`
 }
 
 // BacklogResponse is a repo's Project backlog served from the hub's issue store —
@@ -265,7 +269,7 @@ func defaultReader(cfg config.Config) (tracker.Reader, error) {
 func toBacklogEntries(issues []hubstore.Issue, readyLabel string) []BacklogEntry {
 	out := make([]BacklogEntry, 0, len(issues))
 	for _, iss := range issues {
-		out = append(out, BacklogEntry{
+		entry := BacklogEntry{
 			ID:          iss.Identifier,
 			Title:       iss.Title,
 			Status:      iss.Status,
@@ -275,7 +279,13 @@ func toBacklogEntries(issues []hubstore.Issue, readyLabel string) []BacklogEntry
 			Parent:      iss.Parent,
 			HasChildren: iss.HasChildren,
 			Ready:       hasLabel(iss.Labels, readyLabel),
-		})
+		}
+		if iss.HasChildren {
+			settled, total := iss.ChildrenSettled, iss.ChildrenTotal
+			entry.ChildrenSettled = &settled
+			entry.ChildrenTotal = &total
+		}
+		out = append(out, entry)
 	}
 	return out
 }
