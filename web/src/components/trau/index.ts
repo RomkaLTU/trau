@@ -1,6 +1,11 @@
 export { AppShell } from './app-shell'
 export { Sidebar } from './sidebar'
-export { ActiveRepoProvider, useActiveRepo, ALL_SCOPE } from './active-repo'
+export {
+  ActiveRepoProvider,
+  useActiveRepo,
+  useRepoRouteScope,
+  ALL_SCOPE,
+} from './active-repo'
 export { RepoSwitcher } from './repo-switcher'
 export { ThemeToggle, useTheme } from './theme-toggle'
 export { GlobalSearch } from './global-search'

@@ -79,3 +79,21 @@ export function autoScopeTarget(
   if (lastRepo && repos.some((r) => r.name === lastRepo)) return lastRepo
   return null
 }
+
+export type RepoRouteAction = 'stay' | 'adopt' | 'leave'
+
+// repoRouteAction reconciles a repo-bound route (one with a $repo URL segment,
+// e.g. a live run) with the active scope. Entering the route adopts its repo as
+// the scope, so deep links set the project. Once the scope has caught up (synced),
+// a scope pointing elsewhere means the user switched projects in the switcher, so
+// the route yields instead of leaving a stale run on screen. isAll resolves repo
+// to null, which also counts as a switch away.
+export function repoRouteAction(
+  routeRepo: string,
+  scopeRepo: string | null,
+  synced: boolean,
+): RepoRouteAction {
+  if (scopeRepo === routeRepo) return 'stay'
+  if (!synced) return 'adopt'
+  return 'leave'
+}

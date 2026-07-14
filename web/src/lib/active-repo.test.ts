@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { ALL_SCOPE, autoScopeTarget, resolveScope } from '@/lib/active-repo'
+import {
+  ALL_SCOPE,
+  autoScopeTarget,
+  repoRouteAction,
+  resolveScope,
+} from '@/lib/active-repo'
 import type { RepoView } from '@/lib/instances'
 
 function repo(name: string, live = false): RepoView {
@@ -83,5 +88,25 @@ describe('autoScopeTarget', () => {
 
   it('returns null when there is no history and several repos exist', () => {
     expect(autoScopeTarget(repos, null)).toBeNull()
+  })
+})
+
+describe('repoRouteAction', () => {
+  it('stays when the scope already matches the route repo', () => {
+    expect(repoRouteAction('loop', 'loop', false)).toBe('stay')
+    expect(repoRouteAction('loop', 'loop', true)).toBe('stay')
+  })
+
+  it('adopts the route repo before the scope has synced', () => {
+    expect(repoRouteAction('loop', 'other', false)).toBe('adopt')
+    expect(repoRouteAction('loop', null, false)).toBe('adopt')
+  })
+
+  it('leaves once a synced route sees the scope switch to another repo', () => {
+    expect(repoRouteAction('loop', 'other', true)).toBe('leave')
+  })
+
+  it('leaves once a synced route sees the scope widen to all projects', () => {
+    expect(repoRouteAction('loop', null, true)).toBe('leave')
   })
 })

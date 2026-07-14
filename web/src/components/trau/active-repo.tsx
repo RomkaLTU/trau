@@ -2,17 +2,21 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
 
 import {
   ALL_SCOPE,
   autoScopeTarget,
   loadLastRepo,
   loadStoredScope,
+  repoRouteAction,
   resolveScope,
   storeScope,
 } from '@/lib/active-repo'
@@ -89,6 +93,34 @@ export function useActiveRepo(): ActiveRepoValue {
     throw new Error('useActiveRepo must be used within an ActiveRepoProvider')
   }
   return ctx
+}
+
+// useRepoRouteScope binds a repo-bound route ($repo URL segment) to the active
+// scope. It adopts the route's repo on entry, then leaves for the repo-neutral
+// runs list once the user switches the scope to another project — so the switcher
+// no longer silently desyncs from a live run that stays on screen.
+export function useRepoRouteScope(routeRepo: string): void {
+  const { repo: scopeRepo, setRepo } = useActiveRepo()
+  const navigate = useNavigate()
+  const synced = useRef(false)
+
+  useEffect(() => {
+    synced.current = false
+  }, [routeRepo])
+
+  useEffect(() => {
+    switch (repoRouteAction(routeRepo, scopeRepo, synced.current)) {
+      case 'stay':
+        synced.current = true
+        break
+      case 'adopt':
+        setRepo(routeRepo)
+        break
+      case 'leave':
+        void navigate({ to: '/runs' })
+        break
+    }
+  }, [routeRepo, scopeRepo, setRepo, navigate])
 }
 
 export { ALL_SCOPE }
