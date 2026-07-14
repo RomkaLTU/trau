@@ -163,6 +163,37 @@ func TestGrillUpdateChain(t *testing.T) {
 	}
 }
 
+func TestGrillSetIssue(t *testing.T) {
+	g, _ := testGrill(t, 0)
+	sess, err := g.Create(NewGrillSession{Repo: "acme"})
+	if err != nil {
+		t.Fatalf("create authoring session: %v", err)
+	}
+	if sess.IssueID != "" {
+		t.Fatalf("new authoring session issue = %q, want empty", sess.IssueID)
+	}
+
+	updated, found, err := g.SetIssue(sess.ID, "COD-9")
+	if err != nil || !found {
+		t.Fatalf("set issue: found=%v err=%v", found, err)
+	}
+	if updated.IssueID != "COD-9" {
+		t.Fatalf("anchored issue = %q, want COD-9", updated.IssueID)
+	}
+
+	got, _, err := g.Session(sess.ID)
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	if got.IssueID != "COD-9" {
+		t.Fatalf("persisted issue = %q, want COD-9", got.IssueID)
+	}
+
+	if _, found, err := g.SetIssue(9999, "COD-1"); found || err != nil {
+		t.Fatalf("set issue on unknown session = (found=%v, err=%v), want (false, nil)", found, err)
+	}
+}
+
 func TestGrillListFilter(t *testing.T) {
 	g, _ := testGrill(t, 0)
 	a, _ := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1"})

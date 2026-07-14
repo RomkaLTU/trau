@@ -30,8 +30,10 @@ var grillTriageLabels = []string{"needs-triage", "needs-info"}
 // GrillApplyRequest is the body of POST /grill/{sid}/apply. ProposedDescription is
 // the possibly user-edited replacement from the review UI; empty falls back to the
 // description the agent proposed in the outcome. SubIssues carries the user-edited
-// split breakdown; nil falls back to the agent's proposal.
+// split (or create-epic) breakdown; nil falls back to the agent's proposal. Title is
+// the user-edited title for a create outcome; empty falls back to the proposal.
 type GrillApplyRequest struct {
+	Title               string          `json:"title"`
 	ProposedDescription string          `json:"proposed_description"`
 	SubIssues           []grillSubIssue `json:"sub_issues"`
 }
@@ -65,7 +67,9 @@ type GrillApplyResponse struct {
 
 type grillOutcome struct {
 	Disposition         string          `json:"disposition"`
+	Title               string          `json:"title"`
 	ProposedDescription string          `json:"proposed_description"`
+	Labels              []string        `json:"labels"`
 	SubIssues           []grillSubIssue `json:"sub_issues"`
 	Summary             string          `json:"summary"`
 }
@@ -127,13 +131,6 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	issueID := strings.TrimSpace(sess.IssueID)
-	if issueID == "" {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
-			"error": "this grilling session is not anchored to an issue and has nothing to apply to",
-		})
-		return
-	}
 	repo, ok := s.findRepoByRoot(sess.Repo)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "the session's repo is no longer registered"})
@@ -155,21 +152,40 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 		steps   []GrillApplyStep
 		applied bool
 	)
-	if outcome.Disposition == grillDispSplit {
-		subs := req.SubIssues
-		if len(subs) == 0 {
-			subs = outcome.SubIssues
+	switch outcome.Disposition {
+	case grillDispCreate:
+		title := strings.TrimSpace(req.Title)
+		if title == "" {
+			title = outcome.Title
+		}
+		plan := grillCreatePlan{
+			title:       title,
+			description: description,
+			labels:      outcome.Labels,
+			comment:     comment,
+			subIssues:   grillPlanSubIssues(req.SubIssues, outcome.SubIssues),
+			readyLabel:  cfg.ReadyLabel,
+		}
+		steps, applied = s.applyGrillCreate(r.Context(), writer, &sess, repo.Root, cfg.TrackerProvider, plan)
+	case grillDispSplit:
+		issueID, ok := grillAnchoredIssue(w, sess)
+		if !ok {
+			return
 		}
 		_, remove := grillLabelTransition(grillDispSplit, cfg)
 		plan := grillSplitPlan{
 			description:  description,
 			comment:      comment,
-			subIssues:    subs,
+			subIssues:    grillPlanSubIssues(req.SubIssues, outcome.SubIssues),
 			readyLabel:   cfg.ReadyLabel,
 			removeLabels: remove,
 		}
 		steps, applied = s.applyGrillSplit(r.Context(), writer, repo.Root, cfg.TrackerProvider, issueID, plan)
-	} else {
+	default:
+		issueID, ok := grillAnchoredIssue(w, sess)
+		if !ok {
+			return
+		}
 		plan := grillApplyPlan{
 			disposition: outcome.Disposition,
 			description: description,
@@ -183,6 +199,29 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, GrillApplyResponse{Session: grillSessionView("", sess), Applied: false, Steps: steps})
+}
+
+// grillAnchoredIssue returns the session's anchor issue for the dispositions that
+// write to an existing one, answering 422 when the session has none (an authoring
+// session finishing with a non-create disposition).
+func grillAnchoredIssue(w http.ResponseWriter, sess hubstore.GrillSession) (string, bool) {
+	issueID := strings.TrimSpace(sess.IssueID)
+	if issueID == "" {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
+			"error": "this grilling session is not anchored to an issue and has nothing to apply to",
+		})
+		return "", false
+	}
+	return issueID, true
+}
+
+// grillPlanSubIssues prefers the user-edited breakdown from the review UI, falling
+// back to the agent's proposal when the request carries none.
+func grillPlanSubIssues(edited, proposed []grillSubIssue) []grillSubIssue {
+	if len(edited) > 0 {
+		return edited
+	}
+	return proposed
 }
 
 // settleGrillApplied moves the session to applied and returns the apply response.
@@ -341,6 +380,135 @@ func (s *Server) applyGrillSplit(ctx context.Context, writer tracker.Writer, roo
 		}
 	}
 	return steps, allOK
+}
+
+// grillCreatePlan is the resolved write plan for a create outcome: the new issue's
+// title, description, and labels, the summary comment, and — when the work is
+// epic-shaped — the proposed sub-issues and the label a sub-issue defaults to.
+type grillCreatePlan struct {
+	title       string
+	description string
+	labels      []string
+	comment     string
+	subIssues   []grillSubIssue
+	readyLabel  string
+}
+
+// applyGrillCreate files a brand-new issue (or epic) from an authoring session with
+// no anchor. It creates the parent first and anchors the session to it, so a retry
+// after a partial failure reuses that issue rather than filing a duplicate; an epic
+// then creates its sub-issues as children, wires the sibling relations, and comments
+// on the parent — reusing the split machinery. A single issue is created with the
+// default ready label and takes the summary comment directly. Each created issue is
+// mirrored into the store so the board shows it and the next inbound sync sees no
+// divergence (ADR 0007).
+func (s *Server) applyGrillCreate(ctx context.Context, writer tracker.Writer, sess *hubstore.GrillSession, root, provider string, plan grillCreatePlan) ([]GrillApplyStep, bool) {
+	epic := len(plan.subIssues) > 0
+	steps := make([]GrillApplyStep, 0, len(plan.subIssues)+3)
+	allOK := true
+	record := func(name string, err error) {
+		step := GrillApplyStep{Step: name, Status: grillStepOK}
+		if err != nil {
+			step.Status = grillStepFailed
+			step.Error = err.Error()
+			allOK = false
+		}
+		steps = append(steps, step)
+	}
+
+	parentID := strings.TrimSpace(sess.IssueID)
+	if parentID == "" {
+		labels := plan.labels
+		if len(labels) == 0 && !epic {
+			labels = []string{plan.readyLabel}
+		}
+		created, err := writer.CreateIssue(ctx, tracker.IssueDraft{
+			Title:       plan.title,
+			Description: plan.description,
+			Labels:      labels,
+		})
+		record(grillCreateParentStep(epic, plan.title), err)
+		if err != nil {
+			return steps, false
+		}
+		parentID = created.Identifier
+		s.anchorGrillSession(sess, parentID)
+		s.mirrorCreatedParent(root, provider, parentID, plan.title, plan.description, labels)
+	} else {
+		record(grillCreateParentStep(epic, plan.title), nil)
+	}
+
+	if !epic {
+		record("comment", writer.AddComment(ctx, parentID, plan.comment))
+		return steps, allOK
+	}
+
+	existing := s.grillExistingChildren(root, parentID)
+	ids := make([]string, len(plan.subIssues))
+	for i, sub := range plan.subIssues {
+		if id, ok := existing[strings.ToLower(strings.TrimSpace(sub.Title))]; ok {
+			ids[i] = id
+			record(grillSubIssueStep(sub.Title), nil)
+			continue
+		}
+		labels := sub.Labels
+		if len(labels) == 0 {
+			labels = []string{plan.readyLabel}
+		}
+		created, err := writer.CreateIssue(ctx, tracker.IssueDraft{
+			Title:       sub.Title,
+			Description: sub.Description,
+			Labels:      labels,
+			Parent:      parentID,
+		})
+		record(grillSubIssueStep(sub.Title), err)
+		if err != nil {
+			continue
+		}
+		ids[i] = created.Identifier
+		s.mirrorCreatedSubIssue(root, provider, parentID, created.Identifier, sub, labels)
+	}
+
+	if wired, relErr := s.wireGrillBlocks(ctx, writer, root, plan.subIssues, ids); wired {
+		record("relations", relErr)
+	}
+	record("comment", writer.AddComment(ctx, parentID, plan.comment))
+	return steps, allOK
+}
+
+// grillCreateParentStep names the created parent's apply step so the review UI shows
+// which issue failed — an epic parent or a standalone issue.
+func grillCreateParentStep(epic bool, title string) string {
+	if epic {
+		return "epic: " + strings.TrimSpace(title)
+	}
+	return "issue: " + strings.TrimSpace(title)
+}
+
+// anchorGrillSession records the created parent as the session's issue so a create
+// retry reuses it rather than filing a second parent. A failure is logged, not
+// fatal — the tracker write already landed.
+func (s *Server) anchorGrillSession(sess *hubstore.GrillSession, issueID string) {
+	if updated, _, err := s.stores.Grill().SetIssue(sess.ID, issueID); err == nil {
+		*sess = updated
+	} else {
+		logger.Verbosef("grill apply %d: anchor to %s: %v", sess.ID, issueID, err)
+	}
+}
+
+// mirrorCreatedParent inserts a freshly created top-level issue (a single issue or
+// an epic parent) into the store so the board shows it at once and the next inbound
+// sync reconciles it in place rather than as a divergence (ADR 0007).
+func (s *Server) mirrorCreatedParent(root, provider, identifier, title, description string, labels []string) {
+	if _, _, err := s.stores.Issues().Upsert(root, provider, []hubstore.Issue{{
+		Identifier:  identifier,
+		Title:       title,
+		Description: description,
+		StatusGroup: "unstarted",
+		Labels:      labels,
+	}}); err != nil {
+		logger.Verbosef("grill apply: mirror created issue %s: %v", identifier, err)
+	}
 }
 
 // grillExistingChildren maps a parent's already-created children by lowercased

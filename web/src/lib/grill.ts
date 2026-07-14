@@ -94,7 +94,11 @@ export interface SubIssueProposal {
 
 export interface OutcomePayload {
   disposition: string
+  // title and labels are carried by a create outcome — the new issue's title and its
+  // labels (a single issue defaults to ready-for-agent server-side).
+  title?: string
   proposed_description?: string
+  labels?: string[]
   sub_issues?: SubIssueProposal[]
   summary: string
 }
@@ -154,11 +158,18 @@ export const grillDetailQueryOptions = (sid: string) =>
     staleTime: 5_000,
   })
 
-export async function startGrillSession(repo: string, issueId: string): Promise<GrillSession> {
+// startGrillSession opens a session. An empty issueId with an idea starts a
+// from-scratch authoring session anchored to the repo alone, the idea seeding the
+// first turn; a concrete issueId grills that issue.
+export async function startGrillSession(
+  repo: string,
+  issueId: string,
+  idea = '',
+): Promise<GrillSession> {
   const res = await apiFetch(base(repo), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ issue_id: issueId }),
+    body: JSON.stringify({ issue_id: issueId, idea }),
   })
   if (!res.ok) throw new Error(await errorMessage(res, 'start grill session failed'))
   return res.json()
@@ -210,19 +221,25 @@ export async function answerGrill(sid: string, text: string): Promise<GrillAnswe
   return res.json()
 }
 
-// applyGrill writes a finished session's proposed outcome to the tracker. A rewrite
-// or split carries its (possibly edited) description in the body; a split also
-// carries the edited sub-issues. Other dispositions carry neither and let the hub
-// fall back to the agent's proposal.
+// applyGrill writes a finished session's proposed outcome to the tracker. A rewrite,
+// split, or create carries its (possibly edited) description in the body; a split or
+// create-epic also carries the edited sub-issues, and a create carries the edited
+// title. Other dispositions carry none and let the hub fall back to the proposal.
 export async function applyGrill(
   sid: string,
   proposedDescription: string,
   subIssues?: SubIssueProposal[],
+  title?: string,
 ): Promise<GrillApplyResponse> {
-  const body: { proposed_description: string; sub_issues?: SubIssueProposal[] } = {
+  const body: {
+    proposed_description: string
+    sub_issues?: SubIssueProposal[]
+    title?: string
+  } = {
     proposed_description: proposedDescription,
   }
   if (subIssues) body.sub_issues = subIssues
+  if (title !== undefined) body.title = title
   const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/apply`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -298,8 +315,12 @@ export function outcomePayload(msg: GrillMessage): OutcomePayload {
   const p = (msg.payload ?? {}) as Partial<OutcomePayload>
   return {
     disposition: typeof p.disposition === 'string' ? p.disposition : '',
+    title: typeof p.title === 'string' ? p.title : undefined,
     proposed_description:
       typeof p.proposed_description === 'string' ? p.proposed_description : undefined,
+    labels: Array.isArray(p.labels)
+      ? p.labels.filter((l): l is string => typeof l === 'string')
+      : undefined,
     sub_issues: Array.isArray(p.sub_issues) ? p.sub_issues.map(parseSubIssue) : undefined,
     summary: typeof p.summary === 'string' ? p.summary : '',
   }

@@ -232,7 +232,7 @@ func (r *grillRunner) mcpConfigJSON(sid int64) string {
 
 func (r *grillRunner) firstPrompt(repo registry.Repo, sess hubstore.GrillSession) string {
 	if sess.IssueID == "" {
-		return grillAuthoringPrompt()
+		return grillAuthoringPrompt(r.seedIdea(sess.ID))
 	}
 	title, description := "", ""
 	if iss, found, err := r.srv.stores.Issues().Get(repo.Root, sess.IssueID); err == nil && found {
@@ -242,6 +242,21 @@ func (r *grillRunner) firstPrompt(repo registry.Repo, sess hubstore.GrillSession
 		return grillPregrillPrompt(sess.IssueID, title, description)
 	}
 	return grillIssuePrompt(sess.IssueID, title, description)
+}
+
+// seedIdea returns the one-line idea an authoring session was opened with, stored as
+// its first info message. It grounds the first-turn authoring prompt.
+func (r *grillRunner) seedIdea(sid int64) string {
+	msgs, err := r.srv.stores.Grill().Messages(sid, 0)
+	if err != nil {
+		return ""
+	}
+	for _, m := range msgs {
+		if m.Kind == hubstore.GrillKindInfo {
+			return grillMessageText(m.Payload)
+		}
+	}
+	return ""
 }
 
 // latestAnswer returns the text of the session's most recent user answer, the
