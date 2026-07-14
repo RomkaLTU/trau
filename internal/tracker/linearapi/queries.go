@@ -297,6 +297,20 @@ mutation IssueUpdate($id: String!, $stateId: String, $labelIds: [String!]) {
 }
 `
 
+	// issueDescriptionMutation replaces the issue's description. The same String!
+	// typing note as issueUpdateMutation applies.
+	issueDescriptionMutation = `
+mutation IssueUpdateDescription($id: String!, $description: String!) {
+  issueUpdate(id: $id, input: { description: $description }) {
+    success
+    issue {
+      id
+      identifier
+    }
+  }
+}
+`
+
 	// commentCreateMutation adds a comment to an issue.
 	commentCreateMutation = `
 mutation CommentCreate($issueId: String!, $body: String!) {

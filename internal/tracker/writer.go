@@ -64,6 +64,8 @@ type PublishedDocument struct {
 type Writer interface {
 	CreateIssue(ctx context.Context, draft IssueDraft) (NewIssue, error)
 	AddComment(ctx context.Context, id, body string) error
+	UpdateDescription(ctx context.Context, id, body string) error
+	UpdateLabels(ctx context.Context, id string, add, remove []string) error
 	PublishDocument(ctx context.Context, draft DocumentDraft) (PublishedDocument, error)
 }
 
@@ -125,6 +127,14 @@ func (w *linearWriter) AddComment(ctx context.Context, id, body string) error {
 	return w.client.AddComment(ctx, id, body)
 }
 
+func (w *linearWriter) UpdateDescription(ctx context.Context, id, body string) error {
+	return w.client.UpdateDescription(ctx, id, body)
+}
+
+func (w *linearWriter) UpdateLabels(ctx context.Context, id string, add, remove []string) error {
+	return w.client.UpdateLabels(ctx, id, add, remove)
+}
+
 func (w *linearWriter) PublishDocument(ctx context.Context, draft DocumentDraft) (PublishedDocument, error) {
 	if strings.TrimSpace(w.project) == "" {
 		return PublishedDocument{}, errors.New("tracker: no Linear project configured for this repo (set PROJECT) — a PRD document needs a project to live under")
@@ -157,6 +167,14 @@ func (w *jiraWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIssu
 
 func (w *jiraWriter) AddComment(ctx context.Context, id, body string) error {
 	return w.client.AddComment(ctx, id, body)
+}
+
+func (w *jiraWriter) UpdateDescription(ctx context.Context, id, body string) error {
+	return w.client.UpdateDescription(ctx, id, body)
+}
+
+func (w *jiraWriter) UpdateLabels(ctx context.Context, id string, add, remove []string) error {
+	return w.client.UpdateLabels(ctx, id, add, remove)
 }
 
 func (w *jiraWriter) PublishDocument(ctx context.Context, draft DocumentDraft) (PublishedDocument, error) {

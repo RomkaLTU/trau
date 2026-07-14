@@ -85,6 +85,32 @@ type commentRequest struct {
 	Body adfDoc `json:"body"`
 }
 
+// UpdateDescription replaces an issue's description in one PUT /issue call. The v3
+// description field is an ADF document built from the plain (possibly multi-line)
+// text, the same shape CreateIssue sends. Success is a 204.
+func (c *Client) UpdateDescription(ctx context.Context, key, description string) error {
+	if !c.enabled() {
+		return ErrNotEnabled
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ErrNotFound
+	}
+	body, err := json.Marshal(descriptionUpdateRequest{Fields: descriptionFields{Description: buildADF(description)}})
+	if err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodPut, "/issue/"+url.PathEscape(key), body, nil)
+}
+
+type descriptionUpdateRequest struct {
+	Fields descriptionFields `json:"fields"`
+}
+
+type descriptionFields struct {
+	Description adfDoc `json:"description"`
+}
+
 // CreateIssue creates a new issue and returns its key. The issue type is resolved
 // by name to its project-specific id via createmeta so the create references a
 // stable id rather than a name a project may spell differently; the description
