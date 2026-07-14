@@ -76,6 +76,7 @@ type Config struct {
 	AgentBackoff          int
 	FallbackProviders     []string
 	ClaudeModel           string
+	GrillModel            string
 	ClaudeEffort          string
 	ClaudeDisallowedTools string
 	// ClaudePhaseDisallowedTools holds explicit per-phase
@@ -618,6 +619,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	num("AGENT_RETRIES", &c.AgentRetries)
 	num("AGENT_BACKOFF", &c.AgentBackoff)
 	providerStr(claudeFile, claudeSrc, "CLAUDE_MODEL", &c.ClaudeModel)
+	providerStr(claudeFile, claudeSrc, "GRILL_MODEL", &c.GrillModel)
 	providerStr(claudeFile, claudeSrc, "CLAUDE_DISALLOWED_TOOLS", &c.ClaudeDisallowedTools)
 	providerStr(claudeFile, claudeSrc, "CLAUDE_EFFORT", &c.ClaudeEffort)
 	providerStr(codexFile, codexSrc, "CODEX_BIN", &c.CodexBin)
@@ -1310,6 +1312,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "AGENT_BACKOFF", Advanced: true, Default: "10", Description: "Base seconds to wait between transient agent-step retries"},
 		{Key: "FALLBACK_PROVIDERS", Advanced: true, Description: "Ordered provider[:model[:effort]] specs to try after the primary's retries are exhausted (e.g. codex,kimi). Empty = retry-only, no provider fallback"},
 		{Key: "CLAUDE_MODEL", Advanced: true, Description: "Default Claude model"},
+		{Key: "GRILL_MODEL", Advanced: true, Description: "Claude model for the hub's grilling agent; empty falls back to CLAUDE_MODEL"},
 		{Key: "CLAUDE_EFFORT", Advanced: true, Description: "Default Claude reasoning effort"},
 		{Key: "CLAUDE_DISALLOWED_TOOLS", Advanced: true, Default: "Agent,Workflow", Description: "Tools disabled inside agents"},
 		{Key: "CODEX_BIN", Advanced: true, Default: "codex", Description: "Codex binary"},
@@ -1746,6 +1749,8 @@ func keyValue(cfg Config, key string) string {
 		return strings.Join(cfg.FallbackProviders, ",")
 	case "CLAUDE_MODEL":
 		return cfg.ClaudeModel
+	case "GRILL_MODEL":
+		return cfg.GrillModel
 	case "CLAUDE_EFFORT":
 		return cfg.ClaudeEffort
 	case "CLAUDE_DISALLOWED_TOOLS":

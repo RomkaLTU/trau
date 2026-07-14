@@ -166,8 +166,9 @@ func (s *Server) handleGrillSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGrillAnswer appends a user's answer and resumes the session (POST). A
-// session that is not awaiting an answer is refused. Moving to running is the
-// resume signal the runner slice acts on.
+// session that is not awaiting an answer is refused. A parked or stalled session
+// has no live child, so its answer fires a --resume turn; a waiting session's child
+// is still blocked on the MCP ask_user call and takes the answer over that channel.
 func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -213,6 +214,7 @@ func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	prior := sess.State
 	resumed, err := s.stores.Grill().Transition(sid, hubstore.GrillRunning, "")
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -220,6 +222,9 @@ func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publishGrillMessage(msg)
 	s.publishGrillState(resumed)
+	if grillResumeSpawns(prior) && s.startGrill != nil {
+		s.startGrill(r.Context(), resumed)
+	}
 	writeJSON(w, http.StatusOK, GrillAnswerResponse{
 		Session: grillSessionView("", resumed),
 		Message: grillMessageView(msg),
@@ -385,6 +390,15 @@ func grillAwaitingAnswer(state string) bool {
 	default:
 		return false
 	}
+}
+
+// grillResumeSpawns reports whether answering a session in state must spawn a
+// resume turn. A parked or stalled session has no live child, so the answer only
+// reaches the agent by resuming; a waiting session's child is still blocked on the
+// MCP ask_user call and picks the answer up itself, so spawning again would double
+// the turn.
+func grillResumeSpawns(state string) bool {
+	return state == hubstore.GrillParked || state == hubstore.GrillStalled
 }
 
 // parseSID reads the {sid} path segment as a session id, answering 400 on a
