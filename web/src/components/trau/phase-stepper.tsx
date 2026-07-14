@@ -15,7 +15,33 @@ const STEP_TEXT: Record<StepState, string> = {
   fail: 'text-fail',
 }
 
-export function PhaseStepper({ steps, subLabel }: { steps: Step[]; subLabel?: string }) {
+export function PhaseStepper({
+  steps,
+  subLabel,
+  compact = false,
+}: {
+  steps: Step[]
+  subLabel?: string
+  compact?: boolean
+}) {
+  if (compact) {
+    return (
+      <span className="inline-flex items-center gap-2 font-mono text-xs">
+        <span className="inline-flex items-center gap-1" aria-hidden="true">
+          {steps.map((step) => (
+            <span key={step.label} className={STEP_TEXT[step.state]}>
+              {STEP_GLYPH[step.state]}
+            </span>
+          ))}
+        </span>
+        {subLabel && <span className="text-muted-foreground">{subLabel}</span>}
+        <span className="sr-only">
+          {steps.map((step) => `${step.label} ${step.state}`).join(', ')}
+        </span>
+      </span>
+    )
+  }
+
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-2 font-mono text-xs">
