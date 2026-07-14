@@ -1431,7 +1431,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "READY_LABEL", Group: sectionTracker, WebEditable: true, Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
 		{Key: "QUARANTINE_LABEL", Group: sectionTracker, WebEditable: true, Default: "needs-human", Description: "Label applied when a ticket fails"},
 		{Key: "PROJECT", Group: sectionTracker, WebEditable: true, Description: "Linear project this repo owns — scopes the ready queue, guards cross-project runs, and targets filed bugs"},
-		{Key: "BASE_BRANCH", Group: sectionGit, Default: "main", Description: "Default git base branch"},
+		{Key: "BASE_BRANCH", Group: sectionGit, WebEditable: true, Default: "main", Description: "Default git base branch"},
 		{Key: "REMOTE", Group: sectionGit, Default: "origin", Description: "Git remote name"},
 		{Key: "TRAU_REPO_ROOT", Group: sectionPaths, Description: "Target app repo path"},
 		{Key: "PROVIDER", Group: sectionProviders, Default: "claude", Description: "AI provider: claude | codex | kimi", Options: []string{"claude", "codex", "kimi"}},
