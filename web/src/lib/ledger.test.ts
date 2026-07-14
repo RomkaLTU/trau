@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  attentionReason,
   bucketCounts,
   bucketOf,
   capMerged,
@@ -162,6 +163,21 @@ describe('capMerged', () => {
 
   it('does not cap when merged rows fit', () => {
     expect(capMerged(sortRows(merged(3)), false).hidden).toBe(0)
+  })
+})
+
+describe('attentionReason', () => {
+  it('prefers the loop’s own failure reason', () => {
+    expect(
+      attentionReason(
+        run({ ticket: 'A', failure_class: 'faulted', failure_reason: 'build timeout after 3 retries' }),
+      ),
+    ).toBe('build timeout after 3 retries')
+  })
+
+  it('falls back to the failure class when no reason was written', () => {
+    expect(attentionReason(run({ ticket: 'A', failure_class: 'gave_up' }))).toBe('quarantined')
+    expect(attentionReason(run({ ticket: 'A', failure_class: 'paused', failure_reason: '  ' }))).toBe('paused')
   })
 })
 
