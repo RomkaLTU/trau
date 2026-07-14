@@ -63,10 +63,14 @@ export function GrillPanel({
   repo,
   issueId,
   onClose,
+  onApplied,
 }: {
   repo: string
   issueId: string
   onClose: () => void
+  // onApplied fires once an outcome fully lands on the tracker, so the triage
+  // inbox can auto-advance to the next unclear issue.
+  onApplied?: () => void
 }) {
   const queryClient = useQueryClient()
   const list = useQuery(grillSessionsQueryOptions(repo))
@@ -94,7 +98,15 @@ export function GrillPanel({
   const session = active ?? create.data
 
   if (session) {
-    return <GrillConversation key={session.id} repo={repo} initial={session} onClose={onClose} />
+    return (
+      <GrillConversation
+        key={session.id}
+        repo={repo}
+        initial={session}
+        onClose={onClose}
+        onApplied={onApplied}
+      />
+    )
   }
 
   return (
@@ -133,10 +145,12 @@ function GrillConversation({
   repo,
   initial,
   onClose,
+  onApplied,
 }: {
   repo: string
   initial: GrillSession
   onClose: () => void
+  onApplied?: () => void
 }) {
   const detail = useQuery(grillDetailQueryOptions(initial.id))
   const [state, dispatch] = useReducer(grillReducer, undefined, () => ({
@@ -216,6 +230,7 @@ function GrillConversation({
               session={session}
               outcome={outcomePayload(outcomeMsg)}
               onSession={(next) => dispatch({ type: 'state', session: next })}
+              onApplied={onApplied}
             />
           ) : (
             <>
@@ -438,12 +453,14 @@ function OutcomeReview({
   session,
   outcome,
   onSession,
+  onApplied,
 }: {
   repo: string
   issueId: string
   session: GrillSession
   outcome: OutcomePayload
   onSession: (session: GrillSession) => void
+  onApplied?: () => void
 }) {
   const queryClient = useQueryClient()
   const issue = useQuery(issueQueryOptions(repo, issueId))
@@ -463,6 +480,7 @@ function OutcomeReview({
       if (res.applied) {
         void queryClient.invalidateQueries({ queryKey: ['issue', repo, issueId] })
         void queryClient.invalidateQueries({ queryKey: ['backlog', repo] })
+        onApplied?.()
       }
     },
   })
