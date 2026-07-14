@@ -1,6 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
+import { CheckpointError } from './checkpoints'
 
 export interface Instance {
   pid: number
@@ -87,7 +88,15 @@ export async function startInstance(req: StartRequest): Promise<StartResult> {
     body: JSON.stringify(req),
   })
   if (!res.ok) {
-    throw new Error(await errorMessage(res, 'start failed'))
+    // A loop already holding the working tree answers with 409 {live:true}; the
+    // run views branch on that to raise a conflict banner rather than an error.
+    const detail = (await res.json().catch(() => null)) as {
+      error?: string
+      live?: boolean
+    } | null
+    throw new CheckpointError(detail?.error ?? `start failed: ${res.status}`, {
+      live: detail?.live,
+    })
   }
   return res.json()
 }

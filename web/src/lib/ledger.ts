@@ -1,5 +1,5 @@
 import type { Instance } from './instances'
-import type { Run } from './runs'
+import type { FailureClass, Run } from './runs'
 
 export type LedgerBucket = 'active' | 'needs-you' | 'merged' | 'stopped'
 export type LedgerTab = 'all' | LedgerBucket
@@ -119,4 +119,18 @@ const CHECKPOINT_LABELS: Record<string, string> = {
 // checkpointLabel reuses a stopped run's checkpoint as the stepper's mono label.
 export function checkpointLabel(phase: string): string {
   return CHECKPOINT_LABELS[phase] ?? phase.replace(/_/g, ' ')
+}
+
+const FAILURE_LABELS: Record<FailureClass, string> = {
+  paused: 'paused',
+  faulted: 'faulted',
+  gave_up: 'quarantined',
+}
+
+// attentionReason is a needs-you row's mono reason line: the loop's own
+// failure_reason, falling back to the failure class when it wrote none.
+export function attentionReason(run: Run): string {
+  const reason = run.failure_reason?.trim()
+  if (reason) return reason
+  return run.failure_class ? FAILURE_LABELS[run.failure_class] : ''
 }

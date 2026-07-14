@@ -29,11 +29,13 @@ function useCheckpointMaintenance({
   ticket,
   phase,
   onNotice,
+  onConflict,
 }: {
   repo: string
   ticket: string
   phase: string
   onNotice?: (notice: CheckpointNotice) => void
+  onConflict?: () => void
 }) {
   const queryClient = useQueryClient()
   const [dialog, setDialog] = useState<Dialog>(null)
@@ -47,13 +49,15 @@ function useCheckpointMaintenance({
   }
 
   // A live loop holding the repo answers every checkpoint mutation with a 409
-  // and a plain-language reason; surface that rather than a raw status. A merged
-  // ticket comes back asking to be forced, which reopens the type-to-confirm
-  // dialog instead of failing.
+  // and a plain-language reason. The ledger routes that to its own conflict
+  // banner via onConflict; callers without one surface the reason inline. A
+  // merged ticket comes back asking to be forced, which reopens the
+  // type-to-confirm dialog instead of failing.
   const onError = (error: unknown) => {
     if (error instanceof CheckpointError && error.live) {
       setDialog(null)
-      onNotice?.({ tone: 'warn', text: error.message })
+      if (onConflict) onConflict()
+      else onNotice?.({ tone: 'warn', text: error.message })
       return
     }
     if (error instanceof CheckpointError && error.requiresForce) {
@@ -158,13 +162,21 @@ export function RunActionsMenu({
   ticket,
   phase,
   onNotice,
+  onConflict,
 }: {
   repo: string
   ticket: string
   phase: string
   onNotice?: (notice: CheckpointNotice) => void
+  onConflict?: () => void
 }) {
-  const { open, dialogs, busy } = useCheckpointMaintenance({ repo, ticket, phase, onNotice })
+  const { open, dialogs, busy } = useCheckpointMaintenance({
+    repo,
+    ticket,
+    phase,
+    onNotice,
+    onConflict,
+  })
   const [menuOpen, setMenuOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -261,6 +273,43 @@ export function RunActionsRow({
       </Button>
       {dialogs}
     </div>
+  )
+}
+
+export function RunResetButton({
+  repo,
+  ticket,
+  phase,
+  onNotice,
+  onConflict,
+}: {
+  repo: string
+  ticket: string
+  phase: string
+  onNotice?: (notice: CheckpointNotice) => void
+  onConflict?: () => void
+}) {
+  const { open, dialogs, busy } = useCheckpointMaintenance({
+    repo,
+    ticket,
+    phase,
+    onNotice,
+    onConflict,
+  })
+  return (
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        className="font-mono"
+        disabled={busy}
+        onClick={() => open('reset')}
+      >
+        <RotateCcw className="size-3.5" aria-hidden="true" />
+        Reset
+      </Button>
+      {dialogs}
+    </>
   )
 }
 
