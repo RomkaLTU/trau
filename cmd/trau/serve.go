@@ -113,6 +113,7 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 		Transcripts: cfg.TranscriptRetention,
 		Events:      cfg.EventRetention,
 		TokenCalls:  cfg.TokenRetention,
+		Grill:       cfg.GrillRetention,
 	})
 	if err := stores.Registrations().ImportLegacy(home); err != nil {
 		return console.Actionable(err, "import legacy registration state",

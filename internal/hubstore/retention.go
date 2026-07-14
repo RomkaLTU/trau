@@ -13,6 +13,7 @@ type Retention struct {
 	Transcripts int
 	Events      int
 	TokenCalls  int
+	Grill       int
 }
 
 // pruneKeepingRecent deletes the rows of table beyond the retention newest per
