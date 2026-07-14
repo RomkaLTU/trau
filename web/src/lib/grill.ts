@@ -57,6 +57,25 @@ export interface GrillAnswerResponse {
   message: GrillMessage
 }
 
+export type GrillStepStatus = 'ok' | 'failed'
+
+// GrillApplyStep is one tracker write's outcome — description, comment, or labels.
+// A disposition only reports the steps it runs, so needs_split omits description.
+export interface GrillApplyStep {
+  step: string
+  status: GrillStepStatus
+  error?: string
+}
+
+// GrillApplyResponse mirrors the hub's apply result: the updated session, whether
+// every step landed, and each step in the order it ran. A partial apply leaves the
+// session finished so a retry re-runs the plan.
+export interface GrillApplyResponse {
+  session: GrillSession
+  applied: boolean
+  steps: GrillApplyStep[]
+}
+
 export interface QuestionPayload {
   text: string
   options: string[]
@@ -141,6 +160,32 @@ export async function answerGrill(sid: string, text: string): Promise<GrillAnswe
     body: JSON.stringify({ text }),
   })
   if (!res.ok) throw new Error(await errorMessage(res, 'answer failed'))
+  return res.json()
+}
+
+// applyGrill writes a finished session's proposed outcome to the tracker. For a
+// rewrite the (possibly edited) description travels in the body; other dispositions
+// carry no description and let the hub fall back to the agent's proposal.
+export async function applyGrill(
+  sid: string,
+  proposedDescription: string,
+): Promise<GrillApplyResponse> {
+  const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ proposed_description: proposedDescription }),
+  })
+  if (!res.ok) throw new Error(await errorMessage(res, 'apply failed'))
+  return res.json()
+}
+
+// abandonGrill settles a session as abandoned — the discard path, where the user
+// rejects the proposal and nothing is written to the tracker.
+export async function abandonGrill(sid: string): Promise<GrillSession> {
+  const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/abandon`, {
+    method: 'POST',
+  })
+  if (!res.ok) throw new Error(await errorMessage(res, 'discard failed'))
   return res.json()
 }
 
@@ -301,4 +346,62 @@ export function grillBanner(session: GrillSession): GrillBanner | null {
     case 'abandoned':
       return { tone: 'ended', headline: 'Session ended', hint: 'This session was abandoned.' }
   }
+}
+
+export type DiffOp = 'equal' | 'insert' | 'delete'
+
+export interface DiffLine {
+  op: DiffOp
+  text: string
+}
+
+// diffLines is a line-level old→new diff for the rewrite review: an unchanged run
+// renders once, an edit shows as a delete run followed by an insert run. It walks a
+// longest-common-subsequence table, which is cheap on the short issue bodies a
+// grilling rewrite produces and keeps the panel free of a diff dependency.
+export function diffLines(before: string, after: string): DiffLine[] {
+  const a = splitLines(before)
+  const b = splitLines(after)
+  const lcs = lcsLengths(a, b)
+  const out: DiffLine[] = []
+  let i = 0
+  let j = 0
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) {
+      out.push({ op: 'equal', text: a[i] })
+      i++
+      j++
+    } else if (lcs[i + 1][j] >= lcs[i][j + 1]) {
+      out.push({ op: 'delete', text: a[i] })
+      i++
+    } else {
+      out.push({ op: 'insert', text: b[j] })
+      j++
+    }
+  }
+  for (; i < a.length; i++) out.push({ op: 'delete', text: a[i] })
+  for (; j < b.length; j++) out.push({ op: 'insert', text: b[j] })
+  return out
+}
+
+export function diffHasChanges(lines: DiffLine[]): boolean {
+  return lines.some((l) => l.op !== 'equal')
+}
+
+function splitLines(s: string): string[] {
+  if (s === '') return []
+  return s.replace(/\r\n/g, '\n').split('\n')
+}
+
+function lcsLengths(a: string[], b: string[]): number[][] {
+  const table = Array.from({ length: a.length + 1 }, () =>
+    new Array<number>(b.length + 1).fill(0),
+  )
+  for (let i = a.length - 1; i >= 0; i--) {
+    for (let j = b.length - 1; j >= 0; j--) {
+      table[i][j] =
+        a[i] === b[j] ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1])
+    }
+  }
+  return table
 }
