@@ -532,7 +532,7 @@ func TestKnownKeysCatalogMetadata(t *testing.T) {
 	editable := []string{
 		"MAX_ITERATIONS", "THEME", "PROJECT", "LINEAR_API_KEY", "JIRA_API_TOKEN",
 		"GRILL_MODEL", "TRANSCRIPT_RETENTION", "SERVE_AUTOSTART",
-		"CLAUDE_MODEL", "CLAUDE_BUILD_MODEL", "THEME_BRAND",
+		"CLAUDE_MODEL", "CLAUDE_BUILD_MODEL", "THEME_BRAND", "BASE_BRANCH",
 	}
 	for _, k := range editable {
 		if !byKey[k].WebEditable {

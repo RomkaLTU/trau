@@ -158,6 +158,20 @@ export function RepoSwitcher() {
           <div className="my-1 h-px bg-border" aria-hidden="true" />
 
           <Link
+            to="/projects/new"
+            onClick={() => setOpen(false)}
+            className="flex w-full items-center gap-2.5 px-2.5 py-1.5 text-left transition-colors hover:bg-secondary"
+          >
+            <span
+              aria-hidden="true"
+              className="flex size-7 shrink-0 items-center justify-center rounded-md border border-dashed border-border bg-secondary text-primary"
+            >
+              <Plus className="size-3.5" />
+            </span>
+            <span className="font-mono text-sm text-foreground">Add a project</span>
+          </Link>
+
+          <Link
             to="/instances"
             onClick={() => setOpen(false)}
             className="flex items-center gap-2 px-2.5 py-1.5 font-mono text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
