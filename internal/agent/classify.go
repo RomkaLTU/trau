@@ -13,14 +13,27 @@ func IsRateLimited(err error) bool {
 	if err == nil {
 		return false
 	}
-	s := err.Error()
-	low := strings.ToLower(s)
+	return RateLimitedText(err.Error())
+}
+
+// RateLimitedText is the text counterpart of [IsRateLimited] for callers that only
+// have a child's combined output, not a typed error — the hub's grilling runner
+// classifies a turn's stdout/stderr this way.
+func RateLimitedText(text string) bool {
+	low := strings.ToLower(text)
 	return strings.Contains(low, "rate_limit") || strings.Contains(low, "rate limit") ||
-		strings.Contains(low, "usage limit") || strings.Contains(low, "quota") || strings.Contains(s, "429")
+		strings.Contains(low, "usage limit") || strings.Contains(low, "quota") || strings.Contains(text, "429")
 }
 
 // IsAuthRequired reports whether err is (or wraps) [ErrAuthRequired] — a provider
 // auth/login wall that retrying cannot clear.
 func IsAuthRequired(err error) bool {
 	return errors.Is(err, ErrAuthRequired)
+}
+
+// AuthWallText is the text counterpart of [IsAuthRequired]: it reports a provider
+// auth/login wall from a child's combined output. It strips ANSI first, so a
+// marker drawn with interleaved styling still matches.
+func AuthWallText(text string) bool {
+	return hasAuthFailure(text)
 }

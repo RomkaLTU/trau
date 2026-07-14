@@ -115,6 +115,24 @@ func TestGrillDetailAndAnswer(t *testing.T) {
 	}
 }
 
+func TestGrillResumeSpawns(t *testing.T) {
+	tests := []struct {
+		state string
+		want  bool
+	}{
+		{hubstore.GrillParked, true},
+		{hubstore.GrillStalled, true},
+		{hubstore.GrillWaiting, false},
+		{hubstore.GrillRunning, false},
+		{hubstore.GrillFinished, false},
+	}
+	for _, tt := range tests {
+		if got := grillResumeSpawns(tt.state); got != tt.want {
+			t.Errorf("grillResumeSpawns(%q) = %v, want %v", tt.state, got, tt.want)
+		}
+	}
+}
+
 func TestGrillAbandon(t *testing.T) {
 	ts, _, repo := grillServer(t)
 	sess := createGrill(t, ts, repo, "COD-1")
