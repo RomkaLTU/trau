@@ -3,11 +3,8 @@ import { useMutation } from '@tanstack/react-query'
 import { ArrowRight, RotateCw, Settings2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import {
-  seedSync,
-  type SyncResponse,
-  type TrackerProvider,
-} from '@/lib/onboarding'
+import { syncRepo, type SyncResponse } from '@/lib/instances'
+import { type TrackerProvider } from '@/lib/onboarding'
 import { cn } from '@/lib/utils'
 import { Callout, Hint } from './ui'
 
@@ -27,7 +24,7 @@ export function StepSync({
   const internal = provider === 'internal'
 
   const sync = useMutation({
-    mutationFn: () => seedSync(repo),
+    mutationFn: () => syncRepo(repo),
     onSuccess: (res) => onSynced(res),
   })
 

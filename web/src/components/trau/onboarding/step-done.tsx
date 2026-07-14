@@ -5,11 +5,11 @@ import { List, Play } from 'lucide-react'
 
 import { useActiveRepo } from '@/components/trau/active-repo'
 import { Button } from '@/components/ui/button'
+import { type SyncResponse } from '@/lib/instances'
 import {
   essentialsConfigWrites,
   trackerConfigWrites,
   type EssentialsFields,
-  type SyncResponse,
   type TrackerFields,
   type TrackerProvider,
 } from '@/lib/onboarding'

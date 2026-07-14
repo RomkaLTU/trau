@@ -1,12 +1,12 @@
 import { useState } from 'react'
 
 import { TerminalCard } from '@/components/trau/terminal-card'
+import { type SyncResponse } from '@/lib/instances'
 import {
   laterStep,
   stepLabel,
   type EssentialsFields,
   type RepoInspection,
-  type SyncResponse,
   type TrackerFields,
   type TrackerProvider,
   type WizardStepId,
@@ -19,7 +19,7 @@ import { StepSync } from './step-sync'
 import { StepTracker } from './step-tracker'
 import { WizardStepper } from './wizard-stepper'
 
-export function OnboardingWizard() {
+export function OnboardingWizard({ initialPath = '' }: { initialPath?: string }) {
   const [step, setStep] = useState<WizardStepId>('path')
   const [maxReached, setMaxReached] = useState<WizardStepId>('path')
   const [inspection, setInspection] = useState<RepoInspection | null>(null)
@@ -47,7 +47,7 @@ export function OnboardingWizard() {
         >
           {step === 'path' && (
             <StepPath
-              initialPath={inspection?.path ?? ''}
+              initialPath={inspection?.path ?? initialPath}
               onInspected={(insp, name) => {
                 setInspection(insp)
                 setRepo(name)

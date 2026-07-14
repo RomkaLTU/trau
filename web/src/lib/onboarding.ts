@@ -49,14 +49,6 @@ export interface TestConnectionResponse {
   hint?: string
 }
 
-export interface SyncResponse {
-  repo: string
-  provider: string
-  issues: number
-  comments: number
-  syncedAt: string
-}
-
 // refused marks a 403 (SERVE_ALLOW_REGISTER) so the path step can render its own callout.
 export class InspectError extends Error {
   refused: boolean
@@ -119,16 +111,6 @@ export async function testTracker(
   )
   if (!res.ok) {
     throw new Error(await readError(res, 'connection test failed'))
-  }
-  return res.json()
-}
-
-export async function seedSync(repo: string): Promise<SyncResponse> {
-  const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(repo)}/sync`, {
-    method: 'POST',
-  })
-  if (!res.ok) {
-    throw new Error(await readError(res, 'sync failed'))
   }
   return res.json()
 }
