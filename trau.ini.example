@@ -68,14 +68,14 @@ PROVIDER=claude
 # speed presets — "fast on a smart model" is just a strong model at low effort.
 #
 # Effort is provider-specific. Claude takes --effort (low|medium|high|xhigh|max);
-# Codex takes -c model_reasoning_effort (minimal|low|medium|high|xhigh). Kimi Code has
+# Codex takes -c model_reasoning_effort (low|medium|high|xhigh|max). Kimi Code has
 # NO usable effort knob in headless runs (its KIMI_MODEL_THINKING_EFFORT only applies
 # via the KIMI_MODEL_* env-provider), so KIMI_MODEL is a model dial only — and the
 # value is a model ALIAS defined in your kimi config.toml [models.<alias>], not an ID.
 #
 # CLAUDE_MODEL=claude-sonnet-4-6
 # CLAUDE_EFFORT=medium
-# CODEX_MODEL=gpt-5.5
+# CODEX_MODEL=gpt-5.6-sol
 # CODEX_EFFORT=medium
 # KIMI_MODEL=kimi-for-coding
 
@@ -104,14 +104,14 @@ PROVIDER=claude
 # CLAUDE_COMMIT_EFFORT=low
 # CLAUDE_HANDOFF_MODEL=claude-sonnet-4-6
 #
-# Example Codex tuning: hardest work on GPT-5.5, mechanical phases on lighter Codex.
-# CODEX_BUILD_MODEL=gpt-5.5
+# Example Codex tuning: hardest work on GPT-5.6 Sol, mechanical phases on a lighter model.
+# CODEX_BUILD_MODEL=gpt-5.6-sol
 # CODEX_BUILD_EFFORT=xhigh
-# CODEX_REPAIR_MODEL=gpt-5.5
+# CODEX_REPAIR_MODEL=gpt-5.6-sol
 # CODEX_REPAIR_EFFORT=high
-# CODEX_BUGFIX_MODEL=gpt-5.5
+# CODEX_BUGFIX_MODEL=gpt-5.6-sol
 # CODEX_BUGFIX_EFFORT=xhigh
-# CODEX_VERIFY_MODEL=gpt-5.5
+# CODEX_VERIFY_MODEL=gpt-5.6-sol
 # CODEX_VERIFY_EFFORT=medium
 # CODEX_COMMIT_MODEL=gpt-5.4-mini
 # CODEX_COMMIT_EFFORT=low
@@ -220,7 +220,7 @@ VERIFY_CHECKS=1
 # verdicts. Each member is a provider:model:effort spec (model/effort optional);
 # empty = single verifier (default). Policy: unanimous (any dissent blocks) |
 # majority | any-pass. See docs/verify-panel.md.
-# VERIFY_PANEL=claude,codex:gpt-5.5,kimi
+# VERIFY_PANEL=claude,codex:gpt-5.6-sol,kimi
 VERIFY_PANEL_POLICY=unanimous
 
 # --- lessons memory ---
@@ -385,7 +385,7 @@ AGENT_BACKOFF=10
 # FALLBACK_PROVIDERS=codex,kimi
 
 # Optional provider model/effort defaults when a phase does not override them.
-# Empty = provider or profile default.
+# Empty = provider or profile default (Codex defaults to gpt-5.6-sol at medium effort).
 CLAUDE_MODEL=
 CLAUDE_EFFORT=
 CODEX_MODEL=

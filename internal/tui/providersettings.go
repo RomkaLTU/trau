@@ -262,7 +262,7 @@ func (m providerSettingsModel) enterEdit() (providerSettingsModel, tea.Cmd) {
 	case rowEffort:
 		m.edit = provEditor{
 			title:   "Default reasoning effort — " + p.Name,
-			rowDesc: effortDesc(p.Name),
+			rowDesc: effortDesc(p),
 			pickers: []provPicker{pickerField("Effort", prefix+"EFFORT", p.Efforts, p.Effort.Value, "(default)")},
 		}
 	case rowPhase:
@@ -381,12 +381,13 @@ func optionsWith(opts []string, sentinel string) (values, labels []string) {
 	return values, labels
 }
 
-func effortDesc(provider string) string {
-	switch provider {
+func effortDesc(p ProviderTuning) string {
+	choices := strings.Join(p.Efforts, " · ")
+	switch p.Name {
 	case "claude":
-		return "Claude --effort: low · medium · high · xhigh · max."
+		return "Claude --effort: " + choices + "."
 	case "codex":
-		return "Codex model_reasoning_effort: minimal · low · medium · high · xhigh."
+		return "Codex model_reasoning_effort: " + choices + "."
 	}
 	return ""
 }
@@ -565,7 +566,7 @@ func (m providerSettingsModel) descForRow(p ProviderTuning, i int) string {
 	}
 	switch m.rows[i].kind {
 	case rowEffort:
-		return effortDesc(p.Name)
+		return effortDesc(p)
 	case rowModel:
 		return modelDesc(p)
 	case rowPhase:
