@@ -12,33 +12,6 @@ import (
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
-// safeEditKeys is the whitelist of configuration keys the settings surface may
-// write. It is deliberately limited to operational knobs a loop re-reads on its
-// next start; credentials, identity, filesystem paths, provider binaries and
-// flags, and the serve exposure keys stay read-only over the wire.
-var safeEditKeys = map[string]bool{
-	"MAX_ITERATIONS":    true,
-	"MAX_REPAIRS":       true,
-	"MAX_BUGFIXES":      true,
-	"AUTO_MERGE":        true,
-	"MERGE_METHOD":      true,
-	"REQUIRE_CI":        true,
-	"CI_TIMEOUT":        true,
-	"CI_POLL":           true,
-	"LINT_FIX":          true,
-	"CLEANUP":           true,
-	"VERIFY_CHECKS":     true,
-	"REQUIRED_SKILLS":   true,
-	"BROWSER_VERIFY":    true,
-	"NOTIFY":            true,
-	"EPIC_FLOW":         true,
-	"THEME":             true,
-	"MAX_TICKET_USD":    true,
-	"MAX_TICKET_TOKENS": true,
-	"MAX_DAILY_USD":     true,
-	"MAX_DAILY_TOKENS":  true,
-}
-
 // configWriteLayers are the layers a settings edit may target, lowest to highest
 // precedence. The hub never writes the cwd-local layer — it has no bearing on a
 // specific repo's loop.
@@ -52,9 +25,12 @@ type ConfigKeyView struct {
 	Key         string   `json:"key"`
 	Value       string   `json:"value"`
 	Layer       string   `json:"layer"`
+	Group       string   `json:"group"`
+	Kind        string   `json:"kind,omitempty"`
 	Default     string   `json:"default,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Options     []string `json:"options,omitempty"`
+	Suggestions []string `json:"suggestions,omitempty"`
 	Bool        bool     `json:"bool,omitempty"`
 	Advanced    bool     `json:"advanced,omitempty"`
 	Editable    bool     `json:"editable"`
@@ -119,7 +95,7 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request, repo registry
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("unknown config key %q", key)})
 		return
 	}
-	if !safeEditKeys[key] {
+	if !meta.WebEditable {
 		writeJSON(w, http.StatusForbidden, map[string]string{
 			"error": fmt.Sprintf("config key %q is read-only over the settings surface", key),
 		})
@@ -179,12 +155,15 @@ func configKeyView(it config.ConfigItem) ConfigKeyView {
 	v := ConfigKeyView{
 		Key:         it.Key,
 		Layer:       string(it.Layer),
+		Group:       it.Group,
+		Kind:        it.Kind,
 		Default:     it.Default,
 		Description: it.Description,
 		Options:     it.Options,
+		Suggestions: it.Suggestions,
 		Bool:        it.Bool,
 		Advanced:    it.Advanced,
-		Editable:    safeEditKeys[it.Key],
+		Editable:    it.WebEditable,
 		Secret:      config.IsSecretKey(it.Key),
 	}
 	if v.Secret {

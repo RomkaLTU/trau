@@ -392,3 +392,69 @@ func TestLoadThemeDefault(t *testing.T) {
 		t.Errorf("ThemeColors = %v, want nil", cfg.ThemeColors)
 	}
 }
+
+func TestKnownKeysCatalogMetadata(t *testing.T) {
+	keys := KnownKeys()
+	byKey := make(map[string]KeyMeta, len(keys))
+	sections := map[string]bool{}
+	for _, s := range configSections {
+		sections[s] = true
+	}
+
+	for _, m := range keys {
+		byKey[m.Key] = m
+		if m.Group == "" {
+			t.Errorf("%s has no Section", m.Key)
+			continue
+		}
+		if !sections[m.Group] {
+			t.Errorf("%s has Section %q outside the catalog set", m.Key, m.Group)
+		}
+	}
+
+	editable := []string{
+		"MAX_ITERATIONS", "THEME", "PROJECT", "LINEAR_API_KEY", "JIRA_API_TOKEN",
+		"GRILL_MODEL", "TRANSCRIPT_RETENTION", "SERVE_AUTOSTART",
+		"CLAUDE_MODEL", "CLAUDE_BUILD_MODEL", "THEME_BRAND",
+	}
+	for _, k := range editable {
+		if !byKey[k].WebEditable {
+			t.Errorf("%s should be web-editable", k)
+		}
+	}
+
+	readOnly := []string{
+		"CLAUDE_BIN", "CODEX_BIN", "KIMI_BIN", "CLAUDE_FLAGS", "CODEX_FLAGS",
+		"CLAUDE_CONFIG", "LINT_FIX_CMD", "SERVE_BIND", "SERVE_PORT", "SERVE_TOKEN",
+		"SERVE_ALLOW_REGISTER", "RUNS_DIR", "TRAU_REPO_ROOT", "SERVE_WORKSPACE",
+	}
+	for _, k := range readOnly {
+		if byKey[k].WebEditable {
+			t.Errorf("%s must stay read-only over the web", k)
+		}
+	}
+
+	kinds := map[string]string{
+		"MAX_ITERATIONS":  "int",
+		"CI_TIMEOUT":      "int",
+		"GRILL_RETENTION": "int",
+		"THEME_BRAND":     "color",
+		"MAX_TICKET_USD":  "",
+	}
+	for k, want := range kinds {
+		if got := byKey[k].Kind; got != want {
+			t.Errorf("%s Kind = %q, want %q", k, got, want)
+		}
+	}
+
+	for _, k := range []string{"CLAUDE_MODEL", "CODEX_MODEL", "CLAUDE_BUILD_MODEL", "CODEX_PICK_MODEL"} {
+		if len(byKey[k].Suggestions) == 0 {
+			t.Errorf("%s should carry model suggestions", k)
+		}
+	}
+	for _, k := range []string{"CLAUDE_EFFORT", "CODEX_EFFORT", "CLAUDE_BUILD_EFFORT", "CODEX_VERIFY_EFFORT"} {
+		if len(byKey[k].Options) == 0 {
+			t.Errorf("%s should carry effort options", k)
+		}
+	}
+}
