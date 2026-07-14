@@ -255,6 +255,19 @@ query Teams {
 }
 `
 
+	// countQuery counts the issues visible to the key, bounded to one page (250,
+	// Linear's max), so the onboarding connection test can report a visible-issue
+	// signal from a single cheap authenticated read rather than paging the backlog.
+	countQuery = `
+query CountIssues {
+  issues(first: 250) {
+    nodes {
+      id
+    }
+  }
+}
+`
+
 	// projectsByNameQuery resolves a project's node id from its name, so the create
 	// path can place an issue inside the bound PROJECT.
 	projectsByNameQuery = `

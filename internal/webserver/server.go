@@ -49,6 +49,7 @@ type Server struct {
 	drainCtx         context.Context
 	newWriter        func(config.Config) (tracker.Writer, error)
 	newReader        func(config.Config) (tracker.Reader, error)
+	newProbe         func(provider string, cfg config.Config) (trackerProbe, error)
 	installSkill     func(ctx context.Context, repoRoot, pkg string) error
 	removeSkill      func(ctx context.Context, repoRoot, name string) error
 	skillsMu         sync.Mutex
@@ -83,6 +84,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		drainCtx:         context.Background(),
 		newWriter:        defaultWriter,
 		newReader:        defaultReader,
+		newProbe:         defaultProbe,
 		installSkill:     defaultInstallSkill,
 		removeSkill:      defaultRemoveSkill,
 		skillsCache:      map[string]skillsCacheEntry{},
@@ -224,6 +226,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/instances/{pid}/stop", s.handleStopInstance)
 	mux.HandleFunc(APIPrefix+"/costs", s.handleCosts)
 	mux.HandleFunc(APIPrefix+"/costs/timeseries", s.handleTimeseries)
+	mux.HandleFunc(APIPrefix+"/trackers/{provider}/test-connection", s.handleTrackerTestConnection)
 	mux.HandleFunc(APIPrefix+"/repos", s.handleRepos)
 	mux.HandleFunc(APIPrefix+"/repos/inspect", s.handleReposInspect)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}", s.handleRepo)

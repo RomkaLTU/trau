@@ -279,6 +279,21 @@ func (c *Client) ListTeams(ctx context.Context) ([]Team, error) {
 	return out, nil
 }
 
+// CountIssues returns a bounded count of the issues visible to the API key — the
+// cheap authenticated read behind the onboarding connection test's visible-issue
+// signal. It fetches a single page (Linear's maximum, 250), so a larger workspace
+// reports the cap rather than paging the whole backlog.
+func (c *Client) CountIssues(ctx context.Context) (int, error) {
+	if c.apiKey == "" {
+		return 0, ErrNotEnabled
+	}
+	var dst countQueryResponse
+	if err := c.do(ctx, countQuery, nil, &dst); err != nil {
+		return 0, err
+	}
+	return len(dst.Data.Issues.Nodes), nil
+}
+
 // TeamByKey looks up a team by its key (e.g. "COD").
 func (c *Client) TeamByKey(ctx context.Context, key string) (*Team, error) {
 	teams, err := c.ListTeams(ctx)
@@ -700,6 +715,16 @@ type teamsQueryResponse struct {
 		Teams struct {
 			Nodes []teamNode `json:"nodes"`
 		} `json:"teams"`
+	} `json:"data"`
+}
+
+type countQueryResponse struct {
+	Data struct {
+		Issues struct {
+			Nodes []struct {
+				ID string `json:"id"`
+			} `json:"nodes"`
+		} `json:"issues"`
 	} `json:"data"`
 }
 
