@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   activeLoopCount,
+  boardPill,
   isActiveState,
   loopCardView,
   phasePill,
@@ -11,6 +12,29 @@ import {
   type LiveLoop,
   type SessionState,
 } from "@/lib/overview";
+
+describe("boardPill", () => {
+  it("maps pipeline phases through the shared phase pill", () => {
+    expect(boardPill({ phase: "building" })).toEqual({ state: "active", label: "build" });
+    expect(boardPill({ phase: "verified" })).toEqual({ state: "verify", label: "verify" });
+    expect(boardPill({ phase: "merged" })).toEqual({ state: "success", label: "merged" });
+  });
+
+  it("lets a failure class win over the phase", () => {
+    expect(boardPill({ phase: "verified", failure_class: "paused" })).toEqual({
+      state: "warn",
+      label: "paused",
+    });
+    expect(boardPill({ phase: "building", failure_class: "faulted" })).toEqual({
+      state: "fail",
+      label: "fault",
+    });
+    expect(boardPill({ phase: "verified", failure_class: "gave_up" })).toEqual({
+      state: "fail",
+      label: "quarantined",
+    });
+  });
+});
 
 describe("phaseRank", () => {
   it("ranks the checkpoint pipeline in order", () => {

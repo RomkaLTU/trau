@@ -112,7 +112,7 @@ function toneFor(ev: FeedEvent, base: Tone): Tone {
   return base
 }
 
-function summarize(ev: FeedEvent): string {
+export function summarize(ev: FeedEvent): string {
   const f = ev.fields
   switch (ev.kind) {
     case 'agent_call': {

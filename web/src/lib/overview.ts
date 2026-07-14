@@ -43,6 +43,21 @@ export function phasePill(phase: string): { state: RunState; label: string } {
   }
 }
 
+export function boardPill(
+  run: Pick<Run, "phase" | "failure_class">,
+): { state: RunState; label: string } {
+  switch (run.failure_class) {
+    case "paused":
+      return { state: "warn", label: "paused" };
+    case "faulted":
+      return { state: "fail", label: "fault" };
+    case "gave_up":
+      return { state: "fail", label: "quarantined" };
+    default:
+      return phasePill(run.phase);
+  }
+}
+
 export type SessionState =
   "working" | "grazing" | "parked" | "idle" | "stopping" | "unknown";
 
