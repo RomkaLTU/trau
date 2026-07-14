@@ -84,6 +84,50 @@ func TestCheckpointAllOrderedByTicket(t *testing.T) {
 	}
 }
 
+func TestCheckpointAllCostUSD(t *testing.T) {
+	db, err := hubdb.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open hub db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	stores := NewStores(db.SQL(), nil, Retention{})
+	cp, tk := stores.Checkpoints(), stores.Tokens()
+
+	const repo = "/repo"
+	for _, id := range []string{"COD-costed", "COD-empty", "COD-null", "COD-zero"} {
+		if err := cp.Upsert(repo, id, map[string]string{"PHASE": "built"}); err != nil {
+			t.Fatalf("Upsert %s: %v", id, err)
+		}
+	}
+	appendCalls(t, tk, repo,
+		TokenCall{Ticket: "COD-costed", TS: "2026-07-14T10:00:00", Phase: "build", Input: 100, Output: 50, CostUSD: usd(0.10)},
+		TokenCall{Ticket: "COD-costed", TS: "2026-07-14T10:01:00", Phase: "build", Input: 200, Output: 80, CostUSD: usd(0.20)},
+		TokenCall{Ticket: "COD-null", TS: "2026-07-14T10:02:00", Phase: "build", Input: 300, Output: 120},
+		TokenCall{Ticket: "COD-zero", TS: "2026-07-14T10:03:00", Phase: "build", Input: 10, Output: 5, CostUSD: usd(0)},
+	)
+
+	rows, err := cp.All(repo)
+	if err != nil {
+		t.Fatalf("All: %v", err)
+	}
+	got := map[string]*float64{}
+	for _, r := range rows {
+		got[r.Ticket] = r.CostUSD
+	}
+	if c := got["COD-costed"]; c == nil || *c != 0.30 {
+		t.Errorf("COD-costed cost = %v, want 0.30 (sum of costed rows)", c)
+	}
+	if c := got["COD-empty"]; c != nil {
+		t.Errorf("COD-empty cost = %v, want nil (no token rows)", c)
+	}
+	if c := got["COD-null"]; c != nil {
+		t.Errorf("COD-null cost = %v, want nil (all rows NULL cost)", c)
+	}
+	if c := got["COD-zero"]; c == nil || *c != 0 {
+		t.Errorf("COD-zero cost = %v, want 0 (actual zero-cost row)", c)
+	}
+}
+
 func TestCheckpointImportLegacyIsIdempotent(t *testing.T) {
 	c := testCheckpoints(t)
 	runsDir := t.TempDir()
