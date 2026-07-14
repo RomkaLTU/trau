@@ -340,6 +340,85 @@ func TestBacklogPageOrdersByGroupThenNumericIdentifier(t *testing.T) {
 	}
 }
 
+func TestBacklogPageOrdersByFamilyThenIdentifier(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/family"
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-873", StatusGroup: "backlog", HasChildren: true},
+		{Identifier: "COD-875", StatusGroup: "backlog", Parent: "COD-873"},
+		{Identifier: "COD-874", StatusGroup: "backlog", Parent: "COD-873"},
+		{Identifier: "COD-9", StatusGroup: "backlog"},
+		{Identifier: "COD-880", StatusGroup: "backlog"},
+		{Identifier: "COD-877", StatusGroup: "started", Parent: "COD-873"},
+		{Identifier: "COD-876", StatusGroup: "started", Parent: "COD-873"},
+		{Identifier: "COD-3", StatusGroup: "started"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, _, _, err := s.BacklogPage(repo, BacklogFilter{})
+	if err != nil {
+		t.Fatalf("BacklogPage: %v", err)
+	}
+	want := []string{
+		"COD-3", "COD-876", "COD-877",
+		"COD-9", "COD-873", "COD-874", "COD-875", "COD-880",
+	}
+	if !reflect.DeepEqual(idsOf(got), want) {
+		t.Fatalf("order = %v, want family-key order %v\n"+
+			"expected: within a group, epics before their sub-issues, a sub-issue "+
+			"immediately after its epic, sub-issues in another group clustered under "+
+			"their epic key, and unrelated issues in numeric-aware order", idsOf(got), want)
+	}
+}
+
+func TestBacklogPageCountsEpicChildren(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/childcounts"
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-1", StatusGroup: "backlog", HasChildren: true},
+		{Identifier: "COD-2", StatusGroup: "done", Parent: "COD-1"},
+		{Identifier: "COD-3", StatusGroup: "canceled", Parent: "COD-1"},
+		{Identifier: "COD-4", StatusGroup: "started", Parent: "COD-1"},
+		{Identifier: "COD-5", StatusGroup: "backlog", Parent: "COD-1"},
+		{Identifier: "COD-9", StatusGroup: "backlog"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	epic := func(issues []Issue) Issue {
+		t.Helper()
+		for _, iss := range issues {
+			if iss.Identifier == "COD-1" {
+				return iss
+			}
+		}
+		t.Fatal("epic COD-1 absent from the page")
+		return Issue{}
+	}
+
+	full, _, _, err := s.BacklogPage(repo, BacklogFilter{})
+	if err != nil {
+		t.Fatalf("BacklogPage: %v", err)
+	}
+	if e := epic(full); e.ChildrenSettled != 2 || e.ChildrenTotal != 4 {
+		t.Fatalf("epic counts = %d/%d, want 2/4 (done + canceled settled of four children)", e.ChildrenSettled, e.ChildrenTotal)
+	}
+	for _, iss := range full {
+		if iss.Identifier != "COD-1" && (iss.ChildrenSettled != 0 || iss.ChildrenTotal != 0) {
+			t.Errorf("non-epic %s carries counts %d/%d, want none", iss.Identifier, iss.ChildrenSettled, iss.ChildrenTotal)
+		}
+	}
+
+	filtered, _, _, err := s.BacklogPage(repo, BacklogFilter{Groups: []string{"backlog"}})
+	if err != nil {
+		t.Fatalf("BacklogPage backlog-only: %v", err)
+	}
+	if e := epic(filtered); e.ChildrenSettled != 2 || e.ChildrenTotal != 4 {
+		t.Fatalf("filtered epic counts = %d/%d, want 2/4 — counts cover all children, not the filtered page", e.ChildrenSettled, e.ChildrenTotal)
+	}
+}
+
 func TestBacklogPageCountsIgnoreState(t *testing.T) {
 	s := testIssues(t)
 	repo := "/repo/counts"
