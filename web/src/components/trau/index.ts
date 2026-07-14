@@ -33,6 +33,7 @@ export { RemovedBanner } from './removed-banner'
 export {
   RunActionsMenu,
   RunActionsRow,
+  RunResetButton,
   NoticeBanner,
   type CheckpointNotice,
 } from './checkpoint-actions'

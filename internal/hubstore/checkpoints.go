@@ -24,9 +24,14 @@ type CheckpointRow struct {
 }
 
 // TicketCheckpoint pairs a checkpoint with the ticket it belongs to, for the run
-// board's and resume scan's whole-repo reads.
+// board's and resume scan's whole-repo reads. CostUSD is the run's summed
+// token-call cost, nil when the cost is unknown: the ticket has no token calls
+// (never recorded, or pruned by retention) or every call recorded no per-call
+// cost. It is a pointer so the board shows an unknown cost as absent, distinct
+// from a genuine zero.
 type TicketCheckpoint struct {
-	Ticket string
+	Ticket  string
+	CostUSD *float64
 	CheckpointRow
 }
 
@@ -91,12 +96,16 @@ func (c *Checkpoints) Phase(root, ticket string) string {
 	return row.Phase
 }
 
-// All returns every checkpoint for repo, each tagged with its ticket and ordered
-// by ticket.
+// All returns every checkpoint for repo, each tagged with its ticket and its
+// summed token-call cost, ordered by ticket. The cost is a correlated aggregate
+// over token_calls (indexed by repo, ticket) so the whole board reads in one
+// query rather than a spend query per ticket. SUM is NULL — hence CostUSD nil —
+// when a ticket has no calls or all its calls recorded no per-call cost.
 func (c *Checkpoints) All(root string) (rows []TicketCheckpoint, err error) {
 	q, err := c.db.Query(
-		`SELECT ticket, phase, title, branch, pr, pr_url, failure_reason, updated_at, data
-		 FROM checkpoints WHERE repo = ? ORDER BY ticket`, root,
+		`SELECT c.ticket, c.phase, c.title, c.branch, c.pr, c.pr_url, c.failure_reason, c.updated_at, c.data,
+		        (SELECT SUM(tc.cost_usd) FROM token_calls tc WHERE tc.repo = c.repo AND tc.ticket = c.ticket)
+		 FROM checkpoints c WHERE c.repo = ? ORDER BY c.ticket`, root,
 	)
 	if err != nil {
 		return nil, err
@@ -104,12 +113,19 @@ func (c *Checkpoints) All(root string) (rows []TicketCheckpoint, err error) {
 	defer func() { err = errors.Join(err, q.Close()) }()
 	rows = []TicketCheckpoint{}
 	for q.Next() {
-		var r TicketCheckpoint
+		var (
+			r    TicketCheckpoint
+			cost sql.NullFloat64
+		)
 		if err := q.Scan(
 			&r.Ticket, &r.Phase, &r.Title, &r.Branch, &r.PR, &r.PRURL,
-			&r.FailureReason, &r.UpdatedAt, &r.Data,
+			&r.FailureReason, &r.UpdatedAt, &r.Data, &cost,
 		); err != nil {
 			return nil, err
+		}
+		if cost.Valid {
+			v := roundCents(cost.Float64)
+			r.CostUSD = &v
 		}
 		rows = append(rows, r)
 	}

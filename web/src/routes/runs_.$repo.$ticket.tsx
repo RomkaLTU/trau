@@ -17,7 +17,7 @@ import {
 } from '@/components/trau'
 import { Markdown } from '@/components/markdown'
 import { cn } from '@/lib/utils'
-import { boardPill } from '@/lib/board'
+import { boardPill } from '@/lib/overview'
 import { addComment } from '@/lib/issues'
 import { runTitle, usePageTitle } from '@/lib/page-title'
 import { formatCostUSD, formatDuration } from '@/lib/runlive'
