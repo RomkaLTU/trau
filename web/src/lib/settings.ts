@@ -179,6 +179,25 @@ export function isHexColor(value: string): boolean {
   return HEX_COLOR.test(value)
 }
 
+export type EditorVariant = 'bool' | 'select' | 'color' | 'combobox' | 'text'
+
+export function editorVariant(item: ConfigKey): EditorVariant {
+  if (item.bool) return 'bool'
+  if (item.options && item.options.length > 0) return 'select'
+  if (item.kind === 'color') return 'color'
+  if (item.suggestions && item.suggestions.length > 0) return 'combobox'
+  return 'text'
+}
+
+export function comboboxFreeEntry(
+  query: string,
+  suggestions: string[],
+): string | null {
+  const trimmed = query.trim()
+  if (trimmed === '') return null
+  return suggestions.includes(trimmed) ? null : trimmed
+}
+
 export function deriveSections(keys: ConfigKey[]): Section[] {
   const buckets = new Map<string, ConfigKey[]>()
   for (const item of keys) {

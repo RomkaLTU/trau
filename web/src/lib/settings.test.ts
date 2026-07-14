@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest'
 import type { ConfigKey } from '@/lib/config'
 import {
   appliesOnHubRestart,
+  comboboxFreeEntry,
   derivePhaseMatrix,
   deriveSections,
   displayValue,
+  editorVariant,
   isHexColor,
   isModified,
   matchesQuery,
@@ -226,5 +228,53 @@ describe('isHexColor', () => {
     expect(isHexColor('#7d56f')).toBe(false)
     expect(isHexColor('#7d56f4f')).toBe(false)
     expect(isHexColor('')).toBe(false)
+  })
+})
+
+describe('editorVariant', () => {
+  it('routes model keys with suggestions to the combobox', () => {
+    expect(
+      editorVariant(
+        key({ key: 'CLAUDE_MODEL', suggestions: ['claude-opus', 'claude-sonnet'] }),
+      ),
+    ).toBe('combobox')
+    expect(
+      editorVariant(key({ key: 'GRILL_MODEL', suggestions: ['claude-opus'] })),
+    ).toBe('combobox')
+  })
+
+  it('renders effort keys as a strict select from their options, not a combobox', () => {
+    expect(
+      editorVariant(
+        key({ key: 'CLAUDE_EFFORT', options: ['low', 'medium', 'high'] }),
+      ),
+    ).toBe('select')
+  })
+
+  it('falls back to free text when suggestions are empty', () => {
+    expect(editorVariant(key({ key: 'KIMI_MODEL', suggestions: [] }))).toBe('text')
+    expect(editorVariant(key({ key: 'KIMI_MODEL' }))).toBe('text')
+  })
+
+  it('keeps bool and color keys on their own variants', () => {
+    expect(editorVariant(key({ key: 'AUTO_MERGE', bool: true }))).toBe('bool')
+    expect(editorVariant(key({ key: 'THEME_ACCENT', kind: 'color' }))).toBe('color')
+  })
+})
+
+describe('comboboxFreeEntry', () => {
+  const models = ['claude-opus-4', 'claude-sonnet-4']
+
+  it('offers a trimmed custom id that is not already a suggestion', () => {
+    expect(comboboxFreeEntry('  gpt-5-mini ', models)).toBe('gpt-5-mini')
+  })
+
+  it('suppresses the free entry when the query matches a suggestion exactly', () => {
+    expect(comboboxFreeEntry('claude-opus-4', models)).toBeNull()
+  })
+
+  it('offers nothing for a blank query', () => {
+    expect(comboboxFreeEntry('', models)).toBeNull()
+    expect(comboboxFreeEntry('   ', models)).toBeNull()
   })
 })
