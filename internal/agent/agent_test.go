@@ -113,6 +113,41 @@ func TestClaudeArgsStripMechanicalMCP(t *testing.T) {
 	}
 }
 
+// TestCodexArgsPassModelAndEffort checks the clean codex default (gpt-5.6-sol at
+// medium effort) reaches a fresh `codex exec` as an explicit --model plus a
+// -c model_reasoning_effort override, and that an unset dial emits no flag at all.
+func TestCodexArgsPassModelAndEffort(t *testing.T) {
+	c := &Codex{Bin: "codex", Model: "gpt-5.6-sol", Effort: "medium"}
+	args := c.args("do the thing", "/tmp/msg.json")
+
+	if args[0] != "exec" {
+		t.Fatalf("args[0] = %q, want exec", args[0])
+	}
+	if got := flagValue(args, "--model"); got != "gpt-5.6-sol" {
+		t.Errorf("--model = %q, want gpt-5.6-sol", got)
+	}
+	if got := flagValue(args, "-c"); got != "model_reasoning_effort=medium" {
+		t.Errorf("-c = %q, want model_reasoning_effort=medium", got)
+	}
+	if last := args[len(args)-1]; last != "do the thing" {
+		t.Errorf("prompt is not the final arg: %q", last)
+	}
+
+	bare := (&Codex{Bin: "codex"}).args("p", "/tmp/m")
+	if flagValue(bare, "--model") != "" || flagValue(bare, "-c") != "" {
+		t.Errorf("bare codex args should carry no model/effort flags: %v", bare)
+	}
+}
+
+func flagValue(args []string, flag string) string {
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
 // scriptedSession emits a fixed prologue on its first Read, then blocks like a
 // hung agent (the auth-wall idle) until Kill/Close. It lets a test feed the
 // terminal output that should trip the auth watchdog.

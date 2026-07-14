@@ -21,7 +21,7 @@ behavior is unchanged):
 # Each member is a provider:model:effort spec, same grammar as a phase route.
 # model and effort are optional and fall back to that provider's configured
 # defaults. Repeated providers are allowed (they get a numeric suffix).
-VERIFY_PANEL=claude,codex:gpt-5.5,kimi
+VERIFY_PANEL=claude,codex:gpt-5.6-sol,kimi
 
 # How the members' verdicts combine.
 VERIFY_PANEL_POLICY=unanimous       # unanimous | majority | any-pass
