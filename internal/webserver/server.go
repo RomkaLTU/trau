@@ -262,6 +262,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/resync", s.handleForceResync)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/reconcile", s.handleReconcileRepo)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/gitignore", s.handleRepoGitignore)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/health", s.handleRepoHealth)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/lessons", s.handleLessons)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills", s.handleSkills)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills/search", s.handleSkillsSearch)

@@ -246,6 +246,20 @@ func credentialFinding(prov, label string, present bool, layer config.Layer, act
 	return finding
 }
 
+// activeProviderFrom is the provider a repo would sync as, read from its layered
+// config alone. It is the reusable effective-config signal behind both the
+// inspection report and the repo health derivation, so a repo reads the same
+// either way; an empty result means no effective tracker-provider config, i.e.
+// unconfigured.
+func activeProviderFrom(cfg config.Config, sources map[string]config.Layer) string {
+	explicit := cfg.TrackerProviderExplicit(sources)
+	provider := ""
+	if explicit {
+		provider = strings.ToLower(strings.TrimSpace(cfg.TrackerProvider))
+	}
+	return activeProvider(cfg, explicit, provider)
+}
+
 // activeProvider is the provider trau would actually sync as, used to color the
 // credential findings. An explicit TRACKER_PROVIDER wins; otherwise present Jira
 // credentials imply Jira (the reason the melga case reads its creds as OK), and a
