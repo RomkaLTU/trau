@@ -3,11 +3,15 @@ import { describe, expect, it } from 'vitest'
 import type { ConfigKey } from '@/lib/config'
 import {
   appliesOnHubRestart,
+  derivePhaseMatrix,
   deriveSections,
   displayValue,
+  isHexColor,
   isModified,
   matchesQuery,
+  routingCellKey,
   sectionSlug,
+  themeRoleLabel,
 } from '@/lib/settings'
 
 function key(overrides: Partial<ConfigKey> & { key: string }): ConfigKey {
@@ -68,7 +72,9 @@ describe('deriveSections', () => {
       key({ key: 'A', group: 'CI' }),
       key({ key: 'B', group: 'Git & merge', layer: 'project' }),
     ])
-    const byGroup = Object.fromEntries(sections.map((s) => [s.group, s.modified]))
+    const byGroup = Object.fromEntries(
+      sections.map((s) => [s.group, s.modified]),
+    )
     expect(byGroup['CI']).toBe(false)
     expect(byGroup['Git & merge']).toBe(true)
   })
@@ -79,7 +85,9 @@ describe('deriveSections', () => {
       key({ key: 'EVENT_RETENTION', group: 'Retention' }),
       key({ key: 'LINEAR_TEAM', group: 'Tracker & issues' }),
     ])
-    const byGroup = Object.fromEntries(sections.map((s) => [s.group, s.hubRestart]))
+    const byGroup = Object.fromEntries(
+      sections.map((s) => [s.group, s.hubRestart]),
+    )
     expect(byGroup['Hub & web server']).toBe(true)
     expect(byGroup['Retention']).toBe(true)
     expect(byGroup['Tracker & issues']).toBe(false)
@@ -93,15 +101,23 @@ describe('isModified', () => {
   })
 
   it('requires a secret to be set and non-default', () => {
-    expect(isModified(key({ key: 'S', secret: true, set: true, layer: 'local' }))).toBe(true)
-    expect(isModified(key({ key: 'S', secret: true, set: true, layer: 'default' }))).toBe(false)
-    expect(isModified(key({ key: 'S', secret: true, layer: 'local' }))).toBe(false)
+    expect(
+      isModified(key({ key: 'S', secret: true, set: true, layer: 'local' })),
+    ).toBe(true)
+    expect(
+      isModified(key({ key: 'S', secret: true, set: true, layer: 'default' })),
+    ).toBe(false)
+    expect(isModified(key({ key: 'S', secret: true, layer: 'local' }))).toBe(
+      false,
+    )
   })
 })
 
 describe('displayValue', () => {
   it('masks secrets and shows a dash when unset', () => {
-    expect(displayValue(key({ key: 'S', secret: true, set: true }))).toBe('••••••••')
+    expect(displayValue(key({ key: 'S', secret: true, set: true }))).toBe(
+      '••••••••',
+    )
     expect(displayValue(key({ key: 'S', secret: true }))).toBe('—')
   })
 
@@ -114,7 +130,10 @@ describe('displayValue', () => {
 })
 
 describe('matchesQuery', () => {
-  const k = key({ key: 'BASE_BRANCH', description: 'Branch that features fork from.' })
+  const k = key({
+    key: 'BASE_BRANCH',
+    description: 'Branch that features fork from.',
+  })
 
   it('matches on key or description, case-insensitively', () => {
     expect(matchesQuery(k, 'base')).toBe(true)
@@ -140,5 +159,72 @@ describe('appliesOnHubRestart', () => {
     expect(appliesOnHubRestart('Hub & web server')).toBe(true)
     expect(appliesOnHubRestart('Retention')).toBe(true)
     expect(appliesOnHubRestart('CI')).toBe(false)
+  })
+})
+
+describe('derivePhaseMatrix', () => {
+  const routingKeys = [
+    key({ key: 'CLAUDE_BUILD_MODEL' }),
+    key({ key: 'CLAUDE_BUILD_EFFORT' }),
+    key({ key: 'CLAUDE_CLEANUP_MODEL' }),
+    key({ key: 'CLAUDE_BUILD_DISALLOWED_TOOLS' }),
+    key({ key: 'CODEX_BUILD_MODEL' }),
+    key({ key: 'CODEX_BUILD_EFFORT' }),
+    key({ key: 'KIMI_BUILD_MODEL' }),
+    key({ key: 'KIMI_VERIFY_MODEL' }),
+  ]
+
+  it('derives providers, phases, and columns from catalog keys only', () => {
+    const model = derivePhaseMatrix(routingKeys)
+    expect(model.providers).toEqual(['CLAUDE', 'CODEX', 'KIMI'])
+    expect(model.phases.CLAUDE).toEqual(['BUILD', 'CLEANUP'])
+    expect(model.phases.KIMI).toEqual(['BUILD', 'VERIFY'])
+  })
+
+  it('gives each provider only the columns whose keys exist', () => {
+    const model = derivePhaseMatrix(routingKeys)
+    expect(model.columns.CLAUDE).toEqual([
+      'MODEL',
+      'EFFORT',
+      'DISALLOWED_TOOLS',
+    ])
+    expect(model.columns.CODEX).toEqual(['MODEL', 'EFFORT'])
+    expect(model.columns.KIMI).toEqual(['MODEL'])
+  })
+
+  it('ignores keys that are not phase-routing keys', () => {
+    const model = derivePhaseMatrix([
+      key({ key: 'CLAUDE_MODEL' }),
+      key({ key: 'THEME' }),
+      key({ key: 'CLAUDE_BUILD_MODEL' }),
+    ])
+    expect(model.providers).toEqual(['CLAUDE'])
+    expect(model.phases.CLAUDE).toEqual(['BUILD'])
+  })
+})
+
+describe('routingCellKey', () => {
+  it('rebuilds the catalog key for a provider/phase/column cell', () => {
+    expect(routingCellKey('CLAUDE', 'BUILD', 'DISALLOWED_TOOLS')).toBe(
+      'CLAUDE_BUILD_DISALLOWED_TOOLS',
+    )
+  })
+})
+
+describe('themeRoleLabel', () => {
+  it('strips the THEME_ prefix and lowercases the role', () => {
+    expect(themeRoleLabel('THEME_ACCENT')).toBe('accent')
+    expect(themeRoleLabel('THEME_BORDER')).toBe('border')
+  })
+})
+
+describe('isHexColor', () => {
+  it('accepts #rrggbb and rejects anything else', () => {
+    expect(isHexColor('#7d56f4')).toBe(true)
+    expect(isHexColor('#7D56F4')).toBe(true)
+    expect(isHexColor('7d56f4')).toBe(false)
+    expect(isHexColor('#7d56f')).toBe(false)
+    expect(isHexColor('#7d56f4f')).toBe(false)
+    expect(isHexColor('')).toBe(false)
   })
 })

@@ -95,6 +95,90 @@ export function matchesQuery(item: ConfigKey, query: string): boolean {
   )
 }
 
+export const ROUTING_SECTION = 'Per-phase routing'
+export const THEME_SECTION = 'TUI & notifications'
+
+export const ROUTING_COLUMNS = ['MODEL', 'EFFORT', 'DISALLOWED_TOOLS'] as const
+export type RoutingColumn = (typeof ROUTING_COLUMNS)[number]
+
+export const COLUMN_LABELS: Record<RoutingColumn, string> = {
+  MODEL: 'model',
+  EFFORT: 'effort',
+  DISALLOWED_TOOLS: 'disallowed tools',
+}
+
+const COLUMN_MATCH_ORDER: RoutingColumn[] = [
+  'DISALLOWED_TOOLS',
+  'MODEL',
+  'EFFORT',
+]
+
+function parseRoutingKey(
+  key: string,
+): { provider: string; phase: string; column: RoutingColumn } | null {
+  for (const column of COLUMN_MATCH_ORDER) {
+    const suffix = `_${column}`
+    if (!key.endsWith(suffix)) continue
+    const head = key.slice(0, -suffix.length)
+    const sep = head.indexOf('_')
+    if (sep <= 0) return null
+    return { provider: head.slice(0, sep), phase: head.slice(sep + 1), column }
+  }
+  return null
+}
+
+export interface PhaseMatrixModel {
+  providers: string[]
+  phases: Record<string, string[]>
+  columns: Record<string, RoutingColumn[]>
+}
+
+export function derivePhaseMatrix(keys: ConfigKey[]): PhaseMatrixModel {
+  const providers: string[] = []
+  const phases: Record<string, string[]> = {}
+  const columnSets: Record<string, Set<RoutingColumn>> = {}
+
+  for (const item of keys) {
+    const parts = parseRoutingKey(item.key)
+    if (!parts) continue
+    const seen = phases[parts.provider]
+    if (seen === undefined) {
+      providers.push(parts.provider)
+      phases[parts.provider] = [parts.phase]
+      columnSets[parts.provider] = new Set([parts.column])
+      continue
+    }
+    if (!seen.includes(parts.phase)) seen.push(parts.phase)
+    columnSets[parts.provider].add(parts.column)
+  }
+
+  const columns: Record<string, RoutingColumn[]> = {}
+  for (const provider of providers) {
+    columns[provider] = ROUTING_COLUMNS.filter((c) =>
+      columnSets[provider].has(c),
+    )
+  }
+  return { providers, phases, columns }
+}
+
+export function routingCellKey(
+  provider: string,
+  phase: string,
+  column: string,
+): string {
+  return `${provider}_${phase}_${column}`
+}
+
+export function themeRoleLabel(key: string): string {
+  return key.replace(/^THEME_/, '').toLowerCase()
+}
+
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/
+
+export function isHexColor(value: string): boolean {
+  return HEX_COLOR.test(value)
+}
+
 export function deriveSections(keys: ConfigKey[]): Section[] {
   const buckets = new Map<string, ConfigKey[]>()
   for (const item of keys) {
