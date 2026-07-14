@@ -18,6 +18,7 @@ import { Route as QueueRouteImport } from './routes/queue'
 import { Route as LoopRouteImport } from './routes/loop'
 import { Route as LessonsRouteImport } from './routes/lessons'
 import { Route as InstancesRouteImport } from './routes/instances'
+import { Route as InboxRouteImport } from './routes/inbox'
 import { Route as CostsRouteImport } from './routes/costs'
 import { Route as BacklogRouteImport } from './routes/backlog'
 import { Route as IndexRouteImport } from './routes/index'
@@ -69,6 +70,11 @@ const InstancesRoute = InstancesRouteImport.update({
   path: '/instances',
   getParentRoute: () => rootRouteImport,
 } as any)
+const InboxRoute = InboxRouteImport.update({
+  id: '/inbox',
+  path: '/inbox',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const CostsRoute = CostsRouteImport.update({
   id: '/costs',
   path: '/costs',
@@ -99,6 +105,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/backlog': typeof BacklogRoute
   '/costs': typeof CostsRoute
+  '/inbox': typeof InboxRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
   '/loop': typeof LoopRoute
@@ -115,6 +122,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/backlog': typeof BacklogRoute
   '/costs': typeof CostsRoute
+  '/inbox': typeof InboxRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
   '/loop': typeof LoopRoute
@@ -132,6 +140,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/backlog': typeof BacklogRoute
   '/costs': typeof CostsRoute
+  '/inbox': typeof InboxRoute
   '/instances': typeof InstancesRoute
   '/lessons': typeof LessonsRoute
   '/loop': typeof LoopRoute
@@ -150,6 +159,7 @@ export interface FileRouteTypes {
     | '/'
     | '/backlog'
     | '/costs'
+    | '/inbox'
     | '/instances'
     | '/lessons'
     | '/loop'
@@ -166,6 +176,7 @@ export interface FileRouteTypes {
     | '/'
     | '/backlog'
     | '/costs'
+    | '/inbox'
     | '/instances'
     | '/lessons'
     | '/loop'
@@ -182,6 +193,7 @@ export interface FileRouteTypes {
     | '/'
     | '/backlog'
     | '/costs'
+    | '/inbox'
     | '/instances'
     | '/lessons'
     | '/loop'
@@ -199,6 +211,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   BacklogRoute: typeof BacklogRoute
   CostsRoute: typeof CostsRoute
+  InboxRoute: typeof InboxRoute
   InstancesRoute: typeof InstancesRoute
   LessonsRoute: typeof LessonsRoute
   LoopRoute: typeof LoopRoute
@@ -277,6 +290,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof InstancesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/inbox': {
+      id: '/inbox'
+      path: '/inbox'
+      fullPath: '/inbox'
+      preLoaderRoute: typeof InboxRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/costs': {
       id: '/costs'
       path: '/costs'
@@ -319,6 +339,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   BacklogRoute: BacklogRoute,
   CostsRoute: CostsRoute,
+  InboxRoute: InboxRoute,
   InstancesRoute: InstancesRoute,
   LessonsRoute: LessonsRoute,
   LoopRoute: LoopRoute,
