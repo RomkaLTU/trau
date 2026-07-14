@@ -3,11 +3,15 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
   ArrowLeft,
+  Check,
   CheckCircle2,
+  Eye,
   Loader2,
   PauseCircle,
+  Pencil,
   Send,
   Sparkles,
+  Trash2,
   XCircle,
   type LucideIcon,
 } from 'lucide-react'
@@ -17,19 +21,27 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { StatusPill, type RunState } from '@/components/trau'
 import {
+  abandonGrill,
   activeSessionForIssue,
   answerGrill,
   answerText,
+  applyGrill,
+  diffHasChanges,
+  diffLines,
   grillBanner,
   grillReducer,
   grillSessionsQueryOptions,
   grillDetailQueryOptions,
   grillStreamURL,
   isAwaitingAnswer,
+  latestOutcome,
   outcomePayload,
   pendingQuestion,
   questionPayload,
   startGrillSession,
+  type DiffLine,
+  type GrillApplyResponse,
+  type GrillApplyStep,
   type GrillBanner,
   type GrillBannerTone,
   type GrillListResponse,
@@ -39,6 +51,7 @@ import {
   type OutcomePayload,
   type QuestionPayload,
 } from '@/lib/grill'
+import { issueQueryOptions } from '@/lib/issues'
 import { streamSSE } from '@/lib/sse'
 import { cn } from '@/lib/utils'
 
@@ -81,7 +94,7 @@ export function GrillPanel({
   const session = active ?? create.data
 
   if (session) {
-    return <GrillConversation key={session.id} initial={session} onClose={onClose} />
+    return <GrillConversation key={session.id} repo={repo} initial={session} onClose={onClose} />
   }
 
   return (
@@ -117,9 +130,11 @@ export function GrillPanel({
 type StreamStatus = 'connecting' | 'live' | 'error'
 
 function GrillConversation({
+  repo,
   initial,
   onClose,
 }: {
+  repo: string
   initial: GrillSession
   onClose: () => void
 }) {
@@ -157,6 +172,9 @@ function GrillConversation({
 
   const { session, messages } = state
   const pending = pendingQuestion(messages)
+  const outcomeMsg = latestOutcome(messages)
+  const reviewing =
+    outcomeMsg !== null && (session.state === 'finished' || session.state === 'applied')
 
   const answer = useMutation({
     mutationFn: (text: string) => answerGrill(session.id, text),
@@ -172,8 +190,8 @@ function GrillConversation({
 
   const awaiting = isAwaitingAnswer(session.state)
   const banner = grillBanner(session)
-  const showBanner = banner !== null && banner.tone !== 'thinking'
-  const showFooter = showBanner || awaiting || answer.error !== null
+  const showBanner = banner !== null && banner.tone !== 'thinking' && !reviewing
+  const showFooter = reviewing || showBanner || awaiting || answer.error !== null
 
   return (
     <PanelFrame onClose={onClose} pill={statePill(session.state)} reconnecting={status === 'error'}>
@@ -181,6 +199,7 @@ function GrillConversation({
         <div className="flex flex-col gap-3">
           {messages.map((m) => {
             if (pending && m.id === pending.id) return null
+            if (reviewing && outcomeMsg && m.id === outcomeMsg.id) return null
             return <MessageRow key={m.id} message={m} />
           })}
           {session.state === 'running' && <ThinkingRow />}
@@ -190,25 +209,37 @@ function GrillConversation({
 
       {showFooter && (
         <div className="flex flex-col gap-3 border-t p-4">
-          {showBanner && <BannerRow banner={banner} />}
-          {awaiting &&
-            (pending ? (
-              <QuestionCard
-                question={questionPayload(pending)}
-                disabled={answer.isPending}
-                onAnswer={(text) => answer.mutate(text)}
-              />
-            ) : (
-              <Composer
-                placeholder="Reply to resume…"
-                disabled={answer.isPending}
-                submitting={answer.isPending}
-                onSend={(text) => answer.mutate(text)}
-                defaultValue={session.state === 'stalled' ? lastAnswer(messages) : ''}
-              />
-            ))}
-          {answer.error && (
-            <p className="text-xs text-destructive">{(answer.error as Error).message}</p>
+          {reviewing && outcomeMsg ? (
+            <OutcomeReview
+              repo={repo}
+              issueId={session.issue_id ?? ''}
+              session={session}
+              outcome={outcomePayload(outcomeMsg)}
+              onSession={(next) => dispatch({ type: 'state', session: next })}
+            />
+          ) : (
+            <>
+              {showBanner && <BannerRow banner={banner} />}
+              {awaiting &&
+                (pending ? (
+                  <QuestionCard
+                    question={questionPayload(pending)}
+                    disabled={answer.isPending}
+                    onAnswer={(text) => answer.mutate(text)}
+                  />
+                ) : (
+                  <Composer
+                    placeholder="Reply to resume…"
+                    disabled={answer.isPending}
+                    submitting={answer.isPending}
+                    onSend={(text) => answer.mutate(text)}
+                    defaultValue={session.state === 'stalled' ? lastAnswer(messages) : ''}
+                  />
+                ))}
+              {answer.error && (
+                <p className="text-xs text-destructive">{(answer.error as Error).message}</p>
+              )}
+            </>
           )}
         </div>
       )}
@@ -393,6 +424,262 @@ function OutcomeProposal({ outcome }: { outcome: OutcomePayload }) {
       )}
     </div>
   )
+}
+
+// OutcomeReview is the approve-then-apply gate for a finished session: the proposal
+// is shown for review — a rewrite as an old→new diff the user can edit, a
+// needs_split or no_change as a plain confirmation — and nothing reaches the tracker
+// until Apply. A partial apply keeps the session finished and shows each step so the
+// user can retry; a full apply flips the session to applied and refreshes the
+// drawer's issue so it leaves the unclear set.
+function OutcomeReview({
+  repo,
+  issueId,
+  session,
+  outcome,
+  onSession,
+}: {
+  repo: string
+  issueId: string
+  session: GrillSession
+  outcome: OutcomePayload
+  onSession: (session: GrillSession) => void
+}) {
+  const queryClient = useQueryClient()
+  const issue = useQuery(issueQueryOptions(repo, issueId))
+  const isRewrite = outcome.disposition === 'rewrite'
+  const [draft, setDraft] = useState(outcome.proposed_description ?? '')
+  const [editing, setEditing] = useState(false)
+
+  // The session's new state rides onSession (and the hub's SSE state frame), so the
+  // grill list is left to go stale on its own — invalidating it here would drop the
+  // panel's now-settled active session and retrigger GrillPanel's auto-start. Only
+  // the issue and board are refreshed, which is what makes the issue leave the
+  // unclear set once its triage labels are gone.
+  const apply = useMutation({
+    mutationFn: () => applyGrill(session.id, isRewrite ? draft : ''),
+    onSuccess: (res) => {
+      onSession(res.session)
+      if (res.applied) {
+        void queryClient.invalidateQueries({ queryKey: ['issue', repo, issueId] })
+        void queryClient.invalidateQueries({ queryKey: ['backlog', repo] })
+      }
+    },
+  })
+
+  const discard = useMutation({
+    mutationFn: () => abandonGrill(session.id),
+    onSuccess: onSession,
+  })
+
+  if (session.state === 'applied') {
+    return <AppliedCard outcome={outcome} steps={apply.data?.steps ?? []} />
+  }
+
+  const failedSteps = apply.data && !apply.data.applied ? apply.data.steps : []
+  const busy = apply.isPending || discard.isPending
+
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-info/40 bg-info/5 p-3">
+      <div className="flex items-center gap-2">
+        <Badge variant="outline">{dispositionLabel(outcome.disposition)}</Badge>
+        <span className="text-xs text-muted-foreground">Review before applying</span>
+      </div>
+
+      {isRewrite ? (
+        <RewriteBody
+          current={issue.data?.description ?? ''}
+          draft={draft}
+          editing={editing}
+          loading={issue.isLoading}
+          onChange={setDraft}
+          onEdit={() => setEditing(true)}
+          onPreview={() => setEditing(false)}
+        />
+      ) : (
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {outcome.disposition === 'no_change'
+            ? 'No changes are needed. Close this session out — nothing is written to the tracker.'
+            : 'Marks the issue needs-split and posts the summary comment. The description is left unchanged.'}
+        </p>
+      )}
+
+      <SummaryPreview summary={outcome.summary} />
+
+      {failedSteps.length > 0 && <StepList steps={failedSteps} />}
+
+      {apply.error && <p className="text-xs text-destructive">{(apply.error as Error).message}</p>}
+      {discard.error && (
+        <p className="text-xs text-destructive">{(discard.error as Error).message}</p>
+      )}
+
+      <div className="flex items-center gap-2">
+        <Button size="sm" onClick={() => apply.mutate()} disabled={busy}>
+          {apply.isPending ? <Loader2 className="animate-spin" /> : <Check />}
+          {applyLabel(outcome.disposition, apply.data)}
+        </Button>
+        {outcome.disposition !== 'no_change' && (
+          <Button variant="ghost" size="sm" onClick={() => discard.mutate()} disabled={busy}>
+            {discard.isPending ? <Loader2 className="animate-spin" /> : <Trash2 />}
+            Discard
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function RewriteBody({
+  current,
+  draft,
+  editing,
+  loading,
+  onChange,
+  onEdit,
+  onPreview,
+}: {
+  current: string
+  draft: string
+  editing: boolean
+  loading: boolean
+  onChange: (text: string) => void
+  onEdit: () => void
+  onPreview: () => void
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-medium text-muted-foreground">Description</span>
+        {editing ? (
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onPreview}>
+            <Eye />
+            Preview diff
+          </Button>
+        ) : (
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={onEdit}>
+            <Pencil />
+            Edit
+          </Button>
+        )}
+      </div>
+      {editing ? (
+        <textarea
+          value={draft}
+          onChange={(e) => onChange(e.target.value)}
+          rows={10}
+          className="min-h-40 w-full resize-y rounded-md border bg-card px-3 py-2 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        />
+      ) : loading ? (
+        <p className="text-xs text-muted-foreground">Loading the current description…</p>
+      ) : (
+        <DiffView current={current} next={draft} />
+      )}
+    </div>
+  )
+}
+
+function DiffView({ current, next }: { current: string; next: string }) {
+  const lines = diffLines(current, next)
+  if (!diffHasChanges(lines)) {
+    return (
+      <p className="rounded-md border bg-card px-3 py-2 text-xs text-muted-foreground">
+        No change from the current description.
+      </p>
+    )
+  }
+  return (
+    <div className="max-h-72 overflow-auto rounded-md border bg-card py-1 font-mono text-xs leading-relaxed">
+      {lines.map((line, i) => (
+        <DiffRow key={i} line={line} />
+      ))}
+    </div>
+  )
+}
+
+function DiffRow({ line }: { line: DiffLine }) {
+  const style =
+    line.op === 'insert'
+      ? 'bg-done/10 text-done'
+      : line.op === 'delete'
+        ? 'bg-fail/10 text-fail'
+        : 'text-muted-foreground'
+  const sign = line.op === 'insert' ? '+' : line.op === 'delete' ? '-' : ' '
+  return (
+    <div className={cn('flex gap-2 px-3 whitespace-pre-wrap', style)}>
+      <span aria-hidden="true" className="select-none">
+        {sign}
+      </span>
+      <span className="flex-1 break-words">{line.text || ' '}</span>
+    </div>
+  )
+}
+
+function SummaryPreview({ summary }: { summary: string }) {
+  const text = summary.trim()
+  if (text === '') return null
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-xs font-medium text-muted-foreground">Summary comment</span>
+      <div className="rounded-md border bg-card px-3 py-2 text-sm">
+        <Markdown>{text}</Markdown>
+      </div>
+    </div>
+  )
+}
+
+const STEP_LABELS: Record<string, string> = {
+  description: 'Description',
+  comment: 'Summary comment',
+  labels: 'Labels',
+}
+
+function StepList({ steps }: { steps: GrillApplyStep[] }) {
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border bg-card px-3 py-2">
+      {steps.map((step) => {
+        const ok = step.status === 'ok'
+        return (
+          <div key={step.step} className="flex items-start gap-2 text-xs">
+            {ok ? (
+              <Check className="mt-0.5 size-3.5 shrink-0 text-done" aria-hidden="true" />
+            ) : (
+              <XCircle className="mt-0.5 size-3.5 shrink-0 text-fail" aria-hidden="true" />
+            )}
+            <div className="flex flex-col gap-0.5">
+              <span className={ok ? 'text-foreground' : 'text-fail'}>
+                {STEP_LABELS[step.step] ?? step.step}
+              </span>
+              {step.error && <span className="text-muted-foreground">{step.error}</span>}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function AppliedCard({ outcome, steps }: { outcome: OutcomePayload; steps: GrillApplyStep[] }) {
+  return (
+    <div className="flex flex-col gap-3 rounded-lg border border-done/40 bg-done/5 p-3">
+      <div className="flex items-center gap-2">
+        <CheckCircle2 className="size-4 shrink-0 text-done" aria-hidden="true" />
+        <p className="text-sm font-medium">Applied</p>
+        <Badge variant="outline">{dispositionLabel(outcome.disposition)}</Badge>
+      </div>
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        {outcome.disposition === 'no_change'
+          ? 'Session closed out — nothing was written to the tracker.'
+          : 'The outcome was written to the tracker. This issue is cleared.'}
+      </p>
+      {steps.length > 0 && <StepList steps={steps} />}
+    </div>
+  )
+}
+
+function applyLabel(disposition: string, result?: GrillApplyResponse): string {
+  if (result && !result.applied) return 'Retry'
+  if (disposition === 'no_change') return 'Close out'
+  return 'Apply'
 }
 
 const BANNER_STYLES: Record<GrillBannerTone, { className: string; icon: LucideIcon; spin?: boolean }> = {

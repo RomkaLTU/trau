@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   activeSessionForIssue,
+  diffHasChanges,
+  diffLines,
   grillBanner,
   grillReducer,
   isAwaitingAnswer,
@@ -11,6 +13,7 @@ import {
   pendingQuestion,
   questionPayload,
   upsertMessage,
+  type DiffLine,
   type GrillLive,
   type GrillMessage,
   type GrillSession,
@@ -205,6 +208,49 @@ describe('grillBanner', () => {
     expect(grillBanner(session({ state: 'applied' }))?.tone).toBe('applied')
   })
 })
+
+describe('diffLines', () => {
+  it('marks every line equal when nothing changed', () => {
+    const lines = diffLines('a\nb\nc', 'a\nb\nc')
+    expect(lines.map((l) => l.op)).toEqual(['equal', 'equal', 'equal'])
+    expect(diffHasChanges(lines)).toBe(false)
+  })
+
+  it('keeps context and pairs an edit as delete then insert', () => {
+    const lines = diffLines('a\nb\nc', 'a\nB\nc')
+    expect(compact(lines)).toEqual([
+      'equal a',
+      'delete b',
+      'insert B',
+      'equal c',
+    ])
+    expect(diffHasChanges(lines)).toBe(true)
+  })
+
+  it('reports an inserted line without deleting surrounding context', () => {
+    const lines = diffLines('a\nc', 'a\nb\nc')
+    expect(compact(lines)).toEqual(['equal a', 'insert b', 'equal c'])
+  })
+
+  it('reports a deleted line', () => {
+    const lines = diffLines('a\nb\nc', 'a\nc')
+    expect(compact(lines)).toEqual(['equal a', 'delete b', 'equal c'])
+  })
+
+  it('treats an empty original as all inserts and an empty replacement as all deletes', () => {
+    expect(diffLines('', 'x\ny').map((l) => l.op)).toEqual(['insert', 'insert'])
+    expect(diffLines('x\ny', '').map((l) => l.op)).toEqual(['delete', 'delete'])
+    expect(diffLines('', '')).toEqual([])
+  })
+
+  it('normalises CRLF so a line-ending-only change is not a diff', () => {
+    expect(diffHasChanges(diffLines('a\r\nb', 'a\nb'))).toBe(false)
+  })
+})
+
+function compact(lines: DiffLine[]): string[] {
+  return lines.map((l) => `${l.op} ${l.text}`)
+}
 
 function answerFor(list: GrillMessage[], id: string): string {
   const found = list.find((m) => m.id === id)
