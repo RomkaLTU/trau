@@ -680,38 +680,42 @@ func (s *Issues) commentsFor(repo, identifier string) (comments []Comment, err e
 }
 
 // SyncedPatch mirrors a tracker write onto a stored synced issue: an optional new
-// display status and status group, and label deltas. It carries only the
-// operational fields trau writes to a synced ticket (status, labels) — never its
-// tracker-owned content (ADR 0007).
+// display status and status group, an optional replacement description, and label
+// deltas. It carries the fields trau writes to a synced ticket — status and labels
+// operationally, and the description once a grill apply replaces it — so a
+// hub-initiated write lands in the store immediately and the next inbound sync sees
+// no divergence to reconcile (ADR 0007).
 type SyncedPatch struct {
 	Status       string
 	StatusGroup  string
+	Description  string
 	AddLabels    []string
 	RemoveLabels []string
 }
 
-// UpdateSynced applies a tracker write's status/label change to a repo's stored
-// synced issue so the board reflects the transition without waiting for the next
-// sync (ADR 0007). It only ever touches a source<>'internal' row — a missing or
-// internal identifier yields found=false — and returns the updated row. An empty
-// Status or StatusGroup leaves that field unchanged; label deltas apply
-// case-insensitively.
+// UpdateSynced applies a tracker write's status/description/label change to a
+// repo's stored synced issue so the board reflects the transition without waiting
+// for the next sync (ADR 0007). It only ever touches a source<>'internal' row — a
+// missing or internal identifier yields found=false — and returns the updated row.
+// An empty Status, StatusGroup, or Description leaves that field unchanged; label
+// deltas apply case-insensitively.
 func (s *Issues) UpdateSynced(repo, identifier string, patch SyncedPatch) (Issue, bool, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Issue{}, false, err
 	}
 	var (
-		id        int64
-		status    string
-		group     string
-		labelsRaw string
+		id          int64
+		status      string
+		group       string
+		description string
+		labelsRaw   string
 	)
 	err = tx.QueryRow(
-		`SELECT id, status, status_group, labels FROM issues
+		`SELECT id, status, status_group, description, labels FROM issues
 		 WHERE repo = ? AND identifier = ? AND source <> ?`,
 		repo, identifier, SourceInternal,
-	).Scan(&id, &status, &group, &labelsRaw)
+	).Scan(&id, &status, &group, &description, &labelsRaw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, false, tx.Rollback()
 	}
@@ -724,6 +728,9 @@ func (s *Issues) UpdateSynced(repo, identifier string, patch SyncedPatch) (Issue
 	if v := strings.TrimSpace(patch.StatusGroup); v != "" {
 		group = v
 	}
+	if patch.Description != "" {
+		description = patch.Description
+	}
 	labels := mergeLabels(decodeLabels(labelsRaw), patch.AddLabels, patch.RemoveLabels)
 	labelsJSON, err := json.Marshal(labels)
 	if err != nil {
@@ -731,8 +738,8 @@ func (s *Issues) UpdateSynced(repo, identifier string, patch SyncedPatch) (Issue
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := tx.Exec(
-		`UPDATE issues SET status = ?, status_group = ?, labels = ?, updated_at = ? WHERE id = ?`,
-		status, group, string(labelsJSON), now, id,
+		`UPDATE issues SET status = ?, status_group = ?, description = ?, labels = ?, updated_at = ? WHERE id = ?`,
+		status, group, description, string(labelsJSON), now, id,
 	); err != nil {
 		return Issue{}, false, errors.Join(err, tx.Rollback())
 	}

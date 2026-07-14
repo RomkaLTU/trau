@@ -17,15 +17,30 @@ type commentCall struct {
 // fakeWriter records the drafts and comments the handlers hand it, standing in
 // for a real direct tracker client so the endpoints are asserted without any
 // network.
+type labelCall struct {
+	id     string
+	add    []string
+	remove []string
+}
+
+type descriptionCall struct {
+	id, body string
+}
+
 type fakeWriter struct {
-	created    []tracker.IssueDraft
-	comments   []commentCall
-	published  []tracker.DocumentDraft
-	issue      tracker.NewIssue
-	doc        tracker.PublishedDocument
-	createErr  error
-	commentErr error
-	publishErr error
+	created      []tracker.IssueDraft
+	comments     []commentCall
+	descriptions []descriptionCall
+	labels       []labelCall
+	published    []tracker.DocumentDraft
+	order        []string
+	issue        tracker.NewIssue
+	doc          tracker.PublishedDocument
+	createErr    error
+	commentErr   error
+	descErr      error
+	labelErr     error
+	publishErr   error
 }
 
 func newFakeWriter() *fakeWriter {
@@ -44,8 +59,21 @@ func (f *fakeWriter) CreateIssue(_ context.Context, d tracker.IssueDraft) (track
 }
 
 func (f *fakeWriter) AddComment(_ context.Context, id, body string) error {
+	f.order = append(f.order, "comment")
 	f.comments = append(f.comments, commentCall{id: id, body: body})
 	return f.commentErr
+}
+
+func (f *fakeWriter) UpdateDescription(_ context.Context, id, body string) error {
+	f.order = append(f.order, "description")
+	f.descriptions = append(f.descriptions, descriptionCall{id: id, body: body})
+	return f.descErr
+}
+
+func (f *fakeWriter) UpdateLabels(_ context.Context, id string, add, remove []string) error {
+	f.order = append(f.order, "labels")
+	f.labels = append(f.labels, labelCall{id: id, add: add, remove: remove})
+	return f.labelErr
 }
 
 func (f *fakeWriter) PublishDocument(_ context.Context, d tracker.DocumentDraft) (tracker.PublishedDocument, error) {

@@ -368,6 +368,62 @@ func (c *Client) AddComment(ctx context.Context, identifier, body string) error 
 	return c.do(ctx, commentCreateMutation, map[string]any{"issueId": issue.ID, "body": body}, &dst)
 }
 
+// UpdateDescription replaces the issue's description. The human identifier is
+// resolved to the issue's node id first, the same as AddComment.
+func (c *Client) UpdateDescription(ctx context.Context, identifier, description string) error {
+	if c.apiKey == "" {
+		return ErrNotEnabled
+	}
+	issue, err := c.Issue(ctx, identifier)
+	if err != nil {
+		return err
+	}
+	var dst issueUpdateResponse
+	return c.do(ctx, issueDescriptionMutation, map[string]any{"id": issue.ID, "description": description}, &dst)
+}
+
+// UpdateLabels adds and removes named labels on an issue, leaving the rest of its
+// label set intact. Linear's issueUpdate replaces the whole set, so this reads the
+// issue's current labels, applies the ops, and writes the merged set back. Added
+// labels are created in the team first, since Linear can only attach labels that
+// already exist; an add already present or a remove already absent is a no-op.
+func (c *Client) UpdateLabels(ctx context.Context, identifier string, add, remove []string) error {
+	if c.apiKey == "" {
+		return ErrNotEnabled
+	}
+	issue, err := c.Issue(ctx, identifier)
+	if err != nil {
+		return err
+	}
+	drop := make(map[string]bool, len(remove))
+	for _, name := range remove {
+		if name = strings.TrimSpace(name); name != "" {
+			drop[name] = true
+		}
+	}
+	names := make([]string, 0, len(issue.Labels)+len(add))
+	present := make(map[string]bool, len(issue.Labels))
+	for _, label := range issue.Labels {
+		if drop[label.Name] {
+			continue
+		}
+		names = append(names, label.Name)
+		present[label.Name] = true
+	}
+	for _, name := range add {
+		name = strings.TrimSpace(name)
+		if name == "" || present[name] {
+			continue
+		}
+		if err := c.EnsureLabel(ctx, issue.Team.ID, name); err != nil {
+			return err
+		}
+		names = append(names, name)
+		present[name] = true
+	}
+	return c.SetStatus(ctx, identifier, "", names)
+}
+
 // Labels returns a name->id map of the labels defined in the team.
 func (c *Client) Labels(ctx context.Context, teamID string) (map[string]string, error) {
 	if c.apiKey == "" {

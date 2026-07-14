@@ -71,6 +71,44 @@ func TestUpdateLabelsDisabledWithoutToken(t *testing.T) {
 	}
 }
 
+// UpdateDescription PUTs the issue with an ADF description that round-trips back to
+// the plain text, the fields-verb whole-value set CreateIssue uses.
+func TestUpdateDescriptionPutsADF(t *testing.T) {
+	var (
+		method string
+		path   string
+		req    descriptionUpdateRequest
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	err := New(srv.URL, "me@acme.com", "tok").UpdateDescription(context.Background(), "PROJ-7", "Line one\nLine two")
+	if err != nil {
+		t.Fatalf("UpdateDescription error: %v", err)
+	}
+	if method != http.MethodPut {
+		t.Errorf("method = %q, want PUT", method)
+	}
+	if path != "/rest/api/3/issue/PROJ-7" {
+		t.Errorf("path = %q, want /rest/api/3/issue/PROJ-7", path)
+	}
+	raw, _ := json.Marshal(req.Fields.Description)
+	if got := adfToText(raw); got != "Line one\nLine two" {
+		t.Errorf("description = %q, want two lines", got)
+	}
+}
+
+func TestUpdateDescriptionDisabledWithoutToken(t *testing.T) {
+	if err := New("", "", "").UpdateDescription(context.Background(), "PROJ-7", "body"); !errors.Is(err, ErrNotEnabled) {
+		t.Errorf("UpdateDescription err = %v, want ErrNotEnabled", err)
+	}
+}
+
 // AddComment posts the standalone comment endpoint with an ADF body that
 // round-trips back to the plain text.
 func TestAddCommentPostsADF(t *testing.T) {
