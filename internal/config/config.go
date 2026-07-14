@@ -1253,6 +1253,35 @@ func WriteEnvFile(path string, values map[string]string) error {
 	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
 }
 
+// DeleteEnvKey removes key from an env file, dropping only its line and leaving
+// every comment, blank line, and unrelated key untouched. A missing file or an
+// absent key is a no-op. It is the unset counterpart to WriteEnvFile: writing an
+// empty value keeps an explicit "KEY=" line, delete restores inheritance from a
+// lower layer or the built-in default.
+func DeleteEnvKey(path, key string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	var lines []string
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if line != "" && !strings.HasPrefix(line, "#") {
+			if eq := strings.IndexByte(line, '='); eq > 0 && strings.TrimSpace(line[:eq]) == key {
+				continue
+			}
+		}
+		lines = append(lines, raw)
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644)
+}
+
 // splitCSV parses a comma-separated knob into a trimmed, non-empty list.
 func splitCSV(s string) []string {
 	var out []string
@@ -2146,6 +2175,23 @@ func WriteConfigLayer(layer, localPath, projectPath, userPath, key, value string
 		return WriteProjectEnv(projectPath, map[string]string{key: value})
 	case "user":
 		return WriteEnvFile(userPath, map[string]string{key: value})
+	default:
+		return fmt.Errorf("unsupported config layer %q (expected local|project|user)", layer)
+	}
+}
+
+// DeleteConfigLayer removes key from the named layer's config file so the
+// resolver falls back to a lower-precedence layer or the built-in default. It is
+// the unset counterpart to WriteConfigLayer; layer must be local, project, or
+// user.
+func DeleteConfigLayer(layer, localPath, projectPath, userPath, key string) error {
+	switch layer {
+	case "local":
+		return DeleteEnvKey(localPath, key)
+	case "project":
+		return DeleteEnvKey(projectPath, key)
+	case "user":
+		return DeleteEnvKey(userPath, key)
 	default:
 		return fmt.Errorf("unsupported config layer %q (expected local|project|user)", layer)
 	}

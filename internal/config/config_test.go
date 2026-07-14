@@ -197,6 +197,54 @@ func TestWriteConfigLayerPreservesComments(t *testing.T) {
 	}
 }
 
+func TestDeleteConfigLayerRemovesKey(t *testing.T) {
+	dir := t.TempDir()
+	project := filepath.Join(dir, ".trau.ini")
+	user := filepath.Join(dir, "user.ini")
+
+	original := "# machine config\nLINEAR_API_KEY=old\n# provider flags\nCLAUDE_FLAGS=--foo\n"
+	if err := os.WriteFile(user, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteConfigLayer("user", "", project, user, "LINEAR_API_KEY"); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(string(content), "LINEAR_API_KEY") {
+		t.Fatalf("unset left the key behind: %q", content)
+	}
+	if !contains(string(content), "# machine config") || !contains(string(content), "# provider flags") {
+		t.Fatalf("unset dropped comments: %q", content)
+	}
+	if !contains(string(content), "CLAUDE_FLAGS=--foo") {
+		t.Fatalf("unset dropped an unrelated key: %q", content)
+	}
+
+	if err := os.WriteFile(project, []byte("BASE_BRANCH=develop\nREMOTE=origin\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteConfigLayer("project", "", project, user, "BASE_BRANCH"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseEnvFile(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["BASE_BRANCH"]; ok {
+		t.Fatalf("project unset left BASE_BRANCH behind: %v", got)
+	}
+	if got["REMOTE"] != "origin" {
+		t.Fatalf("project unset dropped an unrelated key: %v", got)
+	}
+
+	if err := DeleteConfigLayer("user", "", project, filepath.Join(dir, "absent.ini"), "ANYTHING"); err != nil {
+		t.Fatalf("unset of a missing file should be a no-op, got %v", err)
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr))
 }
