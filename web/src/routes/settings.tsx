@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { Check, Lock, Pencil, Search, TriangleAlert, X } from 'lucide-react'
 
@@ -7,19 +7,22 @@ import { Button } from '@/components/ui/button'
 import {
   EmptyState,
   Eyebrow,
-  SegmentedControl,
   TerminalCard,
   useActiveRepo,
 } from '@/components/trau'
+import {
+  InlineEditor,
+  LayerChip,
+  SecretChip,
+} from '@/components/trau/settings-editor'
+import { PhaseMatrix } from '@/components/trau/settings-matrix'
+import { ThemeGrid } from '@/components/trau/settings-theme-grid'
 import { cn } from '@/lib/utils'
 import { reposQueryOptions } from '@/lib/runs'
+import { configQueryOptions, type ConfigKey } from '@/lib/config'
 import {
-  configQueryOptions,
-  writeConfig,
-  type ConfigKey,
-  type ConfigWrite,
-} from '@/lib/config'
-import {
+  ROUTING_SECTION,
+  THEME_SECTION,
   deriveSections,
   displayValue,
   isModified,
@@ -48,8 +51,8 @@ function Settings() {
           Settings
         </h1>
         <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
-          Layered config resolved from project → user → default. Edit any key and
-          choose which layer the change writes to.
+          Layered config resolved from project → user → default. Edit any key
+          and choose which layer the change writes to.
         </p>
       </header>
 
@@ -128,6 +131,11 @@ function ConfigView({ repo }: { repo: string }) {
     )
   }
 
+  const handleSaved = (savedKey: string, target: string) => {
+    setEditingKey(null)
+    setSavedMsg(`${savedKey} written to ${target} layer`)
+  }
+
   const rowFor = (item: ConfigKey, section: Section) => (
     <KeyRow
       key={item.key}
@@ -138,12 +146,46 @@ function ConfigView({ repo }: { repo: string }) {
       editing={editingKey === item.key}
       onEdit={() => setEditingKey(item.key)}
       onCancel={() => setEditingKey(null)}
-      onSaved={(target) => {
-        setEditingKey(null)
-        setSavedMsg(`${item.key} written to ${target} layer`)
-      }}
+      onSaved={(target) => handleSaved(item.key, target)}
     />
   )
+
+  const advancedBody = (section: Section) => {
+    const editorProps = {
+      repo,
+      layers,
+      hubRestart: section.hubRestart,
+      editingKey,
+      onEdit: setEditingKey,
+      onCancel: () => setEditingKey(null),
+      onSaved: handleSaved,
+    }
+
+    if (section.group === ROUTING_SECTION) {
+      return (
+        <div className="p-4">
+          <PhaseMatrix keys={section.advancedKeys} {...editorProps} />
+        </div>
+      )
+    }
+
+    if (section.group === THEME_SECTION) {
+      const colorKeys = section.advancedKeys.filter((k) => k.kind === 'color')
+      const otherKeys = section.advancedKeys.filter((k) => k.kind !== 'color')
+      return (
+        <>
+          {otherKeys.map((item) => rowFor(item, section))}
+          {colorKeys.length > 0 && (
+            <div className="p-4">
+              <ThemeGrid keys={colorKeys} {...editorProps} />
+            </div>
+          )}
+        </>
+      )
+    }
+
+    return section.advancedKeys.map((item) => rowFor(item, section))
+  }
 
   const renderSection = (section: Section) => {
     if (searching) {
@@ -172,7 +214,7 @@ function ConfigView({ repo }: { repo: string }) {
             {section.primaryKeys.map((item) => rowFor(item, section))}
             {advancedCount > 0 && (
               <>
-                {isExpanded && section.advancedKeys.map((item) => rowFor(item, section))}
+                {isExpanded && advancedBody(section)}
                 <div className={cn(isExpanded && 'border-t border-border/60')}>
                   <AdvancedExpander
                     count={advancedCount}
@@ -376,7 +418,9 @@ function SectionNav({
             <span className="ml-auto shrink-0 text-[0.65rem] text-faint tabular-nums">
               {s.count}
             </span>
-            {s.modified && <span className="sr-only">(contains modified keys)</span>}
+            {s.modified && (
+              <span className="sr-only">(contains modified keys)</span>
+            )}
           </a>
         ))}
       </nav>
@@ -395,44 +439,16 @@ function SectionNav({
           className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 font-mono text-[0.7rem] text-muted-foreground transition-colors hover:text-foreground"
         >
           {s.modified && (
-            <span aria-hidden="true" className="size-1.5 rounded-full bg-warn" />
+            <span
+              aria-hidden="true"
+              className="size-1.5 rounded-full bg-warn"
+            />
           )}
           {s.title}
           <span className="text-faint tabular-nums">{s.count}</span>
         </a>
       ))}
     </nav>
-  )
-}
-
-const LAYER_STYLES: Record<string, string> = {
-  project: 'border-teal/50 bg-teal/12 text-teal',
-  user: 'border-info/50 bg-info/12 text-info',
-  default: 'border-faint/50 bg-faint/12 text-faint',
-  'env var': 'border-warn/50 bg-warn/12 text-warn',
-  local: 'border-done/50 bg-done/12 text-done',
-  CLI: 'border-cli/50 bg-cli/12 text-cli',
-}
-
-function LayerChip({ layer }: { layer: string }) {
-  return (
-    <span
-      className={cn(
-        'inline-flex shrink-0 items-center rounded border px-1.5 py-0.5 font-mono text-[0.65rem] leading-none',
-        LAYER_STYLES[layer] ?? LAYER_STYLES.default,
-      )}
-    >
-      {layer}
-    </span>
-  )
-}
-
-function SecretChip() {
-  return (
-    <span className="inline-flex shrink-0 items-center gap-1 rounded border border-warn/50 bg-warn/12 px-1.5 py-0.5 font-mono text-[0.65rem] leading-none text-warn">
-      <Lock className="size-2.5" aria-hidden="true" />
-      secret
-    </span>
   )
 }
 
@@ -486,7 +502,10 @@ function KeyRow({
 
         <span className="ml-auto flex shrink-0 items-center gap-2">
           <span
-            className={cn('font-mono text-xs', dimmed ? 'text-faint' : 'text-foreground')}
+            className={cn(
+              'font-mono text-xs',
+              dimmed ? 'text-faint' : 'text-foreground',
+            )}
           >
             {value}
           </span>
@@ -528,163 +547,5 @@ function KeyRow({
         </div>
       )}
     </div>
-  )
-}
-
-function defaultHint(item: ConfigKey): string {
-  return item.default === undefined || item.default === '' ? '(unset)' : item.default
-}
-
-function initialTarget(item: ConfigKey, layers: string[]): string {
-  if (item.layer === 'user') return 'user'
-  return layers[0] ?? 'project'
-}
-
-function InlineEditor({
-  repo,
-  item,
-  layers,
-  hubRestart,
-  onCancel,
-  onSaved,
-}: {
-  repo: string
-  item: ConfigKey
-  layers: string[]
-  hubRestart: boolean
-  onCancel: () => void
-  onSaved: (target: string) => void
-}) {
-  const queryClient = useQueryClient()
-  const [draft, setDraft] = useState(item.secret ? '' : item.value)
-  const [target, setTarget] = useState(() => initialTarget(item, layers))
-
-  const mutation = useMutation({
-    mutationFn: (body: ConfigWrite) => writeConfig(repo, body),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['config', repo] })
-      onSaved(target)
-    },
-  })
-
-  const save = () => mutation.mutate({ key: item.key, value: draft, layer: target })
-
-  return (
-    <div className="flex flex-col gap-3 rounded-md border border-border bg-secondary/30 p-3">
-      <ValueEditor item={item} value={draft} onChange={setDraft} onSave={save} onCancel={onCancel} />
-
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <span className="inline-flex items-center gap-2 font-mono text-xs text-muted-foreground">
-          write to:
-          <SegmentedControl
-            aria-label={`${item.key} write target`}
-            options={layers.map((l) => ({ value: l, label: l }))}
-            value={target}
-            onChange={setTarget}
-          />
-        </span>
-        <span className="font-mono text-[0.7rem] text-faint">
-          default: {defaultHint(item)}
-        </span>
-        <span className="ml-auto flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 font-mono text-xs"
-            onClick={onCancel}
-            disabled={mutation.isPending}
-          >
-            <X className="size-3.5" aria-hidden="true" />
-            Cancel
-          </Button>
-          <Button
-            size="sm"
-            className="h-7 font-mono text-xs"
-            onClick={save}
-            disabled={mutation.isPending}
-          >
-            <Check className="size-3.5" aria-hidden="true" />
-            {mutation.isPending ? 'Saving…' : 'Save'}
-          </Button>
-        </span>
-      </div>
-
-      <p className="font-mono text-[0.7rem] text-faint">
-        {target === 'user'
-          ? 'user layer applies to every repo on this machine'
-          : 'project layer applies only to this repo'}
-        {hubRestart && ' · applies on hub restart'}
-      </p>
-
-      {mutation.error && (
-        <p className="font-mono text-xs text-fail">
-          {String((mutation.error as Error).message)}
-        </p>
-      )}
-    </div>
-  )
-}
-
-function ValueEditor({
-  item,
-  value,
-  onChange,
-  onSave,
-  onCancel,
-}: {
-  item: ConfigKey
-  value: string
-  onChange: (v: string) => void
-  onSave: () => void
-  onCancel: () => void
-}) {
-  if (item.bool) {
-    return (
-      <SegmentedControl
-        aria-label={`${item.key} value`}
-        options={[
-          { value: '1', label: 'on' },
-          { value: '0', label: 'off' },
-        ]}
-        value={value === '1' ? '1' : '0'}
-        onChange={onChange}
-      />
-    )
-  }
-
-  if (item.options && item.options.length > 0) {
-    return (
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        aria-label={`${item.key} value`}
-        className="w-full max-w-xs rounded-md border border-border bg-input px-2 py-1.5 font-mono text-xs text-foreground focus-visible:border-ring focus-visible:outline-none"
-      >
-        {item.options.map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
-        ))}
-      </select>
-    )
-  }
-
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.nativeEvent.isComposing) return
-    if (e.key === 'Enter') onSave()
-    if (e.key === 'Escape') onCancel()
-  }
-
-  return (
-    <input
-      autoFocus
-      type={item.kind === 'int' ? 'number' : 'text'}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      onKeyDown={onKeyDown}
-      placeholder={item.secret ? 'enter new secret value' : defaultHint(item)}
-      aria-label={`${item.key} value`}
-      className="w-full max-w-md rounded-md border border-border bg-input px-2 py-1.5 font-mono text-xs text-foreground placeholder:text-faint focus-visible:border-ring focus-visible:outline-none"
-    />
   )
 }
