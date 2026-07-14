@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { ConfigKey } from '@/lib/config'
 import {
   appliesOnHubRestart,
+  canResetLayer,
   comboboxFreeEntry,
   derivePhaseMatrix,
   deriveSections,
@@ -13,6 +14,7 @@ import {
   matchesQuery,
   routingCellKey,
   sectionSlug,
+  shadowNote,
   themeRoleLabel,
 } from '@/lib/settings'
 
@@ -112,6 +114,51 @@ describe('isModified', () => {
     expect(isModified(key({ key: 'S', secret: true, layer: 'local' }))).toBe(
       false,
     )
+  })
+})
+
+describe('canResetLayer', () => {
+  it('allows reset only for the two layers the web can write', () => {
+    expect(canResetLayer('project')).toBe(true)
+    expect(canResetLayer('user')).toBe(true)
+    expect(canResetLayer('default')).toBe(false)
+    expect(canResetLayer('env var')).toBe(false)
+    expect(canResetLayer('CLI')).toBe(false)
+    expect(canResetLayer('local')).toBe(false)
+  })
+})
+
+describe('shadowNote', () => {
+  it('warns that an env var shadows either write target', () => {
+    expect(shadowNote('env var', 'project')).toBe(
+      "set via env var — this write won't take effect while it's set",
+    )
+    expect(shadowNote('env var', 'user')).toBe(
+      "set via env var — this write won't take effect while it's set",
+    )
+  })
+
+  it('warns that a CLI override shadows either write target', () => {
+    expect(shadowNote('CLI', 'project')).toBe(
+      "set via CLI — this write won't take effect while it's set",
+    )
+    expect(shadowNote('CLI', 'user')).toBe(
+      "set via CLI — this write won't take effect while it's set",
+    )
+  })
+
+  it('steers a project-target write to user when user already overrides it', () => {
+    expect(shadowNote('user', 'project')).toBe(
+      'user layer overrides project — write to user instead',
+    )
+  })
+
+  it('stays silent when the target outranks or equals the effective layer', () => {
+    expect(shadowNote('project', 'project')).toBeNull()
+    expect(shadowNote('user', 'user')).toBeNull()
+    expect(shadowNote('project', 'user')).toBeNull()
+    expect(shadowNote('default', 'project')).toBeNull()
+    expect(shadowNote('local', 'project')).toBeNull()
   })
 })
 

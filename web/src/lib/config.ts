@@ -30,6 +30,7 @@ export interface ConfigWrite {
   key: string
   value: string
   layer: string
+  unset?: boolean
 }
 
 async function fetchConfig(repo: string): Promise<ConfigResponse> {

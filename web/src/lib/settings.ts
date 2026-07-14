@@ -77,6 +77,33 @@ export function isModified(item: ConfigKey): boolean {
   return item.layer !== 'default'
 }
 
+const LAYER_RANK: Record<string, number> = {
+  default: 0,
+  local: 1,
+  project: 2,
+  user: 3,
+  'env var': 4,
+  CLI: 5,
+}
+
+export function canResetLayer(layer: string): boolean {
+  return layer === 'project' || layer === 'user'
+}
+
+export function shadowNote(effectiveLayer: string, target: string): string | null {
+  if ((LAYER_RANK[effectiveLayer] ?? 0) <= (LAYER_RANK[target] ?? 0)) return null
+  if (effectiveLayer === 'env var') {
+    return "set via env var — this write won't take effect while it's set"
+  }
+  if (effectiveLayer === 'CLI') {
+    return "set via CLI — this write won't take effect while it's set"
+  }
+  if (effectiveLayer === 'user' && target === 'project') {
+    return 'user layer overrides project — write to user instead'
+  }
+  return null
+}
+
 const DASH = '—'
 const DOTS = '••••••••'
 

@@ -27,7 +27,7 @@ export function PhaseMatrix({
   editingKey: string | null
   onEdit: (key: string) => void
   onCancel: () => void
-  onSaved: (key: string, target: string) => void
+  onSaved: (key: string, target: string, unset: boolean) => void
 }) {
   const model = useMemo(() => derivePhaseMatrix(keys), [keys])
   const byKey = useMemo(
@@ -154,7 +154,7 @@ export function PhaseMatrix({
             layers={layers}
             hubRestart={hubRestart}
             onCancel={onCancel}
-            onSaved={(target) => onSaved(editingCfg.key, target)}
+            onSaved={(target, unset) => onSaved(editingCfg.key, target, unset)}
           />
         </div>
       )}
