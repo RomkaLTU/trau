@@ -22,17 +22,18 @@ type ReposResponse struct {
 // the row, and the failure class/reason that flags a paused, faulted, or
 // quarantined run.
 type RunView struct {
-	Ticket        string `json:"ticket"`
-	Title         string `json:"title,omitempty"`
-	Phase         string `json:"phase"`
-	PhaseRank     int    `json:"phase_rank"`
-	Terminal      bool   `json:"terminal"`
-	Branch        string `json:"branch,omitempty"`
-	PR            string `json:"pr,omitempty"`
-	PRURL         string `json:"pr_url,omitempty"`
-	FailureClass  string `json:"failure_class,omitempty"`
-	FailureReason string `json:"failure_reason,omitempty"`
-	UpdatedAt     string `json:"updated_at,omitempty"`
+	Ticket        string   `json:"ticket"`
+	Title         string   `json:"title,omitempty"`
+	Phase         string   `json:"phase"`
+	PhaseRank     int      `json:"phase_rank"`
+	Terminal      bool     `json:"terminal"`
+	Branch        string   `json:"branch,omitempty"`
+	PR            string   `json:"pr,omitempty"`
+	PRURL         string   `json:"pr_url,omitempty"`
+	FailureClass  string   `json:"failure_class,omitempty"`
+	FailureReason string   `json:"failure_reason,omitempty"`
+	CostUSD       *float64 `json:"cost_usd,omitempty"`
+	UpdatedAt     string   `json:"updated_at,omitempty"`
 }
 
 // RunsResponse is the /api/v1/repos/{repo}/runs resource: the repo's tickets in
@@ -223,6 +224,7 @@ func runViewFromCheckpoint(tc hubstore.TicketCheckpoint) RunView {
 		PRURL:         tc.PRURL,
 		FailureClass:  class,
 		FailureReason: reason,
+		CostUSD:       tc.CostUSD,
 		UpdatedAt:     tc.UpdatedAt,
 	}
 }

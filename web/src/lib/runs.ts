@@ -16,6 +16,7 @@ export interface Run {
   pr_url?: string
   failure_class?: FailureClass
   failure_reason?: string
+  cost_usd?: number
   updated_at?: string
 }
 
