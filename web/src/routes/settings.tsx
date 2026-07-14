@@ -131,9 +131,13 @@ function ConfigView({ repo }: { repo: string }) {
     )
   }
 
-  const handleSaved = (savedKey: string, target: string) => {
+  const handleSaved = (savedKey: string, target: string, unset: boolean) => {
     setEditingKey(null)
-    setSavedMsg(`${savedKey} written to ${target} layer`)
+    setSavedMsg(
+      unset
+        ? `${savedKey} reset (removed from ${target})`
+        : `${savedKey} written to ${target} layer`,
+    )
   }
 
   const rowFor = (item: ConfigKey, section: Section) => (
@@ -146,7 +150,7 @@ function ConfigView({ repo }: { repo: string }) {
       editing={editingKey === item.key}
       onEdit={() => setEditingKey(item.key)}
       onCancel={() => setEditingKey(null)}
-      onSaved={(target) => handleSaved(item.key, target)}
+      onSaved={(target, unset) => handleSaved(item.key, target, unset)}
     />
   )
 
@@ -469,7 +473,7 @@ function KeyRow({
   editing: boolean
   onEdit: () => void
   onCancel: () => void
-  onSaved: (target: string) => void
+  onSaved: (target: string, unset: boolean) => void
 }) {
   const modified = isModified(item)
   const value = displayValue(item)

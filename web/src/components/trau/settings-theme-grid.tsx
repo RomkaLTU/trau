@@ -22,7 +22,7 @@ export function ThemeGrid({
   editingKey: string | null
   onEdit: (key: string) => void
   onCancel: () => void
-  onSaved: (key: string, target: string) => void
+  onSaved: (key: string, target: string, unset: boolean) => void
 }) {
   const byKey = useMemo(
     () => new Map(keys.map((item) => [item.key, item])),
@@ -97,7 +97,7 @@ export function ThemeGrid({
             layers={layers}
             hubRestart={hubRestart}
             onCancel={onCancel}
-            onSaved={(target) => onSaved(editingCfg.key, target)}
+            onSaved={(target, unset) => onSaved(editingCfg.key, target, unset)}
           />
         </div>
       )}

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronsUpDown, Lock, X } from 'lucide-react'
+import { Check, ChevronsUpDown, Lock, RotateCcw, TriangleAlert, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -19,7 +19,13 @@ import {
 } from '@/components/ui/popover'
 import { SegmentedControl } from '@/components/trau/segmented-control'
 import { cn } from '@/lib/utils'
-import { comboboxFreeEntry, editorVariant, isHexColor } from '@/lib/settings'
+import {
+  canResetLayer,
+  comboboxFreeEntry,
+  editorVariant,
+  isHexColor,
+  shadowNote,
+} from '@/lib/settings'
 import { writeConfig, type ConfigKey, type ConfigWrite } from '@/lib/config'
 
 const LAYER_STYLES: Record<string, string> = {
@@ -65,6 +71,7 @@ function initialTarget(item: ConfigKey, layers: string[]): string {
 }
 
 function draftIsValid(item: ConfigKey, draft: string): boolean {
+  if (item.secret) return draft !== ''
   if (item.kind === 'color') return draft === '' || isHexColor(draft)
   return true
 }
@@ -82,7 +89,7 @@ export function InlineEditor({
   layers: string[]
   hubRestart: boolean
   onCancel: () => void
-  onSaved: (target: string) => void
+  onSaved: (target: string, unset: boolean) => void
 }) {
   const queryClient = useQueryClient()
   const [draft, setDraft] = useState(item.secret ? '' : item.value)
@@ -90,9 +97,9 @@ export function InlineEditor({
 
   const mutation = useMutation({
     mutationFn: (body: ConfigWrite) => writeConfig(repo, body),
-    onSuccess: () => {
+    onSuccess: (_data, body) => {
       queryClient.invalidateQueries({ queryKey: ['config', repo] })
-      onSaved(target)
+      onSaved(body.layer, Boolean(body.unset))
     },
   })
 
@@ -101,6 +108,12 @@ export function InlineEditor({
     if (!valid) return
     mutation.mutate({ key: item.key, value: draft, layer: target })
   }
+  const reset = () => {
+    mutation.mutate({ key: item.key, value: '', layer: item.layer, unset: true })
+  }
+
+  const shadow = shadowNote(item.layer, target)
+  const resettable = canResetLayer(item.layer)
 
   return (
     <div className="flex flex-col gap-3 rounded-md border border-border bg-secondary/30 p-3">
@@ -126,6 +139,19 @@ export function InlineEditor({
           default: {defaultHint(item)}
         </span>
         <span className="ml-auto flex items-center gap-2">
+          {resettable && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 font-mono text-xs text-muted-foreground hover:text-warn"
+              onClick={reset}
+              disabled={mutation.isPending}
+              title={`Remove ${item.key} from the ${item.layer} layer`}
+            >
+              <RotateCcw className="size-3.5" aria-hidden="true" />
+              Reset to default
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -147,6 +173,16 @@ export function InlineEditor({
           </Button>
         </span>
       </div>
+
+      {shadow && (
+        <p
+          className="inline-flex items-center gap-1.5 font-mono text-[0.7rem] text-warn"
+          role="alert"
+        >
+          <TriangleAlert className="size-3 shrink-0" aria-hidden="true" />
+          {shadow}
+        </p>
+      )}
 
       <p className="font-mono text-[0.7rem] text-faint">
         {target === 'user'
