@@ -1,8 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { AlertTriangle, ExternalLink, ListPlus, Pencil } from 'lucide-react'
+import { AlertTriangle, ExternalLink, Flame, ListPlus, Pencil } from 'lucide-react'
 
+import { GrillPanel } from '@/components/grill-panel'
 import { InternalIssueForm } from '@/components/internal-issue-form'
 import { Markdown } from '@/components/markdown'
 import { Button } from '@/components/ui/button'
@@ -19,6 +20,7 @@ import {
   issueQueryOptions,
   type IssueComment,
 } from '@/lib/issues'
+import { activeSessionForIssue, grillSessionsQueryOptions, isGrillable } from '@/lib/grill'
 import { enqueue } from '@/lib/queue'
 import { cn } from '@/lib/utils'
 
@@ -72,10 +74,15 @@ function IssueDrawerBody({
 }) {
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState(false)
+  const [grilling, setGrilling] = useState(false)
 
   const query = useQuery(issueQueryOptions(repo, id))
   const issue = query.data
   const internal = issue?.source === 'internal'
+  const grillable = !!issue && isGrillable(issue.labels)
+
+  const grillSessions = useQuery({ ...grillSessionsQueryOptions(repo), enabled: grillable })
+  const activeGrill = activeSessionForIssue(grillSessions.data?.sessions, id)
 
   const editQuery = useQuery({
     ...internalIssueQueryOptions(repo, id),
@@ -144,63 +151,75 @@ function IssueDrawerBody({
         )}
       </SheetHeader>
 
-      <div className="flex-1 overflow-y-auto px-4 py-4">
-        {editing && internal ? (
-          editQuery.data ? (
-            <InternalIssueForm
-              repo={repo}
-              issue={editQuery.data}
-              onDone={() => {
-                void queryClient.invalidateQueries({ queryKey: ['issue', repo, id] })
-                setEditing(false)
-              }}
-              onCancel={() => setEditing(false)}
-            />
-          ) : (
-            <p className="text-sm text-muted-foreground">Loading editor…</p>
-          )
-        ) : (
-          <>
-            {issue.description.trim() ? (
-              <Markdown>{issue.description}</Markdown>
+      {grilling ? (
+        <GrillPanel repo={repo} issueId={id} onClose={() => setGrilling(false)} />
+      ) : (
+        <>
+          <div className="flex-1 overflow-y-auto px-4 py-4">
+            {editing && internal ? (
+              editQuery.data ? (
+                <InternalIssueForm
+                  repo={repo}
+                  issue={editQuery.data}
+                  onDone={() => {
+                    void queryClient.invalidateQueries({ queryKey: ['issue', repo, id] })
+                    setEditing(false)
+                  }}
+                  onCancel={() => setEditing(false)}
+                />
+              ) : (
+                <p className="text-sm text-muted-foreground">Loading editor…</p>
+              )
             ) : (
-              <p className="text-sm text-muted-foreground">No description.</p>
+              <>
+                {issue.description.trim() ? (
+                  <Markdown>{issue.description}</Markdown>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No description.</p>
+                )}
+                <Comments comments={issue.comments} />
+              </>
             )}
-            <Comments comments={issue.comments} />
-          </>
-        )}
-      </div>
+          </div>
 
-      {!editing && (
-        <SheetFooter className="flex-row flex-wrap items-center gap-2 border-t">
-          <Button
-            size="sm"
-            onClick={() => addToQueue.mutate()}
-            disabled={addToQueue.isPending || addToQueue.isSuccess}
-          >
-            <ListPlus />
-            {addToQueue.isSuccess ? 'Queued' : 'Add to queue'}
-          </Button>
-          {internal && (
-            <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
-              <Pencil />
-              Edit
-            </Button>
+          {!editing && (
+            <SheetFooter className="flex-row flex-wrap items-center gap-2 border-t">
+              <Button
+                size="sm"
+                onClick={() => addToQueue.mutate()}
+                disabled={addToQueue.isPending || addToQueue.isSuccess}
+              >
+                <ListPlus />
+                {addToQueue.isSuccess ? 'Queued' : 'Add to queue'}
+              </Button>
+              {grillable && (
+                <Button variant="outline" size="sm" onClick={() => setGrilling(true)}>
+                  <Flame />
+                  {activeGrill ? 'Resume grill' : 'Grill'}
+                </Button>
+              )}
+              {internal && (
+                <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
+                  <Pencil />
+                  Edit
+                </Button>
+              )}
+              {issue.url && (
+                <Button variant="outline" size="sm" asChild>
+                  <a href={issue.url} target="_blank" rel="noreferrer">
+                    <ExternalLink />
+                    Open in {trackerName(issue.provider)}
+                  </a>
+                </Button>
+              )}
+              {addToQueue.error && (
+                <p className="w-full text-xs text-destructive">
+                  {String((addToQueue.error as Error).message)}
+                </p>
+              )}
+            </SheetFooter>
           )}
-          {issue.url && (
-            <Button variant="outline" size="sm" asChild>
-              <a href={issue.url} target="_blank" rel="noreferrer">
-                <ExternalLink />
-                Open in {trackerName(issue.provider)}
-              </a>
-            </Button>
-          )}
-          {addToQueue.error && (
-            <p className="w-full text-xs text-destructive">
-              {String((addToQueue.error as Error).message)}
-            </p>
-          )}
-        </SheetFooter>
+        </>
       )}
     </>
   )
