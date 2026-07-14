@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Play, X } from 'lucide-react'
 
@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { PhaseStepper } from '@/components/trau/phase-stepper'
 import { StatusPill } from '@/components/trau/status-pill'
 import { TerminalCard } from '@/components/trau/terminal-card'
+import { useActiveRepo } from '@/components/trau/active-repo'
 import {
   RunActionsMenu,
   RunResetButton,
@@ -15,7 +16,7 @@ import {
 import { ATTENTION_META } from '@/components/trau/overview'
 import { summarize } from '@/components/event-feed'
 import { CheckpointError } from '@/lib/checkpoints'
-import { useEventFeed } from '@/lib/events'
+import { useAllEvents, useEventFeed, type RepoFeedEvent } from '@/lib/events'
 import { instancesQueryOptions, startInstance } from '@/lib/instances'
 import {
   attentionReason,
@@ -23,7 +24,7 @@ import {
   capMerged,
   checkpointLabel,
   formatAge,
-  joinInstances,
+  mergeLedger,
   rowsForTab,
   type LedgerRow,
   type LedgerTab,
@@ -41,6 +42,10 @@ function useNow(intervalMs: number): number {
     return () => clearInterval(id)
   }, [intervalMs])
   return now
+}
+
+function rowKey(row: LedgerRow): string {
+  return `${row.repo}/${row.run.ticket}`
 }
 
 const TABS: { key: LedgerTab; label: string }[] = [
@@ -76,6 +81,14 @@ function rowAge(row: LedgerRow, now: number): string {
   return formatAge(Math.max(0, now - Date.parse(row.run.updated_at)))
 }
 
+function RepoChip({ repo }: { repo: string }) {
+  return (
+    <span className="rounded border border-border bg-muted/60 px-1.5 py-0.5 font-mono text-[0.65rem] text-muted-foreground">
+      {repo}
+    </span>
+  )
+}
+
 function EmptyRuns() {
   return (
     <TerminalCard title="runs" bodyClassName="p-0">
@@ -95,22 +108,35 @@ function EmptyRuns() {
   )
 }
 
+function RepoErrorNotices({ repos }: { repos: string[] }) {
+  if (repos.length === 0) return null
+  return (
+    <div className="flex flex-col gap-1">
+      {repos.map((repo) => (
+        <p key={repo} className="font-mono text-xs text-muted-foreground">
+          Couldn’t load {repo}’s runs.
+        </p>
+      ))}
+    </div>
+  )
+}
+
 function RowItem({
-  repo,
   row,
+  showRepo,
   activity,
   now,
   onNotice,
   onConflict,
 }: {
-  repo: string
   row: LedgerRow
+  showRepo: boolean
   activity?: string
   now: number
   onNotice: (notice: CheckpointNotice) => void
-  onConflict: () => void
+  onConflict: (repo: string) => void
 }) {
-  const { run, instance } = row
+  const { repo, run, instance } = row
   const pill = boardPill(run)
   const { steps, label } = rowStepper(row)
   const to = instance ? '/live/$repo/$ticket' : '/runs/$repo/$ticket'
@@ -127,6 +153,7 @@ function RowItem({
           <span className="min-w-0 flex-1 truncate font-sans text-sm text-foreground">
             {run.title ?? run.ticket}
           </span>
+          {showRepo && <RepoChip repo={repo} />}
           <PhaseStepper compact steps={steps} subLabel={label} />
           <StatusPill state={pill.state} label={pill.label} />
           <span className="w-16 text-right font-mono text-[0.7rem] text-foreground">
@@ -141,7 +168,7 @@ function RowItem({
               ticket={run.ticket}
               phase={run.phase}
               onNotice={onNotice}
-              onConflict={onConflict}
+              onConflict={() => onConflict(repo)}
             />
           </div>
         </div>
@@ -200,17 +227,17 @@ function ResumeAction({
 }
 
 function AttentionRow({
-  repo,
   row,
+  showRepo,
   onNotice,
   onConflict,
 }: {
-  repo: string
   row: LedgerRow
+  showRepo: boolean
   onNotice: (notice: CheckpointNotice) => void
-  onConflict: () => void
+  onConflict: (repo: string) => void
 }) {
-  const { run } = row
+  const { repo, run } = row
   const pill = boardPill(run)
   const meta = run.failure_class ? ATTENTION_META[run.failure_class] : undefined
   return (
@@ -225,6 +252,7 @@ function AttentionRow({
       <span className="min-w-0 flex-1 truncate font-sans text-sm text-foreground">
         {run.title ?? run.ticket}
       </span>
+      {showRepo && <RepoChip repo={repo} />}
       <StatusPill state={pill.state} label={pill.label} />
       <span className="font-mono text-xs text-muted-foreground">{attentionReason(run)}</span>
       {meta?.resume ? (
@@ -232,7 +260,7 @@ function AttentionRow({
           repo={repo}
           ticket={run.ticket}
           onNotice={onNotice}
-          onConflict={onConflict}
+          onConflict={() => onConflict(repo)}
         />
       ) : (
         <RunResetButton
@@ -240,7 +268,7 @@ function AttentionRow({
           ticket={run.ticket}
           phase={run.phase}
           onNotice={onNotice}
-          onConflict={onConflict}
+          onConflict={() => onConflict(repo)}
         />
       )}
     </li>
@@ -248,15 +276,15 @@ function AttentionRow({
 }
 
 function NeedsYouStrip({
-  repo,
   rows,
+  showRepo,
   onNotice,
   onConflict,
 }: {
-  repo: string
   rows: LedgerRow[]
+  showRepo: boolean
   onNotice: (notice: CheckpointNotice) => void
-  onConflict: () => void
+  onConflict: (repo: string) => void
 }) {
   if (rows.length === 0) return null
   return (
@@ -275,9 +303,9 @@ function NeedsYouStrip({
       <ul className="flex flex-col divide-y divide-border/60">
         {rows.map((row) => (
           <AttentionRow
-            key={row.run.ticket}
-            repo={repo}
+            key={rowKey(row)}
             row={row}
+            showRepo={showRepo}
             onNotice={onNotice}
             onConflict={onConflict}
           />
@@ -314,64 +342,101 @@ function ConflictBanner({ repo, onDismiss }: { repo: string; onDismiss: () => vo
 }
 
 export function RunLedger({
-  repo,
   onNotice,
 }: {
-  repo: string
   onNotice: (notice: CheckpointNotice) => void
 }) {
-  const runsQuery = useQuery(runsQueryOptions(repo))
+  const { repo, isAll, repos } = useActiveRepo()
+  const repoNames = useMemo(
+    () =>
+      isAll
+        ? repos.filter((r) => r.registered).map((r) => r.name)
+        : repo
+          ? [repo]
+          : [],
+    [isAll, repos, repo],
+  )
+
+  const runsResults = useQueries({
+    queries: repoNames.map((name) => runsQueryOptions(name)),
+  })
   const instancesQuery = useQuery(instancesQueryOptions)
-  const feed = useEventFeed(repo)
+  const singleFeed = useEventFeed(isAll ? '' : (repo ?? ''))
+  const allEvents = useAllEvents(isAll)
   const now = useNow(1000)
   const [tab, setTab] = useState<LedgerTab>('all')
   const [expanded, setExpanded] = useState(false)
-  const [conflict, setConflict] = useState(false)
+  const [conflict, setConflict] = useState<string | null>(null)
 
-  const runs = runsQuery.data?.runs ?? []
   const instances = instancesQuery.data?.instances ?? []
 
+  const runsByRepo = useMemo(() => {
+    const byRepo = new Map<string, Run[]>()
+    repoNames.forEach((name, i) => {
+      const data = runsResults[i]?.data
+      if (data) byRepo.set(name, data.runs)
+    })
+    return byRepo
+  }, [repoNames, runsResults])
+
   const rows = useMemo(
-    () => joinInstances(runs, instances, repo),
-    [runs, instances, repo],
+    () => mergeLedger(repoNames, runsByRepo, instances),
+    [repoNames, runsByRepo, instances],
   )
   const counts = useMemo(() => bucketCounts(rows), [rows])
   const needsYou = useMemo(() => rowsForTab(rows, 'needs-you'), [rows])
 
   // The feed is sorted newest-first, so the first event carrying a ticket is that
-  // ticket's latest activity line.
-  const activityByTicket = useMemo(() => {
+  // (repo, ticket)'s latest activity line. Under "All projects" the frames span
+  // every repo, so the key carries the repo to keep tickets from colliding.
+  const activityByKey = useMemo(() => {
     const latest = new Map<string, string>()
-    for (const ev of feed.events) {
+    const events: RepoFeedEvent[] = isAll
+      ? allEvents
+      : singleFeed.events.map((ev) => ({ ...ev, repo: repo ?? '' }))
+    for (const ev of events) {
       const ticket = typeof ev.fields?.ticket === 'string' ? ev.fields.ticket : ''
-      if (!ticket || latest.has(ticket)) continue
+      if (!ticket) continue
+      const key = `${ev.repo}/${ticket}`
+      if (latest.has(key)) continue
       const text = summarize(ev)
-      if (text) latest.set(ticket, text)
+      if (text) latest.set(key, text)
     }
     return latest
-  }, [feed.events])
+  }, [isAll, allEvents, singleFeed.events, repo])
 
-  if (!repo) return <EmptyRuns />
-  if (runsQuery.error) {
-    return <p className="font-mono text-sm text-destructive">{String(runsQuery.error)}</p>
+  const failedRepos = repoNames.filter((_, i) => runsResults[i]?.isError)
+  const anyPending = runsResults.some((result) => result.isPending)
+
+  if (repoNames.length === 0) return <EmptyRuns />
+
+  if (rows.length === 0) {
+    if (anyPending) {
+      return (
+        <div className="flex flex-col gap-4">
+          <RepoErrorNotices repos={failedRepos} />
+          <p className="font-mono text-sm text-muted-foreground">Loading…</p>
+        </div>
+      )
+    }
+    if (failedRepos.length > 0) return <RepoErrorNotices repos={failedRepos} />
+    return <EmptyRuns />
   }
-  if (runsQuery.isPending) {
-    return <p className="font-mono text-sm text-muted-foreground">Loading…</p>
-  }
-  if (rows.length === 0) return <EmptyRuns />
 
   const visible = rowsForTab(rows, tab)
   const capped = tab === 'all' ? capMerged(visible, expanded) : { rows: visible, hidden: 0 }
 
   return (
     <div className="flex flex-col gap-6">
-      {conflict && <ConflictBanner repo={repo} onDismiss={() => setConflict(false)} />}
+      <RepoErrorNotices repos={failedRepos} />
+
+      {conflict && <ConflictBanner repo={conflict} onDismiss={() => setConflict(null)} />}
 
       <NeedsYouStrip
-        repo={repo}
         rows={needsYou}
+        showRepo={isAll}
         onNotice={onNotice}
-        onConflict={() => setConflict(true)}
+        onConflict={setConflict}
       />
 
       <div className="flex flex-wrap items-center gap-1 self-start rounded-md border border-border bg-input p-0.5">
@@ -406,13 +471,13 @@ export function RunLedger({
         <ul className="flex flex-col divide-y divide-border/60 overflow-hidden rounded-lg border border-border/60 bg-card/40">
           {capped.rows.map((row) => (
             <RowItem
-              key={row.run.ticket}
-              repo={repo}
+              key={rowKey(row)}
               row={row}
-              activity={activityByTicket.get(row.run.ticket)}
+              showRepo={isAll}
+              activity={activityByKey.get(rowKey(row))}
               now={now}
               onNotice={onNotice}
-              onConflict={() => setConflict(true)}
+              onConflict={setConflict}
             />
           ))}
         </ul>

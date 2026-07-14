@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 
-import { Eyebrow, NoticeBanner, useActiveRepo, type CheckpointNotice } from '@/components/trau'
+import { Eyebrow, NoticeBanner, type CheckpointNotice } from '@/components/trau'
 import { RunLedger } from '@/components/trau/run-ledger'
 import { standardTitle, usePageTitle } from '@/lib/page-title'
 import { reposQueryOptions } from '@/lib/runs'
@@ -13,7 +13,6 @@ export const Route = createFileRoute('/runs')({
 
 function Runs() {
   usePageTitle(standardTitle('Runs'))
-  const { repo: active } = useActiveRepo()
   const [notice, setNotice] = useState<CheckpointNotice | null>(null)
 
   return (
@@ -32,7 +31,7 @@ function Runs() {
 
       {notice && <NoticeBanner notice={notice} onDismiss={() => setNotice(null)} />}
 
-      <RunLedger repo={active ?? ''} onNotice={setNotice} />
+      <RunLedger onNotice={setNotice} />
     </div>
   )
 }
