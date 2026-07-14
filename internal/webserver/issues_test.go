@@ -27,19 +27,34 @@ type descriptionCall struct {
 	id, body string
 }
 
+type linkCall struct {
+	blocker, blocked string
+}
+
+// fakeCreate is one queued CreateIssue outcome, letting a test hand back distinct
+// identifiers per sub-issue or fail a specific one for the partial-apply path.
+type fakeCreate struct {
+	issue tracker.NewIssue
+	err   error
+}
+
 type fakeWriter struct {
 	created      []tracker.IssueDraft
 	comments     []commentCall
 	descriptions []descriptionCall
 	labels       []labelCall
+	links        []linkCall
 	published    []tracker.DocumentDraft
 	order        []string
 	issue        tracker.NewIssue
 	doc          tracker.PublishedDocument
+	createQueue  []fakeCreate
+	createIdx    int
 	createErr    error
 	commentErr   error
 	descErr      error
 	labelErr     error
+	linkErr      error
 	publishErr   error
 }
 
@@ -52,10 +67,23 @@ func newFakeWriter() *fakeWriter {
 
 func (f *fakeWriter) CreateIssue(_ context.Context, d tracker.IssueDraft) (tracker.NewIssue, error) {
 	f.created = append(f.created, d)
+	if f.createIdx < len(f.createQueue) {
+		r := f.createQueue[f.createIdx]
+		f.createIdx++
+		if r.err != nil {
+			return tracker.NewIssue{}, r.err
+		}
+		return r.issue, nil
+	}
 	if f.createErr != nil {
 		return tracker.NewIssue{}, f.createErr
 	}
 	return f.issue, nil
+}
+
+func (f *fakeWriter) LinkBlocks(_ context.Context, blocker, blocked string) error {
+	f.links = append(f.links, linkCall{blocker: blocker, blocked: blocked})
+	return f.linkErr
 }
 
 func (f *fakeWriter) AddComment(_ context.Context, id, body string) error {

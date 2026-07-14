@@ -179,6 +179,26 @@ func (s *Issues) List(repo string) (issues []Issue, err error) {
 	return s.attachComments(repo, issues, ids)
 }
 
+// Children returns a repo's issues nested under parent across every source,
+// ordered by identifier — the sub-issues created under an epic. A blank parent
+// returns nothing. Comments are not attached; callers key on identifier and title.
+func (s *Issues) Children(repo, parent string) (issues []Issue, err error) {
+	if strings.TrimSpace(parent) == "" {
+		return []Issue{}, nil
+	}
+	rows, err := s.db.Query(
+		`SELECT `+issueColumns+` FROM issues WHERE repo = ? AND parent = ? ORDER BY identifier`,
+		repo, parent,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+
+	issues, _, err = scanIssues(repo, rows)
+	return issues, err
+}
+
 // BacklogFilter narrows a backlog listing. Groups matches the workflow state
 // groups to union (backlog | unstarted | started | done | canceled | unknown);
 // Label matches an issue carrying that label name, case-insensitively; Source is

@@ -10,6 +10,7 @@ import {
   isGrillable,
   isSettled,
   mergeMessages,
+  outcomePayload,
   pendingQuestion,
   questionPayload,
   upsertMessage,
@@ -147,6 +148,57 @@ describe('questionPayload', () => {
     )
     expect(p.options).toEqual(['a', 'b'])
     expect(p.allow_free_text).toBe(false)
+  })
+})
+
+describe('outcomePayload', () => {
+  it('leaves sub_issues undefined for a rewrite', () => {
+    const p = outcomePayload(
+      msg({ kind: 'outcome', payload: { disposition: 'rewrite', proposed_description: 'x', summary: 's' } }),
+    )
+    expect(p.disposition).toBe('rewrite')
+    expect(p.sub_issues).toBeUndefined()
+  })
+
+  it('parses a split proposal with labels and blocked_by', () => {
+    const p = outcomePayload(
+      msg({
+        kind: 'outcome',
+        payload: {
+          disposition: 'split',
+          proposed_description: 'epic',
+          summary: 's',
+          sub_issues: [
+            { title: 'A', description: 'da' },
+            { title: 'B', description: 'db', labels: ['ready-for-agent'], blocked_by: [0] },
+          ],
+        },
+      }),
+    )
+    expect(p.disposition).toBe('split')
+    expect(p.sub_issues).toHaveLength(2)
+    expect(p.sub_issues?.[1]).toEqual({
+      title: 'B',
+      description: 'db',
+      labels: ['ready-for-agent'],
+      blocked_by: [0],
+    })
+  })
+
+  it('coerces malformed sub_issue fields to safe defaults', () => {
+    const p = outcomePayload(
+      msg({
+        kind: 'outcome',
+        payload: {
+          disposition: 'split',
+          summary: 's',
+          sub_issues: [{ title: 42, blocked_by: ['x', 1] }],
+        },
+      }),
+    )
+    expect(p.sub_issues?.[0].title).toBe('')
+    expect(p.sub_issues?.[0].description).toBe('')
+    expect(p.sub_issues?.[0].blocked_by).toEqual([1])
   })
 })
 

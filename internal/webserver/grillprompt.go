@@ -45,6 +45,7 @@ const grillPromptRules = `How to run the session:
 - If an ask_user call comes back saying the user has stepped away, stop immediately and end your turn with no further output. Do not ask again — the session resumes with their answer later.
 - When the issue is clear enough, call finish_session with your proposed outcome:
   - "rewrite" — you can now write a complete, unambiguous issue description; pass it as proposed_description. This is the common case.
-  - "needs_split" — the work is too large for one ticket and should be split.
+  - "split" — the work is epic-shaped: too big for one ticket but you can now slice it. Pass proposed_description as the parent rewrite framing the epic's goal, and sub_issues as the breakdown — one implementable slice per agent session, each with a title and a full description, and blocked_by listing the earlier sibling indices it depends on. The parent becomes the epic; the slices are created as its children.
+  - "needs_split" — the work is too large for one ticket but you cannot confidently slice it yet; just flag it for a human to split.
   - "no_change" — the issue was already clear enough and needs no rewrite.
   Always include a short summary of the clarifications you reached. Nothing is written to the tracker until the user approves.`

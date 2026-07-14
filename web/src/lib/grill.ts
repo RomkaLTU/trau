@@ -82,9 +82,20 @@ export interface QuestionPayload {
   allow_free_text: boolean
 }
 
+// SubIssueProposal is one proposed slice of a split: a fully-specified child with
+// optional labels (defaulting to ready-for-agent at apply) and blocked_by indices
+// referencing sibling positions in the same array.
+export interface SubIssueProposal {
+  title: string
+  description: string
+  labels?: string[]
+  blocked_by?: number[]
+}
+
 export interface OutcomePayload {
   disposition: string
   proposed_description?: string
+  sub_issues?: SubIssueProposal[]
   summary: string
 }
 
@@ -163,17 +174,23 @@ export async function answerGrill(sid: string, text: string): Promise<GrillAnswe
   return res.json()
 }
 
-// applyGrill writes a finished session's proposed outcome to the tracker. For a
-// rewrite the (possibly edited) description travels in the body; other dispositions
-// carry no description and let the hub fall back to the agent's proposal.
+// applyGrill writes a finished session's proposed outcome to the tracker. A rewrite
+// or split carries its (possibly edited) description in the body; a split also
+// carries the edited sub-issues. Other dispositions carry neither and let the hub
+// fall back to the agent's proposal.
 export async function applyGrill(
   sid: string,
   proposedDescription: string,
+  subIssues?: SubIssueProposal[],
 ): Promise<GrillApplyResponse> {
+  const body: { proposed_description: string; sub_issues?: SubIssueProposal[] } = {
+    proposed_description: proposedDescription,
+  }
+  if (subIssues) body.sub_issues = subIssues
   const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/apply`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ proposed_description: proposedDescription }),
+    body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(await errorMessage(res, 'apply failed'))
   return res.json()
@@ -247,7 +264,22 @@ export function outcomePayload(msg: GrillMessage): OutcomePayload {
     disposition: typeof p.disposition === 'string' ? p.disposition : '',
     proposed_description:
       typeof p.proposed_description === 'string' ? p.proposed_description : undefined,
+    sub_issues: Array.isArray(p.sub_issues) ? p.sub_issues.map(parseSubIssue) : undefined,
     summary: typeof p.summary === 'string' ? p.summary : '',
+  }
+}
+
+function parseSubIssue(raw: unknown): SubIssueProposal {
+  const p = (raw ?? {}) as Partial<SubIssueProposal>
+  return {
+    title: typeof p.title === 'string' ? p.title : '',
+    description: typeof p.description === 'string' ? p.description : '',
+    labels: Array.isArray(p.labels)
+      ? p.labels.filter((l): l is string => typeof l === 'string')
+      : undefined,
+    blocked_by: Array.isArray(p.blocked_by)
+      ? p.blocked_by.filter((n): n is number => Number.isInteger(n))
+      : undefined,
   }
 }
 

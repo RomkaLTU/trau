@@ -66,6 +66,9 @@ type Writer interface {
 	AddComment(ctx context.Context, id, body string) error
 	UpdateDescription(ctx context.Context, id, body string) error
 	UpdateLabels(ctx context.Context, id string, add, remove []string) error
+	// LinkBlocks records that blocker blocks blocked (blocked is blocked by
+	// blocker), the direction the readers interpret. Both are human identifiers.
+	LinkBlocks(ctx context.Context, blocker, blocked string) error
 	PublishDocument(ctx context.Context, draft DocumentDraft) (PublishedDocument, error)
 }
 
@@ -135,6 +138,10 @@ func (w *linearWriter) UpdateLabels(ctx context.Context, id string, add, remove 
 	return w.client.UpdateLabels(ctx, id, add, remove)
 }
 
+func (w *linearWriter) LinkBlocks(ctx context.Context, blocker, blocked string) error {
+	return w.client.CreateBlockRelation(ctx, blocker, blocked)
+}
+
 func (w *linearWriter) PublishDocument(ctx context.Context, draft DocumentDraft) (PublishedDocument, error) {
 	if strings.TrimSpace(w.project) == "" {
 		return PublishedDocument{}, errors.New("tracker: no Linear project configured for this repo (set PROJECT) — a PRD document needs a project to live under")
@@ -175,6 +182,10 @@ func (w *jiraWriter) UpdateDescription(ctx context.Context, id, body string) err
 
 func (w *jiraWriter) UpdateLabels(ctx context.Context, id string, add, remove []string) error {
 	return w.client.UpdateLabels(ctx, id, add, remove)
+}
+
+func (w *jiraWriter) LinkBlocks(ctx context.Context, blocker, blocked string) error {
+	return w.client.LinkBlocks(ctx, blocker, blocked)
 }
 
 func (w *jiraWriter) PublishDocument(ctx context.Context, draft DocumentDraft) (PublishedDocument, error) {

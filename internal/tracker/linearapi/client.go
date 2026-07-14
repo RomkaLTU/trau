@@ -500,6 +500,30 @@ func (c *Client) CreateIssue(ctx context.Context, in CreateIssueInput) (identifi
 	return dst.Data.IssueCreate.Issue.Identifier, dst.Data.IssueCreate.Issue.URL, nil
 }
 
+// CreateBlockRelation records that blocker blocks blocked, resolving both human
+// identifiers to node ids first. Written as a "blocks" relation from blocker, so
+// blocked reads it as a blocker in its inverseRelations — the direction blockers()
+// interprets.
+func (c *Client) CreateBlockRelation(ctx context.Context, blocker, blocked string) error {
+	if c.apiKey == "" {
+		return ErrNotEnabled
+	}
+	b, err := c.Issue(ctx, blocker)
+	if err != nil {
+		return fmt.Errorf("resolve blocker %s: %w", blocker, err)
+	}
+	d, err := c.Issue(ctx, blocked)
+	if err != nil {
+		return fmt.Errorf("resolve blocked %s: %w", blocked, err)
+	}
+	var dst issueRelationCreateResponse
+	return c.do(ctx, issueRelationCreateMutation, map[string]any{
+		"issueId":        b.ID,
+		"relatedIssueId": d.ID,
+		"type":           "blocks",
+	}, &dst)
+}
+
 // CreateDocument creates a document under a project from markdown content and
 // returns its URL. content is stored verbatim, so the markdown round-trips.
 func (c *Client) CreateDocument(ctx context.Context, projectID, title, content string) (string, error) {
@@ -745,6 +769,14 @@ type documentCreateResponse struct {
 				URL string `json:"url"`
 			} `json:"document"`
 		} `json:"documentCreate"`
+	} `json:"data"`
+}
+
+type issueRelationCreateResponse struct {
+	Data struct {
+		IssueRelationCreate struct {
+			Success bool `json:"success"`
+		} `json:"issueRelationCreate"`
 	} `json:"data"`
 }
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -257,6 +258,44 @@ func TestGrillMCPFinishSessionValidation(t *testing.T) {
 		{"unknown disposition", map[string]any{"disposition": "bogus", "summary": "s"}, true},
 		{"missing summary", map[string]any{"disposition": "no_change"}, true},
 		{"valid no_change", map[string]any{"disposition": "no_change", "summary": "already clear"}, false},
+		{
+			"split without description",
+			map[string]any{"disposition": "split", "sub_issues": []any{map[string]any{"title": "A", "description": "da"}}, "summary": "s"},
+			true,
+		},
+		{
+			"split without sub_issues",
+			map[string]any{"disposition": "split", "proposed_description": "epic", "summary": "s"},
+			true,
+		},
+		{
+			"split sub_issue missing description",
+			map[string]any{"disposition": "split", "proposed_description": "epic", "sub_issues": []any{map[string]any{"title": "A"}}, "summary": "s"},
+			true,
+		},
+		{
+			"split out-of-range dep",
+			map[string]any{"disposition": "split", "proposed_description": "epic", "sub_issues": []any{map[string]any{"title": "A", "description": "da", "blocked_by": []any{5}}}, "summary": "s"},
+			true,
+		},
+		{
+			"split self dep",
+			map[string]any{"disposition": "split", "proposed_description": "epic", "sub_issues": []any{map[string]any{"title": "A", "description": "da", "blocked_by": []any{0}}}, "summary": "s"},
+			true,
+		},
+		{
+			"valid split",
+			map[string]any{
+				"disposition":          "split",
+				"proposed_description": "epic",
+				"sub_issues": []any{
+					map[string]any{"title": "A", "description": "da"},
+					map[string]any{"title": "B", "description": "db", "blocked_by": []any{0}},
+				},
+				"summary": "s",
+			},
+			false,
+		},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -305,6 +344,48 @@ func TestGrillMCPRewriteFinish(t *testing.T) {
 	}
 	if outcome.Disposition != "rewrite" || outcome.ProposedDescription == "" {
 		t.Fatalf("outcome payload = %+v", outcome)
+	}
+}
+
+func TestGrillMCPSplitFinish(t *testing.T) {
+	ts, _, repo := grillServer(t)
+	sess := createGrill(t, ts, repo, "COD-1")
+
+	msg := mcpJSON(t, mcpURL(ts, sess.ID), toolCall("finish_session", map[string]any{
+		"disposition":          "split",
+		"proposed_description": "Epic: deliver the checkout redesign.",
+		"sub_issues": []any{
+			map[string]any{"title": "Cart page", "description": "Rebuild the cart page."},
+			map[string]any{"title": "Payment step", "description": "Wire the payment step.", "blocked_by": []any{0}, "labels": []any{"ready-for-agent", "frontend"}},
+		},
+		"summary": "Sliced the redesign into two.",
+	}))
+	if tr := toolResult(t, msg); tr.IsError {
+		t.Fatalf("valid split returned an error: %+v", tr)
+	}
+
+	detail := grillDetail(t, ts, sess.ID)
+	last := detail.Messages[len(detail.Messages)-1]
+	var outcome struct {
+		Disposition string `json:"disposition"`
+		SubIssues   []struct {
+			Title       string   `json:"title"`
+			Description string   `json:"description"`
+			Labels      []string `json:"labels"`
+			BlockedBy   []int    `json:"blocked_by"`
+		} `json:"sub_issues"`
+	}
+	if err := json.Unmarshal(last.Payload, &outcome); err != nil {
+		t.Fatalf("decode outcome payload: %v", err)
+	}
+	if outcome.Disposition != "split" || len(outcome.SubIssues) != 2 {
+		t.Fatalf("outcome = %+v, want split with 2 sub-issues", outcome)
+	}
+	if outcome.SubIssues[1].Title != "Payment step" || len(outcome.SubIssues[1].BlockedBy) != 1 || outcome.SubIssues[1].BlockedBy[0] != 0 {
+		t.Fatalf("second sub-issue = %+v, want blocked_by [0]", outcome.SubIssues[1])
+	}
+	if !slices.Contains(outcome.SubIssues[1].Labels, "frontend") {
+		t.Fatalf("second sub-issue labels = %v, want its proposed labels", outcome.SubIssues[1].Labels)
 	}
 }
 
