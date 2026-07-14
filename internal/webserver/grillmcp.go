@@ -270,6 +270,17 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 	s.publishGrillMessage(question0)
 	s.publishGrillState(waiting)
 
+	// An AFK pre-grill turn has no user waiting, so the opening question parks the
+	// session at once and returns the park sentinel as a plain result — the agent
+	// ends its turn and the question waits for a live session.
+	if s.isPregrill(sid) {
+		if parked, err := s.stores.Grill().Transition(sid, hubstore.GrillParked, ""); err == nil {
+			s.publishGrillState(parked)
+		}
+		respondRPCJSON(w, rpcID, grillParkResult())
+		return
+	}
+
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		respondRPCError(w, rpcID, rpcInternalError, "streaming unsupported")

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { BacklogEntry } from './backlog'
-import type { GrillSession, GrillState } from './grill'
+import type { GrillSession, GrillState, PregrillResponse } from './grill'
 import {
   buildInbox,
   compareIssueIds,
@@ -12,6 +12,7 @@ import {
   mergeGrillableEntries,
   nextIssueId,
   prevIssueId,
+  summarisePregrill,
 } from './inbox'
 
 function entry(over: Partial<BacklogEntry> & { id: string }): BacklogEntry {
@@ -147,5 +148,31 @@ describe('compareIssueIds', () => {
   it('falls back to a string compare across prefixes or non-numeric suffixes', () => {
     expect(compareIssueIds('AAA-1', 'COD-1')).toBeLessThan(0)
     expect(compareIssueIds('feature', 'feature')).toBe(0)
+  })
+})
+
+describe('summarisePregrill', () => {
+  function response(outcomes: PregrillResponse['results'][number]['outcome'][]): PregrillResponse {
+    return {
+      repo: 'acme',
+      max: 5,
+      results: outcomes.map((outcome, i) => ({ issue_id: `COD-${i}`, outcome })),
+    }
+  }
+
+  it('names only the outcomes that occurred, pluralising', () => {
+    expect(
+      summarisePregrill(response(['question_parked', 'question_parked', 'rewrite_drafted', 'clear'])),
+    ).toBe('Pre-grill pass: 2 questions parked · 1 rewrite drafted · 1 already clear')
+  })
+
+  it('reports errors and skips', () => {
+    expect(summarisePregrill(response(['error', 'skipped']))).toBe(
+      'Pre-grill pass: 1 error · 1 skipped',
+    )
+  })
+
+  it('handles an empty pass', () => {
+    expect(summarisePregrill(response([]))).toBe('Pre-grill pass: nothing to do.')
   })
 })

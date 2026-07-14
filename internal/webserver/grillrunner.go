@@ -62,6 +62,29 @@ func (s *Server) EnableGrilling(baseCtx context.Context, baseURL string) {
 		inflight: map[int64]bool{},
 	}
 	s.startGrill = r.launch
+	s.runGrillTurn = r.runPregrill
+}
+
+// runPregrill runs one pre-grill turn synchronously — the pass waits on it to read
+// the settled outcome, unlike the fire-and-forget launch. It shares launch's
+// inflight guard and hub-lifetime timeout; the caller's context is ignored so a
+// disconnected pass request never kills a turn mid-flight.
+func (r *grillRunner) runPregrill(_ context.Context, sess hubstore.GrillSession) {
+	r.mu.Lock()
+	if r.inflight[sess.ID] {
+		r.mu.Unlock()
+		return
+	}
+	r.inflight[sess.ID] = true
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		delete(r.inflight, sess.ID)
+		r.mu.Unlock()
+	}()
+	ctx, cancel := context.WithTimeout(r.baseCtx, grillTurnTimeout)
+	defer cancel()
+	r.runTurn(ctx, sess)
 }
 
 // launch runs a turn for sess in the background unless one is already in flight for
@@ -214,6 +237,9 @@ func (r *grillRunner) firstPrompt(repo registry.Repo, sess hubstore.GrillSession
 	title, description := "", ""
 	if iss, found, err := r.srv.stores.Issues().Get(repo.Root, sess.IssueID); err == nil && found {
 		title, description = iss.Title, iss.Description
+	}
+	if r.srv.isPregrill(sess.ID) {
+		return grillPregrillPrompt(sess.IssueID, title, description)
 	}
 	return grillIssuePrompt(sess.IssueID, title, description)
 }

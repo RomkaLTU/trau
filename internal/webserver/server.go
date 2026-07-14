@@ -40,6 +40,9 @@ type Server struct {
 	transcriptEvents *transcriptBroadcaster
 	grillEvents      *grillBroadcaster
 	startGrill       func(ctx context.Context, sess hubstore.GrillSession)
+	runGrillTurn     func(ctx context.Context, sess hubstore.GrillSession)
+	pregrillMu       sync.Mutex
+	pregrill         map[int64]bool
 	sup              Supervisor
 	drain            *drainer
 	syncer           *syncer
@@ -75,6 +78,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		events:           newEventBroadcaster(),
 		transcriptEvents: newTranscriptBroadcaster(),
 		grillEvents:      newGrillBroadcaster(),
+		pregrill:         map[int64]bool{},
 		sup:              newOSSupervisor(),
 		drainCtx:         context.Background(),
 		newWriter:        defaultWriter,
@@ -269,6 +273,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/transcript/chunks", s.handleTranscriptChunks)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/transcript/stream", s.handleTranscriptStream)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/grill", s.handleRepoGrill)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/grill/pregrill", s.handleRepoPregrill)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}", s.handleGrillSession)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/answer", s.handleGrillAnswer)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/apply", s.handleGrillApply)
