@@ -175,8 +175,12 @@ func (s *Server) knownRepos(entries []registry.Entry) []registry.Repo {
 	return repos
 }
 
-// findRepo resolves a {repo} path segment to a known repo by name, unioning any
-// live loops' repos so a just-started loop's repo is resolvable.
+// findRepo resolves a {repo} path segment to a repo by name against the same union
+// the repos list shows: the repos a loop has run in (the known set and any live
+// loops) first, then the startable roots (the workspace seed and web registrations)
+// synthesized as workspace views, so a freshly registered repo resolves before its
+// first loop runs. Known and live entries win over a synthesized view on a name
+// collision.
 func (s *Server) findRepo(name string) (registry.Repo, bool) {
 	if name == "" {
 		return registry.Repo{}, false
@@ -185,6 +189,9 @@ func (s *Server) findRepo(name string) (registry.Repo, bool) {
 		if repo.Name == name {
 			return repo, true
 		}
+	}
+	if root, ok := matchRoot(s.effectiveRoots(), name); ok {
+		return workspaceRepo(root), true
 	}
 	return registry.Repo{}, false
 }
