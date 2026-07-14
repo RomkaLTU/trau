@@ -38,6 +38,7 @@ import {
   type GroupBy,
   type TimeseriesResponse,
 } from '@/lib/costs'
+import { standardTitle, usePageTitle } from '@/lib/page-title'
 
 export const Route = createFileRoute('/costs')({
   component: Costs,
@@ -72,6 +73,7 @@ function seriesLabel(key: string): string {
 }
 
 function Costs() {
+  usePageTitle(standardTitle('Costs'))
   const { repo } = useActiveRepo()
   const [days, setDays] = useState(7)
   const [groupBy, setGroupBy] = useState<GroupBy>('provider')

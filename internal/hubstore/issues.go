@@ -217,7 +217,7 @@ type BacklogFilter struct {
 }
 
 // familyKey groups a row with its epic: a sub-issue keys on its parent, a
-// top-level issue on its own identifier. parent is NOT NULL DEFAULT '' in the
+// top-level issue on its own identifier. parent is NOT NULL DEFAULT ” in the
 // schema, so NULLIF collapses the empty top-level case to the row's identifier.
 const familyKey = `COALESCE(NULLIF(parent, ''), identifier)`
 

@@ -19,6 +19,7 @@ import { Markdown } from '@/components/markdown'
 import { cn } from '@/lib/utils'
 import { boardPill } from '@/lib/board'
 import { addComment } from '@/lib/issues'
+import { runTitle, usePageTitle } from '@/lib/page-title'
 import { formatCostUSD, formatDuration } from '@/lib/runlive'
 import {
   runDetailQueryOptions,
@@ -39,6 +40,8 @@ function RunDetailPage() {
   const { setRepo } = useActiveRepo()
   const { data, error, isPending } = useQuery(runDetailQueryOptions(repo, ticket))
   const [notice, setNotice] = useState<CheckpointNotice | null>(null)
+
+  usePageTitle(runTitle(ticket, data ? boardPill(data).label : ''))
 
   useEffect(() => {
     setRepo(repo)

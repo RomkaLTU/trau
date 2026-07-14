@@ -12,6 +12,7 @@ import {
   type CheckpointNotice,
 } from '@/components/trau'
 import { boardColumns, boardPill, type BoardColumn } from '@/lib/board'
+import { standardTitle, usePageTitle } from '@/lib/page-title'
 import { reposQueryOptions, runsQueryOptions, type Run } from '@/lib/runs'
 
 export const Route = createFileRoute('/runs')({
@@ -20,6 +21,7 @@ export const Route = createFileRoute('/runs')({
 })
 
 function Runs() {
+  usePageTitle(standardTitle('Runs'))
   const { repo: active, repos } = useActiveRepo()
   const [notice, setNotice] = useState<CheckpointNotice | null>(null)
 

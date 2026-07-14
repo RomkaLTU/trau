@@ -19,6 +19,7 @@ import { StatusPill } from '@/components/trau/status-pill'
 import { UnregisterRepoButton } from '@/components/unregister-repo-button'
 import { instancesQueryOptions, type Instance } from '@/lib/instances'
 import { sessionStatePill, toSessionState } from '@/lib/overview'
+import { standardTitle, usePageTitle } from '@/lib/page-title'
 
 export const Route = createFileRoute('/instances')({
   component: Instances,
@@ -46,6 +47,7 @@ function formatElapsed(fromISO: string, now: number): string {
 }
 
 function Instances() {
+  usePageTitle(standardTitle('Instances'))
   const { data, error, isPending } = useQuery(instancesQueryOptions)
   const now = useNow(1000)
 

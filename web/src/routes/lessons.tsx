@@ -12,6 +12,7 @@ import {
 import { cn } from "@/lib/utils";
 import { reposQueryOptions } from "@/lib/runs";
 import { lessonsQueryOptions, type Lesson } from "@/lib/lessons";
+import { standardTitle, usePageTitle } from "@/lib/page-title";
 
 export const Route = createFileRoute("/lessons")({
   component: Lessons,
@@ -20,6 +21,7 @@ export const Route = createFileRoute("/lessons")({
 });
 
 function Lessons() {
+  usePageTitle(standardTitle("Lessons"));
   const { repo: active, repos } = useActiveRepo();
 
   return (

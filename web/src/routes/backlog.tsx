@@ -59,6 +59,7 @@ import {
 } from '@/lib/backlog-filters'
 import { internalIssueQueryOptions } from '@/lib/issues'
 import { labelsQueryOptions } from '@/lib/labels'
+import { standardTitle, usePageTitle } from '@/lib/page-title'
 import { enqueue } from '@/lib/queue'
 import { cn } from '@/lib/utils'
 
@@ -100,6 +101,7 @@ function useExpandedEpics(repo: string) {
 }
 
 function BacklogPage() {
+  usePageTitle(standardTitle('Backlog'))
   const { repo: activeRepo } = useActiveRepo()
   const repo = activeRepo ?? ''
   const queryClient = useQueryClient()

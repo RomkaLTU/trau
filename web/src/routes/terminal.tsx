@@ -15,6 +15,7 @@ import {
 } from "@/components/trau";
 import { Terminal } from "@/components/terminal";
 import { instancesQueryOptions, type RepoView } from "@/lib/instances";
+import { standardTitle, usePageTitle } from "@/lib/page-title";
 import {
   transcriptsQueryOptions,
   type TranscriptView,
@@ -29,6 +30,7 @@ export const Route = createFileRoute("/terminal")({
 const FOLLOW_NEWEST = "";
 
 function TerminalPage() {
+  usePageTitle(standardTitle("Terminal"));
   const { repo } = useActiveRepo();
   const { data, error, isPending } = useQuery(instancesQueryOptions);
   const repos = useMemo(() => data?.repos ?? [], [data]);

@@ -91,5 +91,6 @@ export const runDetailQueryOptions = (repo: string, ticket: string) =>
     queryKey: ['run', repo, ticket],
     queryFn: () => fetchRunDetail(repo, ticket),
     refetchInterval: 3000,
+    refetchIntervalInBackground: true,
     enabled: repo !== '' && ticket !== '',
   })
