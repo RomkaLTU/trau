@@ -34,6 +34,7 @@
   --warn: #b7791f;
   --info: #0284c7;
   --faint: #b3a99d;
+  --cli: #7c3aed;
 
   --radius: 0.875rem;
 }
@@ -67,6 +68,7 @@
   --warn: #f9d423;
   --info: #00aaff;
   --faint: #555555;
+  --cli: #b48cff;
 }
 
 @theme inline {
@@ -105,6 +107,7 @@
   --color-warn: var(--warn);
   --color-info: var(--info);
   --color-faint: var(--faint);
+  --color-cli: var(--cli);
 }
 
 @layer base {

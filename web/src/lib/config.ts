@@ -6,9 +6,12 @@ export interface ConfigKey {
   key: string
   value: string
   layer: string
+  group?: string
+  kind?: string
   default?: string
   description?: string
   options?: string[]
+  suggestions?: string[]
   bool?: boolean
   advanced?: boolean
   editable: boolean
