@@ -6,10 +6,15 @@ import { standardTitle, usePageTitle } from '@/lib/page-title'
 
 export const Route = createFileRoute('/projects/new')({
   component: NewProjectPage,
+  validateSearch: (search: Record<string, unknown>): { path?: string } => {
+    const path = search.path
+    return typeof path === 'string' && path !== '' ? { path } : {}
+  },
 })
 
 function NewProjectPage() {
   usePageTitle(standardTitle('Add a project'))
+  const { path } = Route.useSearch()
   return (
     <div className="flex flex-col gap-8">
       <header className="flex flex-col gap-2">
@@ -25,7 +30,7 @@ function NewProjectPage() {
         </p>
       </header>
 
-      <OnboardingWizard />
+      <OnboardingWizard initialPath={path ?? ''} />
     </div>
   )
 }
