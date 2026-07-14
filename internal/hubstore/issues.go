@@ -596,6 +596,18 @@ func (s *Issues) SyncState(repo string) (SyncState, error) {
 	return st, nil
 }
 
+// Count returns how many of a repo's issues the store holds, across every source
+// and excluding the tombstoned rows the board hides, so it matches the issue
+// total the backlog shows rather than the raw row count.
+func (s *Issues) Count(repo string) (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT count(*) FROM issues WHERE repo = ? AND deleted_at = ''`,
+		repo,
+	).Scan(&n)
+	return n, err
+}
+
 // SaveBinding caches a repo's resolved team/project ids so later syncs reuse them
 // instead of re-resolving through a team list round-trip.
 func (s *Issues) SaveBinding(repo string, b SyncBinding) error {
