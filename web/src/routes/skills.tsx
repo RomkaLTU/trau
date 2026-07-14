@@ -37,6 +37,7 @@ import {
   type SkillsResponse,
   type SkillSearchResult,
 } from '@/lib/skills'
+import { standardTitle, usePageTitle } from '@/lib/page-title'
 
 export const Route = createFileRoute('/skills')({
   component: SkillsPage,
@@ -51,6 +52,7 @@ interface InstallTarget {
 }
 
 function SkillsPage() {
+  usePageTitle(standardTitle('Skills'))
   const { repo: active, repos } = useActiveRepo()
 
   return (

@@ -35,6 +35,7 @@ import {
   type RepoFreshness,
 } from '@/lib/instances'
 import { deriveLoopHalt, type LoopHalt } from '@/lib/loop'
+import { loopTitle, usePageTitle, type LoopTitleState } from '@/lib/page-title'
 import {
   dequeue,
   drain,
@@ -54,6 +55,7 @@ import {
   buildTimeline,
   ticketPill,
   type PendingEntry,
+  type Timeline,
   type TimelineTicket,
 } from '@/lib/timeline'
 
@@ -972,6 +974,36 @@ function HaltBanner({ repo, halt }: { repo: string; halt: LoopHalt }) {
   )
 }
 
+// loopTitleState reads the loop's tab-title state from the same signals the card
+// renders: the halt banner, the draining header's done/total and step pill, or a
+// clean drain. It never re-derives a state the page does not already show.
+function loopTitleState(
+  canRun: boolean,
+  halt: LoopHalt | null,
+  draining: boolean,
+  timeline: Timeline | null,
+): LoopTitleState {
+  if (!canRun) return { kind: 'idle' }
+  if (halt) return { kind: 'halted', halt: halt.kind, ticket: halt.ticket }
+  if (draining && timeline) {
+    const running = timeline.running
+    const step = running
+      ? stepName(running.activity, running.phase ?? '').toLowerCase() || 'draining'
+      : 'draining'
+    return {
+      kind: 'draining',
+      done: timeline.done,
+      total: timeline.total,
+      ticket: running?.id ?? '',
+      step,
+    }
+  }
+  if (timeline && timeline.total > 0 && timeline.done === timeline.total) {
+    return { kind: 'done', total: timeline.total }
+  }
+  return { kind: 'idle' }
+}
+
 export function Loop() {
   const queryClient = useQueryClient()
   const { repo: activeRepo, repos } = useActiveRepo()
@@ -988,6 +1020,13 @@ export function Loop() {
   const liveInstance = instData?.instances.find((i) => i.repo === repo)
   const feed = useEventFeed(repo)
   const halt = deriveLoopHalt(feed.events)
+  const runs = useQuery(runsQueryOptions(repo))
+
+  const draining = queue.data?.draining ?? false
+  const timeline = queue.data
+    ? buildTimeline(queue.data.items, runs.data?.runs ?? [], liveInstance)
+    : null
+  usePageTitle(loopTitle(loopTitleState(canRun, halt, draining, timeline)))
 
   const stop = useMutation({
     mutationFn: () => drain(repo, false),
@@ -1008,7 +1047,6 @@ export function Loop() {
     )
   }
 
-  const draining = queue.data?.draining ?? false
   if (draining && queue.data) {
     return (
       <RunningQueueView

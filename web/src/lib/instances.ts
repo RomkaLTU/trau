@@ -55,6 +55,9 @@ export const instancesQueryOptions = queryOptions({
   queryKey: ['instances'],
   queryFn: fetchInstances,
   refetchInterval: 3000,
+  // Keep polling in a backgrounded tab so the live tab title stays current while
+  // a user watches a run from another tab.
+  refetchIntervalInBackground: true,
 })
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {

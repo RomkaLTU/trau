@@ -19,6 +19,7 @@ import {
   type ConfigKey,
   type ConfigWrite,
 } from '@/lib/config'
+import { standardTitle, usePageTitle } from '@/lib/page-title'
 
 export const Route = createFileRoute('/settings')({
   component: Settings,
@@ -27,6 +28,7 @@ export const Route = createFileRoute('/settings')({
 })
 
 function Settings() {
+  usePageTitle(standardTitle('Settings'))
   const { repo: active, repos } = useActiveRepo()
 
   return (

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
@@ -21,6 +21,7 @@ import { TerminalCard } from "@/components/trau/terminal-card";
 import { Terminal } from "@/components/terminal";
 import { cn } from "@/lib/utils";
 import { useEventFeed, type FeedEvent } from "@/lib/events";
+import { runTitle, usePageTitle } from "@/lib/page-title";
 import { CheckpointError, resetRun } from "@/lib/checkpoints";
 import {
   instancesQueryOptions,
@@ -42,6 +43,17 @@ import {
   sumCosts,
   type RunVariant,
 } from "@/lib/runlive";
+
+// A backgrounded tab throttles interval polls to ~1/min, so the tab title would
+// lag phase transitions. These feed kinds mark a pipeline-phase move (not churny
+// per-line agent activity); one arriving forces an immediate registry + run
+// refetch so the title snaps. Everything else rides the normal poll.
+const PHASE_EVENT_KINDS = new Set([
+  "agent_start",
+  "activity_change",
+  "pr_open",
+  "state_change",
+]);
 
 function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now());
@@ -482,6 +494,18 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   const detail = working ? instance.detail : undefined;
   const pill = headerPill(variant, phase, run?.failure_class, activity);
   const { steps, subLabel } = runSteps(variant, phase, activity, detail);
+
+  usePageTitle(runTitle(ticket, pill.label));
+
+  const latestPhaseEventId = useMemo(
+    () => feed.events.find((ev) => PHASE_EVENT_KINDS.has(ev.kind))?.id,
+    [feed.events],
+  );
+  useEffect(() => {
+    if (!latestPhaseEventId) return;
+    void queryClient.invalidateQueries({ queryKey: ["instances"] });
+    void queryClient.invalidateQueries({ queryKey: ["run", repo, ticket] });
+  }, [latestPhaseEventId, queryClient, repo, ticket]);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ["instances"] });

@@ -2,6 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 
 import { Eyebrow } from '@/components/trau/eyebrow'
 import { RunOnce } from '@/components/trau/run-once'
+import { standardTitle, usePageTitle } from '@/lib/page-title'
 import { reposQueryOptions } from '@/lib/runs'
 
 export const Route = createFileRoute('/run-once')({
@@ -10,6 +11,7 @@ export const Route = createFileRoute('/run-once')({
 })
 
 function RunOncePage() {
+  usePageTitle(standardTitle('Run once'))
   return (
     <div className="flex flex-col gap-8">
       <header className="flex flex-col gap-2">

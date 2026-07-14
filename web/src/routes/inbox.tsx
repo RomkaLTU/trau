@@ -33,6 +33,7 @@ import {
   type InboxItem,
 } from '@/lib/inbox'
 import { issueQueryOptions } from '@/lib/issues'
+import { standardTitle, usePageTitle } from '@/lib/page-title'
 import { cn } from '@/lib/utils'
 
 export const Route = createFileRoute('/inbox')({
@@ -66,6 +67,7 @@ const ATTENTION_META: Record<
 }
 
 function InboxPage() {
+  usePageTitle(standardTitle('Inbox'))
   const { repo: activeRepo } = useActiveRepo()
   const repo = activeRepo ?? ''
   const { items, isLoading, error } = useInbox(repo)

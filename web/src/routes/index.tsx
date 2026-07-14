@@ -7,6 +7,7 @@ import {
 } from '@/components/trau/overview'
 import { OverviewBoard } from '@/components/trau/overview-repo-board'
 import { instancesQueryOptions } from '@/lib/instances'
+import { standardTitle, usePageTitle } from '@/lib/page-title'
 import { reposQueryOptions } from '@/lib/runs'
 
 export const Route = createFileRoute('/')({
@@ -19,6 +20,7 @@ export const Route = createFileRoute('/')({
 })
 
 function Overview() {
+  usePageTitle(standardTitle('Overview'))
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
