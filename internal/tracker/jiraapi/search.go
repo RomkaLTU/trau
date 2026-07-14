@@ -170,6 +170,37 @@ func (c *Client) ProjectKeys(ctx context.Context, project string) ([]string, err
 	return out, nil
 }
 
+// approximateCountPath is Jira's endpoint for an approximate count of issues
+// matching a JQL query, without materializing them.
+const approximateCountPath = "/search/approximate-count"
+
+// CountIssues returns Jira's approximate count of every issue the token can see —
+// the cheap authenticated read behind the onboarding connection test's
+// visible-issue signal. An empty JQL counts all visible issues; a disabled client
+// (missing credentials) yields ErrNotEnabled.
+func (c *Client) CountIssues(ctx context.Context) (int, error) {
+	if !c.enabled() {
+		return 0, ErrNotEnabled
+	}
+	body, err := json.Marshal(approximateCountRequest{JQL: ""})
+	if err != nil {
+		return 0, err
+	}
+	var resp approximateCountResponse
+	if err := c.do(ctx, http.MethodPost, approximateCountPath, body, &resp); err != nil {
+		return 0, err
+	}
+	return resp.Count, nil
+}
+
+type approximateCountRequest struct {
+	JQL string `json:"jql"`
+}
+
+type approximateCountResponse struct {
+	Count int `json:"count"`
+}
+
 // eligibleJQL builds the ready-queue query: the project's issues that carry the
 // ready label, sit in the To-Do status category (unstarted — not In Progress or
 // Done), and are unresolved, ordered by priority, soonest due date, then key.
