@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CheckpointError } from './checkpoints'
 import {
   anySyncing,
+  healthBlocks,
   healthPill,
   repoHealth,
   startInstance,
@@ -90,6 +91,26 @@ describe('healthPill', () => {
 
   it('never renders a repo whose seed sync failed as a success', () => {
     expect(healthPill('sync-failed').state).not.toBe('success')
+  })
+})
+
+describe('healthBlocks', () => {
+  const cases: [RepoHealthState, boolean][] = [
+    ['ready', false],
+    ['syncing', false],
+    ['never-synced', false],
+    ['sync-failed', true],
+    ['unconfigured', true],
+  ]
+
+  it.each(cases)('gates %s as %s', (state, blocked) => {
+    expect(healthBlocks(state)).toBe(blocked)
+  })
+
+  it('gates a freshly registered repo whose seed sync failed', () => {
+    const repo = repoView({ state: 'sync-failed', syncing: false, last_error: 'boom' })
+
+    expect(healthBlocks(repoHealth(repo))).toBe(true)
   })
 })
 
