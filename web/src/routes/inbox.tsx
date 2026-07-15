@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { parseAsString, useQueryState } from 'nuqs'
@@ -43,6 +43,8 @@ import { issueQueryOptions } from '@/lib/issues'
 import {
   inboxPill,
   inboxPosition,
+  nextIssueId,
+  prevIssueId,
   skipTarget,
   summarisePregrill,
   useInboxQueue,
@@ -50,6 +52,14 @@ import {
   type InboxGroupView,
   type InboxItem,
 } from '@/lib/inbox'
+import { hasOpenLayer, inboxKeyAction } from '@/lib/inbox-keys'
+import {
+  hasUnseenQuestion,
+  loadSeen,
+  markSeen,
+  storeSeen,
+  type SeenMarks,
+} from '@/lib/inbox-seen'
 import { standardTitle, usePageTitle } from '@/lib/page-title'
 import { cn } from '@/lib/utils'
 
@@ -83,10 +93,24 @@ function InboxPage() {
   const [authoring, setAuthoring] = useState(false)
   const [passSummary, setPassSummary] = useState<string | null>(null)
   const [status, setStatus] = useState<GrillStatus | null>(null)
+  const [seen, setSeen] = useState<SeenMarks>(loadSeen)
 
   // The thread reports the session it is following, but the panel beside it must not
   // read the outgoing issue's status while a freshly selected one is still mounting.
   const live = status?.session.issue_id === selected?.id ? status : null
+
+  // Whatever is on screen has been read, and the thread's session is the one being
+  // read — it is followed live, where the rail's list trails a staleTime behind.
+  const onScreen = live?.session ?? selected?.session
+
+  useEffect(() => {
+    if (!onScreen) return
+    setSeen((marks) => markSeen(marks, onScreen.id, onScreen.updated_at))
+  }, [onScreen?.id, onScreen?.updated_at])
+
+  useEffect(() => {
+    storeSeen(seen)
+  }, [seen])
 
   function toggleContext() {
     const next = !contextOpen
@@ -110,6 +134,36 @@ function InboxPage() {
     const next = skipTarget(items, selected?.id ?? null)
     if (next !== null && next !== selected?.id) void setPeek(next)
   }
+
+  // The workspace owns j/k/s while it is on screen. The listener sits on the document
+  // because the queue has nothing focused to hang a handler on — the chat does, and
+  // the composer's Enter stays its own.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const action = inboxKeyAction({
+        key: e.key,
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        altKey: e.altKey,
+        isComposing: e.isComposing,
+        targetTag: (e.target as HTMLElement | null)?.tagName,
+        layerOpen: hasOpenLayer(document),
+      })
+      if (action === null) return
+      if (action === 'skip') {
+        skip()
+        return
+      }
+      if (!selected) return
+      const to =
+        action === 'next'
+          ? nextIssueId(items, selected.id)
+          : prevIssueId(items, selected.id)
+      if (to !== null) void setPeek(to)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [items, selected])
 
   // An applied outcome drops the issue's triage labels on the tracker, so refreshing
   // the board is what retires the row; the applied list is what re-lists it under
@@ -185,6 +239,7 @@ function InboxPage() {
             <QueueRail
               repo={repo}
               groups={groups}
+              seen={seen}
               selectedId={selected?.id ?? null}
               onSelect={(id) => void setPeek(id)}
             />
@@ -395,11 +450,13 @@ function SessionBar({
 function QueueRail({
   repo,
   groups,
+  seen,
   selectedId,
   onSelect,
 }: {
   repo: string
   groups: InboxGroupView[]
+  seen: SeenMarks
   selectedId: string | null
   onSelect: (id: string) => void
 }) {
@@ -430,6 +487,7 @@ function QueueRail({
                   key={item.id}
                   repo={repo}
                   item={item}
+                  unread={hasUnseenQuestion(seen, item)}
                   selected={selectedId === item.id}
                   onSelect={() => onSelect(item.id)}
                 />
@@ -455,11 +513,13 @@ function QueueRail({
 function QueueRow({
   repo,
   item,
+  unread,
   selected,
   onSelect,
 }: {
   repo: string
   item: InboxItem
+  unread: boolean
   selected: boolean
   onSelect: () => void
 }) {
@@ -490,11 +550,11 @@ function QueueRow({
           >
             {item.id}
           </span>
-          {item.attention === 'answer' && (
+          {unread && (
             <span
               className="size-1.5 rounded-full bg-warn"
               aria-hidden="true"
-              title="Waiting for your answer"
+              title="A question you haven't read yet"
             />
           )}
         </span>

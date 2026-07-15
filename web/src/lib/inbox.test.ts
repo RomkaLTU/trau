@@ -215,6 +215,30 @@ describe('walk-through navigation', () => {
     expect(nextIssueId(items, 'COD-9')).toBeNull()
     expect(inboxPosition(items, 'COD-9')).toBe(-1)
   })
+
+  // j/k step the queue, but the rail is what the user is reading: the attention tiers
+  // buildInbox sorts by have to land in the rail's group order, or the selection jumps
+  // around the sections it walks.
+  it('steps the queue in the order the rail lays its groups out', () => {
+    const queue = buildInbox(
+      [
+        entry({ id: 'COD-1' }),
+        entry({ id: 'COD-2' }),
+        entry({ id: 'COD-3' }),
+        entry({ id: 'COD-4' }),
+      ],
+      [
+        session({ id: '1', issue_id: 'COD-1', state: 'finished' }),
+        session({ id: '2', issue_id: 'COD-2', state: 'waiting' }),
+        session({ id: '3', issue_id: 'COD-3', state: 'running' }),
+      ],
+    )
+    const rail = inboxGroups(queue)
+      .filter((g) => g.group !== 'done')
+      .flatMap((g) => g.items.map((i) => i.id))
+    expect(rail).toEqual(queue.map((i) => i.id))
+    expect(rail).toEqual(['COD-2', 'COD-3', 'COD-4', 'COD-1'])
+  })
 })
 
 describe('skipTarget', () => {
