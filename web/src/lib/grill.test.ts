@@ -249,6 +249,7 @@ describe('grillReducer', () => {
   const initial: GrillLive = {
     session: session({ state: 'running' }),
     live: false,
+    hydrated: false,
     messages: [],
     pending: [],
   }
@@ -260,6 +261,15 @@ describe('grillReducer', () => {
     })
     expect(next.session.state).toBe('waiting')
     expect(next.messages.map((m) => m.id)).toEqual(['1'])
+  })
+
+  it('hydrated only turns on once the transcript lands', () => {
+    expect(grillReducer(initial, { type: 'message', message: question('5') }).hydrated).toBe(false)
+    const next = grillReducer(initial, {
+      type: 'hydrate',
+      detail: { session: session({ state: 'running' }), messages: [] },
+    })
+    expect(next.hydrated).toBe(true)
   })
 
   it('a stream state frame wins over a later hydrate', () => {
@@ -282,6 +292,7 @@ describe('optimistic send', () => {
   const initial: GrillLive = {
     session: session({ state: 'waiting' }),
     live: false,
+    hydrated: true,
     messages: [],
     pending: [],
   }

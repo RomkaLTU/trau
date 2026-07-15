@@ -422,10 +422,12 @@ export interface PendingAnswer {
 
 // GrillLive is the panel's merged view of one session: the authoritative session
 // plus its messages. live tracks whether a stream frame has set the session, so a
-// late GET hydrate never reverts a state the stream already advanced.
+// late GET hydrate never reverts a state the stream already advanced; hydrated
+// tracks whether the transcript itself has landed yet.
 export interface GrillLive {
   session: GrillSession
   live: boolean
+  hydrated: boolean
   messages: GrillMessage[]
   pending: PendingAnswer[]
 }
@@ -445,6 +447,7 @@ export function grillReducer(state: GrillLive, action: GrillAction): GrillLive {
       return {
         ...state,
         session: state.live ? state.session : action.detail.session,
+        hydrated: true,
         messages: mergeMessages(state.messages, action.detail.messages),
         pending: action.detail.messages
           .filter((m) => !holds(state.messages, m))

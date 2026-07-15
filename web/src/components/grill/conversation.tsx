@@ -52,6 +52,7 @@ export function GrillConversation({
   const [state, dispatch] = useReducer(grillReducer, undefined, () => ({
     session: initial,
     live: false,
+    hydrated: false,
     messages: [],
     pending: [],
   }));
@@ -83,7 +84,7 @@ export function GrillConversation({
     return () => close();
   }, [initial.id]);
 
-  const { session, messages, pending } = state;
+  const { session, messages, pending, hydrated } = state;
   const asked = pendingQuestion(messages);
   const question = asked ? questionPayload(asked) : null;
   const outcomeMsg = latestOutcome(messages);
@@ -139,6 +140,7 @@ export function GrillConversation({
       <GrillThread
         session={session}
         messages={messages}
+        hydrated={hydrated}
         pending={pending}
         stalled={stalled}
         onRetry={retry}

@@ -36,6 +36,7 @@ const anchors = new Map<string, string>();
 export function GrillThread({
   session,
   messages,
+  hydrated,
   pending,
   stalled,
   onRetry,
@@ -44,6 +45,7 @@ export function GrillThread({
 }: {
   session: GrillSession;
   messages: GrillMessage[];
+  hydrated: boolean;
   pending: PendingAnswer[];
   stalled: GrillBanner | null;
   onRetry: (id: string) => void;
@@ -69,12 +71,15 @@ export function GrillThread({
                 />
               </MessageScrollerItem>
             ))}
-            {session.state === "running" && (
+            {/* A session knows it is running or stalled before its transcript arrives,
+                but seeding these rows that early costs the reader their place: the jump
+                Viewport asks for is only parked while the thread is still empty. */}
+            {hydrated && session.state === "running" && (
               <MessageScrollerItem messageId="thinking">
                 <ThinkingRow />
               </MessageScrollerItem>
             )}
-            {stalled && (
+            {hydrated && stalled && (
               <MessageScrollerItem messageId="stalled">
                 <StalledNote banner={stalled} onResume={onResume} />
               </MessageScrollerItem>
