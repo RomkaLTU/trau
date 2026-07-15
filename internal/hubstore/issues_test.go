@@ -567,6 +567,137 @@ func TestLabelsFacetEmptyRepo(t *testing.T) {
 	}
 }
 
+func seedAssignees(t *testing.T, s *Issues, repo string) {
+	t.Helper()
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-1", Title: "a", StatusGroup: "backlog", AssigneeID: "u-1", AssigneeName: "Ada"},
+		{Identifier: "COD-2", Title: "b", StatusGroup: "unstarted", AssigneeID: "u-1", AssigneeName: "Ada"},
+		{Identifier: "COD-3", Title: "c", StatusGroup: "started", AssigneeID: "u-2", AssigneeName: "Bob"},
+		{Identifier: "COD-4", Title: "d", StatusGroup: "backlog"},
+	}); err != nil {
+		t.Fatalf("seed assignees: %v", err)
+	}
+}
+
+func TestBacklogPageSurfacesAssignee(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/assignee"
+	assigned := sampleIssue()
+	assigned.AssigneeID = "u-7"
+	assigned.AssigneeName = "Ada Lovelace"
+	if _, _, err := s.Upsert(repo, "linear", []Issue{assigned}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	page, _, _, err := s.BacklogPage(repo, BacklogFilter{})
+	if err != nil {
+		t.Fatalf("BacklogPage: %v", err)
+	}
+	if len(page) != 1 || page[0].AssigneeID != "u-7" || page[0].AssigneeName != "Ada Lovelace" {
+		t.Fatalf("page assignee = %+v, want the read path to surface u-7/Ada Lovelace", page)
+	}
+	iss, found, err := s.Find(repo, "COD-1")
+	if err != nil || !found {
+		t.Fatalf("find: found=%v err=%v", found, err)
+	}
+	if iss.AssigneeID != "u-7" || iss.AssigneeName != "Ada Lovelace" {
+		t.Fatalf("find assignee = %q/%q, want u-7/Ada Lovelace", iss.AssigneeID, iss.AssigneeName)
+	}
+}
+
+func TestBacklogPageAssigneeFilter(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/assignfilter"
+	seedAssignees(t, s, repo)
+
+	tests := []struct {
+		name     string
+		assignee string
+		want     []string
+	}{
+		{"by id", "u-1", []string{"COD-2", "COD-1"}},
+		{"other id", "u-2", []string{"COD-3"}},
+		{"unassigned", "unassigned", []string{"COD-4"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, total, _, err := s.BacklogPage(repo, BacklogFilter{Assignee: tt.assignee})
+			if err != nil {
+				t.Fatalf("BacklogPage: %v", err)
+			}
+			if total != len(tt.want) || !reflect.DeepEqual(idsOf(got), tt.want) {
+				t.Errorf("ids = %v (total %d), want %v", idsOf(got), total, tt.want)
+			}
+		})
+	}
+
+	got, total, _, err := s.BacklogPage(repo, BacklogFilter{Assignee: "me"})
+	if err != nil {
+		t.Fatalf("BacklogPage me (no identity): %v", err)
+	}
+	if total != 0 || len(got) != 0 {
+		t.Fatalf("me without a stored identity = %v (total %d), want an empty page", idsOf(got), total)
+	}
+
+	if err := s.SaveIdentity(repo, "u-1", "Ada"); err != nil {
+		t.Fatalf("save identity: %v", err)
+	}
+	got, total, _, err = s.BacklogPage(repo, BacklogFilter{Assignee: "me"})
+	if err != nil {
+		t.Fatalf("BacklogPage me: %v", err)
+	}
+	if total != 2 || !reflect.DeepEqual(idsOf(got), []string{"COD-2", "COD-1"}) {
+		t.Fatalf("me = %v (total %d), want u-1's COD-2, COD-1", idsOf(got), total)
+	}
+}
+
+func TestAssigneesFacet(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/assignfacet"
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-1", Title: "a", StatusGroup: "backlog", AssigneeID: "u-1", AssigneeName: "Ada"},
+		{Identifier: "COD-2", Title: "b", StatusGroup: "unstarted", AssigneeID: "u-1", AssigneeName: "Ada"},
+		{Identifier: "COD-3", Title: "c", StatusGroup: "started", AssigneeID: "u-2", AssigneeName: "Bob"},
+		{Identifier: "COD-4", Title: "d", StatusGroup: "backlog"},
+		{Identifier: "COD-5", Title: "e", StatusGroup: "backlog"},
+	}); err != nil {
+		t.Fatalf("seed synced: %v", err)
+	}
+	if _, _, err := s.Upsert(repo, "internal", []Issue{
+		{Identifier: "COD-100", Title: "note", StatusGroup: "unstarted"},
+	}); err != nil {
+		t.Fatalf("seed internal: %v", err)
+	}
+	if _, err := s.Reconcile(repo, []string{"COD-1", "COD-2", "COD-3", "COD-4"}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	assigned, unassigned, err := s.Assignees(repo)
+	if err != nil {
+		t.Fatalf("Assignees: %v", err)
+	}
+	want := []AssigneeCount{
+		{ID: "u-1", Name: "Ada", Count: 2},
+		{ID: "u-2", Name: "Bob", Count: 1},
+	}
+	if !reflect.DeepEqual(assigned, want) {
+		t.Fatalf("assigned = %+v, want count-desc then name %+v (COD-5 tombstoned)", assigned, want)
+	}
+	if unassigned != 2 {
+		t.Fatalf("unassigned = %d, want 2 (COD-4 and internal COD-100; the tombstoned COD-5 excluded)", unassigned)
+	}
+}
+
+func TestAssigneesFacetEmptyRepo(t *testing.T) {
+	s := testIssues(t)
+	assigned, unassigned, err := s.Assignees("/repo/empty")
+	if err != nil {
+		t.Fatalf("Assignees: %v", err)
+	}
+	if len(assigned) != 0 || unassigned != 0 {
+		t.Fatalf("empty repo = %+v / %d, want an empty slice and zero unassigned", assigned, unassigned)
+	}
+}
+
 func TestCount(t *testing.T) {
 	s := testIssues(t)
 	const repo = "/repo/acme"

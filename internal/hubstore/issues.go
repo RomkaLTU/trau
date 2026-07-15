@@ -172,7 +172,7 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 
 const issueColumns = `id, source, identifier, title, description, status, status_group,
 	priority, labels, parent, has_children, due_date, external_id, url,
-	created_at, updated_at, deleted_at`
+	created_at, updated_at, deleted_at, assignee_id, assignee_name`
 
 // List returns a repo's stored issues with their comments, ordered by identifier.
 func (s *Issues) List(repo string) (issues []Issue, err error) {
@@ -215,18 +215,21 @@ func (s *Issues) Children(repo, parent string) (issues []Issue, err error) {
 // BacklogFilter narrows a backlog listing. Groups matches the workflow state
 // groups to union (backlog | unstarted | started | done | canceled | unknown);
 // Label matches an issue carrying that label name, case-insensitively; Source is
-// "internal" for internally-created issues or "synced" for tracker tickets; Text
-// is a case-insensitive substring over identifier and title. A zero-valued field
-// is ignored, so the zero filter selects the whole board — an empty Groups means
+// "internal" for internally-created issues or "synced" for tracker tickets;
+// Assignee is "me" (the repo binding's resolved identity), "unassigned", or an
+// assignee id to match exactly — an unresolved "me" matches nothing; Text is a
+// case-insensitive substring over identifier and title. A zero-valued field is
+// ignored, so the zero filter selects the whole board — an empty Groups means
 // every group. Limit and Offset paginate the ordered matches; a Limit of zero
 // returns every match.
 type BacklogFilter struct {
-	Groups []string
-	Label  string
-	Source string
-	Text   string
-	Limit  int
-	Offset int
+	Groups   []string
+	Label    string
+	Source   string
+	Assignee string
+	Text     string
+	Limit    int
+	Offset   int
 }
 
 // familyKey groups a row with its epic: a sub-issue keys on its parent, a
@@ -298,6 +301,19 @@ func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue,
 		like := "%" + escapeLike(text) + "%"
 		where = append(where, `(identifier LIKE ? ESCAPE '\' OR title LIKE ? ESCAPE '\')`)
 		args = append(args, like, like)
+	}
+	switch assignee := strings.TrimSpace(filter.Assignee); assignee {
+	case "":
+	case "me":
+		// The repo's identity resolves to NULL when unset (no row, or me_id ''),
+		// and assignee_id = NULL matches nothing — the null-identity degradation.
+		where = append(where, "assignee_id = (SELECT NULLIF(me_id, '') FROM issue_sync WHERE repo = ?)")
+		args = append(args, repo)
+	case "unassigned":
+		where = append(where, "assignee_id IS NULL")
+	default:
+		where = append(where, "assignee_id = ?")
+		args = append(args, assignee)
 	}
 	baseClause := strings.Join(where, " AND ")
 
@@ -449,6 +465,55 @@ func (s *Issues) Labels(repo string) (labels []LabelCount, err error) {
 	return labels, rows.Err()
 }
 
+// AssigneeCount is one distinct assignee carried by a repo's issues and the
+// number of issues assigned to them.
+type AssigneeCount struct {
+	ID    string
+	Name  string
+	Count int
+}
+
+// Assignees returns the distinct assignees of a repo's stored issues with their
+// issue counts, and the count of unassigned issues, straight from the issues
+// table with no tracker call (ADR 0007). Assigned rows are ordered by count
+// descending then name; tombstoned issues are excluded. The caller flags and pins
+// the repo's Me — only the assignee ids already reflected on the issues are
+// returned, never the stored Me identity (ADR 0014).
+func (s *Issues) Assignees(repo string) (assigned []AssigneeCount, unassigned int, err error) {
+	rows, err := s.db.Query(
+		`SELECT assignee_id, min(assignee_name), count(*)
+		 FROM issues
+		 WHERE repo = ? AND deleted_at = '' AND assignee_id IS NOT NULL
+		 GROUP BY assignee_id
+		 ORDER BY count(*) DESC, min(assignee_name)`,
+		repo,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	assigned = []AssigneeCount{}
+	for rows.Next() {
+		var (
+			ac   AssigneeCount
+			name sql.NullString
+		)
+		if scanErr := rows.Scan(&ac.ID, &name, &ac.Count); scanErr != nil {
+			return nil, 0, scanErr
+		}
+		ac.Name = name.String
+		assigned = append(assigned, ac)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	err = s.db.QueryRow(
+		`SELECT count(*) FROM issues WHERE repo = ? AND deleted_at = '' AND assignee_id IS NULL`,
+		repo,
+	).Scan(&unassigned)
+	return assigned, unassigned, err
+}
+
 // cleanGroups trims the requested state groups and drops blanks, so a stray empty
 // value narrows nothing rather than matching a nonexistent group.
 func cleanGroups(groups []string) []string {
@@ -475,21 +540,24 @@ func scanIssues(repo string, rows *sql.Rows) ([]Issue, map[int64]int, error) {
 	ids := map[int64]int{}
 	for rows.Next() {
 		var (
-			id     int64
-			labels string
-			hasCh  int
-			iss    = Issue{Repo: repo}
+			id                     int64
+			labels                 string
+			hasCh                  int
+			assigneeID, assigneeNm sql.NullString
+			iss                    = Issue{Repo: repo}
 		)
 		if err := rows.Scan(
 			&id, &iss.Source, &iss.Identifier, &iss.Title, &iss.Description,
 			&iss.Status, &iss.StatusGroup, &iss.Priority, &labels, &iss.Parent,
 			&hasCh, &iss.DueDate, &iss.ExternalID, &iss.URL, &iss.CreatedAt, &iss.UpdatedAt,
-			&iss.DeletedAt,
+			&iss.DeletedAt, &assigneeID, &assigneeNm,
 		); err != nil {
 			return nil, nil, err
 		}
 		iss.HasChildren = hasCh != 0
 		iss.Labels = decodeLabels(labels)
+		iss.AssigneeID = assigneeID.String
+		iss.AssigneeName = assigneeNm.String
 		iss.Comments = []Comment{}
 		ids[id] = len(issues)
 		issues = append(issues, iss)
