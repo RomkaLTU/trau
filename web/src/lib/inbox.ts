@@ -390,8 +390,8 @@ export function summarisePregrill(res: PregrillResponse): string {
   if (counts.error) parts.push(`${counts.error} error${plural(counts.error)}`);
   if (counts.skipped) parts.push(`${counts.skipped} skipped`);
   return parts.length > 0
-    ? `Pre-grill pass: ${parts.join(" · ")}`
-    : "Pre-grill pass: nothing to do.";
+    ? `Ask ahead: ${parts.join(" · ")}`
+    : "Ask ahead: nothing to do.";
 }
 
 function plural(n: number): string {

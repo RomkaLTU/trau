@@ -420,19 +420,19 @@ describe("summarisePregrill", () => {
         ]),
       ),
     ).toBe(
-      "Pre-grill pass: 2 questions parked · 1 rewrite drafted · 1 already clear",
+      "Ask ahead: 2 questions parked · 1 rewrite drafted · 1 already clear",
     );
   });
 
   it("reports errors and skips", () => {
     expect(summarisePregrill(response(["error", "skipped"]))).toBe(
-      "Pre-grill pass: 1 error · 1 skipped",
+      "Ask ahead: 1 error · 1 skipped",
     );
   });
 
   it("handles an empty pass", () => {
     expect(summarisePregrill(response([]))).toBe(
-      "Pre-grill pass: nothing to do.",
+      "Ask ahead: nothing to do.",
     );
   });
 });

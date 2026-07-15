@@ -178,7 +178,7 @@ async function errorMessage(res: Response, fallback: string): Promise<string> {
 async function fetchGrillSessions(repo: string, state?: GrillState): Promise<GrillListResponse> {
   const url = state ? `${base(repo)}?state=${state}` : base(repo)
   const res = await apiFetch(url)
-  if (!res.ok) throw new Error(await errorMessage(res, 'list grill sessions failed'))
+  if (!res.ok) throw new Error(await errorMessage(res, 'list interview sessions failed'))
   return res.json()
 }
 
@@ -205,7 +205,7 @@ export const appliedGrillSessionsQueryOptions = (repo: string) =>
 
 async function fetchGrillDetail(sid: string): Promise<GrillDetail> {
   const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}`)
-  if (!res.ok) throw new Error(await errorMessage(res, 'fetch grill session failed'))
+  if (!res.ok) throw new Error(await errorMessage(res, 'fetch interview session failed'))
   return res.json()
 }
 
@@ -230,7 +230,7 @@ export async function startGrillSession(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ issue_id: issueId, idea }),
   })
-  if (!res.ok) throw new Error(await errorMessage(res, 'start grill session failed'))
+  if (!res.ok) throw new Error(await errorMessage(res, 'start interview session failed'))
   return res.json()
 }
 
@@ -266,7 +266,7 @@ export async function pregrillIssues(repo: string, issueIds: string[]): Promise<
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ issue_ids: issueIds }),
   })
-  if (!res.ok) throw new Error(await errorMessage(res, 'pre-grill failed'))
+  if (!res.ok) throw new Error(await errorMessage(res, 'ask ahead failed'))
   return res.json()
 }
 
@@ -607,7 +607,7 @@ export function grillBanner(session: GrillSession): GrillBanner | null {
     case 'stalled':
       return {
         tone: 'stalled',
-        headline: 'Session stalled — the grilling agent hit a provider usage or rate limit',
+        headline: 'Session stalled — the interview agent hit a provider usage or rate limit',
         hint: reason || 'Clear it, then resume — your last answer is re-sent as-is.',
         showResume: true,
       }
