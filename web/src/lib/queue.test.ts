@@ -1,10 +1,14 @@
+import { QueryClient } from '@tanstack/react-query'
 import { describe, expect, it } from 'vitest'
 
 import {
+  publishQueue,
   queueCounts,
   queueExecutable,
+  queueQueryOptions,
   skipResumeApplies,
   type QueueItem,
+  type QueueResponse,
 } from './queue'
 import type { Run } from './runs'
 
@@ -18,6 +22,10 @@ function item(over: Partial<QueueItem>): QueueItem {
   }
 }
 
+function queueResponse(over: Partial<QueueResponse> = {}): QueueResponse {
+  return { repo: 'trau', draining: false, items: [], ...over }
+}
+
 function run(over: Partial<Run>): Run {
   return {
     ticket: 'COD-1',
@@ -27,6 +35,37 @@ function run(over: Partial<Run>): Run {
     ...over,
   }
 }
+
+describe('publishQueue', () => {
+  const cached = (client: QueryClient, repo: string) =>
+    client.getQueryData(queueQueryOptions(repo).queryKey)
+
+  it('lands the response on the key the queue query reads', () => {
+    const client = new QueryClient()
+    const res = queueResponse({ items: [item({ id: 'COD-1' })] })
+    publishQueue(client, 'trau', res)
+    expect(cached(client, 'trau')).toEqual(res)
+  })
+
+  it('replaces the cached queue, so an added item shows without a refetch', () => {
+    const client = new QueryClient()
+    publishQueue(client, 'trau', queueResponse({ draining: true }))
+    publishQueue(
+      client,
+      'trau',
+      queueResponse({ draining: true, items: [item({ id: 'COD-2' })] }),
+    )
+    expect(cached(client, 'trau')).toEqual(
+      queueResponse({ draining: true, items: [item({ id: 'COD-2' })] }),
+    )
+  })
+
+  it('scopes the write to its own repo', () => {
+    const client = new QueryClient()
+    publishQueue(client, 'trau', queueResponse({ items: [item({ id: 'COD-1' })] }))
+    expect(cached(client, 'salonradar')).toBeUndefined()
+  })
+})
 
 describe('queueCounts', () => {
   it('counts an empty queue as all zeros', () => {

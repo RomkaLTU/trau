@@ -43,6 +43,7 @@ import {
   drain,
   enqueue,
   moveQueueItem,
+  publishQueue,
   queueExecutable,
   queueQueryOptions,
   skipResumeApplies,
@@ -372,8 +373,7 @@ function LaunchQueueCard({
   const [skipResume, setSkipResume] = useState(false)
   const [onFault, setOnFault] = useState<OnFault>('halt')
 
-  const setQueue = (res: QueueResponse) =>
-    queryClient.setQueryData<QueueResponse>(['queue', repo], res)
+  const setQueue = (res: QueueResponse) => publishQueue(queryClient, repo, res)
 
   const add = useMutation({
     mutationFn: (id: string) => enqueue(repo, { id }),
@@ -863,8 +863,10 @@ function RunningQueueView({
   stopError: unknown
 }) {
   const now = useNow(1000)
+  const queryClient = useQueryClient()
   const runs = useQuery(runsQueryOptions(repo))
   const timeline = buildTimeline(queue.items, runs.data?.runs ?? [], instance)
+  const [addOpen, setAddOpen] = useState(false)
 
   return (
     <div className="flex flex-col gap-6">
@@ -918,29 +920,48 @@ function RunningQueueView({
             )}
           </section>
 
-          {timeline.pending.length > 0 ? (
-            <section className="flex flex-col gap-2">
+          <section className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-3">
               <Eyebrow glyph="idle">REMAINING</Eyebrow>
-              <div className="overflow-hidden rounded-md border border-border">
-                <ul className="flex flex-col">
-                  {timeline.pending.map((entry) =>
-                    entry.kind === 'epic' ? (
-                      <PendingEpicGroup key={entry.id} entry={entry} />
-                    ) : (
-                      <PendingTicketRow
-                        key={entry.ticket.id}
-                        ticket={entry.ticket}
-                      />
-                    ),
-                  )}
-                </ul>
+              <button
+                type="button"
+                onClick={() => setAddOpen(true)}
+                className="inline-flex items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline"
+              >
+                <Plus className="size-3.5" aria-hidden="true" />
+                Add ticket
+              </button>
+            </div>
+            {timeline.pending.length > 0 ? (
+              <>
+                <div className="overflow-hidden rounded-md border border-border">
+                  <ul className="flex flex-col">
+                    {timeline.pending.map((entry) =>
+                      entry.kind === 'epic' ? (
+                        <PendingEpicGroup key={entry.id} entry={entry} />
+                      ) : (
+                        <PendingTicketRow
+                          key={entry.ticket.id}
+                          ticket={entry.ticket}
+                        />
+                      ),
+                    )}
+                  </ul>
+                </div>
+                <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+                  Remaining tickets — the pick order is decided at run time, not
+                  promised here.
+                </p>
+              </>
+            ) : (
+              <div className="rounded-md border border-dashed border-border px-4 py-6 text-center">
+                <p className="font-sans text-sm text-muted-foreground">
+                  Nothing left in the queue — add a ticket and the drain picks it
+                  up.
+                </p>
               </div>
-              <p className="font-sans text-xs leading-relaxed text-muted-foreground">
-                Remaining tickets — the pick order is decided at run time, not
-                promised here.
-              </p>
-            </section>
-          ) : null}
+            )}
+          </section>
 
           {timeline.settled.length > 0 ? (
             <FinishedSection repo={repo} settled={timeline.settled} />
@@ -974,6 +995,14 @@ function RunningQueueView({
           onConfirm={onStop}
         />
       </div>
+
+      <AddTicketDialog
+        repo={repo}
+        queued={queue.items}
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        onQueue={(res) => publishQueue(queryClient, repo, res)}
+      />
     </div>
   )
 }
@@ -1123,8 +1152,7 @@ export function Loop() {
 
   const stop = useMutation({
     mutationFn: () => drain(repo, false),
-    onSuccess: (res) =>
-      queryClient.setQueryData<QueueResponse>(['queue', repo], res),
+    onSuccess: (res) => publishQueue(queryClient, repo, res),
   })
 
   useEffect(() => {

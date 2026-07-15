@@ -1,4 +1,4 @@
-import { queryOptions } from '@tanstack/react-query'
+import { queryOptions, type QueryClient } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
 import type { Run } from './runs'
@@ -52,6 +52,16 @@ export const queueQueryOptions = (repo: string) =>
     enabled: repo !== '',
     staleTime: 15_000,
   })
+
+// publishQueue writes the queue a mutation just returned into the cache, so the
+// card redraws on the response rather than waiting for the next refetch.
+export function publishQueue(
+  client: QueryClient,
+  repo: string,
+  res: QueueResponse,
+): void {
+  client.setQueryData(queueQueryOptions(repo).queryKey, res)
+}
 
 export interface EnqueueRequest {
   id: string

@@ -124,6 +124,16 @@ describe('buildTimeline', () => {
     expect(tl.pending.map((p) => (p.kind === 'ticket' ? p.ticket.id : p.id))).toEqual(['COD-1'])
   })
 
+  it('leaves nothing remaining once the last queued ticket is the running one', () => {
+    const tl = buildTimeline(
+      [item({ id: 'COD-1', status: 'done' }), item({ id: 'COD-2' })],
+      [run({ ticket: 'COD-1', terminal: true, phase: 'merged' })],
+      instance({ ticket: 'COD-2' }),
+    )
+    expect(tl.running?.id).toBe('COD-2')
+    expect(tl.pending).toEqual([])
+  })
+
   it('carries the working instance Activity onto the running ticket', () => {
     const tl = buildTimeline(
       [item({ id: 'COD-1' })],
