@@ -219,6 +219,7 @@ function FramedConversation({
   const [status, setStatus] = useState<GrillStatus>({
     stream: "connecting",
     session,
+    messages: [],
   });
   return (
     <PanelFrame

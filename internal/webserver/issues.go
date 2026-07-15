@@ -36,6 +36,7 @@ type IssueResponse struct {
 	Parent      string         `json:"parent,omitempty"`
 	Source      string         `json:"source,omitempty"`
 	URL         string         `json:"url,omitempty"`
+	CreatedAt   string         `json:"created_at,omitempty"`
 	HasChildren bool           `json:"has_children"`
 	Comments    []IssueComment `json:"comments"`
 	// Project is the ticket's own tracker project; InProject reports whether it
@@ -196,6 +197,7 @@ func (s *Server) storeIssueResponse(repo registry.Repo, iss hubstore.Issue) Issu
 		Parent:      iss.Parent,
 		Source:      iss.Source,
 		URL:         iss.URL,
+		CreatedAt:   iss.CreatedAt,
 		HasChildren: iss.HasChildren,
 		Comments:    toIssueComments(iss.Comments),
 		InProject:   true,

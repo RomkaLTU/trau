@@ -372,6 +372,19 @@ export function pendingQuestion(messages: GrillMessage[]): GrillMessage | null {
   return null
 }
 
+export interface GrillProgress {
+  answered: number
+  total: number
+}
+
+// grillProgress is how far the grilling has got: the questions asked, and how many
+// the user has answered. A question left pending is the only one outstanding — the
+// session cannot ask the next one until the current one is answered.
+export function grillProgress(messages: GrillMessage[]): GrillProgress {
+  const total = messages.reduce((n, m) => (m.kind === 'question' ? n + 1 : n), 0)
+  return { answered: pendingQuestion(messages) ? total - 1 : total, total }
+}
+
 export function latestOutcome(messages: GrillMessage[]): GrillMessage | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i].kind === 'outcome') return messages[i]

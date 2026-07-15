@@ -5,6 +5,7 @@ import {
   diffHasChanges,
   diffLines,
   grillBanner,
+  grillProgress,
   grillReducer,
   isAwaitingAnswer,
   isGrillable,
@@ -132,6 +133,31 @@ describe('pendingQuestion', () => {
 
   it('is null when there are no questions (crash-parked)', () => {
     expect(pendingQuestion([msg({ id: '1', kind: 'info' })])).toBeNull()
+  })
+})
+
+describe('grillProgress', () => {
+  it('leaves a pending question outstanding', () => {
+    expect(grillProgress([question('1'), answer('2'), question('3')])).toEqual({
+      answered: 1,
+      total: 2,
+    })
+  })
+
+  it('counts every question once the last one is answered', () => {
+    expect(grillProgress([question('1'), answer('2')])).toEqual({ answered: 1, total: 1 })
+  })
+
+  // A stalled session resumes on a bare answer, so answers can outnumber questions.
+  it('never counts more answers than were asked for', () => {
+    expect(grillProgress([question('1'), answer('2'), answer('3')])).toEqual({
+      answered: 1,
+      total: 1,
+    })
+  })
+
+  it('counts nothing on an untouched session', () => {
+    expect(grillProgress([])).toEqual({ answered: 0, total: 0 })
   })
 })
 
