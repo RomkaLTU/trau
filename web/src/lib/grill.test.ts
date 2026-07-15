@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   activeSessionForIssue,
+  canCompose,
+  composerPlaceholder,
   diffHasChanges,
   diffLines,
   grillBanner,
@@ -9,6 +11,7 @@ import {
   isAwaitingAnswer,
   isGrillable,
   isSettled,
+  lastAnswer,
   mergeMessages,
   outcomePayload,
   pendingQuestion,
@@ -243,7 +246,12 @@ describe('outcomePayload', () => {
 })
 
 describe('grillReducer', () => {
-  const initial: GrillLive = { session: session({ state: 'running' }), live: false, messages: [] }
+  const initial: GrillLive = {
+    session: session({ state: 'running' }),
+    live: false,
+    messages: [],
+    pending: [],
+  }
 
   it('hydrate seeds messages and adopts the session while not yet live', () => {
     const next = grillReducer(initial, {
@@ -267,6 +275,123 @@ describe('grillReducer', () => {
   it('message upserts into the thread', () => {
     const next = grillReducer(initial, { type: 'message', message: question('5') })
     expect(next.messages.map((m) => m.id)).toEqual(['5'])
+  })
+})
+
+describe('optimistic send', () => {
+  const initial: GrillLive = {
+    session: session({ state: 'waiting' }),
+    live: false,
+    messages: [],
+    pending: [],
+  }
+
+  const sent = (text = 'A') =>
+    grillReducer(initial, { type: 'send', id: 'p1', text })
+
+  it('holds the answer as pending until the hub echoes it', () => {
+    expect(sent().pending).toEqual([{ id: 'p1', text: 'A', failed: false }])
+  })
+
+  it('the echo retires the optimistic twin, leaving only the real message', () => {
+    const next = grillReducer(sent(), { type: 'message', message: answer('7', 'A') })
+    expect(next.pending).toEqual([])
+    expect(next.messages.map((m) => m.id)).toEqual(['7'])
+  })
+
+  it('an echo of different text leaves the pending answer alone', () => {
+    const next = grillReducer(sent(), { type: 'message', message: answer('7', 'other') })
+    expect(next.pending).toHaveLength(1)
+  })
+
+  it('retires one twin per echo when the same text was sent twice', () => {
+    const twice = grillReducer(sent(), { type: 'send', id: 'p2', text: 'A' })
+    const next = grillReducer(twice, { type: 'message', message: answer('7', 'A') })
+    expect(next.pending.map((p) => p.id)).toEqual(['p2'])
+  })
+
+  // The hub answers a send twice: once in the POST response, once over the stream.
+  it('retires one twin for an echo the POST and the stream both deliver', () => {
+    const twice = grillReducer(sent(), { type: 'send', id: 'p2', text: 'A' })
+    const posted = grillReducer(twice, { type: 'message', message: answer('7', 'A') })
+    const streamed = grillReducer(posted, { type: 'message', message: answer('7', 'A') })
+    expect(streamed.pending.map((p) => p.id)).toEqual(['p2'])
+    expect(streamed.messages.map((m) => m.id)).toEqual(['7'])
+  })
+
+  it('a hydrate backfill retires twins the stream already echoed', () => {
+    const next = grillReducer(sent(), {
+      type: 'hydrate',
+      detail: { session: session({ state: 'waiting' }), messages: [answer('7', 'A')] },
+    })
+    expect(next.pending).toEqual([])
+  })
+
+  // A refetch re-hydrates the whole transcript, old turns included.
+  it('a re-hydrate of an already-held answer leaves an in-flight twin alone', () => {
+    const backfill = {
+      type: 'hydrate' as const,
+      detail: { session: session({ state: 'waiting' }), messages: [answer('7', 'A')] },
+    }
+    const held = grillReducer(initial, backfill)
+    const again = grillReducer(grillReducer(held, { type: 'send', id: 'p1', text: 'A' }), backfill)
+    expect(again.pending.map((p) => p.id)).toEqual(['p1'])
+  })
+
+  it('a failed send keeps its text for retry and is not retired by an echo', () => {
+    const failed = grillReducer(sent(), { type: 'send-failed', id: 'p1', text: 'A' })
+    expect(failed.pending[0].failed).toBe(true)
+    const echoed = grillReducer(failed, { type: 'message', message: answer('7', 'A') })
+    expect(echoed.pending.map((p) => p.id)).toEqual(['p1'])
+  })
+
+  it('surfaces the failure on a surviving twin when the echo retired its own entry', () => {
+    const twice = grillReducer(sent(), { type: 'send', id: 'p2', text: 'A' })
+    const echoed = grillReducer(twice, { type: 'message', message: answer('7', 'A') })
+    const failed = grillReducer(echoed, { type: 'send-failed', id: 'p1', text: 'A' })
+    expect(failed.pending).toEqual([{ id: 'p2', text: 'A', failed: true }])
+  })
+
+  it('retry clears the failure so the next echo retires it', () => {
+    const failed = grillReducer(sent(), { type: 'send-failed', id: 'p1', text: 'A' })
+    const again = grillReducer(failed, { type: 'send-retry', id: 'p1' })
+    expect(again.pending[0].failed).toBe(false)
+    const echoed = grillReducer(again, { type: 'message', message: answer('7', 'A') })
+    expect(echoed.pending).toEqual([])
+  })
+
+  it('discard drops the send outright', () => {
+    const failed = grillReducer(sent(), { type: 'send-failed', id: 'p1', text: 'A' })
+    expect(grillReducer(failed, { type: 'send-discard', id: 'p1' }).pending).toEqual([])
+  })
+})
+
+describe('composer gating', () => {
+  it('takes typing only in the states that can accept an answer', () => {
+    expect(canCompose('waiting')).toBe(true)
+    expect(canCompose('parked')).toBe(true)
+    expect(canCompose('running')).toBe(false)
+    expect(canCompose('finished')).toBe(false)
+  })
+
+  it('shuts the box on a stalled session — its Resume button carries the answer', () => {
+    expect(isAwaitingAnswer('stalled')).toBe(true)
+    expect(canCompose('stalled')).toBe(false)
+    expect(composerPlaceholder('stalled')).toBe('Session stalled — resume to keep answering…')
+  })
+
+  it('explains a disabled box while the agent is thinking', () => {
+    expect(composerPlaceholder('running')).toBe('Agent is thinking…')
+  })
+})
+
+describe('lastAnswer', () => {
+  it('is the most recent answer — the resume pre-fill', () => {
+    expect(lastAnswer([answer('1', 'first'), question('2'), answer('3', 'second')])).toBe('second')
+  })
+
+  it('is empty when the session stalled before any answer', () => {
+    expect(lastAnswer([question('1')])).toBe('')
   })
 })
 
