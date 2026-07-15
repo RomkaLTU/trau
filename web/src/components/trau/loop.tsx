@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useReducer, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
@@ -11,6 +11,7 @@ import {
   ListPlus,
   Plus,
   RefreshCw,
+  Search,
   Square,
   TriangleAlert,
   X,
@@ -19,6 +20,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { MakeStartableButton } from '@/components/make-startable-button'
 import { useActiveRepo } from '@/components/trau/active-repo'
+import { AddTicketDialog } from '@/components/trau/add-ticket-dialog'
 import { TargetRepoField } from '@/components/trau/target-repo-field'
 import { ConfirmDialog } from '@/components/trau/confirm-dialog'
 import { Eyebrow } from '@/components/trau/eyebrow'
@@ -41,6 +43,7 @@ import {
   drain,
   enqueue,
   moveQueueItem,
+  publishQueue,
   queueExecutable,
   queueQueryOptions,
   skipResumeApplies,
@@ -53,7 +56,11 @@ import { stepName } from '@/lib/steps'
 import { runsQueryOptions } from '@/lib/runs'
 import {
   buildTimeline,
+  finishedReducer,
+  finishedView,
   ticketPill,
+  FINISHED_INITIAL,
+  FINISHED_PAGE_SIZE,
   type PendingEntry,
   type Timeline,
   type TimelineTicket,
@@ -129,7 +136,10 @@ function statusState(status: string): RunState {
   return STATUS_STATE[status] ?? 'info'
 }
 
-const SUB_GLYPH: Record<string, { glyph: string; className: string; label: string }> = {
+const SUB_GLYPH: Record<
+  string,
+  { glyph: string; className: string; label: string }
+> = {
   done: { glyph: '✓', className: 'text-done', label: 'done' },
   epic: { glyph: '◆', className: 'text-info', label: 'epic' },
   todo: { glyph: '○', className: 'text-faint', label: 'todo' },
@@ -137,6 +147,17 @@ const SUB_GLYPH: Record<string, { glyph: string; className: string; label: strin
 
 function subGlyph(state: string) {
   return SUB_GLYPH[state] ?? SUB_GLYPH.todo
+}
+
+// InternalTag marks a row the tracker knows nothing about, so a queue mixing both
+// reads unambiguously. A synced row stays unmarked — it is the common case.
+function InternalTag({ source }: { source?: string }) {
+  if (source !== 'internal') return null
+  return (
+    <span className="shrink-0 rounded-sm border border-border bg-secondary/60 px-1.5 py-0.5 font-mono text-[0.6rem] uppercase tracking-[0.14em] text-muted-foreground">
+      internal
+    </span>
+  )
 }
 
 function epicCounts(item: QueueItem): { done: number; total: number } {
@@ -268,10 +289,13 @@ function QueueBuilderRow({
           <span className="w-3.5 shrink-0" aria-hidden="true" />
         )}
 
-        <span className="shrink-0 font-mono text-sm text-primary">{item.id}</span>
+        <span className="shrink-0 font-mono text-sm text-primary">
+          {item.id}
+        </span>
         <span className="min-w-0 flex-1 truncate font-sans text-sm text-foreground">
           {item.title || '—'}
         </span>
+        <InternalTag source={item.source} />
 
         {isEpic ? (
           <StatusPill state="info" label={`epic · ${done}/${total}`} />
@@ -362,11 +386,11 @@ function LaunchQueueCard({
   const skipResumeShown = skipResumeApplies(items, runs.data?.runs ?? [])
   const [draft, setDraft] = useState('')
   const [expandedIds, setExpandedIds] = useState<string[]>([])
+  const [browseOpen, setBrowseOpen] = useState(false)
   const [skipResume, setSkipResume] = useState(false)
   const [onFault, setOnFault] = useState<OnFault>('halt')
 
-  const setQueue = (res: QueueResponse) =>
-    queryClient.setQueryData<QueueResponse>(['queue', repo], res)
+  const setQueue = (res: QueueResponse) => publishQueue(queryClient, repo, res)
 
   const add = useMutation({
     mutationFn: (id: string) => enqueue(repo, { id }),
@@ -412,7 +436,8 @@ function LaunchQueueCard({
 
   const executable = queueExecutable(items)
 
-  const busy = move.isPending || remove.isPending || add.isPending || addAll.isPending
+  const busy =
+    move.isPending || remove.isPending || add.isPending || addAll.isPending
 
   const submitAdd = () => {
     const id = draft.trim().toUpperCase()
@@ -426,7 +451,10 @@ function LaunchQueueCard({
 
   return (
     <TerminalCard title="loop-launch" className="max-w-3xl">
-      <form className="flex flex-col gap-6" onSubmit={(e) => e.preventDefault()}>
+      <form
+        className="flex flex-col gap-6"
+        onSubmit={(e) => e.preventDefault()}
+      >
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center justify-between gap-3">
             <label className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
@@ -472,6 +500,16 @@ function LaunchQueueCard({
               >
                 <Plus className="size-4" aria-hidden="true" />
                 {add.isPending ? 'Adding…' : 'Add'}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="font-mono"
+                onClick={() => setBrowseOpen(true)}
+              >
+                <Search className="size-4" aria-hidden="true" />
+                Browse…
               </Button>
               {addAllPlan.items.length > 0 && (
                 <Button
@@ -539,8 +577,8 @@ function LaunchQueueCard({
               </ul>
               <div className="border-t border-border bg-secondary/40 px-3 py-2 font-mono text-xs text-muted-foreground">
                 {items.length} {items.length === 1 ? 'item' : 'items'} ·{' '}
-                {executable} executable {executable === 1 ? 'ticket' : 'tickets'} ·
-                runs top to bottom
+                {executable} executable{' '}
+                {executable === 1 ? 'ticket' : 'tickets'} · runs top to bottom
               </div>
             </div>
           )}
@@ -570,6 +608,14 @@ function LaunchQueueCard({
           ) : null}
         </div>
       </form>
+
+      <AddTicketDialog
+        repo={repo}
+        queued={items}
+        open={browseOpen}
+        onOpenChange={setBrowseOpen}
+        onQueue={setQueue}
+      />
     </TerminalCard>
   )
 }
@@ -591,7 +637,13 @@ function TicketReason({ children }: { children: string }) {
   )
 }
 
-function SettledRow({ repo, ticket }: { repo: string; ticket: TimelineTicket }) {
+function SettledRow({
+  repo,
+  ticket,
+}: {
+  repo: string
+  ticket: TimelineTicket
+}) {
   const pill = ticketPill(ticket)
   const head = (
     <div className="flex items-center gap-3">
@@ -603,11 +655,14 @@ function SettledRow({ repo, ticket }: { repo: string; ticket: TimelineTicket }) 
             {ticket.title}
           </span>
         ) : null}
+        <InternalTag source={ticket.source} />
       </div>
       <StatusPill state={pill.state} label={pill.label} className="shrink-0" />
     </div>
   )
-  const reason = ticket.reason ? <TicketReason>{ticket.reason}</TicketReason> : null
+  const reason = ticket.reason ? (
+    <TicketReason>{ticket.reason}</TicketReason>
+  ) : null
 
   if (ticket.hasRun) {
     return (
@@ -631,6 +686,84 @@ function SettledRow({ repo, ticket }: { repo: string; ticket: TimelineTicket }) 
   )
 }
 
+function FinishedSection({
+  repo,
+  settled,
+}: {
+  repo: string
+  settled: TimelineTicket[]
+}) {
+  const [state, dispatch] = useReducer(finishedReducer, FINISHED_INITIAL)
+  const view = finishedView(settled, state.visible)
+
+  return (
+    <section className="flex flex-col gap-2">
+      <Eyebrow glyph="done">FINISHED</Eyebrow>
+      <div className="overflow-hidden rounded-md border border-border">
+        <button
+          type="button"
+          onClick={() => dispatch({ type: 'toggle' })}
+          aria-expanded={state.expanded}
+          className={cn(
+            'flex w-full items-center justify-between gap-4 px-4 py-2.5 text-left transition-colors hover:bg-secondary/40',
+            state.expanded && 'border-b border-border',
+          )}
+        >
+          <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+            {state.expanded ? (
+              <ChevronDown
+                className="size-4 shrink-0 text-muted-foreground"
+                aria-hidden="true"
+              />
+            ) : (
+              <ChevronRight
+                className="size-4 shrink-0 text-muted-foreground"
+                aria-hidden="true"
+              />
+            )}
+            <span className="font-mono text-sm text-foreground">
+              {view.total} finished
+            </span>
+            <span className="font-mono text-xs text-muted-foreground">
+              <span className="text-done" aria-hidden="true">
+                ✓
+              </span>{' '}
+              {view.tally.map((t) => `${t.count} ${t.label}`).join(' · ')}
+            </span>
+          </span>
+          {!state.expanded && view.latest ? (
+            <span className="hidden shrink-0 items-center gap-2 font-mono text-xs text-muted-foreground sm:inline-flex">
+              latest <span className="text-primary">{view.latest.id}</span>
+            </span>
+          ) : null}
+        </button>
+
+        {state.expanded ? (
+          <>
+            <ul className="flex flex-col">
+              {view.rows.map((ticket) => (
+                <SettledRow key={ticket.id} repo={repo} ticket={ticket} />
+              ))}
+            </ul>
+            {view.older > 0 ? (
+              <div className="border-t border-border px-4 py-2.5">
+                <button
+                  type="button"
+                  onClick={() => dispatch({ type: 'more' })}
+                  className="font-mono text-xs text-teal underline-offset-4 hover:underline"
+                >
+                  Show {Math.min(view.older, FINISHED_PAGE_SIZE)} more (
+                  {view.older} older)
+                </button>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+    </section>
+  )
+}
+
 function RunningRow({
   repo,
   ticket,
@@ -651,7 +784,9 @@ function RunningRow({
         {ticket.epicId ? <EpicTag id={ticket.epicId} /> : null}
         <span className="font-mono text-sm text-primary">{ticket.id}</span>
         {ticket.title ? (
-          <span className="font-sans text-base text-foreground">{ticket.title}</span>
+          <span className="font-sans text-base text-foreground">
+            {ticket.title}
+          </span>
         ) : null}
         <Link
           to="/live/$repo/$ticket"
@@ -663,7 +798,9 @@ function RunningRow({
         </Link>
       </div>
       {phase || live?.activity ? (
-        <PhaseStepper {...runSteps('live', phase ?? '', live?.activity, live?.detail)} />
+        <PhaseStepper
+          {...runSteps('live', phase ?? '', live?.activity, live?.detail)}
+        />
       ) : (
         <p className="font-sans text-sm text-muted-foreground">
           Picking the next ticket…
@@ -699,6 +836,7 @@ function PendingTicketRow({ ticket }: { ticket: TimelineTicket }) {
       <span className="min-w-0 flex-1 truncate font-sans text-sm text-muted-foreground">
         {ticket.title || '—'}
       </span>
+      <InternalTag source={ticket.source} />
       <StatusPill state="todo" label="pending" className="shrink-0" />
     </li>
   )
@@ -719,6 +857,7 @@ function PendingEpicGroup({
         <span className="min-w-0 flex-1 truncate font-sans text-sm text-foreground">
           {entry.title || '—'}
         </span>
+        <InternalTag source={entry.source} />
         <StatusPill
           state="info"
           label={`epic · ${entry.done}/${entry.total}`}
@@ -731,7 +870,9 @@ function PendingEpicGroup({
             key={child.id}
             className="flex items-center gap-3 border-b border-border/40 py-1.5 pl-12 pr-4 last:border-0"
           >
-            <span className="font-mono text-xs text-primary/80">{child.id}</span>
+            <span className="font-mono text-xs text-primary/80">
+              {child.id}
+            </span>
             <span className="min-w-0 flex-1 truncate font-sans text-xs text-muted-foreground">
               {child.title || '—'}
             </span>
@@ -761,8 +902,10 @@ function RunningQueueView({
   stopError: unknown
 }) {
   const now = useNow(1000)
+  const queryClient = useQueryClient()
   const runs = useQuery(runsQueryOptions(repo))
   const timeline = buildTimeline(queue.items, runs.data?.runs ?? [], instance)
+  const [addOpen, setAddOpen] = useState(false)
 
   return (
     <div className="flex flex-col gap-6">
@@ -800,19 +943,6 @@ function RunningQueueView({
             </div>
           </div>
 
-          {timeline.settled.length > 0 ? (
-            <section className="flex flex-col gap-2">
-              <Eyebrow glyph="done">FINISHED</Eyebrow>
-              <div className="overflow-hidden rounded-md border border-border">
-                <ul className="flex flex-col">
-                  {timeline.settled.map((ticket) => (
-                    <SettledRow key={ticket.id} repo={repo} ticket={ticket} />
-                  ))}
-                </ul>
-              </div>
-            </section>
-          ) : null}
-
           <section className="flex flex-col gap-2">
             <Eyebrow glyph="active">RUNNING</Eyebrow>
             {timeline.running ? (
@@ -829,28 +959,51 @@ function RunningQueueView({
             )}
           </section>
 
-          {timeline.pending.length > 0 ? (
-            <section className="flex flex-col gap-2">
+          <section className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-3">
               <Eyebrow glyph="idle">REMAINING</Eyebrow>
-              <div className="overflow-hidden rounded-md border border-border">
-                <ul className="flex flex-col">
-                  {timeline.pending.map((entry) =>
-                    entry.kind === 'epic' ? (
-                      <PendingEpicGroup key={entry.id} entry={entry} />
-                    ) : (
-                      <PendingTicketRow
-                        key={entry.ticket.id}
-                        ticket={entry.ticket}
-                      />
-                    ),
-                  )}
-                </ul>
+              <button
+                type="button"
+                onClick={() => setAddOpen(true)}
+                className="inline-flex items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline"
+              >
+                <Plus className="size-3.5" aria-hidden="true" />
+                Add ticket
+              </button>
+            </div>
+            {timeline.pending.length > 0 ? (
+              <>
+                <div className="overflow-hidden rounded-md border border-border">
+                  <ul className="flex flex-col">
+                    {timeline.pending.map((entry) =>
+                      entry.kind === 'epic' ? (
+                        <PendingEpicGroup key={entry.id} entry={entry} />
+                      ) : (
+                        <PendingTicketRow
+                          key={entry.ticket.id}
+                          ticket={entry.ticket}
+                        />
+                      ),
+                    )}
+                  </ul>
+                </div>
+                <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+                  Remaining tickets — the pick order is decided at run time, not
+                  promised here.
+                </p>
+              </>
+            ) : (
+              <div className="rounded-md border border-dashed border-border px-4 py-6 text-center">
+                <p className="font-sans text-sm text-muted-foreground">
+                  Nothing left in the queue — add a ticket and the drain picks
+                  it up.
+                </p>
               </div>
-              <p className="font-sans text-xs leading-relaxed text-muted-foreground">
-                Remaining tickets — the pick order is decided at run time, not
-                promised here.
-              </p>
-            </section>
+            )}
+          </section>
+
+          {timeline.settled.length > 0 ? (
+            <FinishedSection repo={repo} settled={timeline.settled} />
           ) : null}
         </div>
       </TerminalCard>
@@ -881,6 +1034,14 @@ function RunningQueueView({
           onConfirm={onStop}
         />
       </div>
+
+      <AddTicketDialog
+        repo={repo}
+        queued={queue.items}
+        open={addOpen}
+        onOpenChange={setAddOpen}
+        onQueue={(res) => publishQueue(queryClient, repo, res)}
+      />
     </div>
   )
 }
@@ -988,7 +1149,8 @@ function loopTitleState(
   if (draining && timeline) {
     const running = timeline.running
     const step = running
-      ? stepName(running.activity, running.phase ?? '').toLowerCase() || 'draining'
+      ? stepName(running.activity, running.phase ?? '').toLowerCase() ||
+        'draining'
       : 'draining'
     return {
       kind: 'draining',
@@ -1030,8 +1192,7 @@ export function Loop() {
 
   const stop = useMutation({
     mutationFn: () => drain(repo, false),
-    onSuccess: (res) =>
-      queryClient.setQueryData<QueueResponse>(['queue', repo], res),
+    onSuccess: (res) => publishQueue(queryClient, repo, res),
   })
 
   useEffect(() => {
@@ -1083,7 +1244,11 @@ function NotStartableNotice({ repo, root }: { repo: string; root?: string }) {
         </p>
         <div className="flex flex-wrap items-center gap-2">
           {root && (
-            <MakeStartableButton root={root} name={repo} className="font-mono" />
+            <MakeStartableButton
+              root={root}
+              name={repo}
+              className="font-mono"
+            />
           )}
           <Button asChild variant="outline" size="sm" className="font-mono">
             <Link to="/instances">Manage repos</Link>

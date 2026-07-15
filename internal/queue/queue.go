@@ -53,10 +53,14 @@ type SubIssue struct {
 // Item is one queued unit of work — a run-once ticket or an epic. Its position
 // is implicit in the queue's order. PID is the child the hub spawned to run it,
 // set while Running so a resumed hub can tell whether that child is still alive.
+// Source is the issue store's binding for the id — internal for a hub-only issue,
+// otherwise the tracker provider — resolved once at enqueue so the queue still
+// reports it when the store no longer holds the issue.
 type Item struct {
 	Kind      Kind       `json:"kind"`
 	ID        string     `json:"id"`
 	Title     string     `json:"title,omitempty"`
+	Source    string     `json:"source,omitempty"`
 	Status    string     `json:"status"`
 	Reason    string     `json:"reason,omitempty"`
 	PID       int        `json:"pid,omitempty"`

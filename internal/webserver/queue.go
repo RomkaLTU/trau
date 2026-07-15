@@ -25,13 +25,14 @@ type QueueRequest struct {
 }
 
 // QueueItemView is one queued item as the Queue view reads it: its 1-based
-// position, kind, identifier, title, pending status, and — for an epic — the
-// sub-issues captured when it was queued.
+// position, kind, identifier, title, issue source, pending status, and — for an
+// epic — the sub-issues captured when it was queued.
 type QueueItemView struct {
 	Position  int              `json:"position"`
 	Kind      string           `json:"kind"`
 	ID        string           `json:"id"`
 	Title     string           `json:"title,omitempty"`
+	Source    string           `json:"source,omitempty"`
 	Status    string           `json:"status"`
 	Reason    string           `json:"reason,omitempty"`
 	SubIssues []queue.SubIssue `json:"sub_issues,omitempty"`
@@ -176,35 +177,36 @@ func (s *Server) handleQueueMove(w http.ResponseWriter, r *http.Request) {
 	s.writeQueue(w, http.StatusOK, root)
 }
 
-// validateQueueTarget confirms a to-be-queued id exists in the repo's tracker
-// and belongs to this repo's project, returning its title. It is best-effort: a
-// repo without direct tracker credentials cannot be checked, so it passes and
-// the id is queued unvalidated; a definite not-found or cross-project answer is
-// refused with a clear status and ok=false.
-func (s *Server) validateQueueTarget(w http.ResponseWriter, r *http.Request, name, id string) (string, bool) {
-	repo, ok := s.findRepo(name)
-	if !ok {
-		return "", true
+// validateQueueTarget confirms a to-be-queued id exists in the repo's tracker and
+// belongs to this repo's project, returning its title and the answering tracker's
+// source binding — the same provider name the sync records on the stored issue. It
+// is best-effort: a repo without direct tracker credentials cannot be checked, so
+// it passes and the id is queued unvalidated; a definite not-found or cross-project
+// answer is refused with a clear status and ok=false.
+func (s *Server) validateQueueTarget(w http.ResponseWriter, r *http.Request, name, id string) (title, source string, ok bool) {
+	repo, found := s.findRepo(name)
+	if !found {
+		return "", "", true
 	}
-	_, reader, err := s.readerFor(repo)
+	source, reader, err := s.readerFor(repo)
 	if err != nil {
-		return "", true
+		return "", source, true
 	}
 	item, err := reader.Issue(r.Context(), id)
 	if errors.Is(err, tracker.ErrIssueNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": id + " not found in this repo's tracker"})
-		return "", false
+		return "", "", false
 	}
 	if err != nil {
-		return "", true
+		return "", source, true
 	}
 	if !item.InProject {
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error": fmt.Sprintf("%s belongs to project %q, not this repo's project — refusing to queue a cross-project ticket", id, item.Project),
 		})
-		return "", false
+		return "", "", false
 	}
-	return item.Title, true
+	return item.Title, source, true
 }
 
 // viewQueue lists a repo's queue scoped to the Active repo, in registration
@@ -275,6 +277,7 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		// An internal issue is authoritative in the store and never in the tracker,
 		// so resolve its title and epic children locally and skip the tracker
 		// validation the synced path runs.
+		item.Source = iss.Source
 		if item.Title == "" {
 			item.Title = iss.Title
 		}
@@ -292,9 +295,12 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		if title, ok := s.validateQueueTarget(w, r, name, id); !ok {
+		title, source, ok := s.validateQueueTarget(w, r, name, id)
+		if !ok {
 			return
-		} else if item.Title == "" {
+		}
+		item.Source = source
+		if item.Title == "" {
 			item.Title = title
 		}
 		// Resolve kind: an explicit ticket stays a ticket; otherwise (epic or
@@ -368,6 +374,7 @@ func queueItemViews(items []queue.Item) []QueueItemView {
 			Kind:      string(it.Kind),
 			ID:        it.ID,
 			Title:     it.Title,
+			Source:    it.Source,
 			Status:    it.Status,
 			Reason:    it.Reason,
 			SubIssues: it.SubIssues,
