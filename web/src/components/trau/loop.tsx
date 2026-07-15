@@ -23,6 +23,7 @@ import { useActiveRepo } from '@/components/trau/active-repo'
 import { AddTicketDialog } from '@/components/trau/add-ticket-dialog'
 import { TargetRepoField } from '@/components/trau/target-repo-field'
 import { ConfirmDialog } from '@/components/trau/confirm-dialog'
+import { EmptyState } from '@/components/trau/empty-state'
 import { Eyebrow } from '@/components/trau/eyebrow'
 import { PhaseStepper } from '@/components/trau/phase-stepper'
 import { SegmentedControl } from '@/components/trau/segmented-control'
@@ -556,11 +557,21 @@ function LaunchQueueCard({
             </div>
 
             {builder.queue.length === 0 ? (
-              <div className="rounded-md border border-dashed border-border px-4 py-8 text-center">
-                <p className="font-sans text-sm text-muted-foreground">
-                  Queue is empty — add a ticket or epic above.
-                </p>
-              </div>
+              <EmptyState
+                message="Queue is empty — add a ticket or epic above to build your run."
+                actions={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="font-mono"
+                    onClick={() => setBrowseOpen(true)}
+                  >
+                    <Search className="size-4" aria-hidden="true" />
+                    Browse issues
+                  </Button>
+                }
+              />
             ) : (
               <div className="overflow-hidden rounded-md border border-border">
                 <ul className="flex flex-col">
@@ -1000,12 +1011,21 @@ function RunningQueueView({
                 </p>
               </>
             ) : (
-              <div className="rounded-md border border-dashed border-border px-4 py-6 text-center">
-                <p className="font-sans text-sm text-muted-foreground">
-                  Nothing left in the queue — add a ticket and the drain picks
-                  it up.
-                </p>
-              </div>
+              <EmptyState
+                message="Nothing left in the queue — add a ticket and the drain picks it up."
+                actions={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="font-mono"
+                    onClick={() => setAddOpen(true)}
+                  >
+                    <Plus className="size-4" aria-hidden="true" />
+                    Add ticket
+                  </Button>
+                }
+              />
             )}
           </section>
 

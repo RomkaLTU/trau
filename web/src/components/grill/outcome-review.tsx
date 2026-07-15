@@ -104,9 +104,9 @@ export function OutcomeReview({
 
   // The session's new state rides onSession (and the hub's SSE state frame), so the
   // grill list is left to go stale on its own — invalidating it here would drop the
-  // panel's now-settled active session and retrigger GrillPanel's auto-start. Only
-  // the issue and board are refreshed, which is what makes the issue leave the
-  // unclear set once its triage labels are gone.
+  // panel's now-settled active session back to a preview. Only the issue and board
+  // are refreshed, which is what makes the issue leave the unclear set once its
+  // triage labels are gone.
   const apply = useMutation({
     mutationFn: () =>
       applyGrill(
