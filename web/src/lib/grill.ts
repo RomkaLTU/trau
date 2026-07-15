@@ -124,6 +124,38 @@ export function isAwaitingAnswer(state: GrillState): boolean {
   return state === 'waiting' || state === 'parked' || state === 'stalled'
 }
 
+// canCompose reports whether the composer takes typing in state. stalled awaits an
+// answer but resumes through its banner's pre-filled Resume button, so the box stays
+// shut until the session is moving again.
+export function canCompose(state: GrillState): boolean {
+  return state === 'waiting' || state === 'parked'
+}
+
+// composerPlaceholder is the composer's prompt — and, in a state canCompose refuses,
+// the reason the box is disabled.
+export function composerPlaceholder(state: GrillState): string {
+  switch (state) {
+    case 'running':
+      return 'Agent is thinking…'
+    case 'stalled':
+      return 'Session stalled — resume to keep answering…'
+    case 'waiting':
+    case 'parked':
+      return 'Type your answer…'
+    default:
+      return 'This session has ended.'
+  }
+}
+
+// lastAnswer is the text of the user's most recent answer, the resume mechanic's
+// pre-fill: a stalled session retries the turn it died on without retyping it.
+export function lastAnswer(messages: GrillMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].kind === 'answer') return answerText(messages[i])
+  }
+  return ''
+}
+
 function base(repo: string): string {
   return `/api/v1/repos/${encodeURIComponent(repo)}/grill`
 }
@@ -392,33 +424,106 @@ export function latestOutcome(messages: GrillMessage[]): GrillMessage | null {
   return null
 }
 
+// PendingAnswer is an answer the user has sent that the hub has not echoed back yet.
+// It rides beside messages so the thread shows the turn the moment it is sent; failed
+// carries a send that errored, which the thread offers to retry rather than losing.
+export interface PendingAnswer {
+  id: string
+  text: string
+  failed: boolean
+}
+
 // GrillLive is the panel's merged view of one session: the authoritative session
 // plus its messages. live tracks whether a stream frame has set the session, so a
-// late GET hydrate never reverts a state the stream already advanced.
+// late GET hydrate never reverts a state the stream already advanced; hydrated
+// tracks whether the transcript itself has landed yet.
 export interface GrillLive {
   session: GrillSession
   live: boolean
+  hydrated: boolean
   messages: GrillMessage[]
+  pending: PendingAnswer[]
 }
 
 export type GrillAction =
   | { type: 'hydrate'; detail: GrillDetail }
   | { type: 'message'; message: GrillMessage }
   | { type: 'state'; session: GrillSession }
+  | { type: 'send'; id: string; text: string }
+  | { type: 'send-failed'; id: string; text: string }
+  | { type: 'send-retry'; id: string }
+  | { type: 'send-discard'; id: string }
 
 export function grillReducer(state: GrillLive, action: GrillAction): GrillLive {
   switch (action.type) {
     case 'hydrate':
       return {
+        ...state,
         session: state.live ? state.session : action.detail.session,
-        live: state.live,
+        hydrated: true,
         messages: mergeMessages(state.messages, action.detail.messages),
+        pending: action.detail.messages
+          .filter((m) => !holds(state.messages, m))
+          .reduce(retirePending, state.pending),
       }
     case 'message':
-      return { ...state, messages: upsertMessage(state.messages, action.message) }
+      return {
+        ...state,
+        messages: upsertMessage(state.messages, action.message),
+        pending: holds(state.messages, action.message)
+          ? state.pending
+          : retirePending(state.pending, action.message),
+      }
     case 'state':
       return { ...state, session: action.session, live: true }
+    case 'send':
+      return {
+        ...state,
+        pending: [...state.pending, { id: action.id, text: action.text, failed: false }],
+      }
+    case 'send-failed':
+      return { ...state, pending: markFailed(state.pending, action.id, action.text) }
+    case 'send-retry':
+      return {
+        ...state,
+        pending: state.pending.map((p) => (p.id === action.id ? { ...p, failed: false } : p)),
+      }
+    case 'send-discard':
+      return { ...state, pending: state.pending.filter((p) => p.id !== action.id) }
   }
+}
+
+function holds(list: GrillMessage[], msg: GrillMessage): boolean {
+  return list.some((m) => m.id === msg.id)
+}
+
+// retirePending drops the optimistic twin of an echoed answer. The hub assigns the
+// message its own id, so the echo cannot be matched by id — the oldest unfailed send
+// carrying the same text is the one it settles. Only a message the reducer has not
+// held before retires a twin: the hub delivers every answer twice, once in the POST
+// response and once over the stream, and a re-hydrate replays the whole transcript.
+function retirePending(pending: PendingAnswer[], msg: GrillMessage): PendingAnswer[] {
+  if (msg.kind !== 'answer') return pending
+  const text = answerText(msg)
+  const at = pending.findIndex((p) => !p.failed && p.text === text)
+  return at === -1 ? pending : pending.filter((_, i) => i !== at)
+}
+
+// markFailed flags a send that errored. Its own entry may already be gone, since an
+// echo settles the oldest unfailed twin rather than the send that produced it, so a
+// failure whose entry was retired lands on the newest unfailed send of the same text
+// — the one no echo is coming for.
+function markFailed(pending: PendingAnswer[], id: string, text: string): PendingAnswer[] {
+  let at = pending.findIndex((p) => p.id === id)
+  if (at === -1) at = lastUnfailed(pending, text)
+  return at === -1 ? pending : pending.map((p, i) => (i === at ? { ...p, failed: true } : p))
+}
+
+function lastUnfailed(pending: PendingAnswer[], text: string): number {
+  for (let i = pending.length - 1; i >= 0; i--) {
+    if (!pending[i].failed && pending[i].text === text) return i
+  }
+  return -1
 }
 
 export type GrillBannerTone =
@@ -454,8 +559,8 @@ export function grillBanner(session: GrillSession): GrillBanner | null {
     case 'stalled':
       return {
         tone: 'stalled',
-        headline: 'Session stalled',
-        hint: reason || 'The agent hit a wall — clear it, then resume.',
+        headline: 'Session stalled — the grilling agent hit a provider usage or rate limit',
+        hint: reason || 'Clear it, then resume — your last answer is re-sent as-is.',
         showResume: true,
       }
     case 'finished':

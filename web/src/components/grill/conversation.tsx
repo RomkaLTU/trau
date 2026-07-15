@@ -1,22 +1,20 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
 
 import { BannerRow } from "@/components/grill/banners";
 import { Composer } from "@/components/grill/composer";
-import {
-  OutcomeProposal,
-  OutcomeReview,
-} from "@/components/grill/outcome-review";
-import { QuestionCard } from "@/components/grill/question-card";
+import { OutcomeReview } from "@/components/grill/outcome-review";
+import { Suggestions } from "@/components/grill/suggestions";
+import { GrillThread } from "@/components/grill/thread";
 import {
   answerGrill,
-  answerText,
+  canCompose,
+  composerPlaceholder,
   grillBanner,
   grillDetailQueryOptions,
   grillReducer,
   grillStreamURL,
-  isAwaitingAnswer,
+  lastAnswer,
   latestOutcome,
   outcomePayload,
   pendingQuestion,
@@ -25,7 +23,6 @@ import {
   type GrillSession,
 } from "@/lib/grill";
 import { streamSSE } from "@/lib/sse";
-import { cn } from "@/lib/utils";
 
 export type StreamStatus = "connecting" | "live" | "error";
 
@@ -39,7 +36,7 @@ export interface GrillStatus {
   messages: GrillMessage[];
 }
 
-// GrillConversation is the chat itself — thread, pending question, and outcome
+// GrillConversation is the chat itself — thread, suggestions, composer, and outcome
 // review — with no frame of its own: it hydrates the session over GET, follows it
 // over SSE, and reports both to the host through onStatus. Hosts supply the chrome
 // and lay it out as a flex column.
@@ -58,10 +55,12 @@ export function GrillConversation({
   const [state, dispatch] = useReducer(grillReducer, undefined, () => ({
     session: initial,
     live: false,
+    hydrated: false,
     messages: [],
+    pending: [],
   }));
   const [status, setStatus] = useState<StreamStatus>("connecting");
-  const bottom = useRef<HTMLDivElement>(null);
+  const nextSend = useRef(0);
 
   useEffect(() => {
     if (detail.data) dispatch({ type: "hydrate", detail: detail.data });
@@ -88,154 +87,105 @@ export function GrillConversation({
     return () => close();
   }, [initial.id]);
 
-  const { session, messages } = state;
-  const pending = pendingQuestion(messages);
+  const { session, messages, pending, hydrated } = state;
+  const asked = pendingQuestion(messages);
+  const question = asked ? questionPayload(asked) : null;
   const outcomeMsg = latestOutcome(messages);
   const reviewing =
     outcomeMsg !== null &&
     (session.state === "finished" || session.state === "applied");
 
+  // The mutation carries the optimistic twin's id so a failure lands on the bubble it
+  // belongs to; the echo it resolves with retires that twin through the reducer.
   const answer = useMutation({
-    mutationFn: (text: string) => answerGrill(session.id, text),
+    mutationFn: ({ text }: { id: string; text: string }) =>
+      answerGrill(session.id, text),
     onSuccess: (res) => {
       dispatch({ type: "message", message: res.message });
       dispatch({ type: "state", session: res.session });
     },
+    onError: (_err, { id, text }) => dispatch({ type: "send-failed", id, text }),
   });
 
   useEffect(() => {
     onStatus?.({ stream: status, session, messages });
   }, [status, session, messages]);
 
-  useEffect(() => {
-    bottom.current?.scrollIntoView({ block: "end" });
-  }, [messages, session.state, answer.isPending]);
+  const send = (text: string) => {
+    const id = `pending-${nextSend.current++}`;
+    dispatch({ type: "send", id, text });
+    answer.mutate({ id, text });
+  };
 
-  const awaiting = isAwaitingAnswer(session.state);
+  const retry = (id: string) => {
+    const held = pending.find((p) => p.id === id);
+    if (!held) return;
+    dispatch({ type: "send-retry", id });
+    answer.mutate({ id, text: held.text });
+  };
+
+  // The stalled banner rides in the thread, where its Resume button sits next to the
+  // turn it died on; every other tone belongs above the composer.
   const banner = grillBanner(session);
+  const stalled = banner?.showResume ? banner : null;
   const showBanner =
-    banner !== null && banner.tone !== "thinking" && !reviewing;
-  const showFooter =
-    reviewing || showBanner || awaiting || answer.error !== null;
+    banner !== null && stalled === null && banner.tone !== "thinking" && !reviewing;
+
+  // A session that stalled on its opening turn has no answer to replay, so the box
+  // reopens rather than stranding the user behind a Resume button with nothing to send.
+  const resume = stalled ? lastAnswer(messages) : "";
+  const answering = canCompose(session.state) || (stalled !== null && resume === "");
+  const freeText = question?.allow_free_text ?? true;
+  const sending = answer.isPending;
 
   return (
     <>
-      <div className="flex-1 overflow-y-auto px-4 py-4">
-        <div className="flex flex-col gap-3">
-          {messages.map((m) => {
-            if (pending && m.id === pending.id) return null;
-            if (reviewing && outcomeMsg && m.id === outcomeMsg.id) return null;
-            return <MessageRow key={m.id} message={m} />;
-          })}
-          {session.state === "running" && <ThinkingRow />}
-          <div ref={bottom} />
-        </div>
-      </div>
+      <GrillThread
+        session={session}
+        messages={messages}
+        hydrated={hydrated}
+        pending={pending}
+        stalled={stalled}
+        onRetry={retry}
+        onDiscard={(id) => dispatch({ type: "send-discard", id })}
+        onResume={resume === "" ? undefined : () => send(resume)}
+      />
 
-      {showFooter && (
-        <div className="flex flex-col gap-3 border-t p-4">
-          {reviewing && outcomeMsg ? (
-            <OutcomeReview
-              repo={repo}
-              issueId={session.issue_id ?? ""}
-              session={session}
-              outcome={outcomePayload(outcomeMsg)}
-              onSession={(next) => dispatch({ type: "state", session: next })}
-              onApplied={onApplied}
+      <div className="flex flex-col gap-3 border-t p-4">
+        {reviewing && outcomeMsg ? (
+          <OutcomeReview
+            repo={repo}
+            issueId={session.issue_id ?? ""}
+            session={session}
+            outcome={outcomePayload(outcomeMsg)}
+            onSession={(next) => dispatch({ type: "state", session: next })}
+            onApplied={onApplied}
+          />
+        ) : (
+          <>
+            {showBanner && <BannerRow banner={banner} />}
+            {question && question.options.length > 0 && (
+              <Suggestions
+                options={question.options}
+                disabled={sending || !answering}
+                onPick={send}
+              />
+            )}
+            <Composer
+              placeholder={
+                !answering
+                  ? composerPlaceholder(session.state)
+                  : freeText
+                    ? "Type your answer…"
+                    : "Pick one of the answers above…"
+              }
+              disabled={!answering || !freeText || sending}
+              submitting={sending}
+              onSend={send}
             />
-          ) : (
-            <>
-              {showBanner && <BannerRow banner={banner} />}
-              {awaiting &&
-                (pending ? (
-                  <QuestionCard
-                    question={questionPayload(pending)}
-                    disabled={answer.isPending}
-                    onAnswer={(text) => answer.mutate(text)}
-                  />
-                ) : (
-                  <Composer
-                    placeholder="Reply to resume…"
-                    disabled={answer.isPending}
-                    submitting={answer.isPending}
-                    onSend={(text) => answer.mutate(text)}
-                    defaultValue={
-                      session.state === "stalled" ? lastAnswer(messages) : ""
-                    }
-                  />
-                ))}
-              {answer.error && (
-                <p className="text-xs text-destructive">
-                  {(answer.error as Error).message}
-                </p>
-              )}
-            </>
-          )}
-        </div>
-      )}
+          </>
+        )}
+      </div>
     </>
   );
-}
-
-function MessageRow({ message }: { message: GrillMessage }) {
-  switch (message.kind) {
-    case "question":
-      return <Bubble role="agent">{questionPayload(message).text}</Bubble>;
-    case "answer":
-      return <Bubble role="user">{answerText(message)}</Bubble>;
-    // The seed idea of an authoring session rides as an info message; render it as
-    // the user's opening turn so the conversation reads from the top.
-    case "info":
-      return (
-        <Bubble role={message.role === "user" ? "user" : "agent"}>
-          {answerText(message)}
-        </Bubble>
-      );
-    case "outcome":
-      return <OutcomeProposal outcome={outcomePayload(message)} />;
-    default:
-      return null;
-  }
-}
-
-function Bubble({
-  role,
-  children,
-}: {
-  role: "agent" | "user";
-  children: React.ReactNode;
-}) {
-  const user = role === "user";
-  return (
-    <div className={cn("flex", user ? "justify-end" : "justify-start")}>
-      <div
-        className={cn(
-          "max-w-[85%] whitespace-pre-wrap rounded-2xl px-3 py-2 text-sm",
-          user
-            ? "rounded-br-sm bg-primary text-primary-foreground"
-            : "rounded-bl-sm bg-muted text-foreground",
-        )}
-      >
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function ThinkingRow() {
-  return (
-    <div className="flex justify-start">
-      <span className="inline-flex items-center gap-2 rounded-2xl rounded-bl-sm bg-muted px-3 py-2 text-sm text-muted-foreground">
-        <Loader2 className="size-3.5 animate-spin" />
-        Thinking…
-      </span>
-    </div>
-  );
-}
-
-function lastAnswer(messages: GrillMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].kind === "answer") return answerText(messages[i]);
-  }
-  return "";
 }
