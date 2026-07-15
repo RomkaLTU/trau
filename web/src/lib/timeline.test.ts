@@ -14,11 +14,23 @@ import {
 } from './timeline'
 
 function item(over: Partial<QueueItem>): QueueItem {
-  return { position: 1, kind: 'ticket', id: 'COD-1', status: 'pending', ...over }
+  return {
+    position: 1,
+    kind: 'ticket',
+    id: 'COD-1',
+    status: 'pending',
+    ...over,
+  }
 }
 
 function run(over: Partial<Run>): Run {
-  return { ticket: 'COD-1', phase: 'building', phase_rank: 1, terminal: false, ...over }
+  return {
+    ticket: 'COD-1',
+    phase: 'building',
+    phase_rank: 1,
+    terminal: false,
+    ...over,
+  }
 }
 
 function instance(over: Partial<Instance>): Instance {
@@ -70,7 +82,14 @@ describe('buildTimeline', () => {
   it('classifies a paused run with its failure class and reason', () => {
     const tl = buildTimeline(
       [item({ id: 'COD-1' })],
-      [run({ ticket: 'COD-1', terminal: true, failure_class: 'paused', failure_reason: 'rate limit' })],
+      [
+        run({
+          ticket: 'COD-1',
+          terminal: true,
+          failure_class: 'paused',
+          failure_reason: 'rate limit',
+        }),
+      ],
     )
     const t = tl.settled[0]
     expect(t.status).toBe('paused')
@@ -87,16 +106,31 @@ describe('buildTimeline', () => {
       ],
     )
     expect(tl.settled.map((t) => t.status)).toEqual(['failed', 'failed'])
-    expect(tl.settled.map((t) => t.failureClass)).toEqual(['faulted', 'gave_up'])
+    expect(tl.settled.map((t) => t.failureClass)).toEqual([
+      'faulted',
+      'gave_up',
+    ])
   })
 
   it('orders settled tickets by actual completion time', () => {
     const tl = buildTimeline(
       [item({ id: 'COD-1' }), item({ id: 'COD-2' }), item({ id: 'COD-3' })],
       [
-        run({ ticket: 'COD-1', terminal: true, updated_at: '2026-07-13T10:05:00Z' }),
-        run({ ticket: 'COD-2', terminal: true, updated_at: '2026-07-13T10:02:00Z' }),
-        run({ ticket: 'COD-3', terminal: true, updated_at: '2026-07-13T10:09:00Z' }),
+        run({
+          ticket: 'COD-1',
+          terminal: true,
+          updated_at: '2026-07-13T10:05:00Z',
+        }),
+        run({
+          ticket: 'COD-2',
+          terminal: true,
+          updated_at: '2026-07-13T10:02:00Z',
+        }),
+        run({
+          ticket: 'COD-3',
+          terminal: true,
+          updated_at: '2026-07-13T10:09:00Z',
+        }),
       ],
     )
     expect(tl.settled.map((t) => t.id)).toEqual(['COD-2', 'COD-1', 'COD-3'])
@@ -104,11 +138,14 @@ describe('buildTimeline', () => {
 
   it('sorts snapshot-done tickets (no run) ahead of timestamped completions', () => {
     const tl = buildTimeline(
+      [item({ id: 'COD-1', status: 'done' }), item({ id: 'COD-2' })],
       [
-        item({ id: 'COD-1', status: 'done' }),
-        item({ id: 'COD-2' }),
+        run({
+          ticket: 'COD-2',
+          terminal: true,
+          updated_at: '2026-07-13T10:02:00Z',
+        }),
       ],
-      [run({ ticket: 'COD-2', terminal: true, updated_at: '2026-07-13T10:02:00Z' })],
     )
     expect(tl.settled.map((t) => t.id)).toEqual(['COD-1', 'COD-2'])
   })
@@ -121,7 +158,9 @@ describe('buildTimeline', () => {
     )
     expect(tl.running?.id).toBe('COD-2')
     expect(tl.running?.phase).toBe('verified')
-    expect(tl.pending.map((p) => (p.kind === 'ticket' ? p.ticket.id : p.id))).toEqual(['COD-1'])
+    expect(
+      tl.pending.map((p) => (p.kind === 'ticket' ? p.ticket.id : p.id)),
+    ).toEqual(['COD-1'])
   })
 
   it('leaves nothing remaining once the last queued ticket is the running one', () => {
@@ -138,7 +177,12 @@ describe('buildTimeline', () => {
     const tl = buildTimeline(
       [item({ id: 'COD-1' })],
       [],
-      instance({ ticket: 'COD-1', phase: 'handed_off', activity: 'repair', detail: 'repair2' }),
+      instance({
+        ticket: 'COD-1',
+        phase: 'handed_off',
+        activity: 'repair',
+        detail: 'repair2',
+      }),
     )
     expect(tl.running?.activity).toBe('repair')
     expect(tl.running?.detail).toBe('repair2')
@@ -171,6 +215,32 @@ describe('buildTimeline', () => {
     }
   })
 
+  it('carries an item source onto its ticket, and an epic source onto its children', () => {
+    const tl = buildTimeline(
+      [
+        item({ id: 'LOOP-1', source: 'internal' }),
+        item({ id: 'COD-1', source: 'linear' }),
+        item({
+          id: 'LOOP-2',
+          kind: 'epic',
+          source: 'internal',
+          sub_issues: [{ id: 'LOOP-3', title: 'a', state: 'todo' }],
+        }),
+      ],
+      [],
+    )
+    const sources = tl.pending.map((p) =>
+      p.kind === 'epic'
+        ? [p.id, p.source, p.children.map((c) => c.source)]
+        : [p.ticket.id, p.ticket.source],
+    )
+    expect(sources).toEqual([
+      ['LOOP-1', 'internal'],
+      ['COD-1', 'linear'],
+      ['LOOP-2', 'internal', ['internal']],
+    ])
+  })
+
   it('does not count epic group headers, only leaf tickets', () => {
     const tl = buildTimeline(
       [
@@ -190,7 +260,13 @@ describe('buildTimeline', () => {
   it('anchors elapsed to the earliest run update before the instance start', () => {
     const tl = buildTimeline(
       [item({ id: 'COD-1' }), item({ id: 'COD-2' })],
-      [run({ ticket: 'COD-1', terminal: true, updated_at: '2026-07-13T09:50:00Z' })],
+      [
+        run({
+          ticket: 'COD-1',
+          terminal: true,
+          updated_at: '2026-07-13T09:50:00Z',
+        }),
+      ],
       instance({ ticket: 'COD-2', started_at: '2026-07-13T10:00:00Z' }),
     )
     expect(tl.elapsedAnchor).toBe('2026-07-13T09:50:00Z')
@@ -204,7 +280,9 @@ describe('buildTimeline', () => {
         run({ ticket: 'COD-2', terminal: false }),
       ],
     )
-    const pendingIds = tl.pending.map((p) => (p.kind === 'ticket' ? p.ticket.id : p.id))
+    const pendingIds = tl.pending.map((p) =>
+      p.kind === 'ticket' ? p.ticket.id : p.id,
+    )
     const seen = new Set([
       ...tl.settled.map((t) => t.id),
       ...(tl.running ? [tl.running.id] : []),
@@ -222,7 +300,9 @@ describe('buildTimeline', () => {
       instance({ ticket: 'COD-2', phase: 'building' }),
     )
     expect(tl.running?.id).toBe('COD-2')
-    const pendingIds = tl.pending.map((p) => (p.kind === 'ticket' ? p.ticket.id : p.id))
+    const pendingIds = tl.pending.map((p) =>
+      p.kind === 'ticket' ? p.ticket.id : p.id,
+    )
     expect(pendingIds).toContain('COD-1')
   })
 
@@ -255,7 +335,10 @@ describe('buildTimeline', () => {
 })
 
 describe('finishedView', () => {
-  function settledTicket(id: string, over: Partial<TimelineTicket> = {}): TimelineTicket {
+  function settledTicket(
+    id: string,
+    over: Partial<TimelineTicket> = {},
+  ): TimelineTicket {
     return ticket({ id, title: '', status: 'done', hasRun: true, ...over })
   }
 
@@ -290,12 +373,22 @@ describe('finishedView', () => {
   })
 
   it('caps rows at the visible count and reports the older remainder', () => {
-    const settled = Array.from({ length: 12 }, (_, i) => settledTicket(`COD-${i + 1}`))
+    const settled = Array.from({ length: 12 }, (_, i) =>
+      settledTicket(`COD-${i + 1}`),
+    )
 
     const firstPage = finishedView(settled, FINISHED_PAGE_SIZE)
     expect(firstPage.rows.map((t) => t.id)).toEqual([
-      'COD-12', 'COD-11', 'COD-10', 'COD-9', 'COD-8',
-      'COD-7', 'COD-6', 'COD-5', 'COD-4', 'COD-3',
+      'COD-12',
+      'COD-11',
+      'COD-10',
+      'COD-9',
+      'COD-8',
+      'COD-7',
+      'COD-6',
+      'COD-5',
+      'COD-4',
+      'COD-3',
     ])
     expect(firstPage.older).toBe(2)
 
@@ -310,7 +403,9 @@ describe('finishedReducer', () => {
     const expanded = finishedReducer(FINISHED_INITIAL, { type: 'toggle' })
     expect(expanded.expanded).toBe(true)
 
-    const paged = finishedReducer(finishedReducer(expanded, { type: 'more' }), { type: 'more' })
+    const paged = finishedReducer(finishedReducer(expanded, { type: 'more' }), {
+      type: 'more',
+    })
     expect(paged.visible).toBe(FINISHED_PAGE_SIZE * 3)
 
     expect(finishedReducer(paged, { type: 'toggle' })).toEqual(FINISHED_INITIAL)
@@ -319,14 +414,71 @@ describe('finishedReducer', () => {
 
 describe('ticketPill', () => {
   it('maps each status to the matching pill state', () => {
-    expect(ticketPill(ticket({ id: 'a', title: '', status: 'done', hasRun: true }))).toEqual({ state: 'success', label: 'merged' })
-    expect(ticketPill(ticket({ id: 'a', title: '', status: 'done', hasRun: false }))).toEqual({ state: 'success', label: 'done' })
-    expect(ticketPill(ticket({ id: 'a', title: '', status: 'running', phase: 'verified', hasRun: true }))).toEqual({ state: 'active', label: 'ship' })
-    expect(ticketPill(ticket({ id: 'a', title: '', status: 'running', phase: 'handed_off', activity: 'repair', hasRun: true }))).toEqual({ state: 'active', label: 'verify' })
-    expect(ticketPill(ticket({ id: 'a', title: '', status: 'paused', hasRun: true }))).toEqual({ state: 'warn', label: 'paused' })
-    expect(ticketPill(ticket({ id: 'a', title: '', status: 'failed', failureClass: 'gave_up', hasRun: true }))).toEqual({ state: 'fail', label: 'quarantined' })
-    expect(ticketPill(ticket({ id: 'a', title: '', status: 'failed', failureClass: 'faulted', hasRun: true }))).toEqual({ state: 'fail', label: 'fault' })
-    expect(ticketPill(ticket({ id: 'a', title: '', status: 'skipped', hasRun: false }))).toEqual({ state: 'info', label: 'skipped' })
-    expect(ticketPill(ticket({ id: 'a', title: '', status: 'pending', hasRun: false }))).toEqual({ state: 'todo', label: 'pending' })
+    expect(
+      ticketPill(ticket({ id: 'a', title: '', status: 'done', hasRun: true })),
+    ).toEqual({ state: 'success', label: 'merged' })
+    expect(
+      ticketPill(ticket({ id: 'a', title: '', status: 'done', hasRun: false })),
+    ).toEqual({ state: 'success', label: 'done' })
+    expect(
+      ticketPill(
+        ticket({
+          id: 'a',
+          title: '',
+          status: 'running',
+          phase: 'verified',
+          hasRun: true,
+        }),
+      ),
+    ).toEqual({ state: 'active', label: 'ship' })
+    expect(
+      ticketPill(
+        ticket({
+          id: 'a',
+          title: '',
+          status: 'running',
+          phase: 'handed_off',
+          activity: 'repair',
+          hasRun: true,
+        }),
+      ),
+    ).toEqual({ state: 'active', label: 'verify' })
+    expect(
+      ticketPill(
+        ticket({ id: 'a', title: '', status: 'paused', hasRun: true }),
+      ),
+    ).toEqual({ state: 'warn', label: 'paused' })
+    expect(
+      ticketPill(
+        ticket({
+          id: 'a',
+          title: '',
+          status: 'failed',
+          failureClass: 'gave_up',
+          hasRun: true,
+        }),
+      ),
+    ).toEqual({ state: 'fail', label: 'quarantined' })
+    expect(
+      ticketPill(
+        ticket({
+          id: 'a',
+          title: '',
+          status: 'failed',
+          failureClass: 'faulted',
+          hasRun: true,
+        }),
+      ),
+    ).toEqual({ state: 'fail', label: 'fault' })
+    expect(
+      ticketPill(
+        ticket({ id: 'a', title: '', status: 'skipped', hasRun: false }),
+      ),
+    ).toEqual({ state: 'info', label: 'skipped' })
+    expect(
+      ticketPill(
+        ticket({ id: 'a', title: '', status: 'pending', hasRun: false }),
+      ),
+    ).toEqual({ state: 'todo', label: 'pending' })
   })
 })

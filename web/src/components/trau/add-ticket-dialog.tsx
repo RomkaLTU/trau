@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
-import { Check, ChevronDown, ChevronRight, Search } from 'lucide-react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Check, ChevronDown, ChevronRight, Plus, Search, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -17,6 +17,8 @@ import {
   type PickerEmpty,
 } from '@/lib/add-ticket'
 import { epicPreviewQueryOptions } from '@/lib/epic'
+import { createInternalIssue } from '@/lib/issues'
+import { createAndQueue, planInternalTicket } from '@/lib/internal-ticket'
 import { enqueue, type QueueItem, type QueueResponse } from '@/lib/queue'
 import { issueSearchQueryOptions, type SearchResult } from '@/lib/search'
 
@@ -29,15 +31,23 @@ const EMPTY_TEXT: Record<PickerEmpty, string> = {
   'all-queued': 'All tracker tickets are already queued',
 }
 
+type AddSource = 'tracker' | 'internal'
+
+const SOURCE_TAG: Record<AddSource, string> = {
+  tracker: 'tracker · synced',
+  internal: 'trau only',
+}
+
+const fieldClass =
+  'w-full rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:outline-none'
+
 function SourceTab({
   active,
-  disabled,
-  title,
+  onClick,
   children,
 }: {
   active: boolean
-  disabled?: boolean
-  title?: string
+  onClick: () => void
   children: string
 }) {
   return (
@@ -45,14 +55,12 @@ function SourceTab({
       type="button"
       role="tab"
       aria-selected={active}
-      disabled={disabled}
-      title={title}
+      onClick={onClick}
       className={cn(
         '-mb-px border-b-2 px-1 pb-2 font-mono text-xs transition-colors',
         active
           ? 'border-primary text-foreground'
-          : 'border-transparent text-muted-foreground',
-        disabled && 'cursor-not-allowed opacity-40',
+          : 'border-transparent text-muted-foreground hover:text-foreground',
       )}
     >
       {children}
@@ -266,7 +274,10 @@ function TrackerPicker({
       </ul>
 
       {add.error ? (
-        <p className="whitespace-pre-line font-mono text-xs text-fail" role="alert">
+        <p
+          className="whitespace-pre-line font-mono text-xs text-fail"
+          role="alert"
+        >
           {actionError(add.error)}
         </p>
       ) : null}
@@ -304,9 +315,178 @@ function TrackerPicker({
   )
 }
 
-// AddTicketDialog is the queue builder's browse path: search the repo's synced
-// tracker and check off what to queue. The internal-ticket tab is the shell for a
-// follow-up slice and stays disabled until it lands.
+// SubItemRows collects the epic's children. One row is always on screen — it is
+// the only hint that an epic can be filed here.
+function SubItemRows({
+  subs,
+  onChange,
+}: {
+  subs: string[]
+  onChange: (subs: string[]) => void
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-baseline gap-2">
+        <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+          sub-items
+        </span>
+        <span className="font-mono text-[0.65rem] text-muted-foreground/60">
+          optional — leave empty for a single ticket
+        </span>
+      </div>
+      <ul className="flex flex-col gap-2">
+        {subs.map((sub, i) => (
+          <li key={i} className="flex items-center gap-2">
+            <span
+              className="shrink-0 font-mono text-xs text-primary/70"
+              aria-hidden="true"
+            >
+              ◆
+            </span>
+            <input
+              value={sub}
+              onChange={(e) =>
+                onChange(subs.map((s, j) => (j === i ? e.target.value : s)))
+              }
+              placeholder={`Sub-item ${i + 1}`}
+              aria-label={`Sub-item ${i + 1} title`}
+              className={fieldClass}
+            />
+            <button
+              type="button"
+              onClick={() => onChange(subs.filter((_, j) => j !== i))}
+              disabled={subs.length <= 1}
+              aria-label={`Remove sub-item ${i + 1}`}
+              className="shrink-0 text-muted-foreground transition-colors hover:text-fail disabled:pointer-events-none disabled:opacity-40"
+            >
+              <X className="size-4" aria-hidden="true" />
+            </button>
+          </li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        onClick={() => onChange([...subs, ''])}
+        className="mt-1 inline-flex w-fit items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline"
+      >
+        <Plus className="size-3.5" aria-hidden="true" />
+        Add sub-item
+      </button>
+    </div>
+  )
+}
+
+// InternalTicketForm files work that only trau knows about and queues it in one
+// go. There is no kind control: filling a sub-item row is what makes the ticket an
+// epic, so the shape of the form is the answer.
+function InternalTicketForm({
+  repo,
+  onClose,
+  onQueue,
+}: {
+  repo: string
+  onClose: () => void
+  onQueue: (res: QueueResponse) => void
+}) {
+  const queryClient = useQueryClient()
+  const [title, setTitle] = useState('')
+  const [subs, setSubs] = useState<string[]>([''])
+  const plan = planInternalTicket(title, subs)
+
+  const create = useMutation({
+    mutationFn: () =>
+      createAndQueue(
+        plan,
+        (draft) => createInternalIssue(repo, draft),
+        (req) => enqueue(repo, req),
+      ),
+    onSuccess: (res) => {
+      void queryClient.invalidateQueries({ queryKey: ['backlog', repo] })
+      onQueue(res)
+      onClose()
+    },
+  })
+
+  const submit = () => {
+    if (plan.title === '') return
+    create.mutate()
+  }
+
+  return (
+    <form
+      className="flex flex-col gap-5"
+      onSubmit={(e) => {
+        e.preventDefault()
+        submit()
+      }}
+    >
+      <p className="font-mono text-xs leading-relaxed text-muted-foreground">
+        Internal tickets live only in trau — they never sync back to the
+        tracker. Useful for chores, spikes, and glue work.
+      </p>
+
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-center justify-between gap-3">
+          <label
+            htmlFor="internal-ticket-title"
+            className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground"
+          >
+            {plan.isEpic ? 'epic title' : 'title'}
+          </label>
+          {plan.isEpic && (
+            <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-teal">
+              epic · {plan.subs.length} sub-item
+              {plan.subs.length === 1 ? '' : 's'}
+            </span>
+          )}
+        </div>
+        <input
+          id="internal-ticket-title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="e.g. Fix flaky CI step"
+          autoFocus
+          className={fieldClass}
+        />
+      </div>
+
+      <SubItemRows subs={subs} onChange={setSubs} />
+
+      {create.error ? (
+        <p
+          className="whitespace-pre-line font-mono text-xs text-fail"
+          role="alert"
+        >
+          {actionError(create.error)}
+        </p>
+      ) : null}
+
+      <div className="flex justify-end gap-2 border-t border-border pt-4">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="font-mono"
+          onClick={onClose}
+        >
+          Cancel
+        </Button>
+        <Button
+          type="submit"
+          size="sm"
+          className="font-mono"
+          disabled={plan.title === '' || create.isPending}
+        >
+          {create.isPending ? 'Creating…' : 'Create and queue'}
+        </Button>
+      </div>
+    </form>
+  )
+}
+
+// AddTicketDialog is the queue builder's two ways in: search the repo's synced
+// tracker and check off what to queue, or file a trau-only ticket and queue it on
+// the spot.
 export function AddTicketDialog({
   repo,
   queued,
@@ -320,6 +500,8 @@ export function AddTicketDialog({
   onOpenChange: (open: boolean) => void
   onQueue: (res: QueueResponse) => void
 }) {
+  const [source, setSource] = useState<AddSource>('tracker')
+
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent
@@ -345,22 +527,38 @@ export function AddTicketDialog({
           role="tablist"
           aria-label="Ticket source"
         >
-          <SourceTab active>From tracker</SourceTab>
-          <SourceTab active={false} disabled title="Coming soon">
+          <SourceTab
+            active={source === 'tracker'}
+            onClick={() => setSource('tracker')}
+          >
+            From tracker
+          </SourceTab>
+          <SourceTab
+            active={source === 'internal'}
+            onClick={() => setSource('internal')}
+          >
             Internal ticket
           </SourceTab>
           <span className="ml-auto pb-2 font-mono text-[0.65rem] uppercase tracking-[0.14em] text-muted-foreground">
-            tracker · synced
+            {SOURCE_TAG[source]}
           </span>
         </div>
 
         <div className="min-w-0 p-4">
-          <TrackerPicker
-            repo={repo}
-            queued={queued}
-            onClose={() => onOpenChange(false)}
-            onQueue={onQueue}
-          />
+          {source === 'tracker' ? (
+            <TrackerPicker
+              repo={repo}
+              queued={queued}
+              onClose={() => onOpenChange(false)}
+              onQueue={onQueue}
+            />
+          ) : (
+            <InternalTicketForm
+              repo={repo}
+              onClose={() => onOpenChange(false)}
+              onQueue={onQueue}
+            />
+          )}
         </div>
       </AlertDialogContent>
     </AlertDialog>
