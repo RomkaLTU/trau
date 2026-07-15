@@ -25,6 +25,7 @@ import {
   type GrillMessage,
   type GrillSession,
   type PendingAnswer,
+  type StreamingReply,
 } from "@/lib/grill";
 import { cn } from "@/lib/utils";
 
@@ -38,6 +39,7 @@ export function GrillThread({
   messages,
   hydrated,
   pending,
+  streaming,
   stalled,
   onRetry,
   onDiscard,
@@ -47,6 +49,7 @@ export function GrillThread({
   messages: GrillMessage[];
   hydrated: boolean;
   pending: PendingAnswer[];
+  streaming: StreamingReply;
   stalled: GrillBanner | null;
   onRetry: (id: string) => void;
   onDiscard: (id: string) => void;
@@ -76,7 +79,7 @@ export function GrillThread({
                 Viewport asks for is only parked while the thread is still empty. */}
             {hydrated && session.state === "running" && (
               <MessageScrollerItem messageId="thinking">
-                <ThinkingRow />
+                <ThinkingRow text={streaming.holed ? "" : streaming.text} />
               </MessageScrollerItem>
             )}
             {hydrated && stalled && (
@@ -234,11 +237,13 @@ function PendingRow({
 }
 
 // The indicator is an agent bubble, not a lookalike, so the real message replaces it
-// in the shell it already occupies rather than jolting the thread.
-function ThinkingRow() {
+// in the shell it already occupies rather than jolting the thread. text is the reply
+// so far and grows in place under the same shimmer, reading as provisional until the
+// stored message settles it; a turn that streams nothing keeps the bare word.
+function ThinkingRow({ text }: { text: string }) {
   return (
     <AgentBubble>
-      <span className="shimmer">Thinking</span>{" "}
+      <span className="shimmer">{text === "" ? "Thinking" : text}</span>{" "}
       <span className="cursor-block text-teal" aria-hidden="true">
         ▌
       </span>

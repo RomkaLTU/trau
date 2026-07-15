@@ -16,9 +16,11 @@ import {
   grillStreamURL,
   lastAnswer,
   latestOutcome,
+  NO_REPLY,
   outcomePayload,
   pendingQuestion,
   questionPayload,
+  type GrillDelta,
   type GrillMessage,
   type GrillSession,
 } from "@/lib/grill";
@@ -60,6 +62,7 @@ export function GrillConversation({
     hydrated: false,
     messages: [],
     pending: [],
+    streaming: NO_REPLY,
   }));
   const [status, setStatus] = useState<StreamStatus>("connecting");
   const [followUp, setFollowUp] = useState(false);
@@ -85,12 +88,14 @@ export function GrillConversation({
           dispatch({ type: "state", session: parsed as GrillSession });
         else if (event === "message")
           dispatch({ type: "message", message: parsed as GrillMessage });
+        else if (event === "delta")
+          dispatch({ type: "delta", delta: parsed as GrillDelta });
       },
     });
     return () => close();
   }, [initial.id]);
 
-  const { session, messages, pending, hydrated } = state;
+  const { session, messages, pending, hydrated, streaming } = state;
   const asked = pendingQuestion(messages);
   const question = asked ? questionPayload(asked) : null;
   const outcomeMsg = latestOutcome(messages);
@@ -154,6 +159,7 @@ export function GrillConversation({
         messages={messages}
         hydrated={hydrated}
         pending={pending}
+        streaming={streaming}
         stalled={stalled}
         onRetry={retry}
         onDiscard={(id) => dispatch({ type: "send-discard", id })}

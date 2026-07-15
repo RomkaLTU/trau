@@ -68,6 +68,46 @@ func TestParseGrillStream(t *testing.T) {
 	}
 }
 
+func TestGrillDeltaText(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{
+			name: "text delta",
+			line: `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"hi"}}}`,
+			want: "hi",
+		},
+		{
+			name: "thinking delta",
+			line: `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hmm"}}}`,
+		},
+		{
+			name: "tool input delta",
+			line: `{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{"}}}`,
+		},
+		{
+			name: "block start",
+			line: `{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"text","text":""}}}`,
+		},
+		{
+			name: "whole assistant message",
+			line: `{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}`,
+		},
+		{name: "result", line: `{"type":"result","subtype":"success","is_error":false}`},
+		{name: "not json", line: `warning: ignore me`},
+		{name: "blank"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := grillDeltaText([]byte(tt.line)); got != tt.want {
+				t.Errorf("grillDeltaText() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGrillStallReason(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -100,7 +140,7 @@ func TestGrillTurnArgs(t *testing.T) {
 	if contains(first, "--resume") {
 		t.Errorf("first turn args should not resume: %v", first)
 	}
-	for _, want := range []string{"--dangerously-skip-permissions", "--model", "sonnet", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--mcp-config", `{"mcp":1}`} {
+	for _, want := range []string{"--dangerously-skip-permissions", "--model", "sonnet", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--strict-mcp-config", "--mcp-config", `{"mcp":1}`} {
 		if !contains(first, want) {
 			t.Errorf("first turn args missing %q: %v", want, first)
 		}
@@ -270,6 +310,55 @@ func TestGrillRunnerStallClassification(t *testing.T) {
 	}
 }
 
+// TestGrillRunnerStreamsDeltas drives a stub whose reply arrives as partial-message
+// events: the turn's text must reach subscribers numbered from one and in order,
+// carrying the reply and nothing else, and all of it before the frame that settles
+// the turn.
+func TestGrillRunnerStreamsDeltas(t *testing.T) {
+	r, store, repo, _ := newGrillRunnerTest(t, grillStubStream)
+	sess, err := store.Create(hubstore.NewGrillSession{Repo: repo.Root, IssueID: "COD-2"})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	sub, ch := r.srv.grillEvents.subscribe()
+	defer r.srv.grillEvents.unsubscribe(sub)
+
+	r.runTurn(context.Background(), sess)
+
+	deltas := []GrillDeltaView{}
+	settled := false
+	for draining := true; draining; {
+		select {
+		case ev := <-ch:
+			switch ev.Event {
+			case "delta":
+				if settled {
+					t.Errorf("delta %+v arrived after the turn settled", ev.Payload)
+				}
+				deltas = append(deltas, ev.Payload.(GrillDeltaView))
+			case "state", "message":
+				settled = true
+			}
+		default:
+			draining = false
+		}
+	}
+
+	want := []GrillDeltaView{{Seq: 1, Text: "Let me "}, {Seq: 2, Text: "push back."}}
+	if len(deltas) != len(want) {
+		t.Fatalf("deltas = %+v, want %+v", deltas, want)
+	}
+	for i, w := range want {
+		if deltas[i] != w {
+			t.Errorf("delta %d = %+v, want %+v", i, deltas[i], w)
+		}
+	}
+	if !settled {
+		t.Error("turn published no settling frame")
+	}
+}
+
 // newGrillRunnerTest builds a runner over a real store and a repo whose CLAUDE_BIN
 // is a stub claude at script. HOME and CLAUDE_CONFIG_DIR are isolated to temp dirs
 // so config resolution and the --resume transcript check never touch the real ones.
@@ -388,6 +477,19 @@ mkdir -p "$CLAUDE_CONFIG_DIR/projects/p"
 : > "$CLAUDE_CONFIG_DIR/projects/p/$sid.jsonl"
 printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$sid"
 printf '{"type":"result","subtype":"success","session_id":"%s","is_error":false,"result":"ok"}\n' "$sid"
+`
+
+// grillStubStream writes one reply as partial-message events, salted with the deltas
+// that are not the reply — a thinking delta, a tool-input delta — and closed by the
+// whole assistant event that repeats the text the deltas already carried.
+const grillStubStream = `#!/bin/sh
+printf '{"type":"system","subtype":"init","session_id":"sid-stream"}\n'
+printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"weighing it"}}}\n'
+printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me "}}}\n'
+printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"push back."}}}\n'
+printf '{"type":"stream_event","session_id":"sid-stream","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"q\":"}}}\n'
+printf '{"type":"assistant","session_id":"sid-stream","message":{"content":[{"type":"text","text":"Let me push back."}]}}\n'
+printf '{"type":"result","subtype":"success","session_id":"sid-stream","is_error":false}\n'
 `
 
 const grillStubAuth = `#!/bin/sh

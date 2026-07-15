@@ -45,6 +45,14 @@ export interface GrillMessage {
   created_at: string
 }
 
+// GrillDelta is one chunk of a running turn's reply, live-stream only — the hub never
+// stores it. seq numbers a turn's deltas from one so a client can spot a dropped chunk
+// rather than splice the reply back together across the gap.
+export interface GrillDelta {
+  seq: number
+  text: string
+}
+
 export interface GrillDetail {
   session: GrillSession
   messages: GrillMessage[]
@@ -433,6 +441,17 @@ export interface PendingAnswer {
   failed: boolean
 }
 
+// StreamingReply is the running turn's reply so far, assembled from delta frames. It
+// is a preview, never a message: the stored message frame replaces it. holed means the
+// stream skipped a seq, so the thread shows the thinking row rather than holed prose.
+export interface StreamingReply {
+  seq: number
+  text: string
+  holed: boolean
+}
+
+export const NO_REPLY: StreamingReply = { seq: 0, text: '', holed: false }
+
 // GrillLive is the panel's merged view of one session: the authoritative session
 // plus its messages. live tracks whether a stream frame has set the session, so a
 // late GET hydrate never reverts a state the stream already advanced; hydrated
@@ -443,12 +462,14 @@ export interface GrillLive {
   hydrated: boolean
   messages: GrillMessage[]
   pending: PendingAnswer[]
+  streaming: StreamingReply
 }
 
 export type GrillAction =
   | { type: 'hydrate'; detail: GrillDetail }
   | { type: 'message'; message: GrillMessage }
   | { type: 'state'; session: GrillSession }
+  | { type: 'delta'; delta: GrillDelta }
   | { type: 'send'; id: string; text: string }
   | { type: 'send-failed'; id: string; text: string }
   | { type: 'send-retry'; id: string }
@@ -473,9 +494,22 @@ export function grillReducer(state: GrillLive, action: GrillAction): GrillLive {
         pending: holds(state.messages, action.message)
           ? state.pending
           : retirePending(state.pending, action.message),
+        streaming: NO_REPLY,
       }
+    // Every state frame either settles the running turn or opens the next one, so it
+    // ends whatever was streaming and rebases the seq for the turn ahead.
     case 'state':
-      return { ...state, session: action.session, live: true }
+      return {
+        ...state,
+        session: action.session,
+        live: true,
+        streaming: NO_REPLY,
+      }
+    case 'delta':
+      return {
+        ...state,
+        streaming: appendDelta(state.streaming, action.delta, state.session.state),
+      }
     case 'send':
       return {
         ...state,
@@ -491,6 +525,16 @@ export function grillReducer(state: GrillLive, action: GrillAction): GrillLive {
     case 'send-discard':
       return { ...state, pending: state.pending.filter((p) => p.id !== action.id) }
   }
+}
+
+// appendDelta grows the reply by one chunk. Only a running turn streams, so a delta
+// trailing a settled one never reopens a preview the session has moved past. A seq
+// that skips means the broadcaster dropped a chunk: the reply stays holed for the
+// turn, since every later chunk lands after the gap rather than filling it.
+function appendDelta(reply: StreamingReply, delta: GrillDelta, state: GrillState): StreamingReply {
+  if (state !== 'running') return reply
+  if (delta.seq !== reply.seq + 1) return { seq: delta.seq, text: '', holed: true }
+  return { seq: delta.seq, text: reply.text + delta.text, holed: reply.holed }
 }
 
 function holds(list: GrillMessage[], msg: GrillMessage): boolean {

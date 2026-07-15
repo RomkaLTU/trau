@@ -42,6 +42,14 @@ type GrillMessageView struct {
 	CreatedAt string          `json:"created_at"`
 }
 
+// GrillDeltaView is one chunk of the grilling agent's reply as it is written. Seq
+// numbers a turn's deltas from one so a client can spot one the broadcaster dropped.
+// Deltas are never stored — the turn's message frame stays authoritative.
+type GrillDeltaView struct {
+	Seq  int    `json:"seq"`
+	Text string `json:"text"`
+}
+
 // GrillListResponse is the GET /repos/{repo}/grill resource.
 type GrillListResponse struct {
 	Repo     string             `json:"repo"`
@@ -375,6 +383,17 @@ func (s *Server) publishGrillMessage(msg hubstore.GrillMessage) {
 		Event:     "message",
 		FrameID:   strconv.FormatInt(msg.ID, 10),
 		Payload:   grillMessageView(msg),
+	})
+}
+
+// publishGrillDelta carries no frame id: resuming a reconnect from an ephemeral
+// delta would skip the stored messages the client actually needs. The broadcaster
+// stamps the seq.
+func (s *Server) publishGrillDelta(sid int64, text string) {
+	s.grillEvents.publish(liveGrillEvent{
+		SessionID: sid,
+		Event:     "delta",
+		Payload:   GrillDeltaView{Text: text},
 	})
 }
 

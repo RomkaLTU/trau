@@ -14,11 +14,13 @@ import {
   isSettled,
   lastAnswer,
   mergeMessages,
+  NO_REPLY,
   outcomePayload,
   pendingQuestion,
   questionPayload,
   upsertMessage,
   type DiffLine,
+  type GrillDelta,
   type GrillLive,
   type GrillMessage,
   type GrillSession,
@@ -278,6 +280,7 @@ describe('grillReducer', () => {
     hydrated: false,
     messages: [],
     pending: [],
+    streaming: NO_REPLY,
   }
 
   it('hydrate seeds messages and adopts the session while not yet live', () => {
@@ -314,6 +317,78 @@ describe('grillReducer', () => {
   })
 })
 
+describe('streaming deltas', () => {
+  const initial: GrillLive = {
+    session: session({ state: 'running' }),
+    live: false,
+    hydrated: true,
+    messages: [],
+    pending: [],
+    streaming: NO_REPLY,
+  }
+
+  const stream = (state: GrillLive, ...deltas: GrillDelta[]) =>
+    deltas.reduce((s, delta) => grillReducer(s, { type: 'delta', delta }), state)
+
+  it('accumulates chunks into the running turn’s reply', () => {
+    const next = stream(initial, { seq: 1, text: 'Let me ' }, { seq: 2, text: 'push back.' })
+    expect(next.streaming).toEqual({
+      seq: 2,
+      text: 'Let me push back.',
+      holed: false,
+    })
+  })
+
+  it('the stored message retires the streamed preview', () => {
+    const streamed = stream(initial, { seq: 1, text: 'Let me push back.' })
+    const next = grillReducer(streamed, { type: 'message', message: question('7') })
+    expect(next.streaming).toEqual(NO_REPLY)
+    expect(next.messages.map((m) => m.id)).toEqual(['7'])
+  })
+
+  it('a state frame ends the turn’s stream and rebases the seq', () => {
+    const streamed = stream(initial, { seq: 1, text: 'half a thou' })
+    const settled = grillReducer(streamed, {
+      type: 'state',
+      session: session({ state: 'waiting' }),
+    })
+    expect(settled.streaming).toEqual(NO_REPLY)
+
+    // The next turn's deltas number from one again, so they must read as contiguous.
+    const resumed = grillReducer(settled, {
+      type: 'state',
+      session: session({ state: 'running' }),
+    })
+    expect(stream(resumed, { seq: 1, text: 'Next turn.' }).streaming.text).toBe('Next turn.')
+  })
+
+  it('a dropped chunk holes the reply for the rest of the turn', () => {
+    const next = stream(
+      initial,
+      { seq: 1, text: 'Let me ' },
+      { seq: 4, text: 'back.' },
+      { seq: 5, text: ' Why?' },
+    )
+    expect(next.streaming.holed).toBe(true)
+    // The text after a gap is never spliced onto the text before it.
+    expect(next.streaming.text).not.toContain('Let me ')
+  })
+
+  it('ignores deltas trailing a settled turn', () => {
+    const settled: GrillLive = {
+      ...initial,
+      session: session({ state: 'finished' }),
+    }
+    expect(stream(settled, { seq: 1, text: 'too late' }).streaming).toEqual(NO_REPLY)
+  })
+
+  it('leaves a hub that streams nothing on the message-at-a-time flow', () => {
+    const next = grillReducer(initial, { type: 'message', message: question('1') })
+    expect(next.streaming).toEqual(NO_REPLY)
+    expect(next.messages.map((m) => m.id)).toEqual(['1'])
+  })
+})
+
 describe('optimistic send', () => {
   const initial: GrillLive = {
     session: session({ state: 'waiting' }),
@@ -321,6 +396,7 @@ describe('optimistic send', () => {
     hydrated: true,
     messages: [],
     pending: [],
+    streaming: NO_REPLY,
   }
 
   const sent = (text = 'A') =>
