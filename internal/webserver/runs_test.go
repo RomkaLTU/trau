@@ -285,3 +285,35 @@ func TestRunsRejectsNonGET(t *testing.T) {
 		t.Errorf("POST status = %d, want 405", res.StatusCode)
 	}
 }
+
+// TestFindRepoResolvesRegisteredRoot covers the fresh-registration case: a repo
+// registered from the web but never run through a loop must resolve on every
+// repo-scoped endpoint instead of 404ing as an unknown repo. A name that was
+// never registered still 404s, so resolution stays scoped.
+func TestFindRepoResolvesRegisteredRoot(t *testing.T) {
+	s, ts, _, _ := backlogServer(t, nil, nil)
+	root := gitRepo(t, t.TempDir(), "fresh", "dir")
+	if err := s.stores.Registrations().Register(root); err != nil {
+		t.Fatalf("register root: %v", err)
+	}
+
+	for _, path := range []string{"/backlog", "/config"} {
+		res, err := http.Get(ts.URL + APIPrefix + "/repos/fresh" + path)
+		if err != nil {
+			t.Fatalf("GET fresh%s: %v", path, err)
+		}
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusOK {
+			t.Errorf("GET fresh%s = %d, want 200 for a registered-but-never-run repo", path, res.StatusCode)
+		}
+	}
+
+	res, err := http.Get(ts.URL + APIPrefix + "/repos/nope/backlog")
+	if err != nil {
+		t.Fatalf("GET nope/backlog: %v", err)
+	}
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Errorf("GET nope/backlog = %d, want 404 for a repo that was never registered", res.StatusCode)
+	}
+}

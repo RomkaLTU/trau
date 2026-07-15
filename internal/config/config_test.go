@@ -29,6 +29,75 @@ func TestEffectiveTrackerProvider(t *testing.T) {
 	}
 }
 
+func TestResolveSyncProvider(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		sources map[string]Layer
+		want    string
+	}{
+		{
+			name: "unset provider with full project jira creds infers jira",
+			cfg:  Config{TrackerProvider: "linear", LinearAPIKey: "user-key", JiraBaseURL: "u", JiraEmail: "e", JiraAPIToken: "t"},
+			sources: map[string]Layer{
+				"JIRA_BASE_URL":  LayerProject,
+				"JIRA_EMAIL":     LayerProject,
+				"JIRA_API_TOKEN": LayerProject,
+			},
+			want: "jira",
+		},
+		{
+			name: "explicit linear is honored over project jira creds",
+			cfg:  Config{TrackerProvider: "linear", LinearTeam: "COD"},
+			sources: map[string]Layer{
+				"TRACKER_PROVIDER": LayerProject,
+				"JIRA_BASE_URL":    LayerProject,
+				"JIRA_EMAIL":       LayerProject,
+				"JIRA_API_TOKEN":   LayerProject,
+			},
+			want: "linear",
+		},
+		{
+			name:    "explicit jira is honored",
+			cfg:     Config{TrackerProvider: "jira"},
+			sources: map[string]Layer{"TRACKER_PROVIDER": LayerUser},
+			want:    "jira",
+		},
+		{
+			name: "jira creds only at user layer do not infer jira",
+			cfg:  Config{TrackerProvider: "linear", LinearAPIKey: "k", JiraBaseURL: "u", JiraEmail: "e", JiraAPIToken: "t"},
+			sources: map[string]Layer{
+				"JIRA_BASE_URL":  LayerUser,
+				"JIRA_EMAIL":     LayerUser,
+				"JIRA_API_TOKEN": LayerUser,
+			},
+			want: "linear",
+		},
+		{
+			name: "partial project jira creds do not infer jira",
+			cfg:  Config{TrackerProvider: "linear", LinearAPIKey: "k", JiraBaseURL: "u", JiraEmail: "e"},
+			sources: map[string]Layer{
+				"JIRA_BASE_URL": LayerProject,
+				"JIRA_EMAIL":    LayerProject,
+			},
+			want: "linear",
+		},
+		{
+			name:    "unset provider with no tracker config falls back to internal",
+			cfg:     Config{TrackerProvider: "linear"},
+			sources: map[string]Layer{},
+			want:    "internal",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.ResolveSyncProvider(tc.sources); got != tc.want {
+				t.Fatalf("ResolveSyncProvider() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveConfigItemsLayerPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	local := filepath.Join(dir, "trau.ini")
@@ -463,7 +532,7 @@ func TestKnownKeysCatalogMetadata(t *testing.T) {
 	editable := []string{
 		"MAX_ITERATIONS", "THEME", "PROJECT", "LINEAR_API_KEY", "JIRA_API_TOKEN",
 		"GRILL_MODEL", "TRANSCRIPT_RETENTION", "SERVE_AUTOSTART",
-		"CLAUDE_MODEL", "CLAUDE_BUILD_MODEL", "THEME_BRAND",
+		"CLAUDE_MODEL", "CLAUDE_BUILD_MODEL", "THEME_BRAND", "BASE_BRANCH",
 	}
 	for _, k := range editable {
 		if !byKey[k].WebEditable {

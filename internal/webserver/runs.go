@@ -55,26 +55,39 @@ func (s *Server) handleRepos(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// withFreshness attaches each repo's issue-store sync freshness — last synced,
-// currently syncing, last error, and the last good counts. A repo that has never
-// synced and is not syncing carries no freshness, so the field stays absent for
-// repos with no tracker. It is applied only here so the shared repoViews path
-// stays a pure read for the other endpoints.
+// withFreshness attaches each repo's issue-store freshness — its derived health
+// state, last synced, currently syncing, last error, the last good counts, and
+// the current issue count. Every repo carries a state, so unlike the backlog's
+// freshness this is present for a repo that has never synced (never-synced or
+// unconfigured) rather than absent. It is applied only here so the shared
+// repoViews path stays a pure read for the other endpoints.
 func (s *Server) withFreshness(views []RepoView) []RepoView {
 	for i := range views {
-		views[i].Freshness = s.freshnessFor(views[i].Root)
+		views[i].Freshness = s.repoFreshness(views[i].Repo)
 	}
 	return views
 }
 
-// freshnessFor reads a repo's issue-store sync state and folds in the live syncing
-// flag, returning nil for a repo that has never synced and is not syncing.
-func (s *Server) freshnessFor(root string) *RepoFreshness {
-	st, err := s.stores.Issues().SyncState(root)
+// repoFreshness reads a repo's issue-store state and folds in the live syncing
+// flag, the derived health state, and the current issue count. It always returns
+// a freshness so the repos API surfaces a state for every repo; only a store read
+// error drops it.
+func (s *Server) repoFreshness(repo registry.Repo) *RepoFreshness {
+	st, err := s.stores.Issues().SyncState(repo.Root)
 	if err != nil {
 		return nil
 	}
-	return s.freshnessFrom(root, st)
+	count, _ := s.stores.Issues().Count(repo.Root)
+	syncing := s.syncer.syncing(repo.Root)
+	return &RepoFreshness{
+		State:        deriveHealthState(s.repoConfigured(repo), syncing, st),
+		LastSyncedAt: st.LastSyncedAt,
+		Syncing:      syncing,
+		LastError:    st.LastError,
+		LastIssues:   st.LastIssues,
+		LastComments: st.LastComments,
+		IssueCount:   count,
+	}
 }
 
 // freshnessFrom builds a repo's freshness from an already-read sync state, folding
@@ -175,8 +188,12 @@ func (s *Server) knownRepos(entries []registry.Entry) []registry.Repo {
 	return repos
 }
 
-// findRepo resolves a {repo} path segment to a known repo by name, unioning any
-// live loops' repos so a just-started loop's repo is resolvable.
+// findRepo resolves a {repo} path segment to a repo by name against the same union
+// the repos list shows: the repos a loop has run in (the known set and any live
+// loops) first, then the startable roots (the workspace seed and web registrations)
+// synthesized as workspace views, so a freshly registered repo resolves before its
+// first loop runs. Known and live entries win over a synthesized view on a name
+// collision.
 func (s *Server) findRepo(name string) (registry.Repo, bool) {
 	if name == "" {
 		return registry.Repo{}, false
@@ -185,6 +202,9 @@ func (s *Server) findRepo(name string) (registry.Repo, bool) {
 		if repo.Name == name {
 			return repo, true
 		}
+	}
+	if root, ok := matchRoot(s.effectiveRoots(), name); ok {
+		return workspaceRepo(root), true
 	}
 	return registry.Repo{}, false
 }

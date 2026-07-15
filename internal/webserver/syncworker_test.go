@@ -117,12 +117,18 @@ func TestReposFreshnessSurfacesSyncState(t *testing.T) {
 	}
 }
 
-func TestReposFreshnessAbsentUntilSynced(t *testing.T) {
+func TestReposFreshnessCarriesStateBeforeSync(t *testing.T) {
 	ts, _, _ := syncServer(t, &fakeReader{})
 
 	rv := findRepoView(t, getRepos(t, ts), "acme")
-	if rv.Freshness != nil {
-		t.Fatalf("freshness = %+v, want none before any sync", rv.Freshness)
+	if rv.Freshness == nil {
+		t.Fatal("freshness absent; want a state even before any sync")
+	}
+	if rv.Freshness.State != HealthUnconfigured {
+		t.Fatalf("state = %q, want unconfigured for a repo with no tracker config", rv.Freshness.State)
+	}
+	if rv.Freshness.LastSyncedAt != "" || rv.Freshness.Syncing {
+		t.Fatalf("freshness = %+v, want no sync facts before any sync", rv.Freshness)
 	}
 }
 

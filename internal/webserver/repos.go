@@ -1,18 +1,46 @@
 package webserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/RomkaLTU/trau/internal/state"
 )
 
 // RegisterRepoRequest is the body of POST /api/v1/repos: the absolute path to a
 // git repository the hub should be allowed to start loops in.
 type RegisterRepoRequest struct {
 	Path string `json:"path"`
+	// Sync runs the seed pull inline as the repo registers. Absent means run it,
+	// keeping the register-then-populate default; an explicit false lets a caller
+	// register early and drive the seed sync from its own step without syncing
+	// twice.
+	Sync *bool `json:"sync,omitempty"`
+}
+
+// RegisterRepoResponse is the 201 body of POST /api/v1/repos: the registered repo
+// plus the outcome of the seed sync that fired as it came online, so a caller
+// learns whether the store was actually populated instead of assuming a bare
+// "registered" implies issues. Sync is absent when the request opted out with
+// sync:false.
+type RegisterRepoResponse struct {
+	RepoView
+	Sync *SeedSyncOutcome `json:"sync,omitempty"`
+}
+
+// SeedSyncOutcome reports whether the registration-time seed pull succeeded. On
+// success it carries the pull's counts (the embedded SyncResponse); on failure it
+// carries the recorded error. A repo without direct tracker credentials lands on
+// the failure branch, which is why a failed seed never blocks registration.
+type SeedSyncOutcome struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+	*SyncResponse
 }
 
 // denyRegistrationIfExposed enforces the exposure gate shared by register and
@@ -54,11 +82,26 @@ func (s *Server) registerRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to register repo: " + err.Error()})
 		return
 	}
-	// Seed the issue store from the tracker as the repo comes online (ADR 0007).
-	// A repo without direct tracker credentials still registers, so the pull is
-	// best-effort and its outcome is recorded on the sync bookkeeping row.
-	_, _ = s.syncRepo(r.Context(), workspaceRepo(root))
-	writeJSON(w, http.StatusCreated, RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: true})
+	resp := RegisterRepoResponse{RepoView: RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: true}}
+	// Seed the issue store from the tracker as the repo comes online (ADR 0007),
+	// unless the caller opted out to run the seed sync from its own step. The pull
+	// is best-effort — a repo without direct tracker credentials still registers —
+	// so its outcome rides back in the body rather than being discarded.
+	if req.Sync == nil || *req.Sync {
+		resp.Sync = s.seedSyncOutcome(r.Context(), root)
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+// seedSyncOutcome runs the registration-time seed pull and reduces it to the
+// outcome the caller renders: the counts on success, or the recorded error when
+// the pull failed.
+func (s *Server) seedSyncOutcome(ctx context.Context, root string) *SeedSyncOutcome {
+	resp, err := s.syncRepo(ctx, workspaceRepo(root))
+	if err != nil {
+		return &SeedSyncOutcome{Error: err.Error()}
+	}
+	return &SeedSyncOutcome{OK: true, SyncResponse: &resp}
 }
 
 func (s *Server) handleRepo(w http.ResponseWriter, r *http.Request) {
@@ -105,6 +148,31 @@ func (s *Server) unregisterRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, RepoView{Repo: workspaceRepo(root), Allowed: false})
+}
+
+// handleRepoGitignore keeps the repo's .trau.ini out of git, backing the wizard's
+// essentials-step toggle (CLI parity with SetupProject). It writes into the repo,
+// so it follows the same exposure gate as registration. The ensure is idempotent:
+// a repo already ignoring .trau.ini is left untouched.
+func (s *Server) handleRepoGitignore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if s.denyRegistrationIfExposed(w, "editing a repo's .gitignore") {
+		return
+	}
+	repo, ok := s.findRepo(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	if err := state.EnsureGitignore(repo.Root, ""); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to update .gitignore: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"repo": repo.Name, "gitignored": true})
 }
 
 // validateRepoPath normalizes a registration path and rejects anything that is

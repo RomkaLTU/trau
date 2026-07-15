@@ -6,16 +6,23 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+
+	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
 // queueServer builds a server whose allowlist holds one Registered repo whose
 // base name resolves it, with a fake supervisor standing in for the epic
-// preview capture. It returns the fake, the repo root, and the server.
+// preview capture. Its tracker reader is stubbed unavailable so enqueue's
+// best-effort ticket validation stays hermetic — the repo resolves but carries
+// no credentials, the fresh-registration case. It returns the fake, the repo
+// root, and the server.
 func queueServer(t *testing.T, name string) (*fakeSupervisor, string, *httptest.Server) {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), name)
 	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
 	s.home = t.TempDir()
+	s.newReader = func(config.Config) (tracker.Reader, error) { return nil, tracker.ErrReaderUnavailable }
 	fake := &fakeSupervisor{}
 	s.sup = fake
 	ts := httptest.NewServer(s.Handler())
@@ -306,6 +313,7 @@ func TestDequeueRunningRefused(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "acme")
 	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
 	s.home = t.TempDir()
+	s.newReader = func(config.Config) (tracker.Reader, error) { return nil, tracker.ErrReaderUnavailable }
 	s.sup = &fakeSupervisor{}
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
@@ -335,6 +343,7 @@ func TestQueuePersistsAcrossServers(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "acme")
 	first := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStoresAt(t, home))
 	first.home = home
+	first.newReader = func(config.Config) (tracker.Reader, error) { return nil, tracker.ErrReaderUnavailable }
 	first.sup = &fakeSupervisor{}
 	ts1 := httptest.NewServer(first.Handler())
 	defer ts1.Close()

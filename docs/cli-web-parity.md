@@ -74,6 +74,12 @@ plain-language refusal rather than a raw error.
 | --- | --- |
 | TUI *Settings* (edit `.ini`) · the layered config precedence | **Settings** — layered config resolved project → user → default; edit any key and choose which layer the write lands in. |
 
+## Onboarding
+
+| CLI / TUI | Web surface |
+| --- | --- |
+| Onboarding wizard (first-run `.trau.ini` setup; TUI *Re-run onboarding*) | **Add a project** (`/projects/new`, reached from the sidebar CONFIGURE group and the repo switcher's *Add a project* row) — a path → inspect → tracker → essentials → seed-sync → done wizard that registers the repo, writes the tracker and essentials config to the project layer, and seeds the issue store. Secrets are write-only (blank keeps the stored value); the tracker step is gated on a passing connection test. Registration stays fail-closed: on an exposed bind it also needs `SERVE_ALLOW_REGISTER` (the 403 renders an in-app remediation callout, never a raw error). See ADR 0012. |
+
 ## Costs and lessons
 
 | CLI / TUI | Web surface |
@@ -96,6 +102,5 @@ gap is a decision, not a surprise.
 | CLI / TUI | Why it stays terminal-only |
 | --- | --- |
 | `trau doctor` (preflight: git/gh/provider/config/labels/write perms) | An exit-code-driven check meant to run before a loop and to drop into CI. It diagnoses the *machine*, which a browser tab can't act on, and predates having a hub to serve. |
-| Onboarding wizard (first-run `.trau.ini` setup; TUI *Re-run onboarding*) | Interactive first-run and tracker-identity setup lives in the TUI. The web edits an **already-configured, allowlisted** repo through Settings; it never bootstraps a new one. |
 | Interactive planning flow (TUI *Plan*: raw idea → Q&A rounds → PRD → slices) | The web ships only the terminal publish step (Author → PRD), not the multi-round decomposition into an epic + slices. |
 | `--verbose` · `--debug` · `--no-tui` · `--json` · `--yes` · `-v/--version` | Shell/scripting/CI diagnostics with no browser analog. The hub's build version rides the `/api/v1/health` response rather than a screen. |

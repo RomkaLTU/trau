@@ -3,6 +3,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Eyebrow } from '@/components/trau/eyebrow'
 import { Loop } from '@/components/trau/loop'
 import { ProjectScopeGate } from '@/components/trau/project-scope-gate'
+import { RepoHealthGate } from '@/components/trau/repo-health-gate'
 import { instancesQueryOptions } from '@/lib/instances'
 
 export const Route = createFileRoute('/loop')({
@@ -28,7 +29,9 @@ function LoopPage() {
       </header>
 
       <ProjectScopeGate action="start a loop">
-        <Loop />
+        <RepoHealthGate>
+          <Loop />
+        </RepoHealthGate>
       </ProjectScopeGate>
     </div>
   )

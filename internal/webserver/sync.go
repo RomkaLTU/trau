@@ -105,7 +105,7 @@ func (s *Server) forceResync(ctx context.Context, repo registry.Repo) (SyncRespo
 // rather than tombstoning the whole store — it guards against a misresolved binding
 // (a wrong project key returns zero) wiping every synced row.
 func (s *Server) reconcileRepo(ctx context.Context, repo registry.Repo) error {
-	_, reader, err := s.readerFor(repo)
+	res, err := s.resolveReader(repo)
 	if err != nil {
 		return err
 	}
@@ -114,13 +114,15 @@ func (s *Server) reconcileRepo(ctx context.Context, repo registry.Repo) error {
 	if err != nil {
 		return err
 	}
-	binding, err := s.resolveBinding(ctx, store, repo.Root, state.Binding, reader)
+	binding, err := s.resolveBinding(ctx, store, repo.Root, state.Binding, res.reader)
 	if err != nil {
+		err = res.actionableErr(err)
 		_ = store.RecordError(repo.Root, err.Error())
 		return err
 	}
-	live, err := reader.ProjectIdentifiers(ctx, binding)
+	live, err := res.reader.ProjectIdentifiers(ctx, binding)
 	if err != nil {
+		err = res.actionableErr(err)
 		_ = store.RecordError(repo.Root, err.Error())
 		return err
 	}
@@ -160,7 +162,7 @@ func (s *Server) dropFromQueue(root string, ids []string) {
 // core of the sync endpoint, the sync that fires on repo registration, and the
 // background sync loop.
 func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse, error) {
-	provider, reader, err := s.readerFor(repo)
+	res, err := s.resolveReader(repo)
 	if err != nil {
 		return SyncResponse{}, err
 	}
@@ -170,19 +172,21 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 		return SyncResponse{}, err
 	}
 
-	binding, err := s.resolveBinding(ctx, store, repo.Root, state.Binding, reader)
+	binding, err := s.resolveBinding(ctx, store, repo.Root, state.Binding, res.reader)
 	if err != nil {
+		err = res.actionableErr(err)
 		_ = store.RecordError(repo.Root, err.Error())
 		return SyncResponse{}, err
 	}
 
-	pulled, err := reader.SyncPull(ctx, binding, state.Cursor)
+	pulled, err := res.reader.SyncPull(ctx, binding, state.Cursor)
 	if err != nil {
+		err = res.actionableErr(err)
 		_ = store.RecordError(repo.Root, err.Error())
 		return SyncResponse{}, err
 	}
 
-	issues, comments, err := store.Upsert(repo.Root, provider, toStoredIssues(pulled))
+	issues, comments, err := store.Upsert(repo.Root, res.provider, toStoredIssues(pulled))
 	if err != nil {
 		return SyncResponse{}, err
 	}
@@ -197,7 +201,7 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 	}
 	return SyncResponse{
 		Repo:     repo.Name,
-		Provider: provider,
+		Provider: res.provider,
 		Issues:   issues,
 		Comments: comments,
 		SyncedAt: syncedAt,

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import {
   DollarSign,
+  FolderPlus,
   Inbox,
   LayoutDashboard,
   Lightbulb,
@@ -83,6 +84,7 @@ const GROUPS: NavGroup[] = [
   {
     label: 'CONFIGURE',
     items: [
+      { label: 'Add a project', icon: FolderPlus, to: '/projects/new' },
       { label: 'Skills', icon: Puzzle, to: '/skills' },
       { label: 'Settings', icon: Settings, to: '/settings' },
     ],

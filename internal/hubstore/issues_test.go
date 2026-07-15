@@ -501,6 +501,32 @@ func TestLabelsFacetEmptyRepo(t *testing.T) {
 	}
 }
 
+func TestCount(t *testing.T) {
+	s := testIssues(t)
+	const repo = "/repo/acme"
+
+	if n, err := s.Count(repo); err != nil || n != 0 {
+		t.Fatalf("Count on empty store = %d, %v; want 0", n, err)
+	}
+
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-1", Title: "one"},
+		{Identifier: "COD-2", Title: "two"},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if n, err := s.Count(repo); err != nil || n != 2 {
+		t.Fatalf("Count = %d, %v; want 2", n, err)
+	}
+
+	if _, err := s.Reconcile(repo, []string{"COD-1"}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if n, err := s.Count(repo); err != nil || n != 1 {
+		t.Fatalf("Count after tombstoning = %d, %v; want 1 (tombstoned rows excluded)", n, err)
+	}
+}
+
 func TestRecordErrorPreservesLastGoodSync(t *testing.T) {
 	s := testIssues(t)
 
