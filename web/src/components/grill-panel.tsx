@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Loader2, Sparkles } from "lucide-react";
 
 import { ErrorNote, statePill } from "@/components/grill/banners";
@@ -7,6 +7,7 @@ import {
   GrillConversation,
   type GrillStatus,
 } from "@/components/grill/conversation";
+import { useGrillSession } from "@/components/grill/session";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -16,8 +17,6 @@ import {
 } from "@/components/ui/sheet";
 import { StatusPill, type RunState } from "@/components/trau";
 import {
-  activeSessionForIssue,
-  grillSessionsQueryOptions,
   startGrillSession,
   type GrillListResponse,
   type GrillSession,
@@ -40,37 +39,7 @@ export function GrillPanel({
   // inbox can auto-advance to the next unclear issue.
   onApplied?: () => void;
 }) {
-  const queryClient = useQueryClient();
-  const list = useQuery(grillSessionsQueryOptions(repo));
-  const active = activeSessionForIssue(list.data?.sessions, issueId);
-  const started = useRef(false);
-
-  const create = useMutation({
-    mutationFn: () => startGrillSession(repo, issueId),
-    onSuccess: (sess) => {
-      queryClient.setQueryData<GrillListResponse>(["grill", repo], (prev) =>
-        prev
-          ? {
-              ...prev,
-              sessions: [
-                sess,
-                ...prev.sessions.filter((s) => s.id !== sess.id),
-              ],
-            }
-          : { repo, sessions: [sess] },
-      );
-    },
-    onError: () =>
-      void queryClient.invalidateQueries({ queryKey: ["grill", repo] }),
-  });
-
-  useEffect(() => {
-    if (!list.isSuccess || active || started.current) return;
-    started.current = true;
-    create.mutate();
-  }, [list.isSuccess, active]);
-
-  const session = active ?? create.data;
+  const { session, starting, error, retry } = useGrillSession(repo, issueId);
 
   if (session) {
     return (
@@ -87,26 +56,19 @@ export function GrillPanel({
   return (
     <PanelFrame onClose={onClose}>
       <div className="flex flex-1 items-center justify-center px-4">
-        {list.error ? (
-          <ErrorNote message={(list.error as Error).message} />
-        ) : create.error && !active ? (
+        {error ? (
           <div className="flex flex-col items-center gap-3">
-            <ErrorNote message={(create.error as Error).message} />
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                started.current = true;
-                create.mutate();
-              }}
-            >
-              Try again
-            </Button>
+            <ErrorNote message={error.message} />
+            {retry && (
+              <Button size="sm" variant="outline" onClick={retry}>
+                Try again
+              </Button>
+            )}
           </div>
         ) : (
           <p className="inline-flex items-center gap-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" />
-            {create.isPending ? "Starting grilling session…" : "Loading…"}
+            {starting ? "Starting grilling session…" : "Loading…"}
           </p>
         )}
       </div>

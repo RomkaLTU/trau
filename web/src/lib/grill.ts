@@ -19,11 +19,14 @@ export type GrillKind = 'question' | 'answer' | 'info' | 'outcome'
 
 // GrillSession mirrors the hub's GrillSessionView. issue_id is absent for an
 // authoring session anchored to the repo alone; parked_reason carries the cause a
-// parked or stalled session settled with.
+// parked or stalled session settled with. issue_title is the hub's join onto the
+// grilled issue — the only title a settled session has, since applying drops the
+// triage labels the board queries key on.
 export interface GrillSession {
   id: string
   repo: string
   issue_id?: string
+  issue_title?: string
   state: GrillState
   session_chain?: string
   model?: string
@@ -130,8 +133,9 @@ async function errorMessage(res: Response, fallback: string): Promise<string> {
   return detail?.error ?? `${fallback}: ${res.status}`
 }
 
-async function fetchGrillSessions(repo: string): Promise<GrillListResponse> {
-  const res = await apiFetch(base(repo))
+async function fetchGrillSessions(repo: string, state?: GrillState): Promise<GrillListResponse> {
+  const url = state ? `${base(repo)}?state=${state}` : base(repo)
+  const res = await apiFetch(url)
   if (!res.ok) throw new Error(await errorMessage(res, 'list grill sessions failed'))
   return res.json()
 }
@@ -140,6 +144,19 @@ export const grillSessionsQueryOptions = (repo: string) =>
   queryOptions({
     queryKey: ['grill', repo],
     queryFn: () => fetchGrillSessions(repo),
+    enabled: repo !== '',
+    staleTime: 10_000,
+  })
+
+// appliedGrillSessionsQueryOptions reads the repo's applied sessions. They are the
+// only trace of a triaged issue once apply drops its labels, so the inbox's "Done
+// today" reads them here rather than from the board. The key nests under the repo's
+// grill list so an apply invalidation reaches it, while the narrower key leaves the
+// unfiltered list — and the auto-start that reads it — alone.
+export const appliedGrillSessionsQueryOptions = (repo: string) =>
+  queryOptions({
+    queryKey: ['grill', repo, 'applied'],
+    queryFn: () => fetchGrillSessions(repo, 'applied'),
     enabled: repo !== '',
     staleTime: 10_000,
   })
