@@ -30,6 +30,24 @@ func queueServer(t *testing.T, name string) (*fakeSupervisor, string, *httptest.
 	return fake, root, ts
 }
 
+// queueTrackerServer builds a hub with one Registered repo bound to a Linear team
+// whose tracker reader answers from fake, so enqueue's tracker validation runs for
+// real rather than degrading to the uncredentialed pass.
+func queueTrackerServer(t *testing.T, fake tracker.Reader) *httptest.Server {
+	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	root := filepath.Dir(filepath.Dir(runsDir))
+	writeRepoINI(t, root, "LINEAR_TEAM=COD\n")
+	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStoresAt(t, home))
+	s.home = home
+	s.newReader = func(config.Config) (tracker.Reader, error) { return fake, nil }
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
 func getQueue(t *testing.T, ts *httptest.Server, repo string) (*http.Response, QueueResponse) {
 	t.Helper()
 	res, err := http.Get(ts.URL + APIPrefix + "/repos/" + repo + "/queue")
@@ -243,6 +261,99 @@ func TestEnqueueAutoDetectsKind(t *testing.T) {
 
 // TestQueueMoveReorders drives the reorder endpoint: a valid move returns the
 // reordered queue, an unknown id 404s, and a bad direction 400s.
+func TestEnqueueInternalTicketCarriesInternalSource(t *testing.T) {
+	ts, _, _ := internalIssueServer(t, true)
+
+	_, created := createInternal(t, ts, "acme", InternalIssueRequest{Title: "Runnable"})
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{ID: created.ID})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", res.StatusCode)
+	}
+
+	_, view := getQueue(t, ts, "acme")
+	if len(view.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(view.Items))
+	}
+	if view.Items[0].Source != "internal" {
+		t.Errorf("source = %q, want internal — the queue must badge an internal item after a reload", view.Items[0].Source)
+	}
+}
+
+func TestEnqueueInternalEpicCarriesSourceAndSubIssues(t *testing.T) {
+	ts, _, _ := internalIssueServer(t, true)
+
+	_, epic := createInternal(t, ts, "acme", InternalIssueRequest{Title: "Internal epic"})
+	_, first := createInternal(t, ts, "acme", InternalIssueRequest{Title: "First child", Parent: epic.ID})
+	_, second := createInternal(t, ts, "acme", InternalIssueRequest{Title: "Second child", Parent: epic.ID})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{ID: epic.ID})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", res.StatusCode)
+	}
+
+	_, view := getQueue(t, ts, "acme")
+	if len(view.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(view.Items))
+	}
+	item := view.Items[0]
+	if item.Kind != "epic" || item.Source != "internal" {
+		t.Errorf("kind/source = %q/%q, want epic/internal", item.Kind, item.Source)
+	}
+	if len(item.SubIssues) != 2 {
+		t.Fatalf("sub_issues = %+v, want the epic's two internal children", item.SubIssues)
+	}
+	if item.SubIssues[0].ID != first.ID || item.SubIssues[1].ID != second.ID {
+		t.Errorf("sub_issues = %+v, want %s then %s", item.SubIssues, first.ID, second.ID)
+	}
+}
+
+func TestEnqueueTrackerTicketCarriesTrackerSource(t *testing.T) {
+	ts := queueTrackerServer(t, &fakeReader{issue: tracker.IssueSummary{
+		BacklogItem: tracker.BacklogItem{ID: "COD-11", Title: "A tracker ticket"},
+		Project:     "trau",
+		InProject:   true,
+	}})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: "COD-11"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", res.StatusCode)
+	}
+
+	_, view := getQueue(t, ts, "acme")
+	if len(view.Items) != 1 {
+		t.Fatalf("items = %d, want 1", len(view.Items))
+	}
+	item := view.Items[0]
+	if item.Source != "linear" {
+		t.Errorf("source = %q, want linear — a tracker id carries its tracker's source, not internal", item.Source)
+	}
+	if item.Title != "A tracker ticket" {
+		t.Errorf("title = %q, want the title resolved from the tracker", item.Title)
+	}
+}
+
+func TestEnqueueCrossProjectTicketRefused(t *testing.T) {
+	ts := queueTrackerServer(t, &fakeReader{issue: tracker.IssueSummary{
+		BacklogItem: tracker.BacklogItem{ID: "COD-11", Title: "Someone else's ticket"},
+		Project:     "other",
+		InProject:   false,
+	}})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: "COD-11"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 — a cross-project tracker ticket is still refused", res.StatusCode)
+	}
+
+	_, view := getQueue(t, ts, "acme")
+	if len(view.Items) != 0 {
+		t.Errorf("items = %+v, want the refused ticket left unqueued", view.Items)
+	}
+}
+
 func TestQueueMoveReorders(t *testing.T) {
 	_, _, ts := queueServer(t, "acme")
 	for _, id := range []string{"COD-1", "COD-2", "COD-3"} {

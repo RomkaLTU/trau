@@ -396,7 +396,7 @@ func (q *Queue) load() (st queueState, err error) {
 	}
 
 	rows, err := q.db.Query(
-		`SELECT id, kind, title, status, reason, pid, queued_at FROM queue_items WHERE root = ? ORDER BY position`,
+		`SELECT id, kind, title, source, status, reason, pid, queued_at FROM queue_items WHERE root = ? ORDER BY position`,
 		q.root,
 	)
 	if err != nil {
@@ -406,7 +406,7 @@ func (q *Queue) load() (st queueState, err error) {
 	for rows.Next() {
 		var it queue.Item
 		var kind, queuedAt string
-		if scanErr := rows.Scan(&it.ID, &kind, &it.Title, &it.Status, &it.Reason, &it.PID, &queuedAt); scanErr != nil {
+		if scanErr := rows.Scan(&it.ID, &kind, &it.Title, &it.Source, &it.Status, &it.Reason, &it.PID, &queuedAt); scanErr != nil {
 			return queueState{}, scanErr
 		}
 		it.Kind = queue.Kind(kind)
@@ -468,9 +468,9 @@ func (q *Queue) persist(st queueState) error {
 			queuedAt = it.QueuedAt.UTC().Format(time.RFC3339Nano)
 		}
 		if _, err := tx.Exec(
-			`INSERT INTO queue_items(root, position, id, kind, title, status, reason, pid, queued_at)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			q.root, pos, it.ID, string(it.Kind), it.Title, it.Status, it.Reason, it.PID, queuedAt,
+			`INSERT INTO queue_items(root, position, id, kind, title, source, status, reason, pid, queued_at)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			q.root, pos, it.ID, string(it.Kind), it.Title, it.Source, it.Status, it.Reason, it.PID, queuedAt,
 		); err != nil {
 			return errors.Join(err, tx.Rollback())
 		}

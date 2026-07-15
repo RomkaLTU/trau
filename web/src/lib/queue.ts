@@ -16,6 +16,10 @@ export interface QueueItem {
   kind: QueueKind
   id: string
   title?: string
+  // source is the issue's binding resolved when it was queued: 'internal' for a
+  // hub-only issue, otherwise the tracker provider. Absent on items queued before
+  // the hub recorded it.
+  source?: string
   status: string
   reason?: string
   sub_issues?: QueueSubIssue[]

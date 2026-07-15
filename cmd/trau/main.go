@@ -253,7 +253,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	for _, id := range []string{opts.Parent, opts.ResetID, opts.ClearID} {
-		if err := config.ValidatePrefix(id, cfg.IssuePrefix); err != nil {
+		if err := validateTicketID(cfg, id); err != nil {
 			return console.Actionable(err, "validate ticket id",
 				fmt.Sprintf("set ISSUE_PREFIX (or LINEAR_TEAM) to this tracker's key, or pass a %s-<n> ticket", cfg.IssuePrefix))
 		}
@@ -661,9 +661,36 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 	// local (ADR 0007). Without direct credentials the provider keeps its agent/MCP path.
 	if storeBackedProvider(cfg) {
 		hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
-		pm = tracker.NewStoreBacked(pm, hub, repoName(cfg.RepoRoot), cfg.ReadyLabel, cfg.QuarantineLabel)
+		pm = tracker.NewStoreBacked(pm, hub, repoName(cfg.RepoRoot), internalIDPrefix(cfg), cfg.ReadyLabel, cfg.QuarantineLabel)
 	}
 	return pm, nil
+}
+
+// internalIDPrefix is the prefix the hub mints this repo's internal issue ids with,
+// which a store-backed tracker routes on: a synced repo's store holds both its
+// tracker's tickets and the internal issues filed against it (ADR 0007). It is ""
+// when an explicit ISSUE_PREFIX makes that prefix the tracker's own key, leaving the
+// two id spaces indistinguishable.
+func internalIDPrefix(cfg config.Config) string {
+	prefix := config.InternalPrefix(cfg.IssuePrefixConfigured, repoName(cfg.RepoRoot))
+	if strings.EqualFold(prefix, cfg.IssuePrefix) {
+		return ""
+	}
+	return prefix
+}
+
+// validateTicketID accepts a ticket id passed on the command line when it is
+// addressed to this repo: one carrying the tracker's prefix, or — in a store-backed
+// repo, whose store also holds internal issues — the internal id prefix.
+func validateTicketID(cfg config.Config, id string) error {
+	err := config.ValidatePrefix(id, cfg.IssuePrefix)
+	if err == nil || !storeBackedProvider(cfg) {
+		return err
+	}
+	if prefix := internalIDPrefix(cfg); prefix != "" && config.ValidatePrefix(id, prefix) == nil {
+		return nil
+	}
+	return err
 }
 
 // storeBackedProvider reports whether the repo's synced tracker (Linear or Jira)

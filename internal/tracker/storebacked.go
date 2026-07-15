@@ -14,16 +14,15 @@ import (
 // tickets — every non-internal row — for the store-backed picker.
 const sourceSynced = "synced"
 
-// storeHub is the slice of the hub API the store-backed tracker drives: it reads
-// issues and the backlog from the store, mirrors a tracker write onto a synced row,
-// nudges a sync, and files internal bug issues. *hubclient.Client satisfies it;
-// tests supply a fake.
+// storeHub is the slice of the hub API the store-backed tracker drives: everything
+// the internal provider needs, plus reading a synced issue and the backlog from the
+// store, mirroring a tracker write onto a synced row, and nudging a sync.
+// *hubclient.Client satisfies it; tests supply a fake.
 type storeHub interface {
+	hubAPI
 	Sync(ctx context.Context, repo string) error
 	Issue(ctx context.Context, repo, id string) (hubclient.Issue, error)
-	Backlog(ctx context.Context, repo string, q hubclient.BacklogQuery) ([]hubclient.BacklogItem, error)
 	MirrorSynced(ctx context.Context, repo, id string, m hubclient.SyncedMirror) error
-	CreateInternalIssue(ctx context.Context, repo string, d hubclient.InternalDraft) (hubclient.Issue, error)
 }
 
 // StoreBacked is the pipeline's tracker for a synced repo (Linear or Jira): every
@@ -33,24 +32,53 @@ type storeHub interface {
 // the external tracker through Writes, and each is mirrored onto the store row in the
 // same motion so the board never lags a transition. Bugs the verify loop files become
 // internal issues, never external ones.
+//
+// A synced repo's store also holds internal issues — ones the verify loop filed, or
+// the hub minted — carrying an identifier prefix the tracker knows nothing about.
+// Every operation naming such an id is served by the internal provider instead, so
+// an internal ticket runs here the way it does in a repo with no tracker at all.
 type StoreBacked struct {
 	Writes          Tracker
 	Hub             storeHub
 	Repo            string
+	InternalPrefix  string
 	ReadyLabel      string
 	QuarantineLabel string
 }
 
 // NewStoreBacked wraps writes — the repo's external tracker — so its reads come from
 // the hub store while its status/label writes still land on the tracker (and, in the
-// same call, on the store row).
-func NewStoreBacked(writes Tracker, hub storeHub, repo, readyLabel, quarantineLabel string) *StoreBacked {
+// same call, on the store row). internalPrefix is the prefix the repo's internal
+// issue ids carry; "" leaves every id with the tracker.
+func NewStoreBacked(writes Tracker, hub storeHub, repo, internalPrefix, readyLabel, quarantineLabel string) *StoreBacked {
 	return &StoreBacked{
 		Writes:          writes,
 		Hub:             hub,
 		Repo:            repo,
+		InternalPrefix:  internalPrefix,
 		ReadyLabel:      readyLabel,
 		QuarantineLabel: quarantineLabel,
+	}
+}
+
+// isInternal reports whether id names one of the repo's internal issues rather than
+// a synced ticket. The hub mints internal ids with a prefix that is never the
+// tracker's team key, so the identifier alone decides. No id — an unscoped pick —
+// is never internal, whatever prefix prefixOf falls back to.
+func (in *StoreBacked) isInternal(id string) bool {
+	if id == "" || in.InternalPrefix == "" {
+		return false
+	}
+	return strings.EqualFold(prefixOf(id), in.InternalPrefix)
+}
+
+// internal is the provider that serves the repo's internal issues, over the same hub.
+func (in *StoreBacked) internal() *Internal {
+	return &Internal{
+		Hub:             in.Hub,
+		Repo:            in.Repo,
+		ReadyLabel:      in.ReadyLabel,
+		QuarantineLabel: in.QuarantineLabel,
 	}
 }
 
@@ -90,8 +118,13 @@ func (in *StoreBacked) ListEligible(ctx context.Context, scope Scope) ([]ListedT
 
 // eligible nudges a sync, then reads the repo's ready-labelled synced backlog and
 // narrows it to the runnable candidates: an unstarted leaf, restricted to a scoped
-// parent's children, ordered by ascending issue number.
+// parent's children, ordered by ascending issue number. A pick scoped to an internal
+// epic reads that epic's children instead; an unscoped pick stays synced-only, so the
+// loop never picks an internal issue out of a tracker's backlog on its own.
 func (in *StoreBacked) eligible(ctx context.Context, scope Scope) ([]hubclient.BacklogItem, error) {
+	if in.isInternal(scope.Parent) {
+		return in.internal().eligible(ctx, scope)
+	}
 	if err := in.Hub.Sync(ctx, in.Repo); err != nil {
 		return nil, fmt.Errorf("sync before pick: %w", err)
 	}
@@ -123,6 +156,9 @@ func (in *StoreBacked) eligible(ctx context.Context, scope Scope) ([]hubclient.B
 
 // SubIssues returns the synced children of id, ordered by issue number.
 func (in *StoreBacked) SubIssues(ctx context.Context, id string) ([]SubIssue, error) {
+	if in.isInternal(id) {
+		return in.internal().SubIssues(ctx, id)
+	}
 	items, err := in.Hub.Backlog(ctx, in.Repo, hubclient.BacklogQuery{Source: sourceSynced})
 	if err != nil {
 		return nil, err
@@ -225,6 +261,9 @@ func (in *StoreBacked) IssueProject(ctx context.Context, id string) (string, err
 // SetStatus moves the ticket in the external tracker and mirrors the new status onto
 // the store row so the board reflects it at once.
 func (in *StoreBacked) SetStatus(ctx context.Context, id, status, extra string) error {
+	if in.isInternal(id) {
+		return in.internal().SetStatus(ctx, id, status, extra)
+	}
 	if err := in.Writes.SetStatus(ctx, id, status, extra); err != nil {
 		return err
 	}
@@ -235,6 +274,9 @@ func (in *StoreBacked) SetStatus(ctx context.Context, id, status, extra string) 
 // Reset returns the ticket to an unstarted, ready state in the tracker and mirrors
 // the ready/quarantine label swap and the unstarted group onto the store row.
 func (in *StoreBacked) Reset(ctx context.Context, id string) error {
+	if in.isInternal(id) {
+		return in.internal().Reset(ctx, id)
+	}
 	if err := in.Writes.Reset(ctx, id); err != nil {
 		return err
 	}
@@ -249,6 +291,9 @@ func (in *StoreBacked) Reset(ctx context.Context, id string) error {
 // Quarantine marks the ticket unrecoverable in the tracker and mirrors the
 // quarantine/ready label swap onto the store row.
 func (in *StoreBacked) Quarantine(ctx context.Context, id, reason string) error {
+	if in.isInternal(id) {
+		return in.internal().Quarantine(ctx, id, reason)
+	}
 	if err := in.Writes.Quarantine(ctx, id, reason); err != nil {
 		return err
 	}
@@ -264,6 +309,9 @@ func (in *StoreBacked) Quarantine(ctx context.Context, id, reason string) error 
 func (in *StoreBacked) AddLabel(ctx context.Context, id, label string) error {
 	if strings.TrimSpace(label) == "" {
 		return nil
+	}
+	if in.isInternal(id) {
+		return in.internal().AddLabel(ctx, id, label)
 	}
 	if labeler, ok := in.Writes.(IssueLabeler); ok {
 		if err := labeler.AddLabel(ctx, id, label); err != nil {
