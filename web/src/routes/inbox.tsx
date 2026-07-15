@@ -7,6 +7,7 @@ import {
   Loader2,
   PanelRightClose,
   PanelRightOpen,
+  RotateCcw,
   SkipForward,
   Sparkles,
 } from 'lucide-react'
@@ -14,12 +15,18 @@ import {
 import { AuthoringDrawer } from '@/components/grill-panel'
 import { Markdown } from '@/components/markdown'
 import { ErrorNote } from '@/components/grill/banners'
+import { Composer } from '@/components/grill/composer'
 import {
   GrillConversation,
   type GrillStatus,
 } from '@/components/grill/conversation'
 import { useGrillSession } from '@/components/grill/session'
 import { Button } from '@/components/ui/button'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
 import {
   PageHeader,
   ProjectScopeGate,
@@ -102,6 +109,10 @@ function InboxPage() {
   // Whatever is on screen has been read, and the thread's session is the one being
   // read — it is followed live, where the rail's list trails a staleTime behind.
   const onScreen = live?.session ?? selected?.session
+
+  // With no session the chat zone shows the read-only preview, which carries the issue
+  // itself — so the context panel beside it would only repeat what is already in view.
+  const hasSession = Boolean(onScreen)
 
   useEffect(() => {
     if (!onScreen) return
@@ -228,7 +239,9 @@ function InboxPage() {
           <div
             className={cn(
               'absolute inset-0 flex flex-col px-8 pb-4 md:grid md:grid-cols-[260px_minmax(0,1fr)]',
-              contextOpen && 'xl:[grid-template-columns:260px_minmax(0,1fr)_340px]',
+              contextOpen &&
+                hasSession &&
+                'xl:[grid-template-columns:260px_minmax(0,1fr)_340px]',
             )}
           >
             <QueueSelect
@@ -256,6 +269,7 @@ function InboxPage() {
                   position={inboxPosition(items, selected.id)}
                   total={items.length}
                   status={live}
+                  hasSession={hasSession}
                   onStatus={setStatus}
                   contextOpen={contextOpen}
                   onToggleContext={toggleContext}
@@ -278,7 +292,7 @@ function InboxPage() {
               )}
             </section>
 
-            {selected && contextOpen && (
+            {selected && contextOpen && hasSession && (
               <ContextColumn repo={repo} item={selected} status={live} />
             )}
           </div>
@@ -298,15 +312,17 @@ function InboxPage() {
   )
 }
 
-// SessionColumn is the chat zone: the session bar over the issue's conversation,
-// opening a session for an issue that has none. Hosts key it on the issue so the
-// auto-start and the thread reset together.
+// SessionColumn is the chat zone: the session bar over the issue's conversation, or —
+// when the issue has no session yet — a read-only preview whose actions are the only
+// way a session starts. Hosts key it on the issue so the thread and preview reset
+// together, and selecting or skimming an issue never opens one.
 function SessionColumn({
   repo,
   item,
   position,
   total,
   status,
+  hasSession,
   onStatus,
   contextOpen,
   onToggleContext,
@@ -318,13 +334,15 @@ function SessionColumn({
   position: number
   total: number
   status: GrillStatus | null
+  hasSession: boolean
   onStatus: (status: GrillStatus) => void
   contextOpen: boolean
   onToggleContext: () => void
   onSkip: () => void
   onApplied: () => void
 }) {
-  const { session, starting, error, retry } = useGrillSession(repo, item.id)
+  const { session, resolved, starting, restarting, error, start, startOver, retry } =
+    useGrillSession(repo, item.id)
 
   // The stream's session outranks the list's: it is the one the thread is following.
   const live = status?.session ?? session
@@ -337,9 +355,12 @@ function SessionColumn({
         total={total}
         pill={live ? inboxPill(live.state) : null}
         reconnecting={status?.stream === 'error'}
+        showContextToggle={hasSession}
         contextOpen={contextOpen}
         onToggleContext={onToggleContext}
         onSkip={onSkip}
+        onStartOver={live ? startOver : undefined}
+        restarting={restarting}
       />
 
       {/* The overlay frame floats over the thread, not the bar above it: the bar
@@ -354,31 +375,139 @@ function SessionColumn({
             onApplied={onApplied}
             onDiscarded={onSkip}
           />
-        ) : (
+        ) : starting ? (
+          <SpinnerNote label="Starting interview…" />
+        ) : error ? (
           <div className="flex min-h-0 flex-1 items-center justify-center px-4">
-            {error ? (
-              <div className="flex flex-col items-center gap-3">
-                <ErrorNote message={error.message} />
-                {retry && (
-                  <Button size="sm" variant="outline" onClick={retry}>
-                    Try again
-                  </Button>
-                )}
-              </div>
-            ) : (
-              <p className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="size-4 animate-spin" />
-                {starting ? 'Starting grilling session…' : 'Loading…'}
-              </p>
-            )}
+            <div className="flex flex-col items-center gap-3">
+              <ErrorNote message={error.message} />
+              {retry && (
+                <Button size="sm" variant="outline" onClick={retry}>
+                  Try again
+                </Button>
+              )}
+            </div>
           </div>
+        ) : !resolved ? (
+          <SpinnerNote label="Loading…" />
+        ) : (
+          <SessionPreview
+            repo={repo}
+            item={item}
+            onStart={start}
+            onSkip={onSkip}
+          />
         )}
 
-        {contextOpen && (
+        {contextOpen && hasSession && (
           <ContextOverlay repo={repo} item={item} status={status} />
         )}
       </div>
     </>
+  )
+}
+
+function SpinnerNote({ label }: { label: string }) {
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center px-4">
+      <p className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" />
+        {label}
+      </p>
+    </div>
+  )
+}
+
+// SessionPreview is what a no-session item shows in place of the conversation: a
+// read-only read of the issue over a footer whose actions are the only way an
+// Interview begins. Start interview opens a blank one; the composer opens with the
+// typed message as the first turn; Ask ahead parks just the opening question for
+// later; Skip moves on untouched.
+function SessionPreview({
+  repo,
+  item,
+  onStart,
+  onSkip,
+}: {
+  repo: string
+  item: InboxItem
+  onStart: (seed?: string) => void
+  onSkip: () => void
+}) {
+  const queryClient = useQueryClient()
+  const issue = useQuery(issueQueryOptions(repo, item.id))
+  const labels = (item.entry?.labels ?? []).filter((l) =>
+    GRILLABLE_LABELS.includes(l),
+  )
+
+  const askAhead = useMutation({
+    mutationFn: () => pregrillIssues(repo, [item.id]),
+    onSettled: () =>
+      void queryClient.invalidateQueries({ queryKey: ['grill', repo] }),
+  })
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6">
+        <div className="mx-auto flex max-w-2xl flex-col gap-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-mono text-xs text-muted-foreground">
+              {item.id}
+            </span>
+            {labels.map((label) => (
+              <span
+                key={label}
+                className="inline-flex items-center rounded-full border border-warn/50 bg-warn/12 px-2 py-0.5 font-mono text-[0.65rem] text-warn"
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+          <h2 className="text-balance text-lg font-semibold leading-snug text-foreground">
+            {item.title}
+          </h2>
+          <Description
+            markdown={issue.data?.description.trim() ?? ''}
+            loading={issue.isLoading}
+            error={(issue.error as Error) ?? null}
+          />
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-3 border-t border-border p-4">
+        <p className="text-xs text-muted-foreground">
+          No interview yet — start one, or send a first message to open with it.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" onClick={() => onStart()}>
+            <Sparkles />
+            Start interview
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => askAhead.mutate()}
+            disabled={askAhead.isPending}
+          >
+            <Flame className={cn(askAhead.isPending && 'animate-pulse')} />
+            {askAhead.isPending ? 'Asking ahead…' : 'Ask ahead'}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onSkip}>
+            <SkipForward />
+            Skip
+          </Button>
+        </div>
+        <Composer
+          placeholder="Type your first message to start the interview…"
+          disabled={askAhead.isPending}
+          submitting={false}
+          onSend={(text) => onStart(text)}
+        />
+        {askAhead.error && (
+          <ErrorNote message={(askAhead.error as Error).message} />
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -388,18 +517,24 @@ function SessionBar({
   total,
   pill,
   reconnecting,
+  showContextToggle,
   contextOpen,
   onToggleContext,
   onSkip,
+  onStartOver,
+  restarting,
 }: {
   item: InboxItem
   position: number
   total: number
   pill: { tone: 'warn' | 'active' | 'verify' | 'success' | 'todo'; label: string } | null
   reconnecting: boolean
+  showContextToggle: boolean
   contextOpen: boolean
   onToggleContext: () => void
   onSkip: () => void
+  onStartOver?: () => void
+  restarting?: boolean
 }) {
   return (
     <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border py-3 pl-5 pr-1">
@@ -420,6 +555,9 @@ function SessionBar({
           </span>
         )}
         {pill && <StatusPill state={pill.tone} label={pill.label} />}
+        {onStartOver && (
+          <StartOverButton onConfirm={onStartOver} pending={restarting} />
+        )}
         <Button
           variant="outline"
           size="sm"
@@ -429,21 +567,70 @@ function SessionBar({
           <SkipForward />
           Skip
         </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-8"
-          onClick={onToggleContext}
-          aria-pressed={contextOpen}
-          title={contextOpen ? 'Hide issue context' : 'Show issue context'}
-        >
-          {contextOpen ? <PanelRightClose /> : <PanelRightOpen />}
-          <span className="sr-only">
-            {contextOpen ? 'Hide issue context' : 'Show issue context'}
-          </span>
-        </Button>
+        {showContextToggle && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8"
+            onClick={onToggleContext}
+            aria-pressed={contextOpen}
+            title={contextOpen ? 'Hide issue context' : 'Show issue context'}
+          >
+            {contextOpen ? <PanelRightClose /> : <PanelRightOpen />}
+            <span className="sr-only">
+              {contextOpen ? 'Hide issue context' : 'Show issue context'}
+            </span>
+          </Button>
+        )}
       </div>
     </div>
+  )
+}
+
+// Start over discards the live Interview and opens a fresh one on the same item. The
+// confirm guards only the typed answers — nothing has been written to the tracker — so
+// it is a lightweight popover, not a modal. Never call this "Reset": Reset is the
+// destructive ticket action (branch delete + re-queue).
+function StartOverButton({
+  onConfirm,
+  pending,
+}: {
+  onConfirm: () => void
+  pending?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" disabled={pending} aria-label="Start over">
+          <RotateCcw className={cn(pending && 'animate-spin')} />
+          Start over
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-64">
+        <p className="text-sm font-medium text-foreground">
+          Discard this interview and start over?
+        </p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          Your typed answers are lost. The ticket and its labels stay untouched.
+        </p>
+        <div className="mt-3 flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => {
+              setOpen(false)
+              onConfirm()
+            }}
+          >
+            Start over
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }
 

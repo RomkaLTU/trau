@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Loader2, Sparkles } from "lucide-react";
 
@@ -39,7 +39,20 @@ export function GrillPanel({
   // inbox can auto-advance to the next unclear issue.
   onApplied?: () => void;
 }) {
-  const { session, starting, error, retry } = useGrillSession(repo, issueId);
+  const { session, resolved, starting, error, start, retry } = useGrillSession(
+    repo,
+    issueId,
+  );
+
+  // Opening the drawer is itself the deliberate act, so the panel starts the session
+  // on mount — but only once the list has settled, so an issue's live thread is
+  // rejoined rather than duplicated by a start racing the resolution.
+  const started = useRef(false);
+  useEffect(() => {
+    if (!resolved || session || started.current) return;
+    started.current = true;
+    start();
+  }, [resolved, session, start]);
 
   if (session) {
     return (
