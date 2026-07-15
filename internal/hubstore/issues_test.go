@@ -604,6 +604,26 @@ func TestBacklogPageSurfacesAssignee(t *testing.T) {
 	}
 }
 
+func TestBacklogPageTextMatchesAssigneeName(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/assigntext"
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-1", Title: "unrelated", StatusGroup: "backlog", AssigneeID: "u-1", AssigneeName: "Ada Lovelace"},
+		{Identifier: "COD-2", Title: "lovelace in the title", StatusGroup: "backlog"},
+		{Identifier: "COD-3", Title: "nothing", StatusGroup: "backlog", AssigneeID: "u-2", AssigneeName: "Bob"},
+	}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, total, _, err := s.BacklogPage(repo, BacklogFilter{Text: "lovelace"})
+	if err != nil {
+		t.Fatalf("BacklogPage: %v", err)
+	}
+	want := []string{"COD-1", "COD-2"}
+	if total != len(want) || !reflect.DeepEqual(idsOf(got), want) {
+		t.Fatalf("text over assignee = %v (total %d), want %v alongside the title match", idsOf(got), total, want)
+	}
+}
+
 func TestBacklogPageAssigneeFilter(t *testing.T) {
 	s := testIssues(t)
 	repo := "/repo/assignfilter"
