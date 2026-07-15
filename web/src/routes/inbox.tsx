@@ -17,6 +17,7 @@ import {
   EmptyState,
   PageHeader,
   ProjectScopeGate,
+  RepoHealthGate,
   StatusPill,
   useActiveRepo,
   type RunState,
@@ -124,57 +125,59 @@ function InboxPage() {
         }
       />
 
-      <div className="flex flex-col gap-6 px-8 py-6">
-        {(passSummary || pregrillAll.error) && (
-          <p
-            className={cn(
-              'text-sm',
-              pregrillAll.error ? 'text-destructive' : 'text-muted-foreground',
-            )}
-          >
-            {pregrillAll.error ? pregrillAll.error.message : passSummary}
-          </p>
-        )}
+      <RepoHealthGate>
+        <div className="flex flex-col gap-6 px-8 py-6">
+          {(passSummary || pregrillAll.error) && (
+            <p
+              className={cn(
+                'text-sm',
+                pregrillAll.error ? 'text-destructive' : 'text-muted-foreground',
+              )}
+            >
+              {pregrillAll.error ? pregrillAll.error.message : passSummary}
+            </p>
+          )}
 
-        {isLoading && items.length === 0 && (
-          <p className="text-sm text-muted-foreground">Loading inbox…</p>
-        )}
-        {error && (
-          <p className="text-sm text-destructive">{error.message}</p>
-        )}
+          {isLoading && items.length === 0 && (
+            <p className="text-sm text-muted-foreground">Loading inbox…</p>
+          )}
+          {error && (
+            <p className="text-sm text-destructive">{error.message}</p>
+          )}
 
-        {!isLoading && items.length === 0 && !error && (
-          <EmptyState message="Inbox zero — no issues are labelled needs-triage, needs-info or needs-split right now." />
-        )}
+          {!isLoading && items.length === 0 && !error && (
+            <EmptyState message="Inbox zero — no issues are labelled needs-triage, needs-info or needs-split right now." />
+          )}
 
-        {sections.map((section) => {
-          const meta = ATTENTION_META[section.attention]
-          return (
-            <section key={section.attention} className="flex flex-col gap-2">
-              <div className="flex items-baseline gap-1.5 px-1">
-                <h2 className="text-sm font-semibold text-foreground">{meta.label}</h2>
-                <span aria-hidden className="text-muted-foreground/50">
-                  ·
-                </span>
-                <span className="text-xs tabular-nums text-muted-foreground">
-                  {section.items.length}
-                </span>
-              </div>
-              <ul className="flex flex-col gap-2">
-                {section.items.map((item) => (
-                  <InboxRow
-                    key={item.entry.id}
-                    repo={repo}
-                    item={item}
-                    active={peek === item.entry.id}
-                    onOpen={() => void setPeek(item.entry.id)}
-                  />
-                ))}
-              </ul>
-            </section>
-          )
-        })}
-      </div>
+          {sections.map((section) => {
+            const meta = ATTENTION_META[section.attention]
+            return (
+              <section key={section.attention} className="flex flex-col gap-2">
+                <div className="flex items-baseline gap-1.5 px-1">
+                  <h2 className="text-sm font-semibold text-foreground">{meta.label}</h2>
+                  <span aria-hidden className="text-muted-foreground/50">
+                    ·
+                  </span>
+                  <span className="text-xs tabular-nums text-muted-foreground">
+                    {section.items.length}
+                  </span>
+                </div>
+                <ul className="flex flex-col gap-2">
+                  {section.items.map((item) => (
+                    <InboxRow
+                      key={item.entry.id}
+                      repo={repo}
+                      item={item}
+                      active={peek === item.entry.id}
+                      onOpen={() => void setPeek(item.entry.id)}
+                    />
+                  ))}
+                </ul>
+              </section>
+            )
+          })}
+        </div>
+      </RepoHealthGate>
 
       <InboxDrawer
         repo={repo}

@@ -53,6 +53,16 @@ export interface RepoView {
   freshness?: RepoFreshness
 }
 
+// RepoHealth is one repo's /health resource: the derived state plus the sync
+// facts behind it, so a gate can poll a single repo instead of the whole list.
+export interface RepoHealth {
+  repo: string
+  state: RepoHealthState
+  last_synced_at: string
+  last_error: string
+  issue_count: number
+}
+
 export interface InstancesResponse {
   instances: Instance[]
   repos: RepoView[]
@@ -86,6 +96,13 @@ export function healthPill(state: RepoHealthState): {
   }
 }
 
+// healthBlocks reports whether a state stops a repo-scoped page from being
+// trusted: nothing is configured to fetch, or the last sync recorded an error.
+// A syncing or never-synced repo is mid-setup and left alone.
+export function healthBlocks(state: RepoHealthState): boolean {
+  return state === 'unconfigured' || state === 'sync-failed'
+}
+
 async function fetchInstances(): Promise<InstancesResponse> {
   const res = await apiFetch('/api/v1/instances')
   if (!res.ok) {
@@ -102,6 +119,24 @@ export const instancesQueryOptions = queryOptions({
   // a user watches a run from another tab.
   refetchIntervalInBackground: true,
 })
+
+async function fetchRepoHealth(repo: string): Promise<RepoHealth> {
+  const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(repo)}/health`)
+  if (!res.ok) {
+    throw new Error(`repo health request failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+// Keyed by repo so every gate on a page shares one fetch rather than one per
+// section.
+export const repoHealthQueryOptions = (repo: string) =>
+  queryOptions({
+    queryKey: ['repo-health', repo],
+    queryFn: () => fetchRepoHealth(repo),
+    enabled: repo !== '',
+    staleTime: 15_000,
+  })
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
   const detail = (await res.json().catch(() => null)) as { error?: string } | null

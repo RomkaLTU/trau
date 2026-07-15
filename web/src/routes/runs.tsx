@@ -1,7 +1,12 @@
 import { useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 
-import { Eyebrow, NoticeBanner, type CheckpointNotice } from '@/components/trau'
+import {
+  Eyebrow,
+  NoticeBanner,
+  RepoHealthGate,
+  type CheckpointNotice,
+} from '@/components/trau'
 import { RunLedger } from '@/components/trau/run-ledger'
 import { standardTitle, usePageTitle } from '@/lib/page-title'
 import { reposQueryOptions } from '@/lib/runs'
@@ -31,7 +36,9 @@ function Runs() {
 
       {notice && <NoticeBanner notice={notice} onDismiss={() => setNotice(null)} />}
 
-      <RunLedger onNotice={setNotice} />
+      <RepoHealthGate>
+        <RunLedger onNotice={setNotice} />
+      </RepoHealthGate>
     </div>
   )
 }

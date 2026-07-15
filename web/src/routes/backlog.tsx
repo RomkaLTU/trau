@@ -17,7 +17,12 @@ import {
   Tag,
 } from 'lucide-react'
 
-import { PageHeader, ProjectScopeGate, useActiveRepo } from '@/components/trau'
+import {
+  PageHeader,
+  ProjectScopeGate,
+  RepoHealthGate,
+  useActiveRepo,
+} from '@/components/trau'
 import { AuthoringDrawer } from '@/components/grill-panel'
 import {
   SegmentedControl,
@@ -202,154 +207,156 @@ function BacklogPage() {
         }
       />
 
-      <div className="flex flex-col gap-4 px-8 py-6">
-        {creating && (
-          <InternalIssueForm
-            repo={repo}
-            onDone={() => setCreating(false)}
-            onCancel={() => setCreating(false)}
-          />
-        )}
+      <RepoHealthGate>
+        <div className="flex flex-col gap-4 px-8 py-6">
+          {creating && (
+            <InternalIssueForm
+              repo={repo}
+              onDone={() => setCreating(false)}
+              onCancel={() => setCreating(false)}
+            />
+          )}
 
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex min-w-56 flex-1 items-center gap-2 rounded-md border border-border bg-input px-2.5 py-1.5">
-            <Search className="size-4 shrink-0 text-muted-foreground" />
-            <input
-              type="text"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="Search id or title…"
-              className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex min-w-56 flex-1 items-center gap-2 rounded-md border border-border bg-input px-2.5 py-1.5">
+              <Search className="size-4 shrink-0 text-muted-foreground" />
+              <input
+                type="text"
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                placeholder="Search id or title…"
+                className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+              />
+            </div>
+            <StateFilter
+              value={state}
+              onChange={(next) =>
+                setFilters({ state: next.length ? next : null, page: null })
+              }
+            />
+            <LabelFilter
+              repo={repo}
+              value={label}
+              onChange={(next) => setFilters({ label: next || null, page: null })}
+            />
+            <SegmentedControl
+              aria-label="Source"
+              options={SOURCE_OPTIONS}
+              value={source ?? 'all'}
+              onChange={(v) => setFilters({ source: v === 'all' ? null : v, page: null })}
             />
           </div>
-          <StateFilter
-            value={state}
-            onChange={(next) =>
-              setFilters({ state: next.length ? next : null, page: null })
-            }
-          />
-          <LabelFilter
-            repo={repo}
-            value={label}
-            onChange={(next) => setFilters({ label: next || null, page: null })}
-          />
-          <SegmentedControl
-            aria-label="Source"
-            options={SOURCE_OPTIONS}
-            value={source ?? 'all'}
-            onChange={(v) => setFilters({ source: v === 'all' ? null : v, page: null })}
-          />
-        </div>
 
-        {backlog.isLoading && (
-          <p className="text-sm text-muted-foreground">Loading backlog…</p>
-        )}
-        {backlog.error && (
-          <p className="text-sm text-destructive">
-            {String((backlog.error as Error).message)}
-          </p>
-        )}
-
-        {backlog.data && (
-          <div className="flex flex-col gap-6">
-            {sections.map((section) => (
-              <section key={section.group} className="flex flex-col gap-2">
-                {!section.continuation && (
-                  <div className="flex items-baseline gap-1.5 px-1">
-                    <h2 className="text-sm font-semibold text-foreground">
-                      {section.label}
-                    </h2>
-                    <span aria-hidden className="text-muted-foreground/50">
-                      ·
-                    </span>
-                    <span className="text-xs tabular-nums text-muted-foreground">
-                      {section.count}
-                    </span>
-                  </div>
-                )}
-                <ul className="flex flex-col gap-2">
-                  {nestBacklogRows(section.items).map((node) =>
-                    node.kind === 'epic' ? (
-                      <Fragment key={node.entry.id}>
-                        {renderRow(node.entry, {
-                          expanded: expanded.has(node.entry.id),
-                          onToggle: () => toggle(node.entry.id),
-                        })}
-                        {expanded.has(node.entry.id) &&
-                          node.children.map((child) =>
-                            renderRow(child, { nested: true }),
-                          )}
-                      </Fragment>
-                    ) : (
-                      renderRow(node.entry)
-                    ),
-                  )}
-                </ul>
-              </section>
-            ))}
-
-            {items.length === 0 && (
-              <p className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
-                {hasFilters
-                  ? 'No issues match these filters.'
-                  : 'No issues yet — create one to get started.'}
-              </p>
-            )}
-
-            {hidden.length > 0 && (
-              <p className="px-1 text-xs text-muted-foreground">
-                {hidden.map((h, i) => (
-                  <Fragment key={h.group}>
-                    {i > 0 && (
-                      <span className="px-1 text-muted-foreground/50">·</span>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setFilters({ state: [h.group], page: null })}
-                      className="tabular-nums underline-offset-2 transition-colors hover:text-foreground hover:underline"
-                    >
-                      {h.count} {h.group}
-                    </button>
-                  </Fragment>
-                ))}
-                {' hidden'}
-              </p>
-            )}
-          </div>
-        )}
-
-        {total > PAGE_SIZE && (
-          <div className="flex items-center justify-between pt-1">
-            <p className="text-xs text-muted-foreground">
-              Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of{' '}
-              {total}
+          {backlog.isLoading && (
+            <p className="text-sm text-muted-foreground">Loading backlog…</p>
+          )}
+          {backlog.error && (
+            <p className="text-sm text-destructive">
+              {String((backlog.error as Error).message)}
             </p>
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setFilters({ page: Math.max(1, page - 1) })}
-                disabled={page <= 1}
-              >
-                Previous
-              </Button>
-              <span className="text-xs text-muted-foreground">
-                Page {page} of {pageCount}
-              </span>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setFilters({ page: Math.min(pageCount, page + 1) })}
-                disabled={page >= pageCount}
-              >
-                Next
-              </Button>
+          )}
+
+          {backlog.data && (
+            <div className="flex flex-col gap-6">
+              {sections.map((section) => (
+                <section key={section.group} className="flex flex-col gap-2">
+                  {!section.continuation && (
+                    <div className="flex items-baseline gap-1.5 px-1">
+                      <h2 className="text-sm font-semibold text-foreground">
+                        {section.label}
+                      </h2>
+                      <span aria-hidden className="text-muted-foreground/50">
+                        ·
+                      </span>
+                      <span className="text-xs tabular-nums text-muted-foreground">
+                        {section.count}
+                      </span>
+                    </div>
+                  )}
+                  <ul className="flex flex-col gap-2">
+                    {nestBacklogRows(section.items).map((node) =>
+                      node.kind === 'epic' ? (
+                        <Fragment key={node.entry.id}>
+                          {renderRow(node.entry, {
+                            expanded: expanded.has(node.entry.id),
+                            onToggle: () => toggle(node.entry.id),
+                          })}
+                          {expanded.has(node.entry.id) &&
+                            node.children.map((child) =>
+                              renderRow(child, { nested: true }),
+                            )}
+                        </Fragment>
+                      ) : (
+                        renderRow(node.entry)
+                      ),
+                    )}
+                  </ul>
+                </section>
+              ))}
+
+              {items.length === 0 && (
+                <p className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+                  {hasFilters
+                    ? 'No issues match these filters.'
+                    : 'No issues yet — create one to get started.'}
+                </p>
+              )}
+
+              {hidden.length > 0 && (
+                <p className="px-1 text-xs text-muted-foreground">
+                  {hidden.map((h, i) => (
+                    <Fragment key={h.group}>
+                      {i > 0 && (
+                        <span className="px-1 text-muted-foreground/50">·</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setFilters({ state: [h.group], page: null })}
+                        className="tabular-nums underline-offset-2 transition-colors hover:text-foreground hover:underline"
+                      >
+                        {h.count} {h.group}
+                      </button>
+                    </Fragment>
+                  ))}
+                  {' hidden'}
+                </p>
+              )}
             </div>
-          </div>
-        )}
-      </div>
+          )}
+
+          {total > PAGE_SIZE && (
+            <div className="flex items-center justify-between pt-1">
+              <p className="text-xs text-muted-foreground">
+                Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of{' '}
+                {total}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setFilters({ page: Math.max(1, page - 1) })}
+                  disabled={page <= 1}
+                >
+                  Previous
+                </Button>
+                <span className="text-xs text-muted-foreground">
+                  Page {page} of {pageCount}
+                </span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setFilters({ page: Math.min(pageCount, page + 1) })}
+                  disabled={page >= pageCount}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      </RepoHealthGate>
 
       <IssueDrawer
         repo={repo}
