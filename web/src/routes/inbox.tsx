@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { parseAsString, useQueryState } from "nuqs";
 import {
-  Flame,
+  Clock,
   Loader2,
   PanelRightClose,
   PanelRightOpen,
@@ -258,7 +258,7 @@ function InboxPage() {
   }
 
   return (
-    <ProjectScopeGate className="min-h-0 flex-1" action="triage unclear issues">
+    <ProjectScopeGate className="min-h-0 flex-1" action="interview unclear issues">
       {/* Both gates already establish a positioned wrapper, so filling it is how this
           page claims the height the root column left it — the recap banner above is
           conditional, and a fixed viewport offset would be wrong whenever it shows. */}
@@ -266,8 +266,8 @@ function InboxPage() {
         <PageHeader
           className="shrink-0"
           eyebrow={repo || "inbox"}
-          title="Triage inbox"
-          description="Work through unclear issues in one sitting — the ones with a question waiting on you come first."
+          title="Inbox"
+          description="Make unclear or new work ready to run — questions waiting on you come first."
           actions={
             <div className="flex items-center gap-2">
               <button
@@ -285,10 +285,10 @@ function InboxPage() {
                   onClick={() => pregrillAll.mutate()}
                   disabled={pregrillAll.isPending}
                 >
-                  <Flame />
+                  <Clock />
                   {pregrillAll.isPending
-                    ? "Pre-grilling…"
-                    : `Pre-grill all (${untouchedIds.length})`}
+                    ? "Asking ahead…"
+                    : `Ask ahead (${untouchedIds.length})`}
                 </Button>
               )}
             </div>
@@ -329,7 +329,7 @@ function InboxPage() {
             />
 
             <section
-              aria-label="Grilling session"
+              aria-label="Interview"
               className="flex min-h-0 min-w-0 flex-col"
             >
               {selected ? (
@@ -691,7 +691,7 @@ function SessionPreview({
             onClick={() => askAhead.mutate()}
             disabled={askAhead.isPending}
           >
-            <Flame className={cn(askAhead.isPending && "animate-pulse")} />
+            <Clock className={cn(askAhead.isPending && "animate-pulse")} />
             {askAhead.isPending ? "Asking ahead…" : "Ask ahead"}
           </Button>
           <Button size="sm" variant="ghost" onClick={onSkip}>
@@ -1274,10 +1274,10 @@ function PregrillButton({
       className={cn("size-7 shrink-0", className)}
       onClick={() => pregrill.mutate()}
       disabled={pregrill.isPending}
-      aria-label={`Pre-grill ${issueId}`}
-      title="Pre-grill — ask an opening question ahead of time"
+      aria-label={`Ask ahead ${issueId}`}
+      title="Ask ahead — have the opening question waiting for you"
     >
-      <Flame className={cn(pregrill.isPending && "animate-pulse")} />
+      <Clock className={cn(pregrill.isPending && "animate-pulse")} />
     </Button>
   );
 }
