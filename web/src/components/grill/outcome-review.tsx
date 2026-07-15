@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Eye,
   Loader2,
+  MessageCirclePlus,
   Pencil,
   Plus,
   Trash2,
@@ -61,7 +62,8 @@ export function OutcomeProposal({ outcome }: { outcome: OutcomePayload }) {
 // needs_split or no_change as a plain confirmation — and nothing reaches the tracker
 // until Apply. A partial apply keeps the session finished and shows each step so the
 // user can retry; a full apply flips the session to applied and refreshes the
-// drawer's issue so it leaves the unclear set.
+// drawer's issue so it leaves the unclear set. A proposal the user is not sold on
+// takes a follow-up instead, which reopens the session for another turn.
 export function OutcomeReview({
   repo,
   issueId,
@@ -69,6 +71,8 @@ export function OutcomeReview({
   outcome,
   onSession,
   onApplied,
+  onDiscarded,
+  onAskFollowUp,
 }: {
   repo: string;
   issueId: string;
@@ -76,6 +80,10 @@ export function OutcomeReview({
   outcome: OutcomePayload;
   onSession: (session: GrillSession) => void;
   onApplied?: () => void;
+  onDiscarded?: () => void;
+  // onAskFollowUp is what the follow-up button offers; hosts withhold it once the
+  // composer it reopens is already showing.
+  onAskFollowUp?: () => void;
 }) {
   const queryClient = useQueryClient();
   const issue = useQuery(issueQueryOptions(repo, issueId));
@@ -121,7 +129,10 @@ export function OutcomeReview({
 
   const discard = useMutation({
     mutationFn: () => abandonGrill(session.id),
-    onSuccess: onSession,
+    onSuccess: (settled) => {
+      onSession(settled);
+      onDiscarded?.();
+    },
   });
 
   if (session.state === "applied") {
@@ -206,11 +217,22 @@ export function OutcomeReview({
         </p>
       )}
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" onClick={() => apply.mutate()} disabled={blockApply}>
           {apply.isPending ? <Loader2 className="animate-spin" /> : <Check />}
           {applyLabel(outcome.disposition, apply.data)}
         </Button>
+        {onAskFollowUp && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onAskFollowUp}
+            disabled={busy}
+          >
+            <MessageCirclePlus />
+            Ask a follow-up
+          </Button>
+        )}
         {outcome.disposition !== "no_change" && (
           <Button
             variant="ghost"

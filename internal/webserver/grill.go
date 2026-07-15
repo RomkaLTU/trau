@@ -183,9 +183,10 @@ func (s *Server) handleGrillSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGrillAnswer appends a user's answer and resumes the session (POST). A
-// session that is not awaiting an answer is refused. A parked or stalled session
-// has no live child, so its answer fires a --resume turn; a waiting session's child
-// is still blocked on the MCP ask_user call and takes the answer over that channel.
+// session that cannot take an answer is refused. A parked, stalled or finished
+// session has no live child, so its answer fires a --resume turn; a waiting
+// session's child is still blocked on the MCP ask_user call and takes the answer
+// over that channel.
 func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -205,7 +206,7 @@ func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown grill session"})
 		return
 	}
-	if !grillAwaitingAnswer(sess.State) {
+	if !grillAcceptsAnswer(sess.State) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "session is not awaiting an answer"})
 		return
 	}
@@ -399,10 +400,12 @@ func (s *Server) publishGrillState(sess hubstore.GrillSession) {
 	})
 }
 
-// grillAwaitingAnswer reports whether a session in state can receive an answer.
-func grillAwaitingAnswer(state string) bool {
+// grillAcceptsAnswer reports whether a session in state can receive an answer. A
+// finished session takes one as a follow-up on its proposed outcome, which reopens
+// the session.
+func grillAcceptsAnswer(state string) bool {
 	switch state {
-	case hubstore.GrillWaiting, hubstore.GrillParked, hubstore.GrillStalled:
+	case hubstore.GrillWaiting, hubstore.GrillParked, hubstore.GrillStalled, hubstore.GrillFinished:
 		return true
 	default:
 		return false
@@ -410,12 +413,17 @@ func grillAwaitingAnswer(state string) bool {
 }
 
 // grillResumeSpawns reports whether answering a session in state must spawn a
-// resume turn. A parked or stalled session has no live child, so the answer only
-// reaches the agent by resuming; a waiting session's child is still blocked on the
-// MCP ask_user call and picks the answer up itself, so spawning again would double
-// the turn.
+// resume turn. A parked, stalled or finished session has no live child, so the
+// answer only reaches the agent by resuming; a waiting session's child is still
+// blocked on the MCP ask_user call and picks the answer up itself, so spawning
+// again would double the turn.
 func grillResumeSpawns(state string) bool {
-	return state == hubstore.GrillParked || state == hubstore.GrillStalled
+	switch state {
+	case hubstore.GrillParked, hubstore.GrillStalled, hubstore.GrillFinished:
+		return true
+	default:
+		return false
+	}
 }
 
 // parseSID reads the {sid} path segment as a session id, answering 400 on a

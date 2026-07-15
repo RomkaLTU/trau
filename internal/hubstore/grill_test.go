@@ -145,6 +145,33 @@ func TestGrillTransitionLegality(t *testing.T) {
 	}
 }
 
+func TestGrillFinishedReopens(t *testing.T) {
+	g, _ := testGrill(t, 0)
+	sess, err := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := g.Transition(sess.ID, GrillFinished, ""); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	got, err := g.Transition(sess.ID, GrillRunning, "")
+	if err != nil {
+		t.Fatalf("finished->running: %v", err)
+	}
+	if got.State != GrillRunning {
+		t.Fatalf("state = %q, want %q", got.State, GrillRunning)
+	}
+
+	// The reopened session still settles the same way a first-pass one does.
+	if _, err := g.Transition(sess.ID, GrillFinished, ""); err != nil {
+		t.Fatalf("refinish: %v", err)
+	}
+	if _, err := g.Transition(sess.ID, GrillApplied, ""); err != nil {
+		t.Fatalf("apply after reopen: %v", err)
+	}
+}
+
 func TestGrillUpdateChain(t *testing.T) {
 	g, _ := testGrill(t, 0)
 	sess, err := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1"})

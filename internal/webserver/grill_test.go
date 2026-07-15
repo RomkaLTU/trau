@@ -115,6 +115,46 @@ func TestGrillDetailAndAnswer(t *testing.T) {
 	}
 }
 
+func TestGrillFollowUpOnFinished(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	sess := createGrill(t, ts, repo, "COD-1")
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+
+	// Simulate the runner proposing an outcome and finishing on it.
+	if _, _, err := stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{Role: hubstore.GrillRoleAgent, Kind: hubstore.GrillKindOutcome, Payload: `{"disposition":"no_change","summary":"reads clear"}`}); err != nil {
+		t.Fatalf("post outcome: %v", err)
+	}
+	if _, err := stores.Grill().Transition(sid, hubstore.GrillFinished, ""); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	res := postJSON(t, ts.URL+APIPrefix+"/grill/"+sess.ID+"/answer", GrillAnswerRequest{Text: "what about auth?"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("follow-up status = %d, want 200", res.StatusCode)
+	}
+	var ack GrillAnswerResponse
+	if err := json.NewDecoder(res.Body).Decode(&ack); err != nil {
+		t.Fatalf("decode follow-up: %v", err)
+	}
+	if ack.Session.State != hubstore.GrillRunning || ack.Message.Kind != hubstore.GrillKindAnswer {
+		t.Fatalf("follow-up ack = %+v, want running/answer", ack)
+	}
+
+	// The door closes once the outcome lands: an applied session takes no follow-up.
+	if _, err := stores.Grill().Transition(sid, hubstore.GrillFinished, ""); err != nil {
+		t.Fatalf("refinish: %v", err)
+	}
+	if _, err := stores.Grill().Transition(sid, hubstore.GrillApplied, ""); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	late := postJSON(t, ts.URL+APIPrefix+"/grill/"+sess.ID+"/answer", GrillAnswerRequest{Text: "too late"})
+	_ = late.Body.Close()
+	if late.StatusCode != http.StatusConflict {
+		t.Fatalf("answer after apply status = %d, want 409", late.StatusCode)
+	}
+}
+
 func TestGrillResumeSpawns(t *testing.T) {
 	tests := []struct {
 		state string
@@ -122,9 +162,9 @@ func TestGrillResumeSpawns(t *testing.T) {
 	}{
 		{hubstore.GrillParked, true},
 		{hubstore.GrillStalled, true},
+		{hubstore.GrillFinished, true},
 		{hubstore.GrillWaiting, false},
 		{hubstore.GrillRunning, false},
-		{hubstore.GrillFinished, false},
 	}
 	for _, tt := range tests {
 		if got := grillResumeSpawns(tt.state); got != tt.want {
