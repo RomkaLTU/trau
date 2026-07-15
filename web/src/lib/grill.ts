@@ -90,6 +90,8 @@ export interface GrillApplyResponse {
 export interface QuestionPayload {
   text: string
   options: string[]
+  recommended?: string
+  why?: string
   allow_free_text: boolean
 }
 
@@ -359,6 +361,8 @@ export function questionPayload(msg: GrillMessage): QuestionPayload {
   return {
     text: typeof p.text === 'string' ? p.text : '',
     options: Array.isArray(p.options) ? p.options : [],
+    recommended: typeof p.recommended === 'string' ? p.recommended : undefined,
+    why: typeof p.why === 'string' ? p.why : undefined,
     allow_free_text: p.allow_free_text !== false,
   }
 }

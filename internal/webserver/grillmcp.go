@@ -111,6 +111,8 @@ var grillMCPTools = []mcpTool{
   "properties": {
     "question": {"type": "string", "description": "The single question to ask the user."},
     "options": {"type": "array", "items": {"type": "string"}, "description": "Optional suggested answers to offer the user."},
+    "recommended": {"type": "string", "description": "Optional: when you offer options, the one you would choose — repeat that option's text exactly. Omit only for pure-preference questions."},
+    "why": {"type": "string", "description": "Optional one-line reason for the recommended option."},
     "allow_free_text": {"type": "boolean", "description": "Whether the user may answer freely instead of picking an option. Defaults to true."}
   },
   "required": ["question"]
@@ -236,6 +238,8 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 	var a struct {
 		Question      string   `json:"question"`
 		Options       []string `json:"options"`
+		Recommended   string   `json:"recommended"`
+		Why           string   `json:"why"`
 		AllowFreeText *bool    `json:"allow_free_text"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
@@ -254,8 +258,10 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 	payload, _ := json.Marshal(struct {
 		Text          string   `json:"text"`
 		Options       []string `json:"options,omitempty"`
+		Recommended   string   `json:"recommended,omitempty"`
+		Why           string   `json:"why,omitempty"`
 		AllowFreeText bool     `json:"allow_free_text"`
-	}{Text: question, Options: a.Options, AllowFreeText: allowFreeText})
+	}{Text: question, Options: a.Options, Recommended: strings.TrimSpace(a.Recommended), Why: strings.TrimSpace(a.Why), AllowFreeText: allowFreeText})
 
 	question0, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
 		Role:    hubstore.GrillRoleAgent,
