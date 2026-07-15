@@ -11,6 +11,7 @@ import {
   ListPlus,
   Plus,
   RefreshCw,
+  Search,
   Square,
   TriangleAlert,
   X,
@@ -19,6 +20,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { MakeStartableButton } from '@/components/make-startable-button'
 import { useActiveRepo } from '@/components/trau/active-repo'
+import { AddTicketDialog } from '@/components/trau/add-ticket-dialog'
 import { TargetRepoField } from '@/components/trau/target-repo-field'
 import { ConfirmDialog } from '@/components/trau/confirm-dialog'
 import { Eyebrow } from '@/components/trau/eyebrow'
@@ -362,6 +364,7 @@ function LaunchQueueCard({
   const skipResumeShown = skipResumeApplies(items, runs.data?.runs ?? [])
   const [draft, setDraft] = useState('')
   const [expandedIds, setExpandedIds] = useState<string[]>([])
+  const [browseOpen, setBrowseOpen] = useState(false)
   const [skipResume, setSkipResume] = useState(false)
   const [onFault, setOnFault] = useState<OnFault>('halt')
 
@@ -473,6 +476,16 @@ function LaunchQueueCard({
                 <Plus className="size-4" aria-hidden="true" />
                 {add.isPending ? 'Adding…' : 'Add'}
               </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="font-mono"
+                onClick={() => setBrowseOpen(true)}
+              >
+                <Search className="size-4" aria-hidden="true" />
+                Browse…
+              </Button>
               {addAllPlan.items.length > 0 && (
                 <Button
                   type="button"
@@ -570,6 +583,14 @@ function LaunchQueueCard({
           ) : null}
         </div>
       </form>
+
+      <AddTicketDialog
+        repo={repo}
+        queued={items}
+        open={browseOpen}
+        onOpenChange={setBrowseOpen}
+        onQueue={setQueue}
+      />
     </TerminalCard>
   )
 }
