@@ -289,6 +289,26 @@ func TestGrillReadsIssueTitle(t *testing.T) {
 	}
 }
 
+func TestGrillAuthoringTitleFromSeed(t *testing.T) {
+	g, _ := testGrill(t, 0)
+	authoring, _ := g.Create(NewGrillSession{Repo: "acme"})
+	if _, _, err := g.AppendMessage(authoring.ID, NewGrillMessage{
+		Role:    GrillRoleUser,
+		Kind:    GrillKindInfo,
+		Payload: `{"text":"Add a dark-mode toggle"}`,
+	}); err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+
+	sess, found, err := g.Session(authoring.ID)
+	if err != nil || !found {
+		t.Fatalf("session(%d) = %v, %v", authoring.ID, found, err)
+	}
+	if sess.IssueTitle != "Add a dark-mode toggle" {
+		t.Fatalf("authoring title = %q, want the seed", sess.IssueTitle)
+	}
+}
+
 func TestGrillPruneKeepsRecentSettled(t *testing.T) {
 	g, db := testGrill(t, 2)
 
