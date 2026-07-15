@@ -145,6 +145,33 @@ func TestGrillTransitionLegality(t *testing.T) {
 	}
 }
 
+func TestGrillFinishedReopens(t *testing.T) {
+	g, _ := testGrill(t, 0)
+	sess, err := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := g.Transition(sess.ID, GrillFinished, ""); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	got, err := g.Transition(sess.ID, GrillRunning, "")
+	if err != nil {
+		t.Fatalf("finished->running: %v", err)
+	}
+	if got.State != GrillRunning {
+		t.Fatalf("state = %q, want %q", got.State, GrillRunning)
+	}
+
+	// The reopened session still settles the same way a first-pass one does.
+	if _, err := g.Transition(sess.ID, GrillFinished, ""); err != nil {
+		t.Fatalf("refinish: %v", err)
+	}
+	if _, err := g.Transition(sess.ID, GrillApplied, ""); err != nil {
+		t.Fatalf("apply after reopen: %v", err)
+	}
+}
+
 func TestGrillUpdateChain(t *testing.T) {
 	g, _ := testGrill(t, 0)
 	sess, err := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1"})
@@ -219,6 +246,46 @@ func TestGrillListFilter(t *testing.T) {
 	}
 	if len(waiting) != 1 || waiting[0].ID != b.ID {
 		t.Fatalf("list waiting = %+v, want [%d]", waiting, b.ID)
+	}
+}
+
+func TestGrillReadsIssueTitle(t *testing.T) {
+	g, db := testGrill(t, 0)
+	if _, _, err := NewIssues(db).Upsert("acme", "linear", []Issue{
+		{Identifier: "COD-1", Title: "Split the picker"},
+	}); err != nil {
+		t.Fatalf("seed issue: %v", err)
+	}
+	grilled, _ := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1"})
+	authoring, _ := g.Create(NewGrillSession{Repo: "acme"})
+	untracked, _ := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-404"})
+
+	sess, found, err := g.Session(grilled.ID)
+	if err != nil || !found {
+		t.Fatalf("session(%d) = %v, %v", grilled.ID, found, err)
+	}
+	if sess.IssueTitle != "Split the picker" {
+		t.Fatalf("session issue title = %q, want %q", sess.IssueTitle, "Split the picker")
+	}
+
+	list, err := g.List("acme", "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	titles := map[int64]string{}
+	for _, s := range list {
+		titles[s.ID] = s.IssueTitle
+	}
+	if titles[grilled.ID] != "Split the picker" {
+		t.Fatalf("listed issue title = %q, want %q", titles[grilled.ID], "Split the picker")
+	}
+	// An authoring session anchors to the repo alone, and a session can outlive the
+	// issue row it names — both keep an empty title rather than dropping the row.
+	if titles[authoring.ID] != "" || titles[untracked.ID] != "" {
+		t.Fatalf("titleless sessions = %q, %q, want empty", titles[authoring.ID], titles[untracked.ID])
+	}
+	if len(list) != 3 {
+		t.Fatalf("list = %d sessions, want 3", len(list))
 	}
 }
 

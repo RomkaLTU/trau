@@ -32,6 +32,7 @@ export interface Issue {
   has_children: boolean
   comments: IssueComment[]
   url?: string
+  created_at?: string
   // project is the ticket's own tracker project; in_project reports whether it
   // matches the repo's configured project, so a cross-project ticket can be
   // shown but refused rather than launched into the wrong repo.

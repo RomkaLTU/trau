@@ -4,36 +4,63 @@ import { backlogQueryOptions, type BacklogEntry } from './backlog'
 import { DEFAULT_STATE_GROUPS } from './backlog-filters'
 import {
   activeSessionForIssue,
+  appliedGrillSessionsQueryOptions,
   GRILLABLE_LABELS,
   grillSessionsQueryOptions,
   isAwaitingAnswer,
   type GrillSession,
+  type GrillState,
   type PregrillResponse,
 } from './grill'
 
 // InboxAttention is why an unclear issue is in the inbox, driven by its active
 // grilling session: answer = a question is waiting on the user (waiting/parked/
 // stalled), thinking = the agent is mid-turn, open = untouched (no session yet),
-// review = a finished proposal awaiting apply. It doubles as the list's sort tier.
-export type InboxAttention = 'answer' | 'thinking' | 'open' | 'review'
+// review = a finished proposal awaiting apply, done = applied today. It doubles as
+// the queue's sort tier.
+export type InboxAttention = 'answer' | 'thinking' | 'open' | 'review' | 'done'
 
 const ATTENTION_ORDER: Record<InboxAttention, number> = {
   answer: 0,
   thinking: 1,
   open: 2,
   review: 3,
+  done: 4,
 }
 
-// InboxItem pairs a grillable issue with its active session (if any) and the
-// resulting attention tier.
+// InboxGroup is a queue rail section. Waiting collects everything still owed a turn
+// — questions, untouched issues, and running sessions alike — because they are all
+// work the user has yet to finish, in the order they need attention.
+export type InboxGroup = 'waiting' | 'review' | 'done'
+
+const GROUP_OF: Record<InboxAttention, InboxGroup> = {
+  answer: 'waiting',
+  thinking: 'waiting',
+  open: 'waiting',
+  review: 'review',
+  done: 'done',
+}
+
+const GROUP_LABELS: Record<InboxGroup, string> = {
+  waiting: 'Waiting for you',
+  review: 'Ready to review',
+  done: 'Done today',
+}
+
+// InboxItem is one queue row. entry is the board issue behind it, absent on a Done
+// today row — applying drops the triage labels the board queries key on, so a
+// settled session's id and title are all that survive.
 export interface InboxItem {
-  entry: BacklogEntry
+  id: string
+  title: string
+  entry?: BacklogEntry
   session?: GrillSession
   attention: InboxAttention
 }
 
-export interface InboxSection {
-  attention: InboxAttention
+export interface InboxGroupView {
+  group: InboxGroup
+  label: string
   items: InboxItem[]
 }
 
@@ -77,23 +104,62 @@ export function buildInbox(
 ): InboxItem[] {
   const items = entries.map((entry) => {
     const session = activeSessionForIssue(sessions, entry.id)
-    return { entry, session, attention: inboxAttention(session) }
+    return {
+      id: entry.id,
+      title: entry.title,
+      entry,
+      session,
+      attention: inboxAttention(session),
+    }
   })
   return items.sort(
     (a, b) => ATTENTION_ORDER[a.attention] - ATTENTION_ORDER[b.attention],
   )
 }
 
-// inboxSections splits the tier-sorted items into contiguous runs so the list can
-// render one header per attention group.
-export function inboxSections(items: readonly InboxItem[]): InboxSection[] {
-  const sections: InboxSection[] = []
-  for (const item of items) {
-    const last = sections[sections.length - 1]
-    if (last && last.attention === item.attention) last.items.push(item)
-    else sections.push({ attention: item.attention, items: [item] })
+// isToday reports whether an RFC3339 timestamp falls on now's local calendar day —
+// "today" as the person triaging sees it, not as UTC sees it.
+export function isToday(ts: string, now: Date): boolean {
+  const at = new Date(ts)
+  return (
+    at.getFullYear() === now.getFullYear() &&
+    at.getMonth() === now.getMonth() &&
+    at.getDate() === now.getDate()
+  )
+}
+
+// doneTodayItems is the day's finished triage, newest first: sessions applied today,
+// one row per issue. An authoring session has no issue to show, and a re-grilled
+// issue keeps only its latest apply.
+export function doneTodayItems(
+  sessions: readonly GrillSession[],
+  now: Date,
+): InboxItem[] {
+  const seen = new Set<string>()
+  const out: InboxItem[] = []
+  for (const session of sessions) {
+    const id = session.issue_id
+    if (!id || session.state !== 'applied') continue
+    if (!isToday(session.updated_at, now) || seen.has(id)) continue
+    seen.add(id)
+    out.push({ id, title: session.issue_title ?? '', session, attention: 'done' })
   }
-  return sections
+  return out
+}
+
+// inboxGroups lays the rail out in its three fixed sections. Every group renders even
+// when empty, so the rail keeps its shape as sessions move between them.
+export function inboxGroups(
+  items: readonly InboxItem[],
+  done: readonly InboxItem[] = [],
+): InboxGroupView[] {
+  const all = [...items, ...done]
+  const groups: InboxGroup[] = ['waiting', 'review', 'done']
+  return groups.map((group) => ({
+    group,
+    label: GROUP_LABELS[group],
+    items: all.filter((item) => GROUP_OF[item.attention] === group),
+  }))
 }
 
 export function inboxCounts(items: readonly InboxItem[]): InboxCounts {
@@ -105,23 +171,62 @@ export function inboxCounts(items: readonly InboxItem[]): InboxCounts {
 }
 
 // inboxPosition is the zero-based index of an issue in the walk-through, or -1 when
-// it has left the list (e.g. its outcome was just applied).
+// it has left the queue (e.g. its outcome was just applied).
 export function inboxPosition(items: readonly InboxItem[], id: string): number {
-  return items.findIndex((item) => item.entry.id === id)
+  return items.findIndex((item) => item.id === id)
 }
 
 // nextIssueId / prevIssueId step the walk-through. next past the last item and prev
-// before the first both return null, which the drawer reads as "close".
+// before the first both return null, which the caller reads as "nowhere to go".
 export function nextIssueId(items: readonly InboxItem[], id: string): string | null {
   const at = inboxPosition(items, id)
   if (at === -1) return null
-  return items[at + 1]?.entry.id ?? null
+  return items[at + 1]?.id ?? null
 }
 
 export function prevIssueId(items: readonly InboxItem[], id: string): string | null {
   const at = inboxPosition(items, id)
   if (at <= 0) return null
-  return items[at - 1].entry.id
+  return items[at - 1].id
+}
+
+// skipTarget is where Skip lands: the item after id, wrapping to the top so a skipped
+// item comes round again rather than being lost, and starting at the first item when
+// id has left the queue.
+export function skipTarget(items: readonly InboxItem[], id: string | null): string | null {
+  if (items.length === 0) return null
+  const at = items.findIndex((item) => item.id === id)
+  return items[(at + 1) % items.length].id
+}
+
+// InboxPillTone mirrors the design system's RunState names, so the session bar can
+// style a pill without the model reaching into the component layer.
+export type InboxPillTone = 'warn' | 'active' | 'verify' | 'success' | 'todo'
+
+export interface InboxPill {
+  tone: InboxPillTone
+  label: string
+}
+
+// inboxPill reads a session from the triager's seat: waiting and parked both mean
+// "your turn", and a finished proposal means "review". statePill says what the
+// session is doing; this says what the person has to do about it.
+export function inboxPill(state: GrillState): InboxPill {
+  switch (state) {
+    case 'running':
+      return { tone: 'active', label: 'thinking' }
+    case 'waiting':
+    case 'parked':
+      return { tone: 'warn', label: 'your turn' }
+    case 'stalled':
+      return { tone: 'warn', label: 'stalled' }
+    case 'finished':
+      return { tone: 'verify', label: 'review' }
+    case 'applied':
+      return { tone: 'success', label: 'applied' }
+    case 'abandoned':
+      return { tone: 'todo', label: 'ended' }
+  }
 }
 
 const GROUP_ORDER: Record<string, number> = {
@@ -187,6 +292,23 @@ export function useInbox(repo: string): InboxData {
 
 export function useInboxCounts(repo: string): InboxCounts {
   return inboxCounts(useInbox(repo).items)
+}
+
+export interface InboxQueue extends InboxData {
+  // done is the day's applied sessions. It sits outside items so the nav badge and
+  // the walk-through keep counting only what still needs triage.
+  done: InboxItem[]
+  groups: InboxGroupView[]
+}
+
+// useInboxQueue is the workspace's read: the triage queue plus the day's applied
+// sessions, grouped for the rail. A failed applied-sessions fetch leaves Done today
+// empty rather than failing the page — the queue itself is what the user came for.
+export function useInboxQueue(repo: string): InboxQueue {
+  const inbox = useInbox(repo)
+  const applied = useQuery(appliedGrillSessionsQueryOptions(repo))
+  const done = doneTodayItems(applied.data?.sessions ?? [], new Date())
+  return { ...inbox, done, groups: inboxGroups(inbox.items, done) }
 }
 
 // summarisePregrill turns a pre-grill pass response into a one-line recap for the

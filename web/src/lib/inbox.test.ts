@@ -5,13 +5,17 @@ import type { GrillSession, GrillState, PregrillResponse } from './grill'
 import {
   buildInbox,
   compareIssueIds,
+  doneTodayItems,
   inboxAttention,
   inboxCounts,
+  inboxGroups,
+  inboxPill,
   inboxPosition,
-  inboxSections,
+  isToday,
   mergeGrillableEntries,
   nextIssueId,
   prevIssueId,
+  skipTarget,
   summarisePregrill,
 } from './inbox'
 
@@ -28,7 +32,7 @@ function entry(over: Partial<BacklogEntry> & { id: string }): BacklogEntry {
   }
 }
 
-function session(over: Partial<GrillSession> & { issue_id: string; state: GrillState }): GrillSession {
+function session(over: Partial<GrillSession> & { state: GrillState }): GrillSession {
   return {
     id: '1',
     repo: 'loop',
@@ -74,7 +78,7 @@ describe('buildInbox', () => {
       session({ id: '13', issue_id: 'COD-5', state: 'applied' }),
     ]
     const items = buildInbox(entries, sessions)
-    expect(items.map((i) => i.entry.id)).toEqual(['COD-3', 'COD-4', 'COD-1', 'COD-5', 'COD-2'])
+    expect(items.map((i) => i.id)).toEqual(['COD-3', 'COD-4', 'COD-1', 'COD-5', 'COD-2'])
     expect(items.map((i) => i.attention)).toEqual(['answer', 'thinking', 'open', 'open', 'review'])
   })
 
@@ -87,19 +91,96 @@ describe('buildInbox', () => {
   })
 })
 
-describe('inboxSections', () => {
-  it('groups contiguous attention runs', () => {
+describe('isToday', () => {
+  const now = new Date('2026-07-15T09:00:00')
+
+  it('compares on the local calendar day, not on elapsed time', () => {
+    expect(isToday('2026-07-15T23:30:00', now)).toBe(true)
+    expect(isToday('2026-07-14T23:30:00', now)).toBe(false)
+    expect(isToday('2027-07-15T09:00:00', now)).toBe(false)
+  })
+
+  it('rejects an unparseable timestamp', () => {
+    expect(isToday('', now)).toBe(false)
+  })
+})
+
+describe('doneTodayItems', () => {
+  const now = new Date('2026-07-15T09:00:00')
+  const today = new Date('2026-07-15T08:00:00').toISOString()
+  const yesterday = new Date('2026-07-14T08:00:00').toISOString()
+
+  it('takes today’s applied sessions and titles them from the session', () => {
+    const items = doneTodayItems(
+      [
+        session({
+          id: '3',
+          issue_id: 'COD-1',
+          issue_title: 'Split the picker',
+          state: 'applied',
+          updated_at: today,
+        }),
+        session({ id: '2', issue_id: 'COD-2', state: 'applied', updated_at: yesterday }),
+        session({ id: '1', issue_id: 'COD-3', state: 'finished', updated_at: today }),
+      ],
+      now,
+    )
+    expect(items.map((i) => i.id)).toEqual(['COD-1'])
+    expect(items[0]).toMatchObject({ title: 'Split the picker', attention: 'done' })
+    expect(items[0].entry).toBeUndefined()
+  })
+
+  it('keeps one row per issue and drops an applied authoring session', () => {
+    const items = doneTodayItems(
+      [
+        session({ id: '3', issue_id: 'COD-1', state: 'applied', updated_at: today }),
+        session({ id: '2', issue_id: 'COD-1', state: 'applied', updated_at: today }),
+        session({ id: '1', state: 'applied', updated_at: today }),
+      ],
+      now,
+    )
+    expect(items.map((i) => i.session?.id)).toEqual(['3'])
+  })
+})
+
+describe('inboxGroups', () => {
+  it('splits the queue into the three rail groups, keeping empty ones', () => {
     const items = buildInbox(
       [entry({ id: 'COD-1' }), entry({ id: 'COD-2' }), entry({ id: 'COD-3' })],
       [
         session({ id: '1', issue_id: 'COD-1', state: 'waiting' }),
-        session({ id: '2', issue_id: 'COD-2', state: 'parked' }),
+        session({ id: '2', issue_id: 'COD-2', state: 'running' }),
       ],
     )
-    const sections = inboxSections(items)
-    expect(sections.map((s) => s.attention)).toEqual(['answer', 'open'])
-    expect(sections[0].items).toHaveLength(2)
-    expect(sections[1].items).toHaveLength(1)
+    const groups = inboxGroups(items)
+    expect(groups.map((g) => g.group)).toEqual(['waiting', 'review', 'done'])
+    expect(groups[0].label).toBe('Waiting for you')
+    // A question, a running turn and an untouched issue are all still owed a turn.
+    expect(groups[0].items.map((i) => i.id)).toEqual(['COD-1', 'COD-2', 'COD-3'])
+    expect(groups[1].items).toEqual([])
+    expect(groups[2].items).toEqual([])
+  })
+
+  it('files finished sessions under review and applied ones under done', () => {
+    const items = buildInbox(
+      [entry({ id: 'COD-1' })],
+      [session({ id: '1', issue_id: 'COD-1', state: 'finished' })],
+    )
+    const done = doneTodayItems(
+      [
+        session({
+          id: '2',
+          issue_id: 'COD-9',
+          state: 'applied',
+          updated_at: new Date('2026-07-14T10:00:00').toISOString(),
+        }),
+      ],
+      new Date('2026-07-14T12:00:00'),
+    )
+    const groups = inboxGroups(items, done)
+    expect(groups[0].items).toEqual([])
+    expect(groups[1].items.map((i) => i.id)).toEqual(['COD-1'])
+    expect(groups[2].items.map((i) => i.id)).toEqual(['COD-9'])
   })
 })
 
@@ -133,6 +214,61 @@ describe('walk-through navigation', () => {
     expect(prevIssueId(items, 'COD-1')).toBeNull()
     expect(nextIssueId(items, 'COD-9')).toBeNull()
     expect(inboxPosition(items, 'COD-9')).toBe(-1)
+  })
+
+  // j/k step the queue, but the rail is what the user is reading: the attention tiers
+  // buildInbox sorts by have to land in the rail's group order, or the selection jumps
+  // around the sections it walks.
+  it('steps the queue in the order the rail lays its groups out', () => {
+    const queue = buildInbox(
+      [
+        entry({ id: 'COD-1' }),
+        entry({ id: 'COD-2' }),
+        entry({ id: 'COD-3' }),
+        entry({ id: 'COD-4' }),
+      ],
+      [
+        session({ id: '1', issue_id: 'COD-1', state: 'finished' }),
+        session({ id: '2', issue_id: 'COD-2', state: 'waiting' }),
+        session({ id: '3', issue_id: 'COD-3', state: 'running' }),
+      ],
+    )
+    const rail = inboxGroups(queue)
+      .filter((g) => g.group !== 'done')
+      .flatMap((g) => g.items.map((i) => i.id))
+    expect(rail).toEqual(queue.map((i) => i.id))
+    expect(rail).toEqual(['COD-2', 'COD-3', 'COD-4', 'COD-1'])
+  })
+})
+
+describe('skipTarget', () => {
+  const items = buildInbox(
+    [entry({ id: 'COD-1' }), entry({ id: 'COD-2' }), entry({ id: 'COD-3' })],
+    [],
+  )
+
+  it('advances, and wraps past the last item so a skipped one comes round again', () => {
+    expect(skipTarget(items, 'COD-1')).toBe('COD-2')
+    expect(skipTarget(items, 'COD-3')).toBe('COD-1')
+  })
+
+  it('restarts at the head when the id has left the queue or none is selected', () => {
+    expect(skipTarget(items, 'COD-9')).toBe('COD-1')
+    expect(skipTarget(items, null)).toBe('COD-1')
+  })
+
+  it('has nowhere to go in an empty queue', () => {
+    expect(skipTarget([], 'COD-1')).toBeNull()
+  })
+})
+
+describe('inboxPill', () => {
+  it('reads a session from the triager’s seat', () => {
+    expect(inboxPill('waiting')).toEqual({ tone: 'warn', label: 'your turn' })
+    expect(inboxPill('parked')).toEqual({ tone: 'warn', label: 'your turn' })
+    expect(inboxPill('running')).toEqual({ tone: 'active', label: 'thinking' })
+    expect(inboxPill('stalled')).toEqual({ tone: 'warn', label: 'stalled' })
+    expect(inboxPill('finished')).toEqual({ tone: 'verify', label: 'review' })
   })
 })
 

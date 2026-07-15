@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -24,6 +25,11 @@ import (
 // MCP idle timeout, so this is only a backstop against a wedged child). It is a
 // var so tests can shorten it.
 var grillTurnTimeout = 30 * time.Minute
+
+// grillStdoutBuffer is the read buffer for a child's stream-json stdout. Partial
+// message events are small and arrive at token rate; the buffer only has to keep the
+// pipe from round-tripping per line.
+const grillStdoutBuffer = 64 << 10
 
 // Reasons a turn leaves on a session it had to settle without an agent-proposed
 // outcome. Each one reads as a resumable state in the panel.
@@ -127,7 +133,7 @@ func (r *grillRunner) runTurn(ctx context.Context, sess hubstore.GrillSession) {
 	}
 
 	spec := r.buildTurn(sess, repo, cfg)
-	out, runErr := r.spawnClaude(ctx, spec)
+	out, runErr := r.spawnClaude(ctx, spec, r.deltaSink(sess.ID))
 
 	chainID, resultErr := parseGrillStream(out.stdout)
 	if chainID != "" {
@@ -185,13 +191,14 @@ func (r *grillRunner) buildTurn(sess hubstore.GrillSession, repo registry.Repo, 
 // grillTurnArgs assembles the claude argument vector: the configured flags, the
 // resolved model, the headless stream-json contract, the strict per-session MCP
 // config, an optional resume, and the prompt last. stream-json in print mode
-// requires --verbose, so it is always present.
+// requires --verbose, so it is always present; --include-partial-messages is what
+// breaks each assistant message into the text deltas the panel streams.
 func grillTurnArgs(flags []string, model, mcpConfig, resumeID, prompt string) []string {
 	args := append([]string{}, flags...)
 	if model != "" {
 		args = append(args, "--model", model)
 	}
-	args = append(args, "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--mcp-config", mcpConfig)
+	args = append(args, "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--strict-mcp-config", "--mcp-config", mcpConfig)
 	if resumeID != "" {
 		args = append(args, "--resume", resumeID)
 	}
@@ -280,16 +287,54 @@ type grillOutput struct {
 	stderr string
 }
 
-func (r *grillRunner) spawnClaude(ctx context.Context, spec grillTurnSpec) (grillOutput, error) {
+// spawnClaude runs one turn to completion, handing every stdout line to onLine as it
+// lands rather than buffering the stream whole, so a turn's text can leave the hub
+// while the child is still producing it.
+func (r *grillRunner) spawnClaude(ctx context.Context, spec grillTurnSpec, onLine func([]byte)) (grillOutput, error) {
 	cmd := exec.CommandContext(ctx, spec.bin, spec.args...)
 	cmd.Dir = spec.dir
 	cmd.Env = spec.env
-	var stdout bytes.Buffer
 	stderr := newTailWriter(spawnStderrTailBytes)
-	cmd.Stdout = &stdout
 	cmd.Stderr = stderr
-	err := cmd.Run()
-	return grillOutput{stdout: stdout.Bytes(), stderr: stderr.String()}, err
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return grillOutput{stderr: stderr.String()}, err
+	}
+	if err := cmd.Start(); err != nil {
+		return grillOutput{stderr: stderr.String()}, err
+	}
+	stdout := drainGrillStdout(pipe, onLine)
+	err = cmd.Wait()
+	return grillOutput{stdout: stdout, stderr: stderr.String()}, err
+}
+
+// drainGrillStdout reads r to EOF line by line, calling onLine for each and returning
+// everything it read. It never stops early: this runs before Wait, and a child whose
+// stdout stops being drained blocks on a full pipe.
+func drainGrillStdout(r io.Reader, onLine func([]byte)) []byte {
+	var buf bytes.Buffer
+	br := bufio.NewReaderSize(r, grillStdoutBuffer)
+	for {
+		line, err := br.ReadBytes('\n')
+		buf.Write(line)
+		if len(line) > 0 {
+			onLine(bytes.TrimRight(line, "\r\n"))
+		}
+		if err != nil {
+			return buf.Bytes()
+		}
+	}
+}
+
+// deltaSink publishes the agent's text as the child produces it. One child spans
+// every turn of an interview, blocking inside ask_user between them, so the turn's
+// numbering belongs to the broadcaster rather than to this closure.
+func (r *grillRunner) deltaSink(sid int64) func([]byte) {
+	return func(line []byte) {
+		if text := grillDeltaText(line); text != "" {
+			r.srv.publishGrillDelta(sid, text)
+		}
+	}
 }
 
 // reconcile settles the session after its child exits. A turn that reached ask_user
@@ -353,6 +398,33 @@ type grillStreamEvent struct {
 	Type      string `json:"type"`
 	SessionID string `json:"session_id"`
 	IsError   bool   `json:"is_error"`
+}
+
+// grillPartialEvent is the slice of an --include-partial-messages stream_event the
+// runner reads: the assistant's reply as it is written, one text delta at a time.
+type grillPartialEvent struct {
+	Type  string `json:"type"`
+	Event struct {
+		Type  string `json:"type"`
+		Delta struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"delta"`
+	} `json:"event"`
+}
+
+// grillDeltaText returns the reply text one stream-json line carries. Only a partial
+// message's text delta qualifies: thinking and tool-input deltas are not the reply,
+// and the assistant event closing a block repeats text the deltas already carried.
+func grillDeltaText(line []byte) string {
+	var ev grillPartialEvent
+	if json.Unmarshal(line, &ev) != nil || ev.Type != "stream_event" {
+		return ""
+	}
+	if ev.Event.Type != "content_block_delta" || ev.Event.Delta.Type != "text_delta" {
+		return ""
+	}
+	return ev.Event.Delta.Text
 }
 
 // parseGrillStream extracts the latest session id and the terminal result's error

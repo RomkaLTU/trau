@@ -2,19 +2,25 @@ import { describe, expect, it } from 'vitest'
 
 import {
   activeSessionForIssue,
+  canCompose,
+  composerPlaceholder,
   diffHasChanges,
   diffLines,
   grillBanner,
+  grillProgress,
   grillReducer,
   isAwaitingAnswer,
   isGrillable,
   isSettled,
+  lastAnswer,
   mergeMessages,
+  NO_REPLY,
   outcomePayload,
   pendingQuestion,
   questionPayload,
   upsertMessage,
   type DiffLine,
+  type GrillDelta,
   type GrillLive,
   type GrillMessage,
   type GrillSession,
@@ -135,6 +141,31 @@ describe('pendingQuestion', () => {
   })
 })
 
+describe('grillProgress', () => {
+  it('leaves a pending question outstanding', () => {
+    expect(grillProgress([question('1'), answer('2'), question('3')])).toEqual({
+      answered: 1,
+      total: 2,
+    })
+  })
+
+  it('counts every question once the last one is answered', () => {
+    expect(grillProgress([question('1'), answer('2')])).toEqual({ answered: 1, total: 1 })
+  })
+
+  // A stalled session resumes on a bare answer, so answers can outnumber questions.
+  it('never counts more answers than were asked for', () => {
+    expect(grillProgress([question('1'), answer('2'), answer('3')])).toEqual({
+      answered: 1,
+      total: 1,
+    })
+  })
+
+  it('counts nothing on an untouched session', () => {
+    expect(grillProgress([])).toEqual({ answered: 0, total: 0 })
+  })
+})
+
 describe('questionPayload', () => {
   it('defaults allow_free_text to true and options to empty', () => {
     const p = questionPayload(question('1'))
@@ -243,7 +274,14 @@ describe('outcomePayload', () => {
 })
 
 describe('grillReducer', () => {
-  const initial: GrillLive = { session: session({ state: 'running' }), live: false, messages: [] }
+  const initial: GrillLive = {
+    session: session({ state: 'running' }),
+    live: false,
+    hydrated: false,
+    messages: [],
+    pending: [],
+    streaming: NO_REPLY,
+  }
 
   it('hydrate seeds messages and adopts the session while not yet live', () => {
     const next = grillReducer(initial, {
@@ -252,6 +290,15 @@ describe('grillReducer', () => {
     })
     expect(next.session.state).toBe('waiting')
     expect(next.messages.map((m) => m.id)).toEqual(['1'])
+  })
+
+  it('hydrated only turns on once the transcript lands', () => {
+    expect(grillReducer(initial, { type: 'message', message: question('5') }).hydrated).toBe(false)
+    const next = grillReducer(initial, {
+      type: 'hydrate',
+      detail: { session: session({ state: 'running' }), messages: [] },
+    })
+    expect(next.hydrated).toBe(true)
   })
 
   it('a stream state frame wins over a later hydrate', () => {
@@ -267,6 +314,197 @@ describe('grillReducer', () => {
   it('message upserts into the thread', () => {
     const next = grillReducer(initial, { type: 'message', message: question('5') })
     expect(next.messages.map((m) => m.id)).toEqual(['5'])
+  })
+})
+
+describe('streaming deltas', () => {
+  const initial: GrillLive = {
+    session: session({ state: 'running' }),
+    live: false,
+    hydrated: true,
+    messages: [],
+    pending: [],
+    streaming: NO_REPLY,
+  }
+
+  const stream = (state: GrillLive, ...deltas: GrillDelta[]) =>
+    deltas.reduce((s, delta) => grillReducer(s, { type: 'delta', delta }), state)
+
+  it('accumulates chunks into the running turn’s reply', () => {
+    const next = stream(initial, { seq: 1, text: 'Let me ' }, { seq: 2, text: 'push back.' })
+    expect(next.streaming).toEqual({
+      seq: 2,
+      text: 'Let me push back.',
+      holed: false,
+    })
+  })
+
+  it('the stored message retires the streamed preview', () => {
+    const streamed = stream(initial, { seq: 1, text: 'Let me push back.' })
+    const next = grillReducer(streamed, { type: 'message', message: question('7') })
+    expect(next.streaming).toEqual(NO_REPLY)
+    expect(next.messages.map((m) => m.id)).toEqual(['7'])
+  })
+
+  it('a state frame ends the turn’s stream and rebases the seq', () => {
+    const streamed = stream(initial, { seq: 1, text: 'half a thou' })
+    const settled = grillReducer(streamed, {
+      type: 'state',
+      session: session({ state: 'waiting' }),
+    })
+    expect(settled.streaming).toEqual(NO_REPLY)
+
+    // The next turn's deltas number from one again, so they must read as contiguous.
+    const resumed = grillReducer(settled, {
+      type: 'state',
+      session: session({ state: 'running' }),
+    })
+    expect(stream(resumed, { seq: 1, text: 'Next turn.' }).streaming.text).toBe('Next turn.')
+  })
+
+  it('a dropped chunk holes the reply for the rest of the turn', () => {
+    const next = stream(
+      initial,
+      { seq: 1, text: 'Let me ' },
+      { seq: 4, text: 'back.' },
+      { seq: 5, text: ' Why?' },
+    )
+    expect(next.streaming.holed).toBe(true)
+    // The text after a gap is never spliced onto the text before it.
+    expect(next.streaming.text).not.toContain('Let me ')
+  })
+
+  it('ignores deltas trailing a settled turn', () => {
+    const settled: GrillLive = {
+      ...initial,
+      session: session({ state: 'finished' }),
+    }
+    expect(stream(settled, { seq: 1, text: 'too late' }).streaming).toEqual(NO_REPLY)
+  })
+
+  it('leaves a hub that streams nothing on the message-at-a-time flow', () => {
+    const next = grillReducer(initial, { type: 'message', message: question('1') })
+    expect(next.streaming).toEqual(NO_REPLY)
+    expect(next.messages.map((m) => m.id)).toEqual(['1'])
+  })
+})
+
+describe('optimistic send', () => {
+  const initial: GrillLive = {
+    session: session({ state: 'waiting' }),
+    live: false,
+    hydrated: true,
+    messages: [],
+    pending: [],
+    streaming: NO_REPLY,
+  }
+
+  const sent = (text = 'A') =>
+    grillReducer(initial, { type: 'send', id: 'p1', text })
+
+  it('holds the answer as pending until the hub echoes it', () => {
+    expect(sent().pending).toEqual([{ id: 'p1', text: 'A', failed: false }])
+  })
+
+  it('the echo retires the optimistic twin, leaving only the real message', () => {
+    const next = grillReducer(sent(), { type: 'message', message: answer('7', 'A') })
+    expect(next.pending).toEqual([])
+    expect(next.messages.map((m) => m.id)).toEqual(['7'])
+  })
+
+  it('an echo of different text leaves the pending answer alone', () => {
+    const next = grillReducer(sent(), { type: 'message', message: answer('7', 'other') })
+    expect(next.pending).toHaveLength(1)
+  })
+
+  it('retires one twin per echo when the same text was sent twice', () => {
+    const twice = grillReducer(sent(), { type: 'send', id: 'p2', text: 'A' })
+    const next = grillReducer(twice, { type: 'message', message: answer('7', 'A') })
+    expect(next.pending.map((p) => p.id)).toEqual(['p2'])
+  })
+
+  // The hub answers a send twice: once in the POST response, once over the stream.
+  it('retires one twin for an echo the POST and the stream both deliver', () => {
+    const twice = grillReducer(sent(), { type: 'send', id: 'p2', text: 'A' })
+    const posted = grillReducer(twice, { type: 'message', message: answer('7', 'A') })
+    const streamed = grillReducer(posted, { type: 'message', message: answer('7', 'A') })
+    expect(streamed.pending.map((p) => p.id)).toEqual(['p2'])
+    expect(streamed.messages.map((m) => m.id)).toEqual(['7'])
+  })
+
+  it('a hydrate backfill retires twins the stream already echoed', () => {
+    const next = grillReducer(sent(), {
+      type: 'hydrate',
+      detail: { session: session({ state: 'waiting' }), messages: [answer('7', 'A')] },
+    })
+    expect(next.pending).toEqual([])
+  })
+
+  // A refetch re-hydrates the whole transcript, old turns included.
+  it('a re-hydrate of an already-held answer leaves an in-flight twin alone', () => {
+    const backfill = {
+      type: 'hydrate' as const,
+      detail: { session: session({ state: 'waiting' }), messages: [answer('7', 'A')] },
+    }
+    const held = grillReducer(initial, backfill)
+    const again = grillReducer(grillReducer(held, { type: 'send', id: 'p1', text: 'A' }), backfill)
+    expect(again.pending.map((p) => p.id)).toEqual(['p1'])
+  })
+
+  it('a failed send keeps its text for retry and is not retired by an echo', () => {
+    const failed = grillReducer(sent(), { type: 'send-failed', id: 'p1', text: 'A' })
+    expect(failed.pending[0].failed).toBe(true)
+    const echoed = grillReducer(failed, { type: 'message', message: answer('7', 'A') })
+    expect(echoed.pending.map((p) => p.id)).toEqual(['p1'])
+  })
+
+  it('surfaces the failure on a surviving twin when the echo retired its own entry', () => {
+    const twice = grillReducer(sent(), { type: 'send', id: 'p2', text: 'A' })
+    const echoed = grillReducer(twice, { type: 'message', message: answer('7', 'A') })
+    const failed = grillReducer(echoed, { type: 'send-failed', id: 'p1', text: 'A' })
+    expect(failed.pending).toEqual([{ id: 'p2', text: 'A', failed: true }])
+  })
+
+  it('retry clears the failure so the next echo retires it', () => {
+    const failed = grillReducer(sent(), { type: 'send-failed', id: 'p1', text: 'A' })
+    const again = grillReducer(failed, { type: 'send-retry', id: 'p1' })
+    expect(again.pending[0].failed).toBe(false)
+    const echoed = grillReducer(again, { type: 'message', message: answer('7', 'A') })
+    expect(echoed.pending).toEqual([])
+  })
+
+  it('discard drops the send outright', () => {
+    const failed = grillReducer(sent(), { type: 'send-failed', id: 'p1', text: 'A' })
+    expect(grillReducer(failed, { type: 'send-discard', id: 'p1' }).pending).toEqual([])
+  })
+})
+
+describe('composer gating', () => {
+  it('takes typing only in the states that can accept an answer', () => {
+    expect(canCompose('waiting')).toBe(true)
+    expect(canCompose('parked')).toBe(true)
+    expect(canCompose('running')).toBe(false)
+    expect(canCompose('finished')).toBe(false)
+  })
+
+  it('shuts the box on a stalled session — its Resume button carries the answer', () => {
+    expect(isAwaitingAnswer('stalled')).toBe(true)
+    expect(canCompose('stalled')).toBe(false)
+    expect(composerPlaceholder('stalled')).toBe('Session stalled — resume to keep answering…')
+  })
+
+  it('explains a disabled box while the agent is thinking', () => {
+    expect(composerPlaceholder('running')).toBe('Agent is thinking…')
+  })
+})
+
+describe('lastAnswer', () => {
+  it('is the most recent answer — the resume pre-fill', () => {
+    expect(lastAnswer([answer('1', 'first'), question('2'), answer('3', 'second')])).toBe('second')
+  })
+
+  it('is empty when the session stalled before any answer', () => {
+    expect(lastAnswer([question('1')])).toBe('')
   })
 })
 
