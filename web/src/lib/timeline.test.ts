@@ -5,6 +5,7 @@ import type { QueueItem } from './queue'
 import type { Run } from './runs'
 import {
   buildTimeline,
+  builderView,
   finishedReducer,
   finishedView,
   ticketPill,
@@ -409,6 +410,106 @@ describe('finishedReducer', () => {
     expect(paged.visible).toBe(FINISHED_PAGE_SIZE * 3)
 
     expect(finishedReducer(paged, { type: 'toggle' })).toEqual(FINISHED_INITIAL)
+  })
+})
+
+describe('builderView', () => {
+  it('keeps actionable items in the queue and collapses settled ones', () => {
+    const view = builderView(
+      [
+        item({ id: 'COD-1', status: 'done' }),
+        item({ id: 'COD-2', status: 'pending' }),
+        item({ id: 'COD-3', status: 'skipped' }),
+        item({ id: 'COD-4', status: 'paused' }),
+        item({ id: 'COD-5', status: 'failed' }),
+      ],
+      [],
+    )
+    expect(view.queue.map((it) => it.id)).toEqual(['COD-2', 'COD-4'])
+    expect(view.settled.map((t) => t.id).sort()).toEqual([
+      'COD-1',
+      'COD-3',
+      'COD-5',
+    ])
+  })
+
+  it('preserves queue order for the remaining actionable items', () => {
+    const view = builderView(
+      [
+        item({ id: 'COD-9', status: 'pending' }),
+        item({ id: 'COD-2', status: 'done' }),
+        item({ id: 'COD-5', status: 'pending' }),
+      ],
+      [],
+    )
+    expect(view.queue.map((it) => it.id)).toEqual(['COD-9', 'COD-5'])
+  })
+
+  it('settles an epic only once every sub-issue is done', () => {
+    const done = builderView(
+      [
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          sub_issues: [
+            { id: 'COD-10', title: 'a', state: 'done' },
+            { id: 'COD-11', title: 'b', state: 'done' },
+          ],
+        }),
+      ],
+      [],
+    )
+    expect(done.queue).toEqual([])
+    expect(done.settled.map((t) => [t.id, t.epicId, t.status])).toEqual([
+      ['COD-10', 'COD-9', 'done'],
+      ['COD-11', 'COD-9', 'done'],
+    ])
+  })
+
+  it('keeps a partially-done epic in the queue and out of the finished list', () => {
+    const view = builderView(
+      [
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          sub_issues: [
+            { id: 'COD-10', title: 'a', state: 'done' },
+            { id: 'COD-11', title: 'b', state: 'todo' },
+          ],
+        }),
+      ],
+      [],
+    )
+    expect(view.queue.map((it) => it.id)).toEqual(['COD-9'])
+    expect(view.settled).toEqual([])
+  })
+
+  it('keeps an epic with no sub-issues visible rather than vanishing it', () => {
+    const view = builderView(
+      [item({ id: 'COD-9', kind: 'epic', sub_issues: [] })],
+      [],
+    )
+    expect(view.queue.map((it) => it.id)).toEqual(['COD-9'])
+    expect(view.settled).toEqual([])
+  })
+
+  it('feeds the finished tally its counts per settle status', () => {
+    const view = builderView(
+      [
+        item({ id: 'COD-1', status: 'done' }),
+        item({ id: 'COD-2', status: 'done' }),
+        item({ id: 'COD-3', status: 'skipped' }),
+        item({ id: 'COD-4', status: 'failed' }),
+      ],
+      [run({ ticket: 'COD-1', terminal: true, phase: 'merged' })],
+    )
+    const tally = finishedView(view.settled, FINISHED_PAGE_SIZE).tally
+    expect(tally).toEqual([
+      { label: 'merged', count: 1 },
+      { label: 'done', count: 1 },
+      { label: 'failed', count: 1 },
+      { label: 'skipped', count: 1 },
+    ])
   })
 })
 

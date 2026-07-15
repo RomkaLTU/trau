@@ -56,6 +56,7 @@ import { stepName } from '@/lib/steps'
 import { runsQueryOptions } from '@/lib/runs'
 import {
   buildTimeline,
+  builderView,
   finishedReducer,
   finishedView,
   ticketPill,
@@ -382,6 +383,7 @@ function LaunchQueueCard({
   const runs = useQuery(runsQueryOptions(repo))
 
   const items = queue.data?.items ?? []
+  const builder = builderView(items, runs.data?.runs ?? [])
   const addAllPlan = planAddAll(eligible.data?.tickets ?? [], items)
   const skipResumeShown = skipResumeApplies(items, runs.data?.runs ?? [])
   const [draft, setDraft] = useState('')
@@ -434,7 +436,7 @@ function LaunchQueueCard({
     onSuccess: setQueue,
   })
 
-  const executable = queueExecutable(items)
+  const executable = queueExecutable(builder.queue)
 
   const busy =
     move.isPending || remove.isPending || add.isPending || addAll.isPending
@@ -450,173 +452,178 @@ function LaunchQueueCard({
     )
 
   return (
-    <TerminalCard title="loop-launch" className="max-w-3xl">
-      <form
-        className="flex flex-col gap-6"
-        onSubmit={(e) => e.preventDefault()}
-      >
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-center justify-between gap-3">
-            <label className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
-              repo
-            </label>
-            <SyncFreshness freshness={freshness} />
-          </div>
-          <TargetRepoField repo={repo} />
-        </div>
-
-        <div className="flex flex-col gap-3">
+    <div className="flex max-w-3xl flex-col gap-6">
+      <TerminalCard title="loop-launch">
+        <form
+          className="flex flex-col gap-6"
+          onSubmit={(e) => e.preventDefault()}
+        >
           <div className="flex flex-col gap-1.5">
-            <label
-              htmlFor="queue-add"
-              className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground"
-            >
-              queue
-            </label>
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                id="queue-add"
-                value={draft}
-                onChange={(e) => {
-                  setDraft(e.target.value)
-                  if (add.error) add.reset()
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-                    e.preventDefault()
-                    submitAdd()
-                  }
-                }}
-                placeholder="COD-### (ticket or epic)"
-                className="w-56 rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:outline-none"
-              />
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="font-mono"
-                onClick={submitAdd}
-                disabled={add.isPending || draft.trim() === ''}
+            <div className="flex items-center justify-between gap-3">
+              <label className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+                repo
+              </label>
+              <SyncFreshness freshness={freshness} />
+            </div>
+            <TargetRepoField repo={repo} />
+          </div>
+
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1.5">
+              <label
+                htmlFor="queue-add"
+                className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground"
               >
-                <Plus className="size-4" aria-hidden="true" />
-                {add.isPending ? 'Adding…' : 'Add'}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="font-mono"
-                onClick={() => setBrowseOpen(true)}
-              >
-                <Search className="size-4" aria-hidden="true" />
-                Browse…
-              </Button>
-              {addAllPlan.items.length > 0 && (
+                queue
+              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  id="queue-add"
+                  value={draft}
+                  onChange={(e) => {
+                    setDraft(e.target.value)
+                    if (add.error) add.reset()
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                      e.preventDefault()
+                      submitAdd()
+                    }
+                  }}
+                  placeholder="COD-### (ticket or epic)"
+                  className="w-56 rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:outline-none"
+                />
                 <Button
                   type="button"
-                  variant="ghost"
+                  variant="outline"
                   size="sm"
                   className="font-mono"
-                  onClick={() => addAll.mutate()}
-                  disabled={addAll.isPending}
+                  onClick={submitAdd}
+                  disabled={add.isPending || draft.trim() === ''}
                 >
-                  <ListPlus className="size-4" aria-hidden="true" />
-                  {addAll.isPending ? 'Adding…' : addAllLabel(addAllPlan)}
+                  <Plus className="size-4" aria-hidden="true" />
+                  {add.isPending ? 'Adding…' : 'Add'}
                 </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="font-mono"
+                  onClick={() => setBrowseOpen(true)}
+                >
+                  <Search className="size-4" aria-hidden="true" />
+                  Browse…
+                </Button>
+                {addAllPlan.items.length > 0 && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="font-mono"
+                    onClick={() => addAll.mutate()}
+                    disabled={addAll.isPending}
+                  >
+                    <ListPlus className="size-4" aria-hidden="true" />
+                    {addAll.isPending ? 'Adding…' : addAllLabel(addAllPlan)}
+                  </Button>
+                )}
+              </div>
+              {add.error ? (
+                <p className="font-mono text-xs text-fail" role="alert">
+                  {actionError(add.error)}
+                </p>
+              ) : (
+                <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+                  Mix tickets and epics. Epics expand into their remaining
+                  sub-issues at run time. Runs top to bottom.
+                </p>
               )}
+              {addAll.error ? (
+                <p className="font-mono text-xs text-fail" role="alert">
+                  {actionError(addAll.error)}
+                </p>
+              ) : null}
+              {move.error ? (
+                <p className="font-mono text-xs text-fail" role="alert">
+                  {actionError(move.error)}
+                </p>
+              ) : null}
+              {remove.error ? (
+                <p className="font-mono text-xs text-fail" role="alert">
+                  {actionError(remove.error)}
+                </p>
+              ) : null}
             </div>
-            {add.error ? (
-              <p className="font-mono text-xs text-fail" role="alert">
-                {actionError(add.error)}
-              </p>
+
+            {builder.queue.length === 0 ? (
+              <div className="rounded-md border border-dashed border-border px-4 py-8 text-center">
+                <p className="font-sans text-sm text-muted-foreground">
+                  Queue is empty — add a ticket or epic above.
+                </p>
+              </div>
             ) : (
-              <p className="font-sans text-xs leading-relaxed text-muted-foreground">
-                Mix tickets and epics. Epics expand into their remaining
-                sub-issues at run time. Runs top to bottom.
-              </p>
+              <div className="overflow-hidden rounded-md border border-border">
+                <ul className="flex flex-col">
+                  {builder.queue.map((item, index) => (
+                    <QueueBuilderRow
+                      key={item.id}
+                      item={item}
+                      index={index}
+                      count={builder.queue.length}
+                      expanded={expandedIds.includes(item.id)}
+                      busy={busy}
+                      onToggle={() => toggleExpand(item.id)}
+                      onMove={(dir) => move.mutate({ id: item.id, dir })}
+                      onRemove={() => remove.mutate(item.id)}
+                    />
+                  ))}
+                </ul>
+                <div className="border-t border-border bg-secondary/40 px-3 py-2 font-mono text-xs text-muted-foreground">
+                  {builder.queue.length} queued · {executable} executable{' '}
+                  {executable === 1 ? 'ticket' : 'tickets'} · runs top to bottom
+                </div>
+              </div>
             )}
-            {addAll.error ? (
-              <p className="font-mono text-xs text-fail" role="alert">
-                {actionError(addAll.error)}
-              </p>
-            ) : null}
-            {move.error ? (
-              <p className="font-mono text-xs text-fail" role="alert">
-                {actionError(move.error)}
-              </p>
-            ) : null}
-            {remove.error ? (
-              <p className="font-mono text-xs text-fail" role="alert">
-                {actionError(remove.error)}
-              </p>
+          </div>
+
+          <div className="flex flex-col gap-4 border-t border-border pt-4">
+            <OnFaultToggle value={onFault} onChange={setOnFault} />
+            {skipResumeShown ? (
+              <SkipResumeToggle value={skipResume} onChange={setSkipResume} />
             ) : null}
           </div>
 
-          {items.length === 0 ? (
-            <div className="rounded-md border border-dashed border-border px-4 py-8 text-center">
-              <p className="font-sans text-sm text-muted-foreground">
-                Queue is empty — add a ticket or epic above.
+          <div className="flex flex-col gap-2 border-t border-border pt-4">
+            <Button
+              type="button"
+              size="sm"
+              className="w-fit font-mono"
+              onClick={() => start.mutate()}
+              disabled={executable === 0 || start.isPending}
+            >
+              {start.isPending ? 'Starting…' : 'Start queue'}
+            </Button>
+            {start.error ? (
+              <p className="font-mono text-xs text-destructive">
+                {actionError(start.error)}
               </p>
-            </div>
-          ) : (
-            <div className="overflow-hidden rounded-md border border-border">
-              <ul className="flex flex-col">
-                {items.map((item, index) => (
-                  <QueueBuilderRow
-                    key={item.id}
-                    item={item}
-                    index={index}
-                    count={items.length}
-                    expanded={expandedIds.includes(item.id)}
-                    busy={busy}
-                    onToggle={() => toggleExpand(item.id)}
-                    onMove={(dir) => move.mutate({ id: item.id, dir })}
-                    onRemove={() => remove.mutate(item.id)}
-                  />
-                ))}
-              </ul>
-              <div className="border-t border-border bg-secondary/40 px-3 py-2 font-mono text-xs text-muted-foreground">
-                {items.length} {items.length === 1 ? 'item' : 'items'} ·{' '}
-                {executable} executable{' '}
-                {executable === 1 ? 'ticket' : 'tickets'} · runs top to bottom
-              </div>
-            </div>
-          )}
-        </div>
+            ) : null}
+          </div>
+        </form>
 
-        <div className="flex flex-col gap-4 border-t border-border pt-4">
-          <OnFaultToggle value={onFault} onChange={setOnFault} />
-          {skipResumeShown ? (
-            <SkipResumeToggle value={skipResume} onChange={setSkipResume} />
-          ) : null}
-        </div>
+        <AddTicketDialog
+          repo={repo}
+          queued={items}
+          open={browseOpen}
+          onOpenChange={setBrowseOpen}
+          onQueue={setQueue}
+        />
+      </TerminalCard>
 
-        <div className="flex flex-col gap-2 border-t border-border pt-4">
-          <Button
-            type="button"
-            size="sm"
-            className="w-fit font-mono"
-            onClick={() => start.mutate()}
-            disabled={items.length === 0 || start.isPending}
-          >
-            {start.isPending ? 'Starting…' : 'Start queue'}
-          </Button>
-          {start.error ? (
-            <p className="font-mono text-xs text-destructive">
-              {actionError(start.error)}
-            </p>
-          ) : null}
-        </div>
-      </form>
-
-      <AddTicketDialog
-        repo={repo}
-        queued={items}
-        open={browseOpen}
-        onOpenChange={setBrowseOpen}
-        onQueue={setQueue}
-      />
-    </TerminalCard>
+      {builder.settled.length > 0 ? (
+        <FinishedSection repo={repo} settled={builder.settled} />
+      ) : null}
+    </div>
   )
 }
 
