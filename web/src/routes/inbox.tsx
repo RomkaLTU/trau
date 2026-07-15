@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { parseAsString, useQueryState } from 'nuqs'
 import {
   Flame,
@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 
 import { AuthoringDrawer } from '@/components/grill-panel'
+import { Markdown } from '@/components/markdown'
 import { ErrorNote } from '@/components/grill/banners'
 import {
   GrillConversation,
@@ -26,7 +27,19 @@ import {
   StatusPill,
   useActiveRepo,
 } from '@/components/trau'
-import { GRILLABLE_LABELS, pregrillIssues } from '@/lib/grill'
+import {
+  GRILLABLE_LABELS,
+  latestOutcome,
+  outcomePayload,
+  pregrillIssues,
+  type OutcomePayload,
+} from '@/lib/grill'
+import {
+  contextRows,
+  loadContextOpen,
+  storeContextOpen,
+} from '@/lib/inbox-context'
+import { issueQueryOptions } from '@/lib/issues'
 import {
   inboxPill,
   inboxPosition,
@@ -66,9 +79,20 @@ function InboxPage() {
   // stray id.
   const selected = items.find((item) => item.id === peek) ?? items[0] ?? null
 
-  const [contextOpen, setContextOpen] = useState(true)
+  const [contextOpen, setContextOpen] = useState(loadContextOpen)
   const [authoring, setAuthoring] = useState(false)
   const [passSummary, setPassSummary] = useState<string | null>(null)
+  const [status, setStatus] = useState<GrillStatus | null>(null)
+
+  // The thread reports the session it is following, but the panel beside it must not
+  // read the outgoing issue's status while a freshly selected one is still mounting.
+  const live = status?.session.issue_id === selected?.id ? status : null
+
+  function toggleContext() {
+    const next = !contextOpen
+    setContextOpen(next)
+    storeContextOpen(next)
+  }
 
   const untouchedIds = items
     .filter((item) => item.attention === 'open')
@@ -176,8 +200,10 @@ function InboxPage() {
                   item={selected}
                   position={inboxPosition(items, selected.id)}
                   total={items.length}
+                  status={live}
+                  onStatus={setStatus}
                   contextOpen={contextOpen}
-                  onToggleContext={() => setContextOpen((v) => !v)}
+                  onToggleContext={toggleContext}
                   onSkip={skip}
                   onApplied={onApplied}
                 />
@@ -197,7 +223,9 @@ function InboxPage() {
               )}
             </section>
 
-            {selected && contextOpen && <ContextPanel item={selected} />}
+            {selected && contextOpen && (
+              <ContextColumn repo={repo} item={selected} status={live} />
+            )}
           </div>
         </RepoHealthGate>
       </div>
@@ -223,6 +251,8 @@ function SessionColumn({
   item,
   position,
   total,
+  status,
+  onStatus,
   contextOpen,
   onToggleContext,
   onSkip,
@@ -232,13 +262,14 @@ function SessionColumn({
   item: InboxItem
   position: number
   total: number
+  status: GrillStatus | null
+  onStatus: (status: GrillStatus) => void
   contextOpen: boolean
   onToggleContext: () => void
   onSkip: () => void
   onApplied: () => void
 }) {
   const { session, starting, error, retry } = useGrillSession(repo, item.id)
-  const [status, setStatus] = useState<GrillStatus | null>(null)
 
   // The stream's session outranks the list's: it is the one the thread is following.
   const live = status?.session ?? session
@@ -256,33 +287,41 @@ function SessionColumn({
         onSkip={onSkip}
       />
 
-      {session ? (
-        <GrillConversation
-          key={session.id}
-          repo={repo}
-          initial={session}
-          onStatus={setStatus}
-          onApplied={onApplied}
-        />
-      ) : (
-        <div className="flex min-h-0 flex-1 items-center justify-center px-4">
-          {error ? (
-            <div className="flex flex-col items-center gap-3">
-              <ErrorNote message={error.message} />
-              {retry && (
-                <Button size="sm" variant="outline" onClick={retry}>
-                  Try again
-                </Button>
-              )}
-            </div>
-          ) : (
-            <p className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
-              {starting ? 'Starting grilling session…' : 'Loading…'}
-            </p>
-          )}
-        </div>
-      )}
+      {/* The overlay frame floats over the thread, not the bar above it: the bar
+          carries the toggle that dismisses it again. */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        {session ? (
+          <GrillConversation
+            key={session.id}
+            repo={repo}
+            initial={session}
+            onStatus={onStatus}
+            onApplied={onApplied}
+          />
+        ) : (
+          <div className="flex min-h-0 flex-1 items-center justify-center px-4">
+            {error ? (
+              <div className="flex flex-col items-center gap-3">
+                <ErrorNote message={error.message} />
+                {retry && (
+                  <Button size="sm" variant="outline" onClick={retry}>
+                    Try again
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <p className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />
+                {starting ? 'Starting grilling session…' : 'Loading…'}
+              </p>
+            )}
+          </div>
+        )}
+
+        {contextOpen && (
+          <ContextOverlay repo={repo} item={item} status={status} />
+        )}
+      </div>
     </>
   )
 }
@@ -337,7 +376,7 @@ function SessionBar({
         <Button
           variant="ghost"
           size="icon"
-          className="hidden size-8 xl:inline-flex"
+          className="size-8"
           onClick={onToggleContext}
           aria-pressed={contextOpen}
           title={contextOpen ? 'Hide issue context' : 'Show issue context'}
@@ -528,19 +567,73 @@ function QueueSelect({
   )
 }
 
-// ContextPanel reserves the workspace's third column. It anchors on what the queue
-// already knows about the issue; the description, meta and proposed outcome land in
-// the context-panel slice.
-function ContextPanel({ item }: { item: InboxItem }) {
-  const labels = (item.entry?.labels ?? []).filter((l) =>
-    GRILLABLE_LABELS.includes(l),
-  )
-
+// The context frames are what the triager keeps an eye on while grilling: the issue
+// as it stands today, and the proposal building up to replace it. Only one is ever
+// on screen — the workspace's third column where there is room for it, an overlay
+// over the chat where there is not.
+function ContextColumn({
+  repo,
+  item,
+  status,
+}: {
+  repo: string
+  item: InboxItem
+  status: GrillStatus | null
+}) {
   return (
     <aside
       aria-label="Issue context"
       className="hidden min-h-0 flex-col gap-5 overflow-y-auto border-l border-border py-4 pl-4 xl:flex"
     >
+      <ContextBody repo={repo} item={item} status={status} />
+    </aside>
+  )
+}
+
+function ContextOverlay({
+  repo,
+  item,
+  status,
+}: {
+  repo: string
+  item: InboxItem
+  status: GrillStatus | null
+}) {
+  return (
+    <aside
+      aria-label="Issue context"
+      className="absolute inset-y-0 right-0 z-10 flex w-[340px] max-w-full flex-col gap-5 overflow-y-auto rounded-lg border border-border bg-card p-4 shadow-lg xl:hidden"
+    >
+      <ContextBody repo={repo} item={item} status={status} />
+    </aside>
+  )
+}
+
+function ContextBody({
+  repo,
+  item,
+  status,
+}: {
+  repo: string
+  item: InboxItem
+  status: GrillStatus | null
+}) {
+  const issue = useQuery(issueQueryOptions(repo, item.id))
+  const labels = (item.entry?.labels ?? []).filter((l) =>
+    GRILLABLE_LABELS.includes(l),
+  )
+  const messages = status?.messages ?? []
+  const outcome =
+    status?.session.state === 'finished' ? latestOutcome(messages) : null
+  const rows = contextRows({
+    created: issue.data?.created_at,
+    source: item.entry?.source,
+    messages,
+    now: new Date(),
+  })
+
+  return (
+    <>
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-sm text-foreground">{item.id}</span>
@@ -557,7 +650,93 @@ function ContextPanel({ item }: { item: InboxItem }) {
           {item.title}
         </h2>
       </div>
-    </aside>
+
+      <details open>
+        <summary className="w-fit cursor-pointer font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground transition-colors hover:text-foreground">
+          Description
+        </summary>
+        <div className="mt-2">
+          <Description
+            markdown={issue.data?.description.trim() ?? ''}
+            loading={issue.isLoading}
+            error={(issue.error as Error) ?? null}
+          />
+        </div>
+      </details>
+
+      <dl className="flex flex-col gap-2 border-t border-border pt-4">
+        {rows.map((row) => (
+          <div
+            key={row.label}
+            className="flex items-baseline justify-between gap-3"
+          >
+            <dt className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+              {row.label}
+            </dt>
+            <dd className="text-right font-mono text-xs text-foreground">
+              {row.value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+
+      <div className="flex flex-col gap-1.5 border-t border-border pt-4">
+        <SectionLabel>Proposed outcome</SectionLabel>
+        {outcome ? (
+          <OutcomeMirror outcome={outcomePayload(outcome)} />
+        ) : (
+          <p className="text-xs leading-relaxed text-faint">
+            Builds up as the session progresses — the updated ticket and draft
+            sub-issues will appear here before anything is written back.
+          </p>
+        )}
+      </div>
+    </>
+  )
+}
+
+function Description({
+  markdown,
+  loading,
+  error,
+}: {
+  markdown: string
+  loading: boolean
+  error: Error | null
+}) {
+  if (loading) {
+    return (
+      <p className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+        <Loader2 className="size-3 animate-spin" />
+        Loading…
+      </p>
+    )
+  }
+  if (error) return <ErrorNote message={error.message} />
+  if (!markdown) return <p className="text-xs text-faint">No description.</p>
+  return <Markdown className="text-xs leading-relaxed">{markdown}</Markdown>
+}
+
+// OutcomeMirror is read-only on purpose: the proposal is edited and approved in the
+// chat column, and two live editors over one outcome is a conflict, not a feature.
+function OutcomeMirror({ outcome }: { outcome: OutcomePayload }) {
+  return (
+    <ul className="flex flex-col gap-1.5">
+      <li className="text-xs leading-relaxed text-foreground">
+        {outcome.summary}
+      </li>
+      {outcome.sub_issues?.map((sub) => (
+        <li
+          key={sub.title}
+          className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground"
+        >
+          <span className="text-faint" aria-hidden="true">
+            ○
+          </span>
+          {sub.title}
+        </li>
+      ))}
+    </ul>
   )
 }
 
