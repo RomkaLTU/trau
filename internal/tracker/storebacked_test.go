@@ -29,13 +29,14 @@ type recordedMirror struct {
 }
 
 type fakeStoreHub struct {
-	issues    map[string]hubclient.Issue
-	backlog   []hubclient.BacklogItem
-	created   []hubclient.InternalDraft
-	mirrors   []recordedMirror
-	syncErr   error
-	mirrorErr error
-	ops       []string
+	issues      map[string]hubclient.Issue
+	backlog     []hubclient.BacklogItem
+	created     []hubclient.InternalDraft
+	mirrors     []recordedMirror
+	transitions []recordedTransition
+	syncErr     error
+	mirrorErr   error
+	ops         []string
 }
 
 func newFakeStoreHub() *fakeStoreHub {
@@ -68,6 +69,19 @@ func (f *fakeStoreHub) MirrorSynced(_ context.Context, _, id string, m hubclient
 func (f *fakeStoreHub) CreateInternalIssue(_ context.Context, _ string, d hubclient.InternalDraft) (hubclient.Issue, error) {
 	f.created = append(f.created, d)
 	return hubclient.Issue{ID: "LOOP-1", Title: d.Title}, nil
+}
+
+func (f *fakeStoreHub) InternalIssue(_ context.Context, _, id string) (hubclient.Issue, error) {
+	iss, ok := f.issues[id]
+	if !ok {
+		return hubclient.Issue{}, hubclient.ErrNotFound
+	}
+	return iss, nil
+}
+
+func (f *fakeStoreHub) TransitionInternalIssue(_ context.Context, _, id string, t hubclient.Transition) (hubclient.Issue, error) {
+	f.transitions = append(f.transitions, recordedTransition{id: id, t: t})
+	return f.issues[id], nil
 }
 
 // fakeWrites records the tracker writes StoreBacked delegates and flags any read it
@@ -113,7 +127,14 @@ func (f *fakeWrites) ListTeams(context.Context) ([]Team, error) {
 }
 
 func newStoreBacked(hub storeHub, writes Tracker) *StoreBacked {
-	return &StoreBacked{Writes: writes, Hub: hub, Repo: "acme", ReadyLabel: "ready-for-agent", QuarantineLabel: "needs-human"}
+	return &StoreBacked{
+		Writes:          writes,
+		Hub:             hub,
+		Repo:            "acme",
+		InternalPrefix:  "ACME",
+		ReadyLabel:      "ready-for-agent",
+		QuarantineLabel: "needs-human",
+	}
 }
 
 func TestStoreBackedPickNudgesSyncThenSelects(t *testing.T) {
@@ -294,5 +315,78 @@ func TestStoreBackedIssueStatusMapsGroups(t *testing.T) {
 	}
 	if st, err := sb.IssueStatus(context.Background(), "COD-9"); st != StatusUnknown || err != nil {
 		t.Fatalf("missing status = %q err %v, want unknown/nil", st, err)
+	}
+}
+
+func TestStoreBackedSubIssuesOfInternalEpic(t *testing.T) {
+	hub := newFakeStoreHub()
+	hub.backlog = []hubclient.BacklogItem{
+		{ID: "ACME-2", Source: "internal", Group: "unstarted", Parent: "ACME-1", Title: "second"},
+		{ID: "ACME-1", Source: "internal", Group: "unstarted", HasChildren: true},
+		{ID: "COD-9", Source: "linear", Group: "unstarted", Parent: "COD-8"},
+	}
+	subs, err := newStoreBacked(hub, &fakeWrites{}).SubIssues(context.Background(), "ACME-1")
+	if err != nil {
+		t.Fatalf("sub-issues: %v", err)
+	}
+	if len(subs) != 1 || subs[0].ID != "ACME-2" {
+		t.Fatalf("sub-issues = %+v, want the internal epic's child so it runs as an epic", subs)
+	}
+}
+
+func TestStoreBackedPickScopedToInternalEpicSkipsSync(t *testing.T) {
+	hub := newFakeStoreHub()
+	hub.backlog = []hubclient.BacklogItem{
+		{ID: "ACME-3", Source: "internal", Group: "unstarted", Parent: "ACME-1", Ready: true},
+		{ID: "ACME-2", Source: "internal", Group: "unstarted", Parent: "ACME-1", Ready: true},
+	}
+	id, err := newStoreBacked(hub, &fakeWrites{}).Pick(context.Background(), Scope{Parent: "ACME-1"})
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	if id != "ACME-2" {
+		t.Fatalf("pick = %q, want ACME-2 (lowest ready child of the internal epic)", id)
+	}
+	if !reflect.DeepEqual(hub.ops, []string{"backlog"}) {
+		t.Fatalf("ops = %v, want no tracker sync for an internal scope", hub.ops)
+	}
+}
+
+func TestStoreBackedWritesInternalIDThroughHub(t *testing.T) {
+	hub := newFakeStoreHub()
+	writes := &fakeWrites{}
+	sb := newStoreBacked(hub, writes)
+
+	if err := sb.SetStatus(context.Background(), "ACME-1", "In Progress", "starting"); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	if err := sb.Quarantine(context.Background(), "ACME-1", "gave up"); err != nil {
+		t.Fatalf("quarantine: %v", err)
+	}
+	if err := sb.AddLabel(context.Background(), "ACME-1", "in-review"); err != nil {
+		t.Fatalf("add label: %v", err)
+	}
+	if len(writes.setStatus) != 0 || writes.quarantines != 0 || len(writes.labels) != 0 {
+		t.Fatalf("tracker writes = %+v, want none — the tracker has no ACME-1", writes)
+	}
+	if len(hub.transitions) != 3 || hub.transitions[0].t.State != "started" {
+		t.Fatalf("transitions = %+v, want all three routed to the internal issue", hub.transitions)
+	}
+	if len(hub.mirrors) != 0 {
+		t.Fatalf("mirrors = %+v, want none — an internal row is written directly", hub.mirrors)
+	}
+}
+
+func TestStoreBackedUnscopedPickIsNeverInternal(t *testing.T) {
+	hub := newFakeStoreHub()
+	hub.backlog = []hubclient.BacklogItem{{ID: "ENG-1", Source: "linear", Group: "unstarted", Ready: true}}
+	sb := newStoreBacked(hub, &fakeWrites{})
+	sb.InternalPrefix = DefaultPrefix // a repo directory named after the fallback prefix
+
+	if _, err := sb.Pick(context.Background(), Scope{}); err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	if !reflect.DeepEqual(hub.ops, []string{"sync", "backlog"}) {
+		t.Fatalf("ops = %v, want the synced pick — an unscoped pick carries no id to route on", hub.ops)
 	}
 }

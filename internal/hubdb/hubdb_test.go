@@ -9,6 +9,25 @@ import (
 	"testing"
 )
 
+// seedVersion brings db up to schema version v through the real migrations, so a
+// fixture standing in for an older database carries the schema that version
+// actually shipped rather than a hand-written subset of it.
+func seedVersion(t *testing.T, db *sql.DB, v int) {
+	t.Helper()
+	migs, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations: %v", err)
+	}
+	for _, m := range migs {
+		if m.version > v {
+			return
+		}
+		if err := applyMigration(db, m); err != nil {
+			t.Fatalf("apply %s: %v", m.name, err)
+		}
+	}
+}
+
 func currentVersion(t *testing.T) int {
 	t.Helper()
 	migs, err := loadMigrations()
@@ -102,20 +121,15 @@ func TestOpenOverExistingDerivedCheckpoints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open seed db: %v", err)
 	}
-	for _, stmt := range []string{
-		`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT`,
-		`INSERT INTO meta(key, value) VALUES ('schema_version', '7')`,
-		`CREATE TABLE checkpoints (
-		     repo TEXT NOT NULL, ticket TEXT NOT NULL, phase TEXT NOT NULL DEFAULT '',
-		     title TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL DEFAULT '',
-		     pr TEXT NOT NULL DEFAULT '', pr_url TEXT NOT NULL DEFAULT '',
-		     failure_reason TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '',
-		     data TEXT NOT NULL DEFAULT '{}', PRIMARY KEY (repo, ticket)
-		 ) STRICT`,
-	} {
-		if _, err := seed.Exec(stmt); err != nil {
-			t.Fatalf("seed exec: %v", err)
-		}
+	seedVersion(t, seed, 7)
+	if _, err := seed.Exec(`CREATE TABLE checkpoints (
+	     repo TEXT NOT NULL, ticket TEXT NOT NULL, phase TEXT NOT NULL DEFAULT '',
+	     title TEXT NOT NULL DEFAULT '', branch TEXT NOT NULL DEFAULT '',
+	     pr TEXT NOT NULL DEFAULT '', pr_url TEXT NOT NULL DEFAULT '',
+	     failure_reason TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL DEFAULT '',
+	     data TEXT NOT NULL DEFAULT '{}', PRIMARY KEY (repo, ticket)
+	 ) STRICT`); err != nil {
+		t.Fatalf("seed derived checkpoints: %v", err)
 	}
 	if err := seed.Close(); err != nil {
 		t.Fatalf("close seed db: %v", err)

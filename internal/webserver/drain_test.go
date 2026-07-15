@@ -38,7 +38,7 @@ func seedQueue(t *testing.T, s *Server, root string, draining bool, items ...que
 	t.Helper()
 	st := s.stores.Queue(root)
 	for _, it := range items {
-		base := queue.Item{Kind: it.Kind, ID: it.ID, Title: it.Title, SubIssues: it.SubIssues}
+		base := queue.Item{Kind: it.Kind, ID: it.ID, Title: it.Title, Source: it.Source, SubIssues: it.SubIssues}
 		if base.Kind == "" {
 			base.Kind = queue.KindTicket
 		}
@@ -528,6 +528,28 @@ func seedOutcome(t *testing.T, s *Server, root, ticket string, rep queue.DrainRe
 	t.Helper()
 	if err := s.stores.DrainOutcomes().Upsert(root, ticket, rep.Class, rep.Reason); err != nil {
 		t.Fatalf("seed drain outcome: %v", err)
+	}
+}
+
+// TestDrainSpawnsInternalTicket proves a hub-only internal item drains like any
+// other: the spawn follows the item's kind, and its source never gates the run.
+func TestDrainSpawnsInternalTicket(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	seedQueue(t, s, root, true, queue.Item{Kind: queue.KindTicket, ID: "ACME-1", Source: "internal"})
+
+	act, err := s.drain.tick(root)
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if act != drainSpawn {
+		t.Fatalf("act = %q, want spawn — an internal ticket runs like a tracker one", act)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "ACME-1", "--once", "--drain-report", "ACME-1"})
+	if got := statusOf(t, s, root, "ACME-1"); got != queue.StatusRunning {
+		t.Errorf("ACME-1 = %q, want running", got)
 	}
 }
 
