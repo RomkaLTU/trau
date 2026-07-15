@@ -1,6 +1,6 @@
 import type { RunState } from '@/components/trau/status-pill'
 import type { Instance } from './instances'
-import type { QueueItem } from './queue'
+import { queueTerminal, type QueueItem } from './queue'
 import type { FailureClass, Run } from './runs'
 import { stepPill } from './steps'
 
@@ -238,6 +238,34 @@ export function buildTimeline(
     running,
     pending,
     elapsedAnchor,
+  }
+}
+
+export interface BuilderView {
+  queue: QueueItem[]
+  settled: TimelineTicket[]
+}
+
+// itemSettled reports whether a builder queue item has no work left for a Start:
+// a standalone ticket in a terminal state, or an epic whose sub-issues are all
+// done. Paused stays actionable — a Start resumes it. An epic with no sub-issues
+// stays actionable so it never silently vanishes into the Finished card.
+function itemSettled(item: QueueItem): boolean {
+  if (item.kind === 'epic') {
+    const subs = item.sub_issues ?? []
+    return subs.length > 0 && subs.every((s) => s.state === 'done')
+  }
+  return queueTerminal(item.status)
+}
+
+// builderView splits a non-draining queue for the idle builder: the items still
+// worth reordering in the editable list, and the settled leaves collapsed into
+// the Finished card. The settled side reuses buildTimeline so its rows, ordering,
+// and tally match the running view exactly.
+export function builderView(items: QueueItem[], runs: Run[]): BuilderView {
+  return {
+    queue: items.filter((it) => !itemSettled(it)),
+    settled: buildTimeline(items.filter(itemSettled), runs).settled,
   }
 }
 
