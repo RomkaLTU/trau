@@ -15,7 +15,10 @@ function RootLayout() {
     <NuqsAdapter>
       <ActiveRepoProvider>
         <AppShell>
-          <div className="w-full px-6 py-8">
+          {/* A column so a route can claim the height left under the recap banner
+              instead of guessing at it; routes that just stack keep their own
+              content height. */}
+          <div className="flex min-h-screen w-full flex-col px-6 py-8">
             <AwayRecap />
             <Outlet />
           </div>

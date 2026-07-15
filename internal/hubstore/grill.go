@@ -55,11 +55,14 @@ var grillTransitions = map[string]map[string]bool{
 }
 
 // GrillSession is one grilling session as stored. IssueID is empty for authoring
-// sessions that anchor to the repo alone.
+// sessions that anchor to the repo alone. IssueTitle is read from the issue the
+// session grills, so a settled session still names its issue after apply drops the
+// triage labels the board queries key on.
 type GrillSession struct {
 	ID           int64
 	Repo         string
 	IssueID      string
+	IssueTitle   string
 	State        string
 	SessionChain string
 	Model        string
@@ -147,12 +150,18 @@ func (g *Grill) Create(ns NewGrillSession) (GrillSession, error) {
 	}, nil
 }
 
+// grillSessionSelect reads a session alongside its issue's title. issue_id carries
+// the issue's identifier, so the join keys on (repo, identifier) — the unique index
+// issues already has. An authoring session's empty issue_id matches nothing and
+// keeps an empty title.
+const grillSessionSelect = `SELECT g.id, g.repo, g.issue_id, COALESCE(i.title, ''), g.state,
+	        g.session_chain, g.model, g.parked_reason, g.created_at, g.updated_at
+	 FROM grill_sessions g
+	 LEFT JOIN issues i ON i.repo = g.repo AND i.identifier = g.issue_id`
+
 // Session returns a session by id and whether it exists.
 func (g *Grill) Session(id int64) (GrillSession, bool, error) {
-	sessions, err := g.scanSessions(
-		`SELECT id, repo, issue_id, state, session_chain, model, parked_reason, created_at, updated_at
-		 FROM grill_sessions WHERE id = ?`, id,
-	)
+	sessions, err := g.scanSessions(grillSessionSelect+` WHERE g.id = ?`, id)
 	if err != nil {
 		return GrillSession{}, false, err
 	}
@@ -165,14 +174,13 @@ func (g *Grill) Session(id int64) (GrillSession, bool, error) {
 // List returns repo's sessions, newest first. A non-empty state narrows to that
 // state.
 func (g *Grill) List(repo, state string) ([]GrillSession, error) {
-	query := `SELECT id, repo, issue_id, state, session_chain, model, parked_reason, created_at, updated_at
-	          FROM grill_sessions WHERE repo = ?`
+	query := grillSessionSelect + ` WHERE g.repo = ?`
 	args := []any{repo}
 	if state != "" {
-		query += ` AND state = ?`
+		query += ` AND g.state = ?`
 		args = append(args, state)
 	}
-	query += ` ORDER BY id DESC`
+	query += ` ORDER BY g.id DESC`
 	return g.scanSessions(query, args...)
 }
 
@@ -381,8 +389,8 @@ func (g *Grill) Prune() error {
 // eventually settles.
 func (g *Grill) SweepIdle(cutoff time.Time) ([]GrillSession, error) {
 	stale, err := g.scanSessions(
-		`SELECT id, repo, issue_id, state, session_chain, model, parked_reason, created_at, updated_at
-		 FROM grill_sessions WHERE state NOT IN ('applied', 'abandoned') AND updated_at < ? ORDER BY id`,
+		grillSessionSelect+
+			` WHERE g.state NOT IN ('applied', 'abandoned') AND g.updated_at < ? ORDER BY g.id`,
 		formatGrillTime(cutoff),
 	)
 	if err != nil {
@@ -416,7 +424,7 @@ func (g *Grill) scanSessions(query string, args ...any) (out []GrillSession, err
 	for q.Next() {
 		var s GrillSession
 		if err := q.Scan(
-			&s.ID, &s.Repo, &s.IssueID, &s.State, &s.SessionChain,
+			&s.ID, &s.Repo, &s.IssueID, &s.IssueTitle, &s.State, &s.SessionChain,
 			&s.Model, &s.ParkedReason, &s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, err

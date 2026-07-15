@@ -16,12 +16,13 @@ import (
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
-// GrillSessionView is one grilling session as the web panel sees it. IssueID is
-// omitted for an authoring session anchored to the repo alone.
+// GrillSessionView is one grilling session as the web panel sees it. IssueID and
+// IssueTitle are omitted for an authoring session anchored to the repo alone.
 type GrillSessionView struct {
 	ID           string `json:"id"`
 	Repo         string `json:"repo"`
 	IssueID      string `json:"issue_id,omitempty"`
+	IssueTitle   string `json:"issue_title,omitempty"`
 	State        string `json:"state"`
 	SessionChain string `json:"session_chain,omitempty"`
 	Model        string `json:"model,omitempty"`
@@ -440,6 +441,7 @@ func grillSessionView(repo string, sess hubstore.GrillSession) GrillSessionView 
 		ID:           strconv.FormatInt(sess.ID, 10),
 		Repo:         name,
 		IssueID:      sess.IssueID,
+		IssueTitle:   sess.IssueTitle,
 		State:        sess.State,
 		SessionChain: sess.SessionChain,
 		Model:        sess.Model,
