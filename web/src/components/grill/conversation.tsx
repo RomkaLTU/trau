@@ -45,11 +45,13 @@ export function GrillConversation({
   initial,
   onStatus,
   onApplied,
+  onDiscarded,
 }: {
   repo: string;
   initial: GrillSession;
   onStatus?: (status: GrillStatus) => void;
   onApplied?: () => void;
+  onDiscarded?: () => void;
 }) {
   const detail = useQuery(grillDetailQueryOptions(initial.id));
   const [state, dispatch] = useReducer(grillReducer, undefined, () => ({
@@ -60,6 +62,7 @@ export function GrillConversation({
     pending: [],
   }));
   const [status, setStatus] = useState<StreamStatus>("connecting");
+  const [followUp, setFollowUp] = useState(false);
   const nextSend = useRef(0);
 
   useEffect(() => {
@@ -94,6 +97,12 @@ export function GrillConversation({
   const reviewing =
     outcomeMsg !== null &&
     (session.state === "finished" || session.state === "applied");
+
+  // Each proposal is reviewed on its own terms, so a superseding outcome closes the
+  // composer the one before it reopened. A follow-up is only sendable while the
+  // proposal stands: applying settles the session and the hub stops taking answers.
+  useEffect(() => setFollowUp(false), [outcomeMsg?.id]);
+  const asking = followUp && session.state === "finished";
 
   // The mutation carries the optimistic twin's id so a failure lands on the bubble it
   // belongs to; the echo it resolves with retires that twin through the reducer.
@@ -153,14 +162,26 @@ export function GrillConversation({
 
       <div className="flex flex-col gap-3 border-t p-4">
         {reviewing && outcomeMsg ? (
-          <OutcomeReview
-            repo={repo}
-            issueId={session.issue_id ?? ""}
-            session={session}
-            outcome={outcomePayload(outcomeMsg)}
-            onSession={(next) => dispatch({ type: "state", session: next })}
-            onApplied={onApplied}
-          />
+          <>
+            <OutcomeReview
+              repo={repo}
+              issueId={session.issue_id ?? ""}
+              session={session}
+              outcome={outcomePayload(outcomeMsg)}
+              onSession={(next) => dispatch({ type: "state", session: next })}
+              onApplied={onApplied}
+              onDiscarded={onDiscarded}
+              onAskFollowUp={asking ? undefined : () => setFollowUp(true)}
+            />
+            {asking && (
+              <Composer
+                placeholder="Ask a follow-up…"
+                disabled={sending}
+                submitting={sending}
+                onSend={send}
+              />
+            )}
+          </>
         ) : (
           <>
             {showBanner && <BannerRow banner={banner} />}

@@ -43,13 +43,14 @@ var (
 )
 
 // grillTransitions is the legal state machine: the states each state may move to.
-// applied and abandoned are terminal.
+// applied and abandoned are terminal. finished reopens to running when the user
+// asks a follow-up on the proposed outcome; the next outcome supersedes it.
 var grillTransitions = map[string]map[string]bool{
 	GrillRunning:   {GrillWaiting: true, GrillParked: true, GrillStalled: true, GrillFinished: true, GrillAbandoned: true},
 	GrillWaiting:   {GrillRunning: true, GrillParked: true, GrillStalled: true, GrillFinished: true, GrillAbandoned: true},
 	GrillParked:    {GrillRunning: true, GrillStalled: true, GrillFinished: true, GrillAbandoned: true},
 	GrillStalled:   {GrillRunning: true, GrillParked: true, GrillFinished: true, GrillAbandoned: true},
-	GrillFinished:  {GrillApplied: true, GrillAbandoned: true},
+	GrillFinished:  {GrillRunning: true, GrillApplied: true, GrillAbandoned: true},
 	GrillApplied:   {},
 	GrillAbandoned: {},
 }
