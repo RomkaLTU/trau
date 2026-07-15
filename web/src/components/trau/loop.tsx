@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useReducer, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
@@ -55,7 +55,11 @@ import { stepName } from '@/lib/steps'
 import { runsQueryOptions } from '@/lib/runs'
 import {
   buildTimeline,
+  finishedReducer,
+  finishedView,
   ticketPill,
+  FINISHED_INITIAL,
+  FINISHED_PAGE_SIZE,
   type PendingEntry,
   type Timeline,
   type TimelineTicket,
@@ -652,6 +656,83 @@ function SettledRow({ repo, ticket }: { repo: string; ticket: TimelineTicket }) 
   )
 }
 
+function FinishedSection({
+  repo,
+  settled,
+}: {
+  repo: string
+  settled: TimelineTicket[]
+}) {
+  const [state, dispatch] = useReducer(finishedReducer, FINISHED_INITIAL)
+  const view = finishedView(settled, state.visible)
+
+  return (
+    <section className="flex flex-col gap-2">
+      <Eyebrow glyph="done">FINISHED</Eyebrow>
+      <div className="overflow-hidden rounded-md border border-border">
+        <button
+          type="button"
+          onClick={() => dispatch({ type: 'toggle' })}
+          aria-expanded={state.expanded}
+          className={cn(
+            'flex w-full items-center justify-between gap-4 px-4 py-2.5 text-left transition-colors hover:bg-secondary/40',
+            state.expanded && 'border-b border-border',
+          )}
+        >
+          <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+            {state.expanded ? (
+              <ChevronDown
+                className="size-4 shrink-0 text-muted-foreground"
+                aria-hidden="true"
+              />
+            ) : (
+              <ChevronRight
+                className="size-4 shrink-0 text-muted-foreground"
+                aria-hidden="true"
+              />
+            )}
+            <span className="font-mono text-sm text-foreground">
+              {view.total} finished
+            </span>
+            <span className="font-mono text-xs text-muted-foreground">
+              <span className="text-done" aria-hidden="true">
+                ✓
+              </span>{' '}
+              {view.tally.map((t) => `${t.count} ${t.label}`).join(' · ')}
+            </span>
+          </span>
+          {!state.expanded && view.latest ? (
+            <span className="hidden shrink-0 items-center gap-2 font-mono text-xs text-muted-foreground sm:inline-flex">
+              latest <span className="text-primary">{view.latest.id}</span>
+            </span>
+          ) : null}
+        </button>
+
+        {state.expanded ? (
+          <>
+            <ul className="flex flex-col">
+              {view.rows.map((ticket) => (
+                <SettledRow key={ticket.id} repo={repo} ticket={ticket} />
+              ))}
+            </ul>
+            {view.older > 0 ? (
+              <div className="border-t border-border px-4 py-2.5">
+                <button
+                  type="button"
+                  onClick={() => dispatch({ type: 'more' })}
+                  className="font-mono text-xs text-teal underline-offset-4 hover:underline"
+                >
+                  Show {Math.min(view.older, FINISHED_PAGE_SIZE)} more ({view.older} older)
+                </button>
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+    </section>
+  )
+}
+
 function RunningRow({
   repo,
   ticket,
@@ -821,19 +902,6 @@ function RunningQueueView({
             </div>
           </div>
 
-          {timeline.settled.length > 0 ? (
-            <section className="flex flex-col gap-2">
-              <Eyebrow glyph="done">FINISHED</Eyebrow>
-              <div className="overflow-hidden rounded-md border border-border">
-                <ul className="flex flex-col">
-                  {timeline.settled.map((ticket) => (
-                    <SettledRow key={ticket.id} repo={repo} ticket={ticket} />
-                  ))}
-                </ul>
-              </div>
-            </section>
-          ) : null}
-
           <section className="flex flex-col gap-2">
             <Eyebrow glyph="active">RUNNING</Eyebrow>
             {timeline.running ? (
@@ -872,6 +940,10 @@ function RunningQueueView({
                 promised here.
               </p>
             </section>
+          ) : null}
+
+          {timeline.settled.length > 0 ? (
+            <FinishedSection repo={repo} settled={timeline.settled} />
           ) : null}
         </div>
       </TerminalCard>
