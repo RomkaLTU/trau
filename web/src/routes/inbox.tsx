@@ -7,6 +7,7 @@ import {
   Loader2,
   PanelRightClose,
   PanelRightOpen,
+  RotateCcw,
   SkipForward,
   Sparkles,
 } from 'lucide-react'
@@ -21,6 +22,11 @@ import {
 } from '@/components/grill/conversation'
 import { useGrillSession } from '@/components/grill/session'
 import { Button } from '@/components/ui/button'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
 import {
   PageHeader,
   ProjectScopeGate,
@@ -335,10 +341,8 @@ function SessionColumn({
   onSkip: () => void
   onApplied: () => void
 }) {
-  const { session, resolved, starting, error, start, retry } = useGrillSession(
-    repo,
-    item.id,
-  )
+  const { session, resolved, starting, restarting, error, start, startOver, retry } =
+    useGrillSession(repo, item.id)
 
   // The stream's session outranks the list's: it is the one the thread is following.
   const live = status?.session ?? session
@@ -355,6 +359,8 @@ function SessionColumn({
         contextOpen={contextOpen}
         onToggleContext={onToggleContext}
         onSkip={onSkip}
+        onStartOver={live ? startOver : undefined}
+        restarting={restarting}
       />
 
       {/* The overlay frame floats over the thread, not the bar above it: the bar
@@ -515,6 +521,8 @@ function SessionBar({
   contextOpen,
   onToggleContext,
   onSkip,
+  onStartOver,
+  restarting,
 }: {
   item: InboxItem
   position: number
@@ -525,6 +533,8 @@ function SessionBar({
   contextOpen: boolean
   onToggleContext: () => void
   onSkip: () => void
+  onStartOver?: () => void
+  restarting?: boolean
 }) {
   return (
     <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border py-3 pl-5 pr-1">
@@ -545,6 +555,9 @@ function SessionBar({
           </span>
         )}
         {pill && <StatusPill state={pill.tone} label={pill.label} />}
+        {onStartOver && (
+          <StartOverButton onConfirm={onStartOver} pending={restarting} />
+        )}
         <Button
           variant="outline"
           size="sm"
@@ -571,6 +584,53 @@ function SessionBar({
         )}
       </div>
     </div>
+  )
+}
+
+// Start over discards the live Interview and opens a fresh one on the same item. The
+// confirm guards only the typed answers — nothing has been written to the tracker — so
+// it is a lightweight popover, not a modal. Never call this "Reset": Reset is the
+// destructive ticket action (branch delete + re-queue).
+function StartOverButton({
+  onConfirm,
+  pending,
+}: {
+  onConfirm: () => void
+  pending?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" disabled={pending} aria-label="Start over">
+          <RotateCcw className={cn(pending && 'animate-spin')} />
+          Start over
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-64">
+        <p className="text-sm font-medium text-foreground">
+          Discard this interview and start over?
+        </p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          Your typed answers are lost. The ticket and its labels stay untouched.
+        </p>
+        <div className="mt-3 flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => {
+              setOpen(false)
+              onConfirm()
+            }}
+          >
+            Start over
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
   )
 }
 

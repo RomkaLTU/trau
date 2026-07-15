@@ -1,8 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
+  abandonGrill,
   activeSessionForIssue,
   grillSessionsQueryOptions,
+  isSettled,
   startGrillSession,
   type GrillListResponse,
   type GrillSession,
@@ -10,15 +12,18 @@ import {
 
 // GrillSessionState is a host's view of one issue's session: the resolved session to
 // mount a conversation on, whether the list has settled enough to say there is none,
-// and an explicit start the host runs. resolution never opens a session, so viewing
-// or browsing an issue costs nothing; retry is present only when a start the host ran
+// and the explicit acts the host runs — start opens one, startOver discards the live
+// session and opens a fresh one. resolution never opens a session, so viewing or
+// browsing an issue costs nothing; retry is present only when a start the host ran
 // failed and can be offered again.
 export interface GrillSessionState {
   session?: GrillSession;
   resolved: boolean;
   starting: boolean;
+  restarting: boolean;
   error: Error | null;
   start: (seed?: string) => void;
+  startOver: () => void;
   retry?: () => void;
 }
 
@@ -60,6 +65,37 @@ export function useGrillSession(repo: string, issueId: string): GrillSessionStat
     create.mutate(seed);
   };
 
+  // restart abandons the issue's live session and opens a fresh one in a single act, so
+  // one deliberate Start over discards a derailed Interview and begins again. The old
+  // session settles as abandoned server-side; the optimistic write settles it in the
+  // list too, so resolution never reads the discard as "no session" and strands the
+  // item back in a preview.
+  const restart = useMutation({
+    mutationFn: async (sid: string) => {
+      await abandonGrill(sid);
+      return startGrillSession(repo, issueId, "");
+    },
+    onSuccess: (sess) => {
+      queryClient.setQueryData<GrillListResponse>(["grill", repo], (prev) => {
+        const settled = (prev?.sessions ?? []).map((s) =>
+          s.issue_id === issueId && !isSettled(s.state)
+            ? { ...s, state: "abandoned" as const }
+            : s,
+        );
+        return { repo, sessions: [sess, ...settled.filter((s) => s.id !== sess.id)] };
+      });
+    },
+    onError: () =>
+      void queryClient.invalidateQueries({ queryKey: ["grill", repo] }),
+  });
+
+  // startOver only fires when a live session exists to discard, and stays a no-op while
+  // one restart is already in flight.
+  const startOver = () => {
+    if (!active || restart.isPending) return;
+    restart.mutate(active.id);
+  };
+
   const listError = (list.error as Error) ?? null;
   const createError = active ? null : ((create.error as Error) ?? null);
 
@@ -67,8 +103,10 @@ export function useGrillSession(repo: string, issueId: string): GrillSessionStat
     session: active ?? create.data,
     resolved: list.isSuccess,
     starting: create.isPending,
+    restarting: restart.isPending,
     error: listError ?? createError,
     start,
+    startOver,
     retry: listError === null && createError !== null ? () => start() : undefined,
   };
 }
