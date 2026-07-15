@@ -163,8 +163,10 @@ func TestGrillMCPAskUserRoundTrip(t *testing.T) {
 	errc := make(chan error, 1)
 	go func() {
 		res, err := doMCPPost(mcpURL(ts, sess.ID), toolCall("ask_user", map[string]any{
-			"question": "Which page is in scope?",
-			"options":  []string{"login", "signup"},
+			"question":    "Which page is in scope?",
+			"options":     []string{"login", "signup"},
+			"recommended": "login",
+			"why":         "It is the only page in scope.",
 		}))
 		if err != nil {
 			errc <- err
@@ -207,8 +209,19 @@ func TestGrillMCPAskUserRoundTrip(t *testing.T) {
 	}
 	var gotQuestion bool
 	for _, m := range detail.Messages {
-		if m.Role == hubstore.GrillRoleAgent && m.Kind == hubstore.GrillKindQuestion {
-			gotQuestion = true
+		if m.Role != hubstore.GrillRoleAgent || m.Kind != hubstore.GrillKindQuestion {
+			continue
+		}
+		gotQuestion = true
+		var q struct {
+			Recommended string `json:"recommended"`
+			Why         string `json:"why"`
+		}
+		if err := json.Unmarshal(m.Payload, &q); err != nil {
+			t.Fatalf("decode question payload: %v", err)
+		}
+		if q.Recommended != "login" || q.Why != "It is the only page in scope." {
+			t.Fatalf("stored recommended/why = %q/%q, want login and the reason", q.Recommended, q.Why)
 		}
 	}
 	if !gotQuestion {
