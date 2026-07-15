@@ -101,6 +101,24 @@ func (c *Client) Ping(ctx context.Context) error {
 	return c.do(ctx, http.MethodGet, "/myself", nil, nil)
 }
 
+// Myself returns the identity behind the client's credentials — the accountId and
+// display name of the Jira user the token authenticates as: the repo binding's Me
+// the hub resolves each sync cycle. accountId is canonical; users are never matched
+// by email, which Atlassian privacy settings can hide.
+func (c *Client) Myself(ctx context.Context) (id, name string, err error) {
+	if !c.enabled() {
+		return "", "", ErrNotEnabled
+	}
+	var dst struct {
+		AccountID   string `json:"accountId"`
+		DisplayName string `json:"displayName"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/myself", nil, &dst); err != nil {
+		return "", "", err
+	}
+	return dst.AccountID, dst.DisplayName, nil
+}
+
 // Issue is the subset of a Jira issue the tracker consumes. Description is the v3
 // ADF body flattened to plain text; Status/Resolution/Project/Parent back the
 // tracker's status, ownership-guard and epic-parent reads.

@@ -294,6 +294,20 @@ func (c *Client) CountIssues(ctx context.Context) (int, error) {
 	return len(dst.Data.Issues.Nodes), nil
 }
 
+// Viewer returns the identity behind the API key — its id and display name. A
+// Linear personal API key is a user, so the viewer is that user: the repo
+// binding's Me the hub resolves each sync cycle.
+func (c *Client) Viewer(ctx context.Context) (id, name string, err error) {
+	if c.apiKey == "" {
+		return "", "", ErrNotEnabled
+	}
+	var dst viewerQueryResponse
+	if err := c.do(ctx, viewerQuery, nil, &dst); err != nil {
+		return "", "", err
+	}
+	return dst.Data.Viewer.ID, dst.Data.Viewer.Name, nil
+}
+
 // TeamByKey looks up a team by its key (e.g. "COD").
 func (c *Client) TeamByKey(ctx context.Context, key string) (*Team, error) {
 	teams, err := c.ListTeams(ctx)
@@ -707,6 +721,15 @@ type backlogQueryResponse struct {
 			} `json:"pageInfo"`
 			Nodes []backlogNode `json:"nodes"`
 		} `json:"issues"`
+	} `json:"data"`
+}
+
+type viewerQueryResponse struct {
+	Data struct {
+		Viewer struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"viewer"`
 	} `json:"data"`
 }
 
