@@ -1,6 +1,7 @@
 package hubstore
 
 import (
+	"database/sql"
 	"reflect"
 	"testing"
 
@@ -96,6 +97,71 @@ func TestUpdateSyncedNeverTouchesInternal(t *testing.T) {
 	}
 	if _, found, err := store.UpdateSynced("acme", "LOOP-1", SyncedPatch{StatusGroup: "started"}); found || err != nil {
 		t.Fatalf("update synced on internal = found %v err %v, want false/nil (internal content is never mirrored)", found, err)
+	}
+}
+
+func rawAssignee(t *testing.T, s *Issues, repo, identifier string) (id, name sql.NullString) {
+	t.Helper()
+	if err := s.db.QueryRow(
+		`SELECT assignee_id, assignee_name FROM issues WHERE repo = ? AND identifier = ?`,
+		repo, identifier,
+	).Scan(&id, &name); err != nil {
+		t.Fatalf("read assignee: %v", err)
+	}
+	return id, name
+}
+
+func TestUpsertStoresAssigneeAndClearsOnUnassignment(t *testing.T) {
+	s := testIssues(t)
+
+	assigned := sampleIssue()
+	assigned.AssigneeID = "u-7"
+	assigned.AssigneeName = "Ada Lovelace"
+	if _, _, err := s.Upsert("acme", "linear", []Issue{assigned}); err != nil {
+		t.Fatalf("upsert assigned: %v", err)
+	}
+	id, name := rawAssignee(t, s, "acme", "COD-1")
+	if id.String != "u-7" || name.String != "Ada Lovelace" {
+		t.Fatalf("assignee = %q/%q, want u-7/Ada Lovelace", id.String, name.String)
+	}
+
+	unassigned := sampleIssue()
+	if _, _, err := s.Upsert("acme", "linear", []Issue{unassigned}); err != nil {
+		t.Fatalf("upsert unassigned: %v", err)
+	}
+	id, name = rawAssignee(t, s, "acme", "COD-1")
+	if id.Valid || name.Valid {
+		t.Fatalf("assignee after unassignment = %v/%v, want NULL/NULL — the old assignee must not survive", id, name)
+	}
+}
+
+func TestUpsertLeavesAbsentAssigneeNull(t *testing.T) {
+	s := testIssues(t)
+	if _, _, err := s.Upsert("acme", "linear", []Issue{sampleIssue()}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if id, name := rawAssignee(t, s, "acme", "COD-1"); id.Valid || name.Valid {
+		t.Fatalf("assignee = %v/%v, want NULL for an unassigned issue", id, name)
+	}
+}
+
+func TestSaveIdentityRoundTripPreservesBookkeeping(t *testing.T) {
+	s := testIssues(t)
+	if err := s.SaveBinding("acme", SyncBinding{TeamID: "t-1", ProjectID: "p-1"}); err != nil {
+		t.Fatalf("save binding: %v", err)
+	}
+	if err := s.SaveIdentity("acme", "u-42", "Grace Hopper"); err != nil {
+		t.Fatalf("save identity: %v", err)
+	}
+	st, err := s.SyncState("acme")
+	if err != nil {
+		t.Fatalf("sync state: %v", err)
+	}
+	if st.Me.ID != "u-42" || st.Me.Name != "Grace Hopper" || st.Me.ResolvedAt == "" {
+		t.Fatalf("me = %+v, want u-42/Grace Hopper with a resolved-at stamp", st.Me)
+	}
+	if st.Binding.TeamID != "t-1" || st.Binding.ProjectID != "p-1" {
+		t.Fatalf("binding = %+v, want the identity save to leave it intact", st.Binding)
 	}
 }
 
