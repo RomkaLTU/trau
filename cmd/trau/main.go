@@ -543,13 +543,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}, con, result)
 
 	if opts.DrainReport != "" {
-		var class, reason string
-		switch {
-		case pipeline.IsPaused(lerr):
-			class, reason = state.FailPaused, lerr.Error()
-		case pipeline.IsFault(lerr):
-			class, reason = state.FailFaulted, lerr.Error()
-		}
+		class, reason := drainClass(lerr)
 		hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
 		if werr := hub.PutDrainOutcome(context.Background(), repoName(cfg.RepoRoot), opts.DrainReport, class, reason); werr != nil {
 			logger.Verbosef("drain report post failed: %v", werr)
@@ -570,6 +564,23 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}, lerr))
 	con.Wait()
 	return lerr
+}
+
+// drainClass maps the loop's exit error to the failure class a queue child posts
+// with its drain report. The hub reads an empty class as a clean finish and
+// settles the item done — marking every sub-issue of an epic done with it — so
+// only a nil error may post one. A pause stays a pause; every other error, git
+// preflight failures included, posts faulted so the drainer parks the item
+// instead of settling it done with no work behind it.
+func drainClass(err error) (class, reason string) {
+	switch {
+	case err == nil:
+		return "", ""
+	case pipeline.IsPaused(err):
+		return state.FailPaused, err.Error()
+	default:
+		return state.FailFaulted, err.Error()
+	}
 }
 
 // applyFault fills a SessionSummary's fault fields from err when the loop stopped
