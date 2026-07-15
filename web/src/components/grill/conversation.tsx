@@ -27,10 +27,13 @@ import { streamSSE } from "@/lib/sse";
 export type StreamStatus = "connecting" | "live" | "error";
 
 // GrillStatus is what the conversation knows and its host frame has to render:
-// the stream's connection state and the authoritative session behind the thread.
+// the stream's connection state, the authoritative session behind the thread, and
+// the thread itself — the messages arrive over SSE, so a host that read them back
+// over GET would trail the conversation it is framing.
 export interface GrillStatus {
   stream: StreamStatus;
   session: GrillSession;
+  messages: GrillMessage[];
 }
 
 // GrillConversation is the chat itself — thread, suggestions, composer, and outcome
@@ -105,8 +108,8 @@ export function GrillConversation({
   });
 
   useEffect(() => {
-    onStatus?.({ stream: status, session });
-  }, [status, session]);
+    onStatus?.({ stream: status, session, messages });
+  }, [status, session, messages]);
 
   const send = (text: string) => {
     const id = `pending-${nextSend.current++}`;
