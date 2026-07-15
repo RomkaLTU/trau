@@ -184,6 +184,72 @@ export function buildTimeline(
   }
 }
 
+export const FINISHED_PAGE_SIZE = 10
+
+export interface FinishedState {
+  expanded: boolean
+  visible: number
+}
+
+export const FINISHED_INITIAL: FinishedState = {
+  expanded: false,
+  visible: FINISHED_PAGE_SIZE,
+}
+
+export type FinishedAction = { type: 'toggle' } | { type: 'more' }
+
+export function finishedReducer(
+  state: FinishedState,
+  action: FinishedAction,
+): FinishedState {
+  switch (action.type) {
+    case 'toggle':
+      return { expanded: !state.expanded, visible: FINISHED_PAGE_SIZE }
+    case 'more':
+      return { ...state, visible: state.visible + FINISHED_PAGE_SIZE }
+  }
+}
+
+export type SettleLabel = 'merged' | 'done' | 'failed' | 'skipped' | 'paused'
+
+export interface SettleTally {
+  label: SettleLabel
+  count: number
+}
+
+export interface FinishedView {
+  total: number
+  tally: SettleTally[]
+  latest?: TimelineTicket
+  rows: TimelineTicket[]
+  older: number
+}
+
+// buildTimeline hands settled tickets over oldest-first; finishedView reverses
+// for newest-first display. Statuses nothing settled into drop out of the
+// tally rather than showing a zero.
+export function finishedView(
+  settled: TimelineTicket[],
+  visible: number,
+): FinishedView {
+  const rows = [...settled].reverse()
+  const tally: SettleTally[] = [
+    { label: 'merged', count: settled.filter((t) => t.status === 'done' && t.hasRun).length },
+    { label: 'done', count: settled.filter((t) => t.status === 'done' && !t.hasRun).length },
+    { label: 'failed', count: settled.filter((t) => t.status === 'failed').length },
+    { label: 'skipped', count: settled.filter((t) => t.status === 'skipped').length },
+    { label: 'paused', count: settled.filter((t) => t.status === 'paused').length },
+  ]
+
+  return {
+    total: settled.length,
+    tally: tally.filter((t) => t.count > 0),
+    latest: rows[0],
+    rows: rows.slice(0, visible),
+    older: Math.max(0, settled.length - visible),
+  }
+}
+
 export function ticketPill(t: TimelineTicket): { state: RunState; label: string } {
   switch (t.status) {
     case 'done':

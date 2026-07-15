@@ -3,7 +3,15 @@ import { describe, expect, it } from 'vitest'
 import type { Instance } from './instances'
 import type { QueueItem } from './queue'
 import type { Run } from './runs'
-import { buildTimeline, ticketPill, type TimelineTicket } from './timeline'
+import {
+  buildTimeline,
+  finishedReducer,
+  finishedView,
+  ticketPill,
+  FINISHED_INITIAL,
+  FINISHED_PAGE_SIZE,
+  type TimelineTicket,
+} from './timeline'
 
 function item(over: Partial<QueueItem>): QueueItem {
   return { position: 1, kind: 'ticket', id: 'COD-1', status: 'pending', ...over }
@@ -233,6 +241,69 @@ describe('buildTimeline', () => {
     if (epic?.kind === 'epic') {
       expect(epic.children.map((c) => c.id)).toEqual(['COD-10', 'COD-11'])
     }
+  })
+})
+
+describe('finishedView', () => {
+  function settledTicket(id: string, over: Partial<TimelineTicket> = {}): TimelineTicket {
+    return ticket({ id, title: '', status: 'done', hasRun: true, ...over })
+  }
+
+  it('tallies every settle status and drops the ones nothing settled into', () => {
+    const view = finishedView(
+      [
+        settledTicket('COD-1'),
+        settledTicket('COD-2'),
+        settledTicket('COD-3', { hasRun: false }),
+        settledTicket('COD-4', { status: 'failed' }),
+        settledTicket('COD-5', { status: 'paused' }),
+      ],
+      FINISHED_PAGE_SIZE,
+    )
+    expect(view.total).toBe(5)
+    expect(view.tally).toEqual([
+      { label: 'merged', count: 2 },
+      { label: 'done', count: 1 },
+      { label: 'failed', count: 1 },
+      { label: 'paused', count: 1 },
+    ])
+  })
+
+  it('reads newest-first and features the newest completion as latest', () => {
+    const view = finishedView(
+      [settledTicket('COD-1'), settledTicket('COD-2'), settledTicket('COD-3')],
+      FINISHED_PAGE_SIZE,
+    )
+    expect(view.rows.map((t) => t.id)).toEqual(['COD-3', 'COD-2', 'COD-1'])
+    expect(view.latest?.id).toBe('COD-3')
+    expect(view.older).toBe(0)
+  })
+
+  it('caps rows at the visible count and reports the older remainder', () => {
+    const settled = Array.from({ length: 12 }, (_, i) => settledTicket(`COD-${i + 1}`))
+
+    const firstPage = finishedView(settled, FINISHED_PAGE_SIZE)
+    expect(firstPage.rows.map((t) => t.id)).toEqual([
+      'COD-12', 'COD-11', 'COD-10', 'COD-9', 'COD-8',
+      'COD-7', 'COD-6', 'COD-5', 'COD-4', 'COD-3',
+    ])
+    expect(firstPage.older).toBe(2)
+
+    const secondPage = finishedView(settled, FINISHED_PAGE_SIZE * 2)
+    expect(secondPage.rows).toHaveLength(12)
+    expect(secondPage.older).toBe(0)
+  })
+})
+
+describe('finishedReducer', () => {
+  it('resets pagination when the section collapses', () => {
+    const expanded = finishedReducer(FINISHED_INITIAL, { type: 'toggle' })
+    expect(expanded.expanded).toBe(true)
+
+    const paged = finishedReducer(finishedReducer(expanded, { type: 'more' }), { type: 'more' })
+    expect(paged.visible).toBe(FINISHED_PAGE_SIZE * 3)
+
+    expect(finishedReducer(paged, { type: 'toggle' })).toEqual(FINISHED_INITIAL)
   })
 })
 
