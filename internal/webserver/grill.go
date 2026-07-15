@@ -16,8 +16,9 @@ import (
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
-// GrillSessionView is one grilling session as the web panel sees it. IssueID and
-// IssueTitle are omitted for an authoring session anchored to the repo alone.
+// GrillSessionView is one grilling session as the web panel sees it. IssueID is
+// omitted for an authoring session anchored to the repo alone; IssueTitle then
+// carries the session's seed so the queue can title an issue-less draft.
 type GrillSessionView struct {
 	ID           string `json:"id"`
 	Repo         string `json:"repo"`

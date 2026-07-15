@@ -1,49 +1,62 @@
-import { useEffect, useState } from 'react'
-import { createFileRoute } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { parseAsString, useQueryState } from 'nuqs'
+import { useEffect, useState } from "react";
+import { createFileRoute } from "@tanstack/react-router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { parseAsString, useQueryState } from "nuqs";
 import {
   Flame,
   Loader2,
   PanelRightClose,
   PanelRightOpen,
+  RotateCcw,
   SkipForward,
   Sparkles,
-} from 'lucide-react'
+} from "lucide-react";
 
-import { AuthoringDrawer } from '@/components/grill-panel'
-import { Markdown } from '@/components/markdown'
-import { ErrorNote } from '@/components/grill/banners'
+import { Markdown } from "@/components/markdown";
+import { ErrorNote } from "@/components/grill/banners";
+import { Composer } from "@/components/grill/composer";
 import {
   GrillConversation,
   type GrillStatus,
-} from '@/components/grill/conversation'
-import { useGrillSession } from '@/components/grill/session'
-import { Button } from '@/components/ui/button'
+} from "@/components/grill/conversation";
+import { useGrillSession } from "@/components/grill/session";
+import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import {
   PageHeader,
   ProjectScopeGate,
   RepoHealthGate,
   StatusPill,
   useActiveRepo,
-} from '@/components/trau'
+} from "@/components/trau";
 import {
   GRILLABLE_LABELS,
   latestOutcome,
   outcomePayload,
   pregrillIssues,
+  startGrillSession,
+  type GrillListResponse,
+  type GrillSession,
   type OutcomePayload,
-} from '@/lib/grill'
+} from "@/lib/grill";
 import {
   contextRows,
   loadContextOpen,
   storeContextOpen,
-} from '@/lib/inbox-context'
-import { issueQueryOptions } from '@/lib/issues'
+} from "@/lib/inbox-context";
+import { issueQueryOptions } from "@/lib/issues";
 import {
+  draftItemId,
+  inboxGroups,
   inboxPill,
   inboxPosition,
   nextIssueId,
+  newDraftItem,
+  NEW_DRAFT_ID,
   prevIssueId,
   skipTarget,
   summarisePregrill,
@@ -51,88 +64,127 @@ import {
   type InboxGroup,
   type InboxGroupView,
   type InboxItem,
-} from '@/lib/inbox'
-import { hasOpenLayer, inboxKeyAction } from '@/lib/inbox-keys'
+} from "@/lib/inbox";
+import { hasOpenLayer, inboxKeyAction } from "@/lib/inbox-keys";
 import {
   hasUnseenQuestion,
   loadSeen,
   markSeen,
   storeSeen,
   type SeenMarks,
-} from '@/lib/inbox-seen'
-import { standardTitle, usePageTitle } from '@/lib/page-title'
-import { cn } from '@/lib/utils'
+} from "@/lib/inbox-seen";
+import { standardTitle, usePageTitle } from "@/lib/page-title";
+import { cn } from "@/lib/utils";
 
-export const Route = createFileRoute('/inbox')({
+export const Route = createFileRoute("/inbox")({
   component: InboxPage,
-})
+  // issue selects a queue row (or draft:new opens a fresh Draft) — read at runtime
+  // through nuqs, typed here so backlog and the issue drawer can link into it.
+  validateSearch: (search: Record<string, unknown>): { issue?: string } =>
+    typeof search.issue === "string" && search.issue !== ""
+      ? { issue: search.issue }
+      : {},
+});
 
 const GROUP_COUNT_TONE: Record<InboxGroup, string> = {
-  waiting: 'text-warn',
-  review: 'text-teal',
-  done: 'text-done',
-}
+  waiting: "text-warn",
+  review: "text-teal",
+  done: "text-done",
+};
 
 function InboxPage() {
-  usePageTitle(standardTitle('Inbox'))
-  const { repo: activeRepo } = useActiveRepo()
-  const repo = activeRepo ?? ''
-  const queryClient = useQueryClient()
-  const { items, groups, isLoading, error } = useInboxQueue(repo)
+  usePageTitle(standardTitle("Inbox"));
+  const { repo: activeRepo } = useActiveRepo();
+  const repo = activeRepo ?? "";
+  const queryClient = useQueryClient();
+  const {
+    items: queueItems,
+    groups: queueGroups,
+    done,
+    isLoading,
+    error,
+  } = useInboxQueue(repo);
 
   const [peek, setPeek] = useQueryState(
-    'issue',
-    parseAsString.withOptions({ history: 'push' }),
-  )
+    "issue",
+    parseAsString.withOptions({ history: "push" }),
+  );
+
+  // The fresh Draft is client-only until its first message starts a session. It lives
+  // as a synthetic row at the head of the queue, seeded when New issue selects it (or
+  // a backlog link arrives at ?issue=draft:new), and evaporates the moment selection
+  // moves off it untouched.
+  const [newDraft, setNewDraft] = useState(() => peek === NEW_DRAFT_ID);
+  const items = newDraft ? [newDraftItem(), ...queueItems] : queueItems;
+  const groups = newDraft ? inboxGroups(items, done) : queueGroups;
+
   // The queue owns the selection: an ?issue= naming something that has left it — or
   // was never in it — falls back to the head rather than opening a session on a
   // stray id.
-  const selected = items.find((item) => item.id === peek) ?? items[0] ?? null
+  const selected = items.find((item) => item.id === peek) ?? items[0] ?? null;
 
-  const [contextOpen, setContextOpen] = useState(loadContextOpen)
-  const [authoring, setAuthoring] = useState(false)
-  const [passSummary, setPassSummary] = useState<string | null>(null)
-  const [status, setStatus] = useState<GrillStatus | null>(null)
-  const [seen, setSeen] = useState<SeenMarks>(loadSeen)
+  const [contextOpen, setContextOpen] = useState(loadContextOpen);
+  const [passSummary, setPassSummary] = useState<string | null>(null);
+  const [status, setStatus] = useState<GrillStatus | null>(null);
+  const [seen, setSeen] = useState<SeenMarks>(loadSeen);
+
+  useEffect(() => {
+    if (newDraft && peek !== NEW_DRAFT_ID) setNewDraft(false);
+  }, [newDraft, peek]);
 
   // The thread reports the session it is following, but the panel beside it must not
-  // read the outgoing issue's status while a freshly selected one is still mounting.
-  const live = status?.session.issue_id === selected?.id ? status : null
+  // read the outgoing item's status while a freshly selected one is still mounting.
+  // An issue matches on its id; an issue-less draft has none, so it matches the
+  // session it is showing.
+  const followsSelected =
+    status !== null &&
+    selected !== null &&
+    (selected.draft
+      ? selected.session?.id === status.session.id
+      : status.session.issue_id === selected.id);
+  const live = followsSelected ? status : null;
 
   // Whatever is on screen has been read, and the thread's session is the one being
   // read — it is followed live, where the rail's list trails a staleTime behind.
-  const onScreen = live?.session ?? selected?.session
+  const onScreen = live?.session ?? selected?.session;
+
+  // With no session the chat zone shows the read-only preview, which carries the issue
+  // itself — so the context panel beside it would only repeat what is already in view.
+  // A draft has no tracker issue behind it, so it never opens the context panel.
+  const hasSession = Boolean(onScreen);
+  const showContext = hasSession && !selected?.draft;
 
   useEffect(() => {
-    if (!onScreen) return
-    setSeen((marks) => markSeen(marks, onScreen.id, onScreen.updated_at))
-  }, [onScreen?.id, onScreen?.updated_at])
+    if (!onScreen) return;
+    setSeen((marks) => markSeen(marks, onScreen.id, onScreen.updated_at));
+  }, [onScreen?.id, onScreen?.updated_at]);
 
   useEffect(() => {
-    storeSeen(seen)
-  }, [seen])
+    storeSeen(seen);
+  }, [seen]);
 
   function toggleContext() {
-    const next = !contextOpen
-    setContextOpen(next)
-    storeContextOpen(next)
+    const next = !contextOpen;
+    setContextOpen(next);
+    storeContextOpen(next);
   }
 
   const untouchedIds = items
-    .filter((item) => item.attention === 'open')
-    .map((item) => item.id)
+    .filter((item) => item.attention === "open")
+    .map((item) => item.id);
 
   const pregrillAll = useMutation({
     mutationFn: () => pregrillIssues(repo, untouchedIds),
     onSuccess: (res) => setPassSummary(summarisePregrill(res)),
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: ['grill', repo] }),
-  })
+    onSettled: () =>
+      void queryClient.invalidateQueries({ queryKey: ["grill", repo] }),
+  });
 
   // Skipping parks nothing: an untouched session settles server-side on idle, so the
   // item keeps its place in the queue and comes round again.
   function skip() {
-    const next = skipTarget(items, selected?.id ?? null)
-    if (next !== null && next !== selected?.id) void setPeek(next)
+    const next = skipTarget(items, selected?.id ?? null);
+    if (next !== null && next !== selected?.id) void setPeek(next);
   }
 
   // The workspace owns j/k/s while it is on screen. The listener sits on the document
@@ -148,31 +200,61 @@ function InboxPage() {
         isComposing: e.isComposing,
         targetTag: (e.target as HTMLElement | null)?.tagName,
         layerOpen: hasOpenLayer(document),
-      })
-      if (action === null) return
-      if (action === 'skip') {
-        skip()
-        return
+      });
+      if (action === null) return;
+      if (action === "skip") {
+        skip();
+        return;
       }
-      if (!selected) return
+      if (!selected) return;
       const to =
-        action === 'next'
+        action === "next"
           ? nextIssueId(items, selected.id)
-          : prevIssueId(items, selected.id)
-      if (to !== null) void setPeek(to)
+          : prevIssueId(items, selected.id);
+      if (to !== null) void setPeek(to);
     }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [items, selected])
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [items, selected]);
+
+  // New issue opens a fresh Draft at the head of the queue and selects it; the
+  // composer beside it starts the authoring session on the first message.
+  function openDraft() {
+    setNewDraft(true);
+    void setPeek(NEW_DRAFT_ID);
+  }
+
+  // A started Draft settles into a live authoring row keyed by its session id.
+  // Selecting it retires the fresh Draft (the evaporation effect) with the interview
+  // already in view.
+  function onDraftStarted(session: GrillSession) {
+    void setPeek(draftItemId(session.id));
+  }
 
   // An applied outcome drops the issue's triage labels on the tracker, so refreshing
   // the board is what retires the row; the applied list is what re-lists it under
-  // Done today. The unfiltered grill list is deliberately left alone — refetching it
-  // would read the settled session as "no session" and restart the grilling.
+  // Done today. The issue's own grill list is deliberately left alone — refetching it
+  // would read the settled session as "no session" and drop it to a preview. A draft
+  // has no board row, so its list is refreshed to retire the settled authoring row.
   function onApplied() {
-    skip()
-    void queryClient.invalidateQueries({ queryKey: ['backlog', repo] })
-    void queryClient.invalidateQueries({ queryKey: ['grill', repo, 'applied'] })
+    const wasDraft = selected?.draft;
+    skip();
+    void queryClient.invalidateQueries({ queryKey: ["backlog", repo] });
+    void queryClient.invalidateQueries({
+      queryKey: ["grill", repo, "applied"],
+    });
+    if (wasDraft)
+      void queryClient.invalidateQueries({ queryKey: ["grill", repo] });
+  }
+
+  // Discarding an authoring draft abandons its session with nothing to file, so the
+  // list is refreshed to retire the row. An issue's discard just moves on — the issue
+  // stays in the queue as untouched.
+  function onDiscarded() {
+    const wasDraft = selected?.draft;
+    skip();
+    if (wasDraft)
+      void queryClient.invalidateQueries({ queryKey: ["grill", repo] });
   }
 
   return (
@@ -183,18 +265,18 @@ function InboxPage() {
       <div className="absolute inset-0 flex flex-col">
         <PageHeader
           className="shrink-0"
-          eyebrow={repo || 'inbox'}
+          eyebrow={repo || "inbox"}
           title="Triage inbox"
           description="Work through unclear issues in one sitting — the ones with a question waiting on you come first."
           actions={
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => setAuthoring(true)}
+                onClick={openDraft}
                 className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-muted"
               >
                 <Sparkles className="size-4" />
-                New issue (grilled)
+                New issue
               </button>
               {untouchedIds.length > 0 && (
                 <Button
@@ -205,7 +287,7 @@ function InboxPage() {
                 >
                   <Flame />
                   {pregrillAll.isPending
-                    ? 'Pre-grilling…'
+                    ? "Pre-grilling…"
                     : `Pre-grill all (${untouchedIds.length})`}
                 </Button>
               )}
@@ -216,8 +298,8 @@ function InboxPage() {
         {(passSummary || pregrillAll.error) && (
           <p
             className={cn(
-              'shrink-0 border-b border-border px-8 py-2 text-sm',
-              pregrillAll.error ? 'text-destructive' : 'text-muted-foreground',
+              "shrink-0 border-b border-border px-8 py-2 text-sm",
+              pregrillAll.error ? "text-destructive" : "text-muted-foreground",
             )}
           >
             {pregrillAll.error ? pregrillAll.error.message : passSummary}
@@ -227,8 +309,10 @@ function InboxPage() {
         <RepoHealthGate className="min-h-0 flex-1">
           <div
             className={cn(
-              'absolute inset-0 flex flex-col px-8 pb-4 md:grid md:grid-cols-[260px_minmax(0,1fr)]',
-              contextOpen && 'xl:[grid-template-columns:260px_minmax(0,1fr)_340px]',
+              "absolute inset-0 flex flex-col px-8 pb-4 md:grid md:grid-cols-[260px_minmax(0,1fr)]",
+              contextOpen &&
+                showContext &&
+                "xl:[grid-template-columns:260px_minmax(0,1fr)_340px]",
             )}
           >
             <QueueSelect
@@ -249,19 +333,37 @@ function InboxPage() {
               className="flex min-h-0 min-w-0 flex-col"
             >
               {selected ? (
-                <SessionColumn
-                  key={selected.id}
-                  repo={repo}
-                  item={selected}
-                  position={inboxPosition(items, selected.id)}
-                  total={items.length}
-                  status={live}
-                  onStatus={setStatus}
-                  contextOpen={contextOpen}
-                  onToggleContext={toggleContext}
-                  onSkip={skip}
-                  onApplied={onApplied}
-                />
+                selected.draft ? (
+                  <DraftColumn
+                    key={selected.id}
+                    repo={repo}
+                    item={selected}
+                    position={inboxPosition(items, selected.id)}
+                    total={items.length}
+                    status={live}
+                    onStatus={setStatus}
+                    onStarted={onDraftStarted}
+                    onSkip={skip}
+                    onApplied={onApplied}
+                    onDiscarded={onDiscarded}
+                  />
+                ) : (
+                  <SessionColumn
+                    key={selected.id}
+                    repo={repo}
+                    item={selected}
+                    position={inboxPosition(items, selected.id)}
+                    total={items.length}
+                    status={live}
+                    hasSession={hasSession}
+                    onStatus={setStatus}
+                    contextOpen={contextOpen}
+                    onToggleContext={toggleContext}
+                    onSkip={skip}
+                    onApplied={onApplied}
+                    onDiscarded={onDiscarded}
+                  />
+                )
               ) : (
                 <div className="flex min-h-0 flex-1 items-center justify-center p-8">
                   {error ? (
@@ -278,56 +380,60 @@ function InboxPage() {
               )}
             </section>
 
-            {selected && contextOpen && (
+            {selected && contextOpen && showContext && (
               <ContextColumn repo={repo} item={selected} status={live} />
             )}
           </div>
         </RepoHealthGate>
       </div>
-
-      <AuthoringDrawer
-        repo={repo}
-        open={authoring}
-        onOpenChange={setAuthoring}
-        onCreated={() => {
-          void queryClient.invalidateQueries({ queryKey: ['backlog', repo] })
-          void queryClient.invalidateQueries({ queryKey: ['grill', repo] })
-        }}
-      />
     </ProjectScopeGate>
-  )
+  );
 }
 
-// SessionColumn is the chat zone: the session bar over the issue's conversation,
-// opening a session for an issue that has none. Hosts key it on the issue so the
-// auto-start and the thread reset together.
+// SessionColumn is the chat zone: the session bar over the issue's conversation, or —
+// when the issue has no session yet — a read-only preview whose actions are the only
+// way a session starts. Hosts key it on the issue so the thread and preview reset
+// together, and selecting or skimming an issue never opens one.
 function SessionColumn({
   repo,
   item,
   position,
   total,
   status,
+  hasSession,
   onStatus,
   contextOpen,
   onToggleContext,
   onSkip,
   onApplied,
+  onDiscarded,
 }: {
-  repo: string
-  item: InboxItem
-  position: number
-  total: number
-  status: GrillStatus | null
-  onStatus: (status: GrillStatus) => void
-  contextOpen: boolean
-  onToggleContext: () => void
-  onSkip: () => void
-  onApplied: () => void
+  repo: string;
+  item: InboxItem;
+  position: number;
+  total: number;
+  status: GrillStatus | null;
+  hasSession: boolean;
+  onStatus: (status: GrillStatus) => void;
+  contextOpen: boolean;
+  onToggleContext: () => void;
+  onSkip: () => void;
+  onApplied: () => void;
+  onDiscarded: () => void;
 }) {
-  const { session, starting, error, retry } = useGrillSession(repo, item.id)
+  const {
+    session,
+    resolved,
+    starting,
+    restarting,
+    error,
+    start,
+    startOver,
+    retry,
+  } = useGrillSession(repo, item.id);
 
   // The stream's session outranks the list's: it is the one the thread is following.
-  const live = status?.session ?? session
+  const live = status?.session ?? session;
 
   return (
     <>
@@ -336,10 +442,13 @@ function SessionColumn({
         position={position}
         total={total}
         pill={live ? inboxPill(live.state) : null}
-        reconnecting={status?.stream === 'error'}
+        reconnecting={status?.stream === "error"}
+        showContextToggle={hasSession}
         contextOpen={contextOpen}
         onToggleContext={onToggleContext}
         onSkip={onSkip}
+        onStartOver={live ? startOver : undefined}
+        restarting={restarting}
       />
 
       {/* The overlay frame floats over the thread, not the bar above it: the bar
@@ -352,34 +461,256 @@ function SessionColumn({
             initial={session}
             onStatus={onStatus}
             onApplied={onApplied}
-            onDiscarded={onSkip}
+            onDiscarded={onDiscarded}
           />
-        ) : (
+        ) : starting ? (
+          <SpinnerNote label="Starting interview…" />
+        ) : error ? (
           <div className="flex min-h-0 flex-1 items-center justify-center px-4">
-            {error ? (
-              <div className="flex flex-col items-center gap-3">
-                <ErrorNote message={error.message} />
-                {retry && (
-                  <Button size="sm" variant="outline" onClick={retry}>
-                    Try again
-                  </Button>
-                )}
-              </div>
-            ) : (
-              <p className="inline-flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="size-4 animate-spin" />
-                {starting ? 'Starting grilling session…' : 'Loading…'}
-              </p>
-            )}
+            <div className="flex flex-col items-center gap-3">
+              <ErrorNote message={error.message} />
+              {retry && (
+                <Button size="sm" variant="outline" onClick={retry}>
+                  Try again
+                </Button>
+              )}
+            </div>
           </div>
+        ) : !resolved ? (
+          <SpinnerNote label="Loading…" />
+        ) : (
+          <SessionPreview
+            repo={repo}
+            item={item}
+            onStart={start}
+            onSkip={onSkip}
+          />
         )}
 
-        {contextOpen && (
+        {contextOpen && hasSession && (
           <ContextOverlay repo={repo} item={item} status={status} />
         )}
       </div>
     </>
-  )
+  );
+}
+
+function SpinnerNote({ label }: { label: string }) {
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center px-4">
+      <p className="inline-flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" />
+        {label}
+      </p>
+    </div>
+  );
+}
+
+// DraftColumn is the chat zone for an issue-less authoring row: a live session's
+// conversation once one exists, otherwise a fresh Draft whose composer starts it.
+// There is no tracker issue behind it, so no context panel and no Start over.
+function DraftColumn({
+  repo,
+  item,
+  position,
+  total,
+  status,
+  onStatus,
+  onStarted,
+  onSkip,
+  onApplied,
+  onDiscarded,
+}: {
+  repo: string;
+  item: InboxItem;
+  position: number;
+  total: number;
+  status: GrillStatus | null;
+  onStatus: (status: GrillStatus) => void;
+  onStarted: (session: GrillSession) => void;
+  onSkip: () => void;
+  onApplied: () => void;
+  onDiscarded: () => void;
+}) {
+  const session = item.session;
+  const live = session ? (status?.session ?? session) : null;
+
+  return (
+    <>
+      <SessionBar
+        item={item}
+        position={position}
+        total={total}
+        draft
+        pill={live ? inboxPill(live.state) : null}
+        reconnecting={status?.stream === "error"}
+        showContextToggle={false}
+        contextOpen={false}
+        onToggleContext={() => {}}
+        onSkip={onSkip}
+      />
+
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        {session ? (
+          <GrillConversation
+            key={session.id}
+            repo={repo}
+            initial={session}
+            onStatus={onStatus}
+            onApplied={onApplied}
+            onDiscarded={onDiscarded}
+          />
+        ) : (
+          <FreshDraftBody repo={repo} onStarted={onStarted} />
+        )}
+      </div>
+    </>
+  );
+}
+
+// FreshDraftBody is the empty thread of an untouched Draft: a focused composer whose
+// first message starts the authoring session (startGrillSession with no issue,
+// the text as its seed). Nothing exists server-side until then.
+function FreshDraftBody({
+  repo,
+  onStarted,
+}: {
+  repo: string;
+  onStarted: (session: GrillSession) => void;
+}) {
+  const queryClient = useQueryClient();
+  const start = useMutation({
+    mutationFn: (seed: string) => startGrillSession(repo, "", seed),
+    onSuccess: (session) => {
+      queryClient.setQueryData<GrillListResponse>(["grill", repo], (prev) =>
+        prev
+          ? {
+              ...prev,
+              sessions: [
+                session,
+                ...prev.sessions.filter((s) => s.id !== session.id),
+              ],
+            }
+          : { repo, sessions: [session] },
+      );
+      onStarted(session);
+    },
+  });
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 items-center justify-center px-6">
+        <p className="max-w-sm text-balance text-center text-sm leading-relaxed text-muted-foreground">
+          Describe the issue you want to create. Your first message starts an
+          interview toward a fully-specified issue — nothing is filed until you
+          review the proposal.
+        </p>
+      </div>
+      <div className="flex flex-col gap-3 border-t border-border p-4">
+        <Composer
+          placeholder="Describe the issue…"
+          disabled={start.isPending}
+          submitting={start.isPending}
+          onSend={(text) => start.mutate(text)}
+          autoFocus
+        />
+        {start.error && <ErrorNote message={(start.error as Error).message} />}
+      </div>
+    </div>
+  );
+}
+
+// SessionPreview is what a no-session item shows in place of the conversation: a
+// read-only read of the issue over a footer whose actions are the only way an
+// Interview begins. Start interview opens a blank one; the composer opens with the
+// typed message as the first turn; Ask ahead parks just the opening question for
+// later; Skip moves on untouched.
+function SessionPreview({
+  repo,
+  item,
+  onStart,
+  onSkip,
+}: {
+  repo: string;
+  item: InboxItem;
+  onStart: (seed?: string) => void;
+  onSkip: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const issue = useQuery(issueQueryOptions(repo, item.id));
+  const labels = (item.entry?.labels ?? []).filter((l) =>
+    GRILLABLE_LABELS.includes(l),
+  );
+
+  const askAhead = useMutation({
+    mutationFn: () => pregrillIssues(repo, [item.id]),
+    onSettled: () =>
+      void queryClient.invalidateQueries({ queryKey: ["grill", repo] }),
+  });
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto px-5 py-6">
+        <div className="mx-auto flex max-w-2xl flex-col gap-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-mono text-xs text-muted-foreground">
+              {item.id}
+            </span>
+            {labels.map((label) => (
+              <span
+                key={label}
+                className="inline-flex items-center rounded-full border border-warn/50 bg-warn/12 px-2 py-0.5 font-mono text-[0.65rem] text-warn"
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+          <h2 className="text-balance text-lg font-semibold leading-snug text-foreground">
+            {item.title}
+          </h2>
+          <Description
+            markdown={issue.data?.description.trim() ?? ""}
+            loading={issue.isLoading}
+            error={(issue.error as Error) ?? null}
+          />
+        </div>
+      </div>
+
+      <div className="flex flex-col gap-3 border-t border-border p-4">
+        <p className="text-xs text-muted-foreground">
+          No interview yet — start one, or send a first message to open with it.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" onClick={() => onStart()}>
+            <Sparkles />
+            Start interview
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => askAhead.mutate()}
+            disabled={askAhead.isPending}
+          >
+            <Flame className={cn(askAhead.isPending && "animate-pulse")} />
+            {askAhead.isPending ? "Asking ahead…" : "Ask ahead"}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onSkip}>
+            <SkipForward />
+            Skip
+          </Button>
+        </div>
+        <Composer
+          placeholder="Type your first message to start the interview…"
+          disabled={askAhead.isPending}
+          submitting={false}
+          onSend={(text) => onStart(text)}
+        />
+        {askAhead.error && (
+          <ErrorNote message={(askAhead.error as Error).message} />
+        )}
+      </div>
+    </div>
+  );
 }
 
 function SessionBar({
@@ -388,18 +719,29 @@ function SessionBar({
   total,
   pill,
   reconnecting,
+  showContextToggle,
   contextOpen,
   onToggleContext,
   onSkip,
+  onStartOver,
+  restarting,
+  draft,
 }: {
-  item: InboxItem
-  position: number
-  total: number
-  pill: { tone: 'warn' | 'active' | 'verify' | 'success' | 'todo'; label: string } | null
-  reconnecting: boolean
-  contextOpen: boolean
-  onToggleContext: () => void
-  onSkip: () => void
+  item: InboxItem;
+  position: number;
+  total: number;
+  pill: {
+    tone: "warn" | "active" | "verify" | "success" | "todo";
+    label: string;
+  } | null;
+  reconnecting: boolean;
+  showContextToggle: boolean;
+  contextOpen: boolean;
+  onToggleContext: () => void;
+  onSkip: () => void;
+  onStartOver?: () => void;
+  restarting?: boolean;
+  draft?: boolean;
 }) {
   return (
     <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border py-3 pl-5 pr-1">
@@ -407,9 +749,15 @@ function SessionBar({
         <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
           {position + 1} of {total}
         </span>
-        <span className="truncate text-sm font-medium text-foreground">
-          <span className="font-mono text-muted-foreground">{item.id}</span>{' '}
-          {item.title}
+        <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-foreground">
+          {draft ? (
+            <DraftChip />
+          ) : (
+            <span className="font-mono text-muted-foreground">{item.id}</span>
+          )}
+          <span className="truncate">
+            {draft ? item.title || "New draft" : item.title}
+          </span>
         </span>
       </div>
       <div className="flex shrink-0 items-center gap-2">
@@ -420,6 +768,9 @@ function SessionBar({
           </span>
         )}
         {pill && <StatusPill state={pill.tone} label={pill.label} />}
+        {onStartOver && (
+          <StartOverButton onConfirm={onStartOver} pending={restarting} />
+        )}
         <Button
           variant="outline"
           size="sm"
@@ -429,22 +780,76 @@ function SessionBar({
           <SkipForward />
           Skip
         </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-8"
-          onClick={onToggleContext}
-          aria-pressed={contextOpen}
-          title={contextOpen ? 'Hide issue context' : 'Show issue context'}
-        >
-          {contextOpen ? <PanelRightClose /> : <PanelRightOpen />}
-          <span className="sr-only">
-            {contextOpen ? 'Hide issue context' : 'Show issue context'}
-          </span>
-        </Button>
+        {showContextToggle && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8"
+            onClick={onToggleContext}
+            aria-pressed={contextOpen}
+            title={contextOpen ? "Hide issue context" : "Show issue context"}
+          >
+            {contextOpen ? <PanelRightClose /> : <PanelRightOpen />}
+            <span className="sr-only">
+              {contextOpen ? "Hide issue context" : "Show issue context"}
+            </span>
+          </Button>
+        )}
       </div>
     </div>
-  )
+  );
+}
+
+// Start over discards the live Interview and opens a fresh one on the same item. The
+// confirm guards only the typed answers — nothing has been written to the tracker — so
+// it is a lightweight popover, not a modal. Never call this "Reset": Reset is the
+// destructive ticket action (branch delete + re-queue).
+function StartOverButton({
+  onConfirm,
+  pending,
+}: {
+  onConfirm: () => void;
+  pending?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={pending}
+          aria-label="Start over"
+        >
+          <RotateCcw className={cn(pending && "animate-spin")} />
+          Start over
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-64">
+        <p className="text-sm font-medium text-foreground">
+          Discard this interview and start over?
+        </p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          Your typed answers are lost. The ticket and its labels stay untouched.
+        </p>
+        <div className="mt-3 flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => {
+              setOpen(false);
+              onConfirm();
+            }}
+          >
+            Start over
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
 }
 
 function QueueRail({
@@ -454,11 +859,11 @@ function QueueRail({
   selectedId,
   onSelect,
 }: {
-  repo: string
-  groups: InboxGroupView[]
-  seen: SeenMarks
-  selectedId: string | null
-  onSelect: (id: string) => void
+  repo: string;
+  groups: InboxGroupView[];
+  seen: SeenMarks;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
 }) {
   return (
     <nav
@@ -471,7 +876,7 @@ function QueueRail({
             <SectionLabel>{group.label}</SectionLabel>
             <span
               className={cn(
-                'font-mono text-[0.65rem] tabular-nums',
+                "font-mono text-[0.65rem] tabular-nums",
                 GROUP_COUNT_TONE[group.group],
               )}
             >
@@ -480,7 +885,7 @@ function QueueRail({
           </div>
           <ul className="flex flex-col gap-0.5">
             {group.items.map((item) =>
-              item.attention === 'done' ? (
+              item.attention === "done" ? (
                 <DoneRow key={item.id} item={item} />
               ) : (
                 <QueueRow
@@ -507,7 +912,7 @@ function QueueRail({
         </p>
       </div>
     </nav>
-  )
+  );
 }
 
 function QueueRow({
@@ -517,22 +922,22 @@ function QueueRow({
   selected,
   onSelect,
 }: {
-  repo: string
-  item: InboxItem
-  unread: boolean
-  selected: boolean
-  onSelect: () => void
+  repo: string;
+  item: InboxItem;
+  unread: boolean;
+  selected: boolean;
+  onSelect: () => void;
 }) {
   return (
     <li className="group/row relative">
       <button
         type="button"
         onClick={onSelect}
-        aria-current={selected ? 'true' : undefined}
-        aria-label={`Open ${item.id}`}
+        aria-current={selected ? "true" : undefined}
+        aria-label={item.draft ? "Open draft" : `Open ${item.id}`}
         className={cn(
-          'flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left transition-colors',
-          selected ? 'bg-primary/10' : 'hover:bg-secondary',
+          "flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left transition-colors",
+          selected ? "bg-primary/10" : "hover:bg-secondary",
         )}
       >
         {selected && (
@@ -542,14 +947,18 @@ function QueueRow({
           />
         )}
         <span className="flex items-center gap-2">
-          <span
-            className={cn(
-              'font-mono text-xs',
-              selected ? 'text-primary' : 'text-muted-foreground',
-            )}
-          >
-            {item.id}
-          </span>
+          {item.draft ? (
+            <DraftChip />
+          ) : (
+            <span
+              className={cn(
+                "font-mono text-xs",
+                selected ? "text-primary" : "text-muted-foreground",
+              )}
+            >
+              {item.id}
+            </span>
+          )}
           {unread && (
             <span
               className="size-1.5 rounded-full bg-warn"
@@ -560,14 +969,14 @@ function QueueRow({
         </span>
         <span
           className={cn(
-            'line-clamp-2 text-xs leading-relaxed',
-            selected ? 'text-foreground' : 'text-muted-foreground',
+            "line-clamp-2 text-xs leading-relaxed",
+            selected ? "text-foreground" : "text-muted-foreground",
           )}
         >
-          {item.title}
+          {item.draft ? item.title || "New draft" : item.title}
         </span>
       </button>
-      {item.attention === 'open' && (
+      {item.attention === "open" && !item.draft && (
         <PregrillButton
           repo={repo}
           issueId={item.id}
@@ -575,7 +984,17 @@ function QueueRow({
         />
       )}
     </li>
-  )
+  );
+}
+
+// DraftChip stands in for an id on an issue-less authoring row — the queue's mark
+// that nothing is filed yet.
+function DraftChip() {
+  return (
+    <span className="inline-flex items-center rounded-full border border-primary/40 bg-primary/5 px-1.5 py-0.5 font-mono text-[0.65rem] uppercase tracking-wide text-primary">
+      draft
+    </span>
+  );
 }
 
 function DoneRow({ item }: { item: InboxItem }) {
@@ -589,7 +1008,7 @@ function DoneRow({ item }: { item: InboxItem }) {
         {item.title}
       </span>
     </li>
-  )
+  );
 }
 
 // QueueSelect is the rail's fallback under md, where 260px of chrome would crowd out
@@ -600,32 +1019,37 @@ function QueueSelect({
   selectedId,
   onSelect,
 }: {
-  groups: InboxGroupView[]
-  selectedId: string | null
-  onSelect: (id: string) => void
+  groups: InboxGroupView[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
 }) {
   return (
     <label className="flex shrink-0 flex-col gap-1 py-3 md:hidden">
       <span className="sr-only">Triage queue</span>
       <select
-        value={selectedId ?? ''}
+        value={selectedId ?? ""}
         onChange={(e) => onSelect(e.target.value)}
         className="h-9 w-full rounded-md border bg-transparent px-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
       >
         {groups
-          .filter((group) => group.group !== 'done')
+          .filter((group) => group.group !== "done")
           .map((group) => (
-            <optgroup key={group.group} label={`${group.label} (${group.items.length})`}>
+            <optgroup
+              key={group.group}
+              label={`${group.label} (${group.items.length})`}
+            >
               {group.items.map((item) => (
                 <option key={item.id} value={item.id}>
-                  {item.id} — {item.title}
+                  {item.draft
+                    ? `draft — ${item.title || "New draft"}`
+                    : `${item.id} — ${item.title}`}
                 </option>
               ))}
             </optgroup>
           ))}
       </select>
     </label>
-  )
+  );
 }
 
 // The context frames are what the triager keeps an eye on while grilling: the issue
@@ -637,9 +1061,9 @@ function ContextColumn({
   item,
   status,
 }: {
-  repo: string
-  item: InboxItem
-  status: GrillStatus | null
+  repo: string;
+  item: InboxItem;
+  status: GrillStatus | null;
 }) {
   return (
     <aside
@@ -648,7 +1072,7 @@ function ContextColumn({
     >
       <ContextBody repo={repo} item={item} status={status} />
     </aside>
-  )
+  );
 }
 
 function ContextOverlay({
@@ -656,9 +1080,9 @@ function ContextOverlay({
   item,
   status,
 }: {
-  repo: string
-  item: InboxItem
-  status: GrillStatus | null
+  repo: string;
+  item: InboxItem;
+  status: GrillStatus | null;
 }) {
   return (
     <aside
@@ -667,7 +1091,7 @@ function ContextOverlay({
     >
       <ContextBody repo={repo} item={item} status={status} />
     </aside>
-  )
+  );
 }
 
 function ContextBody({
@@ -675,23 +1099,23 @@ function ContextBody({
   item,
   status,
 }: {
-  repo: string
-  item: InboxItem
-  status: GrillStatus | null
+  repo: string;
+  item: InboxItem;
+  status: GrillStatus | null;
 }) {
-  const issue = useQuery(issueQueryOptions(repo, item.id))
+  const issue = useQuery(issueQueryOptions(repo, item.id));
   const labels = (item.entry?.labels ?? []).filter((l) =>
     GRILLABLE_LABELS.includes(l),
-  )
-  const messages = status?.messages ?? []
+  );
+  const messages = status?.messages ?? [];
   const outcome =
-    status?.session.state === 'finished' ? latestOutcome(messages) : null
+    status?.session.state === "finished" ? latestOutcome(messages) : null;
   const rows = contextRows({
     created: issue.data?.created_at,
     source: item.entry?.source,
     messages,
     now: new Date(),
-  })
+  });
 
   return (
     <>
@@ -718,7 +1142,7 @@ function ContextBody({
         </summary>
         <div className="mt-2">
           <Description
-            markdown={issue.data?.description.trim() ?? ''}
+            markdown={issue.data?.description.trim() ?? ""}
             loading={issue.isLoading}
             error={(issue.error as Error) ?? null}
           />
@@ -753,7 +1177,7 @@ function ContextBody({
         )}
       </div>
     </>
-  )
+  );
 }
 
 function Description({
@@ -761,9 +1185,9 @@ function Description({
   loading,
   error,
 }: {
-  markdown: string
-  loading: boolean
-  error: Error | null
+  markdown: string;
+  loading: boolean;
+  error: Error | null;
 }) {
   if (loading) {
     return (
@@ -771,11 +1195,11 @@ function Description({
         <Loader2 className="size-3 animate-spin" />
         Loading…
       </p>
-    )
+    );
   }
-  if (error) return <ErrorNote message={error.message} />
-  if (!markdown) return <p className="text-xs text-faint">No description.</p>
-  return <Markdown className="text-xs leading-relaxed">{markdown}</Markdown>
+  if (error) return <ErrorNote message={error.message} />;
+  if (!markdown) return <p className="text-xs text-faint">No description.</p>;
+  return <Markdown className="text-xs leading-relaxed">{markdown}</Markdown>;
 }
 
 // OutcomeMirror is read-only on purpose: the proposal is edited and approved in the
@@ -798,7 +1222,7 @@ function OutcomeMirror({ outcome }: { outcome: OutcomePayload }) {
         </li>
       ))}
     </ul>
-  )
+  );
 }
 
 function EmptyInbox() {
@@ -807,13 +1231,16 @@ function EmptyInbox() {
       <span className="font-mono text-2xl text-done" aria-hidden="true">
         ✓
       </span>
-      <p className="text-sm font-medium text-foreground">Nothing needs triage</p>
+      <p className="text-sm font-medium text-foreground">
+        Nothing needs triage
+      </p>
       <p className="max-w-sm text-center text-xs leading-relaxed text-muted-foreground">
-        New issues labelled <span className="font-mono text-warn">needs-triage</span>{' '}
-        land here automatically. Come back when the picker flags something unclear.
+        New issues labelled{" "}
+        <span className="font-mono text-warn">needs-triage</span> land here
+        automatically. Come back when the picker flags something unclear.
       </p>
     </div>
-  )
+  );
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
@@ -821,7 +1248,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
     <p className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
       {children}
     </p>
-  )
+  );
 }
 
 function PregrillButton({
@@ -829,27 +1256,28 @@ function PregrillButton({
   issueId,
   className,
 }: {
-  repo: string
-  issueId: string
-  className?: string
+  repo: string;
+  issueId: string;
+  className?: string;
 }) {
-  const queryClient = useQueryClient()
+  const queryClient = useQueryClient();
   const pregrill = useMutation({
     mutationFn: () => pregrillIssues(repo, [issueId]),
-    onSettled: () => void queryClient.invalidateQueries({ queryKey: ['grill', repo] }),
-  })
+    onSettled: () =>
+      void queryClient.invalidateQueries({ queryKey: ["grill", repo] }),
+  });
 
   return (
     <Button
       variant="ghost"
       size="icon"
-      className={cn('size-7 shrink-0', className)}
+      className={cn("size-7 shrink-0", className)}
       onClick={() => pregrill.mutate()}
       disabled={pregrill.isPending}
       aria-label={`Pre-grill ${issueId}`}
       title="Pre-grill — ask an opening question ahead of time"
     >
-      <Flame className={cn(pregrill.isPending && 'animate-pulse')} />
+      <Flame className={cn(pregrill.isPending && "animate-pulse")} />
     </Button>
-  )
+  );
 }

@@ -1,7 +1,7 @@
-import { Fragment, useCallback, useEffect, useState } from 'react'
-import { createFileRoute } from '@tanstack/react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { parseAsString, useQueryState, useQueryStates } from 'nuqs'
+import { Fragment, useCallback, useEffect, useState } from "react";
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { parseAsString, useQueryState, useQueryStates } from "nuqs";
 import {
   Check,
   ChevronDown,
@@ -15,23 +15,22 @@ import {
   Search,
   Sparkles,
   Tag,
-} from 'lucide-react'
+} from "lucide-react";
 
 import {
   PageHeader,
   ProjectScopeGate,
   RepoHealthGate,
   useActiveRepo,
-} from '@/components/trau'
-import { AuthoringDrawer } from '@/components/grill-panel'
+} from "@/components/trau";
 import {
   SegmentedControl,
   type SegmentOption,
-} from '@/components/trau/segmented-control'
-import { InternalIssueForm } from '@/components/internal-issue-form'
-import { IssueDrawer } from '@/components/issue-drawer'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
+} from "@/components/trau/segmented-control";
+import { InternalIssueForm } from "@/components/internal-issue-form";
+import { IssueDrawer } from "@/components/issue-drawer";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Command,
   CommandEmpty,
@@ -40,12 +39,12 @@ import {
   CommandItem,
   CommandList,
   CommandSeparator,
-} from '@/components/ui/command'
+} from "@/components/ui/command";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
-} from '@/components/ui/popover'
+} from "@/components/ui/popover";
 import {
   backlogQueryOptions,
   backlogSections,
@@ -53,107 +52,107 @@ import {
   nestBacklogRows,
   STATE_GROUPS,
   type BacklogEntry,
-} from '@/lib/backlog'
-import { loadExpandedEpics, storeExpandedEpics } from '@/lib/backlog-expanded'
+} from "@/lib/backlog";
+import { loadExpandedEpics, storeExpandedEpics } from "@/lib/backlog-expanded";
 import {
   backlogFilterParsers,
   backlogParamsFromFilters,
   effectiveStateGroups,
   hasActiveFilters,
   toggleStateGroup,
-} from '@/lib/backlog-filters'
-import { internalIssueQueryOptions } from '@/lib/issues'
-import { labelsQueryOptions } from '@/lib/labels'
-import { standardTitle, usePageTitle } from '@/lib/page-title'
-import { enqueue } from '@/lib/queue'
-import { cn } from '@/lib/utils'
+} from "@/lib/backlog-filters";
+import { NEW_DRAFT_ID } from "@/lib/inbox";
+import { internalIssueQueryOptions } from "@/lib/issues";
+import { labelsQueryOptions } from "@/lib/labels";
+import { standardTitle, usePageTitle } from "@/lib/page-title";
+import { enqueue } from "@/lib/queue";
+import { cn } from "@/lib/utils";
 
-export const Route = createFileRoute('/backlog')({
+export const Route = createFileRoute("/backlog")({
   component: BacklogPage,
-})
+});
 
-const PAGE_SIZE = 50
+const PAGE_SIZE = 50;
 
-type SourceFilter = 'all' | 'internal' | 'synced'
+type SourceFilter = "all" | "internal" | "synced";
 
 const SOURCE_OPTIONS: readonly SegmentOption<SourceFilter>[] = [
-  { value: 'all', label: 'All' },
-  { value: 'internal', label: 'Internal' },
-  { value: 'synced', label: 'Synced' },
-]
+  { value: "all", label: "All" },
+  { value: "internal", label: "Internal" },
+  { value: "synced", label: "Synced" },
+];
 
 function useExpandedEpics(repo: string) {
   const [expanded, setExpanded] = useState<Set<string>>(() =>
     loadExpandedEpics(repo),
-  )
+  );
 
-  useEffect(() => setExpanded(loadExpandedEpics(repo)), [repo])
+  useEffect(() => setExpanded(loadExpandedEpics(repo)), [repo]);
 
   const toggle = useCallback(
     (id: string) => {
       setExpanded((cur) => {
-        const next = new Set(cur)
-        if (next.has(id)) next.delete(id)
-        else next.add(id)
-        storeExpandedEpics(repo, next)
-        return next
-      })
+        const next = new Set(cur);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        storeExpandedEpics(repo, next);
+        return next;
+      });
     },
     [repo],
-  )
+  );
 
-  return { expanded, toggle }
+  return { expanded, toggle };
 }
 
 function BacklogPage() {
-  usePageTitle(standardTitle('Backlog'))
-  const { repo: activeRepo } = useActiveRepo()
-  const repo = activeRepo ?? ''
-  const queryClient = useQueryClient()
-  const [creating, setCreating] = useState(false)
-  const [authoring, setAuthoring] = useState(false)
-  const [editing, setEditing] = useState<string | null>(null)
-  const { expanded, toggle } = useExpandedEpics(repo)
+  usePageTitle(standardTitle("Backlog"));
+  const { repo: activeRepo } = useActiveRepo();
+  const repo = activeRepo ?? "";
+  const [creating, setCreating] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
+  const { expanded, toggle } = useExpandedEpics(repo);
 
   const [filters, setFilters] = useQueryStates(backlogFilterParsers, {
-    history: 'push',
-  })
-  const { q, state, label, source, page } = filters
+    history: "push",
+  });
+  const { q, state, label, source, page } = filters;
 
   // The peeked issue is its own history entry so browser Back closes the drawer
   // without unwinding a filter change; a cold ?issue= link opens it over the list.
   const [peek, setPeek] = useQueryState(
-    'issue',
-    parseAsString.withOptions({ history: 'push' }),
-  )
+    "issue",
+    parseAsString.withOptions({ history: "push" }),
+  );
 
-  const [text, setText] = useState(q)
+  const [text, setText] = useState(q);
 
-  useEffect(() => setText(q), [q])
+  useEffect(() => setText(q), [q]);
 
   useEffect(() => {
     const id = setTimeout(() => {
-      const next = text.trim()
-      if (next !== q) setFilters({ q: next, page: null }, { history: 'replace' })
-    }, 150)
-    return () => clearTimeout(id)
-  }, [text, q, setFilters])
+      const next = text.trim();
+      if (next !== q)
+        setFilters({ q: next, page: null }, { history: "replace" });
+    }, 150);
+    return () => clearTimeout(id);
+  }, [text, q, setFilters]);
 
   const backlog = useQuery(
     backlogQueryOptions(repo, backlogParamsFromFilters(filters, PAGE_SIZE)),
-  )
-  const items = backlog.data?.items ?? []
-  const counts = backlog.data?.counts ?? {}
-  const total = backlog.data?.total ?? 0
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const hasFilters = hasActiveFilters(filters)
+  );
+  const items = backlog.data?.items ?? [];
+  const counts = backlog.data?.counts ?? {};
+  const total = backlog.data?.total ?? 0;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const hasFilters = hasActiveFilters(filters);
   const sections = backlogSections(
     items,
     counts,
     effectiveStateGroups(state),
     (page - 1) * PAGE_SIZE,
-  )
-  const hidden = hiddenStateGroups(counts, effectiveStateGroups(state))
+  );
+  const hidden = hiddenStateGroups(counts, effectiveStateGroups(state));
 
   const renderRow = (
     entry: BacklogEntry,
@@ -174,35 +173,35 @@ function BacklogPage() {
       }
       onEditDone={() => setEditing(null)}
     />
-  )
+  );
 
   return (
     <ProjectScopeGate action="manage the backlog">
       <PageHeader
-        eyebrow={repo || 'backlog'}
+        eyebrow={repo || "backlog"}
         title="Backlog"
         description="In-progress, todo and backlog work — done and canceled are hidden until you filter for them."
         actions={
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setAuthoring(true)}
+              onClick={() => {
+                setEditing(null);
+                setCreating((v) => !v);
+              }}
               className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-muted"
             >
-              <Sparkles className="size-4" />
-              New issue (grilled)
+              <FilePlus className="size-4" />
+              New internal
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                setEditing(null)
-                setCreating((v) => !v)
-              }}
+            <Link
+              to="/inbox"
+              search={{ issue: NEW_DRAFT_ID }}
               className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm text-primary-foreground transition-opacity hover:opacity-90"
             >
-              <FilePlus className="size-4" />
+              <Sparkles className="size-4" />
               New issue
-            </button>
+            </Link>
           </div>
         }
       />
@@ -237,13 +236,17 @@ function BacklogPage() {
             <LabelFilter
               repo={repo}
               value={label}
-              onChange={(next) => setFilters({ label: next || null, page: null })}
+              onChange={(next) =>
+                setFilters({ label: next || null, page: null })
+              }
             />
             <SegmentedControl
               aria-label="Source"
               options={SOURCE_OPTIONS}
-              value={source ?? 'all'}
-              onChange={(v) => setFilters({ source: v === 'all' ? null : v, page: null })}
+              value={source ?? "all"}
+              onChange={(v) =>
+                setFilters({ source: v === "all" ? null : v, page: null })
+              }
             />
           </div>
 
@@ -275,7 +278,7 @@ function BacklogPage() {
                   )}
                   <ul className="flex flex-col gap-2">
                     {nestBacklogRows(section.items).map((node) =>
-                      node.kind === 'epic' ? (
+                      node.kind === "epic" ? (
                         <Fragment key={node.entry.id}>
                           {renderRow(node.entry, {
                             expanded: expanded.has(node.entry.id),
@@ -297,8 +300,8 @@ function BacklogPage() {
               {items.length === 0 && (
                 <p className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
                   {hasFilters
-                    ? 'No issues match these filters.'
-                    : 'No issues yet — create one to get started.'}
+                    ? "No issues match these filters."
+                    : "No issues yet — create one to get started."}
                 </p>
               )}
 
@@ -311,14 +314,16 @@ function BacklogPage() {
                       )}
                       <button
                         type="button"
-                        onClick={() => setFilters({ state: [h.group], page: null })}
+                        onClick={() =>
+                          setFilters({ state: [h.group], page: null })
+                        }
                         className="tabular-nums underline-offset-2 transition-colors hover:text-foreground hover:underline"
                       >
                         {h.count} {h.group}
                       </button>
                     </Fragment>
                   ))}
-                  {' hidden'}
+                  {" hidden"}
                 </p>
               )}
             </div>
@@ -327,8 +332,8 @@ function BacklogPage() {
           {total > PAGE_SIZE && (
             <div className="flex items-center justify-between pt-1">
               <p className="text-xs text-muted-foreground">
-                Showing {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of{' '}
-                {total}
+                Showing {(page - 1) * PAGE_SIZE + 1}–
+                {Math.min(page * PAGE_SIZE, total)} of {total}
               </p>
               <div className="flex items-center gap-2">
                 <Button
@@ -347,7 +352,9 @@ function BacklogPage() {
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => setFilters({ page: Math.min(pageCount, page + 1) })}
+                  onClick={() =>
+                    setFilters({ page: Math.min(pageCount, page + 1) })
+                  }
                   disabled={page >= pageCount}
                 >
                   Next
@@ -362,32 +369,23 @@ function BacklogPage() {
         repo={repo}
         issueId={peek}
         onOpenChange={(open) => {
-          if (!open) void setPeek(null)
+          if (!open) void setPeek(null);
         }}
         onSelectIssue={(id) => void setPeek(id)}
       />
-
-      <AuthoringDrawer
-        repo={repo}
-        open={authoring}
-        onOpenChange={setAuthoring}
-        onCreated={() =>
-          void queryClient.invalidateQueries({ queryKey: ['backlog', repo] })
-        }
-      />
     </ProjectScopeGate>
-  )
+  );
 }
 
 function StateFilter({
   value,
   onChange,
 }: {
-  value: string[]
-  onChange: (next: string[]) => void
+  value: string[];
+  onChange: (next: string[]) => void;
 }) {
-  const [open, setOpen] = useState(false)
-  const selected = new Set(value)
+  const [open, setOpen] = useState(false);
+  const selected = new Set(value);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -410,7 +408,7 @@ function StateFilter({
             <CommandEmpty>No states.</CommandEmpty>
             <CommandGroup>
               {STATE_GROUPS.map((group) => {
-                const active = selected.has(group)
+                const active = selected.has(group);
                 return (
                   <CommandItem
                     key={group}
@@ -419,17 +417,19 @@ function StateFilter({
                   >
                     <span
                       className={cn(
-                        'flex size-4 items-center justify-center rounded-[4px] border',
+                        "flex size-4 items-center justify-center rounded-[4px] border",
                         active
-                          ? 'border-primary bg-primary text-primary-foreground'
-                          : 'border-border',
+                          ? "border-primary bg-primary text-primary-foreground"
+                          : "border-border",
                       )}
                     >
-                      {active && <Check className="size-3 text-primary-foreground" />}
+                      {active && (
+                        <Check className="size-3 text-primary-foreground" />
+                      )}
                     </span>
                     {group}
                   </CommandItem>
-                )
+                );
               })}
             </CommandGroup>
             {value.length > 0 && (
@@ -449,7 +449,7 @@ function StateFilter({
         </Command>
       </PopoverContent>
     </Popover>
-  )
+  );
 }
 
 function LabelFilter({
@@ -457,13 +457,13 @@ function LabelFilter({
   value,
   onChange,
 }: {
-  repo: string
-  value: string
-  onChange: (next: string) => void
+  repo: string;
+  value: string;
+  onChange: (next: string) => void;
 }) {
-  const [open, setOpen] = useState(false)
-  const labels = useQuery(labelsQueryOptions(repo))
-  const facets = labels.data?.labels ?? []
+  const [open, setOpen] = useState(false);
+  const labels = useQuery(labelsQueryOptions(repo));
+  const facets = labels.data?.labels ?? [];
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -476,8 +476,8 @@ function LabelFilter({
         >
           <span className="flex min-w-0 items-center gap-1.5">
             <Tag className="text-muted-foreground" />
-            <span className={cn('truncate', !value && 'text-muted-foreground')}>
-              {value || 'Label'}
+            <span className={cn("truncate", !value && "text-muted-foreground")}>
+              {value || "Label"}
             </span>
           </span>
           <ChevronsUpDown className="text-muted-foreground" />
@@ -488,7 +488,7 @@ function LabelFilter({
           <CommandInput placeholder="Search labels…" />
           <CommandList>
             <CommandEmpty>
-              {labels.isLoading ? 'Loading labels…' : 'No labels found.'}
+              {labels.isLoading ? "Loading labels…" : "No labels found."}
             </CommandEmpty>
             <CommandGroup>
               {facets.map((facet) => (
@@ -496,14 +496,14 @@ function LabelFilter({
                   key={facet.name}
                   value={facet.name}
                   onSelect={() => {
-                    onChange(facet.name === value ? '' : facet.name)
-                    setOpen(false)
+                    onChange(facet.name === value ? "" : facet.name);
+                    setOpen(false);
                   }}
                 >
                   <Check
                     className={cn(
-                      'size-4',
-                      value === facet.name ? 'opacity-100' : 'opacity-0',
+                      "size-4",
+                      value === facet.name ? "opacity-100" : "opacity-0",
                     )}
                   />
                   <span className="flex-1 truncate">{facet.name}</span>
@@ -519,8 +519,8 @@ function LabelFilter({
                 <CommandGroup>
                   <CommandItem
                     onSelect={() => {
-                      onChange('')
-                      setOpen(false)
+                      onChange("");
+                      setOpen(false);
                     }}
                     className="justify-center text-center text-muted-foreground"
                   >
@@ -533,7 +533,7 @@ function LabelFilter({
         </Command>
       </PopoverContent>
     </Popover>
-  )
+  );
 }
 
 function BacklogRow({
@@ -548,35 +548,35 @@ function BacklogRow({
   onToggleEdit,
   onEditDone,
 }: {
-  repo: string
-  entry: BacklogEntry
-  editing: boolean
-  nested?: boolean
-  expanded?: boolean
-  onOpen: () => void
-  onOpenParent: (id: string) => void
-  onToggle?: () => void
-  onToggleEdit: () => void
-  onEditDone: () => void
+  repo: string;
+  entry: BacklogEntry;
+  editing: boolean;
+  nested?: boolean;
+  expanded?: boolean;
+  onOpen: () => void;
+  onOpenParent: (id: string) => void;
+  onToggle?: () => void;
+  onToggleEdit: () => void;
+  onEditDone: () => void;
 }) {
-  const queryClient = useQueryClient()
-  const internal = entry.source === 'internal'
-  const isEpic = entry.has_children && !nested
-  const { children_settled: settled, children_total: total } = entry
+  const queryClient = useQueryClient();
+  const internal = entry.source === "internal";
+  const isEpic = entry.has_children && !nested;
+  const { children_settled: settled, children_total: total } = entry;
   const issueQuery = useQuery({
     ...internalIssueQueryOptions(repo, entry.id),
     enabled: editing && internal,
-  })
+  });
   const addToQueue = useMutation({
     mutationFn: () => enqueue(repo, { id: entry.id }),
-    onSuccess: (res) => queryClient.setQueryData(['queue', repo], res),
-  })
+    onSuccess: (res) => queryClient.setQueryData(["queue", repo], res),
+  });
 
   return (
     <li
       className={cn(
-        'rounded-lg border bg-card transition-colors hover:border-ring/40',
-        nested && 'ml-6',
+        "rounded-lg border bg-card transition-colors hover:border-ring/40",
+        nested && "ml-6",
       )}
     >
       <div className="flex flex-wrap items-center gap-3 px-4 py-3">
@@ -585,7 +585,9 @@ function BacklogRow({
             type="button"
             onClick={onToggle}
             aria-expanded={expanded}
-            aria-label={expanded ? `Collapse ${entry.id}` : `Expand ${entry.id}`}
+            aria-label={
+              expanded ? `Collapse ${entry.id}` : `Expand ${entry.id}`
+            }
             className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             {expanded ? (
@@ -612,8 +614,12 @@ function BacklogRow({
           aria-label={`Open ${entry.id}`}
           className="flex min-w-0 flex-1 items-center gap-3 text-left"
         >
-          <span className="font-mono text-sm font-medium text-foreground">{entry.id}</span>
-          <span className="min-w-0 flex-1 truncate text-sm text-foreground">{entry.title}</span>
+          <span className="font-mono text-sm font-medium text-foreground">
+            {entry.id}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+            {entry.title}
+          </span>
           {isEpic && settled != null && total != null && (
             <span
               className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-xs text-muted-foreground"
@@ -635,10 +641,10 @@ function BacklogRow({
           </span>
           <span
             className={cn(
-              'rounded-full px-2 py-0.5 font-mono text-xs',
+              "rounded-full px-2 py-0.5 font-mono text-xs",
               internal
-                ? 'border border-primary/40 bg-primary/5 text-primary'
-                : 'border text-muted-foreground',
+                ? "border border-primary/40 bg-primary/5 text-primary"
+                : "border text-muted-foreground",
             )}
           >
             {entry.source}
@@ -661,7 +667,7 @@ function BacklogRow({
           className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
         >
           <ListPlus className="size-3.5" />
-          {addToQueue.isSuccess ? 'Queued' : 'Add to queue'}
+          {addToQueue.isSuccess ? "Queued" : "Add to queue"}
         </button>
       </div>
       {addToQueue.error && (
@@ -680,5 +686,5 @@ function BacklogRow({
         </div>
       )}
     </li>
-  )
+  );
 }
