@@ -32,6 +32,7 @@ type IssueResponse struct {
 	Status      string         `json:"status"`
 	Group       string         `json:"group"`
 	Labels      []string       `json:"labels"`
+	Assignee    *AssigneeInfo  `json:"assignee"`
 	Ready       bool           `json:"ready"`
 	Parent      string         `json:"parent,omitempty"`
 	Source      string         `json:"source,omitempty"`
@@ -193,6 +194,7 @@ func (s *Server) storeIssueResponse(repo registry.Repo, iss hubstore.Issue) Issu
 		Status:      iss.Status,
 		Group:       iss.StatusGroup,
 		Labels:      labels,
+		Assignee:    assigneeInfo(iss, s.repoMeID(repo.Root)),
 		Ready:       hasLabel(labels, readyLabel),
 		Parent:      iss.Parent,
 		Source:      iss.Source,
@@ -203,6 +205,18 @@ func (s *Server) storeIssueResponse(repo registry.Repo, iss hubstore.Issue) Issu
 		InProject:   true,
 		Deleted:     iss.DeletedAt != "",
 	}
+}
+
+// repoMeID returns the repo binding's resolved Me identity id, used to flag an
+// assignee as Me, or "" when it is unresolved or unreadable — a best-effort
+// annotation that never fails the response it decorates.
+func (s *Server) repoMeID(root string) string {
+	state, err := s.stores.Issues().SyncState(root)
+	if err != nil {
+		logger.Verbosef("issue: read sync identity: %v", err)
+		return ""
+	}
+	return state.Me.ID
 }
 
 // summaryIssueResponse maps a tracker-fetched issue summary onto the API resource —
