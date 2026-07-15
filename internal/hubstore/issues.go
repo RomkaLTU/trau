@@ -299,8 +299,8 @@ func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue,
 	}
 	if text := strings.TrimSpace(filter.Text); text != "" {
 		like := "%" + escapeLike(text) + "%"
-		where = append(where, `(identifier LIKE ? ESCAPE '\' OR title LIKE ? ESCAPE '\')`)
-		args = append(args, like, like)
+		where = append(where, `(identifier LIKE ? ESCAPE '\' OR title LIKE ? ESCAPE '\' OR assignee_name LIKE ? ESCAPE '\')`)
+		args = append(args, like, like, like)
 	}
 	switch assignee := strings.TrimSpace(filter.Assignee); assignee {
 	case "":
@@ -612,7 +612,7 @@ func (s *Issues) Search(repo, query string, limit int) (issues []Issue, err erro
 		`SELECT `+prefixColumns("i")+`
 		 FROM issues_fts f JOIN issues i ON i.id = f.rowid
 		 WHERE issues_fts MATCH ? AND i.repo = ? AND i.deleted_at = ''
-		 ORDER BY bm25(issues_fts, 10.0, 5.0, 1.0, 3.0)
+		 ORDER BY bm25(issues_fts, 10.0, 5.0, 1.0, 3.0, 3.0)
 		 LIMIT ?`,
 		match, repo, limit,
 	)
