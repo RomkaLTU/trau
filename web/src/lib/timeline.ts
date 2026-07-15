@@ -5,17 +5,13 @@ import type { FailureClass, Run } from './runs'
 import { stepPill } from './steps'
 
 export type TicketStatus =
-  | 'done'
-  | 'running'
-  | 'paused'
-  | 'failed'
-  | 'skipped'
-  | 'pending'
+  'done' | 'running' | 'paused' | 'failed' | 'skipped' | 'pending'
 
 export interface TimelineTicket {
   id: string
   title: string
   status: TicketStatus
+  source?: string
   epicId?: string
   failureClass?: FailureClass
   reason?: string
@@ -32,6 +28,7 @@ export type PendingEntry =
       kind: 'epic'
       id: string
       title: string
+      source?: string
       done: number
       total: number
       children: TimelineTicket[]
@@ -54,10 +51,13 @@ interface Leaf {
   id: string
   title: string
   snapshotState: string
+  source?: string
   epicId?: string
   reason?: string
 }
 
+// An epic's sub-issues share its binding: an internal epic is only ever filed
+// with internal children, so they inherit its source rather than carrying one.
 function flatten(items: QueueItem[]): Leaf[] {
   const leaves: Leaf[] = []
   for (const item of items) {
@@ -67,6 +67,7 @@ function flatten(items: QueueItem[]): Leaf[] {
           id: sub.id,
           title: sub.title,
           snapshotState: sub.state,
+          source: item.source,
           epicId: item.id,
         })
       }
@@ -76,16 +77,22 @@ function flatten(items: QueueItem[]): Leaf[] {
       id: item.id,
       title: item.title ?? '',
       snapshotState: item.status,
+      source: item.source,
       reason: item.reason,
     })
   }
   return leaves
 }
 
-function resolve(leaf: Leaf, run: Run | undefined, instance?: Instance): TimelineTicket {
+function resolve(
+  leaf: Leaf,
+  run: Run | undefined,
+  instance?: Instance,
+): TimelineTicket {
   const base = {
     id: leaf.id,
     title: leaf.title,
+    source: leaf.source,
     epicId: leaf.epicId,
     hasRun: run !== undefined,
   }
@@ -96,18 +103,50 @@ function resolve(leaf: Leaf, run: Run | undefined, instance?: Instance): Timelin
 
   if (run) {
     if (run.failure_class === 'paused') {
-      return { ...base, status: 'paused', failureClass: 'paused', reason: run.failure_reason, phase: run.phase, completedAt: run.updated_at }
+      return {
+        ...base,
+        status: 'paused',
+        failureClass: 'paused',
+        reason: run.failure_reason,
+        phase: run.phase,
+        completedAt: run.updated_at,
+      }
     }
     if (run.failure_class === 'faulted' || run.failure_class === 'gave_up') {
-      return { ...base, status: 'failed', failureClass: run.failure_class, reason: run.failure_reason, phase: run.phase, completedAt: run.updated_at }
+      return {
+        ...base,
+        status: 'failed',
+        failureClass: run.failure_class,
+        reason: run.failure_reason,
+        phase: run.phase,
+        completedAt: run.updated_at,
+      }
     }
     if (run.terminal) {
-      return { ...base, status: 'done', phase: run.phase, completedAt: run.updated_at }
+      return {
+        ...base,
+        status: 'done',
+        phase: run.phase,
+        completedAt: run.updated_at,
+      }
     }
-    return { ...base, status: 'running', phase: isCurrent && instance?.phase ? instance.phase : run.phase, activity, detail }
+    return {
+      ...base,
+      status: 'running',
+      phase: isCurrent && instance?.phase ? instance.phase : run.phase,
+      activity,
+      detail,
+    }
   }
 
-  if (isCurrent) return { ...base, status: 'running', phase: instance?.phase, activity, detail }
+  if (isCurrent)
+    return {
+      ...base,
+      status: 'running',
+      phase: instance?.phase,
+      activity,
+      detail,
+    }
 
   switch (leaf.snapshotState) {
     case 'done':
@@ -128,7 +167,12 @@ function resolve(leaf: Leaf, run: Run | undefined, instance?: Instance): Timelin
 }
 
 function isSettled(status: TicketStatus): boolean {
-  return status === 'done' || status === 'failed' || status === 'skipped' || status === 'paused'
+  return (
+    status === 'done' ||
+    status === 'failed' ||
+    status === 'skipped' ||
+    status === 'paused'
+  )
 }
 
 export function buildTimeline(
@@ -138,7 +182,9 @@ export function buildTimeline(
 ): Timeline {
   const byTicket = new Map(runs.map((r) => [r.ticket, r]))
   const leaves = flatten(items)
-  const tickets = leaves.map((leaf) => resolve(leaf, byTicket.get(leaf.id), instance))
+  const tickets = leaves.map((leaf) =>
+    resolve(leaf, byTicket.get(leaf.id), instance),
+  )
   const byId = new Map(tickets.map((t) => [t.id, t]))
 
   const settled = tickets
@@ -158,8 +204,18 @@ export function buildTimeline(
       const subs = item.sub_issues ?? []
       const children = subs.map((s) => byId.get(s.id)).filter(remains)
       if (children.length > 0) {
-        const done = subs.filter((s) => byId.get(s.id)?.status === 'done').length
-        pending.push({ kind: 'epic', id: item.id, title: item.title ?? '', done, total: subs.length, children })
+        const done = subs.filter(
+          (s) => byId.get(s.id)?.status === 'done',
+        ).length
+        pending.push({
+          kind: 'epic',
+          id: item.id,
+          title: item.title ?? '',
+          source: item.source,
+          done,
+          total: subs.length,
+          children,
+        })
       }
       continue
     }
@@ -171,7 +227,8 @@ export function buildTimeline(
   let elapsedAnchor = instance?.started_at
   for (const r of runs) {
     if (!leafIds.has(r.ticket) || !r.updated_at) continue
-    if (!elapsedAnchor || r.updated_at < elapsedAnchor) elapsedAnchor = r.updated_at
+    if (!elapsedAnchor || r.updated_at < elapsedAnchor)
+      elapsedAnchor = r.updated_at
   }
 
   return {
@@ -234,11 +291,26 @@ export function finishedView(
 ): FinishedView {
   const rows = [...settled].reverse()
   const tally: SettleTally[] = [
-    { label: 'merged', count: settled.filter((t) => t.status === 'done' && t.hasRun).length },
-    { label: 'done', count: settled.filter((t) => t.status === 'done' && !t.hasRun).length },
-    { label: 'failed', count: settled.filter((t) => t.status === 'failed').length },
-    { label: 'skipped', count: settled.filter((t) => t.status === 'skipped').length },
-    { label: 'paused', count: settled.filter((t) => t.status === 'paused').length },
+    {
+      label: 'merged',
+      count: settled.filter((t) => t.status === 'done' && t.hasRun).length,
+    },
+    {
+      label: 'done',
+      count: settled.filter((t) => t.status === 'done' && !t.hasRun).length,
+    },
+    {
+      label: 'failed',
+      count: settled.filter((t) => t.status === 'failed').length,
+    },
+    {
+      label: 'skipped',
+      count: settled.filter((t) => t.status === 'skipped').length,
+    },
+    {
+      label: 'paused',
+      count: settled.filter((t) => t.status === 'paused').length,
+    },
   ]
 
   return {
@@ -250,7 +322,10 @@ export function finishedView(
   }
 }
 
-export function ticketPill(t: TimelineTicket): { state: RunState; label: string } {
+export function ticketPill(t: TimelineTicket): {
+  state: RunState
+  label: string
+} {
   switch (t.status) {
     case 'done':
       return { state: 'success', label: t.hasRun ? 'merged' : 'done' }
