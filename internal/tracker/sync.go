@@ -36,21 +36,23 @@ type SyncedComment struct {
 // content trau's working copy keeps: description, comments, and the metadata the
 // backlog and prompt-building read.
 type SyncedIssue struct {
-	ID          string
-	ExternalID  string
-	Title       string
-	Description string
-	Status      string
-	Group       StatusGroup
-	Priority    int
-	Labels      []string
-	Parent      string
-	HasChildren bool
-	DueDate     string
-	URL         string
-	CreatedAt   string
-	UpdatedAt   string
-	Comments    []SyncedComment
+	ID           string
+	ExternalID   string
+	Title        string
+	Description  string
+	Status       string
+	Group        StatusGroup
+	Priority     int
+	Labels       []string
+	Parent       string
+	HasChildren  bool
+	DueDate      string
+	URL          string
+	CreatedAt    string
+	UpdatedAt    string
+	AssigneeID   string
+	AssigneeName string
+	Comments     []SyncedComment
 }
 
 func (r *linearReader) ResolveBinding(ctx context.Context) (ProjectBinding, error) {
@@ -86,22 +88,28 @@ func (r *linearReader) ProjectIdentifiers(ctx context.Context, binding ProjectBi
 	return r.client.ProjectIssueIDs(ctx, binding.TeamID, binding.ProjectID)
 }
 
+func (r *linearReader) Identity(ctx context.Context) (id, name string, err error) {
+	return r.client.Viewer(ctx)
+}
+
 func linearSynced(iss *linearapi.SyncIssue) SyncedIssue {
 	out := SyncedIssue{
-		ID:          iss.Identifier,
-		ExternalID:  iss.ID,
-		Title:       iss.Title,
-		Description: iss.Description,
-		Status:      iss.State.Name,
-		Group:       mapLinearGroup(iss.State.Type),
-		Priority:    iss.Priority,
-		Labels:      labelNames(iss.Labels),
-		Parent:      iss.Parent,
-		HasChildren: iss.HasChildren,
-		DueDate:     iss.DueDate,
-		URL:         iss.URL,
-		CreatedAt:   iss.CreatedAt,
-		UpdatedAt:   iss.UpdatedAt,
+		ID:           iss.Identifier,
+		ExternalID:   iss.ID,
+		Title:        iss.Title,
+		Description:  iss.Description,
+		Status:       iss.State.Name,
+		Group:        mapLinearGroup(iss.State.Type),
+		Priority:     iss.Priority,
+		Labels:       labelNames(iss.Labels),
+		Parent:       iss.Parent,
+		HasChildren:  iss.HasChildren,
+		DueDate:      iss.DueDate,
+		URL:          iss.URL,
+		CreatedAt:    iss.CreatedAt,
+		UpdatedAt:    iss.UpdatedAt,
+		AssigneeID:   iss.AssigneeID,
+		AssigneeName: iss.AssigneeName,
 	}
 	for _, c := range iss.Comments {
 		out.Comments = append(out.Comments, SyncedComment{
@@ -147,21 +155,27 @@ func (r *jiraReader) ProjectIdentifiers(ctx context.Context, binding ProjectBind
 	return r.client.ProjectKeys(ctx, key)
 }
 
+func (r *jiraReader) Identity(ctx context.Context) (id, name string, err error) {
+	return r.client.Myself(ctx)
+}
+
 func jiraSynced(iss *jiraapi.SyncIssue) SyncedIssue {
 	out := SyncedIssue{
-		ID:          iss.Key,
-		ExternalID:  iss.Key,
-		Title:       iss.Summary,
-		Description: iss.Description,
-		Status:      iss.Status.Name,
-		Group:       mapJiraGroup(iss.Status.Category, iss.Resolution),
-		Priority:    iss.Priority,
-		Labels:      iss.Labels,
-		Parent:      iss.Parent,
-		HasChildren: iss.IsEpic,
-		DueDate:     iss.DueDate,
-		CreatedAt:   iss.Created,
-		UpdatedAt:   iss.Updated,
+		ID:           iss.Key,
+		ExternalID:   iss.Key,
+		Title:        iss.Summary,
+		Description:  iss.Description,
+		Status:       iss.Status.Name,
+		Group:        mapJiraGroup(iss.Status.Category, iss.Resolution),
+		Priority:     iss.Priority,
+		Labels:       iss.Labels,
+		Parent:       iss.Parent,
+		HasChildren:  iss.IsEpic,
+		DueDate:      iss.DueDate,
+		CreatedAt:    iss.Created,
+		UpdatedAt:    iss.Updated,
+		AssigneeID:   iss.AssigneeID,
+		AssigneeName: iss.AssigneeName,
 	}
 	for _, c := range iss.Comments {
 		out.Comments = append(out.Comments, SyncedComment{

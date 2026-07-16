@@ -76,6 +76,7 @@ func grillAuthoringPrompt(idea string) string {
 
 const grillPromptRules = `How to run the session:
 - Interview the user ONE question at a time, and only by calling the ask_user tool — never ask in plain assistant text. Wait for each answer before asking the next.
+- Whenever you offer options, mark the one you would choose with recommended (repeat that option's text exactly) and a one-line why — the user may not know the domain. Omit the recommendation only for pure-preference questions where no option is objectively better.
 - Ask only what genuinely blocks a clean implementation: unclear scope, acceptance criteria, edge cases, affected files, dependencies. Skip anything you can settle yourself by reading the repository.
 - If an ask_user call comes back saying the user has stepped away, stop immediately and end your turn with no further output. Do not ask again — the session resumes with their answer later.
 - When the issue is clear enough, call finish_session with your proposed outcome:
@@ -87,6 +88,7 @@ const grillPromptRules = `How to run the session:
 
 const grillAuthoringRules = `How to run the session:
 - Interview the user ONE question at a time, and only by calling the ask_user tool — never ask in plain assistant text. Wait for each answer before asking the next.
+- Whenever you offer options, mark the one you would choose with recommended (repeat that option's text exactly) and a one-line why — the user may not know the domain. Omit the recommendation only for pure-preference questions where no option is objectively better.
 - Ask only what genuinely blocks a clean specification: the goal, scope, acceptance criteria, edge cases, affected files, dependencies. Settle anything you can by reading the repository.
 - If an ask_user call comes back saying the user has stepped away, stop immediately and end your turn with no further output. Do not ask again — the session resumes with their answer later.
 - When you can specify the work fully, call finish_session with disposition "create":
@@ -100,6 +102,6 @@ const grillPregrillRules = `How to run this unattended pass:
 - If the issue is already clear enough to implement, call finish_session now:
   - "rewrite" — you can write a complete, unambiguous issue description; pass it as proposed_description. This is the common case when the issue only needed tightening.
   - "no_change" — the issue was already clear enough as written; say why in summary.
-- Otherwise, ask the SINGLE most important opening question by calling ask_user exactly once. No user is present, so the call returns a park instruction: when it does, end your turn immediately without asking again. The question is saved and a live session resumes with the user's answer when they return.
+- Otherwise, ask the SINGLE most important opening question by calling ask_user exactly once. If you offer options with it, mark your recommended one (exact option text) and a one-line why. No user is present, so the call returns a park instruction: when it does, end your turn immediately without asking again. The question is saved and a live session resumes with the user's answer when they return.
 - Ask your one opening question or finish — never both, and never call ask_user more than once or wait for an answer.
 Always include a short summary of what you found. Nothing is written to the tracker until the user approves.`

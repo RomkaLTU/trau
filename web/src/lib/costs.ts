@@ -69,6 +69,10 @@ export const costsQueryOptions = (days: number) =>
     refetchInterval: 5000,
   })
 
+// ATLAS_PHASE is the cost category the Atlas generation runner records its spend
+// under (mirrors atlasPhase in the hub); the Costs page surfaces it on its own.
+export const ATLAS_PHASE = 'atlas'
+
 export type GroupBy = 'repo' | 'provider' | 'model' | 'phase'
 
 export const GROUP_BY: { value: GroupBy; label: string }[] = [

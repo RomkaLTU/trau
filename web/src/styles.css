@@ -269,3 +269,29 @@ body::before {
     color: var(--muted-foreground);
   }
 }
+
+.atlas-canvas .react-flow__node,
+.atlas-canvas .react-flow__edge {
+  transition: opacity 0.2s ease;
+}
+.atlas-canvas .react-flow__node.atlas-dim {
+  opacity: 0.15;
+}
+.atlas-canvas .react-flow__edge.atlas-dim {
+  opacity: 0.1;
+}
+.atlas-canvas .react-flow__edge.atlas-edge-active .react-flow__edge-path {
+  stroke: var(--primary);
+  stroke-width: 2;
+}
+.atlas-canvas .react-flow__handle.atlas-handle {
+  width: 6px;
+  height: 6px;
+  min-width: 0;
+  min-height: 0;
+  border: none;
+  opacity: 0;
+}
+.atlas-canvas .react-flow__node-domain {
+  z-index: -1 !important;
+}

@@ -171,6 +171,8 @@ describe('questionPayload', () => {
     const p = questionPayload(question('1'))
     expect(p.allow_free_text).toBe(true)
     expect(p.options).toEqual([])
+    expect(p.recommended).toBeUndefined()
+    expect(p.why).toBeUndefined()
   })
 
   it('reads options and an explicit allow_free_text=false', () => {
@@ -179,6 +181,14 @@ describe('questionPayload', () => {
     )
     expect(p.options).toEqual(['a', 'b'])
     expect(p.allow_free_text).toBe(false)
+  })
+
+  it('reads a recommended option and its why line', () => {
+    const p = questionPayload(
+      question('1', { options: ['a', 'b'], recommended: 'a', why: 'a is simpler' }),
+    )
+    expect(p.recommended).toBe('a')
+    expect(p.why).toBe('a is simpler')
   })
 })
 

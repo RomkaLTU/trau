@@ -24,24 +24,26 @@ func NewIssues(db *sql.DB) *Issues { return &Issues{db: db} }
 
 // Issue is one stored issue row with its comments. Labels is a decoded name list.
 type Issue struct {
-	Repo        string
-	Source      string
-	Identifier  string
-	Title       string
-	Description string
-	Status      string
-	StatusGroup string
-	Priority    int
-	Labels      []string
-	Parent      string
-	HasChildren bool
-	DueDate     string
-	ExternalID  string
-	URL         string
-	CreatedAt   string
-	UpdatedAt   string
-	DeletedAt   string
-	Comments    []Comment
+	Repo         string
+	Source       string
+	Identifier   string
+	Title        string
+	Description  string
+	Status       string
+	StatusGroup  string
+	Priority     int
+	Labels       []string
+	Parent       string
+	HasChildren  bool
+	DueDate      string
+	ExternalID   string
+	URL          string
+	CreatedAt    string
+	UpdatedAt    string
+	DeletedAt    string
+	AssigneeID   string
+	AssigneeName string
+	Comments     []Comment
 
 	// ChildrenSettled and ChildrenTotal are populated by BacklogPage for epic
 	// rows only (HasChildren): the epic's settled (done + canceled) and total
@@ -67,8 +69,17 @@ type SyncBinding struct {
 	Project   string
 }
 
+// SyncIdentity is the repo binding's resolved Me — the tracker user behind its
+// credentials — with the time it was last resolved. A zero value means the repo's
+// identity has not been resolved yet.
+type SyncIdentity struct {
+	ID         string
+	Name       string
+	ResolvedAt string
+}
+
 // SyncState is a repo's sync bookkeeping: the cached binding, the last cursor,
-// and the outcome of the last sync.
+// the outcome of the last sync, and the resolved Me identity.
 type SyncState struct {
 	Binding      SyncBinding
 	Cursor       string
@@ -76,6 +87,7 @@ type SyncState struct {
 	LastIssues   int
 	LastComments int
 	LastError    string
+	Me           SyncIdentity
 }
 
 // SyncResult records the outcome of one sync on the bookkeeping row.
@@ -113,8 +125,8 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 			`INSERT INTO issues(
 				repo, source, identifier, title, description, status, status_group,
 				priority, labels, parent, has_children, due_date, external_id, url,
-				created_at, updated_at, synced_at)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				created_at, updated_at, synced_at, assignee_id, assignee_name)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''))
 			 ON CONFLICT(repo, identifier) DO UPDATE SET
 				source = excluded.source, title = excluded.title,
 				description = excluded.description, status = excluded.status,
@@ -123,13 +135,14 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 				has_children = excluded.has_children, due_date = excluded.due_date,
 				external_id = excluded.external_id, url = excluded.url,
 				created_at = excluded.created_at, updated_at = excluded.updated_at,
-				synced_at = excluded.synced_at, deleted_at = ''
+				synced_at = excluded.synced_at, deleted_at = '',
+				assignee_id = excluded.assignee_id, assignee_name = excluded.assignee_name
 			 WHERE issues.source <> 'internal'
 			 RETURNING id`,
 			repo, source, iss.Identifier, iss.Title, iss.Description, iss.Status,
 			iss.StatusGroup, iss.Priority, string(labels), iss.Parent,
 			boolToInt(iss.HasChildren), iss.DueDate, iss.ExternalID, iss.URL,
-			iss.CreatedAt, iss.UpdatedAt, syncedAt,
+			iss.CreatedAt, iss.UpdatedAt, syncedAt, iss.AssigneeID, iss.AssigneeName,
 		).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			continue
@@ -159,7 +172,7 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 
 const issueColumns = `id, source, identifier, title, description, status, status_group,
 	priority, labels, parent, has_children, due_date, external_id, url,
-	created_at, updated_at, deleted_at`
+	created_at, updated_at, deleted_at, assignee_id, assignee_name`
 
 // List returns a repo's stored issues with their comments, ordered by identifier.
 func (s *Issues) List(repo string) (issues []Issue, err error) {
@@ -202,18 +215,21 @@ func (s *Issues) Children(repo, parent string) (issues []Issue, err error) {
 // BacklogFilter narrows a backlog listing. Groups matches the workflow state
 // groups to union (backlog | unstarted | started | done | canceled | unknown);
 // Label matches an issue carrying that label name, case-insensitively; Source is
-// "internal" for internally-created issues or "synced" for tracker tickets; Text
-// is a case-insensitive substring over identifier and title. A zero-valued field
-// is ignored, so the zero filter selects the whole board — an empty Groups means
+// "internal" for internally-created issues or "synced" for tracker tickets;
+// Assignee is "me" (the repo binding's resolved identity), "unassigned", or an
+// assignee id to match exactly — an unresolved "me" matches nothing; Text is a
+// case-insensitive substring over identifier and title. A zero-valued field is
+// ignored, so the zero filter selects the whole board — an empty Groups means
 // every group. Limit and Offset paginate the ordered matches; a Limit of zero
 // returns every match.
 type BacklogFilter struct {
-	Groups []string
-	Label  string
-	Source string
-	Text   string
-	Limit  int
-	Offset int
+	Groups   []string
+	Label    string
+	Source   string
+	Assignee string
+	Text     string
+	Limit    int
+	Offset   int
 }
 
 // familyKey groups a row with its epic: a sub-issue keys on its parent, a
@@ -283,8 +299,21 @@ func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue,
 	}
 	if text := strings.TrimSpace(filter.Text); text != "" {
 		like := "%" + escapeLike(text) + "%"
-		where = append(where, `(identifier LIKE ? ESCAPE '\' OR title LIKE ? ESCAPE '\')`)
-		args = append(args, like, like)
+		where = append(where, `(identifier LIKE ? ESCAPE '\' OR title LIKE ? ESCAPE '\' OR assignee_name LIKE ? ESCAPE '\')`)
+		args = append(args, like, like, like)
+	}
+	switch assignee := strings.TrimSpace(filter.Assignee); assignee {
+	case "":
+	case "me":
+		// The repo's identity resolves to NULL when unset (no row, or me_id ''),
+		// and assignee_id = NULL matches nothing — the null-identity degradation.
+		where = append(where, "assignee_id = (SELECT NULLIF(me_id, '') FROM issue_sync WHERE repo = ?)")
+		args = append(args, repo)
+	case "unassigned":
+		where = append(where, "assignee_id IS NULL")
+	default:
+		where = append(where, "assignee_id = ?")
+		args = append(args, assignee)
 	}
 	baseClause := strings.Join(where, " AND ")
 
@@ -436,6 +465,55 @@ func (s *Issues) Labels(repo string) (labels []LabelCount, err error) {
 	return labels, rows.Err()
 }
 
+// AssigneeCount is one distinct assignee carried by a repo's issues and the
+// number of issues assigned to them.
+type AssigneeCount struct {
+	ID    string
+	Name  string
+	Count int
+}
+
+// Assignees returns the distinct assignees of a repo's stored issues with their
+// issue counts, and the count of unassigned issues, straight from the issues
+// table with no tracker call (ADR 0007). Assigned rows are ordered by count
+// descending then name; tombstoned issues are excluded. The caller flags and pins
+// the repo's Me — only the assignee ids already reflected on the issues are
+// returned, never the stored Me identity (ADR 0014).
+func (s *Issues) Assignees(repo string) (assigned []AssigneeCount, unassigned int, err error) {
+	rows, err := s.db.Query(
+		`SELECT assignee_id, min(assignee_name), count(*)
+		 FROM issues
+		 WHERE repo = ? AND deleted_at = '' AND assignee_id IS NOT NULL
+		 GROUP BY assignee_id
+		 ORDER BY count(*) DESC, min(assignee_name)`,
+		repo,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	assigned = []AssigneeCount{}
+	for rows.Next() {
+		var (
+			ac   AssigneeCount
+			name sql.NullString
+		)
+		if scanErr := rows.Scan(&ac.ID, &name, &ac.Count); scanErr != nil {
+			return nil, 0, scanErr
+		}
+		ac.Name = name.String
+		assigned = append(assigned, ac)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	err = s.db.QueryRow(
+		`SELECT count(*) FROM issues WHERE repo = ? AND deleted_at = '' AND assignee_id IS NULL`,
+		repo,
+	).Scan(&unassigned)
+	return assigned, unassigned, err
+}
+
 // cleanGroups trims the requested state groups and drops blanks, so a stray empty
 // value narrows nothing rather than matching a nonexistent group.
 func cleanGroups(groups []string) []string {
@@ -462,21 +540,24 @@ func scanIssues(repo string, rows *sql.Rows) ([]Issue, map[int64]int, error) {
 	ids := map[int64]int{}
 	for rows.Next() {
 		var (
-			id     int64
-			labels string
-			hasCh  int
-			iss    = Issue{Repo: repo}
+			id                     int64
+			labels                 string
+			hasCh                  int
+			assigneeID, assigneeNm sql.NullString
+			iss                    = Issue{Repo: repo}
 		)
 		if err := rows.Scan(
 			&id, &iss.Source, &iss.Identifier, &iss.Title, &iss.Description,
 			&iss.Status, &iss.StatusGroup, &iss.Priority, &labels, &iss.Parent,
 			&hasCh, &iss.DueDate, &iss.ExternalID, &iss.URL, &iss.CreatedAt, &iss.UpdatedAt,
-			&iss.DeletedAt,
+			&iss.DeletedAt, &assigneeID, &assigneeNm,
 		); err != nil {
 			return nil, nil, err
 		}
 		iss.HasChildren = hasCh != 0
 		iss.Labels = decodeLabels(labels)
+		iss.AssigneeID = assigneeID.String
+		iss.AssigneeName = assigneeNm.String
 		iss.Comments = []Comment{}
 		ids[id] = len(issues)
 		issues = append(issues, iss)
@@ -531,7 +612,7 @@ func (s *Issues) Search(repo, query string, limit int) (issues []Issue, err erro
 		`SELECT `+prefixColumns("i")+`
 		 FROM issues_fts f JOIN issues i ON i.id = f.rowid
 		 WHERE issues_fts MATCH ? AND i.repo = ? AND i.deleted_at = ''
-		 ORDER BY bm25(issues_fts, 10.0, 5.0, 1.0, 3.0)
+		 ORDER BY bm25(issues_fts, 10.0, 5.0, 1.0, 3.0, 3.0)
 		 LIMIT ?`,
 		match, repo, limit,
 	)
@@ -580,12 +661,14 @@ func prefixColumns(alias string) string {
 func (s *Issues) SyncState(repo string) (SyncState, error) {
 	var st SyncState
 	err := s.db.QueryRow(
-		`SELECT team_id, project_id, project, cursor, last_synced_at, last_issues, last_comments, last_error
+		`SELECT team_id, project_id, project, cursor, last_synced_at, last_issues, last_comments, last_error,
+			me_id, me_name, me_resolved_at
 		 FROM issue_sync WHERE repo = ?`,
 		repo,
 	).Scan(
 		&st.Binding.TeamID, &st.Binding.ProjectID, &st.Binding.Project, &st.Cursor,
 		&st.LastSyncedAt, &st.LastIssues, &st.LastComments, &st.LastError,
+		&st.Me.ID, &st.Me.Name, &st.Me.ResolvedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SyncState{}, nil
@@ -616,6 +699,21 @@ func (s *Issues) SaveBinding(repo string, b SyncBinding) error {
 		 ON CONFLICT(repo) DO UPDATE SET
 			team_id = excluded.team_id, project_id = excluded.project_id, project = excluded.project`,
 		repo, b.TeamID, b.ProjectID, b.Project,
+	)
+	return err
+}
+
+// SaveIdentity persists the repo binding's resolved Me — the tracker user behind
+// its credentials — stamping when it was resolved, so later reads show who the hub
+// treats as Me for the repo. It touches only the identity columns, leaving the
+// binding, cursor, and last-sync outcome intact.
+func (s *Issues) SaveIdentity(repo, id, name string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO issue_sync(repo, me_id, me_name, me_resolved_at) VALUES(?, ?, ?, ?)
+		 ON CONFLICT(repo) DO UPDATE SET
+			me_id = excluded.me_id, me_name = excluded.me_name,
+			me_resolved_at = excluded.me_resolved_at`,
+		repo, id, name, time.Now().UTC().Format(time.RFC3339Nano),
 	)
 	return err
 }

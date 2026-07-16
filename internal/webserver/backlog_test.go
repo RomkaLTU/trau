@@ -34,6 +34,11 @@ type fakeReader struct {
 	identifiers     []string
 	identifiersErr  error
 	identifierCalls int
+
+	identityID    string
+	identityName  string
+	identityErr   error
+	identityCalls int
 }
 
 func (f *fakeReader) Backlog(context.Context) ([]tracker.BacklogItem, error) {
@@ -77,6 +82,14 @@ func (f *fakeReader) ProjectIdentifiers(_ context.Context, _ tracker.ProjectBind
 		return nil, f.identifiersErr
 	}
 	return f.identifiers, nil
+}
+
+func (f *fakeReader) Identity(context.Context) (id, name string, err error) {
+	f.identityCalls++
+	if f.identityErr != nil {
+		return "", "", f.identityErr
+	}
+	return f.identityID, f.identityName, nil
 }
 
 // backlogServer builds a hub with one exited repo ("acme") and a Reader factory
