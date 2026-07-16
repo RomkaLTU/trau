@@ -112,6 +112,13 @@ func (w *linearWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIs
 		return NewIssue{}, err
 	}
 	in := linearapi.CreateIssueInput{TeamID: team.ID, Title: draft.Title, Description: draft.Description, Labels: draft.Labels}
+	if project := strings.TrimSpace(w.project); project != "" {
+		p, err := w.client.ProjectByName(ctx, project)
+		if err != nil {
+			return NewIssue{}, fmt.Errorf("resolve project %q: %w", project, err)
+		}
+		in.ProjectID = p.ID
+	}
 	if parent := strings.TrimSpace(draft.Parent); parent != "" {
 		issue, err := w.client.Issue(ctx, parent)
 		if err != nil {
