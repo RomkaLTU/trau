@@ -57,8 +57,9 @@ var grillTransitions = map[string]map[string]bool{
 
 // GrillSession is one grilling session as stored. IssueID is empty for authoring
 // sessions that anchor to the repo alone. IssueTitle is read from the issue the
-// session grills, so a settled session still names its issue after apply drops the
-// triage labels the board queries key on.
+// session grills — so a settled session still names its issue after apply drops the
+// triage labels the board queries key on — falling back to the authoring seed for an
+// issue-less session.
 type GrillSession struct {
 	ID           int64
 	Repo         string
@@ -151,11 +152,17 @@ func (g *Grill) Create(ns NewGrillSession) (GrillSession, error) {
 	}, nil
 }
 
-// grillSessionSelect reads a session alongside its issue's title. issue_id carries
+// grillSessionSelect reads a session alongside its display title. issue_id carries
 // the issue's identifier, so the join keys on (repo, identifier) — the unique index
-// issues already has. An authoring session's empty issue_id matches nothing and
-// keeps an empty title.
-const grillSessionSelect = `SELECT g.id, g.repo, g.issue_id, COALESCE(i.title, ''), g.state,
+// issues already has. An authoring session's empty issue_id matches no issue and
+// falls back to its seed — the one-line idea stored as the opening info message —
+// so an issue-less session still names itself in the queue.
+const grillSessionSelect = `SELECT g.id, g.repo, g.issue_id,
+	        COALESCE(NULLIF(i.title, ''), (
+	            SELECT json_extract(m.payload, '$.text') FROM grill_messages m
+	            WHERE m.session_id = g.id AND m.role = 'user' AND m.kind = 'info'
+	            ORDER BY m.id LIMIT 1
+	        ), ''), g.state,
 	        g.session_chain, g.model, g.parked_reason, g.created_at, g.updated_at
 	 FROM grill_sessions g
 	 LEFT JOIN issues i ON i.repo = g.repo AND i.identifier = g.issue_id`

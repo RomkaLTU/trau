@@ -9,12 +9,14 @@ export function Composer({
   submitting,
   onSend,
   defaultValue = "",
+  autoFocus = false,
 }: {
   placeholder: string;
   disabled: boolean;
   submitting: boolean;
   onSend: (text: string) => void;
   defaultValue?: string;
+  autoFocus?: boolean;
 }) {
   const [text, setText] = useState(defaultValue);
   const send = () => {
@@ -36,6 +38,7 @@ export function Composer({
         }}
         placeholder={placeholder}
         rows={1}
+        autoFocus={autoFocus}
         disabled={disabled}
         className="max-h-32 min-h-9 flex-1 resize-none rounded-md border bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-50"
       />

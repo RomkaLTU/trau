@@ -194,6 +194,8 @@ export function GrillConversation({
             {question && question.options.length > 0 && (
               <Suggestions
                 options={question.options}
+                recommended={question.recommended}
+                why={question.why}
                 disabled={sending || !answering}
                 onPick={send}
               />

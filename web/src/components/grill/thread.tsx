@@ -122,7 +122,7 @@ function Viewport({
   }, [awayFromEdge, sessionId, visibleMessageIds]);
 
   return (
-    <MessageScrollerViewport aria-label="Grilling transcript">
+    <MessageScrollerViewport aria-label="Interview transcript">
       {children}
     </MessageScrollerViewport>
   );
@@ -153,7 +153,7 @@ function AgentBubble({ children }: { children: React.ReactNode }) {
   return (
     <Message align="start">
       <MessageContent>
-        <Eyebrow>grilling agent</Eyebrow>
+        <Eyebrow>interview agent</Eyebrow>
         <Bubble
           variant="outline"
           align="start"
