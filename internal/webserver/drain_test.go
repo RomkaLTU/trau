@@ -38,7 +38,7 @@ func seedQueue(t *testing.T, s *Server, root string, draining bool, items ...que
 	t.Helper()
 	st := s.stores.Queue(root)
 	for _, it := range items {
-		base := queue.Item{Kind: it.Kind, ID: it.ID, Title: it.Title, Source: it.Source, SubIssues: it.SubIssues}
+		base := queue.Item{Kind: it.Kind, ID: it.ID, Title: it.Title, Source: it.Source, Provider: it.Provider, SubIssues: it.SubIssues}
 		if base.Kind == "" {
 			base.Kind = queue.KindTicket
 		}
@@ -551,6 +551,29 @@ func TestDrainSpawnsInternalTicket(t *testing.T) {
 	if got := statusOf(t, s, root, "ACME-1"); got != queue.StatusRunning {
 		t.Errorf("ACME-1 = %q, want running", got)
 	}
+}
+
+// TestDrainSpawnsWithProviderOverride proves an item's Provider override rides
+// into the spawn as --provider, for a ticket and an epic alike.
+func TestDrainSpawnsWithProviderOverride(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	seedQueue(t, s, root, true,
+		queue.Item{Kind: queue.KindTicket, ID: "COD-1", Provider: "codex"},
+		queue.Item{Kind: queue.KindEpic, ID: "COD-2", Provider: "kimi"},
+	)
+
+	if act, err := s.drain.tick(root); err != nil || act != drainSpawn {
+		t.Fatalf("tick = %q, %v, want spawn", act, err)
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once", "--provider", "codex", "--drain-report", "COD-1"})
+
+	if err := s.stores.Queue(root).Finish("COD-1", queue.StatusDone, ""); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if act, err := s.drain.tick(root); err != nil || act != drainSpawn {
+		t.Fatalf("tick = %q, %v, want spawn of the epic", act, err)
+	}
+	assertArgs(t, fake.spawns[1].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-2", "--provider", "kimi", "--drain-report", "COD-2"})
 }
 
 // TestDrainSkipsDuplicateTicket proves a standalone ticket an earlier queued
