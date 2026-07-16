@@ -10,33 +10,19 @@ import (
 	"syscall"
 )
 
-// spawnStderrTailBytes bounds the stderr kept from a spawned child. A
-// dead-on-arrival startup error is a line or two, so a few KB is ample; the
-// cap keeps a chatty child from pinning an unbounded buffer for the hub's life.
+// spawnStderrTailBytes bounds the stderr kept from a spawned child. A startup
+// error is a line or two, so a few KB is ample; the cap keeps a chatty child
+// from pinning an unbounded buffer for the hub's life.
 const spawnStderrTailBytes = 8 << 10
 
 // SpawnSpec describes a headless loop child the hub launches: the working
 // directory to run it in and the argument vector and environment it starts with.
 // The binary is always the hub's own executable, so a hub-started loop is the
-// same trau a human would run. OnExit, when set, is invoked once from the reaper
-// after the child exits, carrying its exit status and a bounded tail of its
-// stderr — the seam through which a dead-on-arrival child becomes observable
-// without the supervisor knowing anything about repos or events.
+// same trau a human would run.
 type SpawnSpec struct {
-	Dir    string
-	Args   []string
-	Env    []string
-	OnExit func(SpawnOutcome)
-}
-
-// SpawnOutcome is how a spawned child ended: its pid, its exit code (0 clean,
-// -1 when it could not be determined), and a bounded tail of the stderr it
-// printed before exiting — the actual error text of a child that died before it
-// could register or write a checkpoint.
-type SpawnOutcome struct {
-	PID      int
-	ExitCode int
-	Stderr   string
+	Dir  string
+	Args []string
+	Env  []string
 }
 
 // Supervisor is the hub's process-control seam. It isolates OS process
@@ -68,36 +54,11 @@ func (osSupervisor) Spawn(spec SpawnSpec) (int, error) {
 	cmd.Dir = spec.Dir
 	cmd.Env = spec.Env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var stderr *tailWriter
-	if spec.OnExit != nil {
-		stderr = newTailWriter(spawnStderrTailBytes)
-		cmd.Stderr = stderr
-	}
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
-	pid := cmd.Process.Pid
-	go func() {
-		err := cmd.Wait()
-		if spec.OnExit != nil {
-			spec.OnExit(SpawnOutcome{PID: pid, ExitCode: spawnExitCode(err), Stderr: stderr.String()})
-		}
-	}()
-	return pid, nil
-}
-
-// spawnExitCode reads the process exit code from a cmd.Wait error: 0 on a clean
-// exit, the real code from an ExitError, and -1 when the failure is something
-// other than a non-zero exit (the child was never observed to run).
-func spawnExitCode(err error) int {
-	if err == nil {
-		return 0
-	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return ee.ExitCode()
-	}
-	return -1
+	go func() { _ = cmd.Wait() }()
+	return cmd.Process.Pid, nil
 }
 
 // tailWriter is an io.Writer that retains only the last max bytes written,

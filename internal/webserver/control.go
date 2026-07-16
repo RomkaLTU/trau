@@ -14,9 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/RomkaLTU/trau/internal/event"
-	"github.com/RomkaLTU/trau/internal/hubstore"
-	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
@@ -40,172 +37,6 @@ const epicPreviewTimeout = 2 * time.Minute
 // loop; the hub only rejects shapes that are clearly not a ticket before it
 // bothers launching a run for them.
 var reTicketID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
-
-// StartRequest is the body of POST /api/v1/instances. Repo names the loop's
-// target, either by its allowlisted root or its base name. The optional targets
-// mirror the CLI: Ticket runs one specific ticket (the --once equivalent), Epic
-// drives an epic's sub-issues (the --parent equivalent); they are mutually
-// exclusive, and with neither set the hub launches the bare ready-queue loop
-// (plain trau). Max caps iterations (--max); NoResume skips resuming any
-// in-flight checkpoint (--no-resume). Provider is an ephemeral per-run override
-// of the configured routing — it applies only to this spawn and never persists
-// to config.
-type StartRequest struct {
-	Repo     string `json:"repo"`
-	Ticket   string `json:"ticket,omitempty"`
-	Epic     string `json:"epic,omitempty"`
-	Provider string `json:"provider,omitempty"`
-	Max      int    `json:"max,omitempty"`
-	NoResume bool   `json:"no_resume,omitempty"`
-}
-
-// StartResult is returned when the hub spawns a loop, carrying the child's PID so
-// the caller can correlate it with the instance that self-registers moments later.
-type StartResult struct {
-	PID      int    `json:"pid"`
-	Repo     string `json:"repo"`
-	RepoRoot string `json:"repo_root"`
-}
-
-// startInstance spawns a headless loop in an allowlisted repo. Repos outside the
-// workspace allowlist are observe-only and refused with a clear error, so the
-// write path can never launch a loop somewhere the operator hasn't sanctioned.
-func (s *Server) startInstance(w http.ResponseWriter, r *http.Request) {
-	var req StartRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
-		return
-	}
-	if strings.TrimSpace(req.Repo) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "repo is required"})
-		return
-	}
-	ticket := strings.TrimSpace(req.Ticket)
-	epic := strings.TrimSpace(req.Epic)
-	if req.Ticket != "" && ticket == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ticket must not be blank"})
-		return
-	}
-	if req.Epic != "" && epic == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "epic must not be blank"})
-		return
-	}
-	if ticket != "" && epic != "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ticket and epic are mutually exclusive"})
-		return
-	}
-	if ticket != "" && !reTicketID.MatchString(ticket) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("ticket %q is not a valid ticket identifier", req.Ticket)})
-		return
-	}
-	if epic != "" && !reTicketID.MatchString(epic) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("epic %q is not a valid ticket identifier", req.Epic)})
-		return
-	}
-	if req.Max < 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "max must not be negative"})
-		return
-	}
-	root, ok := s.allowedRoot(req.Repo)
-	if !ok {
-		writeJSON(w, http.StatusForbidden, map[string]string{
-			"error": fmt.Sprintf("repo %q is not on the serve workspace allowlist and is observe-only; add its root to SERVE_WORKSPACE to start loops there", req.Repo),
-		})
-		return
-	}
-	// Refuse when a loop already holds this working tree: a second loop into the
-	// same repo corrupts the first's checkpoint and branch — the same hazard the
-	// checkpoint mutations guard with refuseWhenLive and the drainer with repoLive.
-	if e, live := s.liveInstance(root); live {
-		writeJSON(w, http.StatusConflict, map[string]any{
-			"error": fmt.Sprintf("%s already has a live loop (pid %d) — stop it before starting another run in the same working tree", filepath.Base(root), e.PID),
-			"live":  true,
-		})
-		return
-	}
-
-	args := []string{"--repo", root, "--no-tui"}
-	switch {
-	case ticket != "":
-		args = append(args, "--parent", ticket, "--once")
-	case epic != "":
-		args = append(args, "--parent", epic)
-	}
-	if req.NoResume {
-		args = append(args, "--no-resume")
-	}
-	if req.Max > 0 {
-		args = append(args, "--max", strconv.Itoa(req.Max))
-	}
-	if provider := strings.TrimSpace(req.Provider); provider != "" {
-		args = append(args, "--provider", provider)
-	}
-
-	spec := SpawnSpec{Dir: root, Args: args, Env: childEnv(s.home)}
-	// A run-once child targets one ticket, so a death before it registers can be
-	// pinned to that ticket's run page. Capture the outcome and, when it dies on
-	// arrival, record the error where the page can read it.
-	if ticket != "" {
-		spec.OnExit = func(out SpawnOutcome) { s.recordSpawnOutcome(root, ticket, out) }
-	}
-
-	pid, err := s.sup.Spawn(spec)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to start loop: " + err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusAccepted, StartResult{PID: pid, Repo: filepath.Base(root), RepoRoot: root})
-}
-
-// recordSpawnOutcome captures a run-once child's exit as a durable repo event
-// when it dies on arrival: a non-zero exit with no checkpoint means the child
-// never got far enough to record anything itself, so the hub records the exit
-// code and stderr tail as a spawn_failed event the run page can surface. A clean
-// exit, or one that left a checkpoint in the authoritative table (a real run that
-// then faulted), needs no synthetic event — its outcome is already recorded. The
-// event is appended to the authoritative table and fanned out live, the same path
-// a child's own events take (ADR 0008).
-func (s *Server) recordSpawnOutcome(root, ticket string, out SpawnOutcome) {
-	if out.ExitCode == 0 {
-		return
-	}
-	if _, found, _ := s.stores.Checkpoints().One(root, ticket); found {
-		return
-	}
-	fields := marshalFields(map[string]any{
-		"ticket":    ticket,
-		"pid":       out.PID,
-		"exit_code": out.ExitCode,
-		"error":     spawnErrorText(out.Stderr, out.ExitCode),
-	})
-	rows, err := s.stores.Events().Append(root, []hubstore.NewEvent{{
-		TS:     time.Now().Format(time.RFC3339),
-		Kind:   event.KindSpawnFailed,
-		Msg:    "loop failed to start",
-		Fields: fields,
-	}})
-	if err != nil {
-		logger.Verbosef("record spawn failure %s/%s: %v", filepath.Base(root), ticket, err)
-		return
-	}
-	for _, row := range rows {
-		s.publishEvent(root, filepath.Base(root), row)
-	}
-}
-
-// spawnErrorText distils a child's stderr tail into a single-line error for the
-// run page: the last non-empty line, which for a startup failure is the message
-// printed just before exit ("unknown provider …"), past any earlier log noise.
-// It falls back to naming the exit code when the child printed nothing.
-func spawnErrorText(stderr string, exitCode int) string {
-	lines := strings.Split(stderr, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		if trimmed := strings.TrimSpace(lines[i]); trimmed != "" {
-			return trimmed
-		}
-	}
-	return fmt.Sprintf("child exited with status %d without output", exitCode)
-}
 
 // handleStopInstance sends SIGTERM to a registered loop, hub-started or not, so a
 // web stop flows through the same graceful shutdown as Ctrl-C and in-flight work
@@ -289,9 +120,8 @@ func parseNextTicket(stdout []byte) string {
 
 // EligibleTicket is one ready ticket a repo could pick next: its identifier,
 // title, label names, immediate epic parent (empty for a top-level ticket), and
-// whether it is itself a parent/epic. It powers the Run once ticket picker so the
-// operator chooses from the queue instead of typing an ID blind, and can group
-// sub-issues under their epic.
+// whether it is itself a parent/epic. It powers the Loop card's ready-queue
+// preview and Add all eligible, and can group sub-issues under their epic.
 type EligibleTicket struct {
 	ID          string   `json:"id"`
 	Title       string   `json:"title"`

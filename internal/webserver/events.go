@@ -410,19 +410,6 @@ func feedEventFromRow(row hubstore.EventRow) FeedEvent {
 	}
 }
 
-// marshalFields renders an event's fields bag to the JSON object string the store
-// keeps, collapsing an empty bag to the empty column.
-func marshalFields(m map[string]any) string {
-	if len(m) == 0 {
-		return ""
-	}
-	b, err := json.Marshal(m)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
 // unmarshalFields restores the event fields the store holds as a JSON string,
 // leaving an empty column as a nil map so omitempty drops it from the wire shape.
 func unmarshalFields(s string) map[string]any {

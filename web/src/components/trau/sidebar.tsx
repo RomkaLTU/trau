@@ -10,7 +10,6 @@ import {
   ListTodo,
   Lock,
   Network,
-  Play,
   Puzzle,
   RefreshCw,
   Settings,
@@ -65,7 +64,6 @@ const GROUPS: NavGroup[] = [
         requiresProject: true,
         inbox: true,
       },
-      { label: 'Run once', icon: Play, to: '/run-once', requiresProject: true },
     ],
   },
   {

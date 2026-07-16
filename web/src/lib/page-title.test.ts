@@ -5,7 +5,7 @@ import { loopTitle, runTitle, standardTitle } from '@/lib/page-title'
 describe('standardTitle', () => {
   it('puts the page first, then the app suffix', () => {
     expect(standardTitle('Overview')).toBe('Overview · trau')
-    expect(standardTitle('Run once')).toBe('Run once · trau')
+    expect(standardTitle('Backlog')).toBe('Backlog · trau')
   })
 })
 

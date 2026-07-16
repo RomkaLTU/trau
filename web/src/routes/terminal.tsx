@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { Play } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -125,9 +125,9 @@ function Panel({
           message={`Nothing streaming for ${repo} yet.`}
           actions={
             <Button asChild size="sm" className="font-mono">
-              <Link to="/run-once">
-                <Play className="size-4" aria-hidden="true" />
-                Run once
+              <Link to="/loop">
+                <RefreshCw className="size-4" aria-hidden="true" />
+                Start loop
               </Link>
             </Button>
           }

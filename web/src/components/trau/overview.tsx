@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Eye, Play, RefreshCw, Square } from "lucide-react";
+import { Eye, RefreshCw, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useActiveRepo } from "@/components/trau/active-repo";
@@ -149,12 +149,6 @@ export function LaunchActions() {
   return (
     <div className="flex items-center gap-2">
       <Button asChild className="font-mono">
-        <Link to="/run-once">
-          <Play className="size-4" aria-hidden="true" />
-          Run once
-        </Link>
-      </Button>
-      <Button asChild variant="outline" className="font-mono">
         <Link to="/loop">
           <RefreshCw className="size-4" aria-hidden="true" />
           Start loop
@@ -329,20 +323,12 @@ function LiveLoops() {
       <EmptyState
         message="No loops running right now. Point trau at a ticket to watch it work."
         actions={
-          <>
-            <Button asChild size="sm" className="font-mono">
-              <Link to="/run-once">
-                <Play className="size-4" aria-hidden="true" />
-                Run once
-              </Link>
-            </Button>
-            <Button asChild variant="outline" size="sm" className="font-mono">
-              <Link to="/loop">
-                <RefreshCw className="size-4" aria-hidden="true" />
-                Start loop
-              </Link>
-            </Button>
-          </>
+          <Button asChild size="sm" className="font-mono">
+            <Link to="/loop">
+              <RefreshCw className="size-4" aria-hidden="true" />
+              Start loop
+            </Link>
+          </Button>
         }
       />
     );

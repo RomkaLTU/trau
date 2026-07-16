@@ -86,15 +86,15 @@ func TestRegisterRepoValidation(t *testing.T) {
 	}
 }
 
-func TestRegisterThenStartWithoutRestart(t *testing.T) {
+func TestRegisterThenDryRunWithoutRestart(t *testing.T) {
 	home := t.TempDir()
 	repo := gitRepo(t, t.TempDir(), "acme", "dir")
 	fake, ts := controlServer(t, home, nil)
 
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: "acme"})
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/dry-run", nil)
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusForbidden {
-		t.Fatalf("pre-register start = %d, want 403", res.StatusCode)
+		t.Fatalf("pre-register dry-run = %d, want 403", res.StatusCode)
 	}
 
 	res = postJSON(t, ts.URL+APIPrefix+"/repos", RegisterRepoRequest{Path: repo})
@@ -116,16 +116,16 @@ func TestRegisterThenStartWithoutRestart(t *testing.T) {
 		t.Errorf("registered repo not reported allowed in repos list")
 	}
 
-	res = postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: "acme"})
+	res = postJSON(t, ts.URL+APIPrefix+"/repos/acme/dry-run", nil)
 	_ = res.Body.Close()
-	if res.StatusCode != http.StatusAccepted {
-		t.Fatalf("post-register start = %d, want 202", res.StatusCode)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("post-register dry-run = %d, want 200", res.StatusCode)
 	}
-	if len(fake.spawns) != 1 {
-		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
+	if len(fake.captures) != 1 {
+		t.Fatalf("captures = %d, want 1", len(fake.captures))
 	}
-	if fake.spawns[0].Dir != repo {
-		t.Errorf("spawn Dir = %q, want %q", fake.spawns[0].Dir, repo)
+	if fake.captures[0].Dir != repo {
+		t.Errorf("capture Dir = %q, want %q", fake.captures[0].Dir, repo)
 	}
 }
 
@@ -162,13 +162,13 @@ func TestRegistrationPersistsAcrossRestart(t *testing.T) {
 	}
 
 	fake, ts2 := controlServer(t, home, nil)
-	res = postJSON(t, ts2.URL+APIPrefix+"/instances", StartRequest{Repo: "acme"})
+	res = postJSON(t, ts2.URL+APIPrefix+"/repos/acme/dry-run", nil)
 	_ = res.Body.Close()
-	if res.StatusCode != http.StatusAccepted {
-		t.Fatalf("post-restart start = %d, want 202", res.StatusCode)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("post-restart dry-run = %d, want 200", res.StatusCode)
 	}
-	if len(fake.spawns) != 1 {
-		t.Fatalf("post-restart spawns = %d, want 1", len(fake.spawns))
+	if len(fake.captures) != 1 {
+		t.Fatalf("post-restart captures = %d, want 1", len(fake.captures))
 	}
 }
 
@@ -293,10 +293,10 @@ func TestUnregisterRepo(t *testing.T) {
 				if allowedRepoNames(t, ts)["registered"] {
 					t.Error("unregistered repo still reported allowed")
 				}
-				res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: "registered"})
+				res := postJSON(t, ts.URL+APIPrefix+"/repos/registered/dry-run", nil)
 				_ = res.Body.Close()
 				if res.StatusCode != http.StatusForbidden {
-					t.Errorf("post-unregister start = %d, want 403", res.StatusCode)
+					t.Errorf("post-unregister dry-run = %d, want 403", res.StatusCode)
 				}
 				if roots, _ := testStoresAt(t, home).Registrations().Registered(); len(roots) != 0 {
 					t.Errorf("registration store still lists %v", roots)
@@ -364,13 +364,13 @@ func TestUnregisterPersistsAcrossRestart(t *testing.T) {
 	}
 
 	fake, ts2 := controlServer(t, home, nil)
-	res = postJSON(t, ts2.URL+APIPrefix+"/instances", StartRequest{Repo: "acme"})
+	res = postJSON(t, ts2.URL+APIPrefix+"/repos/acme/dry-run", nil)
 	_ = res.Body.Close()
 	if res.StatusCode != http.StatusForbidden {
-		t.Fatalf("post-restart start = %d, want 403", res.StatusCode)
+		t.Fatalf("post-restart dry-run = %d, want 403", res.StatusCode)
 	}
-	if len(fake.spawns) != 0 {
-		t.Fatalf("post-restart spawns = %d, want 0", len(fake.spawns))
+	if len(fake.captures) != 0 {
+		t.Fatalf("post-restart captures = %d, want 0", len(fake.captures))
 	}
 }
 

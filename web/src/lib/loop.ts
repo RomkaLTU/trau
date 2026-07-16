@@ -6,8 +6,8 @@ export type LoopView = 'running' | 'builder'
 
 // loopView picks which shape the Loop page renders. Draining always shows the
 // running view, but a run can be in flight with the flag down — the drain
-// disarms as its last item settles, and run-once or CLI starts never arm it —
-// so an instance in an active session state that carries a ticket keeps the
+// disarms as its last item settles, and CLI starts never arm it — so an
+// instance in an active session state that carries a ticket keeps the
 // running view up until the run settles. Everything else gets the builder.
 export function loopView(draining: boolean, instance?: Instance): LoopView {
   if (draining) return 'running'

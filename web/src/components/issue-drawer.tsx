@@ -36,7 +36,7 @@ import { enqueue } from "@/lib/queue";
 import { cn } from "@/lib/utils";
 
 // IssueDrawer reads one issue in place over the backlog board: the same
-// store-first GET the run-once form uses, rendered as a right-side offcanvas. The
+// store-first GET the add-ticket confirm uses, rendered as a right-side offcanvas. The
 // open issue is URL state (?issue=), so it doubles as a shareable inner page and
 // an in-place drawer — the caller owns the param, the drawer just reflects it.
 export function IssueDrawer({

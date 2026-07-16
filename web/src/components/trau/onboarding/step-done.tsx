@@ -82,7 +82,7 @@ export function StepDone({
             </Link>
           </Button>
           <Button asChild variant="outline">
-            <Link to="/run-once">
+            <Link to="/loop">
               <Play className="size-4" />
               Start first run
             </Link>
