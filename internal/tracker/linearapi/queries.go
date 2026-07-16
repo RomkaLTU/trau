@@ -191,6 +191,10 @@ query SyncIssues($filter: IssueFilter!, $after: String) {
         name
         type
       }
+      assignee {
+        id
+        name
+      }
       project {
         id
         name
@@ -264,6 +268,17 @@ query CountIssues {
     nodes {
       id
     }
+  }
+}
+`
+
+	// viewerQuery resolves the identity behind the API key. A Linear personal API
+	// key is a user, so the viewer is that user — the repo binding's Me.
+	viewerQuery = `
+query Viewer {
+  viewer {
+    id
+    name
   }
 }
 `

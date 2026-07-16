@@ -95,6 +95,51 @@ func TestSyncPullsIssuesAndRecordsOutcome(t *testing.T) {
 	}
 }
 
+func TestSyncPersistsIdentity(t *testing.T) {
+	fake := &fakeReader{synced: syncedFixture(), identityID: "u-42", identityName: "Grace Hopper"}
+	ts, root, store := syncServer(t, fake)
+
+	res, _ := postSync(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	if fake.identityCalls != 1 {
+		t.Fatalf("Identity called %d times, want 1 per sync cycle", fake.identityCalls)
+	}
+	st, err := store.SyncState(root)
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	if st.Me.ID != "u-42" || st.Me.Name != "Grace Hopper" || st.Me.ResolvedAt == "" {
+		t.Fatalf("me = %+v, want u-42/Grace Hopper resolved", st.Me)
+	}
+}
+
+func TestSyncSucceedsWhenIdentityFails(t *testing.T) {
+	fake := &fakeReader{synced: syncedFixture(), identityErr: errors.New("bad creds")}
+	ts, root, store := syncServer(t, fake)
+
+	res, out := postSync(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — an identity failure must never fail a sync", res.StatusCode)
+	}
+	if out.Issues != 1 {
+		t.Fatalf("issues = %d, want the pull to still land", out.Issues)
+	}
+	st, err := store.SyncState(root)
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	if st.Me.ID != "" || st.Me.Name != "" {
+		t.Fatalf("me = %+v, want empty when the identity call failed", st.Me)
+	}
+	if st.LastIssues != 1 {
+		t.Fatalf("recorded issues = %d, want the sync recorded normally", st.LastIssues)
+	}
+}
+
 func TestSyncIsIdempotentAndCachesBinding(t *testing.T) {
 	fake := &fakeReader{synced: syncedFixture()}
 	ts, root, store := syncServer(t, fake)

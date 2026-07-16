@@ -1,14 +1,15 @@
 import { keepPreviousData, queryOptions } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
+import { type Assignee } from './assignee'
 
 // BacklogEntry is one issue on the board, served from the hub's issue store.
 // source distinguishes an internally-created issue (`internal`) from a synced
 // tracker ticket (`linear` | `jira`); only internal issues are editable in place.
-// children_settled/children_total report an epic's settled (done + canceled) and
-// total sub-issue counts over all children in the store, and are present only on
-// an epic row (has_children) so the board can show its progress without a second
-// call.
+// assignee is null when the issue is unassigned. children_settled/children_total
+// report an epic's settled (done + canceled) and total sub-issue counts over all
+// children in the store, and are present only on an epic row (has_children) so the
+// board can show its progress without a second call.
 export interface BacklogEntry {
   id: string
   title: string
@@ -16,6 +17,7 @@ export interface BacklogEntry {
   group: string
   labels: string[]
   source: string
+  assignee?: Assignee | null
   parent?: string
   has_children: boolean
   children_settled?: number
@@ -63,6 +65,7 @@ export interface BacklogResponse {
 export interface BacklogParams {
   state?: string
   label?: string
+  assignee?: string
   source?: string
   q?: string
   limit?: number
@@ -78,6 +81,7 @@ function backlogSearch(params: BacklogParams): string {
   const sp = new URLSearchParams()
   if (params.state) sp.set('state', params.state)
   if (params.label) sp.set('label', params.label)
+  if (params.assignee) sp.set('assignee', params.assignee)
   if (params.source) sp.set('source', params.source)
   if (params.q) sp.set('q', params.q)
   if (params.limit) sp.set('limit', String(params.limit))

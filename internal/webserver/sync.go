@@ -199,6 +199,7 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 	}); err != nil {
 		return SyncResponse{}, err
 	}
+	s.resolveIdentity(ctx, store, repo.Root, res.reader)
 	return SyncResponse{
 		Repo:     repo.Name,
 		Provider: res.provider,
@@ -231,24 +232,42 @@ func (s *Server) resolveBinding(ctx context.Context, store *hubstore.Issues, roo
 	return binding, nil
 }
 
+// resolveIdentity refreshes the repo binding's Me — the tracker user behind its
+// credentials — and persists it beside the sync bookkeeping. It is best-effort: an
+// identity call that fails (bad or missing credentials, tracker hiccup) is logged
+// and swallowed so it never blocks or fails the issue sync, leaving the previously
+// stored identity in place.
+func (s *Server) resolveIdentity(ctx context.Context, store *hubstore.Issues, root string, reader tracker.Reader) {
+	id, name, err := reader.Identity(ctx)
+	if err != nil {
+		logger.Verbosef("sync %s: resolve identity: %v", root, err)
+		return
+	}
+	if err := store.SaveIdentity(root, id, name); err != nil {
+		logger.Verbosef("sync %s: persist identity: %v", root, err)
+	}
+}
+
 func toStoredIssues(pulled []tracker.SyncedIssue) []hubstore.Issue {
 	out := make([]hubstore.Issue, 0, len(pulled))
 	for _, iss := range pulled {
 		stored := hubstore.Issue{
-			Identifier:  iss.ID,
-			Title:       iss.Title,
-			Description: iss.Description,
-			Status:      iss.Status,
-			StatusGroup: string(iss.Group),
-			Priority:    iss.Priority,
-			Labels:      iss.Labels,
-			Parent:      iss.Parent,
-			HasChildren: iss.HasChildren,
-			DueDate:     iss.DueDate,
-			ExternalID:  iss.ExternalID,
-			URL:         iss.URL,
-			CreatedAt:   iss.CreatedAt,
-			UpdatedAt:   iss.UpdatedAt,
+			Identifier:   iss.ID,
+			Title:        iss.Title,
+			Description:  iss.Description,
+			Status:       iss.Status,
+			StatusGroup:  string(iss.Group),
+			Priority:     iss.Priority,
+			Labels:       iss.Labels,
+			Parent:       iss.Parent,
+			HasChildren:  iss.HasChildren,
+			DueDate:      iss.DueDate,
+			ExternalID:   iss.ExternalID,
+			URL:          iss.URL,
+			CreatedAt:    iss.CreatedAt,
+			UpdatedAt:    iss.UpdatedAt,
+			AssigneeID:   iss.AssigneeID,
+			AssigneeName: iss.AssigneeName,
 		}
 		for _, c := range iss.Comments {
 			stored.Comments = append(stored.Comments, hubstore.Comment{

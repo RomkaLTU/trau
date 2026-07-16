@@ -10,21 +10,23 @@ import (
 // keeps as its working copy, including the description, comments, and timestamps
 // the lighter Issue/BacklogIssue reads omit.
 type SyncIssue struct {
-	ID          string
-	Identifier  string
-	Title       string
-	Description string
-	Priority    int
-	DueDate     string
-	URL         string
-	CreatedAt   string
-	UpdatedAt   string
-	State       State
-	Project     Project
-	Parent      string
-	Labels      []Label
-	HasChildren bool
-	Comments    []Comment
+	ID           string
+	Identifier   string
+	Title        string
+	Description  string
+	Priority     int
+	DueDate      string
+	URL          string
+	CreatedAt    string
+	UpdatedAt    string
+	State        State
+	Project      Project
+	Parent       string
+	Labels       []Label
+	HasChildren  bool
+	AssigneeID   string
+	AssigneeName string
+	Comments     []Comment
 }
 
 // Comment is one comment on an issue, keyed by its node id. Author is the
@@ -171,18 +173,22 @@ type syncQueryResponse struct {
 }
 
 type syncNode struct {
-	ID          string      `json:"id"`
-	Identifier  string      `json:"identifier"`
-	Title       string      `json:"title"`
-	Description string      `json:"description"`
-	Priority    int         `json:"priority"`
-	DueDate     string      `json:"dueDate"`
-	URL         string      `json:"url"`
-	CreatedAt   string      `json:"createdAt"`
-	UpdatedAt   string      `json:"updatedAt"`
-	State       stateNode   `json:"state"`
-	Project     projectNode `json:"project"`
-	Parent      struct {
+	ID          string    `json:"id"`
+	Identifier  string    `json:"identifier"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	Priority    int       `json:"priority"`
+	DueDate     string    `json:"dueDate"`
+	URL         string    `json:"url"`
+	CreatedAt   string    `json:"createdAt"`
+	UpdatedAt   string    `json:"updatedAt"`
+	State       stateNode `json:"state"`
+	Assignee    *struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	} `json:"assignee"`
+	Project projectNode `json:"project"`
+	Parent  struct {
 		Identifier string `json:"identifier"`
 	} `json:"parent"`
 	Labels struct {
@@ -223,6 +229,10 @@ func (n *syncNode) toSyncIssue() SyncIssue {
 		Project:     Project(n.Project),
 		Parent:      n.Parent.Identifier,
 		HasChildren: len(n.Children.Nodes) > 0,
+	}
+	if n.Assignee != nil {
+		iss.AssigneeID = n.Assignee.ID
+		iss.AssigneeName = n.Assignee.Name
 	}
 	for _, l := range n.Labels.Nodes {
 		iss.Labels = append(iss.Labels, Label(l))
