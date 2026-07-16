@@ -427,14 +427,15 @@ func TestBacklogPageOrdersByFamilyThenIdentifier(t *testing.T) {
 		t.Fatalf("BacklogPage: %v", err)
 	}
 	want := []string{
-		"COD-3", "COD-876", "COD-877",
-		"COD-9", "COD-873", "COD-874", "COD-875", "COD-880",
+		"COD-3", "COD-873", "COD-876", "COD-877",
+		"COD-9", "COD-874", "COD-875", "COD-880",
 	}
 	if !reflect.DeepEqual(idsOf(got), want) {
 		t.Fatalf("order = %v, want family-key order %v\n"+
 			"expected: within a group, epics before their sub-issues, a sub-issue "+
-			"immediately after its epic, sub-issues in another group clustered under "+
-			"their epic key, and unrelated issues in numeric-aware order", idsOf(got), want)
+			"immediately after its epic, an epic with started sub-issues filed with "+
+			"them under started, its remaining sub-issues clustered under the epic "+
+			"key in their own group, and unrelated issues in numeric-aware order", idsOf(got), want)
 	}
 }
 
@@ -482,7 +483,7 @@ func TestBacklogPageCountsEpicChildren(t *testing.T) {
 		{Identifier: "COD-1", StatusGroup: "backlog", HasChildren: true},
 		{Identifier: "COD-2", StatusGroup: "done", Parent: "COD-1"},
 		{Identifier: "COD-3", StatusGroup: "canceled", Parent: "COD-1"},
-		{Identifier: "COD-4", StatusGroup: "started", Parent: "COD-1"},
+		{Identifier: "COD-4", StatusGroup: "unstarted", Parent: "COD-1"},
 		{Identifier: "COD-5", StatusGroup: "backlog", Parent: "COD-1"},
 		{Identifier: "COD-9", StatusGroup: "backlog"},
 	}); err != nil {
@@ -519,6 +520,82 @@ func TestBacklogPageCountsEpicChildren(t *testing.T) {
 	}
 	if e := epic(filtered); e.ChildrenSettled != 2 || e.ChildrenTotal != 4 {
 		t.Fatalf("filtered epic counts = %d/%d, want 2/4 — counts cover all children, not the filtered page", e.ChildrenSettled, e.ChildrenTotal)
+	}
+}
+
+func TestBacklogPageEpicWithStartedChildFilesUnderStarted(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/epicstarted"
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-1", Status: "Backlog", StatusGroup: "backlog", HasChildren: true},
+		{Identifier: "COD-2", StatusGroup: "started", Parent: "COD-1"},
+		{Identifier: "COD-3", StatusGroup: "unstarted", Parent: "COD-1"},
+		{Identifier: "COD-9", StatusGroup: "backlog"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, _, counts, err := s.BacklogPage(repo, BacklogFilter{})
+	if err != nil {
+		t.Fatalf("BacklogPage: %v", err)
+	}
+	want := []string{"COD-1", "COD-2", "COD-3", "COD-9"}
+	if !reflect.DeepEqual(idsOf(got), want) {
+		t.Fatalf("order = %v, want the epic filed under started ahead of its started child %v", idsOf(got), want)
+	}
+	if got[0].StatusGroup != "started" || got[0].Status != "Backlog" {
+		t.Errorf("epic group/status = %q/%q, want started/Backlog — the group is derived, the status stays stored", got[0].StatusGroup, got[0].Status)
+	}
+	wantCounts := map[string]int{"started": 2, "unstarted": 1, "backlog": 1}
+	if !reflect.DeepEqual(counts, wantCounts) {
+		t.Errorf("counts = %v, want the epic counted as started %v", counts, wantCounts)
+	}
+
+	started, total, _, err := s.BacklogPage(repo, BacklogFilter{Groups: []string{"started"}})
+	if err != nil {
+		t.Fatalf("BacklogPage started: %v", err)
+	}
+	if total != 2 || !reflect.DeepEqual(idsOf(started), []string{"COD-1", "COD-2"}) {
+		t.Errorf("started page = %v (total %d), want the epic listed with its started child", idsOf(started), total)
+	}
+
+	backlog, _, _, err := s.BacklogPage(repo, BacklogFilter{Groups: []string{"backlog"}})
+	if err != nil {
+		t.Fatalf("BacklogPage backlog: %v", err)
+	}
+	if !reflect.DeepEqual(idsOf(backlog), []string{"COD-9"}) {
+		t.Errorf("backlog page = %v, want the promoted epic gone from backlog", idsOf(backlog))
+	}
+}
+
+func TestBacklogPageEpicPromotionSkipsClosedAndTombstoned(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/epicskip"
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-1", StatusGroup: "done", HasChildren: true},
+		{Identifier: "COD-2", StatusGroup: "started", Parent: "COD-1"},
+		{Identifier: "COD-5", StatusGroup: "backlog", HasChildren: true},
+		{Identifier: "COD-6", StatusGroup: "started", Parent: "COD-5"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := s.Reconcile(repo, []string{"COD-1", "COD-2", "COD-5"}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	got, _, _, err := s.BacklogPage(repo, BacklogFilter{})
+	if err != nil {
+		t.Fatalf("BacklogPage: %v", err)
+	}
+	groups := map[string]string{}
+	for _, iss := range got {
+		groups[iss.Identifier] = iss.StatusGroup
+	}
+	if groups["COD-1"] != "done" {
+		t.Errorf("closed epic group = %q, want done — a started child never reopens it", groups["COD-1"])
+	}
+	if groups["COD-5"] != "backlog" {
+		t.Errorf("epic group = %q, want backlog — a tombstoned started child does not promote", groups["COD-5"])
 	}
 }
 

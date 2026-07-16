@@ -334,6 +334,34 @@ func TestBacklogEpicChildCounts(t *testing.T) {
 	}
 }
 
+func TestBacklogEpicWithStartedChildServesStartedGroup(t *testing.T) {
+	_, ts, root, store := backlogServer(t, nil, nil)
+	if _, _, err := store.Upsert(root, "linear", []hubstore.Issue{
+		{Identifier: "COD-10", Title: "Epic", Status: "Backlog", StatusGroup: "backlog", HasChildren: true},
+		{Identifier: "COD-11", Title: "Started child", Status: "In Progress", StatusGroup: "started", Parent: "COD-10"},
+		{Identifier: "COD-12", Title: "Todo child", Status: "Todo", StatusGroup: "unstarted", Parent: "COD-10"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	out := getBacklogQuery(t, ts, "acme", "")
+	byID := map[string]BacklogEntry{}
+	for _, it := range out.Items {
+		byID[it.ID] = it
+	}
+	if epic := byID["COD-10"]; epic.Group != "started" || epic.Status != "Backlog" {
+		t.Fatalf("epic = group %q status %q, want the started group with the stored status", epic.Group, epic.Status)
+	}
+	if out.Counts["started"] != 2 {
+		t.Fatalf("started count = %d, want 2 (the epic and its started child)", out.Counts["started"])
+	}
+
+	started := getBacklogQuery(t, ts, "acme", "state=started")
+	if got := idSet(started.Items); !reflect.DeepEqual(got, []string{"COD-10", "COD-11"}) {
+		t.Fatalf("state=started = %v, want the whole epic listed in progress with its started child", got)
+	}
+}
+
 // backlogItemFields fetches the board and returns each item's raw JSON fields
 // keyed by id, so a test can assert on the wire shape — which keys are present
 // or omitted — rather than the decoded struct.

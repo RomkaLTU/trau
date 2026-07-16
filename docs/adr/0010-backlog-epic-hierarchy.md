@@ -88,3 +88,14 @@ past one level.
   its end exactly when the epic has nothing left to run.
 - Glossary gains **Epic**, **Sub-issue**, and **Settled** — the board, the
   queue, and drain now share one vocabulary for them.
+
+## Amendment (2026-07-17)
+
+An epic's board group is now derived: a not-yet-closed epic files under the
+started group while any of its live children is started, so in-flight work
+lists the whole family as in progress rather than just the sub-issue taken
+from it. The derivation drives the ordering, the section counts, the state
+filter, and the row's reported group together, and the epic's started
+children nest under it in the In Progress section. The epic's stored status
+is untouched; children whose status has diverged keep the flat-with-chip
+rendering, and a done or canceled epic is never reopened by a started child.
