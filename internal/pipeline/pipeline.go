@@ -1987,7 +1987,7 @@ func slugify(title string) string {
 }
 
 func prBody(id string) string {
-	return fmt.Sprintf("## Summary\nAutomated implementation of %s via the Trau loop.\n\n## Test plan\n- [x] Pest suite for this slice\n- [x] QA verify pass (browser for UI slices)\n\nLinear: %s", id, id)
+	return fmt.Sprintf("## Summary\nAutomated implementation of %s via the Trau loop.\n\n## Test plan\n- [x] Relevant automated tests for this slice\n- [x] QA verify pass (browser for UI slices)\n\nLinear: %s", id, id)
 }
 
 // agentPhaseOn runs one phase on a specific runner (the primary loop runner, or a
@@ -2374,7 +2374,7 @@ const codeStyleNote = " Write it the way a senior engineer on this project would
 // installed skills to name. Claude Code stopped honoring this generic self-
 // selection in 2.1.202, which is why a skill-equipped repo names its skills
 // explicitly instead (see skillsPrompt).
-const selfSelectSkillsNote = "This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Always include the project's test skill (e.g. pest-testing); add domain skills based on what the ticket actually touches (e.g. inertia-react-development and tailwindcss-development for UI, medialibrary-development for uploads, pennant-development for feature flags, the relevant *-development skill for each area)."
+const selfSelectSkillsNote = "This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Infer the project's stack from its manifests and configs (package.json, composer.json, go.mod, pyproject.toml, and the like) rather than assuming any framework. Always include the project's test skill when one exists, and add the domain skills matching the areas the ticket actually touches."
 
 // skillsPrompt composes the build-prompt sentence that tells the agent which
 // installed skills to load. With no installed skills it returns the generic
