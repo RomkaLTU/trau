@@ -262,3 +262,108 @@ func TestCheckHealth(t *testing.T) {
 		}
 	})
 }
+
+// The 2026-07-16 incident: two epics developed in parallel both claimed version
+// 20; the merge renumbered one to 22, and a database that had followed that
+// branch skipped the real 20 (its counter already said 20) and died applying 21.
+// Key tracking must apply exactly the missing migrations and recognize the
+// renumbered one as already run.
+func TestMigrateRenumberedParallelBranches(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	base := migration{version: 1, name: "0001_base.sql", key: "base", sql: `
+		CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+		CREATE TABLE t (id INTEGER PRIMARY KEY);`}
+	atlas := migration{version: 2, name: "0002_atlas.sql", key: "atlas", sql: `CREATE TABLE atlas (id INTEGER PRIMARY KEY);`}
+	if _, err := migrateAll(db, []migration{base, atlas}); err != nil {
+		t.Fatalf("branch migrate: %v", err)
+	}
+
+	assignees := migration{version: 2, name: "0002_assignees.sql", key: "assignees", sql: `ALTER TABLE t ADD COLUMN assignee TEXT;`}
+	fts := migration{version: 3, name: "0003_fts.sql", key: "fts", sql: `CREATE INDEX t_assignee ON t(assignee);`}
+	atlas.version, atlas.name = 4, "0004_atlas.sql"
+	v, err := migrateAll(db, []migration{base, assignees, fts, atlas})
+	if err != nil {
+		t.Fatalf("merged migrate: %v", err)
+	}
+	if v != 4 {
+		t.Fatalf("version = %d, want 4", v)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('t') WHERE name = 'assignee'`).Scan(&n); err != nil {
+		t.Fatalf("read columns: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("assignee columns = %d, want 1", n)
+	}
+	var stored string
+	if err := db.QueryRow(`SELECT value FROM meta WHERE key = ?`, schemaVersionKey).Scan(&stored); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if stored != "4" {
+		t.Fatalf("stored schema_version = %s, want 4", stored)
+	}
+}
+
+func TestMigrateBackfillsLegacyVersionCounter(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	migs := []migration{
+		{version: 1, name: "0001_base.sql", key: "base", sql: `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;`},
+		{version: 2, name: "0002_second.sql", key: "second", sql: `CREATE TABLE second (id INTEGER PRIMARY KEY);`},
+	}
+	if _, err := migrateAll(db, migs); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// A database migrated before key tracking has no schema_migrations table.
+	if _, err := db.Exec(`DROP TABLE schema_migrations`); err != nil {
+		t.Fatalf("drop: %v", err)
+	}
+
+	v, err := migrateAll(db, migs)
+	if err != nil {
+		t.Fatalf("re-migrate: %v", err)
+	}
+	if v != 2 {
+		t.Fatalf("version = %d, want 2", v)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&n); err != nil {
+		t.Fatalf("count keys: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("backfilled keys = %d, want 2", n)
+	}
+}
+
+func TestMigrateRejectsCollidingMigrations(t *testing.T) {
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	sameVersion := []migration{
+		{version: 1, name: "0001_a.sql", key: "a", sql: `SELECT 1;`},
+		{version: 1, name: "0001_b.sql", key: "b", sql: `SELECT 1;`},
+	}
+	if _, err := migrateAll(db, sameVersion); err == nil || !strings.Contains(err.Error(), "share version") {
+		t.Fatalf("same-version error = %v, want share version", err)
+	}
+
+	sameKey := []migration{
+		{version: 1, name: "0001_a.sql", key: "a", sql: `SELECT 1;`},
+		{version: 2, name: "0002_a.sql", key: "a", sql: `SELECT 1;`},
+	}
+	if _, err := migrateAll(db, sameKey); err == nil || !strings.Contains(err.Error(), "share name") {
+		t.Fatalf("same-key error = %v, want share name", err)
+	}
+}
