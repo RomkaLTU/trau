@@ -174,6 +174,29 @@ describe('buildTimeline', () => {
     expect(tl.pending).toEqual([])
   })
 
+  it('surfaces an active instance ticket the queue no longer holds as running', () => {
+    const tl = buildTimeline(
+      [],
+      [run({ ticket: 'COD-7', title: 'Fix it', phase: 'building' })],
+      instance({ ticket: 'COD-7', phase: 'building', activity: 'build' }),
+    )
+    expect(tl.running?.id).toBe('COD-7')
+    expect(tl.running?.title).toBe('Fix it')
+    expect(tl.running?.activity).toBe('build')
+    expect(tl.total).toBe(1)
+    expect(tl.pending).toEqual([])
+  })
+
+  it('does not resurrect an idle instance ticket into an empty queue', () => {
+    const tl = buildTimeline(
+      [],
+      [],
+      instance({ ticket: 'COD-7', session_state: 'idle' }),
+    )
+    expect(tl.running).toBeUndefined()
+    expect(tl.total).toBe(0)
+  })
+
   it('carries the working instance Activity onto the running ticket', () => {
     const tl = buildTimeline(
       [item({ id: 'COD-1' })],

@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { deriveLoopHalt } from '@/lib/loop'
+import { deriveLoopHalt, loopView } from '@/lib/loop'
 import type { FeedEvent } from '@/lib/events'
+import type { Instance } from '@/lib/instances'
 
 function stateChange(
   id: string,
@@ -10,6 +11,48 @@ function stateChange(
 ): FeedEvent {
   return { id, ts: '', kind: 'state_change', fields: { state, ...fields } }
 }
+
+function instance(over: Partial<Instance>): Instance {
+  return {
+    pid: 1,
+    repo: 'loop',
+    repo_root: '/loop',
+    runs_dir: 'runs',
+    started_at: '2026-07-16T10:00:00Z',
+    session_state: 'working',
+    ...over,
+  }
+}
+
+describe('loopView', () => {
+  it('shows the running view while the queue drains', () => {
+    expect(loopView(true)).toBe('running')
+  })
+
+  it('keeps the running view up for an active instance after the drain flag drops', () => {
+    expect(loopView(false, instance({ ticket: 'COD-1' }))).toBe('running')
+    expect(
+      loopView(false, instance({ ticket: 'COD-1', session_state: 'stopping' })),
+    ).toBe('running')
+  })
+
+  it('returns to the builder once the instance goes idle', () => {
+    expect(loopView(false)).toBe('builder')
+    expect(
+      loopView(false, instance({ ticket: 'COD-1', session_state: 'idle' })),
+    ).toBe('builder')
+  })
+
+  it('leaves a parked instance to the halt banner, not the running view', () => {
+    expect(
+      loopView(false, instance({ ticket: 'COD-1', session_state: 'parked' })),
+    ).toBe('builder')
+  })
+
+  it('ignores an active instance that carries no ticket', () => {
+    expect(loopView(false, instance({}))).toBe('builder')
+  })
+})
 
 describe('deriveLoopHalt', () => {
   it('returns null with no events', () => {

@@ -1,5 +1,6 @@
 import type { RunState } from '@/components/trau/status-pill'
 import type { Instance } from './instances'
+import { isActiveState, toSessionState } from './overview'
 import { queueTerminal, type QueueItem } from './queue'
 import type { FailureClass, Run } from './runs'
 import { stepPill } from './steps'
@@ -182,6 +183,20 @@ export function buildTimeline(
 ): Timeline {
   const byTicket = new Map(runs.map((r) => [r.ticket, r]))
   const leaves = flatten(items)
+  // A run can outlive its queue entry or never have one (run-once, CLI): an
+  // active instance ticket missing from the snapshot still joins as a leaf so
+  // the running section reflects it.
+  if (
+    instance?.ticket &&
+    isActiveState(toSessionState(instance.session_state)) &&
+    !leaves.some((l) => l.id === instance.ticket)
+  ) {
+    leaves.push({
+      id: instance.ticket,
+      title: byTicket.get(instance.ticket)?.title ?? '',
+      snapshotState: 'running',
+    })
+  }
   const tickets = leaves.map((leaf) =>
     resolve(leaf, byTicket.get(leaf.id), instance),
   )

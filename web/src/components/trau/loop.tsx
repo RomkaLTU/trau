@@ -37,7 +37,12 @@ import {
   type Instance,
   type RepoFreshness,
 } from '@/lib/instances'
-import { deriveLoopHalt, type LoopHalt } from '@/lib/loop'
+import {
+  deriveLoopHalt,
+  loopView,
+  type LoopHalt,
+  type LoopView,
+} from '@/lib/loop'
 import { loopTitle, usePageTitle, type LoopTitleState } from '@/lib/page-title'
 import {
   dequeue,
@@ -1163,17 +1168,17 @@ function HaltBanner({ repo, halt }: { repo: string; halt: LoopHalt }) {
 }
 
 // loopTitleState reads the loop's tab-title state from the same signals the card
-// renders: the halt banner, the draining header's done/total and step pill, or a
+// renders: the halt banner, the running header's done/total and step pill, or a
 // clean drain. It never re-derives a state the page does not already show.
 function loopTitleState(
   canRun: boolean,
   halt: LoopHalt | null,
-  draining: boolean,
+  view: LoopView,
   timeline: Timeline | null,
 ): LoopTitleState {
   if (!canRun) return { kind: 'idle' }
   if (halt) return { kind: 'halted', halt: halt.kind, ticket: halt.ticket }
-  if (draining && timeline) {
+  if (view === 'running' && timeline) {
     const running = timeline.running
     const step = running
       ? stepName(running.activity, running.phase ?? '').toLowerCase() ||
@@ -1212,10 +1217,11 @@ export function Loop() {
   const runs = useQuery(runsQueryOptions(repo))
 
   const draining = queue.data?.draining ?? false
+  const view = loopView(draining, liveInstance)
   const timeline = queue.data
     ? buildTimeline(queue.data.items, runs.data?.runs ?? [], liveInstance)
     : null
-  usePageTitle(loopTitle(loopTitleState(canRun, halt, draining, timeline)))
+  usePageTitle(loopTitle(loopTitleState(canRun, halt, view, timeline)))
 
   const stop = useMutation({
     mutationFn: () => drain(repo, false),
@@ -1235,7 +1241,7 @@ export function Loop() {
     )
   }
 
-  if (draining && queue.data) {
+  if (view === 'running' && queue.data) {
     return (
       <RunningQueueView
         repo={repo}
