@@ -13,7 +13,7 @@ import { TerminalCard } from "@/components/trau/terminal-card";
 import { cn } from "@/lib/utils";
 import { useAttentionRuns } from "@/lib/attention";
 import { costsQueryOptions } from "@/lib/costs";
-import { startInstance, stopInstance } from "@/lib/instances";
+import { stopInstance } from "@/lib/instances";
 import {
   activeLoopCount,
   attentionPill,
@@ -24,6 +24,7 @@ import {
   useRepoActivity,
   type LiveLoop,
 } from "@/lib/overview";
+import { publishQueue, runNext } from "@/lib/queue";
 import { runsQueryOptions, type FailureClass, type Run } from "@/lib/runs";
 import { liveSteps } from "@/lib/steps";
 
@@ -390,12 +391,10 @@ function NeedsAttention() {
   const liveLoop = loops[0];
 
   const resume = useMutation({
-    mutationFn: (ticket: string) => startInstance({ repo: repo ?? "", ticket }),
-    onSuccess: (_res, ticket) => {
-      void navigate({
-        to: "/live/$repo/$ticket",
-        params: { repo: repo ?? "", ticket },
-      });
+    mutationFn: (ticket: string) => runNext(repo ?? "", { id: ticket }),
+    onSuccess: (res) => {
+      publishQueue(queryClient, repo ?? "", res);
+      void navigate({ to: "/loop" });
     },
   });
 

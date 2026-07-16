@@ -154,6 +154,30 @@ export async function drain(
   return res.json()
 }
 
+// runNext is the one web launch gesture: make the item the queue's next run,
+// then arm the drain. A fresh id front-inserts and a pending one moves to the
+// front; on the conflict an already-queued id answers instead, a paused item is
+// already parked at the front so arming alone resumes it, and a settled
+// leftover is dropped and re-queued so the ticket runs again.
+export async function runNext(
+  repo: string,
+  req: EnqueueRequest,
+  opts: DrainOptions = {},
+): Promise<QueueResponse> {
+  try {
+    await enqueue(repo, { ...req, front: true })
+  } catch (err) {
+    const { items } = await fetchQueue(repo)
+    const queued = items.find((it) => it.id === req.id)
+    if (!queued) throw err
+    if (queueTerminal(queued.status)) {
+      await dequeue(repo, req.id)
+      await enqueue(repo, { ...req, front: true })
+    }
+  }
+  return drain(repo, true, opts)
+}
+
 // skipResumeApplies reports whether the Skip resume toggle would change anything
 // for this queue, so the Loop card can hide a no-op control. It applies when the
 // queue has already executed (any item past pending — Start restarts it from the

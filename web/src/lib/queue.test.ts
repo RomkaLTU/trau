@@ -1,16 +1,34 @@
 import { QueryClient } from '@tanstack/react-query'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { apiFetch } from './api'
 import {
   publishQueue,
   queueCounts,
   queueExecutable,
   queueQueryOptions,
+  runNext,
   skipResumeApplies,
   type QueueItem,
   type QueueResponse,
 } from './queue'
 import type { Run } from './runs'
+
+vi.mock('./api', () => ({ apiFetch: vi.fn() }))
+
+const mockFetch = vi.mocked(apiFetch)
+
+afterEach(() => {
+  mockFetch.mockReset()
+})
+
+function response(status: number, body: unknown) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  } as unknown as Response
+}
 
 function item(over: Partial<QueueItem>): QueueItem {
   return {
@@ -64,6 +82,84 @@ describe('publishQueue', () => {
     const client = new QueryClient()
     publishQueue(client, 'trau', queueResponse({ items: [item({ id: 'COD-1' })] }))
     expect(cached(client, 'salonradar')).toBeUndefined()
+  })
+})
+
+describe('runNext', () => {
+  const drainCalls = () =>
+    mockFetch.mock.calls.filter(([url]) => String(url).endsWith('/drain'))
+
+  it('front-inserts the item, then arms the drain', async () => {
+    mockFetch
+      .mockResolvedValueOnce(response(201, queueResponse()))
+      .mockResolvedValueOnce(response(200, queueResponse({ draining: true })))
+
+    const res = await runNext('trau', { id: 'COD-1' })
+
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      1,
+      '/api/v1/repos/trau/queue',
+      expect.objectContaining({
+        body: JSON.stringify({ id: 'COD-1', front: true }),
+      }),
+    )
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      '/api/v1/repos/trau/queue/drain',
+      expect.objectContaining({ body: JSON.stringify({ draining: true }) }),
+    )
+    expect(res.draining).toBe(true)
+  })
+
+  it('resumes a queued paused item by arming without re-queuing', async () => {
+    mockFetch
+      .mockResolvedValueOnce(response(409, { error: 'COD-1 is already in the queue' }))
+      .mockResolvedValueOnce(
+        response(200, queueResponse({ items: [item({ id: 'COD-1', status: 'paused' })] })),
+      )
+      .mockResolvedValueOnce(response(200, queueResponse({ draining: true })))
+
+    const res = await runNext('trau', { id: 'COD-1' })
+
+    expect(mockFetch).toHaveBeenCalledTimes(3)
+    expect(res.draining).toBe(true)
+  })
+
+  it('drops a settled leftover and re-queues it before arming', async () => {
+    mockFetch
+      .mockResolvedValueOnce(response(409, { error: 'COD-1 is already in the queue' }))
+      .mockResolvedValueOnce(
+        response(200, queueResponse({ items: [item({ id: 'COD-1', status: 'failed' })] })),
+      )
+      .mockResolvedValueOnce(response(200, queueResponse()))
+      .mockResolvedValueOnce(response(201, queueResponse()))
+      .mockResolvedValueOnce(response(200, queueResponse({ draining: true })))
+
+    await runNext('trau', { id: 'COD-1' })
+
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      3,
+      '/api/v1/repos/trau/queue/COD-1',
+      { method: 'DELETE' },
+    )
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      4,
+      '/api/v1/repos/trau/queue',
+      expect.objectContaining({
+        body: JSON.stringify({ id: 'COD-1', front: true }),
+      }),
+    )
+  })
+
+  it('does not arm the drain when the id is not queueable', async () => {
+    mockFetch
+      .mockResolvedValueOnce(response(404, { error: 'unknown ticket' }))
+      .mockResolvedValueOnce(response(200, queueResponse()))
+
+    await expect(runNext('trau', { id: 'COD-404' })).rejects.toThrow(
+      'unknown ticket',
+    )
+    expect(drainCalls()).toHaveLength(0)
   })
 })
 

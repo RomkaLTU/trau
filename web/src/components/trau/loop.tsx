@@ -65,6 +65,7 @@ import {
   publishQueue,
   queueExecutable,
   queueQueryOptions,
+  runNext as runNextRequest,
   skipResumeApplies,
   type OnFault,
   type QueueItem,
@@ -501,17 +502,12 @@ function LaunchQueueCard({
   // the drain. Landing is this page's timeline — the queue response flips the
   // view to running, never a live-page navigation.
   const runNext = useMutation({
-    mutationFn: async () => {
-      await enqueue(repo, {
-        id: submittedId,
-        provider: overrideProvider,
-        front: true,
-      })
-      return drain(repo, true, {
-        no_resume: skipResume && skipResumeShown,
-        on_fault: onFault,
-      })
-    },
+    mutationFn: () =>
+      runNextRequest(
+        repo,
+        { id: submittedId, provider: overrideProvider },
+        { no_resume: skipResume && skipResumeShown, on_fault: onFault },
+      ),
     onSuccess: (res) => {
       setQueue(res)
       resetAdd()
