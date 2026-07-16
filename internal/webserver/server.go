@@ -54,6 +54,7 @@ type Server struct {
 	removeSkill      func(ctx context.Context, repoRoot, name string) error
 	skillsMu         sync.Mutex
 	skillsCache      map[string]skillsCacheEntry
+	atlas            *atlasRunner
 }
 
 // New builds a Server that reports version and treats now as its start time. It
@@ -91,6 +92,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 	}
 	s.drain = newDrainer(s)
 	s.syncer = newSyncer(s)
+	s.atlas = newAtlasRunner(s)
 	return s
 }
 

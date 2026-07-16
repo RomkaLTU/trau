@@ -122,14 +122,6 @@ func TestAtlasAPI(t *testing.T) {
 		}
 	})
 
-	t.Run("generate is not yet implemented", func(t *testing.T) {
-		res := doReq(t, http.MethodPost, base+"/data-model/generate", nil)
-		defer func() { _ = res.Body.Close() }()
-		if res.StatusCode != http.StatusNotImplemented {
-			t.Fatalf("POST generate = %d, want 501", res.StatusCode)
-		}
-	})
-
 	t.Run("unknown repo", func(t *testing.T) {
 		res := doReq(t, http.MethodGet, ts.URL+APIPrefix+"/repos/ghost/atlas", nil)
 		defer func() { _ = res.Body.Close() }()

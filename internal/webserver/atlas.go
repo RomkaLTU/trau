@@ -133,18 +133,25 @@ func (s *Server) handleAtlasView(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleAtlasGenerate is the generation trigger's contract. Generation lands in
-// the runner slice; until then it answers 501 (ADR 0013).
+// handleAtlasGenerate spawns a one-shot headless generation for a View, returning
+// 202 while it runs in the background, or 409 when a generation for the same (repo,
+// view) is already in flight (ADR 0013). Generation is explicit-start only.
 func (s *Server) handleAtlasGenerate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if _, _, ok := s.resolveAtlasView(w, r); !ok {
+	repo, viewID, ok := s.resolveAtlasView(w, r)
+	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "atlas generation not yet implemented"})
+	view, _ := hubatlas.ViewByID(viewID)
+	if !s.atlas.start(repo, view) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "a generation for this view is already in progress"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "generating", "view": viewID})
 }
 
 // resolveAtlasView resolves the {repo} and {view} path segments, writing the 404
