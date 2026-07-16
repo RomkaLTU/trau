@@ -16,8 +16,10 @@ import {
   TriangleAlert,
   X,
 } from 'lucide-react'
+import { parseAsString, useQueryState } from 'nuqs'
 
 import { Button } from '@/components/ui/button'
+import { IssueDrawer } from '@/components/issue-drawer'
 import { MakeStartableButton } from '@/components/make-startable-button'
 import { useActiveRepo } from '@/components/trau/active-repo'
 import { AddTicketDialog } from '@/components/trau/add-ticket-dialog'
@@ -167,6 +169,36 @@ function InternalTag({ source }: { source?: string }) {
   )
 }
 
+// TicketIdButton is the drawer trigger: only the id text is clickable, so it
+// never competes with row-level links or the builder's reorder controls.
+function TicketIdButton({
+  id,
+  onPeek,
+  className,
+}: {
+  id: string
+  onPeek: (id: string) => void
+  className?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        onPeek(id)
+      }}
+      aria-label={`Open ${id}`}
+      className={cn(
+        'shrink-0 font-mono underline-offset-4 hover:underline',
+        className,
+      )}
+    >
+      {id}
+    </button>
+  )
+}
+
 function epicCounts(item: QueueItem): { done: number; total: number } {
   const subs = item.sub_issues ?? []
   return {
@@ -257,6 +289,7 @@ function QueueBuilderRow({
   onToggle,
   onMove,
   onRemove,
+  onPeek,
 }: {
   item: QueueItem
   index: number
@@ -266,6 +299,7 @@ function QueueBuilderRow({
   onToggle: () => void
   onMove: (dir: -1 | 1) => void
   onRemove: () => void
+  onPeek: (id: string) => void
 }) {
   const isEpic = item.kind === 'epic'
   const { done, total } = epicCounts(item)
@@ -296,9 +330,11 @@ function QueueBuilderRow({
           <span className="w-3.5 shrink-0" aria-hidden="true" />
         )}
 
-        <span className="shrink-0 font-mono text-sm text-primary">
-          {item.id}
-        </span>
+        <TicketIdButton
+          id={item.id}
+          onPeek={onPeek}
+          className="text-sm text-primary"
+        />
         <span className="min-w-0 flex-1 truncate font-sans text-sm text-foreground">
           {item.title || '—'}
         </span>
@@ -352,9 +388,11 @@ function QueueBuilderRow({
                 key={sub.id}
                 className="flex items-center gap-3 border-b border-border/40 py-1.5 pl-14 pr-3 last:border-0"
               >
-                <span className="shrink-0 font-mono text-xs text-primary/80">
-                  {sub.id}
-                </span>
+                <TicketIdButton
+                  id={sub.id}
+                  onPeek={onPeek}
+                  className="text-xs text-primary/80"
+                />
                 <span className="min-w-0 flex-1 truncate font-sans text-xs text-muted-foreground">
                   {sub.title}
                 </span>
@@ -379,9 +417,11 @@ function QueueBuilderRow({
 function LaunchQueueCard({
   repo,
   freshness,
+  onPeek,
 }: {
   repo: string
   freshness?: RepoFreshness
+  onPeek: (id: string) => void
 }) {
   const queryClient = useQueryClient()
   const queue = useQuery(queueQueryOptions(repo))
@@ -591,6 +631,7 @@ function LaunchQueueCard({
                       onToggle={() => toggleExpand(item.id)}
                       onMove={(dir) => move.mutate({ id: item.id, dir })}
                       onRemove={() => remove.mutate(item.id)}
+                      onPeek={onPeek}
                     />
                   ))}
                 </ul>
@@ -637,7 +678,11 @@ function LaunchQueueCard({
       </TerminalCard>
 
       {builder.settled.length > 0 ? (
-        <FinishedSection repo={repo} settled={builder.settled} />
+        <FinishedSection
+          repo={repo}
+          settled={builder.settled}
+          onPeek={onPeek}
+        />
       ) : null}
     </div>
   )
@@ -663,16 +708,22 @@ function TicketReason({ children }: { children: string }) {
 function SettledRow({
   repo,
   ticket,
+  onPeek,
 }: {
   repo: string
   ticket: TimelineTicket
+  onPeek: (id: string) => void
 }) {
   const pill = ticketPill(ticket)
   const head = (
     <div className="flex items-center gap-3">
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
         {ticket.epicId ? <EpicTag id={ticket.epicId} /> : null}
-        <span className="font-mono text-sm text-primary">{ticket.id}</span>
+        <TicketIdButton
+          id={ticket.id}
+          onPeek={onPeek}
+          className="text-sm text-primary"
+        />
         {ticket.title ? (
           <span className="min-w-0 truncate font-sans text-sm text-foreground">
             {ticket.title}
@@ -712,9 +763,11 @@ function SettledRow({
 function FinishedSection({
   repo,
   settled,
+  onPeek,
 }: {
   repo: string
   settled: TimelineTicket[]
+  onPeek: (id: string) => void
 }) {
   const [state, dispatch] = useReducer(finishedReducer, FINISHED_INITIAL)
   const view = finishedView(settled, state.visible)
@@ -765,7 +818,12 @@ function FinishedSection({
           <>
             <ul className="flex flex-col">
               {view.rows.map((ticket) => (
-                <SettledRow key={ticket.id} repo={repo} ticket={ticket} />
+                <SettledRow
+                  key={ticket.id}
+                  repo={repo}
+                  ticket={ticket}
+                  onPeek={onPeek}
+                />
               ))}
             </ul>
             {view.older > 0 ? (
@@ -792,11 +850,13 @@ function RunningRow({
   ticket,
   instance,
   now,
+  onPeek,
 }: {
   repo: string
   ticket: TimelineTicket
   instance?: Instance
   now: number
+  onPeek: (id: string) => void
 }) {
   const live = instance?.ticket === ticket.id ? instance : undefined
   const phase = live?.phase ?? ticket.phase
@@ -805,7 +865,11 @@ function RunningRow({
     <div className="flex flex-col gap-3 rounded-md border border-teal/40 bg-teal/5 px-4 py-3">
       <div className="flex flex-wrap items-center gap-3">
         {ticket.epicId ? <EpicTag id={ticket.epicId} /> : null}
-        <span className="font-mono text-sm text-primary">{ticket.id}</span>
+        <TicketIdButton
+          id={ticket.id}
+          onPeek={onPeek}
+          className="text-sm text-primary"
+        />
         {ticket.title ? (
           <span className="font-sans text-base text-foreground">
             {ticket.title}
@@ -851,11 +915,21 @@ function RunningRow({
   )
 }
 
-function PendingTicketRow({ ticket }: { ticket: TimelineTicket }) {
+function PendingTicketRow({
+  ticket,
+  onPeek,
+}: {
+  ticket: TimelineTicket
+  onPeek: (id: string) => void
+}) {
   return (
     <li className="flex items-center gap-3 border-b border-border/60 px-4 py-2.5 last:border-0">
       {ticket.epicId ? <EpicTag id={ticket.epicId} /> : null}
-      <span className="font-mono text-sm text-primary">{ticket.id}</span>
+      <TicketIdButton
+        id={ticket.id}
+        onPeek={onPeek}
+        className="text-sm text-primary"
+      />
       <span className="min-w-0 flex-1 truncate font-sans text-sm text-muted-foreground">
         {ticket.title || '—'}
       </span>
@@ -867,15 +941,17 @@ function PendingTicketRow({ ticket }: { ticket: TimelineTicket }) {
 
 function PendingEpicGroup({
   entry,
+  onPeek,
 }: {
   entry: Extract<PendingEntry, { kind: 'epic' }>
+  onPeek: (id: string) => void
 }) {
   return (
     <li className="border-b border-border/60 last:border-0">
       <div className="flex items-center gap-3 px-4 py-2.5">
         <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sm text-info">
           <span aria-hidden="true">◆</span>
-          {entry.id}
+          <TicketIdButton id={entry.id} onPeek={onPeek} className="text-info" />
         </span>
         <span className="min-w-0 flex-1 truncate font-sans text-sm text-foreground">
           {entry.title || '—'}
@@ -893,9 +969,11 @@ function PendingEpicGroup({
             key={child.id}
             className="flex items-center gap-3 border-b border-border/40 py-1.5 pl-12 pr-4 last:border-0"
           >
-            <span className="font-mono text-xs text-primary/80">
-              {child.id}
-            </span>
+            <TicketIdButton
+              id={child.id}
+              onPeek={onPeek}
+              className="text-xs text-primary/80"
+            />
             <span className="min-w-0 flex-1 truncate font-sans text-xs text-muted-foreground">
               {child.title || '—'}
             </span>
@@ -915,6 +993,7 @@ function RunningQueueView({
   onStop,
   stopping,
   stopError,
+  onPeek,
 }: {
   repo: string
   queue: QueueResponse
@@ -923,6 +1002,7 @@ function RunningQueueView({
   onStop: () => void
   stopping: boolean
   stopError: unknown
+  onPeek: (id: string) => void
 }) {
   const now = useNow(1000)
   const queryClient = useQueryClient()
@@ -974,6 +1054,7 @@ function RunningQueueView({
                 ticket={timeline.running}
                 instance={instance}
                 now={now}
+                onPeek={onPeek}
               />
             ) : (
               <p className="font-sans text-sm text-muted-foreground">
@@ -1000,11 +1081,16 @@ function RunningQueueView({
                   <ul className="flex flex-col">
                     {timeline.pending.map((entry) =>
                       entry.kind === 'epic' ? (
-                        <PendingEpicGroup key={entry.id} entry={entry} />
+                        <PendingEpicGroup
+                          key={entry.id}
+                          entry={entry}
+                          onPeek={onPeek}
+                        />
                       ) : (
                         <PendingTicketRow
                           key={entry.ticket.id}
                           ticket={entry.ticket}
+                          onPeek={onPeek}
                         />
                       ),
                     )}
@@ -1035,7 +1121,11 @@ function RunningQueueView({
           </section>
 
           {timeline.settled.length > 0 ? (
-            <FinishedSection repo={repo} settled={timeline.settled} />
+            <FinishedSection
+              repo={repo}
+              settled={timeline.settled}
+              onPeek={onPeek}
+            />
           ) : null}
         </div>
       </TerminalCard>
@@ -1216,6 +1306,14 @@ export function Loop() {
   const halt = deriveLoopHalt(feed.events)
   const runs = useQuery(runsQueryOptions(repo))
 
+  // The peeked issue lives in the URL, so queue polling never closes the drawer
+  // and /loop?issue=COD-123 deep-links straight into the preview.
+  const [peek, setPeek] = useQueryState(
+    'issue',
+    parseAsString.withOptions({ history: 'push' }),
+  )
+  const onPeek = (id: string) => void setPeek(id)
+
   const draining = queue.data?.draining ?? false
   const view = loopView(draining, liveInstance)
   const timeline = queue.data
@@ -1241,17 +1339,32 @@ export function Loop() {
     )
   }
 
+  const drawer = (
+    <IssueDrawer
+      repo={repo}
+      issueId={peek}
+      onOpenChange={(open) => {
+        if (!open) void setPeek(null)
+      }}
+      onSelectIssue={onPeek}
+    />
+  )
+
   if (view === 'running' && queue.data) {
     return (
-      <RunningQueueView
-        repo={repo}
-        queue={queue.data}
-        instance={liveInstance}
-        halt={halt}
-        onStop={() => stop.mutate()}
-        stopping={stop.isPending}
-        stopError={stop.error}
-      />
+      <>
+        <RunningQueueView
+          repo={repo}
+          queue={queue.data}
+          instance={liveInstance}
+          halt={halt}
+          onStop={() => stop.mutate()}
+          stopping={stop.isPending}
+          stopError={stop.error}
+          onPeek={onPeek}
+        />
+        {drawer}
+      </>
     )
   }
 
@@ -1261,7 +1374,9 @@ export function Loop() {
       <LaunchQueueCard
         repo={repo}
         freshness={repos.find((r) => r.name === repo)?.freshness}
+        onPeek={onPeek}
       />
+      {drawer}
     </div>
   )
 }
