@@ -1174,6 +1174,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		PanelParallel:       cfg.PanelParallel,
 		BrowserVerify:       cfg.BrowserVerify,
 		AppURL:              cfg.AppURL,
+		AppURLs:             cfg.AppURLs,
 		AutoMerge:           cfg.AutoMerge,
 		MergeMethod:         cfg.MergeMethod,
 		DeterministicCommit: cfg.DeterministicCommit,

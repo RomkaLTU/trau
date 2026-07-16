@@ -447,6 +447,72 @@ func pnpmWorkspacePackages(repoRoot string) []string {
 	return ws.Packages
 }
 
+// WorkspaceAppURL picks the configured app URL for the workspace holding the
+// most of the slice's changed files (repo-relative paths). A urls key names a
+// workspace by its manifest package name, its directory relative to repoRoot,
+// or that directory's base name. Empty when no configured workspace matches —
+// or two tie — so the caller keeps its fallback URL.
+func WorkspaceAppURL(repoRoot string, urls map[string]string, changed []string) string {
+	if len(urls) == 0 || len(changed) == 0 {
+		return ""
+	}
+	bestURL := ""
+	bestCount := 0
+	ambiguous := false
+	for _, dir := range workspaceDirs(repoRoot) {
+		rel, err := filepath.Rel(repoRoot, dir)
+		if err != nil {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		url := workspaceURL(urls, dir, rel)
+		if url == "" {
+			continue
+		}
+		count := 0
+		for _, f := range changed {
+			if strings.HasPrefix(filepath.ToSlash(f), rel+"/") {
+				count++
+			}
+		}
+		switch {
+		case count == 0:
+		case count > bestCount:
+			bestURL, bestCount, ambiguous = url, count, false
+		case count == bestCount && url != bestURL:
+			ambiguous = true
+		}
+	}
+	if ambiguous {
+		return ""
+	}
+	return bestURL
+}
+
+func workspaceURL(urls map[string]string, dir, rel string) string {
+	if name := manifestName(filepath.Join(dir, "package.json")); name != "" && urls[name] != "" {
+		return urls[name]
+	}
+	if urls[rel] != "" {
+		return urls[rel]
+	}
+	return urls[filepath.Base(dir)]
+}
+
+func manifestName(manifest string) string {
+	data, err := os.ReadFile(manifest)
+	if err != nil {
+		return ""
+	}
+	var pkg struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return ""
+	}
+	return pkg.Name
+}
+
 func mergeDeps(a, b map[string]string) map[string]string {
 	out := make(map[string]string, len(a)+len(b))
 	for k, v := range a {
