@@ -23,6 +23,7 @@ type atlasCatalogView struct {
 	Title       string   `json:"title"`
 	Flavor      string   `json:"flavor"`
 	HasDocument bool     `json:"has_document"`
+	Generating  bool     `json:"generating"`
 	Version     int      `json:"version"`
 	Commit      string   `json:"commit"`
 	GeneratedAt string   `json:"generated_at"`
@@ -72,6 +73,7 @@ func (s *Server) handleAtlas(w http.ResponseWriter, r *http.Request) {
 			Title:       v.Title,
 			Flavor:      string(v.Flavor),
 			HasDocument: meta.HasDocument,
+			Generating:  s.atlas.generating(repo.Root, v.ID),
 			Version:     meta.Version,
 			Commit:      meta.Commit,
 			GeneratedAt: meta.GeneratedAt,

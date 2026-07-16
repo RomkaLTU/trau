@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
-import { Sparkles } from 'lucide-react'
+import { AlertTriangle, Loader2, RefreshCw, Sparkles, XCircle } from 'lucide-react'
 
 import {
   EmptyState,
@@ -16,12 +16,15 @@ import {
   atlasCatalogQueryOptions,
   atlasViewQueryOptions,
   generateView,
+  generatedAgo,
+  shortSha,
   type AtlasCatalogView,
 } from '@/lib/atlas'
 import { appFlowsFixture, dataModelFixture } from '@/lib/atlas-fixtures'
 import { asAppFlows, asDataModel } from '@/lib/atlas-graph'
 import { reposQueryOptions } from '@/lib/runs'
 import { standardTitle, usePageTitle } from '@/lib/page-title'
+import { cn } from '@/lib/utils'
 
 type AtlasSearch = { demo?: 'data-model' | 'app-flows' }
 
@@ -115,6 +118,17 @@ function AtlasBoard({ repo }: { repo: string }) {
   )
 }
 
+function useRegenerate(repo: string, viewId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => generateView(repo, viewId),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: ['atlas', repo] }),
+  })
+}
+
+type RegenerateMutation = ReturnType<typeof useRegenerate>
+
 function AtlasViewPanel({
   repo,
   view,
@@ -122,12 +136,13 @@ function AtlasViewPanel({
   repo: string
   view: AtlasCatalogView
 }) {
+  const regenerate = useRegenerate(repo, view.id)
   const document = useQuery(
-    atlasViewQueryOptions(repo, view.id, view.has_document),
+    atlasViewQueryOptions(repo, view.id, view.has_document, view.version),
   )
 
   if (!view.has_document) {
-    return <GeneratePanel repo={repo} view={view} />
+    return <GeneratePanel repo={repo} view={view} regenerate={regenerate} />
   }
   if (document.isPending) {
     return <p className="font-mono text-sm text-muted-foreground">Loading…</p>
@@ -140,47 +155,218 @@ function AtlasViewPanel({
     )
   }
 
-  if (view.flavor === 'data-model') {
-    return <DataModelView doc={asDataModel(document.data.document)} />
+  const diagram =
+    view.flavor === 'data-model' ? (
+      <DataModelView doc={asDataModel(document.data.document)} />
+    ) : (
+      <AppFlowsView doc={asAppFlows(document.data.document)} />
+    )
+
+  return (
+    <div className="flex flex-1 flex-col gap-3">
+      <ViewBanner view={view} regenerate={regenerate} />
+      {diagram}
+      <ViewFooter view={view} regenerate={regenerate} />
+    </div>
+  )
+}
+
+function ViewBanner({
+  view,
+  regenerate,
+}: {
+  view: AtlasCatalogView
+  regenerate: RegenerateMutation
+}) {
+  if (view.generating) {
+    return (
+      <Banner tone="teal" spin>
+        Regenerating {view.title}… reading the repo. The current diagram stays
+        until the new one is ready.
+      </Banner>
+    )
   }
-  return <AppFlowsView doc={asAppFlows(document.data.document)} />
+  if (view.error !== '') {
+    return (
+      <Banner
+        tone="fail"
+        action={
+          <RegenerateButton
+            regenerate={regenerate}
+            generating={false}
+            label="Retry"
+          />
+        }
+      >
+        Generation failed: {view.error}
+      </Banner>
+    )
+  }
+  if (view.stale > 0) {
+    return (
+      <Banner
+        tone="warn"
+        action={
+          <RegenerateButton
+            regenerate={regenerate}
+            generating={false}
+            label="Regenerate"
+          />
+        }
+      >
+        {view.stale} {view.stale === 1 ? 'merge' : 'merges'} behind — regenerate
+        to refresh this View.
+      </Banner>
+    )
+  }
+  return null
+}
+
+const BANNER_TONE = {
+  teal: { box: 'border-teal/40 bg-teal/5', icon: Loader2 },
+  warn: { box: 'border-warn/40 bg-warn/5', icon: AlertTriangle },
+  fail: { box: 'border-fail/40 bg-fail/5', icon: XCircle },
+} as const
+
+function Banner({
+  tone,
+  spin,
+  action,
+  children,
+}: {
+  tone: keyof typeof BANNER_TONE
+  spin?: boolean
+  action?: ReactNode
+  children: ReactNode
+}) {
+  const { box, icon: Icon } = BANNER_TONE[tone]
+  return (
+    <div
+      role="status"
+      className={cn(
+        'flex items-center justify-between gap-3 rounded-lg border px-4 py-3',
+        box,
+      )}
+    >
+      <div className="flex items-center gap-2.5">
+        <Icon
+          className={cn('size-4 shrink-0 text-foreground', spin && 'animate-spin')}
+          aria-hidden="true"
+        />
+        <p className="font-mono text-sm leading-relaxed text-foreground">
+          {children}
+        </p>
+      </div>
+      {action}
+    </div>
+  )
+}
+
+function ViewFooter({
+  view,
+  regenerate,
+}: {
+  view: AtlasCatalogView
+  regenerate: RegenerateMutation
+}) {
+  const meta = [
+    `v${view.version}`,
+    view.commit !== '' ? shortSha(view.commit) : null,
+    view.generated_at !== '' ? `generated ${generatedAgo(view.generated_at)}` : null,
+    view.cost_usd !== null ? `$${view.cost_usd.toFixed(2)}` : null,
+  ].filter((entry): entry is string => entry !== null)
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-border pt-3">
+      <span className="font-mono text-xs text-muted-foreground">
+        {meta.join(' · ')}
+      </span>
+      <RegenerateButton
+        regenerate={regenerate}
+        generating={view.generating}
+        label="Regenerate"
+      />
+    </div>
+  )
+}
+
+function RegenerateButton({
+  regenerate,
+  generating,
+  label,
+}: {
+  regenerate: RegenerateMutation
+  generating: boolean
+  label: string
+}) {
+  const busy = generating || regenerate.isPending
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      onClick={() => regenerate.mutate()}
+      disabled={busy}
+    >
+      <RefreshCw className={cn('size-3.5', busy && 'animate-spin')} />
+      {generating ? 'Regenerating…' : regenerate.isPending ? 'Starting…' : label}
+    </Button>
+  )
 }
 
 function GeneratePanel({
   repo,
   view,
+  regenerate,
 }: {
   repo: string
   view: AtlasCatalogView
+  regenerate: RegenerateMutation
 }) {
-  const queryClient = useQueryClient()
-  const generate = useMutation({
-    mutationFn: () => generateView(repo, view.id),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ['atlas', repo] }),
-  })
+  if (view.generating) {
+    return (
+      <EmptyState
+        className="min-h-[360px]"
+        message={`Generating ${view.title}… an agent is reading ${repo} and mapping it. This can take a few minutes.`}
+        actions={
+          <span className="inline-flex items-center gap-2 font-mono text-xs text-teal">
+            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            Generation in progress…
+          </span>
+        }
+      />
+    )
+  }
 
+  const failed = view.error !== ''
   return (
     <EmptyState
       className="min-h-[360px]"
-      message={`No ${view.title} generated for ${repo} yet. Generate one — an agent reads the repo and maps it.`}
+      message={
+        failed
+          ? `Generating ${view.title} for ${repo} failed.`
+          : `No ${view.title} generated for ${repo} yet. Generate one — an agent reads the repo and maps it.`
+      }
       actions={
         <div className="flex flex-col items-center gap-2">
           <Button
-            onClick={() => generate.mutate()}
-            disabled={generate.isPending}
+            onClick={() => regenerate.mutate()}
+            disabled={regenerate.isPending}
           >
             <Sparkles className="size-4" />
-            {generate.isPending ? 'Starting…' : `Generate ${view.title}`}
+            {regenerate.isPending
+              ? 'Starting…'
+              : failed
+                ? `Retry ${view.title}`
+                : `Generate ${view.title}`}
           </Button>
-          {generate.isSuccess && (
-            <p className="font-mono text-xs text-teal">
-              Generation started — this can take a few minutes.
+          {failed && (
+            <p className="max-w-md text-center font-mono text-xs text-fail">
+              {view.error}
             </p>
           )}
-          {generate.error && (
+          {regenerate.error && (
             <p className="font-mono text-xs text-destructive">
-              {String((generate.error as Error).message)}
+              {String((regenerate.error as Error).message)}
             </p>
           )}
         </div>

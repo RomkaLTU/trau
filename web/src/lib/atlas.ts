@@ -1,4 +1,4 @@
-import { queryOptions } from '@tanstack/react-query'
+import { keepPreviousData, queryOptions } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
 
@@ -9,6 +9,7 @@ export interface AtlasCatalogView {
   title: string
   flavor: AtlasFlavor
   has_document: boolean
+  generating: boolean
   version: number
   commit: string
   generated_at: string
@@ -111,12 +112,15 @@ export async function generateView(repo: string, view: string): Promise<void> {
     `/api/v1/repos/${encodeURIComponent(repo)}/atlas/${encodeURIComponent(view)}/generate`,
     { method: 'POST' },
   )
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as {
-      error?: string
-    } | null
-    throw new Error(body?.error ?? `atlas generate failed: ${res.status}`)
+  // 409 means a generation is already in flight (e.g. started in another tab);
+  // that resolves to the same in-progress state, not an error.
+  if (res.ok || res.status === 409) {
+    return
   }
+  const body = (await res.json().catch(() => null)) as {
+    error?: string
+  } | null
+  throw new Error(body?.error ?? `atlas generate failed: ${res.status}`)
 }
 
 export const atlasCatalogQueryOptions = (repo: string) =>
@@ -131,9 +135,43 @@ export const atlasViewQueryOptions = (
   repo: string,
   view: string,
   hasDocument: boolean,
+  version: number,
 ) =>
   queryOptions({
-    queryKey: ['atlas', repo, view],
+    queryKey: ['atlas', repo, view, version],
     queryFn: () => fetchDocument(repo, view),
     enabled: repo !== '' && view !== '' && hasDocument,
+    // Keep the current diagram rendered while a regeneration lands a new
+    // version, so the View never blanks and stable ids swap in place.
+    placeholderData: keepPreviousData,
   })
+
+export function shortSha(commit: string): string {
+  return commit.slice(0, 7)
+}
+
+// generatedAt comes from the store as either zoneless UTC or RFC3339; both are
+// normalized to UTC before computing the relative age.
+export function generatedAgo(generatedAt: string, now: number = Date.now()): string {
+  const ms = parseGeneratedAt(generatedAt)
+  if (ms === null) {
+    return generatedAt
+  }
+  const secs = Math.max(0, Math.round((now - ms) / 1000))
+  if (secs < 60) return 'just now'
+  const mins = Math.floor(secs / 60)
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
+}
+
+function parseGeneratedAt(s: string): number | null {
+  if (s === '') {
+    return null
+  }
+  const iso = s.includes('T') ? s : s.replace(' ', 'T')
+  const withZone = /[Z+]|[+-]\d\d:\d\d$/.test(iso) ? iso : `${iso}Z`
+  const ms = Date.parse(withZone)
+  return Number.isNaN(ms) ? null : ms
+}
