@@ -12,7 +12,15 @@ import {
 const PAGE_SIZE = 50
 
 function filters(over: Partial<BacklogFilters> = {}): BacklogFilters {
-  return { q: '', state: [], label: '', source: null, page: 1, ...over }
+  return {
+    q: '',
+    state: [],
+    label: '',
+    assignee: '',
+    source: null,
+    page: 1,
+    ...over,
+  }
 }
 
 describe('backlogParamsFromFilters', () => {
@@ -20,6 +28,7 @@ describe('backlogParamsFromFilters', () => {
     expect(backlogParamsFromFilters(filters(), PAGE_SIZE)).toEqual({
       q: '',
       label: '',
+      assignee: '',
       state: 'started,unstarted,backlog,unknown',
       source: '',
       limit: 50,
@@ -37,13 +46,13 @@ describe('backlogParamsFromFilters', () => {
     expect(params.limit).toBe(50)
   })
 
-  it('passes q, label and source through', () => {
+  it('passes q, label, assignee and source through', () => {
     expect(
       backlogParamsFromFilters(
-        filters({ q: 'auth', label: 'bug', source: 'internal' }),
+        filters({ q: 'auth', label: 'bug', assignee: 'me', source: 'internal' }),
         PAGE_SIZE,
       ),
-    ).toMatchObject({ q: 'auth', label: 'bug', source: 'internal' })
+    ).toMatchObject({ q: 'auth', label: 'bug', assignee: 'me', source: 'internal' })
   })
 })
 
@@ -70,6 +79,7 @@ describe('hasActiveFilters', () => {
   it.each([
     { name: 'search', over: { q: 'x' } },
     { name: 'label', over: { label: 'x' } },
+    { name: 'assignee', over: { assignee: 'me' } },
     { name: 'state', over: { state: ['done'] } },
     { name: 'source', over: { source: 'synced' as const } },
   ])('is true when $name is set', ({ over }) => {

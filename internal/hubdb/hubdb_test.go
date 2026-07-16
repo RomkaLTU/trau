@@ -149,6 +149,47 @@ func TestOpenOverExistingDerivedCheckpoints(t *testing.T) {
 	}
 }
 
+func ftsMatches(t *testing.T, db *sql.DB, term string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM issues_fts WHERE issues_fts MATCH ?`, term).Scan(&n); err != nil {
+		t.Fatalf("fts match %q: %v", term, err)
+	}
+	return n
+}
+
+func TestOpenRepopulatesFTSWithAssigneeName(t *testing.T) {
+	home := t.TempDir()
+
+	seed, err := sql.Open("sqlite", Path(home))
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	seedVersion(t, seed, 20)
+	if _, err := seed.Exec(
+		`INSERT INTO issues(repo, source, identifier, title, assignee_id, assignee_name)
+		 VALUES('/repo/acme', 'linear', 'COD-1', 'nothing special', 'u-1', 'Ada Lovelace')`,
+	); err != nil {
+		t.Fatalf("seed populated issue: %v", err)
+	}
+	if n := ftsMatches(t, seed, "lovelace"); n != 0 {
+		t.Fatalf("pre-migration assignee matches = %d, want 0 while the column is unindexed", n)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	db, err := Open(home)
+	if err != nil {
+		t.Fatalf("Open over a populated pre-assignee-FTS database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if n := ftsMatches(t, db.SQL(), "lovelace"); n != 1 {
+		t.Fatalf("post-migration assignee matches = %d, want the rebuild to index the existing row", n)
+	}
+}
+
 func TestOpenCorrupt(t *testing.T) {
 	home := t.TempDir()
 	garbage := []byte(strings.Repeat("not a sqlite database ", 64))

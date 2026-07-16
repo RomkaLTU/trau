@@ -19,6 +19,7 @@ func TestSyncIssuesFiltersByProjectAndMapsContent(t *testing.T) {
 			"priority":{"name":"High"},
 			"duedate":"2026-08-01",
 			"issuetype":{"hierarchyLevel":1},
+			"assignee":{"accountId":"acc-7","displayName":"Ada Lovelace"},
 			"labels":["epic"],
 			"created":"2026-07-01T00:00:00.000+0000",
 			"updated":"2026-07-10T00:00:00.000+0000",
@@ -48,6 +49,9 @@ func TestSyncIssuesFiltersByProjectAndMapsContent(t *testing.T) {
 	if !containsField(gotReq.Fields, "comment") || !containsField(gotReq.Fields, "description") {
 		t.Fatalf("fields = %v, want comment and description requested", gotReq.Fields)
 	}
+	if !containsField(gotReq.Fields, "assignee") {
+		t.Fatalf("fields = %v, want assignee requested", gotReq.Fields)
+	}
 
 	if len(issues) != 1 {
 		t.Fatalf("issues = %d, want 1", len(issues))
@@ -58,6 +62,9 @@ func TestSyncIssuesFiltersByProjectAndMapsContent(t *testing.T) {
 	}
 	if iss.Priority != 2 || iss.DueDate != "2026-08-01" {
 		t.Fatalf("priority/duedate = %d/%q, want 2/2026-08-01", iss.Priority, iss.DueDate)
+	}
+	if iss.AssigneeID != "acc-7" || iss.AssigneeName != "Ada Lovelace" {
+		t.Fatalf("assignee = %q/%q, want acc-7/Ada Lovelace", iss.AssigneeID, iss.AssigneeName)
 	}
 	if len(iss.Comments) != 1 || iss.Comments[0].Author != "Ada" || iss.Comments[0].Body != "shipping soon" {
 		t.Fatalf("comments = %+v, want one from Ada", iss.Comments)

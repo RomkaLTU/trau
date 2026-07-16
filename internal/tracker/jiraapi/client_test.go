@@ -239,6 +239,33 @@ func TestPing(t *testing.T) {
 	}
 }
 
+// Myself reads GET /myself and returns the token's accountId and display name,
+// never matching on the email Atlassian privacy settings may hide.
+func TestMyself(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accountId":"acc-1","displayName":"Ada Lovelace","emailAddress":"ada@acme.com"}`))
+	}))
+	defer srv.Close()
+
+	id, name, err := New(srv.URL, "me@acme.com", "tok").Myself(context.Background())
+	if err != nil {
+		t.Fatalf("Myself: %v", err)
+	}
+	if gotPath != "/rest/api/3/myself" {
+		t.Errorf("Myself path = %q, want /rest/api/3/myself", gotPath)
+	}
+	if id != "acc-1" || name != "Ada Lovelace" {
+		t.Fatalf("myself = %q/%q, want acc-1/Ada Lovelace", id, name)
+	}
+
+	if _, _, err := New("", "", "").Myself(context.Background()); !errors.Is(err, ErrNotEnabled) {
+		t.Errorf("Myself disabled = %v, want ErrNotEnabled", err)
+	}
+}
+
 func TestADFToText(t *testing.T) {
 	cases := []struct {
 		name string

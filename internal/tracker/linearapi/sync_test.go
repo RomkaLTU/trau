@@ -18,6 +18,7 @@ func TestProjectIssuesFiltersByProjectAndMapsComments(t *testing.T) {
 			 "priority":2,"dueDate":"2026-08-01","url":"https://linear.app/acme/issue/COD-1",
 			 "createdAt":"2026-07-01T00:00:00Z","updatedAt":"2026-07-10T12:00:00Z",
 			 "state":{"name":"In Progress","type":"started"},
+			 "assignee":{"id":"u-7","name":"Ada Lovelace"},
 			 "project":{"id":"proj-1","name":"trau"},
 			 "parent":{"identifier":"COD-9"},
 			 "labels":{"nodes":[{"name":"ready-for-agent"}]},
@@ -64,6 +65,12 @@ func TestProjectIssuesFiltersByProjectAndMapsComments(t *testing.T) {
 	}
 	if iss.Parent != "COD-9" || iss.UpdatedAt != "2026-07-10T12:00:00Z" {
 		t.Fatalf("issue parent/updatedAt = %q/%q", iss.Parent, iss.UpdatedAt)
+	}
+	if !strings.Contains(req.Query, "assignee") {
+		t.Fatalf("query does not request assignee: %s", req.Query)
+	}
+	if iss.AssigneeID != "u-7" || iss.AssigneeName != "Ada Lovelace" {
+		t.Fatalf("assignee = %q/%q, want u-7/Ada Lovelace", iss.AssigneeID, iss.AssigneeName)
 	}
 	if len(iss.Comments) != 2 || iss.Comments[0].Author != "Ada" || iss.Comments[1].Author != "" {
 		t.Fatalf("comments = %+v, want two with Ada then empty author", iss.Comments)

@@ -88,6 +88,12 @@ type Reader interface {
 	// Project, which an updated-since SyncPull never reports (ADR 0007). binding
 	// carries the ids resolved by ResolveBinding.
 	ProjectIdentifiers(ctx context.Context, binding ProjectBinding) ([]string, error)
+	// Identity resolves who the repo binding's credentials belong to — the tracker
+	// user behind them, returned as a stable id and display name. It is the hub's
+	// Me for the repo: for Linear a personal API key is a user (its viewer), for
+	// Jira the token's /myself. A sync resolves it best-effort — an identity failure
+	// never blocks the issue pull.
+	Identity(ctx context.Context) (id, name string, err error)
 }
 
 // NewReader builds a direct Reader for the provider from cfg, or

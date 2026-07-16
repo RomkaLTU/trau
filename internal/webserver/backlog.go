@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -23,17 +24,29 @@ import (
 // and total sub-issue counts over all children in the store, and are present
 // only on an epic row so the board can show its progress without a second call.
 type BacklogEntry struct {
-	ID              string   `json:"id"`
-	Title           string   `json:"title"`
-	Status          string   `json:"status"`
-	Group           string   `json:"group"`
-	Labels          []string `json:"labels"`
-	Source          string   `json:"source"`
-	Parent          string   `json:"parent,omitempty"`
-	HasChildren     bool     `json:"has_children"`
-	ChildrenSettled *int     `json:"children_settled,omitempty"`
-	ChildrenTotal   *int     `json:"children_total,omitempty"`
-	Ready           bool     `json:"ready"`
+	ID              string        `json:"id"`
+	Title           string        `json:"title"`
+	Status          string        `json:"status"`
+	Group           string        `json:"group"`
+	Labels          []string      `json:"labels"`
+	Source          string        `json:"source"`
+	Assignee        *AssigneeInfo `json:"assignee"`
+	Parent          string        `json:"parent,omitempty"`
+	HasChildren     bool          `json:"has_children"`
+	ChildrenSettled *int          `json:"children_settled,omitempty"`
+	ChildrenTotal   *int          `json:"children_total,omitempty"`
+	Ready           bool          `json:"ready"`
+}
+
+// AssigneeInfo is an issue's assignee as the board and issue views see it: the
+// assignee's tracker id and display name, and whether it is the repo's Me. Me is
+// computed server-side against the repo binding's resolved identity, which never
+// leaves the hub (ADR 0014) — the client only ever sees the boolean. A nil
+// AssigneeInfo serializes as null: the issue is Unassigned.
+type AssigneeInfo struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Me   bool   `json:"me"`
 }
 
 // BacklogResponse is a repo's Project backlog served from the hub's issue store —
@@ -91,7 +104,7 @@ func (s *Server) handleBacklog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, BacklogResponse{
 		Repo:      repo.Name,
 		Provider:  provider,
-		Items:     toBacklogEntries(items, readyLabel),
+		Items:     toBacklogEntries(items, readyLabel, state.Me.ID),
 		Total:     total,
 		Counts:    counts,
 		Freshness: s.freshnessFrom(repo.Root, state),
@@ -145,19 +158,91 @@ func toLabelFacets(labels []hubstore.LabelCount) []LabelFacet {
 	return out
 }
 
+// AssigneeFacet is one entry on the board's assignee combobox: a distinct
+// assignee carried by the repo's stored issues, how many they are assigned, and
+// whether it is the repo's Me.
+type AssigneeFacet struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+	Me    bool   `json:"me"`
+}
+
+// AssigneesResponse is a repo's distinct issue assignees with counts and the
+// number of unassigned issues, served from the hub's issue store. The Me row is
+// flagged and pinned first; the identity behind Me never leaves the hub (ADR 0014).
+type AssigneesResponse struct {
+	Repo       string          `json:"repo"`
+	Assignees  []AssigneeFacet `json:"assignees"`
+	Unassigned int             `json:"unassigned"`
+}
+
+// handleAssignees serves the facet the board's assignee combobox filters on,
+// straight from the hub's issue store with no tracker call on the request path
+// (ADR 0007). Me is computed against the repo binding's resolved identity and the
+// Me row is pinned first; only the per-row me boolean leaves the hub (ADR 0014).
+func (s *Server) handleAssignees(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	repo, ok := s.findRepo(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	store := s.stores.Issues()
+	assigned, unassigned, err := store.Assignees(repo.Root)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list assignees: " + err.Error()})
+		return
+	}
+	state, err := store.SyncState(repo.Root)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read sync state: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, AssigneesResponse{
+		Repo:       repo.Name,
+		Assignees:  toAssigneeFacets(assigned, state.Me.ID),
+		Unassigned: unassigned,
+	})
+}
+
+// toAssigneeFacets maps the store's assignee counts onto the JSON facet rows,
+// flagging the repo's Me and pinning the Me row first while keeping the store's
+// count-desc, name order for the rest.
+func toAssigneeFacets(assigned []hubstore.AssigneeCount, meID string) []AssigneeFacet {
+	out := make([]AssigneeFacet, 0, len(assigned))
+	for _, a := range assigned {
+		out = append(out, AssigneeFacet{
+			ID:    a.ID,
+			Name:  a.Name,
+			Count: a.Count,
+			Me:    meID != "" && a.ID == meID,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].Me && !out[j].Me
+	})
+	return out
+}
+
 // backlogFilter reads the board's filter and pagination controls off the query
 // string: state (one or more workflow state groups, comma-separated and/or
-// repeated), label, source (internal | synced), q (substring text match), and
-// limit/offset. Absent or malformed values fall back to the zero filter, so a
-// bare request is the unfiltered board.
+// repeated), label, source (internal | synced), assignee (me | unassigned | an
+// assignee id), q (substring text match), and limit/offset. Absent or malformed
+// values fall back to the zero filter, so a bare request is the unfiltered board.
 func backlogFilter(q url.Values) hubstore.BacklogFilter {
 	return hubstore.BacklogFilter{
-		Groups: stateGroups(q["state"]),
-		Label:  strings.TrimSpace(q.Get("label")),
-		Source: strings.TrimSpace(q.Get("source")),
-		Text:   strings.TrimSpace(q.Get("q")),
-		Limit:  backlogLimit(q.Get("limit")),
-		Offset: backlogOffset(q.Get("offset")),
+		Groups:   stateGroups(q["state"]),
+		Label:    strings.TrimSpace(q.Get("label")),
+		Source:   strings.TrimSpace(q.Get("source")),
+		Assignee: strings.TrimSpace(q.Get("assignee")),
+		Text:     strings.TrimSpace(q.Get("q")),
+		Limit:    backlogLimit(q.Get("limit")),
+		Offset:   backlogOffset(q.Get("offset")),
 	}
 }
 
@@ -318,9 +403,10 @@ func defaultReader(cfg config.Config) (tracker.Reader, error) {
 }
 
 // toBacklogEntries maps the stored issues onto the JSON board rows, deriving the
-// ready flag from each issue's labels against the repo's ready label. Stored
-// labels are always a decoded slice, so the board never sees null.
-func toBacklogEntries(issues []hubstore.Issue, readyLabel string) []BacklogEntry {
+// ready flag from each issue's labels against the repo's ready label and the
+// assignee's me flag against meID. Stored labels are always a decoded slice, so
+// the board never sees null.
+func toBacklogEntries(issues []hubstore.Issue, readyLabel, meID string) []BacklogEntry {
 	out := make([]BacklogEntry, 0, len(issues))
 	for _, iss := range issues {
 		entry := BacklogEntry{
@@ -330,6 +416,7 @@ func toBacklogEntries(issues []hubstore.Issue, readyLabel string) []BacklogEntry
 			Group:       iss.StatusGroup,
 			Labels:      iss.Labels,
 			Source:      iss.Source,
+			Assignee:    assigneeInfo(iss, meID),
 			Parent:      iss.Parent,
 			HasChildren: iss.HasChildren,
 			Ready:       hasLabel(iss.Labels, readyLabel),
@@ -342,6 +429,20 @@ func toBacklogEntries(issues []hubstore.Issue, readyLabel string) []BacklogEntry
 		out = append(out, entry)
 	}
 	return out
+}
+
+// assigneeInfo builds the JSON assignee for a stored issue, or nil (serialized as
+// null) when the issue is unassigned. Me is set when the assignee is the repo's
+// resolved identity; an unresolved identity (empty meID) is never Me.
+func assigneeInfo(iss hubstore.Issue, meID string) *AssigneeInfo {
+	if iss.AssigneeID == "" {
+		return nil
+	}
+	return &AssigneeInfo{
+		ID:   iss.AssigneeID,
+		Name: iss.AssigneeName,
+		Me:   meID != "" && iss.AssigneeID == meID,
+	}
 }
 
 // hasLabel reports whether labels carries want (case-insensitively), so the board

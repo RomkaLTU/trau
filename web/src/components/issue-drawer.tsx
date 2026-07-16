@@ -9,6 +9,7 @@ import {
   Pencil,
 } from "lucide-react";
 
+import { AssigneeAvatar } from "@/components/trau/assignee-avatar";
 import { InternalIssueForm } from "@/components/internal-issue-form";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
@@ -19,6 +20,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { assigneeLabel } from "@/lib/assignee";
 import {
   IssueFetchError,
   internalIssueQueryOptions,
@@ -166,6 +168,17 @@ function IssueDrawerBody({
             </span>
           </button>
         )}
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Assignee</span>
+          {issue.assignee ? (
+            <span className="inline-flex items-center gap-1.5 text-foreground">
+              <AssigneeAvatar assignee={issue.assignee} className="size-5 text-[0.6rem]" />
+              {assigneeLabel(issue.assignee)}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">Unassigned</span>
+          )}
+        </div>
       </SheetHeader>
 
       <div className="flex-1 overflow-y-auto px-4 py-4">

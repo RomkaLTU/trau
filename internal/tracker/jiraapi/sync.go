@@ -12,19 +12,21 @@ import (
 // keeps as its working copy, including the description and comments the lighter
 // BacklogIssue read omits.
 type SyncIssue struct {
-	Key         string
-	Summary     string
-	Description string
-	Status      Status
-	Resolution  string
-	Priority    int
-	DueDate     string
-	Parent      string
-	Labels      []string
-	IsEpic      bool
-	Created     string
-	Updated     string
-	Comments    []Comment
+	Key          string
+	Summary      string
+	Description  string
+	Status       Status
+	Resolution   string
+	Priority     int
+	DueDate      string
+	Parent       string
+	Labels       []string
+	IsEpic       bool
+	AssigneeID   string
+	AssigneeName string
+	Created      string
+	Updated      string
+	Comments     []Comment
 }
 
 // Comment is one comment on an issue, keyed by its Jira id. Author is the
@@ -41,7 +43,7 @@ type Comment struct {
 // issues without it.
 var syncFields = []string{
 	"summary", "description", "status", "resolution", "priority", "duedate",
-	"parent", "labels", "issuetype", "created", "updated", "comment",
+	"parent", "labels", "issuetype", "assignee", "created", "updated", "comment",
 }
 
 // SyncIssues pulls every issue in a project with the full content sync needs —
@@ -139,6 +141,10 @@ type syncSearchIssue struct {
 		IssueType *struct {
 			HierarchyLevel int `json:"hierarchyLevel"`
 		} `json:"issuetype"`
+		Assignee *struct {
+			AccountID   string `json:"accountId"`
+			DisplayName string `json:"displayName"`
+		} `json:"assignee"`
 		Created string `json:"created"`
 		Updated string `json:"updated"`
 		Comment *struct {
@@ -179,6 +185,10 @@ func (r *syncSearchIssue) toSyncIssue() SyncIssue {
 	}
 	if it := r.Fields.IssueType; it != nil {
 		iss.IsEpic = it.HierarchyLevel > 0
+	}
+	if a := r.Fields.Assignee; a != nil {
+		iss.AssigneeID = a.AccountID
+		iss.AssigneeName = a.DisplayName
 	}
 	if cm := r.Fields.Comment; cm != nil {
 		for _, c := range cm.Comments {

@@ -40,6 +40,9 @@ export const backlogFilterParsers = {
   q: parseAsString.withDefault(''),
   state: parseAsArrayOf(parseAsString, ',').withDefault([]),
   label: parseAsString.withDefault(''),
+  // assignee carries a resolved token the client never interprets: `me`,
+  // `unassigned`, or an assignee id. The hub resolves Me per repo binding.
+  assignee: parseAsString.withDefault(''),
   source: parseAsStringLiteral(SOURCE_VALUES),
   page: parseAsPage,
 }
@@ -53,6 +56,7 @@ export function backlogParamsFromFilters(
   return {
     q: filters.q,
     label: filters.label,
+    assignee: filters.assignee,
     state: effectiveStateGroups(filters.state).join(','),
     source: filters.source ?? '',
     limit: pageSize,
@@ -78,6 +82,7 @@ export function hasActiveFilters(filters: BacklogFilters): boolean {
   return (
     filters.q !== '' ||
     filters.label !== '' ||
+    filters.assignee !== '' ||
     filters.state.length > 0 ||
     filters.source !== null
   )

@@ -123,6 +123,22 @@ func TestSearchLabelsAreIndexed(t *testing.T) {
 	}
 }
 
+func TestSearchMatchesAssigneeName(t *testing.T) {
+	s := testIssues(t)
+	if _, _, err := s.Upsert("/repo/acme", "linear", []Issue{
+		{Identifier: "COD-1", Title: "nothing special", AssigneeID: "u-1", AssigneeName: "Ada Lovelace"},
+		{Identifier: "COD-2", Title: "unrelated", AssigneeID: "u-2", AssigneeName: "Bob Martin"},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if got := searchIDs(t, s, "/repo/acme", "lovelace"); !slices.Equal(got, []string{"COD-1"}) {
+		t.Fatalf("assignee search = %v, want [COD-1]", got)
+	}
+	if got := searchIDs(t, s, "/repo/acme", "ada"); !slices.Equal(got, []string{"COD-1"}) {
+		t.Fatalf("first-name search = %v, want [COD-1]", got)
+	}
+}
+
 func TestSearchHandlesSpecialCharactersAndEmptyResults(t *testing.T) {
 	s := testIssues(t)
 	if _, _, err := s.Upsert("/repo/acme", "linear", []Issue{
