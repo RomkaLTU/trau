@@ -23,6 +23,8 @@ import (
 // epic. ChildrenSettled/ChildrenTotal report the epic's settled (done + canceled)
 // and total sub-issue counts over all children in the store, and are present
 // only on an epic row so the board can show its progress without a second call.
+// CreatedAt/UpdatedAt are the issue's tracker timestamps as synced, so a client
+// can order rows by recency without a per-issue fetch.
 type BacklogEntry struct {
 	ID              string        `json:"id"`
 	Title           string        `json:"title"`
@@ -36,6 +38,8 @@ type BacklogEntry struct {
 	ChildrenSettled *int          `json:"children_settled,omitempty"`
 	ChildrenTotal   *int          `json:"children_total,omitempty"`
 	Ready           bool          `json:"ready"`
+	CreatedAt       string        `json:"created_at,omitempty"`
+	UpdatedAt       string        `json:"updated_at,omitempty"`
 }
 
 // AssigneeInfo is an issue's assignee as the board and issue views see it: the
@@ -420,6 +424,8 @@ func toBacklogEntries(issues []hubstore.Issue, readyLabel, meID string) []Backlo
 			Parent:      iss.Parent,
 			HasChildren: iss.HasChildren,
 			Ready:       hasLabel(iss.Labels, readyLabel),
+			CreatedAt:   iss.CreatedAt,
+			UpdatedAt:   iss.UpdatedAt,
 		}
 		if iss.HasChildren {
 			settled, total := iss.ChildrenSettled, iss.ChildrenTotal

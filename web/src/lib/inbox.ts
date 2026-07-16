@@ -122,8 +122,9 @@ export function mergeGrillableEntries(
 
 // buildInbox attaches each issue's active session and folds in the repo's live
 // authoring drafts, then sorts the board into attention tiers — answer, thinking,
-// open, review — keeping the canonical order within a tier (a stable sort over
-// already-ordered rows).
+// open, review — newest activity first within a tier, so the freshest work sits
+// where the walk-through starts. Timestamp ties keep the canonical board order
+// (a stable sort over already-ordered rows).
 export function buildInbox(
   entries: readonly BacklogEntry[],
   sessions: GrillSession[] = [],
@@ -140,8 +141,23 @@ export function buildInbox(
     };
   });
   return [...items, ...authoringItems(sessions)].sort(
-    (a, b) => ATTENTION_ORDER[a.attention] - ATTENTION_ORDER[b.attention],
+    (a, b) =>
+      ATTENTION_ORDER[a.attention] - ATTENTION_ORDER[b.attention] ||
+      itemActivity(b) - itemActivity(a),
   );
+}
+
+// itemActivity is an item's latest movement as a sortable instant: the
+// conversation's last turn when a session exists, otherwise the issue's tracker
+// update (falling back to creation). An item with no readable timestamp sorts
+// after everything dated.
+export function itemActivity(item: InboxItem): number {
+  const ts =
+    item.session?.updated_at ??
+    item.entry?.updated_at ??
+    item.entry?.created_at;
+  const at = ts ? Date.parse(ts) : Number.NaN;
+  return Number.isNaN(at) ? 0 : at;
 }
 
 // authoringItems lifts the repo's live, issue-less authoring sessions into draft
@@ -262,6 +278,16 @@ export type InboxPillTone = "warn" | "active" | "verify" | "success" | "todo";
 export interface InboxPill {
   tone: InboxPillTone;
   label: string;
+}
+
+// rowSession is the session a queue row reports: the open thread's streamed copy
+// when the row is the one on screen — the rail must never trail the session bar it
+// sits beside — and the polled list's copy otherwise.
+export function rowSession(
+  item: InboxItem,
+  live: GrillSession | null,
+): GrillSession | undefined {
+  return live && item.session?.id === live.id ? live : item.session;
 }
 
 // inboxPill reads a session from the triager's seat: waiting and parked both mean

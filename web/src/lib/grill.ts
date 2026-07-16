@@ -182,12 +182,15 @@ async function fetchGrillSessions(repo: string, state?: GrillState): Promise<Gri
   return res.json()
 }
 
+// The list polls because it is the only feed the queue rail has for sessions whose
+// thread is not on screen — only the open conversation gets an SSE stream.
 export const grillSessionsQueryOptions = (repo: string) =>
   queryOptions({
     queryKey: ['grill', repo],
     queryFn: () => fetchGrillSessions(repo),
     enabled: repo !== '',
     staleTime: 10_000,
+    refetchInterval: 5_000,
   })
 
 // appliedGrillSessionsQueryOptions reads the repo's applied sessions. They are the
