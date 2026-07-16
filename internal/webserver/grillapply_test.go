@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -19,6 +20,13 @@ import (
 // writer, returning the repo root so a test can seed the synced issue store.
 func grillApplyServer(t *testing.T, fake tracker.Writer) (*httptest.Server, *hubstore.Stores, string) {
 	t.Helper()
+	return grillApplyServerWriter(t, func(config.Config) (tracker.Writer, error) { return fake, nil })
+}
+
+// grillApplyServerWriter is grillApplyServer with a caller-supplied writer
+// factory, so a test can observe the config the apply builds its writer from.
+func grillApplyServerWriter(t *testing.T, newWriter func(config.Config) (tracker.Writer, error)) (*httptest.Server, *hubstore.Stores, string) {
+	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()
 	stores := testStoresAt(t, home)
@@ -29,7 +37,7 @@ func grillApplyServer(t *testing.T, fake tracker.Writer) (*httptest.Server, *hub
 	}
 	s := New("1.2.3", "127.0.0.1", "", nil, false, stores)
 	s.home = home
-	s.newWriter = func(config.Config) (tracker.Writer, error) { return fake, nil }
+	s.newWriter = newWriter
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return ts, stores, root
@@ -512,6 +520,42 @@ func TestGrillApplyCreateSingle(t *testing.T) {
 	}
 	if iss, found, err := stores.Issues().Get(root, "COD-100"); err != nil || !found || iss.Title != "Add dark mode toggle" {
 		t.Errorf("mirrored issue = (%+v, found=%v, err=%v), want the created issue in the store", iss, found, err)
+	}
+}
+
+func TestGrillApplyCreateBuildsWriterFromRepoConfig(t *testing.T) {
+	fake := newFakeWriter()
+	var got config.Config
+	ts, stores, root := grillApplyServerWriter(t, func(cfg config.Config) (tracker.Writer, error) {
+		got = cfg
+		return fake, nil
+	})
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir repo root: %v", err)
+	}
+	ini := "TRACKER_PROVIDER=linear\nLINEAR_TEAM=COD\nPROJECT=trau\n"
+	if err := os.WriteFile(config.ProjectConfigPath(root), []byte(ini), 0o644); err != nil {
+		t.Fatalf("write repo config: %v", err)
+	}
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispCreate,
+		Title:               "Wire the preview drawer",
+		ProposedDescription: "Clicking a task id opens the preview.",
+		Summary:             "specced the drawer",
+	})
+
+	res, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if res.StatusCode != http.StatusOK || !out.Applied {
+		t.Fatalf("apply = %+v (status %d), want applied", out, res.StatusCode)
+	}
+	if got.Project != "trau" {
+		t.Errorf("writer config project = %q, want the repo's PROJECT so the created task lands in it", got.Project)
+	}
+	if got.TrackerProvider != "linear" || got.LinearTeam != "COD" {
+		t.Errorf("writer config = provider %q team %q, want the repo's tracker binding", got.TrackerProvider, got.LinearTeam)
+	}
+	if len(fake.created) != 1 {
+		t.Fatalf("created = %d, want the conversation's task filed once", len(fake.created))
 	}
 }
 
