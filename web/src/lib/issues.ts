@@ -1,6 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
+import { type Assignee } from './assignee'
 
 // IssueComment is one comment on an issue as the store returns it: author, body
 // (markdown), and the tracker's created timestamp.
@@ -26,6 +27,7 @@ export interface Issue {
   status: string
   group: string
   labels: string[]
+  assignee?: Assignee | null
   ready: boolean
   parent?: string
   source?: string

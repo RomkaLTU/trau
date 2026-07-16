@@ -1,5 +1,6 @@
 import { useQueries, useQuery } from '@tanstack/react-query'
 
+import { type Assignee } from './assignee'
 import { backlogQueryOptions, type BacklogEntry } from './backlog'
 import { DEFAULT_STATE_GROUPS } from './backlog-filters'
 import {
@@ -54,6 +55,7 @@ export interface InboxItem {
   id: string
   title: string
   entry?: BacklogEntry
+  assignee?: Assignee | null
   session?: GrillSession
   attention: InboxAttention
 }
@@ -108,6 +110,7 @@ export function buildInbox(
       id: entry.id,
       title: entry.title,
       entry,
+      assignee: entry.assignee ?? null,
       session,
       attention: inboxAttention(session),
     }

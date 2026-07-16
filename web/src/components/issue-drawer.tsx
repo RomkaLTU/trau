@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { AlertTriangle, ExternalLink, Flame, ListPlus, Pencil } from 'lucide-react'
 
+import { AssigneeAvatar } from '@/components/trau/assignee-avatar'
 import { GrillPanel } from '@/components/grill-panel'
 import { InternalIssueForm } from '@/components/internal-issue-form'
 import { Markdown } from '@/components/markdown'
@@ -14,6 +15,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { assigneeLabel } from '@/lib/assignee'
 import {
   IssueFetchError,
   internalIssueQueryOptions,
@@ -149,6 +151,17 @@ function IssueDrawerBody({
             <span className="font-mono underline-offset-2 hover:underline">{issue.parent}</span>
           </button>
         )}
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Assignee</span>
+          {issue.assignee ? (
+            <span className="inline-flex items-center gap-1.5 text-foreground">
+              <AssigneeAvatar assignee={issue.assignee} className="size-5 text-[0.6rem]" />
+              {assigneeLabel(issue.assignee)}
+            </span>
+          ) : (
+            <span className="text-muted-foreground">Unassigned</span>
+          )}
+        </div>
       </SheetHeader>
 
       {grilling ? (
