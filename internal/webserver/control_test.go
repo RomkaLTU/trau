@@ -18,7 +18,6 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/registry"
-	"github.com/RomkaLTU/trau/internal/state"
 )
 
 // testStores returns the hub store set over a throwaway hub database, for
@@ -50,36 +49,26 @@ type signalCall struct {
 // processes, so the control layer's OS interactions are asserted without
 // launching anything.
 type fakeSupervisor struct {
-	mu            sync.Mutex
-	spawns        []SpawnSpec
-	captures      []SpawnSpec
-	signals       []signalCall
-	pid           int
-	spawnErr      error
-	captureOut    []byte
-	captureErr    error
-	signalErr     error
-	onExitOutcome *SpawnOutcome
+	mu         sync.Mutex
+	spawns     []SpawnSpec
+	captures   []SpawnSpec
+	signals    []signalCall
+	pid        int
+	spawnErr   error
+	captureOut []byte
+	captureErr error
+	signalErr  error
 }
 
 func (f *fakeSupervisor) Spawn(spec SpawnSpec) (int, error) {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.spawns = append(f.spawns, spec)
 	if f.spawnErr != nil {
-		err := f.spawnErr
-		f.mu.Unlock()
-		return 0, err
+		return 0, f.spawnErr
 	}
 	f.pid++
-	pid := 40000 + f.pid
-	outcome := f.onExitOutcome
-	f.mu.Unlock()
-	if outcome != nil && spec.OnExit != nil {
-		out := *outcome
-		out.PID = pid
-		spec.OnExit(out)
-	}
-	return pid, nil
+	return 40000 + f.pid, nil
 }
 
 func (f *fakeSupervisor) Capture(_ context.Context, spec SpawnSpec) ([]byte, error) {
@@ -125,219 +114,6 @@ func postJSON(t *testing.T, url string, body any) *http.Response {
 		t.Fatalf("POST %s: %v", url, err)
 	}
 	return res
-}
-
-func TestStartSpawnsLoopInAllowlistedRepo(t *testing.T) {
-	home := t.TempDir()
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, home, []string{root})
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root})
-	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode != http.StatusAccepted {
-		t.Fatalf("start status = %d, want 202", res.StatusCode)
-	}
-	var out StartResult
-	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
-		t.Fatalf("decode start result: %v", err)
-	}
-	if out.PID <= 0 {
-		t.Errorf("PID = %d, want a spawned pid", out.PID)
-	}
-	if out.RepoRoot != root {
-		t.Errorf("RepoRoot = %q, want %q", out.RepoRoot, root)
-	}
-	if out.Repo != "acme" {
-		t.Errorf("Repo = %q, want acme", out.Repo)
-	}
-
-	if len(fake.spawns) != 1 {
-		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
-	}
-	spec := fake.spawns[0]
-	if spec.Dir != root {
-		t.Errorf("spawn Dir = %q, want %q", spec.Dir, root)
-	}
-	wantArgs := []string{"--repo", root, "--no-tui"}
-	if len(spec.Args) != len(wantArgs) {
-		t.Fatalf("spawn Args = %v, want %v", spec.Args, wantArgs)
-	}
-	for i, a := range wantArgs {
-		if spec.Args[i] != a {
-			t.Errorf("spawn Args[%d] = %q, want %q", i, spec.Args[i], a)
-		}
-	}
-	if !hasEnv(spec.Env, "TRAU_HOME="+home) {
-		t.Errorf("spawn Env missing TRAU_HOME=%s (pins the child to the hub registry)", home)
-	}
-}
-
-func TestStartAcceptsRepoBaseName(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "salonradar")
-	fake, ts := controlServer(t, t.TempDir(), []string{root})
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: "salonradar"})
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusAccepted {
-		t.Fatalf("start by name status = %d, want 202", res.StatusCode)
-	}
-	if len(fake.spawns) != 1 || fake.spawns[0].Dir != root {
-		t.Fatalf("spawns = %+v, want one in %s", fake.spawns, root)
-	}
-}
-
-func TestStartRefusedForNonAllowlistedRepo(t *testing.T) {
-	allowed := filepath.Join(t.TempDir(), "acme")
-	other := filepath.Join(t.TempDir(), "stranger")
-	fake, ts := controlServer(t, t.TempDir(), []string{allowed})
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: other})
-	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode != http.StatusForbidden {
-		t.Fatalf("start status = %d, want 403 for observe-only repo", res.StatusCode)
-	}
-	var body map[string]string
-	_ = json.NewDecoder(res.Body).Decode(&body)
-	if body["error"] == "" {
-		t.Errorf("403 body missing error message")
-	}
-	if len(fake.spawns) != 0 {
-		t.Errorf("spawns = %d, want 0 (nothing started for a refused repo)", len(fake.spawns))
-	}
-}
-
-func TestStartRefusedWhenAllowlistEmpty(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, t.TempDir(), nil)
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root})
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusForbidden {
-		t.Fatalf("start status = %d, want 403 when no workspace is allowlisted", res.StatusCode)
-	}
-	if len(fake.spawns) != 0 {
-		t.Errorf("spawns = %d, want 0", len(fake.spawns))
-	}
-}
-
-func TestStartRefusedWhenRepoIsLive(t *testing.T) {
-	home := t.TempDir()
-	root := filepath.Join(t.TempDir(), "acme")
-	runsDir := filepath.Join(root, ".trau", "runs")
-	fake, ts := controlServer(t, home, []string{root})
-	markLive(t, home, root, runsDir)
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root})
-	defer func() { _ = res.Body.Close() }()
-	if res.StatusCode != http.StatusConflict {
-		t.Fatalf("start status = %d, want 409 while a loop is live in the repo", res.StatusCode)
-	}
-	var body struct {
-		Error string `json:"error"`
-		Live  bool   `json:"live"`
-	}
-	_ = json.NewDecoder(res.Body).Decode(&body)
-	if !body.Live {
-		t.Errorf("409 body = %+v, want live:true so the UI can disable resume", body)
-	}
-	if len(fake.spawns) != 0 {
-		t.Errorf("spawns = %d, want 0 (a second loop must not enter a live working tree)", len(fake.spawns))
-	}
-}
-
-func TestStartReportsSpawnFailure(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, t.TempDir(), []string{root})
-	fake.spawnErr = os.ErrPermission
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root})
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("start status = %d, want 500 when spawn fails", res.StatusCode)
-	}
-}
-
-// findSpawnFailed returns the spawn_failed event recorded for ticket in the
-// authoritative events table, if any — the durable record a dead-on-arrival child
-// leaves for the run page to read.
-func findSpawnFailed(t *testing.T, home, root, ticket string) (FeedEvent, bool) {
-	t.Helper()
-	rows, err := testStoresAt(t, home).Events().Recent(root, 1000, 0)
-	if err != nil {
-		t.Fatalf("recent events: %v", err)
-	}
-	for _, row := range rows {
-		fe := feedEventFromRow(row)
-		if fe.Kind == "spawn_failed" && strField(fe.Fields, "ticket") == ticket {
-			return fe, true
-		}
-	}
-	return FeedEvent{}, false
-}
-
-func strField(fields map[string]any, key string) string {
-	if s, ok := fields[key].(string); ok {
-		return s
-	}
-	return ""
-}
-
-func TestStartRecordsDeadOnArrivalChild(t *testing.T) {
-	home := t.TempDir()
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, home, []string{root})
-	fake.onExitOutcome = &SpawnOutcome{
-		ExitCode: 1,
-		Stderr:   "booting\nunknown provider \"claudew\" (expected: claude | codex | kimi)\n",
-	}
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-786"})
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusAccepted {
-		t.Fatalf("start status = %d, want 202", res.StatusCode)
-	}
-
-	ev, ok := findSpawnFailed(t, home, root, "COD-786")
-	if !ok {
-		t.Fatal("no spawn_failed event recorded for a child that died before registering")
-	}
-	if got := strField(ev.Fields, "error"); !strings.Contains(got, "claudew") {
-		t.Errorf("spawn_failed error = %q, want the captured provider error", got)
-	}
-	if code, ok := ev.Fields["exit_code"].(float64); !ok || code != 1 {
-		t.Errorf("spawn_failed exit_code = %v, want 1", ev.Fields["exit_code"])
-	}
-}
-
-func TestStartRecordsNoSpawnFailedOnCleanExit(t *testing.T) {
-	home := t.TempDir()
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, home, []string{root})
-	fake.onExitOutcome = &SpawnOutcome{ExitCode: 0}
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-786"})
-	_ = res.Body.Close()
-
-	if _, ok := findSpawnFailed(t, home, root, "COD-786"); ok {
-		t.Error("a clean exit recorded a spawn_failed event — only a dead-on-arrival child should")
-	}
-}
-
-func TestStartRecordsNoSpawnFailedWhenCheckpointExists(t *testing.T) {
-	home := t.TempDir()
-	root := filepath.Join(t.TempDir(), "acme")
-	if err := testStoresAt(t, home).Checkpoints().Upsert(root, "COD-786", map[string]string{"PHASE": state.Built}); err != nil {
-		t.Fatalf("seed checkpoint: %v", err)
-	}
-	fake, ts := controlServer(t, home, []string{root})
-	fake.onExitOutcome = &SpawnOutcome{ExitCode: 1, Stderr: "faulted late"}
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-786"})
-	_ = res.Body.Close()
-
-	if _, ok := findSpawnFailed(t, home, root, "COD-786"); ok {
-		t.Error("a run that left a checkpoint recorded a spawn_failed event — its fault surfaces through the checkpoint")
-	}
 }
 
 func TestStopSignalsRegisteredInstance(t *testing.T) {
@@ -406,18 +182,13 @@ func TestControlEndpointsRequireTokenWhenExposed(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 
-	start := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: "/repo/acme"})
-	_ = start.Body.Close()
-	if start.StatusCode != http.StatusUnauthorized {
-		t.Errorf("unauthenticated start = %d, want 401 on an exposed bind", start.StatusCode)
-	}
 	stop := postJSON(t, ts.URL+APIPrefix+"/instances/1/stop", nil)
 	_ = stop.Body.Close()
 	if stop.StatusCode != http.StatusUnauthorized {
 		t.Errorf("unauthenticated stop = %d, want 401 on an exposed bind", stop.StatusCode)
 	}
-	if len(fake.spawns) != 0 || len(fake.signals) != 0 {
-		t.Errorf("token gate let a control request through: spawns=%d signals=%d", len(fake.spawns), len(fake.signals))
+	if len(fake.signals) != 0 {
+		t.Errorf("token gate let a control request through: signals=%d", len(fake.signals))
 	}
 }
 
@@ -446,169 +217,6 @@ func TestInstancesFlagAllowedRepos(t *testing.T) {
 	}
 	if v, ok := byRoot[fresh]; !ok || !v.Allowed || v.Live {
 		t.Errorf("fresh allowlisted repo view = %+v (present=%v), want allowed, not live, startable before first run", v, ok)
-	}
-}
-
-func TestStartRunsSingleTicket(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, t.TempDir(), []string{root})
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-693"})
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusAccepted {
-		t.Fatalf("run-ticket status = %d, want 202", res.StatusCode)
-	}
-	if len(fake.spawns) != 1 {
-		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
-	}
-	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-693", "--once"})
-}
-
-func TestStartRunsEpic(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, t.TempDir(), []string{root})
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Epic: "COD-530"})
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusAccepted {
-		t.Fatalf("run-epic status = %d, want 202", res.StatusCode)
-	}
-	if len(fake.spawns) != 1 {
-		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
-	}
-	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-530"})
-}
-
-func TestStartBareLoopWhenNeitherTicketNorEpic(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, t.TempDir(), []string{root})
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root})
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusAccepted {
-		t.Fatalf("bare-loop status = %d, want 202", res.StatusCode)
-	}
-	if len(fake.spawns) != 1 {
-		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
-	}
-	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui"})
-	if hasArg(fake.spawns[0].Args, "--parent") || hasArg(fake.spawns[0].Args, "--once") {
-		t.Errorf("bare loop carried a target flag: %v — no ticket or epic means the plain ready-queue loop", fake.spawns[0].Args)
-	}
-}
-
-func TestStartHonorsMaxAndNoResume(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, t.TempDir(), []string{root})
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Max: 3, NoResume: true})
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202", res.StatusCode)
-	}
-	if len(fake.spawns) != 1 {
-		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
-	}
-	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--no-resume", "--max", "3"})
-}
-
-func TestStartMaxAndNoResumeApplyToSingleTicket(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, t.TempDir(), []string{root})
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-693", Max: 5, NoResume: true})
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202", res.StatusCode)
-	}
-	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-693", "--once", "--no-resume", "--max", "5"})
-}
-
-func TestStartOmitsMaxWhenZero(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, t.TempDir(), []string{root})
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Max: 0})
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202", res.StatusCode)
-	}
-	if hasArg(fake.spawns[0].Args, "--max") {
-		t.Errorf("args carried --max for an unset (zero) cap: %v", fake.spawns[0].Args)
-	}
-}
-
-func TestStartRejectsNegativeMax(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, t.TempDir(), []string{root})
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Max: -1})
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 for a negative max", res.StatusCode)
-	}
-	if len(fake.spawns) != 0 {
-		t.Errorf("spawns = %d, want 0 for a rejected request", len(fake.spawns))
-	}
-}
-
-func TestStartProviderOverrideIsPerRun(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, t.TempDir(), []string{root})
-
-	overridden := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-693", Provider: "codex"})
-	_ = overridden.Body.Close()
-	plain := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-694"})
-	_ = plain.Body.Close()
-
-	if len(fake.spawns) != 2 {
-		t.Fatalf("spawns = %d, want 2", len(fake.spawns))
-	}
-	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-693", "--once", "--provider", "codex"})
-	if hasArg(fake.spawns[1].Args, "--provider") {
-		t.Errorf("second run carried a --provider override: %v — an override must apply only to the run it was submitted with", fake.spawns[1].Args)
-	}
-}
-
-func TestStartRejectsTicketAndEpicTogether(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, t.TempDir(), []string{root})
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "COD-1", Epic: "COD-2"})
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 when ticket and epic are both set", res.StatusCode)
-	}
-	if len(fake.spawns) != 0 {
-		t.Errorf("spawns = %d, want 0 for a rejected request", len(fake.spawns))
-	}
-}
-
-func TestStartRejectsMalformedTicket(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, t.TempDir(), []string{root})
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "--force"})
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 for a non-ticket value", res.StatusCode)
-	}
-	if len(fake.spawns) != 0 {
-		t.Errorf("spawns = %d, want 0 (never launch a run for a malformed ticket)", len(fake.spawns))
-	}
-}
-
-func TestStartRejectsBlankTicket(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "acme")
-	fake, ts := controlServer(t, t.TempDir(), []string{root})
-
-	res := postJSON(t, ts.URL+APIPrefix+"/instances", StartRequest{Repo: root, Ticket: "   "})
-	_ = res.Body.Close()
-	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 for a whitespace-only ticket", res.StatusCode)
-	}
-	if len(fake.spawns) != 0 {
-		t.Errorf("spawns = %d, want 0 (a blank ticket must not fall through to a plain pick-next loop)", len(fake.spawns))
 	}
 }
 
@@ -1041,24 +649,6 @@ func assertArgs(t *testing.T, got, want []string) {
 			t.Fatalf("args[%d] = %q, want %q (full: %v)", i, got[i], want[i], got)
 		}
 	}
-}
-
-func hasArg(args []string, want string) bool {
-	for _, a := range args {
-		if a == want {
-			return true
-		}
-	}
-	return false
-}
-
-func hasEnv(env []string, want string) bool {
-	for _, kv := range env {
-		if kv == want {
-			return true
-		}
-	}
-	return false
 }
 
 // TestChildEnvStripsNestedLoopMarker locks the fix for hub spawns dying on the

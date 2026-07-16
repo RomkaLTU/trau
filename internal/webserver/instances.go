@@ -83,15 +83,12 @@ type instanceHeartbeatBody struct {
 }
 
 func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.listInstances(w, r)
-	case http.MethodPost:
-		s.startInstance(w, r)
-	default:
-		w.Header().Set("Allow", "GET, POST")
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
 	}
+	s.listInstances(w, r)
 }
 
 // handleInstance is a loop's presence seam (ADR 0008 §7): the loop PUTs its

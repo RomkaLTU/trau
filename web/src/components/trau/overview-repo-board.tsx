@@ -1,5 +1,5 @@
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Eye, Play, Plus, RefreshCw } from 'lucide-react'
+import { Eye, Plus, RefreshCw } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { useActiveRepo } from '@/components/trau/active-repo'
@@ -170,28 +170,14 @@ function RepoActions({
     )
   }
 
-  const focus = (to: '/run-once' | '/loop') => {
+  const focus = () => {
     setRepo(activity.repo.name)
-    void navigate({ to })
+    void navigate({ to: '/loop' })
   }
 
   return (
     <div className="flex items-center gap-2">
-      <Button
-        variant="outline"
-        size="sm"
-        className="font-mono"
-        onClick={() => focus('/run-once')}
-      >
-        <Play data-icon="inline-start" aria-hidden="true" />
-        Run once
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="font-mono"
-        onClick={() => focus('/loop')}
-      >
+      <Button variant="outline" size="sm" className="font-mono" onClick={focus}>
         <RefreshCw data-icon="inline-start" aria-hidden="true" />
         Loop
       </Button>

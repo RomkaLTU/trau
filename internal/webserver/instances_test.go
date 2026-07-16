@@ -337,7 +337,7 @@ func TestInstancesRejectsUnsupportedMethod(t *testing.T) {
 	if res.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("PUT status = %d, want 405", res.StatusCode)
 	}
-	if allow := res.Header.Get("Allow"); allow != "GET, POST" {
-		t.Errorf("Allow = %q, want \"GET, POST\"", allow)
+	if allow := res.Header.Get("Allow"); allow != http.MethodGet {
+		t.Errorf("Allow = %q, want %q", allow, http.MethodGet)
 	}
 }

@@ -219,7 +219,7 @@ export interface QueueCounts {
 }
 
 // queueCounts summarizes a queue for the view header: the total registered and
-// how it splits between run-once tickets and epics.
+// how it splits between single tickets and epics.
 export function queueCounts(items: QueueItem[]): QueueCounts {
   const epics = items.filter((it) => it.kind === 'epic').length
   return { total: items.length, tickets: items.length - epics, epics }

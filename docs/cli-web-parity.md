@@ -19,18 +19,18 @@ help. Screen names match the sidebar nav (OPERATE · OBSERVE · CONFIGURE).
 | --- | --- |
 | `trau` — bare loop: resume any in-flight ticket, else pick the next ready one | **Loop** → scope *Ready queue* → **Start loop**. A loop started here keeps running across a hub restart (supervisor-owned), and **Overview → Live loops** shows it grazing the queue. |
 | `trau <ID>` on an epic · `trau --parent <ID>` · bare `<PREFIX>-<n>` epic | **Loop** → scope *Epic* → epic id → **Start loop**. The epic preview lists sub-issues and their state before you commit. |
-| `trau <ID> --once` · `trau --once` | **Run once** → pick an eligible ticket or type an id → **Run** (redirects to the live run view). |
+| `trau <ID> --once` · `trau --once` | **Loop** → **Run next** — pick from the ready queue or add by id (fetch-then-confirm). The ticket joins the front of the Queue and the drain arms; the Queue is the web's only start path (ADR 0015). |
 | `trau --max <N>` (cap iterations for this run) | **Loop** → *max iterations* stepper. |
 | `trau --no-resume` (skip the resume scan) | **Loop** → *skip resume* toggle. |
-| `trau --provider <name>` (Provider override) | **Run once** → *provider · this run only* select. Ephemeral, single-run, reverts to config after — matches the CLI flag exactly. |
+| `trau --provider <name>` (Provider override) | **Loop** → per-queue-item *Provider override*. Ephemeral, single-run, reverts to config after — matches the CLI flag exactly. |
 | `trau --repo <path>` (target repo) | *Repo picker* on every screen. The web only lists **allowlisted** repos; it can never launch a loop somewhere the operator hasn't sanctioned. |
 
 ## Preview and list
 
 | CLI / TUI | Web surface |
 | --- | --- |
-| `trau --dry-run` — print the next eligible ticket, do nothing | **Run once** → *Preview next* (hits the same dry-run endpoint). |
-| `trau --list-eligible` | **Loop** *Ready queue* preview · **Run once** eligible-ticket list. |
+| `trau --dry-run` — print the next eligible ticket, do nothing | **Loop** *Ready queue* preview (the read-only dry-run endpoint remains). |
+| `trau --list-eligible` | **Loop** *Ready queue* preview. |
 | `trau --list-epic <ID>` | **Loop** *Epic* scope sub-issue preview. |
 
 ## Status and checkpoints
@@ -66,7 +66,7 @@ plain-language refusal rather than a raw error.
 | CLI / TUI | Web surface |
 | --- | --- |
 | TUI `q` / Ctrl-C — quit/stop the running loop | **Loop** *Stop loop* · **Overview** loop-card *Stop* · **Run detail** *Stop*. All graceful: the current ticket finishes its checkpoint, then the loop stops; work in progress is preserved. |
-| (resume a paused/faulted run — CLI does this by re-running `trau`) | **Run detail** *Resume* — a web affordance that relaunches the loop on that ticket without re-typing the id. |
+| (resume a paused/faulted run — CLI does this by re-running `trau`) | **Run detail** *Resume* — Run next on the checkpointed ticket: it joins the front of the Queue and the drain relaunches it. |
 
 ## Settings
 

@@ -2,7 +2,6 @@ import { queryOptions } from '@tanstack/react-query'
 
 import type { RunState } from '@/components/trau/status-pill'
 import { apiFetch } from './api'
-import { CheckpointError } from './checkpoints'
 
 export interface Instance {
   pid: number
@@ -141,41 +140,6 @@ export const repoHealthQueryOptions = (repo: string) =>
 async function errorMessage(res: Response, fallback: string): Promise<string> {
   const detail = (await res.json().catch(() => null)) as { error?: string } | null
   return detail?.error ?? `${fallback}: ${res.status}`
-}
-
-export interface StartRequest {
-  repo: string
-  ticket?: string
-  epic?: string
-  provider?: string
-  max?: number
-  no_resume?: boolean
-}
-
-export interface StartResult {
-  pid: number
-  repo: string
-  repo_root: string
-}
-
-export async function startInstance(req: StartRequest): Promise<StartResult> {
-  const res = await apiFetch('/api/v1/instances', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
-  })
-  if (!res.ok) {
-    // A loop already holding the working tree answers with 409 {live:true}; the
-    // run views branch on that to raise a conflict banner rather than an error.
-    const detail = (await res.json().catch(() => null)) as {
-      error?: string
-      live?: boolean
-    } | null
-    throw new CheckpointError(detail?.error ?? `start failed: ${res.status}`, {
-      live: detail?.live,
-    })
-  }
-  return res.json()
 }
 
 export interface StopResult {

@@ -97,9 +97,6 @@ function EmptyRuns() {
         <p className="relative font-sans text-sm text-muted-foreground">No runs yet.</p>
         <div className="relative flex flex-wrap items-center justify-center gap-2">
           <Button asChild className="font-mono" size="sm">
-            <Link to="/run-once">Run once</Link>
-          </Button>
-          <Button asChild variant="outline" className="font-mono" size="sm">
             <Link to="/loop">Start loop</Link>
           </Button>
         </div>

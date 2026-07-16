@@ -5,7 +5,6 @@ import { Boxes, Plus, RotateCw, Wrench } from 'lucide-react'
 
 import { EventFeed } from '@/components/event-feed'
 import { MakeStartableButton } from '@/components/make-startable-button'
-import { RunControls } from '@/components/run-controls'
 import { PageHeader } from '@/components/trau/page-header'
 import { StatusPill } from '@/components/trau/status-pill'
 import { TerminalCard } from '@/components/trau/terminal-card'
@@ -76,7 +75,6 @@ function Instances() {
 
   const instances = data?.instances ?? []
   const repoViews = repos.data?.repos ?? []
-  const startable = repoViews.filter((repo) => repo.allowed)
 
   return (
     <>
@@ -126,19 +124,6 @@ function Instances() {
               ))}
             </ul>
           </TerminalCard>
-        )}
-
-        {startable.length > 0 && (
-          <section className="flex flex-col gap-3">
-            <h2 className="text-sm font-medium text-muted-foreground">
-              Start a run
-            </h2>
-            <div className="grid gap-4 sm:grid-cols-2">
-              {startable.map((repo) => (
-                <RunControls key={repo.root} repo={repo.name} />
-              ))}
-            </div>
-          </section>
         )}
       </div>
     </>

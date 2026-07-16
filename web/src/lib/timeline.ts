@@ -188,7 +188,7 @@ export function buildTimeline(
 ): Timeline {
   const byTicket = new Map(runs.map((r) => [r.ticket, r]))
   const leaves = flatten(items)
-  // A run can outlive its queue entry or never have one (run-once, CLI): an
+  // A run can outlive its queue entry or never have one (a CLI start): an
   // active instance ticket missing from the snapshot still joins as a leaf so
   // the running section reflects it.
   if (
