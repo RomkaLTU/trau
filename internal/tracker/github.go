@@ -172,8 +172,8 @@ func (g *GitHub) Quarantine(ctx context.Context, id, reason string) error {
 }
 
 func (g *GitHub) quarantinePrompt(id, reason string) string {
-	return fmt.Sprintf("Use the GitHub MCP on issue %s in repository %q: remove the label '%s', add the label '%s', and add a comment: \"Trau loop stopped: %s (see runs/%s/).\" Reply DONE.",
-		id, g.Repo, g.ReadyLabel, g.QuarantineLabel, reason, id)
+	return fmt.Sprintf("Use the GitHub MCP on issue %s in repository %q: remove the label '%s', add the label '%s', and add a comment: \"Trau loop stopped: %s (see this ticket's run in the trau web UI).\" Reply DONE.",
+		id, g.Repo, g.ReadyLabel, g.QuarantineLabel, reason)
 }
 
 // FileBug files a NEW GitHub issue as a last-resort HITL blocker for a QA failure

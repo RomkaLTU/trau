@@ -212,7 +212,7 @@ func (in *Internal) Quarantine(ctx context.Context, id, reason string) error {
 	_, err := in.Hub.TransitionInternalIssue(ctx, in.Repo, id, hubclient.Transition{
 		AddLabels:    labelsOf(in.QuarantineLabel),
 		RemoveLabels: labelsOf(in.ReadyLabel),
-		Comment:      fmt.Sprintf("Trau loop stopped: %s (see runs/%s/).", reason, id),
+		Comment:      fmt.Sprintf("Trau loop stopped: %s (see this ticket's run in the trau web UI).", reason),
 	})
 	return err
 }

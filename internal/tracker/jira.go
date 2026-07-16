@@ -664,12 +664,12 @@ func (j *Jira) quarantineAPI(ctx context.Context, id, reason string) error {
 	if err := j.api().UpdateLabels(ctx, id, []string{j.QuarantineLabel}, []string{j.ReadyLabel}); err != nil {
 		return err
 	}
-	return j.api().AddComment(ctx, id, fmt.Sprintf("Trau loop stopped: %s (see runs/%s/).", reason, id))
+	return j.api().AddComment(ctx, id, fmt.Sprintf("Trau loop stopped: %s (see this ticket's run in the trau web UI).", reason))
 }
 
 func (j *Jira) quarantinePrompt(id, reason string) string {
-	return fmt.Sprintf("Use the Jira (Rovo) MCP on issue %s: remove the label '%s', add the label '%s', and add a comment: \"Trau loop stopped: %s (see runs/%s/).\" Reply DONE.",
-		id, j.ReadyLabel, j.QuarantineLabel, reason, id)
+	return fmt.Sprintf("Use the Jira (Rovo) MCP on issue %s: remove the label '%s', add the label '%s', and add a comment: \"Trau loop stopped: %s (see this ticket's run in the trau web UI).\" Reply DONE.",
+		id, j.ReadyLabel, j.QuarantineLabel, reason)
 }
 
 // FileBug files a NEW Jira issue as a last-resort HITL blocker for a QA failure
@@ -703,7 +703,7 @@ type qaVerdict struct {
 
 // bugContent renders the Jira Bug summary and description from the QA verdict at
 // verdictPath. A missing or unparseable verdict still yields a filable bug that
-// points at the run artifacts.
+// points at the run record.
 func bugContent(id, verdictPath string) (summary, description string) {
 	summary = fmt.Sprintf("Trau QA blocked %s — human attention needed", id)
 	var b strings.Builder
@@ -724,7 +724,7 @@ func bugContent(id, verdictPath string) (summary, description string) {
 			}
 		}
 	}
-	fmt.Fprintf(&b, "See runs/%s/ for the full run artifacts.", id)
+	fmt.Fprintf(&b, "See %s's run in the trau web UI for the full run record.", id)
 	return summary, b.String()
 }
 

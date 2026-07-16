@@ -815,14 +815,14 @@ func TestBugContent(t *testing.T) {
 	if summary != "Trau QA blocked PROJ-7: login broken" {
 		t.Errorf("summary = %q", summary)
 	}
-	for _, want := range []string{"login broken", "500 on submit", "no retry", "runs/PROJ-7/"} {
+	for _, want := range []string{"login broken", "500 on submit", "no retry", "PROJ-7's run in the trau web UI"} {
 		if !strings.Contains(desc, want) {
 			t.Errorf("description missing %q:\n%s", want, desc)
 		}
 	}
 
 	_, missing := bugContent("PROJ-7", filepath.Join(dir, "gone.json"))
-	if !strings.Contains(missing, "runs/PROJ-7/") {
+	if !strings.Contains(missing, "PROJ-7's run in the trau web UI") {
 		t.Errorf("missing-verdict description should still point at the run: %q", missing)
 	}
 }

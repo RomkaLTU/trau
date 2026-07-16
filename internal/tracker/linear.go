@@ -926,7 +926,7 @@ func (l *Linear) quarantineAPI(ctx context.Context, id, reason string) error {
 	if err := l.api().SetStatus(ctx, id, "", labelNames); err != nil {
 		return err
 	}
-	return l.api().AddComment(ctx, id, fmt.Sprintf("Trau loop stopped: %s (see runs/%s/).", reason, id))
+	return l.api().AddComment(ctx, id, fmt.Sprintf("Trau loop stopped: %s (see this ticket's run in the trau web UI).", reason))
 }
 
 // EnsureLabels creates the ready and quarantine labels in Linear if they do not
@@ -1018,8 +1018,8 @@ func (l *Linear) IssueDetail(ctx context.Context, id string) (IssueDetail, error
 }
 
 func (l *Linear) quarantinePrompt(id, reason string) string {
-	return fmt.Sprintf("Use the Linear MCP on issue %s: remove the label '%s', add the label '%s', and add a comment: \"Trau loop stopped: %s (see runs/%s/).\" Reply DONE.",
-		id, l.ReadyLabel, l.QuarantineLabel, reason, id)
+	return fmt.Sprintf("Use the Linear MCP on issue %s: remove the label '%s', add the label '%s', and add a comment: \"Trau loop stopped: %s (see this ticket's run in the trau web UI).\" Reply DONE.",
+		id, l.ReadyLabel, l.QuarantineLabel, reason)
 }
 
 func parseBug(text, prefix string) (id string, matched bool) {
