@@ -54,6 +54,7 @@ type Server struct {
 	removeSkill      func(ctx context.Context, repoRoot, name string) error
 	skillsMu         sync.Mutex
 	skillsCache      map[string]skillsCacheEntry
+	atlas            *atlasRunner
 }
 
 // New builds a Server that reports version and treats now as its start time. It
@@ -91,6 +92,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 	}
 	s.drain = newDrainer(s)
 	s.syncer = newSyncer(s)
+	s.atlas = newAtlasRunner(s)
 	return s
 }
 
@@ -245,6 +247,9 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/drain", s.handleQueueDrain)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}", s.handleQueueItem)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}/move", s.handleQueueMove)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/atlas", s.handleAtlas)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/atlas/{view}", s.handleAtlasView)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/atlas/{view}/generate", s.handleAtlasGenerate)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/checkpoints", s.handleRepoCheckpoints)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs", s.handleRuns)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}", s.handleRunDetail)

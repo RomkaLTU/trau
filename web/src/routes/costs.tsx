@@ -22,6 +22,7 @@ import {
 } from '@/components/trau'
 import { cn } from '@/lib/utils'
 import {
+  ATLAS_PHASE,
   GROUP_BY,
   OTHER_KEY,
   PREV_KEY,
@@ -36,6 +37,7 @@ import {
   toChartRows,
   type CostAnomaly,
   type GroupBy,
+  type TimeseriesGroup,
   type TimeseriesResponse,
 } from '@/lib/costs'
 import { standardTitle, usePageTitle } from '@/lib/page-title'
@@ -89,9 +91,14 @@ function Costs() {
     enabled: compare,
   })
   const costs = useQuery(costsQueryOptions(days))
+  const atlas = useQuery(
+    timeseriesQueryOptions({ days, groupBy: 'phase', repos }),
+  )
 
   const windowLabel = WINDOWS.find((w) => w.value === days)?.label ?? `${days}d`
   const anomalies = (costs.data?.anomalies ?? []).filter((a) => a.repo === repo)
+  const atlasSpend =
+    atlas.data?.series.find((s) => s.key === ATLAS_PHASE) ?? null
 
   return (
     <div className="flex flex-col gap-6">
@@ -173,6 +180,9 @@ function Costs() {
             label={windowLabel}
             groupBy={groupBy}
           />
+          {atlasSpend && atlasSpend.cost_usd > 0 && (
+            <AtlasSpend spend={atlasSpend} repo={repo} label={windowLabel} />
+          )}
           <Anomalies anomalies={anomalies} />
           <Breakdown data={data} />
           {compare && prior.data && (
@@ -446,6 +456,26 @@ function StatTiles({
         label="most expensive"
         value={mostExpensive.value}
         hint={mostExpensive.hint}
+      />
+    </div>
+  )
+}
+
+function AtlasSpend({
+  spend,
+  repo,
+  label,
+}: {
+  spend: TimeseriesGroup
+  repo: string | null
+  label: string
+}) {
+  return (
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <StatTile
+        label={`atlas generation (${label})`}
+        value={money(spend.cost_usd, spend.metered)}
+        hint={repo ? `${repo} · architecture Views` : 'architecture Views'}
       />
     </div>
   )

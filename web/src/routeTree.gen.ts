@@ -21,6 +21,7 @@ import { Route as InstancesRouteImport } from './routes/instances'
 import { Route as InboxRouteImport } from './routes/inbox'
 import { Route as CostsRouteImport } from './routes/costs'
 import { Route as BacklogRouteImport } from './routes/backlog'
+import { Route as AtlasRouteImport } from './routes/atlas'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProjectsNewRouteImport } from './routes/projects.new'
 import { Route as RunsRepoTicketRouteImport } from './routes/runs_.$repo.$ticket'
@@ -86,6 +87,11 @@ const BacklogRoute = BacklogRouteImport.update({
   path: '/backlog',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AtlasRoute = AtlasRouteImport.update({
+  id: '/atlas',
+  path: '/atlas',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -109,6 +115,7 @@ const LiveRepoTicketRoute = LiveRepoTicketRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/atlas': typeof AtlasRoute
   '/backlog': typeof BacklogRoute
   '/costs': typeof CostsRoute
   '/inbox': typeof InboxRoute
@@ -127,6 +134,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/atlas': typeof AtlasRoute
   '/backlog': typeof BacklogRoute
   '/costs': typeof CostsRoute
   '/inbox': typeof InboxRoute
@@ -146,6 +154,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/atlas': typeof AtlasRoute
   '/backlog': typeof BacklogRoute
   '/costs': typeof CostsRoute
   '/inbox': typeof InboxRoute
@@ -166,6 +175,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/atlas'
     | '/backlog'
     | '/costs'
     | '/inbox'
@@ -184,6 +194,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/atlas'
     | '/backlog'
     | '/costs'
     | '/inbox'
@@ -202,6 +213,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/atlas'
     | '/backlog'
     | '/costs'
     | '/inbox'
@@ -221,6 +233,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AtlasRoute: typeof AtlasRoute
   BacklogRoute: typeof BacklogRoute
   CostsRoute: typeof CostsRoute
   InboxRoute: typeof InboxRoute
@@ -324,6 +337,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BacklogRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/atlas': {
+      id: '/atlas'
+      path: '/atlas'
+      fullPath: '/atlas'
+      preLoaderRoute: typeof AtlasRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -357,6 +377,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AtlasRoute: AtlasRoute,
   BacklogRoute: BacklogRoute,
   CostsRoute: CostsRoute,
   InboxRoute: InboxRoute,
