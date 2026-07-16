@@ -438,6 +438,43 @@ func TestBacklogPageOrdersByFamilyThenIdentifier(t *testing.T) {
 	}
 }
 
+func TestBacklogPageOrdersTodoAndBacklogByCreation(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/created"
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-1", StatusGroup: "started", CreatedAt: "2026-07-01T00:00:00Z"},
+		{Identifier: "COD-2", StatusGroup: "started", CreatedAt: "2026-07-04T00:00:00Z"},
+		{Identifier: "COD-3", StatusGroup: "unstarted", CreatedAt: "2026-07-02T00:00:00Z"},
+		{Identifier: "COD-5", StatusGroup: "backlog", CreatedAt: "2026-07-04T00:00:00Z"},
+		{Identifier: "COD-6", StatusGroup: "backlog", HasChildren: true, CreatedAt: "2026-07-02T00:00:00Z"},
+		{Identifier: "COD-8", StatusGroup: "backlog", Parent: "COD-6", CreatedAt: "2026-07-03T00:00:00Z"},
+		{Identifier: "COD-7", StatusGroup: "backlog", Parent: "COD-6", CreatedAt: "2026-07-05T00:00:00Z"},
+	}); err != nil {
+		t.Fatalf("seed synced: %v", err)
+	}
+	if _, _, err := s.Upsert(repo, "internal", []Issue{
+		{Identifier: "LOOP-1", StatusGroup: "unstarted", CreatedAt: "2026-07-06T00:00:00Z"},
+	}); err != nil {
+		t.Fatalf("seed internal: %v", err)
+	}
+
+	got, _, _, err := s.BacklogPage(repo, BacklogFilter{})
+	if err != nil {
+		t.Fatalf("BacklogPage: %v", err)
+	}
+	want := []string{
+		"COD-1", "COD-2",
+		"LOOP-1", "COD-3",
+		"COD-6", "COD-7", "COD-8", "COD-5",
+	}
+	if !reflect.DeepEqual(idsOf(got), want) {
+		t.Fatalf("order = %v, want %v\n"+
+			"expected: started keeps identifier order, Todo and Backlog rank families "+
+			"newest-created first across sources, an epic surfaces on its newest "+
+			"sub-issue and stays ahead of it, children in identifier order", idsOf(got), want)
+	}
+}
+
 func TestBacklogPageCountsEpicChildren(t *testing.T) {
 	s := testIssues(t)
 	repo := "/repo/childcounts"
