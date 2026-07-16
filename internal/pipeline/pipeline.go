@@ -2590,7 +2590,7 @@ func repairInstruction(id, verdict, handoff, branch, fails, rubricNote, lessonsN
 		brief = ""
 	}
 	return id + " verification FAILED. QA verdict file: " + verdict + ". " + brief + "Failures:\n" +
-		fails + "\n\nYou are on branch " + branch + " with this slice's implementation uncommitted." + rubricNote + lessonsNote + notesNote + " If this is a DEFECT IN THIS SLICE'S OWN code, find the root cause and fix it with minimal, targeted changes, then run the relevant Pest tests to confirm. If the failure is actually a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — change nothing and say so clearly." + codeStyleNote + " Do not commit, push, or open a PR." + ticketCtx
+		fails + "\n\nYou are on branch " + branch + " with this slice's implementation uncommitted." + rubricNote + lessonsNote + notesNote + " If this is a DEFECT IN THIS SLICE'S OWN code, find the root cause and fix it with minimal, targeted changes, then run the relevant tests to confirm. If the failure is actually a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — change nothing and say so clearly." + codeStyleNote + " Do not commit, push, or open a PR." + ticketCtx
 }
 
 func bugfixInstruction(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) string {
