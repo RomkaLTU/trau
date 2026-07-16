@@ -18,6 +18,7 @@ import {
 } from 'lucide-react'
 
 import {
+  AssigneeAvatar,
   PageHeader,
   ProjectScopeGate,
   RepoHealthGate,
@@ -643,6 +644,7 @@ function BacklogRow({
           >
             {entry.source}
           </span>
+          {entry.assignee && <AssigneeAvatar assignee={entry.assignee} />}
         </button>
         {internal && (
           <button
