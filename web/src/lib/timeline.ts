@@ -13,6 +13,7 @@ export interface TimelineTicket {
   title: string
   status: TicketStatus
   source?: string
+  provider?: string
   epicId?: string
   failureClass?: FailureClass
   reason?: string
@@ -53,6 +54,7 @@ interface Leaf {
   title: string
   snapshotState: string
   source?: string
+  provider?: string
   epicId?: string
   reason?: string
 }
@@ -69,6 +71,7 @@ function flatten(items: QueueItem[]): Leaf[] {
           title: sub.title,
           snapshotState: sub.state,
           source: item.source,
+          provider: item.provider,
           epicId: item.id,
         })
       }
@@ -79,6 +82,7 @@ function flatten(items: QueueItem[]): Leaf[] {
       title: item.title ?? '',
       snapshotState: item.status,
       source: item.source,
+      provider: item.provider,
       reason: item.reason,
     })
   }
@@ -94,6 +98,7 @@ function resolve(
     id: leaf.id,
     title: leaf.title,
     source: leaf.source,
+    provider: leaf.provider,
     epicId: leaf.epicId,
     hasRun: run !== undefined,
   }
