@@ -20,6 +20,9 @@ export interface QueueItem {
   // hub-only issue, otherwise the tracker provider. Absent on items queued before
   // the hub recorded it.
   source?: string
+  // provider is a per-item override of the configured routing — it applies only
+  // to this item's run and never persists to config.
+  provider?: string
   status: string
   reason?: string
   sub_issues?: QueueSubIssue[]
@@ -69,6 +72,10 @@ export interface EnqueueRequest {
   // the id up in the tracker.
   kind?: QueueKind
   title?: string
+  provider?: string
+  // front lands the item in the first pending position instead of the back; a
+  // pending item re-queued with front moves to the front instead of conflicting.
+  front?: boolean
 }
 
 export async function enqueue(
