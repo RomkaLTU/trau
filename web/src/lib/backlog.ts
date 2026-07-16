@@ -65,6 +65,7 @@ export interface BacklogResponse {
 export interface BacklogParams {
   state?: string
   label?: string
+  assignee?: string
   source?: string
   q?: string
   limit?: number
@@ -80,6 +81,7 @@ function backlogSearch(params: BacklogParams): string {
   const sp = new URLSearchParams()
   if (params.state) sp.set('state', params.state)
   if (params.label) sp.set('label', params.label)
+  if (params.assignee) sp.set('assignee', params.assignee)
   if (params.source) sp.set('source', params.source)
   if (params.q) sp.set('q', params.q)
   if (params.limit) sp.set('limit', String(params.limit))
