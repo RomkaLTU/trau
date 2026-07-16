@@ -404,18 +404,26 @@ func TestNewWriterRequiresCredentials(t *testing.T) {
 }
 
 func TestNewWriterBuildsDirectClients(t *testing.T) {
-	lw, err := NewWriter("linear", Config{APIKey: "k", Team: "COD"})
+	lw, err := NewWriter("linear", Config{APIKey: "k", Team: "COD", Project: "Trau"})
 	if err != nil {
 		t.Fatalf("linear writer: %v", err)
 	}
-	if _, ok := lw.(*linearWriter); !ok {
-		t.Errorf("linear writer type = %T, want *linearWriter", lw)
+	w, ok := lw.(*linearWriter)
+	if !ok {
+		t.Fatalf("linear writer type = %T, want *linearWriter", lw)
+	}
+	if w.team != "COD" || w.project != "Trau" {
+		t.Errorf("linear writer binding = team %q project %q, want the configured team and project so creates land in them", w.team, w.project)
 	}
 	jw, err := NewWriter("jira", Config{APIKey: "t", Email: "e@x.com", BaseURL: "https://x.atlassian.net", Team: "PROJ"})
 	if err != nil {
 		t.Fatalf("jira writer: %v", err)
 	}
-	if _, ok := jw.(*jiraWriter); !ok {
-		t.Errorf("jira writer type = %T, want *jiraWriter", jw)
+	j, ok := jw.(*jiraWriter)
+	if !ok {
+		t.Fatalf("jira writer type = %T, want *jiraWriter", jw)
+	}
+	if j.project != "PROJ" {
+		t.Errorf("jira writer project = %q, want the configured project key", j.project)
 	}
 }
