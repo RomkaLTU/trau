@@ -15,6 +15,7 @@ import {
   Search,
   Sparkles,
   Tag,
+  Users,
 } from 'lucide-react'
 
 import {
@@ -47,6 +48,8 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from '@/components/ui/popover'
+import { assigneeLabel } from '@/lib/assignee'
+import { assigneesQueryOptions, type AssigneeFacet } from '@/lib/assignees'
 import {
   backlogQueryOptions,
   backlogSections,
@@ -119,7 +122,7 @@ function BacklogPage() {
   const [filters, setFilters] = useQueryStates(backlogFilterParsers, {
     history: 'push',
   })
-  const { q, state, label, source, page } = filters
+  const { q, state, label, assignee, source, page } = filters
 
   // The peeked issue is its own history entry so browser Back closes the drawer
   // without unwinding a filter change; a cold ?issue= link opens it over the list.
@@ -239,6 +242,13 @@ function BacklogPage() {
               repo={repo}
               value={label}
               onChange={(next) => setFilters({ label: next || null, page: null })}
+            />
+            <AssigneeFilter
+              repo={repo}
+              value={assignee}
+              onChange={(next) =>
+                setFilters({ assignee: next || null, page: null })
+              }
             />
             <SegmentedControl
               aria-label="Source"
@@ -526,6 +536,142 @@ function LabelFilter({
                     className="justify-center text-center text-muted-foreground"
                   >
                     Clear label
+                  </CommandItem>
+                </CommandGroup>
+              </>
+            )}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
+function assigneeFilterLabel(value: string, facets: AssigneeFacet[]): string {
+  if (value === 'me') return 'Me'
+  if (value === 'unassigned') return 'Unassigned'
+  return facets.find((f) => f.id === value)?.name ?? value
+}
+
+function AssigneeOption({
+  facet,
+  active,
+  onSelect,
+}: {
+  facet: AssigneeFacet
+  active: boolean
+  onSelect: () => void
+}) {
+  const label = assigneeLabel(facet)
+  return (
+    <CommandItem value={label} onSelect={onSelect}>
+      <Check className={cn('size-4', active ? 'opacity-100' : 'opacity-0')} />
+      <AssigneeAvatar assignee={facet} className="size-5 text-[0.6rem]" />
+      <span className="flex-1 truncate">{label}</span>
+      <span className="text-xs text-muted-foreground tabular-nums">
+        {facet.count}
+      </span>
+    </CommandItem>
+  )
+}
+
+function AssigneeFilter({
+  repo,
+  value,
+  onChange,
+}: {
+  repo: string
+  value: string
+  onChange: (next: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const assignees = useQuery(assigneesQueryOptions(repo))
+  const facets = assignees.data?.assignees ?? []
+  const unassigned = assignees.data?.unassigned ?? 0
+
+  const select = (next: string) => {
+    onChange(next === value ? '' : next)
+    setOpen(false)
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-9 w-48 justify-between"
+          aria-label="Assignee"
+        >
+          <span className="flex min-w-0 items-center gap-1.5">
+            <Users className="text-muted-foreground" />
+            <span className={cn('truncate', !value && 'text-muted-foreground')}>
+              {value ? `Assignee: ${assigneeFilterLabel(value, facets)}` : 'Assignee'}
+            </span>
+          </span>
+          <ChevronsUpDown className="text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-60 p-0">
+        <Command>
+          <CommandInput placeholder="Search assignees…" />
+          <CommandList>
+            <CommandEmpty>
+              {assignees.isLoading
+                ? 'Loading assignees…'
+                : 'No assignees found.'}
+            </CommandEmpty>
+            <CommandGroup>
+              {facets
+                .filter((facet) => facet.me)
+                .map((facet) => (
+                  <AssigneeOption
+                    key="me"
+                    facet={facet}
+                    active={value === 'me'}
+                    onSelect={() => select('me')}
+                  />
+                ))}
+              {unassigned > 0 && (
+                <CommandItem
+                  value="Unassigned"
+                  onSelect={() => select('unassigned')}
+                >
+                  <Check
+                    className={cn(
+                      'size-4',
+                      value === 'unassigned' ? 'opacity-100' : 'opacity-0',
+                    )}
+                  />
+                  <span className="flex-1 truncate">Unassigned</span>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {unassigned}
+                  </span>
+                </CommandItem>
+              )}
+              {facets
+                .filter((facet) => !facet.me)
+                .map((facet) => (
+                  <AssigneeOption
+                    key={facet.id}
+                    facet={facet}
+                    active={value === facet.id}
+                    onSelect={() => select(facet.id)}
+                  />
+                ))}
+            </CommandGroup>
+            {value && (
+              <>
+                <CommandSeparator />
+                <CommandGroup>
+                  <CommandItem
+                    onSelect={() => {
+                      onChange('')
+                      setOpen(false)
+                    }}
+                    className="justify-center text-center text-muted-foreground"
+                  >
+                    Clear assignee
                   </CommandItem>
                 </CommandGroup>
               </>
