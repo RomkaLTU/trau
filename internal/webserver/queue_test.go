@@ -186,6 +186,46 @@ func TestEnqueueDedupeRefused(t *testing.T) {
 	}
 }
 
+func TestEnqueueFrontInsertsAndMovesToFront(t *testing.T) {
+	_, _, ts := queueServer(t, "acme")
+
+	for _, id := range []string{"COD-1", "COD-2"} {
+		res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: id})
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("enqueue %s = %d, want 201", id, res.StatusCode)
+		}
+	}
+
+	front := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: "COD-3", Provider: "codex", Front: true})
+	defer func() { _ = front.Body.Close() }()
+	if front.StatusCode != http.StatusCreated {
+		t.Fatalf("front enqueue = %d, want 201", front.StatusCode)
+	}
+	var out QueueResponse
+	if err := json.NewDecoder(front.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Items) != 3 || out.Items[0].ID != "COD-3" {
+		t.Fatalf("items = %+v, want COD-3 inserted at the front", out.Items)
+	}
+	if out.Items[0].Provider != "codex" {
+		t.Errorf("provider = %q, want codex carried onto the item", out.Items[0].Provider)
+	}
+
+	moved := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: "COD-2", Front: true})
+	defer func() { _ = moved.Body.Close() }()
+	if moved.StatusCode != http.StatusOK {
+		t.Fatalf("front re-enqueue = %d, want 200 for a move-to-front", moved.StatusCode)
+	}
+	if err := json.NewDecoder(moved.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Items) != 3 || out.Items[0].ID != "COD-2" || out.Items[1].ID != "COD-3" {
+		t.Fatalf("items = %+v, want COD-2 moved to the front, not re-added", out.Items)
+	}
+}
+
 func TestEnqueueRefusedForObserveOnlyRepo(t *testing.T) {
 	_, _, ts := queueServer(t, "acme")
 

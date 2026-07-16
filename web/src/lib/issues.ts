@@ -12,9 +12,9 @@ export interface IssueComment {
 }
 
 // Issue is one ticket read store-first from the hub's issue store (ADR 0007): the
-// run-once form confirms it before launching, and the backlog drawer reads its
+// add-ticket dialog confirms it before queuing, and the backlog drawer reads its
 // full content in place. Group is the normalized status bucket (backlog |
-// unstarted | started | done | canceled | unknown) the form uses to warn about an
+// unstarted | started | done | canceled | unknown) the dialog uses to warn about an
 // unusual status. Description and comments are the stored content; source and url
 // come from the store (a synced ticket carries the tracker url, an internal one
 // does not).

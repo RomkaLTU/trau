@@ -92,6 +92,61 @@ func (q *Queue) Add(item queue.Item) ([]queue.Item, error) {
 	return st.items, nil
 }
 
+// AddFront inserts item at the first pending position — behind every running or
+// paused item, so it never displaces one — stamping it pending like Add, and
+// returns the resulting queue. When the same id is already queued pending it is
+// moved to that position instead of refused, adopting the incoming Provider
+// override so the latest gesture describes the run; moved reports which case
+// ran. Any other already-queued status keeps Add's ErrAlreadyQueued refusal.
+func (q *Queue) AddFront(item queue.Item) (items []queue.Item, moved bool, err error) {
+	queueMu.Lock()
+	defer queueMu.Unlock()
+	st, err := q.loadImported()
+	if err != nil {
+		return nil, false, err
+	}
+	for i := range st.items {
+		if st.items[i].ID != item.ID {
+			continue
+		}
+		if st.items[i].Status != queue.StatusPending {
+			return nil, false, queue.ErrAlreadyQueued
+		}
+		existing := st.items[i]
+		existing.Provider = item.Provider
+		st.items = append(st.items[:i], st.items[i+1:]...)
+		st.items = insertAtFirstPending(st.items, existing)
+		if err := q.persist(st); err != nil {
+			return nil, false, err
+		}
+		return st.items, true, nil
+	}
+	item.Status = queue.StatusPending
+	item.QueuedAt = time.Now().UTC()
+	st.items = insertAtFirstPending(st.items, item)
+	if err := q.persist(st); err != nil {
+		return nil, false, err
+	}
+	return st.items, false, nil
+}
+
+// insertAtFirstPending places item where the first pending item sits, appending
+// when nothing is pending, so a front insert lands ahead of the waiting work but
+// behind anything running, paused, or settled.
+func insertAtFirstPending(items []queue.Item, item queue.Item) []queue.Item {
+	idx := len(items)
+	for i := range items {
+		if items[i].Status == queue.StatusPending {
+			idx = i
+			break
+		}
+	}
+	items = append(items, queue.Item{})
+	copy(items[idx+1:], items[idx:])
+	items[idx] = item
+	return items
+}
+
 // Remove drops the queued item with id, keeping the order of the rest, and
 // returns the resulting queue. It reports ErrNotQueued when nothing matches and
 // ErrRunning when the item is currently being drained.
@@ -396,7 +451,7 @@ func (q *Queue) load() (st queueState, err error) {
 	}
 
 	rows, err := q.db.Query(
-		`SELECT id, kind, title, source, status, reason, pid, queued_at FROM queue_items WHERE root = ? ORDER BY position`,
+		`SELECT id, kind, title, source, provider, status, reason, pid, queued_at FROM queue_items WHERE root = ? ORDER BY position`,
 		q.root,
 	)
 	if err != nil {
@@ -406,7 +461,7 @@ func (q *Queue) load() (st queueState, err error) {
 	for rows.Next() {
 		var it queue.Item
 		var kind, queuedAt string
-		if scanErr := rows.Scan(&it.ID, &kind, &it.Title, &it.Source, &it.Status, &it.Reason, &it.PID, &queuedAt); scanErr != nil {
+		if scanErr := rows.Scan(&it.ID, &kind, &it.Title, &it.Source, &it.Provider, &it.Status, &it.Reason, &it.PID, &queuedAt); scanErr != nil {
 			return queueState{}, scanErr
 		}
 		it.Kind = queue.Kind(kind)
@@ -468,9 +523,9 @@ func (q *Queue) persist(st queueState) error {
 			queuedAt = it.QueuedAt.UTC().Format(time.RFC3339Nano)
 		}
 		if _, err := tx.Exec(
-			`INSERT INTO queue_items(root, position, id, kind, title, source, status, reason, pid, queued_at)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			q.root, pos, it.ID, string(it.Kind), it.Title, it.Source, it.Status, it.Reason, it.PID, queuedAt,
+			`INSERT INTO queue_items(root, position, id, kind, title, source, provider, status, reason, pid, queued_at)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			q.root, pos, it.ID, string(it.Kind), it.Title, it.Source, it.Provider, it.Status, it.Reason, it.PID, queuedAt,
 		); err != nil {
 			return errors.Join(err, tx.Rollback())
 		}

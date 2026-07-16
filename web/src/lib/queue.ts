@@ -20,6 +20,9 @@ export interface QueueItem {
   // hub-only issue, otherwise the tracker provider. Absent on items queued before
   // the hub recorded it.
   source?: string
+  // provider is a per-item override of the configured routing — it applies only
+  // to this item's run and never persists to config.
+  provider?: string
   status: string
   reason?: string
   sub_issues?: QueueSubIssue[]
@@ -69,6 +72,10 @@ export interface EnqueueRequest {
   // the id up in the tracker.
   kind?: QueueKind
   title?: string
+  provider?: string
+  // front lands the item in the first pending position instead of the back; a
+  // pending item re-queued with front moves to the front instead of conflicting.
+  front?: boolean
 }
 
 export async function enqueue(
@@ -147,6 +154,30 @@ export async function drain(
   return res.json()
 }
 
+// runNext is the one web launch gesture: make the item the queue's next run,
+// then arm the drain. A fresh id front-inserts and a pending one moves to the
+// front; on the conflict an already-queued id answers instead, a paused item is
+// already parked at the front so arming alone resumes it, and a settled
+// leftover is dropped and re-queued so the ticket runs again.
+export async function runNext(
+  repo: string,
+  req: EnqueueRequest,
+  opts: DrainOptions = {},
+): Promise<QueueResponse> {
+  try {
+    await enqueue(repo, { ...req, front: true })
+  } catch (err) {
+    const { items } = await fetchQueue(repo)
+    const queued = items.find((it) => it.id === req.id)
+    if (!queued) throw err
+    if (queueTerminal(queued.status)) {
+      await dequeue(repo, req.id)
+      await enqueue(repo, { ...req, front: true })
+    }
+  }
+  return drain(repo, true, opts)
+}
+
 // skipResumeApplies reports whether the Skip resume toggle would change anything
 // for this queue, so the Loop card can hide a no-op control. It applies when the
 // queue has already executed (any item past pending — Start restarts it from the
@@ -188,7 +219,7 @@ export interface QueueCounts {
 }
 
 // queueCounts summarizes a queue for the view header: the total registered and
-// how it splits between run-once tickets and epics.
+// how it splits between single tickets and epics.
 export function queueCounts(items: QueueItem[]): QueueCounts {
   const epics = items.filter((it) => it.kind === 'epic').length
   return { total: items.length, tickets: items.length - epics, epics }

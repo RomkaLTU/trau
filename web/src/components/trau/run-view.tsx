@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ChevronRight,
   ExternalLink,
@@ -25,10 +25,10 @@ import { runTitle, usePageTitle } from "@/lib/page-title";
 import { CheckpointError, resetRun } from "@/lib/checkpoints";
 import {
   instancesQueryOptions,
-  startInstance,
   stopInstance,
   type Instance,
 } from "@/lib/instances";
+import { publishQueue, runNext } from "@/lib/queue";
 import { runDetailQueryOptions, type RunDetail } from "@/lib/rundetail";
 import {
   deriveElapsedMs,
@@ -464,6 +464,7 @@ function StartingPlaceholder() {
 
 export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const now = useNow(1000);
   const [stopOpen, setStopOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
@@ -519,8 +520,11 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
     onSuccess: invalidate,
   });
   const resume = useMutation({
-    mutationFn: () => startInstance({ repo, ticket }),
-    onSuccess: invalidate,
+    mutationFn: () => runNext(repo, { id: ticket }),
+    onSuccess: (res) => {
+      publishQueue(queryClient, repo, res);
+      void navigate({ to: "/loop" });
+    },
   });
   const reset = useMutation({
     mutationFn: (force: boolean) => resetRun(repo, ticket, force),

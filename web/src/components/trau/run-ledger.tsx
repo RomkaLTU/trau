@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import { Play, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -15,9 +15,8 @@ import {
 } from '@/components/trau/checkpoint-actions'
 import { ATTENTION_META } from '@/components/trau/overview'
 import { summarize } from '@/components/event-feed'
-import { CheckpointError } from '@/lib/checkpoints'
 import { useAllEvents, useEventFeed, type RepoFeedEvent } from '@/lib/events'
-import { instancesQueryOptions, startInstance } from '@/lib/instances'
+import { instancesQueryOptions } from '@/lib/instances'
 import {
   attentionReason,
   bucketCounts,
@@ -30,6 +29,7 @@ import {
   type LedgerTab,
 } from '@/lib/ledger'
 import { boardPill } from '@/lib/overview'
+import { publishQueue, runNext } from '@/lib/queue'
 import { formatDuration } from '@/lib/runlive'
 import { runsQueryOptions, type Run } from '@/lib/runs'
 import { checkpointSteps, liveSteps, type Step } from '@/lib/steps'
@@ -97,9 +97,6 @@ function EmptyRuns() {
         <p className="relative font-sans text-sm text-muted-foreground">No runs yet.</p>
         <div className="relative flex flex-wrap items-center justify-center gap-2">
           <Button asChild className="font-mono" size="sm">
-            <Link to="/run-once">Run once</Link>
-          </Button>
-          <Button asChild variant="outline" className="font-mono" size="sm">
             <Link to="/loop">Start loop</Link>
           </Button>
         </div>
@@ -187,25 +184,22 @@ function ResumeAction({
   repo,
   ticket,
   onNotice,
-  onConflict,
 }: {
   repo: string
   ticket: string
   onNotice: (notice: CheckpointNotice) => void
-  onConflict: () => void
 }) {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const { setRepo } = useActiveRepo()
   const resume = useMutation({
-    mutationFn: () => startInstance({ repo, ticket }),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['instances'] })
-      void queryClient.invalidateQueries({ queryKey: ['runs', repo] })
+    mutationFn: () => runNext(repo, { id: ticket }),
+    onSuccess: (res) => {
+      publishQueue(queryClient, repo, res)
+      setRepo(repo)
+      void navigate({ to: '/loop' })
     },
     onError: (error) => {
-      if (error instanceof CheckpointError && error.live) {
-        onConflict()
-        return
-      }
       onNotice({
         tone: 'error',
         text: error instanceof Error ? error.message : String(error),
@@ -256,12 +250,7 @@ function AttentionRow({
       <StatusPill state={pill.state} label={pill.label} />
       <span className="font-mono text-xs text-muted-foreground">{attentionReason(run)}</span>
       {meta?.resume ? (
-        <ResumeAction
-          repo={repo}
-          ticket={run.ticket}
-          onNotice={onNotice}
-          onConflict={() => onConflict(repo)}
-        />
+        <ResumeAction repo={repo} ticket={run.ticket} onNotice={onNotice} />
       ) : (
         <RunResetButton
           repo={repo}

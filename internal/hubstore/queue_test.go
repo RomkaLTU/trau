@@ -68,6 +68,102 @@ func TestAddOrdersDedupsAndStamps(t *testing.T) {
 	}
 }
 
+func TestAddFrontInsertsAtFirstPending(t *testing.T) {
+	q := testQueue(t)
+	mustAdd(t, q, "COD-1")
+	mustAdd(t, q, "COD-2")
+	if err := q.MarkRunning("COD-1", 4242); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+
+	items, moved, err := q.AddFront(queue.Item{Kind: queue.KindTicket, ID: "COD-3", Provider: "codex"})
+	if err != nil {
+		t.Fatalf("AddFront: %v", err)
+	}
+	if moved {
+		t.Error("moved = true, want a fresh insert")
+	}
+	if got := ids(items); !reflect.DeepEqual(got, []string{"COD-1", "COD-3", "COD-2"}) {
+		t.Fatalf("order = %v, want COD-3 first pending, behind running COD-1", got)
+	}
+	if items[1].Status != queue.StatusPending || items[1].QueuedAt.IsZero() {
+		t.Errorf("front insert not stamped: %+v", items[1])
+	}
+	if items[1].Provider != "codex" {
+		t.Errorf("provider = %q, want codex", items[1].Provider)
+	}
+}
+
+func TestAddFrontMovesPendingToFront(t *testing.T) {
+	q := testQueue(t)
+	mustAdd(t, q, "COD-1")
+	mustAdd(t, q, "COD-2")
+	mustAdd(t, q, "COD-3")
+
+	items, moved, err := q.AddFront(queue.Item{Kind: queue.KindTicket, ID: "COD-3", Provider: "codex"})
+	if err != nil {
+		t.Fatalf("AddFront: %v", err)
+	}
+	if !moved {
+		t.Error("moved = false, want a move-to-front of the pending item")
+	}
+	if got := ids(items); !reflect.DeepEqual(got, []string{"COD-3", "COD-1", "COD-2"}) {
+		t.Fatalf("order = %v, want [COD-3 COD-1 COD-2]", got)
+	}
+	if items[0].Provider != "codex" {
+		t.Errorf("provider = %q, want the incoming override adopted", items[0].Provider)
+	}
+	if items[0].QueuedAt.IsZero() {
+		t.Error("QueuedAt lost on move")
+	}
+}
+
+func TestAddFrontGuardsNonPending(t *testing.T) {
+	q := testQueue(t)
+	mustAdd(t, q, "COD-1")
+	mustAdd(t, q, "COD-2")
+	if err := q.MarkRunning("COD-1", 4242); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	if err := q.Pause("COD-2", "faulted"); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	if _, _, err := q.AddFront(queue.Item{ID: "COD-1"}); err != queue.ErrAlreadyQueued {
+		t.Fatalf("front re-add of running = %v, want ErrAlreadyQueued", err)
+	}
+	if _, _, err := q.AddFront(queue.Item{ID: "COD-2"}); err != queue.ErrAlreadyQueued {
+		t.Fatalf("front re-add of paused = %v, want ErrAlreadyQueued", err)
+	}
+	items, err := q.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := ids(items); !reflect.DeepEqual(got, []string{"COD-1", "COD-2"}) {
+		t.Fatalf("order = %v, want untouched [COD-1 COD-2]", got)
+	}
+}
+
+func TestProviderPersistsAcrossStores(t *testing.T) {
+	db := testDB(t)
+	first := NewQueue(db, "/repo/acme")
+	if _, err := first.Add(queue.Item{Kind: queue.KindTicket, ID: "COD-1", Provider: "codex"}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	mustAdd(t, first, "COD-2")
+
+	items, err := NewQueue(db, "/repo/acme").Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if items[0].Provider != "codex" {
+		t.Errorf("COD-1 provider = %q, want codex round-tripped", items[0].Provider)
+	}
+	if items[1].Provider != "" {
+		t.Errorf("COD-2 provider = %q, want empty for the config default", items[1].Provider)
+	}
+}
+
 func TestPersistsAcrossStores(t *testing.T) {
 	db := testDB(t)
 	first := NewQueue(db, "/repo/acme")
@@ -326,7 +422,7 @@ func TestImportLegacyQueuePreservesOrderAndSettings(t *testing.T) {
 		OnFault:  queue.OnFaultSkip,
 		Items: []queue.Item{
 			{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusPending, QueuedAt: queuedAt, SubIssues: []queue.SubIssue{{ID: "COD-9", State: "todo"}}},
-			{Kind: queue.KindTicket, ID: "COD-2", Status: queue.StatusPaused, Reason: "was faulted", QueuedAt: queuedAt},
+			{Kind: queue.KindTicket, ID: "COD-2", Status: queue.StatusPaused, Reason: "was faulted", Provider: "codex", QueuedAt: queuedAt},
 		},
 	})
 
@@ -353,6 +449,9 @@ func TestImportLegacyQueuePreservesOrderAndSettings(t *testing.T) {
 	}
 	if items[1].Status != queue.StatusPaused || items[1].Reason != "was faulted" {
 		t.Fatalf("paused item not imported: %+v", items[1])
+	}
+	if items[1].Provider != "codex" {
+		t.Fatalf("provider = %q, want codex imported from queue.json", items[1].Provider)
 	}
 	if _, present := LegacyQueueFile(root); present {
 		t.Error("legacy queue.json still present after a committed import")

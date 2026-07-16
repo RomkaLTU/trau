@@ -3,11 +3,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import {
   ArrowDown,
+  ArrowRight,
   ArrowUp,
   Check,
   ChevronDown,
   ChevronRight,
   ExternalLink,
+  Info,
   ListPlus,
   Plus,
   RefreshCw,
@@ -23,6 +25,7 @@ import { IssueDrawer } from '@/components/issue-drawer'
 import { MakeStartableButton } from '@/components/make-startable-button'
 import { useActiveRepo } from '@/components/trau/active-repo'
 import { AddTicketDialog } from '@/components/trau/add-ticket-dialog'
+import { RepoPicker } from '@/components/trau/repo-picker'
 import { TargetRepoField } from '@/components/trau/target-repo-field'
 import { ConfirmDialog } from '@/components/trau/confirm-dialog'
 import { EmptyState } from '@/components/trau/empty-state'
@@ -32,8 +35,16 @@ import { SegmentedControl } from '@/components/trau/segmented-control'
 import { StatusPill, type RunState } from '@/components/trau/status-pill'
 import { TerminalCard } from '@/components/trau/terminal-card'
 import { cn } from '@/lib/utils'
+import {
+  addByIdState,
+  pendingBehind,
+  runNextCopy,
+  statusWarning,
+} from '@/lib/add-by-id'
+import { configQueryOptions } from '@/lib/config'
 import { addAllLabel, eligibleQueryOptions, planAddAll } from '@/lib/eligible'
 import { useEventFeed } from '@/lib/events'
+import { IssueFetchError, issueQueryOptions } from '@/lib/issues'
 import {
   instancesQueryOptions,
   type Instance,
@@ -54,6 +65,7 @@ import {
   publishQueue,
   queueExecutable,
   queueQueryOptions,
+  runNext as runNextRequest,
   skipResumeApplies,
   type OnFault,
   type QueueItem,
@@ -74,6 +86,8 @@ import {
   type Timeline,
   type TimelineTicket,
 } from '@/lib/timeline'
+
+const NO_OVERRIDE = 'default'
 
 function actionError(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -165,6 +179,20 @@ function InternalTag({ source }: { source?: string }) {
   return (
     <span className="shrink-0 rounded-sm border border-border bg-secondary/60 px-1.5 py-0.5 font-mono text-[0.6rem] uppercase tracking-[0.14em] text-muted-foreground">
       internal
+    </span>
+  )
+}
+
+// ProviderTag surfaces a per-item provider override, so a queued run that will
+// not use the configured routing says so on its row.
+function ProviderTag({ provider }: { provider?: string }) {
+  if (!provider) return null
+  return (
+    <span
+      title="provider · this run only"
+      className="shrink-0 rounded-sm border border-border bg-secondary/60 px-1.5 py-0.5 font-mono text-[0.6rem] text-muted-foreground"
+    >
+      {provider}
     </span>
   )
 }
@@ -339,6 +367,7 @@ function QueueBuilderRow({
           {item.title || '—'}
         </span>
         <InternalTag source={item.source} />
+        <ProviderTag provider={item.provider} />
 
         {isEpic ? (
           <StatusPill state="info" label={`epic · ${done}/${total}`} />
@@ -433,18 +462,55 @@ function LaunchQueueCard({
   const addAllPlan = planAddAll(eligible.data?.tickets ?? [], items)
   const skipResumeShown = skipResumeApplies(items, runs.data?.runs ?? [])
   const [draft, setDraft] = useState('')
+  const [submittedId, setSubmittedId] = useState('')
+  const [provider, setProvider] = useState(NO_OVERRIDE)
   const [expandedIds, setExpandedIds] = useState<string[]>([])
   const [browseOpen, setBrowseOpen] = useState(false)
   const [skipResume, setSkipResume] = useState(false)
   const [onFault, setOnFault] = useState<OnFault>('halt')
 
+  const config = useQuery(configQueryOptions(repo))
+  const providers = [NO_OVERRIDE, ...(config.data?.providers ?? [])]
+  const issue = useQuery(issueQueryOptions(repo, submittedId))
+  const ticket = issue.data
+  const addState = addByIdState(submittedId, ticket, issue.error)
+  const warning = ticket && !addState.wrongProject ? statusWarning(ticket) : null
+  const overrideProvider = provider === NO_OVERRIDE ? undefined : provider
+
   const setQueue = (res: QueueResponse) => publishQueue(queryClient, repo, res)
 
+  const resetAdd = () => {
+    setDraft('')
+    setSubmittedId('')
+    setProvider(NO_OVERRIDE)
+  }
+
+  useEffect(() => {
+    resetAdd()
+  }, [repo])
+
   const add = useMutation({
-    mutationFn: (id: string) => enqueue(repo, { id }),
+    mutationFn: () =>
+      enqueue(repo, { id: submittedId, provider: overrideProvider }),
     onSuccess: (res) => {
       setQueue(res)
-      setDraft('')
+      resetAdd()
+    },
+  })
+
+  // Run next is one gesture: land the ticket in the first pending slot, then arm
+  // the drain. Landing is this page's timeline — the queue response flips the
+  // view to running, never a live-page navigation.
+  const runNext = useMutation({
+    mutationFn: () =>
+      runNextRequest(
+        repo,
+        { id: submittedId, provider: overrideProvider },
+        { no_resume: skipResume && skipResumeShown, on_fault: onFault },
+      ),
+    onSuccess: (res) => {
+      setQueue(res)
+      resetAdd()
     },
   })
 
@@ -485,11 +551,17 @@ function LaunchQueueCard({
   const executable = queueExecutable(builder.queue)
 
   const busy =
-    move.isPending || remove.isPending || add.isPending || addAll.isPending
+    move.isPending ||
+    remove.isPending ||
+    add.isPending ||
+    addAll.isPending ||
+    runNext.isPending
 
-  const submitAdd = () => {
+  // The ticket is fetched for confirmation the moment the user commits an id —
+  // on Enter or on blur — so there's no extra "fetch" click to reach the confirm.
+  const fetchTicket = () => {
     const id = draft.trim().toUpperCase()
-    if (id) add.mutate(id)
+    if (id) setSubmittedId(id)
   }
 
   const toggleExpand = (id: string) =>
@@ -528,27 +600,36 @@ function LaunchQueueCard({
                   value={draft}
                   onChange={(e) => {
                     setDraft(e.target.value)
+                    if (
+                      submittedId &&
+                      e.target.value.trim().toUpperCase() !== submittedId
+                    ) {
+                      setSubmittedId('')
+                    }
                     if (add.error) add.reset()
+                    if (runNext.error) runNext.reset()
                   }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
                       e.preventDefault()
-                      submitAdd()
+                      fetchTicket()
                     }
                   }}
+                  onBlur={fetchTicket}
                   placeholder="COD-### (ticket or epic)"
+                  autoComplete="off"
+                  spellCheck={false}
                   className="w-56 rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:outline-none"
                 />
                 <Button
                   type="button"
-                  variant="outline"
+                  variant={addState.confirmed ? 'outline' : 'default'}
                   size="sm"
                   className="font-mono"
-                  onClick={submitAdd}
-                  disabled={add.isPending || draft.trim() === ''}
+                  onClick={fetchTicket}
+                  disabled={issue.isFetching || draft.trim() === ''}
                 >
-                  <Plus className="size-4" aria-hidden="true" />
-                  {add.isPending ? 'Adding…' : 'Add'}
+                  {issue.isFetching ? 'Fetching…' : 'Fetch ticket'}
                 </Button>
                 <Button
                   type="button"
@@ -574,16 +655,11 @@ function LaunchQueueCard({
                   </Button>
                 )}
               </div>
-              {add.error ? (
-                <p className="font-mono text-xs text-fail" role="alert">
-                  {actionError(add.error)}
-                </p>
-              ) : (
-                <p className="font-sans text-xs leading-relaxed text-muted-foreground">
-                  Mix tickets and epics. Epics expand into their remaining
-                  sub-issues at run time. Runs top to bottom.
-                </p>
-              )}
+              <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+                Press Enter to fetch the ticket for confirmation before
+                anything is queued. Epics are taken whole — all remaining
+                sub-issues.
+              </p>
               {addAll.error ? (
                 <p className="font-mono text-xs text-fail" role="alert">
                   {actionError(addAll.error)}
@@ -600,6 +676,191 @@ function LaunchQueueCard({
                 </p>
               ) : null}
             </div>
+
+            {issue.isFetching && submittedId !== '' && (
+              <div
+                aria-busy="true"
+                className="flex flex-col gap-2 rounded-md border border-border bg-secondary/30 px-3 py-3"
+              >
+                <div className="flex items-center gap-3">
+                  <span className="h-3 w-16 animate-pulse rounded bg-muted" />
+                  <span className="h-3 w-2/3 animate-pulse rounded bg-muted" />
+                </div>
+                <span className="h-3 w-24 animate-pulse rounded bg-muted" />
+              </div>
+            )}
+
+            {!issue.isFetching && issue.error && (
+              <FetchError error={issue.error} id={submittedId} />
+            )}
+
+            {addState.confirmed && ticket && (
+              <div
+                className={cn(
+                  'flex flex-col gap-3 rounded-md border px-3 py-3',
+                  addState.wrongProject
+                    ? 'border-fail/40 bg-fail/5'
+                    : 'border-primary/40 bg-primary/5',
+                )}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={cn(
+                      'font-mono text-sm',
+                      addState.wrongProject ? 'text-fail' : 'text-primary',
+                    )}
+                  >
+                    {ticket.id}
+                  </span>
+                  <span className="font-sans text-sm text-foreground">
+                    {ticket.title}
+                  </span>
+                  {ticket.has_children && (
+                    <span className="inline-flex shrink-0 items-center gap-1 font-mono text-[0.7rem] text-info">
+                      <span aria-hidden="true">◆</span>
+                      epic · runs all remaining sub-issues
+                    </span>
+                  )}
+                </div>
+                <dl className="flex flex-wrap gap-x-6 gap-y-1 font-mono text-xs">
+                  <div className="flex items-center gap-2">
+                    <dt className="text-muted-foreground">status</dt>
+                    <dd className="text-foreground">{ticket.status || '—'}</dd>
+                  </div>
+                  {ticket.project && (
+                    <div className="flex items-center gap-2">
+                      <dt className="text-muted-foreground">project</dt>
+                      <dd
+                        className={
+                          addState.wrongProject
+                            ? 'text-fail'
+                            : 'text-foreground'
+                        }
+                      >
+                        {ticket.project}
+                      </dd>
+                    </div>
+                  )}
+                  {ticket.labels.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      <dt className="text-muted-foreground">labels</dt>
+                      <dd className="flex flex-wrap gap-1.5">
+                        {ticket.labels.map((label) => (
+                          <span
+                            key={label}
+                            className="rounded border border-border bg-muted/60 px-1.5 py-0.5 text-muted-foreground"
+                          >
+                            {label}
+                          </span>
+                        ))}
+                      </dd>
+                    </div>
+                  )}
+                </dl>
+                {addState.wrongProject ? (
+                  <p
+                    role="alert"
+                    className="flex items-start gap-2 rounded-md border border-fail/40 bg-fail/5 px-2.5 py-2 font-sans text-xs leading-relaxed text-fail"
+                  >
+                    <TriangleAlert
+                      className="mt-0.5 size-3.5 shrink-0"
+                      aria-hidden="true"
+                    />
+                    <span>
+                      {ticket.id} belongs to another project
+                      {ticket.project ? ` (${ticket.project})` : ''}, not{' '}
+                      {repo}. Switch to that project's repo to run it.
+                    </span>
+                  </p>
+                ) : (
+                  warning && (
+                    <p
+                      className={cn(
+                        'flex items-start gap-2 rounded-md border px-2.5 py-2 font-sans text-xs leading-relaxed',
+                        warning.tone === 'warn'
+                          ? 'border-warn/40 bg-warn/5 text-warn'
+                          : 'border-border bg-secondary/40 text-muted-foreground',
+                      )}
+                    >
+                      {warning.tone === 'warn' ? (
+                        <TriangleAlert
+                          className="mt-0.5 size-3.5 shrink-0"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <Info
+                          className="mt-0.5 size-3.5 shrink-0"
+                          aria-hidden="true"
+                        />
+                      )}
+                      <span>{warning.text}</span>
+                    </p>
+                  )
+                )}
+              </div>
+            )}
+
+            {addState.canQueue && (
+              <div className="flex flex-col gap-4 rounded-md border border-border bg-secondary/20 px-3 py-3">
+                <div className="flex flex-col gap-1.5">
+                  <RepoPicker
+                    repos={providers}
+                    value={provider}
+                    onChange={setProvider}
+                    label="provider · this run only"
+                  />
+                  <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+                    Reverts when the run ends.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <p className="flex items-center gap-2 font-mono text-xs text-muted-foreground">
+                    <ArrowRight
+                      className="size-3.5 text-teal"
+                      aria-hidden="true"
+                    />
+                    <span>
+                      {runNextCopy(
+                        submittedId,
+                        pendingBehind(items, submittedId),
+                      )}
+                    </span>
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="font-mono"
+                      onClick={() => runNext.mutate()}
+                      disabled={runNext.isPending || add.isPending}
+                    >
+                      {runNext.isPending ? 'Starting…' : 'Run next'}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="font-mono"
+                      onClick={() => add.mutate()}
+                      disabled={add.isPending || runNext.isPending}
+                    >
+                      <Plus className="size-4" aria-hidden="true" />
+                      {add.isPending ? 'Adding…' : 'Add to queue'}
+                    </Button>
+                  </div>
+                  {add.error ? (
+                    <p className="font-mono text-xs text-fail" role="alert">
+                      {actionError(add.error)}
+                    </p>
+                  ) : null}
+                  {runNext.error ? (
+                    <p className="font-mono text-xs text-fail" role="alert">
+                      {actionError(runNext.error)}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            )}
 
             {builder.queue.length === 0 ? (
               <EmptyState
@@ -685,6 +946,61 @@ function LaunchQueueCard({
         />
       ) : null}
     </div>
+  )
+}
+
+function FetchError({ error, id }: { error: unknown; id: string }) {
+  const kind = error instanceof IssueFetchError ? error.kind : 'error'
+
+  if (kind === 'not-found') {
+    return (
+      <div
+        role="alert"
+        className="flex items-start gap-2.5 rounded-md border border-fail/40 bg-fail/5 px-3 py-3"
+      >
+        <TriangleAlert
+          className="mt-0.5 size-3.5 shrink-0 text-fail"
+          aria-hidden="true"
+        />
+        <div className="flex flex-col gap-0.5">
+          <p className="font-mono text-sm text-foreground">{id} not found</p>
+          <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+            Check the ticket id and that it exists in this repo's tracker.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  if (kind === 'no-tracker') {
+    return (
+      <div
+        role="alert"
+        className="flex items-start gap-2.5 rounded-md border border-warn/40 bg-warn/5 px-3 py-3"
+      >
+        <TriangleAlert
+          className="mt-0.5 size-3.5 shrink-0 text-warn"
+          aria-hidden="true"
+        />
+        <div className="flex flex-col gap-1">
+          <p className="font-mono text-sm text-foreground">
+            No direct tracker for this repo
+          </p>
+          <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+            Confirming a ticket needs direct tracker credentials. You can still
+            queue by id, or add credentials in{' '}
+            <Link to="/settings" className="text-primary hover:underline">
+              settings
+            </Link>
+            .
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <p className="font-mono text-sm text-destructive">{actionError(error)}</p>
   )
 }
 
@@ -934,6 +1250,7 @@ function PendingTicketRow({
         {ticket.title || '—'}
       </span>
       <InternalTag source={ticket.source} />
+      <ProviderTag provider={ticket.provider} />
       <StatusPill state="todo" label="pending" className="shrink-0" />
     </li>
   )

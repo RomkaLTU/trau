@@ -1,32 +1,9 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, redirect } from '@tanstack/react-router'
 
-import { Eyebrow } from '@/components/trau/eyebrow'
-import { RunOnce } from '@/components/trau/run-once'
-import { standardTitle, usePageTitle } from '@/lib/page-title'
-import { reposQueryOptions } from '@/lib/runs'
-
+// The Queue is the web's only start path (ADR 0015): Run next on the Loop card
+// replaced the direct-spawn Run once page. Old links land there.
 export const Route = createFileRoute('/run-once')({
-  component: RunOncePage,
-  loader: ({ context }) => context.queryClient.ensureQueryData(reposQueryOptions),
+  beforeLoad: () => {
+    throw redirect({ to: '/loop' })
+  },
 })
-
-function RunOncePage() {
-  usePageTitle(standardTitle('Run once'))
-  return (
-    <div className="flex flex-col gap-8">
-      <header className="flex flex-col gap-2">
-        <Eyebrow glyph="action" className="text-primary">
-          SOLO MODE
-        </Eyebrow>
-        <h1 className="text-balance text-2xl font-semibold tracking-tight text-foreground">
-          Run once
-        </h1>
-        <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
-          Drive one ticket through build → verify → merge.
-        </p>
-      </header>
-
-      <RunOnce />
-    </div>
-  )
-}

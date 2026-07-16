@@ -20,8 +20,9 @@ const KindAgentStart = "agent_start"
 const KindBuildNoSkills = "build_no_skills"
 
 // KindSpawnFailed marks a hub-spawned child that exited before it could register
-// or write a checkpoint — dead on arrival. It carries the child's exit code and a
-// tail of its stderr so the failure is diagnosable from the web UI.
+// or write a checkpoint — dead on arrival. The retired direct spawn path was its
+// only emitter (ADR 0015); the name documents rows older stores still hold and
+// the web feed still renders.
 const KindSpawnFailed = "spawn_failed"
 
 // Event is one structured log record. Fields carries action-specific detail

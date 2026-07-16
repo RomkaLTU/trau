@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Eye, Play, RefreshCw, Square } from "lucide-react";
+import { Eye, RefreshCw, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useActiveRepo } from "@/components/trau/active-repo";
@@ -13,7 +13,7 @@ import { TerminalCard } from "@/components/trau/terminal-card";
 import { cn } from "@/lib/utils";
 import { useAttentionRuns } from "@/lib/attention";
 import { costsQueryOptions } from "@/lib/costs";
-import { startInstance, stopInstance } from "@/lib/instances";
+import { stopInstance } from "@/lib/instances";
 import {
   activeLoopCount,
   attentionPill,
@@ -24,6 +24,7 @@ import {
   useRepoActivity,
   type LiveLoop,
 } from "@/lib/overview";
+import { publishQueue, runNext } from "@/lib/queue";
 import { runsQueryOptions, type FailureClass, type Run } from "@/lib/runs";
 import { liveSteps } from "@/lib/steps";
 
@@ -148,12 +149,6 @@ export function LaunchActions() {
   return (
     <div className="flex items-center gap-2">
       <Button asChild className="font-mono">
-        <Link to="/run-once">
-          <Play className="size-4" aria-hidden="true" />
-          Run once
-        </Link>
-      </Button>
-      <Button asChild variant="outline" className="font-mono">
         <Link to="/loop">
           <RefreshCw className="size-4" aria-hidden="true" />
           Start loop
@@ -328,20 +323,12 @@ function LiveLoops() {
       <EmptyState
         message="No loops running right now. Point trau at a ticket to watch it work."
         actions={
-          <>
-            <Button asChild size="sm" className="font-mono">
-              <Link to="/run-once">
-                <Play className="size-4" aria-hidden="true" />
-                Run once
-              </Link>
-            </Button>
-            <Button asChild variant="outline" size="sm" className="font-mono">
-              <Link to="/loop">
-                <RefreshCw className="size-4" aria-hidden="true" />
-                Start loop
-              </Link>
-            </Button>
-          </>
+          <Button asChild size="sm" className="font-mono">
+            <Link to="/loop">
+              <RefreshCw className="size-4" aria-hidden="true" />
+              Start loop
+            </Link>
+          </Button>
         }
       />
     );
@@ -390,12 +377,10 @@ function NeedsAttention() {
   const liveLoop = loops[0];
 
   const resume = useMutation({
-    mutationFn: (ticket: string) => startInstance({ repo: repo ?? "", ticket }),
-    onSuccess: (_res, ticket) => {
-      void navigate({
-        to: "/live/$repo/$ticket",
-        params: { repo: repo ?? "", ticket },
-      });
+    mutationFn: (ticket: string) => runNext(repo ?? "", { id: ticket }),
+    onSuccess: (res) => {
+      publishQueue(queryClient, repo ?? "", res);
+      void navigate({ to: "/loop" });
     },
   });
 
