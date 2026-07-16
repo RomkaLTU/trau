@@ -89,6 +89,46 @@ func TestLinearWriterCreateIssue(t *testing.T) {
 	if create.Variables["title"] != "Follow-up: COD-9 quarantine" {
 		t.Errorf("title = %v, want the drafted title", create.Variables["title"])
 	}
+	lookup := lastLinearReq(*reqs, "query ProjectsByName")
+	if lookup == nil || lookup.Variables["name"] != "Trau" {
+		t.Fatalf("ProjectByName not sent with the repo's project name: %+v", lookup)
+	}
+	if create.Variables["projectId"] != "proj-1" {
+		t.Errorf("projectId = %v, want the resolved project id so the ownership guard accepts the issue", create.Variables["projectId"])
+	}
+}
+
+func TestLinearWriterCreateWithoutProject(t *testing.T) {
+	t.Run("no configured project omits the lookup and the field", func(t *testing.T) {
+		w, reqs := fakeLinearWriter(t)
+		w.project = ""
+
+		if _, err := w.CreateIssue(context.Background(), IssueDraft{Title: "unscoped"}); err != nil {
+			t.Fatalf("CreateIssue error: %v", err)
+		}
+		if lastLinearReq(*reqs, "query ProjectsByName") != nil {
+			t.Error("ProjectByName sent for a repo with no configured project")
+		}
+		create := lastLinearReq(*reqs, "mutation IssueCreate")
+		if create == nil {
+			t.Fatal("no IssueCreate mutation was sent")
+		}
+		if got := create.Variables["projectId"]; got != nil {
+			t.Errorf("projectId = %v, want it omitted", got)
+		}
+	})
+
+	t.Run("unresolvable project fails the create", func(t *testing.T) {
+		w, reqs := fakeLinearWriter(t)
+		w.project = "Ghost"
+
+		if _, err := w.CreateIssue(context.Background(), IssueDraft{Title: "lost"}); err == nil {
+			t.Fatal("CreateIssue with an unresolvable project should error — a project-less issue cannot be queued here")
+		}
+		if lastLinearReq(*reqs, "mutation IssueCreate") != nil {
+			t.Error("IssueCreate sent despite the failed project resolution")
+		}
+	})
 }
 
 func TestLinearWriterCreateUnderParent(t *testing.T) {
