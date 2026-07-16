@@ -791,6 +791,36 @@ func TestRecordErrorOnFirstSyncInserts(t *testing.T) {
 	}
 }
 
+func TestClearErrorPreservesLastGoodSync(t *testing.T) {
+	s := testIssues(t)
+	if err := s.RecordResult("/repo/acme", SyncResult{
+		Issues: 3, Comments: 5, Cursor: "2026-07-10T00:00:00Z", SyncedAt: "2026-07-11T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("RecordResult: %v", err)
+	}
+	if err := s.RecordError("/repo/acme", "linear: no api key"); err != nil {
+		t.Fatalf("RecordError: %v", err)
+	}
+
+	if err := s.ClearError("/repo/acme"); err != nil {
+		t.Fatalf("ClearError: %v", err)
+	}
+	st, err := s.SyncState("/repo/acme")
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	if st.LastError != "" {
+		t.Fatalf("last error = %q, want cleared", st.LastError)
+	}
+	if st.Cursor != "2026-07-10T00:00:00Z" || st.LastSyncedAt != "2026-07-11T00:00:00Z" || st.LastIssues != 3 {
+		t.Fatalf("state = %+v, want the last good cursor/synced/counts preserved", st)
+	}
+
+	if err := s.ClearError("/repo/never-synced"); err != nil {
+		t.Fatalf("ClearError on a repo with no bookkeeping: %v", err)
+	}
+}
+
 func TestSyncBindingAndResultRoundTrip(t *testing.T) {
 	s := testIssues(t)
 

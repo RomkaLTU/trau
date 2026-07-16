@@ -80,7 +80,7 @@ func (s *Server) repoFreshness(repo registry.Repo) *RepoFreshness {
 	count, _ := s.stores.Issues().Count(repo.Root)
 	syncing := s.syncer.syncing(repo.Root)
 	return &RepoFreshness{
-		State:        deriveHealthState(s.repoConfigured(repo), syncing, st),
+		State:        deriveHealthState(s.repoActiveProvider(repo), syncing, st),
 		LastSyncedAt: st.LastSyncedAt,
 		Syncing:      syncing,
 		LastError:    st.LastError,

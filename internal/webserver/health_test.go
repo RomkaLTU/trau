@@ -55,8 +55,9 @@ func getHealth(t *testing.T, ts *httptest.Server, name string) (int, RepoHealth)
 }
 
 const (
-	linearINI = "TRACKER_PROVIDER=linear\nLINEAR_API_KEY=k\nLINEAR_TEAM=COD\n"
-	jiraINI   = "JIRA_BASE_URL=https://acme.atlassian.net\nJIRA_EMAIL=dev@acme.io\nJIRA_API_TOKEN=tok\n"
+	linearINI   = "TRACKER_PROVIDER=linear\nLINEAR_API_KEY=k\nLINEAR_TEAM=COD\n"
+	jiraINI     = "JIRA_BASE_URL=https://acme.atlassian.net\nJIRA_EMAIL=dev@acme.io\nJIRA_API_TOKEN=tok\n"
+	internalINI = "TRACKER_PROVIDER=internal\n"
 )
 
 func TestDeriveHealthState(t *testing.T) {
@@ -66,21 +67,23 @@ func TestDeriveHealthState(t *testing.T) {
 		LastError:    "linear: issue not found",
 	}
 	tests := []struct {
-		name       string
-		configured bool
-		syncing    bool
-		st         hubstore.SyncState
-		want       RepoHealthState
+		name     string
+		provider string
+		syncing  bool
+		st       hubstore.SyncState
+		want     RepoHealthState
 	}{
-		{"a pull in flight wins over the last outcome", true, true, failedAfterGood, HealthSyncing},
-		{"a recorded error is sync-failed over a synced stamp", true, false, failedAfterGood, HealthSyncFailed},
-		{"a clean synced stamp is ready", true, false, synced, HealthReady},
-		{"configured with no sync bookkeeping is never-synced", true, false, hubstore.SyncState{}, HealthNeverSynced},
-		{"unconfigured with no sync bookkeeping", false, false, hubstore.SyncState{}, HealthUnconfigured},
+		{"a pull in flight wins over the last outcome", "linear", true, failedAfterGood, HealthSyncing},
+		{"a recorded error is sync-failed over a synced stamp", "linear", false, failedAfterGood, HealthSyncFailed},
+		{"a clean synced stamp is ready", "linear", false, synced, HealthReady},
+		{"configured with no sync bookkeeping is never-synced", "linear", false, hubstore.SyncState{}, HealthNeverSynced},
+		{"unconfigured with no sync bookkeeping", "", false, hubstore.SyncState{}, HealthUnconfigured},
+		{"an internal provider is ready with no bookkeeping", "internal", false, hubstore.SyncState{}, HealthReady},
+		{"an internal provider sheds a stale sync error", "internal", false, failedAfterGood, HealthReady},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := deriveHealthState(tc.configured, tc.syncing, tc.st); got != tc.want {
+			if got := deriveHealthState(tc.provider, tc.syncing, tc.st); got != tc.want {
 				t.Fatalf("state = %q, want %q", got, tc.want)
 			}
 		})
@@ -129,6 +132,23 @@ func TestRepoHealthSyncFailedMelga(t *testing.T) {
 	}
 	if h.LastError != "linear: issue not found" {
 		t.Fatalf("last error = %q, want the recorded failure surfaced", h.LastError)
+	}
+}
+
+// TestRepoHealthInternalShedsStaleError is the filters-demo case: a linear error
+// recorded before the wizard wrote TRACKER_PROVIDER=internal. An internal repo's
+// issues live in the hub store, so health must read ready — never sync-failed —
+// even with the stale error still on its bookkeeping row.
+func TestRepoHealthInternalShedsStaleError(t *testing.T) {
+	s, ts := healthServer(t)
+	root := registerRepoAt(t, s, "filters-demo", internalINI)
+	if err := s.stores.Issues().RecordError(root, "linear: no api key"); err != nil {
+		t.Fatalf("RecordError: %v", err)
+	}
+
+	_, h := getHealth(t, ts, "filters-demo")
+	if h.State != HealthReady {
+		t.Fatalf("state = %q, want ready for an internal-provider repo", h.State)
 	}
 }
 
@@ -198,9 +218,10 @@ func TestReposAndHealthAgree(t *testing.T) {
 	if err := s.stores.Issues().RecordError(melga, "linear: issue not found"); err != nil {
 		t.Fatalf("RecordError: %v", err)
 	}
+	registerRepoAt(t, s, "notes", internalINI)
 
 	views := getRepos(t, ts)
-	for _, name := range []string{"fresh", "loop", "melga"} {
+	for _, name := range []string{"fresh", "loop", "melga", "notes"} {
 		rv := findRepoView(t, views, name)
 		if rv.Freshness == nil {
 			t.Fatalf("%s: freshness absent on the repos list", name)

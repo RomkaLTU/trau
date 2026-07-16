@@ -160,10 +160,16 @@ func (s *Server) dropFromQueue(root string, ids []string) {
 // incremental off the stored cursor — only issues updated since the last sync —
 // falling back to a full Project pull when the cursor is empty. It is the shared
 // core of the sync endpoint, the sync that fires on repo registration, and the
-// background sync loop.
+// background sync loop. An explicitly internal provider resolves no reader and
+// never records an outcome, so any sync error a previous provider stamped is
+// cleared here — otherwise nothing would ever run to clear it and it would pin
+// health at sync-failed.
 func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse, error) {
 	res, err := s.resolveReader(repo)
 	if err != nil {
+		if errors.Is(err, tracker.ErrReaderUnavailable) && res.provider == "internal" && res.explicit {
+			_ = s.stores.Issues().ClearError(repo.Root)
+		}
 		return SyncResponse{}, err
 	}
 	store := s.stores.Issues()

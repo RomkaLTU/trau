@@ -31,37 +31,41 @@ type RepoHealth struct {
 	IssueCount   int             `json:"issue_count"`
 }
 
-// deriveHealthState reduces a repo's raw signals to its health state. A pull in
-// flight reads as syncing whatever the last outcome; a recorded error is
-// sync-failed even when a prior pull left a synced stamp — the melga case, where
-// Jira credentials with an unset provider record a linear error over an otherwise
-// healthy-looking repo; a synced stamp with no error is ready; and a repo with no
-// sync bookkeeping is never-synced when its tracker is configured and
-// unconfigured when it is not.
-func deriveHealthState(configured, syncing bool, st hubstore.SyncState) RepoHealthState {
+// deriveHealthState reduces a repo's raw signals to its health state. An
+// explicitly internal provider is ready whatever the bookkeeping says: its issues
+// live in the hub store (ADR 0007), there is no pull to fail, and any recorded
+// error is a leftover from a previous provider. Otherwise a pull in flight reads
+// as syncing whatever the last outcome; a recorded error is sync-failed even when
+// a prior pull left a synced stamp — the melga case, where Jira credentials with
+// an unset provider record a linear error over an otherwise healthy-looking repo;
+// a synced stamp with no error is ready; and a repo with no sync bookkeeping is
+// never-synced when its tracker is configured and unconfigured when it is not.
+func deriveHealthState(provider string, syncing bool, st hubstore.SyncState) RepoHealthState {
 	switch {
+	case provider == "internal":
+		return HealthReady
 	case syncing:
 		return HealthSyncing
 	case st.LastError != "":
 		return HealthSyncFailed
 	case st.LastSyncedAt != "":
 		return HealthReady
-	case configured:
+	case provider != "":
 		return HealthNeverSynced
 	default:
 		return HealthUnconfigured
 	}
 }
 
-// repoConfigured reports whether a repo has an effective tracker-provider config:
-// an explicit TRACKER_PROVIDER, or credentials that establish a provider on their
-// own (present Jira credentials imply Jira). Without either, sync has nothing to
-// run as and the repo is unconfigured. It reuses the layered-config read the
-// inspection report is built from.
-func (s *Server) repoConfigured(repo registry.Repo) bool {
+// repoActiveProvider is the effective tracker provider a repo's layered config
+// establishes: an explicit TRACKER_PROVIDER, or credentials that establish a
+// provider on their own (present Jira credentials imply Jira). Empty means no
+// effective tracker-provider config — the repo is unconfigured. It reuses the
+// layered-config read the inspection report is built from.
+func (s *Server) repoActiveProvider(repo registry.Repo) string {
 	projectPath, userPath := s.repoConfigPaths(repo)
 	cfg, sources, _ := config.LoadLayeredWithSources(projectPath, userPath, "", "")
-	return activeProviderFrom(cfg, sources) != ""
+	return activeProviderFrom(cfg, sources)
 }
 
 // repoHealth builds the health resource for one repo. It reads the same signals
@@ -73,7 +77,7 @@ func (s *Server) repoHealth(repo registry.Repo) RepoHealth {
 	syncing := s.syncer.syncing(repo.Root)
 	return RepoHealth{
 		Repo:         repo.Name,
-		State:        deriveHealthState(s.repoConfigured(repo), syncing, st),
+		State:        deriveHealthState(s.repoActiveProvider(repo), syncing, st),
 		LastSyncedAt: st.LastSyncedAt,
 		LastError:    st.LastError,
 		IssueCount:   count,

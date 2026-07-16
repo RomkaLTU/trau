@@ -262,6 +262,59 @@ func TestSyncWithoutCredentials(t *testing.T) {
 	}
 }
 
+func TestSyncInternalProviderClearsStaleError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	root := filepath.Dir(filepath.Dir(runsDir))
+	writeRepoINI(t, root, "TRACKER_PROVIDER=internal\n")
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+	s.home = home
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	store := testStoresAt(t, home).Issues()
+	if err := store.RecordError(root, "linear: no api key"); err != nil {
+		t.Fatalf("RecordError: %v", err)
+	}
+
+	res, _ := postSync(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", res.StatusCode)
+	}
+	st, err := store.SyncState(root)
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	if st.LastError != "" {
+		t.Fatalf("last error = %q, want cleared for an explicit internal provider", st.LastError)
+	}
+}
+
+func TestSyncImplicitInternalKeepsError(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	root := filepath.Dir(filepath.Dir(runsDir))
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+	s.home = home
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	store := testStoresAt(t, home).Issues()
+	if err := store.RecordError(root, "linear: 500"); err != nil {
+		t.Fatalf("RecordError: %v", err)
+	}
+
+	res, _ := postSync(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", res.StatusCode)
+	}
+	if st, _ := store.SyncState(root); st.LastError != "linear: 500" {
+		t.Fatalf("last error = %q, want the recorded failure kept", st.LastError)
+	}
+}
+
 func TestSyncTrackerErrorRecordsAndReports(t *testing.T) {
 	fake := &fakeReader{syncErr: errors.New("linear: 500")}
 	ts, root, store := syncServer(t, fake)
