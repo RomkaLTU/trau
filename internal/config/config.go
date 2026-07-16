@@ -3,16 +3,17 @@
 // Configuration is layered. From lowest to highest precedence:
 //
 //  1. built-in defaults
-//  2. local config file (./trau.ini, or TRAU_ENV)
-//  3. project config file (<repo>/.trau.ini)
-//  4. user config file (~/.trau.ini)
+//  2. user config file (~/.trau.ini)
+//  3. local config file (./trau.ini, or TRAU_ENV)
+//  4. project config file (<repo>/.trau.ini)
 //  5. process environment variables (a bare KEY, or the collision-safe
 //     TRAU_<KEY> alias which wins over the bare name)
 //  6. explicit CLI overrides (e.g. --provider)
 //
 // The env files are parsed (KEY=value, with # comments) rather than executed,
-// so they can never run arbitrary shell. This lets each target project ship its
-// own project-level config while users keep personal/machine overrides at home.
+// so they can never run arbitrary shell. The home file is the personal/machine
+// baseline; a repo's own config always beats it, so a global credential or knob
+// can never silently shadow the project-specific one (ADR 0016).
 package config
 
 import (
@@ -496,7 +497,7 @@ func LoadWithProvider(path, provider string) (Config, error) {
 //
 // Precedence (lowest to highest):
 //
-//	defaults < localPath < projectPath < userPath < env vars < provider arg.
+//	defaults < userPath < localPath < projectPath < env vars < provider arg.
 //
 // A missing path is not an error. Provider-local config files named by
 // CLAUDE_CONFIG/CODEX_CONFIG/KIMI_CONFIG are resolved relative to the layer
@@ -540,7 +541,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		if v := os.Getenv(key); v != "" {
 			return v, envLayer{name: LayerEnv}
 		}
-		for _, layer := range []envLayer{userLayer, projLayer, localLayer} {
+		for _, layer := range []envLayer{projLayer, localLayer, userLayer} {
 			if v, ok := layer.file[key]; ok {
 				return v, layer
 			}

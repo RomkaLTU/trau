@@ -3,9 +3,10 @@
 # Trau uses a layered config model. From lowest to highest precedence:
 #
 #   1. built-in defaults
-#   2. local config file  ->  ./trau.ini (or TRAU_ENV) when no target repo is given
-#   3. project config file -> <repo>/.trau.ini  (repo-specific facts)
-#   4. user config file    -> ~/.trau.ini      (personal / machine overrides)
+#   2. user config file    -> ~/.trau.ini      (personal / machine baseline)
+#   3. local config file  ->  ./trau.ini (or TRAU_ENV) when no target repo is given
+#   4. project config file -> <repo>/.trau.ini  (repo-specific facts — always win
+#      over the home baseline, so a global credential can never shadow a repo's own)
 #   5. process environment variables — any KEY below, or its collision-safe
 #      TRAU_<KEY> alias (e.g. TRAU_PROVIDER, TRAU_REMOTE) which wins over the
 #      bare name and avoids clashing with a generic PROVIDER/REMOTE in your shell

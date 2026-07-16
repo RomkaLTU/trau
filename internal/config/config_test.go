@@ -129,8 +129,8 @@ func TestResolveConfigItemsLayerPrecedence(t *testing.T) {
 		byKey[it.Key] = it
 	}
 
-	if got := byKey["BASE_BRANCH"]; got.Layer != LayerUser || got.Value != "user-main" {
-		t.Fatalf("BASE_BRANCH: want user/user-main, got %s/%s", got.Layer, got.Value)
+	if got := byKey["BASE_BRANCH"]; got.Layer != LayerProject || got.Value != "project-main" {
+		t.Fatalf("BASE_BRANCH: want project/project-main, got %s/%s", got.Layer, got.Value)
 	}
 	if got := byKey["PROVIDER"]; got.Layer != LayerProject || got.Value != "codex" {
 		t.Fatalf("PROVIDER: want project/codex, got %s/%s", got.Layer, got.Value)
