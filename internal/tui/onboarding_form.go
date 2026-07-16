@@ -242,6 +242,9 @@ func (m onboardingModel) ciDescription() string {
 		}
 		return "Auto-detected on GitHub — this branch requires PR status checks.\nPre-selected below; press enter to accept or change it."
 	case "workflows":
+		if m.ciDet.PathFiltered {
+			return "Found pull_request workflows, but all are path-filtered — slices outside\nthose paths get zero checks; the gate then skips instead of timing out."
+		}
 		return "Detected a pull_request-triggered workflow in .github/workflows.\nChange later in Settings or via REQUIRE_CI in .trau.ini."
 	default:
 		return "No pull_request-triggered workflow found — PRs would get zero checks,\nread by the gate as never-green. Skip only if this repo has no PR CI."

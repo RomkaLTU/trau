@@ -1980,7 +1980,8 @@ func (a *appActions) DetectCI(ctx context.Context, baseBranch string) tui.CIDete
 // exact false positive REQUIRE_CI exists to avoid. When nothing authoritative is
 // found the local guess stays a question rather than an auto-decision.
 func detectCIGate(ctx context.Context, repoRoot, baseBranch string) tui.CIDetection {
-	fallback := tui.CIDetection{Gate: config.HasPullRequestCI(repoRoot), Source: "none"}
+	scan := config.ScanPullRequestCI(repoRoot)
+	fallback := tui.CIDetection{Gate: scan.HasPRWorkflows, PathFiltered: scan.AllPathFiltered, Source: "none"}
 	if fallback.Gate {
 		fallback.Source = "workflows"
 	}

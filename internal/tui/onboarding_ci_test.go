@@ -27,6 +27,11 @@ func TestCIDescription(t *testing.T) {
 			wantSub: ".github/workflows",
 		},
 		{
+			name:    "all workflows path-filtered",
+			det:     CIDetection{Gate: true, Source: "workflows", PathFiltered: true},
+			wantSub: "path-filtered",
+		},
+		{
 			name:    "nothing detected",
 			det:     CIDetection{Gate: false, Source: "none"},
 			wantSub: "No pull_request-triggered workflow found",

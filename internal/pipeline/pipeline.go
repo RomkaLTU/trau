@@ -28,6 +28,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/budget"
 	"github.com/RomkaLTU/trau/internal/checks"
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/logger"
@@ -1701,6 +1702,11 @@ func (p *Pipeline) pollCI(ctx context.Context, pr string) error {
 		}
 		if waited >= p.CITimeout {
 			if !sawCheck && len(expected) == 0 {
+				if config.ScanPullRequestCI(p.RepoRoot).AllPathFiltered {
+					p.logf("  ⓘ no checks appeared and every PR workflow is path-filtered — this change matches none of them; skipping the CI gate")
+					p.emitEvent("ci", map[string]any{"state": "skipped"})
+					return nil
+				}
 				p.logf("  ⓘ no checks ever appeared — if this repo has no PR CI, set REQUIRE_CI=0 to skip the gate")
 			}
 			p.emitEvent("ci", map[string]any{"state": "failing"})
