@@ -59,12 +59,14 @@ import {
   newDraftItem,
   NEW_DRAFT_ID,
   prevIssueId,
+  rowSession,
   skipTarget,
   summarisePregrill,
   useInboxQueue,
   type InboxGroup,
   type InboxGroupView,
   type InboxItem,
+  type InboxPillTone,
 } from "@/lib/inbox";
 import { hasOpenLayer, inboxKeyAction } from "@/lib/inbox-keys";
 import {
@@ -91,6 +93,14 @@ const GROUP_COUNT_TONE: Record<InboxGroup, string> = {
   waiting: "text-warn",
   review: "text-teal",
   done: "text-done",
+};
+
+const PILL_TEXT_TONE: Record<InboxPillTone, string> = {
+  warn: "text-warn",
+  active: "text-teal",
+  verify: "text-info",
+  success: "text-done",
+  todo: "text-faint",
 };
 
 function InboxPage() {
@@ -234,9 +244,9 @@ function InboxPage() {
 
   // An applied outcome drops the issue's triage labels on the tracker, so refreshing
   // the board is what retires the row; the applied list is what re-lists it under
-  // Done today. The issue's own grill list is deliberately left alone — refetching it
-  // would read the settled session as "no session" and drop it to a preview. A draft
-  // has no board row, so its list is refreshed to retire the settled authoring row.
+  // Done today. The issue's own grill list is left to its poll — the open thread
+  // rides out the settle on the streamed session. A draft has no board row, so its
+  // list is refreshed to retire the settled authoring row.
   function onApplied() {
     const wasDraft = selected?.draft;
     skip();
@@ -325,6 +335,7 @@ function InboxPage() {
               repo={repo}
               groups={groups}
               seen={seen}
+              live={live?.session ?? null}
               selectedId={selected?.id ?? null}
               onSelect={(id) => void setPeek(id)}
             />
@@ -436,6 +447,11 @@ function SessionColumn({
   // The stream's session outranks the list's: it is the one the thread is following.
   const live = status?.session ?? session;
 
+  // The list decides which session mounts, but once the poll reads the open session
+  // as settled the streamed copy keeps the thread on screen — dropping to a preview
+  // would strand the just-finished conversation.
+  const mounted = session ?? status?.session;
+
   return (
     <>
       <SessionBar
@@ -455,11 +471,11 @@ function SessionColumn({
       {/* The overlay frame floats over the thread, not the bar above it: the bar
           carries the toggle that dismisses it again. */}
       <div className="relative flex min-h-0 flex-1 flex-col">
-        {session ? (
+        {mounted ? (
           <GrillConversation
-            key={session.id}
+            key={mounted.id}
             repo={repo}
-            initial={session}
+            initial={mounted}
             onStatus={onStatus}
             onApplied={onApplied}
             onDiscarded={onDiscarded}
@@ -857,12 +873,14 @@ function QueueRail({
   repo,
   groups,
   seen,
+  live,
   selectedId,
   onSelect,
 }: {
   repo: string;
   groups: InboxGroupView[];
   seen: SeenMarks;
+  live: GrillSession | null;
   selectedId: string | null;
   onSelect: (id: string) => void;
 }) {
@@ -893,6 +911,7 @@ function QueueRail({
                   key={item.id}
                   repo={repo}
                   item={item}
+                  live={live}
                   unread={hasUnseenQuestion(seen, item)}
                   selected={selectedId === item.id}
                   onSelect={() => onSelect(item.id)}
@@ -919,16 +938,22 @@ function QueueRail({
 function QueueRow({
   repo,
   item,
+  live,
   unread,
   selected,
   onSelect,
 }: {
   repo: string;
   item: InboxItem;
+  live: GrillSession | null;
   unread: boolean;
   selected: boolean;
   onSelect: () => void;
 }) {
+  // The row's pill answers "what is this conversation doing right now" without
+  // opening it; an untouched item has no conversation to report on.
+  const session = rowSession(item, live);
+  const pill = session ? inboxPill(session.state) : null;
   return (
     <li className="group/row relative">
       <button
@@ -968,6 +993,16 @@ function QueueRow({
                 aria-hidden="true"
                 title="A question you haven't read yet"
               />
+            )}
+            {pill && (
+              <span
+                className={cn(
+                  "ml-auto shrink-0 font-mono text-[0.65rem]",
+                  PILL_TEXT_TONE[pill.tone],
+                )}
+              >
+                {pill.label}
+              </span>
             )}
           </span>
           <span

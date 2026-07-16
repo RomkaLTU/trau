@@ -17,8 +17,10 @@ import {
   mergeGrillableEntries,
   nextIssueId,
   prevIssueId,
+  rowSession,
   skipTarget,
   summarisePregrill,
+  type InboxItem,
 } from "./inbox";
 
 function entry(over: Partial<BacklogEntry> & { id: string }): BacklogEntry {
@@ -83,7 +85,7 @@ describe("mergeGrillableEntries", () => {
 });
 
 describe("buildInbox", () => {
-  it("sorts answer, then thinking, then untouched, then review, keeping id order within a tier", () => {
+  it("sorts answer, then thinking, then untouched, then review, keeping id order when activity ties", () => {
     const entries = [
       entry({ id: "COD-1" }),
       entry({ id: "COD-2" }),
@@ -112,6 +114,45 @@ describe("buildInbox", () => {
       "open",
       "review",
     ]);
+  });
+
+  it("orders a tier by latest activity, newest first, reading update over creation", () => {
+    const entries = [
+      entry({ id: "COD-1", updated_at: "2026-07-10T09:00:00Z" }),
+      entry({ id: "COD-2", updated_at: "2026-07-12T09:00:00Z" }),
+      entry({ id: "COD-3", created_at: "2026-07-11T09:00:00Z" }),
+      entry({ id: "COD-4" }),
+    ];
+    const items = buildInbox(entries, []);
+    expect(items.map((i) => i.id)).toEqual([
+      "COD-2",
+      "COD-3",
+      "COD-1",
+      "COD-4",
+    ]);
+  });
+
+  it("orders a conversation by its last turn, not the issue's tracker update", () => {
+    const entries = [
+      entry({ id: "COD-1", updated_at: "2026-07-15T09:00:00Z" }),
+      entry({ id: "COD-2", updated_at: "2026-07-01T09:00:00Z" }),
+    ];
+    const sessions = [
+      session({
+        id: "10",
+        issue_id: "COD-1",
+        state: "waiting",
+        updated_at: "2026-07-10T09:00:00Z",
+      }),
+      session({
+        id: "11",
+        issue_id: "COD-2",
+        state: "waiting",
+        updated_at: "2026-07-14T09:00:00Z",
+      }),
+    ];
+    const items = buildInbox(entries, sessions);
+    expect(items.map((i) => i.id)).toEqual(["COD-2", "COD-1"]);
   });
 
   it("treats a settled session as untouched", () => {
@@ -377,6 +418,31 @@ describe("inboxPill", () => {
     expect(inboxPill("running")).toEqual({ tone: "active", label: "thinking" });
     expect(inboxPill("stalled")).toEqual({ tone: "warn", label: "stalled" });
     expect(inboxPill("finished")).toEqual({ tone: "verify", label: "review" });
+  });
+});
+
+describe("rowSession", () => {
+  it("prefers the streamed session on the row it belongs to", () => {
+    const listed = session({ id: "10", issue_id: "COD-1", state: "stalled" });
+    const item: InboxItem = {
+      id: "COD-1",
+      title: "t",
+      session: listed,
+      attention: "answer",
+    };
+    const live = session({ id: "10", issue_id: "COD-1", state: "waiting" });
+    expect(rowSession(item, live)).toBe(live);
+    expect(
+      rowSession(item, session({ id: "11", issue_id: "COD-2", state: "running" })),
+    ).toBe(listed);
+    expect(rowSession(item, null)).toBe(listed);
+  });
+
+  it("leaves an untouched row session-less", () => {
+    const item: InboxItem = { id: "COD-2", title: "t", attention: "open" };
+    expect(
+      rowSession(item, session({ id: "10", issue_id: "COD-1", state: "running" })),
+    ).toBeUndefined();
   });
 });
 

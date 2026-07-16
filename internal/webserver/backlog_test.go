@@ -258,7 +258,7 @@ func TestBacklogDefaultViewUnpaginated(t *testing.T) {
 func backlogFixture() []hubstore.Issue {
 	return []hubstore.Issue{
 		{Identifier: "COD-10", Title: "Epic", Status: "Backlog", StatusGroup: "backlog", HasChildren: true},
-		{Identifier: "COD-11", Title: "Child", Status: "Todo", StatusGroup: "unstarted", Parent: "COD-10", Labels: []string{"ready-for-agent"}},
+		{Identifier: "COD-11", Title: "Child", Status: "Todo", StatusGroup: "unstarted", Parent: "COD-10", Labels: []string{"ready-for-agent"}, CreatedAt: "2026-07-01T10:00:00Z", UpdatedAt: "2026-07-02T11:00:00Z"},
 	}
 }
 
@@ -293,6 +293,9 @@ func TestBacklogServesStoredIssues(t *testing.T) {
 	child := byID["COD-11"]
 	if child.Parent != "COD-10" || !child.Ready || child.Group != "unstarted" {
 		t.Errorf("child entry = %+v, want ready unstarted child of COD-10", child)
+	}
+	if child.CreatedAt != "2026-07-01T10:00:00Z" || child.UpdatedAt != "2026-07-02T11:00:00Z" {
+		t.Errorf("child timestamps = %q / %q, want the synced created/updated times", child.CreatedAt, child.UpdatedAt)
 	}
 }
 

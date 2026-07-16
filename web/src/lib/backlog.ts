@@ -9,7 +9,8 @@ import { type Assignee } from './assignee'
 // assignee is null when the issue is unassigned. children_settled/children_total
 // report an epic's settled (done + canceled) and total sub-issue counts over all
 // children in the store, and are present only on an epic row (has_children) so the
-// board can show its progress without a second call.
+// board can show its progress without a second call. created_at/updated_at are the
+// issue's tracker timestamps as synced, absent when the tracker never sent them.
 export interface BacklogEntry {
   id: string
   title: string
@@ -23,6 +24,8 @@ export interface BacklogEntry {
   children_settled?: number
   children_total?: number
   ready: boolean
+  created_at?: string
+  updated_at?: string
 }
 
 // STATE_GROUPS is the board's normalized status vocabulary: every BacklogEntry
