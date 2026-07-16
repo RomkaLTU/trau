@@ -22,9 +22,10 @@ const (
 )
 
 // View is one named perspective in the Atlas. The catalog is generic: a View
-// carries its id, display title, and the schema flavor its document must satisfy.
-// Prompt is the curated initialization prompt the runner slice fills in; the
-// catalog leaves it empty here.
+// carries its id, display title, the schema flavor its document must satisfy, and
+// the curated initialization prompt its generation runs from — so a future View is
+// prompt plus schema flavor only (ADR 0013). GenerationPrompt composes the runnable
+// prompt from Prompt and Flavor.
 type View struct {
 	ID     string
 	Title  string
@@ -36,8 +37,8 @@ type View struct {
 // and App flows Views (CONTEXT.md — View).
 func Catalog() []View {
 	return []View{
-		{ID: "data-model", Title: "Data model", Flavor: FlavorDataModel},
-		{ID: "app-flows", Title: "App flows", Flavor: FlavorAppFlows},
+		{ID: "data-model", Title: "Data model", Flavor: FlavorDataModel, Prompt: dataModelPrompt},
+		{ID: "app-flows", Title: "App flows", Flavor: FlavorAppFlows, Prompt: appFlowsPrompt},
 	}
 }
 

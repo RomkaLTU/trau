@@ -129,6 +129,7 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 	hub := webserver.New(version, cfg.ServeBind, cfg.ServeToken, cfg.ServeWorkspace, cfg.ServeAllowRegister, stores)
 	grillBase := "http://" + net.JoinHostPort(grillReachableHost(cfg.ServeBind), strconv.Itoa(cfg.ServePort))
 	hub.EnableGrilling(ctx, grillBase)
+	hub.EnableAtlas(ctx)
 	hub.Start(ctx, time.Duration(cfg.ServeSyncInterval)*time.Second, time.Duration(cfg.ServeReconcileInterval)*time.Second)
 	srv := &http.Server{Addr: addr, Handler: hub.Handler()}
 
