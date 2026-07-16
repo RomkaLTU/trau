@@ -251,14 +251,33 @@ func numericIdentOrder(expr string) string {
 // filtered set, so a fresh sub-issue surfaces its whole family together.
 const familyCreated = `max(created_at) OVER (PARTITION BY ` + familyKey + `)`
 
+// backlogGroup is the group a row files under on the board: an epic that is not
+// yet closed surfaces as started while any live child is started, so the whole
+// family reads as in progress, not just the sub-issue taken from it. Every other
+// row keeps its stored status_group.
+const backlogGroup = `CASE
+	WHEN has_children = 1 AND status_group NOT IN ('started', 'done', 'canceled')
+		AND EXISTS (
+			SELECT 1 FROM issues c
+			WHERE c.repo = issues.repo AND c.parent = issues.identifier
+				AND c.deleted_at = '' AND c.status_group = 'started')
+	THEN 'started'
+	ELSE status_group
+END`
+
+// backlogColumns is issueColumns with status_group swapped for the board group,
+// so backlog rows scan carrying the group they file under.
+var backlogColumns = strings.Replace(issueColumns, "status_group", backlogGroup, 1)
+
 // backlogOrderBy sorts the board by workflow progress — active work first, then
-// not-yet-started, backlog, and finally the closed groups. The Todo and Backlog
+// not-yet-started, backlog, and finally the closed groups — keyed on the board
+// group, so a promoted epic sorts with the started rows. The Todo and Backlog
 // groups order families newest-created first, so a just-filed issue lands on top
 // regardless of its identifier prefix; the other groups order by numeric-aware
 // family key. Either way a family stays contiguous within a group: the epic ahead
 // of its same-group sub-issues, then the rows' own numeric-aware identifiers.
 var backlogOrderBy = `ORDER BY
-	CASE status_group
+	CASE ` + backlogGroup + `
 		WHEN 'started' THEN 0
 		WHEN 'unstarted' THEN 1
 		WHEN 'backlog' THEN 2
@@ -267,7 +286,7 @@ var backlogOrderBy = `ORDER BY
 		WHEN 'canceled' THEN 5
 		ELSE 6
 	END,
-	CASE WHEN status_group IN ('unstarted', 'backlog') THEN ` + familyCreated + ` END DESC,
+	CASE WHEN ` + backlogGroup + ` IN ('unstarted', 'backlog') THEN ` + familyCreated + ` END DESC,
 	` + numericIdentOrder(familyKey) + `,
 	CASE WHEN parent = '' THEN 0 ELSE 1 END,
 	` + numericIdentOrder("identifier")
@@ -281,14 +300,17 @@ func (s *Issues) Backlog(repo string) ([]Issue, error) {
 
 // BacklogPage returns the repo's stored issues matching filter, ordered by group
 // precedence (started, unstarted, backlog, unknown, done, canceled) then each
-// group's display order (backlogOrderBy), and paginated. It also returns the total number of
-// matches before pagination so the board can page without counting the rows
-// itself, and per-status-group counts computed over the same filters with the
-// state selection ignored — so section headers and the hidden-count hint hold
-// whichever groups are on screen. Tombstoned issues — synced tickets removed from
-// the tracker — are excluded from the board. The filters compose in the WHERE
-// clause and are pushed into the query rather than applied after loading
-// everything; comments are not attached (the board renders summary rows only).
+// group's display order (backlogOrderBy), and paginated. Grouping — the ordering,
+// the state filter, the counts, and the rows' StatusGroup — is by the board group
+// (backlogGroup), so an epic with a started child files under started as a whole.
+// It also returns the total number of matches before pagination so the board can
+// page without counting the rows itself, and per-board-group counts computed over
+// the same filters with the state selection ignored — so section headers and the
+// hidden-count hint hold whichever groups are on screen. Tombstoned issues —
+// synced tickets removed from the tracker — are excluded from the board. The
+// filters compose in the WHERE clause and are pushed into the query rather than
+// applied after loading everything; comments are not attached (the board renders
+// summary rows only).
 func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue, total int, counts map[string]int, err error) {
 	where := []string{"repo = ?", "deleted_at = ''"}
 	args := []any{repo}
@@ -329,7 +351,7 @@ func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue,
 
 	clause := baseClause
 	if groups := cleanGroups(filter.Groups); len(groups) > 0 {
-		clause += " AND status_group IN (" + strings.TrimSuffix(strings.Repeat("?,", len(groups)), ",") + ")"
+		clause += " AND " + backlogGroup + " IN (" + strings.TrimSuffix(strings.Repeat("?,", len(groups)), ",") + ")"
 		for _, g := range groups {
 			args = append(args, g)
 		}
@@ -339,7 +361,7 @@ func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue,
 		return nil, 0, nil, err
 	}
 
-	query := `SELECT ` + issueColumns + ` FROM issues WHERE ` + clause + ` ` + backlogOrderBy
+	query := `SELECT ` + backlogColumns + ` FROM issues WHERE ` + clause + ` ` + backlogOrderBy
 	if filter.Limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, filter.Limit)
@@ -411,12 +433,12 @@ func (s *Issues) attachChildCounts(repo string, issues []Issue) (err error) {
 	return rows.Err()
 }
 
-// backlogCounts returns per-status-group match totals for the given WHERE clause
+// backlogCounts returns per-board-group match totals for the given WHERE clause
 // and its args — the board's non-state filters — with the state selection left
 // out, so the section headers and the "N done · M canceled hidden" hint stay
 // correct regardless of pagination or which groups are on screen.
 func (s *Issues) backlogCounts(clause string, args []any) (counts map[string]int, err error) {
-	rows, err := s.db.Query(`SELECT status_group, count(*) FROM issues WHERE `+clause+` GROUP BY status_group`, args...)
+	rows, err := s.db.Query(`SELECT `+backlogGroup+` AS grp, count(*) FROM issues WHERE `+clause+` GROUP BY grp`, args...)
 	if err != nil {
 		return nil, err
 	}
