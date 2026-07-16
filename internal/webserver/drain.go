@@ -289,8 +289,9 @@ func classifyDrainOutcome(class, onFault string) (status string, pause bool) {
 // spec is the launch a queued item spawns: a ticket runs as the existing
 // run-once, an epic as the existing epic flow, matching the /instances start
 // paths so a queued run is indistinguishable from a manual one. noResume ignores
-// stored checkpoints. --drain-report carries the ticket the child reports its
-// exit outcome under, so the child posts to the hub keyed by it.
+// stored checkpoints; an item's Provider override rides along as --provider.
+// --drain-report carries the ticket the child reports its exit outcome under,
+// so the child posts to the hub keyed by it.
 func (d *drainer) spec(root string, it queue.Item, noResume bool) SpawnSpec {
 	args := []string{"--repo", root, "--no-tui"}
 	if it.Kind == queue.KindEpic {
@@ -300,6 +301,9 @@ func (d *drainer) spec(root string, it queue.Item, noResume bool) SpawnSpec {
 	}
 	if noResume {
 		args = append(args, "--no-resume")
+	}
+	if it.Provider != "" {
+		args = append(args, "--provider", it.Provider)
 	}
 	args = append(args, "--drain-report", it.ID)
 	return SpawnSpec{Dir: root, Args: args, Env: childEnv(d.srv.home)}

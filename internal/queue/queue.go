@@ -55,12 +55,15 @@ type SubIssue struct {
 // set while Running so a resumed hub can tell whether that child is still alive.
 // Source is the issue store's binding for the id — internal for a hub-only issue,
 // otherwise the tracker provider — resolved once at enqueue so the queue still
-// reports it when the store no longer holds the issue.
+// reports it when the store no longer holds the issue. Provider is an ephemeral
+// per-run override of the configured routing — it applies only to this item's
+// child and never persists to config; empty means the config default.
 type Item struct {
 	Kind      Kind       `json:"kind"`
 	ID        string     `json:"id"`
 	Title     string     `json:"title,omitempty"`
 	Source    string     `json:"source,omitempty"`
+	Provider  string     `json:"provider,omitempty"`
 	Status    string     `json:"status"`
 	Reason    string     `json:"reason,omitempty"`
 	PID       int        `json:"pid,omitempty"`

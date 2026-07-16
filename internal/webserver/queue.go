@@ -18,21 +18,29 @@ import (
 // to register, an optional title, and an optional kind. Kind may be "ticket" or
 // "epic"; left empty or "auto" the hub resolves it by looking the id up in the
 // tracker, so the Loop card can add a bare id without knowing what it is.
+// Provider is an ephemeral per-run override of the configured routing — it
+// applies only to this item's child and never persists to config. Front lands
+// the item in the first pending position instead of the back, never displacing
+// a running item.
 type QueueRequest struct {
-	Kind  string `json:"kind"`
-	ID    string `json:"id"`
-	Title string `json:"title"`
+	Kind     string `json:"kind"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	Provider string `json:"provider"`
+	Front    bool   `json:"front"`
 }
 
 // QueueItemView is one queued item as the Queue view reads it: its 1-based
-// position, kind, identifier, title, issue source, pending status, and — for an
-// epic — the sub-issues captured when it was queued.
+// position, kind, identifier, title, issue source, per-run provider override,
+// pending status, and — for an epic — the sub-issues captured when it was
+// queued.
 type QueueItemView struct {
 	Position  int              `json:"position"`
 	Kind      string           `json:"kind"`
 	ID        string           `json:"id"`
 	Title     string           `json:"title,omitempty"`
 	Source    string           `json:"source,omitempty"`
+	Provider  string           `json:"provider,omitempty"`
 	Status    string           `json:"status"`
 	Reason    string           `json:"reason,omitempty"`
 	SubIssues []queue.SubIssue `json:"sub_issues,omitempty"`
@@ -240,7 +248,8 @@ func (s *Server) writeQueue(w http.ResponseWriter, status int, root string) {
 // observe-only repo is refused. Queuing an epic carries its sub-issues, captured
 // through the hub's existing epic preview, so the queue records what an epic run
 // will cover. Re-queuing something already present is refused with a clear
-// message.
+// message — except a pending item re-queued with front, which moves to the
+// front instead.
 func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("repo")
 	root, ok := s.allowedRoot(name)
@@ -266,7 +275,7 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item := queue.Item{ID: id, Title: strings.TrimSpace(req.Title), Kind: hint}
+	item := queue.Item{ID: id, Title: strings.TrimSpace(req.Title), Kind: hint, Provider: strings.TrimSpace(req.Provider)}
 
 	iss, internal, err := s.stores.Issues().Internal(root, id)
 	if err != nil {
@@ -318,6 +327,27 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 				item.Kind = queue.KindTicket
 			}
 		}
+	}
+
+	// A front enqueue answers 201 like a plain one; re-queuing a pending item
+	// with front is a move-to-front answered 200 with the reordered queue rather
+	// than the 409 a plain re-queue gets. Any other already-queued status —
+	// running, paused, or settled — still conflicts.
+	if req.Front {
+		_, movedToFront, err := s.stores.Queue(root).AddFront(item)
+		if errors.Is(err, queue.ErrAlreadyQueued) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s is already in the queue", id)})
+			return
+		} else if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "enqueue: " + err.Error()})
+			return
+		}
+		status := http.StatusCreated
+		if movedToFront {
+			status = http.StatusOK
+		}
+		s.writeQueue(w, status, root)
+		return
 	}
 
 	if _, err := s.stores.Queue(root).Add(item); errors.Is(err, queue.ErrAlreadyQueued) {
@@ -375,6 +405,7 @@ func queueItemViews(items []queue.Item) []QueueItemView {
 			ID:        it.ID,
 			Title:     it.Title,
 			Source:    it.Source,
+			Provider:  it.Provider,
 			Status:    it.Status,
 			Reason:    it.Reason,
 			SubIssues: it.SubIssues,
