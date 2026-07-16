@@ -2,6 +2,7 @@ package webserver
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -258,6 +259,66 @@ func waitAtlasIdle(t *testing.T, s *Server) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("atlas generations did not settle")
+}
+
+func TestAtlasCatalogReportsGenerating(t *testing.T) {
+	s, repo := atlasServer(t)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	blocking := &scriptedAgent{
+		steps: []agentStep{{res: atlasResult(`{"entities":[{"id":"user","name":"User"}]}`, 0.1)}},
+		onEnter: func(n int) {
+			if n == 0 {
+				close(entered)
+				<-release
+			}
+		},
+	}
+	s.atlas.newRunner = fixedRunner(blocking)
+
+	view, _ := hubatlas.ViewByID("data-model")
+	if !s.atlas.start(repo, view) {
+		t.Fatal("start returned false, want the generation to begin")
+	}
+	<-entered
+
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+
+	views := atlasCatalogViews(t, ts)
+	if !views["data-model"].Generating {
+		t.Errorf("data-model generating = false, want true while a generation is in flight")
+	}
+	if views["app-flows"].Generating {
+		t.Errorf("app-flows generating = true, want false")
+	}
+
+	close(release)
+	waitAtlasIdle(t, s)
+
+	views = atlasCatalogViews(t, ts)
+	if views["data-model"].Generating {
+		t.Errorf("data-model still generating after the run settled")
+	}
+}
+
+func atlasCatalogViews(t *testing.T, ts *httptest.Server) map[string]atlasCatalogView {
+	t.Helper()
+	res := doReq(t, http.MethodGet, ts.URL+APIPrefix+"/repos/acme/atlas", nil)
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET catalog = %d, want 200", res.StatusCode)
+	}
+	var cat atlasCatalogResponse
+	if err := json.NewDecoder(res.Body).Decode(&cat); err != nil {
+		t.Fatalf("decode catalog: %v", err)
+	}
+	views := map[string]atlasCatalogView{}
+	for _, v := range cat.Views {
+		views[v.ID] = v
+	}
+	return views
 }
 
 func approxEqual(a, b float64) bool { return math.Abs(a-b) < 1e-9 }

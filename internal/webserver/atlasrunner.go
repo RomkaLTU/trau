@@ -105,6 +105,15 @@ func (r *atlasRunner) start(repo registry.Repo, view hubatlas.View) bool {
 	return true
 }
 
+// generating reports whether a generation for (repoRoot, viewID) is in flight — the
+// in-progress signal the catalog surfaces so the page can show regen progress and
+// resolve a 409 to the same state.
+func (r *atlasRunner) generating(repoRoot, viewID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.inflight[atlasKey{repo: repoRoot, view: viewID}]
+}
+
 // generate runs the session to a stored outcome: it stamps the repo's default-branch
 // HEAD, runs the agent, validates its output, retries once on invalid output feeding
 // the errors back, and stores the good document or — after a second failure — an
