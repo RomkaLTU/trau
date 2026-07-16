@@ -266,6 +266,28 @@ func TestWriteConfigLayerPreservesComments(t *testing.T) {
 	}
 }
 
+func TestWriteConfigLayerNormalizesAppURLs(t *testing.T) {
+	dir := t.TempDir()
+	project := filepath.Join(dir, ".trau.ini")
+
+	want := "api=http://localhost:3001,web=http://localhost:3000"
+	for _, value := range []string{
+		"web=http://localhost:3000,api=http://localhost:3001",
+		"api=http://localhost:3001, web=http://localhost:3000",
+	} {
+		if err := WriteConfigLayer("project", "", project, "", "APP_URLS", value); err != nil {
+			t.Fatal(err)
+		}
+		got, err := ParseEnvFile(project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got["APP_URLS"] != want {
+			t.Fatalf("APP_URLS after writing %q: want %s, got %s", value, want, got["APP_URLS"])
+		}
+	}
+}
+
 func TestDeleteConfigLayerRemovesKey(t *testing.T) {
 	dir := t.TempDir()
 	project := filepath.Join(dir, ".trau.ini")
@@ -573,5 +595,42 @@ func TestKnownKeysCatalogMetadata(t *testing.T) {
 		if len(byKey[k].Options) == 0 {
 			t.Errorf("%s should carry effort options", k)
 		}
+	}
+}
+
+func TestLoadAppURLs(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "trau.ini")
+	if err := os.WriteFile(local, []byte("APP_URLS=web=http://localhost:3000, api=http://localhost:3001,broken\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadLayered("", "", local, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := map[string]string{"web": "http://localhost:3000", "api": "http://localhost:3001"}
+	if len(cfg.AppURLs) != len(want) {
+		t.Fatalf("AppURLs = %v, want %v", cfg.AppURLs, want)
+	}
+	for name, url := range want {
+		if cfg.AppURLs[name] != url {
+			t.Errorf("AppURLs[%q] = %q, want %q", name, cfg.AppURLs[name], url)
+		}
+	}
+
+	if got := keyValue(cfg, "APP_URLS"); got != "api=http://localhost:3001,web=http://localhost:3000" {
+		t.Errorf("keyValue(APP_URLS) = %q", got)
+	}
+}
+
+func TestLoadAppURLsDefault(t *testing.T) {
+	cfg, err := LoadLayered("", "", filepath.Join(t.TempDir(), "missing.ini"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AppURLs != nil {
+		t.Errorf("AppURLs = %v, want nil", cfg.AppURLs)
 	}
 }

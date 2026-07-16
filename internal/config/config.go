@@ -167,7 +167,11 @@ type Config struct {
 
 	BrowserVerify string
 	AppURL        string
-	VerifyChecks  bool
+	// AppURLs maps a workspace to the URL its app serves (APP_URLS key), so
+	// browser verify can drive the app the slice actually changed in a multi-app
+	// monorepo; slices matching no workspace fall back to AppURL.
+	AppURLs      map[string]string
+	VerifyChecks bool
 
 	VerifyPanel       []string
 	VerifyPanelPolicy string
@@ -743,6 +747,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	}
 	str("BROWSER_VERIFY", &c.BrowserVerify)
 	str("APP_URL", &c.AppURL)
+	if v, src := get("APP_URLS"); v != "" {
+		c.AppURLs = parseAppURLs(v)
+		sources["APP_URLS"] = src.name
+	}
 	if v, src := get("VERIFY_CHECKS"); v != "" {
 		c.VerifyChecks = v == "1"
 		sources["VERIFY_CHECKS"] = src.name
@@ -1337,6 +1345,34 @@ func splitCSV(s string) []string {
 	return out
 }
 
+// parseAppURLs parses APP_URLS — comma-separated <workspace>=<url> pairs —
+// dropping pairs missing either side.
+func parseAppURLs(s string) map[string]string {
+	out := map[string]string{}
+	for _, pair := range splitCSV(s) {
+		name, url, ok := strings.Cut(pair, "=")
+		name, url = strings.TrimSpace(name), strings.TrimSpace(url)
+		if !ok || name == "" || url == "" {
+			continue
+		}
+		out[name] = url
+	}
+	return out
+}
+
+func joinAppURLs(urls map[string]string) string {
+	names := make([]string, 0, len(urls))
+	for name := range urls {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	pairs := make([]string, 0, len(names))
+	for _, name := range names {
+		pairs = append(pairs, name+"="+urls[name])
+	}
+	return strings.Join(pairs, ",")
+}
+
 func stripInlineComment(v string) string {
 	for i := 1; i < len(v); i++ {
 		if v[i] == '#' && (v[i-1] == ' ' || v[i-1] == '\t') {
@@ -1481,6 +1517,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "EXPLORE_SUBAGENTS", Group: sectionAgent, WebEditable: true, Advanced: true, Default: "0", Description: "Let the build and verify phases dispatch read-only exploration subagents (Claude's Explore agent type) by dropping the Agent tool from their disallowed set, keeping the orchestrator's context lean on large tickets; write-capable fan-out (Workflow) stays blocked everywhere (1 = yes, 0 = no)", Bool: true},
 		{Key: "BROWSER_VERIFY", Group: sectionVerify, WebEditable: true, Default: "auto", Description: "Browser verify: auto | always | never", Options: []string{"auto", "always", "never"}},
 		{Key: "APP_URL", Group: sectionVerify, WebEditable: true, Default: "http://localhost", Description: "Local app URL for browser verify"},
+		{Key: "APP_URLS", Group: sectionVerify, WebEditable: true, Description: "Per-workspace app URLs for multi-app monorepos: comma-separated <workspace>=<url> pairs (e.g. web=http://localhost:3000,api=http://localhost:3001). A workspace is named by its manifest package name, directory path, or directory name; slices matching no workspace fall back to APP_URL"},
 		{Key: "VERIFY_CHECKS", Group: sectionVerify, WebEditable: true, Default: "1", Description: "Run the pluggable verify-check library (.trau/checks); 1 = yes, 0 = no", Bool: true},
 		{Key: "VERIFY_PANEL", Group: sectionVerify, WebEditable: true, Description: "Cross-vendor verify panel: comma-separated provider:model:effort verifiers (e.g. claude,codex:gpt-5.6-sol,kimi). Empty = single verifier"},
 		{Key: "VERIFY_PANEL_POLICY", Group: sectionVerify, WebEditable: true, Default: "unanimous", Description: "Panel verdict merge policy: unanimous | majority | any-pass", Options: []string{"unanimous", "majority", "any-pass"}},
@@ -2027,6 +2064,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.BrowserVerify
 	case "APP_URL":
 		return cfg.AppURL
+	case "APP_URLS":
+		return joinAppURLs(cfg.AppURLs)
 	case "VERIFY_CHECKS":
 		if cfg.VerifyChecks {
 			return "1"
@@ -2218,8 +2257,12 @@ func parseRouteSpec(spec string) (provider, model, effort string) {
 
 // WriteConfigLayer writes value for key to the named layer's config file. The
 // path arguments are the same ones passed to LoadLayered. layer must be one of
-// "local", "project", or "user".
+// "local", "project", or "user". APP_URLS is persisted in its canonical form
+// (workspace keys sorted) so the on-disk value is independent of input order.
 func WriteConfigLayer(layer, localPath, projectPath, userPath, key, value string) error {
+	if key == "APP_URLS" {
+		value = joinAppURLs(parseAppURLs(value))
+	}
 	switch layer {
 	case "local":
 		return WriteEnvFile(localPath, map[string]string{key: value})

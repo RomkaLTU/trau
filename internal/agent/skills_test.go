@@ -139,3 +139,79 @@ func TestDetectProjectTypeWorkspaces(t *testing.T) {
 		}
 	})
 }
+
+// TestWorkspaceAppURL: the APP_URLS entry whose workspace holds the slice's
+// changed files wins, keyed by package name, directory path, or base name;
+// unmatched or ambiguous slices yield "" so the caller keeps its fallback.
+func TestWorkspaceAppURL(t *testing.T) {
+	write := func(t *testing.T, root, rel, content string) {
+		t.Helper()
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	monorepo := func(t *testing.T) string {
+		t.Helper()
+		root := t.TempDir()
+		write(t, root, "package.json", `{"name":"mono","private":true,"workspaces":["apps/*"]}`)
+		write(t, root, "apps/web/package.json", `{"name":"@acme/web"}`)
+		write(t, root, "apps/api/package.json", `{"name":"@acme/api"}`)
+		return root
+	}
+
+	urls := map[string]string{"web": "http://localhost:3000", "apps/api": "http://localhost:3001"}
+
+	t.Run("directory base name", func(t *testing.T) {
+		got := WorkspaceAppURL(monorepo(t), urls, []string{"apps/web/src/page.tsx"})
+		if got != "http://localhost:3000" {
+			t.Errorf("WorkspaceAppURL = %q, want %q", got, "http://localhost:3000")
+		}
+	})
+
+	t.Run("relative directory path", func(t *testing.T) {
+		got := WorkspaceAppURL(monorepo(t), urls, []string{"apps/api/routes.ts"})
+		if got != "http://localhost:3001" {
+			t.Errorf("WorkspaceAppURL = %q, want %q", got, "http://localhost:3001")
+		}
+	})
+
+	t.Run("manifest package name", func(t *testing.T) {
+		byName := map[string]string{"@acme/api": "http://localhost:3001"}
+		got := WorkspaceAppURL(monorepo(t), byName, []string{"apps/api/routes.ts"})
+		if got != "http://localhost:3001" {
+			t.Errorf("WorkspaceAppURL = %q, want %q", got, "http://localhost:3001")
+		}
+	})
+
+	t.Run("dominant workspace wins", func(t *testing.T) {
+		changed := []string{"apps/web/a.tsx", "apps/web/b.tsx", "apps/api/routes.ts"}
+		got := WorkspaceAppURL(monorepo(t), urls, changed)
+		if got != "http://localhost:3000" {
+			t.Errorf("WorkspaceAppURL = %q, want %q", got, "http://localhost:3000")
+		}
+	})
+
+	t.Run("tied workspaces keep the fallback", func(t *testing.T) {
+		changed := []string{"apps/web/a.tsx", "apps/api/routes.ts"}
+		if got := WorkspaceAppURL(monorepo(t), urls, changed); got != "" {
+			t.Errorf("WorkspaceAppURL = %q, want empty", got)
+		}
+	})
+
+	t.Run("root-only changes match nothing", func(t *testing.T) {
+		if got := WorkspaceAppURL(monorepo(t), urls, []string{"README.md"}); got != "" {
+			t.Errorf("WorkspaceAppURL = %q, want empty", got)
+		}
+	})
+
+	t.Run("no urls configured", func(t *testing.T) {
+		if got := WorkspaceAppURL(monorepo(t), nil, []string{"apps/web/a.tsx"}); got != "" {
+			t.Errorf("WorkspaceAppURL = %q, want empty", got)
+		}
+	})
+}

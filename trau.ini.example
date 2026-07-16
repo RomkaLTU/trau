@@ -210,6 +210,11 @@ CLEANUP=1                    # 1 = just before verify, a cheap agent strips AI-s
                              # hand-written. Behavior-preserving; fails open. 0 disables it.
 BROWSER_VERIFY=auto          # auto (browser only for UI slices) | always | never
 APP_URL=http://localhost     # base URL of your locally-running app (used by browser verify)
+APP_URLS=                    # multi-app monorepos: per-workspace app URLs as comma-separated
+                             # <workspace>=<url> pairs (e.g. web=http://localhost:3000,api=http://localhost:3001).
+                             # A workspace is named by its manifest package name, directory path, or
+                             # directory name; browser verify drives the URL whose workspace holds the
+                             # slice's changed files, and unmatched slices fall back to APP_URL.
 # Run the pluggable verify-check library each verify phase. Checks live in the
 # TARGET repo under .trau/checks/*.yaml (name, severity, command|prompt, tools);
 # severity gates the merge (error blocks, warn only surfaces). With no custom

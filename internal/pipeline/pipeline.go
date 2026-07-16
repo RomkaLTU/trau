@@ -353,8 +353,12 @@ type Pipeline struct {
 	PanelParallel bool
 	BrowserVerify string
 	AppURL        string
-	AutoMerge     bool
-	MergeMethod   string
+	// AppURLs maps a workspace to its app URL (config APP_URLS) so browser verify
+	// drives the app the slice actually changed in a multi-app monorepo; AppURL
+	// covers slices that match no workspace.
+	AppURLs     map[string]string
+	AutoMerge   bool
+	MergeMethod string
 	// DeterministicCommit routes a squash repo's commit phase through a templated
 	// Conventional Commit instead of a commit agent (config DETERMINISTIC_COMMIT).
 	// Non-squash merge methods always use the agent commit.
@@ -1257,7 +1261,11 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	}
 
 	verdictPath := verifyPath(id)
-	note := browserNote(p.BrowserVerify, p.AppURL)
+	appURL := p.sliceAppURL(ctx)
+	note := browserNote(p.BrowserVerify, appURL)
+	if note != "" && appURL != p.AppURL {
+		p.logf("  ↳ browser verify targets %s (workspace match)", appURL)
+	}
 	branch := p.State.Get(id, "BRANCH")
 
 	rubricRef, rubricOK := p.activeRubric(id)
@@ -2534,6 +2542,38 @@ func handoffTail(id, ticketCtx string) string {
 	return "Write a QA brief for " + id + ": the concrete, checkable behaviors a manual QA tester must verify for this slice, in priority order. Don't duplicate content already in the ticket, PRD, or diff — focus on what to check and how. Do NOT run the test suite, execute the code, or verify behavior yourself — a separate verify step does that; just write the brief. Redact any secrets. Save it to exactly " + handoffPath(id) + " (overwrite if present) and nowhere else." + rubricInstruction(id) + ticketCtx
 }
 
+// worktreeLister lists the working-tree changed files against a base branch.
+// ExecGit implements it; a Git that does not (test stubs) keeps the per-workspace
+// app URL resolution on the AppURL fallback.
+type worktreeLister interface {
+	WorktreeChangedFiles(ctx context.Context, base string) ([]string, error)
+}
+
+// sliceAppURL picks the browser-verify URL for the slice: the APP_URLS entry
+// whose workspace holds the slice's changed files, AppURL otherwise. Fails open
+// to AppURL — an unsizable tree or unmatched slice never blocks verify.
+func (p *Pipeline) sliceAppURL(ctx context.Context) string {
+	if len(p.AppURLs) == 0 || p.RepoRoot == "" {
+		return p.AppURL
+	}
+	lister, ok := p.Git.(worktreeLister)
+	if !ok {
+		return p.AppURL
+	}
+	base, err := p.buildBase(ctx)
+	if err != nil {
+		return p.AppURL
+	}
+	changed, err := lister.WorktreeChangedFiles(ctx, base)
+	if err != nil {
+		return p.AppURL
+	}
+	if url := agent.WorkspaceAppURL(p.RepoRoot, p.AppURLs, changed); url != "" {
+		return url
+	}
+	return p.AppURL
+}
+
 func browserNote(mode, appURL string) string {
 	switch mode {
 	case "always":
@@ -3254,6 +3294,34 @@ func (g ExecGit) WorktreeDiffStat(ctx context.Context, base string) (files, line
 		}
 	}
 	return files, lines, nil
+}
+
+// WorktreeChangedFiles lists the repo-relative paths the working tree changes
+// against base — the tracked edits plus the untracked files the build created,
+// the same view of the slice WorktreeDiffStat sizes.
+func (g ExecGit) WorktreeChangedFiles(ctx context.Context, base string) ([]string, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"diff", "--name-only", base).Output()
+	if err != nil {
+		return nil, fmt.Errorf("git diff --name-only %s: %w", base, err)
+	}
+	var files []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	others, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"ls-files", "--others", "--exclude-standard", "-z").Output()
+	if err != nil {
+		return nil, fmt.Errorf("git ls-files --others: %w", err)
+	}
+	for _, path := range strings.Split(strings.TrimRight(string(others), "\x00"), "\x00") {
+		if path != "" {
+			files = append(files, path)
+		}
+	}
+	return files, nil
 }
 
 // Commits returns the short SHAs unique to branch relative to base (base..branch),
