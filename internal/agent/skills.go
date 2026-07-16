@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // SkillSearchPaths lists the repo-relative directories where agent skills may
@@ -329,8 +331,31 @@ func fileExists(root, name string) bool {
 	return err == nil
 }
 
+// detectNodeProjectType classifies a Node repo by its dependencies. A monorepo
+// root rarely declares the frameworks its apps use, so workspace manifests are
+// scanned too and the most specific framework found anywhere wins.
 func detectNodeProjectType(repoRoot string) string {
-	data, err := os.ReadFile(filepath.Join(repoRoot, "package.json"))
+	best := nodeManifestType(filepath.Join(repoRoot, "package.json"))
+	for _, dir := range workspaceDirs(repoRoot) {
+		if t := nodeManifestType(filepath.Join(dir, "package.json")); nodeTypeRank(t) > nodeTypeRank(best) {
+			best = t
+		}
+	}
+	return best
+}
+
+func nodeTypeRank(t string) int {
+	switch t {
+	case "nextjs":
+		return 2
+	case "react":
+		return 1
+	}
+	return 0
+}
+
+func nodeManifestType(manifest string) string {
+	data, err := os.ReadFile(manifest)
 	if err != nil {
 		return "node"
 	}
@@ -349,6 +374,77 @@ func detectNodeProjectType(repoRoot string) string {
 		return "react"
 	}
 	return "node"
+}
+
+// maxWorkspaceDirs bounds the workspace scan so a pathological glob cannot turn
+// detection into a filesystem walk.
+const maxWorkspaceDirs = 64
+
+// workspaceDirs resolves the workspace globs a monorepo root declares —
+// package.json "workspaces" (array or {packages: [...]}) and pnpm-workspace.yaml
+// packages — into existing directories holding a package.json. Negations and
+// recursive globs are skipped: workspaces they add beyond the plain patterns are
+// a refinement detection can live without.
+func workspaceDirs(repoRoot string) []string {
+	patterns := append(packageJSONWorkspaces(repoRoot), pnpmWorkspacePackages(repoRoot)...)
+	var dirs []string
+	for _, pat := range patterns {
+		pat = strings.TrimSpace(pat)
+		if pat == "" || strings.HasPrefix(pat, "!") || strings.Contains(pat, "**") {
+			continue
+		}
+		matches, err := filepath.Glob(filepath.Join(repoRoot, filepath.FromSlash(pat)))
+		if err != nil {
+			continue
+		}
+		for _, m := range matches {
+			if len(dirs) >= maxWorkspaceDirs {
+				return dirs
+			}
+			if fileExists(m, "package.json") {
+				dirs = append(dirs, m)
+			}
+		}
+	}
+	return dirs
+}
+
+func packageJSONWorkspaces(repoRoot string) []string {
+	data, err := os.ReadFile(filepath.Join(repoRoot, "package.json"))
+	if err != nil {
+		return nil
+	}
+	var pkg struct {
+		Workspaces json.RawMessage `json:"workspaces"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil || len(pkg.Workspaces) == 0 {
+		return nil
+	}
+	var list []string
+	if json.Unmarshal(pkg.Workspaces, &list) == nil {
+		return list
+	}
+	var obj struct {
+		Packages []string `json:"packages"`
+	}
+	if json.Unmarshal(pkg.Workspaces, &obj) == nil {
+		return obj.Packages
+	}
+	return nil
+}
+
+func pnpmWorkspacePackages(repoRoot string) []string {
+	data, err := os.ReadFile(filepath.Join(repoRoot, "pnpm-workspace.yaml"))
+	if err != nil {
+		return nil
+	}
+	var ws struct {
+		Packages []string `yaml:"packages"`
+	}
+	if err := yaml.Unmarshal(data, &ws); err != nil {
+		return nil
+	}
+	return ws.Packages
 }
 
 func mergeDeps(a, b map[string]string) map[string]string {

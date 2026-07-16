@@ -86,3 +86,56 @@ func mkSkill(t *testing.T, repo, dir, name string) {
 		t.Fatal(err)
 	}
 }
+
+// TestDetectProjectTypeWorkspaces: a monorepo root whose own manifest names no
+// framework is classified by its workspace manifests — pnpm-workspace.yaml or the
+// package.json workspaces field — with the most specific framework winning.
+func TestDetectProjectTypeWorkspaces(t *testing.T) {
+	write := func(t *testing.T, root, rel, content string) {
+		t.Helper()
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("pnpm workspaces surface next", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "package.json", `{"name":"mono","private":true,"devDependencies":{"turbo":"^2"}}`)
+		write(t, root, "pnpm-workspace.yaml", "packages:\n  - \"apps/*\"\n  - \"packages/ui\"\n")
+		write(t, root, "apps/web/package.json", `{"name":"web","dependencies":{"next":"15.0.0"}}`)
+		write(t, root, "packages/ui/package.json", `{"name":"ui","dependencies":{"react":"19.0.0"}}`)
+		if got := DetectProjectType(root); got != "nextjs" {
+			t.Errorf("DetectProjectType = %q, want %q", got, "nextjs")
+		}
+	})
+
+	t.Run("package.json workspaces surface react", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "package.json", `{"name":"mono","private":true,"workspaces":["packages/*"]}`)
+		write(t, root, "packages/app/package.json", `{"name":"app","dependencies":{"react":"19.0.0"}}`)
+		if got := DetectProjectType(root); got != "react" {
+			t.Errorf("DetectProjectType = %q, want %q", got, "react")
+		}
+	})
+
+	t.Run("workspaces object form", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "package.json", `{"name":"mono","private":true,"workspaces":{"packages":["apps/*"]}}`)
+		write(t, root, "apps/site/package.json", `{"name":"site","dependencies":{"next":"15.0.0"}}`)
+		if got := DetectProjectType(root); got != "nextjs" {
+			t.Errorf("DetectProjectType = %q, want %q", got, "nextjs")
+		}
+	})
+
+	t.Run("plain node repo stays node", func(t *testing.T) {
+		root := t.TempDir()
+		write(t, root, "package.json", `{"name":"svc","dependencies":{"express":"^4"}}`)
+		if got := DetectProjectType(root); got != "node" {
+			t.Errorf("DetectProjectType = %q, want %q", got, "node")
+		}
+	})
+}
