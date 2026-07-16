@@ -76,12 +76,15 @@ type TeamDetection struct {
 // present it as auto-detected instead of a question. ExpectedChecks carries the
 // required status-check names when GitHub exposed them, seeding EXPECTED_CHECKS.
 // Source labels the winning signal for the description line: "branch-protection",
-// "workflows" (local .github/workflows fallback), or "none".
+// "workflows" (local .github/workflows fallback), or "none". PathFiltered is set
+// when the workflow scan found PR workflows but every one is scoped by a
+// paths/paths-ignore filter, so PRs outside those paths receive zero checks.
 type CIDetection struct {
 	Gate           bool
 	Confident      bool
 	ExpectedChecks []string
 	Source         string
+	PathFiltered   bool
 }
 
 // expectedChecksLabel renders the required checks for the description line,
@@ -242,8 +245,9 @@ func newOnboardingModelWithPrefill(ctx context.Context, actions OnboardingAction
 	if m.repoRoot == "" {
 		m.phase = phaseNoRepo
 	}
-	m.ciHasPRDet = config.HasPullRequestCI(m.repoRoot)
-	m.ciDet = CIDetection{Gate: m.ciHasPRDet, Source: ciWorkflowSource(m.ciHasPRDet)}
+	scan := config.ScanPullRequestCI(m.repoRoot)
+	m.ciHasPRDet = scan.HasPRWorkflows
+	m.ciDet = CIDetection{Gate: scan.HasPRWorkflows, PathFiltered: scan.AllPathFiltered, Source: ciWorkflowSource(scan.HasPRWorkflows)}
 	m.applyPrefill(prefill)
 	return m
 }

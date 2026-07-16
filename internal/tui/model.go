@@ -187,7 +187,7 @@ type model struct {
 	bannerErr     bool
 
 	// PR badge state for the current ticket, from pipeline pr_open/ci events.
-	// ciState ∈ {"", "open", "pending", "failing", "green", "merged"}.
+	// ciState ∈ {"", "open", "pending", "failing", "green", "skipped", "merged"}.
 	prNum    int
 	prURL    string
 	ciState  string

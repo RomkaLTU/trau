@@ -74,13 +74,15 @@ func TestDedupeChecks(t *testing.T) {
 // from HasPullRequestCI alone — deterministic whether or not gh is installed.
 func TestDetectCIGateFallback(t *testing.T) {
 	cases := []struct {
-		name       string
-		workflow   string
-		wantGate   bool
-		wantSource string
+		name             string
+		workflow         string
+		wantGate         bool
+		wantSource       string
+		wantPathFiltered bool
 	}{
 		{name: "pull_request workflow", workflow: "on:\n  pull_request:\n    branches: [main]\n", wantGate: true, wantSource: "workflows"},
 		{name: "push-only workflow", workflow: "on:\n  push:\n    branches: [main]\n", wantGate: false, wantSource: "none"},
+		{name: "path-filtered pull_request workflow", workflow: "on:\n  pull_request:\n    paths:\n      - 'web/**'\n", wantGate: true, wantSource: "workflows", wantPathFiltered: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -93,8 +95,9 @@ func TestDetectCIGateFallback(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := detectCIGate(context.Background(), dir, "")
-			if got.Gate != tc.wantGate || got.Source != tc.wantSource {
-				t.Fatalf("detectCIGate = {Gate:%v Source:%q}, want {Gate:%v Source:%q}", got.Gate, got.Source, tc.wantGate, tc.wantSource)
+			if got.Gate != tc.wantGate || got.Source != tc.wantSource || got.PathFiltered != tc.wantPathFiltered {
+				t.Fatalf("detectCIGate = {Gate:%v Source:%q PathFiltered:%v}, want {Gate:%v Source:%q PathFiltered:%v}",
+					got.Gate, got.Source, got.PathFiltered, tc.wantGate, tc.wantSource, tc.wantPathFiltered)
 			}
 			if got.Confident {
 				t.Fatalf("fallback result must not be Confident")
