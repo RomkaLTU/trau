@@ -746,6 +746,15 @@ func (s *Issues) RecordError(repo, msg string) error {
 	return err
 }
 
+// ClearError drops any recorded sync error from the repo's bookkeeping row,
+// leaving the binding, cursor, counts, and last-synced time intact. It is the
+// escape hatch for a repo whose provider no longer pulls — explicitly internal —
+// where no successful RecordResult will ever run to clear a stale error.
+func (s *Issues) ClearError(repo string) error {
+	_, err := s.db.Exec(`UPDATE issue_sync SET last_error = '' WHERE repo = ?`, repo)
+	return err
+}
+
 // Get returns a repo's stored issue by identifier regardless of source, without
 // its comments, and whether it was found. It answers by-id lookups — like run
 // detail — that need an issue's stored state, including whether it was tombstoned
