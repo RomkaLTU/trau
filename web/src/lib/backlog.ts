@@ -205,9 +205,9 @@ export interface FlatRowNode {
 export type BacklogRowNode = EpicRowNode | FlatRowNode
 
 // nestBacklogRows groups one section's hub-ordered rows into epic nodes and flat
-// rows for status-true nesting. The hub orders each status group by family key
-// with an epic immediately ahead of its same-group sub-issues, so an epic's
-// children are the contiguous run of rows naming it as parent. A sub-issue whose
+// rows for status-true nesting. The hub keeps each family contiguous within a
+// status group with an epic immediately ahead of its same-group sub-issues, so an
+// epic's children are the contiguous run of rows naming it as parent. A sub-issue whose
 // epic row is absent — paged out, filtered away, or diverged into another
 // section — stays a flat row and keeps its breadcrumb chip.
 export function nestBacklogRows(items: BacklogEntry[]): BacklogRowNode[] {

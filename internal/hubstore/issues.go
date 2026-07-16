@@ -247,12 +247,16 @@ func numericIdentOrder(expr string) string {
 	)
 }
 
+// familyCreated ranks a family by the newest created_at among its rows in the
+// filtered set, so a fresh sub-issue surfaces its whole family together.
+const familyCreated = `max(created_at) OVER (PARTITION BY ` + familyKey + `)`
+
 // backlogOrderBy sorts the board by workflow progress — active work first, then
-// not-yet-started, backlog, and finally the closed groups — and within a group by
-// family: each row's epic key (numeric-aware), the epic ahead of its sub-issues,
-// then the row's own numeric-aware identifier. A sub-issue in the same group as
-// its epic lands immediately after it; sub-issues whose epic sits elsewhere
-// cluster under their shared epic key.
+// not-yet-started, backlog, and finally the closed groups. The Todo and Backlog
+// groups order families newest-created first, so a just-filed issue lands on top
+// regardless of its identifier prefix; the other groups order by numeric-aware
+// family key. Either way a family stays contiguous within a group: the epic ahead
+// of its same-group sub-issues, then the rows' own numeric-aware identifiers.
 var backlogOrderBy = `ORDER BY
 	CASE status_group
 		WHEN 'started' THEN 0
@@ -263,6 +267,7 @@ var backlogOrderBy = `ORDER BY
 		WHEN 'canceled' THEN 5
 		ELSE 6
 	END,
+	CASE WHEN status_group IN ('unstarted', 'backlog') THEN ` + familyCreated + ` END DESC,
 	` + numericIdentOrder(familyKey) + `,
 	CASE WHEN parent = '' THEN 0 ELSE 1 END,
 	` + numericIdentOrder("identifier")
@@ -275,8 +280,8 @@ func (s *Issues) Backlog(repo string) ([]Issue, error) {
 }
 
 // BacklogPage returns the repo's stored issues matching filter, ordered by group
-// precedence (started, unstarted, backlog, unknown, done, canceled) then
-// numeric-aware identifier, and paginated. It also returns the total number of
+// precedence (started, unstarted, backlog, unknown, done, canceled) then each
+// group's display order (backlogOrderBy), and paginated. It also returns the total number of
 // matches before pagination so the board can page without counting the rows
 // itself, and per-status-group counts computed over the same filters with the
 // state selection ignored — so section headers and the hidden-count hint hold
