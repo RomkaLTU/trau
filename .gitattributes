@@ -1,0 +1,3 @@
+# Generated build output: never text-merge. Concurrent changes must surface as a
+# conflict and be resolved by rebuilding (cd web && npm ci && npm run build).
+internal/webserver/dist/** binary linguist-generated=true
