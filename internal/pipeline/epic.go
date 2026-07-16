@@ -71,12 +71,36 @@ func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string) (string,
 	if err != nil {
 		title = p.EpicID
 	}
-	prURL, err = p.GitHub.CreatePR(ctx, p.Base, epicBranch, "Epic: "+title, epicPRBody(p.EpicID))
+	prURL, err = p.GitHub.CreatePR(ctx, p.Base, epicBranch, epicPRTitle(p.EpicID, title), epicPRBody(p.EpicID))
 	if err != nil {
 		return "", err
 	}
 	p.logf("  epic PR %s", prURL)
 	return prURL, nil
+}
+
+// epicPRTitle builds the epic PR's Conventional-Commit-style header —
+// 'epic(<id>): <subject>' — so the squash of epic→main lands as a conventional
+// subject. Tracker titles already carrying an "Epic:" prefix are stripped first
+// so the header never stacks two markers, and the subject is case-conformed and
+// truncated like a deterministic commit subject.
+func epicPRTitle(id, title string) string {
+	t := strings.TrimSpace(title)
+	for {
+		rest, ok := strings.CutPrefix(t, "Epic:")
+		if !ok {
+			rest, ok = strings.CutPrefix(t, "epic:")
+		}
+		if !ok {
+			break
+		}
+		t = strings.TrimSpace(rest)
+	}
+	subject := strings.TrimRight(conformSubjectCase(commitSubject(t)), ".")
+	if subject == "" {
+		subject = id
+	}
+	return "epic(" + id + "): " + subject
 }
 
 func epicPRBody(id string) string {

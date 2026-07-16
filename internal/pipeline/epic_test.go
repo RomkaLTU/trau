@@ -374,3 +374,24 @@ func (e *epicGitHub) Merge(_ context.Context, _, method string, deleteBranch boo
 	e.mergeMethod, e.mergeDeleted = method, deleteBranch
 	return nil
 }
+
+// TestEpicPRTitle: the epic PR header is a conventional 'epic(<id>): <subject>' —
+// case-conformed, stripped of stacked "Epic:" prefixes, and falling back to the id
+// when the tracker title is empty.
+func TestEpicPRTitle(t *testing.T) {
+	cases := []struct {
+		name, id, title, want string
+	}{
+		{"conventional header", "COD-951", "Atlas — architecture views per repo", "epic(COD-951): atlas — architecture views per repo"},
+		{"stacked Epic prefixes stripped", "COD-951", "Epic: Epic: Atlas", "epic(COD-951): atlas"},
+		{"empty title falls back to id", "COD-951", "", "epic(COD-951): COD-951"},
+		{"acronym first word untouched", "COD-951", "API surface overhaul", "epic(COD-951): API surface overhaul"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := epicPRTitle(c.id, c.title); got != c.want {
+				t.Errorf("epicPRTitle(%q, %q) = %q, want %q", c.id, c.title, got, c.want)
+			}
+		})
+	}
+}

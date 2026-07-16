@@ -31,6 +31,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/sanitize"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
@@ -101,6 +102,9 @@ type Git interface {
 
 	// Commits returns the short SHAs on branch but not base (base..branch).
 	Commits(ctx context.Context, base, branch string) ([]string, error)
+
+	// CommitSubject returns the subject line of ref's commit (git log -1 --format=%s).
+	CommitSubject(ctx context.Context, ref string) (string, error)
 
 	Pull(ctx context.Context, remote, branch string) error
 
@@ -1413,7 +1417,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 				return fmt.Errorf("commit %s: resolve epic branch: %w", id, err)
 			}
 		}
-		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, id+": "+prDesc(branch), prBody(id))
+		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, p.slicePRTitle(ctx, id, prBase, branch), prBody(id))
 		if err != nil {
 			return fmt.Errorf("commit %s: pr create: %w", id, err)
 		}
@@ -1439,29 +1443,48 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 // path — the squash collapses the message anyway, so a full commit agent is pure
 // overhead — while other merge methods keep the agent commit, which may split the
 // work into atomic commits. DeterministicCommit=false restores the agent commit for
-// squash repos whose commit conventions need judgment.
+// squash repos whose commit conventions need judgment. A deterministic commit the
+// repo's own hooks reject falls back to the agent commit with the rejection quoted:
+// the repo stays the authority on message format, and the agent satisfies
+// conventions no template can know.
 func (p *Pipeline) commitSlice(ctx context.Context, id string) error {
+	hookNote := ""
 	if p.MergeMethod == "squash" && p.DeterministicCommit {
-		return p.deterministicCommit(ctx, id)
+		err := p.deterministicCommit(ctx, id)
+		var rejected *commitRejectedError
+		if !errors.As(err, &rejected) {
+			return err
+		}
+		p.logf("  deterministic commit rejected by the repo's hooks — retrying via the commit agent")
+		hookNote = " A templated commit was just rejected by this repository's hooks (" + sanitize.FeedLine(rejected.Error()) + "). The changes are still staged: read the repo's commit conventions (commit hooks, lint config, recent git log) and write a message they accept."
 	}
 	rubricRef, _ := p.activeRubric(id)
-	_, err := p.agentStep(ctx, id, "commit", commitInstruction(id, commitRubricNote(rubricRef), p.MergeMethod == "squash"))
+	_, err := p.agentStep(ctx, id, "commit", commitInstruction(id, commitRubricNote(rubricRef), p.MergeMethod == "squash")+hookNote)
 	return err
 }
+
+// commitRejectedError marks a failure of the deterministic git-commit step itself —
+// most commonly the repo's commit-msg/pre-commit hook rejecting the templated
+// message — as opposed to a staging failure. commitSlice catches it and retries via
+// the commit agent.
+type commitRejectedError struct{ err error }
+
+func (e *commitRejectedError) Error() string { return e.err.Error() }
+func (e *commitRejectedError) Unwrap() error { return e.err }
 
 // deterministicCommit stages the slice and commits it with a templated Conventional
 // Commit, no agent. Under the clean-base invariant the whole dirty tree is this
 // slice's work (user WIP was autostashed), so AddAll (git add -A) stages every
 // tracked change plus untracked non-ignored files. Hooks run (noVerify=false): a
-// pre-commit rejection surfaces as a phase error and classifies through the normal
-// fault path with the WIP left intact, exactly like an agent commit that fails.
+// staging failure keeps the plain fault path, while a rejected commit returns a
+// *commitRejectedError so commitSlice can retry via the commit agent.
 func (p *Pipeline) deterministicCommit(ctx context.Context, id string) error {
 	if err := p.Git.AddAll(ctx); err != nil {
 		return fmt.Errorf("commit %s: stage: %w", id, err)
 	}
 	msg := deterministicCommitMessage(id, p.commitTitle(ctx, id))
 	if err := p.Git.Commit(ctx, msg, false); err != nil {
-		return fmt.Errorf("commit %s: %w", id, err)
+		return &commitRejectedError{err: fmt.Errorf("commit %s: %w", id, err)}
 	}
 	p.logf("  committed %s", strings.SplitN(msg, "\n", 2)[0])
 	return nil
@@ -1971,6 +1994,20 @@ func prDesc(branch string) string {
 	return strings.ReplaceAll(slug, "-", " ")
 }
 
+// slicePRTitle titles the slice PR with the branch's sole commit subject when
+// exactly one commit sits above the base: that message already passed the repo's
+// own commit hooks, so a squash-merge title (and any PR-title lint the repo runs)
+// conforms wherever commits do. Multi-commit branches and lookup failures fall
+// back to the '<id>: <branch words>' template.
+func (p *Pipeline) slicePRTitle(ctx context.Context, id, base, branch string) string {
+	if shas, err := p.Git.Commits(ctx, base, branch); err == nil && len(shas) == 1 {
+		if subject, err := p.Git.CommitSubject(ctx, branch); err == nil && strings.TrimSpace(subject) != "" {
+			return strings.TrimSpace(subject)
+		}
+	}
+	return id + ": " + prDesc(branch)
+}
+
 var reSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
 func slugify(title string) string {
@@ -2374,7 +2411,7 @@ const codeStyleNote = " Write it the way a senior engineer on this project would
 // installed skills to name. Claude Code stopped honoring this generic self-
 // selection in 2.1.202, which is why a skill-equipped repo names its skills
 // explicitly instead (see skillsPrompt).
-const selfSelectSkillsNote = "This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Infer the project's stack from its manifests and configs (package.json, composer.json, go.mod, pyproject.toml, and the like) rather than assuming any framework. Always include the project's test skill when one exists, and add the domain skills matching the areas the ticket actually touches."
+const selfSelectSkillsNote = "This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Infer the project's stack from its manifests and configs (package.json, composer.json, go.mod, pyproject.toml, and the like) rather than assuming any framework; in a multi-workspace repo (monorepo), read the manifests of the workspaces the ticket touches, not only the root's. Always include the project's test skill when one exists, and add the domain skills matching the areas the ticket actually touches."
 
 // skillsPrompt composes the build-prompt sentence that tells the agent which
 // installed skills to load. With no installed skills it returns the generic
@@ -2409,7 +2446,7 @@ func intersect(want, have []string) []string {
 }
 
 func buildInstruction(id, branch, skillsNote, note, ticketCtx string) string {
-	return "Implement " + id + " on branch " + branch + " (already checked out). " + skillsNote + note + " Implement the ticket fully and run only the tests relevant to this slice (the new or changed test files for this ticket) — not the entire suite." + codeStyleNote + " Do not commit, push, or open a PR — stop after implementation. If the ticket clearly belongs to a DIFFERENT repository or codebase — the files, directories, or stack it references do not exist here and are not something this ticket asks you to create — do NOT implement anything and do NOT modify any files; end your reply with a final line 'REFUSED: <one short sentence naming what the ticket actually targets>'." + buildNotesInstruction(id) + ticketCtx
+	return "Implement " + id + " on branch " + branch + " (already checked out). " + skillsNote + note + " Implement the ticket fully and run only the tests relevant to this slice (the new or changed test files for this ticket) — not the entire suite. In a multi-workspace repo (monorepo), work inside the workspace(s) the ticket concerns and use their own commands, scoped to those workspaces, rather than repo-wide runs." + codeStyleNote + " Do not commit, push, or open a PR — stop after implementation. If the ticket clearly belongs to a DIFFERENT repository or codebase — the files, directories, or stack it references do not exist here and are not something this ticket asks you to create (in a multi-workspace repo, check every workspace before concluding this: a ticket for any of its apps or packages belongs here) — do NOT implement anything and do NOT modify any files; end your reply with a final line 'REFUSED: <one short sentence naming what the ticket actually targets>'." + buildNotesInstruction(id) + ticketCtx
 }
 
 // ticketContext returns a prompt block carrying the ticket's title and full
@@ -2518,7 +2555,7 @@ func verifyTail(id, handoff, verdict, note, checksFragment, rubricNote, lessonsN
 		behaviors = "No separate QA brief was written for this tiny slice: derive the concrete, checkable behaviors yourself from the ticket and the diff, then confirm each actually holds."
 		failWhen = "any behavior the ticket requires does not work"
 	}
-	return "Cold, adversarial QA verification of " + id + " against " + against + ". Treat " + sources + " as the only sources of truth; your job is to find what does NOT work." + rubricNote + lessonsNote + " Run only the tests relevant to this slice (the new or changed test files for this ticket) using the project's test runner — not the whole suite. " + behaviors + " " + note + " Distinguish defects in this slice's own code from pre-existing or out-of-scope issues. When finished, write a JSON verdict to exactly " + verdict + ": {\"pass\": true|false, \"summary\": \"one line\", \"failures\": [\"...\"]}. Set pass=false if any relevant test fails or " + failWhen + "; failures lists each concrete problem (empty when pass is true)." + checksFragment + " Do not commit, push, or open a PR." + ticketCtx
+	return "Cold, adversarial QA verification of " + id + " against " + against + ". Treat " + sources + " as the only sources of truth; your job is to find what does NOT work." + rubricNote + lessonsNote + " Run only the tests relevant to this slice (the new or changed test files for this ticket) using the project's test runner (in a multi-workspace repo, the affected workspace's own runner) — not the whole suite. " + behaviors + " " + note + " Distinguish defects in this slice's own code from pre-existing or out-of-scope issues. When finished, write a JSON verdict to exactly " + verdict + ": {\"pass\": true|false, \"summary\": \"one line\", \"failures\": [\"...\"]}. Set pass=false if any relevant test fails or " + failWhen + "; failures lists each concrete problem (empty when pass is true)." + checksFragment + " Do not commit, push, or open a PR." + ticketCtx
 }
 
 func commitInstruction(id, rubricNote string, squash bool) string {
@@ -2531,15 +2568,39 @@ func commitInstruction(id, rubricNote string, squash bool) string {
 
 // deterministicCommitMessage builds the templated Conventional Commit for a squash
 // slice: '<type>: <subject>' with a 'Refs: <id>' trailer. The type is inferred from
-// the title, the subject is the title truncated to 72 chars, and an empty title
-// falls back to the id. No scope and no AI/authorship trailers, matching the commit
-// rule the agent path enforces.
+// the title, the subject is the title truncated to 72 chars and case-conformed to
+// the spec's lowercase description style (tracker titles arrive sentence-cased,
+// which commitlint's default subject-case rule rejects), and an empty title falls
+// back to the id. No scope and no AI/authorship trailers, matching the commit rule
+// the agent path enforces.
 func deterministicCommitMessage(id, title string) string {
-	subject := commitSubject(title)
+	subject := strings.TrimRight(conformSubjectCase(commitSubject(title)), ".")
 	if subject == "" {
 		subject = id
 	}
 	return commitType(title) + ": " + subject + "\n\nRefs: " + id
+}
+
+// conformSubjectCase lowercases the subject's leading rune so a sentence-cased
+// tracker title reads as a spec-style lowercase description. The first word is
+// left untouched when it carries uppercase beyond its first rune — an acronym,
+// identifier, or CamelCase name, not sentence casing.
+func conformSubjectCase(s string) string {
+	word := s
+	if i := strings.IndexByte(s, ' '); i >= 0 {
+		word = s[:i]
+	}
+	runes := []rune(word)
+	if len(runes) == 0 || !unicode.IsUpper(runes[0]) {
+		return s
+	}
+	for _, r := range runes[1:] {
+		if unicode.IsUpper(r) {
+			return s
+		}
+	}
+	runes[0] = unicode.ToLower(runes[0])
+	return string(runes) + s[len(word):]
 }
 
 // commitType maps a ticket title to a Conventional Commit type. The loop always cuts
@@ -3204,6 +3265,16 @@ func (g ExecGit) Commits(ctx context.Context, base, branch string) ([]string, er
 		}
 	}
 	return shas, nil
+}
+
+// CommitSubject returns the subject line of ref's commit.
+func (g ExecGit) CommitSubject(ctx context.Context, ref string) (string, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"log", "-1", "--format=%s", ref).Output()
+	if err != nil {
+		return "", fmt.Errorf("git log -1 %s: %w", ref, err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // FirstCommitDate returns the committer date (RFC3339) of the earliest commit
