@@ -222,6 +222,7 @@ function InboxPage() {
         altKey: e.altKey,
         isComposing: e.isComposing,
         targetTag: (e.target as HTMLElement | null)?.tagName,
+        targetEditable: (e.target as HTMLElement | null)?.isContentEditable,
         layerOpen: hasOpenLayer(document),
       });
       if (action === null) return;

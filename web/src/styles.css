@@ -295,3 +295,95 @@ body::before {
 .atlas-canvas .react-flow__node-domain {
   z-index: -1 !important;
 }
+
+.composer-editor .tiptap p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: var(--muted-foreground);
+}
+.composer-editor .tiptap > * + * {
+  margin-top: 0.5rem;
+}
+.composer-editor .tiptap h1 {
+  font-size: 1.125rem;
+}
+.composer-editor .tiptap h2 {
+  font-size: 1rem;
+}
+.composer-editor .tiptap h3,
+.composer-editor .tiptap h4,
+.composer-editor .tiptap h5,
+.composer-editor .tiptap h6 {
+  font-size: 0.875rem;
+}
+.composer-editor .tiptap h1,
+.composer-editor .tiptap h2,
+.composer-editor .tiptap h3,
+.composer-editor .tiptap h4,
+.composer-editor .tiptap h5,
+.composer-editor .tiptap h6 {
+  font-weight: 600;
+}
+.composer-editor .tiptap ul {
+  list-style: disc;
+}
+.composer-editor .tiptap ol {
+  list-style: decimal;
+}
+.composer-editor .tiptap ul,
+.composer-editor .tiptap ol {
+  padding-left: 1.25rem;
+}
+.composer-editor .tiptap li + li {
+  margin-top: 0.25rem;
+}
+.composer-editor .tiptap blockquote {
+  border-left: 2px solid var(--border);
+  padding-left: 0.75rem;
+  color: var(--muted-foreground);
+}
+.composer-editor .tiptap a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.composer-editor .tiptap code {
+  background: var(--muted);
+  border-radius: 0.25rem;
+  padding: 0.125rem 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+.composer-editor .tiptap pre {
+  background: var(--muted);
+  border-radius: 0.375rem;
+  padding: 0.75rem;
+  overflow-x: auto;
+}
+.composer-editor .tiptap pre code {
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+  font-size: 0.75rem;
+}
+.composer-editor .tiptap table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+}
+.composer-editor .tiptap th,
+.composer-editor .tiptap td {
+  border: 1px solid var(--border);
+  padding: 0.25rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+.composer-editor .tiptap th {
+  background: var(--muted);
+  font-weight: 600;
+}
+.composer-editor .tiptap .selectedCell {
+  background: var(--accent);
+}

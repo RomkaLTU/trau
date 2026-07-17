@@ -35,6 +35,11 @@ describe('inboxKeyAction', () => {
     expect(inboxKeyAction({ key: 'j', targetTag: 'SELECT' })).toBeNull()
   })
 
+  it('yields while focus is in a contenteditable editor', () => {
+    expect(inboxKeyAction({ key: 'j', targetTag: 'DIV', targetEditable: true })).toBeNull()
+    expect(inboxKeyAction({ key: 's', targetTag: 'DIV', targetEditable: true })).toBeNull()
+  })
+
   it('still fires over the page body', () => {
     expect(inboxKeyAction({ key: 'j', targetTag: 'BODY' })).toBe('next')
   })
