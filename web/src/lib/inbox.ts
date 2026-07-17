@@ -233,6 +233,22 @@ export function inboxCounts(items: readonly InboxItem[]): InboxCounts {
   return { total: items.length, awaiting };
 }
 
+// selectedItem resolves the ?issue= selection: a queue row first, then a Done today
+// row — an applied session stays openable for reference — falling back to the queue
+// head when the id is in neither list.
+export function selectedItem(
+  items: readonly InboxItem[],
+  done: readonly InboxItem[],
+  peek: string | null,
+): InboxItem | null {
+  return (
+    items.find((item) => item.id === peek) ??
+    done.find((item) => item.id === peek) ??
+    items[0] ??
+    null
+  );
+}
+
 // inboxPosition is the zero-based index of an issue in the walk-through, or -1 when
 // it has left the queue (e.g. its outcome was just applied).
 export function inboxPosition(items: readonly InboxItem[], id: string): number {
