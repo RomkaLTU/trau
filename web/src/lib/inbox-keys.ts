@@ -29,16 +29,18 @@ export interface InboxKeyEvent {
   altKey?: boolean
   isComposing?: boolean
   targetTag?: string
+  targetEditable?: boolean
   layerOpen?: boolean
 }
 
 // inboxKeyAction maps a bare keystroke to its queue action. Anything the keystroke
 // could already mean is not ours: a modifier belongs to the browser, a composing
-// keystroke to the IME, a letter over a field is text the user is typing, and an
-// open dialog or popover owns the keyboard until it closes.
+// keystroke to the IME, a letter over a field or contenteditable editor is text
+// the user is typing, and an open dialog or popover owns the keyboard until it
+// closes.
 export function inboxKeyAction(e: InboxKeyEvent): InboxKeyAction | null {
   if (e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return null
-  if (e.layerOpen || TYPING_TAGS.includes(e.targetTag ?? '')) return null
+  if (e.layerOpen || e.targetEditable || TYPING_TAGS.includes(e.targetTag ?? '')) return null
   return ACTIONS[e.key] ?? null
 }
 
