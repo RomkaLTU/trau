@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { parseAsString, useQueryState, useQueryStates } from "nuqs";
 import {
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   ChevronsUpDown,
@@ -22,6 +23,7 @@ import {
   Sparkles,
   Tag,
   Users,
+  X,
 } from "lucide-react";
 
 import {
@@ -72,7 +74,7 @@ import {
   toggleStateGroup,
 } from "@/lib/backlog-filters";
 import { NEW_DRAFT_ID } from "@/lib/inbox";
-import { internalIssueQueryOptions } from "@/lib/issues";
+import { internalIssueQueryOptions, type InternalIssue } from "@/lib/issues";
 import { labelsQueryOptions } from "@/lib/labels";
 import { standardTitle, usePageTitle } from "@/lib/page-title";
 import {
@@ -126,6 +128,7 @@ function BacklogPage() {
   const repo = activeRepo ?? "";
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
+  const [created, setCreated] = useState<InternalIssue | null>(null);
   const { expanded, toggle } = useExpandedEpics(repo);
 
   const [filters, setFilters] = useQueryStates(backlogFilterParsers, {
@@ -152,6 +155,12 @@ function BacklogPage() {
     }, 150);
     return () => clearTimeout(id);
   }, [text, q, setFilters]);
+
+  useEffect(() => {
+    if (!created) return;
+    const id = setTimeout(() => setCreated(null), 8000);
+    return () => clearTimeout(id);
+  }, [created]);
 
   const backlog = useQuery(
     backlogQueryOptions(repo, backlogParamsFromFilters(filters, PAGE_SIZE)),
@@ -181,6 +190,7 @@ function BacklogPage() {
       entry={entry}
       editing={editing === entry.id}
       inQueue={queued.has(entry.id)}
+      highlight={created?.id === entry.id}
       nested={extra?.nested}
       expanded={extra?.expanded}
       onToggle={extra?.onToggle}
@@ -229,7 +239,10 @@ function BacklogPage() {
           {creating && (
             <InternalIssueForm
               repo={repo}
-              onDone={() => setCreating(false)}
+              onDone={(saved) => {
+                setCreating(false);
+                setCreated(saved);
+              }}
               onCancel={() => setCreating(false)}
             />
           )}
@@ -393,6 +406,17 @@ function BacklogPage() {
           )}
         </div>
       </RepoHealthGate>
+
+      {created && (
+        <CreatedToast
+          issue={created}
+          onView={() => {
+            void setPeek(created.id);
+            setCreated(null);
+          }}
+          onDismiss={() => setCreated(null)}
+        />
+      )}
 
       <IssueDrawer
         repo={repo}
@@ -722,6 +746,7 @@ function BacklogRow({
   entry,
   editing,
   inQueue,
+  highlight = false,
   nested = false,
   expanded,
   onOpen,
@@ -734,6 +759,7 @@ function BacklogRow({
   entry: BacklogEntry;
   editing: boolean;
   inQueue: boolean;
+  highlight?: boolean;
   nested?: boolean;
   expanded?: boolean;
   onOpen: () => void;
@@ -760,6 +786,7 @@ function BacklogRow({
       className={cn(
         "rounded-lg border bg-card transition-colors hover:border-ring/40",
         nested && "ml-6",
+        highlight && "border-primary/60 bg-primary/5",
       )}
     >
       <div className="flex flex-wrap items-center gap-3 px-4 py-3">
@@ -875,5 +902,45 @@ function BacklogRow({
         </div>
       )}
     </li>
+  );
+}
+
+function CreatedToast({
+  issue,
+  onView,
+  onDismiss,
+}: {
+  issue: InternalIssue;
+  onView: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div
+      role="status"
+      className="animate-in fade-in slide-in-from-bottom-2 fixed bottom-6 right-6 z-50 flex w-80 items-start gap-3 rounded-lg border bg-card p-3 shadow-lg"
+    >
+      <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-done" aria-hidden />
+      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <p className="text-sm text-foreground">
+          <span className="font-mono font-medium">{issue.id}</span> created
+        </p>
+        <p className="truncate text-sm text-muted-foreground">{issue.title}</p>
+        <button
+          type="button"
+          onClick={onView}
+          className="self-start pt-1 text-xs font-medium text-primary underline-offset-2 hover:underline"
+        >
+          View issue
+        </button>
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <X className="size-4" aria-hidden />
+      </button>
+    </div>
   );
 }
