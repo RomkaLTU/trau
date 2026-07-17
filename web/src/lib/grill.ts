@@ -335,6 +335,18 @@ export function activeSessionForIssue(
   return sessions?.find((s) => s.issue_id === issueId && !isSettled(s.state))
 }
 
+// abandonIssueSessions maps an issue's unsettled sessions to abandoned — the
+// optimistic mirror of the abandon endpoint, so a discarded conversation flips to
+// its preview without waiting on a refetch.
+export function abandonIssueSessions(
+  sessions: readonly GrillSession[] | undefined,
+  issueId: string,
+): GrillSession[] {
+  return (sessions ?? []).map((s) =>
+    s.issue_id === issueId && !isSettled(s.state) ? { ...s, state: 'abandoned' as const } : s,
+  )
+}
+
 function messageOrder(a: GrillMessage, b: GrillMessage): number {
   return Number(a.id) - Number(b.id)
 }
