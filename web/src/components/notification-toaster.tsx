@@ -5,9 +5,9 @@ import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { fireNotification, useNotifications } from '@/lib/notifications'
 import {
+  navigateToNotification,
   notificationTarget,
   useNotificationEvents,
-  type NotificationTarget,
 } from '@/lib/notification-center'
 import { isConversationOpen } from '@/lib/open-conversation'
 
@@ -36,7 +36,7 @@ export function NotificationToaster() {
         body={notification.body}
         onOpen={() => {
           toast.dismiss(id)
-          go(navigate, target)
+          navigateToNotification(navigate, target)
         }}
       />
     ))
@@ -51,18 +51,6 @@ export function NotificationToaster() {
   })
 
   return null
-}
-
-function go(navigate: ReturnType<typeof useNavigate>, target: NotificationTarget) {
-  if (!target) return
-  if (target.kind === 'inbox') {
-    void navigate({ to: '/inbox', search: { issue: target.issue } })
-    return
-  }
-  void navigate({
-    to: '/runs/$repo/$ticket',
-    params: { repo: target.repo, ticket: target.ticket },
-  })
 }
 
 function NotificationCard({
