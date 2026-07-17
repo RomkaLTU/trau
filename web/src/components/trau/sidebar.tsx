@@ -19,6 +19,7 @@ import {
 
 import { useActiveRepo } from '@/components/trau/active-repo'
 import { GlobalSearch } from '@/components/trau/global-search'
+import { NotificationBell } from '@/components/trau/notification-bell'
 import { RepoSwitcher } from '@/components/trau/repo-switcher'
 import { ThemeToggle } from '@/components/trau/theme-toggle'
 import { useAttentionCount } from '@/lib/attention'
@@ -150,13 +151,16 @@ export function Sidebar() {
   return (
     <aside className="fixed inset-y-0 left-0 z-10 flex w-60 flex-col border-r border-border bg-card">
       <div className="flex flex-col gap-3 border-b border-border px-3 py-3">
-        <Link
-          to="/"
-          className="px-1 font-mono text-lg font-medium tracking-tight text-foreground"
-        >
-          trau
-          <span className="cursor-block text-primary">▍</span>
-        </Link>
+        <div className="flex items-center justify-between">
+          <Link
+            to="/"
+            className="px-1 font-mono text-lg font-medium tracking-tight text-foreground"
+          >
+            trau
+            <span className="cursor-block text-primary">▍</span>
+          </Link>
+          <NotificationBell />
+        </div>
         <RepoSwitcher />
         <GlobalSearch />
       </div>
