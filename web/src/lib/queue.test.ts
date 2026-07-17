@@ -5,6 +5,7 @@ import { apiFetch } from './api'
 import {
   publishQueue,
   queueCounts,
+  queueCoveredIds,
   queueExecutable,
   queueQueryOptions,
   runNext,
@@ -214,6 +215,36 @@ describe('queueExecutable', () => {
         }),
       ]),
     ).toBe(3)
+  })
+})
+
+describe('queueCoveredIds', () => {
+  it('covers nothing for an empty queue', () => {
+    expect(queueCoveredIds([])).toEqual(new Set())
+  })
+
+  it('covers each queued item id regardless of status', () => {
+    expect(
+      queueCoveredIds([
+        item({ id: 'COD-1' }),
+        item({ id: 'COD-2', status: 'done' }),
+      ]),
+    ).toEqual(new Set(['COD-1', 'COD-2']))
+  })
+
+  it('covers the sub-issues captured under a queued epic', () => {
+    expect(
+      queueCoveredIds([
+        item({
+          id: 'COD-2',
+          kind: 'epic',
+          sub_issues: [
+            { id: 'COD-3', title: 'a', state: 'todo' },
+            { id: 'COD-4', title: 'b', state: 'done' },
+          ],
+        }),
+      ]),
+    ).toEqual(new Set(['COD-2', 'COD-3', 'COD-4']))
   })
 })
 

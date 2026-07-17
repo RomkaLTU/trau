@@ -69,7 +69,12 @@ import { NEW_DRAFT_ID } from "@/lib/inbox";
 import { internalIssueQueryOptions } from "@/lib/issues";
 import { labelsQueryOptions } from "@/lib/labels";
 import { standardTitle, usePageTitle } from "@/lib/page-title";
-import { enqueue } from "@/lib/queue";
+import {
+  enqueue,
+  publishQueue,
+  queueCoveredIds,
+  queueQueryOptions,
+} from "@/lib/queue";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/backlog")({
@@ -145,6 +150,8 @@ function BacklogPage() {
   const backlog = useQuery(
     backlogQueryOptions(repo, backlogParamsFromFilters(filters, PAGE_SIZE)),
   );
+  const queue = useQuery(queueQueryOptions(repo));
+  const queued = queueCoveredIds(queue.data?.items ?? []);
   const items = backlog.data?.items ?? [];
   const counts = backlog.data?.counts ?? {};
   const total = backlog.data?.total ?? 0;
@@ -167,6 +174,7 @@ function BacklogPage() {
       repo={repo}
       entry={entry}
       editing={editing === entry.id}
+      inQueue={queued.has(entry.id)}
       nested={extra?.nested}
       expanded={extra?.expanded}
       onToggle={extra?.onToggle}
@@ -687,6 +695,7 @@ function BacklogRow({
   repo,
   entry,
   editing,
+  inQueue,
   nested = false,
   expanded,
   onOpen,
@@ -698,6 +707,7 @@ function BacklogRow({
   repo: string;
   entry: BacklogEntry;
   editing: boolean;
+  inQueue: boolean;
   nested?: boolean;
   expanded?: boolean;
   onOpen: () => void;
@@ -716,7 +726,7 @@ function BacklogRow({
   });
   const addToQueue = useMutation({
     mutationFn: () => enqueue(repo, { id: entry.id }),
-    onSuccess: (res) => queryClient.setQueryData(["queue", repo], res),
+    onSuccess: (res) => publishQueue(queryClient, repo, res),
   });
 
   return (
@@ -783,6 +793,11 @@ function BacklogRow({
               ready
             </span>
           )}
+          {inQueue && (
+            <span className="rounded-full border border-sky-500/40 bg-sky-500/5 px-2 py-0.5 text-xs text-sky-600 dark:text-sky-400">
+              queued
+            </span>
+          )}
           <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
             {entry.group}
           </span>
@@ -811,11 +826,11 @@ function BacklogRow({
         <button
           type="button"
           onClick={() => addToQueue.mutate()}
-          disabled={addToQueue.isPending || addToQueue.isSuccess}
+          disabled={inQueue || addToQueue.isPending}
           className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
         >
           <ListPlus className="size-3.5" />
-          {addToQueue.isSuccess ? "Queued" : "Add to queue"}
+          {inQueue ? "Queued" : "Add to queue"}
         </button>
       </div>
       {addToQueue.error && (

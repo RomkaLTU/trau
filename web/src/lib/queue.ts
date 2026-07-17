@@ -212,6 +212,18 @@ export function queueExecutable(items: QueueItem[]): number {
   }, 0)
 }
 
+// queueCoveredIds collects the ids the queue already covers — each item's own
+// id plus every sub-issue captured under a queued epic — so callers can spot a
+// re-add that would only duplicate work.
+export function queueCoveredIds(items: QueueItem[]): Set<string> {
+  const covered = new Set<string>()
+  for (const it of items) {
+    covered.add(it.id)
+    for (const sub of it.sub_issues ?? []) covered.add(sub.id)
+  }
+  return covered
+}
+
 export interface QueueCounts {
   total: number
   tickets: number
