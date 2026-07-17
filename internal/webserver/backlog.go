@@ -58,16 +58,18 @@ type AssigneeInfo struct {
 // configured tracker; Items is the requested page of matches; Total is the number
 // of matches before pagination so the board can page; Counts is the per-status-group
 // match totals with the state filter ignored, so the board's section headers and
-// hidden-count hint hold whichever groups are on screen; Freshness carries the
-// store's last-synced and syncing state so the board can show synced-ness without
-// blocking.
+// hidden-count hint hold whichever groups are on screen; ArchivedCount is how many
+// families the archived view holds, so the board renders "Archived (N)" without a
+// second call; Freshness carries the store's last-synced and syncing state so the
+// board can show synced-ness without blocking.
 type BacklogResponse struct {
-	Repo      string         `json:"repo"`
-	Provider  string         `json:"provider"`
-	Items     []BacklogEntry `json:"items"`
-	Total     int            `json:"total"`
-	Counts    map[string]int `json:"counts"`
-	Freshness *RepoFreshness `json:"freshness,omitempty"`
+	Repo          string         `json:"repo"`
+	Provider      string         `json:"provider"`
+	Items         []BacklogEntry `json:"items"`
+	Total         int            `json:"total"`
+	Counts        map[string]int `json:"counts"`
+	ArchivedCount int            `json:"archived_count"`
+	Freshness     *RepoFreshness `json:"freshness,omitempty"`
 }
 
 // maxBacklogLimit caps a single backlog page so a caller cannot ask the store for
@@ -103,15 +105,21 @@ func (s *Server) handleBacklog(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read sync state: " + err.Error()})
 		return
 	}
+	archivedCount, err := store.ArchivedCount(repo.Root)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "count archived: " + err.Error()})
+		return
+	}
 	s.syncer.refreshIfStale(repo.Root, state.LastSyncedAt)
 	readyLabel, provider := s.backlogConfig(repo)
 	writeJSON(w, http.StatusOK, BacklogResponse{
-		Repo:      repo.Name,
-		Provider:  provider,
-		Items:     toBacklogEntries(items, readyLabel, state.Me.ID),
-		Total:     total,
-		Counts:    counts,
-		Freshness: s.freshnessFrom(repo.Root, state),
+		Repo:          repo.Name,
+		Provider:      provider,
+		Items:         toBacklogEntries(items, readyLabel, state.Me.ID),
+		Total:         total,
+		Counts:        counts,
+		ArchivedCount: archivedCount,
+		Freshness:     s.freshnessFrom(repo.Root, state),
 	})
 }
 
@@ -237,8 +245,9 @@ func toAssigneeFacets(assigned []hubstore.AssigneeCount, meID string) []Assignee
 // string: state (one or more workflow state groups, comma-separated and/or
 // repeated), label, source (internal | synced), assignee (me | unassigned | an
 // assignee id), q (substring text match), parent (an epic identifier — list its
-// direct sub-issues), and limit/offset. Absent or malformed values fall back to
-// the zero filter, so a bare request is the unfiltered board.
+// direct sub-issues), archived (1|true for the archived view), and limit/offset.
+// Absent or malformed values fall back to the zero filter, so a bare request is
+// the unfiltered live board.
 func backlogFilter(q url.Values) hubstore.BacklogFilter {
 	return hubstore.BacklogFilter{
 		Groups:   stateGroups(q["state"]),
@@ -247,8 +256,20 @@ func backlogFilter(q url.Values) hubstore.BacklogFilter {
 		Assignee: strings.TrimSpace(q.Get("assignee")),
 		Text:     strings.TrimSpace(q.Get("q")),
 		Parent:   strings.TrimSpace(q.Get("parent")),
+		Archived: isTrue(q.Get("archived")),
 		Limit:    backlogLimit(q.Get("limit")),
 		Offset:   backlogOffset(q.Get("offset")),
+	}
+}
+
+// isTrue reads a boolean query flag, treating "1" and "true" (case-insensitively)
+// as set and everything else — absent, "0", "false", junk — as clear.
+func isTrue(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true":
+		return true
+	default:
+		return false
 	}
 }
 

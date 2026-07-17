@@ -1,0 +1,1 @@
+ALTER TABLE issues ADD COLUMN archived_at TEXT NOT NULL DEFAULT '';
