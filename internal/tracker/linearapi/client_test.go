@@ -120,6 +120,25 @@ func TestCreateIssueResolvesLabelsAndReturnsURL(t *testing.T) {
 	}
 }
 
+// A draft with no labels (an epic parent) must still send labelIds as an empty
+// array — Linear rejects a null labelIds with an argument validation error.
+func TestCreateIssueWithoutLabelsSendsEmptySet(t *testing.T) {
+	c, reqs := fakeLinear(t)
+
+	if _, _, err := c.CreateIssue(context.Background(), CreateIssueInput{TeamID: "team-1", Title: "An epic"}); err != nil {
+		t.Fatalf("CreateIssue error: %v", err)
+	}
+
+	create := lastMatching(*reqs, "mutation IssueCreate")
+	if create == nil {
+		t.Fatal("no IssueCreate mutation was sent")
+	}
+	ids, ok := create.Variables["labelIds"].([]any)
+	if !ok || len(ids) != 0 {
+		t.Errorf("labelIds = %v, want an empty array, never null", create.Variables["labelIds"])
+	}
+}
+
 func TestAddCommentPostsBody(t *testing.T) {
 	c, reqs := fakeLinear(t)
 
@@ -367,6 +386,70 @@ func TestUpdateLabelsMergesSet(t *testing.T) {
 	}
 	if !ids["l-feat"] || !ids["l-ready"] {
 		t.Errorf("labelIds = %v, want the kept Feature and added ready-for-agent", update.Variables["labelIds"])
+	}
+}
+
+// Removing an issue's last label must write labelIds as an empty array — Linear
+// rejects a null labelIds with an argument validation error.
+func TestUpdateLabelsRemovingLastLabelSendsEmptySet(t *testing.T) {
+	teamLabels := `{"data":{"issueLabels":{"nodes":[{"id":"l-triage","name":"needs-triage"}]}}}`
+	issue := `{"data":{"issues":{"nodes":[{"id":"iss-1","identifier":"COD-42","team":{"id":"team-1","key":"COD"},"labels":{"nodes":[
+		{"id":"l-triage","name":"needs-triage"}
+	]}}]}}}`
+	var update graphReq
+	seen := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req graphReq
+		_ = json.Unmarshal(body, &req)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.Query, "TeamLabels"):
+			_, _ = io.WriteString(w, teamLabels)
+		case strings.Contains(req.Query, "query Issue"):
+			_, _ = io.WriteString(w, issue)
+		case strings.Contains(req.Query, "mutation IssueUpdate"):
+			update, seen = req, true
+			_, _ = io.WriteString(w, `{"data":{"issueUpdate":{"success":true,"issue":{"id":"iss-1","identifier":"COD-42"}}}}`)
+		default:
+			t.Errorf("unexpected query: %s", req.Query)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New("lin_key")
+	c.Endpoint = srv.URL
+	if err := c.UpdateLabels(context.Background(), "COD-42", nil, []string{"needs-triage"}); err != nil {
+		t.Fatalf("UpdateLabels: %v", err)
+	}
+	if !seen {
+		t.Fatal("label update mutation was not sent")
+	}
+	ids, ok := update.Variables["labelIds"].([]any)
+	if !ok || len(ids) != 0 {
+		t.Errorf("labelIds = %v, want an empty array, never null", update.Variables["labelIds"])
+	}
+}
+
+// A GraphQL error whose top-level message is generic ("Argument Validation
+// Error") carries the actionable detail in extensions.userPresentableMessage —
+// the surfaced error must include it.
+func TestGraphQLErrorsIncludePresentableDetail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"errors":[{"message":"Argument Validation Error","extensions":{"userPresentableMessage":"labelIds should not be null."}}],"data":null}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := New("lin_key")
+	c.Endpoint = srv.URL
+	_, err := c.ListTeams(context.Background())
+	if err == nil {
+		t.Fatal("ListTeams: want an error")
+	}
+	want := "linear: Argument Validation Error: labelIds should not be null."
+	if err.Error() != want {
+		t.Errorf("error = %q, want %q", err, want)
 	}
 }
 
