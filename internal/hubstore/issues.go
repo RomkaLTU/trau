@@ -41,6 +41,7 @@ type Issue struct {
 	CreatedAt    string
 	UpdatedAt    string
 	DeletedAt    string
+	ArchivedAt   string
 	AssigneeID   string
 	AssigneeName string
 	Comments     []Comment
@@ -172,7 +173,7 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 
 const issueColumns = `id, source, identifier, title, description, status, status_group,
 	priority, labels, parent, has_children, due_date, external_id, url,
-	created_at, updated_at, deleted_at, assignee_id, assignee_name`
+	created_at, updated_at, deleted_at, archived_at, assignee_id, assignee_name`
 
 // List returns a repo's stored issues with their comments, ordered by identifier.
 func (s *Issues) List(repo string) (issues []Issue, err error) {
@@ -219,10 +220,12 @@ func (s *Issues) Children(repo, parent string) (issues []Issue, err error) {
 // Assignee is "me" (the repo binding's resolved identity), "unassigned", or an
 // assignee id to match exactly — an unresolved "me" matches nothing; Text is a
 // case-insensitive substring over identifier and title; Parent matches the
-// direct sub-issues of that epic identifier. A zero-valued field is ignored, so
-// the zero filter selects the whole board — an empty Groups means every group.
-// Limit and Offset paginate the ordered matches; a Limit of zero returns every
-// match.
+// direct sub-issues of that epic identifier. Archived selects the view: false
+// hides every archived family (a row whose own archived_at is set, or whose
+// family keys onto an archived identifier), true shows only those. A zero-valued
+// field is ignored, so the zero filter selects the whole live board — an empty
+// Groups means every group. Limit and Offset paginate the ordered matches; a
+// Limit of zero returns every match.
 type BacklogFilter struct {
 	Groups   []string
 	Label    string
@@ -230,6 +233,7 @@ type BacklogFilter struct {
 	Assignee string
 	Text     string
 	Parent   string
+	Archived bool
 	Limit    int
 	Offset   int
 }
@@ -238,6 +242,13 @@ type BacklogFilter struct {
 // top-level issue on its own identifier. parent is NOT NULL DEFAULT ” in the
 // schema, so NULLIF collapses the empty top-level case to the row's identifier.
 const familyKey = `COALESCE(NULLIF(parent, ''), identifier)`
+
+// archivedFamily matches a row that belongs to an archived family: its own
+// archived_at is stamped, or its family key is an archived identifier — so a
+// child vanishes with the epic it hangs off, including one synced after the epic
+// was archived. It carries one repo placeholder for the identifier subquery.
+const archivedFamily = `(archived_at <> '' OR ` + familyKey +
+	` IN (SELECT identifier FROM issues WHERE repo = ? AND archived_at <> ''))`
 
 // numericIdentOrder renders the ORDER BY terms that sort an identifier expression
 // numerically — the "COD-" prefix, then the trailing number as an integer, then
@@ -309,7 +320,8 @@ func (s *Issues) Backlog(repo string) ([]Issue, error) {
 // page without counting the rows itself, and per-board-group counts computed over
 // the same filters with the state selection ignored — so section headers and the
 // hidden-count hint hold whichever groups are on screen. Tombstoned issues —
-// synced tickets removed from the tracker — are excluded from the board. The
+// synced tickets removed from the tracker — are excluded from the board, as are
+// archived families unless filter.Archived selects the archived view. The
 // filters compose in the WHERE clause and are pushed into the query rather than
 // applied after loading everything; comments are not attached (the board renders
 // summary rows only).
@@ -348,6 +360,12 @@ func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue,
 		where = append(where, "parent = ?")
 		args = append(args, parent)
 	}
+	if filter.Archived {
+		where = append(where, archivedFamily)
+	} else {
+		where = append(where, "NOT "+archivedFamily)
+	}
+	args = append(args, repo)
 	baseClause := strings.Join(where, " AND ")
 
 	counts, err = s.backlogCounts(baseClause, args)
@@ -393,10 +411,11 @@ func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue,
 }
 
 // attachChildCounts fills ChildrenSettled/ChildrenTotal on the epic rows of a
-// page. The counts cover every one of the epic's children in the store —
+// page. The counts cover every one of the epic's children still on the board —
 // settled = done + canceled, the terminal groups the queue drain settles — so a
 // collapsed epic's progress is whole even when the request's filters or
-// pagination hide the children themselves.
+// pagination hide the children themselves. Individually-archived children are
+// left out, so a visible epic's progress only counts work still in play.
 func (s *Issues) attachChildCounts(repo string, issues []Issue) (err error) {
 	byEpic := map[string]int{}
 	epics := make([]any, 0, len(issues))
@@ -415,7 +434,7 @@ func (s *Issues) attachChildCounts(repo string, issues []Issue) (err error) {
 		`SELECT parent, count(*),
 			sum(CASE WHEN status_group IN ('done', 'canceled') THEN 1 ELSE 0 END)
 		 FROM issues
-		 WHERE repo = ? AND deleted_at = '' AND parent IN (`+placeholders+`)
+		 WHERE repo = ? AND deleted_at = '' AND archived_at = '' AND parent IN (`+placeholders+`)
 		 GROUP BY parent`,
 		args...,
 	)
@@ -583,7 +602,7 @@ func scanIssues(repo string, rows *sql.Rows) ([]Issue, map[int64]int, error) {
 			&id, &iss.Source, &iss.Identifier, &iss.Title, &iss.Description,
 			&iss.Status, &iss.StatusGroup, &iss.Priority, &labels, &iss.Parent,
 			&hasCh, &iss.DueDate, &iss.ExternalID, &iss.URL, &iss.CreatedAt, &iss.UpdatedAt,
-			&iss.DeletedAt, &assigneeID, &assigneeNm,
+			&iss.DeletedAt, &iss.ArchivedAt, &assigneeID, &assigneeNm,
 		); err != nil {
 			return nil, nil, err
 		}
@@ -719,6 +738,43 @@ func (s *Issues) Count(repo string) (int, error) {
 	var n int
 	err := s.db.QueryRow(
 		`SELECT count(*) FROM issues WHERE repo = ? AND deleted_at = ''`,
+		repo,
+	).Scan(&n)
+	return n, err
+}
+
+// SetArchived stamps or clears a repo issue's archive tombstone regardless of its
+// source, returning the updated issue and whether it was found. Archiving records
+// the current time; unarchiving clears it. Sync never writes archived_at — Upsert
+// leaves the default and Reconcile's revival path clears only deleted_at — so the
+// archive state an issue carries survives every later pull.
+func (s *Issues) SetArchived(repo, identifier string, archived bool) (Issue, bool, error) {
+	stamp := ""
+	if archived {
+		stamp = time.Now().UTC().Format(time.RFC3339)
+	}
+	res, err := s.db.Exec(
+		`UPDATE issues SET archived_at = ? WHERE repo = ? AND identifier = ?`,
+		stamp, repo, identifier,
+	)
+	if err != nil {
+		return Issue{}, false, err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return Issue{}, false, err
+	} else if n == 0 {
+		return Issue{}, false, nil
+	}
+	return s.Get(repo, identifier)
+}
+
+// ArchivedCount returns how many of a repo's issues are explicitly archived — one
+// row per archived epic or leaf, since archiving an epic stamps only the epic and
+// its children hide by family. It backs the board's "Archived (N)" toggle badge.
+func (s *Issues) ArchivedCount(repo string) (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT count(*) FROM issues WHERE repo = ? AND archived_at <> ''`,
 		repo,
 	).Scan(&n)
 	return n, err

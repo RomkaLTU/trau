@@ -32,6 +32,9 @@ export interface Issue {
   parent?: string
   source?: string
   has_children: boolean
+  // archived is set once the issue carries an archive tombstone, so the drawer can
+  // badge it and offer Unarchive instead of Archive.
+  archived?: boolean
   comments: IssueComment[]
   url?: string
   created_at?: string

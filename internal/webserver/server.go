@@ -243,6 +243,11 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/internal/{id}", s.handleInternalIssue)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/internal/{id}/transition", s.handleInternalTransition)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/{id}", s.handleIssue)
+	// A literal issues/{id}/archive would conflict with issues/internal/{id} in
+	// net/http's mux (both match issues/internal/archive, neither more specific), so
+	// the archive action rides a wildcard segment that stays clear of the internal
+	// subtree while still serving the exact .../issues/{id}/archive path.
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/{id}/{action}", s.handleIssueAction)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue", s.handleQueue)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/drain", s.handleQueueDrain)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}", s.handleQueueItem)

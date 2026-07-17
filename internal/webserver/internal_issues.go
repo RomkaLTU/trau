@@ -38,6 +38,7 @@ type InternalIssueResponse struct {
 	Parent      string   `json:"parent,omitempty"`
 	Source      string   `json:"source"`
 	HasChildren bool     `json:"has_children"`
+	Archived    bool     `json:"archived"`
 	CreatedAt   string   `json:"created_at,omitempty"`
 	UpdatedAt   string   `json:"updated_at,omitempty"`
 }
@@ -221,6 +222,7 @@ func toInternalIssueResponse(repo string, iss hubstore.Issue) InternalIssueRespo
 		Parent:      iss.Parent,
 		Source:      iss.Source,
 		HasChildren: iss.HasChildren,
+		Archived:    iss.ArchivedAt != "",
 		CreatedAt:   iss.CreatedAt,
 		UpdatedAt:   iss.UpdatedAt,
 	}
