@@ -279,6 +279,7 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 	}
 	s.publishGrillMessage(question0)
 	s.publishGrillState(waiting)
+	s.notifyGrillAwaiting(waiting, question)
 
 	// An AFK pre-grill turn has no user waiting, so the opening question parks the
 	// session at once and returns the park sentinel as a plain result — the agent
