@@ -1,4 +1,4 @@
-import type { QueueItem, QueueKind, QueueResponse } from './queue'
+import { queueCoveredIds, type QueueItem, type QueueKind, type QueueResponse } from './queue'
 import type { SearchResult } from './search'
 
 // SETTLED_GROUPS are the status groups the loop would settle on sight. The hub's
@@ -25,12 +25,7 @@ export function pickerList(
   const candidates = results.filter((r) => !SETTLED_GROUPS.has(r.group))
   if (candidates.length === 0) return { rows: [], empty: 'no-match' }
 
-  const covered = new Set<string>()
-  for (const it of queued) {
-    covered.add(it.id)
-    for (const sub of it.sub_issues ?? []) covered.add(sub.id)
-  }
-
+  const covered = queueCoveredIds(queued)
   const rows = candidates.filter((r) => !covered.has(r.id))
   return { rows, empty: rows.length === 0 ? 'all-queued' : null }
 }

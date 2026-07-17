@@ -32,7 +32,12 @@ import {
   grillSessionsQueryOptions,
   isGrillable,
 } from "@/lib/grill";
-import { enqueue } from "@/lib/queue";
+import {
+  enqueue,
+  publishQueue,
+  queueCoveredIds,
+  queueQueryOptions,
+} from "@/lib/queue";
 import { cn } from "@/lib/utils";
 
 // IssueDrawer reads one issue in place over the backlog board: the same
@@ -102,9 +107,12 @@ function IssueDrawerBody({
     enabled: editing && internal,
   });
 
+  const queue = useQuery(queueQueryOptions(repo));
+  const inQueue = queueCoveredIds(queue.data?.items ?? []).has(id);
+
   const addToQueue = useMutation({
     mutationFn: () => enqueue(repo, { id }),
-    onSuccess: (res) => queryClient.setQueryData(["queue", repo], res),
+    onSuccess: (res) => publishQueue(queryClient, repo, res),
   });
 
   if (query.isLoading) {
@@ -135,6 +143,11 @@ function IssueDrawerBody({
           {issue.ready && (
             <span className="rounded-full border border-emerald-500/40 bg-emerald-500/5 px-2 py-0.5 text-xs text-emerald-600 dark:text-emerald-400">
               ready
+            </span>
+          )}
+          {inQueue && (
+            <span className="rounded-full border border-sky-500/40 bg-sky-500/5 px-2 py-0.5 text-xs text-sky-600 dark:text-sky-400">
+              queued
             </span>
           )}
           <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
@@ -215,10 +228,10 @@ function IssueDrawerBody({
           <Button
             size="sm"
             onClick={() => addToQueue.mutate()}
-            disabled={addToQueue.isPending || addToQueue.isSuccess}
+            disabled={inQueue || addToQueue.isPending}
           >
             <ListPlus />
-            {addToQueue.isSuccess ? "Queued" : "Add to queue"}
+            {inQueue ? "Queued" : "Add to queue"}
           </Button>
           {grillable && (
             <Button variant="outline" size="sm" asChild>

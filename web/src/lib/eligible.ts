@@ -1,7 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
-import type { QueueItem, QueueKind } from './queue'
+import { queueCoveredIds, type QueueItem, type QueueKind } from './queue'
 
 export interface EligibleTicket {
   id: string
@@ -59,11 +59,7 @@ export function planAddAll(
   eligible: EligibleTicket[],
   queued: QueueItem[],
 ): AddAllPlan {
-  const covered = new Set<string>()
-  for (const it of queued) {
-    covered.add(it.id)
-    for (const sub of it.sub_issues ?? []) covered.add(sub.id)
-  }
+  const covered = queueCoveredIds(queued)
 
   const items: AddAllItem[] = []
   const planned = new Set<string>()
