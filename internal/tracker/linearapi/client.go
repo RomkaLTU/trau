@@ -353,7 +353,8 @@ func (c *Client) SetStatus(ctx context.Context, identifier, stateName string, la
 		}
 	}
 
-	var labelIDs []string
+	// Linear rejects a null labelIds — an empty set must go over the wire as [].
+	labelIDs := []string{}
 	if labelNames != nil {
 		teamLabels, err := c.teamLabels(ctx, issue.Team.ID)
 		if err != nil {
@@ -501,7 +502,8 @@ func (c *Client) CreateIssue(ctx context.Context, in CreateIssueInput) (identifi
 	if err != nil {
 		return "", "", err
 	}
-	var labelIDs []string
+	// Linear rejects a null labelIds — an empty set must go over the wire as [].
+	labelIDs := []string{}
 	for _, name := range in.Labels {
 		if id, ok := labels[name]; ok {
 			labelIDs = append(labelIDs, id)
@@ -678,7 +680,11 @@ func (c *Client) do(ctx context.Context, query string, vars map[string]any, dst 
 	if len(gr.Errors) > 0 {
 		msgs := make([]string, 0, len(gr.Errors))
 		for _, e := range gr.Errors {
-			msgs = append(msgs, e.Message)
+			msg := e.Message
+			if p := e.Extensions.UserPresentableMessage; p != "" && p != msg {
+				msg += ": " + p
+			}
+			msgs = append(msgs, msg)
 		}
 		return fmt.Errorf("linear: %s", strings.Join(msgs, "; "))
 	}
@@ -688,9 +694,15 @@ func (c *Client) do(ctx context.Context, query string, vars map[string]any, dst 
 	return json.Unmarshal(resBody, dst)
 }
 
+// graphResponse carries the errors half of a GraphQL response. Linear often puts
+// the actionable detail (e.g. which input field failed validation) in
+// extensions.userPresentableMessage rather than the generic top-level message.
 type graphResponse struct {
 	Errors []struct {
-		Message string `json:"message"`
+		Message    string `json:"message"`
+		Extensions struct {
+			UserPresentableMessage string `json:"userPresentableMessage"`
+		} `json:"extensions"`
 	} `json:"errors"`
 }
 
