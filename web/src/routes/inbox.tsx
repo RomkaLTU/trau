@@ -10,6 +10,8 @@ import {
   RotateCcw,
   SkipForward,
   Sparkles,
+  Square,
+  Trash2,
 } from "lucide-react";
 
 import { Markdown } from "@/components/markdown";
@@ -35,7 +37,9 @@ import {
   useActiveRepo,
 } from "@/components/trau";
 import {
+  abandonGrill,
   GRILLABLE_LABELS,
+  isSettled,
   latestOutcome,
   outcomePayload,
   pregrillIssues,
@@ -438,9 +442,12 @@ function SessionColumn({
     resolved,
     starting,
     restarting,
+    ending,
     error,
+    endError,
     start,
     startOver,
+    end,
     retry,
   } = useGrillSession(repo, item.id);
 
@@ -466,6 +473,11 @@ function SessionColumn({
         onSkip={onSkip}
         onStartOver={live ? startOver : undefined}
         restarting={restarting}
+        onEnd={
+          live && !isSettled(live.state) ? () => end(onDiscarded) : undefined
+        }
+        ending={ending}
+        endError={endError}
       />
 
       {/* The overlay frame floats over the thread, not the bar above it: the bar
@@ -549,8 +561,18 @@ function DraftColumn({
   onApplied: () => void;
   onDiscarded: () => void;
 }) {
+  const queryClient = useQueryClient();
   const session = item.session;
   const live = session ? (status?.session ?? session) : null;
+
+  // Discard draft abandons the authoring session with nothing filed; the settled
+  // session drops out of the queue on the refetch onDiscarded triggers.
+  const discard = useMutation({
+    mutationFn: (sid: string) => abandonGrill(sid),
+    onSuccess: () => onDiscarded(),
+    onError: () =>
+      void queryClient.invalidateQueries({ queryKey: ["grill", repo] }),
+  });
 
   return (
     <>
@@ -565,6 +587,9 @@ function DraftColumn({
         contextOpen={false}
         onToggleContext={() => {}}
         onSkip={onSkip}
+        onEnd={session ? () => discard.mutate(session.id) : undefined}
+        ending={discard.isPending}
+        endError={discard.error}
       />
 
       <div className="relative flex min-h-0 flex-1 flex-col">
@@ -742,6 +767,9 @@ function SessionBar({
   onSkip,
   onStartOver,
   restarting,
+  onEnd,
+  ending,
+  endError,
   draft,
 }: {
   item: InboxItem;
@@ -758,61 +786,72 @@ function SessionBar({
   onSkip: () => void;
   onStartOver?: () => void;
   restarting?: boolean;
+  onEnd?: () => void;
+  ending?: boolean;
+  endError?: Error | null;
   draft?: boolean;
 }) {
   return (
-    <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border py-3 pl-5 pr-1">
-      <div className="flex min-w-0 items-center gap-3">
-        <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
-          {position + 1} of {total}
-        </span>
-        <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-foreground">
-          {draft ? (
-            <DraftChip />
-          ) : (
-            <span className="font-mono text-muted-foreground">{item.id}</span>
-          )}
-          <span className="truncate">
-            {draft ? item.title || "New draft" : item.title}
+    <div className="shrink-0 border-b border-border">
+      <div className="flex items-center justify-between gap-3 py-3 pl-5 pr-1">
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
+            {position + 1} of {total}
           </span>
-        </span>
-      </div>
-      <div className="flex shrink-0 items-center gap-2">
-        {reconnecting && (
-          <span className="inline-flex items-center gap-1 text-xs text-warn">
-            <span aria-hidden="true">⚠</span>
-            reconnecting…
-          </span>
-        )}
-        {pill && <StatusPill state={pill.tone} label={pill.label} />}
-        {onStartOver && (
-          <StartOverButton onConfirm={onStartOver} pending={restarting} />
-        )}
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onSkip}
-          aria-label="Skip to next issue"
-        >
-          <SkipForward />
-          Skip
-        </Button>
-        {showContextToggle && (
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8"
-            onClick={onToggleContext}
-            aria-pressed={contextOpen}
-            title={contextOpen ? "Hide issue context" : "Show issue context"}
-          >
-            {contextOpen ? <PanelRightClose /> : <PanelRightOpen />}
-            <span className="sr-only">
-              {contextOpen ? "Hide issue context" : "Show issue context"}
+          <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-foreground">
+            {draft ? (
+              <DraftChip />
+            ) : (
+              <span className="font-mono text-muted-foreground">{item.id}</span>
+            )}
+            <span className="truncate">
+              {draft ? item.title || "New draft" : item.title}
             </span>
+          </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {reconnecting && (
+            <span className="inline-flex items-center gap-1 text-xs text-warn">
+              <span aria-hidden="true">⚠</span>
+              reconnecting…
+            </span>
+          )}
+          {pill && <StatusPill state={pill.tone} label={pill.label} />}
+          {onStartOver && (
+            <StartOverButton onConfirm={onStartOver} pending={restarting} />
+          )}
+          {onEnd && (
+            <EndButton draft={draft} onConfirm={onEnd} pending={ending} />
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onSkip}
+            aria-label="Skip to next issue"
+          >
+            <SkipForward />
+            Skip
           </Button>
-        )}
+          {showContextToggle && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8"
+              onClick={onToggleContext}
+              aria-pressed={contextOpen}
+              title={contextOpen ? "Hide issue context" : "Show issue context"}
+            >
+              {contextOpen ? <PanelRightClose /> : <PanelRightOpen />}
+              <span className="sr-only">
+                {contextOpen ? "Hide issue context" : "Show issue context"}
+              </span>
+            </Button>
+          )}
+        </div>
       </div>
+      {endError && (
+        <p className="px-5 pb-2 text-xs text-destructive">{endError.message}</p>
+      )}
     </div>
   );
 }
@@ -862,6 +901,69 @@ function StartOverButton({
             }}
           >
             Start over
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// End interview / Discard draft archives the live conversation without opening
+// another: the session settles as abandoned and nothing is written to the tracker.
+// An issue keeps its place in the queue as untouched; a draft row leaves it
+// entirely. Same lightweight confirm as Start over — never "Delete" or "Archive".
+function EndButton({
+  draft,
+  onConfirm,
+  pending,
+}: {
+  draft?: boolean;
+  onConfirm: () => void;
+  pending?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const label = draft ? "Discard draft" : "End interview";
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={pending}
+          aria-label={label}
+        >
+          {pending ? (
+            <Loader2 className="animate-spin" />
+          ) : draft ? (
+            <Trash2 />
+          ) : (
+            <Square />
+          )}
+          {label}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-64">
+        <p className="text-sm font-medium text-foreground">
+          {draft ? "Discard this draft?" : "End this interview?"}
+        </p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          {draft
+            ? "Nothing has been filed. The conversation is discarded."
+            : "Your typed answers are lost. The ticket and its labels stay untouched — it returns to the queue as unstarted."}
+        </p>
+        <div className="mt-3 flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => {
+              setOpen(false);
+              onConfirm();
+            }}
+          >
+            {label}
           </Button>
         </div>
       </PopoverContent>

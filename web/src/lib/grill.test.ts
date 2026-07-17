@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  abandonIssueSessions,
   activeSessionForIssue,
   canCompose,
   composerPlaceholder,
@@ -99,6 +100,25 @@ describe('activeSessionForIssue', () => {
     ]
     expect(activeSessionForIssue(sessions, 'COD-1')).toBeUndefined()
     expect(activeSessionForIssue(undefined, 'COD-1')).toBeUndefined()
+  })
+})
+
+describe('abandonIssueSessions', () => {
+  it("settles the issue's unsettled sessions and leaves everything else alone", () => {
+    const sessions = [
+      session({ id: '1', issue_id: 'COD-1', state: 'waiting' }),
+      session({ id: '2', issue_id: 'COD-1', state: 'applied' }),
+      session({ id: '3', issue_id: 'COD-2', state: 'running' }),
+      session({ id: '4', issue_id: undefined, state: 'waiting' }),
+    ]
+    const out = abandonIssueSessions(sessions, 'COD-1')
+    expect(out.map((s) => s.state)).toEqual(['abandoned', 'applied', 'running', 'waiting'])
+    expect(activeSessionForIssue(out, 'COD-1')).toBeUndefined()
+    expect(sessions[0].state).toBe('waiting')
+  })
+
+  it('handles a missing list', () => {
+    expect(abandonIssueSessions(undefined, 'COD-1')).toEqual([])
   })
 })
 
