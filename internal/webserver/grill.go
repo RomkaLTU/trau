@@ -498,6 +498,14 @@ func (s *Server) publishGrillState(sess hubstore.GrillSession) {
 		Event:     "state",
 		Payload:   s.grillSessionView("", sess),
 	})
+	// Leaving the awaiting set (answered, thinking, finished, settled) clears the
+	// session's needs-you notification. Entering it is recorded at the transition
+	// sites, which carry the pending question for the body.
+	if !grillAwaiting(sess.State) {
+		if err := s.stores.Notifications().ResolveGrillQuestion(sess.ID); err != nil {
+			logger.Verbosef("grill %d: resolve notification: %v", sess.ID, err)
+		}
+	}
 }
 
 // grillAcceptsAnswer reports whether a session in state can receive an answer. A

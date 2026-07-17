@@ -108,6 +108,7 @@ func (s *Server) appendEvents(w http.ResponseWriter, r *http.Request, repo regis
 	}
 	for _, row := range rows {
 		s.publishEvent(repo.Root, repo.Name, row)
+		s.notifyRunEvent(repo, row)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "count": len(rows)})
 }
@@ -460,6 +461,13 @@ func writeSSE(w io.Writer, id string, payload any) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil
+	}
+	// An id-less frame (the notification wake-up) omits the id field so it never
+	// overwrites a streaming client's Last-Event-ID, whose resume cursor must stay
+	// pinned to the last persisted event.
+	if id == "" {
+		_, err = fmt.Fprintf(w, "data: %s\n\n", data)
+		return err
 	}
 	_, err = fmt.Fprintf(w, "id: %s\ndata: %s\n\n", id, data)
 	return err

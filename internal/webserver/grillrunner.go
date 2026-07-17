@@ -375,6 +375,7 @@ func (r *grillRunner) settle(sid int64, state, reason string) {
 		return
 	}
 	r.srv.publishGrillState(sess)
+	r.srv.notifyGrillAwaiting(sess, "")
 }
 
 // grillStallReason classifies a turn's output for an auth or rate wall, reusing the

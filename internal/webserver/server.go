@@ -299,6 +299,9 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/stream", s.handleGrillStream)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/mcp", s.handleGrillMCP)
 	mux.HandleFunc(APIPrefix+"/events/stream", s.handleAllEventStream)
+	mux.HandleFunc(APIPrefix+"/notifications", s.handleNotifications)
+	mux.HandleFunc(APIPrefix+"/notifications/read-all", s.handleNotificationsReadAll)
+	mux.HandleFunc(APIPrefix+"/notifications/{id}/read", s.handleNotificationRead)
 	mux.HandleFunc("/api/", handleAPINotFound)
 
 	var h http.Handler = mux
