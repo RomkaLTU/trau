@@ -18,6 +18,7 @@ import {
   nextIssueId,
   prevIssueId,
   rowSession,
+  selectedItem,
   skipTarget,
   summarisePregrill,
   type InboxItem,
@@ -408,6 +409,49 @@ describe("skipTarget", () => {
 
   it("has nowhere to go in an empty queue", () => {
     expect(skipTarget([], "COD-1")).toBeNull();
+  });
+});
+
+describe("selectedItem", () => {
+  const items = buildInbox(
+    [entry({ id: "COD-1" }), entry({ id: "COD-2" })],
+    [],
+  );
+  const done = doneTodayItems(
+    [
+      session({
+        id: "9",
+        issue_id: "COD-9",
+        state: "applied",
+        updated_at: new Date("2026-07-14T10:00:00").toISOString(),
+      }),
+    ],
+    new Date("2026-07-14T12:00:00"),
+  );
+
+  it("finds a queue row by id", () => {
+    expect(selectedItem(items, done, "COD-2")?.id).toBe("COD-2");
+  });
+
+  it("opens a Done today row for reference", () => {
+    const found = selectedItem(items, done, "COD-9");
+    expect(found?.attention).toBe("done");
+    expect(found?.session?.id).toBe("9");
+  });
+
+  it("falls back to the queue head on a stray or absent id", () => {
+    expect(selectedItem(items, done, "COD-404")?.id).toBe("COD-1");
+    expect(selectedItem(items, done, null)?.id).toBe("COD-1");
+  });
+
+  it("is null when the queue is empty and nothing done matches", () => {
+    expect(selectedItem([], [], null)).toBeNull();
+  });
+
+  it("prefers the queue row when a done issue re-enters the queue", () => {
+    const backAgain = buildInbox([entry({ id: "COD-9" })], []);
+    const found = selectedItem(backAgain, done, "COD-9");
+    expect(found?.attention).toBe("open");
   });
 });
 

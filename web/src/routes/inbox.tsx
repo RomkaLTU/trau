@@ -71,6 +71,7 @@ import {
   NEW_DRAFT_ID,
   prevIssueId,
   rowSession,
+  selectedItem,
   skipTarget,
   summarisePregrill,
   useInboxQueue,
@@ -140,10 +141,10 @@ function InboxPage() {
   const items = newDraft ? [newDraftItem(), ...queueItems] : queueItems;
   const groups = newDraft ? inboxGroups(items, done) : queueGroups;
 
-  // The queue owns the selection: an ?issue= naming something that has left it — or
-  // was never in it — falls back to the head rather than opening a session on a
-  // stray id.
-  const selected = items.find((item) => item.id === peek) ?? items[0] ?? null;
+  // The queue owns the selection: Done today rows are openable for reference, and an
+  // ?issue= naming something in neither list falls back to the head rather than
+  // opening a session on a stray id.
+  const selected = selectedItem(items, done, peek);
 
   const [contextOpen, setContextOpen] = useState(loadContextOpen);
   const [passSummary, setPassSummary] = useState<string | null>(null);
@@ -356,7 +357,18 @@ function InboxPage() {
               className="flex min-h-0 min-w-0 flex-col"
             >
               {selected ? (
-                selected.draft ? (
+                selected.attention === "done" && selected.session ? (
+                  <DoneColumn
+                    key={selected.id}
+                    repo={repo}
+                    item={selected}
+                    session={selected.session}
+                    status={live}
+                    onStatus={setStatus}
+                    contextOpen={contextOpen}
+                    onToggleContext={toggleContext}
+                  />
+                ) : selected.draft ? (
                   <DraftColumn
                     key={selected.id}
                     repo={repo}
@@ -613,6 +625,70 @@ function DraftColumn({
           />
         ) : (
           <FreshDraftBody repo={repo} onStarted={onStarted} />
+        )}
+      </div>
+    </>
+  );
+}
+
+// DoneColumn reopens a Done today row for reference: the applied session's thread —
+// what was asked, and the outcome that was applied — with nothing left to answer.
+// The session is settled, so the bar drops the walk-through chrome.
+function DoneColumn({
+  repo,
+  item,
+  session,
+  status,
+  onStatus,
+  contextOpen,
+  onToggleContext,
+}: {
+  repo: string;
+  item: InboxItem;
+  session: GrillSession;
+  status: GrillStatus | null;
+  onStatus: (status: GrillStatus) => void;
+  contextOpen: boolean;
+  onToggleContext: () => void;
+}) {
+  const pill = inboxPill(session.state);
+
+  return (
+    <>
+      <div className="shrink-0 border-b border-border">
+        <div className="flex items-center justify-between gap-3 py-3 pl-5 pr-1">
+          <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-foreground">
+            <span className="font-mono text-muted-foreground">{item.id}</span>
+            <span className="truncate">{item.title}</span>
+          </span>
+          <div className="flex shrink-0 items-center gap-2">
+            <StatusPill state={pill.tone} label={pill.label} />
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-8"
+              onClick={onToggleContext}
+              aria-pressed={contextOpen}
+              title={contextOpen ? "Hide issue context" : "Show issue context"}
+            >
+              {contextOpen ? <PanelRightClose /> : <PanelRightOpen />}
+              <span className="sr-only">
+                {contextOpen ? "Hide issue context" : "Show issue context"}
+              </span>
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <GrillConversation
+          key={session.id}
+          repo={repo}
+          initial={session}
+          onStatus={onStatus}
+        />
+        {contextOpen && (
+          <ContextOverlay repo={repo} item={item} status={status} />
         )}
       </div>
     </>
@@ -1072,7 +1148,12 @@ function QueueRail({
           <ul className="flex flex-col gap-0.5">
             {group.items.map((item) =>
               item.attention === "done" ? (
-                <DoneRow key={item.id} item={item} />
+                <DoneRow
+                  key={item.id}
+                  item={item}
+                  selected={selectedId === item.id}
+                  onSelect={() => onSelect(item.id)}
+                />
               ) : (
                 <QueueRow
                   key={item.id}
@@ -1209,23 +1290,52 @@ function DraftChip() {
   );
 }
 
-function DoneRow({ item }: { item: InboxItem }) {
+// DoneRow stays openable after the day's triage: selecting it reopens the applied
+// session read-only, for the history and the outcome that was applied.
+function DoneRow({
+  item,
+  selected,
+  onSelect,
+}: {
+  item: InboxItem;
+  selected: boolean;
+  onSelect: () => void;
+}) {
   return (
-    <li className="flex flex-col gap-0.5 rounded-md px-2.5 py-2 opacity-60">
-      <span className="inline-flex items-center gap-2 font-mono text-xs text-done">
-        <span aria-hidden="true">✓</span>
-        {item.id}
-      </span>
-      <span className="line-clamp-1 text-xs leading-relaxed text-muted-foreground">
-        {item.title}
-      </span>
+    <li className="relative">
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-current={selected ? "true" : undefined}
+        aria-label={`Open ${item.id}`}
+        className={cn(
+          "flex w-full flex-col gap-0.5 rounded-md px-2.5 py-2 text-left transition-colors",
+          selected
+            ? "bg-primary/10"
+            : "opacity-60 hover:bg-secondary hover:opacity-100",
+        )}
+      >
+        {selected && (
+          <span
+            aria-hidden="true"
+            className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-primary"
+          />
+        )}
+        <span className="inline-flex items-center gap-2 font-mono text-xs text-done">
+          <span aria-hidden="true">✓</span>
+          {item.id}
+        </span>
+        <span className="line-clamp-1 text-xs leading-relaxed text-muted-foreground">
+          {item.title}
+        </span>
+      </button>
     </li>
   );
 }
 
 // QueueSelect is the rail's fallback under md, where 260px of chrome would crowd out
-// the chat. Only the two working groups are offered — Done today is a record, not a
-// destination.
+// the chat. All three groups are offered — a Done today row opens its applied
+// session read-only, same as the rail's.
 function QueueSelect({
   groups,
   selectedId,
@@ -1243,22 +1353,20 @@ function QueueSelect({
         onChange={(e) => onSelect(e.target.value)}
         className="h-9 w-full rounded-md border bg-transparent px-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
       >
-        {groups
-          .filter((group) => group.group !== "done")
-          .map((group) => (
-            <optgroup
-              key={group.group}
-              label={`${group.label} (${group.items.length})`}
-            >
-              {group.items.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.draft
-                    ? `draft — ${item.title || "New draft"}`
-                    : `${item.id} — ${item.title}`}
-                </option>
-              ))}
-            </optgroup>
-          ))}
+        {groups.map((group) => (
+          <optgroup
+            key={group.group}
+            label={`${group.label} (${group.items.length})`}
+          >
+            {group.items.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.draft
+                  ? `draft — ${item.title || "New draft"}`
+                  : `${item.id} — ${item.title}`}
+              </option>
+            ))}
+          </optgroup>
+        ))}
       </select>
     </label>
   );
@@ -1320,8 +1428,11 @@ function ContextBody({
     GRILLABLE_LABELS.includes(l),
   );
   const messages = status?.messages ?? [];
+  const applied = status?.session.state === "applied";
   const outcome =
-    status?.session.state === "finished" ? latestOutcome(messages) : null;
+    status?.session.state === "finished" || applied
+      ? latestOutcome(messages)
+      : null;
   const rows = contextRows({
     created: issue.data?.created_at,
     source: item.entry?.source,
@@ -1378,7 +1489,9 @@ function ContextBody({
       </dl>
 
       <div className="flex flex-col gap-1.5 border-t border-border pt-4">
-        <SectionLabel>Proposed outcome</SectionLabel>
+        <SectionLabel>
+          {applied ? "Applied outcome" : "Proposed outcome"}
+        </SectionLabel>
         {outcome ? (
           <OutcomeMirror outcome={outcomePayload(outcome)} />
         ) : (
