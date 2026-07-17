@@ -46,6 +46,7 @@ type IssueResponse struct {
 	Project   string `json:"project,omitempty"`
 	InProject bool   `json:"in_project"`
 	Deleted   bool   `json:"deleted,omitempty"`
+	Archived  bool   `json:"archived"`
 }
 
 // IssueComment is one comment on an issue as the store returns it.
@@ -204,6 +205,7 @@ func (s *Server) storeIssueResponse(repo registry.Repo, iss hubstore.Issue) Issu
 		Comments:    toIssueComments(iss.Comments),
 		InProject:   true,
 		Deleted:     iss.DeletedAt != "",
+		Archived:    iss.ArchivedAt != "",
 	}
 }
 
