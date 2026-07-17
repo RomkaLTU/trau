@@ -99,3 +99,17 @@ filter, and the row's reported group together, and the epic's started
 children nest under it in the In Progress section. The epic's stored status
 is untouched; children whose status has diverged keep the flat-with-chip
 rendering, and a done or canceled epic is never reopened by a started child.
+
+## Amendment (2026-07-17): expansion shows the whole family
+
+Expanding an epic now lists all of its live children, fetched from the store
+(`backlog?parent=<epic>`), instead of nesting only the rows the current page
+and filters happened to produce. Before this, an epic whose children had all
+diverged — typically settled slices under a still-open epic, with Done hidden
+by default — carried a chevron that expanded to nothing. Fetched rows render
+nested with their own status group; the same-section adjacent rows still show
+while the fetch resolves, so the common same-status case is unchanged. The
+collapsed board, sections, counts, filters, and pagination are untouched, and
+a diverged child keeps its flat row in its own section — the nested copy
+exists only inside an explicitly expanded epic. An epic with no live children
+renders without a chevron.

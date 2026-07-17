@@ -224,6 +224,26 @@ func TestBacklogUnionsStateGroupsAndReportsCounts(t *testing.T) {
 	}
 }
 
+func TestBacklogParentFilterListsEpicChildren(t *testing.T) {
+	_, ts, root, store := backlogServer(t, nil, nil)
+	if _, _, err := store.Upsert(root, "linear", []hubstore.Issue{
+		{Identifier: "COD-1", Title: "Login epic", StatusGroup: "backlog", HasChildren: true},
+		{Identifier: "COD-2", Title: "Login form", StatusGroup: "done", Parent: "COD-1"},
+		{Identifier: "COD-3", Title: "Login API", StatusGroup: "started", Parent: "COD-1"},
+		{Identifier: "COD-4", Title: "Unrelated", StatusGroup: "backlog"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	out := getBacklogQuery(t, ts, "acme", "parent=COD-1")
+	if got := idSet(out.Items); !reflect.DeepEqual(got, []string{"COD-3", "COD-2"}) {
+		t.Errorf("items = %v, want only COD-1's children in board order", got)
+	}
+	if out.Total != 2 {
+		t.Errorf("total = %d, want 2", out.Total)
+	}
+}
+
 func TestBacklogPaginatesWithTotal(t *testing.T) {
 	_, ts, root, store := backlogServer(t, nil, nil)
 	if _, _, err := store.Upsert(root, "linear", filterFixture()); err != nil {

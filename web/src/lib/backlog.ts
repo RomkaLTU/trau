@@ -71,6 +71,7 @@ export interface BacklogParams {
   assignee?: string
   source?: string
   q?: string
+  parent?: string
   limit?: number
   offset?: number
 }
@@ -87,6 +88,7 @@ function backlogSearch(params: BacklogParams): string {
   if (params.assignee) sp.set('assignee', params.assignee)
   if (params.source) sp.set('source', params.source)
   if (params.q) sp.set('q', params.q)
+  if (params.parent) sp.set('parent', params.parent)
   if (params.limit) sp.set('limit', String(params.limit))
   if (params.offset) sp.set('offset', String(params.offset))
   return sp.toString()

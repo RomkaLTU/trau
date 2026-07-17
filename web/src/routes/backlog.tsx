@@ -1,4 +1,10 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { parseAsString, useQueryState, useQueryStates } from "nuqs";
@@ -303,10 +309,14 @@ function BacklogPage() {
                             expanded: expanded.has(node.entry.id),
                             onToggle: () => toggle(node.entry.id),
                           })}
-                          {expanded.has(node.entry.id) &&
-                            node.children.map((child) =>
-                              renderRow(child, { nested: true }),
-                            )}
+                          {expanded.has(node.entry.id) && (
+                            <EpicChildren
+                              repo={repo}
+                              epicId={node.entry.id}
+                              fallback={node.children}
+                              renderRow={renderRow}
+                            />
+                          )}
                         </Fragment>
                       ) : (
                         renderRow(node.entry)
@@ -691,6 +701,22 @@ function AssigneeFilter({
   )
 }
 
+function EpicChildren({
+  repo,
+  epicId,
+  fallback,
+  renderRow,
+}: {
+  repo: string;
+  epicId: string;
+  fallback: BacklogEntry[];
+  renderRow: (entry: BacklogEntry, extra?: { nested?: boolean }) => ReactNode;
+}) {
+  const children = useQuery(backlogQueryOptions(repo, { parent: epicId }));
+  const rows = children.data?.items ?? fallback;
+  return <>{rows.map((child) => renderRow(child, { nested: true }))}</>;
+}
+
 function BacklogRow({
   repo,
   entry,
@@ -737,7 +763,7 @@ function BacklogRow({
       )}
     >
       <div className="flex flex-wrap items-center gap-3 px-4 py-3">
-        {isEpic && (
+        {isEpic && (total ?? 0) > 0 && (
           <button
             type="button"
             onClick={onToggle}
