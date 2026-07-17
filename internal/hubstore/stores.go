@@ -22,6 +22,7 @@ type Stores struct {
 	transcripts *Transcripts
 	grill       *Grill
 	atlas       *AtlasDocuments
+	notifs      *Notifications
 }
 
 // NewStores builds the hub store set over the authoritative database db and the
@@ -43,6 +44,7 @@ func NewStores(db, transcriptsDB *sql.DB, retention Retention) *Stores {
 		transcripts: NewTranscripts(transcriptsDB, retention.Transcripts),
 		grill:       NewGrill(db, retention.Grill),
 		atlas:       NewAtlasDocuments(db),
+		notifs:      NewNotifications(db),
 	}
 }
 
@@ -84,6 +86,9 @@ func (s *Stores) Grill() *Grill { return s.grill }
 
 // Atlas returns the store of agent-generated Atlas View documents.
 func (s *Stores) Atlas() *AtlasDocuments { return s.atlas }
+
+// Notifications returns the durable needs-attention notification store.
+func (s *Stores) Notifications() *Notifications { return s.notifs }
 
 // Queue returns the queue store for a repo root.
 func (s *Stores) Queue(root string) *Queue { return NewQueue(s.db, root) }
