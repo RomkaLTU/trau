@@ -9,6 +9,8 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { parseAsString, useQueryState, useQueryStates } from "nuqs";
 import {
+  Archive,
+  ArchiveRestore,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -37,6 +39,7 @@ import {
   SegmentedControl,
   type SegmentOption,
 } from "@/components/trau/segmented-control";
+import { ArchiveToast } from "@/components/archive-toast";
 import { InternalIssueForm } from "@/components/internal-issue-form";
 import { IssueDrawer } from "@/components/issue-drawer";
 import { Badge } from "@/components/ui/badge";
@@ -73,6 +76,7 @@ import {
   hasActiveFilters,
   toggleStateGroup,
 } from "@/lib/backlog-filters";
+import { archiveToastMessage, useArchiveIssue } from "@/lib/archive";
 import { NEW_DRAFT_ID } from "@/lib/inbox";
 import { internalIssueQueryOptions, type InternalIssue } from "@/lib/issues";
 import { labelsQueryOptions } from "@/lib/labels";
@@ -129,12 +133,13 @@ function BacklogPage() {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [created, setCreated] = useState<InternalIssue | null>(null);
+  const [archiveNote, setArchiveNote] = useState<string | null>(null);
   const { expanded, toggle } = useExpandedEpics(repo);
 
   const [filters, setFilters] = useQueryStates(backlogFilterParsers, {
     history: "push",
   });
-  const { q, state, label, assignee, source, page } = filters;
+  const { q, state, label, assignee, source, archived, page } = filters;
 
   // The peeked issue is its own history entry so browser Back closes the drawer
   // without unwinding a filter change; a cold ?issue= link opens it over the list.
@@ -162,6 +167,12 @@ function BacklogPage() {
     return () => clearTimeout(id);
   }, [created]);
 
+  useEffect(() => {
+    if (!archiveNote) return;
+    const id = setTimeout(() => setArchiveNote(null), 6000);
+    return () => clearTimeout(id);
+  }, [archiveNote]);
+
   const backlog = useQuery(
     backlogQueryOptions(repo, backlogParamsFromFilters(filters, PAGE_SIZE)),
   );
@@ -170,6 +181,7 @@ function BacklogPage() {
   const items = backlog.data?.items ?? [];
   const counts = backlog.data?.counts ?? {};
   const total = backlog.data?.total ?? 0;
+  const archivedCount = backlog.data?.archived_count ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const hasFilters = hasActiveFilters(filters);
   const sections = backlogSections(
@@ -191,9 +203,13 @@ function BacklogPage() {
       editing={editing === entry.id}
       inQueue={queued.has(entry.id)}
       highlight={created?.id === entry.id}
+      archivedView={archived}
       nested={extra?.nested}
       expanded={extra?.expanded}
       onToggle={extra?.onToggle}
+      onArchived={(id, done, removed) =>
+        setArchiveNote(archiveToastMessage(id, done, removed))
+      }
       onOpen={() => void setPeek(entry.id)}
       onOpenParent={(id) => void setPeek(id)}
       onToggleEdit={() =>
@@ -208,7 +224,11 @@ function BacklogPage() {
       <PageHeader
         eyebrow={repo || "backlog"}
         title="Backlog"
-        description="In-progress, todo and backlog work — done and canceled are hidden until you filter for them."
+        description={
+          archived
+            ? "Archived issues — unarchive any to return it to the board."
+            : "In-progress, todo and backlog work — done and canceled are hidden until you filter for them."
+        }
         actions={
           <div className="flex items-center gap-2">
             <button
@@ -286,6 +306,27 @@ function BacklogPage() {
                 setFilters({ source: v === "all" ? null : v, page: null })
               }
             />
+            {(archived || archivedCount > 0) && (
+              <Button
+                type="button"
+                variant={archived ? "default" : "outline"}
+                size="sm"
+                className="h-9"
+                aria-pressed={archived}
+                onClick={() =>
+                  setFilters({ archived: archived ? null : true, page: null })
+                }
+              >
+                <Archive />
+                Archived
+                <Badge
+                  variant={archived ? "outline" : "secondary"}
+                  className="ml-0.5 tabular-nums"
+                >
+                  {archivedCount}
+                </Badge>
+              </Button>
+            )}
           </div>
 
           {backlog.isLoading && (
@@ -326,6 +367,7 @@ function BacklogPage() {
                             <EpicChildren
                               repo={repo}
                               epicId={node.entry.id}
+                              archived={archived}
                               fallback={node.children}
                               renderRow={renderRow}
                             />
@@ -415,6 +457,13 @@ function BacklogPage() {
             setCreated(null);
           }}
           onDismiss={() => setCreated(null)}
+        />
+      )}
+
+      {archiveNote && (
+        <ArchiveToast
+          message={archiveNote}
+          onDismiss={() => setArchiveNote(null)}
         />
       )}
 
@@ -728,15 +777,19 @@ function AssigneeFilter({
 function EpicChildren({
   repo,
   epicId,
+  archived,
   fallback,
   renderRow,
 }: {
   repo: string;
   epicId: string;
+  archived: boolean;
   fallback: BacklogEntry[];
   renderRow: (entry: BacklogEntry, extra?: { nested?: boolean }) => ReactNode;
 }) {
-  const children = useQuery(backlogQueryOptions(repo, { parent: epicId }));
+  const children = useQuery(
+    backlogQueryOptions(repo, { parent: epicId, archived }),
+  );
   const rows = children.data?.items ?? fallback;
   return <>{rows.map((child) => renderRow(child, { nested: true }))}</>;
 }
@@ -747,8 +800,10 @@ function BacklogRow({
   editing,
   inQueue,
   highlight = false,
+  archivedView,
   nested = false,
   expanded,
+  onArchived,
   onOpen,
   onOpenParent,
   onToggle,
@@ -760,8 +815,10 @@ function BacklogRow({
   editing: boolean;
   inQueue: boolean;
   highlight?: boolean;
+  archivedView: boolean;
   nested?: boolean;
   expanded?: boolean;
+  onArchived: (id: string, archived: boolean, queueRemoved: number) => void;
   onOpen: () => void;
   onOpenParent: (id: string) => void;
   onToggle?: () => void;
@@ -780,11 +837,18 @@ function BacklogRow({
     mutationFn: () => enqueue(repo, { id: entry.id }),
     onSuccess: (res) => publishQueue(queryClient, repo, res),
   });
+  const archive = useArchiveIssue(repo, (result, vars) =>
+    onArchived(vars.id, vars.archived, result.queue_removed),
+  );
+  // A family child carries no archive stamp of its own — only its epic can be
+  // unarchived — so the Unarchive action stays off the nested rows in the
+  // archived view.
+  const showArchiveAction = archivedView ? !nested : true;
 
   return (
     <li
       className={cn(
-        "rounded-lg border bg-card transition-colors hover:border-ring/40",
+        "group rounded-lg border bg-card transition-colors hover:border-ring/40",
         nested && "ml-6",
         highlight && "border-primary/60 bg-primary/5",
       )}
@@ -876,19 +940,46 @@ function BacklogRow({
             Edit
           </button>
         )}
-        <button
-          type="button"
-          onClick={() => addToQueue.mutate()}
-          disabled={inQueue || addToQueue.isPending}
-          className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-        >
-          <ListPlus className="size-3.5" />
-          {inQueue ? "Queued" : "Add to queue"}
-        </button>
+        {!archivedView && (
+          <button
+            type="button"
+            onClick={() => addToQueue.mutate()}
+            disabled={inQueue || addToQueue.isPending}
+            className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+          >
+            <ListPlus className="size-3.5" />
+            {inQueue ? "Queued" : "Add to queue"}
+          </button>
+        )}
+        {showArchiveAction && (
+          <button
+            type="button"
+            onClick={() =>
+              archive.mutate({ id: entry.id, archived: !archivedView })
+            }
+            disabled={archive.isPending}
+            aria-label={
+              archivedView ? `Unarchive ${entry.id}` : `Archive ${entry.id}`
+            }
+            title={archivedView ? "Unarchive" : "Archive"}
+            className="inline-flex size-7 shrink-0 items-center justify-center rounded-md border text-muted-foreground opacity-0 transition-colors hover:text-foreground focus-visible:opacity-100 disabled:opacity-50 group-hover:opacity-100"
+          >
+            {archivedView ? (
+              <ArchiveRestore className="size-3.5" aria-hidden />
+            ) : (
+              <Archive className="size-3.5" aria-hidden />
+            )}
+          </button>
+        )}
       </div>
       {addToQueue.error && (
         <p className="px-4 pb-2 text-xs text-destructive">
           {String((addToQueue.error as Error).message)}
+        </p>
+      )}
+      {archive.error && (
+        <p className="px-4 pb-2 text-xs text-destructive">
+          {String((archive.error as Error).message)}
         </p>
       )}
       {editing && internal && issueQuery.data && (

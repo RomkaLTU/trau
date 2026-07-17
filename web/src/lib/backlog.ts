@@ -59,6 +59,9 @@ export interface BacklogResponse {
   // counts is the per-status-group match totals with the state filter ignored, so
   // section headers and the hidden-count hint hold whichever groups are on screen.
   counts: Record<string, number>
+  // archived_count is how many families the archived view holds, so the board can
+  // render the "Archived (N)" toggle without a second call.
+  archived_count: number
   freshness?: RepoFreshness
 }
 
@@ -72,6 +75,7 @@ export interface BacklogParams {
   source?: string
   q?: string
   parent?: string
+  archived?: boolean
   limit?: number
   offset?: number
 }
@@ -89,6 +93,7 @@ function backlogSearch(params: BacklogParams): string {
   if (params.source) sp.set('source', params.source)
   if (params.q) sp.set('q', params.q)
   if (params.parent) sp.set('parent', params.parent)
+  if (params.archived) sp.set('archived', '1')
   if (params.limit) sp.set('limit', String(params.limit))
   if (params.offset) sp.set('offset', String(params.offset))
   return sp.toString()
