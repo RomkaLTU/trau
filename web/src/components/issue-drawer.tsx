@@ -3,12 +3,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
   AlertTriangle,
+  Archive,
+  ArchiveRestore,
   ExternalLink,
   Flame,
   ListPlus,
   Pencil,
 } from "lucide-react";
 
+import { ArchiveToast } from "@/components/archive-toast";
 import { AssigneeAvatar } from "@/components/trau/assignee-avatar";
 import { InternalIssueForm } from "@/components/internal-issue-form";
 import { Markdown } from "@/components/markdown";
@@ -27,6 +30,7 @@ import {
   issueQueryOptions,
   type IssueComment,
 } from "@/lib/issues";
+import { archiveToastMessage, useArchiveIssue } from "@/lib/archive";
 import {
   activeSessionForIssue,
   grillSessionsQueryOptions,
@@ -115,6 +119,18 @@ function IssueDrawerBody({
     onSuccess: (res) => publishQueue(queryClient, repo, res),
   });
 
+  const [archiveNote, setArchiveNote] = useState<string | null>(null);
+  useEffect(() => {
+    if (!archiveNote) return;
+    const t = setTimeout(() => setArchiveNote(null), 6000);
+    return () => clearTimeout(t);
+  }, [archiveNote]);
+  const archive = useArchiveIssue(repo, (result, vars) =>
+    setArchiveNote(
+      archiveToastMessage(vars.id, vars.archived, result.queue_removed),
+    ),
+  );
+
   if (query.isLoading) {
     return (
       <DrawerFrame id={id}>
@@ -148,6 +164,12 @@ function IssueDrawerBody({
           {inQueue && (
             <span className="rounded-full border border-sky-500/40 bg-sky-500/5 px-2 py-0.5 text-xs text-sky-600 dark:text-sky-400">
               queued
+            </span>
+          )}
+          {issue.archived && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/5 px-2 py-0.5 text-xs text-amber-600 dark:text-amber-400">
+              <Archive className="size-3" aria-hidden />
+              archived
             </span>
           )}
           <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
@@ -225,14 +247,25 @@ function IssueDrawerBody({
 
       {!editing && (
         <SheetFooter className="flex-row flex-wrap items-center gap-2 border-t">
-          <Button
-            size="sm"
-            onClick={() => addToQueue.mutate()}
-            disabled={inQueue || addToQueue.isPending}
-          >
-            <ListPlus />
-            {inQueue ? "Queued" : "Add to queue"}
-          </Button>
+          {issue.archived ? (
+            <Button
+              size="sm"
+              onClick={() => archive.mutate({ id, archived: false })}
+              disabled={archive.isPending}
+            >
+              <ArchiveRestore />
+              Unarchive
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              onClick={() => addToQueue.mutate()}
+              disabled={inQueue || addToQueue.isPending}
+            >
+              <ListPlus />
+              {inQueue ? "Queued" : "Add to queue"}
+            </Button>
+          )}
           {grillable && (
             <Button variant="outline" size="sm" asChild>
               <Link to="/inbox" search={{ issue: id }}>
@@ -259,12 +292,35 @@ function IssueDrawerBody({
               </a>
             </Button>
           )}
+          {!issue.archived && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => archive.mutate({ id, archived: true })}
+              disabled={archive.isPending}
+            >
+              <Archive />
+              Archive
+            </Button>
+          )}
           {addToQueue.error && (
             <p className="w-full text-xs text-destructive">
               {String((addToQueue.error as Error).message)}
             </p>
           )}
+          {archive.error && (
+            <p className="w-full text-xs text-destructive">
+              {String((archive.error as Error).message)}
+            </p>
+          )}
         </SheetFooter>
+      )}
+
+      {archiveNote && (
+        <ArchiveToast
+          message={archiveNote}
+          onDismiss={() => setArchiveNote(null)}
+        />
       )}
     </>
   );

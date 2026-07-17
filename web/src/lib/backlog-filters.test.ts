@@ -18,6 +18,7 @@ function filters(over: Partial<BacklogFilters> = {}): BacklogFilters {
     label: '',
     assignee: '',
     source: null,
+    archived: false,
     page: 1,
     ...over,
   }
@@ -31,8 +32,15 @@ describe('backlogParamsFromFilters', () => {
       assignee: '',
       state: 'started,unstarted,backlog,unknown',
       source: '',
+      archived: false,
       limit: 50,
       offset: 0,
+    })
+  })
+
+  it('passes the archived view flag through', () => {
+    expect(backlogParamsFromFilters(filters({ archived: true }), PAGE_SIZE)).toMatchObject({
+      archived: true,
     })
   })
 
@@ -82,6 +90,7 @@ describe('hasActiveFilters', () => {
     { name: 'assignee', over: { assignee: 'me' } },
     { name: 'state', over: { state: ['done'] } },
     { name: 'source', over: { source: 'synced' as const } },
+    { name: 'archived', over: { archived: true } },
   ])('is true when $name is set', ({ over }) => {
     expect(hasActiveFilters(filters(over))).toBe(true)
   })
@@ -120,6 +129,11 @@ describe('backlogFilterParsers', () => {
     expect(backlogFilterParsers.page.parse('3')).toBe(3)
     expect(backlogFilterParsers.source.parse('internal')).toBe('internal')
     expect(backlogFilterParsers.source.parse('bogus')).toBeNull()
+  })
+
+  it('parses the archived flag as a boolean', () => {
+    expect(backlogFilterParsers.archived.parse('true')).toBe(true)
+    expect(backlogFilterParsers.archived.parse('false')).toBe(false)
   })
 
   it('rejects non-positive and non-integer pages so the hook falls back to page 1', () => {

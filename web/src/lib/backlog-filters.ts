@@ -2,6 +2,7 @@ import {
   createParser,
   type inferParserType,
   parseAsArrayOf,
+  parseAsBoolean,
   parseAsInteger,
   parseAsString,
   parseAsStringLiteral,
@@ -44,6 +45,9 @@ export const backlogFilterParsers = {
   // `unassigned`, or an assignee id. The hub resolves Me per repo binding.
   assignee: parseAsString.withDefault(''),
   source: parseAsStringLiteral(SOURCE_VALUES),
+  // archived swaps the board to the archived view; the default false keeps the
+  // param out of the URL until it is toggled on.
+  archived: parseAsBoolean.withDefault(false),
   page: parseAsPage,
 }
 
@@ -59,6 +63,7 @@ export function backlogParamsFromFilters(
     assignee: filters.assignee,
     state: effectiveStateGroups(filters.state).join(','),
     source: filters.source ?? '',
+    archived: filters.archived,
     limit: pageSize,
     offset: (filters.page - 1) * pageSize,
   }
@@ -84,6 +89,7 @@ export function hasActiveFilters(filters: BacklogFilters): boolean {
     filters.label !== '' ||
     filters.assignee !== '' ||
     filters.state.length > 0 ||
-    filters.source !== null
+    filters.source !== null ||
+    filters.archived
   )
 }
