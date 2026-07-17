@@ -5,6 +5,7 @@ import {
   applyTheme,
   loadThemeMode,
   storeThemeMode,
+  type ResolvedTheme,
   type ThemeMode,
 } from '@/lib/theme'
 import { cn } from '@/lib/utils'
@@ -30,6 +31,27 @@ export function useTheme(): {
   }, [])
 
   return { mode, setMode }
+}
+
+export function useResolvedTheme(): ResolvedTheme {
+  const [theme, setTheme] = useState<ResolvedTheme>(readResolvedTheme)
+
+  useEffect(() => {
+    const root = document.documentElement
+    const update = () => setTheme(readResolvedTheme())
+    update()
+    const observer = new MutationObserver(update)
+    observer.observe(root, { attributes: true, attributeFilter: ['class'] })
+    return () => observer.disconnect()
+  }, [])
+
+  return theme
+}
+
+function readResolvedTheme(): ResolvedTheme {
+  return globalThis.document?.documentElement.classList.contains('dark')
+    ? 'dark'
+    : 'light'
 }
 
 const OPTIONS: readonly { value: ThemeMode; label: string; icon: LucideIcon }[] =
