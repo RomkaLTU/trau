@@ -236,8 +236,9 @@ func toAssigneeFacets(assigned []hubstore.AssigneeCount, meID string) []Assignee
 // backlogFilter reads the board's filter and pagination controls off the query
 // string: state (one or more workflow state groups, comma-separated and/or
 // repeated), label, source (internal | synced), assignee (me | unassigned | an
-// assignee id), q (substring text match), and limit/offset. Absent or malformed
-// values fall back to the zero filter, so a bare request is the unfiltered board.
+// assignee id), q (substring text match), parent (an epic identifier — list its
+// direct sub-issues), and limit/offset. Absent or malformed values fall back to
+// the zero filter, so a bare request is the unfiltered board.
 func backlogFilter(q url.Values) hubstore.BacklogFilter {
 	return hubstore.BacklogFilter{
 		Groups:   stateGroups(q["state"]),
@@ -245,6 +246,7 @@ func backlogFilter(q url.Values) hubstore.BacklogFilter {
 		Source:   strings.TrimSpace(q.Get("source")),
 		Assignee: strings.TrimSpace(q.Get("assignee")),
 		Text:     strings.TrimSpace(q.Get("q")),
+		Parent:   strings.TrimSpace(q.Get("parent")),
 		Limit:    backlogLimit(q.Get("limit")),
 		Offset:   backlogOffset(q.Get("offset")),
 	}

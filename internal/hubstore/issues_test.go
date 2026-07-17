@@ -476,6 +476,30 @@ func TestBacklogPageOrdersTodoAndBacklogByCreation(t *testing.T) {
 	}
 }
 
+func TestBacklogPageParentFilterListsEpicChildren(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/parent"
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-1", StatusGroup: "backlog", HasChildren: true},
+		{Identifier: "COD-2", StatusGroup: "started", Parent: "COD-1"},
+		{Identifier: "COD-3", StatusGroup: "done", Parent: "COD-1"},
+		{Identifier: "COD-4", StatusGroup: "backlog", Parent: "COD-1"},
+		{Identifier: "COD-5", StatusGroup: "backlog", HasChildren: true},
+		{Identifier: "COD-6", StatusGroup: "backlog", Parent: "COD-5"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, total, _, err := s.BacklogPage(repo, BacklogFilter{Parent: "COD-1"})
+	if err != nil {
+		t.Fatalf("BacklogPage: %v", err)
+	}
+	want := []string{"COD-2", "COD-4", "COD-3"}
+	if total != len(want) || !reflect.DeepEqual(idsOf(got), want) {
+		t.Fatalf("ids = %v (total %d), want %v — only COD-1's direct children in board order", idsOf(got), total, want)
+	}
+}
+
 func TestBacklogPageCountsEpicChildren(t *testing.T) {
 	s := testIssues(t)
 	repo := "/repo/childcounts"

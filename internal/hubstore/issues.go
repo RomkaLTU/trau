@@ -218,16 +218,18 @@ func (s *Issues) Children(repo, parent string) (issues []Issue, err error) {
 // "internal" for internally-created issues or "synced" for tracker tickets;
 // Assignee is "me" (the repo binding's resolved identity), "unassigned", or an
 // assignee id to match exactly — an unresolved "me" matches nothing; Text is a
-// case-insensitive substring over identifier and title. A zero-valued field is
-// ignored, so the zero filter selects the whole board — an empty Groups means
-// every group. Limit and Offset paginate the ordered matches; a Limit of zero
-// returns every match.
+// case-insensitive substring over identifier and title; Parent matches the
+// direct sub-issues of that epic identifier. A zero-valued field is ignored, so
+// the zero filter selects the whole board — an empty Groups means every group.
+// Limit and Offset paginate the ordered matches; a Limit of zero returns every
+// match.
 type BacklogFilter struct {
 	Groups   []string
 	Label    string
 	Source   string
 	Assignee string
 	Text     string
+	Parent   string
 	Limit    int
 	Offset   int
 }
@@ -341,6 +343,10 @@ func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue,
 	default:
 		where = append(where, "assignee_id = ?")
 		args = append(args, assignee)
+	}
+	if parent := strings.TrimSpace(filter.Parent); parent != "" {
+		where = append(where, "parent = ?")
+		args = append(args, parent)
 	}
 	baseClause := strings.Join(where, " AND ")
 
