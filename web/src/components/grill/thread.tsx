@@ -135,13 +135,17 @@ function MessageRow({ message }: { message: GrillMessage }) {
     case "answer":
       return <UserBubble>{answerText(message)}</UserBubble>;
     // The seed idea of an authoring session rides as an info message; render it as
-    // the user's opening turn so the conversation reads from the top.
+    // the user's opening turn so the conversation reads from the top. A system info
+    // message is hub bookkeeping (a model switch), not a turn, so it reads as a
+    // notice line rather than a bubble.
     case "info":
-      return message.role === "user" ? (
-        <UserBubble>{answerText(message)}</UserBubble>
-      ) : (
-        <AgentBubble>{answerText(message)}</AgentBubble>
-      );
+      if (message.role === "user") {
+        return <UserBubble>{answerText(message)}</UserBubble>;
+      }
+      if (message.role === "system") {
+        return <SystemNote>{answerText(message)}</SystemNote>;
+      }
+      return <AgentBubble>{answerText(message)}</AgentBubble>;
     case "outcome":
       return <OutcomeProposal outcome={outcomePayload(message)} />;
     default:
@@ -186,6 +190,14 @@ function UserBubble({
         </Bubble>
       </MessageContent>
     </Message>
+  );
+}
+
+function SystemNote({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="py-0.5 text-center font-mono text-xs text-muted-foreground">
+      {children}
+    </p>
   );
 }
 

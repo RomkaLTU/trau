@@ -29,7 +29,9 @@ export interface GrillSession {
   issue_title?: string
   state: GrillState
   session_chain?: string
+  provider?: string
   model?: string
+  model_options?: string[]
   parked_reason?: string
   created_at: string
   updated_at: string
@@ -308,6 +310,19 @@ export async function applyGrill(
     body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(await errorMessage(res, 'apply failed'))
+  return res.json()
+}
+
+// switchGrillModel points the session's next turn at model; an in-flight turn
+// finishes on the old one. The hub echoes the change over the session's state
+// frames, so callers need no optimistic update.
+export async function switchGrillModel(sid: string, model: string): Promise<GrillSession> {
+  const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/model`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model }),
+  })
+  if (!res.ok) throw new Error(await errorMessage(res, 'switch model failed'))
   return res.json()
 }
 

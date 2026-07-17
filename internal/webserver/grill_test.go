@@ -4,17 +4,22 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
 
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
+// grillServer isolates HOME because session creation resolves the repo's grill
+// model through the layered config, which reads ~/.trau.ini.
 func grillServer(t *testing.T) (*httptest.Server, *hubstore.Stores, string) {
 	t.Helper()
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	stores := testStoresAt(t, home)
 	repo := registry.Repo{Name: "acme", Root: filepath.Join(home, "acme"), RunsDir: filepath.Join(home, "acme", ".trau", "runs")}
 	if err := stores.Registrations().Remember([]registry.Repo{repo}); err != nil {
@@ -207,6 +212,144 @@ func TestGrillSessionNotFound(t *testing.T) {
 	res, _ = get(t, ts, APIPrefix+"/grill/not-a-number")
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", res.StatusCode)
+	}
+}
+
+func TestGrillModelSwitch(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	sess := createGrill(t, ts, repo, "COD-1")
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+
+	// A running session takes the switch — the model is only read at next spawn.
+	res := postJSON(t, ts.URL+APIPrefix+"/grill/"+sess.ID+"/model", GrillModelRequest{Model: "opus"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("switch status = %d, want 200", res.StatusCode)
+	}
+	var v GrillSessionView
+	if err := json.NewDecoder(res.Body).Decode(&v); err != nil {
+		t.Fatalf("decode switch: %v", err)
+	}
+	if v.Model != "opus" || v.Provider != "claude" || len(v.ModelOptions) == 0 {
+		t.Fatalf("switched view = %+v, want model opus, provider claude, options", v)
+	}
+
+	msgs, err := stores.Grill().Messages(sid, 0)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %d, want the switch notice alone", len(msgs))
+	}
+	if msgs[0].Role != hubstore.GrillRoleSystem || msgs[0].Kind != hubstore.GrillKindInfo {
+		t.Fatalf("notice = %s/%s, want system/info", msgs[0].Role, msgs[0].Kind)
+	}
+	if msgs[0].Payload != `{"text":"Model switched to opus"}` {
+		t.Fatalf("notice payload = %s", msgs[0].Payload)
+	}
+
+	// Re-sending the same model is a no-op: 200 with no second notice.
+	res = postJSON(t, ts.URL+APIPrefix+"/grill/"+sess.ID+"/model", GrillModelRequest{Model: "opus"})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("no-op status = %d, want 200", res.StatusCode)
+	}
+	if again, _ := stores.Grill().Messages(sid, 0); len(again) != 1 {
+		t.Fatalf("no-op appended a notice: %d messages, want 1", len(again))
+	}
+
+	res = postJSON(t, ts.URL+APIPrefix+"/grill/"+sess.ID+"/model", GrillModelRequest{Model: "  "})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty model status = %d, want 400", res.StatusCode)
+	}
+}
+
+func TestGrillModelSwitchSettled(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	cases := []struct {
+		issue string
+		path  []string
+	}{
+		{"COD-1", []string{hubstore.GrillFinished}},
+		{"COD-2", []string{hubstore.GrillFinished, hubstore.GrillApplied}},
+		{"COD-3", []string{hubstore.GrillAbandoned}},
+	}
+	for _, tc := range cases {
+		state := tc.path[len(tc.path)-1]
+		sess := createGrill(t, ts, repo, tc.issue)
+		sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+		for _, next := range tc.path {
+			if _, err := stores.Grill().Transition(sid, next, ""); err != nil {
+				t.Fatalf("transition to %s: %v", next, err)
+			}
+		}
+
+		res := postJSON(t, ts.URL+APIPrefix+"/grill/"+sess.ID+"/model", GrillModelRequest{Model: "opus"})
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusConflict {
+			t.Fatalf("%s switch status = %d, want 409", state, res.StatusCode)
+		}
+		if after, _, _ := stores.Grill().Session(sid); after.Model == "opus" {
+			t.Fatalf("%s switch persisted the model", state)
+		}
+	}
+}
+
+// A row from before the model column was resolved at create shows the repo
+// config's fallback chain — GRILL_MODEL over CLAUDE_MODEL — and stays empty when
+// neither is set, which the panel renders as the Claude CLI default.
+func TestGrillModelViewFallback(t *testing.T) {
+	ts, stores, _ := grillServer(t)
+	root := filepath.Join(os.Getenv("HOME"), "acme")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	sess, err := stores.Grill().Create(hubstore.NewGrillSession{Repo: root, IssueID: "COD-1"})
+	if err != nil {
+		t.Fatalf("create legacy session: %v", err)
+	}
+
+	fetch := func() GrillSessionView {
+		t.Helper()
+		_, body := get(t, ts, APIPrefix+"/grill/"+strconv.FormatInt(sess.ID, 10))
+		var detail GrillDetailResponse
+		if err := json.Unmarshal([]byte(body), &detail); err != nil {
+			t.Fatalf("decode detail: %v", err)
+		}
+		return detail.Session
+	}
+
+	if got := fetch(); got.Model != "" || got.Provider != "claude" {
+		t.Fatalf("unconfigured view = %+v, want empty model, provider claude", got)
+	}
+
+	cfgPath := config.ProjectConfigPath(root)
+	if err := os.WriteFile(cfgPath, []byte("CLAUDE_MODEL=claude-model\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if got := fetch(); got.Model != "claude-model" {
+		t.Fatalf("claude fallback model = %q, want claude-model", got.Model)
+	}
+
+	if err := os.WriteFile(cfgPath, []byte("GRILL_MODEL=grill-model\nCLAUDE_MODEL=claude-model\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if got := fetch(); got.Model != "grill-model" {
+		t.Fatalf("grill fallback model = %q, want grill-model", got.Model)
+	}
+
+	// Posting the resolved fallback is a no-op: no notice, nothing persisted.
+	res := postJSON(t, ts.URL+APIPrefix+"/grill/"+strconv.FormatInt(sess.ID, 10)+"/model", GrillModelRequest{Model: "grill-model"})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("fallback no-op status = %d, want 200", res.StatusCode)
+	}
+	if msgs, _ := stores.Grill().Messages(sess.ID, 0); len(msgs) != 0 {
+		t.Fatalf("fallback no-op appended %d messages, want 0", len(msgs))
+	}
+	if after, _, _ := stores.Grill().Session(sess.ID); after.Model != "" {
+		t.Fatalf("fallback no-op persisted model %q", after.Model)
 	}
 }
 
