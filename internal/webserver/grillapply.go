@@ -198,7 +198,7 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 		s.settleGrillApplied(w, &sess, steps)
 		return
 	}
-	writeJSON(w, http.StatusOK, GrillApplyResponse{Session: grillSessionView("", sess), Applied: false, Steps: steps})
+	writeJSON(w, http.StatusOK, GrillApplyResponse{Session: s.grillSessionView("", sess), Applied: false, Steps: steps})
 }
 
 // grillAnchoredIssue returns the session's anchor issue for the dispositions that
@@ -237,7 +237,7 @@ func (s *Server) settleGrillApplied(w http.ResponseWriter, sess *hubstore.GrillS
 	if steps == nil {
 		steps = []GrillApplyStep{}
 	}
-	writeJSON(w, http.StatusOK, GrillApplyResponse{Session: grillSessionView("", *sess), Applied: true, Steps: steps})
+	writeJSON(w, http.StatusOK, GrillApplyResponse{Session: s.grillSessionView("", *sess), Applied: true, Steps: steps})
 }
 
 // grillApplyPlan is the resolved write plan for one disposition: the fields to

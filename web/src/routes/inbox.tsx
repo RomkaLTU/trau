@@ -29,6 +29,12 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+} from "@/components/ui/select";
+import {
   AssigneeAvatar,
   PageHeader,
   ProjectScopeGate,
@@ -44,6 +50,7 @@ import {
   outcomePayload,
   pregrillIssues,
   startGrillSession,
+  switchGrillModel,
   type GrillListResponse,
   type GrillSession,
   type OutcomePayload,
@@ -465,6 +472,7 @@ function SessionColumn({
         item={item}
         position={position}
         total={total}
+        session={live ?? null}
         pill={live ? inboxPill(live.state) : null}
         reconnecting={status?.stream === "error"}
         showContextToggle={hasSession}
@@ -581,6 +589,7 @@ function DraftColumn({
         position={position}
         total={total}
         draft
+        session={live}
         pill={live ? inboxPill(live.state) : null}
         reconnecting={status?.stream === "error"}
         showContextToggle={false}
@@ -759,6 +768,7 @@ function SessionBar({
   item,
   position,
   total,
+  session,
   pill,
   reconnecting,
   showContextToggle,
@@ -775,6 +785,7 @@ function SessionBar({
   item: InboxItem;
   position: number;
   total: number;
+  session?: GrillSession | null;
   pill: {
     tone: "warn" | "active" | "verify" | "success" | "todo";
     label: string;
@@ -791,6 +802,8 @@ function SessionBar({
   endError?: Error | null;
   draft?: boolean;
 }) {
+  const [modelError, setModelError] = useState<string | null>(null);
+
   return (
     <div className="shrink-0 border-b border-border">
       <div className="flex items-center justify-between gap-3 py-3 pl-5 pr-1">
@@ -810,6 +823,7 @@ function SessionBar({
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          {session && <ModelSwitch session={session} onError={setModelError} />}
           {reconnecting && (
             <span className="inline-flex items-center gap-1 text-xs text-warn">
               <span aria-hidden="true">⚠</span>
@@ -852,7 +866,58 @@ function SessionBar({
       {endError && (
         <p className="px-5 pb-2 text-xs text-destructive">{endError.message}</p>
       )}
+      {modelError && (
+        <p className="px-5 pb-2 text-xs text-destructive">{modelError}</p>
+      )}
     </div>
+  );
+}
+
+// ModelSwitch is the bar's provider/model indicator: a compact `claude · <model>`
+// trigger over the session's Claude catalog. A switch applies from the next agent
+// turn and the SSE state frame updates the label, so nothing here is optimistic; a
+// finished or settled session keeps the label but the menu disables.
+function ModelSwitch({
+  session,
+  onError,
+}: {
+  session: GrillSession;
+  onError: (message: string | null) => void;
+}) {
+  const switchModel = useMutation({
+    mutationFn: (model: string) => switchGrillModel(session.id, model),
+    onMutate: () => onError(null),
+    onError: (err) => onError((err as Error).message),
+  });
+  const model = session.model ?? "";
+  const options = session.model_options ?? [];
+
+  return (
+    <Select
+      value={model}
+      onValueChange={(next) => switchModel.mutate(next)}
+      disabled={
+        session.state === "finished" ||
+        isSettled(session.state) ||
+        options.length === 0 ||
+        switchModel.isPending
+      }
+    >
+      <SelectTrigger
+        size="sm"
+        className="h-7 gap-1 border-none bg-transparent px-2 font-mono text-xs text-muted-foreground shadow-none dark:bg-transparent"
+        aria-label="Switch model"
+      >
+        {session.provider ?? "claude"} · {model || "default"}
+      </SelectTrigger>
+      <SelectContent align="end">
+        {options.map((m) => (
+          <SelectItem key={m} value={m} className="font-mono text-xs">
+            {m}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 

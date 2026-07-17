@@ -190,6 +190,34 @@ func TestGrillUpdateChain(t *testing.T) {
 	}
 }
 
+func TestGrillSetModel(t *testing.T) {
+	g, _ := testGrill(t, 0)
+	sess, err := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1", Model: "sonnet"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	updated, found, err := g.SetModel(sess.ID, "opus")
+	if err != nil || !found {
+		t.Fatalf("set model: found=%v err=%v", found, err)
+	}
+	if updated.Model != "opus" {
+		t.Fatalf("model = %q, want opus", updated.Model)
+	}
+
+	got, _, err := g.Session(sess.ID)
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	if got.Model != "opus" {
+		t.Fatalf("persisted model = %q, want opus", got.Model)
+	}
+
+	if _, found, err := g.SetModel(9999, "opus"); found || err != nil {
+		t.Fatalf("set model on unknown session = (found=%v, err=%v), want (false, nil)", found, err)
+	}
+}
+
 func TestGrillSetIssue(t *testing.T) {
 	g, _ := testGrill(t, 0)
 	sess, err := g.Create(NewGrillSession{Repo: "acme"})

@@ -336,6 +336,26 @@ func (g *Grill) UpdateChain(id int64, sessionChain string) (GrillSession, bool, 
 	return sess, true, nil
 }
 
+// SetModel records the Claude model the session's next turn spawns with and bumps
+// its updated_at — an in-flight turn keeps the model it was spawned on. It reports
+// whether the session exists.
+func (g *Grill) SetModel(id int64, model string) (GrillSession, bool, error) {
+	sess, found, err := g.Session(id)
+	if err != nil || !found {
+		return GrillSession{}, found, err
+	}
+	now := formatGrillTime(time.Now())
+	if _, err := g.db.Exec(
+		`UPDATE grill_sessions SET model = ?, updated_at = ? WHERE id = ?`,
+		model, now, id,
+	); err != nil {
+		return GrillSession{}, false, err
+	}
+	sess.Model = model
+	sess.UpdatedAt = now
+	return sess, true, nil
+}
+
 // SetIssue anchors a session to issueID and bumps its updated_at — the create-apply
 // flow calls it once the parent issue is filed so a retry reuses that issue instead
 // of filing it a second time. It reports whether the session exists.

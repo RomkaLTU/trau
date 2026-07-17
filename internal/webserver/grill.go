@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
@@ -18,18 +19,22 @@ import (
 
 // GrillSessionView is one grilling session as the web panel sees it. IssueID is
 // omitted for an authoring session anchored to the repo alone; IssueTitle then
-// carries the session's seed so the queue can title an issue-less draft.
+// carries the session's seed so the queue can title an issue-less draft. Provider
+// is fixed to claude while the runner is; ModelOptions carries the switcher's
+// catalog because the inbox never loads the settings config.
 type GrillSessionView struct {
-	ID           string `json:"id"`
-	Repo         string `json:"repo"`
-	IssueID      string `json:"issue_id,omitempty"`
-	IssueTitle   string `json:"issue_title,omitempty"`
-	State        string `json:"state"`
-	SessionChain string `json:"session_chain,omitempty"`
-	Model        string `json:"model,omitempty"`
-	ParkedReason string `json:"parked_reason,omitempty"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	ID           string   `json:"id"`
+	Repo         string   `json:"repo"`
+	IssueID      string   `json:"issue_id,omitempty"`
+	IssueTitle   string   `json:"issue_title,omitempty"`
+	State        string   `json:"state"`
+	SessionChain string   `json:"session_chain,omitempty"`
+	Provider     string   `json:"provider"`
+	Model        string   `json:"model,omitempty"`
+	ModelOptions []string `json:"model_options,omitempty"`
+	ParkedReason string   `json:"parked_reason,omitempty"`
+	CreatedAt    string   `json:"created_at"`
+	UpdatedAt    string   `json:"updated_at"`
 }
 
 // GrillMessageView is one message in a session's conversation. Payload is the
@@ -66,8 +71,9 @@ type GrillDetailResponse struct {
 
 // GrillCreateRequest is the body of POST /repos/{repo}/grill. IssueID is empty for
 // an authoring session anchored to the repo alone; Idea is the one-line seed for
-// such a session and is ignored when IssueID is set. Model is optional and the
-// runner resolves the default when it spawns the turn.
+// such a session and is ignored when IssueID is set. Model is optional; an empty
+// one resolves to the repo config's grill default at create, so the stored row is
+// the source of truth for the session's model.
 type GrillCreateRequest struct {
 	IssueID string `json:"issue_id"`
 	Idea    string `json:"idea"`
@@ -77,6 +83,11 @@ type GrillCreateRequest struct {
 // GrillAnswerRequest is the body of POST /grill/{sid}/answer.
 type GrillAnswerRequest struct {
 	Text string `json:"text"`
+}
+
+// GrillModelRequest is the body of POST /grill/{sid}/model.
+type GrillModelRequest struct {
+	Model string `json:"model"`
 }
 
 // GrillAnswerResponse acknowledges an answer with the resulting session state and
@@ -115,7 +126,7 @@ func (s *Server) listGrill(w http.ResponseWriter, repo registry.Repo, state stri
 	}
 	views := make([]GrillSessionView, len(sessions))
 	for i, sess := range sessions {
-		views[i] = grillSessionView(repo.Name, sess)
+		views[i] = s.grillSessionView(repo.Name, sess)
 	}
 	writeJSON(w, http.StatusOK, GrillListResponse{Repo: repo.Name, Sessions: views})
 }
@@ -127,10 +138,14 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 		return
 	}
 	issueID := strings.TrimSpace(req.IssueID)
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = s.grillModelDefault(repo)
+	}
 	sess, err := s.stores.Grill().Create(hubstore.NewGrillSession{
 		Repo:    repo.Root,
 		IssueID: issueID,
-		Model:   strings.TrimSpace(req.Model),
+		Model:   model,
 	})
 	if err != nil {
 		if errors.Is(err, hubstore.ErrGrillActiveSession) {
@@ -157,7 +172,7 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 	if s.startGrill != nil {
 		s.startGrill(r.Context(), sess)
 	}
-	writeJSON(w, http.StatusCreated, grillSessionView(repo.Name, sess))
+	writeJSON(w, http.StatusCreated, s.grillSessionView(repo.Name, sess))
 }
 
 // handleGrillSession serves one session and its full conversation (GET /grill/{sid}).
@@ -186,7 +201,7 @@ func (s *Server) handleGrillSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, GrillDetailResponse{
-		Session:  grillSessionView("", sess),
+		Session:  s.grillSessionView("", sess),
 		Messages: grillMessageViews(msgs),
 	})
 }
@@ -253,7 +268,7 @@ func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 		s.startGrill(r.Context(), resumed)
 	}
 	writeJSON(w, http.StatusOK, GrillAnswerResponse{
-		Session: grillSessionView("", resumed),
+		Session: s.grillSessionView("", resumed),
 		Message: grillMessageView(msg),
 	})
 }
@@ -281,7 +296,7 @@ func (s *Server) handleGrillAbandon(w http.ResponseWriter, r *http.Request) {
 	}
 	switch sess.State {
 	case hubstore.GrillAbandoned:
-		writeJSON(w, http.StatusOK, grillSessionView("", sess))
+		writeJSON(w, http.StatusOK, s.grillSessionView("", sess))
 		return
 	case hubstore.GrillApplied:
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "session is already applied"})
@@ -293,7 +308,72 @@ func (s *Server) handleGrillAbandon(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publishGrillState(abandoned)
-	writeJSON(w, http.StatusOK, grillSessionView("", abandoned))
+	writeJSON(w, http.StatusOK, s.grillSessionView("", abandoned))
+}
+
+// handleGrillModel switches the Claude model a session's next turn spawns with
+// (POST). The runner reads the model at spawn, so an in-flight turn finishes on the
+// old one and no runner coordination is needed. A finished or settled session is
+// refused; the model already in effect is a no-op. A change lands as a system
+// notice in the transcript and a state frame on the live stream.
+func (s *Server) handleGrillModel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	sid, ok := parseSID(w, r)
+	if !ok {
+		return
+	}
+	sess, found, err := s.stores.Grill().Session(sid)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown grill session"})
+		return
+	}
+	switch sess.State {
+	case hubstore.GrillFinished, hubstore.GrillApplied, hubstore.GrillAbandoned:
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "session no longer accepts a model switch"})
+		return
+	}
+	var req GrillModelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "model is required"})
+		return
+	}
+	if model == s.grillEffectiveModel(sess) {
+		writeJSON(w, http.StatusOK, s.grillSessionView("", sess))
+		return
+	}
+	updated, found, err := s.stores.Grill().SetModel(sid, model)
+	if err != nil || !found {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "set model failed"})
+		return
+	}
+	payload, _ := json.Marshal(struct {
+		Text string `json:"text"`
+	}{Text: "Model switched to " + model})
+	msg, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
+		Role:    hubstore.GrillRoleSystem,
+		Kind:    hubstore.GrillKindInfo,
+		Payload: string(payload),
+	})
+	if err != nil {
+		logger.Verbosef("grill %d: model notice: %v", sid, err)
+	} else {
+		s.publishGrillMessage(msg)
+	}
+	s.publishGrillState(updated)
+	writeJSON(w, http.StatusOK, s.grillSessionView("", updated))
 }
 
 // handleGrillStream streams a session's messages and state changes over SSE (GET
@@ -329,7 +409,7 @@ func (s *Server) handleGrillStream(w http.ResponseWriter, r *http.Request) {
 	defer s.grillEvents.unsubscribe(sub)
 
 	after, _ := parseCursor(r.Header.Get("Last-Event-ID"))
-	_ = writeGrillFrame(w, "state", "", grillSessionView("", sess))
+	_ = writeGrillFrame(w, "state", "", s.grillSessionView("", sess))
 	msgs, err := s.stores.Grill().Messages(sid, after)
 	if err == nil {
 		for _, m := range msgs {
@@ -416,7 +496,7 @@ func (s *Server) publishGrillState(sess hubstore.GrillSession) {
 	s.grillEvents.publish(liveGrillEvent{
 		SessionID: sess.ID,
 		Event:     "state",
-		Payload:   grillSessionView("", sess),
+		Payload:   s.grillSessionView("", sess),
 	})
 }
 
@@ -459,8 +539,10 @@ func parseSID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 
 // grillSessionView maps a stored session onto the API resource. repo names the
 // session's repo for the panel; an empty repo keeps the stored root out of a
-// session-scoped response, where the panel already knows it.
-func grillSessionView(repo string, sess hubstore.GrillSession) GrillSessionView {
+// session-scoped response, where the panel already knows it. A legacy row's empty
+// model resolves through the repo config here, so the panel always sees the model
+// the next turn spawns with; a genuinely-unset one stays empty (Claude CLI default).
+func (s *Server) grillSessionView(repo string, sess hubstore.GrillSession) GrillSessionView {
 	name := repo
 	if name == "" {
 		name = sess.Repo
@@ -472,11 +554,49 @@ func grillSessionView(repo string, sess hubstore.GrillSession) GrillSessionView 
 		IssueTitle:   sess.IssueTitle,
 		State:        sess.State,
 		SessionChain: sess.SessionChain,
-		Model:        sess.Model,
+		Provider:     "claude",
+		Model:        s.grillEffectiveModel(sess),
+		ModelOptions: grillModelOptions(),
 		ParkedReason: sess.ParkedReason,
 		CreatedAt:    sess.CreatedAt,
 		UpdatedAt:    sess.UpdatedAt,
 	}
+}
+
+// grillEffectiveModel is the model the session's next turn spawns with: the stored
+// choice, or a legacy row's repo-config fallback.
+func (s *Server) grillEffectiveModel(sess hubstore.GrillSession) string {
+	if sess.Model != "" {
+		return sess.Model
+	}
+	if r, ok := s.findRepoByRoot(sess.Repo); ok {
+		return s.grillModelDefault(r)
+	}
+	return ""
+}
+
+// grillModelDefault resolves the model a session with no explicit choice runs on:
+// the repo config's GRILL_MODEL, then CLAUDE_MODEL, else empty — the Claude CLI
+// default. It mirrors the runner's legacy fallback chain.
+func (s *Server) grillModelDefault(repo registry.Repo) string {
+	cfg, err := s.grillConfigFor(repo)
+	if err != nil {
+		return ""
+	}
+	if m := strings.TrimSpace(cfg.GrillModel); m != "" {
+		return m
+	}
+	return strings.TrimSpace(cfg.ClaudeModel)
+}
+
+// grillModelOptions is the Claude model catalog the panel's switcher offers.
+func grillModelOptions() []string {
+	for _, meta := range config.ProviderTuningMetas() {
+		if meta.Name == "claude" {
+			return meta.Models
+		}
+	}
+	return nil
 }
 
 func grillMessageView(msg hubstore.GrillMessage) GrillMessageView {
