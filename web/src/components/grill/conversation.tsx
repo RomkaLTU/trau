@@ -6,6 +6,7 @@ import { Composer } from "@/components/grill/composer";
 import { OutcomeReview } from "@/components/grill/outcome-review";
 import { Suggestions } from "@/components/grill/suggestions";
 import { GrillThread } from "@/components/grill/thread";
+import { useOpenConversation } from "@/lib/open-conversation";
 import {
   answerGrill,
   canCompose,
@@ -55,6 +56,7 @@ export function GrillConversation({
   onApplied?: () => void;
   onDiscarded?: () => void;
 }) {
+  useOpenConversation(initial.id);
   const detail = useQuery(grillDetailQueryOptions(initial.id));
   const [state, dispatch] = useReducer(grillReducer, undefined, () => ({
     session: initial,

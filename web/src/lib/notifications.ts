@@ -43,6 +43,17 @@ export function fireStateNotification(item: RecapItem) {
   }
 }
 
+// fireNotification raises one OS notification for a title/body pair, coalescing
+// re-deliveries onto tag so the same needs-attention item never stacks.
+export function fireNotification(title: string, body: string, tag: string) {
+  if (currentPermission() !== 'granted') return
+  try {
+    new Notification(title, { body, tag })
+  } catch {
+    // notifications are advisory; a construction failure must not break the feed
+  }
+}
+
 export interface Notifications {
   supported: boolean
   permission: PermissionState
