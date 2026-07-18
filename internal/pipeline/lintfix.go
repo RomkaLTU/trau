@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/activity"
+	"github.com/RomkaLTU/trau/internal/prompts"
 )
 
 // lintFix runs the project's automated lint/format fixers over the working tree
@@ -47,7 +48,7 @@ func (p *Pipeline) lintFixCmd(ctx context.Context) error {
 
 func (p *Pipeline) lintFixAgent(ctx context.Context, id string) error {
 	p.logf("  ↳ lint-fix: detecting and running the project's autofixers")
-	_, err := p.agentStep(ctx, id, "lintfix", lintFixInstruction(id))
+	_, err := p.agentStep(ctx, id, "lintfix", lintFixInstruction(p.prompts, id))
 	if err != nil && isFatalAgentErr(err) {
 		return err
 	}
@@ -57,10 +58,8 @@ func (p *Pipeline) lintFixAgent(ctx context.Context, id string) error {
 	return nil
 }
 
-func lintFixInstruction(id string) string {
-	return "Before the QA verify step for " + id + ", auto-fix mechanical lint and formatting issues in this repository (already checked out) so verify isn't spent on style noise. " +
-		"Detect the project's OWN automated fixers from its config — package.json/composer.json scripts (lint:fix, format, pint, php-cs-fixer, eslint --fix, prettier --write), a Makefile target (fmt, lint-fix), a pre-commit config, or the language's standard formatter (gofmt/goimports, ruff --fix, rubocop -a) — and run only those, in autofix mode, over the working tree. Prefer scoping the run to the files changed on this branch; in a multi-workspace repo, use the fixers of the workspaces those files live in. " +
-		"Apply the fixes and leave them uncommitted on disk. Do NOT change program logic, do NOT hand-fix anything the tools cannot auto-correct (leave that for verify), and do NOT run the test suite, commit, push, open a PR, or touch the issue tracker. If the project has no automated fixer, make no changes and stop."
+func lintFixInstruction(r prompts.Renderer, id string) string {
+	return r.Render("lint_fix", prompts.LintFixData{ID: id})
 }
 
 func tailLines(s string, n int) []string {

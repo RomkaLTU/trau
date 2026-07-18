@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RomkaLTU/trau/internal/prompts"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
@@ -13,7 +14,7 @@ import (
 // per-ticket cost regresses (M4C-88: cleanup/commit each emitted ~115K output
 // tokens narrating and re-running the suite).
 func TestCleanupInstructionStaysLean(t *testing.T) {
-	got := cleanupInstruction("COD-640", "")
+	got := cleanupInstruction(prompts.Renderer{}, "COD-640", "")
 	mustNotContain(t, "cleanupInstruction", got, "run only the tests", "run the tests")
 	mustContain(t, "cleanupInstruction", got,
 		"do NOT emit a JSON or prose report",
@@ -23,7 +24,7 @@ func TestCleanupInstructionStaysLean(t *testing.T) {
 }
 
 func TestCommitInstructionStaysLean(t *testing.T) {
-	squashed := commitInstruction("COD-640", "", true)
+	squashed := commitInstruction(prompts.Renderer{}, "COD-640", "", true)
 	mustContain(t, "commitInstruction(squash)", squashed,
 		"Verify has already passed",
 		"do NOT run tests",
@@ -31,7 +32,7 @@ func TestCommitInstructionStaysLean(t *testing.T) {
 		"skip splitting entirely",
 	)
 
-	nonSquash := commitInstruction("COD-640", "", false)
+	nonSquash := commitInstruction(prompts.Renderer{}, "COD-640", "", false)
 	mustContain(t, "commitInstruction(merge)", nonSquash,
 		"Verify has already passed",
 		"make ONE commit",
@@ -40,7 +41,7 @@ func TestCommitInstructionStaysLean(t *testing.T) {
 }
 
 func TestHandoffTailSkipsTestRun(t *testing.T) {
-	got := handoffTail("COD-640", "")
+	got := handoffTail(prompts.Renderer{}, "COD-640", "")
 	mustContain(t, "handoffTail", got, "Do NOT run the test suite")
 }
 
@@ -85,6 +86,6 @@ func TestTicketContextNote(t *testing.T) {
 	mustContain(t, "ticketContextNote comments", withComments, "Comments", "ada", "watch the timeout")
 
 	// The build instruction carries the injected block through to the agent.
-	build := buildInstruction("TMS-1121", "feature/x", selfSelectSkillsNote, "", got)
+	build := buildInstruction(prompts.Renderer{}, "TMS-1121", "feature/x", skillsPrompt(prompts.Renderer{}, nil, nil), "", got)
 	mustContain(t, "buildInstruction", build, "Model gateway", "stop after implementation.")
 }

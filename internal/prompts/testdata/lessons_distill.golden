@@ -1,0 +1,5 @@
+A repair experiment for COD-123 just ended (fixed; failure type: test). Evidence:
+evidence line one
+evidence line two
+
+Distill the single most reusable lesson a FUTURE run on similar work should remember to avoid or fix this faster. One or two sentences, concrete and general — no ticket-specific identifiers, file paths, or IDs. Also give 1-4 short lowercase keyword tags. Write ONLY this JSON to exactly /tmp/lesson-COD-123.json (overwrite if present) and nowhere else: {"lesson":"<one or two sentence durable takeaway>","tags":["<short-keyword>","..."]}. Do not change any code, run tests, commit, push, or open a PR.

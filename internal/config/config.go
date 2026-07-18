@@ -26,18 +26,20 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/RomkaLTU/trau/internal/prompts"
 )
 
 // Preamble is prepended to EVERY headless prompt so no phase blocks on a
 // question — there is no human to answer one.
-const Preamble = "[Unattended run] You are running headless inside an automated loop — no human is watching and no input is possible. Never call AskUserQuestion or wait for a reply. When a choice arises, take the most reasonable / recommended default, proceed, and note the assumption in one line. If you truly cannot proceed safely, stop and say why. Do ALL work inline in THIS single agent: the Agent and Workflow tools (subagent spawning and multi-agent fan-out) are intentionally disabled for this loop, because each phase already runs as its own isolated process and fanning out only multiplies token cost without adding any isolation. Do not try to spawn subagents or parallel workers; if you genuinely believe one is unavoidable, stop and explain why in your final summary instead of working around it. (The TaskCreate/TaskUpdate todo-list tools are fine — they do not spawn anything.)"
+var Preamble = prompts.Render("preamble", nil)
 
 // ExplorePreamble replaces Preamble for a phase whose tool policy permits the
 // Agent tool — i.e. read-only exploration subagents are allowed (see
 // ExploreSubagents / PhaseDisallowedTools). It invites the Explore agent type for
 // parallel read-only investigation while still forbidding write-capable fan-out,
 // so the preamble never contradicts the phase's effective disallowed-tools set.
-const ExplorePreamble = "[Unattended run] You are running headless inside an automated loop — no human is watching and no input is possible. Never call AskUserQuestion or wait for a reply. When a choice arises, take the most reasonable / recommended default, proceed, and note the assumption in one line. If you truly cannot proceed safely, stop and say why. You may dispatch read-only exploration subagents (the Explore agent type) to investigate the codebase in parallel and keep your own context lean — but do the actual implementation and every write inline in THIS agent. Multi-agent fan-out (the Workflow tool) and write-capable subagents stay disabled: they multiply token cost and let unobserved workers mutate the tree. (The TaskCreate/TaskUpdate todo-list tools are fine — they do not spawn anything.)"
+var ExplorePreamble = prompts.Render("explore_preamble", nil)
 
 // Config is the resolved loop configuration. Field defaults and names track the
 // trau.ini knobs documented in trau.ini.example.
@@ -62,6 +64,12 @@ type Config struct {
 	BaseBranch string
 	Remote     string
 	RepoRoot   string
+
+	// PromptOverrides is the repo's stored prompt-override map, fetched from the
+	// hub at startup for the preambles baked into the agent backends. Nil keeps
+	// the built-in bodies. The pipeline's phase prompts snapshot their own map at
+	// every ticket-run start instead.
+	PromptOverrides map[string]string
 
 	Provider        string
 	TrackerProvider string
@@ -1101,11 +1109,13 @@ func (c Config) PhaseDisallowedTools(phase string) string {
 // its effective tool policy: the Explore-permitting variant when the phase's Claude
 // disallowed-tools set leaves the Agent tool enabled, otherwise the standard
 // fan-out-disabled text. Non-Claude phases always take the standard preamble.
+// Stored overrides in PromptOverrides replace either body like any other prompt.
 func (c Config) PhasePreamble(provider, phase string) string {
+	r := prompts.Renderer{Overrides: c.PromptOverrides}
 	if provider == "claude" && exploreAllowed(c.PhaseDisallowedTools(phase)) {
-		return ExplorePreamble
+		return r.Render("explore_preamble", nil)
 	}
-	return Preamble
+	return r.Render("preamble", nil)
 }
 
 func dropTool(list, tool string) string {

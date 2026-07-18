@@ -685,6 +685,34 @@ func (c *Client) DeletePhaseLogs(ctx context.Context, repo, ticket string) error
 	return err
 }
 
+// resolvedPromptsBody decodes the repo prompt catalog down to what the
+// pipeline needs: each prompt's effective scope and body.
+type resolvedPromptsBody struct {
+	Prompts []struct {
+		Name          string `json:"name"`
+		Effective     string `json:"effective"`
+		EffectiveBody string `json:"effective_body"`
+	} `json:"prompts"`
+}
+
+// ResolvedPrompts reads repo's effective prompt set from the hub and returns
+// the overridden entries as a name → body map (repo > global precedence
+// resolved hub-side). Prompts still on their built-in default are omitted, so
+// the caller renders those locally.
+func (c *Client) ResolvedPrompts(ctx context.Context, repo string) (map[string]string, error) {
+	var body resolvedPromptsBody
+	if err := c.do(ctx, http.MethodGet, c.repoPath(repo, "prompts"), nil, &body); err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, p := range body.Prompts {
+		if p.Effective != "default" {
+			out[p.Name] = p.EffectiveBody
+		}
+	}
+	return out, nil
+}
+
 // InternalIssue fetches a single internal issue, returning ErrNotFound when the
 // hub has no internal issue with that identifier.
 func (c *Client) InternalIssue(ctx context.Context, repo, id string) (Issue, error) {

@@ -84,6 +84,38 @@ func TestPhaseDisallowedToolsOverrideWins(t *testing.T) {
 	}
 }
 
+// TestPhasePreambleOverrides checks stored prompt overrides replace either preamble
+// body on their matching branch, and a nil override map renders the built-in
+// defaults byte-identically.
+func TestPhasePreambleOverrides(t *testing.T) {
+	c := Defaults()
+	c.ExploreSubagents = true
+	c.PromptOverrides = map[string]string{
+		"preamble":         "standard override",
+		"explore_preamble": "explore override",
+	}
+
+	if got := c.PhasePreamble("claude", "commit"); got != "standard override" {
+		t.Errorf("standard branch = %q, want the preamble override", got)
+	}
+	if got := c.PhasePreamble("claude", "build"); got != "explore override" {
+		t.Errorf("explore branch = %q, want the explore_preamble override", got)
+	}
+
+	c.PromptOverrides = map[string]string{"explore_preamble": "explore override"}
+	if got := c.PhasePreamble("claude", "commit"); got != Preamble {
+		t.Errorf("partial overrides leaked into the standard branch: %q", got)
+	}
+
+	c.PromptOverrides = nil
+	if got := c.PhasePreamble("claude", "commit"); got != Preamble {
+		t.Errorf("nil overrides standard branch = %q, want built-in Preamble", got)
+	}
+	if got := c.PhasePreamble("claude", "build"); got != ExplorePreamble {
+		t.Errorf("nil overrides explore branch = %q, want built-in ExplorePreamble", got)
+	}
+}
+
 // TestPreambleMatchesToolPolicy is the acceptance invariant: the preamble a phase is
 // sent never contradicts its effective disallowed-tools — Explore variant exactly
 // when the Agent tool is left enabled.

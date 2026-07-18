@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/hubclient"
+	"github.com/RomkaLTU/trau/internal/prompts"
 )
 
 // LessonStore is the pipeline's seam for the durable per-repo lessons ledger. Verify
@@ -216,9 +217,15 @@ func (p *Pipeline) recordLesson(ctx context.Context, id string, v verdict, attem
 
 // distillInstruction asks an isolated agent to distill the single most reusable,
 // ticket-agnostic lesson from a finished repair experiment and write it as JSON.
-func distillInstruction(id, result, ftype, evidence, path string) string {
-	return "A repair experiment for " + id + " just ended (" + result + "; failure type: " + ftype + "). Evidence:\n" + evidence +
-		"\n\nDistill the single most reusable lesson a FUTURE run on similar work should remember to avoid or fix this faster. One or two sentences, concrete and general — no ticket-specific identifiers, file paths, or IDs. Also give 1-4 short lowercase keyword tags. Write ONLY this JSON to exactly " + path + " (overwrite if present) and nowhere else: " + lessonSchema + ". Do not change any code, run tests, commit, push, or open a PR."
+func distillInstruction(r prompts.Renderer, id, result, ftype, evidence, path string) string {
+	return r.Render("lessons_distill", prompts.LessonsDistillData{
+		ID:          id,
+		Result:      result,
+		FailureType: ftype,
+		Evidence:    evidence,
+		Path:        path,
+		Schema:      lessonSchema,
+	})
 }
 
 // distillLesson runs the opt-in distillation agent and returns its richer lesson
@@ -233,7 +240,7 @@ func (p *Pipeline) distillLesson(ctx context.Context, id string, l lesson) (stri
 	if strings.TrimSpace(evidence) == "" {
 		evidence = l.Lesson
 	}
-	if _, err := p.agentPhaseOn(ctx, id, "distill", distillInstruction(id, l.Result, l.FailureType, evidence, path), p.Runner); err != nil {
+	if _, err := p.agentPhaseOn(ctx, id, "distill", distillInstruction(p.prompts, id, l.Result, l.FailureType, evidence, path), p.Runner); err != nil {
 		return "", nil, false
 	}
 	data, err := os.ReadFile(path)

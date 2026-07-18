@@ -32,6 +32,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/prompts"
 	"github.com/RomkaLTU/trau/internal/sanitize"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -400,6 +401,13 @@ type Pipeline struct {
 	// emitted here as state_change events; nil in modes that keep no durable log.
 	Events *event.Log
 
+	// FetchPrompts returns the repo's stored prompt-override map (the hub's
+	// resolved prompts read at the composition root). It is called once at
+	// ticket-run start; a failure logs one warning and the run proceeds on
+	// built-in defaults — prompt resolution never blocks a run (ADR 0008).
+	// Nil disables overrides.
+	FetchPrompts func(ctx context.Context) (map[string]string, error)
+
 	// OnPhase, when set, is called each time a ticket enters a checkpoint phase,
 	// carrying the ticket and the phase just written (state.Building, …). The
 	// composition root wires it to the instance registry so the hub sees a
@@ -432,6 +440,12 @@ type Pipeline struct {
 	// post-build no-skills warning.
 	buildProvider string
 	buildSkills   []string
+
+	// prompts is the ticket run's prompt renderer: the override snapshot
+	// fetched at run start layered over the built-in defaults. Edits made
+	// mid-run apply from the next run, never mid-ticket. The zero value
+	// renders defaults, so entry points that never fetched still work.
+	prompts prompts.Renderer
 
 	// OwnedProject is the Linear project this repo is bound to (config PROJECT).
 	// When set, Resume refuses any ticket whose project differs — before any
@@ -524,6 +538,7 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 
 		p.setTitle(p.State.Get(id, "TITLE"))
 	}
+	p.loadPrompts(ctx, id)
 	fi := state.Idx(from)
 
 	if from != "" {
@@ -548,6 +563,30 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 	}
 
 	return p.classifyPhaseErr(ctx, id, p.runPhases(ctx, id, fi))
+}
+
+// loadPrompts snapshots the repo's stored prompt overrides for this ticket run.
+// A fetch failure logs one warning and leaves the built-in defaults in place —
+// the hub being down never blocks prompt resolution. An override that later
+// fails to render falls back to its default and is flagged like the skills
+// warning: on the console and as a durable event naming the prompt.
+func (p *Pipeline) loadPrompts(ctx context.Context, id string) {
+	p.prompts = prompts.Renderer{OnOverrideError: func(name string, err error) {
+		msg := fmt.Sprintf("prompt override %q failed to render — using the built-in default: %v", name, err)
+		p.logf("  ⚠ %s", msg)
+		if p.Events != nil {
+			p.Events.Emit(event.KindPromptOverrideSkipped, "", msg, map[string]any{"ticket": id, "prompt": name})
+		}
+	}}
+	if p.FetchPrompts == nil {
+		return
+	}
+	overrides, err := p.FetchPrompts(ctx)
+	if err != nil {
+		p.logf("  ⚠ prompt overrides unavailable — using built-in defaults: %v", err)
+		return
+	}
+	p.prompts.Overrides = overrides
 }
 
 // reopenedInTracker reports whether a merged ticket should rebuild: trau saw the
@@ -931,8 +970,8 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 		note = resumeNote
 	}
 	note += buildLessonsNote(p.recallLessons(p.lessonQuery(id)))
-	skillsNote := skillsPrompt(agent.InstalledSkillNames(p.RepoRoot), p.RequiredSkills)
-	out, err := p.agentStep(ctx, id, "build", buildInstruction(id, branch, skillsNote, note, p.ticketContext(ctx, id)))
+	skillsNote := skillsPrompt(p.prompts, agent.InstalledSkillNames(p.RepoRoot), p.RequiredSkills)
+	out, err := p.agentStep(ctx, id, "build", buildInstruction(p.prompts, id, branch, skillsNote, note, p.ticketContext(ctx, id)))
 	if err != nil {
 		return err
 	}
@@ -1170,7 +1209,7 @@ func (p *Pipeline) Handoff(ctx context.Context, id string) error {
 // lintfix→cleanup chain has also finished.
 func (p *Pipeline) handoffWork(ctx context.Context, id string) error {
 	p.setActivity(id, activity.Handoff, "")
-	if _, err := p.agentStep(ctx, id, "handoff", handoffTail(id, p.ticketContext(ctx, id))); err != nil {
+	if _, err := p.agentStep(ctx, id, "handoff", handoffTail(p.prompts, id, p.ticketContext(ctx, id))); err != nil {
 		return err
 	}
 	if fi, err := os.Stat(handoffPath(id)); err != nil || fi.Size() == 0 {
@@ -1242,7 +1281,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	fi, err := os.Stat(handoff)
 	briefPresent := err == nil && fi.Size() > 0
 	if !briefPresent && !p.skipHandoff(ctx, id) {
-		if _, err := p.agentStep(ctx, id, "handoff", handoffTail(id, p.ticketContext(ctx, id))); err != nil {
+		if _, err := p.agentStep(ctx, id, "handoff", handoffTail(p.prompts, id, p.ticketContext(ctx, id))); err != nil {
 			return err
 		}
 		p.persistHandoff(id)
@@ -1315,7 +1354,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				p.logf("  ↳ %s", fl)
 			}
 			p.setActivity(id, activity.Repair, fmt.Sprintf("repair%d", repairAttempt))
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
 				return err
 			}
 			continue
@@ -1328,7 +1367,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				p.logf("  ↳ %s", fl)
 			}
 			p.setActivity(id, activity.Bugfix, fmt.Sprintf("bugfix%d", bugfixAttempt))
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
 				return err
 			}
 			continue
@@ -1468,7 +1507,7 @@ func (p *Pipeline) commitSlice(ctx context.Context, id string) error {
 		hookNote = " A templated commit was just rejected by this repository's hooks (" + sanitize.FeedLine(rejected.Error()) + "). The changes are still staged: read the repo's commit conventions (commit hooks, lint config, recent git log) and write a message they accept."
 	}
 	rubricRef, _ := p.activeRubric(id)
-	_, err := p.agentStep(ctx, id, "commit", commitInstruction(id, commitRubricNote(rubricRef), p.MergeMethod == "squash")+hookNote)
+	_, err := p.agentStep(ctx, id, "commit", commitInstruction(p.prompts, id, commitRubricNote(rubricRef), p.MergeMethod == "squash")+hookNote)
 	return err
 }
 
@@ -1654,7 +1693,7 @@ func (p *Pipeline) syncBranchWithBase(ctx context.Context, id, branch, base, lab
 		maxAttempts = 1
 	}
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if _, err := p.agentStep(ctx, id, fmt.Sprintf("%s%d", label, attempt), resolveConflictsInstruction(id, base, branch)); err != nil {
+		if _, err := p.agentStep(ctx, id, fmt.Sprintf("%s%d", label, attempt), resolveConflictsInstruction(p.prompts, id, base, branch)); err != nil {
 			return false, err
 		}
 		if unmerged, _ := p.Git.Unmerged(ctx); strings.TrimSpace(unmerged) == "" {
@@ -1841,7 +1880,7 @@ func (p *Pipeline) pushDeliverable(ctx context.Context, id, ref string) error {
 		repairs++
 		p.logf("  ⚠ push rejected by a pre-push gate — repair attempt %d/%d", repairs, p.MaxRepairs)
 		notesRef, _ := p.activeBuildNotes(id)
-		if _, err := p.agentStep(ctx, id, fmt.Sprintf("push-repair%d", repairs), pushRepairInstruction(id, err.Error(), buildNotesNote(notesRef))); err != nil {
+		if _, err := p.agentStep(ctx, id, fmt.Sprintf("push-repair%d", repairs), pushRepairInstruction(p.prompts, id, err.Error(), buildNotesNote(notesRef))); err != nil {
 			return err
 		}
 	}
@@ -2419,30 +2458,17 @@ func (p *Pipeline) setTitle(title string) {
 
 const resumeNote = " A previous attempt may have left partial work on this branch; continue from it rather than starting over."
 
-const codeStyleNote = " Write it the way a senior engineer on this project would: clean, idiomatic, and matching the surrounding file's conventions. Do NOT add explanatory or narrating comments — no comment that restates what the code does, no section banners, no ticket IDs in comments, no multi-line 'why' essays; let clear names carry the meaning and keep a comment only where a genuinely non-obvious decision truly needs one, matching the file's existing comment density rather than exceeding it. Skip the AI tells: no over-defensive guards for cases that can't occur, no redundant error/nil checks the codebase doesn't already use, no belt-and-suspenders boilerplate a human wouldn't bother to write."
-
-// selfSelectSkillsNote is the trust-based instruction used when the repo has no
-// installed skills to name. Claude Code stopped honoring this generic self-
-// selection in 2.1.202, which is why a skill-equipped repo names its skills
-// explicitly instead (see skillsPrompt).
-const selfSelectSkillsNote = "This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Infer the project's stack from its manifests and configs (package.json, composer.json, go.mod, pyproject.toml, and the like) rather than assuming any framework; in a multi-workspace repo (monorepo), read the manifests of the workspaces the ticket touches, not only the root's. Always include the project's test skill when one exists, and add the domain skills matching the areas the ticket actually touches."
-
-// skillsPrompt composes the build-prompt sentence that tells the agent which
-// installed skills to load. With no installed skills it returns the generic
-// self-selection note unchanged. With skills present it names them, and when
-// required names any of those, instructs loading exactly those first. Required
-// names that are not installed are dropped here (they can't be loaded) and
-// surfaced by the loop-start warning instead.
-func skillsPrompt(installed, required []string) string {
-	if len(installed) == 0 {
-		return selfSelectSkillsNote
-	}
-	have := "This is an unattended run: this repo has skills: " + strings.Join(installed, ", ") + ". "
-	req := intersect(required, installed)
-	if len(req) > 0 {
-		return have + "Load these required skills with the Skill tool before implementing: " + strings.Join(req, ", ") + "; then load any of the remaining skills relevant to this ticket. Do NOT pause to ask which skills to load."
-	}
-	return have + "Load the ones relevant to this ticket with the Skill tool before implementing — do NOT pause to ask which skills to load."
+// skillsPrompt renders the build-prompt sentence that tells the agent which
+// installed skills to load. With no installed skills the template falls back
+// to its generic self-selection wording (Claude Code stopped honoring generic
+// self-selection in 2.1.202, which is why a skill-equipped repo names its
+// skills explicitly). Required names that are not installed are dropped here
+// (they can't be loaded) and surfaced by the loop-start warning instead.
+func skillsPrompt(r prompts.Renderer, installed, required []string) string {
+	return r.Render("skills", prompts.SkillsData{
+		Installed: installed,
+		Required:  intersect(required, installed),
+	})
 }
 
 func intersect(want, have []string) []string {
@@ -2459,8 +2485,16 @@ func intersect(want, have []string) []string {
 	return out
 }
 
-func buildInstruction(id, branch, skillsNote, note, ticketCtx string) string {
-	return "Implement " + id + " on branch " + branch + " (already checked out). " + skillsNote + note + " Implement the ticket fully and run only the tests relevant to this slice (the new or changed test files for this ticket) — not the entire suite. In a multi-workspace repo (monorepo), work inside the workspace(s) the ticket concerns and use their own commands, scoped to those workspaces, rather than repo-wide runs." + codeStyleNote + " Do not commit, push, or open a PR — stop after implementation. If the ticket clearly belongs to a DIFFERENT repository or codebase — the files, directories, or stack it references do not exist here and are not something this ticket asks you to create (in a multi-workspace repo, check every workspace before concluding this: a ticket for any of its apps or packages belongs here) — do NOT implement anything and do NOT modify any files; end your reply with a final line 'REFUSED: <one short sentence naming what the ticket actually targets>'." + buildNotesInstruction(id) + ticketCtx
+func buildInstruction(r prompts.Renderer, id, branch, skillsNote, note, ticketCtx string) string {
+	return r.Render("build", prompts.BuildData{
+		ID:            id,
+		Branch:        branch,
+		SkillsNote:    skillsNote,
+		Note:          note,
+		CodeStyle:     r.Render("code_style", nil),
+		BuildNotes:    buildNotesInstruction(r, id),
+		TicketContext: ticketCtx,
+	})
 }
 
 // ticketContext returns a prompt block carrying the ticket's title and full
@@ -2538,8 +2572,13 @@ func handoffPath(id string) string { return "/tmp/handoff-" + id + ".md" }
 
 func verifyPath(id string) string { return "/tmp/verify-" + id + ".json" }
 
-func handoffTail(id, ticketCtx string) string {
-	return "Write a QA brief for " + id + ": the concrete, checkable behaviors a manual QA tester must verify for this slice, in priority order. Don't duplicate content already in the ticket, PRD, or diff — focus on what to check and how. Do NOT run the test suite, execute the code, or verify behavior yourself — a separate verify step does that; just write the brief. Redact any secrets. Save it to exactly " + handoffPath(id) + " (overwrite if present) and nowhere else." + rubricInstruction(id) + ticketCtx
+func handoffTail(r prompts.Renderer, id, ticketCtx string) string {
+	return r.Render("handoff", prompts.HandoffData{
+		ID:            id,
+		Handoff:       handoffPath(id),
+		Rubric:        rubricInstruction(r, id),
+		TicketContext: ticketCtx,
+	})
 }
 
 // worktreeLister lists the working-tree changed files against a base branch.
@@ -2590,26 +2629,21 @@ func browserNote(mode, appURL string) string {
 // handoff agent) it derives the checkable behaviors itself from the injected ticket
 // content and the slice's diff. The verdict shape and pass/fail gating are identical
 // either way.
-func verifyTail(id, handoff, verdict, note, checksFragment, rubricNote, lessonsNote, ticketCtx string) string {
-	against := "the QA brief at " + handoff
-	sources := "the code on disk and the brief"
-	behaviors := "For each behavior the brief lists, confirm it actually holds."
-	failWhen := "any behavior in the brief does not work"
-	if handoff == "" {
-		against = "the ticket below and this slice's diff against the base branch"
-		sources = "the code on disk and the ticket"
-		behaviors = "No separate QA brief was written for this tiny slice: derive the concrete, checkable behaviors yourself from the ticket and the diff, then confirm each actually holds."
-		failWhen = "any behavior the ticket requires does not work"
-	}
-	return "Cold, adversarial QA verification of " + id + " against " + against + ". Treat " + sources + " as the only sources of truth; your job is to find what does NOT work." + rubricNote + lessonsNote + " Run only the tests relevant to this slice (the new or changed test files for this ticket) using the project's test runner (in a multi-workspace repo, the affected workspace's own runner) — not the whole suite. " + behaviors + " " + note + " Distinguish defects in this slice's own code from pre-existing or out-of-scope issues. When finished, write a JSON verdict to exactly " + verdict + ": {\"pass\": true|false, \"summary\": \"one line\", \"failures\": [\"...\"]}. Set pass=false if any relevant test fails or " + failWhen + "; failures lists each concrete problem (empty when pass is true)." + checksFragment + " Do not commit, push, or open a PR." + ticketCtx
+func verifyTail(r prompts.Renderer, id, handoff, verdict, note, checksFragment, rubricNote, lessonsNote, ticketCtx string) string {
+	return r.Render("verify", prompts.VerifyData{
+		ID:             id,
+		Handoff:        handoff,
+		Verdict:        verdict,
+		Note:           note,
+		ChecksFragment: checksFragment,
+		RubricNote:     rubricNote,
+		LessonsNote:    lessonsNote,
+		TicketContext:  ticketCtx,
+	})
 }
 
-func commitInstruction(id, rubricNote string, squash bool) string {
-	split := "For a small, single-purpose change (a bug fix plus its tests, or ≤~5 files) make ONE commit; split into atomic, dependency-ordered commits only for genuinely independent concerns."
-	if squash {
-		split += " The merge method is squash, so skip splitting entirely and make ONE commit."
-	}
-	return "Commit the implementation for " + id + ". Verify has already passed on this working tree — do NOT run tests, re-verify behavior, or re-analyze the diff for correctness; just stage and commit, and do NOT emit a status report (your final message is only the commit subject line(s)). Stage and commit ONLY files that are part of " + id + "; never commit unrelated untracked files or tooling (e.g. scripts/, *.env)." + rubricNote + " " + split + " Use Conventional Commits: '<type>(scope): <subject>' (type ∈ feat|fix|refactor|docs|style|test|chore), imperative mood, subject under 72 characters, with a 'Refs: " + id + "' trailer; match the project's existing git-log style if it differs. The commit message must contain ONLY the subject and body: do NOT add any 'Co-authored-by:'/'Co-Authored-By:' trailer, a '🤖 Generated with Claude Code' line, or any mention of AI/assistant authorship, and remove them if your environment adds them by default."
+func commitInstruction(r prompts.Renderer, id, rubricNote string, squash bool) string {
+	return r.Render("commit", prompts.CommitData{ID: id, RubricNote: rubricNote, Squash: squash})
 }
 
 // deterministicCommitMessage builds the templated Conventional Commit for a squash
@@ -2691,22 +2725,27 @@ func commitSubject(title string) string {
 	return strings.TrimRight(cut, " ")
 }
 
-func repairInstruction(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) string {
-	brief := "QA brief: " + handoff + ". "
-	if handoff == "" {
-		brief = ""
-	}
-	return id + " verification FAILED. QA verdict file: " + verdict + ". " + brief + "Failures:\n" +
-		fails + "\n\nYou are on branch " + branch + " with this slice's implementation uncommitted." + rubricNote + lessonsNote + notesNote + " If this is a DEFECT IN THIS SLICE'S OWN code, find the root cause and fix it with minimal, targeted changes, then run the relevant tests to confirm. If the failure is actually a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — change nothing and say so clearly." + codeStyleNote + " Do not commit, push, or open a PR." + ticketCtx
+func repairInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) string {
+	return r.Render("repair", repairData(r, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx))
 }
 
-func bugfixInstruction(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) string {
-	brief := "QA brief: " + handoff + ". "
-	if handoff == "" {
-		brief = ""
+func bugfixInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) string {
+	return r.Render("bugfix", repairData(r, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx))
+}
+
+func repairData(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) prompts.RepairData {
+	return prompts.RepairData{
+		ID:            id,
+		Verdict:       verdict,
+		Handoff:       handoff,
+		Branch:        branch,
+		Fails:         fails,
+		RubricNote:    rubricNote,
+		LessonsNote:   lessonsNote,
+		NotesNote:     notesNote,
+		CodeStyle:     r.Render("code_style", nil),
+		TicketContext: ticketCtx,
 	}
-	return id + " verification FAILED after initial quick repairs. QA verdict file: " + verdict + ". " + brief + "Failures:\n" +
-		fails + "\n\nYou are on branch " + branch + " with this slice's implementation uncommitted." + rubricNote + lessonsNote + notesNote + " This is a comprehensive bug-fix pass: read the full verdict, identify every failure that is a DEFECT IN THIS SLICE'S OWN code, and fix ALL of them with minimal, targeted changes. Do not stop after the first fix. Run the relevant tests (and browser checks if applicable) to confirm every failure is resolved before finishing. If a failure is a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — note it clearly." + codeStyleNote + " Do not commit, push, or open a PR." + ticketCtx
 }
 
 // pushRepairInstruction hands the verbatim pre-push rejection to a repair agent.
@@ -2714,8 +2753,13 @@ func bugfixInstruction(id, verdict, handoff, branch, fails, rubricNote, lessonsN
 // problem AND fold the fix into what gets pushed (amend or a follow-up commit); the
 // loop re-pushes after it finishes. The output is passed raw and unparsed — the
 // agent reads the hook's own report rather than trau guessing at its format.
-func pushRepairInstruction(id, hookOutput, notesNote string) string {
-	return id + "'s commit is on the feature branch but `git push` was REJECTED by a local pre-push hook — a quality gate the repo runs before allowing a push (tests, linters, static analysis, etc.). This is deterministic feedback about the committed code, NOT an infra error. Rejection output:\n\n" + hookOutput + "\n\nRead the output, find the root cause in THIS slice's code, and fix it with minimal, targeted changes. Then COMMIT the fix so it becomes part of what gets pushed — amend the existing commit or add a follow-up commit, matching the repo's commit style. If the failure is a pre-existing or out-of-scope problem NOT caused by this slice, do NOT hack around it — say so clearly and change nothing." + notesNote + codeStyleNote + " Do NOT run `git push` or open a PR yourself — the loop re-pushes once you finish."
+func pushRepairInstruction(r prompts.Renderer, id, hookOutput, notesNote string) string {
+	return r.Render("push_repair", prompts.PushRepairData{
+		ID:         id,
+		HookOutput: hookOutput,
+		NotesNote:  notesNote,
+		CodeStyle:  r.Render("code_style", nil),
+	})
 }
 
 type verdict struct {
@@ -2813,7 +2857,7 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 	}
 	verdictPath := verifyPath(id)
 	_ = os.Remove(verdictPath)
-	prompt := verifyTail(id, handoff, verdictPath, note, checksFragment, rubricNote, lessonsNote, ticketCtx)
+	prompt := verifyTail(p.prompts, id, handoff, verdictPath, note, checksFragment, rubricNote, lessonsNote, ticketCtx)
 	_, agentErr := p.agentStep(ctx, id, label, prompt)
 	// A provider pause (rate/usage limit) or budget give-up must propagate, not be
 	// recorded as a verify failure — otherwise a transient 429 burns repair/bugfix
@@ -2858,7 +2902,7 @@ func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, check
 		memberPath := verifyMemberPath(id, m.Name)
 		_ = os.Remove(memberPath)
 		memberLabel := label + "-" + m.Name
-		prompt := verifyTail(id, handoff, memberPath, note, checksFragment, rubricNote, lessonsNote, ticketCtx)
+		prompt := verifyTail(p.prompts, id, handoff, memberPath, note, checksFragment, rubricNote, lessonsNote, ticketCtx)
 		_, agentErr := p.agentStepOn(ctx, id, memberLabel, prompt, m.Runner)
 		if agentErr != nil && isFatalAgentErr(agentErr) {
 			return agentErr

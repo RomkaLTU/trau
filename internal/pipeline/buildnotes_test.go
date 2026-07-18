@@ -5,6 +5,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/RomkaLTU/trau/internal/prompts"
 )
 
 const notesMarker = "The build agent left notes on this slice at"
@@ -144,16 +146,16 @@ func TestBuildNotesInjectedIntoMechanicalPhasesOnly(t *testing.T) {
 		}
 	}
 
-	if got := handoffTail(id, ""); strings.Contains(got, buildNotesPath(id)) {
+	if got := handoffTail(prompts.Renderer{}, id, ""); strings.Contains(got, buildNotesPath(id)) {
 		t.Errorf("handoff prompt leaked the build notes:\n%s", got)
 	}
-	if got := verifyTail(id, handoffPath(id), verifyPath(id), "", "", "", "", ""); strings.Contains(got, buildNotesPath(id)) {
+	if got := verifyTail(prompts.Renderer{}, id, handoffPath(id), verifyPath(id), "", "", "", "", ""); strings.Contains(got, buildNotesPath(id)) {
 		t.Errorf("verify prompt leaked the build notes:\n%s", got)
 	}
 }
 
 func TestBuildInstructionRequestsRedactedBestEffortNotes(t *testing.T) {
-	got := buildInstruction("COD-802", "feature/x", "", "", "")
+	got := buildInstruction(prompts.Renderer{}, "COD-802", "feature/x", "", "", "")
 	mustContain(t, "buildInstruction", got,
 		buildNotesPath("COD-802"),
 		"redact any secrets",
@@ -165,9 +167,9 @@ type namedPrompt struct{ name, got string }
 
 func mechanicalPrompts(id, note string) []namedPrompt {
 	return []namedPrompt{
-		{"cleanup", cleanupInstruction(id, note)},
-		{"repair", repairInstruction(id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", note, "")},
-		{"bugfix", bugfixInstruction(id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", note, "")},
-		{"push-repair", pushRepairInstruction(id, "hook said no", note)},
+		{"cleanup", cleanupInstruction(prompts.Renderer{}, id, note)},
+		{"repair", repairInstruction(prompts.Renderer{}, id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", note, "")},
+		{"bugfix", bugfixInstruction(prompts.Renderer{}, id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", note, "")},
+		{"push-repair", pushRepairInstruction(prompts.Renderer{}, id, "hook said no", note)},
 	}
 }

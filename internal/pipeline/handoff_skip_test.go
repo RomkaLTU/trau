@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/prompts"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
@@ -68,7 +69,7 @@ func (t detailTracker) IssueDetail(context.Context, string) (tracker.IssueDetail
 func TestVerifyTailModes(t *testing.T) {
 	const schema = `"pass": true|false`
 
-	brief := verifyTail("COD-1", handoffPath("COD-1"), verifyPath("COD-1"), "", "", "", "", "")
+	brief := verifyTail(prompts.Renderer{}, "COD-1", handoffPath("COD-1"), verifyPath("COD-1"), "", "", "", "", "")
 	if !strings.Contains(brief, "the QA brief at "+handoffPath("COD-1")) {
 		t.Errorf("brief-mode prompt does not point at the brief:\n%s", brief)
 	}
@@ -80,7 +81,7 @@ func TestVerifyTailModes(t *testing.T) {
 	}
 
 	ticketCtx := ticketContextNote("COD-1", tracker.IssueDetail{Title: "Tiny slice", Description: "Do the small thing."})
-	derive := verifyTail("COD-1", "", verifyPath("COD-1"), "", "", "", "", ticketCtx)
+	derive := verifyTail(prompts.Renderer{}, "COD-1", "", verifyPath("COD-1"), "", "", "", "", ticketCtx)
 	if strings.Contains(derive, "QA brief at") || strings.Contains(derive, "/tmp/handoff") {
 		t.Errorf("derive-mode prompt dangles a brief reference:\n%s", derive)
 	}
@@ -105,10 +106,10 @@ func TestRepairBugfixInstructionModes(t *testing.T) {
 		build func(handoff, ticketCtx string) string
 	}{
 		{name: "repair", build: func(h, tc string) string {
-			return repairInstruction("COD-1", verifyPath("COD-1"), h, "feature/x", "boom", "", "", "", tc)
+			return repairInstruction(prompts.Renderer{}, "COD-1", verifyPath("COD-1"), h, "feature/x", "boom", "", "", "", tc)
 		}},
 		{name: "bugfix", build: func(h, tc string) string {
-			return bugfixInstruction("COD-1", verifyPath("COD-1"), h, "feature/x", "boom", "", "", "", tc)
+			return bugfixInstruction(prompts.Renderer{}, "COD-1", verifyPath("COD-1"), h, "feature/x", "boom", "", "", "", tc)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

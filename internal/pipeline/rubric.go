@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+
+	"github.com/RomkaLTU/trau/internal/prompts"
 )
 
 // rubric is the structured acceptance contract for a ticket: the handoff phase
@@ -29,10 +31,8 @@ func rubricPath(id string) string { return "/tmp/rubric-" + id + ".json" }
 // rubricInstruction is appended to the handoff prompt: it asks the same agent
 // that wrote the QA brief to also emit the structured rubric, populated from the
 // ticket rather than invented, to exactly rubricPath(id).
-func rubricInstruction(id string) string {
-	return " Also distill a structured acceptance rubric for " + id + " as JSON to exactly " + rubricPath(id) +
-		" (overwrite if present) and nowhere else, with this exact shape: " + rubricSchema +
-		". Populate acceptance_criteria and non_goals from the ticket/PRD (what must hold, and what is explicitly out of scope); required_tests with the concrete test files or commands that must pass for this slice; ui_paths with the browser/UI routes to exercise (omit or leave empty for backend-only slices); and fail_conditions with the explicit conditions that must make verification fail. Keep every entry a single concrete, checkable line; do not duplicate the prose brief."
+func rubricInstruction(r prompts.Renderer, id string) string {
+	return r.Render("rubric", prompts.RubricData{ID: id, Path: rubricPath(id), Schema: rubricSchema})
 }
 
 // readRubric parses the rubric at path. ok is false when the file is absent or
