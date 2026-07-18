@@ -67,7 +67,7 @@ function NotificationCard({
     <button
       type="button"
       onClick={onOpen}
-      className="flex w-full flex-col gap-1.5 rounded-lg border border-border bg-popover px-4 py-3 text-left shadow-lg transition-colors hover:bg-accent"
+      className="flex w-[356px] max-w-[calc(100vw-2rem)] flex-col gap-1.5 rounded-lg border border-border bg-popover px-4 py-3 text-left shadow-lg transition-colors hover:bg-accent"
     >
       <div className="flex items-center gap-2">
         <Badge variant="outline" className="font-mono text-[10px]">
