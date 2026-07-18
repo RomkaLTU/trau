@@ -43,7 +43,7 @@ func maybeAutostartHub(ctx context.Context, cfg config.Config, noServe bool, std
 		return
 	}
 
-	addr := net.JoinHostPort(dialHost(cfg.ServeBind), strconv.Itoa(cfg.ServePort))
+	addr := net.JoinHostPort(webserver.DialHost(cfg.ServeBind), strconv.Itoa(cfg.ServePort))
 	healthURL := "http://" + addr + webserver.APIPrefix + "/health"
 	webURL := "http://" + addr + "/"
 
@@ -77,7 +77,7 @@ func maybeAutostartHub(ctx context.Context, cfg config.Config, noServe bool, std
 // hubBaseURL is the origin of the serve hub the loop reaches over HTTP, derived
 // from the configured bind and port with a loopback bind normalized for dialing.
 func hubBaseURL(cfg config.Config) string {
-	return "http://" + net.JoinHostPort(dialHost(cfg.ServeBind), strconv.Itoa(cfg.ServePort))
+	return "http://" + net.JoinHostPort(webserver.DialHost(cfg.ServeBind), strconv.Itoa(cfg.ServePort))
 }
 
 // ensureHubForStore guarantees the serve hub the issue store depends on is
@@ -280,12 +280,4 @@ func openBrowser(url string) error {
 		cmd = exec.Command("xdg-open", url)
 	}
 	return cmd.Start()
-}
-
-func dialHost(bind string) string {
-	switch strings.TrimSpace(bind) {
-	case "", "0.0.0.0", "::", "[::]":
-		return "127.0.0.1"
-	}
-	return bind
 }

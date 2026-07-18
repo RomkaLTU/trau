@@ -30,6 +30,16 @@ func Loopback(bind string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// DialHost normalizes a bind into a host that can be dialed: a wildcard bind
+// listens on every interface, so loopback is the address that reaches it.
+func DialHost(bind string) string {
+	switch strings.TrimSpace(bind) {
+	case "", "0.0.0.0", "::", "[::]":
+		return "127.0.0.1"
+	}
+	return bind
+}
+
 // CheckExposure enforces the exposure policy at startup: loopback binds are
 // free, any other bind must carry a token. It is the gate that keeps a control
 // surface from ever coming up reachable without authentication.

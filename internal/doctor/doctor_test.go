@@ -3,17 +3,23 @@ package doctor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/transcriptdb"
+	"github.com/RomkaLTU/trau/internal/webserver"
 )
 
 func newTestRunner() *runner {
@@ -303,5 +309,140 @@ func TestCheckLegacyRunDataFlagsLeftover(t *testing.T) {
 	}
 	if !strings.Contains(c.Message, "COD-1/state") {
 		t.Errorf("message %q should sample the leftover file", c.Message)
+	}
+}
+
+func hubConfig(t *testing.T, rawURL string) config.Config {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("parse hub url: %v", err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("parse hub port: %v", err)
+	}
+	return config.Config{ServeBind: u.Hostname(), ServePort: port, ServeAutostart: true}
+}
+
+func TestCheckWebHubHealthy(t *testing.T) {
+	const token = "hub-token"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != webserver.APIPrefix+"/health" {
+			t.Errorf("probe path = %q, want %s/health", r.URL.Path, webserver.APIPrefix)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+token {
+			t.Errorf("Authorization = %q, want the configured bearer token", got)
+		}
+		_ = json.NewEncoder(w).Encode(webserver.Health{Status: "ok", Version: "2.0.0", UptimeSeconds: 90})
+	}))
+	defer srv.Close()
+
+	cfg := hubConfig(t, srv.URL)
+	cfg.ServeToken = token
+	rr := newTestRunner()
+	checkWebHub(context.Background(), cfg, "2.0.0", rr)
+
+	c := lastCheck(t, rr)
+	if c.Status != pass {
+		t.Errorf("status = %q, want pass for a healthy matching hub (%s)", c.Status, c.Message)
+	}
+	for _, want := range []string{srv.Listener.Addr().String(), "2.0.0", "1m30s"} {
+		if !strings.Contains(c.Message, want) {
+			t.Errorf("message %q should contain %q", c.Message, want)
+		}
+	}
+}
+
+func TestCheckWebHubWarnsOnVersionMismatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(webserver.Health{Status: "ok", Version: "1.9.0", UptimeSeconds: 5})
+	}))
+	defer srv.Close()
+
+	rr := newTestRunner()
+	checkWebHub(context.Background(), hubConfig(t, srv.URL), "2.0.0", rr)
+
+	c := lastCheck(t, rr)
+	if c.Status != warn {
+		t.Errorf("status = %q, want warn when the hub runs another version", c.Status)
+	}
+	for _, want := range []string{"1.9.0", "2.0.0", "restart it to update"} {
+		if !strings.Contains(c.Message, want) {
+			t.Errorf("message %q should contain %q", c.Message, want)
+		}
+	}
+}
+
+func TestCheckWebHubForeignListener(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+		}
+	}()
+
+	restore := hubProbeTimeout
+	hubProbeTimeout = 150 * time.Millisecond
+	defer func() { hubProbeTimeout = restore }()
+
+	rr := newTestRunner()
+	checkWebHub(context.Background(), hubConfig(t, "http://"+ln.Addr().String()), "2.0.0", rr)
+
+	c := lastCheck(t, rr)
+	if c.Status != warn {
+		t.Errorf("status = %q, want warn for a non-hub listener", c.Status)
+	}
+	if !strings.Contains(c.Message, "not answering as a trau hub") || !strings.Contains(c.Message, ln.Addr().String()) {
+		t.Errorf("message %q should name the occupied address and say it is not a hub", c.Message)
+	}
+}
+
+func TestCheckWebHubNotRunning(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		mutate  func(*config.Config)
+		status  string
+		wantMsg string
+	}{
+		{"autostart on", func(*config.Config) {}, pass, "SERVE_AUTOSTART=1"},
+		{"autostart off", func(c *config.Config) { c.ServeAutostart = false }, warn, "SERVE_AUTOSTART=0"},
+		{"exposed without token", func(c *config.Config) { c.ServeBind = "0.0.0.0" }, warn, "SERVE_TOKEN"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := hubConfig(t, "http://"+addr)
+			tc.mutate(&cfg)
+			rr := newTestRunner()
+			checkWebHub(context.Background(), cfg, "2.0.0", rr)
+
+			c := lastCheck(t, rr)
+			if c.Status != tc.status {
+				t.Errorf("status = %q, want %q (%s)", c.Status, tc.status, c.Message)
+			}
+			if !strings.Contains(c.Message, tc.wantMsg) {
+				t.Errorf("message %q should contain %q", c.Message, tc.wantMsg)
+			}
+			if !strings.Contains(c.Message, strconv.Itoa(cfg.ServePort)) {
+				t.Errorf("message %q should name the probed port", c.Message)
+			}
+		})
 	}
 }
