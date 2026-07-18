@@ -5,12 +5,19 @@ package doctor
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubdb"
@@ -19,6 +26,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 	"github.com/RomkaLTU/trau/internal/transcriptdb"
+	"github.com/RomkaLTU/trau/internal/webserver"
 )
 
 // Report is the outcome of a doctor run.
@@ -40,8 +48,9 @@ type Check struct {
 //
 // sources maps each resolved config key to the layer that supplied its value;
 // a key absent from the map (or marked LayerDefault) is using a built-in
-// default rather than an explicit setting.
-func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer, repoRoot string, stderr io.Writer) (*Report, error) {
+// default rather than an explicit setting. version is this binary's version,
+// compared against the version a running hub reports.
+func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer, repoRoot, version string, stderr io.Writer) (*Report, error) {
 	w := &writer{out: stderr}
 	rr := &runner{w: w, r: &Report{}}
 
@@ -55,6 +64,7 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkLinearProject(ctx, cfg, rr)
 	checkJira(ctx, cfg, rr)
 	checkWritePerms(repoRoot, rr)
+	checkWebHub(ctx, cfg, version, rr)
 	checkHubDatabase(rr)
 	checkTranscriptDatabase(rr)
 	checkLegacyRegistration(rr)
@@ -369,6 +379,78 @@ func resolveRunsDir(cfg config.Config, repoRoot string) string {
 		runsDir = filepath.Join(repoRoot, runsDir)
 	}
 	return runsDir
+}
+
+var hubProbeTimeout = 2 * time.Second
+
+// checkWebHub probes the configured serve hub so "the web UI didn't come up" is
+// answerable here instead of with lsof and curl. Only a refused connection means
+// nothing is listening; a listener that answers wrong — or accepts and then goes
+// quiet until the deadline — is an occupied port, which is a different fix.
+func checkWebHub(ctx context.Context, cfg config.Config, version string, rr *runner) {
+	addr := net.JoinHostPort(webserver.DialHost(cfg.ServeBind), strconv.Itoa(cfg.ServePort))
+	ctx, cancel := context.WithTimeout(ctx, hubProbeTimeout)
+	defer cancel()
+
+	h, err := probeHubHealth(ctx, "http://"+addr+webserver.APIPrefix+"/health", cfg.ServeToken)
+	switch {
+	case errors.Is(err, syscall.ECONNREFUSED):
+		reportHubDown(cfg, addr, rr)
+		return
+	case err != nil:
+		rr.add("web hub", warn, fmt.Sprintf("%s is not answering as a trau hub: %v", addr, err),
+			"set SERVE_PORT to a free port, or stop whatever owns this one")
+		return
+	}
+	uptime := time.Duration(h.UptimeSeconds * float64(time.Second)).Round(time.Second)
+	if h.Version != version {
+		rr.add("web hub", warn, fmt.Sprintf("running at %s serving version %s, up %s — this binary is %s", addr, h.Version, uptime, version),
+			"restart it to update")
+		return
+	}
+	rr.add("web hub", pass, fmt.Sprintf("running at %s (version %s, up %s)", addr, h.Version, uptime), "")
+}
+
+// reportHubDown names what would (or would not) bring the hub up, so a port with
+// nothing on it is distinguishable from a hub nothing is allowed to start.
+func reportHubDown(cfg config.Config, addr string, rr *runner) {
+	if err := webserver.CheckExposure(cfg.ServeBind, cfg.ServeToken); err != nil {
+		rr.add("web hub", warn, fmt.Sprintf("not running on %s, and autostart is blocked: %v", addr, err),
+			"set SERVE_TOKEN, or bind loopback-only with SERVE_BIND=127.0.0.1")
+		return
+	}
+	if !cfg.ServeAutostart {
+		rr.add("web hub", warn, fmt.Sprintf("not running on %s (SERVE_AUTOSTART=0 — nothing will bring it up)", addr),
+			"run `trau serve`, or set SERVE_AUTOSTART=1")
+		return
+	}
+	rr.add("web hub", pass, fmt.Sprintf("not running on %s (SERVE_AUTOSTART=1 — the next run starts it)", addr), "")
+}
+
+func probeHubHealth(ctx context.Context, url, token string) (webserver.Health, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return webserver.Health{}, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return webserver.Health{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return webserver.Health{}, fmt.Errorf("health probe returned HTTP %d", resp.StatusCode)
+	}
+	var h webserver.Health
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&h); err != nil {
+		return webserver.Health{}, fmt.Errorf("health probe returned no usable payload: %w", err)
+	}
+	if h.Status != "ok" {
+		return webserver.Health{}, fmt.Errorf("health probe reported status %q", h.Status)
+	}
+	return h, nil
 }
 
 // dbHealth is one database's health, projected off either database package so

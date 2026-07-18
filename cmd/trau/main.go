@@ -627,7 +627,7 @@ func runDoctor(ctx context.Context, args []string, stderr io.Writer) error {
 		cfg.RepoRoot = repoRoot
 	}
 
-	if _, err = doctor.Run(ctx, cfg, sources, cfg.RepoRoot, stderr); err != nil {
+	if _, err = doctor.Run(ctx, cfg, sources, cfg.RepoRoot, version, stderr); err != nil {
 		return silentExit{1}
 	}
 	return nil
