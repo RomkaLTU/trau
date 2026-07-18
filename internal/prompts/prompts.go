@@ -12,11 +12,14 @@ import (
 // Placeholder describes one field a prompt's data struct exposes to its
 // template. Required marks the fields carrying pipeline contracts — file
 // paths the loop reads back, schemas it parses, or identifiers the phase
-// cannot work without.
+// cannot work without. Sample is a representative value override validation
+// renders with; a required field's sample doubles as the sentinel proving
+// the template actually references it.
 type Placeholder struct {
 	Field       string
 	Description string
 	Required    bool
+	Sample      any
 }
 
 // Prompt is one registry entry: a stable snake_case name, human-facing
@@ -194,4 +197,14 @@ func Catalog() []Prompt {
 	out := make([]Prompt, len(registry))
 	copy(out, registry)
 	return out
+}
+
+// Lookup returns the registry entry for name.
+func Lookup(name string) (Prompt, bool) {
+	for _, p := range registry {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return Prompt{}, false
 }
