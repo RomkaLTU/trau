@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -121,6 +122,45 @@ func resolveRepoError(ctx context.Context, cfg config.Config, err error) error {
 		suggestion = "web UI is running at " + hubBaseURL(cfg) + "/ — cd into a repository or pass --repo <path>"
 	}
 	return console.Actionable(err, "resolve target repo", suggestion)
+}
+
+// HubStatus backs the TUI's Web indicator: the configured hub origin plus a
+// live health probe.
+func (a *appActions) HubStatus(ctx context.Context) (string, bool) {
+	base := hubBaseURL(a.cfg)
+	return base, probeHub(ctx, base+webserver.APIPrefix+"/health", a.cfg.ServeToken).isHub
+}
+
+// OpenWebUI makes the hub reachable for the TUI's Open Web UI action,
+// mirroring maybeAutostartHub's policy but returning the reason instead of
+// logging it: a healthy hub opens regardless of autostart settings; a down hub
+// is autostarted when allowed; otherwise the error says why.
+func (a *appActions) OpenWebUI(ctx context.Context) (string, error) {
+	base := hubBaseURL(a.cfg)
+	healthURL := base + webserver.APIPrefix + "/health"
+	webURL := base + "/"
+	switch p := probeHub(ctx, healthURL, a.cfg.ServeToken); {
+	case p.isHub:
+		return webURL, nil
+	case p.reachable:
+		return "", fmt.Errorf("port %d is busy with something that isn't the hub — set SERVE_PORT", a.cfg.ServePort)
+	}
+	if a.opts.NoServe {
+		return "", errors.New("hub autostart is off for this session (--no-serve) — run 'trau serve'")
+	}
+	if !a.cfg.ServeAutostart {
+		return "", errors.New("hub autostart is off (SERVE_AUTOSTART=0) — run 'trau serve'")
+	}
+	if err := webserver.CheckExposure(a.cfg.ServeBind, a.cfg.ServeToken); err != nil {
+		return "", fmt.Errorf("hub autostart blocked: %w", err)
+	}
+	if err := spawnDetachedServe(); err != nil {
+		return "", fmt.Errorf("hub spawn failed: %w", err)
+	}
+	if !waitHubHealthy(ctx, healthURL, a.cfg.ServeToken) {
+		return "", fmt.Errorf("web hub failed to start — see %s", hubLogPath())
+	}
+	return webURL, nil
 }
 
 type hubStatus struct {

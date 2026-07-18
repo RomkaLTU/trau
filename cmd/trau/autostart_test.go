@@ -131,6 +131,75 @@ func TestMaybeAutostartHubPortBusySkips(t *testing.T) {
 	}
 }
 
+// TestOpenWebUIPolicy pins the Open Web UI action's decisions: a healthy hub
+// opens regardless of autostart settings, a busy port and a suppressed
+// autostart each name their reason instead of failing silently.
+func TestOpenWebUIPolicy(t *testing.T) {
+	healthHub := func(t *testing.T) (config.Config, string) {
+		t.Helper()
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != webserver.APIPrefix+"/health" {
+				http.NotFound(w, r)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(webserver.Health{Status: "ok", Version: version})
+		}))
+		t.Cleanup(ts.Close)
+		host, portStr, err := net.SplitHostPort(ts.Listener.Addr().String())
+		if err != nil {
+			t.Fatalf("split addr: %v", err)
+		}
+		port, _ := strconv.Atoi(portStr)
+		return config.Config{ServeBind: host, ServePort: port}, "http://" + host + ":" + portStr + "/"
+	}
+	deadPort := func(t *testing.T) config.Config {
+		t.Helper()
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		port := l.Addr().(*net.TCPAddr).Port
+		_ = l.Close()
+		return config.Config{ServeBind: "127.0.0.1", ServePort: port}
+	}
+
+	t.Run("healthy hub opens even with autostart off", func(t *testing.T) {
+		cfg, wantURL := healthHub(t)
+		a := &appActions{cfg: cfg}
+		url, err := a.OpenWebUI(context.Background())
+		if err != nil || url != wantURL {
+			t.Fatalf("OpenWebUI = %q, %v; want %q, nil", url, err, wantURL)
+		}
+	})
+
+	t.Run("busy port names the reason", func(t *testing.T) {
+		ts := httptest.NewServer(http.NotFoundHandler())
+		defer ts.Close()
+		host, portStr, _ := net.SplitHostPort(ts.Listener.Addr().String())
+		port, _ := strconv.Atoi(portStr)
+		a := &appActions{cfg: config.Config{ServeBind: host, ServePort: port, ServeAutostart: true}}
+		if _, err := a.OpenWebUI(context.Background()); err == nil || !strings.Contains(err.Error(), "SERVE_PORT") {
+			t.Fatalf("busy-port error = %v, want SERVE_PORT hint", err)
+		}
+	})
+
+	t.Run("autostart off names the reason", func(t *testing.T) {
+		a := &appActions{cfg: deadPort(t)}
+		if _, err := a.OpenWebUI(context.Background()); err == nil || !strings.Contains(err.Error(), "SERVE_AUTOSTART=0") {
+			t.Fatalf("suppressed-autostart error = %v, want SERVE_AUTOSTART=0 reason", err)
+		}
+	})
+
+	t.Run("no-serve session names the reason", func(t *testing.T) {
+		cfg := deadPort(t)
+		cfg.ServeAutostart = true
+		a := &appActions{cfg: cfg, opts: config.Options{NoServe: true}}
+		if _, err := a.OpenWebUI(context.Background()); err == nil || !strings.Contains(err.Error(), "--no-serve") {
+			t.Fatalf("no-serve error = %v, want --no-serve reason", err)
+		}
+	})
+}
+
 // TestHubLogPathUsesTrauHome checks the hub log lives beside the hub database
 // under TRAU_HOME.
 func TestHubLogPathUsesTrauHome(t *testing.T) {

@@ -2,9 +2,14 @@ package tui
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
+
+	"github.com/RomkaLTU/trau/internal/console"
 )
 
 // TestKeyContractPerScreen pins the shared key contract: esc backs out one
@@ -170,4 +175,112 @@ func TestKeyContractPerScreen(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestWebUIKeyContract pins the global W binding: it fires the Open Web UI
+// action on browse screens and over the running dashboard, stays out of
+// focused text inputs (W is a valid ticket-id letter), and surfaces the
+// backend's refusal instead of silently doing nothing.
+func TestWebUIKeyContract(t *testing.T) {
+	keyW := tea.KeyPressMsg{Code: 'W', Text: "W"}
+	t.Cleanup(func() { setScreenWeb(webStatus{}) })
+
+	newApp := func(t *testing.T) (appModel, *fakeAppActions) {
+		t.Helper()
+		fake := &fakeAppActions{
+			fakeOnboardActions: fakeOnboardActions{repoRoot: t.TempDir()},
+			hubBase:            "http://127.0.0.1:8728",
+		}
+		m := newAppModel(context.Background(), fake, nil)
+		nm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+		return nm.(appModel), fake
+	}
+	press := func(m appModel, key tea.KeyPressMsg) (appModel, tea.Cmd) {
+		nm, cmd := m.Update(key)
+		return nm.(appModel), cmd
+	}
+
+	t.Run("menu fires open", func(t *testing.T) {
+		m, fake := newApp(t)
+		_, cmd := press(m, keyW)
+		if cmd == nil {
+			t.Fatal("W on the menu returned no command")
+		}
+		raw := cmd()
+		msg, ok := raw.(openWebDoneMsg)
+		if !ok {
+			t.Fatalf("W produced %T, want openWebDoneMsg", raw)
+		}
+		if fake.openWebCalls != 1 {
+			t.Fatalf("OpenWebUI calls = %d, want 1", fake.openWebCalls)
+		}
+		if msg.err != nil || msg.url != "http://127.0.0.1:8728/" {
+			t.Fatalf("unexpected outcome: url=%q err=%v", msg.url, msg.err)
+		}
+	})
+
+	t.Run("running dashboard fires open", func(t *testing.T) {
+		m, fake := newApp(t)
+		rm, _ := m.startRunLoop("")
+		m = rm.(appModel)
+		if m.loopCancel != nil {
+			defer m.loopCancel()
+		}
+		_, cmd := press(m, keyW)
+		if cmd == nil {
+			t.Fatal("W on the running dashboard returned no command")
+		}
+		if _, ok := cmd().(openWebDoneMsg); !ok || fake.openWebCalls != 1 {
+			t.Fatalf("W did not run OpenWebUI while running (calls = %d)", fake.openWebCalls)
+		}
+	})
+
+	t.Run("focused input keeps W", func(t *testing.T) {
+		m, fake := newApp(t)
+		am, _ := m.selectAction(actReset)
+		m = am.(appModel)
+		m, _ = press(m, keyW)
+		if got := m.reset.Value(); got != "W" {
+			t.Fatalf("W into focused input = %q, want \"W\"", got)
+		}
+		if fake.openWebCalls != 0 {
+			t.Fatalf("W fired OpenWebUI from a text input (calls = %d)", fake.openWebCalls)
+		}
+	})
+
+	t.Run("refusal is reported", func(t *testing.T) {
+		m, fake := newApp(t)
+		fake.openWebErr = errors.New("hub autostart is off (SERVE_AUTOSTART=0) — run 'trau serve'")
+		m, cmd := press(m, keyW)
+		nm, next := m.Update(cmd())
+		m = nm.(appModel)
+		if next != nil {
+			t.Fatal("a refused open must not still open a browser")
+		}
+		if !m.hubNoteErr || !strings.Contains(m.hubNote, "SERVE_AUTOSTART=0") {
+			t.Fatalf("refusal note = %q (err=%v), want the reason surfaced", m.hubNote, m.hubNoteErr)
+		}
+		if screenWeb.healthy {
+			t.Fatal("indicator still claims a healthy hub after a refused open")
+		}
+	})
+
+	t.Run("summary screen shows the refusal", func(t *testing.T) {
+		m, fake := newApp(t)
+		fake.openWebErr = errors.New("hub autostart is off (SERVE_AUTOSTART=0) — run 'trau serve'")
+		rm, _ := m.startRunLoop("")
+		m = rm.(appModel)
+		if m.loopCancel != nil {
+			defer m.loopCancel()
+		}
+		d, _ := m.dash.enterSummary(console.SessionSummary{})
+		m.dash = d.(model)
+
+		m, cmd := press(m, keyW)
+		nm, _ := m.Update(cmd())
+		m = nm.(appModel)
+		if plain := ansi.Strip(m.render()); !strings.Contains(plain, "SERVE_AUTOSTART=0") {
+			t.Fatalf("a refused open left no message on the summary screen:\n%s", plain)
+		}
+	})
 }

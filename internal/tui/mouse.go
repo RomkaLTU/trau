@@ -304,5 +304,6 @@ func (m model) copySelectedArtifact() (model, tea.Cmd) {
 
 func (m model) clearToast() model {
 	m.toast = ""
+	m.toastErr = false
 	return m
 }

@@ -215,6 +215,7 @@ type model struct {
 
 	mouseOff bool
 	toast    string
+	toastErr bool
 
 	results []console.TicketResult
 
@@ -338,7 +339,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		m.toast = ""
+		m = m.clearToast()
 		m.recapBanner = ""
 		if m, cmd, handled := m.handleKey(msg); handled {
 			return m, cmd
@@ -394,13 +395,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tea.MouseClickMsg:
-		m.toast = ""
+		m = m.clearToast()
 		if nm, cmd, handled := m.handleMouseClick(msg); handled {
 			return nm, cmd
 		}
 
 	case tea.MouseWheelMsg:
-		m.toast = ""
+		m = m.clearToast()
 		// Over the rail the wheel moves the selection; elsewhere it falls through to
 		// the span viewport below.
 		if m.railVisible() && zone.Get(zoneRail).InBounds(msg) {
@@ -1063,6 +1064,9 @@ func (m model) renderHeader() string {
 	if badge := m.prBadge(); badge != "" {
 		right += "  " + badge
 	}
+	if wc := webStatusChip(); wc != "" {
+		right += "  " + wc
+	}
 	right += "  " + m.styles.Subtle.Render("⏱ "+fmtDur(time.Since(m.started)))
 
 	// Binding yields before the title; the -4 keeps a 2-col gap to the right cluster
@@ -1270,7 +1274,11 @@ func (m model) renderFooter() string {
 	left := ""
 	switch {
 	case m.toast != "":
-		left = m.styles.Success.Render(m.toast)
+		style := m.styles.Success
+		if m.toastErr {
+			style = m.styles.Error
+		}
+		left = style.Render(m.toast)
 	case done > 0:
 		left = m.styles.Footer.Render(fmt.Sprintf("%d merged", done))
 	}
