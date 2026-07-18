@@ -255,7 +255,7 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 			return false, fmt.Errorf("epic repair %d: checkout %s: %w", repair, epic, err)
 		}
 		p.logf("  ⚠ epic CI red — repair attempt %d/%d", repair, p.MaxRepairs)
-		if _, err := p.agentStep(ctx, p.EpicID, fmt.Sprintf("epic-repair%d", repair), epicRepairInstruction(p.EpicID, prURL, epic)); err != nil {
+		if _, err := p.agentStep(ctx, p.EpicID, fmt.Sprintf("epic-repair%d", repair), epicRepairInstruction(p.prompts, p.EpicID, prURL, epic)); err != nil {
 			return false, err
 		}
 		if err := p.Git.Push(ctx, p.Remote, epic, false); err != nil {
@@ -279,12 +279,12 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 	return true, nil
 }
 
-func resolveConflictsInstruction(id, base, branch string) string {
-	return prompts.Render("resolve_conflicts", prompts.ResolveConflictsData{ID: id, Base: base, Branch: branch})
+func resolveConflictsInstruction(r prompts.Renderer, id, base, branch string) string {
+	return r.Render("resolve_conflicts", prompts.ResolveConflictsData{ID: id, Base: base, Branch: branch})
 }
 
-func epicRepairInstruction(epicID, prURL, branch string) string {
-	return prompts.Render("epic_repair", prompts.EpicRepairData{EpicID: epicID, PRURL: prURL, Branch: branch})
+func epicRepairInstruction(r prompts.Renderer, epicID, prURL, branch string) string {
+	return r.Render("epic_repair", prompts.EpicRepairData{EpicID: epicID, PRURL: prURL, Branch: branch})
 }
 
 func (p *Pipeline) openSubIssues(ctx context.Context, statuser tracker.IssueStatuser, subs []tracker.SubIssue) ([]string, error) {

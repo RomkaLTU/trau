@@ -48,7 +48,7 @@ func (p *Pipeline) lintFixCmd(ctx context.Context) error {
 
 func (p *Pipeline) lintFixAgent(ctx context.Context, id string) error {
 	p.logf("  ↳ lint-fix: detecting and running the project's autofixers")
-	_, err := p.agentStep(ctx, id, "lintfix", lintFixInstruction(id))
+	_, err := p.agentStep(ctx, id, "lintfix", lintFixInstruction(p.prompts, id))
 	if err != nil && isFatalAgentErr(err) {
 		return err
 	}
@@ -58,8 +58,8 @@ func (p *Pipeline) lintFixAgent(ctx context.Context, id string) error {
 	return nil
 }
 
-func lintFixInstruction(id string) string {
-	return prompts.Render("lint_fix", prompts.LintFixData{ID: id})
+func lintFixInstruction(r prompts.Renderer, id string) string {
+	return r.Render("lint_fix", prompts.LintFixData{ID: id})
 }
 
 func tailLines(s string, n int) []string {

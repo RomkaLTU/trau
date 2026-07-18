@@ -13,7 +13,7 @@ import (
 // sample surviving into the rendered output. The returned error message is
 // shown verbatim in the UI.
 func (p Prompt) ValidateOverride(body string) error {
-	t, err := template.New(p.Name).Funcs(template.FuncMap{"join": strings.Join}).Option("missingkey=error").Parse(body)
+	t, err := template.New(p.Name).Funcs(templateFuncs).Option("missingkey=error").Parse(body)
 	if err != nil {
 		return fmt.Errorf("template does not parse: %s", cleanTemplateErr(p.Name, err))
 	}

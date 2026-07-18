@@ -168,11 +168,12 @@ type TimelogEstimateData struct {
 	Path      string
 }
 
+var templateFuncs = template.FuncMap{"join": strings.Join}
+
 var templates = func() map[string]*template.Template {
-	funcs := template.FuncMap{"join": strings.Join}
 	m := make(map[string]*template.Template, len(registry))
 	for _, p := range registry {
-		m[p.Name] = template.Must(template.New(p.Name).Funcs(funcs).Parse(p.Default))
+		m[p.Name] = template.Must(template.New(p.Name).Funcs(templateFuncs).Parse(p.Default))
 	}
 	return m
 }()
@@ -190,6 +191,46 @@ func Render(name string, data any) string {
 		panic("prompts: render " + name + ": " + err.Error())
 	}
 	return b.String()
+}
+
+// Renderer renders prompts with stored override bodies layered over the
+// built-in defaults. The zero value renders defaults only. An override that
+// fails to parse or execute is reported through OnOverrideError (when set)
+// and the built-in default renders instead — a broken override never breaks
+// a render.
+type Renderer struct {
+	Overrides       map[string]string
+	OnOverrideError func(name string, err error)
+}
+
+// Render executes the override body stored for name over data, falling back
+// to the named built-in template when no override is stored or the override
+// fails.
+func (r Renderer) Render(name string, data any) string {
+	body, ok := r.Overrides[name]
+	if !ok {
+		return Render(name, data)
+	}
+	out, err := renderBody(name, body, data)
+	if err != nil {
+		if r.OnOverrideError != nil {
+			r.OnOverrideError(name, err)
+		}
+		return Render(name, data)
+	}
+	return out
+}
+
+func renderBody(name, body string, data any) (string, error) {
+	t, err := template.New(name).Funcs(templateFuncs).Parse(body)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	if err := t.Execute(&b, data); err != nil {
+		return "", err
+	}
+	return b.String(), nil
 }
 
 // Catalog returns the registry's per-prompt metadata in stable order.

@@ -325,6 +325,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
+	cfg.PromptOverrides = fetchPromptOverrides(ctx, cfg)
+
 	runner, err := buildRouter(cfg, log, sink, transcripts, stderr)
 	if err != nil {
 		return usageError{err}
@@ -1078,6 +1080,32 @@ func newLessonStore(cfg config.Config, repoRoot string) pipeline.LessonStore {
 	return hublesson.New(hub, repoName(repoRoot), window, hubclient.IsUnreachable)
 }
 
+// newPromptFetcher reads the repo's stored prompt overrides from the serve hub
+// (repo > global precedence resolved hub-side). The pipeline calls it once at
+// every ticket-run start; a failure there falls back to built-in defaults with
+// one logged warning, never a retry loop or pause (ADR 0008).
+func newPromptFetcher(cfg config.Config, repoRoot string) func(context.Context) (map[string]string, error) {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	return func(ctx context.Context) (map[string]string, error) {
+		return hub.ResolvedPrompts(ctx, repoName(repoRoot))
+	}
+}
+
+// fetchPromptOverrides reads the repo's stored prompt overrides for the phase
+// preambles baked into the agent backends at startup. Best-effort: with no hub
+// reachable yet the backends keep the built-in preambles, and the pipeline still
+// snapshots its own map per ticket run.
+func fetchPromptOverrides(ctx context.Context, cfg config.Config) map[string]string {
+	fctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	m, err := hubclient.New(hubBaseURL(cfg), cfg.ServeToken).ResolvedPrompts(fctx, repoName(cfg.RepoRoot))
+	if err != nil {
+		logger.Verbosef("prompt overrides not fetched (built-in preambles): %v", err)
+		return nil
+	}
+	return m
+}
+
 // newPresence registers this loop with the serve hub over HTTP and heartbeats its
 // reported session state (ADR 0005, ADR 0008 §7); the hub holds presence and
 // reaps a dead PID via signal 0, so no per-PID instance file is written.
@@ -1195,6 +1223,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		LessonsDistill:      cfg.LessonsDistill,
 		Renderer:            con,
 		Events:              log,
+		FetchPrompts:        newPromptFetcher(cfg, repoRoot),
 		OwnedProject:        cfg.Project,
 
 		RepoRoot:            repoRoot,

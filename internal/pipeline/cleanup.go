@@ -16,7 +16,7 @@ func (p *Pipeline) cleanup(ctx context.Context, id string) error {
 	p.setActivity(id, activity.Cleanup, "")
 	p.logf("  ↳ cleanup: stripping unnecessary comments and slop from the diff")
 	notesRef, _ := p.activeBuildNotes(id)
-	_, err := p.agentStep(ctx, id, "cleanup", cleanupInstruction(id, buildNotesNote(notesRef)))
+	_, err := p.agentStep(ctx, id, "cleanup", cleanupInstruction(p.prompts, id, buildNotesNote(notesRef)))
 	if err != nil && isFatalAgentErr(err) {
 		return err
 	}
@@ -83,6 +83,6 @@ func (p *Pipeline) skipHandoff(ctx context.Context, id string) bool {
 	return p.tinyDiff(ctx, "handoff")
 }
 
-func cleanupInstruction(id, notesNote string) string {
-	return prompts.Render("cleanup", prompts.CleanupData{ID: id, NotesNote: notesNote})
+func cleanupInstruction(r prompts.Renderer, id, notesNote string) string {
+	return r.Render("cleanup", prompts.CleanupData{ID: id, NotesNote: notesNote})
 }
