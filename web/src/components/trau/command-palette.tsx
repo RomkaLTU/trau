@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { Check, FolderGit2, GitBranch, History, ListChecks } from 'lucide-react'
 
@@ -13,8 +14,10 @@ import {
   CommandList,
   CommandSeparator,
 } from '@/components/ui/command'
+import { instancesQueryOptions } from '@/lib/instances'
 import { isPaletteShortcut } from '@/lib/palette-keys'
 import { loadRecents, visibleRecents, type RecentEntry } from '@/lib/recents'
+import { suggestFor, type SuggestionEntry } from '@/lib/suggestions'
 
 const GROUP_HEADING =
   '[&_[cmdk-group-heading]]:font-mono [&_[cmdk-group-heading]]:text-[0.65rem] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.2em] [&_[cmdk-group-heading]]:font-normal'
@@ -54,6 +57,19 @@ export function CommandPalette({
     if (!open) setQuery('')
   }, [open])
 
+  const { data: instancesData } = useQuery(instancesQueryOptions)
+  const suggestions = useMemo(
+    () =>
+      open
+        ? suggestFor({
+            pathname,
+            scope: repo,
+            instances: instancesData?.instances ?? [],
+          })
+        : [],
+    [open, pathname, repo, instancesData],
+  )
+
   const recents = useMemo(
     () =>
       open
@@ -82,6 +98,15 @@ export function CommandPalette({
     void navigate({ to: item.to, search: item.search })
   }
 
+  function pickSuggestion(entry: SuggestionEntry) {
+    if (entry.kind === 'page') {
+      goTo(entry.item)
+      return
+    }
+    onOpenChange(false)
+    void navigate({ to: entry.path })
+  }
+
   function pickRecent(entry: RecentEntry) {
     if (entry.kind === 'project') {
       pickScope(entry.label)
@@ -107,6 +132,45 @@ export function CommandPalette({
       />
       <CommandList>
         <CommandEmpty>No results.</CommandEmpty>
+        {query === '' && suggestions.length > 0 && (
+          <>
+            <CommandGroup heading="Suggested" className={GROUP_HEADING}>
+              {suggestions.map((entry) => (
+                <CommandItem
+                  key={entry.key}
+                  value={`suggest:${entry.key}`}
+                  onSelect={() => pickSuggestion(entry)}
+                >
+                  {entry.kind === 'page' ? (
+                    <>
+                      <entry.item.icon />
+                      <span className="flex-1 truncate">{entry.item.label}</span>
+                    </>
+                  ) : (
+                    <>
+                      {entry.kind === 'live' ? (
+                        <GitBranch className="text-teal" />
+                      ) : (
+                        <ListChecks />
+                      )}
+                      <span className="flex-1 truncate">{entry.label}</span>
+                      <span
+                        className={
+                          entry.kind === 'live'
+                            ? 'text-[0.65rem] text-teal'
+                            : 'text-[0.65rem] text-muted-foreground'
+                        }
+                      >
+                        {entry.kind === 'live' ? 'live' : 'run'}
+                      </span>
+                    </>
+                  )}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+            <CommandSeparator />
+          </>
+        )}
         {query === '' && recents.length > 0 && (
           <>
             <CommandGroup heading="Recent" className={GROUP_HEADING}>
