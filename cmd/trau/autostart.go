@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -16,6 +18,8 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/console"
+	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/webserver"
 )
 
@@ -39,7 +43,7 @@ func maybeAutostartHub(ctx context.Context, cfg config.Config, noServe bool, std
 		return
 	}
 
-	addr := net.JoinHostPort(dialHost(cfg.ServeBind), strconv.Itoa(cfg.ServePort))
+	addr := net.JoinHostPort(webserver.DialHost(cfg.ServeBind), strconv.Itoa(cfg.ServePort))
 	healthURL := "http://" + addr + webserver.APIPrefix + "/health"
 	webURL := "http://" + addr + "/"
 
@@ -59,22 +63,21 @@ func maybeAutostartHub(ctx context.Context, cfg config.Config, noServe bool, std
 		_, _ = fmt.Fprintf(stderr, "trau: web UI autostart failed: %v\n", err)
 		return
 	}
-	_, _ = fmt.Fprintf(stderr, "Web UI: %s\n", webURL)
-
-	if !cfg.ServeOpen {
+	if !waitHubHealthy(ctx, healthURL, cfg.ServeToken) {
+		reportHubStartFailure(stderr)
 		return
 	}
-	go func() {
-		if waitHubHealthy(ctx, healthURL, cfg.ServeToken) {
-			_ = openBrowser(webURL)
-		}
-	}()
+	_, _ = fmt.Fprintf(stderr, "Web UI: %s\n", webURL)
+
+	if cfg.ServeOpen {
+		_ = openBrowser(webURL)
+	}
 }
 
 // hubBaseURL is the origin of the serve hub the loop reaches over HTTP, derived
 // from the configured bind and port with a loopback bind normalized for dialing.
 func hubBaseURL(cfg config.Config) string {
-	return "http://" + net.JoinHostPort(dialHost(cfg.ServeBind), strconv.Itoa(cfg.ServePort))
+	return "http://" + net.JoinHostPort(webserver.DialHost(cfg.ServeBind), strconv.Itoa(cfg.ServePort))
 }
 
 // ensureHubForStore guarantees the serve hub the issue store depends on is
@@ -102,8 +105,62 @@ func ensureHubForStore(ctx context.Context, cfg config.Config, stderr io.Writer)
 		return
 	}
 	if !waitHubHealthy(ctx, healthURL, cfg.ServeToken) {
-		_, _ = fmt.Fprintf(stderr, "trau: the web hub did not become ready in time; issue-store operations may fail until it does\n")
+		reportHubStartFailure(stderr)
 	}
+}
+
+func reportHubStartFailure(stderr io.Writer) {
+	_, _ = fmt.Fprintf(stderr, "trau: web hub failed to start — see %s, or run 'trau serve' to see why\n", hubLogPath())
+}
+
+// resolveRepoError wraps a repo-resolution failure for the CLI. When a hub is
+// already listening, the suggestion names its URL so the exit doesn't read as
+// if the web UI never came up.
+func resolveRepoError(ctx context.Context, cfg config.Config, err error) error {
+	suggestion := "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository"
+	if probeHub(ctx, hubBaseURL(cfg)+webserver.APIPrefix+"/health", cfg.ServeToken).isHub {
+		suggestion = "web UI is running at " + hubBaseURL(cfg) + "/ — cd into a repository or pass --repo <path>"
+	}
+	return console.Actionable(err, "resolve target repo", suggestion)
+}
+
+// HubStatus backs the TUI's Web indicator: the configured hub origin plus a
+// live health probe.
+func (a *appActions) HubStatus(ctx context.Context) (string, bool) {
+	base := hubBaseURL(a.cfg)
+	return base, probeHub(ctx, base+webserver.APIPrefix+"/health", a.cfg.ServeToken).isHub
+}
+
+// OpenWebUI makes the hub reachable for the TUI's Open Web UI action,
+// mirroring maybeAutostartHub's policy but returning the reason instead of
+// logging it: a healthy hub opens regardless of autostart settings; a down hub
+// is autostarted when allowed; otherwise the error says why.
+func (a *appActions) OpenWebUI(ctx context.Context) (string, error) {
+	base := hubBaseURL(a.cfg)
+	healthURL := base + webserver.APIPrefix + "/health"
+	webURL := base + "/"
+	switch p := probeHub(ctx, healthURL, a.cfg.ServeToken); {
+	case p.isHub:
+		return webURL, nil
+	case p.reachable:
+		return "", fmt.Errorf("port %d is busy with something that isn't the hub — set SERVE_PORT", a.cfg.ServePort)
+	}
+	if a.opts.NoServe {
+		return "", errors.New("hub autostart is off for this session (--no-serve) — run 'trau serve'")
+	}
+	if !a.cfg.ServeAutostart {
+		return "", errors.New("hub autostart is off (SERVE_AUTOSTART=0) — run 'trau serve'")
+	}
+	if err := webserver.CheckExposure(a.cfg.ServeBind, a.cfg.ServeToken); err != nil {
+		return "", fmt.Errorf("hub autostart blocked: %w", err)
+	}
+	if err := spawnDetachedServe(); err != nil {
+		return "", fmt.Errorf("hub spawn failed: %w", err)
+	}
+	if !waitHubHealthy(ctx, healthURL, a.cfg.ServeToken) {
+		return "", fmt.Errorf("web hub failed to start — see %s", hubLogPath())
+	}
+	return webURL, nil
 }
 
 type hubStatus struct {
@@ -156,9 +213,10 @@ func waitHubHealthy(ctx context.Context, url, token string) bool {
 
 // spawnDetachedServe starts `trau serve` in its own process group so the hub
 // outlives the loop that launched it; its net.Listen on the port is the
-// singleton lock. nil std streams route the child's output to the null device.
-// TRAU_ACTIVE is stripped so the hub — and everything it later spawns — is not
-// marked as running inside the loop that autostarted it.
+// singleton lock. The child's output lands in hub.log under the trau home,
+// truncated per spawn, so a hub that dies at boot is diagnosable. TRAU_ACTIVE
+// is stripped so the hub — and everything it later spawns — is not marked as
+// running inside the loop that autostarted it.
 func spawnDetachedServe() error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -173,11 +231,42 @@ func spawnDetachedServe() error {
 	}
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if logFile := openHubLog(); logFile != nil {
+		defer func() { _ = logFile.Close() }()
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	go func() { _ = cmd.Wait() }()
 	return nil
+}
+
+func hubLogPath() string {
+	home := registry.Home()
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, "hub.log")
+}
+
+// openHubLog opens hub.log truncated for a fresh spawn, creating the trau home
+// if needed. nil sends the child's output to the null device instead — a hub
+// is better spawned unlogged than not spawned.
+func openHubLog() *os.File {
+	path := hubLogPath()
+	if path == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return nil
+	}
+	return f
 }
 
 func openBrowser(url string) error {
@@ -191,12 +280,4 @@ func openBrowser(url string) error {
 		cmd = exec.Command("xdg-open", url)
 	}
 	return cmd.Start()
-}
-
-func dialHost(bind string) string {
-	switch strings.TrimSpace(bind) {
-	case "", "0.0.0.0", "::", "[::]":
-		return "127.0.0.1"
-	}
-	return bind
 }

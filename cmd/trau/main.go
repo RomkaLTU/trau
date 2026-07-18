@@ -392,11 +392,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 
 	if opts.ResetID != "" {
+		ensureHubForStore(ctx, cfg, stderr)
 		repoRoot, err := config.ResolveRepoRoot(opts.Repo, cfg.RepoRoot, config.GitToplevel)
 		if err != nil {
-			return console.Actionable(err, "resolve target repo", "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository")
+			return resolveRepoError(ctx, cfg, err)
 		}
-		ensureHubForStore(ctx, cfg, stderr)
 		pipe, err := buildPipeline(cfg, runner, repoRoot, pm, sink, transcripts, log, con)
 		if err != nil {
 			return err
@@ -466,14 +466,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
+	// Checkpoints write through the hub now (ADR 0008), so the loop needs one up
+	// for every tracker — not only the hub-store providers ensured above, and
+	// before repo resolution so a failed resolve still leaves a hub to point at.
+	// Idempotent.
+	ensureHubForStore(ctx, cfg, stderr)
 	repoRoot, err = config.ResolveRepoRoot(opts.Repo, cfg.RepoRoot, config.GitToplevel)
 	if err != nil {
-		return console.Actionable(err, "resolve target repo", "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository")
+		return resolveRepoError(ctx, cfg, err)
 	}
 	logger.Verbosef("final repo root for pipeline: %s", repoRoot)
-	// Checkpoints write through the hub now (ADR 0008), so the loop needs one up
-	// for every tracker — not only the hub-store providers ensured above. Idempotent.
-	ensureHubForStore(ctx, cfg, stderr)
 	p, err := buildPipeline(cfg, runner, repoRoot, pm, sink, transcripts, log, con)
 	if err != nil {
 		return err
@@ -625,7 +627,7 @@ func runDoctor(ctx context.Context, args []string, stderr io.Writer) error {
 		cfg.RepoRoot = repoRoot
 	}
 
-	if _, err = doctor.Run(ctx, cfg, sources, cfg.RepoRoot, stderr); err != nil {
+	if _, err = doctor.Run(ctx, cfg, sources, cfg.RepoRoot, version, stderr); err != nil {
 		return silentExit{1}
 	}
 	return nil
@@ -1544,6 +1546,9 @@ func menuOnlyArgs(args []string) bool {
 }
 
 func runSession(ctx context.Context, cfg config.Config, opts config.Options, stdout, stderr io.Writer) error {
+	// Hub first: it must be up even when onboarding or the session bails early.
+	maybeAutostartHub(ctx, cfg, opts.NoServe, stderr)
+
 	holder := tui.NewRenderer()
 
 	log, flushEvents := newEventLog(cfg, stderr, holder.Event)
@@ -1581,8 +1586,6 @@ func runSession(ctx context.Context, cfg config.Config, opts config.Options, std
 	reg := newPresence(cfg, cfg.RepoRoot)
 	defer reg.Deregister()
 	acts.reg = reg
-
-	maybeAutostartHub(ctx, cfg, opts.NoServe, stderr)
 
 	return tui.RunSession(ctx, stdout, holder, acts)
 }
