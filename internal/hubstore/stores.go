@@ -23,6 +23,7 @@ type Stores struct {
 	grill       *Grill
 	atlas       *AtlasDocuments
 	notifs      *Notifications
+	prompts     *PromptOverrides
 }
 
 // NewStores builds the hub store set over the authoritative database db and the
@@ -45,6 +46,7 @@ func NewStores(db, transcriptsDB *sql.DB, retention Retention) *Stores {
 		grill:       NewGrill(db, retention.Grill),
 		atlas:       NewAtlasDocuments(db),
 		notifs:      NewNotifications(db),
+		prompts:     NewPromptOverrides(db),
 	}
 }
 
@@ -89,6 +91,9 @@ func (s *Stores) Atlas() *AtlasDocuments { return s.atlas }
 
 // Notifications returns the durable needs-attention notification store.
 func (s *Stores) Notifications() *Notifications { return s.notifs }
+
+// Prompts returns the prompt override store.
+func (s *Stores) Prompts() *PromptOverrides { return s.prompts }
 
 // Queue returns the queue store for a repo root.
 func (s *Stores) Queue(root string) *Queue { return NewQueue(s.db, root) }

@@ -190,6 +190,34 @@ func TestOpenRepopulatesFTSWithAssigneeName(t *testing.T) {
 	}
 }
 
+func TestOpenAddsPromptOverridesToExisting(t *testing.T) {
+	home := t.TempDir()
+
+	seed, err := sql.Open("sqlite", Path(home))
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	seedVersion(t, seed, 25)
+	if err := seed.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	db, err := Open(home)
+	if err != nil {
+		t.Fatalf("Open over a pre-prompt-overrides database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	if want := currentVersion(t); db.Version() != want {
+		t.Fatalf("version = %d, want %d", db.Version(), want)
+	}
+	if _, err := db.SQL().Exec(
+		`INSERT INTO prompt_overrides(name, repo, body) VALUES('build', '', 'custom body')`,
+	); err != nil {
+		t.Fatalf("insert into migrated prompt_overrides: %v", err)
+	}
+}
+
 func TestOpenCorrupt(t *testing.T) {
 	home := t.TempDir()
 	garbage := []byte(strings.Repeat("not a sqlite database ", 64))
