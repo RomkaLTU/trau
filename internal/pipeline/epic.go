@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RomkaLTU/trau/internal/prompts"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
@@ -279,11 +280,11 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 }
 
 func resolveConflictsInstruction(id, base, branch string) string {
-	return "The branch " + branch + " is mid-merge with " + base + " and has conflicts. Resolve EVERY conflicted file so the branch combines its own work with the latest " + base + ": run `git diff --name-only --diff-filter=U` to list them, edit each to keep BOTH sides' intent (never drop this branch's feature work, and never drop " + base + "'s newer changes; when both sides carry the SAME change — e.g. " + base + " already received it as a squash-merge — keep exactly one copy), then `git add` each resolved file. Run the relevant tests to confirm the combined result builds. Do NOT run `git commit`, `git merge --continue`, push, or open a PR — leave the resolved merge staged for the loop to finalize. Refs: " + id + "."
+	return prompts.Render("resolve_conflicts", prompts.ResolveConflictsData{ID: id, Base: base, Branch: branch})
 }
 
 func epicRepairInstruction(epicID, prURL, branch string) string {
-	return "The CI checks on the epic PR " + prURL + " (branch " + branch + ") are failing. You are on " + branch + " with the full epic integrated against the base. Investigate the failing checks, find the root cause, and fix it with minimal, targeted changes anywhere in the epic's code so the whole suite passes; run the relevant tests locally to confirm. Commit the fix with a Conventional Commit ('fix(scope): <subject>', imperative mood, no 'Co-authored-by'/AI-authorship trailers) but do NOT push or merge — the loop pushes and merges. Refs: " + epicID + "."
+	return prompts.Render("epic_repair", prompts.EpicRepairData{EpicID: epicID, PRURL: prURL, Branch: branch})
 }
 
 func (p *Pipeline) openSubIssues(ctx context.Context, statuser tracker.IssueStatuser, subs []tracker.SubIssue) ([]string, error) {

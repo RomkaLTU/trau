@@ -5,9 +5,8 @@ import "testing"
 func TestSkillsPromptComposition(t *testing.T) {
 	t.Run("no skills keeps the self-selection note", func(t *testing.T) {
 		got := skillsPrompt(nil, nil)
-		if got != selfSelectSkillsNote {
-			t.Fatalf("no-skills prompt changed:\n%q", got)
-		}
+		mustContain(t, "skillsPrompt(none)", got, "auto-select and load the project skills")
+		mustNotContain(t, "skillsPrompt(none)", got, "this repo has skills")
 	})
 
 	t.Run("installed only names the skills", func(t *testing.T) {

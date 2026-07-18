@@ -3,6 +3,8 @@ package pipeline
 import (
 	"os"
 	"strings"
+
+	"github.com/RomkaLTU/trau/internal/prompts"
 )
 
 // buildNotesPath is the /tmp file the build agent jots its slice notes to — the
@@ -17,8 +19,7 @@ func buildNotesPath(id string) string { return "/tmp/buildnotes-" + id + ".md" }
 // design: an agent that ignores it leaves no file, and every downstream phase then
 // behaves exactly as it does today.
 func buildNotesInstruction(id string) string {
-	return " As a best-effort aid to the later pipeline phases, after implementing jot a short build-notes file to exactly " + buildNotesPath(id) +
-		" (overwrite if present) and nowhere else: the files you touched, the exact test command you ran for this slice, and any non-obvious decisions a later phase would otherwise have to rediscover. Keep it to a few lines and redact any secrets. This is optional — skipping it breaks nothing."
+	return prompts.Render("build_notes", prompts.BuildNotesData{ID: id, Path: buildNotesPath(id)})
 }
 
 // readBuildNotes reads the notes at path. ok is false when the file is absent or
