@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/webserver"
 )
 
@@ -104,6 +105,17 @@ func ensureHubForStore(ctx context.Context, cfg config.Config, stderr io.Writer)
 	if !waitHubHealthy(ctx, healthURL, cfg.ServeToken) {
 		_, _ = fmt.Fprintf(stderr, "trau: the web hub did not become ready in time; issue-store operations may fail until it does\n")
 	}
+}
+
+// resolveRepoError wraps a repo-resolution failure for the CLI. When a hub is
+// already listening, the suggestion names its URL so the exit doesn't read as
+// if the web UI never came up.
+func resolveRepoError(ctx context.Context, cfg config.Config, err error) error {
+	suggestion := "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository"
+	if probeHub(ctx, hubBaseURL(cfg)+webserver.APIPrefix+"/health", cfg.ServeToken).isHub {
+		suggestion = "web UI is running at " + hubBaseURL(cfg) + "/ — cd into a repository or pass --repo <path>"
+	}
+	return console.Actionable(err, "resolve target repo", suggestion)
 }
 
 type hubStatus struct {
