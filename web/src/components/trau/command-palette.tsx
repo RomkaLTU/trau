@@ -1,6 +1,6 @@
-import { useEffect } from 'react'
-import { useNavigate } from '@tanstack/react-router'
-import { Check, FolderGit2, GitBranch } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { useNavigate, useRouterState } from '@tanstack/react-router'
+import { Check, FolderGit2, GitBranch, History, ListChecks } from 'lucide-react'
 
 import { ALL_SCOPE, useActiveRepo } from '@/components/trau/active-repo'
 import { NAV_GROUPS, type NavItem } from '@/components/trau/nav-items'
@@ -14,9 +14,18 @@ import {
   CommandSeparator,
 } from '@/components/ui/command'
 import { isPaletteShortcut } from '@/lib/palette-keys'
+import { loadRecents, visibleRecents, type RecentEntry } from '@/lib/recents'
 
 const GROUP_HEADING =
   '[&_[cmdk-group-heading]]:font-mono [&_[cmdk-group-heading]]:text-[0.65rem] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.2em] [&_[cmdk-group-heading]]:font-normal'
+
+const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items)
+
+function recentIcon(entry: RecentEntry) {
+  if (entry.kind === 'project') return GitBranch
+  if (entry.kind === 'run') return ListChecks
+  return NAV_ITEMS.find((item) => item.to === entry.path)?.icon ?? History
+}
 
 export function CommandPalette({
   open,
@@ -28,6 +37,8 @@ export function CommandPalette({
   const { repo, repos, isAll, setScope, autoScope, openSwitcher } =
     useActiveRepo()
   const navigate = useNavigate()
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const [query, setQuery] = useState('')
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -38,6 +49,22 @@ export function CommandPalette({
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
   }, [open, onOpenChange])
+
+  useEffect(() => {
+    if (!open) setQuery('')
+  }, [open])
+
+  const recents = useMemo(
+    () =>
+      open
+        ? visibleRecents(loadRecents(), {
+            path: pathname,
+            repo,
+            repos: repos.map((r) => r.name),
+          })
+        : [],
+    [open, pathname, repo, repos],
+  )
 
   function pickScope(scope: string) {
     setScope(scope)
@@ -55,11 +82,56 @@ export function CommandPalette({
     void navigate({ to: item.to, search: item.search })
   }
 
+  function pickRecent(entry: RecentEntry) {
+    if (entry.kind === 'project') {
+      pickScope(entry.label)
+      return
+    }
+    if (entry.kind === 'page') {
+      const item = NAV_ITEMS.find((i) => i.to === entry.path)
+      if (item) {
+        goTo(item)
+        return
+      }
+    }
+    onOpenChange(false)
+    void navigate({ to: entry.path })
+  }
+
   return (
     <CommandDialog open={open} onOpenChange={onOpenChange} className="font-mono">
-      <CommandInput placeholder="Type a command or search…" />
+      <CommandInput
+        placeholder="Type a command or search…"
+        value={query}
+        onValueChange={setQuery}
+      />
       <CommandList>
         <CommandEmpty>No results.</CommandEmpty>
+        {query === '' && recents.length > 0 && (
+          <>
+            <CommandGroup heading="Recent" className={GROUP_HEADING}>
+              {recents.map((entry) => {
+                const Icon = recentIcon(entry)
+                return (
+                  <CommandItem
+                    key={entry.key}
+                    value={entry.key}
+                    onSelect={() => pickRecent(entry)}
+                  >
+                    <Icon />
+                    <span className="flex-1 truncate">{entry.label}</span>
+                    {entry.sublabel && (
+                      <span className="truncate text-[0.65rem] text-muted-foreground">
+                        {entry.sublabel}
+                      </span>
+                    )}
+                  </CommandItem>
+                )
+              })}
+            </CommandGroup>
+            <CommandSeparator />
+          </>
+        )}
         {repos.length > 0 && (
           <>
             <CommandGroup heading="Projects" className={GROUP_HEADING}>
@@ -97,7 +169,7 @@ export function CommandPalette({
           </>
         )}
         <CommandGroup heading="Navigation" className={GROUP_HEADING}>
-          {NAV_GROUPS.flatMap((group) => group.items).map((item) => (
+          {NAV_ITEMS.map((item) => (
             <CommandItem
               key={item.to}
               value={item.label}

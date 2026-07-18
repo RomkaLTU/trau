@@ -21,6 +21,12 @@ import {
   storeScope,
 } from '@/lib/active-repo'
 import type { RepoView } from '@/lib/instances'
+import {
+  loadRecents,
+  projectRecent,
+  recordRecent,
+  saveRecents,
+} from '@/lib/recents'
 import { reposQueryOptions } from '@/lib/runs'
 
 interface ActiveRepoValue {
@@ -55,6 +61,9 @@ export function ActiveRepoProvider({ children }: { children: ReactNode }) {
   const setScope = useCallback((next: string) => {
     setStored(next)
     storeScope(next)
+    if (next !== ALL_SCOPE) {
+      saveRecents(recordRecent(loadRecents(), projectRecent(next, Date.now())))
+    }
   }, [])
 
   const openSwitcher = useCallback(() => setSwitcherSignal((n) => n + 1), [])
