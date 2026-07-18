@@ -11,6 +11,10 @@ import {
   useActiveRepo,
 } from '@/components/trau'
 import {
+  PromptsSection,
+  RepoPromptsSection,
+} from '@/components/trau/prompts-panel'
+import {
   InlineEditor,
   LayerChip,
   SecretChip,
@@ -20,6 +24,11 @@ import { ThemeGrid } from '@/components/trau/settings-theme-grid'
 import { cn } from '@/lib/utils'
 import { reposQueryOptions } from '@/lib/runs'
 import { configQueryOptions, type ConfigKey } from '@/lib/config'
+import {
+  matchesPrompt,
+  promptsQueryOptions,
+  repoPromptsQueryOptions,
+} from '@/lib/prompts'
 import {
   ROUTING_SECTION,
   THEME_SECTION,
@@ -34,7 +43,10 @@ import { standardTitle, usePageTitle } from '@/lib/page-title'
 export const Route = createFileRoute('/settings')({
   component: Settings,
   loader: ({ context }) =>
-    context.queryClient.ensureQueryData(reposQueryOptions),
+    Promise.all([
+      context.queryClient.ensureQueryData(reposQueryOptions),
+      context.queryClient.ensureQueryData(promptsQueryOptions),
+    ]),
 })
 
 function Settings() {
@@ -63,13 +75,15 @@ function Settings() {
         />
       )}
 
-      {active && <ConfigView repo={active} />}
+      {active ? <ConfigView repo={active} /> : <PromptsSection />}
     </div>
   )
 }
 
 function ConfigView({ repo }: { repo: string }) {
   const { data, error, isPending, refetch } = useQuery(configQueryOptions(repo))
+  const promptsData = useQuery(promptsQueryOptions).data
+  const repoPromptsData = useQuery(repoPromptsQueryOptions(repo)).data
   const [search, setSearch] = useState('')
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [editingKey, setEditingKey] = useState<string | null>(null)
@@ -85,6 +99,8 @@ function ConfigView({ repo }: { repo: string }) {
   const layers = data?.layers ?? ['project', 'user']
 
   const sections = useMemo(() => deriveSections(keys), [keys])
+  const globalPrompts = promptsData?.prompts ?? []
+  const repoPrompts = repoPromptsData?.prompts ?? []
 
   const query = search.trim().toLowerCase()
   const searching = query.length > 0
@@ -92,16 +108,32 @@ function ConfigView({ repo }: { repo: string }) {
     () => (searching ? keys.filter((k) => matchesQuery(k, query)).length : 0),
     [keys, query, searching],
   )
+  const promptMatches =
+    !searching ||
+    [...globalPrompts, ...repoPrompts].some((p) => matchesPrompt(p, query))
 
   const navSections = useMemo(
-    () =>
-      sections.map((s) => ({
+    () => [
+      ...sections.map((s) => ({
         id: s.id,
         title: s.group,
         count: s.keys.length,
         modified: s.modified,
       })),
-    [sections],
+      {
+        id: 'prompts',
+        title: 'Prompts',
+        count: globalPrompts.length,
+        modified: globalPrompts.some((p) => p.override !== null),
+      },
+      {
+        id: 'repo-prompts',
+        title: 'Repo prompts',
+        count: repoPrompts.length,
+        modified: repoPrompts.some((p) => p.repo_override !== null),
+      },
+    ],
+    [sections, globalPrompts, repoPrompts],
   )
 
   if (isPending && !error) return <ConfigSkeleton />
@@ -296,9 +328,7 @@ function ConfigView({ repo }: { repo: string }) {
         <SectionNav sections={navSections} variant="desktop" />
 
         <div className="flex min-w-0 flex-1 flex-col gap-4">
-          {visibleSections.length > 0 ? (
-            visibleSections
-          ) : (
+          {visibleSections.length === 0 && !promptMatches && (
             <TerminalCard
               title="search"
               bodyClassName="flex flex-col items-start gap-2 p-6"
@@ -315,6 +345,9 @@ function ConfigView({ repo }: { repo: string }) {
               </button>
             </TerminalCard>
           )}
+          {visibleSections}
+          <PromptsSection query={query} />
+          <RepoPromptsSection repo={repo} query={query} />
         </div>
       </div>
     </div>
