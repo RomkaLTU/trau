@@ -2,12 +2,12 @@ package pipeline
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/prompts"
 	"github.com/RomkaLTU/trau/internal/timelog"
 )
 
@@ -150,7 +150,14 @@ func (p *Pipeline) estimateMinutesAgent(ctx context.Context, id string, ds timel
 func timelogEstimatePath(id string) string { return "/tmp/timelog-" + id + ".txt" }
 
 func timelogEstimateInstruction(id string, ds timelog.DiffStats, commits int, path string) string {
-	return fmt.Sprintf("Estimate how many MINUTES of focused SENIOR-developer effort the change for %s represents — an estimate of HUMAN effort to write this, NOT your runtime. The work is on the current branch: %d files changed, +%d/-%d lines across %d commit(s); inspect `git diff` and the commits if it helps. Anchor to: config/typo/one-line 15-30; small single-file bug fix 30-60; bug fix with tests (2-4 files) 60-120; small feature 120-240; mechanical refactor across many files 120-240; feature spanning UI+API+DB 240-480; architectural change with deep design 480-1440. Judge by distinct concerns touched, not raw line count (generated/scaffolding counts for little). Write ONLY the integer number of minutes (digits, nothing else) to exactly %s and nowhere else. Do NOT change any code, run tests, commit, push, or open a PR.", id, ds.Files, ds.Additions, ds.Deletions, commits, path)
+	return prompts.Render("timelog_estimate", prompts.TimelogEstimateData{
+		ID:        id,
+		Files:     ds.Files,
+		Additions: ds.Additions,
+		Deletions: ds.Deletions,
+		Commits:   commits,
+		Path:      path,
+	})
 }
 
 func (p *Pipeline) nowUTC() time.Time {
