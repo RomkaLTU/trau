@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -73,5 +76,100 @@ func TestResolveRepoErrorWithoutHub(t *testing.T) {
 	}
 	if !strings.Contains(a.Suggestion, "--repo <path>") {
 		t.Fatalf("suggestion %q lost the resolve hint", a.Suggestion)
+	}
+}
+
+// TestMaybeAutostartHubReusesHealthyHub checks an already-healthy hub is
+// announced without spawning anything.
+func TestMaybeAutostartHubReusesHealthyHub(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != webserver.APIPrefix+"/health" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(webserver.Health{Status: "ok", Version: version})
+	}))
+	defer ts.Close()
+
+	host, portStr, err := net.SplitHostPort(ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+	port, _ := strconv.Atoi(portStr)
+	cfg := config.Config{ServeBind: host, ServePort: port, ServeAutostart: true}
+
+	var buf bytes.Buffer
+	maybeAutostartHub(context.Background(), cfg, false, &buf)
+
+	if want := "Web UI: http://" + host + ":" + portStr + "/"; !strings.Contains(buf.String(), want) {
+		t.Fatalf("output %q does not announce %q", buf.String(), want)
+	}
+}
+
+// TestMaybeAutostartHubPortBusySkips checks a non-hub process on the port
+// keeps the existing skip message and never claims a web UI.
+func TestMaybeAutostartHubPortBusySkips(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+
+	host, portStr, err := net.SplitHostPort(ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+	port, _ := strconv.Atoi(portStr)
+	cfg := config.Config{ServeBind: host, ServePort: port, ServeAutostart: true}
+
+	var buf bytes.Buffer
+	maybeAutostartHub(context.Background(), cfg, false, &buf)
+
+	out := buf.String()
+	if !strings.Contains(out, "port "+portStr+" is busy") {
+		t.Fatalf("output %q lost the port-busy skip message", out)
+	}
+	if strings.Contains(out, "Web UI:") {
+		t.Fatalf("output %q claims a web UI with no hub up", out)
+	}
+}
+
+// TestHubLogPathUsesTrauHome checks the hub log lives beside the hub database
+// under TRAU_HOME.
+func TestHubLogPathUsesTrauHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TRAU_HOME", home)
+
+	if got, want := hubLogPath(), filepath.Join(home, "hub.log"); got != want {
+		t.Fatalf("hubLogPath() = %q, want %q", got, want)
+	}
+}
+
+// TestOpenHubLogTruncatesPerSpawn checks each spawn starts a fresh log, so the
+// file only ever holds the latest boot's output.
+func TestOpenHubLogTruncatesPerSpawn(t *testing.T) {
+	t.Setenv("TRAU_HOME", filepath.Join(t.TempDir(), "trau"))
+
+	first := openHubLog()
+	if first == nil {
+		t.Fatal("openHubLog returned nil for a writable home")
+	}
+	if _, err := first.WriteString("first boot\n"); err != nil {
+		t.Fatalf("write first log: %v", err)
+	}
+	_ = first.Close()
+
+	second := openHubLog()
+	if second == nil {
+		t.Fatal("openHubLog returned nil on respawn")
+	}
+	if _, err := second.WriteString("second boot\n"); err != nil {
+		t.Fatalf("write second log: %v", err)
+	}
+	_ = second.Close()
+
+	data, err := os.ReadFile(hubLogPath())
+	if err != nil {
+		t.Fatalf("read hub.log: %v", err)
+	}
+	if string(data) != "second boot\n" {
+		t.Fatalf("hub.log = %q, want only the latest spawn's output", data)
 	}
 }
