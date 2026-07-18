@@ -130,7 +130,7 @@ func (p *Pipeline) estimateMinutes(ctx context.Context, id string, ds timelog.Di
 func (p *Pipeline) estimateMinutesAgent(ctx context.Context, id string, ds timelog.DiffStats, commits []string) (int, bool) {
 	path := timelogEstimatePath(id)
 	_ = os.Remove(path)
-	if _, err := p.agentPhaseOn(ctx, id, "timelog", timelogEstimateInstruction(id, ds, len(commits), path), p.Runner); err != nil {
+	if _, err := p.agentPhaseOn(ctx, id, "timelog", timelogEstimateInstruction(p.prompts, id, ds, len(commits), path), p.Runner); err != nil {
 		return 0, false
 	}
 	data, err := os.ReadFile(path)
@@ -149,8 +149,8 @@ func (p *Pipeline) estimateMinutesAgent(ctx context.Context, id string, ds timel
 
 func timelogEstimatePath(id string) string { return "/tmp/timelog-" + id + ".txt" }
 
-func timelogEstimateInstruction(id string, ds timelog.DiffStats, commits int, path string) string {
-	return prompts.Render("timelog_estimate", prompts.TimelogEstimateData{
+func timelogEstimateInstruction(r prompts.Renderer, id string, ds timelog.DiffStats, commits int, path string) string {
+	return r.Render("timelog_estimate", prompts.TimelogEstimateData{
 		ID:        id,
 		Files:     ds.Files,
 		Additions: ds.Additions,

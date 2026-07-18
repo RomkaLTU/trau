@@ -163,6 +163,43 @@ func TestSyncPostsToRepo(t *testing.T) {
 	}
 }
 
+func TestResolvedPromptsKeepsOnlyOverrides(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != apiPrefix+"/repos/acme/prompts" {
+			t.Errorf("request = %s %q", r.Method, r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"repo": "acme",
+			"prompts": []map[string]any{
+				{"name": "build", "effective": "repo", "effective_body": "custom build {{.ID}}"},
+				{"name": "commit", "effective": "global", "effective_body": "custom commit {{.ID}}"},
+				{"name": "verify", "effective": "default", "effective_body": "built-in verify body"},
+			},
+		})
+	}))
+	defer ts.Close()
+
+	m, err := New(ts.URL, "").ResolvedPrompts(context.Background(), "acme")
+	if err != nil {
+		t.Fatalf("ResolvedPrompts: %v", err)
+	}
+	want := map[string]string{"build": "custom build {{.ID}}", "commit": "custom commit {{.ID}}"}
+	if len(m) != len(want) {
+		t.Fatalf("map = %v, want %v", m, want)
+	}
+	for name, body := range want {
+		if m[name] != body {
+			t.Errorf("m[%q] = %q, want %q", name, m[name], body)
+		}
+	}
+}
+
+func TestResolvedPromptsUnreachable(t *testing.T) {
+	if _, err := New("http://127.0.0.1:1", "").ResolvedPrompts(context.Background(), "acme"); !IsUnreachable(err) {
+		t.Fatalf("err = %v, want an unreachable transport error", err)
+	}
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

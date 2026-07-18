@@ -19,6 +19,10 @@ const KindAgentStart = "agent_start"
 // installed — the agent skipped the skills the repo expected it to use.
 const KindBuildNoSkills = "build_no_skills"
 
+// KindPromptOverrideSkipped marks a stored prompt override that failed to parse
+// or execute at render time — the phase ran on the built-in default body.
+const KindPromptOverrideSkipped = "prompt_override_skipped"
+
 // KindSpawnFailed marks a hub-spawned child that exited before it could register
 // or write a checkpoint — dead on arrival. The retired direct spawn path was its
 // only emitter (ADR 0015); the name documents rows older stores still hold and

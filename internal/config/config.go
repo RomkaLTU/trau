@@ -65,6 +65,12 @@ type Config struct {
 	Remote     string
 	RepoRoot   string
 
+	// PromptOverrides is the repo's stored prompt-override map, fetched from the
+	// hub at startup for the preambles baked into the agent backends. Nil keeps
+	// the built-in bodies. The pipeline's phase prompts snapshot their own map at
+	// every ticket-run start instead.
+	PromptOverrides map[string]string
+
 	Provider        string
 	TrackerProvider string
 
@@ -1103,11 +1109,13 @@ func (c Config) PhaseDisallowedTools(phase string) string {
 // its effective tool policy: the Explore-permitting variant when the phase's Claude
 // disallowed-tools set leaves the Agent tool enabled, otherwise the standard
 // fan-out-disabled text. Non-Claude phases always take the standard preamble.
+// Stored overrides in PromptOverrides replace either body like any other prompt.
 func (c Config) PhasePreamble(provider, phase string) string {
+	r := prompts.Renderer{Overrides: c.PromptOverrides}
 	if provider == "claude" && exploreAllowed(c.PhaseDisallowedTools(phase)) {
-		return ExplorePreamble
+		return r.Render("explore_preamble", nil)
 	}
-	return Preamble
+	return r.Render("preamble", nil)
 }
 
 func dropTool(list, tool string) string {

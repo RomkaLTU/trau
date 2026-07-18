@@ -1,16 +1,20 @@
 package pipeline
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/RomkaLTU/trau/internal/prompts"
+)
 
 func TestSkillsPromptComposition(t *testing.T) {
 	t.Run("no skills keeps the self-selection note", func(t *testing.T) {
-		got := skillsPrompt(nil, nil)
+		got := skillsPrompt(prompts.Renderer{}, nil, nil)
 		mustContain(t, "skillsPrompt(none)", got, "auto-select and load the project skills")
 		mustNotContain(t, "skillsPrompt(none)", got, "this repo has skills")
 	})
 
 	t.Run("installed only names the skills", func(t *testing.T) {
-		got := skillsPrompt([]string{"golang-code-style", "golang-error-handling"}, nil)
+		got := skillsPrompt(prompts.Renderer{}, []string{"golang-code-style", "golang-error-handling"}, nil)
 		mustContain(t, "skillsPrompt(installed)", got,
 			"this repo has skills: golang-code-style, golang-error-handling",
 			"with the Skill tool before implementing",
@@ -19,7 +23,7 @@ func TestSkillsPromptComposition(t *testing.T) {
 	})
 
 	t.Run("required set names them explicitly", func(t *testing.T) {
-		got := skillsPrompt(
+		got := skillsPrompt(prompts.Renderer{},
 			[]string{"golang-code-style", "golang-error-handling", "goreleaser"},
 			[]string{"golang-code-style", "golang-error-handling"},
 		)
@@ -31,7 +35,7 @@ func TestSkillsPromptComposition(t *testing.T) {
 	})
 
 	t.Run("required naming a missing skill drops it and stays installed-only", func(t *testing.T) {
-		got := skillsPrompt(
+		got := skillsPrompt(prompts.Renderer{},
 			[]string{"golang-code-style"},
 			[]string{"golang-code-style", "nonexistent-skill"},
 		)
@@ -43,7 +47,7 @@ func TestSkillsPromptComposition(t *testing.T) {
 	})
 
 	t.Run("all required missing falls back to self-selection among installed", func(t *testing.T) {
-		got := skillsPrompt([]string{"golang-code-style"}, []string{"nonexistent-skill"})
+		got := skillsPrompt(prompts.Renderer{}, []string{"golang-code-style"}, []string{"nonexistent-skill"})
 		mustContain(t, "skillsPrompt(all-missing)", got,
 			"this repo has skills: golang-code-style",
 			"Load the ones relevant to this ticket",

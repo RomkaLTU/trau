@@ -18,8 +18,8 @@ func buildNotesPath(id string) string { return "/tmp/buildnotes-" + id + ".md" }
 // buildNotesInstruction is appended to the build prompt. It is best-effort by
 // design: an agent that ignores it leaves no file, and every downstream phase then
 // behaves exactly as it does today.
-func buildNotesInstruction(id string) string {
-	return prompts.Render("build_notes", prompts.BuildNotesData{ID: id, Path: buildNotesPath(id)})
+func buildNotesInstruction(r prompts.Renderer, id string) string {
+	return r.Render("build_notes", prompts.BuildNotesData{ID: id, Path: buildNotesPath(id)})
 }
 
 // readBuildNotes reads the notes at path. ok is false when the file is absent or

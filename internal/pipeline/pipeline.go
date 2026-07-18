@@ -401,6 +401,13 @@ type Pipeline struct {
 	// emitted here as state_change events; nil in modes that keep no durable log.
 	Events *event.Log
 
+	// FetchPrompts returns the repo's stored prompt-override map (the hub's
+	// resolved prompts read at the composition root). It is called once at
+	// ticket-run start; a failure logs one warning and the run proceeds on
+	// built-in defaults — prompt resolution never blocks a run (ADR 0008).
+	// Nil disables overrides.
+	FetchPrompts func(ctx context.Context) (map[string]string, error)
+
 	// OnPhase, when set, is called each time a ticket enters a checkpoint phase,
 	// carrying the ticket and the phase just written (state.Building, …). The
 	// composition root wires it to the instance registry so the hub sees a
@@ -433,6 +440,12 @@ type Pipeline struct {
 	// post-build no-skills warning.
 	buildProvider string
 	buildSkills   []string
+
+	// prompts is the ticket run's prompt renderer: the override snapshot
+	// fetched at run start layered over the built-in defaults. Edits made
+	// mid-run apply from the next run, never mid-ticket. The zero value
+	// renders defaults, so entry points that never fetched still work.
+	prompts prompts.Renderer
 
 	// OwnedProject is the Linear project this repo is bound to (config PROJECT).
 	// When set, Resume refuses any ticket whose project differs — before any
@@ -525,6 +538,7 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 
 		p.setTitle(p.State.Get(id, "TITLE"))
 	}
+	p.loadPrompts(ctx, id)
 	fi := state.Idx(from)
 
 	if from != "" {
@@ -549,6 +563,30 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 	}
 
 	return p.classifyPhaseErr(ctx, id, p.runPhases(ctx, id, fi))
+}
+
+// loadPrompts snapshots the repo's stored prompt overrides for this ticket run.
+// A fetch failure logs one warning and leaves the built-in defaults in place —
+// the hub being down never blocks prompt resolution. An override that later
+// fails to render falls back to its default and is flagged like the skills
+// warning: on the console and as a durable event naming the prompt.
+func (p *Pipeline) loadPrompts(ctx context.Context, id string) {
+	p.prompts = prompts.Renderer{OnOverrideError: func(name string, err error) {
+		msg := fmt.Sprintf("prompt override %q failed to render — using the built-in default: %v", name, err)
+		p.logf("  ⚠ %s", msg)
+		if p.Events != nil {
+			p.Events.Emit(event.KindPromptOverrideSkipped, "", msg, map[string]any{"ticket": id, "prompt": name})
+		}
+	}}
+	if p.FetchPrompts == nil {
+		return
+	}
+	overrides, err := p.FetchPrompts(ctx)
+	if err != nil {
+		p.logf("  ⚠ prompt overrides unavailable — using built-in defaults: %v", err)
+		return
+	}
+	p.prompts.Overrides = overrides
 }
 
 // reopenedInTracker reports whether a merged ticket should rebuild: trau saw the
@@ -932,8 +970,8 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 		note = resumeNote
 	}
 	note += buildLessonsNote(p.recallLessons(p.lessonQuery(id)))
-	skillsNote := skillsPrompt(agent.InstalledSkillNames(p.RepoRoot), p.RequiredSkills)
-	out, err := p.agentStep(ctx, id, "build", buildInstruction(id, branch, skillsNote, note, p.ticketContext(ctx, id)))
+	skillsNote := skillsPrompt(p.prompts, agent.InstalledSkillNames(p.RepoRoot), p.RequiredSkills)
+	out, err := p.agentStep(ctx, id, "build", buildInstruction(p.prompts, id, branch, skillsNote, note, p.ticketContext(ctx, id)))
 	if err != nil {
 		return err
 	}
@@ -1171,7 +1209,7 @@ func (p *Pipeline) Handoff(ctx context.Context, id string) error {
 // lintfix→cleanup chain has also finished.
 func (p *Pipeline) handoffWork(ctx context.Context, id string) error {
 	p.setActivity(id, activity.Handoff, "")
-	if _, err := p.agentStep(ctx, id, "handoff", handoffTail(id, p.ticketContext(ctx, id))); err != nil {
+	if _, err := p.agentStep(ctx, id, "handoff", handoffTail(p.prompts, id, p.ticketContext(ctx, id))); err != nil {
 		return err
 	}
 	if fi, err := os.Stat(handoffPath(id)); err != nil || fi.Size() == 0 {
@@ -1243,7 +1281,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	fi, err := os.Stat(handoff)
 	briefPresent := err == nil && fi.Size() > 0
 	if !briefPresent && !p.skipHandoff(ctx, id) {
-		if _, err := p.agentStep(ctx, id, "handoff", handoffTail(id, p.ticketContext(ctx, id))); err != nil {
+		if _, err := p.agentStep(ctx, id, "handoff", handoffTail(p.prompts, id, p.ticketContext(ctx, id))); err != nil {
 			return err
 		}
 		p.persistHandoff(id)
@@ -1316,7 +1354,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				p.logf("  ↳ %s", fl)
 			}
 			p.setActivity(id, activity.Repair, fmt.Sprintf("repair%d", repairAttempt))
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
 				return err
 			}
 			continue
@@ -1329,7 +1367,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				p.logf("  ↳ %s", fl)
 			}
 			p.setActivity(id, activity.Bugfix, fmt.Sprintf("bugfix%d", bugfixAttempt))
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
 				return err
 			}
 			continue
@@ -1469,7 +1507,7 @@ func (p *Pipeline) commitSlice(ctx context.Context, id string) error {
 		hookNote = " A templated commit was just rejected by this repository's hooks (" + sanitize.FeedLine(rejected.Error()) + "). The changes are still staged: read the repo's commit conventions (commit hooks, lint config, recent git log) and write a message they accept."
 	}
 	rubricRef, _ := p.activeRubric(id)
-	_, err := p.agentStep(ctx, id, "commit", commitInstruction(id, commitRubricNote(rubricRef), p.MergeMethod == "squash")+hookNote)
+	_, err := p.agentStep(ctx, id, "commit", commitInstruction(p.prompts, id, commitRubricNote(rubricRef), p.MergeMethod == "squash")+hookNote)
 	return err
 }
 
@@ -1655,7 +1693,7 @@ func (p *Pipeline) syncBranchWithBase(ctx context.Context, id, branch, base, lab
 		maxAttempts = 1
 	}
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if _, err := p.agentStep(ctx, id, fmt.Sprintf("%s%d", label, attempt), resolveConflictsInstruction(id, base, branch)); err != nil {
+		if _, err := p.agentStep(ctx, id, fmt.Sprintf("%s%d", label, attempt), resolveConflictsInstruction(p.prompts, id, base, branch)); err != nil {
 			return false, err
 		}
 		if unmerged, _ := p.Git.Unmerged(ctx); strings.TrimSpace(unmerged) == "" {
@@ -1842,7 +1880,7 @@ func (p *Pipeline) pushDeliverable(ctx context.Context, id, ref string) error {
 		repairs++
 		p.logf("  ⚠ push rejected by a pre-push gate — repair attempt %d/%d", repairs, p.MaxRepairs)
 		notesRef, _ := p.activeBuildNotes(id)
-		if _, err := p.agentStep(ctx, id, fmt.Sprintf("push-repair%d", repairs), pushRepairInstruction(id, err.Error(), buildNotesNote(notesRef))); err != nil {
+		if _, err := p.agentStep(ctx, id, fmt.Sprintf("push-repair%d", repairs), pushRepairInstruction(p.prompts, id, err.Error(), buildNotesNote(notesRef))); err != nil {
 			return err
 		}
 	}
@@ -2426,8 +2464,8 @@ const resumeNote = " A previous attempt may have left partial work on this branc
 // self-selection in 2.1.202, which is why a skill-equipped repo names its
 // skills explicitly). Required names that are not installed are dropped here
 // (they can't be loaded) and surfaced by the loop-start warning instead.
-func skillsPrompt(installed, required []string) string {
-	return prompts.Render("skills", prompts.SkillsData{
+func skillsPrompt(r prompts.Renderer, installed, required []string) string {
+	return r.Render("skills", prompts.SkillsData{
 		Installed: installed,
 		Required:  intersect(required, installed),
 	})
@@ -2447,14 +2485,14 @@ func intersect(want, have []string) []string {
 	return out
 }
 
-func buildInstruction(id, branch, skillsNote, note, ticketCtx string) string {
-	return prompts.Render("build", prompts.BuildData{
+func buildInstruction(r prompts.Renderer, id, branch, skillsNote, note, ticketCtx string) string {
+	return r.Render("build", prompts.BuildData{
 		ID:            id,
 		Branch:        branch,
 		SkillsNote:    skillsNote,
 		Note:          note,
-		CodeStyle:     prompts.Render("code_style", nil),
-		BuildNotes:    buildNotesInstruction(id),
+		CodeStyle:     r.Render("code_style", nil),
+		BuildNotes:    buildNotesInstruction(r, id),
 		TicketContext: ticketCtx,
 	})
 }
@@ -2534,11 +2572,11 @@ func handoffPath(id string) string { return "/tmp/handoff-" + id + ".md" }
 
 func verifyPath(id string) string { return "/tmp/verify-" + id + ".json" }
 
-func handoffTail(id, ticketCtx string) string {
-	return prompts.Render("handoff", prompts.HandoffData{
+func handoffTail(r prompts.Renderer, id, ticketCtx string) string {
+	return r.Render("handoff", prompts.HandoffData{
 		ID:            id,
 		Handoff:       handoffPath(id),
-		Rubric:        rubricInstruction(id),
+		Rubric:        rubricInstruction(r, id),
 		TicketContext: ticketCtx,
 	})
 }
@@ -2591,8 +2629,8 @@ func browserNote(mode, appURL string) string {
 // handoff agent) it derives the checkable behaviors itself from the injected ticket
 // content and the slice's diff. The verdict shape and pass/fail gating are identical
 // either way.
-func verifyTail(id, handoff, verdict, note, checksFragment, rubricNote, lessonsNote, ticketCtx string) string {
-	return prompts.Render("verify", prompts.VerifyData{
+func verifyTail(r prompts.Renderer, id, handoff, verdict, note, checksFragment, rubricNote, lessonsNote, ticketCtx string) string {
+	return r.Render("verify", prompts.VerifyData{
 		ID:             id,
 		Handoff:        handoff,
 		Verdict:        verdict,
@@ -2604,8 +2642,8 @@ func verifyTail(id, handoff, verdict, note, checksFragment, rubricNote, lessonsN
 	})
 }
 
-func commitInstruction(id, rubricNote string, squash bool) string {
-	return prompts.Render("commit", prompts.CommitData{ID: id, RubricNote: rubricNote, Squash: squash})
+func commitInstruction(r prompts.Renderer, id, rubricNote string, squash bool) string {
+	return r.Render("commit", prompts.CommitData{ID: id, RubricNote: rubricNote, Squash: squash})
 }
 
 // deterministicCommitMessage builds the templated Conventional Commit for a squash
@@ -2687,15 +2725,15 @@ func commitSubject(title string) string {
 	return strings.TrimRight(cut, " ")
 }
 
-func repairInstruction(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) string {
-	return prompts.Render("repair", repairData(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx))
+func repairInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) string {
+	return r.Render("repair", repairData(r, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx))
 }
 
-func bugfixInstruction(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) string {
-	return prompts.Render("bugfix", repairData(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx))
+func bugfixInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) string {
+	return r.Render("bugfix", repairData(r, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx))
 }
 
-func repairData(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) prompts.RepairData {
+func repairData(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) prompts.RepairData {
 	return prompts.RepairData{
 		ID:            id,
 		Verdict:       verdict,
@@ -2705,7 +2743,7 @@ func repairData(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, no
 		RubricNote:    rubricNote,
 		LessonsNote:   lessonsNote,
 		NotesNote:     notesNote,
-		CodeStyle:     prompts.Render("code_style", nil),
+		CodeStyle:     r.Render("code_style", nil),
 		TicketContext: ticketCtx,
 	}
 }
@@ -2715,12 +2753,12 @@ func repairData(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, no
 // problem AND fold the fix into what gets pushed (amend or a follow-up commit); the
 // loop re-pushes after it finishes. The output is passed raw and unparsed — the
 // agent reads the hook's own report rather than trau guessing at its format.
-func pushRepairInstruction(id, hookOutput, notesNote string) string {
-	return prompts.Render("push_repair", prompts.PushRepairData{
+func pushRepairInstruction(r prompts.Renderer, id, hookOutput, notesNote string) string {
+	return r.Render("push_repair", prompts.PushRepairData{
 		ID:         id,
 		HookOutput: hookOutput,
 		NotesNote:  notesNote,
-		CodeStyle:  prompts.Render("code_style", nil),
+		CodeStyle:  r.Render("code_style", nil),
 	})
 }
 
@@ -2819,7 +2857,7 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 	}
 	verdictPath := verifyPath(id)
 	_ = os.Remove(verdictPath)
-	prompt := verifyTail(id, handoff, verdictPath, note, checksFragment, rubricNote, lessonsNote, ticketCtx)
+	prompt := verifyTail(p.prompts, id, handoff, verdictPath, note, checksFragment, rubricNote, lessonsNote, ticketCtx)
 	_, agentErr := p.agentStep(ctx, id, label, prompt)
 	// A provider pause (rate/usage limit) or budget give-up must propagate, not be
 	// recorded as a verify failure — otherwise a transient 429 burns repair/bugfix
@@ -2864,7 +2902,7 @@ func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, check
 		memberPath := verifyMemberPath(id, m.Name)
 		_ = os.Remove(memberPath)
 		memberLabel := label + "-" + m.Name
-		prompt := verifyTail(id, handoff, memberPath, note, checksFragment, rubricNote, lessonsNote, ticketCtx)
+		prompt := verifyTail(p.prompts, id, handoff, memberPath, note, checksFragment, rubricNote, lessonsNote, ticketCtx)
 		_, agentErr := p.agentStepOn(ctx, id, memberLabel, prompt, m.Runner)
 		if agentErr != nil && isFatalAgentErr(agentErr) {
 			return agentErr

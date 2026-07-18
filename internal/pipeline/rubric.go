@@ -31,8 +31,8 @@ func rubricPath(id string) string { return "/tmp/rubric-" + id + ".json" }
 // rubricInstruction is appended to the handoff prompt: it asks the same agent
 // that wrote the QA brief to also emit the structured rubric, populated from the
 // ticket rather than invented, to exactly rubricPath(id).
-func rubricInstruction(id string) string {
-	return prompts.Render("rubric", prompts.RubricData{ID: id, Path: rubricPath(id), Schema: rubricSchema})
+func rubricInstruction(r prompts.Renderer, id string) string {
+	return r.Render("rubric", prompts.RubricData{ID: id, Path: rubricPath(id), Schema: rubricSchema})
 }
 
 // readRubric parses the rubric at path. ok is false when the file is absent or
