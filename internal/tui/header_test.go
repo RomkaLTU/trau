@@ -1,12 +1,15 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
 )
 
@@ -121,6 +124,92 @@ func TestHeaderTitleYieldsFirstAt80Cols(t *testing.T) {
 	}
 	if !strings.Contains(plain, "…") {
 		t.Fatalf("long title should have truncated with an ellipsis:\n%s", plain)
+	}
+}
+
+// TestWebStatusLabel pins the indicator's three forms: unknown renders
+// nothing, a healthy hub names its port, a down hub is a bare ✗.
+func TestWebStatusLabel(t *testing.T) {
+	if got := (webStatus{}).label(); got != "" {
+		t.Fatalf("unknown hub label = %q, want empty", got)
+	}
+	up := webStatus{base: "http://127.0.0.1:8728", healthy: true}
+	if got := up.label(); got != "Web ✓ :8728" {
+		t.Fatalf("healthy label = %q, want %q", got, "Web ✓ :8728")
+	}
+	if got := (webStatus{base: "http://127.0.0.1:8728"}).label(); got != "Web ✗" {
+		t.Fatalf("down label = %q, want %q", got, "Web ✗")
+	}
+}
+
+// TestRunHeaderShowsWebStatus asserts the run header's right cluster carries
+// the indicator and flips it across hub restarts, and that a session with no
+// hub wired renders none.
+func TestRunHeaderShowsWebStatus(t *testing.T) {
+	setThemeBackground(true)
+	t.Cleanup(func() { setScreenWeb(webStatus{}) })
+	m := freshDash(120, 40, "main")
+
+	setScreenWeb(webStatus{base: "http://127.0.0.1:8728", healthy: true})
+	if plain := ansi.Strip(m.renderHeader()); !strings.Contains(plain, "Web ✓ :8728") {
+		t.Fatalf("header missing healthy indicator:\n%s", plain)
+	}
+
+	setScreenWeb(webStatus{base: "http://127.0.0.1:8728"})
+	plain := ansi.Strip(m.renderHeader())
+	if !strings.Contains(plain, "Web ✗") || strings.Contains(plain, "Web ✓") {
+		t.Fatalf("header did not flip to the down indicator:\n%s", plain)
+	}
+
+	setScreenWeb(webStatus{})
+	if plain := ansi.Strip(m.renderHeader()); strings.Contains(plain, "Web ") {
+		t.Fatalf("header shows an indicator with no hub wired:\n%s", plain)
+	}
+}
+
+// TestCardScreensPinWebStatus asserts a card screen (the menu) pins the
+// indicator top-right, appending the transient open-outcome note while set.
+func TestCardScreensPinWebStatus(t *testing.T) {
+	t.Cleanup(func() { setScreenWeb(webStatus{}) })
+	am := newAppModel(context.Background(), &fakeAppActions{}, nil)
+	nm, _ := am.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m := nm.(appModel)
+
+	setScreenWeb(webStatus{base: "http://127.0.0.1:8728", healthy: true})
+	if plain := ansi.Strip(m.render()); !strings.Contains(plain, "Web ✓ :8728") {
+		t.Fatalf("menu missing web indicator:\n%s", plain)
+	}
+
+	setScreenWeb(webStatus{base: "http://127.0.0.1:8728"})
+	m.hubNote, m.hubNoteErr = "hub autostart is off (SERVE_AUTOSTART=0)", true
+	plain := ansi.Strip(m.render())
+	if !strings.Contains(plain, "Web ✗") || !strings.Contains(plain, "SERVE_AUTOSTART=0") {
+		t.Fatalf("menu missing down indicator with its reason:\n%s", plain)
+	}
+}
+
+// TestSummaryScreenPinsWebStatus asserts the session-complete card — which the
+// dashboard draws without its header row or toast — still carries the indicator
+// and the refusal note, through the shell's overlay.
+func TestSummaryScreenPinsWebStatus(t *testing.T) {
+	t.Cleanup(func() { setScreenWeb(webStatus{}) })
+	am := newAppModel(context.Background(), &fakeAppActions{}, nil)
+	nm, _ := am.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m := nm.(appModel)
+	m.view = viewRunning
+	dash, _ := freshDash(80, 24, "main").enterSummary(console.SessionSummary{})
+	m.dash = dash.(model)
+
+	setScreenWeb(webStatus{base: "http://127.0.0.1:8728", healthy: true})
+	if plain := ansi.Strip(m.render()); !strings.Contains(plain, "Web ✓ :8728") {
+		t.Fatalf("summary missing web indicator:\n%s", plain)
+	}
+
+	setScreenWeb(webStatus{base: "http://127.0.0.1:8728"})
+	m.hubNote, m.hubNoteErr = "hub autostart is off (SERVE_AUTOSTART=0)", true
+	plain := ansi.Strip(m.render())
+	if !strings.Contains(plain, "Web ✗") || !strings.Contains(plain, "SERVE_AUTOSTART=0") {
+		t.Fatalf("summary missing down indicator with its reason:\n%s", plain)
 	}
 }
 

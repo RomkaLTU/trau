@@ -72,6 +72,17 @@ type Actions interface {
 	// to run the loop. When true, the menu shell starts in the onboarding wizard
 	// instead of the hero-card menu.
 	OnboardingNeeded() bool
+
+	// HubStatus reports the web hub origin (fixed by config) and whether it
+	// answers its health probe right now — the signal behind the header's Web
+	// indicator.
+	HubStatus(ctx context.Context) (url string, healthy bool)
+
+	// OpenWebUI makes the web hub reachable — autostarting it when policy
+	// allows — and returns the URL to open in the browser. The error names why
+	// the hub can't be reached (autostart off, exposure guard, spawn failure)
+	// so the shell can surface it instead of a silent no-op.
+	OpenWebUI(ctx context.Context) (url string, err error)
 }
 
 // sessionReporter is the optional capability an Actions implementation exposes so
@@ -214,7 +225,12 @@ const (
 	actBack
 	actQuit
 	actHandle
+	actOpenWeb
 )
+
+// hubProbeEvery throttles the header's hub health probe on the spinner tick
+// that already drives every screen refresh — no polling loop of its own.
+const hubProbeEvery = 5 * time.Second
 
 type menuItem struct {
 	action menuAction
@@ -241,6 +257,17 @@ type (
 	statusActionMsg struct {
 		note string
 		err  error
+	}
+	// hubStatusMsg carries one hub health probe result for the Web indicator.
+	hubStatusMsg struct {
+		base    string
+		healthy bool
+	}
+	// openWebDoneMsg is the Open Web UI outcome: the URL to open, or the reason
+	// the hub can't be reached.
+	openWebDoneMsg struct {
+		url string
+		err error
 	}
 )
 
@@ -293,6 +320,14 @@ type appModel struct {
 	help    helpModel
 	palette paletteModel
 
+	// hubChecked/hubProbing pace the throttled Web-indicator probe; hubNote is
+	// the transient Open Web UI outcome line the top-right overlay appends,
+	// cleared on the next key press like a toast.
+	hubChecked time.Time
+	hubProbing bool
+	hubNote    string
+	hubNoteErr bool
+
 	mouseOff bool
 
 	// notifier is the desktop notifier each fresh dashboard reports through
@@ -321,6 +356,7 @@ func newAppModel(ctx context.Context, actions Actions, renderer *TUI) appModel {
 		{actVersion, "Version", "build info"},
 		{actOnboarding, "Re-run onboarding", "change project settings"},
 		{actSettings, "Settings", "edit .ini config"},
+		{actOpenWeb, "Open Web UI", "the hub in your browser"},
 		{actBack, "Back", "to the main menu"},
 	}
 
@@ -475,7 +511,34 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dash, cmd = applyDashCmd(m.dash, msg)
 			cmds = append(cmds, cmd)
 		}
+		if !m.hubProbing && time.Since(m.hubChecked) >= hubProbeEvery {
+			m.hubProbing = true
+			cmds = append(cmds, m.hubProbeCmd())
+		}
 		return m, tea.Batch(cmds...)
+
+	case hubStatusMsg:
+		m.hubProbing = false
+		m.hubChecked = time.Now()
+		setScreenWeb(webStatus(msg))
+		return m, nil
+
+	case openWebDoneMsg:
+		m.hubChecked = time.Now()
+		if msg.err != nil {
+			setScreenWeb(webStatus{base: screenWeb.base})
+			m.hubNote, m.hubNoteErr = msg.err.Error(), true
+			if m.dashCarriesWebStatus() {
+				m.dash.toast, m.dash.toastErr = "✗ web UI: "+msg.err.Error(), true
+			}
+			return m, nil
+		}
+		setScreenWeb(webStatus{base: strings.TrimSuffix(msg.url, "/"), healthy: true})
+		m.hubNote, m.hubNoteErr = "", false
+		if m.dashCarriesWebStatus() {
+			m.dash = m.dash.clearToast()
+		}
+		return m, openURLCmd(msg.url)
 	}
 
 	var cmd tea.Cmd
@@ -502,6 +565,7 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	m.hubNote, m.hubNoteErr = "", false
 	// The ? help overlay is modal and global: while open it owns every key, and
 	// it opens on any screen that isn't mid-text-entry (where ? is a literal
 	// character). One interception here keeps behavior identical on every view.
@@ -550,6 +614,11 @@ func (m appModel) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.mouseOff = !m.mouseOff
 		setMouseEnabled(!m.mouseOff)
 		return m, nil
+	}
+	// Global like the palette, but suppressed while a text input captures keys —
+	// W is a valid ticket-id letter.
+	if msg.String() == "W" && !m.typingText() {
+		return m.openWebUI()
 	}
 
 	switch m.view {
@@ -955,6 +1024,9 @@ func (m appModel) selectAction(a menuAction) (tea.Model, tea.Cmd) {
 		}
 		return m.selectAction(actStatus)
 
+	case actOpenWeb:
+		return m.openWebUI()
+
 	case actQuit:
 		return m, tea.Quit
 	}
@@ -1244,6 +1316,57 @@ func (m appModel) reconcileCmd(ctx context.Context) tea.Cmd {
 	}
 }
 
+// typingText reports whether a focused text input owns printable keys right
+// now — the guard that keeps the global W out of ticket-id and filter entry.
+func (m appModel) typingText() bool {
+	switch m.view {
+	case viewReset:
+		return m.reset.Focused()
+	case viewRunLoop:
+		return m.loopSetup.input.Focused()
+	case viewRunOnce:
+		return m.runOnce.input.Focused()
+	}
+	return m.editing()
+}
+
+// dashCarriesWebStatus reports whether the running dashboard is drawing the Web
+// indicator itself, in its own header row and toast. Its summary card has
+// neither, so there the shell's overlay takes over as on any other card screen.
+func (m appModel) dashCarriesWebStatus() bool {
+	return m.view == viewRunning && !m.dash.done()
+}
+
+// openWebUI fires the Open Web UI action: the backend probes the hub,
+// autostarts it when policy allows, and reports back through openWebDoneMsg.
+// While the hub is down the autostart wait is announced so the seconds before
+// the browser opens (or the refusal lands) aren't a silent gap.
+func (m appModel) openWebUI() (tea.Model, tea.Cmd) {
+	if !screenWeb.healthy {
+		m.hubNote, m.hubNoteErr = "starting the web hub…", false
+		if m.dashCarriesWebStatus() {
+			m.dash.toast, m.dash.toastErr = "starting the web hub…", false
+		}
+	}
+	return m, m.openWebCmd()
+}
+
+func (m appModel) openWebCmd() tea.Cmd {
+	actions, ctx := m.actions, m.baseCtx
+	return func() tea.Msg {
+		url, err := actions.OpenWebUI(ctx)
+		return openWebDoneMsg{url: url, err: err}
+	}
+}
+
+func (m appModel) hubProbeCmd() tea.Cmd {
+	actions, ctx := m.actions, m.baseCtx
+	return func() tea.Msg {
+		base, healthy := actions.HubStatus(ctx)
+		return hubStatusMsg{base: base, healthy: healthy}
+	}
+}
+
 func (m appModel) View() tea.View {
 	content := m.render()
 	if m.mouseOff {
@@ -1271,6 +1394,9 @@ func (m appModel) render() string {
 		return "Loading…"
 	}
 	base := m.renderScreen()
+	if !m.dashCarriesWebStatus() {
+		base = overlayWebStatus(m.styles, base, m.hubNote, m.hubNoteErr, m.width, m.height)
+	}
 	if m.help.active {
 		return compositeHelp(m.styles, base, m.helpFor(), m.help, m.width, m.height)
 	}
@@ -1638,7 +1764,7 @@ func menuHelp() screenHelp {
 	return screenHelp{title: "Menu", columns: []helpColumn{
 		group("Navigate", fk("↑↓", "move"), xk("j/k", "move")),
 		group("Actions", fk("enter", "select"), fk("q", "quit")),
-		group("Global", xk("ctrl+p / :", "command palette"), xk("ctrl+t", "toggle mouse (select text)"), xk("⇧ drag", "select text (⌥ on iTerm2/Terminal.app)")),
+		group("Global", xk("ctrl+p / :", "command palette"), xk("W", "open web UI"), xk("ctrl+t", "toggle mouse (select text)"), xk("⇧ drag", "select text (⌥ on iTerm2/Terminal.app)")),
 	}}
 }
 

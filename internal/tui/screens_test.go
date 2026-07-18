@@ -14,6 +14,11 @@ import (
 type fakeAppActions struct {
 	fakeOnboardActions
 	fakeSettingsActions
+
+	hubBase      string
+	hubHealthy   bool
+	openWebCalls int
+	openWebErr   error
 }
 
 func (f *fakeAppActions) MenuInfo() MenuInfo {
@@ -54,6 +59,16 @@ func (f *fakeAppActions) ListEligible(context.Context) ([]ListedTicket, error) {
 func (f *fakeAppActions) RunTicket(context.Context, string, string, console.Renderer) {}
 
 func (f *fakeAppActions) OnboardingNeeded() bool { return false }
+
+func (f *fakeAppActions) HubStatus(context.Context) (string, bool) { return f.hubBase, f.hubHealthy }
+
+func (f *fakeAppActions) OpenWebUI(context.Context) (string, error) {
+	f.openWebCalls++
+	if f.openWebErr != nil {
+		return "", f.openWebErr
+	}
+	return f.hubBase + "/", nil
+}
 
 // TestScreensRenderAcrossSizes walks the menu shell into every view at the
 // three reference terminal sizes and renders each one, so a regression in any
