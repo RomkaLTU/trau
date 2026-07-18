@@ -1,96 +1,18 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import {
-  DollarSign,
-  FolderPlus,
-  Inbox,
-  LayoutDashboard,
-  Lightbulb,
-  ListChecks,
-  ListTodo,
-  Lock,
-  Network,
-  Puzzle,
-  RefreshCw,
-  Settings,
-  SquareTerminal,
-  type LucideIcon,
-} from 'lucide-react'
+import { Lock } from 'lucide-react'
 
 import { useActiveRepo } from '@/components/trau/active-repo'
 import { GlobalSearch } from '@/components/trau/global-search'
+import { NAV_GROUPS, type NavItem } from '@/components/trau/nav-items'
 import { NotificationBell } from '@/components/trau/notification-bell'
 import { RepoSwitcher } from '@/components/trau/repo-switcher'
 import { ThemeToggle } from '@/components/trau/theme-toggle'
 import { useAttentionCount } from '@/lib/attention'
 import { healthQueryOptions } from '@/lib/health'
 import { useInboxCounts } from '@/lib/inbox'
+import { isMacPlatform, shortcutLabel } from '@/lib/palette-keys'
 import { cn } from '@/lib/utils'
-
-interface NavItem {
-  label: string
-  icon: LucideIcon
-  to: string
-  search?: Record<string, string>
-  exact?: boolean
-  attention?: boolean
-  /** Show the triage inbox count — total, with the awaiting-answer count emphasized. */
-  inbox?: boolean
-  /** Page acts on a single repo — the link is disabled under "All projects". */
-  requiresProject?: boolean
-}
-
-interface NavGroup {
-  label: string
-  items: NavItem[]
-}
-
-const GROUPS: NavGroup[] = [
-  {
-    label: 'OPERATE',
-    items: [
-      {
-        label: 'Overview',
-        icon: LayoutDashboard,
-        to: '/',
-        exact: true,
-        attention: true,
-      },
-      { label: 'Loop', icon: RefreshCw, to: '/loop', requiresProject: true },
-      { label: 'Backlog', icon: ListTodo, to: '/backlog', requiresProject: true },
-      {
-        label: 'Inbox',
-        icon: Inbox,
-        to: '/inbox',
-        requiresProject: true,
-        inbox: true,
-      },
-    ],
-  },
-  {
-    label: 'OBSERVE',
-    items: [
-      { label: 'Runs', icon: ListChecks, to: '/runs' },
-      {
-        label: 'Terminal',
-        icon: SquareTerminal,
-        to: '/terminal',
-        requiresProject: true,
-      },
-      { label: 'Atlas', icon: Network, to: '/atlas', requiresProject: true },
-      { label: 'Costs', icon: DollarSign, to: '/costs' },
-      { label: 'Lessons', icon: Lightbulb, to: '/lessons' },
-    ],
-  },
-  {
-    label: 'CONFIGURE',
-    items: [
-      { label: 'Add a project', icon: FolderPlus, to: '/projects/new' },
-      { label: 'Skills', icon: Puzzle, to: '/skills' },
-      { label: 'Settings', icon: Settings, to: '/settings' },
-    ],
-  },
-]
 
 interface NavBadge {
   count: number
@@ -128,7 +50,7 @@ function navBadge(
   return null
 }
 
-export function Sidebar() {
+export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
   const { repo, isAll, autoScope, openSwitcher } = useActiveRepo()
   const navigate = useNavigate()
   const attention = useAttentionCount(repo)
@@ -162,11 +84,23 @@ export function Sidebar() {
           <NotificationBell />
         </div>
         <RepoSwitcher />
-        <GlobalSearch />
+        <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <GlobalSearch />
+          </div>
+          <button
+            type="button"
+            onClick={onOpenPalette}
+            title="Open command palette"
+            className="shrink-0 rounded-md border border-border bg-input px-2 py-2 font-mono text-xs text-muted-foreground transition-colors hover:border-ring/50 hover:text-foreground"
+          >
+            {shortcutLabel(isMacPlatform(navigator))}
+          </button>
+        </div>
       </div>
 
       <nav className="flex-1 overflow-y-auto px-3 py-2">
-        {GROUPS.map((group) => (
+        {NAV_GROUPS.map((group) => (
           <div key={group.label} className="mb-5">
             <p className="px-2 pb-1.5 font-mono text-[0.65rem] uppercase tracking-[0.2em] text-muted-foreground">
               {group.label}
