@@ -1,56 +1,55 @@
-import { useRef } from 'react'
-import { useNavigate } from '@tanstack/react-router'
-import { toast } from 'sonner'
+import { useRef } from "react";
+import { toast } from "sonner";
 
-import { Badge } from '@/components/ui/badge'
-import { fireNotification, useNotifications } from '@/lib/notifications'
+import { Badge } from "@/components/ui/badge";
+import { fireNotification, useNotifications } from "@/lib/notifications";
 import {
-  navigateToNotification,
   notificationTarget,
   useNotificationEvents,
-} from '@/lib/notification-center'
-import { isConversationOpen } from '@/lib/open-conversation'
+  useNotificationNavigate,
+} from "@/lib/notification-center";
+import { isConversationOpen } from "@/lib/open-conversation";
 
 // NotificationToaster is the headless bridge from the hub's live needs-attention
 // frames to a toast — and, when the tab is hidden, an OS notification. It renders
 // nothing; the toasts land in the root <Toaster />.
 export function NotificationToaster() {
-  const navigate = useNavigate()
-  const { enabled } = useNotifications()
-  const enabledRef = useRef(enabled)
-  enabledRef.current = enabled
+  const navigateToNotification = useNotificationNavigate();
+  const { enabled } = useNotifications();
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
 
   useNotificationEvents((notification, repo) => {
     if (
-      notification.kind === 'grill_question' &&
+      notification.kind === "grill_question" &&
       isConversationOpen(notification.ref)
     ) {
-      return
+      return;
     }
 
-    const target = notificationTarget(notification, repo)
+    const target = notificationTarget(notification, repo);
     toast.custom((id) => (
       <NotificationCard
         title={notification.title}
         repo={repo}
         body={notification.body}
         onOpen={() => {
-          toast.dismiss(id)
-          navigateToNotification(navigate, target)
+          toast.dismiss(id);
+          navigateToNotification(target);
         }}
       />
-    ))
+    ));
 
     if (document.hidden && enabledRef.current) {
       fireNotification(
         notification.title,
         notification.body,
         notification.kind + notification.ref,
-      )
+      );
     }
-  })
+  });
 
-  return null
+  return null;
 }
 
 function NotificationCard({
@@ -59,10 +58,10 @@ function NotificationCard({
   body,
   onOpen,
 }: {
-  title: string
-  repo: string
-  body: string
-  onOpen: () => void
+  title: string;
+  repo: string;
+  body: string;
+  onOpen: () => void;
 }) {
   return (
     <button
@@ -84,5 +83,5 @@ function NotificationCard({
         </p>
       )}
     </button>
-  )
+  );
 }
