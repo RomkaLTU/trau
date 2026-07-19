@@ -388,3 +388,65 @@ func TestGrillStreamBackfillAndLive(t *testing.T) {
 		t.Fatalf("live frame event = %q, want state (%s)", event, data)
 	}
 }
+
+// A start-time model choice is what the session stores, so its very first turn spawns
+// on it instead of the repo default.
+func TestGrillCreateHonoursRequestedModel(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	writeGrillConfig(t, "GRILL_MODEL=grill-model\n")
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/grill", GrillCreateRequest{IssueID: "COD-1", Model: "opus"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", res.StatusCode)
+	}
+	var v GrillSessionView
+	if err := json.NewDecoder(res.Body).Decode(&v); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if v.Model != "opus" {
+		t.Fatalf("created model = %q, want the requested opus", v.Model)
+	}
+	sid, _ := strconv.ParseInt(v.ID, 10, 64)
+	stored, _, err := stores.Grill().Session(sid)
+	if err != nil {
+		t.Fatalf("read back session: %v", err)
+	}
+	if stored.Model != "opus" {
+		t.Fatalf("stored model = %q, want opus over the repo default", stored.Model)
+	}
+}
+
+// The list resource carries what an interview started now would run on, so a start
+// surface can offer the choice before any session exists.
+func TestGrillListDefaults(t *testing.T) {
+	ts, _, repo := grillServer(t)
+	writeGrillConfig(t, "GRILL_MODEL=grill-model\n")
+
+	_, body := get(t, ts, APIPrefix+"/repos/"+repo+"/grill")
+	var list GrillListResponse
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if list.Defaults.Provider != "claude" {
+		t.Fatalf("defaults provider = %q, want claude", list.Defaults.Provider)
+	}
+	if list.Defaults.Model != "grill-model" {
+		t.Fatalf("defaults model = %q, want the repo default", list.Defaults.Model)
+	}
+	if len(list.Defaults.ModelOptions) == 0 {
+		t.Fatal("defaults carry no model catalog")
+	}
+}
+
+// writeGrillConfig lays down the repo config grillServer's repo resolves against.
+func writeGrillConfig(t *testing.T, body string) {
+	t.Helper()
+	root := filepath.Join(os.Getenv("HOME"), "acme")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir repo: %v", err)
+	}
+	if err := os.WriteFile(config.ProjectConfigPath(root), []byte(body), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+}

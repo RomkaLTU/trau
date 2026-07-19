@@ -22,6 +22,7 @@ import {
   GrillConversation,
   type GrillStatus,
 } from "@/components/grill/conversation";
+import { GrillModelSelect } from "@/components/grill/model-select";
 import { useGrillSession } from "@/components/grill/session";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,12 +30,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-} from "@/components/ui/select";
 import {
   AssigneeAvatar,
   PageHeader,
@@ -45,7 +40,9 @@ import {
 } from "@/components/trau";
 import {
   abandonGrill,
+  applySessionModel,
   GRILLABLE_LABELS,
+  grillSessionsQueryOptions,
   isSettled,
   latestOutcome,
   outcomePayload,
@@ -53,6 +50,7 @@ import {
   startGrillSession,
   switchGrillModel,
   type GrillAppliedOutcome,
+  type GrillDefaults,
   type GrillListResponse,
   type GrillSession,
   type OutcomePayload,
@@ -117,6 +115,14 @@ const PILL_TEXT_TONE: Record<InboxPillTone, string> = {
   todo: "text-faint",
 };
 
+// InterviewStart is what a not-yet-started interview will run on, shared by every
+// surface that can open one so the choice is the panel's rather than each button's.
+interface InterviewStart {
+  defaults?: GrillDefaults;
+  model: string;
+  onModelChange: (model: string) => void;
+}
+
 function InboxPage() {
   usePageTitle(standardTitle("Inbox"));
   const { repo: activeRepo } = useActiveRepo();
@@ -147,6 +153,21 @@ function InboxPage() {
   // ?issue= naming something in neither list falls back to the head rather than
   // opening a session on a stray id.
   const selected = selectedItem(items, done, peek);
+
+  // The model every interview started from this panel opens on — Start interview, a
+  // first message, a fresh Draft, and Ask ahead alike. It is a page-level choice so
+  // walking the queue with j/k keeps it; until the user picks, it trails the repo
+  // default the hub reports beside the session list. Switching repo drops it, so the
+  // new repo's own default wins rather than the pick made against the old one.
+  const defaults = useQuery(grillSessionsQueryOptions(repo)).data?.defaults;
+  const [pickedModel, setPickedModel] = useState<string | null>(null);
+  useEffect(() => setPickedModel(null), [repo]);
+  const startModel = pickedModel ?? defaults?.model ?? "";
+  const starter: InterviewStart = {
+    defaults,
+    model: startModel,
+    onModelChange: setPickedModel,
+  };
 
   const [contextOpen, setContextOpen] = useState(loadContextOpen);
   const [passSummary, setPassSummary] = useState<string | null>(null);
@@ -207,7 +228,7 @@ function InboxPage() {
     .map((item) => item.id);
 
   const pregrillAll = useMutation({
-    mutationFn: () => pregrillIssues(repo, untouchedIds),
+    mutationFn: () => pregrillIssues(repo, untouchedIds, startModel),
     onSuccess: (res) => setPassSummary(summarisePregrill(res)),
     onSettled: () =>
       void queryClient.invalidateQueries({ queryKey: ["grill", repo] }),
@@ -367,6 +388,7 @@ function InboxPage() {
               seen={seen}
               live={live?.session ?? null}
               selectedId={selected?.id ?? null}
+              model={startModel}
               onSelect={(id) => void setPeek(id)}
             />
 
@@ -394,6 +416,7 @@ function InboxPage() {
                     position={inboxPosition(items, selected.id)}
                     total={items.length}
                     status={live}
+                    starter={starter}
                     onStatus={setStatus}
                     onStarted={onDraftStarted}
                     onSkip={skip}
@@ -409,6 +432,7 @@ function InboxPage() {
                     total={items.length}
                     status={live}
                     hasSession={hasSession}
+                    starter={starter}
                     onStatus={setStatus}
                     contextOpen={contextOpen}
                     onToggleContext={toggleContext}
@@ -470,6 +494,7 @@ function SessionColumn({
   total,
   status,
   hasSession,
+  starter,
   onStatus,
   contextOpen,
   onToggleContext,
@@ -483,6 +508,7 @@ function SessionColumn({
   total: number;
   status: GrillStatus | null;
   hasSession: boolean;
+  starter: InterviewStart;
   onStatus: (status: GrillStatus) => void;
   contextOpen: boolean;
   onToggleContext: () => void;
@@ -515,6 +541,7 @@ function SessionColumn({
   return (
     <>
       <SessionBar
+        repo={repo}
         item={item}
         position={position}
         total={total}
@@ -565,6 +592,7 @@ function SessionColumn({
           <SessionPreview
             repo={repo}
             item={item}
+            starter={starter}
             onStart={start}
             onSkip={onSkip}
           />
@@ -598,6 +626,7 @@ function DraftColumn({
   position,
   total,
   status,
+  starter,
   onStatus,
   onStarted,
   onSkip,
@@ -609,6 +638,7 @@ function DraftColumn({
   position: number;
   total: number;
   status: GrillStatus | null;
+  starter: InterviewStart;
   onStatus: (status: GrillStatus) => void;
   onStarted: (session: GrillSession) => void;
   onSkip: () => void;
@@ -631,6 +661,7 @@ function DraftColumn({
   return (
     <>
       <SessionBar
+        repo={repo}
         item={item}
         position={position}
         total={total}
@@ -658,7 +689,7 @@ function DraftColumn({
             onDiscarded={onDiscarded}
           />
         ) : (
-          <FreshDraftBody repo={repo} onStarted={onStarted} />
+          <FreshDraftBody repo={repo} starter={starter} onStarted={onStarted} />
         )}
       </div>
     </>
@@ -734,14 +765,17 @@ function DoneColumn({
 // the text as its seed). Nothing exists server-side until then.
 function FreshDraftBody({
   repo,
+  starter,
   onStarted,
 }: {
   repo: string;
+  starter: InterviewStart;
   onStarted: (session: GrillSession) => void;
 }) {
   const queryClient = useQueryClient();
   const start = useMutation({
-    mutationFn: (seed: string) => startGrillSession(repo, "", seed),
+    mutationFn: (seed: string) =>
+      startGrillSession(repo, "", seed, starter.model),
     onSuccess: (session) => {
       queryClient.setQueryData<GrillListResponse>(["grill", repo], (prev) =>
         prev
@@ -768,6 +802,7 @@ function FreshDraftBody({
         </p>
       </div>
       <div className="flex flex-col gap-3 border-t border-border p-4">
+        <StartModelSelect starter={starter} className="self-end" />
         <Composer
           placeholder="Describe the issue…"
           disabled={start.isPending}
@@ -789,12 +824,14 @@ function FreshDraftBody({
 function SessionPreview({
   repo,
   item,
+  starter,
   onStart,
   onSkip,
 }: {
   repo: string;
   item: InboxItem;
-  onStart: (seed?: string) => void;
+  starter: InterviewStart;
+  onStart: (seed?: string, model?: string) => void;
   onSkip: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -804,7 +841,7 @@ function SessionPreview({
   );
 
   const askAhead = useMutation({
-    mutationFn: () => pregrillIssues(repo, [item.id]),
+    mutationFn: () => pregrillIssues(repo, [item.id], starter.model),
     onSettled: () =>
       void queryClient.invalidateQueries({ queryKey: ["grill", repo] }),
   });
@@ -842,7 +879,7 @@ function SessionPreview({
           No interview yet — start one, or send a first message to open with it.
         </p>
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" onClick={() => onStart()}>
+          <Button size="sm" onClick={() => onStart(undefined, starter.model)}>
             <Sparkles />
             Start interview
           </Button>
@@ -859,12 +896,13 @@ function SessionPreview({
             <SkipForward />
             Skip
           </Button>
+          <StartModelSelect starter={starter} className="ml-auto" />
         </div>
         <Composer
           placeholder="Type your first message to start the interview…"
           disabled={askAhead.isPending}
           submitting={false}
-          onSend={(text) => onStart(text)}
+          onSend={(text) => onStart(text, starter.model)}
         />
         {askAhead.error && (
           <ErrorNote message={(askAhead.error as Error).message} />
@@ -875,6 +913,7 @@ function SessionPreview({
 }
 
 function SessionBar({
+  repo,
   item,
   position,
   total,
@@ -892,6 +931,7 @@ function SessionBar({
   endError,
   draft,
 }: {
+  repo: string;
   item: InboxItem;
   position: number;
   total: number;
@@ -933,7 +973,13 @@ function SessionBar({
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {session && <ModelSwitch session={session} onError={setModelError} />}
+          {session && (
+            <ModelSwitch
+              repo={repo}
+              session={session}
+              onError={setModelError}
+            />
+          )}
           {reconnecting && (
             <span className="inline-flex items-center gap-1 text-xs text-warn">
               <span aria-hidden="true">⚠</span>
@@ -983,51 +1029,79 @@ function SessionBar({
   );
 }
 
-// ModelSwitch is the bar's provider/model indicator: a compact `claude · <model>`
-// trigger over the session's Claude catalog. A switch applies from the next agent
-// turn and the SSE state frame updates the label, so nothing here is optimistic; a
-// finished or settled session keeps the label but the menu disables.
+// ModelSwitch is the bar's provider/model indicator for a live session. A switch
+// applies from the next agent turn and the SSE state frame updates the label, so
+// nothing here is optimistic; a finished or settled session keeps the label but the
+// menu disables. The confirmed model still lands in the list cache, which is what
+// Start over reads to carry a mid-interview switch into the fresh session.
 function ModelSwitch({
+  repo,
   session,
   onError,
 }: {
+  repo: string;
   session: GrillSession;
   onError: (message: string | null) => void;
 }) {
+  const queryClient = useQueryClient();
   const switchModel = useMutation({
     mutationFn: (model: string) => switchGrillModel(session.id, model),
     onMutate: () => onError(null),
+    onSuccess: (updated) => {
+      queryClient.setQueryData<GrillListResponse>(["grill", repo], (prev) =>
+        prev
+          ? {
+              ...prev,
+              sessions: applySessionModel(
+                prev.sessions,
+                updated.id,
+                updated.model ?? "",
+              ),
+            }
+          : prev,
+      );
+    },
     onError: (err) => onError((err as Error).message),
   });
-  const model = session.model ?? "";
-  const options = session.model_options ?? [];
 
   return (
-    <Select
-      value={model}
-      onValueChange={(next) => switchModel.mutate(next)}
+    <GrillModelSelect
+      provider={session.provider ?? "claude"}
+      model={session.model ?? ""}
+      options={session.model_options ?? []}
+      label="Switch model"
       disabled={
         session.state === "finished" ||
         isSettled(session.state) ||
-        options.length === 0 ||
         switchModel.isPending
       }
-    >
-      <SelectTrigger
-        size="sm"
-        className="h-7 gap-1 border-none bg-transparent px-2 font-mono text-xs text-muted-foreground shadow-none dark:bg-transparent"
-        aria-label="Switch model"
-      >
-        {session.provider ?? "claude"} · {model || "default"}
-      </SelectTrigger>
-      <SelectContent align="end">
-        {options.map((m) => (
-          <SelectItem key={m} value={m} className="font-mono text-xs">
-            {m}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+      onChange={(next) => switchModel.mutate(next)}
+    />
+  );
+}
+
+// StartModelSelect is the same control before a session exists, so the interview's
+// provider and model are settled from the first question rather than only switchable
+// once it is already under way. The choice belongs to the panel and rides every start
+// surface, so a walk through the queue keeps it.
+function StartModelSelect({
+  starter,
+  className,
+}: {
+  starter: InterviewStart;
+  className?: string;
+}) {
+  return (
+    <div className={cn("flex items-center gap-1", className)}>
+      <span className="text-xs text-muted-foreground">Runs on</span>
+      <GrillModelSelect
+        provider={starter.defaults?.provider ?? "claude"}
+        model={starter.model}
+        options={starter.defaults?.model_options ?? []}
+        label="Interview model"
+        onChange={starter.onModelChange}
+      />
+    </div>
   );
 }
 
@@ -1152,6 +1226,7 @@ function QueueRail({
   seen,
   live,
   selectedId,
+  model,
   onSelect,
 }: {
   repo: string;
@@ -1159,6 +1234,7 @@ function QueueRail({
   seen: SeenMarks;
   live: GrillSession | null;
   selectedId: string | null;
+  model: string;
   onSelect: (id: string) => void;
 }) {
   return (
@@ -1196,6 +1272,7 @@ function QueueRail({
                   live={live}
                   unread={hasUnseenQuestion(seen, item)}
                   selected={selectedId === item.id}
+                  model={model}
                   onSelect={() => onSelect(item.id)}
                 />
               ),
@@ -1223,6 +1300,7 @@ function QueueRow({
   live,
   unread,
   selected,
+  model,
   onSelect,
 }: {
   repo: string;
@@ -1230,6 +1308,7 @@ function QueueRow({
   live: GrillSession | null;
   unread: boolean;
   selected: boolean;
+  model: string;
   onSelect: () => void;
 }) {
   // The row's pill answers "what is this conversation doing right now" without
@@ -1307,6 +1386,7 @@ function QueueRow({
         <PregrillButton
           repo={repo}
           issueId={item.id}
+          model={model}
           className="absolute right-1 top-1 opacity-0 focus-visible:opacity-100 group-hover/row:opacity-100"
         />
       )}
@@ -1613,15 +1693,17 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 function PregrillButton({
   repo,
   issueId,
+  model,
   className,
 }: {
   repo: string;
   issueId: string;
+  model: string;
   className?: string;
 }) {
   const queryClient = useQueryClient();
   const pregrill = useMutation({
-    mutationFn: () => pregrillIssues(repo, [issueId]),
+    mutationFn: () => pregrillIssues(repo, [issueId], model),
     onSettled: () =>
       void queryClient.invalidateQueries({ queryKey: ["grill", repo] }),
   });

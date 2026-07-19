@@ -20,6 +20,7 @@ import (
 func newPregrillServer(t *testing.T, run func(*Server, hubstore.GrillSession)) (*Server, registry.Repo) {
 	t.Helper()
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	stores := testStoresAt(t, home)
 	repo := registry.Repo{Name: "acme", Root: filepath.Join(home, "acme"), RunsDir: filepath.Join(home, "acme", ".trau", "runs")}
 	if err := os.MkdirAll(repo.Root, 0o755); err != nil {
@@ -96,7 +97,7 @@ func TestPregrillPassBounding(t *testing.T) {
 	srv, repo := newPregrillServer(t, parkTurn)
 
 	ids := []string{"COD-1", "COD-2", "COD-3", "COD-4", "COD-5", "COD-6", "COD-7", "COD-8"}
-	results := srv.runPregrillPass(context.Background(), repo, ids, 5)
+	results := srv.runPregrillPass(context.Background(), repo, PregrillRequest{IssueIDs: ids}, 5)
 
 	if len(results) != len(ids) {
 		t.Fatalf("results = %d, want one per issue (%d)", len(results), len(ids))
@@ -132,7 +133,7 @@ func TestPregrillPassSkipsActiveSession(t *testing.T) {
 		t.Fatalf("seed active session: %v", err)
 	}
 
-	results := srv.runPregrillPass(context.Background(), repo, []string{"COD-1", "COD-2", "COD-3"}, 5)
+	results := srv.runPregrillPass(context.Background(), repo, PregrillRequest{IssueIDs: []string{"COD-1", "COD-2", "COD-3"}}, 5)
 
 	byIssue := map[string]PregrillResult{}
 	for _, r := range results {
@@ -169,7 +170,7 @@ func TestPregrillPassClassifiesFinishOutcomes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv, repo := newPregrillServer(t, finishTurn(tt.disposition))
-			results := srv.runPregrillPass(context.Background(), repo, []string{"COD-9"}, 5)
+			results := srv.runPregrillPass(context.Background(), repo, PregrillRequest{IssueIDs: []string{"COD-9"}}, 5)
 			if len(results) != 1 {
 				t.Fatalf("results = %d, want 1", len(results))
 			}
@@ -212,5 +213,46 @@ func TestPregrillHandlerBoundsFromConfig(t *testing.T) {
 	}
 	if grilled != 2 {
 		t.Fatalf("grilled %d, want the configured 2", grilled)
+	}
+}
+
+// The pass pins every session it opens to the requested model, so Ask ahead runs on
+// the same choice a hand-started interview takes.
+func TestPregrillPassPinsModel(t *testing.T) {
+	srv, repo := newPregrillServer(t, parkTurn)
+
+	results := srv.runPregrillPass(context.Background(), repo, PregrillRequest{
+		IssueIDs: []string{"COD-1"},
+		Model:    "opus",
+	}, 5)
+	if len(results) != 1 || results[0].Outcome != pregrillOutcomeQuestion {
+		t.Fatalf("results = %+v, want one parked question", results)
+	}
+
+	sessions, err := srv.stores.Grill().List(repo.Root, "")
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].Model != "opus" {
+		t.Fatalf("sessions = %+v, want one pinned to opus", sessions)
+	}
+}
+
+// With no model in the request the pass falls back to the repo's grill default, so a
+// pre-grilled session is stored the same way a hand-started one is.
+func TestPregrillPassFallsBackToRepoModel(t *testing.T) {
+	srv, repo := newPregrillServer(t, parkTurn)
+	if err := os.WriteFile(config.ProjectConfigPath(repo.Root), []byte("GRILL_MODEL=grill-model\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	srv.runPregrillPass(context.Background(), repo, PregrillRequest{IssueIDs: []string{"COD-1"}}, 5)
+
+	sessions, err := srv.stores.Grill().List(repo.Root, "")
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].Model != "grill-model" {
+		t.Fatalf("sessions = %+v, want one on the repo default", sessions)
 	}
 }

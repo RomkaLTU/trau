@@ -10,6 +10,13 @@ import {
   type GrillSession,
 } from "@/lib/grill";
 
+// StartOpening is what a start is given: the text seeding the opening user turn and
+// the model to pin the session to. Both empty is a bare start on the repo's default.
+interface StartOpening {
+  seed: string;
+  model: string;
+}
+
 // GrillSessionState is a host's view of one issue's session: the resolved session to
 // mount a conversation on, whether the list has settled enough to say there is none,
 // and the explicit acts the host runs — start opens one, startOver discards the live
@@ -24,7 +31,7 @@ export interface GrillSessionState {
   ending: boolean;
   error: Error | null;
   endError: Error | null;
-  start: (seed?: string) => void;
+  start: (seed?: string, model?: string) => void;
   startOver: () => void;
   end: (onEnded?: () => void) => void;
   retry?: () => void;
@@ -45,7 +52,8 @@ export function useGrillSession(repo: string, issueId: string): GrillSessionStat
   const active = activeSessionForIssue(list.data?.sessions, issueId);
 
   const create = useMutation({
-    mutationFn: (seed: string) => startGrillSession(repo, issueId, seed),
+    mutationFn: (opening: StartOpening) =>
+      startGrillSession(repo, issueId, opening.seed, opening.model),
     onSuccess: (sess) => {
       queryClient.setQueryData<GrillListResponse>(["grill", repo], (prev) =>
         prev
@@ -60,12 +68,13 @@ export function useGrillSession(repo: string, issueId: string): GrillSessionStat
       void queryClient.invalidateQueries({ queryKey: ["grill", repo] }),
   });
 
-  // start opens the session, seeding the opening user turn when given text. It stays a
-  // no-op while a start is in flight or the issue already has a live session, so a
-  // double click or a stale render can never spawn a second.
-  const start = (seed = "") => {
+  // start opens the session, seeding the opening user turn when given text and pinning
+  // the model its first turn spawns with. It stays a no-op while a start is in flight
+  // or the issue already has a live session, so a double click or a stale render can
+  // never spawn a second.
+  const start = (seed = "", model = "") => {
     if (active || create.isPending) return;
-    create.mutate(seed);
+    create.mutate({ seed, model });
   };
 
   // restart abandons the issue's live session and opens a fresh one in a single act, so
@@ -74,14 +83,18 @@ export function useGrillSession(repo: string, issueId: string): GrillSessionStat
   // list too, so resolution never reads the discard as "no session" and strands the
   // item back in a preview.
   const restart = useMutation({
-    mutationFn: async (sid: string) => {
-      await abandonGrill(sid);
-      return startGrillSession(repo, issueId, "");
+    mutationFn: async (sess: GrillSession) => {
+      await abandonGrill(sess.id);
+      return startGrillSession(repo, issueId, "", sess.model ?? "");
     },
     onSuccess: (sess) => {
       queryClient.setQueryData<GrillListResponse>(["grill", repo], (prev) => {
         const settled = abandonIssueSessions(prev?.sessions, issueId);
-        return { repo, sessions: [sess, ...settled.filter((s) => s.id !== sess.id)] };
+        return {
+          ...prev,
+          repo,
+          sessions: [sess, ...settled.filter((s) => s.id !== sess.id)],
+        };
       });
     },
     onError: () =>
@@ -89,10 +102,11 @@ export function useGrillSession(repo: string, issueId: string): GrillSessionStat
   });
 
   // startOver only fires when a live session exists to discard, and stays a no-op while
-  // one restart is already in flight.
+  // one restart is already in flight. The fresh session inherits the discarded one's
+  // model, so a mid-interview switch is not silently undone by starting again.
   const startOver = () => {
     if (!active || restart.isPending) return;
-    restart.mutate(active.id);
+    restart.mutate(active);
   };
 
   // abandon ends the issue's live session without opening another, so the item
@@ -103,6 +117,7 @@ export function useGrillSession(repo: string, issueId: string): GrillSessionStat
     mutationFn: (sid: string) => abandonGrill(sid),
     onSuccess: () => {
       queryClient.setQueryData<GrillListResponse>(["grill", repo], (prev) => ({
+        ...prev,
         repo,
         sessions: abandonIssueSessions(prev?.sessions, issueId),
       }));
@@ -120,6 +135,7 @@ export function useGrillSession(repo: string, issueId: string): GrillSessionStat
 
   const listError = (list.error as Error) ?? null;
   const createError = active ? null : ((create.error as Error) ?? null);
+  const attempted = create.variables;
 
   return {
     session: active ?? create.data,
@@ -132,6 +148,9 @@ export function useGrillSession(repo: string, issueId: string): GrillSessionStat
     start,
     startOver,
     end,
-    retry: listError === null && createError !== null ? () => start() : undefined,
+    retry:
+      listError === null && createError !== null && attempted
+        ? () => start(attempted.seed, attempted.model)
+        : undefined,
   };
 }
