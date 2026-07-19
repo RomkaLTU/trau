@@ -462,6 +462,7 @@ function InternalTicketForm({
           </span>
         </div>
         <MarkdownEditor
+          repo={repo}
           placeholder="Describe the work (markdown, optional)"
           onChange={setDescription}
           editorClassName="min-h-20"

@@ -8,6 +8,7 @@ import {
 import { Button } from "@/components/ui/button";
 
 export function Composer({
+  repo,
   placeholder,
   disabled,
   submitting,
@@ -15,6 +16,7 @@ export function Composer({
   defaultValue = "",
   autoFocus = false,
 }: {
+  repo: string;
   placeholder: string;
   disabled: boolean;
   submitting: boolean;
@@ -38,6 +40,7 @@ export function Composer({
     <div className="flex items-end gap-2">
       <MarkdownEditor
         ref={editorRef}
+        repo={repo}
         className="flex-1"
         placeholder={placeholder}
         disabled={disabled}

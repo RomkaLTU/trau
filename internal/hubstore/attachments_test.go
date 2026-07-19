@@ -444,6 +444,37 @@ func TestAttachmentBindToIssue(t *testing.T) {
 	}
 }
 
+func TestAttachmentBindToIssueLeavesTrackerAttachments(t *testing.T) {
+	a := testAttachments(t)
+	synced, err := a.Create(Attachment{
+		Repo: "/repo", IssueIdentifier: "SYNC-500", Source: AttachmentSourceLinear,
+		SourceURL: "https://uploads.linear.app/live.png",
+	})
+	if err != nil {
+		t.Fatalf("Create synced: %v", err)
+	}
+
+	if err := a.BindToIssue("/repo", []int64{synced.ID}, "ACME-1"); err != nil {
+		t.Fatalf("BindToIssue: %v", err)
+	}
+
+	// A pasted tracker URL must not steal the synced issue's attachment, or the
+	// next ReconcileIssues would drop it from the still-live ticket.
+	row, _, err := a.Get("/repo", synced.ID)
+	if err != nil {
+		t.Fatalf("Get synced: %v", err)
+	}
+	if row.IssueIdentifier != "SYNC-500" {
+		t.Fatalf("tracker attachment rebound to %q, want SYNC-500", row.IssueIdentifier)
+	}
+	if err := a.ReconcileIssues("/repo", []string{"SYNC-500"}); err != nil {
+		t.Fatalf("ReconcileIssues: %v", err)
+	}
+	if _, found, _ := a.Get("/repo", synced.ID); !found {
+		t.Fatalf("still-live synced ticket lost its attachment after a paste + reconcile")
+	}
+}
+
 func TestAttachmentIsImage(t *testing.T) {
 	cases := []struct {
 		mime string

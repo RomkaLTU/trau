@@ -53,19 +53,37 @@ func CheckExposure(bind, token string) error {
 	return nil
 }
 
-// requireToken rejects any request whose Authorization header does not carry
-// the expected bearer token, comparing in constant time.
+// serveTokenCookie mirrors the bearer token for requests the browser issues
+// without a header — an <img src> pointing at an attachment's bytes, or a
+// download link — so those load on an exposed bind. The SPA sets it from the same
+// token it stores for fetches, so it grants nothing the header would not.
+const serveTokenCookie = "trau_serve_token"
+
+// requireToken rejects any request that carries neither the expected bearer
+// token nor the cookie mirroring it, comparing in constant time.
 func requireToken(token string, next http.Handler) http.Handler {
 	want := []byte(token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got, ok := bearerToken(r.Header.Get("Authorization"))
-		if !ok || subtle.ConstantTimeCompare([]byte(got), want) != 1 {
+		if !tokenAuthorized(r, want) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// tokenAuthorized reports whether the request presents the serve token, by the
+// Authorization header the SPA sends on fetches or the cookie it mirrors the
+// token into for requests the browser makes without a header.
+func tokenAuthorized(r *http.Request, want []byte) bool {
+	if got, ok := bearerToken(r.Header.Get("Authorization")); ok && subtle.ConstantTimeCompare([]byte(got), want) == 1 {
+		return true
+	}
+	if c, err := r.Cookie(serveTokenCookie); err == nil && subtle.ConstantTimeCompare([]byte(c.Value), want) == 1 {
+		return true
+	}
+	return false
 }
 
 func bearerToken(header string) (string, bool) {

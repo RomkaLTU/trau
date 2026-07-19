@@ -333,6 +333,7 @@ func (s *Server) applyGrillSplit(ctx context.Context, writer tracker.Writer, roo
 	} else {
 		record("description", nil)
 		patch.Description = plan.description
+		s.bindUploadedAttachments(root, parentID, plan.description)
 	}
 
 	existing := s.grillExistingChildren(root, parentID)
@@ -359,6 +360,7 @@ func (s *Server) applyGrillSplit(ctx context.Context, writer tracker.Writer, roo
 		}
 		ids[i] = created.Identifier
 		s.mirrorCreatedSubIssue(root, provider, parentID, created.Identifier, sub, labels)
+		s.bindUploadedAttachments(root, created.Identifier, sub.Description)
 	}
 
 	if wired, relErr := s.wireGrillBlocks(ctx, writer, root, plan.subIssues, ids); wired {
@@ -434,6 +436,7 @@ func (s *Server) applyGrillCreate(ctx context.Context, writer tracker.Writer, se
 		parentID = created.Identifier
 		s.anchorGrillSession(sess, parentID)
 		s.mirrorCreatedParent(root, provider, parentID, plan.title, plan.description, labels)
+		s.bindUploadedAttachments(root, parentID, plan.description)
 	} else {
 		record(grillCreateParentStep(epic, plan.title), nil)
 	}
@@ -467,6 +470,7 @@ func (s *Server) applyGrillCreate(ctx context.Context, writer tracker.Writer, se
 		}
 		ids[i] = created.Identifier
 		s.mirrorCreatedSubIssue(root, provider, parentID, created.Identifier, sub, labels)
+		s.bindUploadedAttachments(root, created.Identifier, sub.Description)
 	}
 
 	if wired, relErr := s.wireGrillBlocks(ctx, writer, root, plan.subIssues, ids); wired {

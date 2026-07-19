@@ -270,6 +270,7 @@ func (s *Server) apiHandler() http.Handler {
 	// the archive action rides a wildcard segment that stays clear of the internal
 	// subtree while still serving the exact .../issues/{id}/archive path.
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/{id}/{action}", s.handleIssueAction)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/attachments", s.handleUploadAttachment)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/attachments/{id}", s.handleAttachment)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue", s.handleQueue)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/drain", s.handleQueueDrain)
