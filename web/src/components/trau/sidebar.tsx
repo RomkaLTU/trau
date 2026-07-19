@@ -12,6 +12,12 @@ import { useAttentionCount } from '@/lib/attention'
 import { healthQueryOptions } from '@/lib/health'
 import { useInboxCounts } from '@/lib/inbox'
 import { isMacPlatform, shortcutLabel } from '@/lib/palette-keys'
+import {
+  needsAttention,
+  updateQueryOptions,
+  versionLabel,
+  type UpdateStatus,
+} from '@/lib/update'
 import { cn } from '@/lib/utils'
 
 interface NavBadge {
@@ -50,6 +56,19 @@ function navBadge(
   return null
 }
 
+// updateHint names what the footer dot is about. Drift wins over a newer
+// release: the binary is already here, and restarting is the shorter step.
+function updateHint(status: UpdateStatus | undefined): string | null {
+  if (!status) return null
+  if (status.restartPending) {
+    return `${versionLabel(status.onDisk)} is installed — restart the hub to apply it`
+  }
+  if (status.updateAvailable) {
+    return `${versionLabel(status.latest)} is available`
+  }
+  return null
+}
+
 export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
   const { repo, isAll, autoScope, openSwitcher } = useActiveRepo()
   const navigate = useNavigate()
@@ -67,8 +86,10 @@ export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
   }
   const host = window.location.host
   const health = useQuery(healthQueryOptions)
+  const update = useQuery(updateQueryOptions)
   const webVersion = `${__WEB_VERSION__}·${__WEB_BUILD__}`
-  const cliVersion = health.data?.version
+  const cliVersion = update.data?.running ?? health.data?.version
+  const cliLabel = cliVersion ? versionLabel(cliVersion) : null
 
   return (
     <aside className="fixed inset-y-0 left-0 z-10 flex w-60 flex-col border-r border-border bg-card">
@@ -191,11 +212,24 @@ export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
             {webVersion}
           </dd>
           <dt className="text-muted-foreground/60">cli</dt>
-          <dd
-            className="truncate text-foreground/75"
-            title={cliVersion ?? 'unavailable'}
-          >
-            {cliVersion ?? '—'}
+          <dd className="min-w-0">
+            <Link
+              to="/settings"
+              hash="updates"
+              title={updateHint(update.data) ?? cliLabel ?? 'unavailable'}
+              className="inline-flex max-w-full items-center gap-1.5 text-foreground/75 transition-colors hover:text-foreground"
+            >
+              <span className="truncate">{cliLabel ?? '—'}</span>
+              {needsAttention(update.data) && (
+                <>
+                  <span
+                    aria-hidden="true"
+                    className="size-1.5 shrink-0 rounded-full bg-warn"
+                  />
+                  <span className="sr-only">(update waiting)</span>
+                </>
+              )}
+            </Link>
           </dd>
         </dl>
       </div>
