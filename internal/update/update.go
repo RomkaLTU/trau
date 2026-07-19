@@ -18,9 +18,12 @@ import (
 	"github.com/RomkaLTU/trau/internal/logger"
 )
 
+// ReleasesURL is where a user updates an install trau cannot update itself.
+const ReleasesURL = "https://github.com/RomkaLTU/trau/releases"
+
 const (
 	latestReleaseAPI = "https://api.github.com/repos/RomkaLTU/trau/releases/latest"
-	releaseTagURL    = "https://github.com/RomkaLTU/trau/releases/tag/v"
+	releaseTagURL    = ReleasesURL + "/tag/v"
 
 	probeTTL      = time.Minute
 	fetchTimeout  = 5 * time.Second
@@ -39,6 +42,7 @@ type Status struct {
 	CheckedAt       *time.Time `json:"checkedAt"`
 	ChecksEnabled   bool       `json:"checksEnabled"`
 	ReleaseURL      string     `json:"releaseUrl"`
+	ApplyState      ApplyState `json:"applyState"`
 }
 
 // Checker holds what the hub knows about newer trau versions. The on-disk probe
@@ -49,24 +53,29 @@ type Checker struct {
 	client   *http.Client
 	endpoint string
 	probe    func() (version, method string)
+	upgrade  func(context.Context) ([]byte, error)
 
-	mu        sync.Mutex
-	enabled   bool
-	onDisk    string
-	method    string
-	probedAt  time.Time
-	latest    string
-	checkedAt time.Time
+	mu           sync.Mutex
+	enabled      bool
+	onDisk       string
+	method       string
+	probedAt     time.Time
+	latest       string
+	checkedAt    time.Time
+	applyState   string
+	applyMessage string
 }
 
 // NewChecker builds a Checker for a hub running version, with remote checks on.
 func NewChecker(running string) *Checker {
 	return &Checker{
-		running:  running,
-		client:   &http.Client{Timeout: fetchTimeout},
-		endpoint: latestReleaseAPI,
-		probe:    probeBinary,
-		enabled:  true,
+		running:    running,
+		client:     &http.Client{Timeout: fetchTimeout},
+		endpoint:   latestReleaseAPI,
+		probe:      probeBinary,
+		upgrade:    brewUpgrade,
+		enabled:    true,
+		applyState: applyIdle,
 	}
 }
 
@@ -93,6 +102,7 @@ func (c *Checker) Status() Status {
 		RestartPending: onDisk != "" && onDisk != c.running,
 		InstallMethod:  method,
 		ChecksEnabled:  c.enabled,
+		ApplyState:     ApplyState{State: c.applyState, Message: c.applyMessage},
 	}
 	if !c.checkedAt.IsZero() {
 		at := c.checkedAt

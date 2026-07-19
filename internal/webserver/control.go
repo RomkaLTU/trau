@@ -100,7 +100,19 @@ func (s *Server) handleHubRestart(w http.ResponseWriter, r *http.Request) {
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
+	s.triggerRestart()
+}
+
+// triggerRestart runs the restart hook at most once and reports whether this hub
+// can restart itself at all. A hub without one — one embedded in something other
+// than `trau serve` — keeps serving; a one-click update that lands there still
+// upgrades the binary and leaves a restart pending.
+func (s *Server) triggerRestart() bool {
+	if s.restart == nil {
+		return false
+	}
 	s.restartOnce.Do(s.restart)
+	return true
 }
 
 // DryRunResult is the outcome of a preview: the next eligible ticket for a repo,

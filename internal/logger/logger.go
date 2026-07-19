@@ -44,6 +44,12 @@ func SetDebug(d bool) {
 	debugEnabled = d
 }
 
+// Printf writes a diagnostic line to stderr whatever the flags are, for the few
+// records worth keeping unconditionally — a long-running hub's stderr is its log.
+func Printf(format string, a ...any) {
+	emit("info", format, a...)
+}
+
 // Verbosef writes a verbose diagnostic line to stderr when verbose or debug
 // mode is enabled (--debug implies --verbose).
 func Verbosef(format string, a ...any) {
