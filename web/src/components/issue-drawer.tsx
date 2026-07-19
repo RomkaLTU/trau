@@ -14,7 +14,8 @@ import {
 import { ArchiveToast } from "@/components/archive-toast";
 import { AssigneeAvatar } from "@/components/trau/assignee-avatar";
 import { InternalIssueForm } from "@/components/internal-issue-form";
-import { Markdown } from "@/components/markdown";
+import { IssueAttachments } from "@/components/issue-attachments";
+import { Markdown, type MarkdownUrlMap } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -24,6 +25,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { assigneeLabel } from "@/lib/assignee";
+import { useIssueAttachments } from "@/lib/attachments";
 import {
   IssueFetchError,
   internalIssueQueryOptions,
@@ -97,6 +99,7 @@ function IssueDrawerBody({
 
   const query = useQuery(issueQueryOptions(repo, id));
   const issue = query.data;
+  const { attachments, urlMap } = useIssueAttachments(repo, id);
   const internal = issue?.source === "internal";
   const grillable = !!issue && isGrillable(issue.labels);
 
@@ -207,7 +210,10 @@ function IssueDrawerBody({
           <span className="text-muted-foreground">Assignee</span>
           {issue.assignee ? (
             <span className="inline-flex items-center gap-1.5 text-foreground">
-              <AssigneeAvatar assignee={issue.assignee} className="size-5 text-[0.6rem]" />
+              <AssigneeAvatar
+                assignee={issue.assignee}
+                className="size-5 text-[0.6rem]"
+              />
               {assigneeLabel(issue.assignee)}
             </span>
           ) : (
@@ -236,11 +242,20 @@ function IssueDrawerBody({
         ) : (
           <>
             {issue.description.trim() ? (
-              <Markdown>{issue.description}</Markdown>
+              <Markdown urlMap={urlMap}>{issue.description}</Markdown>
             ) : (
               <p className="text-sm text-muted-foreground">No description.</p>
             )}
-            <Comments comments={issue.comments} />
+            <IssueAttachments
+              repo={repo}
+              id={id}
+              attachments={attachments}
+              bodies={[
+                issue.description,
+                ...issue.comments.map((comment) => comment.body),
+              ]}
+            />
+            <Comments comments={issue.comments} urlMap={urlMap} />
           </>
         )}
       </div>
@@ -337,7 +352,13 @@ function DrawerFrame({ id, children }: { id: string; children: ReactNode }) {
   );
 }
 
-function Comments({ comments }: { comments: IssueComment[] }) {
+function Comments({
+  comments,
+  urlMap,
+}: {
+  comments: IssueComment[];
+  urlMap: MarkdownUrlMap;
+}) {
   if (comments.length === 0) return null;
   return (
     <div className="mt-6 flex flex-col gap-3 border-t pt-4">
@@ -357,7 +378,7 @@ function Comments({ comments }: { comments: IssueComment[] }) {
               </span>
               {at && <span className="tabular-nums">{at}</span>}
             </div>
-            <Markdown>{comment.body}</Markdown>
+            <Markdown urlMap={urlMap}>{comment.body}</Markdown>
           </div>
         );
       })}
