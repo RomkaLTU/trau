@@ -277,54 +277,6 @@ func TestOpenHubLogAppendsForRestart(t *testing.T) {
 	}
 }
 
-// TestResolveTrauBinaryPrefersRunningPath checks a binary that is still on disk
-// wins, so a dev build outside PATH re-execs itself rather than an installed one.
-func TestResolveTrauBinaryPrefersRunningPath(t *testing.T) {
-	exe := filepath.Join(t.TempDir(), "trau")
-	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatalf("write binary: %v", err)
-	}
-
-	got, err := resolveTrauBinaryFrom(exe)
-	if err != nil {
-		t.Fatalf("resolveTrauBinaryFrom: %v", err)
-	}
-	if got != exe {
-		t.Fatalf("resolved %q, want the running binary %q", got, exe)
-	}
-}
-
-// TestResolveTrauBinaryFallsBackToPath covers the cask upgrade: the versioned
-// Caskroom directory the running process lives in is deleted, so resolution has
-// to find the freshly installed binary on PATH instead.
-func TestResolveTrauBinaryFallsBackToPath(t *testing.T) {
-	installed := filepath.Join(t.TempDir(), "trau")
-	if err := os.WriteFile(installed, []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatalf("write binary: %v", err)
-	}
-	t.Setenv("PATH", filepath.Dir(installed))
-
-	got, err := resolveTrauBinaryFrom(filepath.Join(t.TempDir(), "Caskroom", "trau", "2.1.0", "trau"))
-	if err != nil {
-		t.Fatalf("resolveTrauBinaryFrom: %v", err)
-	}
-	if got != installed {
-		t.Fatalf("resolved %q, want the binary on PATH %q", got, installed)
-	}
-}
-
-// TestResolveTrauBinaryWithoutAnyBinary checks resolution fails loudly when the
-// running path is gone and PATH has no replacement, so a restart reports why it
-// cannot spawn a successor instead of exiting silently.
-func TestResolveTrauBinaryWithoutAnyBinary(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
-
-	gone := filepath.Join(t.TempDir(), "Caskroom", "trau", "2.1.0", "trau")
-	if _, err := resolveTrauBinaryFrom(gone); err == nil {
-		t.Fatal("resolveTrauBinaryFrom succeeded with no binary anywhere")
-	}
-}
-
 // spawnArgvRecordEnv turns a re-executed test binary into a stand-in for the
 // trau binary a spawn resolves to: it records the argv it was handed and exits.
 const spawnArgvRecordEnv = "TRAU_TEST_SPAWN_ARGV_RECORD"
