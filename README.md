@@ -38,6 +38,11 @@ repo; after that, `trau` drops you into the **main menu** — a terminal UI wher
 do (preview the next issue, run one issue, run the full loop, check status, and more). No flags
 to memorize.
 
+Starting `trau` also brings the **web hub** up before it resolves the repo, so the browser UI is
+always there — the TUI header shows the hub's status, and `W` opens it. If the hub can't start,
+trau says so loudly instead of running blind; pass `--no-serve` to skip the autostart for one
+session.
+
 Flags are there when you want them — scripting, CI, one-offs:
 
 ```bash
@@ -76,7 +81,15 @@ trau serve                       # http://127.0.0.1:8728
 
 The hub mirrors the CLI/TUI, not the other way round — [`docs/cli-web-parity.md`](docs/cli-web-parity.md)
 maps every operation to its web surface and names the deliberate gaps (`doctor`, onboarding, the
-interactive planning flow).
+interactive planning flow). `⌘K` (`Ctrl-K` on Linux) opens a command palette for switching
+projects and jumping between pages, recent locations, and active runs.
+
+Every phase prompt the loop sends is **editable from the hub** — Settings → Prompts for machine-wide
+wording, or a repo's own Prompts section to override just that project ([ADR 0017](docs/adr/0017-configurable-prompts.md)).
+Overrides resolve repo > global > built-in and are validated fail-closed: one that doesn't parse,
+or that drops a placeholder carrying a parsing contract, is rejected and the built-in default is
+used. Resolution snapshots when a ticket starts, so editing mid-run never splits a run across two
+prompt versions. Reset-to-default is one click.
 
 Because the hub is a window onto an autonomous, merge-capable system, **exposing it is a safety
 decision**, and trau enforces an exposure policy:
@@ -136,6 +149,20 @@ trau watch path/to/file.pty.log  # …or an explicit path
 It tails the live transcript, reconstructs the agent's screen legibly (no raw escape sequences),
 follows across phase boundaries, and prints `waiting for agent output…` until a phase starts. It
 never touches the loop, so it's safe to start before, during, or after a run.
+
+When watching isn't enough and you want to steer the agent yourself, **take the session over**:
+
+```bash
+trau takeover <ID>               # resume that ticket's recorded claude session in this terminal
+```
+
+trau records the claude session id in each ticket's checkpoint, so the session outlives the phase
+that minted it ([ADR 0018](docs/adr/0018-terminal-takeover-handoff.md)). Takeover stops the run and
+waits for the loop to let go of the working tree *before* handing you the session — two writers on
+one checkout is exactly what it exists to prevent — and holds the repo for as long as your terminal
+lives. Hand-back is manual: closing the terminal parks the ticket, and it re-enters the loop only
+when you queue it again. The hub's run view offers the same thing as **Open in terminal** (macOS),
+which opens your terminal app on the running session.
 
 Logs are written under `.trau/runs/` (override with `RUNS_DIR`). trau adds this path and
 `.trau.ini` to the target repo's `.gitignore` on first run, so its artifacts never clutter
