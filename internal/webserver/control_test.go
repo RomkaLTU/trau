@@ -58,6 +58,7 @@ type fakeSupervisor struct {
 	captureOut []byte
 	captureErr error
 	signalErr  error
+	onSignal   func(pid int, sig syscall.Signal)
 }
 
 func (f *fakeSupervisor) Spawn(spec SpawnSpec) (int, error) {
@@ -88,6 +89,9 @@ func (f *fakeSupervisor) Signal(pid int, sig syscall.Signal) error {
 		return f.signalErr
 	}
 	f.signals = append(f.signals, signalCall{pid: pid, sig: sig})
+	if f.onSignal != nil {
+		f.onSignal(pid, sig)
+	}
 	return nil
 }
 
