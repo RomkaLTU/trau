@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/attachfile"
 	"github.com/RomkaLTU/trau/internal/hubclient"
 )
 
@@ -132,12 +133,18 @@ type Tracker interface {
 
 // IssueDetail is the ticket content injected into the build/handoff prompts: the
 // title, the full description (which, for Linear/Jira, embeds the acceptance
-// criteria as markdown), and the issue's comments as read from the store.
+// criteria as markdown), the issue's comments as read from the store, and the
+// images and files hanging off it.
 type IssueDetail struct {
 	Title       string
 	Description string
 	Comments    []IssueComment
+	Attachments []AttachmentRef
 }
+
+// AttachmentRef is one of an issue's images or files. It aliases the type the
+// materializer consumes so the detail travels to the prompt without conversion.
+type AttachmentRef = attachfile.Ref
 
 // IssueComment is one comment on an issue — an author and a body — injected into
 // the prompt alongside the description.
@@ -153,6 +160,13 @@ type IssueComment struct {
 // never a blocker.
 type IssueDetailer interface {
 	IssueDetail(ctx context.Context, id string) (IssueDetail, error)
+}
+
+// AttachmentFetcher is the optional capability of reading an issue attachment's
+// bytes. The hub owns the attachment cache, so the store-backed tracker answers
+// over HTTP and the child never writes that cache itself (ADR 0008).
+type AttachmentFetcher interface {
+	AttachmentBytes(ctx context.Context, id int64) ([]byte, error)
 }
 
 // IssueLabeler is the optional capability of adding one label to an issue without

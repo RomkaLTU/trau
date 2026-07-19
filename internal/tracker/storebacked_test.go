@@ -30,17 +30,39 @@ type recordedMirror struct {
 
 type fakeStoreHub struct {
 	issues      map[string]hubclient.Issue
+	attachments map[string][]hubclient.Attachment
+	blobs       map[int64][]byte
 	backlog     []hubclient.BacklogItem
 	created     []hubclient.InternalDraft
 	mirrors     []recordedMirror
 	transitions []recordedTransition
 	syncErr     error
+	attachErr   error
 	mirrorErr   error
 	ops         []string
 }
 
 func newFakeStoreHub() *fakeStoreHub {
-	return &fakeStoreHub{issues: map[string]hubclient.Issue{}}
+	return &fakeStoreHub{
+		issues:      map[string]hubclient.Issue{},
+		attachments: map[string][]hubclient.Attachment{},
+		blobs:       map[int64][]byte{},
+	}
+}
+
+func (f *fakeStoreHub) IssueAttachments(_ context.Context, _, id string) ([]hubclient.Attachment, error) {
+	if f.attachErr != nil {
+		return nil, f.attachErr
+	}
+	return f.attachments[id], nil
+}
+
+func (f *fakeStoreHub) AttachmentBytes(_ context.Context, _ string, id int64) ([]byte, error) {
+	body, ok := f.blobs[id]
+	if !ok {
+		return nil, hubclient.ErrNotFound
+	}
+	return body, nil
 }
 
 func (f *fakeStoreHub) Sync(context.Context, string) error {
@@ -388,5 +410,47 @@ func TestStoreBackedUnscopedPickIsNeverInternal(t *testing.T) {
 	}
 	if !reflect.DeepEqual(hub.ops, []string{"sync", "backlog"}) {
 		t.Fatalf("ops = %v, want the synced pick — an unscoped pick carries no id to route on", hub.ops)
+	}
+}
+
+// IssueDetail carries the issue's attachments so the pipeline can materialize
+// them, and a failed listing costs the prompt its files but never its description.
+func TestStoreBackedIssueDetailIncludesAttachments(t *testing.T) {
+	hub := newFakeStoreHub()
+	hub.issues["COD-1"] = hubclient.Issue{ID: "COD-1", Title: "Fix it", Description: "the body"}
+	hub.attachments["COD-1"] = []hubclient.Attachment{{
+		ID: 7, Filename: "shot.png", MimeType: "image/png", SizeBytes: 120, IsImage: true,
+		SourceURL: "https://uploads.linear.app/abc/shot.png",
+	}}
+
+	detail, err := newStoreBacked(hub, &fakeWrites{}).IssueDetail(context.Background(), "COD-1")
+	if err != nil {
+		t.Fatalf("issue detail: %v", err)
+	}
+	want := AttachmentRef{
+		ID: 7, Filename: "shot.png", MimeType: "image/png", Size: 120, IsImage: true,
+		SourceURL: "https://uploads.linear.app/abc/shot.png",
+	}
+	if len(detail.Attachments) != 1 || detail.Attachments[0] != want {
+		t.Fatalf("attachments = %+v, want %+v", detail.Attachments, want)
+	}
+
+	hub.attachErr = errors.New("hub unreachable")
+	degraded, err := newStoreBacked(hub, &fakeWrites{}).IssueDetail(context.Background(), "COD-1")
+	if err != nil {
+		t.Fatalf("a failed attachment listing must not fail the detail read: %v", err)
+	}
+	if degraded.Description != "the body" || len(degraded.Attachments) != 0 {
+		t.Fatalf("degraded detail = %+v, want the description with no attachments", degraded)
+	}
+}
+
+// AttachmentBytes reads through the hub, which owns the attachment cache.
+func TestStoreBackedAttachmentBytes(t *testing.T) {
+	hub := newFakeStoreHub()
+	hub.blobs[7] = []byte("PNGDATA")
+	body, err := newStoreBacked(hub, &fakeWrites{}).AttachmentBytes(context.Background(), 7)
+	if err != nil || string(body) != "PNGDATA" {
+		t.Fatalf("AttachmentBytes = %q, %v", body, err)
 	}
 }

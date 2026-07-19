@@ -205,3 +205,60 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
+
+// The attachment reads must address the routes the hub actually registers: the
+// issue-action wildcard for the listing, and the repo attachment route for bytes.
+func TestIssueAttachmentsReadsIssueActionPath(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != apiPrefix+"/repos/acme/issues/COD-1/attachments" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		writeJSON(w, http.StatusOK, []Attachment{{
+			ID: 7, Filename: "shot.png", MimeType: "image/png", SizeBytes: 120,
+			IsImage: true, SourceURL: "https://uploads.linear.app/abc/shot.png",
+		}})
+	}))
+	defer ts.Close()
+
+	atts, err := New(ts.URL, "").IssueAttachments(context.Background(), "acme", "COD-1")
+	if err != nil {
+		t.Fatalf("IssueAttachments: %v", err)
+	}
+	if len(atts) != 1 || atts[0].ID != 7 || atts[0].Filename != "shot.png" || !atts[0].IsImage {
+		t.Fatalf("attachments = %+v", atts)
+	}
+	if atts[0].SizeBytes != 120 || atts[0].SourceURL != "https://uploads.linear.app/abc/shot.png" {
+		t.Fatalf("attachment metadata = %+v", atts[0])
+	}
+}
+
+func TestAttachmentBytesReadsRawBody(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != apiPrefix+"/repos/acme/attachments/7" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer tok" {
+			t.Errorf("authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write([]byte("PNGDATA"))
+	}))
+	defer ts.Close()
+
+	body, err := New(ts.URL, "tok").AttachmentBytes(context.Background(), "acme", 7)
+	if err != nil || string(body) != "PNGDATA" {
+		t.Fatalf("AttachmentBytes = %q, %v", body, err)
+	}
+}
+
+func TestAttachmentBytesFetchFailureCarriesHubError(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "fetch attachment: 403"})
+	}))
+	defer ts.Close()
+
+	_, err := New(ts.URL, "").AttachmentBytes(context.Background(), "acme", 7)
+	if err == nil || !strings.Contains(err.Error(), "fetch attachment: 403") {
+		t.Fatalf("err = %v, want the hub's reason", err)
+	}
+}

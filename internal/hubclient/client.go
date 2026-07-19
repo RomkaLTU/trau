@@ -28,6 +28,15 @@ const apiPrefix = "/api/v1"
 // identifier — a 404 from a read, a transition, or a checkpoint fetch.
 var ErrNotFound = errors.New("hubclient: not found")
 
+// attachmentMaxBytes mirrors the cap the hub applies when it fetches a file, so a
+// download never truncates something the hub was willing to cache.
+const attachmentMaxBytes = 50 << 20
+
+// attachmentHTTP downloads attachment bytes. Its timeout is generous because the
+// first read of a tracker-hosted file makes the hub pull it on that same request,
+// which the hub bounds at two minutes of its own.
+var attachmentHTTP = &http.Client{Timeout: 3 * time.Minute}
+
 // transportError wraps a failure to reach the hub at all — a dial or transport
 // error where the request never got an HTTP response, distinct from an error
 // status the hub returned. Its message and unwrap match the plain wrapping the
@@ -780,6 +789,53 @@ func (c *Client) Issue(ctx context.Context, repo, id string) (Issue, error) {
 	var out Issue
 	err := c.do(ctx, http.MethodGet, c.repoPath(repo, "issues/"+url.PathEscape(id)), nil, &out)
 	return out, err
+}
+
+// Attachment is one of an issue's files as the hub reports it: the metadata a
+// caller needs to describe the file, plus the source URL an issue body embeds.
+type Attachment struct {
+	ID        int64  `json:"id"`
+	Filename  string `json:"filename"`
+	MimeType  string `json:"mime_type"`
+	SizeBytes int64  `json:"size_bytes"`
+	IsImage   bool   `json:"is_image"`
+	SourceURL string `json:"source_url"`
+}
+
+// IssueAttachments lists the files attached to an issue — what sync discovered in
+// its description and comments, plus anything uploaded against it. Metadata only;
+// bytes come from AttachmentBytes.
+func (c *Client) IssueAttachments(ctx context.Context, repo, id string) ([]Attachment, error) {
+	var out []Attachment
+	err := c.do(ctx, http.MethodGet, c.repoPath(repo, "issues/"+url.PathEscape(id)+"/attachments"), nil, &out)
+	return out, err
+}
+
+// AttachmentBytes downloads an attachment's bytes. The hub fetches them from the
+// tracker and caches them on the first read, so a child asking for a screenshot
+// never writes the attachment store itself (ADR 0008).
+func (c *Client) AttachmentBytes(ctx context.Context, repo string, id int64) ([]byte, error) {
+	path := c.repoPath(repo, "attachments/"+strconv.FormatInt(id, 10))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := attachmentHTTP.Do(req)
+	if err != nil {
+		return nil, &transportError{op: http.MethodGet + " " + path, err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ErrNotFound
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("GET %s: %s", path, hubError(resp.Body, resp.Status))
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, attachmentMaxBytes))
 }
 
 // MirrorSynced applies a tracker write's status/label change to a synced issue's

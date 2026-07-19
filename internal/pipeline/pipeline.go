@@ -26,6 +26,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/activity"
 	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/attachfile"
 	"github.com/RomkaLTU/trau/internal/budget"
 	"github.com/RomkaLTU/trau/internal/checks"
 	"github.com/RomkaLTU/trau/internal/config"
@@ -909,6 +910,7 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 	_ = os.Remove(verifyPath(id))
 	_ = os.Remove(rubricPath(id))
 	_ = os.Remove(buildNotesPath(id))
+	attachfile.Remove(id)
 	p.clearArtifacts(id)
 	p.clearPhaseLogs(id)
 	_ = p.State.RemoveState(id)
@@ -950,6 +952,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	_ = os.Remove(verifyPath(id))
 	_ = os.Remove(rubricPath(id))
 	_ = os.Remove(buildNotesPath(id))
+	attachfile.Remove(id)
 	p.clearArtifacts(id)
 	p.clearPhaseLogs(id)
 
@@ -2515,16 +2518,19 @@ func (p *Pipeline) ticketContext(ctx context.Context, id string) string {
 		p.logf("  ticket %s content not injected (agent will read it via MCP): %v", id, err)
 		return ""
 	}
-	return ticketContextNote(id, detail)
+	return ticketContextNote(id, detail, p.materializeAttachments(ctx, id, detail.Attachments))
 }
 
-// ticketContextNote renders the injected ticket block — title, description, and
-// comments — or "" when there is no content to inject.
-func ticketContextNote(id string, detail tracker.IssueDetail) string {
+// ticketContextNote renders the injected ticket block — title, description,
+// comments, and the ticket's files — or "" when there is no content to inject.
+// Every reference to an image the run materialized is repointed at its local copy,
+// so an agent following one opens a file rather than an unreachable URL.
+func ticketContextNote(id string, detail tracker.IssueDetail, files []attachfile.File) string {
 	title := strings.TrimSpace(detail.Title)
-	desc := strings.TrimSpace(detail.Description)
-	comments := ticketComments(detail.Comments)
-	if title == "" && desc == "" && comments == "" {
+	desc := attachfile.Rewrite(strings.TrimSpace(detail.Description), files)
+	comments := attachfile.Rewrite(ticketComments(detail.Comments), files)
+	attachments := attachfile.Section(files)
+	if title == "" && desc == "" && comments == "" && attachments == "" {
 		return ""
 	}
 	var b strings.Builder
@@ -2539,6 +2545,7 @@ func ticketContextNote(id string, detail tracker.IssueDetail) string {
 	if comments != "" {
 		b.WriteString("\n--- Comments ---\n" + comments)
 	}
+	b.WriteString(attachments)
 	b.WriteString("=== end " + id + " ===")
 	return b.String()
 }
