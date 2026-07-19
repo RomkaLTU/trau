@@ -146,6 +146,7 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 	hub.EnableAtlas(ctx)
 	restartCh := make(chan struct{})
 	hub.EnableRestart(func() { close(restartCh) })
+	hub.SetUpdateChecks(cfg.UpdateCheck)
 	hub.Start(ctx, time.Duration(cfg.ServeSyncInterval)*time.Second, time.Duration(cfg.ServeReconcileInterval)*time.Second)
 	srv := &http.Server{Addr: addr, Handler: hub.Handler()}
 

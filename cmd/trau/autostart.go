@@ -20,6 +20,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/update"
 	"github.com/RomkaLTU/trau/internal/webserver"
 )
 
@@ -242,7 +243,7 @@ func respawnServe(serveArgs []string) error { return spawnServe(os.O_APPEND, ser
 // lock. TRAU_ACTIVE is stripped so the hub — and everything it later spawns —
 // is not marked as running inside the loop that autostarted it.
 func spawnServe(logMode int, serveArgs []string) error {
-	exe, err := resolveTrauBinary()
+	exe, err := update.ResolveBinary()
 	if err != nil {
 		return err
 	}
@@ -291,31 +292,6 @@ func openHubLog(logMode int) *os.File {
 		return nil
 	}
 	return f
-}
-
-// resolveTrauBinary picks the binary a spawned hub should run.
-func resolveTrauBinary() (string, error) {
-	exe, _ := os.Executable()
-	return resolveTrauBinaryFrom(exe)
-}
-
-// resolveTrauBinaryFrom resolves exe, the running process's own path, to a
-// binary that still exists. exe wins when it does — that covers dev builds
-// outside PATH, and the stable /opt/homebrew/bin/trau symlink, which after an
-// upgrade already points at the new version. `brew upgrade --cask trau` deletes
-// the old versioned Caskroom directory, so a process whose path led into it has
-// nothing to re-exec and falls back to whatever `trau` resolves to on PATH now.
-func resolveTrauBinaryFrom(exe string) (string, error) {
-	if exe != "" {
-		if _, err := os.Stat(exe); err == nil {
-			return exe, nil
-		}
-	}
-	path, err := exec.LookPath("trau")
-	if err != nil {
-		return "", fmt.Errorf("no trau binary to run: %q is gone: %w", exe, err)
-	}
-	return path, nil
 }
 
 func openBrowser(url string) error {

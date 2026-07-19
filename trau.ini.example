@@ -457,6 +457,12 @@ SERVE_AUTOSTART=1
 # best-effort — skipped over SSH or without a display). Set 0 to keep the daemon
 # but not launch a browser; the TUI still prints the Web UI URL.
 SERVE_OPEN=1
+#
+# Once a day the hub asks GitHub whether a newer trau release exists and shows it
+# in the web UI. Set 0 to make no outbound request at all; the hub still notices
+# when the binary on disk is newer than the one it is running (after a
+# `brew upgrade trau`, say), because that check is entirely local.
+UPDATE_CHECK=1
 
 # COST NOTE: the "~$X est" in the closing recap (and --status) is a NOTIONAL
 # API-list estimate, not a bill — no provider cost is reported for interactive
