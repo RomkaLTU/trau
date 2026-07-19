@@ -9,6 +9,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
 // InternalIssueRequest is the body of POST /repos/{repo}/issues/internal and
@@ -73,6 +74,7 @@ func (s *Server) handleCreateInternalIssue(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create issue: " + err.Error()})
 		return
 	}
+	s.registerAttachments(repo.Root, iss.Identifier, scanIssueImages(iss.Description))
 	writeJSON(w, http.StatusCreated, toInternalIssueResponse(repo.Name, iss))
 }
 
@@ -135,7 +137,16 @@ func (s *Server) updateInternalIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "update issue: " + err.Error()})
 		return
 	}
+	s.registerAttachments(repo.Root, iss.Identifier, scanIssueImages(iss.Description))
 	writeJSON(w, http.StatusOK, toInternalIssueResponse(repo.Name, iss))
+}
+
+// scanIssueImages finds the images an internally-authored body embeds, so a
+// pasted screenshot is listed the same way a synced ticket's files are. Only
+// absolute URLs qualify: an uploaded image renders as a relative trau attachment
+// route, which is already a stored row bound by the upload itself.
+func scanIssueImages(description string) []tracker.Attachment {
+	return tracker.AttachmentScanner{}.Scan(description)
 }
 
 // InternalTransitionRequest is the body of POST

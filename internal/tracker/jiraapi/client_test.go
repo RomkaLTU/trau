@@ -42,7 +42,7 @@ func TestIssueSendsBasicAuthAndReturnsSummary(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotPath = r.URL.Path
-		if got := r.URL.Query().Get("fields"); got != "summary,description,status,resolution,project,parent,labels" {
+		if got := r.URL.Query().Get("fields"); got != "summary,description,status,resolution,project,parent,labels,attachment" {
 			t.Errorf("fields query = %q, want the widened field set", got)
 		}
 		w.Header().Set("Content-Type", "application/json")

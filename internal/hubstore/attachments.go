@@ -237,6 +237,24 @@ func (a *Attachments) ReconcileIssues(repo string, live []string) error {
 	return a.deleteWhere(clause, args...)
 }
 
+// ReconcileIssue drops the tracker-sourced attachments of one issue that live no
+// longer lists — the per-issue counterpart of ReconcileIssues, run right after a
+// sync re-registers what the ticket currently references, so an image deleted
+// upstream stops being listed here. Uploads are exempt: they have no upstream to
+// have vanished from. An empty live set drops every discovered file on the issue,
+// which is exactly what a ticket that lost its last image means.
+func (a *Attachments) ReconcileIssue(repo, identifier string, live []string) error {
+	clause := `repo = ? AND issue_identifier = ? AND source <> '` + AttachmentSourceUpload + `' AND source_url <> ''`
+	args := []any{repo, identifier}
+	if len(live) > 0 {
+		clause += ` AND source_url NOT IN (` + placeholders(len(live)) + `)`
+		for _, u := range live {
+			args = append(args, u)
+		}
+	}
+	return a.deleteWhere(clause, args...)
+}
+
 // deleteWhere removes the matching rows and then collects the blobs no surviving
 // row references. The sweep runs after the commit so a rolled-back delete can
 // never take live bytes with it, and a blob shared by two rows survives the first
