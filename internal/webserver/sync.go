@@ -134,6 +134,11 @@ func (s *Server) reconcileRepo(ctx context.Context, repo registry.Repo) error {
 		return err
 	}
 	s.dropFromQueue(repo.Root, tombstoned)
+	// Tracker-sourced attachments follow their ticket out. Uploads are exempt, so an
+	// internal issue's pasted image is never swept by a Project reconcile.
+	if err := s.stores.Attachments().ReconcileIssues(repo.Root, live); err != nil {
+		logger.Verbosef("reconcile %s: prune attachments: %v", repo.Root, err)
+	}
 	return nil
 }
 

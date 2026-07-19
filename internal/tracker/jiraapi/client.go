@@ -81,10 +81,23 @@ func New(baseURL, email, apiToken string) *Client {
 		baseURL: baseURL,
 		http:    &http.Client{Timeout: 30 * time.Second},
 	}
-	if baseURL != "" && email != "" && apiToken != "" {
-		c.auth = "Basic " + base64.StdEncoding.EncodeToString([]byte(email+":"+apiToken))
+	if baseURL != "" {
+		c.auth = BasicAuth(email, apiToken)
 	}
 	return c
+}
+
+// BasicAuth returns the Authorization header value a Jira Cloud request carries,
+// or "" when either credential is missing. Attachment downloads hit the site's
+// content URLs rather than the REST API, so they authenticate with this directly
+// instead of going through a Client.
+func BasicAuth(email, apiToken string) string {
+	email = strings.TrimSpace(email)
+	apiToken = strings.TrimSpace(apiToken)
+	if email == "" || apiToken == "" {
+		return ""
+	}
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(email+":"+apiToken))
 }
 
 // enabled reports whether the client has the credentials to reach the API.

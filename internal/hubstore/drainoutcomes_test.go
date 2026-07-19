@@ -9,12 +9,13 @@ import (
 
 func testDrainOutcomes(t *testing.T) *DrainOutcomes {
 	t.Helper()
-	db, err := hubdb.Open(t.TempDir())
+	home := t.TempDir()
+	db, err := hubdb.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewStores(db.SQL(), nil, Retention{}).DrainOutcomes()
+	return NewStores(home, db.SQL(), nil, Retention{}).DrainOutcomes()
 }
 
 func TestDrainOutcomeUpsertOneRemove(t *testing.T) {
