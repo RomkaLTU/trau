@@ -9,10 +9,12 @@ import (
 	"io/fs"
 	"net/http"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
@@ -44,6 +46,9 @@ type Server struct {
 	pregrillMu       sync.Mutex
 	pregrill         map[int64]bool
 	sup              Supervisor
+	term             terminalLauncher
+	sessionExists    func(sessionID string) bool
+	goos             string
 	drain            *drainer
 	syncer           *syncer
 	drainCtx         context.Context
@@ -82,6 +87,9 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		grillEvents:      newGrillBroadcaster(),
 		pregrill:         map[int64]bool{},
 		sup:              newOSSupervisor(),
+		term:             osascriptLauncher{},
+		sessionExists:    agent.SessionExists,
+		goos:             runtime.GOOS,
 		drainCtx:         context.Background(),
 		newWriter:        defaultWriter,
 		newReader:        defaultReader,
@@ -274,6 +282,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/comment", s.handleRunComment)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/reset", s.handleResetRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/clear", s.handleClearRun)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/takeover", s.handleRunTakeover)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/sync", s.handleSync)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/resync", s.handleForceResync)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/reconcile", s.handleReconcileRepo)
