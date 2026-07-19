@@ -1,7 +1,9 @@
 // Package state is the durable per-ticket checkpoint layer that makes the loop
 // resumable. Each ticket's progress lives in runs/<ID>/state as key=value lines
-// (PHASE, BRANCH, PR, PR_URL, UPDATED), written under runs/ so it survives a
-// reboot — never /tmp. It also owns the ordered phase ranking the resume logic
+// (PHASE, BRANCH, PR, PR_URL, SESSION, SESSION_PHASE, UPDATED), written under
+// runs/ so it survives a reboot — never /tmp. SESSION/SESSION_PHASE name the
+// most recent claude phase's session id and label, the handle terminal takeover
+// resumes (ADR 0018). It also owns the ordered phase ranking the resume logic
 // keys off and the --status reporter.
 //
 // The file format and the phase ranking must stay stable across runs for
