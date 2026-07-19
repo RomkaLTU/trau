@@ -322,6 +322,48 @@ func TestStatusGolden(t *testing.T) {
 	}
 }
 
+// TestStatusAnomalyMarkers pins how an ANOMALIES value carrying a takeover
+// marker reads back: the text table and the JSON report both surface the
+// numeric count, never the raw marker list.
+func TestStatusAnomalyMarkers(t *testing.T) {
+	s := newStore(t)
+	_ = s.Set("COD-3", "PHASE", Building)
+	_ = s.Set("COD-3", "ANOMALIES", "2,takeover")
+	total := func(string) (int, float64, bool) { return 0, 0, true }
+
+	var buf bytes.Buffer
+	WriteStatus(&buf, s, s.Root(), total)
+	if out := buf.String(); strings.Contains(out, "takeover") || !strings.Contains(out, "2") {
+		t.Errorf("status table should render the count without markers:\n%s", out)
+	}
+
+	buf.Reset()
+	if err := WriteStatusJSON(&buf, s, total, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if out := buf.String(); !strings.Contains(out, `"anomalies": 2`) {
+		t.Errorf("JSON should carry the numeric count:\n%s", out)
+	}
+}
+
+func TestMergeAnomalyCount(t *testing.T) {
+	cases := []struct {
+		v    string
+		n    int
+		want string
+	}{
+		{"", 2, "2"},
+		{"1", 2, "2"},
+		{"takeover", 3, "3,takeover"},
+		{"2,takeover", 3, "3,takeover"},
+	}
+	for _, tc := range cases {
+		if got := MergeAnomalyCount(tc.v, tc.n); got != tc.want {
+			t.Errorf("MergeAnomalyCount(%q, %d) = %q, want %q", tc.v, tc.n, got, tc.want)
+		}
+	}
+}
+
 // TestStatusPlanningBucket checks a non-ticket bucket (planning) with spend is
 // rendered as its own row and folded into the grand total, while a bucket with no
 // spend is omitted entirely.

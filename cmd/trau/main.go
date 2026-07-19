@@ -23,7 +23,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -79,6 +78,7 @@ Usage:
   trau <ID>                  run a single ticket (e.g. ENG-123), or its sub-issues if it is an epic
   trau doctor                preflight check: git/gh/provider/config/labels/write perms
   trau watch                 tail a running loop's live agent activity (headless counterpart to the TUI 'w' key)
+  trau takeover <ID> [--repo <path>]  resume a parked ticket's recorded claude session in this terminal (repo locked while it runs)
   trau forensics <cmd>       read-only incident queries over the run history: runs, events, spend (see 'trau forensics --help')
   trau serve                 start the local web hub — HTTP API + embedded UI on 127.0.0.1:8728 (--bind, --port)
   trau --status [--json]     show saved ticket checkpoints with token/cost totals
@@ -180,6 +180,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	if len(args) > 0 && args[0] == "watch" {
 		return runWatch(ctx, args[1:], stdout, stderr)
+	}
+
+	if len(args) > 0 && args[0] == "takeover" {
+		return runTakeover(ctx, args[1:], stdout, stderr)
 	}
 
 	if len(args) > 0 && args[0] == "serve" {
@@ -480,6 +484,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return resolveRepoError(ctx, cfg, err)
 	}
 	logger.Verbosef("final repo root for pipeline: %s", repoRoot)
+	if err := takenOverRefusal(ctx, hubclient.New(hubBaseURL(cfg), cfg.ServeToken), repoRoot); err != nil {
+		return err
+	}
 	p, err := buildPipeline(cfg, runner, repoRoot, pm, sink, transcripts, log, con, rec)
 	if err != nil {
 		return err
@@ -1431,7 +1438,7 @@ func (e *realEngine) flagCostAnomalies(id string) {
 	// Stamp only tickets that still have a checkpoint — a refusal reset just
 	// removed the state file, and recreating it here would leave a ghost row.
 	if e.pipe.State.Get(id, "PHASE") != "" {
-		_ = e.pipe.State.Set(id, "ANOMALIES", strconv.Itoa(len(anomalies)))
+		_ = e.pipe.State.Set(id, "ANOMALIES", state.MergeAnomalyCount(e.pipe.State.Get(id, "ANOMALIES"), len(anomalies)))
 	}
 	phases := make([]string, len(anomalies))
 	for i, a := range anomalies {
@@ -2563,6 +2570,10 @@ func epicChildFilter(ctx context.Context, tr tracker.Tracker, epic string) func(
 // runEpicLoop runs the loop scoped to epic (or the team ready-queue when epic is
 // empty), processing at most max tickets. Run once on an epic uses max=1.
 func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Renderer, max int) {
+	if err := takenOverRefusal(ctx, hubclient.New(hubBaseURL(a.cfg), a.cfg.ServeToken), a.cfg.RepoRoot); err != nil {
+		r.LoopDone(console.SessionSummary{Err: err})
+		return
+	}
 	if err := a.ensure(); err != nil {
 		r.LoopDone(console.SessionSummary{Err: err})
 		return
@@ -2634,6 +2645,10 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 // runs fall back to the config default. Per-phase Routes and FALLBACK_PROVIDERS
 // are untouched (they layer on top of whichever default is active).
 func (a *appActions) RunTicket(ctx context.Context, id, provider string, r console.Renderer) {
+	if err := takenOverRefusal(ctx, hubclient.New(hubBaseURL(a.cfg), a.cfg.ServeToken), a.cfg.RepoRoot); err != nil {
+		r.LoopDone(console.SessionSummary{Err: err})
+		return
+	}
 	if provider != "" && provider != a.cfg.Provider {
 		orig := a.cfg.Provider
 		a.cfg.Provider = provider
