@@ -201,6 +201,9 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 	if err != nil {
 		return SyncResponse{}, err
 	}
+	for _, iss := range pulled {
+		s.registerAttachments(repo.Root, iss.ID, iss.Attachments)
+	}
 	syncedAt := nowStamp()
 	if err := store.RecordResult(repo.Root, hubstore.SyncResult{
 		Issues:   issues,
@@ -218,6 +221,35 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 		Comments: comments,
 		SyncedAt: syncedAt,
 	}, nil
+}
+
+// registerAttachments records the files one issue references — metadata only, so
+// a sync costs nothing beyond the pull it already made; the bytes are fetched the
+// first time something asks for them. Registration dedupes on the source URL, so
+// re-syncing a ticket keeps the rows it already has, and the issue is then
+// reconciled against what it currently references so a file that vanished from
+// the body stops being listed. Failures are logged rather than failed: the issue
+// content already landed and the next sync retries.
+func (s *Server) registerAttachments(root, identifier string, found []tracker.Attachment) {
+	atts := s.stores.Attachments()
+	urls := make([]string, 0, len(found))
+	for _, att := range found {
+		urls = append(urls, att.URL)
+		if _, err := atts.Create(hubstore.Attachment{
+			Repo:            root,
+			IssueIdentifier: identifier,
+			Source:          att.Source,
+			SourceURL:       att.URL,
+			Filename:        att.Filename,
+			MimeType:        att.MimeType,
+			SizeBytes:       att.Size,
+		}); err != nil {
+			logger.Verbosef("attachments %s %s: register %s: %v", root, identifier, att.URL, err)
+		}
+	}
+	if err := atts.ReconcileIssue(root, identifier, urls); err != nil {
+		logger.Verbosef("attachments %s %s: prune: %v", root, identifier, err)
+	}
 }
 
 func (s *Server) resolveBinding(ctx context.Context, store *hubstore.Issues, root string, cached hubstore.SyncBinding, reader tracker.Reader) (tracker.ProjectBinding, error) {

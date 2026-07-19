@@ -2,6 +2,7 @@ package linearapi
 
 import (
 	"context"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -27,6 +28,7 @@ type SyncIssue struct {
 	AssigneeID   string
 	AssigneeName string
 	Comments     []Comment
+	Attachments  []Attachment
 }
 
 // Comment is one comment on an issue, keyed by its node id. Author is the
@@ -38,6 +40,19 @@ type Comment struct {
 	CreatedAt string
 	UpdatedAt string
 }
+
+// Attachment is a file hanging off an issue rather than embedded in its body.
+// Only the entries served from Linear's upload host are files; the rest of the
+// attachment connection is integration links — a pull request, a Figma frame —
+// which have no bytes to cache and are left out.
+type Attachment struct {
+	ID       string
+	Filename string
+	URL      string
+}
+
+// uploadHost is where Linear serves the files uploaded to an issue.
+const uploadHost = "uploads.linear.app"
 
 // syncMaxPages bounds the cursor loop so a huge project cannot spin the pull
 // indefinitely.
@@ -202,6 +217,15 @@ type syncNode struct {
 	Comments struct {
 		Nodes []commentNode `json:"nodes"`
 	} `json:"comments"`
+	Attachments struct {
+		Nodes []attachmentNode `json:"nodes"`
+	} `json:"attachments"`
+}
+
+type attachmentNode struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	URL   string `json:"url"`
 }
 
 type commentNode struct {
@@ -244,5 +268,16 @@ func (n *syncNode) toSyncIssue() SyncIssue {
 		}
 		iss.Comments = append(iss.Comments, c)
 	}
+	for _, at := range n.Attachments.Nodes {
+		if !isUpload(at.URL) {
+			continue
+		}
+		iss.Attachments = append(iss.Attachments, Attachment{ID: at.ID, Filename: at.Title, URL: at.URL})
+	}
 	return iss
+}
+
+func isUpload(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	return err == nil && strings.EqualFold(parsed.Host, uploadHost)
 }

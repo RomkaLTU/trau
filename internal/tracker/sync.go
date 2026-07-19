@@ -53,6 +53,10 @@ type SyncedIssue struct {
 	AssigneeID   string
 	AssigneeName string
 	Comments     []SyncedComment
+	// Attachments are the files the issue references — the tracker's own file
+	// list plus the images its markdown embeds. Metadata only: a pull never
+	// downloads bytes.
+	Attachments []Attachment
 }
 
 func (r *linearReader) ResolveBinding(ctx context.Context) (ProjectBinding, error) {
@@ -78,8 +82,9 @@ func (r *linearReader) SyncPull(ctx context.Context, binding ProjectBinding, sin
 		return nil, err
 	}
 	out := make([]SyncedIssue, 0, len(issues))
+	scanner := AttachmentScanner{}
 	for i := range issues {
-		out = append(out, linearSynced(&issues[i]))
+		out = append(out, linearSynced(&issues[i], scanner))
 	}
 	return out, nil
 }
@@ -92,7 +97,7 @@ func (r *linearReader) Identity(ctx context.Context) (id, name string, err error
 	return r.client.Viewer(ctx)
 }
 
-func linearSynced(iss *linearapi.SyncIssue) SyncedIssue {
+func linearSynced(iss *linearapi.SyncIssue, scanner AttachmentScanner) SyncedIssue {
 	out := SyncedIssue{
 		ID:           iss.Identifier,
 		ExternalID:   iss.ID,
@@ -111,6 +116,7 @@ func linearSynced(iss *linearapi.SyncIssue) SyncedIssue {
 		AssigneeID:   iss.AssigneeID,
 		AssigneeName: iss.AssigneeName,
 	}
+	bodies := []string{iss.Description}
 	for _, c := range iss.Comments {
 		out.Comments = append(out.Comments, SyncedComment{
 			ExternalID: c.ID,
@@ -119,7 +125,13 @@ func linearSynced(iss *linearapi.SyncIssue) SyncedIssue {
 			CreatedAt:  c.CreatedAt,
 			UpdatedAt:  c.UpdatedAt,
 		})
+		bodies = append(bodies, c.Body)
 	}
+	listed := make([]Attachment, 0, len(iss.Attachments))
+	for _, at := range iss.Attachments {
+		listed = append(listed, Attachment{URL: at.URL, Filename: at.Filename, Source: AttachmentLinear})
+	}
+	out.Attachments = mergeAttachments(listed, scanner.Scan(bodies...))
 	return out
 }
 
@@ -141,8 +153,9 @@ func (r *jiraReader) SyncPull(ctx context.Context, binding ProjectBinding, since
 		return nil, err
 	}
 	out := make([]SyncedIssue, 0, len(issues))
+	scanner := NewAttachmentScanner(r.baseURL)
 	for i := range issues {
-		out = append(out, jiraSynced(&issues[i]))
+		out = append(out, jiraSynced(&issues[i], scanner))
 	}
 	return out, nil
 }
@@ -159,7 +172,7 @@ func (r *jiraReader) Identity(ctx context.Context) (id, name string, err error) 
 	return r.client.Myself(ctx)
 }
 
-func jiraSynced(iss *jiraapi.SyncIssue) SyncedIssue {
+func jiraSynced(iss *jiraapi.SyncIssue, scanner AttachmentScanner) SyncedIssue {
 	out := SyncedIssue{
 		ID:           iss.Key,
 		ExternalID:   iss.Key,
@@ -177,6 +190,7 @@ func jiraSynced(iss *jiraapi.SyncIssue) SyncedIssue {
 		AssigneeID:   iss.AssigneeID,
 		AssigneeName: iss.AssigneeName,
 	}
+	bodies := []string{iss.Description}
 	for _, c := range iss.Comments {
 		out.Comments = append(out.Comments, SyncedComment{
 			ExternalID: c.ID,
@@ -185,6 +199,18 @@ func jiraSynced(iss *jiraapi.SyncIssue) SyncedIssue {
 			CreatedAt:  c.Created,
 			UpdatedAt:  c.Updated,
 		})
+		bodies = append(bodies, c.Body)
 	}
+	listed := make([]Attachment, 0, len(iss.Attachments))
+	for _, at := range iss.Attachments {
+		listed = append(listed, Attachment{
+			URL:      at.Content,
+			Filename: at.Filename,
+			MimeType: at.MimeType,
+			Size:     at.Size,
+			Source:   AttachmentJira,
+		})
+	}
+	out.Attachments = mergeAttachments(listed, scanner.Scan(bodies...))
 	return out
 }

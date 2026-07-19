@@ -336,6 +336,82 @@ func TestAttachmentReconcileIssuesDropsVanishedTickets(t *testing.T) {
 	}
 }
 
+func TestAttachmentReconcileIssueDropsUnreferencedURLs(t *testing.T) {
+	a := testAttachments(t)
+	kept, err := a.Create(Attachment{
+		Repo: "/repo", IssueIdentifier: "COD-1", Source: AttachmentSourceLinear,
+		SourceURL: "https://uploads.linear.app/kept.png",
+	})
+	if err != nil {
+		t.Fatalf("Create kept: %v", err)
+	}
+	removed, err := a.Create(Attachment{
+		Repo: "/repo", IssueIdentifier: "COD-1", Source: AttachmentSourceLinear,
+		SourceURL: "https://uploads.linear.app/removed.png",
+	})
+	if err != nil {
+		t.Fatalf("Create removed: %v", err)
+	}
+	upload, err := a.Create(Attachment{Repo: "/repo", IssueIdentifier: "COD-1", Source: AttachmentSourceUpload})
+	if err != nil {
+		t.Fatalf("Create upload: %v", err)
+	}
+	other, err := a.Create(Attachment{
+		Repo: "/repo", IssueIdentifier: "COD-2", Source: AttachmentSourceLinear,
+		SourceURL: "https://uploads.linear.app/other.png",
+	})
+	if err != nil {
+		t.Fatalf("Create other: %v", err)
+	}
+	removedSHA := cache(t, a, removed.ID, "removed")
+
+	if err := a.ReconcileIssue("/repo", "COD-1", []string{"https://uploads.linear.app/kept.png"}); err != nil {
+		t.Fatalf("ReconcileIssue: %v", err)
+	}
+
+	if _, found, _ := a.Get("/repo", kept.ID); !found {
+		t.Fatalf("still-referenced URL was dropped")
+	}
+	if _, found, _ := a.Get("/repo", removed.ID); found {
+		t.Fatalf("URL the issue no longer references survived")
+	}
+	if _, found, _ := a.Get("/repo", upload.ID); !found {
+		t.Fatalf("upload was dropped by a tracker reconcile")
+	}
+	if _, found, _ := a.Get("/repo", other.ID); !found {
+		t.Fatalf("another issue's attachment was dropped")
+	}
+	if blobExists(t, a, removedSHA) {
+		t.Fatalf("dropped row's blob survived")
+	}
+}
+
+func TestAttachmentReconcileIssueWithNoLiveURLsClearsTheIssue(t *testing.T) {
+	a := testAttachments(t)
+	last, err := a.Create(Attachment{
+		Repo: "/repo", IssueIdentifier: "COD-1", Source: AttachmentSourceLinear,
+		SourceURL: "https://uploads.linear.app/last.png",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	upload, err := a.Create(Attachment{Repo: "/repo", IssueIdentifier: "COD-1", Source: AttachmentSourceUpload})
+	if err != nil {
+		t.Fatalf("Create upload: %v", err)
+	}
+
+	if err := a.ReconcileIssue("/repo", "COD-1", nil); err != nil {
+		t.Fatalf("ReconcileIssue: %v", err)
+	}
+
+	if _, found, _ := a.Get("/repo", last.ID); found {
+		t.Fatalf("a ticket that lost its last image kept the row")
+	}
+	if _, found, _ := a.Get("/repo", upload.ID); !found {
+		t.Fatalf("upload was dropped by a tracker reconcile")
+	}
+}
+
 func TestAttachmentBindToIssue(t *testing.T) {
 	a := testAttachments(t)
 	first, err := a.Create(Attachment{Repo: "/repo", Source: AttachmentSourceUpload, Filename: "a.png"})
