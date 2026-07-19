@@ -357,11 +357,37 @@ func ticketNum(id string) (int, bool) {
 	return n, true
 }
 
-// atoiSafe parses a stored integer field, yielding 0 for an empty or malformed
-// value so an absent checkpoint field reads as zero rather than erroring.
-func atoiSafe(v string) int {
-	n, _ := strconv.Atoi(v)
-	return n
+// anomalyCount extracts the numeric cost-anomaly count from an ANOMALIES
+// checkpoint value, which may also carry comma-separated markers such as
+// "takeover" beside the count. An empty or marker-only value reads as zero.
+func anomalyCount(v string) int {
+	for _, f := range strings.Split(v, ",") {
+		if n, err := strconv.Atoi(f); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+// MergeAnomalyCount returns an ANOMALIES checkpoint value with its numeric
+// count replaced by n, keeping any markers stamped beside it.
+func MergeAnomalyCount(v string, n int) string {
+	fields := []string{strconv.Itoa(n)}
+	for _, f := range strings.Split(v, ",") {
+		if _, err := strconv.Atoi(f); err != nil && f != "" {
+			fields = append(fields, f)
+		}
+	}
+	return strings.Join(fields, ",")
+}
+
+// fmtAnomCell renders the ANOM status column: the numeric count when one is
+// recorded, blank otherwise — markers never reach the table.
+func fmtAnomCell(v string) string {
+	if n := anomalyCount(v); n > 0 {
+		return strconv.Itoa(n)
+	}
+	return ""
 }
 
 // RemoveState deletes ticket id's state file (runs/<ID>/state), leaving the rest
@@ -432,7 +458,7 @@ func WriteStatus(w io.Writer, cps Checkpoints, location string, total func(id st
 			phase = "?"
 		}
 		tok, cost, metered := total(id)
-		_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s %5s  %s\n", id, phase, tok, fmtCostCell(cost, metered), cps.Get(id, "ANOMALIES"), cps.Get(id, "PR_URL"))
+		_, _ = fmt.Fprintf(w, "  %-10s %-12s %12d %8s %5s  %s\n", id, phase, tok, fmtCostCell(cost, metered), fmtAnomCell(cps.Get(id, "ANOMALIES")), cps.Get(id, "PR_URL"))
 		grandTokens += tok
 		grandCost = math.Round((grandCost+cost)*100) / 100
 		grandMetered = grandMetered && metered
@@ -498,7 +524,7 @@ func WriteStatusJSON(w io.Writer, cps Checkpoints, total func(id string) (tokens
 			Tokens:        tok,
 			Cost:          cost,
 			CostMeasured:  metered,
-			Anomalies:     atoiSafe(cps.Get(id, "ANOMALIES")),
+			Anomalies:     anomalyCount(cps.Get(id, "ANOMALIES")),
 		})
 		report.Total.Tokens += tok
 		report.Total.Cost = math.Round((report.Total.Cost+cost)*100) / 100

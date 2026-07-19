@@ -935,6 +935,7 @@ func TestRepoHasLiveInstanceIgnoresIdle(t *testing.T) {
 		{name: "working loop blocks", state: registry.StateWorking, blocks: true},
 		{name: "parked WIP blocks", state: registry.StateParked, blocks: true},
 		{name: "stopping loop blocks", state: registry.StateStopping, blocks: true},
+		{name: "takeover terminal blocks", state: registry.StateTakeover, blocks: true},
 		{name: "legacy entry without state blocks", state: "", blocks: true},
 		{name: "working loop in another repo does not block", state: registry.StateWorking, otherRepo: true, blocks: false},
 	}
@@ -954,6 +955,38 @@ func TestRepoHasLiveInstanceIgnoresIdle(t *testing.T) {
 				t.Errorf("repoHasLiveInstance = %v, want %v", got, tc.blocks)
 			}
 		})
+	}
+}
+
+// TestTickTakeoverInstanceWaitsArmed pins the takeover guard on the hub spawn
+// path (ADR 0018): a live takeover terminal in the repo makes the drain wait —
+// not spawn, and never finish — so the queue stays armed and retries the still
+// runnable item on a later tick once the lock's process dies.
+func TestTickTakeoverInstanceWaitsArmed(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	s.drain.repoLive = s.drain.repoHasLiveInstance
+	writeInstanceEntry(t, s, registry.Entry{
+		PID:          os.Getpid(),
+		RepoRoot:     root,
+		SessionState: registry.StateTakeover,
+		Ticket:       "COD-9",
+	})
+	seedQueue(t, s, root, true, queue.Item{ID: "COD-1"})
+	act, err := s.drain.tick(root)
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if act != drainWait {
+		t.Fatalf("tick = %q, want %q — a takeover lock must make the drain wait", act, drainWait)
+	}
+	if len(fake.spawns) != 0 {
+		t.Fatalf("spawned %d children, want 0 while the repo is taken over", len(fake.spawns))
+	}
+	if !drainingOf(t, s, root) {
+		t.Error("drain disarmed — a takeover block is temporary and must stay armed")
+	}
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusPending {
+		t.Errorf("item status = %q, want %q", got, queue.StatusPending)
 	}
 }
 

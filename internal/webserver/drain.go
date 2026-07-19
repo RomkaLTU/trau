@@ -330,7 +330,9 @@ func (d *drainer) checkpointOutcome(root string, it queue.Item) (class, reason s
 // already running in root, so the drainer waits for it instead of spawning a
 // second child in the same repo. An idle instance is an open dashboard, not a
 // run, and does not block; every other state (or a legacy entry with no state)
-// means a run is in flight or holding WIP.
+// means a run is in flight, WIP is held, or a takeover terminal owns the
+// working tree (ADR 0018). The wait keeps the drain armed, so a takeover block
+// is temporary: the queue retries once the lock's process dies.
 func (d *drainer) repoHasLiveInstance(root string) bool {
 	for _, e := range d.srv.liveInstances() {
 		if e.RepoRoot == root && e.SessionState != registry.StateIdle {
