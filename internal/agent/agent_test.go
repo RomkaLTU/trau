@@ -113,6 +113,65 @@ func TestClaudeArgsStripMechanicalMCP(t *testing.T) {
 	}
 }
 
+// TestClaudeSessionHookMatchesSessionIDArg pins the takeover handle (ADR 0018):
+// OnSessionStart fires with the same uuid the args builder passes as
+// --session-id, and it fires before the terminal session spawns, so the id is
+// durable before the session can produce its first byte.
+func TestClaudeSessionHookMatchesSessionIDArg(t *testing.T) {
+	spawnRefused := errors.New("spawn refused")
+	var hooked, hookedLabel string
+	var spawnArgs []string
+	c := &ClaudeInteractive{
+		Bin:       "claude",
+		ResultDir: t.TempDir(),
+		OnSessionStart: func(sessionID, label string) {
+			hooked, hookedLabel = sessionID, label
+		},
+		start: func(_ context.Context, _, _ string, args []string, _, _ int) (terminalSession, error) {
+			if hooked == "" {
+				t.Error("terminal session spawned before OnSessionStart fired")
+			}
+			spawnArgs = args
+			return nil, spawnRefused
+		},
+	}
+
+	if _, err := c.Run(context.Background(), "prompt", "build"); !errors.Is(err, spawnRefused) {
+		t.Fatalf("err = %v, want the spawn error", err)
+	}
+	if hookedLabel != "build" {
+		t.Errorf("hook label = %q, want build", hookedLabel)
+	}
+	sid := ""
+	for i, a := range spawnArgs {
+		if a == "--session-id" && i+1 < len(spawnArgs) {
+			sid = spawnArgs[i+1]
+		}
+	}
+	if sid == "" || sid != hooked {
+		t.Errorf("--session-id = %q, hook got %q — want the same non-empty uuid", sid, hooked)
+	}
+}
+
+// TestCodexIgnoresSessionHook pins that only claude wires OnSessionStart: a
+// codex backend built from the same BackendParams never fires it.
+func TestCodexIgnoresSessionHook(t *testing.T) {
+	fired := false
+	r, err := codexSpec.New(BackendParams{
+		Bin:            "trau-test-no-such-codex",
+		OnSessionStart: func(string, string) { fired = true },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background(), "prompt", "build"); err == nil {
+		t.Fatal("Run with a missing binary should error")
+	}
+	if fired {
+		t.Error("codex backend fired OnSessionStart; only claude mints session ids")
+	}
+}
+
 // TestCodexArgsPassModelAndEffort checks the clean codex default (gpt-5.6-sol at
 // medium effort) reaches a fresh `codex exec` as an explicit --model plus a
 // -c model_reasoning_effort override, and that an unset dial emits no flag at all.
