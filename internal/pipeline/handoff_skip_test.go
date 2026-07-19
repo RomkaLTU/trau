@@ -80,7 +80,7 @@ func TestVerifyTailModes(t *testing.T) {
 		t.Errorf("brief-mode prompt lost the verdict schema:\n%s", brief)
 	}
 
-	ticketCtx := ticketContextNote("COD-1", tracker.IssueDetail{Title: "Tiny slice", Description: "Do the small thing."})
+	ticketCtx := ticketContextNote("COD-1", tracker.IssueDetail{Title: "Tiny slice", Description: "Do the small thing."}, nil)
 	derive := verifyTail(prompts.Renderer{}, "COD-1", "", verifyPath("COD-1"), "", "", "", "", ticketCtx)
 	if strings.Contains(derive, "QA brief at") || strings.Contains(derive, "/tmp/handoff") {
 		t.Errorf("derive-mode prompt dangles a brief reference:\n%s", derive)
@@ -100,7 +100,7 @@ func TestVerifyTailModes(t *testing.T) {
 // and bugfix prompts reference the brief when one exists and drop the reference (in
 // favor of the injected ticket content) when it does not.
 func TestRepairBugfixInstructionModes(t *testing.T) {
-	ticketCtx := ticketContextNote("COD-1", tracker.IssueDetail{Title: "Tiny slice", Description: "Do the small thing."})
+	ticketCtx := ticketContextNote("COD-1", tracker.IssueDetail{Title: "Tiny slice", Description: "Do the small thing."}, nil)
 	for _, tc := range []struct {
 		name  string
 		build func(handoff, ticketCtx string) string
