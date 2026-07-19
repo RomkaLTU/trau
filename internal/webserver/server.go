@@ -240,6 +240,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/hub/restart", s.handleHubRestart)
 	mux.HandleFunc(APIPrefix+"/update", s.handleUpdate)
 	mux.HandleFunc(APIPrefix+"/update/check", s.handleUpdateCheck)
+	mux.HandleFunc(APIPrefix+"/update/apply", s.handleUpdateApply)
 	mux.HandleFunc(APIPrefix+"/instances", s.handleInstances)
 	mux.HandleFunc(APIPrefix+"/instances/{pid}", s.handleInstance)
 	mux.HandleFunc(APIPrefix+"/instances/{pid}/stop", s.handleStopInstance)

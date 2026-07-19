@@ -19,6 +19,9 @@ func TestUpdateEndpointReportsRunningVersion(t *testing.T) {
 		Running       string `json:"running"`
 		ChecksEnabled bool   `json:"checksEnabled"`
 		InstallMethod string `json:"installMethod"`
+		ApplyState    struct {
+			State string `json:"state"`
+		} `json:"applyState"`
 	}
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatalf("decode %s: %v", body, err)
@@ -31,6 +34,9 @@ func TestUpdateEndpointReportsRunningVersion(t *testing.T) {
 	}
 	if got.InstallMethod == "" {
 		t.Error("installMethod is empty, want brew or other")
+	}
+	if got.ApplyState.State != "idle" {
+		t.Errorf("applyState.state = %q, want idle before any apply", got.ApplyState.State)
 	}
 }
 
@@ -76,6 +82,19 @@ func TestUpdateCheckWithChecksDisabled(t *testing.T) {
 	}
 	if got.Latest != "" {
 		t.Errorf("latest = %q, want empty with checks disabled", got.Latest)
+	}
+}
+
+// TestUpdateApplyRejectsGet is the only apply-endpoint test that runs here: a
+// POST would shell out to a real `brew upgrade` on a brew-managed machine. The
+// gate and the state machine are covered in internal/update, where brew is
+// stubbed.
+func TestUpdateApplyRejectsGet(t *testing.T) {
+	ts := newTestServer(t)
+
+	res, _ := get(t, ts, APIPrefix+"/update/apply")
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /update/apply = %d, want 405", res.StatusCode)
 	}
 }
 
