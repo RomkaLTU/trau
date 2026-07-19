@@ -43,12 +43,16 @@ let root: Root | undefined;
 
 // renderGrillSession mounts the hook on a seeded list cache, so no test depends on
 // the list poll: the only fetches are the ones the act under test issues.
-function renderGrillSession(sessions: GrillSession[]) {
+function renderGrillSession(
+  sessions: GrillSession[],
+  defaults?: GrillListResponse["defaults"],
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   client.setQueryData<GrillListResponse>(["grill", "loop"], {
     repo: "loop",
+    defaults,
     sessions,
   });
   const result = {} as { current: GrillSessionState };
@@ -140,5 +144,69 @@ describe("useGrillSession end", () => {
 
     expect(result.current.endError?.message).toBe("session is already applied");
     expect(onEnded).not.toHaveBeenCalled();
+  });
+});
+
+describe("useGrillSession start model", () => {
+  it("opens the session on the chosen model", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(201, session({ model: "opus" })));
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderGrillSession([]);
+
+    await act(async () => result.current.start("make it ready", "opus"));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/repos/loop/grill",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          issue_id: "COD-1",
+          idea: "make it ready",
+          model: "opus",
+        }),
+      }),
+    );
+  });
+
+  // Start over is a fresh interview on the same item, so a model switched mid-way is
+  // what it opens on — reverting to the repo default would undo a deliberate choice.
+  it("carries the discarded session's model into the fresh one", async () => {
+    const fetchMock = vi.fn((input: string) =>
+      Promise.resolve(
+        input.endsWith("/abandon")
+          ? jsonResponse(200, session({ state: "abandoned" }))
+          : jsonResponse(201, session({ id: "2", model: "opus" })),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderGrillSession([session({ model: "opus" })]);
+
+    await act(async () => result.current.startOver());
+
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/api/v1/repos/loop/grill",
+      expect.objectContaining({
+        body: JSON.stringify({ issue_id: "COD-1", idea: "", model: "opus" }),
+      }),
+    );
+  });
+
+  // The list's defaults are what the panel's start picker reads, so a cache write the
+  // hook makes on the way past must not drop them.
+  it("keeps the list defaults through an optimistic settle", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(200, session({ state: "abandoned" })));
+    vi.stubGlobal("fetch", fetchMock);
+    const defaults = { provider: "claude", model: "opus" };
+    const { client, result } = renderGrillSession([session({})], defaults);
+
+    await act(async () => result.current.end());
+
+    expect(
+      client.getQueryData<GrillListResponse>(["grill", "loop"])?.defaults,
+    ).toEqual(defaults);
   });
 });

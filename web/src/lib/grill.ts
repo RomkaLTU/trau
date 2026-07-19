@@ -54,8 +54,18 @@ export interface GrillDetail {
   messages: GrillMessage[]
 }
 
+// GrillDefaults is what an interview started right now would run on. It rides on the
+// list resource so a start surface can offer the provider/model choice before any
+// session exists; a cache write the panel makes itself may not carry it.
+export interface GrillDefaults {
+  provider: string
+  model?: string
+  model_options?: string[]
+}
+
 export interface GrillListResponse {
   repo: string
+  defaults?: GrillDefaults
   sessions: GrillSession[]
 }
 
@@ -245,16 +255,18 @@ export const grillDetailQueryOptions = (sid: string) =>
 
 // startGrillSession opens a session. An empty issueId with an idea starts a
 // from-scratch authoring session anchored to the repo alone, the idea seeding the
-// first turn; a concrete issueId grills that issue.
+// first turn; a concrete issueId grills that issue. model pins the session's first
+// turn; an empty one leaves the hub to resolve the repo's default.
 export async function startGrillSession(
   repo: string,
   issueId: string,
   idea = '',
+  model = '',
 ): Promise<GrillSession> {
   const res = await apiFetch(base(repo), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ issue_id: issueId, idea }),
+    body: JSON.stringify({ issue_id: issueId, idea, model }),
   })
   if (!res.ok) throw new Error(await errorMessage(res, 'start interview session failed'))
   return res.json()
@@ -281,11 +293,16 @@ export interface PregrillResponse {
 // pregrillIssues runs the bounded, sequential AFK pre-grill pass over issueIds. The
 // hub caps the number of turns at GRILL_PREGRILL_MAX and skips issues that already
 // have an active session; each grilled issue lands in the inbox as its outcome.
-export async function pregrillIssues(repo: string, issueIds: string[]): Promise<PregrillResponse> {
+// model pins every session the pass opens, the same choice a hand-started one takes.
+export async function pregrillIssues(
+  repo: string,
+  issueIds: string[],
+  model = '',
+): Promise<PregrillResponse> {
   const res = await apiFetch(`${base(repo)}/pregrill`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ issue_ids: issueIds }),
+    body: JSON.stringify({ issue_ids: issueIds, model }),
   })
   if (!res.ok) throw new Error(await errorMessage(res, 'ask ahead failed'))
   return res.json()
@@ -376,6 +393,18 @@ export function abandonIssueSessions(
   return (sessions ?? []).map((s) =>
     s.issue_id === issueId && !isSettled(s.state) ? { ...s, state: 'abandoned' as const } : s,
   )
+}
+
+// applySessionModel points the list's copy of a session at model. The switch endpoint
+// persists immediately but the list only re-polls every few seconds, and Start over
+// reads the model off that copy — so a switch has to land here or starting again
+// silently reverts to the model the session opened on.
+export function applySessionModel(
+  sessions: readonly GrillSession[] | undefined,
+  sid: string,
+  model: string,
+): GrillSession[] {
+  return (sessions ?? []).map((s) => (s.id === sid ? { ...s, model } : s))
 }
 
 function messageOrder(a: GrillMessage, b: GrillMessage): number {

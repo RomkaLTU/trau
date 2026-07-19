@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   abandonIssueSessions,
   activeSessionForIssue,
+  applySessionModel,
   canCompose,
   composerPlaceholder,
   diffHasChanges,
@@ -125,6 +126,22 @@ describe('abandonIssueSessions', () => {
 
   it('handles a missing list', () => {
     expect(abandonIssueSessions(undefined, 'COD-1')).toEqual([])
+  })
+})
+
+describe('applySessionModel', () => {
+  it('repoints only the switched session, so Start over reads the new model', () => {
+    const sessions = [
+      session({ id: '1', issue_id: 'COD-1', model: 'sonnet' }),
+      session({ id: '2', issue_id: 'COD-2', model: 'sonnet' }),
+    ]
+    const out = applySessionModel(sessions, '1', 'haiku')
+    expect(out.map((s) => s.model)).toEqual(['haiku', 'sonnet'])
+    expect(sessions[0].model).toBe('sonnet')
+  })
+
+  it('handles a missing list', () => {
+    expect(applySessionModel(undefined, '1', 'haiku')).toEqual([])
   })
 })
 

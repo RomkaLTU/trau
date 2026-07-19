@@ -31,8 +31,11 @@ const (
 // PregrillRequest is the body of POST /repos/{repo}/grill/pregrill: the issues to
 // pre-grill, in order. The per-item button sends one; "pre-grill all" sends the
 // inbox's untouched issues. The pass bounds the list to GRILL_PREGRILL_MAX turns.
+// Model is optional and applies to every session the pass opens; an empty one
+// resolves to the repo config's grill default, same as a hand-started session.
 type PregrillRequest struct {
 	IssueIDs []string `json:"issue_ids"`
+	Model    string   `json:"model"`
 }
 
 // PregrillResult is one issue's outcome from the pass.
@@ -72,7 +75,7 @@ func (s *Server) handleRepoPregrill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	max := s.pregrillMax(repo)
-	results := s.runPregrillPass(r.Context(), repo, req.IssueIDs, max)
+	results := s.runPregrillPass(r.Context(), repo, req, max)
 	writeJSON(w, http.StatusOK, PregrillResponse{Repo: repo.Name, Max: max, Results: results})
 }
 
@@ -90,10 +93,14 @@ func (s *Server) pregrillMax(repo registry.Repo) int {
 // issue that already has an active session is skipped without spending budget; once
 // the budget is gone the rest are reported skipped. Each grilled issue runs its turn
 // synchronously so the settled session can be classified into an outcome.
-func (s *Server) runPregrillPass(ctx context.Context, repo registry.Repo, issueIDs []string, max int) []PregrillResult {
-	results := make([]PregrillResult, 0, len(issueIDs))
+func (s *Server) runPregrillPass(ctx context.Context, repo registry.Repo, req PregrillRequest, max int) []PregrillResult {
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = s.grillModelDefault(repo)
+	}
+	results := make([]PregrillResult, 0, len(req.IssueIDs))
 	budget := max
-	for _, raw := range issueIDs {
+	for _, raw := range req.IssueIDs {
 		id := strings.TrimSpace(raw)
 		if id == "" {
 			continue
@@ -102,7 +109,7 @@ func (s *Server) runPregrillPass(ctx context.Context, repo registry.Repo, issueI
 			results = append(results, PregrillResult{IssueID: id, Outcome: pregrillOutcomeSkipped, Detail: "pre-grill pass limit reached"})
 			continue
 		}
-		sess, err := s.stores.Grill().Create(hubstore.NewGrillSession{Repo: repo.Root, IssueID: id})
+		sess, err := s.stores.Grill().Create(hubstore.NewGrillSession{Repo: repo.Root, IssueID: id, Model: model})
 		if errors.Is(err, hubstore.ErrGrillActiveSession) {
 			results = append(results, PregrillResult{IssueID: id, Outcome: pregrillOutcomeSkipped, Detail: "already has an active grill session"})
 			continue

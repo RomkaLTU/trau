@@ -17,6 +17,11 @@ import (
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
+// grillProvider is the provider every grilling turn runs on. The runner spawns the
+// Claude CLI and reads its stream-json contract, so the choice is fixed here rather
+// than stored per session.
+const grillProvider = "claude"
+
 // GrillSessionView is one grilling session as the web panel sees it. IssueID is
 // omitted for an authoring session anchored to the repo alone; IssueTitle then
 // carries the session's seed so the queue can title an issue-less draft. Provider
@@ -56,9 +61,19 @@ type GrillDeltaView struct {
 	Text string `json:"text"`
 }
 
+// GrillDefaultsView is what an interview started right now would run on: the
+// provider, the repo config's model, and the catalog to pick from. It rides on the
+// list resource so a start surface can offer the choice before a session exists.
+type GrillDefaultsView struct {
+	Provider     string   `json:"provider"`
+	Model        string   `json:"model,omitempty"`
+	ModelOptions []string `json:"model_options,omitempty"`
+}
+
 // GrillListResponse is the GET /repos/{repo}/grill resource.
 type GrillListResponse struct {
 	Repo     string             `json:"repo"`
+	Defaults GrillDefaultsView  `json:"defaults"`
 	Sessions []GrillSessionView `json:"sessions"`
 }
 
@@ -128,7 +143,11 @@ func (s *Server) listGrill(w http.ResponseWriter, repo registry.Repo, state stri
 	for i, sess := range sessions {
 		views[i] = s.grillSessionView(repo.Name, sess)
 	}
-	writeJSON(w, http.StatusOK, GrillListResponse{Repo: repo.Name, Sessions: views})
+	writeJSON(w, http.StatusOK, GrillListResponse{
+		Repo:     repo.Name,
+		Defaults: s.grillDefaultsView(repo),
+		Sessions: views,
+	})
 }
 
 func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo registry.Repo) {
@@ -562,12 +581,21 @@ func (s *Server) grillSessionView(repo string, sess hubstore.GrillSession) Grill
 		IssueTitle:   sess.IssueTitle,
 		State:        sess.State,
 		SessionChain: sess.SessionChain,
-		Provider:     "claude",
+		Provider:     grillProvider,
 		Model:        s.grillEffectiveModel(sess),
 		ModelOptions: grillModelOptions(),
 		ParkedReason: sess.ParkedReason,
 		CreatedAt:    sess.CreatedAt,
 		UpdatedAt:    sess.UpdatedAt,
+	}
+}
+
+// grillDefaultsView is the provider and model a session created now would carry.
+func (s *Server) grillDefaultsView(repo registry.Repo) GrillDefaultsView {
+	return GrillDefaultsView{
+		Provider:     grillProvider,
+		Model:        s.grillModelDefault(repo),
+		ModelOptions: grillModelOptions(),
 	}
 }
 
