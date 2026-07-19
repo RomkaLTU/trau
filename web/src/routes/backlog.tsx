@@ -12,7 +12,6 @@ import {
   Archive,
   ArchiveRestore,
   Check,
-  CheckCircle2,
   ChevronDown,
   ChevronRight,
   ChevronsUpDown,
@@ -25,7 +24,6 @@ import {
   Sparkles,
   Tag,
   Users,
-  X,
 } from "lucide-react";
 
 import {
@@ -40,6 +38,7 @@ import {
   type SegmentOption,
 } from "@/components/trau/segmented-control";
 import { ArchiveToast } from "@/components/archive-toast";
+import { CreatedToast } from "@/components/created-toast";
 import { InternalIssueForm } from "@/components/internal-issue-form";
 import { IssueDrawer } from "@/components/issue-drawer";
 import { Badge } from "@/components/ui/badge";
@@ -91,6 +90,12 @@ import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/backlog")({
   component: BacklogPage,
+  // issue opens the drawer over the list — read at runtime through nuqs, typed here
+  // so the inbox's created toast and applied card can link into it.
+  validateSearch: (search: Record<string, unknown>): { issue?: string } =>
+    typeof search.issue === "string" && search.issue !== ""
+      ? { issue: search.issue }
+      : {},
 });
 
 const PAGE_SIZE = 50;
@@ -451,7 +456,8 @@ function BacklogPage() {
 
       {created && (
         <CreatedToast
-          issue={created}
+          id={created.id}
+          title={created.title}
           onView={() => {
             void setPeek(created.id);
             setCreated(null);
@@ -993,45 +999,5 @@ function BacklogRow({
         </div>
       )}
     </li>
-  );
-}
-
-function CreatedToast({
-  issue,
-  onView,
-  onDismiss,
-}: {
-  issue: InternalIssue;
-  onView: () => void;
-  onDismiss: () => void;
-}) {
-  return (
-    <div
-      role="status"
-      className="animate-in fade-in slide-in-from-bottom-2 fixed bottom-6 right-6 z-50 flex w-80 items-start gap-3 rounded-lg border bg-card p-3 shadow-lg"
-    >
-      <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-done" aria-hidden />
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <p className="text-sm text-foreground">
-          <span className="font-mono font-medium">{issue.id}</span> created
-        </p>
-        <p className="truncate text-sm text-muted-foreground">{issue.title}</p>
-        <button
-          type="button"
-          onClick={onView}
-          className="self-start pt-1 text-xs font-medium text-primary underline-offset-2 hover:underline"
-        >
-          View issue
-        </button>
-      </div>
-      <button
-        type="button"
-        onClick={onDismiss}
-        aria-label="Dismiss"
-        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-      >
-        <X className="size-4" aria-hidden />
-      </button>
-    </div>
   );
 }

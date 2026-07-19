@@ -6,13 +6,7 @@ import { apiFetch } from './api'
 // are active; applied and abandoned are settled and stop counting against the
 // one-active-session-per-issue rule.
 export type GrillState =
-  | 'running'
-  | 'waiting'
-  | 'parked'
-  | 'stalled'
-  | 'finished'
-  | 'applied'
-  | 'abandoned'
+  'running' | 'waiting' | 'parked' | 'stalled' | 'finished' | 'applied' | 'abandoned'
 
 export type GrillRole = 'agent' | 'user' | 'system'
 export type GrillKind = 'question' | 'answer' | 'info' | 'outcome'
@@ -87,6 +81,31 @@ export interface GrillApplyResponse {
   session: GrillSession
   applied: boolean
   steps: GrillApplyStep[]
+}
+
+// GrillAppliedOutcome is what a landed apply reports to the host that mounted the
+// review: the disposition that ran and the issue it wrote — for a create, the
+// freshly filed issue the inbox's toast names and links.
+export interface GrillAppliedOutcome {
+  disposition: string
+  issueId: string
+  issueTitle: string
+}
+
+// grillAppliedOutcome reads a full apply's response into the host's report. A create
+// apply anchors the session to the created issue before settling, so issue_id names
+// it; the title join can trail the write, so an empty issue_title falls back to the
+// title that was filed.
+export function grillAppliedOutcome(
+  res: GrillApplyResponse,
+  disposition: string,
+  filedTitle: string,
+): GrillAppliedOutcome {
+  return {
+    disposition,
+    issueId: res.session.issue_id ?? '',
+    issueTitle: res.session.issue_title || filedTitle,
+  }
 }
 
 export interface QuestionPayload {
@@ -173,7 +192,9 @@ function base(repo: string): string {
 }
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
-  const detail = (await res.json().catch(() => null)) as { error?: string } | null
+  const detail = (await res.json().catch(() => null)) as {
+    error?: string
+  } | null
   return detail?.error ?? `${fallback}: ${res.status}`
 }
 
@@ -242,12 +263,7 @@ export async function startGrillSession(
 // PregrillOutcome is one issue's result from an AFK pre-grill pass: a question was
 // parked for the user, a rewrite proposal was drafted, the issue was already clear,
 // the turn errored, or the issue was skipped (active session or past the pass limit).
-export type PregrillOutcome =
-  | 'question_parked'
-  | 'rewrite_drafted'
-  | 'clear'
-  | 'error'
-  | 'skipped'
+export type PregrillOutcome = 'question_parked' | 'rewrite_drafted' | 'clear' | 'error' | 'skipped'
 
 export interface PregrillResult {
   issue_id: string
@@ -550,14 +566,20 @@ export function grillReducer(state: GrillLive, action: GrillAction): GrillLive {
         pending: [...state.pending, { id: action.id, text: action.text, failed: false }],
       }
     case 'send-failed':
-      return { ...state, pending: markFailed(state.pending, action.id, action.text) }
+      return {
+        ...state,
+        pending: markFailed(state.pending, action.id, action.text),
+      }
     case 'send-retry':
       return {
         ...state,
         pending: state.pending.map((p) => (p.id === action.id ? { ...p, failed: false } : p)),
       }
     case 'send-discard':
-      return { ...state, pending: state.pending.filter((p) => p.id !== action.id) }
+      return {
+        ...state,
+        pending: state.pending.filter((p) => p.id !== action.id),
+      }
   }
 }
 
@@ -604,13 +626,7 @@ function lastUnfailed(pending: PendingAnswer[], text: string): number {
   return -1
 }
 
-export type GrillBannerTone =
-  | 'thinking'
-  | 'parked'
-  | 'stalled'
-  | 'finished'
-  | 'applied'
-  | 'ended'
+export type GrillBannerTone = 'thinking' | 'parked' | 'stalled' | 'finished' | 'applied' | 'ended'
 
 export interface GrillBanner {
   tone: GrillBannerTone
@@ -627,13 +643,21 @@ export function grillBanner(session: GrillSession): GrillBanner | null {
   const reason = session.parked_reason?.trim() ?? ''
   switch (session.state) {
     case 'running':
-      return { tone: 'thinking', headline: 'Thinking…', hint: 'The agent is working on your issue.' }
+      return {
+        tone: 'thinking',
+        headline: 'Thinking…',
+        hint: 'The agent is working on your issue.',
+      }
     case 'waiting':
       return null
     case 'parked':
       return reason
         ? { tone: 'parked', headline: 'Waiting for you', hint: reason }
-        : { tone: 'parked', headline: 'Waiting for you', hint: 'Pick up anytime — answer below and the session resumes.' }
+        : {
+            tone: 'parked',
+            headline: 'Waiting for you',
+            hint: 'Pick up anytime — answer below and the session resumes.',
+          }
     case 'stalled':
       return {
         tone: 'stalled',
@@ -642,11 +666,23 @@ export function grillBanner(session: GrillSession): GrillBanner | null {
         showResume: true,
       }
     case 'finished':
-      return { tone: 'finished', headline: 'Proposal ready', hint: 'Review the outcome before it is applied.' }
+      return {
+        tone: 'finished',
+        headline: 'Proposal ready',
+        hint: 'Review the outcome before it is applied.',
+      }
     case 'applied':
-      return { tone: 'applied', headline: 'Applied', hint: 'The outcome was written to the tracker.' }
+      return {
+        tone: 'applied',
+        headline: 'Applied',
+        hint: 'The outcome was written to the tracker.',
+      }
     case 'abandoned':
-      return { tone: 'ended', headline: 'Session ended', hint: 'This session was abandoned.' }
+      return {
+        tone: 'ended',
+        headline: 'Session ended',
+        hint: 'This session was abandoned.',
+      }
   }
 }
 
@@ -696,9 +732,7 @@ function splitLines(s: string): string[] {
 }
 
 function lcsLengths(a: string[], b: string[]): number[][] {
-  const table = Array.from({ length: a.length + 1 }, () =>
-    new Array<number>(b.length + 1).fill(0),
-  )
+  const table = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0))
   for (let i = a.length - 1; i >= 0; i--) {
     for (let j = b.length - 1; j >= 0; j--) {
       table[i][j] =
