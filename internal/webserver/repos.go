@@ -147,6 +147,7 @@ func (s *Server) unregisterRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("repo %q is not registered", name)})
 		return
 	}
+	s.dropRepoAttachments(root)
 	writeJSON(w, http.StatusOK, RepoView{Repo: workspaceRepo(root), Allowed: false})
 }
 

@@ -9,12 +9,13 @@ import (
 
 func testCheckpoints(t *testing.T) *Checkpoints {
 	t.Helper()
-	db, err := hubdb.Open(t.TempDir())
+	home := t.TempDir()
+	db, err := hubdb.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewStores(db.SQL(), nil, Retention{}).Checkpoints()
+	return NewStores(home, db.SQL(), nil, Retention{}).Checkpoints()
 }
 
 func TestCheckpointUpsertProjectsColumns(t *testing.T) {
@@ -85,12 +86,13 @@ func TestCheckpointAllOrderedByTicket(t *testing.T) {
 }
 
 func TestCheckpointAllCostUSD(t *testing.T) {
-	db, err := hubdb.Open(t.TempDir())
+	home := t.TempDir()
+	db, err := hubdb.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	stores := NewStores(db.SQL(), nil, Retention{})
+	stores := NewStores(home, db.SQL(), nil, Retention{})
 	cp, tk := stores.Checkpoints(), stores.Tokens()
 
 	const repo = "/repo"

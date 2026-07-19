@@ -124,7 +124,7 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 	defer func() { err = errors.Join(err, tdb.Close()) }()
 	logger.Verbosef("transcript database ready at %s (schema v%d)", tdb.Path(), tdb.Version())
 
-	stores := hubstore.NewStores(db.SQL(), tdb.SQL(), hubstore.Retention{
+	stores := hubstore.NewStores(home, db.SQL(), tdb.SQL(), hubstore.Retention{
 		Transcripts: cfg.TranscriptRetention,
 		Events:      cfg.EventRetention,
 		TokenCalls:  cfg.TokenRetention,

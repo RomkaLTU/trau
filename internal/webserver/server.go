@@ -22,6 +22,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker"
 	"github.com/RomkaLTU/trau/internal/update"
+	"golang.org/x/sync/singleflight"
 )
 
 // APIPrefix is the mount path for the versioned JSON API.
@@ -64,6 +65,7 @@ type Server struct {
 	restart          func()
 	restartOnce      sync.Once
 	updates          *update.Checker
+	attachFetch      singleflight.Group
 }
 
 // New builds a Server that reports version and treats now as its start time. It
@@ -268,6 +270,7 @@ func (s *Server) apiHandler() http.Handler {
 	// the archive action rides a wildcard segment that stays clear of the internal
 	// subtree while still serving the exact .../issues/{id}/archive path.
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/{id}/{action}", s.handleIssueAction)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/attachments/{id}", s.handleAttachment)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue", s.handleQueue)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/drain", s.handleQueueDrain)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}", s.handleQueueItem)

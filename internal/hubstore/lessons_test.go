@@ -10,12 +10,13 @@ import (
 
 func testLessons(t *testing.T) *Lessons {
 	t.Helper()
-	db, err := hubdb.Open(t.TempDir())
+	home := t.TempDir()
+	db, err := hubdb.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewStores(db.SQL(), nil, Retention{}).Lessons()
+	return NewStores(home, db.SQL(), nil, Retention{}).Lessons()
 }
 
 func TestLessonAppendAllNewestFirst(t *testing.T) {
