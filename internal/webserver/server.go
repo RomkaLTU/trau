@@ -60,6 +60,8 @@ type Server struct {
 	skillsMu         sync.Mutex
 	skillsCache      map[string]skillsCacheEntry
 	atlas            *atlasRunner
+	restart          func()
+	restartOnce      sync.Once
 }
 
 // New builds a Server that reports version and treats now as its start time. It
@@ -231,6 +233,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) apiHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(APIPrefix+"/health", s.handleHealth)
+	mux.HandleFunc(APIPrefix+"/hub/restart", s.handleHubRestart)
 	mux.HandleFunc(APIPrefix+"/instances", s.handleInstances)
 	mux.HandleFunc(APIPrefix+"/instances/{pid}", s.handleInstance)
 	mux.HandleFunc(APIPrefix+"/instances/{pid}/stop", s.handleStopInstance)

@@ -50,7 +50,7 @@ func maybeAutostartHub(ctx context.Context, cfg config.Config, noServe bool, std
 	switch p := probeHub(ctx, healthURL, cfg.ServeToken); {
 	case p.isHub:
 		if p.version != version {
-			_, _ = fmt.Fprintf(stderr, "trau: reusing web UI hub %s (this binary is %s); restart it to update\n", p.version, version)
+			_, _ = fmt.Fprintf(stderr, "trau: reusing web UI hub %s (this binary is %s); run 'trau hub restart' to update\n", p.version, version)
 		}
 		_, _ = fmt.Fprintf(stderr, "Web UI: %s\n", webURL)
 		return
@@ -143,7 +143,7 @@ func (a *appActions) OpenWebUI(ctx context.Context) (string, error) {
 	case p.isHub:
 		return webURL, nil
 	case p.reachable:
-		return "", fmt.Errorf("port %d is busy with something that isn't the hub — set SERVE_PORT", a.cfg.ServePort)
+		return "", portBusyError(a.cfg.ServePort)
 	}
 	if a.opts.NoServe {
 		return "", errors.New("hub autostart is off for this session (--no-serve) — run 'trau serve'")
@@ -167,6 +167,7 @@ type hubStatus struct {
 	reachable bool
 	isHub     bool
 	version   string
+	uptime    float64
 }
 
 func probeHub(ctx context.Context, url, token string) hubStatus {
@@ -189,40 +190,63 @@ func probeHub(ctx context.Context, url, token string) hubStatus {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&h); err != nil || h.Status != "ok" {
 		return hubStatus{reachable: true}
 	}
-	return hubStatus{reachable: true, isHub: true, version: h.Version}
+	return hubStatus{reachable: true, isHub: true, version: h.Version, uptime: h.UptimeSeconds}
 }
 
-func waitHubHealthy(ctx context.Context, url, token string) bool {
-	deadline := time.NewTimer(hubHealthDeadline)
-	defer deadline.Stop()
+// awaitHub polls health until a hub answers and fresh accepts it, or deadline
+// passes.
+func awaitHub(ctx context.Context, url, token string, deadline time.Duration, fresh func(hubStatus) bool) (hubStatus, bool) {
+	expiry := time.NewTimer(deadline)
+	defer expiry.Stop()
 	ticker := time.NewTicker(hubHealthPoll)
 	defer ticker.Stop()
 	for {
-		if probeHub(ctx, url, token).isHub {
-			return true
+		if p := probeHub(ctx, url, token); p.isHub && fresh(p) {
+			return p, true
 		}
 		select {
 		case <-ctx.Done():
-			return false
-		case <-deadline.C:
-			return false
+			return hubStatus{}, false
+		case <-expiry.C:
+			return hubStatus{}, false
 		case <-ticker.C:
 		}
 	}
 }
 
-// spawnDetachedServe starts `trau serve` in its own process group so the hub
-// outlives the loop that launched it; its net.Listen on the port is the
-// singleton lock. The child's output lands in hub.log under the trau home,
-// truncated per spawn, so a hub that dies at boot is diagnosable. TRAU_ACTIVE
-// is stripped so the hub — and everything it later spawns — is not marked as
-// running inside the loop that autostarted it.
-func spawnDetachedServe() error {
-	exe, err := os.Executable()
+func anyHub(hubStatus) bool { return true }
+
+func waitHubHealthy(ctx context.Context, url, token string) bool {
+	_, ok := awaitHub(ctx, url, token, hubHealthDeadline, anyHub)
+	return ok
+}
+
+func portBusyError(port int) error {
+	return fmt.Errorf("port %d is busy with something that isn't the hub — set SERVE_PORT", port)
+}
+
+// spawnDetachedServe starts a hub from a cold start, truncating hub.log so the
+// file only ever holds the latest boot's output. It passes no flags: a cold
+// start has none to inherit and the config decides where the hub listens.
+func spawnDetachedServe() error { return spawnServe(os.O_TRUNC, nil) }
+
+// respawnServe starts the successor of a hub that is shutting down, replaying
+// serveArgs — the outgoing hub's own `serve` flags — so the successor lands on
+// the same port, bind and repo instead of falling back to the config defaults.
+// It appends to hub.log instead of truncating so the outgoing hub's tail
+// survives next to the successor's boot output for diagnosis.
+func respawnServe(serveArgs []string) error { return spawnServe(os.O_APPEND, serveArgs) }
+
+// spawnServe starts `trau serve` in its own process group so the hub outlives
+// the process that launched it; its net.Listen on the port is the singleton
+// lock. TRAU_ACTIVE is stripped so the hub — and everything it later spawns —
+// is not marked as running inside the loop that autostarted it.
+func spawnServe(logMode int, serveArgs []string) error {
+	exe, err := resolveTrauBinary()
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe, "serve")
+	cmd := exec.Command(exe, append([]string{"serve"}, serveArgs...)...)
 	env := make([]string, 0, len(os.Environ()))
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "TRAU_ACTIVE=") {
@@ -231,7 +255,7 @@ func spawnDetachedServe() error {
 	}
 	cmd.Env = env
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if logFile := openHubLog(); logFile != nil {
+	if logFile := openHubLog(logMode); logFile != nil {
 		defer func() { _ = logFile.Close() }()
 		cmd.Stdout = logFile
 		cmd.Stderr = logFile
@@ -251,10 +275,10 @@ func hubLogPath() string {
 	return filepath.Join(home, "hub.log")
 }
 
-// openHubLog opens hub.log truncated for a fresh spawn, creating the trau home
-// if needed. nil sends the child's output to the null device instead — a hub
-// is better spawned unlogged than not spawned.
-func openHubLog() *os.File {
+// openHubLog opens hub.log in logMode (os.O_TRUNC or os.O_APPEND), creating the
+// trau home if needed. nil sends the child's output to the null device instead —
+// a hub is better spawned unlogged than not spawned.
+func openHubLog(logMode int) *os.File {
 	path := hubLogPath()
 	if path == "" {
 		return nil
@@ -262,11 +286,36 @@ func openHubLog() *os.File {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|logMode, 0o644)
 	if err != nil {
 		return nil
 	}
 	return f
+}
+
+// resolveTrauBinary picks the binary a spawned hub should run.
+func resolveTrauBinary() (string, error) {
+	exe, _ := os.Executable()
+	return resolveTrauBinaryFrom(exe)
+}
+
+// resolveTrauBinaryFrom resolves exe, the running process's own path, to a
+// binary that still exists. exe wins when it does — that covers dev builds
+// outside PATH, and the stable /opt/homebrew/bin/trau symlink, which after an
+// upgrade already points at the new version. `brew upgrade --cask trau` deletes
+// the old versioned Caskroom directory, so a process whose path led into it has
+// nothing to re-exec and falls back to whatever `trau` resolves to on PATH now.
+func resolveTrauBinaryFrom(exe string) (string, error) {
+	if exe != "" {
+		if _, err := os.Stat(exe); err == nil {
+			return exe, nil
+		}
+	}
+	path, err := exec.LookPath("trau")
+	if err != nil {
+		return "", fmt.Errorf("no trau binary to run: %q is gone: %w", exe, err)
+	}
+	return path, nil
 }
 
 func openBrowser(url string) error {

@@ -93,6 +93,20 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 		return console.Actionable(err, "start serve", "set SERVE_TOKEN to a secret, or keep SERVE_BIND on loopback (127.0.0.1)")
 	}
 
+	// Registered before the database defers so it runs after them: the successor
+	// binds the port and opens the hub databases only once this process has let
+	// go of both.
+	restarting := false
+	defer func() {
+		if !restarting {
+			return
+		}
+		if spawnErr := respawnServe(args); spawnErr != nil {
+			err = errors.Join(err, console.Actionable(spawnErr, "respawn the hub",
+				"install trau so `trau` resolves on PATH, then run `trau serve`"))
+		}
+	}()
+
 	home := registry.Home()
 	db, err := hubdb.Open(home)
 	if err != nil {
@@ -130,6 +144,8 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 	grillBase := "http://" + net.JoinHostPort(grillReachableHost(cfg.ServeBind), strconv.Itoa(cfg.ServePort))
 	hub.EnableGrilling(ctx, grillBase)
 	hub.EnableAtlas(ctx)
+	restartCh := make(chan struct{})
+	hub.EnableRestart(func() { close(restartCh) })
 	hub.Start(ctx, time.Duration(cfg.ServeSyncInterval)*time.Second, time.Duration(cfg.ServeReconcileInterval)*time.Second)
 	srv := &http.Server{Addr: addr, Handler: hub.Handler()}
 
@@ -144,15 +160,30 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), serveShutdownTimeout)
-		defer cancel()
-		return srv.Shutdown(shutdownCtx)
+		return drainServer(srv)
+	case <-restartCh:
+		restarting = true
+		// A restart drops stragglers rather than failing: the listener is closed
+		// either way, and open event streams would otherwise hold the drain open
+		// for its full timeout. The successor's boot follows this line in hub.log.
+		if err := drainServer(srv); err != nil {
+			_, _ = fmt.Fprintf(stderr, "trau serve: restart drain cut short after %s (%v)\n", serveShutdownTimeout, err)
+		}
+		return nil
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 		return err
 	}
+}
+
+// drainServer closes the listener and lets in-flight requests finish. It returns
+// only once the port is free, which is what makes a successor able to bind it.
+func drainServer(srv *http.Server) error {
+	ctx, cancel := context.WithTimeout(context.Background(), serveShutdownTimeout)
+	defer cancel()
+	return srv.Shutdown(ctx)
 }
 
 // grillReachableHost is the host a hub-local grilling child dials to reach the

@@ -405,7 +405,7 @@ func checkWebHub(ctx context.Context, cfg config.Config, version string, rr *run
 	uptime := time.Duration(h.UptimeSeconds * float64(time.Second)).Round(time.Second)
 	if h.Version != version {
 		rr.add("web hub", warn, fmt.Sprintf("running at %s serving version %s, up %s — this binary is %s", addr, h.Version, uptime, version),
-			"restart it to update")
+			"run `trau hub restart`")
 		return
 	}
 	rr.add("web hub", pass, fmt.Sprintf("running at %s (version %s, up %s)", addr, h.Version, uptime), "")

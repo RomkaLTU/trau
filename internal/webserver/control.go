@@ -64,6 +64,45 @@ func (s *Server) handleStopInstance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "stopping", "signal": "SIGTERM"})
 }
 
+// RestartAck is the answer to an accepted restart: the version that is on its
+// way out, so a client can tell it apart from the one that comes back.
+type RestartAck struct {
+	Restarting bool   `json:"restarting"`
+	Version    string `json:"version"`
+}
+
+// EnableRestart wires the restart endpoint to fn, which the serve command
+// implements as shutdown-then-respawn. fn must return promptly — it is called
+// from the request goroutine, and a graceful shutdown waits on that request —
+// so it signals the restart rather than performing it. Without it the endpoint
+// answers 503: a hub embedded in something other than `trau serve` has no
+// successor to spawn.
+func (s *Server) EnableRestart(fn func()) {
+	s.restart = fn
+}
+
+// handleHubRestart acknowledges before restarting, so the caller learns the
+// outgoing version over a connection that is about to close. It restarts
+// unconditionally — the warn-and-confirm lives in the clients — but only once:
+// a second POST arriving during the drain is acknowledged without spawning a
+// second successor.
+func (s *Server) handleHubRestart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if s.restart == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "this hub cannot restart itself"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, RestartAck{Restarting: true, Version: s.version})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	s.restartOnce.Do(s.restart)
+}
+
 // DryRunResult is the outcome of a preview: the next eligible ticket for a repo,
 // or an empty Ticket when nothing is eligible. It is produced with zero side
 // effects — no branch, no checkpoint, no tracker change.
