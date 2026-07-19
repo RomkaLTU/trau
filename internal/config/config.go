@@ -267,6 +267,11 @@ type Config struct {
 	ServeAutostart bool
 	ServeOpen      bool
 
+	// UpdateCheck lets the hub ask GitHub once a day whether a newer trau
+	// release exists. Off, no request is ever made; drift between the running
+	// hub and the binary on disk is still detected, since that is local.
+	UpdateCheck bool
+
 	// TerminalApp is the macOS terminal application the hub opens for a web
 	// takeover: Terminal (default) or iTerm.
 	TerminalApp string
@@ -394,6 +399,7 @@ func Defaults() Config {
 		ServeReconcileInterval: 900,
 		ServeAutostart:         true,
 		ServeOpen:              true,
+		UpdateCheck:            true,
 		TerminalApp:            "Terminal",
 		HubWriteRetryWindow:    30,
 		HubWriteBufferBytes:    32 << 20,
@@ -844,6 +850,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("SERVE_OPEN"); v != "" {
 		c.ServeOpen = v == "1"
 		sources["SERVE_OPEN"] = src.name
+	}
+	if v, src := get("UPDATE_CHECK"); v != "" {
+		c.UpdateCheck = v == "1"
+		sources["UPDATE_CHECK"] = src.name
 	}
 	str("TERMINAL_APP", &c.TerminalApp)
 	num("HUB_WRITE_RETRY_WINDOW", &c.HubWriteRetryWindow)
@@ -1556,6 +1566,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "SERVE_RECONCILE_INTERVAL", Group: sectionHub, Kind: "int", WebEditable: true, Default: "900", Advanced: true, Description: "Seconds between reconciliation sweeps that tombstone synced issues deleted, archived, or moved out of the Project (runs on the sync tick; 0 = disable)"},
 		{Key: "SERVE_AUTOSTART", Group: sectionHub, WebEditable: true, Default: "1", Advanced: true, Bool: true, Description: "Bring the web UI hub up automatically on the first interactive TUI session when none is running (1 = yes, 0 = no)"},
 		{Key: "SERVE_OPEN", Group: sectionHub, WebEditable: true, Default: "1", Advanced: true, Bool: true, Description: "Open the browser when autostart freshly spawns the hub (1 = yes, 0 = no); the daemon still starts when 0"},
+		{Key: "UPDATE_CHECK", Group: sectionHub, WebEditable: true, Default: "1", Advanced: true, Bool: true, Description: "Check GitHub once a day for a newer trau release and surface it in the web UI (1 = yes, 0 = no)"},
 		{Key: "TERMINAL_APP", Group: sectionHub, WebEditable: true, Default: "Terminal", Options: []string{"Terminal", "iTerm"}, Description: "macOS terminal application a web takeover opens: Terminal | iTerm"},
 		{Key: "HUB_WRITE_RETRY_WINDOW", Group: sectionHub, Kind: "int", WebEditable: true, Default: "30", Advanced: true, Description: "Seconds the loop retries an unreachable hub before a run-data write pauses the run blamelessly (ADR 0008)"},
 		{Key: "HUB_WRITE_BUFFER_BYTES", Group: sectionHub, Kind: "int", WebEditable: true, Default: "33554432", Advanced: true, Description: "Byte cap on the child's in-memory buffer of run-data writes queued while the hub is unreachable; over it the oldest queued events are dropped (ADR 0008)"},
@@ -2151,6 +2162,11 @@ func keyValue(cfg Config, key string) string {
 		return "0"
 	case "SERVE_OPEN":
 		if cfg.ServeOpen {
+			return "1"
+		}
+		return "0"
+	case "UPDATE_CHECK":
+		if cfg.UpdateCheck {
 			return "1"
 		}
 		return "0"

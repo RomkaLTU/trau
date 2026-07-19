@@ -81,6 +81,7 @@ Usage:
   trau takeover <ID> [--repo <path>]  resume a parked ticket's recorded claude session in this terminal (repo locked while it runs)
   trau forensics <cmd>       read-only incident queries over the run history: runs, events, spend (see 'trau forensics --help')
   trau serve                 start the local web hub — HTTP API + embedded UI on 127.0.0.1:8728 (--bind, --port)
+  trau hub restart           restart the web hub so it runs the current on-disk binary (starts one if none is up)
   trau --status [--json]     show saved ticket checkpoints with token/cost totals
   trau --dry-run             print the next eligible ticket without doing any work
   trau --list-eligible [--json]  list the repo's eligible ready tickets (ID, title, labels)
@@ -188,6 +189,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	if len(args) > 0 && args[0] == "serve" {
 		return runServe(ctx, args[1:], stderr)
+	}
+
+	if len(args) > 0 && args[0] == "hub" {
+		return runHub(ctx, args[1:], stdout)
 	}
 
 	opts, err := config.ParseArgs(args)

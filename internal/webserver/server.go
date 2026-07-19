@@ -21,6 +21,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker"
+	"github.com/RomkaLTU/trau/internal/update"
 )
 
 // APIPrefix is the mount path for the versioned JSON API.
@@ -60,6 +61,9 @@ type Server struct {
 	skillsMu         sync.Mutex
 	skillsCache      map[string]skillsCacheEntry
 	atlas            *atlasRunner
+	restart          func()
+	restartOnce      sync.Once
+	updates          *update.Checker
 }
 
 // New builds a Server that reports version and treats now as its start time. It
@@ -97,6 +101,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		installSkill:     defaultInstallSkill,
 		removeSkill:      defaultRemoveSkill,
 		skillsCache:      map[string]skillsCacheEntry{},
+		updates:          update.NewChecker(version),
 	}
 	s.drain = newDrainer(s)
 	s.syncer = newSyncer(s)
@@ -135,6 +140,7 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 	go s.sweepKnownRepos(ctx)
 	go s.syncer.run(ctx, syncInterval, reconcileInterval)
 	go s.pruneRunData(ctx)
+	go s.updates.Run(ctx)
 }
 
 // runDataPruneInterval bounds how often the hub prunes run data past its retention
@@ -231,6 +237,10 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) apiHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(APIPrefix+"/health", s.handleHealth)
+	mux.HandleFunc(APIPrefix+"/hub/restart", s.handleHubRestart)
+	mux.HandleFunc(APIPrefix+"/update", s.handleUpdate)
+	mux.HandleFunc(APIPrefix+"/update/check", s.handleUpdateCheck)
+	mux.HandleFunc(APIPrefix+"/update/apply", s.handleUpdateApply)
 	mux.HandleFunc(APIPrefix+"/instances", s.handleInstances)
 	mux.HandleFunc(APIPrefix+"/instances/{pid}", s.handleInstance)
 	mux.HandleFunc(APIPrefix+"/instances/{pid}/stop", s.handleStopInstance)

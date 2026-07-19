@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
@@ -216,7 +217,7 @@ func TestHubLogPathUsesTrauHome(t *testing.T) {
 func TestOpenHubLogTruncatesPerSpawn(t *testing.T) {
 	t.Setenv("TRAU_HOME", filepath.Join(t.TempDir(), "trau"))
 
-	first := openHubLog()
+	first := openHubLog(os.O_TRUNC)
 	if first == nil {
 		t.Fatal("openHubLog returned nil for a writable home")
 	}
@@ -225,7 +226,7 @@ func TestOpenHubLogTruncatesPerSpawn(t *testing.T) {
 	}
 	_ = first.Close()
 
-	second := openHubLog()
+	second := openHubLog(os.O_TRUNC)
 	if second == nil {
 		t.Fatal("openHubLog returned nil on respawn")
 	}
@@ -241,4 +242,100 @@ func TestOpenHubLogTruncatesPerSpawn(t *testing.T) {
 	if string(data) != "second boot\n" {
 		t.Fatalf("hub.log = %q, want only the latest spawn's output", data)
 	}
+}
+
+// TestOpenHubLogAppendsForRestart checks a restart-spawn keeps the outgoing
+// hub's output, so a successor that dies at boot is diagnosable next to the
+// reason its predecessor was replaced.
+func TestOpenHubLogAppendsForRestart(t *testing.T) {
+	t.Setenv("TRAU_HOME", filepath.Join(t.TempDir(), "trau"))
+
+	old := openHubLog(os.O_TRUNC)
+	if old == nil {
+		t.Fatal("openHubLog returned nil for a writable home")
+	}
+	if _, err := old.WriteString("outgoing hub\n"); err != nil {
+		t.Fatalf("write outgoing log: %v", err)
+	}
+	_ = old.Close()
+
+	successor := openHubLog(os.O_APPEND)
+	if successor == nil {
+		t.Fatal("openHubLog returned nil on restart-spawn")
+	}
+	if _, err := successor.WriteString("successor hub\n"); err != nil {
+		t.Fatalf("write successor log: %v", err)
+	}
+	_ = successor.Close()
+
+	data, err := os.ReadFile(hubLogPath())
+	if err != nil {
+		t.Fatalf("read hub.log: %v", err)
+	}
+	if string(data) != "outgoing hub\nsuccessor hub\n" {
+		t.Fatalf("hub.log = %q, want both boots", data)
+	}
+}
+
+// spawnArgvRecordEnv turns a re-executed test binary into a stand-in for the
+// trau binary a spawn resolves to: it records the argv it was handed and exits.
+const spawnArgvRecordEnv = "TRAU_TEST_SPAWN_ARGV_RECORD"
+
+func TestMain(m *testing.M) {
+	if record := os.Getenv(spawnArgvRecordEnv); record != "" && len(os.Args) > 1 && os.Args[1] == "serve" {
+		_ = os.WriteFile(record, []byte(strings.Join(os.Args[1:], " ")), 0o644)
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+// TestRespawnServeReplaysServeFlags checks the successor inherits the outgoing
+// hub's serve flags, so a hub started on an explicit --port comes back on that
+// port rather than on the configured default.
+func TestRespawnServeReplaysServeFlags(t *testing.T) {
+	record := spawnArgvRecorder(t)
+
+	if err := respawnServe([]string{"--port", "8795", "--bind", "0.0.0.0", "--verbose"}); err != nil {
+		t.Fatalf("respawnServe: %v", err)
+	}
+
+	got := waitForSpawnArgv(t, record)
+	if want := "serve --port 8795 --bind 0.0.0.0 --verbose"; got != want {
+		t.Fatalf("successor argv = %q, want %q", got, want)
+	}
+}
+
+// TestSpawnDetachedServeTakesNoFlags checks a cold start spawns a bare serve,
+// leaving the config to decide where the hub listens.
+func TestSpawnDetachedServeTakesNoFlags(t *testing.T) {
+	record := spawnArgvRecorder(t)
+
+	if err := spawnDetachedServe(); err != nil {
+		t.Fatalf("spawnDetachedServe: %v", err)
+	}
+
+	if got := waitForSpawnArgv(t, record); got != "serve" {
+		t.Fatalf("cold-start argv = %q, want %q", got, "serve")
+	}
+}
+
+func spawnArgvRecorder(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("TRAU_HOME", home)
+	record := filepath.Join(home, "argv")
+	t.Setenv(spawnArgvRecordEnv, record)
+	return record
+}
+
+func waitForSpawnArgv(t *testing.T, record string) string {
+	t.Helper()
+	for range 200 {
+		if b, err := os.ReadFile(record); err == nil {
+			return string(b)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("spawned process never recorded its argv at %s", record)
+	return ""
 }
