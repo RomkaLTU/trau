@@ -367,7 +367,7 @@ func TestCheckWebHubWarnsOnVersionMismatch(t *testing.T) {
 	if c.Status != warn {
 		t.Errorf("status = %q, want warn when the hub runs another version", c.Status)
 	}
-	for _, want := range []string{"1.9.0", "2.0.0", "restart it to update"} {
+	for _, want := range []string{"1.9.0", "2.0.0", "trau hub restart"} {
 		if !strings.Contains(c.Message, want) {
 			t.Errorf("message %q should contain %q", c.Message, want)
 		}
