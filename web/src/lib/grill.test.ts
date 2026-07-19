@@ -7,6 +7,7 @@ import {
   composerPlaceholder,
   diffHasChanges,
   diffLines,
+  grillAppliedOutcome,
   grillBanner,
   grillProgress,
   grillReducer,
@@ -52,7 +53,12 @@ function msg(over: Partial<GrillMessage>): GrillMessage {
 }
 
 function question(id: string, over: Partial<GrillMessage['payload']> = {}) {
-  return msg({ id, role: 'agent', kind: 'question', payload: { text: 'Q' + id, ...over } })
+  return msg({
+    id,
+    role: 'agent',
+    kind: 'question',
+    payload: { text: 'Q' + id, ...over },
+  })
 }
 
 function answer(id: string, text = 'A') {
@@ -122,6 +128,47 @@ describe('abandonIssueSessions', () => {
   })
 })
 
+describe('grillAppliedOutcome', () => {
+  it('names the issue the apply anchored the session to', () => {
+    const res = {
+      session: session({
+        state: 'applied',
+        issue_id: 'COD-9',
+        issue_title: 'Filed title',
+      }),
+      applied: true,
+      steps: [],
+    }
+    expect(grillAppliedOutcome(res, 'create', 'Edited title')).toEqual({
+      disposition: 'create',
+      issueId: 'COD-9',
+      issueTitle: 'Filed title',
+    })
+  })
+
+  it('falls back to the filed title when the join is empty', () => {
+    const res = {
+      session: session({
+        state: 'applied',
+        issue_id: 'COD-9',
+        issue_title: '',
+      }),
+      applied: true,
+      steps: [],
+    }
+    expect(grillAppliedOutcome(res, 'create', 'Edited title').issueTitle).toBe('Edited title')
+  })
+
+  it('reads an unanchored session as no issue', () => {
+    const res = {
+      session: session({ state: 'applied', issue_id: undefined }),
+      applied: true,
+      steps: [],
+    }
+    expect(grillAppliedOutcome(res, 'no_change', '').issueId).toBe('')
+  })
+})
+
 describe('upsertMessage / mergeMessages', () => {
   it('inserts in id order', () => {
     let list: GrillMessage[] = []
@@ -170,7 +217,10 @@ describe('grillProgress', () => {
   })
 
   it('counts every question once the last one is answered', () => {
-    expect(grillProgress([question('1'), answer('2')])).toEqual({ answered: 1, total: 1 })
+    expect(grillProgress([question('1'), answer('2')])).toEqual({
+      answered: 1,
+      total: 1,
+    })
   })
 
   // A stalled session resumes on a bare answer, so answers can outnumber questions.
@@ -196,16 +246,18 @@ describe('questionPayload', () => {
   })
 
   it('reads options and an explicit allow_free_text=false', () => {
-    const p = questionPayload(
-      question('1', { options: ['a', 'b'], allow_free_text: false }),
-    )
+    const p = questionPayload(question('1', { options: ['a', 'b'], allow_free_text: false }))
     expect(p.options).toEqual(['a', 'b'])
     expect(p.allow_free_text).toBe(false)
   })
 
   it('reads a recommended option and its why line', () => {
     const p = questionPayload(
-      question('1', { options: ['a', 'b'], recommended: 'a', why: 'a is simpler' }),
+      question('1', {
+        options: ['a', 'b'],
+        recommended: 'a',
+        why: 'a is simpler',
+      }),
     )
     expect(p.recommended).toBe('a')
     expect(p.why).toBe('a is simpler')
@@ -215,7 +267,14 @@ describe('questionPayload', () => {
 describe('outcomePayload', () => {
   it('leaves sub_issues undefined for a rewrite', () => {
     const p = outcomePayload(
-      msg({ kind: 'outcome', payload: { disposition: 'rewrite', proposed_description: 'x', summary: 's' } }),
+      msg({
+        kind: 'outcome',
+        payload: {
+          disposition: 'rewrite',
+          proposed_description: 'x',
+          summary: 's',
+        },
+      }),
     )
     expect(p.disposition).toBe('rewrite')
     expect(p.sub_issues).toBeUndefined()
@@ -231,7 +290,12 @@ describe('outcomePayload', () => {
           summary: 's',
           sub_issues: [
             { title: 'A', description: 'da' },
-            { title: 'B', description: 'db', labels: ['ready-for-agent'], blocked_by: [0] },
+            {
+              title: 'B',
+              description: 'db',
+              labels: ['ready-for-agent'],
+              blocked_by: [0],
+            },
           ],
         },
       }),
@@ -316,7 +380,10 @@ describe('grillReducer', () => {
   it('hydrate seeds messages and adopts the session while not yet live', () => {
     const next = grillReducer(initial, {
       type: 'hydrate',
-      detail: { session: session({ state: 'waiting' }), messages: [question('1')] },
+      detail: {
+        session: session({ state: 'waiting' }),
+        messages: [question('1')],
+      },
     })
     expect(next.session.state).toBe('waiting')
     expect(next.messages.map((m) => m.id)).toEqual(['1'])
@@ -332,7 +399,10 @@ describe('grillReducer', () => {
   })
 
   it('a stream state frame wins over a later hydrate', () => {
-    const live = grillReducer(initial, { type: 'state', session: session({ state: 'finished' }) })
+    const live = grillReducer(initial, {
+      type: 'state',
+      session: session({ state: 'finished' }),
+    })
     expect(live.live).toBe(true)
     const hydrated = grillReducer(live, {
       type: 'hydrate',
@@ -342,7 +412,10 @@ describe('grillReducer', () => {
   })
 
   it('message upserts into the thread', () => {
-    const next = grillReducer(initial, { type: 'message', message: question('5') })
+    const next = grillReducer(initial, {
+      type: 'message',
+      message: question('5'),
+    })
     expect(next.messages.map((m) => m.id)).toEqual(['5'])
   })
 })
@@ -371,7 +444,10 @@ describe('streaming deltas', () => {
 
   it('the stored message retires the streamed preview', () => {
     const streamed = stream(initial, { seq: 1, text: 'Let me push back.' })
-    const next = grillReducer(streamed, { type: 'message', message: question('7') })
+    const next = grillReducer(streamed, {
+      type: 'message',
+      message: question('7'),
+    })
     expect(next.streaming).toEqual(NO_REPLY)
     expect(next.messages.map((m) => m.id)).toEqual(['7'])
   })
@@ -413,7 +489,10 @@ describe('streaming deltas', () => {
   })
 
   it('leaves a hub that streams nothing on the message-at-a-time flow', () => {
-    const next = grillReducer(initial, { type: 'message', message: question('1') })
+    const next = grillReducer(initial, {
+      type: 'message',
+      message: question('1'),
+    })
     expect(next.streaming).toEqual(NO_REPLY)
     expect(next.messages.map((m) => m.id)).toEqual(['1'])
   })
@@ -429,35 +508,49 @@ describe('optimistic send', () => {
     streaming: NO_REPLY,
   }
 
-  const sent = (text = 'A') =>
-    grillReducer(initial, { type: 'send', id: 'p1', text })
+  const sent = (text = 'A') => grillReducer(initial, { type: 'send', id: 'p1', text })
 
   it('holds the answer as pending until the hub echoes it', () => {
     expect(sent().pending).toEqual([{ id: 'p1', text: 'A', failed: false }])
   })
 
   it('the echo retires the optimistic twin, leaving only the real message', () => {
-    const next = grillReducer(sent(), { type: 'message', message: answer('7', 'A') })
+    const next = grillReducer(sent(), {
+      type: 'message',
+      message: answer('7', 'A'),
+    })
     expect(next.pending).toEqual([])
     expect(next.messages.map((m) => m.id)).toEqual(['7'])
   })
 
   it('an echo of different text leaves the pending answer alone', () => {
-    const next = grillReducer(sent(), { type: 'message', message: answer('7', 'other') })
+    const next = grillReducer(sent(), {
+      type: 'message',
+      message: answer('7', 'other'),
+    })
     expect(next.pending).toHaveLength(1)
   })
 
   it('retires one twin per echo when the same text was sent twice', () => {
     const twice = grillReducer(sent(), { type: 'send', id: 'p2', text: 'A' })
-    const next = grillReducer(twice, { type: 'message', message: answer('7', 'A') })
+    const next = grillReducer(twice, {
+      type: 'message',
+      message: answer('7', 'A'),
+    })
     expect(next.pending.map((p) => p.id)).toEqual(['p2'])
   })
 
   // The hub answers a send twice: once in the POST response, once over the stream.
   it('retires one twin for an echo the POST and the stream both deliver', () => {
     const twice = grillReducer(sent(), { type: 'send', id: 'p2', text: 'A' })
-    const posted = grillReducer(twice, { type: 'message', message: answer('7', 'A') })
-    const streamed = grillReducer(posted, { type: 'message', message: answer('7', 'A') })
+    const posted = grillReducer(twice, {
+      type: 'message',
+      message: answer('7', 'A'),
+    })
+    const streamed = grillReducer(posted, {
+      type: 'message',
+      message: answer('7', 'A'),
+    })
     expect(streamed.pending.map((p) => p.id)).toEqual(['p2'])
     expect(streamed.messages.map((m) => m.id)).toEqual(['7'])
   })
@@ -465,7 +558,10 @@ describe('optimistic send', () => {
   it('a hydrate backfill retires twins the stream already echoed', () => {
     const next = grillReducer(sent(), {
       type: 'hydrate',
-      detail: { session: session({ state: 'waiting' }), messages: [answer('7', 'A')] },
+      detail: {
+        session: session({ state: 'waiting' }),
+        messages: [answer('7', 'A')],
+      },
     })
     expect(next.pending).toEqual([])
   })
@@ -474,7 +570,10 @@ describe('optimistic send', () => {
   it('a re-hydrate of an already-held answer leaves an in-flight twin alone', () => {
     const backfill = {
       type: 'hydrate' as const,
-      detail: { session: session({ state: 'waiting' }), messages: [answer('7', 'A')] },
+      detail: {
+        session: session({ state: 'waiting' }),
+        messages: [answer('7', 'A')],
+      },
     }
     const held = grillReducer(initial, backfill)
     const again = grillReducer(grillReducer(held, { type: 'send', id: 'p1', text: 'A' }), backfill)
@@ -482,29 +581,54 @@ describe('optimistic send', () => {
   })
 
   it('a failed send keeps its text for retry and is not retired by an echo', () => {
-    const failed = grillReducer(sent(), { type: 'send-failed', id: 'p1', text: 'A' })
+    const failed = grillReducer(sent(), {
+      type: 'send-failed',
+      id: 'p1',
+      text: 'A',
+    })
     expect(failed.pending[0].failed).toBe(true)
-    const echoed = grillReducer(failed, { type: 'message', message: answer('7', 'A') })
+    const echoed = grillReducer(failed, {
+      type: 'message',
+      message: answer('7', 'A'),
+    })
     expect(echoed.pending.map((p) => p.id)).toEqual(['p1'])
   })
 
   it('surfaces the failure on a surviving twin when the echo retired its own entry', () => {
     const twice = grillReducer(sent(), { type: 'send', id: 'p2', text: 'A' })
-    const echoed = grillReducer(twice, { type: 'message', message: answer('7', 'A') })
-    const failed = grillReducer(echoed, { type: 'send-failed', id: 'p1', text: 'A' })
+    const echoed = grillReducer(twice, {
+      type: 'message',
+      message: answer('7', 'A'),
+    })
+    const failed = grillReducer(echoed, {
+      type: 'send-failed',
+      id: 'p1',
+      text: 'A',
+    })
     expect(failed.pending).toEqual([{ id: 'p2', text: 'A', failed: true }])
   })
 
   it('retry clears the failure so the next echo retires it', () => {
-    const failed = grillReducer(sent(), { type: 'send-failed', id: 'p1', text: 'A' })
+    const failed = grillReducer(sent(), {
+      type: 'send-failed',
+      id: 'p1',
+      text: 'A',
+    })
     const again = grillReducer(failed, { type: 'send-retry', id: 'p1' })
     expect(again.pending[0].failed).toBe(false)
-    const echoed = grillReducer(again, { type: 'message', message: answer('7', 'A') })
+    const echoed = grillReducer(again, {
+      type: 'message',
+      message: answer('7', 'A'),
+    })
     expect(echoed.pending).toEqual([])
   })
 
   it('discard drops the send outright', () => {
-    const failed = grillReducer(sent(), { type: 'send-failed', id: 'p1', text: 'A' })
+    const failed = grillReducer(sent(), {
+      type: 'send-failed',
+      id: 'p1',
+      text: 'A',
+    })
     expect(grillReducer(failed, { type: 'send-discard', id: 'p1' }).pending).toEqual([])
   })
 })
@@ -578,12 +702,7 @@ describe('diffLines', () => {
 
   it('keeps context and pairs an edit as delete then insert', () => {
     const lines = diffLines('a\nb\nc', 'a\nB\nc')
-    expect(compact(lines)).toEqual([
-      'equal a',
-      'delete b',
-      'insert B',
-      'equal c',
-    ])
+    expect(compact(lines)).toEqual(['equal a', 'delete b', 'insert B', 'equal c'])
     expect(diffHasChanges(lines)).toBe(true)
   })
 

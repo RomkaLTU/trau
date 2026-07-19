@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { parseAsString, useQueryState } from "nuqs";
 import {
@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 
 import { Markdown } from "@/components/markdown";
+import { CreatedToast } from "@/components/created-toast";
 import { ErrorNote } from "@/components/grill/banners";
 import { Composer } from "@/components/grill/composer";
 import {
@@ -51,6 +52,7 @@ import {
   pregrillIssues,
   startGrillSession,
   switchGrillModel,
+  type GrillAppliedOutcome,
   type GrillListResponse,
   type GrillSession,
   type OutcomePayload,
@@ -150,6 +152,14 @@ function InboxPage() {
   const [passSummary, setPassSummary] = useState<string | null>(null);
   const [status, setStatus] = useState<GrillStatus | null>(null);
   const [seen, setSeen] = useState<SeenMarks>(loadSeen);
+  const [created, setCreated] = useState<GrillAppliedOutcome | null>(null);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!created) return;
+    const id = setTimeout(() => setCreated(null), 8000);
+    return () => clearTimeout(id);
+  }, [created]);
 
   useEffect(() => {
     if (newDraft && peek !== NEW_DRAFT_ID) setNewDraft(false);
@@ -259,8 +269,10 @@ function InboxPage() {
   // the board is what retires the row; the applied list is what re-lists it under
   // Done today. The issue's own grill list is left to its poll — the open thread
   // rides out the settle on the streamed session. A draft has no board row, so its
-  // list is refreshed to retire the settled authoring row.
-  function onApplied() {
+  // list is refreshed to retire the settled authoring row. A create apply raises the
+  // created toast — the skip advances the queue, so the toast is what carries the
+  // filed issue's id across the navigation.
+  function onApplied(applied: GrillAppliedOutcome) {
     const wasDraft = selected?.draft;
     skip();
     void queryClient.invalidateQueries({ queryKey: ["backlog", repo] });
@@ -269,6 +281,8 @@ function InboxPage() {
     });
     if (wasDraft)
       void queryClient.invalidateQueries({ queryKey: ["grill", repo] });
+    if (applied.disposition === "create" && applied.issueId !== "")
+      setCreated(applied);
   }
 
   // Discarding an authoring draft abandons its session with nothing to file, so the
@@ -282,7 +296,10 @@ function InboxPage() {
   }
 
   return (
-    <ProjectScopeGate className="min-h-0 flex-1" action="interview unclear issues">
+    <ProjectScopeGate
+      className="min-h-0 flex-1"
+      action="interview unclear issues"
+    >
       {/* Both gates already establish a positioned wrapper, so filling it is how this
           page claims the height the root column left it — the recap banner above is
           conditional, and a fixed viewport offset would be wrong whenever it shows. */}
@@ -422,6 +439,22 @@ function InboxPage() {
           </div>
         </RepoHealthGate>
       </div>
+
+      {created && (
+        <CreatedToast
+          id={created.issueId}
+          title={created.issueTitle}
+          actionLabel="View in backlog"
+          onView={() => {
+            void navigate({
+              to: "/backlog",
+              search: { issue: created.issueId },
+            });
+            setCreated(null);
+          }}
+          onDismiss={() => setCreated(null)}
+        />
+      )}
     </ProjectScopeGate>
   );
 }
@@ -454,7 +487,7 @@ function SessionColumn({
   contextOpen: boolean;
   onToggleContext: () => void;
   onSkip: () => void;
-  onApplied: () => void;
+  onApplied: (applied: GrillAppliedOutcome) => void;
   onDiscarded: () => void;
 }) {
   const {
@@ -579,7 +612,7 @@ function DraftColumn({
   onStatus: (status: GrillStatus) => void;
   onStarted: (session: GrillSession) => void;
   onSkip: () => void;
-  onApplied: () => void;
+  onApplied: (applied: GrillAppliedOutcome) => void;
   onDiscarded: () => void;
 }) {
   const queryClient = useQueryClient();

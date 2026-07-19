@@ -21,6 +21,7 @@ import {
   outcomePayload,
   pendingQuestion,
   questionPayload,
+  type GrillAppliedOutcome,
   type GrillDelta,
   type GrillMessage,
   type GrillSession,
@@ -53,7 +54,7 @@ export function GrillConversation({
   repo: string;
   initial: GrillSession;
   onStatus?: (status: GrillStatus) => void;
-  onApplied?: () => void;
+  onApplied?: (applied: GrillAppliedOutcome) => void;
   onDiscarded?: () => void;
 }) {
   useOpenConversation(initial.id);
@@ -120,7 +121,8 @@ export function GrillConversation({
       dispatch({ type: "message", message: res.message });
       dispatch({ type: "state", session: res.session });
     },
-    onError: (_err, { id, text }) => dispatch({ type: "send-failed", id, text }),
+    onError: (_err, { id, text }) =>
+      dispatch({ type: "send-failed", id, text }),
   });
 
   useEffect(() => {
@@ -145,12 +147,16 @@ export function GrillConversation({
   const banner = grillBanner(session);
   const stalled = banner?.showResume ? banner : null;
   const showBanner =
-    banner !== null && stalled === null && banner.tone !== "thinking" && !reviewing;
+    banner !== null &&
+    stalled === null &&
+    banner.tone !== "thinking" &&
+    !reviewing;
 
   // A session that stalled on its opening turn has no answer to replay, so the box
   // reopens rather than stranding the user behind a Resume button with nothing to send.
   const resume = stalled ? lastAnswer(messages) : "";
-  const answering = canCompose(session.state) || (stalled !== null && resume === "");
+  const answering =
+    canCompose(session.state) || (stalled !== null && resume === "");
   const freeText = question?.allow_free_text ?? true;
   const sending = answer.isPending;
 

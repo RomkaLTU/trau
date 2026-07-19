@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import {
   Check,
   CheckCircle2,
@@ -21,9 +22,11 @@ import {
   applyGrill,
   diffHasChanges,
   diffLines,
+  grillAppliedOutcome,
   type DiffLine,
   type GrillApplyResponse,
   type GrillApplyStep,
+  type GrillAppliedOutcome,
   type GrillSession,
   type OutcomePayload,
   type SubIssueProposal,
@@ -79,7 +82,7 @@ export function OutcomeReview({
   session: GrillSession;
   outcome: OutcomePayload;
   onSession: (session: GrillSession) => void;
-  onApplied?: () => void;
+  onApplied?: (applied: GrillAppliedOutcome) => void;
   onDiscarded?: () => void;
   // onAskFollowUp is what the follow-up button offers; hosts withhold it once the
   // composer it reopens is already showing.
@@ -122,7 +125,9 @@ export function OutcomeReview({
           queryKey: ["issue", repo, issueId],
         });
         void queryClient.invalidateQueries({ queryKey: ["backlog", repo] });
-        onApplied?.();
+        onApplied?.(
+          grillAppliedOutcome(res, outcome.disposition, title.trim()),
+        );
       }
     },
   });
@@ -136,7 +141,13 @@ export function OutcomeReview({
   });
 
   if (session.state === "applied") {
-    return <AppliedCard outcome={outcome} steps={apply.data?.steps ?? []} />;
+    return (
+      <AppliedCard
+        issueId={session.issue_id ?? ""}
+        outcome={outcome}
+        steps={apply.data?.steps ?? []}
+      />
+    );
   }
 
   const failedSteps = apply.data && !apply.data.applied ? apply.data.steps : [];
@@ -790,13 +801,18 @@ function StepList({ steps }: { steps: GrillApplyStep[] }) {
   );
 }
 
+// AppliedCard is what a reopened Done today row shows, so a create names and links
+// the issue it filed — the reference stays useful after the toast is gone.
 function AppliedCard({
+  issueId,
   outcome,
   steps,
 }: {
+  issueId: string;
   outcome: OutcomePayload;
   steps: GrillApplyStep[];
 }) {
+  const created = outcome.disposition === "create" && issueId !== "";
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-done/40 bg-done/5 p-3">
       <div className="flex items-center gap-2">
@@ -808,12 +824,28 @@ function AppliedCard({
         <Badge variant="outline">{dispositionLabel(outcome.disposition)}</Badge>
       </div>
       <p className="text-xs leading-relaxed text-muted-foreground">
-        {outcome.disposition === "no_change"
-          ? "Session closed out — nothing was written to the tracker."
-          : outcome.disposition === "create"
-            ? "The new issue was filed on the tracker."
-            : "The outcome was written to the tracker. This issue is cleared."}
+        {outcome.disposition === "no_change" ? (
+          "Session closed out — nothing was written to the tracker."
+        ) : created ? (
+          <>
+            <span className="font-mono text-foreground">{issueId}</span> filed
+            on the tracker.
+          </>
+        ) : outcome.disposition === "create" ? (
+          "The new issue was filed on the tracker."
+        ) : (
+          "The outcome was written to the tracker. This issue is cleared."
+        )}
       </p>
+      {created && (
+        <Link
+          to="/backlog"
+          search={{ issue: issueId }}
+          className="self-start text-xs font-medium text-primary underline-offset-2 hover:underline"
+        >
+          View in backlog
+        </Link>
+      )}
       {steps.length > 0 && <StepList steps={steps} />}
     </div>
   );
