@@ -191,7 +191,9 @@ func (a *Attachments) MarkFailed(id int64, reason string) error {
 }
 
 // BindToIssue attaches uploads to the issue whose markdown references them, so
-// they follow its lifecycle instead of lingering unowned.
+// they follow its lifecycle instead of lingering unowned. Only uploads bind: a
+// tracker-sourced id referenced in the markdown keeps its own issue, so pasting
+// its URL into another ticket can't steal it out from under the sync sweep.
 func (a *Attachments) BindToIssue(repo string, ids []int64, identifier string) error {
 	if len(ids) == 0 {
 		return nil
@@ -202,7 +204,7 @@ func (a *Attachments) BindToIssue(repo string, ids []int64, identifier string) e
 		args = append(args, id)
 	}
 	_, err := a.db.Exec(
-		`UPDATE attachments SET issue_identifier = ? WHERE repo = ? AND id IN (`+placeholders(len(ids))+`)`,
+		`UPDATE attachments SET issue_identifier = ? WHERE repo = ? AND source = '`+AttachmentSourceUpload+`' AND id IN (`+placeholders(len(ids))+`)`,
 		args...,
 	)
 	return err

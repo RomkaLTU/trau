@@ -1,17 +1,63 @@
-import { useEffect, useImperativeHandle, useRef, type Ref } from "react";
+import {
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  type ChangeEvent,
+  type Ref,
+} from "react";
 import type { Editor } from "@tiptap/core";
 import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { TableKit } from "@tiptap/extension-table";
+import Image from "@tiptap/extension-image";
 import { Placeholder } from "@tiptap/extensions";
 import { Markdown } from "@tiptap/markdown";
-import { Bold, Code, Italic, List, ListOrdered, Table } from "lucide-react";
+import {
+  Bold,
+  Code,
+  Image as ImageIcon,
+  Italic,
+  List,
+  ListOrdered,
+  Table,
+  type LucideIcon,
+} from "lucide-react";
+import { toast } from "sonner";
 
+import {
+  uploadAttachments,
+  type UploadedAttachment,
+} from "@/lib/attachments";
 import { cn } from "@/lib/utils";
 
 export interface MarkdownEditorHandle {
   getMarkdown: () => string;
   clearContent: () => void;
+}
+
+function filesFrom(files: FileList | null | undefined): File[] {
+  return files ? Array.from(files) : [];
+}
+
+// The position is always explicit, never the live selection: an insert leaves the
+// selection sitting on the image node it just created, so a second insert into that
+// selection would replace the first image instead of following it.
+export function insertImages(
+  editor: Editor,
+  uploaded: UploadedAttachment[],
+  at?: number,
+) {
+  editor
+    .chain()
+    .focus()
+    .insertContentAt(
+      at ?? editor.state.selection.to,
+      uploaded.map((att) => ({
+        type: "image",
+        attrs: { src: att.url, alt: att.filename },
+      })),
+    )
+    .run();
 }
 
 export function MarkdownEditor({
@@ -20,6 +66,7 @@ export function MarkdownEditor({
   disabled = false,
   defaultValue = "",
   autoFocus = false,
+  repo,
   onChange,
   onEnter,
   className,
@@ -31,6 +78,7 @@ export function MarkdownEditor({
   disabled?: boolean;
   defaultValue?: string;
   autoFocus?: boolean;
+  repo?: string;
   onChange?: (markdown: string) => void;
   onEnter?: () => void;
   className?: string;
@@ -44,11 +92,37 @@ export function MarkdownEditor({
   onChangeRef.current = onChange;
   const onEnterRef = useRef(onEnter);
   onEnterRef.current = onEnter;
+  const repoRef = useRef(repo);
+  repoRef.current = repo;
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Inserts the whole batch in one edit at the cursor (or at a drop position), since
+  // inserting each upload as it resolves would race the others over the same stale
+  // position. What counts as an image is the hub's call: only it can sniff the bytes.
+  // Reads live refs, so the handlers the editor captures once stay correct as repo
+  // changes.
+  const uploadImages = async (files: File[], at?: number) => {
+    const activeRepo = repoRef.current;
+    const editor = editorRef.current;
+    if (!activeRepo || !editor || files.length === 0) return;
+    const toastId = toast.loading(
+      files.length > 1
+        ? `Uploading ${files.length} images…`
+        : "Uploading image…",
+    );
+    const { uploaded, errors } = await uploadAttachments(activeRepo, files);
+    toast.dismiss(toastId);
+    if (uploaded.length > 0) {
+      insertImages(editor, uploaded, at);
+    }
+    errors.forEach((message) => toast.error(message));
+  };
 
   const editor = useEditor({
     extensions: [
       StarterKit,
       TableKit,
+      Image,
       Markdown.configure({ markedOptions: { gfm: true } }),
       Placeholder.configure({
         placeholder: () => placeholderRef.current,
@@ -63,6 +137,26 @@ export function MarkdownEditor({
     editorProps: {
       attributes: {
         class: cn("min-h-9 px-3 py-2 text-sm outline-none", editorClassName),
+      },
+      handlePaste: (_view, event) => {
+        if (!repoRef.current) return false;
+        const files = filesFrom(event.clipboardData?.files);
+        if (files.length === 0) return false;
+        event.preventDefault();
+        void uploadImages(files);
+        return true;
+      },
+      handleDrop: (view, event, _slice, moved) => {
+        if (moved || !repoRef.current) return false;
+        const files = filesFrom(event.dataTransfer?.files);
+        if (files.length === 0) return false;
+        event.preventDefault();
+        const at = view.posAtCoords({
+          left: event.clientX,
+          top: event.clientY,
+        })?.pos;
+        void uploadImages(files, at);
+        return true;
       },
       handleKeyDown: (_view, event) => {
         if (event.key !== "Enter" || event.isComposing) return false;
@@ -111,7 +205,12 @@ export function MarkdownEditor({
     }),
   });
 
-  const tools = [
+  const tools: {
+    icon: LucideIcon;
+    label: string;
+    active: boolean;
+    run: () => void;
+  }[] = [
     {
       icon: Bold,
       label: "Bold",
@@ -157,6 +256,20 @@ export function MarkdownEditor({
     },
   ];
 
+  if (repo) {
+    tools.push({
+      icon: ImageIcon,
+      label: "Insert image",
+      active: false,
+      run: () => fileInputRef.current?.click(),
+    });
+  }
+
+  const onPickFiles = (event: ChangeEvent<HTMLInputElement>) => {
+    void uploadImages(filesFrom(event.target.files));
+    event.target.value = "";
+  };
+
   return (
     <div
       className={cn(
@@ -189,6 +302,16 @@ export function MarkdownEditor({
         editor={editor}
         className={cn("max-h-48 overflow-y-auto", contentClassName)}
       />
+      {repo && (
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          hidden
+          onChange={onPickFiles}
+        />
+      )}
     </div>
   );
 }

@@ -804,6 +804,7 @@ function FreshDraftBody({
       <div className="flex flex-col gap-3 border-t border-border p-4">
         <StartModelSelect starter={starter} className="self-end" />
         <Composer
+          repo={repo}
           placeholder="Describe the issue…"
           disabled={start.isPending}
           submitting={start.isPending}
@@ -899,6 +900,7 @@ function SessionPreview({
           <StartModelSelect starter={starter} className="ml-auto" />
         </div>
         <Composer
+          repo={repo}
           placeholder="Type your first message to start the interview…"
           disabled={askAhead.isPending}
           submitting={false}

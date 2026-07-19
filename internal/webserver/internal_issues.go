@@ -75,6 +75,7 @@ func (s *Server) handleCreateInternalIssue(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	s.registerAttachments(repo.Root, iss.Identifier, scanIssueImages(iss.Description))
+	s.bindUploadedAttachments(repo.Root, iss.Identifier, iss.Description)
 	writeJSON(w, http.StatusCreated, toInternalIssueResponse(repo.Name, iss))
 }
 
@@ -138,6 +139,7 @@ func (s *Server) updateInternalIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.registerAttachments(repo.Root, iss.Identifier, scanIssueImages(iss.Description))
+	s.bindUploadedAttachments(repo.Root, iss.Identifier, iss.Description)
 	writeJSON(w, http.StatusOK, toInternalIssueResponse(repo.Name, iss))
 }
 
