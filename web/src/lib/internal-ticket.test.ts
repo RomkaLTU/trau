@@ -27,6 +27,7 @@ describe('planInternalTicket', () => {
   it('is a plain ticket when every sub-item row is empty', () => {
     expect(planInternalTicket('Fix flaky CI step', ['', ''])).toEqual({
       title: 'Fix flaky CI step',
+      description: '',
       subs: [],
       isEpic: false,
     })
@@ -39,6 +40,7 @@ describe('planInternalTicket', () => {
     ])
     expect(plan).toEqual({
       title: 'Retire the legacy runner',
+      description: '',
       subs: ['Drop the shim'],
       isEpic: true,
     })
@@ -57,6 +59,14 @@ describe('planInternalTicket', () => {
 
   it('does not count a whitespace-only sub-item row as an epic', () => {
     expect(planInternalTicket('Fix CI', ['   ']).isEpic).toBe(false)
+  })
+
+  it('trims the description and treats a whitespace-only one as absent', () => {
+    expect(
+      planInternalTicket('Fix CI', [], '  Full **context**  ').description,
+    ).toBe('Full **context**')
+    expect(planInternalTicket('Fix CI', [], '   ').description).toBe('')
+    expect(planInternalTicket('Fix CI', []).description).toBe('')
   })
 })
 
@@ -112,6 +122,39 @@ describe('createAndQueue', () => {
     )
 
     expect(calls).toEqual(['create Fix CI', 'enqueue LOOP-1 as ticket'])
+  })
+
+  it('puts the description on the parent draft only', async () => {
+    const drafts: InternalIssueDraft[] = []
+
+    await createAndQueue(
+      planInternalTicket('Retire the runner', ['Drop the shim'], 'Why: **ci**'),
+      async (draft) => {
+        drafts.push(draft)
+        return issue({ id: `LOOP-${drafts.length}`, title: draft.title })
+      },
+      async () => queueResponse(),
+    )
+
+    expect(drafts).toEqual([
+      { title: 'Retire the runner', description: 'Why: **ci**' },
+      { title: 'Drop the shim', parent: 'LOOP-1' },
+    ])
+  })
+
+  it('omits the description from the draft when empty', async () => {
+    const drafts: InternalIssueDraft[] = []
+
+    await createAndQueue(
+      planInternalTicket('Fix CI', [], '   '),
+      async (draft) => {
+        drafts.push(draft)
+        return issue()
+      },
+      async () => queueResponse(),
+    )
+
+    expect(drafts[0]).not.toHaveProperty('description')
   })
 
   it('returns the queue the enqueue landed', async () => {

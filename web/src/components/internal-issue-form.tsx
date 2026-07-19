@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Plus, X } from 'lucide-react'
 
+import { MarkdownEditor } from '@/components/markdown-editor'
 import { cn } from '@/lib/utils'
 import { configQueryOptions } from '@/lib/config'
 import {
@@ -98,12 +99,12 @@ export function InternalIssueForm({
         placeholder="Issue title"
         className={inputClass}
       />
-      <textarea
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
+      <MarkdownEditor
         placeholder="Description (markdown, optional)"
-        rows={4}
-        className="w-full resize-y rounded-md border bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+        defaultValue={issue?.description ?? ''}
+        onChange={setDescription}
+        editorClassName="min-h-20"
+        contentClassName="max-h-64"
       />
       <div className="flex flex-wrap gap-3">
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
