@@ -439,6 +439,30 @@ func (c *Client) DeleteInstance(ctx context.Context, pid int) error {
 	return err
 }
 
+// Instance is one live loop as the hub lists it: the identifying PID and repo
+// plus the session state it last reported. The start-path guards read the list
+// to spot a takeover terminal or an in-flight run before touching a repo.
+type Instance struct {
+	PID          int    `json:"pid"`
+	Repo         string `json:"repo"`
+	RepoRoot     string `json:"repo_root"`
+	SessionState string `json:"session_state"`
+	Ticket       string `json:"ticket,omitempty"`
+	Phase        string `json:"phase,omitempty"`
+}
+
+// Instances lists the loops the hub currently holds presence for — live entries
+// only, dead PIDs already reaped.
+func (c *Client) Instances(ctx context.Context) ([]Instance, error) {
+	var out struct {
+		Instances []Instance `json:"instances"`
+	}
+	if err := c.do(ctx, http.MethodGet, apiPrefix+"/instances", nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Instances, nil
+}
+
 // PutCheckpoint writes a ticket's checkpoint to the hub, which persists it in the
 // authoritative checkpoints table. A hub-connection failure surfaces as an
 // IsUnreachable error so the caller can retry; the request is idempotent.

@@ -1,54 +1,95 @@
-import { apiFetch } from './api'
+import { queryOptions } from "@tanstack/react-query";
+
+import { apiFetch } from "./api";
+
+// RunCheckpoint is the raw checkpoint resource; data carries the loop's state
+// keys verbatim (PHASE, BRANCH, SESSION, …), so SESSION here is the resumable
+// claude session handle terminal takeover keys off (ADR 0018).
+export interface RunCheckpoint {
+  ticket: string;
+  phase: string;
+  data: Record<string, string>;
+}
+
+async function fetchRunCheckpoint(
+  repo: string,
+  ticket: string,
+): Promise<RunCheckpoint | null> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/runs/${encodeURIComponent(
+      ticket,
+    )}/checkpoint`,
+  );
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new Error(`checkpoint request failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+export const runCheckpointQueryOptions = (repo: string, ticket: string) =>
+  queryOptions({
+    queryKey: ["run-checkpoint", repo, ticket],
+    queryFn: () => fetchRunCheckpoint(repo, ticket),
+    refetchInterval: 5000,
+    enabled: repo !== "" && ticket !== "",
+  });
 
 export interface ResetResult {
-  status: string
-  ticket: string
+  status: string;
+  ticket: string;
 }
 
 export interface ClearResult {
-  status: string
-  ticket: string
-  was: string
+  status: string;
+  ticket: string;
+  was: string;
 }
 
 export interface ReconcileResult {
-  repo: string
-  reconciled: string[]
+  repo: string;
+  reconciled: string[];
 }
 
 // CheckpointError carries the machine-readable flags the run views branch on: a
 // live-instance refusal, and the merged-ticket case the UI escalates to a forced
 // confirmation.
 export class CheckpointError extends Error {
-  live: boolean
-  requiresForce: boolean
+  live: boolean;
+  requiresForce: boolean;
 
-  constructor(message: string, opts: { live?: boolean; requiresForce?: boolean }) {
-    super(message)
-    this.name = 'CheckpointError'
-    this.live = opts.live ?? false
-    this.requiresForce = opts.requiresForce ?? false
+  constructor(
+    message: string,
+    opts: { live?: boolean; requiresForce?: boolean },
+  ) {
+    super(message);
+    this.name = "CheckpointError";
+    this.live = opts.live ?? false;
+    this.requiresForce = opts.requiresForce ?? false;
   }
 }
 
 async function post<T>(url: string, body?: unknown): Promise<T> {
   const res = await apiFetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
-  })
+  });
   if (!res.ok) {
     const detail = (await res.json().catch(() => null)) as {
-      error?: string
-      live?: boolean
-      requires_force?: boolean
-    } | null
-    throw new CheckpointError(detail?.error ?? `request failed: ${res.status}`, {
-      live: detail?.live,
-      requiresForce: detail?.requires_force,
-    })
+      error?: string;
+      live?: boolean;
+      requires_force?: boolean;
+    } | null;
+    throw new CheckpointError(
+      detail?.error ?? `request failed: ${res.status}`,
+      {
+        live: detail?.live,
+        requiresForce: detail?.requires_force,
+      },
+    );
   }
-  return res.json()
+  return res.json();
 }
 
 export function resetRun(
@@ -61,7 +102,7 @@ export function resetRun(
       ticket,
     )}/reset`,
     { force },
-  )
+  );
 }
 
 export function clearRun(repo: string, ticket: string): Promise<ClearResult> {
@@ -69,9 +110,9 @@ export function clearRun(repo: string, ticket: string): Promise<ClearResult> {
     `/api/v1/repos/${encodeURIComponent(repo)}/runs/${encodeURIComponent(
       ticket,
     )}/clear`,
-  )
+  );
 }
 
 export function reconcileRepo(repo: string): Promise<ReconcileResult> {
-  return post(`/api/v1/repos/${encodeURIComponent(repo)}/reconcile`)
+  return post(`/api/v1/repos/${encodeURIComponent(repo)}/reconcile`);
 }

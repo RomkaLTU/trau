@@ -15,9 +15,18 @@ import {
 
 describe("boardPill", () => {
   it("maps pipeline phases through the shared phase pill", () => {
-    expect(boardPill({ phase: "building" })).toEqual({ state: "active", label: "build" });
-    expect(boardPill({ phase: "verified" })).toEqual({ state: "verify", label: "verify" });
-    expect(boardPill({ phase: "merged" })).toEqual({ state: "success", label: "merged" });
+    expect(boardPill({ phase: "building" })).toEqual({
+      state: "active",
+      label: "build",
+    });
+    expect(boardPill({ phase: "verified" })).toEqual({
+      state: "verify",
+      label: "verify",
+    });
+    expect(boardPill({ phase: "merged" })).toEqual({
+      state: "success",
+      label: "merged",
+    });
   });
 
   it("lets a failure class win over the phase", () => {
@@ -112,7 +121,10 @@ describe("loopCardView", () => {
   });
 
   it("prefers the live Activity over the checkpoint for the working pill", () => {
-    expect(loopCardView("working", { phase: "handed_off", activity: "ci-wait" }).pill).toEqual({
+    expect(
+      loopCardView("working", { phase: "handed_off", activity: "ci-wait" })
+        .pill,
+    ).toEqual({
       state: "active",
       label: "ship",
     });
@@ -160,21 +172,49 @@ describe("loopCardView", () => {
     expect(view.showStop).toBe(true);
     expect(view.copy).toMatch(/predates session reporting/i);
   });
+
+  it("shows a taken-over loop without a stop action — hand-back is manual", () => {
+    const view = loopCardView("takeover");
+    expect(view.pill).toEqual({ state: "info", label: "Taken over" });
+    expect(view.copy).toMatch(/Run next/);
+    expect(view.showStop).toBe(false);
+    expect(view.showWatch).toBe(true);
+    expect(view.showStepper).toBe(false);
+  });
 });
 
 describe("sessionStatePill", () => {
   it("keeps working and grazing on the teal active palette", () => {
-    expect(sessionStatePill("working")).toEqual({ state: "active", label: "working" });
-    expect(sessionStatePill("grazing")).toEqual({ state: "active", label: "grazing" });
+    expect(sessionStatePill("working")).toEqual({
+      state: "active",
+      label: "working",
+    });
+    expect(sessionStatePill("grazing")).toEqual({
+      state: "active",
+      label: "grazing",
+    });
   });
 
   it("reads parked as a warn, needs-you pill", () => {
-    expect(sessionStatePill("parked")).toEqual({ state: "warn", label: "parked" });
+    expect(sessionStatePill("parked")).toEqual({
+      state: "warn",
+      label: "parked",
+    });
   });
 
   it("dims idle and unknown", () => {
     expect(sessionStatePill("idle")).toEqual({ state: "todo", label: "idle" });
-    expect(sessionStatePill("unknown")).toEqual({ state: "todo", label: "unknown" });
+    expect(sessionStatePill("unknown")).toEqual({
+      state: "todo",
+      label: "unknown",
+    });
+  });
+
+  it("renders takeover as the Taken over info pill", () => {
+    expect(sessionStatePill("takeover")).toEqual({
+      state: "info",
+      label: "Taken over",
+    });
   });
 });
 
@@ -192,6 +232,11 @@ describe("repoBadgeState", () => {
   it("reads a repo whose only instance is parked as needs-you, not busy", () => {
     expect(repoBadgeState(["parked"])).toBe("parked");
     expect(repoBadgeState(["idle", "parked"])).toBe("parked");
+  });
+
+  it("groups a taken-over repo with parked, not active", () => {
+    expect(repoBadgeState(["takeover"])).toBe("parked");
+    expect(isActiveState("takeover")).toBe(false);
   });
 
   it("dims a repo with only idle or unknown instances", () => {

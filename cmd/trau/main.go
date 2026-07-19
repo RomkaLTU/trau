@@ -23,8 +23,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -78,6 +78,7 @@ Usage:
   trau <ID>                  run a single ticket (e.g. ENG-123), or its sub-issues if it is an epic
   trau doctor                preflight check: git/gh/provider/config/labels/write perms
   trau watch                 tail a running loop's live agent activity (headless counterpart to the TUI 'w' key)
+  trau takeover <ID> [--repo <path>]  resume a parked ticket's recorded claude session in this terminal (repo locked while it runs)
   trau forensics <cmd>       read-only incident queries over the run history: runs, events, spend (see 'trau forensics --help')
   trau serve                 start the local web hub — HTTP API + embedded UI on 127.0.0.1:8728 (--bind, --port)
   trau --status [--json]     show saved ticket checkpoints with token/cost totals
@@ -179,6 +180,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	if len(args) > 0 && args[0] == "watch" {
 		return runWatch(ctx, args[1:], stdout, stderr)
+	}
+
+	if len(args) > 0 && args[0] == "takeover" {
+		return runTakeover(ctx, args[1:], stdout, stderr)
 	}
 
 	if len(args) > 0 && args[0] == "serve" {
@@ -327,7 +332,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	cfg.PromptOverrides = fetchPromptOverrides(ctx, cfg)
 
-	runner, err := buildRouter(cfg, log, sink, transcripts, stderr)
+	rec := &sessionRecorder{}
+	runner, err := buildRouter(cfg, log, sink, transcripts, stderr, rec.record)
 	if err != nil {
 		return usageError{err}
 	}
@@ -399,7 +405,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return resolveRepoError(ctx, cfg, err)
 		}
-		pipe, err := buildPipeline(cfg, runner, repoRoot, pm, sink, transcripts, log, con)
+		pipe, err := buildPipeline(cfg, runner, repoRoot, pm, sink, transcripts, log, con, rec)
 		if err != nil {
 			return err
 		}
@@ -478,7 +484,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return resolveRepoError(ctx, cfg, err)
 	}
 	logger.Verbosef("final repo root for pipeline: %s", repoRoot)
-	p, err := buildPipeline(cfg, runner, repoRoot, pm, sink, transcripts, log, con)
+	if err := takenOverRefusal(ctx, hubclient.New(hubBaseURL(cfg), cfg.ServeToken), repoRoot); err != nil {
+		return err
+	}
+	p, err := buildPipeline(cfg, runner, repoRoot, pm, sink, transcripts, log, con, rec)
 	if err != nil {
 		return err
 	}
@@ -764,7 +773,7 @@ func reconcileCheckpoints(ctx context.Context, cfg config.Config, log *event.Log
 	if !hasReconcileCandidate(store) {
 		return nil
 	}
-	runner, err := buildRouter(cfg, log, sink, nil, io.Discard)
+	runner, err := buildRouter(cfg, log, sink, nil, io.Discard, nil)
 	if err != nil {
 		logger.Verbosef("reconcile: provider unavailable, skipping (%v)", err)
 		return nil
@@ -1153,7 +1162,62 @@ func wireTUITranscripts(cfg config.Config) {
 	tui.SetTranscriptSource(tuiTranscriptSource{hub: hubclient.New(hubBaseURL(cfg), cfg.ServeToken)}, repoName(cfg.RepoRoot))
 }
 
-func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *hubtokens.Sink, transcripts agent.TranscriptSink, log *event.Log, con console.Renderer) (*pipeline.Pipeline, error) {
+// sessionRecorder persists each claude phase's freshly minted session id into
+// the active ticket's checkpoint (SESSION/SESSION_PHASE) before the phase's
+// terminal session spawns, so a stopped run leaves behind the handle a terminal
+// takeover resumes (ADR 0018). It learns the active ticket by interposing on
+// the pipeline's SetTicket and writes through the pipeline's own checkpoint
+// store, so the fields ride the same hub-backed flush as every phase
+// transition. Tracker calls (pick, status, …) share the claude backends but are
+// not resumable phases: everything RouteKey buckets under pick is skipped,
+// except push-repair — the one pick-bucketed label that is a real (mechanical)
+// phase.
+type sessionRecorder struct {
+	mu     sync.Mutex
+	cps    state.Checkpoints
+	ticket string
+}
+
+func (r *sessionRecorder) bind(cps state.Checkpoints) {
+	r.mu.Lock()
+	r.cps = cps
+	r.mu.Unlock()
+}
+
+func (r *sessionRecorder) setTicket(id string) {
+	r.mu.Lock()
+	r.ticket = id
+	r.mu.Unlock()
+}
+
+func (r *sessionRecorder) record(sessionID, label string) {
+	if agent.RouteKey(label) == agent.PhasePick && !agent.MechanicalPhase(label) {
+		return
+	}
+	r.mu.Lock()
+	cps, ticket := r.cps, r.ticket
+	r.mu.Unlock()
+	if cps == nil || ticket == "" {
+		return
+	}
+	_ = cps.Set(ticket, "SESSION", sessionID)
+	_ = cps.Set(ticket, "SESSION_PHASE", label)
+}
+
+// sessionLedger is the pipeline's token ledger with the session recorder
+// interposed on SetTicket, so recorded session ids land on the ticket the
+// pipeline is currently running.
+type sessionLedger struct {
+	*hubtokens.Sink
+	rec *sessionRecorder
+}
+
+func (l sessionLedger) SetTicket(id string) {
+	l.rec.setTicket(id)
+	l.Sink.SetTicket(id)
+}
+
+func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm tracker.Tracker, sink *hubtokens.Sink, transcripts agent.TranscriptSink, log *event.Log, con console.Renderer, rec *sessionRecorder) (*pipeline.Pipeline, error) {
 	wireCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if added, err := pipeline.EnsureRepoConfigInclude(wireCtx, repoRoot); err != nil {
@@ -1170,24 +1234,26 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		}
 		verifyChecks = loaded
 	}
-	panel, err := buildPanel(cfg, log, sink, transcripts)
+	panel, err := buildPanel(cfg, log, sink, transcripts, rec.record)
 	if err != nil {
 		return nil, err
 	}
-	fallback, err := buildFallback(cfg, log, sink, transcripts)
+	fallback, err := buildFallback(cfg, log, sink, transcripts, rec.record)
 	if err != nil {
 		return nil, err
 	}
+	store := newCheckpointStore(cfg, repoRoot)
+	rec.bind(store)
 	return &pipeline.Pipeline{
 		Runner:              runner,
-		State:               newCheckpointStore(cfg, repoRoot),
+		State:               store,
 		Artifacts:           newArtifactStore(cfg, repoRoot),
 		PhaseLogs:           newPhaseLogStore(cfg, repoRoot),
 		LessonLedger:        newLessonStore(cfg, repoRoot),
 		Git:                 pipeline.ExecGit{Repo: repoRoot},
 		GitHub:              pipeline.ExecGitHub{Repo: repoRoot},
 		Tracker:             pm,
-		Tokens:              sink,
+		Tokens:              sessionLedger{Sink: sink, rec: rec},
 		Budget:              budgetLimits(cfg),
 		RunsDir:             cfg.RunsDir,
 		Base:                cfg.BaseBranch,
@@ -1257,7 +1323,7 @@ func skillsExpected(repoRoot string) func(string) bool {
 // naming an unknown provider or whose binary is missing from PATH is a startup
 // error. Repeated providers get a numeric suffix (claude, claude2) so their
 // verdict files and ledger labels stay distinct.
-func buildPanel(cfg config.Config, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink) ([]pipeline.Verifier, error) {
+func buildPanel(cfg config.Config, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink, onSession func(sessionID, label string)) ([]pipeline.Verifier, error) {
 	if len(cfg.VerifyPanel) == 0 {
 		return nil, nil
 	}
@@ -1269,7 +1335,7 @@ func buildPanel(cfg config.Config, log *event.Log, sink agent.TokenSink, transcr
 		if err != nil {
 			return nil, fmt.Errorf("verify panel %q: %w", spec, err)
 		}
-		runner, err := buildBackend(reg, cfg, provider, model, effort, agent.PhaseVerify, log, sink, transcripts)
+		runner, err := buildBackend(reg, cfg, provider, model, effort, agent.PhaseVerify, log, sink, transcripts, onSession)
 		if err != nil {
 			return nil, fmt.Errorf("verify panel %q: %w", spec, err)
 		}
@@ -1290,7 +1356,7 @@ func buildPanel(cfg config.Config, log *event.Log, sink agent.TokenSink, transcr
 // chain is global, so every phase gets the same ordered providers. Returns nil when
 // no fallback is configured (retry-only). A spec naming an unknown provider or whose
 // binary is missing from PATH is a startup error, surfaced before any run begins.
-func buildFallback(cfg config.Config, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink) (func(string) []agent.Runner, error) {
+func buildFallback(cfg config.Config, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink, onSession func(sessionID, label string)) (func(string) []agent.Runner, error) {
 	if len(cfg.FallbackProviders) == 0 {
 		return nil, nil
 	}
@@ -1301,7 +1367,7 @@ func buildFallback(cfg config.Config, log *event.Log, sink agent.TokenSink, tran
 		if err != nil {
 			return nil, fmt.Errorf("fallback provider %q: %w", spec, err)
 		}
-		b, err := buildBackend(reg, cfg, provider, model, effort, "", log, sink, transcripts)
+		b, err := buildBackend(reg, cfg, provider, model, effort, "", log, sink, transcripts, onSession)
 		if err != nil {
 			return nil, fmt.Errorf("fallback provider %q: %w", spec, err)
 		}
@@ -1372,7 +1438,7 @@ func (e *realEngine) flagCostAnomalies(id string) {
 	// Stamp only tickets that still have a checkpoint — a refusal reset just
 	// removed the state file, and recreating it here would leave a ghost row.
 	if e.pipe.State.Get(id, "PHASE") != "" {
-		_ = e.pipe.State.Set(id, "ANOMALIES", strconv.Itoa(len(anomalies)))
+		_ = e.pipe.State.Set(id, "ANOMALIES", state.MergeAnomalyCount(e.pipe.State.Get(id, "ANOMALIES"), len(anomalies)))
 	}
 	phases := make([]string, len(anomalies))
 	for i, a := range anomalies {
@@ -1854,7 +1920,7 @@ func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (
 		return res, nil
 	}
 
-	runner, err := buildRouter(a.cfg, a.log, a.sink, a.transcripts, a.stderr)
+	runner, err := buildRouter(a.cfg, a.log, a.sink, a.transcripts, a.stderr, nil)
 	if err != nil {
 		res.LabelErr = err
 		return res, nil
@@ -1909,7 +1975,7 @@ func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvide
 		restOnly := trackerProvider == "jira" && jiraRESTComplete(cfg)
 		var runner agent.Runner
 		if !restOnly {
-			r, err := buildRouter(cfg, a.log, a.sink, a.transcripts, a.stderr)
+			r, err := buildRouter(cfg, a.log, a.sink, a.transcripts, a.stderr, nil)
 			if err != nil {
 				return tui.TeamDetection{Label: label}, err
 			}
@@ -2329,7 +2395,8 @@ func (a *appActions) ensure() error {
 		return a.buildErr
 	}
 	a.built = true
-	runner, err := buildRouter(a.cfg, a.log, a.sink, a.transcripts, a.stderr)
+	rec := &sessionRecorder{}
+	runner, err := buildRouter(a.cfg, a.log, a.sink, a.transcripts, a.stderr, rec.record)
 	if err != nil {
 		a.buildErr = err
 		return err
@@ -2345,7 +2412,7 @@ func (a *appActions) ensure() error {
 		a.buildErr = err
 		return err
 	}
-	pipe, err := buildPipeline(a.cfg, runner, repoRoot, a.tracker, a.sink, a.transcripts, a.log, nil)
+	pipe, err := buildPipeline(a.cfg, runner, repoRoot, a.tracker, a.sink, a.transcripts, a.log, nil, rec)
 	if err != nil {
 		a.buildErr = err
 		return err
@@ -2503,6 +2570,10 @@ func epicChildFilter(ctx context.Context, tr tracker.Tracker, epic string) func(
 // runEpicLoop runs the loop scoped to epic (or the team ready-queue when epic is
 // empty), processing at most max tickets. Run once on an epic uses max=1.
 func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Renderer, max int) {
+	if err := takenOverRefusal(ctx, hubclient.New(hubBaseURL(a.cfg), a.cfg.ServeToken), a.cfg.RepoRoot); err != nil {
+		r.LoopDone(console.SessionSummary{Err: err})
+		return
+	}
 	if err := a.ensure(); err != nil {
 		r.LoopDone(console.SessionSummary{Err: err})
 		return
@@ -2574,6 +2645,10 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 // runs fall back to the config default. Per-phase Routes and FALLBACK_PROVIDERS
 // are untouched (they layer on top of whichever default is active).
 func (a *appActions) RunTicket(ctx context.Context, id, provider string, r console.Renderer) {
+	if err := takenOverRefusal(ctx, hubclient.New(hubBaseURL(a.cfg), a.cfg.ServeToken), a.cfg.RepoRoot); err != nil {
+		r.LoopDone(console.SessionSummary{Err: err})
+		return
+	}
 	if provider != "" && provider != a.cfg.Provider {
 		orig := a.cfg.Provider
 		a.cfg.Provider = provider
@@ -2708,12 +2783,12 @@ func providerConfigFor(cfg config.Config, provider string) providerConfig {
 	return providerConfig{extra: map[string]string{}}
 }
 
-func buildRouter(cfg config.Config, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink, stderr io.Writer) (agent.Runner, error) {
+func buildRouter(cfg config.Config, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink, stderr io.Writer, onSession func(sessionID, label string)) (agent.Runner, error) {
 	reg := agent.DefaultRegistry()
 	used := map[string]bool{cfg.Provider: true}
 
 	defPC := providerConfigFor(cfg, cfg.Provider)
-	def, err := buildBackend(reg, cfg, cfg.Provider, defPC.model, defPC.effort, "", log, sink, transcripts)
+	def, err := buildBackend(reg, cfg, cfg.Provider, defPC.model, defPC.effort, "", log, sink, transcripts, onSession)
 	if err != nil {
 		return nil, err
 	}
@@ -2743,7 +2818,7 @@ func buildRouter(cfg config.Config, log *event.Log, sink agent.TokenSink, transc
 		if err != nil {
 			return nil, fmt.Errorf("%s phase route: %w", phase, err)
 		}
-		b, err := buildBackend(reg, cfg, provider, model, effort, phase, log, sink, transcripts)
+		b, err := buildBackend(reg, cfg, provider, model, effort, phase, log, sink, transcripts, onSession)
 		if err != nil {
 			return nil, fmt.Errorf("%s phase route %q: %w", phase, spec, err)
 		}
@@ -2829,7 +2904,7 @@ func autoInstallSkills(cfg config.Config, con *console.Console) {
 	}
 }
 
-func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort, phase string, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink) (agent.Runner, error) {
+func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort, phase string, log *event.Log, sink agent.TokenSink, transcripts agent.TranscriptSink, onSession func(sessionID, label string)) (agent.Runner, error) {
 	spec, ok := reg.Lookup(provider)
 	if !ok {
 		return nil, fmt.Errorf("unknown provider %q (expected: %s)", provider, strings.Join(reg.Names(), " | "))
@@ -2867,6 +2942,7 @@ func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort
 		Log:                log,
 		Tokens:             sink,
 		Transcripts:        transcripts,
+		OnSessionStart:     onSession,
 		Extra:              pc.extra,
 	})
 }

@@ -23,6 +23,9 @@ const (
 	StateWorking  = "working"
 	StateParked   = "parked"
 	StateStopping = "stopping"
+	// StateTakeover marks a terminal takeover holding the repo (ADR 0018);
+	// display surfaces render it as "Taken over".
+	StateTakeover = "takeover"
 )
 
 // Home returns the trau home directory that roots the hub's database: $TRAU_HOME

@@ -135,6 +135,29 @@ func TestSetGetRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSessionKeysRoundTrip(t *testing.T) {
+	s := newStore(t)
+	_ = s.Set("COD-1", "PHASE", Building)
+	_ = s.Set("COD-1", "SESSION", "0b5a5e2e-8f66-4b41-9dcd-0f2c4d1a9b77")
+	_ = s.Set("COD-1", "SESSION_PHASE", "repair2")
+
+	if got := s.Get("COD-1", "SESSION"); got != "0b5a5e2e-8f66-4b41-9dcd-0f2c4d1a9b77" {
+		t.Errorf("SESSION = %q, want the stored uuid", got)
+	}
+	if got := s.Get("COD-1", "SESSION_PHASE"); got != "repair2" {
+		t.Errorf("SESSION_PHASE = %q, want repair2", got)
+	}
+	if got := s.Get("COD-1", "PHASE"); got != Building {
+		t.Errorf("PHASE = %q, want it preserved beside the session keys", got)
+	}
+	if err := s.RemoveState("COD-1"); err != nil {
+		t.Fatalf("RemoveState: %v", err)
+	}
+	if got := s.Get("COD-1", "SESSION"); got != "" {
+		t.Errorf("SESSION survived removal: %q", got)
+	}
+}
+
 func TestSetLastWriteWinsAndPreservesOthers(t *testing.T) {
 	s := newStore(t)
 	_ = s.Set("COD-1", "PHASE", Building)
@@ -296,6 +319,48 @@ func TestStatusGolden(t *testing.T) {
 	}
 	if buf.String() != string(want) {
 		t.Errorf("Status output mismatch.\n--- got ---\n%s\n--- want ---\n%s", buf.String(), want)
+	}
+}
+
+// TestStatusAnomalyMarkers pins how an ANOMALIES value carrying a takeover
+// marker reads back: the text table and the JSON report both surface the
+// numeric count, never the raw marker list.
+func TestStatusAnomalyMarkers(t *testing.T) {
+	s := newStore(t)
+	_ = s.Set("COD-3", "PHASE", Building)
+	_ = s.Set("COD-3", "ANOMALIES", "2,takeover")
+	total := func(string) (int, float64, bool) { return 0, 0, true }
+
+	var buf bytes.Buffer
+	WriteStatus(&buf, s, s.Root(), total)
+	if out := buf.String(); strings.Contains(out, "takeover") || !strings.Contains(out, "2") {
+		t.Errorf("status table should render the count without markers:\n%s", out)
+	}
+
+	buf.Reset()
+	if err := WriteStatusJSON(&buf, s, total, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if out := buf.String(); !strings.Contains(out, `"anomalies": 2`) {
+		t.Errorf("JSON should carry the numeric count:\n%s", out)
+	}
+}
+
+func TestMergeAnomalyCount(t *testing.T) {
+	cases := []struct {
+		v    string
+		n    int
+		want string
+	}{
+		{"", 2, "2"},
+		{"1", 2, "2"},
+		{"takeover", 3, "3,takeover"},
+		{"2,takeover", 3, "3,takeover"},
+	}
+	for _, tc := range cases {
+		if got := MergeAnomalyCount(tc.v, tc.n); got != tc.want {
+			t.Errorf("MergeAnomalyCount(%q, %d) = %q, want %q", tc.v, tc.n, got, tc.want)
+		}
 	}
 }
 

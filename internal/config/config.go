@@ -267,6 +267,10 @@ type Config struct {
 	ServeAutostart bool
 	ServeOpen      bool
 
+	// TerminalApp is the macOS terminal application the hub opens for a web
+	// takeover: Terminal (default) or iTerm.
+	TerminalApp string
+
 	// HubWriteRetryWindow is how many seconds the loop child retries an
 	// unreachable hub before a run-data write pauses the run blamelessly
 	// (ADR 0008 §3). The child sends run data to the hub over HTTP and never
@@ -390,6 +394,7 @@ func Defaults() Config {
 		ServeReconcileInterval: 900,
 		ServeAutostart:         true,
 		ServeOpen:              true,
+		TerminalApp:            "Terminal",
 		HubWriteRetryWindow:    30,
 		HubWriteBufferBytes:    32 << 20,
 		TranscriptRetention:    50,
@@ -840,6 +845,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		c.ServeOpen = v == "1"
 		sources["SERVE_OPEN"] = src.name
 	}
+	str("TERMINAL_APP", &c.TerminalApp)
 	num("HUB_WRITE_RETRY_WINDOW", &c.HubWriteRetryWindow)
 	num("HUB_WRITE_BUFFER_BYTES", &c.HubWriteBufferBytes)
 	num("TRANSCRIPT_RETENTION", &c.TranscriptRetention)
@@ -1550,6 +1556,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "SERVE_RECONCILE_INTERVAL", Group: sectionHub, Kind: "int", WebEditable: true, Default: "900", Advanced: true, Description: "Seconds between reconciliation sweeps that tombstone synced issues deleted, archived, or moved out of the Project (runs on the sync tick; 0 = disable)"},
 		{Key: "SERVE_AUTOSTART", Group: sectionHub, WebEditable: true, Default: "1", Advanced: true, Bool: true, Description: "Bring the web UI hub up automatically on the first interactive TUI session when none is running (1 = yes, 0 = no)"},
 		{Key: "SERVE_OPEN", Group: sectionHub, WebEditable: true, Default: "1", Advanced: true, Bool: true, Description: "Open the browser when autostart freshly spawns the hub (1 = yes, 0 = no); the daemon still starts when 0"},
+		{Key: "TERMINAL_APP", Group: sectionHub, WebEditable: true, Default: "Terminal", Options: []string{"Terminal", "iTerm"}, Description: "macOS terminal application a web takeover opens: Terminal | iTerm"},
 		{Key: "HUB_WRITE_RETRY_WINDOW", Group: sectionHub, Kind: "int", WebEditable: true, Default: "30", Advanced: true, Description: "Seconds the loop retries an unreachable hub before a run-data write pauses the run blamelessly (ADR 0008)"},
 		{Key: "HUB_WRITE_BUFFER_BYTES", Group: sectionHub, Kind: "int", WebEditable: true, Default: "33554432", Advanced: true, Description: "Byte cap on the child's in-memory buffer of run-data writes queued while the hub is unreachable; over it the oldest queued events are dropped (ADR 0008)"},
 		{Key: "TRANSCRIPT_RETENTION", Group: sectionRetention, Kind: "int", WebEditable: true, Default: "50", Advanced: true, Description: "Transcript sessions per repo the hub keeps in transcripts.db before pruning the oldest; an in-flight session is never pruned (ADR 0008)"},
@@ -2147,6 +2154,8 @@ func keyValue(cfg Config, key string) string {
 			return "1"
 		}
 		return "0"
+	case "TERMINAL_APP":
+		return cfg.TerminalApp
 	case "HUB_WRITE_RETRY_WINDOW":
 		return intValue(cfg.HubWriteRetryWindow)
 	case "HUB_WRITE_BUFFER_BYTES":

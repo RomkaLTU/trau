@@ -152,6 +152,7 @@ type ClaudeInteractive struct {
 	Log                *event.Log
 	Tokens             TokenSink
 	Transcripts        TranscriptSink
+	OnSessionStart     func(sessionID, label string)
 	now                func() time.Time
 	start              terminalStarter
 }
@@ -199,6 +200,9 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	full := c.Preamble + "\n\n" + prompt + "\n\n" + resultInstruction(resultPath)
 
 	sessionID, _ := newUUID()
+	if c.OnSessionStart != nil {
+		c.OnSessionStart(sessionID, label)
+	}
 
 	starter := c.start
 	if starter == nil {

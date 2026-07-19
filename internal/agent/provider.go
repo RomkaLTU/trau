@@ -33,7 +33,12 @@ type BackendParams struct {
 	Log         *event.Log
 	Tokens      TokenSink
 	Transcripts TranscriptSink
-	Extra       map[string]string
+	// OnSessionStart is called with a call's freshly minted session id and phase
+	// label before the terminal session spawns, so the id is durable before the
+	// session can produce its first byte. Only claude mints resumable session ids;
+	// codex/kimi never call it.
+	OnSessionStart func(sessionID, label string)
+	Extra          map[string]string
 }
 
 // Spec is one provider's contract: identity metadata plus a constructor. Adding a
@@ -116,6 +121,7 @@ var claudeSpec = Spec{
 			Log:                p.Log,
 			Tokens:             p.Tokens,
 			Transcripts:        p.Transcripts,
+			OnSessionStart:     p.OnSessionStart,
 		}, nil
 	},
 }

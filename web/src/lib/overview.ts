@@ -3,7 +3,11 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import type { RunState } from "@/components/trau/status-pill";
 import { costsQueryOptions } from "./costs";
 import type { AttentionRun } from "./attention";
-import { instancesQueryOptions, type Instance, type RepoView } from "./instances";
+import {
+  instancesQueryOptions,
+  type Instance,
+  type RepoView,
+} from "./instances";
 import {
   reposQueryOptions,
   runsQueryOptions,
@@ -43,9 +47,10 @@ export function phasePill(phase: string): { state: RunState; label: string } {
   }
 }
 
-export function boardPill(
-  run: Pick<Run, "phase" | "failure_class">,
-): { state: RunState; label: string } {
+export function boardPill(run: Pick<Run, "phase" | "failure_class">): {
+  state: RunState;
+  label: string;
+} {
   switch (run.failure_class) {
     case "paused":
       return { state: "warn", label: "paused" };
@@ -59,7 +64,13 @@ export function boardPill(
 }
 
 export type SessionState =
-  "working" | "grazing" | "parked" | "idle" | "stopping" | "unknown";
+  | "working"
+  | "grazing"
+  | "parked"
+  | "idle"
+  | "stopping"
+  | "takeover"
+  | "unknown";
 
 export interface LiveLoop {
   repo: string;
@@ -83,6 +94,7 @@ export function toSessionState(raw: string): SessionState {
     case "parked":
     case "idle":
     case "stopping":
+    case "takeover":
       return raw;
     default:
       return "unknown";
@@ -223,6 +235,8 @@ export function sessionStatePill(state: SessionState): {
       return { state: "warn", label: "parked" };
     case "stopping":
       return { state: "todo", label: "stopping…" };
+    case "takeover":
+      return { state: "info", label: "Taken over" };
     case "idle":
       return { state: "todo", label: "idle" };
     case "unknown":
@@ -235,7 +249,7 @@ export type RepoBadgeState = "active" | "parked" | "idle" | "none";
 export function repoBadgeState(states: SessionState[]): RepoBadgeState {
   if (states.length === 0) return "none";
   if (states.some(isActiveState)) return "active";
-  if (states.some((s) => s === "parked")) return "parked";
+  if (states.some((s) => s === "parked" || s === "takeover")) return "parked";
   return "idle";
 }
 
@@ -307,6 +321,16 @@ export function loopCardView(
         showWatch: false,
         showStop: true,
         stopDisabled: true,
+        dimmed: false,
+      };
+    case "takeover":
+      return {
+        pill: { state: "info", label: "Taken over" },
+        copy: "Taken over in a terminal — use Run next to hand it back",
+        showStepper: false,
+        showWatch: true,
+        showStop: false,
+        stopDisabled: false,
         dimmed: false,
       };
     case "unknown":
