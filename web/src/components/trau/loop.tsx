@@ -1,6 +1,6 @@
-import { useEffect, useReducer, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link } from '@tanstack/react-router'
+import { useEffect, useReducer, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import {
   ArrowDown,
   ArrowRight,
@@ -15,48 +15,49 @@ import {
   RefreshCw,
   Search,
   Square,
+  SquareTerminal,
   TriangleAlert,
   X,
-} from 'lucide-react'
-import { parseAsString, useQueryState } from 'nuqs'
+} from "lucide-react";
+import { parseAsString, useQueryState } from "nuqs";
 
-import { Button } from '@/components/ui/button'
-import { IssueDrawer } from '@/components/issue-drawer'
-import { MakeStartableButton } from '@/components/make-startable-button'
-import { useActiveRepo } from '@/components/trau/active-repo'
-import { AddTicketDialog } from '@/components/trau/add-ticket-dialog'
-import { RepoPicker } from '@/components/trau/repo-picker'
-import { TargetRepoField } from '@/components/trau/target-repo-field'
-import { ConfirmDialog } from '@/components/trau/confirm-dialog'
-import { EmptyState } from '@/components/trau/empty-state'
-import { Eyebrow } from '@/components/trau/eyebrow'
-import { PhaseStepper } from '@/components/trau/phase-stepper'
-import { SegmentedControl } from '@/components/trau/segmented-control'
-import { StatusPill, type RunState } from '@/components/trau/status-pill'
-import { TerminalCard } from '@/components/trau/terminal-card'
-import { cn } from '@/lib/utils'
+import { Button } from "@/components/ui/button";
+import { IssueDrawer } from "@/components/issue-drawer";
+import { MakeStartableButton } from "@/components/make-startable-button";
+import { useActiveRepo } from "@/components/trau/active-repo";
+import { AddTicketDialog } from "@/components/trau/add-ticket-dialog";
+import { RepoPicker } from "@/components/trau/repo-picker";
+import { TargetRepoField } from "@/components/trau/target-repo-field";
+import { ConfirmDialog } from "@/components/trau/confirm-dialog";
+import { EmptyState } from "@/components/trau/empty-state";
+import { Eyebrow } from "@/components/trau/eyebrow";
+import { PhaseStepper } from "@/components/trau/phase-stepper";
+import { SegmentedControl } from "@/components/trau/segmented-control";
+import { StatusPill, type RunState } from "@/components/trau/status-pill";
+import { TerminalCard } from "@/components/trau/terminal-card";
+import { cn } from "@/lib/utils";
 import {
   addByIdState,
   pendingBehind,
   runNextCopy,
   statusWarning,
-} from '@/lib/add-by-id'
-import { configQueryOptions } from '@/lib/config'
-import { addAllLabel, eligibleQueryOptions, planAddAll } from '@/lib/eligible'
-import { useEventFeed } from '@/lib/events'
-import { IssueFetchError, issueQueryOptions } from '@/lib/issues'
+} from "@/lib/add-by-id";
+import { configQueryOptions } from "@/lib/config";
+import { addAllLabel, eligibleQueryOptions, planAddAll } from "@/lib/eligible";
+import { useEventFeed } from "@/lib/events";
+import { IssueFetchError, issueQueryOptions } from "@/lib/issues";
 import {
   instancesQueryOptions,
   type Instance,
   type RepoFreshness,
-} from '@/lib/instances'
+} from "@/lib/instances";
 import {
   deriveLoopHalt,
   loopView,
   type LoopHalt,
   type LoopView,
-} from '@/lib/loop'
-import { loopTitle, usePageTitle, type LoopTitleState } from '@/lib/page-title'
+} from "@/lib/loop";
+import { loopTitle, usePageTitle, type LoopTitleState } from "@/lib/page-title";
 import {
   dequeue,
   drain,
@@ -70,10 +71,10 @@ import {
   type OnFault,
   type QueueItem,
   type QueueResponse,
-} from '@/lib/queue'
-import { pauseKind, runSteps } from '@/lib/runlive'
-import { stepName } from '@/lib/steps'
-import { runsQueryOptions } from '@/lib/runs'
+} from "@/lib/queue";
+import { pauseKind, runSteps } from "@/lib/runlive";
+import { stepName } from "@/lib/steps";
+import { runsQueryOptions } from "@/lib/runs";
 import {
   buildTimeline,
   builderView,
@@ -85,30 +86,30 @@ import {
   type PendingEntry,
   type Timeline,
   type TimelineTicket,
-} from '@/lib/timeline'
+} from "@/lib/timeline";
 
-const NO_OVERRIDE = 'default'
+const NO_OVERRIDE = "default";
 
 function actionError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  return error instanceof Error ? error.message : String(error);
 }
 
 function useNow(intervalMs: number): number {
-  const [now, setNow] = useState(() => Date.now())
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs)
-    return () => clearInterval(id)
-  }, [intervalMs])
-  return now
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [intervalMs]);
+  return now;
 }
 
 function elapsedSince(fromISO: string, now: number): string {
-  const s = Math.max(0, Math.floor((now - new Date(fromISO).getTime()) / 1000))
-  const h = Math.floor(s / 3600)
-  const m = Math.floor((s % 3600) / 60)
-  const sec = s % 60
-  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m`
-  return `${m}m ${String(sec).padStart(2, '0')}s`
+  const s = Math.max(0, Math.floor((now - new Date(fromISO).getTime()) / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${String(m).padStart(2, "0")}m`;
+  return `${m}m ${String(sec).padStart(2, "0")}s`;
 }
 
 // SyncFreshness shows the issue store's synced-ness for the loop card: a spinner
@@ -116,15 +117,15 @@ function elapsedSince(fromISO: string, now: number): string {
 // when the last sync failed. It stays silent for a repo that has never synced, so
 // a repo with no tracker shows nothing rather than a misleading state.
 function SyncFreshness({ freshness }: { freshness?: RepoFreshness }) {
-  const now = useNow(30_000)
-  if (!freshness) return null
+  const now = useNow(30_000);
+  if (!freshness) return null;
   if (freshness.syncing) {
     return (
       <span className="inline-flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
         <RefreshCw className="size-3 animate-spin" aria-hidden="true" />
         syncing…
       </span>
-    )
+    );
   }
   if (freshness.last_error) {
     return (
@@ -135,58 +136,58 @@ function SyncFreshness({ freshness }: { freshness?: RepoFreshness }) {
         <TriangleAlert className="size-3" aria-hidden="true" />
         sync failed
       </span>
-    )
+    );
   }
-  if (!freshness.last_synced_at) return null
+  if (!freshness.last_synced_at) return null;
   return (
     <span className="inline-flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
       <Check className="size-3 text-done" aria-hidden="true" />
       synced {elapsedSince(freshness.last_synced_at, now)} ago
     </span>
-  )
+  );
 }
 
 const STATUS_STATE: Record<string, RunState> = {
-  pending: 'todo',
-  running: 'active',
-  paused: 'warn',
-  done: 'success',
-  failed: 'fail',
-  skipped: 'info',
-}
+  pending: "todo",
+  running: "active",
+  paused: "warn",
+  done: "success",
+  failed: "fail",
+  skipped: "info",
+};
 
 function statusState(status: string): RunState {
-  return STATUS_STATE[status] ?? 'info'
+  return STATUS_STATE[status] ?? "info";
 }
 
 const SUB_GLYPH: Record<
   string,
   { glyph: string; className: string; label: string }
 > = {
-  done: { glyph: '✓', className: 'text-done', label: 'done' },
-  epic: { glyph: '◆', className: 'text-info', label: 'epic' },
-  todo: { glyph: '○', className: 'text-faint', label: 'todo' },
-}
+  done: { glyph: "✓", className: "text-done", label: "done" },
+  epic: { glyph: "◆", className: "text-info", label: "epic" },
+  todo: { glyph: "○", className: "text-faint", label: "todo" },
+};
 
 function subGlyph(state: string) {
-  return SUB_GLYPH[state] ?? SUB_GLYPH.todo
+  return SUB_GLYPH[state] ?? SUB_GLYPH.todo;
 }
 
 // InternalTag marks a row the tracker knows nothing about, so a queue mixing both
 // reads unambiguously. A synced row stays unmarked — it is the common case.
 function InternalTag({ source }: { source?: string }) {
-  if (source !== 'internal') return null
+  if (source !== "internal") return null;
   return (
     <span className="shrink-0 rounded-sm border border-border bg-secondary/60 px-1.5 py-0.5 font-mono text-[0.6rem] uppercase tracking-[0.14em] text-muted-foreground">
       internal
     </span>
-  )
+  );
 }
 
 // ProviderTag surfaces a per-item provider override, so a queued run that will
 // not use the configured routing says so on its row.
 function ProviderTag({ provider }: { provider?: string }) {
-  if (!provider) return null
+  if (!provider) return null;
   return (
     <span
       title="provider · this run only"
@@ -194,7 +195,7 @@ function ProviderTag({ provider }: { provider?: string }) {
     >
       {provider}
     </span>
-  )
+  );
 }
 
 // TicketIdButton is the drawer trigger: only the id text is clickable, so it
@@ -204,43 +205,43 @@ function TicketIdButton({
   onPeek,
   className,
 }: {
-  id: string
-  onPeek: (id: string) => void
-  className?: string
+  id: string;
+  onPeek: (id: string) => void;
+  className?: string;
 }) {
   return (
     <button
       type="button"
       onClick={(e) => {
-        e.preventDefault()
-        e.stopPropagation()
-        onPeek(id)
+        e.preventDefault();
+        e.stopPropagation();
+        onPeek(id);
       }}
       aria-label={`Open ${id}`}
       className={cn(
-        'shrink-0 font-mono underline-offset-4 hover:underline',
+        "shrink-0 font-mono underline-offset-4 hover:underline",
         className,
       )}
     >
       {id}
     </button>
-  )
+  );
 }
 
 function epicCounts(item: QueueItem): { done: number; total: number } {
-  const subs = item.sub_issues ?? []
+  const subs = item.sub_issues ?? [];
   return {
-    done: subs.filter((s) => s.state === 'done').length,
+    done: subs.filter((s) => s.state === "done").length,
     total: subs.length,
-  }
+  };
 }
 
 function SkipResumeToggle({
   value,
   onChange,
 }: {
-  value: boolean
-  onChange: (v: boolean) => void
+  value: boolean;
+  onChange: (v: boolean) => void;
 }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -252,17 +253,17 @@ function SkipResumeToggle({
           aria-label="Skip resume"
           onClick={() => onChange(!value)}
           className={cn(
-            'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors',
-            value ? 'border-primary bg-primary/30' : 'border-border bg-input',
+            "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors",
+            value ? "border-primary bg-primary/30" : "border-border bg-input",
           )}
         >
           <span
             aria-hidden="true"
             className={cn(
-              'inline-block size-3.5 rounded-full transition-transform',
+              "inline-block size-3.5 rounded-full transition-transform",
               value
-                ? 'translate-x-4 bg-primary'
-                : 'translate-x-0.5 bg-muted-foreground',
+                ? "translate-x-4 bg-primary"
+                : "translate-x-0.5 bg-muted-foreground",
             )}
           />
         </button>
@@ -273,20 +274,20 @@ function SkipResumeToggle({
         checkpoints.
       </p>
     </div>
-  )
+  );
 }
 
 const ON_FAULT_OPTIONS: { value: OnFault; label: string }[] = [
-  { value: 'halt', label: 'Halt' },
-  { value: 'skip', label: 'Skip & continue' },
-]
+  { value: "halt", label: "Halt" },
+  { value: "skip", label: "Skip & continue" },
+];
 
 function OnFaultToggle({
   value,
   onChange,
 }: {
-  value: OnFault
-  onChange: (v: OnFault) => void
+  value: OnFault;
+  onChange: (v: OnFault) => void;
 }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -300,12 +301,12 @@ function OnFaultToggle({
         onChange={onChange}
       />
       <p className="font-sans text-xs leading-relaxed text-muted-foreground">
-        {value === 'halt'
-          ? 'A fault parks the queue for you to intervene.'
-          : 'A fault settles the item failed and the queue drains on. Queue order is not dependency-aware: items that depend on a skipped ticket may fail.'}
+        {value === "halt"
+          ? "A fault parks the queue for you to intervene."
+          : "A fault settles the item failed and the queue drains on. Queue order is not dependency-aware: items that depend on a skipped ticket may fail."}
       </p>
     </div>
-  )
+  );
 }
 
 function QueueBuilderRow({
@@ -319,19 +320,19 @@ function QueueBuilderRow({
   onRemove,
   onPeek,
 }: {
-  item: QueueItem
-  index: number
-  count: number
-  expanded: boolean
-  busy: boolean
-  onToggle: () => void
-  onMove: (dir: -1 | 1) => void
-  onRemove: () => void
-  onPeek: (id: string) => void
+  item: QueueItem;
+  index: number;
+  count: number;
+  expanded: boolean;
+  busy: boolean;
+  onToggle: () => void;
+  onMove: (dir: -1 | 1) => void;
+  onRemove: () => void;
+  onPeek: (id: string) => void;
 }) {
-  const isEpic = item.kind === 'epic'
-  const { done, total } = epicCounts(item)
-  const subs = item.sub_issues ?? []
+  const isEpic = item.kind === "epic";
+  const { done, total } = epicCounts(item);
+  const subs = item.sub_issues ?? [];
 
   return (
     <li className="border-b border-border/60 last:border-0">
@@ -364,14 +365,14 @@ function QueueBuilderRow({
           className="text-sm text-primary"
         />
         <span className="min-w-0 flex-1 truncate font-sans text-sm text-foreground">
-          {item.title || '—'}
+          {item.title || "—"}
         </span>
         <InternalTag source={item.source} />
         <ProviderTag provider={item.provider} />
 
         {isEpic ? (
           <StatusPill state="info" label={`epic · ${done}/${total}`} />
-        ) : item.status !== 'pending' ? (
+        ) : item.status !== "pending" ? (
           <StatusPill state={statusState(item.status)} label={item.status} />
         ) : (
           <StatusPill state="todo" label="ticket" />
@@ -411,7 +412,7 @@ function QueueBuilderRow({
       {isEpic && expanded && subs.length > 0 && (
         <ul className="border-t border-border/60 bg-secondary/20">
           {subs.map((sub) => {
-            const styles = subGlyph(sub.state)
+            const styles = subGlyph(sub.state);
             return (
               <li
                 key={sub.id}
@@ -427,7 +428,7 @@ function QueueBuilderRow({
                 </span>
                 <span
                   className={cn(
-                    'inline-flex shrink-0 items-center gap-1.5 font-mono text-xs',
+                    "inline-flex shrink-0 items-center gap-1.5 font-mono text-xs",
                     styles.className,
                   )}
                 >
@@ -435,12 +436,12 @@ function QueueBuilderRow({
                   {styles.label}
                 </span>
               </li>
-            )
+            );
           })}
         </ul>
       )}
     </li>
-  )
+  );
 }
 
 function LaunchQueueCard({
@@ -448,55 +449,56 @@ function LaunchQueueCard({
   freshness,
   onPeek,
 }: {
-  repo: string
-  freshness?: RepoFreshness
-  onPeek: (id: string) => void
+  repo: string;
+  freshness?: RepoFreshness;
+  onPeek: (id: string) => void;
 }) {
-  const queryClient = useQueryClient()
-  const queue = useQuery(queueQueryOptions(repo))
-  const eligible = useQuery(eligibleQueryOptions(repo))
-  const runs = useQuery(runsQueryOptions(repo))
+  const queryClient = useQueryClient();
+  const queue = useQuery(queueQueryOptions(repo));
+  const eligible = useQuery(eligibleQueryOptions(repo));
+  const runs = useQuery(runsQueryOptions(repo));
 
-  const items = queue.data?.items ?? []
-  const builder = builderView(items, runs.data?.runs ?? [])
-  const addAllPlan = planAddAll(eligible.data?.tickets ?? [], items)
-  const skipResumeShown = skipResumeApplies(items, runs.data?.runs ?? [])
-  const [draft, setDraft] = useState('')
-  const [submittedId, setSubmittedId] = useState('')
-  const [provider, setProvider] = useState(NO_OVERRIDE)
-  const [expandedIds, setExpandedIds] = useState<string[]>([])
-  const [browseOpen, setBrowseOpen] = useState(false)
-  const [skipResume, setSkipResume] = useState(false)
-  const [onFault, setOnFault] = useState<OnFault>('halt')
+  const items = queue.data?.items ?? [];
+  const builder = builderView(items, runs.data?.runs ?? []);
+  const addAllPlan = planAddAll(eligible.data?.tickets ?? [], items);
+  const skipResumeShown = skipResumeApplies(items, runs.data?.runs ?? []);
+  const [draft, setDraft] = useState("");
+  const [submittedId, setSubmittedId] = useState("");
+  const [provider, setProvider] = useState(NO_OVERRIDE);
+  const [expandedIds, setExpandedIds] = useState<string[]>([]);
+  const [browseOpen, setBrowseOpen] = useState(false);
+  const [skipResume, setSkipResume] = useState(false);
+  const [onFault, setOnFault] = useState<OnFault>("halt");
 
-  const config = useQuery(configQueryOptions(repo))
-  const providers = [NO_OVERRIDE, ...(config.data?.providers ?? [])]
-  const issue = useQuery(issueQueryOptions(repo, submittedId))
-  const ticket = issue.data
-  const addState = addByIdState(submittedId, ticket, issue.error)
-  const warning = ticket && !addState.wrongProject ? statusWarning(ticket) : null
-  const overrideProvider = provider === NO_OVERRIDE ? undefined : provider
+  const config = useQuery(configQueryOptions(repo));
+  const providers = [NO_OVERRIDE, ...(config.data?.providers ?? [])];
+  const issue = useQuery(issueQueryOptions(repo, submittedId));
+  const ticket = issue.data;
+  const addState = addByIdState(submittedId, ticket, issue.error);
+  const warning =
+    ticket && !addState.wrongProject ? statusWarning(ticket) : null;
+  const overrideProvider = provider === NO_OVERRIDE ? undefined : provider;
 
-  const setQueue = (res: QueueResponse) => publishQueue(queryClient, repo, res)
+  const setQueue = (res: QueueResponse) => publishQueue(queryClient, repo, res);
 
   const resetAdd = () => {
-    setDraft('')
-    setSubmittedId('')
-    setProvider(NO_OVERRIDE)
-  }
+    setDraft("");
+    setSubmittedId("");
+    setProvider(NO_OVERRIDE);
+  };
 
   useEffect(() => {
-    resetAdd()
-  }, [repo])
+    resetAdd();
+  }, [repo]);
 
   const add = useMutation({
     mutationFn: () =>
       enqueue(repo, { id: submittedId, provider: overrideProvider }),
     onSuccess: (res) => {
-      setQueue(res)
-      resetAdd()
+      setQueue(res);
+      resetAdd();
     },
-  })
+  });
 
   // Run next is one gesture: land the ticket in the first pending slot, then arm
   // the drain. Landing is this page's timeline — the queue response flips the
@@ -509,35 +511,35 @@ function LaunchQueueCard({
         { no_resume: skipResume && skipResumeShown, on_fault: onFault },
       ),
     onSuccess: (res) => {
-      setQueue(res)
-      resetAdd()
+      setQueue(res);
+      resetAdd();
     },
-  })
+  });
 
   const addAll = useMutation({
     mutationFn: async () => {
-      const errors: string[] = []
+      const errors: string[] = [];
       for (const it of addAllPlan.items) {
         try {
-          setQueue(await enqueue(repo, { id: it.id, kind: it.kind }))
+          setQueue(await enqueue(repo, { id: it.id, kind: it.kind }));
         } catch (err) {
-          errors.push(`${it.id}: ${actionError(err)}`)
+          errors.push(`${it.id}: ${actionError(err)}`);
         }
       }
-      if (errors.length > 0) throw new Error(errors.join('\n'))
+      if (errors.length > 0) throw new Error(errors.join("\n"));
     },
-  })
+  });
 
   const move = useMutation({
     mutationFn: (vars: { id: string; dir: -1 | 1 }) =>
       moveQueueItem(repo, vars.id, vars.dir),
     onSuccess: setQueue,
-  })
+  });
 
   const remove = useMutation({
     mutationFn: (id: string) => dequeue(repo, id),
     onSuccess: setQueue,
-  })
+  });
 
   const start = useMutation({
     mutationFn: () =>
@@ -546,28 +548,28 @@ function LaunchQueueCard({
         on_fault: onFault,
       }),
     onSuccess: setQueue,
-  })
+  });
 
-  const executable = queueExecutable(builder.queue)
+  const executable = queueExecutable(builder.queue);
 
   const busy =
     move.isPending ||
     remove.isPending ||
     add.isPending ||
     addAll.isPending ||
-    runNext.isPending
+    runNext.isPending;
 
   // The ticket is fetched for confirmation the moment the user commits an id —
   // on Enter or on blur — so there's no extra "fetch" click to reach the confirm.
   const fetchTicket = () => {
-    const id = draft.trim().toUpperCase()
-    if (id) setSubmittedId(id)
-  }
+    const id = draft.trim().toUpperCase();
+    if (id) setSubmittedId(id);
+  };
 
   const toggleExpand = (id: string) =>
     setExpandedIds((prev) =>
       prev.includes(id) ? prev.filter((e) => e !== id) : [...prev, id],
-    )
+    );
 
   return (
     <div className="flex max-w-3xl flex-col gap-6">
@@ -599,20 +601,20 @@ function LaunchQueueCard({
                   id="queue-add"
                   value={draft}
                   onChange={(e) => {
-                    setDraft(e.target.value)
+                    setDraft(e.target.value);
                     if (
                       submittedId &&
                       e.target.value.trim().toUpperCase() !== submittedId
                     ) {
-                      setSubmittedId('')
+                      setSubmittedId("");
                     }
-                    if (add.error) add.reset()
-                    if (runNext.error) runNext.reset()
+                    if (add.error) add.reset();
+                    if (runNext.error) runNext.reset();
                   }}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-                      e.preventDefault()
-                      fetchTicket()
+                    if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      fetchTicket();
                     }
                   }}
                   onBlur={fetchTicket}
@@ -623,13 +625,13 @@ function LaunchQueueCard({
                 />
                 <Button
                   type="button"
-                  variant={addState.confirmed ? 'outline' : 'default'}
+                  variant={addState.confirmed ? "outline" : "default"}
                   size="sm"
                   className="font-mono"
                   onClick={fetchTicket}
-                  disabled={issue.isFetching || draft.trim() === ''}
+                  disabled={issue.isFetching || draft.trim() === ""}
                 >
-                  {issue.isFetching ? 'Fetching…' : 'Fetch ticket'}
+                  {issue.isFetching ? "Fetching…" : "Fetch ticket"}
                 </Button>
                 <Button
                   type="button"
@@ -651,14 +653,13 @@ function LaunchQueueCard({
                     disabled={addAll.isPending}
                   >
                     <ListPlus className="size-4" aria-hidden="true" />
-                    {addAll.isPending ? 'Adding…' : addAllLabel(addAllPlan)}
+                    {addAll.isPending ? "Adding…" : addAllLabel(addAllPlan)}
                   </Button>
                 )}
               </div>
               <p className="font-sans text-xs leading-relaxed text-muted-foreground">
-                Press Enter to fetch the ticket for confirmation before
-                anything is queued. Epics are taken whole — all remaining
-                sub-issues.
+                Press Enter to fetch the ticket for confirmation before anything
+                is queued. Epics are taken whole — all remaining sub-issues.
               </p>
               {addAll.error ? (
                 <p className="font-mono text-xs text-fail" role="alert">
@@ -677,7 +678,7 @@ function LaunchQueueCard({
               ) : null}
             </div>
 
-            {issue.isFetching && submittedId !== '' && (
+            {issue.isFetching && submittedId !== "" && (
               <div
                 aria-busy="true"
                 className="flex flex-col gap-2 rounded-md border border-border bg-secondary/30 px-3 py-3"
@@ -697,17 +698,17 @@ function LaunchQueueCard({
             {addState.confirmed && ticket && (
               <div
                 className={cn(
-                  'flex flex-col gap-3 rounded-md border px-3 py-3',
+                  "flex flex-col gap-3 rounded-md border px-3 py-3",
                   addState.wrongProject
-                    ? 'border-fail/40 bg-fail/5'
-                    : 'border-primary/40 bg-primary/5',
+                    ? "border-fail/40 bg-fail/5"
+                    : "border-primary/40 bg-primary/5",
                 )}
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <span
                     className={cn(
-                      'font-mono text-sm',
-                      addState.wrongProject ? 'text-fail' : 'text-primary',
+                      "font-mono text-sm",
+                      addState.wrongProject ? "text-fail" : "text-primary",
                     )}
                   >
                     {ticket.id}
@@ -725,7 +726,7 @@ function LaunchQueueCard({
                 <dl className="flex flex-wrap gap-x-6 gap-y-1 font-mono text-xs">
                   <div className="flex items-center gap-2">
                     <dt className="text-muted-foreground">status</dt>
-                    <dd className="text-foreground">{ticket.status || '—'}</dd>
+                    <dd className="text-foreground">{ticket.status || "—"}</dd>
                   </div>
                   {ticket.project && (
                     <div className="flex items-center gap-2">
@@ -733,8 +734,8 @@ function LaunchQueueCard({
                       <dd
                         className={
                           addState.wrongProject
-                            ? 'text-fail'
-                            : 'text-foreground'
+                            ? "text-fail"
+                            : "text-foreground"
                         }
                       >
                         {ticket.project}
@@ -768,21 +769,21 @@ function LaunchQueueCard({
                     />
                     <span>
                       {ticket.id} belongs to another project
-                      {ticket.project ? ` (${ticket.project})` : ''}, not{' '}
-                      {repo}. Switch to that project's repo to run it.
+                      {ticket.project ? ` (${ticket.project})` : ""}, not {repo}
+                      . Switch to that project's repo to run it.
                     </span>
                   </p>
                 ) : (
                   warning && (
                     <p
                       className={cn(
-                        'flex items-start gap-2 rounded-md border px-2.5 py-2 font-sans text-xs leading-relaxed',
-                        warning.tone === 'warn'
-                          ? 'border-warn/40 bg-warn/5 text-warn'
-                          : 'border-border bg-secondary/40 text-muted-foreground',
+                        "flex items-start gap-2 rounded-md border px-2.5 py-2 font-sans text-xs leading-relaxed",
+                        warning.tone === "warn"
+                          ? "border-warn/40 bg-warn/5 text-warn"
+                          : "border-border bg-secondary/40 text-muted-foreground",
                       )}
                     >
-                      {warning.tone === 'warn' ? (
+                      {warning.tone === "warn" ? (
                         <TriangleAlert
                           className="mt-0.5 size-3.5 shrink-0"
                           aria-hidden="true"
@@ -834,7 +835,7 @@ function LaunchQueueCard({
                       onClick={() => runNext.mutate()}
                       disabled={runNext.isPending || add.isPending}
                     >
-                      {runNext.isPending ? 'Starting…' : 'Run next'}
+                      {runNext.isPending ? "Starting…" : "Run next"}
                     </Button>
                     <Button
                       type="button"
@@ -845,7 +846,7 @@ function LaunchQueueCard({
                       disabled={add.isPending || runNext.isPending}
                     >
                       <Plus className="size-4" aria-hidden="true" />
-                      {add.isPending ? 'Adding…' : 'Add to queue'}
+                      {add.isPending ? "Adding…" : "Add to queue"}
                     </Button>
                   </div>
                   {add.error ? (
@@ -897,8 +898,8 @@ function LaunchQueueCard({
                   ))}
                 </ul>
                 <div className="border-t border-border bg-secondary/40 px-3 py-2 font-mono text-xs text-muted-foreground">
-                  {builder.queue.length} queued · {executable} executable{' '}
-                  {executable === 1 ? 'ticket' : 'tickets'} · runs top to bottom
+                  {builder.queue.length} queued · {executable} executable{" "}
+                  {executable === 1 ? "ticket" : "tickets"} · runs top to bottom
                 </div>
               </div>
             )}
@@ -919,7 +920,7 @@ function LaunchQueueCard({
               onClick={() => start.mutate()}
               disabled={executable === 0 || start.isPending}
             >
-              {start.isPending ? 'Starting…' : 'Start queue'}
+              {start.isPending ? "Starting…" : "Start queue"}
             </Button>
             {start.error ? (
               <p className="font-mono text-xs text-destructive">
@@ -946,13 +947,13 @@ function LaunchQueueCard({
         />
       ) : null}
     </div>
-  )
+  );
 }
 
 function FetchError({ error, id }: { error: unknown; id: string }) {
-  const kind = error instanceof IssueFetchError ? error.kind : 'error'
+  const kind = error instanceof IssueFetchError ? error.kind : "error";
 
-  if (kind === 'not-found') {
+  if (kind === "not-found") {
     return (
       <div
         role="alert"
@@ -969,10 +970,10 @@ function FetchError({ error, id }: { error: unknown; id: string }) {
           </p>
         </div>
       </div>
-    )
+    );
   }
 
-  if (kind === 'no-tracker') {
+  if (kind === "no-tracker") {
     return (
       <div
         role="alert"
@@ -988,7 +989,7 @@ function FetchError({ error, id }: { error: unknown; id: string }) {
           </p>
           <p className="font-sans text-xs leading-relaxed text-muted-foreground">
             Confirming a ticket needs direct tracker credentials. You can still
-            queue by id, or add credentials in{' '}
+            queue by id, or add credentials in{" "}
             <Link to="/settings" className="text-primary hover:underline">
               settings
             </Link>
@@ -996,12 +997,12 @@ function FetchError({ error, id }: { error: unknown; id: string }) {
           </p>
         </div>
       </div>
-    )
+    );
   }
 
   return (
     <p className="font-mono text-sm text-destructive">{actionError(error)}</p>
-  )
+  );
 }
 
 function EpicTag({ id }: { id: string }) {
@@ -1010,7 +1011,7 @@ function EpicTag({ id }: { id: string }) {
       <span aria-hidden="true">◆</span>
       {id}
     </span>
-  )
+  );
 }
 
 function TicketReason({ children }: { children: string }) {
@@ -1018,7 +1019,7 @@ function TicketReason({ children }: { children: string }) {
     <p className="text-pretty font-mono text-[0.7rem] leading-relaxed text-muted-foreground">
       {children}
     </p>
-  )
+  );
 }
 
 function SettledRow({
@@ -1026,11 +1027,11 @@ function SettledRow({
   ticket,
   onPeek,
 }: {
-  repo: string
-  ticket: TimelineTicket
-  onPeek: (id: string) => void
+  repo: string;
+  ticket: TimelineTicket;
+  onPeek: (id: string) => void;
 }) {
-  const pill = ticketPill(ticket)
+  const pill = ticketPill(ticket);
   const head = (
     <div className="flex items-center gap-3">
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
@@ -1049,10 +1050,10 @@ function SettledRow({
       </div>
       <StatusPill state={pill.state} label={pill.label} className="shrink-0" />
     </div>
-  )
+  );
   const reason = ticket.reason ? (
     <TicketReason>{ticket.reason}</TicketReason>
-  ) : null
+  ) : null;
 
   if (ticket.hasRun) {
     return (
@@ -1066,14 +1067,14 @@ function SettledRow({
           {reason}
         </Link>
       </li>
-    )
+    );
   }
   return (
     <li className="flex flex-col gap-1.5 border-b border-border/60 px-4 py-2.5 last:border-0">
       {head}
       {reason}
     </li>
-  )
+  );
 }
 
 function FinishedSection({
@@ -1081,12 +1082,12 @@ function FinishedSection({
   settled,
   onPeek,
 }: {
-  repo: string
-  settled: TimelineTicket[]
-  onPeek: (id: string) => void
+  repo: string;
+  settled: TimelineTicket[];
+  onPeek: (id: string) => void;
 }) {
-  const [state, dispatch] = useReducer(finishedReducer, FINISHED_INITIAL)
-  const view = finishedView(settled, state.visible)
+  const [state, dispatch] = useReducer(finishedReducer, FINISHED_INITIAL);
+  const view = finishedView(settled, state.visible);
 
   return (
     <section className="flex flex-col gap-2">
@@ -1094,11 +1095,11 @@ function FinishedSection({
       <div className="overflow-hidden rounded-md border border-border">
         <button
           type="button"
-          onClick={() => dispatch({ type: 'toggle' })}
+          onClick={() => dispatch({ type: "toggle" })}
           aria-expanded={state.expanded}
           className={cn(
-            'flex w-full items-center justify-between gap-4 px-4 py-2.5 text-left transition-colors hover:bg-secondary/40',
-            state.expanded && 'border-b border-border',
+            "flex w-full items-center justify-between gap-4 px-4 py-2.5 text-left transition-colors hover:bg-secondary/40",
+            state.expanded && "border-b border-border",
           )}
         >
           <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
@@ -1119,8 +1120,8 @@ function FinishedSection({
             <span className="font-mono text-xs text-muted-foreground">
               <span className="text-done" aria-hidden="true">
                 ✓
-              </span>{' '}
-              {view.tally.map((t) => `${t.count} ${t.label}`).join(' · ')}
+              </span>{" "}
+              {view.tally.map((t) => `${t.count} ${t.label}`).join(" · ")}
             </span>
           </span>
           {!state.expanded && view.latest ? (
@@ -1146,7 +1147,7 @@ function FinishedSection({
               <div className="border-t border-border px-4 py-2.5">
                 <button
                   type="button"
-                  onClick={() => dispatch({ type: 'more' })}
+                  onClick={() => dispatch({ type: "more" })}
                   className="font-mono text-xs text-teal underline-offset-4 hover:underline"
                 >
                   Show {Math.min(view.older, FINISHED_PAGE_SIZE)} more (
@@ -1158,7 +1159,7 @@ function FinishedSection({
         ) : null}
       </div>
     </section>
-  )
+  );
 }
 
 function RunningRow({
@@ -1168,14 +1169,14 @@ function RunningRow({
   now,
   onPeek,
 }: {
-  repo: string
-  ticket: TimelineTicket
-  instance?: Instance
-  now: number
-  onPeek: (id: string) => void
+  repo: string;
+  ticket: TimelineTicket;
+  instance?: Instance;
+  now: number;
+  onPeek: (id: string) => void;
 }) {
-  const live = instance?.ticket === ticket.id ? instance : undefined
-  const phase = live?.phase ?? ticket.phase
+  const live = instance?.ticket === ticket.id ? instance : undefined;
+  const phase = live?.phase ?? ticket.phase;
 
   return (
     <div className="flex flex-col gap-3 rounded-md border border-teal/40 bg-teal/5 px-4 py-3">
@@ -1202,7 +1203,7 @@ function RunningRow({
       </div>
       {phase || live?.activity ? (
         <PhaseStepper
-          {...runSteps('live', phase ?? '', live?.activity, live?.detail)}
+          {...runSteps("live", phase ?? "", live?.activity, live?.detail)}
         />
       ) : (
         <p className="font-sans text-sm text-muted-foreground">
@@ -1212,14 +1213,14 @@ function RunningRow({
       {live ? (
         <div className="flex flex-wrap items-center gap-6 font-mono text-xs text-muted-foreground">
           <span>
-            elapsed{' '}
+            elapsed{" "}
             <span className="text-foreground">
               {elapsedSince(live.started_at, now)}
             </span>
           </span>
           {live.state_since ? (
             <span>
-              in phase{' '}
+              in phase{" "}
               <span className="text-foreground">
                 {elapsedSince(live.state_since, now)}
               </span>
@@ -1228,15 +1229,15 @@ function RunningRow({
         </div>
       ) : null}
     </div>
-  )
+  );
 }
 
 function PendingTicketRow({
   ticket,
   onPeek,
 }: {
-  ticket: TimelineTicket
-  onPeek: (id: string) => void
+  ticket: TimelineTicket;
+  onPeek: (id: string) => void;
 }) {
   return (
     <li className="flex items-center gap-3 border-b border-border/60 px-4 py-2.5 last:border-0">
@@ -1247,21 +1248,21 @@ function PendingTicketRow({
         className="text-sm text-primary"
       />
       <span className="min-w-0 flex-1 truncate font-sans text-sm text-muted-foreground">
-        {ticket.title || '—'}
+        {ticket.title || "—"}
       </span>
       <InternalTag source={ticket.source} />
       <ProviderTag provider={ticket.provider} />
       <StatusPill state="todo" label="pending" className="shrink-0" />
     </li>
-  )
+  );
 }
 
 function PendingEpicGroup({
   entry,
   onPeek,
 }: {
-  entry: Extract<PendingEntry, { kind: 'epic' }>
-  onPeek: (id: string) => void
+  entry: Extract<PendingEntry, { kind: "epic" }>;
+  onPeek: (id: string) => void;
 }) {
   return (
     <li className="border-b border-border/60 last:border-0">
@@ -1271,7 +1272,7 @@ function PendingEpicGroup({
           <TicketIdButton id={entry.id} onPeek={onPeek} className="text-info" />
         </span>
         <span className="min-w-0 flex-1 truncate font-sans text-sm text-foreground">
-          {entry.title || '—'}
+          {entry.title || "—"}
         </span>
         <InternalTag source={entry.source} />
         <StatusPill
@@ -1292,14 +1293,14 @@ function PendingEpicGroup({
               className="text-xs text-primary/80"
             />
             <span className="min-w-0 flex-1 truncate font-sans text-xs text-muted-foreground">
-              {child.title || '—'}
+              {child.title || "—"}
             </span>
             <StatusPill state="todo" label="pending" className="shrink-0" />
           </li>
         ))}
       </ul>
     </li>
-  )
+  );
 }
 
 function RunningQueueView({
@@ -1312,20 +1313,20 @@ function RunningQueueView({
   stopError,
   onPeek,
 }: {
-  repo: string
-  queue: QueueResponse
-  instance?: Instance
-  halt: LoopHalt | null
-  onStop: () => void
-  stopping: boolean
-  stopError: unknown
-  onPeek: (id: string) => void
+  repo: string;
+  queue: QueueResponse;
+  instance?: Instance;
+  halt: LoopHalt | null;
+  onStop: () => void;
+  stopping: boolean;
+  stopError: unknown;
+  onPeek: (id: string) => void;
 }) {
-  const now = useNow(1000)
-  const queryClient = useQueryClient()
-  const runs = useQuery(runsQueryOptions(repo))
-  const timeline = buildTimeline(queue.items, runs.data?.runs ?? [], instance)
-  const [addOpen, setAddOpen] = useState(false)
+  const now = useNow(1000);
+  const queryClient = useQueryClient();
+  const runs = useQuery(runsQueryOptions(repo));
+  const timeline = buildTimeline(queue.items, runs.data?.runs ?? [], instance);
+  const [addOpen, setAddOpen] = useState(false);
 
   return (
     <div className="flex flex-col gap-6">
@@ -1337,13 +1338,13 @@ function RunningQueueView({
             <span className="font-mono text-sm text-muted-foreground">
               <span className="text-foreground">
                 {timeline.done}/{timeline.total}
-              </span>{' '}
+              </span>{" "}
               tickets done
             </span>
             <div className="flex items-center gap-4">
               {timeline.elapsedAnchor ? (
                 <span className="font-mono text-xs text-muted-foreground">
-                  elapsed{' '}
+                  elapsed{" "}
                   <span className="text-foreground">
                     {elapsedSince(timeline.elapsedAnchor, now)}
                   </span>
@@ -1355,9 +1356,9 @@ function RunningQueueView({
                   timeline.running
                     ? stepName(
                         timeline.running.activity,
-                        timeline.running.phase ?? '',
-                      ).toLowerCase() || 'draining'
-                    : 'draining'
+                        timeline.running.phase ?? "",
+                      ).toLowerCase() || "draining"
+                    : "draining"
                 }
               />
             </div>
@@ -1397,7 +1398,7 @@ function RunningQueueView({
                 <div className="overflow-hidden rounded-md border border-border">
                   <ul className="flex flex-col">
                     {timeline.pending.map((entry) =>
-                      entry.kind === 'epic' ? (
+                      entry.kind === "epic" ? (
                         <PendingEpicGroup
                           key={entry.id}
                           entry={entry}
@@ -1463,7 +1464,7 @@ function RunningQueueView({
               disabled={stopping}
             >
               <Square className="size-4" aria-hidden="true" />
-              {stopping ? 'Stopping…' : 'Stop queue'}
+              {stopping ? "Stopping…" : "Stop queue"}
             </Button>
           }
           title={`Stop the queue on ${repo}?`}
@@ -1482,78 +1483,106 @@ function RunningQueueView({
         onQueue={(res) => publishQueue(queryClient, repo, res)}
       />
     </div>
-  )
+  );
 }
 
 interface HaltNotice {
-  tone: 'warn' | 'fail'
-  glyph: string
-  headline: string
-  hint: string
+  tone: "warn" | "fail";
+  glyph: string;
+  headline: string;
+  hint: string;
 }
 
 function haltNotice(halt: LoopHalt): HaltNotice {
-  const ticket = halt.ticket || 'the ticket'
+  const ticket = halt.ticket || "the ticket";
   switch (halt.kind) {
-    case 'paused':
-      return pauseKind(halt.reason) === 'reauth'
+    case "paused":
+      return pauseKind(halt.reason) === "reauth"
         ? {
-            tone: 'warn',
-            glyph: '⚠',
-            headline: 'paused — re-authentication needed',
-            hint: 'This is not a failure. Re-login to the provider, then the queue resumes.',
+            tone: "warn",
+            glyph: "⚠",
+            headline: "paused — re-authentication needed",
+            hint: "This is not a failure. Re-login to the provider, then the queue resumes.",
           }
         : {
-            tone: 'warn',
-            glyph: '⚠',
-            headline: 'paused — rate limit reached',
+            tone: "warn",
+            glyph: "⚠",
+            headline: "paused — rate limit reached",
             hint: "This is not a failure. The queue resumes on its own once the provider's usage window clears.",
-          }
-    case 'budget':
+          };
+    case "budget":
       return {
-        tone: 'warn',
-        glyph: '⚠',
-        headline: 'budget stop',
-        hint: `${halt.reason || 'The budget cap was reached'}. The queue stops for the day — raise BUDGET in Settings to keep going.`,
-      }
-    case 'fault':
+        tone: "warn",
+        glyph: "⚠",
+        headline: "budget stop",
+        hint: `${halt.reason || "The budget cap was reached"}. The queue stops for the day — raise BUDGET in Settings to keep going.`,
+      };
+    case "fault":
       return {
-        tone: 'fail',
-        glyph: '✗',
-        headline: 'fault',
+        tone: "fail",
+        glyph: "✗",
+        headline: "fault",
         hint: `${ticket} left the pipeline in an unexpected state. Work in progress is preserved — open the run to intervene.`,
-      }
+      };
     default:
       return {
-        tone: 'fail',
-        glyph: '✗',
-        headline: 'quarantined',
+        tone: "fail",
+        glyph: "✗",
+        headline: "quarantined",
         hint: `${ticket} needs a human — open the run to see why.`,
-      }
+      };
   }
 }
 
+function TakeoverBanner({ repo, ticket }: { repo: string; ticket?: string }) {
+  return (
+    <div className="flex max-w-3xl items-start gap-2.5 rounded-lg border border-info/40 bg-info/10 px-4 py-3">
+      <SquareTerminal
+        className="mt-0.5 size-4 shrink-0 text-info"
+        aria-hidden="true"
+      />
+      <div className="flex flex-col gap-1">
+        <span className="font-mono text-sm text-info">Taken over</span>
+        <p className="font-sans text-sm leading-relaxed text-foreground">
+          {ticket ? `${ticket} is` : "This repo is"} taken over in a terminal —
+          close it, then use Run next to hand the ticket back.
+        </p>
+        {ticket ? (
+          <Link
+            to="/live/$repo/$ticket"
+            params={{ repo, ticket }}
+            className="mt-1 inline-flex w-fit items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline"
+          >
+            <ExternalLink className="size-3.5" aria-hidden="true" />
+            Open {ticket}
+          </Link>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function HaltBanner({ repo, halt }: { repo: string; halt: LoopHalt }) {
-  const notice = haltNotice(halt)
-  const border = notice.tone === 'fail' ? 'border-fail/40' : 'border-warn/40'
-  const bg = notice.tone === 'fail' ? 'bg-fail/10' : 'bg-warn/10'
-  const glyphColor = notice.tone === 'fail' ? 'text-fail' : 'text-warn'
+  const notice = haltNotice(halt);
+  const border = notice.tone === "fail" ? "border-fail/40" : "border-warn/40";
+  const bg = notice.tone === "fail" ? "bg-fail/10" : "bg-warn/10";
+  const glyphColor = notice.tone === "fail" ? "text-fail" : "text-warn";
   return (
     <div
       className={cn(
-        'flex max-w-3xl items-start gap-2.5 rounded-lg border px-4 py-3',
+        "flex max-w-3xl items-start gap-2.5 rounded-lg border px-4 py-3",
         border,
         bg,
       )}
     >
       <span
-        className={cn('mt-0.5 shrink-0 font-mono text-sm', glyphColor)}
+        className={cn("mt-0.5 shrink-0 font-mono text-sm", glyphColor)}
         aria-hidden="true"
       >
         {notice.glyph}
       </span>
       <div className="flex flex-col gap-1">
-        <span className={cn('font-mono text-sm', glyphColor)}>
+        <span className={cn("font-mono text-sm", glyphColor)}>
           {notice.headline}
         </span>
         <p className="font-sans text-sm leading-relaxed text-foreground">
@@ -1571,7 +1600,7 @@ function HaltBanner({ repo, halt }: { repo: string; halt: LoopHalt }) {
         ) : null}
       </div>
     </div>
-  )
+  );
 }
 
 // loopTitleState reads the loop's tab-title state from the same signals the card
@@ -1583,69 +1612,72 @@ function loopTitleState(
   view: LoopView,
   timeline: Timeline | null,
 ): LoopTitleState {
-  if (!canRun) return { kind: 'idle' }
-  if (halt) return { kind: 'halted', halt: halt.kind, ticket: halt.ticket }
-  if (view === 'running' && timeline) {
-    const running = timeline.running
+  if (!canRun) return { kind: "idle" };
+  if (halt) return { kind: "halted", halt: halt.kind, ticket: halt.ticket };
+  if (view === "running" && timeline) {
+    const running = timeline.running;
     const step = running
-      ? stepName(running.activity, running.phase ?? '').toLowerCase() ||
-        'draining'
-      : 'draining'
+      ? stepName(running.activity, running.phase ?? "").toLowerCase() ||
+        "draining"
+      : "draining";
     return {
-      kind: 'draining',
+      kind: "draining",
       done: timeline.done,
       total: timeline.total,
-      ticket: running?.id ?? '',
+      ticket: running?.id ?? "",
       step,
-    }
+    };
   }
   if (timeline && timeline.total > 0 && timeline.done === timeline.total) {
-    return { kind: 'done', total: timeline.total }
+    return { kind: "done", total: timeline.total };
   }
-  return { kind: 'idle' }
+  return { kind: "idle" };
 }
 
 export function Loop() {
-  const queryClient = useQueryClient()
-  const { repo: activeRepo, repos } = useActiveRepo()
-  const repo = activeRepo ?? ''
+  const queryClient = useQueryClient();
+  const { repo: activeRepo, repos } = useActiveRepo();
+  const repo = activeRepo ?? "";
 
-  const startable = repos.filter((r) => r.allowed).map((r) => r.name)
-  const canRun = repo !== '' && startable.includes(repo)
+  const startable = repos.filter((r) => r.allowed).map((r) => r.name);
+  const canRun = repo !== "" && startable.includes(repo);
 
   const queue = useQuery({
     ...queueQueryOptions(repo),
     refetchInterval: (q) => (q.state.data?.draining ? 3000 : false),
-  })
-  const { data: instData } = useQuery(instancesQueryOptions)
-  const liveInstance = instData?.instances.find((i) => i.repo === repo)
-  const feed = useEventFeed(repo)
-  const halt = deriveLoopHalt(feed.events)
-  const runs = useQuery(runsQueryOptions(repo))
+  });
+  const { data: instData } = useQuery(instancesQueryOptions);
+  const liveInstance = instData?.instances.find((i) => i.repo === repo);
+  const takeoverInstance = instData?.instances.find(
+    (i) => i.repo === repo && i.session_state === "takeover",
+  );
+  const feed = useEventFeed(repo);
+  const halt = deriveLoopHalt(feed.events);
+  const runs = useQuery(runsQueryOptions(repo));
 
   // The peeked issue lives in the URL, so queue polling never closes the drawer
   // and /loop?issue=COD-123 deep-links straight into the preview.
   const [peek, setPeek] = useQueryState(
-    'issue',
-    parseAsString.withOptions({ history: 'push' }),
-  )
-  const onPeek = (id: string) => void setPeek(id)
+    "issue",
+    parseAsString.withOptions({ history: "push" }),
+  );
+  const onPeek = (id: string) => void setPeek(id);
 
-  const draining = queue.data?.draining ?? false
-  const view = loopView(draining, liveInstance)
+  const draining = queue.data?.draining ?? false;
+  const view = loopView(draining, liveInstance);
   const timeline = queue.data
     ? buildTimeline(queue.data.items, runs.data?.runs ?? [], liveInstance)
-    : null
-  usePageTitle(loopTitle(loopTitleState(canRun, halt, view, timeline)))
+    : null;
+  usePageTitle(loopTitle(loopTitleState(canRun, halt, view, timeline)));
 
   const stop = useMutation({
     mutationFn: () => drain(repo, false),
     onSuccess: (res) => publishQueue(queryClient, repo, res),
-  })
+  });
 
   useEffect(() => {
-    stop.reset()
-  }, [repo])
+    stop.reset();
+  }, [repo]);
 
   if (!canRun) {
     return (
@@ -1653,7 +1685,7 @@ export function Loop() {
         repo={repo}
         root={repos.find((r) => r.name === repo)?.root}
       />
-    )
+    );
   }
 
   const drawer = (
@@ -1661,13 +1693,13 @@ export function Loop() {
       repo={repo}
       issueId={peek}
       onOpenChange={(open) => {
-        if (!open) void setPeek(null)
+        if (!open) void setPeek(null);
       }}
       onSelectIssue={onPeek}
     />
-  )
+  );
 
-  if (view === 'running' && queue.data) {
+  if (view === "running" && queue.data) {
     return (
       <>
         <RunningQueueView
@@ -1682,12 +1714,15 @@ export function Loop() {
         />
         {drawer}
       </>
-    )
+    );
   }
 
   return (
     <div className="flex flex-col gap-6">
       {halt ? <HaltBanner repo={repo} halt={halt} /> : null}
+      {takeoverInstance ? (
+        <TakeoverBanner repo={repo} ticket={takeoverInstance.ticket} />
+      ) : null}
       <LaunchQueueCard
         repo={repo}
         freshness={repos.find((r) => r.name === repo)?.freshness}
@@ -1695,7 +1730,7 @@ export function Loop() {
       />
       {drawer}
     </div>
-  )
+  );
 }
 
 function NotStartableNotice({ repo, root }: { repo: string; root?: string }) {
@@ -1705,7 +1740,7 @@ function NotStartableNotice({ repo, root }: { repo: string; root?: string }) {
         <p className="font-sans text-sm leading-relaxed text-muted-foreground">
           {repo
             ? `${repo} is observe-only — the hub can browse its runs but isn't cleared to start loops here yet.`
-            : 'No repo checked out yet. Register a repo to start a loop.'}
+            : "No repo checked out yet. Register a repo to start a loop."}
         </p>
         <div className="flex flex-wrap items-center gap-2">
           {root && (
@@ -1721,5 +1756,5 @@ function NotStartableNotice({ repo, root }: { repo: string; root?: string }) {
         </div>
       </div>
     </TerminalCard>
-  )
+  );
 }

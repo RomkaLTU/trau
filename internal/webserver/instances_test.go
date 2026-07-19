@@ -341,3 +341,17 @@ func TestInstancesRejectsUnsupportedMethod(t *testing.T) {
 		t.Errorf("Allow = %q, want %q", allow, http.MethodGet)
 	}
 }
+
+func TestInstancesReportsTakeoverSupport(t *testing.T) {
+	for goos, want := range map[string]bool{"darwin": true, "linux": false} {
+		home := t.TempDir()
+		s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+		s.home = home
+		s.goos = goos
+		ts := httptest.NewServer(s.Handler())
+		t.Cleanup(ts.Close)
+		if got := getInstances(t, ts).TakeoverSupported; got != want {
+			t.Fatalf("takeover_supported on %s = %v, want %v", goos, got, want)
+		}
+	}
+}

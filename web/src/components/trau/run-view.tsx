@@ -4,11 +4,14 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ChevronRight,
   ExternalLink,
+  Loader2,
   Play,
   RotateCcw,
   ScrollText,
   Square,
+  SquareTerminal,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/trau/confirm-dialog";
@@ -22,12 +25,19 @@ import { Terminal } from "@/components/terminal";
 import { cn } from "@/lib/utils";
 import { useEventFeed, type FeedEvent } from "@/lib/events";
 import { runTitle, usePageTitle } from "@/lib/page-title";
-import { CheckpointError, resetRun } from "@/lib/checkpoints";
+import {
+  CheckpointError,
+  resetRun,
+  runCheckpointQueryOptions,
+} from "@/lib/checkpoints";
 import {
   instancesQueryOptions,
   stopInstance,
+  takeoverRun,
+  TakeoverError,
   type Instance,
 } from "@/lib/instances";
+import { sessionStatePill } from "@/lib/overview";
 import { publishQueue, runNext } from "@/lib/queue";
 import { runDetailQueryOptions, type RunDetail } from "@/lib/rundetail";
 import {
@@ -468,9 +478,13 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   const now = useNow(1000);
   const [stopOpen, setStopOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
+  const [takeoverUnsupported, setTakeoverUnsupported] = useState(false);
 
   const { data: instData } = useQuery(instancesQueryOptions);
   const { data: run } = useQuery(runDetailQueryOptions(repo, ticket));
+  const { data: checkpoint } = useQuery(
+    runCheckpointQueryOptions(repo, ticket),
+  );
   const feed = useEventFeed(repo);
 
   const instance: Instance | undefined = instData?.instances.find(
@@ -479,6 +493,11 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   const live = instance !== undefined;
   const working = instance?.session_state === "working";
   const parkedHere = instance?.session_state === "parked";
+  const takenOverHere = instance?.session_state === "takeover";
+  const takenOver = instData?.instances.some(
+    (i) => i.repo === repo && i.session_state === "takeover",
+  );
+  const session = checkpoint?.data.SESSION ?? "";
   const phase = (working ? instance.phase : "") || run?.phase || "";
   const spawnFailure = feed.events.find(
     (ev) => ev.kind === "spawn_failed" && fieldStr(ev, "ticket") === ticket,
@@ -493,7 +512,9 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   });
   const activity = working ? instance.activity : undefined;
   const detail = working ? instance.detail : undefined;
-  const pill = headerPill(variant, phase, run?.failure_class, activity);
+  const pill = takenOverHere
+    ? sessionStatePill("takeover")
+    : headerPill(variant, phase, run?.failure_class, activity);
   const { steps, subLabel } = runSteps(variant, phase, activity, detail);
 
   usePageTitle(runTitle(ticket, pill.label));
@@ -535,6 +556,22 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
     onError: (err) => {
       if (err instanceof CheckpointError && err.requiresForce)
         setResetOpen(true);
+    },
+  });
+  const takeover = useMutation({
+    mutationFn: () => takeoverRun(repo, ticket),
+    onSuccess: () => {
+      toast(
+        "Opened in terminal — this ticket stays parked; use Run next to hand it back.",
+      );
+      invalidate();
+    },
+    onError: (err) => {
+      if (err instanceof TakeoverError && err.status === 501) {
+        setTakeoverUnsupported(true);
+        return;
+      }
+      toast.error(err instanceof Error ? err.message : String(err));
     },
   });
 
@@ -653,17 +690,44 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
             </div>
           </div>
 
-          {instance && (
-            <Button
-              variant="destructive"
-              size="sm"
-              className="font-mono"
-              onClick={() => setStopOpen(true)}
-            >
-              <Square className="size-4" aria-hidden="true" />
-              Stop
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            {instData?.takeover_supported && !takeoverUnsupported && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="font-mono"
+                disabled={takenOver || session === "" || takeover.isPending}
+                title={
+                  takenOver
+                    ? "Taken over in a terminal"
+                    : session === ""
+                      ? "No resumable Claude session"
+                      : undefined
+                }
+                onClick={() => takeover.mutate()}
+              >
+                {takeover.isPending && working ? (
+                  <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <SquareTerminal className="size-4" aria-hidden="true" />
+                )}
+                {takeover.isPending && working
+                  ? "Stopping…"
+                  : "Open in terminal"}
+              </Button>
+            )}
+            {instance && !takenOverHere && (
+              <Button
+                variant="destructive"
+                size="sm"
+                className="font-mono"
+                onClick={() => setStopOpen(true)}
+              >
+                <Square className="size-4" aria-hidden="true" />
+                Stop
+              </Button>
+            )}
+          </div>
         </div>
 
         <div className="rounded-md border border-border bg-secondary/30 px-4 py-3">

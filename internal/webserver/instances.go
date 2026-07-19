@@ -60,10 +60,13 @@ type RepoFreshness struct {
 }
 
 // InstancesResponse is the /api/v1/instances resource: the live loops and every
-// repo the hub has ever seen a loop run in.
+// repo the hub has ever seen a loop run in. TakeoverSupported reports whether
+// this hub's platform can open a terminal takeover (ADR 0018), so the web can
+// hide the action instead of offering a guaranteed 501.
 type InstancesResponse struct {
-	Instances []Instance `json:"instances"`
-	Repos     []RepoView `json:"repos"`
+	Instances         []Instance `json:"instances"`
+	Repos             []RepoView `json:"repos"`
+	TakeoverSupported bool       `json:"takeover_supported"`
 }
 
 // instanceHeartbeatBody is a loop's reported presence on a register or heartbeat.
@@ -181,5 +184,9 @@ func (s *Server) listInstances(w http.ResponseWriter, _ *http.Request) {
 		instances = append(instances, inst)
 	}
 
-	writeJSON(w, http.StatusOK, InstancesResponse{Instances: instances, Repos: s.repoViews()})
+	writeJSON(w, http.StatusOK, InstancesResponse{
+		Instances:         instances,
+		Repos:             s.repoViews(),
+		TakeoverSupported: s.goos == "darwin",
+	})
 }
