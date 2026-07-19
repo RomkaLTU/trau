@@ -6,22 +6,39 @@ type Block =
   | { kind: 'heading'; level: number; text: string }
   | { kind: 'code'; text: string }
   | { kind: 'list'; ordered: boolean; items: string[] }
+  | { kind: 'table'; header: string[]; rows: string[][] }
   | { kind: 'paragraph'; text: string }
 
 const HEADING = /^(#{1,6})\s+(.*)$/
 const BULLET = /^\s*[-*]\s+/
 const ORDERED = /^\s*\d+\.\s+/
+const TABLE_ROW = /^\s*\|.*\|\s*$/
+const TABLE_DELIM = /^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/
 
-function isBlockStart(line: string): boolean {
+function isTableStart(lines: string[], i: number): boolean {
+  return TABLE_ROW.test(lines[i]) && i + 1 < lines.length && TABLE_DELIM.test(lines[i + 1])
+}
+
+function isBlockStart(lines: string[], i: number): boolean {
+  const line = lines[i]
   return (
     HEADING.test(line) ||
     BULLET.test(line) ||
     ORDERED.test(line) ||
-    line.trimStart().startsWith('```')
+    line.trimStart().startsWith('```') ||
+    isTableStart(lines, i)
   )
 }
 
-function parseBlocks(md: string): Block[] {
+function splitRow(line: string): string[] {
+  return line
+    .trim()
+    .slice(1, -1)
+    .split('|')
+    .map((cell) => cell.trim())
+}
+
+export function parseBlocks(md: string): Block[] {
   const lines = md.replace(/\r\n/g, '\n').split('\n')
   const blocks: Block[] = []
   let i = 0
@@ -65,8 +82,20 @@ function parseBlocks(md: string): Block[] {
       continue
     }
 
+    if (isTableStart(lines, i)) {
+      const header = splitRow(line)
+      const rows: string[][] = []
+      i += 2
+      while (i < lines.length && TABLE_ROW.test(lines[i])) {
+        rows.push(splitRow(lines[i]))
+        i++
+      }
+      blocks.push({ kind: 'table', header, rows })
+      continue
+    }
+
     const para: string[] = []
-    while (i < lines.length && lines[i].trim() !== '' && !isBlockStart(lines[i])) {
+    while (i < lines.length && lines[i].trim() !== '' && !isBlockStart(lines, i)) {
       para.push(lines[i].trim())
       i++
     }
@@ -144,6 +173,36 @@ function Block({ block }: { block: Block }) {
         </Tag>
       )
     }
+    case 'table':
+      return (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full border-collapse">
+            <thead>
+              <tr>
+                {block.header.map((cell, i) => (
+                  <th
+                    key={i}
+                    className="border border-border bg-muted px-2 py-1 text-left font-semibold text-foreground"
+                  >
+                    {renderInline(cell)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {block.rows.map((cells, i) => (
+                <tr key={i}>
+                  {cells.map((cell, j) => (
+                    <td key={j} className="border border-border px-2 py-1 align-top">
+                      {renderInline(cell)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
     case 'paragraph':
       return <p className="mt-2 first:mt-0 leading-relaxed">{renderInline(block.text)}</p>
   }

@@ -2,10 +2,11 @@ import type { InternalIssue, InternalIssueDraft } from './issues'
 import type { EnqueueRequest, QueueResponse } from './queue'
 
 // InternalTicketPlan is the Internal ticket form resolved to what will be filed:
-// the trimmed title, the sub-item titles that carry one, and whether those
-// sub-items make it an epic.
+// the trimmed title and description, the sub-item titles that carry one, and
+// whether those sub-items make it an epic.
 export interface InternalTicketPlan {
   title: string
+  description: string
   subs: string[]
   isEpic: boolean
 }
@@ -16,9 +17,15 @@ export interface InternalTicketPlan {
 export function planInternalTicket(
   title: string,
   subs: string[],
+  description = '',
 ): InternalTicketPlan {
   const filled = subs.map((s) => s.trim()).filter((s) => s !== '')
-  return { title: title.trim(), subs: filled, isEpic: filled.length > 0 }
+  return {
+    title: title.trim(),
+    description: description.trim(),
+    subs: filled,
+    isEpic: filled.length > 0,
+  }
 }
 
 function errorText(error: unknown): string {
@@ -34,7 +41,11 @@ export async function createAndQueue(
   createIssue: (draft: InternalIssueDraft) => Promise<InternalIssue>,
   enqueueOne: (req: EnqueueRequest) => Promise<QueueResponse>,
 ): Promise<QueueResponse> {
-  const parent = await createIssue({ title: plan.title })
+  const parent = await createIssue(
+    plan.description === ''
+      ? { title: plan.title }
+      : { title: plan.title, description: plan.description },
+  )
 
   for (const [i, title] of plan.subs.entries()) {
     try {

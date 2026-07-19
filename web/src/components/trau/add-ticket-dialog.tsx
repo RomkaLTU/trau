@@ -8,6 +8,7 @@ import {
   AlertDialogContent,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { MarkdownEditor } from '@/components/markdown-editor'
 import { cn } from '@/lib/utils'
 import {
   addTickets,
@@ -390,8 +391,9 @@ function InternalTicketForm({
 }) {
   const queryClient = useQueryClient()
   const [title, setTitle] = useState('')
+  const [description, setDescription] = useState('')
   const [subs, setSubs] = useState<string[]>([''])
-  const plan = planInternalTicket(title, subs)
+  const plan = planInternalTicket(title, subs, description)
 
   const create = useMutation({
     mutationFn: () =>
@@ -447,6 +449,23 @@ function InternalTicketForm({
           placeholder="e.g. Fix flaky CI step"
           autoFocus
           className={fieldClass}
+        />
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <div className="flex items-baseline gap-2">
+          <span className="font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+            description
+          </span>
+          <span className="font-mono text-[0.65rem] text-muted-foreground/60">
+            optional
+          </span>
+        </div>
+        <MarkdownEditor
+          placeholder="Describe the work (markdown, optional)"
+          onChange={setDescription}
+          editorClassName="min-h-20"
+          contentClassName="max-h-64"
         />
       </div>
 
@@ -507,7 +526,7 @@ export function AddTicketDialog({
       <AlertDialogContent
         aria-describedby={undefined}
         onOpenAutoFocus={(e) => e.preventDefault()}
-        className="gap-0 overflow-hidden border-border bg-popover p-0 shadow-xl sm:max-w-lg"
+        className="gap-0 overflow-hidden border-border bg-popover p-0 shadow-xl sm:max-w-2xl"
       >
         <div className="flex items-center gap-3 border-b border-border px-4 py-2.5">
           <div className="flex items-center gap-1.5" aria-hidden="true">
