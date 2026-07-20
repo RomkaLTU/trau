@@ -120,8 +120,8 @@ func TestIssueMapsAllFields(t *testing.T) {
 	if issue.Summary != "Do the thing" {
 		t.Errorf("Summary = %q, want %q", issue.Summary, "Do the thing")
 	}
-	if issue.Description != "Line one.\nLine two." {
-		t.Errorf("Description = %q, want %q", issue.Description, "Line one.\nLine two.")
+	if issue.Description != "Line one.\n\nLine two." {
+		t.Errorf("Description = %q, want %q", issue.Description, "Line one.\n\nLine two.")
 	}
 	if issue.Status.Category != "indeterminate" || issue.Status.Name != "In Progress" {
 		t.Errorf("Status = %+v, want {In Progress indeterminate}", issue.Status)
@@ -276,11 +276,11 @@ func TestADFToText(t *testing.T) {
 		{"null", "null", ""},
 		{"malformed", "{not json", ""},
 		{"single paragraph", `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Hello world"}]}]}`, "Hello world"},
-		{"two paragraphs", `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"P1"}]},{"type":"paragraph","content":[{"type":"text","text":"P2"}]}]}`, "P1\nP2"},
+		{"two paragraphs", `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"P1"}]},{"type":"paragraph","content":[{"type":"text","text":"P2"}]}]}`, "P1\n\nP2"},
 		{"hard break", `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Line1"},{"type":"hardBreak"},{"type":"text","text":"Line2"}]}]}`, "Line1\nLine2"},
-		{"bullet list", `{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"A"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"B"}]}]}]}]}`, "A\n\nB"},
-		{"heading then paragraph", `{"type":"doc","content":[{"type":"heading","content":[{"type":"text","text":"Title"}]},{"type":"paragraph","content":[{"type":"text","text":"Body"}]}]}`, "Title\nBody"},
-		{"marks ignored", `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"see "},{"type":"text","text":"bold","marks":[{"type":"strong"}]},{"type":"text","text":" here"}]}]}`, "see bold here"},
+		{"bullet list", `{"type":"doc","content":[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"A"}]}]},{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"B"}]}]}]}]}`, "- A\n- B"},
+		{"heading then paragraph", `{"type":"doc","content":[{"type":"heading","content":[{"type":"text","text":"Title"}]},{"type":"paragraph","content":[{"type":"text","text":"Body"}]}]}`, "# Title\n\nBody"},
+		{"marks rendered", `{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"see "},{"type":"text","text":"bold","marks":[{"type":"strong"}]},{"type":"text","text":" here"}]}]}`, "see **bold** here"},
 	}
 	for _, tc := range cases {
 		if got := adfToText(json.RawMessage(tc.raw)); got != tc.want {

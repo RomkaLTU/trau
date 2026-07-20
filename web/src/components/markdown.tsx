@@ -24,11 +24,15 @@ type Block =
   | { kind: "code"; text: string }
   | { kind: "list"; ordered: boolean; items: string[] }
   | { kind: "table"; header: string[]; rows: string[][] }
+  | { kind: "quote"; blocks: Block[] }
+  | { kind: "rule" }
   | { kind: "paragraph"; text: string };
 
 const HEADING = /^(#{1,6})\s+(.*)$/;
 const BULLET = /^\s*[-*]\s+/;
 const ORDERED = /^\s*\d+\.\s+/;
+const QUOTE = /^\s*>\s?/;
+const RULE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/;
 const TABLE_ROW = /^\s*\|.*\|\s*$/;
 const TABLE_DELIM = /^\s*\|(?:\s*:?-+:?\s*\|)+\s*$/;
 
@@ -46,6 +50,8 @@ function isBlockStart(lines: string[], i: number): boolean {
     HEADING.test(line) ||
     BULLET.test(line) ||
     ORDERED.test(line) ||
+    QUOTE.test(line) ||
+    RULE.test(line) ||
     line.trimStart().startsWith("```") ||
     isTableStart(lines, i)
   );
@@ -81,6 +87,22 @@ export function parseBlocks(md: string): Block[] {
       }
       i++;
       blocks.push({ kind: "code", text: body.join("\n") });
+      continue;
+    }
+
+    if (RULE.test(line)) {
+      blocks.push({ kind: "rule" });
+      i++;
+      continue;
+    }
+
+    if (QUOTE.test(line)) {
+      const body: string[] = [];
+      while (i < lines.length && QUOTE.test(lines[i])) {
+        body.push(lines[i].replace(QUOTE, ""));
+        i++;
+      }
+      blocks.push({ kind: "quote", blocks: parseBlocks(body.join("\n")) });
       continue;
     }
 
@@ -135,16 +157,23 @@ export function parseBlocks(md: string): Block[] {
 }
 
 const CODE = "`(?<code>[^`]+)`";
+const BOLD_ITALIC = String.raw`\*\*\*(?<bolditalic>[^*]+)\*\*\*`;
 const BOLD = String.raw`\*\*(?<bold>[^*]+)\*\*`;
+const ITALIC = String.raw`\*(?<em>[^*\s][^*]*)\*`;
 const IMAGE = String.raw`!\[(?<alt>[^\]]*)\]\(\s*<?(?<src>[^)>\s]+)>?(?:\s+"[^"]*")?\s*\)`;
 const LINK = String.raw`\[(?<label>[^\]]*)\]\(\s*<?(?<href>[^)>\s]+)>?(?:\s+"[^"]*")?\s*\)`;
 
-const INLINE = new RegExp([CODE, BOLD, IMAGE, LINK].join("|"), "g");
+const INLINE = new RegExp(
+  [CODE, BOLD_ITALIC, BOLD, IMAGE, LINK, ITALIC].join("|"),
+  "g",
+);
 const IMAGE_REF = new RegExp(IMAGE, "g");
 
 type InlineGroups = {
   code?: string;
+  bolditalic?: string;
   bold?: string;
+  em?: string;
   alt?: string;
   src?: string;
   label?: string;
@@ -174,7 +203,7 @@ function renderInline(text: string): ReactNode[] {
     if (m.index > last) {
       nodes.push(text.slice(last, m.index));
     }
-    const { code, bold, alt, src, label, href } = groupsOf(m);
+    const { code, bolditalic, bold, em, alt, src, label, href } = groupsOf(m);
     if (code !== undefined) {
       nodes.push(
         <code
@@ -184,12 +213,20 @@ function renderInline(text: string): ReactNode[] {
           {code}
         </code>,
       );
+    } else if (bolditalic !== undefined) {
+      nodes.push(
+        <strong key={key++} className="font-semibold text-foreground">
+          <em>{bolditalic}</em>
+        </strong>,
+      );
     } else if (bold !== undefined) {
       nodes.push(
         <strong key={key++} className="font-semibold text-foreground">
           {bold}
         </strong>,
       );
+    } else if (em !== undefined) {
+      nodes.push(<em key={key++}>{em}</em>);
     } else if (src !== undefined) {
       nodes.push(<InlineImage key={key++} src={src} alt={alt ?? ""} />);
     } else if (href !== undefined) {
@@ -369,6 +406,16 @@ function Block({ block }: { block: Block }) {
           </table>
         </div>
       );
+    case "quote":
+      return (
+        <blockquote className="mt-2 border-l-2 border-border pl-3">
+          {block.blocks.map((child, i) => (
+            <Block key={i} block={child} />
+          ))}
+        </blockquote>
+      );
+    case "rule":
+      return <hr className="mt-3 border-border" />;
     case "paragraph":
       return (
         <p className="mt-2 first:mt-0 leading-relaxed">

@@ -42,6 +42,13 @@ describe("parseBlocks", () => {
       { kind: "paragraph", text: "before | just | text |" },
     ]);
   });
+
+  it("parses quote lines into a nested quote block and a rule into a rule", () => {
+    expect(parseBlocks("> quoted\n> more\n\n---")).toEqual([
+      { kind: "quote", blocks: [{ kind: "paragraph", text: "quoted more" }] },
+      { kind: "rule" },
+    ]);
+  });
 });
 
 describe("markdownImageSources", () => {
@@ -138,6 +145,29 @@ describe("Markdown", () => {
     expect(link?.textContent).toBe("the docs");
     expect(link?.getAttribute("rel")).toBe("noopener noreferrer");
     expect(link?.getAttribute("target")).toBe("_blank");
+    unmount();
+  });
+
+  it("renders italics, blockquotes and rules instead of literal syntax", async () => {
+    const container = document.createElement("div");
+    const unmount = await render(container, {
+      children: "*em* and ***both***\n\n> quoted\n\n---",
+    });
+    expect(container.querySelector("em")?.textContent).toBe("em");
+    expect(container.querySelector("strong em")?.textContent).toBe("both");
+    expect(container.querySelector("blockquote")?.textContent).toBe("quoted");
+    expect(container.querySelector("hr")).not.toBeNull();
+    expect(container.textContent).not.toContain("*");
+    expect(container.textContent).not.toContain(">");
+    expect(container.textContent).not.toContain("---");
+    unmount();
+  });
+
+  it("keeps asterisks in plain arithmetic text literal", async () => {
+    const container = document.createElement("div");
+    const unmount = await render(container, { children: "2 * 3 * 4" });
+    expect(container.querySelector("em")).toBeNull();
+    expect(container.textContent).toBe("2 * 3 * 4");
     unmount();
   });
 
