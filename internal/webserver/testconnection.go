@@ -108,6 +108,12 @@ func (s *Server) connConfig(provider string, req TestConnectionRequest) config.C
 // testTrackerConnection builds the throwaway reader and runs the probe under a bounded
 // timeout, shaping the outcome into the response the wizard renders.
 func (s *Server) testTrackerConnection(ctx context.Context, provider string, cfg config.Config) TestConnectionResponse {
+	if missing := missingCredentials(provider, cfg); len(missing) > 0 {
+		return TestConnectionResponse{
+			Error: "missing " + strings.Join(missing, ", "),
+			Hint:  enterCredentialsHint(provider),
+		}
+	}
 	probe, err := s.newProbe(provider, cfg)
 	if err != nil {
 		return TestConnectionResponse{Error: err.Error()}
@@ -134,10 +140,43 @@ func (s *Server) testTrackerConnection(ctx context.Context, provider string, cfg
 }
 
 // connFailure renders a probe error as a failure response, attaching a hint when the
-// failure shape is one the wizard can act on: a rejected token, an unreachable base
-// URL, or missing credentials.
+// failure shape is one the wizard can act on: a rejected token or an unreachable
+// base URL.
 func connFailure(provider string, err error) TestConnectionResponse {
 	return TestConnectionResponse{Error: err.Error(), Hint: connHint(provider, err)}
+}
+
+// missingCredentials lists the credential fields the merged config still lacks
+// for provider, in the order the wizard shows them. A non-empty result means the
+// probe could only fail with the provider's opaque "not enabled" sentinel, so the
+// handler names the gap directly instead.
+func missingCredentials(provider string, cfg config.Config) []string {
+	blank := func(v string) bool { return strings.TrimSpace(v) == "" }
+	var missing []string
+	switch provider {
+	case "linear":
+		if blank(cfg.LinearAPIKey) {
+			missing = append(missing, "Linear API key")
+		}
+	case "jira":
+		if blank(cfg.JiraBaseURL) {
+			missing = append(missing, "Jira site URL")
+		}
+		if blank(cfg.JiraEmail) {
+			missing = append(missing, "account email")
+		}
+		if blank(cfg.JiraAPIToken) {
+			missing = append(missing, "API token")
+		}
+	}
+	return missing
+}
+
+func enterCredentialsHint(provider string) string {
+	if provider == "jira" {
+		return "Enter the Jira site URL, account email, and API token."
+	}
+	return "Enter a Linear API key."
 }
 
 // connHint maps a recognizable probe failure onto an actionable, secret-free hint.
@@ -147,18 +186,12 @@ func connHint(provider string, err error) string {
 		if msg := jiraapi.AuthErrorMessage(err); msg != "" {
 			return msg
 		}
-		if errors.Is(err, jiraapi.ErrNotEnabled) {
-			return "Enter the Jira site URL, account email, and API token."
-		}
 		if isUnreachable(err) {
 			return "Could not reach the Jira site — check the base URL is a reachable https://<site>.atlassian.net."
 		}
 	case "linear":
 		if errors.Is(err, linearapi.ErrUnauthorized) {
 			return "Linear rejected the API key — check it is a valid personal API key."
-		}
-		if errors.Is(err, linearapi.ErrNotEnabled) {
-			return "Enter a Linear API key."
 		}
 	}
 	return ""

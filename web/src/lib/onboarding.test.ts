@@ -7,8 +7,10 @@ import {
   preselectProvider,
   secretPlaceholder,
   trackerCanContinue,
+  trackerCanTest,
   trackerConfigWrites,
   type RepoInspection,
+  type TrackerFields,
 } from './onboarding'
 
 function inspection(over: Partial<RepoInspection> = {}): RepoInspection {
@@ -163,6 +165,39 @@ describe('trackerCanContinue', () => {
 
   it('blocks when no provider is chosen', () => {
     expect(trackerCanContinue(null, 'COD', 'ok')).toBe(false)
+  })
+})
+
+describe('trackerCanTest', () => {
+  function fields(over: Partial<TrackerFields> = {}): TrackerFields {
+    return { linearKey: '', jiraBaseUrl: '', jiraEmail: '', jiraToken: '', binding: '', ...over }
+  }
+
+  it('blocks jira until the site URL, email, and token are all filled', () => {
+    expect(
+      trackerCanTest('jira', fields({ jiraEmail: 'e@x.com', jiraToken: 'tok' }), false),
+    ).toBe(false)
+    expect(
+      trackerCanTest(
+        'jira',
+        fields({ jiraBaseUrl: 'https://acme.atlassian.net', jiraEmail: 'e@x.com', jiraToken: 'tok' }),
+        false,
+      ),
+    ).toBe(true)
+  })
+
+  it('blocks linear until the API key is filled', () => {
+    expect(trackerCanTest('linear', fields(), false)).toBe(false)
+    expect(trackerCanTest('linear', fields({ linearKey: 'lin_key' }), false)).toBe(true)
+  })
+
+  it('allows blank fields when stored credentials exist to fall back to', () => {
+    expect(trackerCanTest('jira', fields(), true)).toBe(true)
+    expect(trackerCanTest('linear', fields(), true)).toBe(true)
+  })
+
+  it('never blocks internal', () => {
+    expect(trackerCanTest('internal', fields(), false)).toBe(true)
   })
 })
 

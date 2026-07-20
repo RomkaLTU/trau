@@ -184,6 +184,55 @@ func TestTrackerTestConnectionJiraUnreachableBaseURL(t *testing.T) {
 	}
 }
 
+// TestTrackerTestConnectionJiraMissingBaseURL reproduces the onboarding payload a
+// customer hit: email and token entered, site URL blank, repo not yet configured.
+// The response must name the missing field, not the opaque "not enabled" sentinel.
+func TestTrackerTestConnectionJiraMissingBaseURL(t *testing.T) {
+	s := connServer(t)
+	ts := startConn(t, s)
+
+	_, out := postConn(t, ts, "jira", TestConnectionRequest{Repo: "melga", Email: "e@x.com", APIToken: "tok"})
+	if out.OK {
+		t.Fatalf("ok = true, want false")
+	}
+	if out.Error != "missing Jira site URL" {
+		t.Errorf("error = %q, want %q", out.Error, "missing Jira site URL")
+	}
+	if !strings.Contains(out.Hint, "site URL") {
+		t.Errorf("hint = %q, want the enter-credentials hint", out.Hint)
+	}
+}
+
+func TestTrackerTestConnectionJiraMissingAllFields(t *testing.T) {
+	s := connServer(t)
+	ts := startConn(t, s)
+
+	_, out := postConn(t, ts, "jira", TestConnectionRequest{})
+	if out.OK {
+		t.Fatalf("ok = true, want false")
+	}
+	want := "missing Jira site URL, account email, API token"
+	if out.Error != want {
+		t.Errorf("error = %q, want %q", out.Error, want)
+	}
+}
+
+func TestTrackerTestConnectionLinearMissingKey(t *testing.T) {
+	s := connServer(t)
+	ts := startConn(t, s)
+
+	_, out := postConn(t, ts, "linear", TestConnectionRequest{})
+	if out.OK {
+		t.Fatalf("ok = true, want false")
+	}
+	if out.Error != "missing Linear API key" {
+		t.Errorf("error = %q, want %q", out.Error, "missing Linear API key")
+	}
+	if out.Hint == "" {
+		t.Errorf("hint empty, want an enter-key hint")
+	}
+}
+
 func TestTrackerTestConnectionEmptyProjects(t *testing.T) {
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
