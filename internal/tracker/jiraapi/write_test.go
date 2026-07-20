@@ -183,6 +183,20 @@ func TestLinkBlocksDisabledWithoutToken(t *testing.T) {
 	}
 }
 
+// createmetaTaskAndBug and createmetaTaskOnly mirror real
+// GET /issue/createmeta/{key}/issuetypes responses, envelope included. The array
+// is keyed "issueTypes" — not the "values" the other paginated Jira endpoints
+// use. Decoding it as "values" yields zero types and silently breaks every
+// create, so these literals are the contract: keep them verbatim from the wire.
+const (
+	createmetaTaskAndBug = `{"startAt":0,"maxResults":50,"total":2,"issueTypes":[` +
+		`{"id":"10001","name":"Task","subtask":false,"hierarchyLevel":0},` +
+		`{"id":"10004","name":"Bug","subtask":false,"hierarchyLevel":0}]}`
+
+	createmetaTaskOnly = `{"startAt":0,"maxResults":50,"total":1,"issueTypes":[` +
+		`{"id":"10001","name":"Task","subtask":false,"hierarchyLevel":0}]}`
+)
+
 // CreateIssue resolves the issue type id via createmeta, then POSTs the issue
 // with the resolved id, the project key, an ADF description and the labels,
 // returning the new key.
@@ -197,7 +211,7 @@ func TestCreateIssueResolvesTypeAndPosts(t *testing.T) {
 			if !strings.Contains(r.URL.Path, "/issue/createmeta/PROJ/issuetypes") {
 				t.Errorf("createmeta path = %q", r.URL.Path)
 			}
-			_, _ = w.Write([]byte(`{"values":[{"id":"10001","name":"Task"},{"id":"10004","name":"Bug"}]}`))
+			_, _ = w.Write([]byte(createmetaTaskAndBug))
 			return
 		}
 		body, _ := io.ReadAll(r.Body)
@@ -244,7 +258,7 @@ func TestCreateIssueSetsParent(t *testing.T) {
 	var req createIssueRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			_, _ = w.Write([]byte(`{"values":[{"id":"10001","name":"Task"}]}`))
+			_, _ = w.Write([]byte(createmetaTaskOnly))
 			return
 		}
 		body, _ := io.ReadAll(r.Body)
@@ -266,19 +280,46 @@ func TestCreateIssueSetsParent(t *testing.T) {
 	}
 }
 
-// An issue type the project lacks is a real error, surfaced to the caller.
+// An issue type the project lacks is a real error, surfaced to the caller naming
+// the types the project does offer, so a misconfigured type is distinguishable
+// from a listing that decoded to nothing.
 func TestCreateIssueUnknownType(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			_, _ = w.Write([]byte(`{"values":[{"id":"10001","name":"Task"}]}`))
+			_, _ = w.Write([]byte(createmetaTaskOnly))
 			return
 		}
 		t.Error("must not POST when the issue type is unresolved")
 	}))
 	defer srv.Close()
 
-	if _, err := New(srv.URL, "me@acme.com", "tok").CreateIssue(context.Background(), "PROJ", "Bug", "s", "d", nil, ""); err == nil {
+	_, err := New(srv.URL, "me@acme.com", "tok").CreateIssue(context.Background(), "PROJ", "Bug", "s", "d", nil, "")
+	if err == nil {
 		t.Fatal("CreateIssue with an unknown type should error, got nil")
+	}
+	if !strings.Contains(err.Error(), "available: Task") {
+		t.Errorf("err = %v, want it to name the available types", err)
+	}
+}
+
+// A listing that yields no types at all reads as "available: none" rather than
+// as a project missing the type — the decode, not the configuration, is at fault.
+func TestCreateIssueEmptyTypeListing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(`{"startAt":0,"maxResults":50,"total":0,"issueTypes":[]}`))
+			return
+		}
+		t.Error("must not POST when the issue type is unresolved")
+	}))
+	defer srv.Close()
+
+	_, err := New(srv.URL, "me@acme.com", "tok").CreateIssue(context.Background(), "PROJ", "Task", "s", "d", nil, "")
+	if err == nil {
+		t.Fatal("CreateIssue against an empty listing should error, got nil")
+	}
+	if !strings.Contains(err.Error(), "available: none") {
+		t.Errorf("err = %v, want it to report no available types", err)
 	}
 }
 

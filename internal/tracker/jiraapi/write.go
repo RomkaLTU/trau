@@ -194,19 +194,33 @@ func (c *Client) resolveIssueType(ctx context.Context, projectKey, name string) 
 	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return "", err
 	}
-	for _, it := range resp.Values {
+	available := make([]string, 0, len(resp.IssueTypes))
+	for _, it := range resp.IssueTypes {
 		if strings.EqualFold(strings.TrimSpace(it.Name), strings.TrimSpace(name)) {
 			return it.ID, nil
 		}
+		available = append(available, it.Name)
 	}
-	return "", fmt.Errorf("jira: no %q issue type in project %s", name, projectKey)
+	return "", fmt.Errorf("jira: no %q issue type in project %s (available: %s)", name, projectKey, issueTypeList(available))
 }
 
+// issueTypeList renders the project's issue-type names for the unmatched-type
+// error. An empty set reads as "none", which points at the listing itself rather
+// than at the project's configuration.
+func issueTypeList(names []string) string {
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
+}
+
+// issueTypesResponse is the createmeta issue-type listing. The array is keyed
+// "issueTypes" here, unlike the "values" every other paginated Jira endpoint uses.
 type issueTypesResponse struct {
-	Values []struct {
+	IssueTypes []struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
-	} `json:"values"`
+	} `json:"issueTypes"`
 }
 
 type createIssueRequest struct {
