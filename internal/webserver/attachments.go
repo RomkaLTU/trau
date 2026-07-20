@@ -96,17 +96,38 @@ func (s *Server) handleAttachment(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown attachment"})
 		return
 	}
-	if att.State != hubstore.AttachmentCached {
-		if att.SourceURL == "" {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "attachment has no stored bytes"})
-			return
-		}
-		if att, err = s.fetchAttachment(r.Context(), repo, att); err != nil {
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "fetch attachment: " + err.Error()})
-			return
-		}
+	att, err = s.cachedAttachment(r.Context(), repo, att)
+	switch {
+	case errors.Is(err, errAttachmentNoBytes):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	case err != nil:
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "fetch attachment: " + err.Error()})
+		return
 	}
 	s.serveAttachmentBytes(w, r, att)
+}
+
+// errAttachmentNoBytes reports a row that can never produce bytes on demand: an
+// upload whose blob is gone, with no upstream to fall back on.
+var errAttachmentNoBytes = errors.New("attachment has no stored bytes")
+
+// cachedAttachment returns the row with its bytes on disk, downloading them now
+// when this is the first request for them. A row that failed inside the retry
+// floor is answered with the reason it failed instead of another download, so a
+// file the tracker will never return costs one request a minute rather than one
+// per view — while still healing on its own once the floor passes.
+func (s *Server) cachedAttachment(ctx context.Context, repo registry.Repo, att hubstore.Attachment) (hubstore.Attachment, error) {
+	if att.State == hubstore.AttachmentCached {
+		return att, nil
+	}
+	if att.SourceURL == "" {
+		return hubstore.Attachment{}, errAttachmentNoBytes
+	}
+	if !att.RetryReady(time.Now()) {
+		return hubstore.Attachment{}, errors.New(att.Error)
+	}
+	return s.fetchAttachment(ctx, repo, att)
 }
 
 // serveAttachmentBytes writes a cached attachment. The response is immutable —
@@ -124,6 +145,9 @@ func (s *Server) serveAttachmentBytes(w http.ResponseWriter, r *http.Request, at
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "stat attachment: " + err.Error()})
 		return
+	}
+	if err := s.stores.Attachments().MarkServed(att.ID); err != nil {
+		logger.Verbosef("mark attachment %d served: %v", att.ID, err)
 	}
 
 	name := attachmentFilename(att)
@@ -175,12 +199,28 @@ func (s *Server) downloadAttachment(ctx context.Context, repo registry.Repo, att
 	if err := atts.MarkCached(att.ID, sha, size, mimeType); err != nil {
 		return hubstore.Attachment{}, err
 	}
+	s.evictAttachmentCache(sha)
 
 	att.SHA256, att.SizeBytes, att.State, att.Error = sha, size, hubstore.AttachmentCached, ""
 	if mimeType != "" {
 		att.MimeType = mimeType
 	}
 	return att, nil
+}
+
+// evictAttachmentCache trims the blob store back under its cap, sparing the digest
+// named by keep. It runs on each fetch as well as on the retention sweep, because
+// a burst of first views can otherwise carry the cache well past the cap before
+// the hourly pass comes round.
+func (s *Server) evictAttachmentCache(keep string) {
+	evicted, freed, err := s.stores.Attachments().EnforceCacheCap(keep)
+	if err != nil {
+		logger.Verbosef("evict attachment cache: %v", err)
+		return
+	}
+	if evicted > 0 {
+		logger.Debugf("attachment cache: evicted %d file(s), freed %d bytes", evicted, freed)
+	}
 }
 
 // openAttachmentSource starts the download, authenticated for the source that
@@ -237,11 +277,15 @@ func (s *Server) authorizeAttachment(repo registry.Repo, source string, req *htt
 	return nil
 }
 
-// dropRepoAttachments clears a repo's attachments when it is unregistered, so no
-// row or cached file outlives the repo that owned it.
-func (s *Server) dropRepoAttachments(root string) {
+// dropUnregisteredRepoState clears a repo's attachments when it is unregistered, so no
+// row or cached file outlives the repo that owned it, and drops the sync binding
+// that would otherwise resume mid-cursor if the root were ever registered again.
+func (s *Server) dropUnregisteredRepoState(root string) {
 	if err := s.stores.Attachments().DeleteForRepo(root); err != nil {
 		logger.Verbosef("drop attachments for %s: %v", root, err)
+	}
+	if err := s.stores.Issues().DeleteSyncState(root); err != nil {
+		logger.Verbosef("drop sync state for %s: %v", root, err)
 	}
 }
 

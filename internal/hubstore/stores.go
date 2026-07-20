@@ -53,7 +53,7 @@ func NewStores(home string, db, transcriptsDB *sql.DB, retention Retention) *Sto
 		atlas:       NewAtlasDocuments(db),
 		notifs:      NewNotifications(db),
 		prompts:     NewPromptOverrides(db),
-		attachments: NewAttachments(db, filepath.Join(home, AttachmentsDir)),
+		attachments: NewAttachments(db, filepath.Join(home, AttachmentsDir), retention.AttachmentCacheBytes),
 	}
 }
 

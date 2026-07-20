@@ -49,6 +49,23 @@ type Attachment struct {
 	Error           string `json:"error,omitempty"`
 	CreatedAt       string `json:"created_at"`
 	FetchedAt       string `json:"fetched_at,omitempty"`
+	LastServedAt    string `json:"last_served_at,omitempty"`
+	LastAttemptAt   string `json:"last_attempt_at,omitempty"`
+}
+
+// RetryReady reports whether a fetch may be attempted for this row now. A failed
+// row is self-healing — the next request retries it — but no faster than
+// AttachmentRetryFloor, so a file the tracker will never return cannot turn every
+// view of its issue into another API call.
+func (at Attachment) RetryReady(now time.Time) bool {
+	if at.State != AttachmentFailed || at.LastAttemptAt == "" {
+		return true
+	}
+	last, err := time.Parse(time.RFC3339Nano, at.LastAttemptAt)
+	if err != nil {
+		return true
+	}
+	return now.Sub(last) >= AttachmentRetryFloor
 }
 
 // rasterImageTypes are the image types trau will render and serve inline. SVG is
@@ -71,22 +88,27 @@ func AttachmentIsImage(mime string) bool {
 // Attachments is the hub's authoritative attachment index, paired with the
 // content-addressed blob store holding the bytes. Every delete path here also
 // garbage-collects blobs that lost their last referring row, so the two never
-// drift apart. The caller owns db's lifecycle.
+// drift apart, and cacheBytes caps what the store may hold on disk. The caller
+// owns db's lifecycle.
 type Attachments struct {
-	db    *sql.DB
-	blobs *AttachmentBlobs
+	db         *sql.DB
+	blobs      *AttachmentBlobs
+	cacheBytes int64
+	now        func() time.Time
 }
 
-// NewAttachments returns an attachment store over db whose bytes live under root.
-func NewAttachments(db *sql.DB, root string) *Attachments {
-	return &Attachments{db: db, blobs: NewAttachmentBlobs(root)}
+// NewAttachments returns an attachment store over db whose bytes live under root,
+// trimmed back to cacheBytes on disk by EnforceCacheCap. A non-positive cacheBytes
+// leaves the cache unbounded.
+func NewAttachments(db *sql.DB, root string, cacheBytes int64) *Attachments {
+	return &Attachments{db: db, blobs: NewAttachmentBlobs(root), cacheBytes: cacheBytes, now: time.Now}
 }
 
 // Blobs returns the content-addressed byte store behind the index.
 func (a *Attachments) Blobs() *AttachmentBlobs { return a.blobs }
 
 const attachmentSelect = `SELECT id, repo, issue_identifier, source, source_url, filename, mime_type,
-		size_bytes, sha256, state, error, created_at, fetched_at
+		size_bytes, sha256, state, error, created_at, fetched_at, last_served_at, last_attempt_at
 	 FROM attachments`
 
 // Create registers an attachment, deduping tracker-hosted files on
@@ -98,7 +120,7 @@ func (a *Attachments) Create(att Attachment) (Attachment, error) {
 	if att.State == "" {
 		att.State = AttachmentPending
 	}
-	att.CreatedAt = formatAttachmentTime(time.Now())
+	att.CreatedAt = a.stamp()
 
 	if att.SourceURL != "" {
 		existing, found, err := a.bySourceURL(att.Repo, att.SourceURL)
@@ -168,25 +190,38 @@ func (a *Attachments) Get(repo string, id int64) (Attachment, bool, error) {
 
 // MarkCached records a successful fetch: the bytes are in the blob store under
 // sha, and the row leaves pending with its error cleared. A mime type is only
-// adopted when the fetch actually learned one.
+// adopted when the fetch actually learned one. The fetch counts as a serve — bytes
+// are only ever downloaded because something asked for them — so the row starts
+// its cache life at the warm end of the eviction order rather than the cold one.
 func (a *Attachments) MarkCached(id int64, sha string, size int64, mime string) error {
+	stamp := a.stamp()
 	_, err := a.db.Exec(
 		`UPDATE attachments SET sha256 = ?, size_bytes = ?,
 			mime_type = CASE WHEN ? <> '' THEN ? ELSE mime_type END,
-			state = ?, error = '', fetched_at = ?
+			state = ?, error = '', fetched_at = ?, last_attempt_at = ?, last_served_at = ?
 		 WHERE id = ?`,
-		sha, size, mime, mime, AttachmentCached, formatAttachmentTime(time.Now()), id,
+		sha, size, mime, mime, AttachmentCached, stamp, stamp, stamp, id,
 	)
 	return err
 }
 
 // MarkFailed records why a fetch did not produce bytes. The row stays failed —
-// surfacing the reason in the drawer — until a later request retries it.
+// surfacing the reason in the drawer — until a later request past the retry floor
+// tries again.
 func (a *Attachments) MarkFailed(id int64, reason string) error {
+	stamp := a.stamp()
 	_, err := a.db.Exec(
-		`UPDATE attachments SET state = ?, error = ?, fetched_at = ? WHERE id = ?`,
-		AttachmentFailed, reason, formatAttachmentTime(time.Now()), id,
+		`UPDATE attachments SET state = ?, error = ?, fetched_at = ?, last_attempt_at = ? WHERE id = ?`,
+		AttachmentFailed, reason, stamp, stamp, id,
 	)
+	return err
+}
+
+// MarkServed records that a row's bytes were just handed out, which is what the
+// cache cap ranks eviction on. Serving is a read path, so a failure here is the
+// caller's to log rather than to fail the response over.
+func (a *Attachments) MarkServed(id int64) error {
+	_, err := a.db.Exec(`UPDATE attachments SET last_served_at = ? WHERE id = ?`, a.stamp(), id)
 	return err
 }
 
@@ -338,6 +373,7 @@ func (a *Attachments) scan(query string, args ...any) (out []Attachment, err err
 		if err := q.Scan(
 			&at.ID, &at.Repo, &at.IssueIdentifier, &at.Source, &at.SourceURL, &at.Filename,
 			&at.MimeType, &at.SizeBytes, &at.SHA256, &at.State, &at.Error, &at.CreatedAt, &at.FetchedAt,
+			&at.LastServedAt, &at.LastAttemptAt,
 		); err != nil {
 			return nil, err
 		}
@@ -349,5 +385,7 @@ func (a *Attachments) scan(query string, args ...any) (out []Attachment, err err
 func placeholders(n int) string {
 	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
 }
+
+func (a *Attachments) stamp() string { return formatAttachmentTime(a.now()) }
 
 func formatAttachmentTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }

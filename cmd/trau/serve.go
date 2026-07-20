@@ -125,10 +125,11 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 	logger.Verbosef("transcript database ready at %s (schema v%d)", tdb.Path(), tdb.Version())
 
 	stores := hubstore.NewStores(home, db.SQL(), tdb.SQL(), hubstore.Retention{
-		Transcripts: cfg.TranscriptRetention,
-		Events:      cfg.EventRetention,
-		TokenCalls:  cfg.TokenRetention,
-		Grill:       cfg.GrillRetention,
+		Transcripts:          cfg.TranscriptRetention,
+		Events:               cfg.EventRetention,
+		TokenCalls:           cfg.TokenRetention,
+		Grill:                cfg.GrillRetention,
+		AttachmentCacheBytes: int64(cfg.AttachmentsCacheMB) << 20,
 	})
 	if err := stores.Registrations().ImportLegacy(home); err != nil {
 		return console.Actionable(err, "import legacy registration state",
