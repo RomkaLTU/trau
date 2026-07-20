@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
@@ -119,13 +120,31 @@ func TestAttachmentAPILazyFetchCachesAndServes(t *testing.T) {
 	}
 }
 
+// ageAttachmentAttempt backdates a row's last fetch attempt past the retry floor,
+// standing in for the minute a caller would otherwise have to wait out.
+func ageAttachmentAttempt(t *testing.T, home string, id int64) {
+	t.Helper()
+	db, err := hubdb.Open(home)
+	if err != nil {
+		t.Fatalf("open hub db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	stamp := time.Now().Add(-2 * hubstore.AttachmentRetryFloor).UTC().Format(time.RFC3339Nano)
+	if _, err := db.SQL().Exec(`UPDATE attachments SET last_attempt_at = ? WHERE id = ?`, stamp, id); err != nil {
+		t.Fatalf("age attachment attempt: %v", err)
+	}
+}
+
 // TestAttachmentAPIFailedFetchSurfacesAndRetries covers the failure half: the
-// reason reaches both the 502 and the drawer's list, and the row is not poisoned —
-// a later request tries again.
+// reason reaches both the 502 and the drawer's list, the row is not poisoned —
+// a later request tries again — and the retry floor keeps the views in between
+// from turning a permanently missing file into a stream of tracker calls.
 func TestAttachmentAPIFailedFetchSurfacesAndRetries(t *testing.T) {
 	var broken atomic.Bool
+	var hits atomic.Int32
 	broken.Store(true)
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
 		if broken.Load() {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -161,6 +180,17 @@ func TestAttachmentAPIFailedFetchSurfacesAndRetries(t *testing.T) {
 		t.Fatalf("listed = %+v, want failed with the reason", listed[0])
 	}
 
+	attempts := hits.Load()
+	res = doReq(t, http.MethodGet, attachmentURL(ts, att.ID), nil)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("view inside the retry floor = %d, want the stored 502", res.StatusCode)
+	}
+	if got := hits.Load(); got != attempts {
+		t.Fatalf("origin saw %d request(s) after the failure, want it left alone inside the retry floor", got-attempts)
+	}
+
+	ageAttachmentAttempt(t, home, att.ID)
 	broken.Store(false)
 	res = doReq(t, http.MethodGet, attachmentURL(ts, att.ID), nil)
 	body, _ := io.ReadAll(res.Body)

@@ -2,7 +2,6 @@ package webserver
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 
@@ -23,19 +22,17 @@ func (s *Server) attachmentBytes(ctx context.Context, repo registry.Repo, id int
 	if !found {
 		return nil, fmt.Errorf("unknown attachment %d", id)
 	}
-	if att.State != hubstore.AttachmentCached {
-		if att.SourceURL == "" {
-			return nil, errors.New("attachment has no stored bytes")
-		}
-		if att, err = s.fetchAttachment(ctx, repo, att); err != nil {
-			return nil, err
-		}
+	if att, err = s.cachedAttachment(ctx, repo, att); err != nil {
+		return nil, err
 	}
 	f, err := s.stores.Attachments().Blobs().Open(att.SHA256)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = f.Close() }()
+	if err := s.stores.Attachments().MarkServed(att.ID); err != nil {
+		logger.Verbosef("mark attachment %d served: %v", att.ID, err)
+	}
 	return io.ReadAll(f)
 }
 

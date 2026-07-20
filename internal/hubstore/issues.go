@@ -1068,6 +1068,17 @@ func (s *Issues) DropSynced(repo string) error {
 	return tx.Commit()
 }
 
+// DeleteSyncState drops a repo's tracker binding, sync cursor, and resolved Me
+// identity — the unregister sweep. Left behind, they are the orphan rows a
+// re-registered root silently resumes from: a cursor that skips everything the
+// tracker changed while the repo was gone, against a binding it may no longer
+// have. The repo's issues stay put, so its run history remains browsable, and the
+// re-register re-resolves and re-pulls from scratch.
+func (s *Issues) DeleteSyncState(repo string) error {
+	_, err := s.db.Exec(`DELETE FROM issue_sync WHERE repo = ?`, repo)
+	return err
+}
+
 func labelList(labels []string) []string {
 	if labels == nil {
 		return []string{}
