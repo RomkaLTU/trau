@@ -16,6 +16,7 @@ import {
   preselectProvider,
   testTracker,
   trackerCanContinue,
+  trackerCanTest,
   trackerConfigWrites,
   type RepoInspection,
   type Team,
@@ -100,6 +101,8 @@ export function StepTracker({
   })
 
   const needsBinding = provider === 'linear' || provider === 'jira'
+  const hasExisting = provider !== null && credentialLayer(inspection, provider) !== null
+  const canTest = provider !== null && trackerCanTest(provider, fields, hasExisting)
   const canContinue = trackerCanContinue(provider, binding, testState)
 
   function choose(next: TrackerProvider) {
@@ -251,7 +254,7 @@ export function StepTracker({
                   type="button"
                   variant="outline"
                   onClick={() => provider && test.mutate(provider)}
-                  disabled={test.isPending}
+                  disabled={test.isPending || !canTest}
                 >
                   <Plug className="size-4" />
                   {test.isPending ? 'Testing…' : 'Test connection'}
@@ -259,6 +262,13 @@ export function StepTracker({
                 {testState === 'ok' && (
                   <span className="font-mono text-xs text-done">
                     authenticated{binding ? ` — ${binding} reachable` : ''}
+                  </span>
+                )}
+                {!canTest && (
+                  <span className="font-sans text-xs text-muted-foreground">
+                    {provider === 'jira'
+                      ? 'Enter the site URL, email, and API token to test.'
+                      : 'Enter the API key to test.'}
                   </span>
                 )}
               </div>

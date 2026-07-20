@@ -253,6 +253,22 @@ export function trackerCanContinue(
   return binding.trim() !== '' && test === 'ok'
 }
 
+// Blank fields are allowed when the repo already stores a credential set the hub
+// falls back to; otherwise every field the provider needs must be filled in.
+export function trackerCanTest(
+  provider: TrackerProvider,
+  fields: TrackerFields,
+  hasExisting: boolean,
+): boolean {
+  if (provider === 'internal' || hasExisting) return true
+  if (provider === 'linear') return fields.linearKey.trim() !== ''
+  return (
+    fields.jiraBaseUrl.trim() !== '' &&
+    fields.jiraEmail.trim() !== '' &&
+    fields.jiraToken.trim() !== ''
+  )
+}
+
 const SECRET_MASK = '••••••••••••  (set — enter to replace)'
 
 export function secretPlaceholder(hasExisting: boolean, fallback: string): string {
