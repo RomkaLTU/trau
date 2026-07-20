@@ -111,7 +111,12 @@ func NewReader(provider string, cfg Config) (Reader, error) {
 		if cfg.BaseURL == "" || cfg.Email == "" || cfg.APIKey == "" {
 			return nil, ErrReaderUnavailable
 		}
-		return &jiraReader{client: jiraapi.New(cfg.BaseURL, cfg.Email, cfg.APIKey), project: cfg.Team, readyLabel: cfg.ReadyLabel}, nil
+		return &jiraReader{
+			client:     jiraapi.New(cfg.BaseURL, cfg.Email, cfg.APIKey),
+			baseURL:    cfg.BaseURL,
+			project:    cfg.Team,
+			readyLabel: cfg.ReadyLabel,
+		}, nil
 	case "github":
 		return nil, ErrReaderUnavailable
 	default:
@@ -182,6 +187,7 @@ func (r *linearReader) Issue(ctx context.Context, id string) (IssueSummary, erro
 
 type jiraReader struct {
 	client     *jiraapi.Client
+	baseURL    string
 	project    string
 	readyLabel string
 }

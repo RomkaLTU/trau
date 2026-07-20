@@ -14,7 +14,7 @@ import {
   Trash2,
 } from "lucide-react";
 
-import { Markdown } from "@/components/markdown";
+import { Markdown, type MarkdownUrlMap } from "@/components/markdown";
 import { CreatedToast } from "@/components/created-toast";
 import { ErrorNote } from "@/components/grill/banners";
 import { Composer } from "@/components/grill/composer";
@@ -38,6 +38,7 @@ import {
   StatusPill,
   useActiveRepo,
 } from "@/components/trau";
+import { useIssueAttachments } from "@/lib/attachments";
 import {
   abandonGrill,
   applySessionModel,
@@ -804,6 +805,7 @@ function FreshDraftBody({
       <div className="flex flex-col gap-3 border-t border-border p-4">
         <StartModelSelect starter={starter} className="self-end" />
         <Composer
+          repo={repo}
           placeholder="Describe the issue…"
           disabled={start.isPending}
           submitting={start.isPending}
@@ -836,6 +838,7 @@ function SessionPreview({
 }) {
   const queryClient = useQueryClient();
   const issue = useQuery(issueQueryOptions(repo, item.id));
+  const { urlMap } = useIssueAttachments(repo, item.id);
   const labels = (item.entry?.labels ?? []).filter((l) =>
     GRILLABLE_LABELS.includes(l),
   );
@@ -870,6 +873,7 @@ function SessionPreview({
             markdown={issue.data?.description.trim() ?? ""}
             loading={issue.isLoading}
             error={(issue.error as Error) ?? null}
+            urlMap={urlMap}
           />
         </div>
       </div>
@@ -899,6 +903,7 @@ function SessionPreview({
           <StartModelSelect starter={starter} className="ml-auto" />
         </div>
         <Composer
+          repo={repo}
           placeholder="Type your first message to start the interview…"
           disabled={askAhead.isPending}
           submitting={false}
@@ -1538,6 +1543,7 @@ function ContextBody({
   status: GrillStatus | null;
 }) {
   const issue = useQuery(issueQueryOptions(repo, item.id));
+  const { urlMap } = useIssueAttachments(repo, item.id);
   const labels = (item.entry?.labels ?? []).filter((l) =>
     GRILLABLE_LABELS.includes(l),
   );
@@ -1582,6 +1588,7 @@ function ContextBody({
             markdown={issue.data?.description.trim() ?? ""}
             loading={issue.isLoading}
             error={(issue.error as Error) ?? null}
+            urlMap={urlMap}
           />
         </div>
       </details>
@@ -1623,10 +1630,12 @@ function Description({
   markdown,
   loading,
   error,
+  urlMap,
 }: {
   markdown: string;
   loading: boolean;
   error: Error | null;
+  urlMap: MarkdownUrlMap;
 }) {
   if (loading) {
     return (
@@ -1638,7 +1647,11 @@ function Description({
   }
   if (error) return <ErrorNote message={error.message} />;
   if (!markdown) return <p className="text-xs text-faint">No description.</p>;
-  return <Markdown className="text-xs leading-relaxed">{markdown}</Markdown>;
+  return (
+    <Markdown className="text-xs leading-relaxed" urlMap={urlMap}>
+      {markdown}
+    </Markdown>
+  );
 }
 
 // OutcomeMirror is read-only on purpose: the proposal is edited and approved in the

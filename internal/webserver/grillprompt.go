@@ -1,13 +1,17 @@
 package webserver
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/RomkaLTU/trau/internal/attachfile"
+)
 
 // grillIssuePrompt is the first-turn prompt for grilling an existing issue: the
 // agent interviews the user one question at a time via the ask_user MCP tool and
 // ends with a finish_session proposal. It runs with the repo as cwd, so it is told
 // to read the code before asking when that sharpens a question. Resume turns carry
 // only the user's answer — the child already holds this context.
-func grillIssuePrompt(issueID, title, description string) string {
+func grillIssuePrompt(issueID, title, description string, files []attachfile.File) string {
 	var b strings.Builder
 	b.WriteString("You are clarifying a software issue so an autonomous coding agent can implement it without guessing. ")
 	b.WriteString("You are running inside the repository this issue belongs to; read the code before asking when it sharpens a question.\n\n")
@@ -18,21 +22,28 @@ func grillIssuePrompt(issueID, title, description string) string {
 		b.WriteString(t)
 	}
 	b.WriteString("\n\n")
-	if d := strings.TrimSpace(description); d != "" {
-		b.WriteString(d)
-	} else {
-		b.WriteString("(no description yet)")
-	}
-	b.WriteString("\n\n")
+	b.WriteString(grillIssueBody(description, files))
 	b.WriteString(grillPromptRules)
 	return b.String()
+}
+
+// grillIssueBody renders the description with every reference to one of the
+// issue's images repointed at the local copy the session materialized, followed by
+// the list of those files — so the interviewing agent can open a screenshot the
+// ticket only linked to.
+func grillIssueBody(description string, files []attachfile.File) string {
+	body := "(no description yet)"
+	if d := strings.TrimSpace(description); d != "" {
+		body = attachfile.Rewrite(d, files)
+	}
+	return body + "\n" + attachfile.Section(files) + "\n"
 }
 
 // grillPregrillPrompt is the first-turn prompt for an AFK pre-grill pass: no user
 // is present, so the agent reads the repo and either finishes with a rewrite or
 // no_change, or lodges its single opening question via ask_user — which parks at
 // once — and ends its turn. The parked question waits for a live session later.
-func grillPregrillPrompt(issueID, title, description string) string {
+func grillPregrillPrompt(issueID, title, description string, files []attachfile.File) string {
 	var b strings.Builder
 	b.WriteString("You are triaging a software issue ahead of time so an autonomous coding agent can later implement it without guessing. ")
 	b.WriteString("You are running inside the repository this issue belongs to; read the code before you decide.\n\n")
@@ -44,12 +55,7 @@ func grillPregrillPrompt(issueID, title, description string) string {
 		b.WriteString(t)
 	}
 	b.WriteString("\n\n")
-	if d := strings.TrimSpace(description); d != "" {
-		b.WriteString(d)
-	} else {
-		b.WriteString("(no description yet)")
-	}
-	b.WriteString("\n\n")
+	b.WriteString(grillIssueBody(description, files))
 	b.WriteString(grillPregrillRules)
 	return b.String()
 }

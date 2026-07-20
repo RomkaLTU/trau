@@ -10,12 +10,13 @@ import (
 
 func testArtifacts(t *testing.T) *Artifacts {
 	t.Helper()
-	db, err := hubdb.Open(t.TempDir())
+	home := t.TempDir()
+	db, err := hubdb.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewStores(db.SQL(), nil, Retention{}).Artifacts()
+	return NewStores(home, db.SQL(), nil, Retention{}).Artifacts()
 }
 
 func TestArtifactUpsertOneAll(t *testing.T) {

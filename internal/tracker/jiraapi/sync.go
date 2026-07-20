@@ -27,6 +27,18 @@ type SyncIssue struct {
 	Created      string
 	Updated      string
 	Comments     []Comment
+	Attachments  []Attachment
+}
+
+// Attachment is one file attached to an issue. Content is the authenticated URL
+// its bytes are served from — the same URL an embedded image in the description
+// resolves to, so a file is registered once however it was referenced.
+type Attachment struct {
+	ID       string
+	Filename string
+	MimeType string
+	Size     int64
+	Content  string
 }
 
 // Comment is one comment on an issue, keyed by its Jira id. Author is the
@@ -44,6 +56,7 @@ type Comment struct {
 var syncFields = []string{
 	"summary", "description", "status", "resolution", "priority", "duedate",
 	"parent", "labels", "issuetype", "assignee", "created", "updated", "comment",
+	"attachment",
 }
 
 // SyncIssues pulls every issue in a project with the full content sync needs —
@@ -158,18 +171,37 @@ type syncSearchIssue struct {
 				Updated string          `json:"updated"`
 			} `json:"comments"`
 		} `json:"comment"`
+		Attachment []attachmentField `json:"attachment"`
 	} `json:"fields"`
 }
 
+type attachmentField struct {
+	ID       string `json:"id"`
+	Filename string `json:"filename"`
+	MimeType string `json:"mimeType"`
+	Size     int64  `json:"size"`
+	Content  string `json:"content"`
+}
+
+func toAttachments(fields []attachmentField) []Attachment {
+	out := make([]Attachment, 0, len(fields))
+	for _, f := range fields {
+		out = append(out, Attachment(f))
+	}
+	return out
+}
+
 func (r *syncSearchIssue) toSyncIssue() SyncIssue {
+	files := toAttachments(r.Fields.Attachment)
 	iss := SyncIssue{
 		Key:         r.Key,
 		Summary:     r.Fields.Summary,
-		Description: adfToText(r.Fields.Description),
+		Description: adfToMarkdown(r.Fields.Description, files),
 		DueDate:     r.Fields.DueDate,
 		Labels:      r.Fields.Labels,
 		Created:     r.Fields.Created,
 		Updated:     r.Fields.Updated,
+		Attachments: files,
 	}
 	if s := r.Fields.Status; s != nil {
 		iss.Status = Status{Name: s.Name, Category: s.StatusCategory.Key}
@@ -192,7 +224,7 @@ func (r *syncSearchIssue) toSyncIssue() SyncIssue {
 	}
 	if cm := r.Fields.Comment; cm != nil {
 		for _, c := range cm.Comments {
-			comment := Comment{ID: c.ID, Body: adfToText(c.Body), Created: c.Created, Updated: c.Updated}
+			comment := Comment{ID: c.ID, Body: adfToMarkdown(c.Body, files), Created: c.Created, Updated: c.Updated}
 			if c.Author != nil {
 				comment.Author = c.Author.DisplayName
 			}

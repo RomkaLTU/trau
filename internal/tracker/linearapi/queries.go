@@ -223,6 +223,13 @@ query SyncIssues($filter: IssueFilter!, $after: String) {
           }
         }
       }
+      attachments {
+        nodes {
+          id
+          title
+          url
+        }
+      }
     }
   }
 }

@@ -16,12 +16,15 @@ const sourceSynced = "synced"
 
 // storeHub is the slice of the hub API the store-backed tracker drives: everything
 // the internal provider needs, plus reading a synced issue and the backlog from the
-// store, mirroring a tracker write onto a synced row, and nudging a sync.
-// *hubclient.Client satisfies it; tests supply a fake.
+// store, reading the issue's attachments and their bytes, mirroring a tracker write
+// onto a synced row, and nudging a sync. *hubclient.Client satisfies it; tests
+// supply a fake.
 type storeHub interface {
 	hubAPI
 	Sync(ctx context.Context, repo string) error
 	Issue(ctx context.Context, repo, id string) (hubclient.Issue, error)
+	IssueAttachments(ctx context.Context, repo, id string) ([]hubclient.Attachment, error)
+	AttachmentBytes(ctx context.Context, repo string, id int64) ([]byte, error)
 	MirrorSynced(ctx context.Context, repo, id string, m hubclient.SyncedMirror) error
 }
 
@@ -193,8 +196,10 @@ func (in *StoreBacked) Title(ctx context.Context, id string) (string, error) {
 	return iss.Title, nil
 }
 
-// IssueDetail returns the title, description, and comments of synced issue id from
-// the store, for the build/verify prompt context.
+// IssueDetail returns the title, description, comments, and attachments of synced
+// issue id from the store, for the build/verify prompt context. A failed
+// attachment listing costs the prompt its files, never its description — the same
+// best-effort contract mirror carries.
 func (in *StoreBacked) IssueDetail(ctx context.Context, id string) (IssueDetail, error) {
 	iss, err := in.Hub.Issue(ctx, in.Repo, id)
 	if err != nil {
@@ -204,7 +209,27 @@ func (in *StoreBacked) IssueDetail(ctx context.Context, id string) (IssueDetail,
 	for _, c := range iss.Comments {
 		detail.Comments = append(detail.Comments, IssueComment{Author: c.Author, Body: c.Body})
 	}
+	atts, err := in.Hub.IssueAttachments(ctx, in.Repo, id)
+	if err != nil {
+		return detail, nil
+	}
+	for _, att := range atts {
+		detail.Attachments = append(detail.Attachments, AttachmentRef{
+			ID:        att.ID,
+			Filename:  att.Filename,
+			MimeType:  att.MimeType,
+			Size:      att.SizeBytes,
+			IsImage:   att.IsImage,
+			SourceURL: att.SourceURL,
+		})
+	}
 	return detail, nil
+}
+
+// AttachmentBytes reads one of the repo's attachments through the hub, which
+// fetches and caches it from the tracker on first read.
+func (in *StoreBacked) AttachmentBytes(ctx context.Context, id int64) ([]byte, error) {
+	return in.Hub.AttachmentBytes(ctx, in.Repo, id)
 }
 
 // IssueStatus reports the normalized lifecycle status of synced issue id from its

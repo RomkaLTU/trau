@@ -12,12 +12,13 @@ import (
 
 func testInstances(t *testing.T) *Instances {
 	t.Helper()
-	db, err := hubdb.Open(t.TempDir())
+	home := t.TempDir()
+	db, err := hubdb.Open(home)
 	if err != nil {
 		t.Fatalf("open hub db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return NewStores(db.SQL(), nil, Retention{}).Instances()
+	return NewStores(home, db.SQL(), nil, Retention{}).Instances()
 }
 
 func countInstances(t *testing.T, in *Instances) int {

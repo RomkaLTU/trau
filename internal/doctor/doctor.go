@@ -64,9 +64,10 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkLinearProject(ctx, cfg, rr)
 	checkJira(ctx, cfg, rr)
 	checkWritePerms(repoRoot, rr)
-	checkWebHub(ctx, cfg, version, rr)
+	hub, hubUp := checkWebHub(ctx, cfg, version, rr)
 	checkHubDatabase(rr)
 	checkTranscriptDatabase(rr)
+	checkAttachmentCache(hub, hubUp, rr)
 	checkLegacyRegistration(rr)
 	checkLegacyQueue(repoRoot, rr)
 	checkLegacyRunData(cfg, repoRoot, rr)
@@ -387,7 +388,9 @@ var hubProbeTimeout = 2 * time.Second
 // answerable here instead of with lsof and curl. Only a refused connection means
 // nothing is listening; a listener that answers wrong — or accepts and then goes
 // quiet until the deadline — is an occupied port, which is a different fix.
-func checkWebHub(ctx context.Context, cfg config.Config, version string, rr *runner) {
+// It returns the health payload it read, so the checks that report hub-owned state
+// need no second probe; the bool is false when nothing usable came back.
+func checkWebHub(ctx context.Context, cfg config.Config, version string, rr *runner) (webserver.Health, bool) {
 	addr := net.JoinHostPort(webserver.DialHost(cfg.ServeBind), strconv.Itoa(cfg.ServePort))
 	ctx, cancel := context.WithTimeout(ctx, hubProbeTimeout)
 	defer cancel()
@@ -396,19 +399,36 @@ func checkWebHub(ctx context.Context, cfg config.Config, version string, rr *run
 	switch {
 	case errors.Is(err, syscall.ECONNREFUSED):
 		reportHubDown(cfg, addr, rr)
-		return
+		return webserver.Health{}, false
 	case err != nil:
 		rr.add("web hub", warn, fmt.Sprintf("%s is not answering as a trau hub: %v", addr, err),
 			"set SERVE_PORT to a free port, or stop whatever owns this one")
-		return
+		return webserver.Health{}, false
 	}
 	uptime := time.Duration(h.UptimeSeconds * float64(time.Second)).Round(time.Second)
 	if h.Version != version {
 		rr.add("web hub", warn, fmt.Sprintf("running at %s serving version %s, up %s — this binary is %s", addr, h.Version, uptime, version),
 			"run `trau hub restart`")
-		return
+		return h, true
 	}
 	rr.add("web hub", pass, fmt.Sprintf("running at %s (version %s, up %s)", addr, h.Version, uptime), "")
+	return h, true
+}
+
+// checkAttachmentCache reports what the issue attachment cache is holding. The hub
+// is the store's only writer (ADR 0008), so the numbers come from the health
+// payload rather than a second reader on the database; with the hub down there is
+// nothing to report and the line is skipped.
+func checkAttachmentCache(hub webserver.Health, hubUp bool, rr *runner) {
+	if !hubUp {
+		return
+	}
+	c := hub.Attachments
+	msg := fmt.Sprintf("%s across %d file(s), %d failed", humanBytes(c.Bytes), c.Files, c.Failed)
+	if c.CapBytes > 0 {
+		msg += fmt.Sprintf(" (cap %s)", humanBytes(c.CapBytes))
+	}
+	rr.add("attachment cache", pass, msg, "")
 }
 
 // reportHubDown names what would (or would not) bring the hub up, so a port with

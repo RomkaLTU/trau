@@ -8,12 +8,15 @@ import (
 // Retention bounds how much per-repo run data each authoritative store keeps
 // before its periodic prune drops the oldest (ADR 0008). A non-positive field
 // disables pruning for that store. Checkpoints — the per-ticket run summaries —
-// are never pruned.
+// are never pruned. AttachmentCacheBytes is the odd one out: it bounds bytes on
+// disk rather than rows per repo, because attachments tie to issue lifecycle
+// rather than to a run.
 type Retention struct {
-	Transcripts int
-	Events      int
-	TokenCalls  int
-	Grill       int
+	Transcripts          int
+	Events               int
+	TokenCalls           int
+	Grill                int
+	AttachmentCacheBytes int64
 }
 
 // pruneKeepingRecent deletes the rows of table beyond the retention newest per

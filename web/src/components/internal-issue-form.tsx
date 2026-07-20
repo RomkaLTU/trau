@@ -100,6 +100,7 @@ export function InternalIssueForm({
         className={inputClass}
       />
       <MarkdownEditor
+        repo={repo}
         placeholder="Description (markdown, optional)"
         defaultValue={issue?.description ?? ''}
         onChange={setDescription}

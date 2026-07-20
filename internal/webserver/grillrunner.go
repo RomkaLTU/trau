@@ -9,11 +9,13 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/attachfile"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
@@ -132,7 +134,7 @@ func (r *grillRunner) runTurn(ctx context.Context, sess hubstore.GrillSession) {
 		return
 	}
 
-	spec := r.buildTurn(sess, repo, cfg)
+	spec := r.buildTurn(ctx, sess, repo, cfg)
 	out, runErr := r.spawnClaude(ctx, spec, r.deltaSink(sess.ID))
 
 	chainID, resultErr := parseGrillStream(out.stdout)
@@ -156,7 +158,7 @@ type grillTurnSpec struct {
 // has a transcript on disk resumes it with the user's latest answer as the prompt;
 // a fresh or stale-chained session runs the first-turn grilling prompt (the next
 // result event mints the authoritative id, so a stale chain self-heals).
-func (r *grillRunner) buildTurn(sess hubstore.GrillSession, repo registry.Repo, cfg config.Config) grillTurnSpec {
+func (r *grillRunner) buildTurn(ctx context.Context, sess hubstore.GrillSession, repo registry.Repo, cfg config.Config) grillTurnSpec {
 	model := sess.Model
 	if model == "" {
 		model = cfg.GrillModel
@@ -172,12 +174,9 @@ func (r *grillRunner) buildTurn(sess hubstore.GrillSession, repo registry.Repo, 
 	resume, prompt := "", ""
 	if sess.SessionChain != "" && agent.SessionExists(sess.SessionChain) {
 		resume = sess.SessionChain
-		prompt = r.latestAnswer(sess.ID)
-		if prompt == "" {
-			prompt = grillResumeNudge
-		}
+		prompt = r.answerPrompt(ctx, repo, sess)
 	} else {
-		prompt = r.firstPrompt(repo, sess)
+		prompt = r.firstPrompt(ctx, repo, sess)
 	}
 
 	return grillTurnSpec{
@@ -237,7 +236,7 @@ func (r *grillRunner) mcpConfigJSON(sid int64) string {
 	return string(b)
 }
 
-func (r *grillRunner) firstPrompt(repo registry.Repo, sess hubstore.GrillSession) string {
+func (r *grillRunner) firstPrompt(ctx context.Context, repo registry.Repo, sess hubstore.GrillSession) string {
 	if sess.IssueID == "" {
 		return grillAuthoringPrompt(r.seedIdea(sess.ID))
 	}
@@ -245,10 +244,36 @@ func (r *grillRunner) firstPrompt(repo registry.Repo, sess hubstore.GrillSession
 	if iss, found, err := r.srv.stores.Issues().Get(repo.Root, sess.IssueID); err == nil && found {
 		title, description = iss.Title, iss.Description
 	}
+	files := r.srv.materializeIssueAttachments(ctx, repo, sess.IssueID)
 	if r.srv.isPregrill(sess.ID) {
-		return grillPregrillPrompt(sess.IssueID, title, description)
+		return grillPregrillPrompt(sess.IssueID, title, description, files)
 	}
-	return grillIssuePrompt(sess.IssueID, title, description)
+	return grillIssuePrompt(sess.IssueID, title, description, files)
+}
+
+// answerPrompt is the resume-turn prompt: the user's latest answer with any image
+// they pasted mid-interview materialized locally and referenced by path, so a
+// screenshot dropped into an answer is something the child can open on this turn.
+func (r *grillRunner) answerPrompt(ctx context.Context, repo registry.Repo, sess hubstore.GrillSession) string {
+	text := r.latestAnswer(sess.ID)
+	if text == "" {
+		return grillResumeNudge
+	}
+	ids := attachfile.IDsIn(text)
+	if len(ids) == 0 {
+		return text
+	}
+	files := r.srv.materializeAttachmentIDs(ctx, repo, grillAttachTicket(sess), ids)
+	return attachfile.Rewrite(text, files) + attachfile.Section(files)
+}
+
+// grillAttachTicket names the directory a session's files materialize into: the
+// issue for an issue grilling, the session itself when it is authoring one.
+func grillAttachTicket(sess hubstore.GrillSession) string {
+	if sess.IssueID != "" {
+		return sess.IssueID
+	}
+	return "grill-" + strconv.FormatInt(sess.ID, 10)
 }
 
 // seedIdea returns the one-line idea an authoring session was opened with, stored as

@@ -22,6 +22,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker"
 	"github.com/RomkaLTU/trau/internal/update"
+	"golang.org/x/sync/singleflight"
 )
 
 // APIPrefix is the mount path for the versioned JSON API.
@@ -64,6 +65,7 @@ type Server struct {
 	restart          func()
 	restartOnce      sync.Once
 	updates          *update.Checker
+	attachFetch      singleflight.Group
 }
 
 // New builds a Server that reports version and treats now as its start time. It
@@ -154,7 +156,8 @@ const grillIdleAbandon = 30 * 24 * time.Hour
 // pruneRunData drops run data past its retention window on startup and on a
 // periodic timer (ADR 0008): transcript sessions from transcripts.db, reclaiming
 // their freed pages, and event and token-call rows from the authoritative store.
-// Checkpoints — the run summaries — are never pruned. Each pass is best-effort
+// Checkpoints — the run summaries — are never pruned. The attachment sweeps ride
+// along here rather than on a timer of their own. Each pass is best-effort
 // hygiene, so a failure is logged and retried on the next tick rather than
 // surfaced.
 func (s *Server) pruneRunData(ctx context.Context) {
@@ -172,6 +175,10 @@ func (s *Server) pruneRunData(ctx context.Context) {
 		if err := s.stores.Grill().Prune(); err != nil {
 			logger.Verbosef("prune grill sessions: %v", err)
 		}
+		if err := s.stores.Attachments().PruneUnboundUploads(); err != nil {
+			logger.Verbosef("prune unbound uploads: %v", err)
+		}
+		s.evictAttachmentCache("")
 	}
 	prune()
 	t := time.NewTicker(runDataPruneInterval)
@@ -268,6 +275,8 @@ func (s *Server) apiHandler() http.Handler {
 	// the archive action rides a wildcard segment that stays clear of the internal
 	// subtree while still serving the exact .../issues/{id}/archive path.
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/issues/{id}/{action}", s.handleIssueAction)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/attachments", s.handleUploadAttachment)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/attachments/{id}", s.handleAttachment)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue", s.handleQueue)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/drain", s.handleQueueDrain)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}", s.handleQueueItem)
@@ -336,9 +345,10 @@ func (s *Server) apiHandler() http.Handler {
 
 // Health is the /api/v1/health resource.
 type Health struct {
-	Status        string  `json:"status"`
-	Version       string  `json:"version"`
-	UptimeSeconds float64 `json:"uptime_seconds"`
+	Status        string                        `json:"status"`
+	Version       string                        `json:"version"`
+	UptimeSeconds float64                       `json:"uptime_seconds"`
+	Attachments   hubstore.AttachmentCacheStats `json:"attachments"`
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -347,10 +357,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	stats, _ := s.stores.Attachments().Stats()
 	writeJSON(w, http.StatusOK, Health{
 		Status:        "ok",
 		Version:       s.version,
 		UptimeSeconds: time.Since(s.started).Seconds(),
+		Attachments:   stats,
 	})
 }
 

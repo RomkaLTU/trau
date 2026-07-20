@@ -1,6 +1,9 @@
 package hubstore
 
-import "database/sql"
+import (
+	"database/sql"
+	"path/filepath"
+)
 
 // Stores is the hub's set of SQLite-backed stores. Every store but transcripts is
 // over the one authoritative database the serve process opens; transcripts live in
@@ -24,12 +27,15 @@ type Stores struct {
 	atlas       *AtlasDocuments
 	notifs      *Notifications
 	prompts     *PromptOverrides
+	attachments *Attachments
 }
 
 // NewStores builds the hub store set over the authoritative database db and the
 // separate transcripts database, each authoritative store pruned to its retention
-// window. A nil transcriptsDB yields an inert transcript store (tests).
-func NewStores(db, transcriptsDB *sql.DB, retention Retention) *Stores {
+// window. A nil transcriptsDB yields an inert transcript store (tests). home is
+// the trau home the databases were opened under; attachment bytes live beside
+// them, so a test home keeps a test's blobs out of the real one.
+func NewStores(home string, db, transcriptsDB *sql.DB, retention Retention) *Stores {
 	return &Stores{
 		db:          db,
 		repos:       NewRegistrations(db),
@@ -47,6 +53,7 @@ func NewStores(db, transcriptsDB *sql.DB, retention Retention) *Stores {
 		atlas:       NewAtlasDocuments(db),
 		notifs:      NewNotifications(db),
 		prompts:     NewPromptOverrides(db),
+		attachments: NewAttachments(db, filepath.Join(home, AttachmentsDir), retention.AttachmentCacheBytes),
 	}
 }
 
@@ -94,6 +101,9 @@ func (s *Stores) Notifications() *Notifications { return s.notifs }
 
 // Prompts returns the prompt override store.
 func (s *Stores) Prompts() *PromptOverrides { return s.prompts }
+
+// Attachments returns the issue attachment index and its blob store.
+func (s *Stores) Attachments() *Attachments { return s.attachments }
 
 // Queue returns the queue store for a repo root.
 func (s *Stores) Queue(root string) *Queue { return NewQueue(s.db, root) }

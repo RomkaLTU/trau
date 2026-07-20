@@ -67,14 +67,14 @@ func mustNotContain(t *testing.T, name, s string, subs ...string) {
 // agent away from the account-level tracker MCP; empty detail injects nothing so
 // the agent keeps its MCP fallback (used when per-repo API creds are missing).
 func TestTicketContextNote(t *testing.T) {
-	got := ticketContextNote("TMS-1121", tracker.IssueDetail{Title: "Model gateway", Description: "Change source engine."})
+	got := ticketContextNote("TMS-1121", tracker.IssueDetail{Title: "Model gateway", Description: "Change source engine."}, nil)
 	mustContain(t, "ticketContextNote", got,
 		"TMS-1121",
 		"Model gateway",
 		"Change source engine.",
 		"do NOT call the Jira/Atlassian or Linear MCP",
 	)
-	if empty := ticketContextNote("TMS-1121", tracker.IssueDetail{}); empty != "" {
+	if empty := ticketContextNote("TMS-1121", tracker.IssueDetail{}, nil); empty != "" {
 		t.Errorf("empty detail should inject nothing, got %q", empty)
 	}
 
@@ -82,7 +82,7 @@ func TestTicketContextNote(t *testing.T) {
 	withComments := ticketContextNote("TMS-1121", tracker.IssueDetail{
 		Title:    "Model gateway",
 		Comments: []tracker.IssueComment{{Author: "ada", Body: "watch the timeout"}},
-	})
+	}, nil)
 	mustContain(t, "ticketContextNote comments", withComments, "Comments", "ada", "watch the timeout")
 
 	// The build instruction carries the injected block through to the agent.

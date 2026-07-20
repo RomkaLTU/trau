@@ -189,6 +189,7 @@ export function GrillConversation({
             />
             {asking && (
               <Composer
+                repo={repo}
                 placeholder="Ask a follow-up…"
                 disabled={sending}
                 submitting={sending}
@@ -209,6 +210,7 @@ export function GrillConversation({
               />
             )}
             <Composer
+              repo={repo}
               placeholder={
                 !answering
                   ? composerPlaceholder(session.state)

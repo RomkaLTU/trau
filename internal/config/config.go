@@ -305,6 +305,13 @@ type Config struct {
 	// sessions past the window are kept; zero disables pruning.
 	GrillRetention int
 
+	// AttachmentsCacheMB caps the megabytes of issue attachments the hub keeps
+	// under ~/.trau/attachments. Over the cap the least recently served
+	// tracker-hosted files are evicted and re-download on next use; uploaded files
+	// are the only copy of their bytes and are never evicted. Zero disables the
+	// cap.
+	AttachmentsCacheMB int
+
 	// GrillPregrillMax bounds how many issues one AFK pre-grill pass grills in a
 	// single sequential sweep (grilling-prd.md). Non-positive falls back to the
 	// built-in default.
@@ -407,6 +414,7 @@ func Defaults() Config {
 		EventRetention:         5000,
 		TokenRetention:         5000,
 		GrillRetention:         50,
+		AttachmentsCacheMB:     1024,
 		GrillPregrillMax:       5,
 		MaxTicketUSD:           0,
 		MaxTicketTokens:        0,
@@ -862,6 +870,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	num("EVENT_RETENTION", &c.EventRetention)
 	num("TOKEN_RETENTION", &c.TokenRetention)
 	num("GRILL_RETENTION", &c.GrillRetention)
+	num("ATTACHMENTS_CACHE_MB", &c.AttachmentsCacheMB)
 	num("GRILL_PREGRILL_MAX", &c.GrillPregrillMax)
 	fnum("MAX_TICKET_USD", &c.MaxTicketUSD)
 	num("MAX_TICKET_TOKENS", &c.MaxTicketTokens)
@@ -1574,6 +1583,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "EVENT_RETENTION", Group: sectionRetention, Kind: "int", WebEditable: true, Default: "5000", Advanced: true, Description: "Event rows per repo the hub keeps in trau.db before pruning the oldest; checkpoints (run summaries) are never pruned; 0 = keep all (ADR 0008)"},
 		{Key: "TOKEN_RETENTION", Group: sectionRetention, Kind: "int", WebEditable: true, Default: "5000", Advanced: true, Description: "Token-call rows per repo the hub keeps in trau.db before pruning the oldest, anomalies alongside; 0 = keep all (ADR 0008)"},
 		{Key: "GRILL_RETENTION", Group: sectionRetention, Kind: "int", WebEditable: true, Default: "50", Advanced: true, Description: "Grilling sessions per repo the hub keeps in trau.db before pruning the oldest settled ones; active sessions are kept; 0 = keep all"},
+		{Key: "ATTACHMENTS_CACHE_MB", Group: sectionRetention, Kind: "int", WebEditable: true, Default: "1024", Advanced: true, Description: "Megabytes of issue attachments the hub caches under ~/.trau/attachments; over the cap the least recently served tracker files are evicted and re-download on next view, while uploaded files are never evicted; 0 = no cap"},
 		{Key: "GRILL_PREGRILL_MAX", Group: sectionGrilling, Kind: "int", WebEditable: true, Default: "5", Advanced: true, Description: "Issues one AFK pre-grill pass grills in a single sequential sweep; 0 or less uses the default"},
 		{Key: "MAX_TICKET_USD", Group: sectionCost, WebEditable: true, Description: "Per-ticket USD spend cap; over it the ticket is quarantined (empty = no cap)"},
 		{Key: "MAX_TICKET_TOKENS", Group: sectionCost, Kind: "int", WebEditable: true, Description: "Per-ticket token spend cap; over it the ticket is quarantined (empty = no cap)"},
@@ -2184,6 +2194,8 @@ func keyValue(cfg Config, key string) string {
 		return intValue(cfg.TokenRetention)
 	case "GRILL_RETENTION":
 		return intValue(cfg.GrillRetention)
+	case "ATTACHMENTS_CACHE_MB":
+		return intValue(cfg.AttachmentsCacheMB)
 	case "GRILL_PREGRILL_MAX":
 		return intValue(cfg.GrillPregrillMax)
 	case "MAX_TICKET_USD":

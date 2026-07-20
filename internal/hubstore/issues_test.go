@@ -985,3 +985,21 @@ func TestSyncBindingAndResultRoundTrip(t *testing.T) {
 		t.Fatalf("result = %+v, want 3/5/cursor/no-error", st)
 	}
 }
+
+func TestIssuesDeleteSyncStateLeavesNoBindingBehind(t *testing.T) {
+	s := testIssues(t)
+	if err := s.SaveBinding("/repo", SyncBinding{TeamID: "team", ProjectID: "proj", Project: "trau"}); err != nil {
+		t.Fatalf("SaveBinding: %v", err)
+	}
+
+	if err := s.DeleteSyncState("/repo"); err != nil {
+		t.Fatalf("DeleteSyncState: %v", err)
+	}
+	st, err := s.SyncState("/repo")
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	if st.Binding.TeamID != "" || st.Binding.ProjectID != "" {
+		t.Fatalf("sync state after unregister = %+v, want nothing a re-register could resume from", st.Binding)
+	}
+}

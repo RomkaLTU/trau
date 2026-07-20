@@ -81,10 +81,23 @@ func New(baseURL, email, apiToken string) *Client {
 		baseURL: baseURL,
 		http:    &http.Client{Timeout: 30 * time.Second},
 	}
-	if baseURL != "" && email != "" && apiToken != "" {
-		c.auth = "Basic " + base64.StdEncoding.EncodeToString([]byte(email+":"+apiToken))
+	if baseURL != "" {
+		c.auth = BasicAuth(email, apiToken)
 	}
 	return c
+}
+
+// BasicAuth returns the Authorization header value a Jira Cloud request carries,
+// or "" when either credential is missing. Attachment downloads hit the site's
+// content URLs rather than the REST API, so they authenticate with this directly
+// instead of going through a Client.
+func BasicAuth(email, apiToken string) string {
+	email = strings.TrimSpace(email)
+	apiToken = strings.TrimSpace(apiToken)
+	if email == "" || apiToken == "" {
+		return ""
+	}
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(email+":"+apiToken))
 }
 
 // enabled reports whether the client has the credentials to reach the API.
@@ -120,8 +133,9 @@ func (c *Client) Myself(ctx context.Context) (id, name string, err error) {
 }
 
 // Issue is the subset of a Jira issue the tracker consumes. Description is the v3
-// ADF body flattened to plain text; Status/Resolution/Project/Parent back the
-// tracker's status, ownership-guard and epic-parent reads.
+// ADF body flattened to text with its embedded images kept as markdown image
+// references; Status/Resolution/Project/Parent back the tracker's status,
+// ownership-guard and epic-parent reads.
 type Issue struct {
 	Key         string
 	Summary     string
@@ -131,6 +145,7 @@ type Issue struct {
 	Project     Project
 	Parent      string // parent issue key, "" when top-level
 	Labels      []string
+	Attachments []Attachment
 }
 
 // Status is an issue's workflow status. Category is the stable statusCategory.key
@@ -159,7 +174,7 @@ func (c *Client) Issue(ctx context.Context, key string) (*Issue, error) {
 		return nil, ErrNotFound
 	}
 	var dst issueResponse
-	path := "/issue/" + url.PathEscape(key) + "?fields=summary,description,status,resolution,project,parent,labels"
+	path := "/issue/" + url.PathEscape(key) + "?fields=summary,description,status,resolution,project,parent,labels,attachment"
 	if err := c.do(ctx, http.MethodGet, path, nil, &dst); err != nil {
 		return nil, err
 	}
@@ -188,17 +203,20 @@ type issueResponse struct {
 		Parent *struct {
 			Key string `json:"key"`
 		} `json:"parent"`
-		Labels []string `json:"labels"`
+		Labels     []string          `json:"labels"`
+		Attachment []attachmentField `json:"attachment"`
 	} `json:"fields"`
 }
 
 // toIssue maps the raw REST payload onto the Issue the tracker consumes,
 // tolerating absent optional objects (null status/resolution/project/parent).
 func (r *issueResponse) toIssue() *Issue {
+	files := toAttachments(r.Fields.Attachment)
 	iss := &Issue{
 		Key:         r.Key,
 		Summary:     r.Fields.Summary,
-		Description: adfToText(r.Fields.Description),
+		Description: adfToMarkdown(r.Fields.Description, files),
+		Attachments: files,
 	}
 	if s := r.Fields.Status; s != nil {
 		iss.Status = Status{Name: s.Name, Category: s.StatusCategory.Key}
@@ -301,17 +319,57 @@ func retryAfter(header string, attempt int, jitter float64) time.Duration {
 }
 
 // adfNode is one node of an Atlassian Document Format tree. Text carries inline
-// content (marks are ignored); Content holds child nodes.
+// content (marks are ignored); Content holds child nodes. Attrs stays raw because
+// its shape varies by node type — decoding it eagerly would let one unfamiliar
+// node blank an entire description.
 type adfNode struct {
-	Type    string    `json:"type"`
-	Text    string    `json:"text"`
-	Content []adfNode `json:"content"`
+	Type    string          `json:"type"`
+	Text    string          `json:"text"`
+	Attrs   json.RawMessage `json:"attrs"`
+	Content []adfNode       `json:"content"`
 }
 
-// adfToText flattens a v3 ADF description document to plain, readable text. A
-// missing or null description, or any decode failure, yields "" so callers treat
-// an unreadable body as "no description" rather than an error.
+// adfMediaAttrs are a media node's attributes: id addresses the file in the
+// issue's attachment list, url carries an externally hosted image directly, and
+// alt is the caption Jira echoes for it.
+type adfMediaAttrs struct {
+	ID  string `json:"id"`
+	URL string `json:"url"`
+	Alt string `json:"alt"`
+}
+
+// adfMedia resolves a document's media nodes against the issue's attachment list.
+type adfMedia []Attachment
+
+func (m adfMedia) byID(id string) (Attachment, bool) {
+	for _, att := range m {
+		if id != "" && att.ID == id {
+			return att, true
+		}
+	}
+	return Attachment{}, false
+}
+
+func (m adfMedia) byFilename(name string) (Attachment, bool) {
+	for _, att := range m {
+		if name != "" && strings.EqualFold(att.Filename, name) {
+			return att, true
+		}
+	}
+	return Attachment{}, false
+}
+
+// adfToText flattens a v3 ADF document with no attachment list to resolve its
+// embedded images against, so each one leaves a placeholder rather than a URL.
 func adfToText(raw json.RawMessage) string {
+	return adfToMarkdown(raw, nil)
+}
+
+// adfToMarkdown flattens a v3 ADF document to plain, readable text, rendering its
+// embedded media as markdown image references resolved against the issue's
+// attachments. A missing or null body, or any decode failure, yields "" so callers
+// treat an unreadable body as "no description" rather than an error.
+func adfToMarkdown(raw json.RawMessage, media adfMedia) string {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || string(trimmed) == "null" {
 		return ""
@@ -321,25 +379,63 @@ func adfToText(raw json.RawMessage) string {
 		return ""
 	}
 	var b strings.Builder
-	writeADF(&b, doc)
+	writeADF(&b, doc, media)
 	return strings.TrimSpace(collapseBlankLines(b.String()))
 }
 
 // writeADF walks an ADF node depth-first, emitting text and a newline after every
 // block-level node so paragraphs and list items stay on their own lines.
-func writeADF(b *strings.Builder, n adfNode) {
+func writeADF(b *strings.Builder, n adfNode, media adfMedia) {
 	switch n.Type {
 	case "text":
 		b.WriteString(n.Text)
 	case "hardBreak":
 		b.WriteByte('\n')
+	case "media", "mediaInline":
+		b.WriteString(mediaRef(n, media))
 	}
 	for _, c := range n.Content {
-		writeADF(b, c)
+		writeADF(b, c, media)
 	}
 	if isADFBlock(n.Type) {
 		b.WriteByte('\n')
 	}
+}
+
+// mediaRef renders a media node — the leaf inside a mediaSingle or mediaGroup —
+// as a markdown image, so an embedded screenshot survives the flattening instead
+// of vanishing from the stored body. An external node carries its URL directly; a
+// file node resolves through the issue's attachments, by media id and then by the
+// filename Jira echoes into alt. A node nothing resolves still leaves a trace, so
+// a reader knows an image was there.
+func mediaRef(n adfNode, media adfMedia) string {
+	var attrs adfMediaAttrs
+	if err := json.Unmarshal(n.Attrs, &attrs); err != nil {
+		return "[image]"
+	}
+	if attrs.URL != "" {
+		return "![" + attrs.Alt + "](" + attrs.URL + ")"
+	}
+	att, found := media.byID(attrs.ID)
+	if !found {
+		att, found = media.byFilename(attrs.Alt)
+	}
+	if found && att.Content != "" {
+		return "![" + attrs.Alt + "](" + att.Content + ")"
+	}
+	if name := firstNonEmpty(attrs.Alt, attrs.ID); name != "" {
+		return "[image: " + name + "]"
+	}
+	return "[image]"
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // isADFBlock reports whether an ADF node type is block-level and should be
