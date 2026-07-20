@@ -182,7 +182,7 @@ func readApplied(db *sql.DB) (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	applied := map[string]bool{}
 	for rows.Next() {
 		var k string
