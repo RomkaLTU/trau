@@ -90,7 +90,7 @@ func TestADFKeepsProseAroundEmbeddedMedia(t *testing.T) {
 		`{"type":"paragraph","content":[{"type":"text","text":"After"}]}`)
 	media := []Attachment{{ID: "7", Filename: "shot.png", Content: "https://acme.atlassian.net/c/7"}}
 
-	want := "Before\n![shot.png](https://acme.atlassian.net/c/7)\nAfter"
+	want := "Before\n\n![shot.png](https://acme.atlassian.net/c/7)\n\nAfter"
 	if got := adfToMarkdown(doc, media); got != want {
 		t.Fatalf("adfToMarkdown = %q, want %q", got, want)
 	}
@@ -140,16 +140,16 @@ func TestSyncIssuesRegistersAttachmentsAndResolvesEmbeddedMedia(t *testing.T) {
 	if att.Filename != "architecture.png" || att.MimeType != "image/png" || att.Size != 2048 {
 		t.Errorf("attachment = %+v, want filename/mime/size from the API", att)
 	}
-	want := "Look:\n![architecture.png](https://acme.atlassian.net/rest/api/3/attachment/content/10042)"
+	want := "Look:\n\n![architecture.png](https://acme.atlassian.net/rest/api/3/attachment/content/10042)"
 	if iss.Description != want {
 		t.Errorf("description = %q, want the embedded image kept as %q", iss.Description, want)
 	}
 }
 
-func TestADFNodeAttributesNeverBreakFlattening(t *testing.T) {
+func TestADFHeadingAttrsDriveTheMarkdownLevel(t *testing.T) {
 	doc := adfBody(`{"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"Title"}]},` +
 		`{"type":"paragraph","content":[{"type":"text","text":"Body"}]}`)
-	if got := adfToMarkdown(doc, nil); got != "Title\nBody" {
-		t.Fatalf("adfToMarkdown = %q, want the numeric heading attrs ignored", got)
+	if got := adfToMarkdown(doc, nil); got != "## Title\n\nBody" {
+		t.Fatalf("adfToMarkdown = %q, want the heading level rendered as hashes", got)
 	}
 }
