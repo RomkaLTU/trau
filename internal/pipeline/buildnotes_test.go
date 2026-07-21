@@ -149,7 +149,7 @@ func TestBuildNotesInjectedIntoMechanicalPhasesOnly(t *testing.T) {
 	if got := handoffTail(prompts.Renderer{}, id, ""); strings.Contains(got, buildNotesPath(id)) {
 		t.Errorf("handoff prompt leaked the build notes:\n%s", got)
 	}
-	if got := verifyTail(prompts.Renderer{}, id, handoffPath(id), verifyPath(id), "", "", "", "", "", ""); strings.Contains(got, buildNotesPath(id)) {
+	if got := verifyTail(prompts.Renderer{}, id, handoffPath(id), verifyPath(id), "", "", "", "", "", "", ""); strings.Contains(got, buildNotesPath(id)) {
 		t.Errorf("verify prompt leaked the build notes:\n%s", got)
 	}
 }
@@ -168,8 +168,8 @@ type namedPrompt struct{ name, got string }
 func mechanicalPrompts(id, note string) []namedPrompt {
 	return []namedPrompt{
 		{"cleanup", cleanupInstruction(prompts.Renderer{}, id, note)},
-		{"repair", repairInstruction(prompts.Renderer{}, id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", note, "")},
-		{"bugfix", bugfixInstruction(prompts.Renderer{}, id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", note, "")},
+		{"repair", repairInstruction(prompts.Renderer{}, id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", note, "", "")},
+		{"bugfix", bugfixInstruction(prompts.Renderer{}, id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", note, "", "")},
 		{"push-repair", pushRepairInstruction(prompts.Renderer{}, id, "hook said no", note)},
 	}
 }

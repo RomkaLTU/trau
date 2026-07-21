@@ -78,6 +78,10 @@ func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 		{"skills_none", "skills", SkillsData{}},
 		{"skills_installed", "skills", SkillsData{Installed: []string{"alpha", "beta"}}},
 		{"skills_required", "skills", SkillsData{Installed: []string{"alpha", "beta", "gamma"}, Required: []string{"beta"}}},
+		{"verify_skills_none", "verify_skills", SkillsData{}},
+		{"verify_skills_installed", "verify_skills", SkillsData{Installed: []string{"alpha", "beta"}}},
+		{"verify_skills_required", "verify_skills", SkillsData{Installed: []string{"alpha", "beta", "tdd"}, Required: []string{"tdd", "browser-harness"}}},
+		{"verify_skills_browser_only", "verify_skills", SkillsData{Required: []string{"browser-harness"}}},
 		{"build_full", "build", buildData("SKILLS-NOTE.", " NOTE-FRAGMENT.", goldenTicketCtx)},
 		{"build_empty", "build", buildData("", "", "")},
 		{"handoff_ctx", "handoff", HandoffData{ID: goldenID, Handoff: goldenHandoffPath, Rubric: rubricFragment, TicketContext: goldenTicketCtx}},
@@ -117,8 +121,8 @@ func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 
 func TestCatalog(t *testing.T) {
 	cat := Catalog()
-	if len(cat) != 19 {
-		t.Fatalf("catalog has %d prompts, want 19", len(cat))
+	if len(cat) != 20 {
+		t.Fatalf("catalog has %d prompts, want 20", len(cat))
 	}
 	seen := map[string]bool{}
 	for _, p := range cat {

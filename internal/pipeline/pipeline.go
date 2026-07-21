@@ -381,9 +381,9 @@ type Pipeline struct {
 	// they were on) instead of aborting, and RestoreWIP pops them back at session
 	// end. When off, a dirty tracked tree aborts the run as before.
 	AutoStash bool
-	// SkillsExpected reports whether a build run by the named provider is
-	// expected to load repo skills (the provider reports skill usage and the
-	// repo has skills installed). Nil disables the post-build no-skills warning.
+	// SkillsExpected reports whether a build or verify run by the named provider
+	// is expected to load repo skills (the provider reports skill usage and the
+	// repo has skills installed). Nil disables the no-skills warnings.
 	SkillsExpected func(provider string) bool
 	// RequiredSkills names the skills the build prompt tells the agent to load
 	// before implementing (config REQUIRED_SKILLS). Only names installed in the
@@ -448,6 +448,11 @@ type Pipeline struct {
 	// post-build no-skills warning.
 	buildProvider string
 	buildSkills   []string
+
+	// verifyProvider/verifySkills mirror the build capture for the primary
+	// verify call — the inputs to the post-verify no-skills warning.
+	verifyProvider string
+	verifySkills   []string
 
 	// prompts is the ticket run's prompt renderer: the override snapshot
 	// fetched at run start layered over the built-in defaults. Edits made
@@ -1330,6 +1335,9 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	notesRef, _ := p.activeBuildNotes(id)
 	notesRepair := buildNotesNote(notesRef)
 	lessonsVerify := verifyLessonsNote(p.recallLessons(p.lessonQuery(id)))
+	installed := agent.InstalledSkillNames(p.RepoRoot)
+	skillsVerify := verifySkillsPrompt(p.prompts, installed, note != "")
+	skillsRepair := skillsPrompt(p.prompts, installed, p.RequiredSkills)
 
 	checksFragment := checks.Render(p.Checks)
 	if n := len(p.Checks); n > 0 {
@@ -1346,9 +1354,12 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	var lastFail, passVerdict verdict
 	for {
 		p.setActivity(id, activity.Verify, "")
-		v, err := p.verifyAttempt(ctx, id, label, handoff, note, qaNote, checksFragment, rubricVerify, lessonsVerify, ticketCtx)
+		v, err := p.verifyAttempt(ctx, id, label, handoff, note, qaNote, checksFragment, rubricVerify, lessonsVerify, skillsVerify, ticketCtx)
 		if err != nil {
 			return err
+		}
+		if label == "verify" {
+			p.warnVerifyWithoutSkills(id)
 		}
 		p.persistVerdict(id, v)
 		if v.Pass {
@@ -1366,7 +1377,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				p.logf("  ↳ %s", fl)
 			}
 			p.setActivity(id, activity.Repair, fmt.Sprintf("repair%d", repairAttempt))
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, skillsRepair, ticketCtx)); err != nil {
 				return err
 			}
 			continue
@@ -1379,7 +1390,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				p.logf("  ↳ %s", fl)
 			}
 			p.setActivity(id, activity.Bugfix, fmt.Sprintf("bugfix%d", bugfixAttempt))
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, skillsRepair, ticketCtx)); err != nil {
 				return err
 			}
 			continue
@@ -1396,7 +1407,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 		}
 		return p.giveUp(ctx, id, reason)
 	}
-	if err := p.gateBrowserVerify(ctx, id, passVerdict, handoff, qaNote, checksFragment, rubricVerify, lessonsVerify, ticketCtx); err != nil {
+	if err := p.gateBrowserVerify(ctx, id, passVerdict, handoff, qaNote, checksFragment, rubricVerify, lessonsVerify, skillsVerify, ticketCtx); err != nil {
 		return err
 	}
 	if repairAttempt > 0 || bugfixAttempt > 0 {
@@ -1409,6 +1420,22 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 		return fmt.Errorf("verify %s: checkpoint verified: %w", id, err)
 	}
 	return nil
+}
+
+const verifyNoSkillsWarning = "verify loaded no skills — the repo has skills installed but the agent used none"
+
+// warnVerifyWithoutSkills flags a primary verify attempt that loaded no skills
+// in a repo that has them, mirroring warnBuildWithoutSkills: a console/TUI line
+// plus, in serve mode, a durable verify_no_skills event. Called once per Verify,
+// after the first attempt only, so a run emits the event at most once.
+func (p *Pipeline) warnVerifyWithoutSkills(id string) {
+	if p.SkillsExpected == nil || len(p.verifySkills) > 0 || !p.SkillsExpected(p.verifyProvider) {
+		return
+	}
+	p.logf("  ⚠ %s", verifyNoSkillsWarning)
+	if p.Events != nil {
+		p.Events.Emit(event.KindVerifyNoSkills, "verify", verifyNoSkillsWarning, map[string]any{"ticket": id})
+	}
 }
 
 const noBrowserWarning = "browser verify skipped on a UI slice — the verifier did not drive the app in a browser"
@@ -1427,7 +1454,7 @@ const noBrowserWarning = "browser verify skipped on a UI slice — the verifier 
 // a still-undriven UI slice pauses blamelessly, carrying the verdict's
 // browser_notes as the reason. A browser skip is an environment/config gap, never
 // a code defect, so it never routes into the repair loop.
-func (p *Pipeline) gateBrowserVerify(ctx context.Context, id string, v verdict, handoff, qaNote, checksFragment, rubricNote, lessonsNote, ticketCtx string) error {
+func (p *Pipeline) gateBrowserVerify(ctx context.Context, id string, v verdict, handoff, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) error {
 	if p.BrowserVerify == "never" || p.BrowserVerify == "" {
 		return nil
 	}
@@ -1450,7 +1477,7 @@ func (p *Pipeline) gateBrowserVerify(ctx context.Context, id string, v verdict, 
 
 	p.logf("  ⚠ browser verify required but the UI slice was not driven — re-verifying once (must drive %s)", appURL)
 	p.setActivity(id, activity.Verify, "browser")
-	v2, err := p.verifyAttempt(ctx, id, "verify-browser", handoff, browserDriveNote(appURL), qaNote, checksFragment, rubricNote, lessonsNote, ticketCtx)
+	v2, err := p.verifyAttempt(ctx, id, "verify-browser", handoff, browserDriveNote(appURL), qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
 	if err != nil {
 		return err
 	}
@@ -2201,15 +2228,23 @@ func (p *Pipeline) agentPhaseOn(ctx context.Context, id, phase, prompt string, r
 	stop := p.spin(label)
 	res, err := runner.Run(ctx, prompt, phase)
 	stop()
-	if phase == "build" {
-		p.buildSkills = res.Skills
-		p.buildProvider = ""
-		if pr, ok := runner.(agent.PhaseRoute); ok {
-			p.buildProvider, _, _ = pr.Route(phase)
-		}
+	switch phase {
+	case "build":
+		p.buildSkills, p.buildProvider = res.Skills, phaseProvider(runner, phase)
+	case "verify":
+		p.verifySkills, p.verifyProvider = res.Skills, phaseProvider(runner, phase)
 	}
 	p.putPhaseLog(id, phase, res.Final)
 	return res.Final, err
+}
+
+func phaseProvider(runner agent.Runner, phase string) string {
+	pr, ok := runner.(agent.PhaseRoute)
+	if !ok {
+		return ""
+	}
+	provider, _, _ := pr.Route(phase)
+	return provider
 }
 
 func runnerLabel(phase string, runner agent.Runner) string {
@@ -2583,6 +2618,22 @@ func skillsPrompt(r prompts.Renderer, installed, required []string) string {
 	})
 }
 
+// verifySkillsPrompt renders the verify-prompt skills sentence: the installed
+// list plus the auto-required set — the project's test skill(s) derived from
+// the installed names, and browser-harness when browser verify is active for
+// the slice. browser-harness is required even when not repo-installed: the
+// harness loads from outside the repo.
+func verifySkillsPrompt(r prompts.Renderer, installed []string, browserActive bool) string {
+	required := agent.TestSkillNames(installed)
+	if browserActive {
+		required = append(required, "browser-harness")
+	}
+	return r.Render("verify_skills", prompts.SkillsData{
+		Installed: installed,
+		Required:  required,
+	})
+}
+
 func intersect(want, have []string) []string {
 	set := make(map[string]struct{}, len(have))
 	for _, h := range have {
@@ -2900,7 +2951,7 @@ func qaRosterNote(accounts []hubclient.QAAccount, notes string) string {
 // handoff agent) it derives the checkable behaviors itself from the injected ticket
 // content and the slice's diff. The verdict shape and pass/fail gating are identical
 // either way.
-func verifyTail(r prompts.Renderer, id, handoff, verdict, note, qaNote, checksFragment, rubricNote, lessonsNote, ticketCtx string) string {
+func verifyTail(r prompts.Renderer, id, handoff, verdict, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) string {
 	return r.Render("verify", prompts.VerifyData{
 		ID:             id,
 		Handoff:        handoff,
@@ -2910,6 +2961,7 @@ func verifyTail(r prompts.Renderer, id, handoff, verdict, note, qaNote, checksFr
 		ChecksFragment: checksFragment,
 		RubricNote:     rubricNote,
 		LessonsNote:    lessonsNote,
+		SkillsNote:     skillsNote,
 		TicketContext:  ticketCtx,
 	})
 }
@@ -2997,15 +3049,15 @@ func commitSubject(title string) string {
 	return strings.TrimRight(cut, " ")
 }
 
-func repairInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) string {
-	return r.Render("repair", repairData(r, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx))
+func repairInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, ticketCtx string) string {
+	return r.Render("repair", repairData(r, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, ticketCtx))
 }
 
-func bugfixInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) string {
-	return r.Render("bugfix", repairData(r, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx))
+func bugfixInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, ticketCtx string) string {
+	return r.Render("bugfix", repairData(r, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, ticketCtx))
 }
 
-func repairData(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) prompts.RepairData {
+func repairData(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, ticketCtx string) prompts.RepairData {
 	return prompts.RepairData{
 		ID:            id,
 		Verdict:       verdict,
@@ -3015,6 +3067,7 @@ func repairData(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricN
 		RubricNote:    rubricNote,
 		LessonsNote:   lessonsNote,
 		NotesNote:     notesNote,
+		SkillsNote:    skillsNote,
 		CodeStyle:     r.Render("code_style", nil),
 		TicketContext: ticketCtx,
 	}
@@ -3143,13 +3196,13 @@ type panelResult struct {
 // so the repair prompt and FileBug read the authoritative result. A non-nil error
 // is fatal and propagated (a provider pause or a budget give-up) — it stops the
 // phase rather than counting as a verify failure.
-func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, ticketCtx string) (verdict, error) {
+func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) (verdict, error) {
 	if len(p.VerifyPanel) > 0 {
-		return p.runPanel(ctx, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, ticketCtx)
+		return p.runPanel(ctx, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
 	}
 	verdictPath := verifyPath(id)
 	_ = os.Remove(verdictPath)
-	prompt := verifyTail(p.prompts, id, handoff, verdictPath, note, qaNote, checksFragment, rubricNote, lessonsNote, ticketCtx)
+	prompt := verifyTail(p.prompts, id, handoff, verdictPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
 	_, agentErr := p.agentStep(ctx, id, label, prompt)
 	// A provider pause (rate/usage limit) or budget give-up must propagate, not be
 	// recorded as a verify failure — otherwise a transient 429 burns repair/bugfix
@@ -3187,14 +3240,14 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 // give-up from any member is propagated so the loop stops cleanly (the ticket
 // stays resumable on its branch) instead of being recorded as a dissenting fail;
 // a plain timeout/crash counts as that member failing.
-func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, ticketCtx string) (verdict, error) {
+func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) (verdict, error) {
 	results := make([]panelResult, len(p.VerifyPanel))
 	member := func(ctx context.Context, i int) error {
 		m := p.VerifyPanel[i]
 		memberPath := verifyMemberPath(id, m.Name)
 		_ = os.Remove(memberPath)
 		memberLabel := label + "-" + m.Name
-		prompt := verifyTail(p.prompts, id, handoff, memberPath, note, qaNote, checksFragment, rubricNote, lessonsNote, ticketCtx)
+		prompt := verifyTail(p.prompts, id, handoff, memberPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
 		_, agentErr := p.agentStepOn(ctx, id, memberLabel, prompt, m.Runner)
 		if agentErr != nil && isFatalAgentErr(agentErr) {
 			return agentErr

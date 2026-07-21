@@ -2,9 +2,12 @@ package pipeline
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"os"
 	"testing"
 
+	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/event"
 )
 
@@ -57,6 +60,100 @@ func TestWarnBuildWithoutSkillsEmitsEvent(t *testing.T) {
 				t.Fatalf("emitted %d build_no_skills events, want 0", len(evs))
 			}
 		})
+	}
+}
+
+// TestWarnVerifyWithoutSkillsEmitsEvent mirrors the build guard for the QA
+// phase: the durable verify_no_skills event fires only when the repo expected
+// skills and the primary verify loaded none.
+func TestWarnVerifyWithoutSkillsEmitsEvent(t *testing.T) {
+	expected := func(string) bool { return true }
+
+	cases := []struct {
+		name    string
+		expects func(string) bool
+		skills  []string
+		want    bool
+	}{
+		{"skills expected and none loaded", expected, nil, true},
+		{"skills expected but some loaded", expected, []string{"tdd"}, false},
+		{"no skills expected", func(string) bool { return false }, nil, false},
+		{"gating disabled", nil, nil, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+			p.Events = event.New(&buf)
+			p.SkillsExpected = tc.expects
+			p.verifyProvider = "claude"
+			p.verifySkills = tc.skills
+
+			p.warnVerifyWithoutSkills("COD-1")
+
+			evs := kindEvents(t, &buf, event.KindVerifyNoSkills)
+			if tc.want {
+				if len(evs) != 1 {
+					t.Fatalf("emitted %d verify_no_skills events, want exactly 1", len(evs))
+				}
+				ev := evs[0]
+				if got := strField(ev.Fields, "ticket"); got != "COD-1" {
+					t.Errorf("ticket = %q, want %q", got, "COD-1")
+				}
+				if ev.Phase != "verify" {
+					t.Errorf("phase = %q, want %q", ev.Phase, "verify")
+				}
+				return
+			}
+			if len(evs) != 0 {
+				t.Fatalf("emitted %d verify_no_skills events, want 0", len(evs))
+			}
+		})
+	}
+}
+
+// seqVerdictRunner writes the next verdict in the sequence on each call (the
+// last one repeats), reporting no loaded skills, so a fail→repair→pass verify
+// can be driven end-to-end.
+type seqVerdictRunner struct {
+	path  string
+	seq   []verdict
+	calls int
+}
+
+func (r *seqVerdictRunner) Run(context.Context, string, string) (agent.Result, error) {
+	i := r.calls
+	if i >= len(r.seq) {
+		i = len(r.seq) - 1
+	}
+	r.calls++
+	data, _ := json.Marshal(r.seq[i])
+	_ = os.WriteFile(r.path, data, 0o644)
+	return agent.Result{}, nil
+}
+
+// TestVerifyNoSkillsEmittedExactlyOnce runs the whole Verify phase — a failing
+// first attempt, one repair, a passing retry — and asserts the skill-less run
+// produced exactly one verify_no_skills event, keyed to the first attempt.
+func TestVerifyNoSkillsEmittedExactlyOnce(t *testing.T) {
+	id := "COD-91061"
+	writeHandoff(t, id)
+	runner := &seqVerdictRunner{path: verifyPath(id), seq: []verdict{
+		{Pass: false, Summary: "boom", Failures: []string{"boom"}},
+		{Pass: true, Summary: "ok"},
+	}}
+	var buf bytes.Buffer
+	p := newTestPipeline(t, runner, &fakeTracker{})
+	p.Events = event.New(&buf)
+	p.SkillsExpected = func(string) bool { return true }
+	p.MaxRepairs = 1
+
+	if err := p.Verify(context.Background(), id); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if evs := kindEvents(t, &buf, event.KindVerifyNoSkills); len(evs) != 1 {
+		t.Fatalf("emitted %d verify_no_skills events, want exactly 1", len(evs))
 	}
 }
 
