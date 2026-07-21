@@ -1275,6 +1275,8 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		Base:                cfg.BaseBranch,
 		Remote:              cfg.Remote,
 		Prefix:              cfg.IssuePrefix,
+		TrackerProvider:     cfg.EffectiveTrackerProvider(),
+		InternalPrefix:      config.InternalPrefix(cfg.IssuePrefixConfigured, repoName(repoRoot)),
 		MaxRepairs:          cfg.MaxRepairs,
 		MaxBugfixes:         cfg.MaxBugfixes,
 		AgentRetries:        cfg.AgentRetries,

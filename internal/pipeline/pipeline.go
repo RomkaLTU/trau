@@ -334,8 +334,14 @@ type Pipeline struct {
 	Base         string
 	Remote       string
 	Prefix       string
-	MaxRepairs   int
-	MaxBugfixes  int
+	// TrackerProvider is the effective tracker backend (config
+	// EffectiveTrackerProvider) that names the PR body's ticket trailer;
+	// InternalPrefix is the repo's internal issue-id prefix, marking ids no
+	// external tracker knows.
+	TrackerProvider string
+	InternalPrefix  string
+	MaxRepairs      int
+	MaxBugfixes     int
 
 	// AgentRetries is how many times a TRANSIENT agent-step failure (timeout,
 	// output stall, non-rate-limit crash) is retried on a fresh process per
@@ -998,6 +1004,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	}
 	p.warnBuildWithoutSkills(id)
 	p.persistBuildNotes(id)
+	_ = p.State.Set(id, "BUILD_SUMMARY", summarizeBuildOutput(out))
 	if fi, err := os.Stat(buildNotesPath(id)); err == nil && fi.Size() > 0 {
 		p.logf("  ↳ build notes: %s captured for cleanup/repair", fmtBytes(fi.Size()))
 	}
@@ -1604,7 +1611,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 				return fmt.Errorf("commit %s: resolve epic branch: %w", id, err)
 			}
 		}
-		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, p.slicePRTitle(ctx, id, prBase, branch), prBody(id))
+		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, p.slicePRTitle(ctx, id, prBase, branch), p.prBody(ctx, id))
 		if err != nil {
 			return fmt.Errorf("commit %s: pr create: %w", id, err)
 		}
@@ -2213,10 +2220,6 @@ func slugify(title string) string {
 		words = words[:6]
 	}
 	return strings.Join(words, "-")
-}
-
-func prBody(id string) string {
-	return fmt.Sprintf("## Summary\nAutomated implementation of %s via the Trau loop.\n\n## Test plan\n- [x] Relevant automated tests for this slice\n- [x] QA verify pass (browser for UI slices)\n\nLinear: %s", id, id)
 }
 
 // agentPhaseOn runs one phase on a specific runner (the primary loop runner, or a
