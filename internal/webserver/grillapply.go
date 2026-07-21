@@ -27,15 +27,25 @@ const (
 // config-driven: the triage inbox keys on them by name.
 var grillTriageLabels = []string{"needs-triage", "needs-info"}
 
+// Apply destinations: the repo's configured tracker (the default) or the hub's
+// internal issue store.
+const (
+	grillDestTracker  = "tracker"
+	grillDestInternal = "internal"
+)
+
 // GrillApplyRequest is the body of POST /grill/{sid}/apply. ProposedDescription is
 // the possibly user-edited replacement from the review UI; empty falls back to the
 // description the agent proposed in the outcome. SubIssues carries the user-edited
 // split (or create-epic) breakdown; nil falls back to the agent's proposal. Title is
 // the user-edited title for a create outcome; empty falls back to the proposal.
+// Destination is where a create outcome files: "tracker" (the default — omitting it
+// keeps the repo's configured tracker) or "internal" for the hub issue store.
 type GrillApplyRequest struct {
 	Title               string          `json:"title"`
 	ProposedDescription string          `json:"proposed_description"`
 	SubIssues           []grillSubIssue `json:"sub_issues"`
+	Destination         string          `json:"destination"`
 }
 
 // grillSubIssue is one proposed slice of a split: a fully-specified child issue
@@ -114,6 +124,10 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
+	if req.Destination != "" && req.Destination != grillDestTracker && req.Destination != grillDestInternal {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": `destination must be "tracker" or "internal"`})
+		return
+	}
 
 	msgs, err := s.stores.Grill().Messages(sid, 0)
 	if err != nil {
@@ -136,7 +150,7 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "the session's repo is no longer registered"})
 		return
 	}
-	cfg, writer, err := s.grillWriterFor(repo)
+	cfg, writer, err := s.grillWriterFor(repo, req.Destination)
 	if err != nil {
 		writeWriterErr(w, err)
 		return
@@ -165,7 +179,12 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 			comment:     comment,
 			subIssues:   grillPlanSubIssues(req.SubIssues, outcome.SubIssues),
 			readyLabel:  cfg.ReadyLabel,
+			destination: grillDestination(req.Destination, cfg),
 		}
+		// A stored anchor's empty destination predates destination tracking and
+		// belongs to the repo's own tracker; resolving it the same way the request
+		// is lets the two compare directly.
+		sess.IssueDestination = grillDestination(sess.IssueDestination, cfg)
 		steps, applied = s.applyGrillCreate(r.Context(), writer, &sess, repo.Root, cfg.TrackerProvider, plan)
 	case grillDispSplit:
 		issueID, ok := grillAnchoredIssue(w, sess)
@@ -385,8 +404,9 @@ func (s *Server) applyGrillSplit(ctx context.Context, writer tracker.Writer, roo
 }
 
 // grillCreatePlan is the resolved write plan for a create outcome: the new issue's
-// title, description, and labels, the summary comment, and — when the work is
-// epic-shaped — the proposed sub-issues and the label a sub-issue defaults to.
+// title, description, and labels, the summary comment, the resolved destination
+// the issue files in, and — when the work is epic-shaped — the proposed
+// sub-issues and the label a sub-issue defaults to.
 type grillCreatePlan struct {
 	title       string
 	description string
@@ -394,16 +414,20 @@ type grillCreatePlan struct {
 	comment     string
 	subIssues   []grillSubIssue
 	readyLabel  string
+	destination string
 }
 
 // applyGrillCreate files a brand-new issue (or epic) from an authoring session with
-// no anchor. It creates the parent first and anchors the session to it, so a retry
-// after a partial failure reuses that issue rather than filing a duplicate; an epic
-// then creates its sub-issues as children, wires the sibling relations, and comments
-// on the parent — reusing the split machinery. A single issue is created with the
-// default ready label and takes the summary comment directly. Each created issue is
-// mirrored into the store so the board shows it and the next inbound sync sees no
-// divergence (ADR 0007).
+// no anchor. It creates the parent first and anchors the session to it with the
+// destination it filed in, so a retry after a partial failure reuses that issue
+// rather than filing a duplicate; an anchor from a different destination is no
+// anchor here — reusing it would graft children onto an identifier the requested
+// store has never seen — so a destination switch files a fresh parent and
+// re-anchors. An epic then creates its sub-issues as children, wires the sibling
+// relations, and comments on the parent — reusing the split machinery. A single
+// issue is created with the default ready label and takes the summary comment
+// directly. Each created issue is mirrored into the store so the board shows it
+// and the next inbound sync sees no divergence (ADR 0007).
 func (s *Server) applyGrillCreate(ctx context.Context, writer tracker.Writer, sess *hubstore.GrillSession, root, provider string, plan grillCreatePlan) ([]GrillApplyStep, bool) {
 	epic := len(plan.subIssues) > 0
 	steps := make([]GrillApplyStep, 0, len(plan.subIssues)+3)
@@ -419,6 +443,9 @@ func (s *Server) applyGrillCreate(ctx context.Context, writer tracker.Writer, se
 	}
 
 	parentID := strings.TrimSpace(sess.IssueID)
+	if parentID != "" && sess.IssueDestination != plan.destination {
+		parentID = ""
+	}
 	if parentID == "" {
 		labels := plan.labels
 		if len(labels) == 0 && !epic {
@@ -434,7 +461,7 @@ func (s *Server) applyGrillCreate(ctx context.Context, writer tracker.Writer, se
 			return steps, false
 		}
 		parentID = created.Identifier
-		s.anchorGrillSession(sess, parentID)
+		s.anchorGrillSession(sess, parentID, plan.destination)
 		s.mirrorCreatedParent(root, provider, parentID, plan.title, plan.description, labels)
 		s.bindUploadedAttachments(root, parentID, plan.description)
 	} else {
@@ -489,11 +516,12 @@ func grillCreateParentStep(epic bool, title string) string {
 	return "issue: " + strings.TrimSpace(title)
 }
 
-// anchorGrillSession records the created parent as the session's issue so a create
-// retry reuses it rather than filing a second parent. A failure is logged, not
-// fatal — the tracker write already landed.
-func (s *Server) anchorGrillSession(sess *hubstore.GrillSession, issueID string) {
-	if updated, _, err := s.stores.Grill().SetIssue(sess.ID, issueID); err == nil {
+// anchorGrillSession records the created parent and the destination it filed in as
+// the session's issue so a create retry to the same destination reuses it rather
+// than filing a second parent. A failure is logged, not fatal — the tracker write
+// already landed.
+func (s *Server) anchorGrillSession(sess *hubstore.GrillSession, issueID, destination string) {
+	if updated, _, err := s.stores.Grill().SetIssue(sess.ID, issueID, destination); err == nil {
 		*sess = updated
 	} else {
 		logger.Verbosef("grill apply %d: anchor to %s: %v", sess.ID, issueID, err)
@@ -606,21 +634,33 @@ func grillLabelTransition(disposition string, cfg config.Config) (add, remove []
 	return add, remove
 }
 
-// grillWriterFor resolves the repo's layered config and a direct tracker Writer,
-// returning the config so the caller can read its label names. A repo on the
-// internal provider gets the hub's in-process store-backed writer — there is no
-// external tracker to reach.
-func (s *Server) grillWriterFor(repo registry.Repo) (config.Config, tracker.Writer, error) {
+// grillWriterFor resolves the repo's layered config and the Writer the requested
+// destination reaches, returning the config so the caller can read its label
+// names. An internal apply — chosen by the request or forced by a repo on the
+// internal provider — gets the hub's in-process store-backed writer; everything
+// else gets a direct tracker Writer.
+func (s *Server) grillWriterFor(repo registry.Repo, destination string) (config.Config, tracker.Writer, error) {
 	projectPath, userPath := s.repoConfigPaths(repo)
 	cfg, err := config.LoadLayered(projectPath, userPath, "", "")
 	if err != nil {
 		return config.Config{}, nil, err
 	}
-	if cfg.EffectiveTrackerProvider() == "internal" {
+	if grillDestination(destination, cfg) == grillDestInternal {
 		return cfg, s.internalWriterFor(repo, cfg), nil
 	}
 	writer, err := s.newWriter(cfg)
 	return cfg, writer, err
+}
+
+// grillDestination resolves a requested destination against the repo's provider:
+// the default (empty or "tracker") is the configured tracker, and a repo on the
+// internal provider has no external tracker to reach, so every apply lands
+// internally there.
+func grillDestination(requested string, cfg config.Config) string {
+	if requested == grillDestInternal || cfg.EffectiveTrackerProvider() == "internal" {
+		return grillDestInternal
+	}
+	return grillDestTracker
 }
 
 // findRepoByRoot resolves a stored session's repo root back to a known repo,

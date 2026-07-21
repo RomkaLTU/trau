@@ -228,23 +228,30 @@ func TestGrillSetIssue(t *testing.T) {
 		t.Fatalf("new authoring session issue = %q, want empty", sess.IssueID)
 	}
 
-	updated, found, err := g.SetIssue(sess.ID, "COD-9")
+	updated, found, err := g.SetIssue(sess.ID, "COD-9", "tracker")
 	if err != nil || !found {
 		t.Fatalf("set issue: found=%v err=%v", found, err)
 	}
-	if updated.IssueID != "COD-9" {
-		t.Fatalf("anchored issue = %q, want COD-9", updated.IssueID)
+	if updated.IssueID != "COD-9" || updated.IssueDestination != "tracker" {
+		t.Fatalf("anchored issue = %q dest %q, want COD-9 in tracker", updated.IssueID, updated.IssueDestination)
 	}
 
 	got, _, err := g.Session(sess.ID)
 	if err != nil {
 		t.Fatalf("session: %v", err)
 	}
-	if got.IssueID != "COD-9" {
-		t.Fatalf("persisted issue = %q, want COD-9", got.IssueID)
+	if got.IssueID != "COD-9" || got.IssueDestination != "tracker" {
+		t.Fatalf("persisted issue = %q dest %q, want COD-9 in tracker", got.IssueID, got.IssueDestination)
 	}
 
-	if _, found, err := g.SetIssue(9999, "COD-1"); found || err != nil {
+	if _, _, err := g.SetIssue(sess.ID, "ACME-1", "internal"); err != nil {
+		t.Fatalf("re-anchor: %v", err)
+	}
+	if got, _, err := g.Session(sess.ID); err != nil || got.IssueID != "ACME-1" || got.IssueDestination != "internal" {
+		t.Fatalf("re-anchored issue = %q dest %q (err=%v), want ACME-1 in internal", got.IssueID, got.IssueDestination, err)
+	}
+
+	if _, found, err := g.SetIssue(9999, "COD-1", "tracker"); found || err != nil {
 		t.Fatalf("set issue on unknown session = (found=%v, err=%v), want (false, nil)", found, err)
 	}
 }
