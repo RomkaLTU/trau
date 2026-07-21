@@ -1105,6 +1105,17 @@ func newPromptFetcher(cfg config.Config, repoRoot string) func(context.Context) 
 	}
 }
 
+// newQAFetcher reads the repo's QA credentials roster (accounts with full secrets
+// plus notes) from the serve hub. The pipeline calls it at verify time only for a
+// browser-verify UI slice; a failure there logs one warning and verify proceeds
+// without stored credentials (ADR 0008).
+func newQAFetcher(cfg config.Config, repoRoot string) func(context.Context) (hubclient.QARoster, error) {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	return func(ctx context.Context) (hubclient.QARoster, error) {
+		return hub.QARoster(ctx, repoName(repoRoot))
+	}
+}
+
 // fetchPromptOverrides reads the repo's stored prompt overrides for the phase
 // preambles baked into the agent backends at startup. Best-effort: with no hub
 // reachable yet the backends keep the built-in preambles, and the pipeline still
@@ -1295,6 +1306,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		Renderer:            con,
 		Events:              log,
 		FetchPrompts:        newPromptFetcher(cfg, repoRoot),
+		FetchQAAccounts:     newQAFetcher(cfg, repoRoot),
 		OwnedProject:        cfg.Project,
 
 		RepoRoot:            repoRoot,
