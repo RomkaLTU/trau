@@ -418,7 +418,7 @@ func defaultReader(cfg config.Config) (tracker.Reader, error) {
 		return nil, tracker.ErrReaderUnavailable
 	}
 	tc := tracker.Config{
-		Team:            cfg.LinearTeam,
+		Team:            cfg.TrackerKey(),
 		Project:         cfg.Project,
 		ReadyLabel:      cfg.ReadyLabel,
 		QuarantineLabel: cfg.QuarantineLabel,
