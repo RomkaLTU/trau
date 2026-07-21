@@ -412,6 +412,32 @@ func backlogItemFields(t *testing.T, ts *httptest.Server, repo string) map[strin
 	return byID
 }
 
+func TestBacklogExposesBlockers(t *testing.T) {
+	_, ts, root, store := backlogServer(t, nil, nil)
+	if _, _, err := store.Upsert(root, "internal", []hubstore.Issue{
+		{Identifier: "COD-1", Title: "Blocker", Status: "Todo", StatusGroup: "unstarted"},
+		{Identifier: "COD-2", Title: "Dependent", Status: "Todo", StatusGroup: "unstarted"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := store.AddRelation(root, "COD-1", "COD-2"); err != nil {
+		t.Fatalf("add relation: %v", err)
+	}
+
+	res, out := getBacklog(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	entries := map[string]BacklogEntry{}
+	for _, it := range out.Items {
+		entries[it.ID] = it
+	}
+	if got := entries["COD-2"]; !got.Blocked || !reflect.DeepEqual(got.Blockers, []string{"COD-1"}) {
+		t.Fatalf("COD-2 = blocked %v blockers %v, want the board to expose the unresolved blocker", got.Blocked, got.Blockers)
+	}
+	if got := entries["COD-1"]; got.Blocked || len(got.Blockers) != 0 {
+		t.Fatalf("COD-1 = blocked %v blockers %v, want unblocked", got.Blocked, got.Blockers)
+	}
+}
+
 func TestBacklogIncludesInternalIssues(t *testing.T) {
 	_, ts, root, store := backlogServer(t, nil, nil)
 	if _, _, err := store.Upsert(root, "linear", []hubstore.Issue{

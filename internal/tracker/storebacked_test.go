@@ -179,6 +179,21 @@ func TestStoreBackedPickNudgesSyncThenSelects(t *testing.T) {
 	}
 }
 
+func TestStoreBackedPickSkipsBlocked(t *testing.T) {
+	hub := newFakeStoreHub()
+	hub.backlog = []hubclient.BacklogItem{
+		{ID: "COD-2", Source: "linear", Group: "unstarted", Ready: true, Blocked: true},
+		{ID: "COD-3", Source: "linear", Group: "unstarted", Ready: true},
+	}
+	id, err := newStoreBacked(hub, &fakeWrites{}).Pick(context.Background(), Scope{})
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	if id != "COD-3" {
+		t.Fatalf("pick = %q, want COD-3 (COD-2 has an unresolved blocker)", id)
+	}
+}
+
 func TestStoreBackedListEligibleThreadsParent(t *testing.T) {
 	hub := newFakeStoreHub()
 	hub.backlog = []hubclient.BacklogItem{

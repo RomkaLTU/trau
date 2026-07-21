@@ -82,12 +82,11 @@ func (w *internalWriter) UpdateLabels(_ context.Context, id string, add, remove 
 	return err
 }
 
-// LinkBlocks fails loudly: the issues table has no relations storage yet, and a
-// silent no-op would drop an epic's dependency graph while every slice looked
-// immediately runnable to the picker. Failing the relations step keeps the
-// session finished and re-appliable once relations storage lands.
+// LinkBlocks persists the blocker→blocked edge in the issue store, so an internal
+// epic keeps the execution ordering wireGrillBlocks wires between its slices.
+// AddRelation is idempotent, so a re-apply wires nothing new.
 func (w *internalWriter) LinkBlocks(_ context.Context, blocker, blocked string) error {
-	return fmt.Errorf("internal issues cannot store blocking relations yet, so %s blocking %s was not recorded; re-apply once internal relations are supported", blocker, blocked)
+	return w.server.stores.Issues().AddRelation(w.root, blocker, blocked)
 }
 
 func (w *internalWriter) PublishDocument(context.Context, tracker.DocumentDraft) (tracker.PublishedDocument, error) {

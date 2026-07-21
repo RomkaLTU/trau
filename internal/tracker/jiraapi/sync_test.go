@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -25,7 +26,12 @@ func TestSyncIssuesFiltersByProjectAndMapsContent(t *testing.T) {
 			"updated":"2026-07-10T00:00:00.000+0000",
 			"comment":{"comments":[
 				{"id":"10","author":{"displayName":"Ada"},"body":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"shipping soon"}]}]},"created":"2026-07-02T00:00:00.000+0000","updated":"2026-07-02T00:00:00.000+0000"}
-			]}
+			]},
+			"issuelinks":[
+				{"type":{"name":"Blocks","inward":"is blocked by"},"inwardIssue":{"key":"PROJ-9","fields":{"status":{"name":"Done","statusCategory":{"key":"done"}}}}},
+				{"type":{"name":"Blocks","inward":"is blocked by"},"inwardIssue":{"key":"PROJ-8","fields":{"status":{"name":"Todo","statusCategory":{"key":"new"}}}}},
+				{"type":{"name":"Relates","inward":"relates to"},"inwardIssue":{"key":"PROJ-7","fields":{"status":{"name":"Todo","statusCategory":{"key":"new"}}}}}
+			]
 		}}
 	]}`
 
@@ -68,6 +74,13 @@ func TestSyncIssuesFiltersByProjectAndMapsContent(t *testing.T) {
 	}
 	if len(iss.Comments) != 1 || iss.Comments[0].Author != "Ada" || iss.Comments[0].Body != "shipping soon" {
 		t.Fatalf("comments = %+v, want one from Ada", iss.Comments)
+	}
+	if !containsField(gotReq.Fields, "issuelinks") {
+		t.Fatalf("fields = %v, want issuelinks requested", gotReq.Fields)
+	}
+	want := []Blocker{{Key: "PROJ-9", Resolved: true}, {Key: "PROJ-8"}}
+	if !reflect.DeepEqual(iss.BlockedBy, want) {
+		t.Fatalf("blockedBy = %+v, want the blocked-by links with resolution, not the relates link", iss.BlockedBy)
 	}
 }
 

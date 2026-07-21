@@ -202,6 +202,9 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 		return SyncResponse{}, err
 	}
 	for _, iss := range pulled {
+		if err := store.ReflectBlockers(repo.Root, iss.ID, blockerRefs(iss.BlockedBy)); err != nil {
+			return SyncResponse{}, err
+		}
 		s.registerAttachments(repo.Root, iss.ID, iss.Attachments)
 	}
 	syncedAt := nowStamp()
@@ -289,6 +292,14 @@ func (s *Server) resolveIdentity(ctx context.Context, store *hubstore.Issues, ro
 	if err := store.SaveIdentity(root, id, name); err != nil {
 		logger.Verbosef("sync %s: persist identity: %v", root, err)
 	}
+}
+
+func blockerRefs(blockers []tracker.SyncedBlocker) []hubstore.BlockerRef {
+	out := make([]hubstore.BlockerRef, 0, len(blockers))
+	for _, b := range blockers {
+		out = append(out, hubstore.BlockerRef{ID: b.ID, Resolved: b.Resolved})
+	}
+	return out
 }
 
 func toStoredIssues(pulled []tracker.SyncedIssue) []hubstore.Issue {

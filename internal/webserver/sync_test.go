@@ -95,6 +95,41 @@ func TestSyncPullsIssuesAndRecordsOutcome(t *testing.T) {
 	}
 }
 
+func TestSyncReflectsBlockedByRelations(t *testing.T) {
+	blocked := tracker.SyncedIssue{
+		ID:        "COD-2",
+		Title:     "Dependent",
+		Group:     tracker.StatusGroupUnstarted,
+		UpdatedAt: "2026-07-10T12:00:00Z",
+		BlockedBy: []tracker.SyncedBlocker{{ID: "COD-1"}},
+	}
+	fake := &fakeReader{synced: append(syncedFixture(), blocked)}
+	ts, root, store := syncServer(t, fake)
+
+	for i := 0; i < 2; i++ {
+		res, _ := postSync(t, ts, "acme")
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("sync %d status = %d, want 200", i, res.StatusCode)
+		}
+		_ = res.Body.Close()
+	}
+
+	blockers, err := store.Blockers(root, "COD-2")
+	if err != nil {
+		t.Fatalf("Blockers: %v", err)
+	}
+	if len(blockers) != 1 || blockers[0] != "COD-1" {
+		t.Fatalf("blockers = %v, want the pulled blocked-by link reflected once", blockers)
+	}
+	iss, found, err := store.Find(root, "COD-2")
+	if err != nil || !found {
+		t.Fatalf("find COD-2: found=%v err=%v", found, err)
+	}
+	if !iss.Blocked {
+		t.Fatalf("blocked = false, want COD-2 held back while COD-1 is unresolved")
+	}
+}
+
 func TestSyncPersistsIdentity(t *testing.T) {
 	fake := &fakeReader{synced: syncedFixture(), identityID: "u-42", identityName: "Grace Hopper"}
 	ts, root, store := syncServer(t, fake)

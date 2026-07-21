@@ -26,6 +26,11 @@ func TestProjectIssuesFiltersByProjectAndMapsComments(t *testing.T) {
 			 "comments":{"nodes":[
 				{"id":"c1","body":"looks good","createdAt":"2026-07-02T00:00:00Z","updatedAt":"2026-07-02T00:00:00Z","user":{"name":"Ada"}},
 				{"id":"c2","body":"bot note","createdAt":"2026-07-03T00:00:00Z","updatedAt":"2026-07-03T00:00:00Z","user":null}
+			 ]},
+			 "inverseRelations":{"nodes":[
+				{"type":"blocks","issue":{"identifier":"COD-5","state":{"type":"completed"}}},
+				{"type":"blocks","issue":{"identifier":"COD-6","state":{"type":"unstarted"}}},
+				{"type":"related","issue":{"identifier":"COD-7","state":{"type":"unstarted"}}}
 			 ]}}
 		]}}}`
 
@@ -74,6 +79,15 @@ func TestProjectIssuesFiltersByProjectAndMapsComments(t *testing.T) {
 	}
 	if len(iss.Comments) != 2 || iss.Comments[0].Author != "Ada" || iss.Comments[1].Author != "" {
 		t.Fatalf("comments = %+v, want two with Ada then empty author", iss.Comments)
+	}
+	if !strings.Contains(req.Query, "inverseRelations") {
+		t.Fatalf("query does not request inverseRelations: %s", req.Query)
+	}
+	if len(iss.BlockedBy) != 2 || iss.BlockedBy[0].Identifier != "COD-5" || iss.BlockedBy[1].Identifier != "COD-6" {
+		t.Fatalf("blockedBy = %+v, want the two blocks relations and not the related one", iss.BlockedBy)
+	}
+	if !iss.BlockedBy[0].State.IsTerminal() || iss.BlockedBy[1].State.IsTerminal() {
+		t.Fatalf("blockedBy states = %+v, want COD-5 terminal and COD-6 live", iss.BlockedBy)
 	}
 }
 

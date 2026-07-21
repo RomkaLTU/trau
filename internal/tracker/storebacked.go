@@ -87,7 +87,7 @@ func (in *StoreBacked) internal() *Internal {
 
 // Pick nudges a sync so a ticket finished, reopened, or removed out-of-band cannot
 // be picked from stale state, then returns the lowest-numbered ready, unstarted,
-// leaf synced issue in scope — or "" when none is eligible.
+// unblocked leaf synced issue in scope — or "" when none is eligible.
 func (in *StoreBacked) Pick(ctx context.Context, scope Scope) (string, error) {
 	candidates, err := in.eligible(ctx, scope)
 	if err != nil {
@@ -120,10 +120,11 @@ func (in *StoreBacked) ListEligible(ctx context.Context, scope Scope) ([]ListedT
 }
 
 // eligible nudges a sync, then reads the repo's ready-labelled synced backlog and
-// narrows it to the runnable candidates: an unstarted leaf, restricted to a scoped
-// parent's children, ordered by ascending issue number. A pick scoped to an internal
-// epic reads that epic's children instead; an unscoped pick stays synced-only, so the
-// loop never picks an internal issue out of a tracker's backlog on its own.
+// narrows it to the runnable candidates: an unstarted, unblocked leaf, restricted
+// to a scoped parent's children, ordered by ascending issue number. A pick scoped
+// to an internal epic reads that epic's children instead; an unscoped pick stays
+// synced-only, so the loop never picks an internal issue out of a tracker's
+// backlog on its own.
 func (in *StoreBacked) eligible(ctx context.Context, scope Scope) ([]hubclient.BacklogItem, error) {
 	if in.isInternal(scope.Parent) {
 		return in.internal().eligible(ctx, scope)
@@ -137,7 +138,7 @@ func (in *StoreBacked) eligible(ctx context.Context, scope Scope) ([]hubclient.B
 	}
 	out := make([]hubclient.BacklogItem, 0, len(items))
 	for _, it := range items {
-		if it.HasChildren {
+		if it.HasChildren || it.Blocked {
 			continue
 		}
 		if it.Group != "backlog" && it.Group != "unstarted" {

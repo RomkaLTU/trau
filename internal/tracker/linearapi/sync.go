@@ -29,6 +29,7 @@ type SyncIssue struct {
 	AssigneeName string
 	Comments     []Comment
 	Attachments  []Attachment
+	BlockedBy    []IssueRef
 }
 
 // Comment is one comment on an issue, keyed by its node id. Author is the
@@ -220,6 +221,9 @@ type syncNode struct {
 	Attachments struct {
 		Nodes []attachmentNode `json:"nodes"`
 	} `json:"attachments"`
+	InverseRelations struct {
+		Nodes []relationNode `json:"nodes"`
+	} `json:"inverseRelations"`
 }
 
 type attachmentNode struct {
@@ -274,6 +278,7 @@ func (n *syncNode) toSyncIssue() SyncIssue {
 		}
 		iss.Attachments = append(iss.Attachments, Attachment{ID: at.ID, Filename: at.Title, URL: at.URL})
 	}
+	iss.BlockedBy = blockers(n.InverseRelations.Nodes)
 	return iss
 }
 

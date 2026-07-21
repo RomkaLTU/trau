@@ -32,6 +32,10 @@ export interface Issue {
   parent?: string
   source?: string
   has_children: boolean
+  // blockers are the issue's stored blocked-by edges; blocked is set while any
+  // of them is still unresolved, so the drawer can say why a pick refuses it.
+  blockers?: string[]
+  blocked?: boolean
   // archived is set once the issue carries an archive tombstone, so the drawer can
   // badge it and offer Unarchive instead of Archive.
   archived?: boolean

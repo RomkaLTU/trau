@@ -51,6 +51,11 @@ type Issue struct {
 	// sub-issue counts over every child in the store, not the requested page.
 	ChildrenSettled int
 	ChildrenTotal   int
+
+	// Blockers and Blocked are populated by BacklogPage and Find: the issue's
+	// stored blocked-by edges, and whether any of them is still unresolved.
+	Blockers []string
+	Blocked  bool
 }
 
 // Comment is one comment on an issue, keyed by its external tracker id.
@@ -405,6 +410,9 @@ func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue,
 		return nil, 0, nil, err
 	}
 	if err = s.attachChildCounts(repo, issues); err != nil {
+		return nil, 0, nil, err
+	}
+	if err = s.attachBlockers(repo, issues); err != nil {
 		return nil, 0, nil, err
 	}
 	return issues, total, counts, nil
@@ -882,7 +890,11 @@ func (s *Issues) Find(repo, identifier string) (Issue, bool, error) {
 		return Issue{}, false, err
 	}
 	iss.Comments = comments
-	return iss, true, nil
+	single := []Issue{iss}
+	if err := s.attachBlockers(repo, single); err != nil {
+		return Issue{}, false, err
+	}
+	return single[0], true, nil
 }
 
 func (s *Issues) commentsFor(repo, identifier string) (comments []Comment, err error) {
@@ -1048,12 +1060,20 @@ func (s *Issues) Reconcile(repo string, live []string) (tombstoned []string, err
 // DropSynced deletes a repo's synced issues and resets its sync cursor so the next
 // pull re-populates the Project from scratch — the force-resync recovery path when
 // sync state is doubted (ADR 0007). Internal issues are preserved; comments cascade
-// with their issue through the foreign key. The cached team/project binding is
-// kept, so the re-pull reuses it without re-resolving.
+// with their issue through the foreign key, and the blocked-by edges of the dropped
+// issues are cleaned up alongside so nothing dangles. The cached team/project
+// binding is kept, so the re-pull reuses it without re-resolving.
 func (s *Issues) DropSynced(repo string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
+	}
+	if _, err := tx.Exec(
+		`DELETE FROM issue_relations WHERE repo = ?
+		 AND blocked IN (SELECT identifier FROM issues WHERE repo = ? AND source <> 'internal')`,
+		repo, repo,
+	); err != nil {
+		return errors.Join(err, tx.Rollback())
 	}
 	if _, err := tx.Exec(`DELETE FROM issues WHERE repo = ? AND source <> 'internal'`, repo); err != nil {
 		return errors.Join(err, tx.Rollback())
