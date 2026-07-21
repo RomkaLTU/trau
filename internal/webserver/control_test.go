@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/state"
 )
 
 // testStores returns the hub store set over a throwaway hub database, for
@@ -53,12 +55,15 @@ type fakeSupervisor struct {
 	spawns     []SpawnSpec
 	captures   []SpawnSpec
 	signals    []signalCall
+	kills      []int
 	pid        int
 	spawnErr   error
 	captureOut []byte
 	captureErr error
 	signalErr  error
+	killErr    error
 	onSignal   func(pid int, sig syscall.Signal)
+	onKill     func(pid int)
 }
 
 func (f *fakeSupervisor) Spawn(spec SpawnSpec) (int, error) {
@@ -91,6 +96,19 @@ func (f *fakeSupervisor) Signal(pid int, sig syscall.Signal) error {
 	f.signals = append(f.signals, signalCall{pid: pid, sig: sig})
 	if f.onSignal != nil {
 		f.onSignal(pid, sig)
+	}
+	return nil
+}
+
+func (f *fakeSupervisor) Kill(pid int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.killErr != nil {
+		return f.killErr
+	}
+	f.kills = append(f.kills, pid)
+	if f.onKill != nil {
+		f.onKill(pid)
 	}
 	return nil
 }
@@ -682,5 +700,171 @@ func TestChildEnvStripsNestedLoopMarkerWithoutHome(t *testing.T) {
 		if strings.HasPrefix(kv, "TRAU_ACTIVE=") {
 			t.Errorf("childEnv kept %q with no home override", kv)
 		}
+	}
+}
+
+// spawnSleeper starts a real child that sleeps for seconds and returns its
+// pid, reaped in the background like a real spawned loop so stopAndWait's
+// process-liveness polling observes its exit promptly rather than a zombie.
+func spawnSleeper(t *testing.T, seconds string) int {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", "sleep "+seconds)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleeper: %v", err)
+	}
+	go func() { _ = cmd.Wait() }()
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	return cmd.Process.Pid
+}
+
+// spawnTermIgnorer starts a real child that ignores SIGTERM and sleeps for
+// seconds, so an escalation test can drive it to a real group SIGKILL.
+func spawnTermIgnorer(t *testing.T, seconds string) int {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", "trap '' TERM; sleep "+seconds)
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start SIGTERM-ignoring child: %v", err)
+	}
+	go func() { _ = cmd.Wait() }()
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	return cmd.Process.Pid
+}
+
+// stopWaitServer returns a Server wired to a fakeSupervisor with the poll
+// cadence compressed, so stopAndWait tests never sleep for real seconds.
+func stopWaitServer(t *testing.T, home string) (*Server, *fakeSupervisor) {
+	t.Helper()
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+	s.home = home
+	fake := &fakeSupervisor{}
+	s.sup = fake
+
+	prevPoll, prevConfirm := stopWaitPoll, stopKillConfirm
+	stopWaitPoll, stopKillConfirm = 5*time.Millisecond, time.Second
+	t.Cleanup(func() { stopWaitPoll, stopKillConfirm = prevPoll, prevConfirm })
+	return s, fake
+}
+
+func TestStopAndWaitGracefulExitNeverEscalates(t *testing.T) {
+	s, fake := stopWaitServer(t, t.TempDir())
+	pid := spawnSleeper(t, "0.05")
+
+	if err := s.stopAndWait(pid, time.Second); err != nil {
+		t.Fatalf("stopAndWait: %v", err)
+	}
+	if len(fake.signals) != 1 || fake.signals[0].pid != pid || fake.signals[0].sig != syscall.SIGTERM {
+		t.Errorf("signals = %+v, want one SIGTERM to %d", fake.signals, pid)
+	}
+	if len(fake.kills) != 0 {
+		t.Errorf("kills = %v, want none — the child exited inside the grace period", fake.kills)
+	}
+}
+
+func TestStopAndWaitEscalatesToGroupKill(t *testing.T) {
+	s, fake := stopWaitServer(t, t.TempDir())
+	pid := spawnTermIgnorer(t, "5")
+	fake.onKill = func(pid int) { _ = syscall.Kill(pid, syscall.SIGKILL) }
+
+	if err := s.stopAndWait(pid, 20*time.Millisecond); err != nil {
+		t.Fatalf("stopAndWait: %v", err)
+	}
+	if len(fake.signals) != 1 || fake.signals[0].sig != syscall.SIGTERM {
+		t.Errorf("signals = %+v, want one SIGTERM before escalating", fake.signals)
+	}
+	if len(fake.kills) != 1 || fake.kills[0] != pid {
+		t.Errorf("kills = %v, want one group kill of %d", fake.kills, pid)
+	}
+	if registry.Alive(pid) {
+		t.Error("pid still alive after stopAndWait escalated")
+	}
+}
+
+func TestStopAndWaitStalePIDSucceedsImmediately(t *testing.T) {
+	s, fake := stopWaitServer(t, t.TempDir())
+	pid := deadPID(t)
+
+	if err := s.stopAndWait(pid, time.Second); err != nil {
+		t.Fatalf("stopAndWait(dead pid): %v", err)
+	}
+	if len(fake.signals) != 0 || len(fake.kills) != 0 {
+		t.Errorf("signals=%v kills=%v, want neither for an already-dead pid", fake.signals, fake.kills)
+	}
+}
+
+func TestStopAndWaitSettlesForceKilledRun(t *testing.T) {
+	home := t.TempDir()
+	s, fake := stopWaitServer(t, home)
+	repoRoot := filepath.Join(t.TempDir(), "acme")
+	pid := spawnTermIgnorer(t, "5")
+	fake.onKill = func(pid int) { _ = syscall.Kill(pid, syscall.SIGKILL) }
+
+	writeEntry(t, home, registry.Entry{
+		PID:          pid,
+		RepoRoot:     repoRoot,
+		StartedAt:    time.Now(),
+		Heartbeat:    time.Now(),
+		SessionState: registry.StateWorking,
+		Ticket:       "COD-42",
+		Phase:        state.Building,
+	})
+	if err := s.stores.Checkpoints().Upsert(repoRoot, "COD-42", map[string]string{"PHASE": state.Building, "TITLE": "example"}); err != nil {
+		t.Fatalf("seed checkpoint: %v", err)
+	}
+
+	if err := s.stopAndWait(pid, 20*time.Millisecond); err != nil {
+		t.Fatalf("stopAndWait: %v", err)
+	}
+
+	if _, found, err := s.stores.Instances().Get(pid); err != nil || found {
+		t.Errorf("registry entry after force-kill: found=%v err=%v, want removed", found, err)
+	}
+	row, found, err := s.stores.Checkpoints().One(repoRoot, "COD-42")
+	if err != nil || !found {
+		t.Fatalf("checkpoint after force-kill: found=%v err=%v", found, err)
+	}
+	if row.FailureReason != "shutdown" {
+		t.Errorf("FailureReason = %q, want shutdown", row.FailureReason)
+	}
+	if checkpointField(row.Data, "FAILURE_CLASS") != state.FailStopped {
+		t.Errorf("FAILURE_CLASS = %q, want %q", checkpointField(row.Data, "FAILURE_CLASS"), state.FailStopped)
+	}
+	if row.Title != "example" {
+		t.Errorf("Title = %q, want the pre-existing field preserved", row.Title)
+	}
+}
+
+func TestStopAndWaitLeavesGracefullyDeregisteredRunUntouched(t *testing.T) {
+	home := t.TempDir()
+	s, _ := stopWaitServer(t, home)
+	repoRoot := filepath.Join(t.TempDir(), "acme")
+	pid := spawnSleeper(t, "0.05")
+
+	writeEntry(t, home, registry.Entry{
+		PID:          pid,
+		RepoRoot:     repoRoot,
+		StartedAt:    time.Now(),
+		Heartbeat:    time.Now(),
+		SessionState: registry.StateWorking,
+		Ticket:       "COD-42",
+	})
+	if err := s.stores.Checkpoints().Upsert(repoRoot, "COD-42", map[string]string{"PHASE": state.Building}); err != nil {
+		t.Fatalf("seed checkpoint: %v", err)
+	}
+	// The loop deregisters itself on a clean exit; simulate that racing ahead
+	// of stopAndWait's own settle so the helper finds nothing left to do.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		_ = s.stores.Instances().Remove(pid)
+	}()
+
+	if err := s.stopAndWait(pid, time.Second); err != nil {
+		t.Fatalf("stopAndWait: %v", err)
+	}
+	row, found, err := s.stores.Checkpoints().One(repoRoot, "COD-42")
+	if err != nil || !found {
+		t.Fatalf("checkpoint after a clean deregister: found=%v err=%v", found, err)
+	}
+	if row.FailureReason != "" || checkpointField(row.Data, "FAILURE_CLASS") != "" {
+		t.Errorf("checkpoint = %+v, want untouched — the loop already deregistered on its own", row)
 	}
 }
