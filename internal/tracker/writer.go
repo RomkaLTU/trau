@@ -75,7 +75,9 @@ type Writer interface {
 // NewWriter builds a direct Writer for the provider from cfg, or
 // ErrWriterUnavailable when cfg carries no usable direct credentials. A Writer
 // only ever uses the direct API — it never falls back to an agent/MCP, so the
-// hub's writes stay a single, explicit tracker identity.
+// hub's writes stay a single, explicit tracker identity. The internal provider
+// is refused here: internal issues live in the hub's own store, which the hub
+// writes in-process rather than through any API client.
 func NewWriter(provider string, cfg Config) (Writer, error) {
 	switch provider {
 	case "linear":
@@ -95,8 +97,10 @@ func NewWriter(provider string, cfg Config) (Writer, error) {
 		}, nil
 	case "github":
 		return nil, fmt.Errorf("tracker: github issue creation over the direct API is not supported")
+	case "internal":
+		return nil, errors.New("tracker: internal issues are hub-owned; the serve hub writes them straight to its issue store, not through a direct-API writer")
 	default:
-		return nil, fmt.Errorf("unknown tracker provider %q (expected: linear | jira)", provider)
+		return nil, fmt.Errorf("unknown tracker provider %q (expected: linear | jira | github | internal)", provider)
 	}
 }
 

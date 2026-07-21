@@ -35,6 +35,14 @@ func grillApplyServerWriter(t *testing.T, newWriter func(config.Config) (tracker
 	if err := stores.Registrations().Remember([]registry.Repo{repo}); err != nil {
 		t.Fatalf("remember repo: %v", err)
 	}
+	// A tracker binding keeps the effective provider linear; without it the repo
+	// would fall back to internal and bypass the injected writer factory.
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir repo root: %v", err)
+	}
+	if err := os.WriteFile(config.ProjectConfigPath(root), []byte("LINEAR_TEAM=COD\n"), 0o644); err != nil {
+		t.Fatalf("write repo config: %v", err)
+	}
 	s := New("1.2.3", "127.0.0.1", "", nil, false, stores)
 	s.home = home
 	s.newWriter = newWriter
