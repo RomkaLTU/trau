@@ -151,7 +151,7 @@ func linearSynced(iss *linearapi.SyncIssue, scanner AttachmentScanner) SyncedIss
 func (r *jiraReader) ResolveBinding(ctx context.Context) (ProjectBinding, error) {
 	key := strings.TrimSpace(r.project)
 	if key == "" {
-		return ProjectBinding{}, ErrReaderUnavailable
+		return ProjectBinding{}, ErrNoProjectKey
 	}
 	return ProjectBinding{ProjectID: key, Project: key}, nil
 }

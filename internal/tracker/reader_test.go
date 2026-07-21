@@ -70,6 +70,21 @@ func TestNewReaderUnavailableWithoutCredentials(t *testing.T) {
 	}
 }
 
+func TestJiraReaderResolveBindingNoProjectKey(t *testing.T) {
+	r := &jiraReader{client: jiraapi.New("https://acme.atlassian.net", "me@acme.com", "tok")}
+
+	_, err := r.ResolveBinding(context.Background())
+	if !errors.Is(err, ErrNoProjectKey) {
+		t.Fatalf("ResolveBinding err = %v, want ErrNoProjectKey", err)
+	}
+	if errors.Is(err, ErrReaderUnavailable) {
+		t.Fatalf("ResolveBinding err = %v, must not read as no credentials", err)
+	}
+	if got := err.Error(); strings.Contains(got, "credentials") || !strings.Contains(got, "LINEAR_TEAM") {
+		t.Fatalf("ResolveBinding err = %q, want it to name LINEAR_TEAM and not mention credentials", got)
+	}
+}
+
 func TestLinearReaderBacklogMapsAndFiltersProject(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
