@@ -47,6 +47,8 @@ type Server struct {
 	runGrillTurn     func(ctx context.Context, sess hubstore.GrillSession)
 	pregrillMu       sync.Mutex
 	pregrill         map[int64]bool
+	shutdownMu       sync.Mutex
+	shuttingDown     map[string]bool
 	sup              Supervisor
 	term             terminalLauncher
 	sessionExists    func(sessionID string) bool
@@ -92,6 +94,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		transcriptEvents: newTranscriptBroadcaster(),
 		grillEvents:      newGrillBroadcaster(),
 		pregrill:         map[int64]bool{},
+		shuttingDown:     map[string]bool{},
 		sup:              newOSSupervisor(),
 		term:             osascriptLauncher{},
 		sessionExists:    agent.SessionExists,
@@ -279,6 +282,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/attachments/{id}", s.handleAttachment)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue", s.handleQueue)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/drain", s.handleQueueDrain)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/shutdown", s.handleQueueShutdown)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}", s.handleQueueItem)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}/move", s.handleQueueMove)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/atlas", s.handleAtlas)
