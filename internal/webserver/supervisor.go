@@ -34,6 +34,7 @@ type Supervisor interface {
 	Spawn(SpawnSpec) (pid int, err error)
 	Capture(context.Context, SpawnSpec) (stdout []byte, err error)
 	Signal(pid int, sig syscall.Signal) error
+	Kill(pid int) error
 }
 
 // osSupervisor is the production Supervisor, backed by the real OS.
@@ -122,4 +123,14 @@ func (osSupervisor) Signal(pid int, sig syscall.Signal) error {
 		return err
 	}
 	return proc.Signal(sig)
+}
+
+// Kill guarantees pid's end: it SIGKILLs the whole process group so a loop's
+// own children die with it, falling back to the bare PID when the group never
+// existed or the group signal fails for any other reason.
+func (osSupervisor) Kill(pid int) error {
+	if err := syscall.Kill(-pid, syscall.SIGKILL); err == nil {
+		return nil
+	}
+	return syscall.Kill(pid, syscall.SIGKILL)
 }

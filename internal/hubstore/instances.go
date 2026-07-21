@@ -2,6 +2,7 @@ package hubstore
 
 import (
 	"database/sql"
+	"errors"
 	"sort"
 	"time"
 
@@ -53,6 +54,31 @@ func (in *Instances) Upsert(e registry.Entry) error {
 func (in *Instances) Remove(pid int) error {
 	_, err := in.db.Exec(`DELETE FROM instances WHERE pid = ?`, pid)
 	return err
+}
+
+// Get returns pid's row regardless of process liveness. Unlike Live, it never
+// reaps or excludes a dead PID's row, so a caller that needs a loop's
+// last-reported repo/ticket after its process is already confirmed gone can
+// still read it.
+func (in *Instances) Get(pid int) (registry.Entry, bool, error) {
+	var (
+		e                              registry.Entry
+		started, heartbeat, stateSince string
+	)
+	err := in.db.QueryRow(
+		`SELECT pid, repo_root, runs_dir, started_at, heartbeat, session_state, ticket, phase, activity, detail, state_since
+		 FROM instances WHERE pid = ?`, pid,
+	).Scan(&e.PID, &e.RepoRoot, &e.RunsDir, &started, &heartbeat, &e.SessionState, &e.Ticket, &e.Phase, &e.Activity, &e.Detail, &stateSince)
+	if errors.Is(err, sql.ErrNoRows) {
+		return registry.Entry{}, false, nil
+	}
+	if err != nil {
+		return registry.Entry{}, false, err
+	}
+	e.StartedAt = parseInstanceTime(started)
+	e.Heartbeat = parseInstanceTime(heartbeat)
+	e.StateSince = parseInstanceTime(stateSince)
+	return e, true, nil
 }
 
 // Live returns the loops whose process is still alive, oldest first, reaping the
