@@ -107,7 +107,8 @@ type Comment struct {
 }
 
 // BacklogItem is one issue on the hub backlog board. Ready reports whether it
-// carries the repo's ready label; Group is its normalized status group.
+// carries the repo's ready label; Group is its normalized status group; Blocked
+// reports an unresolved blocked-by relation, so the picker skips the row.
 type BacklogItem struct {
 	ID          string   `json:"id"`
 	Title       string   `json:"title"`
@@ -118,6 +119,7 @@ type BacklogItem struct {
 	Parent      string   `json:"parent"`
 	HasChildren bool     `json:"has_children"`
 	Ready       bool     `json:"ready"`
+	Blocked     bool     `json:"blocked"`
 }
 
 // BacklogQuery narrows a backlog listing to the rows the internal picker needs.

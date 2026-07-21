@@ -5,6 +5,7 @@ import {
   Check,
   CheckCircle2,
   Eye,
+  Inbox,
   Loader2,
   MessageCirclePlus,
   Pencil,
@@ -23,10 +24,12 @@ import {
   diffHasChanges,
   diffLines,
   grillAppliedOutcome,
+  grillSessionsQueryOptions,
   type DiffLine,
   type GrillApplyResponse,
   type GrillApplyStep,
   type GrillAppliedOutcome,
+  type GrillDestination,
   type GrillSession,
   type OutcomePayload,
   type SubIssueProposal,
@@ -90,6 +93,8 @@ export function OutcomeReview({
 }) {
   const queryClient = useQueryClient();
   const issue = useQuery(issueQueryOptions(repo, issueId));
+  const sessions = useQuery(grillSessionsQueryOptions(repo));
+  const tracker = sessions.data?.tracker ?? "";
   const isRewrite = outcome.disposition === "rewrite";
   const isSplit = outcome.disposition === "split";
   const isCreate = outcome.disposition === "create";
@@ -104,6 +109,9 @@ export function OutcomeReview({
   const [subs, setSubs] = useState<SubIssueDraft[]>(() =>
     toSubDrafts(outcome.sub_issues ?? []),
   );
+  const [destination, setDestination] = useState<GrillDestination>(
+    session.issue_destination === "internal" ? "internal" : "tracker",
+  );
 
   // The session's new state rides onSession (and the hub's SSE state frame), so the
   // grill list is left to go stale on its own — invalidating it here would drop the
@@ -111,12 +119,13 @@ export function OutcomeReview({
   // are refreshed, which is what makes the issue leave the unclear set once its
   // triage labels are gone.
   const apply = useMutation({
-    mutationFn: () =>
+    mutationFn: (destination: GrillDestination) =>
       applyGrill(
         session.id,
         carriesDescription ? draft : "",
         carriesSubs ? toSubIssues(subs) : undefined,
         isCreate ? title.trim() : undefined,
+        destination === "internal" ? destination : undefined,
       ),
     onSuccess: (res) => {
       onSession(res.session);
@@ -146,6 +155,7 @@ export function OutcomeReview({
         issueId={session.issue_id ?? ""}
         outcome={outcome}
         steps={apply.data?.steps ?? []}
+        internal={destination === "internal"}
       />
     );
   }
@@ -215,6 +225,15 @@ export function OutcomeReview({
 
       <SummaryPreview summary={outcome.summary} />
 
+      {isCreate && tracker !== "" && (
+        <DestinationPicker
+          tracker={tracker}
+          destination={destination}
+          disabled={busy}
+          onChange={setDestination}
+        />
+      )}
+
       {failedSteps.length > 0 && <StepList steps={failedSteps} />}
 
       {apply.error && (
@@ -229,10 +248,31 @@ export function OutcomeReview({
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Button size="sm" onClick={() => apply.mutate()} disabled={blockApply}>
+        <Button
+          size="sm"
+          onClick={() => apply.mutate(destination)}
+          disabled={blockApply}
+        >
           {apply.isPending ? <Loader2 className="animate-spin" /> : <Check />}
           {applyLabel(outcome.disposition, apply.data)}
         </Button>
+        {isCreate &&
+          destination === "tracker" &&
+          tracker !== "internal" &&
+          failedSteps.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={blockApply}
+              onClick={() => {
+                setDestination("internal");
+                apply.mutate("internal");
+              }}
+            >
+              <Inbox />
+              File internally instead
+            </Button>
+          )}
         {onAskFollowUp && (
           <Button
             variant="outline"
@@ -746,6 +786,84 @@ function DiffRow({ line }: { line: DiffLine }) {
   );
 }
 
+const TRACKER_NAMES: Record<string, string> = {
+  jira: "Jira",
+  linear: "Linear",
+  github: "GitHub",
+};
+
+// DestinationPicker is a create outcome's filing choice: the repo's external
+// tracker — named, and the default — or the hub's internal backlog. A repo on the
+// internal provider has only one destination, so it is stated rather than offered
+// as a fake choice.
+function DestinationPicker({
+  tracker,
+  destination,
+  disabled,
+  onChange,
+}: {
+  tracker: string;
+  destination: GrillDestination;
+  disabled: boolean;
+  onChange: (destination: GrillDestination) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-xs font-medium text-muted-foreground">
+        Destination
+      </span>
+      {tracker === "internal" ? (
+        <p className="text-xs text-muted-foreground">
+          Files to this repo's internal backlog.
+        </p>
+      ) : (
+        <div className="flex flex-wrap gap-1">
+          <DestinationOption
+            label={`File to ${TRACKER_NAMES[tracker] ?? tracker}`}
+            on={destination === "tracker"}
+            disabled={disabled}
+            onPick={() => onChange("tracker")}
+          />
+          <DestinationOption
+            label="File internally"
+            on={destination === "internal"}
+            disabled={disabled}
+            onPick={() => onChange("internal")}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DestinationOption({
+  label,
+  on,
+  disabled,
+  onPick,
+}: {
+  label: string;
+  on: boolean;
+  disabled: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onPick}
+      disabled={disabled}
+      className={cn(
+        "rounded border px-2 py-0.5 text-[11px]",
+        on
+          ? "border-info/50 bg-info/10 text-foreground"
+          : "border-border text-muted-foreground",
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
 function SummaryPreview({ summary }: { summary: string }) {
   const text = summary.trim();
   if (text === "") return null;
@@ -802,17 +920,22 @@ function StepList({ steps }: { steps: GrillApplyStep[] }) {
 }
 
 // AppliedCard is what a reopened Done today row shows, so a create names and links
-// the issue it filed — the reference stays useful after the toast is gone.
+// the issue it filed — the reference stays useful after the toast is gone. internal
+// marks a create the review just filed to the internal backlog, so the card does
+// not claim a tracker write that never happened.
 function AppliedCard({
   issueId,
   outcome,
   steps,
+  internal,
 }: {
   issueId: string;
   outcome: OutcomePayload;
   steps: GrillApplyStep[];
+  internal: boolean;
 }) {
   const created = outcome.disposition === "create" && issueId !== "";
+  const destination = internal ? "internally" : "on the tracker";
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-done/40 bg-done/5 p-3">
       <div className="flex items-center gap-2">
@@ -828,11 +951,11 @@ function AppliedCard({
           "Session closed out — nothing was written to the tracker."
         ) : created ? (
           <>
-            <span className="font-mono text-foreground">{issueId}</span> filed
-            on the tracker.
+            <span className="font-mono text-foreground">{issueId}</span> filed{" "}
+            {destination}.
           </>
         ) : outcome.disposition === "create" ? (
-          "The new issue was filed on the tracker."
+          `The new issue was filed ${destination}.`
         ) : (
           "The outcome was written to the tracker. This issue is cleared."
         )}

@@ -24,22 +24,26 @@ const grillProvider = "claude"
 
 // GrillSessionView is one grilling session as the web panel sees it. IssueID is
 // omitted for an authoring session anchored to the repo alone; IssueTitle then
-// carries the session's seed so the queue can title an issue-less draft. Provider
-// is fixed to claude while the runner is; ModelOptions carries the switcher's
-// catalog because the inbox never loads the settings config.
+// carries the session's seed so the queue can title an issue-less draft.
+// IssueDestination names where a create-apply filed the anchored issue, so a review
+// remounted on a settled session still names the destination it used rather than
+// reverting to the picker default. Provider is fixed to claude while the runner is;
+// ModelOptions carries the switcher's catalog because the inbox never loads the
+// settings config.
 type GrillSessionView struct {
-	ID           string   `json:"id"`
-	Repo         string   `json:"repo"`
-	IssueID      string   `json:"issue_id,omitempty"`
-	IssueTitle   string   `json:"issue_title,omitempty"`
-	State        string   `json:"state"`
-	SessionChain string   `json:"session_chain,omitempty"`
-	Provider     string   `json:"provider"`
-	Model        string   `json:"model,omitempty"`
-	ModelOptions []string `json:"model_options,omitempty"`
-	ParkedReason string   `json:"parked_reason,omitempty"`
-	CreatedAt    string   `json:"created_at"`
-	UpdatedAt    string   `json:"updated_at"`
+	ID               string   `json:"id"`
+	Repo             string   `json:"repo"`
+	IssueID          string   `json:"issue_id,omitempty"`
+	IssueDestination string   `json:"issue_destination,omitempty"`
+	IssueTitle       string   `json:"issue_title,omitempty"`
+	State            string   `json:"state"`
+	SessionChain     string   `json:"session_chain,omitempty"`
+	Provider         string   `json:"provider"`
+	Model            string   `json:"model,omitempty"`
+	ModelOptions     []string `json:"model_options,omitempty"`
+	ParkedReason     string   `json:"parked_reason,omitempty"`
+	CreatedAt        string   `json:"created_at"`
+	UpdatedAt        string   `json:"updated_at"`
 }
 
 // GrillMessageView is one message in a session's conversation. Payload is the
@@ -70,9 +74,13 @@ type GrillDefaultsView struct {
 	ModelOptions []string `json:"model_options,omitempty"`
 }
 
-// GrillListResponse is the GET /repos/{repo}/grill resource.
+// GrillListResponse is the GET /repos/{repo}/grill resource. Tracker is the repo's
+// effective tracker provider, so the review UI can name the apply destination
+// choice — or withhold it on a repo whose only destination is internal — without
+// loading the settings config.
 type GrillListResponse struct {
 	Repo     string             `json:"repo"`
+	Tracker  string             `json:"tracker"`
 	Defaults GrillDefaultsView  `json:"defaults"`
 	Sessions []GrillSessionView `json:"sessions"`
 }
@@ -145,6 +153,7 @@ func (s *Server) listGrill(w http.ResponseWriter, repo registry.Repo, state stri
 	}
 	writeJSON(w, http.StatusOK, GrillListResponse{
 		Repo:     repo.Name,
+		Tracker:  s.grillTrackerFor(repo),
 		Defaults: s.grillDefaultsView(repo),
 		Sessions: views,
 	})
@@ -575,18 +584,19 @@ func (s *Server) grillSessionView(repo string, sess hubstore.GrillSession) Grill
 		name = sess.Repo
 	}
 	return GrillSessionView{
-		ID:           strconv.FormatInt(sess.ID, 10),
-		Repo:         name,
-		IssueID:      sess.IssueID,
-		IssueTitle:   sess.IssueTitle,
-		State:        sess.State,
-		SessionChain: sess.SessionChain,
-		Provider:     grillProvider,
-		Model:        s.grillEffectiveModel(sess),
-		ModelOptions: grillModelOptions(),
-		ParkedReason: sess.ParkedReason,
-		CreatedAt:    sess.CreatedAt,
-		UpdatedAt:    sess.UpdatedAt,
+		ID:               strconv.FormatInt(sess.ID, 10),
+		Repo:             name,
+		IssueID:          sess.IssueID,
+		IssueDestination: sess.IssueDestination,
+		IssueTitle:       sess.IssueTitle,
+		State:            sess.State,
+		SessionChain:     sess.SessionChain,
+		Provider:         grillProvider,
+		Model:            s.grillEffectiveModel(sess),
+		ModelOptions:     grillModelOptions(),
+		ParkedReason:     sess.ParkedReason,
+		CreatedAt:        sess.CreatedAt,
+		UpdatedAt:        sess.UpdatedAt,
 	}
 }
 
@@ -597,6 +607,16 @@ func (s *Server) grillDefaultsView(repo registry.Repo) GrillDefaultsView {
 		Model:        s.grillModelDefault(repo),
 		ModelOptions: grillModelOptions(),
 	}
+}
+
+// grillTrackerFor resolves the repo's effective tracker provider for the list
+// resource; a config error degrades to empty so the list still serves.
+func (s *Server) grillTrackerFor(repo registry.Repo) string {
+	cfg, err := s.grillConfigFor(repo)
+	if err != nil {
+		return ""
+	}
+	return cfg.EffectiveTrackerProvider()
 }
 
 // grillEffectiveModel is the model the session's next turn spawns with: the stored

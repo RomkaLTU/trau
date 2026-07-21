@@ -15,11 +15,14 @@ export type GrillKind = 'question' | 'answer' | 'info' | 'outcome'
 // authoring session anchored to the repo alone; parked_reason carries the cause a
 // parked or stalled session settled with. issue_title is the hub's join onto the
 // grilled issue — the only title a settled session has, since applying drops the
-// triage labels the board queries key on.
+// triage labels the board queries key on. issue_destination names where a create
+// apply filed the anchored issue, so a review remounted on a settled session names
+// the destination it used instead of the picker default.
 export interface GrillSession {
   id: string
   repo: string
   issue_id?: string
+  issue_destination?: GrillDestination
   issue_title?: string
   state: GrillState
   session_chain?: string
@@ -65,6 +68,7 @@ export interface GrillDefaults {
 
 export interface GrillListResponse {
   repo: string
+  tracker?: string
   defaults?: GrillDefaults
   sessions: GrillSession[]
 }
@@ -75,6 +79,10 @@ export interface GrillAnswerResponse {
 }
 
 export type GrillStepStatus = 'ok' | 'failed'
+
+// GrillDestination is where a create outcome files: the repo's configured tracker
+// (the default) or the hub's internal issue store.
+export type GrillDestination = 'tracker' | 'internal'
 
 // GrillApplyStep is one tracker write's outcome — description, comment, or labels.
 // A disposition only reports the steps it runs, so needs_split omits description.
@@ -321,22 +329,26 @@ export async function answerGrill(sid: string, text: string): Promise<GrillAnswe
 // applyGrill writes a finished session's proposed outcome to the tracker. A rewrite,
 // split, or create carries its (possibly edited) description in the body; a split or
 // create-epic also carries the edited sub-issues, and a create carries the edited
-// title. Other dispositions carry none and let the hub fall back to the proposal.
+// title and, when the user picked one, the destination it files in. Other
+// dispositions carry none and let the hub fall back to the proposal.
 export async function applyGrill(
   sid: string,
   proposedDescription: string,
   subIssues?: SubIssueProposal[],
   title?: string,
+  destination?: GrillDestination,
 ): Promise<GrillApplyResponse> {
   const body: {
     proposed_description: string
     sub_issues?: SubIssueProposal[]
     title?: string
+    destination?: GrillDestination
   } = {
     proposed_description: proposedDescription,
   }
   if (subIssues) body.sub_issues = subIssues
   if (title !== undefined) body.title = title
+  if (destination) body.destination = destination
   const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/apply`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

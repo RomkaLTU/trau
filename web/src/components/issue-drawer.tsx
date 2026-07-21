@@ -206,6 +206,21 @@ function IssueDrawerBody({
             </span>
           </button>
         )}
+        {issue.blockers && issue.blockers.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+            <span>{issue.blocked ? "Blocked by" : "Was blocked by"} ·</span>
+            {issue.blockers.map((blocker) => (
+              <button
+                key={blocker}
+                type="button"
+                onClick={() => onSelectIssue(blocker)}
+                className="font-mono underline-offset-2 transition-colors hover:text-foreground hover:underline"
+              >
+                {blocker}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="flex items-center gap-2 text-xs">
           <span className="text-muted-foreground">Assignee</span>
           {issue.assignee ? (

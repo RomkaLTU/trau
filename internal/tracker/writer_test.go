@@ -403,6 +403,15 @@ func TestNewWriterRequiresCredentials(t *testing.T) {
 	}
 }
 
+func TestNewWriterInternalIsHubOwned(t *testing.T) {
+	if _, err := NewWriter("internal", Config{}); err == nil || !strings.Contains(err.Error(), "hub") {
+		t.Fatalf("NewWriter(internal) = %v, want the hub-owned refusal", err)
+	}
+	if _, err := NewWriter("nope", Config{}); err == nil || !strings.Contains(err.Error(), "internal") {
+		t.Fatalf("unknown provider error = %v, want it to list internal", err)
+	}
+}
+
 func TestNewWriterBuildsDirectClients(t *testing.T) {
 	lw, err := NewWriter("linear", Config{APIKey: "k", Team: "COD", Project: "Trau"})
 	if err != nil {

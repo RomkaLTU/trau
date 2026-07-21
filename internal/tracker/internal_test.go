@@ -83,6 +83,21 @@ func TestInternalPickSelectsLowestEligible(t *testing.T) {
 	}
 }
 
+func TestInternalPickSkipsBlocked(t *testing.T) {
+	hub := newFakeHub()
+	hub.backlog = []hubclient.BacklogItem{
+		{ID: "LOOP-2", Source: "internal", Group: "unstarted", Ready: true, Blocked: true},
+		{ID: "LOOP-3", Source: "internal", Group: "unstarted", Ready: true},
+	}
+	id, err := newInternal(hub).Pick(context.Background(), Scope{})
+	if err != nil {
+		t.Fatalf("pick: %v", err)
+	}
+	if id != "LOOP-3" {
+		t.Fatalf("pick = %q, want LOOP-3 (LOOP-2 has an unresolved blocker)", id)
+	}
+}
+
 func TestInternalPickHonorsScopeParent(t *testing.T) {
 	hub := newFakeHub()
 	hub.backlog = []hubclient.BacklogItem{

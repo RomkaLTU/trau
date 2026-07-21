@@ -38,8 +38,8 @@ type Internal struct {
 	QuarantineLabel string
 }
 
-// Pick returns the lowest-numbered ready, unstarted, leaf internal issue in scope,
-// or "" when none is eligible.
+// Pick returns the lowest-numbered ready, unstarted, unblocked leaf internal issue
+// in scope, or "" when none is eligible.
 func (in *Internal) Pick(ctx context.Context, scope Scope) (string, error) {
 	candidates, err := in.eligible(ctx, scope)
 	if err != nil {
@@ -72,8 +72,8 @@ func (in *Internal) ListEligible(ctx context.Context, scope Scope) ([]ListedTick
 }
 
 // eligible reads the repo's ready-labelled internal backlog and narrows it to the
-// runnable candidates: an unstarted leaf issue, restricted to a scoped parent's
-// children when the scope carries one, ordered by ascending issue number.
+// runnable candidates: an unstarted, unblocked leaf issue, restricted to a scoped
+// parent's children when the scope carries one, ordered by ascending issue number.
 func (in *Internal) eligible(ctx context.Context, scope Scope) ([]hubclient.BacklogItem, error) {
 	items, err := in.Hub.Backlog(ctx, in.Repo, hubclient.BacklogQuery{Source: sourceInternal, Label: in.ReadyLabel})
 	if err != nil {
@@ -81,7 +81,7 @@ func (in *Internal) eligible(ctx context.Context, scope Scope) ([]hubclient.Back
 	}
 	out := make([]hubclient.BacklogItem, 0, len(items))
 	for _, it := range items {
-		if it.Source != sourceInternal || it.HasChildren {
+		if it.Source != sourceInternal || it.HasChildren || it.Blocked {
 			continue
 		}
 		if it.Group != "backlog" && it.Group != "unstarted" {
