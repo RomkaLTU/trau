@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/config"
@@ -294,6 +295,47 @@ func TestSyncWithoutCredentials(t *testing.T) {
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422", res.StatusCode)
+	}
+}
+
+// TestSyncJiraExplicitNoProjectKeyReportsKey is the legacy melga config: an explicit
+// jira provider with valid REST creds but no project key. The sync must name the key
+// to set — not the credentials, which are fine — and land the repo at sync-failed with
+// that same reason rather than a no-credentials state.
+func TestSyncJiraExplicitNoProjectKeyReportsKey(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	root := filepath.Dir(filepath.Dir(runsDir))
+	writeRepoINI(t, root, "TRACKER_PROVIDER=jira\nJIRA_BASE_URL=https://acme.atlassian.net\nJIRA_EMAIL=dev@acme.io\nJIRA_API_TOKEN=tok\n")
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+	s.home = home
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/sync", nil)
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", res.StatusCode)
+	}
+	var body map[string]string
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if msg := body["error"]; strings.Contains(msg, "credentials") || !strings.Contains(msg, "LINEAR_TEAM") {
+		t.Fatalf("error = %q, want it to name LINEAR_TEAM and not mention credentials", msg)
+	}
+
+	repo, ok := s.findRepo("acme")
+	if !ok {
+		t.Fatal("findRepo acme = false")
+	}
+	h := s.repoHealth(repo)
+	if h.State != HealthSyncFailed {
+		t.Fatalf("health state = %q, want sync-failed (misconfigured, not unconfigured)", h.State)
+	}
+	if strings.Contains(h.LastError, "credentials") || !strings.Contains(h.LastError, "project key") {
+		t.Fatalf("health last error = %q, want the missing project key without mentioning credentials", h.LastError)
 	}
 }
 

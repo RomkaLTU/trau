@@ -66,6 +66,7 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkLinearLabels(ctx, cfg, rr)
 	checkLinearProject(ctx, cfg, rr)
 	checkJira(ctx, cfg, rr)
+	checkJiraProject(cfg, rr)
 	checkWritePerms(repoRoot, rr)
 	hub, hubUp := checkWebHub(ctx, cfg, version, rr)
 	checkHubDatabase(rr)
@@ -414,6 +415,28 @@ func checkJira(ctx context.Context, cfg config.Config, rr *runner) {
 		return
 	}
 	rr.add("jira auth", pass, fmt.Sprintf("authenticated to %s as %s", cfg.JiraBaseURL, cfg.JiraEmail), "")
+}
+
+// checkJiraProject flags the legacy-config bind hole: a Jira repo reads its
+// project key from LINEAR_TEAM ("Linear team / Jira project / GitHub repo"),
+// falling back to PROJECT. With neither set the tracker can never resolve a
+// binding and the board stays empty, so this fails instead of passing silently
+// while auth alone looks healthy.
+func checkJiraProject(cfg config.Config, rr *runner) {
+	if cfg.EffectiveTrackerProvider() != "jira" {
+		return
+	}
+	if key := strings.TrimSpace(cfg.LinearTeam); key != "" {
+		rr.add("jira project key", pass, fmt.Sprintf("LINEAR_TEAM=%s", key), "")
+		return
+	}
+	if key := strings.TrimSpace(cfg.Project); key != "" {
+		rr.add("jira project key", pass, fmt.Sprintf("PROJECT=%s (LINEAR_TEAM unset)", key), "")
+		return
+	}
+	rr.add("jira project key", fail,
+		"neither LINEAR_TEAM nor PROJECT is set — the Jira project key is unresolved, so the backlog can never bind",
+		"set LINEAR_TEAM=<Jira project key> in this repo's .trau.ini")
 }
 
 // checkWritePerms probes that the repo root is writable, where the loop stages

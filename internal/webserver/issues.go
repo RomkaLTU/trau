@@ -328,7 +328,7 @@ func writeWriterErr(w http.ResponseWriter, err error) {
 // mapping the provider's credentials the same way the loop's tracker is wired.
 func defaultWriter(cfg config.Config) (tracker.Writer, error) {
 	tc := tracker.Config{
-		Team:            cfg.LinearTeam,
+		Team:            cfg.TrackerKey(),
 		Project:         cfg.Project,
 		ReadyLabel:      cfg.ReadyLabel,
 		QuarantineLabel: cfg.QuarantineLabel,

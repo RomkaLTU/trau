@@ -652,7 +652,7 @@ func runDoctor(ctx context.Context, args []string, stderr io.Writer) error {
 func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, error) {
 	provider := cfg.EffectiveTrackerProvider()
 	tc := tracker.Config{
-		Team:            cfg.LinearTeam,
+		Team:            cfg.TrackerKey(),
 		Project:         cfg.Project,
 		ReadyLabel:      cfg.ReadyLabel,
 		QuarantineLabel: cfg.QuarantineLabel,

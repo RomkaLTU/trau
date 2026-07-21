@@ -40,7 +40,7 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := s.syncRepo(r.Context(), repo)
 	if err != nil {
-		if errors.Is(err, tracker.ErrReaderUnavailable) {
+		if readerConfigErr(err) {
 			writeReaderErr(w, err)
 			return
 		}
@@ -69,7 +69,7 @@ func (s *Server) handleForceResync(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := s.forceResync(r.Context(), repo)
 	if err != nil {
-		if errors.Is(err, tracker.ErrReaderUnavailable) {
+		if readerConfigErr(err) {
 			writeReaderErr(w, err)
 			return
 		}
@@ -79,17 +79,27 @@ func (s *Server) handleForceResync(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// forceResync drops the repo's synced rows and cursor, then re-pulls the Project
-// from an empty cursor — a full pull that re-populates the store with only the
-// issues the tracker still holds, so deleted or moved-out tickets simply vanish
-// (ADR 0007). Internal issues are preserved. It checks the reader is usable before
-// dropping anything, so a repo without direct credentials is refused with the store
-// intact rather than emptied with nothing to re-pull it.
+// forceResync re-resolves the repo's tracker binding from current config, then
+// drops the synced rows and cursor and re-pulls the Project from an empty cursor —
+// a full pull that re-populates the store with only the issues the tracker still
+// holds, so deleted or moved-out tickets simply vanish (ADR 0007). Re-resolving
+// first is the point of a resync: the cached binding is part of the doubted state,
+// so a wrong project key left by an old config is replaced rather than reused for
+// the clean re-pull. Internal issues are preserved. The binding is re-resolved
+// before anything is dropped, so a repo whose reader cannot resolve one is refused
+// with the store intact rather than emptied with nothing to re-pull it.
 func (s *Server) forceResync(ctx context.Context, repo registry.Repo) (SyncResponse, error) {
-	if _, _, err := s.readerFor(repo); err != nil {
+	res, err := s.resolveReader(repo)
+	if err != nil {
 		return SyncResponse{}, err
 	}
-	if err := s.stores.Issues().DropSynced(repo.Root); err != nil {
+	store := s.stores.Issues()
+	if _, err := s.refreshBinding(ctx, store, repo.Root, res.reader); err != nil {
+		err = res.actionableErr(err)
+		_ = store.RecordError(repo.Root, err.Error())
+		return SyncResponse{}, err
+	}
+	if err := store.DropSynced(repo.Root); err != nil {
 		return SyncResponse{}, err
 	}
 	return s.syncRepo(ctx, repo)
@@ -264,6 +274,15 @@ func (s *Server) resolveBinding(ctx context.Context, store *hubstore.Issues, roo
 	if binding.Resolved() {
 		return binding, nil
 	}
+	return s.refreshBinding(ctx, store, root, reader)
+}
+
+// refreshBinding resolves the repo's tracker binding from current config and caches
+// it, overwriting whatever was stored. The incremental path reaches it only for an
+// unresolved cache, so ordinary syncs still skip the team/project lookup; a forced
+// resync calls it directly to re-resolve a binding the cache should no longer be
+// trusted for.
+func (s *Server) refreshBinding(ctx context.Context, store *hubstore.Issues, root string, reader tracker.Reader) (tracker.ProjectBinding, error) {
 	binding, err := reader.ResolveBinding(ctx)
 	if err != nil {
 		return tracker.ProjectBinding{}, err
