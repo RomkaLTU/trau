@@ -32,6 +32,7 @@ export interface QueueItem {
 export interface QueueResponse {
   repo: string
   draining: boolean
+  shutting_down: boolean
   items: QueueItem[]
 }
 
@@ -152,6 +153,20 @@ export async function drain(
     throw new Error(await errorMessage(res, 'queue drain failed'))
   }
   return res.json()
+}
+
+// shutdownQueue tears the loop down: stops the running child, drops paused
+// checkpoints, and clears the queue. The hub does this asynchronously — the
+// response only acknowledges the request, so callers must poll the queue
+// query to see `shutting_down` clear.
+export async function shutdownQueue(repo: string): Promise<void> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/queue/shutdown`,
+    { method: 'POST' },
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'shutdown failed'))
+  }
 }
 
 // runNext is the one web launch gesture: make the item the queue's next run,

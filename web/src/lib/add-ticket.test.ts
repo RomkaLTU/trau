@@ -34,7 +34,7 @@ function item(over: Partial<QueueItem>): QueueItem {
 }
 
 function queueResponse(over: Partial<QueueResponse> = {}): QueueResponse {
-  return { repo: 'trau', draining: false, items: [], ...over }
+  return { repo: 'trau', draining: false, shutting_down: false, items: [], ...over }
 }
 
 describe('pickerList', () => {
