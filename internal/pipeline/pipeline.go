@@ -2620,6 +2620,33 @@ func (p *Pipeline) sliceAppURL(ctx context.Context) string {
 	return p.AppURL
 }
 
+// sliceLintFixCmd picks the lint-fix command for the slice: the owning
+// workspace's own .trau.ini LINT_FIX_CMD (ADR 0019) if set, LintFixCmd
+// otherwise. Fails open to LintFixCmd — an unsizable tree or unmatched slice
+// never blocks lint-fix.
+func (p *Pipeline) sliceLintFixCmd(ctx context.Context) string {
+	if p.RepoRoot == "" {
+		return p.LintFixCmd
+	}
+	lister, ok := p.Git.(worktreeLister)
+	if !ok {
+		return p.LintFixCmd
+	}
+	base, err := p.buildBase(ctx)
+	if err != nil {
+		return p.LintFixCmd
+	}
+	changed, err := lister.WorktreeChangedFiles(ctx, base)
+	if err != nil {
+		return p.LintFixCmd
+	}
+	dir := agent.OwningWorkspaceDir(p.RepoRoot, changed)
+	if v, ok := config.WorkspaceOverride(dir, "LINT_FIX_CMD"); ok {
+		return v
+	}
+	return p.LintFixCmd
+}
+
 func browserNote(mode, appURL string) string {
 	switch mode {
 	case "always":

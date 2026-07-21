@@ -215,3 +215,72 @@ func TestWorkspaceAppURL(t *testing.T) {
 		}
 	})
 }
+
+// TestOwningWorkspaceDir: the workspace holding the plurality of the slice's
+// changed files wins; no match or a tie yields "" so the caller keeps its
+// repo-root fallback.
+func TestOwningWorkspaceDir(t *testing.T) {
+	write := func(t *testing.T, root, rel, content string) {
+		t.Helper()
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	monorepo := func(t *testing.T) string {
+		t.Helper()
+		root := t.TempDir()
+		write(t, root, "package.json", `{"name":"mono","private":true,"workspaces":["apps/*"]}`)
+		write(t, root, "apps/web/package.json", `{"name":"@acme/web"}`)
+		write(t, root, "apps/api/package.json", `{"name":"@acme/api"}`)
+		return root
+	}
+
+	t.Run("single workspace owns the diff", func(t *testing.T) {
+		root := monorepo(t)
+		got := OwningWorkspaceDir(root, []string{"apps/web/src/page.tsx"})
+		if want := filepath.Join(root, "apps/web"); got != want {
+			t.Errorf("OwningWorkspaceDir = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("dominant workspace wins", func(t *testing.T) {
+		root := monorepo(t)
+		changed := []string{"apps/web/a.tsx", "apps/web/b.tsx", "apps/api/routes.ts"}
+		got := OwningWorkspaceDir(root, changed)
+		if want := filepath.Join(root, "apps/web"); got != want {
+			t.Errorf("OwningWorkspaceDir = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("tied workspaces yield empty", func(t *testing.T) {
+		root := monorepo(t)
+		changed := []string{"apps/web/a.tsx", "apps/api/routes.ts"}
+		if got := OwningWorkspaceDir(root, changed); got != "" {
+			t.Errorf("OwningWorkspaceDir = %q, want empty", got)
+		}
+	})
+
+	t.Run("root-only changes match nothing", func(t *testing.T) {
+		root := monorepo(t)
+		if got := OwningWorkspaceDir(root, []string{"README.md"}); got != "" {
+			t.Errorf("OwningWorkspaceDir = %q, want empty", got)
+		}
+	})
+
+	t.Run("no changed files", func(t *testing.T) {
+		if got := OwningWorkspaceDir(monorepo(t), nil); got != "" {
+			t.Errorf("OwningWorkspaceDir = %q, want empty", got)
+		}
+	})
+
+	t.Run("no repo root", func(t *testing.T) {
+		if got := OwningWorkspaceDir("", []string{"apps/web/a.tsx"}); got != "" {
+			t.Errorf("OwningWorkspaceDir = %q, want empty", got)
+		}
+	})
+}

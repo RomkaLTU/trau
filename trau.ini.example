@@ -12,6 +12,13 @@
 #      bare name and avoids clashing with a generic PROVIDER/REMOTE in your shell
 #   6. CLI flags (--repo, --provider, etc.)
 #
+# Monorepos: a handful of knobs resolved after a slice's diff is known (e.g.
+# LINT_FIX_CMD) additionally check <workspace>/.trau.ini for the workspace
+# owning the changed files, before falling back to the repo-root value above
+# (ADR 0019). A workspace is identified the same way APP_URLS matches one:
+# its manifest package name, its directory path, or that directory's base
+# name. This is opt-in per knob, not a blanket layer.
+#
 # Format: a flat INI subset (KEY=value with # comments). The keys ARE the
 # environment-variable names, so PROVIDER here and TRAU_PROVIDER in your shell
 # are the same knob. Saved with a .ini extension so VS Code and IntelliJ
@@ -205,6 +212,8 @@ LINT_FIX=1                   # 1 = just before verify, run the project's automat
 LINT_FIX_CMD=                # deterministic fixer command run in the target repo before verify, e.g.
                              # vendor/bin/pint or "npm run lint:fix" — zero tokens, exit code ignored
                              # (fails open). Empty = a cheap agent auto-detects and runs the project's fixers.
+                             # Monorepos: a slice whose changed files live under one workspace picks up
+                             # that workspace's own <workspace>/.trau.ini LINT_FIX_CMD first (ADR 0019).
 CLEANUP=1                    # 1 = just before verify, a cheap agent strips AI-slop from the slice's diff —
                              # unnecessary comments, dead code, over-defensive scaffolding — so the code reads
                              # hand-written. Behavior-preserving; fails open. 0 disables it.
