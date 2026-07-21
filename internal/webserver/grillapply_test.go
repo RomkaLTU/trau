@@ -684,6 +684,112 @@ func TestGrillApplyCreatePartialRetry(t *testing.T) {
 	}
 }
 
+func TestGrillApplyUnknownDestination(t *testing.T) {
+	fake := newFakeWriter()
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispCreate,
+		Title:               "Add dark mode toggle",
+		ProposedDescription: "body",
+		Summary:             "specced",
+	})
+
+	res, _ := applyGrill(t, ts, sid, GrillApplyRequest{Destination: "jira"})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("apply with unknown destination = %d, want 400", res.StatusCode)
+	}
+	if len(fake.created) != 0 {
+		t.Errorf("wrote to the tracker on a rejected destination")
+	}
+	sess, _, err := stores.Grill().Session(sid)
+	if err != nil || sess.State != hubstore.GrillFinished {
+		t.Fatalf("session state = %q (err=%v), want still finished", sess.State, err)
+	}
+}
+
+func TestGrillApplyCreateInternalDestination(t *testing.T) {
+	fake := newFakeWriter()
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispCreate,
+		Title:               "Add dark mode toggle",
+		ProposedDescription: "As a user I can toggle dark mode.",
+		Summary:             "specced the toggle",
+	})
+
+	res, out := applyGrill(t, ts, sid, GrillApplyRequest{Destination: "internal"})
+	if res.StatusCode != http.StatusOK || !out.Applied || out.Session.State != hubstore.GrillApplied {
+		t.Fatalf("apply = %+v (status %d), want applied", out, res.StatusCode)
+	}
+	if len(fake.created)+len(fake.comments) != 0 {
+		t.Fatalf("external tracker written on an internal apply: %v", fake.order)
+	}
+	if out.Session.IssueID != "ACME-1" {
+		t.Errorf("session anchor = %q, want the internal issue ACME-1", out.Session.IssueID)
+	}
+	if out.Session.IssueDestination != "internal" {
+		t.Errorf("session destination = %q, want internal so a remounted review names it", out.Session.IssueDestination)
+	}
+	iss, found, err := stores.Issues().Get(root, "ACME-1")
+	if err != nil || !found {
+		t.Fatalf("internal issue: found=%v err=%v", found, err)
+	}
+	if iss.Source != hubstore.SourceInternal || iss.Title != "Add dark mode toggle" {
+		t.Errorf("internal issue = source %q title %q, want an internal row with the filed title", iss.Source, iss.Title)
+	}
+	if !hasLabel(iss.Labels, "ready-for-agent") {
+		t.Errorf("internal issue labels = %v, want the default ready label", iss.Labels)
+	}
+}
+
+func TestGrillApplyCreateDestinationSwitchReanchors(t *testing.T) {
+	fake := newFakeWriter()
+	// Pass 1 to the tracker: the epic parent lands, the child fails, and the
+	// session anchors to the tracker parent.
+	fake.createQueue = []fakeCreate{
+		{issue: tracker.NewIssue{Identifier: "COD-300"}},
+		{err: errString("linear: 502")},
+	}
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispCreate,
+		Title:               "New epic",
+		ProposedDescription: "Epic body.",
+		Summary:             "one slice",
+		SubIssues:           []grillSubIssue{{Title: "S1", Description: "d1"}},
+	})
+
+	_, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if out.Applied || out.Session.IssueID != "COD-300" {
+		t.Fatalf("partial apply = %+v, want not applied and anchored to COD-300", out)
+	}
+
+	// Pass 2 files internally instead: the tracker anchor is foreign to the new
+	// destination, so a fresh internal parent takes the children — nothing grafts
+	// onto COD-300 and the tracker is not touched again.
+	fake.created = nil
+	fake.createIdx = 0
+	fake.createQueue = nil
+
+	_, out = applyGrill(t, ts, sid, GrillApplyRequest{Destination: "internal"})
+	if !out.Applied || out.Session.State != hubstore.GrillApplied {
+		t.Fatalf("internal re-apply = %+v, want applied", out)
+	}
+	if len(fake.created) != 0 {
+		t.Fatalf("re-apply wrote %d issues to the tracker, want 0", len(fake.created))
+	}
+	if out.Session.IssueID != "ACME-1" {
+		t.Errorf("re-anchor = %q, want the internal parent ACME-1", out.Session.IssueID)
+	}
+	kids, err := stores.Issues().Children(root, "ACME-1")
+	if err != nil || len(kids) != 1 || kids[0].Title != "S1" {
+		t.Fatalf("internal children = %+v (err=%v), want the one slice under ACME-1", kids, err)
+	}
+	if kids, err := stores.Issues().Children(root, "COD-300"); err != nil || len(kids) != 0 {
+		t.Fatalf("tracker parent children = %+v (err=%v), want none grafted", kids, err)
+	}
+}
+
 func TestGrillApplyCreateNotAnchoredRewrite(t *testing.T) {
 	fake := newFakeWriter()
 	ts, stores, root := grillApplyServer(t, fake)

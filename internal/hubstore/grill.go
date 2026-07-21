@@ -59,18 +59,20 @@ var grillTransitions = map[string]map[string]bool{
 // sessions that anchor to the repo alone. IssueTitle is read from the issue the
 // session grills — so a settled session still names its issue after apply drops the
 // triage labels the board queries key on — falling back to the authoring seed for an
-// issue-less session.
+// issue-less session. IssueDestination records where a create-apply filed the
+// anchored issue; empty for anchors that predate destination tracking.
 type GrillSession struct {
-	ID           int64
-	Repo         string
-	IssueID      string
-	IssueTitle   string
-	State        string
-	SessionChain string
-	Model        string
-	ParkedReason string
-	CreatedAt    string
-	UpdatedAt    string
+	ID               int64
+	Repo             string
+	IssueID          string
+	IssueDestination string
+	IssueTitle       string
+	State            string
+	SessionChain     string
+	Model            string
+	ParkedReason     string
+	CreatedAt        string
+	UpdatedAt        string
 }
 
 // NewGrillSession is the input to Create. State always starts at running.
@@ -157,7 +159,7 @@ func (g *Grill) Create(ns NewGrillSession) (GrillSession, error) {
 // issues already has. An authoring session's empty issue_id matches no issue and
 // falls back to its seed — the one-line idea stored as the opening info message —
 // so an issue-less session still names itself in the queue.
-const grillSessionSelect = `SELECT g.id, g.repo, g.issue_id,
+const grillSessionSelect = `SELECT g.id, g.repo, g.issue_id, g.issue_destination,
 	        COALESCE(NULLIF(i.title, ''), (
 	            SELECT json_extract(m.payload, '$.text') FROM grill_messages m
 	            WHERE m.session_id = g.id AND m.role = 'user' AND m.kind = 'info'
@@ -356,22 +358,24 @@ func (g *Grill) SetModel(id int64, model string) (GrillSession, bool, error) {
 	return sess, true, nil
 }
 
-// SetIssue anchors a session to issueID and bumps its updated_at — the create-apply
-// flow calls it once the parent issue is filed so a retry reuses that issue instead
-// of filing it a second time. It reports whether the session exists.
-func (g *Grill) SetIssue(id int64, issueID string) (GrillSession, bool, error) {
+// SetIssue anchors a session to issueID, recording the destination it was filed
+// in, and bumps its updated_at — the create-apply flow calls it once the parent
+// issue is filed so a retry to the same destination reuses that issue instead of
+// filing it a second time. It reports whether the session exists.
+func (g *Grill) SetIssue(id int64, issueID, destination string) (GrillSession, bool, error) {
 	sess, found, err := g.Session(id)
 	if err != nil || !found {
 		return GrillSession{}, found, err
 	}
 	now := formatGrillTime(time.Now())
 	if _, err := g.db.Exec(
-		`UPDATE grill_sessions SET issue_id = ?, updated_at = ? WHERE id = ?`,
-		issueID, now, id,
+		`UPDATE grill_sessions SET issue_id = ?, issue_destination = ?, updated_at = ? WHERE id = ?`,
+		issueID, destination, now, id,
 	); err != nil {
 		return GrillSession{}, false, err
 	}
 	sess.IssueID = issueID
+	sess.IssueDestination = destination
 	sess.UpdatedAt = now
 	return sess, true, nil
 }
@@ -452,8 +456,8 @@ func (g *Grill) scanSessions(query string, args ...any) (out []GrillSession, err
 	for q.Next() {
 		var s GrillSession
 		if err := q.Scan(
-			&s.ID, &s.Repo, &s.IssueID, &s.IssueTitle, &s.State, &s.SessionChain,
-			&s.Model, &s.ParkedReason, &s.CreatedAt, &s.UpdatedAt,
+			&s.ID, &s.Repo, &s.IssueID, &s.IssueDestination, &s.IssueTitle, &s.State,
+			&s.SessionChain, &s.Model, &s.ParkedReason, &s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
