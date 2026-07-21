@@ -501,6 +501,27 @@ func ProjectConfigPath(dir string) string {
 	return filepath.Join(dir, ProjectConfigName)
 }
 
+// WorkspaceOverride reads <workspaceDir>/.trau.ini and returns the value it
+// sets for key, if any (ADR 0019). It backs monorepo knob scoping: a knob
+// resolved after a slice's diff is known checks the owning workspace's own
+// .trau.ini — found via agent.OwningWorkspaceDir — before falling back to the
+// repo-root value. ok is false when the file is absent, unreadable, or
+// doesn't set key, so the caller keeps its existing fallback.
+func WorkspaceOverride(workspaceDir, key string) (string, bool) {
+	if workspaceDir == "" || key == "" {
+		return "", false
+	}
+	file, err := ParseEnvFile(ProjectConfigPath(workspaceDir))
+	if err != nil {
+		return "", false
+	}
+	v, ok := file[key]
+	if !ok || v == "" {
+		return "", false
+	}
+	return v, true
+}
+
 // LocalConfigPath returns the cwd-local config file: an explicit TRAU_ENV path
 // when set, else trau.ini.
 func LocalConfigPath() string {

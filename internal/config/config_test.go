@@ -634,3 +634,38 @@ func TestLoadAppURLsDefault(t *testing.T) {
 		t.Errorf("AppURLs = %v, want nil", cfg.AppURLs)
 	}
 }
+
+func TestWorkspaceOverride(t *testing.T) {
+	t.Run("key set in the workspace file", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, ".trau.ini"), []byte("LINT_FIX_CMD=npm run lint:fix\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		v, ok := WorkspaceOverride(dir, "LINT_FIX_CMD")
+		if !ok || v != "npm run lint:fix" {
+			t.Errorf("WorkspaceOverride = (%q, %v), want (%q, true)", v, ok, "npm run lint:fix")
+		}
+	})
+
+	t.Run("key not set in the workspace file", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, ".trau.ini"), []byte("AGENT_TIMEOUT=60\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if v, ok := WorkspaceOverride(dir, "LINT_FIX_CMD"); ok {
+			t.Errorf("WorkspaceOverride = (%q, %v), want ok=false", v, ok)
+		}
+	})
+
+	t.Run("no workspace file", func(t *testing.T) {
+		if v, ok := WorkspaceOverride(t.TempDir(), "LINT_FIX_CMD"); ok {
+			t.Errorf("WorkspaceOverride = (%q, %v), want ok=false", v, ok)
+		}
+	})
+
+	t.Run("no workspace dir", func(t *testing.T) {
+		if v, ok := WorkspaceOverride("", "LINT_FIX_CMD"); ok {
+			t.Errorf("WorkspaceOverride = (%q, %v), want ok=false", v, ok)
+		}
+	})
+}

@@ -499,6 +499,44 @@ func workspaceURL(urls map[string]string, dir, rel string) string {
 	return urls[filepath.Base(dir)]
 }
 
+// OwningWorkspaceDir returns the absolute directory of the workspace holding
+// the most of the slice's changed files (repo-relative paths), or "" when no
+// workspace owns any changed file or two workspaces tie (ADR 0019). It backs
+// per-workspace config scoping: the returned dir's own .trau.ini is checked
+// for a knob before the repo-root value, via config.WorkspaceOverride.
+func OwningWorkspaceDir(repoRoot string, changed []string) string {
+	if repoRoot == "" || len(changed) == 0 {
+		return ""
+	}
+	bestDir := ""
+	bestCount := 0
+	ambiguous := false
+	for _, dir := range workspaceDirs(repoRoot) {
+		rel, err := filepath.Rel(repoRoot, dir)
+		if err != nil {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		count := 0
+		for _, f := range changed {
+			if strings.HasPrefix(filepath.ToSlash(f), rel+"/") {
+				count++
+			}
+		}
+		switch {
+		case count == 0:
+		case count > bestCount:
+			bestDir, bestCount, ambiguous = dir, count, false
+		case count == bestCount:
+			ambiguous = true
+		}
+	}
+	if ambiguous {
+		return ""
+	}
+	return bestDir
+}
+
 func manifestName(manifest string) string {
 	data, err := os.ReadFile(manifest)
 	if err != nil {

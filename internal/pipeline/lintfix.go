@@ -19,15 +19,15 @@ func (p *Pipeline) lintFix(ctx context.Context, id string) error {
 		return nil
 	}
 	p.setActivity(id, activity.LintFix, "")
-	if strings.TrimSpace(p.LintFixCmd) != "" {
-		return p.lintFixCmd(ctx)
+	if cmd := strings.TrimSpace(p.sliceLintFixCmd(ctx)); cmd != "" {
+		return p.lintFixCmd(ctx, cmd)
 	}
 	return p.lintFixAgent(ctx, id)
 }
 
-func (p *Pipeline) lintFixCmd(ctx context.Context) error {
-	p.logf("  ↳ lint-fix: %s", p.LintFixCmd)
-	c := exec.CommandContext(ctx, "sh", "-c", p.LintFixCmd)
+func (p *Pipeline) lintFixCmd(ctx context.Context, cmd string) error {
+	p.logf("  ↳ lint-fix: %s", cmd)
+	c := exec.CommandContext(ctx, "sh", "-c", cmd)
 	if p.RepoRoot != "" {
 		c.Dir = p.RepoRoot
 	}
