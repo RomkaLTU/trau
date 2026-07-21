@@ -99,14 +99,14 @@ func TestPanelParallelMergedVerdictMatchesSequential(t *testing.T) {
 
 	seqPanel := build("COD-79701")
 	seq := newPanelPipeline(t, seqPanel, false)
-	seqVerdict, err := seq.runPanel(context.Background(), "COD-79701", "verify", "brief", "", "", "", "", "", "")
+	seqVerdict, err := seq.runPanel(context.Background(), "COD-79701", "verify", "brief", "", "", "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("sequential runPanel err = %v", err)
 	}
 
 	parPanel := build("COD-79701")
 	par := newPanelPipeline(t, parPanel, true)
-	parVerdict, err := par.runPanel(context.Background(), "COD-79701", "verify", "brief", "", "", "", "", "", "")
+	parVerdict, err := par.runPanel(context.Background(), "COD-79701", "verify", "brief", "", "", "", "", "", "", "")
 	if err != nil {
 		t.Fatalf("parallel runPanel err = %v", err)
 	}
@@ -139,7 +139,7 @@ func TestPanelParallelRunsConcurrently(t *testing.T) {
 	p := newPanelPipeline(t, panel, true)
 
 	start := time.Now()
-	v, err := p.runPanel(context.Background(), id, "verify", "brief", "", "", "", "", "", "")
+	v, err := p.runPanel(context.Background(), id, "verify", "brief", "", "", "", "", "", "", "")
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -185,7 +185,7 @@ func TestPanelParallelFatalMemberCancelsAndPropagates(t *testing.T) {
 	p := newPanelPipeline(t, panel, true)
 
 	start := time.Now()
-	_, err := p.runPanel(context.Background(), id, "verify", "brief", "", "", "", "", "", "")
+	_, err := p.runPanel(context.Background(), id, "verify", "brief", "", "", "", "", "", "", "")
 	elapsed := time.Since(start)
 
 	if !IsPaused(err) {
@@ -217,7 +217,7 @@ func TestPanelParallelMemberCrashCountsAsFail(t *testing.T) {
 	}
 	p := newPanelPipeline(t, panel, true)
 
-	v, err := p.runPanel(context.Background(), id, "verify", "brief", "", "", "", "", "", "")
+	v, err := p.runPanel(context.Background(), id, "verify", "brief", "", "", "", "", "", "", "")
 
 	if err != nil {
 		t.Fatalf("runPanel err = %v, want nil (a member crash is a dissent, not a phase error)", err)

@@ -76,6 +76,33 @@ func TestMissingRequiredSkills(t *testing.T) {
 	}
 }
 
+// TestTestSkillNames pins the generic test-skill derivation: token matching on
+// hyphen/underscore boundaries, so a framework-named skill is only recognized
+// when its name itself says testing.
+func TestTestSkillNames(t *testing.T) {
+	cases := []struct {
+		name      string
+		installed []string
+		want      []string
+	}{
+		{"nil installed", nil, nil},
+		{"no test skill", []string{"golang-code-style", "web-feature", "browser-harness"}, nil},
+		{"tdd token", []string{"golang-pro", "tdd"}, []string{"tdd"}},
+		{"testing token", []string{"api-testing", "goreleaser"}, []string{"api-testing"}},
+		{"tests token with underscore", []string{"unit_tests"}, []string{"unit_tests"}},
+		{"substring is not a token", []string{"contest-picker", "attestation"}, nil},
+		{"multiple matches keep order", []string{"tdd", "e2e-tests", "bubbletea"}, []string{"tdd", "e2e-tests"}},
+		{"case-insensitive", []string{"TDD"}, []string{"TDD"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := TestSkillNames(tc.installed); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("TestSkillNames(%v) = %v, want %v", tc.installed, got, tc.want)
+			}
+		})
+	}
+}
+
 func mkSkill(t *testing.T, repo, dir, name string) {
 	t.Helper()
 	path := filepath.Join(repo, dir, name)

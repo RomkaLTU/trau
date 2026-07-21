@@ -144,7 +144,7 @@ func TestGateBrowserVerifyAdvisory(t *testing.T) {
 			p.AppURL = tc.appURL
 
 			v := verdict{Pass: true, Browser: tc.browser}
-			if err := p.gateBrowserVerify(context.Background(), "COD-1", v, "", "", "", "", "", ""); err != nil {
+			if err := p.gateBrowserVerify(context.Background(), "COD-1", v, "", "", "", "", "", "", ""); err != nil {
 				t.Fatalf("gate returned %v, want nil (advisory)", err)
 			}
 			if runner.calls != 0 {
@@ -180,7 +180,7 @@ func TestGateBrowserVerifyAlwaysReVerifies(t *testing.T) {
 		p.AppURL = "http://localhost:3000"
 
 		v := verdict{Pass: true, Browser: "skipped"}
-		if err := p.gateBrowserVerify(context.Background(), id, v, "", "", "", "", "", ""); err != nil {
+		if err := p.gateBrowserVerify(context.Background(), id, v, "", "", "", "", "", "", ""); err != nil {
 			t.Fatalf("gate returned %v, want nil after the browser was driven on re-verify", err)
 		}
 		if runner.calls != 1 {
@@ -210,7 +210,7 @@ func TestGateBrowserVerifyAlwaysReVerifies(t *testing.T) {
 			p.AppURL = "http://localhost:3000"
 
 			v := verdict{Pass: true, Browser: initial}
-			err := p.gateBrowserVerify(context.Background(), id, v, "", "", "", "", "", "")
+			err := p.gateBrowserVerify(context.Background(), id, v, "", "", "", "", "", "", "")
 
 			if !IsPaused(err) {
 				t.Fatalf("gate returned %v, want a *PausedError", err)
