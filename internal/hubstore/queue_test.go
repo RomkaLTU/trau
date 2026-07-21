@@ -231,6 +231,54 @@ func TestRemoveKeepsOrderAndGuardsRunning(t *testing.T) {
 	}
 }
 
+func TestClearEmptiesItemsSubIssuesAndDisarms(t *testing.T) {
+	q := testQueue(t)
+	if _, err := q.Add(queue.Item{
+		Kind:      queue.KindEpic,
+		ID:        "COD-1",
+		SubIssues: []queue.SubIssue{{ID: "COD-9", Title: "child", State: "todo"}},
+	}); err != nil {
+		t.Fatalf("Add epic: %v", err)
+	}
+	mustAdd(t, q, "COD-2")
+	if err := q.MarkRunning("COD-1", 7); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	if err := q.SetDraining(true); err != nil {
+		t.Fatalf("SetDraining: %v", err)
+	}
+
+	removed, err := q.Clear()
+	if err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	if got := ids(removed); !reflect.DeepEqual(got, []string{"COD-1", "COD-2"}) {
+		t.Fatalf("removed = %v, want [COD-1 COD-2]", got)
+	}
+
+	items, draining, err := q.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("items after Clear = %v, want none", ids(items))
+	}
+	if draining {
+		t.Error("Clear left the queue draining")
+	}
+
+	var itemCount, subCount int
+	if err := q.db.QueryRow(`SELECT COUNT(*) FROM queue_items WHERE root = ?`, q.root).Scan(&itemCount); err != nil {
+		t.Fatalf("count queue_items: %v", err)
+	}
+	if err := q.db.QueryRow(`SELECT COUNT(*) FROM queue_sub_issues WHERE root = ?`, q.root).Scan(&subCount); err != nil {
+		t.Fatalf("count queue_sub_issues: %v", err)
+	}
+	if itemCount != 0 || subCount != 0 {
+		t.Fatalf("raw rows after Clear = items:%d sub_issues:%d, want both 0", itemCount, subCount)
+	}
+}
+
 func TestMoveReorders(t *testing.T) {
 	q := testQueue(t)
 	mustAdd(t, q, "COD-1")

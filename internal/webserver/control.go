@@ -14,7 +14,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/state"
 )
 
 // dryRunTimeout bounds a preview: it drives a fresh trau to ask the tracker for
@@ -62,6 +64,99 @@ func (s *Server) handleStopInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "stopping", "signal": "SIGTERM"})
+}
+
+// stopWaitPoll is the process-liveness poll cadence stopAndWait uses while
+// waiting out a grace period and while confirming a kill took. stopKillConfirm
+// bounds that post-kill confirmation — SIGKILL cannot be caught, so this only
+// covers the process's actual exit, never a resumed run. Both are vars so
+// tests compress them instead of sleeping for real.
+var (
+	stopWaitPoll    = 200 * time.Millisecond
+	stopKillConfirm = 5 * time.Second
+)
+
+// stopAndWait stops pid with escalation and is guaranteed to end it: SIGTERM,
+// then wait out grace for the loop to exit on its own, then a group SIGKILL if
+// it is still alive, confirming the process is gone before returning. A stale
+// or already-dead pid succeeds immediately without signalling anything — the
+// caller's goal (pid not running) is already met. Either way, once the process
+// is confirmed gone it settles the hub's own records for a run that never got
+// to report its own terminal state (settleStoppedRun) — always true after an
+// escalation, and also true for a loop that died some other way without
+// deregistering; a loop that exited and deregistered on its own is untouched.
+func (s *Server) stopAndWait(pid int, grace time.Duration) error {
+	if !registry.Alive(pid) {
+		s.settleStoppedRun(pid)
+		return nil
+	}
+	if err := s.sup.Signal(pid, syscall.SIGTERM); err != nil {
+		return fmt.Errorf("signal pid %d: %w", pid, err)
+	}
+	if !awaitDead(pid, grace) {
+		if err := s.sup.Kill(pid); err != nil {
+			return fmt.Errorf("kill pid %d: %w", pid, err)
+		}
+		if !awaitDead(pid, stopKillConfirm) {
+			return fmt.Errorf("pid %d still alive after a group SIGKILL", pid)
+		}
+	}
+	s.settleStoppedRun(pid)
+	return nil
+}
+
+// awaitDead polls pid's process liveness until it is gone or within elapses.
+func awaitDead(pid int, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	for registry.Alive(pid) {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(stopWaitPoll)
+	}
+	return true
+}
+
+// settleStoppedRun settles the hub's own records for pid once its process is
+// confirmed gone. A loop that deregistered cleanly on its own (the ordinary
+// SIGTERM path) has already removed its registry entry, so this is a no-op;
+// one that never got the chance to — force-killed, or dead some other way
+// without reporting — still has one, which this drops, and its checkpoint (if
+// it was mid-ticket) gets stamped stopped/shutdown so nothing keeps showing it
+// as running.
+func (s *Server) settleStoppedRun(pid int) {
+	entry, found, err := s.stores.Instances().Get(pid)
+	if err != nil || !found {
+		return
+	}
+	if err := s.stores.Instances().Remove(pid); err != nil {
+		logger.Verbosef("settle stopped pid %d: remove registry entry: %v", pid, err)
+	}
+	if entry.Ticket == "" {
+		return
+	}
+	s.stampCheckpointStopped(entry.RepoRoot, entry.Ticket)
+}
+
+// stampCheckpointStopped marks ticket's checkpoint stopped by the hub itself,
+// preserving every other field, so a run that never got to report its own
+// outcome doesn't read as a phantom in-flight build. A ticket with no
+// checkpoint yet has nothing to stamp.
+func (s *Server) stampCheckpointStopped(root, ticket string) {
+	row, found, err := s.stores.Checkpoints().One(root, ticket)
+	if err != nil || !found {
+		return
+	}
+	data := map[string]string{}
+	if row.Data != "" {
+		_ = json.Unmarshal([]byte(row.Data), &data)
+	}
+	data["FAILURE_CLASS"] = state.FailStopped
+	data["FAILURE_REASON"] = "shutdown"
+	data["UPDATED"] = time.Now().UTC().Format("2006-01-02 15:04:05")
+	if err := s.stores.Checkpoints().Upsert(root, ticket, data); err != nil {
+		logger.Verbosef("stamp stopped checkpoint %s/%s: %v", root, ticket, err)
+	}
 }
 
 // RestartAck is the answer to an accepted restart: the version that is on its

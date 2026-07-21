@@ -86,11 +86,12 @@ func StaleCheckpoint(phase string, trackerDone bool) bool {
 
 // Failure classes written to the FAILURE_CLASS key when a ticket stops short of
 // merged. FailGaveUp is never stored — a Quarantined phase already carries it —
-// but is returned by FailureClass so every surface names the three the same way.
+// but is returned by FailureClass so every surface names the classes the same way.
 const (
 	FailPaused  = "paused"  // a blameless provider rate/usage or auth wall
 	FailFaulted = "faulted" // an unexpected error; work preserved, still resumable
 	FailGaveUp  = "gave_up" // a verified dead end; quarantined and needs a human
+	FailStopped = "stopped" // an administrative stop (hub shutdown, supervisor kill); blameless, always resumable
 )
 
 // FailureClass classifies a checkpoint's failure from its durable fields: a

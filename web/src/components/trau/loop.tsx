@@ -12,6 +12,7 @@ import {
   Info,
   ListPlus,
   Plus,
+  Power,
   RefreshCw,
   Search,
   Square,
@@ -67,6 +68,7 @@ import {
   queueExecutable,
   queueQueryOptions,
   runNext as runNextRequest,
+  shutdownQueue,
   skipResumeApplies,
   type OnFault,
   type QueueItem,
@@ -92,6 +94,62 @@ const NO_OVERRIDE = "default";
 
 function actionError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function shutdownDescription(queuedCount: number): string {
+  const noun = queuedCount === 1 ? "item" : "items";
+  return `Stops the running task if any (force-killed if it hasn't exited after ~30s), removes all ${queuedCount} queued ${noun}, and clears paused run leftovers. Work in progress on feature branches is kept; tracker tickets are not changed.`;
+}
+
+// ShutdownAction is the destructive teardown gesture shared by both Loop card
+// shapes: it stays hidden until there is something to tear down (a queued
+// item or a live child), then disables itself and reads "Shutting down…"
+// until the hub confirms the teardown and the queue query clears.
+function ShutdownAction({
+  repo,
+  queuedCount,
+  hasRunningChild,
+  shuttingDown,
+  onConfirm,
+  error,
+}: {
+  repo: string;
+  queuedCount: number;
+  hasRunningChild: boolean;
+  shuttingDown: boolean;
+  onConfirm: () => void;
+  error: unknown;
+}) {
+  if (!shuttingDown && queuedCount === 0 && !hasRunningChild) return null;
+
+  return (
+    <div className="flex flex-col items-end gap-2">
+      {error ? (
+        <p className="font-mono text-xs text-destructive">
+          {actionError(error)}
+        </p>
+      ) : null}
+      <ConfirmDialog
+        windowTitle="confirm"
+        trigger={
+          <Button
+            variant="destructive"
+            size="sm"
+            className="font-mono"
+            disabled={shuttingDown}
+          >
+            <Power className="size-4" aria-hidden="true" />
+            {shuttingDown ? "Shutting down…" : "Shut down"}
+          </Button>
+        }
+        title={`Shut down the loop on ${repo}?`}
+        description={shutdownDescription(queuedCount)}
+        confirmLabel="Shut down"
+        destructive
+        onConfirm={onConfirm}
+      />
+    </div>
+  );
 }
 
 function useNow(intervalMs: number): number {
@@ -447,10 +505,18 @@ function QueueBuilderRow({
 function LaunchQueueCard({
   repo,
   freshness,
+  hasRunningChild,
+  shuttingDown,
+  onShutdown,
+  shutdownError,
   onPeek,
 }: {
   repo: string;
   freshness?: RepoFreshness;
+  hasRunningChild: boolean;
+  shuttingDown: boolean;
+  onShutdown: () => void;
+  shutdownError: unknown;
   onPeek: (id: string) => void;
 }) {
   const queryClient = useQueryClient();
@@ -557,7 +623,8 @@ function LaunchQueueCard({
     remove.isPending ||
     add.isPending ||
     addAll.isPending ||
-    runNext.isPending;
+    runNext.isPending ||
+    shuttingDown;
 
   // The ticket is fetched for confirmation the moment the user commits an id —
   // on Enter or on blur — so there's no extra "fetch" click to reach the confirm.
@@ -621,6 +688,7 @@ function LaunchQueueCard({
                   placeholder="COD-### (ticket or epic)"
                   autoComplete="off"
                   spellCheck={false}
+                  disabled={shuttingDown}
                   className="w-56 rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:outline-none"
                 />
                 <Button
@@ -629,7 +697,7 @@ function LaunchQueueCard({
                   size="sm"
                   className="font-mono"
                   onClick={fetchTicket}
-                  disabled={issue.isFetching || draft.trim() === ""}
+                  disabled={issue.isFetching || draft.trim() === "" || shuttingDown}
                 >
                   {issue.isFetching ? "Fetching…" : "Fetch ticket"}
                 </Button>
@@ -639,6 +707,7 @@ function LaunchQueueCard({
                   size="sm"
                   className="font-mono"
                   onClick={() => setBrowseOpen(true)}
+                  disabled={shuttingDown}
                 >
                   <Search className="size-4" aria-hidden="true" />
                   Browse…
@@ -650,7 +719,7 @@ function LaunchQueueCard({
                     size="sm"
                     className="font-mono"
                     onClick={() => addAll.mutate()}
-                    disabled={addAll.isPending}
+                    disabled={addAll.isPending || shuttingDown}
                   >
                     <ListPlus className="size-4" aria-hidden="true" />
                     {addAll.isPending ? "Adding…" : addAllLabel(addAllPlan)}
@@ -833,7 +902,7 @@ function LaunchQueueCard({
                       size="sm"
                       className="font-mono"
                       onClick={() => runNext.mutate()}
-                      disabled={runNext.isPending || add.isPending}
+                      disabled={runNext.isPending || add.isPending || shuttingDown}
                     >
                       {runNext.isPending ? "Starting…" : "Run next"}
                     </Button>
@@ -843,7 +912,7 @@ function LaunchQueueCard({
                       size="sm"
                       className="font-mono"
                       onClick={() => add.mutate()}
-                      disabled={add.isPending || runNext.isPending}
+                      disabled={add.isPending || runNext.isPending || shuttingDown}
                     >
                       <Plus className="size-4" aria-hidden="true" />
                       {add.isPending ? "Adding…" : "Add to queue"}
@@ -918,7 +987,7 @@ function LaunchQueueCard({
               size="sm"
               className="w-fit font-mono"
               onClick={() => start.mutate()}
-              disabled={executable === 0 || start.isPending}
+              disabled={executable === 0 || start.isPending || shuttingDown}
             >
               {start.isPending ? "Starting…" : "Start queue"}
             </Button>
@@ -938,6 +1007,15 @@ function LaunchQueueCard({
           onQueue={setQueue}
         />
       </TerminalCard>
+
+      <ShutdownAction
+        repo={repo}
+        queuedCount={builder.queue.length}
+        hasRunningChild={hasRunningChild}
+        shuttingDown={shuttingDown}
+        onConfirm={onShutdown}
+        error={shutdownError}
+      />
 
       {builder.settled.length > 0 ? (
         <FinishedSection
@@ -1311,6 +1389,10 @@ function RunningQueueView({
   onStop,
   stopping,
   stopError,
+  hasRunningChild,
+  shuttingDown,
+  onShutdown,
+  shutdownError,
   onPeek,
 }: {
   repo: string;
@@ -1320,6 +1402,10 @@ function RunningQueueView({
   onStop: () => void;
   stopping: boolean;
   stopError: unknown;
+  hasRunningChild: boolean;
+  shuttingDown: boolean;
+  onShutdown: () => void;
+  shutdownError: unknown;
   onPeek: (id: string) => void;
 }) {
   const now = useNow(1000);
@@ -1387,7 +1473,8 @@ function RunningQueueView({
               <button
                 type="button"
                 onClick={() => setAddOpen(true)}
-                className="inline-flex items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline"
+                disabled={shuttingDown}
+                className="inline-flex items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline disabled:pointer-events-none disabled:opacity-30"
               >
                 <Plus className="size-3.5" aria-hidden="true" />
                 Add ticket
@@ -1429,6 +1516,7 @@ function RunningQueueView({
                     size="sm"
                     className="font-mono"
                     onClick={() => setAddOpen(true)}
+                    disabled={shuttingDown}
                   >
                     <Plus className="size-4" aria-hidden="true" />
                     Add ticket
@@ -1448,30 +1536,40 @@ function RunningQueueView({
         </div>
       </TerminalCard>
 
-      <div className="flex max-w-3xl flex-col items-end gap-2">
-        {stopError ? (
-          <p className="font-mono text-xs text-destructive">
-            {actionError(stopError)}
-          </p>
-        ) : null}
-        <ConfirmDialog
-          windowTitle="confirm"
-          trigger={
-            <Button
-              variant="destructive"
-              size="sm"
-              className="font-mono"
-              disabled={stopping}
-            >
-              <Square className="size-4" aria-hidden="true" />
-              {stopping ? "Stopping…" : "Stop queue"}
-            </Button>
-          }
-          title={`Stop the queue on ${repo}?`}
-          description="The current ticket finishes its checkpoint, then the queue stops. Work in progress is preserved — Start again to resume where it left off."
-          confirmLabel="Stop queue"
-          destructive
-          onConfirm={onStop}
+      <div className="flex max-w-3xl flex-wrap items-end justify-end gap-4">
+        <div className="flex flex-col items-end gap-2">
+          {stopError ? (
+            <p className="font-mono text-xs text-destructive">
+              {actionError(stopError)}
+            </p>
+          ) : null}
+          <ConfirmDialog
+            windowTitle="confirm"
+            trigger={
+              <Button
+                variant="destructive"
+                size="sm"
+                className="font-mono"
+                disabled={stopping || shuttingDown}
+              >
+                <Square className="size-4" aria-hidden="true" />
+                {stopping ? "Stopping…" : "Stop queue"}
+              </Button>
+            }
+            title={`Stop the queue on ${repo}?`}
+            description="The current ticket finishes its checkpoint, then the queue stops. Work in progress is preserved — Start again to resume where it left off."
+            confirmLabel="Stop queue"
+            destructive
+            onConfirm={onStop}
+          />
+        </div>
+        <ShutdownAction
+          repo={repo}
+          queuedCount={timeline.pending.length}
+          hasRunningChild={hasRunningChild}
+          shuttingDown={shuttingDown}
+          onConfirm={onShutdown}
+          error={shutdownError}
         />
       </div>
 
@@ -1642,9 +1740,18 @@ export function Loop() {
   const startable = repos.filter((r) => r.allowed).map((r) => r.name);
   const canRun = repo !== "" && startable.includes(repo);
 
+  // shutdownArmed bridges the gap between confirming Shut down and the queue
+  // query catching up: it forces polling on immediately instead of waiting for
+  // a fetch that happens to land after the click to prove shutting_down is
+  // true, and it keeps polling alive until one lands showing teardown is done.
+  const [shutdownArmed, setShutdownArmed] = useState(false);
+
   const queue = useQuery({
     ...queueQueryOptions(repo),
-    refetchInterval: (q) => (q.state.data?.draining ? 3000 : false),
+    refetchInterval: (q) =>
+      q.state.data?.draining || q.state.data?.shutting_down || shutdownArmed
+        ? 3000
+        : false,
   });
   const { data: instData } = useQuery(instancesQueryOptions);
   const liveInstance = instData?.instances.find((i) => i.repo === repo);
@@ -1675,8 +1782,26 @@ export function Loop() {
     onSuccess: (res) => publishQueue(queryClient, repo, res),
   });
 
+  const shutdown = useMutation({
+    mutationFn: () => shutdownQueue(repo),
+    onMutate: () => setShutdownArmed(true),
+    onSuccess: () =>
+      queryClient.invalidateQueries({ queryKey: queueQueryOptions(repo).queryKey }),
+  });
+
+  const shuttingDown =
+    shutdownArmed || (queue.data?.shutting_down ?? false) || shutdown.isPending;
+
+  useEffect(() => {
+    if (shutdownArmed && queue.data && !queue.data.shutting_down && !queue.data.draining) {
+      setShutdownArmed(false);
+    }
+  }, [shutdownArmed, queue.data]);
+
   useEffect(() => {
     stop.reset();
+    shutdown.reset();
+    setShutdownArmed(false);
   }, [repo]);
 
   if (!canRun) {
@@ -1710,6 +1835,10 @@ export function Loop() {
           onStop={() => stop.mutate()}
           stopping={stop.isPending}
           stopError={stop.error}
+          hasRunningChild={Boolean(liveInstance)}
+          shuttingDown={shuttingDown}
+          onShutdown={() => shutdown.mutate()}
+          shutdownError={shutdown.error}
           onPeek={onPeek}
         />
         {drawer}
@@ -1726,6 +1855,10 @@ export function Loop() {
       <LaunchQueueCard
         repo={repo}
         freshness={repos.find((r) => r.name === repo)?.freshness}
+        hasRunningChild={Boolean(liveInstance)}
+        shuttingDown={shuttingDown}
+        onShutdown={() => shutdown.mutate()}
+        shutdownError={shutdown.error}
         onPeek={onPeek}
       />
       {drawer}

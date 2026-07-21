@@ -354,6 +354,27 @@ func (q *Queue) Restart() error {
 	return q.persist(st)
 }
 
+// Clear empties root's queue entirely — every item and its sub-issues — and
+// disarms the drain, all in one persist. It carries no running-item guard: the
+// queue shutdown endpoint sequences the child's confirmed death before ever
+// calling it. It returns the items that were removed, so the caller can log or
+// report what a teardown tore down.
+func (q *Queue) Clear() ([]queue.Item, error) {
+	queueMu.Lock()
+	defer queueMu.Unlock()
+	st, err := q.loadImported()
+	if err != nil {
+		return nil, err
+	}
+	removed := st.items
+	st.items = []queue.Item{}
+	st.draining = false
+	if err := q.persist(st); err != nil {
+		return nil, err
+	}
+	return removed, nil
+}
+
 func (q *Queue) settle(id, status, reason string, pid int) error {
 	queueMu.Lock()
 	defer queueMu.Unlock()
