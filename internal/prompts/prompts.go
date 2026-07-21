@@ -68,6 +68,7 @@ type VerifyData struct {
 	Handoff        string
 	Verdict        string
 	Note           string
+	QANote         string
 	ChecksFragment string
 	RubricNote     string
 	LessonsNote    string
