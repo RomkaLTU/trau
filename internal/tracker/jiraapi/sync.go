@@ -28,6 +28,7 @@ type SyncIssue struct {
 	Updated      string
 	Comments     []Comment
 	Attachments  []Attachment
+	BlockedBy    []Blocker
 }
 
 // Attachment is one file attached to an issue. Content is the authenticated URL
@@ -56,7 +57,7 @@ type Comment struct {
 var syncFields = []string{
 	"summary", "description", "status", "resolution", "priority", "duedate",
 	"parent", "labels", "issuetype", "assignee", "created", "updated", "comment",
-	"attachment",
+	"attachment", "issuelinks",
 }
 
 // SyncIssues pulls every issue in a project with the full content sync needs —
@@ -172,6 +173,7 @@ type syncSearchIssue struct {
 			} `json:"comments"`
 		} `json:"comment"`
 		Attachment []attachmentField `json:"attachment"`
+		IssueLinks []issueLink       `json:"issuelinks"`
 	} `json:"fields"`
 }
 
@@ -231,6 +233,7 @@ func (r *syncSearchIssue) toSyncIssue() SyncIssue {
 			iss.Comments = append(iss.Comments, comment)
 		}
 	}
+	iss.BlockedBy = blockersFromLinks(r.Fields.IssueLinks)
 	return iss
 }
 

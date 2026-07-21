@@ -230,6 +230,17 @@ query SyncIssues($filter: IssueFilter!, $after: String) {
           url
         }
       }
+      inverseRelations(first: 50) {
+        nodes {
+          type
+          issue {
+            identifier
+            state {
+              type
+            }
+          }
+        }
+      }
     }
   }
 }

@@ -39,6 +39,8 @@ type IssueResponse struct {
 	URL         string         `json:"url,omitempty"`
 	CreatedAt   string         `json:"created_at,omitempty"`
 	HasChildren bool           `json:"has_children"`
+	Blockers    []string       `json:"blockers,omitempty"`
+	Blocked     bool           `json:"blocked,omitempty"`
 	Comments    []IssueComment `json:"comments"`
 	// Project is the ticket's own tracker project; InProject reports whether it
 	// matches the repo's configured project, so a cross-project ticket can be
@@ -202,6 +204,8 @@ func (s *Server) storeIssueResponse(repo registry.Repo, iss hubstore.Issue) Issu
 		URL:         iss.URL,
 		CreatedAt:   iss.CreatedAt,
 		HasChildren: iss.HasChildren,
+		Blockers:    iss.Blockers,
+		Blocked:     iss.Blocked,
 		Comments:    toIssueComments(iss.Comments),
 		InProject:   true,
 		Deleted:     iss.DeletedAt != "",

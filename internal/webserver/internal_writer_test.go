@@ -113,7 +113,7 @@ func TestGrillApplyInternalCreateEpic(t *testing.T) {
 	}
 }
 
-func TestGrillApplyInternalEpicRelationsFailLoudly(t *testing.T) {
+func TestGrillApplyInternalEpicPersistsRelations(t *testing.T) {
 	ts, stores, root := grillApplyInternalServer(t)
 	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
 		Disposition:         grillDispCreate,
@@ -126,28 +126,32 @@ func TestGrillApplyInternalEpicRelationsFailLoudly(t *testing.T) {
 		},
 	})
 
-	_, out := applyGrill(t, ts, sid, GrillApplyRequest{})
-	if out.Applied || out.Session.State != hubstore.GrillFinished {
-		t.Fatalf("apply = %+v, want not applied and still finished for re-apply", out)
+	res, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if res.StatusCode != http.StatusOK || !out.Applied || out.Session.State != hubstore.GrillApplied {
+		t.Fatalf("apply = %+v (status %d), want applied", out, res.StatusCode)
 	}
-	for _, step := range out.Steps {
-		if step.Step == "relations" {
-			if step.Status != grillStepFailed || !strings.Contains(step.Error, "blocking relations") {
-				t.Errorf("relations step = %+v, want a failure naming the missing relations support", step)
-			}
-		} else if step.Status != grillStepOK {
-			t.Errorf("step %s = %+v, want ok", step.Step, step)
-		}
+	if st, ok := stepStatus(out.Steps, "relations"); !ok || st != grillStepOK {
+		t.Fatalf("relations step = %q (present %v), want ok", st, ok)
 	}
-	if st, ok := stepStatus(out.Steps, "relations"); !ok || st != grillStepFailed {
-		t.Fatalf("relations step = %q (present %v), want failed", st, ok)
-	}
-	kids, err := stores.Issues().Children(root, "ACME-1")
+	blockers, err := stores.Issues().Blockers(root, "ACME-3")
 	if err != nil {
-		t.Fatalf("children: %v", err)
+		t.Fatalf("blockers: %v", err)
 	}
-	if len(kids) != 2 {
-		t.Fatalf("children = %d, want both slices filed despite the failed relation", len(kids))
+	if len(blockers) != 1 || blockers[0] != "ACME-2" {
+		t.Fatalf("blockers of ACME-3 = %v, want the S1 slice ACME-2", blockers)
+	}
+	iss, found, err := stores.Issues().Find(root, "ACME-3")
+	if err != nil || !found {
+		t.Fatalf("find ACME-3: found=%v err=%v", found, err)
+	}
+	if !iss.Blocked {
+		t.Fatalf("blocked = false, want ACME-3 held back while ACME-2 is open")
+	}
+	if err := stores.Issues().AddRelation(root, "ACME-2", "ACME-3"); err != nil {
+		t.Fatalf("re-add relation: %v", err)
+	}
+	if blockers, err = stores.Issues().Blockers(root, "ACME-3"); err != nil || len(blockers) != 1 {
+		t.Fatalf("blockers after re-add = %v (err %v), want still exactly one", blockers, err)
 	}
 }
 

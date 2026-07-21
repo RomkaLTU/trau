@@ -57,6 +57,16 @@ type SyncedIssue struct {
 	// list plus the images its markdown embeds. Metadata only: a pull never
 	// downloads bytes.
 	Attachments []Attachment
+	// BlockedBy are the issue's inbound "blocked by" links as the tracker
+	// reports them, so the hub reflects the relation graph for synced issues.
+	BlockedBy []SyncedBlocker
+}
+
+// SyncedBlocker is one blocking issue on a pulled issue's blocked-by links: its
+// identifier and whether the tracker already shows it resolved.
+type SyncedBlocker struct {
+	ID       string
+	Resolved bool
 }
 
 func (r *linearReader) ResolveBinding(ctx context.Context) (ProjectBinding, error) {
@@ -126,6 +136,9 @@ func linearSynced(iss *linearapi.SyncIssue, scanner AttachmentScanner) SyncedIss
 			UpdatedAt:  c.UpdatedAt,
 		})
 		bodies = append(bodies, c.Body)
+	}
+	for _, b := range iss.BlockedBy {
+		out.BlockedBy = append(out.BlockedBy, SyncedBlocker{ID: b.Identifier, Resolved: b.State.IsTerminal()})
 	}
 	listed := make([]Attachment, 0, len(iss.Attachments))
 	for _, at := range iss.Attachments {
@@ -200,6 +213,9 @@ func jiraSynced(iss *jiraapi.SyncIssue, scanner AttachmentScanner) SyncedIssue {
 			UpdatedAt:  c.Updated,
 		})
 		bodies = append(bodies, c.Body)
+	}
+	for _, b := range iss.BlockedBy {
+		out.BlockedBy = append(out.BlockedBy, SyncedBlocker{ID: b.Key, Resolved: b.Resolved})
 	}
 	listed := make([]Attachment, 0, len(iss.Attachments))
 	for _, at := range iss.Attachments {

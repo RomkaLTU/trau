@@ -23,8 +23,10 @@ import (
 // epic. ChildrenSettled/ChildrenTotal report the epic's settled (done + canceled)
 // and total sub-issue counts over all children in the store, and are present
 // only on an epic row so the board can show its progress without a second call.
-// CreatedAt/UpdatedAt are the issue's tracker timestamps as synced, so a client
-// can order rows by recency without a per-issue fetch.
+// Blockers are the issue's stored blocked-by edges and Blocked reports whether
+// any of them is still unresolved, so the picker refuses the row and the board
+// can say why. CreatedAt/UpdatedAt are the issue's tracker timestamps as synced,
+// so a client can order rows by recency without a per-issue fetch.
 type BacklogEntry struct {
 	ID              string        `json:"id"`
 	Title           string        `json:"title"`
@@ -38,6 +40,8 @@ type BacklogEntry struct {
 	ChildrenSettled *int          `json:"children_settled,omitempty"`
 	ChildrenTotal   *int          `json:"children_total,omitempty"`
 	Ready           bool          `json:"ready"`
+	Blockers        []string      `json:"blockers,omitempty"`
+	Blocked         bool          `json:"blocked"`
 	CreatedAt       string        `json:"created_at,omitempty"`
 	UpdatedAt       string        `json:"updated_at,omitempty"`
 }
@@ -447,6 +451,8 @@ func toBacklogEntries(issues []hubstore.Issue, readyLabel, meID string) []Backlo
 			Parent:      iss.Parent,
 			HasChildren: iss.HasChildren,
 			Ready:       hasLabel(iss.Labels, readyLabel),
+			Blockers:    iss.Blockers,
+			Blocked:     iss.Blocked,
 			CreatedAt:   iss.CreatedAt,
 			UpdatedAt:   iss.UpdatedAt,
 		}
