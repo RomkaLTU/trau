@@ -60,6 +60,7 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkGitHub(ctx, rr)
 	checkProvider(ctx, cfg, rr)
 	checkConfig(ctx, cfg, sources, repoRoot, rr)
+	checkBrowserVerify(cfg, rr)
 	checkLinearLabels(ctx, cfg, rr)
 	checkLinearProject(ctx, cfg, rr)
 	checkJira(ctx, cfg, rr)
@@ -218,6 +219,23 @@ func checkConfig(ctx context.Context, cfg config.Config, sources map[string]conf
 		}
 		rr.add(r.name, pass, fmt.Sprintf("%s=%s (%s)", r.key, value, sources[r.key]), "")
 	}
+}
+
+// checkBrowserVerify flags the config-debt case the pipeline downgrades to
+// advisory: browser verify is on (auto or always) but no APP_URL is configured,
+// so a UI slice has no reachable target to drive and the gate can only warn.
+func checkBrowserVerify(cfg config.Config, rr *runner) {
+	mode := strings.TrimSpace(cfg.BrowserVerify)
+	if mode == "" || mode == "never" {
+		return
+	}
+	if strings.TrimSpace(cfg.AppURL) != "" || len(cfg.AppURLs) > 0 {
+		rr.add("browser verify", pass, fmt.Sprintf("BROWSER_VERIFY=%s with an APP_URL target", mode), "")
+		return
+	}
+	rr.add("browser verify", warn,
+		fmt.Sprintf("BROWSER_VERIFY=%s but APP_URL is empty — UI slices have no browser target, so the gate stays advisory", mode),
+		"set APP_URL (or APP_URLS for a monorepo) to the running app's URL, or set BROWSER_VERIFY=never")
 }
 
 func isDefault(sources map[string]config.Layer, key string) bool {

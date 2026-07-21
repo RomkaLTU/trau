@@ -446,3 +446,42 @@ func TestCheckWebHubNotRunning(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckBrowserVerify(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     config.Config
+		status  string
+		warns   int
+		wantMsg string
+	}{
+		{"never skips", config.Config{BrowserVerify: "never"}, "", 0, ""},
+		{"empty mode skips", config.Config{}, "", 0, ""},
+		{"auto without app url warns", config.Config{BrowserVerify: "auto"}, warn, 1, "APP_URL is empty"},
+		{"always without app url warns", config.Config{BrowserVerify: "always"}, warn, 1, "APP_URL is empty"},
+		{"auto with app url passes", config.Config{BrowserVerify: "auto", AppURL: "http://localhost:3000"}, pass, 0, "APP_URL target"},
+		{"always with app urls passes", config.Config{BrowserVerify: "always", AppURLs: map[string]string{"web": "http://localhost:3000"}}, pass, 0, "APP_URL target"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := newTestRunner()
+			checkBrowserVerify(tc.cfg, rr)
+			if tc.status == "" {
+				if len(rr.r.Checks) != 0 {
+					t.Fatalf("expected no check, got %+v", rr.r.Checks)
+				}
+				return
+			}
+			c := lastCheck(t, rr)
+			if c.Status != tc.status {
+				t.Errorf("status = %q, want %q (%s)", c.Status, tc.status, c.Message)
+			}
+			if rr.r.Warnings != tc.warns {
+				t.Errorf("warnings = %d, want %d", rr.r.Warnings, tc.warns)
+			}
+			if !strings.Contains(c.Message, tc.wantMsg) {
+				t.Errorf("message %q should contain %q", c.Message, tc.wantMsg)
+			}
+		})
+	}
+}

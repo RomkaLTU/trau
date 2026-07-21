@@ -31,6 +31,10 @@ type RunDetail struct {
 	// skills installed — the durable build_no_skills warning, surfaced so the
 	// page can flag a silently skill-less build.
 	NoSkills bool `json:"no_skills,omitempty"`
+	// NoBrowser is true when this run's verify left a UI slice undriven — the
+	// durable verify_no_browser warning, surfaced so the page can flag browser QA
+	// that never happened on a front-end diff.
+	NoBrowser bool `json:"no_browser,omitempty"`
 	// Removed is true when the run's ticket is a synced issue the tracker no longer
 	// holds — deleted, archived, or moved out of the Project and tombstoned by a
 	// reconciliation sweep. The run detail still renders from its durable artifacts;
@@ -131,7 +135,7 @@ func (s *Server) handleRunDetail(w http.ResponseWriter, r *http.Request) {
 // not-removed on any store error so a store hiccup never fails an
 // otherwise-renderable run.
 func (s *Server) runDetail(repo registry.Repo, ticket string, view RunView) RunDetail {
-	d := runDetail(s.stores.Tokens(), s.stores.Artifacts(), s.stores.Events(), repo.Root, ticket, view, s.noSkillsWarning(repo, ticket))
+	d := runDetail(s.stores.Tokens(), s.stores.Artifacts(), s.stores.Events(), repo.Root, ticket, view, s.noSkillsWarning(repo, ticket), s.noBrowserWarning(repo, ticket))
 	if iss, ok, err := s.stores.Issues().Get(repo.Root, ticket); err == nil && ok && iss.DeletedAt != "" {
 		d.Removed = true
 	}
@@ -146,6 +150,18 @@ func (s *Server) noSkillsWarning(repo registry.Repo, ticket string) bool {
 	has, err := s.stores.Events().HasKind(repo.Root, event.KindBuildNoSkills, ticket)
 	if err != nil {
 		logger.Verbosef("no-skills flag %s/%s: %v", repo.Name, ticket, err)
+	}
+	return has
+}
+
+// noBrowserWarning reports whether the authoritative event table carries a
+// verify_no_browser warning for ticket — a UI slice whose verify never drove the
+// browser (ADR 0008). A store error degrades to no warning rather than failing an
+// otherwise-renderable run.
+func (s *Server) noBrowserWarning(repo registry.Repo, ticket string) bool {
+	has, err := s.stores.Events().HasKind(repo.Root, event.KindVerifyNoBrowser, ticket)
+	if err != nil {
+		logger.Verbosef("no-browser flag %s/%s: %v", repo.Name, ticket, err)
 	}
 	return has
 }
@@ -169,7 +185,7 @@ func (s *Server) runViewFor(root, ticket string) (RunView, bool) {
 	return runViewFromCheckpoint(hubstore.TicketCheckpoint{Ticket: ticket, CheckpointRow: row}), true
 }
 
-func runDetail(toks *hubstore.Tokens, arts *hubstore.Artifacts, evs *hubstore.Events, root, ticket string, view RunView, noSkills bool) RunDetail {
+func runDetail(toks *hubstore.Tokens, arts *hubstore.Artifacts, evs *hubstore.Events, root, ticket string, view RunView, noSkills, noBrowser bool) RunDetail {
 	costs := phaseCosts(toks, root, ticket)
 	all, err := arts.All(root, ticket)
 	if err != nil {
@@ -196,7 +212,8 @@ func runDetail(toks *hubstore.Tokens, arts *hubstore.Artifacts, evs *hubstore.Ev
 			BuildNotes: hasNotes,
 			Tokens:     len(costs) > 0,
 		},
-		NoSkills: noSkills,
+		NoSkills:  noSkills,
+		NoBrowser: noBrowser,
 	}
 }
 

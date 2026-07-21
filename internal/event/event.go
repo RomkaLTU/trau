@@ -19,6 +19,12 @@ const KindAgentStart = "agent_start"
 // installed — the agent skipped the skills the repo expected it to use.
 const KindBuildNoSkills = "build_no_skills"
 
+// KindVerifyNoBrowser marks a UI slice whose verify did not drive the browser
+// while browser verify was advisory (BROWSER_VERIFY=auto, or no APP_URL
+// configured) — the verdict claimed no UI run on a diff the pipeline classified
+// as front-end.
+const KindVerifyNoBrowser = "verify_no_browser"
+
 // KindPromptOverrideSkipped marks a stored prompt override that failed to parse
 // or execute at render time — the phase ran on the built-in default body.
 const KindPromptOverrideSkipped = "prompt_override_skipped"

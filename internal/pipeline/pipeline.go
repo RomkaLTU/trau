@@ -1335,7 +1335,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	bugfixAttempt := 0
 	passed := false
 	label := "verify"
-	var lastFail verdict
+	var lastFail, passVerdict verdict
 	for {
 		p.setActivity(id, activity.Verify, "")
 		v, err := p.verifyAttempt(ctx, id, label, handoff, note, checksFragment, rubricVerify, lessonsVerify, ticketCtx)
@@ -1345,6 +1345,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 		p.persistVerdict(id, v)
 		if v.Pass {
 			passed = true
+			passVerdict = v
 			break
 		}
 		lastFail = v
@@ -1387,6 +1388,9 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 		}
 		return p.giveUp(ctx, id, reason)
 	}
+	if err := p.gateBrowserVerify(ctx, id, passVerdict, handoff, checksFragment, rubricVerify, lessonsVerify, ticketCtx); err != nil {
+		return err
+	}
 	if repairAttempt > 0 || bugfixAttempt > 0 {
 		p.recordLesson(ctx, id, lastFail, attemptLabel(repairAttempt, bugfixAttempt), lessonResultRepaired)
 		p.logf("  ✓ verify passed (after %d repair attempt(s) and %d bugfix attempt(s))", repairAttempt, bugfixAttempt)
@@ -1397,6 +1401,103 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 		return fmt.Errorf("verify %s: checkpoint verified: %w", id, err)
 	}
 	return nil
+}
+
+const noBrowserWarning = "browser verify skipped on a UI slice — the verifier did not drive the app in a browser"
+
+// gateBrowserVerify enforces browser-verify accounting on a slice that already
+// passed functional verify. The verdict's self-reported browser value is recorded
+// but never trusted to decide the gate: the slice is classified as UI
+// deterministically from its own diff, so a UI slice whose verify did not DRIVE
+// the browser is a violation regardless of what the verdict claimed (including a
+// "not-applicable" on a front-end diff).
+//
+// Under BROWSER_VERIFY=auto — or whenever no APP_URL is configured, where there is
+// no reachable target to demand — the violation is advisory: a console warning
+// plus a durable verify_no_browser event, and the run proceeds. Under always with
+// a real APP_URL it re-runs verify once with an explicit must-drive instruction;
+// a still-undriven UI slice pauses blamelessly, carrying the verdict's
+// browser_notes as the reason. A browser skip is an environment/config gap, never
+// a code defect, so it never routes into the repair loop.
+func (p *Pipeline) gateBrowserVerify(ctx context.Context, id string, v verdict, handoff, checksFragment, rubricNote, lessonsNote, ticketCtx string) error {
+	if p.BrowserVerify == "never" || p.BrowserVerify == "" {
+		return nil
+	}
+	if !p.sliceIsUI(ctx) {
+		return nil
+	}
+	if browserOutcome(v) == "driven" {
+		return nil
+	}
+	appURL := p.sliceAppURL(ctx)
+	if appURL == "" {
+		p.logf("  ⚠ browser verify: no APP_URL configured — treating the browser gate as advisory")
+		p.warnNoBrowser(id, v)
+		return nil
+	}
+	if p.BrowserVerify != "always" {
+		p.warnNoBrowser(id, v)
+		return nil
+	}
+
+	p.logf("  ⚠ browser verify required but the UI slice was not driven — re-verifying once (must drive %s)", appURL)
+	p.setActivity(id, activity.Verify, "browser")
+	v2, err := p.verifyAttempt(ctx, id, "verify-browser", handoff, browserDriveNote(appURL), checksFragment, rubricNote, lessonsNote, ticketCtx)
+	if err != nil {
+		return err
+	}
+	p.persistVerdict(id, v2)
+	if browserOutcome(v2) == "driven" {
+		p.logf("  ✓ browser verify driven on re-verify")
+		return nil
+	}
+	return p.pauseNoBrowser(id, browserPauseReason(v2))
+}
+
+// warnNoBrowser flags a UI slice whose verify did not drive the browser when the
+// gate is advisory (BROWSER_VERIFY=auto, or no APP_URL configured). Advisory only
+// — the run proceeds; the warning makes an unverified UI surface visible instead
+// of trusting the verdict's self-reported browser value. Mirrors
+// warnBuildWithoutSkills: a console/TUI line plus, in serve mode, a durable
+// verify_no_browser event the web UI surfaces.
+func (p *Pipeline) warnNoBrowser(id string, v verdict) {
+	msg := noBrowserWarning
+	notes := strings.TrimSpace(v.BrowserNotes)
+	if notes != "" {
+		msg += " (" + notes + ")"
+	}
+	p.logf("  ⚠ %s", msg)
+	if p.Events != nil {
+		fields := map[string]any{"ticket": id, "browser": browserOutcome(v)}
+		if notes != "" {
+			fields["browser_notes"] = notes
+		}
+		p.Events.Emit(event.KindVerifyNoBrowser, "verify", msg, fields)
+	}
+}
+
+// browserPauseReason builds the blameless-pause reason for a BROWSER_VERIFY=always
+// UI slice that stayed undriven, folding in the verdict's browser_notes so the
+// parked ticket names the concrete blocker (e.g. "cannot reach APP_URL").
+func browserPauseReason(v verdict) string {
+	reason := "browser verify required but not run"
+	if notes := strings.TrimSpace(v.BrowserNotes); notes != "" {
+		reason += ": " + notes
+	}
+	return reason
+}
+
+// pauseNoBrowser blamelessly parks a UI slice that BROWSER_VERIFY=always required
+// to be driven but the verifier did not. Like the other pauses the WIP stays on
+// its branch at the last checkpoint and the ticket is neither quarantined nor
+// bug-filed — a browser skip is a config/environment gap, not a code defect. A
+// rerun continues once a reachable APP_URL and automation browser are in place.
+func (p *Pipeline) pauseNoBrowser(id, reason string) error {
+	p.markPaused(id, reason)
+	p.logf("  ⏸ paused — %s", reason)
+	p.logf("  ↳ %s left resumable on its branch; give browser verify a reachable APP_URL and automation browser, then rerun trau", id)
+	p.emitState(id, "verify", "paused", "browser_verify")
+	return &PausedError{ID: id, Phase: "verify", Provider: "browser", Reason: reason}
 }
 
 func (p *Pipeline) giveUp(ctx context.Context, id, reason string) error {
@@ -2602,16 +2703,8 @@ func (p *Pipeline) sliceAppURL(ctx context.Context) string {
 	if len(p.AppURLs) == 0 || p.RepoRoot == "" {
 		return p.AppURL
 	}
-	lister, ok := p.Git.(worktreeLister)
+	changed, ok := p.sliceChangedFiles(ctx)
 	if !ok {
-		return p.AppURL
-	}
-	base, err := p.buildBase(ctx)
-	if err != nil {
-		return p.AppURL
-	}
-	changed, err := lister.WorktreeChangedFiles(ctx, base)
-	if err != nil {
 		return p.AppURL
 	}
 	if url := agent.WorkspaceAppURL(p.RepoRoot, p.AppURLs, changed); url != "" {
@@ -2628,16 +2721,8 @@ func (p *Pipeline) sliceLintFixCmd(ctx context.Context) string {
 	if p.RepoRoot == "" {
 		return p.LintFixCmd
 	}
-	lister, ok := p.Git.(worktreeLister)
+	changed, ok := p.sliceChangedFiles(ctx)
 	if !ok {
-		return p.LintFixCmd
-	}
-	base, err := p.buildBase(ctx)
-	if err != nil {
-		return p.LintFixCmd
-	}
-	changed, err := lister.WorktreeChangedFiles(ctx, base)
-	if err != nil {
 		return p.LintFixCmd
 	}
 	dir := agent.OwningWorkspaceDir(p.RepoRoot, changed)
@@ -2647,15 +2732,105 @@ func (p *Pipeline) sliceLintFixCmd(ctx context.Context) string {
 	return p.LintFixCmd
 }
 
+// sliceChangedFiles lists the slice's working-tree changes against the base
+// branch through the same worktreeLister sliceAppURL relies on. The bool is false
+// when the diff can't be listed (a Git stub without the interface, an unresolved
+// base, a diff error) so callers can fail open rather than fabricate a result.
+func (p *Pipeline) sliceChangedFiles(ctx context.Context) ([]string, bool) {
+	lister, ok := p.Git.(worktreeLister)
+	if !ok {
+		return nil, false
+	}
+	base, err := p.buildBase(ctx)
+	if err != nil {
+		return nil, false
+	}
+	changed, err := lister.WorktreeChangedFiles(ctx, base)
+	if err != nil {
+		return nil, false
+	}
+	return changed, true
+}
+
+var frontendExts = map[string]bool{
+	".tsx":    true,
+	".jsx":    true,
+	".vue":    true,
+	".svelte": true,
+	".css":    true,
+	".scss":   true,
+}
+
+var templateDirs = map[string]bool{
+	"templates": true,
+	"template":  true,
+	"views":     true,
+	"view":      true,
+}
+
+// isUIFile reports whether a repo-relative changed path is a front-end surface: a
+// known front-end file type, a Blade template, or any file under a template/view
+// directory. Deterministic and framework-agnostic — it classifies from the path
+// alone, never the agent's say-so.
+func isUIFile(path string) bool {
+	p := strings.ToLower(filepath.ToSlash(path))
+	if strings.HasSuffix(p, ".blade.php") {
+		return true
+	}
+	if frontendExts[filepath.Ext(p)] {
+		return true
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if templateDirs[seg] {
+			return true
+		}
+	}
+	return false
+}
+
+// sliceIsUI reports whether the slice's diff touches any front-end surface,
+// classified deterministically from the changed files. It fails open to false —
+// an unlistable diff never fabricates a UI gate — so the browser gate can only
+// fire on a diff it could actually read.
+func (p *Pipeline) sliceIsUI(ctx context.Context) bool {
+	changed, ok := p.sliceChangedFiles(ctx)
+	if !ok {
+		return false
+	}
+	for _, f := range changed {
+		if isUIFile(f) {
+			return true
+		}
+	}
+	return false
+}
+
+// browserNote is the verify prompt's browser-driving instruction. It is empty
+// when no APP_URL is configured (no reachable target to drive) or when browser
+// verify is off. The wording is deliberately hardened: the automation browser is
+// sanctioned and dedicated, so a genuine connection failure is reported in
+// browser_notes rather than skipped out of concern for a user's session. Kept
+// framework-agnostic.
 func browserNote(mode, appURL string) string {
+	if appURL == "" {
+		return ""
+	}
 	switch mode {
 	case "always":
-		return "Also drive the running app at " + appURL + " via the browser-harness skill to exercise the UI in the handoff."
+		return "Drive the running app at " + appURL + ` via the browser-harness skill and exercise this slice's UI, then set the verdict's "browser" to "driven" and record what you exercised in "browser_notes". This is an unattended run against a sanctioned, dedicated automation browser — do not skip out of concern for a user's session; if the browser cannot connect, set "browser" to "skipped" and give the concrete reason in "browser_notes" instead of silently skipping.`
 	case "auto":
-		return "If this slice has a UI surface, also drive the running app at " + appURL + " via the browser-harness skill; skip the browser for backend-only slices."
+		return "If this slice has a UI surface, drive the running app at " + appURL + ` via the browser-harness skill and record what you exercised in "browser_notes" (set "browser" to "driven"); for a backend-only slice set "browser" to "not-applicable". This is an unattended run against a sanctioned, dedicated automation browser — do not skip a UI surface out of concern for a user's session; if the browser cannot connect, set "browser" to "skipped" and give the concrete reason in "browser_notes".`
 	default:
 		return ""
 	}
+}
+
+// browserDriveNote is the must-drive instruction for the single
+// BROWSER_VERIFY=always re-verify after a UI slice came back undriven: the
+// browser is no longer optional, and a genuine connection failure must be
+// reported rather than skipped.
+func browserDriveNote(appURL string) string {
+	return "This slice changes a UI surface and browser verification is REQUIRED. Drive the running app at " + appURL + ` through the browser-harness skill, exercise the changed UI, then set the verdict's "browser" to "driven" and record what you exercised in "browser_notes". This is an unattended run against a sanctioned, dedicated automation browser — do NOT skip out of concern for a user's session. If the automation browser genuinely cannot connect, set "browser" to "skipped" and report the concrete reason in "browser_notes" instead of skipping silently.`
 }
 
 // verifyTail builds the cold-verifier prompt. When handoff names a QA brief the
@@ -2801,6 +2976,26 @@ type verdict struct {
 	Summary  string        `json:"summary"`
 	Failures []string      `json:"failures"`
 	Checks   []checkResult `json:"checks,omitempty"`
+	// Browser is the verifier's self-reported browser-QA outcome: "driven",
+	// "skipped", or "not-applicable". Recorded for accounting only — the pipeline
+	// classifies the slice as UI deterministically and never lets this value
+	// decide the gate. An absent field (old verdicts, or an agent that omitted it)
+	// reads as "skipped" via browserOutcome.
+	Browser      string `json:"browser,omitempty"`
+	BrowserNotes string `json:"browser_notes,omitempty"`
+}
+
+// browserOutcome normalizes a verdict's self-reported browser field for
+// accounting. Only the two affirmative values are trusted verbatim; anything
+// else — including an empty field from a pre-field verdict — reads as "skipped",
+// so a missing value can never masquerade as a browser run.
+func browserOutcome(v verdict) string {
+	switch v.Browser {
+	case "driven", "not-applicable":
+		return v.Browser
+	default:
+		return "skipped"
+	}
 }
 
 // checkResult is one verify-check outcome the cold verifier reports back inside
