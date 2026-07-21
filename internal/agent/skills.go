@@ -95,6 +95,33 @@ func InstalledSkillNames(repoRoot string) []string {
 	return names
 }
 
+// TestSkillNames returns the installed skill names that read as the project's
+// test skill: any name whose hyphen/underscore-separated tokens include a
+// generic testing word. Token matching keeps the derivation framework-agnostic
+// — it recognizes "tdd" or "api-testing" without naming any runner.
+func TestSkillNames(installed []string) []string {
+	var out []string
+	for _, name := range installed {
+		if hasTestToken(name) {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func hasTestToken(name string) bool {
+	tokens := strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
+		return r == '-' || r == '_'
+	})
+	for _, t := range tokens {
+		switch t {
+		case "test", "tests", "testing", "tdd":
+			return true
+		}
+	}
+	return false
+}
+
 // MissingRequiredSkills returns the names in required that are not installed in
 // repoRoot, preserving the input order. It backs the loop-start warning that
 // keeps a mistyped or uninstalled REQUIRED_SKILLS name from silently vanishing

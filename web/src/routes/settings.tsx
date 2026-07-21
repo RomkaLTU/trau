@@ -14,6 +14,7 @@ import {
   PromptsSection,
   RepoPromptsSection,
 } from '@/components/trau/prompts-panel'
+import { QAAccountsSection } from '@/components/trau/qa-accounts-panel'
 import {
   InlineEditor,
   LayerChip,
@@ -30,6 +31,11 @@ import {
   promptsQueryOptions,
   repoPromptsQueryOptions,
 } from '@/lib/prompts'
+import {
+  matchesQAAccount,
+  qaAccountsQueryOptions,
+  qaNotesQueryOptions,
+} from '@/lib/qa'
 import {
   ROUTING_SECTION,
   THEME_SECTION,
@@ -87,6 +93,8 @@ function ConfigView({ repo }: { repo: string }) {
   const { data, error, isPending, refetch } = useQuery(configQueryOptions(repo))
   const promptsData = useQuery(promptsQueryOptions).data
   const repoPromptsData = useQuery(repoPromptsQueryOptions(repo)).data
+  const qaAccountsData = useQuery(qaAccountsQueryOptions(repo)).data
+  const qaNotesData = useQuery(qaNotesQueryOptions(repo)).data
   const [search, setSearch] = useState('')
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [editingKey, setEditingKey] = useState<string | null>(null)
@@ -104,6 +112,8 @@ function ConfigView({ repo }: { repo: string }) {
   const sections = useMemo(() => deriveSections(keys), [keys])
   const globalPrompts = promptsData?.prompts ?? []
   const repoPrompts = repoPromptsData?.prompts ?? []
+  const qaAccounts = qaAccountsData ?? []
+  const qaNotes = qaNotesData?.notes ?? ''
 
   const query = search.trim().toLowerCase()
   const searching = query.length > 0
@@ -113,7 +123,8 @@ function ConfigView({ repo }: { repo: string }) {
   )
   const promptMatches =
     !searching ||
-    [...globalPrompts, ...repoPrompts].some((p) => matchesPrompt(p, query))
+    [...globalPrompts, ...repoPrompts].some((p) => matchesPrompt(p, query)) ||
+    qaAccounts.some((a) => matchesQAAccount(a, query))
 
   const navSections = useMemo(
     () => [
@@ -135,8 +146,14 @@ function ConfigView({ repo }: { repo: string }) {
         count: repoPrompts.length,
         modified: repoPrompts.some((p) => p.repo_override !== null),
       },
+      {
+        id: 'qa-accounts',
+        title: 'QA accounts',
+        count: qaAccounts.length,
+        modified: qaNotes !== '',
+      },
     ],
-    [sections, globalPrompts, repoPrompts],
+    [sections, globalPrompts, repoPrompts, qaAccounts, qaNotes],
   )
 
   if (isPending && !error) return <ConfigSkeleton />
@@ -351,6 +368,7 @@ function ConfigView({ repo }: { repo: string }) {
           {visibleSections}
           <PromptsSection query={query} />
           <RepoPromptsSection repo={repo} query={query} />
+          <QAAccountsSection repo={repo} query={query} />
         </div>
       </div>
     </div>

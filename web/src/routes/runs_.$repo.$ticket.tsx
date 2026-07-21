@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import {
   Eyebrow,
   NoSkillsBanner,
+  NoBrowserBanner,
   NoticeBanner,
   RemovedBanner,
   RunActionsRow,
@@ -135,6 +136,8 @@ function Detail({
       {run.removed && <RemovedBanner />}
 
       {run.no_skills && <NoSkillsBanner />}
+
+      {run.no_browser && <NoBrowserBanner />}
 
       {run.failure_reason && (
         <div className="rounded-lg border border-fail/40 bg-fail/10 px-4 py-3">

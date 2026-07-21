@@ -32,8 +32,9 @@ type Prompt struct {
 	Default      string
 }
 
-// SkillsData feeds the skills prompt. Required must already be intersected
-// with Installed — names that cannot be loaded are the caller's to drop.
+// SkillsData feeds the skills and verify_skills prompts. Required lists only
+// loadable names: the build path intersects it with Installed, the verify path
+// may add browser-harness, which loads from outside the repo.
 type SkillsData struct {
 	Installed []string
 	Required  []string
@@ -68,9 +69,11 @@ type VerifyData struct {
 	Handoff        string
 	Verdict        string
 	Note           string
+	QANote         string
 	ChecksFragment string
 	RubricNote     string
 	LessonsNote    string
+	SkillsNote     string
 	TicketContext  string
 }
 
@@ -93,6 +96,7 @@ type RepairData struct {
 	RubricNote    string
 	LessonsNote   string
 	NotesNote     string
+	SkillsNote    string
 	CodeStyle     string
 	TicketContext string
 }

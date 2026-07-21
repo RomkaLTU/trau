@@ -373,6 +373,29 @@ func TestRunDetailSurfacesNoSkillsWarning(t *testing.T) {
 	}
 }
 
+// TestRunDetailSurfacesNoBrowserWarning covers the run-detail side of the
+// browser-verify warning: a run with a verify_no_browser event in the table
+// carries no_browser, and a run without one does not — even when another ticket in
+// the same repo was flagged.
+func TestRunDetailSurfacesNoBrowserWarning(t *testing.T) {
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	seedCheckpoint(t, runsDir, "COD-210", map[string]string{"PHASE": state.Verified})
+	seedCheckpoint(t, runsDir, "COD-211", map[string]string{"PHASE": state.Verified})
+
+	ts := instancesServer(t, home)
+	postEvents(t, ts, "acme",
+		hubclient.Event{Kind: event.KindVerifyNoBrowser, Phase: "verify", Fields: `{"ticket":"COD-210"}`},
+	)
+
+	if d := getRunDetail(t, ts, "acme", "COD-210"); !d.NoBrowser {
+		t.Error("no_browser = false, want the undriven UI slice surfaced")
+	}
+	if d := getRunDetail(t, ts, "acme", "COD-211"); d.NoBrowser {
+		t.Error("no_browser = true for an unflagged run, want false")
+	}
+}
+
 // TestRunDetailServesHubOnlyCheckpoint covers the post-cutover run: a ticket that
 // exists only as an authoritative checkpoint row, with no legacy state file on
 // disk, still resolves to a 200 detail carrying its phase, branch, and PR — the

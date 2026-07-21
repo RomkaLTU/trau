@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
@@ -60,6 +61,8 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkGitHub(ctx, rr)
 	checkProvider(ctx, cfg, rr)
 	checkConfig(ctx, cfg, sources, repoRoot, rr)
+	checkBrowserVerify(cfg, rr)
+	checkSkills(cfg, repoRoot, rr)
 	checkLinearLabels(ctx, cfg, rr)
 	checkLinearProject(ctx, cfg, rr)
 	checkJira(ctx, cfg, rr)
@@ -218,6 +221,62 @@ func checkConfig(ctx context.Context, cfg config.Config, sources map[string]conf
 		}
 		rr.add(r.name, pass, fmt.Sprintf("%s=%s (%s)", r.key, value, sources[r.key]), "")
 	}
+}
+
+// checkBrowserVerify flags the config-debt case the pipeline downgrades to
+// advisory: browser verify is on (auto or always) but no APP_URL is configured,
+// so a UI slice has no reachable target to drive and the gate can only warn.
+func checkBrowserVerify(cfg config.Config, rr *runner) {
+	mode := strings.TrimSpace(cfg.BrowserVerify)
+	if mode == "" || mode == "never" {
+		return
+	}
+	if strings.TrimSpace(cfg.AppURL) != "" || len(cfg.AppURLs) > 0 {
+		rr.add("browser verify", pass, fmt.Sprintf("BROWSER_VERIFY=%s with an APP_URL target", mode), "")
+		return
+	}
+	rr.add("browser verify", warn,
+		fmt.Sprintf("BROWSER_VERIFY=%s but APP_URL is empty — UI slices have no browser target, so the gate stays advisory", mode),
+		"set APP_URL (or APP_URLS for a monorepo) to the running app's URL, or set BROWSER_VERIFY=never")
+}
+
+// checkSkills flags a repo whose installed skills are not pinned: with skills
+// present but REQUIRED_SKILLS unset the build prompt can only suggest
+// self-selection, which providers have been observed to skip entirely. The
+// suggested pin reuses the project-type recommendation mapping, falling back to
+// the first installed names when none of the recommended set is present.
+func checkSkills(cfg config.Config, repoRoot string, rr *runner) {
+	installed := agent.InstalledSkillNames(repoRoot)
+	if len(installed) == 0 {
+		return
+	}
+	if len(cfg.RequiredSkills) > 0 {
+		rr.add("skills", pass, fmt.Sprintf("%d skill(s) installed, REQUIRED_SKILLS pins %s", len(installed), strings.Join(cfg.RequiredSkills, ", ")), "")
+		return
+	}
+	rr.add("skills", warn,
+		fmt.Sprintf("%d skill(s) installed but REQUIRED_SKILLS is unset — the agent may load none of them", len(installed)),
+		fmt.Sprintf("set REQUIRED_SKILLS in .trau.ini (e.g. REQUIRED_SKILLS=%s) so every build loads them", strings.Join(suggestedRequiredSkills(repoRoot, installed), ",")))
+}
+
+func suggestedRequiredSkills(repoRoot string, installed []string) []string {
+	set := make(map[string]struct{}, len(installed))
+	for _, n := range installed {
+		set[n] = struct{}{}
+	}
+	var out []string
+	for _, rec := range agent.RecommendedSkills(agent.DetectProjectType(repoRoot)) {
+		if _, ok := set[rec.Name]; ok {
+			out = append(out, rec.Name)
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	if len(installed) > 3 {
+		installed = installed[:3]
+	}
+	return installed
 }
 
 func isDefault(sources map[string]config.Layer, key string) bool {

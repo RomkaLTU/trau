@@ -32,6 +32,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/prompts"
 	"github.com/RomkaLTU/trau/internal/sanitize"
@@ -333,8 +334,14 @@ type Pipeline struct {
 	Base         string
 	Remote       string
 	Prefix       string
-	MaxRepairs   int
-	MaxBugfixes  int
+	// TrackerProvider is the effective tracker backend (config
+	// EffectiveTrackerProvider) that names the PR body's ticket trailer;
+	// InternalPrefix is the repo's internal issue-id prefix, marking ids no
+	// external tracker knows.
+	TrackerProvider string
+	InternalPrefix  string
+	MaxRepairs      int
+	MaxBugfixes     int
 
 	// AgentRetries is how many times a TRANSIENT agent-step failure (timeout,
 	// output stall, non-rate-limit crash) is retried on a fresh process per
@@ -380,9 +387,9 @@ type Pipeline struct {
 	// they were on) instead of aborting, and RestoreWIP pops them back at session
 	// end. When off, a dirty tracked tree aborts the run as before.
 	AutoStash bool
-	// SkillsExpected reports whether a build run by the named provider is
-	// expected to load repo skills (the provider reports skill usage and the
-	// repo has skills installed). Nil disables the post-build no-skills warning.
+	// SkillsExpected reports whether a build or verify run by the named provider
+	// is expected to load repo skills (the provider reports skill usage and the
+	// repo has skills installed). Nil disables the no-skills warnings.
 	SkillsExpected func(provider string) bool
 	// RequiredSkills names the skills the build prompt tells the agent to load
 	// before implementing (config REQUIRED_SKILLS). Only names installed in the
@@ -408,6 +415,12 @@ type Pipeline struct {
 	// built-in defaults — prompt resolution never blocks a run (ADR 0008).
 	// Nil disables overrides.
 	FetchPrompts func(ctx context.Context) (map[string]string, error)
+
+	// FetchQAAccounts returns the repo's QA credentials roster (accounts with
+	// full secrets plus free-text notes) from the hub. It is called at verify
+	// time only for a browser-verify UI slice; a failure logs one warning and
+	// verify proceeds without stored credentials. Nil disables QA injection.
+	FetchQAAccounts func(ctx context.Context) (hubclient.QARoster, error)
 
 	// OnPhase, when set, is called each time a ticket enters a checkpoint phase,
 	// carrying the ticket and the phase just written (state.Building, …). The
@@ -441,6 +454,11 @@ type Pipeline struct {
 	// post-build no-skills warning.
 	buildProvider string
 	buildSkills   []string
+
+	// verifyProvider/verifySkills mirror the build capture for the primary
+	// verify call — the inputs to the post-verify no-skills warning.
+	verifyProvider string
+	verifySkills   []string
 
 	// prompts is the ticket run's prompt renderer: the override snapshot
 	// fetched at run start layered over the built-in defaults. Edits made
@@ -986,6 +1004,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	}
 	p.warnBuildWithoutSkills(id)
 	p.persistBuildNotes(id)
+	_ = p.State.Set(id, "BUILD_SUMMARY", summarizeBuildOutput(out))
 	if fi, err := os.Stat(buildNotesPath(id)); err == nil && fi.Size() > 0 {
 		p.logf("  ↳ build notes: %s captured for cleanup/repair", fmtBytes(fi.Size()))
 	}
@@ -1308,6 +1327,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	if note != "" && appURL != p.AppURL {
 		p.logf("  ↳ browser verify targets %s (workspace match)", appURL)
 	}
+	qaNote := p.qaVerifyNote(ctx, note)
 	branch := p.State.Get(id, "BRANCH")
 
 	rubricRef, rubricOK := p.activeRubric(id)
@@ -1322,6 +1342,9 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	notesRef, _ := p.activeBuildNotes(id)
 	notesRepair := buildNotesNote(notesRef)
 	lessonsVerify := verifyLessonsNote(p.recallLessons(p.lessonQuery(id)))
+	installed := agent.InstalledSkillNames(p.RepoRoot)
+	skillsVerify := verifySkillsPrompt(p.prompts, installed, note != "")
+	skillsRepair := skillsPrompt(p.prompts, installed, p.RequiredSkills)
 
 	checksFragment := checks.Render(p.Checks)
 	if n := len(p.Checks); n > 0 {
@@ -1335,16 +1358,20 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	bugfixAttempt := 0
 	passed := false
 	label := "verify"
-	var lastFail verdict
+	var lastFail, passVerdict verdict
 	for {
 		p.setActivity(id, activity.Verify, "")
-		v, err := p.verifyAttempt(ctx, id, label, handoff, note, checksFragment, rubricVerify, lessonsVerify, ticketCtx)
+		v, err := p.verifyAttempt(ctx, id, label, handoff, note, qaNote, checksFragment, rubricVerify, lessonsVerify, skillsVerify, ticketCtx)
 		if err != nil {
 			return err
+		}
+		if label == "verify" {
+			p.warnVerifyWithoutSkills(id)
 		}
 		p.persistVerdict(id, v)
 		if v.Pass {
 			passed = true
+			passVerdict = v
 			break
 		}
 		lastFail = v
@@ -1357,7 +1384,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				p.logf("  ↳ %s", fl)
 			}
 			p.setActivity(id, activity.Repair, fmt.Sprintf("repair%d", repairAttempt))
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, skillsRepair, ticketCtx)); err != nil {
 				return err
 			}
 			continue
@@ -1370,7 +1397,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				p.logf("  ↳ %s", fl)
 			}
 			p.setActivity(id, activity.Bugfix, fmt.Sprintf("bugfix%d", bugfixAttempt))
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, ticketCtx)); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, skillsRepair, ticketCtx)); err != nil {
 				return err
 			}
 			continue
@@ -1387,6 +1414,9 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 		}
 		return p.giveUp(ctx, id, reason)
 	}
+	if err := p.gateBrowserVerify(ctx, id, passVerdict, handoff, qaNote, checksFragment, rubricVerify, lessonsVerify, skillsVerify, ticketCtx); err != nil {
+		return err
+	}
 	if repairAttempt > 0 || bugfixAttempt > 0 {
 		p.recordLesson(ctx, id, lastFail, attemptLabel(repairAttempt, bugfixAttempt), lessonResultRepaired)
 		p.logf("  ✓ verify passed (after %d repair attempt(s) and %d bugfix attempt(s))", repairAttempt, bugfixAttempt)
@@ -1397,6 +1427,119 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 		return fmt.Errorf("verify %s: checkpoint verified: %w", id, err)
 	}
 	return nil
+}
+
+const verifyNoSkillsWarning = "verify loaded no skills — the repo has skills installed but the agent used none"
+
+// warnVerifyWithoutSkills flags a primary verify attempt that loaded no skills
+// in a repo that has them, mirroring warnBuildWithoutSkills: a console/TUI line
+// plus, in serve mode, a durable verify_no_skills event. Called once per Verify,
+// after the first attempt only, so a run emits the event at most once.
+func (p *Pipeline) warnVerifyWithoutSkills(id string) {
+	if p.SkillsExpected == nil || len(p.verifySkills) > 0 || !p.SkillsExpected(p.verifyProvider) {
+		return
+	}
+	p.logf("  ⚠ %s", verifyNoSkillsWarning)
+	if p.Events != nil {
+		p.Events.Emit(event.KindVerifyNoSkills, "verify", verifyNoSkillsWarning, map[string]any{"ticket": id})
+	}
+}
+
+const noBrowserWarning = "browser verify skipped on a UI slice — the verifier did not drive the app in a browser"
+
+// gateBrowserVerify enforces browser-verify accounting on a slice that already
+// passed functional verify. The verdict's self-reported browser value is recorded
+// but never trusted to decide the gate: the slice is classified as UI
+// deterministically from its own diff, so a UI slice whose verify did not DRIVE
+// the browser is a violation regardless of what the verdict claimed (including a
+// "not-applicable" on a front-end diff).
+//
+// Under BROWSER_VERIFY=auto — or whenever no APP_URL is configured, where there is
+// no reachable target to demand — the violation is advisory: a console warning
+// plus a durable verify_no_browser event, and the run proceeds. Under always with
+// a real APP_URL it re-runs verify once with an explicit must-drive instruction;
+// a still-undriven UI slice pauses blamelessly, carrying the verdict's
+// browser_notes as the reason. A browser skip is an environment/config gap, never
+// a code defect, so it never routes into the repair loop.
+func (p *Pipeline) gateBrowserVerify(ctx context.Context, id string, v verdict, handoff, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) error {
+	if p.BrowserVerify == "never" || p.BrowserVerify == "" {
+		return nil
+	}
+	if !p.sliceIsUI(ctx) {
+		return nil
+	}
+	if browserOutcome(v) == "driven" {
+		return nil
+	}
+	appURL := p.sliceAppURL(ctx)
+	if appURL == "" {
+		p.logf("  ⚠ browser verify: no APP_URL configured — treating the browser gate as advisory")
+		p.warnNoBrowser(id, v)
+		return nil
+	}
+	if p.BrowserVerify != "always" {
+		p.warnNoBrowser(id, v)
+		return nil
+	}
+
+	p.logf("  ⚠ browser verify required but the UI slice was not driven — re-verifying once (must drive %s)", appURL)
+	p.setActivity(id, activity.Verify, "browser")
+	v2, err := p.verifyAttempt(ctx, id, "verify-browser", handoff, browserDriveNote(appURL), qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
+	if err != nil {
+		return err
+	}
+	p.persistVerdict(id, v2)
+	if browserOutcome(v2) == "driven" {
+		p.logf("  ✓ browser verify driven on re-verify")
+		return nil
+	}
+	return p.pauseNoBrowser(id, browserPauseReason(v2))
+}
+
+// warnNoBrowser flags a UI slice whose verify did not drive the browser when the
+// gate is advisory (BROWSER_VERIFY=auto, or no APP_URL configured). Advisory only
+// — the run proceeds; the warning makes an unverified UI surface visible instead
+// of trusting the verdict's self-reported browser value. Mirrors
+// warnBuildWithoutSkills: a console/TUI line plus, in serve mode, a durable
+// verify_no_browser event the web UI surfaces.
+func (p *Pipeline) warnNoBrowser(id string, v verdict) {
+	msg := noBrowserWarning
+	notes := strings.TrimSpace(v.BrowserNotes)
+	if notes != "" {
+		msg += " (" + notes + ")"
+	}
+	p.logf("  ⚠ %s", msg)
+	if p.Events != nil {
+		fields := map[string]any{"ticket": id, "browser": browserOutcome(v)}
+		if notes != "" {
+			fields["browser_notes"] = notes
+		}
+		p.Events.Emit(event.KindVerifyNoBrowser, "verify", msg, fields)
+	}
+}
+
+// browserPauseReason builds the blameless-pause reason for a BROWSER_VERIFY=always
+// UI slice that stayed undriven, folding in the verdict's browser_notes so the
+// parked ticket names the concrete blocker (e.g. "cannot reach APP_URL").
+func browserPauseReason(v verdict) string {
+	reason := "browser verify required but not run"
+	if notes := strings.TrimSpace(v.BrowserNotes); notes != "" {
+		reason += ": " + notes
+	}
+	return reason
+}
+
+// pauseNoBrowser blamelessly parks a UI slice that BROWSER_VERIFY=always required
+// to be driven but the verifier did not. Like the other pauses the WIP stays on
+// its branch at the last checkpoint and the ticket is neither quarantined nor
+// bug-filed — a browser skip is a config/environment gap, not a code defect. A
+// rerun continues once a reachable APP_URL and automation browser are in place.
+func (p *Pipeline) pauseNoBrowser(id, reason string) error {
+	p.markPaused(id, reason)
+	p.logf("  ⏸ paused — %s", reason)
+	p.logf("  ↳ %s left resumable on its branch; give browser verify a reachable APP_URL and automation browser, then rerun trau", id)
+	p.emitState(id, "verify", "paused", "browser_verify")
+	return &PausedError{ID: id, Phase: "verify", Provider: "browser", Reason: reason}
 }
 
 func (p *Pipeline) giveUp(ctx context.Context, id, reason string) error {
@@ -1468,7 +1611,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 				return fmt.Errorf("commit %s: resolve epic branch: %w", id, err)
 			}
 		}
-		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, p.slicePRTitle(ctx, id, prBase, branch), prBody(id))
+		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, p.slicePRTitle(ctx, id, prBase, branch), p.prBody(ctx, id))
 		if err != nil {
 			return fmt.Errorf("commit %s: pr create: %w", id, err)
 		}
@@ -2079,10 +2222,6 @@ func slugify(title string) string {
 	return strings.Join(words, "-")
 }
 
-func prBody(id string) string {
-	return fmt.Sprintf("## Summary\nAutomated implementation of %s via the Trau loop.\n\n## Test plan\n- [x] Relevant automated tests for this slice\n- [x] QA verify pass (browser for UI slices)\n\nLinear: %s", id, id)
-}
-
 // agentPhaseOn runs one phase on a specific runner (the primary loop runner, or a
 // single panel verifier's backend). The label and transcript are keyed off phase,
 // so panel members must pass distinct phase tags to avoid clobbering each other.
@@ -2092,15 +2231,23 @@ func (p *Pipeline) agentPhaseOn(ctx context.Context, id, phase, prompt string, r
 	stop := p.spin(label)
 	res, err := runner.Run(ctx, prompt, phase)
 	stop()
-	if phase == "build" {
-		p.buildSkills = res.Skills
-		p.buildProvider = ""
-		if pr, ok := runner.(agent.PhaseRoute); ok {
-			p.buildProvider, _, _ = pr.Route(phase)
-		}
+	switch phase {
+	case "build":
+		p.buildSkills, p.buildProvider = res.Skills, phaseProvider(runner, phase)
+	case "verify":
+		p.verifySkills, p.verifyProvider = res.Skills, phaseProvider(runner, phase)
 	}
 	p.putPhaseLog(id, phase, res.Final)
 	return res.Final, err
+}
+
+func phaseProvider(runner agent.Runner, phase string) string {
+	pr, ok := runner.(agent.PhaseRoute)
+	if !ok {
+		return ""
+	}
+	provider, _, _ := pr.Route(phase)
+	return provider
 }
 
 func runnerLabel(phase string, runner agent.Runner) string {
@@ -2474,6 +2621,22 @@ func skillsPrompt(r prompts.Renderer, installed, required []string) string {
 	})
 }
 
+// verifySkillsPrompt renders the verify-prompt skills sentence: the installed
+// list plus the auto-required set — the project's test skill(s) derived from
+// the installed names, and browser-harness when browser verify is active for
+// the slice. browser-harness is required even when not repo-installed: the
+// harness loads from outside the repo.
+func verifySkillsPrompt(r prompts.Renderer, installed []string, browserActive bool) string {
+	required := agent.TestSkillNames(installed)
+	if browserActive {
+		required = append(required, "browser-harness")
+	}
+	return r.Render("verify_skills", prompts.SkillsData{
+		Installed: installed,
+		Required:  required,
+	})
+}
+
 func intersect(want, have []string) []string {
 	set := make(map[string]struct{}, len(have))
 	for _, h := range have {
@@ -2602,16 +2765,8 @@ func (p *Pipeline) sliceAppURL(ctx context.Context) string {
 	if len(p.AppURLs) == 0 || p.RepoRoot == "" {
 		return p.AppURL
 	}
-	lister, ok := p.Git.(worktreeLister)
+	changed, ok := p.sliceChangedFiles(ctx)
 	if !ok {
-		return p.AppURL
-	}
-	base, err := p.buildBase(ctx)
-	if err != nil {
-		return p.AppURL
-	}
-	changed, err := lister.WorktreeChangedFiles(ctx, base)
-	if err != nil {
 		return p.AppURL
 	}
 	if url := agent.WorkspaceAppURL(p.RepoRoot, p.AppURLs, changed); url != "" {
@@ -2628,16 +2783,8 @@ func (p *Pipeline) sliceLintFixCmd(ctx context.Context) string {
 	if p.RepoRoot == "" {
 		return p.LintFixCmd
 	}
-	lister, ok := p.Git.(worktreeLister)
+	changed, ok := p.sliceChangedFiles(ctx)
 	if !ok {
-		return p.LintFixCmd
-	}
-	base, err := p.buildBase(ctx)
-	if err != nil {
-		return p.LintFixCmd
-	}
-	changed, err := lister.WorktreeChangedFiles(ctx, base)
-	if err != nil {
 		return p.LintFixCmd
 	}
 	dir := agent.OwningWorkspaceDir(p.RepoRoot, changed)
@@ -2647,15 +2794,159 @@ func (p *Pipeline) sliceLintFixCmd(ctx context.Context) string {
 	return p.LintFixCmd
 }
 
+// sliceChangedFiles lists the slice's working-tree changes against the base
+// branch through the same worktreeLister sliceAppURL relies on. The bool is false
+// when the diff can't be listed (a Git stub without the interface, an unresolved
+// base, a diff error) so callers can fail open rather than fabricate a result.
+func (p *Pipeline) sliceChangedFiles(ctx context.Context) ([]string, bool) {
+	lister, ok := p.Git.(worktreeLister)
+	if !ok {
+		return nil, false
+	}
+	base, err := p.buildBase(ctx)
+	if err != nil {
+		return nil, false
+	}
+	changed, err := lister.WorktreeChangedFiles(ctx, base)
+	if err != nil {
+		return nil, false
+	}
+	return changed, true
+}
+
+var frontendExts = map[string]bool{
+	".tsx":    true,
+	".jsx":    true,
+	".vue":    true,
+	".svelte": true,
+	".css":    true,
+	".scss":   true,
+}
+
+var templateDirs = map[string]bool{
+	"templates": true,
+	"template":  true,
+	"views":     true,
+	"view":      true,
+}
+
+// isUIFile reports whether a repo-relative changed path is a front-end surface: a
+// known front-end file type, a Blade template, or any file under a template/view
+// directory. Deterministic and framework-agnostic — it classifies from the path
+// alone, never the agent's say-so.
+func isUIFile(path string) bool {
+	p := strings.ToLower(filepath.ToSlash(path))
+	if strings.HasSuffix(p, ".blade.php") {
+		return true
+	}
+	if frontendExts[filepath.Ext(p)] {
+		return true
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if templateDirs[seg] {
+			return true
+		}
+	}
+	return false
+}
+
+// sliceIsUI reports whether the slice's diff touches any front-end surface,
+// classified deterministically from the changed files. It fails open to false —
+// an unlistable diff never fabricates a UI gate — so the browser gate can only
+// fire on a diff it could actually read.
+func (p *Pipeline) sliceIsUI(ctx context.Context) bool {
+	changed, ok := p.sliceChangedFiles(ctx)
+	if !ok {
+		return false
+	}
+	for _, f := range changed {
+		if isUIFile(f) {
+			return true
+		}
+	}
+	return false
+}
+
+// browserNote is the verify prompt's browser-driving instruction. It is empty
+// when no APP_URL is configured (no reachable target to drive) or when browser
+// verify is off. The wording is deliberately hardened: the automation browser is
+// sanctioned and dedicated, so a genuine connection failure is reported in
+// browser_notes rather than skipped out of concern for a user's session. Kept
+// framework-agnostic.
 func browserNote(mode, appURL string) string {
+	if appURL == "" {
+		return ""
+	}
 	switch mode {
 	case "always":
-		return "Also drive the running app at " + appURL + " via the browser-harness skill to exercise the UI in the handoff."
+		return "Drive the running app at " + appURL + ` via the browser-harness skill and exercise this slice's UI, then set the verdict's "browser" to "driven" and record what you exercised in "browser_notes". This is an unattended run against a sanctioned, dedicated automation browser — do not skip out of concern for a user's session; if the browser cannot connect, set "browser" to "skipped" and give the concrete reason in "browser_notes" instead of silently skipping.`
 	case "auto":
-		return "If this slice has a UI surface, also drive the running app at " + appURL + " via the browser-harness skill; skip the browser for backend-only slices."
+		return "If this slice has a UI surface, drive the running app at " + appURL + ` via the browser-harness skill and record what you exercised in "browser_notes" (set "browser" to "driven"); for a backend-only slice set "browser" to "not-applicable". This is an unattended run against a sanctioned, dedicated automation browser — do not skip a UI surface out of concern for a user's session; if the browser cannot connect, set "browser" to "skipped" and give the concrete reason in "browser_notes".`
 	default:
 		return ""
 	}
+}
+
+// browserDriveNote is the must-drive instruction for the single
+// BROWSER_VERIFY=always re-verify after a UI slice came back undriven: the
+// browser is no longer optional, and a genuine connection failure must be
+// reported rather than skipped.
+func browserDriveNote(appURL string) string {
+	return "This slice changes a UI surface and browser verification is REQUIRED. Drive the running app at " + appURL + ` through the browser-harness skill, exercise the changed UI, then set the verdict's "browser" to "driven" and record what you exercised in "browser_notes". This is an unattended run against a sanctioned, dedicated automation browser — do NOT skip out of concern for a user's session. If the automation browser genuinely cannot connect, set "browser" to "skipped" and report the concrete reason in "browser_notes" instead of skipping silently.`
+}
+
+// qaVerifyNote fetches the repo's QA credentials and renders the verify-prompt
+// roster, but only for a slice where browser verify is actually active: there is
+// a browser-driving note (a configured APP_URL under auto/always) and the slice's
+// own diff touches a UI surface. A backend slice, a disabled browser gate, or a
+// missing APP_URL injects nothing, and a fetch failure logs one warning and
+// proceeds without credentials — QA injection never blocks verify.
+func (p *Pipeline) qaVerifyNote(ctx context.Context, browserNote string) string {
+	if p.FetchQAAccounts == nil || browserNote == "" || !p.sliceIsUI(ctx) {
+		return ""
+	}
+	roster, err := p.FetchQAAccounts(ctx)
+	if err != nil {
+		p.logf("  ⚠ QA accounts unavailable — verify runs without stored credentials: %v", err)
+		return ""
+	}
+	return qaRosterNote(roster.Accounts, roster.Notes)
+}
+
+// qaRosterNote renders the QA credentials fragment appended to a browser-verify
+// prompt: the accounts the verifier may sign in with, each by label with its
+// username, secret, and coverage, plus the free-text notes and a standing order
+// never to copy any credential into a durable artifact. It is empty when there is
+// nothing to inject, so an absent roster leaves the prompt untouched. Kept
+// framework-agnostic — it names no stack and no login mechanism.
+func qaRosterNote(accounts []hubclient.QAAccount, notes string) string {
+	notes = strings.TrimSpace(notes)
+	usable := make([]hubclient.QAAccount, 0, len(accounts))
+	for _, a := range accounts {
+		if strings.TrimSpace(a.Label) != "" {
+			usable = append(usable, a)
+		}
+	}
+	if len(usable) == 0 && notes == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(" QA test credentials for the app under test — treat every value below as a write-only secret: NEVER copy a username, secret, or any of it into the QA brief, the verdict JSON, the PR, a comment, or the tracker; refer to an account only by its label.")
+	if len(usable) > 0 {
+		b.WriteString(" Available accounts:")
+		for _, a := range usable {
+			fmt.Fprintf(&b, " label %q — username %q, secret %q", a.Label, a.Username, a.Secret)
+			if d := strings.TrimSpace(a.Description); d != "" {
+				b.WriteString(", covers " + d)
+			}
+			b.WriteString(";")
+		}
+		b.WriteString(" pick the account(s) whose coverage matches the flows this slice exercises and use them to sign in past any login wall.")
+	}
+	if notes != "" {
+		b.WriteString(" QA notes: " + notes)
+	}
+	return b.String()
 }
 
 // verifyTail builds the cold-verifier prompt. When handoff names a QA brief the
@@ -2663,15 +2954,17 @@ func browserNote(mode, appURL string) string {
 // handoff agent) it derives the checkable behaviors itself from the injected ticket
 // content and the slice's diff. The verdict shape and pass/fail gating are identical
 // either way.
-func verifyTail(r prompts.Renderer, id, handoff, verdict, note, checksFragment, rubricNote, lessonsNote, ticketCtx string) string {
+func verifyTail(r prompts.Renderer, id, handoff, verdict, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) string {
 	return r.Render("verify", prompts.VerifyData{
 		ID:             id,
 		Handoff:        handoff,
 		Verdict:        verdict,
 		Note:           note,
+		QANote:         qaNote,
 		ChecksFragment: checksFragment,
 		RubricNote:     rubricNote,
 		LessonsNote:    lessonsNote,
+		SkillsNote:     skillsNote,
 		TicketContext:  ticketCtx,
 	})
 }
@@ -2759,15 +3052,15 @@ func commitSubject(title string) string {
 	return strings.TrimRight(cut, " ")
 }
 
-func repairInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) string {
-	return r.Render("repair", repairData(r, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx))
+func repairInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, ticketCtx string) string {
+	return r.Render("repair", repairData(r, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, ticketCtx))
 }
 
-func bugfixInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) string {
-	return r.Render("bugfix", repairData(r, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx))
+func bugfixInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, ticketCtx string) string {
+	return r.Render("bugfix", repairData(r, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, ticketCtx))
 }
 
-func repairData(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) prompts.RepairData {
+func repairData(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, ticketCtx string) prompts.RepairData {
 	return prompts.RepairData{
 		ID:            id,
 		Verdict:       verdict,
@@ -2777,6 +3070,7 @@ func repairData(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricN
 		RubricNote:    rubricNote,
 		LessonsNote:   lessonsNote,
 		NotesNote:     notesNote,
+		SkillsNote:    skillsNote,
 		CodeStyle:     r.Render("code_style", nil),
 		TicketContext: ticketCtx,
 	}
@@ -2801,6 +3095,26 @@ type verdict struct {
 	Summary  string        `json:"summary"`
 	Failures []string      `json:"failures"`
 	Checks   []checkResult `json:"checks,omitempty"`
+	// Browser is the verifier's self-reported browser-QA outcome: "driven",
+	// "skipped", or "not-applicable". Recorded for accounting only — the pipeline
+	// classifies the slice as UI deterministically and never lets this value
+	// decide the gate. An absent field (old verdicts, or an agent that omitted it)
+	// reads as "skipped" via browserOutcome.
+	Browser      string `json:"browser,omitempty"`
+	BrowserNotes string `json:"browser_notes,omitempty"`
+}
+
+// browserOutcome normalizes a verdict's self-reported browser field for
+// accounting. Only the two affirmative values are trusted verbatim; anything
+// else — including an empty field from a pre-field verdict — reads as "skipped",
+// so a missing value can never masquerade as a browser run.
+func browserOutcome(v verdict) string {
+	switch v.Browser {
+	case "driven", "not-applicable":
+		return v.Browser
+	default:
+		return "skipped"
+	}
 }
 
 // checkResult is one verify-check outcome the cold verifier reports back inside
@@ -2885,13 +3199,13 @@ type panelResult struct {
 // so the repair prompt and FileBug read the authoritative result. A non-nil error
 // is fatal and propagated (a provider pause or a budget give-up) — it stops the
 // phase rather than counting as a verify failure.
-func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, checksFragment, rubricNote, lessonsNote, ticketCtx string) (verdict, error) {
+func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) (verdict, error) {
 	if len(p.VerifyPanel) > 0 {
-		return p.runPanel(ctx, id, label, handoff, note, checksFragment, rubricNote, lessonsNote, ticketCtx)
+		return p.runPanel(ctx, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
 	}
 	verdictPath := verifyPath(id)
 	_ = os.Remove(verdictPath)
-	prompt := verifyTail(p.prompts, id, handoff, verdictPath, note, checksFragment, rubricNote, lessonsNote, ticketCtx)
+	prompt := verifyTail(p.prompts, id, handoff, verdictPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
 	_, agentErr := p.agentStep(ctx, id, label, prompt)
 	// A provider pause (rate/usage limit) or budget give-up must propagate, not be
 	// recorded as a verify failure — otherwise a transient 429 burns repair/bugfix
@@ -2929,14 +3243,14 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 // give-up from any member is propagated so the loop stops cleanly (the ticket
 // stays resumable on its branch) instead of being recorded as a dissenting fail;
 // a plain timeout/crash counts as that member failing.
-func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, checksFragment, rubricNote, lessonsNote, ticketCtx string) (verdict, error) {
+func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) (verdict, error) {
 	results := make([]panelResult, len(p.VerifyPanel))
 	member := func(ctx context.Context, i int) error {
 		m := p.VerifyPanel[i]
 		memberPath := verifyMemberPath(id, m.Name)
 		_ = os.Remove(memberPath)
 		memberLabel := label + "-" + m.Name
-		prompt := verifyTail(p.prompts, id, handoff, memberPath, note, checksFragment, rubricNote, lessonsNote, ticketCtx)
+		prompt := verifyTail(p.prompts, id, handoff, memberPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
 		_, agentErr := p.agentStepOn(ctx, id, memberLabel, prompt, m.Runner)
 		if agentErr != nil && isFatalAgentErr(agentErr) {
 			return agentErr

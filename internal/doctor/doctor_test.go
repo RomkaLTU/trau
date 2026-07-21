@@ -446,3 +446,109 @@ func TestCheckWebHubNotRunning(t *testing.T) {
 		})
 	}
 }
+
+func TestCheckBrowserVerify(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     config.Config
+		status  string
+		warns   int
+		wantMsg string
+	}{
+		{"never skips", config.Config{BrowserVerify: "never"}, "", 0, ""},
+		{"empty mode skips", config.Config{}, "", 0, ""},
+		{"auto without app url warns", config.Config{BrowserVerify: "auto"}, warn, 1, "APP_URL is empty"},
+		{"always without app url warns", config.Config{BrowserVerify: "always"}, warn, 1, "APP_URL is empty"},
+		{"auto with app url passes", config.Config{BrowserVerify: "auto", AppURL: "http://localhost:3000"}, pass, 0, "APP_URL target"},
+		{"always with app urls passes", config.Config{BrowserVerify: "always", AppURLs: map[string]string{"web": "http://localhost:3000"}}, pass, 0, "APP_URL target"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := newTestRunner()
+			checkBrowserVerify(tc.cfg, rr)
+			if tc.status == "" {
+				if len(rr.r.Checks) != 0 {
+					t.Fatalf("expected no check, got %+v", rr.r.Checks)
+				}
+				return
+			}
+			c := lastCheck(t, rr)
+			if c.Status != tc.status {
+				t.Errorf("status = %q, want %q (%s)", c.Status, tc.status, c.Message)
+			}
+			if rr.r.Warnings != tc.warns {
+				t.Errorf("warnings = %d, want %d", rr.r.Warnings, tc.warns)
+			}
+			if !strings.Contains(c.Message, tc.wantMsg) {
+				t.Errorf("message %q should contain %q", c.Message, tc.wantMsg)
+			}
+		})
+	}
+}
+
+func installSkill(t *testing.T, repo, name string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(repo, ".agents", "skills", name), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckSkillsSkippedWithoutSkills(t *testing.T) {
+	rr := newTestRunner()
+	checkSkills(config.Config{}, t.TempDir(), rr)
+	if len(rr.r.Checks) != 0 {
+		t.Errorf("expected no skills check for a repo without skills, got %+v", rr.r.Checks)
+	}
+}
+
+func TestCheckSkillsPassWhenPinned(t *testing.T) {
+	repo := t.TempDir()
+	installSkill(t, repo, "golang-code-style")
+	rr := newTestRunner()
+	checkSkills(config.Config{RequiredSkills: []string{"golang-code-style"}}, repo, rr)
+	c := lastCheck(t, rr)
+	if c.Status != pass {
+		t.Errorf("status = %q, want pass", c.Status)
+	}
+	if !strings.Contains(c.Message, "golang-code-style") {
+		t.Errorf("message %q should name the pinned skills", c.Message)
+	}
+}
+
+func TestCheckSkillsWarnsWhenUnpinned(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installSkill(t, repo, "golang-code-style")
+	installSkill(t, repo, "unrelated-skill")
+	rr := newTestRunner()
+	checkSkills(config.Config{}, repo, rr)
+	c := lastCheck(t, rr)
+	if c.Status != warn {
+		t.Errorf("status = %q, want warn", c.Status)
+	}
+	if !strings.Contains(c.Message, "REQUIRED_SKILLS is unset") {
+		t.Errorf("message %q should flag the unset pin", c.Message)
+	}
+	if !strings.Contains(c.Message, "REQUIRED_SKILLS=golang-code-style") {
+		t.Errorf("message %q should suggest the recommended installed skill", c.Message)
+	}
+	if strings.Contains(c.Message, "unrelated-skill") {
+		t.Errorf("message %q should not suggest a non-recommended skill when a recommended one is present", c.Message)
+	}
+}
+
+func TestCheckSkillsSuggestionFallsBackToInstalled(t *testing.T) {
+	repo := t.TempDir()
+	installSkill(t, repo, "web-feature")
+	rr := newTestRunner()
+	checkSkills(config.Config{}, repo, rr)
+	c := lastCheck(t, rr)
+	if c.Status != warn {
+		t.Errorf("status = %q, want warn", c.Status)
+	}
+	if !strings.Contains(c.Message, "REQUIRED_SKILLS=web-feature") {
+		t.Errorf("message %q should fall back to the installed names", c.Message)
+	}
+}

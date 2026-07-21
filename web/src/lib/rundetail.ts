@@ -70,6 +70,7 @@ export interface RunDetail extends Run {
   build_notes?: string
   artifacts: Artifacts
   no_skills?: boolean
+  no_browser?: boolean
   removed?: boolean
 }
 
