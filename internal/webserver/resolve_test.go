@@ -50,11 +50,14 @@ func TestResolveReaderInfersJiraFromProjectCreds(t *testing.T) {
 		t.Fatal("explicit = true, want false for an inferred provider")
 	}
 
-	got := res.actionableErr(tracker.ErrReaderUnavailable).Error()
-	for _, want := range []string{"inferred jira", "PROJECT"} {
+	got := res.actionableErr(tracker.ErrNoProjectKey).Error()
+	for _, want := range []string{"inferred jira", "LINEAR_TEAM"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("actionableErr = %q, want it to mention %q", got, want)
 		}
+	}
+	if strings.Contains(got, "credentials") {
+		t.Fatalf("actionableErr = %q, must not mention credentials", got)
 	}
 }
 

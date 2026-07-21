@@ -374,8 +374,8 @@ func (r trackerResolution) actionableErr(err error) error {
 	}
 	switch r.provider {
 	case "jira":
-		if errors.Is(err, tracker.ErrReaderUnavailable) {
-			return fmt.Errorf("inferred jira from project-layer credentials but no Jira project key is set — set PROJECT: %w", err)
+		if errors.Is(err, tracker.ErrNoProjectKey) {
+			return fmt.Errorf("inferred jira from the repo's Jira config: %w", err)
 		}
 	case "linear":
 		if r.jiraCreds {
@@ -393,18 +393,28 @@ func (s *Server) readerFor(repo registry.Repo) (string, tracker.Reader, error) {
 	return res.provider, res.reader, err
 }
 
-// writeReaderErr maps a Reader build failure to a response. A repo with no direct
-// tracker credentials cannot browse its backlog over the hub — it is a config
-// state, not a bad request — so it answers 422 with a hint the board renders as a
-// backlog-unavailable state.
+// readerConfigErr reports whether err is a reader config state the hub answers
+// with a 422 backlog-unavailable response rather than a transport failure: no
+// direct credentials at all, or Jira credentials with no project key.
+func readerConfigErr(err error) bool {
+	return errors.Is(err, tracker.ErrReaderUnavailable) || errors.Is(err, tracker.ErrNoProjectKey)
+}
+
+// writeReaderErr maps a Reader config state to a response. A repo that cannot
+// browse its backlog over the hub is a config state, not a bad request, so it
+// answers 422 with a hint the board renders as a backlog-unavailable state. A
+// missing project key names the key to set instead of the credentials hint.
 func writeReaderErr(w http.ResponseWriter, err error) {
-	if errors.Is(err, tracker.ErrReaderUnavailable) {
+	switch {
+	case errors.Is(err, tracker.ErrNoProjectKey):
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
+	case errors.Is(err, tracker.ErrReaderUnavailable):
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
 			"error": "this repo has no direct tracker credentials configured; set LINEAR_API_KEY, or the full Jira REST credentials (JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN)",
 		})
-		return
+	default:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "tracker unavailable: " + err.Error()})
 	}
-	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "tracker unavailable: " + err.Error()})
 }
 
 // defaultReader builds a direct tracker Reader from a repo's resolved config,

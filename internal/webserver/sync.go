@@ -40,7 +40,7 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := s.syncRepo(r.Context(), repo)
 	if err != nil {
-		if errors.Is(err, tracker.ErrReaderUnavailable) {
+		if readerConfigErr(err) {
 			writeReaderErr(w, err)
 			return
 		}
@@ -69,7 +69,7 @@ func (s *Server) handleForceResync(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := s.forceResync(r.Context(), repo)
 	if err != nil {
-		if errors.Is(err, tracker.ErrReaderUnavailable) {
+		if readerConfigErr(err) {
 			writeReaderErr(w, err)
 			return
 		}
