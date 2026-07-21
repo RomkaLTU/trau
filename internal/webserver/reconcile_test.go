@@ -173,6 +173,72 @@ func TestForceResyncWithoutCredentialsKeepsStore(t *testing.T) {
 	}
 }
 
+func TestForceResyncReResolvesStaleBinding(t *testing.T) {
+	fake := &fakeReader{
+		binding: tracker.ProjectBinding{ProjectID: "proj-right"},
+		synced:  []tracker.SyncedIssue{syncedIssue("COD-1")},
+	}
+	s, root := reconcileServer(t, fake)
+	repo := workspaceRepo(root)
+	store := s.stores.Issues()
+
+	if err := store.SaveBinding(root, hubstore.SyncBinding{ProjectID: "proj-wrong"}); err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+	if _, _, err := store.Upsert(root, "linear", []hubstore.Issue{{Identifier: "OLD-9", Title: "wrong project"}}); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+
+	resp, err := s.forceResync(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("forceResync: %v", err)
+	}
+	if resp.Issues != 1 {
+		t.Fatalf("resync pulled %d issues, want 1", resp.Issues)
+	}
+
+	st, err := store.SyncState(root)
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	if st.Binding.ProjectID != "proj-right" {
+		t.Fatalf("binding = %+v, want it re-resolved to proj-right", st.Binding)
+	}
+	if _, ok, _ := store.Get(root, "OLD-9"); ok {
+		t.Fatal("the stale-binding issue should be gone after a re-resolved resync")
+	}
+	if _, ok, _ := store.Get(root, "COD-1"); !ok {
+		t.Fatal("the re-resolved resync should re-populate the backlog")
+	}
+}
+
+func TestForceResyncBindingResolveFailureKeepsStore(t *testing.T) {
+	fake := &fakeReader{
+		bindingErr: errors.New("linear: team not found"),
+		synced:     []tracker.SyncedIssue{syncedIssue("COD-1")},
+	}
+	s, root := reconcileServer(t, fake)
+	repo := workspaceRepo(root)
+	store := s.stores.Issues()
+	if _, _, err := store.Upsert(root, "linear", []hubstore.Issue{{Identifier: "COD-1", Title: "kept"}}); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+
+	if _, err := s.forceResync(context.Background(), repo); err == nil {
+		t.Fatal("forceResync should surface a binding resolution failure")
+	}
+	if _, ok, _ := store.Get(root, "COD-1"); !ok {
+		t.Fatal("a resync that cannot re-resolve the binding must not drop the store")
+	}
+	st, err := store.SyncState(root)
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	if st.LastError == "" {
+		t.Fatal("a failed re-resolution should record on the sync error surface")
+	}
+}
+
 func TestResyncEndpoint(t *testing.T) {
 	fake := &fakeReader{synced: []tracker.SyncedIssue{syncedIssue("COD-1")}}
 	ts, _, _ := syncServer(t, fake)
