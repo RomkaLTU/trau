@@ -937,6 +937,20 @@ func (c Config) EffectiveTrackerProvider() string {
 	}
 }
 
+// TrackerKey resolves the team/project key the tracker binds to — the value
+// behind "Linear team / Jira project / GitHub repo" (LINEAR_TEAM). For Jira it
+// falls back to PROJECT when LINEAR_TEAM is unset, so a legacy config that wrote
+// only PROJECT=<key> still resolves a binding; LINEAR_TEAM wins when both are set.
+func (c Config) TrackerKey() string {
+	if strings.TrimSpace(c.LinearTeam) != "" {
+		return c.LinearTeam
+	}
+	if c.EffectiveTrackerProvider() == "jira" {
+		return c.Project
+	}
+	return ""
+}
+
 // ResolveSyncProvider resolves the tracker provider a hub-side sync should use for
 // a repo, given which layer supplied each config value. It honors an explicit
 // TRACKER_PROVIDER through EffectiveTrackerProvider; only when the provider is unset

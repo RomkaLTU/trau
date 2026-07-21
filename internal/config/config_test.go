@@ -98,6 +98,28 @@ func TestResolveSyncProvider(t *testing.T) {
 	}
 }
 
+func TestTrackerKey(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  Config
+		want string
+	}{
+		{"linear uses the team", Config{TrackerProvider: "linear", LinearTeam: "COD"}, "COD"},
+		{"jira uses the team when set", Config{TrackerProvider: "jira", LinearTeam: "TMS", Project: "MLG"}, "TMS"},
+		{"jira falls back to project when team unset", Config{TrackerProvider: "jira", Project: "MLG"}, "MLG"},
+		{"mixed-case jira still falls back to project", Config{TrackerProvider: "Jira", Project: "MLG"}, "MLG"},
+		{"jira with neither key is empty", Config{TrackerProvider: "jira"}, ""},
+		{"non-jira never falls back to project", Config{TrackerProvider: "linear", LinearAPIKey: "k", Project: "trau"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cfg.TrackerKey(); got != tc.want {
+				t.Fatalf("TrackerKey() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestResolveConfigItemsLayerPrecedence(t *testing.T) {
 	dir := t.TempDir()
 	local := filepath.Join(dir, "trau.ini")

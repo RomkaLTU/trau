@@ -126,6 +126,53 @@ func TestCheckLinearProjectPassWhenScoped(t *testing.T) {
 	}
 }
 
+func TestCheckJiraProjectSkippedForNonJira(t *testing.T) {
+	rr := newTestRunner()
+	checkJiraProject(config.Config{TrackerProvider: "linear", Project: "trau"}, rr)
+	if len(rr.r.Checks) != 0 {
+		t.Errorf("expected no jira project check for linear provider, got %+v", rr.r.Checks)
+	}
+}
+
+func TestCheckJiraProjectPassOnProjectFallback(t *testing.T) {
+	rr := newTestRunner()
+	checkJiraProject(config.Config{TrackerProvider: "jira", Project: "MLG"}, rr)
+	c := lastCheck(t, rr)
+	if c.Status != pass {
+		t.Errorf("status = %q, want pass", c.Status)
+	}
+	if !strings.Contains(c.Message, "PROJECT=MLG") {
+		t.Errorf("message %q should name the project key it falls back to", c.Message)
+	}
+}
+
+func TestCheckJiraProjectMixedCaseProvider(t *testing.T) {
+	rr := newTestRunner()
+	checkJiraProject(config.Config{TrackerProvider: "Jira", Project: "MLG"}, rr)
+	c := lastCheck(t, rr)
+	if c.Status != pass {
+		t.Errorf("status = %q, want pass", c.Status)
+	}
+	if !strings.Contains(c.Message, "PROJECT=MLG") {
+		t.Errorf("message %q should name the project key it falls back to", c.Message)
+	}
+}
+
+func TestCheckJiraProjectFailsWhenUnset(t *testing.T) {
+	rr := newTestRunner()
+	checkJiraProject(config.Config{TrackerProvider: "jira"}, rr)
+	c := lastCheck(t, rr)
+	if c.Status != fail {
+		t.Errorf("status = %q, want fail", c.Status)
+	}
+	if rr.r.Errors != 1 {
+		t.Errorf("errors = %d, want 1", rr.r.Errors)
+	}
+	if !strings.Contains(c.Message, "LINEAR_TEAM") {
+		t.Errorf("suggestion %q should name LINEAR_TEAM as the key to set", c.Message)
+	}
+}
+
 func TestCheckLegacyRegistrationClean(t *testing.T) {
 	t.Setenv("TRAU_HOME", t.TempDir())
 	rr := newTestRunner()
