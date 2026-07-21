@@ -48,11 +48,13 @@ type QueueItemView struct {
 }
 
 // QueueResponse is the /repos/{repo}/queue resource: the repo's queue in
-// registration order and whether the hub is currently draining it.
+// registration order, whether the hub is currently draining it, and whether a
+// full queue shutdown is tearing it down.
 type QueueResponse struct {
-	Repo     string          `json:"repo"`
-	Draining bool            `json:"draining"`
-	Items    []QueueItemView `json:"items"`
+	Repo         string          `json:"repo"`
+	Draining     bool            `json:"draining"`
+	ShuttingDown bool            `json:"shutting_down"`
+	Items        []QueueItemView `json:"items"`
 }
 
 // DrainRequest is the body of POST /repos/{repo}/queue/drain: whether the hub
@@ -240,7 +242,53 @@ func (s *Server) writeQueue(w http.ResponseWriter, status int, root string) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read queue: " + err.Error()})
 		return
 	}
-	writeJSON(w, status, QueueResponse{Repo: filepath.Base(root), Draining: draining, Items: queueItemViews(items)})
+	writeJSON(w, status, QueueResponse{
+		Repo:         filepath.Base(root),
+		Draining:     draining,
+		ShuttingDown: s.isShuttingDown(root),
+		Items:        queueItemViews(items),
+	})
+}
+
+// handleQueueShutdown tears a repo's loop down completely in one gesture:
+// disarming the drain synchronously so no drainer tick spawns a new child, then
+// — in the background — stopping any running child with escalation, dropping
+// the checkpoints a live loop would otherwise refuse to have touched, and
+// emptying the queue. It answers 202 immediately; clears never run until the
+// child is confirmed dead, so refuseWhenLive is never tripped. A second POST
+// while a teardown is already in flight is a no-op that answers the same way.
+// It is gated on the workspace allowlist like a drain start: only a Registered
+// repo can be shut down.
+func (s *Server) handleQueueShutdown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	name := r.PathValue("repo")
+	root, ok := s.allowedRoot(name)
+	if !ok {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": fmt.Sprintf("repo %q is observe-only; only a Registered repo can be shut down — register it first", name),
+		})
+		return
+	}
+	store := s.stores.Queue(root)
+	if err := store.SetDraining(false); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "disarm drain: " + err.Error()})
+		return
+	}
+	if s.beginShutdown(root) {
+		items, _, err := store.Snapshot()
+		if err != nil {
+			s.endShutdown(root)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read queue: " + err.Error()})
+			return
+		}
+		running, hasRunning := firstWithStatus(items, queue.StatusRunning)
+		go s.teardownQueue(root, running, hasRunning)
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "shutting_down"})
 }
 
 // enqueue registers a ticket or epic for execution. It is gated on the workspace
