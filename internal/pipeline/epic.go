@@ -72,7 +72,7 @@ func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string) (string,
 	if err != nil {
 		title = p.EpicID
 	}
-	prURL, err = p.GitHub.CreatePR(ctx, p.Base, epicBranch, epicPRTitle(p.EpicID, title), epicPRBody(p.EpicID))
+	prURL, err = p.GitHub.CreatePR(ctx, p.Base, epicBranch, epicPRTitle(p.EpicID, title), p.epicPRBody(p.EpicID))
 	if err != nil {
 		return "", err
 	}
@@ -102,10 +102,6 @@ func epicPRTitle(id, title string) string {
 		subject = id
 	}
 	return "epic(" + id + "): " + subject
-}
-
-func epicPRBody(id string) string {
-	return fmt.Sprintf("## Summary\nEpic integration branch for %s.\n\nFeatures land on the epic branch first; this PR ships the epic to main once complete.\n\nLinear: %s", id, id)
 }
 
 // FinalizeEpic ships the epic only after every direct child is terminal. It is
