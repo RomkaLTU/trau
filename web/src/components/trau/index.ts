@@ -31,6 +31,7 @@ export { ConfirmDialog } from './confirm-dialog'
 export { AddTicketDialog } from './add-ticket-dialog'
 export { ForceResetDialog } from './force-reset-dialog'
 export { NoSkillsBanner } from './no-skills-banner'
+export { NoBrowserBanner } from './no-browser-banner'
 export { RemovedBanner } from './removed-banner'
 export {
   RunActionsMenu,

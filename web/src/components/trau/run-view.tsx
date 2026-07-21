@@ -18,6 +18,7 @@ import { ConfirmDialog } from "@/components/trau/confirm-dialog";
 import { ForceResetDialog } from "@/components/trau/force-reset-dialog";
 import { Eyebrow } from "@/components/trau/eyebrow";
 import { NoSkillsBanner } from "@/components/trau/no-skills-banner";
+import { NoBrowserBanner } from "@/components/trau/no-browser-banner";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { StatusPill } from "@/components/trau/status-pill";
 import { TerminalCard } from "@/components/trau/terminal-card";
@@ -163,6 +164,12 @@ function activityRow(ev: FeedEvent): ActivityRow {
         glyph: "⚠",
         glyphClass: "text-warn",
         text: ev.msg || "build loaded no skills",
+      };
+    case "verify_no_browser":
+      return {
+        glyph: "⚠",
+        glyphClass: "text-warn",
+        text: ev.msg || "browser verify skipped on a UI slice",
       };
     case "spawn_failed":
       return {
@@ -581,6 +588,9 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   const noSkills = feed.events.some(
     (ev) => ev.kind === "build_no_skills" && fieldStr(ev, "ticket") === ticket,
   );
+  const noBrowser = feed.events.some(
+    (ev) => ev.kind === "verify_no_browser" && fieldStr(ev, "ticket") === ticket,
+  );
 
   const openPR =
     run && run.pr && run.pr_url ? (
@@ -765,6 +775,8 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         )}
 
         {noSkills && <NoSkillsBanner />}
+
+        {noBrowser && <NoBrowserBanner />}
 
         {resume.error && (
           <p className="font-mono text-sm text-destructive">

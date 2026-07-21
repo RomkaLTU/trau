@@ -43,6 +43,7 @@ const KIND_META: Record<string, KindMeta> = {
   usage_window: { label: 'Usage window', icon: Gauge, tone: 'info' },
   cost_anomaly: { label: 'Cost anomaly', icon: Coins, tone: 'warn' },
   build_no_skills: { label: 'No skills loaded', icon: TriangleAlert, tone: 'warn' },
+  verify_no_browser: { label: 'Browser verify skipped', icon: TriangleAlert, tone: 'warn' },
   pr_open: { label: 'PR opened', icon: GitPullRequest, tone: 'info' },
   ci: { label: 'CI', icon: CircleDot, tone: 'flow' },
   phase_start: { label: 'Phase', icon: CircleDot, tone: 'flow' },
