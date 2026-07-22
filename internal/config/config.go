@@ -56,6 +56,7 @@ type Config struct {
 	JiraBaseURL           string
 	JiraEmail             string
 	JiraAPIToken          string
+	JiraEpicType          string
 	ReadyLabel            string
 	QuarantineLabel       string
 	SplitLabel            string
@@ -647,6 +648,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("JIRA_BASE_URL", &c.JiraBaseURL)
 	str("JIRA_EMAIL", &c.JiraEmail)
 	str("JIRA_API_TOKEN", &c.JiraAPIToken)
+	str("JIRA_EPIC_TYPE", &c.JiraEpicType)
 	str("READY_LABEL", &c.ReadyLabel)
 	str("QUARANTINE_LABEL", &c.QuarantineLabel)
 	str("SPLIT_LABEL", &c.SplitLabel)
@@ -1533,6 +1535,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "JIRA_BASE_URL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Jira Cloud site base URL for the direct REST adapter (e.g. https://acme.atlassian.net)"},
 		{Key: "JIRA_EMAIL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Atlassian account email for Jira REST Basic auth"},
 		{Key: "JIRA_API_TOKEN", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Classic (unscoped) Jira API token; enables direct REST calls with MCP fallback"},
+		{Key: "JIRA_EPIC_TYPE", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Issue type a hub-created Jira epic is filed as; empty resolves the project's own hierarchy-level-1 type"},
 		{Key: "TRACKER_PROVIDER", Group: sectionTracker, WebEditable: true, Default: "linear", Description: "Ticket backend: linear | jira | github | internal (internal issues in the hub, no external tracker)", Options: []string{"linear", "jira", "github", "internal"}},
 		{Key: "READY_LABEL", Group: sectionTracker, WebEditable: true, Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
 		{Key: "QUARANTINE_LABEL", Group: sectionTracker, WebEditable: true, Default: "needs-human", Description: "Label applied when a ticket fails"},
@@ -2003,6 +2006,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.JiraEmail
 	case "JIRA_API_TOKEN":
 		return cfg.JiraAPIToken
+	case "JIRA_EPIC_TYPE":
+		return cfg.JiraEpicType
 	case "READY_LABEL":
 		return cfg.ReadyLabel
 	case "QUARANTINE_LABEL":

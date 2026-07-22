@@ -766,7 +766,7 @@ func TestJiraFileBugUsesAPI(t *testing.T) {
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			_, _ = w.Write([]byte(`{"values":[{"id":"10004","name":"Bug"}]}`))
+			_, _ = w.Write([]byte(`{"issueTypes":[{"id":"10004","name":"Bug","subtask":false,"hierarchyLevel":0}]}`))
 			return
 		}
 		w.WriteHeader(http.StatusCreated)

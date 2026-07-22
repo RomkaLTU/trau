@@ -339,6 +339,7 @@ func defaultWriter(cfg config.Config) (tracker.Writer, error) {
 		tc.APIKey = cfg.JiraAPIToken
 		tc.BaseURL = cfg.JiraBaseURL
 		tc.Email = cfg.JiraEmail
+		tc.EpicType = cfg.JiraEpicType
 	}
 	return tracker.NewWriter(cfg.TrackerProvider, tc)
 }

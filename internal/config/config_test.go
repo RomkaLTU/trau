@@ -162,6 +162,27 @@ func TestResolveConfigItemsLayerPrecedence(t *testing.T) {
 	}
 }
 
+// JIRA_EPIC_TYPE is the override for the project's own hierarchy-level-1 lookup,
+// so it has to survive the load and reach the settings surfaces by its catalog key.
+func TestLoadJiraEpicType(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "trau.ini")
+	if err := os.WriteFile(local, []byte("TRACKER_PROVIDER=jira\nJIRA_EPIC_TYPE=Feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadLayered("", "", local, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.JiraEpicType != "Feature" {
+		t.Fatalf("JiraEpicType = %q, want Feature", cfg.JiraEpicType)
+	}
+	if got := keyValue(cfg, "JIRA_EPIC_TYPE"); got != "Feature" {
+		t.Errorf("keyValue(JIRA_EPIC_TYPE) = %q, want Feature", got)
+	}
+}
+
 func TestResolveConfigItemsEnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	local := filepath.Join(dir, "trau.ini")

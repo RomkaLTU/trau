@@ -22,12 +22,16 @@ const jiraDefaultIssueType = "Task"
 
 // IssueDraft is a new issue to create: a title, an optional markdown description,
 // any labels to apply (e.g. the ready label), and an optional parent to nest the
-// issue under so an epic and its sub-issues can be filed from the board.
+// issue under so an epic and its sub-issues can be filed from the board. Epic
+// marks a draft that will carry sub-issues of its own, so a tracker with a typed
+// hierarchy files it one level up — Jira rejects a child whose parent sits at the
+// child's own level.
 type IssueDraft struct {
 	Title       string
 	Description string
 	Labels      []string
 	Parent      string
+	Epic        bool
 }
 
 // NewIssue identifies a freshly created issue: its human identifier and a link.
@@ -94,6 +98,7 @@ func NewWriter(provider string, cfg Config) (Writer, error) {
 			project:   cfg.Team,
 			baseURL:   strings.TrimRight(cfg.BaseURL, "/"),
 			issueType: jiraDefaultIssueType,
+			epicType:  cfg.EpicType,
 		}, nil
 	case "github":
 		return nil, fmt.Errorf("tracker: github issue creation over the direct API is not supported")
@@ -173,14 +178,22 @@ type jiraWriter struct {
 	project   string
 	baseURL   string
 	issueType string
+	epicType  string
 }
 
 func (w *jiraWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIssue, error) {
-	key, err := w.client.CreateIssue(ctx, w.project, w.issueType, draft.Title, draft.Description, draft.Labels, strings.TrimSpace(draft.Parent))
+	key, err := w.createKey(ctx, draft)
 	if err != nil {
 		return NewIssue{}, err
 	}
 	return NewIssue{Identifier: key, URL: w.baseURL + "/browse/" + key}, nil
+}
+
+func (w *jiraWriter) createKey(ctx context.Context, draft IssueDraft) (string, error) {
+	if draft.Epic {
+		return w.client.CreateEpic(ctx, w.project, w.epicType, draft.Title, draft.Description, draft.Labels)
+	}
+	return w.client.CreateIssue(ctx, w.project, w.issueType, draft.Title, draft.Description, draft.Labels, strings.TrimSpace(draft.Parent))
 }
 
 func (w *jiraWriter) AddComment(ctx context.Context, id, body string) error {
