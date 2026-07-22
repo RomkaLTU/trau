@@ -7,6 +7,7 @@ export interface QAAccount {
   label: string
   username: string
   description: string
+  source: 'manual' | 'agent'
   secret_set: boolean
 }
 
