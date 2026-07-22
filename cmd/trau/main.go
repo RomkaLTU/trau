@@ -496,6 +496,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	stampRouting(ctx, cfg, sink)
 	p.EpicID = epicID
 	if epicID != "" {
 		if subs, serr := pm.SubIssues(ctx, epicID); serr == nil && len(subs) > 0 {
@@ -1148,7 +1149,28 @@ func newPresence(cfg config.Config, repoRoot string) *hubpresence.Handle {
 func newTokenSink(cfg config.Config) *hubtokens.Sink {
 	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
 	window := time.Duration(cfg.HubWriteRetryWindow) * time.Second
-	return hubtokens.New(hub, repoName(cfg.RepoRoot), cfg.HubWriteBufferBytes, window)
+	sink := hubtokens.New(hub, repoName(cfg.RepoRoot), cfg.HubWriteBufferBytes, window)
+	sink.SetConfigHash(config.ResolveRouting(cfg).Hash)
+	return sink
+}
+
+// stampRouting fingerprints the routing config this run executes under, stamps it
+// on the run's token calls, and reports it to the hub, which emits a config_change
+// event when it differs from the repo's last one. Re-stamping at each run entry is
+// what keeps an ephemeral provider override in its own cohort. Best-effort — an
+// unreachable hub costs the marker, never the run.
+func stampRouting(ctx context.Context, cfg config.Config, sink *hubtokens.Sink) {
+	fp := config.ResolveRouting(cfg)
+	sink.SetConfigHash(fp.Hash)
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	changed, err := hub.RecordRouting(ctx, repoName(cfg.RepoRoot), hubclient.RoutingFingerprint{Hash: fp.Hash, Keys: fp.Keys})
+	if err != nil {
+		logger.Verbosef("record routing fingerprint: %v", err)
+		return
+	}
+	if changed {
+		logger.Verbosef("routing config changed — this run opens cohort %s", fp.Hash)
+	}
 }
 
 // newTranscriptSink is the hub-backed transcript sink: the agent tees each phase's
@@ -2597,6 +2619,7 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 		r.LoopDone(console.SessionSummary{Err: err})
 		return
 	}
+	stampRouting(ctx, a.cfg, a.sink)
 	a.pipe.Renderer = r
 	a.pipe.EpicID = epic
 	a.eng.scope = scopeFor(a.cfg, epic)
@@ -2681,6 +2704,7 @@ func (a *appActions) RunTicket(ctx context.Context, id, provider string, r conso
 		r.LoopDone(console.SessionSummary{Err: err})
 		return
 	}
+	stampRouting(ctx, a.cfg, a.sink)
 	a.pipe.Renderer = r
 
 	// Epic guard: a parent issue is a container, not a buildable leaf. If the chosen

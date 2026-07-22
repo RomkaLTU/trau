@@ -255,3 +255,58 @@ func TestTokensPruneKeepsRecentPerRepo(t *testing.T) {
 		t.Fatalf("anomalies after prune = %d, want 2", len(an))
 	}
 }
+
+// TestTokensAppendRecordsRouting keeps the three columns a config cohort is
+// grouped by on the write path. A call reporting none of them lands on the
+// defaults historical rows carry.
+func TestTokensAppendRecordsRouting(t *testing.T) {
+	db, err := hubdb.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open hub db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	tk := NewTokens(db.SQL(), 0)
+
+	const repo = "/repos/acme"
+	appendCalls(t, tk, repo,
+		TokenCall{Ticket: "COD-1", Phase: "verify", Input: 10, Output: 5, Effort: "high", DurationMS: 42_000, ConfigHash: "9f1c2a"},
+		TokenCall{Ticket: "COD-1", Phase: "commit", Input: 1, Output: 1},
+	)
+
+	rows, err := db.SQL().Query(
+		`SELECT phase, effort, duration_ms, config_hash FROM token_calls WHERE repo = ? AND ticket = ? ORDER BY id`,
+		repo, "COD-1",
+	)
+	if err != nil {
+		t.Fatalf("query token calls: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	type row struct {
+		phase, effort, hash string
+		durationMS          int
+	}
+	got := []row{}
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.phase, &r.effort, &r.durationMS, &r.hash); err != nil {
+			t.Fatalf("scan token call: %v", err)
+		}
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate token calls: %v", err)
+	}
+	want := []row{
+		{phase: "verify", effort: "high", durationMS: 42_000, hash: "9f1c2a"},
+		{phase: "commit"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("rows = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("row %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}

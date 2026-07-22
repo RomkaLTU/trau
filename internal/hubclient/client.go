@@ -298,7 +298,10 @@ type TokenCall struct {
 	IsError       bool     `json:"is_error"`
 	Provider      string   `json:"provider,omitempty"`
 	Model         string   `json:"model,omitempty"`
+	Effort        string   `json:"effort,omitempty"`
 	Context       int      `json:"context,omitempty"`
+	DurationMS    int      `json:"duration_ms,omitempty"`
+	ConfigHash    string   `json:"config_hash,omitempty"`
 	Skills        string   `json:"skills,omitempty"`
 }
 
@@ -431,6 +434,25 @@ func (c *Client) TokenDayTotal(ctx context.Context, repo, date string) (Spend, e
 // IsUnreachable error so the caller can retry.
 func (c *Client) RecordAnomalies(ctx context.Context, repo, ticket string, anomalies []Anomaly) error {
 	return c.do(ctx, http.MethodPost, c.repoPath(repo, "runs/"+url.PathEscape(ticket)+"/anomalies"), recordAnomaliesBody{Anomalies: anomalies}, nil)
+}
+
+// RoutingFingerprint is the resolved routing configuration a run reports at start:
+// the hash its token calls are stamped with, and the key/value pairs it was
+// computed from, which the hub diffs to describe a change.
+type RoutingFingerprint struct {
+	Hash string            `json:"hash"`
+	Keys map[string]string `json:"keys,omitempty"`
+}
+
+// RecordRouting reports the routing fingerprint this run executes under. The hub
+// emits a config_change event when it differs from the repo's last one, and
+// reports whether it did.
+func (c *Client) RecordRouting(ctx context.Context, repo string, fp RoutingFingerprint) (bool, error) {
+	var out struct {
+		Changed bool `json:"changed"`
+	}
+	err := c.do(ctx, http.MethodPost, c.repoPath(repo, "routing"), fp, &out)
+	return out.Changed, err
 }
 
 // PutInstance registers or refreshes this loop's presence with the hub, keyed by

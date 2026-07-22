@@ -10,7 +10,9 @@ import (
 // TokenCall is one normalized provider call a child sends to the hub for the
 // authoritative token ledger (ADR 0008). Each carries its own ticket, so one
 // append batch may span buckets. CostUSD is nil for a call a provider reported no
-// per-call cost for.
+// per-call cost for. Effort, DurationMS, and ConfigHash record what the call ran
+// under, so spend can be grouped into configuration cohorts; an empty ConfigHash
+// is the unknown cohort historical rows fall into.
 type TokenCall struct {
 	Ticket        string
 	TS            string
@@ -26,7 +28,10 @@ type TokenCall struct {
 	IsError       bool
 	Provider      string
 	Model         string
+	Effort        string
 	Context       int
+	DurationMS    int
+	ConfigHash    string
 	Skills        string
 }
 
@@ -129,10 +134,12 @@ func (t *Tokens) Append(repo string, calls []TokenCall) error {
 		if _, err := tx.Exec(
 			`INSERT INTO token_calls(
 			     repo, ticket, ts, phase, input, output, cache_read, cache_creation,
-			     reasoning, total, cost_usd, turns, is_error, provider, model, context, skills)
-			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			     reasoning, total, cost_usd, turns, is_error, provider, model, effort,
+			     context, duration_ms, config_hash, skills)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			repo, c.Ticket, c.TS, c.Phase, c.Input, c.Output, c.CacheRead, c.CacheCreation,
-			c.Reasoning, c.Total, c.CostUSD, c.Turns, boolToInt(c.IsError), c.Provider, c.Model, c.Context, c.Skills,
+			c.Reasoning, c.Total, c.CostUSD, c.Turns, boolToInt(c.IsError), c.Provider, c.Model, c.Effort,
+			c.Context, c.DurationMS, c.ConfigHash, c.Skills,
 		); err != nil {
 			return errors.Join(err, tx.Rollback())
 		}

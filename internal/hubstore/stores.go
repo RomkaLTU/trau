@@ -29,6 +29,7 @@ type Stores struct {
 	prompts     *PromptOverrides
 	attachments *Attachments
 	qa          *QAAccounts
+	routing     *Routing
 }
 
 // NewStores builds the hub store set over the authoritative database db and the
@@ -56,6 +57,7 @@ func NewStores(home string, db, transcriptsDB *sql.DB, retention Retention) *Sto
 		prompts:     NewPromptOverrides(db),
 		attachments: NewAttachments(db, filepath.Join(home, AttachmentsDir), retention.AttachmentCacheBytes),
 		qa:          NewQAAccounts(db),
+		routing:     NewRouting(db),
 	}
 }
 
@@ -109,6 +111,9 @@ func (s *Stores) Attachments() *Attachments { return s.attachments }
 
 // QA returns the per-repo QA accounts and notes store.
 func (s *Stores) QA() *QAAccounts { return s.qa }
+
+// Routing returns the store of the routing fingerprint each repo last ran under.
+func (s *Stores) Routing() *Routing { return s.routing }
 
 // Queue returns the queue store for a repo root.
 func (s *Stores) Queue(root string) *Queue { return NewQueue(s.db, root) }

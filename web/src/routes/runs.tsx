@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 
 import {
+  ConfigExperiments,
   Eyebrow,
   NoticeBanner,
   RepoHealthGate,
@@ -39,6 +40,8 @@ function Runs() {
       <RepoHealthGate>
         <RunLedger onNotice={setNotice} />
       </RepoHealthGate>
+
+      <ConfigExperiments />
     </div>
   )
 }
