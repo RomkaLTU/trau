@@ -14,21 +14,24 @@ import (
 // QAAccountRequest is the body of a QA account create or update: the login the
 // browser verifier signs in with and the cases or flows it covers. A blank Secret
 // on update keeps the stored one (write-only, ADR 0011); on create it stores none.
+// Source is optional and applies on create only, defaulting to manual.
 type QAAccountRequest struct {
 	Label       string `json:"label"`
 	Username    string `json:"username"`
 	Secret      string `json:"secret"`
 	Description string `json:"description"`
+	Source      string `json:"source,omitempty"`
 }
 
 // QAAccountView is a QA account as the settings surface reads it: its identifier,
-// label, username, and coverage description, plus whether a secret is stored. The
-// secret itself is write-only and never crosses the wire on a read.
+// label, username, coverage description, and provenance, plus whether a secret is
+// stored. The secret itself is write-only and never crosses the wire on a read.
 type QAAccountView struct {
 	ID          int64  `json:"id"`
 	Label       string `json:"label"`
 	Username    string `json:"username"`
 	Description string `json:"description"`
+	Source      string `json:"source"`
 	SecretSet   bool   `json:"secret_set"`
 	CreatedAt   string `json:"created_at,omitempty"`
 	UpdatedAt   string `json:"updated_at,omitempty"`
@@ -280,6 +283,15 @@ func decodeQAAccount(w http.ResponseWriter, r *http.Request) (QAAccountRequest, 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "label is required"})
 		return QAAccountRequest{}, false
 	}
+	req.Source = strings.TrimSpace(req.Source)
+	switch req.Source {
+	case "":
+		req.Source = hubstore.QASourceManual
+	case hubstore.QASourceManual, hubstore.QASourceAgent:
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "source must be " + hubstore.QASourceManual + " or " + hubstore.QASourceAgent})
+		return QAAccountRequest{}, false
+	}
 	return req, true
 }
 
@@ -298,6 +310,7 @@ func qaInput(req QAAccountRequest) hubstore.QAAccountInput {
 		Username:    strings.TrimSpace(req.Username),
 		Secret:      req.Secret,
 		Description: req.Description,
+		Source:      req.Source,
 	}
 }
 
@@ -307,6 +320,7 @@ func qaAccountView(a hubstore.QAAccount) QAAccountView {
 		Label:       a.Label,
 		Username:    a.Username,
 		Description: a.Description,
+		Source:      a.Source,
 		SecretSet:   a.Secret != "",
 		CreatedAt:   a.CreatedAt,
 		UpdatedAt:   a.UpdatedAt,

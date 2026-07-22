@@ -86,7 +86,7 @@ var registry = []Prompt{
 			{Field: "Verdict", Description: "JSON verdict file path the loop parses", Required: true, Sample: "runs/sample/verdict.json"},
 			{Field: "Handoff", Description: "QA brief file path; empty switches to derive-from-ticket wording", Sample: "runs/sample/handoff.md"},
 			{Field: "Note", Description: "browser/app note", Sample: "Drive the running app at http://localhost:3000 via the browser-harness skill and exercise this slice's UI."},
-			{Field: "QANote", Description: "QA credentials roster note; injected only on browser-verify UI slices", Sample: ` QA test accounts (never copy into the brief, verdict, PR, comments, or tracker): label "admin" — username qa@example.test.`},
+			{Field: "QANote", Description: "QA credentials roster, plus the in-repo discovery and capture instructions; injected only on browser-verify UI slices", Sample: ` QA test accounts (never copy into the brief, verdict, PR, comments, or tracker): label "admin" — username qa@example.test.`},
 			{Field: "ChecksFragment", Description: "deterministic verify-checks fragment", Sample: " Deterministic checks: the build passes."},
 			{Field: "RubricNote", Description: "rubric pointer note", Sample: " A structured rubric is at runs/sample/rubric.json."},
 			{Field: "LessonsNote", Description: "recalled-lessons note", Sample: " Lessons from similar runs: check both themes."},

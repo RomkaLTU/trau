@@ -29,6 +29,17 @@ const KindVerifyNoSkills = "verify_no_skills"
 // as front-end.
 const KindVerifyNoBrowser = "verify_no_browser"
 
+// KindQARoster records what the stored QA roster contributed to a verify whose
+// browser gate was active on a UI slice: how many accounts reached the verifier,
+// whether free-text notes came with them, or why nothing did. Counts and flags
+// only — no label, username, or secret is ever carried here.
+const KindQARoster = "qa_roster"
+
+// KindQACaptured marks a QA account the verifier discovered inside the repo
+// under test and the loop stored on the hub, so the next run starts with it in
+// the roster. Carries the ticket and the account's label only.
+const KindQACaptured = "qa_captured"
+
 // KindModelFallback marks a call that found no model configured at any layer and
 // ran on the provider's built-in default. Without the fallback the child would
 // inherit whichever model the user last selected in their own agent CLI settings
