@@ -29,6 +29,12 @@ const KindVerifyNoSkills = "verify_no_skills"
 // as front-end.
 const KindVerifyNoBrowser = "verify_no_browser"
 
+// KindModelFallback marks a call that found no model configured at any layer and
+// ran on the provider's built-in default. Without the fallback the child would
+// inherit whichever model the user last selected in their own agent CLI settings
+// — a route trau neither controls nor records.
+const KindModelFallback = "model_fallback"
+
 // KindPromptOverrideSkipped marks a stored prompt override that failed to parse
 // or execute at render time — the phase ran on the built-in default body.
 const KindPromptOverrideSkipped = "prompt_override_skipped"

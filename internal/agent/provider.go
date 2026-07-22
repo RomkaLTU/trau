@@ -33,6 +33,10 @@ type BackendParams struct {
 	Log         *event.Log
 	Tokens      TokenSink
 	Transcripts TranscriptSink
+	// ModelFallback is shared by every backend a run builds, so a model missing
+	// from every config layer is announced once for the run instead of on each
+	// phase spawn.
+	ModelFallback *ModelFallbackNotice
 	// OnSessionStart is called with a call's freshly minted session id and phase
 	// label before the terminal session spawns, so the id is durable before the
 	// session can produce its first byte. Only claude mints resumable session ids;
@@ -121,6 +125,7 @@ var claudeSpec = Spec{
 			Log:                p.Log,
 			Tokens:             p.Tokens,
 			Transcripts:        p.Transcripts,
+			ModelFallback:      p.ModelFallback,
 			OnSessionStart:     p.OnSessionStart,
 		}, nil
 	},

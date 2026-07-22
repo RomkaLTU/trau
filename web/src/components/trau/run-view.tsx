@@ -171,6 +171,12 @@ function activityRow(ev: FeedEvent): ActivityRow {
         glyphClass: "text-warn",
         text: ev.msg || "browser verify skipped on a UI slice",
       };
+    case "model_fallback":
+      return {
+        glyph: "⚠",
+        glyphClass: "text-warn",
+        text: ev.msg || "no model configured — ran on the built-in default",
+      };
     case "spawn_failed":
       return {
         glyph: "✗",
