@@ -631,13 +631,15 @@ func runDoctor(ctx context.Context, args []string, stderr io.Writer) error {
 		repoRoot = ""
 	}
 
-	projectEnv := config.ProjectConfigPath(repoRoot)
-	userEnv := ""
+	paths := config.LayerPaths{
+		Project: config.ProjectConfigPath(repoRoot),
+		Local:   config.LocalConfigPath(),
+	}
 	if home, herr := os.UserHomeDir(); herr == nil {
-		userEnv = config.ProjectConfigPath(home)
+		paths.User = config.ProjectConfigPath(home)
 	}
 
-	cfg, sources, err := config.LoadLayeredWithSources(projectEnv, userEnv, config.LocalConfigPath(), opts.Provider)
+	cfg, sources, err := config.LoadLayeredWithSources(paths.Project, paths.User, paths.Local, opts.Provider)
 	if err != nil {
 		return console.Actionable(err, "load config", "check trau.ini, ~/.trau.ini, and environment variables")
 	}
@@ -645,7 +647,7 @@ func runDoctor(ctx context.Context, args []string, stderr io.Writer) error {
 		cfg.RepoRoot = repoRoot
 	}
 
-	if _, err = doctor.Run(ctx, cfg, sources, cfg.RepoRoot, version, stderr); err != nil {
+	if _, err = doctor.Run(ctx, cfg, sources, paths, cfg.RepoRoot, version, stderr); err != nil {
 		return silentExit{1}
 	}
 	return nil

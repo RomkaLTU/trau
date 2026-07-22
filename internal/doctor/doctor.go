@@ -49,9 +49,10 @@ type Check struct {
 //
 // sources maps each resolved config key to the layer that supplied its value;
 // a key absent from the map (or marked LayerDefault) is using a built-in
-// default rather than an explicit setting. version is this binary's version,
+// default rather than an explicit setting. paths names the file each config
+// layer resolved to for this invocation. version is this binary's version,
 // compared against the version a running hub reports.
-func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer, repoRoot, version string, stderr io.Writer) (*Report, error) {
+func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer, paths config.LayerPaths, repoRoot, version string, stderr io.Writer) (*Report, error) {
 	w := &writer{out: stderr}
 	rr := &runner{w: w, r: &Report{}}
 
@@ -61,6 +62,8 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkGitHub(ctx, rr)
 	checkProvider(ctx, cfg, rr)
 	checkConfig(ctx, cfg, sources, repoRoot, rr)
+	checkConfigLayers(paths, rr)
+	checkConfigShadowing(paths, rr)
 	checkBrowserVerify(cfg, rr)
 	checkSkills(cfg, repoRoot, rr)
 	checkLinearLabels(ctx, cfg, rr)
@@ -222,6 +225,49 @@ func checkConfig(ctx context.Context, cfg config.Config, sources map[string]conf
 		}
 		rr.add(r.name, pass, fmt.Sprintf("%s=%s (%s)", r.key, value, sources[r.key]), "")
 	}
+}
+
+// checkConfigLayers names the file every config layer resolved to. The
+// cwd-local trau.ini is called out by name: it outranks both files people think
+// of as "the config", and is the layer left behind and forgotten.
+func checkConfigLayers(paths config.LayerPaths, rr *runner) {
+	lines := []string{"resolved files, highest precedence first"}
+	for _, f := range paths.Files() {
+		lines = append(lines, "    "+layerLine(f))
+	}
+	rr.add("config layers", pass, strings.Join(lines, "\n"), "")
+}
+
+func layerLine(f config.LayerFile) string {
+	switch {
+	case f.Path == "":
+		return fmt.Sprintf("%-8s (not resolved)", f.Layer)
+	case !f.Exists:
+		return fmt.Sprintf("%-8s %s (absent)", f.Layer, f.Path)
+	case f.Layer == config.LayerLocal:
+		return fmt.Sprintf("%-8s %s ← cwd-local trau.ini present, it outranks ~/.trau.ini", f.Layer, f.Path)
+	default:
+		return fmt.Sprintf("%-8s %s", f.Layer, f.Path)
+	}
+}
+
+// checkConfigShadowing flags the silent failure a hand-written config file can
+// cause: an empty value is an explicit unset that wins on precedence, so a
+// forgotten `KEY=` line disables a lower layer's setting with nothing on screen
+// to explain it.
+func checkConfigShadowing(paths config.LayerPaths, rr *runner) {
+	shadowed := config.ShadowedKeys(paths)
+	if len(shadowed) == 0 {
+		rr.add("config shadowing", pass, "no key is blanked by a higher config layer", "")
+		return
+	}
+	lines := []string{fmt.Sprintf("%d key(s) emptied by a higher layer — the lower layer's value never takes effect", len(shadowed))}
+	for _, s := range shadowed {
+		lines = append(lines, fmt.Sprintf("    %s: empty in %s (%s) shadows %s=%s from %s (%s)",
+			s.Key, s.By, s.ByPath, s.Key, s.Value, s.Over, s.OverPath))
+	}
+	rr.add("config shadowing", warn, strings.Join(lines, "\n"),
+		"delete the empty line from the shadowing file, or give it a value — `KEY=` means \"unset it\", not \"leave it alone\"")
 }
 
 // checkBrowserVerify flags the config-debt case the pipeline downgrades to
