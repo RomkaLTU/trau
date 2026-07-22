@@ -9,6 +9,7 @@ function account(over: Partial<QAAccount> = {}): QAAccount {
     label: 'admin',
     username: 'qa-admin@example.test',
     description: 'covers the dashboard and user management flows',
+    source: 'manual',
     secret_set: true,
     ...over,
   }
@@ -32,6 +33,15 @@ describe('draftFor', () => {
       'covers the dashboard and user management flows',
     )
     expect(draft.secret).toBe('')
+  })
+
+  it('leaves provenance out of the draft, so an edit cannot change it', () => {
+    expect(draftFor(account({ source: 'agent' }))).toEqual({
+      label: 'admin',
+      username: 'qa-admin@example.test',
+      secret: '',
+      description: 'covers the dashboard and user management flows',
+    })
   })
 })
 

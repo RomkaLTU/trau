@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Pencil, Plus, Trash2, TriangleAlert, X } from 'lucide-react'
 
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/trau/confirm-dialog'
 import { TerminalCard } from '@/components/trau/terminal-card'
@@ -176,6 +177,14 @@ function AccountRow({
           <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
             {account.username}
           </span>
+        )}
+        {account.source === 'agent' && (
+          <Badge
+            variant="secondary"
+            className="shrink-0 font-mono text-[0.7rem] font-normal"
+          >
+            Captured by agent
+          </Badge>
         )}
         <span className="ml-auto flex shrink-0 items-center gap-2">
           <span
