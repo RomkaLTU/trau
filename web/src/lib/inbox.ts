@@ -233,19 +233,31 @@ export function inboxCounts(items: readonly InboxItem[]): InboxCounts {
   return { total: items.length, awaiting };
 }
 
-// selectedItem resolves the ?issue= selection: a queue row first, then a Done today
-// row — an applied session stays openable for reference — falling back to the queue
-// head when the id is in neither list.
-export function selectedItem(
+// resolveSelection pins the conversation on screen: an explicit ?issue= wins, then the
+// sticky id carried over from the last resolution — the queue re-sorts on every session
+// state change, so tracking its head would swap the chat mid-interview. Both lookups
+// span Done today as well, since an applied session stays openable for reference.
+export function resolveSelection(
   items: readonly InboxItem[],
   done: readonly InboxItem[],
   peek: string | null,
+  sticky: string | null,
 ): InboxItem | null {
   return (
-    items.find((item) => item.id === peek) ??
-    done.find((item) => item.id === peek) ??
+    itemById(items, done, peek) ??
+    itemById(items, done, sticky) ??
     items[0] ??
     null
+  );
+}
+
+function itemById(
+  items: readonly InboxItem[],
+  done: readonly InboxItem[],
+  id: string | null,
+): InboxItem | undefined {
+  return (
+    items.find((item) => item.id === id) ?? done.find((item) => item.id === id)
   );
 }
 

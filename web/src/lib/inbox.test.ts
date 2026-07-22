@@ -18,7 +18,7 @@ import {
   nextIssueId,
   prevIssueId,
   rowSession,
-  selectedItem,
+  resolveSelection,
   postDeleteTarget,
   skipTarget,
   summarisePregrill,
@@ -469,7 +469,7 @@ describe("postDeleteTarget", () => {
   });
 });
 
-describe("selectedItem", () => {
+describe("resolveSelection", () => {
   const items = buildInbox(
     [entry({ id: "COD-1" }), entry({ id: "COD-2" })],
     [],
@@ -487,28 +487,62 @@ describe("selectedItem", () => {
   );
 
   it("finds a queue row by id", () => {
-    expect(selectedItem(items, done, "COD-2")?.id).toBe("COD-2");
+    expect(resolveSelection(items, done, "COD-2", null)?.id).toBe("COD-2");
   });
 
   it("opens a Done today row for reference", () => {
-    const found = selectedItem(items, done, "COD-9");
+    const found = resolveSelection(items, done, "COD-9", null);
     expect(found?.attention).toBe("done");
     expect(found?.session?.id).toBe("9");
   });
 
   it("falls back to the queue head on a stray or absent id", () => {
-    expect(selectedItem(items, done, "COD-404")?.id).toBe("COD-1");
-    expect(selectedItem(items, done, null)?.id).toBe("COD-1");
+    expect(resolveSelection(items, done, "COD-404", null)?.id).toBe("COD-1");
+    expect(resolveSelection(items, done, null, null)?.id).toBe("COD-1");
   });
 
   it("is null when the queue is empty and nothing done matches", () => {
-    expect(selectedItem([], [], null)).toBeNull();
+    expect(resolveSelection([], [], null, null)).toBeNull();
   });
 
   it("prefers the queue row when a done issue re-enters the queue", () => {
     const backAgain = buildInbox([entry({ id: "COD-9" })], []);
-    const found = selectedItem(backAgain, done, "COD-9");
+    const found = resolveSelection(backAgain, done, "COD-9", null);
     expect(found?.attention).toBe("open");
+  });
+
+  it("pins the sticky item over the queue head", () => {
+    expect(resolveSelection(items, done, null, "COD-2")?.id).toBe("COD-2");
+  });
+
+  it("lets an explicit selection override the sticky item", () => {
+    expect(resolveSelection(items, done, "COD-1", "COD-2")?.id).toBe("COD-1");
+  });
+
+  it("resolves a sticky Done today row", () => {
+    const found = resolveSelection(items, done, null, "COD-9");
+    expect(found?.attention).toBe("done");
+  });
+
+  it("falls back to the head once the sticky item leaves both lists", () => {
+    expect(resolveSelection(items, done, null, "COD-404")?.id).toBe("COD-1");
+  });
+
+  it("keeps the open conversation when a state change re-sorts the queue", () => {
+    const before = buildInbox(
+      [entry({ id: "COD-1" }), entry({ id: "COD-2" })],
+      [session({ id: "1", issue_id: "COD-1", state: "waiting" })],
+    );
+    const after = buildInbox(
+      [entry({ id: "COD-1" }), entry({ id: "COD-2" })],
+      [
+        session({ id: "1", issue_id: "COD-1", state: "running" }),
+        session({ id: "2", issue_id: "COD-2", state: "waiting" }),
+      ],
+    );
+    expect(before[0].id).toBe("COD-1");
+    expect(after[0].id).toBe("COD-2");
+    expect(resolveSelection(after, [], null, "COD-1")?.id).toBe("COD-1");
   });
 });
 
