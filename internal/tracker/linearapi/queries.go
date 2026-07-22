@@ -357,6 +357,35 @@ mutation IssueUpdateDescription($id: String!, $description: String!) {
 }
 `
 
+	// issueAssignMutation sets the issue's assignee. assigneeId is nullable on
+	// purpose: a null clears it back to Unassigned. The same String! typing note
+	// as issueUpdateMutation applies.
+	issueAssignMutation = `
+mutation IssueAssign($id: String!, $assigneeId: String) {
+  issueUpdate(id: $id, input: { assigneeId: $assigneeId }) {
+    success
+    issue {
+      id
+      identifier
+    }
+  }
+}
+`
+
+	// assignableUsersQuery lists the workspace's active members. name is matched
+	// with containsIgnoreCase, and an empty name is contained in every string, so
+	// an unfiltered lookup needs no second query shape.
+	assignableUsersQuery = `
+query AssignableUsers($name: String!, $first: Int!) {
+  users(first: $first, filter: { active: { eq: true }, name: { containsIgnoreCase: $name } }) {
+    nodes {
+      id
+      name
+    }
+  }
+}
+`
+
 	// commentCreateMutation adds a comment to an issue.
 	commentCreateMutation = `
 mutation CommentCreate($issueId: String!, $body: String!) {

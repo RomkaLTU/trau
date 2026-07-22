@@ -145,6 +145,44 @@ func TestUpsertLeavesAbsentAssigneeNull(t *testing.T) {
 	}
 }
 
+func TestUpdateSyncedMirrorsAssignee(t *testing.T) {
+	s := testIssues(t)
+	assigned := sampleIssue()
+	assigned.AssigneeID = "u-1"
+	assigned.AssigneeName = "Ada"
+	if _, _, err := s.Upsert("acme", "linear", []Issue{assigned}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	if _, found, err := s.UpdateSynced("acme", "COD-1", SyncedPatch{StatusGroup: "started"}); err != nil || !found {
+		t.Fatalf("patch without assignee fields: found=%v err=%v", found, err)
+	}
+	if id, name := rawAssignee(t, s, "acme", "COD-1"); id.String != "u-1" || name.String != "Ada" {
+		t.Fatalf("assignee = %q/%q, want u-1/Ada left unchanged", id.String, name.String)
+	}
+
+	bob, bobName := "u-2", "Bob"
+	iss, found, err := s.UpdateSynced("acme", "COD-1", SyncedPatch{AssigneeID: &bob, AssigneeName: &bobName})
+	if err != nil || !found {
+		t.Fatalf("assign: found=%v err=%v", found, err)
+	}
+	if iss.AssigneeID != "u-2" || iss.AssigneeName != "Bob" {
+		t.Fatalf("assignee = %q/%q, want u-2/Bob", iss.AssigneeID, iss.AssigneeName)
+	}
+
+	cleared := ""
+	iss, found, err = s.UpdateSynced("acme", "COD-1", SyncedPatch{AssigneeID: &cleared, AssigneeName: &cleared})
+	if err != nil || !found {
+		t.Fatalf("unassign: found=%v err=%v", found, err)
+	}
+	if iss.AssigneeID != "" || iss.AssigneeName != "" {
+		t.Fatalf("assignee = %q/%q, want it cleared", iss.AssigneeID, iss.AssigneeName)
+	}
+	if id, name := rawAssignee(t, s, "acme", "COD-1"); id.Valid || name.Valid {
+		t.Fatalf("assignee columns = %v/%v, want NULL so the facet counts it as Unassigned", id, name)
+	}
+}
+
 func TestSaveIdentityRoundTripPreservesBookkeeping(t *testing.T) {
 	s := testIssues(t)
 	if err := s.SaveBinding("acme", SyncBinding{TeamID: "t-1", ProjectID: "p-1"}); err != nil {

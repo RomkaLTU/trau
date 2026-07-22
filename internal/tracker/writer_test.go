@@ -259,6 +259,14 @@ func fakeJiraWriterEpicType(t *testing.T, epicType string) (*jiraWriter, *jiraCa
 				`{"id":"10001","name":"Task","subtask":false,"hierarchyLevel":0},` +
 				`{"id":"10004","name":"Bug","subtask":false,"hierarchyLevel":0},` +
 				`{"id":"10009","name":"Feature","subtask":false,"hierarchyLevel":1}]}`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/user/assignable/search"):
+			rec.userQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`[{"accountId":"acc-1","displayName":"Ada"}]`))
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/assignee"):
+			rec.assigneePath = r.URL.Path
+			body, _ := io.ReadAll(r.Body)
+			rec.assigneeBody = string(body)
+			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comment"):
 			rec.commentPath = r.URL.Path
 			body, _ := io.ReadAll(r.Body)
@@ -298,10 +306,13 @@ type jiraCreateBody struct {
 }
 
 type jiraCapture struct {
-	creates     []jiraCreateBody
-	createRaw   string
-	commentPath string
-	commentBody string
+	creates      []jiraCreateBody
+	createRaw    string
+	commentPath  string
+	commentBody  string
+	assigneePath string
+	assigneeBody string
+	userQuery    string
 }
 
 func TestJiraWriterCreateIssue(t *testing.T) {
@@ -423,6 +434,32 @@ func TestJiraWriterAddComment(t *testing.T) {
 	}
 }
 
+// Jira has no site-wide notion of assignability, so the lookup is project-scoped.
+func TestJiraWriterAssignment(t *testing.T) {
+	w, rec := fakeJiraWriter(t)
+
+	if err := w.AssignIssue(context.Background(), "PROJ-7", "acc-1"); err != nil {
+		t.Fatalf("AssignIssue error: %v", err)
+	}
+	if rec.assigneePath != "/rest/api/3/issue/PROJ-7/assignee" {
+		t.Errorf("assignee path = %q, want the v3 assignee endpoint for PROJ-7", rec.assigneePath)
+	}
+	if rec.assigneeBody != `{"accountId":"acc-1"}` {
+		t.Errorf("assignee body = %s, want the accountId", rec.assigneeBody)
+	}
+
+	users, err := w.AssignableUsers(context.Background(), "ad")
+	if err != nil {
+		t.Fatalf("AssignableUsers error: %v", err)
+	}
+	if len(users) != 1 || users[0] != (AssignableUser{ID: "acc-1", Name: "Ada"}) {
+		t.Fatalf("users = %+v, want the accountId/displayName mapping", users)
+	}
+	if !strings.Contains(rec.userQuery, "project=PROJ") {
+		t.Errorf("user query = %q, want it scoped to the configured project", rec.userQuery)
+	}
+}
+
 func TestJiraWriterPublishDocument(t *testing.T) {
 	w, rec := fakeJiraWriter(t)
 
@@ -464,8 +501,8 @@ func TestNewWriterRequiresCredentials(t *testing.T) {
 	if _, err := NewWriter("jira", Config{BaseURL: "https://x.atlassian.net", Email: "e@x.com"}); !errors.Is(err, ErrWriterUnavailable) {
 		t.Errorf("jira without a full credential set: err = %v, want ErrWriterUnavailable", err)
 	}
-	if _, err := NewWriter("github", Config{}); err == nil {
-		t.Error("github writer should be unsupported")
+	if _, err := NewWriter("github", Config{}); !errors.Is(err, ErrUnsupported) {
+		t.Errorf("github writer: err = %v, want ErrUnsupported", err)
 	}
 	if _, err := NewWriter("nope", Config{}); err == nil {
 		t.Error("unknown provider should error")
