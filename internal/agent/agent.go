@@ -79,9 +79,9 @@ type Runner interface {
 // configured to run under, before the call starts — so callers can name the
 // agent at the moment a phase begins instead of only on the closing stat line.
 // The concrete backends and the Router implement it. The model returned is the
-// *configured* one, which may be "" when the CLI default is used; the
-// actually-recovered (and possibly more specific) model still rides the
-// agent_call event afterward.
+// one the call will be launched with, which may be "" for a backend that leaves
+// the choice to its CLI; the actually-recovered (and possibly more specific)
+// model still rides the agent_call event afterward.
 type PhaseRoute interface {
 	Route(label string) (provider, model, effort string)
 }
@@ -130,6 +130,29 @@ func (s *ptySession) Kill() error {
 	return s.cmd.Process.Kill()
 }
 
+// ClaudeDefaultModel is the model a claude child runs under when no config layer
+// supplies one. Omitting --model hands the choice to the user's own Claude Code
+// settings, so an unset — or present-but-empty, which masks the layer below it —
+// CLAUDE_MODEL would silently route every phase through whatever they last picked
+// interactively.
+const ClaudeDefaultModel = "opus"
+
+// ModelFallbackNotice announces the built-in-model fallback once for the run that
+// shares it. A run builds one claude backend per diverging phase route, so the
+// notice — not the backend — is what keeps the warning to one per run. A nil
+// notice announces nothing; the fallback still applies.
+type ModelFallbackNotice struct{ announced atomic.Bool }
+
+func (n *ModelFallbackNotice) announce(log *event.Log, phase, model string) {
+	if n == nil || log == nil || !n.announced.CompareAndSwap(false, true) {
+		return
+	}
+	log.Emit(event.KindModelFallback, phase, "no Claude model configured — running on the built-in default "+model, map[string]any{
+		"provider": "claude",
+		"model":    model,
+	})
+}
+
 // ClaudeInteractive runs Claude in a real terminal session and uses a result
 // file as the machine protocol. It deliberately does not pass -p/--print or
 // --output-format; stdout is terminal UI only, never parsed for correctness.
@@ -152,6 +175,7 @@ type ClaudeInteractive struct {
 	Log                *event.Log
 	Tokens             TokenSink
 	Transcripts        TranscriptSink
+	ModelFallback      *ModelFallbackNotice
 	OnSessionStart     func(sessionID, label string)
 	now                func() time.Time
 	start              terminalStarter
@@ -159,16 +183,21 @@ type ClaudeInteractive struct {
 
 func (c *ClaudeInteractive) Provider() string { return "claude" }
 
-// Route reports the configured provider/model/effort for pre-call display.
+// Route reports the resolved provider/model/effort for pre-call display.
 func (c *ClaudeInteractive) Route(string) (string, string, string) {
-	return "claude", c.Model, c.Effort
+	return "claude", c.model(), c.Effort
+}
+
+func (c *ClaudeInteractive) model() string {
+	if c.Model == "" {
+		return ClaudeDefaultModel
+	}
+	return c.Model
 }
 
 func (c *ClaudeInteractive) args(prompt, sessionID, label string) []string {
 	args := append([]string{}, c.Flags...)
-	if c.Model != "" {
-		args = append(args, "--model", c.Model)
-	}
+	args = append(args, "--model", c.model())
 	if c.Effort != "" {
 		args = append(args, "--effort", c.Effort)
 	}
@@ -188,6 +217,9 @@ func (c *ClaudeInteractive) args(prompt, sessionID, label string) []string {
 }
 
 func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Result, error) {
+	if c.Model == "" {
+		c.ModelFallback.announce(c.Log, label, ClaudeDefaultModel)
+	}
 	if c.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.Timeout)
@@ -369,7 +401,7 @@ func (c *ClaudeInteractive) enrich(res Result, sessionID string) Result {
 	res.Skills = stats.Skills
 	res.Model = stats.Model
 	if res.Model == "" {
-		res.Model = c.Model
+		res.Model = c.model()
 	}
 	return res
 }
@@ -380,7 +412,7 @@ func (c *ClaudeInteractive) emit(label string, res Result, dur time.Duration, ru
 	}
 	model := res.Model
 	if model == "" {
-		model = c.Model
+		model = c.model()
 	}
 	fields := map[string]any{
 		"provider":       "claude",
@@ -429,7 +461,7 @@ func (c *ClaudeInteractive) record(label string, res Result, dur time.Duration) 
 
 	model := res.Model
 	if model == "" {
-		model = c.Model
+		model = c.model()
 	}
 	cost := tokens.EstimateCost(model, res.Usage.Input, res.Usage.Output, res.Usage.CacheRead, res.Usage.CacheCreation)
 	c.Tokens.Append(label, tokens.Record{
