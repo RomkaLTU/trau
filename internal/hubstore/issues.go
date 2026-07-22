@@ -110,7 +110,9 @@ type SyncResult struct {
 // so re-running a sync updates in place rather than duplicating. Issues missing
 // from a later pull are left intact; a previously tombstoned issue that a pull
 // returns again is revived (its deleted_at cleared), so an issue moved back into
-// the Project un-tombstones on the next sync. An identifier already held by an
+// the Project un-tombstones on the next sync. An identifier the repo has purged
+// is skipped outright: that tombstone is permanent, however long the tracker
+// keeps returning the ticket. An identifier already held by an
 // internal issue is never overwritten: inbound
 // sync only ever writes tracker content, so the conflict update skips a
 // source=internal row (ADR 0007). It returns the number of issues and comments
@@ -120,8 +122,15 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 	if err != nil {
 		return 0, 0, err
 	}
+	purged, err := tombstonedIdentifiers(tx, repo)
+	if err != nil {
+		return 0, 0, errors.Join(err, tx.Rollback())
+	}
 	syncedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, iss := range issues {
+		if _, ok := purged[iss.Identifier]; ok {
+			continue
+		}
 		labels, err := json.Marshal(labelList(iss.Labels))
 		if err != nil {
 			return 0, 0, errors.Join(err, tx.Rollback())
