@@ -227,6 +227,19 @@ func (s *Issues) Children(repo, parent string) (issues []Issue, err error) {
 	return issues, err
 }
 
+// ChildCount reports how many children an epic has — the same selection Children
+// makes, and the family Purge takes down with the epic, archived children
+// included. It is what a delete confirm has to name, not the board's own count,
+// which leaves archived children out.
+func (s *Issues) ChildCount(repo, parent string) (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT count(*) FROM issues WHERE repo = ? AND parent = ?`,
+		repo, parent,
+	).Scan(&n)
+	return n, err
+}
+
 // BacklogFilter narrows a backlog listing. Groups matches the workflow state
 // groups to union (backlog | unstarted | started | done | canceled | unknown);
 // Label matches an issue carrying that label name, case-insensitively; Source is

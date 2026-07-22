@@ -24,24 +24,28 @@ type CommentRequest struct {
 // uses to warn about an unusual status (already done, in progress); Description and
 // Comments carry the content prompt-building injects for a synced ticket.
 type IssueResponse struct {
-	Repo        string         `json:"repo"`
-	Provider    string         `json:"provider"`
-	ID          string         `json:"id"`
-	Title       string         `json:"title"`
-	Description string         `json:"description"`
-	Status      string         `json:"status"`
-	Group       string         `json:"group"`
-	Labels      []string       `json:"labels"`
-	Assignee    *AssigneeInfo  `json:"assignee"`
-	Ready       bool           `json:"ready"`
-	Parent      string         `json:"parent,omitempty"`
-	Source      string         `json:"source,omitempty"`
-	URL         string         `json:"url,omitempty"`
-	CreatedAt   string         `json:"created_at,omitempty"`
-	HasChildren bool           `json:"has_children"`
-	Blockers    []string       `json:"blockers,omitempty"`
-	Blocked     bool           `json:"blocked,omitempty"`
-	Comments    []IssueComment `json:"comments"`
+	Repo        string        `json:"repo"`
+	Provider    string        `json:"provider"`
+	ID          string        `json:"id"`
+	Title       string        `json:"title"`
+	Description string        `json:"description"`
+	Status      string        `json:"status"`
+	Group       string        `json:"group"`
+	Labels      []string      `json:"labels"`
+	Assignee    *AssigneeInfo `json:"assignee"`
+	Ready       bool          `json:"ready"`
+	Parent      string        `json:"parent,omitempty"`
+	Source      string        `json:"source,omitempty"`
+	URL         string        `json:"url,omitempty"`
+	CreatedAt   string        `json:"created_at,omitempty"`
+	HasChildren bool          `json:"has_children"`
+	// Children counts the sub-issues a purge of this ticket would take with it —
+	// every child row, archived ones included — so a delete confirm can name the
+	// whole blast radius. Zero on a leaf.
+	Children int            `json:"children"`
+	Blockers []string       `json:"blockers,omitempty"`
+	Blocked  bool           `json:"blocked,omitempty"`
+	Comments []IssueComment `json:"comments"`
 	// Project is the ticket's own tracker project; InProject reports whether it
 	// matches the repo's configured project, so a cross-project ticket can be
 	// shown but refused rather than launched into the wrong repo.
@@ -245,6 +249,7 @@ func (s *Server) storeIssueResponse(repo registry.Repo, iss hubstore.Issue) Issu
 		URL:         iss.URL,
 		CreatedAt:   iss.CreatedAt,
 		HasChildren: iss.HasChildren,
+		Children:    s.childCount(repo.Root, iss),
 		Blockers:    iss.Blockers,
 		Blocked:     iss.Blocked,
 		Comments:    toIssueComments(iss.Comments),
@@ -252,6 +257,20 @@ func (s *Server) storeIssueResponse(repo registry.Repo, iss hubstore.Issue) Issu
 		Deleted:     iss.DeletedAt != "",
 		Archived:    iss.ArchivedAt != "",
 	}
+}
+
+// childCount reports how many children a purge of iss would remove, following the
+// same has_children short-circuit purgeFamily takes, so the number a delete
+// confirm shows is the number the purge deletes.
+func (s *Server) childCount(root string, iss hubstore.Issue) int {
+	if !iss.HasChildren {
+		return 0
+	}
+	n, err := s.stores.Issues().ChildCount(root, iss.Identifier)
+	if err != nil {
+		logger.Verbosef("issue %s: count children: %v", iss.Identifier, err)
+	}
+	return n
 }
 
 // repoMeID returns the repo binding's resolved Me identity id, used to flag an

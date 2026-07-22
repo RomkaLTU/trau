@@ -21,6 +21,7 @@ function issue(over: Partial<Issue> = {}): Issue {
     labels: [],
     ready: true,
     has_children: false,
+    children: 0,
     comments: [],
     in_project: true,
     ...over,
