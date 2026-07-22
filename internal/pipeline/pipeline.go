@@ -741,16 +741,34 @@ func (p *Pipeline) fault(ctx context.Context, id string, err error) error {
 	return &FaultError{ID: id, Phase: phase, Err: err}
 }
 
-// finalizeFault mirrors finalizeFailed's preserve-and-clean — commit the WIP to
-// the feature branch, push it best-effort, then return the working tree to a clean
-// base — but it does NOT quarantine the ticket or file a bug, and it leaves PHASE
-// untouched so the ticket stays resumable.
-func (p *Pipeline) finalizeFault(ctx context.Context, id string) {
+// Both budgets stay under the hub's SIGKILL escalation grace, so a stopped run's
+// WIP commit lands before the escalation. The push gets its own sub-deadline so an
+// unreachable remote still leaves time for the checkout and clean that follow.
+const (
+	cleanupBudget     = 60 * time.Second
+	cleanupPushBudget = 20 * time.Second
+)
+
+// detachedCleanup derives the context every stop-time cleanup runs on. A stop
+// (web Stop's SIGTERM, Ctrl-C) cancels the run's context, and the cleanup is
+// exactly the work that must still happen afterwards, so it is detached from that
+// cancellation and bounded by its own deadline instead.
+func detachedCleanup(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), cleanupBudget)
+}
+
+// preserveAndClean saves whatever an aborted attempt left on the feature branch —
+// commit it under msg, push it best-effort — and returns the working tree to a
+// clean base.
+func (p *Pipeline) preserveAndClean(ctx context.Context, msg string) {
+	ctx, cancel := detachedCleanup(ctx)
+	defer cancel()
+
 	branch, _ := p.Git.CurrentBranch(ctx)
 	if branch != p.Base {
 		_ = p.Git.AddAll(ctx)
-		_ = p.Git.Commit(ctx, fmt.Sprintf("wip(%s): incomplete attempt — rerun trau to resume", id), true)
-		if err := p.Git.Push(ctx, p.Remote, "HEAD", true); err == nil {
+		_ = p.Git.Commit(ctx, msg, true)
+		if p.pushPreserved(ctx) {
 			p.logf("  saved attempt to %s/%s", p.Remote, branch)
 		} else {
 			p.logf("  saved attempt to local branch %s", branch)
@@ -758,6 +776,20 @@ func (p *Pipeline) finalizeFault(ctx context.Context, id string) {
 	}
 	_ = p.Git.Checkout(ctx, p.Base, true)
 	_ = p.Git.Clean(ctx)
+}
+
+func (p *Pipeline) pushPreserved(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, cleanupPushBudget)
+	defer cancel()
+	return p.Git.Push(ctx, p.Remote, "HEAD", true) == nil
+}
+
+// finalizeFault mirrors finalizeFailed's preserve-and-clean — commit the WIP to
+// the feature branch, push it best-effort, then return the working tree to a clean
+// base — but it does NOT quarantine the ticket or file a bug, and it leaves PHASE
+// untouched so the ticket stays resumable.
+func (p *Pipeline) finalizeFault(ctx context.Context, id string) {
+	p.preserveAndClean(ctx, fmt.Sprintf("wip(%s): incomplete attempt — rerun trau to resume", id))
 }
 
 // AsFault extracts the *FaultError from err (traversing wraps), or nil when err
@@ -928,8 +960,13 @@ func (p *Pipeline) Reset(ctx context.Context, id string) error {
 }
 
 // resetLocal is Reset without the tracker step — used when the tracker already
-// reflects the desired status (a user restore) and must be left untouched.
+// reflects the desired status (a user restore) and must be left untouched. It is
+// also reached from the refusal path, where the run's context may already be
+// cancelled, so it runs detached rather than half-undoing the scaffolding.
 func (p *Pipeline) resetLocal(ctx context.Context, id string) {
+	ctx, cancel := detachedCleanup(ctx)
+	defer cancel()
+
 	branch := p.State.Get(id, "BRANCH")
 	if branch == "" {
 		branch, _ = p.Git.FindFeatureBranch(ctx, id)
@@ -1578,18 +1615,7 @@ func (p *Pipeline) giveUp(ctx context.Context, id, reason string) error {
 }
 
 func (p *Pipeline) finalizeFailed(ctx context.Context, id string) {
-	branch, _ := p.Git.CurrentBranch(ctx)
-	if branch != p.Base {
-		_ = p.Git.AddAll(ctx)
-		_ = p.Git.Commit(ctx, fmt.Sprintf("wip(%s): quarantined attempt — needs human", id), true)
-		if err := p.Git.Push(ctx, p.Remote, "HEAD", true); err == nil {
-			p.logf("  saved attempt to %s/%s", p.Remote, branch)
-		} else {
-			p.logf("  saved attempt to local branch %s", branch)
-		}
-	}
-	_ = p.Git.Checkout(ctx, p.Base, true)
-	_ = p.Git.Clean(ctx)
+	p.preserveAndClean(ctx, fmt.Sprintf("wip(%s): quarantined attempt — needs human", id))
 }
 
 // CommitAndPR ships the verified slice: the commit phase stages and commits ONLY
@@ -3556,10 +3582,19 @@ func (g ExecGit) bin() string {
 	return "git"
 }
 
+// gitWaitDelay bounds Wait once the context has killed git. A networked git forks
+// a transport (ssh, git-remote-https) that the kill does not reach and that keeps
+// the output pipe open, so without this a context deadline stops bounding the
+// call — it only kills git and then blocks on the pipe until the transport gives
+// up on its own.
+const gitWaitDelay = 2 * time.Second
+
 func (g ExecGit) run(ctx context.Context, args ...string) error {
 	full := append([]string{"-C", g.Repo}, args...)
 	logger.Debugf("git %s", strings.Join(full, " "))
-	if out, err := exec.CommandContext(ctx, g.bin(), full...).CombinedOutput(); err != nil {
+	cmd := exec.CommandContext(ctx, g.bin(), full...)
+	cmd.WaitDelay = gitWaitDelay
+	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
