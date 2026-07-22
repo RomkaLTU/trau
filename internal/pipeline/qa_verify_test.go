@@ -12,17 +12,55 @@ import (
 	"github.com/RomkaLTU/trau/internal/prompts"
 )
 
-func TestQARosterNoteEmptyWhenNothingToInject(t *testing.T) {
-	if got := qaRosterNote(nil, ""); got != "" {
-		t.Errorf("qaRosterNote(nil, \"\") = %q, want empty", got)
+// TestQARosterNoteEmptyRosterStillInstructs is the melga case: a repo with
+// nothing stored is the one that has to discover its own credentials, so the
+// fragment must still reach the verifier with the discovery and capture orders.
+func TestQARosterNoteEmptyRosterStillInstructs(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		accounts []hubclient.QAAccount
+		notes    string
+	}{
+		{"nothing stored", nil, ""},
+		{"blank label and notes", []hubclient.QAAccount{{Label: "  "}}, "   "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			note := qaRosterNote("COD-1", tc.accounts, tc.notes)
+			if strings.Contains(note, "Available accounts") {
+				t.Errorf("empty roster listed accounts: %s", note)
+			}
+			for _, want := range []string{"search the repo under test", qaCapturePath("COD-1")} {
+				if !strings.Contains(note, want) {
+					t.Errorf("empty-roster note missing %q: %s", want, note)
+				}
+			}
+		})
 	}
-	if got := qaRosterNote([]hubclient.QAAccount{{Label: "  "}}, "   "); got != "" {
-		t.Errorf("qaRosterNote(blank label, blank notes) = %q, want empty", got)
+}
+
+// TestQARosterNoteDiscoveryIsRepoScoped pins the boundary the discovery order
+// draws: the repo under test is the only permitted source, and the capture file
+// the only permitted destination.
+func TestQARosterNoteDiscoveryIsRepoScoped(t *testing.T) {
+	note := qaRosterNote("COD-1", nil, "")
+
+	for _, want := range []string{
+		"seed data",
+		"fixtures",
+		"environment-variable examples",
+		"never reach for credentials in your own configuration files",
+		"ONLY place a discovered credential value may be written",
+		`{"accounts": [{"label": "...", "username": "...", "secret": "...", "description": "..."}]}`,
+		"never the username",
+	} {
+		if !strings.Contains(note, want) {
+			t.Errorf("discovery note missing %q: %s", want, note)
+		}
 	}
 }
 
 func TestQARosterNoteCarriesCredentialsAndNoCopyOrder(t *testing.T) {
-	note := qaRosterNote([]hubclient.QAAccount{
+	note := qaRosterNote("COD-1", []hubclient.QAAccount{
 		{Label: "admin", Username: "admin@example.test", Secret: "s3cret", Description: "billing flows"},
 	}, "login at /auth")
 
@@ -39,7 +77,7 @@ func TestQARosterNoteCarriesCredentialsAndNoCopyOrder(t *testing.T) {
 }
 
 func TestQARosterNoteNotesOnly(t *testing.T) {
-	note := qaRosterNote(nil, "create a disposable admin via the seeder; delete it after")
+	note := qaRosterNote("COD-1", nil, "create a disposable admin via the seeder; delete it after")
 	if !strings.Contains(note, "create a disposable admin") {
 		t.Errorf("notes-only roster note dropped the notes: %s", note)
 	}
@@ -54,6 +92,10 @@ func TestQAVerifyNoteInjectsOnlyForBrowserUISlice(t *testing.T) {
 		Notes:    "notes",
 	}
 	fetch := func(context.Context) (hubclient.QARoster, error) { return roster, nil }
+	empty := func(context.Context) (hubclient.QARoster, error) { return hubclient.QARoster{}, nil }
+	unreachable := func(context.Context) (hubclient.QARoster, error) {
+		return hubclient.QARoster{}, errors.New("hub down")
+	}
 
 	cases := []struct {
 		name    string
@@ -66,6 +108,8 @@ func TestQAVerifyNoteInjectsOnlyForBrowserUISlice(t *testing.T) {
 		{"backend slice", backendFiles, "drive the app", fetch, false},
 		{"ui slice without a browser note", uiFiles, "", fetch, false},
 		{"ui slice with no fetcher", uiFiles, "drive the app", nil, false},
+		{"ui slice with an empty roster", uiFiles, "drive the app", empty, true},
+		{"ui slice with an unreachable roster", uiFiles, "drive the app", unreachable, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -204,7 +248,7 @@ func TestQAVerifyNoteSilentWhenGateInactive(t *testing.T) {
 // the verifier grades against can never carry a credential.
 func TestQACredentialsConfinedToVerifyPrompt(t *testing.T) {
 	const secret = "top-secret-pw"
-	qaNote := qaRosterNote([]hubclient.QAAccount{{Label: "admin", Username: "u", Secret: secret}}, "")
+	qaNote := qaRosterNote("COD-1", []hubclient.QAAccount{{Label: "admin", Username: "u", Secret: secret}}, "")
 
 	verify := verifyTail(prompts.Renderer{}, "COD-1", handoffPath("COD-1"), verifyPath("COD-1"), "drive the app", qaNote, "", "", "", "", "")
 	if !strings.Contains(verify, secret) {

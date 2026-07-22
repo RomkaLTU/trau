@@ -422,6 +422,12 @@ type Pipeline struct {
 	// verify proceeds without stored credentials. Nil disables QA injection.
 	FetchQAAccounts func(ctx context.Context) (hubclient.QARoster, error)
 
+	// SaveQAAccount stores on the hub a QA credential the verifier discovered
+	// inside the repo under test, so the next run's roster is prefilled. A
+	// failure logs one warning and the run proceeds — capture never blocks a
+	// run. Nil disables capture.
+	SaveQAAccount func(ctx context.Context, in hubclient.QAAccountInput) error
+
 	// OnPhase, when set, is called each time a ticket enters a checkpoint phase,
 	// carrying the ticket and the phase just written (state.Building, …). The
 	// composition root wires it to the instance registry so the hub sees a
@@ -459,6 +465,15 @@ type Pipeline struct {
 	// verify call — the inputs to the post-verify no-skills warning.
 	verifyProvider string
 	verifySkills   []string
+
+	// qaRoster is the roster the verify prompt was built from, held so the
+	// capture ingest can tell a newly discovered credential from one the
+	// verifier was handed. Each captured account joins it, so a later attempt
+	// of the same verify offering that credential again is a duplicate.
+	// qaCaptured counts what the current verify has already stored, which is
+	// what qaCaptureMax bounds.
+	qaRoster   []hubclient.QAAccount
+	qaCaptured int
 
 	// prompts is the ticket run's prompt renderer: the override snapshot
 	// fetched at run start layered over the built-in defaults. Edits made
@@ -2901,13 +2916,14 @@ const (
 )
 
 // qaVerifyNote fetches the repo's QA credentials and renders the verify-prompt
-// roster, but only for a slice where browser verify is actually active: there is
-// a browser-driving note (a configured APP_URL under auto/always) and the slice's
-// own diff touches a UI surface. A backend slice, a disabled browser gate, or a
-// missing APP_URL injects nothing, and a fetch failure logs one warning and
-// proceeds without credentials — QA injection never blocks verify. The note is
-// built once per verify and threaded through every attempt, so this is also
-// where the outcome is reported.
+// QA fragment, but only for a slice where browser verify is actually active:
+// there is a browser-driving note (a configured APP_URL under auto/always) and
+// the slice's own diff touches a UI surface. A backend slice, a disabled browser
+// gate, or a missing APP_URL injects nothing. Once the gate is active the
+// fragment always goes out, even with an empty or unreachable roster — the
+// discovery and capture instructions are exactly what an unprovisioned repo
+// needs. The note is built once per verify and threaded through every attempt,
+// so this is also where the outcome is reported.
 func (p *Pipeline) qaVerifyNote(ctx context.Context, id, browserNote string) string {
 	if p.FetchQAAccounts == nil || browserNote == "" || !p.sliceIsUI(ctx) {
 		return ""
@@ -2915,9 +2931,11 @@ func (p *Pipeline) qaVerifyNote(ctx context.Context, id, browserNote string) str
 	roster, err := p.FetchQAAccounts(ctx)
 	p.reportQARoster(id, roster, err)
 	if err != nil {
-		return ""
+		roster = hubclient.QARoster{}
 	}
-	return qaRosterNote(roster.Accounts, roster.Notes)
+	p.qaRoster = roster.Accounts
+	p.qaCaptured = 0
+	return qaRosterNote(id, roster.Accounts, roster.Notes)
 }
 
 // reportQARoster records what the roster contributed to an active verify gate —
@@ -2964,18 +2982,17 @@ func usableQAAccounts(accounts []hubclient.QAAccount) []hubclient.QAAccount {
 
 // qaRosterNote renders the QA credentials fragment appended to a browser-verify
 // prompt: the accounts the verifier may sign in with, each by label with its
-// username, secret, and coverage, plus the free-text notes and a standing order
-// never to copy any credential into a durable artifact. It is empty when there is
-// nothing to inject, so an absent roster leaves the prompt untouched. Kept
-// framework-agnostic — it names no stack and no login mechanism.
-func qaRosterNote(accounts []hubclient.QAAccount, notes string) string {
+// username, secret, and coverage, the free-text notes, a standing order never to
+// copy any credential into a durable artifact, and — for the login wall no stored
+// account opens — how to discover a working credential inside the repo under test
+// and where to hand it back. Kept framework-agnostic — it names no stack and no
+// login mechanism.
+func qaRosterNote(id string, accounts []hubclient.QAAccount, notes string) string {
 	notes = strings.TrimSpace(notes)
 	usable := usableQAAccounts(accounts)
-	if len(usable) == 0 && notes == "" {
-		return ""
-	}
+
 	var b strings.Builder
-	b.WriteString(" QA test credentials for the app under test — treat every value below as a write-only secret: NEVER copy a username, secret, or any of it into the QA brief, the verdict JSON, the PR, a comment, or the tracker; refer to an account only by its label.")
+	b.WriteString(" QA test credentials for the app under test — treat every credential value as a write-only secret: NEVER copy a username, secret, or any of it into the QA brief, the verdict JSON, the PR, a comment, or the tracker; refer to an account only by its label.")
 	if len(usable) > 0 {
 		b.WriteString(" Available accounts:")
 		for _, a := range usable {
@@ -2990,6 +3007,8 @@ func qaRosterNote(accounts []hubclient.QAAccount, notes string) string {
 	if notes != "" {
 		b.WriteString(" QA notes: " + notes)
 	}
+	b.WriteString(" If a login wall blocks verification and no account above signs you in (including when none is listed), search the repo under test for credentials that do work — seed data, fixtures, test documentation, environment-variable examples — and sign in with those. Only the repo under test is a permitted source: never reach for credentials in your own configuration files, the machine environment, or another project.")
+	b.WriteString(" Every repo-discovered credential that successfully signed in and is not already listed above must be written to " + qaCapturePath(id) + ` as {"accounts": [{"label": "...", "username": "...", "secret": "...", "description": "..."}]}, the description saying what the account covers and where in the repo you found it, and the label a short human-readable name for the account — never the username, which is itself a credential value. That file is the ONLY place a discovered credential value may be written; the never-copy order above applies everywhere else.`)
 	return b.String()
 }
 
@@ -3243,7 +3262,15 @@ type panelResult struct {
 // so the repair prompt and FileBug read the authoritative result. A non-nil error
 // is fatal and propagated (a provider pause or a budget give-up) — it stops the
 // phase rather than counting as a verify failure.
+//
+// A non-empty qaNote means the QA gate is active, so the attempt is bracketed by
+// the credential-capture side channel — deferred, to cover the panel path, the
+// browser re-verify, and a fatal return alike.
 func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) (verdict, error) {
+	if qaNote != "" {
+		_ = os.Remove(qaCapturePath(id))
+		defer p.ingestQACapture(ctx, id)
+	}
 	if len(p.VerifyPanel) > 0 {
 		return p.runPanel(ctx, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
 	}

@@ -218,6 +218,41 @@ func TestOpenAddsPromptOverridesToExisting(t *testing.T) {
 	}
 }
 
+// TestOpenBackfillsQAAccountSource covers the upgrade path for the provenance
+// column: a QA account stored before the migration must come back as manual, not
+// as an empty string the settings surface would have to interpret.
+func TestOpenBackfillsQAAccountSource(t *testing.T) {
+	home := t.TempDir()
+
+	seed, err := sql.Open("sqlite", Path(home))
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	seedVersion(t, seed, 33)
+	if _, err := seed.Exec(
+		`INSERT INTO qa_accounts(repo, label, username, secret) VALUES('/repos/acme', 'admin', 'admin@example.test', 'pw')`,
+	); err != nil {
+		t.Fatalf("seed qa account: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	db, err := Open(home)
+	if err != nil {
+		t.Fatalf("Open over a pre-source database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	var source string
+	if err := db.SQL().QueryRow(`SELECT source FROM qa_accounts WHERE label = 'admin'`).Scan(&source); err != nil {
+		t.Fatalf("read migrated source: %v", err)
+	}
+	if source != "manual" {
+		t.Errorf("pre-existing account source = %q, want %q", source, "manual")
+	}
+}
+
 func TestOpenCorrupt(t *testing.T) {
 	home := t.TempDir()
 	garbage := []byte(strings.Repeat("not a sqlite database ", 64))

@@ -177,6 +177,12 @@ function activityRow(ev: FeedEvent): ActivityRow {
         glyphClass: "text-info",
         text: ev.msg || "QA roster checked for verify",
       };
+    case "qa_captured":
+      return {
+        glyph: "✓",
+        glyphClass: "text-teal",
+        text: ev.msg || "QA account captured",
+      };
     case "model_fallback":
       return {
         glyph: "⚠",

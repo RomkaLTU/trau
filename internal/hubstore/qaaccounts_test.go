@@ -101,6 +101,54 @@ func TestQAAccountListScopedAndOrdered(t *testing.T) {
 	}
 }
 
+// TestQAAccountSource pins the provenance rules: a blank input is a manual
+// account, an agent-captured one keeps its source through reads and lists, and an
+// edit refreshes the content without rewriting where the account came from.
+func TestQAAccountSource(t *testing.T) {
+	q := testQAAccounts(t)
+	const repo = "/repos/acme"
+
+	manual, err := q.Create(repo, QAAccountInput{Label: "admin"})
+	if err != nil {
+		t.Fatalf("create manual: %v", err)
+	}
+	if manual.Source != QASourceManual {
+		t.Errorf("source with no input = %q, want %q", manual.Source, QASourceManual)
+	}
+
+	captured, err := q.Create(repo, QAAccountInput{Label: "seeded", Username: "seed@example.test", Secret: "pw", Source: QASourceAgent})
+	if err != nil {
+		t.Fatalf("create captured: %v", err)
+	}
+	if captured.Source != QASourceAgent {
+		t.Errorf("captured source = %q, want %q", captured.Source, QASourceAgent)
+	}
+
+	got, found, err := q.Get(repo, captured.ID)
+	if err != nil || !found {
+		t.Fatalf("get: found=%v err=%v", found, err)
+	}
+	if got.Source != QASourceAgent {
+		t.Errorf("get source = %q, want %q", got.Source, QASourceAgent)
+	}
+
+	updated, err := q.Update(repo, captured.ID, QAAccountInput{Label: "seeded", Username: "seed@example.test", Secret: "rotated"})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.Source != QASourceAgent {
+		t.Errorf("update rewrote source to %q, want it left at %q", updated.Source, QASourceAgent)
+	}
+
+	list, err := q.List(repo)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 2 || list[0].Source != QASourceManual || list[1].Source != QASourceAgent {
+		t.Errorf("list sources = %+v", list)
+	}
+}
+
 func TestQAAccountByLabel(t *testing.T) {
 	q := testQAAccounts(t)
 	if _, err := q.Create("/repos/acme", QAAccountInput{Label: "admin", Secret: "x"}); err != nil {
