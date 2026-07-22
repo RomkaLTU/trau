@@ -150,7 +150,23 @@ It tails the live transcript, reconstructs the agent's screen legibly (no raw es
 follows across phase boundaries, and prints `waiting for agent output…` until a phase starts. It
 never touches the loop, so it's safe to start before, during, or after a run.
 
-When watching isn't enough and you want to steer the agent yourself, **take the session over**:
+When watching is enough but you want a word in, **steer the run** — a note queued from the
+terminal against a running ticket, delivered without stopping anything:
+
+```bash
+trau steer <ID> "use the REST client, not the MCP"   # or pipe a longer note:
+trau steer <ID> - <<'EOF'
+Skip the migration for now — the schema change lands in a separate ticket.
+EOF
+```
+
+It queues the note with the running web hub (which must already be up — `trau steer` never starts
+one, since nothing serving means nothing to steer) and prints the note's id. The agent picks it up
+mid-phase, or at the next phase's spawn if it is between agents. The hub's run view offers the
+same box, and both surfaces show every note's state: queued, delivered, or expired when the run
+ended first.
+
+When steering isn't enough and you want the agent's session yourself, **take it over**:
 
 ```bash
 trau takeover <ID>               # resume that ticket's recorded claude session in this terminal
