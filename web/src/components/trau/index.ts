@@ -26,6 +26,7 @@ export {
 } from './segmented-control'
 export { RepoPicker } from './repo-picker'
 export { DataTable, type Column } from './data-table'
+export { ConfigExperiments } from './config-experiments'
 export { EmptyState } from './empty-state'
 export { ConfirmDialog } from './confirm-dialog'
 export { AddTicketDialog } from './add-ticket-dialog'
