@@ -68,19 +68,60 @@ type SyncedMirrorRequest struct {
 	RemoveLabels []string `json:"remove_labels"`
 }
 
-// handleIssue reads a single ticket by identifier (GET) or mirrors a tracker write
-// onto its synced store row (POST). Both answer from the hub's issue store — no
-// agent, no MCP on the request path (ADR 0007).
+// handleIssue reads a single ticket by identifier (GET), mirrors a tracker write
+// onto its synced store row (POST), or hard-deletes it (DELETE). All three answer
+// from the hub's issue store — no agent, no MCP on the request path (ADR 0007).
 func (s *Server) handleIssue(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		s.getIssue(w, r)
 	case http.MethodPost:
 		s.mirrorIssue(w, r)
+	case http.MethodDelete:
+		s.deleteIssue(w, r)
 	default:
-		w.Header().Set("Allow", "GET, POST")
+		w.Header().Set("Allow", "GET, POST, DELETE")
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
+}
+
+// DeleteIssueResponse names every identifier the purge removed, so the UI can
+// report what went: the ticket alone for a leaf, the epic and its children for a
+// family.
+type DeleteIssueResponse struct {
+	Deleted []string `json:"deleted"`
+}
+
+// deleteIssue hard-deletes a stored issue and, when it heads an epic, its
+// children — see Issues.Purge for what that takes down and what it leaves. A
+// family member mid-run answers 409 and changes nothing; an unknown repo or
+// identifier answers 404.
+func (s *Server) deleteIssue(w http.ResponseWriter, r *http.Request) {
+	repo, ok := s.findRepo(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	res, found, err := s.stores.Issues().Purge(repo, id)
+	var running *hubstore.IssueRunningError
+	switch {
+	case errors.As(err, &running):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": running.Identifier + " is running — stop the run before deleting",
+		})
+		return
+	case err != nil:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "delete issue: " + err.Error()})
+		return
+	case !found:
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": id + " not found in this repo"})
+		return
+	}
+	if err := s.stores.Attachments().CollectOrphans(res.OrphanedBlobs); err != nil {
+		logger.Verbosef("delete %s: collect attachment blobs: %v", id, err)
+	}
+	writeJSON(w, http.StatusOK, DeleteIssueResponse{Deleted: res.Deleted})
 }
 
 // getIssue serves a ticket store-first: a stored issue (synced or internal) is

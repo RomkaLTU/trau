@@ -307,6 +307,10 @@ func (a *Attachments) deleteWhere(clause string, args ...any) error {
 	return a.collectBlobs(shas)
 }
 
+// CollectOrphans removes the cached bytes of each digest nothing references any
+// more, for a caller whose rows went in its own transaction — see Issues.Purge.
+func (a *Attachments) CollectOrphans(shas []string) error { return a.collectBlobs(shas) }
+
 // collectBlobs removes each digest's file once nothing references it any more.
 func (a *Attachments) collectBlobs(shas []string) error {
 	var errs []error
