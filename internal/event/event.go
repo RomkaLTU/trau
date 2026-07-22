@@ -61,6 +61,19 @@ const KindConfigChange = "config_change"
 // the web feed still renders.
 const KindSpawnFailed = "spawn_failed"
 
+// KindSteerQueued marks an operator steer note queued against a ticket, carrying
+// the ticket and the note's id. The hub emits it, since the queue is hub-owned;
+// the note's body stays out of the feed and is read from the steer API.
+const KindSteerQueued = "steer.queued"
+
+// KindSteerDelivered marks a queued steer note handed to a running agent,
+// carrying the ticket, the note's id, and the phase that consumed it.
+const KindSteerDelivered = "steer.delivered"
+
+// KindSteerExpired marks a steer note the ticket's run settled past without an
+// agent ever consuming it, carrying the ticket and the note's id.
+const KindSteerExpired = "steer.expired"
+
 // Event is one structured log record. Fields carries action-specific detail
 // (token counts, ids, durations) so the schema can grow without churning the
 // envelope.
