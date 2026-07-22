@@ -228,3 +228,29 @@ func TestSinkCloseFlushesTail(t *testing.T) {
 		t.Fatalf("received %d calls, want the tail flushed on Close", len(fake.received()))
 	}
 }
+
+// TestSinkStampsRoutingOnEveryCall covers the ledger's routing columns on the
+// child's write path: each call carries the effort and duration the backend
+// reported plus the run's config fingerprint.
+func TestSinkStampsRoutingOnEveryCall(t *testing.T) {
+	fake := &fakeHub{}
+	s := newSink(fake, "repo", 0, 0)
+	fixedClock(s)
+	s.SetTicket("COD-1")
+	s.SetConfigHash("9f1c2a3b")
+
+	s.Append("verify", tokens.Record{Input: 100, Output: 50, Effort: "high", Duration: 42 * time.Second})
+	s.Append("commit", tokens.Record{Input: 10, Output: 5})
+	s.flush()
+
+	got := fake.received()
+	if len(got) != 2 {
+		t.Fatalf("received %d calls, want 2", len(got))
+	}
+	if got[0].Effort != "high" || got[0].DurationMS != 42_000 || got[0].ConfigHash != "9f1c2a3b" {
+		t.Errorf("call 0 = %+v, want effort high, 42000ms, hash 9f1c2a3b", got[0])
+	}
+	if got[1].Effort != "" || got[1].DurationMS != 0 || got[1].ConfigHash != "9f1c2a3b" {
+		t.Errorf("call 1 = %+v, want the fingerprint stamped even with no effort reported", got[1])
+	}
+}

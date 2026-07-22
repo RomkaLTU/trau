@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/tokens"
 )
 
 // stallSession is a terminalSession wedged before it ever produces output and
@@ -355,5 +357,81 @@ func TestLiveTranscriptTeesAndAnnounces(t *testing.T) {
 
 	if _, ok := liveTranscript(nil, event.New(&events), "build", 100, 40, now); ok {
 		t.Error("a nil sink must disable capture")
+	}
+}
+
+// recordingSink captures the token records a backend appends, so the ledger's
+// per-call fields can be asserted without a hub.
+type recordingSink struct {
+	phases  []string
+	records []tokens.Record
+}
+
+func (r *recordingSink) Append(phase string, rec tokens.Record) {
+	r.phases = append(r.phases, phase)
+	r.records = append(r.records, rec)
+}
+
+// resultPathFromPrompt recovers the result path the backend told the agent to
+// write, so a fake session can complete the run the way the real CLI does.
+func resultPathFromPrompt(t *testing.T, args []string) string {
+	t.Helper()
+	const marker = "creating parent directories if needed: "
+	prompt := args[len(args)-1]
+	i := strings.Index(prompt, marker)
+	if i < 0 {
+		t.Fatalf("prompt carries no result path: %q", prompt)
+	}
+	path, _, _ := strings.Cut(prompt[i+len(marker):], "\n")
+	return path
+}
+
+// TestClaudeInteractiveRecordsEffortAndDuration covers the ledger's routing
+// fields: a completed call reports the effort it was launched with and its
+// measured wall-clock duration, not just its token counts.
+func TestClaudeInteractiveRecordsEffortAndDuration(t *testing.T) {
+	sink := &recordingSink{}
+	sess := newScriptedSession("working…\n")
+	defer sess.stop()
+
+	base := time.Unix(1_700_000_000, 0)
+	var calls int64
+	c := &ClaudeInteractive{
+		Bin:             "claude",
+		Model:           "opus",
+		Effort:          "xhigh",
+		ResultDir:       t.TempDir(),
+		TrustPromptWait: time.Millisecond,
+		Tokens:          sink,
+		now: func() time.Time {
+			n := atomic.AddInt64(&calls, 1)
+			return base.Add(time.Duration(n) * time.Second)
+		},
+		start: func(_ context.Context, _, _ string, args []string, _, _ int) (terminalSession, error) {
+			if err := os.WriteFile(resultPathFromPrompt(t, args), []byte("done"), 0o644); err != nil {
+				return nil, err
+			}
+			return sess, nil
+		},
+	}
+
+	if _, err := c.Run(context.Background(), "do the thing", "verify"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(sink.records) != 1 {
+		t.Fatalf("recorded %d calls, want 1", len(sink.records))
+	}
+	if sink.phases[0] != "verify" {
+		t.Errorf("phase = %q, want verify", sink.phases[0])
+	}
+	rec := sink.records[0]
+	if rec.Effort != "xhigh" {
+		t.Errorf("effort = %q, want xhigh", rec.Effort)
+	}
+	if rec.Duration <= 0 {
+		t.Errorf("duration = %v, want the measured wall clock", rec.Duration)
+	}
+	if rec.Model != "opus" || rec.Provider != "claude" {
+		t.Errorf("record = %+v, want the claude/opus route it ran under", rec)
 	}
 }

@@ -279,8 +279,9 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 		} else if ok {
 			_ = sess.Kill()
 			res := c.enrich(Result{Final: final}, sessionID)
-			c.emit(label, res, c.clock().Sub(start), nil)
-			c.record(label, res)
+			dur := c.clock().Sub(start)
+			c.emit(label, res, dur, nil)
+			c.record(label, res, dur)
 			return res, nil
 		}
 
@@ -288,8 +289,9 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 		case err := <-wait:
 			final, ok, readErr := readResultFile(resultPath)
 			res := c.enrich(Result{Final: final, IsError: err != nil || readErr != nil || !ok}, sessionID)
-			c.emit(label, res, c.clock().Sub(start), err)
-			c.record(label, res)
+			dur := c.clock().Sub(start)
+			c.emit(label, res, dur, err)
+			c.record(label, res, dur)
 			switch {
 			case readErr != nil:
 				return res, fmt.Errorf("claude interactive run (%s): read result after exit: %w", label, readErr)
@@ -420,7 +422,7 @@ func (c *ClaudeInteractive) maybeConfirmTrust(ctx context.Context, sess terminal
 	}
 }
 
-func (c *ClaudeInteractive) record(label string, res Result) {
+func (c *ClaudeInteractive) record(label string, res Result, dur time.Duration) {
 	if c.Tokens == nil {
 		return
 	}
@@ -441,7 +443,9 @@ func (c *ClaudeInteractive) record(label string, res Result) {
 		IsError:       res.IsError,
 		Provider:      "claude",
 		Model:         model,
+		Effort:        c.Effort,
 		Context:       res.Context,
+		Duration:      dur,
 		Skills:        res.Skills,
 	})
 }
@@ -772,7 +776,7 @@ func (c *Codex) Run(ctx context.Context, prompt, label string) (Result, error) {
 	res.Final = strings.TrimRight(string(final), "\n")
 
 	c.emit(label, res, dur, runErr)
-	c.record(label, res)
+	c.record(label, res, dur)
 
 	if runErr != nil {
 		return res, fmt.Errorf("codex run (%s): %w", label, runErr)
@@ -803,7 +807,7 @@ func (c *Codex) emit(label string, res Result, dur time.Duration, runErr error) 
 	c.Log.Emit("agent_call", label, "", fields)
 }
 
-func (c *Codex) record(label string, res Result) {
+func (c *Codex) record(label string, res Result, dur time.Duration) {
 	if c.Tokens == nil {
 		return
 	}
@@ -818,6 +822,8 @@ func (c *Codex) record(label string, res Result) {
 		IsError:       res.IsError,
 		Provider:      "codex",
 		Model:         c.Model,
+		Effort:        c.Effort,
+		Duration:      dur,
 	})
 }
 
@@ -1042,7 +1048,7 @@ func (c *Kimi) Run(ctx context.Context, prompt, label string) (Result, error) {
 	}
 
 	c.emit(label, res, dur, runErr, usageOK)
-	c.record(label, res)
+	c.record(label, res, dur)
 
 	if runErr != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
@@ -1077,7 +1083,7 @@ func (c *Kimi) emit(label string, res Result, dur time.Duration, runErr error, u
 	c.Log.Emit("agent_call", label, "", fields)
 }
 
-func (c *Kimi) record(label string, res Result) {
+func (c *Kimi) record(label string, res Result, dur time.Duration) {
 	if c.Tokens == nil {
 		return
 	}
@@ -1095,6 +1101,7 @@ func (c *Kimi) record(label string, res Result) {
 		IsError:       res.IsError,
 		Provider:      "kimi",
 		Model:         model,
+		Duration:      dur,
 	})
 }
 
