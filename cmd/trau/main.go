@@ -1135,6 +1135,31 @@ func newQASaver(cfg config.Config, repoRoot string) func(context.Context, hubcli
 	}
 }
 
+// steerQueue adapts the hub client to the pipeline's steer-note calls, binding
+// the repo so every call only has to name the ticket.
+type steerQueue struct {
+	hub  *hubclient.Client
+	repo string
+}
+
+func (q steerQueue) Pending(ctx context.Context, ticket string) ([]hubclient.SteerNote, error) {
+	return q.hub.PendingSteerNotes(ctx, q.repo, ticket)
+}
+
+func (q steerQueue) Ack(ctx context.Context, id int64, phase string) error {
+	return q.hub.AckSteer(ctx, q.repo, id, phase)
+}
+
+func (q steerQueue) Expire(ctx context.Context, ticket string) ([]hubclient.SteerNote, error) {
+	return q.hub.ExpireSteer(ctx, q.repo, ticket)
+}
+
+// newSteerQueue points the pipeline at the repo's operator steer-note queue on
+// the serve hub.
+func newSteerQueue(cfg config.Config, repoRoot string) pipeline.SteerQueue {
+	return steerQueue{hub: hubclient.New(hubBaseURL(cfg), cfg.ServeToken), repo: repoName(repoRoot)}
+}
+
 // fetchPromptOverrides reads the repo's stored prompt overrides for the phase
 // preambles baked into the agent backends at startup. Best-effort: with no hub
 // reachable yet the backends keep the built-in preambles, and the pipeline still
@@ -1350,6 +1375,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		FetchPrompts:        newPromptFetcher(cfg, repoRoot),
 		FetchQAAccounts:     newQAFetcher(cfg, repoRoot),
 		SaveQAAccount:       newQASaver(cfg, repoRoot),
+		Steer:               newSteerQueue(cfg, repoRoot),
 		OwnedProject:        cfg.Project,
 
 		RepoRoot:            repoRoot,

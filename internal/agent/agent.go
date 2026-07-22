@@ -179,6 +179,7 @@ type ClaudeInteractive struct {
 	OnSessionStart     func(sessionID, label string)
 	now                func() time.Time
 	start              terminalStarter
+	steerPoll          time.Duration
 }
 
 func (c *ClaudeInteractive) Provider() string { return "claude" }
@@ -297,6 +298,13 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 				return res, fmt.Errorf("claude interactive run (%s): %w", label, err)
 			}
 		}
+	}
+
+	// Started after the trust window so the two PTY writers never overlap.
+	if src, ok := SteerFrom(ctx); ok {
+		steerCtx, stopSteer := context.WithCancel(ctx)
+		defer stopSteer()
+		go c.deliverSteer(steerCtx, sess, src, label)
 	}
 
 	tick := time.NewTicker(250 * time.Millisecond)
