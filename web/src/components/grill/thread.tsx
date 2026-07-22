@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { AlertTriangle, Play, RotateCw } from "lucide-react";
 
+import { AnswerBody } from "@/components/grill/answer-body";
 import { BannerRow } from "@/components/grill/banners";
 import { OutcomeProposal } from "@/components/grill/outcome-review";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
@@ -133,14 +134,14 @@ function MessageRow({ message }: { message: GrillMessage }) {
     case "question":
       return <AgentBubble>{questionPayload(message).text}</AgentBubble>;
     case "answer":
-      return <UserBubble>{answerText(message)}</UserBubble>;
+      return <UserBubble text={answerText(message)} />;
     // The seed idea of an authoring session rides as an info message; render it as
     // the user's opening turn so the conversation reads from the top. A system info
     // message is hub bookkeeping (a model switch), not a turn, so it reads as a
     // notice line rather than a bubble.
     case "info":
       if (message.role === "user") {
-        return <UserBubble>{answerText(message)}</UserBubble>;
+        return <UserBubble text={answerText(message)} />;
       }
       if (message.role === "system") {
         return <SystemNote>{answerText(message)}</SystemNote>;
@@ -173,10 +174,10 @@ function AgentBubble({ children }: { children: React.ReactNode }) {
 }
 
 function UserBubble({
-  children,
+  text,
   className,
 }: {
-  children: React.ReactNode;
+  text: string;
   className?: string;
 }) {
   return (
@@ -185,7 +186,7 @@ function UserBubble({
         <Eyebrow>you</Eyebrow>
         <Bubble variant="default" align="end" className={cn("max-w-[56ch]", className)}>
           <BubbleContent className="whitespace-pre-wrap">
-            {children}
+            <AnswerBody text={text} />
           </BubbleContent>
         </Bubble>
       </MessageContent>
@@ -221,13 +222,14 @@ function PendingRow({
   onDiscard: () => void;
 }) {
   if (!pending.failed) {
-    return <UserBubble className="opacity-60">{pending.text}</UserBubble>;
+    return <UserBubble text={pending.text} className="opacity-60" />;
   }
   return (
     <div className="flex flex-col gap-1.5">
-      <UserBubble className="*:data-[slot=bubble-content]:bg-fail/15 *:data-[slot=bubble-content]:text-foreground">
-        {pending.text}
-      </UserBubble>
+      <UserBubble
+        text={pending.text}
+        className="*:data-[slot=bubble-content]:bg-fail/15 *:data-[slot=bubble-content]:text-foreground"
+      />
       <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
         <AlertTriangle className="size-3.5 text-fail" aria-hidden="true" />
         <span>Not sent.</span>
