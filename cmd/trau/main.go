@@ -78,6 +78,7 @@ Usage:
   trau <ID>                  run a single ticket (e.g. ENG-123), or its sub-issues if it is an epic
   trau doctor                preflight check: git/gh/provider/config/labels/write perms
   trau watch                 tail a running loop's live agent activity (headless counterpart to the TUI 'w' key)
+  trau steer <ID> <note>     queue an operator note for a running ticket (reaches the agent mid-phase; "-" reads it from stdin)
   trau takeover <ID> [--repo <path>]  resume a parked ticket's recorded claude session in this terminal (repo locked while it runs)
   trau forensics <cmd>       read-only incident queries over the run history: runs, events, spend (see 'trau forensics --help')
   trau serve                 start the local web hub — HTTP API + embedded UI on 127.0.0.1:8728 (--bind, --port)
@@ -159,10 +160,16 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	// forensics owns its subcommand args (including --help), so it is dispatched
+	// forensics and steer own their subcommand args — forensics has its own
+	// --help, and a steer note is free-form trailing words — so both dispatch
 	// before the loop's global --version/--help scan claims them.
-	if len(args) > 0 && args[0] == "forensics" {
-		return runForensics(ctx, args[1:], stdout, stderr)
+	if len(args) > 0 {
+		switch args[0] {
+		case "forensics":
+			return runForensics(ctx, args[1:], stdout, stderr)
+		case "steer":
+			return runSteer(ctx, args[1:], stdout, stderr)
+		}
 	}
 
 	for _, a := range args {
