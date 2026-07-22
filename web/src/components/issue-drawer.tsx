@@ -13,6 +13,7 @@ import {
 
 import { ArchiveToast } from "@/components/archive-toast";
 import { AssigneeAvatar } from "@/components/trau/assignee-avatar";
+import { DeleteIssueDialog } from "@/components/delete-issue-dialog";
 import { InternalIssueForm } from "@/components/internal-issue-form";
 import { IssueAttachments } from "@/components/issue-attachments";
 import { Markdown, type MarkdownUrlMap } from "@/components/markdown";
@@ -77,6 +78,7 @@ export function IssueDrawer({
             key={shownId}
             repo={repo}
             id={shownId}
+            onClose={() => onOpenChange(false)}
             onSelectIssue={onSelectIssue}
           />
         )}
@@ -88,10 +90,12 @@ export function IssueDrawer({
 function IssueDrawerBody({
   repo,
   id,
+  onClose,
   onSelectIssue,
 }: {
   repo: string;
   id: string;
+  onClose: () => void;
   onSelectIssue: (id: string) => void;
 }) {
   const queryClient = useQueryClient();
@@ -333,6 +337,7 @@ function IssueDrawerBody({
               Archive
             </Button>
           )}
+          <DeleteIssueDialog repo={repo} id={id} onDeleted={onClose} />
           {addToQueue.error && (
             <p className="w-full text-xs text-destructive">
               {String((addToQueue.error as Error).message)}

@@ -16,6 +16,7 @@ import {
 
 import { Markdown, type MarkdownUrlMap } from "@/components/markdown";
 import { CreatedToast } from "@/components/created-toast";
+import { DeleteIssueDialog } from "@/components/delete-issue-dialog";
 import { ErrorNote } from "@/components/grill/banners";
 import { Composer } from "@/components/grill/composer";
 import {
@@ -70,6 +71,7 @@ import {
   nextIssueId,
   newDraftItem,
   NEW_DRAFT_ID,
+  postDeleteTarget,
   prevIssueId,
   rowSession,
   selectedItem,
@@ -317,6 +319,10 @@ function InboxPage() {
       void queryClient.invalidateQueries({ queryKey: ["grill", repo] });
   }
 
+  function onDeleted(deleted: string[]) {
+    void setPeek(postDeleteTarget(items, deleted));
+  }
+
   return (
     <ProjectScopeGate
       className="min-h-0 flex-1"
@@ -440,6 +446,7 @@ function InboxPage() {
                     onSkip={skip}
                     onApplied={onApplied}
                     onDiscarded={onDiscarded}
+                    onDeleted={onDeleted}
                   />
                 )
               ) : (
@@ -502,6 +509,7 @@ function SessionColumn({
   onSkip,
   onApplied,
   onDiscarded,
+  onDeleted,
 }: {
   repo: string;
   item: InboxItem;
@@ -516,6 +524,7 @@ function SessionColumn({
   onSkip: () => void;
   onApplied: (applied: GrillAppliedOutcome) => void;
   onDiscarded: () => void;
+  onDeleted: (deleted: string[]) => void;
 }) {
   const {
     session,
@@ -560,6 +569,7 @@ function SessionColumn({
         }
         ending={ending}
         endError={endError}
+        onDeleted={onDeleted}
       />
 
       {/* The overlay frame floats over the thread, not the bar above it: the bar
@@ -934,6 +944,7 @@ function SessionBar({
   onEnd,
   ending,
   endError,
+  onDeleted,
   draft,
 }: {
   repo: string;
@@ -955,6 +966,7 @@ function SessionBar({
   onEnd?: () => void;
   ending?: boolean;
   endError?: Error | null;
+  onDeleted?: (deleted: string[]) => void;
   draft?: boolean;
 }) {
   const [modelError, setModelError] = useState<string | null>(null);
@@ -1007,6 +1019,14 @@ function SessionBar({
             <SkipForward />
             Skip
           </Button>
+          {onDeleted && item.entry && (
+            <DeleteIssueDialog
+              repo={repo}
+              id={item.id}
+              iconOnly
+              onDeleted={onDeleted}
+            />
+          )}
           {showContextToggle && (
             <Button
               variant="ghost"

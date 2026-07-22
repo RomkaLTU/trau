@@ -23,6 +23,7 @@ export function ConfirmDialog({
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
   onConfirm,
+  confirmDisabled = false,
   destructive = false,
 }: {
   trigger?: ReactElement
@@ -34,6 +35,7 @@ export function ConfirmDialog({
   confirmLabel?: string
   cancelLabel?: string
   onConfirm: () => void
+  confirmDisabled?: boolean
   destructive?: boolean
 }) {
   return (
@@ -69,6 +71,7 @@ export function ConfirmDialog({
             </AlertDialogCancel>
             <AlertDialogAction
               onClick={onConfirm}
+              disabled={confirmDisabled}
               className={cn(
                 'h-8 gap-1.5 px-3 font-mono text-sm',
                 destructive &&

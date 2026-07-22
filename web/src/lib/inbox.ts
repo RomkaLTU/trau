@@ -287,6 +287,19 @@ export function skipTarget(
   return items[(at + 1) % items.length].id;
 }
 
+// postDeleteTarget advances the same way Skip does, but over every identifier the
+// purge took — an epic's children leave the rail with it, so landing on one would
+// select a row that is already gone. Null when nothing survived.
+export function postDeleteTarget(
+  items: readonly InboxItem[],
+  deleted: readonly string[],
+): string | null {
+  const gone = new Set(deleted);
+  const at = items.findIndex((item) => gone.has(item.id));
+  const ahead = [...items.slice(at + 1), ...items.slice(0, at + 1)];
+  return ahead.find((item) => !gone.has(item.id))?.id ?? null;
+}
+
 // InboxPillTone mirrors the design system's RunState names, so the session bar can
 // style a pill without the model reaching into the component layer.
 export type InboxPillTone = "warn" | "active" | "verify" | "success" | "todo";
