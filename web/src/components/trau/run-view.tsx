@@ -20,6 +20,7 @@ import { Eyebrow } from "@/components/trau/eyebrow";
 import { NoSkillsBanner } from "@/components/trau/no-skills-banner";
 import { NoBrowserBanner } from "@/components/trau/no-browser-banner";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
+import { SteerComposer } from "@/components/trau/steer-notes";
 import { StatusPill } from "@/components/trau/status-pill";
 import { TerminalCard } from "@/components/trau/terminal-card";
 import { Terminal } from "@/components/terminal";
@@ -830,6 +831,12 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
             <div className="flex flex-col gap-2 lg:col-span-3">
               <Eyebrow glyph="partial">TRANSCRIPT</Eyebrow>
               <Terminal repo={repo} live={live} />
+              <SteerComposer
+                repo={repo}
+                ticket={ticket}
+                settled={isRecap}
+                className="mt-2"
+              />
             </div>
           </div>
         ) : (
@@ -853,6 +860,8 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
                 />
               </div>
             )}
+
+            <SteerComposer repo={repo} ticket={ticket} settled={isRecap} />
 
             <ActivityFeed events={feed.events} />
           </div>
