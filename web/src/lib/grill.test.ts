@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { type Assignee } from './assignee'
 import {
   abandonIssueSessions,
   activeSessionForIssue,
+  applyGrill,
   applySessionModel,
   canCompose,
   composerPlaceholder,
@@ -160,7 +162,20 @@ describe('grillAppliedOutcome', () => {
       disposition: 'create',
       issueId: 'COD-9',
       issueTitle: 'Filed title',
+      hasFailures: false,
     })
+  })
+
+  it('flags an apply that landed with a step that did not', () => {
+    const res = {
+      session: session({ state: 'applied' as const, issue_id: 'COD-9' }),
+      applied: true,
+      steps: [
+        { step: 'issue: Dark mode', status: 'ok' as const },
+        { step: 'assign: COD-9', status: 'failed' as const, error: 'not a member of the team' },
+      ],
+    }
+    expect(grillAppliedOutcome(res, 'create', 'Dark mode').hasFailures).toBe(true)
   })
 
   it('falls back to the filed title when the join is empty', () => {
@@ -741,6 +756,50 @@ describe('diffLines', () => {
 
   it('normalises CRLF so a line-ending-only change is not a diff', () => {
     expect(diffHasChanges(diffLines('a\r\nb', 'a\nb'))).toBe(false)
+  })
+})
+
+describe('applyGrill', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function stubApply() {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => ({}) } as Response)
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  function applyBody(fetchMock: ReturnType<typeof stubApply>): unknown {
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    return JSON.parse(init.body as string)
+  }
+
+  it('carries the picked person so every created issue lands on them', async () => {
+    const ada: Assignee = { id: 'usr_1', name: 'Ada Lovelace', me: false }
+    const fetchMock = stubApply()
+
+    await applyGrill('7', 'body', undefined, 'Dark mode', undefined, ada)
+
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe('/api/v1/grill/7/apply')
+    expect(applyBody(fetchMock)).toEqual({
+      proposed_description: 'body',
+      title: 'Dark mode',
+      assignee: { id: 'usr_1', name: 'Ada Lovelace' },
+    })
+  })
+
+  it('omits the assignee when nobody was picked', async () => {
+    const fetchMock = stubApply()
+
+    await applyGrill('7', 'body', undefined, 'Dark mode')
+
+    expect(applyBody(fetchMock)).toEqual({
+      proposed_description: 'body',
+      title: 'Dark mode',
+    })
   })
 })
 
