@@ -22,6 +22,7 @@ type Options struct {
 	ListEligible bool
 	ListEpicID   string
 	ResetID      string
+	ResetLocalID string
 	ClearID      string
 	Force        bool
 	NoResume     bool
@@ -91,6 +92,12 @@ func ParseArgs(args []string) (Options, error) {
 				return o, err
 			}
 			o.ResetID = v
+		case a == "--reset-local":
+			v, err := next(a)
+			if err != nil {
+				return o, err
+			}
+			o.ResetLocalID = v
 		case a == "--clear", a == "--forget":
 			v, err := next(a)
 			if err != nil {
@@ -141,13 +148,13 @@ func ParseArgs(args []string) (Options, error) {
 	}
 
 	modes := 0
-	for _, on := range []bool{o.Status, o.ResetID != "", o.ClearID != "", o.DryRun, o.ListEligible, o.ListEpicID != ""} {
+	for _, on := range []bool{o.Status, o.ResetID != "", o.ResetLocalID != "", o.ClearID != "", o.DryRun, o.ListEligible, o.ListEpicID != ""} {
 		if on {
 			modes++
 		}
 	}
 	if modes > 1 {
-		return o, fmt.Errorf("--status, --reset, --clear, --dry-run, --list-eligible, and --list-epic are mutually exclusive")
+		return o, fmt.Errorf("--status, --reset, --reset-local, --clear, --dry-run, --list-eligible, and --list-epic are mutually exclusive")
 	}
 
 	return o, nil

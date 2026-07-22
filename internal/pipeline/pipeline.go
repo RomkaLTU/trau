@@ -1005,10 +1005,7 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 	ctx, cancel := detachedCleanup(ctx)
 	defer cancel()
 
-	branch := p.State.Get(id, "BRANCH")
-	if branch == "" {
-		branch, _ = p.Git.FindFeatureBranch(ctx, id)
-	}
+	branch := p.featureBranch(ctx, id)
 	_ = p.Git.Checkout(ctx, p.Base, true)
 	if branch != "" && branch != p.Base {
 		_ = p.Git.DeleteBranch(ctx, branch)
@@ -1029,15 +1026,91 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 	}
 }
 
+// PurgeLocal drops what a hard-deleted ticket left on this machine: its feature
+// branch, local and remote, and its run directory. It is deliberately narrower
+// than a reset — the hub's run history (checkpoint, phase logs, artifacts) stays,
+// so what ran is still browsable once the ticket it ran for is gone, and the
+// tracker is never touched because a tombstoned ticket's upstream issue is not
+// trau's to reset. It returns the cleanup steps that failed so the hub that
+// ordered it can log them; the purge itself has already happened either way.
+func (p *Pipeline) PurgeLocal(ctx context.Context, id string) error {
+	ctx, cancel := detachedCleanup(ctx)
+	defer cancel()
+
+	branch := p.featureBranch(ctx, id)
+	_ = p.Git.Checkout(ctx, p.Base, true)
+
+	var errs []error
+	if branch != "" && branch != p.Base {
+		if err := p.Git.DeleteBranch(ctx, branch); err != nil {
+			errs = append(errs, fmt.Errorf("delete branch %s: %w", branch, err))
+		}
+		if err := p.dropPushedBranch(ctx, branch); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if dir := p.runDir(id); dir != "" {
+		if err := os.RemoveAll(dir); err != nil {
+			errs = append(errs, fmt.Errorf("remove run dir %s: %w", dir, err))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	if branch != "" {
+		p.logf("  purged %s: dropped branch %s + its run directory", id, branch)
+	} else {
+		p.logf("  purged %s: dropped its run directory", id)
+	}
+	return nil
+}
+
+// dropPushedBranch deletes branch from the remote, when the remote still has it.
+// A remote that pruned it already is nothing to report; one that cannot be reached
+// is, since the branch then outlives the ticket unseen.
+func (p *Pipeline) dropPushedBranch(ctx context.Context, branch string) error {
+	exists, err := p.Git.RemoteBranchExists(ctx, p.Remote, branch)
+	if err != nil {
+		return fmt.Errorf("look up %s/%s: %w", p.Remote, branch, err)
+	}
+	if !exists {
+		return nil
+	}
+	if err := p.Git.DeletePushedBranch(ctx, p.Remote, branch); err != nil {
+		return fmt.Errorf("delete %s/%s: %w", p.Remote, branch, err)
+	}
+	return nil
+}
+
+// featureBranch resolves ticket id's feature branch: the recorded BRANCH, else the
+// first matching feature/<id>-* branch, empty when the ticket left neither.
+func (p *Pipeline) featureBranch(ctx context.Context, id string) string {
+	if branch := p.State.Get(id, "BRANCH"); branch != "" {
+		return branch
+	}
+	branch, _ := p.Git.FindFeatureBranch(ctx, id)
+	return branch
+}
+
+// runDir is ticket id's run directory, resolving a relative RUNS_DIR against the
+// repo root the way every other resolver does. It is empty when no runs dir is
+// configured, so a caller never mistakes the repo root for one.
+func (p *Pipeline) runDir(id string) string {
+	if p.RunsDir == "" {
+		return ""
+	}
+	if filepath.IsAbs(p.RunsDir) {
+		return filepath.Join(p.RunsDir, id)
+	}
+	return filepath.Join(p.RepoRoot, p.RunsDir, id)
+}
+
 // CheckoutBranch checks out ticket id's recorded feature branch in the target repo
 // so a user inspecting an incomplete or quarantined result lands directly on its
 // preserved WIP. It resolves the branch from saved state, falling back to the
 // first matching feature/<id>-* branch, and returns the branch it switched to.
 func (p *Pipeline) CheckoutBranch(ctx context.Context, id string) (string, error) {
-	branch := p.State.Get(id, "BRANCH")
-	if branch == "" {
-		branch, _ = p.Git.FindFeatureBranch(ctx, id)
-	}
+	branch := p.featureBranch(ctx, id)
 	if branch == "" {
 		return "", fmt.Errorf("no feature branch recorded for %s", id)
 	}
