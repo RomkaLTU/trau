@@ -97,9 +97,9 @@ type DeleteIssueResponse struct {
 }
 
 // deleteIssue hard-deletes a stored issue and, when it heads an epic, its
-// children — see Issues.Purge for what that takes down and what it leaves. A
-// family member mid-run answers 409 and changes nothing; an unknown repo or
-// identifier answers 404.
+// children — see Issues.Purge for what that takes down and what it leaves — then
+// hands the family's git footprint to purgeGitFootprint. A family member mid-run
+// answers 409 and changes nothing; an unknown repo or identifier answers 404.
 func (s *Server) deleteIssue(w http.ResponseWriter, r *http.Request) {
 	repo, ok := s.findRepo(r.PathValue("repo"))
 	if !ok {
@@ -125,6 +125,7 @@ func (s *Server) deleteIssue(w http.ResponseWriter, r *http.Request) {
 	if err := s.stores.Attachments().CollectOrphans(res.OrphanedBlobs); err != nil {
 		logger.Verbosef("delete %s: collect attachment blobs: %v", id, err)
 	}
+	s.purgeGitFootprint(repo, res.Deleted)
 	writeJSON(w, http.StatusOK, DeleteIssueResponse{Deleted: res.Deleted})
 }
 
