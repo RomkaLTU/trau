@@ -1,6 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
+import { type Assignee } from './assignee'
 
 // A grilling session's lifecycle (grilling-prd.md). running/waiting/parked/stalled
 // are active; applied and abandoned are settled and stop counting against the
@@ -102,18 +103,22 @@ export interface GrillApplyResponse {
 }
 
 // GrillAppliedOutcome is what a landed apply reports to the host that mounted the
-// review: the disposition that ran and the issue it wrote — for a create, the
-// freshly filed issue the inbox's toast names and links.
+// review: the disposition that ran, the issue it wrote — for a create, the freshly
+// filed issue the inbox's toast names and links — and whether any step failed on the
+// way there.
 export interface GrillAppliedOutcome {
   disposition: string
   issueId: string
   issueTitle: string
+  hasFailures: boolean
 }
 
 // grillAppliedOutcome reads a full apply's response into the host's report. A create
 // apply anchors the session to the created issue before settling, so issue_id names
 // it; the title join can trail the write, so an empty issue_title falls back to the
-// title that was filed.
+// title that was filed. An apply lands even when a step it does not gate on fails —
+// a tracker refusing the assignment — and the review raises those itself, so
+// hasFailures is how the host keeps a plain success confirmation out of their way.
 export function grillAppliedOutcome(
   res: GrillApplyResponse,
   disposition: string,
@@ -123,6 +128,7 @@ export function grillAppliedOutcome(
     disposition,
     issueId: res.session.issue_id ?? '',
     issueTitle: res.session.issue_title || filedTitle,
+    hasFailures: res.steps.some((step) => step.status === 'failed'),
   }
 }
 
@@ -329,26 +335,30 @@ export async function answerGrill(sid: string, text: string): Promise<GrillAnswe
 // applyGrill writes a finished session's proposed outcome to the tracker. A rewrite,
 // split, or create carries its (possibly edited) description in the body; a split or
 // create-epic also carries the edited sub-issues, and a create carries the edited
-// title and, when the user picked one, the destination it files in. Other
-// dispositions carry none and let the hub fall back to the proposal.
+// title and, when the user picked one, the destination it files in. assignee rides
+// along only when a person was picked, and every issue the apply creates lands on
+// them. Other dispositions carry none and let the hub fall back to the proposal.
 export async function applyGrill(
   sid: string,
   proposedDescription: string,
   subIssues?: SubIssueProposal[],
   title?: string,
   destination?: GrillDestination,
+  assignee?: Assignee | null,
 ): Promise<GrillApplyResponse> {
   const body: {
     proposed_description: string
     sub_issues?: SubIssueProposal[]
     title?: string
     destination?: GrillDestination
+    assignee?: { id: string; name: string }
   } = {
     proposed_description: proposedDescription,
   }
   if (subIssues) body.sub_issues = subIssues
   if (title !== undefined) body.title = title
   if (destination) body.destination = destination
+  if (assignee) body.assignee = { id: assignee.id, name: assignee.name }
   const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/apply`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -42,11 +42,21 @@ const (
 // the user-edited title for a create outcome; empty falls back to the proposal.
 // Destination is where a create outcome files: "tracker" (the default — omitting it
 // keeps the repo's configured tracker) or "internal" for the hub issue store.
+// Assignee is who every issue the apply creates is assigned to; omitting it leaves
+// them unassigned.
 type GrillApplyRequest struct {
 	Title               string          `json:"title"`
 	ProposedDescription string          `json:"proposed_description"`
 	SubIssues           []grillSubIssue `json:"sub_issues"`
 	Destination         string          `json:"destination"`
+	Assignee            *grillAssignee  `json:"assignee"`
+}
+
+// grillAssignee is the person a create's issues land on. Only the id is written;
+// the name rides along so the picker can send its choice unchanged.
+type grillAssignee struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // grillSubIssue is one proposed slice of a split: a fully-specified child issue
@@ -162,6 +172,7 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 		description = outcome.ProposedDescription
 	}
 	comment := composeGrillSummary(outcome.Summary, msgs)
+	assignee := grillAssigneeID(req, cfg)
 
 	var (
 		steps   []GrillApplyStep
@@ -181,6 +192,7 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 			subIssues:   grillPlanSubIssues(req.SubIssues, outcome.SubIssues),
 			readyLabel:  cfg.ReadyLabel,
 			destination: grillDestination(req.Destination, cfg),
+			assignee:    assignee,
 		}
 		// A stored anchor's empty destination predates destination tracking and
 		// belongs to the repo's own tracker; resolving it the same way the request
@@ -199,6 +211,7 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 			subIssues:    grillPlanSubIssues(req.SubIssues, outcome.SubIssues),
 			readyLabel:   cfg.ReadyLabel,
 			removeLabels: remove,
+			assignee:     assignee,
 		}
 		steps, applied = s.applyGrillSplit(r.Context(), writer, repo.Root, cfg.TrackerProvider, issueID, plan)
 	default:
@@ -316,14 +329,15 @@ func (s *Server) applyGrillOutcome(ctx context.Context, writer tracker.Writer, r
 
 // grillSplitPlan is the resolved write plan for a split: the parent's epic-framing
 // description, the summary comment, the proposed sub-issues, the label a sub-issue
-// defaults to, and the labels to strip from the parent now that it is a specified
-// epic.
+// defaults to, the labels to strip from the parent now that it is a specified epic,
+// and the tracker id every created slice is assigned to.
 type grillSplitPlan struct {
 	description  string
 	comment      string
 	subIssues    []grillSubIssue
 	readyLabel   string
 	removeLabels []string
+	assignee     string
 }
 
 // applyGrillSplit converts the parent into an epic and creates its proposed
@@ -379,6 +393,7 @@ func (s *Server) applyGrillSplit(ctx context.Context, writer tracker.Writer, roo
 			continue
 		}
 		ids[i] = created.Identifier
+		steps = appendGrillAssign(ctx, writer, steps, created.Identifier, plan.assignee)
 		s.mirrorCreatedSubIssue(root, provider, parentID, created.Identifier, sub, labels)
 		s.bindUploadedAttachments(root, created.Identifier, sub.Description)
 	}
@@ -406,8 +421,9 @@ func (s *Server) applyGrillSplit(ctx context.Context, writer tracker.Writer, roo
 
 // grillCreatePlan is the resolved write plan for a create outcome: the new issue's
 // title, description, and labels, the summary comment, the resolved destination
-// the issue files in, and — when the work is epic-shaped — the proposed
-// sub-issues and the label a sub-issue defaults to.
+// the issue files in, the tracker id every created issue is assigned to, and —
+// when the work is epic-shaped — the proposed sub-issues and the label a sub-issue
+// defaults to.
 type grillCreatePlan struct {
 	title       string
 	description string
@@ -416,6 +432,7 @@ type grillCreatePlan struct {
 	subIssues   []grillSubIssue
 	readyLabel  string
 	destination string
+	assignee    string
 }
 
 // applyGrillCreate files a brand-new issue (or epic) from an authoring session with
@@ -465,6 +482,7 @@ func (s *Server) applyGrillCreate(ctx context.Context, writer tracker.Writer, se
 			return steps, false
 		}
 		parentID = created.Identifier
+		steps = appendGrillAssign(ctx, writer, steps, parentID, plan.assignee)
 		s.anchorGrillSession(sess, parentID, plan.destination)
 		s.mirrorCreatedParent(root, provider, parentID, plan.title, plan.description, labels)
 		s.bindUploadedAttachments(root, parentID, plan.description)
@@ -500,6 +518,7 @@ func (s *Server) applyGrillCreate(ctx context.Context, writer tracker.Writer, se
 			continue
 		}
 		ids[i] = created.Identifier
+		steps = appendGrillAssign(ctx, writer, steps, created.Identifier, plan.assignee)
 		s.mirrorCreatedSubIssue(root, provider, parentID, created.Identifier, sub, labels)
 		s.bindUploadedAttachments(root, created.Identifier, sub.Description)
 	}
@@ -509,6 +528,31 @@ func (s *Server) applyGrillCreate(ctx context.Context, writer tracker.Writer, se
 	}
 	record("comment", writer.AddComment(ctx, parentID, plan.comment))
 	return steps, allOK
+}
+
+// grillAssigneeID resolves who the apply's created issues are assigned to. The
+// hub's internal store carries no people, so an internal apply files unassigned
+// whatever the request asked for.
+func grillAssigneeID(req GrillApplyRequest, cfg config.Config) string {
+	if req.Assignee == nil || grillDestination(req.Destination, cfg) == grillDestInternal {
+		return ""
+	}
+	return strings.TrimSpace(req.Assignee.ID)
+}
+
+// appendGrillAssign assigns a freshly created issue and records the attempt. A
+// tracker that refuses the assignment leaves a failed step behind without holding
+// up the apply — the issue simply stays unassigned.
+func appendGrillAssign(ctx context.Context, writer tracker.Writer, steps []GrillApplyStep, id, assigneeID string) []GrillApplyStep {
+	if assigneeID == "" {
+		return steps
+	}
+	step := GrillApplyStep{Step: "assign: " + id, Status: grillStepOK}
+	if err := writer.AssignIssue(ctx, id, assigneeID); err != nil {
+		step.Status = grillStepFailed
+		step.Error = err.Error()
+	}
+	return append(steps, step)
 }
 
 // grillCreateParentStep names the created parent's apply step so the review UI shows
