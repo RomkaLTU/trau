@@ -275,7 +275,7 @@ function fileNameOf(src: string): string {
   return path.slice(path.lastIndexOf("/") + 1);
 }
 
-function InlineImage({ src, alt }: { src: string; alt: string }) {
+export function InlineImage({ src, alt }: { src: string; alt: string }) {
   const urlMap = useContext(UrlMapContext);
   const [broken, setBroken] = useState(false);
   const resolved = displayableSrc(src, urlMap);

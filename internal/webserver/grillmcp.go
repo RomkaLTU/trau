@@ -314,9 +314,16 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 		_ = writeMCPMessage(w, jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: rpcID, Result: result})
 		flusher.Flush()
 	}
+	answered := func() bool {
+		answer, ok := s.grillAnswerAfter(sid, question0.ID)
+		if !ok {
+			return false
+		}
+		respond(grillAnswerResult(s.grillPastedAnswer(r.Context(), sid, answer)))
+		return true
+	}
 
-	if answer, ok := s.grillAnswerAfter(sid, question0.ID); ok {
-		respond(grillAnswerResult(answer))
+	if answered() {
 		return
 	}
 	for {
@@ -324,8 +331,7 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 		case <-r.Context().Done():
 			return
 		case <-idle.C:
-			if answer, ok := s.grillAnswerAfter(sid, question0.ID); ok {
-				respond(grillAnswerResult(answer))
+			if answered() {
 				return
 			}
 			if parked, err := s.stores.Grill().Transition(sid, hubstore.GrillParked, ""); err == nil {
@@ -334,8 +340,7 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 			respond(grillParkResult())
 			return
 		case <-keepalive.C:
-			if answer, ok := s.grillAnswerAfter(sid, question0.ID); ok {
-				respond(grillAnswerResult(answer))
+			if answered() {
 				return
 			}
 			progress++
@@ -346,8 +351,7 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 			if ev.SessionID != sid {
 				continue
 			}
-			if answer, ok := s.grillAnswerAfter(sid, question0.ID); ok {
-				respond(grillAnswerResult(answer))
+			if answered() {
 				return
 			}
 			if ev.Event == "state" && s.grillSessionEnded(sid) {

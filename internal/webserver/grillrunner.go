@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/agent"
-	"github.com/RomkaLTU/trau/internal/attachfile"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
@@ -238,7 +237,7 @@ func (r *grillRunner) mcpConfigJSON(sid int64) string {
 
 func (r *grillRunner) firstPrompt(ctx context.Context, repo registry.Repo, sess hubstore.GrillSession) string {
 	if sess.IssueID == "" {
-		return grillAuthoringPrompt(r.seedIdea(sess.ID))
+		return grillAuthoringPrompt(r.srv.withPastedFiles(ctx, repo, sess, r.seedIdea(sess.ID)))
 	}
 	title, description := "", ""
 	if iss, found, err := r.srv.stores.Issues().Get(repo.Root, sess.IssueID); err == nil && found {
@@ -259,12 +258,7 @@ func (r *grillRunner) answerPrompt(ctx context.Context, repo registry.Repo, sess
 	if text == "" {
 		return grillResumeNudge
 	}
-	ids := attachfile.IDsIn(text)
-	if len(ids) == 0 {
-		return text
-	}
-	files := r.srv.materializeAttachmentIDs(ctx, repo, grillAttachTicket(sess), ids)
-	return attachfile.Rewrite(text, files) + attachfile.Section(files)
+	return r.srv.withPastedFiles(ctx, repo, sess, text)
 }
 
 // grillAttachTicket names the directory a session's files materialize into: the

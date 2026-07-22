@@ -79,3 +79,27 @@ func (s *Server) materializeAttachments(ctx context.Context, repo registry.Repo,
 		return s.attachmentBytes(ctx, repo, id)
 	})
 }
+
+// withPastedFiles repoints hub upload references at local copies the child can
+// open, and closes with the file list.
+func (s *Server) withPastedFiles(ctx context.Context, repo registry.Repo, sess hubstore.GrillSession, text string) string {
+	ids := attachfile.IDsIn(text)
+	if len(ids) == 0 {
+		return text
+	}
+	files := s.materializeAttachmentIDs(ctx, repo, grillAttachTicket(sess), ids)
+	return attachfile.Rewrite(text, files) + attachfile.Section(files)
+}
+
+// grillPastedAnswer does the same for the MCP layer, which holds only a session id.
+func (s *Server) grillPastedAnswer(ctx context.Context, sid int64, answer string) string {
+	sess, found, err := s.stores.Grill().Session(sid)
+	if err != nil || !found {
+		return answer
+	}
+	repo, ok := s.findRepoByRoot(sess.Repo)
+	if !ok {
+		return answer
+	}
+	return s.withPastedFiles(ctx, repo, sess, answer)
+}
