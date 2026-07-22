@@ -843,3 +843,50 @@ func TestGrillApplyStateGuards(t *testing.T) {
 		t.Fatalf("re-apply of applied status = %d, want 409", res.StatusCode)
 	}
 }
+
+func TestFindRepoByRoot(t *testing.T) {
+	stores := testStores(t)
+	ran := filepath.Join(t.TempDir(), "ran")
+	web := filepath.Join(t.TempDir(), "web")
+	seeded := filepath.Join(t.TempDir(), "seeded")
+	unclean := filepath.Join(t.TempDir(), "unclean") + string(filepath.Separator)
+	known := registry.Repo{Name: "ran", Root: ran, RunsDir: filepath.Join(ran, ".trau", "runs")}
+	knownUnclean := registry.Repo{Name: "unclean", Root: unclean, RunsDir: filepath.Join(unclean, ".trau", "runs")}
+	if err := stores.Registrations().Remember([]registry.Repo{known, knownUnclean}); err != nil {
+		t.Fatalf("remember repo: %v", err)
+	}
+	if err := stores.Registrations().Register(web); err != nil {
+		t.Fatalf("register repo: %v", err)
+	}
+	s := New("1.2.3", "127.0.0.1", "", []string{seeded}, false, stores)
+
+	tests := []struct {
+		name string
+		root string
+		want registry.Repo
+	}{
+		{name: "repo a loop has run in", root: ran, want: known},
+		{name: "repo registered from the web", root: web, want: workspaceRepo(web)},
+		{name: "repo from the workspace seed", root: seeded, want: workspaceRepo(seeded)},
+		{name: "trailing separator", root: web + string(filepath.Separator), want: workspaceRepo(web)},
+		{name: "known root stored with a trailing separator", root: unclean, want: knownUnclean},
+		{name: "known root stored unclean, looked up clean", root: filepath.Clean(unclean), want: knownUnclean},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := s.findRepoByRoot(tt.root)
+			if !ok {
+				t.Fatalf("findRepoByRoot(%q) not found", tt.root)
+			}
+			if got != tt.want {
+				t.Errorf("findRepoByRoot(%q) = %+v, want %+v", tt.root, got, tt.want)
+			}
+		})
+	}
+
+	for _, root := range []string{"", filepath.Join(t.TempDir(), "stranger")} {
+		if repo, ok := s.findRepoByRoot(root); ok {
+			t.Errorf("findRepoByRoot(%q) = %+v, want not found", root, repo)
+		}
+	}
+}

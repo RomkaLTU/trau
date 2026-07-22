@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/config"
@@ -666,15 +667,26 @@ func grillDestination(requested string, cfg config.Config) string {
 	return grillDestTracker
 }
 
-// findRepoByRoot resolves a stored session's repo root back to a known repo,
-// unioning live loops' repos the same way findRepo does.
+// findRepoByRoot resolves a stored session's repo root back to a repo against the
+// same union findRepo resolves a name against: the repos a loop has run in (the
+// known set and any live loops) first, then the startable roots — the workspace
+// seed and the web registrations — synthesized as workspace views. Without that
+// second tier a repo registered from the web but never run in resolves on the
+// create side and misses on the run side, parking every session it starts.
+// Known roots are stored as the loop resolved them, so both sides are cleaned.
 func (s *Server) findRepoByRoot(root string) (registry.Repo, bool) {
 	if root == "" {
 		return registry.Repo{}, false
 	}
+	cleaned := filepath.Clean(root)
 	for _, repo := range s.knownRepos(s.liveInstances()) {
-		if repo.Root == root {
+		if filepath.Clean(repo.Root) == cleaned {
 			return repo, true
+		}
+	}
+	for _, allowed := range s.effectiveRoots() {
+		if allowed == cleaned {
+			return workspaceRepo(allowed), true
 		}
 	}
 	return registry.Repo{}, false
