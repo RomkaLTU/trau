@@ -1327,7 +1327,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	if note != "" && appURL != p.AppURL {
 		p.logf("  ↳ browser verify targets %s (workspace match)", appURL)
 	}
-	qaNote := p.qaVerifyNote(ctx, note)
+	qaNote := p.qaVerifyNote(ctx, id, note)
 	branch := p.State.Get(id, "BRANCH")
 
 	rubricRef, rubricOK := p.activeRubric(id)
@@ -2895,22 +2895,71 @@ func browserDriveNote(appURL string) string {
 	return "This slice changes a UI surface and browser verification is REQUIRED. Drive the running app at " + appURL + ` through the browser-harness skill, exercise the changed UI, then set the verdict's "browser" to "driven" and record what you exercised in "browser_notes". This is an unattended run against a sanctioned, dedicated automation browser — do NOT skip out of concern for a user's session. If the automation browser genuinely cannot connect, set "browser" to "skipped" and report the concrete reason in "browser_notes" instead of skipping silently.`
 }
 
+const (
+	qaNoRosterWarning          = "no QA accounts stored — verify runs without stored credentials"
+	qaRosterUnavailableWarning = "QA accounts unavailable — verify runs without stored credentials"
+)
+
 // qaVerifyNote fetches the repo's QA credentials and renders the verify-prompt
 // roster, but only for a slice where browser verify is actually active: there is
 // a browser-driving note (a configured APP_URL under auto/always) and the slice's
 // own diff touches a UI surface. A backend slice, a disabled browser gate, or a
 // missing APP_URL injects nothing, and a fetch failure logs one warning and
-// proceeds without credentials — QA injection never blocks verify.
-func (p *Pipeline) qaVerifyNote(ctx context.Context, browserNote string) string {
+// proceeds without credentials — QA injection never blocks verify. The note is
+// built once per verify and threaded through every attempt, so this is also
+// where the outcome is reported.
+func (p *Pipeline) qaVerifyNote(ctx context.Context, id, browserNote string) string {
 	if p.FetchQAAccounts == nil || browserNote == "" || !p.sliceIsUI(ctx) {
 		return ""
 	}
 	roster, err := p.FetchQAAccounts(ctx)
+	p.reportQARoster(id, roster, err)
 	if err != nil {
-		p.logf("  ⚠ QA accounts unavailable — verify runs without stored credentials: %v", err)
 		return ""
 	}
 	return qaRosterNote(roster.Accounts, roster.Notes)
+}
+
+// reportQARoster records what the roster contributed to an active verify gate —
+// injected, none stored, or unreachable. Counts and flags only: a label,
+// username, or secret must never reach the log or the event fields.
+func (p *Pipeline) reportQARoster(id string, roster hubclient.QARoster, err error) {
+	accounts := len(usableQAAccounts(roster.Accounts))
+	notes := strings.TrimSpace(roster.Notes) != ""
+	fields := map[string]any{"ticket": id, "accounts": accounts, "notes": notes}
+
+	var msg string
+	switch {
+	case err != nil:
+		msg = qaRosterUnavailableWarning
+		fields["error"] = err.Error()
+		p.logf("  ⚠ %s: %v", msg, err)
+	case accounts == 0 && !notes:
+		msg = qaNoRosterWarning
+		p.logf("  ⚠ %s", msg)
+	default:
+		msg = fmt.Sprintf("QA roster injected: %d account(s)", accounts)
+		if notes {
+			msg += " + QA notes"
+		}
+		p.logf("  ↳ %s", msg)
+	}
+
+	if p.Events != nil {
+		p.Events.Emit(event.KindQARoster, "verify", msg, fields)
+	}
+}
+
+// usableQAAccounts keeps the roster entries the verifier can be pointed at by
+// name: an unlabeled account cannot be referred to without naming its credentials.
+func usableQAAccounts(accounts []hubclient.QAAccount) []hubclient.QAAccount {
+	usable := make([]hubclient.QAAccount, 0, len(accounts))
+	for _, a := range accounts {
+		if strings.TrimSpace(a.Label) != "" {
+			usable = append(usable, a)
+		}
+	}
+	return usable
 }
 
 // qaRosterNote renders the QA credentials fragment appended to a browser-verify
@@ -2921,12 +2970,7 @@ func (p *Pipeline) qaVerifyNote(ctx context.Context, browserNote string) string 
 // framework-agnostic — it names no stack and no login mechanism.
 func qaRosterNote(accounts []hubclient.QAAccount, notes string) string {
 	notes = strings.TrimSpace(notes)
-	usable := make([]hubclient.QAAccount, 0, len(accounts))
-	for _, a := range accounts {
-		if strings.TrimSpace(a.Label) != "" {
-			usable = append(usable, a)
-		}
-	}
+	usable := usableQAAccounts(accounts)
 	if len(usable) == 0 && notes == "" {
 		return ""
 	}

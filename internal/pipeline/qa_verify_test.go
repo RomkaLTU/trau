@@ -1,10 +1,13 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/prompts"
 )
@@ -70,11 +73,128 @@ func TestQAVerifyNoteInjectsOnlyForBrowserUISlice(t *testing.T) {
 			p.Git = filesGit{files: tc.files}
 			p.FetchQAAccounts = tc.fetch
 
-			got := p.qaVerifyNote(context.Background(), tc.note)
+			got := p.qaVerifyNote(context.Background(), "COD-1", tc.note)
 			if hit := got != ""; hit != tc.wantHit {
 				t.Fatalf("qaVerifyNote hit=%v (%q), want %v", hit, got, tc.wantHit)
 			}
 		})
+	}
+}
+
+// TestQAVerifyNoteReportsEveryOutcome is the observability guarantee: whenever
+// the QA gate is active the run says what the roster contributed — injected,
+// empty, or unreachable — through both the log and a counts-only event.
+func TestQAVerifyNoteReportsEveryOutcome(t *testing.T) {
+	cases := []struct {
+		name         string
+		fetch        func(context.Context) (hubclient.QARoster, error)
+		wantLog      string
+		wantAccounts float64
+		wantNotes    bool
+		wantErrField string
+	}{
+		{
+			name: "injected",
+			fetch: func(context.Context) (hubclient.QARoster, error) {
+				return hubclient.QARoster{
+					Accounts: []hubclient.QAAccount{
+						{Label: "admin", Username: "admin@example.test", Secret: "s3cret"},
+						{Label: "member", Username: "member@example.test", Secret: "hunter2"},
+						{Username: "unlabeled@example.test"},
+					},
+					Notes: "sign in at /auth",
+				}, nil
+			},
+			wantLog:      "QA roster injected: 2 account(s) + QA notes",
+			wantAccounts: 2,
+			wantNotes:    true,
+		},
+		{
+			name: "empty",
+			fetch: func(context.Context) (hubclient.QARoster, error) {
+				return hubclient.QARoster{}, nil
+			},
+			wantLog: qaNoRosterWarning,
+		},
+		{
+			name: "fetch failed",
+			fetch: func(context.Context) (hubclient.QARoster, error) {
+				return hubclient.QARoster{}, errors.New("hub down")
+			},
+			wantLog:      qaRosterUnavailableWarning,
+			wantErrField: "hub down",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			logs := &logRenderer{}
+			p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+			p.Git = filesGit{files: uiFiles}
+			p.Events = event.New(&buf)
+			p.Renderer = logs
+			p.FetchQAAccounts = tc.fetch
+
+			p.qaVerifyNote(context.Background(), "COD-1", "drive the app")
+
+			if !logs.contains(tc.wantLog) {
+				t.Fatalf("log missing %q:\n%s", tc.wantLog, strings.Join(logs.lines, "\n"))
+			}
+			evs := kindEvents(t, &buf, event.KindQARoster)
+			if len(evs) != 1 {
+				t.Fatalf("emitted %d qa_roster events, want exactly 1", len(evs))
+			}
+			ev := evs[0]
+			if ev.Msg != tc.wantLog {
+				t.Errorf("event msg = %q, want %q", ev.Msg, tc.wantLog)
+			}
+			if got := strField(ev.Fields, "ticket"); got != "COD-1" {
+				t.Errorf("ticket field = %q, want %q", got, "COD-1")
+			}
+			if got := ev.Fields["accounts"]; got != tc.wantAccounts {
+				t.Errorf("accounts field = %v, want %v", got, tc.wantAccounts)
+			}
+			if got := ev.Fields["notes"]; got != tc.wantNotes {
+				t.Errorf("notes field = %v, want %v", got, tc.wantNotes)
+			}
+			if got := strField(ev.Fields, "error"); got != tc.wantErrField {
+				t.Errorf("error field = %q, want %q", got, tc.wantErrField)
+			}
+			assertNoQASecrets(t, strings.Join(logs.lines, "\n"), buf.String())
+		})
+	}
+}
+
+// assertNoQASecrets is the leak guard on the observability surfaces: the injected
+// note is allowed to carry credentials because it reaches only the verify prompt,
+// but no label, username, or secret may appear in a log line or a durable event.
+func assertNoQASecrets(t *testing.T, surfaces ...string) {
+	t.Helper()
+	for _, text := range surfaces {
+		for _, secret := range []string{"admin", "member", "example.test", "s3cret", "hunter2", "/auth"} {
+			if strings.Contains(text, secret) {
+				t.Errorf("observability surface leaked %q: %s", secret, text)
+			}
+		}
+	}
+}
+
+// TestQAVerifyNoteSilentWhenGateInactive keeps the reporting scoped to a verify
+// the QA gate actually reaches: a backend slice must stay quiet rather than
+// announce an injection that never applied.
+func TestQAVerifyNoteSilentWhenGateInactive(t *testing.T) {
+	var buf bytes.Buffer
+	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+	p.Git = filesGit{files: backendFiles}
+	p.Events = event.New(&buf)
+	p.FetchQAAccounts = func(context.Context) (hubclient.QARoster, error) {
+		return hubclient.QARoster{Accounts: []hubclient.QAAccount{{Label: "admin"}}}, nil
+	}
+
+	p.qaVerifyNote(context.Background(), "COD-1", "drive the app")
+
+	if evs := kindEvents(t, &buf, event.KindQARoster); len(evs) != 0 {
+		t.Errorf("emitted %d qa_roster events on a backend slice, want 0", len(evs))
 	}
 }
 

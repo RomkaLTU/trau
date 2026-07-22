@@ -171,6 +171,12 @@ function activityRow(ev: FeedEvent): ActivityRow {
         glyphClass: "text-warn",
         text: ev.msg || "browser verify skipped on a UI slice",
       };
+    case "qa_roster":
+      return {
+        glyph: "●",
+        glyphClass: "text-info",
+        text: ev.msg || "QA roster checked for verify",
+      };
     case "model_fallback":
       return {
         glyph: "⚠",
