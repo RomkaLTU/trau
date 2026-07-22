@@ -11,6 +11,8 @@ import {
   NoticeBanner,
   RemovedBanner,
   RunActionsRow,
+  SteerComposer,
+  SteerNotesTimeline,
   StatusPill,
   TerminalCard,
   useRepoRouteScope,
@@ -22,6 +24,7 @@ import { boardPill } from '@/lib/overview'
 import { addComment } from '@/lib/issues'
 import { runTitle, usePageTitle } from '@/lib/page-title'
 import { formatCostUSD, formatDuration } from '@/lib/runlive'
+import { steerSettled } from '@/lib/steer'
 import {
   runDetailQueryOptions,
   type Anomaly,
@@ -146,6 +149,18 @@ function Detail({
       )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <TerminalCard title="steer notes" className="lg:col-span-2">
+          <div className="flex flex-col gap-5">
+            <SteerComposer
+              repo={repo}
+              ticket={run.ticket}
+              settled={steerSettled(run)}
+              showQueued={false}
+            />
+            <SteerNotesTimeline repo={repo} ticket={run.ticket} />
+          </div>
+        </TerminalCard>
+
         <TerminalCard title="handoff.md" className="lg:col-span-2">
           {run.artifacts.handoff && run.handoff ? (
             <Markdown>{run.handoff}</Markdown>
