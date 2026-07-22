@@ -14,12 +14,17 @@
 // zero-total call is uncaptured and dropped by the sink.
 package tokens
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // Record is one call's raw, already-normalized counts, handed to the sink's Append.
 // Input is the NON-cached input portion (see the package doc). CostUSD is a pointer
 // so a provider that reports no per-call cost (codex on a ChatGPT-plan login) records
 // a null; the claude path always supplies a value (0 when the field is absent).
+// Effort is the reasoning effort the call was launched with, empty when the backend
+// passed none and the provider CLI chose its own.
 type Record struct {
 	Input         int
 	Output        int
@@ -31,7 +36,9 @@ type Record struct {
 	IsError       bool
 	Provider      string
 	Model         string
+	Effort        string
 	Context       int
+	Duration      time.Duration
 	Skills        []string
 }
 

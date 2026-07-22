@@ -25,7 +25,10 @@ type tokenCallInput struct {
 	IsError       bool     `json:"is_error"`
 	Provider      string   `json:"provider"`
 	Model         string   `json:"model"`
+	Effort        string   `json:"effort"`
 	Context       int      `json:"context"`
+	DurationMS    int      `json:"duration_ms"`
+	ConfigHash    string   `json:"config_hash"`
 	Skills        string   `json:"skills"`
 }
 
@@ -84,7 +87,10 @@ func (s *Server) handleRepoTokens(w http.ResponseWriter, r *http.Request) {
 			IsError:       c.IsError,
 			Provider:      c.Provider,
 			Model:         c.Model,
+			Effort:        c.Effort,
 			Context:       c.Context,
+			DurationMS:    c.DurationMS,
+			ConfigHash:    c.ConfigHash,
 			Skills:        c.Skills,
 		}
 	}

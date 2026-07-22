@@ -33,6 +33,11 @@ const KindVerifyNoBrowser = "verify_no_browser"
 // or execute at render time — the phase ran on the built-in default body.
 const KindPromptOverrideSkipped = "prompt_override_skipped"
 
+// KindConfigChange marks a run whose resolved routing configuration differs from
+// the one its repo last ran under — the cohort boundary spend is grouped by. The
+// hub emits it, since only it holds the previous fingerprint.
+const KindConfigChange = "config_change"
+
 // KindSpawnFailed marks a hub-spawned child that exited before it could register
 // or write a checkpoint — dead on arrival. The retired direct spawn path was its
 // only emitter (ADR 0015); the name documents rows older stores still hold and

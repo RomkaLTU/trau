@@ -63,11 +63,12 @@ type Sink struct {
 	now   func() time.Time
 	sleep func(time.Duration)
 
-	mu      sync.Mutex
-	bucket  string
-	buf     []hubclient.TokenCall
-	bytes   int
-	session map[string]*sessionSpend
+	mu         sync.Mutex
+	configHash string
+	bucket     string
+	buf        []hubclient.TokenCall
+	bytes      int
+	session    map[string]*sessionSpend
 
 	flushMu sync.Mutex
 
@@ -128,6 +129,16 @@ func (s *Sink) SetTicket(id string) {
 	s.mu.Unlock()
 }
 
+// SetConfigHash stamps subsequent Appends with the routing fingerprint the calls
+// run under. It is stamped at construction and again at each run entry, where an
+// ephemeral provider override may have moved it; an unset hash records the calls
+// under the unknown cohort.
+func (s *Sink) SetConfigHash(hash string) {
+	s.mu.Lock()
+	s.configHash = hash
+	s.mu.Unlock()
+}
+
 // Append records one normalized call for a phase into the session ledger and queues
 // it for the hub. Calls whose total is zero are dropped (uncaptured/empty calls). It
 // never blocks; when the buffer is over its byte cap the oldest queued calls are
@@ -158,7 +169,10 @@ func (s *Sink) Append(phase string, rec tokens.Record) {
 		IsError:       rec.IsError,
 		Provider:      rec.Provider,
 		Model:         rec.Model,
+		Effort:        rec.Effort,
 		Context:       rec.Context,
+		DurationMS:    int(rec.Duration.Milliseconds()),
+		ConfigHash:    s.configHash,
 		Skills:        marshalSkills(rec.Skills),
 	}
 	s.buf = append(s.buf, call)
@@ -377,7 +391,8 @@ func marshalSkills(skills []string) string {
 }
 
 func callBytes(c hubclient.TokenCall) int {
-	return len(c.Ticket) + len(c.TS) + len(c.Phase) + len(c.Provider) + len(c.Model) + len(c.Skills) + callOverhead
+	return len(c.Ticket) + len(c.TS) + len(c.Phase) + len(c.Provider) + len(c.Model) +
+		len(c.Effort) + len(c.ConfigHash) + len(c.Skills) + callOverhead
 }
 
 func totalBytes(calls []hubclient.TokenCall) int {
