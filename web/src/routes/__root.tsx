@@ -25,8 +25,10 @@ function RootLayout() {
             <Outlet />
           </div>
           <NotificationToaster />
-          <Toaster />
         </AppShell>
+        {/* Outside the shell: its main column is a z-[1] stacking context that
+            would paint every toast under an open sheet or dialog. */}
+        <Toaster />
       </ActiveRepoProvider>
     </NuqsAdapter>
   )
