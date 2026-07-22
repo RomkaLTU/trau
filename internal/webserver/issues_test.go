@@ -31,6 +31,10 @@ type linkCall struct {
 	blocker, blocked string
 }
 
+type assignCall struct {
+	id, assigneeID string
+}
+
 // fakeCreate is one queued CreateIssue outcome, letting a test hand back distinct
 // identifiers per sub-issue or fail a specific one for the partial-apply path.
 type fakeCreate struct {
@@ -45,6 +49,9 @@ type fakeWriter struct {
 	labels       []labelCall
 	links        []linkCall
 	published    []tracker.DocumentDraft
+	assigned     []assignCall
+	userQueries  []string
+	users        []tracker.AssignableUser
 	order        []string
 	issue        tracker.NewIssue
 	doc          tracker.PublishedDocument
@@ -56,6 +63,8 @@ type fakeWriter struct {
 	labelErr     error
 	linkErr      error
 	publishErr   error
+	assignErr    error
+	usersErr     error
 }
 
 func newFakeWriter() *fakeWriter {
@@ -102,6 +111,20 @@ func (f *fakeWriter) UpdateLabels(_ context.Context, id string, add, remove []st
 	f.order = append(f.order, "labels")
 	f.labels = append(f.labels, labelCall{id: id, add: add, remove: remove})
 	return f.labelErr
+}
+
+func (f *fakeWriter) AssignIssue(_ context.Context, id, assigneeID string) error {
+	f.order = append(f.order, "assign")
+	f.assigned = append(f.assigned, assignCall{id: id, assigneeID: assigneeID})
+	return f.assignErr
+}
+
+func (f *fakeWriter) AssignableUsers(_ context.Context, query string) ([]tracker.AssignableUser, error) {
+	f.userQueries = append(f.userQueries, query)
+	if f.usersErr != nil {
+		return nil, f.usersErr
+	}
+	return f.users, nil
 }
 
 func (f *fakeWriter) PublishDocument(_ context.Context, d tracker.DocumentDraft) (tracker.PublishedDocument, error) {

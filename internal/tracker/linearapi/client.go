@@ -87,6 +87,12 @@ type Label struct {
 	Name string
 }
 
+// User is a workspace member an issue can be assigned to.
+type User struct {
+	ID   string
+	Name string
+}
+
 // IssueRef is a lightweight issue reference.
 type IssueRef struct {
 	ID          string
@@ -410,6 +416,47 @@ func (c *Client) UpdateDescription(ctx context.Context, identifier, description 
 	}
 	var dst issueUpdateResponse
 	return c.do(ctx, issueDescriptionMutation, map[string]any{"id": issue.ID, "description": description}, &dst)
+}
+
+// AssignIssue sets the issue's assignee, or clears it when assigneeID is empty —
+// the mutation then carries an explicit null, which is what Linear reads as
+// Unassigned. The human identifier is resolved to the issue's node id first.
+func (c *Client) AssignIssue(ctx context.Context, identifier, assigneeID string) error {
+	if c.apiKey == "" {
+		return ErrNotEnabled
+	}
+	issue, err := c.Issue(ctx, identifier)
+	if err != nil {
+		return err
+	}
+	vars := map[string]any{"id": issue.ID, "assigneeId": nil}
+	if assigneeID = strings.TrimSpace(assigneeID); assigneeID != "" {
+		vars["assigneeId"] = assigneeID
+	}
+	var dst issueUpdateResponse
+	return c.do(ctx, issueAssignMutation, vars, &dst)
+}
+
+// assignableUsersPageSize caps the assignable-user lookup at one page; the picker
+// narrows with a query rather than paging a whole workspace.
+const assignableUsersPageSize = 50
+
+// AssignableUsers returns the workspace's active members, narrowed to those whose
+// display name contains query when it is non-empty.
+func (c *Client) AssignableUsers(ctx context.Context, query string) ([]User, error) {
+	if c.apiKey == "" {
+		return nil, ErrNotEnabled
+	}
+	vars := map[string]any{"name": strings.TrimSpace(query), "first": assignableUsersPageSize}
+	var dst usersQueryResponse
+	if err := c.do(ctx, assignableUsersQuery, vars, &dst); err != nil {
+		return nil, err
+	}
+	out := make([]User, 0, len(dst.Data.Users.Nodes))
+	for _, n := range dst.Data.Users.Nodes {
+		out = append(out, User(n))
+	}
+	return out, nil
 }
 
 // UpdateLabels adds and removes named labels on an issue, leaving the rest of its
@@ -745,6 +792,14 @@ type viewerQueryResponse struct {
 	} `json:"data"`
 }
 
+type usersQueryResponse struct {
+	Data struct {
+		Users struct {
+			Nodes []userNode `json:"nodes"`
+		} `json:"users"`
+	} `json:"data"`
+}
+
 type teamsQueryResponse struct {
 	Data struct {
 		Teams struct {
@@ -860,6 +915,11 @@ type projectNode struct {
 }
 
 type labelNode struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type userNode struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }
