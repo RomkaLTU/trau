@@ -1,18 +1,15 @@
 import { CheckCircle2, X } from "lucide-react";
 
 // CreatedToast confirms a freshly filed issue — presentational only; the caller
-// owns the dismiss timer, mirroring ArchiveToast. Manual backlog creation and an
-// inbox create apply share it so the two creation flows look identical.
+// owns the dismiss timer, mirroring ArchiveToast.
 export function CreatedToast({
   id,
   title,
-  actionLabel = "View issue",
   onView,
   onDismiss,
 }: {
   id: string;
   title: string;
-  actionLabel?: string;
   onView: () => void;
   onDismiss: () => void;
 }) {
@@ -32,7 +29,7 @@ export function CreatedToast({
           onClick={onView}
           className="self-start pt-1 text-xs font-medium text-primary underline-offset-2 hover:underline"
         >
-          {actionLabel}
+          View issue
         </button>
       </div>
       <button

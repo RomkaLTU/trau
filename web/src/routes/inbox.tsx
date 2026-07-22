@@ -15,7 +15,6 @@ import {
 } from "lucide-react";
 
 import { Markdown, type MarkdownUrlMap } from "@/components/markdown";
-import { CreatedToast } from "@/components/created-toast";
 import { DeleteIssueDialog } from "@/components/delete-issue-dialog";
 import { ErrorNote } from "@/components/grill/banners";
 import { Composer } from "@/components/grill/composer";
@@ -73,8 +72,8 @@ import {
   NEW_DRAFT_ID,
   postDeleteTarget,
   prevIssueId,
+  resolveSelection,
   rowSession,
-  selectedItem,
   skipTarget,
   summarisePregrill,
   useInboxQueue,
@@ -152,10 +151,16 @@ function InboxPage() {
   const items = newDraft ? [newDraftItem(), ...queueItems] : queueItems;
   const groups = newDraft ? inboxGroups(items, done) : queueGroups;
 
-  // The queue owns the selection: Done today rows are openable for reference, and an
-  // ?issue= naming something in neither list falls back to the head rather than
-  // opening a session on a stray id.
-  const selected = selectedItem(items, done, peek);
+  // Once a conversation is on screen it stays on screen. buildInbox re-sorts the queue
+  // on every session state change, so a selection tracking the head would hand the chat
+  // to another issue the moment an answer lands; the sticky id pins it until an explicit
+  // move — a rail click, j/k, Skip, an advance, or Back — sets ?issue=.
+  const [sticky, setSticky] = useState<string | null>(null);
+  const selected = resolveSelection(items, done, peek, sticky);
+
+  useEffect(() => {
+    if (selected && selected.id !== sticky) setSticky(selected.id);
+  }, [selected?.id, sticky]);
 
   // The model every interview started from this panel opens on — Start interview, a
   // first message, a fresh Draft, and Ask ahead alike. It is a page-level choice so
@@ -176,14 +181,7 @@ function InboxPage() {
   const [passSummary, setPassSummary] = useState<string | null>(null);
   const [status, setStatus] = useState<GrillStatus | null>(null);
   const [seen, setSeen] = useState<SeenMarks>(loadSeen);
-  const [created, setCreated] = useState<GrillAppliedOutcome | null>(null);
   const navigate = useNavigate();
-
-  useEffect(() => {
-    if (!created) return;
-    const id = setTimeout(() => setCreated(null), 8000);
-    return () => clearTimeout(id);
-  }, [created]);
 
   useEffect(() => {
     if (newDraft && peek !== NEW_DRAFT_ID) setNewDraft(false);
@@ -293,26 +291,24 @@ function InboxPage() {
   // the board is what retires the row; the applied list is what re-lists it under
   // Done today. The issue's own grill list is left to its poll — the open thread
   // rides out the settle on the streamed session. A draft has no board row, so its
-  // list is refreshed to retire the settled authoring row. A create apply raises the
-  // created toast — the skip advances the queue, so the toast is what carries the
-  // filed issue's id across the navigation. An apply that landed with a failed step
-  // raises its own toast in the same corner, and that one is the news, so the plain
-  // confirmation stands aside.
+  // list is refreshed to retire the settled authoring row. A create that landed cleanly
+  // leaves the inbox for the backlog, where the filed row is highlighted; every other
+  // disposition keeps working the queue and advances to the next item.
   function onApplied(applied: GrillAppliedOutcome) {
     const wasDraft = selected?.draft;
-    skip();
+    const filed =
+      !applied.hasFailures &&
+      applied.disposition === "create" &&
+      applied.issueId !== "";
+    if (!filed) skip();
     void queryClient.invalidateQueries({ queryKey: ["backlog", repo] });
     void queryClient.invalidateQueries({
       queryKey: ["grill", repo, "applied"],
     });
     if (wasDraft)
       void queryClient.invalidateQueries({ queryKey: ["grill", repo] });
-    if (
-      !applied.hasFailures &&
-      applied.disposition === "create" &&
-      applied.issueId !== ""
-    )
-      setCreated(applied);
+    if (filed)
+      void navigate({ to: "/backlog", search: { created: applied.issueId } });
   }
 
   // Discarding an authoring draft abandons its session with nothing to file, so the
@@ -477,22 +473,6 @@ function InboxPage() {
           </div>
         </RepoHealthGate>
       </div>
-
-      {created && (
-        <CreatedToast
-          id={created.issueId}
-          title={created.issueTitle}
-          actionLabel="View in backlog"
-          onView={() => {
-            void navigate({
-              to: "/backlog",
-              search: { issue: created.issueId },
-            });
-            setCreated(null);
-          }}
-          onDismiss={() => setCreated(null)}
-        />
-      )}
     </ProjectScopeGate>
   );
 }
