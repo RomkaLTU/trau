@@ -442,6 +442,18 @@ func providerGet(file map[string]string, src envLayer, key string, fallback func
 	return fallback(key)
 }
 
+// envOverride returns the environment value for key, preferring the TRAU_
+// alias. An empty variable reads as absent, so env can never blank out a value
+// a file layer supplies.
+func envOverride(key string) string {
+	if !strings.HasPrefix(key, "TRAU_") {
+		if v := os.Getenv("TRAU_" + key); v != "" {
+			return v
+		}
+	}
+	return os.Getenv(key)
+}
+
 // Layer identifies which configuration layer supplied a value.
 type Layer string
 
@@ -585,12 +597,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	userLayer := envLayer{file: user, dir: dirOf(userPath), path: userPath, name: LayerUser}
 
 	get := func(key string) (string, envLayer) {
-		if !strings.HasPrefix(key, "TRAU_") {
-			if v := os.Getenv("TRAU_" + key); v != "" {
-				return v, envLayer{name: LayerEnv}
-			}
-		}
-		if v := os.Getenv(key); v != "" {
+		if v := envOverride(key); v != "" {
 			return v, envLayer{name: LayerEnv}
 		}
 		for _, layer := range []envLayer{projLayer, localLayer, userLayer} {
@@ -1871,12 +1878,7 @@ func ResolveProviderTunings(localPath, projectPath, userPath, activeProvider str
 	user, _ := ParseEnvFile(userPath)
 
 	rawGet := func(key string) (string, Layer) {
-		if !strings.HasPrefix(key, "TRAU_") {
-			if v := os.Getenv("TRAU_" + key); v != "" {
-				return v, LayerEnv
-			}
-		}
-		if v := os.Getenv(key); v != "" {
+		if v := envOverride(key); v != "" {
 			return v, LayerEnv
 		}
 		if v, ok := user[key]; ok {

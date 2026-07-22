@@ -599,3 +599,105 @@ func TestCheckSkillsSuggestionFallsBackToInstalled(t *testing.T) {
 		t.Errorf("message %q should fall back to the installed names", c.Message)
 	}
 }
+
+// configLayers writes the three layer files into a temp dir and returns their
+// paths. An empty body means the layer has no file at all.
+func configLayers(t *testing.T, project, local, user string) config.LayerPaths {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if body == "" {
+			return path
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	return config.LayerPaths{
+		Project: write(".trau.ini", project),
+		Local:   write("trau.ini", local),
+		User:    write("home.trau.ini", user),
+	}
+}
+
+func TestCheckConfigLayersNamesEveryLayer(t *testing.T) {
+	paths := configLayers(t, "BASE_BRANCH=main\n", "", "REMOTE=origin\n")
+	rr := newTestRunner()
+	checkConfigLayers(paths, rr)
+
+	c := lastCheck(t, rr)
+	if c.Status != pass {
+		t.Errorf("status = %q, want pass", c.Status)
+	}
+	for _, want := range []string{paths.Project, paths.Local, paths.User} {
+		if !strings.Contains(c.Message, want) {
+			t.Errorf("message %q should name %q", c.Message, want)
+		}
+	}
+	if !strings.Contains(c.Message, "(absent)") {
+		t.Errorf("message %q should mark the layer with no file as absent", c.Message)
+	}
+}
+
+func TestCheckConfigLayersFlagsCwdLocalFile(t *testing.T) {
+	rr := newTestRunner()
+	checkConfigLayers(configLayers(t, "", "BASE_BRANCH=main\n", ""), rr)
+	if msg := lastCheck(t, rr).Message; !strings.Contains(msg, "cwd-local trau.ini present") {
+		t.Errorf("message %q should call out the stray cwd-local file", msg)
+	}
+
+	rr = newTestRunner()
+	checkConfigLayers(configLayers(t, "BASE_BRANCH=main\n", "", ""), rr)
+	if msg := lastCheck(t, rr).Message; strings.Contains(msg, "cwd-local trau.ini present") {
+		t.Errorf("message %q should not flag a cwd-local file that does not exist", msg)
+	}
+}
+
+func TestCheckConfigShadowingWarns(t *testing.T) {
+	t.Setenv("CLAUDE_MODEL", "")
+	t.Setenv("TRAU_CLAUDE_MODEL", "")
+	paths := configLayers(t, "", "CLAUDE_MODEL=\n", "CLAUDE_MODEL=claude-opus-4-8\n")
+
+	rr := newTestRunner()
+	checkConfigShadowing(paths, rr)
+
+	c := lastCheck(t, rr)
+	if c.Status != warn || rr.r.Warnings != 1 {
+		t.Errorf("status = %q warnings = %d, want warn/1", c.Status, rr.r.Warnings)
+	}
+	for _, want := range []string{"CLAUDE_MODEL", paths.Local, paths.User, "claude-opus-4-8"} {
+		if !strings.Contains(c.Message, want) {
+			t.Errorf("message %q should name %q", c.Message, want)
+		}
+	}
+}
+
+func TestCheckConfigShadowingRedactsSecret(t *testing.T) {
+	const token = "s3cr3t-token"
+	t.Setenv("JIRA_API_TOKEN", "")
+	t.Setenv("TRAU_JIRA_API_TOKEN", "")
+	rr := newTestRunner()
+	checkConfigShadowing(configLayers(t, "JIRA_API_TOKEN=\n", "", "JIRA_API_TOKEN="+token+"\n"), rr)
+
+	c := lastCheck(t, rr)
+	if strings.Contains(c.Message, token) {
+		t.Errorf("shadowing warning leaked the token: %q", c.Message)
+	}
+	if !strings.Contains(c.Message, config.RedactedValue) {
+		t.Errorf("message %q should redact the shadowed credential", c.Message)
+	}
+}
+
+func TestCheckConfigShadowingQuietOnPlainOverride(t *testing.T) {
+	t.Setenv("BASE_BRANCH", "")
+	t.Setenv("TRAU_BASE_BRANCH", "")
+	rr := newTestRunner()
+	checkConfigShadowing(configLayers(t, "BASE_BRANCH=develop\n", "", "BASE_BRANCH=main\n"), rr)
+
+	c := lastCheck(t, rr)
+	if c.Status != pass || rr.r.Warnings != 0 {
+		t.Errorf("status = %q warnings = %d, want pass/0 (%s)", c.Status, rr.r.Warnings, c.Message)
+	}
+}
