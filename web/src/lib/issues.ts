@@ -32,6 +32,9 @@ export interface Issue {
   parent?: string
   source?: string
   has_children: boolean
+  // children counts the sub-issues a delete of this ticket purges with it,
+  // archived ones included — the board's children_total leaves those out.
+  children: number
   // blockers are the issue's stored blocked-by edges; blocked is set while any
   // of them is still unresolved, so the drawer can say why a pick refuses it.
   blockers?: string[]
@@ -86,6 +89,26 @@ export const issueQueryOptions = (repo: string, id: string) =>
 async function errorMessage(res: Response, fallback: string): Promise<string> {
   const detail = (await res.json().catch(() => null)) as { error?: string } | null
   return detail?.error ?? `${fallback}: ${res.status}`
+}
+
+export interface DeleteIssueResult {
+  deleted: string[]
+}
+
+// deleteIssue hard-deletes a stored issue and every local trace of it. An issue
+// mid-run answers 409, whose body is the hub's own "stop the run" message.
+export async function deleteIssue(
+  repo: string,
+  id: string,
+): Promise<DeleteIssueResult> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/issues/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'delete issue failed'))
+  }
+  return res.json()
 }
 
 // InternalIssueDraft is the editable content of an issue that lives only in the

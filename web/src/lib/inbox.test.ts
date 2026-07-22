@@ -19,6 +19,7 @@ import {
   prevIssueId,
   rowSession,
   selectedItem,
+  postDeleteTarget,
   skipTarget,
   summarisePregrill,
   type InboxItem,
@@ -409,6 +410,62 @@ describe("skipTarget", () => {
 
   it("has nowhere to go in an empty queue", () => {
     expect(skipTarget([], "COD-1")).toBeNull();
+  });
+});
+
+describe("postDeleteTarget", () => {
+  const items = buildInbox(
+    [entry({ id: "COD-1" }), entry({ id: "COD-2" }), entry({ id: "COD-3" })],
+    [],
+  );
+
+  it("advances to the next item, wrapping past the last", () => {
+    expect(postDeleteTarget(items, ["COD-1"])).toBe("COD-2");
+    expect(postDeleteTarget(items, ["COD-3"])).toBe("COD-1");
+  });
+
+  it("passes over the children a purged epic took with it", () => {
+    const rail = buildInbox(
+      [
+        entry({ id: "COD-1" }),
+        entry({ id: "COD-2", has_children: true }),
+        entry({ id: "COD-3", parent: "COD-2" }),
+        entry({ id: "COD-4" }),
+      ],
+      [],
+    );
+    expect(postDeleteTarget(rail, ["COD-2", "COD-3"])).toBe("COD-4");
+  });
+
+  it("wraps to a survivor above when the purge took the tail", () => {
+    const rail = buildInbox(
+      [
+        entry({ id: "COD-1" }),
+        entry({ id: "COD-2", has_children: true }),
+        entry({ id: "COD-3", parent: "COD-2" }),
+      ],
+      [],
+    );
+    expect(postDeleteTarget(rail, ["COD-2", "COD-3"])).toBe("COD-1");
+  });
+
+  it("selects nothing when the purge emptied the queue", () => {
+    expect(
+      postDeleteTarget(buildInbox([entry({ id: "COD-1" })], []), ["COD-1"]),
+    ).toBeNull();
+    expect(
+      postDeleteTarget(
+        buildInbox(
+          [
+            entry({ id: "COD-1", has_children: true }),
+            entry({ id: "COD-2", parent: "COD-1" }),
+          ],
+          [],
+        ),
+        ["COD-1", "COD-2"],
+      ),
+    ).toBeNull();
+    expect(postDeleteTarget([], ["COD-1"])).toBeNull();
   });
 });
 

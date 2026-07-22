@@ -120,6 +120,38 @@ func TestDeleteIssueListsTheWholeEpicFamily(t *testing.T) {
 	}
 }
 
+func TestIssueChildCountMatchesWhatTheDeleteRemoves(t *testing.T) {
+	s, root, ts := archiveServer(t, []hubstore.Issue{
+		{Identifier: "COD-1", StatusGroup: "backlog", HasChildren: true},
+		{Identifier: "COD-2", StatusGroup: "backlog", Parent: "COD-1"},
+		{Identifier: "COD-3", StatusGroup: "backlog", Parent: "COD-1"},
+	})
+	if _, _, err := s.stores.Issues().SetArchived(root, "COD-3", true); err != nil {
+		t.Fatalf("archive child: %v", err)
+	}
+
+	for _, entry := range backlogItems(t, ts) {
+		if entry.ID == "COD-1" && (entry.ChildrenTotal == nil || *entry.ChildrenTotal != 1) {
+			t.Fatalf("board children_total = %v, want 1 — the archived child is off the board", entry.ChildrenTotal)
+		}
+	}
+
+	_, epic := getIssue(t, ts, "acme", "COD-1")
+	if epic.Children != 2 {
+		t.Errorf("children = %d, want 2 — an archived child is purged with the epic like any other", epic.Children)
+	}
+	if _, leaf := getIssue(t, ts, "acme", "COD-2"); leaf.Children != 0 {
+		t.Errorf("leaf children = %d, want 0", leaf.Children)
+	}
+
+	res := doReq(t, http.MethodDelete, ts.URL+APIPrefix+"/repos/acme/issues/COD-1", nil)
+	defer func() { _ = res.Body.Close() }()
+	deleted := deleteIssueResponse(t, res).Deleted
+	if len(deleted) != epic.Children+1 {
+		t.Errorf("deleted %v, want the %d children the confirm named plus the epic itself", deleted, epic.Children)
+	}
+}
+
 func TestDeleteIssueConflictsWithARunningMember(t *testing.T) {
 	s, root, ts := archiveServer(t, []hubstore.Issue{
 		{Identifier: "COD-1", StatusGroup: "backlog", HasChildren: true},
