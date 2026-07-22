@@ -69,6 +69,23 @@ func MechanicalPhase(label string) bool {
 	return false
 }
 
+// steerablePhasePrefixes is deliberately an allow-list rather than the inverse of
+// MechanicalPhase: repair and bugfix are mechanical in the MCP-stripping sense
+// yet are exactly where a mid-run correction lands.
+var steerablePhasePrefixes = []string{PhaseBuild, PhaseHandoff, PhaseVerify, PhaseRepair, PhaseBugfix}
+
+// SteerablePhase reports whether label names a phase that takes operator steer
+// notes. Prefix-matched on the raw label, so repair2, verify-retry1, and a verify
+// panel member (verify-codex) all qualify.
+func SteerablePhase(label string) bool {
+	for _, p := range steerablePhasePrefixes {
+		if strings.HasPrefix(label, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // Router dispatches each agent call to a per-phase backend Runner, falling back
 // to Default when a phase has no override. It is itself a [Runner], so the
 // pipeline and tracker are unchanged — they call Run(ctx, prompt, label) exactly
