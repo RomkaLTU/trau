@@ -92,3 +92,11 @@ func (w *internalWriter) LinkBlocks(_ context.Context, blocker, blocked string) 
 func (w *internalWriter) PublishDocument(context.Context, tracker.DocumentDraft) (tracker.PublishedDocument, error) {
 	return tracker.PublishedDocument{}, errors.New("internal issues have no document store; publishing a PRD needs an external tracker")
 }
+
+func (w *internalWriter) AssignIssue(context.Context, string, string) error {
+	return fmt.Errorf("internal issues are always Unassigned: %w", tracker.ErrUnsupported)
+}
+
+func (w *internalWriter) AssignableUsers(context.Context, string) ([]tracker.AssignableUser, error) {
+	return nil, fmt.Errorf("internal issues have no tracker users to assign: %w", tracker.ErrUnsupported)
+}

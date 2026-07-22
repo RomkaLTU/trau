@@ -1,6 +1,6 @@
 # ADR 0014 — Assignees are reflected read-only; "Me" is derived from tracker credentials
 
-- **Status:** Accepted
+- **Status:** Accepted (amended by [ADR 0020](0020-outbound-assignment-write.md))
 - **Date:** 2026-07-16
 - **Deciders:** Romas (sole maintainer)
 
@@ -37,7 +37,10 @@ who the operator is — it only renders booleans.
 **Reflection is one-way.** Assignee is never written back to the tracker,
 and assignment does not influence the picker, queue, or loop. Sync
 overwrites to NULL when a ticket is unassigned upstream — the upsert must
-not coalesce old assignees into place.
+not coalesce old assignees into place. (Amended by ADR 0020: the hub may now
+write assignment outbound on an explicit user gesture. Everything else here
+stands — sync remains authoritative, and assignment is still behaviorally
+inert.)
 
 **No avatar URLs.** Jira Cloud avatar URLs sit behind auth, so hotlinking
 fails in the browser; surfaces render initials avatars for both trackers.

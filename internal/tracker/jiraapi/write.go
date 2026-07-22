@@ -111,6 +111,35 @@ type descriptionFields struct {
 	Description adfDoc `json:"description"`
 }
 
+// AssignIssue sets the issue's assignee by accountId, or clears it when accountID
+// is empty — the body then carries an explicit null accountId, which is what Jira
+// reads as Unassigned. Success is a 204.
+func (c *Client) AssignIssue(ctx context.Context, key, accountID string) error {
+	if !c.enabled() {
+		return ErrNotEnabled
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ErrNotFound
+	}
+	var req assigneeRequest
+	if accountID = strings.TrimSpace(accountID); accountID != "" {
+		req.AccountID = &accountID
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	return c.do(ctx, http.MethodPut, "/issue/"+url.PathEscape(key)+"/assignee", body, nil)
+}
+
+// assigneeRequest is the PUT /issue/{key}/assignee body. AccountID is a pointer so
+// a cleared assignee marshals as null rather than being omitted, which Jira would
+// read as "leave it alone".
+type assigneeRequest struct {
+	AccountID *string `json:"accountId"`
+}
+
 // CreateIssue creates a new issue and returns its key. The issue type is resolved
 // by name to its project-specific id via createmeta so the create references a
 // stable id rather than a name a project may spell differently; the description

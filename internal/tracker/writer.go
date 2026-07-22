@@ -15,6 +15,11 @@ import (
 // which a Writer never does.
 var ErrWriterUnavailable = errors.New("tracker: no direct API credentials configured")
 
+// ErrUnsupported means the provider has no direct-API path for the requested
+// operation. It is a capability gap, not a failure: a surface that reads it hides
+// the affordance rather than reporting an error.
+var ErrUnsupported = errors.New("tracker: operation not supported by this provider")
+
 // jiraDefaultIssueType is the issue type a hub-created Jira issue is filed as.
 // Every Jira project ships with "Task"; the general new-issue form does not pick
 // a type.
@@ -38,6 +43,14 @@ type IssueDraft struct {
 type NewIssue struct {
 	Identifier string
 	URL        string
+}
+
+// AssignableUser is one person the tracker will accept as an issue's assignee,
+// keyed by the provider's own user id (Linear user id, Jira accountId). The
+// lookup is live — trau persists no users of its own (ADR 0020).
+type AssignableUser struct {
+	ID   string
+	Name string
 }
 
 // DocumentDraft is a PRD to publish: a title and its markdown body.
@@ -74,6 +87,12 @@ type Writer interface {
 	// blocker), the direction the readers interpret. Both are human identifiers.
 	LinkBlocks(ctx context.Context, blocker, blocked string) error
 	PublishDocument(ctx context.Context, draft DocumentDraft) (PublishedDocument, error)
+	// AssignIssue writes the issue's assignee on the tracker; an empty assigneeID
+	// clears it (Unassigned). Always driven by an explicit user gesture (ADR 0020).
+	AssignIssue(ctx context.Context, id, assigneeID string) error
+	// AssignableUsers lists who an issue can be assigned to, optionally narrowed by
+	// a display-name query.
+	AssignableUsers(ctx context.Context, query string) ([]AssignableUser, error)
 }
 
 // NewWriter builds a direct Writer for the provider from cfg, or
@@ -101,7 +120,7 @@ func NewWriter(provider string, cfg Config) (Writer, error) {
 			epicType:  cfg.EpicType,
 		}, nil
 	case "github":
-		return nil, fmt.Errorf("tracker: github issue creation over the direct API is not supported")
+		return nil, fmt.Errorf("tracker: github issue creation over the direct API is not supported: %w", ErrUnsupported)
 	case "internal":
 		return nil, errors.New("tracker: internal issues are hub-owned; the serve hub writes them straight to its issue store, not through a direct-API writer")
 	default:
@@ -158,6 +177,22 @@ func (w *linearWriter) LinkBlocks(ctx context.Context, blocker, blocked string) 
 	return w.client.CreateBlockRelation(ctx, blocker, blocked)
 }
 
+func (w *linearWriter) AssignIssue(ctx context.Context, id, assigneeID string) error {
+	return w.client.AssignIssue(ctx, id, assigneeID)
+}
+
+func (w *linearWriter) AssignableUsers(ctx context.Context, query string) ([]AssignableUser, error) {
+	users, err := w.client.AssignableUsers(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AssignableUser, 0, len(users))
+	for _, u := range users {
+		out = append(out, AssignableUser{ID: u.ID, Name: u.Name})
+	}
+	return out, nil
+}
+
 func (w *linearWriter) PublishDocument(ctx context.Context, draft DocumentDraft) (PublishedDocument, error) {
 	if strings.TrimSpace(w.project) == "" {
 		return PublishedDocument{}, errors.New("tracker: no Linear project configured for this repo (set PROJECT) — a PRD document needs a project to live under")
@@ -210,6 +245,22 @@ func (w *jiraWriter) UpdateLabels(ctx context.Context, id string, add, remove []
 
 func (w *jiraWriter) LinkBlocks(ctx context.Context, blocker, blocked string) error {
 	return w.client.LinkBlocks(ctx, blocker, blocked)
+}
+
+func (w *jiraWriter) AssignIssue(ctx context.Context, id, assigneeID string) error {
+	return w.client.AssignIssue(ctx, id, assigneeID)
+}
+
+func (w *jiraWriter) AssignableUsers(ctx context.Context, query string) ([]AssignableUser, error) {
+	users, err := w.client.AssignableUsers(ctx, w.project, query)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AssignableUser, 0, len(users))
+	for _, u := range users {
+		out = append(out, AssignableUser{ID: u.ID, Name: u.Name})
+	}
+	return out, nil
 }
 
 func (w *jiraWriter) PublishDocument(ctx context.Context, draft DocumentDraft) (PublishedDocument, error) {

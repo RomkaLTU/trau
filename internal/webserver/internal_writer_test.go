@@ -2,6 +2,7 @@ package webserver
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -195,5 +196,15 @@ func TestInternalWriterRefusesDocuments(t *testing.T) {
 	w := &internalWriter{}
 	if _, err := w.PublishDocument(context.Background(), tracker.DocumentDraft{Title: "PRD", Markdown: "body"}); err == nil {
 		t.Fatal("PublishDocument on internal = nil error, want an explicit refusal")
+	}
+}
+
+func TestInternalWriterRefusesAssignment(t *testing.T) {
+	w := &internalWriter{}
+	if err := w.AssignIssue(context.Background(), "ACME-1", "u-1"); !errors.Is(err, tracker.ErrUnsupported) {
+		t.Errorf("AssignIssue on internal = %v, want ErrUnsupported", err)
+	}
+	if _, err := w.AssignableUsers(context.Background(), ""); !errors.Is(err, tracker.ErrUnsupported) {
+		t.Errorf("AssignableUsers on internal = %v, want ErrUnsupported", err)
 	}
 }

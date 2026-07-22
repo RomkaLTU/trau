@@ -693,6 +693,103 @@ func TestGrillApplyCreatePartialRetry(t *testing.T) {
 	}
 }
 
+func TestGrillApplyCreateEpicAssignsEveryCreatedIssue(t *testing.T) {
+	fake := newFakeWriter()
+	fake.createQueue = []fakeCreate{
+		{issue: tracker.NewIssue{Identifier: "COD-400"}},
+		{issue: tracker.NewIssue{Identifier: "COD-401"}},
+	}
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispCreate,
+		Title:               "Checkout redesign",
+		ProposedDescription: "Epic: redesign the checkout.",
+		Summary:             "authored an epic",
+		SubIssues:           []grillSubIssue{{Title: "Cart page", Description: "rebuild the cart"}},
+	})
+
+	res, out := applyGrill(t, ts, sid, GrillApplyRequest{Assignee: &grillAssignee{ID: "usr_1", Name: "Ada Lovelace"}})
+	if res.StatusCode != http.StatusOK || !out.Applied {
+		t.Fatalf("apply = %+v (status %d), want applied", out, res.StatusCode)
+	}
+	want := []assignCall{{id: "COD-400", assigneeID: "usr_1"}, {id: "COD-401", assigneeID: "usr_1"}}
+	if !slices.Equal(fake.assigned, want) {
+		t.Fatalf("assigned = %+v, want the epic parent and its slice on the picked person %+v", fake.assigned, want)
+	}
+	for _, step := range []string{"assign: COD-400", "assign: COD-401"} {
+		if status, ok := stepStatus(out.Steps, step); !ok || status != grillStepOK {
+			t.Errorf("step %q = %q (present=%v), want ok", step, status, ok)
+		}
+	}
+}
+
+func TestGrillApplySplitAssignsCreatedSubIssues(t *testing.T) {
+	fake := newFakeWriter()
+	fake.createQueue = []fakeCreate{{issue: tracker.NewIssue{Identifier: "COD-2"}}}
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "COD-1", grillOutcome{
+		Disposition:         grillDispSplit,
+		ProposedDescription: "Epic goal framing.",
+		Summary:             "sliced into one",
+		SubIssues:           []grillSubIssue{{Title: "Slice A", Description: "do a"}},
+	})
+
+	res, out := applyGrill(t, ts, sid, GrillApplyRequest{Assignee: &grillAssignee{ID: "usr_1", Name: "Ada Lovelace"}})
+	if res.StatusCode != http.StatusOK || !out.Applied {
+		t.Fatalf("apply = %+v (status %d), want applied", out, res.StatusCode)
+	}
+	want := []assignCall{{id: "COD-2", assigneeID: "usr_1"}}
+	if !slices.Equal(fake.assigned, want) {
+		t.Fatalf("assigned = %+v, want only the created slice %+v — the parent already exists and keeps its own assignee", fake.assigned, want)
+	}
+}
+
+func TestGrillApplyAssignFailureLeavesTheApplyApplied(t *testing.T) {
+	fake := newFakeWriter()
+	fake.createQueue = []fakeCreate{{issue: tracker.NewIssue{Identifier: "COD-500"}}}
+	fake.assignErr = errString("linear: not a member of the team")
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispCreate,
+		Title:               "Add dark mode toggle",
+		ProposedDescription: "As a user I can toggle dark mode.",
+		Summary:             "specced the toggle",
+	})
+
+	res, out := applyGrill(t, ts, sid, GrillApplyRequest{Assignee: &grillAssignee{ID: "usr_1", Name: "Ada Lovelace"}})
+	if res.StatusCode != http.StatusOK || !out.Applied || out.Session.State != hubstore.GrillApplied {
+		t.Fatalf("apply = %+v (status %d), want applied despite the refused assignment", out, res.StatusCode)
+	}
+	if status, ok := stepStatus(out.Steps, "assign: COD-500"); !ok || status != grillStepFailed {
+		t.Fatalf("assign step = %q (present=%v), want a visible failed step", status, ok)
+	}
+	if len(fake.comments) != 1 {
+		t.Errorf("comments = %+v, want the summary still posted after the failed assignment", fake.comments)
+	}
+}
+
+func TestGrillApplyInternalDestinationIgnoresAssignee(t *testing.T) {
+	fake := newFakeWriter()
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispCreate,
+		Title:               "Add dark mode toggle",
+		ProposedDescription: "As a user I can toggle dark mode.",
+		Summary:             "specced the toggle",
+	})
+
+	res, out := applyGrill(t, ts, sid, GrillApplyRequest{
+		Destination: "internal",
+		Assignee:    &grillAssignee{ID: "usr_1", Name: "Ada Lovelace"},
+	})
+	if res.StatusCode != http.StatusOK || !out.Applied {
+		t.Fatalf("apply = %+v (status %d), want applied", out, res.StatusCode)
+	}
+	if len(fake.assigned) != 0 {
+		t.Errorf("assigned = %+v, want none — the internal store has nobody to assign", fake.assigned)
+	}
+}
+
 func TestGrillApplyUnknownDestination(t *testing.T) {
 	fake := newFakeWriter()
 	ts, stores, root := grillApplyServer(t, fake)

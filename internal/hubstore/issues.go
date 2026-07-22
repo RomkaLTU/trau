@@ -953,6 +953,10 @@ type SyncedPatch struct {
 	Description  string
 	AddLabels    []string
 	RemoveLabels []string
+	// Nil leaves the stored assignee alone; a pointer to "" clears it to
+	// Unassigned (ADR 0020).
+	AssigneeID   *string
+	AssigneeName *string
 }
 
 // UpdateSynced applies a tracker write's status/description/label change to a
@@ -967,17 +971,19 @@ func (s *Issues) UpdateSynced(repo, identifier string, patch SyncedPatch) (Issue
 		return Issue{}, false, err
 	}
 	var (
-		id          int64
-		status      string
-		group       string
-		description string
-		labelsRaw   string
+		id           int64
+		status       string
+		group        string
+		description  string
+		labelsRaw    string
+		assigneeID   sql.NullString
+		assigneeName sql.NullString
 	)
 	err = tx.QueryRow(
-		`SELECT id, status, status_group, description, labels FROM issues
+		`SELECT id, status, status_group, description, labels, assignee_id, assignee_name FROM issues
 		 WHERE repo = ? AND identifier = ? AND source <> ?`,
 		repo, identifier, SourceInternal,
-	).Scan(&id, &status, &group, &description, &labelsRaw)
+	).Scan(&id, &status, &group, &description, &labelsRaw, &assigneeID, &assigneeName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Issue{}, false, tx.Rollback()
 	}
@@ -993,6 +999,12 @@ func (s *Issues) UpdateSynced(repo, identifier string, patch SyncedPatch) (Issue
 	if patch.Description != "" {
 		description = patch.Description
 	}
+	if patch.AssigneeID != nil {
+		assigneeID = nullableText(*patch.AssigneeID)
+	}
+	if patch.AssigneeName != nil {
+		assigneeName = nullableText(*patch.AssigneeName)
+	}
 	labels := mergeLabels(decodeLabels(labelsRaw), patch.AddLabels, patch.RemoveLabels)
 	labelsJSON, err := json.Marshal(labels)
 	if err != nil {
@@ -1000,8 +1012,9 @@ func (s *Issues) UpdateSynced(repo, identifier string, patch SyncedPatch) (Issue
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := tx.Exec(
-		`UPDATE issues SET status = ?, status_group = ?, description = ?, labels = ?, updated_at = ? WHERE id = ?`,
-		status, group, description, string(labelsJSON), now, id,
+		`UPDATE issues SET status = ?, status_group = ?, description = ?, labels = ?,
+			assignee_id = ?, assignee_name = ?, updated_at = ? WHERE id = ?`,
+		status, group, description, string(labelsJSON), assigneeID, assigneeName, now, id,
 	); err != nil {
 		return Issue{}, false, errors.Join(err, tx.Rollback())
 	}
@@ -1119,6 +1132,11 @@ func (s *Issues) DropSynced(repo string) error {
 func (s *Issues) DeleteSyncState(repo string) error {
 	_, err := s.db.Exec(`DELETE FROM issue_sync WHERE repo = ?`, repo)
 	return err
+}
+
+// nullableText stores an empty string as NULL, the encoding Unassigned uses.
+func nullableText(v string) sql.NullString {
+	return sql.NullString{String: v, Valid: v != ""}
 }
 
 func labelList(labels []string) []string {

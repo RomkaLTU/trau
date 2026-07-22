@@ -10,9 +10,13 @@ import {
   ListPlus,
   Pencil,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { ArchiveToast } from "@/components/archive-toast";
-import { AssigneeAvatar } from "@/components/trau/assignee-avatar";
+import {
+  AssigneeDisplay,
+  AssigneePicker,
+} from "@/components/trau/assignee-picker";
 import { DeleteIssueDialog } from "@/components/delete-issue-dialog";
 import { InternalIssueForm } from "@/components/internal-issue-form";
 import { IssueAttachments } from "@/components/issue-attachments";
@@ -25,7 +29,8 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { assigneeLabel } from "@/lib/assignee";
+import { type Assignee } from "@/lib/assignee";
+import { assignIssue, publishAssignment } from "@/lib/assignees";
 import { useIssueAttachments } from "@/lib/attachments";
 import {
   IssueFetchError,
@@ -124,6 +129,12 @@ function IssueDrawerBody({
   const addToQueue = useMutation({
     mutationFn: () => enqueue(repo, { id }),
     onSuccess: (res) => publishQueue(queryClient, repo, res),
+  });
+
+  const assign = useMutation({
+    mutationFn: (next: Assignee | null) => assignIssue(repo, id, next),
+    onSuccess: (updated) => publishAssignment(queryClient, repo, updated),
+    onError: (err) => toast.error(err.message),
   });
 
   const [archiveNote, setArchiveNote] = useState<string | null>(null);
@@ -227,16 +238,15 @@ function IssueDrawerBody({
         )}
         <div className="flex items-center gap-2 text-xs">
           <span className="text-muted-foreground">Assignee</span>
-          {issue.assignee ? (
-            <span className="inline-flex items-center gap-1.5 text-foreground">
-              <AssigneeAvatar
-                assignee={issue.assignee}
-                className="size-5 text-[0.6rem]"
-              />
-              {assigneeLabel(issue.assignee)}
-            </span>
+          {internal ? (
+            <AssigneeDisplay assignee={issue.assignee} />
           ) : (
-            <span className="text-muted-foreground">Unassigned</span>
+            <AssigneePicker
+              repo={repo}
+              assignee={issue.assignee}
+              onSelect={(next) => assign.mutate(next)}
+              disabled={assign.isPending}
+            />
           )}
         </div>
       </SheetHeader>

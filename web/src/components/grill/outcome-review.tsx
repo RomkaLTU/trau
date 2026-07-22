@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { toast } from "sonner";
 import {
   Check,
   CheckCircle2,
@@ -11,13 +12,17 @@ import {
   Pencil,
   Plus,
   Trash2,
+  TriangleAlert,
   X,
   XCircle,
 } from "lucide-react";
 
 import { Markdown } from "@/components/markdown";
+import { AssigneePicker } from "@/components/trau/assignee-picker";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { type Assignee } from "@/lib/assignee";
+import { assignableUsersQueryOptions } from "@/lib/assignees";
 import {
   abandonGrill,
   applyGrill,
@@ -112,6 +117,15 @@ export function OutcomeReview({
   const [destination, setDestination] = useState<GrillDestination>(
     session.issue_destination === "internal" ? "internal" : "tracker",
   );
+  const [assignee, setAssignee] = useState<Assignee | null>(null);
+
+  // The probe shares its cache entry with the picker's own, so gating the control on
+  // it costs nothing and hides it entirely on a tracker with nobody to assign.
+  const creates = isCreate || isSplit;
+  const assignable = useQuery({
+    ...assignableUsersQueryOptions(repo, ""),
+    enabled: creates && destination === "tracker",
+  });
 
   // The session's new state rides onSession (and the hub's SSE state frame), so the
   // grill list is left to go stale on its own — invalidating it here would drop the
@@ -119,14 +133,17 @@ export function OutcomeReview({
   // are refreshed, which is what makes the issue leave the unclear set once its
   // triage labels are gone.
   const apply = useMutation({
-    mutationFn: (destination: GrillDestination) =>
-      applyGrill(
+    mutationFn: (destination: GrillDestination) => {
+      const internal = destination === "internal";
+      return applyGrill(
         session.id,
         carriesDescription ? draft : "",
         carriesSubs ? toSubIssues(subs) : undefined,
         isCreate ? title.trim() : undefined,
-        destination === "internal" ? destination : undefined,
-      ),
+        internal ? destination : undefined,
+        internal ? null : assignee,
+      );
+    },
     onSuccess: (res) => {
       onSession(res.session);
       if (res.applied) {
@@ -134,6 +151,7 @@ export function OutcomeReview({
           queryKey: ["issue", repo, issueId],
         });
         void queryClient.invalidateQueries({ queryKey: ["backlog", repo] });
+        reportApplyFailures(res.steps);
         onApplied?.(
           grillAppliedOutcome(res, outcome.disposition, title.trim()),
         );
@@ -232,6 +250,20 @@ export function OutcomeReview({
           disabled={busy}
           onChange={setDestination}
         />
+      )}
+
+      {creates && destination === "tracker" && assignable.isSuccess && (
+        <div className="flex flex-col items-start gap-1">
+          <span className="text-xs font-medium text-muted-foreground">
+            Assign to
+          </span>
+          <AssigneePicker
+            repo={repo}
+            assignee={assignee}
+            onSelect={setAssignee}
+            disabled={busy}
+          />
+        </div>
       )}
 
       {failedSteps.length > 0 && <StepList steps={failedSteps} />}
@@ -885,6 +917,50 @@ const STEP_LABELS: Record<string, string> = {
   labels: "Labels",
   relations: "Blocking relations",
 };
+
+// reportApplyFailures raises the steps that failed inside an apply that still landed
+// — a tracker refusing an assignment on an issue it did create. The host retires the
+// review the moment the session settles, so the applied card's step list is gone
+// before it can be read; a toast outlives the queue moving on.
+function reportApplyFailures(steps: GrillApplyStep[]) {
+  const failed = steps.filter((step) => step.status === "failed");
+  if (failed.length === 0) return;
+  toast.custom(
+    (id) => (
+      <ApplyFailuresCard steps={failed} onDismiss={() => toast.dismiss(id)} />
+    ),
+    { duration: 10_000 },
+  );
+}
+
+function ApplyFailuresCard({
+  steps,
+  onDismiss,
+}: {
+  steps: GrillApplyStep[];
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="flex w-[356px] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-lg border border-border bg-popover p-3 shadow-lg">
+      <TriangleAlert className="mt-0.5 size-4 shrink-0 text-fail" aria-hidden />
+      <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <p className="text-sm text-popover-foreground">
+          Applied, but {steps.length === 1 ? "a step" : `${steps.length} steps`}{" "}
+          did not land.
+        </p>
+        <StepList steps={steps} />
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        aria-label="Dismiss"
+        className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      >
+        <X className="size-4" aria-hidden />
+      </button>
+    </div>
+  );
+}
 
 function StepList({ steps }: { steps: GrillApplyStep[] }) {
   return (

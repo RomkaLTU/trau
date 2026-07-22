@@ -295,7 +295,9 @@ function InboxPage() {
   // rides out the settle on the streamed session. A draft has no board row, so its
   // list is refreshed to retire the settled authoring row. A create apply raises the
   // created toast — the skip advances the queue, so the toast is what carries the
-  // filed issue's id across the navigation.
+  // filed issue's id across the navigation. An apply that landed with a failed step
+  // raises its own toast in the same corner, and that one is the news, so the plain
+  // confirmation stands aside.
   function onApplied(applied: GrillAppliedOutcome) {
     const wasDraft = selected?.draft;
     skip();
@@ -305,7 +307,11 @@ function InboxPage() {
     });
     if (wasDraft)
       void queryClient.invalidateQueries({ queryKey: ["grill", repo] });
-    if (applied.disposition === "create" && applied.issueId !== "")
+    if (
+      !applied.hasFailures &&
+      applied.disposition === "create" &&
+      applied.issueId !== ""
+    )
       setCreated(applied);
   }
 
