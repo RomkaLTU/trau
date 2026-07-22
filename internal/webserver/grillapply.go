@@ -423,8 +423,10 @@ type grillCreatePlan struct {
 // rather than filing a duplicate; an anchor from a different destination is no
 // anchor here — reusing it would graft children onto an identifier the requested
 // store has never seen — so a destination switch files a fresh parent and
-// re-anchors. An epic then creates its sub-issues as children, wires the sibling
-// relations, and comments on the parent — reusing the split machinery. A single
+// re-anchors. A parent with proposed slices is drafted as an epic so a tracker
+// with a typed hierarchy files it a level above the children it is about to take.
+// An epic then creates its sub-issues as children, wires the sibling relations,
+// and comments on the parent — reusing the split machinery. A single
 // issue is created with the default ready label and takes the summary comment
 // directly. Each created issue is mirrored into the store so the board shows it
 // and the next inbound sync sees no divergence (ADR 0007).
@@ -455,6 +457,7 @@ func (s *Server) applyGrillCreate(ctx context.Context, writer tracker.Writer, se
 			Title:       plan.title,
 			Description: plan.description,
 			Labels:      labels,
+			Epic:        epic,
 		})
 		record(grillCreateParentStep(epic, plan.title), err)
 		if err != nil {

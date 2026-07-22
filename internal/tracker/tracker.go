@@ -58,6 +58,10 @@ type Config struct {
 	// Linear and GitHub providers.
 	BaseURL string
 	Email   string
+	// EpicType names the Jira issue type an epic-shaped draft is filed as,
+	// overriding the lookup of the project's own hierarchy-level-1 type. Unused by
+	// the Linear, GitHub and internal providers.
+	EpicType string
 	// Repo, HubBaseURL, and HubToken wire the internal provider to the serve hub:
 	// the hub-registered repo name it addresses, the hub origin
 	// (e.g. http://127.0.0.1:8728), and the bearer token for an exposed hub. All

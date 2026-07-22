@@ -138,6 +138,36 @@ func (c *Client) CreateIssue(ctx context.Context, projectKey, issueType, summary
 	if parent = strings.TrimSpace(parent); parent != "" {
 		fields.Parent = &keyRef{Key: parent}
 	}
+	return c.postIssue(ctx, fields)
+}
+
+// CreateEpic creates a parent issue at the project's epic hierarchy level and
+// returns its key. Jira accepts a parent only one level above its children, so an
+// epic filed at the Task level rejects every child with "Please select valid
+// parent issue"; typeName pins the level-1 type by name when the project's own
+// metadata should not choose it.
+func (c *Client) CreateEpic(ctx context.Context, projectKey, typeName, summary, description string, labels []string) (string, error) {
+	if !c.enabled() {
+		return "", ErrNotEnabled
+	}
+	projectKey = strings.TrimSpace(projectKey)
+	if projectKey == "" {
+		return "", ErrNotEnabled
+	}
+	typeID, err := c.resolveEpicType(ctx, projectKey, typeName)
+	if err != nil {
+		return "", err
+	}
+	return c.postIssue(ctx, createFields{
+		Project:     keyRef{Key: projectKey},
+		IssueType:   idRef{ID: typeID},
+		Summary:     summary,
+		Description: buildADF(description),
+		Labels:      labels,
+	})
+}
+
+func (c *Client) postIssue(ctx context.Context, fields createFields) (string, error) {
 	body, err := json.Marshal(createIssueRequest{Fields: fields})
 	if err != nil {
 		return "", err
@@ -186,30 +216,61 @@ type linkTypeRef struct {
 	Name string `json:"name"`
 }
 
-// resolveIssueType returns the id of the named issue type in a project via
-// createmeta. An unmatched name is a real error the caller surfaces.
-func (c *Client) resolveIssueType(ctx context.Context, projectKey, name string) (string, error) {
+// issueTypes lists the types a project can create via createmeta.
+func (c *Client) issueTypes(ctx context.Context, projectKey string) ([]issueTypeMeta, error) {
 	var resp issueTypesResponse
 	path := "/issue/createmeta/" + url.PathEscape(projectKey) + "/issuetypes"
 	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.IssueTypes, nil
+}
+
+// resolveIssueType returns the id of the named issue type in a project. An
+// unmatched name is a real error the caller surfaces.
+func (c *Client) resolveIssueType(ctx context.Context, projectKey, name string) (string, error) {
+	types, err := c.issueTypes(ctx, projectKey)
+	if err != nil {
 		return "", err
 	}
-	available := make([]string, 0, len(resp.IssueTypes))
-	for _, it := range resp.IssueTypes {
+	for _, it := range types {
 		if strings.EqualFold(strings.TrimSpace(it.Name), strings.TrimSpace(name)) {
 			return it.ID, nil
 		}
-		available = append(available, it.Name)
 	}
-	return "", fmt.Errorf("jira: no %q issue type in project %s (available: %s)", name, projectKey, issueTypeList(available))
+	return "", fmt.Errorf("jira: no %q issue type in project %s (available: %s)", name, projectKey, issueTypeList(types))
+}
+
+// resolveEpicType returns the id of the project's parent-capable issue type: the
+// named one when the caller pins it, otherwise the first type at hierarchy
+// level 1. The level comes from the project's own metadata rather than a match on
+// the name "Epic", which varies by project template and site language.
+func (c *Client) resolveEpicType(ctx context.Context, projectKey, name string) (string, error) {
+	if name = strings.TrimSpace(name); name != "" {
+		return c.resolveIssueType(ctx, projectKey, name)
+	}
+	types, err := c.issueTypes(ctx, projectKey)
+	if err != nil {
+		return "", err
+	}
+	for _, it := range types {
+		if it.HierarchyLevel == 1 {
+			return it.ID, nil
+		}
+	}
+	return "", fmt.Errorf("jira: no epic-level issue type in project %s (available: %s)", projectKey, issueTypeList(types))
 }
 
 // issueTypeList renders the project's issue-type names for the unmatched-type
-// error. An empty set reads as "none", which points at the listing itself rather
+// errors. An empty set reads as "none", which points at the listing itself rather
 // than at the project's configuration.
-func issueTypeList(names []string) string {
-	if len(names) == 0 {
+func issueTypeList(types []issueTypeMeta) string {
+	if len(types) == 0 {
 		return "none"
+	}
+	names := make([]string, 0, len(types))
+	for _, it := range types {
+		names = append(names, it.Name)
 	}
 	return strings.Join(names, ", ")
 }
@@ -217,10 +278,15 @@ func issueTypeList(names []string) string {
 // issueTypesResponse is the createmeta issue-type listing. The array is keyed
 // "issueTypes" here, unlike the "values" every other paginated Jira endpoint uses.
 type issueTypesResponse struct {
-	IssueTypes []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	} `json:"issueTypes"`
+	IssueTypes []issueTypeMeta `json:"issueTypes"`
+}
+
+// issueTypeMeta is one creatable issue type. HierarchyLevel is -1 for subtasks,
+// 0 for Task-level work and 1 for the epic level a Task's parent sits at.
+type issueTypeMeta struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	HierarchyLevel int    `json:"hierarchyLevel"`
 }
 
 type createIssueRequest struct {

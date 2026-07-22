@@ -506,6 +506,9 @@ func TestGrillApplyCreateSingle(t *testing.T) {
 	if fake.created[0].Title != "Add dark mode toggle" || fake.created[0].Parent != "" {
 		t.Fatalf("created draft = %+v, want a titled top-level issue", fake.created[0])
 	}
+	if fake.created[0].Epic {
+		t.Error("standalone issue is marked as an epic; a create with no slices keeps the default issue type")
+	}
 	if got := fake.created[0].Labels; !slices.Equal(got, []string{"ready-for-agent"}) {
 		t.Errorf("single-issue labels = %v, want the default ready label", got)
 	}
@@ -596,12 +599,18 @@ func TestGrillApplyCreateEpic(t *testing.T) {
 	if fake.created[0].Parent != "" || fake.created[0].Title != "Checkout redesign" {
 		t.Errorf("parent draft = %+v, want a top-level epic", fake.created[0])
 	}
+	if !fake.created[0].Epic {
+		t.Error("parent draft is not marked as an epic; a typed tracker files it at the children's own level and every child create is rejected")
+	}
 	if len(fake.created[0].Labels) != 0 {
 		t.Errorf("epic parent labels = %v, want none — readiness lives on the children", fake.created[0].Labels)
 	}
 	for _, d := range fake.created[1:] {
 		if d.Parent != "COD-200" {
 			t.Errorf("child %q parent = %q, want COD-200", d.Title, d.Parent)
+		}
+		if d.Epic {
+			t.Errorf("child %q is marked as an epic, want a leaf under the epic", d.Title)
 		}
 		if !slices.Equal(d.Labels, []string{"ready-for-agent"}) {
 			t.Errorf("child %q labels = %v, want the default ready label", d.Title, d.Labels)

@@ -195,6 +195,15 @@ const (
 
 	createmetaTaskOnly = `{"startAt":0,"maxResults":50,"total":1,"issueTypes":[` +
 		`{"id":"10001","name":"Task","subtask":false,"hierarchyLevel":0}]}`
+
+	// createmetaWithEpicLevel is a project whose parent-capable type is not named
+	// "Epic" — the hierarchy level is what lets a type parent a Task, and the name
+	// varies by project template and site language.
+	createmetaWithEpicLevel = `{"startAt":0,"maxResults":50,"total":4,"issueTypes":[` +
+		`{"id":"10001","name":"Task","subtask":false,"hierarchyLevel":0},` +
+		`{"id":"10004","name":"Bug","subtask":false,"hierarchyLevel":0},` +
+		`{"id":"10009","name":"Feature","subtask":false,"hierarchyLevel":1},` +
+		`{"id":"10003","name":"Subtask","subtask":true,"hierarchyLevel":-1}]}`
 )
 
 // CreateIssue resolves the issue type id via createmeta, then POSTs the issue
@@ -320,6 +329,108 @@ func TestCreateIssueEmptyTypeListing(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "available: none") {
 		t.Errorf("err = %v, want it to report no available types", err)
+	}
+}
+
+// CreateEpic files the parent at the project's hierarchy level 1 — found by level,
+// not by the name "Epic" — so the children created after it can name it as their
+// parent. The epic itself nests under nothing.
+func TestCreateEpicResolvesHierarchyLevelOne(t *testing.T) {
+	var (
+		methods []string
+		req     createIssueRequest
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method)
+		if r.Method == http.MethodGet {
+			if !strings.Contains(r.URL.Path, "/issue/createmeta/PROJ/issuetypes") {
+				t.Errorf("createmeta path = %q", r.URL.Path)
+			}
+			_, _ = w.Write([]byte(createmetaWithEpicLevel))
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"10600","key":"PROJ-600"}`))
+	}))
+	defer srv.Close()
+
+	key, err := New(srv.URL, "me@acme.com", "tok").CreateEpic(context.Background(), "PROJ", "", "Checkout redesign", "Redesign the checkout", []string{"epic"})
+	if err != nil {
+		t.Fatalf("CreateEpic error: %v", err)
+	}
+	if key != "PROJ-600" {
+		t.Errorf("key = %q, want PROJ-600", key)
+	}
+	if len(methods) != 2 || methods[0] != http.MethodGet || methods[1] != http.MethodPost {
+		t.Errorf("methods = %v, want [GET POST]", methods)
+	}
+	if req.Fields.IssueType.ID != "10009" {
+		t.Errorf("issuetype id = %q, want 10009 (the hierarchy-level-1 type)", req.Fields.IssueType.ID)
+	}
+	if req.Fields.Parent != nil {
+		t.Errorf("parent = %+v, want an epic filed at the top level", req.Fields.Parent)
+	}
+	if req.Fields.Summary != "Checkout redesign" {
+		t.Errorf("summary = %q, want the epic title", req.Fields.Summary)
+	}
+	if len(req.Fields.Labels) != 1 || req.Fields.Labels[0] != "epic" {
+		t.Errorf("labels = %v, want [epic]", req.Fields.Labels)
+	}
+}
+
+// A named type pins the epic level explicitly, for a project the hierarchy lookup
+// would resolve to the wrong parent type.
+func TestCreateEpicHonorsNamedType(t *testing.T) {
+	var req createIssueRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(createmetaWithEpicLevel))
+			return
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"10601","key":"PROJ-601"}`))
+	}))
+	defer srv.Close()
+
+	if _, err := New(srv.URL, "me@acme.com", "tok").CreateEpic(context.Background(), "PROJ", "bug", "Named", "body", nil); err != nil {
+		t.Fatalf("CreateEpic error: %v", err)
+	}
+	if req.Fields.IssueType.ID != "10004" {
+		t.Errorf("issuetype id = %q, want 10004 (the named type, case-insensitively)", req.Fields.IssueType.ID)
+	}
+}
+
+// A project with no level-1 type cannot hold an epic at all; that is a real error
+// naming what the project does offer rather than a create Jira rejects later.
+func TestCreateEpicWithoutEpicLevel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write([]byte(createmetaTaskAndBug))
+			return
+		}
+		t.Error("must not POST when no epic-level type exists")
+	}))
+	defer srv.Close()
+
+	_, err := New(srv.URL, "me@acme.com", "tok").CreateEpic(context.Background(), "PROJ", "", "s", "d", nil)
+	if err == nil {
+		t.Fatal("CreateEpic without an epic-level type should error, got nil")
+	}
+	if !strings.Contains(err.Error(), "available: Task, Bug") {
+		t.Errorf("err = %v, want it to name the available types", err)
+	}
+}
+
+func TestCreateEpicDisabled(t *testing.T) {
+	if _, err := New("", "", "").CreateEpic(context.Background(), "PROJ", "", "s", "d", nil); !errors.Is(err, ErrNotEnabled) {
+		t.Errorf("no token: err = %v, want ErrNotEnabled", err)
+	}
+	if _, err := New("https://x.atlassian.net", "me@acme.com", "tok").CreateEpic(context.Background(), " ", "", "s", "d", nil); !errors.Is(err, ErrNotEnabled) {
+		t.Errorf("empty project: err = %v, want ErrNotEnabled", err)
 	}
 }
 

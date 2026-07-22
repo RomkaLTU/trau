@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -239,15 +240,25 @@ func lastLinearReq(reqs []linearGraphReq, needle string) *linearGraphReq {
 }
 
 // fakeJiraWriter wires a jiraWriter to a fake REST endpoint that resolves the
-// issue type, accepts the create, and accepts a comment, recording the create
-// body and comment path.
+// issue type, accepts the creates, and accepts a comment, recording every create
+// body and the comment path. Created keys are minted in sequence from PROJ-500 so
+// a test can file an epic and its children and tell them apart.
 func fakeJiraWriter(t *testing.T) (*jiraWriter, *jiraCapture) {
 	t.Helper()
+	return fakeJiraWriterEpicType(t, "")
+}
+
+func fakeJiraWriterEpicType(t *testing.T, epicType string) (*jiraWriter, *jiraCapture) {
+	t.Helper()
 	rec := &jiraCapture{}
+	next := 500
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/issue/createmeta/PROJ/issuetypes"):
-			_, _ = w.Write([]byte(`{"values":[{"id":"10001","name":"Task"},{"id":"10004","name":"Bug"}]}`))
+			_, _ = w.Write([]byte(`{"issueTypes":[` +
+				`{"id":"10001","name":"Task","subtask":false,"hierarchyLevel":0},` +
+				`{"id":"10004","name":"Bug","subtask":false,"hierarchyLevel":0},` +
+				`{"id":"10009","name":"Feature","subtask":false,"hierarchyLevel":1}]}`))
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comment"):
 			rec.commentPath = r.URL.Path
 			body, _ := io.ReadAll(r.Body)
@@ -256,9 +267,12 @@ func fakeJiraWriter(t *testing.T) (*jiraWriter, *jiraCapture) {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issue"):
 			body, _ := io.ReadAll(r.Body)
 			rec.createRaw = string(body)
-			_ = json.Unmarshal(body, &rec.create)
+			var create jiraCreateBody
+			_ = json.Unmarshal(body, &create)
+			rec.creates = append(rec.creates, create)
 			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{"id":"10500","key":"PROJ-500"}`))
+			_, _ = fmt.Fprintf(w, `{"id":"10500","key":"PROJ-%d"}`, next)
+			next++
 		default:
 			t.Errorf("unexpected Jira request: %s %s", r.Method, r.URL.Path)
 		}
@@ -269,19 +283,22 @@ func fakeJiraWriter(t *testing.T) (*jiraWriter, *jiraCapture) {
 		project:   "PROJ",
 		baseURL:   srv.URL,
 		issueType: jiraDefaultIssueType,
+		epicType:  epicType,
 	}, rec
 }
 
+type jiraCreateBody struct {
+	Fields struct {
+		Project   struct{ Key string } `json:"project"`
+		IssueType struct{ ID string }  `json:"issuetype"`
+		Summary   string               `json:"summary"`
+		Labels    []string             `json:"labels"`
+		Parent    struct{ Key string } `json:"parent"`
+	} `json:"fields"`
+}
+
 type jiraCapture struct {
-	create struct {
-		Fields struct {
-			Project   struct{ Key string } `json:"project"`
-			IssueType struct{ ID string }  `json:"issuetype"`
-			Summary   string               `json:"summary"`
-			Labels    []string             `json:"labels"`
-			Parent    struct{ Key string } `json:"parent"`
-		} `json:"fields"`
-	}
+	creates     []jiraCreateBody
 	createRaw   string
 	commentPath string
 	commentBody string
@@ -303,17 +320,17 @@ func TestJiraWriterCreateIssue(t *testing.T) {
 	if !strings.HasSuffix(got.URL, "/browse/PROJ-500") {
 		t.Errorf("url = %q, want it to end with /browse/PROJ-500", got.URL)
 	}
-	if rec.create.Fields.Project.Key != "PROJ" {
-		t.Errorf("project key = %q, want PROJ", rec.create.Fields.Project.Key)
+	if rec.creates[0].Fields.Project.Key != "PROJ" {
+		t.Errorf("project key = %q, want PROJ", rec.creates[0].Fields.Project.Key)
 	}
-	if rec.create.Fields.IssueType.ID != "10001" {
-		t.Errorf("issuetype id = %q, want 10001 (Task, the default)", rec.create.Fields.IssueType.ID)
+	if rec.creates[0].Fields.IssueType.ID != "10001" {
+		t.Errorf("issuetype id = %q, want 10001 (Task, the default)", rec.creates[0].Fields.IssueType.ID)
 	}
-	if rec.create.Fields.Summary != "New tracked work" {
-		t.Errorf("summary = %q, want the drafted title", rec.create.Fields.Summary)
+	if rec.creates[0].Fields.Summary != "New tracked work" {
+		t.Errorf("summary = %q, want the drafted title", rec.creates[0].Fields.Summary)
 	}
-	if len(rec.create.Fields.Labels) != 1 || rec.create.Fields.Labels[0] != "ready-for-agent" {
-		t.Errorf("labels = %v, want [ready-for-agent]", rec.create.Fields.Labels)
+	if len(rec.creates[0].Fields.Labels) != 1 || rec.creates[0].Fields.Labels[0] != "ready-for-agent" {
+		t.Errorf("labels = %v, want [ready-for-agent]", rec.creates[0].Fields.Labels)
 	}
 }
 
@@ -334,13 +351,61 @@ func TestJiraWriterCreateUnderParent(t *testing.T) {
 			if _, err := w.CreateIssue(context.Background(), IssueDraft{Title: "child", Parent: tc.parent}); err != nil {
 				t.Fatalf("CreateIssue error: %v", err)
 			}
-			if rec.create.Fields.Parent.Key != tc.wantParent {
-				t.Errorf("parent key = %q, want %q", rec.create.Fields.Parent.Key, tc.wantParent)
+			if rec.creates[0].Fields.Parent.Key != tc.wantParent {
+				t.Errorf("parent key = %q, want %q", rec.creates[0].Fields.Parent.Key, tc.wantParent)
 			}
 			if tc.wantParent == "" && strings.Contains(rec.createRaw, `"parent"`) {
 				t.Errorf("create body carried a parent for a top-level issue: %s", rec.createRaw)
 			}
 		})
+	}
+}
+
+// An epic-shaped draft is filed at the project's hierarchy level 1 so the children
+// that follow can name it as their parent — a Task-level parent has Jira reject
+// every child with "Please select valid parent issue".
+func TestJiraWriterCreateEpicAndChildren(t *testing.T) {
+	w, rec := fakeJiraWriter(t)
+
+	epic, err := w.CreateIssue(context.Background(), IssueDraft{Title: "Checkout redesign", Epic: true})
+	if err != nil {
+		t.Fatalf("CreateIssue(epic) error: %v", err)
+	}
+	for _, title := range []string{"Cart page", "Payment"} {
+		if _, err := w.CreateIssue(context.Background(), IssueDraft{Title: title, Parent: epic.Identifier}); err != nil {
+			t.Fatalf("CreateIssue(%s) error: %v", title, err)
+		}
+	}
+
+	if len(rec.creates) != 3 {
+		t.Fatalf("creates = %d, want 3 (epic parent + 2 children)", len(rec.creates))
+	}
+	if rec.creates[0].Fields.IssueType.ID != "10009" {
+		t.Errorf("epic issuetype id = %q, want 10009 (the hierarchy-level-1 type)", rec.creates[0].Fields.IssueType.ID)
+	}
+	if rec.creates[0].Fields.Parent.Key != "" {
+		t.Errorf("epic parent = %q, want a top-level epic", rec.creates[0].Fields.Parent.Key)
+	}
+	for _, child := range rec.creates[1:] {
+		if child.Fields.Parent.Key != epic.Identifier {
+			t.Errorf("child %q parent = %q, want the created epic %s", child.Fields.Summary, child.Fields.Parent.Key, epic.Identifier)
+		}
+		if child.Fields.IssueType.ID != "10001" {
+			t.Errorf("child %q issuetype id = %q, want 10001 (Task)", child.Fields.Summary, child.Fields.IssueType.ID)
+		}
+	}
+}
+
+// A configured epic type overrides the hierarchy lookup, for a project whose
+// level-1 type is not the one the epic belongs in.
+func TestJiraWriterEpicTypeOverride(t *testing.T) {
+	w, rec := fakeJiraWriterEpicType(t, "Bug")
+
+	if _, err := w.CreateIssue(context.Background(), IssueDraft{Title: "Odd epic", Epic: true}); err != nil {
+		t.Fatalf("CreateIssue(epic) error: %v", err)
+	}
+	if rec.creates[0].Fields.IssueType.ID != "10004" {
+		t.Errorf("epic issuetype id = %q, want 10004 (the configured override)", rec.creates[0].Fields.IssueType.ID)
 	}
 }
 
@@ -375,15 +440,19 @@ func TestJiraWriterPublishDocument(t *testing.T) {
 	if !strings.HasSuffix(got.URL, "/browse/PROJ-500") {
 		t.Errorf("url = %q, want it to end with /browse/PROJ-500", got.URL)
 	}
-	if rec.create.Fields.Summary != "Payments PRD" {
-		t.Errorf("summary = %q, want the PRD title", rec.create.Fields.Summary)
+	if rec.creates[0].Fields.Summary != "Payments PRD" {
+		t.Errorf("summary = %q, want the PRD title", rec.creates[0].Fields.Summary)
 	}
-	if rec.create.Fields.IssueType.ID != "10001" {
-		t.Errorf("issuetype id = %q, want 10001 (Task, the fallback type)", rec.create.Fields.IssueType.ID)
+	if rec.creates[0].Fields.IssueType.ID != "10001" {
+		t.Errorf("issuetype id = %q, want 10001 (Task, the fallback type)", rec.creates[0].Fields.IssueType.ID)
 	}
-	for _, line := range []string{"# Payments PRD", "Body line with **markdown** and `code`."} {
-		if !strings.Contains(rec.createRaw, line) {
-			t.Errorf("create body missing PRD line %q; the description must carry the markdown", line)
+	for _, node := range []string{
+		`{"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"Payments PRD"}]}`,
+		`{"type":"text","text":"markdown","marks":[{"type":"strong"}]}`,
+		`{"type":"text","text":"code","marks":[{"type":"code"}]}`,
+	} {
+		if !strings.Contains(rec.createRaw, node) {
+			t.Errorf("create body missing %s; the description must carry the PRD as structured ADF", node)
 		}
 	}
 }
