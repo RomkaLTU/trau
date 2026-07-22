@@ -162,11 +162,38 @@ var attributionRE = regexp.MustCompile(`(?i)\b(trau|claude|codex|gemini|copilot|
 
 const buildSummaryMax = 480
 
+// buildResultProseKeys are the fields a JSON build result may carry its prose
+// summary in, most specific first.
+var buildResultProseKeys = []string{"summary", "description", "result", "notes"}
+
+// unwrapBuildResult reports whether the build result is a JSON object and, if so,
+// the prose it carries. The agent interface invites a result object, and one
+// flattened into a paragraph reads as a wall of braces and quotes, so an object
+// carrying no prose field yields "" and the caller falls back to the ticket title
+// rather than shipping the fields themselves.
+func unwrapBuildResult(out string) (string, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(out), &obj); err != nil {
+		return "", false
+	}
+	for _, key := range buildResultProseKeys {
+		var prose string
+		if json.Unmarshal(obj[key], &prose) == nil && strings.TrimSpace(prose) != "" {
+			return prose, true
+		}
+	}
+	return "", true
+}
+
 // summarizeBuildOutput distills the build agent's final message into the 1–3
 // sentence PR summary: the first prose paragraph, skipping headings, lists,
-// fences, and tables. A paragraph tripping attributionRE yields "" outright so
-// the caller falls back instead of shipping any attribution.
+// fences, and tables. A JSON result is unwrapped to its prose first. A paragraph
+// tripping attributionRE yields "" outright so the caller falls back instead of
+// shipping any attribution.
 func summarizeBuildOutput(out string) string {
+	if prose, isJSON := unwrapBuildResult(out); isJSON {
+		out = prose
+	}
 	for _, para := range strings.Split(out, "\n\n") {
 		text := proseParagraph(para)
 		if text == "" {
@@ -181,7 +208,7 @@ func summarizeBuildOutput(out string) string {
 }
 
 // proseParagraph flattens a paragraph to one line, or "" when any of its lines
-// is markdown structure rather than prose.
+// is markdown or JSON structure rather than prose.
 func proseParagraph(para string) string {
 	var lines []string
 	for _, ln := range strings.Split(para, "\n") {
@@ -190,7 +217,7 @@ func proseParagraph(para string) string {
 			continue
 		}
 		switch ln[0] {
-		case '#', '-', '*', '>', '|', '`':
+		case '#', '-', '*', '>', '|', '`', '{', '[':
 			return ""
 		}
 		lines = append(lines, ln)

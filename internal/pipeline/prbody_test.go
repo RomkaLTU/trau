@@ -132,6 +132,33 @@ func TestPRBodyFallbackNeverEmbedsJSON(t *testing.T) {
 	}
 }
 
+// TestPRBodyNeverEmbedsBuildResultJSON: when the build result is the JSON object
+// the agent interface invites, the Summary is the prose that object carried —
+// never the flattened, mid-object-truncated blob the raw object used to yield.
+func TestPRBodyNeverEmbedsBuildResultJSON(t *testing.T) {
+	id := "COD-91069"
+	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+	result := `{"status":"completed","ticket":"` + id + `","branch":"feature/` + id + `-add-footer",` +
+		`"summary":"Added a backoffice-wide footer with a copyright line, rendered in both the dashboard shell and the auth shell.",` +
+		`"files":["apps/backoffice/src/components/app-footer.tsx (new)","apps/backoffice/src/components/auth-shell.tsx"],` +
+		`"verification":{"tests":"none — the backoffice workspace has no test runner"}}`
+	if err := p.State.Set(id, "BUILD_SUMMARY", summarizeBuildOutput(result)); err != nil {
+		t.Fatal(err)
+	}
+	writeSliceVerdict(t, id, verdict{Pass: true, Summary: "footer renders", Browser: "driven"})
+
+	body := p.prBody(context.Background(), id)
+
+	if !strings.Contains(body, "## Summary\nAdded a backoffice-wide footer with a copyright line, rendered in both the dashboard shell and the auth shell.") {
+		t.Errorf("summary must be the prose the result carried:\n%s", body)
+	}
+	for _, leak := range []string{"{", "}", `"status"`, `"files"`, "…"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("body leaks build-result JSON (%q):\n%s", leak, body)
+		}
+	}
+}
+
 func TestPRBodyWithoutVerdictStatesIt(t *testing.T) {
 	id := "COD-91065"
 	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
@@ -183,6 +210,20 @@ func TestSummarizeBuildOutput(t *testing.T) {
 		{"rejects ai attribution", "The AI implemented this ticket.", ""},
 		{"structure only", "## Summary\n\n- a\n- b", ""},
 		{"empty", "", ""},
+		{
+			"unwraps a json result to its prose",
+			`{"status":"completed","ticket":"COD-7","files":["a.tsx"],"summary":"Adds a shared footer to both shells."}`,
+			"Adds a shared footer to both shells.",
+		},
+		{
+			"unwraps a pretty-printed json result",
+			"{\n  \"status\": \"completed\",\n  \"summary\": \"Adds cart totals to the checkout page.\"\n}",
+			"Adds cart totals to the checkout page.",
+		},
+		{"json result carrying no prose", `{"status":"completed","files":["a.tsx"]}`, ""},
+		{"truncated json never flattens", `{"status": "completed", "summary": "Adds a foot`, ""},
+		{"json array never flattens", `[{"summary":"Adds a shared footer."}]`, ""},
+		{"json prose still screened for attribution", `{"summary":"The agent implemented this ticket."}`, ""},
 	}
 	for _, tc := range cases {
 		if got := summarizeBuildOutput(tc.in); got != tc.want {
