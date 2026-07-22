@@ -383,9 +383,10 @@ type Pipeline struct {
 	LintFix    bool
 	LintFixCmd string
 	// AutoStash gates the fresh-pick WIP guard (config AUTO_STASH, default on). When
-	// set, EnsureCleanBase stashes uncommitted tracked changes (recording the branch
-	// they were on) instead of aborting, and RestoreWIP pops them back at session
-	// end. When off, a dirty tracked tree aborts the run as before.
+	// set, EnsureCleanBase stashes the user's uncommitted tracked changes (recording
+	// the branch they were on) instead of aborting, and RestoreWIP pops them back at
+	// session end. When off, a dirty tracked tree aborts the run as before. It does
+	// not gate the reconcile of an interrupted run's leftovers, which is a commit.
 	AutoStash bool
 	// SkillsExpected reports whether a build or verify run by the named provider
 	// is expected to load repo skills (the provider reports skill usage and the
@@ -741,16 +742,34 @@ func (p *Pipeline) fault(ctx context.Context, id string, err error) error {
 	return &FaultError{ID: id, Phase: phase, Err: err}
 }
 
-// finalizeFault mirrors finalizeFailed's preserve-and-clean — commit the WIP to
-// the feature branch, push it best-effort, then return the working tree to a clean
-// base — but it does NOT quarantine the ticket or file a bug, and it leaves PHASE
-// untouched so the ticket stays resumable.
-func (p *Pipeline) finalizeFault(ctx context.Context, id string) {
+// Both budgets stay under the hub's SIGKILL escalation grace, so a stopped run's
+// WIP commit lands before the escalation. The push gets its own sub-deadline so an
+// unreachable remote still leaves time for the checkout and clean that follow.
+const (
+	cleanupBudget     = 60 * time.Second
+	cleanupPushBudget = 20 * time.Second
+)
+
+// detachedCleanup derives the context every stop-time cleanup runs on. A stop
+// (web Stop's SIGTERM, Ctrl-C) cancels the run's context, and the cleanup is
+// exactly the work that must still happen afterwards, so it is detached from that
+// cancellation and bounded by its own deadline instead.
+func detachedCleanup(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), cleanupBudget)
+}
+
+// preserveAndClean saves whatever an aborted attempt left on the feature branch —
+// commit it under msg, push it best-effort — and returns the working tree to a
+// clean base.
+func (p *Pipeline) preserveAndClean(ctx context.Context, msg string) {
+	ctx, cancel := detachedCleanup(ctx)
+	defer cancel()
+
 	branch, _ := p.Git.CurrentBranch(ctx)
 	if branch != p.Base {
 		_ = p.Git.AddAll(ctx)
-		_ = p.Git.Commit(ctx, fmt.Sprintf("wip(%s): incomplete attempt — rerun trau to resume", id), true)
-		if err := p.Git.Push(ctx, p.Remote, "HEAD", true); err == nil {
+		_ = p.Git.Commit(ctx, msg, true)
+		if p.pushPreserved(ctx) {
 			p.logf("  saved attempt to %s/%s", p.Remote, branch)
 		} else {
 			p.logf("  saved attempt to local branch %s", branch)
@@ -758,6 +777,20 @@ func (p *Pipeline) finalizeFault(ctx context.Context, id string) {
 	}
 	_ = p.Git.Checkout(ctx, p.Base, true)
 	_ = p.Git.Clean(ctx)
+}
+
+func (p *Pipeline) pushPreserved(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, cleanupPushBudget)
+	defer cancel()
+	return p.Git.Push(ctx, p.Remote, "HEAD", true) == nil
+}
+
+// finalizeFault mirrors finalizeFailed's preserve-and-clean — commit the WIP to
+// the feature branch, push it best-effort, then return the working tree to a clean
+// base — but it does NOT quarantine the ticket or file a bug, and it leaves PHASE
+// untouched so the ticket stays resumable.
+func (p *Pipeline) finalizeFault(ctx context.Context, id string) {
+	p.preserveAndClean(ctx, fmt.Sprintf("wip(%s): incomplete attempt — rerun trau to resume", id))
 }
 
 // AsFault extracts the *FaultError from err (traversing wraps), or nil when err
@@ -859,10 +892,11 @@ const autoStashMsg = "trau autostash: uncommitted WIP set aside for a fresh run"
 
 // EnsureCleanBase guards the loop's fresh-pick path: TRACKED files with uncommitted
 // changes must not ride into a fresh build (untracked tooling rides along safely).
-// With AutoStash on (default) it stashes that WIP — recording the branch it was on
-// so RestoreWIP can put it back at session end — instead of aborting; with AutoStash
-// off it aborts as before. Then it checks out the base branch and fast-forwards it
-// from the remote (best-effort). The resume path deliberately skips this — the
+// Leftovers on a branch trau cut belong to a run that died without cleaning up and
+// are committed back to that branch; anything else is the user's WIP, which AutoStash
+// (default on) sets aside for RestoreWIP to put back at session end and which aborts
+// the run when AutoStash is off. Then it checks out the base branch and fast-forwards
+// it from the remote (best-effort). The resume path deliberately skips this — the
 // feature branch's WIP IS the work.
 func (p *Pipeline) EnsureCleanBase(ctx context.Context) error {
 	dirty, err := p.Git.StatusPorcelain(ctx)
@@ -870,24 +904,60 @@ func (p *Pipeline) EnsureCleanBase(ctx context.Context) error {
 		return fmt.Errorf("ensure clean base: git status: %w", err)
 	}
 	if strings.TrimSpace(dirty) != "" {
-		if !p.AutoStash {
-			return fmt.Errorf("tracked files have uncommitted changes — aborting so I don't touch your WIP (set AUTO_STASH=1 to stash and restore them automatically)")
+		if err := p.setAsideWIP(ctx); err != nil {
+			return err
 		}
-		branch, berr := p.Git.CurrentBranch(ctx)
-		if berr != nil {
-			return fmt.Errorf("tracked files have uncommitted changes and I couldn't read the current branch to stash them safely: %w — commit or stash manually", berr)
-		}
-		if serr := p.Git.Stash(ctx, autoStashMsg); serr != nil {
-			return fmt.Errorf("tracked files have uncommitted changes and auto-stash failed: %w — commit or stash manually", serr)
-		}
-		p.stashedBranch = branch
-		p.logf("  ↩ stashed your WIP on %s — I'll restore it when the run ends", branch)
 	}
 	if err := p.Git.Checkout(ctx, p.Base, false); err != nil {
 		return fmt.Errorf("ensure clean base: checkout %s: %w", p.Base, err)
 	}
 	_ = p.Git.Pull(ctx, p.Remote, p.Base)
 	return nil
+}
+
+// setAsideWIP clears the dirty tree EnsureCleanBase found by the route that suits
+// whoever left it there. An interrupted run's work is committed back to its own
+// branch rather than stashed — a stash would pop a dead run's leftovers onto a dead
+// branch at session end, which reads to the user as files disappearing — so that
+// path runs whether or not AutoStash is on: it is a reconcile, not a stash.
+func (p *Pipeline) setAsideWIP(ctx context.Context) error {
+	branch, err := p.Git.CurrentBranch(ctx)
+	if err == nil {
+		if id := p.interruptedRunID(branch); id != "" {
+			p.logf("  ↻ %s left uncommitted work on %s when its run died — committing it there", id, branch)
+			p.preserveAndClean(ctx, fmt.Sprintf("wip(%s): preserved after interrupted run", id))
+			return nil
+		}
+	}
+	if !p.AutoStash {
+		return fmt.Errorf("tracked files have uncommitted changes — aborting so I don't touch your WIP (set AUTO_STASH=1 to stash and restore them automatically)")
+	}
+	if err != nil {
+		return fmt.Errorf("tracked files have uncommitted changes and I couldn't read the current branch to stash them safely: %w — commit or stash manually", err)
+	}
+	if serr := p.Git.Stash(ctx, autoStashMsg); serr != nil {
+		return fmt.Errorf("tracked files have uncommitted changes and auto-stash failed: %w — commit or stash manually", serr)
+	}
+	p.stashedBranch = branch
+	p.logf("  ↩ stashed your WIP on %s — I'll restore it when the run ends", branch)
+	return nil
+}
+
+// interruptedRunID names the ticket whose run left branch checked out: the branch a
+// saved checkpoint recorded, or one trau would have cut for a ticket that has a
+// checkpoint. It returns "" for the base branch and for branches trau never cut,
+// a personal feature/… branch included.
+func (p *Pipeline) interruptedRunID(branch string) string {
+	if branch == "" || branch == p.Base {
+		return ""
+	}
+	for _, id := range p.State.Tickets() {
+		cut := "feature/" + id
+		if branch == cut || strings.HasPrefix(branch, cut+"-") || p.State.Get(id, "BRANCH") == branch {
+			return id
+		}
+	}
+	return ""
 }
 
 // RestoreWIP undoes an EnsureCleanBase auto-stash at session end: it checks the
@@ -928,12 +998,14 @@ func (p *Pipeline) Reset(ctx context.Context, id string) error {
 }
 
 // resetLocal is Reset without the tracker step — used when the tracker already
-// reflects the desired status (a user restore) and must be left untouched.
+// reflects the desired status (a user restore) and must be left untouched. It is
+// also reached from the refusal path, where the run's context may already be
+// cancelled, so it runs detached rather than half-undoing the scaffolding.
 func (p *Pipeline) resetLocal(ctx context.Context, id string) {
-	branch := p.State.Get(id, "BRANCH")
-	if branch == "" {
-		branch, _ = p.Git.FindFeatureBranch(ctx, id)
-	}
+	ctx, cancel := detachedCleanup(ctx)
+	defer cancel()
+
+	branch := p.featureBranch(ctx, id)
 	_ = p.Git.Checkout(ctx, p.Base, true)
 	if branch != "" && branch != p.Base {
 		_ = p.Git.DeleteBranch(ctx, branch)
@@ -954,15 +1026,91 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 	}
 }
 
+// PurgeLocal drops what a hard-deleted ticket left on this machine: its feature
+// branch, local and remote, and its run directory. It is deliberately narrower
+// than a reset — the hub's run history (checkpoint, phase logs, artifacts) stays,
+// so what ran is still browsable once the ticket it ran for is gone, and the
+// tracker is never touched because a tombstoned ticket's upstream issue is not
+// trau's to reset. It returns the cleanup steps that failed so the hub that
+// ordered it can log them; the purge itself has already happened either way.
+func (p *Pipeline) PurgeLocal(ctx context.Context, id string) error {
+	ctx, cancel := detachedCleanup(ctx)
+	defer cancel()
+
+	branch := p.featureBranch(ctx, id)
+	_ = p.Git.Checkout(ctx, p.Base, true)
+
+	var errs []error
+	if branch != "" && branch != p.Base {
+		if err := p.Git.DeleteBranch(ctx, branch); err != nil {
+			errs = append(errs, fmt.Errorf("delete branch %s: %w", branch, err))
+		}
+		if err := p.dropPushedBranch(ctx, branch); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if dir := p.runDir(id); dir != "" {
+		if err := os.RemoveAll(dir); err != nil {
+			errs = append(errs, fmt.Errorf("remove run dir %s: %w", dir, err))
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
+		return err
+	}
+	if branch != "" {
+		p.logf("  purged %s: dropped branch %s + its run directory", id, branch)
+	} else {
+		p.logf("  purged %s: dropped its run directory", id)
+	}
+	return nil
+}
+
+// dropPushedBranch deletes branch from the remote, when the remote still has it.
+// A remote that pruned it already is nothing to report; one that cannot be reached
+// is, since the branch then outlives the ticket unseen.
+func (p *Pipeline) dropPushedBranch(ctx context.Context, branch string) error {
+	exists, err := p.Git.RemoteBranchExists(ctx, p.Remote, branch)
+	if err != nil {
+		return fmt.Errorf("look up %s/%s: %w", p.Remote, branch, err)
+	}
+	if !exists {
+		return nil
+	}
+	if err := p.Git.DeletePushedBranch(ctx, p.Remote, branch); err != nil {
+		return fmt.Errorf("delete %s/%s: %w", p.Remote, branch, err)
+	}
+	return nil
+}
+
+// featureBranch resolves ticket id's feature branch: the recorded BRANCH, else the
+// first matching feature/<id>-* branch, empty when the ticket left neither.
+func (p *Pipeline) featureBranch(ctx context.Context, id string) string {
+	if branch := p.State.Get(id, "BRANCH"); branch != "" {
+		return branch
+	}
+	branch, _ := p.Git.FindFeatureBranch(ctx, id)
+	return branch
+}
+
+// runDir is ticket id's run directory, resolving a relative RUNS_DIR against the
+// repo root the way every other resolver does. It is empty when no runs dir is
+// configured, so a caller never mistakes the repo root for one.
+func (p *Pipeline) runDir(id string) string {
+	if p.RunsDir == "" {
+		return ""
+	}
+	if filepath.IsAbs(p.RunsDir) {
+		return filepath.Join(p.RunsDir, id)
+	}
+	return filepath.Join(p.RepoRoot, p.RunsDir, id)
+}
+
 // CheckoutBranch checks out ticket id's recorded feature branch in the target repo
 // so a user inspecting an incomplete or quarantined result lands directly on its
 // preserved WIP. It resolves the branch from saved state, falling back to the
 // first matching feature/<id>-* branch, and returns the branch it switched to.
 func (p *Pipeline) CheckoutBranch(ctx context.Context, id string) (string, error) {
-	branch := p.State.Get(id, "BRANCH")
-	if branch == "" {
-		branch, _ = p.Git.FindFeatureBranch(ctx, id)
-	}
+	branch := p.featureBranch(ctx, id)
 	if branch == "" {
 		return "", fmt.Errorf("no feature branch recorded for %s", id)
 	}
@@ -1578,18 +1726,7 @@ func (p *Pipeline) giveUp(ctx context.Context, id, reason string) error {
 }
 
 func (p *Pipeline) finalizeFailed(ctx context.Context, id string) {
-	branch, _ := p.Git.CurrentBranch(ctx)
-	if branch != p.Base {
-		_ = p.Git.AddAll(ctx)
-		_ = p.Git.Commit(ctx, fmt.Sprintf("wip(%s): quarantined attempt — needs human", id), true)
-		if err := p.Git.Push(ctx, p.Remote, "HEAD", true); err == nil {
-			p.logf("  saved attempt to %s/%s", p.Remote, branch)
-		} else {
-			p.logf("  saved attempt to local branch %s", branch)
-		}
-	}
-	_ = p.Git.Checkout(ctx, p.Base, true)
-	_ = p.Git.Clean(ctx)
+	p.preserveAndClean(ctx, fmt.Sprintf("wip(%s): quarantined attempt — needs human", id))
 }
 
 // CommitAndPR ships the verified slice: the commit phase stages and commits ONLY
@@ -3556,10 +3693,19 @@ func (g ExecGit) bin() string {
 	return "git"
 }
 
+// gitWaitDelay bounds Wait once the context has killed git. A networked git forks
+// a transport (ssh, git-remote-https) that the kill does not reach and that keeps
+// the output pipe open, so without this a context deadline stops bounding the
+// call — it only kills git and then blocks on the pipe until the transport gives
+// up on its own.
+const gitWaitDelay = 2 * time.Second
+
 func (g ExecGit) run(ctx context.Context, args ...string) error {
 	full := append([]string{"-C", g.Repo}, args...)
 	logger.Debugf("git %s", strings.Join(full, " "))
-	if out, err := exec.CommandContext(ctx, g.bin(), full...).CombinedOutput(); err != nil {
+	cmd := exec.CommandContext(ctx, g.bin(), full...)
+	cmd.WaitDelay = gitWaitDelay
+	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil

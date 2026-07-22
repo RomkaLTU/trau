@@ -29,9 +29,9 @@ func shutdownServer(t *testing.T, name string) (*Server, *fakeSupervisor, string
 	stopWaitPoll, stopKillConfirm = 5*time.Millisecond, time.Second
 	t.Cleanup(func() { stopWaitPoll, stopKillConfirm = prevPoll, prevConfirm })
 
-	prevGrace := shutdownStopGrace
-	shutdownStopGrace = 20 * time.Millisecond
-	t.Cleanup(func() { shutdownStopGrace = prevGrace })
+	prevKill, prevRace := shutdownKillGrace, shutdownRaceWindow
+	shutdownKillGrace, shutdownRaceWindow = 20*time.Millisecond, 20*time.Millisecond
+	t.Cleanup(func() { shutdownKillGrace, shutdownRaceWindow = prevKill, prevRace })
 
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
@@ -150,9 +150,9 @@ func TestQueueShutdownStopsDrainerRacedChild(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	prevGrace := shutdownStopGrace
-	shutdownStopGrace = 200 * time.Millisecond
-	t.Cleanup(func() { shutdownStopGrace = prevGrace })
+	prevRace := shutdownRaceWindow
+	shutdownRaceWindow = 200 * time.Millisecond
+	t.Cleanup(func() { shutdownRaceWindow = prevRace })
 
 	racedPID := spawnTermIgnorer(t, "5")
 	go func() {

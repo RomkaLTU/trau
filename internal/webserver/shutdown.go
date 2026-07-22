@@ -8,11 +8,21 @@ import (
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
-// shutdownStopGrace bounds how long a queue shutdown's teardown waits for a
+// shutdownKillGrace bounds how long a queue shutdown's teardown waits for a
 // running child to exit on its own SIGTERM before stopAndWait escalates to a
-// group SIGKILL. It is a var so tests can compress it instead of sleeping for
-// real seconds.
-var shutdownStopGrace = 5 * time.Second
+// group SIGKILL. A stopped run spends that window preserving its WIP on the
+// feature branch and cleaning back to base, so the grace sits above the
+// pipeline's cleanup budget rather than cutting it short.
+//
+// shutdownRaceWindow bounds the separate watch for a child the drainer spawned
+// into the repo as the shutdown landed — a registration gap measured in
+// milliseconds, not a process that has to be waited out.
+//
+// Both are vars so tests can compress them instead of sleeping for real seconds.
+var (
+	shutdownKillGrace  = 90 * time.Second
+	shutdownRaceWindow = 5 * time.Second
+)
 
 // beginShutdown / endShutdown / isShuttingDown flag which repos have a queue
 // teardown in flight. beginShutdown reports false when one is already running,
@@ -55,7 +65,7 @@ func (s *Server) isShuttingDown(root string) bool {
 func (s *Server) teardownQueue(root string, running queue.Item, hasRunning bool) {
 	defer s.endShutdown(root)
 	if hasRunning {
-		if err := s.stopAndWait(running.PID, shutdownStopGrace); err != nil {
+		if err := s.stopAndWait(running.PID, shutdownKillGrace); err != nil {
 			logger.Verbosef("shutdown %s: stop %s (pid %d): %v", root, running.ID, running.PID, err)
 		}
 		if registry.Alive(running.PID) {
@@ -83,7 +93,7 @@ func (s *Server) teardownQueue(root string, running queue.Item, hasRunning bool)
 	}
 }
 
-// stopRaceSpawned polls the registry for shutdownStopGrace, stopping a child
+// stopRaceSpawned polls the registry for shutdownRaceWindow, stopping a child
 // the drainer spawned into root between the handler's queue snapshot and the
 // disarm taking effect. A single immediate check misses this: a real child's
 // own registration lands over the network once it starts up, measurably later
@@ -92,10 +102,10 @@ func (s *Server) teardownQueue(root string, running queue.Item, hasRunning bool)
 // live race-spawned child and could not confirm it dead afterward — otherwise
 // (nothing raced in, or it raced in and died) it reports true.
 func (s *Server) stopRaceSpawned(root string) bool {
-	deadline := time.Now().Add(shutdownStopGrace)
+	deadline := time.Now().Add(shutdownRaceWindow)
 	for {
 		if e, ok := s.liveInstance(root); ok {
-			if err := s.stopAndWait(e.PID, shutdownStopGrace); err != nil {
+			if err := s.stopAndWait(e.PID, shutdownKillGrace); err != nil {
 				logger.Verbosef("shutdown %s: stop race-spawned pid %d: %v", root, e.PID, err)
 			}
 			return !registry.Alive(e.PID)

@@ -42,6 +42,38 @@ func TestParseArgsClearMutuallyExclusive(t *testing.T) {
 	}
 }
 
+func TestParseArgsResetLocal(t *testing.T) {
+	o, err := ParseArgs([]string{"--reset-local", "COD-1094"})
+	if err != nil {
+		t.Fatalf("ParseArgs(--reset-local COD-1094): %v", err)
+	}
+	if o.ResetLocalID != "COD-1094" {
+		t.Errorf("ResetLocalID = %q, want COD-1094", o.ResetLocalID)
+	}
+	if o.ResetID != "" {
+		t.Errorf("ResetID = %q, want empty", o.ResetID)
+	}
+}
+
+func TestParseArgsResetLocalRequiresValue(t *testing.T) {
+	if _, err := ParseArgs([]string{"--reset-local"}); err == nil {
+		t.Error("ParseArgs(--reset-local) without a value should error")
+	}
+}
+
+func TestParseArgsResetLocalMutuallyExclusive(t *testing.T) {
+	pairs := [][]string{
+		{"--reset-local", "COD-1", "--reset", "COD-2"},
+		{"--reset-local", "COD-1", "--clear", "COD-2"},
+		{"--reset-local", "COD-1", "--status"},
+	}
+	for _, args := range pairs {
+		if _, err := ParseArgs(args); err == nil {
+			t.Errorf("ParseArgs(%v) should reject combining --reset-local with another mode", args)
+		}
+	}
+}
+
 func TestParseArgsListEligible(t *testing.T) {
 	o, err := ParseArgs([]string{"--list-eligible", "--json"})
 	if err != nil {

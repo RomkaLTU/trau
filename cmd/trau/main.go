@@ -100,6 +100,7 @@ Flags:
   --list-eligible   list the eligible ready tickets and exit (--json for machine-readable output)
   --list-epic <ID>  list an epic's sub-issues and their states and exit (--json for machine-readable output)
   --reset <ID>      reset a ticket and exit
+  --reset-local <ID>  drop a ticket's branch + run dir, leaving its run history and the tracker alone, and exit
   --clear <ID>      drop a ticket's local checkpoint without touching git or the tracker (a.k.a. --forget)
   --force           with --reset, reset even a ticket whose code is already merged
   --status          print saved checkpoints (auto-reconciles stale in-flight/quarantined rows against the tracker) and exit
@@ -262,7 +263,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		logger.Verbosef("ensure runs .gitignore: %v", err)
 	}
 
-	for _, id := range []string{opts.Parent, opts.ResetID, opts.ClearID} {
+	for _, id := range []string{opts.Parent, opts.ResetID, opts.ResetLocalID, opts.ClearID} {
 		if err := validateTicketID(cfg, id); err != nil {
 			return console.Actionable(err, "validate ticket id",
 				fmt.Sprintf("set ISSUE_PREFIX (or LINEAR_TEAM) to this tracker's key, or pass a %s-<n> ticket", cfg.IssuePrefix))
@@ -405,7 +406,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	if opts.ResetID != "" {
+	if opts.ResetID != "" || opts.ResetLocalID != "" {
 		ensureHubForStore(ctx, cfg, stderr)
 		repoRoot, err := config.ResolveRepoRoot(opts.Repo, cfg.RepoRoot, config.GitToplevel)
 		if err != nil {
@@ -414,6 +415,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		pipe, err := buildPipeline(cfg, runner, repoRoot, pm, sink, transcripts, log, con, rec, modelFallback)
 		if err != nil {
 			return err
+		}
+		// The merged guard below guards a re-queue; --reset-local never re-queues.
+		if opts.ResetLocalID != "" {
+			return pipe.PurgeLocal(ctx, opts.ResetLocalID)
 		}
 		if phase := pipe.State.Get(opts.ResetID, "PHASE"); phase == state.Merged && !opts.Force {
 			return console.Actionable(
