@@ -383,9 +383,10 @@ type Pipeline struct {
 	LintFix    bool
 	LintFixCmd string
 	// AutoStash gates the fresh-pick WIP guard (config AUTO_STASH, default on). When
-	// set, EnsureCleanBase stashes uncommitted tracked changes (recording the branch
-	// they were on) instead of aborting, and RestoreWIP pops them back at session
-	// end. When off, a dirty tracked tree aborts the run as before.
+	// set, EnsureCleanBase stashes the user's uncommitted tracked changes (recording
+	// the branch they were on) instead of aborting, and RestoreWIP pops them back at
+	// session end. When off, a dirty tracked tree aborts the run as before. It does
+	// not gate the reconcile of an interrupted run's leftovers, which is a commit.
 	AutoStash bool
 	// SkillsExpected reports whether a build or verify run by the named provider
 	// is expected to load repo skills (the provider reports skill usage and the
@@ -891,10 +892,11 @@ const autoStashMsg = "trau autostash: uncommitted WIP set aside for a fresh run"
 
 // EnsureCleanBase guards the loop's fresh-pick path: TRACKED files with uncommitted
 // changes must not ride into a fresh build (untracked tooling rides along safely).
-// With AutoStash on (default) it stashes that WIP — recording the branch it was on
-// so RestoreWIP can put it back at session end — instead of aborting; with AutoStash
-// off it aborts as before. Then it checks out the base branch and fast-forwards it
-// from the remote (best-effort). The resume path deliberately skips this — the
+// Leftovers on a branch trau cut belong to a run that died without cleaning up and
+// are committed back to that branch; anything else is the user's WIP, which AutoStash
+// (default on) sets aside for RestoreWIP to put back at session end and which aborts
+// the run when AutoStash is off. Then it checks out the base branch and fast-forwards
+// it from the remote (best-effort). The resume path deliberately skips this — the
 // feature branch's WIP IS the work.
 func (p *Pipeline) EnsureCleanBase(ctx context.Context) error {
 	dirty, err := p.Git.StatusPorcelain(ctx)
@@ -902,24 +904,60 @@ func (p *Pipeline) EnsureCleanBase(ctx context.Context) error {
 		return fmt.Errorf("ensure clean base: git status: %w", err)
 	}
 	if strings.TrimSpace(dirty) != "" {
-		if !p.AutoStash {
-			return fmt.Errorf("tracked files have uncommitted changes — aborting so I don't touch your WIP (set AUTO_STASH=1 to stash and restore them automatically)")
+		if err := p.setAsideWIP(ctx); err != nil {
+			return err
 		}
-		branch, berr := p.Git.CurrentBranch(ctx)
-		if berr != nil {
-			return fmt.Errorf("tracked files have uncommitted changes and I couldn't read the current branch to stash them safely: %w — commit or stash manually", berr)
-		}
-		if serr := p.Git.Stash(ctx, autoStashMsg); serr != nil {
-			return fmt.Errorf("tracked files have uncommitted changes and auto-stash failed: %w — commit or stash manually", serr)
-		}
-		p.stashedBranch = branch
-		p.logf("  ↩ stashed your WIP on %s — I'll restore it when the run ends", branch)
 	}
 	if err := p.Git.Checkout(ctx, p.Base, false); err != nil {
 		return fmt.Errorf("ensure clean base: checkout %s: %w", p.Base, err)
 	}
 	_ = p.Git.Pull(ctx, p.Remote, p.Base)
 	return nil
+}
+
+// setAsideWIP clears the dirty tree EnsureCleanBase found by the route that suits
+// whoever left it there. An interrupted run's work is committed back to its own
+// branch rather than stashed — a stash would pop a dead run's leftovers onto a dead
+// branch at session end, which reads to the user as files disappearing — so that
+// path runs whether or not AutoStash is on: it is a reconcile, not a stash.
+func (p *Pipeline) setAsideWIP(ctx context.Context) error {
+	branch, err := p.Git.CurrentBranch(ctx)
+	if err == nil {
+		if id := p.interruptedRunID(branch); id != "" {
+			p.logf("  ↻ %s left uncommitted work on %s when its run died — committing it there", id, branch)
+			p.preserveAndClean(ctx, fmt.Sprintf("wip(%s): preserved after interrupted run", id))
+			return nil
+		}
+	}
+	if !p.AutoStash {
+		return fmt.Errorf("tracked files have uncommitted changes — aborting so I don't touch your WIP (set AUTO_STASH=1 to stash and restore them automatically)")
+	}
+	if err != nil {
+		return fmt.Errorf("tracked files have uncommitted changes and I couldn't read the current branch to stash them safely: %w — commit or stash manually", err)
+	}
+	if serr := p.Git.Stash(ctx, autoStashMsg); serr != nil {
+		return fmt.Errorf("tracked files have uncommitted changes and auto-stash failed: %w — commit or stash manually", serr)
+	}
+	p.stashedBranch = branch
+	p.logf("  ↩ stashed your WIP on %s — I'll restore it when the run ends", branch)
+	return nil
+}
+
+// interruptedRunID names the ticket whose run left branch checked out: the branch a
+// saved checkpoint recorded, or one trau would have cut for a ticket that has a
+// checkpoint. It returns "" for the base branch and for branches trau never cut,
+// a personal feature/… branch included.
+func (p *Pipeline) interruptedRunID(branch string) string {
+	if branch == "" || branch == p.Base {
+		return ""
+	}
+	for _, id := range p.State.Tickets() {
+		cut := "feature/" + id
+		if branch == cut || strings.HasPrefix(branch, cut+"-") || p.State.Get(id, "BRANCH") == branch {
+			return id
+		}
+	}
+	return ""
 }
 
 // RestoreWIP undoes an EnsureCleanBase auto-stash at session end: it checks the
