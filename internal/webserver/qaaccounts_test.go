@@ -73,6 +73,45 @@ func TestQAAccountCreateMasksSecret(t *testing.T) {
 	}
 }
 
+// TestQAAccountSource covers the provenance the loop's capture path writes: an
+// agent-captured account is accepted and reported as such, a create that names no
+// source is manual, and an unknown value is rejected rather than stored.
+func TestQAAccountSource(t *testing.T) {
+	_, base := qaServer(t)
+
+	captured := createQAAccount(t, base, QAAccountRequest{
+		Label:    "seeded owner",
+		Username: "owner@example.test",
+		Secret:   "pw",
+		Source:   "agent",
+	})
+	if captured.Source != "agent" {
+		t.Errorf("created source = %q, want %q", captured.Source, "agent")
+	}
+	if manual := createQAAccount(t, base, QAAccountRequest{Label: "admin", Secret: "x"}); manual.Source != "manual" {
+		t.Errorf("sourceless create = %q, want %q", manual.Source, "manual")
+	}
+
+	res := postJSON(t, base+"/accounts", QAAccountRequest{Label: "bogus", Source: "somewhere-else"})
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("unknown source status = %d, want 400", res.StatusCode)
+	}
+	_ = res.Body.Close()
+
+	listRes, err := http.Get(base + "/accounts")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	defer func() { _ = listRes.Body.Close() }()
+	var list []QAAccountView
+	if err := json.NewDecoder(listRes.Body).Decode(&list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if len(list) != 2 || list[0].Source != "manual" || list[1].Source != "agent" {
+		t.Fatalf("list sources = %+v", list)
+	}
+}
+
 func TestQAAccountUpdateKeepsSecretWhenBlank(t *testing.T) {
 	_, base := qaServer(t)
 	view := createQAAccount(t, base, QAAccountRequest{Label: "admin", Secret: "original"})

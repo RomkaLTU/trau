@@ -9,27 +9,39 @@ import (
 // ErrQAAccountNotFound is returned when a QA account id is not present in the repo.
 var ErrQAAccountNotFound = errors.New("qa account not found")
 
+// QASourceManual and QASourceAgent are the provenances a QA account can carry:
+// entered by a person in settings, or discovered inside the repo under test by
+// the verifier and captured by the loop.
+const (
+	QASourceManual = "manual"
+	QASourceAgent  = "agent"
+)
+
 // QAAccount is one stored login the browser verifier can use to reach an
 // auth-walled app: a human label, the username and secret, and a description of
 // the cases or flows the account covers. Secret is the full value — the store is
 // the source of truth; the settings API masks it on read while the loop reads it
-// whole.
+// whole. Source records where the account came from, manual or agent.
 type QAAccount struct {
 	ID          int64
 	Label       string
 	Username    string
 	Secret      string
 	Description string
+	Source      string
 	CreatedAt   string
 	UpdatedAt   string
 }
 
-// QAAccountInput is the editable content of a QA account.
+// QAAccountInput is the editable content of a QA account. Source applies on
+// create only, defaulting to QASourceManual; an update leaves the stored
+// provenance untouched.
 type QAAccountInput struct {
 	Label       string
 	Username    string
 	Secret      string
 	Description string
+	Source      string
 }
 
 // QAAccounts is the hub's per-repo store of QA credentials and the free-text QA
@@ -44,16 +56,20 @@ func NewQAAccounts(db *sql.DB) *QAAccounts {
 	return &QAAccounts{db: db, now: time.Now}
 }
 
-const qaAccountSelect = `SELECT id, label, username, secret, description, created_at, updated_at FROM qa_accounts`
+const qaAccountSelect = `SELECT id, label, username, secret, description, source, created_at, updated_at FROM qa_accounts`
 
-// Create files a new QA account for the repo, stamping its created and updated
-// times, and returns it with its allocated id.
+// Create files a new QA account for the repo, stamping its provenance and its
+// created and updated times, and returns it with its allocated id.
 func (q *QAAccounts) Create(repo string, in QAAccountInput) (QAAccount, error) {
 	now := q.stamp()
+	source := in.Source
+	if source == "" {
+		source = QASourceManual
+	}
 	res, err := q.db.Exec(
-		`INSERT INTO qa_accounts(repo, label, username, secret, description, created_at, updated_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?)`,
-		repo, in.Label, in.Username, in.Secret, in.Description, now, now,
+		`INSERT INTO qa_accounts(repo, label, username, secret, description, source, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
+		repo, in.Label, in.Username, in.Secret, in.Description, source, now, now,
 	)
 	if err != nil {
 		return QAAccount{}, err
@@ -95,8 +111,9 @@ func (q *QAAccounts) ByLabel(repo, label string) (QAAccount, bool, error) {
 	return a, true, nil
 }
 
-// Update overwrites a QA account's content, refreshing its updated time. It
-// returns ErrQAAccountNotFound when the id is not in the repo.
+// Update overwrites a QA account's content, refreshing its updated time and
+// leaving its provenance as created. It returns ErrQAAccountNotFound when the id
+// is not in the repo.
 func (q *QAAccounts) Update(repo string, id int64, in QAAccountInput) (QAAccount, error) {
 	res, err := q.db.Exec(
 		`UPDATE qa_accounts SET label = ?, username = ?, secret = ?, description = ?, updated_at = ?
@@ -159,7 +176,7 @@ func (q *QAAccounts) get(repo string, id int64) (QAAccount, error) {
 func (q *QAAccounts) one(query string, args ...any) (QAAccount, error) {
 	var a QAAccount
 	err := q.db.QueryRow(query, args...).Scan(
-		&a.ID, &a.Label, &a.Username, &a.Secret, &a.Description, &a.CreatedAt, &a.UpdatedAt,
+		&a.ID, &a.Label, &a.Username, &a.Secret, &a.Description, &a.Source, &a.CreatedAt, &a.UpdatedAt,
 	)
 	return a, err
 }
@@ -174,7 +191,7 @@ func (q *QAAccounts) scan(query string, args ...any) (out []QAAccount, err error
 	for rows.Next() {
 		var a QAAccount
 		if err := rows.Scan(
-			&a.ID, &a.Label, &a.Username, &a.Secret, &a.Description, &a.CreatedAt, &a.UpdatedAt,
+			&a.ID, &a.Label, &a.Username, &a.Secret, &a.Description, &a.Source, &a.CreatedAt, &a.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

@@ -46,6 +46,7 @@ const KIND_META: Record<string, KindMeta> = {
   build_no_skills: { label: 'No skills loaded', icon: TriangleAlert, tone: 'warn' },
   verify_no_browser: { label: 'Browser verify skipped', icon: TriangleAlert, tone: 'warn' },
   qa_roster: { label: 'QA roster', icon: KeyRound, tone: 'info' },
+  qa_captured: { label: 'QA account captured', icon: KeyRound, tone: 'success' },
   model_fallback: { label: 'Built-in model used', icon: TriangleAlert, tone: 'warn' },
   pr_open: { label: 'PR opened', icon: GitPullRequest, tone: 'info' },
   ci: { label: 'CI', icon: CircleDot, tone: 'flow' },

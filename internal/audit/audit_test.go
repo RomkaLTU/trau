@@ -47,6 +47,7 @@ var allowedReaders = map[string]string{
 	"internal/pipeline/buildnotes.go": "/tmp build-notes payload",
 	"internal/pipeline/lessons.go":    "/tmp lesson-distill payload",
 	"internal/pipeline/timelog.go":    "/tmp timelog-estimate payload",
+	"internal/pipeline/qacapture.go":  "/tmp QA-credential capture payload",
 	"internal/tracker/internal.go":    "/tmp verdict payload",
 	"internal/tracker/jira.go":        "/tmp verdict payload",
 

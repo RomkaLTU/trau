@@ -1120,6 +1120,16 @@ func newQAFetcher(cfg config.Config, repoRoot string) func(context.Context) (hub
 	}
 }
 
+// newQASaver stores a credential the verifier discovered inside the repo under
+// test on the serve hub, stamped agent-captured, so the next run's roster is
+// prefilled.
+func newQASaver(cfg config.Config, repoRoot string) func(context.Context, hubclient.QAAccountInput) error {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	return func(ctx context.Context, in hubclient.QAAccountInput) error {
+		return hub.CreateQAAccount(ctx, repoName(repoRoot), in)
+	}
+}
+
 // fetchPromptOverrides reads the repo's stored prompt overrides for the phase
 // preambles baked into the agent backends at startup. Best-effort: with no hub
 // reachable yet the backends keep the built-in preambles, and the pipeline still
@@ -1334,6 +1344,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		Events:              log,
 		FetchPrompts:        newPromptFetcher(cfg, repoRoot),
 		FetchQAAccounts:     newQAFetcher(cfg, repoRoot),
+		SaveQAAccount:       newQASaver(cfg, repoRoot),
 		OwnedProject:        cfg.Project,
 
 		RepoRoot:            repoRoot,
