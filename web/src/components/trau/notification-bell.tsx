@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bell,
   CheckCheck,
+  GitMerge,
   MessageCircleQuestion,
   TriangleAlert,
   type LucideIcon,
@@ -35,6 +36,7 @@ const KIND_ICON: Record<NotificationKind, LucideIcon> = {
   run_paused: TriangleAlert,
   run_faulted: TriangleAlert,
   run_quarantined: TriangleAlert,
+  run_awaiting_merge: GitMerge,
 };
 
 export function NotificationBell() {

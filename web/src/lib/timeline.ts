@@ -2,7 +2,7 @@ import type { RunState } from '@/components/trau/status-pill'
 import type { Instance } from './instances'
 import { isActiveState, toSessionState } from './overview'
 import { queueTerminal, type QueueItem } from './queue'
-import type { FailureClass, Run } from './runs'
+import type { FailureClass, PRStatus, Run } from './runs'
 import { stepPill } from './steps'
 
 export type TicketStatus =
@@ -18,6 +18,7 @@ export interface TimelineTicket {
   failureClass?: FailureClass
   reason?: string
   phase?: string
+  prStatus?: PRStatus
   activity?: string
   detail?: string
   hasRun: boolean
@@ -150,6 +151,7 @@ function resolve(
       ...base,
       status: 'running',
       phase: isCurrent && instance?.phase ? instance.phase : run.phase,
+      prStatus: run.pr_status,
       activity,
       detail,
     }

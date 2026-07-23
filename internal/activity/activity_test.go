@@ -6,17 +6,18 @@ import "testing"
 // stepper carries in web/src/lib/steps.ts, so the two surfaces cannot drift.
 func TestStepOf(t *testing.T) {
 	cases := map[Activity]Step{
-		Build:   StepBuild,
-		LintFix: StepBuild,
-		Cleanup: StepBuild,
-		Handoff: StepBuild,
-		Verify:  StepVerify,
-		Repair:  StepVerify,
-		Bugfix:  StepVerify,
-		Commit:  StepShip,
-		PR:      StepShip,
-		CIWait:  StepShip,
-		Merge:   StepShip,
+		Build:     StepBuild,
+		LintFix:   StepBuild,
+		Cleanup:   StepBuild,
+		Handoff:   StepBuild,
+		Verify:    StepVerify,
+		Repair:    StepVerify,
+		Bugfix:    StepVerify,
+		Commit:    StepShip,
+		PR:        StepShip,
+		CIWait:    StepShip,
+		Merge:     StepShip,
+		MergeWait: StepShip,
 	}
 	for act, want := range cases {
 		if got := StepOf(act); got != want {

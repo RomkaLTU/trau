@@ -5,6 +5,7 @@ import { Play, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { PhaseStepper } from '@/components/trau/phase-stepper'
+import { PRStatusBadge } from '@/components/trau/pr-status-badge'
 import { StatusPill } from '@/components/trau/status-pill'
 import { TerminalCard } from '@/components/trau/terminal-card'
 import { useActiveRepo } from '@/components/trau/active-repo'
@@ -158,6 +159,7 @@ function RowItem({
           {showRepo && <RepoChip repo={repo} />}
           <PhaseStepper compact steps={steps} subLabel={label} />
           <StatusPill state={pill.state} label={pill.label} />
+          <PRStatusBadge status={run.pr_status} />
           <span className="w-16 text-right font-mono text-[0.7rem] text-foreground">
             {rowCost(run)}
           </span>
@@ -259,6 +261,7 @@ function AttentionRow({
       </span>
       {showRepo && <RepoChip repo={repo} />}
       <StatusPill state={pill.state} label={pill.label} />
+      <PRStatusBadge status={run.pr_status} />
       <span className="font-mono text-xs text-muted-foreground">{attentionReason(run)}</span>
       {meta?.resume ? (
         <ResumeAction

@@ -30,6 +30,7 @@ type RunView struct {
 	Branch        string   `json:"branch,omitempty"`
 	PR            string   `json:"pr,omitempty"`
 	PRURL         string   `json:"pr_url,omitempty"`
+	PRStatus      string   `json:"pr_status,omitempty"`
 	FailureClass  string   `json:"failure_class,omitempty"`
 	FailureReason string   `json:"failure_reason,omitempty"`
 	CostUSD       *float64 `json:"cost_usd,omitempty"`
@@ -256,6 +257,7 @@ func runViewFromCheckpoint(tc hubstore.TicketCheckpoint) RunView {
 		Branch:        tc.Branch,
 		PR:            tc.PR,
 		PRURL:         tc.PRURL,
+		PRStatus:      checkpointField(tc.Data, "PR_STATUS"),
 		FailureClass:  class,
 		FailureReason: reason,
 		CostUSD:       tc.CostUSD,

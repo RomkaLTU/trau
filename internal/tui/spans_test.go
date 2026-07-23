@@ -66,6 +66,16 @@ func TestRenderSpanListFoldExpandPending(t *testing.T) {
 	}
 }
 
+// The AUTO_MERGE=0 wait surfaces on the Ship step's activity line as
+// "Ship · merge-wait", so the operator sees the run is parked on their manual merge.
+func TestActivityLineRendersMergeWait(t *testing.T) {
+	m := initialModel(nil)
+	m.steps = advanceActivity(m.steps, activity.MergeWait, "", time.Now())
+	if out := strip(m.renderSpanList(80)); !strings.Contains(out, "Ship · merge-wait") {
+		t.Fatalf("activity line missing %q:\n%s", "Ship · merge-wait", out)
+	}
+}
+
 // A fold transition: an active Step re-renders as a folded one-liner once the next
 // Step starts.
 func TestSpanFoldTransition(t *testing.T) {

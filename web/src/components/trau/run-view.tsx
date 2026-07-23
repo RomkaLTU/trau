@@ -21,6 +21,7 @@ import { Eyebrow } from "@/components/trau/eyebrow";
 import { NoSkillsBanner } from "@/components/trau/no-skills-banner";
 import { NoBrowserBanner } from "@/components/trau/no-browser-banner";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
+import { PRStatusBadge } from "@/components/trau/pr-status-badge";
 import { SteerComposer } from "@/components/trau/steer-notes";
 import { StatusPill } from "@/components/trau/status-pill";
 import { TerminalCard } from "@/components/trau/terminal-card";
@@ -686,6 +687,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         </a>
       </Button>
     ) : null;
+  const prBadge = <PRStatusBadge status={run?.pr_status} />;
   const viewLog = (
     <Button asChild variant="outline" size="sm" className="font-mono">
       <Link to="/runs/$repo/$ticket" params={{ repo, ticket }}>
@@ -747,12 +749,14 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
     variant === "success" ? (
       <>
         {openPR}
+        {prBadge}
         {viewLog}
         {forceResetBtn}
         {takenOver && <GateNote text={TAKEOVER_BLOCKED} />}
       </>
     ) : (
       <>
+        {prBadge}
         {viewLog}
         {resumeBtn}
         {plainResetBtn}
@@ -779,6 +783,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
                 </h1>
               )}
               <StatusPill state={pill.state} label={pill.label} />
+              {!isRecap && prBadge}
               <span className="rounded-md border border-border bg-secondary/50 px-2 py-0.5 font-mono text-xs text-muted-foreground">
                 {repo}
               </span>

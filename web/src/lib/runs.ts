@@ -6,6 +6,8 @@ import type { RepoView } from './instances'
 
 export type FailureClass = 'paused' | 'stopped' | 'faulted' | 'gave_up'
 
+export type PRStatus = 'awaiting-merge' | 'merged' | 'closed'
+
 export interface Run {
   ticket: string
   title?: string
@@ -15,6 +17,7 @@ export interface Run {
   branch?: string
   pr?: string
   pr_url?: string
+  pr_status?: PRStatus
   failure_class?: FailureClass
   failure_reason?: string
   cost_usd?: number

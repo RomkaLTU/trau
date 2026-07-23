@@ -1,56 +1,17 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
-
-func TestFinalizeEpicCreatesPRAndClosesWhenChildrenTerminal(t *testing.T) {
-	tr := &epicTracker{
-		title: "Checkout rebuild",
-		subs: []tracker.SubIssue{
-			{ID: "COD-2", Title: "first"},
-			{ID: "COD-3", Title: "second"},
-		},
-		status: map[string]tracker.IssueStatus{
-			"COD-2": tracker.StatusDone,
-			"COD-3": tracker.StatusCanceled,
-		},
-	}
-	gh := &epicGitHub{createURL: "https://github.test/pr/42"}
-	p := &Pipeline{
-		Base:       "main",
-		Remote:     "origin",
-		EpicID:     "COD-1",
-		epicBranch: "epic/COD-1-checkout-rebuild",
-		Git:        fakeGit{},
-		GitHub:     gh,
-		Tracker:    tr,
-	}
-
-	if err := p.FinalizeEpic(context.Background()); err != nil {
-		t.Fatalf("FinalizeEpic returned error: %v", err)
-	}
-	if gh.createCalls != 1 {
-		t.Fatalf("expected one epic PR create, got %d", gh.createCalls)
-	}
-	if gh.base != "main" || gh.head != "epic/COD-1-checkout-rebuild" {
-		t.Fatalf("unexpected PR base/head: %s <- %s", gh.base, gh.head)
-	}
-	if gh.mergeCalls != 0 {
-		t.Fatalf("AUTO_MERGE off must not merge the epic PR, got %d merges", gh.mergeCalls)
-	}
-	if tr.setID != "COD-1" || tr.setStatus != "Done" {
-		t.Fatalf("expected epic set Done, got %s %s", tr.setID, tr.setStatus)
-	}
-	if !strings.Contains(tr.setExtra, "https://github.test/pr/42") {
-		t.Fatalf("expected PR URL in close comment, got %q", tr.setExtra)
-	}
-}
 
 func TestFinalizeEpicAutoMergesWhenCIGreen(t *testing.T) {
 	tr := &epicTracker{
@@ -79,6 +40,7 @@ func TestFinalizeEpicAutoMergesWhenCIGreen(t *testing.T) {
 		Git:         fakeGit{},
 		GitHub:      gh,
 		Tracker:     tr,
+		State:       state.NewStore(t.TempDir()),
 	}
 
 	if err := p.FinalizeEpic(context.Background()); err != nil {
@@ -87,6 +49,7 @@ func TestFinalizeEpicAutoMergesWhenCIGreen(t *testing.T) {
 	if gh.mergeCalls != 1 {
 		t.Fatalf("expected one epic merge on green CI, got %d", gh.mergeCalls)
 	}
+	assertEpicCheckpointedMerged(t, p)
 	if gh.mergeMethod != "squash" || !gh.mergeDeleted {
 		t.Fatalf("expected squash merge with branch delete, got %q delete=%v", gh.mergeMethod, gh.mergeDeleted)
 	}
@@ -122,6 +85,7 @@ func TestFinalizeEpicMergesWithRequireCIOffAndNoChecks(t *testing.T) {
 		Git:         fakeGit{},
 		GitHub:      gh,
 		Tracker:     tr,
+		State:       state.NewStore(t.TempDir()),
 	}
 
 	if err := p.FinalizeEpic(context.Background()); err != nil {
@@ -132,6 +96,200 @@ func TestFinalizeEpicMergesWithRequireCIOffAndNoChecks(t *testing.T) {
 	}
 	if tr.setStatus != "Done" {
 		t.Fatalf("expected epic closed Done, got %s", tr.setStatus)
+	}
+}
+
+// With AUTO_MERGE=0 the epic release PR waits for the operator to merge it by hand;
+// once they do, the epic closes with the shipped-to-base comment exactly as if
+// auto-merge had merged it, and the wait announces itself once through the
+// notification pathway attributed to the epic id.
+func TestFinalizeEpicManualMergeWaitsThenShips(t *testing.T) {
+	tr := doneEpicTracker()
+	gh := &waitGitHub{
+		epicGitHub: epicGitHub{
+			createURL: "https://github.test/pr/42",
+			checks:    []Check{{Name: "ci/test", Bucket: "pass"}},
+		},
+		replies: []prReply{{state: "OPEN"}, {state: "OPEN"}, {state: "MERGED"}},
+	}
+	p := newEpicWaitPipeline(t, gh, tr)
+	var buf bytes.Buffer
+	p.Events = event.New(&buf)
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+	if gh.createCalls != 1 {
+		t.Fatalf("expected one epic PR create, got %d", gh.createCalls)
+	}
+	if gh.base != "main" || gh.head != "epic/COD-1-checkout-rebuild" {
+		t.Fatalf("unexpected PR base/head: %s <- %s", gh.base, gh.head)
+	}
+	if gh.mergeCalls != 0 {
+		t.Fatalf("AUTO_MERGE=0 must leave the merge to the human, got %d merges", gh.mergeCalls)
+	}
+	if tr.quarantineCalls != 0 {
+		t.Fatalf("a merged epic must not be quarantined, got %d", tr.quarantineCalls)
+	}
+	if tr.setID != "COD-1" || tr.setStatus != "Done" {
+		t.Fatalf("expected epic set Done, got %s %s", tr.setID, tr.setStatus)
+	}
+	if !strings.Contains(tr.setExtra, "merged to main") {
+		t.Fatalf("expected the shipped-to-base comment, got %q", tr.setExtra)
+	}
+	assertEpicCheckpointedMerged(t, p)
+
+	evs := awaitingMergeEvents(t, &buf)
+	if len(evs) != 1 {
+		t.Fatalf("emitted %d awaiting_merge events, want exactly 1", len(evs))
+	}
+	if got := strField(evs[0].Fields, "ticket"); got != "COD-1" {
+		t.Errorf("ticket field = %q, want the epic id", got)
+	}
+	if got := strField(evs[0].Fields, "pr"); got != "42" {
+		t.Errorf("pr field = %q, want 42", got)
+	}
+	if got := strField(evs[0].Fields, "url"); got != "https://github.test/pr/42" {
+		t.Errorf("url field = %q, want the PR url", got)
+	}
+}
+
+// An epic release PR closed without merging is a human rejection: give up
+// (quarantine + needs-human) naming the epic PR, do NOT ship, and never close the
+// Linear epic as done.
+func TestFinalizeEpicManualMergeClosedNotShipped(t *testing.T) {
+	tr := doneEpicTracker()
+	gh := &waitGitHub{
+		epicGitHub: epicGitHub{
+			createURL: "https://github.test/pr/42",
+			checks:    []Check{{Name: "ci/test", Bucket: "pass"}},
+		},
+		replies: []prReply{{state: "OPEN"}, {state: "CLOSED"}},
+	}
+	p := newEpicWaitPipeline(t, gh, tr)
+
+	err := p.FinalizeEpic(context.Background())
+	var g *GiveUpError
+	if !errors.As(err, &g) {
+		t.Fatalf("FinalizeEpic = %v, want a *GiveUpError", err)
+	}
+	if !strings.Contains(g.Reason, "epic PR #42 closed without merge") {
+		t.Errorf("give-up reason = %q, want it to name the closed epic PR", g.Reason)
+	}
+	if tr.quarantineCalls != 1 || tr.quarantineID != "COD-1" {
+		t.Errorf("Quarantine = %d call(s) on %q, want 1 on COD-1", tr.quarantineCalls, tr.quarantineID)
+	}
+	if tr.setStatus == "Done" {
+		t.Errorf("a rejected epic must not be closed as done, got %q", tr.setStatus)
+	}
+	if got := p.State.Get("COD-1", "PHASE"); got != state.Quarantined {
+		t.Errorf("epic PHASE = %q, want quarantined", got)
+	}
+	if got := p.State.Get("COD-1", "PR_STATUS"); got != "closed" {
+		t.Errorf("epic PR_STATUS = %q, want closed", got)
+	}
+	if gh.mergeCalls != 0 {
+		t.Errorf("a rejected epic must not be merged, got %d", gh.mergeCalls)
+	}
+}
+
+// A context canceled mid-wait is a blameless stop: FinalizeEpic propagates the
+// cancellation without quarantining, and a later rerun — after the operator merged
+// the PR while the loop was stopped — reconciles the merge and ships the epic.
+func TestFinalizeEpicManualMergeCancelThenRerunReconciles(t *testing.T) {
+	tr := doneEpicTracker()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gh := &waitGitHub{
+		epicGitHub: epicGitHub{
+			createURL: "https://github.test/pr/42",
+			checks:    []Check{{Name: "ci/test", Bucket: "pass"}},
+		},
+		replies: []prReply{{state: "OPEN"}},
+		onCall: func(call int) {
+			if call == 1 {
+				cancel()
+			}
+		},
+	}
+	p := newEpicWaitPipeline(t, gh, tr)
+
+	err := p.FinalizeEpic(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("FinalizeEpic = %v, want context.Canceled", err)
+	}
+	if tr.quarantineCalls != 0 {
+		t.Fatalf("a stop is blameless — Quarantine called %d times, want 0", tr.quarantineCalls)
+	}
+	if tr.setStatus == "Done" {
+		t.Fatalf("a stopped epic must not be closed, got %q", tr.setStatus)
+	}
+	if got := p.State.Get("COD-1", "PR_STATUS"); got != "" {
+		t.Fatalf("epic PR_STATUS = %q, want none — an unshipped epic owns no run row", got)
+	}
+
+	p.GitHub = &waitGitHub{
+		epicGitHub: epicGitHub{createURL: "https://github.test/pr/42"},
+		replies:    []prReply{{state: "MERGED"}},
+	}
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("rerun FinalizeEpic returned error: %v", err)
+	}
+	if tr.setStatus != "Done" || !strings.Contains(tr.setExtra, "merged to main") {
+		t.Fatalf("rerun must reconcile the merge and ship, got %s %q", tr.setStatus, tr.setExtra)
+	}
+	assertEpicCheckpointedMerged(t, p)
+}
+
+// assertEpicCheckpointedMerged pins the shipped epic to a complete run row rather
+// than a bare PR_STATUS stamp: a checkpoint carrying only the status would have no
+// phase, which the board reads as a run still in flight forever.
+func assertEpicCheckpointedMerged(t *testing.T, p *Pipeline) {
+	t.Helper()
+	if got := p.State.Get("COD-1", "PHASE"); got != state.Merged {
+		t.Fatalf("epic PHASE = %q, want merged", got)
+	}
+	if got := p.State.Get("COD-1", "PR_STATUS"); got != "merged" {
+		t.Fatalf("epic PR_STATUS = %q, want merged", got)
+	}
+	if got := p.State.Get("COD-1", "TITLE"); got != "Checkout rebuild" {
+		t.Fatalf("epic TITLE = %q, want the epic title", got)
+	}
+	if got := p.State.Get("COD-1", "PR_URL"); got != "https://github.test/pr/42" {
+		t.Fatalf("epic PR_URL = %q, want the epic PR url", got)
+	}
+}
+
+func newEpicWaitPipeline(t *testing.T, gh GitHub, tr *epicTracker) *Pipeline {
+	t.Helper()
+	dir := t.TempDir()
+	return &Pipeline{
+		Base:        "main",
+		Remote:      "origin",
+		EpicID:      "COD-1",
+		epicBranch:  "epic/COD-1-checkout-rebuild",
+		RequireCI:   true,
+		MergeMethod: "squash",
+		Git:         fakeGit{},
+		GitHub:      gh,
+		Tracker:     tr,
+		State:       state.NewStore(dir),
+		RunsDir:     dir,
+		Sleep:       func(time.Duration) {},
+	}
+}
+
+func doneEpicTracker() *epicTracker {
+	return &epicTracker{
+		title: "Checkout rebuild",
+		subs: []tracker.SubIssue{
+			{ID: "COD-2", Title: "first"},
+			{ID: "COD-3", Title: "second"},
+		},
+		status: map[string]tracker.IssueStatus{
+			"COD-2": tracker.StatusDone,
+			"COD-3": tracker.StatusDone,
+		},
 	}
 }
 
@@ -317,13 +475,15 @@ func (g *epicGit) CreateBranch(_ context.Context, _, base string) error {
 }
 
 type epicTracker struct {
-	title     string
-	subs      []tracker.SubIssue
-	status    map[string]tracker.IssueStatus
-	statusErr error
-	setID     string
-	setStatus string
-	setExtra  string
+	title           string
+	subs            []tracker.SubIssue
+	status          map[string]tracker.IssueStatus
+	statusErr       error
+	setID           string
+	setStatus       string
+	setExtra        string
+	quarantineCalls int
+	quarantineID    string
 }
 
 func (e *epicTracker) Pick(context.Context, tracker.Scope) (string, error) { return "", nil }
@@ -335,8 +495,12 @@ func (e *epicTracker) SetStatus(_ context.Context, id, status, extra string) err
 	e.setID, e.setStatus, e.setExtra = id, status, extra
 	return nil
 }
-func (e *epicTracker) Reset(context.Context, string) error              { return nil }
-func (e *epicTracker) Quarantine(context.Context, string, string) error { return nil }
+func (e *epicTracker) Reset(context.Context, string) error { return nil }
+func (e *epicTracker) Quarantine(_ context.Context, id, _ string) error {
+	e.quarantineCalls++
+	e.quarantineID = id
+	return nil
+}
 func (e *epicTracker) FileBug(context.Context, string, string) (string, error) {
 	return "", nil
 }
