@@ -93,6 +93,7 @@ import {
   ticketPill,
   FINISHED_INITIAL,
   FINISHED_PAGE_SIZE,
+  type FinalizeEntry,
   type PendingEntry,
   type Timeline,
   type TimelineTicket,
@@ -1335,6 +1336,61 @@ function RunningRow({
   );
 }
 
+// FinalizeRow takes the running row's place while the drain does epic-level work
+// no ticket owns.
+function FinalizeRow({
+  finalize,
+  instance,
+  now,
+  onPeek,
+}: {
+  finalize: FinalizeEntry;
+  instance?: Instance;
+  now: number;
+  onPeek: (id: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 rounded-md border border-teal/40 bg-teal/5 px-4 py-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="font-sans text-base text-foreground">
+          Finalizing epic
+        </span>
+        <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sm text-info">
+          <span aria-hidden="true">◆</span>
+          <TicketIdButton
+            id={finalize.epicId}
+            onPeek={onPeek}
+            className="text-info"
+          />
+        </span>
+        {finalize.title ? (
+          <span className="min-w-0 truncate font-sans text-base text-foreground">
+            {finalize.title}
+          </span>
+        ) : null}
+        <InternalTag source={finalize.source} />
+      </div>
+      {finalize.activity ? (
+        <PhaseStepper
+          {...runSteps("live", "", finalize.activity, finalize.detail)}
+        />
+      ) : (
+        <p className="font-sans text-sm text-muted-foreground">
+          Every ticket is done — shipping the epic branch to its base.
+        </p>
+      )}
+      {instance?.state_since ? (
+        <div className="font-mono text-xs text-muted-foreground">
+          in step{" "}
+          <span className="text-foreground">
+            {elapsedSince(instance.state_since, now)}
+          </span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function PendingTicketRow({
   ticket,
   onPeek,
@@ -1407,6 +1463,18 @@ function PendingEpicGroup({
   );
 }
 
+function drainStep(timeline: Timeline): string {
+  if (timeline.running) {
+    return (
+      stepName(
+        timeline.running.activity,
+        timeline.running.phase ?? "",
+      ).toLowerCase() || "draining"
+    );
+  }
+  return timeline.finalize ? "finalizing" : "draining";
+}
+
 function RunningQueueView({
   repo,
   queue,
@@ -1464,17 +1532,7 @@ function RunningQueueView({
                   </span>
                 </span>
               ) : null}
-              <StatusPill
-                state="active"
-                label={
-                  timeline.running
-                    ? stepName(
-                        timeline.running.activity,
-                        timeline.running.phase ?? "",
-                      ).toLowerCase() || "draining"
-                    : "draining"
-                }
-              />
+              <StatusPill state="active" label={drainStep(timeline)} />
             </div>
           </div>
 
@@ -1484,6 +1542,13 @@ function RunningQueueView({
               <RunningRow
                 repo={repo}
                 ticket={timeline.running}
+                instance={instance}
+                now={now}
+                onPeek={onPeek}
+              />
+            ) : timeline.finalize ? (
+              <FinalizeRow
+                finalize={timeline.finalize}
                 instance={instance}
                 now={now}
                 onPeek={onPeek}
@@ -1781,17 +1846,12 @@ function loopTitleState(
   if (!canRun) return { kind: "idle" };
   if (halt) return { kind: "halted", halt: halt.kind, ticket: halt.ticket };
   if (view === "running" && timeline) {
-    const running = timeline.running;
-    const step = running
-      ? stepName(running.activity, running.phase ?? "").toLowerCase() ||
-        "draining"
-      : "draining";
     return {
       kind: "draining",
       done: timeline.done,
       total: timeline.total,
-      ticket: running?.id ?? "",
-      step,
+      ticket: timeline.running?.id ?? timeline.finalize?.epicId ?? "",
+      step: drainStep(timeline),
     };
   }
   if (timeline && timeline.total > 0 && timeline.done === timeline.total) {

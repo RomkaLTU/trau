@@ -414,6 +414,70 @@ describe('buildTimeline', () => {
       expect(epic.children.map((c) => c.id)).toEqual(['COD-10', 'COD-11'])
     }
   })
+
+  it('reads a ticket-less active instance as the running epic finalize', () => {
+    const tl = buildTimeline(
+      [
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          title: 'Epic',
+          status: 'running',
+          sub_issues: [
+            { id: 'COD-10', title: 'a', state: 'done' },
+            { id: 'COD-11', title: 'b', state: 'done' },
+          ],
+        }),
+      ],
+      [
+        run({ ticket: 'COD-10', terminal: true, phase: 'merged' }),
+        run({ ticket: 'COD-11', terminal: true, phase: 'merged' }),
+      ],
+      instance({ activity: 'merge', detail: 'epic-sync' }),
+    )
+    expect(tl.running).toBeUndefined()
+    expect(tl.pending).toEqual([])
+    expect(tl.finalize?.epicId).toBe('COD-9')
+    expect(tl.finalize?.title).toBe('Epic')
+    expect(tl.finalize?.activity).toBe('merge')
+    expect(tl.finalize?.detail).toBe('epic-sync')
+  })
+
+  it('leaves the finalize out while the running epic still has leaves', () => {
+    const tl = buildTimeline(
+      [
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          status: 'running',
+          sub_issues: [
+            { id: 'COD-10', title: 'a', state: 'done' },
+            { id: 'COD-11', title: 'b', state: 'todo' },
+          ],
+        }),
+      ],
+      [run({ ticket: 'COD-10', terminal: true, phase: 'merged' })],
+      instance({ session_state: 'grazing' }),
+    )
+    expect(tl.finalize).toBeUndefined()
+    expect(tl.pending).toHaveLength(1)
+  })
+
+  it('leaves the finalize out for an instance that is no longer live', () => {
+    const tl = buildTimeline(
+      [
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          status: 'running',
+          sub_issues: [{ id: 'COD-10', title: 'a', state: 'done' }],
+        }),
+      ],
+      [run({ ticket: 'COD-10', terminal: true, phase: 'merged' })],
+      instance({ session_state: 'idle' }),
+    )
+    expect(tl.finalize).toBeUndefined()
+  })
 })
 
 describe('finishedView', () => {
