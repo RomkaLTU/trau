@@ -5,9 +5,11 @@ import {
   healthBlocks,
   healthPill,
   repoHealth,
+  repoTakenOver,
   syncRepo,
   takeoverRun,
   TakeoverError,
+  type Instance,
   type RepoFreshness,
   type RepoHealthState,
   type RepoView,
@@ -122,6 +124,42 @@ describe("anySyncing", () => {
 
     expect(anySyncing(repos)).toBe(false);
     expect(anySyncing([])).toBe(false);
+  });
+});
+
+describe("repoTakenOver", () => {
+  function instance(repo: string, session_state: string): Instance {
+    return {
+      pid: 4242,
+      repo,
+      repo_root: `/Users/rd/Projects/${repo}`,
+      runs_dir: `/Users/rd/Projects/${repo}/.trau/runs`,
+      started_at: "2026-07-23T09:00:00Z",
+      session_state,
+      ticket: "COD-7",
+    };
+  }
+
+  const cases: [string, Instance[], boolean][] = [
+    ["a terminal holding the repo", [instance("melga", "takeover")], true],
+    ["a working loop", [instance("melga", "working")], false],
+    ["a parked loop", [instance("melga", "parked")], false],
+    ["a takeover in another repo", [instance("trau", "takeover")], false],
+    ["nothing live", [], false],
+  ];
+
+  it.each(cases)("reads %s as %s", (_name, instances, want) => {
+    expect(repoTakenOver(instances, "melga")).toBe(want);
+  });
+
+  it("gates the repo while a takeover sits alongside other instances", () => {
+    const instances = [
+      instance("trau", "working"),
+      instance("melga", "idle"),
+      instance("melga", "takeover"),
+    ];
+
+    expect(repoTakenOver(instances, "melga")).toBe(true);
   });
 });
 
