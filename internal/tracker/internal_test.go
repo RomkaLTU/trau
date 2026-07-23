@@ -197,8 +197,8 @@ func TestInternalIssueStatusMapsGroups(t *testing.T) {
 	if st, _ := in.IssueStatus(context.Background(), "LOOP-1"); st != StatusDone {
 		t.Fatalf("done status = %q, want done", st)
 	}
-	if st, _ := in.IssueStatus(context.Background(), "LOOP-2"); st != StatusOpen {
-		t.Fatalf("started status = %q, want open", st)
+	if st, _ := in.IssueStatus(context.Background(), "LOOP-2"); st != StatusStarted {
+		t.Fatalf("started status = %q, want started", st)
 	}
 	if st, err := in.IssueStatus(context.Background(), "LOOP-9"); st != StatusUnknown || err != nil {
 		t.Fatalf("missing status = %q err %v, want unknown/nil", st, err)

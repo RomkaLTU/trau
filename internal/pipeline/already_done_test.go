@@ -141,7 +141,9 @@ func TestResumeRebuildsReopenedTicket(t *testing.T) {
 
 // TestResumeKeepsMergedSkipUnlessAffirmativelyReopened locks the fail-safe side
 // of COD-747: no TRACKER_DONE marker (the Done write may have failed), a status
-// lookup error, or a still-terminal status must all keep today's skip.
+// lookup error, or a still-terminal status must all keep today's skip. A started
+// status joins them: an automation flipping a delivered ticket to In Progress is a
+// regression to ignore, not the deliberate reopen (Todo/Backlog) that rebuilds.
 func TestResumeKeepsMergedSkipUnlessAffirmativelyReopened(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -153,6 +155,7 @@ func TestResumeKeepsMergedSkipUnlessAffirmativelyReopened(t *testing.T) {
 		{name: "still done in tracker", marker: true, status: tracker.StatusDone},
 		{name: "canceled in tracker", marker: true, status: tracker.StatusCanceled},
 		{name: "unknown status", marker: true, status: tracker.StatusUnknown},
+		{name: "started again by an automation", marker: true, status: tracker.StatusStarted},
 		{name: "status lookup error", marker: true, status: tracker.StatusOpen, err: errors.New("tracker down")},
 	}
 	for _, tt := range tests {

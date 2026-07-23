@@ -249,6 +249,8 @@ func (in *StoreBacked) IssueStatus(ctx context.Context, id string) (IssueStatus,
 		return StatusDone, nil
 	case "canceled":
 		return StatusCanceled, nil
+	case "started":
+		return StatusStarted, nil
 	default:
 		return StatusOpen, nil
 	}

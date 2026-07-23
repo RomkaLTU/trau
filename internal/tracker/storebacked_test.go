@@ -344,8 +344,8 @@ func TestStoreBackedIssueStatusMapsGroups(t *testing.T) {
 	if st, _ := sb.IssueStatus(context.Background(), "COD-1"); st != StatusDone {
 		t.Fatalf("completed status = %q, want done", st)
 	}
-	if st, _ := sb.IssueStatus(context.Background(), "COD-2"); st != StatusOpen {
-		t.Fatalf("started status = %q, want open", st)
+	if st, _ := sb.IssueStatus(context.Background(), "COD-2"); st != StatusStarted {
+		t.Fatalf("started status = %q, want started", st)
 	}
 	if st, _ := sb.IssueStatus(context.Background(), "COD-3"); st != StatusCanceled {
 		t.Fatalf("canceled status = %q, want canceled", st)

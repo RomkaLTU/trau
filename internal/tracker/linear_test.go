@@ -78,7 +78,9 @@ func TestParseIssueStatus(t *testing.T) {
 		{"canceled sentinel", "STATUS=canceled", StatusCanceled, true},
 		{"cancelled spelling", "STATUS=cancelled", StatusCanceled, true},
 		{"open sentinel", "STATUS=open", StatusOpen, true},
-		{"in-progress synonym", "STATUS=in-progress", StatusOpen, true},
+		{"started sentinel", "STATUS=started", StatusStarted, true},
+		{"in-progress synonym", "STATUS=in-progress", StatusStarted, true},
+		{"backlog synonym", "STATUS=backlog", StatusOpen, true},
 		{"case-insensitive key and value", "status=Done", StatusDone, true},
 		{"line prefix before sentinel", "The issue COD-566 STATUS=done", StatusDone, true},
 		{"last sentinel wins", "STATUS=open\nSTATUS=done", StatusDone, true},
@@ -102,7 +104,7 @@ func TestMapLinearState(t *testing.T) {
 		{"canceled", StatusCanceled},
 		{"backlog", StatusOpen},
 		{"unstarted", StatusOpen},
-		{"started", StatusOpen},
+		{"started", StatusStarted},
 		{"", StatusOpen},
 	}
 	for _, tc := range tests {
@@ -118,7 +120,7 @@ func TestIssueStatusTerminal(t *testing.T) {
 			t.Errorf("%q.Terminal() = false, want true", s)
 		}
 	}
-	for _, s := range []IssueStatus{StatusOpen, StatusUnknown} {
+	for _, s := range []IssueStatus{StatusOpen, StatusStarted, StatusUnknown} {
 		if s.Terminal() {
 			t.Errorf("%q.Terminal() = true, want false", s)
 		}

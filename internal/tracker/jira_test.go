@@ -175,7 +175,7 @@ func TestMapJiraStatus(t *testing.T) {
 		want       IssueStatus
 	}{
 		{"backlog is open", "new", "", StatusOpen},
-		{"in progress is open", "indeterminate", "", StatusOpen},
+		{"in progress is started", "indeterminate", "", StatusStarted},
 		{"done resolved is done", "done", "Done", StatusDone},
 		{"done unresolved is done", "done", "", StatusDone},
 		{"done wont-do is canceled", "done", "Won't Do", StatusCanceled},

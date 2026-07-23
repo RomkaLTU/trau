@@ -163,6 +163,8 @@ func (in *Internal) IssueStatus(ctx context.Context, id string) (IssueStatus, er
 		return StatusDone, nil
 	case "canceled":
 		return StatusCanceled, nil
+	case "started":
+		return StatusStarted, nil
 	default:
 		return StatusOpen, nil
 	}

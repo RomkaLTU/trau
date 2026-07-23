@@ -30,6 +30,12 @@
       "sourceType": "github",
       "skillPath": "toolchains/universal/infrastructure/homebrew-formula-maintenance/SKILL.md",
       "computedHash": "2a89e88f462bb38089d70443a888fc2ff578f2cb048d058bc552e3bf1652961e"
+    },
+    "mcp-builder": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "skillPath": "skills/mcp-builder/SKILL.md",
+      "computedHash": "826e46adf81e1372282e205c34e1a2ee876e72148007726e4a2512599d2fef7b"
     }
   }
 }
