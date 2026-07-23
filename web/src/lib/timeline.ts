@@ -6,7 +6,7 @@ import type { FailureClass, Run } from './runs'
 import { stepPill } from './steps'
 
 export type TicketStatus =
-  'done' | 'running' | 'paused' | 'failed' | 'skipped' | 'pending'
+  'done' | 'running' | 'paused' | 'stopped' | 'failed' | 'skipped' | 'pending'
 
 export interface TimelineTicket {
   id: string
@@ -118,6 +118,16 @@ function resolve(
         completedAt: run.updated_at,
       }
     }
+    if (run.failure_class === 'stopped') {
+      return {
+        ...base,
+        status: 'stopped',
+        failureClass: 'stopped',
+        reason: run.failure_reason,
+        phase: run.phase,
+        completedAt: run.updated_at,
+      }
+    }
     if (run.failure_class === 'faulted' || run.failure_class === 'gave_up') {
       return {
         ...base,
@@ -177,7 +187,8 @@ function isSettled(status: TicketStatus): boolean {
     status === 'done' ||
     status === 'failed' ||
     status === 'skipped' ||
-    status === 'paused'
+    status === 'paused' ||
+    status === 'stopped'
   )
 }
 
@@ -327,7 +338,8 @@ export function finishedReducer(
   }
 }
 
-export type SettleLabel = 'merged' | 'done' | 'failed' | 'skipped' | 'paused'
+export type SettleLabel =
+  'merged' | 'done' | 'failed' | 'skipped' | 'paused' | 'stopped'
 
 export interface SettleTally {
   label: SettleLabel
@@ -371,6 +383,10 @@ export function finishedView(
       label: 'paused',
       count: settled.filter((t) => t.status === 'paused').length,
     },
+    {
+      label: 'stopped',
+      count: settled.filter((t) => t.status === 'stopped').length,
+    },
   ]
 
   return {
@@ -393,6 +409,8 @@ export function ticketPill(t: TimelineTicket): {
       return stepPill(t.activity, t.phase ?? '')
     case 'paused':
       return { state: 'warn', label: 'paused' }
+    case 'stopped':
+      return { state: 'info', label: 'stopped' }
     case 'failed':
       return t.failureClass === 'gave_up'
         ? { state: 'fail', label: 'quarantined' }

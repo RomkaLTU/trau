@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { loopView, projectLoopState } from '@/lib/loop'
+import { isTakeover, loopView, projectLoopState, repoInstance } from '@/lib/loop'
 import type { Instance } from '@/lib/instances'
 import type { QueueItem, QueueResponse } from '@/lib/queue'
 import type { Run } from '@/lib/runs'
@@ -78,6 +78,26 @@ describe('loopView', () => {
   })
 })
 
+describe('repoInstance', () => {
+  it('scopes to the repo', () => {
+    const mine = instance({ pid: 2, ticket: 'COD-1' })
+    expect(
+      repoInstance([instance({ pid: 1, repo: 'other' }), mine], 'loop'),
+    ).toBe(mine)
+    expect(repoInstance([], 'loop')).toBeUndefined()
+  })
+
+  it('prefers a takeover over anything else registered on the repo', () => {
+    const held = instance({ pid: 2, ticket: 'COD-1', session_state: 'takeover' })
+    const picked = repoInstance(
+      [instance({ pid: 1, session_state: 'idle' }), held],
+      'loop',
+    )
+    expect(picked).toBe(held)
+    expect(isTakeover(picked)).toBe(true)
+  })
+})
+
 describe('projectLoopState', () => {
   it('carries the view and the queue/run join the card renders', () => {
     const state = projectLoopState({
@@ -148,6 +168,39 @@ describe('projectLoopState', () => {
       instance: instance({ ticket: 'COD-1', session_state: 'takeover' }),
     })
     expect(state.halt).toBeNull()
+  })
+
+  it('leaves an earlier fault as history while a takeover holds the repo', () => {
+    const state = projectLoopState({
+      queue: queue([item({ id: 'COD-1', status: 'failed' })]),
+      runs: [
+        run({
+          failure_class: 'faulted',
+          failure_reason: 'dirty tree',
+          updated_at: '2026-07-23T10:00:00Z',
+        }),
+      ],
+      instance: instance({ ticket: 'COD-1', session_state: 'takeover' }),
+    })
+    expect(state.halt).toBeNull()
+  })
+
+  it('reports a deliberate stop as its own blameless halt', () => {
+    const state = projectLoopState({
+      queue: queue([item({ id: 'COD-1', status: 'paused' })]),
+      runs: [
+        run({
+          failure_class: 'stopped',
+          failure_reason: 'stopped during build — work saved at the last checkpoint',
+          updated_at: '2026-07-23T10:00:00Z',
+        }),
+      ],
+    })
+    expect(state.halt).toEqual({
+      kind: 'stopped',
+      ticket: 'COD-1',
+      reason: 'stopped during build — work saved at the last checkpoint',
+    })
   })
 
   it('still halts on a parked instance — parking is the pause', () => {

@@ -1,4 +1,6 @@
+import type { RunState } from '@/components/trau/status-pill'
 import type { Instance } from './instances'
+import { boardPill, sessionStatePill } from './overview'
 import type { FailureClass, Run } from './runs'
 
 export type LedgerBucket = 'active' | 'needs-you' | 'merged' | 'stopped'
@@ -10,8 +12,9 @@ export interface LedgerRow {
   // than a page-wide scope.
   repo: string
   run: Run
-  // instance is the Working instance holding this ticket, present only for a live
-  // row. A grazing or parked loop is between tickets and does not hold one.
+  // instance is the live holder of this ticket: the Working loop, or the terminal
+  // session that took it over. A grazing or parked loop is between tickets and
+  // does not hold one.
   instance?: Instance
 }
 
@@ -22,13 +25,14 @@ export function joinInstances(
   instances: Instance[],
   repo: string,
 ): LedgerRow[] {
-  const working = new Map<string, Instance>()
+  const holders = new Map<string, Instance>()
   for (const inst of instances) {
-    if (inst.repo === repo && inst.ticket && inst.session_state === 'working') {
-      working.set(inst.ticket, inst)
+    if (inst.repo !== repo || !inst.ticket) continue
+    if (inst.session_state === 'working' || inst.session_state === 'takeover') {
+      holders.set(inst.ticket, inst)
     }
   }
-  return runs.map((run) => ({ repo, run, instance: working.get(run.ticket) }))
+  return runs.map((run) => ({ repo, run, instance: holders.get(run.ticket) }))
 }
 
 // mergeLedger folds every repo's runs into one ledger, joining each against the
@@ -49,9 +53,18 @@ export function mergeLedger(
   return rows
 }
 
-// bucketOf assigns each row to exactly one bucket by precedence: a live loop
-// working the ticket wins, then a failure class needs the user, then a merged
-// checkpoint, and everything else is stopped. The buckets stay disjoint.
+// rowPill is the one state a ledger row leads with. A live takeover outranks a
+// stored failure: the checkpoint's recap is history, not the row's state.
+export function rowPill(row: LedgerRow): { state: RunState; label: string } {
+  if (row.instance?.session_state === 'takeover') {
+    return sessionStatePill('takeover')
+  }
+  return boardPill(row.run)
+}
+
+// bucketOf assigns each row to exactly one bucket by precedence: a live holder of
+// the ticket wins, then a failure class needs the user, then a merged checkpoint,
+// and everything else is stopped. The buckets stay disjoint.
 export function bucketOf(row: LedgerRow): LedgerBucket {
   if (row.instance) return 'active'
   if (row.run.failure_class) return 'needs-you'

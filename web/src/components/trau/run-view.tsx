@@ -51,6 +51,8 @@ import {
   pauseBanner,
   phaseLabel,
   runSteps,
+  STOPPED_HEADLINE,
+  STOPPED_HINT,
   sumCosts,
   type RunVariant,
 } from "@/lib/runlive";
@@ -480,6 +482,45 @@ function FailedToStartBanner({
   );
 }
 
+function StoppedBanner({
+  onResume,
+  resuming,
+  gated,
+}: {
+  onResume: () => void;
+  resuming: boolean;
+  gated: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-1 rounded-lg border border-info/40 bg-info/10 px-4 py-3">
+      <span className="inline-flex items-center gap-2 font-mono text-sm text-info">
+        <span aria-hidden="true">⏹</span>
+        {STOPPED_HEADLINE}
+      </span>
+      <p className="font-sans text-sm leading-relaxed text-muted-foreground">
+        {STOPPED_HINT}
+      </p>
+      <div className="mt-2">
+        <Button
+          size="sm"
+          className="font-mono"
+          disabled={resuming || gated}
+          onClick={onResume}
+        >
+          <Play className="size-4" aria-hidden="true" />
+          {resuming ? "Resuming…" : "Resume"}
+        </Button>
+      </div>
+      {gated && (
+        <p className="mt-1 font-mono text-[0.65rem] text-muted-foreground">
+          trau is parked on this ticket’s recap in the TUI — handle it there, or
+          stop it above to resume from here
+        </p>
+      )}
+    </div>
+  );
+}
+
 function StartingPlaceholder() {
   return (
     <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-border bg-card px-4 py-12 text-center">
@@ -602,7 +643,10 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
 
   const elapsedMs = deriveElapsedMs(feed.events, ticket);
   const recapElapsed = elapsedMs !== null ? formatDuration(elapsedMs) : null;
-  const isRecap = variant === "success" || variant === "failure";
+  // A live takeover is the header's state, so the stored recap stays out of the
+  // page body rather than contradicting it.
+  const isRecap =
+    !takenOverHere && (variant === "success" || variant === "failure");
   const noSkills = feed.events.some(
     (ev) => ev.kind === "build_no_skills" && fieldStr(ev, "ticket") === ticket,
   );
@@ -783,9 +827,17 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
       </header>
 
       <div className="flex flex-col gap-6 p-8">
-        {variant === "paused" && (
+        {variant === "paused" && !takenOverHere && (
           <PausedBanner
             reason={run?.failure_reason ?? ""}
+            onResume={() => resume.mutate()}
+            resuming={resume.isPending}
+            gated={parkedHere}
+          />
+        )}
+
+        {variant === "stopped" && !takenOverHere && (
+          <StoppedBanner
             onResume={() => resume.mutate()}
             resuming={resume.isPending}
             gated={parkedHere}
@@ -864,7 +916,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         onOpenChange={setStopOpen}
         windowTitle="confirm"
         title={`Stop run ${ticket}?`}
-        description="The run stops gracefully at the last checkpoint. Work in progress is preserved."
+        description="The run stops now. Work in progress is saved at the last checkpoint and the ticket stays resumable."
         confirmLabel="Stop run"
         destructive
         onConfirm={() => stop.mutate()}

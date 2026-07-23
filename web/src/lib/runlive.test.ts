@@ -24,6 +24,7 @@ describe('deriveVariant', () => {
   it('reads a stopped run from its checkpoint', () => {
     expect(deriveVariant({ phase: 'merged', working: false })).toBe('success')
     expect(deriveVariant({ phase: 'verified', failureClass: 'paused', working: false })).toBe('paused')
+    expect(deriveVariant({ phase: 'built', failureClass: 'stopped', working: false })).toBe('stopped')
     expect(deriveVariant({ phase: 'built', failureClass: 'faulted', working: false })).toBe('failure')
     expect(deriveVariant({ phase: 'quarantined', failureClass: 'gave_up', working: false })).toBe('failure')
   })
@@ -106,6 +107,7 @@ describe('headerPill', () => {
   it('labels each terminal variant', () => {
     expect(headerPill('success', 'merged')).toEqual({ state: 'success', label: 'merged' })
     expect(headerPill('paused', 'verified')).toEqual({ state: 'warn', label: 'paused' })
+    expect(headerPill('stopped', 'built')).toEqual({ state: 'info', label: 'stopped' })
     expect(headerPill('failure', 'built', 'faulted')).toEqual({ state: 'fail', label: 'fault' })
     expect(headerPill('failure', 'quarantined', 'gave_up')).toEqual({
       state: 'fail',
@@ -186,6 +188,15 @@ describe('deriveElapsedMs', () => {
     ]
     expect(deriveElapsedMs(events, 'COD-2')).toBe((18 * 60 + 42) * 1000)
     expect(formatDuration(deriveElapsedMs(events, 'COD-2')!)).toBe('18m 42s')
+  })
+
+  it('closes a run on a deliberate stop, not only on a merge', () => {
+    const events = [
+      ev('2026-07-05T14:00:00Z', 'state_change', { state: 'merged', ticket: 'COD-1' }),
+      ev('2026-07-05T14:00:10Z', 'agent_start', {}),
+      ev('2026-07-05T14:05:10Z', 'state_change', { state: 'stopped', ticket: 'COD-2' }),
+    ]
+    expect(deriveElapsedMs(events, 'COD-2')).toBe(5 * 60 * 1000)
   })
 
   it('is null when the feed lacks the run terminal event', () => {
