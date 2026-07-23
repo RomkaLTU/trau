@@ -2047,21 +2047,38 @@ func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 	return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
 }
 
-// awaitManualMerge is the AUTO_MERGE=0 path: CI is green, so it notifies once and
-// then polls the PR at the CI cadence with no timeout. A close without merge is a
-// human rejection (give-up); a canceled context stops blamelessly; a transient
-// lookup error never ends the wait.
+// awaitManualMerge is the AUTO_MERGE=0 ticket path: CI is green, so it waits for the
+// operator to merge the PR by hand. A merge marks the ticket Done; a close without
+// merge is a human rejection (give-up); a canceled context stops blamelessly.
 func (p *Pipeline) awaitManualMerge(ctx context.Context, id, pr string) error {
+	merged, err := p.waitForManualMerge(ctx, id, pr, p.State.Get(id, "PR_URL"))
+	if err != nil {
+		return err
+	}
+	if merged {
+		return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+	}
+	return p.giveUp(ctx, id, fmt.Sprintf("PR #%s closed without merge", pr))
+}
+
+// waitForManualMerge is the shared AUTO_MERGE=0 wait for a human to merge a green
+// PR. It enters the "awaiting manual merge" activity, fires the one-time notification
+// carrying the PR number and URL, then polls PRState at the CI cadence with no
+// timeout: true once the PR merges, false on a close without merge. A canceled
+// context returns its error (blameless stop); a transient lookup error never ends the
+// wait. Both the ticket and epic finalize paths drive their own terminal handling off
+// the returned outcome.
+func (p *Pipeline) waitForManualMerge(ctx context.Context, id, pr, url string) (bool, error) {
 	p.setActivity(id, activity.MergeWait, "")
 	p.logf("  ⏳ green CI — awaiting manual merge of PR #%s (AUTO_MERGE=0)", pr)
-	p.emitAwaitingMerge(id, pr, p.State.Get(id, "PR_URL"))
+	p.emitAwaitingMerge(id, pr, url)
 	warnedLookup := false
 	for {
 		switch st, err := p.GitHub.PRState(ctx, pr); {
 		case st == "MERGED":
-			return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+			return true, nil
 		case st == "CLOSED":
-			return p.giveUp(ctx, id, fmt.Sprintf("PR #%s closed without merge", pr))
+			return false, nil
 		case err != nil && !warnedLookup:
 			p.logf("  PR #%s state lookup failing (still awaiting merge): %v", pr, err)
 			warnedLookup = true
@@ -2069,7 +2086,7 @@ func (p *Pipeline) awaitManualMerge(ctx context.Context, id, pr string) error {
 			warnedLookup = false
 		}
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return false, ctx.Err()
 		}
 		p.sleep(p.CIPoll)
 	}

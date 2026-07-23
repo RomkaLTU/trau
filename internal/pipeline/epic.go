@@ -222,11 +222,13 @@ func (p *Pipeline) syncEpicForMerge(ctx context.Context, epic string) (bool, err
 	return p.syncBranchWithBase(ctx, p.EpicID, epic, p.Base, "epic-sync")
 }
 
-// epicCIAndMerge gates the epic PR on CI and, when AUTO_MERGE is set, squash-merges
-// it to the base. A red gate drives a bounded repair-agent loop on the epic branch
-// before re-polling; an unrecoverable gate leaves the PR open for review. The bool
-// reports whether the epic actually shipped to the base, so the caller closes the
-// Linear epic with the right comment.
+// epicCIAndMerge gates the epic PR on CI and ships it to the base: with AUTO_MERGE
+// set it squash-merges once green; without it, it waits for the operator to merge the
+// green PR by hand (a close without merge is a rejection → give-up, leaving the epic
+// branch intact and unshipped). A red gate drives a bounded repair-agent loop on the
+// epic branch before re-polling; an unrecoverable gate leaves the PR open for review.
+// The bool reports whether the epic actually shipped to the base, so the caller closes
+// the Linear epic with the right comment.
 func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, error) {
 	pr := prNumber(prURL)
 	if st, _ := p.GitHub.PRState(ctx, pr); st == "MERGED" {
@@ -261,8 +263,15 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 	}
 
 	if !p.AutoMerge {
-		p.logf("  ✓ epic CI green — leaving merge to you (AUTO_MERGE=0): %s", prURL)
-		return false, nil
+		merged, err := p.waitForManualMerge(ctx, p.EpicID, pr, prURL)
+		if err != nil {
+			return false, err
+		}
+		if !merged {
+			return false, p.giveUp(ctx, p.EpicID, fmt.Sprintf("epic PR #%s closed without merge", pr))
+		}
+		p.logf("  ✓ epic merged to %s via %s", p.Base, prURL)
+		return true, nil
 	}
 	if err := p.retryGH(ctx, "gh pr merge", func() error {
 		if st, _ := p.GitHub.PRState(ctx, pr); st == "MERGED" {
