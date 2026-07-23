@@ -2864,6 +2864,7 @@ func providerConfigFor(cfg config.Config, provider string) providerConfig {
 			effort: cfg.CodexEffort,
 			extra: map[string]string{
 				"profile":    cfg.CodexProfile,
+				"mode":       cfg.CodexMode,
 				"result_dir": cfg.RunsDir,
 			},
 		}

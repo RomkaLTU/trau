@@ -37,6 +37,7 @@ var allowedReaders = map[string]string{
 
 	// §3 Provider-owned files — owned by the provider CLIs; read for usage/stats.
 	"internal/agent/agent.go":        "provider session files + agent .result.json read-back",
+	"internal/agent/codexsession.go": "codex session rollouts",
 	"internal/agent/transcript.go":   "provider session transcripts",
 	"internal/usage/probe/claude.go": "provider usage window",
 	"internal/usage/probe/codex.go":  "provider usage window",
