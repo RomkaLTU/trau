@@ -104,7 +104,8 @@ var grillMCPTools = []mcpTool{
 	{
 		Name: "ask_user",
 		Description: "Ask the user exactly one clarifying question and wait for their answer, which is returned as the tool result. " +
-			"Ask one question at a time. If the user has stepped away the call returns a park instruction: end your turn then " +
+			"One question per call and per question string: never bundle several questions into one question value — no \"Also, ...?\" " +
+			"tacked on the end. If the user has stepped away the call returns a park instruction: end your turn then " +
 			"without asking again — the question is saved and the session resumes with their answer when they return.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
@@ -136,7 +137,7 @@ var grillMCPTools = []mcpTool{
     "labels": {"type": "array", "items": {"type": "string"}, "description": "Optional labels for the created issue when disposition is create. A single issue defaults to the ready-for-agent label; an epic parent gets none by default."},
     "sub_issues": {
       "type": "array",
-      "description": "Required for split, optional for create: the proposed breakdown, one implementable slice per agent session. Each becomes a child of the parent (the grilled issue for split, the newly created epic for create).",
+      "description": "Required for split, optional for create: the proposed breakdown, one implementable slice per agent session. Every slice must be a thin VERTICAL slice: end-to-end and independently verifiable on its own. A horizontal layer is not a slice — \"schema\", \"backend\", \"UI\" are layers. Each becomes a child of the parent (the grilled issue for split, the newly created epic for create).",
       "items": {
         "type": "object",
         "properties": {
