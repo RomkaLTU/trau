@@ -44,6 +44,19 @@ func TestValidateOverrideRejectsRequiredPlaceholderBehindOptionalBranch(t *testi
 	}
 }
 
+func TestValidateOverrideRejectsInterviewWithoutIssueBody(t *testing.T) {
+	for _, name := range []string{"grill_issue", "grill_pregrill"} {
+		p := mustLookup(t, name)
+		err := p.ValidateOverride("Interview the user about {{.ID}} one question at a time.")
+		if err == nil {
+			t.Fatalf("%s: template without {{.Body}} accepted", name)
+		}
+		if !strings.Contains(err.Error(), "{{.Body}}") {
+			t.Fatalf("%s: error %q does not name the missing placeholder", name, err)
+		}
+	}
+}
+
 func TestValidateOverrideRejectsParseError(t *testing.T) {
 	p := mustLookup(t, "build")
 	err := p.ValidateOverride("Implement {{.ID on branch {{.Branch}}.")

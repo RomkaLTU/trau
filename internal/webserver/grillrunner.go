@@ -236,8 +236,9 @@ func (r *grillRunner) mcpConfigJSON(sid int64) string {
 }
 
 func (r *grillRunner) firstPrompt(ctx context.Context, repo registry.Repo, sess hubstore.GrillSession) string {
+	renderer := r.srv.promptRenderer(repo.Root)
 	if sess.IssueID == "" {
-		return grillAuthoringPrompt(r.srv.withPastedFiles(ctx, repo, sess, r.seedIdea(sess.ID)))
+		return grillAuthoringPrompt(renderer, r.srv.withPastedFiles(ctx, repo, sess, r.seedIdea(sess.ID)))
 	}
 	title, description := "", ""
 	if iss, found, err := r.srv.stores.Issues().Get(repo.Root, sess.IssueID); err == nil && found {
@@ -245,9 +246,9 @@ func (r *grillRunner) firstPrompt(ctx context.Context, repo registry.Repo, sess 
 	}
 	files := r.srv.materializeIssueAttachments(ctx, repo, sess.IssueID)
 	if r.srv.isPregrill(sess.ID) {
-		return grillPregrillPrompt(sess.IssueID, title, description, files)
+		return grillPregrillPrompt(renderer, sess.IssueID, title, description, files)
 	}
-	return grillIssuePrompt(sess.IssueID, title, description, files)
+	return grillIssuePrompt(renderer, sess.IssueID, title, description, files)
 }
 
 // answerPrompt is the resume-turn prompt: the user's latest answer with any image

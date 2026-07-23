@@ -21,6 +21,10 @@ const (
 
 	rubricSchema = `{"ticket":"<ID>","acceptance_criteria":["..."],"non_goals":["..."],"required_tests":["..."],"ui_paths":["..."],"fail_conditions":["..."]}`
 	lessonSchema = `{"lesson":"<one or two sentence durable takeaway>","tags":["<short-keyword>","..."]}`
+
+	goldenGrillTitle       = "Ticket title"
+	goldenGrillBody        = "Ticket body.\n\n![shot](/tmp/trau-attachments-COD-123/shot.png)"
+	goldenGrillAttachments = "\n--- Attachments ---\n/tmp/trau-attachments-COD-123/shot.png — shot.png (image/png, 2.0KB)\nThese are local copies of the ticket's files. Images may show UI states or error screenshots that matter for this task — read them.\n"
 )
 
 func goldenRepairData(handoff, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) RepairData {
@@ -36,6 +40,10 @@ func goldenRepairData(handoff, fails, rubricNote, lessonsNote, notesNote, ticket
 		CodeStyle:     Render("code_style", nil),
 		TicketContext: ticketCtx,
 	}
+}
+
+func grillIssue(title, body, attachments string) GrillIssueData {
+	return GrillIssueData{ID: goldenID, Title: title, Body: body, Attachments: attachments}
 }
 
 func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
@@ -104,6 +112,11 @@ func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 		{"lint_fix", "lint_fix", LintFixData{ID: goldenID}},
 		{"lessons_distill", "lessons_distill", LessonsDistillData{ID: goldenID, Result: "fixed", FailureType: "test", Evidence: "evidence line one\nevidence line two", Path: "/tmp/lesson-COD-123.json", Schema: lessonSchema}},
 		{"timelog_estimate", "timelog_estimate", TimelogEstimateData{ID: goldenID, Files: 3, Additions: 120, Deletions: 40, Commits: 2, Path: "/tmp/timelog-COD-123.txt"}},
+		{"grill_issue", "grill_issue", grillIssue(goldenGrillTitle, goldenGrillBody, goldenGrillAttachments)},
+		{"grill_issue_bare", "grill_issue", grillIssue("", "(no description yet)", "")},
+		{"grill_pregrill", "grill_pregrill", grillIssue(goldenGrillTitle, goldenGrillBody, goldenGrillAttachments)},
+		{"grill_authoring_seed", "grill_authoring", GrillAuthoringData{Idea: "A dark-mode toggle in the toolbar."}},
+		{"grill_authoring_empty", "grill_authoring", GrillAuthoringData{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.golden, func(t *testing.T) {
@@ -121,8 +134,8 @@ func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 
 func TestCatalog(t *testing.T) {
 	cat := Catalog()
-	if len(cat) != 20 {
-		t.Fatalf("catalog has %d prompts, want 20", len(cat))
+	if len(cat) != 23 {
+		t.Fatalf("catalog has %d prompts, want 23", len(cat))
 	}
 	seen := map[string]bool{}
 	for _, p := range cat {
