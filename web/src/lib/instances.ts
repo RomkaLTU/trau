@@ -1,4 +1,4 @@
-import { queryOptions } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 
 import type { RunState } from "@/components/trau/status-pill";
 import { apiFetch } from "./api";
@@ -115,6 +115,27 @@ export const instancesQueryOptions = queryOptions({
   // a user watches a run from another tab.
   refetchIntervalInBackground: true,
 });
+
+// TAKEOVER_BLOCKED is what every control a live takeover gates says, both as a
+// tooltip and as the rendering of the hub's 409 (ADR 0018).
+export const TAKEOVER_BLOCKED =
+  "Taken over in a terminal — close it to hand the repo back";
+
+export function repoTakenOver(
+  instances: readonly Instance[],
+  repo: string,
+): boolean {
+  return instances.some(
+    (i) => i.repo === repo && i.session_state === "takeover",
+  );
+}
+
+// useRepoTakenOver rides the shared instances poll, so a gated control re-enables
+// on its own once the takeover deregisters.
+export function useRepoTakenOver(repo: string): boolean {
+  const { data } = useQuery(instancesQueryOptions);
+  return data ? repoTakenOver(data.instances, repo) : false;
+}
 
 async function fetchRepoHealth(repo: string): Promise<RepoHealth> {
   const res = await apiFetch(
