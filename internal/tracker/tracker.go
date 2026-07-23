@@ -186,8 +186,12 @@ type IssueLabeler interface {
 type IssueStatus string
 
 const (
-	// StatusOpen means the issue is still live (backlog/unstarted/started/in-review).
+	// StatusOpen means the issue is live and not yet started (backlog/unstarted).
 	StatusOpen IssueStatus = "open"
+	// StatusStarted means the issue is live and work on it has begun
+	// (in-progress/in-review). Kept apart from StatusOpen so a delivered ticket
+	// flipped back to a started state is not mistaken for a deliberate reopen.
+	StatusStarted IssueStatus = "started"
 	// StatusDone means the issue reached a completed/shipped state.
 	StatusDone IssueStatus = "done"
 	// StatusCanceled means the issue was canceled / won't-do.

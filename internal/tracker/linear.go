@@ -666,6 +666,8 @@ func mapLinearState(stateType string) IssueStatus {
 		return StatusDone
 	case "canceled":
 		return StatusCanceled
+	case "started":
+		return StatusStarted
 	default:
 		return StatusOpen
 	}
@@ -673,8 +675,9 @@ func mapLinearState(stateType string) IssueStatus {
 
 func (l *Linear) issueStatusPrompt(id string) string {
 	return fmt.Sprintf("Use the Linear MCP. Look up issue %s and report its workflow state. "+
-		"Respond with exactly one final line: 'STATUS=<done|canceled|open>' — "+
-		"'done' if it is in a Done/completed state, 'canceled' if Canceled, otherwise 'open'. No other output.", id)
+		"Respond with exactly one final line: 'STATUS=<done|canceled|started|open>' — "+
+		"'done' if it is in a Done/completed state, 'canceled' if Canceled, "+
+		"'started' if work has begun (In Progress/In Review), otherwise 'open'. No other output.", id)
 }
 
 // parseIssueStatus recovers the normalized status from an agent response: the
@@ -691,7 +694,9 @@ func parseIssueStatus(text string) (status IssueStatus, matched bool) {
 		return StatusDone, true
 	case "canceled", "cancelled", "wontfix", "wont-do", "duplicate":
 		return StatusCanceled, true
-	case "open", "started", "unstarted", "backlog", "todo", "in-progress":
+	case "started", "in-progress", "in_progress", "doing", "in-review":
+		return StatusStarted, true
+	case "open", "unstarted", "backlog", "todo":
 		return StatusOpen, true
 	default:
 		return StatusUnknown, false

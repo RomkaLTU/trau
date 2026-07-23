@@ -684,9 +684,11 @@ func (p *Pipeline) loadPrompts(ctx context.Context, id string) {
 
 // reopenedInTracker reports whether a merged ticket should rebuild: trau saw the
 // tracker reach Done (TRACKER_DONE) and the tracker now affirmatively reports the
-// issue open again. Anything uncertain — no marker, no status capability, a lookup
-// error, an unknown status — reads as not-reopened, so delivered work is never
-// rebuilt on doubt.
+// issue back in an unstarted state, the shape of a deliberate reopen. A started
+// state is not a reopen: that is what an external automation's status flip on an
+// already-delivered ticket looks like. Anything uncertain — no marker, no status
+// capability, a lookup error, an unknown status — reads as not-reopened, so
+// delivered work is never rebuilt on doubt.
 func (p *Pipeline) reopenedInTracker(ctx context.Context, id string) bool {
 	if p.State.Get(id, "TRACKER_DONE") != "1" {
 		return false

@@ -279,6 +279,25 @@ func newEpicWaitPipeline(t *testing.T, gh GitHub, tr *epicTracker) *Pipeline {
 	}
 }
 
+// shippableEpicPipeline wires an epic that ships end to end once its children are
+// terminal: CI gated, auto-merge on, fake git and a fresh checkpoint store.
+func shippableEpicPipeline(t *testing.T, gh GitHub, tr tracker.Tracker) *Pipeline {
+	t.Helper()
+	return &Pipeline{
+		Base:        "main",
+		Remote:      "origin",
+		EpicID:      "COD-1",
+		epicBranch:  "epic/COD-1-checkout-rebuild",
+		AutoMerge:   true,
+		RequireCI:   true,
+		MergeMethod: "squash",
+		Git:         fakeGit{},
+		GitHub:      gh,
+		Tracker:     tr,
+		State:       state.NewStore(t.TempDir()),
+	}
+}
+
 func doneEpicTracker() *epicTracker {
 	return &epicTracker{
 		title: "Checkout rebuild",
@@ -293,7 +312,72 @@ func doneEpicTracker() *epicTracker {
 	}
 }
 
+// A child the tracker does not report closed still blocks the epic — the
+// checkpoint escape hatch only covers work trau itself merged AND closed, and an
+// unreadable status is never mistaken for delivery.
 func TestFinalizeEpicWaitsWhenAnyChildOpen(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     tracker.IssueStatus
+		checkpoint map[string]string
+	}{
+		{name: "no checkpoint", status: tracker.StatusOpen},
+		{
+			name:       "in-flight checkpoint",
+			status:     tracker.StatusOpen,
+			checkpoint: map[string]string{"PHASE": state.Verified},
+		},
+		{
+			name:       "unreadable status on a delivered child",
+			status:     tracker.StatusUnknown,
+			checkpoint: map[string]string{"PHASE": state.Merged, "TRACKER_DONE": "1"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := &epicTracker{
+				title: "Checkout rebuild",
+				subs: []tracker.SubIssue{
+					{ID: "COD-2", Title: "first"},
+					{ID: "COD-3", Title: "second"},
+				},
+				status: map[string]tracker.IssueStatus{
+					"COD-2": tracker.StatusDone,
+					"COD-3": tt.status,
+				},
+			}
+			gh := &epicGitHub{createURL: "https://github.test/pr/42"}
+			p := &Pipeline{
+				Base:       "main",
+				EpicID:     "COD-1",
+				epicBranch: "epic/COD-1-checkout-rebuild",
+				GitHub:     gh,
+				Tracker:    tr,
+				State:      state.NewStore(t.TempDir()),
+			}
+			for k, v := range tt.checkpoint {
+				if err := p.State.Set("COD-3", k, v); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := p.FinalizeEpic(context.Background()); err != nil {
+				t.Fatalf("FinalizeEpic returned error: %v", err)
+			}
+			if gh.createCalls != 0 {
+				t.Fatalf("open child must block epic PR creation, got %d creates", gh.createCalls)
+			}
+			if tr.setID != "" {
+				t.Fatalf("open child must block epic close, set %s %s", tr.setID, tr.setStatus)
+			}
+		})
+	}
+}
+
+// An external automation flipping a delivered child back to a started state after
+// trau closed it must not orphan the epic: the merged checkpoint settles
+// terminality and the regressed tracker status is restored to Done.
+func TestFinalizeEpicShipsWhenTrackerRegressedChildIsCheckpointMerged(t *testing.T) {
 	tr := &epicTracker{
 		title: "Checkout rebuild",
 		subs: []tracker.SubIssue{
@@ -302,26 +386,94 @@ func TestFinalizeEpicWaitsWhenAnyChildOpen(t *testing.T) {
 		},
 		status: map[string]tracker.IssueStatus{
 			"COD-2": tracker.StatusDone,
-			"COD-3": tracker.StatusOpen,
+			"COD-3": tracker.StatusStarted,
 		},
 	}
-	gh := &epicGitHub{createURL: "https://github.test/pr/42"}
-	p := &Pipeline{
-		Base:       "main",
-		EpicID:     "COD-1",
-		epicBranch: "epic/COD-1-checkout-rebuild",
-		GitHub:     gh,
-		Tracker:    tr,
+	gh := &epicGitHub{
+		createURL: "https://github.test/pr/42",
+		checks:    []Check{{Name: "ci/test", Bucket: "pass"}},
+	}
+	p := shippableEpicPipeline(t, gh, tr)
+	for k, v := range map[string]string{"PHASE": state.Merged, "PR": "424", "TRACKER_DONE": "1"} {
+		if err := p.State.Set("COD-3", k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+	if gh.mergeCalls != 1 {
+		t.Fatalf("delivered children must ship the epic, got %d merges", gh.mergeCalls)
+	}
+	reassert := tr.setFor("COD-3")
+	if reassert == nil || reassert.status != "Done" {
+		t.Fatalf("regressed child must be re-asserted Done, got %+v", reassert)
+	}
+	if !strings.Contains(reassert.extra, "PR #424") {
+		t.Errorf("re-assert comment = %q, want the delivering PR named", reassert.extra)
+	}
+	if closed := tr.setFor("COD-1"); closed == nil || closed.status != "Done" {
+		t.Fatalf("epic must still close, got %+v", closed)
+	}
+}
+
+// A child whose delivery trau never confirmed on the tracker (no TRACKER_DONE) is
+// still mid-flight however far its own checkpoint got: the epic keeps waiting on
+// it and nothing is written back — trau only restores a status it set itself.
+func TestFinalizeEpicSkipsReassertWithoutTrackerDoneMarker(t *testing.T) {
+	tr := doneEpicTracker()
+	tr.status["COD-3"] = tracker.StatusStarted
+	gh := &epicGitHub{
+		createURL: "https://github.test/pr/42",
+		checks:    []Check{{Name: "ci/test", Bucket: "pass"}},
+	}
+	p := shippableEpicPipeline(t, gh, tr)
+	if err := p.State.Set("COD-3", "PHASE", state.Merged); err != nil {
+		t.Fatal(err)
 	}
 
 	if err := p.FinalizeEpic(context.Background()); err != nil {
 		t.Fatalf("FinalizeEpic returned error: %v", err)
 	}
 	if gh.createCalls != 0 {
-		t.Fatalf("open child must block epic PR creation, got %d creates", gh.createCalls)
+		t.Fatalf("an unconfirmed child must block the epic, got %d creates", gh.createCalls)
 	}
 	if tr.setID != "" {
-		t.Fatalf("open child must block epic close, set %s %s", tr.setID, tr.setStatus)
+		t.Fatalf("an unconfirmed child must not be written back, set %s %s", tr.setID, tr.setStatus)
+	}
+}
+
+// A failed re-assert is a best-effort miss: the merged checkpoint already proves
+// delivery, so the epic ships anyway.
+func TestFinalizeEpicShipsWhenReassertFails(t *testing.T) {
+	inner := &epicTracker{
+		title: "Checkout rebuild",
+		subs:  []tracker.SubIssue{{ID: "COD-2", Title: "first"}},
+		status: map[string]tracker.IssueStatus{
+			"COD-2": tracker.StatusStarted,
+		},
+	}
+	tr := &childSetFailTracker{epicTracker: inner, epicID: "COD-1"}
+	gh := &epicGitHub{
+		createURL: "https://github.test/pr/42",
+		checks:    []Check{{Name: "ci/test", Bucket: "pass"}},
+	}
+	p := shippableEpicPipeline(t, gh, tr)
+	for k, v := range map[string]string{"PHASE": state.Merged, "TRACKER_DONE": "1"} {
+		if err := p.State.Set("COD-2", k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+	if gh.mergeCalls != 1 {
+		t.Fatalf("a failed re-assert must not block the epic, got %d merges", gh.mergeCalls)
+	}
+	if closed := inner.setFor("COD-1"); closed == nil || closed.status != "Done" {
+		t.Fatalf("epic must still close, got %+v", closed)
 	}
 }
 
@@ -482,8 +634,35 @@ type epicTracker struct {
 	setID           string
 	setStatus       string
 	setExtra        string
+	sets            []trackerSet
 	quarantineCalls int
 	quarantineID    string
+}
+
+type trackerSet struct{ id, status, extra string }
+
+// setFor returns the last status write aimed at id, or nil when there was none.
+func (e *epicTracker) setFor(id string) *trackerSet {
+	for i := len(e.sets) - 1; i >= 0; i-- {
+		if e.sets[i].id == id {
+			return &e.sets[i]
+		}
+	}
+	return nil
+}
+
+// childSetFailTracker rejects every status write except the epic's own close, so a
+// failed self-heal can be told apart from a failed epic close.
+type childSetFailTracker struct {
+	*epicTracker
+	epicID string
+}
+
+func (t *childSetFailTracker) SetStatus(ctx context.Context, id, status, extra string) error {
+	if id != t.epicID {
+		return errors.New("tracker unavailable")
+	}
+	return t.epicTracker.SetStatus(ctx, id, status, extra)
 }
 
 func (e *epicTracker) Pick(context.Context, tracker.Scope) (string, error) { return "", nil }
@@ -493,6 +672,7 @@ func (e *epicTracker) SubIssues(context.Context, string) ([]tracker.SubIssue, er
 func (e *epicTracker) Title(context.Context, string) (string, error) { return e.title, nil }
 func (e *epicTracker) SetStatus(_ context.Context, id, status, extra string) error {
 	e.setID, e.setStatus, e.setExtra = id, status, extra
+	e.sets = append(e.sets, trackerSet{id: id, status: status, extra: extra})
 	return nil
 }
 func (e *epicTracker) Reset(context.Context, string) error { return nil }

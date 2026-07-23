@@ -465,8 +465,10 @@ func mapJiraStatus(category, resolution string) IssueStatus {
 			return StatusCanceled
 		}
 		return StatusDone
-	case "new", "indeterminate":
+	case "new":
 		return StatusOpen
+	case "indeterminate":
+		return StatusStarted
 	default:
 		return StatusUnknown
 	}
@@ -486,8 +488,9 @@ func isCanceledResolution(name string) bool {
 
 func (j *Jira) issueStatusPrompt(id string) string {
 	return fmt.Sprintf("Use the Jira (Rovo) MCP. Look up issue %s and report its workflow state. "+
-		"Respond with exactly one final line: 'STATUS=<done|canceled|open>' — "+
-		"'done' if it is Done/Closed/completed, 'canceled' if Canceled/won't-do/duplicate, otherwise 'open'. No other output.", id)
+		"Respond with exactly one final line: 'STATUS=<done|canceled|started|open>' — "+
+		"'done' if it is Done/Closed/completed, 'canceled' if Canceled/won't-do/duplicate, "+
+		"'started' if work has begun (In Progress/In Review), otherwise 'open'. No other output.", id)
 }
 
 // IssueProject reports the key of the Jira project issue id belongs to, used by
