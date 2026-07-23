@@ -32,6 +32,7 @@ import { TargetRepoField } from "@/components/trau/target-repo-field";
 import { ConfirmDialog } from "@/components/trau/confirm-dialog";
 import { EmptyState } from "@/components/trau/empty-state";
 import { Eyebrow } from "@/components/trau/eyebrow";
+import { useHandback } from "@/components/trau/handback-dialog";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { SegmentedControl } from "@/components/trau/segmented-control";
 import { StatusPill, type RunState } from "@/components/trau/status-pill";
@@ -45,6 +46,7 @@ import {
 } from "@/lib/add-by-id";
 import { configQueryOptions } from "@/lib/config";
 import { addAllLabel, eligibleQueryOptions, planAddAll } from "@/lib/eligible";
+import { pendingHandback } from "@/lib/handback";
 import { IssueFetchError, issueQueryOptions } from "@/lib/issues";
 import {
   instancesQueryOptions,
@@ -585,6 +587,7 @@ function LaunchQueueCard({
       resetAdd();
     },
   });
+  const handback = useHandback(repo, () => runNext.mutate());
 
   const addAll = useMutation({
     mutationFn: async () => {
@@ -905,7 +908,12 @@ function LaunchQueueCard({
                       type="button"
                       size="sm"
                       className="font-mono"
-                      onClick={() => runNext.mutate()}
+                      onClick={() =>
+                        handback.request(
+                          submittedId,
+                          pendingHandback(runs.data?.runs, submittedId),
+                        )
+                      }
                       disabled={runNext.isPending || add.isPending || shuttingDown}
                     >
                       {runNext.isPending ? "Starting…" : "Run next"}
@@ -1028,6 +1036,8 @@ function LaunchQueueCard({
           onPeek={onPeek}
         />
       ) : null}
+
+      {handback.dialog}
     </div>
   );
 }
