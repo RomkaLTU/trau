@@ -34,6 +34,7 @@ export function runTitle(ticket: string, pill: string): string {
 
 const HALT_GLYPH: Record<LoopHaltKind, string> = {
   paused: '⏸',
+  stopped: '⏹',
   budget: '⚠',
   fault: '⚠',
   quarantined: '⚠',

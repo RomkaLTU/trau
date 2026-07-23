@@ -23,7 +23,8 @@ export function loopView(draining: boolean, instance?: Instance): LoopView {
   return 'builder'
 }
 
-export type LoopHaltKind = 'paused' | 'budget' | 'fault' | 'quarantined'
+export type LoopHaltKind =
+  'paused' | 'stopped' | 'budget' | 'fault' | 'quarantined'
 
 export interface LoopHalt {
   kind: LoopHaltKind
@@ -41,6 +42,24 @@ export interface LoopState {
   view: LoopView
   timeline: Timeline | null
   halt: LoopHalt | null
+}
+
+// repoInstance picks the one instance the Loop page speaks for. A takeover wins
+// over anything else registered against the repo, so a human holding the ticket
+// is the headline and the halt banner stays down behind them.
+export function repoInstance(
+  instances: Instance[],
+  repo: string,
+): Instance | undefined {
+  const scoped = instances.filter((i) => i.repo === repo)
+  return (
+    scoped.find((i) => toSessionState(i.session_state) === 'takeover') ??
+    scoped[0]
+  )
+}
+
+export function isTakeover(instance?: Instance): boolean {
+  return toSessionState(instance?.session_state ?? '') === 'takeover'
 }
 
 // A takeover is a human holding the ticket, not a stopped loop, so it counts as
@@ -72,6 +91,8 @@ function haltFor(t: TimelineTicket): LoopHalt | null {
   switch (t.status) {
     case 'paused':
       return { kind: 'paused', ticket: t.id, reason }
+    case 'stopped':
+      return { kind: 'stopped', ticket: t.id, reason }
     case 'failed':
       if (t.failureClass === 'gave_up') {
         return {

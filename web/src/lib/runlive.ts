@@ -10,6 +10,7 @@ export type RunVariant =
   | 'success'
   | 'failure'
   | 'paused'
+  | 'stopped'
 
 export interface VariantInput {
   phase: string
@@ -34,6 +35,7 @@ export function deriveVariant({
   if (working) return 'live'
   if (phase === 'merged') return 'success'
   if (failureClass === 'paused') return 'paused'
+  if (failureClass === 'stopped') return 'stopped'
   if (failureClass === 'faulted' || failureClass === 'gave_up') return 'failure'
   // No checkpoint and no live process: the run has not landed yet. A reported
   // child death makes it failed-to-start; otherwise it is still launching.
@@ -73,6 +75,8 @@ export function headerPill(
       return { state: 'success', label: 'merged' }
     case 'paused':
       return { state: 'warn', label: 'paused' }
+    case 'stopped':
+      return { state: 'info', label: 'stopped' }
     case 'failure':
       return failureClass === 'gave_up'
         ? { state: 'fail', label: 'quarantined' }
@@ -136,6 +140,10 @@ export function pauseBanner(reason: string): PauseBanner {
   }
 }
 
+export const STOPPED_HEADLINE = 'stopped — resume when ready'
+export const STOPPED_HINT =
+  'Work is saved at its checkpoint. Resume hands it back to the loop.'
+
 export interface CostSummary {
   tokens: number
   usd: number
@@ -164,7 +172,13 @@ export function formatCostUSD(usd: number, metered: boolean): string {
   return metered ? money : `≥ ${money}`
 }
 
-const TERMINAL_STATES = new Set(['merged', 'faulted', 'quarantined', 'paused'])
+const TERMINAL_STATES = new Set([
+  'merged',
+  'faulted',
+  'quarantined',
+  'paused',
+  'stopped',
+])
 
 interface TimedEvent {
   ts: string

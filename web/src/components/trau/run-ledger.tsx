@@ -24,6 +24,7 @@ import {
   checkpointLabel,
   formatAge,
   mergeLedger,
+  rowPill,
   rowsForTab,
   type LedgerRow,
   type LedgerTab,
@@ -58,13 +59,15 @@ const TABS: { key: LedgerTab; label: string }[] = [
 
 function rowStepper(row: LedgerRow): { steps: Step[]; label: string } {
   const { run, instance } = row
-  if (instance) {
+  if (instance?.session_state === 'working') {
     const live = liveSteps(instance.activity, instance.detail, instance.phase ?? '')
     const label = (live.subLabel ?? checkpointLabel(instance.phase ?? '')).toLowerCase()
     return { steps: live.steps, label }
   }
+  const faulted =
+    run.failure_class === 'faulted' || run.failure_class === 'gave_up'
   return {
-    steps: checkpointSteps(run.phase, Boolean(run.failure_class)),
+    steps: checkpointSteps(run.phase, faulted),
     label: checkpointLabel(run.phase),
   }
 }
@@ -134,7 +137,7 @@ function RowItem({
   onConflict: (repo: string) => void
 }) {
   const { repo, run, instance } = row
-  const pill = boardPill(run)
+  const pill = rowPill(row)
   const { steps, label } = rowStepper(row)
   const to = instance ? '/live/$repo/$ticket' : '/runs/$repo/$ticket'
 
