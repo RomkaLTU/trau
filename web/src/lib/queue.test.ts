@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { apiFetch } from './api'
 import {
+  enqueueFresh,
   publishQueue,
+  queueActiveIds,
   queueCounts,
   queueCoveredIds,
   queueExecutable,
@@ -279,6 +281,93 @@ describe('queueCoveredIds', () => {
         }),
       ]),
     ).toEqual(new Set(['COD-2', 'COD-3', 'COD-4']))
+  })
+})
+
+describe('queueActiveIds', () => {
+  it.each(['done', 'failed', 'skipped'])('drops a %s ticket row', (status) => {
+    expect(
+      queueActiveIds([item({ id: 'COD-1' }), item({ id: 'COD-2', status })]),
+    ).toEqual(new Set(['COD-1']))
+  })
+
+  it('drops a settled epic along with its sub-issues', () => {
+    expect(
+      queueActiveIds([
+        item({
+          id: 'COD-2',
+          kind: 'epic',
+          status: 'done',
+          sub_issues: [
+            { id: 'COD-3', title: 'a', state: 'done' },
+            { id: 'COD-4', title: 'b', state: 'done' },
+          ],
+        }),
+      ]),
+    ).toEqual(new Set())
+  })
+
+  it.each(['pending', 'running', 'paused'])(
+    'keeps a %s epic and every sub-issue under it',
+    (status) => {
+      expect(
+        queueActiveIds([
+          item({
+            id: 'COD-2',
+            kind: 'epic',
+            status,
+            sub_issues: [
+              { id: 'COD-3', title: 'a', state: 'todo' },
+              { id: 'COD-4', title: 'b', state: 'done' },
+            ],
+          }),
+        ]),
+      ).toEqual(new Set(['COD-2', 'COD-3', 'COD-4']))
+    },
+  )
+})
+
+describe('enqueueFresh', () => {
+  it('adds the item with a single request when the id is free', async () => {
+    mockFetch.mockResolvedValueOnce(response(201, queueResponse()))
+
+    await enqueueFresh('trau', { id: 'COD-1' })
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/repos/trau/queue',
+      expect.objectContaining({ body: JSON.stringify({ id: 'COD-1' }) }),
+    )
+  })
+
+  it('drops a settled leftover and queues the item again', async () => {
+    mockFetch
+      .mockResolvedValueOnce(response(409, { error: 'COD-1 is already in the queue' }))
+      .mockResolvedValueOnce(
+        response(200, queueResponse({ items: [item({ id: 'COD-1', status: 'done' })] })),
+      )
+      .mockResolvedValueOnce(response(200, queueResponse()))
+      .mockResolvedValueOnce(response(201, queueResponse({ items: [item({ id: 'COD-1' })] })))
+
+    const res = await enqueueFresh('trau', { id: 'COD-1' })
+
+    expect(mockFetch).toHaveBeenNthCalledWith(3, '/api/v1/repos/trau/queue/COD-1', {
+      method: 'DELETE',
+    })
+    expect(res.items).toEqual([item({ id: 'COD-1' })])
+  })
+
+  it('rethrows when the conflicting row is still live', async () => {
+    mockFetch
+      .mockResolvedValueOnce(response(409, { error: 'COD-1 is already in the queue' }))
+      .mockResolvedValueOnce(
+        response(200, queueResponse({ items: [item({ id: 'COD-1', status: 'running' })] })),
+      )
+
+    await expect(enqueueFresh('trau', { id: 'COD-1' })).rejects.toThrow(
+      'COD-1 is already in the queue',
+    )
+    expect(mockFetch).toHaveBeenCalledTimes(2)
   })
 })
 

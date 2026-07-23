@@ -1,4 +1,4 @@
-import { queueCoveredIds, type QueueItem, type QueueKind, type QueueResponse } from './queue'
+import { queueActiveIds, type QueueItem, type QueueKind, type QueueResponse } from './queue'
 import type { SearchResult } from './search'
 
 // SETTLED_GROUPS are the status groups the loop would settle on sight. The hub's
@@ -16,8 +16,9 @@ export interface PickerList {
 }
 
 // pickerList narrows a search response to the rows the queue builder can offer.
-// A settled issue is never a candidate; a candidate the queue already covers —
-// as an item of its own or inside a queued epic — is dropped as a duplicate.
+// A settled issue is never a candidate; a candidate the queue is still going to
+// act on — as an item of its own or inside a queued epic — is dropped as a
+// duplicate.
 export function pickerList(
   results: SearchResult[],
   queued: QueueItem[],
@@ -25,8 +26,8 @@ export function pickerList(
   const candidates = results.filter((r) => !SETTLED_GROUPS.has(r.group))
   if (candidates.length === 0) return { rows: [], empty: 'no-match' }
 
-  const covered = queueCoveredIds(queued)
-  const rows = candidates.filter((r) => !covered.has(r.id))
+  const active = queueActiveIds(queued)
+  const rows = candidates.filter((r) => !active.has(r.id))
   return { rows, empty: rows.length === 0 ? 'all-queued' : null }
 }
 

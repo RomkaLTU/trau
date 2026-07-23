@@ -45,9 +45,9 @@ import {
   isGrillable,
 } from "@/lib/grill";
 import {
-  enqueue,
+  enqueueFresh,
   publishQueue,
-  queueCoveredIds,
+  queueActiveIds,
   queueQueryOptions,
 } from "@/lib/queue";
 import { cn } from "@/lib/utils";
@@ -124,10 +124,10 @@ function IssueDrawerBody({
   });
 
   const queue = useQuery(queueQueryOptions(repo));
-  const inQueue = queueCoveredIds(queue.data?.items ?? []).has(id);
+  const inQueue = queueActiveIds(queue.data?.items ?? []).has(id);
 
   const addToQueue = useMutation({
-    mutationFn: () => enqueue(repo, { id }),
+    mutationFn: () => enqueueFresh(repo, { id }),
     onSuccess: (res) => publishQueue(queryClient, repo, res),
   });
 

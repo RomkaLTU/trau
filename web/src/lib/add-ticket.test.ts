@@ -63,6 +63,12 @@ describe('pickerList', () => {
     expect(list).toEqual({ rows: [fresh], empty: null })
   })
 
+  it('offers an id again once its queue row has settled', () => {
+    const again = result({ id: 'COD-1' })
+    const list = pickerList([again], [item({ id: 'COD-1', status: 'done' })])
+    expect(list).toEqual({ rows: [again], empty: null })
+  })
+
   it('drops a ticket covered by a queued epic sub-issue', () => {
     const list = pickerList(
       [result({ id: 'COD-3' })],
