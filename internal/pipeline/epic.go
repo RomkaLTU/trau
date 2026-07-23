@@ -44,10 +44,11 @@ func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
 		p.logf("  epic title lookup error (using id-only branch): %v", err)
 	}
 	branch := epicBranch(p.EpicID, title)
-	if err := p.Git.CreateBranch(ctx, branch, p.Base); err != nil {
+	base := p.baseRef()
+	if err := p.Git.CreateBranch(ctx, branch, base); err != nil {
 		return "", &GiveUpError{ID: p.EpicID, Reason: "could not create epic branch for " + p.EpicID}
 	}
-	p.logf("  epic branch %s ← %s", branch, p.Base)
+	p.logf("  epic branch %s ← %s", branch, base)
 	if err := p.Git.Push(ctx, p.Remote, branch, false); err != nil {
 		p.logf("  push epic branch error (continuing): %v", err)
 	}

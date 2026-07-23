@@ -65,6 +65,17 @@ type Git interface {
 
 	Checkout(ctx context.Context, ref string, force bool) error
 
+	// CheckoutDetached puts HEAD on ref without claiming a branch (git checkout
+	// --detach); force discards local changes as Checkout's does. It is the only way
+	// onto a branch another worktree already holds, since git allows exactly one
+	// checkout of a branch across a repo's worktrees.
+	CheckoutDetached(ctx context.Context, ref string, force bool) error
+
+	// WorktreeHolding returns the path of another linked worktree that has branch
+	// checked out, or "" when none does — the structural reason git refuses to
+	// check that branch out here.
+	WorktreeHolding(ctx context.Context, branch string) (string, error)
+
 	CreateBranch(ctx context.Context, branch, base string) error
 
 	Clean(ctx context.Context) error
@@ -111,6 +122,11 @@ type Git interface {
 	CommitSubject(ctx context.Context, ref string) (string, error)
 
 	Pull(ctx context.Context, remote, branch string) error
+
+	// Fetch updates the remote-tracking ref for branch without touching the
+	// working tree or the local branch, so a detached checkout can land on an
+	// up-to-date tip even when the local branch is unwritable.
+	Fetch(ctx context.Context, remote, branch string) error
 
 	// MergeRemote fetches remote/base and merges it into the current branch,
 	// reporting conflicted=true when the merge stopped on conflicts (the tree is
@@ -488,6 +504,11 @@ type Pipeline struct {
 	// at session end. Empty means nothing was stashed this run.
 	stashedBranch string
 
+	// detachedBase records the ref checkoutBase parked HEAD on when another worktree
+	// held the base branch, so baseRef cuts from those commits and not from the local
+	// base branch that stayed behind. Empty means the base branch itself is checked out.
+	detachedBase string
+
 	// buildProvider/buildSkills capture, from the last build agent call, which
 	// provider ran and which skills its session loaded — the inputs to the
 	// post-build no-skills warning.
@@ -819,7 +840,7 @@ func (p *Pipeline) preserveAndClean(ctx context.Context, msg string) {
 	defer cancel()
 
 	branch, _ := p.Git.CurrentBranch(ctx)
-	if branch != p.Base {
+	if !p.onBase(branch) {
 		_ = p.Git.AddAll(ctx)
 		_ = p.Git.Commit(ctx, msg, true)
 		if p.pushPreserved(ctx) {
@@ -828,7 +849,7 @@ func (p *Pipeline) preserveAndClean(ctx context.Context, msg string) {
 			p.logf("  saved attempt to local branch %s", branch)
 		}
 	}
-	_ = p.Git.Checkout(ctx, p.Base, true)
+	_, _ = p.checkoutBase(ctx, true)
 	_ = p.Git.Clean(ctx)
 }
 
@@ -949,8 +970,9 @@ const autoStashMsg = "trau autostash: uncommitted WIP set aside for a fresh run"
 // are committed back to that branch; anything else is the user's WIP, which AutoStash
 // (default on) sets aside for RestoreWIP to put back at session end and which aborts
 // the run when AutoStash is off. Then it checks out the base branch and fast-forwards
-// it from the remote (best-effort). The resume path deliberately skips this — the
-// feature branch's WIP IS the work.
+// it from the remote (best-effort); a base another worktree holds is ridden detached
+// at its tip instead, already up to date, so the pull is redundant there. The resume
+// path deliberately skips this — the feature branch's WIP IS the work.
 func (p *Pipeline) EnsureCleanBase(ctx context.Context) error {
 	dirty, err := p.Git.StatusPorcelain(ctx)
 	if err != nil {
@@ -961,11 +983,86 @@ func (p *Pipeline) EnsureCleanBase(ctx context.Context) error {
 			return err
 		}
 	}
-	if err := p.Git.Checkout(ctx, p.Base, false); err != nil {
+	detached, err := p.checkoutBase(ctx, false)
+	if err != nil {
 		return fmt.Errorf("ensure clean base: checkout %s: %w", p.Base, err)
 	}
-	_ = p.Git.Pull(ctx, p.Remote, p.Base)
+	if !detached {
+		_ = p.Git.Pull(ctx, p.Remote, p.Base)
+	}
 	return nil
+}
+
+// detachedHead is what CurrentBranch reports once HEAD is detached.
+const detachedHead = "HEAD"
+
+// onBase reports whether branch is the base branch itself or the detached HEAD at
+// its tip. Neither carries a run's work, so neither is preserved or adopted as one.
+func (p *Pipeline) onBase(branch string) bool {
+	return branch == p.Base || branch == detachedHead
+}
+
+// checkoutBase puts the repo on the base branch, reporting whether it had to settle
+// for a detached HEAD at the base tip. An operator's sibling worktree with the base
+// checked out makes git refuse ours, and that worktree is theirs — never freed by
+// trau — so the run rides the same commits detached rather than stopping the queue.
+// It records the ref HEAD ended up on for baseRef to cut later branches from.
+func (p *Pipeline) checkoutBase(ctx context.Context, force bool) (detached bool, err error) {
+	if err = p.Git.Checkout(ctx, p.Base, force); err == nil {
+		p.detachedBase = ""
+		return false, nil
+	}
+	where, held := p.baseHeldElsewhere(ctx, err)
+	if !held {
+		return false, err
+	}
+	tip := p.Base
+	if p.fetchBaseTip(ctx) {
+		tip = p.Remote + "/" + p.Base
+	}
+	if derr := p.Git.CheckoutDetached(ctx, tip, force); derr != nil {
+		return false, derr
+	}
+	p.detachedBase = tip
+	p.logf("  ↻ base %s is checked out in %s — running detached at %s", p.Base, where, tip)
+	return true, nil
+}
+
+// baseRef names the ref a run's branch is cut from. It is the base branch, except
+// while the run rides that base detached: git can refuse to move the local branch
+// but never the fetched remote tip HEAD is parked at, so cutting from the branch
+// there would start the run behind the commits it just fetched.
+func (p *Pipeline) baseRef() string {
+	if p.detachedBase != "" {
+		return p.detachedBase
+	}
+	return p.Base
+}
+
+// fetchBaseTip refreshes the base's remote-tracking ref under its own sub-deadline,
+// reporting whether that tip is now current. The budget keeps an unreachable remote
+// from eating the sweep-back's whole cleanup budget before the checkout lands.
+func (p *Pipeline) fetchBaseTip(ctx context.Context) bool {
+	ctx, cancel := context.WithTimeout(ctx, baseFetchBudget)
+	defer cancel()
+	return p.Git.Fetch(ctx, p.Remote, p.Base) == nil
+}
+
+const baseFetchBudget = 20 * time.Second
+
+// baseHeldElsewhere reports whether refusal is git declining to check out a base
+// another worktree already holds, and names that holder for the log. git's worktree
+// list answers structurally; its refusal message is the fallback when that lookup
+// itself fails, and then the holder goes unnamed.
+func (p *Pipeline) baseHeldElsewhere(ctx context.Context, refusal error) (where string, held bool) {
+	path, err := p.Git.WorktreeHolding(ctx, p.Base)
+	if err != nil {
+		return "another worktree", strings.Contains(refusal.Error(), "already used by worktree")
+	}
+	if path == "" {
+		return "", false
+	}
+	return "worktree " + path, true
 }
 
 // setAsideWIP clears the dirty tree EnsureCleanBase found by the route that suits
@@ -1001,7 +1098,7 @@ func (p *Pipeline) setAsideWIP(ctx context.Context) error {
 // checkpoint. It returns "" for the base branch and for branches trau never cut,
 // a personal feature/… branch included.
 func (p *Pipeline) interruptedRunID(branch string) string {
-	if branch == "" || branch == p.Base {
+	if branch == "" || p.onBase(branch) {
 		return ""
 	}
 	for _, id := range p.State.Tickets() {
@@ -1059,7 +1156,7 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 	defer cancel()
 
 	branch := p.featureBranch(ctx, id)
-	_ = p.Git.Checkout(ctx, p.Base, true)
+	_, _ = p.checkoutBase(ctx, true)
 	if branch != "" && branch != p.Base {
 		_ = p.Git.DeleteBranch(ctx, branch)
 		_ = p.Git.DeletePushedBranch(ctx, p.Remote, branch)
@@ -1091,7 +1188,7 @@ func (p *Pipeline) PurgeLocal(ctx context.Context, id string) error {
 	defer cancel()
 
 	branch := p.featureBranch(ctx, id)
-	_ = p.Git.Checkout(ctx, p.Base, true)
+	_, _ = p.checkoutBase(ctx, true)
 
 	var errs []error
 	if branch != "" && branch != p.Base {
@@ -1299,7 +1396,7 @@ func (p *Pipeline) resolveBuildBranch(ctx context.Context, id string) (string, e
 		p.setTitle(title)
 	}
 	branch = featureBranch(id, title)
-	base := p.Base
+	base := p.baseRef()
 	if p.EpicID != "" {
 		epic, err := p.epicBranchName(ctx)
 		if err != nil {
@@ -3813,9 +3910,50 @@ func (g ExecGit) Checkout(ctx context.Context, ref string, force bool) error {
 	return g.run(ctx, append(args, ref)...)
 }
 
-// CreateBranch creates and switches to branch off base (git checkout -b <branch> <base>).
+// CheckoutDetached puts HEAD on ref without claiming a branch (git checkout --detach
+// <ref>); force adds -f to discard local changes.
+func (g ExecGit) CheckoutDetached(ctx context.Context, ref string, force bool) error {
+	args := []string{"checkout", "--detach"}
+	if force {
+		args = append(args, "-f")
+	}
+	return g.run(ctx, append(args, ref)...)
+}
+
+// WorktreeHolding returns the path of another linked worktree that has branch
+// checked out, or "" when none does. git worktree list --porcelain emits a
+// `worktree <path>` line followed by the `branch <ref>` that worktree holds; this
+// worktree is skipped so only a genuine conflict is reported.
+func (g ExecGit) WorktreeHolding(ctx context.Context, branch string) (string, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo, "worktree", "list", "--porcelain").Output()
+	if err != nil {
+		return "", fmt.Errorf("git worktree list: %w", err)
+	}
+	top, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --show-toplevel: %w", err)
+	}
+	mine := strings.TrimSpace(string(top))
+	path := ""
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if rest, ok := strings.CutPrefix(line, "worktree "); ok {
+			path = rest
+			continue
+		}
+		if line == "branch refs/heads/"+branch && path != mine {
+			return path, nil
+		}
+	}
+	return "", nil
+}
+
+// CreateBranch creates and switches to branch off base (git checkout -b <branch>
+// <base>). --no-track is a no-op for a local base but stops a base given as a
+// remote-tracking ref from becoming the new branch's upstream, which would point a
+// bare `git push` on a run's branch at the base branch.
 func (g ExecGit) CreateBranch(ctx context.Context, branch, base string) error {
-	return g.run(ctx, "checkout", "-b", branch, base)
+	return g.run(ctx, "checkout", "-b", branch, "--no-track", base)
 }
 
 // Clean removes untracked files and directories (git clean -fd) from the target
@@ -4073,6 +4211,12 @@ func (g ExecGit) StashPop(ctx context.Context) error {
 // Pull fast-forwards branch from remote (git pull --ff-only <remote> <branch>).
 func (g ExecGit) Pull(ctx context.Context, remote, branch string) error {
 	return g.run(ctx, "pull", "--ff-only", remote, branch)
+}
+
+// Fetch updates the remote-tracking ref for branch (git fetch <remote> <branch>),
+// leaving the working tree and the local branch alone.
+func (g ExecGit) Fetch(ctx context.Context, remote, branch string) error {
+	return g.run(ctx, "fetch", remote, branch)
 }
 
 // MergeRemote fetches remote/base and merges it into the current branch. A clean
