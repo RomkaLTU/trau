@@ -114,7 +114,7 @@ func (c *CodexInteractive) Run(ctx context.Context, prompt, label string) (Resul
 
 	trustPrompt := make(chan struct{}, 1)
 	authPrompt := make(chan struct{}, 1)
-	go drainWithSignals(transcript, sess, codexWatch, trustPrompt, authPrompt, func() {
+	go drainWithSignals(transcript, sess, codexWatch, terminalSignals{trust: trustPrompt, auth: authPrompt}, func() {
 		lastActivity.Store(c.clock().UnixNano())
 	})
 

@@ -273,7 +273,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 
 	trustPrompt := make(chan struct{}, 1)
 	authPrompt := make(chan struct{}, 1)
-	go drainWithSignals(transcript, sess, claudeWatch, trustPrompt, authPrompt, func() {
+	go drainWithSignals(transcript, sess, claudeWatch, terminalSignals{trust: trustPrompt, auth: authPrompt}, func() {
 		lastActivity.Store(c.clock().UnixNano())
 	})
 
@@ -569,19 +569,36 @@ func liveTranscript(sink TranscriptSink, log *event.Log, label string, cols, row
 }
 
 // terminalWatch is the per-provider reading of an agent's terminal output: the
-// first-run trust dialog to confirm, and the auth wall to fail fast on. Every CLI
-// words and draws both differently.
+// first-run trust dialog to confirm, the auth wall to fail fast on, and — for a
+// CLI that takes no prompt argument — the composer announcing it will accept one.
+// Every CLI words and draws them differently, and a nil matcher is a screen the
+// provider never shows.
 type terminalWatch struct {
 	trusts func(string) bool
 	auths  func(string) bool
+	ready  func(string) bool
 }
+
+// terminalSignals are the channels each watched screen is announced on, once. A
+// nil channel is a screen this caller does not act on.
+type terminalSignals struct{ trust, auth, ready chan<- struct{} }
 
 var claudeWatch = terminalWatch{trusts: hasClaudeTrustPrompt, auths: hasAuthFailure}
 
-func drainWithSignals(dst io.Writer, src io.Reader, watch terminalWatch, trustPrompt, authPrompt chan<- struct{}, onActivity func()) {
+func drainWithSignals(dst io.Writer, src io.Reader, watch terminalWatch, sig terminalSignals, onActivity func()) {
+	type watcher struct {
+		match func(string) bool
+		ch    chan<- struct{}
+	}
+	pending := []watcher{}
+	for _, w := range []watcher{{watch.trusts, sig.trust}, {watch.auths, sig.auth}, {watch.ready, sig.ready}} {
+		if w.match != nil && w.ch != nil {
+			pending = append(pending, w)
+		}
+	}
+
 	buf := make([]byte, 4096)
 	var seen strings.Builder
-	trustSeen, authSeen := false, false
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
@@ -590,17 +607,18 @@ func drainWithSignals(dst io.Writer, src io.Reader, watch terminalWatch, trustPr
 			}
 			chunk := buf[:n]
 			_, _ = dst.Write(chunk)
-			if !trustSeen || !authSeen {
+			if len(pending) > 0 {
 				seen.WriteString(string(chunk))
 				text := seen.String()
-				if !trustSeen && watch.trusts(text) {
-					trustSeen = true
-					signalOnce(trustPrompt)
+				kept := pending[:0]
+				for _, w := range pending {
+					if w.match(text) {
+						signalOnce(w.ch)
+						continue
+					}
+					kept = append(kept, w)
 				}
-				if !authSeen && watch.auths(text) {
-					authSeen = true
-					signalOnce(authPrompt)
-				}
+				pending = kept
 				if seen.Len() > 8192 {
 					trimmed := text[len(text)-4096:]
 					seen.Reset()
@@ -1050,18 +1068,13 @@ func readKimiUsage(sessionsDir, sessionID string) (u Usage, turns int, model str
 }
 
 // kimiSessionsDir resolves where Kimi Code stores session transcripts:
-// SessionsDir when set (tests/overrides), else ~/.kimi-code/sessions. Returns ""
-// if the home directory can't be resolved, which readKimiUsage treats as
-// "no usage available".
+// SessionsDir when set (tests/overrides), else the sessions dir under the Kimi
+// Code home.
 func (c *Kimi) kimiSessionsDir() string {
 	if c.SessionsDir != "" {
 		return c.SessionsDir
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".kimi-code", "sessions")
+	return filepath.Join(kimiHome(), "sessions")
 }
 
 // Run executes one fresh kimi process and returns its final assistant message. The
