@@ -9,6 +9,7 @@ import {
   NoSkillsBanner,
   NoBrowserBanner,
   NoticeBanner,
+  PRStatusBadge,
   RemovedBanner,
   RunActionsRow,
   SteerComposer,
@@ -132,7 +133,12 @@ function Detail({
         ticket={run.ticket}
         phase={run.phase}
         onNotice={onNotice}
-        leading={openPR}
+        leading={
+          <>
+            {openPR}
+            <PRStatusBadge status={run.pr_status} />
+          </>
+        }
       />
 
       {notice && <NoticeBanner notice={notice} onDismiss={onDismiss} />}

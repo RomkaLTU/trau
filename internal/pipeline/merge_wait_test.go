@@ -86,6 +86,9 @@ func TestCIAndMergeManualMergeWaitsThenDone(t *testing.T) {
 	if got := p.State.Get(id, "PHASE"); got != state.Merged {
 		t.Errorf("PHASE = %q, want merged", got)
 	}
+	if got := p.State.Get(id, "PR_STATUS"); got != "merged" {
+		t.Errorf("PR_STATUS = %q, want merged", got)
+	}
 	if tr.quarantineCalls != 0 {
 		t.Errorf("Quarantine called %d times, want 0", tr.quarantineCalls)
 	}
@@ -131,6 +134,9 @@ func TestCIAndMergeManualMergeClosedGivesUp(t *testing.T) {
 	if got := p.State.Get(id, "PHASE"); got != state.Quarantined {
 		t.Errorf("PHASE = %q, want quarantined", got)
 	}
+	if got := p.State.Get(id, "PR_STATUS"); got != "closed" {
+		t.Errorf("PR_STATUS = %q, want closed", got)
+	}
 }
 
 // A context canceled mid-wait is a blameless stop: CIAndMerge propagates the
@@ -161,6 +167,9 @@ func TestCIAndMergeManualMergeContextCancelStops(t *testing.T) {
 	}
 	if got := p.State.Get(id, "PHASE"); got != state.PROpen {
 		t.Errorf("PHASE = %q, want pr_open preserved", got)
+	}
+	if got := p.State.Get(id, "PR_STATUS"); got != "awaiting-merge" {
+		t.Errorf("PR_STATUS = %q, want awaiting-merge preserved", got)
 	}
 
 	var s *StoppedError

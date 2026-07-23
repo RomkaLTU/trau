@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/prompts"
+	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
@@ -232,6 +233,7 @@ func (p *Pipeline) syncEpicForMerge(ctx context.Context, epic string) (bool, err
 func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, error) {
 	pr := prNumber(prURL)
 	if st, _ := p.GitHub.PRState(ctx, pr); st == "MERGED" {
+		p.checkpointEpicMerged(ctx, prURL)
 		return true, nil
 	}
 
@@ -268,8 +270,10 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 			return false, err
 		}
 		if !merged {
+			p.setPRStatus(p.EpicID, prStatusClosed)
 			return false, p.giveUp(ctx, p.EpicID, fmt.Sprintf("epic PR #%s closed without merge", pr))
 		}
+		p.checkpointEpicMerged(ctx, prURL)
 		p.logf("  ✓ epic merged to %s via %s", p.Base, prURL)
 		return true, nil
 	}
@@ -281,8 +285,27 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 	}); err != nil {
 		return false, fmt.Errorf("merge epic PR %s: %w", prURL, err)
 	}
+	p.checkpointEpicMerged(ctx, prURL)
 	p.logf("  ✓ epic merged to %s via %s", p.Base, prURL)
 	return true, nil
+}
+
+// checkpointEpicMerged records the shipped epic as a merged run — title, PR and
+// terminal phase beside its PR status. The epic id carries no checkpoint of its
+// own until it ships, so stamping PR_STATUS alone would leave the board a
+// phase-less row it reads as a run still in flight. The phase stays terminal on
+// purpose: an in-flight one would make the epic id a resume target.
+func (p *Pipeline) checkpointEpicMerged(ctx context.Context, prURL string) {
+	if err := p.State.Set(p.EpicID, "PHASE", state.Merged); err != nil {
+		p.logf("  epic checkpoint merged error (continuing): %v", err)
+		return
+	}
+	if title, _ := p.Tracker.Title(ctx, p.EpicID); title != "" {
+		_ = p.State.Set(p.EpicID, "TITLE", title)
+	}
+	_ = p.State.Set(p.EpicID, "PR", prNumber(prURL))
+	_ = p.State.Set(p.EpicID, "PR_URL", prURL)
+	p.setPRStatus(p.EpicID, prStatusMerged)
 }
 
 func resolveConflictsInstruction(r prompts.Renderer, id, base, branch string) string {

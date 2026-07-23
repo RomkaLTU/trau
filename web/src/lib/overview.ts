@@ -12,6 +12,7 @@ import {
   reposQueryOptions,
   runsQueryOptions,
   type FailureClass,
+  type PRStatus,
   type Run,
 } from "./runs";
 import { stepPill } from "./steps";
@@ -44,6 +45,21 @@ export function phasePill(phase: string): { state: RunState; label: string } {
       return { state: "success", label: "merged" };
     default:
       return { state: "active", label: phase || "running" };
+  }
+}
+
+export function prStatusPill(
+  status: PRStatus | undefined,
+): { state: RunState; label: string } | null {
+  switch (status) {
+    case "awaiting-merge":
+      return { state: "warn", label: "Awaiting merge" };
+    case "merged":
+      return { state: "success", label: "Merged" };
+    case "closed":
+      return { state: "info", label: "Closed" };
+    default:
+      return null;
   }
 }
 

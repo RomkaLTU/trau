@@ -34,6 +34,7 @@ import { EmptyState } from "@/components/trau/empty-state";
 import { Eyebrow } from "@/components/trau/eyebrow";
 import { useHandback } from "@/components/trau/handback-dialog";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
+import { PRStatusBadge } from "@/components/trau/pr-status-badge";
 import { SegmentedControl } from "@/components/trau/segmented-control";
 import { StatusPill, type RunState } from "@/components/trau/status-pill";
 import { TerminalCard } from "@/components/trau/terminal-card";
@@ -83,7 +84,7 @@ import {
   STOPPED_HINT,
 } from "@/lib/runlive";
 import { stepName } from "@/lib/steps";
-import { runsQueryOptions } from "@/lib/runs";
+import { runsQueryOptions, type PRStatus } from "@/lib/runs";
 import {
   builderView,
   finishedReducer,
@@ -246,6 +247,13 @@ function InternalTag({ source }: { source?: string }) {
       internal
     </span>
   );
+}
+
+// BacklogPRBadge shows awaiting-merge only: a merged ticket leaves the backlog
+// for Done and a closed one already carries its quarantine pill.
+function BacklogPRBadge({ status }: { status?: PRStatus }) {
+  if (status !== "awaiting-merge") return null;
+  return <PRStatusBadge status={status} className="shrink-0" />;
 }
 
 // ProviderTag surfaces a per-item provider override, so a queued run that will
@@ -1292,6 +1300,7 @@ function RunningRow({
           <ExternalLink className="size-3.5" aria-hidden="true" />
           View run
         </Link>
+        <BacklogPRBadge status={ticket.prStatus} />
       </div>
       {phase || live?.activity ? (
         <PhaseStepper
@@ -1344,6 +1353,7 @@ function PendingTicketRow({
       </span>
       <InternalTag source={ticket.source} />
       <ProviderTag provider={ticket.provider} />
+      <BacklogPRBadge status={ticket.prStatus} />
       <StatusPill state="todo" label="pending" className="shrink-0" />
     </li>
   );

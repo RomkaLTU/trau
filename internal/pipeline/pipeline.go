@@ -2047,10 +2047,27 @@ func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 	return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
 }
 
+const (
+	prStatusAwaitingMerge = "awaiting-merge"
+	prStatusMerged        = "merged"
+	prStatusClosed        = "closed"
+)
+
+// setPRStatus is display-only, so a write failure logs and continues rather
+// than aborting the run.
+func (p *Pipeline) setPRStatus(id, status string) {
+	if err := p.State.Set(id, "PR_STATUS", status); err != nil {
+		p.logf("  pr status (%s) error (continuing): %v", status, err)
+	}
+}
+
 // awaitManualMerge is the AUTO_MERGE=0 ticket path: CI is green, so it waits for the
 // operator to merge the PR by hand. A merge marks the ticket Done; a close without
-// merge is a human rejection (give-up); a canceled context stops blamelessly.
+// merge is a human rejection (give-up); a canceled context stops blamelessly. The
+// awaiting-merge status is stamped here rather than inside the shared wait so the
+// epic finalize path never opens a checkpoint under an epic id that has none.
 func (p *Pipeline) awaitManualMerge(ctx context.Context, id, pr string) error {
+	p.setPRStatus(id, prStatusAwaitingMerge)
 	merged, err := p.waitForManualMerge(ctx, id, pr, p.State.Get(id, "PR_URL"))
 	if err != nil {
 		return err
@@ -2058,6 +2075,7 @@ func (p *Pipeline) awaitManualMerge(ctx context.Context, id, pr string) error {
 	if merged {
 		return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
 	}
+	p.setPRStatus(id, prStatusClosed)
 	return p.giveUp(ctx, id, fmt.Sprintf("PR #%s closed without merge", pr))
 }
 
@@ -2233,6 +2251,7 @@ func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
 	if err := p.State.Set(id, "PHASE", state.Merged); err != nil {
 		return fmt.Errorf("merge %s: checkpoint merged: %w", id, err)
 	}
+	p.setPRStatus(id, prStatusMerged)
 	p.expireSteer(ctx, id)
 	p.emitEvent("ci", map[string]any{"state": "merged"})
 	p.emitState(id, state.Merged, "merged", "")

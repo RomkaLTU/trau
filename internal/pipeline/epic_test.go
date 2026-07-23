@@ -40,6 +40,7 @@ func TestFinalizeEpicAutoMergesWhenCIGreen(t *testing.T) {
 		Git:         fakeGit{},
 		GitHub:      gh,
 		Tracker:     tr,
+		State:       state.NewStore(t.TempDir()),
 	}
 
 	if err := p.FinalizeEpic(context.Background()); err != nil {
@@ -48,6 +49,7 @@ func TestFinalizeEpicAutoMergesWhenCIGreen(t *testing.T) {
 	if gh.mergeCalls != 1 {
 		t.Fatalf("expected one epic merge on green CI, got %d", gh.mergeCalls)
 	}
+	assertEpicCheckpointedMerged(t, p)
 	if gh.mergeMethod != "squash" || !gh.mergeDeleted {
 		t.Fatalf("expected squash merge with branch delete, got %q delete=%v", gh.mergeMethod, gh.mergeDeleted)
 	}
@@ -83,6 +85,7 @@ func TestFinalizeEpicMergesWithRequireCIOffAndNoChecks(t *testing.T) {
 		Git:         fakeGit{},
 		GitHub:      gh,
 		Tracker:     tr,
+		State:       state.NewStore(t.TempDir()),
 	}
 
 	if err := p.FinalizeEpic(context.Background()); err != nil {
@@ -134,6 +137,7 @@ func TestFinalizeEpicManualMergeWaitsThenShips(t *testing.T) {
 	if !strings.Contains(tr.setExtra, "merged to main") {
 		t.Fatalf("expected the shipped-to-base comment, got %q", tr.setExtra)
 	}
+	assertEpicCheckpointedMerged(t, p)
 
 	evs := awaitingMergeEvents(t, &buf)
 	if len(evs) != 1 {
@@ -181,6 +185,9 @@ func TestFinalizeEpicManualMergeClosedNotShipped(t *testing.T) {
 	if got := p.State.Get("COD-1", "PHASE"); got != state.Quarantined {
 		t.Errorf("epic PHASE = %q, want quarantined", got)
 	}
+	if got := p.State.Get("COD-1", "PR_STATUS"); got != "closed" {
+		t.Errorf("epic PR_STATUS = %q, want closed", got)
+	}
 	if gh.mergeCalls != 0 {
 		t.Errorf("a rejected epic must not be merged, got %d", gh.mergeCalls)
 	}
@@ -217,6 +224,9 @@ func TestFinalizeEpicManualMergeCancelThenRerunReconciles(t *testing.T) {
 	if tr.setStatus == "Done" {
 		t.Fatalf("a stopped epic must not be closed, got %q", tr.setStatus)
 	}
+	if got := p.State.Get("COD-1", "PR_STATUS"); got != "" {
+		t.Fatalf("epic PR_STATUS = %q, want none — an unshipped epic owns no run row", got)
+	}
 
 	p.GitHub = &waitGitHub{
 		epicGitHub: epicGitHub{createURL: "https://github.test/pr/42"},
@@ -227,6 +237,26 @@ func TestFinalizeEpicManualMergeCancelThenRerunReconciles(t *testing.T) {
 	}
 	if tr.setStatus != "Done" || !strings.Contains(tr.setExtra, "merged to main") {
 		t.Fatalf("rerun must reconcile the merge and ship, got %s %q", tr.setStatus, tr.setExtra)
+	}
+	assertEpicCheckpointedMerged(t, p)
+}
+
+// assertEpicCheckpointedMerged pins the shipped epic to a complete run row rather
+// than a bare PR_STATUS stamp: a checkpoint carrying only the status would have no
+// phase, which the board reads as a run still in flight forever.
+func assertEpicCheckpointedMerged(t *testing.T, p *Pipeline) {
+	t.Helper()
+	if got := p.State.Get("COD-1", "PHASE"); got != state.Merged {
+		t.Fatalf("epic PHASE = %q, want merged", got)
+	}
+	if got := p.State.Get("COD-1", "PR_STATUS"); got != "merged" {
+		t.Fatalf("epic PR_STATUS = %q, want merged", got)
+	}
+	if got := p.State.Get("COD-1", "TITLE"); got != "Checkout rebuild" {
+		t.Fatalf("epic TITLE = %q, want the epic title", got)
+	}
+	if got := p.State.Get("COD-1", "PR_URL"); got != "https://github.test/pr/42" {
+		t.Fatalf("epic PR_URL = %q, want the epic PR url", got)
 	}
 }
 

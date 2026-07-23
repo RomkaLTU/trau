@@ -8,6 +8,7 @@ import {
   loopCardView,
   phasePill,
   phaseRank,
+  prStatusPill,
   repoBadgeState,
   sessionStatePill,
   type LiveLoop,
@@ -96,6 +97,21 @@ describe("phasePill", () => {
   it("falls back to the raw phase for anything unmapped", () => {
     expect(phasePill("picking")).toEqual({ state: "active", label: "picking" });
     expect(phasePill("")).toEqual({ state: "active", label: "running" });
+  });
+});
+
+describe("prStatusPill", () => {
+  it("badges the awaiting-merge action item and merge outcomes", () => {
+    expect(prStatusPill("awaiting-merge")).toEqual({
+      state: "warn",
+      label: "Awaiting merge",
+    });
+    expect(prStatusPill("merged")).toEqual({ state: "success", label: "Merged" });
+    expect(prStatusPill("closed")).toEqual({ state: "info", label: "Closed" });
+  });
+
+  it("returns no badge when the run has no PR status", () => {
+    expect(prStatusPill(undefined)).toBeNull();
   });
 });
 
