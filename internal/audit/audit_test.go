@@ -54,6 +54,11 @@ var allowedReaders = map[string]string{
 	// §5 Timelog — out of scope for this epic.
 	"internal/timelog/timelog.go": "timelog under ~/.trau/time",
 
+	// Hub-owned content store — the hub reads its own content-addressed
+	// attachment blobs (under <hub home>/attachments) to serve their bytes; this
+	// is the hub, not run data routed around it.
+	"internal/hubstore/attachmentblobs.go": "hub attachment blob store",
+
 	// One-shot legacy importers — the only file-era code, gated to first hub touch.
 	"internal/state/state.go":             "file-era checkpoint store read by the checkpoint importer",
 	"internal/hubstore/checkpoints.go":    "legacy checkpoint import",
