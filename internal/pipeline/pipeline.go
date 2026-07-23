@@ -255,6 +255,38 @@ func IsFault(err error) bool {
 	return errors.As(err, &f)
 }
 
+// StoppedError signals a ticket was cut short by a deliberate stop — web Stop's
+// SIGTERM, a takeover, Ctrl-C — rather than by anything going wrong. Like a fault
+// it preserves the partial work on the feature branch and leaves PHASE at its last
+// checkpoint, but nothing is blamed: it unwraps to context.Canceled so the loop
+// driver and the CLI take the ordinary signal path (exit 130) with no fault recap.
+type StoppedError struct {
+	ID    string
+	Phase string
+}
+
+func (e *StoppedError) Error() string {
+	return fmt.Sprintf("ticket %s stopped during %s", e.ID, NextPhaseLabel(e.Phase))
+}
+
+func (e *StoppedError) Unwrap() error { return context.Canceled }
+
+// IsStopped reports whether err is (or wraps) a *StoppedError.
+func IsStopped(err error) bool {
+	var s *StoppedError
+	return errors.As(err, &s)
+}
+
+// AsStopped extracts the *StoppedError from err (traversing wraps), or nil when
+// err is not a stop. Callers use it to name the ticket the stop left parked.
+func AsStopped(err error) *StoppedError {
+	var s *StoppedError
+	if errors.As(err, &s) {
+		return s
+	}
+	return nil
+}
+
 // CrossProjectError signals a refusal: the ticket belongs to a different Linear
 // project than the one this repo owns (config PROJECT). It is raised before any
 // branch/checkpoint/build work, so nothing is left to clean up — the run simply
@@ -674,6 +706,10 @@ func (p *Pipeline) runPhases(ctx context.Context, id string, fi int) error {
 //     stays on its branch and the loop driver stops picking new tickets.
 //   - give-up: a verified dead end — finalize+quarantine (idempotent, so the
 //     give-ups verify/CI already finalized are not double-handled).
+//   - stopped: the run's own context was canceled, so a human stopped the run —
+//     preserve the WIP and report a blameless stop. The test is the loop context,
+//     never the error: AGENT_TIMEOUT expires a child context of it, so a timeout
+//     surfaces DeadlineExceeded while this context stays live and still faults.
 //   - anything else: an UNEXPECTED error — funnel into the blameless fault path,
 //     which preserves the WIP on the branch without quarantining or filing a bug.
 func (p *Pipeline) classifyPhaseErr(ctx context.Context, id string, err error) error {
@@ -689,6 +725,8 @@ func (p *Pipeline) classifyPhaseErr(ctx context.Context, id string, err error) e
 		return p.handleGiveUp(ctx, id, err)
 	case AsRefused(err) != nil:
 		return p.handleRefusal(ctx, id, err)
+	case errors.Is(ctx.Err(), context.Canceled):
+		return p.stop(ctx, id)
 	default:
 		return p.fault(ctx, id, err)
 	}
@@ -740,6 +778,21 @@ func (p *Pipeline) fault(ctx context.Context, id string, err error) error {
 	p.logf("  ⚠ %s could not finish during %s — work saved, ticket left resumable", id, NextPhaseLabel(phase))
 	p.emitState(id, phase, "faulted", NextPhaseLabel(phase))
 	return &FaultError{ID: id, Phase: phase, Err: err}
+}
+
+// stop preserves the partial work of a ticket cut short by a deliberate stop and
+// returns a *StoppedError. It mirrors fault's preserve-and-clean and leaves PHASE
+// at its checkpoint so a rerun resumes the ticket, but records the blameless
+// stopped class instead.
+func (p *Pipeline) stop(ctx context.Context, id string) error {
+	phase := p.State.Get(id, "PHASE")
+	label := NextPhaseLabel(phase)
+	p.preserveAndClean(ctx, fmt.Sprintf("wip(%s): stopped mid-run — rerun trau to resume", id))
+	_ = p.State.Set(id, "FAILURE_REASON", fmt.Sprintf("stopped during %s — work saved at the last checkpoint", label))
+	_ = p.State.Set(id, "FAILURE_CLASS", state.FailStopped)
+	p.logf("  ⏹ %s stopped during %s — work saved, ticket left resumable", id, label)
+	p.emitState(id, phase, "stopped", label)
+	return &StoppedError{ID: id, Phase: phase}
 }
 
 // Both budgets stay under the hub's SIGKILL escalation grace, so a stopped run's
@@ -2453,8 +2506,9 @@ func (p *Pipeline) emitEvent(kind string, fields map[string]any) {
 
 // emitState records a durable state_change for id — the signal the dashboard
 // recap and browser notifications consume. state ∈ {merged, quarantined, faulted,
-// paused}; reason distinguishes a blameless pause (usage_window vs reauth) and
-// carries the give-up text for a quarantine. No-op without a durable log.
+// paused, stopped}; reason distinguishes a blameless pause (usage_window vs
+// reauth), names the phase a fault or stop cut short, and carries the give-up text
+// for a quarantine. No-op without a durable log.
 func (p *Pipeline) emitState(id, phase, st, reason string) {
 	if p.Events == nil {
 		return
@@ -2639,10 +2693,10 @@ func (p *Pipeline) markPaused(id, reason string) {
 	_ = p.State.Set(id, "FAILURE_REASON", reason)
 }
 
-// clearFailureMarks drops a prior attempt's pause/fault marker as the ticket is
-// retried, so a resumed run that progresses no longer reads as failed. It only
-// writes when a marker is actually present, so a fresh ticket keeps its first
-// checkpoint being the build phase rather than an empty state file.
+// clearFailureMarks drops a prior attempt's failure marker — whatever its class —
+// as the ticket is retried, so a resumed run that progresses no longer reads as
+// failed. It only writes when a marker is actually present, so a fresh ticket
+// keeps its first checkpoint being the build phase rather than an empty state file.
 func (p *Pipeline) clearFailureMarks(id string) {
 	if p.State.Get(id, "FAILURE_CLASS") == "" && p.State.Get(id, "FAILURE_REASON") == "" {
 		return

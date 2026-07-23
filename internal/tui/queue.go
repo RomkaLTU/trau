@@ -27,8 +27,9 @@ type QueueRow struct {
 	Branch        string
 	FailureReason string
 	// FailureClass is the checkpoint's classified failure (state.FailPaused /
-	// FailFaulted / FailGaveUp), or "" when the row has no failure. It drives which
-	// recovery the Handle confirm offers per class — resume vs the destructive reset.
+	// FailStopped / FailFaulted / FailGaveUp), or "" when the row has no failure. It
+	// drives which recovery the Handle confirm offers per class — resume vs the
+	// destructive reset.
 	FailureClass string
 	Tokens       int
 	Cost         float64
@@ -132,15 +133,22 @@ func queueVerbs(r QueueRow, live bool) (open, logs, resume, branch, reset bool) 
 func (r QueueRow) needsAttention() bool { return r.FailureClass != "" }
 
 // canResume reports whether the Handle confirm should offer Resume for this row's
-// failure class: paused (re-run after the human clears the block) and faulted
-// (resume from the preserved checkpoint). Quarantined (gave_up) is terminal.
+// failure class: paused (re-run after the human clears the block), stopped, and
+// faulted (resume from the preserved checkpoint). Quarantined (gave_up) is
+// terminal.
 func (r QueueRow) canResume() bool {
-	return r.FailureClass == state.FailPaused || r.FailureClass == state.FailFaulted
+	switch r.FailureClass {
+	case state.FailPaused, state.FailStopped, state.FailFaulted:
+		return true
+	default:
+		return false
+	}
 }
 
 // canReset reports whether the Handle confirm should offer the destructive Reset:
-// faulted and quarantined (gave_up). Paused is blameless and is never offered a
-// Reset — the human re-logs-in or waits out the limit, then resumes.
+// faulted and quarantined (gave_up). Paused and stopped are blameless and are
+// never offered a Reset — the human clears the block, or restarts the run, then
+// resumes.
 func (r QueueRow) canReset() bool {
 	return r.FailureClass == state.FailFaulted || r.FailureClass == state.FailGaveUp
 }
@@ -151,6 +159,8 @@ func failureLabel(class string) string {
 	switch class {
 	case state.FailPaused:
 		return "paused"
+	case state.FailStopped:
+		return "stopped"
 	case state.FailGaveUp:
 		return "quarantined"
 	default:
@@ -159,9 +169,9 @@ func failureLabel(class string) string {
 }
 
 // attentionGlyph is the class-colored mark for the menu Handle item, matching the
-// rail: ⏸ for a paused row, ⚠ for faulted/quarantined.
+// rail: ⏸ for a blameless paused/stopped row, ⚠ for faulted/quarantined.
 func attentionGlyph(s Styles, class string) (string, lipgloss.Style) {
-	if class == state.FailPaused {
+	if class == state.FailPaused || class == state.FailStopped {
 		return "⏸", s.Warning
 	}
 	return "⚠", s.Error

@@ -32,6 +32,7 @@ import { TargetRepoField } from "@/components/trau/target-repo-field";
 import { ConfirmDialog } from "@/components/trau/confirm-dialog";
 import { EmptyState } from "@/components/trau/empty-state";
 import { Eyebrow } from "@/components/trau/eyebrow";
+import { useHandback } from "@/components/trau/handback-dialog";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { SegmentedControl } from "@/components/trau/segmented-control";
 import { StatusPill, type RunState } from "@/components/trau/status-pill";
@@ -45,6 +46,7 @@ import {
 } from "@/lib/add-by-id";
 import { configQueryOptions } from "@/lib/config";
 import { addAllLabel, eligibleQueryOptions, planAddAll } from "@/lib/eligible";
+import { pendingHandback } from "@/lib/handback";
 import { IssueFetchError, issueQueryOptions } from "@/lib/issues";
 import {
   instancesQueryOptions,
@@ -52,7 +54,9 @@ import {
   type RepoFreshness,
 } from "@/lib/instances";
 import {
+  isTakeover,
   projectLoopState,
+  repoInstance,
   type LoopHalt,
   type LoopView,
 } from "@/lib/loop";
@@ -72,7 +76,12 @@ import {
   type QueueItem,
   type QueueResponse,
 } from "@/lib/queue";
-import { pauseKind, runSteps } from "@/lib/runlive";
+import {
+  pauseKind,
+  runSteps,
+  STOPPED_HEADLINE,
+  STOPPED_HINT,
+} from "@/lib/runlive";
 import { stepName } from "@/lib/steps";
 import { runsQueryOptions } from "@/lib/runs";
 import {
@@ -578,6 +587,7 @@ function LaunchQueueCard({
       resetAdd();
     },
   });
+  const handback = useHandback(repo, () => runNext.mutate());
 
   const addAll = useMutation({
     mutationFn: async () => {
@@ -898,7 +908,12 @@ function LaunchQueueCard({
                       type="button"
                       size="sm"
                       className="font-mono"
-                      onClick={() => runNext.mutate()}
+                      onClick={() =>
+                        handback.request(
+                          submittedId,
+                          pendingHandback(runs.data?.runs, submittedId),
+                        )
+                      }
                       disabled={runNext.isPending || add.isPending || shuttingDown}
                     >
                       {runNext.isPending ? "Starting…" : "Run next"}
@@ -1021,6 +1036,8 @@ function LaunchQueueCard({
           onPeek={onPeek}
         />
       ) : null}
+
+      {handback.dialog}
     </div>
   );
 }
@@ -1383,6 +1400,7 @@ function RunningQueueView({
   queue,
   timeline,
   instance,
+  takeover,
   halt,
   onStop,
   stopping,
@@ -1397,6 +1415,7 @@ function RunningQueueView({
   queue: QueueResponse;
   timeline: Timeline;
   instance?: Instance;
+  takeover?: Instance;
   halt: LoopHalt | null;
   onStop: () => void;
   stopping: boolean;
@@ -1413,7 +1432,7 @@ function RunningQueueView({
 
   return (
     <div className="flex flex-col gap-6">
-      {halt ? <HaltBanner repo={repo} halt={halt} /> : null}
+      <LoopBanner repo={repo} takeover={takeover} halt={halt} />
 
       <TerminalCard title="loop" className="max-w-3xl">
         <div className="flex flex-col gap-6">
@@ -1554,7 +1573,7 @@ function RunningQueueView({
               </Button>
             }
             title={`Stop the queue on ${repo}?`}
-            description="The current ticket finishes its checkpoint, then the queue stops. Work in progress is preserved — Start again to resume where it left off."
+            description="The run stops now. Work in progress is saved at the last checkpoint and the ticket stays resumable — Start again to pick it up from there."
             confirmLabel="Stop queue"
             destructive
             onConfirm={onStop}
@@ -1582,7 +1601,7 @@ function RunningQueueView({
 }
 
 interface HaltNotice {
-  tone: "warn" | "fail";
+  tone: "info" | "warn" | "fail";
   glyph: string;
   headline: string;
   hint: string;
@@ -1591,6 +1610,13 @@ interface HaltNotice {
 function haltNotice(halt: LoopHalt): HaltNotice {
   const ticket = halt.ticket || "the ticket";
   switch (halt.kind) {
+    case "stopped":
+      return {
+        tone: "info",
+        glyph: "⏹",
+        headline: STOPPED_HEADLINE,
+        hint: STOPPED_HINT,
+      };
     case "paused":
       return pauseKind(halt.reason) === "reauth"
         ? {
@@ -1657,11 +1683,34 @@ function TakeoverBanner({ repo, ticket }: { repo: string; ticket?: string }) {
   );
 }
 
+const HALT_TONE: Record<
+  HaltNotice["tone"],
+  { border: string; bg: string; text: string }
+> = {
+  info: { border: "border-info/40", bg: "bg-info/10", text: "text-info" },
+  warn: { border: "border-warn/40", bg: "bg-warn/10", text: "text-warn" },
+  fail: { border: "border-fail/40", bg: "bg-fail/10", text: "text-fail" },
+};
+
+// LoopBanner is the page's single headline slot: a live takeover owns it, and a
+// halt stored behind one is history rather than a second, contradicting banner.
+function LoopBanner({
+  repo,
+  takeover,
+  halt,
+}: {
+  repo: string;
+  takeover?: Instance;
+  halt: LoopHalt | null;
+}) {
+  if (takeover) return <TakeoverBanner repo={repo} ticket={takeover.ticket} />;
+  if (halt) return <HaltBanner repo={repo} halt={halt} />;
+  return null;
+}
+
 function HaltBanner({ repo, halt }: { repo: string; halt: LoopHalt }) {
   const notice = haltNotice(halt);
-  const border = notice.tone === "fail" ? "border-fail/40" : "border-warn/40";
-  const bg = notice.tone === "fail" ? "bg-fail/10" : "bg-warn/10";
-  const glyphColor = notice.tone === "fail" ? "text-fail" : "text-warn";
+  const { border, bg, text: glyphColor } = HALT_TONE[notice.tone];
   return (
     <div
       className={cn(
@@ -1751,10 +1800,8 @@ export function Loop() {
         : false,
   });
   const { data: instData } = useQuery(instancesQueryOptions);
-  const liveInstance = instData?.instances.find((i) => i.repo === repo);
-  const takeoverInstance = instData?.instances.find(
-    (i) => i.repo === repo && i.session_state === "takeover",
-  );
+  const liveInstance = repoInstance(instData?.instances ?? [], repo);
+  const takeoverInstance = isTakeover(liveInstance) ? liveInstance : undefined;
   const runs = useQuery(runsQueryOptions(repo));
 
   // The peeked issue lives in the URL, so queue polling never closes the drawer
@@ -1827,6 +1874,7 @@ export function Loop() {
           queue={queue.data}
           timeline={timeline}
           instance={liveInstance}
+          takeover={takeoverInstance}
           halt={halt}
           onStop={() => stop.mutate()}
           stopping={stop.isPending}
@@ -1844,10 +1892,7 @@ export function Loop() {
 
   return (
     <div className="flex flex-col gap-6">
-      {halt ? <HaltBanner repo={repo} halt={halt} /> : null}
-      {takeoverInstance ? (
-        <TakeoverBanner repo={repo} ticket={takeoverInstance.ticket} />
-      ) : null}
+      <LoopBanner repo={repo} takeover={takeoverInstance} halt={halt} />
       <LaunchQueueCard
         repo={repo}
         freshness={repos.find((r) => r.name === repo)?.freshness}

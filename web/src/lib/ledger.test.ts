@@ -8,6 +8,7 @@ import {
   formatAge,
   joinInstances,
   mergeLedger,
+  rowPill,
   rowsForTab,
   sortRows,
   type LedgerRow,
@@ -50,7 +51,16 @@ describe('joinInstances', () => {
     expect(rows[1].instance).toBeUndefined()
   })
 
-  it('ignores a non-working, wrong-repo, or ticketless instance', () => {
+  it('pairs a run with the terminal session that took its ticket over', () => {
+    const rows = joinInstances(
+      [run({ ticket: 'A-1' })],
+      [instance({ ticket: 'A-1', session_state: 'takeover' })],
+      'repo',
+    )
+    expect(rows[0].instance?.session_state).toBe('takeover')
+  })
+
+  it('ignores a non-holding, wrong-repo, or ticketless instance', () => {
     const rows = joinInstances(
       [run({ ticket: 'A-1' })],
       [
@@ -109,6 +119,31 @@ describe('mergeLedger', () => {
     )
     expect(rows).toHaveLength(1)
     expect(rows[0].repo).toBe('salonradar')
+  })
+})
+
+describe('rowPill', () => {
+  it('names a deliberate stop without the fail tone', () => {
+    expect(rowPill(row({ ticket: 'A', phase: 'built', failure_class: 'stopped' }))).toEqual({
+      state: 'info',
+      label: 'stopped',
+    })
+  })
+
+  it('leads with the takeover, leaving the stored failure as history', () => {
+    const held: LedgerRow = {
+      repo: 'repo',
+      run: run({ ticket: 'A', phase: 'built', failure_class: 'faulted' }),
+      instance: instance({ ticket: 'A', session_state: 'takeover' }),
+    }
+    expect(rowPill(held)).toEqual({ state: 'info', label: 'Taken over' })
+  })
+
+  it('reads the checkpoint when nothing holds the ticket', () => {
+    expect(rowPill(row({ ticket: 'A', phase: 'built', failure_class: 'faulted' }))).toEqual({
+      state: 'fail',
+      label: 'fault',
+    })
   })
 })
 

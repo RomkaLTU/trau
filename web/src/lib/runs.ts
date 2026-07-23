@@ -1,9 +1,10 @@
 import { queryOptions } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
+import type { Handback } from './handback'
 import type { RepoView } from './instances'
 
-export type FailureClass = 'paused' | 'faulted' | 'gave_up'
+export type FailureClass = 'paused' | 'stopped' | 'faulted' | 'gave_up'
 
 export interface Run {
   ticket: string
@@ -18,6 +19,7 @@ export interface Run {
   failure_reason?: string
   cost_usd?: number
   updated_at?: string
+  handback?: Handback
 }
 
 export interface ReposResponse {

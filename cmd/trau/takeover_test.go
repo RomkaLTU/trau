@@ -10,10 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -32,6 +34,22 @@ func (f *fakeTakeoverPresence) SetState(state, ticket, _ string) {
 
 func (f *fakeTakeoverPresence) Deregister() { f.deregistered++ }
 
+type fakeTakeoverGit struct {
+	head        string
+	checkedOut  []string
+	checkoutErr error
+}
+
+func (g *fakeTakeoverGit) CurrentBranch(context.Context) (string, error) { return g.head, nil }
+
+func (g *fakeTakeoverGit) Checkout(_ context.Context, ref string, _ bool) error {
+	if g.checkoutErr != nil {
+		return g.checkoutErr
+	}
+	g.checkedOut = append(g.checkedOut, ref)
+	return nil
+}
+
 // takeoverFixture wires a takeoverSession over a file-backed checkpoint store
 // and inert seams; tests override the seam under exercise.
 func takeoverFixture(t *testing.T) (*takeoverSession, *fakeTakeoverPresence, *state.Store, *bytes.Buffer) {
@@ -45,6 +63,7 @@ func takeoverFixture(t *testing.T) (*takeoverSession, *fakeTakeoverPresence, *st
 		presence:      pres,
 		instances:     func(context.Context) ([]hubclient.Instance, error) { return nil, nil },
 		cps:           cps,
+		git:           &fakeTakeoverGit{head: "main"},
 		sessionExists: func(string) bool { return true },
 		runClaude:     func(string) error { return nil },
 		now:           func() time.Time { return time.Date(2026, 7, 19, 10, 30, 0, 0, time.UTC) },
@@ -95,10 +114,11 @@ func TestTakeoverMissingTranscriptRefuses(t *testing.T) {
 }
 
 // TestTakeoverHappyPath drives the whole wrapper with the claude binary faked
-// by a script: the lock is held as takeover with the ticket, the recorded
-// session is resumed via `--resume <sid>` in the repo root, the checkpoint
-// carries the TAKEOVER stamp and takeover anomaly, the hand-back hint names the
-// phase, and the lock is released on exit.
+// by a script: the lock is held as takeover with the ticket, the repo is put on
+// the ticket's recorded branch, the recorded session is resumed via
+// `--resume <sid>` in the repo root, the checkpoint carries the TAKEOVER stamp
+// and takeover anomaly, the guidance says the resumed conversation waits, the
+// hand-back hint names the phase and Run next, and the lock is released on exit.
 func TestTakeoverHappyPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake claude script needs a POSIX shell")
@@ -114,12 +134,18 @@ func TestTakeoverHappyPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	sess.runClaude = claudeResumeRunner(bin, sess.repoRoot)
+	git := &fakeTakeoverGit{head: "main"}
+	sess.git = git
 	_ = cps.Set("COD-1", "SESSION", "0b5a5e2e-8f66-4b41-9dcd-0f2c4d1a9b77")
 	_ = cps.Set("COD-1", "SESSION_PHASE", "repair2")
 	_ = cps.Set("COD-1", "ANOMALIES", "2")
+	_ = cps.Set("COD-1", "BRANCH", "feature/COD-1-widget")
 
 	if err := sess.run(context.Background()); err != nil {
 		t.Fatalf("run: %v", err)
+	}
+	if want := []string{"feature/COD-1-widget"}; !slices.Equal(git.checkedOut, want) {
+		t.Errorf("checkouts = %v, want %v — the branch is checked out once and left checked out on exit", git.checkedOut, want)
 	}
 	recorded, err := os.ReadFile(argsFile)
 	if err != nil {
@@ -143,8 +169,73 @@ func TestTakeoverHappyPath(t *testing.T) {
 		t.Errorf("deregistered %d times, want 1", pres.deregistered)
 	}
 	hint := out.String()
-	if !strings.Contains(hint, "repair2") || !strings.Contains(hint, "Run next") {
-		t.Errorf("hand-back hint = %q, want the resumed phase and the Run next pointer", hint)
+	for _, want := range []string{
+		"feature/COD-1-widget",
+		"repair2",
+		"waits: nothing runs until you type an instruction",
+		"Closing claude releases the repo",
+		"Run next in the trau web UI",
+	} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("takeover output = %q, want it to contain %q", hint, want)
+		}
+	}
+}
+
+// TestTakeoverCheckoutFailureRefuses covers a recorded branch that will not
+// check out (dirty tree, missing branch): the wrapper refuses with an actionable
+// error naming the branch, never launches claude, leaves no stamp, and releases
+// the lock.
+func TestTakeoverCheckoutFailureRefuses(t *testing.T) {
+	sess, pres, cps, _ := takeoverFixture(t)
+	ran := false
+	sess.runClaude = func(string) error { ran = true; return nil }
+	sess.git = &fakeTakeoverGit{head: "main", checkoutErr: errors.New("local changes would be overwritten")}
+	_ = cps.Set("COD-1", "SESSION", "uuid")
+	_ = cps.Set("COD-1", "BRANCH", "feature/COD-1-widget")
+
+	err := sess.run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "check out feature/COD-1-widget for COD-1") {
+		t.Fatalf("run = %v, want a refusal naming the branch that would not check out", err)
+	}
+	var actionable *console.ActionableError
+	if !errors.As(err, &actionable) || !strings.Contains(actionable.Suggestion, "stash") {
+		t.Errorf("refusal = %v, want an actionable suggestion for clearing the tree", err)
+	}
+	if ran {
+		t.Error("claude ran despite a failed checkout")
+	}
+	if got := cps.Get("COD-1", "TAKEOVER"); got != "" {
+		t.Errorf("TAKEOVER = %q, want unset on a refused takeover", got)
+	}
+	if pres.deregistered != 1 {
+		t.Errorf("deregistered %d times, want 1", pres.deregistered)
+	}
+}
+
+// TestTakeoverWithoutRecordedBranchNotesHead covers a checkpoint carrying no
+// BRANCH — an old parked fault: nothing is checked out, the takeover proceeds on
+// the current head, and the output says which branch that is.
+func TestTakeoverWithoutRecordedBranchNotesHead(t *testing.T) {
+	sess, _, cps, out := takeoverFixture(t)
+	ran := false
+	sess.runClaude = func(string) error { ran = true; return nil }
+	git := &fakeTakeoverGit{head: "chore/scratch"}
+	sess.git = git
+	_ = cps.Set("COD-1", "SESSION", "uuid")
+	_ = cps.Set("COD-1", "SESSION_PHASE", "build")
+
+	if err := sess.run(context.Background()); err != nil {
+		t.Fatalf("run = %v, want success with no recorded branch", err)
+	}
+	if !ran {
+		t.Error("claude never ran")
+	}
+	if len(git.checkedOut) != 0 {
+		t.Errorf("checkouts = %v, want none — with no recorded branch the head stays put", git.checkedOut)
+	}
+	if got := out.String(); !strings.Contains(got, "no recorded branch") || !strings.Contains(got, "chore/scratch") {
+		t.Errorf("output = %q, want an explicit note of the current branch", got)
 	}
 }
 

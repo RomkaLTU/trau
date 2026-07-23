@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   activeLoopCount,
+  attentionPill,
   boardPill,
   isActiveState,
   loopCardView,
@@ -34,11 +35,30 @@ describe("boardPill", () => {
       state: "warn",
       label: "paused",
     });
+    expect(boardPill({ phase: "building", failure_class: "stopped" })).toEqual({
+      state: "info",
+      label: "stopped",
+    });
     expect(boardPill({ phase: "building", failure_class: "faulted" })).toEqual({
       state: "fail",
       label: "fault",
     });
     expect(boardPill({ phase: "verified", failure_class: "gave_up" })).toEqual({
+      state: "fail",
+      label: "quarantined",
+    });
+  });
+});
+
+describe("attentionPill", () => {
+  it("names every failure class, keeping a deliberate stop blameless", () => {
+    expect(attentionPill("paused")).toEqual({ state: "warn", label: "paused" });
+    expect(attentionPill("stopped")).toEqual({
+      state: "info",
+      label: "stopped",
+    });
+    expect(attentionPill("faulted")).toEqual({ state: "fail", label: "fault" });
+    expect(attentionPill("gave_up")).toEqual({
       state: "fail",
       label: "quarantined",
     });
@@ -141,6 +161,18 @@ describe("loopCardView", () => {
     expect(faulted.showWatch).toBe(true);
     expect(faulted.showStop).toBe(true);
     expect(faulted.copy).toMatch(/parked on the recap/i);
+  });
+
+  it("reads a parked stop as blameless, not as a recap waiting on you", () => {
+    const view = loopCardView("parked", { failureClass: "stopped" });
+    expect(view.pill).toEqual({ state: "info", label: "stopped" });
+    expect(view.copy).toMatch(/work is saved at its checkpoint/i);
+    expect(view.copy).not.toMatch(/parked on the recap/i);
+  });
+
+  it("leads a takeover with Taken over, whatever the checkpoint recorded", () => {
+    const view = loopCardView("takeover", { failureClass: "faulted" });
+    expect(view.pill).toEqual({ state: "info", label: "Taken over" });
   });
 
   it("grazes without a ticket, watch, or stepper", () => {

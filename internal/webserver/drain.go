@@ -264,15 +264,15 @@ func repoRunsDir(root string) string {
 // recorded it (state.FailureClass) — to what the queue does with the item. An
 // unknown outcome (classUnknown: a child that exited without a drain report and
 // left no clean-finish evidence) always parks the item and stops the drain, so a
-// missing outcome never settles done. A provider pause parks the same way for a
-// resume. A fault halts by default, or — when the queue was started
-// on-fault=skip — settles the item failed and lets the drain move on. A give-up
-// is a settled dead end the queue moves past; a clean finish settles done.
+// missing outcome never settles done. A provider pause and a deliberate stop park
+// the same way for a resume. A fault halts by default, or — when the queue was
+// started on-fault=skip — settles the item failed and lets the drain move on. A
+// give-up is a settled dead end the queue moves past; a clean finish settles done.
 func classifyDrainOutcome(class, onFault string) (status string, pause bool) {
 	switch class {
 	case classUnknown:
 		return queue.StatusPaused, true
-	case state.FailPaused:
+	case state.FailPaused, state.FailStopped:
 		return queue.StatusPaused, true
 	case state.FailFaulted:
 		if onFault == queue.OnFaultSkip {

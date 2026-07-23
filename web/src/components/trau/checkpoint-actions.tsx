@@ -8,10 +8,12 @@ import { ForceResetDialog } from '@/components/trau/force-reset-dialog'
 import { cn } from '@/lib/utils'
 import {
   CheckpointError,
+  checkpointErrorText,
   clearRun,
   reconcileRepo,
   resetRun,
 } from '@/lib/checkpoints'
+import { TAKEOVER_BLOCKED, useRepoTakenOver } from '@/lib/instances'
 
 export type CheckpointNotice = {
   tone: 'success' | 'warn' | 'error'
@@ -19,10 +21,6 @@ export type CheckpointNotice = {
 }
 
 type Dialog = 'reset' | 'clear' | 'reconcile' | null
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
 
 function useCheckpointMaintenance({
   repo,
@@ -41,6 +39,7 @@ function useCheckpointMaintenance({
   const [dialog, setDialog] = useState<Dialog>(null)
   const [forceRequired, setForceRequired] = useState(false)
   const useForce = phase === 'merged' || forceRequired
+  const takenOver = useRepoTakenOver(repo)
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['runs', repo] })
@@ -51,9 +50,15 @@ function useCheckpointMaintenance({
   // A live loop holding the repo answers every checkpoint mutation with a 409
   // and a plain-language reason. The ledger routes that to its own conflict
   // banner via onConflict; callers without one surface the reason inline. A
-  // merged ticket comes back asking to be forced, which reopens the
-  // type-to-confirm dialog instead of failing.
+  // takeover is a live holder the conflict banner's "stop it" advice does not
+  // fit, so it stays inline. A merged ticket comes back asking to be forced,
+  // which reopens the type-to-confirm dialog instead of failing.
   const onError = (error: unknown) => {
+    if (error instanceof CheckpointError && error.takenOver) {
+      setDialog(null)
+      onNotice?.({ tone: 'warn', text: TAKEOVER_BLOCKED })
+      return
+    }
     if (error instanceof CheckpointError && error.live) {
       setDialog(null)
       if (onConflict) onConflict()
@@ -66,7 +71,7 @@ function useCheckpointMaintenance({
       return
     }
     setDialog(null)
-    onNotice?.({ tone: 'error', text: errorText(error) })
+    onNotice?.({ tone: 'error', text: checkpointErrorText(error) })
   }
 
   const reset = useMutation({
@@ -148,7 +153,7 @@ function useCheckpointMaintenance({
     </>
   )
 
-  return { open: setDialog, dialogs, busy }
+  return { open: setDialog, dialogs, busy, takenOver }
 }
 
 const MENU_ITEMS: { label: string; action: Exclude<Dialog, null> }[] = [
@@ -170,7 +175,7 @@ export function RunActionsMenu({
   onNotice?: (notice: CheckpointNotice) => void
   onConflict?: () => void
 }) {
-  const { open, dialogs, busy } = useCheckpointMaintenance({
+  const { open, dialogs, busy, takenOver } = useCheckpointMaintenance({
     repo,
     ticket,
     phase,
@@ -207,11 +212,13 @@ export function RunActionsMenu({
             <li key={item.action}>
               <button
                 type="button"
+                disabled={takenOver}
+                title={takenOver ? TAKEOVER_BLOCKED : undefined}
                 onClick={() => {
                   setMenuOpen(false)
                   open(item.action)
                 }}
-                className="flex w-full px-2.5 py-1.5 text-left font-mono text-xs text-foreground hover:bg-secondary"
+                className="flex w-full px-2.5 py-1.5 text-left font-mono text-xs text-foreground hover:bg-secondary disabled:opacity-50"
               >
                 {item.label}
               </button>
@@ -237,7 +244,13 @@ export function RunActionsRow({
   onNotice?: (notice: CheckpointNotice) => void
   leading?: ReactNode
 }) {
-  const { open, dialogs, busy } = useCheckpointMaintenance({ repo, ticket, phase, onNotice })
+  const { open, dialogs, busy, takenOver } = useCheckpointMaintenance({
+    repo,
+    ticket,
+    phase,
+    onNotice,
+  })
+  const gate = takenOver ? TAKEOVER_BLOCKED : undefined
   return (
     <div className="flex flex-wrap items-center gap-2">
       {leading}
@@ -245,7 +258,8 @@ export function RunActionsRow({
         variant="outline"
         size="sm"
         className="font-mono"
-        disabled={busy}
+        disabled={busy || takenOver}
+        title={gate}
         onClick={() => open('reset')}
       >
         <RotateCcw className="size-3.5" aria-hidden="true" />
@@ -255,7 +269,8 @@ export function RunActionsRow({
         variant="ghost"
         size="sm"
         className="font-mono"
-        disabled={busy}
+        disabled={busy || takenOver}
+        title={gate}
         onClick={() => open('clear')}
       >
         <Eraser className="size-3.5" aria-hidden="true" />
@@ -265,12 +280,18 @@ export function RunActionsRow({
         variant="ghost"
         size="sm"
         className="font-mono"
-        disabled={busy}
+        disabled={busy || takenOver}
+        title={gate}
         onClick={() => open('reconcile')}
       >
         <GitCompare className="size-3.5" aria-hidden="true" />
         Reconcile
       </Button>
+      {takenOver && (
+        <p className="w-full font-mono text-[0.65rem] text-muted-foreground">
+          {TAKEOVER_BLOCKED}
+        </p>
+      )}
       {dialogs}
     </div>
   )
@@ -289,7 +310,7 @@ export function RunResetButton({
   onNotice?: (notice: CheckpointNotice) => void
   onConflict?: () => void
 }) {
-  const { open, dialogs, busy } = useCheckpointMaintenance({
+  const { open, dialogs, busy, takenOver } = useCheckpointMaintenance({
     repo,
     ticket,
     phase,
@@ -302,7 +323,8 @@ export function RunResetButton({
         variant="outline"
         size="sm"
         className="font-mono"
-        disabled={busy}
+        disabled={busy || takenOver}
+        title={takenOver ? TAKEOVER_BLOCKED : undefined}
         onClick={() => open('reset')}
       >
         <RotateCcw className="size-3.5" aria-hidden="true" />

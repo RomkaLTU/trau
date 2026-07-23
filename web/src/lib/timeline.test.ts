@@ -98,6 +98,23 @@ describe('buildTimeline', () => {
     expect(t.reason).toBe('rate limit')
   })
 
+  it('settles a stopped run on its own status, never as still running', () => {
+    const tl = buildTimeline(
+      [item({ id: 'COD-1', status: 'paused' })],
+      [
+        run({
+          ticket: 'COD-1',
+          failure_class: 'stopped',
+          failure_reason: 'stopped during build — work saved at the last checkpoint',
+        }),
+      ],
+    )
+    const t = tl.settled[0]
+    expect(t.status).toBe('stopped')
+    expect(t.failureClass).toBe('stopped')
+    expect(tl.running).toBeUndefined()
+  })
+
   it('classifies faulted and gave_up runs as failed', () => {
     const tl = buildTimeline(
       [item({ id: 'COD-1' }), item({ id: 'COD-2' })],
@@ -613,6 +630,11 @@ describe('ticketPill', () => {
         ticket({ id: 'a', title: '', status: 'paused', hasRun: true }),
       ),
     ).toEqual({ state: 'warn', label: 'paused' })
+    expect(
+      ticketPill(
+        ticket({ id: 'a', title: '', status: 'stopped', hasRun: true }),
+      ),
+    ).toEqual({ state: 'info', label: 'stopped' })
     expect(
       ticketPill(
         ticket({

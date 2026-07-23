@@ -217,3 +217,42 @@ func TestMergedRowSuppressesStaleReason(t *testing.T) {
 		t.Errorf("merged row rendered its stale failure reason:\n%s", out)
 	}
 }
+
+// TestFailureClassRecovery pins what each failure class offers a human: the
+// blameless classes (paused, stopped) resume only, a fault both resumes and
+// resets, and a quarantine is reset-only. The label and glyph must name the class
+// they came from rather than falling back to "faulted".
+func TestFailureClassRecovery(t *testing.T) {
+	tests := []struct {
+		class      string
+		wantResume bool
+		wantReset  bool
+		wantLabel  string
+		wantGlyph  string
+	}{
+		{state.FailPaused, true, false, "paused", "⏸"},
+		{state.FailStopped, true, false, "stopped", "⏸"},
+		{state.FailFaulted, true, true, "faulted", "⚠"},
+		{state.FailGaveUp, false, true, "quarantined", "⚠"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.class, func(t *testing.T) {
+			r := QueueRow{ID: "COD-1", FailureClass: tc.class}
+			if !r.needsAttention() {
+				t.Error("a classified failure must need attention")
+			}
+			if got := r.canResume(); got != tc.wantResume {
+				t.Errorf("canResume = %v, want %v", got, tc.wantResume)
+			}
+			if got := r.canReset(); got != tc.wantReset {
+				t.Errorf("canReset = %v, want %v", got, tc.wantReset)
+			}
+			if got := failureLabel(tc.class); got != tc.wantLabel {
+				t.Errorf("failureLabel = %q, want %q", got, tc.wantLabel)
+			}
+			if got, _ := attentionGlyph(DefaultStyles(), tc.class); got != tc.wantGlyph {
+				t.Errorf("attentionGlyph = %q, want %q", got, tc.wantGlyph)
+			}
+		})
+	}
+}
