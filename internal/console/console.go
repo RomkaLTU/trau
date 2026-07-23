@@ -87,7 +87,7 @@ type SessionSummary struct {
 	CostMetered bool
 	Elapsed     time.Duration
 	Err         error
-	Paused      bool // loop stopped on a blameless provider rate/usage limit
+	Paused      bool // loop parked blamelessly — a provider rate/usage limit, or an epic left unfinalized
 	// Fault is set when the loop stopped on an UNEXPECTED error (agent crash,
 	// failed push, infra hiccup) partway through a ticket. The ticket's WIP was
 	// preserved on its branch without quarantining or filing a bug, so it stays

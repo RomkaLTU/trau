@@ -350,6 +350,27 @@ func AsRefused(err error) *RefusedError {
 	return nil
 }
 
+// EpicUnfinalizedError signals FinalizeEpic declined to ship the epic because
+// children still read open in the tracker. Nothing is blamed — no quarantine, no
+// filed bug, the epic branch and every child are left exactly as they were — but
+// the epic is NOT delivered, so a caller whose whole job was to ship it must park
+// it for another attempt instead of recording a clean finish. Open names the
+// children still blocking it.
+type EpicUnfinalizedError struct {
+	EpicID string
+	Open   []string
+}
+
+func (e *EpicUnfinalizedError) Error() string {
+	return fmt.Sprintf("epic %s unfinalized — waiting on %s", e.EpicID, strings.Join(e.Open, ", "))
+}
+
+// IsEpicUnfinalized reports whether err is (or wraps) an *EpicUnfinalizedError.
+func IsEpicUnfinalized(err error) bool {
+	var e *EpicUnfinalizedError
+	return errors.As(err, &e)
+}
+
 // parseRefusal recovers the build agent's refusal from its final output: the
 // last line starting with the REFUSED: sentinel, with the reason after the
 // colon. Line-anchored and case-sensitive so prose mentioning the word can't

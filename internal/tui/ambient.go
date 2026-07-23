@@ -101,7 +101,11 @@ func (m model) sessionNotifyCmd(s console.SessionSummary) tea.Cmd {
 	var body string
 	switch {
 	case s.Paused:
-		body = "paused — needs re-auth or the rate limit to clear"
+		reason := "needs re-auth or the rate limit to clear"
+		if s.Err != nil {
+			reason = s.Err.Error()
+		}
+		body = "paused — " + reason
 	case s.Fault:
 		body = "faulted — resumable WIP preserved"
 		if s.FaultID != "" {

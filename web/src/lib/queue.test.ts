@@ -8,6 +8,7 @@ import {
   queueCoveredIds,
   queueExecutable,
   queueQueryOptions,
+  queueRunnable,
   runNext,
   skipResumeApplies,
   type QueueItem,
@@ -215,6 +216,39 @@ describe('queueExecutable', () => {
         }),
       ]),
     ).toBe(3)
+  })
+})
+
+describe('queueRunnable', () => {
+  it('is false for an empty queue', () => {
+    expect(queueRunnable([])).toBe(false)
+  })
+
+  it('is false when every item has settled', () => {
+    expect(
+      queueRunnable([
+        item({ id: 'COD-1', status: 'done' }),
+        item({ id: 'COD-2', status: 'failed' }),
+        item({ id: 'COD-3', status: 'skipped' }),
+      ]),
+    ).toBe(false)
+  })
+
+  it('is true for a paused epic whose sub-issues all read done', () => {
+    expect(
+      queueRunnable([
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          status: 'paused',
+          reason: 'epic COD-9 unfinalized — waiting on COD-11',
+          sub_issues: [
+            { id: 'COD-10', title: 'a', state: 'done' },
+            { id: 'COD-11', title: 'b', state: 'done' },
+          ],
+        }),
+      ]),
+    ).toBe(true)
   })
 })
 

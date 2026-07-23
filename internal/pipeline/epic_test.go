@@ -314,23 +314,27 @@ func doneEpicTracker() *epicTracker {
 
 // A child the tracker does not report closed still blocks the epic — the
 // checkpoint escape hatch only covers work trau itself merged AND closed, and an
-// unreadable status is never mistaken for delivery.
+// unreadable status is never mistaken for delivery. The decline is typed and names
+// the blockers, so the caller parks the epic rather than reading it as a delivery.
 func TestFinalizeEpicWaitsWhenAnyChildOpen(t *testing.T) {
 	tests := []struct {
 		name       string
 		status     tracker.IssueStatus
 		checkpoint map[string]string
+		wantOpen   string
 	}{
-		{name: "no checkpoint", status: tracker.StatusOpen},
+		{name: "no checkpoint", status: tracker.StatusOpen, wantOpen: "COD-3"},
 		{
 			name:       "in-flight checkpoint",
 			status:     tracker.StatusOpen,
 			checkpoint: map[string]string{"PHASE": state.Verified},
+			wantOpen:   "COD-3",
 		},
 		{
 			name:       "unreadable status on a delivered child",
 			status:     tracker.StatusUnknown,
 			checkpoint: map[string]string{"PHASE": state.Merged, "TRACKER_DONE": "1"},
+			wantOpen:   "COD-3 (unknown)",
 		},
 	}
 	for _, tt := range tests {
@@ -361,8 +365,12 @@ func TestFinalizeEpicWaitsWhenAnyChildOpen(t *testing.T) {
 				}
 			}
 
-			if err := p.FinalizeEpic(context.Background()); err != nil {
-				t.Fatalf("FinalizeEpic returned error: %v", err)
+			var unfinalized *EpicUnfinalizedError
+			if err := p.FinalizeEpic(context.Background()); !errors.As(err, &unfinalized) {
+				t.Fatalf("FinalizeEpic = %v, want an *EpicUnfinalizedError", err)
+			}
+			if unfinalized.EpicID != "COD-1" || strings.Join(unfinalized.Open, ", ") != tt.wantOpen {
+				t.Errorf("decline = %+v, want epic COD-1 waiting on %q", unfinalized, tt.wantOpen)
 			}
 			if gh.createCalls != 0 {
 				t.Fatalf("open child must block epic PR creation, got %d creates", gh.createCalls)
@@ -433,8 +441,9 @@ func TestFinalizeEpicSkipsReassertWithoutTrackerDoneMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := p.FinalizeEpic(context.Background()); err != nil {
-		t.Fatalf("FinalizeEpic returned error: %v", err)
+	var unfinalized *EpicUnfinalizedError
+	if err := p.FinalizeEpic(context.Background()); !errors.As(err, &unfinalized) {
+		t.Fatalf("FinalizeEpic = %v, want an *EpicUnfinalizedError", err)
 	}
 	if gh.createCalls != 0 {
 		t.Fatalf("an unconfirmed child must block the epic, got %d creates", gh.createCalls)

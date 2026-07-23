@@ -640,6 +640,54 @@ func TestDrainReportFaultParksEpic(t *testing.T) {
 	}
 }
 
+// TestDrainReportUnfinalizedEpicPausesThenShips is the COD-1127 acceptance: an
+// epic child whose finalize declined while a sibling still read open posts a
+// pause, so the item parks with the waiting-on reason instead of settling done
+// with the epic branch unmerged and the Loop page disagreeing with the tracker. A
+// start re-attempts that same item, and the re-run that does ship the epic
+// settles it done.
+func TestDrainReportUnfinalizedEpicPausesThenShips(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	seedQueue(t, s, root, true, queue.Item{
+		Kind:      queue.KindEpic,
+		ID:        "COD-1",
+		Status:    queue.StatusRunning,
+		PID:       7,
+		SubIssues: []queue.SubIssue{{ID: "COD-2", State: "backlog"}},
+	})
+	reason := "epic COD-1 unfinalized — waiting on COD-2"
+	seedOutcome(t, s, root, "COD-1", queue.DrainReport{Class: state.FailPaused, Reason: reason})
+
+	if act, _ := s.drain.tick(root); act != drainReconcile {
+		t.Fatalf("settle tick = %q, want reconcile", act)
+	}
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusPaused {
+		t.Fatalf("COD-1 = %q, want paused — a declined finalize must not settle done", got)
+	}
+	if got := reasonOf(t, s, root, "COD-1"); got != reason {
+		t.Errorf("COD-1 reason = %q, want the waiting-on reason %q", got, reason)
+	}
+	if drainingOf(t, s, root) {
+		t.Error("draining still set after parking an unfinalized epic")
+	}
+
+	if err := s.stores.Queue(root).SetDraining(true); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if act, _ := s.drain.tick(root); act != drainSpawn {
+		t.Fatalf("start tick = %q, want the paused epic re-attempted", act)
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--drain-report", "COD-1"})
+
+	seedOutcome(t, s, root, "COD-1", queue.DrainReport{})
+	if act, _ := s.drain.tick(root); act != drainReconcile {
+		t.Fatalf("re-run tick = %q, want reconcile", act)
+	}
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusDone {
+		t.Errorf("COD-1 = %q, want done once the re-run shipped the epic", got)
+	}
+}
+
 // TestDrainNoReportPausesEpicWithoutFanout is the COD-813 acceptance: an epic
 // child killed mid-run leaves no drain report, and an epic has no checkpoint of
 // its own, so the drain has zero evidence of a clean finish. It must park the

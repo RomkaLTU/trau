@@ -70,6 +70,7 @@ import {
   publishQueue,
   queueExecutable,
   queueQueryOptions,
+  queueRunnable,
   runNext as runNextRequest,
   shutdownQueue,
   skipResumeApplies,
@@ -632,6 +633,7 @@ function LaunchQueueCard({
   });
 
   const executable = queueExecutable(builder.queue);
+  const runnable = queueRunnable(builder.queue);
 
   const busy =
     move.isPending ||
@@ -1007,7 +1009,7 @@ function LaunchQueueCard({
               size="sm"
               className="w-fit font-mono"
               onClick={() => start.mutate()}
-              disabled={executable === 0 || start.isPending || shuttingDown}
+              disabled={!runnable || start.isPending || shuttingDown}
             >
               {start.isPending ? "Starting…" : "Start queue"}
             </Button>
@@ -1628,19 +1630,29 @@ function haltNotice(halt: LoopHalt): HaltNotice {
         hint: STOPPED_HINT,
       };
     case "paused":
-      return pauseKind(halt.reason) === "reauth"
-        ? {
+      switch (pauseKind(halt.reason)) {
+        case "reauth":
+          return {
             tone: "warn",
             glyph: "⚠",
             headline: "paused — re-authentication needed",
             hint: "This is not a failure. Re-login to the provider, then the queue resumes.",
-          }
-        : {
+          };
+        case "usage_window":
+          return {
             tone: "warn",
             glyph: "⚠",
             headline: "paused — rate limit reached",
             hint: "This is not a failure. The queue resumes on its own once the provider's usage window clears.",
           };
+        default:
+          return {
+            tone: "warn",
+            glyph: "⚠",
+            headline: halt.reason ? `paused — ${halt.reason}` : "paused",
+            hint: "This is not a failure. Clear what the run is waiting on, then Start to re-attempt this item.",
+          };
+      }
     case "budget":
       return {
         tone: "warn",

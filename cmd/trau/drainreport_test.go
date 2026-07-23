@@ -24,6 +24,7 @@ func TestDrainClass(t *testing.T) {
 		{"nil error is a clean finish", nil, ""},
 		{"paused stays paused", &pipeline.PausedError{ID: "COD-1", Phase: "build", Reason: "usage limit"}, state.FailPaused},
 		{"wrapped paused stays paused", fmt.Errorf("loop: %w", &pipeline.PausedError{ID: "COD-1", Phase: "build", Reason: "usage limit"}), state.FailPaused},
+		{"declined epic finalize posts paused", &pipeline.EpicUnfinalizedError{EpicID: "COD-1", Open: []string{"COD-2"}}, state.FailPaused},
 		{"deliberate stop posts stopped", &pipeline.StoppedError{ID: "COD-1", Phase: "building"}, state.FailStopped},
 		{"fault posts faulted", &pipeline.FaultError{ID: "COD-1", Phase: "verify", Err: errors.New("push failed")}, state.FailFaulted},
 		{"generic error posts faulted, never clean", errors.New("repo has unmerged paths"), state.FailFaulted},

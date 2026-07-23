@@ -113,6 +113,8 @@ func epicPRTitle(id, title string) string {
 // branch is synced with the base (drift conflicts resolved by an agent), the epic
 // PR is opened/adopted, its CI is gated with a bounded repair loop, and — when
 // AUTO_MERGE is set — it is squash-merged to the base before the Linear epic closes.
+// While any child still reads open it declines with an *EpicUnfinalizedError, so
+// the caller can park the epic instead of mistaking the decline for a delivery.
 func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 	if p.EpicID == "" {
 		return nil
@@ -138,7 +140,7 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 	}
 	if len(open) > 0 {
 		p.logf("  epic %s still open — waiting on %s", p.EpicID, strings.Join(open, ", "))
-		return nil
+		return &EpicUnfinalizedError{EpicID: p.EpicID, Open: open}
 	}
 
 	epic, err := p.epicBranchName(ctx)

@@ -547,6 +547,26 @@ describe('builderView', () => {
     ])
   })
 
+  it('keeps a paused epic in the queue even when every sub-issue is done', () => {
+    const view = builderView(
+      [
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          status: 'paused',
+          reason: 'epic COD-9 unfinalized — waiting on COD-11',
+          sub_issues: [
+            { id: 'COD-10', title: 'a', state: 'done' },
+            { id: 'COD-11', title: 'b', state: 'done' },
+          ],
+        }),
+      ],
+      [],
+    )
+    expect(view.queue.map((it) => it.id)).toEqual(['COD-9'])
+    expect(view.settled).toEqual([])
+  })
+
   it('keeps a partially-done epic in the queue and out of the finished list', () => {
     const view = builderView(
       [

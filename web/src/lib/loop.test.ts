@@ -275,6 +275,31 @@ describe('projectLoopState', () => {
       })
     })
 
+    it('names the epic when its own finalize declined and every child reads delivered', () => {
+      const stalled = item({
+        id: 'COD-9',
+        kind: 'epic',
+        status: 'paused',
+        reason: 'epic COD-9 unfinalized — waiting on COD-11',
+        sub_issues: [
+          { id: 'COD-10', title: 'first', state: 'done' },
+          { id: 'COD-11', title: 'second', state: 'done' },
+        ],
+      })
+      const state = projectLoopState({
+        queue: queue([stalled]),
+        runs: [
+          run({ ticket: 'COD-10', terminal: true, updated_at: '2026-07-23T09:00:00Z' }),
+          run({ ticket: 'COD-11', terminal: true, updated_at: '2026-07-23T10:00:00Z' }),
+        ],
+      })
+      expect(state.halt).toEqual({
+        kind: 'paused',
+        ticket: 'COD-9',
+        reason: 'epic COD-9 unfinalized — waiting on COD-11',
+      })
+    })
+
     it('clears once the resumed epic starts running again', () => {
       const state = projectLoopState({
         queue: queue([epic('running')], true),
