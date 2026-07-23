@@ -45,13 +45,17 @@ func (t *fakeTracker) EnsureLabels(context.Context) error { return nil }
 // takes its shortest path (checkout+clean, no commit/push).
 type fakeGit struct{}
 
-func (fakeGit) CurrentBranch(context.Context) (string, error)      { return "main", nil }
-func (fakeGit) AddAll(context.Context) error                       { return nil }
-func (fakeGit) Commit(context.Context, string, bool) error         { return nil }
-func (fakeGit) Push(context.Context, string, string, bool) error   { return nil }
-func (fakeGit) PushDryRun(context.Context, string, string) error   { return nil }
-func (fakeGit) Checkout(context.Context, string, bool) error       { return nil }
-func (fakeGit) CreateBranch(context.Context, string, string) error { return nil }
+func (fakeGit) CurrentBranch(context.Context) (string, error)        { return "main", nil }
+func (fakeGit) AddAll(context.Context) error                         { return nil }
+func (fakeGit) Commit(context.Context, string, bool) error           { return nil }
+func (fakeGit) Push(context.Context, string, string, bool) error     { return nil }
+func (fakeGit) PushDryRun(context.Context, string, string) error     { return nil }
+func (fakeGit) Checkout(context.Context, string, bool) error         { return nil }
+func (fakeGit) CheckoutDetached(context.Context, string, bool) error { return nil }
+func (fakeGit) CreateBranch(context.Context, string, string) error   { return nil }
+func (fakeGit) WorktreeHolding(context.Context, string) (string, error) {
+	return "", nil
+}
 func (fakeGit) Clean(context.Context) error                        { return nil }
 func (fakeGit) BranchExists(context.Context, string) (bool, error) { return false, nil }
 func (fakeGit) FindFeatureBranch(context.Context, string) (string, error) {
@@ -74,6 +78,7 @@ func (fakeGit) StashPop(context.Context) error                            { retu
 func (fakeGit) Commits(context.Context, string, string) ([]string, error) { return nil, nil }
 func (fakeGit) CommitSubject(context.Context, string) (string, error)     { return "", nil }
 func (fakeGit) Pull(context.Context, string, string) error                { return nil }
+func (fakeGit) Fetch(context.Context, string, string) error               { return nil }
 func (fakeGit) MergeRemote(context.Context, string, string) (bool, error) { return false, nil }
 func (fakeGit) MergeAbort(context.Context) error                          { return nil }
 func (fakeGit) Unmerged(context.Context) (string, error)                  { return "", nil }
