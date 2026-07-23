@@ -16,6 +16,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/hubpresence"
 	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/pipeline"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/webserver"
@@ -97,6 +98,7 @@ func runTakeover(ctx context.Context, args []string, stdout, stderr io.Writer) e
 			return hub.Instances(ictx)
 		},
 		cps:           newCheckpointStore(cfg, repoRoot),
+		git:           pipeline.ExecGit{Repo: repoRoot},
 		sessionExists: agent.SessionExists,
 		runClaude:     claudeResumeRunner(cfg.ClaudeBin, repoRoot),
 		now:           time.Now,
@@ -112,10 +114,17 @@ type takeoverPresence interface {
 	Deregister()
 }
 
+// takeoverGit is the slice of git a takeover drives: put the repo on the
+// session's recorded branch, or read the head it will run on instead.
+type takeoverGit interface {
+	CurrentBranch(ctx context.Context) (string, error)
+	Checkout(ctx context.Context, ref string, force bool) error
+}
+
 // takeoverSession is one wired `trau takeover` run: the resolved repo and
 // ticket plus every seam the wrapper drives — the presence lock, the hub's
-// instance list, the checkpoint store, the transcript-existence probe, and the
-// interactive claude child.
+// instance list, the checkpoint store, git, the transcript-existence probe, and
+// the interactive claude child.
 type takeoverSession struct {
 	repoRoot      string
 	ticket        string
@@ -123,6 +132,7 @@ type takeoverSession struct {
 	presence      takeoverPresence
 	instances     func(context.Context) ([]hubclient.Instance, error)
 	cps           state.Checkpoints
+	git           takeoverGit
 	sessionExists func(sessionID string) bool
 	runClaude     func(sessionID string) error
 	now           func() time.Time
@@ -130,10 +140,10 @@ type takeoverSession struct {
 }
 
 // run drives the takeover in order: hold the lock, refuse while a run is still
-// active in the repo, resolve the recorded claude session, stamp the checkpoint
-// so the recap shows a human drove this run, then hand the terminal to claude
-// and release the lock on exit. Every path deregisters, so a refused or failed
-// takeover leaves no lock behind.
+// active in the repo, resolve the recorded claude session, put the repo on the
+// ticket's branch, stamp the checkpoint so the recap shows a human drove this
+// run, then hand the terminal to claude and release the lock on exit. Every
+// path deregisters, so a refused or failed takeover leaves no lock behind.
 func (t *takeoverSession) run(ctx context.Context) error {
 	t.presence.SetState(registry.StateTakeover, t.ticket, "")
 	defer t.presence.Deregister()
@@ -159,6 +169,11 @@ func (t *takeoverSession) run(ctx context.Context) error {
 	}
 	phase := t.cps.Get(t.ticket, "SESSION_PHASE")
 
+	branch, err := t.checkoutRecordedBranch(ctx)
+	if err != nil {
+		return err
+	}
+
 	if err := t.cps.Set(t.ticket, "TAKEOVER", t.now().UTC().Format(time.RFC3339)); err != nil {
 		return fmt.Errorf("stamp takeover on %s: %w", t.ticket, err)
 	}
@@ -166,12 +181,15 @@ func (t *takeoverSession) run(ctx context.Context) error {
 		return fmt.Errorf("stamp takeover on %s: %w", t.ticket, err)
 	}
 
-	_, _ = fmt.Fprintf(t.out, "Taking over %s — resuming its %s session; closing claude releases the repo.\n", t.ticket, phase)
+	_, _ = fmt.Fprintf(t.out, "Taking over %s on %s — resuming its %s session.\n", t.ticket, branch, phase)
+	_, _ = fmt.Fprintln(t.out, "The conversation reopens with its full context and then waits: nothing runs until you type an instruction.")
+	_, _ = fmt.Fprintln(t.out, "Closing claude releases the repo.")
 	runErr := t.runClaude(sid)
 	if runErr != nil {
 		_, _ = fmt.Fprintf(t.out, "claude exited with an error: %v\n", runErr)
 	}
-	_, _ = fmt.Fprintf(t.out, "Resumed the %s conversation for %s. The ticket stays parked at its checkpoint — Run next in the web UI hands it back to the loop.\n", phase, t.ticket)
+	_, _ = fmt.Fprintf(t.out, "Released the repo — %s is left checked out and %s stays parked at its %s checkpoint.\n", branch, t.ticket, phase)
+	_, _ = fmt.Fprintln(t.out, "Hand the ticket back with Run next in the trau web UI.")
 	if runErr != nil {
 		var ee *exec.ExitError
 		if errors.As(runErr, &ee) {
@@ -180,6 +198,28 @@ func (t *takeoverSession) run(ctx context.Context) error {
 		return fmt.Errorf("run claude: %w", runErr)
 	}
 	return nil
+}
+
+// checkoutRecordedBranch puts the repo on the branch the run committed its WIP
+// to and returns it, so whatever the steered agent writes lands where the
+// ticket's work lives rather than on the clean base the stop path left behind.
+// With no branch recorded the head stays put and is reported instead.
+func (t *takeoverSession) checkoutRecordedBranch(ctx context.Context) (string, error) {
+	branch := t.cps.Get(t.ticket, "BRANCH")
+	if branch == "" {
+		head, err := t.git.CurrentBranch(ctx)
+		if err != nil {
+			return "", console.Actionable(err, "read the current branch of "+t.repoRoot, "check that the repo is a healthy git checkout")
+		}
+		_, _ = fmt.Fprintf(t.out, "%s has no recorded branch — resuming on the current head, %s.\n", t.ticket, head)
+		return head, nil
+	}
+	if err := t.git.Checkout(ctx, branch, false); err != nil {
+		return "", console.Actionable(err,
+			fmt.Sprintf("check out %s for %s", branch, t.ticket),
+			fmt.Sprintf("commit or stash your changes in %s and retry — the takeover resumes on the ticket's branch, never on the base", t.repoRoot))
+	}
+	return branch, nil
 }
 
 // claudeResumeRunner returns the interactive claude child a takeover hands the
