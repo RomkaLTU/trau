@@ -11,17 +11,18 @@ package activity
 type Activity string
 
 const (
-	Build   Activity = "build"
-	LintFix Activity = "lintfix"
-	Cleanup Activity = "cleanup"
-	Handoff Activity = "handoff"
-	Verify  Activity = "verify"
-	Repair  Activity = "repair"
-	Bugfix  Activity = "bugfix"
-	Commit  Activity = "commit"
-	PR      Activity = "pr"
-	CIWait  Activity = "ci-wait"
-	Merge   Activity = "merge"
+	Build     Activity = "build"
+	LintFix   Activity = "lintfix"
+	Cleanup   Activity = "cleanup"
+	Handoff   Activity = "handoff"
+	Verify    Activity = "verify"
+	Repair    Activity = "repair"
+	Bugfix    Activity = "bugfix"
+	Commit    Activity = "commit"
+	PR        Activity = "pr"
+	CIWait    Activity = "ci-wait"
+	Merge     Activity = "merge"
+	MergeWait Activity = "merge-wait"
 )
 
 // Step is a display grouping of Activities: the three phases every surface shows
@@ -46,7 +47,7 @@ func StepOf(a Activity) Step {
 	switch a {
 	case Verify, Repair, Bugfix:
 		return StepVerify
-	case Commit, PR, CIWait, Merge:
+	case Commit, PR, CIWait, Merge, MergeWait:
 		return StepShip
 	default:
 		return StepBuild

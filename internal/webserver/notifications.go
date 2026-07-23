@@ -218,6 +218,8 @@ func runNotificationKind(state string) string {
 		return hubstore.NotificationRunFaulted
 	case "quarantined":
 		return hubstore.NotificationRunQuarantined
+	case "awaiting_merge":
+		return hubstore.NotificationRunAwaitingMerge
 	}
 	return ""
 }
@@ -230,6 +232,8 @@ func runNotificationTitle(state, repo string) string {
 		return "Run faulted — " + repo
 	case "quarantined":
 		return "Run quarantined — " + repo
+	case "awaiting_merge":
+		return "PR awaiting merge — " + repo
 	}
 	return "Run needs attention — " + repo
 }

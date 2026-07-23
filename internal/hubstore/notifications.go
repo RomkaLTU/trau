@@ -11,10 +11,11 @@ import (
 // unread row per grilling session — while the run kinds each record a distinct
 // pause, fault, or quarantine fact.
 const (
-	NotificationGrillQuestion  = "grill_question"
-	NotificationRunPaused      = "run_paused"
-	NotificationRunFaulted     = "run_faulted"
-	NotificationRunQuarantined = "run_quarantined"
+	NotificationGrillQuestion    = "grill_question"
+	NotificationRunPaused        = "run_paused"
+	NotificationRunFaulted       = "run_faulted"
+	NotificationRunQuarantined   = "run_quarantined"
+	NotificationRunAwaitingMerge = "run_awaiting_merge"
 )
 
 // notificationReadRetention bounds how many read notifications the store keeps;

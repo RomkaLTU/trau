@@ -31,6 +31,7 @@ const ACTIVITY_STEP: Record<string, number> = {
   pr: 2,
   'ci-wait': 2,
   merge: 2,
+  'merge-wait': 2,
 }
 
 // CHECKPOINT_STEP reads a past-tense checkpoint as the Step a run is actually in
