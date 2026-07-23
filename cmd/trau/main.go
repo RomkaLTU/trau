@@ -2874,7 +2874,10 @@ func providerConfigFor(cfg config.Config, provider string) providerConfig {
 			flags:  cfg.KimiFlags,
 			model:  cfg.KimiModel,
 			effort: "",
-			extra:  map[string]string{"result_dir": cfg.RunsDir},
+			extra: map[string]string{
+				"mode":       cfg.KimiMode,
+				"result_dir": cfg.RunsDir,
+			},
 		}
 	}
 	return providerConfig{extra: map[string]string{}}

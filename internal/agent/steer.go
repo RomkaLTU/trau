@@ -47,10 +47,11 @@ func SteerFrom(ctx context.Context) (SteerSource, bool) {
 // Notes are typed by hand, so seconds of latency cost nothing.
 const steerPollInterval = 3 * time.Second
 
-// steerKeystrokes renders a note as a bracketed paste — so an embedded newline
-// lands in the message instead of submitting it early — followed by the CR that
-// sends it.
-func steerKeystrokes(body string) []byte {
+// pasteKeystrokes renders a message as a bracketed paste — so an embedded newline
+// lands in the composer instead of submitting it early — followed by the CR that
+// sends it. Steer notes go in this way, and so does the launch prompt of a backend
+// whose CLI takes no prompt argument.
+func pasteKeystrokes(body string) []byte {
 	return []byte("\x1b[200~" + body + "\x1b[201~\r")
 }
 
@@ -85,7 +86,7 @@ func deliverSteer(ctx context.Context, sess terminalSession, src SteerSource, la
 			if typed[n.ID] {
 				continue
 			}
-			if _, err := sess.Write(steerKeystrokes(n.Body)); err != nil {
+			if _, err := sess.Write(pasteKeystrokes(n.Body)); err != nil {
 				return
 			}
 			typed[n.ID] = true

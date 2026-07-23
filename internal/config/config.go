@@ -106,6 +106,7 @@ type Config struct {
 	KimiConfig string
 	KimiBin    string
 	KimiFlags  string
+	KimiMode   string
 	KimiModel  string
 
 	Routes map[string]string
@@ -365,6 +366,7 @@ func Defaults() Config {
 		KimiConfig:             "",
 		KimiBin:                "kimi",
 		KimiFlags:              "",
+		KimiMode:               KimiDefaultMode,
 		KimiModel:              "",
 		MaxIterations:          15,
 		MaxRepairs:             2,
@@ -708,6 +710,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	providerStr(codexFile, codexSrc, "CODEX_EFFORT", &c.CodexEffort)
 	providerStr(kimiFile, kimiSrc, "KIMI_BIN", &c.KimiBin)
 	providerStr(kimiFile, kimiSrc, "KIMI_FLAGS", &c.KimiFlags)
+	providerStr(kimiFile, kimiSrc, "KIMI_MODE", &c.KimiMode)
 	providerStr(kimiFile, kimiSrc, "KIMI_MODEL", &c.KimiModel)
 
 	routes := map[string]string{}
@@ -1578,6 +1581,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "CODEX_EFFORT", Group: sectionProviders, WebEditable: true, Advanced: true, Default: CodexDefaultEffort, Description: "Default Codex reasoning effort"},
 		{Key: "KIMI_BIN", Group: sectionProviders, Advanced: true, Default: "kimi", Description: "Kimi binary"},
 		{Key: "KIMI_FLAGS", Group: sectionProviders, Advanced: true, Description: "Extra flags passed to Kimi"},
+		{Key: "KIMI_MODE", Group: sectionProviders, Advanced: true, Default: KimiDefaultMode, Options: []string{KimiDefaultMode, "print"}, Description: "How Kimi phases run: interactive (a driven TUI, steerable mid-phase) | print (steered at the next spawn)"},
 		{Key: "KIMI_MODEL", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Default Kimi model alias (from your kimi config.toml [models.*])"},
 		{Key: "MAX_ITERATIONS", Group: sectionPipeline, Kind: "int", WebEditable: true, Default: "15", Description: "Maximum tickets per run"},
 		{Key: "MAX_REPAIRS", Group: sectionPipeline, Kind: "int", WebEditable: true, Default: "2", Description: "Verify-fail quick repair attempts before bugfix"},
@@ -2080,6 +2084,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.KimiBin
 	case "KIMI_FLAGS":
 		return cfg.KimiFlags
+	case "KIMI_MODE":
+		return cfg.KimiMode
 	case "KIMI_MODEL":
 		return cfg.KimiModel
 	case "MAX_ITERATIONS":
