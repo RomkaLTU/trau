@@ -1586,7 +1586,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "MAX_ITERATIONS", Group: sectionPipeline, Kind: "int", WebEditable: true, Default: "15", Description: "Maximum tickets per run"},
 		{Key: "MAX_REPAIRS", Group: sectionPipeline, Kind: "int", WebEditable: true, Default: "2", Description: "Verify-fail quick repair attempts before bugfix"},
 		{Key: "MAX_BUGFIXES", Group: sectionPipeline, Kind: "int", WebEditable: true, Default: "2", Description: "Comprehensive bugfix passes after quick repairs are exhausted"},
-		{Key: "AUTO_MERGE", Group: sectionGit, WebEditable: true, Default: "1", Description: "Merge on green CI (1 = yes, 0 = no)", Bool: true},
+		{Key: "AUTO_MERGE", Group: sectionGit, WebEditable: true, Default: "1", Description: "Merge on green CI (1 = auto-merge, 0 = wait for manual merge)", Bool: true},
 		{Key: "MERGE_METHOD", Group: sectionGit, WebEditable: true, Default: "squash", Description: "Merge strategy: squash | merge | rebase", Options: []string{"squash", "merge", "rebase"}},
 		{Key: "DETERMINISTIC_COMMIT", Group: sectionGit, Default: "1", Description: "For squash-merge repos, stage and commit the slice deterministically (templated Conventional Commit; falls back to the commit agent when the repo's hooks reject the template) since the squash discards the message; 0 always uses the agent commit (1 = yes, 0 = no)", Bool: true},
 		{Key: "CI_TIMEOUT", Group: sectionCI, Kind: "int", WebEditable: true, Default: "600", Description: "Seconds to wait for CI checks"},

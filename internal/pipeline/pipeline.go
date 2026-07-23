@@ -2031,8 +2031,7 @@ func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 		return p.giveUp(ctx, id, "CI not green")
 	}
 	if !p.AutoMerge {
-		p.logf("  green CI — leaving merge to you (AUTO_MERGE=0)")
-		return nil
+		return p.awaitManualMerge(ctx, id, pr)
 	}
 	p.setActivity(id, activity.Merge, "")
 	err := p.mergePR(ctx, pr)
@@ -2046,6 +2045,48 @@ func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 		return fmt.Errorf("merge %s: %w", id, err)
 	}
 	return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+}
+
+// awaitManualMerge is the AUTO_MERGE=0 path: CI is green, so it notifies once and
+// then polls the PR at the CI cadence with no timeout. A close without merge is a
+// human rejection (give-up); a canceled context stops blamelessly; a transient
+// lookup error never ends the wait.
+func (p *Pipeline) awaitManualMerge(ctx context.Context, id, pr string) error {
+	p.setActivity(id, activity.MergeWait, "")
+	p.logf("  ⏳ green CI — awaiting manual merge of PR #%s (AUTO_MERGE=0)", pr)
+	p.emitAwaitingMerge(id, pr, p.State.Get(id, "PR_URL"))
+	warnedLookup := false
+	for {
+		switch st, err := p.GitHub.PRState(ctx, pr); {
+		case st == "MERGED":
+			return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+		case st == "CLOSED":
+			return p.giveUp(ctx, id, fmt.Sprintf("PR #%s closed without merge", pr))
+		case err != nil && !warnedLookup:
+			p.logf("  PR #%s state lookup failing (still awaiting merge): %v", pr, err)
+			warnedLookup = true
+		case err == nil:
+			warnedLookup = false
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		p.sleep(p.CIPoll)
+	}
+}
+
+// emitAwaitingMerge records the one-time state_change that tells the operator a
+// green PR is theirs to merge, riding the same pathway as the pause/fault/quarantine
+// notifications and carrying the PR number and URL so the hub notification links to it.
+func (p *Pipeline) emitAwaitingMerge(id, pr, url string) {
+	if p.Events == nil {
+		return
+	}
+	fields := map[string]any{"ticket": id, "state": "awaiting_merge", "pr": pr}
+	if url != "" {
+		fields["url"] = url
+	}
+	p.Events.Emit("state_change", state.PROpen, "PR #"+pr+" awaiting your merge", fields)
 }
 
 // mergePR merges pr with the transient-retry guard, adopting a merge a prior
