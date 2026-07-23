@@ -37,6 +37,17 @@ export type PendingEntry =
       children: TimelineTicket[]
     }
 
+// FinalizeEntry is the drain's epic-level work: syncing the epic branch, opening
+// its PR, waiting on CI, merging. It belongs to no ticket, so the heartbeat
+// carries no ticket id and only the running epic queue item names it.
+export interface FinalizeEntry {
+  epicId: string
+  title: string
+  source?: string
+  activity?: string
+  detail?: string
+}
+
 // Timeline is the client-side join of a draining queue's snapshot with its live
 // run records: settled tickets in the order they actually completed, the one
 // running ticket, and the remaining set in snapshot order. Epic group headers do
@@ -46,6 +57,7 @@ export interface Timeline {
   done: number
   settled: TimelineTicket[]
   running?: TimelineTicket
+  finalize?: FinalizeEntry
   pending: PendingEntry[]
   elapsedAnchor?: string
 }
@@ -194,6 +206,33 @@ function isSettled(status: TicketStatus): boolean {
   )
 }
 
+// epicFinalize reads a ticket-less active instance as the epic finalize. It only
+// stands in for a running row once every leaf under that epic has settled — an
+// instance grazing between picks still has leaves to show.
+function epicFinalize(
+  items: QueueItem[],
+  byId: Map<string, TimelineTicket>,
+  instance?: Instance,
+): FinalizeEntry | undefined {
+  if (instance?.ticket) return undefined
+  if (!isActiveState(toSessionState(instance?.session_state ?? ''))) {
+    return undefined
+  }
+  const epic = items.find((it) => it.kind === 'epic' && it.status === 'running')
+  if (!epic) return undefined
+  const open = (epic.sub_issues ?? []).some(
+    (s) => !isSettled(byId.get(s.id)?.status ?? 'pending'),
+  )
+  if (open) return undefined
+  return {
+    epicId: epic.id,
+    title: epic.title ?? '',
+    source: epic.source,
+    activity: instance?.activity,
+    detail: instance?.detail,
+  }
+}
+
 export function buildTimeline(
   items: QueueItem[],
   runs: Run[],
@@ -281,6 +320,7 @@ export function buildTimeline(
     done: tickets.filter((t) => t.status === 'done').length,
     settled,
     running,
+    finalize: epicFinalize(items, byId, instance),
     pending,
     elapsedAnchor,
   }
