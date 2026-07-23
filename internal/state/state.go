@@ -91,15 +91,15 @@ const (
 	FailPaused  = "paused"  // a blameless provider rate/usage or auth wall
 	FailFaulted = "faulted" // an unexpected error; work preserved, still resumable
 	FailGaveUp  = "gave_up" // a verified dead end; quarantined and needs a human
-	FailStopped = "stopped" // an administrative stop (hub shutdown, supervisor kill); blameless, always resumable
+	FailStopped = "stopped" // a deliberate stop (web Stop, Ctrl-C, hub shutdown); blameless, always resumable
 )
 
 // FailureClass classifies a checkpoint's failure from its durable fields: a
 // quarantined phase is a give-up regardless of the rest; a merged phase has no
 // failure even if a stale marker lingers; otherwise the stored FAILURE_CLASS
-// marker (paused/faulted) wins, and a bare FAILURE_REASON with no marker reads as
-// a fault so checkpoints written before the marker existed still classify. A
-// healthy in-flight phase returns "".
+// marker (paused/stopped/faulted) wins, and a bare FAILURE_REASON with no marker
+// reads as a fault so checkpoints written before the marker existed still
+// classify. A healthy in-flight phase returns "".
 func FailureClass(phase, stored, reason string) string {
 	switch {
 	case phase == Quarantined:

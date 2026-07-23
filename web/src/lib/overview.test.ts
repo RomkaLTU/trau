@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   activeLoopCount,
+  attentionPill,
   boardPill,
   isActiveState,
   loopCardView,
@@ -34,11 +35,30 @@ describe("boardPill", () => {
       state: "warn",
       label: "paused",
     });
+    expect(boardPill({ phase: "building", failure_class: "stopped" })).toEqual({
+      state: "warn",
+      label: "stopped",
+    });
     expect(boardPill({ phase: "building", failure_class: "faulted" })).toEqual({
       state: "fail",
       label: "fault",
     });
     expect(boardPill({ phase: "verified", failure_class: "gave_up" })).toEqual({
+      state: "fail",
+      label: "quarantined",
+    });
+  });
+});
+
+describe("attentionPill", () => {
+  it("names every failure class, keeping a deliberate stop blameless", () => {
+    expect(attentionPill("paused")).toEqual({ state: "warn", label: "paused" });
+    expect(attentionPill("stopped")).toEqual({
+      state: "warn",
+      label: "stopped",
+    });
+    expect(attentionPill("faulted")).toEqual({ state: "fail", label: "fault" });
+    expect(attentionPill("gave_up")).toEqual({
       state: "fail",
       label: "quarantined",
     });

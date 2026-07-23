@@ -145,6 +145,32 @@ func TestRunDetailDerivesStepDurations(t *testing.T) {
 	}
 }
 
+// TestRunDetailClosesDurationsOnAStop: a deliberate stop ends a run just as a
+// merge or a fault does, so the Activity it interrupted must have its wall-clock
+// closed rather than left open as if the run were still in flight.
+func TestRunDetailClosesDurationsOnAStop(t *testing.T) {
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	seedCheckpoint(t, runsDir, "COD-502", map[string]string{
+		"PHASE": state.Building, "FAILURE_CLASS": state.FailStopped,
+		"FAILURE_REASON": "stopped during build — work saved at the last checkpoint",
+	})
+
+	ts := instancesServer(t, home)
+	base := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	stamp := func(secs int) string { return at(base, secs).Format(time.RFC3339) }
+	postEvents(t, ts, "acme",
+		hubclient.Event{TS: stamp(0), Kind: "activity_change", Fields: `{"ticket":"COD-502","activity":"build"}`},
+		hubclient.Event{TS: stamp(90), Kind: "state_change", Fields: `{"ticket":"COD-502","state":"stopped"}`},
+	)
+
+	d := getRunDetail(t, ts, "acme", "COD-502")
+
+	if build, ok := durationOf(d.Durations, "Build"); !ok || build != 90_000 {
+		t.Errorf("Build duration = %d present=%v, want 90000", build, ok)
+	}
+}
+
 // TestRunDetailNoDurationsBeforeSignal covers the compatibility floor: a run with no
 // activity_change events — one predating ADR 0009 — carries no durations rather than
 // a guess, while its cost table is unaffected.

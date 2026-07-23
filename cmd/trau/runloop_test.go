@@ -208,6 +208,49 @@ func (e *resumeOnceEngine) ResumeTarget() (string, string) {
 	return "COD-9", "built"
 }
 
+// stoppedEngine reports the deliberate stop the pipeline raises when a run is
+// cut short mid-ticket.
+type stoppedEngine struct {
+	loopEngine
+	picks []string
+}
+
+func (e *stoppedEngine) Pick(context.Context) (string, error) {
+	if len(e.picks) == 0 {
+		return "", nil
+	}
+	id := e.picks[0]
+	e.picks = e.picks[1:]
+	return id, nil
+}
+
+func (e *stoppedEngine) Process(_ context.Context, id, _ string) error {
+	return &pipeline.StoppedError{ID: id, Phase: "building"}
+}
+
+// TestRunLoopEndsOnDeliberateStop: a ticket cut short by a Stop must end the
+// session there — reported as stopping, surfaced so the exit takes the signal
+// path, and never counted as a processed ticket or followed by a Finalize.
+func TestRunLoopEndsOnDeliberateStop(t *testing.T) {
+	eng := &stoppedEngine{picks: []string{"COD-1", "COD-2"}}
+	var recs []stateRec
+	processed, err := runLoop(context.Background(), eng, loopParams{Max: 5, Report: recorder(&recs)}, noopRenderer{}, func(id string, _ time.Duration) console.TicketResult {
+		return console.TicketResult{ID: id}
+	})
+	if !pipeline.IsStopped(err) {
+		t.Fatalf("runLoop err = %v, want the *StoppedError to surface", err)
+	}
+	if len(processed) != 0 {
+		t.Fatalf("processed = %v, want none — the stopped ticket did not finish", processed)
+	}
+	if eng.finalized {
+		t.Fatal("a stopped run must not finalize")
+	}
+	if last := recs[len(recs)-1]; last.state != registry.StateStopping {
+		t.Fatalf("last transition = %v, want %q", last, registry.StateStopping)
+	}
+}
+
 func TestLeafSubsFiltersNestedEpics(t *testing.T) {
 	subs := []tracker.SubIssue{
 		{ID: "COD-500", HasChildren: true},

@@ -54,6 +54,8 @@ export function boardPill(run: Pick<Run, "phase" | "failure_class">): {
   switch (run.failure_class) {
     case "paused":
       return { state: "warn", label: "paused" };
+    case "stopped":
+      return { state: "warn", label: "stopped" };
     case "faulted":
       return { state: "fail", label: "fault" };
     case "gave_up":
@@ -215,6 +217,8 @@ export function attentionPill(cls: FailureClass): {
   switch (cls) {
     case "paused":
       return { state: "warn", label: "paused" };
+    case "stopped":
+      return { state: "warn", label: "stopped" };
     case "faulted":
       return { state: "fail", label: "fault" };
     case "gave_up":
