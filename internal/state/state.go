@@ -66,6 +66,23 @@ func Idx(phase string) int {
 // quarantined ticket that the resume scan must skip (rank >= 6).
 func Terminal(phase string) bool { return Idx(phase) >= 6 }
 
+// AdvancedPhase maps a checkpoint phase to the phase that records the step
+// running from it as finished, and "" where there is none. It stops at verified:
+// the commit/PR step also records the PR and PR_URL a later phase needs, so no
+// PHASE write alone can stand for it.
+func AdvancedPhase(phase string) string {
+	switch phase {
+	case Building:
+		return Built
+	case Built:
+		return HandedOff
+	case HandedOff:
+		return Verified
+	default:
+		return ""
+	}
+}
+
 // Reconcilable reports whether a checkpoint phase is worth cross-checking against
 // the tracker: any tracked attempt that is not already merged locally — an
 // in-flight phase (rank 1–5) or a quarantined one (rank 9). Merged (6) and

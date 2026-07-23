@@ -49,6 +49,20 @@ func TestTerminal(t *testing.T) {
 	}
 }
 
+func TestAdvancedPhase(t *testing.T) {
+	advances := map[string]string{Building: Built, Built: HandedOff, HandedOff: Verified}
+	for from, want := range advances {
+		if got := AdvancedPhase(from); got != want {
+			t.Errorf("AdvancedPhase(%q) = %q, want %q", from, got, want)
+		}
+	}
+	for _, p := range []string{Verified, PROpen, Merged, Quarantined, "", "bogus"} {
+		if got := AdvancedPhase(p); got != "" {
+			t.Errorf("AdvancedPhase(%q) = %q, want no completed phase to advance to", p, got)
+		}
+	}
+}
+
 // --- Reconcilable / StaleCheckpoint --------------------------------------
 
 func TestReconcilable(t *testing.T) {

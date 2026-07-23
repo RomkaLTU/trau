@@ -16,6 +16,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/trau/confirm-dialog";
 import { ForceResetDialog } from "@/components/trau/force-reset-dialog";
+import { useHandback } from "@/components/trau/handback-dialog";
 import { Eyebrow } from "@/components/trau/eyebrow";
 import { NoSkillsBanner } from "@/components/trau/no-skills-banner";
 import { NoBrowserBanner } from "@/components/trau/no-browser-banner";
@@ -632,6 +633,8 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
       void navigate({ to: "/loop" });
     },
   });
+  const handback = useHandback(repo, () => resume.mutate());
+  const startResume = () => handback.request(ticket, run?.handback ?? null);
   const reset = useMutation({
     mutationFn: (force: boolean) => resetRun(repo, ticket, force),
     onSuccess: () => {
@@ -697,7 +700,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
       className="font-mono"
       disabled={resume.isPending || resumeGate !== ""}
       title={resumeGate || undefined}
-      onClick={() => resume.mutate()}
+      onClick={startResume}
     >
       <Play className="size-4" aria-hidden="true" />
       {resume.isPending ? "Resuming…" : "Resume"}
@@ -849,7 +852,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         {variant === "paused" && !takenOverHere && (
           <PausedBanner
             reason={run?.failure_reason ?? ""}
-            onResume={() => resume.mutate()}
+            onResume={startResume}
             resuming={resume.isPending}
             gate={resumeGate}
           />
@@ -857,7 +860,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
 
         {variant === "stopped" && !takenOverHere && (
           <StoppedBanner
-            onResume={() => resume.mutate()}
+            onResume={startResume}
             resuming={resume.isPending}
             gate={resumeGate}
           />
@@ -908,7 +911,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
             {variant === "failed_to_start" ? (
               <FailedToStartBanner
                 error={fieldStr(spawnFailure!, "error")}
-                onRetry={() => resume.mutate()}
+                onRetry={startResume}
                 retrying={resume.isPending}
               />
             ) : variant === "starting" ? (
@@ -947,6 +950,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         pending={reset.isPending}
         onConfirm={() => reset.mutate(true)}
       />
+      {handback.dialog}
     </>
   );
 }

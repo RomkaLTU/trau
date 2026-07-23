@@ -34,6 +34,20 @@ type RunView struct {
 	FailureReason string   `json:"failure_reason,omitempty"`
 	CostUSD       *float64 `json:"cost_usd,omitempty"`
 	UpdatedAt     string   `json:"updated_at,omitempty"`
+	// Handback is set only while a takeover stamp is pending, so a hand-back can
+	// ask whether the human finished the interrupted phase.
+	Handback *Handback `json:"handback,omitempty"`
+}
+
+// Handback is a ticket's pending hand-back choice (ADR 0018): a takeover
+// terminal steered it by hand and no phase transition has cleared the stamp
+// since. Phase names the phase a hand-back re-enters; Advance is the completed
+// phase value the operator may promote the checkpoint to instead, empty when the
+// recorded phase has no such value.
+type Handback struct {
+	At      string `json:"at"`
+	Phase   string `json:"phase"`
+	Advance string `json:"advance,omitempty"`
 }
 
 // RunsResponse is the /api/v1/repos/{repo}/runs resource: the repo's tickets in
@@ -246,6 +260,21 @@ func runViewFromCheckpoint(tc hubstore.TicketCheckpoint) RunView {
 		FailureReason: reason,
 		CostUSD:       tc.CostUSD,
 		UpdatedAt:     tc.UpdatedAt,
+		Handback:      handbackFor(tc),
+	}
+}
+
+// handbackFor reads a checkpoint's pending hand-back choice; a ticket no
+// terminal steered has none.
+func handbackFor(tc hubstore.TicketCheckpoint) *Handback {
+	at := checkpointField(tc.Data, "TAKEOVER")
+	if at == "" {
+		return nil
+	}
+	return &Handback{
+		At:      at,
+		Phase:   checkpointField(tc.Data, "SESSION_PHASE"),
+		Advance: state.AdvancedPhase(tc.Phase),
 	}
 }
 

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { useActiveRepo } from "@/components/trau/active-repo";
 import { EmptyState } from "@/components/trau/empty-state";
 import { Eyebrow } from "@/components/trau/eyebrow";
+import { useHandback } from "@/components/trau/handback-dialog";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { StatusPill, type RunState } from "@/components/trau/status-pill";
 import { TerminalCard } from "@/components/trau/terminal-card";
@@ -384,6 +385,7 @@ function NeedsAttention() {
       void navigate({ to: "/loop" });
     },
   });
+  const handback = useHandback(repo ?? "", (ticket) => resume.mutate(ticket));
 
   const stopLive = useMutation({
     mutationFn: (pid: number) => stopInstance(pid),
@@ -438,7 +440,9 @@ function NeedsAttention() {
                     size="sm"
                     className="h-auto w-fit p-0 font-mono text-xs text-teal"
                     disabled={isLive || pending}
-                    onClick={() => resume.mutate(run.ticket)}
+                    onClick={() =>
+                      handback.request(run.ticket, run.handback ?? null)
+                    }
                   >
                     {pending ? "Resuming…" : `${meta.action} →`}
                   </Button>
@@ -494,6 +498,7 @@ function NeedsAttention() {
           );
         })}
       </ul>
+      {handback.dialog}
     </TerminalCard>
   );
 }
