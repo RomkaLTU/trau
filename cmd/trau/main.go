@@ -592,7 +592,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		CostMetered: metered,
 		Elapsed:     time.Since(start),
 		Err:         lerr,
-		Paused:      pipeline.IsPaused(lerr),
+		Paused:      blamelessPause(lerr),
 	}, lerr))
 	con.Wait()
 	return lerr
@@ -604,18 +604,28 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 // only a nil error may post one. A pause stays a pause and a deliberate stop stays
 // a stop, both parking the item for a resume; every other error, git preflight
 // failures included, posts faulted so the drainer parks the item instead of
-// settling it done with no work behind it.
+// settling it done with no work behind it. An epic whose finalize declined while
+// children still read open posts a pause too, so a start re-attempts the finalize
+// instead of the item settling done with the epic branch unmerged.
 func drainClass(err error) (class, reason string) {
 	switch {
 	case err == nil:
 		return "", ""
-	case pipeline.IsPaused(err):
+	case pipeline.IsPaused(err), pipeline.IsEpicUnfinalized(err):
 		return state.FailPaused, err.Error()
 	case pipeline.IsStopped(err):
 		return state.FailStopped, err.Error()
 	default:
 		return state.FailFaulted, err.Error()
 	}
+}
+
+// blamelessPause reports whether err parked the run without blaming anything:
+// a provider rate/usage pause, or an epic whose finalize declined while children
+// still read open. Both leave every ticket resumable where it stands, so the
+// summary owes the operator a pause line, not an "aborted" one.
+func blamelessPause(err error) bool {
+	return pipeline.IsPaused(err) || pipeline.IsEpicUnfinalized(err)
 }
 
 // applyFault fills a SessionSummary's fault fields from err when the loop stopped
@@ -1610,6 +1620,10 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 	// offering such an id a second time means the tracker is not converging —
 	// stop cleanly instead of spending a pick agent per spin.
 	doneSkipped := map[string]bool{}
+	// Only a loop that ran itself out of work owns the epic's finalize: one cut short
+	// by a cap (--once, MAX_ITERATIONS, the daily budget) was never asked to deliver
+	// the epic, so its children still reading open is the expected outcome.
+	ownsFinalize := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -1697,6 +1711,7 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 			}
 			if id == "" {
 				con.Logf("no eligible tickets left%s — done", p.ParentSuffix)
+				ownsFinalize = true
 				break
 			}
 			con.Logf("▶ [%d] %s", len(processed)+1, id)
@@ -1712,6 +1727,7 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 			if errors.Is(err, pipeline.ErrAlreadyDone) {
 				if doneSkipped[id] {
 					con.Logf("  %s already done — picked again after being skipped; stopping so the pick loop can't spin", id)
+					ownsFinalize = true
 					break
 				}
 				doneSkipped[id] = true
@@ -1731,6 +1747,9 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 		}
 	}
 	if err := eng.Finalize(ctx); err != nil {
+		if !ownsFinalize && pipeline.IsEpicUnfinalized(err) {
+			return processed, nil
+		}
 		return processed, err
 	}
 	return processed, nil
@@ -2743,7 +2762,7 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 		CostMetered: metered,
 		Elapsed:     time.Since(start),
 		Err:         lerr,
-		Paused:      pipeline.IsPaused(lerr),
+		Paused:      blamelessPause(lerr),
 	}, lerr))
 }
 
@@ -2849,7 +2868,7 @@ func (a *appActions) RunTicket(ctx context.Context, id, provider string, r conso
 		CostMetered: metered,
 		Elapsed:     time.Since(start),
 		Err:         lerr,
-		Paused:      pipeline.IsPaused(lerr),
+		Paused:      blamelessPause(lerr),
 	}, lerr))
 }
 

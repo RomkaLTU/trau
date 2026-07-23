@@ -112,6 +112,8 @@ function haltFor(t: TimelineTicket): LoopHalt | null {
 // marked running outranks the checkpoint failure it is being resumed from, which
 // closes the window between a resume and its child registering. Of what is left,
 // only the newest settle reaches the banner: a clean one means the loop moved on.
+// A paused epic is the last word: a declined finalize halts the epic row and no
+// leaf, so the leaf scan finds nothing to name.
 function currentHalt(
   timeline: Timeline,
   items: QueueItem[],
@@ -121,7 +123,14 @@ function currentHalt(
   const executing = executingTickets(items)
   const settled = timeline.settled.filter((t) => !executing.has(t.id))
   const latest = settled[settled.length - 1]
-  return latest ? haltFor(latest) : null
+  const halt = latest ? haltFor(latest) : null
+  if (halt) return halt
+  const stalled = items.find(
+    (it) => it.kind === 'epic' && it.status === 'paused',
+  )
+  return stalled
+    ? { kind: 'paused', ticket: stalled.id, reason: stalled.reason ?? '' }
+    : null
 }
 
 // projectLoopState is the Loop page's current state in one pass: the view shape,

@@ -296,6 +296,7 @@ export interface BuilderView {
 // done. Paused stays actionable — a Start resumes it. An epic with no sub-issues
 // stays actionable so it never silently vanishes into the Finished card.
 function itemSettled(item: QueueItem): boolean {
+  if (item.status === 'paused') return false
   if (item.kind === 'epic') {
     const subs = item.sub_issues ?? []
     return subs.length > 0 && subs.every((s) => s.state === 'done')

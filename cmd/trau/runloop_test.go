@@ -251,6 +251,77 @@ func TestRunLoopEndsOnDeliberateStop(t *testing.T) {
 	}
 }
 
+// unfinalizedEpicEngine works its scripted picks and then declines to ship the
+// epic, the way FinalizeEpic does while a sibling still reads open. Ids in done
+// come back already merged, so a pick list that repeats one drives the loop's
+// non-converging-tracker stop.
+type unfinalizedEpicEngine struct {
+	loopEngine
+	picks []string
+	done  map[string]bool
+}
+
+func (e *unfinalizedEpicEngine) Pick(context.Context) (string, error) {
+	if len(e.picks) == 0 {
+		return "", nil
+	}
+	id := e.picks[0]
+	e.picks = e.picks[1:]
+	return id, nil
+}
+
+func (e *unfinalizedEpicEngine) Process(_ context.Context, id, _ string) error {
+	if e.done[id] {
+		return pipeline.ErrAlreadyDone
+	}
+	return nil
+}
+
+func (e *unfinalizedEpicEngine) Finalize(context.Context) error {
+	e.finalized = true
+	return &pipeline.EpicUnfinalizedError{EpicID: "COD-1", Open: []string{"COD-3"}}
+}
+
+// TestRunLoopSurfacesUnfinalizedEpicOnlyWhenNothingLeft pins who owns the epic's
+// finalize. A loop that ran itself out of work and still could not ship the epic
+// must surface the decline — whether it ran the pick queue dry or gave up on a
+// tracker that kept re-offering a merged child — or its queue item settles done
+// with the epic branch unmerged. A run cut short by --once or MAX_ITERATIONS was
+// only ever asked for part of the epic, so open children are the expected
+// outcome, not a halt.
+func TestRunLoopSurfacesUnfinalizedEpicOnlyWhenNothingLeft(t *testing.T) {
+	tests := []struct {
+		name    string
+		eng     *unfinalizedEpicEngine
+		params  loopParams
+		wantErr bool
+	}{
+		{"nothing eligible left", &unfinalizedEpicEngine{picks: []string{"COD-2"}}, loopParams{Max: 5}, true},
+		{
+			"tracker keeps re-offering a merged child",
+			&unfinalizedEpicEngine{picks: []string{"COD-2", "COD-2"}, done: map[string]bool{"COD-2": true}},
+			loopParams{Max: 5},
+			true,
+		},
+		{"single-ticket run", &unfinalizedEpicEngine{picks: []string{"COD-2"}}, loopParams{Max: 5, Once: true, ForcedID: "COD-2"}, false},
+		{"iteration cap", &unfinalizedEpicEngine{picks: []string{"COD-2"}}, loopParams{Max: 1}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			eng := tt.eng
+			_, err := runLoop(context.Background(), eng, tt.params, noopRenderer{}, func(id string, _ time.Duration) console.TicketResult {
+				return console.TicketResult{ID: id}
+			})
+			if !eng.finalized {
+				t.Fatal("expected the loop to attempt the epic finalize")
+			}
+			if got := pipeline.IsEpicUnfinalized(err); got != tt.wantErr {
+				t.Fatalf("runLoop err = %v, want an *EpicUnfinalizedError: %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestLeafSubsFiltersNestedEpics(t *testing.T) {
 	subs := []tracker.SubIssue{
 		{ID: "COD-500", HasChildren: true},
