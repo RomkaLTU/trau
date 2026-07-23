@@ -179,6 +179,7 @@ type ClaudeInteractive struct {
 	OnSessionStart     func(sessionID, label string)
 	now                func() time.Time
 	start              terminalStarter
+	steerPoll          time.Duration
 }
 
 func (c *ClaudeInteractive) Provider() string { return "claude" }
@@ -225,7 +226,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 		ctx, cancel = context.WithTimeout(ctx, c.Timeout)
 		defer cancel()
 	}
-	resultPath, err := c.resultPath(label)
+	resultPath, err := newResultPath(c.ResultDir, label, c.clock())
 	if err != nil {
 		return Result{}, err
 	}
@@ -243,7 +244,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 
 	cols, rows := c.resolveSize()
 	stem := newTranscriptStem(label, c.clock())
-	transcript, closeTranscript := c.openTranscript(stem, cols, rows)
+	transcript, closeTranscript := openTranscript(c.Transcripts, stem, cols, rows)
 	defer closeTranscript()
 
 	start := c.clock()
@@ -275,7 +276,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	drainDone := make(chan struct{})
 	go func() {
 		defer close(drainDone)
-		drainWithTrustSignal(transcript, sess, trustPrompt, authPrompt, func() {
+		drainWithSignals(transcript, sess, claudeWatch, terminalSignals{trust: trustPrompt, auth: authPrompt}, func() {
 			lastActivity.Store(c.clock().UnixNano())
 		})
 	}()
@@ -285,10 +286,10 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 
 	trustWait := c.TrustPromptWait
 	if trustWait == 0 {
-		trustWait = 3 * time.Second
+		trustWait = defaultTrustPromptWait
 	}
 	if trustWait > 0 {
-		if ok, err := c.maybeConfirmTrust(ctx, sess, trustPrompt, trustWait); err != nil {
+		if ok, err := confirmTrustPrompt(ctx, sess, trustPrompt, trustWait); err != nil {
 			_ = sess.Kill()
 			res := Result{IsError: true}
 			c.emit(label, res, c.clock().Sub(start), err)
@@ -301,6 +302,13 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 				return res, fmt.Errorf("claude interactive run (%s): %w", label, err)
 			}
 		}
+	}
+
+	// Started after the trust window so the two PTY writers never overlap.
+	if src, ok := SteerFrom(ctx); ok {
+		steerCtx, stopSteer := context.WithCancel(ctx)
+		defer stopSteer()
+		go deliverSteer(steerCtx, sess, src, label, c.steerPoll, c.Log)
 	}
 
 	tick := time.NewTicker(250 * time.Millisecond)
@@ -382,8 +390,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	}
 }
 
-func (c *ClaudeInteractive) resultPath(label string) (string, error) {
-	root := c.ResultDir
+func newResultPath(root, label string, now time.Time) (string, error) {
 	if root == "" {
 		root = filepath.Join(os.TempDir(), "trau-agent-results")
 	}
@@ -391,7 +398,7 @@ func (c *ClaudeInteractive) resultPath(label string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create result dir: %w", err)
 	}
-	name := fmt.Sprintf("%d-%s%s", c.clock().UnixNano(), safeLabel(label), resultExt)
+	name := fmt.Sprintf("%d-%s%s", now.UnixNano(), safeLabel(label), resultExt)
 
 	abs, err := filepath.Abs(filepath.Join(dir, name))
 	if err != nil {
@@ -457,7 +464,11 @@ func (c *ClaudeInteractive) emit(label string, res Result, dur time.Duration, ru
 	c.Log.Emit("agent_call", label, "", fields)
 }
 
-func (c *ClaudeInteractive) maybeConfirmTrust(ctx context.Context, sess terminalSession, trustPrompt <-chan struct{}, wait time.Duration) (bool, error) {
+// defaultTrustPromptWait is how long a freshly spawned CLI is given to raise its
+// first-run directory-trust dialog before the run assumes there is none.
+const defaultTrustPromptWait = 3 * time.Second
+
+func confirmTrustPrompt(ctx context.Context, sess terminalSession, trustPrompt <-chan struct{}, wait time.Duration) (bool, error) {
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
@@ -550,11 +561,11 @@ func newTranscriptStem(label string, now time.Time) string {
 // openTranscript returns the writer the agent tees PTY output to for this session,
 // plus a close. With no sink configured it discards, so a run without a hub still
 // works (its live tail is simply unavailable).
-func (c *ClaudeInteractive) openTranscript(stem string, cols, rows int) (io.Writer, func()) {
-	if c.Transcripts == nil {
+func openTranscript(sink TranscriptSink, stem string, cols, rows int) (io.Writer, func()) {
+	if sink == nil {
 		return io.Discard, func() {}
 	}
-	w := c.Transcripts.Open(stem, cols, rows)
+	w := sink.Open(stem, cols, rows)
 	return w, func() { _ = w.Close() }
 }
 
@@ -577,12 +588,54 @@ func liveTranscript(sink TranscriptSink, log *event.Log, label string, cols, row
 	return w, true
 }
 
-func drainWithTrustSignal(dst io.Writer, src io.Reader, trustPrompt, authPrompt chan<- struct{}, onActivity func()) {
+// terminalWatch is the per-provider reading of an agent's terminal output: the
+// first-run trust dialog to confirm, the auth wall to fail fast on, and — for a
+// CLI that takes no prompt argument — the composer announcing it will accept one.
+// Every CLI words and draws them differently, and a nil matcher is a screen the
+// provider never shows.
+type terminalWatch struct {
+	trusts func(string) bool
+	auths  func(string) bool
+	ready  func(string) bool
+
+	// authDebounce routes the auth match through authDebouncer's quiet-window
+	// confirmation instead of signaling on first match. Claude Code's transcript
+	// can quote a "please run /login" string in ordinary prose (reviewing a
+	// ticket about auth, say), so an instant signal is a false-positive pause;
+	// waiting for either a quiet window or process exit confirms it is real. See
+	// COD-596 / the reauth-pause-false-positive fix.
+	authDebounce bool
+}
+
+// terminalSignals are the channels each watched screen is announced on, once. A
+// nil channel is a screen this caller does not act on.
+type terminalSignals struct{ trust, auth, ready chan<- struct{} }
+
+var claudeWatch = terminalWatch{trusts: hasClaudeTrustPrompt, auths: hasAuthFailure, authDebounce: true}
+
+func drainWithSignals(dst io.Writer, src io.Reader, watch terminalWatch, sig terminalSignals, onActivity func()) {
+	type watcher struct {
+		match func(string) bool
+		ch    chan<- struct{}
+	}
+	pending := []watcher{}
+	watchers := []watcher{{watch.trusts, sig.trust}, {watch.ready, sig.ready}}
+	if !watch.authDebounce {
+		watchers = append(watchers, watcher{watch.auths, sig.auth})
+	}
+	for _, w := range watchers {
+		if w.match != nil && w.ch != nil {
+			pending = append(pending, w)
+		}
+	}
+
 	buf := make([]byte, 4096)
-	var trustText strings.Builder
+	var seen strings.Builder
 	var authText strings.Builder
-	auth := newAuthDebouncer(authPrompt, authQuietWindow, newAuthTimer)
-	trustSeen := false
+	var auth *authDebouncer
+	if watch.authDebounce && watch.auths != nil && sig.auth != nil {
+		auth = newAuthDebouncer(sig.auth, authQuietWindow, newAuthTimer)
+	}
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
@@ -591,40 +644,54 @@ func drainWithTrustSignal(dst io.Writer, src io.Reader, trustPrompt, authPrompt 
 			}
 			chunk := buf[:n]
 			_, _ = dst.Write(chunk)
-
-			if !trustSeen {
-				trustText.Write(chunk)
-				text := trustText.String()
-				if strings.Contains(text, "Quick") && strings.Contains(text, "safety") && strings.Contains(text, "trust") {
-					trustSeen = true
-					signalOnce(trustPrompt)
+			if len(pending) > 0 {
+				seen.WriteString(string(chunk))
+				text := seen.String()
+				kept := pending[:0]
+				for _, w := range pending {
+					if w.match(text) {
+						signalOnce(w.ch)
+						continue
+					}
+					kept = append(kept, w)
 				}
-				if trustText.Len() > 8192 {
+				pending = kept
+				if seen.Len() > 8192 {
 					trimmed := text[len(text)-4096:]
-					trustText.Reset()
-					trustText.WriteString(trimmed)
+					seen.Reset()
+					seen.WriteString(trimmed)
 				}
 			}
 
-			authText.Write(chunk)
-			text := authText.String()
-			if hasAuthFailure(text) {
-				auth.arm()
-				authText.Reset()
-			} else {
-				auth.observeOutput(n)
-				if authText.Len() > 8192 {
-					trimmed := text[len(text)-4096:]
+			if auth != nil {
+				authText.Write(chunk)
+				text := authText.String()
+				if watch.auths(text) {
+					auth.arm()
 					authText.Reset()
-					authText.WriteString(trimmed)
+				} else {
+					auth.observeOutput(n)
+					if authText.Len() > 8192 {
+						trimmed := text[len(text)-4096:]
+						authText.Reset()
+						authText.WriteString(trimmed)
+					}
 				}
 			}
 		}
 		if err != nil {
-			auth.finish()
+			if auth != nil {
+				auth.finish()
+			}
 			return
 		}
 	}
+}
+
+// hasClaudeTrustPrompt matches Claude Code's first-run directory-trust dialog,
+// which it draws as ordinary flowing text.
+func hasClaudeTrustPrompt(s string) bool {
+	return strings.Contains(s, "Quick") && strings.Contains(s, "safety") && strings.Contains(s, "trust")
 }
 
 // signalOnce does a non-blocking send so a full (already-signaled) channel never
@@ -717,10 +784,12 @@ func safeLabel(label string) string {
 	return b.String()
 }
 
-// Codex runs `codex exec --json -o <msgfile> "<prompt>"`, the second backend
-// behind the seam. It diverges from Claude in three ways, all confined
-// here: the final agent message is read from the -o file (not stdout); the --json
-// event stream on stdout carries token usage which is summed and dropped; and
+// Codex runs `codex exec --json -o <msgfile> "<prompt>"`, the print-mode
+// fallback selected by CODEX_MODE=exec; CodexInteractive is the default. Print
+// mode cannot be typed into, so phases run this way are steered only at the next
+// spawn. It diverges from Claude in three ways, all confined here: the final
+// agent message is read from the -o file (not stdout); the --json event stream
+// on stdout carries token usage which is summed and dropped; and
 // codex reports input_tokens INCLUDING cached, so usage is renormalized to the
 // shared non-cached schema. There is no disallowed-tools field: codex exec is a
 // single-agent runner with no Agent/Workflow fan-out tool, so Claude's
@@ -1055,18 +1124,13 @@ func readKimiUsage(sessionsDir, sessionID string) (u Usage, turns int, model str
 }
 
 // kimiSessionsDir resolves where Kimi Code stores session transcripts:
-// SessionsDir when set (tests/overrides), else ~/.kimi-code/sessions. Returns ""
-// if the home directory can't be resolved, which readKimiUsage treats as
-// "no usage available".
+// SessionsDir when set (tests/overrides), else the sessions dir under the Kimi
+// Code home.
 func (c *Kimi) kimiSessionsDir() string {
 	if c.SessionsDir != "" {
 		return c.SessionsDir
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".kimi-code", "sessions")
+	return filepath.Join(kimiHome(), "sessions")
 }
 
 // Run executes one fresh kimi process and returns its final assistant message. The

@@ -67,7 +67,7 @@ func TestDrainAuthQuoteThenStreamingDoesNotSignal(t *testing.T) {
 	authPrompt := make(chan struct{}, 1)
 	var transcript bytes.Buffer
 
-	drainWithTrustSignal(&transcript, src, make(chan struct{}, 1), authPrompt, nil)
+	drainWithSignals(&transcript, src, claudeWatch, terminalSignals{trust: make(chan struct{}, 1), auth: authPrompt}, nil)
 
 	select {
 	case <-authPrompt:
@@ -108,11 +108,11 @@ func TestAuthDebouncerWallThenSilence(t *testing.T) {
 
 func TestDrainAuthWallThenEOFSignals(t *testing.T) {
 	authPrompt := make(chan struct{}, 1)
-	drainWithTrustSignal(
+	drainWithSignals(
 		io.Discard,
 		strings.NewReader("API Error: 403 Request not allowed · Please run /login\n"),
-		make(chan struct{}, 1),
-		authPrompt,
+		claudeWatch,
+		terminalSignals{trust: make(chan struct{}, 1), auth: authPrompt},
 		nil,
 	)
 

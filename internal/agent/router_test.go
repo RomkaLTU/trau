@@ -59,3 +59,31 @@ func TestMechanicalPhase(t *testing.T) {
 		}
 	}
 }
+
+// TestSteerablePhase pins which phases take operator steer notes. Repair and
+// bugfix qualify even though MechanicalPhase calls them mechanical.
+func TestSteerablePhase(t *testing.T) {
+	cases := []struct {
+		label string
+		want  bool
+	}{
+		{"build", true},
+		{"handoff", true},
+		{"verify", true},
+		{"verify-retry2", true},
+		{"verify-codex", true},
+		{"repair1", true},
+		{"bugfix2", true},
+		{"commit", false},
+		{"cleanup", false},
+		{"lintfix", false},
+		{"push-repair1", false},
+		{"pick", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := SteerablePhase(tc.label); got != tc.want {
+			t.Errorf("SteerablePhase(%q) = %v, want %v", tc.label, got, tc.want)
+		}
+	}
+}

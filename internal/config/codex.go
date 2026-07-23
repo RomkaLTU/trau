@@ -8,6 +8,10 @@ package config
 const (
 	CodexDefaultModel  = "gpt-5.6-sol"
 	CodexDefaultEffort = "medium"
+	// CodexDefaultMode drives the codex TUI in a terminal session, which is what
+	// makes a codex phase steerable mid-run. The exec print mode remains available
+	// as a fallback while the interactive path soaks.
+	CodexDefaultMode = "interactive"
 )
 
 // codexModels are the suggested Codex model IDs, ordered Sol, Terra, Luna, then

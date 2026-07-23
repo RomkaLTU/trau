@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/agent"
@@ -11,11 +12,39 @@ import (
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
-// fakeRunner returns the same canned result/error for every phase call.
-type fakeRunner struct{ err error }
+// fakeRunner returns the same canned result/error for every phase call, and,
+// when given a log, records each prompt it was handed.
+type fakeRunner struct {
+	err   error
+	calls *promptLog
+}
 
 func (r fakeRunner) Run(ctx context.Context, prompt, label string) (agent.Result, error) {
+	if r.calls != nil {
+		r.calls.record(label, prompt)
+	}
 	return agent.Result{}, r.err
+}
+
+// promptLog collects the prompts a fakeRunner was called with. Safe for the
+// concurrent verify panel.
+type promptLog struct {
+	mu    sync.Mutex
+	calls []promptCall
+}
+
+type promptCall struct{ label, prompt string }
+
+func (l *promptLog) record(label, prompt string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, promptCall{label: label, prompt: prompt})
+}
+
+func (l *promptLog) all() []promptCall {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]promptCall(nil), l.calls...)
 }
 
 // fakeTracker records whether the loop reached the quarantine/file-bug path.

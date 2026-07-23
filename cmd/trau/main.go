@@ -78,6 +78,7 @@ Usage:
   trau <ID>                  run a single ticket (e.g. ENG-123), or its sub-issues if it is an epic
   trau doctor                preflight check: git/gh/provider/config/labels/write perms
   trau watch                 tail a running loop's live agent activity (headless counterpart to the TUI 'w' key)
+  trau steer <ID> <note>     queue an operator note for a running ticket (reaches the agent mid-phase; "-" reads it from stdin)
   trau takeover <ID> [--repo <path>]  resume a parked ticket's recorded claude session in this terminal (repo locked while it runs)
   trau forensics <cmd>       read-only incident queries over the run history: runs, events, spend (see 'trau forensics --help')
   trau serve                 start the local web hub — HTTP API + embedded UI on 127.0.0.1:8728 (--bind, --port)
@@ -159,10 +160,16 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	// forensics owns its subcommand args (including --help), so it is dispatched
+	// forensics and steer own their subcommand args — forensics has its own
+	// --help, and a steer note is free-form trailing words — so both dispatch
 	// before the loop's global --version/--help scan claims them.
-	if len(args) > 0 && args[0] == "forensics" {
-		return runForensics(ctx, args[1:], stdout, stderr)
+	if len(args) > 0 {
+		switch args[0] {
+		case "forensics":
+			return runForensics(ctx, args[1:], stdout, stderr)
+		case "steer":
+			return runSteer(ctx, args[1:], stdout, stderr)
+		}
 	}
 
 	for _, a := range args {
@@ -1138,6 +1145,31 @@ func newQASaver(cfg config.Config, repoRoot string) func(context.Context, hubcli
 	}
 }
 
+// steerQueue adapts the hub client to the pipeline's steer-note calls, binding
+// the repo so every call only has to name the ticket.
+type steerQueue struct {
+	hub  *hubclient.Client
+	repo string
+}
+
+func (q steerQueue) Pending(ctx context.Context, ticket string) ([]hubclient.SteerNote, error) {
+	return q.hub.PendingSteerNotes(ctx, q.repo, ticket)
+}
+
+func (q steerQueue) Ack(ctx context.Context, id int64, phase string) error {
+	return q.hub.AckSteer(ctx, q.repo, id, phase)
+}
+
+func (q steerQueue) Expire(ctx context.Context, ticket string) ([]hubclient.SteerNote, error) {
+	return q.hub.ExpireSteer(ctx, q.repo, ticket)
+}
+
+// newSteerQueue points the pipeline at the repo's operator steer-note queue on
+// the serve hub.
+func newSteerQueue(cfg config.Config, repoRoot string) pipeline.SteerQueue {
+	return steerQueue{hub: hubclient.New(hubBaseURL(cfg), cfg.ServeToken), repo: repoName(repoRoot)}
+}
+
 // fetchPromptOverrides reads the repo's stored prompt overrides for the phase
 // preambles baked into the agent backends at startup. Best-effort: with no hub
 // reachable yet the backends keep the built-in preambles, and the pipeline still
@@ -1353,6 +1385,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		FetchPrompts:        newPromptFetcher(cfg, repoRoot),
 		FetchQAAccounts:     newQAFetcher(cfg, repoRoot),
 		SaveQAAccount:       newQASaver(cfg, repoRoot),
+		Steer:               newSteerQueue(cfg, repoRoot),
 		OwnedProject:        cfg.Project,
 
 		RepoRoot:            repoRoot,
@@ -2849,6 +2882,7 @@ func providerConfigFor(cfg config.Config, provider string) providerConfig {
 			effort: cfg.CodexEffort,
 			extra: map[string]string{
 				"profile":    cfg.CodexProfile,
+				"mode":       cfg.CodexMode,
 				"result_dir": cfg.RunsDir,
 			},
 		}
@@ -2858,7 +2892,10 @@ func providerConfigFor(cfg config.Config, provider string) providerConfig {
 			flags:  cfg.KimiFlags,
 			model:  cfg.KimiModel,
 			effort: "",
-			extra:  map[string]string{"result_dir": cfg.RunsDir},
+			extra: map[string]string{
+				"mode":       cfg.KimiMode,
+				"result_dir": cfg.RunsDir,
+			},
 		}
 	}
 	return providerConfig{extra: map[string]string{}}

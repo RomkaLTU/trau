@@ -99,12 +99,14 @@ type Config struct {
 	CodexBin     string
 	CodexFlags   string
 	CodexProfile string
+	CodexMode    string
 	CodexModel   string
 	CodexEffort  string
 
 	KimiConfig string
 	KimiBin    string
 	KimiFlags  string
+	KimiMode   string
 	KimiModel  string
 
 	Routes map[string]string
@@ -358,11 +360,13 @@ func Defaults() Config {
 		CodexBin:               "codex",
 		CodexFlags:             "--dangerously-bypass-approvals-and-sandbox",
 		CodexProfile:           "",
+		CodexMode:              CodexDefaultMode,
 		CodexModel:             CodexDefaultModel,
 		CodexEffort:            CodexDefaultEffort,
 		KimiConfig:             "",
 		KimiBin:                "kimi",
 		KimiFlags:              "",
+		KimiMode:               KimiDefaultMode,
 		KimiModel:              "",
 		MaxIterations:          15,
 		MaxRepairs:             2,
@@ -701,10 +705,12 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	providerStr(codexFile, codexSrc, "CODEX_BIN", &c.CodexBin)
 	providerStr(codexFile, codexSrc, "CODEX_FLAGS", &c.CodexFlags)
 	providerStr(codexFile, codexSrc, "CODEX_PROFILE", &c.CodexProfile)
+	providerStr(codexFile, codexSrc, "CODEX_MODE", &c.CodexMode)
 	providerStr(codexFile, codexSrc, "CODEX_MODEL", &c.CodexModel)
 	providerStr(codexFile, codexSrc, "CODEX_EFFORT", &c.CodexEffort)
 	providerStr(kimiFile, kimiSrc, "KIMI_BIN", &c.KimiBin)
 	providerStr(kimiFile, kimiSrc, "KIMI_FLAGS", &c.KimiFlags)
+	providerStr(kimiFile, kimiSrc, "KIMI_MODE", &c.KimiMode)
 	providerStr(kimiFile, kimiSrc, "KIMI_MODEL", &c.KimiModel)
 
 	routes := map[string]string{}
@@ -1570,10 +1576,12 @@ func KnownKeys() []KeyMeta {
 		{Key: "CODEX_BIN", Group: sectionProviders, Advanced: true, Default: "codex", Description: "Codex binary"},
 		{Key: "CODEX_FLAGS", Group: sectionProviders, Advanced: true, Default: "--dangerously-bypass-approvals-and-sandbox", Description: "Extra flags passed to Codex"},
 		{Key: "CODEX_PROFILE", Group: sectionProviders, Advanced: true, Description: "Codex exec profile"},
+		{Key: "CODEX_MODE", Group: sectionProviders, Advanced: true, Default: CodexDefaultMode, Options: []string{CodexDefaultMode, "exec"}, Description: "How Codex phases run: interactive (a driven TUI, steerable mid-phase) | exec (print mode, steered at the next spawn)"},
 		{Key: "CODEX_MODEL", Group: sectionProviders, WebEditable: true, Advanced: true, Default: CodexDefaultModel, Description: "Default Codex model"},
 		{Key: "CODEX_EFFORT", Group: sectionProviders, WebEditable: true, Advanced: true, Default: CodexDefaultEffort, Description: "Default Codex reasoning effort"},
 		{Key: "KIMI_BIN", Group: sectionProviders, Advanced: true, Default: "kimi", Description: "Kimi binary"},
 		{Key: "KIMI_FLAGS", Group: sectionProviders, Advanced: true, Description: "Extra flags passed to Kimi"},
+		{Key: "KIMI_MODE", Group: sectionProviders, Advanced: true, Default: KimiDefaultMode, Options: []string{KimiDefaultMode, "print"}, Description: "How Kimi phases run: interactive (a driven TUI, steerable mid-phase) | print (steered at the next spawn)"},
 		{Key: "KIMI_MODEL", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Default Kimi model alias (from your kimi config.toml [models.*])"},
 		{Key: "MAX_ITERATIONS", Group: sectionPipeline, Kind: "int", WebEditable: true, Default: "15", Description: "Maximum tickets per run"},
 		{Key: "MAX_REPAIRS", Group: sectionPipeline, Kind: "int", WebEditable: true, Default: "2", Description: "Verify-fail quick repair attempts before bugfix"},
@@ -2066,6 +2074,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.CodexFlags
 	case "CODEX_PROFILE":
 		return cfg.CodexProfile
+	case "CODEX_MODE":
+		return cfg.CodexMode
 	case "CODEX_MODEL":
 		return cfg.CodexModel
 	case "CODEX_EFFORT":
@@ -2074,6 +2084,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.KimiBin
 	case "KIMI_FLAGS":
 		return cfg.KimiFlags
+	case "KIMI_MODE":
+		return cfg.KimiMode
 	case "KIMI_MODEL":
 		return cfg.KimiModel
 	case "MAX_ITERATIONS":

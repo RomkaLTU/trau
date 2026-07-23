@@ -131,23 +131,48 @@ var claudeSpec = Spec{
 	},
 }
 
+// CodexModeExec selects the legacy `codex exec --json` print-mode backend over
+// the interactive default. Print mode cannot be typed into, so a steer note
+// reaches an exec-mode phase only at the next phase's spawn.
+const CodexModeExec = "exec"
+
 var codexSpec = Spec{
 	Name:        "codex",
 	KeyPrefix:   "CODEX",
 	NeedsSkills: true,
 	New: func(p BackendParams) (Runner, error) {
-		return &Codex{
+		if p.Extra["mode"] == CodexModeExec {
+			return &Codex{
+				Bin:         p.Bin,
+				Flags:       p.Flags,
+				Profile:     p.Extra["profile"],
+				Model:       p.Model,
+				Effort:      p.Effort,
+				Preamble:    p.Preamble,
+				Dir:         p.Dir,
+				ResultDir:   p.Extra["result_dir"],
+				Cols:        p.Cols,
+				Rows:        p.Rows,
+				SizeFn:      p.SizeFn,
+				Log:         p.Log,
+				Tokens:      p.Tokens,
+				Transcripts: p.Transcripts,
+			}, nil
+		}
+		return &CodexInteractive{
 			Bin:         p.Bin,
 			Flags:       p.Flags,
 			Profile:     p.Extra["profile"],
 			Model:       p.Model,
 			Effort:      p.Effort,
 			Preamble:    p.Preamble,
-			Dir:         p.Dir,
 			ResultDir:   p.Extra["result_dir"],
+			Dir:         p.Dir,
 			Cols:        p.Cols,
 			Rows:        p.Rows,
 			SizeFn:      p.SizeFn,
+			Timeout:     p.Timeout,
+			StallWindow: p.StallWindow,
 			Log:         p.Log,
 			Tokens:      p.Tokens,
 			Transcripts: p.Transcripts,
@@ -155,22 +180,45 @@ var codexSpec = Spec{
 	},
 }
 
+// KimiModePrint selects the `kimi -p` print-mode backend over the interactive
+// default. Print mode cannot be typed into, so a steer note reaches a print-mode
+// phase only at the next phase's spawn.
+const KimiModePrint = "print"
+
 var kimiSpec = Spec{
 	Name:        "kimi",
 	KeyPrefix:   "KIMI",
 	NeedsSkills: true,
 	New: func(p BackendParams) (Runner, error) {
-		return &Kimi{
+		if p.Extra["mode"] == KimiModePrint {
+			return &Kimi{
+				Bin:         p.Bin,
+				Flags:       p.Flags,
+				Model:       p.Model,
+				Preamble:    p.Preamble,
+				Dir:         p.Dir,
+				ResultDir:   p.Extra["result_dir"],
+				Cols:        p.Cols,
+				Rows:        p.Rows,
+				SizeFn:      p.SizeFn,
+				Timeout:     p.Timeout,
+				Log:         p.Log,
+				Tokens:      p.Tokens,
+				Transcripts: p.Transcripts,
+			}, nil
+		}
+		return &KimiInteractive{
 			Bin:         p.Bin,
 			Flags:       p.Flags,
 			Model:       p.Model,
 			Preamble:    p.Preamble,
-			Dir:         p.Dir,
 			ResultDir:   p.Extra["result_dir"],
+			Dir:         p.Dir,
 			Cols:        p.Cols,
 			Rows:        p.Rows,
 			SizeFn:      p.SizeFn,
 			Timeout:     p.Timeout,
+			StallWindow: p.StallWindow,
 			Log:         p.Log,
 			Tokens:      p.Tokens,
 			Transcripts: p.Transcripts,

@@ -477,6 +477,11 @@ type Pipeline struct {
 	// run. Nil disables capture.
 	SaveQAAccount func(ctx context.Context, in hubclient.QAAccountInput) error
 
+	// Steer is the hub-backed queue of operator steer notes typed at a running
+	// ticket. Every substantive phase drains it into its prompt and lends it to
+	// the agent layer for mid-session delivery. Nil disables steering.
+	Steer SteerQueue
+
 	// OnPhase, when set, is called each time a ticket enters a checkpoint phase,
 	// carrying the ticket and the phase just written (state.Building, …). The
 	// composition root wires it to the instance registry so the hub sees a
@@ -793,6 +798,7 @@ func (p *Pipeline) clearFailure(id string) {
 func (p *Pipeline) fault(ctx context.Context, id string, err error) error {
 	phase := p.State.Get(id, "PHASE")
 	p.finalizeFault(ctx, id)
+	p.expireSteer(ctx, id)
 	reason := fmt.Sprintf("unexpected error during %s: %v", NextPhaseLabel(phase), err)
 	_ = p.State.Set(id, "FAILURE_REASON", reason)
 	_ = p.State.Set(id, "FAILURE_CLASS", state.FailFaulted)
@@ -1863,6 +1869,7 @@ func (p *Pipeline) giveUp(ctx context.Context, id, reason string) error {
 		return &GiveUpError{ID: id, Reason: reason}
 	}
 	p.finalizeFailed(ctx, id)
+	p.expireSteer(ctx, id)
 	if err := p.State.Set(id, "PHASE", state.Quarantined); err != nil {
 		return fmt.Errorf("give up %s: checkpoint quarantined: %w", id, err)
 	}
@@ -2168,6 +2175,7 @@ func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
 	if err := p.State.Set(id, "PHASE", state.Merged); err != nil {
 		return fmt.Errorf("merge %s: checkpoint merged: %w", id, err)
 	}
+	p.expireSteer(ctx, id)
 	p.emitEvent("ci", map[string]any{"state": "merged"})
 	p.emitState(id, state.Merged, "merged", "")
 	p.recordTimelog(ctx, id)
@@ -2668,6 +2676,12 @@ func (p *Pipeline) recoveryChain(phase string, primary agent.Runner) []agent.Run
 // funnels it into the WIP-preserving fault path. A single-entry chain with
 // AgentRetries==0 is exactly the old single-shot behavior.
 func (p *Pipeline) recoverStep(ctx context.Context, id, phase, prompt string, chain []agent.Runner) (string, error) {
+	// Drained once for the whole chain, so a retry or a fallback provider still
+	// carries the notes the first attempt was handed.
+	if agent.SteerablePhase(phase) {
+		prompt += p.steerSection(ctx, id, phase)
+		ctx = agent.WithSteer(ctx, p.steerSource(id))
+	}
 	retries := p.AgentRetries
 	if retries < 0 {
 		retries = 0

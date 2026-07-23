@@ -30,6 +30,7 @@ type Stores struct {
 	attachments *Attachments
 	qa          *QAAccounts
 	routing     *Routing
+	steer       *SteerNotes
 }
 
 // NewStores builds the hub store set over the authoritative database db and the
@@ -58,6 +59,7 @@ func NewStores(home string, db, transcriptsDB *sql.DB, retention Retention) *Sto
 		attachments: NewAttachments(db, filepath.Join(home, AttachmentsDir), retention.AttachmentCacheBytes),
 		qa:          NewQAAccounts(db),
 		routing:     NewRouting(db),
+		steer:       NewSteerNotes(db),
 	}
 }
 
@@ -114,6 +116,9 @@ func (s *Stores) QA() *QAAccounts { return s.qa }
 
 // Routing returns the store of the routing fingerprint each repo last ran under.
 func (s *Stores) Routing() *Routing { return s.routing }
+
+// Steer returns the per-ticket steer-note queue.
+func (s *Stores) Steer() *SteerNotes { return s.steer }
 
 // Queue returns the queue store for a repo root.
 func (s *Stores) Queue(root string) *Queue { return NewQueue(s.db, root) }

@@ -307,6 +307,13 @@ CODEX_BIN=codex
 CODEX_FLAGS=--dangerously-bypass-approvals-and-sandbox
 CODEX_PROFILE=
 
+# How codex phases run. interactive (default) drives the codex TUI in a real
+# terminal, so a steer note queued with `trau steer` is typed into the phase while
+# it works; exec runs the older `codex exec` print mode, which cannot be typed
+# into, so notes wait for the next phase's spawn. Both isolate phases the same way
+# — a fresh process per call, never a resumed session.
+# CODEX_MODE=exec
+
 # Linear personal API key. Enables fast direct GraphQL calls for title lookups,
 # status moves, label changes, etc. Create one in Linear under
 # Settings > Account > Security & Access > API. Keep this in ~/.trau.ini, NOT
@@ -351,6 +358,13 @@ JIRA_API_TOKEN=              # classic API token (never commit)
 
 KIMI_BIN=kimi
 KIMI_FLAGS=
+
+# How kimi phases run. interactive (default) drives the kimi TUI in a real
+# terminal, pasting the phase prompt into its composer, so a steer note queued with
+# `trau steer` is typed into the phase while it works; print runs `kimi -p`, which
+# cannot be typed into, so notes wait for the next phase's spawn. Both isolate
+# phases the same way — a fresh process per call, never a resumed session.
+# KIMI_MODE=print
 
 # Optional provider-local KEY=value files, resolved relative to the env file that
 # names them. Leave empty if unused.
