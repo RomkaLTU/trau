@@ -172,6 +172,23 @@ type TimelogEstimateData struct {
 	Path      string
 }
 
+// GrillIssueData feeds the grill_issue and grill_pregrill prompts. Body is the
+// issue description with every attachment reference repointed at the local copy
+// the session materialized; Attachments is the rendered listing of those files,
+// empty when the issue has none.
+type GrillIssueData struct {
+	ID          string
+	Title       string
+	Body        string
+	Attachments string
+}
+
+// GrillAuthoringData feeds the grill_authoring prompt. An empty Idea switches
+// the template to the opener that asks the user what they want to build.
+type GrillAuthoringData struct {
+	Idea string
+}
+
 var templateFuncs = template.FuncMap{"join": strings.Join}
 
 var templates = func() map[string]*template.Template {

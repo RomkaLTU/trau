@@ -305,8 +305,17 @@ func (s *Server) mutableCheckpoint(w http.ResponseWriter, r *http.Request) (regi
 // refuseWhenLive is the safety guard: a checkpoint mutation is refused with a
 // conflict while a loop is live in the repo, so the browser can never corrupt a
 // running session's state out from under it. It names the holding pid so the
-// operator knows what to stop first.
+// operator knows what to stop first. A takeover terminal gets its own reason:
+// no web button can hand the repo back, only closing the session (ADR 0018).
 func (s *Server) refuseWhenLive(w http.ResponseWriter, repo registry.Repo) bool {
+	if e, ok := s.takeoverHolder(repo.Root); ok {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":  fmt.Sprintf("%s is taken over — PID %d holds %s in a terminal session; close it first", repo.Name, e.PID, e.Ticket),
+			"reason": "taken_over",
+			"live":   true,
+		})
+		return true
+	}
 	e, ok := s.liveInstance(repo.Root)
 	if !ok {
 		return false

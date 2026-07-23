@@ -309,6 +309,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/reset", s.handleResetRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/clear", s.handleClearRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/takeover", s.handleRunTakeover)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/advance", s.handleAdvanceRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/sync", s.handleSync)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/resync", s.handleForceResync)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/reconcile", s.handleReconcileRepo)

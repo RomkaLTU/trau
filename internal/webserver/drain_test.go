@@ -355,6 +355,7 @@ func TestClassifyDrainOutcome(t *testing.T) {
 		{name: "fault pauses the queue by default", class: state.FailFaulted, onFault: queue.OnFaultHalt, wantStatus: queue.StatusPaused, wantPause: true},
 		{name: "fault skips on on-fault=skip", class: state.FailFaulted, onFault: queue.OnFaultSkip, wantStatus: queue.StatusFailed, wantPause: false},
 		{name: "provider pause parks regardless of on-fault", class: state.FailPaused, onFault: queue.OnFaultSkip, wantStatus: queue.StatusPaused, wantPause: true},
+		{name: "deliberate stop parks regardless of on-fault", class: state.FailStopped, onFault: queue.OnFaultSkip, wantStatus: queue.StatusPaused, wantPause: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -382,6 +383,7 @@ func TestCheckpointOutcomeReadsRecordedState(t *testing.T) {
 		{name: "quarantine reads as give-up", phase: state.Quarantined, reason: "verify never went green", wantClass: state.FailGaveUp, wantReason: "verify never went green"},
 		{name: "fault marker reads as fault", phase: state.HandedOff, failClass: state.FailFaulted, reason: "unexpected error during handoff", wantClass: state.FailFaulted, wantReason: "unexpected error during handoff"},
 		{name: "pause marker reads as provider pause", phase: state.Building, failClass: state.FailPaused, reason: "claude authentication required", wantClass: state.FailPaused, wantReason: "claude authentication required"},
+		{name: "stop marker reads as a deliberate stop", phase: state.Building, failClass: state.FailStopped, reason: "stopped during build — work saved at the last checkpoint", wantClass: state.FailStopped, wantReason: "stopped during build — work saved at the last checkpoint"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

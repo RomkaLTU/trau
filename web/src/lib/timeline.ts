@@ -6,7 +6,7 @@ import type { FailureClass, Run } from './runs'
 import { stepPill } from './steps'
 
 export type TicketStatus =
-  'done' | 'running' | 'paused' | 'failed' | 'skipped' | 'pending'
+  'done' | 'running' | 'paused' | 'stopped' | 'failed' | 'skipped' | 'pending'
 
 export interface TimelineTicket {
   id: string
@@ -118,6 +118,16 @@ function resolve(
         completedAt: run.updated_at,
       }
     }
+    if (run.failure_class === 'stopped') {
+      return {
+        ...base,
+        status: 'stopped',
+        failureClass: 'stopped',
+        reason: run.failure_reason,
+        phase: run.phase,
+        completedAt: run.updated_at,
+      }
+    }
     if (run.failure_class === 'faulted' || run.failure_class === 'gave_up') {
       return {
         ...base,
@@ -177,7 +187,8 @@ function isSettled(status: TicketStatus): boolean {
     status === 'done' ||
     status === 'failed' ||
     status === 'skipped' ||
-    status === 'paused'
+    status === 'paused' ||
+    status === 'stopped'
   )
 }
 
@@ -189,11 +200,12 @@ export function buildTimeline(
   const byTicket = new Map(runs.map((r) => [r.ticket, r]))
   const leaves = flatten(items)
   // A run can outlive its queue entry or never have one (a CLI start): an
-  // active instance ticket missing from the snapshot still joins as a leaf so
-  // the running section reflects it.
+  // instance ticket missing from the snapshot still joins as a leaf, whether the
+  // instance is working it or parked on the halt it stopped at.
+  const session = toSessionState(instance?.session_state ?? '')
   if (
     instance?.ticket &&
-    isActiveState(toSessionState(instance.session_state)) &&
+    (isActiveState(session) || session === 'parked') &&
     !leaves.some((l) => l.id === instance.ticket)
   ) {
     leaves.push({
@@ -207,9 +219,20 @@ export function buildTimeline(
   )
   const byId = new Map(tickets.map((t) => [t.id, t]))
 
-  const settled = tickets
-    .filter((t) => isSettled(t.status))
-    .sort((a, b) => (a.completedAt ?? '').localeCompare(b.completedAt ?? ''))
+  // Settle order comes from the runs' completion stamps. A leaf the queue
+  // settled without a run has none of its own — it settled no earlier than the
+  // leaf ahead of it, so it borrows that stamp and the stable sort keeps it
+  // there instead of collapsing to the front.
+  const stamped: { ticket: TimelineTicket; at: string }[] = []
+  let at = ''
+  for (const t of tickets) {
+    if (!isSettled(t.status)) continue
+    at = t.completedAt ?? at
+    stamped.push({ ticket: t, at })
+  }
+  const settled = stamped
+    .sort((a, b) => a.at.localeCompare(b.at))
+    .map((s) => s.ticket)
 
   const running =
     tickets.find((t) => t.status === 'running' && t.id === instance?.ticket) ??
@@ -315,7 +338,8 @@ export function finishedReducer(
   }
 }
 
-export type SettleLabel = 'merged' | 'done' | 'failed' | 'skipped' | 'paused'
+export type SettleLabel =
+  'merged' | 'done' | 'failed' | 'skipped' | 'paused' | 'stopped'
 
 export interface SettleTally {
   label: SettleLabel
@@ -359,6 +383,10 @@ export function finishedView(
       label: 'paused',
       count: settled.filter((t) => t.status === 'paused').length,
     },
+    {
+      label: 'stopped',
+      count: settled.filter((t) => t.status === 'stopped').length,
+    },
   ]
 
   return {
@@ -381,6 +409,8 @@ export function ticketPill(t: TimelineTicket): {
       return stepPill(t.activity, t.phase ?? '')
     case 'paused':
       return { state: 'warn', label: 'paused' }
+    case 'stopped':
+      return { state: 'info', label: 'stopped' }
     case 'failed':
       return t.failureClass === 'gave_up'
         ? { state: 'fail', label: 'quarantined' }

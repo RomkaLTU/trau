@@ -273,9 +273,13 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 
 	trustPrompt := make(chan struct{}, 1)
 	authPrompt := make(chan struct{}, 1)
-	go drainWithSignals(transcript, sess, claudeWatch, terminalSignals{trust: trustPrompt, auth: authPrompt}, func() {
-		lastActivity.Store(c.clock().UnixNano())
-	})
+	drainDone := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		drainWithSignals(transcript, sess, claudeWatch, terminalSignals{trust: trustPrompt, auth: authPrompt}, func() {
+			lastActivity.Store(c.clock().UnixNano())
+		})
+	}()
 
 	wait := make(chan error, 1)
 	go func() { wait <- sess.Wait() }()
@@ -330,6 +334,23 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 			final, ok, readErr := readResultFile(resultPath)
 			res := c.enrich(Result{Final: final, IsError: err != nil || readErr != nil || !ok}, sessionID)
 			dur := c.clock().Sub(start)
+			if ok && err == nil {
+				c.emit(label, res, dur, nil)
+				c.record(label, res, dur)
+				return res, nil
+			}
+
+			_ = sess.Close()
+			<-drainDone
+			select {
+			case <-authPrompt:
+				res.IsError = true
+				c.emit(label, res, dur, ErrAuthRequired)
+				c.record(label, res, dur)
+				return res, fmt.Errorf("claude interactive run (%s): %w", label, ErrAuthRequired)
+			default:
+			}
+
 			c.emit(label, res, dur, err)
 			c.record(label, res, dur)
 			switch {
@@ -348,10 +369,9 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 			c.emit(label, res, c.clock().Sub(start), ctx.Err())
 			return res, fmt.Errorf("claude interactive run (%s): %w", label, ctx.Err())
 		case <-authPrompt:
-			// The agent hit a provider auth/login wall (403 / "Please run /login")
-			// and would otherwise idle here until the stall watchdog kills it, only
-			// for every retry to re-hit the same wall. Fail fast with a classifiable
-			// error so the pipeline pauses blamelessly instead of faulting the ticket.
+			// The agent hit a confirmed provider auth/login wall and would otherwise
+			// idle until the stall watchdog kills it. Return a classifiable error so
+			// the pipeline pauses blamelessly instead of faulting the ticket.
 			_ = sess.Kill()
 			res := Result{IsError: true}
 			c.emit(label, res, c.clock().Sub(start), ErrAuthRequired)
@@ -577,13 +597,21 @@ type terminalWatch struct {
 	trusts func(string) bool
 	auths  func(string) bool
 	ready  func(string) bool
+
+	// authDebounce routes the auth match through authDebouncer's quiet-window
+	// confirmation instead of signaling on first match. Claude Code's transcript
+	// can quote a "please run /login" string in ordinary prose (reviewing a
+	// ticket about auth, say), so an instant signal is a false-positive pause;
+	// waiting for either a quiet window or process exit confirms it is real. See
+	// COD-596 / the reauth-pause-false-positive fix.
+	authDebounce bool
 }
 
 // terminalSignals are the channels each watched screen is announced on, once. A
 // nil channel is a screen this caller does not act on.
 type terminalSignals struct{ trust, auth, ready chan<- struct{} }
 
-var claudeWatch = terminalWatch{trusts: hasClaudeTrustPrompt, auths: hasAuthFailure}
+var claudeWatch = terminalWatch{trusts: hasClaudeTrustPrompt, auths: hasAuthFailure, authDebounce: true}
 
 func drainWithSignals(dst io.Writer, src io.Reader, watch terminalWatch, sig terminalSignals, onActivity func()) {
 	type watcher struct {
@@ -591,7 +619,11 @@ func drainWithSignals(dst io.Writer, src io.Reader, watch terminalWatch, sig ter
 		ch    chan<- struct{}
 	}
 	pending := []watcher{}
-	for _, w := range []watcher{{watch.trusts, sig.trust}, {watch.auths, sig.auth}, {watch.ready, sig.ready}} {
+	watchers := []watcher{{watch.trusts, sig.trust}, {watch.ready, sig.ready}}
+	if !watch.authDebounce {
+		watchers = append(watchers, watcher{watch.auths, sig.auth})
+	}
+	for _, w := range watchers {
 		if w.match != nil && w.ch != nil {
 			pending = append(pending, w)
 		}
@@ -599,6 +631,11 @@ func drainWithSignals(dst io.Writer, src io.Reader, watch terminalWatch, sig ter
 
 	buf := make([]byte, 4096)
 	var seen strings.Builder
+	var authText strings.Builder
+	var auth *authDebouncer
+	if watch.authDebounce && watch.auths != nil && sig.auth != nil {
+		auth = newAuthDebouncer(sig.auth, authQuietWindow, newAuthTimer)
+	}
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
@@ -625,8 +662,27 @@ func drainWithSignals(dst io.Writer, src io.Reader, watch terminalWatch, sig ter
 					seen.WriteString(trimmed)
 				}
 			}
+
+			if auth != nil {
+				authText.Write(chunk)
+				text := authText.String()
+				if watch.auths(text) {
+					auth.arm()
+					authText.Reset()
+				} else {
+					auth.observeOutput(n)
+					if authText.Len() > 8192 {
+						trimmed := text[len(text)-4096:]
+						authText.Reset()
+						authText.WriteString(trimmed)
+					}
+				}
+			}
 		}
 		if err != nil {
+			if auth != nil {
+				auth.finish()
+			}
 			return
 		}
 	}

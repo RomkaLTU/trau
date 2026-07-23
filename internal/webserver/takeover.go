@@ -194,6 +194,18 @@ func (s *Server) handleRunTakeover(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, TakeoverResult{Stopped: stopped, Opened: true})
 }
 
+// takeoverHolder reports the live takeover terminal holding root, if any (ADR
+// 0018).
+func (s *Server) takeoverHolder(root string) (registry.Entry, bool) {
+	cleaned := filepath.Clean(root)
+	for _, e := range s.liveInstances() {
+		if e.SessionState == registry.StateTakeover && filepath.Clean(e.RepoRoot) == cleaned {
+			return e, true
+		}
+	}
+	return registry.Entry{}, false
+}
+
 // awaitParked polls the registry until pid is gone or reports parked or idle —
 // the states in which the ticket's checkpoint is safe to hand over — bounded by
 // takeoverStopTimeout. False means the bound (or the request) expired first.

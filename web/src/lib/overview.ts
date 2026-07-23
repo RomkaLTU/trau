@@ -54,6 +54,8 @@ export function boardPill(run: Pick<Run, "phase" | "failure_class">): {
   switch (run.failure_class) {
     case "paused":
       return { state: "warn", label: "paused" };
+    case "stopped":
+      return { state: "info", label: "stopped" };
     case "faulted":
       return { state: "fail", label: "fault" };
     case "gave_up":
@@ -215,6 +217,8 @@ export function attentionPill(cls: FailureClass): {
   switch (cls) {
     case "paused":
       return { state: "warn", label: "paused" };
+    case "stopped":
+      return { state: "info", label: "stopped" };
     case "faulted":
       return { state: "fail", label: "fault" };
     case "gave_up":
@@ -252,6 +256,9 @@ export function repoBadgeState(states: SessionState[]): RepoBadgeState {
   if (states.some((s) => s === "parked" || s === "takeover")) return "parked";
   return "idle";
 }
+
+const STOPPED_COPY =
+  "Stopped — work is saved at its checkpoint. Resume hands it back to the loop.";
 
 export interface LoopCardView {
   pill: { state: RunState; label: string };
@@ -297,7 +304,10 @@ export function loopCardView(
         pill: opts.failureClass
           ? attentionPill(opts.failureClass)
           : { state: "fail", label: "parked" },
-        copy: "Parked on the recap — waiting for you",
+        copy:
+          opts.failureClass === "stopped"
+            ? STOPPED_COPY
+            : "Parked on the recap — waiting for you",
         showStepper: false,
         showWatch: true,
         showStop: true,

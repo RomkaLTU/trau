@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/prompts"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
@@ -173,6 +174,24 @@ func (s *Server) putPromptOverride(w http.ResponseWriter, r *http.Request, p pro
 		return false
 	}
 	return true
+}
+
+// promptRenderer resolves the prompt catalog for root — repo override over
+// global override over built-in default — into a renderer. A store failure or an
+// override that will not render falls back to the built-in defaults rather than
+// failing the turn.
+func (s *Server) promptRenderer(root string) prompts.Renderer {
+	effective, err := s.stores.Prompts().Effective(root)
+	if err != nil {
+		logger.Verbosef("prompt overrides unavailable for %s: %v", root, err)
+		return prompts.Renderer{}
+	}
+	return prompts.Renderer{
+		Overrides: effective,
+		OnOverrideError: func(name string, err error) {
+			logger.Verbosef("prompt override %q failed to render — using the built-in default: %v", name, err)
+		},
+	}
 }
 
 func (s *Server) repoPromptViews(repo registry.Repo) ([]RepoPromptView, error) {

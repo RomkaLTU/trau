@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -201,6 +203,60 @@ func TestCheckpointMutationsRefusedWhileLive(t *testing.T) {
 	}
 	if !stateFileExists(runsDir, "COD-1") {
 		t.Errorf("checkpoint was dropped while a loop was live — the guard must leave state untouched")
+	}
+}
+
+func TestCheckpointMutationsRefusedWhileTakenOver(t *testing.T) {
+	home := t.TempDir()
+	root, runsDir := checkpointRepo(t, home, "acme")
+	seedCheckpoint(t, runsDir, "COD-1", map[string]string{"PHASE": state.Quarantined})
+	writeEntry(t, home, registry.Entry{
+		PID:          os.Getpid(),
+		RepoRoot:     root,
+		RunsDir:      runsDir,
+		StartedAt:    time.Now(),
+		Heartbeat:    time.Now(),
+		SessionState: registry.StateTakeover,
+		Ticket:       "COD-1",
+	})
+	fake, ts := controlServer(t, home, nil)
+
+	cases := []struct {
+		name string
+		path string
+		body any
+	}{
+		{"reset", "/repos/acme/runs/COD-1/reset", ResetRequest{}},
+		{"clear", "/repos/acme/runs/COD-1/clear", nil},
+		{"reconcile", "/repos/acme/reconcile", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res := postJSON(t, ts.URL+APIPrefix+c.path, c.body)
+			defer func() { _ = res.Body.Close() }()
+			if res.StatusCode != http.StatusConflict {
+				t.Fatalf("%s while taken over = %d, want 409", c.name, res.StatusCode)
+			}
+			var body struct {
+				Error  string `json:"error"`
+				Reason string `json:"reason"`
+			}
+			_ = json.NewDecoder(res.Body).Decode(&body)
+			if body.Reason != "taken_over" {
+				t.Errorf("%s reason = %q, want taken_over", c.name, body.Reason)
+			}
+			for _, want := range []string{"acme", strconv.Itoa(os.Getpid()), "COD-1"} {
+				if !strings.Contains(body.Error, want) {
+					t.Errorf("%s error = %q, want it to name %q", c.name, body.Error, want)
+				}
+			}
+		})
+	}
+	if len(fake.captures) != 0 {
+		t.Errorf("captures = %d, want 0 (no mutation reaches a repo a terminal holds)", len(fake.captures))
+	}
+	if !stateFileExists(runsDir, "COD-1") {
+		t.Errorf("checkpoint was dropped under a live takeover — the guard must leave state untouched")
 	}
 }
 

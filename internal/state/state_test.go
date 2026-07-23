@@ -49,6 +49,20 @@ func TestTerminal(t *testing.T) {
 	}
 }
 
+func TestAdvancedPhase(t *testing.T) {
+	advances := map[string]string{Building: Built, Built: HandedOff, HandedOff: Verified}
+	for from, want := range advances {
+		if got := AdvancedPhase(from); got != want {
+			t.Errorf("AdvancedPhase(%q) = %q, want %q", from, got, want)
+		}
+	}
+	for _, p := range []string{Verified, PROpen, Merged, Quarantined, "", "bogus"} {
+		if got := AdvancedPhase(p); got != "" {
+			t.Errorf("AdvancedPhase(%q) = %q, want no completed phase to advance to", p, got)
+		}
+	}
+}
+
 // --- Reconcilable / StaleCheckpoint --------------------------------------
 
 func TestReconcilable(t *testing.T) {
@@ -100,6 +114,7 @@ func TestFailureClass(t *testing.T) {
 		{"quarantined wins over any marker", Quarantined, FailPaused, "x", FailGaveUp},
 		{"merged has no failure even with stale marker", Merged, FailPaused, "x", ""},
 		{"stored paused marker wins", Built, FailPaused, "rate limit", FailPaused},
+		{"stored stopped marker wins", Building, FailStopped, "stopped during build", FailStopped},
 		{"stored faulted marker wins", HandedOff, FailFaulted, "boom", FailFaulted},
 		{"bare reason with no marker reads as fault", Verified, "", "unexpected error", FailFaulted},
 		{"healthy in-flight has no class", Built, "", "", ""},

@@ -88,6 +88,7 @@ function Detail({
   onDismiss: () => void
 }) {
   const pill = boardPill(run)
+  const stopped = run.failure_class === 'stopped'
   const openPR = run.pr_url ? (
     <Button asChild size="sm" className="font-mono">
       <a href={run.pr_url} target="_blank" rel="noreferrer">
@@ -143,8 +144,20 @@ function Detail({
       {run.no_browser && <NoBrowserBanner />}
 
       {run.failure_reason && (
-        <div className="rounded-lg border border-fail/40 bg-fail/10 px-4 py-3">
-          <p className="font-mono text-sm leading-relaxed text-fail">{run.failure_reason}</p>
+        <div
+          className={cn(
+            'rounded-lg border px-4 py-3',
+            stopped ? 'border-info/40 bg-info/10' : 'border-fail/40 bg-fail/10',
+          )}
+        >
+          <p
+            className={cn(
+              'font-mono text-sm leading-relaxed',
+              stopped ? 'text-info' : 'text-fail',
+            )}
+          >
+            {run.failure_reason}
+          </p>
         </div>
       )}
 

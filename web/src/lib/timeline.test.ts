@@ -98,6 +98,23 @@ describe('buildTimeline', () => {
     expect(t.reason).toBe('rate limit')
   })
 
+  it('settles a stopped run on its own status, never as still running', () => {
+    const tl = buildTimeline(
+      [item({ id: 'COD-1', status: 'paused' })],
+      [
+        run({
+          ticket: 'COD-1',
+          failure_class: 'stopped',
+          failure_reason: 'stopped during build — work saved at the last checkpoint',
+        }),
+      ],
+    )
+    const t = tl.settled[0]
+    expect(t.status).toBe('stopped')
+    expect(t.failureClass).toBe('stopped')
+    expect(tl.running).toBeUndefined()
+  })
+
   it('classifies faulted and gave_up runs as failed', () => {
     const tl = buildTimeline(
       [item({ id: 'COD-1' }), item({ id: 'COD-2' })],
@@ -151,6 +168,26 @@ describe('buildTimeline', () => {
     expect(tl.settled.map((t) => t.id)).toEqual(['COD-1', 'COD-2'])
   })
 
+  it('settles a run-less leaf behind the completion ahead of it', () => {
+    const tl = buildTimeline(
+      [
+        item({ id: 'COD-1', status: 'done' }),
+        item({ id: 'COD-2', status: 'paused', reason: 'no drain report' }),
+      ],
+      [
+        run({
+          ticket: 'COD-1',
+          terminal: true,
+          updated_at: '2026-07-13T10:02:00Z',
+        }),
+      ],
+    )
+    expect(tl.settled.map((t) => [t.id, t.status])).toEqual([
+      ['COD-1', 'done'],
+      ['COD-2', 'paused'],
+    ])
+  })
+
   it('marks the live instance ticket running even without a run record', () => {
     const tl = buildTimeline(
       [item({ id: 'COD-1' }), item({ id: 'COD-2' })],
@@ -185,6 +222,27 @@ describe('buildTimeline', () => {
     expect(tl.running?.activity).toBe('build')
     expect(tl.total).toBe(1)
     expect(tl.pending).toEqual([])
+  })
+
+  it('surfaces a parked instance ticket the queue never held as settled', () => {
+    const tl = buildTimeline(
+      [],
+      [
+        run({
+          ticket: 'COD-7',
+          title: 'Fix it',
+          failure_class: 'paused',
+          failure_reason: 'provider login required',
+          updated_at: '2026-07-13T10:02:00Z',
+        }),
+      ],
+      instance({ ticket: 'COD-7', session_state: 'parked' }),
+    )
+    expect(tl.running).toBeUndefined()
+    expect(tl.settled.map((t) => [t.id, t.status])).toEqual([
+      ['COD-7', 'paused'],
+    ])
+    expect(tl.settled[0].reason).toBe('provider login required')
   })
 
   it('does not resurrect an idle instance ticket into an empty queue', () => {
@@ -572,6 +630,11 @@ describe('ticketPill', () => {
         ticket({ id: 'a', title: '', status: 'paused', hasRun: true }),
       ),
     ).toEqual({ state: 'warn', label: 'paused' })
+    expect(
+      ticketPill(
+        ticket({ id: 'a', title: '', status: 'stopped', hasRun: true }),
+      ),
+    ).toEqual({ state: 'info', label: 'stopped' })
     expect(
       ticketPill(
         ticket({

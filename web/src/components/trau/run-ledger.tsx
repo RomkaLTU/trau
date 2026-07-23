@@ -14,8 +14,10 @@ import {
   type CheckpointNotice,
 } from '@/components/trau/checkpoint-actions'
 import { ATTENTION_META } from '@/components/trau/overview'
+import { useHandback } from '@/components/trau/handback-dialog'
 import { summarize } from '@/components/event-feed'
 import { useAllEvents, useEventFeed, type RepoFeedEvent } from '@/lib/events'
+import type { Handback } from '@/lib/handback'
 import { instancesQueryOptions } from '@/lib/instances'
 import {
   attentionReason,
@@ -24,6 +26,7 @@ import {
   checkpointLabel,
   formatAge,
   mergeLedger,
+  rowPill,
   rowsForTab,
   type LedgerRow,
   type LedgerTab,
@@ -58,13 +61,15 @@ const TABS: { key: LedgerTab; label: string }[] = [
 
 function rowStepper(row: LedgerRow): { steps: Step[]; label: string } {
   const { run, instance } = row
-  if (instance) {
+  if (instance?.session_state === 'working') {
     const live = liveSteps(instance.activity, instance.detail, instance.phase ?? '')
     const label = (live.subLabel ?? checkpointLabel(instance.phase ?? '')).toLowerCase()
     return { steps: live.steps, label }
   }
+  const faulted =
+    run.failure_class === 'faulted' || run.failure_class === 'gave_up'
   return {
-    steps: checkpointSteps(run.phase, Boolean(run.failure_class)),
+    steps: checkpointSteps(run.phase, faulted),
     label: checkpointLabel(run.phase),
   }
 }
@@ -134,7 +139,7 @@ function RowItem({
   onConflict: (repo: string) => void
 }) {
   const { repo, run, instance } = row
-  const pill = boardPill(run)
+  const pill = rowPill(row)
   const { steps, label } = rowStepper(row)
   const to = instance ? '/live/$repo/$ticket' : '/runs/$repo/$ticket'
 
@@ -183,10 +188,12 @@ function RowItem({
 function ResumeAction({
   repo,
   ticket,
+  handback,
   onNotice,
 }: {
   repo: string
   ticket: string
+  handback: Handback | null
   onNotice: (notice: CheckpointNotice) => void
 }) {
   const queryClient = useQueryClient()
@@ -206,17 +213,21 @@ function ResumeAction({
       })
     },
   })
+  const choice = useHandback(repo, () => resume.mutate())
   return (
-    <Button
-      variant="outline"
-      size="sm"
-      className="font-mono"
-      disabled={resume.isPending}
-      onClick={() => resume.mutate()}
-    >
-      <Play className="size-3.5" aria-hidden="true" />
-      {resume.isPending ? 'Resuming…' : 'Resume'}
-    </Button>
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        className="font-mono"
+        disabled={resume.isPending}
+        onClick={() => choice.request(ticket, handback)}
+      >
+        <Play className="size-3.5" aria-hidden="true" />
+        {resume.isPending ? 'Resuming…' : 'Resume'}
+      </Button>
+      {choice.dialog}
+    </>
   )
 }
 
@@ -250,7 +261,12 @@ function AttentionRow({
       <StatusPill state={pill.state} label={pill.label} />
       <span className="font-mono text-xs text-muted-foreground">{attentionReason(run)}</span>
       {meta?.resume ? (
-        <ResumeAction repo={repo} ticket={run.ticket} onNotice={onNotice} />
+        <ResumeAction
+          repo={repo}
+          ticket={run.ticket}
+          handback={run.handback ?? null}
+          onNotice={onNotice}
+        />
       ) : (
         <RunResetButton
           repo={repo}

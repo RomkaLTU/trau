@@ -1,6 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 
 import { apiFetch } from "./api";
+import { TAKEOVER_BLOCKED } from "./instances";
 
 // RunCheckpoint is the raw checkpoint resource; data carries the loop's state
 // keys verbatim (PHASE, BRANCH, SESSION, …), so SESSION here is the resumable
@@ -52,21 +53,32 @@ export interface ReconcileResult {
 }
 
 // CheckpointError carries the machine-readable flags the run views branch on: a
-// live-instance refusal, and the merged-ticket case the UI escalates to a forced
-// confirmation.
+// live-instance refusal, the takeover terminal no web button can stop, and the
+// merged-ticket case the UI escalates to a forced confirmation.
 export class CheckpointError extends Error {
   live: boolean;
+  takenOver: boolean;
   requiresForce: boolean;
 
   constructor(
     message: string,
-    opts: { live?: boolean; requiresForce?: boolean },
+    opts: { live?: boolean; takenOver?: boolean; requiresForce?: boolean },
   ) {
     super(message);
     this.name = "CheckpointError";
     this.live = opts.live ?? false;
+    this.takenOver = opts.takenOver ?? false;
     this.requiresForce = opts.requiresForce ?? false;
   }
+}
+
+// checkpointErrorText renders a refusal for a human. A takeover conflict — what
+// a stale tab races into after the terminal opened — reads as the same line the
+// gated controls carry, not the hub's raw text.
+export function checkpointErrorText(error: unknown): string {
+  if (error instanceof CheckpointError && error.takenOver)
+    return TAKEOVER_BLOCKED;
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function post<T>(url: string, body?: unknown): Promise<T> {
@@ -79,12 +91,14 @@ async function post<T>(url: string, body?: unknown): Promise<T> {
     const detail = (await res.json().catch(() => null)) as {
       error?: string;
       live?: boolean;
+      reason?: string;
       requires_force?: boolean;
     } | null;
     throw new CheckpointError(
       detail?.error ?? `request failed: ${res.status}`,
       {
         live: detail?.live,
+        takenOver: detail?.reason === "taken_over",
         requiresForce: detail?.requires_force,
       },
     );
