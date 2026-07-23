@@ -65,7 +65,7 @@ import { loopTitle, usePageTitle, type LoopTitleState } from "@/lib/page-title";
 import {
   dequeue,
   drain,
-  enqueue,
+  enqueueFresh,
   moveQueueItem,
   publishQueue,
   queueExecutable,
@@ -574,7 +574,7 @@ function LaunchQueueCard({
 
   const add = useMutation({
     mutationFn: () =>
-      enqueue(repo, { id: submittedId, provider: overrideProvider }),
+      enqueueFresh(repo, { id: submittedId, provider: overrideProvider }),
     onSuccess: (res) => {
       setQueue(res);
       resetAdd();
@@ -603,7 +603,7 @@ function LaunchQueueCard({
       const errors: string[] = [];
       for (const it of addAllPlan.items) {
         try {
-          setQueue(await enqueue(repo, { id: it.id, kind: it.kind }));
+          setQueue(await enqueueFresh(repo, { id: it.id, kind: it.kind }));
         } catch (err) {
           errors.push(`${it.id}: ${actionError(err)}`);
         }

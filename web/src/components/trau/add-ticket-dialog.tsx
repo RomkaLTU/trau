@@ -20,7 +20,7 @@ import {
 import { epicPreviewQueryOptions } from '@/lib/epic'
 import { createInternalIssue } from '@/lib/issues'
 import { createAndQueue, planInternalTicket } from '@/lib/internal-ticket'
-import { enqueue, type QueueItem, type QueueResponse } from '@/lib/queue'
+import { enqueue, enqueueFresh, type QueueItem, type QueueResponse } from '@/lib/queue'
 import { issueSearchQueryOptions, type SearchResult } from '@/lib/search'
 
 function actionError(error: unknown): string {
@@ -215,7 +215,7 @@ function TrackerPicker({
     mutationFn: () =>
       addTickets(
         planAddSelected(selected),
-        (it) => enqueue(repo, { id: it.id, kind: it.kind }),
+        (it) => enqueueFresh(repo, { id: it.id, kind: it.kind }),
         onQueue,
       ),
     onSuccess: onClose,

@@ -82,6 +82,14 @@ describe('planAddAll', () => {
     expect(plan.items).toEqual([{ id: 'COD-5', kind: 'ticket' }])
   })
 
+  it('plans an id again once its queue row has settled', () => {
+    const plan = planAddAll(
+      [ticket({ id: 'COD-4' })],
+      [item({ id: 'COD-4', status: 'failed' })],
+    )
+    expect(plan.items).toEqual([{ id: 'COD-4', kind: 'ticket' }])
+  })
+
   it('skips a sub-issue whose epic is already queued', () => {
     const plan = planAddAll(
       [ticket({ id: 'COD-2', parent: 'COD-100' })],

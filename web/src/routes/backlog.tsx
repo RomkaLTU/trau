@@ -82,9 +82,9 @@ import { internalIssueQueryOptions, type InternalIssue } from "@/lib/issues";
 import { labelsQueryOptions } from "@/lib/labels";
 import { standardTitle, usePageTitle } from "@/lib/page-title";
 import {
-  enqueue,
+  enqueueFresh,
   publishQueue,
-  queueCoveredIds,
+  queueActiveIds,
   queueQueryOptions,
 } from "@/lib/queue";
 import { cn } from "@/lib/utils";
@@ -211,7 +211,7 @@ function BacklogPage() {
     backlogQueryOptions(repo, backlogParamsFromFilters(filters, PAGE_SIZE)),
   );
   const queue = useQuery(queueQueryOptions(repo));
-  const queued = queueCoveredIds(queue.data?.items ?? []);
+  const queued = queueActiveIds(queue.data?.items ?? []);
   const items = backlog.data?.items ?? [];
   const counts = backlog.data?.counts ?? {};
   const total = backlog.data?.total ?? 0;
@@ -880,7 +880,7 @@ function BacklogRow({
     enabled: editing && internal,
   });
   const addToQueue = useMutation({
-    mutationFn: () => enqueue(repo, { id: entry.id }),
+    mutationFn: () => enqueueFresh(repo, { id: entry.id }),
     onSuccess: (res) => publishQueue(queryClient, repo, res),
   });
   const archive = useArchiveIssue(repo, (result, vars) =>

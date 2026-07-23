@@ -1,7 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
-import { queueCoveredIds, type QueueItem, type QueueKind } from './queue'
+import { queueActiveIds, type QueueItem, type QueueKind } from './queue'
 
 export interface EligibleTicket {
   id: string
@@ -53,19 +53,19 @@ export interface AddAllPlan {
 // for "Add all eligible". A sub-issue contributes its epic (enqueued once, as
 // kind "epic", so the hub captures the whole epic — not just the eligible
 // subset); a parentless epic goes in as an epic; the rest enqueue as plain
-// tickets. Ids already in the queue, or covered by a queued epic's sub-issues,
-// are dropped so a re-add is a no-op.
+// tickets. Ids the queue is still going to act on, on their own or inside a
+// queued epic, are dropped so a re-add is a no-op.
 export function planAddAll(
   eligible: EligibleTicket[],
   queued: QueueItem[],
 ): AddAllPlan {
-  const covered = queueCoveredIds(queued)
+  const active = queueActiveIds(queued)
 
   const items: AddAllItem[] = []
   const planned = new Set<string>()
 
   const push = (id: string, kind: QueueKind) => {
-    if (covered.has(id) || planned.has(id)) return
+    if (active.has(id) || planned.has(id)) return
     planned.add(id)
     items.push({ id, kind })
   }

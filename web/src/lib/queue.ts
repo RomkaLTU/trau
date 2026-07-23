@@ -94,6 +94,24 @@ export async function enqueue(
   return res.json()
 }
 
+// enqueueFresh adds an item at the back, clearing the one conflict a re-add
+// legitimately hits: a settled row keeps its slot as Finished history and still
+// holds the id. A live row is a real duplicate and rethrows.
+export async function enqueueFresh(
+  repo: string,
+  req: EnqueueRequest,
+): Promise<QueueResponse> {
+  try {
+    return await enqueue(repo, req)
+  } catch (err) {
+    const { items } = await fetchQueue(repo)
+    const leftover = items.find((it) => it.id === req.id)
+    if (!leftover || !queueTerminal(leftover.status)) throw err
+    await dequeue(repo, req.id)
+    return enqueue(repo, req)
+  }
+}
+
 export async function moveQueueItem(
   repo: string,
   id: string,
@@ -235,9 +253,9 @@ export function queueExecutable(items: QueueItem[]): number {
   }, 0)
 }
 
-// queueCoveredIds collects the ids the queue already covers — each item's own
-// id plus every sub-issue captured under a queued epic — so callers can spot a
-// re-add that would only duplicate work.
+// queueCoveredIds collects every id the queue holds a row for — each item's own
+// id plus every sub-issue captured under a queued epic — settled rows included,
+// since those keep their slot as Finished history.
 export function queueCoveredIds(items: QueueItem[]): Set<string> {
   const covered = new Set<string>()
   for (const it of items) {
@@ -245,6 +263,13 @@ export function queueCoveredIds(items: QueueItem[]): Set<string> {
     for (const sub of it.sub_issues ?? []) covered.add(sub.id)
   }
   return covered
+}
+
+// queueActiveIds narrows the coverage to the ids the queue is still going to act
+// on, which is what "queued" means to an operator. A settled row — and the
+// sub-issues under a settled epic — drops out, so the issue can be added again.
+export function queueActiveIds(items: QueueItem[]): Set<string> {
+  return queueCoveredIds(items.filter((it) => !queueTerminal(it.status)))
 }
 
 export interface QueueCounts {
