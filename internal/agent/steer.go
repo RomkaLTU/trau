@@ -54,9 +54,9 @@ func steerKeystrokes(body string) []byte {
 	return []byte("\x1b[200~" + body + "\x1b[201~\r")
 }
 
-func (c *ClaudeInteractive) steerInterval() time.Duration {
-	if c.steerPoll > 0 {
-		return c.steerPoll
+func steerInterval(poll time.Duration) time.Duration {
+	if poll > 0 {
+		return poll
 	}
 	return steerPollInterval
 }
@@ -64,8 +64,8 @@ func (c *ClaudeInteractive) steerInterval() time.Duration {
 // deliverSteer types the operator's queued notes into a session that is already
 // working, acking only what the terminal actually took. A hub error is logged and
 // dropped — steering must never end a phase.
-func (c *ClaudeInteractive) deliverSteer(ctx context.Context, sess terminalSession, src SteerSource, label string) {
-	tick := time.NewTicker(c.steerInterval())
+func deliverSteer(ctx context.Context, sess terminalSession, src SteerSource, label string, poll time.Duration, log *event.Log) {
+	tick := time.NewTicker(steerInterval(poll))
 	defer tick.Stop()
 	// A note whose ack failed is still in the terminal, so a later poll that
 	// still finds it pending must not type it again.
@@ -93,18 +93,18 @@ func (c *ClaudeInteractive) deliverSteer(ctx context.Context, sess terminalSessi
 				logger.Verbosef("steer note %d not acked (%s): %v", n.ID, label, err)
 				continue
 			}
-			c.announceSteer(src.Ticket, n.ID, label)
+			announceSteer(log, src.Ticket, n.ID, label)
 		}
 	}
 }
 
 // announceSteer records a note the live session took, so the run timeline tells
 // mid-phase delivery from next-spawn delivery.
-func (c *ClaudeInteractive) announceSteer(ticket string, id int64, label string) {
-	if c.Log == nil {
+func announceSteer(log *event.Log, ticket string, id int64, label string) {
+	if log == nil {
 		return
 	}
-	c.Log.Emit(event.KindSteerDelivered, label, "", map[string]any{
+	log.Emit(event.KindSteerDelivered, label, "", map[string]any{
 		"ticket":    ticket,
 		"note_id":   id,
 		"mid_phase": true,

@@ -226,7 +226,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 		ctx, cancel = context.WithTimeout(ctx, c.Timeout)
 		defer cancel()
 	}
-	resultPath, err := c.resultPath(label)
+	resultPath, err := newResultPath(c.ResultDir, label, c.clock())
 	if err != nil {
 		return Result{}, err
 	}
@@ -244,7 +244,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 
 	cols, rows := c.resolveSize()
 	stem := newTranscriptStem(label, c.clock())
-	transcript, closeTranscript := c.openTranscript(stem, cols, rows)
+	transcript, closeTranscript := openTranscript(c.Transcripts, stem, cols, rows)
 	defer closeTranscript()
 
 	start := c.clock()
@@ -273,7 +273,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 
 	trustPrompt := make(chan struct{}, 1)
 	authPrompt := make(chan struct{}, 1)
-	go drainWithTrustSignal(transcript, sess, trustPrompt, authPrompt, func() {
+	go drainWithSignals(transcript, sess, claudeWatch, trustPrompt, authPrompt, func() {
 		lastActivity.Store(c.clock().UnixNano())
 	})
 
@@ -282,10 +282,10 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 
 	trustWait := c.TrustPromptWait
 	if trustWait == 0 {
-		trustWait = 3 * time.Second
+		trustWait = defaultTrustPromptWait
 	}
 	if trustWait > 0 {
-		if ok, err := c.maybeConfirmTrust(ctx, sess, trustPrompt, trustWait); err != nil {
+		if ok, err := confirmTrustPrompt(ctx, sess, trustPrompt, trustWait); err != nil {
 			_ = sess.Kill()
 			res := Result{IsError: true}
 			c.emit(label, res, c.clock().Sub(start), err)
@@ -304,7 +304,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	if src, ok := SteerFrom(ctx); ok {
 		steerCtx, stopSteer := context.WithCancel(ctx)
 		defer stopSteer()
-		go c.deliverSteer(steerCtx, sess, src, label)
+		go deliverSteer(steerCtx, sess, src, label, c.steerPoll, c.Log)
 	}
 
 	tick := time.NewTicker(250 * time.Millisecond)
@@ -370,8 +370,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	}
 }
 
-func (c *ClaudeInteractive) resultPath(label string) (string, error) {
-	root := c.ResultDir
+func newResultPath(root, label string, now time.Time) (string, error) {
 	if root == "" {
 		root = filepath.Join(os.TempDir(), "trau-agent-results")
 	}
@@ -379,7 +378,7 @@ func (c *ClaudeInteractive) resultPath(label string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create result dir: %w", err)
 	}
-	name := fmt.Sprintf("%d-%s%s", c.clock().UnixNano(), safeLabel(label), resultExt)
+	name := fmt.Sprintf("%d-%s%s", now.UnixNano(), safeLabel(label), resultExt)
 
 	abs, err := filepath.Abs(filepath.Join(dir, name))
 	if err != nil {
@@ -445,7 +444,11 @@ func (c *ClaudeInteractive) emit(label string, res Result, dur time.Duration, ru
 	c.Log.Emit("agent_call", label, "", fields)
 }
 
-func (c *ClaudeInteractive) maybeConfirmTrust(ctx context.Context, sess terminalSession, trustPrompt <-chan struct{}, wait time.Duration) (bool, error) {
+// defaultTrustPromptWait is how long a freshly spawned CLI is given to raise its
+// first-run directory-trust dialog before the run assumes there is none.
+const defaultTrustPromptWait = 3 * time.Second
+
+func confirmTrustPrompt(ctx context.Context, sess terminalSession, trustPrompt <-chan struct{}, wait time.Duration) (bool, error) {
 	timer := time.NewTimer(wait)
 	defer timer.Stop()
 	select {
@@ -538,11 +541,11 @@ func newTranscriptStem(label string, now time.Time) string {
 // openTranscript returns the writer the agent tees PTY output to for this session,
 // plus a close. With no sink configured it discards, so a run without a hub still
 // works (its live tail is simply unavailable).
-func (c *ClaudeInteractive) openTranscript(stem string, cols, rows int) (io.Writer, func()) {
-	if c.Transcripts == nil {
+func openTranscript(sink TranscriptSink, stem string, cols, rows int) (io.Writer, func()) {
+	if sink == nil {
 		return io.Discard, func() {}
 	}
-	w := c.Transcripts.Open(stem, cols, rows)
+	w := sink.Open(stem, cols, rows)
 	return w, func() { _ = w.Close() }
 }
 
@@ -565,7 +568,17 @@ func liveTranscript(sink TranscriptSink, log *event.Log, label string, cols, row
 	return w, true
 }
 
-func drainWithTrustSignal(dst io.Writer, src io.Reader, trustPrompt, authPrompt chan<- struct{}, onActivity func()) {
+// terminalWatch is the per-provider reading of an agent's terminal output: the
+// first-run trust dialog to confirm, and the auth wall to fail fast on. Every CLI
+// words and draws both differently.
+type terminalWatch struct {
+	trusts func(string) bool
+	auths  func(string) bool
+}
+
+var claudeWatch = terminalWatch{trusts: hasClaudeTrustPrompt, auths: hasAuthFailure}
+
+func drainWithSignals(dst io.Writer, src io.Reader, watch terminalWatch, trustPrompt, authPrompt chan<- struct{}, onActivity func()) {
 	buf := make([]byte, 4096)
 	var seen strings.Builder
 	trustSeen, authSeen := false, false
@@ -580,11 +593,11 @@ func drainWithTrustSignal(dst io.Writer, src io.Reader, trustPrompt, authPrompt 
 			if !trustSeen || !authSeen {
 				seen.WriteString(string(chunk))
 				text := seen.String()
-				if !trustSeen && strings.Contains(text, "Quick") && strings.Contains(text, "safety") && strings.Contains(text, "trust") {
+				if !trustSeen && watch.trusts(text) {
 					trustSeen = true
 					signalOnce(trustPrompt)
 				}
-				if !authSeen && hasAuthFailure(text) {
+				if !authSeen && watch.auths(text) {
 					authSeen = true
 					signalOnce(authPrompt)
 				}
@@ -599,6 +612,12 @@ func drainWithTrustSignal(dst io.Writer, src io.Reader, trustPrompt, authPrompt 
 			return
 		}
 	}
+}
+
+// hasClaudeTrustPrompt matches Claude Code's first-run directory-trust dialog,
+// which it draws as ordinary flowing text.
+func hasClaudeTrustPrompt(s string) bool {
+	return strings.Contains(s, "Quick") && strings.Contains(s, "safety") && strings.Contains(s, "trust")
 }
 
 // signalOnce does a non-blocking send so a full (already-signaled) channel never
@@ -691,10 +710,12 @@ func safeLabel(label string) string {
 	return b.String()
 }
 
-// Codex runs `codex exec --json -o <msgfile> "<prompt>"`, the second backend
-// behind the seam. It diverges from Claude in three ways, all confined
-// here: the final agent message is read from the -o file (not stdout); the --json
-// event stream on stdout carries token usage which is summed and dropped; and
+// Codex runs `codex exec --json -o <msgfile> "<prompt>"`, the print-mode
+// fallback selected by CODEX_MODE=exec; CodexInteractive is the default. Print
+// mode cannot be typed into, so phases run this way are steered only at the next
+// spawn. It diverges from Claude in three ways, all confined here: the final
+// agent message is read from the -o file (not stdout); the --json event stream
+// on stdout carries token usage which is summed and dropped; and
 // codex reports input_tokens INCLUDING cached, so usage is renormalized to the
 // shared non-cached schema. There is no disallowed-tools field: codex exec is a
 // single-agent runner with no Agent/Workflow fan-out tool, so Claude's

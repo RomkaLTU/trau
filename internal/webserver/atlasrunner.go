@@ -247,6 +247,7 @@ func atlasProviderConfig(cfg config.Config) (bin, flags, model, effort string, e
 	switch cfg.Provider {
 	case "codex":
 		extra["profile"] = cfg.CodexProfile
+		extra["mode"] = cfg.CodexMode
 		return cfg.CodexBin, cfg.CodexFlags, cfg.CodexModel, cfg.CodexEffort, extra
 	case "kimi":
 		return cfg.KimiBin, cfg.KimiFlags, cfg.KimiModel, "", extra
