@@ -1,6 +1,12 @@
-import type { FeedEvent } from '@/lib/events'
 import type { Instance } from '@/lib/instances'
 import { isActiveState, toSessionState } from '@/lib/overview'
+import type { QueueItem, QueueResponse } from '@/lib/queue'
+import type { Run } from '@/lib/runs'
+import {
+  buildTimeline,
+  type Timeline,
+  type TimelineTicket,
+} from '@/lib/timeline'
 
 export type LoopView = 'running' | 'builder'
 
@@ -25,45 +31,91 @@ export interface LoopHalt {
   reason: string
 }
 
-const TERMINAL_STATES = new Set([
-  'paused',
-  'faulted',
-  'quarantined',
-  'merged',
-])
-
-function field(ev: FeedEvent, key: string): string {
-  const v = ev.fields?.[key]
-  return typeof v === 'string' ? v : ''
+export interface LoopStateInput {
+  queue?: QueueResponse
+  runs: Run[]
+  instance?: Instance
 }
 
-// deriveLoopHalt reads the reason a repo's loop stopped from its event feed. It
-// classifies the newest terminal state_change: a rate-limit or re-auth pause, a
-// budget give-up, a fault, or another quarantine. A clean merge as the newest
-// terminal event means the loop did not halt — it returns null. Events are
-// expected newest-first, matching the feed's ordering.
-export function deriveLoopHalt(events: FeedEvent[]): LoopHalt | null {
-  for (const ev of events) {
-    if (ev.kind !== 'state_change') continue
-    const state = field(ev, 'state')
-    if (!TERMINAL_STATES.has(state)) continue
+export interface LoopState {
+  view: LoopView
+  timeline: Timeline | null
+  halt: LoopHalt | null
+}
 
-    const ticket = field(ev, 'ticket')
-    const reason = field(ev, 'reason')
-    switch (state) {
-      case 'paused':
-        return { kind: 'paused', ticket, reason }
-      case 'faulted':
-        return { kind: 'fault', ticket, reason }
-      case 'quarantined':
+// A takeover is a human holding the ticket, not a stopped loop, so it counts as
+// live alongside the states a drain runs in.
+function instanceLive(instance?: Instance): boolean {
+  if (!instance) return false
+  const state = toSessionState(instance.session_state)
+  return isActiveState(state) || state === 'takeover'
+}
+
+// executingTickets lists what the hub has already handed to a child in this
+// queue snapshot. An epic lends its status to every sub-issue, so a resumed
+// child counts from the moment the drain arms it.
+function executingTickets(items: QueueItem[]): Set<string> {
+  const ids = new Set<string>()
+  for (const item of items) {
+    if (item.status !== 'running') continue
+    ids.add(item.id)
+    for (const sub of item.sub_issues ?? []) ids.add(sub.id)
+  }
+  return ids
+}
+
+// haltFor names one settled ticket in the banner's vocabulary, matching the pill
+// its row already shows: a give-up is a budget stop when the reason says so and
+// a quarantine otherwise.
+function haltFor(t: TimelineTicket): LoopHalt | null {
+  const reason = t.reason ?? ''
+  switch (t.status) {
+    case 'paused':
+      return { kind: 'paused', ticket: t.id, reason }
+    case 'failed':
+      if (t.failureClass === 'gave_up') {
         return {
           kind: /budget/i.test(reason) ? 'budget' : 'quarantined',
-          ticket,
+          ticket: t.id,
           reason,
         }
-      default:
-        return null
-    }
+      }
+      return { kind: 'fault', ticket: t.id, reason }
+    default:
+      return null
   }
-  return null
+}
+
+// currentHalt reports what has the loop stopped now, never what stopped it once.
+// A live instance outranks everything — work is in flight. A queue entry the hub
+// marked running outranks the checkpoint failure it is being resumed from, which
+// closes the window between a resume and its child registering. Of what is left,
+// only the newest settle reaches the banner: a clean one means the loop moved on.
+function currentHalt(
+  timeline: Timeline,
+  items: QueueItem[],
+  instance?: Instance,
+): LoopHalt | null {
+  if (instanceLive(instance)) return null
+  const executing = executingTickets(items)
+  const settled = timeline.settled.filter((t) => !executing.has(t.id))
+  const latest = settled[settled.length - 1]
+  return latest ? haltFor(latest) : null
+}
+
+// projectLoopState is the Loop page's current state in one pass: the view shape,
+// the queue/run/instance join the card renders, and the halt the banner and tab
+// title read.
+export function projectLoopState({
+  queue,
+  runs,
+  instance,
+}: LoopStateInput): LoopState {
+  const items = queue?.items ?? []
+  const timeline = queue ? buildTimeline(items, runs, instance) : null
+  return {
+    view: loopView(queue?.draining ?? false, instance),
+    timeline,
+    halt: timeline ? currentHalt(timeline, items, instance) : null,
+  }
 }

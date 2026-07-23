@@ -45,7 +45,6 @@ import {
 } from "@/lib/add-by-id";
 import { configQueryOptions } from "@/lib/config";
 import { addAllLabel, eligibleQueryOptions, planAddAll } from "@/lib/eligible";
-import { useEventFeed } from "@/lib/events";
 import { IssueFetchError, issueQueryOptions } from "@/lib/issues";
 import {
   instancesQueryOptions,
@@ -53,8 +52,7 @@ import {
   type RepoFreshness,
 } from "@/lib/instances";
 import {
-  deriveLoopHalt,
-  loopView,
+  projectLoopState,
   type LoopHalt,
   type LoopView,
 } from "@/lib/loop";
@@ -78,7 +76,6 @@ import { pauseKind, runSteps } from "@/lib/runlive";
 import { stepName } from "@/lib/steps";
 import { runsQueryOptions } from "@/lib/runs";
 import {
-  buildTimeline,
   builderView,
   finishedReducer,
   finishedView,
@@ -1384,6 +1381,7 @@ function PendingEpicGroup({
 function RunningQueueView({
   repo,
   queue,
+  timeline,
   instance,
   halt,
   onStop,
@@ -1397,6 +1395,7 @@ function RunningQueueView({
 }: {
   repo: string;
   queue: QueueResponse;
+  timeline: Timeline;
   instance?: Instance;
   halt: LoopHalt | null;
   onStop: () => void;
@@ -1410,8 +1409,6 @@ function RunningQueueView({
 }) {
   const now = useNow(1000);
   const queryClient = useQueryClient();
-  const runs = useQuery(runsQueryOptions(repo));
-  const timeline = buildTimeline(queue.items, runs.data?.runs ?? [], instance);
   const [addOpen, setAddOpen] = useState(false);
 
   return (
@@ -1758,8 +1755,6 @@ export function Loop() {
   const takeoverInstance = instData?.instances.find(
     (i) => i.repo === repo && i.session_state === "takeover",
   );
-  const feed = useEventFeed(repo);
-  const halt = deriveLoopHalt(feed.events);
   const runs = useQuery(runsQueryOptions(repo));
 
   // The peeked issue lives in the URL, so queue polling never closes the drawer
@@ -1770,11 +1765,11 @@ export function Loop() {
   );
   const onPeek = (id: string) => void setPeek(id);
 
-  const draining = queue.data?.draining ?? false;
-  const view = loopView(draining, liveInstance);
-  const timeline = queue.data
-    ? buildTimeline(queue.data.items, runs.data?.runs ?? [], liveInstance)
-    : null;
+  const { view, timeline, halt } = projectLoopState({
+    queue: queue.data,
+    runs: runs.data?.runs ?? [],
+    instance: liveInstance,
+  });
   usePageTitle(loopTitle(loopTitleState(canRun, halt, view, timeline)));
 
   const stop = useMutation({
@@ -1824,12 +1819,13 @@ export function Loop() {
     />
   );
 
-  if (view === "running" && queue.data) {
+  if (view === "running" && queue.data && timeline) {
     return (
       <>
         <RunningQueueView
           repo={repo}
           queue={queue.data}
+          timeline={timeline}
           instance={liveInstance}
           halt={halt}
           onStop={() => stop.mutate()}
