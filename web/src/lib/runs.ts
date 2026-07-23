@@ -3,7 +3,7 @@ import { queryOptions } from '@tanstack/react-query'
 import { apiFetch } from './api'
 import type { RepoView } from './instances'
 
-export type FailureClass = 'paused' | 'faulted' | 'gave_up'
+export type FailureClass = 'paused' | 'stopped' | 'faulted' | 'gave_up'
 
 export interface Run {
   ticket: string

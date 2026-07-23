@@ -349,10 +349,11 @@ export const ATTENTION_META: Record<
   FailureClass,
   { action: string; resume: boolean }
 > = {
-  // paused/faulted resume from the checkpoint (start a run); quarantined keeps the
-  // Reset navigation to the live view's action menu, where the destructive reset
-  // stays behind its own confirm.
+  // paused/stopped/faulted resume from the checkpoint (start a run); quarantined
+  // keeps the Reset navigation to the live view's action menu, where the
+  // destructive reset stays behind its own confirm.
   paused: { action: "Resume", resume: true },
+  stopped: { action: "Resume", resume: true },
   faulted: { action: "Resume", resume: true },
   gave_up: { action: "Reset", resume: false },
 };

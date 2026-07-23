@@ -100,6 +100,7 @@ func TestFailureClass(t *testing.T) {
 		{"quarantined wins over any marker", Quarantined, FailPaused, "x", FailGaveUp},
 		{"merged has no failure even with stale marker", Merged, FailPaused, "x", ""},
 		{"stored paused marker wins", Built, FailPaused, "rate limit", FailPaused},
+		{"stored stopped marker wins", Building, FailStopped, "stopped during build", FailStopped},
 		{"stored faulted marker wins", HandedOff, FailFaulted, "boom", FailFaulted},
 		{"bare reason with no marker reads as fault", Verified, "", "unexpected error", FailFaulted},
 		{"healthy in-flight has no class", Built, "", "", ""},

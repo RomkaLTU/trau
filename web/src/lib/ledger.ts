@@ -145,6 +145,7 @@ export function checkpointLabel(phase: string): string {
 
 const FAILURE_LABELS: Record<FailureClass, string> = {
   paused: 'paused',
+  stopped: 'stopped',
   faulted: 'faulted',
   gave_up: 'quarantined',
 }
