@@ -272,9 +272,13 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 
 	trustPrompt := make(chan struct{}, 1)
 	authPrompt := make(chan struct{}, 1)
-	go drainWithTrustSignal(transcript, sess, trustPrompt, authPrompt, func() {
-		lastActivity.Store(c.clock().UnixNano())
-	})
+	drainDone := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		drainWithTrustSignal(transcript, sess, trustPrompt, authPrompt, func() {
+			lastActivity.Store(c.clock().UnixNano())
+		})
+	}()
 
 	wait := make(chan error, 1)
 	go func() { wait <- sess.Wait() }()
@@ -322,6 +326,23 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 			final, ok, readErr := readResultFile(resultPath)
 			res := c.enrich(Result{Final: final, IsError: err != nil || readErr != nil || !ok}, sessionID)
 			dur := c.clock().Sub(start)
+			if ok && err == nil {
+				c.emit(label, res, dur, nil)
+				c.record(label, res, dur)
+				return res, nil
+			}
+
+			_ = sess.Close()
+			<-drainDone
+			select {
+			case <-authPrompt:
+				res.IsError = true
+				c.emit(label, res, dur, ErrAuthRequired)
+				c.record(label, res, dur)
+				return res, fmt.Errorf("claude interactive run (%s): %w", label, ErrAuthRequired)
+			default:
+			}
+
 			c.emit(label, res, dur, err)
 			c.record(label, res, dur)
 			switch {
@@ -340,10 +361,9 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 			c.emit(label, res, c.clock().Sub(start), ctx.Err())
 			return res, fmt.Errorf("claude interactive run (%s): %w", label, ctx.Err())
 		case <-authPrompt:
-			// The agent hit a provider auth/login wall (403 / "Please run /login")
-			// and would otherwise idle here until the stall watchdog kills it, only
-			// for every retry to re-hit the same wall. Fail fast with a classifiable
-			// error so the pipeline pauses blamelessly instead of faulting the ticket.
+			// The agent hit a confirmed provider auth/login wall and would otherwise
+			// idle until the stall watchdog kills it. Return a classifiable error so
+			// the pipeline pauses blamelessly instead of faulting the ticket.
 			_ = sess.Kill()
 			res := Result{IsError: true}
 			c.emit(label, res, c.clock().Sub(start), ErrAuthRequired)
@@ -559,8 +579,10 @@ func liveTranscript(sink TranscriptSink, log *event.Log, label string, cols, row
 
 func drainWithTrustSignal(dst io.Writer, src io.Reader, trustPrompt, authPrompt chan<- struct{}, onActivity func()) {
 	buf := make([]byte, 4096)
-	var seen strings.Builder
-	trustSeen, authSeen := false, false
+	var trustText strings.Builder
+	var authText strings.Builder
+	auth := newAuthDebouncer(authPrompt, authQuietWindow, newAuthTimer)
+	trustSeen := false
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
@@ -569,25 +591,37 @@ func drainWithTrustSignal(dst io.Writer, src io.Reader, trustPrompt, authPrompt 
 			}
 			chunk := buf[:n]
 			_, _ = dst.Write(chunk)
-			if !trustSeen || !authSeen {
-				seen.WriteString(string(chunk))
-				text := seen.String()
-				if !trustSeen && strings.Contains(text, "Quick") && strings.Contains(text, "safety") && strings.Contains(text, "trust") {
+
+			if !trustSeen {
+				trustText.Write(chunk)
+				text := trustText.String()
+				if strings.Contains(text, "Quick") && strings.Contains(text, "safety") && strings.Contains(text, "trust") {
 					trustSeen = true
 					signalOnce(trustPrompt)
 				}
-				if !authSeen && hasAuthFailure(text) {
-					authSeen = true
-					signalOnce(authPrompt)
-				}
-				if seen.Len() > 8192 {
+				if trustText.Len() > 8192 {
 					trimmed := text[len(text)-4096:]
-					seen.Reset()
-					seen.WriteString(trimmed)
+					trustText.Reset()
+					trustText.WriteString(trimmed)
+				}
+			}
+
+			authText.Write(chunk)
+			text := authText.String()
+			if hasAuthFailure(text) {
+				auth.arm()
+				authText.Reset()
+			} else {
+				auth.observeOutput(n)
+				if authText.Len() > 8192 {
+					trimmed := text[len(text)-4096:]
+					authText.Reset()
+					authText.WriteString(trimmed)
 				}
 			}
 		}
 		if err != nil {
+			auth.finish()
 			return
 		}
 	}

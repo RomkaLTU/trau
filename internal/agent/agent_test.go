@@ -237,11 +237,9 @@ func (s *scriptedSession) stop()                       { s.once.Do(func() { clos
 func (s *scriptedSession) Close() error                { s.stop(); return nil }
 func (s *scriptedSession) Kill() error                 { s.stop(); return nil }
 
-// TestClaudeInteractiveAuthFailurePauses is the COD-596 guard: when the agent hits
-// a provider auth/login wall it idles producing no result, so trau must recognize
-// the wall in the terminal output and fail fast with ErrAuthRequired — letting the
-// pipeline pause blamelessly — instead of waiting out the (here, very long) stall
-// window and then retrying into the same wall.
+// TestClaudeInteractiveAuthFailurePauses is the COD-596 guard: when an agent exits
+// after rendering an auth/login wall without a result, the confirmed auth signal
+// must win over the generic session-exit error so the pipeline pauses blamelessly.
 func TestClaudeInteractiveAuthFailurePauses(t *testing.T) {
 	sess := newScriptedSession("⏺ API Error: 403 Request not allowed · Please run /login\n")
 	c := &ClaudeInteractive{
@@ -264,6 +262,7 @@ func TestClaudeInteractiveAuthFailurePauses(t *testing.T) {
 		res, err := c.Run(context.Background(), "do the thing", "build")
 		ch <- outcome{res, err}
 	}()
+	sess.stop()
 
 	select {
 	case got := <-ch:
@@ -276,6 +275,34 @@ func TestClaudeInteractiveAuthFailurePauses(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		sess.stop()
 		t.Fatal("Run did not return within 5s — the auth watchdog never fired")
+	}
+}
+
+func TestClaudeInteractiveAuthQuoteWithResultSucceeds(t *testing.T) {
+	sess := newScriptedSession(`Reviewing the "please run /login" matcher in prose.` + "\n")
+	defer sess.stop()
+
+	c := &ClaudeInteractive{
+		Bin:             "claude",
+		ResultDir:       t.TempDir(),
+		TrustPromptWait: time.Millisecond,
+		start: func(_ context.Context, _, _ string, args []string, _, _ int) (terminalSession, error) {
+			if err := os.WriteFile(resultPathFromPrompt(t, args), []byte("done"), 0o644); err != nil {
+				return nil, err
+			}
+			return sess, nil
+		},
+	}
+
+	res, err := c.Run(context.Background(), "do the thing", "verify")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.IsError {
+		t.Fatal("res.IsError = true, want a successful result")
+	}
+	if res.Final != "done" {
+		t.Fatalf("res.Final = %q, want done", res.Final)
 	}
 }
 
