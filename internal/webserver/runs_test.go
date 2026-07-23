@@ -202,6 +202,23 @@ func TestRunsMergedDropsStaleFailure(t *testing.T) {
 	}
 }
 
+// TestRunsProjectsPRStatus proves the PR status recorded on a checkpoint
+// surfaces on the run.
+func TestRunsProjectsPRStatus(t *testing.T) {
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	seedCheckpoint(t, runsDir, "COD-1", map[string]string{
+		"PHASE": state.PROpen, "PR": "42",
+		"PR_URL": "https://github.test/pr/42", "PR_STATUS": "awaiting-merge",
+	})
+
+	ts := ingestedServer(t, home)
+	r := runByTicket(getRuns(t, ts, "acme").Runs)["COD-1"]
+	if r.PRStatus != "awaiting-merge" {
+		t.Errorf("PRStatus = %q, want awaiting-merge", r.PRStatus)
+	}
+}
+
 // TestRunsServedFromDatabaseNotStateFiles proves the board reads the derived
 // checkpoints table, not the state files: once ingested, deleting every state
 // file leaves the board — including the failure class read from the data blob —
