@@ -657,7 +657,7 @@ function LaunchQueueCard({
     );
 
   return (
-    <div className="flex max-w-3xl flex-col gap-6">
+    <div className="flex max-w-page flex-col gap-6">
       <TerminalCard title="loop-launch">
         <form
           className="flex flex-col gap-6"
@@ -1514,7 +1514,7 @@ function RunningQueueView({
     <div className="flex flex-col gap-6">
       <LoopBanner repo={repo} takeover={takeover} halt={halt} />
 
-      <TerminalCard title="loop" className="max-w-3xl">
+      <TerminalCard title="loop" className="max-w-page">
         <div className="flex flex-col gap-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <span className="font-mono text-sm text-muted-foreground">
@@ -1629,7 +1629,7 @@ function RunningQueueView({
         </div>
       </TerminalCard>
 
-      <div className="flex max-w-3xl flex-wrap items-end justify-end gap-4">
+      <div className="flex max-w-page flex-wrap items-end justify-end gap-4">
         <div className="flex flex-col items-end gap-2">
           {stopError ? (
             <p className="font-mono text-xs text-destructive">
@@ -1744,7 +1744,7 @@ function haltNotice(halt: LoopHalt): HaltNotice {
 
 function TakeoverBanner({ repo, ticket }: { repo: string; ticket?: string }) {
   return (
-    <div className="flex max-w-3xl items-start gap-2.5 rounded-lg border border-info/40 bg-info/10 px-4 py-3">
+    <div className="flex max-w-page items-start gap-2.5 rounded-lg border border-info/40 bg-info/10 px-4 py-3">
       <SquareTerminal
         className="mt-0.5 size-4 shrink-0 text-info"
         aria-hidden="true"
@@ -1801,7 +1801,7 @@ function HaltBanner({ repo, halt }: { repo: string; halt: LoopHalt }) {
   return (
     <div
       className={cn(
-        "flex max-w-3xl items-start gap-2.5 rounded-lg border px-4 py-3",
+        "flex max-w-page items-start gap-2.5 rounded-lg border px-4 py-3",
         border,
         bg,
       )}
@@ -1991,7 +1991,7 @@ export function Loop() {
 
 function NotStartableNotice({ repo, root }: { repo: string; root?: string }) {
   return (
-    <TerminalCard title="loop" className="max-w-3xl">
+    <TerminalCard title="loop" className="max-w-page">
       <div className="flex flex-col items-start gap-4">
         <p className="font-sans text-sm leading-relaxed text-muted-foreground">
           {repo
