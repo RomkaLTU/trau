@@ -159,6 +159,13 @@ type Config struct {
 	// the project's test skills and browser-harness in the verify set; when that
 	// union is empty verify falls back to the build set.
 	RequiredSkillsVerify []string
+	// SkillsMode selects how a phase's resolved skill set reaches the agent
+	// (config SKILLS_MODE): "instruct" (default) names the skills for the agent to
+	// load with the Skill tool; "inject" delivers each skill's SKILL.md content
+	// inline in the build/verify/repair/bugfix prompt, so delivery no longer
+	// depends on the agent calling the Skill tool and works for providers without
+	// it.
+	SkillsMode string
 	// LintFix gates the pre-verify lint-fix step: when on (default), the project's
 	// automated lint/format fixers run over the working tree just before verify so
 	// the verify gate isn't spent self-healing mechanical style noise. LintFixCmd, if
@@ -397,6 +404,7 @@ func Defaults() Config {
 		StripMechanicalMCP:     true,
 		ExploreSubagents:       false,
 		BrowserVerify:          "auto",
+		SkillsMode:             "instruct",
 		VerifyChecks:           true,
 		VerifyPanelPolicy:      "unanimous",
 		PanelParallel:          true,
@@ -803,6 +811,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("REQUIRED_SKILLS_VERIFY"); v != "" {
 		c.RequiredSkillsVerify = splitCSV(v)
 		sources["REQUIRED_SKILLS_VERIFY"] = src.name
+	}
+	if v, src := get("SKILLS_MODE"); v != "" {
+		c.SkillsMode = v
+		sources["SKILLS_MODE"] = src.name
 	}
 	if v, src := get("LINT_FIX"); v != "" {
 		c.LintFix = v == "1"
@@ -1620,6 +1632,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "AUTO_INSTALL_SKILLS", Group: sectionSkills, WebEditable: true, Default: "0", Description: "Install the recommended skill set for the repo's project type at loop start when no skills are present (opt-in; 1 = yes, 0 = no)", Bool: true},
 		{Key: "REQUIRED_SKILLS", Group: sectionSkills, WebEditable: true, Description: "Skill names (comma-separated) the build, repair and bugfix agents must load whatever the ticket touches, on top of the repo's routing rules in .trau/skills-rules.json. Names the repo cannot load warn at loop start. Empty with no matching rule = the project type's recommended skills, or every installed skill when none match"},
 		{Key: "REQUIRED_SKILLS_VERIFY", Group: sectionSkills, WebEditable: true, Description: "Skill names (comma-separated) the verify agent must load, alongside the routing rules' verify matches, the project's test skills and browser-harness on browser verify. Empty with no matching rule = verify loads the build set"},
+		{Key: "SKILLS_MODE", Group: sectionSkills, WebEditable: true, Default: "instruct", Description: "How a phase's resolved skill set reaches the agent: instruct names the skills for the agent to load with the Skill tool; inject delivers each skill's SKILL.md content inline in the build/verify/repair/bugfix prompt", Options: []string{"instruct", "inject"}},
 		{Key: "SPLIT_LABEL", Group: sectionTracker, WebEditable: true, Advanced: true, Default: "needs-split", Description: "Managed label marking a ticket a human should split into smaller slices before the loop builds it"},
 		{Key: "LINT_FIX", Group: sectionPipeline, WebEditable: true, Default: "1", Description: "Run the project's lint/format autofixers before verify so verify isn't spent self-healing style noise (1 = yes, 0 = no)", Bool: true},
 		{Key: "LINT_FIX_CMD", Group: sectionPipeline, Description: "Deterministic lint-fix command run before verify (e.g. vendor/bin/pint, npm run lint:fix). Empty = a cheap agent auto-detects and runs the project's fixers"},
@@ -2155,6 +2168,8 @@ func keyValue(cfg Config, key string) string {
 		return strings.Join(cfg.RequiredSkills, ",")
 	case "REQUIRED_SKILLS_VERIFY":
 		return strings.Join(cfg.RequiredSkillsVerify, ",")
+	case "SKILLS_MODE":
+		return cfg.SkillsMode
 	case "LINT_FIX":
 		if cfg.LintFix {
 			return "1"

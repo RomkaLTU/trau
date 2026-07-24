@@ -87,13 +87,14 @@ type SkillPlanView struct {
 // report skill usage, or that no recorded call could be matched to: its loaded
 // side is unrecoverable rather than empty.
 type SkillPhaseView struct {
-	Ticket   string   `json:"ticket"`
-	Phase    string   `json:"phase"`
-	TS       string   `json:"ts"`
-	Provider string   `json:"provider,omitempty"`
-	Planned  []string `json:"planned"`
-	Loaded   []string `json:"loaded"`
-	Unknown  bool     `json:"unknown,omitempty"`
+	Ticket    string   `json:"ticket"`
+	Phase     string   `json:"phase"`
+	TS        string   `json:"ts"`
+	Provider  string   `json:"provider,omitempty"`
+	Planned   []string `json:"planned"`
+	Loaded    []string `json:"loaded"`
+	Unknown   bool     `json:"unknown,omitempty"`
+	Activated bool     `json:"activated,omitempty"`
 }
 
 // SkillCoverageView is the repo's activation evidence over the last Days days.
@@ -406,14 +407,15 @@ func (s *Server) skillPhases(root string, since time.Time, calls []hubstore.Skil
 	out := make([]SkillPhaseView, 0, len(evs))
 	for i := len(evs) - 1; i >= 0; i-- {
 		ev := evs[i]
-		ticket, planned := plannedSkills(ev.Fields)
+		ticket, planned, activated := plannedSkills(ev.Fields)
 		v := SkillPhaseView{
-			Ticket:  ticket,
-			Phase:   ev.Phase,
-			TS:      ev.TS,
-			Planned: planned,
-			Loaded:  []string{},
-			Unknown: true,
+			Ticket:    ticket,
+			Phase:     ev.Phase,
+			TS:        ev.TS,
+			Planned:   planned,
+			Loaded:    []string{},
+			Unknown:   true,
+			Activated: activated,
 		}
 		if c, ok := callUnderPlan(calls, ticket, ev.Phase, ev.TS); ok {
 			v.Provider = c.Provider
@@ -444,15 +446,16 @@ func wallClock(ts string) string {
 	return ts
 }
 
-func plannedSkills(fields string) (ticket string, skills []string) {
+func plannedSkills(fields string) (ticket string, skills []string, activated bool) {
 	var f struct {
 		Ticket string   `json:"ticket"`
 		Skills []string `json:"skills"`
+		Mode   string   `json:"mode"`
 	}
 	if err := json.Unmarshal([]byte(fields), &f); err != nil {
-		return "", []string{}
+		return "", []string{}, false
 	}
-	return f.Ticket, orEmpty(f.Skills)
+	return f.Ticket, orEmpty(f.Skills), f.Mode == "inject"
 }
 
 func reportsSkills(provider string) bool {

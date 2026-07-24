@@ -1067,30 +1067,62 @@ function PhaseCoverage({ phases }: { phases: SkillPhaseCoverage[] }) {
                 <span className="text-faint">{phase.provider}</span>
               )}
             </div>
-            {phase.unknown ? (
-              <span className="font-mono text-xs text-faint">
-                no data — this run reported no skill usage
-              </span>
-            ) : (
-              <div className="flex flex-wrap gap-1.5">
-                {phase.planned.map((name) => {
-                  const loaded = phase.loaded.includes(name)
-                  return (
-                    <span
-                      key={name}
-                      className={cn(
-                        'rounded border px-1.5 py-0.5 font-mono text-[0.65rem]',
-                        loaded
-                          ? 'border-done/50 bg-done/12 text-done'
-                          : 'border-border text-faint',
-                      )}
-                    >
-                      {name}
-                    </span>
-                  )
-                })}
-              </div>
-            )}
+            {(() => {
+              const extras = phase.loaded.filter(
+                (name) => !phase.planned.includes(name),
+              )
+              const extraChips = extras.map((name) => (
+                <span
+                  key={`extra-${name}`}
+                  className="rounded border border-border bg-secondary/40 px-1.5 py-0.5 font-mono text-[0.65rem] text-muted-foreground"
+                >
+                  {name} · extra
+                </span>
+              ))
+              if (phase.activated) {
+                return (
+                  <div className="flex flex-wrap gap-1.5">
+                    {phase.planned.map((name) => (
+                      <span
+                        key={name}
+                        className="rounded border border-done/50 bg-done/12 px-1.5 py-0.5 font-mono text-[0.65rem] text-done"
+                      >
+                        {name} · activated
+                      </span>
+                    ))}
+                    {extraChips}
+                  </div>
+                )
+              }
+              if (phase.unknown) {
+                return (
+                  <span className="font-mono text-xs text-faint">
+                    no data — this run reported no skill usage
+                  </span>
+                )
+              }
+              return (
+                <div className="flex flex-wrap gap-1.5">
+                  {phase.planned.map((name) => {
+                    const loaded = phase.loaded.includes(name)
+                    return (
+                      <span
+                        key={name}
+                        className={cn(
+                          'rounded border px-1.5 py-0.5 font-mono text-[0.65rem]',
+                          loaded
+                            ? 'border-done/50 bg-done/12 text-done'
+                            : 'border-border text-faint',
+                        )}
+                      >
+                        {name}
+                      </span>
+                    )
+                  })}
+                  {extraChips}
+                </div>
+              )
+            })()}
           </div>
         ))}
       </div>

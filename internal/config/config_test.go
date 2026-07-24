@@ -216,6 +216,41 @@ func TestLoadRequiredSkillsVerify(t *testing.T) {
 	t.Error("REQUIRED_SKILLS_VERIFY is missing from the settings catalog")
 }
 
+func TestLoadSkillsMode(t *testing.T) {
+	if got := Defaults().SkillsMode; got != "instruct" {
+		t.Fatalf("default SkillsMode = %q, want instruct", got)
+	}
+
+	dir := t.TempDir()
+	project := filepath.Join(dir, ".trau.ini")
+	if err := os.WriteFile(project, []byte("SKILLS_MODE=inject\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayered(project, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SkillsMode != "inject" {
+		t.Errorf("SkillsMode = %q, want inject", cfg.SkillsMode)
+	}
+	if got := keyValue(cfg, "SKILLS_MODE"); got != "inject" {
+		t.Errorf("keyValue(SKILLS_MODE) = %q, want inject", got)
+	}
+	for _, m := range KnownKeys() {
+		if m.Key != "SKILLS_MODE" {
+			continue
+		}
+		if !m.WebEditable {
+			t.Error("SKILLS_MODE should be web-editable")
+		}
+		if !slices.Contains(m.Options, "instruct") || !slices.Contains(m.Options, "inject") {
+			t.Errorf("SKILLS_MODE options = %v, want instruct and inject", m.Options)
+		}
+		return
+	}
+	t.Error("SKILLS_MODE is missing from the settings catalog")
+}
+
 func TestResolveConfigItemsEnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	local := filepath.Join(dir, "trau.ini")
@@ -668,7 +703,7 @@ func TestKnownKeysCatalogMetadata(t *testing.T) {
 	editable := []string{
 		"MAX_ITERATIONS", "THEME", "PROJECT", "LINEAR_API_KEY", "JIRA_API_TOKEN",
 		"GRILL_MODEL", "TRANSCRIPT_RETENTION", "SERVE_AUTOSTART",
-		"CLAUDE_MODEL", "CLAUDE_BUILD_MODEL", "THEME_BRAND", "BASE_BRANCH",
+		"CLAUDE_MODEL", "CLAUDE_BUILD_MODEL", "THEME_BRAND", "BASE_BRANCH", "SKILLS_MODE",
 	}
 	for _, k := range editable {
 		if !byKey[k].WebEditable {

@@ -53,6 +53,7 @@ export interface SkillPhaseCoverage {
   planned: string[]
   loaded: string[]
   unknown?: boolean
+  activated?: boolean
 }
 
 export interface SkillCoverage {
