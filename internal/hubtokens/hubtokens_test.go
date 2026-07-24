@@ -106,6 +106,29 @@ func TestSinkBuffersAndPostsInOrder(t *testing.T) {
 	}
 }
 
+// TestSinkKeepsSkillBearingZeroTotalCall pins the COD-1136 exception to the
+// zero-total drop: a call whose usage went unrecovered but whose live capture saw
+// skills is kept, so the loaded set survives an unflushed transcript instead of
+// vanishing as an empty call. An equally zero-total call with no skills still drops.
+func TestSinkKeepsSkillBearingZeroTotalCall(t *testing.T) {
+	fake := &fakeHub{}
+	s := newSink(fake, "repo", 0, 0)
+	fixedClock(s)
+	s.SetTicket("COD-1")
+
+	s.Append("build", tokens.Record{Skills: []string{"bubbletea"}})
+	s.Append("build", tokens.Record{})
+	s.flush()
+
+	got := fake.received()
+	if len(got) != 1 {
+		t.Fatalf("received %d calls, want 1 (skill-bearing kept, empty dropped)", len(got))
+	}
+	if got[0].Skills != `["bubbletea"]` {
+		t.Errorf("skills = %q, want %q", got[0].Skills, `["bubbletea"]`)
+	}
+}
+
 func TestSinkTotalFlushesThenReads(t *testing.T) {
 	fake := &fakeHub{total: hubclient.Spend{Tokens: 150, Cost: 0.10, Metered: true}}
 	s := newSink(fake, "repo", 0, 0)

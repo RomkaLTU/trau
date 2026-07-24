@@ -14,9 +14,10 @@ import (
 
 // TestWarnBuildWithoutSkillsEmitsEvent guards the serve-mode visibility of a
 // skill-less build: the durable build_no_skills event fires only when the prompt
-// named a skill set and the build loaded none of it, carrying the ticket and the
-// build phase. Any other combination — skills loaded, nothing named, or no skills
-// expected — stays silent so the web UI never flags a healthy run.
+// named a skill set and the build is confirmed to have loaded none of it, carrying
+// the ticket and the build phase. Any other combination — skills loaded, nothing
+// named, no skills expected, or an Unknown result with no recoverable evidence —
+// stays silent so the web UI never flags a healthy or unobserved run.
 func TestWarnBuildWithoutSkillsEmitsEvent(t *testing.T) {
 	expected := func(string) bool { return true }
 	named := []string{"golang-code-style"}
@@ -26,13 +27,15 @@ func TestWarnBuildWithoutSkillsEmitsEvent(t *testing.T) {
 		expects func(string) bool
 		named   []string
 		skills  []string
+		known   bool
 		want    bool
 	}{
-		{"named a set and none loaded", expected, named, nil, true},
-		{"named a set and some loaded", expected, named, []string{"golang-code-style"}, false},
-		{"named nothing", expected, nil, nil, false},
-		{"no skills expected", func(string) bool { return false }, named, nil, false},
-		{"gating disabled", nil, named, nil, false},
+		{"named a set and confirmed none loaded", expected, named, nil, true, true},
+		{"named a set but result is unknown", expected, named, nil, false, false},
+		{"named a set and some loaded", expected, named, []string{"golang-code-style"}, true, false},
+		{"named nothing", expected, nil, nil, true, false},
+		{"no skills expected", func(string) bool { return false }, named, nil, true, false},
+		{"gating disabled", nil, named, nil, true, false},
 	}
 
 	for _, tc := range cases {
@@ -43,6 +46,7 @@ func TestWarnBuildWithoutSkillsEmitsEvent(t *testing.T) {
 			p.SkillsExpected = tc.expects
 			p.buildProvider = "claude"
 			p.buildSkills = tc.skills
+			p.buildSkillsKnown = tc.known
 
 			p.warnBuildWithoutSkills("COD-1", tc.named)
 
@@ -79,13 +83,15 @@ func TestWarnVerifyWithoutSkillsEmitsEvent(t *testing.T) {
 		expects func(string) bool
 		named   []string
 		skills  []string
+		known   bool
 		want    bool
 	}{
-		{"named a set and none loaded", expected, named, nil, true},
-		{"named a set and some loaded", expected, named, []string{"tdd"}, false},
-		{"named nothing", expected, nil, nil, false},
-		{"no skills expected", func(string) bool { return false }, named, nil, false},
-		{"gating disabled", nil, named, nil, false},
+		{"named a set and confirmed none loaded", expected, named, nil, true, true},
+		{"named a set but result is unknown", expected, named, nil, false, false},
+		{"named a set and some loaded", expected, named, []string{"tdd"}, true, false},
+		{"named nothing", expected, nil, nil, true, false},
+		{"no skills expected", func(string) bool { return false }, named, nil, true, false},
+		{"gating disabled", nil, named, nil, true, false},
 	}
 
 	for _, tc := range cases {
@@ -96,6 +102,7 @@ func TestWarnVerifyWithoutSkillsEmitsEvent(t *testing.T) {
 			p.SkillsExpected = tc.expects
 			p.verifyProvider = "claude"
 			p.verifySkills = tc.skills
+			p.verifySkillsKnown = tc.known
 
 			p.warnVerifyWithoutSkills("COD-1", tc.named)
 
@@ -121,8 +128,9 @@ func TestWarnVerifyWithoutSkillsEmitsEvent(t *testing.T) {
 }
 
 // seqVerdictRunner writes the next verdict in the sequence on each call (the
-// last one repeats), reporting no loaded skills, so a fail→repair→pass verify
-// can be driven end-to-end.
+// last one repeats), reporting a confirmed empty skill set (SkillsKnown, no
+// names), so a fail→repair→pass verify can be driven end-to-end and its
+// no-skills warning fires as it would for a real observed run.
 type seqVerdictRunner struct {
 	path  string
 	seq   []verdict
@@ -137,7 +145,7 @@ func (r *seqVerdictRunner) Run(context.Context, string, string) (agent.Result, e
 	r.calls++
 	data, _ := json.Marshal(r.seq[i])
 	_ = os.WriteFile(r.path, data, 0o644)
-	return agent.Result{}, nil
+	return agent.Result{SkillsKnown: true}, nil
 }
 
 // TestVerifyNoSkillsEmittedExactlyOnce runs the whole Verify phase — a failing
