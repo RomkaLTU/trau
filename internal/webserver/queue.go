@@ -48,13 +48,15 @@ type QueueItemView struct {
 }
 
 // QueueResponse is the /repos/{repo}/queue resource: the repo's queue in
-// registration order, whether the hub is currently draining it, and whether a
-// full queue shutdown is tearing it down.
+// registration order, whether the hub is currently draining it and since when,
+// and whether a full queue shutdown is tearing it down. DrainingSince is absent
+// unless the queue is draining.
 type QueueResponse struct {
-	Repo         string          `json:"repo"`
-	Draining     bool            `json:"draining"`
-	ShuttingDown bool            `json:"shutting_down"`
-	Items        []QueueItemView `json:"items"`
+	Repo          string          `json:"repo"`
+	Draining      bool            `json:"draining"`
+	DrainingSince string          `json:"draining_since,omitempty"`
+	ShuttingDown  bool            `json:"shutting_down"`
+	Items         []QueueItemView `json:"items"`
 }
 
 // DrainRequest is the body of POST /repos/{repo}/queue/drain: whether the hub
@@ -237,16 +239,21 @@ func (s *Server) viewQueue(w http.ResponseWriter, r *http.Request) {
 // ends here, so the response always reflects the persisted draining flag rather
 // than the caller's local view of it.
 func (s *Server) writeQueue(w http.ResponseWriter, status int, root string) {
-	items, draining, err := s.stores.Queue(root).Snapshot()
+	items, meta, err := s.stores.Queue(root).Snapshot()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read queue: " + err.Error()})
 		return
 	}
+	drainingSince := ""
+	if !meta.DrainingSince.IsZero() {
+		drainingSince = meta.DrainingSince.UTC().Format(time.RFC3339)
+	}
 	writeJSON(w, status, QueueResponse{
-		Repo:         filepath.Base(root),
-		Draining:     draining,
-		ShuttingDown: s.isShuttingDown(root),
-		Items:        queueItemViews(items),
+		Repo:          filepath.Base(root),
+		Draining:      meta.Draining,
+		DrainingSince: drainingSince,
+		ShuttingDown:  s.isShuttingDown(root),
+		Items:         queueItemViews(items),
 	})
 }
 

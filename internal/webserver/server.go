@@ -134,11 +134,11 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 	s.importAllLessons()
 	s.importAllPhaseLogs()
 	for _, root := range s.effectiveRoots() {
-		items, draining, err := s.stores.Queue(root).Snapshot()
+		items, meta, err := s.stores.Queue(root).Snapshot()
 		if err != nil {
 			continue
 		}
-		if _, running := firstWithStatus(items, queue.StatusRunning); draining || running {
+		if _, running := firstWithStatus(items, queue.StatusRunning); meta.Draining || running {
 			s.drain.ensure(ctx, root)
 		}
 	}

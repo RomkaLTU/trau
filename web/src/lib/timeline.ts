@@ -51,7 +51,9 @@ export interface FinalizeEntry {
 // Timeline is the client-side join of a draining queue's snapshot with its live
 // run records: settled tickets in the order they actually completed, the one
 // running ticket, and the remaining set in snapshot order. Epic group headers do
-// not count toward done/total — only leaf tickets do.
+// not count toward done/total — only leaf tickets do. elapsedAnchor is when the
+// run in flight started: the drain's arm stamp, or the loop process's own start
+// for a CLI run the hub never armed.
 export interface Timeline {
   total: number
   done: number
@@ -237,6 +239,7 @@ export function buildTimeline(
   items: QueueItem[],
   runs: Run[],
   instance?: Instance,
+  drainingSince?: string,
 ): Timeline {
   const byTicket = new Map(runs.map((r) => [r.ticket, r]))
   const leaves = flatten(items)
@@ -307,14 +310,6 @@ export function buildTimeline(
     if (remains(t)) pending.push({ kind: 'ticket', ticket: t })
   }
 
-  const leafIds = new Set(leaves.map((l) => l.id))
-  let elapsedAnchor = instance?.started_at
-  for (const r of runs) {
-    if (!leafIds.has(r.ticket) || !r.updated_at) continue
-    if (!elapsedAnchor || r.updated_at < elapsedAnchor)
-      elapsedAnchor = r.updated_at
-  }
-
   return {
     total: tickets.length,
     done: tickets.filter((t) => t.status === 'done').length,
@@ -322,7 +317,7 @@ export function buildTimeline(
     running,
     finalize: epicFinalize(items, byId, instance),
     pending,
-    elapsedAnchor,
+    elapsedAnchor: drainingSince ?? instance?.started_at,
   }
 }
 

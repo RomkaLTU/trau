@@ -176,16 +176,12 @@ func TestPersistsAcrossStores(t *testing.T) {
 	}
 
 	second := NewQueue(db, "/repo/acme")
-	items, draining, err := second.Snapshot()
+	items, meta, err := second.Snapshot()
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
-	if !draining || len(items) != 1 || items[0].ID != "COD-1" {
-		t.Fatalf("reopened snapshot = %v draining=%v, want the persisted COD-1 armed", ids(items), draining)
-	}
-	meta, err := second.Meta()
-	if err != nil {
-		t.Fatalf("Meta: %v", err)
+	if !meta.Draining || len(items) != 1 || items[0].ID != "COD-1" {
+		t.Fatalf("reopened snapshot = %v draining=%v, want the persisted COD-1 armed", ids(items), meta.Draining)
 	}
 	if !meta.NoResume || meta.OnFault != queue.OnFaultSkip {
 		t.Fatalf("meta = %+v, want no-resume + on-fault=skip", meta)
@@ -256,14 +252,14 @@ func TestClearEmptiesItemsSubIssuesAndDisarms(t *testing.T) {
 		t.Fatalf("removed = %v, want [COD-1 COD-2]", got)
 	}
 
-	items, draining, err := q.Snapshot()
+	items, meta, err := q.Snapshot()
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
 	if len(items) != 0 {
 		t.Fatalf("items after Clear = %v, want none", ids(items))
 	}
-	if draining {
+	if meta.Draining {
 		t.Error("Clear left the queue draining")
 	}
 
@@ -320,11 +316,11 @@ func TestPauseParksAndStopsDraining(t *testing.T) {
 	if err := q.Pause("COD-1", "needs re-auth"); err != nil {
 		t.Fatalf("Pause: %v", err)
 	}
-	items, draining, err := q.Snapshot()
+	items, meta, err := q.Snapshot()
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
-	if draining {
+	if meta.Draining {
 		t.Error("Pause left the queue draining")
 	}
 	if items[0].Status != queue.StatusPaused || items[0].Reason != "needs re-auth" || items[0].PID != 0 {
@@ -396,8 +392,42 @@ func TestFinishDrainingClearsWhenDry(t *testing.T) {
 	if !done {
 		t.Fatal("FinishDraining did not clear a dry queue")
 	}
-	if _, draining, _ := q.Snapshot(); draining {
-		t.Error("queue still reads draining after FinishDraining")
+	if _, meta, _ := q.Snapshot(); meta.Draining || !meta.DrainingSince.IsZero() {
+		t.Errorf("meta = %+v, want disarmed and unstamped after FinishDraining", meta)
+	}
+}
+
+func TestSetDrainingStampsTheRunItArms(t *testing.T) {
+	q := testQueue(t)
+	mustAdd(t, q, "COD-1")
+	if _, meta, _ := q.Snapshot(); !meta.DrainingSince.IsZero() {
+		t.Fatalf("draining since = %v on an idle queue, want zero", meta.DrainingSince)
+	}
+
+	before := time.Now().UTC()
+	if err := q.SetDraining(true); err != nil {
+		t.Fatalf("SetDraining: %v", err)
+	}
+	_, armed, err := q.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if armed.DrainingSince.Before(before) {
+		t.Fatalf("draining since = %v, want at or after the arm at %v", armed.DrainingSince, before)
+	}
+
+	if err := q.SetDraining(true); err != nil {
+		t.Fatalf("re-arm: %v", err)
+	}
+	if _, meta, _ := q.Snapshot(); !meta.DrainingSince.Equal(armed.DrainingSince) {
+		t.Errorf("draining since = %v after a re-arm, want the original %v", meta.DrainingSince, armed.DrainingSince)
+	}
+
+	if err := q.SetDraining(false); err != nil {
+		t.Fatalf("disarm: %v", err)
+	}
+	if _, meta, _ := q.Snapshot(); !meta.DrainingSince.IsZero() {
+		t.Errorf("draining since = %v after a disarm, want zero", meta.DrainingSince)
 	}
 }
 
@@ -479,11 +509,11 @@ func TestImportLegacyQueuePreservesOrderAndSettings(t *testing.T) {
 		t.Fatalf("ImportLegacy: %v", err)
 	}
 
-	items, draining, err := q.Snapshot()
+	items, meta, err := q.Snapshot()
 	if err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
-	if !draining {
+	if !meta.Draining {
 		t.Error("draining flag not imported")
 	}
 	if got := ids(items); !reflect.DeepEqual(got, []string{"COD-1", "COD-2"}) {
