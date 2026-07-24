@@ -31,9 +31,11 @@ var allowedReaders = map[string]string{
 	"internal/config/ci_detect.go": "repo CI-workflow detection",
 
 	// §2 Repo-owned content — owned by the target repo; trau only reads it.
-	"internal/agent/skills.go":    "repo skills / skills-lock.json / package.json",
-	"internal/checks/checks.go":   "repo .trau/checks",
-	"internal/state/gitignore.go": "target repo .gitignore",
+	"internal/agent/skills.go":          "repo skills / skills-lock.json / package.json",
+	"internal/agent/skillmeta.go":       "repo skills' SKILL.md manifests",
+	"internal/checks/checks.go":         "repo .trau/checks",
+	"internal/skillrules/skillrules.go": "repo .trau/skills-rules.json",
+	"internal/state/gitignore.go":       "target repo .gitignore",
 
 	// §3 Provider-owned files — owned by the provider CLIs; read for usage/stats.
 	"internal/agent/agent.go":        "provider session files + agent .result.json read-back",

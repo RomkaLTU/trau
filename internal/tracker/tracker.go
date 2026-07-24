@@ -144,6 +144,9 @@ type IssueDetail struct {
 	Description string
 	Comments    []IssueComment
 	Attachments []AttachmentRef
+	// Labels are the issue's label names. They never reach the prompt; skill
+	// routing matches its keywords against them alongside the title and body.
+	Labels []string
 }
 
 // AttachmentRef is one of an issue's images or files. It aliases the type the

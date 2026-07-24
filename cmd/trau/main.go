@@ -47,6 +47,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/skillrules"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
@@ -3104,6 +3105,23 @@ func warnMissingRequiredSkills(cfg config.Config, con *console.Console) {
 		}
 		con.Logf("⚠ %s not installed in this repo: %s — the %s prompt can only name installed skills; install them or fix %s",
 			pin.key, strings.Join(missing, ", "), pin.prompt, pin.key)
+	}
+	warnSkillRules(cfg, con)
+}
+
+// warnSkillRules flags a routing-rules file the loop could not use as written: a
+// rule naming a skill the repo cannot load, or a file that would not parse at
+// all. Advisory only — an unusable rule drops out and the phase falls back down
+// the resolution chain, so the run proceeds either way.
+func warnSkillRules(cfg config.Config, con *console.Console) {
+	resolver := agent.NewSkillResolver(cfg.RepoRoot, cfg.RequiredSkills, cfg.RequiredSkillsVerify)
+	if err := resolver.RulesError(); err != nil {
+		con.Logf("⚠ %s could not be read: %v — phases resolve skills from REQUIRED_SKILLS and the fallback chain", skillrules.File, err)
+		return
+	}
+	if unknown := resolver.UnknownRuleSkills(); len(unknown) > 0 {
+		con.Logf("⚠ %s routes skills this repo does not have: %s — install them or drop their rules",
+			skillrules.File, strings.Join(unknown, ", "))
 	}
 }
 
