@@ -37,6 +37,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/prompts"
 	"github.com/RomkaLTU/trau/internal/proofs"
+	"github.com/RomkaLTU/trau/internal/proofsbranch"
 	"github.com/RomkaLTU/trau/internal/sanitize"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -524,6 +525,14 @@ type Pipeline struct {
 	// verify attempt resolves; a failure logs one warning and the run proceeds,
 	// since missing proofs never fail or pause a run. Nil disables harvest.
 	UploadProofs func(ctx context.Context, ticket, traceDir string, shots []hubclient.ProofScreenshot) error
+
+	// PublishProofs pushes a run's stored verify screenshots to the target repo's
+	// trau-proofs orphan branch and reports how the delivered PR body should
+	// reference them. It is called once during PR creation; a repo with no remote
+	// or a run with no proofs yields an empty publication, and a push failure
+	// returns an error the caller logs before delivering the PR without the QA
+	// section. Nil disables proof publishing.
+	PublishProofs func(ctx context.Context, ticket string) (proofsbranch.Publication, error)
 
 	// Steer is the hub-backed queue of operator steer notes typed at a running
 	// ticket. Every substantive phase drains it into its prompt and lends it to
@@ -2067,7 +2076,8 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 				return fmt.Errorf("commit %s: resolve epic branch: %w", id, err)
 			}
 		}
-		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, p.slicePRTitle(ctx, id, prBase, branch), p.prBody(ctx, id))
+		body := p.prBody(ctx, id, p.proofsSection(ctx, id))
+		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, p.slicePRTitle(ctx, id, prBase, branch), body)
 		if err != nil {
 			return fmt.Errorf("commit %s: pr create: %w", id, err)
 		}
