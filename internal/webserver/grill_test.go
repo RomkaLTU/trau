@@ -2,11 +2,13 @@ package webserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/config"
@@ -162,19 +164,25 @@ func TestGrillFollowUpOnFinished(t *testing.T) {
 
 func TestGrillResumeSpawns(t *testing.T) {
 	tests := []struct {
-		state string
-		want  bool
+		name   string
+		state  string
+		active bool
+		want   bool
 	}{
-		{hubstore.GrillParked, true},
-		{hubstore.GrillStalled, true},
-		{hubstore.GrillFinished, true},
-		{hubstore.GrillWaiting, false},
-		{hubstore.GrillRunning, false},
+		{name: "parked", state: hubstore.GrillParked, want: true},
+		{name: "stalled", state: hubstore.GrillStalled, want: true},
+		{name: "finished", state: hubstore.GrillFinished, want: true},
+		{name: "waiting on a live child", state: hubstore.GrillWaiting, active: true, want: false},
+		{name: "waiting after the child exited", state: hubstore.GrillWaiting, want: true},
+		{name: "running", state: hubstore.GrillRunning, want: false},
 	}
 	for _, tt := range tests {
-		if got := grillResumeSpawns(tt.state); got != tt.want {
-			t.Errorf("grillResumeSpawns(%q) = %v, want %v", tt.state, got, tt.want)
-		}
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Server{grillTurnActive: func(int64) bool { return tt.active }}
+			if got := s.grillResumeSpawns(7, tt.state); got != tt.want {
+				t.Errorf("grillResumeSpawns(%q) = %v, want %v", tt.state, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -436,6 +444,127 @@ func TestGrillListDefaults(t *testing.T) {
 	}
 	if len(list.Defaults.ModelOptions) == 0 {
 		t.Fatal("defaults carry no model catalog")
+	}
+}
+
+// A start-time provider choice is what the session locks, so its model resolves and
+// its catalog is reported against that provider rather than the claude default.
+func TestGrillCreateHonoursRequestedProvider(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	writeGrillConfig(t, "KIMI_MODEL=kimi-default\n")
+	seedKimiConfig(t, "k3")
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/grill", GrillCreateRequest{IssueID: "COD-1", Provider: "kimi"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", res.StatusCode)
+	}
+	var v GrillSessionView
+	if err := json.NewDecoder(res.Body).Decode(&v); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if v.Provider != "kimi" {
+		t.Fatalf("created provider = %q, want kimi", v.Provider)
+	}
+	if v.Model != "kimi-default" {
+		t.Fatalf("created model = %q, want the KIMI_MODEL default", v.Model)
+	}
+	if !contains(v.ModelOptions, "k3") {
+		t.Fatalf("model options = %v, want the kimi catalog", v.ModelOptions)
+	}
+	sid, _ := strconv.ParseInt(v.ID, 10, 64)
+	if stored, _, _ := stores.Grill().Session(sid); stored.Provider != "kimi" {
+		t.Fatalf("stored provider = %q, want kimi", stored.Provider)
+	}
+}
+
+// An unknown provider is refused at create, exactly as the issue provider pin is.
+func TestGrillCreateRejectsUnknownProvider(t *testing.T) {
+	ts, _, repo := grillServer(t)
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/grill", GrillCreateRequest{IssueID: "COD-1", Provider: "bogus"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create status = %d, want 400", res.StatusCode)
+	}
+}
+
+// The list defaults carry every provider a start surface may offer with its own
+// model catalog, so picking one swaps the model list without another round trip.
+func TestGrillListDefaultsProviders(t *testing.T) {
+	ts, _, repo := grillServer(t)
+	seedKimiConfig(t, "k3")
+	writeGrillConfig(t, "KIMI_BIN="+installedStub(t, "kimi")+"\n")
+
+	byName := grillDefaultProviders(t, ts, repo)
+	claude, hasClaude := byName["claude"]
+	kimi, hasKimi := byName["kimi"]
+	if !hasClaude || !hasKimi {
+		t.Fatalf("defaults providers = %v, want both claude and kimi", byName)
+	}
+	if len(claude) == 0 {
+		t.Fatal("claude offered with no model catalog")
+	}
+	if !contains(kimi, "k3") {
+		t.Fatalf("kimi catalog = %v, want the seeded alias", kimi)
+	}
+}
+
+// The picker is the ship gate: a provider whose CLI is not installed is never
+// offered, so no start surface can hand out an interview that cannot spawn.
+func TestGrillListDefaultsSkipsUninstalledProvider(t *testing.T) {
+	ts, _, repo := grillServer(t)
+	seedKimiConfig(t, "k3")
+	writeGrillConfig(t, "KIMI_BIN="+filepath.Join(t.TempDir(), "no-such-kimi")+"\n")
+
+	byName := grillDefaultProviders(t, ts, repo)
+	if _, offered := byName["kimi"]; offered {
+		t.Errorf("kimi offered without an installed CLI: %v", byName)
+	}
+	if _, offered := byName["claude"]; !offered {
+		t.Errorf("the default provider must stay offered: %v", byName)
+	}
+}
+
+// grillDefaultProviders reads the repo list's offered providers by name.
+func grillDefaultProviders(t *testing.T, ts *httptest.Server, repo string) map[string][]string {
+	t.Helper()
+	_, body := get(t, ts, APIPrefix+"/repos/"+repo+"/grill")
+	var list GrillListResponse
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	byName := map[string][]string{}
+	for _, p := range list.Defaults.Providers {
+		byName[p.Name] = p.ModelOptions
+	}
+	return byName
+}
+
+// installedStub writes an executable stub the provider-binary probe resolves.
+func installedStub(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write %s stub: %v", name, err)
+	}
+	return path
+}
+
+// seedKimiConfig lays down a kimi config.toml under the test home so KimiModelAliases
+// resolves a deterministic catalog.
+func seedKimiConfig(t *testing.T, aliases ...string) {
+	t.Helper()
+	dir := filepath.Join(os.Getenv("HOME"), ".kimi-code")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir kimi home: %v", err)
+	}
+	var b strings.Builder
+	for _, a := range aliases {
+		fmt.Fprintf(&b, "[models.%q]\nmodel = %q\n\n", a, a)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(b.String()), 0o644); err != nil {
+		t.Fatalf("write kimi config: %v", err)
 	}
 }
 

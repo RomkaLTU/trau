@@ -232,9 +232,11 @@ func (s *Server) grillMCPToolsCall(w http.ResponseWriter, r *http.Request, sid i
 }
 
 // grillAskUser posts the question, moves the session to waiting, and blocks on an
-// SSE stream until the user's answer arrives or the idle window elapses. The
-// answer is returned verbatim as the tool result; on idle timeout the session
-// parks and a structured sentinel tells the agent to end its turn.
+// SSE stream until the user's answer arrives or the idle window elapses. A call
+// repeating the question the session is already waiting on re-attaches to it rather
+// than posting it twice. The answer is returned verbatim as the tool result; on idle
+// timeout the session parks and a structured sentinel tells the agent to end its
+// turn.
 func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64, rpcID, args, progressToken json.RawMessage) {
 	var a struct {
 		Question      string   `json:"question"`
@@ -264,23 +266,27 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 		AllowFreeText bool     `json:"allow_free_text"`
 	}{Text: question, Options: a.Options, Recommended: strings.TrimSpace(a.Recommended), Why: strings.TrimSpace(a.Why), AllowFreeText: allowFreeText})
 
-	question0, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
-		Role:    hubstore.GrillRoleAgent,
-		Kind:    hubstore.GrillKindQuestion,
-		Payload: string(payload),
-	})
-	if err != nil {
-		respondRPCError(w, rpcID, rpcInternalError, "store question: "+err.Error())
-		return
+	question0, pending := s.grillPendingQuestion(sid, question)
+	if !pending {
+		stored, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
+			Role:    hubstore.GrillRoleAgent,
+			Kind:    hubstore.GrillKindQuestion,
+			Payload: string(payload),
+		})
+		if err != nil {
+			respondRPCError(w, rpcID, rpcInternalError, "store question: "+err.Error())
+			return
+		}
+		waiting, err := s.stores.Grill().Transition(sid, hubstore.GrillWaiting, "")
+		if err != nil {
+			respondRPCJSON(w, rpcID, s.grillAskUnavailable(sid))
+			return
+		}
+		question0 = stored
+		s.publishGrillMessage(question0)
+		s.publishGrillState(waiting)
+		s.notifyGrillAwaiting(waiting, question)
 	}
-	waiting, err := s.stores.Grill().Transition(sid, hubstore.GrillWaiting, "")
-	if err != nil {
-		respondRPCJSON(w, rpcID, s.grillAskUnavailable(sid))
-		return
-	}
-	s.publishGrillMessage(question0)
-	s.publishGrillState(waiting)
-	s.notifyGrillAwaiting(waiting, question)
 
 	// An AFK pre-grill turn has no user waiting, so the opening question parks the
 	// session at once and returns the park sentinel as a plain result — the agent
@@ -448,6 +454,30 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 	s.publishGrillState(finished)
 	respondRPCJSON(w, rpcID, grillToolSuccess(
 		"Session finished with disposition \""+disposition+"\". The proposed outcome is now awaiting the user's review."))
+}
+
+// grillPendingQuestion returns the question the session is already waiting on when
+// it is exactly this one. A provider whose MCP client abandons a long ask_user call
+// retries it with the same question; re-attaching to the pending one keeps a second
+// identical bubble out of the transcript and reopens the wait instead of failing on
+// a waiting-to-waiting transition.
+func (s *Server) grillPendingQuestion(sid int64, question string) (hubstore.GrillMessage, bool) {
+	sess, found, err := s.stores.Grill().Session(sid)
+	if err != nil || !found || sess.State != hubstore.GrillWaiting {
+		return hubstore.GrillMessage{}, false
+	}
+	msgs, err := s.stores.Grill().Messages(sid, 0)
+	if err != nil || len(msgs) == 0 {
+		return hubstore.GrillMessage{}, false
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != hubstore.GrillRoleAgent || last.Kind != hubstore.GrillKindQuestion {
+		return hubstore.GrillMessage{}, false
+	}
+	if grillMessageText(last.Payload) != question {
+		return hubstore.GrillMessage{}, false
+	}
+	return last, true
 }
 
 // grillAnswerAfter returns the first user answer stored after afterID, the answer

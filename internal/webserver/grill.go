@@ -7,29 +7,36 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
-// grillProvider is the provider every grilling turn runs on. The runner spawns the
-// Claude CLI and reads its stream-json contract, so the choice is fixed here rather
-// than stored per session.
-const grillProvider = "claude"
+// grillDefaultProvider is the provider a session with no explicit choice runs on:
+// an empty stored provider resolves to claude, so legacy and in-flight sessions
+// keep working. The choice is locked at create — the runner reads a per-provider
+// stream contract, so it cannot change mid-session.
+const grillDefaultProvider = "claude"
+
+// grillProviders is the ordered set of providers with an interview adapter. Codex is
+// deferred to its own slice, so it stays out even though the agent registry knows it.
+var grillProviders = []string{"claude", "kimi"}
 
 // GrillSessionView is one grilling session as the web panel sees it. IssueID is
 // omitted for an authoring session anchored to the repo alone; IssueTitle then
 // carries the session's seed so the queue can title an issue-less draft.
 // IssueDestination names where a create-apply filed the anchored issue, so a review
 // remounted on a settled session still names the destination it used rather than
-// reverting to the picker default. Provider is fixed to claude while the runner is;
-// ModelOptions carries the switcher's catalog because the inbox never loads the
-// settings config.
+// reverting to the picker default. Provider is the session's locked provider;
+// ModelOptions carries that provider's switcher catalog because the inbox never
+// loads the settings config.
 type GrillSessionView struct {
 	ID               string   `json:"id"`
 	Repo             string   `json:"repo"`
@@ -66,11 +73,21 @@ type GrillDeltaView struct {
 }
 
 // GrillDefaultsView is what an interview started right now would run on: the
-// provider, the repo config's model, and the catalog to pick from. It rides on the
-// list resource so a start surface can offer the choice before a session exists.
+// default provider, its repo-config model, and the catalog to pick from. Providers
+// carries every provider a start surface may offer with its own model catalog, so
+// picking one swaps the model list without another round trip. It rides on the list
+// resource so a start surface can offer the choice before a session exists.
 type GrillDefaultsView struct {
-	Provider     string   `json:"provider"`
-	Model        string   `json:"model,omitempty"`
+	Provider     string                `json:"provider"`
+	Model        string                `json:"model,omitempty"`
+	ModelOptions []string              `json:"model_options,omitempty"`
+	Providers    []GrillProviderOption `json:"providers,omitempty"`
+}
+
+// GrillProviderOption is one provider a not-yet-started interview can run on and the
+// model catalog choosing it swaps to.
+type GrillProviderOption struct {
+	Name         string   `json:"name"`
 	ModelOptions []string `json:"model_options,omitempty"`
 }
 
@@ -94,13 +111,15 @@ type GrillDetailResponse struct {
 
 // GrillCreateRequest is the body of POST /repos/{repo}/grill. IssueID is empty for
 // an authoring session anchored to the repo alone; Idea is the one-line seed for
-// such a session and is ignored when IssueID is set. Model is optional; an empty
-// one resolves to the repo config's grill default at create, so the stored row is
-// the source of truth for the session's model.
+// such a session and is ignored when IssueID is set. Provider and Model are
+// optional; an empty provider runs claude and an empty model resolves to that
+// provider's repo-config default at create, so the stored row is the source of
+// truth for the session's provider and model.
 type GrillCreateRequest struct {
-	IssueID string `json:"issue_id"`
-	Idea    string `json:"idea"`
-	Model   string `json:"model"`
+	IssueID  string `json:"issue_id"`
+	Idea     string `json:"idea"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
 }
 
 // GrillAnswerRequest is the body of POST /grill/{sid}/answer.
@@ -166,14 +185,20 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 		return
 	}
 	issueID := strings.TrimSpace(req.IssueID)
+	provider, errMsg := grillValidateProvider(req.Provider)
+	if errMsg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
+		return
+	}
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
-		model = s.grillModelDefault(repo)
+		model = s.grillModelDefaultFor(repo, provider)
 	}
 	sess, err := s.stores.Grill().Create(hubstore.NewGrillSession{
-		Repo:    repo.Root,
-		IssueID: issueID,
-		Model:   model,
+		Repo:     repo.Root,
+		IssueID:  issueID,
+		Provider: provider,
+		Model:    model,
 	})
 	if err != nil {
 		if errors.Is(err, hubstore.ErrGrillActiveSession) {
@@ -235,10 +260,8 @@ func (s *Server) handleGrillSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGrillAnswer appends a user's answer and resumes the session (POST). A
-// session that cannot take an answer is refused. A parked, stalled or finished
-// session has no live child, so its answer fires a --resume turn; a waiting
-// session's child is still blocked on the MCP ask_user call and takes the answer
-// over that channel.
+// session that cannot take an answer is refused. An answer that no live child is
+// waiting on fires a resume turn instead; see grillResumeSpawns.
 func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -292,7 +315,7 @@ func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publishGrillMessage(msg)
 	s.publishGrillState(resumed)
-	if grillResumeSpawns(prior) && s.startGrill != nil {
+	if s.grillResumeSpawns(sid, prior) && s.startGrill != nil {
 		s.startGrill(r.Context(), resumed)
 	}
 	writeJSON(w, http.StatusOK, GrillAnswerResponse{
@@ -550,13 +573,17 @@ func grillAcceptsAnswer(state string) bool {
 
 // grillResumeSpawns reports whether answering a session in state must spawn a
 // resume turn. A parked, stalled or finished session has no live child, so the
-// answer only reaches the agent by resuming; a waiting session's child is still
-// blocked on the MCP ask_user call and picks the answer up itself, so spawning
-// again would double the turn.
-func grillResumeSpawns(state string) bool {
+// answer only reaches the agent by resuming. A waiting session usually has one
+// blocked on the MCP ask_user call that picks the answer up itself — spawning again
+// would double the turn — but a provider whose MCP client abandons a long call
+// leaves the question pending with no child, so the runner's own view of the turn
+// decides.
+func (s *Server) grillResumeSpawns(sid int64, state string) bool {
 	switch state {
 	case hubstore.GrillParked, hubstore.GrillStalled, hubstore.GrillFinished:
 		return true
+	case hubstore.GrillWaiting:
+		return s.grillTurnActive != nil && !s.grillTurnActive(sid)
 	default:
 		return false
 	}
@@ -591,22 +618,73 @@ func (s *Server) grillSessionView(repo string, sess hubstore.GrillSession) Grill
 		IssueTitle:       sess.IssueTitle,
 		State:            sess.State,
 		SessionChain:     sess.SessionChain,
-		Provider:         grillProvider,
+		Provider:         grillEffectiveProvider(sess.Provider),
 		Model:            s.grillEffectiveModel(sess),
-		ModelOptions:     grillModelOptions(),
+		ModelOptions:     grillModelOptionsFor(sess.Provider),
 		ParkedReason:     sess.ParkedReason,
 		CreatedAt:        sess.CreatedAt,
 		UpdatedAt:        sess.UpdatedAt,
 	}
 }
 
-// grillDefaultsView is the provider and model a session created now would carry.
+// grillDefaultsView is the provider and model a session created now would carry,
+// alongside every provider a start surface may offer with its own model catalog.
 func (s *Server) grillDefaultsView(repo registry.Repo) GrillDefaultsView {
 	return GrillDefaultsView{
-		Provider:     grillProvider,
-		Model:        s.grillModelDefault(repo),
-		ModelOptions: grillModelOptions(),
+		Provider:     grillDefaultProvider,
+		Model:        s.grillModelDefaultFor(repo, grillDefaultProvider),
+		ModelOptions: grillModelOptionsFor(grillDefaultProvider),
+		Providers:    s.grillProviderOptions(repo),
 	}
+}
+
+// grillProviderOptions is the ordered set of providers the pre-start picker offers,
+// each with its model catalog. A provider other than the default is offered only
+// where its CLI resolves on this machine, so the picker never hands out a start that
+// cannot spawn; the default is always listed, being what a session with no choice
+// runs on.
+func (s *Server) grillProviderOptions(repo registry.Repo) []GrillProviderOption {
+	cfg, cfgErr := s.grillConfigFor(repo)
+	out := make([]GrillProviderOption, 0, len(grillProviders))
+	for _, name := range grillProviders {
+		if name != grillDefaultProvider && (cfgErr != nil || !grillProviderInstalled(cfg, name)) {
+			continue
+		}
+		out = append(out, GrillProviderOption{Name: name, ModelOptions: grillModelOptionsFor(name)})
+	}
+	return out
+}
+
+// grillProviderInstalled reports whether a provider's interview CLI resolves on this
+// machine.
+func grillProviderInstalled(cfg config.Config, provider string) bool {
+	_, err := exec.LookPath(grillProviderBin(cfg, provider))
+	return err == nil
+}
+
+// grillEffectiveProvider is the provider a session runs on: its stored choice, or
+// claude for a legacy or unset row.
+func grillEffectiveProvider(provider string) string {
+	if provider == "" {
+		return grillDefaultProvider
+	}
+	return provider
+}
+
+// grillValidateProvider trims and validates a requested interview provider against
+// the agent registry, exactly as handleIssueProviderPin does. An empty value is the
+// claude default and is allowed. It returns the normalized provider and, on an
+// unknown name, a 400 message.
+func grillValidateProvider(provider string) (string, string) {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return "", ""
+	}
+	reg := agent.DefaultRegistry()
+	if _, known := reg.Lookup(provider); !known {
+		return "", fmt.Sprintf("unknown provider %q (expected: %s)", provider, strings.Join(reg.Names(), " | "))
+	}
+	return provider, ""
 }
 
 // grillTrackerFor resolves the repo's effective tracker provider for the list
@@ -620,33 +698,33 @@ func (s *Server) grillTrackerFor(repo registry.Repo) string {
 }
 
 // grillEffectiveModel is the model the session's next turn spawns with: the stored
-// choice, or a legacy row's repo-config fallback.
+// choice, or its provider's repo-config fallback.
 func (s *Server) grillEffectiveModel(sess hubstore.GrillSession) string {
 	if sess.Model != "" {
 		return sess.Model
 	}
 	if r, ok := s.findRepoByRoot(sess.Repo); ok {
-		return s.grillModelDefault(r)
+		return s.grillModelDefaultFor(r, sess.Provider)
 	}
 	return ""
 }
 
-// grillModelDefault resolves the model a session with no explicit choice runs on:
-// the repo config's GRILL_MODEL, then CLAUDE_MODEL, else empty — the Claude CLI
-// default. It mirrors the runner's legacy fallback chain.
-func (s *Server) grillModelDefault(repo registry.Repo) string {
+// grillModelDefaultFor resolves the repo config a session's provider default comes
+// from, so the panel shows the model the next turn spawns with.
+func (s *Server) grillModelDefaultFor(repo registry.Repo, provider string) string {
 	cfg, err := s.grillConfigFor(repo)
 	if err != nil {
 		return ""
 	}
-	if m := strings.TrimSpace(cfg.GrillModel); m != "" {
-		return m
-	}
-	return strings.TrimSpace(cfg.ClaudeModel)
+	return grillModelDefault(cfg, provider)
 }
 
-// grillModelOptions is the Claude model catalog the panel's switcher offers.
-func grillModelOptions() []string {
+// grillModelOptionsFor is the model catalog the panel offers for a provider: the
+// claude tuning models, or kimi's config.toml aliases.
+func grillModelOptionsFor(provider string) []string {
+	if grillEffectiveProvider(provider) == "kimi" {
+		return config.KimiModelAliases()
+	}
 	for _, meta := range config.ProviderTuningMetas() {
 		if meta.Name == "claude" {
 			return meta.Models

@@ -466,3 +466,40 @@ func TestOpenAddsIssueProviderToExisting(t *testing.T) {
 		t.Fatalf("provider = %q, want an existing issue to migrate in unpinned", provider)
 	}
 }
+
+// TestOpenAddsGrillProviderToExisting covers the upgrade path for grill_sessions: a
+// session stored before the migration must come back on the claude default (empty),
+// not with a NULL the store's scan cannot read.
+func TestOpenAddsGrillProviderToExisting(t *testing.T) {
+	home := t.TempDir()
+
+	seed, err := sql.Open("sqlite", Path(home))
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	seedVersion(t, seed, 38)
+	if _, err := seed.Exec(
+		`INSERT INTO grill_sessions(repo, issue_id, state) VALUES('/repos/acme', 'COD-1', 'running')`,
+	); err != nil {
+		t.Fatalf("seed grill session: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	db, err := Open(home)
+	if err != nil {
+		t.Fatalf("Open over a pre-grill-provider database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	var provider string
+	if err := db.SQL().QueryRow(
+		`SELECT provider FROM grill_sessions WHERE issue_id = 'COD-1'`,
+	).Scan(&provider); err != nil {
+		t.Fatalf("read migrated provider: %v", err)
+	}
+	if provider != "" {
+		t.Fatalf("provider = %q, want an existing session to migrate in on the claude default", provider)
+	}
+}
