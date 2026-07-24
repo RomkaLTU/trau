@@ -38,10 +38,18 @@ func NewQueue(db *sql.DB, root string) *Queue {
 // queueState is one repo's whole queue in memory: the file-era `file` shape,
 // loaded, mutated, and written back as a unit.
 type queueState struct {
-	draining bool
-	noResume bool
-	onFault  string
-	items    []queue.Item
+	draining      bool
+	drainingSince time.Time
+	noResume      bool
+	onFault       string
+	items         []queue.Item
+}
+
+// disarm stops the drain and drops its stamp, so a queue that is not draining
+// never reports a loop run in flight.
+func (st *queueState) disarm() {
+	st.draining = false
+	st.drainingSince = time.Time{}
 }
 
 // Load returns the queue in registration order, empty when nothing has been
@@ -56,16 +64,23 @@ func (q *Queue) Load() ([]queue.Item, error) {
 	return st.items, nil
 }
 
-// Snapshot returns the queue in registration order along with whether the hub is
-// draining it, the two facts the Queue view and the drainer both read.
-func (q *Queue) Snapshot() ([]queue.Item, bool, error) {
+// Snapshot returns the queue in registration order along with its run-level
+// metadata, the two halves the Queue view and the drainer both read. One load
+// serves both, so a caller never pairs items from one write with metadata from
+// the next.
+func (q *Queue) Snapshot() ([]queue.Item, queue.Meta, error) {
 	queueMu.Lock()
 	defer queueMu.Unlock()
 	st, err := q.loadImported()
 	if err != nil {
-		return nil, false, err
+		return nil, queue.Meta{}, err
 	}
-	return st.items, st.draining, nil
+	return st.items, queue.Meta{
+		Draining:      st.draining,
+		DrainingSince: st.drainingSince,
+		NoResume:      st.noResume,
+		OnFault:       st.onFault,
+	}, nil
 }
 
 // Add appends item to the end of the queue, stamping it pending and recording
@@ -201,16 +216,18 @@ func (q *Queue) FinishDraining() (bool, error) {
 			return false, nil
 		}
 	}
-	st.draining = false
+	st.disarm()
 	if err := q.persist(st); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-// SetDraining records whether the hub is draining this queue. It survives a
-// serve restart with the rest of the row, so a resumed hub picks draining back
-// up where it left off.
+// SetDraining records whether the hub is draining this queue, stamping when the
+// drain was armed so the run in flight can be timed from it. Arming an
+// already-draining queue is a no-op, so a re-arm mid-run never restarts the
+// clock. It survives a serve restart with the rest of the row, so a resumed hub
+// picks draining back up where it left off.
 func (q *Queue) SetDraining(draining bool) error {
 	queueMu.Lock()
 	defer queueMu.Unlock()
@@ -221,7 +238,12 @@ func (q *Queue) SetDraining(draining bool) error {
 	if st.draining == draining {
 		return nil
 	}
-	st.draining = draining
+	if draining {
+		st.draining = true
+		st.drainingSince = time.Now().UTC()
+	} else {
+		st.disarm()
+	}
 	return q.persist(st)
 }
 
@@ -262,7 +284,7 @@ func (q *Queue) Pause(id, reason string) error {
 			st.items[i].Status = queue.StatusPaused
 			st.items[i].Reason = reason
 			st.items[i].PID = 0
-			st.draining = false
+			st.disarm()
 			return q.persist(st)
 		}
 	}
@@ -305,17 +327,6 @@ func (q *Queue) Move(id string, dir int) ([]queue.Item, error) {
 		return nil, err
 	}
 	return st.items, nil
-}
-
-// Meta returns the queue's run-level configuration.
-func (q *Queue) Meta() (queue.Meta, error) {
-	queueMu.Lock()
-	defer queueMu.Unlock()
-	st, err := q.loadImported()
-	if err != nil {
-		return queue.Meta{}, err
-	}
-	return queue.Meta{Draining: st.draining, NoResume: st.noResume, OnFault: st.onFault}, nil
 }
 
 // SetOptions records the run-level knobs a drain start carries: whether children
@@ -368,7 +379,7 @@ func (q *Queue) Clear() ([]queue.Item, error) {
 	}
 	removed := st.items
 	st.items = []queue.Item{}
-	st.draining = false
+	st.disarm()
 	if err := q.persist(st); err != nil {
 		return nil, err
 	}
@@ -457,14 +468,22 @@ func (q *Queue) importLocked() error {
 func (q *Queue) load() (st queueState, err error) {
 	st.items = []queue.Item{}
 	var draining, noResume int
+	var drainingSince string
 	err = q.db.QueryRow(
-		`SELECT draining, no_resume, on_fault FROM queue_repos WHERE root = ?`, q.root,
-	).Scan(&draining, &noResume, &st.onFault)
+		`SELECT draining, no_resume, on_fault, draining_since FROM queue_repos WHERE root = ?`, q.root,
+	).Scan(&draining, &noResume, &st.onFault, &drainingSince)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return queueState{}, err
 	}
 	st.draining = draining != 0
 	st.noResume = noResume != 0
+	if drainingSince != "" {
+		t, perr := time.Parse(time.RFC3339Nano, drainingSince)
+		if perr != nil {
+			return queueState{}, fmt.Errorf("parse draining_since for %s: %w", q.root, perr)
+		}
+		st.drainingSince = t
+	}
 
 	subs, err := q.loadSubIssues()
 	if err != nil {
@@ -525,10 +544,14 @@ func (q *Queue) persist(st queueState) error {
 	if err != nil {
 		return err
 	}
+	drainingSince := ""
+	if !st.drainingSince.IsZero() {
+		drainingSince = st.drainingSince.UTC().Format(time.RFC3339Nano)
+	}
 	if _, err := tx.Exec(
-		`INSERT INTO queue_repos(root, draining, no_resume, on_fault) VALUES(?, ?, ?, ?)
-		 ON CONFLICT(root) DO UPDATE SET draining = excluded.draining, no_resume = excluded.no_resume, on_fault = excluded.on_fault`,
-		q.root, boolToInt(st.draining), boolToInt(st.noResume), st.onFault,
+		`INSERT INTO queue_repos(root, draining, no_resume, on_fault, draining_since) VALUES(?, ?, ?, ?, ?)
+		 ON CONFLICT(root) DO UPDATE SET draining = excluded.draining, no_resume = excluded.no_resume, on_fault = excluded.on_fault, draining_since = excluded.draining_since`,
+		q.root, boolToInt(st.draining), boolToInt(st.noResume), st.onFault, drainingSince,
 	); err != nil {
 		return errors.Join(err, tx.Rollback())
 	}

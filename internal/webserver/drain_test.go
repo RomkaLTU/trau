@@ -98,11 +98,11 @@ func reasonOf(t *testing.T, s *Server, root, id string) string {
 
 func drainingOf(t *testing.T, s *Server, root string) bool {
 	t.Helper()
-	_, draining, err := s.stores.Queue(root).Snapshot()
+	_, meta, err := s.stores.Queue(root).Snapshot()
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	return draining
+	return meta.Draining
 }
 
 func countStatus(t *testing.T, s *Server, root, status string) int {
@@ -915,7 +915,10 @@ func TestDrainEndpointStartsAndPauses(t *testing.T) {
 	if !out.Draining {
 		t.Error("response draining = false, want true after start")
 	}
-	if _, draining, _ := s.stores.Queue(root).Snapshot(); !draining {
+	if out.DrainingSince == "" {
+		t.Error("response carries no draining_since, want the stamp the Loop page times the run from")
+	}
+	if _, meta, _ := s.stores.Queue(root).Snapshot(); !meta.Draining {
 		t.Error("draining flag not persisted after start")
 	}
 	s.drain.mu.Lock()
@@ -934,7 +937,10 @@ func TestDrainEndpointStartsAndPauses(t *testing.T) {
 	if paused.Draining {
 		t.Error("response draining = true, want false after pause")
 	}
-	if _, draining, _ := s.stores.Queue(root).Snapshot(); draining {
+	if paused.DrainingSince != "" {
+		t.Errorf("response draining_since = %q, want it dropped with the drain", paused.DrainingSince)
+	}
+	if _, meta, _ := s.stores.Queue(root).Snapshot(); meta.Draining {
 		t.Error("draining flag not cleared after pause")
 	}
 }

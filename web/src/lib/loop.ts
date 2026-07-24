@@ -142,7 +142,9 @@ export function projectLoopState({
   instance,
 }: LoopStateInput): LoopState {
   const items = queue?.items ?? []
-  const timeline = queue ? buildTimeline(items, runs, instance) : null
+  const timeline = queue
+    ? buildTimeline(items, runs, instance, queue.draining_since)
+    : null
   return {
     view: loopView(queue?.draining ?? false, instance),
     timeline,

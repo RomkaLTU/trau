@@ -339,19 +339,29 @@ describe('buildTimeline', () => {
     expect(tl.done).toBe(1)
   })
 
-  it('anchors elapsed to the earliest run update before the instance start', () => {
+  it('anchors elapsed to the drain start, not the tickets it has already run', () => {
     const tl = buildTimeline(
       [item({ id: 'COD-1' }), item({ id: 'COD-2' })],
       [
         run({
           ticket: 'COD-1',
           terminal: true,
-          updated_at: '2026-07-13T09:50:00Z',
+          updated_at: '2026-07-11T09:50:00Z',
         }),
       ],
-      instance({ ticket: 'COD-2', started_at: '2026-07-13T10:00:00Z' }),
+      instance({ ticket: 'COD-2', started_at: '2026-07-13T10:05:00Z' }),
+      '2026-07-13T10:00:00Z',
     )
-    expect(tl.elapsedAnchor).toBe('2026-07-13T09:50:00Z')
+    expect(tl.elapsedAnchor).toBe('2026-07-13T10:00:00Z')
+  })
+
+  it('anchors elapsed to the loop process for a run the hub never armed', () => {
+    const tl = buildTimeline(
+      [item({ id: 'COD-1' })],
+      [],
+      instance({ ticket: 'COD-1', started_at: '2026-07-13T10:05:00Z' }),
+    )
+    expect(tl.elapsedAnchor).toBe('2026-07-13T10:05:00Z')
   })
 
   it('keeps every ticket visible when two runs are simultaneously non-terminal', () => {

@@ -32,6 +32,8 @@ export interface QueueItem {
 export interface QueueResponse {
   repo: string
   draining: boolean
+  // When the current drain was armed. Absent unless the queue is draining.
+  draining_since?: string
   shutting_down: boolean
   items: QueueItem[]
 }

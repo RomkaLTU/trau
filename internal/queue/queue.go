@@ -72,11 +72,14 @@ type Item struct {
 }
 
 // Meta is the queue's run-level configuration, read alongside its items to drive
-// the drain: whether to ignore stored checkpoints and what a fault does.
+// the drain: whether the hub is draining it and since when, whether to ignore
+// stored checkpoints, and what a fault does. DrainingSince is zero unless the
+// queue is draining.
 type Meta struct {
-	Draining bool
-	NoResume bool
-	OnFault  string
+	Draining      bool
+	DrainingSince time.Time
+	NoResume      bool
+	OnFault       string
 }
 
 var (

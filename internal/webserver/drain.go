@@ -101,11 +101,7 @@ func (d *drainer) run(ctx context.Context, root string) {
 // enough to table-test.
 func (d *drainer) tick(root string) (drainAction, error) {
 	store := d.srv.stores.Queue(root)
-	items, draining, err := store.Snapshot()
-	if err != nil {
-		return drainWait, err
-	}
-	meta, err := store.Meta()
+	items, meta, err := store.Snapshot()
 	if err != nil {
 		return drainWait, err
 	}
@@ -123,7 +119,7 @@ func (d *drainer) tick(root string) (drainAction, error) {
 		}
 		return drainReconcile, nil
 	}
-	if !draining {
+	if !meta.Draining {
 		return drainStop, nil
 	}
 	next, ok := firstRunnable(items)
