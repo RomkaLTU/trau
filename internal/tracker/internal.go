@@ -144,7 +144,7 @@ func (in *Internal) IssueDetail(ctx context.Context, id string) (IssueDetail, er
 	if err != nil {
 		return IssueDetail{}, err
 	}
-	return IssueDetail{Title: iss.Title, Description: iss.Description}, nil
+	return IssueDetail{Title: iss.Title, Description: iss.Description, Labels: iss.Labels}, nil
 }
 
 // IssueStatus reports the normalized lifecycle status of internal issue id. A

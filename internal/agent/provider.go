@@ -58,9 +58,12 @@ type Spec struct {
 	// skills are found, trau warns the user at onboarding and at loop start.
 	NeedsSkills bool
 
-	// ReportsSkills is true when the provider's Result carries the skills a
+	// ReportsSkills is true when the provider's Result can carry the skills a
 	// session actually loaded, so the pipeline can warn when a build in a
-	// skill-equipped repo used none.
+	// skill-equipped repo confirmed it used none. A provider that never reports
+	// leaves every call in the Unknown state (Result.SkillsKnown false), which
+	// never warns. Only claude reports today; codex exposes no skill signal, and
+	// kimi's /skill support is post-0.29.
 	ReportsSkills bool
 
 	New func(BackendParams) (Runner, error)

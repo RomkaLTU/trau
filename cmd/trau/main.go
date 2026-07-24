@@ -47,6 +47,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/skillrules"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
@@ -1351,57 +1352,59 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 	store := newCheckpointStore(cfg, repoRoot)
 	rec.bind(store)
 	return &pipeline.Pipeline{
-		Runner:              runner,
-		State:               store,
-		Artifacts:           newArtifactStore(cfg, repoRoot),
-		PhaseLogs:           newPhaseLogStore(cfg, repoRoot),
-		LessonLedger:        newLessonStore(cfg, repoRoot),
-		Git:                 pipeline.ExecGit{Repo: repoRoot},
-		GitHub:              pipeline.ExecGitHub{Repo: repoRoot},
-		Tracker:             pm,
-		Tokens:              sessionLedger{Sink: sink, rec: rec},
-		Budget:              budgetLimits(cfg),
-		RunsDir:             cfg.RunsDir,
-		Base:                cfg.BaseBranch,
-		Remote:              cfg.Remote,
-		Prefix:              cfg.IssuePrefix,
-		TrackerProvider:     cfg.EffectiveTrackerProvider(),
-		InternalPrefix:      config.InternalPrefix(cfg.IssuePrefixConfigured, repoName(repoRoot)),
-		MaxRepairs:          cfg.MaxRepairs,
-		MaxBugfixes:         cfg.MaxBugfixes,
-		AgentRetries:        cfg.AgentRetries,
-		AgentBackoff:        cfg.AgentBackoff,
-		Fallback:            fallback,
-		Checks:              verifyChecks,
-		VerifyPanel:         panel,
-		PanelPolicy:         cfg.VerifyPanelPolicy,
-		PanelParallel:       cfg.PanelParallel,
-		BrowserVerify:       cfg.BrowserVerify,
-		AppURL:              cfg.AppURL,
-		AppURLs:             cfg.AppURLs,
-		AutoMerge:           cfg.AutoMerge,
-		MergeMethod:         cfg.MergeMethod,
-		DeterministicCommit: cfg.DeterministicCommit,
-		ExpectedChecks:      cfg.ExpectedChecks,
-		RequireCI:           cfg.RequireCI,
-		RequireRepoChanges:  cfg.RequireRepoChanges,
-		AutoStash:           cfg.AutoStash,
-		LintFix:             cfg.LintFix,
-		LintFixCmd:          cfg.LintFixCmd,
-		Cleanup:             cfg.Cleanup,
-		SkillsExpected:      skillsExpected(repoRoot),
-		RequiredSkills:      cfg.RequiredSkills,
-		CITimeout:           cfg.CITimeout,
-		CIPoll:              cfg.CIPoll,
-		Lessons:             cfg.Lessons,
-		LessonsDistill:      cfg.LessonsDistill,
-		Renderer:            con,
-		Events:              log,
-		FetchPrompts:        newPromptFetcher(cfg, repoRoot),
-		FetchQAAccounts:     newQAFetcher(cfg, repoRoot),
-		SaveQAAccount:       newQASaver(cfg, repoRoot),
-		Steer:               newSteerQueue(cfg, repoRoot),
-		OwnedProject:        cfg.Project,
+		Runner:               runner,
+		State:                store,
+		Artifacts:            newArtifactStore(cfg, repoRoot),
+		PhaseLogs:            newPhaseLogStore(cfg, repoRoot),
+		LessonLedger:         newLessonStore(cfg, repoRoot),
+		Git:                  pipeline.ExecGit{Repo: repoRoot},
+		GitHub:               pipeline.ExecGitHub{Repo: repoRoot},
+		Tracker:              pm,
+		Tokens:               sessionLedger{Sink: sink, rec: rec},
+		Budget:               budgetLimits(cfg),
+		RunsDir:              cfg.RunsDir,
+		Base:                 cfg.BaseBranch,
+		Remote:               cfg.Remote,
+		Prefix:               cfg.IssuePrefix,
+		TrackerProvider:      cfg.EffectiveTrackerProvider(),
+		InternalPrefix:       config.InternalPrefix(cfg.IssuePrefixConfigured, repoName(repoRoot)),
+		MaxRepairs:           cfg.MaxRepairs,
+		MaxBugfixes:          cfg.MaxBugfixes,
+		AgentRetries:         cfg.AgentRetries,
+		AgentBackoff:         cfg.AgentBackoff,
+		Fallback:             fallback,
+		Checks:               verifyChecks,
+		VerifyPanel:          panel,
+		PanelPolicy:          cfg.VerifyPanelPolicy,
+		PanelParallel:        cfg.PanelParallel,
+		BrowserVerify:        cfg.BrowserVerify,
+		AppURL:               cfg.AppURL,
+		AppURLs:              cfg.AppURLs,
+		AutoMerge:            cfg.AutoMerge,
+		MergeMethod:          cfg.MergeMethod,
+		DeterministicCommit:  cfg.DeterministicCommit,
+		ExpectedChecks:       cfg.ExpectedChecks,
+		RequireCI:            cfg.RequireCI,
+		RequireRepoChanges:   cfg.RequireRepoChanges,
+		AutoStash:            cfg.AutoStash,
+		LintFix:              cfg.LintFix,
+		LintFixCmd:           cfg.LintFixCmd,
+		Cleanup:              cfg.Cleanup,
+		SkillsExpected:       skillsExpected(repoRoot),
+		RequiredSkills:       cfg.RequiredSkills,
+		RequiredSkillsVerify: cfg.RequiredSkillsVerify,
+		SkillsMode:           cfg.SkillsMode,
+		CITimeout:            cfg.CITimeout,
+		CIPoll:               cfg.CIPoll,
+		Lessons:              cfg.Lessons,
+		LessonsDistill:       cfg.LessonsDistill,
+		Renderer:             con,
+		Events:               log,
+		FetchPrompts:         newPromptFetcher(cfg, repoRoot),
+		FetchQAAccounts:      newQAFetcher(cfg, repoRoot),
+		SaveQAAccount:        newQASaver(cfg, repoRoot),
+		Steer:                newSteerQueue(cfg, repoRoot),
+		OwnedProject:         cfg.Project,
 
 		RepoRoot:            repoRoot,
 		TimelogEnabled:      cfg.TimelogEnabled,
@@ -3082,16 +3085,45 @@ func emitProviderNotes(reg agent.Registry, used map[string]bool, cfg config.Conf
 	}
 }
 
-// warnMissingRequiredSkills flags REQUIRED_SKILLS names that are not installed
-// in the repo, so a mistyped or uninstalled skill surfaces at loop start rather
-// than silently dropping out of the build prompt. Advisory only — the run
-// proceeds and the build prompt names whichever required skills are present.
+// warnMissingRequiredSkills flags pinned skill names that are not installed in
+// the repo, so a mistyped or uninstalled skill surfaces at loop start rather than
+// silently dropping out of the phase prompt. Advisory only — the run proceeds and
+// the prompt names whichever pinned skills are present, falling back down the
+// resolution chain when none are.
 func warnMissingRequiredSkills(cfg config.Config, con *console.Console) {
-	missing := agent.MissingRequiredSkills(cfg.RepoRoot, cfg.RequiredSkills)
-	if len(missing) == 0 {
+	pins := []struct {
+		key    string
+		names  []string
+		prompt string
+	}{
+		{"REQUIRED_SKILLS", cfg.RequiredSkills, "build"},
+		{"REQUIRED_SKILLS_VERIFY", cfg.RequiredSkillsVerify, "verify"},
+	}
+	for _, pin := range pins {
+		missing := agent.MissingRequiredSkills(cfg.RepoRoot, pin.names)
+		if len(missing) == 0 {
+			continue
+		}
+		con.Logf("⚠ %s not installed in this repo: %s — the %s prompt can only name installed skills; install them or fix %s",
+			pin.key, strings.Join(missing, ", "), pin.prompt, pin.key)
+	}
+	warnSkillRules(cfg, con)
+}
+
+// warnSkillRules flags a routing-rules file the loop could not use as written: a
+// rule naming a skill the repo cannot load, or a file that would not parse at
+// all. Advisory only — an unusable rule drops out and the phase falls back down
+// the resolution chain, so the run proceeds either way.
+func warnSkillRules(cfg config.Config, con *console.Console) {
+	resolver := agent.NewSkillResolver(cfg.RepoRoot, cfg.RequiredSkills, cfg.RequiredSkillsVerify)
+	if err := resolver.RulesError(); err != nil {
+		con.Logf("⚠ %s could not be read: %v — phases resolve skills from REQUIRED_SKILLS and the fallback chain", skillrules.File, err)
 		return
 	}
-	con.Logf("⚠ REQUIRED_SKILLS not installed in this repo: %s — the build prompt can only name installed skills; install them or fix REQUIRED_SKILLS", strings.Join(missing, ", "))
+	if unknown := resolver.UnknownRuleSkills(); len(unknown) > 0 {
+		con.Logf("⚠ %s routes skills this repo does not have: %s — install them or drop their rules",
+			skillrules.File, strings.Join(unknown, ", "))
+	}
 }
 
 // autoInstallSkills installs the curated recommended skill set at loop start

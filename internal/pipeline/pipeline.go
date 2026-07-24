@@ -468,10 +468,19 @@ type Pipeline struct {
 	// repo has skills installed). Nil disables the no-skills warnings.
 	SkillsExpected func(provider string) bool
 	// RequiredSkills names the skills the build prompt tells the agent to load
-	// before implementing (config REQUIRED_SKILLS). Only names installed in the
-	// repo are surfaced in the prompt; the rest stay self-selected. Empty leaves
-	// selection entirely to the agent.
+	// before implementing (config REQUIRED_SKILLS). It is the first step of the
+	// build resolution chain; empty falls through to the project type's
+	// recommended skills, then to every installed skill.
 	RequiredSkills []string
+	// RequiredSkillsVerify names the skills the verify prompt tells the agent to
+	// load (config REQUIRED_SKILLS_VERIFY), alongside the project's test skills
+	// and browser-harness on a browser-verify slice.
+	RequiredSkillsVerify []string
+	// SkillsMode selects skill delivery (config SKILLS_MODE): "instruct" (default)
+	// names the resolved set for the agent to load with the Skill tool; "inject"
+	// delivers each skill's SKILL.md content inline in the build/verify/repair/
+	// bugfix prompt, so delivery is guaranteed and provider-agnostic.
+	SkillsMode string
 	// Cleanup gates the pre-verify slop-cleanup step (config CLEANUP).
 	Cleanup        bool
 	CITimeout      int
@@ -543,14 +552,17 @@ type Pipeline struct {
 
 	// buildProvider/buildSkills capture, from the last build agent call, which
 	// provider ran and which skills its session loaded — the inputs to the
-	// post-build no-skills warning.
-	buildProvider string
-	buildSkills   []string
+	// post-build no-skills warning. buildSkillsKnown is false in the Unknown state,
+	// which suppresses the warning so a lost transcript never reads as a skill-less build.
+	buildProvider    string
+	buildSkills      []string
+	buildSkillsKnown bool
 
 	// verifyProvider/verifySkills mirror the build capture for the primary
 	// verify call — the inputs to the post-verify no-skills warning.
-	verifyProvider string
-	verifySkills   []string
+	verifyProvider    string
+	verifySkills      []string
+	verifySkillsKnown bool
 
 	// qaRoster is the roster the verify prompt was built from, held so the
 	// capture ingest can tell a newly discovered credential from one the
@@ -1356,8 +1368,12 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 		note = resumeNote
 	}
 	note += buildLessonsNote(p.recallLessons(p.lessonQuery(id)))
-	skillsNote := skillsPrompt(p.prompts, agent.InstalledSkillNames(p.RepoRoot), p.RequiredSkills)
-	out, err := p.agentStep(ctx, id, "build", buildInstruction(p.prompts, id, branch, skillsNote, note, p.ticketContext(ctx, id)))
+	ticketCtx, labels := p.ticketContextWithLabels(ctx, id)
+	resolver := p.skillResolver()
+	buildSkills := resolver.Build(agent.SkillContext{Text: skillMatchText(ticketCtx, labels)})
+	buildDelivery := p.resolveSkills(buildSkills, resolver.Installed(), false)
+	p.recordPhaseSkills(id, "build", buildDelivery)
+	out, err := p.agentStep(ctx, id, "build", injectInto(buildDelivery.injection, buildInstruction(p.prompts, id, branch, buildDelivery.note, note, ticketCtx)))
 	if err != nil {
 		return err
 	}
@@ -1367,7 +1383,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	if err := p.assertRepoChanged(ctx, id); err != nil {
 		return err
 	}
-	p.warnBuildWithoutSkills(id)
+	p.warnBuildWithoutSkills(id, buildSkills.Names)
 	p.persistBuildNotes(id)
 	_ = p.State.Set(id, "BUILD_SUMMARY", summarizeBuildOutput(out))
 	if fi, err := os.Stat(buildNotesPath(id)); err == nil && fi.Size() > 0 {
@@ -1382,13 +1398,16 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 
 const noSkillsWarning = "build loaded no skills — the repo has skills installed but the agent used none"
 
-// warnBuildWithoutSkills flags a build that loaded no skills in a repo that has
-// them. Advisory only — the run proceeds; the warning makes a silently
-// skill-less build visible instead of trusting the prompt's self-selection. It
-// prints to the console/TUI and, in serve mode, records a durable event so the
-// web UI surfaces the same warning a headless run would otherwise bury.
-func (p *Pipeline) warnBuildWithoutSkills(id string) {
-	if p.SkillsExpected == nil || len(p.buildSkills) > 0 || !p.SkillsExpected(p.buildProvider) {
+// warnBuildWithoutSkills flags a build that loaded none of the skills its prompt
+// named. Advisory only — the run proceeds. It prints to the console/TUI and, in
+// serve mode, records a durable event so the web UI surfaces the same warning a
+// headless run would otherwise bury. It fires only on a confirmed empty set; the
+// Unknown state (buildSkillsKnown false) stays silent.
+func (p *Pipeline) warnBuildWithoutSkills(id string, named []string) {
+	if p.injectSkills() {
+		return
+	}
+	if p.SkillsExpected == nil || len(named) == 0 || len(p.buildSkills) > 0 || !p.buildSkillsKnown || !p.SkillsExpected(p.buildProvider) {
 		return
 	}
 	p.logf("  ⚠ %s", noSkillsWarning)
@@ -1707,9 +1726,14 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	notesRef, _ := p.activeBuildNotes(id)
 	notesRepair := buildNotesNote(notesRef)
 	lessonsVerify := verifyLessonsNote(p.recallLessons(p.lessonQuery(id)))
-	installed := agent.InstalledSkillNames(p.RepoRoot)
-	skillsVerify := verifySkillsPrompt(p.prompts, installed, note != "")
-	skillsRepair := skillsPrompt(p.prompts, installed, p.RequiredSkills)
+	resolver := p.skillResolver()
+	changed, _ := p.sliceChangedFiles(ctx)
+	skillCtx := agent.SkillContext{Changed: changed}
+	verifySkills := resolver.Verify(skillCtx, note != "")
+	repairSkills := resolver.Repair(skillCtx)
+	verifyDelivery := p.resolveSkills(verifySkills, resolver.Installed(), true)
+	repairDelivery := p.resolveSkills(repairSkills, resolver.Installed(), false)
+	p.recordPhaseSkills(id, "verify", verifyDelivery)
 
 	checksFragment := checks.Render(p.Checks)
 	if n := len(p.Checks); n > 0 {
@@ -1726,12 +1750,12 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	var lastFail, passVerdict verdict
 	for {
 		p.setActivity(id, activity.Verify, "")
-		v, err := p.verifyAttempt(ctx, id, label, handoff, note, qaNote, checksFragment, rubricVerify, lessonsVerify, skillsVerify, ticketCtx)
+		v, err := p.verifyAttempt(ctx, id, label, handoff, note, qaNote, checksFragment, rubricVerify, lessonsVerify, verifyDelivery.note, verifyDelivery.injection, ticketCtx)
 		if err != nil {
 			return err
 		}
 		if label == "verify" {
-			p.warnVerifyWithoutSkills(id)
+			p.warnVerifyWithoutSkills(id, verifySkills.Names)
 		}
 		p.persistVerdict(id, v)
 		if v.Pass {
@@ -1749,7 +1773,8 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				p.logf("  ↳ %s", fl)
 			}
 			p.setActivity(id, activity.Repair, fmt.Sprintf("repair%d", repairAttempt))
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, skillsRepair, ticketCtx)); err != nil {
+			p.recordPhaseSkills(id, "repair", repairDelivery)
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), injectInto(repairDelivery.injection, repairInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, repairDelivery.note, ticketCtx))); err != nil {
 				return err
 			}
 			continue
@@ -1762,7 +1787,8 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				p.logf("  ↳ %s", fl)
 			}
 			p.setActivity(id, activity.Bugfix, fmt.Sprintf("bugfix%d", bugfixAttempt))
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, skillsRepair, ticketCtx)); err != nil {
+			p.recordPhaseSkills(id, "bugfix", repairDelivery)
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), injectInto(repairDelivery.injection, bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, repairDelivery.note, ticketCtx))); err != nil {
 				return err
 			}
 			continue
@@ -1779,7 +1805,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 		}
 		return p.giveUp(ctx, id, reason)
 	}
-	if err := p.gateBrowserVerify(ctx, id, passVerdict, handoff, qaNote, checksFragment, rubricVerify, lessonsVerify, skillsVerify, ticketCtx); err != nil {
+	if err := p.gateBrowserVerify(ctx, id, passVerdict, handoff, qaNote, checksFragment, rubricVerify, lessonsVerify, verifyDelivery.note, verifyDelivery.injection, ticketCtx); err != nil {
 		return err
 	}
 	if repairAttempt > 0 || bugfixAttempt > 0 {
@@ -1796,12 +1822,15 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 
 const verifyNoSkillsWarning = "verify loaded no skills — the repo has skills installed but the agent used none"
 
-// warnVerifyWithoutSkills flags a primary verify attempt that loaded no skills
-// in a repo that has them, mirroring warnBuildWithoutSkills: a console/TUI line
+// warnVerifyWithoutSkills flags a primary verify attempt that loaded none of the
+// skills its prompt named, mirroring warnBuildWithoutSkills: a console/TUI line
 // plus, in serve mode, a durable verify_no_skills event. Called once per Verify,
 // after the first attempt only, so a run emits the event at most once.
-func (p *Pipeline) warnVerifyWithoutSkills(id string) {
-	if p.SkillsExpected == nil || len(p.verifySkills) > 0 || !p.SkillsExpected(p.verifyProvider) {
+func (p *Pipeline) warnVerifyWithoutSkills(id string, named []string) {
+	if p.injectSkills() {
+		return
+	}
+	if p.SkillsExpected == nil || len(named) == 0 || len(p.verifySkills) > 0 || !p.verifySkillsKnown || !p.SkillsExpected(p.verifyProvider) {
 		return
 	}
 	p.logf("  ⚠ %s", verifyNoSkillsWarning)
@@ -1826,7 +1855,7 @@ const noBrowserWarning = "browser verify skipped on a UI slice — the verifier 
 // a still-undriven UI slice pauses blamelessly, carrying the verdict's
 // browser_notes as the reason. A browser skip is an environment/config gap, never
 // a code defect, so it never routes into the repair loop.
-func (p *Pipeline) gateBrowserVerify(ctx context.Context, id string, v verdict, handoff, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) error {
+func (p *Pipeline) gateBrowserVerify(ctx context.Context, id string, v verdict, handoff, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx string) error {
 	if p.BrowserVerify == "never" || p.BrowserVerify == "" {
 		return nil
 	}
@@ -1849,7 +1878,7 @@ func (p *Pipeline) gateBrowserVerify(ctx context.Context, id string, v verdict, 
 
 	p.logf("  ⚠ browser verify required but the UI slice was not driven — re-verifying once (must drive %s)", appURL)
 	p.setActivity(id, activity.Verify, "browser")
-	v2, err := p.verifyAttempt(ctx, id, "verify-browser", handoff, browserDriveNote(appURL), qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
+	v2, err := p.verifyAttempt(ctx, id, "verify-browser", handoff, browserDriveNote(appURL), qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx)
 	if err != nil {
 		return err
 	}
@@ -2666,9 +2695,9 @@ func (p *Pipeline) agentPhaseOn(ctx context.Context, id, phase, prompt string, r
 	stop()
 	switch phase {
 	case "build":
-		p.buildSkills, p.buildProvider = res.Skills, phaseProvider(runner, phase)
+		p.buildSkills, p.buildProvider, p.buildSkillsKnown = res.Skills, phaseProvider(runner, phase), res.SkillsKnown
 	case "verify":
-		p.verifySkills, p.verifyProvider = res.Skills, phaseProvider(runner, phase)
+		p.verifySkills, p.verifyProvider, p.verifySkillsKnown = res.Skills, phaseProvider(runner, phase), res.SkillsKnown
 	}
 	p.putPhaseLog(id, phase, res.Final)
 	return res.Final, err
@@ -3062,47 +3091,141 @@ func (p *Pipeline) setTitle(title string) {
 
 const resumeNote = " A previous attempt may have left partial work on this branch; continue from it rather than starting over."
 
-// skillsPrompt renders the build-prompt sentence that tells the agent which
-// installed skills to load. With no installed skills the template falls back
-// to its generic self-selection wording (Claude Code stopped honoring generic
-// self-selection in 2.1.202, which is why a skill-equipped repo names its
-// skills explicitly). Required names that are not installed are dropped here
-// (they can't be loaded) and surfaced by the loop-start warning instead.
-func skillsPrompt(r prompts.Renderer, installed, required []string) string {
-	return r.Render("skills", prompts.SkillsData{
-		Installed: installed,
-		Required:  intersect(required, installed),
-	})
+func (p *Pipeline) skillResolver() agent.SkillResolver {
+	return agent.NewSkillResolver(p.RepoRoot, p.RequiredSkills, p.RequiredSkillsVerify)
 }
 
-// verifySkillsPrompt renders the verify-prompt skills sentence: the installed
-// list plus the auto-required set — the project's test skill(s) derived from
-// the installed names, and browser-harness when browser verify is active for
-// the slice. browser-harness is required even when not repo-installed: the
-// harness loads from outside the repo.
-func verifySkillsPrompt(r prompts.Renderer, installed []string, browserActive bool) string {
-	required := agent.TestSkillNames(installed)
-	if browserActive {
-		required = append(required, "browser-harness")
+// skillMatchText is what a build's routing rules match against: the ticket block
+// the prompt already carries, plus the ticket's labels.
+func skillMatchText(ticketCtx string, labels []string) string {
+	if len(labels) == 0 {
+		return ticketCtx
 	}
-	return r.Render("verify_skills", prompts.SkillsData{
-		Installed: installed,
-		Required:  required,
-	})
+	return ticketCtx + "\n" + strings.Join(labels, " ")
 }
 
-func intersect(want, have []string) []string {
-	set := make(map[string]struct{}, len(have))
-	for _, h := range have {
-		set[h] = struct{}{}
-	}
-	var out []string
-	for _, w := range want {
-		if _, ok := set[w]; ok {
-			out = append(out, w)
+const (
+	skillsModeInstruct = "instruct"
+	skillsModeInject   = "inject"
+)
+
+// injectSkills reports whether resolved skill sets are delivered by injecting
+// their SKILL.md content into the phase prompt (SKILLS_MODE=inject) rather than
+// by naming them for the agent to load with the Skill tool (the default).
+func (p *Pipeline) injectSkills() bool { return p.SkillsMode == skillsModeInject }
+
+// phaseSkills is a phase's resolved set turned into what its prompt carries. In
+// instruct mode note is the Skill-tool sentence and injection is empty; in inject
+// mode note is empty, injection is the inline SKILL.md block, and activated names
+// the skills whose content that block actually delivered — the run receipt.
+type phaseSkills struct {
+	set       agent.SkillSet
+	note      string
+	injection string
+	activated []string
+}
+
+// resolveSkills turns a resolved set into its delivery for the current mode. The
+// injection rides the prompt outside the phase template (see agentStep call
+// sites), so a prompt-catalog override cannot drop it; the Skill-tool sentence is
+// dropped entirely in inject mode.
+func (p *Pipeline) resolveSkills(set agent.SkillSet, installed []string, verify bool) phaseSkills {
+	if !p.injectSkills() {
+		render := skillsPrompt
+		if verify {
+			render = verifySkillsPrompt
 		}
+		return phaseSkills{set: set, note: render(p.prompts, installed, set.Names)}
 	}
-	return out
+	injected := agent.LoadInjectableSkills(p.RepoRoot, set.Names)
+	return phaseSkills{
+		set:       set,
+		injection: skillInjectionBlock(injected),
+		activated: injectedSkillNames(injected),
+	}
+}
+
+// recordPhaseSkills files a phase attempt's skill set: the planned set in
+// instruct mode, or the deterministically injected (Activated) set plus its byte
+// size in inject mode. A phase that delivers nothing files nothing.
+func (p *Pipeline) recordPhaseSkills(id, phase string, ps phaseSkills) {
+	if p.Events == nil {
+		return
+	}
+	if p.injectSkills() {
+		if len(ps.activated) == 0 {
+			return
+		}
+		p.logf("  ↳ injected %d skill(s), %s into %s", len(ps.activated), fmtBytes(int64(len(ps.injection))), phase)
+		p.Events.Emit(event.KindSkillsPlanned, phase, "activated skills: "+strings.Join(ps.activated, ", "), map[string]any{
+			"ticket": id,
+			"skills": ps.activated,
+			"source": ps.set.Source,
+			"mode":   skillsModeInject,
+			"bytes":  len(ps.injection),
+		})
+		return
+	}
+	if len(ps.set.Names) == 0 {
+		return
+	}
+	p.Events.Emit(event.KindSkillsPlanned, phase, "planned skills: "+strings.Join(ps.set.Names, ", "), map[string]any{
+		"ticket": id,
+		"skills": ps.set.Names,
+		"source": ps.set.Source,
+		"mode":   skillsModeInstruct,
+	})
+}
+
+// skillInjectionBlock renders the resolved set's SKILL.md contents as a
+// self-contained prompt block: each skill under its own heading, preceded by the
+// repo-relative path to its SKILL.md so the agent can open the skill's
+// references/ and asset files itself. Empty when nothing injectable resolves.
+func skillInjectionBlock(skills []agent.InjectedSkill) string {
+	if len(skills) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("The skills below are activated for this phase — their full SKILL.md contents are included inline, so you do not need the Skill tool to load them. Each is preceded by the repo-relative path to its SKILL.md; read that directory's referenced files yourself when a skill points to them.")
+	for _, s := range skills {
+		b.WriteString("\n\n===== SKILL: " + s.Name + " (" + s.Path + ") =====\n")
+		b.WriteString(strings.TrimRight(s.Body, "\n"))
+	}
+	return b.String()
+}
+
+func injectedSkillNames(skills []agent.InjectedSkill) []string {
+	if len(skills) == 0 {
+		return nil
+	}
+	names := make([]string, len(skills))
+	for i, s := range skills {
+		names[i] = s.Name
+	}
+	return names
+}
+
+// injectInto prepends a skill-injection block to a rendered phase prompt. The
+// block lands outside the phase template, so it survives a prompt-catalog
+// override that drops the template's skills note. A no-op on an empty block.
+func injectInto(injection, prompt string) string {
+	if injection == "" {
+		return prompt
+	}
+	return injection + "\n\n" + prompt
+}
+
+// skillsPrompt renders the build-prompt sentence naming the skills to load. Only
+// a repo with no installed skills renders an empty set, where the template falls
+// back to generic self-selection wording (Claude Code stopped honoring that in
+// 2.1.202, which is why every other repo names its skills explicitly).
+func skillsPrompt(r prompts.Renderer, installed, resolved []string) string {
+	return r.Render("skills", prompts.SkillsData{Installed: installed, Required: resolved})
+}
+
+// verifySkillsPrompt renders the verify-prompt sentence naming the skills to load.
+func verifySkillsPrompt(r prompts.Renderer, installed, resolved []string) string {
+	return r.Render("verify_skills", prompts.SkillsData{Installed: installed, Required: resolved})
 }
 
 func buildInstruction(r prompts.Renderer, id, branch, skillsNote, note, ticketCtx string) string {
@@ -3126,16 +3249,25 @@ func buildInstruction(r prompts.Renderer, id, branch, skillsNote, note, ticketCt
 // capability or the API read fails — i.e. only when the per-repo credentials are
 // configured and working does the content get injected.
 func (p *Pipeline) ticketContext(ctx context.Context, id string) string {
+	note, _ := p.ticketContextWithLabels(ctx, id)
+	return note
+}
+
+// ticketContextWithLabels returns the injected ticket block alongside the
+// ticket's label names, from a single tracker read: the block goes to the
+// prompt, the labels only to skill routing, which matches rule keywords against
+// them as well as the title and description.
+func (p *Pipeline) ticketContextWithLabels(ctx context.Context, id string) (string, []string) {
 	detailer, ok := p.Tracker.(tracker.IssueDetailer)
 	if !ok {
-		return ""
+		return "", nil
 	}
 	detail, err := detailer.IssueDetail(ctx, id)
 	if err != nil {
 		p.logf("  ticket %s content not injected (agent will read it via MCP): %v", id, err)
-		return ""
+		return "", nil
 	}
-	return ticketContextNote(id, detail, p.materializeAttachments(ctx, id, detail.Attachments))
+	return ticketContextNote(id, detail, p.materializeAttachments(ctx, id, detail.Attachments)), detail.Labels
 }
 
 // ticketContextNote renders the injected ticket block — title, description,
@@ -3705,17 +3837,17 @@ type panelResult struct {
 // A non-empty qaNote means the QA gate is active, so the attempt is bracketed by
 // the credential-capture side channel — deferred, to cover the panel path, the
 // browser re-verify, and a fatal return alike.
-func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) (verdict, error) {
+func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx string) (verdict, error) {
 	if qaNote != "" {
 		_ = os.Remove(qaCapturePath(id))
 		defer p.ingestQACapture(ctx, id)
 	}
 	if len(p.VerifyPanel) > 0 {
-		return p.runPanel(ctx, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
+		return p.runPanel(ctx, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx)
 	}
 	verdictPath := verifyPath(id)
 	_ = os.Remove(verdictPath)
-	prompt := verifyTail(p.prompts, id, handoff, verdictPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
+	prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, verdictPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx))
 	_, agentErr := p.agentStep(ctx, id, label, prompt)
 	// A provider pause (rate/usage limit) or budget give-up must propagate, not be
 	// recorded as a verify failure — otherwise a transient 429 burns repair/bugfix
@@ -3753,14 +3885,14 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 // give-up from any member is propagated so the loop stops cleanly (the ticket
 // stays resumable on its branch) instead of being recorded as a dissenting fail;
 // a plain timeout/crash counts as that member failing.
-func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) (verdict, error) {
+func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx string) (verdict, error) {
 	results := make([]panelResult, len(p.VerifyPanel))
 	member := func(ctx context.Context, i int) error {
 		m := p.VerifyPanel[i]
 		memberPath := verifyMemberPath(id, m.Name)
 		_ = os.Remove(memberPath)
 		memberLabel := label + "-" + m.Name
-		prompt := verifyTail(p.prompts, id, handoff, memberPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
+		prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, memberPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx))
 		_, agentErr := p.agentStepOn(ctx, id, memberLabel, prompt, m.Runner)
 		if agentErr != nil && isFatalAgentErr(agentErr) {
 			return agentErr

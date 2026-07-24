@@ -7,36 +7,112 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/skillrules"
 )
 
 const (
 	skillsRegistryURL = "https://skills.sh/api/search"
 	skillsPageBase    = "https://skills.sh/"
 	skillsSearchTTL   = 60 * time.Second
+
+	// skillCoverageDays is the activation window the panel reads run evidence
+	// over: a skill no call in it loaded reads as dead, not merely quiet.
+	skillCoverageDays = 30
+
+	// skillCoveragePhases caps the plan-versus-loaded list at a page's worth of
+	// the most recent phase attempts.
+	skillCoveragePhases = 12
 )
 
 var (
 	defaultInstallSkill = agent.InstallSkillPackage
 	defaultRemoveSkill  = agent.RemoveSkill
 	skillsHTTPClient    = &http.Client{Timeout: 10 * time.Second}
+	skillProviders      = agent.DefaultRegistry()
 )
 
 // SkillView is one installed skill as the panel shows it: its directory name
-// enriched with the source and pin metadata from skills-lock.json when the repo
-// has a lockfile. A skill dropped in by hand carries no provenance and reads as
-// unpinned.
+// enriched with its SKILL.md frontmatter, the routing scope in force for it, and
+// the source and pin metadata from skills-lock.json when the repo has a
+// lockfile. A skill dropped in by hand carries no provenance and reads as
+// unpinned; one whose SKILL.md is missing or unreadable reads as invalid, so a
+// broken install is visible instead of counting as healthy.
 type SkillView struct {
-	Name       string `json:"name"`
-	Source     string `json:"source,omitempty"`
-	SourceType string `json:"source_type,omitempty"`
-	SkillPath  string `json:"skill_path,omitempty"`
-	Pinned     bool   `json:"pinned"`
+	Name              string   `json:"name"`
+	DeclaredName      string   `json:"declared_name,omitempty"`
+	Description       string   `json:"description,omitempty"`
+	SuggestedKeywords []string `json:"suggested_keywords,omitempty"`
+	Invalid           bool     `json:"invalid,omitempty"`
+	Scope             string   `json:"scope"`
+	Source            string   `json:"source,omitempty"`
+	SourceType        string   `json:"source_type,omitempty"`
+	SkillPath         string   `json:"skill_path,omitempty"`
+	Pinned            bool     `json:"pinned"`
+	Loads             int      `json:"loads"`
+	LastLoaded        string   `json:"last_loaded,omitempty"`
+}
+
+// SkillRuleView is one repo-owned routing rule as the panel edits it.
+type SkillRuleView struct {
+	Skill    string   `json:"skill"`
+	Scope    string   `json:"scope"`
+	Phases   []string `json:"phases,omitempty"`
+	Paths    []string `json:"paths,omitempty"`
+	Keywords []string `json:"keywords,omitempty"`
+}
+
+// SkillPlanView is the set one phase would name for a run with no ticket and no
+// diff — every auto rule reads as non-matching, so the plan shows the repo's
+// floor rather than any particular slice's set. Fallback marks a phase that
+// nothing scoped to it, left to the chain's backstop.
+type SkillPlanView struct {
+	Phase    string            `json:"phase"`
+	Skills   []string          `json:"skills"`
+	Source   string            `json:"source"`
+	Origins  map[string]string `json:"origins,omitempty"`
+	Fallback bool              `json:"fallback,omitempty"`
+}
+
+// SkillPhaseView pairs one recent phase attempt's planned set with the skills
+// its agent reported loading. Unknown marks an attempt whose provider does not
+// report skill usage, or that no recorded call could be matched to: its loaded
+// side is unrecoverable rather than empty.
+type SkillPhaseView struct {
+	Ticket    string   `json:"ticket"`
+	Phase     string   `json:"phase"`
+	TS        string   `json:"ts"`
+	Provider  string   `json:"provider,omitempty"`
+	Planned   []string `json:"planned"`
+	Loaded    []string `json:"loaded"`
+	Unknown   bool     `json:"unknown,omitempty"`
+	Activated bool     `json:"activated,omitempty"`
+}
+
+// SkillCoverageView is the repo's activation evidence over the last Days days.
+// HasData is false when nothing in the window could report skill usage — no runs
+// at all, or only providers that never report it — and every skill's load count
+// then says nothing about whether it is dead. Silent names the providers that ran
+// without reporting.
+type SkillCoverageView struct {
+	Days    int              `json:"days"`
+	HasData bool             `json:"has_data"`
+	Silent  []string         `json:"silent_providers,omitempty"`
+	Phases  []SkillPhaseView `json:"phases"`
+}
+
+// SkillRulesRequest is the body of PUT /repos/{repo}/skills/rules: the repo's
+// whole rule list, replacing whatever the rules file held.
+type SkillRulesRequest struct {
+	Rules []SkillRuleView `json:"rules"`
 }
 
 // SkillRecommendationView is one recommended-but-missing starter skill for the
@@ -49,13 +125,21 @@ type SkillRecommendationView struct {
 
 // SkillsResponse is the /api/v1/repos/{repo}/skills readiness snapshot: the
 // detected project type, the installed skills, the recommended starters still
-// missing, and the repo's pinned REQUIRED_SKILLS.
+// missing, the repo's pinned REQUIRED_SKILLS, its routing rules, and the set
+// each phase would resolve to under them. Unknown names the rules point at a
+// skill the repo cannot load; RulesError reports a rules file that would not
+// parse, which leaves every phase on the fallback chain.
 type SkillsResponse struct {
 	Repo        string                    `json:"repo"`
 	ProjectType string                    `json:"project_type"`
 	Installed   []SkillView               `json:"installed"`
 	Recommended []SkillRecommendationView `json:"recommended"`
 	Required    []string                  `json:"required"`
+	Rules       []SkillRuleView           `json:"rules"`
+	Plan        []SkillPlanView           `json:"plan"`
+	Coverage    SkillCoverageView         `json:"coverage"`
+	Unknown     []string                  `json:"unknown,omitempty"`
+	RulesError  string                    `json:"rules_error,omitempty"`
 }
 
 // SkillInstallRequest is the body of POST /repos/{repo}/skills: the package spec
@@ -169,15 +253,29 @@ func (s *Server) handleSkillsSearch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) skillsSnapshot(repo registry.Repo) SkillsResponse {
 	readiness := agent.CheckSkillReadiness(repo.Root)
 	lock := agent.ReadSkillsLock(repo.Root)
+	required, requiredVerify := s.requiredSkills(repo)
+	resolver := agent.NewSkillResolver(repo.Root, required, requiredVerify)
+	scopes := ruleScopes(resolver.Rules())
 
-	names := agent.InstalledSkillNames(repo.Root)
-	installed := make([]SkillView, 0, len(names))
-	for _, name := range names {
-		v := SkillView{Name: name}
-		if meta, ok := lock[name]; ok {
-			v.Source = meta.Source
-			v.SourceType = meta.SourceType
-			v.SkillPath = meta.SkillPath
+	coverage, loads := s.skillCoverage(repo.Root)
+
+	metas := agent.InstalledSkills(repo.Root)
+	installed := make([]SkillView, 0, len(metas))
+	for _, meta := range metas {
+		v := SkillView{
+			Name:              meta.Name,
+			DeclaredName:      meta.DeclaredName,
+			Description:       meta.Description,
+			SuggestedKeywords: agent.SuggestedKeywords(meta.Description),
+			Invalid:           meta.Invalid,
+			Scope:             scopes[meta.Name],
+			Loads:             loads[meta.Name].count,
+			LastLoaded:        loads[meta.Name].lastTS,
+		}
+		if lockMeta, ok := lock[meta.Name]; ok {
+			v.Source = lockMeta.Source
+			v.SourceType = lockMeta.SourceType
+			v.SkillPath = lockMeta.SkillPath
 			v.Pinned = true
 		}
 		installed = append(installed, v)
@@ -188,22 +286,235 @@ func (s *Server) skillsSnapshot(repo registry.Repo) SkillsResponse {
 		recommended = append(recommended, SkillRecommendationView{Name: rec.Name, Package: rec.Package, URL: rec.URL})
 	}
 
-	return SkillsResponse{
+	resp := SkillsResponse{
 		Repo:        repo.Name,
 		ProjectType: readiness.ProjectType,
 		Installed:   installed,
 		Recommended: recommended,
-		Required:    s.requiredSkills(repo),
+		Required:    required,
+		Rules:       ruleViews(resolver.Rules()),
+		Plan:        skillPlan(resolver),
+		Coverage:    coverage,
+		Unknown:     resolver.UnknownRuleSkills(),
+	}
+	if err := resolver.RulesError(); err != nil {
+		resp.RulesError = err.Error()
+	}
+	return resp
+}
+
+func skillPlan(resolver agent.SkillResolver) []SkillPlanView {
+	return []SkillPlanView{
+		planView(skillrules.PhaseBuild, resolver.Build(agent.SkillContext{})),
+		planView(skillrules.PhaseVerify, resolver.Verify(agent.SkillContext{}, false)),
+		planView(skillrules.PhaseRepair, resolver.Repair(agent.SkillContext{})),
 	}
 }
 
-func (s *Server) requiredSkills(repo registry.Repo) []string {
+func planView(phase string, set agent.SkillSet) SkillPlanView {
+	return SkillPlanView{
+		Phase:    phase,
+		Skills:   orEmpty(set.Names),
+		Source:   set.Source,
+		Origins:  set.Origins,
+		Fallback: set.Source == agent.SkillsSourceRecommended || set.Source == agent.SkillsSourceInstalled,
+	}
+}
+
+func ruleViews(set skillrules.Set) []SkillRuleView {
+	out := make([]SkillRuleView, 0, len(set.Rules))
+	for _, r := range set.Rules {
+		out = append(out, SkillRuleView{
+			Skill:    r.Skill,
+			Scope:    skillrules.NormalizeScope(r.Scope),
+			Phases:   r.Phases,
+			Paths:    r.Paths,
+			Keywords: r.Keywords,
+		})
+	}
+	return out
+}
+
+func ruleScopes(set skillrules.Set) map[string]string {
+	scopes := make(map[string]string, len(set.Rules))
+	for _, r := range set.Rules {
+		name := strings.TrimSpace(r.Skill)
+		if name != "" {
+			scopes[name] = skillrules.NormalizeScope(r.Scope)
+		}
+	}
+	return scopes
+}
+
+func orEmpty(names []string) []string {
+	if names == nil {
+		return []string{}
+	}
+	return names
+}
+
+// skillLoad is one skill's evidence inside the coverage window.
+type skillLoad struct {
+	count  int
+	lastTS string
+}
+
+// skillCoverage reads the repo's recent activation evidence: how often each
+// skill was loaded and when it last was, plus the recent phase attempts with
+// their planned set beside the loaded one. A provider that never reports skill
+// usage contributes no evidence, so a repo running only those reads as "no data"
+// rather than as one whose every skill went unused.
+func (s *Server) skillCoverage(root string) (SkillCoverageView, map[string]skillLoad) {
+	view := SkillCoverageView{Days: skillCoverageDays, Phases: []SkillPhaseView{}}
+	loads := map[string]skillLoad{}
+
+	cutoff := time.Now().AddDate(0, 0, -skillCoverageDays)
+	calls, err := s.stores.Tokens().SkillCalls(root, cutoff.Format(time.DateOnly))
+	if err != nil {
+		return view, loads
+	}
+	for _, c := range calls {
+		if !reportsSkills(c.Provider) {
+			view.Silent = appendSilentProvider(view.Silent, c.Provider)
+			continue
+		}
+		view.HasData = true
+		for _, name := range c.Skills {
+			l := loads[name]
+			l.count++
+			if c.TS > l.lastTS {
+				l.lastTS = c.TS
+			}
+			loads[name] = l
+		}
+	}
+	view.Phases = s.skillPhases(root, cutoff, calls)
+	return view, loads
+}
+
+// skillPhases pairs each recent planned set with the call that ran under it —
+// the first call for the same ticket whose phase label starts with the planned
+// phase, so a verify-retry2 call pairs with the verify plan — newest first.
+func (s *Server) skillPhases(root string, since time.Time, calls []hubstore.SkillCall) []SkillPhaseView {
+	evs, err := s.stores.Events().Query(root, hubstore.EventFilter{
+		Kind:  event.KindSkillsPlanned,
+		Since: since,
+		Limit: skillCoveragePhases,
+	})
+	if err != nil {
+		return []SkillPhaseView{}
+	}
+	out := make([]SkillPhaseView, 0, len(evs))
+	for i := len(evs) - 1; i >= 0; i-- {
+		ev := evs[i]
+		ticket, planned, activated := plannedSkills(ev.Fields)
+		v := SkillPhaseView{
+			Ticket:    ticket,
+			Phase:     ev.Phase,
+			TS:        ev.TS,
+			Planned:   planned,
+			Loaded:    []string{},
+			Unknown:   true,
+			Activated: activated,
+		}
+		if c, ok := callUnderPlan(calls, ticket, ev.Phase, ev.TS); ok {
+			v.Provider = c.Provider
+			v.Loaded = orEmpty(c.Skills)
+			v.Unknown = !reportsSkills(c.Provider)
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+func callUnderPlan(calls []hubstore.SkillCall, ticket, phase, ts string) (hubstore.SkillCall, bool) {
+	planned := wallClock(ts)
+	for _, c := range calls {
+		if c.Ticket == ticket && wallClock(c.TS) >= planned && strings.HasPrefix(c.Phase, phase) {
+			return c, true
+		}
+	}
+	return hubstore.SkillCall{}, false
+}
+
+// wallClock trims a timestamp to the local wall clock both sides share: events
+// carry an RFC3339 offset and token calls do not, so only the prefix compares.
+func wallClock(ts string) string {
+	if len(ts) > len("2006-01-02T15:04:05") {
+		return ts[:len("2006-01-02T15:04:05")]
+	}
+	return ts
+}
+
+func plannedSkills(fields string) (ticket string, skills []string, activated bool) {
+	var f struct {
+		Ticket string   `json:"ticket"`
+		Skills []string `json:"skills"`
+		Mode   string   `json:"mode"`
+	}
+	if err := json.Unmarshal([]byte(fields), &f); err != nil {
+		return "", []string{}, false
+	}
+	return f.Ticket, orEmpty(f.Skills), f.Mode == "inject"
+}
+
+func reportsSkills(provider string) bool {
+	spec, ok := skillProviders.Lookup(provider)
+	return ok && spec.ReportsSkills
+}
+
+func appendSilentProvider(dst []string, provider string) []string {
+	if provider == "" || slices.Contains(dst, provider) {
+		return dst
+	}
+	return append(dst, provider)
+}
+
+func (s *Server) requiredSkills(repo registry.Repo) (required, requiredVerify []string) {
 	projectPath, userPath := s.repoConfigPaths(repo)
 	cfg, err := config.LoadLayered(projectPath, userPath, "", "")
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	return cfg.RequiredSkills
+	return cfg.RequiredSkills, cfg.RequiredSkillsVerify
+}
+
+func (s *Server) handleSkillRules(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		w.Header().Set("Allow", http.MethodPut)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	repo, ok := s.findRepo(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	var req SkillRulesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	set := skillrules.Set{Rules: make([]skillrules.Rule, 0, len(req.Rules))}
+	for _, v := range req.Rules {
+		name := strings.TrimSpace(v.Skill)
+		if name == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "every rule needs a skill"})
+			return
+		}
+		set.Rules = append(set.Rules, skillrules.Rule{
+			Skill:    name,
+			Scope:    skillrules.NormalizeScope(v.Scope),
+			Phases:   v.Phases,
+			Paths:    v.Paths,
+			Keywords: v.Keywords,
+		})
+	}
+	if err := skillrules.Save(repo.Root, set); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.skillsSnapshot(repo))
 }
 
 func (s *Server) searchSkills(ctx context.Context, q, owner string) SkillsSearchResponse {

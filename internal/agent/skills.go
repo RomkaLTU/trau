@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -64,11 +65,28 @@ func CheckSkills(repoRoot string) (found bool, dirs []string) {
 // .claude/skills entries symlink into .agents/skills, so names are resolved
 // through symlinks and collapsed to one entry per name.
 func InstalledSkillNames(repoRoot string) []string {
+	return sortedSkillNames(installedSkillDirs(repoRoot))
+}
+
+func sortedSkillNames(dirs map[string]string) []string {
+	if len(dirs) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(dirs))
+	for name := range dirs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// installedSkillDirs maps each installed skill name to the directory holding it,
+// first search path wins.
+func installedSkillDirs(repoRoot string) map[string]string {
 	if repoRoot == "" {
 		return nil
 	}
-	seen := map[string]struct{}{}
-	var names []string
+	dirs := map[string]string{}
 	for _, rel := range SkillSearchPaths {
 		dir := filepath.Join(repoRoot, rel)
 		entries, err := os.ReadDir(dir)
@@ -80,19 +98,18 @@ func InstalledSkillNames(repoRoot string) []string {
 			if strings.HasPrefix(name, ".") {
 				continue
 			}
-			if _, ok := seen[name]; ok {
+			if _, ok := dirs[name]; ok {
 				continue
 			}
-			fi, err := os.Stat(filepath.Join(dir, name))
+			path := filepath.Join(dir, name)
+			fi, err := os.Stat(path)
 			if err != nil || !fi.IsDir() {
 				continue
 			}
-			seen[name] = struct{}{}
-			names = append(names, name)
+			dirs[name] = path
 		}
 	}
-	sort.Strings(names)
-	return names
+	return dirs
 }
 
 // TestSkillNames returns the installed skill names that read as the project's
@@ -122,22 +139,19 @@ func hasTestToken(name string) bool {
 	return false
 }
 
-// MissingRequiredSkills returns the names in required that are not installed in
-// repoRoot, preserving the input order. It backs the loop-start warning that
-// keeps a mistyped or uninstalled REQUIRED_SKILLS name from silently vanishing
-// from the build prompt.
+// MissingRequiredSkills returns the names in required that this repo cannot
+// name, preserving the input order. It backs the loop-start warning that keeps a
+// mistyped or uninstalled skill name from silently vanishing from a phase
+// prompt. Known out-of-repo skills are nameable without being installed, so they
+// never read as missing.
 func MissingRequiredSkills(repoRoot string, required []string) []string {
 	if len(required) == 0 {
 		return nil
 	}
-	installed := InstalledSkillNames(repoRoot)
-	set := make(map[string]struct{}, len(installed))
-	for _, n := range installed {
-		set[n] = struct{}{}
-	}
+	nameable := NameableSkills(repoRoot)
 	var missing []string
 	for _, r := range required {
-		if _, ok := set[r]; !ok {
+		if !slices.Contains(nameable, r) {
 			missing = append(missing, r)
 		}
 	}

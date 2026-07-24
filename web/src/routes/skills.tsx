@@ -4,8 +4,6 @@ import { createFileRoute, Link } from '@tanstack/react-router'
 import {
   Download,
   ExternalLink,
-  Pin,
-  PinOff,
   Search,
   Sparkles,
   TriangleAlert,
@@ -17,6 +15,7 @@ import {
   ConfirmDialog,
   EmptyState,
   Eyebrow,
+  SegmentedControl,
   TerminalCard,
   useActiveRepo,
 } from '@/components/trau'
@@ -25,15 +24,30 @@ import { reposQueryOptions } from '@/lib/runs'
 import { writeConfig } from '@/lib/config'
 import { recentEventsQueryOptions } from '@/lib/events'
 import {
+  autoNeverMatches,
   installSkill,
   latestNoSkillsTicket,
+  loadedAgo,
+  parseMatchers,
   removeSkill,
+  ruleFor,
+  saveSkillRules,
+  scopeOf,
   skillPageUrl,
   skillsQueryOptions,
   skillsSearchQueryOptions,
-  toggleRequired,
+  SKILL_PHASES,
+  upsertRule,
+  usageState,
+  withoutRequired,
   type InstalledSkill,
   type RecommendedSkill,
+  type SkillCoverage,
+  type SkillPhase,
+  type SkillPhaseCoverage,
+  type SkillPlan,
+  type SkillRule,
+  type SkillScope,
   type SkillsResponse,
   type SkillSearchResult,
 } from '@/lib/skills'
@@ -51,6 +65,18 @@ interface InstallTarget {
   source?: string
 }
 
+const SCOPE_OPTIONS: { value: SkillScope; label: string }[] = [
+  { value: 'always', label: 'Always' },
+  { value: 'auto', label: 'Auto' },
+  { value: 'manual', label: 'Manual' },
+]
+
+const SCOPE_TONE: Record<SkillScope, string> = {
+  always: 'border-primary/50 bg-primary/12 text-primary',
+  auto: 'border-info/50 bg-info/12 text-info',
+  manual: 'border-border bg-secondary/40 text-muted-foreground',
+}
+
 function SkillsPage() {
   usePageTitle(standardTitle('Skills'))
   const { repo: active, repos } = useActiveRepo()
@@ -65,8 +91,8 @@ function SkillsPage() {
           Skills
         </h1>
         <p className="text-pretty text-sm leading-relaxed text-muted-foreground">
-          Manage the agent skills installed for this repo. Pin the ones the build
-          agent must always load, and pull new ones from the{' '}
+          What this repo has installed, when each skill activates, and what runs
+          actually loaded. Pull new ones from the{' '}
           <a
             href="https://skills.sh"
             target="_blank"
@@ -130,15 +156,24 @@ function SkillsPanel({ repo }: { repo: string }) {
   })
 
   const required = data?.required ?? []
-  const toggleRequiredMut = useMutation({
-    mutationFn: (name: string) =>
-      writeConfig(repo, {
-        key: 'REQUIRED_SKILLS',
-        value: toggleRequired(required, name),
-        layer: 'project',
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: skillsQueryOptions(repo).queryKey })
+  const rules = data?.rules ?? []
+
+  // Editing a skill's activation supersedes whatever REQUIRED_SKILLS pinned it
+  // to, so the pin is dropped in the same gesture that writes the rule —
+  // otherwise the preview would keep naming a skill the editor says is Manual.
+  const saveRules = useMutation({
+    mutationFn: async ({ next, unpin }: { next: SkillRule[]; unpin: boolean }) => {
+      if (unpin) {
+        await writeConfig(repo, {
+          key: 'REQUIRED_SKILLS',
+          value: withoutRequired(required, next[0]?.skill ?? ''),
+          layer: 'project',
+        })
+      }
+      return saveSkillRules(repo, next)
+    },
+    onSuccess: (snapshot) => {
+      onSnapshot(snapshot)
       queryClient.invalidateQueries({ queryKey: ['config', repo] })
       setActionError(null)
     },
@@ -153,12 +188,18 @@ function SkillsPanel({ repo }: { repo: string }) {
   }
   if (!data) return null
 
-  const requiredSet = new Set(required)
   const busy = install.isPending || remove.isPending
+
+  const applyRule = (rule: SkillRule) =>
+    saveRules.mutate({
+      next: [rule, ...upsertRule(rules, rule).filter((r) => r.skill !== rule.skill)],
+      unpin: required.includes(rule.skill),
+    })
 
   return (
     <div className="flex flex-col gap-6">
-      <SkillHealthBanner repo={repo} />
+      <NoSkillsWarning repo={repo} />
+      <RulesProblem error={data.rules_error} unknown={data.unknown ?? []} />
 
       {actionError && (
         <p className="font-mono text-sm text-fail">{actionError}</p>
@@ -182,17 +223,27 @@ function SkillsPanel({ repo }: { repo: string }) {
         }}
       />
 
-      <InstalledList
+      <InventorySection
         skills={data.installed}
-        requiredSet={requiredSet}
-        onToggleRequired={(name) => toggleRequiredMut.mutate(name)}
-        toggling={toggleRequiredMut.isPending}
+        rules={rules}
+        required={required}
         onRemove={(skill) => {
           setActionError(null)
           setRemoveTarget(skill)
         }}
         busy={busy}
       />
+
+      <ActivationSection
+        skills={data.installed}
+        rules={rules}
+        required={required}
+        plan={data.plan}
+        onApply={applyRule}
+        saving={saveRules.isPending}
+      />
+
+      <CoverageSection skills={data.installed} coverage={data.coverage} />
 
       <ConfirmDialog
         open={installTarget !== null}
@@ -203,8 +254,8 @@ function SkillsPanel({ repo }: { repo: string }) {
           <>
             Runs <code className="text-foreground">skills add {installTarget?.pkg}</code>{' '}
             in {repo}
-            {installTarget?.source ? ` from ${installTarget.source}` : ''}. The
-            skill becomes available to every agent phase.
+            {installTarget?.source ? ` from ${installTarget.source}` : ''}. Set
+            when it activates once it lands.
           </>
         }
         confirmLabel="Install"
@@ -220,7 +271,7 @@ function SkillsPanel({ repo }: { repo: string }) {
           <>
             Deletes {removeTarget?.name}
             {removeTarget?.source ? ` (from ${removeTarget.source})` : ''} from
-            this repo and drops its pin. Agents can no longer load it.
+            this repo. Agents can no longer load it.
           </>
         }
         confirmLabel="Remove"
@@ -231,14 +282,13 @@ function SkillsPanel({ repo }: { repo: string }) {
   )
 }
 
-function SkillHealthBanner({ repo }: { repo: string }) {
-  const { data } = useQuery(recentEventsQueryOptions(repo))
-  const ticket = useMemo(
-    () => latestNoSkillsTicket(data?.events ?? []),
-    [data],
-  )
-  if (!ticket) return null
-
+function WarnBanner({
+  title,
+  children,
+}: {
+  title: string
+  children: React.ReactNode
+}) {
   return (
     <div
       role="status"
@@ -249,23 +299,61 @@ function SkillHealthBanner({ repo }: { repo: string }) {
         aria-hidden="true"
       />
       <div className="flex flex-col gap-0.5">
-        <p className="font-mono text-sm font-medium text-warn">
-          A recent build loaded no skills
-        </p>
+        <p className="font-mono text-sm font-medium text-warn">{title}</p>
         <p className="font-sans text-sm leading-relaxed text-muted-foreground">
-          {ticket}&apos;s build ran without loading any skill. Review whether the
-          right ones are installed and pinned —{' '}
-          <Link
-            to="/runs/$repo/$ticket"
-            params={{ repo, ticket }}
-            className="text-warn underline-offset-4 hover:underline"
-          >
-            open the run
-          </Link>
-          .
+          {children}
         </p>
       </div>
     </div>
+  )
+}
+
+function NoSkillsWarning({ repo }: { repo: string }) {
+  const { data } = useQuery(recentEventsQueryOptions(repo))
+  const ticket = useMemo(
+    () => latestNoSkillsTicket(data?.events ?? []),
+    [data],
+  )
+  if (!ticket) return null
+
+  return (
+    <WarnBanner title="A recent build loaded none of its planned skills">
+      {ticket}&apos;s build was told which skills to load and used none of them
+      —{' '}
+      <Link
+        to="/runs/$repo/$ticket"
+        params={{ repo, ticket }}
+        className="text-warn underline-offset-4 hover:underline"
+      >
+        open the run
+      </Link>
+      .
+    </WarnBanner>
+  )
+}
+
+function RulesProblem({
+  error,
+  unknown,
+}: {
+  error?: string
+  unknown: string[]
+}) {
+  if (error) {
+    return (
+      <WarnBanner title="Activation rules could not be read">
+        <code className="text-foreground">.trau/skills-rules.json</code> failed
+        to parse ({error}), so every phase is falling back to the chain until it
+        is fixed.
+      </WarnBanner>
+    )
+  }
+  if (unknown.length === 0) return null
+  return (
+    <WarnBanner title="Rules name skills this repo cannot load">
+      {unknown.join(', ')} — install them or drop the rule; they are skipped in
+      the meantime.
+    </WarnBanner>
   )
 }
 
@@ -494,26 +582,34 @@ function RecommendedStrip({
   )
 }
 
-function InstalledList({
+function ScopeBadge({ scope }: { scope: SkillScope }) {
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[0.65rem] capitalize',
+        SCOPE_TONE[scope],
+      )}
+    >
+      {scope}
+    </span>
+  )
+}
+
+function InventorySection({
   skills,
-  requiredSet,
-  onToggleRequired,
-  toggling,
+  rules,
+  required,
   onRemove,
   busy,
 }: {
   skills: InstalledSkill[]
-  requiredSet: Set<string>
-  onToggleRequired: (name: string) => void
-  toggling: boolean
+  rules: SkillRule[]
+  required: string[]
   onRemove: (skill: InstalledSkill) => void
   busy: boolean
 }) {
   return (
-    <TerminalCard
-      title={`installed · ${skills.length}`}
-      bodyClassName="p-0"
-    >
+    <TerminalCard title={`inventory · ${skills.length}`} bodyClassName="p-0">
       {skills.length === 0 ? (
         <p className="px-4 py-6 font-mono text-sm text-muted-foreground">
           No skills installed. Pull one from the registry above.
@@ -521,12 +617,10 @@ function InstalledList({
       ) : (
         <div className="divide-y divide-border/60">
           {skills.map((skill) => (
-            <InstalledRow
+            <InventoryRow
               key={skill.name}
               skill={skill}
-              required={requiredSet.has(skill.name)}
-              onToggleRequired={() => onToggleRequired(skill.name)}
-              toggling={toggling}
+              scope={scopeOf(skill.name, rules, required)}
               onRemove={() => onRemove(skill)}
               busy={busy}
             />
@@ -537,18 +631,14 @@ function InstalledList({
   )
 }
 
-function InstalledRow({
+function InventoryRow({
   skill,
-  required,
-  onToggleRequired,
-  toggling,
+  scope,
   onRemove,
   busy,
 }: {
   skill: InstalledSkill
-  required: boolean
-  onToggleRequired: () => void
-  toggling: boolean
+  scope: SkillScope
   onRemove: () => void
   busy: boolean
 }) {
@@ -557,20 +647,33 @@ function InstalledRow({
   return (
     <div
       className={cn(
-        'flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3',
-        required && 'border-l-2 border-primary',
+        'flex flex-wrap items-start gap-x-3 gap-y-1.5 px-4 py-3',
+        skill.invalid && 'border-l-2 border-fail',
       )}
     >
-      <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <div className="flex items-center gap-2">
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-sm text-foreground">{skill.name}</span>
-          {required && (
-            <span className="inline-flex items-center gap-1 rounded border border-primary/50 bg-primary/12 px-1.5 py-0.5 font-mono text-[0.65rem] text-primary">
-              <Pin className="size-3" aria-hidden="true" />
-              required
+          <ScopeBadge scope={scope} />
+          {skill.invalid && (
+            <span className="inline-flex items-center gap-1 rounded border border-fail/50 bg-fail/12 px-1.5 py-0.5 font-mono text-[0.65rem] text-fail">
+              <TriangleAlert className="size-3" aria-hidden="true" />
+              invalid SKILL.md
             </span>
           )}
         </div>
+        {skill.invalid ? (
+          <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+            No readable frontmatter — agents can still be told to load it, but
+            it describes nothing and cannot suggest keywords.
+          </p>
+        ) : (
+          skill.description && (
+            <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+              {skill.description}
+            </p>
+          )
+        )}
         {skill.source ? (
           page ? (
             <a
@@ -595,28 +698,6 @@ function InstalledRow({
       <Button
         size="sm"
         variant="ghost"
-        className={cn(
-          'font-mono',
-          required
-            ? 'text-primary hover:text-primary'
-            : 'text-muted-foreground hover:text-foreground',
-        )}
-        onClick={onToggleRequired}
-        disabled={toggling}
-        aria-pressed={required}
-        aria-label={required ? `Unpin ${skill.name}` : `Require ${skill.name}`}
-      >
-        {required ? (
-          <PinOff className="size-3.5" aria-hidden="true" />
-        ) : (
-          <Pin className="size-3.5" aria-hidden="true" />
-        )}
-        {required ? 'Unpin' : 'Require'}
-      </Button>
-
-      <Button
-        size="sm"
-        variant="ghost"
         className="font-mono text-muted-foreground hover:text-fail"
         onClick={onRemove}
         disabled={busy}
@@ -625,6 +706,426 @@ function InstalledRow({
         <Trash2 className="size-3.5" aria-hidden="true" />
         Remove
       </Button>
+    </div>
+  )
+}
+
+function ActivationSection({
+  skills,
+  rules,
+  required,
+  plan,
+  onApply,
+  saving,
+}: {
+  skills: InstalledSkill[]
+  rules: SkillRule[]
+  required: string[]
+  plan: SkillPlan[]
+  onApply: (rule: SkillRule) => void
+  saving: boolean
+}) {
+  if (skills.length === 0) return null
+
+  return (
+    <TerminalCard title="activation policy" bodyClassName="p-0">
+      <div className="flex flex-col gap-3 border-b border-border/60 px-4 py-3">
+        <p className="font-sans text-sm leading-relaxed text-muted-foreground">
+          <span className="text-foreground">Always</span> names a skill in every
+          phase it covers, <span className="text-foreground">Auto</span> names it
+          when its paths or keywords match the ticket or the slice&apos;s diff,
+          and <span className="text-foreground">Manual</span> keeps it out of
+          automatic sets. Rules are saved to{' '}
+          <code className="text-foreground">.trau/skills-rules.json</code> and
+          checked in with the repo.
+        </p>
+        <PlanPreview plan={plan} />
+      </div>
+      <div className="divide-y divide-border/60">
+        {skills.map((skill) => (
+          <ActivationRow
+            key={skill.name}
+            skill={skill}
+            rule={ruleFor(rules, skill.name)}
+            scope={scopeOf(skill.name, rules, required)}
+            pinned={required.includes(skill.name)}
+            onApply={onApply}
+            saving={saving}
+          />
+        ))}
+      </div>
+    </TerminalCard>
+  )
+}
+
+function PlanPreview({ plan }: { plan: SkillPlan[] }) {
+  return (
+    <div className="grid gap-3 sm:grid-cols-3">
+      {plan.map((phase) => (
+        <div
+          key={phase.phase}
+          className="flex flex-col gap-2 rounded-md border border-border bg-secondary/20 p-3"
+        >
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="font-mono text-xs uppercase tracking-[0.18em] text-muted-foreground">
+              next {phase.phase}
+            </span>
+            <span className="font-mono text-[0.65rem] text-faint">
+              {phase.skills.length}
+            </span>
+          </div>
+          {phase.skills.length === 0 ? (
+            <p className="font-mono text-xs text-faint">names nothing</p>
+          ) : (
+            <ul className="flex flex-col gap-1">
+              {phase.skills.map((name) => (
+                <li key={name} className="flex flex-col">
+                  <span className="font-mono text-xs text-foreground">
+                    {name}
+                  </span>
+                  <span className="font-mono text-[0.65rem] text-faint">
+                    {phase.origins?.[name] ?? phase.source}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {phase.fallback && (
+            <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+              Nothing is scoped to {phase.phase} — falling back to {phase.source}.
+            </p>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function ActivationRow({
+  skill,
+  rule,
+  scope,
+  pinned,
+  onApply,
+  saving,
+}: {
+  skill: InstalledSkill
+  rule?: SkillRule
+  scope: SkillScope
+  pinned: boolean
+  onApply: (rule: SkillRule) => void
+  saving: boolean
+}) {
+  const base: SkillRule = { ...(rule ?? { skill: skill.name }), skill: skill.name, scope }
+  const phases = base.phases?.length ? base.phases : [...SKILL_PHASES]
+  const suggestions = (skill.suggested_keywords ?? []).filter(
+    (k) => !(base.keywords ?? []).includes(k),
+  )
+
+  const apply = (patch: Partial<SkillRule>) => onApply({ ...base, ...patch })
+
+  const togglePhase = (phase: SkillPhase) => {
+    const next = phases.includes(phase)
+      ? phases.filter((p) => p !== phase)
+      : [...phases, phase]
+    const ordered = SKILL_PHASES.filter((p) => next.includes(p))
+    apply({ phases: ordered.length === SKILL_PHASES.length ? undefined : ordered })
+  }
+
+  return (
+    <div className="flex flex-col gap-3 px-4 py-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+          <span className="font-mono text-sm text-foreground">{skill.name}</span>
+          {pinned && (
+            <span className="font-mono text-[0.65rem] text-faint">
+              pinned by REQUIRED_SKILLS
+            </span>
+          )}
+        </div>
+        <SegmentedControl
+          aria-label={`Activation scope for ${skill.name}`}
+          options={SCOPE_OPTIONS}
+          value={scope}
+          onChange={(next) => apply({ scope: next })}
+        />
+      </div>
+
+      {scope !== 'manual' && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-xs text-muted-foreground">phases</span>
+          {SKILL_PHASES.map((phase) => {
+            const on = phases.includes(phase)
+            return (
+              <button
+                key={phase}
+                type="button"
+                aria-pressed={on}
+                disabled={saving || (on && phases.length === 1)}
+                onClick={() => togglePhase(phase)}
+                className={cn(
+                  'rounded border px-2 py-0.5 font-mono text-xs transition-colors disabled:opacity-60',
+                  on
+                    ? 'border-primary/50 bg-primary/12 text-primary'
+                    : 'border-border text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {phase}
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      {scope === 'auto' && (
+        <div className="flex flex-col gap-2">
+          <MatcherField
+            label="paths"
+            placeholder="web/** , **/*.go"
+            values={base.paths ?? []}
+            disabled={saving}
+            onCommit={(paths) => apply({ paths })}
+          />
+          <MatcherField
+            label="keywords"
+            placeholder="web ui, release"
+            values={base.keywords ?? []}
+            disabled={saving}
+            onCommit={(keywords) => apply({ keywords })}
+          />
+          {suggestions.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="font-mono text-xs text-muted-foreground">
+                suggested
+              </span>
+              {suggestions.map((word) => (
+                <button
+                  key={word}
+                  type="button"
+                  disabled={saving}
+                  onClick={() =>
+                    apply({ keywords: [...(base.keywords ?? []), word] })
+                  }
+                  className="rounded border border-border px-1.5 py-0.5 font-mono text-[0.65rem] text-muted-foreground transition-colors hover:border-primary/50 hover:text-primary disabled:opacity-60"
+                >
+                  + {word}
+                </button>
+              ))}
+            </div>
+          )}
+          {autoNeverMatches(base) && (
+            <p className="font-sans text-xs leading-relaxed text-muted-foreground">
+              No paths and no keywords — this rule can never match, so the skill
+              is never named automatically.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MatcherField({
+  label,
+  placeholder,
+  values,
+  disabled,
+  onCommit,
+}: {
+  label: string
+  placeholder: string
+  values: string[]
+  disabled: boolean
+  onCommit: (values: string[]) => void
+}) {
+  const joined = values.join(', ')
+  const [draft, setDraft] = useState(joined)
+
+  useEffect(() => setDraft(joined), [joined])
+
+  const commit = () => {
+    const next = parseMatchers(draft)
+    if (next.join(', ') !== joined) onCommit(next)
+  }
+
+  return (
+    <label className="flex flex-wrap items-center gap-2">
+      <span className="w-16 font-mono text-xs text-muted-foreground">
+        {label}
+      </span>
+      <input
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            commit()
+          }
+        }}
+        placeholder={placeholder}
+        disabled={disabled}
+        autoComplete="off"
+        spellCheck={false}
+        className="min-w-0 flex-1 rounded-md border border-border bg-input px-2.5 py-1 font-mono text-xs text-foreground placeholder:text-faint focus-visible:border-ring focus-visible:outline-none disabled:opacity-60"
+      />
+    </label>
+  )
+}
+
+function CoverageSection({
+  skills,
+  coverage,
+}: {
+  skills: InstalledSkill[]
+  coverage: SkillCoverage
+}) {
+  if (skills.length === 0) return null
+  const silent = coverage.silent_providers ?? []
+
+  return (
+    <TerminalCard
+      title={`run coverage · last ${coverage.days} days`}
+      bodyClassName="p-0"
+    >
+      {!coverage.has_data && (
+        <p className="border-b border-border/60 px-4 py-3 font-sans text-sm leading-relaxed text-muted-foreground">
+          No run in the window reported which skills it loaded, so coverage reads
+          as no data rather than as skills nobody uses.
+          {silent.length > 0 &&
+            ` ${silent.join(', ')} ${silent.length === 1 ? 'does' : 'do'} not report skill usage.`}
+        </p>
+      )}
+      <div className="divide-y divide-border/60">
+        {skills.map((skill) => (
+          <CoverageRow key={skill.name} skill={skill} coverage={coverage} />
+        ))}
+      </div>
+      <PhaseCoverage phases={coverage.phases} />
+    </TerminalCard>
+  )
+}
+
+function CoverageRow({
+  skill,
+  coverage,
+}: {
+  skill: InstalledSkill
+  coverage: SkillCoverage
+}) {
+  const state = usageState(skill, coverage)
+
+  return (
+    <div
+      className={cn(
+        'flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2.5',
+        state === 'dead' && 'opacity-70',
+      )}
+    >
+      <span className="min-w-0 flex-1 font-mono text-sm text-foreground">
+        {skill.name}
+      </span>
+      {state === 'loaded' && (
+        <span className="font-mono text-xs text-done">
+          loaded {skill.loads}×
+          <span className="mx-1.5 text-faint">·</span>
+          {loadedAgo(skill.last_loaded)}
+        </span>
+      )}
+      {state === 'dead' && (
+        <span className="rounded border border-border bg-secondary/40 px-1.5 py-0.5 font-mono text-[0.65rem] text-muted-foreground">
+          not loaded in {coverage.days}d
+        </span>
+      )}
+      {state === 'unknown' && (
+        <span className="font-mono text-xs text-faint">no data</span>
+      )}
+    </div>
+  )
+}
+
+function PhaseCoverage({ phases }: { phases: SkillPhaseCoverage[] }) {
+  if (phases.length === 0) return null
+
+  return (
+    <div className="border-t border-border/60">
+      <p className="px-4 pt-3 font-mono text-xs uppercase tracking-[0.18em] text-muted-foreground">
+        planned vs loaded
+      </p>
+      <div className="divide-y divide-border/60">
+        {phases.map((phase) => (
+          <div
+            key={`${phase.ticket}-${phase.phase}-${phase.ts}`}
+            className="flex flex-col gap-1.5 px-4 py-2.5"
+          >
+            <div className="flex flex-wrap items-baseline gap-x-2 font-mono text-xs">
+              <span className="text-foreground">{phase.ticket}</span>
+              <span className="text-muted-foreground">{phase.phase}</span>
+              <span className="text-faint">{loadedAgo(phase.ts)}</span>
+              {phase.provider && (
+                <span className="text-faint">{phase.provider}</span>
+              )}
+            </div>
+            {(() => {
+              const extras = phase.loaded.filter(
+                (name) => !phase.planned.includes(name),
+              )
+              const extraChips = extras.map((name) => (
+                <span
+                  key={`extra-${name}`}
+                  className="rounded border border-border bg-secondary/40 px-1.5 py-0.5 font-mono text-[0.65rem] text-muted-foreground"
+                >
+                  {name} · extra
+                </span>
+              ))
+              if (phase.activated) {
+                return (
+                  <div className="flex flex-wrap gap-1.5">
+                    {phase.planned.map((name) => (
+                      <span
+                        key={name}
+                        className="rounded border border-done/50 bg-done/12 px-1.5 py-0.5 font-mono text-[0.65rem] text-done"
+                      >
+                        {name} · activated
+                      </span>
+                    ))}
+                    {extraChips}
+                  </div>
+                )
+              }
+              if (phase.unknown) {
+                return (
+                  <span className="font-mono text-xs text-faint">
+                    no data — this run reported no skill usage
+                  </span>
+                )
+              }
+              return (
+                <div className="flex flex-wrap gap-1.5">
+                  {phase.planned.map((name) => {
+                    const loaded = phase.loaded.includes(name)
+                    return (
+                      <span
+                        key={name}
+                        className={cn(
+                          'rounded border px-1.5 py-0.5 font-mono text-[0.65rem]',
+                          loaded
+                            ? 'border-done/50 bg-done/12 text-done'
+                            : 'border-border text-faint',
+                        )}
+                      >
+                        {name}
+                      </span>
+                    )
+                  })}
+                  {extraChips}
+                </div>
+              )
+            })()}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

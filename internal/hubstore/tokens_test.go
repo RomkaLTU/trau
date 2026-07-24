@@ -310,3 +310,32 @@ func TestTokensAppendRecordsRouting(t *testing.T) {
 		}
 	}
 }
+
+// TestSkillCallsWindow is the activation-evidence contract: calls inside the
+// window come back oldest first with their skills decoded, older ones are
+// dropped, and a call whose provider reported nothing yields no names rather
+// than a decode error.
+func TestSkillCallsWindow(t *testing.T) {
+	tk := testTokens(t)
+	const repo = "/repos/acme"
+	appendCalls(t, tk, repo,
+		TokenCall{Ticket: "COD-1", TS: "2026-05-01T09:00:00", Phase: "build", Provider: "claude", Skills: `["old-skill"]`},
+		TokenCall{Ticket: "COD-2", TS: "2026-07-10T09:00:00", Phase: "build", Provider: "claude", Skills: `["golang-cli","web-feature"]`},
+		TokenCall{Ticket: "COD-2", TS: "2026-07-11T09:00:00", Phase: "verify", Provider: "codex", Skills: ""},
+	)
+	appendCalls(t, tk, "/repos/other", TokenCall{Ticket: "X-1", TS: "2026-07-10T09:00:00", Provider: "claude", Skills: `["stray"]`})
+
+	calls, err := tk.SkillCalls(repo, "2026-07-01")
+	if err != nil {
+		t.Fatalf("skill calls: %v", err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("calls = %d, want 2 (%+v)", len(calls), calls)
+	}
+	if got := calls[0]; got.Ticket != "COD-2" || got.Phase != "build" || len(got.Skills) != 2 || got.Skills[0] != "golang-cli" {
+		t.Fatalf("first call = %+v", got)
+	}
+	if got := calls[1]; got.Provider != "codex" || len(got.Skills) != 0 {
+		t.Fatalf("second call = %+v, want codex with no names", got)
+	}
+}

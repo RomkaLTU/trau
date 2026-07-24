@@ -57,16 +57,20 @@ type Usage struct {
 	Reasoning     int
 }
 
-// Result is the outcome of one agent invocation.
+// Result is the outcome of one agent invocation. SkillsKnown reports whether the
+// call produced any recoverable skill evidence; false is the Unknown state, which
+// is distinct from a confirmed-empty Skills so a missing transcript is not read as
+// "loaded none".
 type Result struct {
-	Final    string
-	Usage    Usage
-	CostUSD  float64
-	IsError  bool
-	NumTurns int
-	Model    string
-	Context  int
-	Skills   []string
+	Final       string
+	Usage       Usage
+	CostUSD     float64
+	IsError     bool
+	NumTurns    int
+	Model       string
+	Context     int
+	Skills      []string
+	SkillsKnown bool
 }
 
 // Runner runs one prompt to completion in a fresh process and returns the final
@@ -247,6 +251,11 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	transcript, closeTranscript := openTranscript(c.Transcripts, stem, cols, rows)
 	defer closeTranscript()
 
+	// Capture skills off the live PTY so a build's loaded set is known even when the
+	// session transcript has not flushed yet; the transcript later reconciles, adding only.
+	skills := newSkillCapture(claudeSkills)
+	watched := io.MultiWriter(skills, transcript)
+
 	start := c.clock()
 	sess, err := starter(ctx, c.Bin, c.Dir, c.args(full, sessionID, label), cols, rows)
 	if err != nil {
@@ -276,7 +285,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 	drainDone := make(chan struct{})
 	go func() {
 		defer close(drainDone)
-		drainWithSignals(transcript, sess, claudeWatch, terminalSignals{trust: trustPrompt, auth: authPrompt}, func() {
+		drainWithSignals(watched, sess, claudeWatch, terminalSignals{trust: trustPrompt, auth: authPrompt}, func() {
 			lastActivity.Store(c.clock().UnixNano())
 		})
 	}()
@@ -322,7 +331,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 			return res, fmt.Errorf("claude interactive run (%s): read result: %w", label, err)
 		} else if ok {
 			_ = sess.Kill()
-			res := c.enrich(Result{Final: final}, sessionID)
+			res := c.enrich(Result{Final: final}, sessionID, skills.skills())
 			dur := c.clock().Sub(start)
 			c.emit(label, res, dur, nil)
 			c.record(label, res, dur)
@@ -332,7 +341,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 		select {
 		case err := <-wait:
 			final, ok, readErr := readResultFile(resultPath)
-			res := c.enrich(Result{Final: final, IsError: err != nil || readErr != nil || !ok}, sessionID)
+			res := c.enrich(Result{Final: final, IsError: err != nil || readErr != nil || !ok}, sessionID, skills.skills())
 			dur := c.clock().Sub(start)
 			if ok && err == nil {
 				c.emit(label, res, dur, nil)
@@ -414,19 +423,22 @@ func (c *ClaudeInteractive) clock() time.Time {
 	return time.Now()
 }
 
-func (c *ClaudeInteractive) enrich(res Result, sessionID string) Result {
-	if sessionID == "" {
-		return res
+func (c *ClaudeInteractive) enrich(res Result, sessionID string, live []string) Result {
+	var (
+		stats transcriptStats
+		ok    bool
+	)
+	if sessionID != "" {
+		stats, ok = readSessionStats(claudeConfigDir(), sessionID)
 	}
-	stats, ok := readSessionStats(claudeConfigDir(), sessionID)
-	if !ok {
-		return res
+	if ok {
+		res.Usage = stats.Usage
+		res.NumTurns = stats.Turns
+		res.Context = stats.Context
+		res.Model = stats.Model
 	}
-	res.Usage = stats.Usage
-	res.NumTurns = stats.Turns
-	res.Context = stats.Context
-	res.Skills = stats.Skills
-	res.Model = stats.Model
+	res.Skills = mergeSkills(live, stats.Skills)
+	res.SkillsKnown = ok || len(res.Skills) > 0
 	if res.Model == "" {
 		res.Model = c.model()
 	}

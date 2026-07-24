@@ -287,23 +287,30 @@ func checkBrowserVerify(cfg config.Config, rr *runner) {
 		"set APP_URL (or APP_URLS for a monorepo) to the running app's URL, or set BROWSER_VERIFY=never")
 }
 
-// checkSkills flags a repo whose installed skills are not pinned: with skills
-// present but REQUIRED_SKILLS unset the build prompt can only suggest
-// self-selection, which providers have been observed to skip entirely. The
+// checkSkills reports the skill set each phase resolves to for a run with no
+// ticket and no diff — every auto routing rule reads as non-matching, so this is
+// the repo's floor — and the chain step that produced it. It warns only when
+// nothing narrows the set and every phase loads every installed skill. The
 // suggested pin reuses the project-type recommendation mapping, falling back to
 // the first installed names when none of the recommended set is present.
 func checkSkills(cfg config.Config, repoRoot string, rr *runner) {
-	installed := agent.InstalledSkillNames(repoRoot)
+	resolver := agent.NewSkillResolver(repoRoot, cfg.RequiredSkills, cfg.RequiredSkillsVerify)
+	installed := resolver.Installed()
 	if len(installed) == 0 {
 		return
 	}
-	if len(cfg.RequiredSkills) > 0 {
-		rr.add("skills", pass, fmt.Sprintf("%d skill(s) installed, REQUIRED_SKILLS pins %s", len(installed), strings.Join(cfg.RequiredSkills, ", ")), "")
+	build := resolver.Build(agent.SkillContext{})
+	verify := resolver.Verify(agent.SkillContext{}, false)
+	detail := fmt.Sprintf("%d skill(s) installed — build/repair/bugfix load %s (%s), verify loads %s (%s)",
+		len(installed),
+		strings.Join(build.Names, ", "), build.Source,
+		strings.Join(verify.Names, ", "), verify.Source)
+	if build.Source == agent.SkillsSourceInstalled {
+		rr.add("skills", warn, detail,
+			fmt.Sprintf("nothing narrows the set — set REQUIRED_SKILLS in .trau.ini (e.g. REQUIRED_SKILLS=%s) so phases load the skills that matter instead of all %d", strings.Join(suggestedRequiredSkills(repoRoot, installed), ","), len(installed)))
 		return
 	}
-	rr.add("skills", warn,
-		fmt.Sprintf("%d skill(s) installed but REQUIRED_SKILLS is unset — the agent may load none of them", len(installed)),
-		fmt.Sprintf("set REQUIRED_SKILLS in .trau.ini (e.g. REQUIRED_SKILLS=%s) so every build loads them", strings.Join(suggestedRequiredSkills(repoRoot, installed), ",")))
+	rr.add("skills", pass, detail, "")
 }
 
 func suggestedRequiredSkills(repoRoot string, installed []string) []string {

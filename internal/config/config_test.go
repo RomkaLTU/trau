@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -181,6 +182,73 @@ func TestLoadJiraEpicType(t *testing.T) {
 	if got := keyValue(cfg, "JIRA_EPIC_TYPE"); got != "Feature" {
 		t.Errorf("keyValue(JIRA_EPIC_TYPE) = %q, want Feature", got)
 	}
+}
+
+// REQUIRED_SKILLS_VERIFY pins the verify prompt's skill set, so it has to survive
+// the load, round-trip through the settings surfaces by its catalog key, and stay
+// web-editable like REQUIRED_SKILLS.
+func TestLoadRequiredSkillsVerify(t *testing.T) {
+	dir := t.TempDir()
+	project := filepath.Join(dir, ".trau.ini")
+	if err := os.WriteFile(project, []byte("REQUIRED_SKILLS_VERIFY=tdd, web-feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadLayered(project, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"tdd", "web-feature"}; !slices.Equal(cfg.RequiredSkillsVerify, want) {
+		t.Fatalf("RequiredSkillsVerify = %v, want %v", cfg.RequiredSkillsVerify, want)
+	}
+	if got := keyValue(cfg, "REQUIRED_SKILLS_VERIFY"); got != "tdd,web-feature" {
+		t.Errorf("keyValue(REQUIRED_SKILLS_VERIFY) = %q, want tdd,web-feature", got)
+	}
+	for _, m := range KnownKeys() {
+		if m.Key != "REQUIRED_SKILLS_VERIFY" {
+			continue
+		}
+		if !m.WebEditable {
+			t.Error("REQUIRED_SKILLS_VERIFY should be web-editable")
+		}
+		return
+	}
+	t.Error("REQUIRED_SKILLS_VERIFY is missing from the settings catalog")
+}
+
+func TestLoadSkillsMode(t *testing.T) {
+	if got := Defaults().SkillsMode; got != "instruct" {
+		t.Fatalf("default SkillsMode = %q, want instruct", got)
+	}
+
+	dir := t.TempDir()
+	project := filepath.Join(dir, ".trau.ini")
+	if err := os.WriteFile(project, []byte("SKILLS_MODE=inject\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayered(project, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SkillsMode != "inject" {
+		t.Errorf("SkillsMode = %q, want inject", cfg.SkillsMode)
+	}
+	if got := keyValue(cfg, "SKILLS_MODE"); got != "inject" {
+		t.Errorf("keyValue(SKILLS_MODE) = %q, want inject", got)
+	}
+	for _, m := range KnownKeys() {
+		if m.Key != "SKILLS_MODE" {
+			continue
+		}
+		if !m.WebEditable {
+			t.Error("SKILLS_MODE should be web-editable")
+		}
+		if !slices.Contains(m.Options, "instruct") || !slices.Contains(m.Options, "inject") {
+			t.Errorf("SKILLS_MODE options = %v, want instruct and inject", m.Options)
+		}
+		return
+	}
+	t.Error("SKILLS_MODE is missing from the settings catalog")
 }
 
 func TestResolveConfigItemsEnvOverride(t *testing.T) {
@@ -635,7 +703,7 @@ func TestKnownKeysCatalogMetadata(t *testing.T) {
 	editable := []string{
 		"MAX_ITERATIONS", "THEME", "PROJECT", "LINEAR_API_KEY", "JIRA_API_TOKEN",
 		"GRILL_MODEL", "TRANSCRIPT_RETENTION", "SERVE_AUTOSTART",
-		"CLAUDE_MODEL", "CLAUDE_BUILD_MODEL", "THEME_BRAND", "BASE_BRANCH",
+		"CLAUDE_MODEL", "CLAUDE_BUILD_MODEL", "THEME_BRAND", "BASE_BRANCH", "SKILLS_MODE",
 	}
 	for _, k := range editable {
 		if !byKey[k].WebEditable {

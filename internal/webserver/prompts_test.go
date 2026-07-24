@@ -210,7 +210,7 @@ func TestRepoPromptsEffectivePrecedence(t *testing.T) {
 		t.Fatalf("untouched entry effective = %q, want default with the built-in body", build.Effective)
 	}
 
-	globalBody := "Implement {{.ID}} on {{.Branch}} the global way."
+	globalBody := "Implement {{.ID}} on {{.Branch}} the global way. {{.SkillsNote}}"
 	if res, out := putPrompt(t, ts, APIPrefix+"/prompts/build", globalBody); res.StatusCode != http.StatusOK {
 		t.Fatalf("global PUT status = %d (%s)", res.StatusCode, out)
 	}
@@ -222,7 +222,7 @@ func TestRepoPromptsEffectivePrecedence(t *testing.T) {
 		t.Fatalf("repo override = %q, want null while unset", *build.RepoOverride)
 	}
 
-	repoBody := "Implement {{.ID}} on {{.Branch}} the acme way."
+	repoBody := "Implement {{.ID}} on {{.Branch}} the acme way. {{.SkillsNote}}"
 	res, out := putPrompt(t, ts, APIPrefix+"/repos/acme/prompts/build", repoBody)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("repo PUT status = %d (%s)", res.StatusCode, out)

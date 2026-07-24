@@ -1019,7 +1019,11 @@ func (l *Linear) IssueDetail(ctx context.Context, id string) (IssueDetail, error
 	if err != nil {
 		return IssueDetail{}, err
 	}
-	return IssueDetail{Title: issue.Title, Description: issue.Description}, nil
+	detail := IssueDetail{Title: issue.Title, Description: issue.Description}
+	for _, label := range issue.Labels {
+		detail.Labels = append(detail.Labels, label.Name)
+	}
+	return detail, nil
 }
 
 func (l *Linear) quarantinePrompt(id, reason string) string {

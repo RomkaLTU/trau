@@ -565,7 +565,7 @@ func (j *Jira) IssueDetail(ctx context.Context, id string) (IssueDetail, error) 
 	if err != nil {
 		return IssueDetail{}, err
 	}
-	return IssueDetail{Title: issue.Summary, Description: issue.Description}, nil
+	return IssueDetail{Title: issue.Summary, Description: issue.Description, Labels: issue.Labels}, nil
 }
 
 // SetStatus transitions issue id to the named Jira status via the two-step REST

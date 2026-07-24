@@ -35,12 +35,35 @@ func TestValidateOverrideRejectsDroppedRequiredPlaceholder(t *testing.T) {
 
 func TestValidateOverrideRejectsRequiredPlaceholderBehindOptionalBranch(t *testing.T) {
 	p := mustLookup(t, "verify")
-	err := p.ValidateOverride("Verify {{.ID}}.{{if .Handoff}} Verdict to {{.Verdict}}.{{end}}")
+	err := p.ValidateOverride("Verify {{.ID}}. {{.SkillsNote}}{{if .Handoff}} Verdict to {{.Verdict}}.{{end}}")
 	if err == nil {
 		t.Fatal("template hiding {{.Verdict}} behind {{if .Handoff}} accepted")
 	}
 	if !strings.Contains(err.Error(), "{{.Verdict}}") {
 		t.Fatalf("error %q does not name the missing placeholder", err)
+	}
+}
+
+// TestValidateOverrideRejectsDroppedSkillsNote pins the template safety net: an
+// override of a skill-carrying phase that omits {{.SkillsNote}} would silently
+// run the agent with no skills instruction, so validation refuses it by name.
+func TestValidateOverrideRejectsDroppedSkillsNote(t *testing.T) {
+	bodies := map[string]string{
+		"build":  "Implement {{.ID}} on branch {{.Branch}}.",
+		"verify": "Verify {{.ID}} and write the verdict to {{.Verdict}}.",
+		"repair": "Fix {{.Fails}} for {{.ID}} on {{.Branch}}; verdict at {{.Verdict}}.",
+		"bugfix": "Fix every one of {{.Fails}} for {{.ID}} on {{.Branch}}; verdict at {{.Verdict}}.",
+	}
+	for name, body := range bodies {
+		p := mustLookup(t, name)
+		err := p.ValidateOverride(body)
+		if err == nil {
+			t.Errorf("%s: template without {{.SkillsNote}} accepted", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "{{.SkillsNote}}") {
+			t.Errorf("%s: error %q does not name the missing placeholder", name, err)
+		}
 	}
 }
 

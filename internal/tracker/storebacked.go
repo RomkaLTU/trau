@@ -206,7 +206,7 @@ func (in *StoreBacked) IssueDetail(ctx context.Context, id string) (IssueDetail,
 	if err != nil {
 		return IssueDetail{}, err
 	}
-	detail := IssueDetail{Title: iss.Title, Description: iss.Description}
+	detail := IssueDetail{Title: iss.Title, Description: iss.Description, Labels: iss.Labels}
 	for _, c := range iss.Comments {
 		detail.Comments = append(detail.Comments, IssueComment{Author: c.Author, Body: c.Body})
 	}
