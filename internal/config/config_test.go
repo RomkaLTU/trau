@@ -184,6 +184,25 @@ func TestLoadJiraEpicType(t *testing.T) {
 	}
 }
 
+func TestLoadGrillProvider(t *testing.T) {
+	dir := t.TempDir()
+	project := filepath.Join(dir, ".trau.ini")
+	if err := os.WriteFile(project, []byte("GRILL_PROVIDER=kimi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadLayered(project, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GrillProvider != "kimi" {
+		t.Fatalf("GrillProvider = %q, want kimi", cfg.GrillProvider)
+	}
+	if got := keyValue(cfg, "GRILL_PROVIDER"); got != "kimi" {
+		t.Errorf("keyValue(GRILL_PROVIDER) = %q, want kimi", got)
+	}
+}
+
 // REQUIRED_SKILLS_VERIFY pins the verify prompt's skill set, so it has to survive
 // the load, round-trip through the settings surfaces by its catalog key, and stay
 // web-editable like REQUIRED_SKILLS.
@@ -749,7 +768,7 @@ func TestKnownKeysCatalogMetadata(t *testing.T) {
 
 	editable := []string{
 		"MAX_ITERATIONS", "THEME", "PROJECT", "LINEAR_API_KEY", "JIRA_API_TOKEN",
-		"GRILL_MODEL", "TRANSCRIPT_RETENTION", "SERVE_AUTOSTART",
+		"GRILL_PROVIDER", "GRILL_MODEL", "TRANSCRIPT_RETENTION", "SERVE_AUTOSTART",
 		"CLAUDE_MODEL", "CLAUDE_BUILD_MODEL", "THEME_BRAND", "BASE_BRANCH", "SKILLS_MODE",
 	}
 	for _, k := range editable {
@@ -791,6 +810,9 @@ func TestKnownKeysCatalogMetadata(t *testing.T) {
 		if len(byKey[k].Options) == 0 {
 			t.Errorf("%s should carry effort options", k)
 		}
+	}
+	if !slices.Contains(byKey["GRILL_PROVIDER"].Options, "kimi") {
+		t.Errorf("GRILL_PROVIDER options = %v, want provider names", byKey["GRILL_PROVIDER"].Options)
 	}
 }
 

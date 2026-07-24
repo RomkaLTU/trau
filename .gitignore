@@ -1,6 +1,8 @@
 # Local config (copy from trau.ini.example; .trau.ini for project/user scope)
 trau.ini
 .trau.ini
+.trau.ini.bak*
+trau.ini.bak*
 
 # Agentic / internal files — kept out of the public repo (present locally)
 tasks/

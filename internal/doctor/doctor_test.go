@@ -665,7 +665,7 @@ func TestCheckConfigLayersFlagsCwdLocalFile(t *testing.T) {
 func TestCheckConfigShadowingWarns(t *testing.T) {
 	t.Setenv("CLAUDE_MODEL", "")
 	t.Setenv("TRAU_CLAUDE_MODEL", "")
-	paths := configLayers(t, "", "CLAUDE_MODEL=\n", "CLAUDE_MODEL=claude-opus-4-8\n")
+	paths := configLayers(t, "", "CLAUDE_MODEL=\n", "CLAUDE_MODEL=claude-opus-5\n")
 
 	rr := newTestRunner()
 	checkConfigShadowing(paths, rr)
@@ -674,7 +674,7 @@ func TestCheckConfigShadowingWarns(t *testing.T) {
 	if c.Status != warn || rr.r.Warnings != 1 {
 		t.Errorf("status = %q warnings = %d, want warn/1", c.Status, rr.r.Warnings)
 	}
-	for _, want := range []string{"CLAUDE_MODEL", paths.Local, paths.User, "claude-opus-4-8"} {
+	for _, want := range []string{"CLAUDE_MODEL", paths.Local, paths.User, "claude-opus-5"} {
 		if !strings.Contains(c.Message, want) {
 			t.Errorf("message %q should name %q", c.Message, want)
 		}

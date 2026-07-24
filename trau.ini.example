@@ -81,7 +81,7 @@ PROVIDER=claude
 # via the KIMI_MODEL_* env-provider), so KIMI_MODEL is a model dial only — and the
 # value is a model ALIAS defined in your kimi config.toml [models.<alias>], not an ID.
 #
-# CLAUDE_MODEL=claude-sonnet-4-6
+# CLAUDE_MODEL=claude-sonnet-5
 # CLAUDE_EFFORT=medium
 # CODEX_MODEL=gpt-5.6-sol
 # CODEX_EFFORT=medium
@@ -100,17 +100,17 @@ PROVIDER=claude
 # relied on CLAUDE_PICK_MODEL covering cleanup/lintfix, set these.
 #
 # Example Claude tuning: Opus for implementation, Sonnet for cold verify.
-# CLAUDE_BUILD_MODEL=claude-opus-4-8
+# CLAUDE_BUILD_MODEL=claude-opus-5
 # CLAUDE_BUILD_EFFORT=max
-# CLAUDE_VERIFY_MODEL=claude-sonnet-4-6
+# CLAUDE_VERIFY_MODEL=claude-sonnet-5
 # CLAUDE_VERIFY_EFFORT=medium
-# CLAUDE_BUGFIX_MODEL=claude-opus-4-8
+# CLAUDE_BUGFIX_MODEL=claude-opus-5
 # CLAUDE_BUGFIX_EFFORT=max
-# CLAUDE_CLEANUP_MODEL=claude-sonnet-4-6
-# CLAUDE_SIZEJUDGE_MODEL=claude-sonnet-4-6
-# CLAUDE_COMMIT_MODEL=claude-sonnet-4-6
+# CLAUDE_CLEANUP_MODEL=claude-sonnet-5
+# CLAUDE_SIZEJUDGE_MODEL=claude-sonnet-5
+# CLAUDE_COMMIT_MODEL=claude-sonnet-5
 # CLAUDE_COMMIT_EFFORT=low
-# CLAUDE_HANDOFF_MODEL=claude-sonnet-4-6
+# CLAUDE_HANDOFF_MODEL=claude-sonnet-5
 #
 # Example Codex tuning: hardest work on GPT-5.6 Sol, mechanical phases on a lighter model.
 # CODEX_BUILD_MODEL=gpt-5.6-sol
@@ -425,6 +425,10 @@ CLAUDE_EFFORT=
 CODEX_MODEL=
 CODEX_EFFORT=
 KIMI_MODEL=
+
+# Default provider for new hub interviews. Empty = claude; a per-session picker
+# choice still overrides this for that interview.
+# GRILL_PROVIDER=kimi
 
 # --- artifacts ---
 # Root for per-ticket run artifacts: runs/<ID>/{state,*.log,tokens.jsonl}. Defaults
