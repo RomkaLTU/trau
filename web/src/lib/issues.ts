@@ -25,6 +25,11 @@ export interface Issue {
   // fall back to the repo default. Unrelated to provider above, which names the
   // repo's tracker.
   provider_pin?: string
+  // provider_inherited is the provider the ticket's parent epic pins and
+  // provider_inherited_from names that parent. Reported whether or not the ticket
+  // pins its own — provider_pin still wins.
+  provider_inherited?: string
+  provider_inherited_from?: string
   id: string
   title: string
   description: string

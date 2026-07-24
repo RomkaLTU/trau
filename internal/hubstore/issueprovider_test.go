@@ -106,3 +106,31 @@ func TestProvidersReturnsOnlyPinnedIssues(t *testing.T) {
 		t.Fatalf("pins = %v, want %v", pins, want)
 	}
 }
+
+func TestProviderReadsOnePinAndIsEmptyForUnknownIssues(t *testing.T) {
+	store := testIssues(t)
+	if _, _, err := store.Upsert("acme", "linear", []Issue{sampleIssue()}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if _, _, err := store.SetProvider("acme", "COD-1", "codex"); err != nil {
+		t.Fatalf("pin: %v", err)
+	}
+
+	provider, err := store.Provider("acme", "COD-1")
+	if err != nil {
+		t.Fatalf("provider: %v", err)
+	}
+	if provider != "codex" {
+		t.Fatalf("provider = %q, want codex", provider)
+	}
+
+	// COD-9 is the sample's parent, which was never stored: an inheriting caller
+	// must read an absent parent as unpinned, not as an error.
+	missing, err := store.Provider("acme", "COD-9")
+	if err != nil {
+		t.Fatalf("provider of a missing issue: %v", err)
+	}
+	if missing != "" {
+		t.Fatalf("provider = %q, want empty for an issue that is not stored", missing)
+	}
+}

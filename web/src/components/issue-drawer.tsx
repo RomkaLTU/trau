@@ -261,7 +261,7 @@ function IssueDrawerBody({
           <span className="text-muted-foreground">Provider</span>
           <ProviderPinPicker
             repo={repo}
-            provider={issue.provider_pin}
+            issue={issue}
             onSelect={(next) => pin.mutate(next)}
             disabled={pin.isPending}
           />

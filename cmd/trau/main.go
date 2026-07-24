@@ -3003,10 +3003,12 @@ func buildRouter(cfg config.Config, log *event.Log, sink agent.TokenSink, transc
 // newRunnerSelector returns the pipeline's per-ticket backend resolver. An ephemeral
 // override — --provider, which is also how a queue item's one-shot arrives, or the
 // run-once picker — is a whole-run decision and wins outright; otherwise the ticket's
-// pin decides, falling back to the configured default. Each backend is built from
-// the config rebased onto its own Provider, so the phase routes move with it rather
-// than leaving commit/handoff on the repo default. Backends are built once per
-// Provider and reused, so they share the first one's recorder and fallback notice.
+// own pin decides, then the one its parent epic carries, then the configured
+// default — so an epic's slices run on its Provider without each being pinned by
+// hand. Each backend is built from the config rebased onto its own Provider, so the
+// phase routes move with it rather than leaving commit/handoff on the repo default.
+// Backends are built once per Provider and reused, so they share the first one's
+// recorder and fallback notice.
 func newRunnerSelector(cfg config.Config, override, repo string, hub *hubclient.Client, def agent.Runner, build func(string) (agent.Runner, error)) func(context.Context, string) (agent.Runner, string, error) {
 	built := map[string]agent.Runner{cfg.Provider: def}
 	return func(ctx context.Context, id string) (agent.Runner, string, error) {
@@ -3028,9 +3030,10 @@ func newRunnerSelector(cfg config.Config, override, repo string, hub *hubclient.
 	}
 }
 
-// providerPin reads the Provider pinned on a ticket from the hub's issue store
-// (ADR 0007). A hub that cannot answer leaves the run on its configured default —
-// a truly dead hub already parks the run via the checkpoint writer.
+// providerPin reads the Provider a ticket resolves to from the hub's issue store
+// (ADR 0007): its own pin, else the one its parent epic pins, which the hub already
+// resolved one level up. A hub that cannot answer leaves the run on its configured
+// default — a truly dead hub already parks the run via the checkpoint writer.
 func providerPin(ctx context.Context, hub *hubclient.Client, repo, id string) string {
 	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -3039,7 +3042,10 @@ func providerPin(ctx context.Context, hub *hubclient.Client, repo, id string) st
 		logger.Verbosef("provider pin for %s not read (using the configured default): %v", id, err)
 		return ""
 	}
-	return iss.ProviderPin
+	if iss.ProviderPin != "" {
+		return iss.ProviderPin
+	}
+	return iss.ProviderInherited
 }
 
 func emitProviderNotes(reg agent.Registry, used map[string]bool, cfg config.Config, stderr io.Writer) {

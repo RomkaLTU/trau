@@ -23,9 +23,14 @@ func (r namedRunner) Run(context.Context, string, string) (agent.Result, error) 
 // be exercised without a live hub.
 func pinHub(t *testing.T, pin string) *hubclient.Client {
 	t.Helper()
+	return issueHub(t, `{"id":"COD-1","provider_pin":"`+pin+`"}`)
+}
+
+func issueHub(t *testing.T, body string) *hubclient.Client {
+	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"COD-1","provider_pin":"` + pin + `"}`))
+		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(ts.Close)
 	return hubclient.New(ts.URL, "")
@@ -75,6 +80,38 @@ func TestRunnerSelectorKeepsTheDefaultWhenUnpinned(t *testing.T) {
 	}
 }
 
+func TestRunnerSelectorInheritsTheParentEpicsProvider(t *testing.T) {
+	cfg := config.Config{Provider: "claude"}
+	hub := issueHub(t, `{"id":"COD-1","provider_pin":"","provider_inherited":"codex"}`)
+
+	sel := newRunnerSelector(cfg, "", "acme", hub, namedRunner{name: "claude"}, func(provider string) (agent.Runner, error) {
+		return namedRunner{name: provider}, nil
+	})
+	_, provider, err := sel(context.Background(), "COD-1")
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if provider != "codex" {
+		t.Fatalf("selected %q, want the provider inherited from the epic", provider)
+	}
+}
+
+func TestRunnerSelectorPrefersTheSlicesOwnPinOverTheEpics(t *testing.T) {
+	cfg := config.Config{Provider: "claude"}
+	hub := issueHub(t, `{"id":"COD-1","provider_pin":"kimi","provider_inherited":"codex"}`)
+
+	sel := newRunnerSelector(cfg, "", "acme", hub, namedRunner{name: "claude"}, func(provider string) (agent.Runner, error) {
+		return namedRunner{name: provider}, nil
+	})
+	_, provider, err := sel(context.Background(), "COD-1")
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	if provider != "kimi" {
+		t.Fatalf("selected %q, want the slice's own pin to beat the inherited one", provider)
+	}
+}
+
 func TestRunnerSelectorLetsAnExplicitOverrideWin(t *testing.T) {
 	// --provider lands in cfg.Provider too, so the override the selector honors is
 	// the same name the default backend was built for.
@@ -84,8 +121,9 @@ func TestRunnerSelectorLetsAnExplicitOverrideWin(t *testing.T) {
 		t.Fatal("an explicit override must not consult the ticket's pin")
 		return nil, nil
 	}
+	hub := issueHub(t, `{"id":"COD-1","provider_pin":"codex","provider_inherited":"kimi"}`)
 
-	sel := newRunnerSelector(cfg, "claude", "acme", pinHub(t, "codex"), def, build)
+	sel := newRunnerSelector(cfg, "claude", "acme", hub, def, build)
 	_, provider, err := sel(context.Background(), "COD-1")
 	if err != nil {
 		t.Fatalf("select: %v", err)
