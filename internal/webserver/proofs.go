@@ -45,13 +45,17 @@ type proofScreenshotInput struct {
 	Data     string `json:"data"`
 }
 
-// ProofView is one proof on the wire: its stored record plus the two things a
-// client cannot derive — whether trau renders it inline, and where to fetch its
-// bytes (empty for a video row, which carries only its trace directory).
+// ProofView is one proof on the wire: its stored record plus what a client cannot
+// derive — whether trau renders it inline and where to fetch its bytes. A video row
+// additionally carries whether its recorded trace still exists on disk and the state
+// of any render started for it, so the run page can gate and drive the render button.
 type ProofView struct {
 	hubstore.RunProof
-	IsImage bool   `json:"is_image"`
-	URL     string `json:"url,omitempty"`
+	IsImage     bool   `json:"is_image"`
+	URL         string `json:"url,omitempty"`
+	TraceExists bool   `json:"trace_exists,omitempty"`
+	Render      string `json:"render,omitempty"`
+	RenderError string `json:"render_error,omitempty"`
 }
 
 // handleRunProofs lists (GET) or ingests (POST) a run's verify browser proofs —
@@ -84,7 +88,7 @@ func (s *Server) listRunProofs(w http.ResponseWriter, repo registry.Repo, ticket
 	}
 	out := make([]ProofView, 0, len(rows))
 	for _, pr := range rows {
-		out = append(out, proofView(repo, ticket, pr))
+		out = append(out, s.proofView(repo, ticket, pr))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -147,7 +151,7 @@ func (s *Server) uploadRunProofs(w http.ResponseWriter, r *http.Request, repo re
 	}
 	out := make([]ProofView, 0, len(proofs))
 	for _, pr := range proofs {
-		out = append(out, proofView(repo, ticket, pr))
+		out = append(out, s.proofView(repo, ticket, pr))
 	}
 	writeJSON(w, http.StatusCreated, out)
 }
@@ -184,6 +188,43 @@ func (s *Server) handleRunProof(w http.ResponseWriter, r *http.Request) {
 	s.serveProofBytes(w, r, pr)
 }
 
+// handleRenderVideo starts a hub-side render of the run's verify recording into a
+// narrated mp4 — POST /repos/{repo}/runs/{ticket}/render-video. It answers 202 while
+// the render runs in the background, 409 when a render for the run is already in
+// flight (a second click is a no-op), and 422 when there is no recording to render or
+// its trace was pruned.
+func (s *Server) handleRenderVideo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	repo, ok := s.findRepo(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	ticket := strings.TrimSpace(r.PathValue("ticket"))
+	video, found, err := s.stores.Proofs().Video(repo.Root, ticket)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read proofs: " + err.Error()})
+		return
+	}
+	if !found || video.TraceDir == "" {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "no recording was captured for this run"})
+		return
+	}
+	if !s.render.traceExists(video.TraceDir) {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "the recording was pruned — nothing to render"})
+		return
+	}
+	if !s.render.start(repo, ticket, video) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "a render for this run is already in progress"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "rendering"})
+}
+
 func (s *Server) serveProofBytes(w http.ResponseWriter, r *http.Request, pr hubstore.RunProof) {
 	f, err := s.stores.Proofs().Blobs().Open(pr.SHA256)
 	if err != nil {
@@ -199,7 +240,7 @@ func (s *Server) serveProofBytes(w http.ResponseWriter, r *http.Request, pr hubs
 
 	name := proofFilename(pr)
 	disposition := "attachment"
-	if hubstore.AttachmentIsImage(pr.Mime) {
+	if proofInlineMime(pr.Mime) {
 		disposition = "inline"
 	}
 	if pr.Mime != "" {
@@ -211,13 +252,29 @@ func (s *Server) serveProofBytes(w http.ResponseWriter, r *http.Request, pr hubs
 	http.ServeContent(w, r, name, info.ModTime(), f)
 }
 
-func proofView(repo registry.Repo, ticket string, pr hubstore.RunProof) ProofView {
+func (s *Server) proofView(repo registry.Repo, ticket string, pr hubstore.RunProof) ProofView {
 	v := ProofView{RunProof: pr, IsImage: hubstore.AttachmentIsImage(pr.Mime)}
-	if pr.Kind == hubstore.ProofScreenshot && pr.SHA256 != "" {
+	if pr.SHA256 != "" {
 		v.URL = fmt.Sprintf("%s/repos/%s/runs/%s/proofs/%d",
 			APIPrefix, url.PathEscape(repo.Name), url.PathEscape(ticket), pr.Seq)
 	}
+	if pr.Kind == hubstore.ProofVideo {
+		v.TraceExists = pr.TraceDir != "" && s.render.traceExists(pr.TraceDir)
+		job := s.render.state(repo.Root, ticket)
+		v.Render = string(job.status)
+		v.RenderError = job.reason
+	}
 	return v
+}
+
+// proofInlineMime reports whether a proof's bytes render in the browser rather than
+// download — the raster images the gallery shows and the mp4 the run page plays.
+func proofInlineMime(mimeType string) bool {
+	if hubstore.AttachmentIsImage(mimeType) {
+		return true
+	}
+	m, _, _ := strings.Cut(mimeType, ";")
+	return strings.EqualFold(strings.TrimSpace(m), videoMime)
 }
 
 func proofMime(shot proofScreenshotInput, raw []byte) string {
@@ -248,6 +305,8 @@ func proofExt(mimeType string) string {
 		return ".gif"
 	case "image/webp":
 		return ".webp"
+	case videoMime:
+		return ".mp4"
 	default:
 		return ""
 	}
