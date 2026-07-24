@@ -14,6 +14,7 @@ export interface TimelineTicket {
   status: TicketStatus
   source?: string
   provider?: string
+  providerPin?: string
   epicId?: string
   failureClass?: FailureClass
   reason?: string
@@ -70,6 +71,7 @@ interface Leaf {
   snapshotState: string
   source?: string
   provider?: string
+  providerPin?: string
   epicId?: string
   reason?: string
 }
@@ -98,6 +100,7 @@ function flatten(items: QueueItem[]): Leaf[] {
       snapshotState: item.status,
       source: item.source,
       provider: item.provider,
+      providerPin: item.provider_pin,
       reason: item.reason,
     })
   }
@@ -114,6 +117,7 @@ function resolve(
     title: leaf.title,
     source: leaf.source,
     provider: leaf.provider,
+    providerPin: leaf.providerPin,
     epicId: leaf.epicId,
     hasRun: run !== undefined,
   }

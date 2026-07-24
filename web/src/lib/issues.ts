@@ -21,6 +21,10 @@ export interface IssueComment {
 export interface Issue {
   repo: string
   provider: string
+  // provider_pin is the provider pinned on the ticket itself, empty when its runs
+  // fall back to the repo default. Unrelated to provider above, which names the
+  // repo's tracker.
+  provider_pin?: string
   id: string
   title: string
   description: string

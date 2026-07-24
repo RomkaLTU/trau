@@ -23,6 +23,9 @@ export interface QueueItem {
   // provider is a per-item override of the configured routing — it applies only
   // to this item's run and never persists to config.
   provider?: string
+  // provider_pin is the provider pinned on the underlying issue, which the run
+  // uses whenever the item carries no override of its own.
+  provider_pin?: string
   status: string
   reason?: string
   sub_issues?: QueueSubIssue[]

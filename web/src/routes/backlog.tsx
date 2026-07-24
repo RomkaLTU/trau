@@ -975,6 +975,14 @@ function BacklogRow({
           >
             {entry.source}
           </span>
+          {entry.provider_pin && (
+            <span
+              title="provider · pinned on issue"
+              className="shrink-0 rounded-sm border border-border bg-secondary/60 px-1.5 py-0.5 font-mono text-[0.6rem] text-muted-foreground"
+            >
+              {entry.provider_pin}
+            </span>
+          )}
           {entry.assignee && <AssigneeAvatar assignee={entry.assignee} />}
         </button>
         {internal && (

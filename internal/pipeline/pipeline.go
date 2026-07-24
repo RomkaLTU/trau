@@ -425,6 +425,12 @@ type Pipeline struct {
 	// composition root so the pipeline stays provider-agnostic.
 	Fallback func(phase string) []agent.Runner
 
+	// SelectRunner, when set, resolves the default backend one ticket runs on and
+	// names the Provider behind it. Resume calls it once before any phase spawns and
+	// installs the result as Runner; Routes and Fallback layer on top of that default.
+	// Nil keeps Runner as built.
+	SelectRunner func(ctx context.Context, id string) (agent.Runner, string, error)
+
 	Checks        []checks.Check
 	VerifyPanel   []Verifier
 	PanelPolicy   string
@@ -644,6 +650,9 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 		from = ""
 	}
 	p.clearFailureMarks(id)
+	if err := p.selectRunner(ctx, id); err != nil {
+		return err
+	}
 	if p.Tokens != nil {
 		p.Tokens.SetTicket(id)
 	}
@@ -677,6 +686,20 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 	}
 
 	return p.classifyPhaseErr(ctx, id, p.runPhases(ctx, id, fi))
+}
+
+// selectRunner installs the default backend this ticket runs on, so a Provider
+// pinned on the ticket applies wherever the run was started from.
+func (p *Pipeline) selectRunner(ctx context.Context, id string) error {
+	if p.SelectRunner == nil {
+		return nil
+	}
+	runner, provider, err := p.SelectRunner(ctx, id)
+	if err != nil {
+		return p.pauseProviderUnavailable(id, provider, err)
+	}
+	p.Runner = runner
+	return nil
 }
 
 // loadPrompts snapshots the repo's stored prompt overrides for this ticket run.
@@ -2858,6 +2881,20 @@ func (p *Pipeline) pause(id, phase string, err error) error {
 	p.logf("  ↳ %s left resumable on its branch; rerun trau when the limit resets", id)
 	p.emitState(id, phase, "paused", "usage_window")
 	return &PausedError{ID: id, Phase: phase, Provider: prov, Reason: reason}
+}
+
+// pauseProviderUnavailable stops a ticket whose resolved Provider cannot be built
+// on this machine. Nothing has run yet, so a rerun picks it up once the provider is
+// installed or the pin is cleared; falling back to the repo default would silently
+// run the ticket on a Provider nobody asked for.
+func (p *Pipeline) pauseProviderUnavailable(id, provider string, err error) error {
+	phase := p.State.Get(id, "PHASE")
+	reason := "provider unavailable: " + err.Error()
+	p.markPaused(id, reason)
+	p.logf("  ⏸ paused — %s is pinned to %s, which is not available: %v", id, provider, err)
+	p.logf("  ↳ install %s or clear the pin on %s, then rerun trau", provider, id)
+	p.emitState(id, phase, "paused", "provider_unavailable")
+	return &PausedError{ID: id, Phase: phase, Provider: provider, Reason: reason}
 }
 
 func isRateLimited(err error) bool {

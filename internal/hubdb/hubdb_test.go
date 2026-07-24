@@ -430,3 +430,39 @@ func TestMigrateRejectsCollidingMigrations(t *testing.T) {
 		t.Fatalf("same-key error = %v, want share name", err)
 	}
 }
+
+// TestOpenAddsIssueProviderToExisting covers the upgrade path: an issue stored before
+// the migration must come back unpinned, not with a NULL the store's scan cannot read.
+func TestOpenAddsIssueProviderToExisting(t *testing.T) {
+	home := t.TempDir()
+
+	seed, err := sql.Open("sqlite", Path(home))
+	if err != nil {
+		t.Fatalf("open seed db: %v", err)
+	}
+	seedVersion(t, seed, 36)
+	if _, err := seed.Exec(
+		`INSERT INTO issues(repo, source, identifier, title) VALUES('/repos/acme', 'linear', 'COD-1', 'Fix')`,
+	); err != nil {
+		t.Fatalf("seed issue: %v", err)
+	}
+	if err := seed.Close(); err != nil {
+		t.Fatalf("close seed db: %v", err)
+	}
+
+	db, err := Open(home)
+	if err != nil {
+		t.Fatalf("Open over a pre-provider-pin database: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	var provider string
+	if err := db.SQL().QueryRow(
+		`SELECT provider FROM issues WHERE identifier = 'COD-1'`,
+	).Scan(&provider); err != nil {
+		t.Fatalf("read migrated provider: %v", err)
+	}
+	if provider != "" {
+		t.Fatalf("provider = %q, want an existing issue to migrate in unpinned", provider)
+	}
+}

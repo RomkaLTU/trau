@@ -24,8 +24,12 @@ type CommentRequest struct {
 // uses to warn about an unusual status (already done, in progress); Description and
 // Comments carry the content prompt-building injects for a synced ticket.
 type IssueResponse struct {
-	Repo        string        `json:"repo"`
-	Provider    string        `json:"provider"`
+	Repo     string `json:"repo"`
+	Provider string `json:"provider"`
+	// ProviderPin is the Provider pinned on the ticket itself, empty when its runs
+	// fall back to the repo default. Unrelated to Provider above, which names the
+	// repo's tracker.
+	ProviderPin string        `json:"provider_pin"`
 	ID          string        `json:"id"`
 	Title       string        `json:"title"`
 	Description string        `json:"description"`
@@ -237,6 +241,7 @@ func (s *Server) storeIssueResponse(repo registry.Repo, iss hubstore.Issue) Issu
 	return IssueResponse{
 		Repo:        repo.Name,
 		Provider:    provider,
+		ProviderPin: iss.Provider,
 		ID:          iss.Identifier,
 		Title:       iss.Title,
 		Description: iss.Description,
