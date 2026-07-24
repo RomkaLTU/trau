@@ -347,7 +347,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	rec := &sessionRecorder{}
 	modelFallback := &agent.ModelFallbackNotice{}
-	runner, err := buildRouter(cfg, log, sink, transcripts, stderr, rec.record, modelFallback)
+	buildRunner := func(provider string) (agent.Runner, error) {
+		return buildRouter(cfg.WithProvider(provider), log, sink, transcripts, stderr, rec.record, modelFallback)
+	}
+	runner, err := buildRunner(cfg.Provider)
 	if err != nil {
 		return usageError{err}
 	}
@@ -509,6 +512,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	p.SelectRunner = newRunnerSelector(cfg, opts.Provider, repoName(repoRoot),
+		hubclient.New(hubBaseURL(cfg), cfg.ServeToken), runner, buildRunner)
 	stampRouting(ctx, cfg, sink)
 	p.EpicID = epicID
 	if epicID != "" {
@@ -1823,6 +1828,10 @@ type appActions struct {
 	scope       tracker.Scope
 	maxIter     int
 
+	// runProvider is the run-once picker's ephemeral Provider override while a
+	// ticket started from it is in flight; empty otherwise.
+	runProvider string
+
 	built    bool
 	buildErr error
 	runner   agent.Runner
@@ -1834,6 +1843,15 @@ type appActions struct {
 
 // RepoRoot returns the resolved target repo root, or "" when none was found.
 func (a *appActions) RepoRoot() string { return a.cfg.RepoRoot }
+
+// providerOverride reports the ephemeral single-run Provider override in force —
+// the run-once picker's choice, else --provider — which outranks a ticket's pin.
+func (a *appActions) providerOverride() string {
+	if a.runProvider != "" {
+		return a.runProvider
+	}
+	return a.opts.Provider
+}
 
 // OnboardingPrefill returns the current configuration so the onboarding wizard
 // can default to existing values when it is re-run.
@@ -2523,7 +2541,10 @@ func (a *appActions) ensure() error {
 	a.built = true
 	rec := &sessionRecorder{}
 	modelFallback := &agent.ModelFallbackNotice{}
-	runner, err := buildRouter(a.cfg, a.log, a.sink, a.transcripts, a.stderr, rec.record, modelFallback)
+	buildRunner := func(provider string) (agent.Runner, error) {
+		return buildRouter(a.cfg.WithProvider(provider), a.log, a.sink, a.transcripts, a.stderr, rec.record, modelFallback)
+	}
+	runner, err := buildRunner(a.cfg.Provider)
 	if err != nil {
 		a.buildErr = err
 		return err
@@ -2545,6 +2566,8 @@ func (a *appActions) ensure() error {
 		return err
 	}
 	a.pipe = pipe
+	a.pipe.SelectRunner = newRunnerSelector(a.cfg, a.providerOverride(), repoName(repoRoot),
+		hubclient.New(hubBaseURL(a.cfg), a.cfg.ServeToken), runner, buildRunner)
 	a.pipe.OnPhase = func(id, phase string) { a.reg.SetState(registry.StateWorking, id, phase) }
 	a.pipe.OnActivity = func(_, activity, detail string) { a.reg.SetActivity(activity, detail) }
 	a.eng = &realEngine{pipe: a.pipe, tracker: a.tracker, scope: a.scope, sink: a.sink, log: a.log}
@@ -2774,19 +2797,23 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 // A non-empty provider is an ephemeral single-run override of the default: it is
 // snapshotted, applied, the built deps invalidated so ensure() rebuilds the
 // router/tracker/pipeline for it, and restored on return — so the menu and later
-// runs fall back to the config default. Per-phase Routes and FALLBACK_PROVIDERS
-// are untouched (they layer on top of whichever default is active).
+// runs fall back to the config default. It outranks the Provider the ticket pins
+// on itself, which is why it is applied even when it names the current default.
+// Per-phase Routes follow the new default (see config.WithProvider) and
+// FALLBACK_PROVIDERS is untouched.
 func (a *appActions) RunTicket(ctx context.Context, id, provider string, r console.Renderer) {
 	if err := takenOverRefusal(ctx, hubclient.New(hubBaseURL(a.cfg), a.cfg.ServeToken), a.cfg.RepoRoot); err != nil {
 		r.LoopDone(console.SessionSummary{Err: err})
 		return
 	}
-	if provider != "" && provider != a.cfg.Provider {
+	if provider != "" {
 		orig := a.cfg.Provider
-		a.cfg.Provider = provider
+		a.cfg = a.cfg.WithProvider(provider)
+		a.runProvider = provider
 		a.built = false
 		defer func() {
-			a.cfg.Provider = orig
+			a.cfg = a.cfg.WithProvider(orig)
+			a.runProvider = ""
 			a.built = false
 		}()
 	}
@@ -2971,6 +2998,54 @@ func buildRouter(cfg config.Config, log *event.Log, sink agent.TokenSink, transc
 		return def, nil
 	}
 	return agent.NewRouter(def, routes), nil
+}
+
+// newRunnerSelector returns the pipeline's per-ticket backend resolver. An ephemeral
+// override — --provider, which is also how a queue item's one-shot arrives, or the
+// run-once picker — is a whole-run decision and wins outright; otherwise the ticket's
+// own pin decides, then the one its parent epic carries, then the configured
+// default — so an epic's slices run on its Provider without each being pinned by
+// hand. Each backend is built from the config rebased onto its own Provider, so the
+// phase routes move with it rather than leaving commit/handoff on the repo default.
+// Backends are built once per Provider and reused, so they share the first one's
+// recorder and fallback notice.
+func newRunnerSelector(cfg config.Config, override, repo string, hub *hubclient.Client, def agent.Runner, build func(string) (agent.Runner, error)) func(context.Context, string) (agent.Runner, string, error) {
+	built := map[string]agent.Runner{cfg.Provider: def}
+	return func(ctx context.Context, id string) (agent.Runner, string, error) {
+		provider := cfg.Provider
+		if override == "" {
+			if pinned := providerPin(ctx, hub, repo, id); pinned != "" {
+				provider = pinned
+			}
+		}
+		if r, ok := built[provider]; ok {
+			return r, provider, nil
+		}
+		r, err := build(provider)
+		if err != nil {
+			return nil, provider, err
+		}
+		built[provider] = r
+		return r, provider, nil
+	}
+}
+
+// providerPin reads the Provider a ticket resolves to from the hub's issue store
+// (ADR 0007): its own pin, else the one its parent epic pins, which the hub already
+// resolved one level up. A hub that cannot answer leaves the run on its configured
+// default — a truly dead hub already parks the run via the checkpoint writer.
+func providerPin(ctx context.Context, hub *hubclient.Client, repo, id string) string {
+	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	iss, err := hub.Issue(pctx, repo, id)
+	if err != nil {
+		logger.Verbosef("provider pin for %s not read (using the configured default): %v", id, err)
+		return ""
+	}
+	if iss.ProviderPin != "" {
+		return iss.ProviderPin
+	}
+	return iss.ProviderInherited
 }
 
 func emitProviderNotes(reg agent.Registry, used map[string]bool, cfg config.Config, stderr io.Writer) {

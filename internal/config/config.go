@@ -111,6 +111,12 @@ type Config struct {
 
 	Routes map[string]string
 
+	// providerRoutes holds the phase routes derived for every provider, not only
+	// the active one. Routes are provider-scoped — both the explicit
+	// <PROVIDER>_<PHASE>_MODEL keys and the seeded cheap defaults — so a run that
+	// swaps its default backend needs that provider's set, not the loaded one's.
+	providerRoutes map[string]map[string]string
+
 	MaxIterations int
 	MaxRepairs    int
 	MaxBugfixes   int
@@ -713,36 +719,34 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	providerStr(kimiFile, kimiSrc, "KIMI_MODE", &c.KimiMode)
 	providerStr(kimiFile, kimiSrc, "KIMI_MODEL", &c.KimiModel)
 
-	routes := map[string]string{}
-	phaseGet := func(key string) (string, Layer) {
-		v, src := get(key)
-		return v, src.name
-	}
-	switch c.Provider {
-	case "claude":
-		phaseGet = func(key string) (string, Layer) {
-			v, src := providerGet(claudeFile, claudeSrc, key, get)
-			return v, src.name
-		}
-	case "codex":
-		phaseGet = func(key string) (string, Layer) {
-			v, src := providerGet(codexFile, codexSrc, key, get)
-			return v, src.name
-		}
-	case "kimi":
-		phaseGet = func(key string) (string, Layer) {
-			v, src := providerGet(kimiFile, kimiSrc, key, get)
+	phaseGetter := func(file map[string]string, layer envLayer) func(string) (string, Layer) {
+		return func(key string) (string, Layer) {
+			v, src := providerGet(file, layer, key, get)
 			return v, src.name
 		}
 	}
-	addProviderPhaseRoutesWithSources(routes, sources, c.Provider, c, phaseGet)
-	if len(routes) > 0 {
-		c.Routes = routes
+	phaseGets := map[string]func(string) (string, Layer){
+		"claude": phaseGetter(claudeFile, claudeSrc),
+		"codex":  phaseGetter(codexFile, codexSrc),
+		"kimi":   phaseGetter(kimiFile, kimiSrc),
 	}
+	c.providerRoutes = map[string]map[string]string{}
+	for provider, phaseGet := range phaseGets {
+		routeSources := sources
+		if provider != c.Provider {
+			routeSources = nil
+		}
+		routes := map[string]string{}
+		addProviderPhaseRoutesWithSources(routes, routeSources, provider, c, phaseGet)
+		if len(routes) > 0 {
+			c.providerRoutes[provider] = routes
+		}
+	}
+	c.Routes = c.providerRoutes[c.Provider]
 	if c.Provider == "claude" {
 		for _, ph := range phases {
 			key := "CLAUDE_" + strings.ToUpper(ph) + "_DISALLOWED_TOOLS"
-			if v, src := phaseGet(key); v != "" {
+			if v, src := phaseGets["claude"](key); v != "" {
 				if c.ClaudePhaseDisallowedTools == nil {
 					c.ClaudePhaseDisallowedTools = map[string]string{}
 				}
@@ -1066,6 +1070,15 @@ var phases = []string{"build", "handoff", "verify", "repair", "bugfix", "cleanup
 // ThemeRoles are the semantic color roles a THEME_<ROLE> config key can
 // override with a hex value.
 var ThemeRoles = []string{"brand", "accent", "success", "error", "warning", "info", "text", "subtle", "faint", "surface", "border", "ink"}
+
+// WithProvider returns c with provider as its default backend, carrying that
+// provider's own phase routes instead of the loaded provider's. Swapping only
+// Config.Provider would leave every routed phase on the old provider.
+func (c Config) WithProvider(provider string) Config {
+	c.Provider = provider
+	c.Routes = c.providerRoutes[provider]
+	return c
+}
 
 func addProviderPhaseRoutesWithSources(routes map[string]string, sources map[string]Layer, provider string, c Config, get func(string) (string, Layer)) {
 	var defaultModel, defaultEffort string

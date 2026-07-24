@@ -17,6 +17,7 @@ import {
   AssigneeDisplay,
   AssigneePicker,
 } from "@/components/trau/assignee-picker";
+import { ProviderPinPicker } from "@/components/trau/provider-picker";
 import { DeleteIssueDialog } from "@/components/delete-issue-dialog";
 import { InternalIssueForm } from "@/components/internal-issue-form";
 import { IssueAttachments } from "@/components/issue-attachments";
@@ -39,6 +40,7 @@ import {
   type IssueComment,
 } from "@/lib/issues";
 import { archiveToastMessage, useArchiveIssue } from "@/lib/archive";
+import { pinProvider, publishProviderPin } from "@/lib/provider-pin";
 import {
   activeSessionForIssue,
   grillSessionsQueryOptions,
@@ -134,6 +136,12 @@ function IssueDrawerBody({
   const assign = useMutation({
     mutationFn: (next: Assignee | null) => assignIssue(repo, id, next),
     onSuccess: (updated) => publishAssignment(queryClient, repo, updated),
+    onError: (err) => toast.error(err.message),
+  });
+
+  const pin = useMutation({
+    mutationFn: (next: string) => pinProvider(repo, id, next),
+    onSuccess: (updated) => publishProviderPin(queryClient, repo, updated),
     onError: (err) => toast.error(err.message),
   });
 
@@ -248,6 +256,15 @@ function IssueDrawerBody({
               disabled={assign.isPending}
             />
           )}
+        </div>
+        <div className="flex items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Provider</span>
+          <ProviderPinPicker
+            repo={repo}
+            issue={issue}
+            onSelect={(next) => pin.mutate(next)}
+            disabled={pin.isPending}
+          />
         </div>
       </SheetHeader>
 

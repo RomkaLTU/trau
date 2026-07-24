@@ -19,6 +19,9 @@ export interface BacklogEntry {
   labels: string[]
   source: string
   assignee?: Assignee | null
+  // provider_pin is the provider pinned on the issue, absent when it runs on the
+  // repo default.
+  provider_pin?: string
   parent?: string
   has_children: boolean
   children_settled?: number

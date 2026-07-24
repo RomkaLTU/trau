@@ -97,6 +97,12 @@ type Issue struct {
 	Project     string    `json:"project"`
 	InProject   bool      `json:"in_project"`
 	Deleted     bool      `json:"deleted"`
+	// ProviderPin is the Provider pinned on the ticket, empty when it runs on the
+	// repo default. It is hub-local metadata, unrelated to the repo's tracker.
+	ProviderPin string `json:"provider_pin"`
+	// ProviderInherited is the Provider the ticket's parent epic pins, which its
+	// runs use when it pins none of its own.
+	ProviderInherited string `json:"provider_inherited"`
 }
 
 // Comment is one comment on an issue as the hub returns it.

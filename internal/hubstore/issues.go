@@ -44,7 +44,10 @@ type Issue struct {
 	ArchivedAt   string
 	AssigneeID   string
 	AssigneeName string
-	Comments     []Comment
+	// Provider is the Provider pinned on the ticket, empty when unset. It is
+	// hub-local: no sync write touches it, so a pull never clears a pin.
+	Provider string
+	Comments []Comment
 
 	// ChildrenSettled and ChildrenTotal are populated by BacklogPage for epic
 	// rows only (HasChildren): the epic's settled (done + canceled) and total
@@ -187,7 +190,8 @@ func (s *Issues) Upsert(repo, source string, issues []Issue) (issueCount, commen
 
 const issueColumns = `id, source, identifier, title, description, status, status_group,
 	priority, labels, parent, has_children, due_date, external_id, url,
-	created_at, updated_at, deleted_at, archived_at, assignee_id, assignee_name`
+	created_at, updated_at, deleted_at, archived_at, assignee_id, assignee_name,
+	provider`
 
 // List returns a repo's stored issues with their comments, ordered by identifier.
 func (s *Issues) List(repo string) (issues []Issue, err error) {
@@ -632,7 +636,7 @@ func scanIssues(repo string, rows *sql.Rows) ([]Issue, map[int64]int, error) {
 			&id, &iss.Source, &iss.Identifier, &iss.Title, &iss.Description,
 			&iss.Status, &iss.StatusGroup, &iss.Priority, &labels, &iss.Parent,
 			&hasCh, &iss.DueDate, &iss.ExternalID, &iss.URL, &iss.CreatedAt, &iss.UpdatedAt,
-			&iss.DeletedAt, &iss.ArchivedAt, &assigneeID, &assigneeNm,
+			&iss.DeletedAt, &iss.ArchivedAt, &assigneeID, &assigneeNm, &iss.Provider,
 		); err != nil {
 			return nil, nil, err
 		}
@@ -939,6 +943,61 @@ func (s *Issues) commentsFor(repo, identifier string) (comments []Comment, err e
 		comments = append(comments, c)
 	}
 	return comments, rows.Err()
+}
+
+// Providers returns a repo's pinned Providers keyed by identifier, leaving out the
+// issues that carry none, so a view over many rows reads them all at once.
+func (s *Issues) Providers(repo string) (pins map[string]string, err error) {
+	rows, err := s.db.Query(
+		`SELECT identifier, provider FROM issues WHERE repo = ? AND provider <> ''`,
+		repo,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	pins = map[string]string{}
+	for rows.Next() {
+		var identifier, provider string
+		if scanErr := rows.Scan(&identifier, &provider); scanErr != nil {
+			return nil, scanErr
+		}
+		pins[identifier] = provider
+	}
+	return pins, rows.Err()
+}
+
+// Provider returns the Provider pinned on one repo issue, empty when it pins none
+// or does not exist.
+func (s *Issues) Provider(repo, identifier string) (string, error) {
+	var provider string
+	err := s.db.QueryRow(
+		`SELECT provider FROM issues WHERE repo = ? AND identifier = ?`,
+		repo, identifier,
+	).Scan(&provider)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return provider, err
+}
+
+// SetProvider pins the Provider a repo issue's runs use, regardless of its source,
+// returning the updated issue and whether it was found. An empty provider clears the
+// pin. Upsert never lists the column, so a pin survives every later pull.
+func (s *Issues) SetProvider(repo, identifier, provider string) (Issue, bool, error) {
+	res, err := s.db.Exec(
+		`UPDATE issues SET provider = ? WHERE repo = ? AND identifier = ?`,
+		provider, repo, identifier,
+	)
+	if err != nil {
+		return Issue{}, false, err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return Issue{}, false, err
+	} else if n == 0 {
+		return Issue{}, false, nil
+	}
+	return s.Find(repo, identifier)
 }
 
 // SyncedPatch mirrors a tracker write onto a stored synced issue: an optional new

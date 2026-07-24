@@ -33,18 +33,20 @@ type QueueRequest struct {
 // QueueItemView is one queued item as the Queue view reads it: its 1-based
 // position, kind, identifier, title, issue source, per-run provider override,
 // pending status, and — for an epic — the sub-issues captured when it was
-// queued.
+// queued. ProviderPin is the Provider pinned on the underlying issue, which the
+// run uses whenever the item carries no override of its own.
 type QueueItemView struct {
-	Position  int              `json:"position"`
-	Kind      string           `json:"kind"`
-	ID        string           `json:"id"`
-	Title     string           `json:"title,omitempty"`
-	Source    string           `json:"source,omitempty"`
-	Provider  string           `json:"provider,omitempty"`
-	Status    string           `json:"status"`
-	Reason    string           `json:"reason,omitempty"`
-	SubIssues []queue.SubIssue `json:"sub_issues,omitempty"`
-	QueuedAt  string           `json:"queued_at,omitempty"`
+	Position    int              `json:"position"`
+	Kind        string           `json:"kind"`
+	ID          string           `json:"id"`
+	Title       string           `json:"title,omitempty"`
+	Source      string           `json:"source,omitempty"`
+	Provider    string           `json:"provider,omitempty"`
+	ProviderPin string           `json:"provider_pin,omitempty"`
+	Status      string           `json:"status"`
+	Reason      string           `json:"reason,omitempty"`
+	SubIssues   []queue.SubIssue `json:"sub_issues,omitempty"`
+	QueuedAt    string           `json:"queued_at,omitempty"`
 }
 
 // QueueResponse is the /repos/{repo}/queue resource: the repo's queue in
@@ -244,6 +246,11 @@ func (s *Server) writeQueue(w http.ResponseWriter, status int, root string) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read queue: " + err.Error()})
 		return
 	}
+	pins, err := s.stores.Issues().Providers(root)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read provider pins: " + err.Error()})
+		return
+	}
 	drainingSince := ""
 	if !meta.DrainingSince.IsZero() {
 		drainingSince = meta.DrainingSince.UTC().Format(time.RFC3339)
@@ -253,7 +260,7 @@ func (s *Server) writeQueue(w http.ResponseWriter, status int, root string) {
 		Draining:      meta.Draining,
 		DrainingSince: drainingSince,
 		ShuttingDown:  s.isShuttingDown(root),
-		Items:         queueItemViews(items),
+		Items:         queueItemViews(items, pins),
 	})
 }
 
@@ -451,19 +458,20 @@ func (s *Server) queueRoot(name string) (string, bool) {
 	return "", false
 }
 
-func queueItemViews(items []queue.Item) []QueueItemView {
+func queueItemViews(items []queue.Item, pins map[string]string) []QueueItemView {
 	out := make([]QueueItemView, 0, len(items))
 	for i, it := range items {
 		view := QueueItemView{
-			Position:  i + 1,
-			Kind:      string(it.Kind),
-			ID:        it.ID,
-			Title:     it.Title,
-			Source:    it.Source,
-			Provider:  it.Provider,
-			Status:    it.Status,
-			Reason:    it.Reason,
-			SubIssues: it.SubIssues,
+			Position:    i + 1,
+			Kind:        string(it.Kind),
+			ID:          it.ID,
+			Title:       it.Title,
+			Source:      it.Source,
+			Provider:    it.Provider,
+			ProviderPin: pins[it.ID],
+			Status:      it.Status,
+			Reason:      it.Reason,
+			SubIssues:   it.SubIssues,
 		}
 		if !it.QueuedAt.IsZero() {
 			view.QueuedAt = it.QueuedAt.Format(time.RFC3339)

@@ -258,16 +258,17 @@ function BacklogPRBadge({ status }: { status?: PRStatus }) {
   return <PRStatusBadge status={status} className="shrink-0" />;
 }
 
-// ProviderTag surfaces a per-item provider override, so a queued run that will
-// not use the configured routing says so on its row.
-function ProviderTag({ provider }: { provider?: string }) {
-  if (!provider) return null;
+// ProviderTag names the provider a queued run will use when it is not the configured
+// default: the item's own one-shot override, else the provider pinned on the issue.
+function ProviderTag({ provider, pin }: { provider?: string; pin?: string }) {
+  const name = provider || pin;
+  if (!name) return null;
   return (
     <span
-      title="provider · this run only"
+      title={provider ? "provider · this run only" : "provider · pinned on issue"}
       className="shrink-0 rounded-sm border border-border bg-secondary/60 px-1.5 py-0.5 font-mono text-[0.6rem] text-muted-foreground"
     >
-      {provider}
+      {name}
     </span>
   );
 }
@@ -442,7 +443,7 @@ function QueueBuilderRow({
           {item.title || "—"}
         </span>
         <InternalTag source={item.source} />
-        <ProviderTag provider={item.provider} />
+        <ProviderTag provider={item.provider} pin={item.provider_pin} />
 
         {isEpic ? (
           <StatusPill state="info" label={`epic · ${done}/${total}`} />
@@ -1410,7 +1411,7 @@ function PendingTicketRow({
         {ticket.title || "—"}
       </span>
       <InternalTag source={ticket.source} />
-      <ProviderTag provider={ticket.provider} />
+      <ProviderTag provider={ticket.provider} pin={ticket.providerPin} />
       <BacklogPRBadge status={ticket.prStatus} />
       <StatusPill state="todo" label="pending" className="shrink-0" />
     </li>

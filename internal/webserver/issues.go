@@ -24,21 +24,31 @@ type CommentRequest struct {
 // uses to warn about an unusual status (already done, in progress); Description and
 // Comments carry the content prompt-building injects for a synced ticket.
 type IssueResponse struct {
-	Repo        string        `json:"repo"`
-	Provider    string        `json:"provider"`
-	ID          string        `json:"id"`
-	Title       string        `json:"title"`
-	Description string        `json:"description"`
-	Status      string        `json:"status"`
-	Group       string        `json:"group"`
-	Labels      []string      `json:"labels"`
-	Assignee    *AssigneeInfo `json:"assignee"`
-	Ready       bool          `json:"ready"`
-	Parent      string        `json:"parent,omitempty"`
-	Source      string        `json:"source,omitempty"`
-	URL         string        `json:"url,omitempty"`
-	CreatedAt   string        `json:"created_at,omitempty"`
-	HasChildren bool          `json:"has_children"`
+	Repo     string `json:"repo"`
+	Provider string `json:"provider"`
+	// ProviderPin is the Provider pinned on the ticket itself, empty when its runs
+	// fall back to the repo default. Unrelated to Provider above, which names the
+	// repo's tracker.
+	ProviderPin string `json:"provider_pin"`
+	// ProviderInherited is the Provider the ticket's parent epic pins and
+	// ProviderInheritedFrom names that parent. Both are reported whether or not the
+	// ticket pins its own Provider — ProviderPin still wins — so a picker can name
+	// the state clearing the pin returns to.
+	ProviderInherited     string        `json:"provider_inherited,omitempty"`
+	ProviderInheritedFrom string        `json:"provider_inherited_from,omitempty"`
+	ID                    string        `json:"id"`
+	Title                 string        `json:"title"`
+	Description           string        `json:"description"`
+	Status                string        `json:"status"`
+	Group                 string        `json:"group"`
+	Labels                []string      `json:"labels"`
+	Assignee              *AssigneeInfo `json:"assignee"`
+	Ready                 bool          `json:"ready"`
+	Parent                string        `json:"parent,omitempty"`
+	Source                string        `json:"source,omitempty"`
+	URL                   string        `json:"url,omitempty"`
+	CreatedAt             string        `json:"created_at,omitempty"`
+	HasChildren           bool          `json:"has_children"`
 	// Children counts the sub-issues a purge of this ticket would take with it —
 	// every child row, archived ones included — so a delete confirm can name the
 	// whole blast radius. Zero on a leaf.
@@ -234,30 +244,53 @@ func (s *Server) storeIssueResponse(repo registry.Repo, iss hubstore.Issue) Issu
 	if labels == nil {
 		labels = []string{}
 	}
-	return IssueResponse{
-		Repo:        repo.Name,
-		Provider:    provider,
-		ID:          iss.Identifier,
-		Title:       iss.Title,
-		Description: iss.Description,
-		Status:      iss.Status,
-		Group:       iss.StatusGroup,
-		Labels:      labels,
-		Assignee:    assigneeInfo(iss, s.repoMeID(repo.Root)),
-		Ready:       hasLabel(labels, readyLabel),
-		Parent:      iss.Parent,
-		Source:      iss.Source,
-		URL:         iss.URL,
-		CreatedAt:   iss.CreatedAt,
-		HasChildren: iss.HasChildren,
-		Children:    s.childCount(repo.Root, iss),
-		Blockers:    iss.Blockers,
-		Blocked:     iss.Blocked,
-		Comments:    toIssueComments(iss.Comments),
-		InProject:   true,
-		Deleted:     iss.DeletedAt != "",
-		Archived:    iss.ArchivedAt != "",
+	inherited := s.inheritedProvider(repo.Root, iss.Parent)
+	inheritedFrom := ""
+	if inherited != "" {
+		inheritedFrom = iss.Parent
 	}
+	return IssueResponse{
+		Repo:                  repo.Name,
+		Provider:              provider,
+		ProviderPin:           iss.Provider,
+		ProviderInherited:     inherited,
+		ProviderInheritedFrom: inheritedFrom,
+		ID:                    iss.Identifier,
+		Title:                 iss.Title,
+		Description:           iss.Description,
+		Status:                iss.Status,
+		Group:                 iss.StatusGroup,
+		Labels:                labels,
+		Assignee:              assigneeInfo(iss, s.repoMeID(repo.Root)),
+		Ready:                 hasLabel(labels, readyLabel),
+		Parent:                iss.Parent,
+		Source:                iss.Source,
+		URL:                   iss.URL,
+		CreatedAt:             iss.CreatedAt,
+		HasChildren:           iss.HasChildren,
+		Children:              s.childCount(repo.Root, iss),
+		Blockers:              iss.Blockers,
+		Blocked:               iss.Blocked,
+		Comments:              toIssueComments(iss.Comments),
+		InProject:             true,
+		Deleted:               iss.DeletedAt != "",
+		Archived:              iss.ArchivedAt != "",
+	}
+}
+
+// inheritedProvider reads the Provider pinned on parent, the one a slice falls back
+// to before the repo default. The lookup stops there — inheritance is one level, so
+// a grandparent's pin never reaches a slice.
+func (s *Server) inheritedProvider(root, parent string) string {
+	if parent == "" {
+		return ""
+	}
+	provider, err := s.stores.Issues().Provider(root, parent)
+	if err != nil {
+		logger.Verbosef("issue: read provider pinned on %s: %v", parent, err)
+		return ""
+	}
+	return provider
 }
 
 // childCount reports how many children a purge of iss would remove, following the

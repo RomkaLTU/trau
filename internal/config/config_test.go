@@ -473,6 +473,44 @@ func TestSeedsCheapDefaultRoutes(t *testing.T) {
 	}
 }
 
+// TestWithProviderSwapsPhaseRoutes guards the per-issue provider pin: swapping the
+// run's default backend must carry that provider's phase routes, or the routed
+// phases (commit, handoff, cleanup, lintfix) keep running on the repo default.
+func TestWithProviderSwapsPhaseRoutes(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "trau.ini")
+
+	if err := os.WriteFile(local, []byte("PROVIDER=claude\nKIMI_COMMIT_MODEL=kimi-commit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayered("", "", local, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	kimi := cfg.WithProvider("kimi")
+	if kimi.Provider != "kimi" {
+		t.Fatalf("Provider = %q, want kimi", kimi.Provider)
+	}
+	if got := kimi.Routes["commit"]; got != "kimi:kimi-commit" {
+		t.Errorf("kimi Routes[commit] = %q, want kimi:kimi-commit", got)
+	}
+	for phase, spec := range kimi.Routes {
+		if provider, _, _ := parseRouteSpec(spec); provider != "kimi" {
+			t.Errorf("kimi Routes[%q] = %q, want a kimi route", phase, spec)
+		}
+	}
+
+	// Codex configures no phase keys, so every phase falls through to its default.
+	if got := cfg.WithProvider("codex").Routes; len(got) != 0 {
+		t.Errorf("codex Routes = %v, want none", got)
+	}
+
+	if got := kimi.WithProvider("claude").Routes["commit"]; got != "claude:sonnet" {
+		t.Errorf("Routes[commit] back on claude = %q, want claude:sonnet", got)
+	}
+}
+
 // TestRecoveryDefaults pins the COD-583 transient-recovery defaults: stall
 // detection and retry are on out of the box, provider fallback is opt-in.
 func TestRecoveryDefaults(t *testing.T) {
