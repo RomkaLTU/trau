@@ -211,9 +211,9 @@ export function CommandPalette({
               )}
               {repos.map((r) => (
                 <CommandItem
-                  key={r.name}
-                  value={r.name}
-                  keywords={[r.root]}
+                  key={r.root}
+                  value={r.root}
+                  keywords={[r.name]}
                   onSelect={() => pickScope(r.name)}
                 >
                   <GitBranch />
