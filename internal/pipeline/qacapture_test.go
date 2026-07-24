@@ -351,7 +351,7 @@ func TestVerifyAttemptIngestsCapture(t *testing.T) {
 	})
 	writeQACaptureRaw(t, id, `{"accounts":[{"label":"stale","username":"stale@example.test","secret":"pw"}]}`)
 
-	if _, err := p.verifyAttempt(context.Background(), id, "verify", "", "drive the app", "qa note", "", "", "", "", ""); err != nil {
+	if _, err := p.verifyAttempt(context.Background(), id, "verify", "", "drive the app", "qa note", "", "", "", "", "", ""); err != nil {
 		t.Fatalf("verifyAttempt: %v", err)
 	}
 
@@ -374,7 +374,7 @@ func TestVerifyAttemptSkipsCaptureWithoutQAGate(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(verifyPath(id)) })
 	writeQACaptureRaw(t, id, `{"accounts":[{"label":"stale","username":"stale@example.test","secret":"pw"}]}`)
 
-	if _, err := p.verifyAttempt(context.Background(), id, "verify", "", "drive the app", "", "", "", "", "", ""); err != nil {
+	if _, err := p.verifyAttempt(context.Background(), id, "verify", "", "drive the app", "", "", "", "", "", "", ""); err != nil {
 		t.Fatalf("verifyAttempt: %v", err)
 	}
 

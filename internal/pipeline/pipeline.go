@@ -476,6 +476,11 @@ type Pipeline struct {
 	// load (config REQUIRED_SKILLS_VERIFY), alongside the project's test skills
 	// and browser-harness on a browser-verify slice.
 	RequiredSkillsVerify []string
+	// SkillsMode selects skill delivery (config SKILLS_MODE): "instruct" (default)
+	// names the resolved set for the agent to load with the Skill tool; "inject"
+	// delivers each skill's SKILL.md content inline in the build/verify/repair/
+	// bugfix prompt, so delivery is guaranteed and provider-agnostic.
+	SkillsMode string
 	// Cleanup gates the pre-verify slop-cleanup step (config CLEANUP).
 	Cleanup        bool
 	CITimeout      int
@@ -1363,9 +1368,9 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	ticketCtx, labels := p.ticketContextWithLabels(ctx, id)
 	resolver := p.skillResolver()
 	buildSkills := resolver.Build(agent.SkillContext{Text: skillMatchText(ticketCtx, labels)})
-	skillsNote := skillsPrompt(p.prompts, resolver.Installed(), buildSkills.Names)
-	p.recordPlannedSkills(id, "build", buildSkills)
-	out, err := p.agentStep(ctx, id, "build", buildInstruction(p.prompts, id, branch, skillsNote, note, ticketCtx))
+	buildDelivery := p.resolveSkills(buildSkills, resolver.Installed(), false)
+	p.recordPhaseSkills(id, "build", buildDelivery)
+	out, err := p.agentStep(ctx, id, "build", injectInto(buildDelivery.injection, buildInstruction(p.prompts, id, branch, buildDelivery.note, note, ticketCtx)))
 	if err != nil {
 		return err
 	}
@@ -1395,6 +1400,9 @@ const noSkillsWarning = "build loaded no skills — the repo has skills installe
 // serve mode, records a durable event so the web UI surfaces the same warning a
 // headless run would otherwise bury.
 func (p *Pipeline) warnBuildWithoutSkills(id string, named []string) {
+	if p.injectSkills() {
+		return
+	}
 	if p.SkillsExpected == nil || len(named) == 0 || len(p.buildSkills) > 0 || !p.SkillsExpected(p.buildProvider) {
 		return
 	}
@@ -1719,9 +1727,9 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	skillCtx := agent.SkillContext{Changed: changed}
 	verifySkills := resolver.Verify(skillCtx, note != "")
 	repairSkills := resolver.Repair(skillCtx)
-	skillsVerify := verifySkillsPrompt(p.prompts, resolver.Installed(), verifySkills.Names)
-	skillsRepair := skillsPrompt(p.prompts, resolver.Installed(), repairSkills.Names)
-	p.recordPlannedSkills(id, "verify", verifySkills)
+	verifyDelivery := p.resolveSkills(verifySkills, resolver.Installed(), true)
+	repairDelivery := p.resolveSkills(repairSkills, resolver.Installed(), false)
+	p.recordPhaseSkills(id, "verify", verifyDelivery)
 
 	checksFragment := checks.Render(p.Checks)
 	if n := len(p.Checks); n > 0 {
@@ -1738,7 +1746,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	var lastFail, passVerdict verdict
 	for {
 		p.setActivity(id, activity.Verify, "")
-		v, err := p.verifyAttempt(ctx, id, label, handoff, note, qaNote, checksFragment, rubricVerify, lessonsVerify, skillsVerify, ticketCtx)
+		v, err := p.verifyAttempt(ctx, id, label, handoff, note, qaNote, checksFragment, rubricVerify, lessonsVerify, verifyDelivery.note, verifyDelivery.injection, ticketCtx)
 		if err != nil {
 			return err
 		}
@@ -1761,8 +1769,8 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				p.logf("  ↳ %s", fl)
 			}
 			p.setActivity(id, activity.Repair, fmt.Sprintf("repair%d", repairAttempt))
-			p.recordPlannedSkills(id, "repair", repairSkills)
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, skillsRepair, ticketCtx)); err != nil {
+			p.recordPhaseSkills(id, "repair", repairDelivery)
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), injectInto(repairDelivery.injection, repairInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, repairDelivery.note, ticketCtx))); err != nil {
 				return err
 			}
 			continue
@@ -1775,8 +1783,8 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				p.logf("  ↳ %s", fl)
 			}
 			p.setActivity(id, activity.Bugfix, fmt.Sprintf("bugfix%d", bugfixAttempt))
-			p.recordPlannedSkills(id, "bugfix", repairSkills)
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, skillsRepair, ticketCtx)); err != nil {
+			p.recordPhaseSkills(id, "bugfix", repairDelivery)
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), injectInto(repairDelivery.injection, bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, repairDelivery.note, ticketCtx))); err != nil {
 				return err
 			}
 			continue
@@ -1793,7 +1801,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 		}
 		return p.giveUp(ctx, id, reason)
 	}
-	if err := p.gateBrowserVerify(ctx, id, passVerdict, handoff, qaNote, checksFragment, rubricVerify, lessonsVerify, skillsVerify, ticketCtx); err != nil {
+	if err := p.gateBrowserVerify(ctx, id, passVerdict, handoff, qaNote, checksFragment, rubricVerify, lessonsVerify, verifyDelivery.note, verifyDelivery.injection, ticketCtx); err != nil {
 		return err
 	}
 	if repairAttempt > 0 || bugfixAttempt > 0 {
@@ -1815,6 +1823,9 @@ const verifyNoSkillsWarning = "verify loaded no skills — the repo has skills i
 // plus, in serve mode, a durable verify_no_skills event. Called once per Verify,
 // after the first attempt only, so a run emits the event at most once.
 func (p *Pipeline) warnVerifyWithoutSkills(id string, named []string) {
+	if p.injectSkills() {
+		return
+	}
 	if p.SkillsExpected == nil || len(named) == 0 || len(p.verifySkills) > 0 || !p.SkillsExpected(p.verifyProvider) {
 		return
 	}
@@ -1840,7 +1851,7 @@ const noBrowserWarning = "browser verify skipped on a UI slice — the verifier 
 // a still-undriven UI slice pauses blamelessly, carrying the verdict's
 // browser_notes as the reason. A browser skip is an environment/config gap, never
 // a code defect, so it never routes into the repair loop.
-func (p *Pipeline) gateBrowserVerify(ctx context.Context, id string, v verdict, handoff, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) error {
+func (p *Pipeline) gateBrowserVerify(ctx context.Context, id string, v verdict, handoff, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx string) error {
 	if p.BrowserVerify == "never" || p.BrowserVerify == "" {
 		return nil
 	}
@@ -1863,7 +1874,7 @@ func (p *Pipeline) gateBrowserVerify(ctx context.Context, id string, v verdict, 
 
 	p.logf("  ⚠ browser verify required but the UI slice was not driven — re-verifying once (must drive %s)", appURL)
 	p.setActivity(id, activity.Verify, "browser")
-	v2, err := p.verifyAttempt(ctx, id, "verify-browser", handoff, browserDriveNote(appURL), qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
+	v2, err := p.verifyAttempt(ctx, id, "verify-browser", handoff, browserDriveNote(appURL), qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx)
 	if err != nil {
 		return err
 	}
@@ -3089,18 +3100,115 @@ func skillMatchText(ticketCtx string, labels []string) string {
 	return ticketCtx + "\n" + strings.Join(labels, " ")
 }
 
-// recordPlannedSkills files a phase attempt's planned skill set and the step
-// that produced it. A repo that installs no skills plans nothing and files
-// nothing.
-func (p *Pipeline) recordPlannedSkills(id, phase string, set agent.SkillSet) {
-	if p.Events == nil || len(set.Names) == 0 {
+const (
+	skillsModeInstruct = "instruct"
+	skillsModeInject   = "inject"
+)
+
+// injectSkills reports whether resolved skill sets are delivered by injecting
+// their SKILL.md content into the phase prompt (SKILLS_MODE=inject) rather than
+// by naming them for the agent to load with the Skill tool (the default).
+func (p *Pipeline) injectSkills() bool { return p.SkillsMode == skillsModeInject }
+
+// phaseSkills is a phase's resolved set turned into what its prompt carries. In
+// instruct mode note is the Skill-tool sentence and injection is empty; in inject
+// mode note is empty, injection is the inline SKILL.md block, and activated names
+// the skills whose content that block actually delivered — the run receipt.
+type phaseSkills struct {
+	set       agent.SkillSet
+	note      string
+	injection string
+	activated []string
+}
+
+// resolveSkills turns a resolved set into its delivery for the current mode. The
+// injection rides the prompt outside the phase template (see agentStep call
+// sites), so a prompt-catalog override cannot drop it; the Skill-tool sentence is
+// dropped entirely in inject mode.
+func (p *Pipeline) resolveSkills(set agent.SkillSet, installed []string, verify bool) phaseSkills {
+	if !p.injectSkills() {
+		render := skillsPrompt
+		if verify {
+			render = verifySkillsPrompt
+		}
+		return phaseSkills{set: set, note: render(p.prompts, installed, set.Names)}
+	}
+	injected := agent.LoadInjectableSkills(p.RepoRoot, set.Names)
+	return phaseSkills{
+		set:       set,
+		injection: skillInjectionBlock(injected),
+		activated: injectedSkillNames(injected),
+	}
+}
+
+// recordPhaseSkills files a phase attempt's skill set: the planned set in
+// instruct mode, or the deterministically injected (Activated) set plus its byte
+// size in inject mode. A phase that delivers nothing files nothing.
+func (p *Pipeline) recordPhaseSkills(id, phase string, ps phaseSkills) {
+	if p.Events == nil {
 		return
 	}
-	p.Events.Emit(event.KindSkillsPlanned, phase, "planned skills: "+strings.Join(set.Names, ", "), map[string]any{
+	if p.injectSkills() {
+		if len(ps.activated) == 0 {
+			return
+		}
+		p.logf("  ↳ injected %d skill(s), %s into %s", len(ps.activated), fmtBytes(int64(len(ps.injection))), phase)
+		p.Events.Emit(event.KindSkillsPlanned, phase, "activated skills: "+strings.Join(ps.activated, ", "), map[string]any{
+			"ticket": id,
+			"skills": ps.activated,
+			"source": ps.set.Source,
+			"mode":   skillsModeInject,
+			"bytes":  len(ps.injection),
+		})
+		return
+	}
+	if len(ps.set.Names) == 0 {
+		return
+	}
+	p.Events.Emit(event.KindSkillsPlanned, phase, "planned skills: "+strings.Join(ps.set.Names, ", "), map[string]any{
 		"ticket": id,
-		"skills": set.Names,
-		"source": set.Source,
+		"skills": ps.set.Names,
+		"source": ps.set.Source,
+		"mode":   skillsModeInstruct,
 	})
+}
+
+// skillInjectionBlock renders the resolved set's SKILL.md contents as a
+// self-contained prompt block: each skill under its own heading, preceded by the
+// repo-relative path to its SKILL.md so the agent can open the skill's
+// references/ and asset files itself. Empty when nothing injectable resolves.
+func skillInjectionBlock(skills []agent.InjectedSkill) string {
+	if len(skills) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("The skills below are activated for this phase — their full SKILL.md contents are included inline, so you do not need the Skill tool to load them. Each is preceded by the repo-relative path to its SKILL.md; read that directory's referenced files yourself when a skill points to them.")
+	for _, s := range skills {
+		b.WriteString("\n\n===== SKILL: " + s.Name + " (" + s.Path + ") =====\n")
+		b.WriteString(strings.TrimRight(s.Body, "\n"))
+	}
+	return b.String()
+}
+
+func injectedSkillNames(skills []agent.InjectedSkill) []string {
+	if len(skills) == 0 {
+		return nil
+	}
+	names := make([]string, len(skills))
+	for i, s := range skills {
+		names[i] = s.Name
+	}
+	return names
+}
+
+// injectInto prepends a skill-injection block to a rendered phase prompt. The
+// block lands outside the phase template, so it survives a prompt-catalog
+// override that drops the template's skills note. A no-op on an empty block.
+func injectInto(injection, prompt string) string {
+	if injection == "" {
+		return prompt
+	}
+	return injection + "\n\n" + prompt
 }
 
 // skillsPrompt renders the build-prompt sentence naming the skills to load. Only
@@ -3725,17 +3833,17 @@ type panelResult struct {
 // A non-empty qaNote means the QA gate is active, so the attempt is bracketed by
 // the credential-capture side channel — deferred, to cover the panel path, the
 // browser re-verify, and a fatal return alike.
-func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) (verdict, error) {
+func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx string) (verdict, error) {
 	if qaNote != "" {
 		_ = os.Remove(qaCapturePath(id))
 		defer p.ingestQACapture(ctx, id)
 	}
 	if len(p.VerifyPanel) > 0 {
-		return p.runPanel(ctx, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
+		return p.runPanel(ctx, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx)
 	}
 	verdictPath := verifyPath(id)
 	_ = os.Remove(verdictPath)
-	prompt := verifyTail(p.prompts, id, handoff, verdictPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
+	prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, verdictPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx))
 	_, agentErr := p.agentStep(ctx, id, label, prompt)
 	// A provider pause (rate/usage limit) or budget give-up must propagate, not be
 	// recorded as a verify failure — otherwise a transient 429 burns repair/bugfix
@@ -3773,14 +3881,14 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 // give-up from any member is propagated so the loop stops cleanly (the ticket
 // stays resumable on its branch) instead of being recorded as a dissenting fail;
 // a plain timeout/crash counts as that member failing.
-func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) (verdict, error) {
+func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx string) (verdict, error) {
 	results := make([]panelResult, len(p.VerifyPanel))
 	member := func(ctx context.Context, i int) error {
 		m := p.VerifyPanel[i]
 		memberPath := verifyMemberPath(id, m.Name)
 		_ = os.Remove(memberPath)
 		memberLabel := label + "-" + m.Name
-		prompt := verifyTail(p.prompts, id, handoff, memberPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx)
+		prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, memberPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx))
 		_, agentErr := p.agentStepOn(ctx, id, memberLabel, prompt, m.Runner)
 		if agentErr != nil && isFatalAgentErr(agentErr) {
 			return agentErr
