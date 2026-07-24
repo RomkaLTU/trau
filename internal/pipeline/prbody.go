@@ -3,18 +3,21 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"regexp"
 	"strings"
 
+	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/proofsbranch"
 	"github.com/RomkaLTU/trau/internal/sanitize"
 )
 
 // prBody assembles the slice PR description from the run's own recorded results:
 // the summary captured from the build phase, the verify verdict and rubric on
-// disk (or their durable hub copies), and a trailer naming the tracker that
-// actually owns the ticket. Every line states what happened — nothing is
-// pre-checked, and no attribution of any kind is added.
-func (p *Pipeline) prBody(ctx context.Context, id string) string {
+// disk (or their durable hub copies), an optional QA-proofs gallery, and a
+// trailer naming the tracker that actually owns the ticket. Every line states
+// what happened — nothing is pre-checked, and no attribution of any kind is added.
+func (p *Pipeline) prBody(ctx context.Context, id, proofsSection string) string {
 	var b strings.Builder
 	b.WriteString("## Summary\n")
 	b.WriteString(p.prSummary(ctx, id))
@@ -22,8 +25,79 @@ func (p *Pipeline) prBody(ctx context.Context, id string) string {
 	for _, line := range p.testingLines(ctx, id) {
 		b.WriteString("- " + line + "\n")
 	}
+	if proofsSection != "" {
+		b.WriteString("\n" + proofsSection + "\n")
+	}
 	b.WriteString("\n" + p.ticketRef(id) + "\n")
 	return b.String()
+}
+
+// proofsSection publishes the run's verify screenshots to the target repo's
+// trau-proofs branch and renders the PR body's QA-proofs section. It returns ""
+// — no section, no claim — when proofs are disabled, none were captured, or the
+// repo has no remote. A publish failure is non-fatal: it warns and returns "".
+func (p *Pipeline) proofsSection(ctx context.Context, id string) string {
+	if p.PublishProofs == nil {
+		return ""
+	}
+	pub, err := p.PublishProofs(ctx, id)
+	if err != nil {
+		p.logf("  ⚠ publish verify proofs: %v", err)
+		if p.Events != nil {
+			p.Events.Emit(event.KindProofsPublishFailed, "commit", "could not publish verify proofs to the "+proofsbranch.Branch+" branch", map[string]any{"ticket": id, "error": sanitize.FeedLine(err.Error())})
+		}
+		return ""
+	}
+	if len(pub.Files) == 0 {
+		return ""
+	}
+	v, graded := p.sliceVerdict(id)
+	outcome := ""
+	if graded {
+		outcome = browserLine(v, p.sliceAppURL(ctx))
+	}
+	return renderProofsSection(pub, outcome)
+}
+
+// renderProofsSection formats the ### QA proofs block: the one-line browser
+// outcome followed by each proof — inline images on a public repo, plain links
+// on a private one, whose image proxy cannot render repo-hosted files.
+func renderProofsSection(pub proofsbranch.Publication, browserOutcome string) string {
+	var b strings.Builder
+	b.WriteString("### QA proofs\n")
+	if browserOutcome != "" {
+		b.WriteString("Browser QA: " + browserOutcome + "\n")
+	}
+	for _, f := range pub.Files {
+		caption := sanitize.FeedLine(f.Caption)
+		if pub.Private {
+			b.WriteString("\n[" + caption + "](" + proofBlobURL(pub, f.Path) + ")\n")
+			continue
+		}
+		b.WriteString("\n![" + caption + "](" + proofRawURL(pub, f.Path) + ")\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// proofRawURL is the raw.githubusercontent embed URL for a public repo's proof,
+// keyed by branch name (not a SHA) so retention force-pushes never orphan a
+// surviving file's link.
+func proofRawURL(pub proofsbranch.Publication, path string) string {
+	return "https://raw.githubusercontent.com/" + pub.Owner + "/" + pub.Repo + "/" + pub.Branch + "/" + escapePath(path)
+}
+
+// proofBlobURL is the github.com blob URL for a private repo's proof, which a
+// reviewer clicks through to rather than embedding inline.
+func proofBlobURL(pub proofsbranch.Publication, path string) string {
+	return "https://github.com/" + pub.Owner + "/" + pub.Repo + "/blob/" + pub.Branch + "/" + escapePath(path)
+}
+
+func escapePath(path string) string {
+	parts := strings.Split(path, "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	return strings.Join(parts, "/")
 }
 
 func (p *Pipeline) epicPRBody(id string) string {

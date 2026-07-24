@@ -69,7 +69,7 @@ func (t detailTracker) IssueDetail(context.Context, string) (tracker.IssueDetail
 func TestVerifyTailModes(t *testing.T) {
 	const schema = `"pass": true|false`
 
-	brief := verifyTail(prompts.Renderer{}, "COD-1", handoffPath("COD-1"), verifyPath("COD-1"), "", "", "", "", "", "", "")
+	brief := verifyTail(prompts.Renderer{}, "COD-1", handoffPath("COD-1"), verifyPath("COD-1"), "", "", "", "", "", "", "", false)
 	if !strings.Contains(brief, "the QA brief at "+handoffPath("COD-1")) {
 		t.Errorf("brief-mode prompt does not point at the brief:\n%s", brief)
 	}
@@ -81,7 +81,7 @@ func TestVerifyTailModes(t *testing.T) {
 	}
 
 	ticketCtx := ticketContextNote("COD-1", tracker.IssueDetail{Title: "Tiny slice", Description: "Do the small thing."}, nil)
-	derive := verifyTail(prompts.Renderer{}, "COD-1", "", verifyPath("COD-1"), "", "", "", "", "", "", ticketCtx)
+	derive := verifyTail(prompts.Renderer{}, "COD-1", "", verifyPath("COD-1"), "", "", "", "", "", "", ticketCtx, false)
 	if strings.Contains(derive, "QA brief at") || strings.Contains(derive, "/tmp/handoff") {
 		t.Errorf("derive-mode prompt dangles a brief reference:\n%s", derive)
 	}

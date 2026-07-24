@@ -144,7 +144,7 @@ func TestRunDetailCompleteRun(t *testing.T) {
 	})
 	seedArtifact(t, runsDir, "COD-100", "handoff.md", "# QA brief\n\n- Check the detail renders.\n")
 	seedArtifact(t, runsDir, "COD-100", "rubric.json", `{"ticket":"COD-100","acceptance_criteria":["detail returns state keys","cost table sums exactly"],"non_goals":["editing runs"],"required_tests":["rundetail_test.go"],"ui_paths":["/runs/acme/COD-100"],"fail_conditions":["missing artifact errors"]}`)
-	seedArtifact(t, runsDir, "COD-100", "verdict.json", `{"pass":true,"summary":"all criteria hold","failures":[],"checks":[{"name":"tests","severity":"error","pass":true,"detail":"go test ok"}]}`)
+	seedArtifact(t, runsDir, "COD-100", "verdict.json", `{"pass":true,"summary":"all criteria hold","failures":[],"checks":[{"name":"tests","severity":"error","pass":true,"detail":"go test ok"}],"browser":"driven","browser_notes":"drove the detail page in both themes"}`)
 	seedArtifact(t, runsDir, "COD-100", "buildnotes.md", "files: internal/webserver/rundetail.go\ntest: rundetail_test.go\n")
 
 	ts := instancesServer(t, home)
@@ -168,6 +168,9 @@ func TestRunDetailCompleteRun(t *testing.T) {
 	}
 	if d.Verdict == nil || !d.Verdict.Pass || len(d.Verdict.Checks) != 1 {
 		t.Errorf("verdict = %+v, want a passing verdict with one check", d.Verdict)
+	}
+	if d.Verdict == nil || d.Verdict.Browser != "driven" || d.Verdict.BrowserNotes == "" {
+		t.Errorf("verdict browser = %+v, want the browser outcome and notes threaded through", d.Verdict)
 	}
 	if d.BuildNotes == "" {
 		t.Error("build notes missing, want the notes carried through from the store")

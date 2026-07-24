@@ -250,7 +250,7 @@ func TestQACredentialsConfinedToVerifyPrompt(t *testing.T) {
 	const secret = "top-secret-pw"
 	qaNote := qaRosterNote("COD-1", []hubclient.QAAccount{{Label: "admin", Username: "u", Secret: secret}}, "")
 
-	verify := verifyTail(prompts.Renderer{}, "COD-1", handoffPath("COD-1"), verifyPath("COD-1"), "drive the app", qaNote, "", "", "", "", "")
+	verify := verifyTail(prompts.Renderer{}, "COD-1", handoffPath("COD-1"), verifyPath("COD-1"), "drive the app", qaNote, "", "", "", "", "", false)
 	if !strings.Contains(verify, secret) {
 		t.Fatal("verify prompt should carry the injected credentials")
 	}

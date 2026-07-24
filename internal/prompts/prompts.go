@@ -64,6 +64,8 @@ type HandoffData struct {
 
 // VerifyData feeds the verify prompt. Verdict is the JSON verdict file path;
 // an empty Handoff switches the template to its derive-from-ticket wording.
+// ProofsContract adds the browser-proofs contract (record a trace, save
+// screenshots, write a manifest) when the run harvests proofs.
 type VerifyData struct {
 	ID             string
 	Handoff        string
@@ -75,6 +77,7 @@ type VerifyData struct {
 	LessonsNote    string
 	SkillsNote     string
 	TicketContext  string
+	ProofsContract bool
 }
 
 // CommitData feeds the commit prompt. Squash selects the skip-splitting

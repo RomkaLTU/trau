@@ -1,0 +1,193 @@
+package hubstore
+
+import (
+	"database/sql"
+	"errors"
+)
+
+// ProofsDir is the verify-proof blob store's directory under the trau home. It is
+// kept apart from the attachment blobs so the attachment retention sweep, which
+// only knows attachment rows, never mistakes a proof digest for an orphan.
+const ProofsDir = "proofs"
+
+// Proof kinds. A screenshot has bytes in the blob store; a video row records only
+// the local trace directory the recorder wrote, which is not uploaded.
+const (
+	ProofScreenshot = "screenshot"
+	ProofVideo      = "video"
+)
+
+// RunProof is one harvested verify proof: a screenshot's stored bytes, or a video
+// row that carries only the trace directory path. Seq orders a run's proofs.
+type RunProof struct {
+	Seq       int    `json:"seq"`
+	Kind      string `json:"kind"`
+	SHA256    string `json:"sha256,omitempty"`
+	Mime      string `json:"mime,omitempty"`
+	Caption   string `json:"caption,omitempty"`
+	TraceDir  string `json:"trace_dir,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
+}
+
+// RunProofs is the hub's store of verify browser proofs, paired with the
+// content-addressed blob store holding the screenshot bytes. The caller owns db's
+// lifecycle.
+type RunProofs struct {
+	db    *sql.DB
+	blobs *AttachmentBlobs
+}
+
+// NewRunProofs builds the proof store over db, with screenshot bytes under root.
+func NewRunProofs(db *sql.DB, root string) *RunProofs {
+	return &RunProofs{db: db, blobs: NewAttachmentBlobs(root)}
+}
+
+// Blobs returns the content-addressed store the screenshot bytes live in.
+func (p *RunProofs) Blobs() *AttachmentBlobs { return p.blobs }
+
+// Replace swaps a run's proof rows for proofs in one transaction, so the latest
+// verify attempt supersedes the prior one rather than appending. An empty set
+// clears the run's proofs.
+func (p *RunProofs) Replace(repo, ticket string, proofs []RunProof) error {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM run_proofs WHERE repo = ? AND ticket = ?`, repo, ticket); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	for _, pr := range proofs {
+		if _, err := tx.Exec(
+			`INSERT INTO run_proofs(repo, ticket, seq, kind, sha256, mime, caption, trace_dir, created_at)
+			 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			repo, ticket, pr.Seq, pr.Kind, pr.SHA256, pr.Mime, pr.Caption, pr.TraceDir, pr.CreatedAt,
+		); err != nil {
+			return errors.Join(err, tx.Rollback())
+		}
+	}
+	return tx.Commit()
+}
+
+// ForRun returns a run's proofs in seq order.
+func (p *RunProofs) ForRun(repo, ticket string) ([]RunProof, error) {
+	rows, err := p.db.Query(
+		`SELECT seq, kind, sha256, mime, caption, trace_dir, created_at
+		 FROM run_proofs WHERE repo = ? AND ticket = ? ORDER BY seq`,
+		repo, ticket,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []RunProof{}
+	for rows.Next() {
+		var pr RunProof
+		if err := rows.Scan(&pr.Seq, &pr.Kind, &pr.SHA256, &pr.Mime, &pr.Caption, &pr.TraceDir, &pr.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, pr)
+	}
+	return out, rows.Err()
+}
+
+// Video returns a run's video proof row — the trace-directory placeholder the
+// verify harvest wrote, later carrying the rendered mp4's bytes — or ok=false when
+// the run recorded no trace.
+func (p *RunProofs) Video(repo, ticket string) (RunProof, bool, error) {
+	var pr RunProof
+	err := p.db.QueryRow(
+		`SELECT seq, kind, sha256, mime, caption, trace_dir, created_at
+		 FROM run_proofs WHERE repo = ? AND ticket = ? AND kind = ? ORDER BY seq LIMIT 1`,
+		repo, ticket, ProofVideo,
+	).Scan(&pr.Seq, &pr.Kind, &pr.SHA256, &pr.Mime, &pr.Caption, &pr.TraceDir, &pr.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RunProof{}, false, nil
+	}
+	if err != nil {
+		return RunProof{}, false, err
+	}
+	return pr, true, nil
+}
+
+// SetVideo replaces a run's video proof with video — the freshly rendered mp4 that
+// supersedes any prior video — while leaving the screenshot rows untouched.
+func (p *RunProofs) SetVideo(repo, ticket string, video RunProof) error {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM run_proofs WHERE repo = ? AND ticket = ? AND kind = ?`, repo, ticket, ProofVideo); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO run_proofs(repo, ticket, seq, kind, sha256, mime, caption, trace_dir, created_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		repo, ticket, video.Seq, ProofVideo, video.SHA256, video.Mime, video.Caption, video.TraceDir, video.CreatedAt,
+	); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	return tx.Commit()
+}
+
+// ExpiredProof is one run whose proofs have aged past the retention cutoff: the
+// repo and ticket that recorded it and the local trace directory it wrote, empty
+// for a run whose trace was never recorded or has already been cleared.
+type ExpiredProof struct {
+	Repo     string
+	Ticket   string
+	TraceDir string
+}
+
+// ExpiredBefore returns the distinct runs whose proofs were created before cutoff
+// (an RFC3339 timestamp), one row per (repo, ticket, trace_dir). Rows with no
+// timestamp are skipped, so a row written before created_at was recorded is never
+// mistaken for expired. The retention sweep deletes the recorded traces and drops
+// the runs' trau-proofs directories.
+func (p *RunProofs) ExpiredBefore(cutoff string) ([]ExpiredProof, error) {
+	rows, err := p.db.Query(
+		`SELECT DISTINCT repo, ticket, trace_dir FROM run_proofs
+		 WHERE created_at != '' AND created_at < ? ORDER BY repo, ticket`,
+		cutoff,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []ExpiredProof{}
+	for rows.Next() {
+		var e ExpiredProof
+		if err := rows.Scan(&e.Repo, &e.Ticket, &e.TraceDir); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ClearTrace blanks the recorded trace_dir on a run's rows once the directory has
+// been deleted, so a later sweep neither re-deletes it nor offers a video render
+// for a recording that is gone. The screenshot bytes in the blob store are kept.
+func (p *RunProofs) ClearTrace(repo, ticket string) error {
+	_, err := p.db.Exec(
+		`UPDATE run_proofs SET trace_dir = '' WHERE repo = ? AND ticket = ?`,
+		repo, ticket,
+	)
+	return err
+}
+
+// Find returns a run's proof at seq.
+func (p *RunProofs) Find(repo, ticket string, seq int) (RunProof, bool, error) {
+	var pr RunProof
+	err := p.db.QueryRow(
+		`SELECT seq, kind, sha256, mime, caption, trace_dir, created_at
+		 FROM run_proofs WHERE repo = ? AND ticket = ? AND seq = ?`,
+		repo, ticket, seq,
+	).Scan(&pr.Seq, &pr.Kind, &pr.SHA256, &pr.Mime, &pr.Caption, &pr.TraceDir, &pr.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RunProof{}, false, nil
+	}
+	if err != nil {
+		return RunProof{}, false, err
+	}
+	return pr, true, nil
+}

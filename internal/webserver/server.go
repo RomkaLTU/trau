@@ -64,6 +64,9 @@ type Server struct {
 	skillsMu         sync.Mutex
 	skillsCache      map[string]skillsCacheEntry
 	atlas            *atlasRunner
+	render           *videoRenderer
+	proofRetention   int
+	recordingsRoot   string
 	restart          func()
 	restartOnce      sync.Once
 	updates          *update.Checker
@@ -111,6 +114,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 	s.drain = newDrainer(s)
 	s.syncer = newSyncer(s)
 	s.atlas = newAtlasRunner(s)
+	s.render = newVideoRenderer(s)
 	return s
 }
 
@@ -145,6 +149,7 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 	go s.sweepKnownRepos(ctx)
 	go s.syncer.run(ctx, syncInterval, reconcileInterval)
 	go s.pruneRunData(ctx)
+	go s.pruneProofs(ctx)
 	go s.updates.Run(ctx)
 }
 
@@ -301,6 +306,9 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/tokens", s.handleRunTokens)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/spend", s.handleRunSpend)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/anomalies", s.handleRunAnomalies)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/proofs", s.handleRunProofs)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/proofs/{seq}", s.handleRunProof)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/render-video", s.handleRenderVideo)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/tokens", s.handleRepoTokens)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/tokens/day", s.handleTokenDay)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/routing", s.handleRepoRouting)

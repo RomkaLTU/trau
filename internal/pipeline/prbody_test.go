@@ -1,10 +1,15 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/proofsbranch"
 )
 
 // titledTracker is a fakeTracker whose Title returns a fixed ticket title, so
@@ -66,7 +71,7 @@ func TestPRBodySkippedBrowserNeverClaimsBrowserQA(t *testing.T) {
 	p.AppURL = "http://app.test"
 	writeSliceVerdict(t, id, verdict{Pass: true, Summary: "backend checks pass", Browser: "skipped", BrowserNotes: "no automation browser reachable"})
 
-	body := p.prBody(context.Background(), id)
+	body := p.prBody(context.Background(), id, "")
 
 	if !strings.Contains(body, "Browser QA: not run — no automation browser reachable") {
 		t.Errorf("body must state the browser was not run:\n%s", body)
@@ -88,7 +93,7 @@ func TestPRBodyDrivenBrowserNamesTarget(t *testing.T) {
 	p.AppURL = "http://app.test"
 	writeSliceVerdict(t, id, verdict{Pass: true, Summary: "UI verified", Browser: "driven"})
 
-	body := p.prBody(context.Background(), id)
+	body := p.prBody(context.Background(), id, "")
 
 	if !strings.Contains(body, "Browser QA: driven against http://app.test") {
 		t.Errorf("driven verdict must name the target URL:\n%s", body)
@@ -110,7 +115,7 @@ func TestPRBodyFallbackNeverEmbedsJSON(t *testing.T) {
 	})
 	writeSliceRubric(t, id, `{"ticket":"`+id+`","acceptance_criteria":["totals shown"],"required_tests":["go test ./internal/cart"],"fail_conditions":[]}`)
 
-	body := p.prBody(context.Background(), id)
+	body := p.prBody(context.Background(), id, "")
 
 	if !strings.Contains(body, "## Summary\nImplements "+id+": Add cart totals.") {
 		t.Errorf("missing title-derived summary fallback:\n%s", body)
@@ -147,7 +152,7 @@ func TestPRBodyNeverEmbedsBuildResultJSON(t *testing.T) {
 	}
 	writeSliceVerdict(t, id, verdict{Pass: true, Summary: "footer renders", Browser: "driven"})
 
-	body := p.prBody(context.Background(), id)
+	body := p.prBody(context.Background(), id, "")
 
 	if !strings.Contains(body, "## Summary\nAdded a backoffice-wide footer with a copyright line, rendered in both the dashboard shell and the auth shell.") {
 		t.Errorf("summary must be the prose the result carried:\n%s", body)
@@ -163,7 +168,7 @@ func TestPRBodyWithoutVerdictStatesIt(t *testing.T) {
 	id := "COD-91065"
 	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
 
-	body := p.prBody(context.Background(), id)
+	body := p.prBody(context.Background(), id, "")
 
 	if !strings.Contains(body, "No verify verdict was recorded for this run") {
 		t.Errorf("missing honest no-verdict line:\n%s", body)
@@ -183,7 +188,7 @@ func TestPRBodiesCarryNoAttribution(t *testing.T) {
 	writeSliceVerdict(t, id, verdict{Pass: true, Summary: "scoping verified", Browser: "not-applicable"})
 
 	for name, body := range map[string]string{
-		"slice": p.prBody(context.Background(), id),
+		"slice": p.prBody(context.Background(), id, ""),
 		"epic":  p.epicPRBody("COD-91067"),
 	} {
 		for _, banned := range []string{"Trau", "trau", " loop", "AI", "utomated", "[x]", "Test plan"} {
@@ -194,6 +199,125 @@ func TestPRBodiesCarryNoAttribution(t *testing.T) {
 	}
 	if body := p.epicPRBody("COD-91067"); !strings.Contains(body, "Linear: COD-91067") {
 		t.Errorf("epic body missing tracker trailer:\n%s", body)
+	}
+}
+
+func TestRenderProofsSectionPublicEmbedsInlineImages(t *testing.T) {
+	pub := proofsbranch.Publication{
+		Owner:  "acme",
+		Repo:   "web",
+		Branch: proofsbranch.Branch,
+		Files: []proofsbranch.File{
+			{Path: "COD-1148/proof-1.png", Caption: "cart totals"},
+			{Path: "COD-1148/proof-2.png", Caption: "checkout"},
+		},
+	}
+
+	got := renderProofsSection(pub, "driven against http://app.test")
+
+	if !strings.HasPrefix(got, "### QA proofs\n") {
+		t.Errorf("missing QA proofs header:\n%s", got)
+	}
+	if !strings.Contains(got, "Browser QA: driven against http://app.test") {
+		t.Errorf("missing browser outcome line:\n%s", got)
+	}
+	want := "![cart totals](https://raw.githubusercontent.com/acme/web/trau-proofs/COD-1148/proof-1.png)"
+	if !strings.Contains(got, want) {
+		t.Errorf("public repo must embed inline images keyed by branch name:\n%s", got)
+	}
+	if strings.Contains(got, "github.com/acme/web/blob") {
+		t.Errorf("public repo must not use blob links:\n%s", got)
+	}
+}
+
+func TestRenderProofsSectionPrivateUsesLinks(t *testing.T) {
+	pub := proofsbranch.Publication{
+		Owner:   "acme",
+		Repo:    "web",
+		Branch:  proofsbranch.Branch,
+		Private: true,
+		Files: []proofsbranch.File{
+			{Path: "COD-1148/proof-1.png", Caption: "cart totals"},
+		},
+	}
+
+	got := renderProofsSection(pub, "")
+
+	if strings.Contains(got, "![") {
+		t.Errorf("private repo image proxy cannot render inline images:\n%s", got)
+	}
+	want := "[cart totals](https://github.com/acme/web/blob/trau-proofs/COD-1148/proof-1.png)"
+	if !strings.Contains(got, want) {
+		t.Errorf("private repo must emit clickable blob links:\n%s", got)
+	}
+	if strings.Contains(got, "Browser QA:") {
+		t.Errorf("no browser outcome means no outcome line:\n%s", got)
+	}
+}
+
+// TestProofsSectionAbsentWithoutProofs guards the truthful-body invariant: no
+// publisher, or a publisher that pushed nothing, yields no QA section at all.
+func TestProofsSectionAbsentWithoutProofs(t *testing.T) {
+	id := "COD-91148"
+
+	nilPub := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+	if got := nilPub.proofsSection(context.Background(), id); got != "" {
+		t.Errorf("no publisher must yield no section, got %q", got)
+	}
+
+	empty := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+	empty.PublishProofs = func(context.Context, string) (proofsbranch.Publication, error) {
+		return proofsbranch.Publication{}, nil
+	}
+	if got := empty.proofsSection(context.Background(), id); got != "" {
+		t.Errorf("empty publication must yield no section, got %q", got)
+	}
+}
+
+// TestProofsSectionPublishFailureIsNonFatal: a failed proofs push warns via a
+// durable event and delivers the PR with no QA section rather than blocking.
+func TestProofsSectionPublishFailureIsNonFatal(t *testing.T) {
+	var buf bytes.Buffer
+	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+	p.Events = event.New(&buf)
+	p.PublishProofs = func(context.Context, string) (proofsbranch.Publication, error) {
+		return proofsbranch.Publication{}, errors.New("push rejected")
+	}
+
+	if got := p.proofsSection(context.Background(), "COD-91148"); got != "" {
+		t.Errorf("publish failure must yield no section, got %q", got)
+	}
+	evs := kindEvents(t, &buf, event.KindProofsPublishFailed)
+	if len(evs) != 1 {
+		t.Fatalf("emitted %d proofs_publish_failed events, want 1", len(evs))
+	}
+	if got := strField(evs[0].Fields, "ticket"); got != "COD-91148" {
+		t.Errorf("ticket = %q, want COD-91148", got)
+	}
+}
+
+// TestProofsSectionCarriesVerdictOutcome: a rendered section names the driven
+// browser target from the run's verdict and lands in the assembled PR body.
+func TestProofsSectionCarriesVerdictOutcome(t *testing.T) {
+	id := "COD-91148"
+	p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+	p.AppURL = "http://app.test"
+	writeSliceVerdict(t, id, verdict{Pass: true, Summary: "UI verified", Browser: "driven"})
+	p.PublishProofs = func(context.Context, string) (proofsbranch.Publication, error) {
+		return proofsbranch.Publication{
+			Owner:  "acme",
+			Repo:   "web",
+			Branch: proofsbranch.Branch,
+			Files:  []proofsbranch.File{{Path: id + "/proof-1.png", Caption: "home"}},
+		}, nil
+	}
+
+	section := p.proofsSection(context.Background(), id)
+	if !strings.Contains(section, "Browser QA: driven against http://app.test") {
+		t.Errorf("section must carry the driven outcome:\n%s", section)
+	}
+	if body := p.prBody(context.Background(), id, section); !strings.Contains(body, "### QA proofs") {
+		t.Errorf("PR body must include the QA proofs section:\n%s", body)
 	}
 }
 

@@ -1,9 +1,17 @@
 import { useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { ArrowLeft, ExternalLink, GitBranch, Send } from 'lucide-react'
+import {
+  ArrowLeft,
+  ExternalLink,
+  GitBranch,
+  Loader2,
+  Send,
+  Video,
+} from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import {
   Eyebrow,
   NoSkillsBanner,
@@ -18,6 +26,7 @@ import {
   TerminalCard,
   useRepoRouteScope,
   type CheckpointNotice,
+  type RunState,
 } from '@/components/trau'
 import { Markdown } from '@/components/markdown'
 import { cn } from '@/lib/utils'
@@ -27,9 +36,12 @@ import { runTitle, usePageTitle } from '@/lib/page-title'
 import { formatCostUSD, formatDuration } from '@/lib/runlive'
 import { steerSettled } from '@/lib/steer'
 import {
+  renderRunVideo,
   runDetailQueryOptions,
+  runProofsQueryOptions,
   type Anomaly,
   type PhaseCost,
+  type Proof,
   type RunDetail,
   type Rubric,
   type StepDuration,
@@ -196,6 +208,8 @@ function Detail({
           <VerdictView verdict={run.verdict} present={run.artifacts.verdict} />
         </TerminalCard>
 
+        <ProofsCard repo={repo} ticket={run.ticket} />
+
         <TerminalCard title="costs">
           <CostsView
             costs={run.costs}
@@ -305,7 +319,188 @@ function VerdictView({ verdict, present }: { verdict?: Verdict; present: boolean
           ))}
         </ul>
       )}
+      {verdict.browser && (
+        <div className="flex flex-col gap-1.5 border-t border-border/60 pt-3">
+          <div className="flex items-center gap-2 font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+            browser QA
+            <StatusPill state={browserPill(verdict.browser)} label={verdict.browser} />
+          </div>
+          {verdict.browser_notes && (
+            <p className="font-sans text-sm leading-relaxed text-muted-foreground">
+              {verdict.browser_notes}
+            </p>
+          )}
+        </div>
+      )}
     </div>
+  )
+}
+
+function browserPill(outcome: string): RunState {
+  switch (outcome) {
+    case 'driven':
+      return 'success'
+    case 'skipped':
+      return 'warn'
+    default:
+      return 'todo'
+  }
+}
+
+function ProofsCard({ repo, ticket }: { repo: string; ticket: string }) {
+  const { data } = useQuery(runProofsQueryOptions(repo, ticket))
+  const [active, setActive] = useState<Proof | null>(null)
+  const proofs = data ?? []
+  const shots = proofs.filter((p) => p.is_image && p.url)
+  const video = proofs.find((p) => p.kind === 'video')
+
+  if (shots.length === 0 && !video) {
+    return null
+  }
+  return (
+    <TerminalCard title="QA proofs" className="lg:col-span-2">
+      <div className="flex flex-col gap-4">
+        {shots.length > 0 && (
+          <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            {shots.map((p) => (
+              <li key={p.seq}>
+                <button
+                  type="button"
+                  onClick={() => setActive(p)}
+                  className="group flex w-full flex-col gap-1.5 text-left"
+                >
+                  <img
+                    src={p.url}
+                    alt={p.caption || `proof ${p.seq}`}
+                    loading="lazy"
+                    className="aspect-video w-full rounded-md border border-border object-cover transition-colors group-hover:border-primary"
+                  />
+                  {p.caption && (
+                    <span className="truncate font-mono text-[0.7rem] text-muted-foreground">
+                      {p.caption}
+                    </span>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <VideoProof repo={repo} ticket={ticket} video={video} />
+      </div>
+      <Lightbox proof={active} onClose={() => setActive(null)} />
+    </TerminalCard>
+  )
+}
+
+function VideoProof({
+  repo,
+  ticket,
+  video,
+}: {
+  repo: string
+  ticket: string
+  video?: Proof
+}) {
+  const queryClient = useQueryClient()
+  const mutation = useMutation({
+    mutationFn: () => renderRunVideo(repo, ticket),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: ['run-proofs', repo, ticket],
+      }),
+  })
+
+  const rendering = mutation.isPending || video?.render === 'rendering'
+  const hasVideo = Boolean(video?.url)
+  const disabledReason = video?.trace_exists
+    ? ''
+    : video?.trace_dir
+      ? 'trace pruned'
+      : 'no recording captured'
+
+  return (
+    <div className="flex flex-col gap-2">
+      {hasVideo && video && (
+        <figure className="flex flex-col gap-1.5">
+          <video
+            src={video.url}
+            controls
+            className="w-full rounded-md border border-border"
+          />
+          {video.caption && (
+            <figcaption className="font-mono text-[0.7rem] text-muted-foreground">
+              {video.caption}
+            </figcaption>
+          )}
+        </figure>
+      )}
+      <div className="flex items-center gap-3">
+        <Button
+          size="sm"
+          variant={hasVideo ? 'outline' : 'default'}
+          className="font-mono"
+          disabled={rendering || !video?.trace_exists}
+          onClick={() => mutation.mutate()}
+        >
+          {rendering ? (
+            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+          ) : (
+            <Video className="size-3.5" aria-hidden="true" />
+          )}
+          {rendering
+            ? 'Rendering…'
+            : hasVideo
+              ? 'Re-render video'
+              : 'Render video'}
+        </Button>
+        {!rendering && disabledReason && (
+          <span className="font-mono text-xs text-muted-foreground">
+            {disabledReason}
+          </span>
+        )}
+        {rendering && (
+          <span className="font-mono text-xs text-muted-foreground">
+            vision-heavy agent session; this can take a few minutes
+          </span>
+        )}
+      </div>
+      {!rendering && video?.render === 'failed' && video.render_error && (
+        <span className="font-mono text-xs text-destructive">
+          {video.render_error}
+        </span>
+      )}
+      {mutation.error && (
+        <span className="font-mono text-xs text-destructive">
+          {(mutation.error as Error).message}
+        </span>
+      )}
+    </div>
+  )
+}
+
+function Lightbox({ proof, onClose }: { proof: Proof | null; onClose: () => void }) {
+  return (
+    <Dialog open={proof !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-4xl gap-2 border-border p-2">
+        {proof && (
+          <>
+            <DialogTitle className="sr-only">
+              {proof.caption || `Proof ${proof.seq}`}
+            </DialogTitle>
+            <img
+              src={proof.url}
+              alt={proof.caption || `proof ${proof.seq}`}
+              className="max-h-[80vh] w-full rounded object-contain"
+            />
+            {proof.caption && (
+              <p className="px-2 pb-1 text-center font-mono text-xs text-muted-foreground">
+                {proof.caption}
+              </p>
+            )}
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 
