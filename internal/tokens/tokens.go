@@ -63,6 +63,7 @@ var rates = []struct {
 	match string
 	modelRate
 }{
+	{"opus-5", modelRate{5, 25}},
 	{"opus-4-8", modelRate{5, 25}},
 	{"opus-4-7", modelRate{5, 25}},
 	{"opus-4-6", modelRate{5, 25}},

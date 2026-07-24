@@ -37,7 +37,7 @@ func (a *fakeRenderAgent) Run(_ context.Context, _, _ string) (agent.Result, err
 	}
 	return agent.Result{
 		Final: a.final,
-		Model: "claude-opus-4-8",
+		Model: "claude-opus-5",
 		Usage: agent.Usage{Input: 100, Output: 50},
 	}, a.runErr
 }

@@ -45,7 +45,7 @@ func TestShadowedKeysDetectsEmptyMask(t *testing.T) {
 	paths := layerFixture(t,
 		"",
 		"CLAUDE_MODEL=\nCLAUDE_EFFORT=\n",
-		"CLAUDE_MODEL=claude-opus-4-8\nCLAUDE_EFFORT=xhigh\n")
+		"CLAUDE_MODEL=claude-opus-5\nCLAUDE_EFFORT=xhigh\n")
 
 	got := ShadowedKeys(paths)
 	if len(got) != 2 {
@@ -61,7 +61,7 @@ func TestShadowedKeysDetectsEmptyMask(t *testing.T) {
 	if m.Over != LayerUser || m.OverPath != paths.User {
 		t.Errorf("shadowed layer = %s (%s), want user (%s)", m.Over, m.OverPath, paths.User)
 	}
-	if m.Value != "claude-opus-4-8" {
+	if m.Value != "claude-opus-5" {
 		t.Errorf("value = %q, want the user layer's model", m.Value)
 	}
 }

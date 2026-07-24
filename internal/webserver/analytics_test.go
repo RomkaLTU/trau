@@ -54,7 +54,7 @@ func seedAnalyticsFixture(t *testing.T, home string) (dirs map[string]string, fm
 	fmtDay = func(n int) string { return day(n).Format(dateLayout) }
 
 	seedDayTokens(t, home, dirs["acme"], "COD-1", day(0), []phaseCall{
-		{"build", tokens.Record{Input: 300, Output: 200, CostUSD: usd(0.50), Model: "claude-opus-4-8"}},
+		{"build", tokens.Record{Input: 300, Output: 200, CostUSD: usd(0.50), Model: "claude-opus-5"}},
 		{"verify", tokens.Record{Input: 100, Output: 100, CostUSD: usd(0.20), Model: "gpt-5.4"}},
 	})
 	seedDayTokens(t, home, dirs["acme"], "COD-2", day(-1), []phaseCall{
@@ -68,7 +68,7 @@ func seedAnalyticsFixture(t *testing.T, home string) (dirs map[string]string, fm
 	})
 	// Outside a 7-day window — must never contribute.
 	seedDayTokens(t, home, dirs["acme"], "COD-OLD", day(-40), []phaseCall{
-		{"build", tokens.Record{Input: 9000, Output: 999, CostUSD: usd(9.99), Model: "claude-opus-4-8"}},
+		{"build", tokens.Record{Input: 9000, Output: 999, CostUSD: usd(9.99), Model: "claude-opus-5"}},
 	})
 	return dirs, fmtDay
 }
@@ -134,7 +134,7 @@ func TestTimeseriesGroupsByProvider(t *testing.T) {
 	if !eqStrings(f.Phases, []string{"build", "commit", "verify"}) {
 		t.Errorf("phase facets = %v, want [build commit verify]", f.Phases)
 	}
-	if !eqStrings(f.Models, []string{"claude-haiku-4-5", "claude-opus-4-8", "claude-sonnet-5", "gpt-5.4", "kimi-k2"}) {
+	if !eqStrings(f.Models, []string{"claude-haiku-4-5", "claude-opus-5", "claude-sonnet-5", "gpt-5.4", "kimi-k2"}) {
 		t.Errorf("model facets = %v, want the five recorded models", f.Models)
 	}
 }
@@ -183,7 +183,7 @@ func TestTimeseriesUnknownBucketFilter(t *testing.T) {
 	home := t.TempDir()
 	dirs := seedRepos(t, home, "acme")
 	seedDayTokens(t, home, dirs["acme"], "COD-1", time.Now(), []phaseCall{
-		{"build", tokens.Record{Input: 300, Output: 200, CostUSD: usd(0.50), Model: "claude-opus-4-8"}},
+		{"build", tokens.Record{Input: 300, Output: 200, CostUSD: usd(0.50), Model: "claude-opus-5"}},
 		{"", tokens.Record{Input: 60, Output: 40, CostUSD: usd(0.02), Model: "mystery-model"}},
 	})
 	ts := ingestedServer(t, home)
@@ -240,7 +240,7 @@ func TestTimeseriesGroupByDimensions(t *testing.T) {
 
 	byModel := getTimeseries(t, ts, "?days=7&group_by=model")
 	mm := seriesByKey(byModel.Series)
-	if g := mm["claude-opus-4-8"]; g.CostUSD != 0.50 {
+	if g := mm["claude-opus-5"]; g.CostUSD != 0.50 {
 		t.Errorf("opus model series = %+v, want cost 0.50", g)
 	}
 	if _, ok := mm["kimi-k2"]; !ok {
@@ -261,7 +261,7 @@ func TestTimeseriesCompareWindows(t *testing.T) {
 	fmtDay := func(n int) string { return day(n).Format(dateLayout) }
 
 	seedDayTokens(t, home, dirs["acme"], "COD-NEW", day(-1), []phaseCall{
-		{"build", tokens.Record{Input: 600, Output: 400, CostUSD: usd(1.00), Model: "claude-opus-4-8"}},
+		{"build", tokens.Record{Input: 600, Output: 400, CostUSD: usd(1.00), Model: "claude-opus-5"}},
 	})
 	seedDayTokens(t, home, dirs["acme"], "COD-OLD", day(-8), []phaseCall{
 		{"build", tokens.Record{Input: 500, Output: 300, CostUSD: usd(0.80), Model: "gpt-5.4"}},

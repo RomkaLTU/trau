@@ -18,11 +18,11 @@ func strip(s string) string { return ansi.Strip(s) }
 func TestFoldedSpanComposesDurationAndTag(t *testing.T) {
 	m := initialModel(nil)
 	m.steps[0].state = stepDone
-	m.steps[0].tag = "opus-4-8 @high"
+	m.steps[0].tag = "opus-5 @high"
 	m.steps[0].took = 5*time.Minute + 3*time.Second
 
 	got := strip(m.foldedSpan(m.steps[0], 80))
-	if want := "✓ Build  5m03s  opus-4-8 @high"; got != want {
+	if want := "✓ Build  5m03s  opus-5 @high"; got != want {
 		t.Fatalf("folded = %q, want %q", got, want)
 	}
 }
@@ -166,10 +166,10 @@ func TestFeedTailFiltersAndWindows(t *testing.T) {
 func TestRenderSpanListNarrowWidthNoOverflow(t *testing.T) {
 	m := initialModel(nil)
 	m.steps = advanceActivity(m.steps, activity.Verify, "", time.Now())
-	m.steps[0].tag = "claude-opus-4-8 @high"
+	m.steps[0].tag = "claude-opus-5 @high"
 	m.steps[0].took = 6*time.Minute + 2*time.Second
 	idx := activeIndex(m.steps)
-	m.steps[idx].tag = "claude-opus-4-8 @high"
+	m.steps[idx].tag = "claude-opus-5 @high"
 
 	const width = 20
 	for _, ln := range strings.Split(m.renderSpanList(width), "\n") {
