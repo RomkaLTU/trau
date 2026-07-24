@@ -3,6 +3,7 @@ package webserver
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -226,6 +227,74 @@ func TestGrillMCPAskUserRoundTrip(t *testing.T) {
 	}
 	if !gotQuestion {
 		t.Fatalf("no question message stored: %+v", detail.Messages)
+	}
+}
+
+// A provider whose MCP client abandons the blocking ask_user call retries it with
+// the same question. The retry must re-attach to the pending question — one bubble
+// in the transcript, one wait — and still return the answer when it lands.
+func TestGrillMCPAskUserRetryReattaches(t *testing.T) {
+	ts, _, repo := grillServer(t)
+	sess := createGrill(t, ts, repo, "COD-1")
+	call := toolCall("ask_user", map[string]any{"question": "Which page is in scope?"})
+
+	ctx, abandon := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mcpURL(ts, sess.ID), bytes.NewReader(mustJSON(t, call)))
+	if err != nil {
+		t.Fatalf("build ask_user request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	first, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("ask_user call failed: %v", err)
+	}
+	waitForGrillState(t, ts, sess.ID, hubstore.GrillWaiting)
+	abandon()
+	_ = first.Body.Close()
+
+	// The retry's response headers land once the handler has re-attached and opened
+	// its stream, so the answer below cannot race ahead of the wait.
+	retry, err := doMCPPost(mcpURL(ts, sess.ID), call)
+	if err != nil {
+		t.Fatalf("retried ask_user call failed: %v", err)
+	}
+	done := make(chan rpcMsg, 1)
+	errc := make(chan error, 1)
+	go func() {
+		msg, err := readSSEResult(retry)
+		if err != nil {
+			errc <- err
+			return
+		}
+		done <- msg
+	}()
+
+	ans := postJSON(t, ts.URL+APIPrefix+"/grill/"+sess.ID+"/answer", GrillAnswerRequest{Text: "Just the login page."})
+	_ = ans.Body.Close()
+	if ans.StatusCode != http.StatusOK {
+		t.Fatalf("answer status = %d, want 200", ans.StatusCode)
+	}
+
+	select {
+	case err := <-errc:
+		t.Fatalf("retried ask_user call failed: %v", err)
+	case msg := <-done:
+		tr := toolResult(t, msg)
+		if tr.IsError || len(tr.Content) != 1 || tr.Content[0].Text != "Just the login page." {
+			t.Fatalf("retried ask_user result = %+v, want the answer text", tr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("retried ask_user did not return after the answer")
+	}
+
+	questions := 0
+	for _, m := range grillDetail(t, ts, sess.ID).Messages {
+		if m.Role == hubstore.GrillRoleAgent && m.Kind == hubstore.GrillKindQuestion {
+			questions++
+		}
+	}
+	if questions != 1 {
+		t.Fatalf("stored %d question messages, want 1", questions)
 	}
 }
 

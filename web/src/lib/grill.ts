@@ -58,13 +58,23 @@ export interface GrillDetail {
   messages: GrillMessage[]
 }
 
+// GrillProviderOption is one provider a not-yet-started interview can run on and the
+// model catalog choosing it swaps to.
+export interface GrillProviderOption {
+  name: string
+  model_options?: string[]
+}
+
 // GrillDefaults is what an interview started right now would run on. It rides on the
 // list resource so a start surface can offer the provider/model choice before any
-// session exists; a cache write the panel makes itself may not carry it.
+// session exists; a cache write the panel makes itself may not carry it. providers
+// carries every offered provider with its own catalog, so picking one swaps the
+// model list without another round trip.
 export interface GrillDefaults {
   provider: string
   model?: string
   model_options?: string[]
+  providers?: GrillProviderOption[]
 }
 
 export interface GrillListResponse {
@@ -269,18 +279,20 @@ export const grillDetailQueryOptions = (sid: string) =>
 
 // startGrillSession opens a session. An empty issueId with an idea starts a
 // from-scratch authoring session anchored to the repo alone, the idea seeding the
-// first turn; a concrete issueId grills that issue. model pins the session's first
-// turn; an empty one leaves the hub to resolve the repo's default.
+// first turn; a concrete issueId grills that issue. provider locks the session's
+// backend and model pins its first turn; an empty one of either leaves the hub to
+// resolve the repo's default.
 export async function startGrillSession(
   repo: string,
   issueId: string,
   idea = '',
   model = '',
+  provider = '',
 ): Promise<GrillSession> {
   const res = await apiFetch(base(repo), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ issue_id: issueId, idea, model }),
+    body: JSON.stringify({ issue_id: issueId, idea, model, provider }),
   })
   if (!res.ok) throw new Error(await errorMessage(res, 'start interview session failed'))
   return res.json()
@@ -307,16 +319,18 @@ export interface PregrillResponse {
 // pregrillIssues runs the bounded, sequential AFK pre-grill pass over issueIds. The
 // hub caps the number of turns at GRILL_PREGRILL_MAX and skips issues that already
 // have an active session; each grilled issue lands in the inbox as its outcome.
-// model pins every session the pass opens, the same choice a hand-started one takes.
+// provider and model pin every session the pass opens, the same choice a
+// hand-started one takes.
 export async function pregrillIssues(
   repo: string,
   issueIds: string[],
   model = '',
+  provider = '',
 ): Promise<PregrillResponse> {
   const res = await apiFetch(`${base(repo)}/pregrill`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ issue_ids: issueIds, model }),
+    body: JSON.stringify({ issue_ids: issueIds, model, provider }),
   })
   if (!res.ok) throw new Error(await errorMessage(res, 'ask ahead failed'))
   return res.json()

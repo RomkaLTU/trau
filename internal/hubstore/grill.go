@@ -69,6 +69,7 @@ type GrillSession struct {
 	IssueTitle       string
 	State            string
 	SessionChain     string
+	Provider         string
 	Model            string
 	ParkedReason     string
 	CreatedAt        string
@@ -76,10 +77,12 @@ type GrillSession struct {
 }
 
 // NewGrillSession is the input to Create. State always starts at running.
+// Provider is locked at create; an empty one runs claude.
 type NewGrillSession struct {
-	Repo    string
-	IssueID string
-	Model   string
+	Repo     string
+	IssueID  string
+	Provider string
+	Model    string
 }
 
 // GrillMessage is one message in a session's conversation. Payload is the message's
@@ -122,12 +125,12 @@ func NewGrill(db *sql.DB, retention int) *Grill { return &Grill{db: db, retentio
 func (g *Grill) Create(ns NewGrillSession) (GrillSession, error) {
 	now := formatGrillTime(time.Now())
 	res, err := g.db.Exec(
-		`INSERT INTO grill_sessions(repo, issue_id, state, session_chain, model, parked_reason, created_at, updated_at)
-		 SELECT ?, ?, 'running', '', ?, '', ?, ?
+		`INSERT INTO grill_sessions(repo, issue_id, state, session_chain, provider, model, parked_reason, created_at, updated_at)
+		 SELECT ?, ?, 'running', '', ?, ?, '', ?, ?
 		 WHERE ? = '' OR NOT EXISTS (
 		     SELECT 1 FROM grill_sessions
 		     WHERE repo = ? AND issue_id = ? AND state NOT IN ('applied', 'abandoned'))`,
-		ns.Repo, ns.IssueID, ns.Model, now, now, ns.IssueID, ns.Repo, ns.IssueID,
+		ns.Repo, ns.IssueID, ns.Provider, ns.Model, now, now, ns.IssueID, ns.Repo, ns.IssueID,
 	)
 	if err != nil {
 		return GrillSession{}, err
@@ -148,6 +151,7 @@ func (g *Grill) Create(ns NewGrillSession) (GrillSession, error) {
 		Repo:      ns.Repo,
 		IssueID:   ns.IssueID,
 		State:     GrillRunning,
+		Provider:  ns.Provider,
 		Model:     ns.Model,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -165,7 +169,7 @@ const grillSessionSelect = `SELECT g.id, g.repo, g.issue_id, g.issue_destination
 	            WHERE m.session_id = g.id AND m.role = 'user' AND m.kind = 'info'
 	            ORDER BY m.id LIMIT 1
 	        ), ''), g.state,
-	        g.session_chain, g.model, g.parked_reason, g.created_at, g.updated_at
+	        g.session_chain, g.provider, g.model, g.parked_reason, g.created_at, g.updated_at
 	 FROM grill_sessions g
 	 LEFT JOIN issues i ON i.repo = g.repo AND i.identifier = g.issue_id`
 
@@ -319,7 +323,7 @@ func (g *Grill) Transition(id int64, state, parkedReason string) (GrillSession, 
 	return sess, nil
 }
 
-// UpdateChain records the latest Claude session id for a session and bumps its
+// UpdateChain records the latest agent session id for a session and bumps its
 // updated_at — the per-turn chain update. It reports whether the session exists.
 func (g *Grill) UpdateChain(id int64, sessionChain string) (GrillSession, bool, error) {
 	sess, found, err := g.Session(id)
@@ -457,7 +461,7 @@ func (g *Grill) scanSessions(query string, args ...any) (out []GrillSession, err
 		var s GrillSession
 		if err := q.Scan(
 			&s.ID, &s.Repo, &s.IssueID, &s.IssueDestination, &s.IssueTitle, &s.State,
-			&s.SessionChain, &s.Model, &s.ParkedReason, &s.CreatedAt, &s.UpdatedAt,
+			&s.SessionChain, &s.Provider, &s.Model, &s.ParkedReason, &s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

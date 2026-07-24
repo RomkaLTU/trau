@@ -41,12 +41,12 @@ const (
 )
 
 // grillRunner is the process side of a grilling session: it spawns the headless
-// claude child for a turn, tracks the child's session-id chain, and reconciles the
-// session's state after the child exits — parking it on idle/crash and stalling it
-// on an auth or rate wall. It runs in-process in the hub (ADR 0008), so it mutates
-// state through the same store and broadcaster the API handlers use. One turn per
-// session at a time: inflight guards a create and a resume from racing into two
-// children for the same session.
+// child for a turn through the session's provider adapter, tracks the child's
+// session-id chain, and reconciles the session's state after the child exits —
+// parking it on idle/crash and stalling it on an auth or rate wall. It runs
+// in-process in the hub (ADR 0008), so it mutates state through the same store and
+// broadcaster the API handlers use. One turn per session at a time: inflight guards
+// a create and a resume from racing into two children for the same session.
 type grillRunner struct {
 	srv     *Server
 	baseCtx context.Context
@@ -70,6 +70,17 @@ func (s *Server) EnableGrilling(baseCtx context.Context, baseURL string) {
 	}
 	s.startGrill = r.launch
 	s.runGrillTurn = r.runPregrill
+	s.grillTurnActive = r.active
+}
+
+// active reports whether a turn is running for sid right now. The answer endpoint
+// reads it to tell a session whose child is still blocked on ask_user, and takes the
+// answer over that channel, from one whose child has already exited with the question
+// still pending, which only reaches the agent through a resume turn.
+func (r *grillRunner) active(sid int64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.inflight[sid]
 }
 
 // runPregrill runs one pre-grill turn synchronously — the pass waits on it to read
@@ -119,8 +130,9 @@ func (r *grillRunner) launch(_ context.Context, sess hubstore.GrillSession) {
 	}()
 }
 
-// runTurn spawns one claude child for sess, updates the session-id chain from the
-// stream, and reconciles the session's state once the child exits.
+// runTurn spawns one child for sess through its provider adapter, updates the
+// session-id chain from the stream, and reconciles the session's state once the
+// child exits.
 func (r *grillRunner) runTurn(ctx context.Context, sess hubstore.GrillSession) {
 	repo, ok := r.srv.findRepoByRoot(sess.Repo)
 	if !ok {
@@ -132,20 +144,33 @@ func (r *grillRunner) runTurn(ctx context.Context, sess hubstore.GrillSession) {
 		r.settle(sess.ID, hubstore.GrillParked, "could not load the repository config: "+err.Error())
 		return
 	}
+	adapter, ok := grillAdapterFor(r, sess.Provider)
+	if !ok {
+		r.settle(sess.ID, hubstore.GrillParked, "interviews do not yet support the "+sess.Provider+" provider")
+		return
+	}
+	if !grillProviderInstalled(cfg, sess.Provider) {
+		r.settle(sess.ID, hubstore.GrillParked, "the "+grillEffectiveProvider(sess.Provider)+" CLI is not installed on this machine")
+		return
+	}
 
-	spec := r.buildTurn(ctx, sess, repo, cfg)
-	out, runErr := r.spawnClaude(ctx, spec, r.deltaSink(sess.ID))
+	spec, err := r.buildTurn(ctx, sess, repo, cfg, adapter)
+	if err != nil {
+		r.settle(sess.ID, hubstore.GrillParked, "could not prepare the interview turn: "+err.Error())
+		return
+	}
+	out, runErr := r.spawnGrill(ctx, spec, r.deltaSink(sess.ID, adapter))
 
-	chainID, resultErr := parseGrillStream(out.stdout)
+	chainID, resultErr := adapter.parseResult(out.stdout)
 	if chainID != "" {
 		if _, _, err := r.srv.stores.Grill().UpdateChain(sess.ID, chainID); err != nil {
 			logger.Verbosef("grill %d: update chain: %v", sess.ID, err)
 		}
 	}
-	r.reconcile(sess.ID, out, runErr, resultErr)
+	r.reconcile(sess.ID, adapter, out, runErr, resultErr)
 }
 
-// grillTurnSpec is the resolved claude invocation for one turn.
+// grillTurnSpec is the resolved child invocation for one turn.
 type grillTurnSpec struct {
 	bin  string
 	dir  string
@@ -153,37 +178,24 @@ type grillTurnSpec struct {
 	env  []string
 }
 
-// buildTurn resolves the child invocation for sess. A session whose chain id still
-// has a transcript on disk resumes it with the user's latest answer as the prompt;
-// a fresh or stale-chained session runs the first-turn grilling prompt (the next
-// result event mints the authoritative id, so a stale chain self-heals).
-func (r *grillRunner) buildTurn(ctx context.Context, sess hubstore.GrillSession, repo registry.Repo, cfg config.Config) grillTurnSpec {
+// buildTurn resolves the child invocation for sess through its provider adapter. A
+// session whose chain id still names a live agent session resumes it with the
+// user's latest answer as the prompt; a fresh or stale-chained session runs the
+// first-turn grilling prompt (the next result event mints the authoritative id, so
+// a stale chain self-heals).
+func (r *grillRunner) buildTurn(ctx context.Context, sess hubstore.GrillSession, repo registry.Repo, cfg config.Config, adapter grillAdapter) (grillTurnSpec, error) {
 	model := sess.Model
 	if model == "" {
-		model = cfg.GrillModel
+		model = grillModelDefault(cfg, sess.Provider)
 	}
-	if model == "" {
-		model = cfg.ClaudeModel
-	}
-	bin := cfg.ClaudeBin
-	if bin == "" {
-		bin = "claude"
-	}
-
 	resume, prompt := "", ""
-	if sess.SessionChain != "" && agent.SessionExists(sess.SessionChain) {
+	if sess.SessionChain != "" && adapter.resumable(sess.SessionChain) {
 		resume = sess.SessionChain
 		prompt = r.answerPrompt(ctx, repo, sess)
 	} else {
 		prompt = r.firstPrompt(ctx, repo, sess)
 	}
-
-	return grillTurnSpec{
-		bin:  bin,
-		dir:  repo.Root,
-		args: grillTurnArgs(strings.Fields(cfg.ClaudeFlags), model, r.mcpConfigJSON(sess.ID), resume, prompt),
-		env:  grillChildEnv(),
-	}
+	return adapter.turnSpec(sess.ID, repo, cfg, model, resume, prompt)
 }
 
 // grillTurnArgs assembles the claude argument vector: the configured flags, the
@@ -220,18 +232,26 @@ func grillChildEnv() []string {
 	return out
 }
 
-// mcpConfigJSON is the --mcp-config the child gets: one Streamable-HTTP server
-// pointing at this session's own MCP endpoint, so the child can reach ask_user and
-// finish_session but cannot address another session. A bearer token is forwarded as
-// an Authorization header when the hub gates its API.
-func (r *grillRunner) mcpConfigJSON(sid int64) string {
+// grillMCPServer is the one Streamable-HTTP server a child gets: this session's own
+// MCP endpoint, so it can reach ask_user and finish_session but cannot address
+// another session. A bearer token is forwarded as an Authorization header when the
+// hub gates its API. The transport is inferred from the url, so no "type" is set —
+// claude's config adds it; kimi's mcp.json wants it absent.
+func (r *grillRunner) grillMCPServer(sid int64) map[string]any {
 	server := map[string]any{
-		"type": "http",
-		"url":  fmt.Sprintf("%s%s/grill/%d/mcp", r.baseURL, APIPrefix, sid),
+		"url": fmt.Sprintf("%s%s/grill/%d/mcp", r.baseURL, APIPrefix, sid),
 	}
 	if r.srv.token != "" {
 		server["headers"] = map[string]string{"Authorization": "Bearer " + r.srv.token}
 	}
+	return server
+}
+
+// mcpConfigJSON is the --mcp-config the claude child gets: the session's scoped
+// server with the explicit http transport claude's loader expects.
+func (r *grillRunner) mcpConfigJSON(sid int64) string {
+	server := r.grillMCPServer(sid)
+	server["type"] = "http"
 	b, _ := json.Marshal(map[string]any{"mcpServers": map[string]any{"trau-grill": server}})
 	return string(b)
 }
@@ -308,10 +328,10 @@ type grillOutput struct {
 	stderr string
 }
 
-// spawnClaude runs one turn to completion, handing every stdout line to onLine as it
+// spawnGrill runs one turn to completion, handing every stdout line to onLine as it
 // lands rather than buffering the stream whole, so a turn's text can leave the hub
 // while the child is still producing it.
-func (r *grillRunner) spawnClaude(ctx context.Context, spec grillTurnSpec, onLine func([]byte)) (grillOutput, error) {
+func (r *grillRunner) spawnGrill(ctx context.Context, spec grillTurnSpec, onLine func([]byte)) (grillOutput, error) {
 	cmd := exec.CommandContext(ctx, spec.bin, spec.args...)
 	cmd.Dir = spec.dir
 	cmd.Env = spec.env
@@ -347,12 +367,13 @@ func drainGrillStdout(r io.Reader, onLine func([]byte)) []byte {
 	}
 }
 
-// deltaSink publishes the agent's text as the child produces it. One child spans
-// every turn of an interview, blocking inside ask_user between them, so the turn's
-// numbering belongs to the broadcaster rather than to this closure.
-func (r *grillRunner) deltaSink(sid int64) func([]byte) {
+// deltaSink publishes the agent's text as the child produces it, reading each line
+// through the provider adapter. One child spans every turn of an interview, blocking
+// inside ask_user between them, so the turn's numbering belongs to the broadcaster
+// rather than to this closure.
+func (r *grillRunner) deltaSink(sid int64, adapter grillAdapter) func([]byte) {
 	return func(line []byte) {
-		if text := grillDeltaText(line); text != "" {
+		if text := adapter.deltaText(line); text != "" {
 			r.srv.publishGrillDelta(sid, text)
 		}
 	}
@@ -362,16 +383,18 @@ func (r *grillRunner) deltaSink(sid int64) func([]byte) {
 // or finish_session has already moved the session (parked/waiting/finished) through
 // the MCP layer; this only has to catch the cases that layer did not: an auth or
 // rate wall (stall), a crash (park), or an agent that ended without asking or
-// proposing anything (park). A settled session is left alone, except a parked one
-// the child stalled on, which is upgraded to stalled with the cause.
-func (r *grillRunner) reconcile(sid int64, out grillOutput, runErr error, resultErr bool) {
+// proposing anything (park). A settled session is left alone, and so is one still
+// waiting on a question: a provider whose MCP client abandons a long ask_user call
+// exits with the question genuinely pending, and the answer resumes it. A parked
+// session the child stalled on is upgraded to stalled with the cause.
+func (r *grillRunner) reconcile(sid int64, adapter grillAdapter, out grillOutput, runErr error, resultErr bool) {
 	sess, found, err := r.srv.stores.Grill().Session(sid)
 	if err != nil || !found {
 		return
 	}
-	reason := grillStallReason(out.stdout, out.stderr)
+	reason := grillStallReason(adapter, out.stdout, out.stderr)
 	switch sess.State {
-	case hubstore.GrillFinished, hubstore.GrillApplied, hubstore.GrillAbandoned:
+	case hubstore.GrillWaiting, hubstore.GrillFinished, hubstore.GrillApplied, hubstore.GrillAbandoned:
 		return
 	case hubstore.GrillParked, hubstore.GrillStalled:
 		if reason != "" && sess.State == hubstore.GrillParked {
@@ -400,10 +423,11 @@ func (r *grillRunner) settle(sid int64, state, reason string) {
 }
 
 // grillStallReason classifies a turn's output for an auth or rate wall, reusing the
-// pipeline's pause classification. It returns the reason to stall the session with,
-// or empty when the turn showed no stall.
-func grillStallReason(stdout []byte, stderr string) string {
-	text := string(stdout) + "\n" + stderr
+// pipeline's pause classification. It reads the provider's own output only: an
+// interview that discusses usage limits is not one that hit them. It returns the
+// reason to stall the session with, or empty when the turn showed no stall.
+func grillStallReason(adapter grillAdapter, stdout []byte, stderr string) string {
+	text := grillProviderText(adapter, stdout) + "\n" + stderr
 	switch {
 	case agent.AuthWallText(text):
 		return "the grilling agent needs re-authentication — re-login (run claude, then /login), then resume"
@@ -411,6 +435,23 @@ func grillStallReason(stdout []byte, stderr string) string {
 		return "the grilling agent hit a provider usage or rate limit — resume once it clears"
 	}
 	return ""
+}
+
+// grillProviderText is a turn's stdout without the lines the adapter reads as the
+// agent's reply, so a turn is classified on the provider's own stream events rather
+// than on the words the agent wrote.
+func grillProviderText(adapter grillAdapter, stdout []byte) string {
+	var b strings.Builder
+	sc := bufio.NewScanner(bytes.NewReader(stdout))
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		if adapter.deltaText(sc.Bytes()) != "" {
+			continue
+		}
+		b.Write(sc.Bytes())
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 // grillStreamEvent is the slice of a headless stream-json event the runner reads:

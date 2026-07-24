@@ -45,6 +45,7 @@ type Server struct {
 	grillEvents      *grillBroadcaster
 	startGrill       func(ctx context.Context, sess hubstore.GrillSession)
 	runGrillTurn     func(ctx context.Context, sess hubstore.GrillSession)
+	grillTurnActive  func(sid int64) bool
 	pregrillMu       sync.Mutex
 	pregrill         map[int64]bool
 	shutdownMu       sync.Mutex

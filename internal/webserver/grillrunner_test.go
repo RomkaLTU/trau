@@ -110,18 +110,28 @@ func TestGrillDeltaText(t *testing.T) {
 
 func TestGrillStallReason(t *testing.T) {
 	tests := []struct {
-		name   string
-		stdout string
-		stderr string
-		want   string
+		name    string
+		adapter grillAdapter
+		stdout  string
+		stderr  string
+		want    string
 	}{
 		{name: "clean", stdout: `{"type":"result","is_error":false}`, want: ""},
 		{name: "auth wall on stdout", stdout: "API Error: Please run /login", want: "re-authentication"},
 		{name: "rate limit on stderr", stderr: "Error: 429 rate_limit exceeded", want: "rate limit"},
+		{
+			name:    "the agent discussing rate limits is not a stall",
+			adapter: kimiGrillAdapter{},
+			stdout:  `{"role":"assistant","content":"Should a 429 rate limit park the run or stall it?"}`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := grillStallReason([]byte(tt.stdout), tt.stderr)
+			adapter := tt.adapter
+			if adapter == nil {
+				adapter = claudeGrillAdapter{}
+			}
+			got := grillStallReason(adapter, []byte(tt.stdout), tt.stderr)
 			if tt.want == "" {
 				if got != "" {
 					t.Errorf("reason = %q, want empty", got)
@@ -261,6 +271,72 @@ func TestGrillAnswerResumeThroughHandler(t *testing.T) {
 	r.runTurn(context.Background(), sess)
 	if got, _, _ := store.Session(sess.ID); got.State != hubstore.GrillParked {
 		t.Fatalf("state after first turn = %q, want parked", got.State)
+	}
+
+	res := postJSON(t, ts.URL+APIPrefix+"/grill/"+strconv.FormatInt(sess.ID, 10)+"/answer", GrillAnswerRequest{Text: "make it red"})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("answer status = %d, want 200", res.StatusCode)
+	}
+
+	waitForGrillChain(t, store, sess.ID, "sid-two")
+
+	resumeArgs := readNullArgs(t, filepath.Join(stubDir, "resume.args"))
+	if !contains(resumeArgs, "--resume") || !contains(resumeArgs, "sid-one") {
+		t.Errorf("resume turn must carry --resume sid-one: %v", resumeArgs)
+	}
+	if prompt := lastArg(resumeArgs); prompt != "make it red" {
+		t.Errorf("resume prompt = %q, want the user's answer", prompt)
+	}
+}
+
+// A child that exits with its question still pending — the shape of a provider whose
+// MCP client abandons the blocking ask_user call — leaves the session waiting. The
+// question stands, so neither a no-outcome park nor a stall read off the agent's own
+// words may overwrite it.
+func TestGrillRunnerKeepsPendingQuestionWaiting(t *testing.T) {
+	r, store, repo, _ := newGrillRunnerTest(t, grillStubRate)
+	sess, err := store.Create(hubstore.NewGrillSession{Repo: repo.Root, IssueID: "COD-1"})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	waiting, err := store.Transition(sess.ID, hubstore.GrillWaiting, "")
+	if err != nil {
+		t.Fatalf("pose question: %v", err)
+	}
+
+	r.runTurn(context.Background(), waiting)
+
+	got, _, _ := store.Session(sess.ID)
+	if got.State != hubstore.GrillWaiting {
+		t.Fatalf("state after the child exited = %q (%s), want waiting", got.State, got.ParkedReason)
+	}
+	if got.ParkedReason != "" {
+		t.Errorf("waiting session carries a settle reason: %q", got.ParkedReason)
+	}
+}
+
+// A waiting session whose child has already exited has nothing blocked on the MCP
+// call, so its answer must fire a resume turn rather than strand the interview.
+func TestGrillAnswerResumesWaitingWithoutChild(t *testing.T) {
+	r, store, repo, stubDir := newGrillRunnerTest(t, grillStubScript)
+	r.srv.startGrill = r.launch
+	r.srv.grillTurnActive = r.active
+	ts := httptest.NewServer(r.srv.Handler())
+	t.Cleanup(ts.Close)
+
+	sess, err := store.Create(hubstore.NewGrillSession{Repo: repo.Root, IssueID: "COD-1"})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	// The first turn mints the chain and its transcript; the question it leaves
+	// pending is what the child then exits on.
+	r.runTurn(context.Background(), sess)
+	if _, err := store.Transition(sess.ID, hubstore.GrillRunning, ""); err != nil {
+		t.Fatalf("reopen session: %v", err)
+	}
+	if _, err := store.Transition(sess.ID, hubstore.GrillWaiting, ""); err != nil {
+		t.Fatalf("pose question: %v", err)
 	}
 
 	res := postJSON(t, ts.URL+APIPrefix+"/grill/"+strconv.FormatInt(sess.ID, 10)+"/answer", GrillAnswerRequest{Text: "make it red"})
