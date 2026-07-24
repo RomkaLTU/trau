@@ -58,7 +58,7 @@ func atlasResult(final string, cost float64) agent.Result {
 	return agent.Result{
 		Final:   final,
 		CostUSD: cost,
-		Model:   "claude-opus-4-8",
+		Model:   "claude-opus-5",
 		Usage:   agent.Usage{Input: 1000, Output: 500},
 	}
 }

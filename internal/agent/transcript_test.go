@@ -11,8 +11,8 @@ import (
 // must be summed into the phase's usage total, not dropped.
 func TestParseTranscriptSumsSubagentUsage(t *testing.T) {
 	transcript := strings.Join([]string{
-		`{"type":"assistant","message":{"model":"claude-opus-4-8","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}}`,
-		`{"type":"assistant","isSidechain":true,"message":{"model":"claude-opus-4-8","usage":{"input_tokens":40,"output_tokens":10,"cache_read_input_tokens":2,"cache_creation_input_tokens":1}}}`,
+		`{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":3}}}`,
+		`{"type":"assistant","isSidechain":true,"message":{"model":"claude-opus-5","usage":{"input_tokens":40,"output_tokens":10,"cache_read_input_tokens":2,"cache_creation_input_tokens":1}}}`,
 	}, "\n")
 
 	st, ok := parseTranscript(strings.NewReader(transcript))
