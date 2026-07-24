@@ -301,6 +301,8 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/tokens", s.handleRunTokens)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/spend", s.handleRunSpend)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/anomalies", s.handleRunAnomalies)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/proofs", s.handleRunProofs)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/proofs/{seq}", s.handleRunProof)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/tokens", s.handleRepoTokens)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/tokens/day", s.handleTokenDay)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/routing", s.handleRepoRouting)

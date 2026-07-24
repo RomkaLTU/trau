@@ -108,7 +108,7 @@ type ptySession struct {
 func startPTY(ctx context.Context, bin, dir string, args []string, cols, rows int) (terminalSession, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
-	cmd.Env = spawnEnv()
+	cmd.Env = spawnEnv(ctx)
 	var (
 		tty *os.File
 		err error
@@ -910,7 +910,7 @@ func (c *Codex) Run(ctx context.Context, prompt, label string) (Result, error) {
 
 	cmd := exec.CommandContext(ctx, c.Bin, c.args(full, msgPath)...)
 	cmd.Dir = c.Dir
-	cmd.Env = spawnEnv()
+	cmd.Env = spawnEnv(ctx)
 	cmd.Stdout = sink
 	cmd.Stderr = nil
 
@@ -1169,7 +1169,7 @@ func (c *Kimi) Run(ctx context.Context, prompt, label string) (Result, error) {
 
 	cmd := exec.CommandContext(ctx, c.Bin, c.args(full)...)
 	cmd.Dir = c.Dir
-	cmd.Env = spawnEnv()
+	cmd.Env = spawnEnv(ctx)
 	cmd.Stdout = sink
 	cmd.Stderr = &stderr
 

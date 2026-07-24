@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -29,5 +31,14 @@ func TestScrubClaudeSessionEnv(t *testing.T) {
 	}
 	if got := ScrubClaudeSessionEnv(in); !reflect.DeepEqual(got, want) {
 		t.Errorf("ScrubClaudeSessionEnv() = %v, want %v", got, want)
+	}
+}
+
+func TestBrowserRecordingEnv(t *testing.T) {
+	if plain := spawnEnv(context.Background()); slices.Contains(plain, "BH_RECORD=1") {
+		t.Fatalf("spawnEnv set BH_RECORD without WithBrowserRecording")
+	}
+	if rec := spawnEnv(WithBrowserRecording(context.Background())); !slices.Contains(rec, "BH_RECORD=1") {
+		t.Fatalf("spawnEnv under WithBrowserRecording did not set BH_RECORD=1")
 	}
 }

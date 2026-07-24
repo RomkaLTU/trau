@@ -34,6 +34,11 @@ const KindVerifyNoSkills = "verify_no_skills"
 // as front-end.
 const KindVerifyNoBrowser = "verify_no_browser"
 
+// KindVerifyNoProofs marks a verify that reported driving the browser but left no
+// proofs (screenshots/trace) for the loop to harvest. Advisory only — a run is
+// never failed or paused over missing proofs.
+const KindVerifyNoProofs = "verify_no_proofs"
+
 // KindQARoster records what the stored QA roster contributed to a verify whose
 // browser gate was active on a UI slice: how many accounts reached the verifier,
 // whether free-text notes came with them, or why nothing did. Counts and flags

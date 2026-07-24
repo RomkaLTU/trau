@@ -196,7 +196,10 @@ type Config struct {
 	ExploreSubagents bool
 
 	BrowserVerify string
-	AppURL        string
+	// VerifyProofs gates whether browser verify records a trace and screenshots
+	// and harvests them to the hub (VERIFY_PROOFS key): "on" or "off".
+	VerifyProofs string
+	AppURL       string
 	// AppURLs maps a workspace to the URL its app serves (APP_URLS key), so
 	// browser verify can drive the app the slice actually changed in a multi-app
 	// monorepo; slices matching no workspace fall back to AppURL.
@@ -404,6 +407,7 @@ func Defaults() Config {
 		StripMechanicalMCP:     true,
 		ExploreSubagents:       false,
 		BrowserVerify:          "auto",
+		VerifyProofs:           "on",
 		SkillsMode:             "instruct",
 		VerifyChecks:           true,
 		VerifyPanelPolicy:      "unanimous",
@@ -834,6 +838,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		sources["EXPLORE_SUBAGENTS"] = src.name
 	}
 	str("BROWSER_VERIFY", &c.BrowserVerify)
+	str("VERIFY_PROOFS", &c.VerifyProofs)
 	str("APP_URL", &c.AppURL)
 	if v, src := get("APP_URLS"); v != "" {
 		c.AppURLs = parseAppURLs(v)
@@ -1640,6 +1645,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "STRIP_MECHANICAL_MCP", Group: sectionPipeline, WebEditable: true, Advanced: true, Default: "1", Description: "Launch the mechanical phases (cleanup, commit, repair, bugfix, push-repair) with the repo's MCP servers stripped where the provider supports it (Claude's --strict-mcp-config), since they never read the tracker; 0 restores full MCP everywhere (1 = yes, 0 = no)", Bool: true},
 		{Key: "EXPLORE_SUBAGENTS", Group: sectionAgent, WebEditable: true, Advanced: true, Default: "0", Description: "Let the build and verify phases dispatch read-only exploration subagents (Claude's Explore agent type) by dropping the Agent tool from their disallowed set, keeping the orchestrator's context lean on large tickets; write-capable fan-out (Workflow) stays blocked everywhere (1 = yes, 0 = no)", Bool: true},
 		{Key: "BROWSER_VERIFY", Group: sectionVerify, WebEditable: true, Default: "auto", Description: "Browser verify: auto | always | never", Options: []string{"auto", "always", "never"}},
+		{Key: "VERIFY_PROOFS", Group: sectionVerify, WebEditable: true, Default: "on", Description: "When browser verify drives the app, record a trace and save key screenshots, then harvest them to the hub: on | off", Options: []string{"on", "off"}},
 		{Key: "APP_URL", Group: sectionVerify, WebEditable: true, Description: "Local app URL browser verify drives (e.g. http://localhost:3000). Empty = no browser target: browser verify stays advisory even under BROWSER_VERIFY=always"},
 		{Key: "APP_URLS", Group: sectionVerify, WebEditable: true, Description: "Per-workspace app URLs for multi-app monorepos: comma-separated <workspace>=<url> pairs (e.g. web=http://localhost:3000,api=http://localhost:3001). A workspace is named by its manifest package name, directory path, or directory name; slices matching no workspace fall back to APP_URL"},
 		{Key: "VERIFY_CHECKS", Group: sectionVerify, WebEditable: true, Default: "1", Description: "Run the pluggable verify-check library (.trau/checks); 1 = yes, 0 = no", Bool: true},
@@ -2194,6 +2200,8 @@ func keyValue(cfg Config, key string) string {
 		return "0"
 	case "BROWSER_VERIFY":
 		return cfg.BrowserVerify
+	case "VERIFY_PROOFS":
+		return cfg.VerifyProofs
 	case "APP_URL":
 		return cfg.AppURL
 	case "APP_URLS":

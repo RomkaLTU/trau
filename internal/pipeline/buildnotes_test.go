@@ -149,7 +149,7 @@ func TestBuildNotesInjectedIntoMechanicalPhasesOnly(t *testing.T) {
 	if got := handoffTail(prompts.Renderer{}, id, ""); strings.Contains(got, buildNotesPath(id)) {
 		t.Errorf("handoff prompt leaked the build notes:\n%s", got)
 	}
-	if got := verifyTail(prompts.Renderer{}, id, handoffPath(id), verifyPath(id), "", "", "", "", "", "", ""); strings.Contains(got, buildNotesPath(id)) {
+	if got := verifyTail(prompts.Renderer{}, id, handoffPath(id), verifyPath(id), "", "", "", "", "", "", "", false); strings.Contains(got, buildNotesPath(id)) {
 		t.Errorf("verify prompt leaked the build notes:\n%s", got)
 	}
 }
