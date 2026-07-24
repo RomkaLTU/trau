@@ -216,6 +216,53 @@ func TestLoadRequiredSkillsVerify(t *testing.T) {
 	t.Error("REQUIRED_SKILLS_VERIFY is missing from the settings catalog")
 }
 
+func TestLoadProofRetentionDays(t *testing.T) {
+	if got := Defaults().ProofRetentionDays; got != 14 {
+		t.Fatalf("default ProofRetentionDays = %d, want 14", got)
+	}
+
+	dir := t.TempDir()
+	project := filepath.Join(dir, ".trau.ini")
+	if err := os.WriteFile(project, []byte("PROOF_RETENTION_DAYS=7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayered(project, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ProofRetentionDays != 7 {
+		t.Errorf("ProofRetentionDays = %d, want 7", cfg.ProofRetentionDays)
+	}
+	if got := keyValue(cfg, "PROOF_RETENTION_DAYS"); got != "7" {
+		t.Errorf("keyValue(PROOF_RETENTION_DAYS) = %q, want 7", got)
+	}
+
+	off := filepath.Join(t.TempDir(), ".trau.ini")
+	if err := os.WriteFile(off, []byte("PROOF_RETENTION_DAYS=0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	keepForever, err := LoadLayered(off, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keepForever.ProofRetentionDays != 0 {
+		t.Errorf("ProofRetentionDays = %d, want 0 (keep forever)", keepForever.ProofRetentionDays)
+	}
+
+	var meta KeyMeta
+	for _, m := range KnownKeys() {
+		if m.Key == "PROOF_RETENTION_DAYS" {
+			meta = m
+		}
+	}
+	if meta.Key == "" {
+		t.Fatal("PROOF_RETENTION_DAYS missing from the settings catalog")
+	}
+	if !meta.WebEditable || meta.Kind != "int" || meta.Group != sectionVerify {
+		t.Errorf("PROOF_RETENTION_DAYS meta = %+v, want web-editable int in the verify section", meta)
+	}
+}
+
 func TestLoadSkillsMode(t *testing.T) {
 	if got := Defaults().SkillsMode; got != "instruct" {
 		t.Fatalf("default SkillsMode = %q, want instruct", got)

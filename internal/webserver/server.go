@@ -65,6 +65,8 @@ type Server struct {
 	skillsCache      map[string]skillsCacheEntry
 	atlas            *atlasRunner
 	render           *videoRenderer
+	proofRetention   int
+	recordingsRoot   string
 	restart          func()
 	restartOnce      sync.Once
 	updates          *update.Checker
@@ -147,6 +149,7 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 	go s.sweepKnownRepos(ctx)
 	go s.syncer.run(ctx, syncInterval, reconcileInterval)
 	go s.pruneRunData(ctx)
+	go s.pruneProofs(ctx)
 	go s.updates.Run(ctx)
 }
 

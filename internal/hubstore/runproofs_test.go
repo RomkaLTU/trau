@@ -149,6 +149,96 @@ func TestRunProofsVideoAbsent(t *testing.T) {
 	}
 }
 
+func TestRunProofsExpiredBefore(t *testing.T) {
+	p := testRunProofs(t)
+	const repo = "/repos/acme"
+
+	seed := func(ticket, trace, created string) {
+		if err := p.Replace(repo, ticket, []RunProof{
+			{Seq: 0, Kind: ProofVideo, TraceDir: trace, CreatedAt: created},
+			{Seq: 1, Kind: ProofScreenshot, SHA256: putProof(t, p, ticket), Mime: "image/png", TraceDir: trace, CreatedAt: created},
+		}); err != nil {
+			t.Fatalf("seed %s: %v", ticket, err)
+		}
+	}
+	seed("COD-old", "/rec/old", "2026-07-01T00:00:00Z")
+	seed("COD-shots", "", "2026-07-02T00:00:00Z")
+	seed("COD-new", "/rec/new", "2026-07-20T00:00:00Z")
+
+	got, err := p.ExpiredBefore("2026-07-10T00:00:00Z")
+	if err != nil {
+		t.Fatalf("ExpiredBefore: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ExpiredBefore returned %d rows, want the two runs before the cutoff: %+v", len(got), got)
+	}
+	byTicket := map[string]string{}
+	for _, e := range got {
+		if e.Repo != repo {
+			t.Errorf("row repo = %q, want %q", e.Repo, repo)
+		}
+		byTicket[e.Ticket] = e.TraceDir
+	}
+	if trace, ok := byTicket["COD-old"]; !ok || trace != "/rec/old" {
+		t.Errorf("COD-old trace = %q (present=%v), want /rec/old", trace, ok)
+	}
+	if trace, ok := byTicket["COD-shots"]; !ok || trace != "" {
+		t.Errorf("COD-shots trace = %q (present=%v), want empty", trace, ok)
+	}
+	if _, ok := byTicket["COD-new"]; ok {
+		t.Errorf("COD-new is newer than the cutoff and must not be expired")
+	}
+}
+
+func TestRunProofsExpiredBeforeSkipsUntimestamped(t *testing.T) {
+	p := testRunProofs(t)
+	if err := p.Replace("/repos/acme", "COD-notime", []RunProof{
+		{Seq: 0, Kind: ProofVideo, TraceDir: "/rec/x", CreatedAt: ""},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, err := p.ExpiredBefore("2026-07-10T00:00:00Z")
+	if err != nil {
+		t.Fatalf("ExpiredBefore: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("ExpiredBefore returned %d rows, want a row with no created_at skipped", len(got))
+	}
+}
+
+func TestRunProofsClearTrace(t *testing.T) {
+	p := testRunProofs(t)
+	const repo, ticket = "/repos/acme", "COD-clear"
+
+	shot := putProof(t, p, "shot")
+	if err := p.Replace(repo, ticket, []RunProof{
+		{Seq: 0, Kind: ProofVideo, TraceDir: "/rec/gone", CreatedAt: "2026-07-01T00:00:00Z"},
+		{Seq: 1, Kind: ProofScreenshot, SHA256: shot, Mime: "image/png", TraceDir: "/rec/gone", CreatedAt: "2026-07-01T00:00:00Z"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := p.ClearTrace(repo, ticket); err != nil {
+		t.Fatalf("ClearTrace: %v", err)
+	}
+
+	got, err := p.ForRun(repo, ticket)
+	if err != nil {
+		t.Fatalf("ForRun: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ForRun returned %d rows, want the screenshot bytes kept", len(got))
+	}
+	for _, row := range got {
+		if row.TraceDir != "" {
+			t.Errorf("row %d trace_dir = %q, want cleared", row.Seq, row.TraceDir)
+		}
+	}
+	if got[1].SHA256 != shot {
+		t.Errorf("screenshot sha = %q, want the bytes preserved %q", got[1].SHA256, shot)
+	}
+}
+
 func TestRunProofsReplaceEmptyClears(t *testing.T) {
 	p := testRunProofs(t)
 	const repo, ticket = "/repos/acme", "COD-3"

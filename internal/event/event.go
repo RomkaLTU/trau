@@ -43,6 +43,11 @@ const KindVerifyNoProofs = "verify_no_proofs"
 // screenshots to the trau-proofs branch; the PR ships without the QA section.
 const KindProofsPublishFailed = "proofs_publish_failed"
 
+// KindProofsSwept marks a proof-retention sweep that pruned something for a repo,
+// carrying how many raw traces it deleted and how many trau-proofs directories it
+// dropped. The hub emits it; a sweep that pruned nothing stays silent.
+const KindProofsSwept = "proofs_swept"
+
 // KindQARoster records what the stored QA roster contributed to a verify whose
 // browser gate was active on a UI slice: how many accounts reached the verifier,
 // whether free-text notes came with them, or why nothing did. Counts and flags

@@ -129,6 +129,52 @@ func (p *RunProofs) SetVideo(repo, ticket string, video RunProof) error {
 	return tx.Commit()
 }
 
+// ExpiredProof is one run whose proofs have aged past the retention cutoff: the
+// repo and ticket that recorded it and the local trace directory it wrote, empty
+// for a run whose trace was never recorded or has already been cleared.
+type ExpiredProof struct {
+	Repo     string
+	Ticket   string
+	TraceDir string
+}
+
+// ExpiredBefore returns the distinct runs whose proofs were created before cutoff
+// (an RFC3339 timestamp), one row per (repo, ticket, trace_dir). Rows with no
+// timestamp are skipped, so a row written before created_at was recorded is never
+// mistaken for expired. The retention sweep deletes the recorded traces and drops
+// the runs' trau-proofs directories.
+func (p *RunProofs) ExpiredBefore(cutoff string) ([]ExpiredProof, error) {
+	rows, err := p.db.Query(
+		`SELECT DISTINCT repo, ticket, trace_dir FROM run_proofs
+		 WHERE created_at != '' AND created_at < ? ORDER BY repo, ticket`,
+		cutoff,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []ExpiredProof{}
+	for rows.Next() {
+		var e ExpiredProof
+		if err := rows.Scan(&e.Repo, &e.Ticket, &e.TraceDir); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// ClearTrace blanks the recorded trace_dir on a run's rows once the directory has
+// been deleted, so a later sweep neither re-deletes it nor offers a video render
+// for a recording that is gone. The screenshot bytes in the blob store are kept.
+func (p *RunProofs) ClearTrace(repo, ticket string) error {
+	_, err := p.db.Exec(
+		`UPDATE run_proofs SET trace_dir = '' WHERE repo = ? AND ticket = ?`,
+		repo, ticket,
+	)
+	return err
+}
+
 // Find returns a run's proof at seq.
 func (p *RunProofs) Find(repo, ticket string, seq int) (RunProof, bool, error) {
 	var pr RunProof

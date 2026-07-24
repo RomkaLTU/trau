@@ -1,6 +1,9 @@
 package proofsbranch
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestBuildPlanBootstrapsWhenBranchMissing(t *testing.T) {
 	proofs := []Proof{
@@ -34,6 +37,45 @@ func TestBuildPlanSkipsBootstrapWhenBranchExists(t *testing.T) {
 	}
 	if len(pl.Files) != 1 || pl.Files[0].Path != "COD-1148/proof-1.png" {
 		t.Errorf("proofs still land under <ticket>/, got %+v", pl.Files)
+	}
+}
+
+func TestSelectTreeEntriesDropsOnlyExpiredDirs(t *testing.T) {
+	lsTree := "100644 blob aaaa\tREADME.md\n" +
+		"040000 tree bbbb\tCOD-1\n" +
+		"040000 tree cccc\tCOD-2\n" +
+		"040000 tree dddd\tCOD-3\n"
+
+	keep, dropped := selectTreeEntries(parseTreeEntries(lsTree), []string{"COD-2", "COD-4"})
+
+	if !slices.Equal(dropped, []string{"COD-2"}) {
+		t.Errorf("dropped = %v, want only the expired dir present on the branch (COD-2)", dropped)
+	}
+	wantKeep := []string{
+		"100644 blob aaaa\tREADME.md",
+		"040000 tree bbbb\tCOD-1",
+		"040000 tree dddd\tCOD-3",
+	}
+	if !slices.Equal(keep, wantKeep) {
+		t.Errorf("keep = %v, want the README and surviving dirs with their lines intact %v", keep, wantKeep)
+	}
+}
+
+func TestSelectTreeEntriesKeepsAllWhenNoneExpired(t *testing.T) {
+	entries := parseTreeEntries("040000 tree bbbb\tCOD-1\n040000 tree cccc\tCOD-2\n")
+	keep, dropped := selectTreeEntries(entries, []string{"COD-9"})
+	if len(dropped) != 0 {
+		t.Errorf("dropped = %v, want nothing dropped when no expired dir is on the branch", dropped)
+	}
+	if len(keep) != 2 {
+		t.Errorf("keep has %d entries, want both preserved", len(keep))
+	}
+}
+
+func TestParseTreeEntriesSkipsMalformed(t *testing.T) {
+	entries := parseTreeEntries("040000 tree bbbb\tCOD-1\n\nnot-a-tree-line\n")
+	if len(entries) != 1 || entries[0].Name != "COD-1" {
+		t.Fatalf("parseTreeEntries = %+v, want only the well-formed COD-1 entry", entries)
 	}
 }
 
