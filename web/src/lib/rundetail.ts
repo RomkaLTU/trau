@@ -55,6 +55,9 @@ export interface Proof {
   created_at?: string
   is_image: boolean
   url?: string
+  trace_exists?: boolean
+  render?: '' | 'rendering' | 'failed' | 'done'
+  render_error?: string
 }
 
 export interface Artifacts {
@@ -126,3 +129,19 @@ export const runProofsQueryOptions = (repo: string, ticket: string) =>
     refetchInterval: 5000,
     enabled: repo !== '' && ticket !== '',
   })
+
+export async function renderRunVideo(
+  repo: string,
+  ticket: string,
+): Promise<void> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/runs/${encodeURIComponent(ticket)}/render-video`,
+    { method: 'POST' },
+  )
+  if (!res.ok) {
+    const detail = (await res.json().catch(() => null)) as {
+      error?: string
+    } | null
+    throw new Error(detail?.error ?? `render video failed: ${res.status}`)
+  }
+}

@@ -94,6 +94,61 @@ func TestRunProofsReplaceSupersedesPrior(t *testing.T) {
 	}
 }
 
+func TestRunProofsSetVideoReplacesVideoKeepingScreenshots(t *testing.T) {
+	p := testRunProofs(t)
+	const repo, ticket = "/repos/acme", "COD-9"
+
+	shot := putProof(t, p, "screenshot-bytes")
+	if err := p.Replace(repo, ticket, []RunProof{
+		{Seq: 0, Kind: ProofVideo, TraceDir: "/tmp/rec/xyz", CreatedAt: "t0"},
+		{Seq: 1, Kind: ProofScreenshot, SHA256: shot, Mime: "image/png", Caption: "login", TraceDir: "/tmp/rec/xyz", CreatedAt: "t0"},
+	}); err != nil {
+		t.Fatalf("seed proofs: %v", err)
+	}
+
+	rendered := putProof(t, p, "mp4-bytes")
+	if err := p.SetVideo(repo, ticket, RunProof{
+		Seq:       0,
+		Kind:      ProofVideo,
+		SHA256:    rendered,
+		Mime:      "video/mp4",
+		Caption:   "walkthrough",
+		TraceDir:  "/tmp/rec/xyz",
+		CreatedAt: "t1",
+	}); err != nil {
+		t.Fatalf("SetVideo: %v", err)
+	}
+
+	got, err := p.ForRun(repo, ticket)
+	if err != nil {
+		t.Fatalf("ForRun: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ForRun returned %d rows, want the rendered video plus the untouched screenshot", len(got))
+	}
+	if got[0].Kind != ProofVideo || got[0].SHA256 != rendered || got[0].Mime != "video/mp4" {
+		t.Errorf("video row = %+v, want the rendered mp4 bytes", got[0])
+	}
+	if got[1].Kind != ProofScreenshot || got[1].SHA256 != shot || got[1].Caption != "login" {
+		t.Errorf("screenshot row = %+v, want it preserved through the video replacement", got[1])
+	}
+
+	vid, found, err := p.Video(repo, ticket)
+	if err != nil || !found {
+		t.Fatalf("Video: found=%v err=%v", found, err)
+	}
+	if vid.SHA256 != rendered {
+		t.Errorf("Video sha = %q, want the rendered mp4 %q", vid.SHA256, rendered)
+	}
+}
+
+func TestRunProofsVideoAbsent(t *testing.T) {
+	p := testRunProofs(t)
+	if _, found, err := p.Video("/repos/acme", "COD-none"); err != nil || found {
+		t.Fatalf("Video for a run with no proofs: found=%v err=%v, want not found", found, err)
+	}
+}
+
 func TestRunProofsReplaceEmptyClears(t *testing.T) {
 	p := testRunProofs(t)
 	const repo, ticket = "/repos/acme", "COD-3"

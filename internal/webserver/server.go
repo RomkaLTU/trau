@@ -64,6 +64,7 @@ type Server struct {
 	skillsMu         sync.Mutex
 	skillsCache      map[string]skillsCacheEntry
 	atlas            *atlasRunner
+	render           *videoRenderer
 	restart          func()
 	restartOnce      sync.Once
 	updates          *update.Checker
@@ -111,6 +112,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 	s.drain = newDrainer(s)
 	s.syncer = newSyncer(s)
 	s.atlas = newAtlasRunner(s)
+	s.render = newVideoRenderer(s)
 	return s
 }
 
@@ -303,6 +305,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/anomalies", s.handleRunAnomalies)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/proofs", s.handleRunProofs)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/proofs/{seq}", s.handleRunProof)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/render-video", s.handleRenderVideo)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/tokens", s.handleRepoTokens)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/tokens/day", s.handleTokenDay)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/routing", s.handleRepoRouting)

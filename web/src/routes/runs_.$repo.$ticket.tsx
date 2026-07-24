@@ -1,7 +1,14 @@
 import { useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { ArrowLeft, ExternalLink, GitBranch, Send } from 'lucide-react'
+import {
+  ArrowLeft,
+  ExternalLink,
+  GitBranch,
+  Loader2,
+  Send,
+  Video,
+} from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
@@ -29,6 +36,7 @@ import { runTitle, usePageTitle } from '@/lib/page-title'
 import { formatCostUSD, formatDuration } from '@/lib/runlive'
 import { steerSettled } from '@/lib/steer'
 import {
+  renderRunVideo,
   runDetailQueryOptions,
   runProofsQueryOptions,
   type Anomaly,
@@ -344,9 +352,9 @@ function ProofsCard({ repo, ticket }: { repo: string; ticket: string }) {
   const [active, setActive] = useState<Proof | null>(null)
   const proofs = data ?? []
   const shots = proofs.filter((p) => p.is_image && p.url)
-  const videos = proofs.filter((p) => p.kind === 'video' && p.url)
+  const video = proofs.find((p) => p.kind === 'video')
 
-  if (shots.length === 0 && videos.length === 0) {
+  if (shots.length === 0 && !video) {
     return null
   }
   return (
@@ -377,23 +385,96 @@ function ProofsCard({ repo, ticket }: { repo: string; ticket: string }) {
             ))}
           </ul>
         )}
-        {videos.map((p) => (
-          <figure key={p.seq} className="flex flex-col gap-1.5">
-            <video
-              src={p.url}
-              controls
-              className="w-full rounded-md border border-border"
-            />
-            {p.caption && (
-              <figcaption className="font-mono text-[0.7rem] text-muted-foreground">
-                {p.caption}
-              </figcaption>
-            )}
-          </figure>
-        ))}
+        <VideoProof repo={repo} ticket={ticket} video={video} />
       </div>
       <Lightbox proof={active} onClose={() => setActive(null)} />
     </TerminalCard>
+  )
+}
+
+function VideoProof({
+  repo,
+  ticket,
+  video,
+}: {
+  repo: string
+  ticket: string
+  video?: Proof
+}) {
+  const queryClient = useQueryClient()
+  const mutation = useMutation({
+    mutationFn: () => renderRunVideo(repo, ticket),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: ['run-proofs', repo, ticket],
+      }),
+  })
+
+  const rendering = mutation.isPending || video?.render === 'rendering'
+  const hasVideo = Boolean(video?.url)
+  const disabledReason = video?.trace_exists
+    ? ''
+    : video?.trace_dir
+      ? 'trace pruned'
+      : 'no recording captured'
+
+  return (
+    <div className="flex flex-col gap-2">
+      {hasVideo && video && (
+        <figure className="flex flex-col gap-1.5">
+          <video
+            src={video.url}
+            controls
+            className="w-full rounded-md border border-border"
+          />
+          {video.caption && (
+            <figcaption className="font-mono text-[0.7rem] text-muted-foreground">
+              {video.caption}
+            </figcaption>
+          )}
+        </figure>
+      )}
+      <div className="flex items-center gap-3">
+        <Button
+          size="sm"
+          variant={hasVideo ? 'outline' : 'default'}
+          className="font-mono"
+          disabled={rendering || !video?.trace_exists}
+          onClick={() => mutation.mutate()}
+        >
+          {rendering ? (
+            <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+          ) : (
+            <Video className="size-3.5" aria-hidden="true" />
+          )}
+          {rendering
+            ? 'Rendering…'
+            : hasVideo
+              ? 'Re-render video'
+              : 'Render video'}
+        </Button>
+        {!rendering && disabledReason && (
+          <span className="font-mono text-xs text-muted-foreground">
+            {disabledReason}
+          </span>
+        )}
+        {rendering && (
+          <span className="font-mono text-xs text-muted-foreground">
+            vision-heavy agent session; this can take a few minutes
+          </span>
+        )}
+      </div>
+      {!rendering && video?.render === 'failed' && video.render_error && (
+        <span className="font-mono text-xs text-destructive">
+          {video.render_error}
+        </span>
+      )}
+      {mutation.error && (
+        <span className="font-mono text-xs text-destructive">
+          {(mutation.error as Error).message}
+        </span>
+      )}
+    </div>
   )
 }
 

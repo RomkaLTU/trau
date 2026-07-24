@@ -3,8 +3,6 @@ package webserver
 import (
 	"context"
 	"errors"
-	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -12,10 +10,8 @@ import (
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubatlas"
-	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
-	"github.com/RomkaLTU/trau/internal/tokens"
 )
 
 // atlasGenTimeout bounds one Atlas generation end to end, across both attempts. It
@@ -184,77 +180,14 @@ func (r *atlasRunner) previousDocument(repo, viewID string) string {
 // to repo and returns the call's cost, which the caller sums into the document's
 // stamped cost. A call that captured no tokens records nothing.
 func (r *atlasRunner) recordCall(repo, provider string, res agent.Result) float64 {
-	cost := res.CostUSD
-	if cost == 0 {
-		cost = tokens.EstimateCost(res.Model, res.Usage.Input, res.Usage.Output, res.Usage.CacheRead, res.Usage.CacheCreation)
-	}
-	total := res.Usage.Input + res.Usage.Output + res.Usage.CacheRead + res.Usage.CacheCreation
-	if total <= 0 {
-		return cost
-	}
-	c := cost
-	call := hubstore.TokenCall{
-		Ticket:        atlasBucket,
-		TS:            r.now().Format("2006-01-02T15:04:05"),
-		Phase:         atlasPhase,
-		Input:         res.Usage.Input,
-		Output:        res.Usage.Output,
-		CacheRead:     res.Usage.CacheRead,
-		CacheCreation: res.Usage.CacheCreation,
-		Reasoning:     res.Usage.Reasoning,
-		Total:         total,
-		CostUSD:       &c,
-		Turns:         res.NumTurns,
-		IsError:       res.IsError,
-		Provider:      provider,
-		Model:         res.Model,
-		Context:       res.Context,
-	}
-	if err := r.srv.stores.Tokens().Append(repo, []hubstore.TokenCall{call}); err != nil {
-		logger.Verbosef("atlas: record token call %s: %v", repo, err)
-	}
-	return cost
+	return recordAgentSpend(r.srv, repo, atlasBucket, atlasPhase, provider, res, r.now())
 }
 
 // buildRunner constructs the repo's default-provider backend for a one-shot headless
-// session in the repo directory, using the same provider registry the loop does. The
-// prompt is passed whole to Run, so the backend's preamble stays empty.
+// generation session in the repo directory (the View argument is unused; the prompt
+// carries the View).
 func (r *atlasRunner) buildRunner(cfg config.Config, repo registry.Repo, _ hubatlas.View) (agent.Runner, error) {
-	spec, ok := agent.DefaultRegistry().Lookup(cfg.Provider)
-	if !ok {
-		return nil, fmt.Errorf("unknown provider %q", cfg.Provider)
-	}
-	bin, flags, model, effort, extra := atlasProviderConfig(cfg)
-	if _, err := exec.LookPath(bin); err != nil {
-		return nil, fmt.Errorf("provider %q: %q not found on PATH", cfg.Provider, bin)
-	}
-	return spec.New(agent.BackendParams{
-		Bin:     bin,
-		Flags:   strings.Fields(flags),
-		Model:   model,
-		Effort:  effort,
-		Dir:     repo.Root,
-		Timeout: time.Duration(cfg.AgentTimeout) * time.Second,
-		Extra:   extra,
-	})
-}
-
-// atlasProviderConfig maps the repo's layered config to the default provider's
-// bin/flags/model/effort, mirroring the loop's provider resolution for the fields an
-// Atlas session needs.
-func atlasProviderConfig(cfg config.Config) (bin, flags, model, effort string, extra map[string]string) {
-	extra = map[string]string{"result_dir": cfg.RunsDir}
-	switch cfg.Provider {
-	case "codex":
-		extra["profile"] = cfg.CodexProfile
-		extra["mode"] = cfg.CodexMode
-		return cfg.CodexBin, cfg.CodexFlags, cfg.CodexModel, cfg.CodexEffort, extra
-	case "kimi":
-		extra["mode"] = cfg.KimiMode
-		return cfg.KimiBin, cfg.KimiFlags, cfg.KimiModel, "", extra
-	default:
-		return cfg.ClaudeBin, cfg.ClaudeFlags, cfg.ClaudeModel, cfg.ClaudeEffort, extra
-	}
+	return newHubRunner(cfg, repo)
 }
 
 // atlasFailure phrases why an attempt's output was rejected, for the retry feedback

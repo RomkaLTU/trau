@@ -90,6 +90,45 @@ func (p *RunProofs) ForRun(repo, ticket string) ([]RunProof, error) {
 	return out, rows.Err()
 }
 
+// Video returns a run's video proof row — the trace-directory placeholder the
+// verify harvest wrote, later carrying the rendered mp4's bytes — or ok=false when
+// the run recorded no trace.
+func (p *RunProofs) Video(repo, ticket string) (RunProof, bool, error) {
+	var pr RunProof
+	err := p.db.QueryRow(
+		`SELECT seq, kind, sha256, mime, caption, trace_dir, created_at
+		 FROM run_proofs WHERE repo = ? AND ticket = ? AND kind = ? ORDER BY seq LIMIT 1`,
+		repo, ticket, ProofVideo,
+	).Scan(&pr.Seq, &pr.Kind, &pr.SHA256, &pr.Mime, &pr.Caption, &pr.TraceDir, &pr.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RunProof{}, false, nil
+	}
+	if err != nil {
+		return RunProof{}, false, err
+	}
+	return pr, true, nil
+}
+
+// SetVideo replaces a run's video proof with video — the freshly rendered mp4 that
+// supersedes any prior video — while leaving the screenshot rows untouched.
+func (p *RunProofs) SetVideo(repo, ticket string, video RunProof) error {
+	tx, err := p.db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM run_proofs WHERE repo = ? AND ticket = ? AND kind = ?`, repo, ticket, ProofVideo); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO run_proofs(repo, ticket, seq, kind, sha256, mime, caption, trace_dir, created_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		repo, ticket, video.Seq, ProofVideo, video.SHA256, video.Mime, video.Caption, video.TraceDir, video.CreatedAt,
+	); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	return tx.Commit()
+}
+
 // Find returns a run's proof at seq.
 func (p *RunProofs) Find(repo, ticket string, seq int) (RunProof, bool, error) {
 	var pr RunProof
