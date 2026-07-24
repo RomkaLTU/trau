@@ -1,7 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Issue } from './issues'
-import { pinProvider, publishProviderPin } from './provider-pin'
+import {
+  clearedProviderPin,
+  pinProvider,
+  providerPinLabel,
+  publishProviderPin,
+  resolveProviderPin,
+} from './provider-pin'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -67,5 +73,50 @@ describe('publishProviderPin', () => {
       { queryKey: ['backlog', 'acme'] },
       { queryKey: ['queue', 'acme'] },
     ])
+  })
+})
+
+describe('resolveProviderPin', () => {
+  it('shows the epic it inherits from when the slice pins nothing', () => {
+    const pin = resolveProviderPin({
+      provider_inherited: 'codex',
+      provider_inherited_from: 'COD-123',
+    })
+    expect(pin).toEqual({ kind: 'inherited', provider: 'codex', from: 'COD-123' })
+    expect(providerPinLabel(pin)).toBe('Inherited from COD-123 (codex)')
+  })
+
+  it("prefers the slice's own pin over the inherited one", () => {
+    const pin = resolveProviderPin({
+      provider_pin: 'claude',
+      provider_inherited: 'codex',
+      provider_inherited_from: 'COD-123',
+    })
+    expect(pin).toEqual({ kind: 'pinned', provider: 'claude' })
+    expect(providerPinLabel(pin)).toBe('claude')
+  })
+
+  it('falls back to the repo default with no pin anywhere', () => {
+    expect(providerPinLabel(resolveProviderPin({}))).toBe('Repo default')
+  })
+})
+
+describe('clearedProviderPin', () => {
+  it('returns a pinned slice to the inherited state, not the repo default', () => {
+    expect(
+      providerPinLabel(
+        clearedProviderPin({
+          provider_pin: 'claude',
+          provider_inherited: 'codex',
+          provider_inherited_from: 'COD-123',
+        }),
+      ),
+    ).toBe('Inherited from COD-123 (codex)')
+  })
+
+  it('returns to the repo default when there is nothing to inherit', () => {
+    expect(providerPinLabel(clearedProviderPin({ provider_pin: 'claude' }))).toBe(
+      'Repo default',
+    )
   })
 })

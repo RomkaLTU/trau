@@ -86,6 +86,51 @@ func TestProviderPinUnknownIssueIsNotFound(t *testing.T) {
 	}
 }
 
+func TestIssueReportsTheProviderInheritedFromItsEpic(t *testing.T) {
+	s, root, ts := archiveServer(t, []hubstore.Issue{
+		{Identifier: "COD-1", StatusGroup: "backlog", HasChildren: true},
+		{Identifier: "COD-2", StatusGroup: "backlog", Parent: "COD-1"},
+		{Identifier: "COD-3", StatusGroup: "backlog", Parent: "COD-1"},
+	})
+	if _, _, err := s.stores.Issues().SetProvider(root, "COD-1", "codex"); err != nil {
+		t.Fatalf("pin the epic: %v", err)
+	}
+	if _, _, err := s.stores.Issues().SetProvider(root, "COD-3", "claude"); err != nil {
+		t.Fatalf("pin COD-3: %v", err)
+	}
+
+	_, slice := getIssue(t, ts, "acme", "COD-2")
+	if slice.ProviderPin != "" || slice.ProviderInherited != "codex" || slice.ProviderInheritedFrom != "COD-1" {
+		t.Fatalf("COD-2 = %+v, want codex inherited from COD-1 with no pin of its own", slice)
+	}
+
+	_, pinned := getIssue(t, ts, "acme", "COD-3")
+	if pinned.ProviderPin != "claude" || pinned.ProviderInherited != "codex" {
+		t.Fatalf("COD-3 = %+v, want its own pin alongside what it would inherit", pinned)
+	}
+
+	_, epic := getIssue(t, ts, "acme", "COD-1")
+	if epic.ProviderInherited != "" || epic.ProviderInheritedFrom != "" {
+		t.Fatalf("COD-1 = %+v, want no inheritance on a parentless epic", epic)
+	}
+}
+
+func TestIssueInheritanceStopsAtTheParent(t *testing.T) {
+	s, root, ts := archiveServer(t, []hubstore.Issue{
+		{Identifier: "COD-1", StatusGroup: "backlog", HasChildren: true},
+		{Identifier: "COD-2", StatusGroup: "backlog", Parent: "COD-1", HasChildren: true},
+		{Identifier: "COD-3", StatusGroup: "backlog", Parent: "COD-2"},
+	})
+	if _, _, err := s.stores.Issues().SetProvider(root, "COD-1", "codex"); err != nil {
+		t.Fatalf("pin the grandparent: %v", err)
+	}
+
+	_, grandchild := getIssue(t, ts, "acme", "COD-3")
+	if grandchild.ProviderInherited != "" || grandchild.ProviderInheritedFrom != "" {
+		t.Fatalf("COD-3 = %+v, want a grandparent's pin never to reach it", grandchild)
+	}
+}
+
 func TestQueueItemCarriesTheIssueProviderPin(t *testing.T) {
 	s, root, ts := archiveServer(t, []hubstore.Issue{
 		{Identifier: "COD-1", StatusGroup: "backlog"},

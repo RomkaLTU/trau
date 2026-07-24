@@ -16,13 +16,20 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover'
 import { configQueryOptions } from '@/lib/config'
+import {
+  clearedProviderPin,
+  providerPinLabel,
+  resolveProviderPin,
+  type ProviderPinSource,
+} from '@/lib/provider-pin'
 import { cn } from '@/lib/utils'
 
-export function ProviderPinDisplay({ provider }: { provider?: string }) {
-  if (!provider) {
-    return <span className="text-muted-foreground">Repo default</span>
+export function ProviderPinDisplay({ issue }: { issue: ProviderPinSource }) {
+  const pin = resolveProviderPin(issue)
+  if (pin.kind === 'pinned') {
+    return <span className="font-mono text-foreground">{pin.provider}</span>
   }
-  return <span className="font-mono text-foreground">{provider}</span>
+  return <span className="text-muted-foreground">{providerPinLabel(pin)}</span>
 }
 
 // Owns the provider list but not the write: the caller decides what a choice
@@ -30,22 +37,24 @@ export function ProviderPinDisplay({ provider }: { provider?: string }) {
 // trau gains is offered here without a web change.
 export function ProviderPinPicker({
   repo,
-  provider,
+  issue,
   onSelect,
   disabled,
 }: {
   repo: string
-  provider?: string
+  issue: ProviderPinSource
   onSelect: (next: string) => void
   disabled?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const config = useQuery(configQueryOptions(repo))
   const providers = config.data?.providers ?? []
+  const provider = issue.provider_pin ?? ''
+  const cleared = clearedProviderPin(issue)
 
   const choose = (next: string) => {
     setOpen(false)
-    if (next !== (provider ?? '')) onSelect(next)
+    if (next !== provider) onSelect(next)
   }
 
   return (
@@ -58,11 +67,11 @@ export function ProviderPinPicker({
           aria-label="Change provider"
           className="-ml-2 h-7 gap-1.5 px-2 text-xs font-normal"
         >
-          <ProviderPinDisplay provider={provider} />
+          <ProviderPinDisplay issue={issue} />
           <ChevronsUpDown className="size-3 text-muted-foreground" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-48 p-0">
+      <PopoverContent align="start" className="w-64 p-0">
         <Command shouldFilter={false}>
           <CommandList>
             <CommandGroup>
@@ -89,7 +98,7 @@ export function ProviderPinPicker({
                   className={cn('size-4', provider ? 'opacity-0' : 'opacity-100')}
                 />
                 <span className="flex-1 truncate text-muted-foreground">
-                  Repo default
+                  {providerPinLabel(cleared)}
                 </span>
               </CommandItem>
             </CommandGroup>

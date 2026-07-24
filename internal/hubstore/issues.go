@@ -967,6 +967,20 @@ func (s *Issues) Providers(repo string) (pins map[string]string, err error) {
 	return pins, rows.Err()
 }
 
+// Provider returns the Provider pinned on one repo issue, empty when it pins none
+// or does not exist.
+func (s *Issues) Provider(repo, identifier string) (string, error) {
+	var provider string
+	err := s.db.QueryRow(
+		`SELECT provider FROM issues WHERE repo = ? AND identifier = ?`,
+		repo, identifier,
+	).Scan(&provider)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return provider, err
+}
+
 // SetProvider pins the Provider a repo issue's runs use, regardless of its source,
 // returning the updated issue and whether it was found. An empty provider clears the
 // pin. Upsert never lists the column, so a pin survives every later pull.
