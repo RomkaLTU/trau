@@ -12,8 +12,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubstore"
 )
 
 func skillsServer(t *testing.T, home string) *Server {
@@ -548,5 +551,109 @@ func TestSkillRulesRejectsNamelessRule(t *testing.T) {
 
 	if status, _ := putSkillRules(t, ts, "acme", `{"rules":[{"skill":"  ","scope":"always"}]}`); status != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", status)
+	}
+}
+
+func seedSkillCall(t *testing.T, home, root, ticket, phase, provider, skills string, ts time.Time) {
+	t.Helper()
+	call := hubstore.TokenCall{
+		Ticket:   ticket,
+		TS:       ts.Format("2006-01-02T15:04:05"),
+		Phase:    phase,
+		Provider: provider,
+		Skills:   skills,
+	}
+	if err := testStoresAt(t, home).Tokens().Append(root, []hubstore.TokenCall{call}); err != nil {
+		t.Fatalf("append token call: %v", err)
+	}
+}
+
+func seedPlannedSkills(t *testing.T, home, root, ticket, phase string, names []string, ts time.Time) {
+	t.Helper()
+	fields, err := json.Marshal(map[string]any{"ticket": ticket, "skills": names})
+	if err != nil {
+		t.Fatalf("marshal fields: %v", err)
+	}
+	ev := hubstore.NewEvent{
+		TS:     ts.Format(time.RFC3339),
+		Kind:   event.KindSkillsPlanned,
+		Phase:  phase,
+		Msg:    "planned skills: " + strings.Join(names, ", "),
+		Fields: string(fields),
+	}
+	if _, err := testStoresAt(t, home).Events().Append(root, []hubstore.NewEvent{ev}); err != nil {
+		t.Fatalf("append planned event: %v", err)
+	}
+}
+
+// TestSkillsRunCoverage is the run-coverage contract: a skill a recent call
+// reported loading carries its load count and timestamp, one no call named
+// carries neither, and the plan a phase filed is paired with what its agent
+// actually loaded.
+func TestSkillsRunCoverage(t *testing.T) {
+	home := t.TempDir()
+	root := seedConfigRepo(t, home, "acme")
+	writeSkill(t, root, "golang-cli")
+	writeSkill(t, root, "web-feature")
+
+	loaded := time.Now().Add(-24 * time.Hour)
+	seedPlannedSkills(t, home, root, "COD-1", "build", []string{"golang-cli", "web-feature"}, loaded)
+	seedSkillCall(t, home, root, "COD-1", "build", "claude", `["golang-cli"]`, loaded.Add(time.Minute))
+	seedSkillCall(t, home, root, "COD-1", "build", "claude", `["old"]`, time.Now().Add(-90*24*time.Hour))
+
+	ts := httptest.NewServer(skillsServer(t, home).Handler())
+	t.Cleanup(ts.Close)
+	out := getSkills(t, ts, "acme")
+
+	if !out.Coverage.HasData || out.Coverage.Days != skillCoverageDays {
+		t.Fatalf("coverage = %+v, want evidence over the %d-day window", out.Coverage, skillCoverageDays)
+	}
+	byName := map[string]SkillView{}
+	for _, v := range out.Installed {
+		byName[v.Name] = v
+	}
+	if got := byName["golang-cli"]; got.Loads != 1 || got.LastLoaded == "" {
+		t.Errorf("golang-cli = %+v, want one load inside the window with its timestamp", got)
+	}
+	if got := byName["web-feature"]; got.Loads != 0 || got.LastLoaded != "" {
+		t.Errorf("web-feature = %+v, want no load evidence", got)
+	}
+
+	if len(out.Coverage.Phases) != 1 {
+		t.Fatalf("phases = %+v, want the one planned attempt", out.Coverage.Phases)
+	}
+	phase := out.Coverage.Phases[0]
+	if phase.Ticket != "COD-1" || phase.Phase != "build" || phase.Unknown {
+		t.Fatalf("phase = %+v, want a recoverable build attempt for COD-1", phase)
+	}
+	if !contains(phase.Planned, "web-feature") || contains(phase.Loaded, "web-feature") {
+		t.Errorf("phase = %+v, want web-feature planned but not loaded", phase)
+	}
+}
+
+// TestSkillsCoverageWithoutReportingProvider holds the "no data" line: a repo
+// whose runs used only providers that never report skill usage carries no
+// evidence, so an unloaded skill must not read as one nobody uses.
+func TestSkillsCoverageWithoutReportingProvider(t *testing.T) {
+	home := t.TempDir()
+	root := seedConfigRepo(t, home, "acme")
+	writeSkill(t, root, "golang-cli")
+
+	ran := time.Now().Add(-2 * time.Hour)
+	seedPlannedSkills(t, home, root, "COD-2", "build", []string{"golang-cli"}, ran)
+	seedSkillCall(t, home, root, "COD-2", "build", "codex", "", ran.Add(time.Minute))
+
+	ts := httptest.NewServer(skillsServer(t, home).Handler())
+	t.Cleanup(ts.Close)
+	out := getSkills(t, ts, "acme")
+
+	if out.Coverage.HasData {
+		t.Errorf("coverage.HasData = true, want no recoverable evidence")
+	}
+	if !contains(out.Coverage.Silent, "codex") {
+		t.Errorf("silent providers = %v, want codex named", out.Coverage.Silent)
+	}
+	if len(out.Coverage.Phases) != 1 || !out.Coverage.Phases[0].Unknown {
+		t.Errorf("phases = %+v, want the attempt flagged unknown", out.Coverage.Phases)
 	}
 }

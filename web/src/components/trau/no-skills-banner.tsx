@@ -1,4 +1,5 @@
 import { TriangleAlert } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
 
 export function NoSkillsBanner() {
   return (
@@ -8,10 +9,16 @@ export function NoSkillsBanner() {
     >
       <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warn" aria-hidden="true" />
       <div className="flex flex-col gap-0.5">
-        <p className="font-mono text-sm font-medium text-warn">Build loaded no skills</p>
+        <p className="font-mono text-sm font-medium text-warn">
+          Build loaded none of its planned skills
+        </p>
         <p className="font-sans text-sm leading-relaxed text-muted-foreground">
-          This repo has skills installed, but the agent used none while building. Review whether the
-          right skills were selected for this run.
+          The build prompt named skills to load and the agent used none of them. Check their
+          activation on the{' '}
+          <Link to="/skills" className="text-warn underline-offset-4 hover:underline">
+            Skills page
+          </Link>
+          .
         </p>
       </div>
     </div>

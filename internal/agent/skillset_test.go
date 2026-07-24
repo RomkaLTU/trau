@@ -280,3 +280,42 @@ func TestRoutingRulesResolution(t *testing.T) {
 		}
 	})
 }
+
+// TestSkillSetOrigins is the per-entry provenance contract the plan preview
+// reads: every resolved name carries the chain step that produced it, so a union
+// set can say which of its halves each name came from.
+func TestSkillSetOrigins(t *testing.T) {
+	repo := skillRepo(t, "go.mod", "golang-code-style", "golang-pro", "goreleaser")
+	writeRules(t, repo,
+		skillrules.Rule{Skill: "golang-code-style", Scope: skillrules.ScopeAlways},
+		skillrules.Rule{Skill: "golang-pro", Scope: skillrules.ScopeAuto, Paths: []string{"**/*.go"}},
+	)
+
+	t.Run("a union splits its names across the rules and the pins", func(t *testing.T) {
+		r := NewSkillResolver(repo, []string{"goreleaser"}, nil)
+		got := r.Build(SkillContext{Text: "Rework internal/agent/skills.go"})
+		want := map[string]string{
+			"golang-code-style": SkillsSourceRules,
+			"golang-pro":        SkillsSourceRules,
+			"goreleaser":        SkillsSourceRequired,
+		}
+		for name, source := range want {
+			if got.Origins[name] != source {
+				t.Errorf("origin of %s = %q, want %q", name, got.Origins[name], source)
+			}
+		}
+	})
+
+	t.Run("a fallback set attributes every name to the chain step", func(t *testing.T) {
+		bare := skillRepo(t, "go.mod", "golang-code-style", "goreleaser")
+		got := NewSkillResolver(bare, nil, nil).Build(SkillContext{})
+		if got.Source == SkillsSourceRules {
+			t.Fatalf("Source = %q, want a fallback step", got.Source)
+		}
+		for _, name := range got.Names {
+			if got.Origins[name] != got.Source {
+				t.Errorf("origin of %s = %q, want %q", name, got.Origins[name], got.Source)
+			}
+		}
+	})
+}

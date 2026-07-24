@@ -7,11 +7,14 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/skillrules"
 )
@@ -20,12 +23,21 @@ const (
 	skillsRegistryURL = "https://skills.sh/api/search"
 	skillsPageBase    = "https://skills.sh/"
 	skillsSearchTTL   = 60 * time.Second
+
+	// skillCoverageDays is the activation window the panel reads run evidence
+	// over: a skill no call in it loaded reads as dead, not merely quiet.
+	skillCoverageDays = 30
+
+	// skillCoveragePhases caps the plan-versus-loaded list at a page's worth of
+	// the most recent phase attempts.
+	skillCoveragePhases = 12
 )
 
 var (
 	defaultInstallSkill = agent.InstallSkillPackage
 	defaultRemoveSkill  = agent.RemoveSkill
 	skillsHTTPClient    = &http.Client{Timeout: 10 * time.Second}
+	skillProviders      = agent.DefaultRegistry()
 )
 
 // SkillView is one installed skill as the panel shows it: its directory name
@@ -45,6 +57,8 @@ type SkillView struct {
 	SourceType        string   `json:"source_type,omitempty"`
 	SkillPath         string   `json:"skill_path,omitempty"`
 	Pinned            bool     `json:"pinned"`
+	Loads             int      `json:"loads"`
+	LastLoaded        string   `json:"last_loaded,omitempty"`
 }
 
 // SkillRuleView is one repo-owned routing rule as the panel edits it.
@@ -58,11 +72,40 @@ type SkillRuleView struct {
 
 // SkillPlanView is the set one phase would name for a run with no ticket and no
 // diff — every auto rule reads as non-matching, so the plan shows the repo's
-// floor rather than any particular slice's set.
+// floor rather than any particular slice's set. Fallback marks a phase that
+// nothing scoped to it, left to the chain's backstop.
 type SkillPlanView struct {
-	Phase  string   `json:"phase"`
-	Skills []string `json:"skills"`
-	Source string   `json:"source"`
+	Phase    string            `json:"phase"`
+	Skills   []string          `json:"skills"`
+	Source   string            `json:"source"`
+	Origins  map[string]string `json:"origins,omitempty"`
+	Fallback bool              `json:"fallback,omitempty"`
+}
+
+// SkillPhaseView pairs one recent phase attempt's planned set with the skills
+// its agent reported loading. Unknown marks an attempt whose provider does not
+// report skill usage, or that no recorded call could be matched to: its loaded
+// side is unrecoverable rather than empty.
+type SkillPhaseView struct {
+	Ticket   string   `json:"ticket"`
+	Phase    string   `json:"phase"`
+	TS       string   `json:"ts"`
+	Provider string   `json:"provider,omitempty"`
+	Planned  []string `json:"planned"`
+	Loaded   []string `json:"loaded"`
+	Unknown  bool     `json:"unknown,omitempty"`
+}
+
+// SkillCoverageView is the repo's activation evidence over the last Days days.
+// HasData is false when nothing in the window could report skill usage — no runs
+// at all, or only providers that never report it — and every skill's load count
+// then says nothing about whether it is dead. Silent names the providers that ran
+// without reporting.
+type SkillCoverageView struct {
+	Days    int              `json:"days"`
+	HasData bool             `json:"has_data"`
+	Silent  []string         `json:"silent_providers,omitempty"`
+	Phases  []SkillPhaseView `json:"phases"`
 }
 
 // SkillRulesRequest is the body of PUT /repos/{repo}/skills/rules: the repo's
@@ -93,6 +136,7 @@ type SkillsResponse struct {
 	Required    []string                  `json:"required"`
 	Rules       []SkillRuleView           `json:"rules"`
 	Plan        []SkillPlanView           `json:"plan"`
+	Coverage    SkillCoverageView         `json:"coverage"`
 	Unknown     []string                  `json:"unknown,omitempty"`
 	RulesError  string                    `json:"rules_error,omitempty"`
 }
@@ -212,6 +256,8 @@ func (s *Server) skillsSnapshot(repo registry.Repo) SkillsResponse {
 	resolver := agent.NewSkillResolver(repo.Root, required, requiredVerify)
 	scopes := ruleScopes(resolver.Rules())
 
+	coverage, loads := s.skillCoverage(repo.Root)
+
 	metas := agent.InstalledSkills(repo.Root)
 	installed := make([]SkillView, 0, len(metas))
 	for _, meta := range metas {
@@ -222,6 +268,8 @@ func (s *Server) skillsSnapshot(repo registry.Repo) SkillsResponse {
 			SuggestedKeywords: agent.SuggestedKeywords(meta.Description),
 			Invalid:           meta.Invalid,
 			Scope:             scopes[meta.Name],
+			Loads:             loads[meta.Name].count,
+			LastLoaded:        loads[meta.Name].lastTS,
 		}
 		if lockMeta, ok := lock[meta.Name]; ok {
 			v.Source = lockMeta.Source
@@ -245,6 +293,7 @@ func (s *Server) skillsSnapshot(repo registry.Repo) SkillsResponse {
 		Required:    required,
 		Rules:       ruleViews(resolver.Rules()),
 		Plan:        skillPlan(resolver),
+		Coverage:    coverage,
 		Unknown:     resolver.UnknownRuleSkills(),
 	}
 	if err := resolver.RulesError(); err != nil {
@@ -254,13 +303,20 @@ func (s *Server) skillsSnapshot(repo registry.Repo) SkillsResponse {
 }
 
 func skillPlan(resolver agent.SkillResolver) []SkillPlanView {
-	build := resolver.Build(agent.SkillContext{})
-	verify := resolver.Verify(agent.SkillContext{}, false)
-	repair := resolver.Repair(agent.SkillContext{})
 	return []SkillPlanView{
-		{Phase: skillrules.PhaseBuild, Skills: orEmpty(build.Names), Source: build.Source},
-		{Phase: skillrules.PhaseVerify, Skills: orEmpty(verify.Names), Source: verify.Source},
-		{Phase: skillrules.PhaseRepair, Skills: orEmpty(repair.Names), Source: repair.Source},
+		planView(skillrules.PhaseBuild, resolver.Build(agent.SkillContext{})),
+		planView(skillrules.PhaseVerify, resolver.Verify(agent.SkillContext{}, false)),
+		planView(skillrules.PhaseRepair, resolver.Repair(agent.SkillContext{})),
+	}
+}
+
+func planView(phase string, set agent.SkillSet) SkillPlanView {
+	return SkillPlanView{
+		Phase:    phase,
+		Skills:   orEmpty(set.Names),
+		Source:   set.Source,
+		Origins:  set.Origins,
+		Fallback: set.Source == agent.SkillsSourceRecommended || set.Source == agent.SkillsSourceInstalled,
 	}
 }
 
@@ -294,6 +350,121 @@ func orEmpty(names []string) []string {
 		return []string{}
 	}
 	return names
+}
+
+// skillLoad is one skill's evidence inside the coverage window.
+type skillLoad struct {
+	count  int
+	lastTS string
+}
+
+// skillCoverage reads the repo's recent activation evidence: how often each
+// skill was loaded and when it last was, plus the recent phase attempts with
+// their planned set beside the loaded one. A provider that never reports skill
+// usage contributes no evidence, so a repo running only those reads as "no data"
+// rather than as one whose every skill went unused.
+func (s *Server) skillCoverage(root string) (SkillCoverageView, map[string]skillLoad) {
+	view := SkillCoverageView{Days: skillCoverageDays, Phases: []SkillPhaseView{}}
+	loads := map[string]skillLoad{}
+
+	cutoff := time.Now().AddDate(0, 0, -skillCoverageDays)
+	calls, err := s.stores.Tokens().SkillCalls(root, cutoff.Format(time.DateOnly))
+	if err != nil {
+		return view, loads
+	}
+	for _, c := range calls {
+		if !reportsSkills(c.Provider) {
+			view.Silent = appendSilentProvider(view.Silent, c.Provider)
+			continue
+		}
+		view.HasData = true
+		for _, name := range c.Skills {
+			l := loads[name]
+			l.count++
+			if c.TS > l.lastTS {
+				l.lastTS = c.TS
+			}
+			loads[name] = l
+		}
+	}
+	view.Phases = s.skillPhases(root, cutoff, calls)
+	return view, loads
+}
+
+// skillPhases pairs each recent planned set with the call that ran under it —
+// the first call for the same ticket whose phase label starts with the planned
+// phase, so a verify-retry2 call pairs with the verify plan — newest first.
+func (s *Server) skillPhases(root string, since time.Time, calls []hubstore.SkillCall) []SkillPhaseView {
+	evs, err := s.stores.Events().Query(root, hubstore.EventFilter{
+		Kind:  event.KindSkillsPlanned,
+		Since: since,
+		Limit: skillCoveragePhases,
+	})
+	if err != nil {
+		return []SkillPhaseView{}
+	}
+	out := make([]SkillPhaseView, 0, len(evs))
+	for i := len(evs) - 1; i >= 0; i-- {
+		ev := evs[i]
+		ticket, planned := plannedSkills(ev.Fields)
+		v := SkillPhaseView{
+			Ticket:  ticket,
+			Phase:   ev.Phase,
+			TS:      ev.TS,
+			Planned: planned,
+			Loaded:  []string{},
+			Unknown: true,
+		}
+		if c, ok := callUnderPlan(calls, ticket, ev.Phase, ev.TS); ok {
+			v.Provider = c.Provider
+			v.Loaded = orEmpty(c.Skills)
+			v.Unknown = !reportsSkills(c.Provider)
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+func callUnderPlan(calls []hubstore.SkillCall, ticket, phase, ts string) (hubstore.SkillCall, bool) {
+	planned := wallClock(ts)
+	for _, c := range calls {
+		if c.Ticket == ticket && wallClock(c.TS) >= planned && strings.HasPrefix(c.Phase, phase) {
+			return c, true
+		}
+	}
+	return hubstore.SkillCall{}, false
+}
+
+// wallClock trims a timestamp to the local wall clock both sides share: events
+// carry an RFC3339 offset and token calls do not, so only the prefix compares.
+func wallClock(ts string) string {
+	if len(ts) > len("2006-01-02T15:04:05") {
+		return ts[:len("2006-01-02T15:04:05")]
+	}
+	return ts
+}
+
+func plannedSkills(fields string) (ticket string, skills []string) {
+	var f struct {
+		Ticket string   `json:"ticket"`
+		Skills []string `json:"skills"`
+	}
+	if err := json.Unmarshal([]byte(fields), &f); err != nil {
+		return "", []string{}
+	}
+	return f.Ticket, orEmpty(f.Skills)
+}
+
+func reportsSkills(provider string) bool {
+	spec, ok := skillProviders.Lookup(provider)
+	return ok && spec.ReportsSkills
+}
+
+func appendSilentProvider(dst []string, provider string) []string {
+	if provider == "" || slices.Contains(dst, provider) {
+		return dst
+	}
+	return append(dst, provider)
 }
 
 func (s *Server) requiredSkills(repo registry.Repo) (required, requiredVerify []string) {
