@@ -39,6 +39,10 @@ const KindVerifyNoBrowser = "verify_no_browser"
 // never failed or paused over missing proofs.
 const KindVerifyNoProofs = "verify_no_proofs"
 
+// KindProofsPublishFailed marks a delivery that could not publish its verify
+// screenshots to the trau-proofs branch; the PR ships without the QA section.
+const KindProofsPublishFailed = "proofs_publish_failed"
+
 // KindQARoster records what the stored QA roster contributed to a verify whose
 // browser gate was active on a UI slice: how many accounts reached the verifier,
 // whether free-text notes came with them, or why nothing did. Counts and flags

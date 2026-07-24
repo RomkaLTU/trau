@@ -464,6 +464,79 @@ func (c *Client) UploadProofs(ctx context.Context, repo, ticket, traceDir string
 	return c.do(ctx, http.MethodPost, c.repoPath(repo, "runs/"+url.PathEscape(ticket)+"/proofs"), body, nil)
 }
 
+// FetchedProof is one of a run's stored verify proofs read back from the hub: the
+// metadata the delivery step needs plus a screenshot's bytes. A video row (the
+// trace path) carries no bytes.
+type FetchedProof struct {
+	Seq     int
+	Kind    string
+	Mime    string
+	Caption string
+	IsImage bool
+	Bytes   []byte
+}
+
+type proofView struct {
+	Seq     int    `json:"seq"`
+	Kind    string `json:"kind"`
+	Mime    string `json:"mime"`
+	Caption string `json:"caption"`
+	IsImage bool   `json:"is_image"`
+	URL     string `json:"url"`
+}
+
+// RunProofs reads a run's stored verify proofs from the hub, downloading each
+// screenshot's bytes so delivery can republish them without touching the DB (ADR
+// 0008). Video rows come back without bytes.
+func (c *Client) RunProofs(ctx context.Context, repo, ticket string) ([]FetchedProof, error) {
+	var views []proofView
+	if err := c.do(ctx, http.MethodGet, c.proofsPath(repo, ticket), nil, &views); err != nil {
+		return nil, err
+	}
+	out := make([]FetchedProof, 0, len(views))
+	for _, v := range views {
+		fp := FetchedProof{Seq: v.Seq, Kind: v.Kind, Mime: v.Mime, Caption: v.Caption, IsImage: v.IsImage}
+		if v.IsImage && v.URL != "" {
+			body, err := c.ProofBytes(ctx, repo, ticket, v.Seq)
+			if err != nil {
+				return nil, err
+			}
+			fp.Bytes = body
+		}
+		out = append(out, fp)
+	}
+	return out, nil
+}
+
+// ProofBytes downloads one proof's stored bytes from the hub.
+func (c *Client) ProofBytes(ctx context.Context, repo, ticket string, seq int) ([]byte, error) {
+	path := c.proofsPath(repo, ticket) + "/" + strconv.Itoa(seq)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := attachmentHTTP.Do(req)
+	if err != nil {
+		return nil, &transportError{op: http.MethodGet + " " + path, err: err}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ErrNotFound
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("GET %s: %s", path, hubError(resp.Body, resp.Status))
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, attachmentMaxBytes))
+}
+
+func (c *Client) proofsPath(repo, ticket string) string {
+	return c.repoPath(repo, "runs/"+url.PathEscape(ticket)+"/proofs")
+}
+
 // RoutingFingerprint is the resolved routing configuration a run reports at start:
 // the hash its token calls are stamped with, and the key/value pairs it was
 // computed from, which the hub diffs to describe a change.

@@ -46,6 +46,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubtranscript"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/pipeline"
+	"github.com/RomkaLTU/trau/internal/proofsbranch"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/skillrules"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -1171,6 +1172,35 @@ func newProofUploader(cfg config.Config, repoRoot string) func(context.Context, 
 	}
 }
 
+// newProofsPublisher fetches a run's stored screenshots back from the serve hub
+// and publishes them to the target repo's trau-proofs orphan branch, so the
+// delivered PR can embed the visual QA proof (ADR 0008 keeps the child DB-free).
+func newProofsPublisher(cfg config.Config, repoRoot string) func(context.Context, string) (proofsbranch.Publication, error) {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	return func(ctx context.Context, ticket string) (proofsbranch.Publication, error) {
+		shots, err := hub.RunProofs(ctx, repoName(repoRoot), ticket)
+		if err != nil {
+			return proofsbranch.Publication{}, err
+		}
+		proofs := make([]proofsbranch.Proof, 0, len(shots))
+		for _, s := range shots {
+			if !s.IsImage || len(s.Bytes) == 0 {
+				continue
+			}
+			proofs = append(proofs, proofsbranch.Proof{
+				Seq:     s.Seq,
+				Mime:    s.Mime,
+				Caption: s.Caption,
+				Bytes:   s.Bytes,
+			})
+		}
+		if len(proofs) == 0 {
+			return proofsbranch.Publication{}, nil
+		}
+		return proofsbranch.Publish(ctx, proofsbranch.Config{RepoDir: repoRoot, Remote: cfg.Remote}, ticket, proofs)
+	}
+}
+
 // steerQueue adapts the hub client to the pipeline's steer-note calls, binding
 // the repo so every call only has to name the ticket.
 type steerQueue struct {
@@ -1415,6 +1445,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		FetchQAAccounts:      newQAFetcher(cfg, repoRoot),
 		SaveQAAccount:        newQASaver(cfg, repoRoot),
 		UploadProofs:         newProofUploader(cfg, repoRoot),
+		PublishProofs:        newProofsPublisher(cfg, repoRoot),
 		Steer:                newSteerQueue(cfg, repoRoot),
 		OwnedProject:         cfg.Project,
 
