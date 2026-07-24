@@ -1,35 +1,33 @@
 package webserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
-// grillProvider is the provider every grilling turn runs on. The runner spawns the
-// Claude CLI and reads its stream-json contract, so the choice is fixed here rather
-// than stored per session.
-const grillProvider = "claude"
+const grillDefaultProvider = "claude"
 
 // GrillSessionView is one grilling session as the web panel sees it. IssueID is
 // omitted for an authoring session anchored to the repo alone; IssueTitle then
 // carries the session's seed so the queue can title an issue-less draft.
 // IssueDestination names where a create-apply filed the anchored issue, so a review
 // remounted on a settled session still names the destination it used rather than
-// reverting to the picker default. Provider is fixed to claude while the runner is;
-// ModelOptions carries the switcher's catalog because the inbox never loads the
-// settings config.
+// reverting to the picker default. Provider is the session's locked provider.
 type GrillSessionView struct {
 	ID               string   `json:"id"`
 	Repo             string   `json:"repo"`
@@ -65,12 +63,17 @@ type GrillDeltaView struct {
 	Text string `json:"text"`
 }
 
-// GrillDefaultsView is what an interview started right now would run on: the
-// provider, the repo config's model, and the catalog to pick from. It rides on the
-// list resource so a start surface can offer the choice before a session exists.
+// GrillDefaultsView is what an interview started right now would run on.
 type GrillDefaultsView struct {
-	Provider     string   `json:"provider"`
-	Model        string   `json:"model,omitempty"`
+	Provider     string                `json:"provider"`
+	Model        string                `json:"model,omitempty"`
+	ModelOptions []string              `json:"model_options,omitempty"`
+	Providers    []GrillProviderOption `json:"providers,omitempty"`
+}
+
+// GrillProviderOption is one provider a not-yet-started interview can run on.
+type GrillProviderOption struct {
+	Name         string   `json:"name"`
 	ModelOptions []string `json:"model_options,omitempty"`
 }
 
@@ -94,13 +97,12 @@ type GrillDetailResponse struct {
 
 // GrillCreateRequest is the body of POST /repos/{repo}/grill. IssueID is empty for
 // an authoring session anchored to the repo alone; Idea is the one-line seed for
-// such a session and is ignored when IssueID is set. Model is optional; an empty
-// one resolves to the repo config's grill default at create, so the stored row is
-// the source of truth for the session's model.
+// such a session and is ignored when IssueID is set. Provider and Model are optional.
 type GrillCreateRequest struct {
-	IssueID string `json:"issue_id"`
-	Idea    string `json:"idea"`
-	Model   string `json:"model"`
+	IssueID  string `json:"issue_id"`
+	Idea     string `json:"idea"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
 }
 
 // GrillAnswerRequest is the body of POST /grill/{sid}/answer.
@@ -166,14 +168,23 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 		return
 	}
 	issueID := strings.TrimSpace(req.IssueID)
+	provider, errMsg := grillValidateProvider(req.Provider)
+	if errMsg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
+		return
+	}
+	if provider == "" {
+		provider = s.grillDefaultProviderFor(repo)
+	}
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
-		model = s.grillModelDefault(repo)
+		model = s.grillModelDefaultFor(repo, provider)
 	}
 	sess, err := s.stores.Grill().Create(hubstore.NewGrillSession{
-		Repo:    repo.Root,
-		IssueID: issueID,
-		Model:   model,
+		Repo:     repo.Root,
+		IssueID:  issueID,
+		Provider: provider,
+		Model:    model,
 	})
 	if err != nil {
 		if errors.Is(err, hubstore.ErrGrillActiveSession) {
@@ -235,10 +246,7 @@ func (s *Server) handleGrillSession(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGrillAnswer appends a user's answer and resumes the session (POST). A
-// session that cannot take an answer is refused. A parked, stalled or finished
-// session has no live child, so its answer fires a --resume turn; a waiting
-// session's child is still blocked on the MCP ask_user call and takes the answer
-// over that channel.
+// session that cannot take an answer is refused.
 func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -292,7 +300,7 @@ func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publishGrillMessage(msg)
 	s.publishGrillState(resumed)
-	if grillResumeSpawns(prior) && s.startGrill != nil {
+	if s.grillResumeSpawns(sid, prior) && s.startGrill != nil {
 		s.startGrill(r.Context(), resumed)
 	}
 	writeJSON(w, http.StatusOK, GrillAnswerResponse{
@@ -550,13 +558,14 @@ func grillAcceptsAnswer(state string) bool {
 
 // grillResumeSpawns reports whether answering a session in state must spawn a
 // resume turn. A parked, stalled or finished session has no live child, so the
-// answer only reaches the agent by resuming; a waiting session's child is still
-// blocked on the MCP ask_user call and picks the answer up itself, so spawning
-// again would double the turn.
-func grillResumeSpawns(state string) bool {
+// answer only reaches the agent by resuming. Waiting sessions resume only after the
+// child has exited with the question still pending.
+func (s *Server) grillResumeSpawns(sid int64, state string) bool {
 	switch state {
 	case hubstore.GrillParked, hubstore.GrillStalled, hubstore.GrillFinished:
 		return true
+	case hubstore.GrillWaiting:
+		return s.grillTurnActive != nil && !s.grillTurnActive(sid)
 	default:
 		return false
 	}
@@ -591,22 +600,103 @@ func (s *Server) grillSessionView(repo string, sess hubstore.GrillSession) Grill
 		IssueTitle:       sess.IssueTitle,
 		State:            sess.State,
 		SessionChain:     sess.SessionChain,
-		Provider:         grillProvider,
+		Provider:         grillEffectiveProvider(sess.Provider),
 		Model:            s.grillEffectiveModel(sess),
-		ModelOptions:     grillModelOptions(),
+		ModelOptions:     grillModelOptionsFor(sess.Provider),
 		ParkedReason:     sess.ParkedReason,
 		CreatedAt:        sess.CreatedAt,
 		UpdatedAt:        sess.UpdatedAt,
 	}
 }
 
-// grillDefaultsView is the provider and model a session created now would carry.
 func (s *Server) grillDefaultsView(repo registry.Repo) GrillDefaultsView {
+	provider := s.grillDefaultProviderFor(repo)
 	return GrillDefaultsView{
-		Provider:     grillProvider,
-		Model:        s.grillModelDefault(repo),
-		ModelOptions: grillModelOptions(),
+		Provider:     provider,
+		Model:        s.grillModelDefaultFor(repo, provider),
+		ModelOptions: grillModelOptionsFor(provider),
+		Providers:    s.grillProviderOptions(repo, provider),
 	}
+}
+
+func (s *Server) grillProviderOptions(repo registry.Repo, defaultProvider string) []GrillProviderOption {
+	cfg, cfgErr := s.grillConfigFor(repo)
+	names := agent.DefaultRegistry().Names()
+	out := make([]GrillProviderOption, 0, len(names))
+	for _, name := range names {
+		if name != grillDefaultProvider && name != defaultProvider && (cfgErr != nil || grillProviderUnavailableReason(cfg, name) != "") {
+			continue
+		}
+		out = append(out, GrillProviderOption{Name: name, ModelOptions: grillModelOptionsFor(name)})
+	}
+	return out
+}
+
+func grillProviderUnavailableReason(cfg config.Config, provider string) string {
+	provider = grillEffectiveProvider(provider)
+	if _, err := exec.LookPath(grillProviderBin(cfg, provider)); err != nil {
+		return "the " + provider + " CLI is not installed on this machine"
+	}
+	if provider == "codex" && !codexGrillSupported(grillProviderBin(cfg, provider)) {
+		return "the codex CLI installed on this machine does not support interview sessions"
+	}
+	return ""
+}
+
+func codexGrillSupported(bin string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	execHelp, err := exec.CommandContext(ctx, bin, "exec", "--help").Output()
+	if err != nil {
+		return false
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	mcpHelp, err := exec.CommandContext(ctx, bin, "mcp", "add", "--help").Output()
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(execHelp, []byte("resume")) &&
+		bytes.Contains(execHelp, []byte("--json")) &&
+		bytes.Contains(mcpHelp, []byte("--url"))
+}
+
+func grillEffectiveProvider(provider string) string {
+	if provider == "" {
+		return grillDefaultProvider
+	}
+	return provider
+}
+
+func grillValidateProvider(provider string) (string, string) {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return "", ""
+	}
+	reg := agent.DefaultRegistry()
+	if _, known := reg.Lookup(provider); !known {
+		return "", fmt.Sprintf("unknown provider %q (expected: %s)", provider, strings.Join(reg.Names(), " | "))
+	}
+	return provider, ""
+}
+
+func (s *Server) grillDefaultProviderFor(repo registry.Repo) string {
+	cfg, err := s.grillConfigFor(repo)
+	if err != nil {
+		return grillDefaultProvider
+	}
+	return grillConfiguredProvider(cfg)
+}
+
+func grillConfiguredProvider(cfg config.Config) string {
+	provider := strings.TrimSpace(cfg.GrillProvider)
+	if provider == "" {
+		return grillDefaultProvider
+	}
+	if _, known := agent.DefaultRegistry().Lookup(provider); known {
+		return provider
+	}
+	return grillDefaultProvider
 }
 
 // grillTrackerFor resolves the repo's effective tracker provider for the list
@@ -620,33 +710,32 @@ func (s *Server) grillTrackerFor(repo registry.Repo) string {
 }
 
 // grillEffectiveModel is the model the session's next turn spawns with: the stored
-// choice, or a legacy row's repo-config fallback.
+// choice, or its provider's repo-config fallback.
 func (s *Server) grillEffectiveModel(sess hubstore.GrillSession) string {
 	if sess.Model != "" {
 		return sess.Model
 	}
 	if r, ok := s.findRepoByRoot(sess.Repo); ok {
-		return s.grillModelDefault(r)
+		return s.grillModelDefaultFor(r, sess.Provider)
 	}
 	return ""
 }
 
-// grillModelDefault resolves the model a session with no explicit choice runs on:
-// the repo config's GRILL_MODEL, then CLAUDE_MODEL, else empty — the Claude CLI
-// default. It mirrors the runner's legacy fallback chain.
-func (s *Server) grillModelDefault(repo registry.Repo) string {
+func (s *Server) grillModelDefaultFor(repo registry.Repo, provider string) string {
 	cfg, err := s.grillConfigFor(repo)
 	if err != nil {
 		return ""
 	}
-	if m := strings.TrimSpace(cfg.GrillModel); m != "" {
-		return m
-	}
-	return strings.TrimSpace(cfg.ClaudeModel)
+	return grillModelDefault(cfg, provider)
 }
 
-// grillModelOptions is the Claude model catalog the panel's switcher offers.
-func grillModelOptions() []string {
+func grillModelOptionsFor(provider string) []string {
+	switch grillEffectiveProvider(provider) {
+	case "codex":
+		return config.CodexModels()
+	case "kimi":
+		return config.KimiModelAliases()
+	}
 	for _, meta := range config.ProviderTuningMetas() {
 		if meta.Name == "claude" {
 			return meta.Models

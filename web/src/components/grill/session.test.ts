@@ -155,7 +155,7 @@ describe("useGrillSession start model", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { result } = renderGrillSession([]);
 
-    await act(async () => result.current.start("make it ready", "opus"));
+    await act(async () => result.current.start("make it ready", "opus", "kimi"));
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/repos/loop/grill",
@@ -165,14 +165,16 @@ describe("useGrillSession start model", () => {
           issue_id: "COD-1",
           idea: "make it ready",
           model: "opus",
+          provider: "kimi",
         }),
       }),
     );
   });
 
-  // Start over is a fresh interview on the same item, so a model switched mid-way is
-  // what it opens on — reverting to the repo default would undo a deliberate choice.
-  it("carries the discarded session's model into the fresh one", async () => {
+  // Start over is a fresh interview on the same item, so a provider and model chosen
+  // mid-way are what it opens on — reverting to the repo default would undo a
+  // deliberate choice.
+  it("carries the discarded session's provider and model into the fresh one", async () => {
     const fetchMock = vi.fn((input: string) =>
       Promise.resolve(
         input.endsWith("/abandon")
@@ -181,14 +183,21 @@ describe("useGrillSession start model", () => {
       ),
     );
     vi.stubGlobal("fetch", fetchMock);
-    const { result } = renderGrillSession([session({ model: "opus" })]);
+    const { result } = renderGrillSession([
+      session({ model: "opus", provider: "kimi" }),
+    ]);
 
     await act(async () => result.current.startOver());
 
     expect(fetchMock).toHaveBeenLastCalledWith(
       "/api/v1/repos/loop/grill",
       expect.objectContaining({
-        body: JSON.stringify({ issue_id: "COD-1", idea: "", model: "opus" }),
+        body: JSON.stringify({
+          issue_id: "COD-1",
+          idea: "",
+          model: "opus",
+          provider: "kimi",
+        }),
       }),
     );
   });

@@ -256,3 +256,20 @@ func TestPregrillPassFallsBackToRepoModel(t *testing.T) {
 		t.Fatalf("sessions = %+v, want one on the repo default", sessions)
 	}
 }
+
+func TestPregrillPassFallsBackToConfiguredProvider(t *testing.T) {
+	srv, repo := newPregrillServer(t, parkTurn)
+	if err := os.WriteFile(config.ProjectConfigPath(repo.Root), []byte("GRILL_PROVIDER=codex\nCODEX_MODEL=codex-default\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	srv.runPregrillPass(context.Background(), repo, PregrillRequest{IssueIDs: []string{"COD-1"}}, 5)
+
+	sessions, err := srv.stores.Grill().List(repo.Root, "")
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 || sessions[0].Provider != "codex" || sessions[0].Model != "codex-default" {
+		t.Fatalf("sessions = %+v, want one on codex/codex-default", sessions)
+	}
+}

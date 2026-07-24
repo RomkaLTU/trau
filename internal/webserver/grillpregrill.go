@@ -35,6 +35,7 @@ const (
 // resolves to the repo config's grill default, same as a hand-started session.
 type PregrillRequest struct {
 	IssueIDs []string `json:"issue_ids"`
+	Provider string   `json:"provider"`
 	Model    string   `json:"model"`
 }
 
@@ -74,6 +75,10 @@ func (s *Server) handleRepoPregrill(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
+	if _, errMsg := grillValidateProvider(req.Provider); errMsg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
+		return
+	}
 	max := s.pregrillMax(repo)
 	results := s.runPregrillPass(r.Context(), repo, req, max)
 	writeJSON(w, http.StatusOK, PregrillResponse{Repo: repo.Name, Max: max, Results: results})
@@ -94,9 +99,13 @@ func (s *Server) pregrillMax(repo registry.Repo) int {
 // the budget is gone the rest are reported skipped. Each grilled issue runs its turn
 // synchronously so the settled session can be classified into an outcome.
 func (s *Server) runPregrillPass(ctx context.Context, repo registry.Repo, req PregrillRequest, max int) []PregrillResult {
+	provider := strings.TrimSpace(req.Provider)
+	if provider == "" {
+		provider = s.grillDefaultProviderFor(repo)
+	}
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
-		model = s.grillModelDefault(repo)
+		model = s.grillModelDefaultFor(repo, provider)
 	}
 	results := make([]PregrillResult, 0, len(req.IssueIDs))
 	budget := max
@@ -109,7 +118,7 @@ func (s *Server) runPregrillPass(ctx context.Context, repo registry.Repo, req Pr
 			results = append(results, PregrillResult{IssueID: id, Outcome: pregrillOutcomeSkipped, Detail: "pre-grill pass limit reached"})
 			continue
 		}
-		sess, err := s.stores.Grill().Create(hubstore.NewGrillSession{Repo: repo.Root, IssueID: id, Model: model})
+		sess, err := s.stores.Grill().Create(hubstore.NewGrillSession{Repo: repo.Root, IssueID: id, Provider: provider, Model: model})
 		if errors.Is(err, hubstore.ErrGrillActiveSession) {
 			results = append(results, PregrillResult{IssueID: id, Outcome: pregrillOutcomeSkipped, Detail: "already has an active grill session"})
 			continue

@@ -426,6 +426,10 @@ CODEX_MODEL=
 CODEX_EFFORT=
 KIMI_MODEL=
 
+# Default provider for new hub interviews. Empty = claude; a per-session picker
+# choice still overrides this for that interview.
+# GRILL_PROVIDER=kimi
+
 # --- artifacts ---
 # Root for per-ticket run artifacts: runs/<ID>/{state,*.log,tokens.jsonl}. Defaults
 # to ./runs (relative to the working directory). Point it at a stable path if you

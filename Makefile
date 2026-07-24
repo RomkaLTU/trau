@@ -20,7 +20,7 @@ SERVE_LOG  ?= /tmp/trau-serve.log
 
 export CGO_ENABLED := 0
 
-.PHONY: all build reset web vet test lint fmt dist clean
+.PHONY: all build reset hub-guard web vet test lint fmt dist clean
 
 all: build
 
@@ -29,7 +29,7 @@ build: web
 	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o bin/$(BINARY) $(PKG)
 
 ## reset: rebuild the dev binary + restart the local web hub (detached) from it
-reset: build
+reset: hub-guard build
 	@pids=$$(lsof -ti tcp:$(SERVE_PORT) -sTCP:LISTEN 2>/dev/null); \
 	if [ -n "$$pids" ]; then \
 		echo "→ stopping hub on :$(SERVE_PORT) (pid $$pids)"; \
@@ -42,6 +42,16 @@ reset: build
 		echo "→ hub live: http://127.0.0.1:$(SERVE_PORT)  (dev build $(VERSION); logs: $(SERVE_LOG))"; \
 	else \
 		echo "✗ hub failed to start — tail of $(SERVE_LOG):"; tail -n 15 $(SERVE_LOG); exit 1; \
+	fi
+
+## hub-guard: refuse to restart the hub from inside a trau-managed agent run
+hub-guard:
+	@if [ "$$TRAU_ACTIVE" = "1" ]; then \
+		echo "✗ refusing 'make reset' inside a trau-managed run: the hub on :$(SERVE_PORT) owns this run,"; \
+		echo "  and restarting or killing it loses the run's data. For live QA start an isolated hub instead:"; \
+		echo "    iso=\$$(mktemp -d) && TRAU_HOME=\$$iso/.trau HOME=\$$iso ./bin/$(BINARY) serve --port 8799"; \
+		echo "  and kill only that pid when done. Never touch the hub on :$(SERVE_PORT)."; \
+		exit 1; \
 	fi
 
 ## web: build the embedded SPA (only when its sources change)

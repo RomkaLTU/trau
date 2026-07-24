@@ -141,6 +141,10 @@ func TestConfigProvenance(t *testing.T) {
 	if effort := mustKey(t, out.Keys, "CLAUDE_EFFORT"); len(effort.Options) == 0 {
 		t.Errorf("CLAUDE_EFFORT should carry effort options over the wire")
 	}
+	grillProvider := mustKey(t, out.Keys, "GRILL_PROVIDER")
+	if !grillProvider.Editable || !contains(grillProvider.Options, "kimi") {
+		t.Errorf("GRILL_PROVIDER metadata = %+v, want editable provider picker", grillProvider)
+	}
 }
 
 // TestConfigWriteProjectLayer covers the write path: a whitelisted edit lands in
@@ -172,6 +176,26 @@ func TestConfigWriteProjectLayer(t *testing.T) {
 	}
 	if cfg.MaxIterations != 9 {
 		t.Errorf("loop-loaded MaxIterations = %d, want 9", cfg.MaxIterations)
+	}
+}
+
+func TestConfigWriteGrillProvider(t *testing.T) {
+	home := t.TempDir()
+	root := seedConfigRepo(t, home, "acme")
+
+	ts := instancesServer(t, home)
+	res := putConfig(t, ts, "acme", ConfigWriteRequest{Key: "GRILL_PROVIDER", Value: "kimi", Layer: "project"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("PUT status = %d, want 200", res.StatusCode)
+	}
+
+	cfg, err := config.LoadLayered(config.ProjectConfigPath(root), "", "", "")
+	if err != nil {
+		t.Fatalf("reload as a loop would: %v", err)
+	}
+	if cfg.GrillProvider != "kimi" {
+		t.Errorf("loop-loaded GrillProvider = %q, want kimi", cfg.GrillProvider)
 	}
 }
 
@@ -222,6 +246,7 @@ func TestConfigWriteRejections(t *testing.T) {
 		{"non-int value", ConfigWriteRequest{Key: "MAX_ITERATIONS", Value: "lots", Layer: "project"}, http.StatusBadRequest},
 		{"bad color value", ConfigWriteRequest{Key: "THEME_BRAND", Value: "purple", Layer: "user"}, http.StatusBadRequest},
 		{"non-option effort", ConfigWriteRequest{Key: "CLAUDE_BUILD_EFFORT", Value: "extreme", Layer: "project"}, http.StatusBadRequest},
+		{"bad grill provider", ConfigWriteRequest{Key: "GRILL_PROVIDER", Value: "ollama", Layer: "project"}, http.StatusBadRequest},
 		{"empty secret", ConfigWriteRequest{Key: "LINEAR_API_KEY", Value: "", Layer: "user"}, http.StatusBadRequest},
 	}
 	for _, tc := range cases {

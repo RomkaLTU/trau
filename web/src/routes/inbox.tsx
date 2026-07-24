@@ -22,7 +22,10 @@ import {
   GrillConversation,
   type GrillStatus,
 } from "@/components/grill/conversation";
-import { GrillModelSelect } from "@/components/grill/model-select";
+import {
+  GrillModelSelect,
+  GrillProviderSelect,
+} from "@/components/grill/model-select";
 import { useGrillSession } from "@/components/grill/session";
 import { Button } from "@/components/ui/button";
 import {
@@ -121,8 +124,24 @@ const PILL_TEXT_TONE: Record<InboxPillTone, string> = {
 // surface that can open one so the choice is the panel's rather than each button's.
 interface InterviewStart {
   defaults?: GrillDefaults;
+  provider: string;
   model: string;
+  onProviderChange: (provider: string) => void;
   onModelChange: (model: string) => void;
+}
+
+// interviewModelOptions is the model catalog to offer for a provider before a session
+// exists: the provider's own list from the defaults payload, falling back to the flat
+// default catalog for the default provider.
+function interviewModelOptions(
+  defaults: GrillDefaults | undefined,
+  provider: string,
+): string[] {
+  const match = defaults?.providers?.find((p) => p.name === provider);
+  if (match) return match.model_options ?? [];
+  return provider === (defaults?.provider ?? "claude")
+    ? (defaults?.model_options ?? [])
+    : [];
 }
 
 function InboxPage() {
@@ -162,18 +181,30 @@ function InboxPage() {
     if (selected && selected.id !== sticky) setSticky(selected.id);
   }, [selected?.id, sticky]);
 
-  // The model every interview started from this panel opens on — Start interview, a
-  // first message, a fresh Draft, and Ask ahead alike. It is a page-level choice so
-  // walking the queue with j/k keeps it; until the user picks, it trails the repo
-  // default the hub reports beside the session list. Switching repo drops it, so the
-  // new repo's own default wins rather than the pick made against the old one.
+  // The provider and model every interview started from this panel opens on — Start
+  // interview, a first message, a fresh Draft, and Ask ahead alike. It is a page-level
+  // choice so walking the queue with j/k keeps it; until the user picks, it trails the
+  // repo default the hub reports beside the session list. Switching repo drops it, so
+  // the new repo's own default wins rather than the pick made against the old one.
+  // Picking a provider resets the model to that provider's own default, since a claude
+  // model alias means nothing to kimi.
   const defaults = useQuery(grillSessionsQueryOptions(repo)).data?.defaults;
+  const [pickedProvider, setPickedProvider] = useState<string | null>(null);
   const [pickedModel, setPickedModel] = useState<string | null>(null);
-  useEffect(() => setPickedModel(null), [repo]);
+  useEffect(() => {
+    setPickedProvider(null);
+    setPickedModel(null);
+  }, [repo]);
+  const startProvider = pickedProvider ?? defaults?.provider ?? "claude";
   const startModel = pickedModel ?? defaults?.model ?? "";
   const starter: InterviewStart = {
     defaults,
+    provider: startProvider,
     model: startModel,
+    onProviderChange: (next) => {
+      setPickedProvider(next);
+      setPickedModel("");
+    },
     onModelChange: setPickedModel,
   };
 
@@ -229,7 +260,8 @@ function InboxPage() {
     .map((item) => item.id);
 
   const pregrillAll = useMutation({
-    mutationFn: () => pregrillIssues(repo, untouchedIds, startModel),
+    mutationFn: () =>
+      pregrillIssues(repo, untouchedIds, startModel, startProvider),
     onSuccess: (res) => setPassSummary(summarisePregrill(res)),
     onSettled: () =>
       void queryClient.invalidateQueries({ queryKey: ["grill", repo] }),
@@ -398,6 +430,7 @@ function InboxPage() {
               live={live?.session ?? null}
               selectedId={selected?.id ?? null}
               model={startModel}
+              provider={startProvider}
               onSelect={(id) => void setPeek(id)}
             />
 
@@ -772,7 +805,7 @@ function FreshDraftBody({
   const queryClient = useQueryClient();
   const start = useMutation({
     mutationFn: (seed: string) =>
-      startGrillSession(repo, "", seed, starter.model),
+      startGrillSession(repo, "", seed, starter.model, starter.provider),
     onSuccess: (session) => {
       queryClient.setQueryData<GrillListResponse>(["grill", repo], (prev) =>
         prev
@@ -829,7 +862,7 @@ function SessionPreview({
   repo: string;
   item: InboxItem;
   starter: InterviewStart;
-  onStart: (seed?: string, model?: string) => void;
+  onStart: (seed?: string, model?: string, provider?: string) => void;
   onSkip: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -840,7 +873,8 @@ function SessionPreview({
   );
 
   const askAhead = useMutation({
-    mutationFn: () => pregrillIssues(repo, [item.id], starter.model),
+    mutationFn: () =>
+      pregrillIssues(repo, [item.id], starter.model, starter.provider),
     onSettled: () =>
       void queryClient.invalidateQueries({ queryKey: ["grill", repo] }),
   });
@@ -879,7 +913,10 @@ function SessionPreview({
           No interview yet — start one, or send a first message to open with it.
         </p>
         <div className="flex flex-wrap items-center gap-2">
-          <Button size="sm" onClick={() => onStart(undefined, starter.model)}>
+          <Button
+            size="sm"
+            onClick={() => onStart(undefined, starter.model, starter.provider)}
+          >
             <Sparkles />
             Start interview
           </Button>
@@ -903,7 +940,7 @@ function SessionPreview({
           placeholder="Type your first message to start the interview…"
           disabled={askAhead.isPending}
           submitting={false}
-          onSend={(text) => onStart(text, starter.model)}
+          onSend={(text) => onStart(text, starter.model, starter.provider)}
         />
         {askAhead.error && (
           <ErrorNote message={(askAhead.error as Error).message} />
@@ -1091,10 +1128,12 @@ function ModelSwitch({
   );
 }
 
-// StartModelSelect is the same control before a session exists, so the interview's
-// provider and model are settled from the first question rather than only switchable
-// once it is already under way. The choice belongs to the panel and rides every start
-// surface, so a walk through the queue keeps it.
+// StartModelSelect is the start-surface control before a session exists, so the
+// interview's provider and model are settled from the first question rather than only
+// switchable once it is already under way. Provider is its own picker here — choosing
+// one swaps the model list to that provider's catalog — because provider locks at the
+// first turn. The choice belongs to the panel and rides every start surface, so a walk
+// through the queue keeps it.
 function StartModelSelect({
   starter,
   className,
@@ -1102,14 +1141,23 @@ function StartModelSelect({
   starter: InterviewStart;
   className?: string;
 }) {
+  const providers =
+    starter.defaults?.providers?.map((p) => p.name) ??
+    [starter.provider].filter(Boolean);
   return (
     <div className={cn("flex items-center gap-1", className)}>
       <span className="text-xs text-muted-foreground">Runs on</span>
+      <GrillProviderSelect
+        provider={starter.provider}
+        providers={providers}
+        onChange={starter.onProviderChange}
+      />
       <GrillModelSelect
-        provider={starter.defaults?.provider ?? "claude"}
+        provider={starter.provider}
         model={starter.model}
-        options={starter.defaults?.model_options ?? []}
+        options={interviewModelOptions(starter.defaults, starter.provider)}
         label="Interview model"
+        hideProvider
         onChange={starter.onModelChange}
       />
     </div>
@@ -1238,6 +1286,7 @@ function QueueRail({
   live,
   selectedId,
   model,
+  provider,
   onSelect,
 }: {
   repo: string;
@@ -1246,6 +1295,7 @@ function QueueRail({
   live: GrillSession | null;
   selectedId: string | null;
   model: string;
+  provider: string;
   onSelect: (id: string) => void;
 }) {
   return (
@@ -1284,6 +1334,7 @@ function QueueRail({
                   unread={hasUnseenQuestion(seen, item)}
                   selected={selectedId === item.id}
                   model={model}
+                  provider={provider}
                   onSelect={() => onSelect(item.id)}
                 />
               ),
@@ -1312,6 +1363,7 @@ function QueueRow({
   unread,
   selected,
   model,
+  provider,
   onSelect,
 }: {
   repo: string;
@@ -1320,6 +1372,7 @@ function QueueRow({
   unread: boolean;
   selected: boolean;
   model: string;
+  provider: string;
   onSelect: () => void;
 }) {
   // The row's pill answers "what is this conversation doing right now" without
@@ -1398,6 +1451,7 @@ function QueueRow({
           repo={repo}
           issueId={item.id}
           model={model}
+          provider={provider}
           className="absolute right-1 top-1 opacity-0 focus-visible:opacity-100 group-hover/row:opacity-100"
         />
       )}
@@ -1713,16 +1767,18 @@ function PregrillButton({
   repo,
   issueId,
   model,
+  provider,
   className,
 }: {
   repo: string;
   issueId: string;
   model: string;
+  provider: string;
   className?: string;
 }) {
   const queryClient = useQueryClient();
   const pregrill = useMutation({
-    mutationFn: () => pregrillIssues(repo, [issueId], model),
+    mutationFn: () => pregrillIssues(repo, [issueId], model, provider),
     onSettled: () =>
       void queryClient.invalidateQueries({ queryKey: ["grill", repo] }),
   });
