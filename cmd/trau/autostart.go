@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/registry"
@@ -241,7 +242,10 @@ func respawnServe(serveArgs []string) error { return spawnServe(os.O_APPEND, ser
 // spawnServe starts `trau serve` in its own process group so the hub outlives
 // the process that launched it; its net.Listen on the port is the singleton
 // lock. TRAU_ACTIVE is stripped so the hub — and everything it later spawns —
-// is not marked as running inside the loop that autostarted it.
+// is not marked as running inside the loop that autostarted it. Claude Code
+// session markers are stripped for the same reason: a hub autostarted from
+// inside a Claude Code session would otherwise pass CLAUDE_CODE_CHILD_SESSION
+// down to every agent child, disabling their transcript saving.
 func spawnServe(logMode int, serveArgs []string) error {
 	exe, err := update.ResolveBinary()
 	if err != nil {
@@ -249,7 +253,7 @@ func spawnServe(logMode int, serveArgs []string) error {
 	}
 	cmd := exec.Command(exe, append([]string{"serve"}, serveArgs...)...)
 	env := make([]string, 0, len(os.Environ()))
-	for _, kv := range os.Environ() {
+	for _, kv := range agent.ScrubClaudeSessionEnv(os.Environ()) {
 		if !strings.HasPrefix(kv, "TRAU_ACTIVE=") {
 			env = append(env, kv)
 		}
