@@ -32,9 +32,9 @@ type Prompt struct {
 	Default      string
 }
 
-// SkillsData feeds the skills and verify_skills prompts. Required lists only
-// loadable names: the build path intersects it with Installed, the verify path
-// may add browser-harness, which loads from outside the repo.
+// SkillsData feeds the skills and verify_skills prompts. Required is the
+// phase's resolved set — the names the prompt tells the agent to load; the
+// verify path may add browser-harness, which loads from outside the repo.
 type SkillsData struct {
 	Installed []string
 	Required  []string

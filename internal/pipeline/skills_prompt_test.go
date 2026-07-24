@@ -1,106 +1,62 @@
 package pipeline
 
 import (
+	"context"
+	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 
+	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/prompts"
 )
 
 func TestSkillsPromptComposition(t *testing.T) {
-	t.Run("no skills keeps the self-selection note", func(t *testing.T) {
+	t.Run("no installed skills keeps the self-selection fallback", func(t *testing.T) {
 		got := skillsPrompt(prompts.Renderer{}, nil, nil)
 		mustContain(t, "skillsPrompt(none)", got, "auto-select and load the project skills")
-		mustNotContain(t, "skillsPrompt(none)", got, "this repo has skills")
+		mustNotContain(t, "skillsPrompt(none)", got, "Skill tool before implementing")
 	})
 
-	t.Run("installed only names the skills", func(t *testing.T) {
-		got := skillsPrompt(prompts.Renderer{}, []string{"golang-code-style", "golang-error-handling"}, nil)
-		mustContain(t, "skillsPrompt(installed)", got,
-			"this repo has skills: golang-code-style, golang-error-handling",
-			"with the Skill tool before implementing",
-		)
-		mustNotContain(t, "skillsPrompt(installed)", got, "auto-select", "Load these required skills")
-	})
-
-	t.Run("required set names them explicitly", func(t *testing.T) {
+	t.Run("resolved set is named and nothing is left to self-selection", func(t *testing.T) {
 		got := skillsPrompt(prompts.Renderer{},
 			[]string{"golang-code-style", "golang-error-handling", "goreleaser"},
 			[]string{"golang-code-style", "golang-error-handling"},
 		)
-		mustContain(t, "skillsPrompt(required)", got,
-			"this repo has skills: golang-code-style, golang-error-handling, goreleaser",
-			"Load these required skills with the Skill tool before implementing: golang-code-style, golang-error-handling",
-			"then load any of the remaining skills",
+		mustContain(t, "skillsPrompt(resolved)", got,
+			"load these required skills with the Skill tool before implementing: golang-code-style, golang-error-handling",
 		)
-	})
-
-	t.Run("required naming a missing skill drops it and stays installed-only", func(t *testing.T) {
-		got := skillsPrompt(prompts.Renderer{},
-			[]string{"golang-code-style"},
-			[]string{"golang-code-style", "nonexistent-skill"},
+		mustNotContain(t, "skillsPrompt(resolved)", got,
+			"remaining skills", "auto-select", "goreleaser",
 		)
-		mustContain(t, "skillsPrompt(required+missing)", got,
-			"this repo has skills: golang-code-style",
-			"Load these required skills with the Skill tool before implementing: golang-code-style",
-		)
-		mustNotContain(t, "skillsPrompt(required+missing)", got, "nonexistent-skill")
-	})
-
-	t.Run("all required missing falls back to self-selection among installed", func(t *testing.T) {
-		got := skillsPrompt(prompts.Renderer{}, []string{"golang-code-style"}, []string{"nonexistent-skill"})
-		mustContain(t, "skillsPrompt(all-missing)", got,
-			"this repo has skills: golang-code-style",
-			"Load the ones relevant to this ticket",
-		)
-		mustNotContain(t, "skillsPrompt(all-missing)", got, "Load these required skills", "nonexistent-skill")
 	})
 }
 
 func TestVerifySkillsPromptComposition(t *testing.T) {
-	t.Run("no skills and no browser stays empty", func(t *testing.T) {
-		if got := verifySkillsPrompt(prompts.Renderer{}, nil, false); got != "" {
+	t.Run("empty set renders nothing", func(t *testing.T) {
+		if got := verifySkillsPrompt(prompts.Renderer{}, nil, nil); got != "" {
 			t.Fatalf("verifySkillsPrompt(none) = %q, want empty", got)
 		}
 	})
 
-	t.Run("installed only names the skills", func(t *testing.T) {
-		got := verifySkillsPrompt(prompts.Renderer{}, []string{"golang-code-style", "web-feature"}, false)
-		mustContain(t, "verifySkillsPrompt(installed)", got,
-			"This repo has skills: golang-code-style, web-feature",
-			"with the Skill tool before verifying",
+	t.Run("resolved set is named and nothing is left to self-selection", func(t *testing.T) {
+		got := verifySkillsPrompt(prompts.Renderer{},
+			[]string{"golang-code-style", "tdd"},
+			[]string{"tdd", "browser-harness"},
 		)
-		mustNotContain(t, "verifySkillsPrompt(installed)", got, "browser-harness", "Load these required skills")
-	})
-
-	t.Run("test skill is auto-required from installed names", func(t *testing.T) {
-		got := verifySkillsPrompt(prompts.Renderer{}, []string{"golang-code-style", "tdd"}, false)
-		mustContain(t, "verifySkillsPrompt(test-skill)", got,
-			"This repo has skills: golang-code-style, tdd",
-			"Load these required skills with the Skill tool before verifying: tdd",
-		)
-		mustNotContain(t, "verifySkillsPrompt(test-skill)", got, "browser-harness")
-	})
-
-	t.Run("browser verify adds browser-harness", func(t *testing.T) {
-		got := verifySkillsPrompt(prompts.Renderer{}, []string{"golang-code-style", "tdd"}, true)
-		mustContain(t, "verifySkillsPrompt(browser)", got,
+		mustContain(t, "verifySkillsPrompt(resolved)", got,
 			"Load these required skills with the Skill tool before verifying: tdd, browser-harness",
 		)
-	})
-
-	t.Run("browser verify without repo skills still requires the harness", func(t *testing.T) {
-		got := verifySkillsPrompt(prompts.Renderer{}, nil, true)
-		mustContain(t, "verifySkillsPrompt(browser-only)", got,
-			"Load these required skills with the Skill tool before verifying: browser-harness",
+		mustNotContain(t, "verifySkillsPrompt(resolved)", got,
+			"remaining skills", "golang-code-style",
 		)
-		mustNotContain(t, "verifySkillsPrompt(browser-only)", got, "This repo has skills")
 	})
 }
 
 // TestVerifyPromptCarriesSkillsNote pins the verify-prompt injection point: a
 // rendered skills note lands in the prompt, an empty one leaves it untouched.
 func TestVerifyPromptCarriesSkillsNote(t *testing.T) {
-	note := verifySkillsPrompt(prompts.Renderer{}, []string{"tdd"}, true)
+	note := verifySkillsPrompt(prompts.Renderer{}, []string{"tdd"}, []string{"tdd", "browser-harness"})
 	got := verifyTail(prompts.Renderer{}, "COD-1", "", verifyPath("COD-1"), "", "", "", "", "", note, "")
 	mustContain(t, "verifyTail(skills)", got, "Load these required skills with the Skill tool before verifying: tdd, browser-harness")
 
@@ -113,7 +69,7 @@ func TestVerifyPromptCarriesSkillsNote(t *testing.T) {
 // prompts stay skill-less.
 func TestRepairPromptsReuseBuildSkillsNote(t *testing.T) {
 	note := skillsPrompt(prompts.Renderer{}, []string{"golang-code-style"}, []string{"golang-code-style"})
-	want := "Load these required skills with the Skill tool before implementing: golang-code-style"
+	want := "load these required skills with the Skill tool before implementing: golang-code-style"
 
 	repair := repairInstruction(prompts.Renderer{}, "COD-1", verifyPath("COD-1"), "", "feature/x", "boom", "", "", "", note, "")
 	mustContain(t, "repairInstruction(skills)", repair, want)
@@ -124,4 +80,61 @@ func TestRepairPromptsReuseBuildSkillsNote(t *testing.T) {
 	mustNotContain(t, "cleanupInstruction", cleanup, "Skill tool")
 	lintfix := lintFixInstruction(prompts.Renderer{}, "COD-1")
 	mustNotContain(t, "lintFixInstruction", lintfix, "Skill tool")
+}
+
+// failingVerdictRunner records every prompt and fails the first verify verdict,
+// so one Verify drives the verify and repair prompts through the real phase code.
+type failingVerdictRunner struct {
+	path  string
+	calls *promptLog
+}
+
+func (r *failingVerdictRunner) Run(_ context.Context, prompt, label string) (agent.Result, error) {
+	r.calls.record(label, prompt)
+	data, _ := json.Marshal(verdict{Pass: label != "verify", Summary: "boom", Failures: []string{"boom"}})
+	_ = os.WriteFile(r.path, data, 0o644)
+	return agent.Result{}, nil
+}
+
+// TestPhasePromptsAlwaysNameASkillSet is the never-empty guard: in a repo whose
+// skills match no pin and no project-type recommendation, build, verify and
+// repair still name an explicit set — the whole installed list — and verify with
+// no test-token skill names the build set rather than falling silent.
+func TestPhasePromptsAlwaysNameASkillSet(t *testing.T) {
+	id := "COD-91132"
+	writeHandoff(t, id)
+	calls := &promptLog{}
+	runner := &failingVerdictRunner{path: verifyPath(id), calls: calls}
+	p := newTestPipeline(t, runner, &fakeTracker{})
+	p.RepoRoot = repoWithSkill(t, "web-feature")
+	p.MaxRepairs = 1
+
+	if err := p.build(context.Background(), id, false); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if err := p.Verify(context.Background(), id); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	want := map[string]string{
+		"build":   "load these required skills with the Skill tool before implementing: web-feature",
+		"verify":  "Load these required skills with the Skill tool before verifying: web-feature",
+		"repair1": "load these required skills with the Skill tool before implementing: web-feature",
+	}
+	for _, c := range calls.all() {
+		sentence, ok := want[c.label]
+		if !ok {
+			continue
+		}
+		if !strings.Contains(c.prompt, sentence) {
+			t.Errorf("%s prompt does not name the resolved skill set: want %q", c.label, sentence)
+		}
+		if strings.Contains(c.prompt, "remaining skills") {
+			t.Errorf("%s prompt still offers self-selection", c.label)
+		}
+		delete(want, c.label)
+	}
+	for label := range want {
+		t.Errorf("%s phase never ran", label)
+	}
 }

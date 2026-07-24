@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
@@ -548,21 +549,27 @@ func TestCheckSkillsSkippedWithoutSkills(t *testing.T) {
 	}
 }
 
-func TestCheckSkillsPassWhenPinned(t *testing.T) {
+func TestCheckSkillsReportsPerPhaseResolution(t *testing.T) {
 	repo := t.TempDir()
 	installSkill(t, repo, "golang-code-style")
+	installSkill(t, repo, "tdd")
 	rr := newTestRunner()
 	checkSkills(config.Config{RequiredSkills: []string{"golang-code-style"}}, repo, rr)
 	c := lastCheck(t, rr)
 	if c.Status != pass {
 		t.Errorf("status = %q, want pass", c.Status)
 	}
-	if !strings.Contains(c.Message, "golang-code-style") {
-		t.Errorf("message %q should name the pinned skills", c.Message)
+	for _, want := range []string{
+		"build/repair/bugfix load golang-code-style (REQUIRED_SKILLS)",
+		"verify loads tdd (" + agent.SkillsSourceVerifyPins + ")",
+	} {
+		if !strings.Contains(c.Message, want) {
+			t.Errorf("message %q should report %q", c.Message, want)
+		}
 	}
 }
 
-func TestCheckSkillsWarnsWhenUnpinned(t *testing.T) {
+func TestCheckSkillsPassesOnTheRecommendedStep(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repo, "go.mod"), []byte("module example.com/x\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -572,21 +579,18 @@ func TestCheckSkillsWarnsWhenUnpinned(t *testing.T) {
 	rr := newTestRunner()
 	checkSkills(config.Config{}, repo, rr)
 	c := lastCheck(t, rr)
-	if c.Status != warn {
-		t.Errorf("status = %q, want warn", c.Status)
+	if c.Status != pass {
+		t.Errorf("status = %q, want pass", c.Status)
 	}
-	if !strings.Contains(c.Message, "REQUIRED_SKILLS is unset") {
-		t.Errorf("message %q should flag the unset pin", c.Message)
-	}
-	if !strings.Contains(c.Message, "REQUIRED_SKILLS=golang-code-style") {
-		t.Errorf("message %q should suggest the recommended installed skill", c.Message)
+	if !strings.Contains(c.Message, "golang-code-style ("+agent.SkillsSourceRecommended+")") {
+		t.Errorf("message %q should name the recommended chain step", c.Message)
 	}
 	if strings.Contains(c.Message, "unrelated-skill") {
-		t.Errorf("message %q should not suggest a non-recommended skill when a recommended one is present", c.Message)
+		t.Errorf("message %q should not name a skill outside the recommended set", c.Message)
 	}
 }
 
-func TestCheckSkillsSuggestionFallsBackToInstalled(t *testing.T) {
+func TestCheckSkillsWarnsWhenNothingNarrowsTheSet(t *testing.T) {
 	repo := t.TempDir()
 	installSkill(t, repo, "web-feature")
 	rr := newTestRunner()
@@ -595,8 +599,11 @@ func TestCheckSkillsSuggestionFallsBackToInstalled(t *testing.T) {
 	if c.Status != warn {
 		t.Errorf("status = %q, want warn", c.Status)
 	}
+	if !strings.Contains(c.Message, agent.SkillsSourceInstalled) {
+		t.Errorf("message %q should name the all-installed chain step", c.Message)
+	}
 	if !strings.Contains(c.Message, "REQUIRED_SKILLS=web-feature") {
-		t.Errorf("message %q should fall back to the installed names", c.Message)
+		t.Errorf("message %q should suggest a narrower pin", c.Message)
 	}
 }
 

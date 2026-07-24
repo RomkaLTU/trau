@@ -468,10 +468,14 @@ type Pipeline struct {
 	// repo has skills installed). Nil disables the no-skills warnings.
 	SkillsExpected func(provider string) bool
 	// RequiredSkills names the skills the build prompt tells the agent to load
-	// before implementing (config REQUIRED_SKILLS). Only names installed in the
-	// repo are surfaced in the prompt; the rest stay self-selected. Empty leaves
-	// selection entirely to the agent.
+	// before implementing (config REQUIRED_SKILLS). It is the first step of the
+	// build resolution chain; empty falls through to the project type's
+	// recommended skills, then to every installed skill.
 	RequiredSkills []string
+	// RequiredSkillsVerify names the skills the verify prompt tells the agent to
+	// load (config REQUIRED_SKILLS_VERIFY), alongside the project's test skills
+	// and browser-harness on a browser-verify slice.
+	RequiredSkillsVerify []string
 	// Cleanup gates the pre-verify slop-cleanup step (config CLEANUP).
 	Cleanup        bool
 	CITimeout      int
@@ -1356,7 +1360,9 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 		note = resumeNote
 	}
 	note += buildLessonsNote(p.recallLessons(p.lessonQuery(id)))
-	skillsNote := skillsPrompt(p.prompts, agent.InstalledSkillNames(p.RepoRoot), p.RequiredSkills)
+	resolver := p.skillResolver()
+	buildSkills := resolver.Build()
+	skillsNote := skillsPrompt(p.prompts, resolver.Installed(), buildSkills.Names)
 	out, err := p.agentStep(ctx, id, "build", buildInstruction(p.prompts, id, branch, skillsNote, note, p.ticketContext(ctx, id)))
 	if err != nil {
 		return err
@@ -1367,7 +1373,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	if err := p.assertRepoChanged(ctx, id); err != nil {
 		return err
 	}
-	p.warnBuildWithoutSkills(id)
+	p.warnBuildWithoutSkills(id, buildSkills.Names)
 	p.persistBuildNotes(id)
 	_ = p.State.Set(id, "BUILD_SUMMARY", summarizeBuildOutput(out))
 	if fi, err := os.Stat(buildNotesPath(id)); err == nil && fi.Size() > 0 {
@@ -1382,13 +1388,12 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 
 const noSkillsWarning = "build loaded no skills — the repo has skills installed but the agent used none"
 
-// warnBuildWithoutSkills flags a build that loaded no skills in a repo that has
-// them. Advisory only — the run proceeds; the warning makes a silently
-// skill-less build visible instead of trusting the prompt's self-selection. It
-// prints to the console/TUI and, in serve mode, records a durable event so the
-// web UI surfaces the same warning a headless run would otherwise bury.
-func (p *Pipeline) warnBuildWithoutSkills(id string) {
-	if p.SkillsExpected == nil || len(p.buildSkills) > 0 || !p.SkillsExpected(p.buildProvider) {
+// warnBuildWithoutSkills flags a build that loaded none of the skills its prompt
+// named. Advisory only — the run proceeds. It prints to the console/TUI and, in
+// serve mode, records a durable event so the web UI surfaces the same warning a
+// headless run would otherwise bury.
+func (p *Pipeline) warnBuildWithoutSkills(id string, named []string) {
+	if p.SkillsExpected == nil || len(named) == 0 || len(p.buildSkills) > 0 || !p.SkillsExpected(p.buildProvider) {
 		return
 	}
 	p.logf("  ⚠ %s", noSkillsWarning)
@@ -1707,9 +1712,10 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	notesRef, _ := p.activeBuildNotes(id)
 	notesRepair := buildNotesNote(notesRef)
 	lessonsVerify := verifyLessonsNote(p.recallLessons(p.lessonQuery(id)))
-	installed := agent.InstalledSkillNames(p.RepoRoot)
-	skillsVerify := verifySkillsPrompt(p.prompts, installed, note != "")
-	skillsRepair := skillsPrompt(p.prompts, installed, p.RequiredSkills)
+	resolver := p.skillResolver()
+	verifySkills := resolver.Verify(note != "")
+	skillsVerify := verifySkillsPrompt(p.prompts, resolver.Installed(), verifySkills.Names)
+	skillsRepair := skillsPrompt(p.prompts, resolver.Installed(), resolver.Build().Names)
 
 	checksFragment := checks.Render(p.Checks)
 	if n := len(p.Checks); n > 0 {
@@ -1731,7 +1737,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 			return err
 		}
 		if label == "verify" {
-			p.warnVerifyWithoutSkills(id)
+			p.warnVerifyWithoutSkills(id, verifySkills.Names)
 		}
 		p.persistVerdict(id, v)
 		if v.Pass {
@@ -1796,12 +1802,12 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 
 const verifyNoSkillsWarning = "verify loaded no skills — the repo has skills installed but the agent used none"
 
-// warnVerifyWithoutSkills flags a primary verify attempt that loaded no skills
-// in a repo that has them, mirroring warnBuildWithoutSkills: a console/TUI line
+// warnVerifyWithoutSkills flags a primary verify attempt that loaded none of the
+// skills its prompt named, mirroring warnBuildWithoutSkills: a console/TUI line
 // plus, in serve mode, a durable verify_no_skills event. Called once per Verify,
 // after the first attempt only, so a run emits the event at most once.
-func (p *Pipeline) warnVerifyWithoutSkills(id string) {
-	if p.SkillsExpected == nil || len(p.verifySkills) > 0 || !p.SkillsExpected(p.verifyProvider) {
+func (p *Pipeline) warnVerifyWithoutSkills(id string, named []string) {
+	if p.SkillsExpected == nil || len(named) == 0 || len(p.verifySkills) > 0 || !p.SkillsExpected(p.verifyProvider) {
 		return
 	}
 	p.logf("  ⚠ %s", verifyNoSkillsWarning)
@@ -3062,47 +3068,21 @@ func (p *Pipeline) setTitle(title string) {
 
 const resumeNote = " A previous attempt may have left partial work on this branch; continue from it rather than starting over."
 
-// skillsPrompt renders the build-prompt sentence that tells the agent which
-// installed skills to load. With no installed skills the template falls back
-// to its generic self-selection wording (Claude Code stopped honoring generic
-// self-selection in 2.1.202, which is why a skill-equipped repo names its
-// skills explicitly). Required names that are not installed are dropped here
-// (they can't be loaded) and surfaced by the loop-start warning instead.
-func skillsPrompt(r prompts.Renderer, installed, required []string) string {
-	return r.Render("skills", prompts.SkillsData{
-		Installed: installed,
-		Required:  intersect(required, installed),
-	})
+func (p *Pipeline) skillResolver() agent.SkillResolver {
+	return agent.NewSkillResolver(p.RepoRoot, p.RequiredSkills, p.RequiredSkillsVerify)
 }
 
-// verifySkillsPrompt renders the verify-prompt skills sentence: the installed
-// list plus the auto-required set — the project's test skill(s) derived from
-// the installed names, and browser-harness when browser verify is active for
-// the slice. browser-harness is required even when not repo-installed: the
-// harness loads from outside the repo.
-func verifySkillsPrompt(r prompts.Renderer, installed []string, browserActive bool) string {
-	required := agent.TestSkillNames(installed)
-	if browserActive {
-		required = append(required, "browser-harness")
-	}
-	return r.Render("verify_skills", prompts.SkillsData{
-		Installed: installed,
-		Required:  required,
-	})
+// skillsPrompt renders the build-prompt sentence naming the skills to load. Only
+// a repo with no installed skills renders an empty set, where the template falls
+// back to generic self-selection wording (Claude Code stopped honoring that in
+// 2.1.202, which is why every other repo names its skills explicitly).
+func skillsPrompt(r prompts.Renderer, installed, resolved []string) string {
+	return r.Render("skills", prompts.SkillsData{Installed: installed, Required: resolved})
 }
 
-func intersect(want, have []string) []string {
-	set := make(map[string]struct{}, len(have))
-	for _, h := range have {
-		set[h] = struct{}{}
-	}
-	var out []string
-	for _, w := range want {
-		if _, ok := set[w]; ok {
-			out = append(out, w)
-		}
-	}
-	return out
+// verifySkillsPrompt renders the verify-prompt sentence naming the skills to load.
+func verifySkillsPrompt(r prompts.Renderer, installed, resolved []string) string {
+	return r.Render("verify_skills", prompts.SkillsData{Installed: installed, Required: resolved})
 }
 
 func buildInstruction(r prompts.Renderer, id, branch, skillsNote, note, ticketCtx string) string {
