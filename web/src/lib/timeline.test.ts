@@ -70,6 +70,17 @@ describe('buildTimeline', () => {
     expect(tl.done).toBe(0)
   })
 
+  it('carries both the one-shot override and the issue pin onto the ticket', () => {
+    const tl = buildTimeline(
+      [item({ id: 'COD-1', provider: 'claude', provider_pin: 'codex' })],
+      [],
+    )
+    expect(tl.pending[0]).toMatchObject({
+      kind: 'ticket',
+      ticket: { provider: 'claude', providerPin: 'codex' },
+    })
+  })
+
   it('lets the live run record win over the snapshot state', () => {
     const tl = buildTimeline(
       [item({ id: 'COD-1', status: 'pending' })],
