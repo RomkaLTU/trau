@@ -552,14 +552,17 @@ type Pipeline struct {
 
 	// buildProvider/buildSkills capture, from the last build agent call, which
 	// provider ran and which skills its session loaded — the inputs to the
-	// post-build no-skills warning.
-	buildProvider string
-	buildSkills   []string
+	// post-build no-skills warning. buildSkillsKnown is false in the Unknown state,
+	// which suppresses the warning so a lost transcript never reads as a skill-less build.
+	buildProvider    string
+	buildSkills      []string
+	buildSkillsKnown bool
 
 	// verifyProvider/verifySkills mirror the build capture for the primary
 	// verify call — the inputs to the post-verify no-skills warning.
-	verifyProvider string
-	verifySkills   []string
+	verifyProvider    string
+	verifySkills      []string
+	verifySkillsKnown bool
 
 	// qaRoster is the roster the verify prompt was built from, held so the
 	// capture ingest can tell a newly discovered credential from one the
@@ -1398,12 +1401,13 @@ const noSkillsWarning = "build loaded no skills — the repo has skills installe
 // warnBuildWithoutSkills flags a build that loaded none of the skills its prompt
 // named. Advisory only — the run proceeds. It prints to the console/TUI and, in
 // serve mode, records a durable event so the web UI surfaces the same warning a
-// headless run would otherwise bury.
+// headless run would otherwise bury. It fires only on a confirmed empty set; the
+// Unknown state (buildSkillsKnown false) stays silent.
 func (p *Pipeline) warnBuildWithoutSkills(id string, named []string) {
 	if p.injectSkills() {
 		return
 	}
-	if p.SkillsExpected == nil || len(named) == 0 || len(p.buildSkills) > 0 || !p.SkillsExpected(p.buildProvider) {
+	if p.SkillsExpected == nil || len(named) == 0 || len(p.buildSkills) > 0 || !p.buildSkillsKnown || !p.SkillsExpected(p.buildProvider) {
 		return
 	}
 	p.logf("  ⚠ %s", noSkillsWarning)
@@ -1826,7 +1830,7 @@ func (p *Pipeline) warnVerifyWithoutSkills(id string, named []string) {
 	if p.injectSkills() {
 		return
 	}
-	if p.SkillsExpected == nil || len(named) == 0 || len(p.verifySkills) > 0 || !p.SkillsExpected(p.verifyProvider) {
+	if p.SkillsExpected == nil || len(named) == 0 || len(p.verifySkills) > 0 || !p.verifySkillsKnown || !p.SkillsExpected(p.verifyProvider) {
 		return
 	}
 	p.logf("  ⚠ %s", verifyNoSkillsWarning)
@@ -2691,9 +2695,9 @@ func (p *Pipeline) agentPhaseOn(ctx context.Context, id, phase, prompt string, r
 	stop()
 	switch phase {
 	case "build":
-		p.buildSkills, p.buildProvider = res.Skills, phaseProvider(runner, phase)
+		p.buildSkills, p.buildProvider, p.buildSkillsKnown = res.Skills, phaseProvider(runner, phase), res.SkillsKnown
 	case "verify":
-		p.verifySkills, p.verifyProvider = res.Skills, phaseProvider(runner, phase)
+		p.verifySkills, p.verifyProvider, p.verifySkillsKnown = res.Skills, phaseProvider(runner, phase), res.SkillsKnown
 	}
 	p.putPhaseLog(id, phase, res.Final)
 	return res.Final, err

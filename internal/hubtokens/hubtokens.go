@@ -140,12 +140,14 @@ func (s *Sink) SetConfigHash(hash string) {
 }
 
 // Append records one normalized call for a phase into the session ledger and queues
-// it for the hub. Calls whose total is zero are dropped (uncaptured/empty calls). It
+// it for the hub. Calls whose total is zero are dropped as uncaptured/empty — unless
+// they carry live-captured skills, whose evidence must survive an unrecovered
+// transcript so the phase reads as loaded, not "no data". It
 // never blocks; when the buffer is over its byte cap the oldest queued calls are
 // dropped to make room.
 func (s *Sink) Append(phase string, rec tokens.Record) {
 	total := rec.Input + rec.Output + rec.CacheRead + rec.CacheCreation
-	if total <= 0 {
+	if total <= 0 && len(rec.Skills) == 0 {
 		return
 	}
 	s.mu.Lock()
