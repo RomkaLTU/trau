@@ -4,6 +4,7 @@ import { Link, createFileRoute } from '@tanstack/react-router'
 import { ArrowLeft, ExternalLink, GitBranch, Send } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import {
   Eyebrow,
   NoSkillsBanner,
@@ -18,6 +19,7 @@ import {
   TerminalCard,
   useRepoRouteScope,
   type CheckpointNotice,
+  type RunState,
 } from '@/components/trau'
 import { Markdown } from '@/components/markdown'
 import { cn } from '@/lib/utils'
@@ -28,8 +30,10 @@ import { formatCostUSD, formatDuration } from '@/lib/runlive'
 import { steerSettled } from '@/lib/steer'
 import {
   runDetailQueryOptions,
+  runProofsQueryOptions,
   type Anomaly,
   type PhaseCost,
+  type Proof,
   type RunDetail,
   type Rubric,
   type StepDuration,
@@ -196,6 +200,8 @@ function Detail({
           <VerdictView verdict={run.verdict} present={run.artifacts.verdict} />
         </TerminalCard>
 
+        <ProofsCard repo={repo} ticket={run.ticket} />
+
         <TerminalCard title="costs">
           <CostsView
             costs={run.costs}
@@ -305,7 +311,115 @@ function VerdictView({ verdict, present }: { verdict?: Verdict; present: boolean
           ))}
         </ul>
       )}
+      {verdict.browser && (
+        <div className="flex flex-col gap-1.5 border-t border-border/60 pt-3">
+          <div className="flex items-center gap-2 font-mono text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
+            browser QA
+            <StatusPill state={browserPill(verdict.browser)} label={verdict.browser} />
+          </div>
+          {verdict.browser_notes && (
+            <p className="font-sans text-sm leading-relaxed text-muted-foreground">
+              {verdict.browser_notes}
+            </p>
+          )}
+        </div>
+      )}
     </div>
+  )
+}
+
+function browserPill(outcome: string): RunState {
+  switch (outcome) {
+    case 'driven':
+      return 'success'
+    case 'skipped':
+      return 'warn'
+    default:
+      return 'todo'
+  }
+}
+
+function ProofsCard({ repo, ticket }: { repo: string; ticket: string }) {
+  const { data } = useQuery(runProofsQueryOptions(repo, ticket))
+  const [active, setActive] = useState<Proof | null>(null)
+  const proofs = data ?? []
+  const shots = proofs.filter((p) => p.is_image && p.url)
+  const videos = proofs.filter((p) => p.kind === 'video' && p.url)
+
+  if (shots.length === 0 && videos.length === 0) {
+    return null
+  }
+  return (
+    <TerminalCard title="QA proofs" className="lg:col-span-2">
+      <div className="flex flex-col gap-4">
+        {shots.length > 0 && (
+          <ul className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            {shots.map((p) => (
+              <li key={p.seq}>
+                <button
+                  type="button"
+                  onClick={() => setActive(p)}
+                  className="group flex w-full flex-col gap-1.5 text-left"
+                >
+                  <img
+                    src={p.url}
+                    alt={p.caption || `proof ${p.seq}`}
+                    loading="lazy"
+                    className="aspect-video w-full rounded-md border border-border object-cover transition-colors group-hover:border-primary"
+                  />
+                  {p.caption && (
+                    <span className="truncate font-mono text-[0.7rem] text-muted-foreground">
+                      {p.caption}
+                    </span>
+                  )}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {videos.map((p) => (
+          <figure key={p.seq} className="flex flex-col gap-1.5">
+            <video
+              src={p.url}
+              controls
+              className="w-full rounded-md border border-border"
+            />
+            {p.caption && (
+              <figcaption className="font-mono text-[0.7rem] text-muted-foreground">
+                {p.caption}
+              </figcaption>
+            )}
+          </figure>
+        ))}
+      </div>
+      <Lightbox proof={active} onClose={() => setActive(null)} />
+    </TerminalCard>
+  )
+}
+
+function Lightbox({ proof, onClose }: { proof: Proof | null; onClose: () => void }) {
+  return (
+    <Dialog open={proof !== null} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-4xl gap-2 border-border p-2">
+        {proof && (
+          <>
+            <DialogTitle className="sr-only">
+              {proof.caption || `Proof ${proof.seq}`}
+            </DialogTitle>
+            <img
+              src={proof.url}
+              alt={proof.caption || `proof ${proof.seq}`}
+              className="max-h-[80vh] w-full rounded object-contain"
+            />
+            {proof.caption && (
+              <p className="px-2 pb-1 text-center font-mono text-xs text-muted-foreground">
+                {proof.caption}
+              </p>
+            )}
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 

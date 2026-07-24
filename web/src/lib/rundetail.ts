@@ -42,6 +42,19 @@ export interface Verdict {
   summary?: string
   failures?: string[]
   checks?: VerdictCheck[]
+  browser?: string
+  browser_notes?: string
+}
+
+export interface Proof {
+  seq: number
+  kind: string
+  mime?: string
+  caption?: string
+  trace_dir?: string
+  created_at?: string
+  is_image: boolean
+  url?: string
 }
 
 export interface Artifacts {
@@ -93,5 +106,23 @@ export const runDetailQueryOptions = (repo: string, ticket: string) =>
     queryFn: () => fetchRunDetail(repo, ticket),
     refetchInterval: 3000,
     refetchIntervalInBackground: true,
+    enabled: repo !== '' && ticket !== '',
+  })
+
+async function fetchRunProofs(repo: string, ticket: string): Promise<Proof[]> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/runs/${encodeURIComponent(ticket)}/proofs`,
+  )
+  if (!res.ok) {
+    throw new Error(`run proofs request failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+export const runProofsQueryOptions = (repo: string, ticket: string) =>
+  queryOptions({
+    queryKey: ['run-proofs', repo, ticket],
+    queryFn: () => fetchRunProofs(repo, ticket),
+    refetchInterval: 5000,
     enabled: repo !== '' && ticket !== '',
   })
