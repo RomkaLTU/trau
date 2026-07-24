@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/agent"
@@ -14,29 +15,19 @@ import (
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
-// grillAdapter is the per-provider seam a grilling turn runs through. Each provider
-// resolves its own child invocation (binary, flags, per-session MCP config and
-// resume), reads the reply text off one stream line for the live panel, and mints
-// the session chain id from the child's stream so the next turn resumes it.
 type grillAdapter interface {
-	// resumable reports whether chain still names a resumable session for this
-	// provider, so a fresh id self-heals a stale chain.
 	resumable(chain string) bool
-	// turnSpec builds the child invocation. resume is "" for a first turn.
 	turnSpec(sid int64, repo registry.Repo, cfg config.Config, model, resume, prompt string) (grillTurnSpec, error)
-	// deltaText returns the reply text one stream line carries, or empty.
 	deltaText(line []byte) string
-	// parseResult mints the session chain id and error flag from the whole stream.
 	parseResult(stream []byte) (chainID string, resultErr bool)
 }
 
-// grillAdapterFor resolves the adapter for a session's provider. An empty provider
-// runs claude; an unknown one (a validated provider with no interview adapter yet,
-// such as codex) has no adapter, so the caller parks the session.
 func grillAdapterFor(r *grillRunner, provider string) (grillAdapter, bool) {
 	switch grillEffectiveProvider(provider) {
 	case "claude":
 		return claudeGrillAdapter{r: r}, true
+	case "codex":
+		return codexGrillAdapter{r: r}, true
 	case "kimi":
 		return kimiGrillAdapter{r: r}, true
 	default:
@@ -44,12 +35,13 @@ func grillAdapterFor(r *grillRunner, provider string) (grillAdapter, bool) {
 	}
 }
 
-// grillProviderBin is the CLI a provider's turn spawns: the repo config's binary, or
-// the provider's own name on PATH.
 func grillProviderBin(cfg config.Config, provider string) string {
 	provider = grillEffectiveProvider(provider)
 	bin := cfg.ClaudeBin
-	if provider == "kimi" {
+	switch provider {
+	case "codex":
+		bin = cfg.CodexBin
+	case "kimi":
 		bin = cfg.KimiBin
 	}
 	if bin := strings.TrimSpace(bin); bin != "" {
@@ -58,11 +50,11 @@ func grillProviderBin(cfg config.Config, provider string) string {
 	return provider
 }
 
-// grillModelDefault is the model a provider's session with no explicit choice runs
-// on: for claude the repo config's GRILL_MODEL then CLAUDE_MODEL, for kimi
-// KIMI_MODEL, else empty — the provider CLI's own default.
 func grillModelDefault(cfg config.Config, provider string) string {
-	if grillEffectiveProvider(provider) == "kimi" {
+	switch grillEffectiveProvider(provider) {
+	case "codex":
+		return strings.TrimSpace(cfg.CodexModel)
+	case "kimi":
 		return strings.TrimSpace(cfg.KimiModel)
 	}
 	if m := strings.TrimSpace(cfg.GrillModel); m != "" {
@@ -71,8 +63,6 @@ func grillModelDefault(cfg config.Config, provider string) string {
 	return strings.TrimSpace(cfg.ClaudeModel)
 }
 
-// claudeGrillAdapter is the original grilling behavior: the headless claude CLI with
-// its stream-json partial-message contract and transcript-backed resume.
 type claudeGrillAdapter struct{ r *grillRunner }
 
 func (a claudeGrillAdapter) resumable(chain string) bool { return agent.SessionExists(chain) }
@@ -92,11 +82,140 @@ func (a claudeGrillAdapter) parseResult(stream []byte) (string, bool) {
 	return parseGrillStream(stream)
 }
 
-// kimiGrillAdapter drives the kimi CLI in headless print mode. Kimi has no
-// per-invocation MCP flag — servers load from mcp.json at session start — so the
-// session's scoped endpoint is written into a per-session KIMI_CODE_HOME that
-// mirrors the real home but for its own mcp.json. Resume is kimi's native
-// --session, its id read back from the stream's session.resume_hint line.
+type codexGrillAdapter struct{ r *grillRunner }
+
+func (a codexGrillAdapter) resumable(chain string) bool { return codexGrillSessionExists(chain) }
+
+func (a codexGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.Config, model, resume, prompt string) (grillTurnSpec, error) {
+	return grillTurnSpec{
+		bin: grillProviderBin(cfg, "codex"),
+		dir: repo.Root,
+		args: codexGrillArgs(
+			strings.Fields(cfg.CodexFlags),
+			cfg.CodexProfile,
+			model,
+			cfg.CodexEffort,
+			a.r.codexMCPConfigArgs(sid),
+			resume,
+			prompt,
+		),
+		env: codexChildEnv(a.r.srv.token),
+	}, nil
+}
+
+func (a codexGrillAdapter) deltaText(line []byte) string { return codexGrillDeltaText(line) }
+
+func (a codexGrillAdapter) parseResult(stream []byte) (string, bool) {
+	return parseCodexGrillStream(stream)
+}
+
+const codexGrillMCPTokenEnv = "TRAU_GRILL_MCP_TOKEN"
+
+func (r *grillRunner) codexMCPConfigArgs(sid int64) []string {
+	url := fmt.Sprintf("%s%s/grill/%d/mcp", r.baseURL, APIPrefix, sid)
+	args := []string{"-c", "mcp_servers.trau-grill.url=" + strconv.Quote(url)}
+	if r.srv.token != "" {
+		args = append(args, "-c", "mcp_servers.trau-grill.bearer_token_env_var="+strconv.Quote(codexGrillMCPTokenEnv))
+	}
+	return args
+}
+
+func codexChildEnv(token string) []string {
+	base := grillChildEnv()
+	out := make([]string, 0, len(base)+1)
+	for _, kv := range base {
+		if strings.HasPrefix(kv, codexGrillMCPTokenEnv+"=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	if token != "" {
+		out = append(out, codexGrillMCPTokenEnv+"="+token)
+	}
+	return out
+}
+
+func codexGrillArgs(flags []string, profile, model, effort string, mcpArgs []string, resumeID, prompt string) []string {
+	args := []string{"exec"}
+	args = append(args, flags...)
+	args = append(args, "--json")
+	if profile != "" {
+		args = append(args, "--profile", profile)
+	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if effort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+effort)
+	}
+	args = append(args, mcpArgs...)
+	if resumeID != "" {
+		args = append(args, "resume", resumeID)
+	}
+	return append(args, prompt)
+}
+
+func codexGrillDeltaText(line []byte) string {
+	var ev struct {
+		Type string `json:"type"`
+		Item struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"item"`
+	}
+	if json.Unmarshal(line, &ev) != nil || ev.Type != "item.completed" || ev.Item.Type != "agent_message" {
+		return ""
+	}
+	return ev.Item.Text
+}
+
+func parseCodexGrillStream(stream []byte) (sessionID string, resultErr bool) {
+	sc := bufio.NewScanner(bytes.NewReader(stream))
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		b := bytes.TrimSpace(sc.Bytes())
+		if len(b) == 0 {
+			continue
+		}
+		var ev struct {
+			Type     string `json:"type"`
+			ThreadID string `json:"thread_id"`
+			Item     struct {
+				Type string `json:"type"`
+			} `json:"item"`
+		}
+		if json.Unmarshal(b, &ev) != nil {
+			continue
+		}
+		if ev.ThreadID != "" {
+			sessionID = ev.ThreadID
+		}
+		if ev.Type == "turn.failed" || ev.Type == "error" || ev.Item.Type == "error" {
+			resultErr = true
+		}
+	}
+	return sessionID, resultErr
+}
+
+func codexGrillSessionExists(sessionID string) bool {
+	if sessionID == "" {
+		return false
+	}
+	matches, _ := filepath.Glob(filepath.Join(codexHomeDir(), "sessions", "*", "*", "*", "rollout-*"+sessionID+".jsonl"))
+	return len(matches) > 0
+}
+
+func codexHomeDir() string {
+	if d := strings.TrimSpace(os.Getenv("CODEX_HOME")); d != "" {
+		return d
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".codex"
+	}
+	return filepath.Join(home, ".codex")
+}
+
 type kimiGrillAdapter struct{ r *grillRunner }
 
 func (a kimiGrillAdapter) resumable(chain string) bool { return kimiGrillSessionExists(chain) }
@@ -114,9 +233,6 @@ func (a kimiGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.Con
 	}, nil
 }
 
-// kimiChildEnv is the grilling child env with KIMI_CODE_HOME pinned to the session's
-// overlay, replacing any the hub itself inherited so a relocated kimi home cannot
-// shadow the scoped one.
 func kimiChildEnv(home string) []string {
 	base := grillChildEnv()
 	out := make([]string, 0, len(base)+1)
@@ -135,10 +251,6 @@ func (a kimiGrillAdapter) parseResult(stream []byte) (string, bool) {
 	return parseKimiGrillStream(stream)
 }
 
-// kimiGrillArgs assembles the kimi print-mode vector: the configured flags, the
-// resolved model alias, the stream-json contract, an optional native resume, and the
-// prompt last. Kimi auto-executes tools in print mode (it rejects --yolo), so no
-// approval flag is needed for the grilling MCP calls.
 func kimiGrillArgs(flags []string, model, resumeID, prompt string) []string {
 	args := append([]string{}, flags...)
 	if model != "" {
@@ -151,9 +263,6 @@ func kimiGrillArgs(flags []string, model, resumeID, prompt string) []string {
 	return append(args, "-p", prompt)
 }
 
-// kimiGrillDeltaText returns the reply text one kimi stream line carries. Kimi emits
-// whole assistant messages rather than token deltas, so each assistant line is
-// published as one chunk; the meta resume-hint line carries a role that excludes it.
 func kimiGrillDeltaText(line []byte) string {
 	var ev struct {
 		Role    string `json:"role"`
@@ -165,10 +274,6 @@ func kimiGrillDeltaText(line []byte) string {
 	return ev.Content
 }
 
-// parseKimiGrillStream reads the kimi session id from the stream's session.resume_hint
-// line, the id the next turn resumes with. Kimi's print stream carries no terminal
-// error event — a failed turn exits non-zero and is caught by the spawn error — so
-// the error flag is always false here.
 func parseKimiGrillStream(stream []byte) (sessionID string, resultErr bool) {
 	sc := bufio.NewScanner(bytes.NewReader(stream))
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
@@ -191,13 +296,8 @@ func parseKimiGrillStream(stream []byte) (sessionID string, resultErr bool) {
 	return sessionID, false
 }
 
-// kimiGrillHome builds the per-session KIMI_CODE_HOME the kimi child runs under: a
-// stable scratch dir keyed by session id, symlinking every entry of the real kimi
-// home (config, credentials, sessions) so auth and native resume keep working, but
-// owning its own mcp.json that exposes only this session's grill endpoint. Kimi
-// loads MCP servers at session start with no command-line override, so the scoped
-// endpoint has to arrive as a file in a home of its own. It is rebuilt idempotently
-// each turn so a changed base URL or token is picked up.
+// Kimi only reads MCP servers from its home at session start, so each grill session
+// gets an overlay home with shared auth/session state and a scoped mcp.json.
 func (r *grillRunner) kimiGrillHome(sid int64) (string, error) {
 	real := kimiHomeDir()
 	entries, err := os.ReadDir(real)
@@ -225,9 +325,6 @@ func (r *grillRunner) kimiGrillHome(sid int64) (string, error) {
 	return dir, nil
 }
 
-// kimiGrillSessionExists reports whether sessionID still has a session directory
-// under the kimi home, the resume gate that lets a stale chain self-heal to a fresh
-// first turn. It mirrors kimi's own sessions layout, <home>/sessions/<workspace>/<id>.
 func kimiGrillSessionExists(sessionID string) bool {
 	if sessionID == "" {
 		return false
@@ -236,9 +333,6 @@ func kimiGrillSessionExists(sessionID string) bool {
 	return len(matches) > 0
 }
 
-// kimiHomeDir resolves kimi's data directory the way the CLI does: KIMI_CODE_HOME,
-// else ~/.kimi-code. The hub does not set KIMI_CODE_HOME for itself, so this reads
-// the real home the per-session overlay is layered over.
 func kimiHomeDir() string {
 	if d := strings.TrimSpace(os.Getenv("KIMI_CODE_HOME")); d != "" {
 		return d
