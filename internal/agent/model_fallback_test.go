@@ -145,7 +145,7 @@ func TestModelFallbackWarnsOncePerRun(t *testing.T) {
 func TestConfiguredModelWarnsNothing(t *testing.T) {
 	var stream bytes.Buffer
 	var argv []string
-	c := spawnRefusingClaude(t, "opus-4-8", &ModelFallbackNotice{}, event.New(&stream), &argv)
+	c := spawnRefusingClaude(t, "opus-5", &ModelFallbackNotice{}, event.New(&stream), &argv)
 
 	if _, err := c.Run(context.Background(), "prompt", "build"); err == nil {
 		t.Fatal("Run with a refused spawn should error")
@@ -153,7 +153,7 @@ func TestConfiguredModelWarnsNothing(t *testing.T) {
 	if evs := fallbackEvents(t, &stream); len(evs) != 0 {
 		t.Errorf("emitted %d model_fallback events for a configured model, want 0", len(evs))
 	}
-	if got := modelArg(argv); got != "opus-4-8" {
-		t.Errorf("spawned --model = %q, want the configured opus-4-8", got)
+	if got := modelArg(argv); got != "opus-5" {
+		t.Errorf("spawned --model = %q, want the configured opus-5", got)
 	}
 }

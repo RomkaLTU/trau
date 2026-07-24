@@ -56,12 +56,12 @@ func TestVerbosityTierCycling(t *testing.T) {
 // exactly by what classification ate.
 func TestFeedAndRawContentParity(t *testing.T) {
 	m := initialModel(nil)
-	m.addLog("▸ verify · claude-opus-4-8")
+	m.addLog("▸ verify · claude-opus-5")
 	m.addLog("✓ build passed")
 	m.addLog("✗ tests failed")
 
 	feed := strip(m.renderFeed(120))
-	for _, want := range []string{"claude-opus-4-8", "build passed", "tests failed"} {
+	for _, want := range []string{"claude-opus-5", "build passed", "tests failed"} {
 		if !strings.Contains(feed, want) {
 			t.Errorf("feed missing %q\n%s", want, feed)
 		}
@@ -69,10 +69,10 @@ func TestFeedAndRawContentParity(t *testing.T) {
 
 	raw := strip(m.renderRaw(120))
 	// Raw keeps the original "▸ verify · " prefix the feed classification dropped.
-	if !strings.Contains(raw, "▸ verify · claude-opus-4-8") {
+	if !strings.Contains(raw, "▸ verify · claude-opus-5") {
 		t.Errorf("raw missing the pre-classification line\n%s", raw)
 	}
-	if strings.Contains(feed, "▸ verify · claude-opus-4-8") {
+	if strings.Contains(feed, "▸ verify · claude-opus-5") {
 		t.Errorf("feed should show the classified text, not the raw prefix\n%s", feed)
 	}
 }

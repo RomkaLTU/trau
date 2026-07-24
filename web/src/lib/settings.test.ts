@@ -310,14 +310,14 @@ describe('editorVariant', () => {
 })
 
 describe('comboboxFreeEntry', () => {
-  const models = ['claude-opus-4', 'claude-sonnet-4']
+  const models = ['claude-opus-5', 'claude-sonnet-5']
 
   it('offers a trimmed custom id that is not already a suggestion', () => {
     expect(comboboxFreeEntry('  gpt-5-mini ', models)).toBe('gpt-5-mini')
   })
 
   it('suppresses the free entry when the query matches a suggestion exactly', () => {
-    expect(comboboxFreeEntry('claude-opus-4', models)).toBeNull()
+    expect(comboboxFreeEntry('claude-opus-5', models)).toBeNull()
   })
 
   it('offers nothing for a blank query', () => {

@@ -8,7 +8,8 @@ func TestEstimateCostByModelTier(t *testing.T) {
 		model string
 		want  float64
 	}{
-		{"opus input+output", "claude-opus-4-8", 5 + 25},
+		{"opus input+output", "claude-opus-5", 5 + 25},
+		{"retired opus still priced", "claude-opus-4-8", 5 + 25},
 		{"sonnet cheaper", "claude-sonnet-5", 3 + 15},
 		{"haiku cheapest", "claude-haiku-4-5", 1 + 5},
 		{"unknown model is free", "some-mystery-model", 0},
@@ -25,7 +26,7 @@ func TestEstimateCostByModelTier(t *testing.T) {
 
 func TestEstimateCostCacheTiers(t *testing.T) {
 	// Cache reads bill at 0.1x input, 5-minute cache writes at 1.25x input.
-	got := EstimateCost("claude-opus-4-8", 0, 0, 1_000_000, 1_000_000)
+	got := EstimateCost("claude-opus-5", 0, 0, 1_000_000, 1_000_000)
 	want := 5*0.1 + 5*1.25
 	if got != want {
 		t.Errorf("cache cost = %v, want %v", got, want)
@@ -34,7 +35,7 @@ func TestEstimateCostCacheTiers(t *testing.T) {
 
 func TestProviderForModel(t *testing.T) {
 	tests := map[string]string{
-		"claude-opus-4-8": "claude",
+		"claude-opus-5": "claude",
 		"claude-sonnet-5": "claude",
 		"fable-5":         "claude",
 		"gpt-5.4":         "codex",
