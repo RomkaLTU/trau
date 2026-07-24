@@ -447,8 +447,6 @@ func TestGrillListDefaults(t *testing.T) {
 	}
 }
 
-// A start-time provider choice is what the session locks, so its model resolves and
-// its catalog is reported against that provider rather than the claude default.
 func TestGrillCreateHonoursRequestedProvider(t *testing.T) {
 	ts, stores, repo := grillServer(t)
 	writeGrillConfig(t, "KIMI_MODEL=kimi-default\n")
@@ -478,7 +476,34 @@ func TestGrillCreateHonoursRequestedProvider(t *testing.T) {
 	}
 }
 
-// An unknown provider is refused at create, exactly as the issue provider pin is.
+func TestGrillCreateHonoursRequestedCodexProvider(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	writeGrillConfig(t, "CODEX_MODEL=codex-default\n")
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/grill", GrillCreateRequest{IssueID: "COD-1", Provider: "codex"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", res.StatusCode)
+	}
+	var v GrillSessionView
+	if err := json.NewDecoder(res.Body).Decode(&v); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if v.Provider != "codex" {
+		t.Fatalf("created provider = %q, want codex", v.Provider)
+	}
+	if v.Model != "codex-default" {
+		t.Fatalf("created model = %q, want the CODEX_MODEL default", v.Model)
+	}
+	if !contains(v.ModelOptions, config.CodexDefaultModel) {
+		t.Fatalf("model options = %v, want the codex catalog", v.ModelOptions)
+	}
+	sid, _ := strconv.ParseInt(v.ID, 10, 64)
+	if stored, _, _ := stores.Grill().Session(sid); stored.Provider != "codex" {
+		t.Fatalf("stored provider = %q, want codex", stored.Provider)
+	}
+}
+
 func TestGrillCreateRejectsUnknownProvider(t *testing.T) {
 	ts, _, repo := grillServer(t)
 
@@ -489,44 +514,50 @@ func TestGrillCreateRejectsUnknownProvider(t *testing.T) {
 	}
 }
 
-// The list defaults carry every provider a start surface may offer with its own
-// model catalog, so picking one swaps the model list without another round trip.
 func TestGrillListDefaultsProviders(t *testing.T) {
 	ts, _, repo := grillServer(t)
 	seedKimiConfig(t, "k3")
-	writeGrillConfig(t, "KIMI_BIN="+installedStub(t, "kimi")+"\n")
+	writeGrillConfig(t, "KIMI_BIN="+installedStub(t, "kimi")+"\nCODEX_BIN="+codexInstalledStub(t)+"\n")
 
 	byName := grillDefaultProviders(t, ts, repo)
 	claude, hasClaude := byName["claude"]
+	codex, hasCodex := byName["codex"]
 	kimi, hasKimi := byName["kimi"]
-	if !hasClaude || !hasKimi {
-		t.Fatalf("defaults providers = %v, want both claude and kimi", byName)
+	if !hasClaude || !hasCodex || !hasKimi {
+		t.Fatalf("defaults providers = %v, want claude, codex, and kimi", byName)
 	}
 	if len(claude) == 0 {
 		t.Fatal("claude offered with no model catalog")
+	}
+	if !contains(codex, config.CodexDefaultModel) {
+		t.Fatalf("codex catalog = %v, want the codex catalog", codex)
 	}
 	if !contains(kimi, "k3") {
 		t.Fatalf("kimi catalog = %v, want the seeded alias", kimi)
 	}
 }
 
-// The picker is the ship gate: a provider whose CLI is not installed is never
-// offered, so no start surface can hand out an interview that cannot spawn.
 func TestGrillListDefaultsSkipsUninstalledProvider(t *testing.T) {
 	ts, _, repo := grillServer(t)
 	seedKimiConfig(t, "k3")
-	writeGrillConfig(t, "KIMI_BIN="+filepath.Join(t.TempDir(), "no-such-kimi")+"\n")
+	writeGrillConfig(t, strings.Join([]string{
+		"KIMI_BIN=" + filepath.Join(t.TempDir(), "no-such-kimi"),
+		"CODEX_BIN=" + filepath.Join(t.TempDir(), "no-such-codex"),
+		"",
+	}, "\n"))
 
 	byName := grillDefaultProviders(t, ts, repo)
 	if _, offered := byName["kimi"]; offered {
 		t.Errorf("kimi offered without an installed CLI: %v", byName)
+	}
+	if _, offered := byName["codex"]; offered {
+		t.Errorf("codex offered without a capable CLI: %v", byName)
 	}
 	if _, offered := byName["claude"]; !offered {
 		t.Errorf("the default provider must stay offered: %v", byName)
 	}
 }
 
-// grillDefaultProviders reads the repo list's offered providers by name.
 func grillDefaultProviders(t *testing.T, ts *httptest.Server, repo string) map[string][]string {
 	t.Helper()
 	_, body := get(t, ts, APIPrefix+"/repos/"+repo+"/grill")
@@ -541,7 +572,6 @@ func grillDefaultProviders(t *testing.T, ts *httptest.Server, repo string) map[s
 	return byName
 }
 
-// installedStub writes an executable stub the provider-binary probe resolves.
 func installedStub(t *testing.T, name string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
@@ -551,8 +581,26 @@ func installedStub(t *testing.T, name string) string {
 	return path
 }
 
-// seedKimiConfig lays down a kimi config.toml under the test home so KimiModelAliases
-// resolves a deterministic catalog.
+func codexInstalledStub(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "codex")
+	script := `#!/bin/sh
+if [ "$1" = "exec" ] && [ "$2" = "--help" ]; then
+  printf 'Usage: codex exec [OPTIONS] [PROMPT]\nCommands:\n  resume\nOptions:\n  --json\n'
+  exit 0
+fi
+if [ "$1" = "mcp" ] && [ "$2" = "add" ] && [ "$3" = "--help" ]; then
+  printf 'Options:\n  --url <URL>\n'
+  exit 0
+fi
+exit 0
+`
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write codex stub: %v", err)
+	}
+	return path
+}
+
 func seedKimiConfig(t *testing.T, aliases ...string) {
 	t.Helper()
 	dir := filepath.Join(os.Getenv("HOME"), ".kimi-code")
