@@ -96,6 +96,106 @@ func Publish(ctx context.Context, cfg Config, ticket string, proofs []Proof) (Pu
 	return Publication{Owner: owner, Repo: repo, Branch: Branch, Private: private, Files: pl.Files}, nil
 }
 
+// Prune rebuilds the orphan branch without the expired runs' <ticket>/
+// directories and force-pushes it as a fresh single commit, so its history — and
+// any clone's size — stays bounded while surviving files keep their branch-name
+// raw URLs. It returns the ticket directories actually dropped. A repo with no
+// remote, no such branch, or no expired directory present on the branch yields no
+// dropped tickets and no push, so a sweep that finds nothing to do is silent.
+func Prune(ctx context.Context, cfg Config, expired []string) ([]string, error) {
+	if len(expired) == 0 {
+		return nil, nil
+	}
+	if _, err := cfg.git(ctx, nil, nil, "remote", "get-url", cfg.remote()); err != nil {
+		return nil, nil
+	}
+	exists, err := cfg.remoteBranchExists(ctx, cfg.remote(), Branch)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, nil
+	}
+	if _, err := cfg.git(ctx, nil, nil, "fetch", cfg.remote(), Branch); err != nil {
+		return nil, err
+	}
+	tip, err := cfg.git(ctx, nil, nil, "rev-parse", "FETCH_HEAD")
+	if err != nil {
+		return nil, err
+	}
+	out, err := cfg.git(ctx, nil, nil, "ls-tree", tip)
+	if err != nil {
+		return nil, err
+	}
+	keep, dropped := selectTreeEntries(parseTreeEntries(out), expired)
+	if len(dropped) == 0 {
+		return nil, nil
+	}
+	tree, err := cfg.mkTree(ctx, keep)
+	if err != nil {
+		return nil, err
+	}
+	commit, err := cfg.commitTreeObject(ctx, tree, "", "proofs: prune "+strconv.Itoa(len(dropped))+" expired")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := cfg.git(ctx, nil, nil, "push", "--force", cfg.remote(), commit+":refs/heads/"+Branch); err != nil {
+		return nil, err
+	}
+	return dropped, nil
+}
+
+// treeEntry is one top-level entry of the branch tree: its raw ls-tree line (fed
+// back to mktree unchanged for kept entries) and the name the retention decision
+// keys on.
+type treeEntry struct {
+	Line string
+	Name string
+}
+
+// parseTreeEntries reads `git ls-tree` output into one entry per top-level line.
+// The name is the tab-separated field; malformed lines are skipped.
+func parseTreeEntries(lsTree string) []treeEntry {
+	entries := []treeEntry{}
+	for _, line := range strings.Split(lsTree, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		_, name, ok := strings.Cut(line, "\t")
+		if !ok || name == "" {
+			continue
+		}
+		entries = append(entries, treeEntry{Line: line, Name: name})
+	}
+	return entries
+}
+
+// selectTreeEntries splits a branch's top-level entries into the ls-tree lines to
+// keep and the ticket directories dropped, given the expired tickets. Every entry
+// whose name is not an expired ticket — surviving runs and the README — is kept.
+func selectTreeEntries(entries []treeEntry, expired []string) (keep []string, dropped []string) {
+	expiredSet := make(map[string]struct{}, len(expired))
+	for _, t := range expired {
+		expiredSet[t] = struct{}{}
+	}
+	keep = []string{}
+	dropped = []string{}
+	for _, e := range entries {
+		if _, ok := expiredSet[e.Name]; ok {
+			dropped = append(dropped, e.Name)
+			continue
+		}
+		keep = append(keep, e.Line)
+	}
+	return keep, dropped
+}
+
+// mkTree writes a tree object from ls-tree-format lines, preserving each kept
+// entry's mode and object sha unchanged.
+func (c Config) mkTree(ctx context.Context, lines []string) (string, error) {
+	return c.git(ctx, nil, bytes.NewReader([]byte(strings.Join(lines, "\n")+"\n")), "mktree")
+}
+
 // plan is the set of commits Publish will make: a README bootstrap commit when
 // the branch is new, plus the index entries for this run's screenshots.
 type plan struct {
@@ -169,6 +269,12 @@ func (c Config) commitTree(ctx context.Context, env []string, parent, msg string
 	if err != nil {
 		return "", err
 	}
+	return c.commitTreeObject(ctx, tree, parent, msg)
+}
+
+// commitTreeObject commits an existing tree object. An empty parent yields a
+// parentless (orphan) commit.
+func (c Config) commitTreeObject(ctx context.Context, tree, parent, msg string) (string, error) {
 	args := []string{"commit-tree", tree, "-m", msg}
 	if parent != "" {
 		args = []string{"commit-tree", tree, "-p", parent, "-m", msg}
