@@ -287,19 +287,20 @@ func checkBrowserVerify(cfg config.Config, rr *runner) {
 		"set APP_URL (or APP_URLS for a monorepo) to the running app's URL, or set BROWSER_VERIFY=never")
 }
 
-// checkSkills reports the skill set each phase resolves to and the chain step
-// that produced it, warning only when nothing narrows the set and every phase
-// loads every installed skill. The suggested pin reuses the project-type
-// recommendation mapping, falling back to the first installed names when none of
-// the recommended set is present.
+// checkSkills reports the skill set each phase resolves to for a run with no
+// ticket and no diff — every auto routing rule reads as non-matching, so this is
+// the repo's floor — and the chain step that produced it. It warns only when
+// nothing narrows the set and every phase loads every installed skill. The
+// suggested pin reuses the project-type recommendation mapping, falling back to
+// the first installed names when none of the recommended set is present.
 func checkSkills(cfg config.Config, repoRoot string, rr *runner) {
 	resolver := agent.NewSkillResolver(repoRoot, cfg.RequiredSkills, cfg.RequiredSkillsVerify)
 	installed := resolver.Installed()
 	if len(installed) == 0 {
 		return
 	}
-	build := resolver.Build()
-	verify := resolver.Verify(false)
+	build := resolver.Build(agent.SkillContext{})
+	verify := resolver.Verify(agent.SkillContext{}, false)
 	detail := fmt.Sprintf("%d skill(s) installed — build/repair/bugfix load %s (%s), verify loads %s (%s)",
 		len(installed),
 		strings.Join(build.Names, ", "), build.Source,

@@ -443,3 +443,110 @@ func containsInstalled(xs []SkillView, want string) bool {
 type errString string
 
 func (e errString) Error() string { return string(e) }
+
+func writeSkillWithFrontmatter(t *testing.T, root, name, description string) {
+	t.Helper()
+	dir := filepath.Join(root, ".agents", "skills", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir skill %s: %v", name, err)
+	}
+	body := "---\nname: " + name + "\ndescription: " + description + "\n---\n\n# " + name + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+}
+
+func putSkillRules(t *testing.T, ts *httptest.Server, repo string, body string) (int, SkillsResponse) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPut, ts.URL+APIPrefix+"/repos/"+repo+"/skills/rules", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT rules: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	raw, _ := io.ReadAll(res.Body)
+	var out SkillsResponse
+	_ = json.Unmarshal(raw, &out)
+	return res.StatusCode, out
+}
+
+// TestSkillsRoutingRules is the contract for the routing-rules surface: the
+// snapshot carries each skill's manifest metadata and routing scope, the
+// per-phase plan previews a run with no ticket (so auto rules read as
+// non-matching), and a rules write round-trips through the hub.
+func TestSkillsRoutingRules(t *testing.T) {
+	home := t.TempDir()
+	root := seedConfigRepo(t, home, "acme")
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module acme\n\ngo 1.25\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	writeSkillWithFrontmatter(t, root, "golang-code-style", "Golang code style conventions for reviewing code.")
+	writeSkillWithFrontmatter(t, root, "web-feature", "Build a web UI feature end to end.")
+	writeSkill(t, root, "github-release")
+	if err := os.MkdirAll(filepath.Join(root, ".agents", "skills", "broken"), 0o755); err != nil {
+		t.Fatalf("mkdir broken skill: %v", err)
+	}
+
+	ts := httptest.NewServer(skillsServer(t, home).Handler())
+	t.Cleanup(ts.Close)
+
+	status, out := putSkillRules(t, ts, "acme", `{"rules":[
+		{"skill":"golang-code-style","scope":"always"},
+		{"skill":"web-feature","scope":"auto","phases":["build","verify"],"paths":["web/**"]},
+		{"skill":"github-release","scope":"manual"}
+	]}`)
+	if status != http.StatusOK {
+		t.Fatalf("PUT rules status = %d, want 200", status)
+	}
+	if len(out.Rules) != 3 || out.Rules[1].Skill != "web-feature" || out.Rules[1].Paths[0] != "web/**" {
+		t.Fatalf("rules = %+v, want the three saved rules", out.Rules)
+	}
+
+	out = getSkills(t, ts, "acme")
+	byName := map[string]SkillView{}
+	for _, v := range out.Installed {
+		byName[v.Name] = v
+	}
+	if got := byName["web-feature"]; got.Scope != "auto" || got.Description == "" || len(got.SuggestedKeywords) == 0 {
+		t.Errorf("web-feature = %+v, want the auto scope and its manifest metadata", got)
+	}
+	if got := byName["github-release"]; got.Scope != "manual" {
+		t.Errorf("github-release scope = %q, want manual", got.Scope)
+	}
+	if got := byName["broken"]; !got.Invalid {
+		t.Errorf("broken = %+v, want it flagged invalid", got)
+	}
+
+	plan := map[string]SkillPlanView{}
+	for _, p := range out.Plan {
+		plan[p.Phase] = p
+	}
+	if len(plan) != 3 {
+		t.Fatalf("plan = %+v, want one entry per phase", out.Plan)
+	}
+	for phase, p := range plan {
+		if !contains(p.Skills, "golang-code-style") {
+			t.Errorf("%s plan = %v, want the always skill", phase, p.Skills)
+		}
+		if contains(p.Skills, "web-feature") {
+			t.Errorf("%s plan = %v, want the auto rule to read as non-matching without a ticket", phase, p.Skills)
+		}
+		if contains(p.Skills, "github-release") {
+			t.Errorf("%s plan = %v, want the manual skill left out", phase, p.Skills)
+		}
+	}
+}
+
+func TestSkillRulesRejectsNamelessRule(t *testing.T) {
+	home := t.TempDir()
+	seedConfigRepo(t, home, "acme")
+	ts := httptest.NewServer(skillsServer(t, home).Handler())
+	t.Cleanup(ts.Close)
+
+	if status, _ := putSkillRules(t, ts, "acme", `{"rules":[{"skill":"  ","scope":"always"}]}`); status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", status)
+	}
+}

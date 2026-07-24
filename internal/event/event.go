@@ -19,6 +19,11 @@ const KindAgentStart = "agent_start"
 // installed — the agent skipped the skills the repo expected it to use.
 const KindBuildNoSkills = "build_no_skills"
 
+// KindSkillsPlanned records the skill set a phase's prompt named and the step
+// that produced it, so it can be compared against the skills the agent_call
+// reports the agent actually loaded.
+const KindSkillsPlanned = "skills_planned"
+
 // KindVerifyNoSkills marks a verify that loaded no skills in a repo that has
 // skills installed — the build_no_skills mirror for the QA phase.
 const KindVerifyNoSkills = "verify_no_skills"

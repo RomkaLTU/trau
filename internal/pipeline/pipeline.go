@@ -1360,10 +1360,12 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 		note = resumeNote
 	}
 	note += buildLessonsNote(p.recallLessons(p.lessonQuery(id)))
+	ticketCtx, labels := p.ticketContextWithLabels(ctx, id)
 	resolver := p.skillResolver()
-	buildSkills := resolver.Build()
+	buildSkills := resolver.Build(agent.SkillContext{Text: skillMatchText(ticketCtx, labels)})
 	skillsNote := skillsPrompt(p.prompts, resolver.Installed(), buildSkills.Names)
-	out, err := p.agentStep(ctx, id, "build", buildInstruction(p.prompts, id, branch, skillsNote, note, p.ticketContext(ctx, id)))
+	p.recordPlannedSkills(id, "build", buildSkills)
+	out, err := p.agentStep(ctx, id, "build", buildInstruction(p.prompts, id, branch, skillsNote, note, ticketCtx))
 	if err != nil {
 		return err
 	}
@@ -1713,9 +1715,13 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	notesRepair := buildNotesNote(notesRef)
 	lessonsVerify := verifyLessonsNote(p.recallLessons(p.lessonQuery(id)))
 	resolver := p.skillResolver()
-	verifySkills := resolver.Verify(note != "")
+	changed, _ := p.sliceChangedFiles(ctx)
+	skillCtx := agent.SkillContext{Changed: changed}
+	verifySkills := resolver.Verify(skillCtx, note != "")
+	repairSkills := resolver.Repair(skillCtx)
 	skillsVerify := verifySkillsPrompt(p.prompts, resolver.Installed(), verifySkills.Names)
-	skillsRepair := skillsPrompt(p.prompts, resolver.Installed(), resolver.Build().Names)
+	skillsRepair := skillsPrompt(p.prompts, resolver.Installed(), repairSkills.Names)
+	p.recordPlannedSkills(id, "verify", verifySkills)
 
 	checksFragment := checks.Render(p.Checks)
 	if n := len(p.Checks); n > 0 {
@@ -1755,6 +1761,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				p.logf("  ↳ %s", fl)
 			}
 			p.setActivity(id, activity.Repair, fmt.Sprintf("repair%d", repairAttempt))
+			p.recordPlannedSkills(id, "repair", repairSkills)
 			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), repairInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, skillsRepair, ticketCtx)); err != nil {
 				return err
 			}
@@ -1768,6 +1775,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				p.logf("  ↳ %s", fl)
 			}
 			p.setActivity(id, activity.Bugfix, fmt.Sprintf("bugfix%d", bugfixAttempt))
+			p.recordPlannedSkills(id, "bugfix", repairSkills)
 			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, skillsRepair, ticketCtx)); err != nil {
 				return err
 			}
@@ -3072,6 +3080,29 @@ func (p *Pipeline) skillResolver() agent.SkillResolver {
 	return agent.NewSkillResolver(p.RepoRoot, p.RequiredSkills, p.RequiredSkillsVerify)
 }
 
+// skillMatchText is what a build's routing rules match against: the ticket block
+// the prompt already carries, plus the ticket's labels.
+func skillMatchText(ticketCtx string, labels []string) string {
+	if len(labels) == 0 {
+		return ticketCtx
+	}
+	return ticketCtx + "\n" + strings.Join(labels, " ")
+}
+
+// recordPlannedSkills files a phase attempt's planned skill set and the step
+// that produced it. A repo that installs no skills plans nothing and files
+// nothing.
+func (p *Pipeline) recordPlannedSkills(id, phase string, set agent.SkillSet) {
+	if p.Events == nil || len(set.Names) == 0 {
+		return
+	}
+	p.Events.Emit(event.KindSkillsPlanned, phase, "planned skills: "+strings.Join(set.Names, ", "), map[string]any{
+		"ticket": id,
+		"skills": set.Names,
+		"source": set.Source,
+	})
+}
+
 // skillsPrompt renders the build-prompt sentence naming the skills to load. Only
 // a repo with no installed skills renders an empty set, where the template falls
 // back to generic self-selection wording (Claude Code stopped honoring that in
@@ -3106,16 +3137,25 @@ func buildInstruction(r prompts.Renderer, id, branch, skillsNote, note, ticketCt
 // capability or the API read fails — i.e. only when the per-repo credentials are
 // configured and working does the content get injected.
 func (p *Pipeline) ticketContext(ctx context.Context, id string) string {
+	note, _ := p.ticketContextWithLabels(ctx, id)
+	return note
+}
+
+// ticketContextWithLabels returns the injected ticket block alongside the
+// ticket's label names, from a single tracker read: the block goes to the
+// prompt, the labels only to skill routing, which matches rule keywords against
+// them as well as the title and description.
+func (p *Pipeline) ticketContextWithLabels(ctx context.Context, id string) (string, []string) {
 	detailer, ok := p.Tracker.(tracker.IssueDetailer)
 	if !ok {
-		return ""
+		return "", nil
 	}
 	detail, err := detailer.IssueDetail(ctx, id)
 	if err != nil {
 		p.logf("  ticket %s content not injected (agent will read it via MCP): %v", id, err)
-		return ""
+		return "", nil
 	}
-	return ticketContextNote(id, detail, p.materializeAttachments(ctx, id, detail.Attachments))
+	return ticketContextNote(id, detail, p.materializeAttachments(ctx, id, detail.Attachments)), detail.Labels
 }
 
 // ticketContextNote renders the injected ticket block — title, description,

@@ -13,6 +13,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/skillrules"
 )
 
 const (
@@ -28,15 +29,46 @@ var (
 )
 
 // SkillView is one installed skill as the panel shows it: its directory name
-// enriched with the source and pin metadata from skills-lock.json when the repo
-// has a lockfile. A skill dropped in by hand carries no provenance and reads as
-// unpinned.
+// enriched with its SKILL.md frontmatter, the routing scope in force for it, and
+// the source and pin metadata from skills-lock.json when the repo has a
+// lockfile. A skill dropped in by hand carries no provenance and reads as
+// unpinned; one whose SKILL.md is missing or unreadable reads as invalid, so a
+// broken install is visible instead of counting as healthy.
 type SkillView struct {
-	Name       string `json:"name"`
-	Source     string `json:"source,omitempty"`
-	SourceType string `json:"source_type,omitempty"`
-	SkillPath  string `json:"skill_path,omitempty"`
-	Pinned     bool   `json:"pinned"`
+	Name              string   `json:"name"`
+	DeclaredName      string   `json:"declared_name,omitempty"`
+	Description       string   `json:"description,omitempty"`
+	SuggestedKeywords []string `json:"suggested_keywords,omitempty"`
+	Invalid           bool     `json:"invalid,omitempty"`
+	Scope             string   `json:"scope"`
+	Source            string   `json:"source,omitempty"`
+	SourceType        string   `json:"source_type,omitempty"`
+	SkillPath         string   `json:"skill_path,omitempty"`
+	Pinned            bool     `json:"pinned"`
+}
+
+// SkillRuleView is one repo-owned routing rule as the panel edits it.
+type SkillRuleView struct {
+	Skill    string   `json:"skill"`
+	Scope    string   `json:"scope"`
+	Phases   []string `json:"phases,omitempty"`
+	Paths    []string `json:"paths,omitempty"`
+	Keywords []string `json:"keywords,omitempty"`
+}
+
+// SkillPlanView is the set one phase would name for a run with no ticket and no
+// diff — every auto rule reads as non-matching, so the plan shows the repo's
+// floor rather than any particular slice's set.
+type SkillPlanView struct {
+	Phase  string   `json:"phase"`
+	Skills []string `json:"skills"`
+	Source string   `json:"source"`
+}
+
+// SkillRulesRequest is the body of PUT /repos/{repo}/skills/rules: the repo's
+// whole rule list, replacing whatever the rules file held.
+type SkillRulesRequest struct {
+	Rules []SkillRuleView `json:"rules"`
 }
 
 // SkillRecommendationView is one recommended-but-missing starter skill for the
@@ -49,13 +81,20 @@ type SkillRecommendationView struct {
 
 // SkillsResponse is the /api/v1/repos/{repo}/skills readiness snapshot: the
 // detected project type, the installed skills, the recommended starters still
-// missing, and the repo's pinned REQUIRED_SKILLS.
+// missing, the repo's pinned REQUIRED_SKILLS, its routing rules, and the set
+// each phase would resolve to under them. Unknown names the rules point at a
+// skill the repo cannot load; RulesError reports a rules file that would not
+// parse, which leaves every phase on the fallback chain.
 type SkillsResponse struct {
 	Repo        string                    `json:"repo"`
 	ProjectType string                    `json:"project_type"`
 	Installed   []SkillView               `json:"installed"`
 	Recommended []SkillRecommendationView `json:"recommended"`
 	Required    []string                  `json:"required"`
+	Rules       []SkillRuleView           `json:"rules"`
+	Plan        []SkillPlanView           `json:"plan"`
+	Unknown     []string                  `json:"unknown,omitempty"`
+	RulesError  string                    `json:"rules_error,omitempty"`
 }
 
 // SkillInstallRequest is the body of POST /repos/{repo}/skills: the package spec
@@ -169,15 +208,25 @@ func (s *Server) handleSkillsSearch(w http.ResponseWriter, r *http.Request) {
 func (s *Server) skillsSnapshot(repo registry.Repo) SkillsResponse {
 	readiness := agent.CheckSkillReadiness(repo.Root)
 	lock := agent.ReadSkillsLock(repo.Root)
+	required, requiredVerify := s.requiredSkills(repo)
+	resolver := agent.NewSkillResolver(repo.Root, required, requiredVerify)
+	scopes := ruleScopes(resolver.Rules())
 
-	names := agent.InstalledSkillNames(repo.Root)
-	installed := make([]SkillView, 0, len(names))
-	for _, name := range names {
-		v := SkillView{Name: name}
-		if meta, ok := lock[name]; ok {
-			v.Source = meta.Source
-			v.SourceType = meta.SourceType
-			v.SkillPath = meta.SkillPath
+	metas := agent.InstalledSkills(repo.Root)
+	installed := make([]SkillView, 0, len(metas))
+	for _, meta := range metas {
+		v := SkillView{
+			Name:              meta.Name,
+			DeclaredName:      meta.DeclaredName,
+			Description:       meta.Description,
+			SuggestedKeywords: agent.SuggestedKeywords(meta.Description),
+			Invalid:           meta.Invalid,
+			Scope:             scopes[meta.Name],
+		}
+		if lockMeta, ok := lock[meta.Name]; ok {
+			v.Source = lockMeta.Source
+			v.SourceType = lockMeta.SourceType
+			v.SkillPath = lockMeta.SkillPath
 			v.Pinned = true
 		}
 		installed = append(installed, v)
@@ -188,22 +237,110 @@ func (s *Server) skillsSnapshot(repo registry.Repo) SkillsResponse {
 		recommended = append(recommended, SkillRecommendationView{Name: rec.Name, Package: rec.Package, URL: rec.URL})
 	}
 
-	return SkillsResponse{
+	resp := SkillsResponse{
 		Repo:        repo.Name,
 		ProjectType: readiness.ProjectType,
 		Installed:   installed,
 		Recommended: recommended,
-		Required:    s.requiredSkills(repo),
+		Required:    required,
+		Rules:       ruleViews(resolver.Rules()),
+		Plan:        skillPlan(resolver),
+		Unknown:     resolver.UnknownRuleSkills(),
+	}
+	if err := resolver.RulesError(); err != nil {
+		resp.RulesError = err.Error()
+	}
+	return resp
+}
+
+func skillPlan(resolver agent.SkillResolver) []SkillPlanView {
+	build := resolver.Build(agent.SkillContext{})
+	verify := resolver.Verify(agent.SkillContext{}, false)
+	repair := resolver.Repair(agent.SkillContext{})
+	return []SkillPlanView{
+		{Phase: skillrules.PhaseBuild, Skills: orEmpty(build.Names), Source: build.Source},
+		{Phase: skillrules.PhaseVerify, Skills: orEmpty(verify.Names), Source: verify.Source},
+		{Phase: skillrules.PhaseRepair, Skills: orEmpty(repair.Names), Source: repair.Source},
 	}
 }
 
-func (s *Server) requiredSkills(repo registry.Repo) []string {
+func ruleViews(set skillrules.Set) []SkillRuleView {
+	out := make([]SkillRuleView, 0, len(set.Rules))
+	for _, r := range set.Rules {
+		out = append(out, SkillRuleView{
+			Skill:    r.Skill,
+			Scope:    skillrules.NormalizeScope(r.Scope),
+			Phases:   r.Phases,
+			Paths:    r.Paths,
+			Keywords: r.Keywords,
+		})
+	}
+	return out
+}
+
+func ruleScopes(set skillrules.Set) map[string]string {
+	scopes := make(map[string]string, len(set.Rules))
+	for _, r := range set.Rules {
+		name := strings.TrimSpace(r.Skill)
+		if name != "" {
+			scopes[name] = skillrules.NormalizeScope(r.Scope)
+		}
+	}
+	return scopes
+}
+
+func orEmpty(names []string) []string {
+	if names == nil {
+		return []string{}
+	}
+	return names
+}
+
+func (s *Server) requiredSkills(repo registry.Repo) (required, requiredVerify []string) {
 	projectPath, userPath := s.repoConfigPaths(repo)
 	cfg, err := config.LoadLayered(projectPath, userPath, "", "")
 	if err != nil {
-		return nil
+		return nil, nil
 	}
-	return cfg.RequiredSkills
+	return cfg.RequiredSkills, cfg.RequiredSkillsVerify
+}
+
+func (s *Server) handleSkillRules(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		w.Header().Set("Allow", http.MethodPut)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	repo, ok := s.findRepo(r.PathValue("repo"))
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	var req SkillRulesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	set := skillrules.Set{Rules: make([]skillrules.Rule, 0, len(req.Rules))}
+	for _, v := range req.Rules {
+		name := strings.TrimSpace(v.Skill)
+		if name == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "every rule needs a skill"})
+			return
+		}
+		set.Rules = append(set.Rules, skillrules.Rule{
+			Skill:    name,
+			Scope:    skillrules.NormalizeScope(v.Scope),
+			Phases:   v.Phases,
+			Paths:    v.Paths,
+			Keywords: v.Keywords,
+		})
+	}
+	if err := skillrules.Save(repo.Root, set); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.skillsSnapshot(repo))
 }
 
 func (s *Server) searchSkills(ctx context.Context, q, owner string) SkillsSearchResponse {
