@@ -218,6 +218,8 @@ CLEANUP=1                    # 1 = just before verify, a cheap agent strips AI-s
                              # unnecessary comments, dead code, over-defensive scaffolding — so the code reads
                              # hand-written. Behavior-preserving; fails open. 0 disables it.
 BROWSER_VERIFY=auto          # auto (browser only for UI slices) | always | never
+VERIFY_PROOFS=on             # on = when browser verify drives the app, record a trace and save key
+                             # screenshots, then harvest them to the hub (viewable over the API). off disables it.
 APP_URL=http://localhost     # base URL of your locally-running app (used by browser verify)
 APP_URLS=                    # multi-app monorepos: per-workspace app URLs as comma-separated
                              # <workspace>=<url> pairs (e.g. web=http://localhost:3000,api=http://localhost:3001).

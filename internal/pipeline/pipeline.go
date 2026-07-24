@@ -9,6 +9,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/prompts"
+	"github.com/RomkaLTU/trau/internal/proofs"
 	"github.com/RomkaLTU/trau/internal/sanitize"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -436,7 +438,11 @@ type Pipeline struct {
 	PanelPolicy   string
 	PanelParallel bool
 	BrowserVerify string
-	AppURL        string
+	// VerifyProofs gates whether a browser-driving verify records a trace and
+	// screenshots and harvests them to the hub (config VERIFY_PROOFS): "on" or
+	// "off". Empty reads as on, the default.
+	VerifyProofs string
+	AppURL       string
 	// AppURLs maps a workspace to its app URL (config APP_URLS) so browser verify
 	// drives the app the slice actually changed in a multi-app monorepo; AppURL
 	// covers slices that match no workspace.
@@ -512,6 +518,12 @@ type Pipeline struct {
 	// failure logs one warning and the run proceeds — capture never blocks a
 	// run. Nil disables capture.
 	SaveQAAccount func(ctx context.Context, in hubclient.QAAccountInput) error
+
+	// UploadProofs ships a browser-verify run's harvested proofs — the screenshots
+	// and the recorder's trace directory path — to the hub. It is called after a
+	// verify attempt resolves; a failure logs one warning and the run proceeds,
+	// since missing proofs never fail or pause a run. Nil disables harvest.
+	UploadProofs func(ctx context.Context, ticket, traceDir string, shots []hubclient.ProofScreenshot) error
 
 	// Steer is the hub-backed queue of operator steer notes typed at a running
 	// ticket. Every substantive phase drains it into its prompt and lends it to
@@ -1808,6 +1820,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	if err := p.gateBrowserVerify(ctx, id, passVerdict, handoff, qaNote, checksFragment, rubricVerify, lessonsVerify, verifyDelivery.note, verifyDelivery.injection, ticketCtx); err != nil {
 		return err
 	}
+	p.harvestProofs(ctx, id)
 	if repairAttempt > 0 || bugfixAttempt > 0 {
 		p.recordLesson(ctx, id, lastFail, attemptLabel(repairAttempt, bugfixAttempt), lessonResultRepaired)
 		p.logf("  ✓ verify passed (after %d repair attempt(s) and %d bugfix attempt(s))", repairAttempt, bugfixAttempt)
@@ -1909,6 +1922,65 @@ func (p *Pipeline) warnNoBrowser(id string, v verdict) {
 			fields["browser_notes"] = notes
 		}
 		p.Events.Emit(event.KindVerifyNoBrowser, "verify", msg, fields)
+	}
+}
+
+// proofsEnabled reports whether this verify run should record a trace and
+// screenshots and harvest them to the hub: the browser gate is active for the
+// slice (note != "") and VERIFY_PROOFS is not off (empty reads as on, the default).
+func (p *Pipeline) proofsEnabled(note string) bool {
+	return note != "" && !strings.EqualFold(strings.TrimSpace(p.VerifyProofs), "off")
+}
+
+// harvestProofs ships the proofs the verify agent saved under /tmp for the run to
+// the hub, then clears the directory. Best-effort: a harvest failure logs one
+// warning and never fails or pauses the run. When the last verdict reported
+// driving the browser yet no proofs turned up, it emits an advisory warning event.
+func (p *Pipeline) harvestProofs(ctx context.Context, id string) {
+	if strings.EqualFold(strings.TrimSpace(p.VerifyProofs), "off") {
+		return
+	}
+	defer proofs.Remove(id)
+	man, shots, err := proofs.Read(id)
+	if err != nil || len(shots) == 0 {
+		if p.lastBrowserDriven(id) {
+			p.warnNoProofs(id)
+		}
+		return
+	}
+	if p.UploadProofs == nil {
+		return
+	}
+	payload := make([]hubclient.ProofScreenshot, 0, len(shots))
+	for _, s := range shots {
+		payload = append(payload, hubclient.ProofScreenshot{
+			Filename: s.Filename,
+			Mime:     s.MimeType,
+			Caption:  s.Caption,
+			Data:     base64.StdEncoding.EncodeToString(s.Bytes),
+		})
+	}
+	if err := p.UploadProofs(ctx, id, man.TraceDir, payload); err != nil {
+		p.logf("  ⚠ harvest verify proofs: %v", err)
+		return
+	}
+	p.logf("  ✓ harvested %d verify proof screenshot(s)", len(payload))
+}
+
+// lastBrowserDriven reports whether the run's most recent verdict claimed a
+// browser run, read from the verdict file the last verify attempt wrote.
+func (p *Pipeline) lastBrowserDriven(id string) bool {
+	v, ok := readVerdict(verifyPath(id))
+	return ok && browserOutcome(v) == "driven"
+}
+
+// warnNoProofs records that a browser-driven verify left nothing to harvest. It is
+// advisory: a run is never failed or paused over missing proofs.
+func (p *Pipeline) warnNoProofs(id string) {
+	msg := "browser verify reported a driven UI run but saved no proofs to harvest"
+	p.logf("  ⚠ %s", msg)
+	if p.Events != nil {
+		p.Events.Emit(event.KindVerifyNoProofs, "verify", msg, map[string]any{"ticket": id})
 	}
 }
 
@@ -3588,7 +3660,7 @@ func qaRosterNote(id string, accounts []hubclient.QAAccount, notes string) strin
 // handoff agent) it derives the checkable behaviors itself from the injected ticket
 // content and the slice's diff. The verdict shape and pass/fail gating are identical
 // either way.
-func verifyTail(r prompts.Renderer, id, handoff, verdict, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string) string {
+func verifyTail(r prompts.Renderer, id, handoff, verdict, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string, proofsContract bool) string {
 	return r.Render("verify", prompts.VerifyData{
 		ID:             id,
 		Handoff:        handoff,
@@ -3600,6 +3672,7 @@ func verifyTail(r prompts.Renderer, id, handoff, verdict, note, qaNote, checksFr
 		LessonsNote:    lessonsNote,
 		SkillsNote:     skillsNote,
 		TicketContext:  ticketCtx,
+		ProofsContract: proofsContract,
 	})
 }
 
@@ -3842,12 +3915,16 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 		_ = os.Remove(qaCapturePath(id))
 		defer p.ingestQACapture(ctx, id)
 	}
+	proofsOn := p.proofsEnabled(note)
+	if proofsOn {
+		ctx = agent.WithBrowserRecording(ctx)
+	}
 	if len(p.VerifyPanel) > 0 {
-		return p.runPanel(ctx, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx)
+		return p.runPanel(ctx, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx, proofsOn)
 	}
 	verdictPath := verifyPath(id)
 	_ = os.Remove(verdictPath)
-	prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, verdictPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx))
+	prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, verdictPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx, proofsOn))
 	_, agentErr := p.agentStep(ctx, id, label, prompt)
 	// A provider pause (rate/usage limit) or budget give-up must propagate, not be
 	// recorded as a verify failure — otherwise a transient 429 burns repair/bugfix
@@ -3885,14 +3962,14 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 // give-up from any member is propagated so the loop stops cleanly (the ticket
 // stays resumable on its branch) instead of being recorded as a dissenting fail;
 // a plain timeout/crash counts as that member failing.
-func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx string) (verdict, error) {
+func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, skillsInject, ticketCtx string, proofsOn bool) (verdict, error) {
 	results := make([]panelResult, len(p.VerifyPanel))
 	member := func(ctx context.Context, i int) error {
 		m := p.VerifyPanel[i]
 		memberPath := verifyMemberPath(id, m.Name)
 		_ = os.Remove(memberPath)
 		memberLabel := label + "-" + m.Name
-		prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, memberPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx))
+		prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, memberPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx, proofsOn))
 		_, agentErr := p.agentStepOn(ctx, id, memberLabel, prompt, m.Runner)
 		if agentErr != nil && isFatalAgentErr(agentErr) {
 			return agentErr

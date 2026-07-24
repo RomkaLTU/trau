@@ -1161,6 +1161,16 @@ func newQASaver(cfg config.Config, repoRoot string) func(context.Context, hubcli
 	}
 }
 
+// newProofUploader ships a browser-verify run's harvested proofs — the
+// screenshots and the recorder's trace directory path — to the serve hub, so they
+// survive the /tmp cleanup and are viewable over the API (ADR 0008).
+func newProofUploader(cfg config.Config, repoRoot string) func(context.Context, string, string, []hubclient.ProofScreenshot) error {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	return func(ctx context.Context, ticket, traceDir string, shots []hubclient.ProofScreenshot) error {
+		return hub.UploadProofs(ctx, repoName(repoRoot), ticket, traceDir, shots)
+	}
+}
+
 // steerQueue adapts the hub client to the pipeline's steer-note calls, binding
 // the repo so every call only has to name the ticket.
 type steerQueue struct {
@@ -1378,6 +1388,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		PanelPolicy:          cfg.VerifyPanelPolicy,
 		PanelParallel:        cfg.PanelParallel,
 		BrowserVerify:        cfg.BrowserVerify,
+		VerifyProofs:         cfg.VerifyProofs,
 		AppURL:               cfg.AppURL,
 		AppURLs:              cfg.AppURLs,
 		AutoMerge:            cfg.AutoMerge,
@@ -1403,6 +1414,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		FetchPrompts:         newPromptFetcher(cfg, repoRoot),
 		FetchQAAccounts:      newQAFetcher(cfg, repoRoot),
 		SaveQAAccount:        newQASaver(cfg, repoRoot),
+		UploadProofs:         newProofUploader(cfg, repoRoot),
 		Steer:                newSteerQueue(cfg, repoRoot),
 		OwnedProject:         cfg.Project,
 

@@ -355,6 +355,11 @@ type recordAnomaliesBody struct {
 	Anomalies []Anomaly `json:"anomalies"`
 }
 
+type uploadProofsBody struct {
+	TraceDir    string            `json:"trace_dir"`
+	Screenshots []ProofScreenshot `json:"screenshots"`
+}
+
 // AppendEvents posts a batch of events for repo to the hub, which appends them to
 // the authoritative events table in order and fans them out to live streams. The
 // batch is sent whole so the hub preserves its order; a hub-connection failure
@@ -440,6 +445,23 @@ func (c *Client) TokenDayTotal(ctx context.Context, repo, date string) (Spend, e
 // IsUnreachable error so the caller can retry.
 func (c *Client) RecordAnomalies(ctx context.Context, repo, ticket string, anomalies []Anomaly) error {
 	return c.do(ctx, http.MethodPost, c.repoPath(repo, "runs/"+url.PathEscape(ticket)+"/anomalies"), recordAnomaliesBody{Anomalies: anomalies}, nil)
+}
+
+// ProofScreenshot is one harvested verify screenshot on the wire, its bytes
+// base64-encoded (the same transport the transcript chunks use).
+type ProofScreenshot struct {
+	Filename string `json:"filename"`
+	Mime     string `json:"mime"`
+	Caption  string `json:"caption"`
+	Data     string `json:"data"`
+}
+
+// UploadProofs ships a run's verify browser proofs to the hub — the screenshots
+// plus the recorder's trace directory path — replacing any the hub already holds
+// for the ticket. A hub-connection failure surfaces as an IsUnreachable error.
+func (c *Client) UploadProofs(ctx context.Context, repo, ticket, traceDir string, shots []ProofScreenshot) error {
+	body := uploadProofsBody{TraceDir: traceDir, Screenshots: shots}
+	return c.do(ctx, http.MethodPost, c.repoPath(repo, "runs/"+url.PathEscape(ticket)+"/proofs"), body, nil)
 }
 
 // RoutingFingerprint is the resolved routing configuration a run reports at start:
