@@ -96,6 +96,18 @@ type CostCell struct {
 	Metered  bool
 }
 
+// SkillCall is one recorded agent call's skill-activation evidence: the run it
+// belongs to, the provider that ran it, and the skills that provider reported the
+// agent loading. Skills is empty both for a call that loaded none and for a
+// provider that never reports them, so the two are told apart by the provider.
+type SkillCall struct {
+	Ticket   string
+	Phase    string
+	TS       string
+	Provider string
+	Skills   []string
+}
+
 // Tokens is the hub's authoritative token-call and anomaly store (ADR 0008).
 // Children POST every provider call and flagged anomaly here over HTTP, so the
 // tables — not per-run log files — are the source of truth. They are real migrated
@@ -269,6 +281,50 @@ func (t *Tokens) CostCells(from, to string) (cells []CostCell, err error) {
 		cells = append(cells, c)
 	}
 	return cells, q.Err()
+}
+
+// SkillCalls returns the activation evidence in repo's calls whose local date is
+// on or after since (a YYYY-MM-DD prefix compared lexically, matching CostCells),
+// oldest first. A call whose provider does not report skill usage carries no
+// skills and no way to tell "loaded nothing" from "never said" — the caller
+// resolves that against the provider, not the row.
+func (t *Tokens) SkillCalls(repo, since string) (calls []SkillCall, err error) {
+	q, err := t.db.Query(
+		`SELECT ticket, phase, ts, provider, skills
+		 FROM token_calls
+		 WHERE repo = ? AND length(ts) >= 10 AND substr(ts, 1, 10) >= ?
+		 ORDER BY id`,
+		repo, since,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, q.Close()) }()
+
+	calls = []SkillCall{}
+	for q.Next() {
+		var (
+			c      SkillCall
+			skills string
+		)
+		if err := q.Scan(&c.Ticket, &c.Phase, &c.TS, &c.Provider, &skills); err != nil {
+			return nil, err
+		}
+		c.Skills = unmarshalSkills(skills)
+		calls = append(calls, c)
+	}
+	return calls, q.Err()
+}
+
+func unmarshalSkills(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var names []string
+	if err := json.Unmarshal([]byte(s), &names); err != nil {
+		return nil
+	}
+	return names
 }
 
 // RecordAnomalies replaces a ticket's flagged anomalies with the given set, so a

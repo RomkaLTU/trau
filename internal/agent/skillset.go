@@ -22,10 +22,12 @@ const (
 )
 
 // SkillSet is one phase's resolved skill set: the names its prompt tells the
-// agent to load, plus the chain step that produced them.
+// agent to load, the chain step that produced them, and the step each individual
+// name came from — a union set draws from more than one.
 type SkillSet struct {
-	Names  []string
-	Source string
+	Names   []string
+	Source  string
+	Origins map[string]string
 }
 
 // SkillContext is what a phase's routing rules match against: the ticket's text
@@ -128,9 +130,9 @@ func (r SkillResolver) resolve(phase string, sc SkillContext) SkillSet {
 		return set
 	}
 	if names := intersectSkills(recommendedSkillNames(r.projectType), r.installed); len(names) > 0 {
-		return SkillSet{Names: names, Source: SkillsSourceRecommended}
+		return skillSetFrom(names, SkillsSourceRecommended)
 	}
-	return SkillSet{Names: r.installed, Source: SkillsSourceInstalled}
+	return skillSetFrom(r.installed, SkillsSourceInstalled)
 }
 
 // Verify resolves the set the verify prompt names: the rules' verify matches for
@@ -151,13 +153,26 @@ func (r SkillResolver) Verify(sc SkillContext, browserActive bool) SkillSet {
 // union is the rule-driven part of a phase's set joined with the pins that phase
 // forces, and the source describing which of the two contributed.
 func (r SkillResolver) union(phase string, sc SkillContext, pinned []string, pinSource string) SkillSet {
-	names := intersectSkills(r.rules.Resolve(sc.match(phase)), r.nameable)
-	source := ruleSource(names)
+	matched := intersectSkills(r.rules.Resolve(sc.match(phase)), r.nameable)
+	set := skillSetFrom(matched, ruleSource(matched))
 	if len(pinned) > 0 {
-		names = appendSkills(names, pinned...)
-		source = joinSources(source, pinSource)
+		for _, name := range pinned {
+			if _, matched := set.Origins[name]; !matched {
+				set.Origins[name] = pinSource
+			}
+		}
+		set.Names = appendSkills(set.Names, pinned...)
+		set.Source = joinSources(set.Source, pinSource)
 	}
-	return SkillSet{Names: names, Source: source}
+	return set
+}
+
+func skillSetFrom(names []string, source string) SkillSet {
+	origins := make(map[string]string, len(names))
+	for _, name := range names {
+		origins[name] = source
+	}
+	return SkillSet{Names: names, Source: source, Origins: origins}
 }
 
 func ruleSource(matched []string) string {
