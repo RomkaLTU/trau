@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -181,6 +182,38 @@ func TestLoadJiraEpicType(t *testing.T) {
 	if got := keyValue(cfg, "JIRA_EPIC_TYPE"); got != "Feature" {
 		t.Errorf("keyValue(JIRA_EPIC_TYPE) = %q, want Feature", got)
 	}
+}
+
+// REQUIRED_SKILLS_VERIFY pins the verify prompt's skill set, so it has to survive
+// the load, round-trip through the settings surfaces by its catalog key, and stay
+// web-editable like REQUIRED_SKILLS.
+func TestLoadRequiredSkillsVerify(t *testing.T) {
+	dir := t.TempDir()
+	project := filepath.Join(dir, ".trau.ini")
+	if err := os.WriteFile(project, []byte("REQUIRED_SKILLS_VERIFY=tdd, web-feature\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadLayered(project, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"tdd", "web-feature"}; !slices.Equal(cfg.RequiredSkillsVerify, want) {
+		t.Fatalf("RequiredSkillsVerify = %v, want %v", cfg.RequiredSkillsVerify, want)
+	}
+	if got := keyValue(cfg, "REQUIRED_SKILLS_VERIFY"); got != "tdd,web-feature" {
+		t.Errorf("keyValue(REQUIRED_SKILLS_VERIFY) = %q, want tdd,web-feature", got)
+	}
+	for _, m := range KnownKeys() {
+		if m.Key != "REQUIRED_SKILLS_VERIFY" {
+			continue
+		}
+		if !m.WebEditable {
+			t.Error("REQUIRED_SKILLS_VERIFY should be web-editable")
+		}
+		return
+	}
+	t.Error("REQUIRED_SKILLS_VERIFY is missing from the settings catalog")
 }
 
 func TestResolveConfigItemsEnvOverride(t *testing.T) {

@@ -1,1 +1,1 @@
-This repo has skills: alpha, beta, tdd. Load these required skills with the Skill tool before verifying: tdd, browser-harness; then load any of the remaining skills relevant to checking this slice. Do NOT pause to ask which skills to load.
+Load these required skills with the Skill tool before verifying: tdd, browser-harness. Do NOT pause to ask which skills to load.

@@ -45,9 +45,9 @@ const explorePreambleDefault = `[Unattended run] You are running headless inside
 
 const codeStyleDefault = ` Write it the way a senior engineer on this project would: clean, idiomatic, and matching the surrounding file's conventions. Do NOT add explanatory or narrating comments — no comment that restates what the code does, no section banners, no ticket IDs in comments, no multi-line 'why' essays; let clear names carry the meaning and keep a comment only where a genuinely non-obvious decision truly needs one, matching the file's existing comment density rather than exceeding it. Skip the AI tells: no over-defensive guards for cases that can't occur, no redundant error/nil checks the codebase doesn't already use, no belt-and-suspenders boilerplate a human wouldn't bother to write.`
 
-const verifySkillsDefault = `{{if .Installed}}This repo has skills: {{join .Installed ", "}}. {{if .Required}}Load these required skills with the Skill tool before verifying: {{join .Required ", "}}; then load any of the remaining skills relevant to checking this slice. Do NOT pause to ask which skills to load.{{else}}Load the ones relevant to checking this slice with the Skill tool before verifying — do NOT pause to ask which skills to load.{{end}}{{else if .Required}}Load these required skills with the Skill tool before verifying: {{join .Required ", "}}. Do NOT pause to ask which skills to load.{{end}}`
+const verifySkillsDefault = `{{if .Required}}Load these required skills with the Skill tool before verifying: {{join .Required ", "}}. Do NOT pause to ask which skills to load.{{end}}`
 
-const skillsDefault = `{{if .Installed}}This is an unattended run: this repo has skills: {{join .Installed ", "}}. {{if .Required}}Load these required skills with the Skill tool before implementing: {{join .Required ", "}}; then load any of the remaining skills relevant to this ticket. Do NOT pause to ask which skills to load.{{else}}Load the ones relevant to this ticket with the Skill tool before implementing — do NOT pause to ask which skills to load.{{end}}{{else}}This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Infer the project's stack from its manifests and configs (package.json, composer.json, go.mod, pyproject.toml, and the like) rather than assuming any framework; in a multi-workspace repo (monorepo), read the manifests of the workspaces the ticket touches, not only the root's. Always include the project's test skill when one exists, and add the domain skills matching the areas the ticket actually touches.{{end}}`
+const skillsDefault = `{{if .Required}}This is an unattended run — load these required skills with the Skill tool before implementing: {{join .Required ", "}}. Do NOT pause to ask which skills to load.{{else}}This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Infer the project's stack from its manifests and configs (package.json, composer.json, go.mod, pyproject.toml, and the like) rather than assuming any framework; in a multi-workspace repo (monorepo), read the manifests of the workspaces the ticket touches, not only the root's. Always include the project's test skill when one exists, and add the domain skills matching the areas the ticket actually touches.{{end}}`
 
 const grillIssueDefault = `You are clarifying a software issue so an autonomous coding agent can implement it without guessing. You are running inside the repository this issue belongs to; read the code before asking when it sharpens a question.
 
@@ -122,7 +122,7 @@ var registry = []Prompt{
 		Placeholders: []Placeholder{
 			{Field: "ID", Description: "ticket id", Required: true, Sample: "COD-4242"},
 			{Field: "Branch", Description: "feature branch the work happens on", Required: true, Sample: "feature/sample-slice"},
-			{Field: "SkillsNote", Description: "rendered skills-loading sentence", Sample: "Load the repo's skills with the Skill tool before implementing."},
+			{Field: "SkillsNote", Description: "rendered skills-loading sentence", Required: true, Sample: "Load the repo's skills with the Skill tool before implementing."},
 			{Field: "Note", Description: "resume/lessons fragment", Sample: " Lessons from earlier runs: none."},
 			{Field: "CodeStyle", Description: "rendered code_style fragment", Sample: " Write it the way a senior engineer on this project would."},
 			{Field: "BuildNotes", Description: "rendered build_notes fragment", Sample: " Jot a short build-notes file to runs/sample/notes.md."},
@@ -155,7 +155,7 @@ var registry = []Prompt{
 			{Field: "ChecksFragment", Description: "deterministic verify-checks fragment", Sample: " Deterministic checks: the build passes."},
 			{Field: "RubricNote", Description: "rubric pointer note", Sample: " A structured rubric is at runs/sample/rubric.json."},
 			{Field: "LessonsNote", Description: "recalled-lessons note", Sample: " Lessons from similar runs: check both themes."},
-			{Field: "SkillsNote", Description: "rendered verify_skills sentence", Sample: "Load the repo's skills with the Skill tool before verifying."},
+			{Field: "SkillsNote", Description: "rendered verify_skills sentence", Required: true, Sample: "Load the repo's skills with the Skill tool before verifying."},
 			{Field: "TicketContext", Description: "injected ticket content block", Sample: "\n\n=== TCK-7: Sample ticket ===\nSample ticket body.\n=== end TCK-7 ==="},
 		},
 		Default: verifyDefault,
@@ -184,7 +184,7 @@ var registry = []Prompt{
 			{Field: "RubricNote", Description: "rubric pointer note", Sample: " A structured rubric is at runs/sample/rubric.json."},
 			{Field: "LessonsNote", Description: "recalled-lessons note", Sample: " Lessons from similar runs: check both themes."},
 			{Field: "NotesNote", Description: "build-notes pointer note", Sample: " Build notes: runs/sample/notes.md."},
-			{Field: "SkillsNote", Description: "rendered skills-loading sentence (build's note)", Sample: "Load the repo's skills with the Skill tool before implementing."},
+			{Field: "SkillsNote", Description: "rendered skills-loading sentence (build's note)", Required: true, Sample: "Load the repo's skills with the Skill tool before implementing."},
 			{Field: "CodeStyle", Description: "rendered code_style fragment", Sample: " Write it the way a senior engineer on this project would."},
 			{Field: "TicketContext", Description: "injected ticket content block", Sample: "\n\n=== TCK-7: Sample ticket ===\nSample ticket body.\n=== end TCK-7 ==="},
 		},
@@ -203,7 +203,7 @@ var registry = []Prompt{
 			{Field: "RubricNote", Description: "rubric pointer note", Sample: " A structured rubric is at runs/sample/rubric.json."},
 			{Field: "LessonsNote", Description: "recalled-lessons note", Sample: " Lessons from similar runs: check both themes."},
 			{Field: "NotesNote", Description: "build-notes pointer note", Sample: " Build notes: runs/sample/notes.md."},
-			{Field: "SkillsNote", Description: "rendered skills-loading sentence (build's note)", Sample: "Load the repo's skills with the Skill tool before implementing."},
+			{Field: "SkillsNote", Description: "rendered skills-loading sentence (build's note)", Required: true, Sample: "Load the repo's skills with the Skill tool before implementing."},
 			{Field: "CodeStyle", Description: "rendered code_style fragment", Sample: " Write it the way a senior engineer on this project would."},
 			{Field: "TicketContext", Description: "injected ticket content block", Sample: "\n\n=== TCK-7: Sample ticket ===\nSample ticket body.\n=== end TCK-7 ==="},
 		},
@@ -334,8 +334,8 @@ var registry = []Prompt{
 		Title:       "Skills",
 		Description: "Skills-loading sentence for the build prompt.",
 		Placeholders: []Placeholder{
-			{Field: "Installed", Description: "installed skill names; empty falls back to self-selection", Sample: []string{"golang-pro", "web-feature"}},
-			{Field: "Required", Description: "required skill names, already intersected with Installed", Sample: []string{"golang-pro"}},
+			{Field: "Installed", Description: "every installed skill name, for a template that wants to enumerate them", Sample: []string{"golang-pro", "web-feature"}},
+			{Field: "Required", Description: "the resolved set the build agent must load: REQUIRED_SKILLS, else the project type's recommended skills, else all installed; empty only when the repo installs none", Sample: []string{"golang-pro"}},
 		},
 		Default: skillsDefault,
 	},
@@ -344,8 +344,8 @@ var registry = []Prompt{
 		Title:       "Verify skills",
 		Description: "Skills-loading sentence for the verify prompt.",
 		Placeholders: []Placeholder{
-			{Field: "Installed", Description: "installed skill names; empty drops the listing", Sample: []string{"golang-pro", "tdd"}},
-			{Field: "Required", Description: "auto-required names: the project's test skill plus browser-harness when browser verify is active", Sample: []string{"tdd", "browser-harness"}},
+			{Field: "Installed", Description: "every installed skill name, for a template that wants to enumerate them", Sample: []string{"golang-pro", "tdd"}},
+			{Field: "Required", Description: "the resolved set the verify agent must load: REQUIRED_SKILLS_VERIFY, the project's test skills, and browser-harness when browser verify is active, falling back to the build set", Sample: []string{"tdd", "browser-harness"}},
 		},
 		Default: verifySkillsDefault,
 	},
