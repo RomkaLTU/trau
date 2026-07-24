@@ -447,6 +447,91 @@ func TestGrillListDefaults(t *testing.T) {
 	}
 }
 
+func TestGrillDefaultsUseConfiguredProvider(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	seedKimiConfig(t, "k3")
+	writeGrillConfig(t, "GRILL_PROVIDER=kimi\nKIMI_MODEL=kimi-default\n")
+
+	_, body := get(t, ts, APIPrefix+"/repos/"+repo+"/grill")
+	var list GrillListResponse
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if list.Defaults.Provider != "kimi" {
+		t.Fatalf("defaults provider = %q, want kimi", list.Defaults.Provider)
+	}
+	if list.Defaults.Model != "kimi-default" {
+		t.Fatalf("defaults model = %q, want kimi-default", list.Defaults.Model)
+	}
+	if !contains(list.Defaults.ModelOptions, "k3") {
+		t.Fatalf("defaults model options = %v, want the kimi catalog", list.Defaults.ModelOptions)
+	}
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/grill", GrillCreateRequest{IssueID: "COD-1"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", res.StatusCode)
+	}
+	var v GrillSessionView
+	if err := json.NewDecoder(res.Body).Decode(&v); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if v.Provider != "kimi" || v.Model != "kimi-default" {
+		t.Fatalf("created session = %+v, want kimi/kimi-default", v)
+	}
+	sid, _ := strconv.ParseInt(v.ID, 10, 64)
+	if stored, _, _ := stores.Grill().Session(sid); stored.Provider != "kimi" {
+		t.Fatalf("stored provider = %q, want kimi", stored.Provider)
+	}
+
+	root := filepath.Join(os.Getenv("HOME"), "acme")
+	if _, _, err := stores.Issues().Upsert(root, "linear", []hubstore.Issue{{
+		Identifier:  "COD-2",
+		Title:       "Pinned",
+		StatusGroup: "unstarted",
+	}}); err != nil {
+		t.Fatalf("seed issue: %v", err)
+	}
+	if _, _, err := stores.Issues().SetProvider(root, "COD-2", "codex"); err != nil {
+		t.Fatalf("pin issue provider: %v", err)
+	}
+	pinned := createGrill(t, ts, repo, "COD-2")
+	if pinned.Provider != "kimi" {
+		t.Fatalf("pinned issue grill provider = %q, want configured kimi", pinned.Provider)
+	}
+}
+
+func TestGrillDefaultsIgnoreStaleConfiguredProvider(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	writeGrillConfig(t, "GRILL_PROVIDER=ollama\nGRILL_MODEL=grill-model\n")
+
+	_, body := get(t, ts, APIPrefix+"/repos/"+repo+"/grill")
+	var list GrillListResponse
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if list.Defaults.Provider != "claude" || list.Defaults.Model != "grill-model" {
+		t.Fatalf("defaults = %+v, want claude/grill-model", list.Defaults)
+	}
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/grill", GrillCreateRequest{IssueID: "COD-1"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", res.StatusCode)
+	}
+	var v GrillSessionView
+	if err := json.NewDecoder(res.Body).Decode(&v); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if v.Provider != "claude" {
+		t.Fatalf("created provider = %q, want claude", v.Provider)
+	}
+	sid, _ := strconv.ParseInt(v.ID, 10, 64)
+	if stored, _, _ := stores.Grill().Session(sid); stored.Provider != "claude" {
+		t.Fatalf("stored provider = %q, want claude", stored.Provider)
+	}
+}
+
 func TestGrillCreateHonoursRequestedProvider(t *testing.T) {
 	ts, stores, repo := grillServer(t)
 	writeGrillConfig(t, "KIMI_MODEL=kimi-default\n")

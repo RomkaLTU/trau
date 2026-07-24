@@ -22,8 +22,6 @@ import (
 
 const grillDefaultProvider = "claude"
 
-var grillProviders = []string{"claude", "codex", "kimi"}
-
 // GrillSessionView is one grilling session as the web panel sees it. IssueID is
 // omitted for an authoring session anchored to the repo alone; IssueTitle then
 // carries the session's seed so the queue can title an issue-less draft.
@@ -174,6 +172,9 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 	if errMsg != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
 		return
+	}
+	if provider == "" {
+		provider = s.grillDefaultProviderFor(repo)
 	}
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
@@ -609,19 +610,21 @@ func (s *Server) grillSessionView(repo string, sess hubstore.GrillSession) Grill
 }
 
 func (s *Server) grillDefaultsView(repo registry.Repo) GrillDefaultsView {
+	provider := s.grillDefaultProviderFor(repo)
 	return GrillDefaultsView{
-		Provider:     grillDefaultProvider,
-		Model:        s.grillModelDefaultFor(repo, grillDefaultProvider),
-		ModelOptions: grillModelOptionsFor(grillDefaultProvider),
-		Providers:    s.grillProviderOptions(repo),
+		Provider:     provider,
+		Model:        s.grillModelDefaultFor(repo, provider),
+		ModelOptions: grillModelOptionsFor(provider),
+		Providers:    s.grillProviderOptions(repo, provider),
 	}
 }
 
-func (s *Server) grillProviderOptions(repo registry.Repo) []GrillProviderOption {
+func (s *Server) grillProviderOptions(repo registry.Repo, defaultProvider string) []GrillProviderOption {
 	cfg, cfgErr := s.grillConfigFor(repo)
-	out := make([]GrillProviderOption, 0, len(grillProviders))
-	for _, name := range grillProviders {
-		if name != grillDefaultProvider && (cfgErr != nil || grillProviderUnavailableReason(cfg, name) != "") {
+	names := agent.DefaultRegistry().Names()
+	out := make([]GrillProviderOption, 0, len(names))
+	for _, name := range names {
+		if name != grillDefaultProvider && name != defaultProvider && (cfgErr != nil || grillProviderUnavailableReason(cfg, name) != "") {
 			continue
 		}
 		out = append(out, GrillProviderOption{Name: name, ModelOptions: grillModelOptionsFor(name)})
@@ -675,6 +678,25 @@ func grillValidateProvider(provider string) (string, string) {
 		return "", fmt.Sprintf("unknown provider %q (expected: %s)", provider, strings.Join(reg.Names(), " | "))
 	}
 	return provider, ""
+}
+
+func (s *Server) grillDefaultProviderFor(repo registry.Repo) string {
+	cfg, err := s.grillConfigFor(repo)
+	if err != nil {
+		return grillDefaultProvider
+	}
+	return grillConfiguredProvider(cfg)
+}
+
+func grillConfiguredProvider(cfg config.Config) string {
+	provider := strings.TrimSpace(cfg.GrillProvider)
+	if provider == "" {
+		return grillDefaultProvider
+	}
+	if _, known := agent.DefaultRegistry().Lookup(provider); known {
+		return provider
+	}
+	return grillDefaultProvider
 }
 
 // grillTrackerFor resolves the repo's effective tracker provider for the list

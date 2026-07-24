@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/prompts"
 )
 
@@ -74,6 +75,7 @@ type Config struct {
 
 	Provider        string
 	TrackerProvider string
+	GrillProvider   string
 
 	ClaudeConfig          string
 	ClaudeBin             string
@@ -371,6 +373,7 @@ func Defaults() Config {
 		RepoRoot:               "",
 		Provider:               "claude",
 		TrackerProvider:        "linear",
+		GrillProvider:          "",
 		ClaudeConfig:           "",
 		ClaudeBin:              "claude",
 		ClaudeFlags:            "--dangerously-skip-permissions",
@@ -703,6 +706,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		sources["PROVIDER"] = LayerCLI
 	}
 	str("TRACKER_PROVIDER", &c.TrackerProvider)
+	str("GRILL_PROVIDER", &c.GrillProvider)
 	str("CLAUDE_CONFIG", &c.ClaudeConfig)
 	str("CODEX_CONFIG", &c.CodexConfig)
 	str("KIMI_CONFIG", &c.KimiConfig)
@@ -1588,6 +1592,7 @@ func ConfigSections() []string {
 // order is the order the editor presents them; advanced keys are hidden behind
 // a toggle by default.
 func KnownKeys() []KeyMeta {
+	providerOptions := agent.DefaultRegistry().Names()
 	keys := []KeyMeta{
 		{Key: "LINEAR_TEAM", Group: sectionTracker, WebEditable: true, Description: "Linear team / Jira project / GitHub repo"},
 		{Key: "ISSUE_PREFIX", Group: sectionTracker, WebEditable: true, Description: "Issue-ID prefix for ticket parsing (default: the team key, e.g. COD, TMS, ENG)"},
@@ -1603,7 +1608,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "BASE_BRANCH", Group: sectionGit, WebEditable: true, Default: "main", Description: "Default git base branch"},
 		{Key: "REMOTE", Group: sectionGit, Default: "origin", Description: "Git remote name"},
 		{Key: "TRAU_REPO_ROOT", Group: sectionPaths, Description: "Target app repo path"},
-		{Key: "PROVIDER", Group: sectionProviders, Default: "claude", Description: "AI provider: claude | codex | kimi", Options: []string{"claude", "codex", "kimi"}},
+		{Key: "PROVIDER", Group: sectionProviders, Default: "claude", Description: "AI provider: claude | codex | kimi", Options: providerOptions},
 		{Key: "CLAUDE_CONFIG", Group: sectionProviders, Advanced: true, Description: "Provider-local Claude config file"},
 		{Key: "CODEX_CONFIG", Group: sectionProviders, Advanced: true, Description: "Provider-local Codex config file"},
 		{Key: "KIMI_CONFIG", Group: sectionProviders, Advanced: true, Description: "Provider-local Kimi config file"},
@@ -1617,6 +1622,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "AGENT_BACKOFF", Group: sectionAgent, Kind: "int", WebEditable: true, Advanced: true, Default: "10", Description: "Base seconds to wait between transient agent-step retries"},
 		{Key: "FALLBACK_PROVIDERS", Group: sectionProviders, Advanced: true, Description: "Ordered provider[:model[:effort]] specs to try after the primary's retries are exhausted (e.g. codex,kimi). Empty = retry-only, no provider fallback"},
 		{Key: "CLAUDE_MODEL", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Default Claude model"},
+		{Key: "GRILL_PROVIDER", Group: sectionGrilling, WebEditable: true, Advanced: true, Description: "Provider for the hub's grilling agent (claude, codex, kimi); empty means claude", Options: providerOptions},
 		{Key: "GRILL_MODEL", Group: sectionGrilling, WebEditable: true, Advanced: true, Description: "Claude model for the hub's grilling agent; empty falls back to CLAUDE_MODEL"},
 		{Key: "CLAUDE_EFFORT", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Default Claude reasoning effort"},
 		{Key: "CLAUDE_DISALLOWED_TOOLS", Group: sectionProviders, Advanced: true, Default: "Agent,Workflow", Description: "Tools disabled inside agents"},
@@ -2087,6 +2093,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.Provider
 	case "TRACKER_PROVIDER":
 		return cfg.TrackerProvider
+	case "GRILL_PROVIDER":
+		return cfg.GrillProvider
 	case "CLAUDE_CONFIG":
 		return cfg.ClaudeConfig
 	case "CODEX_CONFIG":

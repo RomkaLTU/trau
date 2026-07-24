@@ -100,6 +100,9 @@ func (s *Server) pregrillMax(repo registry.Repo) int {
 // synchronously so the settled session can be classified into an outcome.
 func (s *Server) runPregrillPass(ctx context.Context, repo registry.Repo, req PregrillRequest, max int) []PregrillResult {
 	provider := strings.TrimSpace(req.Provider)
+	if provider == "" {
+		provider = s.grillDefaultProviderFor(repo)
+	}
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
 		model = s.grillModelDefaultFor(repo, provider)
