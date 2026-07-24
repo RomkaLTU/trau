@@ -80,13 +80,16 @@ type RubricView struct {
 }
 
 // VerdictView is the cold verifier's graded outcome, read from the artifact
-// store: whether the slice passed, a one-line summary, the concrete failures, and
-// any gated check results.
+// store: whether the slice passed, a one-line summary, the concrete failures, the
+// gated check results, and the self-reported browser-QA outcome (driven, skipped,
+// or not-applicable) with its notes.
 type VerdictView struct {
-	Pass     bool        `json:"pass"`
-	Summary  string      `json:"summary,omitempty"`
-	Failures []string    `json:"failures,omitempty"`
-	Checks   []CheckView `json:"checks,omitempty"`
+	Pass         bool        `json:"pass"`
+	Summary      string      `json:"summary,omitempty"`
+	Failures     []string    `json:"failures,omitempty"`
+	Checks       []CheckView `json:"checks,omitempty"`
+	Browser      string      `json:"browser,omitempty"`
+	BrowserNotes string      `json:"browser_notes,omitempty"`
 }
 
 // CheckView is one verify-check outcome carried inside the verdict.
