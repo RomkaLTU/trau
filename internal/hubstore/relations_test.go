@@ -259,3 +259,49 @@ func TestDropSyncedCleansSyncedEdgesKeepsInternal(t *testing.T) {
 		t.Errorf("blockers of ACME-1 = %v, want the internal issue's edge preserved", blockers)
 	}
 }
+
+func TestUnresolvedBlockersReadsManyAtOnce(t *testing.T) {
+	store := testIssues(t)
+	seedSyncedInto(t, store, "acme",
+		Issue{Identifier: "ENG-1", Title: "live blocker", StatusGroup: "unstarted"},
+		Issue{Identifier: "ENG-2", Title: "settled blocker", StatusGroup: "done"},
+		Issue{Identifier: "ENG-3", Title: "dependent", StatusGroup: "unstarted"},
+		Issue{Identifier: "ENG-4", Title: "unblocked", StatusGroup: "unstarted"},
+		Issue{Identifier: "ENG-5", Title: "dangling dependent", StatusGroup: "unstarted"},
+	)
+	for _, edge := range [][2]string{{"ENG-1", "ENG-3"}, {"ENG-2", "ENG-3"}, {"ENG-2", "ENG-4"}, {"GHOST-1", "ENG-5"}} {
+		if err := store.AddRelation("acme", edge[0], edge[1]); err != nil {
+			t.Fatalf("add %v: %v", edge, err)
+		}
+	}
+
+	got, err := store.UnresolvedBlockers("acme", []string{"ENG-3", "ENG-4", "ENG-5"})
+	if err != nil {
+		t.Fatalf("unresolved blockers: %v", err)
+	}
+	want := map[string][]string{"ENG-3": {"ENG-1"}, "ENG-5": {"GHOST-1"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("unresolved = %v, want %v — done blockers drop out and a dangling one counts", got, want)
+	}
+}
+
+func TestUnresolvedBlockersIgnoresTombstonedBlocker(t *testing.T) {
+	store := testIssues(t)
+	seedSyncedInto(t, store, "acme",
+		Issue{Identifier: "ENG-1", Title: "blocker", StatusGroup: "unstarted"},
+		Issue{Identifier: "ENG-2", Title: "dependent", StatusGroup: "unstarted"},
+	)
+	if err := store.AddRelation("acme", "ENG-1", "ENG-2"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, err := store.Reconcile("acme", []string{"ENG-2"}); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	got, err := store.UnresolvedBlockers("acme", []string{"ENG-2"})
+	if err != nil {
+		t.Fatalf("unresolved blockers: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("unresolved = %v, want a tracker-removed blocker to no longer hold ENG-2 back", got)
+	}
+}

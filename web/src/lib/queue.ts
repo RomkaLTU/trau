@@ -28,6 +28,10 @@ export interface QueueItem {
   provider_pin?: string
   status: string
   reason?: string
+  // blockers are the item's still-unresolved blocked-by edges; blocked is set
+  // while it has any, so the row cannot be run on its own.
+  blockers?: string[]
+  blocked?: boolean
   sub_issues?: QueueSubIssue[]
   queued_at?: string
 }
@@ -132,6 +136,23 @@ export async function moveQueueItem(
   )
   if (!res.ok) {
     throw new Error(await errorMessage(res, 'reorder failed'))
+  }
+  return res.json()
+}
+
+// runQueueItem runs one queued item on its own: the hub spawns its child without
+// arming the drain, so when the item settles the queue goes idle instead of
+// starting the next row.
+export async function runQueueItem(
+  repo: string,
+  id: string,
+): Promise<QueueResponse> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/queue/${encodeURIComponent(id)}/run`,
+    { method: 'POST' },
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'run item failed'))
   }
   return res.json()
 }

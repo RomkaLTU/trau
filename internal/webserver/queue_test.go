@@ -1,13 +1,17 @@
 package webserver
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
@@ -563,3 +567,264 @@ func TestQueueRequiresTokenWhenExposed(t *testing.T) {
 type errStub string
 
 func (e errStub) Error() string { return string(e) }
+
+// runOneServer wires deterministic drain probes: alive answers true so the drain
+// loop the handler starts parks on the child it just spawned.
+func runOneServer(t *testing.T) (*Server, *fakeSupervisor, string, *httptest.Server) {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "acme")
+	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
+	s.home = t.TempDir()
+	fake := &fakeSupervisor{}
+	s.sup = fake
+	s.drain.repoLive = func(string) bool { return false }
+	s.drain.alive = func(int) bool { return true }
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	s.drainCtx = ctx
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	return s, fake, root, ts
+}
+
+func runQueueItem(t *testing.T, ts *httptest.Server, repo, id string) (*http.Response, string) {
+	t.Helper()
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/queue/"+id+"/run", nil)
+	if res.StatusCode == http.StatusOK {
+		return res, ""
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	return res, body.Error
+}
+
+func TestQueueRunItemSpawnsWithoutArmingDrain(t *testing.T) {
+	s, fake, root, ts := runOneServer(t)
+	seedQueue(t, s, root, false,
+		queue.Item{Kind: queue.KindTicket, ID: "COD-1"},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
+	)
+
+	res, _ := runQueueItem(t, ts, "acme", "COD-2")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want only the item asked for", len(fake.spawns))
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-2", "--once", "--drain-report", "COD-2"})
+	if got := statusOf(t, s, root, "COD-2"); got != queue.StatusRunning {
+		t.Errorf("COD-2 = %q, want running", got)
+	}
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusPending {
+		t.Errorf("COD-1 = %q, want it left pending — a single-item run never starts the queue", got)
+	}
+	if drainingOf(t, s, root) {
+		t.Error("draining armed, want the queue left disarmed so the loop stops after this item")
+	}
+}
+
+func TestQueueRunItemSpawnsEpicWithoutOnce(t *testing.T) {
+	s, fake, root, ts := runOneServer(t)
+	seedQueue(t, s, root, false, queue.Item{Kind: queue.KindEpic, ID: "COD-1"})
+
+	res, _ := runQueueItem(t, ts, "acme", "COD-1")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--drain-report", "COD-1"})
+}
+
+func TestQueueRunItemResumesPausedItem(t *testing.T) {
+	s, fake, root, ts := runOneServer(t)
+	seedQueue(t, s, root, false, queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusPaused, Reason: "parked"})
+
+	res, _ := runQueueItem(t, ts, "acme", "COD-1")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once", "--drain-report", "COD-1"})
+}
+
+// TestQueueRunItemRunsDuplicateOfQueuedEpic proves the drain's global dedup does
+// not apply: an explicit pick of a ticket an earlier queued epic covers runs it.
+func TestQueueRunItemRunsDuplicateOfQueuedEpic(t *testing.T) {
+	s, fake, root, ts := runOneServer(t)
+	seedQueue(t, s, root, false,
+		queue.Item{Kind: queue.KindEpic, ID: "COD-1", SubIssues: []queue.SubIssue{{ID: "COD-2"}}},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
+	)
+
+	res, _ := runQueueItem(t, ts, "acme", "COD-2")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — an explicit single-item pick beats the dedup", res.StatusCode)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want the duplicate run anyway", len(fake.spawns))
+	}
+	if got := statusOf(t, s, root, "COD-2"); got != queue.StatusRunning {
+		t.Errorf("COD-2 = %q, want running rather than skipped", got)
+	}
+}
+
+func TestQueueRunItemGuards(t *testing.T) {
+	cases := []struct {
+		name   string
+		setup  func(t *testing.T, s *Server, root string)
+		id     string
+		status int
+		reason string
+	}{
+		{
+			name: "draining queue",
+			setup: func(t *testing.T, s *Server, root string) {
+				seedQueue(t, s, root, true, queue.Item{Kind: queue.KindTicket, ID: "COD-1"})
+			},
+			id:     "COD-1",
+			status: http.StatusConflict,
+			reason: "draining",
+		},
+		{
+			name: "another item running",
+			setup: func(t *testing.T, s *Server, root string) {
+				seedQueue(t, s, root, false,
+					queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusRunning, PID: 4242},
+					queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
+				)
+			},
+			id:     "COD-2",
+			status: http.StatusConflict,
+			reason: "COD-1 is already running",
+		},
+		{
+			name: "live instance in the repo",
+			setup: func(t *testing.T, s *Server, root string) {
+				s.drain.repoLive = func(string) bool { return true }
+				seedQueue(t, s, root, false, queue.Item{Kind: queue.KindTicket, ID: "COD-1"})
+			},
+			id:     "COD-1",
+			status: http.StatusConflict,
+			reason: "a loop is already running",
+		},
+		{
+			name: "repo shutting down",
+			setup: func(t *testing.T, s *Server, root string) {
+				seedQueue(t, s, root, false, queue.Item{Kind: queue.KindTicket, ID: "COD-1"})
+				s.beginShutdown(root)
+			},
+			id:     "COD-1",
+			status: http.StatusConflict,
+			reason: "shutting down",
+		},
+		{
+			name: "already settled item",
+			setup: func(t *testing.T, s *Server, root string) {
+				seedQueue(t, s, root, false, queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusDone})
+			},
+			id:     "COD-1",
+			status: http.StatusConflict,
+			reason: "COD-1 has already settled done",
+		},
+		{
+			name: "unknown item",
+			setup: func(t *testing.T, s *Server, root string) {
+				seedQueue(t, s, root, false, queue.Item{Kind: queue.KindTicket, ID: "COD-1"})
+			},
+			id:     "COD-9",
+			status: http.StatusNotFound,
+			reason: "COD-9 is not in the queue",
+		},
+		{
+			name: "unresolved blockers",
+			setup: func(t *testing.T, s *Server, root string) {
+				seedQueue(t, s, root, false, queue.Item{Kind: queue.KindTicket, ID: "COD-1"})
+				for _, blocker := range []string{"COD-8", "COD-9"} {
+					if err := s.stores.Issues().AddRelation(root, blocker, "COD-1"); err != nil {
+						t.Fatalf("add relation: %v", err)
+					}
+				}
+			},
+			id:     "COD-1",
+			status: http.StatusConflict,
+			reason: "COD-1 is blocked by COD-8, COD-9",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, fake, root, ts := runOneServer(t)
+			tc.setup(t, s, root)
+
+			res, reason := runQueueItem(t, ts, "acme", tc.id)
+			defer func() { _ = res.Body.Close() }()
+			if res.StatusCode != tc.status {
+				t.Fatalf("status = %d, want %d", res.StatusCode, tc.status)
+			}
+			if !strings.Contains(reason, tc.reason) {
+				t.Errorf("reason = %q, want it to name %q", reason, tc.reason)
+			}
+			if len(fake.spawns) != 0 {
+				t.Errorf("spawns = %d, want none — a refused run launches nothing", len(fake.spawns))
+			}
+		})
+	}
+}
+
+func TestQueueRunItemRefusedForObserveOnlyRepo(t *testing.T) {
+	_, _, ts := queueServer(t, "acme")
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/stranger/queue/COD-1/run", nil)
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for an observe-only repo", res.StatusCode)
+	}
+}
+
+func TestQueueRunItemRejectsUnsupportedMethod(t *testing.T) {
+	_, _, ts := queueServer(t, "acme")
+	req, err := http.NewRequest(http.MethodGet, ts.URL+APIPrefix+"/repos/acme/queue/COD-1/run", nil)
+	if err != nil {
+		t.Fatalf("new GET: %v", err)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET run: %v", err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", res.StatusCode)
+	}
+}
+
+func TestQueueViewCarriesBlockers(t *testing.T) {
+	s, _, root, ts := runOneServer(t)
+	seedQueue(t, s, root, false,
+		queue.Item{Kind: queue.KindTicket, ID: "COD-1"},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
+	)
+	if err := s.stores.Issues().AddRelation(root, "COD-9", "COD-2"); err != nil {
+		t.Fatalf("add relation: %v", err)
+	}
+
+	res, out := getQueue(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	if len(out.Items) != 2 {
+		t.Fatalf("items = %d, want 2", len(out.Items))
+	}
+	if out.Items[0].Blocked || len(out.Items[0].Blockers) != 0 {
+		t.Errorf("COD-1 = blocked %v blockers %v, want it runnable", out.Items[0].Blocked, out.Items[0].Blockers)
+	}
+	if !out.Items[1].Blocked || !reflect.DeepEqual(out.Items[1].Blockers, []string{"COD-9"}) {
+		t.Errorf("COD-2 = blocked %v blockers %v, want blocked by COD-9", out.Items[1].Blocked, out.Items[1].Blockers)
+	}
+}
