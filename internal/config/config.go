@@ -37,8 +37,8 @@ var Preamble = prompts.Render("preamble", nil)
 
 // ExplorePreamble replaces Preamble for a phase whose tool policy permits the
 // Agent tool — i.e. read-only exploration subagents are allowed (see
-// ExploreSubagents / PhaseDisallowedTools). It invites the Explore agent type for
-// parallel read-only investigation while still forbidding write-capable fan-out,
+// ExploreSubagents / PhaseDisallowedTools). It directs reconnaissance to the
+// Explore agent type while still forbidding write-capable fan-out,
 // so the preamble never contradicts the phase's effective disallowed-tools set.
 var ExplorePreamble = prompts.Render("explore_preamble", nil)
 
