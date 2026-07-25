@@ -424,6 +424,44 @@ func TestLoadSkillsMenu(t *testing.T) {
 	t.Error("SKILLS_MENU is missing from the settings catalog")
 }
 
+func TestLoadCodeStyleNote(t *testing.T) {
+	if !Defaults().CodeStyleNote {
+		t.Fatal("default CodeStyleNote = false, want the block carried")
+	}
+
+	dir := t.TempDir()
+	project := filepath.Join(dir, ".trau.ini")
+	if err := os.WriteFile(project, []byte("CODE_STYLE_NOTE=0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayered(project, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CodeStyleNote {
+		t.Error("CodeStyleNote = true, want false")
+	}
+	if got := keyValue(cfg, "CODE_STYLE_NOTE"); got != "0" {
+		t.Errorf("keyValue(CODE_STYLE_NOTE) = %q, want 0", got)
+	}
+	for _, m := range KnownKeys() {
+		if m.Key != "CODE_STYLE_NOTE" {
+			continue
+		}
+		if !m.WebEditable {
+			t.Error("CODE_STYLE_NOTE should be web-editable")
+		}
+		if !m.Bool {
+			t.Error("CODE_STYLE_NOTE should render as a boolean")
+		}
+		if m.Group != sectionPipeline {
+			t.Errorf("CODE_STYLE_NOTE section = %q, want %q", m.Group, sectionPipeline)
+		}
+		return
+	}
+	t.Error("CODE_STYLE_NOTE is missing from the settings catalog")
+}
+
 func TestResolveConfigItemsEnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	local := filepath.Join(dir, "trau.ini")

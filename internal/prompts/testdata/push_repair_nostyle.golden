@@ -1,0 +1,6 @@
+COD-123's commit is on the feature branch but `git push` was REJECTED by a local pre-push hook — a quality gate the repo runs before allowing a push (tests, linters, static analysis, etc.). This is deterministic feedback about the committed code, NOT an infra error. Rejection output:
+
+hook line one
+hook line two
+
+Read the output, find the root cause in THIS slice's code, and fix it with minimal, targeted changes. Then COMMIT the fix so it becomes part of what gets pushed — amend the existing commit or add a follow-up commit, matching the repo's commit style. If the failure is a pre-existing or out-of-scope problem NOT caused by this slice, do NOT hack around it — say so clearly and change nothing. NOTES-NOTE. Do NOT run `git push` or open a PR yourself — the loop re-pushes once you finish.

@@ -137,18 +137,19 @@ func newTestPipeline(t *testing.T, runner agent.Runner, tr tracker.Tracker) *Pip
 	t.Helper()
 	dir := t.TempDir()
 	return &Pipeline{
-		Runner:       runner,
-		Tracker:      tr,
-		Git:          fakeGit{},
-		State:        state.NewStore(dir),
-		PhaseLogs:    newMemPhaseLogs(),
-		LessonLedger: &fakeLedger{},
-		RunsDir:      dir,
-		Base:         "main",
-		Prefix:       "COD",
-		Lessons:      true,
-		MaxRepairs:   0,
-		MaxBugfixes:  0,
+		Runner:        runner,
+		Tracker:       tr,
+		Git:           fakeGit{},
+		State:         state.NewStore(dir),
+		PhaseLogs:     newMemPhaseLogs(),
+		LessonLedger:  &fakeLedger{},
+		RunsDir:       dir,
+		Base:          "main",
+		Prefix:        "COD",
+		Lessons:       true,
+		CodeStyleNote: true,
+		MaxRepairs:    0,
+		MaxBugfixes:   0,
 	}
 }
 

@@ -106,10 +106,10 @@ func TestRepairBugfixInstructionModes(t *testing.T) {
 		build func(handoff, ticketCtx string) string
 	}{
 		{name: "repair", build: func(h, tc string) string {
-			return repairInstruction(prompts.Renderer{}, "COD-1", verifyPath("COD-1"), h, "feature/x", "boom", "", "", "", "", tc)
+			return repairInstruction(prompts.Renderer{}, "COD-1", verifyPath("COD-1"), h, "feature/x", "boom", "", "", "", "", "", tc)
 		}},
 		{name: "bugfix", build: func(h, tc string) string {
-			return bugfixInstruction(prompts.Renderer{}, "COD-1", verifyPath("COD-1"), h, "feature/x", "boom", "", "", "", "", tc)
+			return bugfixInstruction(prompts.Renderer{}, "COD-1", verifyPath("COD-1"), h, "feature/x", "boom", "", "", "", "", "", tc)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

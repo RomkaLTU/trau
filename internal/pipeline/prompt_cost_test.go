@@ -86,6 +86,6 @@ func TestTicketContextNote(t *testing.T) {
 	mustContain(t, "ticketContextNote comments", withComments, "Comments", "ada", "watch the timeout")
 
 	// The build instruction carries the injected block through to the agent.
-	build := buildInstruction(prompts.Renderer{}, "TMS-1121", "feature/x", skillsPrompt(prompts.Renderer{}, nil, nil, nil), "", got)
+	build := buildInstruction(prompts.Renderer{}, "TMS-1121", "feature/x", skillsPrompt(prompts.Renderer{}, nil, nil, nil), "", "", got)
 	mustContain(t, "buildInstruction", build, "Model gateway", "stop after implementation.")
 }

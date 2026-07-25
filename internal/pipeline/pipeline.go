@@ -502,6 +502,10 @@ type Pipeline struct {
 	// left out, for the agent to load on its own judgment. Claude-only: the other
 	// providers have no Skill tool to take the offer.
 	SkillsMenu bool
+	// CodeStyleNote carries the code_style block into the build, repair, bugfix and
+	// push_repair prompts (config CODE_STYLE_NOTE). Off drops it from all four, so
+	// every diff a cohort produces was written under the same instructions.
+	CodeStyleNote bool
 	// Cleanup gates the pre-verify slop-cleanup step (config CLEANUP).
 	Cleanup        bool
 	CITimeout      int
@@ -1427,7 +1431,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	buildSkills := resolver.Build(agent.SkillContext{Text: skillMatchText(ticketCtx, labels)})
 	buildDelivery := p.resolveSkills(buildSkills, resolver.Installed(), agent.PhaseBuild)
 	p.recordPhaseSkills(id, "build", buildDelivery)
-	out, err := p.agentStep(ctx, id, "build", injectInto(buildDelivery.injection, buildInstruction(p.prompts, id, branch, buildDelivery.note, note, ticketCtx)))
+	out, err := p.agentStep(ctx, id, "build", injectInto(buildDelivery.injection, buildInstruction(p.prompts, id, branch, buildDelivery.note, note, p.codeStyleNote(), ticketCtx)))
 	if err != nil {
 		return err
 	}
@@ -1841,7 +1845,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 			}
 			p.setActivity(id, activity.Repair, fmt.Sprintf("repair%d", repairAttempt))
 			p.recordPhaseSkills(id, "repair", repairDelivery)
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), injectInto(repairDelivery.injection, repairInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, repairDelivery.note, ticketCtx))); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), injectInto(repairDelivery.injection, repairInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, repairDelivery.note, p.codeStyleNote(), ticketCtx))); err != nil {
 				return err
 			}
 			continue
@@ -1855,7 +1859,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 			}
 			p.setActivity(id, activity.Bugfix, fmt.Sprintf("bugfix%d", bugfixAttempt))
 			p.recordPhaseSkills(id, "bugfix", bugfixDelivery)
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), injectInto(bugfixDelivery.injection, bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, bugfixDelivery.note, ticketCtx))); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), injectInto(bugfixDelivery.injection, bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, bugfixDelivery.note, p.codeStyleNote(), ticketCtx))); err != nil {
 				return err
 			}
 			continue
@@ -2628,7 +2632,7 @@ func (p *Pipeline) pushDeliverable(ctx context.Context, id, ref string) error {
 		repairs++
 		p.logf("  ⚠ push rejected by a pre-push gate — repair attempt %d/%d", repairs, p.MaxRepairs)
 		notesRef, _ := p.activeBuildNotes(id)
-		if _, err := p.agentStep(ctx, id, fmt.Sprintf("push-repair%d", repairs), pushRepairInstruction(p.prompts, id, err.Error(), buildNotesNote(notesRef))); err != nil {
+		if _, err := p.agentStep(ctx, id, fmt.Sprintf("push-repair%d", repairs), pushRepairInstruction(p.prompts, id, err.Error(), buildNotesNote(notesRef), p.codeStyleNote())); err != nil {
 			return err
 		}
 	}
@@ -3418,13 +3422,20 @@ func verifySkillsPrompt(r prompts.Renderer, installed, resolved, menu []string) 
 	return r.Render("verify_skills", prompts.SkillsData{Installed: installed, Required: resolved, Menu: menu})
 }
 
-func buildInstruction(r prompts.Renderer, id, branch, skillsNote, note, ticketCtx string) string {
+func (p *Pipeline) codeStyleNote() string {
+	if !p.CodeStyleNote {
+		return ""
+	}
+	return p.prompts.Render("code_style", nil)
+}
+
+func buildInstruction(r prompts.Renderer, id, branch, skillsNote, note, codeStyle, ticketCtx string) string {
 	return r.Render("build", prompts.BuildData{
 		ID:            id,
 		Branch:        branch,
 		SkillsNote:    skillsNote,
 		Note:          note,
-		CodeStyle:     r.Render("code_style", nil),
+		CodeStyle:     codeStyle,
 		BuildNotes:    buildNotesInstruction(r, id),
 		TicketContext: ticketCtx,
 	})
@@ -3877,15 +3888,15 @@ func commitSubject(title string) string {
 	return strings.TrimRight(cut, " ")
 }
 
-func repairInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, ticketCtx string) string {
-	return r.Render("repair", repairData(r, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, ticketCtx))
+func repairInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, codeStyle, ticketCtx string) string {
+	return r.Render("repair", repairData(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, codeStyle, ticketCtx))
 }
 
-func bugfixInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, ticketCtx string) string {
-	return r.Render("bugfix", repairData(r, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, ticketCtx))
+func bugfixInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, codeStyle, ticketCtx string) string {
+	return r.Render("bugfix", repairData(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, codeStyle, ticketCtx))
 }
 
-func repairData(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, ticketCtx string) prompts.RepairData {
+func repairData(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, codeStyle, ticketCtx string) prompts.RepairData {
 	return prompts.RepairData{
 		ID:            id,
 		Verdict:       verdict,
@@ -3896,7 +3907,7 @@ func repairData(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricN
 		LessonsNote:   lessonsNote,
 		NotesNote:     notesNote,
 		SkillsNote:    skillsNote,
-		CodeStyle:     r.Render("code_style", nil),
+		CodeStyle:     codeStyle,
 		TicketContext: ticketCtx,
 	}
 }
@@ -3906,12 +3917,12 @@ func repairData(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricN
 // problem AND fold the fix into what gets pushed (amend or a follow-up commit); the
 // loop re-pushes after it finishes. The output is passed raw and unparsed — the
 // agent reads the hook's own report rather than trau guessing at its format.
-func pushRepairInstruction(r prompts.Renderer, id, hookOutput, notesNote string) string {
+func pushRepairInstruction(r prompts.Renderer, id, hookOutput, notesNote, codeStyle string) string {
 	return r.Render("push_repair", prompts.PushRepairData{
 		ID:         id,
 		HookOutput: hookOutput,
 		NotesNote:  notesNote,
-		CodeStyle:  r.Render("code_style", nil),
+		CodeStyle:  codeStyle,
 	})
 }
 
