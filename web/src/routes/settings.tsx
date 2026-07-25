@@ -14,6 +14,7 @@ import {
   PromptsSection,
   RepoPromptsSection,
 } from '@/components/trau/prompts-panel'
+import { MCPConnectSection } from '@/components/trau/mcp-connect'
 import { QAAccountsSection } from '@/components/trau/qa-accounts-panel'
 import {
   InlineEditor,
@@ -76,6 +77,8 @@ function Settings() {
       </header>
 
       <UpdatesSection />
+
+      <MCPConnectSection />
 
       {repos.length === 0 && (
         <EmptyState

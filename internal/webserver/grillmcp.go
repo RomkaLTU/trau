@@ -11,22 +11,6 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubstore"
 )
 
-// The grilling child reaches the hub over MCP (grilling-prd.md, Mechanism). Each
-// session is mounted at its own /grill/{sid}/mcp endpoint, so a child's mcp-config
-// points at one session and cannot address another. The transport is Streamable
-// HTTP: immediate methods answer with application/json, and the blocking ask_user
-// call answers with an SSE stream carrying keepalive/progress notifications until
-// the answer arrives.
-const (
-	jsonrpcVersion     = "2.0"
-	mcpProtocolVersion = "2025-06-18"
-
-	rpcParseError     = -32700
-	rpcMethodNotFound = -32601
-	rpcInvalidParams  = -32602
-	rpcInternalError  = -32603
-)
-
 // Grilling outcome dispositions a child can finish a session with. create files a
 // brand-new issue (or epic) from an authoring session with no anchor.
 const (
@@ -47,58 +31,6 @@ var (
 	grillAskIdleTimeout = 10 * time.Minute
 	grillAskKeepalive   = time.Minute
 )
-
-var nullID = json.RawMessage("null")
-
-type jsonrpcRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params"`
-}
-
-type jsonrpcResponse struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id"`
-	Result  any             `json:"result,omitempty"`
-	Error   *jsonrpcError   `json:"error,omitempty"`
-}
-
-type jsonrpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-type jsonrpcNotification struct {
-	JSONRPC string `json:"jsonrpc"`
-	Method  string `json:"method"`
-	Params  any    `json:"params,omitempty"`
-}
-
-type mcpTool struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"inputSchema"`
-}
-
-type mcpContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-type mcpToolResult struct {
-	Content           []mcpContent `json:"content"`
-	StructuredContent any          `json:"structuredContent,omitempty"`
-	IsError           bool         `json:"isError,omitempty"`
-}
-
-type toolsCallParams struct {
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
-	Meta      struct {
-		ProgressToken json.RawMessage `json:"progressToken"`
-	} `json:"_meta"`
-}
 
 var grillMCPTools = []mcpTool{
 	{
@@ -176,58 +108,24 @@ func (s *Server) handleGrillMCP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown grill session"})
 		return
 	}
-	var req jsonrpcRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		respondRPCError(w, nullID, rpcParseError, "parse error")
-		return
-	}
-	if len(req.ID) == 0 {
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-	switch req.Method {
-	case "initialize":
-		s.grillMCPInitialize(w, req)
-	case "ping":
-		respondRPCJSON(w, req.ID, map[string]any{})
-	case "tools/list":
-		respondRPCJSON(w, req.ID, map[string]any{"tools": grillMCPTools})
-	case "tools/call":
-		s.grillMCPToolsCall(w, r, sid, req)
-	default:
-		respondRPCError(w, req.ID, rpcMethodNotFound, "method not found: "+req.Method)
-	}
+	mcpServer{
+		name:    "trau-grill",
+		version: s.version,
+		tools:   grillMCPTools,
+		callTool: func(w http.ResponseWriter, r *http.Request, rpcID json.RawMessage, p toolsCallParams) {
+			s.grillMCPToolsCall(w, r, sid, rpcID, p)
+		},
+	}.serve(w, r)
 }
 
-func (s *Server) grillMCPInitialize(w http.ResponseWriter, req jsonrpcRequest) {
-	var p struct {
-		ProtocolVersion string `json:"protocolVersion"`
-	}
-	_ = json.Unmarshal(req.Params, &p)
-	version := p.ProtocolVersion
-	if version == "" {
-		version = mcpProtocolVersion
-	}
-	respondRPCJSON(w, req.ID, map[string]any{
-		"protocolVersion": version,
-		"capabilities":    map[string]any{"tools": map[string]any{}},
-		"serverInfo":      map[string]any{"name": "trau-grill", "version": s.version},
-	})
-}
-
-func (s *Server) grillMCPToolsCall(w http.ResponseWriter, r *http.Request, sid int64, req jsonrpcRequest) {
-	var p toolsCallParams
-	if err := json.Unmarshal(req.Params, &p); err != nil {
-		respondRPCError(w, req.ID, rpcInvalidParams, "invalid params")
-		return
-	}
+func (s *Server) grillMCPToolsCall(w http.ResponseWriter, r *http.Request, sid int64, rpcID json.RawMessage, p toolsCallParams) {
 	switch p.Name {
 	case "ask_user":
-		s.grillAskUser(w, r, sid, req.ID, p.Arguments, p.Meta.ProgressToken)
+		s.grillAskUser(w, r, sid, rpcID, p.Arguments, p.Meta.ProgressToken)
 	case "finish_session":
-		s.grillFinishSession(w, sid, req.ID, p.Arguments)
+		s.grillFinishSession(w, sid, rpcID, p.Arguments)
 	default:
-		respondRPCError(w, req.ID, rpcInvalidParams, "unknown tool: "+p.Name)
+		respondRPCError(w, rpcID, rpcInvalidParams, "unknown tool: "+p.Name)
 	}
 }
 
@@ -246,12 +144,12 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 		AllowFreeText *bool    `json:"allow_free_text"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
-		respondRPCJSON(w, rpcID, grillToolError("ask_user arguments were not valid JSON"))
+		respondRPCJSON(w, rpcID, mcpToolError("ask_user arguments were not valid JSON"))
 		return
 	}
 	question := strings.TrimSpace(a.Question)
 	if question == "" {
-		respondRPCJSON(w, rpcID, grillToolError("question is required and must not be empty"))
+		respondRPCJSON(w, rpcID, mcpToolError("question is required and must not be empty"))
 		return
 	}
 	allowFreeText := true
@@ -382,22 +280,22 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 		Summary             string          `json:"summary"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
-		respondRPCJSON(w, rpcID, grillToolError("finish_session arguments were not valid JSON"))
+		respondRPCJSON(w, rpcID, mcpToolError("finish_session arguments were not valid JSON"))
 		return
 	}
 	disposition := strings.TrimSpace(a.Disposition)
 	if !validGrillDisposition(disposition) {
-		respondRPCJSON(w, rpcID, grillToolError("disposition must be one of: rewrite, split, needs_split, create, no_change"))
+		respondRPCJSON(w, rpcID, mcpToolError("disposition must be one of: rewrite, split, needs_split, create, no_change"))
 		return
 	}
 	proposed := strings.TrimSpace(a.ProposedDescription)
 	if needsProposedDescription(disposition) && proposed == "" {
-		respondRPCJSON(w, rpcID, grillToolError("disposition "+disposition+" requires proposed_description"))
+		respondRPCJSON(w, rpcID, mcpToolError("disposition "+disposition+" requires proposed_description"))
 		return
 	}
 	title := strings.TrimSpace(a.Title)
 	if disposition == grillDispCreate && title == "" {
-		respondRPCJSON(w, rpcID, grillToolError("disposition create requires a title for the new issue"))
+		respondRPCJSON(w, rpcID, mcpToolError("disposition create requires a title for the new issue"))
 		return
 	}
 	var subIssues []grillSubIssue
@@ -405,13 +303,13 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 		var msg string
 		subIssues, msg = normalizeSplitSubIssues(a.SubIssues)
 		if msg != "" {
-			respondRPCJSON(w, rpcID, grillToolError(msg))
+			respondRPCJSON(w, rpcID, mcpToolError(msg))
 			return
 		}
 	}
 	summary := strings.TrimSpace(a.Summary)
 	if summary == "" {
-		respondRPCJSON(w, rpcID, grillToolError("summary is required"))
+		respondRPCJSON(w, rpcID, mcpToolError("summary is required"))
 		return
 	}
 	sess, found, err := s.stores.Grill().Session(sid)
@@ -424,7 +322,7 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 		return
 	}
 	if !grillFinishable(sess.State) {
-		respondRPCJSON(w, rpcID, grillToolError("this session has already ended and cannot be finished again"))
+		respondRPCJSON(w, rpcID, mcpToolError("this session has already ended and cannot be finished again"))
 		return
 	}
 	outcome, _ := json.Marshal(struct {
@@ -447,12 +345,12 @@ func (s *Server) grillFinishSession(w http.ResponseWriter, sid int64, rpcID, arg
 	}
 	finished, err := s.stores.Grill().Transition(sid, hubstore.GrillFinished, "")
 	if err != nil {
-		respondRPCJSON(w, rpcID, grillToolError("could not finish session: "+err.Error()))
+		respondRPCJSON(w, rpcID, mcpToolError("could not finish session: "+err.Error()))
 		return
 	}
 	s.publishGrillMessage(msg)
 	s.publishGrillState(finished)
-	respondRPCJSON(w, rpcID, grillToolSuccess(
+	respondRPCJSON(w, rpcID, mcpToolSuccess(
 		"Session finished with disposition \""+disposition+"\". The proposed outcome is now awaiting the user's review."))
 }
 
@@ -621,50 +519,4 @@ func grillEndedResult() mcpToolResult {
 			"do not call any more tools."}},
 		StructuredContent: map[string]any{"status": "ended"},
 	}
-}
-
-func grillToolError(msg string) mcpToolResult {
-	return mcpToolResult{Content: []mcpContent{{Type: "text", Text: msg}}, IsError: true}
-}
-
-func grillToolSuccess(msg string) mcpToolResult {
-	return mcpToolResult{Content: []mcpContent{{Type: "text", Text: msg}}}
-}
-
-func respondRPCJSON(w http.ResponseWriter, id json.RawMessage, result any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: id, Result: result})
-}
-
-func respondRPCError(w http.ResponseWriter, id json.RawMessage, code int, msg string) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(jsonrpcResponse{JSONRPC: jsonrpcVersion, ID: id, Error: &jsonrpcError{Code: code, Message: msg}})
-}
-
-func writeMCPMessage(w io.Writer, msg any) error {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Fprintf(w, "data: %s\n\n", data)
-	return err
-}
-
-// writeMCPProgress emits an MCP progress notification, keeping the client's tool
-// idle timer fed while ask_user blocks. Progress references the token from the
-// tool call; with no token there is nothing to correlate, so it is a no-op and
-// the SSE keepalive comment carries the connection alone.
-func writeMCPProgress(w io.Writer, token json.RawMessage, progress int) error {
-	if len(token) == 0 {
-		return nil
-	}
-	return writeMCPMessage(w, jsonrpcNotification{
-		JSONRPC: jsonrpcVersion,
-		Method:  "notifications/progress",
-		Params: map[string]any{
-			"progressToken": token,
-			"progress":      progress,
-			"message":       "waiting for the user to answer",
-		},
-	})
 }

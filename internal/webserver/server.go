@@ -263,6 +263,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) apiHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(APIPrefix+"/health", s.handleHealth)
+	mux.HandleFunc(APIPrefix+"/mcp", s.handleMCP)
 	mux.HandleFunc(APIPrefix+"/hub/restart", s.handleHubRestart)
 	mux.HandleFunc(APIPrefix+"/hub/reload", s.handleHubReload)
 	mux.HandleFunc(APIPrefix+"/update", s.handleUpdate)
@@ -375,7 +376,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc("/api/", handleAPINotFound)
 
 	var h http.Handler = mux
-	if !Loopback(s.bind) && s.token != "" {
+	if s.tokenGated() {
 		h = requireToken(s.token, h)
 	}
 	return h
@@ -386,6 +387,7 @@ type Health struct {
 	Status        string                        `json:"status"`
 	Version       string                        `json:"version"`
 	UptimeSeconds float64                       `json:"uptime_seconds"`
+	TokenRequired bool                          `json:"token_required"`
 	Attachments   hubstore.AttachmentCacheStats `json:"attachments"`
 }
 
@@ -400,6 +402,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		Status:        "ok",
 		Version:       s.version,
 		UptimeSeconds: time.Since(s.started).Seconds(),
+		TokenRequired: s.tokenGated(),
 		Attachments:   stats,
 	})
 }

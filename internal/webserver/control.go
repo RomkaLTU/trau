@@ -303,7 +303,19 @@ func (s *Server) handleEligible(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), eligibleTimeout)
+	tickets, err := s.listEligibleTickets(r.Context(), root)
+	if err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "listing eligible tickets failed: " + err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, EligibleResult{Repo: filepath.Base(root), RepoRoot: root, Tickets: tickets})
+}
+
+// listEligibleTickets drives a fresh trau with --list-eligible --json in root and
+// decodes the ready queue it prints, shared by the eligible endpoint and the MCP
+// tool so both see the order the picker would.
+func (s *Server) listEligibleTickets(ctx context.Context, root string) ([]EligibleTicket, error) {
+	ctx, cancel := context.WithTimeout(ctx, eligibleTimeout)
 	defer cancel()
 	out, err := s.sup.Capture(ctx, SpawnSpec{
 		Dir:  root,
@@ -311,15 +323,9 @@ func (s *Server) handleEligible(w http.ResponseWriter, r *http.Request) {
 		Env:  childEnv(s.home),
 	})
 	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "listing eligible tickets failed: " + err.Error()})
-		return
+		return nil, err
 	}
-	tickets, err := parseEligibleTickets(out)
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "listing eligible tickets failed: " + err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, EligibleResult{Repo: filepath.Base(root), RepoRoot: root, Tickets: tickets})
+	return parseEligibleTickets(out)
 }
 
 // parseEligibleTickets decodes the JSON array a --list-eligible --json emitted on

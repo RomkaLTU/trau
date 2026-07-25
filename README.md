@@ -114,6 +114,12 @@ The **blessed remote path is a private network, not a public port.** Put the hos
 `http://<machine>.<tailnet>.ts.net:8728`) — the token still applies, giving you defence in depth
 rather than a single open port to the internet.
 
+The hub also **speaks MCP** at `/api/v1/mcp`, so an agent you already run — Claude Code, Codex,
+Cursor — can file tickets, arm the queue, watch runs and steer them without going through the web
+UI. Settings → *External agents (MCP)* has the copy-paste setup for each client with the endpoint
+already resolved; [`docs/external-agents.md`](docs/external-agents.md) documents the auth posture,
+the full tool list and two worked examples.
+
 ## Troubleshooting
 
 Start with the preflight check — it catches the common setup problems before a run can fail

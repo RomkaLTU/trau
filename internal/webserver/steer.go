@@ -106,13 +106,23 @@ func (s *Server) queueSteerNote(w http.ResponseWriter, r *http.Request, repo reg
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "a steer note needs a body"})
 		return
 	}
-	note, err := s.stores.Steer().Queue(repo.Root, ticket, body)
+	note, err := s.steerNote(repo, ticket, body)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "queue steer note: " + err.Error()})
 		return
 	}
-	s.emitSteerQueued(repo, note)
 	writeJSON(w, http.StatusCreated, steerNoteView(note))
+}
+
+// steerNote is the single queue-and-emit path every steering surface takes, so
+// the REST route and the steer_agent MCP tool write identical notes.
+func (s *Server) steerNote(repo registry.Repo, ticket, body string) (hubstore.SteerNote, error) {
+	note, err := s.stores.Steer().Queue(repo.Root, ticket, body)
+	if err != nil {
+		return hubstore.SteerNote{}, err
+	}
+	s.emitSteerQueued(repo, note)
+	return note, nil
 }
 
 // handleSteerAck marks a note delivered by the phase that consumed it (POST). It
