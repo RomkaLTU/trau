@@ -57,13 +57,17 @@ type mcpTool struct {
 }
 
 // mcpAnnotations are the behaviour hints a client may act on when deciding
-// whether a tool needs confirmation. The hub declares only readOnlyHint, marking
-// the tools that change nothing.
+// whether a tool needs confirmation: readOnlyHint marks the tools that change
+// nothing, destructiveHint the ones whose write takes something away.
 type mcpAnnotations struct {
-	ReadOnlyHint bool `json:"readOnlyHint"`
+	ReadOnlyHint    bool `json:"readOnlyHint"`
+	DestructiveHint bool `json:"destructiveHint,omitempty"`
 }
 
-var readOnlyTool = &mcpAnnotations{ReadOnlyHint: true}
+var (
+	readOnlyTool    = &mcpAnnotations{ReadOnlyHint: true}
+	destructiveTool = &mcpAnnotations{DestructiveHint: true}
+)
 
 type mcpContent struct {
 	Type string `json:"type"`

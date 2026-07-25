@@ -22,7 +22,7 @@ import (
 // the Queue view can never disagree about what happened.
 const hubMCPName = "trau"
 
-var hubMCPTools = []mcpTool{
+var hubMCPTools = append([]mcpTool{
 	{
 		Name: "list_repos",
 		Description: "List the repos this hub serves: the name every other tool takes, the absolute path of each, " +
@@ -204,7 +204,7 @@ var hubMCPTools = []mcpTool{
 		InputSchema: json.RawMessage(`{"type": "object", "properties": {}}`),
 		Annotations: readOnlyTool,
 	},
-}
+}, hubMCPAdminTools...)
 
 // MCPRepo is one repo as list_repos reports it: the name every other tool takes,
 // its absolute path, and whether the workspace gate lets the hub queue and drain
@@ -267,6 +267,10 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 // observe-only one, a ticket that is not in the store — comes back as a tool
 // error it can read, not a protocol error that aborts the call.
 func (s *Server) hubMCPToolsCall(w http.ResponseWriter, r *http.Request, rpcID json.RawMessage, p toolsCallParams) {
+	if p.Name == "restart_hub" {
+		s.mcpRestartHub(w, rpcID)
+		return
+	}
 	var run func(json.RawMessage) (any, error)
 	switch p.Name {
 	case "list_repos":
@@ -294,8 +298,10 @@ func (s *Server) hubMCPToolsCall(w http.ResponseWriter, r *http.Request, rpcID j
 	case "list_instances":
 		run = s.mcpListInstances
 	default:
-		respondRPCError(w, rpcID, rpcInvalidParams, "unknown tool: "+p.Name)
-		return
+		if run = s.hubMCPAdminTool(r.Context(), p.Name); run == nil {
+			respondRPCError(w, rpcID, rpcInvalidParams, "unknown tool: "+p.Name)
+			return
+		}
 	}
 	result, err := run(p.Arguments)
 	if err != nil {
