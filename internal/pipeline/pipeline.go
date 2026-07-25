@@ -4521,20 +4521,27 @@ func (g ExecGit) DiffStat(ctx context.Context, base, branch string) (files, addi
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("git diff --numstat %s...%s: %w", base, branch, err)
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		fields := strings.Fields(strings.TrimSpace(line))
+	files, additions, deletions = parseNumstat(string(out))
+	return files, additions, deletions, nil
+}
+
+// parseNumstat sums a `git diff --numstat` body. Binary files carry "-" for both
+// counts and so contribute to files only.
+func parseNumstat(out string) (files, additions, deletions int) {
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		fields := strings.Fields(line)
 		if len(fields) < 3 {
 			continue
 		}
 		files++
-		if a, e := strconv.Atoi(fields[0]); e == nil {
+		if a, err := strconv.Atoi(fields[0]); err == nil {
 			additions += a
 		}
-		if d, e := strconv.Atoi(fields[1]); e == nil {
+		if d, err := strconv.Atoi(fields[1]); err == nil {
 			deletions += d
 		}
 	}
-	return files, additions, deletions, nil
+	return files, additions, deletions
 }
 
 // WorktreeDiffStat measures the working-tree changes against base — both the
@@ -4605,6 +4612,76 @@ func (g ExecGit) WorktreeChangedFiles(ctx context.Context, base string) ([]strin
 		}
 	}
 	return files, nil
+}
+
+// SnapshotWorktree records the whole working tree — tracked edits plus the
+// untracked files a phase created — as a git tree object and returns its SHA.
+// Staging runs against a throwaway index, so the repo's own index, HEAD, and
+// working tree are all left exactly as they were.
+func (g ExecGit) SnapshotWorktree(ctx context.Context) (string, error) {
+	dir, err := os.MkdirTemp("", "trau-snapshot-")
+	if err != nil {
+		return "", fmt.Errorf("snapshot index dir: %w", err)
+	}
+	defer os.RemoveAll(dir)
+
+	index := filepath.Join(dir, "index")
+	if err := g.seedIndex(ctx, index); err != nil {
+		logger.Debugf("snapshot index unseeded (hashing the whole worktree): %v", err)
+	}
+	env := append(os.Environ(), "GIT_INDEX_FILE="+index)
+
+	add := exec.CommandContext(ctx, g.bin(), "-C", g.Repo, "add", "-A")
+	add.Env = env
+	add.WaitDelay = gitWaitDelay
+	if out, err := add.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git add -A (snapshot): %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	write := exec.CommandContext(ctx, g.bin(), "-C", g.Repo, "write-tree")
+	write.Env = env
+	write.WaitDelay = gitWaitDelay
+	out, err := write.Output()
+	if err != nil {
+		return "", fmt.Errorf("git write-tree (snapshot): %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// seedIndex copies the repo's index to path so a snapshot's `git add -A` re-hashes
+// only the files whose stat data moved. Purely a speed-up — an unseeded snapshot
+// yields the same tree — so the caller logs a failure rather than aborting.
+func (g ExecGit) seedIndex(ctx context.Context, path string) error {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"rev-parse", "--git-path", "index").Output()
+	if err != nil {
+		return fmt.Errorf("git rev-parse --git-path index: %w", err)
+	}
+	live := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(live) {
+		live = filepath.Join(g.Repo, live)
+	}
+	data, err := os.ReadFile(live)
+	if err != nil {
+		return fmt.Errorf("read repo index: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return fmt.Errorf("write snapshot index: %w", err)
+	}
+	return nil
+}
+
+// DiffTrees returns the numstat totals between two tree objects. Object-to-object,
+// so the result is unaffected by the index or the working tree at the time of the
+// call.
+func (g ExecGit) DiffTrees(ctx context.Context, from, to string) (files, insertions, deletions int, err error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"diff", "--numstat", from, to).Output()
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("git diff --numstat %s %s: %w", from, to, err)
+	}
+	files, insertions, deletions = parseNumstat(string(out))
+	return files, insertions, deletions, nil
 }
 
 // Commits returns the short SHAs unique to branch relative to base (base..branch),
