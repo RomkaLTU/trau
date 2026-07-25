@@ -352,8 +352,8 @@ func TestLoadHubReloadBuildCmd(t *testing.T) {
 }
 
 func TestLoadSkillsMode(t *testing.T) {
-	if got := Defaults().SkillsMode; got != "instruct" {
-		t.Fatalf("default SkillsMode = %q, want instruct", got)
+	if got := Defaults().SkillsMode; got != "auto" {
+		t.Fatalf("default SkillsMode = %q, want auto", got)
 	}
 
 	dir := t.TempDir()
@@ -378,8 +378,8 @@ func TestLoadSkillsMode(t *testing.T) {
 		if !m.WebEditable {
 			t.Error("SKILLS_MODE should be web-editable")
 		}
-		if !slices.Contains(m.Options, "instruct") || !slices.Contains(m.Options, "inject") {
-			t.Errorf("SKILLS_MODE options = %v, want instruct and inject", m.Options)
+		if !slices.Contains(m.Options, "auto") || !slices.Contains(m.Options, "instruct") || !slices.Contains(m.Options, "inject") {
+			t.Errorf("SKILLS_MODE options = %v, want auto, instruct and inject", m.Options)
 		}
 		return
 	}

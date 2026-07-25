@@ -98,6 +98,8 @@ func (r *failingVerdictRunner) Run(_ context.Context, prompt, label string) (age
 	return agent.Result{}, nil
 }
 
+func (r *failingVerdictRunner) Route(string) (string, string, string) { return "claude", "", "" }
+
 // TestPhasePromptsAlwaysNameASkillSet is the never-empty guard: in a repo whose
 // skills match no pin and no project-type recommendation, build, verify and
 // repair still name an explicit set — the whole installed list — and verify with

@@ -41,7 +41,7 @@ func TestWarnBuildWithoutSkillsEmitsEvent(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+			p := newTestPipeline(t, routedRunner{provider: "claude"}, &fakeTracker{})
 			p.Events = event.New(&buf)
 			p.SkillsExpected = tc.expects
 			p.buildProvider = "claude"
@@ -97,7 +97,7 @@ func TestWarnVerifyWithoutSkillsEmitsEvent(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
+			p := newTestPipeline(t, routedRunner{provider: "claude"}, &fakeTracker{})
 			p.Events = event.New(&buf)
 			p.SkillsExpected = tc.expects
 			p.verifyProvider = "claude"
@@ -136,6 +136,8 @@ type seqVerdictRunner struct {
 	seq   []verdict
 	calls int
 }
+
+func (r *seqVerdictRunner) Route(string) (string, string, string) { return "claude", "", "" }
 
 func (r *seqVerdictRunner) Run(context.Context, string, string) (agent.Result, error) {
 	i := r.calls
