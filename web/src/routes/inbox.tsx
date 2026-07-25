@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { parseAsString, useQueryState } from "nuqs";
 import {
@@ -212,7 +212,6 @@ function InboxPage() {
   const [passSummary, setPassSummary] = useState<string | null>(null);
   const [status, setStatus] = useState<GrillStatus | null>(null);
   const [seen, setSeen] = useState<SeenMarks>(loadSeen);
-  const navigate = useNavigate();
 
   useEffect(() => {
     if (newDraft && peek !== NEW_DRAFT_ID) setNewDraft(false);
@@ -323,24 +322,18 @@ function InboxPage() {
   // the board is what retires the row; the applied list is what re-lists it under
   // Done today. The issue's own grill list is left to its poll — the open thread
   // rides out the settle on the streamed session. A draft has no board row, so its
-  // list is refreshed to retire the settled authoring row. A create that landed cleanly
-  // leaves the inbox for the backlog, where the filed row is highlighted; every other
-  // disposition keeps working the queue and advances to the next item.
-  function onApplied(applied: GrillAppliedOutcome) {
+  // list is refreshed to retire the settled authoring row. Every disposition keeps
+  // working the queue and advances to the next item — a create's receipt is the
+  // banner the review published, so the inbox never leaves for the backlog.
+  function onApplied() {
     const wasDraft = selected?.draft;
-    const filed =
-      !applied.hasFailures &&
-      applied.disposition === "create" &&
-      applied.issueId !== "";
-    if (!filed) skip();
+    skip();
     void queryClient.invalidateQueries({ queryKey: ["backlog", repo] });
     void queryClient.invalidateQueries({
       queryKey: ["grill", repo, "applied"],
     });
     if (wasDraft)
       void queryClient.invalidateQueries({ queryKey: ["grill", repo] });
-    if (filed)
-      void navigate({ to: "/backlog", search: { created: applied.issueId } });
   }
 
   // Discarding an authoring draft abandons its session with nothing to file, so the
