@@ -3,6 +3,7 @@ package webserver
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -69,14 +70,24 @@ func (s *Server) handleCreateInternalIssue(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "title is required"})
 		return
 	}
-	iss, err := s.stores.Issues().CreateInternal(repo.Root, s.internalPrefix(repo), draftFrom(req))
+	iss, err := s.createInternalIssue(repo, draftFrom(req))
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create issue: " + err.Error()})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
+	}
+	writeJSON(w, http.StatusCreated, toInternalIssueResponse(repo.Name, iss))
+}
+
+// createInternalIssue is the write behind both the REST create route and the MCP
+// create_ticket tool.
+func (s *Server) createInternalIssue(repo registry.Repo, draft hubstore.InternalDraft) (hubstore.Issue, error) {
+	iss, err := s.stores.Issues().CreateInternal(repo.Root, s.internalPrefix(repo), draft)
+	if err != nil {
+		return hubstore.Issue{}, fmt.Errorf("create issue: %w", err)
 	}
 	s.registerAttachments(repo.Root, iss.Identifier, scanIssueImages(iss.Description))
 	s.bindUploadedAttachments(repo.Root, iss.Identifier, iss.Description)
-	writeJSON(w, http.StatusCreated, toInternalIssueResponse(repo.Name, iss))
+	return iss, nil
 }
 
 // handleInternalIssue reads (GET) or edits (PATCH) a single internal issue. Only

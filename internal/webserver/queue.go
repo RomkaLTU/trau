@@ -128,36 +128,56 @@ func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
-	store := s.stores.Queue(root)
+	onFault := ""
 	if req.Draining {
-		onFault := strings.TrimSpace(req.OnFault)
-		if onFault == "" {
-			onFault = queue.OnFaultHalt
-		}
-		if onFault != queue.OnFaultHalt && onFault != queue.OnFaultSkip {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("on_fault %q must be %q or %q", req.OnFault, queue.OnFaultHalt, queue.OnFaultSkip)})
-			return
-		}
-		if req.NoResume {
-			if err := store.Restart(); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "restart queue: " + err.Error()})
-				return
-			}
-		}
-		if err := store.SetOptions(req.NoResume, onFault); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "set options: " + err.Error()})
+		var err error
+		if onFault, err = normalizeOnFault(req.OnFault); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
 	}
-	if err := store.SetDraining(req.Draining); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "set draining: " + err.Error()})
+	if err := s.setDraining(root, req.Draining, req.NoResume, onFault); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if req.Draining {
+	s.writeQueue(w, http.StatusOK, root)
+}
+
+func normalizeOnFault(raw string) (string, error) {
+	onFault := strings.TrimSpace(raw)
+	if onFault == "" {
+		return queue.OnFaultHalt, nil
+	}
+	if onFault != queue.OnFaultHalt && onFault != queue.OnFaultSkip {
+		return "", fmt.Errorf("on_fault %q must be %q or %q", raw, queue.OnFaultHalt, queue.OnFaultSkip)
+	}
+	return onFault, nil
+}
+
+// setDraining arms or pauses a repo's drain, the write behind both the REST drain
+// route and the MCP start_queue/pause_queue tools. Pausing only clears the flag,
+// so the loop stops after the current child exits. onFault must already be
+// normalized.
+func (s *Server) setDraining(root string, draining, noResume bool, onFault string) error {
+	store := s.stores.Queue(root)
+	if draining {
+		if noResume {
+			if err := store.Restart(); err != nil {
+				return fmt.Errorf("restart queue: %w", err)
+			}
+		}
+		if err := store.SetOptions(noResume, onFault); err != nil {
+			return fmt.Errorf("set options: %w", err)
+		}
+	}
+	if err := store.SetDraining(draining); err != nil {
+		return fmt.Errorf("set draining: %w", err)
+	}
+	if draining {
 		s.drain.reconcileParked(root)
 		s.drain.ensure(s.drainCtx, root)
 	}
-	s.writeQueue(w, http.StatusOK, root)
+	return nil
 }
 
 // handleQueueMove reorders a pending item one slot up or down. It is gated like
@@ -324,15 +344,22 @@ func (s *Server) viewQueue(w http.ResponseWriter, r *http.Request) {
 // ends here, so the response always reflects the persisted draining flag rather
 // than the caller's local view of it.
 func (s *Server) writeQueue(w http.ResponseWriter, status int, root string) {
+	view, err := s.queueView(root)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, status, view)
+}
+
+func (s *Server) queueView(root string) (QueueResponse, error) {
 	items, meta, err := s.stores.Queue(root).Snapshot()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read queue: " + err.Error()})
-		return
+		return QueueResponse{}, fmt.Errorf("read queue: %w", err)
 	}
 	pins, err := s.stores.Issues().Providers(root)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read provider pins: " + err.Error()})
-		return
+		return QueueResponse{}, fmt.Errorf("read provider pins: %w", err)
 	}
 	ids := make([]string, 0, len(items))
 	for _, it := range items {
@@ -340,20 +367,19 @@ func (s *Server) writeQueue(w http.ResponseWriter, status int, root string) {
 	}
 	blockers, err := s.stores.Issues().UnresolvedBlockers(root, ids)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read blockers: " + err.Error()})
-		return
+		return QueueResponse{}, fmt.Errorf("read blockers: %w", err)
 	}
 	drainingSince := ""
 	if !meta.DrainingSince.IsZero() {
 		drainingSince = meta.DrainingSince.UTC().Format(time.RFC3339)
 	}
-	writeJSON(w, status, QueueResponse{
+	return QueueResponse{
 		Repo:          filepath.Base(root),
 		Draining:      meta.Draining,
 		DrainingSince: drainingSince,
 		ShuttingDown:  s.isShuttingDown(root),
 		Items:         queueItemViews(items, pins, blockers),
-	})
+	}, nil
 }
 
 // handleQueueShutdown tears a repo's loop down completely in one gesture:
