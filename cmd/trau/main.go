@@ -1173,6 +1173,16 @@ func newProofUploader(cfg config.Config, repoRoot string) func(context.Context, 
 	}
 }
 
+// newHubReloader asks the serve hub to restart onto the binary this repo builds,
+// once the repo's work has shipped to its base. The hub applies it at the first
+// hub-wide idle gap, so the request never interrupts the run making it.
+func newHubReloader(cfg config.Config, repoRoot string) func(context.Context) (hubclient.ReloadAck, error) {
+	hub := hubclient.New(hubBaseURL(cfg), cfg.ServeToken)
+	return func(ctx context.Context) (hubclient.ReloadAck, error) {
+		return hub.RequestHubReload(ctx, repoRoot)
+	}
+}
+
 // newProofsPublisher fetches a run's stored screenshots back from the serve hub
 // and publishes them to the target repo's trau-proofs orphan branch, so the
 // delivered PR can embed the visual QA proof (ADR 0008 keeps the child DB-free).
@@ -1447,6 +1457,9 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		SaveQAAccount:        newQASaver(cfg, repoRoot),
 		UploadProofs:         newProofUploader(cfg, repoRoot),
 		PublishProofs:        newProofsPublisher(cfg, repoRoot),
+		HubSelfReload:        cfg.HubSelfReload,
+		HubReloadBuildCmd:    cfg.HubReloadBuildCmd,
+		RequestHubReload:     newHubReloader(cfg, repoRoot),
 		Steer:                newSteerQueue(cfg, repoRoot),
 		OwnedProject:         cfg.Project,
 

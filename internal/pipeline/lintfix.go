@@ -26,12 +26,7 @@ func (p *Pipeline) lintFix(ctx context.Context, id string) error {
 }
 
 func (p *Pipeline) lintFixCmd(ctx context.Context, cmd string) error {
-	p.logf("  ↳ lint-fix: %s", cmd)
-	c := exec.CommandContext(ctx, "sh", "-c", cmd)
-	if p.RepoRoot != "" {
-		c.Dir = p.RepoRoot
-	}
-	out, err := c.CombinedOutput()
+	out, err := p.runRepoCmd(ctx, "lint-fix", cmd)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -60,6 +55,17 @@ func (p *Pipeline) lintFixAgent(ctx context.Context, id string) error {
 
 func lintFixInstruction(r prompts.Renderer, id string) string {
 	return r.Render("lint_fix", prompts.LintFixData{ID: id})
+}
+
+// runRepoCmd runs one of the repo's own shell commands from its root, echoing it
+// under label so the run log shows what was invoked before its output.
+func (p *Pipeline) runRepoCmd(ctx context.Context, label, cmd string) ([]byte, error) {
+	p.logf("  ↳ %s: %s", label, cmd)
+	c := exec.CommandContext(ctx, "sh", "-c", cmd)
+	if p.RepoRoot != "" {
+		c.Dir = p.RepoRoot
+	}
+	return c.CombinedOutput()
 }
 
 func tailLines(s string, n int) []string {

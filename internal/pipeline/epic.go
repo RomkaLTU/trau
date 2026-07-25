@@ -181,6 +181,9 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 		return fmt.Errorf("finalize epic %s: close epic: %w", p.EpicID, err)
 	}
 	p.logf("  ✓ epic %s closed; PR %s", p.EpicID, prURL)
+	if merged {
+		p.reloadHubOntoBase(ctx)
+	}
 	return nil
 }
 

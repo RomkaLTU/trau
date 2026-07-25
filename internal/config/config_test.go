@@ -282,6 +282,75 @@ func TestLoadProofRetentionDays(t *testing.T) {
 	}
 }
 
+func TestLoadHubReloadBuildCmd(t *testing.T) {
+	if got := Defaults().HubReloadBuildCmd; got != "make build" {
+		t.Fatalf("default HubReloadBuildCmd = %q, want make build", got)
+	}
+
+	project := filepath.Join(t.TempDir(), ".trau.ini")
+	if err := os.WriteFile(project, []byte("HUB_RELOAD_BUILD_CMD=go build ./cmd/trau\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayered(project, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HubReloadBuildCmd != "go build ./cmd/trau" {
+		t.Errorf("HubReloadBuildCmd = %q, want go build ./cmd/trau", cfg.HubReloadBuildCmd)
+	}
+	if got := keyValue(cfg, "HUB_RELOAD_BUILD_CMD"); got != "go build ./cmd/trau" {
+		t.Errorf("keyValue(HUB_RELOAD_BUILD_CMD) = %q", got)
+	}
+
+	// The key documents "empty skips the rebuild", so every way of writing an
+	// empty value has to survive the layer merge instead of falling back.
+	set := filepath.Join(t.TempDir(), "user.ini")
+	if err := os.WriteFile(set, []byte("HUB_RELOAD_BUILD_CMD=make build\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{"HUB_RELOAD_BUILD_CMD=", "HUB_RELOAD_BUILD_CMD= ", `HUB_RELOAD_BUILD_CMD=""`} {
+		t.Run(line, func(t *testing.T) {
+			off := filepath.Join(t.TempDir(), ".trau.ini")
+			if err := os.WriteFile(off, []byte(line+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			for _, layer := range []struct {
+				name          string
+				project, user string
+				want          Layer
+			}{
+				{name: "project", project: off, want: LayerProject},
+				{name: "user", user: off, want: LayerUser},
+				{name: "project clears the user layer", project: off, user: set, want: LayerProject},
+			} {
+				t.Run(layer.name, func(t *testing.T) {
+					cfg, err := LoadLayered(layer.project, layer.user, "", "")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if cfg.HubReloadBuildCmd != "" {
+						t.Errorf("HubReloadBuildCmd = %q, want empty (rebuild skipped)", cfg.HubReloadBuildCmd)
+					}
+
+					// The settings surfaces must not attribute the default to the
+					// layer that just switched the rebuild off.
+					items, err := ResolveConfigItems(cfg, "", layer.project, layer.user, "", Options{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					byKey := map[string]ConfigItem{}
+					for _, it := range items {
+						byKey[it.Key] = it
+					}
+					if got := byKey["HUB_RELOAD_BUILD_CMD"]; got.Layer != layer.want || got.Value != "" {
+						t.Errorf("HUB_RELOAD_BUILD_CMD item = %s/%q, want %s/empty", got.Layer, got.Value, layer.want)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestLoadSkillsMode(t *testing.T) {
 	if got := Defaults().SkillsMode; got != "instruct" {
 		t.Fatalf("default SkillsMode = %q, want instruct", got)

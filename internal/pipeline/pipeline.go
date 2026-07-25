@@ -83,6 +83,12 @@ type Git interface {
 
 	Clean(ctx context.Context) error
 
+	// DiscardTracked reverts every tracked file to HEAD (git checkout -- .),
+	// leaving untracked files alone. It sweeps the churn a build leaves behind —
+	// nondeterministic bundler output and the like — which would otherwise read as
+	// a dirty tree to the next run's clean-base check.
+	DiscardTracked(ctx context.Context) error
+
 	BranchExists(ctx context.Context, branch string) (bool, error)
 
 	FindFeatureBranch(ctx context.Context, id string) (string, error)
@@ -535,6 +541,23 @@ type Pipeline struct {
 	// returns an error the caller logs before delivering the PR without the QA
 	// section. Nil disables proof publishing.
 	PublishProofs func(ctx context.Context, ticket string) (proofsbranch.Publication, error)
+
+	// HubSelfReload gates the post-ship hub reload (config HUB_SELF_RELOAD): once
+	// a full unit of work merges to the base, the binary is rebuilt from it with
+	// HubReloadBuildCmd and the hub is asked to restart onto the result.
+	HubSelfReload     bool
+	HubReloadBuildCmd string
+
+	// RequestHubReload asks the hub to restart onto this repo's freshly built
+	// binary, which it defers to the first gap with nothing running anywhere. The
+	// work has already shipped by the time it is called, so a refusal or an
+	// unreachable hub only logs. Nil disables the reload request.
+	RequestHubReload func(ctx context.Context) (hubclient.ReloadAck, error)
+
+	// probeBinary reads the version of the binary the hub would re-exec; nil
+	// resolves and probes the real one on disk (overridable in tests, whose own
+	// binary is not a trau).
+	probeBinary func(ctx context.Context) (string, error)
 
 	// Steer is the hub-backed queue of operator steer notes typed at a running
 	// ticket. Every substantive phase drains it into its prompt and lends it to
@@ -2189,7 +2212,19 @@ func (p *Pipeline) commitTitle(ctx context.Context, id string) string {
 // aborting the loop. A merge GitHub refuses as "not mergeable" (the base moved
 // under the PR) goes through recoverUnmergeablePR — sync, agent-resolved
 // conflicts, one more CI gate — before it too becomes a give-up, never a fault.
+//
+// Every outcome that reached the base hands it to the hub reload step. An epic
+// slice is excluded: its PR targets the epic branch, so nothing reached the base
+// yet.
 func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
+	err := p.ciAndMerge(ctx, id)
+	if p.EpicID == "" && (err == nil || errors.Is(err, ErrAlreadyDone)) {
+		p.reloadHubOntoBase(ctx)
+	}
+	return err
+}
+
+func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 	pr := p.State.Get(id, "PR")
 	if prState, _ := p.GitHub.PRState(ctx, pr); prState == "MERGED" {
 		if err := p.markDone(ctx, id, "  ✓ %s already merged — marked Done"); err != nil {
@@ -4355,6 +4390,10 @@ func (g ExecGit) Clean(ctx context.Context) error {
 		"-e", "trau.ini",
 		"-e", ".trau/",
 	)
+}
+
+func (g ExecGit) DiscardTracked(ctx context.Context) error {
+	return g.run(ctx, "checkout", "--", ".")
 }
 
 // BranchExists reports whether refs/heads/<branch> resolves. git rev-parse --verify
