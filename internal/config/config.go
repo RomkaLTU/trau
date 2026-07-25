@@ -162,11 +162,13 @@ type Config struct {
 	// union is empty verify falls back to the build set.
 	RequiredSkillsVerify []string
 	// SkillsMode selects how a phase's resolved skill set reaches the agent
-	// (config SKILLS_MODE): "instruct" (default) names the skills for the agent to
-	// load with the Skill tool; "inject" delivers each skill's SKILL.md content
-	// inline in the build/verify/repair/bugfix prompt, so delivery no longer
-	// depends on the agent calling the Skill tool and works for providers without
-	// it.
+	// (config SKILLS_MODE): "instruct" names the skills for the agent to load with
+	// the Skill tool; "inject" delivers each skill's SKILL.md content inline in the
+	// build/verify/repair/bugfix prompt, so delivery no longer depends on the agent
+	// calling the Skill tool and works for providers without it. "auto" (the
+	// default) picks per phase from the provider it routes to — instruct for
+	// claude, inject for codex and kimi, which have no Skill tool. Either explicit
+	// mode applies to every provider.
 	SkillsMode string
 	// SkillsMenu adds an optional backstop line to the build and verify skills
 	// prompts (config SKILLS_MENU) naming the installed skills outside the
@@ -431,7 +433,7 @@ func Defaults() Config {
 		BrowserVerify:          "auto",
 		VerifyProofs:           "on",
 		ProofRetentionDays:     14,
-		SkillsMode:             "instruct",
+		SkillsMode:             "auto",
 		VerifyChecks:           true,
 		VerifyPanelPolicy:      "unanimous",
 		PanelParallel:          true,
@@ -1684,7 +1686,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "AUTO_INSTALL_SKILLS", Group: sectionSkills, WebEditable: true, Default: "0", Description: "Install the recommended skill set for the repo's project type at loop start when no skills are present (opt-in; 1 = yes, 0 = no)", Bool: true},
 		{Key: "REQUIRED_SKILLS", Group: sectionSkills, WebEditable: true, Description: "Skill names (comma-separated) the build, repair and bugfix agents must load whatever the ticket touches, on top of the repo's routing rules in .trau/skills-rules.json. Names the repo cannot load warn at loop start. Empty with no matching rule = the project type's recommended skills, or every installed skill when none match"},
 		{Key: "REQUIRED_SKILLS_VERIFY", Group: sectionSkills, WebEditable: true, Description: "Skill names (comma-separated) the verify agent must load, alongside the routing rules' verify matches, the project's test skills and browser-harness on browser verify. Empty with no matching rule = verify loads the build set"},
-		{Key: "SKILLS_MODE", Group: sectionSkills, WebEditable: true, Default: "instruct", Description: "How a phase's resolved skill set reaches the agent: instruct names the skills for the agent to load with the Skill tool; inject delivers each skill's SKILL.md content inline in the build/verify/repair/bugfix prompt", Options: []string{"instruct", "inject"}},
+		{Key: "SKILLS_MODE", Group: sectionSkills, WebEditable: true, Default: "auto", Description: "How a phase's resolved skill set reaches the agent: instruct names the skills for the agent to load with the Skill tool; inject delivers each skill's SKILL.md content inline in the build/verify/repair/bugfix prompt. auto picks per phase from the provider it routes to — instruct on claude, inject on codex and kimi, which have no Skill tool; either explicit mode applies to every provider", Options: []string{"auto", "instruct", "inject"}},
 		{Key: "SKILLS_MENU", Group: sectionSkills, WebEditable: true, Default: "0", Description: "Append an optional backstop line to the build and verify skills prompts naming the installed skills outside the resolved set, for the agent to load when they genuinely help. Instruct mode on claude only — the other providers have no Skill tool (1 = yes, 0 = no)", Bool: true},
 		{Key: "SPLIT_LABEL", Group: sectionTracker, WebEditable: true, Advanced: true, Default: "needs-split", Description: "Managed label marking a ticket a human should split into smaller slices before the loop builds it"},
 		{Key: "LINT_FIX", Group: sectionPipeline, WebEditable: true, Default: "1", Description: "Run the project's lint/format autofixers before verify so verify isn't spent self-healing style noise (1 = yes, 0 = no)", Bool: true},

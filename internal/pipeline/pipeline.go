@@ -491,10 +491,11 @@ type Pipeline struct {
 	// load (config REQUIRED_SKILLS_VERIFY), alongside the project's test skills
 	// and browser-harness on a browser-verify slice.
 	RequiredSkillsVerify []string
-	// SkillsMode selects skill delivery (config SKILLS_MODE): "instruct" (default)
-	// names the resolved set for the agent to load with the Skill tool; "inject"
-	// delivers each skill's SKILL.md content inline in the build/verify/repair/
-	// bugfix prompt, so delivery is guaranteed and provider-agnostic.
+	// SkillsMode selects skill delivery (config SKILLS_MODE): "instruct" names the
+	// resolved set for the agent to load with the Skill tool; "inject" delivers
+	// each skill's SKILL.md content inline in the build/verify/repair/bugfix
+	// prompt, so delivery is guaranteed and provider-agnostic. Unset (or "auto")
+	// picks per phase — see skillsModeFor.
 	SkillsMode string
 	// SkillsMenu opts the instruct-mode prompts into an optional backstop line
 	// (config SKILLS_MENU) naming the installed skills the phase's resolved set
@@ -1457,7 +1458,7 @@ const noSkillsWarning = "build loaded no skills — the repo has skills installe
 // headless run would otherwise bury. It fires only on a confirmed empty set; the
 // Unknown state (buildSkillsKnown false) stays silent.
 func (p *Pipeline) warnBuildWithoutSkills(id string, named []string) {
-	if p.injectSkills() {
+	if p.skillsModeFor(agent.PhaseBuild) == skillsModeInject {
 		return
 	}
 	if p.SkillsExpected == nil || len(named) == 0 || len(p.buildSkills) > 0 || !p.buildSkillsKnown || !p.SkillsExpected(p.buildProvider) {
@@ -1798,6 +1799,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	repairSkills := resolver.Repair(skillCtx)
 	verifyDelivery := p.resolveSkills(verifySkills, resolver.Installed(), agent.PhaseVerify)
 	repairDelivery := p.resolveSkills(repairSkills, resolver.Installed(), agent.PhaseRepair)
+	bugfixDelivery := p.resolveSkills(repairSkills, resolver.Installed(), agent.PhaseBugfix)
 	p.recordPhaseSkills(id, "verify", verifyDelivery)
 
 	checksFragment := checks.Render(p.Checks)
@@ -1852,8 +1854,8 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 				p.logf("  ↳ %s", fl)
 			}
 			p.setActivity(id, activity.Bugfix, fmt.Sprintf("bugfix%d", bugfixAttempt))
-			p.recordPhaseSkills(id, "bugfix", repairDelivery)
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), injectInto(repairDelivery.injection, bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, repairDelivery.note, ticketCtx))); err != nil {
+			p.recordPhaseSkills(id, "bugfix", bugfixDelivery)
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), injectInto(bugfixDelivery.injection, bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, bugfixDelivery.note, ticketCtx))); err != nil {
 				return err
 			}
 			continue
@@ -1893,7 +1895,7 @@ const verifyNoSkillsWarning = "verify loaded no skills — the repo has skills i
 // plus, in serve mode, a durable verify_no_skills event. Called once per Verify,
 // after the first attempt only, so a run emits the event at most once.
 func (p *Pipeline) warnVerifyWithoutSkills(id string, named []string) {
-	if p.injectSkills() {
+	if p.skillsModeFor(agent.PhaseVerify) == skillsModeInject {
 		return
 	}
 	if p.SkillsExpected == nil || len(named) == 0 || len(p.verifySkills) > 0 || !p.verifySkillsKnown || !p.SkillsExpected(p.verifyProvider) {
@@ -3247,10 +3249,20 @@ const (
 	skillsModeInject   = "inject"
 )
 
-// injectSkills reports whether resolved skill sets are delivered by injecting
-// their SKILL.md content into the phase prompt (SKILLS_MODE=inject) rather than
-// by naming them for the agent to load with the Skill tool (the default).
-func (p *Pipeline) injectSkills() bool { return p.SkillsMode == skillsModeInject }
+// skillsModeFor is the delivery mode the phase's prompt runs under. An explicitly
+// configured SKILLS_MODE applies to every provider; the default is provider-aware:
+// claude loads a named set with the Skill tool, and phases routed to a provider
+// without that tool get the SKILL.md content inline instead.
+func (p *Pipeline) skillsModeFor(phase string) string {
+	switch p.SkillsMode {
+	case skillsModeInstruct, skillsModeInject:
+		return p.SkillsMode
+	}
+	if p.claudeOnlyPhase(phase) {
+		return skillsModeInstruct
+	}
+	return skillsModeInject
+}
 
 // phaseSkills is a phase's resolved set turned into what its prompt carries. In
 // instruct mode note is the Skill-tool sentence and injection is empty; in inject
@@ -3258,6 +3270,7 @@ func (p *Pipeline) injectSkills() bool { return p.SkillsMode == skillsModeInject
 // the skills whose content that block actually delivered — the run receipt.
 type phaseSkills struct {
 	set       agent.SkillSet
+	mode      string
 	note      string
 	injection string
 	activated []string
@@ -3268,16 +3281,18 @@ type phaseSkills struct {
 // sites), so a prompt-catalog override cannot drop it; the Skill-tool sentence is
 // dropped entirely in inject mode.
 func (p *Pipeline) resolveSkills(set agent.SkillSet, installed []string, phase string) phaseSkills {
-	if !p.injectSkills() {
+	mode := p.skillsModeFor(phase)
+	if mode == skillsModeInstruct {
 		render := skillsPrompt
 		if phase == agent.PhaseVerify {
 			render = verifySkillsPrompt
 		}
-		return phaseSkills{set: set, note: render(p.prompts, installed, set.Names, p.skillsMenu(phase, installed, set.Names))}
+		return phaseSkills{set: set, mode: mode, note: render(p.prompts, installed, set.Names, p.skillsMenu(phase, installed, set.Names))}
 	}
 	injected := agent.LoadInjectableSkills(p.RepoRoot, set.Names)
 	return phaseSkills{
 		set:       set,
+		mode:      mode,
 		injection: skillInjectionBlock(injected),
 		activated: injectedSkillNames(injected),
 	}
@@ -3290,7 +3305,7 @@ func (p *Pipeline) recordPhaseSkills(id, phase string, ps phaseSkills) {
 	if p.Events == nil {
 		return
 	}
-	if p.injectSkills() {
+	if ps.mode == skillsModeInject {
 		if len(ps.activated) == 0 {
 			return
 		}
@@ -3299,7 +3314,7 @@ func (p *Pipeline) recordPhaseSkills(id, phase string, ps phaseSkills) {
 			"ticket": id,
 			"skills": ps.activated,
 			"source": ps.set.Source,
-			"mode":   skillsModeInject,
+			"mode":   ps.mode,
 			"bytes":  len(ps.injection),
 		})
 		return
@@ -3311,7 +3326,7 @@ func (p *Pipeline) recordPhaseSkills(id, phase string, ps phaseSkills) {
 		"ticket": id,
 		"skills": ps.set.Names,
 		"source": ps.set.Source,
-		"mode":   skillsModeInstruct,
+		"mode":   ps.mode,
 	})
 }
 
