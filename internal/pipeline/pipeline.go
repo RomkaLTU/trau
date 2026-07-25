@@ -692,13 +692,15 @@ func (p *Pipeline) EnsureOwnedProject(ctx context.Context, id string) error {
 // bad pick must never rebuild delivered work (`trau --clear` is the explicit
 // override) — unless the tracker affirmatively shows the ticket reopened after
 // trau marked it Done, in which case the delivered checkpoint is cleared and the
-// ticket rebuilds fresh. Otherwise it buckets token logs to the ticket, restores
-// the recorded feature branch (auto-resetting the ticket when that branch is
-// gone), then runs each phase whose rank exceeds the resume point
-// (fi = Idx(from)); from="" runs everything fresh. A *GiveUpError
-// from build (no feature branch) is funneled into giveUp here; verify and the CI
-// gate run giveUp themselves and return the resulting *GiveUpError, which passes
-// straight through.
+// ticket rebuilds fresh. A post-handoff checkpoint that lost its PR number is
+// reconciled against its recorded branch first, so work whose PR already merged
+// short-circuits before verify spends another QA session on it. Otherwise it
+// buckets token logs to the ticket, restores the recorded feature branch
+// (auto-resetting the ticket when that branch is gone), then runs each phase
+// whose rank exceeds the resume point (fi = Idx(from)); from="" runs everything
+// fresh. A *GiveUpError from build (no feature branch) is funneled into giveUp
+// here; verify and the CI gate run giveUp themselves and return the resulting
+// *GiveUpError, which passes straight through.
 func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 	if err := p.EnsureOwnedProject(ctx, id); err != nil {
 		return err
@@ -716,6 +718,12 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 		p.logf("  ↻ %s was delivered but reopened in the tracker — clearing the merged checkpoint to rebuild", id)
 		p.resetLocal(ctx, id)
 		from = ""
+	}
+	if err := p.reconcileDeliveredBranch(ctx, id, from); err != nil {
+		if errors.Is(err, ErrAlreadyDone) {
+			p.clearFailure(id)
+		}
+		return err
 	}
 	p.clearFailureMarks(id)
 	if err := p.selectRunner(ctx, id); err != nil {
@@ -2256,13 +2264,15 @@ func (p *Pipeline) commitTitle(ctx context.Context, id string) string {
 }
 
 // CIAndMerge is the CI gate + merge. It reconciles first: a PR a prior run
-// already merged is marked Done without re-merging. Otherwise it polls
-// CI; on green it squash-merges and deletes the branch when AutoMerge is set (else
-// it stops at the open PR), moves the ticket to Done, and checkpoints merged. A CI
-// failure or timeout gives up — preserving the branch and quarantining without
-// aborting the loop. A merge GitHub refuses as "not mergeable" (the base moved
-// under the PR) goes through recoverUnmergeablePR — sync, agent-resolved
-// conflicts, one more CI gate — before it too becomes a give-up, never a fault.
+// already merged — including one recovered from the recorded branch when the
+// checkpoint's PR field is empty — is marked Done without re-merging. Otherwise
+// it polls CI; on green it squash-merges and deletes the branch when AutoMerge
+// is set (else it stops at the open PR), moves the ticket to Done, and
+// checkpoints merged. A CI failure or timeout gives up — preserving the branch
+// and quarantining without aborting the loop. A merge GitHub refuses as "not
+// mergeable" (the base moved under the PR) goes through recoverUnmergeablePR —
+// sync, agent-resolved conflicts, one more CI gate — before it too becomes a
+// give-up, never a fault.
 //
 // Every outcome that reached the base hands it to the hub reload step. An epic
 // slice is excluded: its PR targets the epic branch, so nothing reached the base
@@ -2276,7 +2286,10 @@ func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 }
 
 func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
-	pr := p.State.Get(id, "PR")
+	pr, err := p.resolvePR(ctx, id)
+	if err != nil {
+		return err
+	}
 	if prState, _ := p.GitHub.PRState(ctx, pr); prState == "MERGED" {
 		if err := p.markDone(ctx, id, "  ✓ %s already merged — marked Done"); err != nil {
 			return err
@@ -2293,7 +2306,7 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 		return p.awaitManualMerge(ctx, id, pr)
 	}
 	p.setActivity(id, activity.Merge, "")
-	err := p.mergePR(ctx, pr)
+	err = p.mergePR(ctx, pr)
 	if unmergeablePR(err) {
 		err = p.recoverUnmergeablePR(ctx, id, pr, err)
 	}
@@ -2304,6 +2317,66 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 		return fmt.Errorf("merge %s: %w", id, err)
 	}
 	return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+}
+
+// resolvePR is the PR the CI gate runs on, reconciled from the recorded branch when
+// an interrupted run left a checkpoint carrying a branch but no PR number. A merged
+// PR settles the ticket exactly as the already-merged reconcile does, an open one is
+// adopted onto the checkpoint and gated normally, and a branch with no PR at all
+// gives up naming what is missing rather than polling CI for "".
+func (p *Pipeline) resolvePR(ctx context.Context, id string) (string, error) {
+	if pr := p.State.Get(id, "PR"); pr != "" {
+		return pr, nil
+	}
+	branch := p.State.Get(id, "BRANCH")
+	if branch == "" {
+		return "", p.giveUp(ctx, id, "no PR recorded and no branch to find one from")
+	}
+	if url, _ := p.GitHub.MergedPRURL(ctx, branch); url != "" {
+		return "", p.adoptMergedPR(ctx, id, branch, url)
+	}
+	url, _ := p.GitHub.PRURL(ctx, branch)
+	if url == "" {
+		return "", p.giveUp(ctx, id, "no PR recorded or found for branch "+branch)
+	}
+	p.recordPR(id, url)
+	p.logf("  ↻ %s had no PR recorded — adopted the open PR %s for branch %s", id, url, branch)
+	return prNumber(url), nil
+}
+
+// reconcileDeliveredBranch settles a post-handoff resume whose checkpoint lost its
+// PR number but whose branch already shipped, so the run short-circuits to
+// ErrAlreadyDone instead of re-running verify (and its browser QA session) on
+// delivered work. It returns nil whenever there is nothing to reconcile — an
+// earlier resume point, a checkpoint that still has its PR, or a branch GitHub
+// reports no merged PR for — leaving the phases to run.
+func (p *Pipeline) reconcileDeliveredBranch(ctx context.Context, id, from string) error {
+	branch := p.State.Get(id, "BRANCH")
+	if state.Idx(from) < state.Idx(state.HandedOff) || branch == "" || p.State.Get(id, "PR") != "" {
+		return nil
+	}
+	url, _ := p.GitHub.MergedPRURL(ctx, branch)
+	if url == "" {
+		return nil
+	}
+	return p.adoptMergedPR(ctx, id, branch, url)
+}
+
+// adoptMergedPR records the merged PR a branch lookup recovered and closes the
+// ticket out as delivered, the same finish the already-merged reconcile makes.
+func (p *Pipeline) adoptMergedPR(ctx context.Context, id, branch, url string) error {
+	p.recordPR(id, url)
+	p.logf("  ↻ %s had no PR recorded — branch %s shipped via PR #%s", id, branch, prNumber(url))
+	if err := p.markDone(ctx, id, "  ✓ %s already merged — marked Done"); err != nil {
+		return err
+	}
+	return ErrAlreadyDone
+}
+
+// recordPR stamps a reconciled PR onto the checkpoint.
+func (p *Pipeline) recordPR(id, url string) {
+	_ = p.State.Set(id, "PR", prNumber(url))
+	_ = p.State.Set(id, "PR_URL", url)
 }
 
 const (
