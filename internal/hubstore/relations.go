@@ -196,6 +196,40 @@ func (s *Issues) attachBlockers(repo string, issues []Issue) (err error) {
 	return rows.Err()
 }
 
+// UnresolvedBlockers returns, per identifier, the blockers still holding it back,
+// applying the same rule attachBlockers does: a dangling edge or a live, unsettled
+// blocker is unresolved, while a tombstoned one no longer blocks. Identifiers with
+// nothing unresolved are absent from the map.
+func (s *Issues) UnresolvedBlockers(repo string, identifiers []string) (out map[string][]string, err error) {
+	out = map[string][]string{}
+	if len(identifiers) == 0 {
+		return out, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(identifiers)), ",")
+	args := append([]any{repo}, toAnys(identifiers)...)
+	rows, err := s.db.Query(
+		`SELECT r.blocked, r.blocker
+		 FROM issue_relations r
+		 LEFT JOIN issues b ON b.repo = r.repo AND b.identifier = r.blocker
+		 WHERE r.repo = ? AND r.blocked IN (`+placeholders+`)
+		   AND (b.id IS NULL OR (b.deleted_at = '' AND b.status_group NOT IN ('done', 'canceled')))
+		 ORDER BY r.blocker`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var blocked, blocker string
+		if scanErr := rows.Scan(&blocked, &blocker); scanErr != nil {
+			return nil, scanErr
+		}
+		out[blocked] = append(out[blocked], blocker)
+	}
+	return out, rows.Err()
+}
+
 func toAnys(vals []string) []any {
 	out := make([]any, len(vals))
 	for i, v := range vals {

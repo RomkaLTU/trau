@@ -9,6 +9,7 @@ import {
   Flame,
   ListPlus,
   Pencil,
+  Play,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -37,6 +38,7 @@ import {
   IssueFetchError,
   internalIssueQueryOptions,
   issueQueryOptions,
+  type Issue,
   type IssueComment,
 } from "@/lib/issues";
 import { archiveToastMessage, useArchiveIssue } from "@/lib/archive";
@@ -46,11 +48,14 @@ import {
   grillSessionsQueryOptions,
   isGrillable,
 } from "@/lib/grill";
+import { liveGateMessage, useLiveLoops, type LiveLoop } from "@/lib/overview";
 import {
   enqueueFresh,
   publishQueue,
   queueActiveIds,
   queueQueryOptions,
+  runOnly,
+  type QueueResponse,
 } from "@/lib/queue";
 import { cn } from "@/lib/utils";
 
@@ -127,10 +132,20 @@ function IssueDrawerBody({
 
   const queue = useQuery(queueQueryOptions(repo));
   const inQueue = queueActiveIds(queue.data?.items ?? []).has(id);
+  const liveLoop = useLiveLoops(repo)[0];
 
   const addToQueue = useMutation({
     mutationFn: () => enqueueFresh(repo, { id }),
     onSuccess: (res) => publishQueue(queryClient, repo, res),
+  });
+
+  const run = useMutation({
+    mutationFn: () => runOnly(repo, { id }),
+    onSuccess: (res) => {
+      publishQueue(queryClient, repo, res);
+      toast.success(`Running ${id}`);
+    },
+    onError: (err) => toast.error(err.message),
   });
 
   const assign = useMutation({
@@ -174,6 +189,8 @@ function IssueDrawerBody({
   }
 
   if (!issue) return null;
+
+  const runGate = runGateReason(issue, queue.data, liveLoop);
 
   return (
     <>
@@ -327,6 +344,21 @@ function IssueDrawerBody({
               {inQueue ? "Queued" : "Add to queue"}
             </Button>
           )}
+          <span
+            title={runGate ?? "Run this issue now — the queue stays disarmed"}
+            className="flex"
+          >
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => run.mutate()}
+              disabled={runGate !== null || run.isPending}
+              aria-label={`Run ${id} now`}
+            >
+              <Play />
+              {run.isPending ? "Starting…" : "Run"}
+            </Button>
+          </span>
           {grillable && (
             <Button variant="outline" size="sm" asChild>
               <Link to="/inbox" search={{ issue: id }}>
@@ -386,6 +418,28 @@ function IssueDrawerBody({
       )}
     </>
   );
+}
+
+// runGateReason names why running this issue now is refused, or null when the
+// gesture is allowed. The hub refuses the same cases with a 409, so the reasons
+// are stated up front rather than after the click.
+function runGateReason(
+  issue: Issue,
+  queue: QueueResponse | undefined,
+  liveLoop: LiveLoop | undefined,
+): string | null {
+  if (issue.archived) return "Archived — unarchive it before running";
+  if (issue.group === "done" || issue.group === "canceled") {
+    return `Already ${issue.group}`;
+  }
+  if (issue.blocked) return `Blocked by ${(issue.blockers ?? []).join(", ")}`;
+  if (queue?.items.find((it) => it.id === issue.id)?.status === "running") {
+    return `${issue.id} is already running`;
+  }
+  if (liveLoop) return liveGateMessage(liveLoop);
+  if (queue?.shutting_down) return "The loop is shutting down…";
+  if (queue?.draining) return "The queue is draining — stop it first";
+  return null;
 }
 
 function DrawerFrame({ id, children }: { id: string; children: ReactNode }) {

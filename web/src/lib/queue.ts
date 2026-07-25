@@ -28,6 +28,10 @@ export interface QueueItem {
   provider_pin?: string
   status: string
   reason?: string
+  // blockers are the item's still-unresolved blocked-by edges; blocked is set
+  // while it has any, so the row cannot be run on its own.
+  blockers?: string[]
+  blocked?: boolean
   sub_issues?: QueueSubIssue[]
   queued_at?: string
 }
@@ -136,6 +140,23 @@ export async function moveQueueItem(
   return res.json()
 }
 
+// runQueueItem runs one queued item on its own: the hub spawns its child without
+// arming the drain, so when the item settles the queue goes idle instead of
+// starting the next row.
+export async function runQueueItem(
+  repo: string,
+  id: string,
+): Promise<QueueResponse> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/queue/${encodeURIComponent(id)}/run`,
+    { method: 'POST' },
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'run item failed'))
+  }
+  return res.json()
+}
+
 export async function dequeue(
   repo: string,
   id: string,
@@ -214,6 +235,27 @@ export async function runNext(
     }
   }
   return drain(repo, true, opts)
+}
+
+// runOnly runs one issue on its own without arming the drain: an id the queue is
+// still going to act on runs where it stands, an unqueued one is appended first,
+// and a settled leftover holding the id is dropped and re-queued so it runs again.
+export async function runOnly(
+  repo: string,
+  req: EnqueueRequest,
+): Promise<QueueResponse> {
+  try {
+    await enqueue(repo, req)
+  } catch (err) {
+    const { items } = await fetchQueue(repo)
+    const queued = items.find((it) => it.id === req.id)
+    if (!queued) throw err
+    if (queueTerminal(queued.status)) {
+      await dequeue(repo, req.id)
+      await enqueue(repo, req)
+    }
+  }
+  return runQueueItem(repo, req.id)
 }
 
 // skipResumeApplies reports whether the Skip resume toggle would change anything
