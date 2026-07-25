@@ -131,11 +131,13 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 // read handler having to write.
 const repoSweepInterval = 30 * time.Second
 
-// Start resumes draining any allowlisted repo whose queue was left draining, so
-// a serve restart picks the Queue back up instead of stalling it, and launches
-// the known-repos sweep and the background issue-store sync on syncInterval. ctx
-// governs them all: cancelling it stops the drain loops between children without
-// killing a child already in flight, and ends the tickers. A non-positive
+// Start settles the parked items of every allowlisted repo whose checkpoint
+// proves the work shipped, resumes draining any repo whose queue was left
+// draining, so a serve restart picks the Queue back up instead of stalling it,
+// and launches the known-repos sweep and the background issue-store sync on
+// syncInterval. ctx governs them all: cancelling it stops the drain loops
+// between children without killing a child already in flight, and ends the
+// tickers. A non-positive
 // syncInterval disables the background sync; each sync tick also runs the
 // reconciliation sweep for repos due on reconcileInterval, so a disabled sync
 // disables the sweep too. Call it once before serving.
@@ -150,6 +152,7 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 		if err != nil {
 			continue
 		}
+		s.drain.reconcileParked(root)
 		if _, running := firstWithStatus(items, queue.StatusRunning); meta.Draining || running {
 			s.drain.ensure(ctx, root)
 		}

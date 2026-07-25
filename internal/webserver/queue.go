@@ -104,9 +104,10 @@ func (s *Server) handleQueueItem(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleQueueDrain starts or pauses draining a repo's queue. Starting flips the
-// persisted draining flag and launches the drain loop; pausing clears the flag
-// and the loop stops after the current child exits — there is no mid-run kill
-// (Stop remains the per-run action). It is gated on the workspace allowlist like
+// persisted draining flag, settles any parked item whose checkpoint already
+// proves it shipped, and launches the drain loop; pausing clears the flag and the
+// loop stops after the current child exits — there is no mid-run kill (Stop
+// remains the per-run action). It is gated on the workspace allowlist like
 // registration: only a Registered repo can be drained.
 func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -153,6 +154,7 @@ func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Draining {
+		s.drain.reconcileParked(root)
 		s.drain.ensure(s.drainCtx, root)
 	}
 	s.writeQueue(w, http.StatusOK, root)
