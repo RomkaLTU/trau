@@ -59,17 +59,38 @@ type Usage struct {
 	Reasoning     int
 }
 
+func (u *Usage) add(o Usage) {
+	u.Input += o.Input
+	u.Output += o.Output
+	u.CacheRead += o.CacheRead
+	u.CacheCreation += o.CacheCreation
+	u.Reasoning += o.Reasoning
+}
+
+func (u Usage) total() int { return u.Input + u.Output + u.CacheRead + u.CacheCreation }
+
+func (u Usage) cost(model string) float64 {
+	return tokens.EstimateCost(model, u.Input, u.Output, u.CacheRead, u.CacheCreation)
+}
+
 // Result is the outcome of one agent invocation. SkillsKnown reports whether the
 // call produced any recoverable skill evidence; false is the Unknown state, which
 // is distinct from a confirmed-empty Skills so a missing transcript is not read as
 // "loaded none". Skills holds only names the repo can actually load;
-// SkillsUnmatched carries the evidence that resolved to none of them.
+// SkillsUnmatched carries the evidence that resolved to none of them. Usage and
+// NumTurns cover the whole call including any subagents it dispatched, and CostUSD
+// prices that combined total; Subagent, SubagentTurns, Dispatches, and Explores
+// isolate that share.
 type Result struct {
 	Final           string
 	Usage           Usage
+	Subagent        Usage
 	CostUSD         float64
 	IsError         bool
 	NumTurns        int
+	SubagentTurns   int
+	Dispatches      int
+	Explores        int
 	Model           string
 	Context         int
 	Skills          []string
@@ -281,9 +302,13 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 
 	if c.Log != nil {
 		c.Log.Emit(event.KindAgentStart, label, "", map[string]any{
-			"transcript_id": stem,
-			"cols":          cols,
-			"rows":          rows,
+			"transcript_id":    stem,
+			"cols":             cols,
+			"rows":             rows,
+			"provider":         "claude",
+			"model":            c.model(),
+			"effort":           c.Effort,
+			"disallowed_tools": c.DisallowedTools,
 		})
 	}
 
@@ -340,8 +365,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 			_ = sess.Kill()
 			res := c.enrich(Result{Final: final}, sessionID, skills)
 			dur := c.clock().Sub(start)
-			c.emit(label, res, dur, nil)
-			c.record(label, res, dur)
+			c.report(label, res, dur, nil)
 			return res, nil
 		}
 
@@ -351,8 +375,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 			res := c.enrich(Result{Final: final, IsError: err != nil || readErr != nil || !ok}, sessionID, skills)
 			dur := c.clock().Sub(start)
 			if ok && err == nil {
-				c.emit(label, res, dur, nil)
-				c.record(label, res, dur)
+				c.report(label, res, dur, nil)
 				return res, nil
 			}
 
@@ -361,14 +384,12 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 			select {
 			case <-authPrompt:
 				res.IsError = true
-				c.emit(label, res, dur, ErrAuthRequired)
-				c.record(label, res, dur)
+				c.report(label, res, dur, ErrAuthRequired)
 				return res, fmt.Errorf("claude interactive run (%s): %w", label, ErrAuthRequired)
 			default:
 			}
 
-			c.emit(label, res, dur, err)
-			c.record(label, res, dur)
+			c.report(label, res, dur, err)
 			switch {
 			case readErr != nil:
 				return res, fmt.Errorf("claude interactive run (%s): read result after exit: %w", label, readErr)
@@ -440,7 +461,11 @@ func (c *ClaudeInteractive) enrich(res Result, sessionID string, live *skillCapt
 	}
 	if ok {
 		res.Usage = stats.Usage
+		res.Subagent = stats.Subagent
 		res.NumTurns = stats.Turns
+		res.SubagentTurns = stats.SubagentTurns
+		res.Dispatches = stats.Dispatches
+		res.Explores = stats.Explores
 		res.Context = stats.Context
 		res.Model = stats.Model
 	}
@@ -451,30 +476,34 @@ func (c *ClaudeInteractive) enrich(res Result, sessionID string, live *skillCapt
 	if res.Model == "" {
 		res.Model = c.model()
 	}
+	res.CostUSD = res.Usage.cost(res.Model)
 	return res
+}
+
+func (c *ClaudeInteractive) report(label string, res Result, dur time.Duration, runErr error) {
+	c.emit(label, res, dur, runErr)
+	c.exploreUsage(label, res)
+	c.record(label, res, dur)
 }
 
 func (c *ClaudeInteractive) emit(label string, res Result, dur time.Duration, runErr error) {
 	if c.Log == nil {
 		return
 	}
-	model := res.Model
-	if model == "" {
-		model = c.model()
-	}
 	fields := map[string]any{
-		"provider":       "claude",
-		"mode":           "interactive",
-		"model":          model,
-		"effort":         c.Effort,
-		"is_error":       res.IsError || runErr != nil,
-		"num_turns":      res.NumTurns,
-		"input_tokens":   res.Usage.Input,
-		"output_tokens":  res.Usage.Output,
-		"total_tokens":   res.Usage.Input + res.Usage.Output + res.Usage.CacheRead + res.Usage.CacheCreation,
-		"context_tokens": res.Context,
-		"cost_usd":       res.CostUSD,
-		"duration_ms":    dur.Milliseconds(),
+		"provider":        "claude",
+		"mode":            "interactive",
+		"model":           c.callModel(res),
+		"effort":          c.Effort,
+		"is_error":        res.IsError || runErr != nil,
+		"num_turns":       res.NumTurns,
+		"input_tokens":    res.Usage.Input,
+		"output_tokens":   res.Usage.Output,
+		"total_tokens":    res.Usage.total(),
+		"subagent_tokens": res.Subagent.total(),
+		"context_tokens":  res.Context,
+		"cost_usd":        res.CostUSD,
+		"duration_ms":     dur.Milliseconds(),
 	}
 	if len(res.Skills) > 0 {
 		fields["skills"] = res.Skills
@@ -486,6 +515,43 @@ func (c *ClaudeInteractive) emit(label string, res Result, dur time.Duration, ru
 		fields["error"] = runErr.Error()
 	}
 	c.Log.Emit("agent_call", label, "", fields)
+}
+
+// exploreUsage records what the call did with its subagent budget. It fires only
+// when the effective tool policy left the Agent tool enabled, so a zero dispatch
+// count is the agent declining to fan out rather than the tool being unavailable.
+func (c *ClaudeInteractive) exploreUsage(label string, res Result) {
+	if c.Log == nil || !agentToolEnabled(c.DisallowedTools) {
+		return
+	}
+	sub := res.Subagent
+	c.Log.Emit(event.KindExploreUsage, label, "", map[string]any{
+		"dispatches":         res.Dispatches,
+		"explore_dispatches": res.Explores,
+		"subagent_turns":     res.SubagentTurns,
+		"subagent_tokens":    sub.total(),
+		"subagent_cost_usd":  sub.cost(c.callModel(res)),
+	})
+}
+
+// agentToolEnabled reports whether a --disallowedTools list leaves the Agent tool
+// available.
+func agentToolEnabled(disallowed string) bool {
+	for _, tool := range strings.Split(disallowed, ",") {
+		if strings.EqualFold(strings.TrimSpace(tool), "Agent") {
+			return false
+		}
+	}
+	return true
+}
+
+// callModel is the model to attribute the call to: the one the transcript reported,
+// falling back to the one it was launched with.
+func (c *ClaudeInteractive) callModel(res Result) string {
+	if res.Model != "" {
+		return res.Model
+	}
+	return c.model()
 }
 
 // defaultTrustPromptWait is how long a freshly spawned CLI is given to raise its
@@ -514,11 +580,7 @@ func (c *ClaudeInteractive) record(label string, res Result, dur time.Duration) 
 		return
 	}
 
-	model := res.Model
-	if model == "" {
-		model = c.model()
-	}
-	cost := tokens.EstimateCost(model, res.Usage.Input, res.Usage.Output, res.Usage.CacheRead, res.Usage.CacheCreation)
+	cost := res.CostUSD
 	c.Tokens.Append(label, tokens.Record{
 		Input:         res.Usage.Input,
 		Output:        res.Usage.Output,
@@ -529,7 +591,7 @@ func (c *ClaudeInteractive) record(label string, res Result, dur time.Duration) 
 		Turns:         res.NumTurns,
 		IsError:       res.IsError,
 		Provider:      "claude",
-		Model:         model,
+		Model:         c.callModel(res),
 		Effort:        c.Effort,
 		Context:       res.Context,
 		Duration:      dur,

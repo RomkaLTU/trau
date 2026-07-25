@@ -15,6 +15,12 @@ import (
 // KindAgentStart marks the start of an agent run, carrying its live transcript path.
 const KindAgentStart = "agent_start"
 
+// KindExploreUsage records what one agent call did with its subagent budget: how
+// many subagents it dispatched, how many named the read-only Explore type, and the
+// share of the call's turns and tokens they burned. It is emitted for every call
+// that had the Agent tool enabled, so a dispatch count of zero is a recorded fact.
+const KindExploreUsage = "explore_usage"
+
 // KindBuildNoSkills marks a build that loaded no skills in a repo that has skills
 // installed — the agent skipped the skills the repo expected it to use.
 const KindBuildNoSkills = "build_no_skills"

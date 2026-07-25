@@ -13,18 +13,25 @@ import (
 
 // transcriptStats is the aggregate recovered from one session transcript.
 type transcriptStats struct {
-	Usage   Usage
-	Turns   int      // assistant API calls (one usage-bearing line each)
-	Model   string   // last non-empty message.model seen
-	Context int      // high-water mark: max(input+cache_read+cache_creation) over turns
-	Skills  []string // skills loaded via the Skill tool, in first-seen order
+	Usage         Usage
+	Subagent      Usage    // the portion of Usage burned by dispatched subagents
+	Turns         int      // assistant API calls (one usage-bearing line each)
+	SubagentTurns int      // the portion of Turns taken by dispatched subagents
+	Dispatches    int      // subagents the orchestrator dispatched
+	Explores      int      // dispatches that named the read-only Explore agent type
+	Model         string   // last non-empty message.model seen
+	Context       int      // high-water mark: max(input+cache_read+cache_creation) over turns
+	Skills        []string // skills loaded via the Skill tool, in first-seen order
 }
 
 // sessionLine is the subset of a transcript line we read. Only assistant lines
-// carry usage/model; tool_use blocks inside their content name the skills loaded.
+// carry usage/model; tool_use blocks inside their content name the skills loaded
+// and the subagents dispatched. isSidechain marks a line produced by a subagent
+// rather than by the orchestrator.
 type sessionLine struct {
-	Type    string `json:"type"`
-	Message struct {
+	Type      string `json:"type"`
+	Sidechain bool   `json:"isSidechain"`
+	Message   struct {
 		Model string `json:"model"`
 		Usage *struct {
 			Input         int `json:"input_tokens"`
@@ -36,11 +43,16 @@ type sessionLine struct {
 			Type  string `json:"type"`
 			Name  string `json:"name"`
 			Input struct {
-				Skill string `json:"skill"`
+				Skill        string `json:"skill"`
+				SubagentType string `json:"subagent_type"`
 			} `json:"input"`
 		} `json:"content"`
 	} `json:"message"`
 }
+
+// isSubagentTool reports whether name is a subagent-dispatch tool. "Task" is the
+// pre-rename spelling, still present in transcripts written by older CLI versions.
+func isSubagentTool(name string) bool { return name == "Agent" || name == "Task" }
 
 // newUUID returns a random RFC-4122 v4 UUID for `--session-id`. A fresh id per
 // run guarantees a unique transcript filename, so reading it back is unambiguous.
@@ -95,14 +107,42 @@ func SessionExists(sessionID string) bool {
 	return ok
 }
 
-// readSessionStats locates and parses the transcript for sessionID. ok is false
-// when the file is missing or yields no usage-bearing line — callers leave the
-// result un-enriched (the prior zero behavior) rather than failing.
+// subagentTranscriptPaths returns the child-session transcripts Claude Code writes
+// for a session's subagent dispatches, under <session-id>/subagents/. Their tokens
+// are absent from the parent's own file.
+func subagentTranscriptPaths(sessionPath string) []string {
+	dir := strings.TrimSuffix(sessionPath, ".jsonl")
+	matches, _ := filepath.Glob(filepath.Join(dir, "subagents", "*.jsonl"))
+	return matches
+}
+
+// readSessionStats locates and parses the transcript for sessionID, folding the
+// usage of every subagent it dispatched into the totals while keeping that share
+// separable. ok is false when the file is missing or yields no usage-bearing line —
+// callers leave the result un-enriched (the prior zero behavior) rather than failing.
 func readSessionStats(configDir, sessionID string) (transcriptStats, bool) {
 	path, found := sessionTranscriptPath(configDir, sessionID)
 	if !found {
 		return transcriptStats{}, false
 	}
+	st, hasUsage := parseTranscriptFile(path)
+	if !hasUsage {
+		return transcriptStats{}, false
+	}
+	for _, child := range subagentTranscriptPaths(path) {
+		sub, subOK := parseTranscriptFile(child)
+		if !subOK {
+			continue
+		}
+		st.Usage.add(sub.Usage)
+		st.Subagent.add(sub.Usage)
+		st.Turns += sub.Turns
+		st.SubagentTurns += sub.Turns
+	}
+	return st, true
+}
+
+func parseTranscriptFile(path string) (transcriptStats, bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return transcriptStats{}, false
@@ -112,9 +152,11 @@ func readSessionStats(configDir, sessionID string) (transcriptStats, bool) {
 }
 
 // parseTranscript sums usage across assistant lines, tracks the context
-// high-water mark, records the model, and collects skills loaded via the Skill
-// tool. Malformed lines are skipped. ok is false when no assistant line carried
-// usage.
+// high-water mark, records the model, collects skills loaded via the Skill tool,
+// and counts the subagents the orchestrator dispatched. Sidechain lines are subagent
+// turns: their usage lands in the totals and in Subagent, but they neither raise the
+// orchestrator's context high-water mark nor count toward its dispatch tally.
+// Malformed lines are skipped. ok is false when no assistant line carried usage.
 func parseTranscript(r interface{ Read([]byte) (int, error) }) (transcriptStats, bool) {
 	var st transcriptStats
 	seenSkill := map[string]bool{}
@@ -135,9 +177,18 @@ func parseTranscript(r interface{ Read([]byte) (int, error) }) (transcriptStats,
 			st.Model = ln.Message.Model
 		}
 		for _, blk := range ln.Message.Content {
-			if blk.Type == "tool_use" && blk.Name == "Skill" && blk.Input.Skill != "" && !seenSkill[blk.Input.Skill] {
+			if blk.Type != "tool_use" {
+				continue
+			}
+			if blk.Name == "Skill" && blk.Input.Skill != "" && !seenSkill[blk.Input.Skill] {
 				seenSkill[blk.Input.Skill] = true
 				st.Skills = append(st.Skills, blk.Input.Skill)
+			}
+			if isSubagentTool(blk.Name) && !ln.Sidechain {
+				st.Dispatches++
+				if strings.EqualFold(blk.Input.SubagentType, "Explore") {
+					st.Explores++
+				}
 			}
 		}
 		if ln.Message.Usage == nil {
@@ -145,11 +196,18 @@ func parseTranscript(r interface{ Read([]byte) (int, error) }) (transcriptStats,
 		}
 		any = true
 		st.Turns++
-		u := ln.Message.Usage
-		st.Usage.Input += u.Input
-		st.Usage.Output += u.Output
-		st.Usage.CacheRead += u.CacheRead
-		st.Usage.CacheCreation += u.CacheCreation
+		u := Usage{
+			Input:         ln.Message.Usage.Input,
+			Output:        ln.Message.Usage.Output,
+			CacheRead:     ln.Message.Usage.CacheRead,
+			CacheCreation: ln.Message.Usage.CacheCreation,
+		}
+		st.Usage.add(u)
+		if ln.Sidechain {
+			st.SubagentTurns++
+			st.Subagent.add(u)
+			continue
+		}
 		if ctx := u.Input + u.CacheRead + u.CacheCreation; ctx > st.Context {
 			st.Context = ctx
 		}
