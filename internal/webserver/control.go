@@ -449,6 +449,15 @@ func (s *Server) allowedRoot(ident string) (string, bool) {
 	return matchRoot(s.effectiveRoots(), ident)
 }
 
+// withinRoot reports whether path sits inside root, root itself included.
+func withinRoot(root, path string) bool {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // matchRoot resolves a repo identifier against a set of roots: an exact cleaned
 // path, or an unambiguous base name. An ambiguous base name matches nothing, so
 // a caller never acts on the wrong repo when two roots share a directory name.

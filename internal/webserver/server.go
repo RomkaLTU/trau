@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"net/http"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -70,6 +71,10 @@ type Server struct {
 	recordingsRoot   string
 	restart          func()
 	restartOnce      sync.Once
+	executable       func() (string, error)
+	selfReloadMu     sync.Mutex
+	selfReload       string
+	reloadPoll       time.Duration
 	updates          *update.Checker
 	attachFetch      singleflight.Group
 }
@@ -110,6 +115,8 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		installSkill:     defaultInstallSkill,
 		removeSkill:      defaultRemoveSkill,
 		skillsCache:      map[string]skillsCacheEntry{},
+		executable:       os.Executable,
+		reloadPoll:       drainPoll,
 		updates:          update.NewChecker(version),
 	}
 	s.drain = newDrainer(s)
@@ -254,6 +261,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(APIPrefix+"/health", s.handleHealth)
 	mux.HandleFunc(APIPrefix+"/hub/restart", s.handleHubRestart)
+	mux.HandleFunc(APIPrefix+"/hub/reload", s.handleHubReload)
 	mux.HandleFunc(APIPrefix+"/update", s.handleUpdate)
 	mux.HandleFunc(APIPrefix+"/update/check", s.handleUpdateCheck)
 	mux.HandleFunc(APIPrefix+"/update/apply", s.handleUpdateApply)
