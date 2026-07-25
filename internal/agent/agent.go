@@ -3,7 +3,9 @@
 // Each call spawns a fresh, isolated subprocess — a brand-new session, never
 // --continue/--resume — so phases can never share context. This is the property
 // that keeps the verify phase cold: it can only inherit the durable handoff file
-// and the code on disk, not the build agent's reasoning. The interface is
+// and the code on disk, not the build agent's reasoning. A fresh process is not
+// enough on its own — Claude Code's auto-memory store outlives it — so every
+// child is spawned through [ChildEnv], which disables it. The interface is
 // provider-agnostic; Claude and Codex are the two backends. All per-provider
 // divergence lives inside the implementation; nothing branches on the provider
 // name outside this package.

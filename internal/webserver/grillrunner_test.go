@@ -190,6 +190,9 @@ func TestGrillChildEnv(t *testing.T) {
 	if !containsPrefix(env, "GRILL_KEEP_ME=yes") {
 		t.Errorf("unrelated env should pass through: %v", env)
 	}
+	if !containsPrefix(env, "CLAUDE_CODE_DISABLE_AUTO_MEMORY=1") {
+		t.Errorf("auto-memory should be disabled: %v", env)
+	}
 }
 
 // TestGrillRunnerParkResumeRoundTrip drives a real stub claude binary through a
