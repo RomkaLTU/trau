@@ -208,6 +208,35 @@ func (e *resumeOnceEngine) ResumeTarget() (string, string) {
 	return "COD-9", "built"
 }
 
+// forcedEngine records the tickets the loop handed to Process. Its inherited
+// InferredResume declines, the way adoption does for an already-delivered branch.
+type forcedEngine struct {
+	loopEngine
+	ran []string
+}
+
+func (e *forcedEngine) Process(_ context.Context, id, _ string) error {
+	e.ran = append(e.ran, id)
+	return nil
+}
+
+func TestRunLoopRunsForcedTicketWhenAdoptionIsDeclined(t *testing.T) {
+	eng := &forcedEngine{}
+	processed, err := runLoop(context.Background(), eng, loopParams{Max: 5, Once: true, ForcedID: "COD-1243"}, noopRenderer{}, func(id string, _ time.Duration) console.TicketResult {
+		return console.TicketResult{ID: id}
+	})
+	if err != nil {
+		t.Fatalf("runLoop returned error: %v", err)
+	}
+	want := []string{"COD-1243"}
+	if !reflect.DeepEqual(eng.ran, want) {
+		t.Fatalf("Process called for %v, want %v", eng.ran, want)
+	}
+	if !reflect.DeepEqual(processed, want) {
+		t.Fatalf("processed = %v, want %v", processed, want)
+	}
+}
+
 // stoppedEngine reports the deliberate stop the pipeline raises when a run is
 // cut short mid-ticket.
 type stoppedEngine struct {

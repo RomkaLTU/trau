@@ -1046,8 +1046,8 @@ func (p *Pipeline) prefix() string {
 // (branch → built; handoff file → handed_off; passing verdict → verified; open PR →
 // pr_open), seeds the state file, and returns (id, phase) for the resume path.
 // Conservative on purpose — only the currently checked-out branch, never a scan. It
-// returns ("", "") when HEAD is not a parked feature branch or the ticket is already
-// tracked.
+// returns ("", "") when HEAD is not a parked feature branch, the ticket is already
+// tracked, or the work already shipped.
 func (p *Pipeline) InferredResume(ctx context.Context) (id, phase string) {
 	pfx := p.prefix()
 	head, err := p.Git.CurrentBranch(ctx)
@@ -1059,6 +1059,9 @@ func (p *Pipeline) InferredResume(ctx context.Context) (id, phase string) {
 		return "", ""
 	}
 	if p.State.Get(id, "PHASE") != "" {
+		return "", ""
+	}
+	if p.alreadyDelivered(ctx, id, head) {
 		return "", ""
 	}
 
@@ -1079,6 +1082,36 @@ func (p *Pipeline) InferredResume(ctx context.Context) (id, phase string) {
 	_ = p.State.Set(id, "PHASE", phase)
 	p.logf("  ↻ adopted in-progress branch %s (inferred checkpoint: %s)", head, phase)
 	return id, phase
+}
+
+// alreadyDelivered reports whether the parked branch's work already shipped. A merged
+// PR is the authoritative signal (PRURL only sees open ones, so a hand-merged branch
+// otherwise reads as PR-less) and settles the checkpoint at merged. A terminal tracker
+// status is the weaker second guard: it declines adoption but writes nothing, since
+// without a merged PR there is no proof the branch shipped.
+func (p *Pipeline) alreadyDelivered(ctx context.Context, id, head string) bool {
+	if url, _ := p.GitHub.MergedPRURL(ctx, head); url != "" {
+		pr := prNumber(url)
+		p.logf("  ✓ branch %s already delivered via PR #%s — not adopting", head, pr)
+		_ = p.State.Set(id, "BRANCH", head)
+		_ = p.State.Set(id, "PR", pr)
+		_ = p.State.Set(id, "PR_URL", url)
+		if err := p.markDone(ctx, id, "  ✓ %s already merged — marked Done"); err != nil {
+			p.logf("  checkpoint merged error (continuing): %v", err)
+		}
+		return true
+	}
+
+	statuser, ok := p.Tracker.(tracker.IssueStatuser)
+	if !ok {
+		return false
+	}
+	st, err := statuser.IssueStatus(ctx, id)
+	if err != nil || !st.Terminal() {
+		return false
+	}
+	p.logf("  ✓ %s reads %s in the tracker — not adopting branch %s", id, st, head)
+	return true
 }
 
 // autoStashMsg labels the stash EnsureCleanBase creates so it is recognizable in
