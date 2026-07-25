@@ -1,13 +1,16 @@
 package webserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
@@ -106,6 +109,101 @@ var hubMCPTools = []mcpTool{
 }`),
 		Annotations: readOnlyTool,
 	},
+	{
+		Name: "list_backlog",
+		Description: "Read a repo's board: every issue the hub's store holds with its workflow status, normalized state " +
+			"group, labels, source, epic relationship and blockers. This is the whole backlog, not what is runnable — call " +
+			"list_eligible for that. state filters to one or more status groups (backlog, unstarted, started, completed, " +
+			"canceled), label to one label name, parent to an epic's direct children. Rows are capped; total reports how " +
+			"many matched so you can page with limit and offset.",
+		InputSchema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "repo": {"type": "string", "description": "Repo name as list_repos reports it."},
+    "state": {"type": "array", "items": {"type": "string"}, "description": "Status groups to union, e.g. [\"backlog\", \"started\"]. Omit for every group."},
+    "label": {"type": "string", "description": "Only issues carrying this label."},
+    "source": {"type": "string", "enum": ["internal", "synced"], "description": "Only hub-filed issues, or only ones synced from the tracker."},
+    "assignee": {"type": "string", "description": "\"me\", \"unassigned\", or an assignee id."},
+    "q": {"type": "string", "description": "Substring match over the identifier and title."},
+    "parent": {"type": "string", "description": "An epic identifier — list its direct sub-issues."},
+    "limit": {"type": "integer", "description": "Rows to return. Defaults to 100, capped at 500."},
+    "offset": {"type": "integer", "description": "Rows to skip, for paging through total."}
+  },
+  "required": ["repo"]
+}`),
+		Annotations: readOnlyTool,
+	},
+	{
+		Name: "list_eligible",
+		Description: "List what the picker would consider runnable in a repo right now, in the order it would pick them: " +
+			"ready-labelled, unblocked tickets with their labels and epic parent. This is the answer to \"what happens if I " +
+			"start the queue\" — list_backlog shows everything, this shows only what is eligible. It reads the repo through a " +
+			"fresh trau, so only a Registered repo can be listed.",
+		InputSchema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "repo": {"type": "string", "description": "Repo name as list_repos reports it. Must be a repo whose can_drain is true."}
+  },
+  "required": ["repo"]
+}`),
+		Annotations: readOnlyTool,
+	},
+	{
+		Name: "get_epic",
+		Description: "List an epic's direct sub-issues with their preview state — done, epic for a nested parent, or todo " +
+			"for a buildable child. Call it before queuing an epic to see what queuing it would actually run.",
+		InputSchema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "repo": {"type": "string", "description": "Repo name as list_repos reports it. Must be a repo whose can_drain is true."},
+    "epic": {"type": "string", "description": "The epic identifier, e.g. ACME-12."}
+  },
+  "required": ["repo", "epic"]
+}`),
+		Annotations: readOnlyTool,
+	},
+	{
+		Name: "list_runs",
+		Description: "List the tickets this repo has run, each with the phase its checkpoint settled at, whether that phase " +
+			"is terminal, the branch and PR it opened, the failure class and reason if it faulted, its cost, and when it last " +
+			"moved. Rows come back in board order — earliest phase first, then ticket — so the stuck runs lead. Use it to find " +
+			"a ticket worth drilling into, then call get_run for that one.",
+		InputSchema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "repo": {"type": "string", "description": "Repo name as list_repos reports it."},
+    "limit": {"type": "integer", "description": "Rows to return. Defaults to 100, capped at 500."}
+  },
+  "required": ["repo"]
+}`),
+		Annotations: readOnlyTool,
+	},
+	{
+		Name: "get_run",
+		Description: "Drill into one ticket's run: its checkpoint phase and failure class/reason, the verifier's verdict with " +
+			"the concrete failures, per-phase and total token spend, flagged cost anomalies, which artifacts the run produced, " +
+			"and the tail of its events. This is how a settled ticket went and why it is stuck — for a run happening right now, " +
+			"call list_instances instead, which reports what the live process is doing this second. The bulky artifacts (the " +
+			"handoff brief, build notes, transcripts) are flagged as present but never inlined.",
+		InputSchema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "repo": {"type": "string", "description": "Repo name as list_repos reports it."},
+    "ticket": {"type": "string", "description": "The ticket identifier as list_runs reports it, e.g. ACME-12."},
+    "events": {"type": "integer", "description": "How many of the run's most recent events to return. Defaults to 20, capped at 100."}
+  },
+  "required": ["repo", "ticket"]
+}`),
+		Annotations: readOnlyTool,
+	},
+	{
+		Name: "list_instances",
+		Description: "List the loop processes alive on this machine right now: pid, repo, the ticket and phase each is on, " +
+			"its session state and current activity. This is live state — what is running this second, across every repo. For " +
+			"how a ticket's run turned out once it settled, call get_run.",
+		InputSchema: json.RawMessage(`{"type": "object", "properties": {}}`),
+		Annotations: readOnlyTool,
+	},
 }
 
 // MCPRepo is one repo as list_repos reports it: the name every other tool takes,
@@ -133,6 +231,33 @@ type MCPQueueStatus struct {
 	ChildLive bool   `json:"child_live"`
 }
 
+// MCPRun is what get_run answers with. The bulky artifacts — the handoff brief,
+// the build notes, a transcript — are named in Artifacts but never inlined, so
+// the payload stays bounded whatever the run did.
+type MCPRun struct {
+	Repo string `json:"repo"`
+	RunView
+	Total     SpendResponse `json:"total"`
+	Costs     []PhaseCost   `json:"costs"`
+	Anomalies []AnomalyView `json:"anomalies,omitempty"`
+	Verdict   *VerdictView  `json:"verdict,omitempty"`
+	Artifacts ArtifactSet   `json:"artifacts"`
+	Events    []FeedEvent   `json:"events"`
+	NoSkills  bool          `json:"no_skills,omitempty"`
+	NoBrowser bool          `json:"no_browser,omitempty"`
+	Removed   bool          `json:"removed,omitempty"`
+}
+
+// The read tools answer a page rather than a whole table: each listing takes a
+// default row count and clamps whatever it is asked for.
+const (
+	mcpBacklogRows  = 100
+	mcpRunRows      = 100
+	maxMCPRunRows   = 500
+	mcpEventTail    = 20
+	maxMCPEventTail = 100
+)
+
 func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	mcpServer{name: hubMCPName, version: s.version, tools: hubMCPTools, callTool: s.hubMCPToolsCall}.serve(w, r)
 }
@@ -141,7 +266,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 // Anything the agent could fix by calling again — an unknown repo, an
 // observe-only one, a ticket that is not in the store — comes back as a tool
 // error it can read, not a protocol error that aborts the call.
-func (s *Server) hubMCPToolsCall(w http.ResponseWriter, _ *http.Request, rpcID json.RawMessage, p toolsCallParams) {
+func (s *Server) hubMCPToolsCall(w http.ResponseWriter, r *http.Request, rpcID json.RawMessage, p toolsCallParams) {
 	var run func(json.RawMessage) (any, error)
 	switch p.Name {
 	case "list_repos":
@@ -156,6 +281,18 @@ func (s *Server) hubMCPToolsCall(w http.ResponseWriter, _ *http.Request, rpcID j
 		run = s.mcpPauseQueue
 	case "queue_status":
 		run = s.mcpQueueStatus
+	case "list_backlog":
+		run = s.mcpListBacklog
+	case "list_eligible":
+		run = func(args json.RawMessage) (any, error) { return s.mcpListEligible(r.Context(), args) }
+	case "get_epic":
+		run = func(args json.RawMessage) (any, error) { return s.mcpGetEpic(r.Context(), args) }
+	case "list_runs":
+		run = s.mcpListRuns
+	case "get_run":
+		run = s.mcpGetRun
+	case "list_instances":
+		run = s.mcpListInstances
 	default:
 		respondRPCError(w, rpcID, rpcInvalidParams, "unknown tool: "+p.Name)
 		return
@@ -311,6 +448,186 @@ func (s *Server) mcpQueueStatus(args json.RawMessage) (any, error) {
 	return s.mcpDrainState(root)
 }
 
+func (s *Server) mcpListBacklog(args json.RawMessage) (any, error) {
+	var a struct {
+		Repo     string   `json:"repo"`
+		State    []string `json:"state"`
+		Label    string   `json:"label"`
+		Source   string   `json:"source"`
+		Assignee string   `json:"assignee"`
+		Text     string   `json:"q"`
+		Parent   string   `json:"parent"`
+		Limit    int      `json:"limit"`
+		Offset   int      `json:"offset"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return nil, errors.New("list_backlog arguments were not valid JSON")
+	}
+	repo, err := s.mcpRepo(a.Repo)
+	if err != nil {
+		return nil, err
+	}
+	store := s.stores.Issues()
+	items, total, counts, err := store.BacklogPage(repo.Root, hubstore.BacklogFilter{
+		Groups:   stateGroups(a.State),
+		Label:    strings.TrimSpace(a.Label),
+		Source:   strings.TrimSpace(a.Source),
+		Assignee: strings.TrimSpace(a.Assignee),
+		Text:     strings.TrimSpace(a.Text),
+		Parent:   strings.TrimSpace(a.Parent),
+		Limit:    mcpRows(a.Limit, mcpBacklogRows, maxBacklogLimit),
+		Offset:   max(a.Offset, 0),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list backlog: %w", err)
+	}
+	syncState, err := store.SyncState(repo.Root)
+	if err != nil {
+		return nil, fmt.Errorf("read sync state: %w", err)
+	}
+	archivedCount, err := store.ArchivedCount(repo.Root)
+	if err != nil {
+		return nil, fmt.Errorf("count archived: %w", err)
+	}
+	s.syncer.refreshIfStale(repo.Root, syncState.LastSyncedAt)
+	readyLabel, provider := s.backlogConfig(repo)
+	return BacklogResponse{
+		Repo:          repo.Name,
+		Provider:      provider,
+		Items:         toBacklogEntries(items, readyLabel, syncState.Me.ID),
+		Total:         total,
+		Counts:        counts,
+		ArchivedCount: archivedCount,
+		Freshness:     s.freshnessFrom(repo.Root, syncState),
+	}, nil
+}
+
+func (s *Server) mcpListEligible(ctx context.Context, args json.RawMessage) (any, error) {
+	var a struct {
+		Repo string `json:"repo"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return nil, errors.New("list_eligible arguments were not valid JSON")
+	}
+	root, err := s.mcpAllowedRoot(a.Repo, "have its eligible tickets listed")
+	if err != nil {
+		return nil, err
+	}
+	tickets, err := s.listEligibleTickets(ctx, root)
+	if err != nil {
+		return nil, fmt.Errorf("listing eligible tickets failed: %w", err)
+	}
+	return EligibleResult{Repo: filepath.Base(root), RepoRoot: root, Tickets: tickets}, nil
+}
+
+func (s *Server) mcpGetEpic(ctx context.Context, args json.RawMessage) (any, error) {
+	var a struct {
+		Repo string `json:"repo"`
+		Epic string `json:"epic"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return nil, errors.New("get_epic arguments were not valid JSON")
+	}
+	epic := strings.TrimSpace(a.Epic)
+	if !reTicketID.MatchString(epic) {
+		return nil, fmt.Errorf("epic %q is not a valid ticket identifier", a.Epic)
+	}
+	root, err := s.mcpAllowedRoot(a.Repo, "have its epics previewed")
+	if err != nil {
+		return nil, err
+	}
+	subs, err := s.listEpicSubIssues(ctx, root, epic)
+	if err != nil {
+		return nil, fmt.Errorf("epic preview failed: %w", err)
+	}
+	return EpicPreviewResult{Repo: filepath.Base(root), RepoRoot: root, Epic: epic, SubIssues: subs}, nil
+}
+
+func (s *Server) mcpListRuns(args json.RawMessage) (any, error) {
+	var a struct {
+		Repo  string `json:"repo"`
+		Limit int    `json:"limit"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return nil, errors.New("list_runs arguments were not valid JSON")
+	}
+	repo, err := s.mcpRepo(a.Repo)
+	if err != nil {
+		return nil, err
+	}
+	s.importCheckpoints(repo)
+	runs := s.collectRuns(repo.Root)
+	if limit := mcpRows(a.Limit, mcpRunRows, maxMCPRunRows); len(runs) > limit {
+		runs = runs[:limit]
+	}
+	return RunsResponse{Repo: repo.Name, Runs: runs}, nil
+}
+
+func (s *Server) mcpGetRun(args json.RawMessage) (any, error) {
+	var a struct {
+		Repo   string `json:"repo"`
+		Ticket string `json:"ticket"`
+		Events int    `json:"events"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return nil, errors.New("get_run arguments were not valid JSON")
+	}
+	repo, err := s.mcpRepo(a.Repo)
+	if err != nil {
+		return nil, err
+	}
+	ticket := strings.TrimSpace(a.Ticket)
+	s.importCheckpoints(repo)
+	s.importArtifacts(repo)
+	view, ok := s.runViewFor(repo.Root, ticket)
+	if !ok {
+		return nil, fmt.Errorf("%s has never run in repo %q — call list_runs for the tickets it has", a.Ticket, repo.Name)
+	}
+	detail := s.runDetail(repo, ticket, view)
+	total, err := s.stores.Tokens().Total(repo.Root, ticket)
+	if err != nil {
+		return nil, fmt.Errorf("read spend: %w", err)
+	}
+	return MCPRun{
+		Repo:      repo.Name,
+		RunView:   detail.RunView,
+		Total:     spendResponse(total),
+		Costs:     detail.Costs,
+		Anomalies: detail.Anomalies,
+		Verdict:   detail.Verdict,
+		Artifacts: detail.Artifacts,
+		Events:    s.mcpRunEvents(repo, ticket, a.Events),
+		NoSkills:  detail.NoSkills,
+		NoBrowser: detail.NoBrowser,
+		Removed:   detail.Removed,
+	}, nil
+}
+
+// mcpRunEvents reads the capped tail of a ticket's events. A store error degrades
+// to an empty tail rather than failing an otherwise-readable run.
+func (s *Server) mcpRunEvents(repo registry.Repo, ticket string, want int) []FeedEvent {
+	rows, err := s.stores.Events().Query(repo.Root, hubstore.EventFilter{
+		Ticket: ticket,
+		Limit:  mcpRows(want, mcpEventTail, maxMCPEventTail),
+	})
+	if err != nil {
+		logger.Verbosef("run events %s/%s: %v", repo.Name, ticket, err)
+		return []FeedEvent{}
+	}
+	return feedList(rows)
+}
+
+func (s *Server) mcpListInstances(json.RawMessage) (any, error) {
+	return map[string]any{"instances": s.instanceViews()}, nil
+}
+
+func mcpRows(want, fallback, ceiling int) int {
+	if want <= 0 {
+		return fallback
+	}
+	return min(want, ceiling)
+}
+
 func (s *Server) mcpRepo(name string) (registry.Repo, error) {
 	repo, ok := s.findRepo(strings.TrimSpace(name))
 	if !ok {
@@ -322,9 +639,16 @@ func (s *Server) mcpRepo(name string) (registry.Repo, error) {
 // mcpQueueRoot resolves a tool's repo argument to a root the hub may queue and
 // drain work in, applying the workspace gate the REST queue routes apply.
 func (s *Server) mcpQueueRoot(name string) (string, error) {
+	return s.mcpAllowedRoot(name, "have work queued or drained")
+}
+
+// mcpAllowedRoot resolves a tool's repo argument to a root the hub may run the
+// binary in, applying the workspace gate the REST routes apply. The refusal names
+// the action that was blocked, so the agent knows what registering would buy.
+func (s *Server) mcpAllowedRoot(name, action string) (string, error) {
 	root, ok := s.allowedRoot(strings.TrimSpace(name))
 	if !ok {
-		return "", fmt.Errorf("repo %q is observe-only; only a Registered repo can have work queued or drained — register it first, or call list_repos for the repos that can", name)
+		return "", fmt.Errorf("repo %q is observe-only; only a Registered repo can %s — register it first, or call list_repos for the repos that can", name, action)
 	}
 	return root, nil
 }

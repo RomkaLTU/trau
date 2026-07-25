@@ -174,8 +174,17 @@ func (s *Server) hasBusyInstance(root string) bool {
 }
 
 func (s *Server) listInstances(w http.ResponseWriter, _ *http.Request) {
-	entries := s.liveInstances()
+	writeJSON(w, http.StatusOK, InstancesResponse{
+		Instances:         s.instanceViews(),
+		Repos:             s.repoViews(),
+		TakeoverSupported: s.goos == "darwin",
+	})
+}
 
+// instanceViews maps the live presence entries onto the JSON instance rows the
+// Instances page and the MCP tool share.
+func (s *Server) instanceViews() []Instance {
+	entries := s.liveInstances()
 	instances := make([]Instance, 0, len(entries))
 	for _, e := range entries {
 		inst := Instance{
@@ -199,10 +208,5 @@ func (s *Server) listInstances(w http.ResponseWriter, _ *http.Request) {
 		}
 		instances = append(instances, inst)
 	}
-
-	writeJSON(w, http.StatusOK, InstancesResponse{
-		Instances:         instances,
-		Repos:             s.repoViews(),
-		TakeoverSupported: s.goos == "darwin",
-	})
+	return instances
 }
