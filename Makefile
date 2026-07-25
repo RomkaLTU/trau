@@ -13,10 +13,9 @@ WEB_DIR  := web
 WEB_DIST := internal/webserver/dist/index.html
 WEB_SRC  := $(shell find $(WEB_DIR)/src $(WEB_DIR)/index.html $(WEB_DIR)/package.json $(WEB_DIR)/vite.config.ts 2>/dev/null)
 
-# Local dev hub (see `make reset`). Override the port if you run serve elsewhere:
-#   make reset SERVE_PORT=8730
+# Only names the port in the hub-guard message; the binary resolves the real one
+# from the layered config.
 SERVE_PORT ?= 8728
-SERVE_LOG  ?= /tmp/trau-serve.log
 
 export CGO_ENABLED := 0
 
@@ -28,21 +27,9 @@ all: build
 build: web
 	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o bin/$(BINARY) $(PKG)
 
-## reset: rebuild the dev binary + restart the local web hub (detached) from it
+## reset: rebuild the dev binary + make the local web hub run it
 reset: hub-guard build
-	@pids=$$(lsof -ti tcp:$(SERVE_PORT) -sTCP:LISTEN 2>/dev/null); \
-	if [ -n "$$pids" ]; then \
-		echo "→ stopping hub on :$(SERVE_PORT) (pid $$pids)"; \
-		kill $$pids 2>/dev/null || true; \
-		for i in 1 2 3 4 5 6 7 8 9 10; do lsof -ti tcp:$(SERVE_PORT) -sTCP:LISTEN >/dev/null 2>&1 || break; sleep 0.3; done; \
-	fi
-	@nohup env -u TRAU_ACTIVE ./bin/$(BINARY) serve >$(SERVE_LOG) 2>&1 & \
-	sleep 1; \
-	if lsof -ti tcp:$(SERVE_PORT) -sTCP:LISTEN >/dev/null 2>&1; then \
-		echo "→ hub live: http://127.0.0.1:$(SERVE_PORT)  (dev build $(VERSION); logs: $(SERVE_LOG))"; \
-	else \
-		echo "✗ hub failed to start — tail of $(SERVE_LOG):"; tail -n 15 $(SERVE_LOG); exit 1; \
-	fi
+	@./bin/$(BINARY) hub restart
 
 ## hub-guard: refuse to restart the hub from inside a trau-managed agent run
 hub-guard:

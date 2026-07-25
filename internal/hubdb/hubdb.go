@@ -1,6 +1,6 @@
 // Package hubdb owns the trau serve hub's SQLite database. The file lives under
-// the trau home as trau.db and is opened by the hub process alone (ADR 0007);
-// `trau doctor` inspects it read-only for its health report. No loop, Run once,
+// the trau home as trau.db and is written by the hub process alone (ADR 0007);
+// `trau doctor` and a forced hub restart inspect it read-only. No loop, Run once,
 // or TUI code path references it. The driver is pure-Go (modernc.org/sqlite) so
 // CGO_ENABLED=0 is preserved.
 package hubdb
@@ -92,7 +92,7 @@ func CheckHealth(home string) Health {
 	}
 	h.Exists = true
 	h.SizeBytes = dbSize(h.Path)
-	db, err := openReadOnly(h.Path)
+	db, err := OpenReadOnly(home)
 	if err != nil {
 		h.Err = err
 		return h
@@ -106,7 +106,17 @@ func CheckHealth(home string) Health {
 	return h
 }
 
-func openReadOnly(path string) (*sql.DB, error) {
+// OpenReadOnly opens the hub database under home read-only, creating and
+// migrating nothing, so a reader can inspect it while the hub holds the writable
+// handle. A database the hub has never created reports fs.ErrNotExist.
+func OpenReadOnly(home string) (*sql.DB, error) {
+	if home == "" {
+		return nil, errors.New("no trau home resolved — set TRAU_HOME or a usable home directory")
+	}
+	path := Path(home)
+	if _, err := os.Stat(path); err != nil {
+		return nil, err
+	}
 	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&_pragma=busy_timeout(2000)"}
 	return sql.Open("sqlite", u.String())
 }
