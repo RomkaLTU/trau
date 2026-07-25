@@ -203,22 +203,22 @@ func (s *Server) knownRepos(entries []registry.Entry) []registry.Repo {
 	return repos
 }
 
-// findRepo resolves a {repo} path segment to a repo by name against the same union
-// the repos list shows: the repos a loop has run in (the known set and any live
-// loops) first, then the startable roots (the workspace seed and web registrations)
-// synthesized as workspace views, so a freshly registered repo resolves before its
-// first loop runs. Known and live entries win over a synthesized view on a name
-// collision.
-func (s *Server) findRepo(name string) (registry.Repo, bool) {
-	if name == "" {
+// findRepo resolves a repo identifier — the {repo} path segment's name, or a root
+// path — against the same union the repos list shows: the repos a loop has run in
+// (the known set and any live loops) first, then the startable roots (the
+// workspace seed and web registrations) synthesized as workspace views, so a
+// freshly registered repo resolves before its first loop runs. Known and live
+// entries win over a synthesized view on a name collision.
+func (s *Server) findRepo(ident string) (registry.Repo, bool) {
+	if ident == "" {
 		return registry.Repo{}, false
 	}
 	for _, repo := range s.knownRepos(s.liveInstances()) {
-		if repo.Name == name {
+		if repo.Name == ident {
 			return repo, true
 		}
 	}
-	if root, ok := matchRoot(s.effectiveRoots(), name); ok {
+	if root, ok := matchRoot(s.effectiveRoots(), ident); ok {
 		return workspaceRepo(root), true
 	}
 	return registry.Repo{}, false

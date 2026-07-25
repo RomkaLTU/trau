@@ -304,6 +304,15 @@ type Config struct {
 	// hub and the binary on disk is still detected, since that is local.
 	UpdateCheck bool
 
+	// HubSelfReload lets a client ask the hub to restart itself onto the binary
+	// this repo builds, applied at the first hub-wide idle gap. Off, the reload
+	// endpoint refuses: a hub only ever reloads for a repo that opted in.
+	HubSelfReload bool
+
+	// HubReloadBuildCmd rebuilds the hub's binary from the merged base once a
+	// HubSelfReload repo ships work to it, run deterministically in the repo root.
+	HubReloadBuildCmd string
+
 	// TerminalApp is the macOS terminal application the hub opens for a web
 	// takeover: Terminal (default) or iTerm.
 	TerminalApp string
@@ -444,6 +453,8 @@ func Defaults() Config {
 		ServeAutostart:         true,
 		ServeOpen:              true,
 		UpdateCheck:            true,
+		HubSelfReload:          false,
+		HubReloadBuildCmd:      "make build",
 		TerminalApp:            "Terminal",
 		HubWriteRetryWindow:    30,
 		HubWriteBufferBytes:    32 << 20,
@@ -647,6 +658,15 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str := func(key string, dst *string) {
 		v, src := get(key)
 		if v != "" {
+			*dst = v
+			sources[key] = src.name
+		}
+	}
+	// strAllowEmpty takes the layer's value even when it is empty, so a key whose
+	// default is not empty can be switched off by setting it to nothing.
+	strAllowEmpty := func(key string, dst *string) {
+		v, src := get(key)
+		if src.name != LayerDefault {
 			*dst = v
 			sources[key] = src.name
 		}
@@ -940,6 +960,11 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		c.UpdateCheck = v == "1"
 		sources["UPDATE_CHECK"] = src.name
 	}
+	if v, src := get("HUB_SELF_RELOAD"); v != "" {
+		c.HubSelfReload = v == "1"
+		sources["HUB_SELF_RELOAD"] = src.name
+	}
+	strAllowEmpty("HUB_RELOAD_BUILD_CMD", &c.HubReloadBuildCmd)
 	str("TERMINAL_APP", &c.TerminalApp)
 	num("HUB_WRITE_RETRY_WINDOW", &c.HubWriteRetryWindow)
 	num("HUB_WRITE_BUFFER_BYTES", &c.HubWriteBufferBytes)
@@ -1685,6 +1710,8 @@ func KnownKeys() []KeyMeta {
 		{Key: "SERVE_AUTOSTART", Group: sectionHub, WebEditable: true, Default: "1", Advanced: true, Bool: true, Description: "Bring the web UI hub up automatically on the first interactive TUI session when none is running (1 = yes, 0 = no)"},
 		{Key: "SERVE_OPEN", Group: sectionHub, WebEditable: true, Default: "1", Advanced: true, Bool: true, Description: "Open the browser when autostart freshly spawns the hub (1 = yes, 0 = no); the daemon still starts when 0"},
 		{Key: "UPDATE_CHECK", Group: sectionHub, WebEditable: true, Default: "1", Advanced: true, Bool: true, Description: "Check GitHub once a day for a newer trau release and surface it in the web UI (1 = yes, 0 = no)"},
+		{Key: "HUB_SELF_RELOAD", Group: sectionHub, WebEditable: true, Default: "0", Advanced: true, Bool: true, Description: "Let this repo ask the hub to restart itself onto the binary it builds, applied once no run is in flight anywhere; only works for a hub already running from this repo (1 = yes, 0 = no)"},
+		{Key: "HUB_RELOAD_BUILD_CMD", Group: sectionHub, Advanced: true, Default: "make build", Description: "Command that rebuilds the hub's binary, run in the repo root from the merged base once a HUB_SELF_RELOAD repo ships work; empty skips the rebuild"},
 		{Key: "TERMINAL_APP", Group: sectionHub, WebEditable: true, Default: "Terminal", Options: []string{"Terminal", "iTerm"}, Description: "macOS terminal application a web takeover opens: Terminal | iTerm"},
 		{Key: "HUB_WRITE_RETRY_WINDOW", Group: sectionHub, Kind: "int", WebEditable: true, Default: "30", Advanced: true, Description: "Seconds the loop retries an unreachable hub before a run-data write pauses the run blamelessly (ADR 0008)"},
 		{Key: "HUB_WRITE_BUFFER_BYTES", Group: sectionHub, Kind: "int", WebEditable: true, Default: "33554432", Advanced: true, Description: "Byte cap on the child's in-memory buffer of run-data writes queued while the hub is unreachable; over it the oldest queued events are dropped (ADR 0008)"},
@@ -2034,12 +2061,14 @@ func ResolveConfigItems(cfg Config, localPath, projectPath, userPath string, pro
 	items := make([]ConfigItem, 0, len(known))
 	for _, meta := range known {
 		value := keyValue(cfg, meta.Key)
-		if value == "" {
-			value = meta.Default
-		}
 		layer := sources[meta.Key]
 		if layer == "" {
 			layer = LayerDefault
+		}
+		// A layer that supplied an empty value switched the key off; only an
+		// unsupplied key falls back to the default.
+		if value == "" && layer == LayerDefault {
+			value = meta.Default
 		}
 		items = append(items, ConfigItem{
 			Key:         meta.Key,
@@ -2300,6 +2329,13 @@ func keyValue(cfg Config, key string) string {
 			return "1"
 		}
 		return "0"
+	case "HUB_SELF_RELOAD":
+		if cfg.HubSelfReload {
+			return "1"
+		}
+		return "0"
+	case "HUB_RELOAD_BUILD_CMD":
+		return cfg.HubReloadBuildCmd
 	case "TERMINAL_APP":
 		return cfg.TerminalApp
 	case "HUB_WRITE_RETRY_WINDOW":

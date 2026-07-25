@@ -573,6 +573,26 @@ func (c *Client) DeleteInstance(ctx context.Context, pid int) error {
 	return err
 }
 
+// ReloadAck mirrors webserver.ReloadAck: the hub accepted a self-reload but has
+// not performed it. Version is the version still serving — the restart lands at
+// the first moment nothing is running anywhere.
+type ReloadAck struct {
+	Pending  bool   `json:"pending"`
+	RepoRoot string `json:"repo_root"`
+	Version  string `json:"version"`
+}
+
+// RequestHubReload asks the hub to restart onto the binary repoRoot builds. The
+// hub answers 403 when that repo has not set HUB_SELF_RELOAD and 409 when it is
+// not running from the repo's binary, both of which surface as an error carrying
+// the hub's own explanation.
+func (c *Client) RequestHubReload(ctx context.Context, repoRoot string) (ReloadAck, error) {
+	var ack ReloadAck
+	body := map[string]string{"repo_root": repoRoot}
+	err := c.do(ctx, http.MethodPost, apiPrefix+"/hub/reload", body, &ack)
+	return ack, err
+}
+
 // Instance is one live loop as the hub lists it: the identifying PID and repo
 // plus the session state it last reported. The start-path guards read the list
 // to spot a takeover terminal or an in-flight run before touching a repo.

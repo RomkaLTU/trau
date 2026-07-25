@@ -14,13 +14,25 @@ func (s *Server) SetUpdateChecks(enabled bool) {
 	s.updates.SetEnabled(enabled)
 }
 
+// UpdateStatus is the /api/v1/update resource: what the checker knows about
+// newer versions, plus the repo a self-reload is waiting on. The pending reload
+// lives on the hub rather than the checker — a merge asks for it, not a release.
+type UpdateStatus struct {
+	update.Status
+	SelfReloadPending string `json:"selfReloadPending"`
+}
+
+func (s *Server) updateStatus() UpdateStatus {
+	return UpdateStatus{Status: s.updates.Status(), SelfReloadPending: s.selfReloadPending()}
+}
+
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.updates.Status())
+	writeJSON(w, http.StatusOK, s.updateStatus())
 }
 
 // handleUpdateCheck forces a release check and answers with the resulting state.
@@ -35,7 +47,7 @@ func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 	if err := s.updates.CheckNow(r.Context()); err != nil {
 		logger.Verbosef("update check: %v", err)
 	}
-	writeJSON(w, http.StatusOK, s.updates.Status())
+	writeJSON(w, http.StatusOK, s.updateStatus())
 }
 
 // handleUpdateApply hands the upgrade to Homebrew and restarts onto the result.
@@ -58,7 +70,7 @@ func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, update.ErrApplyInFlight):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "an update is already being applied"})
 	default:
-		writeJSON(w, http.StatusAccepted, s.updates.Status())
+		writeJSON(w, http.StatusAccepted, s.updateStatus())
 	}
 }
 

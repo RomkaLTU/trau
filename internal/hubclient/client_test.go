@@ -262,3 +262,65 @@ func TestAttachmentBytesFetchFailureCarriesHubError(t *testing.T) {
 		t.Fatalf("err = %v, want the hub's reason", err)
 	}
 }
+
+func TestRequestHubReloadPostsRepoRoot(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != apiPrefix+"/hub/reload" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		if body["repo_root"] != "/Users/rd/Projects/loop" {
+			t.Errorf("repo_root = %q", body["repo_root"])
+		}
+		writeJSON(w, http.StatusAccepted, ReloadAck{Pending: true, RepoRoot: body["repo_root"], Version: "v2.5.0"})
+	}))
+	defer ts.Close()
+
+	ack, err := New(ts.URL, "").RequestHubReload(context.Background(), "/Users/rd/Projects/loop")
+	if err != nil {
+		t.Fatalf("RequestHubReload: %v", err)
+	}
+	if !ack.Pending || ack.Version != "v2.5.0" {
+		t.Fatalf("ack = %+v", ack)
+	}
+}
+
+// Both refusals a hub can hand back — the repo never opted in (403) and the hub
+// runs from somewhere else (409) — reach the caller with the hub's own wording,
+// which is the only explanation the run log gets.
+func TestRequestHubReloadRefusalCarriesHubError(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		reason string
+	}{
+		{name: "repo has not opted in", status: http.StatusForbidden, reason: "self-reload is off for loop"},
+		{name: "hub runs another binary", status: http.StatusConflict, reason: "hub is not running from this repo's binary (/opt/homebrew/bin/trau)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(w, tc.status, map[string]string{"error": tc.reason})
+			}))
+			defer ts.Close()
+
+			_, err := New(ts.URL, "").RequestHubReload(context.Background(), "/repo")
+			if err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("err = %v, want the hub's reason", err)
+			}
+			if IsUnreachable(err) {
+				t.Errorf("err = %v, want a refusal rather than a connection failure", err)
+			}
+		})
+	}
+}
+
+func TestRequestHubReloadUnreachableHub(t *testing.T) {
+	_, err := New("http://127.0.0.1:1", "").RequestHubReload(context.Background(), "/repo")
+	if !IsUnreachable(err) {
+		t.Fatalf("err = %v, want an unreachable-hub error", err)
+	}
+}

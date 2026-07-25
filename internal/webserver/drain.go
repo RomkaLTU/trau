@@ -96,9 +96,10 @@ func (d *drainer) run(ctx context.Context, root string) {
 // tick advances a repo's queue by one decision: it launches the next runnable
 // item, settles a finished one per the failure taxonomy — pausing the drain on a
 // fault or provider pause — waits, never spawning a second child while one is in
-// flight, or finishes the drain once the queue has run dry so a completed queue
-// reads stopped instead of idling armed. It is the whole drain policy, pure
-// enough to table-test.
+// flight or while a pending self-reload is waiting for its idle gap, or finishes
+// the drain once the queue has run dry so a completed queue reads stopped
+// instead of idling armed. It is the whole drain policy, pure enough to
+// table-test.
 func (d *drainer) tick(root string) (drainAction, error) {
 	store := d.srv.stores.Queue(root)
 	items, meta, err := store.Snapshot()
@@ -131,6 +132,9 @@ func (d *drainer) tick(root string) (drainAction, error) {
 		if finished {
 			return drainStop, nil
 		}
+		return drainWait, nil
+	}
+	if d.srv.selfReloadArmed() {
 		return drainWait, nil
 	}
 	if d.repoLive(root) {
@@ -324,18 +328,10 @@ func (d *drainer) checkpointOutcome(root string, it queue.Item) (class, reason s
 
 // repoHasLiveInstance reports whether a loop — a manual loop or a Run once — is
 // already running in root, so the drainer waits for it instead of spawning a
-// second child in the same repo. An idle instance is an open dashboard, not a
-// run, and does not block; every other state (or a legacy entry with no state)
-// means a run is in flight, WIP is held, or a takeover terminal owns the
-// working tree (ADR 0018). The wait keeps the drain armed, so a takeover block
-// is temporary: the queue retries once the lock's process dies.
+// second child in the same repo. The wait keeps the drain armed, so a takeover
+// block is temporary: the queue retries once the lock's process dies.
 func (d *drainer) repoHasLiveInstance(root string) bool {
-	for _, e := range d.srv.liveInstances() {
-		if e.RepoRoot == root && e.SessionState != registry.StateIdle {
-			return true
-		}
-	}
-	return false
+	return d.srv.hasBusyInstance(root)
 }
 
 func firstWithStatus(items []queue.Item, status string) (queue.Item, bool) {

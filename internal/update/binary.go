@@ -1,6 +1,7 @@
 package update
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -46,12 +47,27 @@ func probeBinary() (version, method string) {
 		return "", installOther
 	}
 	method = installMethod(path)
-	out, err := exec.Command(path, "--version").Output()
+	version, err = ProbeVersion(context.Background(), path)
 	if err != nil {
-		logger.Debugf("update: %s --version: %v", path, err)
+		logger.Debugf("update: %v", err)
 		return "", method
 	}
-	return parseVersionOutput(string(out)), method
+	return version, method
+}
+
+// ProbeVersion runs the trau binary at path and returns the version it reports.
+// A binary that cannot be executed, or whose output names no version, is not a
+// usable trau.
+func ProbeVersion(ctx context.Context, path string) (string, error) {
+	out, err := exec.CommandContext(ctx, path, "--version").Output()
+	if err != nil {
+		return "", fmt.Errorf("%s --version: %w", path, err)
+	}
+	version := parseVersionOutput(string(out))
+	if version == "" {
+		return "", fmt.Errorf("%s --version: reported no version", path)
+	}
+	return version, nil
 }
 
 // parseVersionOutput reads the version out of `trau --version`, whose only line

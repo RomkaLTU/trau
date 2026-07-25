@@ -157,6 +157,22 @@ func (s *Server) liveInstances() []registry.Entry {
 	return entries
 }
 
+// hasBusyInstance reports whether a live instance in root is past idle — a run in
+// flight, held WIP, or a takeover terminal owning the working tree (ADR 0018). An
+// idle instance is an open dashboard rather than a run, and a legacy entry with no
+// state counts as busy. An empty root asks across every repo.
+func (s *Server) hasBusyInstance(root string) bool {
+	for _, e := range s.liveInstances() {
+		if root != "" && e.RepoRoot != root {
+			continue
+		}
+		if e.SessionState != registry.StateIdle {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) listInstances(w http.ResponseWriter, _ *http.Request) {
 	entries := s.liveInstances()
 
