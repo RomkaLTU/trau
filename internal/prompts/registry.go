@@ -45,9 +45,9 @@ const explorePreambleDefault = `[Unattended run] You are running headless inside
 
 const codeStyleDefault = ` Write it the way a senior engineer on this project would: clean, idiomatic, and matching the surrounding file's conventions. Do NOT add explanatory or narrating comments — no comment that restates what the code does, no section banners, no ticket IDs in comments, no multi-line 'why' essays; let clear names carry the meaning and keep a comment only where a genuinely non-obvious decision truly needs one, matching the file's existing comment density rather than exceeding it. Skip the AI tells: no over-defensive guards for cases that can't occur, no redundant error/nil checks the codebase doesn't already use, no belt-and-suspenders boilerplate a human wouldn't bother to write.`
 
-const verifySkillsDefault = `{{if .Required}}Load these required skills with the Skill tool before verifying: {{join .Required ", "}}. Do NOT pause to ask which skills to load.{{end}}`
+const verifySkillsDefault = `{{if .Required}}Load these required skills with the Skill tool before verifying: {{join .Required ", "}}. Do NOT pause to ask which skills to load.{{if .Menu}} Other installed skills are available — load any that genuinely help: {{join .Menu ", "}}.{{end}}{{end}}`
 
-const skillsDefault = `{{if .Required}}This is an unattended run — load these required skills with the Skill tool before implementing: {{join .Required ", "}}. Do NOT pause to ask which skills to load.{{else}}This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Infer the project's stack from its manifests and configs (package.json, composer.json, go.mod, pyproject.toml, and the like) rather than assuming any framework; in a multi-workspace repo (monorepo), read the manifests of the workspaces the ticket touches, not only the root's. Always include the project's test skill when one exists, and add the domain skills matching the areas the ticket actually touches.{{end}}`
+const skillsDefault = `{{if .Required}}This is an unattended run — load these required skills with the Skill tool before implementing: {{join .Required ", "}}. Do NOT pause to ask which skills to load.{{if .Menu}} Other installed skills are available — load any that genuinely help: {{join .Menu ", "}}.{{end}}{{else}}This is an unattended run: auto-select and load the project skills relevant to this ticket — do NOT pause to ask which skills to load. Infer the project's stack from its manifests and configs (package.json, composer.json, go.mod, pyproject.toml, and the like) rather than assuming any framework; in a multi-workspace repo (monorepo), read the manifests of the workspaces the ticket touches, not only the root's. Always include the project's test skill when one exists, and add the domain skills matching the areas the ticket actually touches.{{end}}`
 
 const grillIssueDefault = `You are clarifying a software issue so an autonomous coding agent can implement it without guessing. You are running inside the repository this issue belongs to; read the code before asking when it sharpens a question.
 
@@ -337,6 +337,7 @@ var registry = []Prompt{
 		Placeholders: []Placeholder{
 			{Field: "Installed", Description: "every installed skill name, for a template that wants to enumerate them", Sample: []string{"golang-pro", "web-feature"}},
 			{Field: "Required", Description: "the resolved set the build agent must load: REQUIRED_SKILLS, else the project type's recommended skills, else all installed; empty only when the repo installs none", Sample: []string{"golang-pro"}},
+			{Field: "Menu", Description: "the installed skills outside Required, offered as an optional load-if-useful menu; empty unless SKILLS_MENU is on and the phase runs on claude in instruct mode", Sample: []string{"web-feature"}},
 		},
 		Default: skillsDefault,
 	},
@@ -347,6 +348,7 @@ var registry = []Prompt{
 		Placeholders: []Placeholder{
 			{Field: "Installed", Description: "every installed skill name, for a template that wants to enumerate them", Sample: []string{"golang-pro", "tdd"}},
 			{Field: "Required", Description: "the resolved set the verify agent must load: REQUIRED_SKILLS_VERIFY, the project's test skills, and browser-harness when browser verify is active, falling back to the build set", Sample: []string{"tdd", "browser-harness"}},
+			{Field: "Menu", Description: "the installed skills outside Required, offered as an optional load-if-useful menu; empty unless SKILLS_MENU is on and the phase runs on claude in instruct mode", Sample: []string{"golang-pro"}},
 		},
 		Default: verifySkillsDefault,
 	},

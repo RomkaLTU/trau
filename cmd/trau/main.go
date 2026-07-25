@@ -1446,6 +1446,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		RequiredSkills:       cfg.RequiredSkills,
 		RequiredSkillsVerify: cfg.RequiredSkillsVerify,
 		SkillsMode:           cfg.SkillsMode,
+		SkillsMenu:           cfg.SkillsMenu,
 		CITimeout:            cfg.CITimeout,
 		CIPoll:               cfg.CIPoll,
 		Lessons:              cfg.Lessons,

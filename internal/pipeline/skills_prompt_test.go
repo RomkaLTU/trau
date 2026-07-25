@@ -13,7 +13,7 @@ import (
 
 func TestSkillsPromptComposition(t *testing.T) {
 	t.Run("no installed skills keeps the self-selection fallback", func(t *testing.T) {
-		got := skillsPrompt(prompts.Renderer{}, nil, nil)
+		got := skillsPrompt(prompts.Renderer{}, nil, nil, nil)
 		mustContain(t, "skillsPrompt(none)", got, "auto-select and load the project skills")
 		mustNotContain(t, "skillsPrompt(none)", got, "Skill tool before implementing")
 	})
@@ -22,6 +22,7 @@ func TestSkillsPromptComposition(t *testing.T) {
 		got := skillsPrompt(prompts.Renderer{},
 			[]string{"golang-code-style", "golang-error-handling", "goreleaser"},
 			[]string{"golang-code-style", "golang-error-handling"},
+			nil,
 		)
 		mustContain(t, "skillsPrompt(resolved)", got,
 			"load these required skills with the Skill tool before implementing: golang-code-style, golang-error-handling",
@@ -34,7 +35,7 @@ func TestSkillsPromptComposition(t *testing.T) {
 
 func TestVerifySkillsPromptComposition(t *testing.T) {
 	t.Run("empty set renders nothing", func(t *testing.T) {
-		if got := verifySkillsPrompt(prompts.Renderer{}, nil, nil); got != "" {
+		if got := verifySkillsPrompt(prompts.Renderer{}, nil, nil, nil); got != "" {
 			t.Fatalf("verifySkillsPrompt(none) = %q, want empty", got)
 		}
 	})
@@ -43,6 +44,7 @@ func TestVerifySkillsPromptComposition(t *testing.T) {
 		got := verifySkillsPrompt(prompts.Renderer{},
 			[]string{"golang-code-style", "tdd"},
 			[]string{"tdd", "browser-harness"},
+			nil,
 		)
 		mustContain(t, "verifySkillsPrompt(resolved)", got,
 			"Load these required skills with the Skill tool before verifying: tdd, browser-harness",
@@ -56,7 +58,7 @@ func TestVerifySkillsPromptComposition(t *testing.T) {
 // TestVerifyPromptCarriesSkillsNote pins the verify-prompt injection point: a
 // rendered skills note lands in the prompt, an empty one leaves it untouched.
 func TestVerifyPromptCarriesSkillsNote(t *testing.T) {
-	note := verifySkillsPrompt(prompts.Renderer{}, []string{"tdd"}, []string{"tdd", "browser-harness"})
+	note := verifySkillsPrompt(prompts.Renderer{}, []string{"tdd"}, []string{"tdd", "browser-harness"}, nil)
 	got := verifyTail(prompts.Renderer{}, "COD-1", "", verifyPath("COD-1"), "", "", "", "", "", note, "", false)
 	mustContain(t, "verifyTail(skills)", got, "Load these required skills with the Skill tool before verifying: tdd, browser-harness")
 
@@ -68,7 +70,7 @@ func TestVerifyPromptCarriesSkillsNote(t *testing.T) {
 // carry the build-flavored skills note unchanged, while cleanup and lint_fix
 // prompts stay skill-less.
 func TestRepairPromptsReuseBuildSkillsNote(t *testing.T) {
-	note := skillsPrompt(prompts.Renderer{}, []string{"golang-code-style"}, []string{"golang-code-style"})
+	note := skillsPrompt(prompts.Renderer{}, []string{"golang-code-style"}, []string{"golang-code-style"}, nil)
 	want := "load these required skills with the Skill tool before implementing: golang-code-style"
 
 	repair := repairInstruction(prompts.Renderer{}, "COD-1", verifyPath("COD-1"), "", "feature/x", "boom", "", "", "", note, "")
