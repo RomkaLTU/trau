@@ -126,6 +126,7 @@ func (f *fakeGitHub) CreatePR(context.Context, string, string, string, string) (
 	return f.createURL, nil
 }
 
-func (f *fakeGitHub) PRState(context.Context, string) (string, error)   { return "", nil }
-func (f *fakeGitHub) Checks(context.Context, string) ([]Check, error)   { return nil, nil }
-func (f *fakeGitHub) Merge(context.Context, string, string, bool) error { return nil }
+func (f *fakeGitHub) MergedPRURL(context.Context, string) (string, error) { return "", nil }
+func (f *fakeGitHub) PRState(context.Context, string) (string, error)     { return "", nil }
+func (f *fakeGitHub) Checks(context.Context, string) ([]Check, error)     { return nil, nil }
+func (f *fakeGitHub) Merge(context.Context, string, string, bool) error   { return nil }

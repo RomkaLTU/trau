@@ -99,6 +99,69 @@ func TestFinalizeEpicMergesWithRequireCIOffAndNoChecks(t *testing.T) {
 	}
 }
 
+// A finalize re-attempt after the epic PR already merged must settle clean, not
+// wedge the queue: the open-PR filter reads a merged epic PR as "no PR", the
+// re-create is refused with "No commits between", and the merged PR is adopted
+// instead of pausing the item forever (COD-1158 — epic COD-1151 re-paused on
+// every Start).
+func TestFinalizeEpicReattemptAdoptsMergedPR(t *testing.T) {
+	tr := &epicTracker{
+		title: "Checkout rebuild",
+		subs: []tracker.SubIssue{
+			{ID: "COD-2", Title: "first"},
+			{ID: "COD-3", Title: "second"},
+		},
+		status: map[string]tracker.IssueStatus{
+			"COD-2": tracker.StatusDone,
+			"COD-3": tracker.StatusDone,
+		},
+	}
+	gh := &epicGitHub{
+		createErr: errors.New(`gh pr create: exit status 1: pull request create failed: GraphQL: No commits between main and epic/COD-1-checkout-rebuild (createPullRequest)`),
+		mergedURL: "https://github.test/pr/42",
+		prState:   "MERGED",
+	}
+	p := &Pipeline{
+		Base:        "main",
+		Remote:      "origin",
+		EpicID:      "COD-1",
+		epicBranch:  "epic/COD-1-checkout-rebuild",
+		AutoMerge:   true,
+		RequireCI:   true,
+		MergeMethod: "squash",
+		Git:         fakeGit{},
+		GitHub:      gh,
+		Tracker:     tr,
+		State:       state.NewStore(t.TempDir()),
+	}
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+	if gh.createCalls != 1 {
+		t.Fatalf("expected one create attempt, got %d", gh.createCalls)
+	}
+	if gh.mergeCalls != 0 {
+		t.Fatalf("already-merged epic must not merge again, got %d merges", gh.mergeCalls)
+	}
+	assertEpicCheckpointedMerged(t, p)
+	if tr.setStatus != "Done" || !strings.Contains(tr.setExtra, "https://github.test/pr/42") {
+		t.Fatalf("expected epic closed Done citing the merged PR, got %s %q", tr.setStatus, tr.setExtra)
+	}
+}
+
+// "No commits between" with no merged PR behind it is a real failure — an empty
+// epic branch has nothing to adopt, so the create error still surfaces.
+func TestEnsureEpicPRNoCommitsWithoutMergedPRStillFails(t *testing.T) {
+	gh := &epicGitHub{
+		createErr: errors.New("gh pr create: exit status 1: GraphQL: No commits between main and epic/COD-1 (createPullRequest)"),
+	}
+	p := &Pipeline{Base: "main", EpicID: "COD-1", GitHub: gh, Tracker: &epicTracker{title: "x"}}
+	if _, err := p.ensureEpicPR(context.Background(), "epic/COD-1-x"); err == nil {
+		t.Fatal("expected create error to surface when no merged PR exists")
+	}
+}
+
 // With AUTO_MERGE=0 the epic release PR waits for the operator to merge it by hand;
 // once they do, the epic closes with the shipped-to-base comment exactly as if
 // auto-merge had merged it, and the wait announces itself once through the
@@ -703,6 +766,9 @@ func (e *epicTracker) IssueStatus(_ context.Context, id string) (tracker.IssueSt
 
 type epicGitHub struct {
 	createURL    string
+	createErr    error
+	mergedURL    string
+	prState      string
 	createCalls  int
 	base         string
 	head         string
@@ -715,12 +781,15 @@ type epicGitHub struct {
 }
 
 func (e *epicGitHub) PRURL(context.Context, string) (string, error) { return "", nil }
+func (e *epicGitHub) MergedPRURL(context.Context, string) (string, error) {
+	return e.mergedURL, nil
+}
 func (e *epicGitHub) CreatePR(_ context.Context, base, head, title, body string) (string, error) {
 	e.createCalls++
 	e.base, e.head, e.title, e.body = base, head, title, body
-	return e.createURL, nil
+	return e.createURL, e.createErr
 }
-func (e *epicGitHub) PRState(context.Context, string) (string, error) { return "", nil }
+func (e *epicGitHub) PRState(context.Context, string) (string, error) { return e.prState, nil }
 func (e *epicGitHub) Checks(context.Context, string) ([]Check, error) { return e.checks, nil }
 func (e *epicGitHub) Merge(_ context.Context, _, method string, deleteBranch bool) error {
 	e.mergeCalls++
