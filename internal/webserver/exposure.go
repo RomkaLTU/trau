@@ -53,6 +53,12 @@ func CheckExposure(bind, token string) error {
 	return nil
 }
 
+// tokenGated reports whether this hub's API is behind the bearer token, so a
+// client can tell what its own requests must carry.
+func (s *Server) tokenGated() bool {
+	return !Loopback(s.bind) && s.token != ""
+}
+
 // serveTokenCookie mirrors the bearer token for requests the browser issues
 // without a header — an <img src> pointing at an attachment's bytes, or a
 // download link — so those load on an exposed bind. The SPA sets it from the same

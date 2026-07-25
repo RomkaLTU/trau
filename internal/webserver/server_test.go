@@ -72,6 +72,33 @@ func TestHealthResource(t *testing.T) {
 	if h.UptimeSeconds < 0 {
 		t.Errorf("uptime_seconds = %v, want >= 0", h.UptimeSeconds)
 	}
+	if h.TokenRequired {
+		t.Error("token_required = true on a loopback bind, want false")
+	}
+}
+
+func TestHealthReportsTokenGate(t *testing.T) {
+	ts := httptest.NewServer(New("1.2.3", "10.0.0.5", "s3cret", nil, false, testStores(t)).Handler())
+	t.Cleanup(ts.Close)
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+APIPrefix+"/health", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer s3cret")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET health: %v", err)
+	}
+	var h Health
+	err = json.NewDecoder(res.Body).Decode(&h)
+	_ = res.Body.Close()
+	if err != nil {
+		t.Fatalf("decode health: %v", err)
+	}
+	if !h.TokenRequired {
+		t.Error("token_required = false on a token-gated bind, want true")
+	}
 }
 
 func TestHealthRejectsNonGET(t *testing.T) {

@@ -6,6 +6,7 @@ export interface Health {
   status: string
   version: string
   uptime_seconds: number
+  token_required: boolean
 }
 
 async function fetchHealth(): Promise<Health> {
