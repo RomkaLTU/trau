@@ -34,10 +34,13 @@ type Prompt struct {
 
 // SkillsData feeds the skills and verify_skills prompts. Required is the
 // phase's resolved set — the names the prompt tells the agent to load; the
-// verify path may add browser-harness, which loads from outside the repo.
+// verify path may add browser-harness, which loads from outside the repo. Menu
+// is the optional backstop: the installed skills outside Required, offered for
+// the agent to load on its own judgment.
 type SkillsData struct {
 	Installed []string
 	Required  []string
+	Menu      []string
 }
 
 // BuildData feeds the build prompt. SkillsNote, Note, CodeStyle, and

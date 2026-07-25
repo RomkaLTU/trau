@@ -17,7 +17,7 @@ func TestResolveSkillsInjectMode(t *testing.T) {
 	p := &Pipeline{RepoRoot: root, SkillsMode: skillsModeInject}
 	set := agent.SkillSet{Names: []string{"golang-code-style"}, Source: agent.SkillsSourceRequired}
 
-	ps := p.resolveSkills(set, []string{"golang-code-style"}, false)
+	ps := p.resolveSkills(set, []string{"golang-code-style"}, agent.PhaseBuild)
 	if ps.note != "" {
 		t.Errorf("inject mode should drop the Skill-tool note, got %q", ps.note)
 	}
@@ -42,7 +42,7 @@ func TestResolveSkillsInstructMode(t *testing.T) {
 	p := &Pipeline{RepoRoot: root, SkillsMode: skillsModeInstruct}
 	set := agent.SkillSet{Names: []string{"golang-code-style"}}
 
-	ps := p.resolveSkills(set, []string{"golang-code-style"}, false)
+	ps := p.resolveSkills(set, []string{"golang-code-style"}, agent.PhaseBuild)
 	if ps.injection != "" {
 		t.Errorf("instruct mode should not inject, got %q", ps.injection)
 	}

@@ -386,6 +386,44 @@ func TestLoadSkillsMode(t *testing.T) {
 	t.Error("SKILLS_MODE is missing from the settings catalog")
 }
 
+func TestLoadSkillsMenu(t *testing.T) {
+	if Defaults().SkillsMenu {
+		t.Fatal("default SkillsMenu = true, want the menu off")
+	}
+
+	dir := t.TempDir()
+	project := filepath.Join(dir, ".trau.ini")
+	if err := os.WriteFile(project, []byte("SKILLS_MENU=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayered(project, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.SkillsMenu {
+		t.Error("SkillsMenu = false, want true")
+	}
+	if got := keyValue(cfg, "SKILLS_MENU"); got != "1" {
+		t.Errorf("keyValue(SKILLS_MENU) = %q, want 1", got)
+	}
+	for _, m := range KnownKeys() {
+		if m.Key != "SKILLS_MENU" {
+			continue
+		}
+		if !m.WebEditable {
+			t.Error("SKILLS_MENU should be web-editable")
+		}
+		if !m.Bool {
+			t.Error("SKILLS_MENU should render as a boolean")
+		}
+		if m.Group != sectionSkills {
+			t.Errorf("SKILLS_MENU section = %q, want %q", m.Group, sectionSkills)
+		}
+		return
+	}
+	t.Error("SKILLS_MENU is missing from the settings catalog")
+}
+
 func TestResolveConfigItemsEnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	local := filepath.Join(dir, "trau.ini")

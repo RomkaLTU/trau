@@ -73,7 +73,7 @@ func TestTicketContextMaterializesAttachments(t *testing.T) {
 		}
 	}
 
-	build := buildInstruction(prompts.Renderer{}, id, "feature/x", skillsPrompt(prompts.Renderer{}, nil, nil), "", got)
+	build := buildInstruction(prompts.Renderer{}, id, "feature/x", skillsPrompt(prompts.Renderer{}, nil, nil, nil), "", got)
 	mustContain(t, "buildInstruction", build, imagePath, "--- Attachments ---")
 }
 

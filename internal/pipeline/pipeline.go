@@ -496,6 +496,11 @@ type Pipeline struct {
 	// delivers each skill's SKILL.md content inline in the build/verify/repair/
 	// bugfix prompt, so delivery is guaranteed and provider-agnostic.
 	SkillsMode string
+	// SkillsMenu opts the instruct-mode prompts into an optional backstop line
+	// (config SKILLS_MENU) naming the installed skills the phase's resolved set
+	// left out, for the agent to load on its own judgment. Claude-only: the other
+	// providers have no Skill tool to take the offer.
+	SkillsMenu bool
 	// Cleanup gates the pre-verify slop-cleanup step (config CLEANUP).
 	Cleanup        bool
 	CITimeout      int
@@ -1419,7 +1424,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	ticketCtx, labels := p.ticketContextWithLabels(ctx, id)
 	resolver := p.skillResolver()
 	buildSkills := resolver.Build(agent.SkillContext{Text: skillMatchText(ticketCtx, labels)})
-	buildDelivery := p.resolveSkills(buildSkills, resolver.Installed(), false)
+	buildDelivery := p.resolveSkills(buildSkills, resolver.Installed(), agent.PhaseBuild)
 	p.recordPhaseSkills(id, "build", buildDelivery)
 	out, err := p.agentStep(ctx, id, "build", injectInto(buildDelivery.injection, buildInstruction(p.prompts, id, branch, buildDelivery.note, note, ticketCtx)))
 	if err != nil {
@@ -1791,8 +1796,8 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	skillCtx := agent.SkillContext{Changed: changed}
 	verifySkills := resolver.Verify(skillCtx, note != "")
 	repairSkills := resolver.Repair(skillCtx)
-	verifyDelivery := p.resolveSkills(verifySkills, resolver.Installed(), true)
-	repairDelivery := p.resolveSkills(repairSkills, resolver.Installed(), false)
+	verifyDelivery := p.resolveSkills(verifySkills, resolver.Installed(), agent.PhaseVerify)
+	repairDelivery := p.resolveSkills(repairSkills, resolver.Installed(), agent.PhaseRepair)
 	p.recordPhaseSkills(id, "verify", verifyDelivery)
 
 	checksFragment := checks.Render(p.Checks)
@@ -3262,13 +3267,13 @@ type phaseSkills struct {
 // injection rides the prompt outside the phase template (see agentStep call
 // sites), so a prompt-catalog override cannot drop it; the Skill-tool sentence is
 // dropped entirely in inject mode.
-func (p *Pipeline) resolveSkills(set agent.SkillSet, installed []string, verify bool) phaseSkills {
+func (p *Pipeline) resolveSkills(set agent.SkillSet, installed []string, phase string) phaseSkills {
 	if !p.injectSkills() {
 		render := skillsPrompt
-		if verify {
+		if phase == agent.PhaseVerify {
 			render = verifySkillsPrompt
 		}
-		return phaseSkills{set: set, note: render(p.prompts, installed, set.Names)}
+		return phaseSkills{set: set, note: render(p.prompts, installed, set.Names, p.skillsMenu(phase, installed, set.Names))}
 	}
 	injected := agent.LoadInjectableSkills(p.RepoRoot, set.Names)
 	return phaseSkills{
@@ -3348,17 +3353,54 @@ func injectInto(injection, prompt string) string {
 	return injection + "\n\n" + prompt
 }
 
+// skillsMenu returns the installed skills the phase's prompt may offer beyond its
+// resolved set — the optional backstop behind SKILLS_MENU. Empty unless the flag
+// is on and every agent the phase's prompt reaches routes to claude: codex and kimi
+// have no Skill tool, so a menu would only be noise.
+func (p *Pipeline) skillsMenu(phase string, installed, resolved []string) []string {
+	if !p.SkillsMenu || !p.claudeOnlyPhase(phase) {
+		return nil
+	}
+	named := make(map[string]bool, len(resolved))
+	for _, n := range resolved {
+		named[n] = true
+	}
+	rest := make([]string, 0, len(installed))
+	for _, n := range installed {
+		if !named[n] {
+			rest = append(rest, n)
+		}
+	}
+	return rest
+}
+
+// claudeOnlyPhase reports whether every agent the phase's prompt reaches runs on
+// claude. A configured verify panel replaces the primary verifier and all its
+// members read the same prompt, so one member without a Skill tool speaks for the
+// whole panel.
+func (p *Pipeline) claudeOnlyPhase(phase string) bool {
+	if phase == agent.PhaseVerify && len(p.VerifyPanel) > 0 {
+		for _, m := range p.VerifyPanel {
+			if m.Provider != "claude" {
+				return false
+			}
+		}
+		return true
+	}
+	return phaseProvider(p.Runner, phase) == "claude"
+}
+
 // skillsPrompt renders the build-prompt sentence naming the skills to load. Only
 // a repo with no installed skills renders an empty set, where the template falls
 // back to generic self-selection wording (Claude Code stopped honoring that in
 // 2.1.202, which is why every other repo names its skills explicitly).
-func skillsPrompt(r prompts.Renderer, installed, resolved []string) string {
-	return r.Render("skills", prompts.SkillsData{Installed: installed, Required: resolved})
+func skillsPrompt(r prompts.Renderer, installed, resolved, menu []string) string {
+	return r.Render("skills", prompts.SkillsData{Installed: installed, Required: resolved, Menu: menu})
 }
 
 // verifySkillsPrompt renders the verify-prompt sentence naming the skills to load.
-func verifySkillsPrompt(r prompts.Renderer, installed, resolved []string) string {
-	return r.Render("verify_skills", prompts.SkillsData{Installed: installed, Required: resolved})
+func verifySkillsPrompt(r prompts.Renderer, installed, resolved, menu []string) string {
+	return r.Render("verify_skills", prompts.SkillsData{Installed: installed, Required: resolved, Menu: menu})
 }
 
 func buildInstruction(r prompts.Renderer, id, branch, skillsNote, note, ticketCtx string) string {
