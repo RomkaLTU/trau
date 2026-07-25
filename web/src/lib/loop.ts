@@ -30,6 +30,9 @@ export interface LoopHalt {
   kind: LoopHaltKind
   ticket: string
   reason: string
+  // Set for a paused epic: a reason carried up from a child's checkpoint names
+  // that child, so the banner uses these to tell a sub-ticket from a foreign one.
+  subTickets?: string[]
 }
 
 export interface LoopStateInput {
@@ -129,7 +132,12 @@ function currentHalt(
     (it) => it.kind === 'epic' && it.status === 'paused',
   )
   return stalled
-    ? { kind: 'paused', ticket: stalled.id, reason: stalled.reason ?? '' }
+    ? {
+        kind: 'paused',
+        ticket: stalled.id,
+        reason: stalled.reason ?? '',
+        subTickets: (stalled.sub_issues ?? []).map((sub) => sub.id),
+      }
     : null
 }
 

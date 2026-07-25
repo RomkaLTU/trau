@@ -543,6 +543,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	p.OnActivity = func(_, activity, detail string) { reg.SetActivity(activity, detail) }
 
 	eng := &realEngine{pipe: p, tracker: pm, scope: scope, sink: sink, log: log}
+	if forcedID != "" {
+		// Also when epicID is set: there it only stacks the branch, it never widens the pick.
+		eng.resumeKeep = forcedTicketFilter(forcedID)
+	}
 
 	total := func(ids []string) (int, float64, bool) {
 		t, c := 0, 0.0
@@ -1575,9 +1579,10 @@ type realEngine struct {
 	scope   tracker.Scope
 	sink    *hubtokens.Sink
 	log     *event.Log
-	// resumeKeep, when set, restricts the resume scan to ids it accepts — the epic
-	// flow sets it to the epic's child set so a stale checkpoint for an unrelated
-	// ticket in the same runs/ dir is skipped rather than resumed. Nil scans all.
+	// resumeKeep, when set, restricts both resume scans — stored checkpoints and
+	// parked-branch adoption — to ids it accepts: the epic flow sets it to the epic's
+	// child set, a pinned single-ticket run to that ticket alone, so an unrelated
+	// ticket's leftover state is skipped rather than resumed. Nil scans all.
 	resumeKeep func(id string) bool
 }
 
@@ -1585,7 +1590,7 @@ func (e *realEngine) ResumeTarget() (string, string) {
 	return e.pipe.State.ResumeTargetFunc(e.resumeKeep)
 }
 func (e *realEngine) InferredResume(ctx context.Context) (string, string) {
-	return e.pipe.InferredResume(ctx)
+	return e.pipe.InferredResumeFunc(ctx, e.resumeKeep)
 }
 func (e *realEngine) EnsureCleanBase(ctx context.Context) error { return e.pipe.EnsureCleanBase(ctx) }
 func (e *realEngine) RestoreWIP(ctx context.Context)            { e.pipe.RestoreWIP(ctx) }
@@ -2781,6 +2786,13 @@ func epicChildFilter(ctx context.Context, tr tracker.Tracker, epic string) func(
 		}
 	}
 	return func(id string) bool { return allow[strings.ToUpper(strings.TrimSpace(id))] }
+}
+
+// forcedTicketFilter returns the resume scope of an explicitly started single-ticket
+// run: only id itself, so another ticket's leftover state cannot pre-empt it.
+func forcedTicketFilter(id string) func(string) bool {
+	want := strings.ToUpper(strings.TrimSpace(id))
+	return func(got string) bool { return strings.ToUpper(strings.TrimSpace(got)) == want }
 }
 
 // runEpicLoop runs the loop scoped to epic (or the team ready-queue when epic is
