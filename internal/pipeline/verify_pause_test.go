@@ -86,6 +86,7 @@ func (fakeGit) WorktreeHolding(context.Context, string) (string, error) {
 	return "", nil
 }
 func (fakeGit) Clean(context.Context) error                        { return nil }
+func (fakeGit) DiscardTracked(context.Context) error               { return nil }
 func (fakeGit) BranchExists(context.Context, string) (bool, error) { return false, nil }
 func (fakeGit) FindFeatureBranch(context.Context, string) (string, error) {
 	return "", nil
