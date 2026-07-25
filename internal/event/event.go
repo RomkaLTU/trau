@@ -24,6 +24,11 @@ const KindBuildNoSkills = "build_no_skills"
 // reports the agent actually loaded.
 const KindSkillsPlanned = "skills_planned"
 
+// KindCleanupOutcome records what the cleanup phase actually changed, measured
+// from git tree snapshots taken around the agent call, next to the agent's own
+// closing claim so the two can be compared.
+const KindCleanupOutcome = "cleanup_outcome"
+
 // KindVerifyNoSkills marks a verify that loaded no skills in a repo that has
 // skills installed — the build_no_skills mirror for the QA phase.
 const KindVerifyNoSkills = "verify_no_skills"

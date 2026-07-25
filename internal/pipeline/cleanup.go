@@ -2,8 +2,11 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"github.com/RomkaLTU/trau/internal/activity"
+	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/prompts"
 )
 
@@ -16,7 +19,10 @@ func (p *Pipeline) cleanup(ctx context.Context, id string) error {
 	p.setActivity(id, activity.Cleanup, "")
 	p.logf("  ↳ cleanup: stripping unnecessary comments and slop from the diff")
 	notesRef, _ := p.activeBuildNotes(id)
-	_, err := p.agentStep(ctx, id, "cleanup", cleanupInstruction(p.prompts, id, buildNotesNote(notesRef)))
+	snapper, _ := p.Git.(worktreeSnapshotter)
+	before := p.snapshotTree(ctx, snapper)
+	out, err := p.agentStep(ctx, id, "cleanup", cleanupInstruction(p.prompts, id, buildNotesNote(notesRef)))
+	p.recordCleanupOutcome(ctx, id, snapper, before, out)
 	if err != nil && isFatalAgentErr(err) {
 		return err
 	}
@@ -24,6 +30,67 @@ func (p *Pipeline) cleanup(ctx context.Context, id string) error {
 		p.logf("  cleanup agent error (continuing to verify): %v", err)
 	}
 	return nil
+}
+
+// worktreeSnapshotter records the working tree as a git tree object and compares
+// two such snapshots. ExecGit implements it; a Git that does not (test stubs)
+// leaves cleanup unmeasured rather than reporting numbers nobody took.
+type worktreeSnapshotter interface {
+	SnapshotWorktree(ctx context.Context) (string, error)
+	DiffTrees(ctx context.Context, from, to string) (files, insertions, deletions int, err error)
+}
+
+// snapshotTree returns "" when the tree cannot be captured — the signal that this
+// run records no cleanup_outcome.
+func (p *Pipeline) snapshotTree(ctx context.Context, snapper worktreeSnapshotter) string {
+	if snapper == nil {
+		return ""
+	}
+	tree, err := snapper.SnapshotWorktree(ctx)
+	if err != nil {
+		p.logf("  cleanup: could not snapshot the working tree (outcome unmeasured): %v", err)
+		return ""
+	}
+	return tree
+}
+
+// recordCleanupOutcome files what cleanup did to the working tree, measured from
+// the snapshots taken either side of the agent, alongside the agent's own claim.
+func (p *Pipeline) recordCleanupOutcome(ctx context.Context, id string, snapper worktreeSnapshotter, before, agentOut string) {
+	if before == "" || p.Events == nil {
+		return
+	}
+	after := p.snapshotTree(ctx, snapper)
+	if after == "" {
+		return
+	}
+	files, insertions, deletions, err := snapper.DiffTrees(ctx, before, after)
+	if err != nil {
+		p.logf("  cleanup: could not measure the outcome: %v", err)
+		return
+	}
+	p.Events.Emit(event.KindCleanupOutcome, "cleanup",
+		fmt.Sprintf("cleanup changed %d file(s), +%d/-%d", files, insertions, deletions),
+		map[string]any{
+			"ticket":      id,
+			"files":       files,
+			"insertions":  insertions,
+			"deletions":   deletions,
+			"agent_claim": cleanupClaim(agentOut),
+		})
+}
+
+// cleanupClaim is the agent's self-reported result: the last non-empty line of its
+// output, which the cleanup prompt pins to "trimmed N comments/lines across M
+// files" or "no changes needed".
+func cleanupClaim(out string) string {
+	lines := strings.Split(out, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 const (
