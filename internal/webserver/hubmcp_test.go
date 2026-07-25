@@ -118,6 +118,7 @@ func TestHubMCPInitializeAndToolsList(t *testing.T) {
 	declared := []string{
 		"list_repos", "create_ticket", "enqueue", "start_queue", "pause_queue", "queue_status",
 		"list_backlog", "list_eligible", "get_epic", "list_runs", "get_run", "list_instances",
+		"steer_agent", "list_steer_notes",
 	}
 	for _, name := range declared {
 		tool, ok := tools[name]
@@ -139,14 +140,14 @@ func TestHubMCPInitializeAndToolsList(t *testing.T) {
 	}
 	readers := []string{
 		"list_repos", "queue_status", "list_backlog", "list_eligible", "get_epic",
-		"list_runs", "get_run", "list_instances",
+		"list_runs", "get_run", "list_instances", "list_steer_notes",
 	}
 	for _, name := range readers {
 		if a := tools[name].Annotations; a == nil || !a.ReadOnlyHint {
 			t.Errorf("%s annotations = %+v, want readOnlyHint", name, tools[name].Annotations)
 		}
 	}
-	for _, name := range []string{"create_ticket", "enqueue", "start_queue", "pause_queue"} {
+	for _, name := range []string{"create_ticket", "enqueue", "start_queue", "pause_queue", "steer_agent"} {
 		if tools[name].Annotations != nil {
 			t.Errorf("%s declares %+v, want no read-only hint on a writing tool", name, tools[name].Annotations)
 		}

@@ -204,6 +204,41 @@ var hubMCPTools = append([]mcpTool{
 		InputSchema: json.RawMessage(`{"type": "object", "properties": {}}`),
 		Annotations: readOnlyTool,
 	},
+	{
+		Name: "steer_agent",
+		Description: "Nudge the agent running a ticket without stopping it: the note — \"also update the changelog\" — is " +
+			"queued for that ticket and injected into the live agent mid-phase. Delivery is asynchronous and never " +
+			"guaranteed: the agent takes the note at its next injection point, and a note still waiting when the run settles " +
+			"expires undelivered. What comes back is the queue receipt, always pending, not a delivery confirmation — call " +
+			"list_steer_notes for the status it reached. Call queue_status or list_instances first to see which ticket is " +
+			"actually running; a note queued for a ticket that is not waits for its next run.",
+		InputSchema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "repo": {"type": "string", "description": "Repo name as list_repos reports it."},
+    "ticket": {"type": "string", "description": "The ticket whose agent to steer, e.g. ACME-12."},
+    "body": {"type": "string", "description": "The note to hand the agent. It reaches it verbatim and may span lines, so write it as you would type it to the agent yourself."}
+  },
+  "required": ["repo", "ticket", "body"]
+}`),
+	},
+	{
+		Name: "list_steer_notes",
+		Description: "Read a ticket's steer notes in delivery order, oldest first: the body of each, whether it is still " +
+			"pending, was delivered — with the phase whose agent consumed it — or expired when the run settled with the note " +
+			"still queued, and the timestamps for both. This is how a steer_agent call is followed up. pending_only narrows " +
+			"to the notes no agent has taken yet.",
+		InputSchema: json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "repo": {"type": "string", "description": "Repo name as list_repos reports it."},
+    "ticket": {"type": "string", "description": "The ticket whose notes to list, e.g. ACME-12."},
+    "pending_only": {"type": "boolean", "description": "Only the notes still waiting for an agent. Defaults to false, which returns every note the ticket has."}
+  },
+  "required": ["repo", "ticket"]
+}`),
+		Annotations: readOnlyTool,
+	},
 }, hubMCPAdminTools...)
 
 // MCPRepo is one repo as list_repos reports it: the name every other tool takes,
@@ -246,6 +281,21 @@ type MCPRun struct {
 	NoSkills  bool          `json:"no_skills,omitempty"`
 	NoBrowser bool          `json:"no_browser,omitempty"`
 	Removed   bool          `json:"removed,omitempty"`
+}
+
+// MCPSteerNote is what steer_agent answers with: the repo the note was queued in
+// and the note itself, pending until an agent takes it.
+type MCPSteerNote struct {
+	Repo string `json:"repo"`
+	SteerNoteView
+}
+
+// MCPSteerNotes is what list_steer_notes answers with: a ticket's notes in
+// delivery order, each carrying the status it reached.
+type MCPSteerNotes struct {
+	Repo   string `json:"repo"`
+	Ticket string `json:"ticket"`
+	SteerNotesResponse
 }
 
 // The read tools answer a page rather than a whole table: each listing takes a
@@ -297,6 +347,10 @@ func (s *Server) hubMCPToolsCall(w http.ResponseWriter, r *http.Request, rpcID j
 		run = s.mcpGetRun
 	case "list_instances":
 		run = s.mcpListInstances
+	case "steer_agent":
+		run = s.mcpSteerAgent
+	case "list_steer_notes":
+		run = s.mcpListSteerNotes
 	default:
 		if run = s.hubMCPAdminTool(r.Context(), p.Name); run == nil {
 			respondRPCError(w, rpcID, rpcInvalidParams, "unknown tool: "+p.Name)
@@ -625,6 +679,62 @@ func (s *Server) mcpRunEvents(repo registry.Repo, ticket string, want int) []Fee
 
 func (s *Server) mcpListInstances(json.RawMessage) (any, error) {
 	return map[string]any{"instances": s.instanceViews()}, nil
+}
+
+func (s *Server) mcpSteerAgent(args json.RawMessage) (any, error) {
+	var a struct {
+		Repo   string `json:"repo"`
+		Ticket string `json:"ticket"`
+		Body   string `json:"body"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return nil, errors.New("steer_agent arguments were not valid JSON")
+	}
+	repo, err := s.mcpRepo(a.Repo)
+	if err != nil {
+		return nil, err
+	}
+	ticket := strings.TrimSpace(a.Ticket)
+	if ticket == "" {
+		return nil, errors.New("ticket is required — a steer note is queued against the ticket whose agent reads it")
+	}
+	body := strings.TrimSpace(a.Body)
+	if body == "" {
+		return nil, errors.New("a steer note needs a body — that text is what reaches the agent")
+	}
+	note, err := s.steerNote(repo, ticket, body)
+	if err != nil {
+		return nil, fmt.Errorf("queue steer note: %w", err)
+	}
+	return MCPSteerNote{Repo: repo.Name, SteerNoteView: steerNoteView(note)}, nil
+}
+
+func (s *Server) mcpListSteerNotes(args json.RawMessage) (any, error) {
+	var a struct {
+		Repo        string `json:"repo"`
+		Ticket      string `json:"ticket"`
+		PendingOnly bool   `json:"pending_only"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return nil, errors.New("list_steer_notes arguments were not valid JSON")
+	}
+	repo, err := s.mcpRepo(a.Repo)
+	if err != nil {
+		return nil, err
+	}
+	ticket := strings.TrimSpace(a.Ticket)
+	if ticket == "" {
+		return nil, errors.New("ticket is required — steer notes are listed one ticket at a time")
+	}
+	read := s.stores.Steer().List
+	if a.PendingOnly {
+		read = s.stores.Steer().Pending
+	}
+	notes, err := read(repo.Root, ticket)
+	if err != nil {
+		return nil, fmt.Errorf("list steer notes: %w", err)
+	}
+	return MCPSteerNotes{Repo: repo.Name, Ticket: ticket, SteerNotesResponse: steerNotesResponse(notes)}, nil
 }
 
 func mcpRows(want, fallback, ceiling int) int {
