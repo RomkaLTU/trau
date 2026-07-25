@@ -91,6 +91,12 @@ const KindConfigChange = "config_change"
 // the web feed still renders.
 const KindSpawnFailed = "spawn_failed"
 
+// KindQueueReconciled marks a parked queue item the hub settled done on stored
+// evidence alone — its checkpoint proved the work shipped — carrying the item and
+// the evidence that settled it. The hub emits it, since the settle happens with no
+// run of its own to explain it in the feed.
+const KindQueueReconciled = "queue_reconciled"
+
 // KindSteerQueued marks an operator steer note queued against a ticket, carrying
 // the ticket and the note's id. The hub emits it, since the queue is hub-owned;
 // the note's body stays out of the feed and is read from the steer API.

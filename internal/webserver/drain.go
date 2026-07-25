@@ -9,6 +9,9 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -175,10 +178,10 @@ const classUnknown = "unknown"
 //   - outcome present, empty class → a clean finish; the checkpoint-derived
 //     outcome (a give-up, or "" for done) stands;
 //   - outcome absent → the child died without recording an outcome (SIGKILL,
-//     crash, or a failed post). A checkpoint failure class still stands, and a
-//     ticket the checkpoint proves merged still settles done, but otherwise the
-//     outcome is unknown (classUnknown) and must not settle done — an epic never
-//     has a checkpoint of its own, so a dead epic child lands here.
+//     crash, or a failed post). A checkpoint failure class still stands, and an
+//     item the checkpoint proves merged still settles done, but otherwise the
+//     outcome is unknown (classUnknown) and must not settle done — a dead child
+//     that never reached merged lands here.
 //
 // A hub store read error reads as absent, keeping the safe path: never settle
 // done on missing evidence.
@@ -198,15 +201,69 @@ func (d *drainer) reconcileOutcome(root string, it queue.Item) (class, reason st
 }
 
 // cleanFinish reports whether a report-absent child nonetheless left durable
-// proof on its checkpoint that it finished cleanly: a ticket item whose phase
-// reached merged in the authoritative checkpoints table. An epic has no
-// checkpoint of its own, so its only clean-finish proof is a present, empty
-// report; a report-absent epic is never a clean finish.
+// proof on its checkpoint that it finished cleanly: an item whose phase reached
+// merged in the authoritative checkpoints table. An epic is judged on the same
+// evidence a ticket is — a shipped epic writes a checkpoint of its own under the
+// epic id (checkpointEpicMerged).
 func (d *drainer) cleanFinish(root string, it queue.Item) bool {
-	if it.Kind == queue.KindEpic {
-		return false
-	}
 	return d.srv.stores.Checkpoints().Phase(root, it.ID) == state.Merged
+}
+
+// reconciledReason replaces the stale fault a swept item was parked with: the
+// evidence that settled it instead.
+const reconciledReason = "checkpoint merged — the work had already shipped"
+
+// reconcileParked settles the paused items an outage left behind. A hub that
+// comes back to an item whose work verifiably finished — an out-of-band resume,
+// a child that died after merging — should not make a Start re-discover the
+// fact. Each paused item is judged on the same evidence a finished child is, so
+// only proof of a clean finish settles it, and through the same settle path, so
+// its sub-issues and the web queue follow. Anything short of proof stays parked
+// (classUnknown never settles done), and the sweep spawns nothing.
+func (d *drainer) reconcileParked(root string) {
+	store := d.srv.stores.Queue(root)
+	items, _, err := store.Snapshot()
+	if err != nil {
+		logger.Verbosef("reconcile parked queue %s: %v", root, err)
+		return
+	}
+	for _, it := range items {
+		if it.Status != queue.StatusPaused {
+			continue
+		}
+		if class, _ := d.reconcileOutcome(root, it); class != "" {
+			continue
+		}
+		if err := store.Finish(it.ID, queue.StatusDone, reconciledReason); err != nil {
+			logger.Verbosef("reconcile parked %s: %v", it.ID, err)
+			continue
+		}
+		d.srv.emitQueueReconciled(root, it)
+	}
+}
+
+// emitQueueReconciled records a settle the sweep made on stored evidence alone,
+// so the activity view can explain a queue item that reached done with no run of
+// its own behind it.
+func (s *Server) emitQueueReconciled(root string, it queue.Item) {
+	rows, err := s.stores.Events().Append(root, []hubstore.NewEvent{{
+		TS:   time.Now().UTC().Format(time.RFC3339),
+		Kind: event.KindQueueReconciled,
+		Msg:  fmt.Sprintf("%s settled done without a run — checkpoint merged", it.ID),
+		Fields: marshalFields(map[string]any{
+			"ticket":   it.ID,
+			"kind":     string(it.Kind),
+			"evidence": "checkpoint merged",
+		}),
+	}})
+	if err != nil {
+		logger.Verbosef("queue reconcile: emit event for %s: %v", it.ID, err)
+		return
+	}
+	name := filepath.Base(root)
+	for _, row := range rows {
+		s.publishEvent(root, name, row)
+	}
 }
 
 // duplicateReason reports whether a next-to-run ticket is already covered by an

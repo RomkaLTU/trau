@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -689,10 +691,11 @@ func TestDrainReportUnfinalizedEpicPausesThenShips(t *testing.T) {
 }
 
 // TestDrainNoReportPausesEpicWithoutFanout is the COD-813 acceptance: an epic
-// child killed mid-run leaves no drain report, and an epic has no checkpoint of
-// its own, so the drain has zero evidence of a clean finish. It must park the
-// epic — halting the drain for a human — with an explanatory reason, and never
-// settle it done, which would stamp every carried sub-issue done.
+// child killed mid-run leaves no drain report, and an epic that never shipped
+// wrote no merged checkpoint, so the drain has zero evidence of a clean finish.
+// It must park the epic — halting the drain for a human — with an explanatory
+// reason, and never settle it done, which would stamp every carried sub-issue
+// done.
 func TestDrainNoReportPausesEpicWithoutFanout(t *testing.T) {
 	s, _, root := drainServer(t, "acme")
 	seedQueue(t, s, root, true, queue.Item{
@@ -1064,5 +1067,210 @@ func TestTickSpawnsDespiteIdleInstance(t *testing.T) {
 	}
 	if len(fake.spawns) != 1 {
 		t.Fatalf("spawned %d children, want 1", len(fake.spawns))
+	}
+}
+
+// TestReconcileParkedSweep table-drives the parked-item sweep over one staged
+// item: a paused item whose checkpoint proves it merged settles done — epic and
+// ticket alike, fanning its sub-issues out with it — while a paused item without
+// that proof, one whose checkpoint records a fault, and anything not paused are
+// left exactly as they were. The sweep never spawns.
+func TestReconcileParkedSweep(t *testing.T) {
+	tests := []struct {
+		name        string
+		item        queue.Item
+		checkpoint  map[string]string
+		wantStatus  string
+		wantReason  string
+		wantSubState string
+	}{
+		{
+			name: "paused epic with a merged checkpoint settles done",
+			item: queue.Item{
+				Kind:      queue.KindEpic,
+				ID:        "COD-1",
+				Status:    queue.StatusPaused,
+				Reason:    "child exited without a drain report — outcome unknown",
+				SubIssues: []queue.SubIssue{{ID: "COD-2", State: "backlog"}},
+			},
+			checkpoint:  map[string]string{"PHASE": state.Merged},
+			wantStatus:  queue.StatusDone,
+			wantReason:  reconciledReason,
+			wantSubState: "done",
+		},
+		{
+			name:        "paused epic without a checkpoint stays parked",
+			item:        queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusPaused, Reason: "outcome unknown", SubIssues: []queue.SubIssue{{ID: "COD-2", State: "backlog"}}},
+			wantStatus:  queue.StatusPaused,
+			wantReason:  "outcome unknown",
+			wantSubState: "backlog",
+		},
+		{
+			name:       "paused ticket with a merged checkpoint settles done",
+			item:       queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusPaused, Reason: "outcome unknown"},
+			checkpoint: map[string]string{"PHASE": state.Merged},
+			wantStatus: queue.StatusDone,
+			wantReason: reconciledReason,
+		},
+		{
+			name: "paused item whose checkpoint records a fault stays parked",
+			item: queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusPaused, Reason: "unexpected error during handoff"},
+			checkpoint: map[string]string{
+				"PHASE":          state.HandedOff,
+				"FAILURE_CLASS":  state.FailFaulted,
+				"FAILURE_REASON": "unexpected error during handoff",
+			},
+			wantStatus: queue.StatusPaused,
+			wantReason: "unexpected error during handoff",
+		},
+		{
+			name:       "pending item is untouched",
+			item:       queue.Item{Kind: queue.KindTicket, ID: "COD-1"},
+			checkpoint: map[string]string{"PHASE": state.Merged},
+			wantStatus: queue.StatusPending,
+		},
+		{
+			name:       "running item is untouched",
+			item:       queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusRunning, PID: 7},
+			checkpoint: map[string]string{"PHASE": state.Merged},
+			wantStatus: queue.StatusRunning,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, fake, root := drainServer(t, "acme")
+			s.drain.outcome = s.drain.checkpointOutcome
+			if tc.checkpoint != nil {
+				if err := s.stores.Checkpoints().Upsert(root, tc.item.ID, tc.checkpoint); err != nil {
+					t.Fatalf("seed checkpoint: %v", err)
+				}
+			}
+			seedQueue(t, s, root, false, tc.item)
+
+			s.drain.reconcileParked(root)
+
+			if got := statusOf(t, s, root, tc.item.ID); got != tc.wantStatus {
+				t.Errorf("%s status = %q, want %q", tc.item.ID, got, tc.wantStatus)
+			}
+			if got := reasonOf(t, s, root, tc.item.ID); got != tc.wantReason {
+				t.Errorf("%s reason = %q, want %q", tc.item.ID, got, tc.wantReason)
+			}
+			if tc.wantSubState != "" {
+				for _, it := range snapshot(t, s, root) {
+					for _, sub := range it.SubIssues {
+						if sub.State != tc.wantSubState {
+							t.Errorf("sub %s state = %q, want %q", sub.ID, sub.State, tc.wantSubState)
+						}
+					}
+				}
+			}
+			if len(fake.spawns) != 0 {
+				t.Errorf("spawns = %d, want none — the sweep settles from evidence and never runs anything", len(fake.spawns))
+			}
+		})
+	}
+}
+
+// TestQueueStartReconcilesBeforeFirstSpawn proves the arm-time hook: a Start over
+// a queue whose head is parked but already merged settles that item within the
+// request, so the drain's first spawn is the item behind it rather than a re-run
+// of work that shipped.
+func TestQueueStartReconcilesBeforeFirstSpawn(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	s.drain.outcome = s.drain.checkpointOutcome
+	// Occupy the repo's drain slot so ensure is a no-op and the test — not a
+	// background loop — drives the tick that follows the reconcile.
+	s.drain.mu.Lock()
+	s.drain.active[root] = func() {}
+	s.drain.mu.Unlock()
+	if err := s.stores.Checkpoints().Upsert(root, "COD-1", map[string]string{"PHASE": state.Merged}); err != nil {
+		t.Fatalf("seed merged checkpoint: %v", err)
+	}
+	seedQueue(t, s, root, false,
+		queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusPaused, Reason: "outcome unknown"},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
+	)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/drain", DrainRequest{Draining: true})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("start = %d, want 200", res.StatusCode)
+	}
+	var out QueueResponse
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Items[0].Status != queue.StatusDone {
+		t.Fatalf("COD-1 = %q in the start response, want done — the reconcile runs inside the Start", out.Items[0].Status)
+	}
+	if len(fake.spawns) != 0 {
+		t.Fatalf("spawns = %d during the Start, want none", len(fake.spawns))
+	}
+
+	if act, _ := s.drain.tick(root); act != drainSpawn {
+		t.Fatalf("first tick = %q, want spawn", act)
+	}
+	running, ok := runningItem(t, s, root)
+	if !ok || running.ID != "COD-2" {
+		t.Fatalf("first spawn ran %+v, want COD-2 — the settled item must not re-run", running)
+	}
+}
+
+// TestServerStartSettlesParkedMergedEpic is the COD-1161 acceptance, in the
+// COD-1151 shape: a hub comes back to an epic item parked with an outcome-unknown
+// reason while its checkpoint has read merged the whole time. Boot settles it done
+// with its sub-issues, records the evidence in the feed, and starts no child.
+func TestServerStartSettlesParkedMergedEpic(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	s.drain.outcome = s.drain.checkpointOutcome
+	if err := s.stores.Checkpoints().Upsert(root, "COD-1151", map[string]string{"PHASE": state.Merged}); err != nil {
+		t.Fatalf("seed merged checkpoint: %v", err)
+	}
+	seedQueue(t, s, root, false, queue.Item{
+		Kind:      queue.KindEpic,
+		ID:        "COD-1151",
+		Status:    queue.StatusPaused,
+		Reason:    "child exited without a drain report — outcome unknown",
+		SubIssues: []queue.SubIssue{{ID: "COD-1152", State: "backlog"}},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	s.Start(ctx, 0, 0)
+
+	if got := statusOf(t, s, root, "COD-1151"); got != queue.StatusDone {
+		t.Fatalf("COD-1151 = %q after boot, want done — its checkpoint proved the work shipped", got)
+	}
+	if got := reasonOf(t, s, root, "COD-1151"); got != reconciledReason {
+		t.Errorf("COD-1151 reason = %q, want the settle evidence %q", got, reconciledReason)
+	}
+	for _, it := range snapshot(t, s, root) {
+		for _, sub := range it.SubIssues {
+			if sub.State != "done" {
+				t.Errorf("sub %s state = %q, want done with the settled epic", sub.ID, sub.State)
+			}
+		}
+	}
+	if len(fake.spawns) != 0 {
+		t.Errorf("spawns = %d on boot, want none", len(fake.spawns))
+	}
+
+	rows, err := s.stores.Events().Recent(root, 10, 0)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	var msg string
+	for _, row := range rows {
+		if row.Kind == event.KindQueueReconciled {
+			msg = row.Msg
+		}
+	}
+	if msg == "" {
+		t.Fatal("no queue_reconciled event, want the settle explained in the feed")
+	}
+	if !strings.Contains(msg, "COD-1151") || !strings.Contains(msg, "checkpoint merged") {
+		t.Errorf("event msg = %q, want it to name the item and cite the checkpoint evidence", msg)
 	}
 }
