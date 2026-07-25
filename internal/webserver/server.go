@@ -292,6 +292,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/shutdown", s.handleQueueShutdown)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}", s.handleQueueItem)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}/move", s.handleQueueMove)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}/run", s.handleQueueRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/atlas", s.handleAtlas)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/atlas/{view}", s.handleAtlasView)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/atlas/{view}/generate", s.handleAtlasGenerate)

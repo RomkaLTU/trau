@@ -11,6 +11,7 @@ import {
   ExternalLink,
   Info,
   ListPlus,
+  Play,
   Plus,
   Power,
   RefreshCw,
@@ -72,6 +73,7 @@ import {
   queueQueryOptions,
   queueRunnable,
   runNext as runNextRequest,
+  runQueueItem,
   shutdownQueue,
   skipResumeApplies,
   type OnFault,
@@ -392,6 +394,7 @@ function QueueBuilderRow({
   busy,
   onToggle,
   onMove,
+  onRun,
   onRemove,
   onPeek,
 }: {
@@ -402,12 +405,19 @@ function QueueBuilderRow({
   busy: boolean;
   onToggle: () => void;
   onMove: (dir: -1 | 1) => void;
+  onRun: () => void;
   onRemove: () => void;
   onPeek: (id: string) => void;
 }) {
   const isEpic = item.kind === "epic";
   const { done, total } = epicCounts(item);
   const subs = item.sub_issues ?? [];
+  const runnable = item.status === "pending" || item.status === "paused";
+  const runHint = item.blocked
+    ? `Blocked by ${(item.blockers ?? []).join(", ")}`
+    : isEpic
+      ? "Run remaining sub-issues, then stop"
+      : "Run only this item";
 
   return (
     <li className="border-b border-border/60 last:border-0">
@@ -454,6 +464,19 @@ function QueueBuilderRow({
         )}
 
         <div className="flex shrink-0 items-center gap-0.5">
+          {runnable && (
+            <span title={runHint} className="flex">
+              <button
+                type="button"
+                onClick={onRun}
+                disabled={item.blocked || busy}
+                aria-label={`Run ${item.id} now`}
+                className="flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-primary disabled:pointer-events-none disabled:opacity-30"
+              >
+                <Play className="size-3.5" aria-hidden="true" />
+              </button>
+            </span>
+          )}
           <button
             type="button"
             onClick={() => onMove(-1)}
@@ -625,6 +648,11 @@ function LaunchQueueCard({
     onSuccess: setQueue,
   });
 
+  const runOne = useMutation({
+    mutationFn: (id: string) => runQueueItem(repo, id),
+    onSuccess: setQueue,
+  });
+
   const start = useMutation({
     mutationFn: () =>
       drain(repo, true, {
@@ -640,6 +668,7 @@ function LaunchQueueCard({
   const busy =
     move.isPending ||
     remove.isPending ||
+    runOne.isPending ||
     add.isPending ||
     addAll.isPending ||
     runNext.isPending ||
@@ -762,6 +791,11 @@ function LaunchQueueCard({
               {remove.error ? (
                 <p className="font-mono text-xs text-fail" role="alert">
                   {actionError(remove.error)}
+                </p>
+              ) : null}
+              {runOne.error ? (
+                <p className="font-mono text-xs text-fail" role="alert">
+                  {actionError(runOne.error)}
                 </p>
               ) : null}
             </div>
@@ -985,6 +1019,7 @@ function LaunchQueueCard({
                       busy={busy}
                       onToggle={() => toggleExpand(item.id)}
                       onMove={(dir) => move.mutate({ id: item.id, dir })}
+                      onRun={() => runOne.mutate(item.id)}
                       onRemove={() => remove.mutate(item.id)}
                       onPeek={onPeek}
                     />

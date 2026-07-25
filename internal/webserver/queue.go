@@ -34,7 +34,9 @@ type QueueRequest struct {
 // position, kind, identifier, title, issue source, per-run provider override,
 // pending status, and — for an epic — the sub-issues captured when it was
 // queued. ProviderPin is the Provider pinned on the underlying issue, which the
-// run uses whenever the item carries no override of its own.
+// run uses whenever the item carries no override of its own. Blockers are the
+// item's still-unresolved blocked-by edges and Blocked reports whether it has
+// any, so the queue can refuse to run the row on its own and say why.
 type QueueItemView struct {
 	Position    int              `json:"position"`
 	Kind        string           `json:"kind"`
@@ -45,6 +47,8 @@ type QueueItemView struct {
 	ProviderPin string           `json:"provider_pin,omitempty"`
 	Status      string           `json:"status"`
 	Reason      string           `json:"reason,omitempty"`
+	Blockers    []string         `json:"blockers,omitempty"`
+	Blocked     bool             `json:"blocked"`
 	SubIssues   []queue.SubIssue `json:"sub_issues,omitempty"`
 	QueuedAt    string           `json:"queued_at,omitempty"`
 }
@@ -191,6 +195,83 @@ func (s *Server) handleQueueMove(w http.ResponseWriter, r *http.Request) {
 	s.writeQueue(w, http.StatusOK, root)
 }
 
+// handleQueueRun runs one queued item and nothing after it. It spawns the item's
+// child exactly as a drain would, then starts the loop that waits for it —
+// without arming draining, so the tick that settles the item finds the drain off
+// and stops instead of picking up the next row. It refuses with 409 whenever the
+// repo already has work in flight: a shutdown, an armed drain, a running queue
+// item, or a live loop.
+func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	name := r.PathValue("repo")
+	root, ok := s.allowedRoot(name)
+	if !ok {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": fmt.Sprintf("repo %q is observe-only; only a Registered repo can run queued work — register it first", name),
+		})
+		return
+	}
+	if s.isShuttingDown(root) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "the queue is shutting down — wait for the teardown to finish"})
+		return
+	}
+	store := s.stores.Queue(root)
+	items, meta, err := store.Snapshot()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read queue: " + err.Error()})
+		return
+	}
+	if meta.Draining {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "the queue is draining — pause it before running a single item"})
+		return
+	}
+	if running, ok := firstWithStatus(items, queue.StatusRunning); ok {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s is already running", running.ID)})
+		return
+	}
+	if s.drain.repoLive(root) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "a loop is already running in this repo — wait for it to finish"})
+		return
+	}
+	id := strings.TrimSpace(r.PathValue("id"))
+	item, queued := itemByID(items, id)
+	if !queued {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("%s is not in the queue", id)})
+		return
+	}
+	if item.Status != queue.StatusPending && item.Status != queue.StatusPaused {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s has already settled %s and cannot be run", item.ID, item.Status)})
+		return
+	}
+	blockers, err := s.stores.Issues().UnresolvedBlockers(root, []string{item.ID})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read blockers: " + err.Error()})
+		return
+	}
+	if unresolved := blockers[item.ID]; len(unresolved) > 0 {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("%s is blocked by %s", item.ID, strings.Join(unresolved, ", ")),
+		})
+		return
+	}
+	_ = s.stores.DrainOutcomes().Remove(root, item.ID)
+	pid, err := s.sup.Spawn(s.drain.spec(root, item, false))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "spawn: " + err.Error()})
+		return
+	}
+	if err := store.MarkRunning(item.ID, pid); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mark running: " + err.Error()})
+		return
+	}
+	s.drain.ensure(s.drainCtx, root)
+	s.writeQueue(w, http.StatusOK, root)
+}
+
 // validateQueueTarget confirms a to-be-queued id exists in the repo's tracker and
 // belongs to this repo's project, returning its title and the answering tracker's
 // source binding — the same provider name the sync records on the stored issue. It
@@ -251,6 +332,15 @@ func (s *Server) writeQueue(w http.ResponseWriter, status int, root string) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read provider pins: " + err.Error()})
 		return
 	}
+	ids := make([]string, 0, len(items))
+	for _, it := range items {
+		ids = append(ids, it.ID)
+	}
+	blockers, err := s.stores.Issues().UnresolvedBlockers(root, ids)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read blockers: " + err.Error()})
+		return
+	}
 	drainingSince := ""
 	if !meta.DrainingSince.IsZero() {
 		drainingSince = meta.DrainingSince.UTC().Format(time.RFC3339)
@@ -260,7 +350,7 @@ func (s *Server) writeQueue(w http.ResponseWriter, status int, root string) {
 		Draining:      meta.Draining,
 		DrainingSince: drainingSince,
 		ShuttingDown:  s.isShuttingDown(root),
-		Items:         queueItemViews(items, pins),
+		Items:         queueItemViews(items, pins, blockers),
 	})
 }
 
@@ -458,7 +548,16 @@ func (s *Server) queueRoot(name string) (string, bool) {
 	return "", false
 }
 
-func queueItemViews(items []queue.Item, pins map[string]string) []QueueItemView {
+func itemByID(items []queue.Item, id string) (queue.Item, bool) {
+	for _, it := range items {
+		if it.ID == id {
+			return it, true
+		}
+	}
+	return queue.Item{}, false
+}
+
+func queueItemViews(items []queue.Item, pins map[string]string, blockers map[string][]string) []QueueItemView {
 	out := make([]QueueItemView, 0, len(items))
 	for i, it := range items {
 		view := QueueItemView{
@@ -471,6 +570,8 @@ func queueItemViews(items []queue.Item, pins map[string]string) []QueueItemView 
 			ProviderPin: pins[it.ID],
 			Status:      it.Status,
 			Reason:      it.Reason,
+			Blockers:    blockers[it.ID],
+			Blocked:     len(blockers[it.ID]) > 0,
 			SubIssues:   it.SubIssues,
 		}
 		if !it.QueuedAt.IsZero() {
