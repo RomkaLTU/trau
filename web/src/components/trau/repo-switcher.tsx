@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 
 import { ALL_SCOPE, useActiveRepo } from '@/components/trau/active-repo'
+import { loadRepoUsage, sortRepos } from '@/lib/active-repo'
 import { instancesQueryOptions, type RepoView } from '@/lib/instances'
 import {
   repoBadgeState,
@@ -69,6 +70,12 @@ export function RepoSwitcher() {
   }, [switcherSignal])
 
   const active = repos.find((r) => r.name === repo)
+  // The usage stamps are read on open, so the repo picked here leads the list
+  // the next time it is opened.
+  const ordered = useMemo(
+    () => (open ? sortRepos(repos, badges, loadRepoUsage()) : []),
+    [open, repos, badges],
+  )
 
   return (
     <div className="relative" ref={ref}>
@@ -141,7 +148,7 @@ export function RepoSwitcher() {
               no repos yet
             </p>
           ) : (
-            repos.map((r) => (
+            ordered.map((r) => (
               <RepoOption
                 key={r.name}
                 repo={r}

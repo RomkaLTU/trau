@@ -1,4 +1,5 @@
 import type { RepoView } from './instances'
+import type { RepoBadgeState } from './overview'
 
 type Store = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 
@@ -6,8 +7,12 @@ type Store = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 // keeps working; its value is now either a repo name or the ALL_SCOPE sentinel.
 // LAST_REPO_KEY remembers the last concrete repo so acting on a gated page from
 // "All projects" can auto-scope back to it.
+// USAGE_KEY holds the per-repo last-used stamps, kept apart from the recents
+// history: recents is capped for display, so a repo the user works in daily can
+// fall out of it and lose its place at the top of the switcher.
 const SCOPE_KEY = 'trau.active-repo'
 const LAST_REPO_KEY = 'trau.last-repo'
+const USAGE_KEY = 'trau.repo-usage'
 
 // ALL_SCOPE is the sentinel scope that spans every repo. Operate pages are
 // gated under it; observe pages that already read across repos keep working.
@@ -30,11 +35,58 @@ export function storeScope(scope: string | null): void {
   if (!store) return
   if (scope) store.setItem(SCOPE_KEY, scope)
   else store.removeItem(SCOPE_KEY)
-  if (scope && scope !== ALL_SCOPE) store.setItem(LAST_REPO_KEY, scope)
+  if (scope && scope !== ALL_SCOPE) {
+    store.setItem(LAST_REPO_KEY, scope)
+    store.setItem(
+      USAGE_KEY,
+      JSON.stringify({
+        ...parseRepoUsage(store.getItem(USAGE_KEY)),
+        [scope]: Date.now(),
+      }),
+    )
+  }
 }
 
 export function loadLastRepo(): string | null {
   return browserStore()?.getItem(LAST_REPO_KEY) ?? null
+}
+
+// RepoUsage maps a repo name to when the scope last landed on it.
+export type RepoUsage = Record<string, number>
+
+export function parseRepoUsage(raw: string | null): RepoUsage {
+  if (!raw) return {}
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return {}
+    if (Array.isArray(parsed)) return {}
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, at]) => typeof at === 'number'),
+    )
+  } catch {
+    return {}
+  }
+}
+
+export function loadRepoUsage(): RepoUsage {
+  return parseRepoUsage(browserStore()?.getItem(USAGE_KEY) ?? null)
+}
+
+// sortRepos orders the switcher's project list: a repo with a working loop
+// first — that is where the user's attention is — then most recently used, then
+// by name so repos with no history keep a stable order.
+export function sortRepos(
+  repos: readonly RepoView[],
+  badges: ReadonlyMap<string, RepoBadgeState>,
+  usage: RepoUsage,
+): RepoView[] {
+  const rank = (repo: RepoView) => (badges.get(repo.name) === 'active' ? 0 : 1)
+  return [...repos].sort(
+    (a, b) =>
+      rank(a) - rank(b) ||
+      (usage[b.name] ?? 0) - (usage[a.name] ?? 0) ||
+      a.name.localeCompare(b.name),
+  )
 }
 
 export interface ResolvedScope {
