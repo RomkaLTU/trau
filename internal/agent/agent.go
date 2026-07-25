@@ -60,17 +60,19 @@ type Usage struct {
 // Result is the outcome of one agent invocation. SkillsKnown reports whether the
 // call produced any recoverable skill evidence; false is the Unknown state, which
 // is distinct from a confirmed-empty Skills so a missing transcript is not read as
-// "loaded none".
+// "loaded none". Skills holds only names the repo can actually load;
+// SkillsUnmatched carries the evidence that resolved to none of them.
 type Result struct {
-	Final       string
-	Usage       Usage
-	CostUSD     float64
-	IsError     bool
-	NumTurns    int
-	Model       string
-	Context     int
-	Skills      []string
-	SkillsKnown bool
+	Final           string
+	Usage           Usage
+	CostUSD         float64
+	IsError         bool
+	NumTurns        int
+	Model           string
+	Context         int
+	Skills          []string
+	SkillsKnown     bool
+	SkillsUnmatched []string
 }
 
 // Runner runs one prompt to completion in a fresh process and returns the final
@@ -254,7 +256,9 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 
 	// Capture skills off the live PTY so a build's loaded set is known even when the
 	// session transcript has not flushed yet; the transcript later reconciles, adding only.
-	skills := newSkillCapture(claudeSkills)
+	// Terminal redraw drops characters, so each sighting is snapped back onto the repo's
+	// own inventory before it counts as loaded.
+	skills := newSkillCapture(claudeSkills, newSkillSnapper(NameableSkills(c.Dir)))
 	watched := io.MultiWriter(skills, transcript)
 
 	start := c.clock()
@@ -332,7 +336,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 			return res, fmt.Errorf("claude interactive run (%s): read result: %w", label, err)
 		} else if ok {
 			_ = sess.Kill()
-			res := c.enrich(Result{Final: final}, sessionID, skills.skills())
+			res := c.enrich(Result{Final: final}, sessionID, skills)
 			dur := c.clock().Sub(start)
 			c.emit(label, res, dur, nil)
 			c.record(label, res, dur)
@@ -342,7 +346,7 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 		select {
 		case err := <-wait:
 			final, ok, readErr := readResultFile(resultPath)
-			res := c.enrich(Result{Final: final, IsError: err != nil || readErr != nil || !ok}, sessionID, skills.skills())
+			res := c.enrich(Result{Final: final, IsError: err != nil || readErr != nil || !ok}, sessionID, skills)
 			dur := c.clock().Sub(start)
 			if ok && err == nil {
 				c.emit(label, res, dur, nil)
@@ -424,7 +428,7 @@ func (c *ClaudeInteractive) clock() time.Time {
 	return time.Now()
 }
 
-func (c *ClaudeInteractive) enrich(res Result, sessionID string, live []string) Result {
+func (c *ClaudeInteractive) enrich(res Result, sessionID string, live *skillCapture) Result {
 	var (
 		stats transcriptStats
 		ok    bool
@@ -438,7 +442,9 @@ func (c *ClaudeInteractive) enrich(res Result, sessionID string, live []string) 
 		res.Context = stats.Context
 		res.Model = stats.Model
 	}
-	res.Skills = mergeSkills(live, stats.Skills)
+	settled, unmatched := live.snap.snapAll(stats.Skills)
+	res.Skills = mergeSkills(live.skills(), settled)
+	res.SkillsUnmatched = appendSkills(live.unmatchedSightings(), unmatched...)
 	res.SkillsKnown = ok || len(res.Skills) > 0
 	if res.Model == "" {
 		res.Model = c.model()
@@ -470,6 +476,9 @@ func (c *ClaudeInteractive) emit(label string, res Result, dur time.Duration, ru
 	}
 	if len(res.Skills) > 0 {
 		fields["skills"] = res.Skills
+	}
+	if len(res.SkillsUnmatched) > 0 {
+		fields["skills_unmatched"] = res.SkillsUnmatched
 	}
 	if runErr != nil {
 		fields["error"] = runErr.Error()
