@@ -1718,9 +1718,33 @@ interface HaltNotice {
   glyph: string;
   headline: string;
   hint: string;
+  attribution?: HaltAttribution;
 }
 
-function haltNotice(halt: LoopHalt): HaltNotice {
+interface HaltAttribution {
+  ticket: string;
+  text: string;
+}
+
+const REASON_LEAD = /^(?:ticket\s+)?([A-Z][A-Z0-9]*-\d+)\b[\s:,–—-]*/;
+const REASON_TICKET = /\b[A-Z][A-Z0-9]*-\d+\b/;
+
+// haltAttribution names the ticket a stop reason blames when that is not the
+// queue item itself, so the banner can relate the two ids rather than show one
+// in its headline and another in its link with nothing tying them together.
+function haltAttribution(halt: LoopHalt): HaltAttribution | undefined {
+  const lead = halt.reason.match(REASON_LEAD);
+  const ticket = lead?.[1] ?? halt.reason.match(REASON_TICKET)?.[0];
+  if (!ticket || ticket === halt.ticket) return undefined;
+
+  const tail = (lead ? halt.reason.slice(lead[0].length) : halt.reason).trim();
+  const sub = halt.subTickets?.includes(ticket);
+  const relation = sub ? `sub-ticket ${ticket}` : `while working ${ticket}`;
+  const joiner = sub ? " " : ": ";
+  return { ticket, text: tail ? `${relation}${joiner}${tail}` : relation };
+}
+
+export function haltNotice(halt: LoopHalt): HaltNotice {
   const ticket = halt.ticket || "the ticket";
   switch (halt.kind) {
     case "stopped":
@@ -1746,13 +1770,17 @@ function haltNotice(halt: LoopHalt): HaltNotice {
             headline: "paused — rate limit reached",
             hint: "This is not a failure. The queue resumes on its own once the provider's usage window clears.",
           };
-        default:
+        default: {
+          const attribution = haltAttribution(halt);
+          const subject = attribution ? halt.ticket : halt.reason;
           return {
             tone: "warn",
             glyph: "⚠",
-            headline: halt.reason ? `paused — ${halt.reason}` : "paused",
+            headline: subject ? `paused — ${subject}` : "paused",
             hint: "This is not a failure. Clear what the run is waiting on, then Start to re-attempt this item.",
+            attribution,
           };
+        }
       }
     case "budget":
       return {
@@ -1834,6 +1862,9 @@ function LoopBanner({
 function HaltBanner({ repo, halt }: { repo: string; halt: LoopHalt }) {
   const notice = haltNotice(halt);
   const { border, bg, text: glyphColor } = HALT_TONE[notice.tone];
+  const tickets = [halt.ticket, notice.attribution?.ticket].filter(
+    (t): t is string => !!t,
+  );
   return (
     <div
       className={cn(
@@ -1852,21 +1883,34 @@ function HaltBanner({ repo, halt }: { repo: string; halt: LoopHalt }) {
         <span className={cn("font-mono text-sm", glyphColor)}>
           {notice.headline}
         </span>
+        {notice.attribution ? (
+          <TicketReason>{notice.attribution.text}</TicketReason>
+        ) : null}
         <p className="font-sans text-sm leading-relaxed text-foreground">
           {notice.hint}
         </p>
-        {halt.ticket ? (
-          <Link
-            to="/live/$repo/$ticket"
-            params={{ repo, ticket: halt.ticket }}
-            className="mt-1 inline-flex w-fit items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline"
-          >
-            <ExternalLink className="size-3.5" aria-hidden="true" />
-            Open {halt.ticket}
-          </Link>
+        {tickets.length ? (
+          <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1">
+            {tickets.map((ticket) => (
+              <HaltLink key={ticket} repo={repo} ticket={ticket} />
+            ))}
+          </div>
         ) : null}
       </div>
     </div>
+  );
+}
+
+function HaltLink({ repo, ticket }: { repo: string; ticket: string }) {
+  return (
+    <Link
+      to="/live/$repo/$ticket"
+      params={{ repo, ticket }}
+      className="inline-flex w-fit items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline"
+    >
+      <ExternalLink className="size-3.5" aria-hidden="true" />
+      Open {ticket}
+    </Link>
   );
 }
 
