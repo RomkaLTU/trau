@@ -237,6 +237,27 @@ export async function runNext(
   return drain(repo, true, opts)
 }
 
+// runOnly runs one issue on its own without arming the drain: an id the queue is
+// still going to act on runs where it stands, an unqueued one is appended first,
+// and a settled leftover holding the id is dropped and re-queued so it runs again.
+export async function runOnly(
+  repo: string,
+  req: EnqueueRequest,
+): Promise<QueueResponse> {
+  try {
+    await enqueue(repo, req)
+  } catch (err) {
+    const { items } = await fetchQueue(repo)
+    const queued = items.find((it) => it.id === req.id)
+    if (!queued) throw err
+    if (queueTerminal(queued.status)) {
+      await dequeue(repo, req.id)
+      await enqueue(repo, req)
+    }
+  }
+  return runQueueItem(repo, req.id)
+}
+
 // skipResumeApplies reports whether the Skip resume toggle would change anything
 // for this queue, so the Loop card can hide a no-op control. It applies when the
 // queue has already executed (any item past pending — Start restarts it from the

@@ -18,6 +18,7 @@ import { stopInstance } from "@/lib/instances";
 import {
   activeLoopCount,
   attentionPill,
+  liveGateMessage,
   loopCardView,
   phasePill,
   recentRuns,
@@ -358,12 +359,6 @@ export const ATTENTION_META: Record<
   faulted: { action: "Resume", resume: true },
   gave_up: { action: "Reset", resume: false },
 };
-
-function liveGateMessage(loop: LiveLoop | undefined): string {
-  if (!loop) return "a loop is live in this repo — stop it before resuming";
-  const label = loop.sessionState === "unknown" ? "live" : loop.sessionState;
-  return `a loop is ${label}${loop.ticket ? ` ${loop.ticket}` : ""} in this repo…`;
-}
 
 function NeedsAttention() {
   const { repo, repos } = useActiveRepo();

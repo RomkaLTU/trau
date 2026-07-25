@@ -152,6 +152,14 @@ export function useLiveLoops(repo: string | null): LiveLoop[] {
   );
 }
 
+// liveGateMessage says why an action that needs the repo's working tree is
+// refused while a loop holds it.
+export function liveGateMessage(loop: LiveLoop | undefined): string {
+  if (!loop) return "a loop is live in this repo — stop it before resuming";
+  const label = loop.sessionState === "unknown" ? "live" : loop.sessionState;
+  return `a loop is ${label}${loop.ticket ? ` ${loop.ticket}` : ""} in this repo…`;
+}
+
 // useRunsByRepo fans out the per-repo runs endpoint across every repo so the
 // multi-repo board can join loop titles and surface attention/recent runs in
 // one place. React Query dedupes each key, so screens already reading a single
