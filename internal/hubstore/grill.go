@@ -198,6 +198,16 @@ func (g *Grill) List(repo, state string) ([]GrillSession, error) {
 	return g.scanSessions(query, args...)
 }
 
+// ListAwaiting returns every session blocked on the user — waiting, parked or
+// stalled — across all repos, most recently touched first. It is deliberately not
+// repo-scoped: the session needing an answer is often not in the project on screen.
+func (g *Grill) ListAwaiting() ([]GrillSession, error) {
+	return g.scanSessions(
+		grillSessionSelect+` WHERE g.state IN (?, ?, ?) ORDER BY g.updated_at DESC, g.id DESC`,
+		GrillWaiting, GrillParked, GrillStalled,
+	)
+}
+
 // Messages returns a session's messages with id greater than after, in order —
 // the detail read (after 0) and the SSE reconnect backfill from a client's
 // last-seen id.

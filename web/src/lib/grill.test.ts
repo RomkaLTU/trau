@@ -23,6 +23,7 @@ import {
   outcomePayload,
   pendingQuestion,
   questionPayload,
+  sortAwaiting,
   upsertMessage,
   type DiffLine,
   type GrillDelta,
@@ -109,6 +110,27 @@ describe('activeSessionForIssue', () => {
     ]
     expect(activeSessionForIssue(sessions, 'COD-1')).toBeUndefined()
     expect(activeSessionForIssue(undefined, 'COD-1')).toBeUndefined()
+  })
+})
+
+describe('sortAwaiting', () => {
+  it('leads with the live question, then latest activity', () => {
+    const sessions = [
+      session({ id: '1', state: 'parked', updated_at: '2026-07-14T12:00:00Z' }),
+      session({ id: '2', state: 'waiting', updated_at: '2026-07-14T10:00:00Z' }),
+      session({ id: '3', state: 'stalled', updated_at: '2026-07-14T13:00:00Z' }),
+      session({ id: '4', state: 'waiting', updated_at: '2026-07-14T11:00:00Z' }),
+    ]
+    expect(sortAwaiting(sessions).map((s) => s.id)).toEqual(['4', '2', '3', '1'])
+  })
+
+  it('leaves the input untouched and sorts an undated session last', () => {
+    const sessions = [
+      session({ id: '1', state: 'waiting', updated_at: '' }),
+      session({ id: '2', state: 'waiting', updated_at: '2026-07-14T10:00:00Z' }),
+    ]
+    expect(sortAwaiting(sessions).map((s) => s.id)).toEqual(['2', '1'])
+    expect(sessions.map((s) => s.id)).toEqual(['1', '2'])
   })
 })
 
