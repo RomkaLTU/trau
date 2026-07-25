@@ -175,6 +175,8 @@ type Check struct {
 type GitHub interface {
 	PRURL(ctx context.Context, branch string) (string, error)
 
+	MergedPRURL(ctx context.Context, branch string) (string, error)
+
 	CreatePR(ctx context.Context, base, head, title, body string) (string, error)
 
 	PRState(ctx context.Context, pr string) (string, error)
@@ -4723,6 +4725,26 @@ func parseOpenPRURL(out string) string {
 		return ""
 	}
 	return pr.URL
+}
+
+// MergedPRURL returns the merged PR's URL for branch, or "" when the branch's
+// most recent PR is anything else (a gh error is swallowed to ""). It leans on
+// the same branch-lookup fallback PRURL filters out: a finalize re-attempt after
+// the epic PR shipped adopts that merged PR instead of re-creating one GitHub
+// refuses with "No commits between" (COD-1158).
+func (g ExecGitHub) MergedPRURL(ctx context.Context, branch string) (string, error) {
+	out, err := g.output(ctx, "pr", "view", branch, "--json", "url,state")
+	if err != nil {
+		return "", nil
+	}
+	var pr struct {
+		URL   string `json:"url"`
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal([]byte(out), &pr); err != nil || pr.State != "MERGED" {
+		return "", nil
+	}
+	return pr.URL, nil
 }
 
 // PRState returns the PR's state (OPEN, MERGED, …), or "" when unknown (a gh error
