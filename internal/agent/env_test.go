@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestScrubClaudeSessionEnv(t *testing.T) {
+func TestChildEnv(t *testing.T) {
 	in := []string{
 		"PATH=/usr/bin",
 		"CLAUDE_CODE_CHILD_SESSION=1",
@@ -28,9 +28,14 @@ func TestScrubClaudeSessionEnv(t *testing.T) {
 		"CLAUDE_BIN=claude",
 		"CLAUDECODEC=keep",
 		"TRAU_ACTIVE=1",
+		"CLAUDE_CODE_DISABLE_AUTO_MEMORY=1",
 	}
-	if got := ScrubClaudeSessionEnv(in); !reflect.DeepEqual(got, want) {
-		t.Errorf("ScrubClaudeSessionEnv() = %v, want %v", got, want)
+	got := ChildEnv(in)
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ChildEnv() = %v, want %v", got, want)
+	}
+	if again := ChildEnv(got); !reflect.DeepEqual(again, want) {
+		t.Errorf("ChildEnv() re-applied = %v, want %v", again, want)
 	}
 }
 

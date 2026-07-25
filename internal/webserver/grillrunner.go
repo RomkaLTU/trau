@@ -199,13 +199,11 @@ func grillTurnArgs(flags []string, model, mcpConfig, resumeID, prompt string) []
 	return append(args, "-p", prompt)
 }
 
-// grillChildEnv is the environment a grilling child inherits, stripped of the
-// markers that would poison a hub-spawned claude: TRAU_ACTIVE (the nested-loop
-// guard) and the Claude Code session markers (CLAUDECODE plus CLAUDE_CODE_*,
-// whose CHILD_SESSION marker disables transcript saving). Same lesson as the
-// hub-spawn poisoning fix.
+// grillChildEnv is the environment a grilling child inherits: agent.ChildEnv
+// minus TRAU_ACTIVE, the nested-loop guard the hub may carry from the loop that
+// started it. Same lesson as the hub-spawn poisoning fix.
 func grillChildEnv() []string {
-	env := agent.ScrubClaudeSessionEnv(os.Environ())
+	env := agent.ChildEnv(os.Environ())
 	out := make([]string, 0, len(env))
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "TRAU_ACTIVE=") {

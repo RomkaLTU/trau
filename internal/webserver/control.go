@@ -521,11 +521,9 @@ func workspaceRepo(root string) registry.Repo {
 // home so the child registers into the same registry the hub reads. TRAU_ACTIVE
 // is stripped: the hub may carry it from the loop that started it, but hub
 // spawns are deliberate top-level runs, and inheriting the marker would trip the
-// child's nested-loop guard. Claude Code session markers are stripped too: a
-// hub started from inside a Claude Code session would otherwise hand every
-// agent child CLAUDE_CODE_CHILD_SESSION, silently disabling transcript saving.
+// child's nested-loop guard. Everything else is agent.ChildEnv's job.
 func childEnv(home string) []string {
-	env := agent.ScrubClaudeSessionEnv(os.Environ())
+	env := agent.ChildEnv(os.Environ())
 	out := make([]string, 0, len(env)+1)
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "TRAU_ACTIVE=") {
