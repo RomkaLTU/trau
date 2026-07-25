@@ -297,6 +297,7 @@ describe('projectLoopState', () => {
         kind: 'paused',
         ticket: 'COD-9',
         reason: 'epic COD-9 unfinalized — waiting on COD-11',
+        subTickets: ['COD-10', 'COD-11'],
       })
     })
 
