@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { ArrowRight, Sparkles } from "lucide-react";
 
 import { BannerRow } from "@/components/grill/banners";
 import { Composer } from "@/components/grill/composer";
@@ -40,6 +41,11 @@ export interface GrillStatus {
   messages: GrillMessage[];
 }
 
+// GrillOutcomeVariant is how a host renders a finished session's proposal: the full
+// approve-then-apply review, or — for a host too small to review one in, like the
+// dock — a link handing it off to the surface that owns applying.
+export type GrillOutcomeVariant = "review" | "link";
+
 // GrillConversation is the chat itself — thread, suggestions, composer, and outcome
 // review — with no frame of its own: it hydrates the session over GET, follows it
 // over SSE, and reports both to the host through onStatus. Hosts supply the chrome
@@ -47,15 +53,19 @@ export interface GrillStatus {
 export function GrillConversation({
   repo,
   initial,
+  outcome = "review",
   onStatus,
   onApplied,
   onDiscarded,
+  onReview,
 }: {
   repo: string;
   initial: GrillSession;
+  outcome?: GrillOutcomeVariant;
   onStatus?: (status: GrillStatus) => void;
   onApplied?: (applied: GrillAppliedOutcome) => void;
   onDiscarded?: () => void;
+  onReview?: () => void;
 }) {
   useOpenConversation(initial.id);
   const detail = useQuery(grillDetailQueryOptions(initial.id));
@@ -175,7 +185,9 @@ export function GrillConversation({
       />
 
       <div className="flex flex-col gap-3 border-t p-4">
-        {reviewing && outcomeMsg ? (
+        {reviewing && outcomeMsg && outcome === "link" ? (
+          <ProposalLink onOpen={onReview} />
+        ) : reviewing && outcomeMsg ? (
           <>
             <OutcomeReview
               repo={repo}
@@ -226,5 +238,22 @@ export function GrillConversation({
         )}
       </div>
     </>
+  );
+}
+
+// ProposalLink hands a ready proposal off to the Inbox's full surface.
+function ProposalLink({ onOpen }: { onOpen?: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="flex items-center gap-2.5 rounded-md border border-info/40 bg-info/5 px-3 py-2.5 text-left transition-colors hover:bg-info/10"
+    >
+      <Sparkles className="size-4 shrink-0 text-info" aria-hidden="true" />
+      <span className="min-w-0 flex-1 text-sm font-medium text-foreground">
+        Proposal ready — review in Inbox
+      </span>
+      <ArrowRight className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+    </button>
   );
 }

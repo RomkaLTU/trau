@@ -70,6 +70,63 @@ func TestGrillCreateAndList(t *testing.T) {
 	}
 }
 
+func TestGrillAwaitingAcrossRepos(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	asked := createGrill(t, ts, repo, "COD-1")
+	sid, _ := strconv.ParseInt(asked.ID, 10, 64)
+	createGrill(t, ts, repo, "COD-2")
+
+	if _, _, err := stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
+		Role: hubstore.GrillRoleAgent, Kind: hubstore.GrillKindQuestion,
+		Payload: `{"text":"Which destination?\nPick one of the options."}`,
+	}); err != nil {
+		t.Fatalf("post question: %v", err)
+	}
+	if _, err := stores.Grill().Transition(sid, hubstore.GrillWaiting, ""); err != nil {
+		t.Fatalf("pose question: %v", err)
+	}
+
+	// Parking normally happens mid-interview, so the reason must win over the
+	// question the session already asked.
+	elsewhere, err := stores.Grill().Create(hubstore.NewGrillSession{Repo: "/tmp/other", IssueID: "OTH-9"})
+	if err != nil {
+		t.Fatalf("create other repo session: %v", err)
+	}
+	if _, _, err := stores.Grill().AppendMessage(elsewhere.ID, hubstore.NewGrillMessage{
+		Role: hubstore.GrillRoleAgent, Kind: hubstore.GrillKindQuestion,
+		Payload: `{"text":"Should I retry the migration?"}`,
+	}); err != nil {
+		t.Fatalf("post other repo question: %v", err)
+	}
+	if _, err := stores.Grill().Transition(elsewhere.ID, hubstore.GrillParked, "needs a decision"); err != nil {
+		t.Fatalf("park other repo session: %v", err)
+	}
+
+	_, body := get(t, ts, APIPrefix+"/grill")
+	var list GrillAwaitingResponse
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("decode awaiting: %v", err)
+	}
+	if len(list.Sessions) != 2 {
+		t.Fatalf("awaiting = %+v, want the waiting and parked sessions only", list.Sessions)
+	}
+	byID := map[string]GrillAwaitingView{}
+	for _, sess := range list.Sessions {
+		byID[sess.ID] = sess
+	}
+	waiting, ok := byID[asked.ID]
+	if !ok {
+		t.Fatalf("awaiting = %+v, want session %s", list.Sessions, asked.ID)
+	}
+	if waiting.Repo != repo || waiting.Question != "Which destination?" {
+		t.Fatalf("waiting view = %+v, want repo %s and the question's first line", waiting, repo)
+	}
+	parked := byID[strconv.FormatInt(elsewhere.ID, 10)]
+	if parked.Repo != "other" || parked.Question != "needs a decision" {
+		t.Fatalf("parked view = %+v, want the park reason as preview", parked)
+	}
+}
+
 func TestGrillCreateUnknownRepo(t *testing.T) {
 	ts, _, _ := grillServer(t)
 	res := postJSON(t, ts.URL+APIPrefix+"/repos/nope/grill", GrillCreateRequest{IssueID: "COD-1"})
