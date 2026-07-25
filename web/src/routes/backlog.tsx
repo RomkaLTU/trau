@@ -31,6 +31,7 @@ import {
   PageHeader,
   ProjectScopeGate,
   RepoHealthGate,
+  StateGroupChip,
   useActiveRepo,
 } from "@/components/trau";
 import {
@@ -927,9 +928,7 @@ function BacklogRow({
               queued
             </span>
           )}
-          <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
-            {entry.group}
-          </span>
+          <StateGroupChip group={entry.group} />
           <span
             className={cn(
               "rounded-full px-2 py-0.5 font-mono text-xs",

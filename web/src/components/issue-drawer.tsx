@@ -19,6 +19,7 @@ import {
   AssigneePicker,
 } from "@/components/trau/assignee-picker";
 import { ProviderPinPicker } from "@/components/trau/provider-picker";
+import { StateGroupChip } from "@/components/trau/state-group-chip";
 import { DeleteIssueDialog } from "@/components/delete-issue-dialog";
 import { InternalIssueForm } from "@/components/internal-issue-form";
 import { IssueAttachments } from "@/components/issue-attachments";
@@ -215,9 +216,7 @@ function IssueDrawerBody({
               archived
             </span>
           )}
-          <span className="rounded-full border px-2 py-0.5 text-xs text-muted-foreground">
-            {issue.group}
-          </span>
+          <StateGroupChip group={issue.group} />
           {issue.source && (
             <span
               className={cn(
