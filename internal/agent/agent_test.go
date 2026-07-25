@@ -3,9 +3,11 @@ package agent
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -460,5 +462,218 @@ func TestClaudeInteractiveRecordsEffortAndDuration(t *testing.T) {
 	}
 	if rec.Model != "opus" || rec.Provider != "claude" {
 		t.Errorf("record = %+v, want the claude/opus route it ran under", rec)
+	}
+}
+
+// decodeEvents parses the JSON lines an event.Log wrote, keyed by kind.
+func decodeEvents(t *testing.T, stream string) map[string]event.Event {
+	t.Helper()
+	out := map[string]event.Event{}
+	for _, line := range strings.Split(strings.TrimSpace(stream), "\n") {
+		if line == "" {
+			continue
+		}
+		var ev event.Event
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Fatalf("decode event %q: %v", line, err)
+		}
+		out[ev.Kind] = ev
+	}
+	return out
+}
+
+func eventNum(t *testing.T, ev event.Event, key string) float64 {
+	t.Helper()
+	n, ok := ev.Fields[key].(float64)
+	if !ok {
+		t.Fatalf("%s event carries no numeric %q field: %+v", ev.Kind, key, ev.Fields)
+	}
+	return n
+}
+
+// TestClaudeAgentStartRecordsToolPolicy pins the effective tool policy onto the
+// ledger: agent_start carries the exact --disallowedTools value the call was
+// launched with plus the route serving it, so "was the Agent tool really enabled
+// for this call?" is answerable after the fact.
+func TestClaudeAgentStartRecordsToolPolicy(t *testing.T) {
+	var events bytes.Buffer
+	sess := newScriptedSession("working…\n")
+	defer sess.stop()
+
+	c := &ClaudeInteractive{
+		Bin:             "claude",
+		Model:           "opus",
+		Effort:          "high",
+		DisallowedTools: "Workflow",
+		ResultDir:       t.TempDir(),
+		TrustPromptWait: time.Millisecond,
+		Log:             event.New(&events),
+		start: func(_ context.Context, _, _ string, args []string, _, _ int) (terminalSession, error) {
+			if err := os.WriteFile(resultPathFromPrompt(t, args), []byte("done"), 0o644); err != nil {
+				return nil, err
+			}
+			return sess, nil
+		},
+	}
+
+	if _, err := c.Run(context.Background(), "do the thing", "build"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	start, ok := decodeEvents(t, events.String())[event.KindAgentStart]
+	if !ok {
+		t.Fatalf("no agent_start event; got: %s", events.String())
+	}
+	if got := start.Fields["disallowed_tools"]; got != "Workflow" {
+		t.Errorf("disallowed_tools = %v, want Workflow — the value actually passed", got)
+	}
+	if start.Fields["provider"] != "claude" || start.Fields["model"] != "opus" || start.Fields["effort"] != "high" {
+		t.Errorf("agent_start route = %+v, want claude/opus/high", start.Fields)
+	}
+}
+
+// TestClaudeExploreUsageRecordsDispatches: a call that could dispatch subagents
+// always emits explore_usage, carrying how many it sent and the tokens they burned.
+// A call with the Agent tool blocked emits nothing — there is no dispatch decision
+// to record.
+func TestClaudeExploreUsageRecordsDispatches(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+
+	run := func(t *testing.T, disallowed string) (Result, map[string]event.Event) {
+		t.Helper()
+		var events bytes.Buffer
+		sess := newScriptedSession("working…\n")
+		defer sess.stop()
+
+		c := &ClaudeInteractive{
+			Bin:             "claude",
+			Model:           "opus",
+			DisallowedTools: disallowed,
+			ResultDir:       t.TempDir(),
+			TrustPromptWait: time.Millisecond,
+			Log:             event.New(&events),
+			start: func(_ context.Context, _, _ string, args []string, _, _ int) (terminalSession, error) {
+				projects := filepath.Join(configDir, "projects", "-Users-dev-repo")
+				sid := flagValue(args, "--session-id")
+				writeTranscript(t, filepath.Join(projects, sid+".jsonl"),
+					`{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":100,"output_tokens":20},"content":[{"type":"tool_use","name":"Agent","input":{"subagent_type":"Explore"}}]}}`)
+				writeTranscript(t, filepath.Join(projects, sid, "subagents", "agent-a1b2.jsonl"),
+					`{"type":"assistant","isSidechain":true,"message":{"model":"claude-opus-5","usage":{"input_tokens":40,"output_tokens":10}}}`)
+				if err := os.WriteFile(resultPathFromPrompt(t, args), []byte("done"), 0o644); err != nil {
+					return nil, err
+				}
+				return sess, nil
+			},
+		}
+
+		res, err := c.Run(context.Background(), "do the thing", "build")
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		return res, decodeEvents(t, events.String())
+	}
+
+	t.Run("agent tool enabled", func(t *testing.T) {
+		res, events := run(t, "Workflow")
+		if res.Usage.Input != 140 || res.Subagent.Input != 40 {
+			t.Errorf("usage = %+v subagent = %+v, want 140 combined input of which 40 is the subagent's", res.Usage, res.Subagent)
+		}
+		ev, ok := events[event.KindExploreUsage]
+		if !ok {
+			t.Fatalf("no explore_usage event; got kinds %v", events)
+		}
+		if n := eventNum(t, ev, "dispatches"); n != 1 {
+			t.Errorf("dispatches = %v, want 1", n)
+		}
+		if n := eventNum(t, ev, "explore_dispatches"); n != 1 {
+			t.Errorf("explore_dispatches = %v, want 1", n)
+		}
+		if n := eventNum(t, ev, "subagent_turns"); n != 1 {
+			t.Errorf("subagent_turns = %v, want 1", n)
+		}
+		if n := eventNum(t, ev, "subagent_tokens"); n != 50 {
+			t.Errorf("subagent_tokens = %v, want 50", n)
+		}
+		if n := eventNum(t, ev, "subagent_cost_usd"); n <= 0 {
+			t.Errorf("subagent_cost_usd = %v, want the priced subagent share", n)
+		}
+		if ev.Phase != "build" {
+			t.Errorf("phase = %q, want build", ev.Phase)
+		}
+	})
+
+	t.Run("agent tool blocked", func(t *testing.T) {
+		if _, events := run(t, "Agent,Workflow"); events[event.KindExploreUsage].Kind != "" {
+			t.Error("a call with the Agent tool blocked must not report a dispatch decision")
+		}
+	})
+}
+
+// TestClaudeCallCostPricesCombinedUsage covers the spend side of the same call:
+// the agent_call event and the token record both price the parent turns plus the
+// subagents they dispatched, so a run that fans out is never billed as if only the
+// orchestrator spent tokens.
+func TestClaudeCallCostPricesCombinedUsage(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+
+	var events bytes.Buffer
+	sink := &recordingSink{}
+	sess := newScriptedSession("working…\n")
+	defer sess.stop()
+
+	c := &ClaudeInteractive{
+		Bin:             "claude",
+		Model:           "opus",
+		ResultDir:       t.TempDir(),
+		TrustPromptWait: time.Millisecond,
+		Log:             event.New(&events),
+		Tokens:          sink,
+		start: func(_ context.Context, _, _ string, args []string, _, _ int) (terminalSession, error) {
+			projects := filepath.Join(configDir, "projects", "-Users-dev-repo")
+			sid := flagValue(args, "--session-id")
+			writeTranscript(t, filepath.Join(projects, sid+".jsonl"),
+				`{"type":"assistant","message":{"model":"claude-opus-5","usage":{"input_tokens":100,"output_tokens":20}}}`)
+			writeTranscript(t, filepath.Join(projects, sid, "subagents", "agent-a1b2.jsonl"),
+				`{"type":"assistant","isSidechain":true,"message":{"model":"claude-opus-5","usage":{"input_tokens":40,"output_tokens":10}}}`)
+			if err := os.WriteFile(resultPathFromPrompt(t, args), []byte("done"), 0o644); err != nil {
+				return nil, err
+			}
+			return sess, nil
+		},
+	}
+
+	res, err := c.Run(context.Background(), "do the thing", "build")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	want := tokens.EstimateCost("claude-opus-5", 140, 30, 0, 0)
+	if want <= 0 {
+		t.Fatalf("fixture model priced at %v; the assertions below would be vacuous", want)
+	}
+	if res.CostUSD != want {
+		t.Errorf("Result.CostUSD = %v, want %v — parent plus subagent tokens priced", res.CostUSD, want)
+	}
+
+	call, ok := decodeEvents(t, events.String())["agent_call"]
+	if !ok {
+		t.Fatalf("no agent_call event; got: %s", events.String())
+	}
+	if n := eventNum(t, call, "total_tokens"); n != 170 {
+		t.Errorf("total_tokens = %v, want 170 combined", n)
+	}
+	if n := eventNum(t, call, "cost_usd"); n != want {
+		t.Errorf("cost_usd = %v, want %v — the combined total, not the orchestrator's share", n, want)
+	}
+
+	if len(sink.records) != 1 {
+		t.Fatalf("recorded %d calls, want 1", len(sink.records))
+	}
+	if got := sink.records[0].CostUSD; got == nil {
+		t.Error("ledger recorded no per-call cost, want the same price the event reported")
+	} else if *got != want {
+		t.Errorf("ledger CostUSD = %v, want %v — the same price the event reported", *got, want)
 	}
 }
