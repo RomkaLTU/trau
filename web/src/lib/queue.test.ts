@@ -12,6 +12,7 @@ import {
   queueQueryOptions,
   queueRunnable,
   runNext,
+  runOnly,
   skipResumeApplies,
   type QueueItem,
   type QueueResponse,
@@ -164,6 +165,102 @@ describe('runNext', () => {
       'unknown ticket',
     )
     expect(drainCalls()).toHaveLength(0)
+  })
+})
+
+describe('runOnly', () => {
+  const drainCalls = () =>
+    mockFetch.mock.calls.filter(([url]) => String(url).endsWith('/drain'))
+
+  it('appends an unqueued item, then runs it without arming the drain', async () => {
+    mockFetch
+      .mockResolvedValueOnce(response(201, queueResponse()))
+      .mockResolvedValueOnce(
+        response(200, queueResponse({ items: [item({ status: 'running' })] })),
+      )
+
+    const res = await runOnly('trau', { id: 'COD-1' })
+
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      1,
+      '/api/v1/repos/trau/queue',
+      expect.objectContaining({ body: JSON.stringify({ id: 'COD-1' }) }),
+    )
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      2,
+      '/api/v1/repos/trau/queue/COD-1/run',
+      { method: 'POST' },
+    )
+    expect(drainCalls()).toHaveLength(0)
+    expect(res.items[0].status).toBe('running')
+  })
+
+  it('runs an item the queue already holds where it stands', async () => {
+    mockFetch
+      .mockResolvedValueOnce(response(409, { error: 'COD-1 is already in the queue' }))
+      .mockResolvedValueOnce(
+        response(200, queueResponse({ items: [item({ status: 'paused' })] })),
+      )
+      .mockResolvedValueOnce(response(200, queueResponse()))
+
+    await runOnly('trau', { id: 'COD-1' })
+
+    expect(mockFetch).toHaveBeenCalledTimes(3)
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      3,
+      '/api/v1/repos/trau/queue/COD-1/run',
+      { method: 'POST' },
+    )
+  })
+
+  it('drops a settled leftover and re-queues it before running', async () => {
+    mockFetch
+      .mockResolvedValueOnce(response(409, { error: 'COD-1 is already in the queue' }))
+      .mockResolvedValueOnce(
+        response(200, queueResponse({ items: [item({ status: 'done' })] })),
+      )
+      .mockResolvedValueOnce(response(200, queueResponse()))
+      .mockResolvedValueOnce(response(201, queueResponse()))
+      .mockResolvedValueOnce(response(200, queueResponse()))
+
+    await runOnly('trau', { id: 'COD-1' })
+
+    expect(mockFetch).toHaveBeenNthCalledWith(3, '/api/v1/repos/trau/queue/COD-1', {
+      method: 'DELETE',
+    })
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      4,
+      '/api/v1/repos/trau/queue',
+      expect.objectContaining({ body: JSON.stringify({ id: 'COD-1' }) }),
+    )
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      5,
+      '/api/v1/repos/trau/queue/COD-1/run',
+      { method: 'POST' },
+    )
+  })
+
+  it('surfaces the enqueue error for an id the queue cannot take', async () => {
+    mockFetch
+      .mockResolvedValueOnce(response(404, { error: 'unknown ticket' }))
+      .mockResolvedValueOnce(response(200, queueResponse()))
+
+    await expect(runOnly('trau', { id: 'COD-404' })).rejects.toThrow(
+      'unknown ticket',
+    )
+    expect(
+      mockFetch.mock.calls.filter(([url]) => String(url).endsWith('/run')),
+    ).toHaveLength(0)
+  })
+
+  it('surfaces a run refusal, such as a blocker added since render', async () => {
+    mockFetch
+      .mockResolvedValueOnce(response(201, queueResponse()))
+      .mockResolvedValueOnce(response(409, { error: 'COD-1 is blocked by COD-2' }))
+
+    await expect(runOnly('trau', { id: 'COD-1' })).rejects.toThrow(
+      'COD-1 is blocked by COD-2',
+    )
   })
 })
 
