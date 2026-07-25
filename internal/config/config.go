@@ -188,6 +188,11 @@ type Config struct {
 	// dead code, over-defensive scaffolding — before verify grades the result. Set
 	// Cleanup 0 to skip it.
 	Cleanup bool
+	// CodeStyleNote gates the code_style block the build, repair, bugfix and
+	// push_repair prompts carry (config CODE_STYLE_NOTE). On by default; 0 drops it
+	// from all four at once, so an experiment cohort's diffs share one provenance.
+	// The catalog prompt stays registered and overridable either way.
+	CodeStyleNote bool
 	// StripMechanicalMCP launches the mechanical phases (cleanup, commit, repair,
 	// bugfix, push-repair) with the target repo's MCP servers stripped, where the
 	// provider CLI supports it (Claude's --strict-mcp-config) — those phases never
@@ -428,6 +433,7 @@ func Defaults() Config {
 		AutoStash:              true,
 		LintFix:                true,
 		Cleanup:                true,
+		CodeStyleNote:          true,
 		StripMechanicalMCP:     true,
 		ExploreSubagents:       false,
 		BrowserVerify:          "auto",
@@ -869,6 +875,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("CLEANUP"); v != "" {
 		c.Cleanup = v == "1"
 		sources["CLEANUP"] = src.name
+	}
+	if v, src := get("CODE_STYLE_NOTE"); v != "" {
+		c.CodeStyleNote = v == "1"
+		sources["CODE_STYLE_NOTE"] = src.name
 	}
 	if v, src := get("STRIP_MECHANICAL_MCP"); v != "" {
 		c.StripMechanicalMCP = v == "1"
@@ -1692,6 +1702,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "LINT_FIX", Group: sectionPipeline, WebEditable: true, Default: "1", Description: "Run the project's lint/format autofixers before verify so verify isn't spent self-healing style noise (1 = yes, 0 = no)", Bool: true},
 		{Key: "LINT_FIX_CMD", Group: sectionPipeline, Description: "Deterministic lint-fix command run before verify (e.g. vendor/bin/pint, npm run lint:fix). Empty = a cheap agent auto-detects and runs the project's fixers"},
 		{Key: "CLEANUP", Group: sectionPipeline, WebEditable: true, Default: "1", Description: "Strip AI-slop (unnecessary comments, dead code, over-defensive scaffolding) from the slice's diff before verify (1 = yes, 0 = no)", Bool: true},
+		{Key: "CODE_STYLE_NOTE", Group: sectionPipeline, WebEditable: true, Advanced: true, Default: "1", Description: "Append the code_style block (write it like a senior engineer, no narrating comments, skip the AI tells) to the build, repair, bugfix and push-repair prompts; 0 drops it from all four, leaving the cleanup step to enforce the same rules over the diff (1 = yes, 0 = no)", Bool: true},
 		{Key: "STRIP_MECHANICAL_MCP", Group: sectionPipeline, WebEditable: true, Advanced: true, Default: "1", Description: "Launch the mechanical phases (cleanup, commit, repair, bugfix, push-repair) with the repo's MCP servers stripped where the provider supports it (Claude's --strict-mcp-config), since they never read the tracker; 0 restores full MCP everywhere (1 = yes, 0 = no)", Bool: true},
 		{Key: "EXPLORE_SUBAGENTS", Group: sectionAgent, WebEditable: true, Advanced: true, Default: "0", Description: "Let the build and verify phases dispatch read-only exploration subagents (Claude's Explore agent type) by dropping the Agent tool from their disallowed set, keeping the orchestrator's context lean on large tickets; write-capable fan-out (Workflow) stays blocked everywhere (1 = yes, 0 = no)", Bool: true},
 		{Key: "BROWSER_VERIFY", Group: sectionVerify, WebEditable: true, Default: "auto", Description: "Browser verify: auto | always | never", Options: []string{"auto", "always", "never"}},
@@ -2247,6 +2258,11 @@ func keyValue(cfg Config, key string) string {
 		return cfg.LintFixCmd
 	case "CLEANUP":
 		if cfg.Cleanup {
+			return "1"
+		}
+		return "0"
+	case "CODE_STYLE_NOTE":
+		if cfg.CodeStyleNote {
 			return "1"
 		}
 		return "0"

@@ -25,7 +25,8 @@ func loadRouting(t *testing.T, files map[string]string) RoutingFingerprint {
 }
 
 // TestResolveRoutingKeys pins the fingerprint's inputs: the active provider, every
-// phase's fully expanded route, and the required skills — nothing else.
+// phase's fully expanded route, the required skills, and the prompt-shape flags —
+// nothing else.
 func TestResolveRoutingKeys(t *testing.T) {
 	fp := ResolveRouting(Config{
 		Provider:       "claude",
@@ -33,11 +34,13 @@ func TestResolveRoutingKeys(t *testing.T) {
 		ClaudeEffort:   "xhigh",
 		Routes:         map[string]string{"verify": "claude:opus:high", "lintfix": "claude:haiku"},
 		RequiredSkills: []string{"golang-pro", "bubbletea"},
+		CodeStyleNote:  true,
 	})
 
 	want := map[string]string{
 		"PROVIDER":        "claude",
 		"REQUIRED_SKILLS": "bubbletea,golang-pro",
+		"CODE_STYLE_NOTE": "1",
 		"PHASE_BUILD":     "claude:opus:xhigh",
 		"PHASE_HANDOFF":   "claude:opus:xhigh",
 		"PHASE_VERIFY":    "claude:opus:high",
@@ -90,6 +93,7 @@ func TestResolveRoutingHashTracksRoutingKeys(t *testing.T) {
 		ClaudeEffort:   "xhigh",
 		Routes:         map[string]string{"verify": "claude:opus:xhigh"},
 		RequiredSkills: []string{"golang-pro"},
+		CodeStyleNote:  true,
 	}
 	baseHash := ResolveRouting(base).Hash
 
@@ -105,6 +109,7 @@ func TestResolveRoutingHashTracksRoutingKeys(t *testing.T) {
 		{"default model", func(c *Config) { c.ClaudeModel = "sonnet" }, true},
 		{"default effort", func(c *Config) { c.ClaudeEffort = "high" }, true},
 		{"required skills", func(c *Config) { c.RequiredSkills = []string{"golang-pro", "bubbletea"} }, true},
+		{"code style note", func(c *Config) { c.CodeStyleNote = false }, true},
 		{"api key", func(c *Config) { c.LinearAPIKey = "lin_api_secret" }, false},
 		{"serve token", func(c *Config) { c.ServeToken = "s3cret" }, false},
 		{"max iterations", func(c *Config) { c.MaxIterations = 7 }, false},

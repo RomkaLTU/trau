@@ -8,11 +8,12 @@ import (
 )
 
 // RoutingFingerprint identifies the routing configuration a run executes under.
-// Keys holds the resolved routing-relevant values — the active provider, every
-// phase's provider/model/effort after layering, and the required skills — and Hash
-// is a stable digest over them, so two repos whose effective routing matches share
-// a hash no matter which config file supplied it. Nothing else participates, so
-// no secret can reach either field.
+// Keys holds the resolved cohort-relevant values — the active provider, every
+// phase's provider/model/effort after layering, the required skills, and the
+// prompt-shape flags an experiment stamps cohorts with — and Hash is a stable
+// digest over them, so two repos whose effective configuration matches share a hash
+// no matter which config file supplied it. Nothing else participates, so no secret
+// can reach either field.
 type RoutingFingerprint struct {
 	Hash string
 	Keys map[string]string
@@ -28,6 +29,7 @@ func ResolveRouting(c Config) RoutingFingerprint {
 	keys := map[string]string{
 		"PROVIDER":        c.Provider,
 		"REQUIRED_SKILLS": strings.Join(skills, ","),
+		"CODE_STYLE_NOTE": keyValue(c, "CODE_STYLE_NOTE"),
 	}
 	for _, ph := range phases {
 		keys["PHASE_"+strings.ToUpper(ph)] = c.effectiveRoute(ph)

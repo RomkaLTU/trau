@@ -27,7 +27,7 @@ const (
 	goldenGrillAttachments = "\n--- Attachments ---\n/tmp/trau-attachments-COD-123/shot.png — shot.png (image/png, 2.0KB)\nThese are local copies of the ticket's files. Images may show UI states or error screenshots that matter for this task — read them.\n"
 )
 
-func goldenRepairData(handoff, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) RepairData {
+func goldenRepairData(codeStyle, handoff, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) RepairData {
 	return RepairData{
 		ID:            goldenID,
 		Verdict:       goldenVerdictPath,
@@ -37,7 +37,7 @@ func goldenRepairData(handoff, fails, rubricNote, lessonsNote, notesNote, ticket
 		RubricNote:    rubricNote,
 		LessonsNote:   lessonsNote,
 		NotesNote:     notesNote,
-		CodeStyle:     Render("code_style", nil),
+		CodeStyle:     codeStyle,
 		TicketContext: ticketCtx,
 	}
 }
@@ -51,7 +51,7 @@ func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 	buildNotesFragment := Render("build_notes", BuildNotesData{ID: goldenID, Path: goldenBuildNotesPath})
 	codeStyle := Render("code_style", nil)
 
-	buildData := func(skillsNote, note, ticketCtx string) BuildData {
+	buildData := func(codeStyle, skillsNote, note, ticketCtx string) BuildData {
 		return BuildData{
 			ID:            goldenID,
 			Branch:        goldenBranch,
@@ -92,8 +92,9 @@ func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 		{"verify_skills_browser_only", "verify_skills", SkillsData{Required: []string{"browser-harness"}}},
 		{"verify_skills_menu", "verify_skills", SkillsData{Installed: []string{"alpha", "beta", "tdd"}, Required: []string{"tdd"}, Menu: []string{"alpha", "beta"}}},
 		{"verify_skills_menu_empty", "verify_skills", SkillsData{Installed: []string{"tdd"}, Required: []string{"tdd"}}},
-		{"build_full", "build", buildData("SKILLS-NOTE.", " NOTE-FRAGMENT.", goldenTicketCtx)},
-		{"build_empty", "build", buildData("", "", "")},
+		{"build_full", "build", buildData(codeStyle, "SKILLS-NOTE.", " NOTE-FRAGMENT.", goldenTicketCtx)},
+		{"build_empty", "build", buildData(codeStyle, "", "", "")},
+		{"build_nostyle", "build", buildData("", "SKILLS-NOTE.", " NOTE-FRAGMENT.", goldenTicketCtx)},
 		{"handoff_ctx", "handoff", HandoffData{ID: goldenID, Handoff: goldenHandoffPath, Rubric: rubricFragment, TicketContext: goldenTicketCtx}},
 		{"handoff_empty", "handoff", HandoffData{ID: goldenID, Handoff: goldenHandoffPath, Rubric: rubricFragment}},
 		{"rubric", "rubric", RubricData{ID: goldenID, Path: goldenRubricPath, Schema: rubricSchema}},
@@ -102,11 +103,14 @@ func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 		{"verify_derive", "verify", verifyData("", "", "", "", "", "")},
 		{"commit_squash", "commit", CommitData{ID: goldenID, RubricNote: " RUBRIC-NOTE.", Squash: true}},
 		{"commit_split", "commit", CommitData{ID: goldenID}},
-		{"repair_brief", "repair", goldenRepairData(goldenHandoffPath, "fail one\nfail two", " RUBRIC-NOTE.", " LESSONS-NOTE.", " NOTES-NOTE.", goldenTicketCtx)},
-		{"repair_nobrief", "repair", goldenRepairData("", "boom", "", "", "", "")},
-		{"bugfix_brief", "bugfix", goldenRepairData(goldenHandoffPath, "fail one\nfail two", " RUBRIC-NOTE.", " LESSONS-NOTE.", " NOTES-NOTE.", goldenTicketCtx)},
-		{"bugfix_nobrief", "bugfix", goldenRepairData("", "boom", "", "", "", "")},
+		{"repair_brief", "repair", goldenRepairData(codeStyle, goldenHandoffPath, "fail one\nfail two", " RUBRIC-NOTE.", " LESSONS-NOTE.", " NOTES-NOTE.", goldenTicketCtx)},
+		{"repair_nobrief", "repair", goldenRepairData(codeStyle, "", "boom", "", "", "", "")},
+		{"repair_nostyle", "repair", goldenRepairData("", goldenHandoffPath, "fail one\nfail two", " RUBRIC-NOTE.", " LESSONS-NOTE.", " NOTES-NOTE.", goldenTicketCtx)},
+		{"bugfix_brief", "bugfix", goldenRepairData(codeStyle, goldenHandoffPath, "fail one\nfail two", " RUBRIC-NOTE.", " LESSONS-NOTE.", " NOTES-NOTE.", goldenTicketCtx)},
+		{"bugfix_nobrief", "bugfix", goldenRepairData(codeStyle, "", "boom", "", "", "", "")},
+		{"bugfix_nostyle", "bugfix", goldenRepairData("", goldenHandoffPath, "fail one\nfail two", " RUBRIC-NOTE.", " LESSONS-NOTE.", " NOTES-NOTE.", goldenTicketCtx)},
 		{"push_repair", "push_repair", PushRepairData{ID: goldenID, HookOutput: "hook line one\nhook line two", NotesNote: " NOTES-NOTE.", CodeStyle: codeStyle}},
+		{"push_repair_nostyle", "push_repair", PushRepairData{ID: goldenID, HookOutput: "hook line one\nhook line two", NotesNote: " NOTES-NOTE."}},
 		{"resolve_conflicts", "resolve_conflicts", ResolveConflictsData{ID: goldenID, Base: "main", Branch: goldenBranch}},
 		{"epic_repair", "epic_repair", EpicRepairData{EpicID: "COD-100", PRURL: "https://github.com/o/r/pull/5", Branch: "epic/COD-100"}},
 		{"cleanup_notes", "cleanup", CleanupData{ID: goldenID, NotesNote: " NOTES-NOTE."}},

@@ -1,0 +1,9 @@
+COD-123 verification FAILED. QA verdict file: /tmp/verify-COD-123.json. QA brief: /tmp/handoff-COD-123.md. Failures:
+fail one
+fail two
+
+You are on branch feature/COD-123-slice with this slice's implementation uncommitted. RUBRIC-NOTE. LESSONS-NOTE. NOTES-NOTE. If this is a DEFECT IN THIS SLICE'S OWN code, find the root cause and fix it with minimal, targeted changes, then run the relevant tests to confirm. If the failure is actually a pre-existing or out-of-scope bug NOT caused by this slice, do NOT hack around it — change nothing and say so clearly. Do not commit, push, or open a PR.
+
+=== COD-123: Ticket title ===
+Ticket body.
+=== end COD-123 ===
