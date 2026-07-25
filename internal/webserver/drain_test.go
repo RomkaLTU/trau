@@ -1077,11 +1077,11 @@ func TestTickSpawnsDespiteIdleInstance(t *testing.T) {
 // left exactly as they were. The sweep never spawns.
 func TestReconcileParkedSweep(t *testing.T) {
 	tests := []struct {
-		name        string
-		item        queue.Item
-		checkpoint  map[string]string
-		wantStatus  string
-		wantReason  string
+		name         string
+		item         queue.Item
+		checkpoint   map[string]string
+		wantStatus   string
+		wantReason   string
 		wantSubState string
 	}{
 		{
@@ -1093,16 +1093,16 @@ func TestReconcileParkedSweep(t *testing.T) {
 				Reason:    "child exited without a drain report — outcome unknown",
 				SubIssues: []queue.SubIssue{{ID: "COD-2", State: "backlog"}},
 			},
-			checkpoint:  map[string]string{"PHASE": state.Merged},
-			wantStatus:  queue.StatusDone,
-			wantReason:  reconciledReason,
+			checkpoint:   map[string]string{"PHASE": state.Merged},
+			wantStatus:   queue.StatusDone,
+			wantReason:   reconciledReason,
 			wantSubState: "done",
 		},
 		{
-			name:        "paused epic without a checkpoint stays parked",
-			item:        queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusPaused, Reason: "outcome unknown", SubIssues: []queue.SubIssue{{ID: "COD-2", State: "backlog"}}},
-			wantStatus:  queue.StatusPaused,
-			wantReason:  "outcome unknown",
+			name:         "paused epic without a checkpoint stays parked",
+			item:         queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusPaused, Reason: "outcome unknown", SubIssues: []queue.SubIssue{{ID: "COD-2", State: "backlog"}}},
+			wantStatus:   queue.StatusPaused,
+			wantReason:   "outcome unknown",
 			wantSubState: "backlog",
 		},
 		{

@@ -13,6 +13,11 @@ import { healthQueryOptions } from '@/lib/health'
 import { useInboxCounts } from '@/lib/inbox'
 import { isMacPlatform, shortcutLabel } from '@/lib/palette-keys'
 import {
+  queueQueryOptions,
+  queueTerminal,
+  type QueueResponse,
+} from '@/lib/queue'
+import {
   needsAttention,
   updateQueryOptions,
   versionLabel,
@@ -22,20 +27,32 @@ import { cn } from '@/lib/utils'
 
 interface NavBadge {
   count: number
-  tone: 'warn' | 'muted'
+  tone: 'active' | 'warn' | 'muted'
   title?: string
 }
 
-// navBadge resolves an item's count pill: the attention item counts faulted runs;
-// the inbox item shows its total, but emphasizes the parked-awaiting-answer count
-// as the warn-toned "a question is waiting for you" signal when there is one.
-function navBadge(
+export function navBadge(
   item: NavItem,
   attention: number,
   inbox: { total: number; awaiting: number },
+  queue?: QueueResponse,
 ): NavBadge | null {
   if (item.attention) {
     return attention > 0 ? { count: attention, tone: 'warn' } : null
+  }
+  if (item.loop) {
+    const count =
+      queue?.items.filter((entry) => !queueTerminal(entry.status)).length ?? 0
+    if (count === 0) return null
+    const running =
+      queue?.draining === true ||
+      queue?.items.some((entry) => entry.status === 'running')
+    const noun = count === 1 ? 'item' : 'items'
+    return {
+      count,
+      tone: running ? 'active' : 'muted',
+      title: `${count} ${noun} in queue${running ? ' — running' : ''}`,
+    }
   }
   if (item.inbox) {
     if (inbox.awaiting > 0) {
@@ -74,6 +91,10 @@ export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
   const navigate = useNavigate()
   const attention = useAttentionCount(repo)
   const inbox = useInboxCounts(repo ?? '')
+  const queue = useQuery({
+    ...queueQueryOptions(repo ?? ''),
+    refetchInterval: 3000,
+  })
 
   // A gated nav click auto-scopes to a lone/last-used repo and follows the link,
   // or opens the switcher when there's a real choice — never a dead end.
@@ -128,7 +149,7 @@ export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
             </p>
             <ul className="flex flex-col gap-0.5">
               {group.items.map((item) => {
-                const badge = navBadge(item, attention, inbox)
+                const badge = navBadge(item, attention, inbox, queue.data)
                 const disabled = isAll && item.requiresProject
 
                 if (disabled) {
@@ -174,13 +195,22 @@ export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
                           {badge ? (
                             <span
                               title={badge.title}
+                              aria-label={badge.title}
                               className={cn(
                                 'inline-flex h-4 min-w-4 items-center justify-center rounded-full border px-1 font-mono text-[0.65rem]',
-                                badge.tone === 'warn'
-                                  ? 'border-warn/50 bg-warn/12 text-warn'
-                                  : 'border-border bg-muted/60 text-muted-foreground',
+                                badge.tone === 'active'
+                                  ? 'gap-1 border-teal/50 bg-teal/12 text-teal'
+                                  : badge.tone === 'warn'
+                                    ? 'border-warn/50 bg-warn/12 text-warn'
+                                    : 'border-border bg-muted/60 text-muted-foreground',
                               )}
                             >
+                              {badge.tone === 'active' && (
+                                <span
+                                  aria-hidden="true"
+                                  className="size-1 rounded-full bg-current"
+                                />
+                              )}
                               {badge.count}
                             </span>
                           ) : null}
