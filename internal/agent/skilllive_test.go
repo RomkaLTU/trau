@@ -59,11 +59,104 @@ func TestMergeSkills(t *testing.T) {
 // TestSkillCaptureAcrossWrites pins that a marker split across two teed writes is
 // still recovered — the rolling tail rescans the boundary.
 func TestSkillCaptureAcrossWrites(t *testing.T) {
-	c := newSkillCapture(claudeSkills)
+	c := newSkillCapture(claudeSkills, newSkillSnapper([]string{"bubbletea", "tdd"}))
 	_, _ = c.Write([]byte("working... ● Skill(bub"))
 	_, _ = c.Write([]byte("bletea)\n  ⎿  Launching skill: tdd\n"))
 	if got, want := c.skills(), []string{"bubbletea", "tdd"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("skills = %v, want %v", got, want)
+	}
+}
+
+// mangleInventory is the installed set the observed mangles were drawn against.
+var mangleInventory = []string{
+	"golang-code-style",
+	"laravel-best-practices",
+	"pest-testing",
+	"typescript-expert",
+	"web-feature",
+}
+
+func TestSkillSnapper(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+	}{
+		{"web-feature", "web-feature"},
+		{"wb-eature", "web-feature"},
+		{"typescipt-expt", "typescript-expert"},
+		{"typescript-exprt", "typescript-expert"},
+		{"typscrpt-expert", "typescript-expert"},
+		{"olang-code-style", "golang-code-style"},
+		{"larave-best-practices", "laravel-best-practices"},
+		{"pst-testing", "pest-testing"},
+		{"pt-testing", "pest-testing"},
+		{"artifact-design", ""},
+		{"typescr", ""},
+		{"web", ""},
+	}
+	snap := newSkillSnapper(mangleInventory)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := snap.snap(tc.name)
+			if ok != (tc.want != "") {
+				t.Fatalf("snap(%q) matched = %v, want %v", tc.name, ok, tc.want != "")
+			}
+			if got != tc.want {
+				t.Fatalf("snap(%q) = %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSkillSnapperDuplicateInventory pins the shape NameableSkills returns for a
+// repo that installs a known external skill: the name arrives twice, and the
+// second copy must not read as an ambiguous tie against the first.
+func TestSkillSnapperDuplicateInventory(t *testing.T) {
+	snap := newSkillSnapper([]string{"browser-harness", "web-feature", "browser-harness"})
+	got, ok := snap.snap("brower-harness")
+	if !ok || got != "browser-harness" {
+		t.Fatalf("snap = %q, %v, want %q, true", got, ok, "browser-harness")
+	}
+}
+
+// TestSkillSnapperEmptyInventory pins that a repo with nothing installed can never
+// contribute a loaded name: there is no inventory to vouch for the sighting.
+func TestSkillSnapperEmptyInventory(t *testing.T) {
+	if got, ok := newSkillSnapper(nil).snap("web-feature"); ok {
+		t.Fatalf("snap = %q, want no match", got)
+	}
+}
+
+// TestSkillSnapperAll is the transcript-reconcile side: names the session JSONL
+// settles are held to the same inventory, and what it cannot vouch for lands in
+// the debug list instead of the loaded set.
+func TestSkillSnapperAll(t *testing.T) {
+	loaded, unmatched := newSkillSnapper(mangleInventory).snapAll([]string{
+		"pest-testing",
+		"pst-testing",
+		"artifact-design",
+	})
+	if want := []string{"pest-testing"}; !reflect.DeepEqual(loaded, want) {
+		t.Errorf("loaded = %v, want %v", loaded, want)
+	}
+	if want := []string{"artifact-design"}; !reflect.DeepEqual(unmatched, want) {
+		t.Errorf("unmatched = %v, want %v", unmatched, want)
+	}
+}
+
+// TestSkillCaptureSnapsMangles pins that one call whose PTY drew three renderings
+// of the same skill records that skill once, and that a sighting no installed
+// skill accounts for stays out of the loaded set.
+func TestSkillCaptureSnapsMangles(t *testing.T) {
+	c := newSkillCapture(claudeSkills, newSkillSnapper(mangleInventory))
+	_, _ = c.Write([]byte("● Skill(typescipt-expt)\n  ⎿  Launching skill: typescript-exprt\n"))
+	_, _ = c.Write([]byte("● Skill(typscrpt-expert)\n● Skill(wb-eature)\n● Skill(artifact-design)\n"))
+
+	if got, want := c.skills(), []string{"typescript-expert", "web-feature"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("skills = %v, want %v", got, want)
+	}
+	if got, want := c.unmatchedSightings(), []string{"artifact-design"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("unmatchedSightings = %v, want %v", got, want)
 	}
 }
 
@@ -105,27 +198,38 @@ func (s *scriptSession) Kill() error                 { s.stop(); return nil }
 // output names no skill reports the Unknown state, not a confirmed empty set.
 func TestClaudeLiveCaptureRecordsSkills(t *testing.T) {
 	cases := []struct {
-		name       string
-		output     string
-		wantSkills []string
-		wantKnown  bool
+		name          string
+		output        string
+		wantSkills    []string
+		wantUnmatched []string
+		wantKnown     bool
 	}{
 		{
-			"skills seen live without a transcript",
-			"● Skill(bubbletea)\n  ⎿  Launching skill: tdd\n",
-			[]string{"bubbletea", "tdd"},
-			true,
+			name:       "skills seen live without a transcript",
+			output:     "● Skill(bubbletea)\n  ⎿  Launching skill: tdd\n",
+			wantSkills: []string{"bubbletea", "tdd"},
+			wantKnown:  true,
 		},
 		{
-			"no skill named leaves the result unknown",
-			"working on the ticket, nothing to load\n",
-			nil,
-			false,
+			name:          "mangled draws snap to the installed names",
+			output:        "● Skill(bubbleta)\n● Skill(bubbltea)\n● Skill(artifact-design)\n",
+			wantSkills:    []string{"bubbletea"},
+			wantUnmatched: []string{"artifact-design"},
+			wantKnown:     true,
+		},
+		{
+			name:      "no skill named leaves the result unknown",
+			output:    "working on the ticket, nothing to load\n",
+			wantKnown: false,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir()) // no transcript can be found
+
+			repo := t.TempDir()
+			mkSkill(t, repo, ".agents/skills", "bubbletea")
+			mkSkill(t, repo, ".agents/skills", "tdd")
 
 			sess := newScriptSession([]byte(tc.output))
 			defer sess.stop()
@@ -133,6 +237,7 @@ func TestClaudeLiveCaptureRecordsSkills(t *testing.T) {
 			var resultPath string
 			c := &ClaudeInteractive{
 				Bin:             "claude",
+				Dir:             repo,
 				ResultDir:       t.TempDir(),
 				TrustPromptWait: time.Millisecond,
 				start:           finishOnResultPath(t, sess, &resultPath),
@@ -162,6 +267,9 @@ func TestClaudeLiveCaptureRecordsSkills(t *testing.T) {
 				}
 				if !reflect.DeepEqual(got.res.Skills, tc.wantSkills) {
 					t.Errorf("Skills = %v, want %v", got.res.Skills, tc.wantSkills)
+				}
+				if !reflect.DeepEqual(got.res.SkillsUnmatched, tc.wantUnmatched) {
+					t.Errorf("SkillsUnmatched = %v, want %v", got.res.SkillsUnmatched, tc.wantUnmatched)
 				}
 				if got.res.SkillsKnown != tc.wantKnown {
 					t.Errorf("SkillsKnown = %v, want %v", got.res.SkillsKnown, tc.wantKnown)
