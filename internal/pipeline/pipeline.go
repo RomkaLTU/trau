@@ -1040,7 +1040,7 @@ func (p *Pipeline) prefix() string {
 	return "COD"
 }
 
-// InferredResume is the bridge for work started BEFORE state tracking (or whose
+// InferredResumeFunc is the bridge for work started BEFORE state tracking (or whose
 // state file was lost): if HEAD is parked on a feature/<PREFIX>-… branch with no
 // tracked checkpoint, it infers how far the work got from the artifacts on disk
 // (branch → built; handoff file → handed_off; passing verdict → verified; open PR →
@@ -1048,7 +1048,10 @@ func (p *Pipeline) prefix() string {
 // Conservative on purpose — only the currently checked-out branch, never a scan. It
 // returns ("", "") when HEAD is not a parked feature branch, the ticket is already
 // tracked, or the work already shipped.
-func (p *Pipeline) InferredResume(ctx context.Context) (id, phase string) {
+//
+// keep bounds the adoption to a run's scope — one pinned ticket, or an epic and its
+// children. A nil keep adopts whatever HEAD is on.
+func (p *Pipeline) InferredResumeFunc(ctx context.Context, keep func(id string) bool) (id, phase string) {
 	pfx := p.prefix()
 	head, err := p.Git.CurrentBranch(ctx)
 	if err != nil || !strings.HasPrefix(head, "feature/"+pfx+"-") {
@@ -1056,6 +1059,10 @@ func (p *Pipeline) InferredResume(ctx context.Context) (id, phase string) {
 	}
 	id = regexp.MustCompile(regexp.QuoteMeta(pfx) + `-[0-9]+`).FindString(head)
 	if id == "" {
+		return "", ""
+	}
+	if keep != nil && !keep(id) {
+		p.logf("  ↻ parked branch %s ignored — %s is outside this run's scope", head, id)
 		return "", ""
 	}
 	if p.State.Get(id, "PHASE") != "" {
