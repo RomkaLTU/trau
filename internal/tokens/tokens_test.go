@@ -35,7 +35,7 @@ func TestEstimateCostCacheTiers(t *testing.T) {
 
 func TestProviderForModel(t *testing.T) {
 	tests := map[string]string{
-		"claude-opus-5": "claude",
+		"claude-opus-5":   "claude",
 		"claude-sonnet-5": "claude",
 		"fable-5":         "claude",
 		"gpt-5.4":         "codex",
