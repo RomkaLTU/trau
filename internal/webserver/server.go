@@ -263,6 +263,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) apiHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(APIPrefix+"/health", s.handleHealth)
+	mux.HandleFunc(APIPrefix+"/mcp", s.handleMCP)
 	mux.HandleFunc(APIPrefix+"/hub/restart", s.handleHubRestart)
 	mux.HandleFunc(APIPrefix+"/hub/reload", s.handleHubReload)
 	mux.HandleFunc(APIPrefix+"/update", s.handleUpdate)
