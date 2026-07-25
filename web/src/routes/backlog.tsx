@@ -4,7 +4,6 @@ import {
   useEffect,
   useState,
   type ReactNode,
-  type Ref,
 } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -91,20 +90,16 @@ import { cn } from "@/lib/utils";
 
 interface BacklogSearch {
   issue?: string;
-  created?: string;
 }
 
 export const Route = createFileRoute("/backlog")({
   component: BacklogPage,
-  // issue opens the drawer over the list; created lands a freshly filed issue with its
-  // row highlighted instead. Both are read at runtime through nuqs, typed here so the
-  // inbox can link into them.
+  // issue opens the drawer over the list. It is read at runtime through nuqs, typed
+  // here so the rest of the app can link into it.
   validateSearch: (search: Record<string, unknown>): BacklogSearch => {
     const out: BacklogSearch = {};
     if (typeof search.issue === "string" && search.issue !== "")
       out.issue = search.issue;
-    if (typeof search.created === "string" && search.created !== "")
-      out.created = search.created;
     return out;
   },
 });
@@ -149,10 +144,6 @@ function BacklogPage() {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [created, setCreated] = useState<InternalIssue | null>(null);
-  // A create applied in the inbox lands here as ?created=<id>: the highlighted row is
-  // the whole confirmation, no drawer and no toast. The param is consumed into state
-  // and dropped, so a refresh or a Back never re-highlights.
-  const [landed, setLanded] = useState<string | null>(null);
   const [archiveNote, setArchiveNote] = useState<string | null>(null);
   const { expanded, toggle } = useExpandedEpics(repo);
 
@@ -167,8 +158,6 @@ function BacklogPage() {
     "issue",
     parseAsString.withOptions({ history: "push" }),
   );
-
-  const [arrival, setArrival] = useQueryState("created", parseAsString);
 
   const [text, setText] = useState(q);
 
@@ -188,18 +177,6 @@ function BacklogPage() {
     const id = setTimeout(() => setCreated(null), 8000);
     return () => clearTimeout(id);
   }, [created]);
-
-  useEffect(() => {
-    if (!arrival) return;
-    setLanded(arrival);
-    void setArrival(null, { history: "replace" });
-  }, [arrival, setArrival]);
-
-  useEffect(() => {
-    if (!landed) return;
-    const id = setTimeout(() => setLanded(null), 8000);
-    return () => clearTimeout(id);
-  }, [landed]);
 
   useEffect(() => {
     if (!archiveNote) return;
@@ -226,14 +203,6 @@ function BacklogPage() {
   );
   const hidden = hiddenStateGroups(counts, effectiveStateGroups(state));
 
-  // The board refetches on mount, so the landed row appears only once that read
-  // resolves; a ref fires on mount and no-ops when the id never shows up at all.
-  const revealLanded = useCallback((node: HTMLLIElement | null) => {
-    node?.scrollIntoView({ block: "center" });
-  }, []);
-
-  const highlighted = created?.id ?? landed;
-
   const renderRow = (
     entry: BacklogEntry,
     extra?: { nested?: boolean; expanded?: boolean; onToggle?: () => void },
@@ -244,8 +213,7 @@ function BacklogPage() {
       entry={entry}
       editing={editing === entry.id}
       inQueue={queued.has(entry.id)}
-      highlight={highlighted === entry.id}
-      rowRef={landed === entry.id ? revealLanded : undefined}
+      highlight={created?.id === entry.id}
       archivedView={archived}
       nested={extra?.nested}
       expanded={extra?.expanded}
@@ -844,7 +812,6 @@ function BacklogRow({
   editing,
   inQueue,
   highlight = false,
-  rowRef,
   archivedView,
   nested = false,
   expanded,
@@ -860,7 +827,6 @@ function BacklogRow({
   editing: boolean;
   inQueue: boolean;
   highlight?: boolean;
-  rowRef?: Ref<HTMLLIElement>;
   archivedView: boolean;
   nested?: boolean;
   expanded?: boolean;
@@ -893,7 +859,6 @@ function BacklogRow({
 
   return (
     <li
-      ref={rowRef}
       className={cn(
         "group rounded-lg border bg-card transition-colors hover:border-ring/40",
         nested && "ml-6",

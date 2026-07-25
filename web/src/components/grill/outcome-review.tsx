@@ -19,6 +19,7 @@ import {
 
 import { Markdown } from "@/components/markdown";
 import { AssigneePicker } from "@/components/trau/assignee-picker";
+import { useCreatedBanner } from "@/components/trau/created-banner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { type Assignee } from "@/lib/assignee";
@@ -97,6 +98,7 @@ export function OutcomeReview({
   onAskFollowUp?: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { publish } = useCreatedBanner();
   const issue = useQuery(issueQueryOptions(repo, issueId));
   const sessions = useQuery(grillSessionsQueryOptions(repo));
   const tracker = sessions.data?.tracker ?? "";
@@ -131,7 +133,9 @@ export function OutcomeReview({
   // grill list is left to go stale on its own — invalidating it here would drop the
   // panel's now-settled active session back to a preview. Only the issue and board
   // are refreshed, which is what makes the issue leave the unclear set once its
-  // triage labels are gone.
+  // triage labels are gone. A create publishes its receipt to the global banner
+  // outside the applied gate, so a partial apply the user can still retry leaves a
+  // trace of what did land.
   const apply = useMutation({
     mutationFn: (destination: GrillDestination) => {
       const internal = destination === "internal";
@@ -146,6 +150,18 @@ export function OutcomeReview({
     },
     onSuccess: (res) => {
       onSession(res.session);
+      const filed = res.session.issue_id ?? "";
+      if (isCreate && filed !== "") {
+        publish({
+          repo,
+          id: filed,
+          title: res.session.issue_title || title.trim(),
+          subCount: isCreateEpic ? subs.length : 0,
+          failedSteps: res.steps
+            .filter((step) => step.status === "failed")
+            .map(stepLabel),
+        });
+      }
       if (res.applied) {
         void queryClient.invalidateQueries({
           queryKey: ["issue", repo, issueId],
@@ -918,6 +934,10 @@ const STEP_LABELS: Record<string, string> = {
   relations: "Blocking relations",
 };
 
+function stepLabel(step: GrillApplyStep): string {
+  return STEP_LABELS[step.step] ?? step.step;
+}
+
 // reportApplyFailures raises the steps that failed inside an apply that still landed
 // — a tracker refusing an assignment on an issue it did create. The host retires the
 // review the moment the session settles, so the applied card's step list is gone
@@ -982,7 +1002,7 @@ function StepList({ steps }: { steps: GrillApplyStep[] }) {
             )}
             <div className="flex flex-col gap-0.5">
               <span className={ok ? "text-foreground" : "text-fail"}>
-                {STEP_LABELS[step.step] ?? step.step}
+                {stepLabel(step)}
               </span>
               {step.error && (
                 <span className="text-muted-foreground">{step.error}</span>
