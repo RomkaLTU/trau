@@ -178,10 +178,10 @@ func TestDetachedBaseIsNotAdoptedAsInProgressWork(t *testing.T) {
 	t.Run("detached HEAD is never inferred as a resume", func(t *testing.T) {
 		p := newWorktreePipeline(t, &worktreeGit{branch: detachedHead})
 
-		gotID, gotPhase := p.InferredResume(context.Background())
+		gotID, gotPhase := p.InferredResumeFunc(context.Background(), nil)
 
 		if gotID != "" || gotPhase != "" {
-			t.Errorf("InferredResume = (%q, %q), want no adoption of a detached HEAD", gotID, gotPhase)
+			t.Errorf("InferredResumeFunc = (%q, %q), want no adoption of a detached HEAD", gotID, gotPhase)
 		}
 	})
 

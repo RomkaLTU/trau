@@ -66,10 +66,10 @@ func TestInferredResumeDeclinesBranchWithMergedPR(t *testing.T) {
 	tr := &inferredTracker{}
 	p, logs := newParkedPipeline(t, branch, &fakeGitHub{mergedURL: prURL}, tr)
 
-	gotID, gotPhase := p.InferredResume(context.Background())
+	gotID, gotPhase := p.InferredResumeFunc(context.Background(), nil)
 
 	if gotID != "" || gotPhase != "" {
-		t.Fatalf("InferredResume = (%q, %q), want no adoption of a delivered branch", gotID, gotPhase)
+		t.Fatalf("InferredResumeFunc = (%q, %q), want no adoption of a delivered branch", gotID, gotPhase)
 	}
 	if got := p.State.Get(id, "PHASE"); got != state.Merged {
 		t.Errorf("PHASE = %q, want the checkpoint settled at %q", got, state.Merged)
@@ -120,10 +120,10 @@ func TestInferredResumeAdoptsWhenNothingWasDelivered(t *testing.T) {
 			}
 			p, logs := newParkedPipeline(t, branch, &fakeGitHub{prURL: tc.prURL}, &inferredTracker{})
 
-			gotID, gotPhase := p.InferredResume(context.Background())
+			gotID, gotPhase := p.InferredResumeFunc(context.Background(), nil)
 
 			if gotID != tc.id || gotPhase != tc.wantPhase {
-				t.Fatalf("InferredResume = (%q, %q), want (%q, %q)", gotID, gotPhase, tc.id, tc.wantPhase)
+				t.Fatalf("InferredResumeFunc = (%q, %q), want (%q, %q)", gotID, gotPhase, tc.id, tc.wantPhase)
 			}
 			if got := p.State.Get(tc.id, "PHASE"); got != tc.wantPhase {
 				t.Errorf("PHASE = %q, want %q", got, tc.wantPhase)
@@ -138,6 +138,52 @@ func TestInferredResumeAdoptsWhenNothingWasDelivered(t *testing.T) {
 	}
 }
 
+// A run pinned to one ticket leaves another ticket's parked branch alone, and says so
+// rather than silently skipping it.
+func TestInferredResumeFuncIgnoresBranchOutsideScope(t *testing.T) {
+	const (
+		forced = "COD-91247"
+		id     = "COD-91248"
+		branch = "feature/COD-91248-stray"
+	)
+	p, logs := newParkedPipeline(t, branch, &fakeGitHub{}, &inferredTracker{})
+
+	keep := func(got string) bool { return got == forced }
+	gotID, gotPhase := p.InferredResumeFunc(context.Background(), keep)
+
+	if gotID != "" || gotPhase != "" {
+		t.Fatalf("InferredResumeFunc = (%q, %q), want no adoption outside the run's scope", gotID, gotPhase)
+	}
+	if got := p.State.Get(id, "PHASE"); got != "" {
+		t.Errorf("PHASE = %q, want no checkpoint written", got)
+	}
+	if got := p.State.Get(id, "BRANCH"); got != "" {
+		t.Errorf("BRANCH = %q, want no checkpoint written", got)
+	}
+	if !logs.contains("parked branch " + branch + " ignored") {
+		t.Errorf("log lines %v, want one naming the skipped branch", logs.lines)
+	}
+}
+
+// The pinned ticket's own parked branch is still adopted.
+func TestInferredResumeFuncAdoptsBranchInScope(t *testing.T) {
+	const (
+		id     = "COD-91249"
+		branch = "feature/COD-91249-pinned"
+	)
+	p, logs := newParkedPipeline(t, branch, &fakeGitHub{}, &inferredTracker{})
+
+	keep := func(got string) bool { return got == id }
+	gotID, gotPhase := p.InferredResumeFunc(context.Background(), keep)
+
+	if gotID != id || gotPhase != state.Built {
+		t.Fatalf("InferredResumeFunc = (%q, %q), want (%q, %q)", gotID, gotPhase, id, state.Built)
+	}
+	if !logs.contains("adopted in-progress branch " + branch) {
+		t.Errorf("log lines %v, want the adoption line naming %s", logs.lines, branch)
+	}
+}
+
 // With no PR to prove delivery, a tracker-terminal ticket declines adoption but leaves
 // the checkpoint untouched.
 func TestInferredResumeDeclinesTicketFinishedInTracker(t *testing.T) {
@@ -148,10 +194,10 @@ func TestInferredResumeDeclinesTicketFinishedInTracker(t *testing.T) {
 	tr := &inferredTracker{status: tracker.StatusDone}
 	p, logs := newParkedPipeline(t, branch, &fakeGitHub{}, tr)
 
-	gotID, gotPhase := p.InferredResume(context.Background())
+	gotID, gotPhase := p.InferredResumeFunc(context.Background(), nil)
 
 	if gotID != "" || gotPhase != "" {
-		t.Fatalf("InferredResume = (%q, %q), want no adoption of a finished ticket", gotID, gotPhase)
+		t.Fatalf("InferredResumeFunc = (%q, %q), want no adoption of a finished ticket", gotID, gotPhase)
 	}
 	if got := p.State.Get(id, "PHASE"); got != "" {
 		t.Errorf("PHASE = %q, want no checkpoint written", got)
