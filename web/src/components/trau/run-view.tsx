@@ -17,11 +17,13 @@ import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/trau/confirm-dialog";
 import { ForceResetDialog } from "@/components/trau/force-reset-dialog";
 import { useHandback } from "@/components/trau/handback-dialog";
-import { Eyebrow } from "@/components/trau/eyebrow";
+import { Eyebrow, type EyebrowGlyph } from "@/components/trau/eyebrow";
 import { NoSkillsBanner } from "@/components/trau/no-skills-banner";
 import { NoBrowserBanner } from "@/components/trau/no-browser-banner";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { PRStatusBadge } from "@/components/trau/pr-status-badge";
+import { RunDiff } from "@/components/trau/run-diff";
+import { SegmentedControl } from "@/components/trau/segmented-control";
 import { SteerComposer } from "@/components/trau/steer-notes";
 import { StatusPill } from "@/components/trau/status-pill";
 import { TerminalCard } from "@/components/trau/terminal-card";
@@ -65,14 +67,22 @@ import {
 
 // A backgrounded tab throttles interval polls to ~1/min, so the tab title would
 // lag phase transitions. These feed kinds mark a pipeline-phase move (not churny
-// per-line agent activity); one arriving forces an immediate registry + run
-// refetch so the title snaps. Everything else rides the normal poll.
+// per-line agent activity); one arriving forces an immediate registry, run, and
+// diff refetch so the title and the changed files snap. Everything else rides the
+// normal poll.
 const PHASE_EVENT_KINDS = new Set([
   "agent_start",
   "activity_change",
   "pr_open",
   "state_change",
 ]);
+
+const PANE_OPTIONS = [
+  { value: "transcript", label: "Transcript" },
+  { value: "diff", label: "Diff" },
+] as const;
+
+type PaneTab = (typeof PANE_OPTIONS)[number]["value"];
 
 const PARKED_GATE =
   "trau is parked on this ticket’s recap in the TUI — handle it there, or stop it above to resume from here";
@@ -538,6 +548,43 @@ function GateNote({ text }: { text: string }) {
   );
 }
 
+// MainPane stacks the run's transcript and its live diff behind one toggle. The
+// terminal stays mounted and CSS-hidden rather than unmounted, so flipping to the
+// diff never tears down its SSE transcript stream; the diff only mounts while it
+// shows, which is what keeps its polling off the rest of the time.
+function MainPane({
+  repo,
+  ticket,
+  glyph,
+  terminal,
+}: {
+  repo: string;
+  ticket: string;
+  glyph: EyebrowGlyph;
+  terminal: React.ReactNode;
+}) {
+  const [tab, setTab] = useState<PaneTab>("transcript");
+  const diff = tab === "diff";
+
+  return (
+    <div className="flex flex-1 flex-col gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Eyebrow glyph={glyph}>{diff ? "DIFF" : "TRANSCRIPT"}</Eyebrow>
+        <SegmentedControl
+          aria-label="Run pane"
+          options={PANE_OPTIONS}
+          value={tab}
+          onChange={setTab}
+        />
+      </div>
+      <div className={cn("flex flex-1 flex-col", diff && "hidden")}>
+        {terminal}
+      </div>
+      {diff && <RunDiff repo={repo} ticket={ticket} />}
+    </div>
+  );
+}
+
 function StartingPlaceholder() {
   return (
     <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-border bg-card px-4 py-12 text-center">
@@ -615,6 +662,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
     if (!latestPhaseEventId) return;
     void queryClient.invalidateQueries({ queryKey: ["instances"] });
     void queryClient.invalidateQueries({ queryKey: ["run", repo, ticket] });
+    void queryClient.invalidateQueries({ queryKey: ["run-diff", repo, ticket] });
   }, [latestPhaseEventId, queryClient, repo, ticket]);
 
   const invalidate = () => {
@@ -908,8 +956,12 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
             </div>
 
             <div className="flex flex-col gap-2 lg:col-span-3">
-              <Eyebrow glyph="partial">TRANSCRIPT</Eyebrow>
-              <Terminal repo={repo} live={live} />
+              <MainPane
+                repo={repo}
+                ticket={ticket}
+                glyph="partial"
+                terminal={<Terminal repo={repo} live={live} />}
+              />
               <SteerComposer
                 repo={repo}
                 ticket={ticket}
@@ -929,15 +981,19 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
             ) : variant === "starting" ? (
               <StartingPlaceholder />
             ) : (
-              <div className="flex flex-col gap-2">
-                <Eyebrow glyph="active">TRANSCRIPT</Eyebrow>
-                <Terminal
-                  repo={repo}
-                  since={instance?.started_at}
-                  live={live}
-                  tall
-                />
-              </div>
+              <MainPane
+                repo={repo}
+                ticket={ticket}
+                glyph="active"
+                terminal={
+                  <Terminal
+                    repo={repo}
+                    since={instance?.started_at}
+                    live={live}
+                    tall
+                  />
+                }
+              />
             )}
 
             <SteerComposer repo={repo} ticket={ticket} settled={isRecap} />

@@ -1042,6 +1042,7 @@ func (p *Pipeline) InferredResume(ctx context.Context) (id, phase string) {
 		_ = p.State.Set(id, "PR_URL", pr)
 	}
 	_ = p.State.Set(id, "BRANCH", head)
+	p.recordDiffBase(ctx, id)
 	_ = p.State.Set(id, "PHASE", phase)
 	p.logf("  ↻ adopted in-progress branch %s (inferred checkpoint: %s)", head, phase)
 	return id, phase
@@ -1385,6 +1386,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	if err := p.State.Set(id, "BRANCH", branch); err != nil {
 		return fmt.Errorf("build %s: record branch: %w", id, err)
 	}
+	p.recordDiffBase(ctx, id)
 
 	note := ""
 	if withNote {
@@ -1560,6 +1562,18 @@ func (p *Pipeline) buildBase(ctx context.Context) (string, error) {
 		return p.epicBranchName(ctx)
 	}
 	return p.Base, nil
+}
+
+// recordDiffBase stores the branch the run's work diverges from alongside its
+// BRANCH, so a reader can diff the run without re-deriving the epic topology. An
+// unresolvable base leaves the key absent and readers fall back to the configured
+// base branch.
+func (p *Pipeline) recordDiffBase(ctx context.Context, id string) {
+	base, err := p.buildBase(ctx)
+	if err != nil || base == "" {
+		return
+	}
+	_ = p.State.Set(id, "BASE", base)
 }
 
 // repoLabel names the managed repo for guard messages — its directory basename,

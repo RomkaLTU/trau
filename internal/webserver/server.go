@@ -302,6 +302,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/checkpoint", s.handleRunCheckpoint)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/artifacts", s.handleRunArtifacts)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/artifacts/{kind}", s.handleRunArtifact)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/diff", s.handleRunDiff)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/drain-outcome", s.handleRunDrainOutcome)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/logs", s.handleRunPhaseLogs)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/logs/{phase}", s.handleRunPhaseLog)
