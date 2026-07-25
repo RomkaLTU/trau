@@ -199,14 +199,10 @@ func traceWithinRoot(traceDir, root string) bool {
 	if err != nil {
 		return false
 	}
-	rel, err := filepath.Rel(filepath.Clean(absRoot), filepath.Clean(absTrace))
-	if err != nil {
+	if absTrace == absRoot {
 		return false
 	}
-	if rel == "." {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return withinRoot(absRoot, absTrace)
 }
 
 // browserRecordingsRoot resolves the directory the browser-harness recorder writes

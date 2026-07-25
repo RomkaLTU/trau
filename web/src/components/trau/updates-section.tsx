@@ -153,6 +153,17 @@ export function UpdatesSection() {
                 </Row>
               )}
 
+              {status.selfReloadPending && (
+                <Row label="reload">
+                  <span className="text-xs text-muted-foreground">
+                    <span className="font-mono text-foreground">
+                      {repoLabel(status.selfReloadPending)}
+                    </span>{' '}
+                    asked for a self-reload — it applies when runs finish.
+                  </span>
+                </Row>
+              )}
+
               <Row label="latest">
                 {!status.checksEnabled ? (
                   <span className="text-xs text-muted-foreground">
@@ -288,6 +299,10 @@ export function UpdatesSection() {
       />
     </section>
   )
+}
+
+function repoLabel(root: string): string {
+  return root.split('/').filter(Boolean).pop() ?? root
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }) {

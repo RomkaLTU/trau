@@ -15,6 +15,8 @@ export interface ApplyState {
 // UpdateStatus is the hub's /update resource. running is the version serving
 // this page and onDisk the binary a restart would re-exec: an upgrade that has
 // landed under a still-running hub shows the two apart until it restarts.
+// selfReloadPending names the repo whose merge asked the hub to restart onto its
+// own build, empty when nothing is waiting.
 export interface UpdateStatus {
   running: string
   onDisk: string
@@ -26,6 +28,7 @@ export interface UpdateStatus {
   checksEnabled: boolean
   releaseUrl: string
   applyState: ApplyState
+  selfReloadPending: string
 }
 
 export interface RestartAck {
@@ -33,7 +36,7 @@ export interface RestartAck {
   version: string
 }
 
-const IDLE_POLL_MS = 30 * 60 * 1000
+const LIVE_POLL_MS = 5000
 const APPLY_POLL_MS = 2000
 
 // A hub that has not answered by then either failed to respawn or is wedged,
@@ -60,15 +63,19 @@ async function fetchUpdate(): Promise<UpdateStatus> {
   return res.json()
 }
 
-// An idle hub only needs the daily check reflected, so it refetches on focus and
-// every half hour; a running apply is followed closely enough to watch brew work.
+// pollMs is how closely /update is followed. The resource carries hub state that
+// turns over between two glances at the page — a self-reload waiting on the runs
+// to finish, a brew apply mid-flight — so it is polled live either way, and the
+// once-a-day release check simply rides along on the same requests. Only the
+// apply gets a tighter interval, because its brew output is read as it lands.
+export function pollMs(status: UpdateStatus | undefined): number {
+  return status?.applyState.state === 'running' ? APPLY_POLL_MS : LIVE_POLL_MS
+}
+
 export const updateQueryOptions = queryOptions({
   queryKey: ['update'],
   queryFn: fetchUpdate,
-  refetchInterval: (query) =>
-    query.state.data?.applyState.state === 'running'
-      ? APPLY_POLL_MS
-      : IDLE_POLL_MS,
+  refetchInterval: (query) => pollMs(query.state.data),
 })
 
 export async function checkForUpdates(): Promise<UpdateStatus> {

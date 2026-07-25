@@ -6,6 +6,8 @@ import {
   checkedAgo,
   isSuccessor,
   needsAttention,
+  pollMs,
+  updateQueryOptions,
   versionLabel,
   waitForSuccessor,
   type HubMark,
@@ -24,6 +26,7 @@ function status(over: Partial<UpdateStatus> = {}): UpdateStatus {
     checksEnabled: true,
     releaseUrl: 'https://github.com/RomkaLTU/trau/releases/tag/v2.1.0',
     applyState: { state: 'idle', message: '' },
+    selfReloadPending: '',
     ...over,
   }
 }
@@ -60,6 +63,32 @@ describe('canApply', () => {
 
   it('never offers one when nothing is newer', () => {
     expect(canApply(status())).toBe(false)
+  })
+})
+
+describe('pollMs', () => {
+  it('follows an idle hub live, so a reload asked for elsewhere reaches an open page', () => {
+    expect(pollMs(status())).toBe(5000)
+    expect(pollMs(undefined)).toBe(5000)
+  })
+
+  it('keeps following while a self-reload waits, so the note goes once it lands', () => {
+    expect(pollMs(status({ selfReloadPending: '/repos/acme' }))).toBe(5000)
+  })
+
+  it('tightens onto a running apply to follow the brew output', () => {
+    expect(pollMs(status({ applyState: { state: 'running', message: '' } }))).toBe(
+      2000,
+    )
+  })
+})
+
+describe('updateQueryOptions', () => {
+  it('takes its refetch interval from the status it last saw', () => {
+    const interval = updateQueryOptions.refetchInterval as (query: never) => number
+    const applying = status({ applyState: { state: 'running', message: '' } })
+    expect(interval({ state: { data: status() } } as never)).toBe(pollMs(status()))
+    expect(interval({ state: { data: applying } } as never)).toBe(pollMs(applying))
   })
 })
 
