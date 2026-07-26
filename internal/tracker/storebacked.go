@@ -350,6 +350,24 @@ func (in *StoreBacked) AddLabel(ctx context.Context, id, label string) error {
 	return nil
 }
 
+// RemoveLabel drops one label in the tracker and mirrors the removal onto the
+// store row. A tracker that cannot remove a single label makes the write a no-op.
+func (in *StoreBacked) RemoveLabel(ctx context.Context, id, label string) error {
+	if strings.TrimSpace(label) == "" {
+		return nil
+	}
+	if in.isInternal(id) {
+		return in.internal().RemoveLabel(ctx, id, label)
+	}
+	if remover, ok := in.Writes.(IssueLabelRemover); ok {
+		if err := remover.RemoveLabel(ctx, id, label); err != nil {
+			return err
+		}
+	}
+	in.mirror(ctx, id, hubclient.SyncedMirror{RemoveLabels: []string{label}})
+	return nil
+}
+
 // FileBug files the verify loop's HITL blocker as an internal issue, never in the
 // external tracker (ADR 0007): trau does not create issues in a synced tracker. It
 // carries the QA verdict and needs-human labels, and is not marked ready so the loop

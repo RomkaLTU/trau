@@ -290,6 +290,7 @@ func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "mark running: " + err.Error()})
 		return
 	}
+	s.clearQueuedIssue(r.Context(), root, item.ID)
 	s.drain.ensure(s.drainCtx, root)
 	s.writeQueue(w, http.StatusOK, root)
 }
@@ -526,6 +527,7 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		if movedToFront {
 			status = http.StatusOK
 		}
+		s.markQueued(r.Context(), root, item)
 		s.writeQueue(w, status, root)
 		return
 	}
@@ -537,6 +539,7 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "enqueue: " + err.Error()})
 		return
 	}
+	s.markQueued(r.Context(), root, item)
 	s.writeQueue(w, http.StatusCreated, root)
 }
 
@@ -550,6 +553,7 @@ func (s *Server) dequeue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := strings.TrimSpace(r.PathValue("id"))
+	item, queued := s.queuedItem(root, id)
 	if _, err := s.stores.Queue(root).Remove(id); errors.Is(err, queue.ErrNotQueued) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("%s is not in the queue", id)})
 		return
@@ -559,6 +563,9 @@ func (s *Server) dequeue(w http.ResponseWriter, r *http.Request) {
 	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "dequeue: " + err.Error()})
 		return
+	}
+	if queued {
+		s.clearQueued(r.Context(), root, item)
 	}
 	s.writeQueue(w, http.StatusOK, root)
 }

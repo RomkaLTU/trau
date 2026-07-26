@@ -118,8 +118,11 @@ func (d *drainer) tick(root string) (drainAction, error) {
 			if err := store.Pause(running.ID, reason); err != nil {
 				return drainWait, err
 			}
-		} else if err := store.Finish(running.ID, status, reason); err != nil {
-			return drainWait, err
+		} else {
+			if err := store.Finish(running.ID, status, reason); err != nil {
+				return drainWait, err
+			}
+			d.srv.clearQueued(d.srv.drainCtx, root, running)
 		}
 		return drainReconcile, nil
 	}
@@ -159,6 +162,7 @@ func (d *drainer) tick(root string) (drainAction, error) {
 	if err := store.MarkRunning(next.ID, pid); err != nil {
 		return drainWait, err
 	}
+	d.srv.clearQueuedIssue(d.srv.drainCtx, root, next.ID)
 	return drainSpawn, nil
 }
 
@@ -238,6 +242,7 @@ func (d *drainer) reconcileParked(root string) {
 			logger.Verbosef("reconcile parked %s: %v", it.ID, err)
 			continue
 		}
+		d.srv.clearQueued(d.srv.drainCtx, root, it)
 		d.srv.emitQueueReconciled(root, it)
 	}
 }

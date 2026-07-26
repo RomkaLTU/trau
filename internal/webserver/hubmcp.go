@@ -443,6 +443,7 @@ func (s *Server) mcpEnqueue(args json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("enqueue: %w", err)
 	}
+	s.markQueued(context.Background(), root, item)
 	view, err := s.queueView(root)
 	if err != nil {
 		return nil, err

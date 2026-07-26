@@ -48,6 +48,7 @@ type Config struct {
 	Project         string
 	ReadyLabel      string
 	QuarantineLabel string
+	QueuedLabel     string
 	SplitLabel      string
 	// APIKey is the tracker's API secret: the Linear API key (GraphQL) or the
 	// Jira API token (Basic-auth password). Empty disables the direct API and
@@ -183,6 +184,13 @@ type IssueLabeler interface {
 	AddLabel(ctx context.Context, id, label string) error
 }
 
+// IssueLabelRemover is the optional capability of removing one label from an
+// issue without disturbing its other labels. A tracker that cannot answer makes
+// the removal a no-op.
+type IssueLabelRemover interface {
+	RemoveLabel(ctx context.Context, id, label string) error
+}
+
 // IssueStatus is the normalized lifecycle bucket of a tracker issue, used by
 // --status to reconcile stale local checkpoints. Each tracker maps its native
 // workflow states onto these.
@@ -290,12 +298,15 @@ func (s Scope) prefix() string {
 }
 
 // managedLabelList returns the labels the loop provisions on a tracker: the ready
-// and quarantine labels, plus the split label when one is configured. Shared by
-// every provider's EnsureLabels so the set stays consistent.
-func managedLabelList(ready, quarantine, split string) []string {
+// and quarantine labels, plus whichever optional ones — the split and queued
+// labels — are configured. Shared by every provider's EnsureLabels so the set
+// stays consistent.
+func managedLabelList(ready, quarantine string, optional ...string) []string {
 	labels := []string{ready, quarantine}
-	if s := strings.TrimSpace(split); s != "" {
-		labels = append(labels, s)
+	for _, name := range optional {
+		if s := strings.TrimSpace(name); s != "" {
+			labels = append(labels, s)
+		}
 	}
 	return labels
 }
@@ -320,6 +331,7 @@ func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 			Project:         cfg.Project,
 			ReadyLabel:      cfg.ReadyLabel,
 			QuarantineLabel: cfg.QuarantineLabel,
+			QueuedLabel:     cfg.QueuedLabel,
 			SplitLabel:      cfg.SplitLabel,
 			APIKey:          cfg.APIKey,
 		}, nil

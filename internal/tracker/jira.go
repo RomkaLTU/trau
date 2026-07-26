@@ -625,6 +625,32 @@ func (j *Jira) addLabelPrompt(id, label string) string {
 	return fmt.Sprintf("Use the Jira (Rovo) MCP on issue %s: add the label '%s' (keep every other label). Reply DONE.", id, label)
 }
 
+// RemoveLabel drops one label from an issue without disturbing its other labels,
+// via the incremental PUT /issue label remove op when a token is configured,
+// otherwise the Rovo MCP.
+func (j *Jira) RemoveLabel(ctx context.Context, id, label string) error {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return nil
+	}
+	if err := j.removeLabelAPI(ctx, id, label); err == nil {
+		return nil
+	} else if !j.canFallback(err) {
+		return err
+	}
+
+	_, err := j.Runner.Run(ctx, j.removeLabelPrompt(id, label), "label")
+	return err
+}
+
+func (j *Jira) removeLabelAPI(ctx context.Context, id, label string) error {
+	return j.api().UpdateLabels(ctx, id, nil, []string{label})
+}
+
+func (j *Jira) removeLabelPrompt(id, label string) string {
+	return fmt.Sprintf("Use the Jira (Rovo) MCP on issue %s: remove the label '%s' (keep every other label). Reply DONE.", id, label)
+}
+
 // Reset returns a ticket to a ready/unstarted state so the picker re-selects it:
 // it drops the quarantine label, ensures the ready label, transitions back to an
 // unstarted status and comments. It uses the REST API when a token is configured,
