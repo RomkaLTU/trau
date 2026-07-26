@@ -25,6 +25,7 @@ import {
   editorVariant,
   isHexColor,
   shadowNote,
+  valueWarning,
 } from '@/lib/settings'
 import { writeConfig, type ConfigKey, type ConfigWrite } from '@/lib/config'
 
@@ -56,6 +57,18 @@ export function SecretChip() {
       <Lock className="size-2.5" aria-hidden="true" />
       secret
     </span>
+  )
+}
+
+export function ValueWarning({ text }: { text: string }) {
+  return (
+    <p
+      role="status"
+      className="inline-flex items-start gap-2 rounded-md border border-warn/50 bg-warn/12 px-2.5 py-2 text-xs leading-relaxed text-warn"
+    >
+      <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
+      <span>{text}</span>
+    </p>
   )
 }
 
@@ -113,6 +126,7 @@ export function InlineEditor({
   }
 
   const shadow = shadowNote(item.layer, target)
+  const warning = valueWarning(item.key, draft)
   const resettable = canResetLayer(item.layer)
 
   return (
@@ -124,6 +138,8 @@ export function InlineEditor({
         onSave={save}
         onCancel={onCancel}
       />
+
+      {warning && <ValueWarning text={warning} />}
 
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <span className="inline-flex items-center gap-2 font-mono text-xs text-muted-foreground">

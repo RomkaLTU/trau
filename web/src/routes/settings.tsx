@@ -20,6 +20,7 @@ import {
   InlineEditor,
   LayerChip,
   SecretChip,
+  ValueWarning,
 } from '@/components/trau/settings-editor'
 import { PhaseMatrix } from '@/components/trau/settings-matrix'
 import { ThemeGrid } from '@/components/trau/settings-theme-grid'
@@ -44,6 +45,7 @@ import {
   displayValue,
   isModified,
   matchesQuery,
+  valueWarning,
   type Section,
 } from '@/lib/settings'
 import { standardTitle, usePageTitle } from '@/lib/page-title'
@@ -535,6 +537,7 @@ function KeyRow({
   const modified = isModified(item)
   const value = displayValue(item)
   const dimmed = value === '—' || (item.bool && item.value !== '1')
+  const warning = valueWarning(item.key, item.value)
 
   return (
     <div
@@ -593,6 +596,12 @@ function KeyRow({
         <p className="mt-1 pl-4 text-xs leading-relaxed text-muted-foreground">
           {item.description}
         </p>
+      )}
+
+      {warning && !editing && (
+        <div className="mt-1.5 pl-4">
+          <ValueWarning text={warning} />
+        </div>
       )}
 
       {editing && (

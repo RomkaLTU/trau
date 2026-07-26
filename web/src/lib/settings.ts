@@ -216,6 +216,17 @@ export function editorVariant(item: ConfigKey): EditorVariant {
   return 'text'
 }
 
+const VALUE_WARNINGS: Record<string, Record<string, string>> = {
+  BROWSER_VERIFY: {
+    never:
+      'Browser verification is disabled: UI changes are never exercised in a real browser, so broken functionality can ship undetected.',
+  },
+}
+
+export function valueWarning(key: string, value: string): string | null {
+  return VALUE_WARNINGS[key]?.[value] ?? null
+}
+
 export function comboboxFreeEntry(
   query: string,
   suggestions: string[],
