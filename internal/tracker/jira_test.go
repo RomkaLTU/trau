@@ -653,6 +653,43 @@ func TestJiraAddLabelBlankIsNoOp(t *testing.T) {
 	}
 }
 
+// With a token set, RemoveLabel drops the label via a single PUT and never
+// touches the runner.
+func TestJiraRemoveLabelUsesAPI(t *testing.T) {
+	var puts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			puts++
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	runner := &recordingRunner{}
+	j := &Jira{Runner: runner, Team: "PROJ", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+
+	if err := j.RemoveLabel(context.Background(), "PROJ-7", "queued"); err != nil {
+		t.Fatalf("RemoveLabel error: %v", err)
+	}
+	if puts != 1 {
+		t.Errorf("expected one label PUT, got %d", puts)
+	}
+	if runner.calls["label"] != 0 {
+		t.Errorf("expected no MCP fallback, got %d label calls", runner.calls["label"])
+	}
+}
+
+// Without a token RemoveLabel falls back to the MCP.
+func TestJiraRemoveLabelFallsBackWithoutToken(t *testing.T) {
+	runner := &recordingRunner{responses: map[string]agent.Result{"label": {Final: "DONE"}}}
+	j := &Jira{Runner: runner, Team: "PROJ"}
+	if err := j.RemoveLabel(context.Background(), "PROJ-7", "queued"); err != nil {
+		t.Fatalf("RemoveLabel error: %v", err)
+	}
+	if runner.calls["label"] != 1 {
+		t.Errorf("expected one MCP fallback, got %d label calls", runner.calls["label"])
+	}
+}
+
 // Without a token AddLabel falls back to the MCP.
 func TestJiraAddLabelFallsBackWithoutToken(t *testing.T) {
 	runner := &recordingRunner{responses: map[string]agent.Result{"label": {Final: "DONE"}}}

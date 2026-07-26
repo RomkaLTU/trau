@@ -60,6 +60,7 @@ type Config struct {
 	JiraEpicType          string
 	ReadyLabel            string
 	QuarantineLabel       string
+	QueuedLabel           string
 	SplitLabel            string
 	Project               string
 
@@ -387,6 +388,7 @@ func Defaults() Config {
 		IssuePrefix:            "",
 		ReadyLabel:             "ready-for-agent",
 		QuarantineLabel:        "needs-human",
+		QueuedLabel:            "queued",
 		SplitLabel:             "needs-split",
 		Project:                "",
 		BaseBranch:             "main",
@@ -728,6 +730,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("JIRA_EPIC_TYPE", &c.JiraEpicType)
 	str("READY_LABEL", &c.ReadyLabel)
 	str("QUARANTINE_LABEL", &c.QuarantineLabel)
+	strAllowEmpty("QUEUED_LABEL", &c.QueuedLabel)
 	str("SPLIT_LABEL", &c.SplitLabel)
 	str("PROJECT", &c.Project)
 	str("BASE_BRANCH", &c.BaseBranch)
@@ -1405,6 +1408,7 @@ func WriteProjectEnv(path string, values map[string]string) error {
 		"LINEAR_TEAM",
 		"READY_LABEL",
 		"QUARANTINE_LABEL",
+		"QUEUED_LABEL",
 		"PROJECT",
 		"BASE_BRANCH",
 		"REMOTE",
@@ -1650,6 +1654,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "TRACKER_PROVIDER", Group: sectionTracker, WebEditable: true, Default: "linear", Description: "Ticket backend: linear | jira | github | internal (internal issues in the hub, no external tracker)", Options: []string{"linear", "jira", "github", "internal"}},
 		{Key: "READY_LABEL", Group: sectionTracker, WebEditable: true, Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
 		{Key: "QUARANTINE_LABEL", Group: sectionTracker, WebEditable: true, Default: "needs-human", Description: "Label applied when a ticket fails"},
+		{Key: "QUEUED_LABEL", Group: sectionTracker, WebEditable: true, Default: "queued", Description: "Label mirrored onto tickets waiting in the hub queue"},
 		{Key: "PROJECT", Group: sectionTracker, WebEditable: true, Description: "Linear project this repo owns — scopes the ready queue, guards cross-project runs, and targets filed bugs"},
 		{Key: "BASE_BRANCH", Group: sectionGit, WebEditable: true, Default: "main", Description: "Default git base branch"},
 		{Key: "REMOTE", Group: sectionGit, Default: "origin", Description: "Git remote name"},
@@ -2131,6 +2136,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.ReadyLabel
 	case "QUARANTINE_LABEL":
 		return cfg.QuarantineLabel
+	case "QUEUED_LABEL":
+		return cfg.QueuedLabel
 	case "SPLIT_LABEL":
 		return cfg.SplitLabel
 	case "PROJECT":

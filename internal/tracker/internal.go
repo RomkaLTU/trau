@@ -244,6 +244,15 @@ func (in *Internal) AddLabel(ctx context.Context, id, label string) error {
 	return err
 }
 
+// RemoveLabel drops one label from an internal issue, keeping its others.
+func (in *Internal) RemoveLabel(ctx context.Context, id, label string) error {
+	if strings.TrimSpace(label) == "" {
+		return nil
+	}
+	_, err := in.Hub.TransitionInternalIssue(ctx, in.Repo, id, hubclient.Transition{RemoveLabels: []string{label}})
+	return err
+}
+
 // EnsureLabels is a no-op for internal issues: labels are free-form strings on the
 // issue row, so there is nothing to provision.
 func (in *Internal) EnsureLabels(context.Context) error { return nil }

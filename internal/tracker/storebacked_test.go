@@ -113,6 +113,7 @@ type fakeWrites struct {
 	resets      int
 	quarantines int
 	labels      []string
+	removed     []string
 	ensured     int
 	fileBugs    int
 	teamCalls   int
@@ -141,6 +142,10 @@ func (f *fakeWrites) FileBug(context.Context, string, string) (string, error) {
 func (f *fakeWrites) EnsureLabels(context.Context) error { f.ensured++; return f.err }
 func (f *fakeWrites) AddLabel(_ context.Context, _, label string) error {
 	f.labels = append(f.labels, label)
+	return f.err
+}
+func (f *fakeWrites) RemoveLabel(_ context.Context, _, label string) error {
+	f.removed = append(f.removed, label)
 	return f.err
 }
 func (f *fakeWrites) ListTeams(context.Context) ([]Team, error) {
@@ -411,6 +416,34 @@ func TestStoreBackedWritesInternalIDThroughHub(t *testing.T) {
 	}
 	if len(hub.mirrors) != 0 {
 		t.Fatalf("mirrors = %+v, want none — an internal row is written directly", hub.mirrors)
+	}
+}
+
+// A single-label removal lands on the tracker and the store row for a synced
+// ticket, and goes straight to the hub for an internal one.
+func TestStoreBackedRemoveLabelMirrorsAndRoutes(t *testing.T) {
+	hub := newFakeStoreHub()
+	writes := &fakeWrites{}
+	sb := newStoreBacked(hub, writes)
+
+	if err := sb.RemoveLabel(context.Background(), "COD-1", "queued"); err != nil {
+		t.Fatalf("remove label: %v", err)
+	}
+	if !reflect.DeepEqual(writes.removed, []string{"queued"}) {
+		t.Fatalf("tracker removals = %v, want [queued]", writes.removed)
+	}
+	if len(hub.mirrors) != 1 || !reflect.DeepEqual(hub.mirrors[0].m.RemoveLabels, []string{"queued"}) {
+		t.Fatalf("mirrors = %+v, want the removal mirrored onto the store row", hub.mirrors)
+	}
+
+	if err := sb.RemoveLabel(context.Background(), "ACME-1", "queued"); err != nil {
+		t.Fatalf("remove label on internal issue: %v", err)
+	}
+	if len(writes.removed) != 1 {
+		t.Fatalf("tracker removals = %v, want the internal issue routed past the tracker", writes.removed)
+	}
+	if len(hub.transitions) != 1 || !reflect.DeepEqual(hub.transitions[0].t.RemoveLabels, []string{"queued"}) {
+		t.Fatalf("transitions = %+v, want the internal removal through the hub", hub.transitions)
 	}
 }
 

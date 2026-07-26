@@ -420,8 +420,11 @@ type Pipeline struct {
 	// external tracker knows.
 	TrackerProvider string
 	InternalPrefix  string
-	MaxRepairs      int
-	MaxBugfixes     int
+	// QueuedLabel is the label the hub queue mirrors onto waiting tickets, stripped
+	// as the ticket goes In Progress. Empty disables the write.
+	QueuedLabel string
+	MaxRepairs  int
+	MaxBugfixes int
 
 	// AgentRetries is how many times a TRANSIENT agent-step failure (timeout,
 	// output stall, non-rate-limit crash) is retried on a fresh process per
@@ -1590,7 +1593,25 @@ func (p *Pipeline) resolveBuildBranch(ctx context.Context, id string) (string, e
 	if err := p.Tracker.SetStatus(ctx, id, "In Progress", ""); err != nil {
 		p.logf("  set In Progress error (continuing): %v", err)
 	}
+	p.clearQueuedLabel(ctx, id)
 	return branch, nil
+}
+
+// clearQueuedLabel drops the hub queue's label from a ticket now that its own run
+// has started — the seam every epic sub-issue passes through as its slice begins.
+// A failed write is logged rather than stopping the run.
+func (p *Pipeline) clearQueuedLabel(ctx context.Context, id string) {
+	label := strings.TrimSpace(p.QueuedLabel)
+	if label == "" {
+		return
+	}
+	remover, ok := p.Tracker.(tracker.IssueLabelRemover)
+	if !ok {
+		return
+	}
+	if err := remover.RemoveLabel(ctx, id, label); err != nil {
+		p.logf("  clear queued label error (continuing): %v", err)
+	}
 }
 
 func featureBranch(id, title string) string {

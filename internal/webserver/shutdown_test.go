@@ -18,6 +18,7 @@ import (
 // real seconds.
 func shutdownServer(t *testing.T, name string) (*Server, *fakeSupervisor, string, *httptest.Server) {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 	home := t.TempDir()
 	root := filepath.Join(t.TempDir(), name)
 	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStoresAt(t, home))

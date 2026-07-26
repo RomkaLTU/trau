@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -78,7 +79,13 @@ func (s *Server) handleIssueArchive(w http.ResponseWriter, r *http.Request) {
 	}
 	removed := 0
 	if req.Archived {
-		removed = s.dropPendingFromQueue(repo.Root, s.archiveQueueTargets(repo.Root, iss))
+		removed = s.dropPendingFromQueue(r.Context(), repo.Root, s.archiveQueueTargets(repo.Root, iss))
+		if removed > 0 {
+			// The prune stripped the queued label off the row read above.
+			if fresh, found, err := s.stores.Issues().Find(repo.Root, iss.Identifier); err == nil && found {
+				iss = fresh
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, ArchiveResponse{
 		IssueResponse: s.storeIssueResponse(repo, iss),
@@ -106,10 +113,11 @@ func (s *Server) archiveQueueTargets(root string, iss hubstore.Issue) []string {
 }
 
 // dropPendingFromQueue removes the pending queue entries whose id is in ids,
-// through the same Queue.Remove path a manual dequeue takes, and reports how many
-// it removed. Only pending items are touched: a running or paused entry is left in
-// place so an archive never yanks work executing or parked mid-run.
-func (s *Server) dropPendingFromQueue(root string, ids []string) int {
+// through the same Queue.Remove path a manual dequeue takes — queued label
+// included — and reports how many it removed. Only pending items are touched: a
+// running or paused entry is left in place so an archive never yanks work
+// executing or parked mid-run.
+func (s *Server) dropPendingFromQueue(ctx context.Context, root string, ids []string) int {
 	if len(ids) == 0 {
 		return 0
 	}
@@ -135,6 +143,7 @@ func (s *Server) dropPendingFromQueue(root string, ids []string) int {
 			logger.Verbosef("archive %s: drop %s from queue: %v", root, it.ID, err)
 			continue
 		}
+		s.clearQueued(ctx, root, it)
 		removed++
 	}
 	return removed
