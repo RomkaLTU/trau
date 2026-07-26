@@ -236,7 +236,7 @@ func (r *grillRunner) mcpConfigJSON(sid int64) string {
 func (r *grillRunner) firstPrompt(ctx context.Context, repo registry.Repo, sess hubstore.GrillSession) string {
 	renderer := r.srv.promptRenderer(repo.Root)
 	if sess.IssueID == "" {
-		return grillAuthoringPrompt(renderer, r.srv.withPastedFiles(ctx, repo, sess, r.seedIdea(sess.ID)))
+		return grillAuthoringPrompt(renderer, r.srv.withPastedFiles(ctx, repo, sess, r.openingNote(sess.ID)))
 	}
 	title, description := "", ""
 	if iss, found, err := r.srv.stores.Issues().Get(repo.Root, sess.IssueID); err == nil && found {
@@ -246,7 +246,7 @@ func (r *grillRunner) firstPrompt(ctx context.Context, repo registry.Repo, sess 
 	if r.srv.isPregrill(sess.ID) {
 		return grillPregrillPrompt(renderer, sess.IssueID, title, description, files)
 	}
-	return grillIssuePrompt(renderer, sess.IssueID, title, description, files)
+	return grillIssuePrompt(renderer, sess.IssueID, title, description, r.openingNote(sess.ID), files)
 }
 
 // answerPrompt is the resume-turn prompt: the user's latest answer with any image
@@ -269,15 +269,17 @@ func grillAttachTicket(sess hubstore.GrillSession) string {
 	return "grill-" + strconv.FormatInt(sess.ID, 10)
 }
 
-// seedIdea returns the one-line idea an authoring session was opened with, stored as
-// its first info message. It grounds the first-turn authoring prompt.
-func (r *grillRunner) seedIdea(sid int64) string {
+// openingNote returns the line a session was opened with, stored as its first info
+// message: an authoring session's seed idea, or an issue grilling's focus note. It
+// grounds the first-turn prompt. A system info message is hub bookkeeping (a model
+// switch) and never the user's opener.
+func (r *grillRunner) openingNote(sid int64) string {
 	msgs, err := r.srv.stores.Grill().Messages(sid, 0)
 	if err != nil {
 		return ""
 	}
 	for _, m := range msgs {
-		if m.Kind == hubstore.GrillKindInfo {
+		if m.Role == hubstore.GrillRoleUser && m.Kind == hubstore.GrillKindInfo {
 			return grillMessageText(m.Payload)
 		}
 	}
