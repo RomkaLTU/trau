@@ -26,9 +26,10 @@ import {
   awaitingGrillsQueryKey,
   awaitingGrillsQueryOptions,
   awaitingWithOpen,
-  awaitingWithout,
+  dropAwaiting,
+  grillDetailQueryOptions,
+  isOver,
   sortAwaiting,
-  type GrillAwaitingResponse,
   type GrillAwaitingSession,
   type GrillSession,
 } from "@/lib/grill";
@@ -56,76 +57,134 @@ const UNREAD_TITLE = "A question you haven't read yet";
 // InterviewDock is the machine-wide answer surface: a tab pinned bottom-right
 // whenever an interview anywhere is waiting on the user, expanding in place into that
 // conversation so the question is answered without leaving the screen — or the
-// project — the user is on. The Inbox owns the full triage surface, so the dock stays
-// off it.
+// project — the user is on. It rides every route; on the Inbox, which owns the full
+// triage surface, the tab points that page at the session instead of floating a
+// second copy of the conversation over it.
 export function InterviewDock() {
   const onInbox = useRouterState({
     select: (s) => s.location.pathname.startsWith("/inbox"),
   });
   const queryClient = useQueryClient();
-  const [expanded, setExpanded] = useState<GrillAwaitingSession | null>(null);
+  const [engaged, setEngaged] = useState<GrillAwaitingSession | null>(null);
+  const [expanded, setExpanded] = useState(false);
   const [seen, read] = useSeenMarks();
-  const { data } = useQuery({
-    ...awaitingGrillsQueryOptions(),
-    enabled: !onInbox,
-  });
+  const { data } = useQuery(awaitingGrillsQueryOptions());
+  const focusInPage = useNotificationNavigate();
 
   useNotificationEvents((notification) => {
     if (notification.kind !== "grill_question") return;
     void queryClient.invalidateQueries({ queryKey: awaitingGrillsQueryKey });
   });
 
-  const expand = (session: GrillAwaitingSession) => {
-    setExpanded(session);
+  const awaiting = sortAwaiting(data?.sessions ?? []);
+  const engagedRow = engaged
+    ? awaiting.find((s) => s.id === engaged.id)
+    : undefined;
+
+  // Answering drops the engaged session off the awaiting feed while the interviewer
+  // works. The dock keeps holding it either way, so minimising leaves a tab rather
+  // than taking the conversation away, and the next question lands back in it.
+  const inflight = engaged && !engagedRow ? engaged : null;
+  const showPanel = engaged !== null && expanded && !onInbox;
+
+  // Minimised, the dock has no stream on the session it holds, so its own resource is
+  // the only signal separating an interviewer still working from a session that is over.
+  const { data: held, isError: heldLost } = useQuery({
+    ...grillDetailQueryOptions(inflight && !showPanel ? inflight.id : ""),
+    refetchInterval: 5_000,
+  });
+  const heldState = held?.session.state;
+  // A read that fails for good leaves nothing to hold — a session purged with its issue
+  // is as gone as one that ended, and holding it would leave the tab thinking forever.
+  useEffect(() => {
+    if (heldLost || (heldState && isOver(heldState))) setEngaged(null);
+  }, [heldLost, heldState]);
+
+  // The Inbox owns the conversation, so leaving it never resurrects the panel.
+  useEffect(() => {
+    if (onInbox) setExpanded(false);
+  }, [onInbox]);
+
+  const open = (session: GrillAwaitingSession) => {
+    setEngaged(session);
+    setExpanded(true);
     read(session);
   };
 
-  if (onInbox) return null;
+  const activate = (session: GrillAwaitingSession) => {
+    if (!onInbox) {
+      open(session);
+      return;
+    }
+    focusInPage({
+      kind: "inbox",
+      repo: session.repo,
+      issue: session.issue_id || draftItemId(session.id),
+    });
+  };
 
-  const awaiting = sortAwaiting(data?.sessions ?? []);
+  const letGo = () => {
+    setEngaged(null);
+    setExpanded(false);
+  };
 
-  // Answering drops the session off the awaiting feed while the agent thinks, so an
-  // expanded panel outlives the row that opened it and the next question streams in
-  // place rather than reopening as a fresh tab.
-  if (expanded) {
+  if (showPanel && engaged) {
     return (
       <InterviewPanel
-        session={expanded}
-        sessions={awaitingWithOpen(awaiting, expanded)}
+        session={engaged}
+        sessions={awaitingWithOpen(awaiting, engaged)}
         seen={seen}
-        onSelect={expand}
+        onSelect={open}
         onRead={read}
-        onCollapse={() => setExpanded(null)}
+        onCollapse={() => setExpanded(false)}
+        onDismiss={letGo}
       />
     );
   }
 
-  const top = awaiting[0];
-  if (!top) return null;
+  // The tab leads with the session the dock holds, so what the user was last in stays
+  // one click away instead of the top row taking its place. Off the feed the held row
+  // is a snapshot from before the answer, whose question is already spent.
+  const tab = inflight
+    ? {
+        ...inflight,
+        state: "running" as const,
+        updated_at: held?.session.updated_at ?? inflight.updated_at,
+        question: undefined,
+      }
+    : (engagedRow ?? awaiting[0]);
+  if (!tab) return null;
+  const standsFor = awaitingWithOpen(awaiting, tab);
 
   return (
     <InterviewTab
-      session={top}
-      count={awaiting.length}
-      breakdown={awaitingBreakdown(awaiting)}
+      session={tab}
+      thinking={inflight !== null}
+      count={standsFor.length}
+      breakdown={awaitingBreakdown(standsFor)}
       unread={awaiting.some((s) => hasUnseenSession(seen, s))}
-      onExpand={() => expand(top)}
+      onActivate={() => activate(tab)}
+      onAbandoned={letGo}
     />
   );
 }
 
 function InterviewTab({
   session,
+  thinking,
   count,
   breakdown,
   unread,
-  onExpand,
+  onActivate,
+  onAbandoned,
 }: {
   session: GrillAwaitingSession;
+  thinking: boolean;
   count: number;
   breakdown: string;
   unread: boolean;
-  onExpand: () => void;
+  onActivate: () => void;
+  onAbandoned: () => void;
 }) {
   return (
     <div
@@ -136,20 +195,27 @@ function InterviewTab({
     >
       <button
         type="button"
-        onClick={onExpand}
+        onClick={onActivate}
         className="flex flex-col gap-1 p-3 text-left"
       >
         <span className="flex items-center gap-2 pr-7">
-          <span
-            className={cn(
-              "size-2 shrink-0 rounded-full",
-              unread ? "animate-pulse bg-warn" : "bg-info/60",
-            )}
-            aria-hidden="true"
-            title={unread ? UNREAD_TITLE : undefined}
-          />
+          {thinking ? (
+            <Loader2
+              className="size-3 shrink-0 animate-spin text-teal"
+              aria-hidden="true"
+            />
+          ) : (
+            <span
+              className={cn(
+                "size-2 shrink-0 rounded-full",
+                unread ? "animate-pulse bg-warn" : "bg-info/60",
+              )}
+              aria-hidden="true"
+              title={unread ? UNREAD_TITLE : undefined}
+            />
+          )}
           <span className="flex-1 truncate text-xs font-medium text-muted-foreground">
-            Interview waiting
+            {thinking ? "Interviewer is thinking…" : "Interview waiting"}
           </span>
           {count > 1 && (
             <Badge
@@ -169,7 +235,11 @@ function InterviewTab({
         <SessionFacts session={session} />
       </button>
       {/* Keyed so a re-sorted feed drops an open confirm instead of re-aiming it. */}
-      <AbandonAction key={session.id} session={session} />
+      <AbandonAction
+        key={session.id}
+        session={session}
+        onAbandoned={onAbandoned}
+      />
     </div>
   );
 }
@@ -184,6 +254,7 @@ function InterviewPanel({
   onSelect,
   onRead,
   onCollapse,
+  onDismiss,
 }: {
   session: GrillAwaitingSession;
   sessions: GrillAwaitingSession[];
@@ -191,6 +262,7 @@ function InterviewPanel({
   onSelect: (session: GrillAwaitingSession) => void;
   onRead: (session: GrillSession) => void;
   onCollapse: () => void;
+  onDismiss: () => void;
 }) {
   const navigateToNotification = useNotificationNavigate();
   const [status, setStatus] = useState<GrillSession | null>(null);
@@ -204,7 +276,7 @@ function InterviewPanel({
   }, [onRead, live.id, live.updated_at]);
 
   const review = () => {
-    onCollapse();
+    onDismiss();
     navigateToNotification({
       kind: "inbox",
       repo: session.repo,
@@ -240,7 +312,7 @@ function InterviewPanel({
             seen={seen}
             onSelect={onSelect}
             onAbandoned={(s) => {
-              if (s.id === session.id) onCollapse();
+              if (s.id === session.id) onDismiss();
             }}
           />
         )}
@@ -444,11 +516,7 @@ function AbandonAction({
   const abandon = useMutation({
     mutationFn: () => abandonGrill(session.id),
     onSuccess: () => {
-      queryClient.setQueryData<GrillAwaitingResponse>(
-        awaitingGrillsQueryKey,
-        (feed) =>
-          feed && { sessions: awaitingWithout(feed.sessions, session.id) },
-      );
+      dropAwaiting(queryClient, session.id);
       void queryClient.invalidateQueries({ queryKey: awaitingGrillsQueryKey });
       onAbandoned?.(session);
     },
