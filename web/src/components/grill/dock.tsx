@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouterState } from "@tanstack/react-router";
 import {
@@ -20,6 +20,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { dockPanelAction, isDockOpenKey } from "@/lib/dock-keys";
 import {
   abandonGrill,
   awaitingBreakdown,
@@ -40,6 +41,7 @@ import {
   useSeenMarks,
   type SeenMarks,
 } from "@/lib/inbox-seen";
+import { readKeyStroke } from "@/lib/keys";
 import {
   useNotificationEvents,
   useNotificationNavigate,
@@ -54,6 +56,10 @@ const dockAnchor =
 
 const UNREAD_TITLE = "A question you haven't read yet";
 
+// A disabled editor drops the attribute, so the selector only ever finds a box that can
+// actually take the keyboard.
+const ANSWER_BOX = '[contenteditable="true"]';
+
 // InterviewDock is the machine-wide answer surface: a tab pinned bottom-right
 // whenever an interview anywhere is waiting on the user, expanding in place into that
 // conversation so the question is answered without leaving the screen — or the
@@ -65,6 +71,7 @@ export function InterviewDock() {
     select: (s) => s.location.pathname.startsWith("/inbox"),
   });
   const queryClient = useQueryClient();
+  const frame = useRef<HTMLDivElement>(null);
   const [engaged, setEngaged] = useState<GrillAwaitingSession | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [seen, read] = useSeenMarks();
@@ -128,20 +135,6 @@ export function InterviewDock() {
     setExpanded(false);
   };
 
-  if (showPanel && engaged) {
-    return (
-      <InterviewPanel
-        session={engaged}
-        sessions={awaitingWithOpen(awaiting, engaged)}
-        seen={seen}
-        onSelect={open}
-        onRead={read}
-        onCollapse={() => setExpanded(false)}
-        onDismiss={letGo}
-      />
-    );
-  }
-
   // The tab leads with the session the dock holds, so what the user was last in stays
   // one click away instead of the top row taking its place. Off the feed the held row
   // is a snapshot from before the answer, whose question is already spent.
@@ -153,6 +146,37 @@ export function InterviewDock() {
         question: undefined,
       }
     : (engagedRow ?? awaiting[0]);
+
+  // i opens whatever the tab opens — the Inbox's own thread there, the panel anywhere
+  // else — and hands an open panel the keyboard back when the user has clicked away.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!isDockOpenKey(readKeyStroke(e))) return;
+      if (showPanel) {
+        frame.current?.focus();
+        return;
+      }
+      if (tab) activate(tab);
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [activate, showPanel, tab]);
+
+  if (showPanel && engaged) {
+    return (
+      <InterviewPanel
+        frame={frame}
+        session={engaged}
+        sessions={awaitingWithOpen(awaiting, engaged)}
+        seen={seen}
+        onSelect={open}
+        onRead={read}
+        onCollapse={() => setExpanded(false)}
+        onDismiss={letGo}
+      />
+    );
+  }
+
   if (!tab) return null;
   const standsFor = awaitingWithOpen(awaiting, tab);
 
@@ -246,8 +270,10 @@ function InterviewTab({
 
 // InterviewPanel frames the conversation itself. The session it mounts is the dock's
 // own — never the active scope's — so answering another project's question leaves the
-// project switcher where the user left it.
+// project switcher where the user left it. The frame takes the keyboard as it opens, so
+// the panel is walked, answered and closed without the mouse ever coming into it.
 function InterviewPanel({
+  frame,
   session,
   sessions,
   seen,
@@ -256,6 +282,7 @@ function InterviewPanel({
   onCollapse,
   onDismiss,
 }: {
+  frame: RefObject<HTMLDivElement | null>;
   session: GrillAwaitingSession;
   sessions: GrillAwaitingSession[];
   seen: SeenMarks;
@@ -266,6 +293,7 @@ function InterviewPanel({
 }) {
   const navigateToNotification = useNotificationNavigate();
   const [status, setStatus] = useState<GrillSession | null>(null);
+  const [confirming, setConfirming] = useState(false);
   // A switch leaves the outgoing session's status behind for a render, so the frame
   // only quotes a status that belongs to the conversation it is mounting.
   const live = status?.id === session.id ? status : session;
@@ -274,6 +302,13 @@ function InterviewPanel({
   useEffect(() => {
     onRead(live);
   }, [onRead, live.id, live.updated_at]);
+
+  useEffect(() => {
+    frame.current?.focus();
+  }, [frame]);
+
+  // A confirm is aimed at the session it was raised on, so a switch drops it.
+  useEffect(() => setConfirming(false), [session.id]);
 
   const review = () => {
     onDismiss();
@@ -284,16 +319,48 @@ function InterviewPanel({
     });
   };
 
+  const step = (by: number) => {
+    const to = sessions[sessions.findIndex((s) => s.id === session.id) + by];
+    if (to) onSelect(to);
+  };
+
+  // The bindings sit on the document rather than the frame: an answer sent closes the
+  // box it was typed in, dropping focus to the page, and keys hung off the panel would
+  // go with it.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const action = dockPanelAction(readKeyStroke(e));
+      switch (action) {
+        case "next":
+        case "prev":
+          // Left to the browser the arrows scroll the thread out from under the switch.
+          e.preventDefault();
+          step(action === "next" ? 1 : -1);
+          break;
+        case "answer":
+          frame.current?.querySelector<HTMLElement>(ANSWER_BOX)?.focus();
+          break;
+        case "abandon":
+          setConfirming(true);
+          break;
+        case "collapse":
+          onCollapse();
+          break;
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [frame, session, sessions, onSelect, onCollapse]);
+
   return (
     <div
+      ref={frame}
       role="dialog"
       aria-label={`Interview — ${sessionTitle(session)}`}
-      onKeyDown={(e) => {
-        if (e.key === "Escape") onCollapse();
-      }}
+      tabIndex={-1}
       className={cn(
         dockAnchor,
-        "flex max-h-[68vh] w-[520px] max-w-[calc(100vw-3rem)] flex-col overflow-hidden rounded-lg border bg-card shadow-xl",
+        "flex max-h-[68vh] w-[520px] max-w-[calc(100vw-3rem)] flex-col overflow-hidden rounded-lg border bg-card shadow-xl outline-none",
       )}
     >
       <div className="flex shrink-0 items-center gap-2 border-b px-4 py-2.5">
@@ -339,6 +406,18 @@ function InterviewPanel({
           onReview={review}
         />
       </div>
+
+      {confirming && (
+        <AbandonConfirm
+          session={session}
+          autoFocus
+          onKeep={() => {
+            setConfirming(false);
+            frame.current?.focus();
+          }}
+          onAbandoned={onDismiss}
+        />
+      )}
     </div>
   );
 }
@@ -501,8 +580,6 @@ function SessionAge({ at }: { at: string }) {
   );
 }
 
-// The confirm stays inside the row: a dialog portals underneath the dock, and one
-// raised from the switcher would dismiss the popover it lives in.
 function AbandonAction({
   session,
   onAbandoned,
@@ -510,22 +587,7 @@ function AbandonAction({
   session: GrillAwaitingSession;
   onAbandoned?: (session: GrillAwaitingSession) => void;
 }) {
-  const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
-  const confirm = useRef<HTMLDivElement>(null);
-  const abandon = useMutation({
-    mutationFn: () => abandonGrill(session.id),
-    onSuccess: () => {
-      dropAwaiting(queryClient, session.id);
-      void queryClient.invalidateQueries({ queryKey: awaitingGrillsQueryKey });
-      onAbandoned?.(session);
-    },
-  });
-
-  // The switcher's list scrolls, so a confirm raised on its last row opens off-screen.
-  useEffect(() => {
-    confirm.current?.scrollIntoView({ block: "nearest" });
-  }, [confirming]);
 
   if (!confirming) {
     return (
@@ -543,7 +605,54 @@ function AbandonAction({
   }
 
   return (
-    <div ref={confirm} className="flex flex-col gap-1 border-t px-3 py-2">
+    <AbandonConfirm
+      session={session}
+      onKeep={() => setConfirming(false)}
+      onAbandoned={onAbandoned}
+    />
+  );
+}
+
+// The confirm stays inside the row: a dialog portals underneath the dock, and one
+// raised from the switcher would dismiss the popover it lives in.
+function AbandonConfirm({
+  session,
+  autoFocus,
+  onKeep,
+  onAbandoned,
+}: {
+  session: GrillAwaitingSession;
+  autoFocus?: boolean;
+  onKeep: () => void;
+  onAbandoned?: (session: GrillAwaitingSession) => void;
+}) {
+  const queryClient = useQueryClient();
+  const confirm = useRef<HTMLDivElement>(null);
+  const abandon = useMutation({
+    mutationFn: () => abandonGrill(session.id),
+    onSuccess: () => {
+      dropAwaiting(queryClient, session.id);
+      void queryClient.invalidateQueries({ queryKey: awaitingGrillsQueryKey });
+      onAbandoned?.(session);
+    },
+  });
+
+  // The switcher's list scrolls, so a confirm raised on its last row opens off-screen.
+  useEffect(() => {
+    confirm.current?.scrollIntoView({ block: "nearest" });
+  }, []);
+
+  return (
+    <div
+      ref={confirm}
+      // The keys asked here are the confirm's own; Escape would otherwise carry on and
+      // collapse the panel behind it.
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Escape") onKeep();
+      }}
+      className="flex shrink-0 flex-col gap-1 border-t px-3 py-2"
+    >
       <div className="flex items-center gap-2">
         <span className="flex-1 text-[11px] text-muted-foreground">
           Abandon this interview?
@@ -552,7 +661,7 @@ function AbandonAction({
           variant="ghost"
           size="sm"
           className="h-7 px-2 text-xs"
-          onClick={() => setConfirming(false)}
+          onClick={onKeep}
           disabled={abandon.isPending}
         >
           Keep
@@ -561,6 +670,7 @@ function AbandonAction({
           variant="destructive"
           size="sm"
           className="h-7 px-2 text-xs"
+          autoFocus={autoFocus}
           onClick={() => abandon.mutate()}
           disabled={abandon.isPending}
         >

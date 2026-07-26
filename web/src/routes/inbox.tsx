@@ -85,12 +85,13 @@ import {
   type InboxItem,
   type InboxPillTone,
 } from "@/lib/inbox";
-import { hasOpenLayer, inboxKeyAction } from "@/lib/inbox-keys";
+import { inboxKeyAction } from "@/lib/inbox-keys";
 import {
   hasUnseenQuestion,
   useSeenMarks,
   type SeenMarks,
 } from "@/lib/inbox-seen";
+import { readKeyStroke } from "@/lib/keys";
 import { standardTitle, usePageTitle } from "@/lib/page-title";
 import { cn } from "@/lib/utils";
 
@@ -271,16 +272,7 @@ function InboxPage() {
   // the composer's Enter stays its own.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      const action = inboxKeyAction({
-        key: e.key,
-        ctrlKey: e.ctrlKey,
-        metaKey: e.metaKey,
-        altKey: e.altKey,
-        isComposing: e.isComposing,
-        targetTag: (e.target as HTMLElement | null)?.tagName,
-        targetEditable: (e.target as HTMLElement | null)?.isContentEditable,
-        layerOpen: hasOpenLayer(document),
-      });
+      const action = inboxKeyAction(readKeyStroke(e));
       if (action === null) return;
       if (action === "skip") {
         skip();
