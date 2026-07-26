@@ -439,7 +439,9 @@ func (s *Server) handleQueueShutdown(w http.ResponseWriter, r *http.Request) {
 // message — except a pending item re-queued with front, which moves to the
 // front instead. Registration is also refused when it would duplicate an
 // unsettled row's work in the other direction of the hierarchy: a ticket a
-// queued epic covers, or an epic whose children are queued on their own.
+// queued epic covers, or an epic whose children are queued on their own. A
+// ticket that leaves its epic fully queued child by child is collapsed into that
+// epic, so the queue never reads as covering an epic it does not hold.
 func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("repo")
 	root, ok := s.allowedRoot(name)
@@ -488,7 +490,7 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 			}
 			if len(children) > 0 {
 				item.Kind = queue.KindEpic
-				item.SubIssues = internalSubIssues(children)
+				item.SubIssues = storedSubIssues(children)
 			} else {
 				item.Kind = queue.KindTicket
 			}
@@ -547,6 +549,7 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusOK
 		}
 		s.markQueued(r.Context(), root, item)
+		s.promoteQueuedEpic(r.Context(), root, item)
 		s.writeQueue(w, status, root)
 		return
 	}
@@ -559,6 +562,7 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.markQueued(r.Context(), root, item)
+	s.promoteQueuedEpic(r.Context(), root, item)
 	s.writeQueue(w, http.StatusCreated, root)
 }
 
@@ -717,17 +721,25 @@ func toQueueSubIssues(subs []EpicSubIssue) []queue.SubIssue {
 	return out
 }
 
-// internalSubIssues maps an internal epic's children onto queue sub-issues,
-// marking each done when its state group is terminal so a queued internal epic
-// records the same shape a synced one does.
-func internalSubIssues(children []hubstore.Issue) []queue.SubIssue {
+// storedSubIssues maps an epic's stored children onto queue sub-issues, so a
+// queued internal epic records the same shape a synced one does.
+func storedSubIssues(children []hubstore.Issue) []queue.SubIssue {
 	out := make([]queue.SubIssue, 0, len(children))
 	for _, c := range children {
-		state := "todo"
-		if c.StatusGroup == "done" || c.StatusGroup == "canceled" {
-			state = "done"
-		}
-		out = append(out, queue.SubIssue{ID: c.Identifier, Title: c.Title, State: state})
+		out = append(out, storedSubIssue(c))
 	}
 	return out
+}
+
+// storedSubIssue maps one stored child onto a queue sub-issue, marking it done
+// when its state group is terminal. A row reaches a terminal group two ways: a
+// tracker sync writes "done", a transition trau mirrored itself writes
+// "completed".
+func storedSubIssue(c hubstore.Issue) queue.SubIssue {
+	state := "todo"
+	switch c.StatusGroup {
+	case "done", "completed", "canceled":
+		state = subIssueDone
+	}
+	return queue.SubIssue{ID: c.Identifier, Title: c.Title, State: state}
 }

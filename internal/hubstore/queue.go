@@ -207,6 +207,62 @@ func (q *Queue) Remove(id string) ([]queue.Item, error) {
 	return st.items, nil
 }
 
+// Promote swaps the queued rows in ids for item, landing it where the first of
+// them sat so the epic inherits the place its children held. Every id must still
+// be queued pending — a row that has started or settled since the caller looked
+// reports ErrRunning or ErrNotQueued and writes nothing — and item's own id must
+// not already be queued.
+func (q *Queue) Promote(item queue.Item, ids []string) ([]queue.Item, error) {
+	queueMu.Lock()
+	defer queueMu.Unlock()
+	st, err := q.loadImported()
+	if err != nil {
+		return nil, err
+	}
+	swap := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		swap[id] = true
+	}
+	matched := 0
+	for _, it := range st.items {
+		if it.ID == item.ID {
+			return nil, queue.ErrAlreadyQueued
+		}
+		if !swap[it.ID] {
+			continue
+		}
+		if it.Status == queue.StatusRunning {
+			return nil, queue.ErrRunning
+		}
+		if it.Status != queue.StatusPending {
+			return nil, queue.ErrNotQueued
+		}
+		matched++
+	}
+	if matched != len(swap) {
+		return nil, queue.ErrNotQueued
+	}
+	item.Status = queue.StatusPending
+	item.QueuedAt = time.Now().UTC()
+	kept := make([]queue.Item, 0, len(st.items))
+	promoted := false
+	for _, it := range st.items {
+		if !swap[it.ID] {
+			kept = append(kept, it)
+			continue
+		}
+		if !promoted {
+			kept = append(kept, item)
+			promoted = true
+		}
+	}
+	st.items = kept
+	if err := q.persist(st); err != nil {
+		return nil, err
+	}
+	return st.items, nil
+}
+
 // Arm starts draining this queue for a fresh run and records the run-level knobs
 // that go with it: noResume returns every non-running item to pending so the
 // queue re-runs from the top, and onFault decides what a fault does to the rest.

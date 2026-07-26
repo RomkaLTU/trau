@@ -358,6 +358,10 @@ type EpicSubIssue struct {
 	State string `json:"state"`
 }
 
+// subIssueDone is the preview state of a child an epic run has nothing left to
+// do on.
+const subIssueDone = "done"
+
 // EpicPreviewResult is the outcome of an epic preview: the repo, the previewed
 // epic, and its direct sub-issues, empty when the epic has no children.
 type EpicPreviewResult struct {

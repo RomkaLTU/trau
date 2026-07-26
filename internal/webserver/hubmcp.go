@@ -792,7 +792,7 @@ func (s *Server) storeQueueItem(root, id string) (queue.Item, error) {
 	}
 	if len(children) > 0 {
 		item.Kind = queue.KindEpic
-		item.SubIssues = internalSubIssues(children)
+		item.SubIssues = storedSubIssues(children)
 	}
 	return item, nil
 }
