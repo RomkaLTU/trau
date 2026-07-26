@@ -72,7 +72,8 @@ var hubMCPTools = append([]mcpTool{
 		Description: "Arm a repo's queue: the hub runs its pending items one at a time, in order, spawning one child per " +
 			"item and moving on when it finishes. on_fault decides what a failed item does to the rest — \"halt\" (the " +
 			"default) stops the queue at the failure, \"skip\" settles it and continues with the next item. Only a repo " +
-			"whose can_drain is true can be started. Returns the queue with draining true.",
+			"whose can_drain is true can be started, and only a queue holding a pending or paused item — starting an " +
+			"empty or fully settled queue is refused, so call enqueue first. Returns the queue with draining true.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "properties": {

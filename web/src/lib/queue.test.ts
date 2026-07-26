@@ -18,6 +18,7 @@ import {
   type QueueResponse,
 } from './queue'
 import type { Run } from './runs'
+import { builderView } from './timeline'
 
 vi.mock('./api', () => ({ apiFetch: vi.fn() }))
 
@@ -333,6 +334,15 @@ describe('queueRunnable', () => {
     ).toBe(false)
   })
 
+  it('is true while a pending item remains among settled ones', () => {
+    expect(
+      queueRunnable([
+        item({ id: 'COD-1', status: 'done' }),
+        item({ id: 'COD-2', status: 'pending' }),
+      ]),
+    ).toBe(true)
+  })
+
   it('is true for a paused epic whose sub-issues all read done', () => {
     expect(
       queueRunnable([
@@ -348,6 +358,31 @@ describe('queueRunnable', () => {
         }),
       ]),
     ).toBe(true)
+  })
+})
+
+// The Loop card gates Start on the builder list, which drops settled rows, so a
+// queue that holds nothing but history reads as unrunnable there too.
+describe('the Loop Start gate', () => {
+  const disabled = (items: QueueItem[]) =>
+    !queueRunnable(builderView(items, []).queue)
+
+  it('is disabled for an empty queue', () => {
+    expect(disabled([])).toBe(true)
+  })
+
+  it('is disabled when every row has settled', () => {
+    expect(
+      disabled([
+        item({ id: 'COD-1', status: 'done' }),
+        item({ id: 'COD-2', status: 'skipped' }),
+      ]),
+    ).toBe(true)
+  })
+
+  it('is enabled for a pending or paused row', () => {
+    expect(disabled([item({ id: 'COD-1', status: 'pending' })])).toBe(false)
+    expect(disabled([item({ id: 'COD-1', status: 'paused' })])).toBe(false)
   })
 })
 

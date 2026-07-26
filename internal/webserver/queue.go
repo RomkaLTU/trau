@@ -107,8 +107,9 @@ func (s *Server) handleQueueItem(w http.ResponseWriter, r *http.Request) {
 // persisted draining flag, settles any parked item whose checkpoint already
 // proves it shipped, and launches the drain loop; pausing clears the flag and the
 // loop stops after the current child exits — there is no mid-run kill (Stop
-// remains the per-run action). It is gated on the workspace allowlist like
-// registration: only a Registered repo can be drained.
+// remains the per-run action). A start against a queue with nothing pending or
+// paused is refused 409 and changes nothing. It is gated on the workspace
+// allowlist like registration: only a Registered repo can be drained.
 func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -136,7 +137,10 @@ func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.setDraining(root, req.Draining, req.NoResume, onFault); err != nil {
+	if err := s.setDraining(root, req.Draining, req.NoResume, onFault); errors.Is(err, queue.ErrNoRunnableItems) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
+	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -155,28 +159,26 @@ func normalizeOnFault(raw string) (string, error) {
 }
 
 // setDraining arms or pauses a repo's drain, the write behind both the REST drain
-// route and the MCP start_queue/pause_queue tools. Pausing only clears the flag,
-// so the loop stops after the current child exits. onFault must already be
-// normalized.
+// route and the MCP start_queue/pause_queue tools. A start is refused with
+// queue.ErrNoRunnableItems unless the queue holds a pending or paused item, so an
+// empty or fully settled queue is never left armed waiting for work a later add
+// would silently pick up. Pausing only clears the flag, so the loop stops after
+// the current child exits. onFault must already be normalized.
 func (s *Server) setDraining(root string, draining, noResume bool, onFault string) error {
 	store := s.stores.Queue(root)
-	if draining {
-		if noResume {
-			if err := store.Restart(); err != nil {
-				return fmt.Errorf("restart queue: %w", err)
-			}
+	if !draining {
+		if err := store.SetDraining(false); err != nil {
+			return fmt.Errorf("set draining: %w", err)
 		}
-		if err := store.SetOptions(noResume, onFault); err != nil {
-			return fmt.Errorf("set options: %w", err)
-		}
+		return nil
 	}
-	if err := store.SetDraining(draining); err != nil {
-		return fmt.Errorf("set draining: %w", err)
+	if err := store.Arm(noResume, onFault); errors.Is(err, queue.ErrNoRunnableItems) {
+		return err
+	} else if err != nil {
+		return fmt.Errorf("arm queue: %w", err)
 	}
-	if draining {
-		s.drain.reconcileParked(root)
-		s.drain.ensure(s.drainCtx, root)
-	}
+	s.drain.reconcileParked(root)
+	s.drain.ensure(s.drainCtx, root)
 	return nil
 }
 
@@ -266,7 +268,7 @@ func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("%s is not in the queue", id)})
 		return
 	}
-	if item.Status != queue.StatusPending && item.Status != queue.StatusPaused {
+	if !queue.Runnable(item.Status) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s has already settled %s and cannot be run", item.ID, item.Status)})
 		return
 	}

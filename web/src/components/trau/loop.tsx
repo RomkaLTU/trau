@@ -72,6 +72,7 @@ import {
   queueExecutable,
   queueQueryOptions,
   queueRunnable,
+  QUEUE_NOT_RUNNABLE,
   runNext as runNextRequest,
   runQueueItem,
   shutdownQueue,
@@ -1047,12 +1048,17 @@ function LaunchQueueCard({
               className="w-fit font-mono"
               onClick={() => start.mutate()}
               disabled={!runnable || start.isPending || shuttingDown}
+              title={runnable ? undefined : QUEUE_NOT_RUNNABLE}
             >
               {start.isPending ? "Starting…" : "Start queue"}
             </Button>
             {start.error ? (
               <p className="font-mono text-xs text-destructive">
                 {actionError(start.error)}
+              </p>
+            ) : !runnable ? (
+              <p className="font-mono text-xs text-muted-foreground">
+                {QUEUE_NOT_RUNNABLE}
               </p>
             ) : null}
           </div>

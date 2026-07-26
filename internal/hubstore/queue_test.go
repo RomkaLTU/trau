@@ -3,6 +3,7 @@ package hubstore
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -168,11 +169,8 @@ func TestPersistsAcrossStores(t *testing.T) {
 	db := testDB(t)
 	first := NewQueue(db, "/repo/acme")
 	mustAdd(t, first, "COD-1")
-	if err := first.SetOptions(true, queue.OnFaultSkip); err != nil {
-		t.Fatalf("SetOptions: %v", err)
-	}
-	if err := first.SetDraining(true); err != nil {
-		t.Fatalf("SetDraining: %v", err)
+	if err := first.Arm(true, queue.OnFaultSkip); err != nil {
+		t.Fatalf("Arm: %v", err)
 	}
 
 	second := NewQueue(db, "/repo/acme")
@@ -397,6 +395,155 @@ func TestFinishDrainingClearsWhenDry(t *testing.T) {
 	}
 }
 
+func TestFinishDrainingDisarmsAQueueWithNothingRunnable(t *testing.T) {
+	tests := []struct {
+		name  string
+		items []queue.Item
+	}{
+		{name: "empty"},
+		{name: "settled only", items: []queue.Item{
+			{ID: "COD-1", Status: queue.StatusDone},
+			{ID: "COD-2", Status: queue.StatusFailed},
+			{ID: "COD-3", Status: queue.StatusSkipped},
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q := testQueue(t)
+			for _, it := range tc.items {
+				mustAdd(t, q, it.ID)
+				if err := q.Finish(it.ID, it.Status, ""); err != nil {
+					t.Fatalf("Finish %s: %v", it.ID, err)
+				}
+			}
+			if err := q.SetDraining(true); err != nil {
+				t.Fatalf("SetDraining: %v", err)
+			}
+
+			done, err := q.FinishDraining()
+			if err != nil {
+				t.Fatalf("FinishDraining: %v", err)
+			}
+			if !done {
+				t.Fatal("FinishDraining left the queue armed over work it cannot run")
+			}
+			if _, meta, _ := q.Snapshot(); meta.Draining || !meta.DrainingSince.IsZero() {
+				t.Errorf("meta = %+v, want disarmed and unstamped", meta)
+			}
+		})
+	}
+}
+
+func TestArmRefusesAQueueWithNothingRunnable(t *testing.T) {
+	tests := []struct {
+		name   string
+		settle map[string]string
+	}{
+		{name: "empty"},
+		{name: "settled only", settle: map[string]string{"COD-1": queue.StatusDone, "COD-2": queue.StatusSkipped}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q := testQueue(t)
+			for id, status := range tc.settle {
+				mustAdd(t, q, id)
+				if err := q.Finish(id, status, ""); err != nil {
+					t.Fatalf("Finish %s: %v", id, err)
+				}
+			}
+
+			if err := q.Arm(true, queue.OnFaultSkip); !errors.Is(err, queue.ErrNoRunnableItems) {
+				t.Fatalf("Arm = %v, want ErrNoRunnableItems", err)
+			}
+			items, meta, err := q.Snapshot()
+			if err != nil {
+				t.Fatalf("Snapshot: %v", err)
+			}
+			if meta.Draining || !meta.DrainingSince.IsZero() || meta.NoResume || meta.OnFault != "" {
+				t.Errorf("meta = %+v, want untouched by the refused arm", meta)
+			}
+			for _, it := range items {
+				if it.Status != tc.settle[it.ID] {
+					t.Errorf("%s = %q, want %q — a refused arm resets nothing", it.ID, it.Status, tc.settle[it.ID])
+				}
+			}
+		})
+	}
+}
+
+func TestArmStartsOnPendingOrPaused(t *testing.T) {
+	tests := []struct {
+		name   string
+		paused bool
+	}{
+		{name: "pending item"},
+		{name: "paused item", paused: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			q := testQueue(t)
+			mustAdd(t, q, "COD-1")
+			if tc.paused {
+				if err := q.Pause("COD-1", "faulted"); err != nil {
+					t.Fatalf("Pause: %v", err)
+				}
+			}
+
+			before := time.Now().UTC()
+			if err := q.Arm(false, queue.OnFaultHalt); err != nil {
+				t.Fatalf("Arm: %v", err)
+			}
+			_, meta, err := q.Snapshot()
+			if err != nil {
+				t.Fatalf("Snapshot: %v", err)
+			}
+			if !meta.Draining || meta.DrainingSince.Before(before) {
+				t.Fatalf("meta = %+v, want armed and stamped at or after %v", meta, before)
+			}
+			if meta.OnFault != queue.OnFaultHalt || meta.NoResume {
+				t.Errorf("meta = %+v, want the start's options recorded", meta)
+			}
+
+			if err := q.Arm(false, queue.OnFaultHalt); err != nil {
+				t.Fatalf("re-arm: %v", err)
+			}
+			if _, again, _ := q.Snapshot(); !again.DrainingSince.Equal(meta.DrainingSince) {
+				t.Errorf("draining since = %v after a re-arm, want the original %v", again.DrainingSince, meta.DrainingSince)
+			}
+		})
+	}
+}
+
+func TestArmWithNoResumeRestartsTheQueue(t *testing.T) {
+	q := testQueue(t)
+	mustAdd(t, q, "COD-1")
+	mustAdd(t, q, "COD-2")
+	mustAdd(t, q, "COD-3")
+	if err := q.Finish("COD-1", queue.StatusFailed, "boom"); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	if err := q.MarkRunning("COD-2", 7); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+
+	if err := q.Arm(true, queue.OnFaultSkip); err != nil {
+		t.Fatalf("Arm: %v", err)
+	}
+	items, meta, err := q.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if items[0].Status != queue.StatusPending || items[0].Reason != "" {
+		t.Errorf("COD-1 = %+v, want reset to pending by the skip-resume start", items[0])
+	}
+	if items[1].Status != queue.StatusRunning {
+		t.Errorf("COD-2 = %q, want the running item left alone", items[1].Status)
+	}
+	if !meta.NoResume || meta.OnFault != queue.OnFaultSkip {
+		t.Errorf("meta = %+v, want the start's options recorded with the arm", meta)
+	}
+}
+
 func TestSetDrainingStampsTheRunItArms(t *testing.T) {
 	q := testQueue(t)
 	mustAdd(t, q, "COD-1")
@@ -428,28 +575,6 @@ func TestSetDrainingStampsTheRunItArms(t *testing.T) {
 	}
 	if _, meta, _ := q.Snapshot(); !meta.DrainingSince.IsZero() {
 		t.Errorf("draining since = %v after a disarm, want zero", meta.DrainingSince)
-	}
-}
-
-func TestRestartResetsNonRunning(t *testing.T) {
-	q := testQueue(t)
-	mustAdd(t, q, "COD-1")
-	mustAdd(t, q, "COD-2")
-	if err := q.Finish("COD-1", queue.StatusFailed, "boom"); err != nil {
-		t.Fatalf("Finish: %v", err)
-	}
-	if err := q.MarkRunning("COD-2", 7); err != nil {
-		t.Fatalf("MarkRunning: %v", err)
-	}
-	if err := q.Restart(); err != nil {
-		t.Fatalf("Restart: %v", err)
-	}
-	items, _ := q.Load()
-	if items[0].Status != queue.StatusPending || items[0].Reason != "" {
-		t.Fatalf("COD-1 = %+v, want reset to pending", items[0])
-	}
-	if items[1].Status != queue.StatusRunning {
-		t.Fatalf("COD-2 = %q, want the running item left alone", items[1].Status)
 	}
 }
 

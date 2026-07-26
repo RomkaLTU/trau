@@ -282,12 +282,18 @@ export function queueTerminal(status: string): boolean {
 }
 
 // queueRunnable reports whether a Start has anything to launch, mirroring the
-// drain's own rule that it runs the first pending or paused item. A paused epic
-// counts even when every sub-issue reads done — the Start re-attempts the
-// finalize the pause parked on, which runs no leaf ticket of its own.
+// hub's own queue.Runnable rule that it runs the first pending or paused item.
+// A paused epic counts even when every sub-issue reads done — the Start
+// re-attempts the finalize the pause parked on, which runs no leaf ticket of its
+// own.
 export function queueRunnable(items: QueueItem[]): boolean {
   return items.some((it) => it.status === 'pending' || it.status === 'paused')
 }
+
+// QUEUE_NOT_RUNNABLE is why a Start is unavailable, said both as a tooltip and
+// as the reason next to the disabled control.
+export const QUEUE_NOT_RUNNABLE =
+  'Nothing to run — add a ticket or resume a paused item first'
 
 // queueExecutable estimates how many leaf tickets a Start will run: each
 // unsettled ticket counts once, each epic by its not-done sub-issues (the count

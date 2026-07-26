@@ -290,11 +290,11 @@ func TestDrainTickDecisions(t *testing.T) {
 			wantDraining: boolPtr(false),
 		},
 		{
-			name:         "an armed empty queue keeps idling for items",
+			name:         "an armed empty queue disarms itself",
 			draining:     true,
-			wantAction:   drainWait,
+			wantAction:   drainStop,
 			wantSpawns:   0,
-			wantDraining: boolPtr(true),
+			wantDraining: boolPtr(false),
 		},
 	}
 	for _, tc := range tests {
@@ -805,8 +805,8 @@ func TestDrainOnFaultSkipContinues(t *testing.T) {
 		queue.Item{ID: "COD-1", Status: queue.StatusRunning, PID: 7},
 		queue.Item{ID: "COD-2"},
 	)
-	if err := s.stores.Queue(root).SetOptions(false, queue.OnFaultSkip); err != nil {
-		t.Fatalf("set options: %v", err)
+	if err := s.stores.Queue(root).Arm(false, queue.OnFaultSkip); err != nil {
+		t.Fatalf("arm on-fault skip: %v", err)
 	}
 	seedOutcome(t, s, root, "COD-1", queue.DrainReport{Class: state.FailFaulted, Reason: "boom"})
 	if act, _ := s.drain.tick(root); act != drainReconcile {
@@ -905,9 +905,13 @@ func TestDrainEndpointStartsAndPauses(t *testing.T) {
 	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
 	s.home = t.TempDir()
 	s.sup = &fakeSupervisor{}
+	// A live run holds the repo, so the armed loop waits instead of spawning and
+	// the endpoint's own writes are what the assertions read.
+	s.drain.repoLive = func(string) bool { return true }
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	s.drainCtx = ctx
+	seedQueue(t, s, root, false, queue.Item{ID: "COD-1"})
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 
@@ -950,6 +954,108 @@ func TestDrainEndpointStartsAndPauses(t *testing.T) {
 	}
 	if _, meta, _ := s.stores.Queue(root).Snapshot(); meta.Draining {
 		t.Error("draining flag not cleared after pause")
+	}
+}
+
+// A queue with nothing pending or paused has no run to start, so the endpoint
+// refuses it 409 and leaves the metadata, the items and the drain loop alone
+// rather than arming over work that does not exist.
+func TestDrainEndpointRefusesStartWithNothingRunnable(t *testing.T) {
+	tests := []struct {
+		name  string
+		items []queue.Item
+	}{
+		{name: "empty queue"},
+		{name: "settled-only queue", items: []queue.Item{
+			{ID: "COD-1", Status: queue.StatusDone},
+			{ID: "COD-2", Status: queue.StatusFailed, Reason: "verify never went green"},
+			{ID: "COD-3", Status: queue.StatusSkipped, Reason: "duplicate"},
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, fake, root := drainServer(t, "acme")
+			seedQueue(t, s, root, false, tc.items...)
+			ts := httptest.NewServer(s.Handler())
+			t.Cleanup(ts.Close)
+
+			res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/drain", DrainRequest{
+				Draining: true,
+				NoResume: true,
+				OnFault:  queue.OnFaultSkip,
+			})
+			defer func() { _ = res.Body.Close() }()
+			if res.StatusCode != http.StatusConflict {
+				t.Fatalf("start = %d, want 409", res.StatusCode)
+			}
+			var out struct {
+				Error string `json:"error"`
+			}
+			if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if out.Error != queue.ErrNoRunnableItems.Error() {
+				t.Errorf("error = %q, want the domain refusal %q", out.Error, queue.ErrNoRunnableItems.Error())
+			}
+
+			items, meta, err := s.stores.Queue(root).Snapshot()
+			if err != nil {
+				t.Fatalf("snapshot: %v", err)
+			}
+			if meta.Draining || !meta.DrainingSince.IsZero() || meta.NoResume || meta.OnFault != "" {
+				t.Errorf("meta = %+v, want untouched by the refused start", meta)
+			}
+			for i, it := range items {
+				if it.Status != tc.items[i].Status {
+					t.Errorf("%s = %q, want %q — a refused start resets nothing", it.ID, it.Status, tc.items[i].Status)
+				}
+			}
+			s.drain.mu.Lock()
+			_, active := s.drain.active[root]
+			s.drain.mu.Unlock()
+			if active {
+				t.Error("the refused start launched a drain loop")
+			}
+			if len(fake.spawns) != 0 {
+				t.Errorf("spawns = %d after a refused start, want none", len(fake.spawns))
+			}
+		})
+	}
+}
+
+// Work queued after a refused start does not inherit it: the queue stays idle
+// until the user starts it again.
+func TestDrainEndpointStaysIdleAfterARefusedStart(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	s.drain.repoLive = func(string) bool { return true }
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	refused := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/drain", DrainRequest{Draining: true})
+	_ = refused.Body.Close()
+	if refused.StatusCode != http.StatusConflict {
+		t.Fatalf("start on an empty queue = %d, want 409", refused.StatusCode)
+	}
+
+	added := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: string(queue.KindTicket), ID: "COD-1"})
+	_ = added.Body.Close()
+	if added.StatusCode != http.StatusCreated {
+		t.Fatalf("enqueue = %d, want 201", added.StatusCode)
+	}
+	if drainingOf(t, s, root) {
+		t.Fatal("the queue armed itself when work arrived, want it idle until an explicit start")
+	}
+	if len(fake.spawns) != 0 {
+		t.Fatalf("spawns = %d after the add, want none", len(fake.spawns))
+	}
+
+	started := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/drain", DrainRequest{Draining: true})
+	_ = started.Body.Close()
+	if started.StatusCode != http.StatusOK {
+		t.Fatalf("start with a pending item = %d, want 200", started.StatusCode)
+	}
+	if !drainingOf(t, s, root) {
+		t.Error("draining flag not persisted by the explicit start")
 	}
 }
 

@@ -100,9 +100,9 @@ func (d *drainer) run(ctx context.Context, root string) {
 // item, settles a finished one per the failure taxonomy — pausing the drain on a
 // fault or provider pause — waits, never spawning a second child while one is in
 // flight or while a pending self-reload is waiting for its idle gap, or finishes
-// the drain once the queue has run dry so a completed queue reads stopped
-// instead of idling armed. It is the whole drain policy, pure enough to
-// table-test.
+// the drain once the queue has nothing left to run so a completed — or armed but
+// empty — queue reads stopped instead of idling armed. It is the whole drain
+// policy, pure enough to table-test.
 func (d *drainer) tick(root string) (drainAction, error) {
 	store := d.srv.stores.Queue(root)
 	items, meta, err := store.Snapshot()
@@ -410,7 +410,7 @@ func firstWithStatus(items []queue.Item, status string) (queue.Item, bool) {
 // drain stopped when it paused — so a resume re-attempts it before moving on.
 func firstRunnable(items []queue.Item) (queue.Item, bool) {
 	for _, it := range items {
-		if it.Status == queue.StatusPending || it.Status == queue.StatusPaused {
+		if queue.Runnable(it.Status) {
 			return it, true
 		}
 	}
