@@ -3182,6 +3182,24 @@ func warnMissingRequiredSkills(cfg config.Config, con *console.Console) {
 			pin.key, strings.Join(missing, ", "), pin.prompt, pin.key)
 	}
 	warnSkillRules(cfg, con)
+	warnSkillDrift(cfg, con)
+}
+
+// warnSkillDrift notes skills that do not match what skills-lock.json pins.
+// Advisory only: installing a skill writes prompt-shaping instructions onto the
+// machine, so it happens on the explicit gesture on the web Skills page and
+// nowhere else.
+func warnSkillDrift(cfg config.Config, con *console.Console) {
+	report := agent.CheckSkillDrift(cfg.RepoRoot)
+	if len(report.Drifted) == 0 {
+		return
+	}
+	names := make([]string, 0, len(report.Drifted))
+	for _, d := range report.Drifted {
+		names = append(names, d.Class+" "+d.Name)
+	}
+	con.Logf("⚠ %d skill(s) drift from skills-lock.json: %s — install them from the Skills page; this run proceeds unchanged",
+		len(report.Drifted), strings.Join(names, ", "))
 }
 
 // warnSkillRules flags a routing-rules file the loop could not use as written: a

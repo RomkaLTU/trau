@@ -67,6 +67,7 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkBrowserVerify(cfg, rr)
 	checkTeamSync(ctx, cfg, repoRoot, rr)
 	checkSkills(cfg, repoRoot, rr)
+	checkSkillsDrift(repoRoot, rr)
 	checkLinearLabels(ctx, cfg, rr)
 	checkLinearProject(ctx, cfg, rr)
 	checkJira(ctx, cfg, rr)
@@ -360,6 +361,35 @@ func checkSkills(cfg config.Config, repoRoot string, rr *runner) {
 		return
 	}
 	rr.add("skills", pass, detail, "")
+}
+
+// checkSkillsDrift reports the skills that do not match what skills-lock.json
+// pins. Drift never fails the check: runs proceed on a drifted machine, and
+// only the explicit install gesture on the web Skills page writes a skill.
+func checkSkillsDrift(repoRoot string, rr *runner) {
+	report := agent.CheckSkillDrift(repoRoot)
+	if !report.Checked {
+		return
+	}
+	if len(report.Drifted) == 0 {
+		rr.add("skills lock", pass, "every pinned skill is installed at its pinned content"+unlockedSkillsNote(report.Unlocked), "")
+		return
+	}
+	drifted := make([]string, 0, len(report.Drifted))
+	for _, d := range report.Drifted {
+		drifted = append(drifted, fmt.Sprintf("%s %s (pinned to %s)", d.Class, d.Name, d.Lock.Source))
+	}
+	rr.add("skills lock", warn,
+		fmt.Sprintf("%d pinned skill(s) drift from skills-lock.json: %s%s",
+			len(report.Drifted), strings.Join(drifted, ", "), unlockedSkillsNote(report.Unlocked)),
+		"install them from the Skills page in `trau serve` — runs proceed either way")
+}
+
+func unlockedSkillsNote(unlocked []string) string {
+	if len(unlocked) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" — %s installed without a pin", strings.Join(unlocked, ", "))
 }
 
 func suggestedRequiredSkills(repoRoot string, installed []string) []string {
