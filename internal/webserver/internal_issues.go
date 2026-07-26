@@ -195,8 +195,9 @@ func (s *Server) handleInternalTransition(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
+	state := strings.TrimSpace(req.State)
 	iss, err := s.stores.Issues().TransitionInternal(repo.Root, id, hubstore.InternalTransition{
-		State:        strings.TrimSpace(req.State),
+		State:        state,
 		AddLabels:    cleanLabels(req.AddLabels),
 		RemoveLabels: cleanLabels(req.RemoveLabels),
 		Comment:      req.Comment,
@@ -208,6 +209,9 @@ func (s *Server) handleInternalTransition(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "transition issue: " + err.Error()})
 		return
+	}
+	if state != "" {
+		s.retireClosedGrill(repo.Root)
 	}
 	writeJSON(w, http.StatusOK, toInternalIssueResponse(repo.Name, iss))
 }

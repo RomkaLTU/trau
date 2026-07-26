@@ -168,10 +168,6 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 // window, on top of the startup pass.
 const runDataPruneInterval = time.Hour
 
-// grillIdleAbandon is how long a parked grill session may sit untouched before the
-// sweep settles it as abandoned (grilling-prd.md).
-const grillIdleAbandon = 30 * 24 * time.Hour
-
 // pruneRunData drops run data past its retention window on startup and on a
 // periodic timer (ADR 0008): transcript sessions from transcripts.db, reclaiming
 // their freed pages, and event and token-call rows from the authoritative store.
@@ -190,7 +186,6 @@ func (s *Server) pruneRunData(ctx context.Context) {
 		if err := s.stores.Tokens().Prune(); err != nil {
 			logger.Verbosef("prune token calls: %v", err)
 		}
-		s.sweepIdleGrill()
 		if err := s.stores.Grill().Prune(); err != nil {
 			logger.Verbosef("prune grill sessions: %v", err)
 		}

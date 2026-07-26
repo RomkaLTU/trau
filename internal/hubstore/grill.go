@@ -173,6 +173,13 @@ const grillSessionSelect = `SELECT g.id, g.repo, g.issue_id, g.issue_destination
 	 FROM grill_sessions g
 	 LEFT JOIN issues i ON i.repo = g.repo AND i.identifier = g.issue_id`
 
+// grillIssueOpen hides a session whose issue has closed from a feed read, so the
+// closure takes effect the moment the store learns of it rather than waiting for
+// RetireClosed. An authoring draft joins no issue and is always kept; a settled
+// session keeps the visibility it has as history.
+const grillIssueOpen = ` AND (COALESCE(i.status_group, '') NOT IN ('done', 'canceled')
+	     OR g.state IN ('finished', 'applied', 'abandoned'))`
+
 // Session returns a session by id and whether it exists.
 func (g *Grill) Session(id int64) (GrillSession, bool, error) {
 	sessions, err := g.scanSessions(grillSessionSelect+` WHERE g.id = ?`, id)
@@ -185,10 +192,10 @@ func (g *Grill) Session(id int64) (GrillSession, bool, error) {
 	return sessions[0], true, nil
 }
 
-// List returns repo's sessions, newest first. A non-empty state narrows to that
-// state.
+// List returns repo's sessions, newest first, minus the ones whose issue has
+// closed. A non-empty state narrows to that state.
 func (g *Grill) List(repo, state string) ([]GrillSession, error) {
-	query := grillSessionSelect + ` WHERE g.repo = ?`
+	query := grillSessionSelect + ` WHERE g.repo = ?` + grillIssueOpen
 	args := []any{repo}
 	if state != "" {
 		query += ` AND g.state = ?`
@@ -199,11 +206,13 @@ func (g *Grill) List(repo, state string) ([]GrillSession, error) {
 }
 
 // ListAwaiting returns every session blocked on the user — waiting, parked or
-// stalled — across all repos, most recently touched first. It is deliberately not
-// repo-scoped: the session needing an answer is often not in the project on screen.
+// stalled — across all repos, most recently touched first, minus the ones whose
+// issue has closed. It is deliberately not repo-scoped: the session needing an
+// answer is often not in the project on screen.
 func (g *Grill) ListAwaiting() ([]GrillSession, error) {
 	return g.scanSessions(
-		grillSessionSelect+` WHERE g.state IN (?, ?, ?) ORDER BY g.updated_at DESC, g.id DESC`,
+		grillSessionSelect+` WHERE g.state IN (?, ?, ?)`+grillIssueOpen+
+			` ORDER BY g.updated_at DESC, g.id DESC`,
 		GrillWaiting, GrillParked, GrillStalled,
 	)
 }
@@ -429,35 +438,35 @@ func (g *Grill) Prune() error {
 	return nil
 }
 
-// SweepIdle marks every active session last touched before cutoff as abandoned,
-// returning the sessions it swept so the caller can announce the state change. It
-// is the 30-day idle sweep (grilling-prd.md): a parked session nobody returns to
-// eventually settles.
-func (g *Grill) SweepIdle(cutoff time.Time) ([]GrillSession, error) {
-	stale, err := g.scanSessions(
+// RetireClosed abandons every session in repo blocked — waiting, parked, stalled or
+// finished — on an issue the tracker has since closed, and returns the sessions it
+// settled so the caller can announce each state change. A running session is left to
+// its live child and is caught at its next blocked state. Closure is the only
+// automatic retirement: age alone never settles a session (grilling-prd.md).
+func (g *Grill) RetireClosed(repo string) ([]GrillSession, error) {
+	retired, err := g.scanSessions(
 		grillSessionSelect+
-			` WHERE g.state NOT IN ('applied', 'abandoned') AND g.updated_at < ? ORDER BY g.id`,
-		formatGrillTime(cutoff),
+			` WHERE g.repo = ? AND g.state IN (?, ?, ?, ?)
+			   AND i.status_group IN ('done', 'canceled') ORDER BY g.id`,
+		repo, GrillWaiting, GrillParked, GrillStalled, GrillFinished,
 	)
 	if err != nil {
 		return nil, err
 	}
-	if len(stale) == 0 {
-		return nil, nil
-	}
 	now := formatGrillTime(time.Now())
-	for i := range stale {
+	for i := range retired {
+		reason := "retired: " + retired[i].IssueID + " closed"
 		if _, err := g.db.Exec(
-			`UPDATE grill_sessions SET state = 'abandoned', parked_reason = '', updated_at = ? WHERE id = ?`,
-			now, stale[i].ID,
+			`UPDATE grill_sessions SET state = 'abandoned', parked_reason = ?, updated_at = ? WHERE id = ?`,
+			reason, now, retired[i].ID,
 		); err != nil {
 			return nil, err
 		}
-		stale[i].State = GrillAbandoned
-		stale[i].ParkedReason = ""
-		stale[i].UpdatedAt = now
+		retired[i].State = GrillAbandoned
+		retired[i].ParkedReason = reason
+		retired[i].UpdatedAt = now
 	}
-	return stale, nil
+	return retired, nil
 }
 
 func (g *Grill) scanSessions(query string, args ...any) (out []GrillSession, err error) {
