@@ -96,12 +96,15 @@ func TestSortChildrenForRun(t *testing.T) {
 func TestCreateIssueResolvesLabelsAndReturnsURL(t *testing.T) {
 	c, reqs := fakeLinear(t)
 
-	id, url, err := c.CreateIssue(context.Background(), CreateIssueInput{TeamID: "team-1", Title: "Something broke", Description: "Details here", Labels: []string{"ready-for-agent", "unknown-label"}})
+	id, identifier, url, err := c.CreateIssue(context.Background(), CreateIssueInput{TeamID: "team-1", Title: "Something broke", Description: "Details here", Labels: []string{"ready-for-agent", "unknown-label"}})
 	if err != nil {
 		t.Fatalf("CreateIssue error: %v", err)
 	}
-	if id != "COD-42" {
-		t.Errorf("identifier = %q, want COD-42", id)
+	if identifier != "COD-42" {
+		t.Errorf("identifier = %q, want COD-42", identifier)
+	}
+	if id != "iss-1" {
+		t.Errorf("node id = %q, want iss-1", id)
 	}
 	if url != "https://linear.app/acme/issue/COD-42" {
 		t.Errorf("url = %q, want the issue url", url)
@@ -125,7 +128,7 @@ func TestCreateIssueResolvesLabelsAndReturnsURL(t *testing.T) {
 func TestCreateIssueWithoutLabelsSendsEmptySet(t *testing.T) {
 	c, reqs := fakeLinear(t)
 
-	if _, _, err := c.CreateIssue(context.Background(), CreateIssueInput{TeamID: "team-1", Title: "An epic"}); err != nil {
+	if _, _, _, err := c.CreateIssue(context.Background(), CreateIssueInput{TeamID: "team-1", Title: "An epic"}); err != nil {
 		t.Fatalf("CreateIssue error: %v", err)
 	}
 
@@ -254,9 +257,9 @@ func TestMutationsDeclareStringVariables(t *testing.T) {
 	}
 }
 
-// CreateBlockRelation resolves both human identifiers to node ids and writes a
-// "blocks" relation from the blocker to the blocked issue.
-func TestCreateBlockRelationResolvesIDs(t *testing.T) {
+// CreateBlockRelationByID writes a "blocks" relation from the blocker to the
+// blocked issue with the mutation alone — no identifier lookup.
+func TestCreateBlockRelationByIDSendsOnlyTheMutation(t *testing.T) {
 	var mutation graphReq
 	seen := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -265,13 +268,6 @@ func TestCreateBlockRelationResolvesIDs(t *testing.T) {
 		_ = json.Unmarshal(body, &req)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case strings.Contains(req.Query, "query Issue"):
-			node := "iss-blocked"
-			ident := "COD-2"
-			if req.Variables["number"] == float64(1) {
-				node, ident = "iss-blocker", "COD-1"
-			}
-			_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"id":"`+node+`","identifier":"`+ident+`","team":{"id":"team-1","key":"COD"}}]}}}`)
 		case strings.Contains(req.Query, "mutation IssueRelationCreate"):
 			mutation, seen = req, true
 			_, _ = io.WriteString(w, `{"data":{"issueRelationCreate":{"success":true}}}`)
@@ -283,8 +279,8 @@ func TestCreateBlockRelationResolvesIDs(t *testing.T) {
 
 	c := New("lin_key")
 	c.Endpoint = srv.URL
-	if err := c.CreateBlockRelation(context.Background(), "COD-1", "COD-2"); err != nil {
-		t.Fatalf("CreateBlockRelation: %v", err)
+	if err := c.CreateBlockRelationByID(context.Background(), "iss-blocker", "iss-blocked"); err != nil {
+		t.Fatalf("CreateBlockRelationByID: %v", err)
 	}
 	if !seen {
 		t.Fatal("relation mutation was not sent")

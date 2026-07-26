@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
@@ -107,7 +108,7 @@ func NewWriter(provider string, cfg Config) (Writer, error) {
 		if strings.TrimSpace(cfg.APIKey) == "" {
 			return nil, ErrWriterUnavailable
 		}
-		return &linearWriter{client: linearapi.New(cfg.APIKey), team: cfg.Team, project: cfg.Project}, nil
+		return newLinearWriter(linearapi.New(cfg.APIKey), cfg.Team, cfg.Project), nil
 	case "jira":
 		if cfg.BaseURL == "" || cfg.Email == "" || cfg.APIKey == "" {
 			return nil, ErrWriterUnavailable
@@ -128,10 +129,59 @@ func NewWriter(provider string, cfg Config) (Writer, error) {
 	}
 }
 
+// Linear's identifier search lags a create by a moment, so a not-found lookup is
+// retried before it is reported.
+const (
+	linearResolveAttempts = 3
+	linearResolveBackoff  = time.Second
+)
+
 type linearWriter struct {
 	client  *linearapi.Client
 	team    string
 	project string
+	// created maps the identifier of every issue this writer created to its node
+	// id, so a follow-up write addresses it without a lookup Linear's search index
+	// may not answer yet. The hub builds a writer per request, so the cache lives
+	// exactly as long as one apply.
+	created map[string]string
+	// backoff is the first retry delay, doubling per attempt — a field so tests
+	// need not sleep out the real one.
+	backoff time.Duration
+}
+
+func newLinearWriter(client *linearapi.Client, team, project string) *linearWriter {
+	return &linearWriter{
+		client:  client,
+		team:    team,
+		project: project,
+		created: map[string]string{},
+		backoff: linearResolveBackoff,
+	}
+}
+
+// resolveID returns the node id behind a human identifier: from the created cache
+// when this writer filed the issue, otherwise from a retried lookup.
+func (w *linearWriter) resolveID(ctx context.Context, identifier string) (string, error) {
+	if id, ok := w.created[identifier]; ok {
+		return id, nil
+	}
+	var err error
+	for attempt := range linearResolveAttempts {
+		var issue *linearapi.Issue
+		if issue, err = w.client.Issue(ctx, identifier); err == nil {
+			return issue.ID, nil
+		}
+		if !errors.Is(err, linearapi.ErrNotFound) || attempt == linearResolveAttempts-1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(w.backoff << attempt):
+		}
+	}
+	return "", err
 }
 
 func (w *linearWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIssue, error) {
@@ -148,17 +198,18 @@ func (w *linearWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIs
 		in.ProjectID = p.ID
 	}
 	if parent := strings.TrimSpace(draft.Parent); parent != "" {
-		issue, err := w.client.Issue(ctx, parent)
+		parentID, err := w.resolveID(ctx, parent)
 		if err != nil {
 			return NewIssue{}, fmt.Errorf("resolve parent %s: %w", parent, err)
 		}
-		in.ParentID = issue.ID
+		in.ParentID = parentID
 	}
-	id, url, err := w.client.CreateIssue(ctx, in)
+	id, identifier, url, err := w.client.CreateIssue(ctx, in)
 	if err != nil {
 		return NewIssue{}, err
 	}
-	return NewIssue{Identifier: id, URL: url}, nil
+	w.created[identifier] = id
+	return NewIssue{Identifier: identifier, URL: url}, nil
 }
 
 func (w *linearWriter) AddComment(ctx context.Context, id, body string) error {
@@ -174,11 +225,23 @@ func (w *linearWriter) UpdateLabels(ctx context.Context, id string, add, remove 
 }
 
 func (w *linearWriter) LinkBlocks(ctx context.Context, blocker, blocked string) error {
-	return w.client.CreateBlockRelation(ctx, blocker, blocked)
+	blockerID, err := w.resolveID(ctx, blocker)
+	if err != nil {
+		return fmt.Errorf("resolve blocker %s: %w", blocker, err)
+	}
+	blockedID, err := w.resolveID(ctx, blocked)
+	if err != nil {
+		return fmt.Errorf("resolve blocked %s: %w", blocked, err)
+	}
+	return w.client.CreateBlockRelationByID(ctx, blockerID, blockedID)
 }
 
 func (w *linearWriter) AssignIssue(ctx context.Context, id, assigneeID string) error {
-	return w.client.AssignIssue(ctx, id, assigneeID)
+	issueID, err := w.resolveID(ctx, id)
+	if err != nil {
+		return err
+	}
+	return w.client.AssignIssueByID(ctx, issueID, assigneeID)
 }
 
 func (w *linearWriter) AssignableUsers(ctx context.Context, query string) ([]AssignableUser, error) {

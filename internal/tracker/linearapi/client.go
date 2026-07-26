@@ -418,9 +418,8 @@ func (c *Client) UpdateDescription(ctx context.Context, identifier, description 
 	return c.do(ctx, issueDescriptionMutation, map[string]any{"id": issue.ID, "description": description}, &dst)
 }
 
-// AssignIssue sets the issue's assignee, or clears it when assigneeID is empty —
-// the mutation then carries an explicit null, which is what Linear reads as
-// Unassigned. The human identifier is resolved to the issue's node id first.
+// AssignIssue sets the issue's assignee, resolving the human identifier to the
+// issue's node id first.
 func (c *Client) AssignIssue(ctx context.Context, identifier, assigneeID string) error {
 	if c.apiKey == "" {
 		return ErrNotEnabled
@@ -429,7 +428,17 @@ func (c *Client) AssignIssue(ctx context.Context, identifier, assigneeID string)
 	if err != nil {
 		return err
 	}
-	vars := map[string]any{"id": issue.ID, "assigneeId": nil}
+	return c.AssignIssueByID(ctx, issue.ID, assigneeID)
+}
+
+// AssignIssueByID sets the assignee on an issue node id, or clears it when
+// assigneeID is empty — the mutation then carries an explicit null, which is what
+// Linear reads as Unassigned.
+func (c *Client) AssignIssueByID(ctx context.Context, issueID, assigneeID string) error {
+	if c.apiKey == "" {
+		return ErrNotEnabled
+	}
+	vars := map[string]any{"id": issueID, "assigneeId": nil}
 	if assigneeID = strings.TrimSpace(assigneeID); assigneeID != "" {
 		vars["assigneeId"] = assigneeID
 	}
@@ -538,16 +547,18 @@ type CreateIssueInput struct {
 	ProjectID   string
 }
 
-// CreateIssue creates a new issue and returns its identifier and URL. Label names
-// that do not exist in the team are dropped — Linear can only attach labels that
-// already exist.
-func (c *Client) CreateIssue(ctx context.Context, in CreateIssueInput) (identifier, url string, err error) {
+// CreateIssue creates a new issue and returns its node id, identifier and URL.
+// The node id lets a caller address the fresh issue without a lookup — Linear's
+// identifier search is eventually consistent and misses an issue created moments
+// ago. Label names that do not exist in the team are dropped — Linear can only
+// attach labels that already exist.
+func (c *Client) CreateIssue(ctx context.Context, in CreateIssueInput) (id, identifier, url string, err error) {
 	if c.apiKey == "" {
-		return "", "", ErrNotEnabled
+		return "", "", "", ErrNotEnabled
 	}
 	labels, err := c.teamLabels(ctx, in.TeamID)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	// Linear rejects a null labelIds — an empty set must go over the wire as [].
 	labelIDs := []string{}
@@ -570,34 +581,26 @@ func (c *Client) CreateIssue(ctx context.Context, in CreateIssueInput) (identifi
 	}
 	var dst issueCreateResponse
 	if err := c.do(ctx, issueCreateMutation, vars, &dst); err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if dst.Data.IssueCreate.Issue.Identifier == "" {
-		return "", "", errors.New("linear: create issue returned no identifier")
+		return "", "", "", errors.New("linear: create issue returned no identifier")
 	}
-	return dst.Data.IssueCreate.Issue.Identifier, dst.Data.IssueCreate.Issue.URL, nil
+	issue := dst.Data.IssueCreate.Issue
+	return issue.ID, issue.Identifier, issue.URL, nil
 }
 
-// CreateBlockRelation records that blocker blocks blocked, resolving both human
-// identifiers to node ids first. Written as a "blocks" relation from blocker, so
-// blocked reads it as a blocker in its inverseRelations — the direction blockers()
-// interprets.
-func (c *Client) CreateBlockRelation(ctx context.Context, blocker, blocked string) error {
+// CreateBlockRelationByID records that blockerID blocks blockedID, both node ids.
+// Written as a "blocks" relation from the blocker, so the blocked issue reads it
+// as a blocker in its inverseRelations — the direction blockers() interprets.
+func (c *Client) CreateBlockRelationByID(ctx context.Context, blockerID, blockedID string) error {
 	if c.apiKey == "" {
 		return ErrNotEnabled
 	}
-	b, err := c.Issue(ctx, blocker)
-	if err != nil {
-		return fmt.Errorf("resolve blocker %s: %w", blocker, err)
-	}
-	d, err := c.Issue(ctx, blocked)
-	if err != nil {
-		return fmt.Errorf("resolve blocked %s: %w", blocked, err)
-	}
 	var dst issueRelationCreateResponse
 	return c.do(ctx, issueRelationCreateMutation, map[string]any{
-		"issueId":        b.ID,
-		"relatedIssueId": d.ID,
+		"issueId":        blockerID,
+		"relatedIssueId": blockedID,
 		"type":           "blocks",
 	}, &dst)
 }
