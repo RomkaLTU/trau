@@ -385,6 +385,24 @@ export const grillDetailQueryOptions = (sid: string) =>
     staleTime: 5_000,
   })
 
+// GrillStartError carries the refusal's status, so a start that raced another one
+// can tell the hub's one-session-per-issue conflict from a real failure.
+export class GrillStartError extends Error {
+  status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.name = 'GrillStartError'
+    this.status = status
+  }
+}
+
+// isActiveSessionConflict reports whether a start was refused because the issue
+// already has a live session — the one refusal a start surface can act on.
+export function isActiveSessionConflict(err: unknown): boolean {
+  return err instanceof GrillStartError && err.status === 409
+}
+
 // startGrillSession opens a session. An empty issueId with an idea starts a
 // from-scratch authoring session anchored to the repo alone, the idea seeding the
 // first turn; a concrete issueId grills that issue. provider locks the session's
@@ -402,8 +420,31 @@ export async function startGrillSession(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ issue_id: issueId, idea, model, provider }),
   })
-  if (!res.ok) throw new Error(await errorMessage(res, 'start interview session failed'))
+  if (!res.ok) {
+    throw new GrillStartError(
+      await errorMessage(res, 'start interview session failed'),
+      res.status,
+    )
+  }
   return res.json()
+}
+
+// publishGrillSession puts a freshly started session at the head of the repo's
+// list. A surface that navigates on start then arrives at a live conversation
+// instead of the preview the list would hold until its next poll.
+export function publishGrillSession(
+  client: QueryClient,
+  repo: string,
+  session: GrillSession,
+): void {
+  client.setQueryData<GrillListResponse>(['grill', repo], (prev) =>
+    prev
+      ? {
+          ...prev,
+          sessions: [session, ...prev.sessions.filter((s) => s.id !== session.id)],
+        }
+      : { repo, sessions: [session] },
+  )
 }
 
 // PregrillOutcome is one issue's result from an AFK pre-grill pass: a question was
