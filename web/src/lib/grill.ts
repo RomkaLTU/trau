@@ -1,4 +1,4 @@
-import { queryOptions } from '@tanstack/react-query'
+import { queryOptions, type QueryClient } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
 import { type Assignee } from './assignee'
@@ -182,6 +182,12 @@ export function isSettled(state: GrillState): boolean {
   return state === 'applied' || state === 'abandoned'
 }
 
+// isOver reports whether a session has stopped for good: a settled one, and a
+// finished one whose proposal is reviewed on the Inbox rather than answered.
+export function isOver(state: GrillState): boolean {
+  return isSettled(state) || state === 'finished'
+}
+
 // isAwaitingAnswer reports whether a session in state can take the user's answer —
 // the states whose child is blocked on ask_user (waiting) or has parked with a
 // pending answer or resume (parked, stalled).
@@ -315,8 +321,8 @@ export function awaitingWithOpen(
   return sessions.some((s) => s.id === open.id) ? [...sessions] : [open, ...sessions]
 }
 
-// awaitingWithout drops an abandoned session from the feed, so the dock row leaves on
-// the click rather than on the next poll.
+// awaitingWithout drops a session the hub has moved past from the feed — abandoned, or
+// answered and running again.
 export function awaitingWithout(
   sessions: readonly GrillAwaitingSession[],
   sid: string,
@@ -324,17 +330,35 @@ export function awaitingWithout(
   return sessions.filter((s) => s.id !== sid)
 }
 
-// The states the hub blocks on the user with, in the order the feed ranks them.
-const AWAITING_STATES: GrillState[] = ['waiting', 'parked', 'stalled']
+// dropAwaiting makes that drop in the cache. The hub flips an answered session to
+// running the moment the POST returns, so the dock reads the session it holds as an
+// interviewer working instead of re-offering the answered question until the next poll.
+export function dropAwaiting(client: QueryClient, sid: string): void {
+  client.setQueryData<GrillAwaitingResponse>(
+    awaitingGrillsQueryKey,
+    (feed) => feed && { sessions: awaitingWithout(feed.sessions, sid) },
+  )
+}
+
+// The states a collapsed dock stands for, named as its badge names them: the session
+// it holds while the interviewer works, then the states the hub blocks on the user
+// with, in the order the feed ranks them.
+const DOCK_STATES: { state: GrillState; label: string }[] = [
+  { state: 'running', label: 'thinking' },
+  { state: 'waiting', label: 'waiting' },
+  { state: 'parked', label: 'parked' },
+  { state: 'stalled', label: 'stalled' },
+]
 
 // awaitingBreakdown explains a collapsed dock's count — "1 waiting · 2 stalled" — so
 // the badge reconciles with the sessions the interview page lists.
 export function awaitingBreakdown(sessions: readonly GrillAwaitingSession[]): string {
-  return AWAITING_STATES.map(
-    (state) => [state, sessions.filter((s) => s.state === state).length] as const,
-  )
-    .filter(([, count]) => count > 0)
-    .map(([state, count]) => `${count} ${state}`)
+  return DOCK_STATES.map(({ state, label }) => ({
+    label,
+    count: sessions.filter((s) => s.state === state).length,
+  }))
+    .filter(({ count }) => count > 0)
+    .map(({ count, label }) => `${count} ${label}`)
     .join(' · ')
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef, useState } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Sparkles } from "lucide-react";
 
 import { BannerRow } from "@/components/grill/banners";
@@ -12,6 +12,7 @@ import {
   answerGrill,
   canCompose,
   composerPlaceholder,
+  dropAwaiting,
   grillBanner,
   grillDetailQueryOptions,
   grillReducer,
@@ -68,6 +69,7 @@ export function GrillConversation({
   onReview?: () => void;
 }) {
   useOpenConversation(initial.id);
+  const queryClient = useQueryClient();
   const detail = useQuery(grillDetailQueryOptions(initial.id));
   const [state, dispatch] = useReducer(grillReducer, undefined, () => ({
     session: initial,
@@ -130,6 +132,7 @@ export function GrillConversation({
     onSuccess: (res) => {
       dispatch({ type: "message", message: res.message });
       dispatch({ type: "state", session: res.session });
+      dropAwaiting(queryClient, session.id);
     },
     onError: (_err, { id, text }) =>
       dispatch({ type: "send-failed", id, text }),
