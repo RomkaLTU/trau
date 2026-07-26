@@ -222,7 +222,8 @@ func (s *Server) handleQueueMove(w http.ResponseWriter, r *http.Request) {
 // without arming draining, so the tick that settles the item finds the drain off
 // and stops instead of picking up the next row. It refuses with 409 whenever the
 // repo already has work in flight: a shutdown, an armed drain, a running queue
-// item, or a live loop.
+// item, or a live loop — and, so the one-shot cannot bypass the drain's dedup,
+// whenever an unsettled queued epic already covers the item.
 func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -267,6 +268,10 @@ func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if item.Status != queue.StatusPending && item.Status != queue.StatusPaused {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s has already settled %s and cannot be run", item.ID, item.Status)})
+		return
+	}
+	if epic, covered := coveringEpic(items, item); covered {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": coveredByEpic(item.ID, epic.ID)})
 		return
 	}
 	blockers, err := s.stores.Issues().UnresolvedBlockers(root, []string{item.ID})
@@ -430,7 +435,9 @@ func (s *Server) handleQueueShutdown(w http.ResponseWriter, r *http.Request) {
 // through the hub's existing epic preview, so the queue records what an epic run
 // will cover. Re-queuing something already present is refused with a clear
 // message — except a pending item re-queued with front, which moves to the
-// front instead.
+// front instead. Registration is also refused when it would duplicate an
+// unsettled row's work in the other direction of the hierarchy: a ticket a
+// queued epic covers, or an epic whose children are queued on their own.
 func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("repo")
 	root, ok := s.allowedRoot(name)
@@ -508,6 +515,16 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 				item.Kind = queue.KindTicket
 			}
 		}
+	}
+
+	queued, err := s.stores.Queue(root).Load()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read queue: " + err.Error()})
+		return
+	}
+	if reason, dup := duplicateEnqueueReason(queued, item); dup {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": reason})
+		return
 	}
 
 	// A front enqueue answers 201 like a plain one; re-queuing a pending item
@@ -590,6 +607,79 @@ func itemByID(items []queue.Item, id string) (queue.Item, bool) {
 		}
 	}
 	return queue.Item{}, false
+}
+
+// queueSettled reports whether an item is queue history — done, failed, or
+// skipped. A settled row covers nothing, so the hierarchy guards ignore it.
+func queueSettled(it queue.Item) bool {
+	switch it.Status {
+	case queue.StatusDone, queue.StatusFailed, queue.StatusSkipped:
+		return true
+	default:
+		return false
+	}
+}
+
+// coveringEpic returns the unsettled queued epic whose sub-issues already cover
+// target. Unlike the drain's duplicateReason it is position-independent: wherever
+// the epic sits, its remaining-work run picks the child up. Only a standalone
+// ticket can be covered; epics dedup their shared leaves through tracker state as
+// they run.
+func coveringEpic(items []queue.Item, target queue.Item) (queue.Item, bool) {
+	if target.Kind == queue.KindEpic {
+		return queue.Item{}, false
+	}
+	for _, it := range items {
+		if it.Kind != queue.KindEpic || queueSettled(it) {
+			continue
+		}
+		for _, sub := range it.SubIssues {
+			if sub.ID == target.ID {
+				return it, true
+			}
+		}
+	}
+	return queue.Item{}, false
+}
+
+// coveredByEpic is the refusal both the add-time and the one-shot-run guard
+// answer with, so a caller reads the same sentence whichever gesture it made.
+func coveredByEpic(id, epicID string) string {
+	return fmt.Sprintf("%s is already covered by queued epic %s", id, epicID)
+}
+
+// duplicateEnqueueReason reports why registering item would queue work an
+// existing row already covers: a ticket an unsettled queued epic carries, or an
+// epic whose children sit in the queue as tickets of their own. An id the queue
+// already holds is left to the store's exact-id refusal, which owns the
+// re-queue and move-to-front answers.
+func duplicateEnqueueReason(items []queue.Item, item queue.Item) (string, bool) {
+	if _, exists := itemByID(items, item.ID); exists {
+		return "", false
+	}
+	if epic, covered := coveringEpic(items, item); covered {
+		return coveredByEpic(item.ID, epic.ID), true
+	}
+	if children := queuedIndividually(items, item.SubIssues); len(children) > 0 {
+		return fmt.Sprintf(
+			"%s covers %s, already queued individually — remove from the queue before queueing the epic",
+			item.ID,
+			strings.Join(children, ", "),
+		), true
+	}
+	return "", false
+}
+
+// queuedIndividually lists the sub-issues an incoming epic carries that are
+// already queued as unsettled tickets of their own.
+func queuedIndividually(items []queue.Item, subs []queue.SubIssue) []string {
+	out := make([]string, 0, len(subs))
+	for _, sub := range subs {
+		if it, exists := itemByID(items, sub.ID); exists && it.Kind == queue.KindTicket && !queueSettled(it) {
+			out = append(out, sub.ID)
+		}
+	}
+	return out
 }
 
 func queueItemViews(items []queue.Item, pins map[string]string, blockers map[string][]string) []QueueItemView {
