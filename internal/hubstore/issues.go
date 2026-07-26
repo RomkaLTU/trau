@@ -551,6 +551,42 @@ func (s *Issues) Labels(repo string) (labels []LabelCount, err error) {
 	return labels, rows.Err()
 }
 
+// LabelState is one stored issue's label projection: its identifier, the status
+// group it sits in, and the labels currently on it.
+type LabelState struct {
+	Identifier  string
+	StatusGroup string
+	Labels      []string
+}
+
+// LabelStates returns the label projection of a repo's issues across every
+// source, ordered by identifier and without the descriptions and comments a List
+// would carry. Tombstoned issues are excluded.
+func (s *Issues) LabelStates(repo string) (states []LabelState, err error) {
+	rows, err := s.db.Query(
+		`SELECT identifier, status_group, labels FROM issues
+		 WHERE repo = ? AND deleted_at = '' ORDER BY identifier`,
+		repo,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	states = []LabelState{}
+	for rows.Next() {
+		var (
+			st     LabelState
+			labels string
+		)
+		if scanErr := rows.Scan(&st.Identifier, &st.StatusGroup, &labels); scanErr != nil {
+			return nil, scanErr
+		}
+		st.Labels = decodeLabels(labels)
+		states = append(states, st)
+	}
+	return states, rows.Err()
+}
+
 // AssigneeCount is one distinct assignee carried by a repo's issues and the
 // number of issues assigned to them.
 type AssigneeCount struct {
