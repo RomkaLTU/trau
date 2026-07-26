@@ -4198,6 +4198,7 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 	}
 	v, ok := readVerdict(verdictPath)
 	if agentErr != nil || !ok {
+		p.emitVerdictMissing(id, label, "", verdictMissReason(verdictPath, agentErr))
 		reason := "verify agent timed out or exited without writing a verdict"
 		if agentErr != nil {
 			reason = fmt.Sprintf("verify agent failed: %v", agentErr)
@@ -4239,6 +4240,7 @@ func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNot
 		}
 		v, ok := readVerdict(memberPath)
 		if agentErr != nil || !ok {
+			p.emitVerdictMissing(id, memberLabel, m.Name, verdictMissReason(memberPath, agentErr))
 			reason := m.Name + " verifier timed out or exited without writing a verdict"
 			if agentErr != nil {
 				reason = fmt.Sprintf("%s verifier failed: %v", m.Name, agentErr)
@@ -4390,6 +4392,31 @@ func readVerdict(path string) (v verdict, ok bool) {
 		return verdict{}, false
 	}
 	return v, true
+}
+
+// verdictMissReason must be called before the synthetic failure verdict is
+// written, which would turn a missing file into an unparseable one.
+func verdictMissReason(path string, agentErr error) string {
+	if agentErr != nil {
+		return "agent-error"
+	}
+	if _, err := os.Stat(path); err != nil {
+		return "missing"
+	}
+	return "unparseable"
+}
+
+// emitVerdictMissing records a verify attempt that left no usable verdict. member
+// is the panel member's name, empty for the single verifier.
+func (p *Pipeline) emitVerdictMissing(id, label, member, reason string) {
+	if p.Events == nil {
+		return
+	}
+	fields := map[string]any{"ticket": id, "reason": reason}
+	if member != "" {
+		fields["member"] = member
+	}
+	p.Events.Emit(event.KindVerdictMissing, label, "verify agent left no usable verdict — a failure was synthesized in its place", fields)
 }
 
 func writeFailureVerdict(path, reason string) error {

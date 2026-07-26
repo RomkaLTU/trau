@@ -50,6 +50,12 @@ const KindVerifyNoBrowser = "verify_no_browser"
 // never failed or paused over missing proofs.
 const KindVerifyNoProofs = "verify_no_proofs"
 
+// KindVerdictMissing marks a verify attempt whose agent left no usable verdict —
+// no file, unparseable JSON, or an agent error — and had a failure synthesized in
+// its place. The synthetic verdict is overwritten by the next attempt's, so this
+// event is the only durable trace of the miss.
+const KindVerdictMissing = "verdict_missing"
+
 // KindProofsPublishFailed marks a delivery that could not publish its verify
 // screenshots to the trau-proofs branch; the PR ships without the QA section.
 const KindProofsPublishFailed = "proofs_publish_failed"
