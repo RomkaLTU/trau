@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/forkpoint"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
@@ -81,12 +82,12 @@ func (s *Server) handleRunDiff(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no branch recorded for this run"})
 		return
 	}
-	base, ok := s.diffBase(r.Context(), repo, row.Data)
+	anchor, ok := s.diffAnchor(r.Context(), repo, row.Data)
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no base branch to diff this run against"})
 		return
 	}
-	diff, err := runDiff(r.Context(), repo.Root, base, row.Branch)
+	diff, err := runDiff(r.Context(), repo.Root, anchor, row.Branch)
 	if errors.Is(err, errNoDiffSource) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
@@ -98,15 +99,43 @@ func (s *Server) handleRunDiff(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, diff)
 }
 
-// diffBase is the branch the run diverged from: its checkpoint BASE for as long as
-// that branch resolves — an epic branch is deleted once its epic merges — and the
-// repo's configured base branch otherwise.
-func (s *Server) diffBase(ctx context.Context, repo registry.Repo, data string) (string, bool) {
+// diffAnchor reads the run's anchor off its checkpoint. The base is its BASE for as
+// long as that branch resolves — an epic branch is deleted once its epic merges —
+// and the repo's configured base branch otherwise.
+func (s *Server) diffAnchor(ctx context.Context, repo registry.Repo, data string) (forkpoint.Anchor, bool) {
+	anchor := forkpoint.Anchor{Pin: checkpointField(data, "BASE_SHA")}
 	if base := checkpointField(data, "BASE"); resolvesToCommit(ctx, repo.Root, base) {
-		return base, true
+		anchor.Base = base
+		return anchor, true
 	}
-	base := s.configuredBase(repo)
-	return base, resolvesToCommit(ctx, repo.Root, base)
+	anchor.Base = s.configuredBase(repo)
+	return anchor, resolvesToCommit(ctx, repo.Root, anchor.Base)
+}
+
+// repoGit answers a fork point's git questions by running git in a repo root.
+type repoGit struct{ root string }
+
+func (g repoGit) MergeBase(ctx context.Context, a, b string) (string, error) {
+	return gitOutput(ctx, g.root, "merge-base", a, b), nil
+}
+
+// IsAncestor reports whether ancestor is reachable from rev. git answers with its
+// exit status: 0 yes, 1 no, anything else a real failure — which must not read as a
+// plain "no" and quietly re-route the diff to the other anchor.
+func (g repoGit) IsAncestor(ctx context.Context, ancestor, rev string) (bool, error) {
+	err := exec.CommandContext(ctx, "git", "-C", g.root, "merge-base", "--is-ancestor", ancestor, rev).Run()
+	if err == nil {
+		return true, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git merge-base --is-ancestor %s %s: %w", ancestor, rev, err)
+}
+
+func (g repoGit) ResolvesToCommit(ctx context.Context, rev string) (bool, error) {
+	return resolvesToCommit(ctx, g.root, rev), nil
 }
 
 func resolvesToCommit(ctx context.Context, root, rev string) bool {
@@ -124,17 +153,17 @@ func (s *Server) configuredBase(repo registry.Repo) string {
 	return cfg.BaseBranch
 }
 
-// runDiff computes branch's changes against base in root, preferring the working
-// tree and falling back to branch's committed history when the worktree has moved
-// to another branch.
-func runDiff(ctx context.Context, root, base, branch string) (RunDiff, error) {
+// runDiff computes branch's changes against its anchor in root, preferring the
+// working tree and falling back to branch's committed history when the worktree has
+// moved to another branch.
+func runDiff(ctx context.Context, root string, anchor forkpoint.Anchor, branch string) (RunDiff, error) {
 	var diff RunDiff
 	var err error
 	switch {
 	case gitOutput(ctx, root, "rev-parse", "--abbrev-ref", "HEAD") == branch:
-		diff, err = worktreeDiff(ctx, root, base, branch)
+		diff, err = worktreeDiff(ctx, root, anchor, branch)
 	case gitOutput(ctx, root, "rev-parse", "--verify", "refs/heads/"+branch) != "":
-		diff, err = committedDiff(ctx, root, base, branch)
+		diff, err = committedDiff(ctx, root, anchor, branch)
 	default:
 		return RunDiff{}, errNoDiffSource
 	}
@@ -148,33 +177,43 @@ func runDiff(ctx context.Context, root, base, branch string) (RunDiff, error) {
 // worktreeDiff diffs from the fork point rather than base's tip: base advances every
 // time a sibling slice merges into it, and a two-dot diff against the moved tip
 // reports its new commits as deletions the run never made.
-func worktreeDiff(ctx context.Context, root, base, branch string) (RunDiff, error) {
-	forkPoint := gitOutput(ctx, root, "merge-base", base, "HEAD")
-	if forkPoint == "" {
+func worktreeDiff(ctx context.Context, root string, anchor forkpoint.Anchor, branch string) (RunDiff, error) {
+	fork, err := forkpoint.Resolve(ctx, repoGit{root: root}, anchor, "HEAD")
+	if err != nil {
+		return RunDiff{}, err
+	}
+	if fork == "" {
 		return RunDiff{}, errNoDiffSource
 	}
-	raw, err := gitDiffOutput(ctx, root, "diff", forkPoint)
+	raw, err := gitDiffOutput(ctx, root, "diff", fork)
 	if err != nil {
 		return RunDiff{}, err
 	}
 	files := parseDiffFiles(raw)
-	applyStats(files, numstat(ctx, root, forkPoint))
+	applyStats(files, numstat(ctx, root, fork))
 	untracked, err := untrackedDiffs(ctx, root)
 	if err != nil {
 		return RunDiff{}, err
 	}
 	return RunDiff{
 		Source:  "live",
-		Base:    base,
+		Base:    anchor.Base,
 		Branch:  branch,
-		BaseSHA: forkPoint,
+		BaseSHA: fork,
 		HeadSHA: gitOutput(ctx, root, "rev-parse", "HEAD"),
 		Files:   append(files, untracked...),
 	}, nil
 }
 
-func committedDiff(ctx context.Context, root, base, branch string) (RunDiff, error) {
-	spec := base + "..." + branch
+func committedDiff(ctx context.Context, root string, anchor forkpoint.Anchor, branch string) (RunDiff, error) {
+	fork, err := forkpoint.Resolve(ctx, repoGit{root: root}, anchor, branch)
+	if err != nil {
+		return RunDiff{}, err
+	}
+	if fork == "" {
+		return RunDiff{}, errNoDiffSource
+	}
+	spec := fork + ".." + branch
 	raw, err := gitDiffOutput(ctx, root, "diff", spec)
 	if err != nil {
 		return RunDiff{}, err
@@ -183,9 +222,9 @@ func committedDiff(ctx context.Context, root, base, branch string) (RunDiff, err
 	applyStats(files, numstat(ctx, root, spec))
 	return RunDiff{
 		Source:  "committed",
-		Base:    base,
+		Base:    anchor.Base,
 		Branch:  branch,
-		BaseSHA: gitOutput(ctx, root, "merge-base", base, branch),
+		BaseSHA: fork,
 		HeadSHA: gitOutput(ctx, root, "rev-parse", branch),
 		Files:   files,
 	}, nil

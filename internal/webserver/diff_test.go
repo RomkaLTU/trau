@@ -196,6 +196,125 @@ func TestRunDiffLiveIgnoresCommitsBaseGainedAfterTheFork(t *testing.T) {
 	}
 }
 
+// divergedDiffRepo cuts a run's branch onto a sibling's line of history while the
+// base branch it was cut from is rebuilt on main. The two then share nothing but the
+// repo's first commit, so a merge-base against that base reports the sibling's slice
+// as this run's. Returns the commit the run's own work sits on.
+func divergedDiffRepo(t *testing.T) (*httptest.Server, *Server, string, string) {
+	t.Helper()
+	ts, s, root, git := diffFixture(t)
+	git("checkout", "-b", "sibling")
+	writeRepoFile(t, root, "sibling.txt", "another slice's work\n")
+	git("add", "-A")
+	git("commit", "-m", "sibling slice")
+	sibling := gitOutput(t.Context(), root, "rev-parse", "HEAD")
+	git("checkout", "-b", "epic/COD-13-e", "main")
+	writeRepoFile(t, root, "epicwork.txt", "epic rebuilt on main\n")
+	git("add", "-A")
+	git("commit", "-m", "epic work")
+	git("checkout", "-b", "feature/COD-13-x", "sibling")
+	writeRepoFile(t, root, "runwork.txt", "the run's own slice\n")
+	git("add", "-A")
+	git("commit", "-m", "run work")
+	return ts, s, root, sibling
+}
+
+func TestRunDiffMeasuresFromThePinnedForkPoint(t *testing.T) {
+	t.Run("the pin keeps the diff to the run's own slice", func(t *testing.T) {
+		ts, s, root, sibling := divergedDiffRepo(t)
+		seedDiffCheckpoint(t, s, root, "COD-13", map[string]string{
+			"BRANCH":   "feature/COD-13-x",
+			"BASE":     "epic/COD-13-e",
+			"BASE_SHA": sibling,
+		})
+
+		status, diff := getRunDiff(t, ts, "COD-13")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+		if diff.BaseSHA != sibling {
+			t.Errorf("base_sha = %q, want the pinned fork point %q", diff.BaseSHA, sibling)
+		}
+		if diff.Base != "epic/COD-13-e" {
+			t.Errorf("base = %q, want the branch the run was cut from", diff.Base)
+		}
+		if len(diff.Files) != 1 {
+			t.Fatalf("files = %+v, want only the run's own runwork.txt", diff.Files)
+		}
+		diffFileFor(t, diff, "runwork.txt")
+	})
+
+	t.Run("a pin the branch does not contain falls back to the merge base", func(t *testing.T) {
+		ts, s, root, _ := divergedDiffRepo(t)
+		seedDiffCheckpoint(t, s, root, "COD-13", map[string]string{
+			"BRANCH":   "feature/COD-13-x",
+			"BASE":     "epic/COD-13-e",
+			"BASE_SHA": gitOutput(t.Context(), root, "rev-parse", "epic/COD-13-e"),
+		})
+
+		status, diff := getRunDiff(t, ts, "COD-13")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+		forkPoint := gitOutput(t.Context(), root, "merge-base", "epic/COD-13-e", "HEAD")
+		if diff.BaseSHA != forkPoint {
+			t.Errorf("base_sha = %q, want the merge base %q", diff.BaseSHA, forkPoint)
+		}
+		diffFileFor(t, diff, "sibling.txt")
+	})
+
+	t.Run("a pin whose commit is gone falls back to the merge base", func(t *testing.T) {
+		ts, s, root, _ := divergedDiffRepo(t)
+		seedDiffCheckpoint(t, s, root, "COD-13", map[string]string{
+			"BRANCH":   "feature/COD-13-x",
+			"BASE":     "epic/COD-13-e",
+			"BASE_SHA": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+		})
+
+		status, diff := getRunDiff(t, ts, "COD-13")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200 — a pin git cannot resolve falls back, it does not fail", status)
+		}
+		mergeBase := gitOutput(t.Context(), root, "merge-base", "epic/COD-13-e", "HEAD")
+		if diff.BaseSHA != mergeBase {
+			t.Errorf("base_sha = %q, want the merge base %q", diff.BaseSHA, mergeBase)
+		}
+	})
+
+	t.Run("a mid-run rebase onto an advanced base measures from the base it landed on", func(t *testing.T) {
+		ts, s, root, git := diffFixture(t)
+		git("checkout", "-b", "epic/COD-14-e")
+		pin := gitOutput(t.Context(), root, "rev-parse", "HEAD")
+		git("checkout", "-b", "feature/COD-14-x")
+		writeRepoFile(t, root, "runwork.txt", "the run's own slice\n")
+		git("add", "-A")
+		git("commit", "-m", "run work")
+		git("checkout", "epic/COD-14-e")
+		writeRepoFile(t, root, "sibling.txt", "another slice's work\n")
+		git("add", "-A")
+		git("commit", "-m", "sibling slice")
+		git("rebase", "epic/COD-14-e", "feature/COD-14-x")
+		seedDiffCheckpoint(t, s, root, "COD-14", map[string]string{
+			"BRANCH":   "feature/COD-14-x",
+			"BASE":     "epic/COD-14-e",
+			"BASE_SHA": pin,
+		})
+
+		status, diff := getRunDiff(t, ts, "COD-14")
+		if status != http.StatusOK {
+			t.Fatalf("status = %d, want 200", status)
+		}
+		advanced := gitOutput(t.Context(), root, "rev-parse", "epic/COD-14-e")
+		if diff.BaseSHA != advanced {
+			t.Errorf("base_sha = %q, want the advanced base %q the branch was replayed onto", diff.BaseSHA, advanced)
+		}
+		if len(diff.Files) != 1 {
+			t.Fatalf("files = %+v, want only the run's own runwork.txt", diff.Files)
+		}
+		diffFileFor(t, diff, "runwork.txt")
+	})
+}
+
 func TestRunDiffFallsBackToConfiguredBaseWhenRecordedBaseIsGone(t *testing.T) {
 	ts, s, root, git := diffFixture(t)
 	git("checkout", "-b", "feature/COD-10-x")
