@@ -20,6 +20,7 @@ import {
   grillBanner,
   grillProgress,
   grillReducer,
+  isActiveSessionConflict,
   isAwaitingAnswer,
   isGrillable,
   isOver,
@@ -29,12 +30,15 @@ import {
   NO_REPLY,
   outcomePayload,
   pendingQuestion,
+  publishGrillSession,
   questionPayload,
   sortAwaiting,
+  startGrillSession,
   upsertMessage,
   type DiffLine,
   type GrillAwaitingResponse,
   type GrillDelta,
+  type GrillListResponse,
   type GrillLive,
   type GrillMessage,
   type GrillSession,
@@ -188,6 +192,37 @@ describe('dropAwaiting', () => {
     const client = new QueryClient()
     dropAwaiting(client, '1')
     expect(feed(client)).toBeUndefined()
+  })
+})
+
+describe('publishGrillSession', () => {
+  const list = (client: QueryClient) =>
+    client.getQueryData<GrillListResponse>(['grill', 'loop'])
+
+  it('heads the cached list with the started session', () => {
+    const client = new QueryClient()
+    client.setQueryData<GrillListResponse>(['grill', 'loop'], {
+      repo: 'loop',
+      sessions: [session({ id: '1', issue_id: 'COD-1' })],
+    })
+    publishGrillSession(client, 'loop', session({ id: '2', issue_id: 'COD-2' }))
+    expect(list(client)?.sessions.map((s) => s.id)).toEqual(['2', '1'])
+  })
+
+  it('replaces the cached copy of a session it already holds', () => {
+    const client = new QueryClient()
+    client.setQueryData<GrillListResponse>(['grill', 'loop'], {
+      repo: 'loop',
+      sessions: [session({ id: '1', state: 'running' })],
+    })
+    publishGrillSession(client, 'loop', session({ id: '1', state: 'waiting' }))
+    expect(list(client)?.sessions).toEqual([session({ id: '1', state: 'waiting' })])
+  })
+
+  it('seeds a list that has not loaded yet, so the row is there on arrival', () => {
+    const client = new QueryClient()
+    publishGrillSession(client, 'loop', session({ id: '1' }))
+    expect(list(client)).toEqual({ repo: 'loop', sessions: [session({ id: '1' })] })
   })
 })
 
@@ -907,6 +942,53 @@ describe('applyGrill', () => {
       proposed_description: 'body',
       title: 'Dark mode',
     })
+  })
+})
+
+describe('startGrillSession', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function stubStart(status: number, body: unknown) {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: status < 400, status, json: async () => body } as Response)
+    vi.stubGlobal('fetch', fetchMock)
+    return fetchMock
+  }
+
+  it('rides the focus note in as the opening idea', async () => {
+    const fetchMock = stubStart(200, session({ id: '1' }))
+
+    await startGrillSession('loop', 'COD-1', 'why two flows?')
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/v1/repos/loop/grill')
+    expect(JSON.parse(init.body as string)).toEqual({
+      issue_id: 'COD-1',
+      idea: 'why two flows?',
+      model: '',
+      provider: '',
+    })
+  })
+
+  it('marks a refused start as a conflict when a session raced it', async () => {
+    stubStart(409, { error: 'COD-1 already has an active grill session' })
+
+    const err = await startGrillSession('loop', 'COD-1').catch((e: unknown) => e)
+
+    expect((err as Error).message).toBe('COD-1 already has an active grill session')
+    expect(isActiveSessionConflict(err)).toBe(true)
+  })
+
+  it('leaves every other refusal a plain failure', async () => {
+    stubStart(500, { error: 'no interviewer configured' })
+
+    const err = await startGrillSession('loop', 'COD-1').catch((e: unknown) => e)
+
+    expect((err as Error).message).toBe('no interviewer configured')
+    expect(isActiveSessionConflict(err)).toBe(false)
   })
 })
 

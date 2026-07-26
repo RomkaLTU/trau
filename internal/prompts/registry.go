@@ -1,5 +1,7 @@
 package prompts
 
+import "slices"
+
 const buildDefault = `Implement {{.ID}} on branch {{.Branch}} (already checked out). {{.SkillsNote}}{{.Note}} Implement the ticket fully and run only the tests relevant to this slice (the new or changed test files for this ticket) — not the entire suite. In a multi-workspace repo (monorepo), work inside the workspace(s) the ticket concerns and use their own commands, scoped to those workspaces, rather than repo-wide runs.{{.TestEffort}}{{.CodeStyle}} Do not commit, push, or open a PR — stop after implementation. Report what you changed as 1–3 plain prose sentences — not JSON, not a status object or field list, and with no mention of the loop or of any AI agent — since that text becomes the pull request summary. If the ticket clearly belongs to a DIFFERENT repository or codebase — the files, directories, or stack it references do not exist here and are not something this ticket asks you to create (in a multi-workspace repo, check every workspace before concluding this: a ticket for any of its apps or packages belongs here) — do NOT implement anything and do NOT modify any files; end your reply with a final line 'REFUSED: <one short sentence naming what the ticket actually targets>'.{{.BuildNotes}}{{.TicketContext}}`
 
 const handoffDefault = `Write a QA brief for {{.ID}}: the concrete, checkable behaviors a manual QA tester must verify for this slice, in priority order. Don't duplicate content already in the ticket, PRD, or diff — focus on what to check and how. Do NOT run the test suite, execute the code, or verify behavior yourself — a separate verify step does that; just write the brief. Redact any secrets. Save it to exactly {{.Handoff}} (overwrite if present) and nowhere else.{{.Rubric}}{{.TicketContext}}`
@@ -55,7 +57,12 @@ The issue under discussion:
 {{.ID}}{{if .Title}} — {{.Title}}{{end}}
 
 {{.Body}}
-{{.Attachments}}
+{{.Attachments}}{{if .Focus}}
+The person starting this interview wants clarified:
+{{.Focus}}
+
+Open there — your first question must address it — then carry on with whatever else blocks a clean implementation.
+{{end}}
 How to run the session:
 - Interview the user ONE question at a time, and only by calling the ask_user tool — never ask in plain assistant text. Wait for each answer before asking the next. A bundle of questions turns the conversation into a form to fill in; one question earns a considered answer and lets the next question build on what it revealed.
 - Whenever you offer options, mark the one you would choose with recommended (repeat that option's text exactly) and a one-line why — the user may not know the domain. Omit the recommendation only for pure-preference questions where no option is objectively better.
@@ -107,12 +114,19 @@ How to run this unattended pass:
 - Ask your one opening question or finish — never both, and never call ask_user more than once or wait for an answer.
 Always include a short summary of what you found. Nothing is written to the tracker until the user approves.`
 
-var grillIssuePlaceholders = []Placeholder{
+var grillContextPlaceholders = []Placeholder{
 	{Field: "ID", Description: "issue id under discussion", Required: true, Sample: "COD-4242"},
 	{Field: "Title", Description: "issue title; empty drops the dash", Sample: "Toolbar collapses on narrow screens"},
 	{Field: "Body", Description: "issue description with attachment references repointed at their local copies", Required: true, Sample: "The toolbar collapses below 480px."},
 	{Field: "Attachments", Description: "materialized attachment listing; empty when the issue has no files", Sample: "\n--- Attachments ---\n/tmp/trau-attachments-COD-4242/shot.png — shot.png (image/png, 2.0KB)\n"},
 }
+
+// Only the live interview is started by hand, so the focus note is its alone.
+var grillIssuePlaceholders = append(slices.Clone(grillContextPlaceholders), Placeholder{
+	Field:       "Focus",
+	Description: "focus note the interview was opened with; empty drops the section",
+	Sample:      "Whether the collapse threshold should be configurable.",
+})
 
 var registry = []Prompt{
 	{
@@ -376,7 +390,7 @@ var registry = []Prompt{
 		Name:         "grill_pregrill",
 		Title:        "Interview: ask ahead",
 		Description:  "First-turn prompt for the unattended Ask-ahead pass over an issue.",
-		Placeholders: grillIssuePlaceholders,
+		Placeholders: grillContextPlaceholders,
 		Default:      grillPregrillDefault,
 	},
 }

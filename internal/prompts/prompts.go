@@ -186,12 +186,14 @@ type TimelogEstimateData struct {
 // GrillIssueData feeds the grill_issue and grill_pregrill prompts. Body is the
 // issue description with every attachment reference repointed at the local copy
 // the session materialized; Attachments is the rendered listing of those files,
-// empty when the issue has none.
+// empty when the issue has none. Focus is the note the interview was opened with,
+// always empty on an Ask-ahead pass.
 type GrillIssueData struct {
 	ID          string
 	Title       string
 	Body        string
 	Attachments string
+	Focus       string
 }
 
 // GrillAuthoringData feeds the grill_authoring prompt. An empty Idea switches
