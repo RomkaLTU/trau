@@ -518,6 +518,90 @@ func TestQueueMoveReorders(t *testing.T) {
 	}
 }
 
+// TestQueueMoveToFrontPromotesMidDrain drives the running view's Run next: a
+// pending item promoted while the queue drains lands at the first pending slot,
+// behind the item in flight, which is where the drainer picks its next run from.
+func TestQueueMoveToFrontPromotesMidDrain(t *testing.T) {
+	s, _, root, ts := queueHub(t, "acme")
+	for _, id := range []string{"COD-1", "COD-2", "COD-3"} {
+		res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: id})
+		_ = res.Body.Close()
+	}
+	if err := s.stores.Queue(root).MarkRunning("COD-1", 4242); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/COD-3/move", MoveRequest{To: "front"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("promote status = %d, want 200", res.StatusCode)
+	}
+	var out QueueResponse
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Items) != 3 || out.Items[1].ID != "COD-3" || out.Items[2].ID != "COD-2" {
+		t.Errorf("order = %+v, want COD-3 promoted behind the running COD-1", out.Items)
+	}
+
+	running := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/COD-1/move", MoveRequest{To: "front"})
+	_ = running.Body.Close()
+	if running.StatusCode != http.StatusConflict {
+		t.Errorf("promote running = %d, want 409", running.StatusCode)
+	}
+	miss := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/COD-9/move", MoveRequest{To: "front"})
+	_ = miss.Body.Close()
+	if miss.StatusCode != http.StatusNotFound {
+		t.Errorf("promote absent = %d, want 404", miss.StatusCode)
+	}
+}
+
+func TestQueueMoveToFrontRefusesSettledItem(t *testing.T) {
+	s, _, root, ts := queueHub(t, "acme")
+	for _, id := range []string{"COD-1", "COD-2"} {
+		res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: id})
+		_ = res.Body.Close()
+	}
+	if err := s.stores.Queue(root).Finish("COD-1", queue.StatusDone, ""); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/COD-1/move", MoveRequest{To: "front"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("promote settled = %d, want 409", res.StatusCode)
+	}
+	var body map[string]string
+	_ = json.NewDecoder(res.Body).Decode(&body)
+	if !strings.Contains(body["error"], "only a pending item can be promoted") {
+		t.Errorf("error = %q, want it to say only a pending item can be promoted", body["error"])
+	}
+}
+
+func TestQueueMoveRejectsBadDestination(t *testing.T) {
+	_, _, ts := queueServer(t, "acme")
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: "COD-1"})
+	_ = res.Body.Close()
+
+	tests := []struct {
+		name string
+		req  MoveRequest
+	}{
+		{name: "both dir and to", req: MoveRequest{Dir: -1, To: "front"}},
+		{name: "neither dir nor to", req: MoveRequest{}},
+		{name: "unknown destination", req: MoveRequest{To: "back"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/COD-1/move", tt.req)
+			_ = res.Body.Close()
+			if res.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", res.StatusCode)
+			}
+		})
+	}
+}
+
 func TestDequeueRemovesItem(t *testing.T) {
 	_, _, ts := queueServer(t, "acme")
 	for _, id := range []string{"COD-1", "COD-2", "COD-3"} {

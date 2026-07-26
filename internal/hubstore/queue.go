@@ -429,6 +429,44 @@ func (q *Queue) Move(id string, dir int) ([]queue.Item, error) {
 	return st.items, nil
 }
 
+// MoveToFront repositions the item with id at the first pending position —
+// behind anything running, paused, or settled — and returns the resulting queue,
+// so the drain picks it as soon as the run in flight settles. The item keeps
+// every field it carries, its Provider override and QueuedAt stamp included,
+// unlike the AddFront path which adopts the incoming request's. Only a pending
+// item can be promoted.
+func (q *Queue) MoveToFront(id string) ([]queue.Item, error) {
+	queueMu.Lock()
+	defer queueMu.Unlock()
+	st, err := q.loadImported()
+	if err != nil {
+		return nil, err
+	}
+	idx := -1
+	for i := range st.items {
+		if st.items[i].ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return nil, queue.ErrNotQueued
+	}
+	if st.items[idx].Status == queue.StatusRunning {
+		return nil, queue.ErrRunning
+	}
+	if st.items[idx].Status != queue.StatusPending {
+		return nil, queue.ErrNotPending
+	}
+	item := st.items[idx]
+	st.items = append(st.items[:idx], st.items[idx+1:]...)
+	st.items = insertAtFirstPending(st.items, item)
+	if err := q.persist(st); err != nil {
+		return nil, err
+	}
+	return st.items, nil
+}
+
 // Clear empties root's queue entirely — every item and its sub-issues — and
 // disarms the drain, all in one persist. It carries no running-item guard: the
 // queue shutdown endpoint sequences the child's confirmed death before ever

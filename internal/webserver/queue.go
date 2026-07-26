@@ -76,11 +76,16 @@ type DrainRequest struct {
 	OnFault  string `json:"on_fault,omitempty"`
 }
 
-// MoveRequest is the body of POST /repos/{repo}/queue/{id}/move: the direction
-// to shift the item, -1 toward the front or 1 toward the back.
+// MoveRequest is the body of POST /repos/{repo}/queue/{id}/move: either the
+// direction to shift the item — -1 toward the front or 1 toward the back — or
+// the absolute position to send it to, which only ever means "front". Exactly
+// one of the two is accepted.
 type MoveRequest struct {
-	Dir int `json:"dir"`
+	Dir int    `json:"dir,omitempty"`
+	To  string `json:"to,omitempty"`
 }
+
+const moveToFront = "front"
 
 func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -182,9 +187,11 @@ func (s *Server) setDraining(root string, draining, noResume bool, onFault strin
 	return nil
 }
 
-// handleQueueMove reorders a pending item one slot up or down. It is gated like
-// a dequeue on any repo whose queue the hub can see, reports 404 for an unknown
-// item and 409 for the running one, and answers with the reordered queue.
+// handleQueueMove reorders a pending item: one slot up or down with dir, or to
+// the first pending slot with to "front", which the running view's Run next uses
+// to promote an item mid-drain. It is gated like a dequeue on any repo whose
+// queue the hub can see, reports 404 for an unknown item and 409 for one that
+// has started or settled, and answers with the reordered queue.
 func (s *Server) handleQueueMove(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -201,22 +208,41 @@ func (s *Server) handleQueueMove(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
-	if req.Dir != -1 && req.Dir != 1 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "dir must be -1 (up) or 1 (down)"})
-		return
-	}
 	id := strings.TrimSpace(r.PathValue("id"))
-	if _, err := s.stores.Queue(root).Move(id, req.Dir); errors.Is(err, queue.ErrNotQueued) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("%s is not in the queue", id)})
+	store := s.stores.Queue(root)
+
+	var err error
+	switch {
+	case req.To != "" && req.Dir != 0:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "send dir or to, not both"})
 		return
-	} else if errors.Is(err, queue.ErrRunning) {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s is running and cannot be reordered", id)})
-		return
-	} else if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "reorder: " + err.Error()})
+	case req.To != "":
+		if req.To != moveToFront {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("to %q must be %q", req.To, moveToFront)})
+			return
+		}
+		_, err = store.MoveToFront(id)
+	case req.Dir == -1 || req.Dir == 1:
+		_, err = store.Move(id, req.Dir)
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("dir must be -1 (up) or 1 (down), or to %q", moveToFront)})
 		return
 	}
-	s.writeQueue(w, http.StatusOK, root)
+
+	switch {
+	case errors.Is(err, queue.ErrNotQueued):
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("%s is not in the queue", id)})
+	case errors.Is(err, queue.ErrRunning):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s is running and cannot be reordered", id)})
+	case errors.Is(err, queue.ErrNotPending):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("%s has already started or settled — only a pending item can be promoted", id),
+		})
+	case err != nil:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "reorder: " + err.Error()})
+	default:
+		s.writeQueue(w, http.StatusOK, root)
+	}
 }
 
 // handleQueueRun runs one queued item and nothing after it. It spawns the item's
