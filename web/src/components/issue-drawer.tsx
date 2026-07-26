@@ -18,8 +18,10 @@ import {
   AssigneeDisplay,
   AssigneePicker,
 } from "@/components/trau/assignee-picker";
+import { AuthorChip } from "@/components/trau/author-chip";
 import { ProviderPinPicker } from "@/components/trau/provider-picker";
 import { StateGroupChip } from "@/components/trau/state-group-chip";
+import { StatusPill } from "@/components/trau/status-pill";
 import { DeleteIssueDialog } from "@/components/delete-issue-dialog";
 import { StartInterviewDialog } from "@/components/grill/start-interview-dialog";
 import { InternalIssueForm } from "@/components/internal-issue-form";
@@ -46,7 +48,14 @@ import {
 import { archiveToastMessage, useArchiveIssue } from "@/lib/archive";
 import { pinProvider, publishProviderPin } from "@/lib/provider-pin";
 import { activeSessionForIssue, grillSessionsQueryOptions } from "@/lib/grill";
-import { liveGateMessage, useLiveLoops, type LiveLoop } from "@/lib/overview";
+import { attemptsFor, checkpointLabel, formatAge } from "@/lib/ledger";
+import {
+  boardPill,
+  liveGateMessage,
+  useLiveLoops,
+  type LiveLoop,
+} from "@/lib/overview";
+import { runsQueryOptions, teamRunsQueryOptions } from "@/lib/runs";
 import {
   enqueueFresh,
   publishQueue,
@@ -301,6 +310,7 @@ function IssueDrawerBody({
           )
         ) : (
           <>
+            <Attempts repo={repo} id={id} />
             {issue.description.trim() ? (
               <Markdown urlMap={urlMap}>{issue.description}</Markdown>
             ) : (
@@ -456,6 +466,51 @@ function DrawerFrame({ id, children }: { id: string; children: ReactNode }) {
       </SheetHeader>
       <div className="flex-1 overflow-y-auto px-4 py-4">{children}</div>
     </>
+  );
+}
+
+// Attempts lists this ticket's prior runs, local and shared. A teammate's row
+// opens the record that travelled, never the local run page.
+function Attempts({ repo, id }: { repo: string; id: string }) {
+  const local = useQuery(runsQueryOptions(repo));
+  const team = useQuery(teamRunsQueryOptions(repo));
+  const attempts = attemptsFor(
+    [...(local.data?.runs ?? []), ...(team.data?.runs ?? [])],
+    id,
+  );
+  if (attempts.length === 0) return null;
+
+  return (
+    <div className="mb-6 flex flex-col gap-2 border-b pb-4">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        Attempts · {attempts.length}
+      </h3>
+      {attempts.map((run) => {
+        const pill = boardPill(run);
+        const shared = run.shared;
+        return (
+          <Link
+            key={`${run.ticket}/${shared?.writer ?? ""}`}
+            to={
+              shared ? "/team-runs/$repo/$writer/$ticket" : "/runs/$repo/$ticket"
+            }
+            params={{ repo, ticket: run.ticket, writer: shared?.writer ?? "" }}
+            className="flex flex-wrap items-center gap-2 rounded-md border bg-card px-3 py-2 text-xs transition-colors hover:bg-secondary/40"
+          >
+            <AuthorChip run={run} />
+            <StatusPill state={pill.state} label={pill.label} />
+            <span className="min-w-0 flex-1 truncate text-muted-foreground">
+              {run.failure_reason ?? checkpointLabel(run.phase)}
+            </span>
+            {run.updated_at && (
+              <span className="font-mono tabular-nums text-muted-foreground">
+                {formatAge(Math.max(0, Date.now() - Date.parse(run.updated_at)))}
+              </span>
+            )}
+          </Link>
+        );
+      })}
+    </div>
   );
 }
 

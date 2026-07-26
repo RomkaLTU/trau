@@ -7,6 +7,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/activity"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/teamsync"
 )
 
 // StepDuration is one display Step's derived wall-clock, summed from the
@@ -18,10 +19,21 @@ type StepDuration struct {
 	DurationMS int64  `json:"duration_ms"`
 }
 
+// ActivitySpan is one Activity's derived wall-clock inside a run — the finer grain
+// under StepDuration. It is the wire type itself: the timeline shared run history
+// travels with is the shape the API serves back, so neither side converts.
+type ActivitySpan = teamsync.ActivitySpan
+
 // activityStart is one activity_change: the instant a session began an Activity.
 type activityStart struct {
 	at  time.Time
 	act activity.Activity
+}
+
+// activitySpan is one Activity closed against whatever followed it.
+type activitySpan struct {
+	act activity.Activity
+	d   time.Duration
 }
 
 // terminalStates are the state_change values that close a run and so end the last
@@ -43,17 +55,37 @@ const maxDurationEvents = 5000
 // yields nil so the page shows no durations. A store error degrades to nil rather
 // than failing the resource.
 func runStepDurations(evs *hubstore.Events, root, ticket string) []StepDuration {
+	starts, terminals := runActivityEvents(evs, root, ticket)
+	return stepDurations(starts, terminals)
+}
+
+// runActivitySpans derives a ticket's per-Activity wall-clock from the same deltas,
+// alongside the instant its latest run's first Activity began. It is the compact
+// timeline shared run history carries in place of the event stream it came from.
+func runActivitySpans(evs *hubstore.Events, root, ticket string) (startedAt string, spans []ActivitySpan) {
+	starts, terminals := runActivityEvents(evs, root, ticket)
+	current, end := currentRun(starts, terminals)
+	if len(current) == 0 {
+		return "", nil
+	}
+	return current[0].at.UTC().Format(time.RFC3339), activitySpans(current, end)
+}
+
+// runActivityEvents reads the two signals a run's wall-clock derives from: the
+// instants its Activities began, and the instants a terminal state closed a run. A
+// store error degrades to no events rather than failing the caller's resource.
+func runActivityEvents(evs *hubstore.Events, root, ticket string) ([]activityStart, []time.Time) {
 	acts, err := evs.Query(root, hubstore.EventFilter{Kind: "activity_change", Ticket: ticket, Limit: maxDurationEvents})
 	if err != nil {
-		logger.Verbosef("step durations %s/%s: %v", root, ticket, err)
-		return nil
+		logger.Verbosef("run activities %s/%s: %v", root, ticket, err)
+		return nil, nil
 	}
 	if len(acts) == 0 {
-		return nil
+		return nil, nil
 	}
 	states, err := evs.Query(root, hubstore.EventFilter{Kind: "state_change", Ticket: ticket, Limit: maxDurationEvents})
 	if err != nil {
-		logger.Verbosef("step durations %s/%s: %v", root, ticket, err)
+		logger.Verbosef("run activities %s/%s: %v", root, ticket, err)
 	}
 
 	starts := make([]activityStart, 0, len(acts))
@@ -78,18 +110,18 @@ func runStepDurations(evs *hubstore.Events, root, ticket string) []StepDuration 
 		}
 	}
 
-	return stepDurations(starts, terminals)
+	return starts, terminals
 }
 
-// stepDurations groups the derived per-Activity spans into their Steps, scoped to
-// the latest run so the totals track the run's displayed wall-clock even after a
-// pause and resume. The current run is the span of activity_change events after the
-// terminal state_change that precedes the most recent one, closed by the terminal
-// state_change that follows it — or, for a run still in flight, left open at its
-// last Activity (which then contributes nothing until the next change).
-func stepDurations(starts []activityStart, terminals []time.Time) []StepDuration {
+// currentRun narrows a ticket's Activity starts to its latest run and reports the
+// instant that run closed, so totals track the run's displayed wall-clock even
+// after a pause and resume. The current run is the span of activity_change events
+// after the terminal state_change that precedes the most recent one, closed by the
+// terminal state_change that follows it — or, for a run still in flight, left open
+// at its last Activity (which then contributes nothing until the next change).
+func currentRun(starts []activityStart, terminals []time.Time) ([]activityStart, time.Time) {
 	if len(starts) == 0 {
-		return nil
+		return nil, time.Time{}
 	}
 	sort.Slice(starts, func(i, j int) bool { return starts[i].at.Before(starts[j].at) })
 	last := starts[len(starts)-1].at
@@ -111,21 +143,21 @@ func stepDurations(starts []activityStart, terminals []time.Time) []StepDuration
 		end = last
 	}
 
-	byStep := make(map[activity.Step]time.Duration, len(activity.Steps))
 	current := make([]activityStart, 0, len(starts))
 	for _, a := range starts {
 		if a.at.After(prior) && !a.at.After(end) {
 			current = append(current, a)
 		}
 	}
-	for i, a := range current {
-		next := end
-		if i+1 < len(current) {
-			next = current[i+1].at
-		}
-		if d := next.Sub(a.at); d > 0 {
-			byStep[activity.StepOf(a.act)] += d
-		}
+	return current, end
+}
+
+// stepDurations groups the derived per-Activity spans into their display Steps.
+func stepDurations(starts []activityStart, terminals []time.Time) []StepDuration {
+	current, end := currentRun(starts, terminals)
+	byStep := make(map[activity.Step]time.Duration, len(activity.Steps))
+	for _, span := range spansOf(current, end) {
+		byStep[activity.StepOf(span.act)] += span.d
 	}
 
 	out := make([]StepDuration, 0, len(activity.Steps))
@@ -136,6 +168,46 @@ func stepDurations(starts []activityStart, terminals []time.Time) []StepDuration
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+// activitySpans sums the run's spans per Activity, in the order each Activity first
+// ran, so a self-heal loop that re-entered verify reads as one line rather than
+// several.
+func activitySpans(current []activityStart, end time.Time) []ActivitySpan {
+	byActivity := map[activity.Activity]time.Duration{}
+	order := make([]activity.Activity, 0, len(current))
+	for _, span := range spansOf(current, end) {
+		if _, seen := byActivity[span.act]; !seen {
+			order = append(order, span.act)
+		}
+		byActivity[span.act] += span.d
+	}
+
+	out := make([]ActivitySpan, 0, len(order))
+	for _, act := range order {
+		out = append(out, ActivitySpan{Activity: string(act), DurationMS: byActivity[act].Milliseconds()})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// spansOf closes each Activity in a run against the next one, and the last against
+// the run's end. A span with no elapsed time is dropped rather than reported as a
+// zero.
+func spansOf(current []activityStart, end time.Time) []activitySpan {
+	out := make([]activitySpan, 0, len(current))
+	for i, a := range current {
+		next := end
+		if i+1 < len(current) {
+			next = current[i+1].at
+		}
+		if d := next.Sub(a.at); d > 0 {
+			out = append(out, activitySpan{act: a.act, d: d})
+		}
 	}
 	return out
 }

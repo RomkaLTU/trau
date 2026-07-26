@@ -169,6 +169,26 @@ func (t *Tokens) Total(repo, ticket string) (Spend, error) {
 	)
 }
 
+// Route is the provider and model a ticket mostly answered on: the pair the most
+// of its calls ran under, so a run that fell back for a single phase still reports
+// what it actually used. A ticket with no calls, or only provider-less historical
+// ones, yields empty strings rather than an error.
+func (t *Tokens) Route(repo, ticket string) (provider, model string, err error) {
+	err = t.db.QueryRow(
+		`SELECT provider, model FROM token_calls
+		 WHERE repo = ? AND ticket = ? AND provider <> ''
+		 GROUP BY provider, model ORDER BY COUNT(*) DESC, provider, model LIMIT 1`,
+		repo, ticket,
+	).Scan(&provider, &model)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", err
+	}
+	return provider, model, nil
+}
+
 // DayTotal sums repo's token + cost spend for calls whose local date (the ts's
 // YYYY-MM-DD prefix) equals date — the per-day window the budget day cap enforces,
 // across every bucket including _loop and _plans.

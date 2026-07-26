@@ -109,6 +109,7 @@ func (s *Server) appendEvents(w http.ResponseWriter, r *http.Request, repo regis
 	for _, row := range rows {
 		s.publishEvent(repo.Root, repo.Name, row)
 		s.notifyRunEvent(repo, row)
+		s.team.kickOnSettle(repo.Root, row)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "count": len(rows)})
 }

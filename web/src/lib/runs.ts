@@ -8,6 +8,26 @@ export type FailureClass = 'paused' | 'stopped' | 'faulted' | 'gave_up'
 
 export type PRStatus = 'awaiting-merge' | 'merged' | 'closed'
 
+export interface ActivitySpan {
+  activity: string
+  duration_ms: number
+}
+
+// SharedRun is everything a teammate's run carried across the team-sync remote,
+// and the author to attribute it to.
+export interface SharedRun {
+  writer: string
+  author?: string
+  repo?: string
+  started_at?: string
+  ended_at?: string
+  provider?: string
+  model?: string
+  tokens?: number
+  activities?: ActivitySpan[]
+  fetched_at?: string
+}
+
 export interface Run {
   ticket: string
   title?: string
@@ -23,6 +43,7 @@ export interface Run {
   cost_usd?: number
   updated_at?: string
   handback?: Handback
+  shared?: SharedRun
 }
 
 export interface ReposResponse {
@@ -61,5 +82,26 @@ export const runsQueryOptions = (repo: string) =>
     queryKey: ['runs', repo],
     queryFn: () => fetchRuns(repo),
     refetchInterval: 3000,
+    enabled: repo !== '',
+  })
+
+async function fetchTeamRuns(repo: string): Promise<RunsResponse> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/team-runs`,
+  )
+  if (!res.ok) {
+    throw new Error(`team runs request failed: ${res.status}`)
+  }
+  return res.json()
+}
+
+// teamRunsQueryOptions reads the runs teammates shared over the repo's git remote.
+// They are a resource of their own so nothing that means "this machine's work" ever
+// picks them up; only the ledger and the ticket drawer merge them in, for display.
+export const teamRunsQueryOptions = (repo: string) =>
+  queryOptions({
+    queryKey: ['team-runs', repo],
+    queryFn: () => fetchTeamRuns(repo),
+    refetchInterval: 15000,
     enabled: repo !== '',
   })

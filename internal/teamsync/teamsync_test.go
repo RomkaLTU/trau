@@ -46,12 +46,12 @@ func TestPushSnapshotsAndForcePushes(t *testing.T) {
 	cfg := Config{RepoDir: repo}
 	w := Writer{ID: "abc123", Name: "Ada", Email: "ada@example.com"}
 
-	if err := Push(context.Background(), cfg, w, []Lesson{{Lesson: "first"}}); err != nil {
+	if err := Push(context.Background(), cfg, w, Snapshot{Lessons: []Lesson{{Lesson: "first"}}}); err != nil {
 		t.Fatalf("first push: %v", err)
 	}
 	first := remoteRef(t, remote, RefPrefix+w.ID)
 
-	if err := Push(context.Background(), cfg, w, []Lesson{{Lesson: "second"}}); err != nil {
+	if err := Push(context.Background(), cfg, w, Snapshot{Lessons: []Lesson{{Lesson: "second"}}}); err != nil {
 		t.Fatalf("second push: %v", err)
 	}
 	second := remoteRef(t, remote, RefPrefix+w.ID)
@@ -71,7 +71,7 @@ func TestPushRejectedByRemoteReturnsError(t *testing.T) {
 	_, repo := fixture(t)
 	git(t, repo, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing.git"))
 
-	err := Push(context.Background(), Config{RepoDir: repo}, Writer{ID: "abc123"}, nil)
+	err := Push(context.Background(), Config{RepoDir: repo}, Writer{ID: "abc123"}, Snapshot{})
 	if err == nil {
 		t.Fatal("push to an unreachable remote succeeded")
 	}
@@ -83,10 +83,10 @@ func TestFetchReadsTeammatePayloadsAndSkipsSelf(t *testing.T) {
 
 	me := Writer{ID: "mine00", Name: "Ada", Email: "ada@example.com"}
 	them := Writer{ID: "theirs0", Name: "Grace", Email: "grace@example.com"}
-	if err := Push(context.Background(), Config{RepoDir: mine}, me, []Lesson{{Lesson: "mine"}}); err != nil {
+	if err := Push(context.Background(), Config{RepoDir: mine}, me, Snapshot{Lessons: []Lesson{{Lesson: "mine"}}}); err != nil {
 		t.Fatalf("publish mine: %v", err)
 	}
-	if err := Push(context.Background(), Config{RepoDir: theirs}, them, []Lesson{{Lesson: "theirs", Ticket: "COD-1"}}); err != nil {
+	if err := Push(context.Background(), Config{RepoDir: theirs}, them, Snapshot{Lessons: []Lesson{{Lesson: "theirs", Ticket: "COD-1"}}}); err != nil {
 		t.Fatalf("publish theirs: %v", err)
 	}
 
@@ -114,12 +114,12 @@ func TestFetchAttributesToTheRefNotThePayload(t *testing.T) {
 	theirs := clone(t, remote, "theirs")
 
 	them := Writer{ID: "theirs0", Name: "Grace"}
-	if err := Push(context.Background(), Config{RepoDir: theirs}, them, []Lesson{{Lesson: "theirs"}}); err != nil {
+	if err := Push(context.Background(), Config{RepoDir: theirs}, them, Snapshot{Lessons: []Lesson{{Lesson: "theirs"}}}); err != nil {
 		t.Fatalf("publish theirs: %v", err)
 	}
 	// Republish the same payload — which still names theirs0 in its body — under a
 	// second ref, the shape a writer impersonating another would produce.
-	if err := Push(context.Background(), Config{RepoDir: theirs}, Writer{ID: "other0", Name: "Grace"}, []Lesson{{Lesson: "theirs"}}); err != nil {
+	if err := Push(context.Background(), Config{RepoDir: theirs}, Writer{ID: "other0", Name: "Grace"}, Snapshot{Lessons: []Lesson{{Lesson: "theirs"}}}); err != nil {
 		t.Fatalf("publish under a second ref: %v", err)
 	}
 
@@ -140,7 +140,7 @@ func TestFetchSkipsUnreadableRefs(t *testing.T) {
 	remote, mine := fixture(t)
 	theirs := clone(t, remote, "theirs")
 
-	if err := Push(context.Background(), Config{RepoDir: theirs}, Writer{ID: "good00", Name: "Grace"}, []Lesson{{Lesson: "good"}}); err != nil {
+	if err := Push(context.Background(), Config{RepoDir: theirs}, Writer{ID: "good00", Name: "Grace"}, Snapshot{Lessons: []Lesson{{Lesson: "good"}}}); err != nil {
 		t.Fatalf("publish good: %v", err)
 	}
 	// A ref in the namespace whose commit carries no payload at all.
