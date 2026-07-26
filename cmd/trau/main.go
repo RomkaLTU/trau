@@ -697,6 +697,7 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		Project:         cfg.Project,
 		ReadyLabel:      cfg.ReadyLabel,
 		QuarantineLabel: cfg.QuarantineLabel,
+		QueuedLabel:     cfg.QueuedLabel,
 		SplitLabel:      cfg.SplitLabel,
 		APIKey:          cfg.LinearAPIKey,
 	}
@@ -1423,6 +1424,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		Prefix:               cfg.IssuePrefix,
 		TrackerProvider:      cfg.EffectiveTrackerProvider(),
 		InternalPrefix:       config.InternalPrefix(cfg.IssuePrefixConfigured, repoName(repoRoot)),
+		QueuedLabel:          cfg.QueuedLabel,
 		MaxRepairs:           cfg.MaxRepairs,
 		MaxBugfixes:          cfg.MaxBugfixes,
 		AgentRetries:         cfg.AgentRetries,

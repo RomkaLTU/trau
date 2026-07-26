@@ -264,6 +264,7 @@ func (s *Server) mcpDequeue(args json.RawMessage) (any, error) {
 		return nil, unknownMCPRepo(a.Repo)
 	}
 	id := strings.TrimSpace(a.ID)
+	item, queued := s.queuedItem(root, id)
 	switch _, err := s.stores.Queue(root).Remove(id); {
 	case errors.Is(err, queue.ErrNotQueued):
 		return nil, fmt.Errorf("%s is not in the queue — call queue_status for the rows it has", id)
@@ -271,6 +272,9 @@ func (s *Server) mcpDequeue(args json.RawMessage) (any, error) {
 		return nil, fmt.Errorf("%s is running and cannot be removed — call shutdown_queue to tear the run down", id)
 	case err != nil:
 		return nil, fmt.Errorf("dequeue: %w", err)
+	}
+	if queued {
+		s.clearQueued(context.Background(), root, item)
 	}
 	return s.mcpDrainState(root)
 }

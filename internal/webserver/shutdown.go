@@ -88,8 +88,13 @@ func (s *Server) teardownQueue(root string, running queue.Item, hasRunning bool)
 			}
 		}
 	}
-	if _, err := s.stores.Queue(root).Clear(); err != nil {
+	removed, err := s.stores.Queue(root).Clear()
+	if err != nil {
 		logger.Verbosef("shutdown %s: clear queue: %v", root, err)
+		return
+	}
+	for _, it := range removed {
+		s.clearQueued(s.drainCtx, root, it)
 	}
 }
 

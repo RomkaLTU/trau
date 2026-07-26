@@ -22,6 +22,7 @@ import (
 // probes per case.
 func drainServer(t *testing.T, name string) (*Server, *fakeSupervisor, string) {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 	root := filepath.Join(t.TempDir(), name)
 	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
 	s.home = t.TempDir()

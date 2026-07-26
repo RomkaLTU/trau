@@ -21,6 +21,7 @@ type Linear struct {
 	Runner          agent.Runner
 	ReadyLabel      string
 	QuarantineLabel string
+	QueuedLabel     string
 	SplitLabel      string
 	Team            string
 	Project         string
@@ -969,7 +970,7 @@ func (l *Linear) ensureLabelsPrompt() string {
 }
 
 func (l *Linear) managedLabels() []string {
-	return managedLabelList(l.ReadyLabel, l.QuarantineLabel, l.SplitLabel)
+	return managedLabelList(l.ReadyLabel, l.QuarantineLabel, l.SplitLabel, l.QueuedLabel)
 }
 
 // AddLabel adds one label to an issue without disturbing its other labels. Uses
@@ -1007,6 +1008,47 @@ func (l *Linear) addLabelAPI(ctx context.Context, id, label string) error {
 
 func (l *Linear) addLabelPrompt(id, label string) string {
 	return fmt.Sprintf("Use the Linear MCP on issue %s: add the label '%s' (keep every other label). Reply DONE.", id, label)
+}
+
+// RemoveLabel drops one label from an issue without disturbing its other labels.
+// Uses the API when possible, otherwise the MCP.
+func (l *Linear) RemoveLabel(ctx context.Context, id, label string) error {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return nil
+	}
+	if err := l.removeLabelAPI(ctx, id, label); err == nil {
+		return nil
+	} else if !shouldFallback(err) {
+		return err
+	}
+
+	_, err := l.Runner.Run(ctx, l.removeLabelPrompt(id, label), "label")
+	return err
+}
+
+func (l *Linear) removeLabelAPI(ctx context.Context, id, label string) error {
+	issue, err := l.api().Issue(ctx, id)
+	if err != nil {
+		return err
+	}
+	labelNames := make([]string, 0, len(issue.Labels))
+	present := false
+	for _, existing := range issue.Labels {
+		if existing.Name == label {
+			present = true
+			continue
+		}
+		labelNames = append(labelNames, existing.Name)
+	}
+	if !present {
+		return nil
+	}
+	return l.api().SetStatus(ctx, id, "", labelNames)
+}
+
+func (l *Linear) removeLabelPrompt(id, label string) string {
+	return fmt.Sprintf("Use the Linear MCP on issue %s: remove the label '%s' (keep every other label). Reply DONE.", id, label)
 }
 
 // IssueDetail returns the title and full description of issue id for build-prompt
