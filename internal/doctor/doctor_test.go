@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -718,6 +719,68 @@ func TestCheckSkillsWarnsWhenNothingNarrowsTheSet(t *testing.T) {
 	}
 	if !strings.Contains(c.Message, "REQUIRED_SKILLS=web-feature") {
 		t.Errorf("message %q should suggest a narrower pin", c.Message)
+	}
+}
+
+// writeLockedSkill installs a skill and returns the lockfile entry pinning it to
+// the content just written, so a test can pin either that content or another.
+func writeLockedSkill(t *testing.T, repo, name, body string) string {
+	t.Helper()
+	dir := filepath.Join(repo, ".agents", "skills", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := agent.SkillFolderHash(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hash
+}
+
+// TestCheckSkillsDriftReportsBothClasses: a lockfile naming one uninstalled and
+// one edited skill reports each with its class and pinned source, and a skill at
+// its pinned content is not named at all.
+func TestCheckSkillsDriftReportsBothClasses(t *testing.T) {
+	repo := t.TempDir()
+	pinned := writeLockedSkill(t, repo, "golang-code-style", "# pinned\n")
+	writeLockedSkill(t, repo, "web-feature", "# edited by hand\n")
+	lock := fmt.Sprintf(`{"version":1,"skills":{
+		"golang-code-style":{"source":"samber/cc-skills-golang","sourceType":"github","computedHash":%q},
+		"web-feature":{"source":"acme/skills","sourceType":"github","computedHash":"deadbeef"},
+		"mcp-builder":{"source":"anthropics/skills","sourceType":"github","computedHash":"cafebabe"}}}`, pinned)
+	if err := os.WriteFile(filepath.Join(repo, "skills-lock.json"), []byte(lock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := newTestRunner()
+	checkSkillsDrift(repo, rr)
+	c := lastCheck(t, rr)
+	if c.Status != warn {
+		t.Errorf("status = %q, want warn", c.Status)
+	}
+	for _, want := range []string{
+		"missing mcp-builder (pinned to anthropics/skills)",
+		"stale web-feature (pinned to acme/skills)",
+	} {
+		if !strings.Contains(c.Message, want) {
+			t.Errorf("message %q should report %q", c.Message, want)
+		}
+	}
+	if strings.Contains(c.Message, "golang-code-style") {
+		t.Errorf("message %q should not name a skill at its pinned content", c.Message)
+	}
+}
+
+func TestCheckSkillsDriftSilentWithoutLockfile(t *testing.T) {
+	repo := t.TempDir()
+	installSkill(t, repo, "golang-code-style")
+	rr := newTestRunner()
+	checkSkillsDrift(repo, rr)
+	if len(rr.r.Checks) != 0 {
+		t.Errorf("expected no drift check for a repo without a lockfile, got %+v", rr.r.Checks)
 	}
 }
 

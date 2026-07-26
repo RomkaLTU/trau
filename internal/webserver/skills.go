@@ -138,6 +138,7 @@ type SkillsResponse struct {
 	Rules       []SkillRuleView           `json:"rules"`
 	Plan        []SkillPlanView           `json:"plan"`
 	Coverage    SkillCoverageView         `json:"coverage"`
+	Lock        SkillLockView             `json:"lock"`
 	Unknown     []string                  `json:"unknown,omitempty"`
 	RulesError  string                    `json:"rules_error,omitempty"`
 }
@@ -295,6 +296,7 @@ func (s *Server) skillsSnapshot(repo registry.Repo) SkillsResponse {
 		Rules:       ruleViews(resolver.Rules()),
 		Plan:        skillPlan(resolver),
 		Coverage:    coverage,
+		Lock:        skillLockView(repo.Root),
 		Unknown:     resolver.UnknownRuleSkills(),
 	}
 	if err := resolver.RulesError(); err != nil {

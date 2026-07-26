@@ -25,6 +25,7 @@ import { writeConfig } from '@/lib/config'
 import { recentEventsQueryOptions } from '@/lib/events'
 import {
   autoNeverMatches,
+  installDriftedSkills,
   installSkill,
   latestNoSkillsTicket,
   loadedAgo,
@@ -43,6 +44,9 @@ import {
   type InstalledSkill,
   type RecommendedSkill,
   type SkillCoverage,
+  type SkillDriftClass,
+  type SkillInstallFailure,
+  type SkillLockState,
   type SkillPhase,
   type SkillPhaseCoverage,
   type SkillPlan,
@@ -70,6 +74,11 @@ const SCOPE_OPTIONS: { value: SkillScope; label: string }[] = [
   { value: 'auto', label: 'Auto' },
   { value: 'manual', label: 'Manual' },
 ]
+
+const DRIFT_TONE: Record<SkillDriftClass, string> = {
+  missing: 'border-fail/50 bg-fail/12 text-fail',
+  stale: 'border-warn/50 bg-warn/12 text-warn',
+}
 
 const SCOPE_TONE: Record<SkillScope, string> = {
   always: 'border-primary/50 bg-primary/12 text-primary',
@@ -124,6 +133,8 @@ function SkillsPanel({ repo }: { repo: string }) {
   const [installTarget, setInstallTarget] = useState<InstallTarget | null>(null)
   const [removeTarget, setRemoveTarget] = useState<InstalledSkill | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [driftOpen, setDriftOpen] = useState(false)
+  const [driftFailures, setDriftFailures] = useState<SkillInstallFailure[]>([])
 
   const onSnapshot = (snapshot: SkillsResponse) => {
     queryClient.setQueryData(skillsQueryOptions(repo).queryKey, snapshot)
@@ -151,6 +162,20 @@ function SkillsPanel({ repo }: { repo: string }) {
     },
     onError: (err) => {
       setRemoveTarget(null)
+      setActionError((err as Error).message)
+    },
+  })
+
+  const installDrift = useMutation({
+    mutationFn: () => installDriftedSkills(repo),
+    onSuccess: (result) => {
+      onSnapshot(result.skills)
+      setDriftOpen(false)
+      setDriftFailures(result.failed ?? [])
+      setActionError(null)
+    },
+    onError: (err) => {
+      setDriftOpen(false)
       setActionError((err as Error).message)
     },
   })
@@ -205,6 +230,16 @@ function SkillsPanel({ repo }: { repo: string }) {
         <p className="font-mono text-sm text-fail">{actionError}</p>
       )}
 
+      <SkillLockSection
+        lock={data.lock}
+        failures={driftFailures}
+        installing={installDrift.isPending}
+        onInstall={() => {
+          setActionError(null)
+          setDriftOpen(true)
+        }}
+      />
+
       <RegistrySearch
         repo={repo}
         onInstall={(t) => {
@@ -244,6 +279,23 @@ function SkillsPanel({ repo }: { repo: string }) {
       />
 
       <CoverageSection skills={data.installed} coverage={data.coverage} />
+
+      <ConfirmDialog
+        open={driftOpen}
+        onOpenChange={setDriftOpen}
+        windowTitle="install pinned skills"
+        title={`Install ${data.lock.drift.length} pinned skill(s)?`}
+        description={
+          <>
+            Installs each one from the source{' '}
+            <code className="text-foreground">skills-lock.json</code> pins and
+            keeps it only if its content matches the pinned hash. This writes
+            prompt instructions into {repo}.
+          </>
+        }
+        confirmLabel="Install"
+        onConfirm={() => installDrift.mutate()}
+      />
 
       <ConfirmDialog
         open={installTarget !== null}
@@ -354,6 +406,97 @@ function RulesProblem({
       {unknown.join(', ')} — install them or drop the rule; they are skipped in
       the meantime.
     </WarnBanner>
+  )
+}
+
+function SkillLockSection({
+  lock,
+  failures,
+  installing,
+  onInstall,
+}: {
+  lock: SkillLockState
+  failures: SkillInstallFailure[]
+  installing: boolean
+  onInstall: () => void
+}) {
+  if (!lock.checked) return null
+  const unlocked = lock.unlocked ?? []
+
+  return (
+    <TerminalCard
+      title={
+        lock.drift.length === 0
+          ? 'skills-lock · in sync'
+          : `skills-lock · ${lock.drift.length} drifted`
+      }
+    >
+      <div className="flex flex-col gap-3">
+        <p className="font-sans text-sm leading-relaxed text-muted-foreground">
+          {lock.drift.length === 0
+            ? 'Every skill this repo pins is installed at its pinned content.'
+            : 'This machine does not match what skills-lock.json pins. Runs go ahead either way — installing writes prompt instructions onto your machine, so it only happens when you ask.'}
+          {unlocked.length > 0 &&
+            ` Installed without a pin: ${unlocked.join(', ')}.`}
+        </p>
+
+        {lock.drift.length > 0 && (
+          <div className="divide-y divide-border/60 rounded-md border border-border">
+            {lock.drift.map((drift) => (
+              <div
+                key={drift.name}
+                className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2"
+              >
+                <span className="font-mono text-sm text-foreground">
+                  {drift.name}
+                </span>
+                <span
+                  className={cn(
+                    'inline-flex items-center rounded border px-1.5 py-0.5 font-mono text-[0.65rem] capitalize',
+                    DRIFT_TONE[drift.class],
+                  )}
+                >
+                  {drift.class}
+                </span>
+                {drift.source && (
+                  <span className="font-mono text-xs text-muted-foreground">
+                    pinned to {drift.source}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {failures.length > 0 && (
+          <div className="flex flex-col gap-1 rounded-md border border-fail/50 bg-fail/12 px-3 py-2">
+            <p className="font-mono text-sm font-medium text-fail">
+              Not installed — the fetched content does not match the pin
+            </p>
+            {failures.map((f) => (
+              <p key={f.name} className="font-mono text-xs text-fail">
+                {f.name}: {f.error}
+              </p>
+            ))}
+          </div>
+        )}
+
+        {lock.drift.length > 0 && (
+          <div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="font-mono"
+              disabled={installing}
+              onClick={onInstall}
+            >
+              <Download className="size-3.5" aria-hidden="true" />
+              {installing ? 'Installing…' : 'Install missing skills'}
+            </Button>
+          </div>
+        )}
+      </div>
+    </TerminalCard>
   )
 }
 

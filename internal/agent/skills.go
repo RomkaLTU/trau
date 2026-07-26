@@ -277,6 +277,9 @@ func MissingSkillsMessage(r SkillReadiness) string {
 	return msg
 }
 
+// SkillsLockFile is the repo-root lockfile the skills.sh CLI writes.
+const SkillsLockFile = "skills-lock.json"
+
 // SkillLock is the recorded provenance of one installed skill from
 // skills-lock.json: where it came from and the SKILL.md path within that source.
 type SkillLock struct {
@@ -293,7 +296,7 @@ func ReadSkillsLock(repoRoot string) map[string]SkillLock {
 	if repoRoot == "" {
 		return nil
 	}
-	data, err := os.ReadFile(filepath.Join(repoRoot, "skills-lock.json"))
+	data, err := os.ReadFile(filepath.Join(repoRoot, SkillsLockFile))
 	if err != nil {
 		return nil
 	}
