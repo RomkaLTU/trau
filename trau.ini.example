@@ -52,7 +52,8 @@ ISSUE_PREFIX=                # ticket-ID prefix for parsing, branch inference, a
 READY_LABEL=ready-for-agent
 QUARANTINE_LABEL=needs-human
 QUEUED_LABEL=queued          # label mirrored onto tickets waiting in the hub queue; it comes off when
-                             # the ticket's own run starts or the item leaves the queue. Empty = no writes.
+                             # the ticket's own run starts or the item leaves the queue, and each sync
+                             # heals whatever drifted from queue membership. Empty = no writes.
 SPLIT_LABEL=needs-split      # label the pre-flight size judge applies to a ticket it flags as
                              # too large to build in one window (see SIZE_JUDGE under loop control)
 PROJECT=                     # Linear project this repo owns (e.g. salonradar.com). When set, the loop only

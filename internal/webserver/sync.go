@@ -178,7 +178,8 @@ func (s *Server) dropFromQueue(root string, ids []string) {
 // background sync loop. An explicitly internal provider resolves no reader and
 // never records an outcome, so any sync error a previous provider stamped is
 // cleared here — otherwise nothing would ever run to clear it and it would pin
-// health at sync-failed.
+// health at sync-failed. A finished pull ends with a queued-label reconcile, so the
+// labels it just landed are healed against the queue the hub holds.
 func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse, error) {
 	res, err := s.resolveReader(repo)
 	if err != nil {
@@ -227,6 +228,7 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 		return SyncResponse{}, err
 	}
 	s.resolveIdentity(ctx, store, repo.Root, res.reader)
+	s.reconcileQueuedLabels(ctx, repo.Root)
 	return SyncResponse{
 		Repo:     repo.Name,
 		Provider: res.provider,
