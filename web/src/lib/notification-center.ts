@@ -152,6 +152,13 @@ function notificationOf(ev: RepoFeedEvent): HubNotification | null {
   return notification ?? null;
 }
 
+// showsInAppToast is whether a live notification still raises a corner toast.
+// Interview questions don't: the dock lights up in the same corner and is the
+// in-app signal for them.
+export function showsInAppToast(kind: NotificationKind): boolean {
+  return kind !== "grill_question";
+}
+
 export type NotificationTarget =
   | { kind: "inbox"; repo: string; issue: string }
   | { kind: "run"; repo: string; ticket: string }
