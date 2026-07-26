@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,6 +20,8 @@ import (
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubdb"
+	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/transcriptdb"
 	"github.com/RomkaLTU/trau/internal/webserver"
@@ -534,6 +538,117 @@ func TestCheckBrowserVerify(t *testing.T) {
 	}
 }
 
+func TestCheckTeamSync(t *testing.T) {
+	cases := []struct {
+		name     string
+		enabled  bool
+		remote   bool
+		state    hubstore.TeamSyncState
+		status   string
+		wantMsg  string
+		wantWarn int
+	}{
+		{name: "off skips entirely"},
+		{name: "no remote warns", enabled: true, status: warn, wantMsg: "no git remote", wantWarn: 1},
+		{name: "never synced warns", enabled: true, remote: true, status: warn, wantMsg: "no sync has run yet", wantWarn: 1},
+		{
+			name: "recorded error warns", enabled: true, remote: true,
+			state:   hubstore.TeamSyncState{WriterID: "w1", LastSyncAt: "2026-07-26T10:00:00Z", LastError: "push rejected"},
+			status:  warn,
+			wantMsg: "push rejected", wantWarn: 1,
+		},
+		{
+			name: "clean pass passes", enabled: true, remote: true,
+			state:   hubstore.TeamSyncState{WriterID: "w1", LastSyncAt: "2026-07-26T10:00:00Z"},
+			status:  pass,
+			wantMsg: "last synced 2026-07-26T10:00:00Z",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TRAU_HOME", t.TempDir())
+			repoRoot := teamSyncRepo(t, tc.remote)
+			if tc.remote {
+				seedTeamSyncState(t, repoRoot, tc.state)
+			}
+
+			rr := newTestRunner()
+			checkTeamSync(context.Background(), config.Config{TeamSync: tc.enabled}, repoRoot, rr)
+
+			if tc.status == "" {
+				if len(rr.r.Checks) != 0 {
+					t.Fatalf("expected no check, got %+v", rr.r.Checks)
+				}
+				return
+			}
+			c := lastCheck(t, rr)
+			if c.Status != tc.status {
+				t.Errorf("status = %q, want %q (%s)", c.Status, tc.status, c.Message)
+			}
+			if rr.r.Warnings != tc.wantWarn {
+				t.Errorf("warnings = %d, want %d", rr.r.Warnings, tc.wantWarn)
+			}
+			if rr.r.Errors != 0 {
+				t.Errorf("errors = %d, want 0 — a failed sync never fails doctor", rr.r.Errors)
+			}
+			if !strings.Contains(c.Message, tc.wantMsg) {
+				t.Errorf("message %q should contain %q", c.Message, tc.wantMsg)
+			}
+		})
+	}
+}
+
+func teamSyncRepo(t *testing.T, withRemote bool) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "repo")
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	run("init", "-q", root)
+	if withRemote {
+		run("-C", root, "remote", "add", "origin", filepath.Join(t.TempDir(), "remote.git"))
+	}
+	return root
+}
+
+// seedTeamSyncState brings the hub database into existence the way serve does and
+// records st, so the check reads real bookkeeping. A zero state leaves the table
+// empty — the shape of a hub that has started but never synced this repo.
+func seedTeamSyncState(t *testing.T, repoRoot string, st hubstore.TeamSyncState) {
+	t.Helper()
+	db, err := hubdb.Open(registry.Home())
+	if err != nil {
+		t.Fatalf("open hub db: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	if st == (hubstore.TeamSyncState{}) {
+		return
+	}
+	if err := hubstore.NewTeamSync(db.SQL()).SaveState(repoRoot, st); err != nil {
+		t.Fatalf("seed sync state: %v", err)
+	}
+}
+
+// TestCheckTeamSyncWithoutHubDatabase covers the toggle being on before the hub
+// has ever run: there is no bookkeeping to read, and doctor says so.
+func TestCheckTeamSyncWithoutHubDatabase(t *testing.T) {
+	t.Setenv("TRAU_HOME", t.TempDir())
+	rr := newTestRunner()
+
+	checkTeamSync(context.Background(), config.Config{TeamSync: true}, teamSyncRepo(t, true), rr)
+
+	c := lastCheck(t, rr)
+	if c.Status != warn {
+		t.Errorf("status = %q, want warn", c.Status)
+	}
+	if !strings.Contains(c.Message, "unreadable") {
+		t.Errorf("message %q should say the bookkeeping is unreadable", c.Message)
+	}
+}
+
 func installSkill(t *testing.T, repo, name string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(repo, ".agents", "skills", name), 0o755); err != nil {
@@ -604,6 +719,68 @@ func TestCheckSkillsWarnsWhenNothingNarrowsTheSet(t *testing.T) {
 	}
 	if !strings.Contains(c.Message, "REQUIRED_SKILLS=web-feature") {
 		t.Errorf("message %q should suggest a narrower pin", c.Message)
+	}
+}
+
+// writeLockedSkill installs a skill and returns the lockfile entry pinning it to
+// the content just written, so a test can pin either that content or another.
+func writeLockedSkill(t *testing.T, repo, name, body string) string {
+	t.Helper()
+	dir := filepath.Join(repo, ".agents", "skills", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := agent.SkillFolderHash(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return hash
+}
+
+// TestCheckSkillsDriftReportsBothClasses: a lockfile naming one uninstalled and
+// one edited skill reports each with its class and pinned source, and a skill at
+// its pinned content is not named at all.
+func TestCheckSkillsDriftReportsBothClasses(t *testing.T) {
+	repo := t.TempDir()
+	pinned := writeLockedSkill(t, repo, "golang-code-style", "# pinned\n")
+	writeLockedSkill(t, repo, "web-feature", "# edited by hand\n")
+	lock := fmt.Sprintf(`{"version":1,"skills":{
+		"golang-code-style":{"source":"samber/cc-skills-golang","sourceType":"github","computedHash":%q},
+		"web-feature":{"source":"acme/skills","sourceType":"github","computedHash":"deadbeef"},
+		"mcp-builder":{"source":"anthropics/skills","sourceType":"github","computedHash":"cafebabe"}}}`, pinned)
+	if err := os.WriteFile(filepath.Join(repo, "skills-lock.json"), []byte(lock), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := newTestRunner()
+	checkSkillsDrift(repo, rr)
+	c := lastCheck(t, rr)
+	if c.Status != warn {
+		t.Errorf("status = %q, want warn", c.Status)
+	}
+	for _, want := range []string{
+		"missing mcp-builder (pinned to anthropics/skills)",
+		"stale web-feature (pinned to acme/skills)",
+	} {
+		if !strings.Contains(c.Message, want) {
+			t.Errorf("message %q should report %q", c.Message, want)
+		}
+	}
+	if strings.Contains(c.Message, "golang-code-style") {
+		t.Errorf("message %q should not name a skill at its pinned content", c.Message)
+	}
+}
+
+func TestCheckSkillsDriftSilentWithoutLockfile(t *testing.T) {
+	repo := t.TempDir()
+	installSkill(t, repo, "golang-code-style")
+	rr := newTestRunner()
+	checkSkillsDrift(repo, rr)
+	if len(rr.r.Checks) != 0 {
+		t.Errorf("expected no drift check for a repo without a lockfile, got %+v", rr.r.Checks)
 	}
 }
 

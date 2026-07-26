@@ -269,6 +269,16 @@ LESSONS_DISTILL=0
 # See docs/lessons-memory.md for the record schema and when to commit a curated
 # digest vs keep it local.
 
+# Share this repo's lessons with teammates over the repo's own git remote — no
+# server and no new credentials. The hub publishes this machine's records as a
+# single snapshot commit on refs/trau/team/<writer-id> and folds the teammates'
+# records back into prompt recall and the web lessons view, attributed to their git
+# name. It touches refs only, never the working tree, and is blameless: an
+# unreachable or read-only remote is recorded for `trau doctor` and the settings
+# page and never pauses, faults, or delays a run. Off by default; a repo with no
+# git remote cannot use it.
+# TEAM_SYNC=0
+
 # --- time tracking (opt-in, OFF by default) ---
 # Optional per-ticket time tracking. When enabled, trau writes a per-ticket
 # human-EFFORT estimate after a ticket merges to

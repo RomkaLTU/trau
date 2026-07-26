@@ -12,6 +12,8 @@ export interface Lesson {
   lesson: string
   tags?: string[]
   recorded_at?: string
+  author?: string
+  me?: boolean
 }
 
 export interface LessonsResponse {

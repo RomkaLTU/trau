@@ -38,6 +38,10 @@ type RunView struct {
 	// Handback is set only while a takeover stamp is pending, so a hand-back can
 	// ask whether the human finished the interrupted phase.
 	Handback *Handback `json:"handback,omitempty"`
+	// Shared is set on the rows the team-runs resource serves: who ran it and the
+	// fields that actually travelled. It is never present on this machine's own
+	// runs, which the ledger marks "Me".
+	Shared *SharedRun `json:"shared,omitempty"`
 }
 
 // Handback is a ticket's pending hand-back choice (ADR 0018): a takeover

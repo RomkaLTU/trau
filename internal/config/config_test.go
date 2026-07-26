@@ -424,6 +424,50 @@ func TestLoadSkillsMenu(t *testing.T) {
 	t.Error("SKILLS_MENU is missing from the settings catalog")
 }
 
+func TestLoadTeamSync(t *testing.T) {
+	if Defaults().TeamSync {
+		t.Fatal("default TeamSync = true, want sharing off until it is opted into")
+	}
+
+	dir := t.TempDir()
+	project := filepath.Join(dir, ".trau.ini")
+	if err := os.WriteFile(project, []byte("TEAM_SYNC=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayered(project, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.TeamSync {
+		t.Error("TeamSync = false, want true")
+	}
+	if got := keyValue(cfg, "TEAM_SYNC"); got != "1" {
+		t.Errorf("keyValue(TEAM_SYNC) = %q, want 1", got)
+	}
+	if got := keyValue(Defaults(), "TEAM_SYNC"); got != "0" {
+		t.Errorf("keyValue(TEAM_SYNC) on defaults = %q, want 0", got)
+	}
+	for _, m := range KnownKeys() {
+		if m.Key != "TEAM_SYNC" {
+			continue
+		}
+		if !m.WebEditable {
+			t.Error("TEAM_SYNC should be web-editable")
+		}
+		if !m.Bool {
+			t.Error("TEAM_SYNC should render as a boolean")
+		}
+		if m.Default != "0" {
+			t.Errorf("TEAM_SYNC default = %q, want 0", m.Default)
+		}
+		if m.Group != sectionTeam {
+			t.Errorf("TEAM_SYNC section = %q, want %q", m.Group, sectionTeam)
+		}
+		return
+	}
+	t.Error("TEAM_SYNC is missing from the settings catalog")
+}
+
 func TestLoadCodeStyleNote(t *testing.T) {
 	if !Defaults().CodeStyleNote {
 		t.Fatal("default CodeStyleNote = false, want the block carried")

@@ -77,6 +77,7 @@ type Server struct {
 	reloadPoll       time.Duration
 	updates          *update.Checker
 	attachFetch      singleflight.Group
+	team             *teamSyncer
 }
 
 // New builds a Server that reports version and treats now as its start time. It
@@ -123,6 +124,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 	s.syncer = newSyncer(s)
 	s.atlas = newAtlasRunner(s)
 	s.render = newVideoRenderer(s)
+	s.team = newTeamSyncer(s)
 	return s
 }
 
@@ -140,7 +142,8 @@ const repoSweepInterval = 30 * time.Second
 // tickers. A non-positive
 // syncInterval disables the background sync; each sync tick also runs the
 // reconciliation sweep for repos due on reconcileInterval, so a disabled sync
-// disables the sweep too. Call it once before serving.
+// disables the sweep too, and the team-sync sweep rides the same cadence.
+// Call it once before serving.
 func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time.Duration) {
 	s.drainCtx = ctx
 	s.importAllCheckpoints()
@@ -161,6 +164,7 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 	go s.syncer.run(ctx, syncInterval, reconcileInterval)
 	go s.pruneRunData(ctx)
 	go s.pruneProofs(ctx)
+	go s.team.run(ctx, syncInterval)
 	go s.updates.Run(ctx)
 }
 
@@ -334,9 +338,12 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/gitignore", s.handleRepoGitignore)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/health", s.handleRepoHealth)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/lessons", s.handleLessons)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/team-sync", s.handleTeamSync)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/team-runs", s.handleTeamRuns)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills", s.handleSkills)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills/search", s.handleSkillsSearch)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills/rules", s.handleSkillRules)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills/drift", s.handleSkillDrift)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills/{name}", s.handleSkillItem)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/skills/{$}", s.handleSkillItem)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/config", s.handleConfig)

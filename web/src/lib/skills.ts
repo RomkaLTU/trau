@@ -63,6 +63,35 @@ export interface SkillCoverage {
   phases: SkillPhaseCoverage[]
 }
 
+export type SkillDriftClass = 'missing' | 'stale'
+
+export interface SkillDrift {
+  name: string
+  class: SkillDriftClass
+  source?: string
+  source_type?: string
+  skill_path?: string
+  pinned_hash?: string
+  installed_hash?: string
+}
+
+export interface SkillLockState {
+  checked: boolean
+  drift: SkillDrift[]
+  unlocked?: string[]
+}
+
+export interface SkillInstallFailure {
+  name: string
+  error: string
+}
+
+export interface SkillDriftInstallResult {
+  installed: string[]
+  failed?: SkillInstallFailure[]
+  skills: SkillsResponse
+}
+
 export interface SkillsResponse {
   repo: string
   project_type: string
@@ -72,6 +101,7 @@ export interface SkillsResponse {
   rules: SkillRule[]
   plan: SkillPlan[]
   coverage: SkillCoverage
+  lock: SkillLockState
   unknown?: string[]
   rules_error?: string
 }
@@ -148,6 +178,16 @@ export async function removeSkill(
   })
   if (!res.ok) {
     throw new Error(await readError(res, 'remove failed'))
+  }
+  return res.json()
+}
+
+export async function installDriftedSkills(
+  repo: string,
+): Promise<SkillDriftInstallResult> {
+  const res = await apiFetch(`${repoBase(repo)}/drift`, { method: 'POST' })
+  if (!res.ok) {
+    throw new Error(await readError(res, 'installing pinned skills failed'))
   }
   return res.json()
 }

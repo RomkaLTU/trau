@@ -4,6 +4,7 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { Play, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { AuthorChip } from '@/components/trau/author-chip'
 import { PhaseStepper } from '@/components/trau/phase-stepper'
 import { PRStatusBadge } from '@/components/trau/pr-status-badge'
 import { StatusPill } from '@/components/trau/status-pill'
@@ -26,16 +27,20 @@ import {
   capMerged,
   checkpointLabel,
   formatAge,
+  isMine,
+  ledgerTotals,
   mergeLedger,
   rowPill,
+  rowsForAuthor,
   rowsForTab,
+  type LedgerAuthor,
   type LedgerRow,
   type LedgerTab,
 } from '@/lib/ledger'
 import { boardPill } from '@/lib/overview'
 import { publishQueue, runNext } from '@/lib/queue'
-import { formatDuration } from '@/lib/runlive'
-import { runsQueryOptions, type Run } from '@/lib/runs'
+import { formatCostUSD, formatDuration } from '@/lib/runlive'
+import { runsQueryOptions, teamRunsQueryOptions, type Run } from '@/lib/runs'
 import { checkpointSteps, liveSteps, type Step } from '@/lib/steps'
 import { cn } from '@/lib/utils'
 
@@ -49,7 +54,7 @@ function useNow(intervalMs: number): number {
 }
 
 function rowKey(row: LedgerRow): string {
-  return `${row.repo}/${row.run.ticket}`
+  return `${row.repo}/${row.run.ticket}/${row.run.shared?.writer ?? ''}`
 }
 
 const TABS: { key: LedgerTab; label: string }[] = [
@@ -58,6 +63,12 @@ const TABS: { key: LedgerTab; label: string }[] = [
   { key: 'needs-you', label: 'needs you' },
   { key: 'stopped', label: 'stopped' },
   { key: 'merged', label: 'merged' },
+]
+
+const AUTHORS: { key: LedgerAuthor; label: string }[] = [
+  { key: 'everyone', label: 'everyone' },
+  { key: 'me', label: 'me' },
+  { key: 'teammates', label: 'teammates' },
 ]
 
 function rowStepper(row: LedgerRow): { steps: Step[]; label: string } {
@@ -127,6 +138,7 @@ function RepoErrorNotices({ repos }: { repos: string[] }) {
 function RowItem({
   row,
   showRepo,
+  showAuthor,
   activity,
   now,
   onNotice,
@@ -134,6 +146,7 @@ function RowItem({
 }: {
   row: LedgerRow
   showRepo: boolean
+  showAuthor: boolean
   activity?: string
   now: number
   onNotice: (notice: CheckpointNotice) => void
@@ -142,13 +155,18 @@ function RowItem({
   const { repo, run, instance } = row
   const pill = rowPill(row)
   const { steps, label } = rowStepper(row)
-  const to = instance ? '/live/$repo/$ticket' : '/runs/$repo/$ticket'
+  const shared = run.shared
+  const to = shared
+    ? '/team-runs/$repo/$writer/$ticket'
+    : instance
+      ? '/live/$repo/$ticket'
+      : '/runs/$repo/$ticket'
 
   return (
     <li>
       <Link
         to={to}
-        params={{ repo, ticket: run.ticket }}
+        params={{ repo, ticket: run.ticket, writer: shared?.writer ?? '' }}
         className="group flex flex-col gap-1.5 px-4 py-3 transition-colors hover:bg-secondary/40"
       >
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
@@ -157,6 +175,7 @@ function RowItem({
             {run.title ?? run.ticket}
           </span>
           {showRepo && <RepoChip repo={repo} />}
+          {showAuthor && <AuthorChip run={run} />}
           <PhaseStepper compact steps={steps} subLabel={label} />
           <StatusPill state={pill.state} label={pill.label} />
           <PRStatusBadge status={run.pr_status} />
@@ -166,15 +185,17 @@ function RowItem({
           <span className="w-16 text-right font-mono text-[0.7rem] text-muted-foreground">
             {rowAge(row, now)}
           </span>
-          <div onClick={(e) => e.preventDefault()}>
-            <RunActionsMenu
-              repo={repo}
-              ticket={run.ticket}
-              phase={run.phase}
-              onNotice={onNotice}
-              onConflict={() => onConflict(repo)}
-            />
-          </div>
+          {!shared && (
+            <div onClick={(e) => e.preventDefault()}>
+              <RunActionsMenu
+                repo={repo}
+                ticket={run.ticket}
+                phase={run.phase}
+                onNotice={onNotice}
+                onConflict={() => onConflict(repo)}
+              />
+            </div>
+          )}
         </div>
         {instance && activity && (
           <p className="pl-[5.75rem] font-mono text-xs text-muted-foreground">
@@ -323,6 +344,16 @@ function NeedsYouStrip({
   )
 }
 
+function TotalsLine({ rows }: { rows: LedgerRow[] }) {
+  const totals = ledgerTotals(rows)
+  return (
+    <p className="font-mono text-xs tabular-nums text-muted-foreground">
+      {totals.runs} runs ·{' '}
+      <span className="text-foreground">{formatCostUSD(totals.costUsd, true)}</span>
+    </p>
+  )
+}
+
 function ConflictBanner({ repo, onDismiss }: { repo: string; onDismiss: () => void }) {
   return (
     <div
@@ -368,11 +399,15 @@ export function RunLedger({
   const runsResults = useQueries({
     queries: repoNames.map((name) => runsQueryOptions(name)),
   })
+  const teamResults = useQueries({
+    queries: repoNames.map((name) => teamRunsQueryOptions(name)),
+  })
   const instancesQuery = useQuery(instancesQueryOptions)
   const singleFeed = useEventFeed(isAll ? '' : (repo ?? ''))
   const allEvents = useAllEvents(isAll)
   const now = useNow(1000)
   const [tab, setTab] = useState<LedgerTab>('all')
+  const [author, setAuthor] = useState<LedgerAuthor>('everyone')
   const [expanded, setExpanded] = useState(false)
   const [conflict, setConflict] = useState<string | null>(null)
 
@@ -382,15 +417,20 @@ export function RunLedger({
     const byRepo = new Map<string, Run[]>()
     repoNames.forEach((name, i) => {
       const data = runsResults[i]?.data
-      if (data) byRepo.set(name, data.runs)
+      const shared = teamResults[i]?.data?.runs ?? []
+      if (data) byRepo.set(name, [...data.runs, ...shared])
     })
     return byRepo
-  }, [repoNames, runsResults])
+  }, [repoNames, runsResults, teamResults])
 
-  const rows = useMemo(
+  const all = useMemo(
     () => mergeLedger(repoNames, runsByRepo, instances),
     [repoNames, runsByRepo, instances],
   )
+  // Team sync is opt-in, so the attribution chrome only appears once teammates
+  // are actually sharing: without it the ledger is the one it has always been.
+  const shared = all.some((row) => !isMine(row.run))
+  const rows = useMemo(() => rowsForAuthor(all, author), [all, author])
   const counts = useMemo(() => bucketCounts(rows), [rows])
   const needsYou = useMemo(() => rowsForTab(rows, 'needs-you'), [rows])
 
@@ -418,7 +458,7 @@ export function RunLedger({
 
   if (repoNames.length === 0) return <EmptyRuns />
 
-  if (rows.length === 0) {
+  if (all.length === 0) {
     if (anyPending) {
       return (
         <div className="flex flex-col gap-4">
@@ -447,28 +487,56 @@ export function RunLedger({
         onConflict={setConflict}
       />
 
-      <div className="flex flex-wrap items-center gap-1 self-start rounded-md border border-border bg-input p-0.5">
-        {TABS.map((t) => {
-          const count = t.key === 'all' ? rows.length : counts[t.key]
-          return (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => setTab(t.key)}
-              aria-pressed={tab === t.key}
-              className={cn(
-                'rounded-[calc(var(--radius)-6px)] px-3 py-1 font-mono text-xs transition-colors',
-                tab === t.key
-                  ? 'bg-primary text-primary-foreground'
-                  : count === 0
-                    ? 'text-faint hover:text-muted-foreground'
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-1 rounded-md border border-border bg-input p-0.5">
+          {TABS.map((t) => {
+            const count = t.key === 'all' ? rows.length : counts[t.key]
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setTab(t.key)}
+                aria-pressed={tab === t.key}
+                className={cn(
+                  'rounded-[calc(var(--radius)-6px)] px-3 py-1 font-mono text-xs transition-colors',
+                  tab === t.key
+                    ? 'bg-primary text-primary-foreground'
+                    : count === 0
+                      ? 'text-faint hover:text-muted-foreground'
+                      : 'text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {t.label} ({count})
+              </button>
+            )
+          })}
+        </div>
+
+        {shared && (
+          <div
+            aria-label="Filter runs by author"
+            className="flex flex-wrap items-center gap-1 rounded-md border border-border bg-input p-0.5"
+          >
+            {AUTHORS.map((a) => (
+              <button
+                key={a.key}
+                type="button"
+                onClick={() => setAuthor(a.key)}
+                aria-pressed={author === a.key}
+                className={cn(
+                  'rounded-[calc(var(--radius)-6px)] px-3 py-1 font-mono text-xs transition-colors',
+                  author === a.key
+                    ? 'bg-primary text-primary-foreground'
                     : 'text-muted-foreground hover:text-foreground',
-              )}
-            >
-              {t.label} ({count})
-            </button>
-          )
-        })}
+                )}
+              >
+                {a.label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {shared && <TotalsLine rows={visible} />}
       </div>
 
       {capped.rows.length === 0 ? (
@@ -482,7 +550,8 @@ export function RunLedger({
               key={rowKey(row)}
               row={row}
               showRepo={isAll}
-              activity={activityByKey.get(rowKey(row))}
+              showAuthor={shared}
+              activity={activityByKey.get(`${row.repo}/${row.run.ticket}`)}
               now={now}
               onNotice={onNotice}
               onConflict={setConflict}

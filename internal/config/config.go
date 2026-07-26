@@ -273,6 +273,12 @@ type Config struct {
 	Lessons        bool
 	LessonsDistill bool
 
+	// TeamSync opts the repo into sharing its lessons ledger with teammates over the
+	// repo's own git remote (config TEAM_SYNC): the hub publishes this machine's
+	// records to refs/trau/team/<writer-id> and folds the teammates' back in. Off by
+	// default — nothing is fetched, pushed, or created until it is turned on.
+	TeamSync bool
+
 	// Opt-in, per-ticket time tracking. Off by default: when TimelogEnabled is
 	// false none of the time-log code runs and trau behaves exactly as before.
 	// Storage is repo|user|none; OutputFormat selects the export rendering;
@@ -461,6 +467,7 @@ func Defaults() Config {
 		Notify:                 false,
 		Lessons:                true,
 		LessonsDistill:         false,
+		TeamSync:               false,
 		TimelogEnabled:         false,
 		TimelogStorage:         "repo",
 		TimelogOutputFormat:    "default",
@@ -947,6 +954,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	if v, src := get("LESSONS_DISTILL"); v != "" {
 		c.LessonsDistill = v == "1"
 		sources["LESSONS_DISTILL"] = src.name
+	}
+	if v, src := get("TEAM_SYNC"); v != "" {
+		c.TeamSync = v == "1"
+		sources["TEAM_SYNC"] = src.name
 	}
 	if v, src := get("TIMELOG_ENABLED"); v != "" {
 		c.TimelogEnabled = v == "1"
@@ -1622,6 +1633,7 @@ const (
 	sectionCost      = "Cost caps"
 	sectionGrilling  = "Grilling & triage"
 	sectionSkills    = "Skills"
+	sectionTeam      = "Team sync"
 	sectionAgent     = "Agent runtime"
 	sectionHub       = "Hub & web server"
 	sectionRetention = "Retention"
@@ -1635,8 +1647,8 @@ const (
 var configSections = []string{
 	sectionTracker, sectionGit, sectionCI, sectionProviders, sectionRouting,
 	sectionPipeline, sectionVerify, sectionCost, sectionGrilling, sectionSkills,
-	sectionAgent, sectionHub, sectionRetention, sectionTUI, sectionTimeLog,
-	sectionPaths,
+	sectionTeam, sectionAgent, sectionHub, sectionRetention, sectionTUI,
+	sectionTimeLog, sectionPaths,
 }
 
 // ConfigSections returns the canonical catalog Section order shared by the web
@@ -1712,6 +1724,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "REQUIRED_SKILLS_VERIFY", Group: sectionSkills, WebEditable: true, Description: "Skill names (comma-separated) the verify agent must load, alongside the routing rules' verify matches, the project's test skills and browser-harness on browser verify. Empty with no matching rule = verify loads the build set"},
 		{Key: "SKILLS_MODE", Group: sectionSkills, WebEditable: true, Default: "auto", Description: "How a phase's resolved skill set reaches the agent: instruct names the skills for the agent to load with the Skill tool; inject delivers each skill's SKILL.md content inline in the build/verify/repair/bugfix prompt. auto picks per phase from the provider it routes to — instruct on claude, inject on codex and kimi, which have no Skill tool; either explicit mode applies to every provider", Options: []string{"auto", "instruct", "inject"}},
 		{Key: "SKILLS_MENU", Group: sectionSkills, WebEditable: true, Default: "0", Description: "Append an optional backstop line to the build and verify skills prompts naming the installed skills outside the resolved set, for the agent to load when they genuinely help. Instruct mode on claude only — the other providers have no Skill tool (1 = yes, 0 = no)", Bool: true},
+		{Key: "TEAM_SYNC", Group: sectionTeam, WebEditable: true, Default: "0", Description: "Share this repo's lessons ledger with teammates over its own git remote: the hub publishes this machine's records to refs/trau/team/<writer-id> and folds the teammates' records back into recall and the lessons view. Needs no server and no new credentials, and never touches the working tree; a repo with no git remote cannot use it (1 = yes, 0 = no)", Bool: true},
 		{Key: "SPLIT_LABEL", Group: sectionTracker, WebEditable: true, Advanced: true, Default: "needs-split", Description: "Managed label marking a ticket a human should split into smaller slices before the loop builds it"},
 		{Key: "LINT_FIX", Group: sectionPipeline, WebEditable: true, Default: "1", Description: "Run the project's lint/format autofixers before verify so verify isn't spent self-healing style noise (1 = yes, 0 = no)", Bool: true},
 		{Key: "LINT_FIX_CMD", Group: sectionPipeline, Description: "Deterministic lint-fix command run before verify (e.g. vendor/bin/pint, npm run lint:fix). Empty = a cheap agent auto-detects and runs the project's fixers"},
@@ -2328,6 +2341,11 @@ func keyValue(cfg Config, key string) string {
 		return cfg.Theme
 	case "EPIC_FLOW":
 		if cfg.EpicFlow {
+			return "1"
+		}
+		return "0"
+	case "TEAM_SYNC":
+		if cfg.TeamSync {
 			return "1"
 		}
 		return "0"

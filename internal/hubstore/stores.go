@@ -32,6 +32,7 @@ type Stores struct {
 	routing     *Routing
 	steer       *SteerNotes
 	proofs      *RunProofs
+	team        *TeamSync
 }
 
 // NewStores builds the hub store set over the authoritative database db and the
@@ -62,6 +63,7 @@ func NewStores(home string, db, transcriptsDB *sql.DB, retention Retention) *Sto
 		routing:     NewRouting(db),
 		steer:       NewSteerNotes(db),
 		proofs:      NewRunProofs(db, filepath.Join(home, ProofsDir)),
+		team:        NewTeamSync(db),
 	}
 }
 
@@ -124,6 +126,9 @@ func (s *Stores) Steer() *SteerNotes { return s.steer }
 
 // Proofs returns the verify browser-proof store and its blob store.
 func (s *Stores) Proofs() *RunProofs { return s.proofs }
+
+// TeamSync returns the store of teammate-published records and sync bookkeeping.
+func (s *Stores) TeamSync() *TeamSync { return s.team }
 
 // Queue returns the queue store for a repo root.
 func (s *Stores) Queue(root string) *Queue { return NewQueue(s.db, root) }

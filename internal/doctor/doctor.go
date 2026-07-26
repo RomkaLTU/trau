@@ -65,7 +65,9 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkConfigLayers(paths, rr)
 	checkConfigShadowing(paths, rr)
 	checkBrowserVerify(cfg, rr)
+	checkTeamSync(ctx, cfg, repoRoot, rr)
 	checkSkills(cfg, repoRoot, rr)
+	checkSkillsDrift(repoRoot, rr)
 	checkLinearLabels(ctx, cfg, rr)
 	checkLinearProject(ctx, cfg, rr)
 	checkJira(ctx, cfg, rr)
@@ -287,6 +289,54 @@ func checkBrowserVerify(cfg config.Config, rr *runner) {
 		"set APP_URL (or APP_URLS for a monorepo) to the running app's URL, or set BROWSER_VERIFY=never")
 }
 
+// checkTeamSync reports the repo's last team-sync pass. It stays silent unless
+// TEAM_SYNC is on, since the default off state has nothing to report. Sync is
+// blameless — a failed pass never touched a run — so a recorded error is a warning
+// here and nowhere else.
+func checkTeamSync(ctx context.Context, cfg config.Config, repoRoot string, rr *runner) {
+	if !cfg.TeamSync {
+		return
+	}
+	if repoRoot != "" && !hasGitRemote(ctx, repoRoot, cfg.Remote) {
+		rr.add("team sync", warn, "TEAM_SYNC is on but the repo has no git remote — sync travels over the repo's own remote, so nothing is shared",
+			"add a git remote, or set TEAM_SYNC=0")
+		return
+	}
+	st, err := teamSyncState(repoRoot)
+	if err != nil {
+		rr.add("team sync", warn, "TEAM_SYNC is on but the hub's sync bookkeeping is unreadable", "start the hub with `trau serve`")
+		return
+	}
+	if st.LastSyncAt == "" {
+		rr.add("team sync", warn, "TEAM_SYNC is on but no sync has run yet", "start the hub with `trau serve`, or use Sync now on the settings page")
+		return
+	}
+	if st.LastError != "" {
+		rr.add("team sync", warn, fmt.Sprintf("last sync at %s failed: %s", st.LastSyncAt, st.LastError),
+			"check that the remote accepts custom refs and that you have push access; runs are unaffected either way")
+		return
+	}
+	rr.add("team sync", pass, fmt.Sprintf("last synced %s as writer %s", st.LastSyncAt, st.WriterID), "")
+}
+
+// teamSyncState reads a repo's team-sync bookkeeping from the hub database
+// read-only, so doctor reports it whether or not the hub is up.
+func teamSyncState(repoRoot string) (hubstore.TeamSyncState, error) {
+	db, err := hubdb.OpenReadOnly(registry.Home())
+	if err != nil {
+		return hubstore.TeamSyncState{}, err
+	}
+	defer func() { _ = db.Close() }()
+	return hubstore.NewTeamSync(db).State(repoRoot)
+}
+
+func hasGitRemote(ctx context.Context, repoRoot, remote string) bool {
+	if remote == "" {
+		remote = "origin"
+	}
+	return exec.CommandContext(ctx, "git", "-C", repoRoot, "remote", "get-url", remote).Run() == nil
+}
+
 // checkSkills reports the skill set each phase resolves to for a run with no
 // ticket and no diff — every auto routing rule reads as non-matching, so this is
 // the repo's floor — and the chain step that produced it. It warns only when
@@ -311,6 +361,35 @@ func checkSkills(cfg config.Config, repoRoot string, rr *runner) {
 		return
 	}
 	rr.add("skills", pass, detail, "")
+}
+
+// checkSkillsDrift reports the skills that do not match what skills-lock.json
+// pins. Drift never fails the check: runs proceed on a drifted machine, and
+// only the explicit install gesture on the web Skills page writes a skill.
+func checkSkillsDrift(repoRoot string, rr *runner) {
+	report := agent.CheckSkillDrift(repoRoot)
+	if !report.Checked {
+		return
+	}
+	if len(report.Drifted) == 0 {
+		rr.add("skills lock", pass, "every pinned skill is installed at its pinned content"+unlockedSkillsNote(report.Unlocked), "")
+		return
+	}
+	drifted := make([]string, 0, len(report.Drifted))
+	for _, d := range report.Drifted {
+		drifted = append(drifted, fmt.Sprintf("%s %s (pinned to %s)", d.Class, d.Name, d.Lock.Source))
+	}
+	rr.add("skills lock", warn,
+		fmt.Sprintf("%d pinned skill(s) drift from skills-lock.json: %s%s",
+			len(report.Drifted), strings.Join(drifted, ", "), unlockedSkillsNote(report.Unlocked)),
+		"install them from the Skills page in `trau serve` — runs proceed either way")
+}
+
+func unlockedSkillsNote(unlocked []string) string {
+	if len(unlocked) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" — %s installed without a pin", strings.Join(unlocked, ", "))
 }
 
 func suggestedRequiredSkills(repoRoot string, installed []string) []string {

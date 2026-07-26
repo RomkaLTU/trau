@@ -26,6 +26,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as ProjectsNewRouteImport } from './routes/projects.new'
 import { Route as RunsRepoTicketRouteImport } from './routes/runs_.$repo.$ticket'
 import { Route as LiveRepoTicketRouteImport } from './routes/live.$repo.$ticket'
+import { Route as TeamRunsRepoWriterTicketRouteImport } from './routes/team-runs.$repo.$writer.$ticket'
 
 const TerminalRoute = TerminalRouteImport.update({
   id: '/terminal',
@@ -112,6 +113,12 @@ const LiveRepoTicketRoute = LiveRepoTicketRouteImport.update({
   path: '/live/$repo/$ticket',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TeamRunsRepoWriterTicketRoute =
+  TeamRunsRepoWriterTicketRouteImport.update({
+    id: '/team-runs/$repo/$writer/$ticket',
+    path: '/team-runs/$repo/$writer/$ticket',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -131,6 +138,7 @@ export interface FileRoutesByFullPath {
   '/projects/new': typeof ProjectsNewRoute
   '/live/$repo/$ticket': typeof LiveRepoTicketRoute
   '/runs/$repo/$ticket': typeof RunsRepoTicketRoute
+  '/team-runs/$repo/$writer/$ticket': typeof TeamRunsRepoWriterTicketRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -150,6 +158,7 @@ export interface FileRoutesByTo {
   '/projects/new': typeof ProjectsNewRoute
   '/live/$repo/$ticket': typeof LiveRepoTicketRoute
   '/runs/$repo/$ticket': typeof RunsRepoTicketRoute
+  '/team-runs/$repo/$writer/$ticket': typeof TeamRunsRepoWriterTicketRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -170,6 +179,7 @@ export interface FileRoutesById {
   '/projects/new': typeof ProjectsNewRoute
   '/live/$repo/$ticket': typeof LiveRepoTicketRoute
   '/runs_/$repo/$ticket': typeof RunsRepoTicketRoute
+  '/team-runs/$repo/$writer/$ticket': typeof TeamRunsRepoWriterTicketRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -191,6 +201,7 @@ export interface FileRouteTypes {
     | '/projects/new'
     | '/live/$repo/$ticket'
     | '/runs/$repo/$ticket'
+    | '/team-runs/$repo/$writer/$ticket'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -210,6 +221,7 @@ export interface FileRouteTypes {
     | '/projects/new'
     | '/live/$repo/$ticket'
     | '/runs/$repo/$ticket'
+    | '/team-runs/$repo/$writer/$ticket'
   id:
     | '__root__'
     | '/'
@@ -229,6 +241,7 @@ export interface FileRouteTypes {
     | '/projects/new'
     | '/live/$repo/$ticket'
     | '/runs_/$repo/$ticket'
+    | '/team-runs/$repo/$writer/$ticket'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -249,6 +262,7 @@ export interface RootRouteChildren {
   ProjectsNewRoute: typeof ProjectsNewRoute
   LiveRepoTicketRoute: typeof LiveRepoTicketRoute
   RunsRepoTicketRoute: typeof RunsRepoTicketRoute
+  TeamRunsRepoWriterTicketRoute: typeof TeamRunsRepoWriterTicketRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -372,6 +386,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LiveRepoTicketRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/team-runs/$repo/$writer/$ticket': {
+      id: '/team-runs/$repo/$writer/$ticket'
+      path: '/team-runs/$repo/$writer/$ticket'
+      fullPath: '/team-runs/$repo/$writer/$ticket'
+      preLoaderRoute: typeof TeamRunsRepoWriterTicketRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -393,6 +414,7 @@ const rootRouteChildren: RootRouteChildren = {
   ProjectsNewRoute: ProjectsNewRoute,
   LiveRepoTicketRoute: LiveRepoTicketRoute,
   RunsRepoTicketRoute: RunsRepoTicketRoute,
+  TeamRunsRepoWriterTicketRoute: TeamRunsRepoWriterTicketRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

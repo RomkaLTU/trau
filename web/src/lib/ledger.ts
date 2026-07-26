@@ -32,7 +32,13 @@ export function joinInstances(
       holders.set(inst.ticket, inst)
     }
   }
-  return runs.map((run) => ({ repo, run, instance: holders.get(run.ticket) }))
+  // A teammate's settled run is history, not something a local session holds —
+  // even when a loop here is working the same ticket right now.
+  return runs.map((run) => ({
+    repo,
+    run,
+    instance: run.shared ? undefined : holders.get(run.ticket),
+  }))
 }
 
 // mergeLedger folds every repo's runs into one ledger, joining each against the
@@ -64,12 +70,47 @@ export function rowPill(row: LedgerRow): { state: RunState; label: string } {
 
 // bucketOf assigns each row to exactly one bucket by precedence: a live holder of
 // the ticket wins, then a failure class needs the user, then a merged checkpoint,
-// and everything else is stopped. The buckets stay disjoint.
+// and everything else is stopped. The buckets stay disjoint. A teammate's run is
+// somebody else's finished work and never lands in needs-you, which is the strip
+// that offers resume and reset.
 export function bucketOf(row: LedgerRow): LedgerBucket {
   if (row.instance) return 'active'
+  if (row.run.shared) return row.run.phase === 'merged' ? 'merged' : 'stopped'
   if (row.run.failure_class) return 'needs-you'
   if (row.run.phase === 'merged') return 'merged'
   return 'stopped'
+}
+
+export type LedgerAuthor = 'everyone' | 'me' | 'teammates'
+
+export function isMine(run: Run): boolean {
+  return run.shared === undefined
+}
+
+// authorLabel is the chip a run leads with: this machine's own runs say "Me",
+// never "You", and a teammate's say who ran it.
+export function authorLabel(run: Run): string {
+  return run.shared ? (run.shared.author ?? run.shared.writer) : 'Me'
+}
+
+export function rowsForAuthor(rows: LedgerRow[], author: LedgerAuthor): LedgerRow[] {
+  if (author === 'everyone') return rows
+  return rows.filter((row) => isMine(row.run) === (author === 'me'))
+}
+
+export interface LedgerTotals {
+  runs: number
+  costUsd: number
+}
+
+// ledgerTotals sums the spend of whatever the filters left visible, so the team
+// cost picture is exactly the rows the reader is looking at. A run whose cost was
+// never metered contributes nothing rather than a guess.
+export function ledgerTotals(rows: LedgerRow[]): LedgerTotals {
+  return {
+    runs: rows.length,
+    costUsd: rows.reduce((acc, row) => acc + (row.run.cost_usd ?? 0), 0),
+  }
 }
 
 const DISPLAY_ORDER: Record<LedgerBucket, number> = {
@@ -129,6 +170,13 @@ export function capMerged(rows: LedgerRow[], expanded: boolean): CappedRows {
     kept.push(row)
   }
   return { rows: kept, hidden: Math.max(0, mergedSeen - MERGED_CAP) }
+}
+
+// attemptsFor is every run recorded against a ticket — this machine's own and the
+// ones teammates shared — newest first, so a second dev sees a prior failed attempt
+// before queueing the ticket again.
+export function attemptsFor(runs: Run[], ticket: string): Run[] {
+  return runs.filter((run) => run.ticket === ticket).sort(byUpdatedDesc)
 }
 
 export function formatAge(ms: number): string {
