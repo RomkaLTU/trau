@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  attemptsFor,
   attentionReason,
+  authorLabel,
   bucketCounts,
   bucketOf,
   capMerged,
   formatAge,
+  isMine,
   joinInstances,
+  ledgerTotals,
   mergeLedger,
   rowPill,
+  rowsForAuthor,
   rowsForTab,
   sortRows,
   type LedgerRow,
@@ -272,5 +277,75 @@ describe('formatAge', () => {
     expect(formatAge(5 * 60_000)).toBe('5m')
     expect(formatAge((2 * 3600 + 11 * 60) * 1000)).toBe('2h 11m')
     expect(formatAge(25 * 3600 * 1000)).toBe('1d')
+  })
+})
+
+describe('teammate rows', () => {
+  const mine = row({ ticket: 'A-1', phase: 'merged', cost_usd: 2, updated_at: '2026-07-14T09:00:00Z' })
+  const theirs: LedgerRow = {
+    repo: 'repo',
+    run: run({
+      ticket: 'A-2',
+      phase: 'built',
+      failure_class: 'faulted',
+      cost_usd: 1.25,
+      updated_at: '2026-07-14T10:00:00Z',
+      shared: { writer: 'w1', author: 'Ada' },
+    }),
+  }
+
+  it('labels this machine’s rows Me and a teammate’s by their author', () => {
+    expect(authorLabel(mine.run)).toBe('Me')
+    expect(authorLabel(theirs.run)).toBe('Ada')
+    expect(isMine(mine.run)).toBe(true)
+    expect(isMine(theirs.run)).toBe(false)
+  })
+
+  it('falls back to the writer id when the author shared no git name', () => {
+    expect(authorLabel(run({ ticket: 'A-3', shared: { writer: 'w9' } }))).toBe('w9')
+  })
+
+  it('keeps a teammate’s failed run out of the needs-you strip', () => {
+    expect(bucketOf(theirs)).toBe('stopped')
+    expect(bucketOf({ ...theirs, run: { ...theirs.run, phase: 'merged' } })).toBe('merged')
+    expect(rowsForTab([mine, theirs], 'needs-you')).toHaveLength(0)
+  })
+
+  it('never joins a teammate’s run to a local live session', () => {
+    const rows = joinInstances(
+      [run({ ticket: 'A-1' }), theirs.run],
+      [instance({ ticket: 'A-1' }), instance({ ticket: 'A-2' })],
+      'repo',
+    )
+    expect(rows[0].instance?.ticket).toBe('A-1')
+    expect(rows[1].instance).toBeUndefined()
+  })
+
+  it('filters by author', () => {
+    expect(rowsForAuthor([mine, theirs], 'everyone')).toHaveLength(2)
+    expect(rowsForAuthor([mine, theirs], 'me')).toEqual([mine])
+    expect(rowsForAuthor([mine, theirs], 'teammates')).toEqual([theirs])
+  })
+
+  it('totals the combined spend of whatever the filter left visible', () => {
+    expect(ledgerTotals([mine, theirs])).toEqual({ runs: 2, costUsd: 3.25 })
+    expect(ledgerTotals(rowsForAuthor([mine, theirs], 'me'))).toEqual({ runs: 1, costUsd: 2 })
+    expect(ledgerTotals([]).costUsd).toBe(0)
+  })
+})
+
+describe('attemptsFor', () => {
+  it('lists a ticket’s local and teammate attempts, newest first', () => {
+    const runs = [
+      run({ ticket: 'A-1', updated_at: '2026-07-14T09:00:00Z' }),
+      run({ ticket: 'A-2', updated_at: '2026-07-14T12:00:00Z' }),
+      run({ ticket: 'A-1', updated_at: '2026-07-14T11:00:00Z', shared: { writer: 'w1', author: 'Ada' } }),
+    ]
+    const attempts = attemptsFor(runs, 'A-1')
+    expect(attempts.map((r) => r.shared?.author ?? 'me')).toEqual(['Ada', 'me'])
+  })
+
+  it('is empty for a ticket nobody has run', () => {
+    expect(attemptsFor([run({ ticket: 'A-1' })], 'A-9')).toEqual([])
   })
 })

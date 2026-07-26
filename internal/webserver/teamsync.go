@@ -152,9 +152,9 @@ func (ts *teamSyncer) foldIn(ctx context.Context, root string, cfg teamsync.Conf
 	return nil
 }
 
-// publish snapshots this machine's own lessons onto its ref. Teammates' records
-// live in a separate table and are never re-exported, so a payload only ever
-// carries what this machine recorded.
+// publish snapshots this machine's own lessons and settled runs onto its ref.
+// Teammates' records live in a separate table and are never re-exported, so a
+// payload only ever carries what this machine recorded.
 func (ts *teamSyncer) publish(ctx context.Context, root string, cfg teamsync.Config, writer teamsync.Writer) error {
 	local, err := ts.srv.stores.Lessons().All(root)
 	if err != nil {
@@ -174,7 +174,8 @@ func (ts *teamSyncer) publish(ctx context.Context, root string, cfg teamsync.Con
 			RecordedAt:   l.RecordedAt,
 		}
 	}
-	if err := teamsync.Push(ctx, cfg, writer, shared); err != nil {
+	snap := teamsync.Snapshot{Lessons: shared, Runs: ts.srv.sharedRuns(root)}
+	if err := teamsync.Push(ctx, cfg, writer, snap); err != nil {
 		return fmt.Errorf("publish snapshot: %w", err)
 	}
 	return nil

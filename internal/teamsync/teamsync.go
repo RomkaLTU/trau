@@ -72,16 +72,54 @@ type Lesson struct {
 	RecordedAt   string   `json:"recorded_at,omitempty"`
 }
 
+// ActivitySpan is one Activity's wall-clock inside a shared run — the whole
+// timeline that travels, in place of the event stream it was derived from.
+type ActivitySpan struct {
+	Activity   string `json:"activity"`
+	DurationMS int64  `json:"duration_ms"`
+}
+
+// Run is one settled run on the wire — the summary a teammate's ledger shows for
+// it. Transcripts, PTY and phase logs, and raw event streams are deliberately
+// absent: they are megabytes per run, and every snapshot the remote has ever
+// carried is a commit somebody has to keep.
+type Run struct {
+	Ticket        string         `json:"ticket"`
+	Title         string         `json:"title,omitempty"`
+	Repo          string         `json:"repo,omitempty"`
+	Branch        string         `json:"branch,omitempty"`
+	PRURL         string         `json:"pr_url,omitempty"`
+	Phase         string         `json:"phase,omitempty"`
+	FailureClass  string         `json:"failure_class,omitempty"`
+	FailureReason string         `json:"failure_reason,omitempty"`
+	StartedAt     string         `json:"started_at,omitempty"`
+	EndedAt       string         `json:"ended_at,omitempty"`
+	Provider      string         `json:"provider,omitempty"`
+	Model         string         `json:"model,omitempty"`
+	Tokens        int            `json:"tokens,omitempty"`
+	CostUSD       *float64       `json:"cost_usd,omitempty"`
+	Activities    []ActivitySpan `json:"activities,omitempty"`
+}
+
+// Snapshot is what a machine shares: its own lessons ledger and its own recent
+// settled runs. A teammate's records are never re-exported. Runs is absent from a
+// snapshot published before shared history existed, which stays a readable
+// PayloadVersion 1 payload rather than one to skip.
+type Snapshot struct {
+	Lessons []Lesson `json:"lessons"`
+	Runs    []Run    `json:"runs,omitempty"`
+}
+
 // Payload is one writer's published snapshot: who wrote it, when it was published,
 // and the records they share. Only a machine's own records are ever published — a
 // teammate's records are never re-exported.
 type Payload struct {
-	Version   int      `json:"version"`
-	Writer    string   `json:"writer"`
-	Name      string   `json:"name,omitempty"`
-	Email     string   `json:"email,omitempty"`
-	UpdatedAt string   `json:"updated_at"`
-	Lessons   []Lesson `json:"lessons"`
+	Version   int    `json:"version"`
+	Writer    string `json:"writer"`
+	Name      string `json:"name,omitempty"`
+	Email     string `json:"email,omitempty"`
+	UpdatedAt string `json:"updated_at"`
+	Snapshot
 }
 
 // WriterID derives the ref segment an email publishes under on a machine: a short
@@ -122,12 +160,12 @@ func HasRemote(ctx context.Context, cfg Config) bool {
 	return err == nil
 }
 
-// Push publishes lessons as a parentless snapshot commit and force-updates the
+// Push publishes snap as a parentless snapshot commit and force-updates the
 // writer's ref on the remote. Snapshot-only keeps remote growth bounded: each push
 // orphans the previous commit for the host's own GC instead of chaining history.
-func Push(ctx context.Context, cfg Config, w Writer, lessons []Lesson) error {
-	if lessons == nil {
-		lessons = []Lesson{}
+func Push(ctx context.Context, cfg Config, w Writer, snap Snapshot) error {
+	if snap.Lessons == nil {
+		snap.Lessons = []Lesson{}
 	}
 	data, err := json.MarshalIndent(Payload{
 		Version:   PayloadVersion,
@@ -135,7 +173,7 @@ func Push(ctx context.Context, cfg Config, w Writer, lessons []Lesson) error {
 		Name:      w.Name,
 		Email:     w.Email,
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-		Lessons:   lessons,
+		Snapshot:  snap,
 	}, "", "  ")
 	if err != nil {
 		return err
