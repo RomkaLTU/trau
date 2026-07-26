@@ -16,6 +16,7 @@ import {
   sectionSlug,
   shadowNote,
   themeRoleLabel,
+  valueWarning,
 } from '@/lib/settings'
 
 function key(overrides: Partial<ConfigKey> & { key: string }): ConfigKey {
@@ -306,6 +307,25 @@ describe('editorVariant', () => {
   it('keeps bool and color keys on their own variants', () => {
     expect(editorVariant(key({ key: 'AUTO_MERGE', bool: true }))).toBe('bool')
     expect(editorVariant(key({ key: 'THEME_ACCENT', kind: 'color' }))).toBe('color')
+  })
+})
+
+describe('valueWarning', () => {
+  it('warns that BROWSER_VERIFY=never can ship broken functionality', () => {
+    const warning = valueWarning('BROWSER_VERIFY', 'never')
+    expect(warning).toMatch(/real browser/)
+    expect(warning).toMatch(/ship undetected/)
+  })
+
+  it('stays silent for the browser verify values that still drive a browser', () => {
+    expect(valueWarning('BROWSER_VERIFY', 'auto')).toBeNull()
+    expect(valueWarning('BROWSER_VERIFY', 'always')).toBeNull()
+    expect(valueWarning('BROWSER_VERIFY', '')).toBeNull()
+  })
+
+  it('does not leak the warning onto other keys holding the same value', () => {
+    expect(valueWarning('VERIFY_PROOFS', 'never')).toBeNull()
+    expect(valueWarning('TIMELOG_STORAGE', 'none')).toBeNull()
   })
 })
 

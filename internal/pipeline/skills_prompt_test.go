@@ -59,10 +59,10 @@ func TestVerifySkillsPromptComposition(t *testing.T) {
 // rendered skills note lands in the prompt, an empty one leaves it untouched.
 func TestVerifyPromptCarriesSkillsNote(t *testing.T) {
 	note := verifySkillsPrompt(prompts.Renderer{}, []string{"tdd"}, []string{"tdd", "browser-harness"}, nil)
-	got := verifyTail(prompts.Renderer{}, "COD-1", "", verifyPath("COD-1"), "", "", "", "", "", note, "", false)
+	got := verifyTail(prompts.Renderer{}, "COD-1", "", verifyPath("COD-1"), "", "", "", "", "", note, "", "", false)
 	mustContain(t, "verifyTail(skills)", got, "Load these required skills with the Skill tool before verifying: tdd, browser-harness")
 
-	empty := verifyTail(prompts.Renderer{}, "COD-1", "", verifyPath("COD-1"), "", "", "", "", "", "", "", false)
+	empty := verifyTail(prompts.Renderer{}, "COD-1", "", verifyPath("COD-1"), "", "", "", "", "", "", "", "", false)
 	mustNotContain(t, "verifyTail(no-skills)", empty, "before verifying")
 }
 
@@ -73,9 +73,9 @@ func TestRepairPromptsReuseBuildSkillsNote(t *testing.T) {
 	note := skillsPrompt(prompts.Renderer{}, []string{"golang-code-style"}, []string{"golang-code-style"}, nil)
 	want := "load these required skills with the Skill tool before implementing: golang-code-style"
 
-	repair := repairInstruction(prompts.Renderer{}, "COD-1", verifyPath("COD-1"), "", "feature/x", "boom", "", "", "", note, "", "")
+	repair := repairInstruction(prompts.Renderer{}, "COD-1", verifyPath("COD-1"), "", "feature/x", "boom", "", "", "", note, "", "", "")
 	mustContain(t, "repairInstruction(skills)", repair, want)
-	bugfix := bugfixInstruction(prompts.Renderer{}, "COD-1", verifyPath("COD-1"), "", "feature/x", "boom", "", "", "", note, "", "")
+	bugfix := bugfixInstruction(prompts.Renderer{}, "COD-1", verifyPath("COD-1"), "", "feature/x", "boom", "", "", "", note, "", "", "")
 	mustContain(t, "bugfixInstruction(skills)", bugfix, want)
 
 	cleanup := cleanupInstruction(prompts.Renderer{}, "COD-1", "")

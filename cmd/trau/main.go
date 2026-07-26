@@ -1449,6 +1449,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		LintFixCmd:           cfg.LintFixCmd,
 		Cleanup:              cfg.Cleanup,
 		CodeStyleNote:        cfg.CodeStyleNote,
+		TestEffort:           cfg.TestEffort,
 		SkillsExpected:       skillsExpected(repoRoot),
 		RequiredSkills:       cfg.RequiredSkills,
 		RequiredSkillsVerify: cfg.RequiredSkillsVerify,
