@@ -315,6 +315,29 @@ export function awaitingWithOpen(
   return sessions.some((s) => s.id === open.id) ? [...sessions] : [open, ...sessions]
 }
 
+// awaitingWithout drops an abandoned session from the feed, so the dock row leaves on
+// the click rather than on the next poll.
+export function awaitingWithout(
+  sessions: readonly GrillAwaitingSession[],
+  sid: string,
+): GrillAwaitingSession[] {
+  return sessions.filter((s) => s.id !== sid)
+}
+
+// The states the hub blocks on the user with, in the order the feed ranks them.
+const AWAITING_STATES: GrillState[] = ['waiting', 'parked', 'stalled']
+
+// awaitingBreakdown explains a collapsed dock's count — "1 waiting · 2 stalled" — so
+// the badge reconciles with the sessions the interview page lists.
+export function awaitingBreakdown(sessions: readonly GrillAwaitingSession[]): string {
+  return AWAITING_STATES.map(
+    (state) => [state, sessions.filter((s) => s.state === state).length] as const,
+  )
+    .filter(([, count]) => count > 0)
+    .map(([state, count]) => `${count} ${state}`)
+    .join(' · ')
+}
+
 function awaitingRank(state: GrillState): number {
   return state === 'waiting' ? 0 : 1
 }

@@ -121,9 +121,16 @@ func TestGrillAwaitingAcrossRepos(t *testing.T) {
 	if waiting.Repo != repo || waiting.Question != "Which destination?" {
 		t.Fatalf("waiting view = %+v, want repo %s and the question's first line", waiting, repo)
 	}
+	// The dock identifies a row by these alone, without loading the conversation.
+	if waiting.IssueID != "COD-1" || waiting.State != hubstore.GrillWaiting || waiting.UpdatedAt == "" {
+		t.Fatalf("waiting view = %+v, want the issue identifier, state and age", waiting)
+	}
 	parked := byID[strconv.FormatInt(elsewhere.ID, 10)]
 	if parked.Repo != "other" || parked.Question != "needs a decision" {
 		t.Fatalf("parked view = %+v, want the park reason as preview", parked)
+	}
+	if parked.State != hubstore.GrillParked {
+		t.Fatalf("parked view state = %q, want %q", parked.State, hubstore.GrillParked)
 	}
 }
 

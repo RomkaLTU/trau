@@ -6,7 +6,9 @@ import {
   activeSessionForIssue,
   applyGrill,
   applySessionModel,
+  awaitingBreakdown,
   awaitingWithOpen,
+  awaitingWithout,
   canCompose,
   composerPlaceholder,
   diffHasChanges,
@@ -145,6 +147,34 @@ describe('awaitingWithOpen', () => {
     const open = session({ id: '9', state: 'running' })
     const sessions = [session({ id: '1', state: 'waiting' })]
     expect(awaitingWithOpen(sessions, open).map((s) => s.id)).toEqual(['9', '1'])
+  })
+})
+
+describe('awaitingWithout', () => {
+  it('drops the abandoned session and leaves the rest of the feed alone', () => {
+    const sessions = [session({ id: '1' }), session({ id: '2' }), session({ id: '3' })]
+    expect(awaitingWithout(sessions, '2').map((s) => s.id)).toEqual(['1', '3'])
+    expect(awaitingWithout(sessions, '9').map((s) => s.id)).toEqual(['1', '2', '3'])
+    expect(sessions).toHaveLength(3)
+  })
+})
+
+describe('awaitingBreakdown', () => {
+  it('counts each blocking state in the order the feed ranks them', () => {
+    const sessions = [
+      session({ id: '1', state: 'stalled' }),
+      session({ id: '2', state: 'waiting' }),
+      session({ id: '3', state: 'stalled' }),
+      session({ id: '4', state: 'parked' }),
+    ]
+    expect(awaitingBreakdown(sessions)).toBe('1 waiting · 1 parked · 2 stalled')
+  })
+
+  it('names only the states present, and nothing on an empty feed', () => {
+    expect(awaitingBreakdown([session({ state: 'waiting' }), session({ state: 'waiting' })])).toBe(
+      '2 waiting',
+    )
+    expect(awaitingBreakdown([])).toBe('')
   })
 })
 
