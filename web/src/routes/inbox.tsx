@@ -1020,7 +1020,7 @@ function SessionBar({
             <SkipForward />
             Skip
           </Button>
-          {onDeleted && item.entry && (
+          {onDeleted && (
             <DeleteIssueDialog
               repo={repo}
               id={item.id}

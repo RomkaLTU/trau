@@ -179,6 +179,55 @@ describe("buildInbox", () => {
     expect(items[0].draft).toBe(true);
     expect(items[0].title).toBe("Dark-mode toggle");
   });
+
+  it("lifts a session on an issue carrying no triage label into its own row", () => {
+    const items = buildInbox(
+      [entry({ id: "COD-1" })],
+      [
+        session({ id: "1", issue_id: "COD-1", state: "running" }),
+        session({
+          id: "2",
+          issue_id: "COD-9",
+          issue_title: "Rail keeps its shape",
+          state: "waiting",
+        }),
+      ],
+    );
+    expect(items.map((i) => i.id)).toEqual(["COD-9", "COD-1"]);
+    expect(items.map((i) => i.attention)).toEqual(["answer", "thinking"]);
+    expect(items[0].title).toBe("Rail keeps its shape");
+    expect(items[0].entry).toBeUndefined();
+    expect(items[0].assignee).toBeNull();
+  });
+
+  it("names an unlabelled row by its id when the session carries no title", () => {
+    const items = buildInbox(
+      [],
+      [session({ id: "2", issue_id: "COD-9", state: "waiting" })],
+    );
+    expect(items[0].title).toBe("COD-9");
+  });
+
+  it("shows a labelled issue once, its entry keeping the session", () => {
+    const items = buildInbox(
+      [entry({ id: "COD-1" })],
+      [session({ id: "1", issue_id: "COD-1", state: "waiting" })],
+    );
+    expect(items).toHaveLength(1);
+    expect(items[0].entry).toBeDefined();
+    expect(items[0].session?.id).toBe("1");
+  });
+
+  it("drops a settled session on an unlabelled issue", () => {
+    const items = buildInbox(
+      [],
+      [
+        session({ id: "1", issue_id: "COD-8", state: "applied" }),
+        session({ id: "2", issue_id: "COD-9", state: "abandoned" }),
+      ],
+    );
+    expect(items).toEqual([]);
+  });
 });
 
 describe("authoringItems", () => {
