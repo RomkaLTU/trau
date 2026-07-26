@@ -306,6 +306,15 @@ export function sortAwaiting(
   )
 }
 
+// awaitingWithOpen is what the dock's switcher offers: the awaiting feed, carrying the
+// session the panel already has open even once answering has dropped it off that feed.
+export function awaitingWithOpen(
+  sessions: readonly GrillAwaitingSession[],
+  open: GrillAwaitingSession,
+): GrillAwaitingSession[] {
+  return sessions.some((s) => s.id === open.id) ? [...sessions] : [open, ...sessions]
+}
+
 function awaitingRank(state: GrillState): number {
   return state === 'waiting' ? 0 : 1
 }

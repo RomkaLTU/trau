@@ -6,6 +6,7 @@ import {
   activeSessionForIssue,
   applyGrill,
   applySessionModel,
+  awaitingWithOpen,
   canCompose,
   composerPlaceholder,
   diffHasChanges,
@@ -131,6 +132,19 @@ describe('sortAwaiting', () => {
     ]
     expect(sortAwaiting(sessions).map((s) => s.id)).toEqual(['2', '1'])
     expect(sessions.map((s) => s.id)).toEqual(['1', '2'])
+  })
+})
+
+describe('awaitingWithOpen', () => {
+  it('offers the feed as it stands while the open session still awaits', () => {
+    const sessions = [session({ id: '1', state: 'waiting' }), session({ id: '2', state: 'parked' })]
+    expect(awaitingWithOpen(sessions, sessions[1]).map((s) => s.id)).toEqual(['1', '2'])
+  })
+
+  it('carries the open session once answering drops it off the feed', () => {
+    const open = session({ id: '9', state: 'running' })
+    const sessions = [session({ id: '1', state: 'waiting' })]
+    expect(awaitingWithOpen(sessions, open).map((s) => s.id)).toEqual(['9', '1'])
   })
 })
 

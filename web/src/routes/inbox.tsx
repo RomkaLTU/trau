@@ -88,9 +88,7 @@ import {
 import { hasOpenLayer, inboxKeyAction } from "@/lib/inbox-keys";
 import {
   hasUnseenQuestion,
-  loadSeen,
-  markSeen,
-  storeSeen,
+  useSeenMarks,
   type SeenMarks,
 } from "@/lib/inbox-seen";
 import { standardTitle, usePageTitle } from "@/lib/page-title";
@@ -211,7 +209,7 @@ function InboxPage() {
   const [contextOpen, setContextOpen] = useState(loadContextOpen);
   const [passSummary, setPassSummary] = useState<string | null>(null);
   const [status, setStatus] = useState<GrillStatus | null>(null);
-  const [seen, setSeen] = useState<SeenMarks>(loadSeen);
+  const [seen, read] = useSeenMarks();
 
   useEffect(() => {
     if (newDraft && peek !== NEW_DRAFT_ID) setNewDraft(false);
@@ -240,13 +238,8 @@ function InboxPage() {
   const showContext = hasSession && !selected?.draft;
 
   useEffect(() => {
-    if (!onScreen) return;
-    setSeen((marks) => markSeen(marks, onScreen.id, onScreen.updated_at));
-  }, [onScreen?.id, onScreen?.updated_at]);
-
-  useEffect(() => {
-    storeSeen(seen);
-  }, [seen]);
+    if (onScreen) read(onScreen);
+  }, [read, onScreen?.id, onScreen?.updated_at]);
 
   function toggleContext() {
     const next = !contextOpen;
