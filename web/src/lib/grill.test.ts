@@ -1,3 +1,4 @@
+import { QueryClient } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { type Assignee } from './assignee'
@@ -6,17 +7,22 @@ import {
   activeSessionForIssue,
   applyGrill,
   applySessionModel,
+  awaitingBreakdown,
+  awaitingGrillsQueryKey,
   awaitingWithOpen,
+  awaitingWithout,
   canCompose,
   composerPlaceholder,
   diffHasChanges,
   diffLines,
+  dropAwaiting,
   grillAppliedOutcome,
   grillBanner,
   grillProgress,
   grillReducer,
   isAwaitingAnswer,
   isGrillable,
+  isOver,
   isSettled,
   lastAnswer,
   mergeMessages,
@@ -27,6 +33,7 @@ import {
   sortAwaiting,
   upsertMessage,
   type DiffLine,
+  type GrillAwaitingResponse,
   type GrillDelta,
   type GrillLive,
   type GrillMessage,
@@ -92,6 +99,13 @@ describe('state predicates', () => {
     for (const s of awaits) expect(isAwaitingAnswer(s)).toBe(true)
     for (const s of idle) expect(isAwaitingAnswer(s)).toBe(false)
   })
+
+  it('is over once finished or settled, but not while the interviewer works', () => {
+    const over: GrillState[] = ['finished', 'applied', 'abandoned']
+    const live: GrillState[] = ['running', 'waiting', 'parked', 'stalled']
+    for (const s of over) expect(isOver(s)).toBe(true)
+    for (const s of live) expect(isOver(s)).toBe(false)
+  })
 })
 
 describe('activeSessionForIssue', () => {
@@ -145,6 +159,63 @@ describe('awaitingWithOpen', () => {
     const open = session({ id: '9', state: 'running' })
     const sessions = [session({ id: '1', state: 'waiting' })]
     expect(awaitingWithOpen(sessions, open).map((s) => s.id)).toEqual(['9', '1'])
+  })
+})
+
+describe('awaitingWithout', () => {
+  it('drops the abandoned session and leaves the rest of the feed alone', () => {
+    const sessions = [session({ id: '1' }), session({ id: '2' }), session({ id: '3' })]
+    expect(awaitingWithout(sessions, '2').map((s) => s.id)).toEqual(['1', '3'])
+    expect(awaitingWithout(sessions, '9').map((s) => s.id)).toEqual(['1', '2', '3'])
+    expect(sessions).toHaveLength(3)
+  })
+})
+
+describe('dropAwaiting', () => {
+  const feed = (client: QueryClient) =>
+    client.getQueryData<GrillAwaitingResponse>(awaitingGrillsQueryKey)
+
+  it('takes the answered session off the cached feed rather than waiting on the poll', () => {
+    const client = new QueryClient()
+    client.setQueryData<GrillAwaitingResponse>(awaitingGrillsQueryKey, {
+      sessions: [session({ id: '1', state: 'waiting' }), session({ id: '2', state: 'parked' })],
+    })
+    dropAwaiting(client, '1')
+    expect(feed(client)?.sessions.map((s) => s.id)).toEqual(['2'])
+  })
+
+  it('leaves a feed that has not loaded yet unseeded', () => {
+    const client = new QueryClient()
+    dropAwaiting(client, '1')
+    expect(feed(client)).toBeUndefined()
+  })
+})
+
+describe('awaitingBreakdown', () => {
+  it('counts each blocking state in the order the feed ranks them', () => {
+    const sessions = [
+      session({ id: '1', state: 'stalled' }),
+      session({ id: '2', state: 'waiting' }),
+      session({ id: '3', state: 'stalled' }),
+      session({ id: '4', state: 'parked' }),
+    ]
+    expect(awaitingBreakdown(sessions)).toBe('1 waiting · 1 parked · 2 stalled')
+  })
+
+  it('names only the states present, and nothing on an empty feed', () => {
+    expect(awaitingBreakdown([session({ state: 'waiting' }), session({ state: 'waiting' })])).toBe(
+      '2 waiting',
+    )
+    expect(awaitingBreakdown([])).toBe('')
+  })
+
+  it('leads with the session the dock holds while the interviewer works', () => {
+    const sessions = [
+      session({ id: '9', state: 'running' }),
+      session({ id: '1', state: 'waiting' }),
+      session({ id: '2', state: 'stalled' }),
+    ]
+    expect(awaitingBreakdown(sessions)).toBe('1 thinking · 1 waiting · 1 stalled')
   })
 })
 

@@ -574,16 +574,18 @@ func (s *Server) publishGrillDelta(sid int64, text string) {
 	})
 }
 
-// sweepIdleGrill settles grill sessions idle past the abandon window and announces
-// each state change to any live stream. It is best-effort hygiene, so a failure is
-// logged and retried on the next prune tick.
-func (s *Server) sweepIdleGrill() {
-	swept, err := s.stores.Grill().SweepIdle(time.Now().Add(-grillIdleAbandon))
+// retireClosedGrill settles the repo's grill sessions whose issue has closed and
+// announces each state change to any live stream. It rides every write that can
+// close an issue — the tracker sync pass, and the internal-issue transitions a
+// hub-tracked repo has instead of a sync — so a failure is logged and retried on the
+// next one.
+func (s *Server) retireClosedGrill(root string) {
+	retired, err := s.stores.Grill().RetireClosed(root)
 	if err != nil {
-		logger.Verbosef("sweep grill sessions: %v", err)
+		logger.Verbosef("retire grill sessions %s: %v", root, err)
 		return
 	}
-	for _, sess := range swept {
+	for _, sess := range retired {
 		s.publishGrillState(sess)
 	}
 }

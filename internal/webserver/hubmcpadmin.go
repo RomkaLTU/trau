@@ -454,6 +454,9 @@ func (s *Server) mcpTransitionTicket(args json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("transition issue: %w", err)
 	}
+	if group != "" {
+		s.retireClosedGrill(repo.Root)
+	}
 	return toInternalIssueResponse(repo.Name, iss), nil
 }
 
