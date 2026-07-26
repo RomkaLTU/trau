@@ -51,7 +51,8 @@ const GROUP_LABELS: Record<InboxGroup, string> = {
 
 // InboxItem is one queue row. entry is the board issue behind it, absent on a Done
 // today row — applying drops the triage labels the board queries key on, so a
-// settled session's id and title are all that survive. draft marks an issue-less
+// settled session's id and title are all that survive — and on a session started
+// against a ticket the triage board never carried. draft marks an issue-less
 // authoring row: a live from-scratch session, or the fresh Draft opened by New issue
 // before its first message starts one. A draft's id is a client sentinel, never a
 // tracker identifier.
@@ -120,11 +121,12 @@ export function mergeGrillableEntries(
   return [...byId.values()].sort(compareEntries);
 }
 
-// buildInbox attaches each issue's active session and folds in the repo's live
-// authoring drafts, then sorts the board into attention tiers — answer, thinking,
-// open, review — newest activity first within a tier, so the freshest work sits
-// where the walk-through starts. Timestamp ties keep the canonical board order
-// (a stable sort over already-ordered rows).
+// buildInbox attaches each issue's active session, lifts in the sessions running on
+// tickets the triage board never returned, folds in the repo's live authoring drafts,
+// then sorts the board into attention tiers — answer, thinking, open, review — newest
+// activity first within a tier, so the freshest work sits where the walk-through
+// starts. Timestamp ties keep the canonical board order (a stable sort over
+// already-ordered rows).
 export function buildInbox(
   entries: readonly BacklogEntry[],
   sessions: GrillSession[] = [],
@@ -140,7 +142,12 @@ export function buildInbox(
       attention: inboxAttention(session),
     };
   });
-  return [...items, ...authoringItems(sessions)].sort(
+  const board = new Set(items.map((item) => item.id));
+  return [
+    ...items,
+    ...unlabelledItems(sessions, board),
+    ...authoringItems(sessions),
+  ].sort(
     (a, b) =>
       ATTENTION_ORDER[a.attention] - ATTENTION_ORDER[b.attention] ||
       itemActivity(b) - itemActivity(a),
@@ -158,6 +165,33 @@ export function itemActivity(item: InboxItem): number {
     item.entry?.created_at;
   const at = ts ? Date.parse(ts) : Number.NaN;
   return Number.isNaN(at) ? 0 : at;
+}
+
+// unlabelledItems lifts sessions running on issues the triage board never returned —
+// an interview started from the drawer on a ticket carrying no triage label — into
+// rows of their own, so the rail shows every live conversation rather than only the
+// labelled ones. The hub joins the issue title onto the session row, so nothing extra
+// is fetched; a settled session drops out the way an applied board row does, and an
+// issue already on the board keeps its labelled entry.
+export function unlabelledItems(
+  sessions: readonly GrillSession[],
+  board: ReadonlySet<string>,
+): InboxItem[] {
+  const seen = new Set(board);
+  const out: InboxItem[] = [];
+  for (const session of sessions) {
+    const id = session.issue_id;
+    if (!id || isSettled(session.state) || seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      id,
+      title: session.issue_title ?? id,
+      session,
+      attention: inboxAttention(session),
+      assignee: null,
+    });
+  }
+  return out;
 }
 
 // authoringItems lifts the repo's live, issue-less authoring sessions into draft
