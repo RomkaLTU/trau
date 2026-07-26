@@ -8,8 +8,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
@@ -59,7 +61,7 @@ func fakeLinearWriter(t *testing.T) (*linearWriter, *[]linearGraphReq) {
 	t.Cleanup(srv.Close)
 	client := linearapi.New("lin_key")
 	client.Endpoint = srv.URL
-	return &linearWriter{client: client, team: "COD", project: "Trau"}, &reqs
+	return newLinearWriter(client, "COD", "Trau"), &reqs
 }
 
 func TestLinearWriterCreateIssue(t *testing.T) {
@@ -167,6 +169,147 @@ func TestLinearWriterCreateUnderParent(t *testing.T) {
 				t.Errorf("parentId = %v, want %q (the resolved epic id)", got, tc.wantParent)
 			}
 		})
+	}
+}
+
+// fakeApplyLinear stands in for Linear across a whole apply: every create answers
+// with a fresh node id/identifier pair, and the identifier lookup answers with an
+// empty node set missingLookups times before it resolves.
+func fakeApplyLinear(t *testing.T, missingLookups int) (*linearWriter, *[]linearGraphReq) {
+	t.Helper()
+	var reqs []linearGraphReq
+	created := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req linearGraphReq
+		_ = json.Unmarshal(body, &req)
+		reqs = append(reqs, req)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(req.Query, "query Teams"):
+			_, _ = io.WriteString(w, `{"data":{"teams":{"nodes":[{"id":"team-1","key":"COD","name":"Codesome"}]}}}`)
+		case strings.Contains(req.Query, "TeamLabels"):
+			_, _ = io.WriteString(w, `{"data":{"issueLabels":{"nodes":[{"id":"lbl-ready","name":"ready-for-agent"}]}}}`)
+		case strings.Contains(req.Query, "query ProjectsByName"):
+			_, _ = io.WriteString(w, `{"data":{"projects":{"nodes":[{"id":"proj-1","name":"Trau"}]}}}`)
+		case strings.Contains(req.Query, "mutation IssueCreate"):
+			created++
+			n := strconv.Itoa(created)
+			_, _ = io.WriteString(w, `{"data":{"issueCreate":{"success":true,"issue":{"id":"iss-`+n+`","identifier":"COD-`+n+`","url":"https://linear.app/acme/issue/COD-`+n+`"}}}}`)
+		case strings.Contains(req.Query, "query Issue("):
+			if missingLookups > 0 {
+				missingLookups--
+				_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[]}}}`)
+				return
+			}
+			n := fmt.Sprintf("%.0f", req.Variables["number"])
+			_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"id":"iss-`+n+`","identifier":"COD-`+n+`","team":{"id":"team-1","key":"COD"}}]}}}`)
+		case strings.Contains(req.Query, "mutation IssueRelationCreate"):
+			_, _ = io.WriteString(w, `{"data":{"issueRelationCreate":{"success":true}}}`)
+		case strings.Contains(req.Query, "mutation IssueAssign"):
+			_, _ = io.WriteString(w, `{"data":{"issueUpdate":{"success":true}}}`)
+		default:
+			t.Errorf("unexpected GraphQL query: %s", req.Query)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client := linearapi.New("lin_key")
+	client.Endpoint = srv.URL
+	return newLinearWriter(client, "COD", "Trau"), &reqs
+}
+
+func countLinearReqs(reqs []linearGraphReq, needle string) int {
+	n := 0
+	for _, req := range reqs {
+		if strings.Contains(req.Query, needle) {
+			n++
+		}
+	}
+	return n
+}
+
+// An apply that creates an epic with blocked_by slices wires every relation from
+// the node ids the creates returned — a lookup here is the race that silently
+// loses the relations.
+func TestLinearWriterApplyWiresRelationsWithoutLookups(t *testing.T) {
+	w, reqs := fakeApplyLinear(t, 0)
+	ctx := context.Background()
+
+	epic, err := w.CreateIssue(ctx, IssueDraft{Title: "epic", Epic: true})
+	if err != nil {
+		t.Fatalf("create epic: %v", err)
+	}
+	blocker, err := w.CreateIssue(ctx, IssueDraft{Title: "first slice", Parent: epic.Identifier})
+	if err != nil {
+		t.Fatalf("create blocker slice: %v", err)
+	}
+	blocked, err := w.CreateIssue(ctx, IssueDraft{Title: "second slice", Parent: epic.Identifier})
+	if err != nil {
+		t.Fatalf("create blocked slice: %v", err)
+	}
+	if err := w.LinkBlocks(ctx, blocker.Identifier, blocked.Identifier); err != nil {
+		t.Fatalf("LinkBlocks: %v", err)
+	}
+	if err := w.AssignIssue(ctx, blocked.Identifier, "u-1"); err != nil {
+		t.Fatalf("AssignIssue: %v", err)
+	}
+
+	if got := countLinearReqs(*reqs, "query Issue("); got != 0 {
+		t.Errorf("identifier lookups = %d, want 0 — every id was returned by a create in this apply", got)
+	}
+	relation := lastLinearReq(*reqs, "mutation IssueRelationCreate")
+	if relation == nil {
+		t.Fatal("no IssueRelationCreate mutation was sent")
+	}
+	if relation.Variables["issueId"] != "iss-2" || relation.Variables["relatedIssueId"] != "iss-3" {
+		t.Errorf("relation vars = %+v, want the blocker/blocked node ids the creates returned", relation.Variables)
+	}
+	if relation.Variables["type"] != "blocks" {
+		t.Errorf("type = %v, want blocks", relation.Variables["type"])
+	}
+	if create := lastLinearReq(*reqs, "mutation IssueCreate"); create == nil || create.Variables["parentId"] != "iss-1" {
+		t.Errorf("parentId = %+v, want the epic node id its own create returned", create)
+	}
+	if assign := lastLinearReq(*reqs, "mutation IssueAssign"); assign == nil || assign.Variables["id"] != "iss-3" {
+		t.Errorf("assign vars = %+v, want the created slice's node id", assign)
+	}
+}
+
+// A relation between issues this writer did not create — an apply retried after a
+// hub restart — falls back to the lookup and retries it.
+func TestLinearWriterResolveRetriesLookup(t *testing.T) {
+	w, reqs := fakeApplyLinear(t, 1)
+	w.backoff = time.Millisecond
+
+	if err := w.LinkBlocks(context.Background(), "COD-9", "COD-10"); err != nil {
+		t.Fatalf("LinkBlocks: %v", err)
+	}
+	if got := countLinearReqs(*reqs, "query Issue("); got != 3 {
+		t.Errorf("lookups = %d, want 3 (the blocker missed once and was retried)", got)
+	}
+	relation := lastLinearReq(*reqs, "mutation IssueRelationCreate")
+	if relation == nil {
+		t.Fatal("no IssueRelationCreate mutation was sent")
+	}
+	if relation.Variables["issueId"] != "iss-9" || relation.Variables["relatedIssueId"] != "iss-10" {
+		t.Errorf("relation vars = %+v, want the looked-up node ids", relation.Variables)
+	}
+}
+
+func TestLinearWriterResolveGivesUpAfterAttempts(t *testing.T) {
+	w, reqs := fakeApplyLinear(t, 99)
+	w.backoff = time.Millisecond
+
+	err := w.LinkBlocks(context.Background(), "COD-9", "COD-10")
+	if !errors.Is(err, linearapi.ErrNotFound) {
+		t.Fatalf("LinkBlocks error = %v, want linearapi.ErrNotFound", err)
+	}
+	if got := countLinearReqs(*reqs, "query Issue("); got != 3 {
+		t.Errorf("lookups = %d, want the retry bounded to 3 attempts", got)
+	}
+	if lastLinearReq(*reqs, "mutation IssueRelationCreate") != nil {
+		t.Error("relation mutation sent despite the unresolved blocker")
 	}
 }
 
