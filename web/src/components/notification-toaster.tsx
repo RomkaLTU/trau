@@ -5,14 +5,16 @@ import { Badge } from "@/components/ui/badge";
 import { fireNotification, useNotifications } from "@/lib/notifications";
 import {
   notificationTarget,
+  showsInAppToast,
   useNotificationEvents,
   useNotificationNavigate,
 } from "@/lib/notification-center";
 import { isConversationOpen } from "@/lib/open-conversation";
 
 // NotificationToaster is the headless bridge from the hub's live needs-attention
-// frames to a toast — and, when the tab is hidden, an OS notification. It renders
-// nothing; the toasts land in the root <Toaster />.
+// frames to a toast — and, when the tab is hidden, an OS notification. Interview
+// questions skip the toast and are left to the dock, but keep the OS fallback.
+// It renders nothing; the toasts land in the root <Toaster />.
 export function NotificationToaster() {
   const navigateToNotification = useNotificationNavigate();
   const { enabled } = useNotifications();
@@ -27,18 +29,20 @@ export function NotificationToaster() {
       return;
     }
 
-    const target = notificationTarget(notification, repo);
-    toast.custom((id) => (
-      <NotificationCard
-        title={notification.title}
-        repo={repo}
-        body={notification.body}
-        onOpen={() => {
-          toast.dismiss(id);
-          navigateToNotification(target);
-        }}
-      />
-    ));
+    if (showsInAppToast(notification.kind)) {
+      const target = notificationTarget(notification, repo);
+      toast.custom((id) => (
+        <NotificationCard
+          title={notification.title}
+          repo={repo}
+          body={notification.body}
+          onOpen={() => {
+            toast.dismiss(id);
+            navigateToNotification(target);
+          }}
+        />
+      ));
+    }
 
     if (document.hidden && enabledRef.current) {
       fireNotification(
