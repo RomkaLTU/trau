@@ -16,6 +16,7 @@ import {
 } from '@/components/trau/prompts-panel'
 import { MCPConnectSection } from '@/components/trau/mcp-connect'
 import { QAAccountsSection } from '@/components/trau/qa-accounts-panel'
+import { TeamSyncSection } from '@/components/trau/team-sync-panel'
 import {
   InlineEditor,
   LayerChip,
@@ -38,6 +39,7 @@ import {
   qaAccountsQueryOptions,
   qaNotesQueryOptions,
 } from '@/lib/qa'
+import { matchesTeamSync } from '@/lib/teamsync'
 import {
   ROUTING_SECTION,
   THEME_SECTION,
@@ -126,9 +128,10 @@ function ConfigView({ repo }: { repo: string }) {
     () => (searching ? keys.filter((k) => matchesQuery(k, query)).length : 0),
     [keys, query, searching],
   )
-  const promptMatches =
+  const panelMatches =
     !searching ||
     [...globalPrompts, ...repoPrompts].some((p) => matchesPrompt(p, query)) ||
+    matchesTeamSync(query) ||
     qaAccounts.some((a) => matchesQAAccount(a, query))
 
   const navSections = useMemo(
@@ -150,6 +153,12 @@ function ConfigView({ repo }: { repo: string }) {
         title: 'Repo prompts',
         count: repoPrompts.length,
         modified: repoPrompts.some((p) => p.repo_override !== null),
+      },
+      {
+        id: 'team-sync-status',
+        title: 'Team sync status',
+        count: 0,
+        modified: false,
       },
       {
         id: 'qa-accounts',
@@ -353,7 +362,7 @@ function ConfigView({ repo }: { repo: string }) {
         <SectionNav sections={navSections} variant="desktop" />
 
         <div className="flex min-w-0 flex-1 flex-col gap-4">
-          {visibleSections.length === 0 && !promptMatches && (
+          {visibleSections.length === 0 && !panelMatches && (
             <TerminalCard
               title="search"
               bodyClassName="flex flex-col items-start gap-2 p-6"
@@ -373,6 +382,7 @@ function ConfigView({ repo }: { repo: string }) {
           {visibleSections}
           <PromptsSection query={query} />
           <RepoPromptsSection repo={repo} query={query} />
+          <TeamSyncSection repo={repo} query={query} />
           <QAAccountsSection repo={repo} query={query} />
         </div>
       </div>
@@ -584,7 +594,7 @@ function KeyRow({
               <Pencil className="size-3.5" aria-hidden="true" />
             </button>
           ) : (
-            <span title="read-only over the web">
+            <span title={item.disabled_reason ?? 'read-only over the web'}>
               <Lock className="size-3.5 text-faint" aria-hidden="true" />
               <span className="sr-only">{item.key} is read-only</span>
             </span>
@@ -596,6 +606,12 @@ function KeyRow({
         <p className="mt-1 pl-4 text-xs leading-relaxed text-muted-foreground">
           {item.description}
         </p>
+      )}
+
+      {item.disabled_reason && (
+        <div className="mt-1.5 pl-4">
+          <ValueWarning text={item.disabled_reason} />
+        </div>
       )}
 
       {warning && !editing && (

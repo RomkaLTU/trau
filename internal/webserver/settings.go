@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -37,6 +38,10 @@ type ConfigKeyView struct {
 	Editable    bool     `json:"editable"`
 	Secret      bool     `json:"secret,omitempty"`
 	Set         bool     `json:"set,omitempty"`
+	// DisabledReason explains why a key the catalog marks web-editable is not
+	// editable for this repo — a fact about the repo, not about the key, so it is
+	// resolved per request rather than declared in the catalog.
+	DisabledReason string `json:"disabled_reason,omitempty"`
 }
 
 // ConfigResponse is the /api/v1/repos/{repo}/config resource: every known config
@@ -105,6 +110,10 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request, repo registry
 		})
 		return
 	}
+	if reason, blocked := s.unavailableKeys(repo.Root)[key]; blocked {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": reason})
+		return
+	}
 	if req.Layer != "project" && req.Layer != "user" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "layer must be project or user"})
 		return
@@ -155,11 +164,28 @@ func (s *Server) resolveConfig(repo registry.Repo) ([]ConfigKeyView, error) {
 	if err != nil {
 		return nil, err
 	}
+	unavailable := s.unavailableKeys(repo.Root)
 	views := make([]ConfigKeyView, 0, len(items))
 	for _, it := range items {
-		views = append(views, configKeyView(it))
+		v := configKeyView(it)
+		if reason, blocked := unavailable[v.Key]; blocked {
+			v.Editable = false
+			v.DisabledReason = reason
+		}
+		views = append(views, v)
 	}
 	return views, nil
+}
+
+// unavailableKeys names the web-editable keys this repo cannot use, each with the
+// copy explaining why. Turning one on would be inert, so the surface disables it
+// and the write path refuses it.
+func (s *Server) unavailableKeys(root string) map[string]string {
+	out := map[string]string{}
+	if reason := s.teamSyncUnavailable(context.Background(), root); reason != "" {
+		out["TEAM_SYNC"] = reason
+	}
+	return out
 }
 
 func configKeyView(it config.ConfigItem) ConfigKeyView {

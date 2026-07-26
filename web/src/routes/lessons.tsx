@@ -56,6 +56,9 @@ function LessonList({ repo }: { repo: string }) {
   const [query, setQuery] = useState("");
 
   const lessons = data?.lessons ?? [];
+  // Attribution only earns its space once a teammate's records are in the mix;
+  // on a solo repo every card would read "Me".
+  const shared = useMemo(() => lessons.some((l) => Boolean(l.author)), [lessons]);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return lessons;
@@ -119,6 +122,7 @@ function LessonList({ repo }: { repo: string }) {
             <LessonCard
               key={`${lesson.recorded_at ?? ""}-${lesson.ticket ?? ""}-${i}`}
               lesson={lesson}
+              showAuthor={shared}
             />
           ))}
         </div>
@@ -132,7 +136,13 @@ const RESULT_CHIP: Record<string, string> = {
   quarantined: "border-fail/40 bg-fail/10 text-fail",
 };
 
-function LessonCard({ lesson }: { lesson: Lesson }) {
+function LessonCard({
+  lesson,
+  showAuthor,
+}: {
+  lesson: Lesson;
+  showAuthor: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const hasDetail = Boolean(
     lesson.phase || lesson.attempted_fix || (lesson.evidence?.length ?? 0) > 0,
@@ -150,6 +160,19 @@ function LessonCard({ lesson }: { lesson: Lesson }) {
         </p>
 
         <div className="flex flex-wrap items-center gap-2">
+          {showAuthor && (
+            <span
+              title={lesson.me ? undefined : lesson.author}
+              className={cn(
+                "inline-flex items-center rounded-md border px-2 py-0.5 font-mono text-[0.7rem]",
+                lesson.me
+                  ? "border-primary/40 bg-primary/10 text-primary"
+                  : "border-border bg-secondary/50 text-muted-foreground",
+              )}
+            >
+              {lesson.me ? "Me" : lesson.author}
+            </span>
+          )}
           {lesson.result && (
             <span
               className={cn(
@@ -250,6 +273,7 @@ function haystack(l: Lesson): string {
     l.failure_type,
     l.result,
     l.attempted_fix,
+    l.author,
     ...(l.tags ?? []),
     ...(l.evidence ?? []),
   ]
