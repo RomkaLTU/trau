@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import {
   AlertTriangle,
   Archive,
@@ -21,6 +21,7 @@ import {
 import { ProviderPinPicker } from "@/components/trau/provider-picker";
 import { StateGroupChip } from "@/components/trau/state-group-chip";
 import { DeleteIssueDialog } from "@/components/delete-issue-dialog";
+import { StartInterviewDialog } from "@/components/grill/start-interview-dialog";
 import { InternalIssueForm } from "@/components/internal-issue-form";
 import { IssueAttachments } from "@/components/issue-attachments";
 import { Markdown, type MarkdownUrlMap } from "@/components/markdown";
@@ -44,11 +45,7 @@ import {
 } from "@/lib/issues";
 import { archiveToastMessage, useArchiveIssue } from "@/lib/archive";
 import { pinProvider, publishProviderPin } from "@/lib/provider-pin";
-import {
-  activeSessionForIssue,
-  grillSessionsQueryOptions,
-  isGrillable,
-} from "@/lib/grill";
+import { activeSessionForIssue, grillSessionsQueryOptions } from "@/lib/grill";
 import { liveGateMessage, useLiveLoops, type LiveLoop } from "@/lib/overview";
 import {
   enqueueFresh,
@@ -112,17 +109,18 @@ function IssueDrawerBody({
   onSelectIssue: (id: string) => void;
 }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [editing, setEditing] = useState(false);
 
   const query = useQuery(issueQueryOptions(repo, id));
   const issue = query.data;
   const { attachments, urlMap } = useIssueAttachments(repo, id);
   const internal = issue?.source === "internal";
-  const grillable = !!issue && isGrillable(issue.labels);
+  const interviewable = !!issue && !issue.archived;
 
   const grillSessions = useQuery({
     ...grillSessionsQueryOptions(repo),
-    enabled: grillable,
+    enabled: interviewable,
   });
   const activeGrill = activeSessionForIssue(grillSessions.data?.sessions, id);
 
@@ -358,14 +356,23 @@ function IssueDrawerBody({
               {run.isPending ? "Starting…" : "Run"}
             </Button>
           </span>
-          {grillable && (
-            <Button variant="outline" size="sm" asChild>
-              <Link to="/inbox" search={{ issue: id }}>
-                <Flame />
-                {activeGrill ? "Resume interview" : "Interview"}
-              </Link>
-            </Button>
-          )}
+          {interviewable &&
+            (activeGrill ? (
+              <Button variant="outline" size="sm" asChild>
+                <Link to="/inbox" search={{ issue: id }}>
+                  <Flame />
+                  Resume interview
+                </Link>
+              </Button>
+            ) : (
+              <StartInterviewDialog
+                repo={repo}
+                id={id}
+                onStarted={() =>
+                  void navigate({ to: "/inbox", search: { issue: id } })
+                }
+              />
+            ))}
           {internal && (
             <Button
               variant="outline"
