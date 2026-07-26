@@ -8,6 +8,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronsUp,
   ExternalLink,
   Info,
   ListPlus,
@@ -68,6 +69,7 @@ import {
   drain,
   enqueueFresh,
   moveQueueItem,
+  promoteQueueItem,
   publishQueue,
   queueExecutable,
   queueQueryOptions,
@@ -1433,12 +1435,41 @@ function FinalizeRow({
   );
 }
 
+// RunNextButton promotes a remaining item to the front of the queue, so the
+// drain picks it when the run in flight settles.
+function RunNextButton({
+  id,
+  disabled,
+  onRunNext,
+}: {
+  id: string;
+  disabled: boolean;
+  onRunNext: (id: string) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onRunNext(id)}
+      disabled={disabled}
+      title="Run next"
+      aria-label={`Run ${id} next`}
+      className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-primary disabled:pointer-events-none disabled:opacity-30"
+    >
+      <ChevronsUp className="size-3.5" aria-hidden="true" />
+    </button>
+  );
+}
+
 function PendingTicketRow({
   ticket,
   onPeek,
+  onRunNext,
+  runNextDisabled,
 }: {
   ticket: TimelineTicket;
   onPeek: (id: string) => void;
+  onRunNext: (id: string) => void;
+  runNextDisabled: boolean;
 }) {
   return (
     <li className="flex items-center gap-3 border-b border-border/60 px-4 py-2.5 last:border-0">
@@ -1455,6 +1486,11 @@ function PendingTicketRow({
       <ProviderTag provider={ticket.provider} pin={ticket.providerPin} />
       <BacklogPRBadge status={ticket.prStatus} />
       <StatusPill state="todo" label="pending" className="shrink-0" />
+      <RunNextButton
+        id={ticket.id}
+        disabled={runNextDisabled}
+        onRunNext={onRunNext}
+      />
     </li>
   );
 }
@@ -1462,9 +1498,13 @@ function PendingTicketRow({
 function PendingEpicGroup({
   entry,
   onPeek,
+  onRunNext,
+  runNextDisabled,
 }: {
   entry: Extract<PendingEntry, { kind: "epic" }>;
   onPeek: (id: string) => void;
+  onRunNext: (id: string) => void;
+  runNextDisabled: boolean;
 }) {
   return (
     <li className="border-b border-border/60 last:border-0">
@@ -1481,6 +1521,11 @@ function PendingEpicGroup({
           state="info"
           label={`epic · ${entry.done}/${entry.total}`}
           className="shrink-0"
+        />
+        <RunNextButton
+          id={entry.id}
+          disabled={runNextDisabled}
+          onRunNext={onRunNext}
         />
       </div>
       <ul className="border-t border-border/60 bg-secondary/20">
@@ -1551,6 +1596,18 @@ function RunningQueueView({
   const now = useNow(1000);
   const queryClient = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
+  const [runNextId, setRunNextId] = useState<string | null>(null);
+
+  const promote = useMutation({
+    mutationFn: (id: string) => promoteQueueItem(repo, id),
+    onSuccess: (res) => publishQueue(queryClient, repo, res),
+  });
+  const askRunNext = (id: string) => {
+    promote.reset();
+    setRunNextId(id);
+  };
+  const runNextTarget = queue.items.find((it) => it.id === runNextId);
+  const runNextBusy = promote.isPending || shuttingDown;
 
   return (
     <div className="flex flex-col gap-6">
@@ -1619,26 +1676,35 @@ function RunningQueueView({
               <>
                 <div className="overflow-hidden rounded-md border border-border">
                   <ul className="flex flex-col">
-                    {timeline.pending.map((entry) =>
+                    {timeline.pending.map((entry, index) =>
                       entry.kind === "epic" ? (
                         <PendingEpicGroup
                           key={entry.id}
                           entry={entry}
                           onPeek={onPeek}
+                          onRunNext={askRunNext}
+                          runNextDisabled={index === 0 || runNextBusy}
                         />
                       ) : (
                         <PendingTicketRow
                           key={entry.ticket.id}
                           ticket={entry.ticket}
                           onPeek={onPeek}
+                          onRunNext={askRunNext}
+                          runNextDisabled={index === 0 || runNextBusy}
                         />
                       ),
                     )}
                   </ul>
                 </div>
+                {promote.error ? (
+                  <p className="font-mono text-xs text-fail" role="alert">
+                    {actionError(promote.error)}
+                  </p>
+                ) : null}
                 <p className="font-sans text-xs leading-relaxed text-muted-foreground">
-                  Remaining tickets — the pick order is decided at run time, not
-                  promised here.
+                  Remaining tickets run top to bottom — Run next moves one to the
+                  front for when the current run finishes.
                 </p>
               </>
             ) : (
@@ -1707,6 +1773,35 @@ function RunningQueueView({
           error={shutdownError}
         />
       </div>
+
+      {runNextTarget ? (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setRunNextId(null);
+          }}
+          windowTitle="confirm"
+          title={`Run ${runNextTarget.id} next?`}
+          description={
+            <>
+              {runNextTarget.id} moves to the front of the remaining list. The
+              run in flight is never interrupted — the change takes effect when
+              the current run finishes. Running ahead of queue order is risky:
+              later tickets may assume earlier queued work already landed.
+              {runNextTarget.blocked ? (
+                <span className="mt-2 block text-fail">
+                  {runNextTarget.id} is blocked by{" "}
+                  {(runNextTarget.blockers ?? []).join(", ")} — the drain will
+                  run it anyway.
+                </span>
+              ) : null}
+            </>
+          }
+          confirmLabel="Run next"
+          destructive
+          onConfirm={() => promote.mutate(runNextTarget.id)}
+        />
+      ) : null}
 
       <AddTicketDialog
         repo={repo}

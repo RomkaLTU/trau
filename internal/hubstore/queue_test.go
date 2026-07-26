@@ -397,6 +397,111 @@ func TestMoveGuardsRunningItem(t *testing.T) {
 	}
 }
 
+func TestMoveToFrontPromotesBehindTheRunningItem(t *testing.T) {
+	q := testQueue(t)
+	mustAdd(t, q, "COD-1")
+	mustAdd(t, q, "COD-2")
+	if _, err := q.Add(queue.Item{
+		Kind:      queue.KindEpic,
+		ID:        "COD-10",
+		Provider:  "codex",
+		SubIssues: []queue.SubIssue{{ID: "COD-11", Title: "First", State: "todo"}},
+	}); err != nil {
+		t.Fatalf("Add epic: %v", err)
+	}
+	if err := q.MarkRunning("COD-1", 4242); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+	before, err := q.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	items, err := q.MoveToFront("COD-10")
+	if err != nil {
+		t.Fatalf("MoveToFront: %v", err)
+	}
+	if got := ids(items); !reflect.DeepEqual(got, []string{"COD-1", "COD-10", "COD-2"}) {
+		t.Fatalf("order = %v, want COD-10 first pending, behind running COD-1", got)
+	}
+	promoted := items[1]
+	if promoted.Provider != "codex" {
+		t.Errorf("provider = %q, want the per-run override preserved", promoted.Provider)
+	}
+	if !promoted.QueuedAt.Equal(before[2].QueuedAt) {
+		t.Errorf("queued_at = %v, want the original stamp %v", promoted.QueuedAt, before[2].QueuedAt)
+	}
+	if !reflect.DeepEqual(promoted.SubIssues, before[2].SubIssues) {
+		t.Errorf("sub_issues = %+v, want %+v", promoted.SubIssues, before[2].SubIssues)
+	}
+}
+
+func TestMoveToFrontGuardsRowsItCannotPromote(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(t *testing.T, q *Queue)
+		id      string
+		want    error
+	}{
+		{
+			name: "item not queued",
+			id:   "COD-9",
+			want: queue.ErrNotQueued,
+		},
+		{
+			name: "item already running",
+			prepare: func(t *testing.T, q *Queue) {
+				if err := q.MarkRunning("COD-2", 11); err != nil {
+					t.Fatalf("MarkRunning: %v", err)
+				}
+			},
+			id:   "COD-2",
+			want: queue.ErrRunning,
+		},
+		{
+			name: "item paused",
+			prepare: func(t *testing.T, q *Queue) {
+				if err := q.Pause("COD-2", "needs re-auth"); err != nil {
+					t.Fatalf("Pause: %v", err)
+				}
+			},
+			id:   "COD-2",
+			want: queue.ErrNotPending,
+		},
+		{
+			name: "item already settled",
+			prepare: func(t *testing.T, q *Queue) {
+				if err := q.Finish("COD-2", queue.StatusDone, ""); err != nil {
+					t.Fatalf("Finish: %v", err)
+				}
+			},
+			id:   "COD-2",
+			want: queue.ErrNotPending,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := testQueue(t)
+			mustAdd(t, q, "COD-1")
+			mustAdd(t, q, "COD-2")
+			if tt.prepare != nil {
+				tt.prepare(t, q)
+			}
+
+			if _, err := q.MoveToFront(tt.id); !errors.Is(err, tt.want) {
+				t.Fatalf("MoveToFront(%s) = %v, want %v", tt.id, err, tt.want)
+			}
+			items, err := q.Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := ids(items); !reflect.DeepEqual(got, []string{"COD-1", "COD-2"}) {
+				t.Fatalf("order = %v, want a refused promote to write nothing", got)
+			}
+		})
+	}
+}
+
 func TestPauseParksAndStopsDraining(t *testing.T) {
 	q := testQueue(t)
 	mustAdd(t, q, "COD-1")

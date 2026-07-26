@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apiFetch } from './api'
 import {
   enqueueFresh,
+  promoteQueueItem,
   publishQueue,
   queueActiveIds,
   queueCounts,
@@ -500,6 +501,45 @@ describe('enqueueFresh', () => {
       'COD-1 is already in the queue',
     )
     expect(mockFetch).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('promoteQueueItem', () => {
+  it('posts the front destination to the move endpoint', async () => {
+    const promoted = queueResponse({
+      draining: true,
+      items: [item({ id: 'COD-2' }), item({ id: 'COD-1', position: 2 })],
+    })
+    mockFetch.mockResolvedValueOnce(response(200, promoted))
+
+    const res = await promoteQueueItem('trau', 'COD-2')
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      '/api/v1/repos/trau/queue/COD-2/move',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ to: 'front' }),
+      }),
+    )
+    expect(res).toEqual(promoted)
+  })
+
+  it('surfaces the hub refusal when the item is no longer pending', async () => {
+    mockFetch.mockResolvedValueOnce(
+      response(409, { error: 'COD-2 is running and cannot be reordered' }),
+    )
+
+    await expect(promoteQueueItem('trau', 'COD-2')).rejects.toThrow(
+      'COD-2 is running and cannot be reordered',
+    )
+  })
+
+  it('falls back to the status when the refusal carries no message', async () => {
+    mockFetch.mockResolvedValueOnce(response(404, null))
+
+    await expect(promoteQueueItem('trau', 'COD-9')).rejects.toThrow(
+      'run next failed: 404',
+    )
   })
 })
 

@@ -140,6 +140,27 @@ export async function moveQueueItem(
   return res.json()
 }
 
+// promoteQueueItem moves a pending item to the first pending slot, so the drain
+// picks it when the run in flight settles. Only a pending item can be promoted:
+// one that has started or settled meanwhile answers 409.
+export async function promoteQueueItem(
+  repo: string,
+  id: string,
+): Promise<QueueResponse> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/queue/${encodeURIComponent(id)}/move`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to: 'front' }),
+    },
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'run next failed'))
+  }
+  return res.json()
+}
+
 // runQueueItem runs one queued item on its own: the hub spawns its child without
 // arming the drain, so when the item settles the queue goes idle instead of
 // starting the next row.
