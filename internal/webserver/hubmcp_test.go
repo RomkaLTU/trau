@@ -217,6 +217,44 @@ func TestHubMCPCreateEnqueueStartFlow(t *testing.T) {
 	}
 }
 
+// start_queue answers the same domain refusal the REST route maps to 409, for
+// both shapes of an unrunnable queue, and arms nothing.
+func TestHubMCPStartQueueRefusesWithNothingRunnable(t *testing.T) {
+	tests := []struct {
+		name   string
+		settle string
+	}{
+		{name: "empty queue"},
+		{name: "settled-only queue", settle: queue.StatusDone},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, s, root := hubMCPServer(t)
+			if tc.settle != "" {
+				ticket := createMCPTicket(t, ts, map[string]any{"repo": "acme", "title": "Ship the toggle"})
+				hubToolPayload(t, hubTool(t, ts, "enqueue", map[string]any{"repo": "acme", "id": ticket.ID}), &MCPQueueRow{})
+				if err := s.stores.Queue(root).Finish(ticket.ID, tc.settle, ""); err != nil {
+					t.Fatalf("settle %s: %v", ticket.ID, err)
+				}
+			}
+
+			tr := hubTool(t, ts, "start_queue", map[string]any{"repo": "acme"})
+			if !tr.IsError || tr.Content[0].Text != queue.ErrNoRunnableItems.Error() {
+				t.Fatalf("start_queue = %+v, want the domain refusal %q", tr, queue.ErrNoRunnableItems.Error())
+			}
+			if _, meta, _ := s.stores.Queue(root).Snapshot(); meta.Draining || !meta.DrainingSince.IsZero() {
+				t.Errorf("meta = %+v, want untouched by the refused start", meta)
+			}
+			s.drain.mu.Lock()
+			_, active := s.drain.active[root]
+			s.drain.mu.Unlock()
+			if active {
+				t.Error("the refused start_queue launched a drain loop")
+			}
+		})
+	}
+}
+
 func TestHubMCPPauseQueueAndStatus(t *testing.T) {
 	ts, s, root := hubMCPServer(t)
 	ticket := createMCPTicket(t, ts, map[string]any{"repo": "acme", "title": "Ship the toggle"})

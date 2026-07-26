@@ -42,6 +42,25 @@ const (
 	OnFaultSkip = "skip"
 )
 
+// Runnable reports whether a status still contributes work to a drain: the drain
+// launches the first pending or paused item and passes over every settled one.
+// It is the one rule a start is validated against and the drain picks by.
+func Runnable(status string) bool {
+	return status == StatusPending || status == StatusPaused
+}
+
+// HasRunnable reports whether the queue holds anything a drain could launch. An
+// empty queue and a fully settled one both read false, so neither is left armed
+// waiting for work that may never arrive.
+func HasRunnable(items []Item) bool {
+	for _, it := range items {
+		if Runnable(it.Status) {
+			return true
+		}
+	}
+	return false
+}
+
 // SubIssue is one child an epic item carries, captured when the epic is queued
 // so the queue records what an epic run will cover.
 type SubIssue struct {
@@ -91,6 +110,10 @@ var (
 	// ErrRunning is returned when removing an item the hub is currently
 	// draining, so a running child is never orphaned by a dequeue.
 	ErrRunning = errors.New("cannot remove a running item")
+	// ErrNoRunnableItems is returned when a start is asked of a queue with
+	// nothing pending or paused, so an empty or fully settled queue stays idle
+	// instead of arming over work that does not exist.
+	ErrNoRunnableItems = errors.New("the queue has no runnable items — add or resume an item before starting it")
 )
 
 // DrainReport is how a headless queue-member child reports to the hub drainer how

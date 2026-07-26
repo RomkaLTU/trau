@@ -52,6 +52,19 @@ func (st *queueState) disarm() {
 	st.drainingSince = time.Time{}
 }
 
+// restart returns every item that is not currently running to pending with its
+// reason and child pid cleared, so the next drain runs from the top.
+func (st *queueState) restart() {
+	for i := range st.items {
+		if st.items[i].Status == queue.StatusRunning {
+			continue
+		}
+		st.items[i].Status = queue.StatusPending
+		st.items[i].Reason = ""
+		st.items[i].PID = 0
+	}
+}
+
 // Load returns the queue in registration order, empty when nothing has been
 // queued yet.
 func (q *Queue) Load() ([]queue.Item, error) {
@@ -194,10 +207,42 @@ func (q *Queue) Remove(id string) ([]queue.Item, error) {
 	return st.items, nil
 }
 
-// FinishDraining clears the draining flag once the queue has run dry — at least
-// one item, none of them pending, paused, or running — and reports whether it
-// did, so a completed queue reads stopped instead of idling armed. An armed
-// empty queue is left waiting for items. The check and the write share one lock,
+// Arm starts draining this queue for a fresh run and records the run-level knobs
+// that go with it: noResume returns every non-running item to pending so the
+// queue re-runs from the top, and onFault decides what a fault does to the rest.
+// It refuses a queue with nothing pending or paused with queue.ErrNoRunnableItems
+// and writes nothing in that case. Validation, the reset, the options and the arm
+// share one lock and one persist, so a concurrent enqueue or settlement can
+// neither slip past the check nor observe a half-armed queue. Arming an
+// already-draining queue keeps its stamp, so a re-arm mid-run never restarts the
+// clock.
+func (q *Queue) Arm(noResume bool, onFault string) error {
+	queueMu.Lock()
+	defer queueMu.Unlock()
+	st, err := q.loadImported()
+	if err != nil {
+		return err
+	}
+	if !queue.HasRunnable(st.items) {
+		return queue.ErrNoRunnableItems
+	}
+	if noResume {
+		st.restart()
+	}
+	st.noResume = noResume
+	st.onFault = onFault
+	if !st.draining {
+		st.draining = true
+		st.drainingSince = time.Now().UTC()
+	}
+	return q.persist(st)
+}
+
+// FinishDraining clears the draining flag once the queue has nothing left to run
+// — no pending, paused, or running item — and reports whether it did, so a
+// completed queue reads stopped instead of idling armed. An empty or fully
+// settled queue disarms the same way, which self-heals a row persisted armed
+// before a start required runnable work. The check and the write share one lock,
 // so an item queued after the drain's last snapshot keeps the queue armed rather
 // than being stranded.
 func (q *Queue) FinishDraining() (bool, error) {
@@ -207,12 +252,11 @@ func (q *Queue) FinishDraining() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if !st.draining || len(st.items) == 0 {
+	if !st.draining {
 		return false, nil
 	}
 	for _, it := range st.items {
-		switch it.Status {
-		case queue.StatusPending, queue.StatusPaused, queue.StatusRunning:
+		if queue.Runnable(it.Status) || it.Status == queue.StatusRunning {
 			return false, nil
 		}
 	}
@@ -327,42 +371,6 @@ func (q *Queue) Move(id string, dir int) ([]queue.Item, error) {
 		return nil, err
 	}
 	return st.items, nil
-}
-
-// SetOptions records the run-level knobs a drain start carries: whether children
-// ignore stored checkpoints, and what a fault does to the rest of the queue.
-func (q *Queue) SetOptions(noResume bool, onFault string) error {
-	queueMu.Lock()
-	defer queueMu.Unlock()
-	st, err := q.loadImported()
-	if err != nil {
-		return err
-	}
-	st.noResume = noResume
-	st.onFault = onFault
-	return q.persist(st)
-}
-
-// Restart resets the queue for a fresh drain from the top: every item that is
-// not currently running returns to pending with its reason and child pid
-// cleared. It backs skip-resume, which discards any stored position before
-// draining.
-func (q *Queue) Restart() error {
-	queueMu.Lock()
-	defer queueMu.Unlock()
-	st, err := q.loadImported()
-	if err != nil {
-		return err
-	}
-	for i := range st.items {
-		if st.items[i].Status == queue.StatusRunning {
-			continue
-		}
-		st.items[i].Status = queue.StatusPending
-		st.items[i].Reason = ""
-		st.items[i].PID = 0
-	}
-	return q.persist(st)
 }
 
 // Clear empties root's queue entirely — every item and its sub-issues — and
