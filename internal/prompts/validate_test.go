@@ -80,6 +80,22 @@ func TestValidateOverrideRejectsInterviewWithoutIssueBody(t *testing.T) {
 	}
 }
 
+// A focus note only ever reaches the live interview, so an Ask-ahead override that
+// reaches for one is refused by name rather than silently rendering nothing.
+func TestValidateOverrideScopesFocusToLiveInterview(t *testing.T) {
+	body := "Interview about {{.ID}}: {{.Body}}{{if .Focus}} Open on {{.Focus}}{{end}}"
+	if err := mustLookup(t, "grill_issue").ValidateOverride(body); err != nil {
+		t.Fatalf("live interview rejected {{.Focus}}: %v", err)
+	}
+	err := mustLookup(t, "grill_pregrill").ValidateOverride(body)
+	if err == nil {
+		t.Fatal("Ask-ahead template referencing {{.Focus}} accepted")
+	}
+	if !strings.Contains(err.Error(), "{{.Focus}}") {
+		t.Fatalf("error %q does not name the unknown placeholder", err)
+	}
+}
+
 func TestValidateOverrideRejectsParseError(t *testing.T) {
 	p := mustLookup(t, "build")
 	err := p.ValidateOverride("Implement {{.ID on branch {{.Branch}}.")

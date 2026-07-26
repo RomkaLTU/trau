@@ -25,6 +25,7 @@ const (
 	goldenGrillTitle       = "Ticket title"
 	goldenGrillBody        = "Ticket body.\n\n![shot](/tmp/trau-attachments-COD-123/shot.png)"
 	goldenGrillAttachments = "\n--- Attachments ---\n/tmp/trau-attachments-COD-123/shot.png — shot.png (image/png, 2.0KB)\nThese are local copies of the ticket's files. Images may show UI states or error screenshots that matter for this task — read them.\n"
+	goldenGrillFocus       = "Whether the collapse threshold should be configurable."
 )
 
 func goldenRepairData(codeStyle, handoff, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) RepairData {
@@ -44,6 +45,12 @@ func goldenRepairData(codeStyle, handoff, fails, rubricNote, lessonsNote, notesN
 
 func grillIssue(title, body, attachments string) GrillIssueData {
 	return GrillIssueData{ID: goldenID, Title: title, Body: body, Attachments: attachments}
+}
+
+func grillIssueFocused(focus string) GrillIssueData {
+	data := grillIssue(goldenGrillTitle, goldenGrillBody, goldenGrillAttachments)
+	data.Focus = focus
+	return data
 }
 
 type goldenCase struct {
@@ -136,6 +143,7 @@ func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 		{"lessons_distill", "lessons_distill", LessonsDistillData{ID: goldenID, Result: "fixed", FailureType: "test", Evidence: "evidence line one\nevidence line two", Path: "/tmp/lesson-COD-123.json", Schema: lessonSchema}},
 		{"timelog_estimate", "timelog_estimate", TimelogEstimateData{ID: goldenID, Files: 3, Additions: 120, Deletions: 40, Commits: 2, Path: "/tmp/timelog-COD-123.txt"}},
 		{"grill_issue", "grill_issue", grillIssue(goldenGrillTitle, goldenGrillBody, goldenGrillAttachments)},
+		{"grill_issue_focus", "grill_issue", grillIssueFocused(goldenGrillFocus)},
 		{"grill_issue_bare", "grill_issue", grillIssue("", "(no description yet)", "")},
 		{"grill_pregrill", "grill_pregrill", grillIssue(goldenGrillTitle, goldenGrillBody, goldenGrillAttachments)},
 		{"grill_authoring_seed", "grill_authoring", GrillAuthoringData{Idea: "A dark-mode toggle in the toolbar."}},

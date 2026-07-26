@@ -112,8 +112,9 @@ type GrillDetailResponse struct {
 }
 
 // GrillCreateRequest is the body of POST /repos/{repo}/grill. IssueID is empty for
-// an authoring session anchored to the repo alone; Idea is the one-line seed for
-// such a session and is ignored when IssueID is set. Provider and Model are optional.
+// an authoring session anchored to the repo alone; Idea is that session's one-line
+// seed, or the focus note an issue-bound interview opens on. Provider and Model are
+// optional.
 type GrillCreateRequest struct {
 	IssueID  string `json:"issue_id"`
 	Idea     string `json:"idea"`
@@ -210,18 +211,19 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create grill session: " + err.Error()})
 		return
 	}
-	// An authoring session's one-line idea seeds the first turn's prompt and opens
-	// the conversation, so it is stored before the turn spawns.
-	if idea := strings.TrimSpace(req.Idea); issueID == "" && idea != "" {
+	// The opening line — an authoring session's seed idea, an issue grilling's focus
+	// note — grounds the first turn's prompt and opens the conversation, so it is
+	// stored before the turn spawns.
+	if note := strings.TrimSpace(req.Idea); note != "" {
 		payload, _ := json.Marshal(struct {
 			Text string `json:"text"`
-		}{Text: idea})
+		}{Text: note})
 		if _, _, err := s.stores.Grill().AppendMessage(sess.ID, hubstore.NewGrillMessage{
 			Role:    hubstore.GrillRoleUser,
 			Kind:    hubstore.GrillKindInfo,
 			Payload: string(payload),
 		}); err != nil {
-			logger.Verbosef("grill %d: seed idea: %v", sess.ID, err)
+			logger.Verbosef("grill %d: opening note: %v", sess.ID, err)
 		}
 	}
 	if s.startGrill != nil {

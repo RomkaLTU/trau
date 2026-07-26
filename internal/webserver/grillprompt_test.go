@@ -2,7 +2,12 @@ package webserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -20,7 +25,7 @@ func TestGrillIssuePromptReferencesMaterializedFiles(t *testing.T) {
 	body := "The toolbar breaks:\n\n![shot](https://uploads.linear.app/abc/shot.png)"
 
 	for name, got := range map[string]string{
-		"grillIssuePrompt":    grillIssuePrompt(prompts.Renderer{}, "COD-1", "Broken toolbar", body, files),
+		"grillIssuePrompt":    grillIssuePrompt(prompts.Renderer{}, "COD-1", "Broken toolbar", body, "", files),
 		"grillPregrillPrompt": grillPregrillPrompt(prompts.Renderer{}, "COD-1", "Broken toolbar", body, files),
 	} {
 		for _, want := range []string{
@@ -41,14 +46,14 @@ func TestGrillIssuePromptReferencesMaterializedFiles(t *testing.T) {
 
 // An issue with no files renders exactly as it did before attachments existed.
 func TestGrillIssuePromptWithoutAttachments(t *testing.T) {
-	got := grillIssuePrompt(prompts.Renderer{}, "COD-1", "Broken toolbar", "Fix the toolbar.", nil)
+	got := grillIssuePrompt(prompts.Renderer{}, "COD-1", "Broken toolbar", "Fix the toolbar.", "", nil)
 	if strings.Contains(got, "--- Attachments ---") {
 		t.Errorf("empty attachment list should render no section:\n%s", got)
 	}
 	if !strings.Contains(got, "Fix the toolbar.\n\n") {
 		t.Errorf("description spacing changed:\n%s", got)
 	}
-	if empty := grillIssuePrompt(prompts.Renderer{}, "COD-1", "Broken toolbar", "", nil); !strings.Contains(empty, "(no description yet)\n\n") {
+	if empty := grillIssuePrompt(prompts.Renderer{}, "COD-1", "Broken toolbar", "", "", nil); !strings.Contains(empty, "(no description yet)\n\n") {
 		t.Errorf("missing description placeholder:\n%s", empty)
 	}
 }
@@ -58,7 +63,7 @@ func TestGrillIssuePromptNotesUnavailableFile(t *testing.T) {
 	files := []attachfile.File{
 		{Ref: attachfile.Ref{ID: 1, Filename: "shot.png"}, Err: errors.New("hub unreachable")},
 	}
-	got := grillIssuePrompt(prompts.Renderer{}, "COD-1", "Broken toolbar", "See the shot.", files)
+	got := grillIssuePrompt(prompts.Renderer{}, "COD-1", "Broken toolbar", "See the shot.", "", files)
 	if !strings.Contains(got, "shot.png unavailable:") {
 		t.Errorf("missing the unavailable note:\n%s", got)
 	}
@@ -127,4 +132,76 @@ func TestGrillPromptVariantsAreIndependentlyEditable(t *testing.T) {
 	if got := r.firstPrompt(ctx, repo, issue); !strings.HasPrefix(got, "LIVE COD-1107:") {
 		t.Fatalf("interview override not applied:\n%s", got)
 	}
+}
+
+// A focus note on an issue-bound create opens the conversation and aims the first
+// turn: it is stored as the user's opening message and the spawned prompt carries
+// the section built from it. A create without one leaves both untouched.
+func TestGrillIssueCreateHonoursFocusNote(t *testing.T) {
+	r, store, repo, stubDir := newGrillRunnerTest(t, grillStubScript)
+	r.srv.startGrill = r.launch
+	ts := httptest.NewServer(r.srv.Handler())
+	t.Cleanup(ts.Close)
+	t.Cleanup(func() {
+		attachfile.Remove("COD-1224")
+		attachfile.Remove("COD-1225")
+	})
+
+	const focus = "Whether the collapse threshold should be configurable."
+	focused := startIssueGrill(t, ts, repo.Name, "COD-1224", focus)
+	waitForGrillChain(t, store, focused, "sid-one")
+
+	prompt := lastArg(readNullArgs(t, filepath.Join(stubDir, "first.args")))
+	for _, want := range []string{"The person starting this interview wants clarified:", focus} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("first-turn prompt missing %q:\n%s", want, prompt)
+		}
+	}
+
+	msgs := grillThread(t, ts, focused)
+	if len(msgs) == 0 {
+		t.Fatal("focus note did not open the conversation")
+	}
+	if opening := msgs[0]; opening.Role != hubstore.GrillRoleUser || opening.Kind != hubstore.GrillKindInfo {
+		t.Errorf("opening message = %s/%s, want the user's info turn", opening.Role, opening.Kind)
+	} else if got := grillMessageText(string(opening.Payload)); got != focus {
+		t.Errorf("opening message = %q, want the focus note", got)
+	}
+
+	bare := startIssueGrill(t, ts, repo.Name, "COD-1225", "")
+	waitForGrillChain(t, store, bare, "sid-one")
+	if prompt := lastArg(readNullArgs(t, filepath.Join(stubDir, "first.args"))); strings.Contains(prompt, "wants clarified") {
+		t.Errorf("a create without a note rendered the focus section:\n%s", prompt)
+	}
+	if msgs := grillThread(t, ts, bare); len(msgs) != 0 {
+		t.Errorf("a create without a note opened the conversation with %+v", msgs)
+	}
+}
+
+func startIssueGrill(t *testing.T, ts *httptest.Server, repo, issue, idea string) int64 {
+	t.Helper()
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/grill", GrillCreateRequest{IssueID: issue, Idea: idea})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", res.StatusCode)
+	}
+	var v GrillSessionView
+	if err := json.NewDecoder(res.Body).Decode(&v); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	sid, err := strconv.ParseInt(v.ID, 10, 64)
+	if err != nil {
+		t.Fatalf("session id %q: %v", v.ID, err)
+	}
+	return sid
+}
+
+func grillThread(t *testing.T, ts *httptest.Server, sid int64) []GrillMessageView {
+	t.Helper()
+	_, body := get(t, ts, APIPrefix+"/grill/"+strconv.FormatInt(sid, 10))
+	var detail GrillDetailResponse
+	if err := json.Unmarshal([]byte(body), &detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	return detail.Messages
 }
