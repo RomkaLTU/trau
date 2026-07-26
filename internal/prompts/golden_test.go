@@ -46,6 +46,27 @@ func grillIssue(title, body, attachments string) GrillIssueData {
 	return GrillIssueData{ID: goldenID, Title: title, Body: body, Attachments: attachments}
 }
 
+type goldenCase struct {
+	golden string
+	name   string
+	data   any
+}
+
+func assertGoldens(t *testing.T, cases []goldenCase) {
+	t.Helper()
+	for _, tc := range cases {
+		t.Run(tc.golden, func(t *testing.T) {
+			want, err := os.ReadFile(filepath.Join("testdata", tc.golden+".golden"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := Render(tc.name, tc.data); got != string(want) {
+				t.Errorf("Render(%q) diverged from the golden\n got: %q\nwant: %q", tc.name, got, want)
+			}
+		})
+	}
+}
+
 func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 	rubricFragment := Render("rubric", RubricData{ID: goldenID, Path: goldenRubricPath, Schema: rubricSchema})
 	buildNotesFragment := Render("build_notes", BuildNotesData{ID: goldenID, Path: goldenBuildNotesPath})
@@ -75,11 +96,7 @@ func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 		}
 	}
 
-	cases := []struct {
-		golden string
-		name   string
-		data   any
-	}{
+	cases := []goldenCase{
 		{"preamble", "preamble", nil},
 		{"explore_preamble", "explore_preamble", nil},
 		{"code_style", "code_style", nil},
@@ -124,18 +141,44 @@ func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 		{"grill_authoring_seed", "grill_authoring", GrillAuthoringData{Idea: "A dark-mode toggle in the toolbar."}},
 		{"grill_authoring_empty", "grill_authoring", GrillAuthoringData{}},
 	}
-	for _, tc := range cases {
-		t.Run(tc.golden, func(t *testing.T) {
-			want, err := os.ReadFile(filepath.Join("testdata", tc.golden+".golden"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			got := Render(tc.name, tc.data)
-			if got != string(want) {
-				t.Errorf("Render(%q) diverged from the pre-refactor output\n got: %q\nwant: %q", tc.name, got, want)
-			}
-		})
-	}
+	assertGoldens(t, cases)
+}
+
+// These pin where the TEST_EFFORT fragment splices into each prompt. The
+// default high level renders nothing and is pinned by the goldens above, which
+// leave TestEffort empty.
+func TestRenderTestEffortGoldens(t *testing.T) {
+	const fragment = " TEST-EFFORT."
+	codeStyle := Render("code_style", nil)
+
+	repair := goldenRepairData(codeStyle, goldenHandoffPath, "fail one\nfail two", " RUBRIC-NOTE.", " LESSONS-NOTE.", " NOTES-NOTE.", goldenTicketCtx)
+	repair.TestEffort = fragment
+
+	assertGoldens(t, []goldenCase{
+		{"build_test_effort", "build", BuildData{
+			ID:            goldenID,
+			Branch:        goldenBranch,
+			SkillsNote:    "SKILLS-NOTE.",
+			Note:          " NOTE-FRAGMENT.",
+			TestEffort:    fragment,
+			CodeStyle:     codeStyle,
+			BuildNotes:    Render("build_notes", BuildNotesData{ID: goldenID, Path: goldenBuildNotesPath}),
+			TicketContext: goldenTicketCtx,
+		}},
+		{"repair_test_effort", "repair", repair},
+		{"bugfix_test_effort", "bugfix", repair},
+		{"verify_test_effort", "verify", VerifyData{
+			ID:             goldenID,
+			Handoff:        goldenHandoffPath,
+			Verdict:        goldenVerdictPath,
+			Note:           "NOTE.",
+			ChecksFragment: " CHECKS-FRAGMENT.",
+			RubricNote:     " RUBRIC-NOTE.",
+			LessonsNote:    " LESSONS-NOTE.",
+			TestEffort:     "TEST-EFFORT.",
+			TicketContext:  goldenTicketCtx,
+		}},
+	})
 }
 
 func TestCatalog(t *testing.T) {

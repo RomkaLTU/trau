@@ -509,6 +509,10 @@ type Pipeline struct {
 	// push_repair prompts (config CODE_STYLE_NOTE). Off drops it from all four, so
 	// every diff a cohort produces was written under the same instructions.
 	CodeStyleNote bool
+	// TestEffort constrains how many tests the build, repair and bugfix agents
+	// write (config TEST_EFFORT): "off", "low", "medium", or "high" — the default,
+	// which adds nothing to the prompts.
+	TestEffort string
 	// Cleanup gates the pre-verify slop-cleanup step (config CLEANUP).
 	Cleanup        bool
 	CITimeout      int
@@ -1482,7 +1486,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	buildSkills := resolver.Build(agent.SkillContext{Text: skillMatchText(ticketCtx, labels)})
 	buildDelivery := p.resolveSkills(buildSkills, resolver.Installed(), agent.PhaseBuild)
 	p.recordPhaseSkills(id, "build", buildDelivery)
-	out, err := p.agentStep(ctx, id, "build", injectInto(buildDelivery.injection, buildInstruction(p.prompts, id, branch, buildDelivery.note, note, p.codeStyleNote(), ticketCtx)))
+	out, err := p.agentStep(ctx, id, "build", injectInto(buildDelivery.injection, buildInstruction(p.prompts, id, branch, buildDelivery.note, note, testEffortNote(p.TestEffort), p.codeStyleNote(), ticketCtx)))
 	if err != nil {
 		return err
 	}
@@ -1914,7 +1918,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 			}
 			p.setActivity(id, activity.Repair, fmt.Sprintf("repair%d", repairAttempt))
 			p.recordPhaseSkills(id, "repair", repairDelivery)
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), injectInto(repairDelivery.injection, repairInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, repairDelivery.note, p.codeStyleNote(), ticketCtx))); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("repair%d", repairAttempt), injectInto(repairDelivery.injection, repairInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, repairDelivery.note, testEffortNote(p.TestEffort), p.codeStyleNote(), ticketCtx))); err != nil {
 				return err
 			}
 			continue
@@ -1928,7 +1932,7 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 			}
 			p.setActivity(id, activity.Bugfix, fmt.Sprintf("bugfix%d", bugfixAttempt))
 			p.recordPhaseSkills(id, "bugfix", bugfixDelivery)
-			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), injectInto(bugfixDelivery.injection, bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, bugfixDelivery.note, p.codeStyleNote(), ticketCtx))); err != nil {
+			if _, err := p.agentStep(ctx, id, fmt.Sprintf("bugfix%d", bugfixAttempt), injectInto(bugfixDelivery.injection, bugfixInstruction(p.prompts, id, verdictPath, handoff, branch, v.failureLines(), rubricRepair, lessonsRepair, notesRepair, bugfixDelivery.note, testEffortNote(p.TestEffort), p.codeStyleNote(), ticketCtx))); err != nil {
 				return err
 			}
 			continue
@@ -3563,12 +3567,41 @@ func (p *Pipeline) codeStyleNote() string {
 	return p.prompts.Render("code_style", nil)
 }
 
-func buildInstruction(r prompts.Renderer, id, branch, skillsNote, note, codeStyle, ticketCtx string) string {
+// testEffortNote is the build/repair/bugfix fragment constraining how much
+// effort the agent spends writing tests (config TEST_EFFORT). "high" — the
+// default — and any unrecognized level render nothing, leaving those prompts
+// byte-identical to a repo that never set the key.
+func testEffortNote(level string) string {
+	switch level {
+	case "off":
+		return " Do NOT create or extend any tests for this slice: write no new test files and add no cases to existing ones. Run the existing tests covering the code you changed to confirm nothing broke."
+	case "low":
+		return " Write only critical tests: cover the core happy path of the changed behavior and nothing more — skip edge-case, error-path and permutation tests."
+	case "medium":
+		return " Write focused tests: cover the core behavior plus the important edge and error cases, and skip exhaustive permutations and trivial tests."
+	default:
+		return ""
+	}
+}
+
+// verifyTestEffortNote replaces verify's which-tests-to-run sentence when the
+// slice was built under TEST_EFFORT=off: there are no new or changed test files
+// by design, so verify must run the existing tests instead and not count the
+// missing ones as a failure. Every other level keeps the default wording.
+func verifyTestEffortNote(level string) string {
+	if level != "off" {
+		return ""
+	}
+	return "This slice was built with test writing switched off, so it has no new or changed test files: run the existing tests that cover the changed code using the project's test runner (in a multi-workspace repo, the affected workspace's own runner) — not the whole suite — as a regression check, and do NOT treat the absence of new or changed tests as a failure."
+}
+
+func buildInstruction(r prompts.Renderer, id, branch, skillsNote, note, testEffort, codeStyle, ticketCtx string) string {
 	return r.Render("build", prompts.BuildData{
 		ID:            id,
 		Branch:        branch,
 		SkillsNote:    skillsNote,
 		Note:          note,
+		TestEffort:    testEffort,
 		CodeStyle:     codeStyle,
 		BuildNotes:    buildNotesInstruction(r, id),
 		TicketContext: ticketCtx,
@@ -3923,7 +3956,7 @@ func qaRosterNote(id string, accounts []hubclient.QAAccount, notes string) strin
 // handoff agent) it derives the checkable behaviors itself from the injected ticket
 // content and the slice's diff. The verdict shape and pass/fail gating are identical
 // either way.
-func verifyTail(r prompts.Renderer, id, handoff, verdict, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx string, proofsContract bool) string {
+func verifyTail(r prompts.Renderer, id, handoff, verdict, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, testEffort, ticketCtx string, proofsContract bool) string {
 	return r.Render("verify", prompts.VerifyData{
 		ID:             id,
 		Handoff:        handoff,
@@ -3934,6 +3967,7 @@ func verifyTail(r prompts.Renderer, id, handoff, verdict, note, qaNote, checksFr
 		RubricNote:     rubricNote,
 		LessonsNote:    lessonsNote,
 		SkillsNote:     skillsNote,
+		TestEffort:     testEffort,
 		TicketContext:  ticketCtx,
 		ProofsContract: proofsContract,
 	})
@@ -4022,15 +4056,15 @@ func commitSubject(title string) string {
 	return strings.TrimRight(cut, " ")
 }
 
-func repairInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, codeStyle, ticketCtx string) string {
-	return r.Render("repair", repairData(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, codeStyle, ticketCtx))
+func repairInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, testEffort, codeStyle, ticketCtx string) string {
+	return r.Render("repair", repairData(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, testEffort, codeStyle, ticketCtx))
 }
 
-func bugfixInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, codeStyle, ticketCtx string) string {
-	return r.Render("bugfix", repairData(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, codeStyle, ticketCtx))
+func bugfixInstruction(r prompts.Renderer, id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, testEffort, codeStyle, ticketCtx string) string {
+	return r.Render("bugfix", repairData(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, testEffort, codeStyle, ticketCtx))
 }
 
-func repairData(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, codeStyle, ticketCtx string) prompts.RepairData {
+func repairData(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, notesNote, skillsNote, testEffort, codeStyle, ticketCtx string) prompts.RepairData {
 	return prompts.RepairData{
 		ID:            id,
 		Verdict:       verdict,
@@ -4041,6 +4075,7 @@ func repairData(id, verdict, handoff, branch, fails, rubricNote, lessonsNote, no
 		LessonsNote:   lessonsNote,
 		NotesNote:     notesNote,
 		SkillsNote:    skillsNote,
+		TestEffort:    testEffort,
 		CodeStyle:     codeStyle,
 		TicketContext: ticketCtx,
 	}
@@ -4187,7 +4222,7 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 	}
 	verdictPath := verifyPath(id)
 	_ = os.Remove(verdictPath)
-	prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, verdictPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx, proofsOn))
+	prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, verdictPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, verifyTestEffortNote(p.TestEffort), ticketCtx, proofsOn))
 	_, agentErr := p.agentStep(ctx, id, label, prompt)
 	// A provider pause (rate/usage limit) or budget give-up must propagate, not be
 	// recorded as a verify failure — otherwise a transient 429 burns repair/bugfix
@@ -4233,7 +4268,7 @@ func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNot
 		memberPath := verifyMemberPath(id, m.Name)
 		_ = os.Remove(memberPath)
 		memberLabel := label + "-" + m.Name
-		prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, memberPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, ticketCtx, proofsOn))
+		prompt := injectInto(skillsInject, verifyTail(p.prompts, id, handoff, memberPath, note, qaNote, checksFragment, rubricNote, lessonsNote, skillsNote, verifyTestEffortNote(p.TestEffort), ticketCtx, proofsOn))
 		_, agentErr := p.agentStepOn(ctx, id, memberLabel, prompt, m.Runner)
 		if agentErr != nil && isFatalAgentErr(agentErr) {
 			return agentErr

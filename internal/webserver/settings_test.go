@@ -247,6 +247,7 @@ func TestConfigWriteRejections(t *testing.T) {
 		{"bad color value", ConfigWriteRequest{Key: "THEME_BRAND", Value: "purple", Layer: "user"}, http.StatusBadRequest},
 		{"non-option effort", ConfigWriteRequest{Key: "CLAUDE_BUILD_EFFORT", Value: "extreme", Layer: "project"}, http.StatusBadRequest},
 		{"bad grill provider", ConfigWriteRequest{Key: "GRILL_PROVIDER", Value: "ollama", Layer: "project"}, http.StatusBadRequest},
+		{"bad test effort", ConfigWriteRequest{Key: "TEST_EFFORT", Value: "none", Layer: "project"}, http.StatusBadRequest},
 		{"empty secret", ConfigWriteRequest{Key: "LINEAR_API_KEY", Value: "", Layer: "user"}, http.StatusBadRequest},
 	}
 	for _, tc := range cases {

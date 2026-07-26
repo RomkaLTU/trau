@@ -19,9 +19,9 @@ func TestCodeStyleNoteGatesEveryCodingPrompt(t *testing.T) {
 		p := &Pipeline{CodeStyleNote: on}
 		note := p.codeStyleNote()
 		phases := []namedPrompt{
-			{"build", buildInstruction(p.prompts, id, "feature/x", "", "", note, "")},
-			{"repair", repairInstruction(p.prompts, id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", "", "", note, "")},
-			{"bugfix", bugfixInstruction(p.prompts, id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", "", "", note, "")},
+			{"build", buildInstruction(p.prompts, id, "feature/x", "", "", "", note, "")},
+			{"repair", repairInstruction(p.prompts, id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", "", "", "", note, "")},
+			{"bugfix", bugfixInstruction(p.prompts, id, verifyPath(id), handoffPath(id), "feature/x", "boom", "", "", "", "", "", note, "")},
 			{"push-repair", pushRepairInstruction(p.prompts, id, "hook said no", "", note)},
 		}
 		for _, ph := range phases {
