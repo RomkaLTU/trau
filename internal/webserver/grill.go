@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -86,6 +87,21 @@ type GrillListResponse struct {
 	Tracker  string             `json:"tracker"`
 	Defaults GrillDefaultsView  `json:"defaults"`
 	Sessions []GrillSessionView `json:"sessions"`
+}
+
+// GrillAwaitingView is one session awaiting the user: the session resource with its
+// repo resolved to the registry name the web addresses it by, plus the first line of
+// the question it is blocked on so a collapsed dock previews it without loading the
+// conversation.
+type GrillAwaitingView struct {
+	GrillSessionView
+	Question string `json:"question,omitempty"`
+}
+
+// GrillAwaitingResponse is the GET /grill resource: every session awaiting the user
+// across every repo the hub tracks.
+type GrillAwaitingResponse struct {
+	Sessions []GrillAwaitingView `json:"sessions"`
 }
 
 // GrillDetailResponse is the GET /grill/{sid} resource: a session and its full
@@ -212,6 +228,50 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 		s.startGrill(r.Context(), sess)
 	}
 	writeJSON(w, http.StatusCreated, s.grillSessionView(repo.Name, sess))
+}
+
+// handleGrillAwaiting lists every session awaiting the user across all repos (GET
+// /grill), most recently touched first.
+func (s *Server) handleGrillAwaiting(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	sessions, err := s.stores.Grill().ListAwaiting()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	views := make([]GrillAwaitingView, len(sessions))
+	for i, sess := range sessions {
+		views[i] = GrillAwaitingView{
+			GrillSessionView: s.grillSessionView(s.grillRepoName(sess.Repo), sess),
+			Question:         s.grillQuestionPreview(sess),
+		}
+	}
+	writeJSON(w, http.StatusOK, GrillAwaitingResponse{Sessions: views})
+}
+
+// grillRepoName resolves a stored repo root to the registry name the web scopes its
+// calls by, degrading to the directory name for a repo the hub no longer tracks.
+func (s *Server) grillRepoName(root string) string {
+	if repo, ok := s.findRepoByRoot(root); ok {
+		return repo.Name
+	}
+	return filepath.Base(root)
+}
+
+// grillQuestionPreview is the one-line preview a collapsed dock shows: what actually
+// blocks the session. A parked or stalled session carries its reason (transitions into
+// waiting clear it), and only a session still on its question falls back to that.
+func (s *Server) grillQuestionPreview(sess hubstore.GrillSession) string {
+	body := sess.ParkedReason
+	if body == "" {
+		body = s.grillNotificationBody(sess)
+	}
+	line, _, _ := strings.Cut(body, "\n")
+	return truncateBody(strings.TrimSpace(line), notificationBodyMax)
 }
 
 // handleGrillSession serves one session and its full conversation (GET /grill/{sid}).

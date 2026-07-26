@@ -7,6 +7,7 @@ import {
   notificationRepoName,
   notificationScopeSwitch,
   notificationTarget,
+  showsInAppToast,
   sortByNewest,
   unreadBadgeLabel,
   type HubNotification,
@@ -51,6 +52,21 @@ describe("notificationTarget", () => {
       expect(target).toEqual({ kind: "run", repo: "app", ticket: "COD-9" });
     },
   );
+});
+
+describe("showsInAppToast", () => {
+  it("leaves interview questions to the dock", () => {
+    expect(showsInAppToast("grill_question")).toBe(false);
+  });
+
+  it.each([
+    "run_paused",
+    "run_faulted",
+    "run_quarantined",
+    "run_awaiting_merge",
+  ] as const)("still toasts %s", (kind) => {
+    expect(showsInAppToast(kind)).toBe(true);
+  });
 });
 
 function repoView(name: string): RepoView {

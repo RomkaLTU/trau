@@ -263,6 +263,67 @@ export const appliedGrillSessionsQueryOptions = (repo: string) =>
     staleTime: 10_000,
   })
 
+// GrillAwaitingSession is one session from the machine-wide awaiting feed: repo is
+// the registry name of whichever project it belongs to, and question is the first
+// line of what it is blocked on — enough to preview without loading its conversation.
+export interface GrillAwaitingSession extends GrillSession {
+  question?: string
+}
+
+export interface GrillAwaitingResponse {
+  sessions: GrillAwaitingSession[]
+}
+
+export const awaitingGrillsQueryKey = ['grill-awaiting'] as const
+
+async function fetchAwaitingGrills(): Promise<GrillAwaitingResponse> {
+  const res = await apiFetch('/api/v1/grill')
+  if (!res.ok) throw new Error(await errorMessage(res, 'list awaiting interviews failed'))
+  return res.json()
+}
+
+// The awaiting feed backs the interview dock on every route, so it polls at the same
+// cadence as the per-repo list; the live notification frames invalidate it on top of
+// that, so a question the user is waiting on lands without the poll's delay.
+export const awaitingGrillsQueryOptions = () =>
+  queryOptions({
+    queryKey: awaitingGrillsQueryKey,
+    queryFn: fetchAwaitingGrills,
+    staleTime: 10_000,
+    refetchInterval: 5_000,
+  })
+
+// sortAwaiting ranks the awaiting feed the way the inbox ranks attention: a session
+// blocked on a live question leads a parked or stalled one, then latest activity
+// first. A session with no readable timestamp sorts after everything dated.
+export function sortAwaiting(
+  sessions: readonly GrillAwaitingSession[],
+): GrillAwaitingSession[] {
+  return [...sessions].sort(
+    (a, b) =>
+      awaitingRank(a.state) - awaitingRank(b.state) ||
+      awaitingActivity(b) - awaitingActivity(a),
+  )
+}
+
+// awaitingWithOpen is what the dock's switcher offers: the awaiting feed, carrying the
+// session the panel already has open even once answering has dropped it off that feed.
+export function awaitingWithOpen(
+  sessions: readonly GrillAwaitingSession[],
+  open: GrillAwaitingSession,
+): GrillAwaitingSession[] {
+  return sessions.some((s) => s.id === open.id) ? [...sessions] : [open, ...sessions]
+}
+
+function awaitingRank(state: GrillState): number {
+  return state === 'waiting' ? 0 : 1
+}
+
+function awaitingActivity(session: GrillAwaitingSession): number {
+  const at = Date.parse(session.updated_at)
+  return Number.isNaN(at) ? 0 : at
+}
+
 async function fetchGrillDetail(sid: string): Promise<GrillDetail> {
   const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}`)
   if (!res.ok) throw new Error(await errorMessage(res, 'fetch interview session failed'))

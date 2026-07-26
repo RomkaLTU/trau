@@ -284,6 +284,44 @@ func TestGrillListFilter(t *testing.T) {
 	}
 }
 
+func TestGrillListAwaitingAcrossRepos(t *testing.T) {
+	g, _ := testGrill(t, 0)
+	waiting, _ := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1"})
+	parked, _ := g.Create(NewGrillSession{Repo: "other", IssueID: "COD-2"})
+	stalled, _ := g.Create(NewGrillSession{Repo: "other", IssueID: "COD-3"})
+	finished, _ := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-4"})
+	running, _ := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-5"})
+
+	for _, move := range []struct {
+		id    int64
+		state string
+	}{
+		{waiting.ID, GrillWaiting},
+		{parked.ID, GrillParked},
+		{stalled.ID, GrillStalled},
+		{finished.ID, GrillFinished},
+	} {
+		if _, err := g.Transition(move.id, move.state, ""); err != nil {
+			t.Fatalf("transition %d to %s: %v", move.id, move.state, err)
+		}
+	}
+
+	awaiting, err := g.ListAwaiting()
+	if err != nil {
+		t.Fatalf("list awaiting: %v", err)
+	}
+	got := map[int64]bool{}
+	for _, sess := range awaiting {
+		got[sess.ID] = true
+	}
+	if len(awaiting) != 3 || !got[waiting.ID] || !got[parked.ID] || !got[stalled.ID] {
+		t.Fatalf("awaiting = %+v, want the waiting, parked and stalled sessions", awaiting)
+	}
+	if got[finished.ID] || got[running.ID] {
+		t.Fatalf("awaiting = %+v, want no finished or running session", awaiting)
+	}
+}
+
 func TestGrillReadsIssueTitle(t *testing.T) {
 	g, db := testGrill(t, 0)
 	if _, _, err := NewIssues(db).Upsert("acme", "linear", []Issue{

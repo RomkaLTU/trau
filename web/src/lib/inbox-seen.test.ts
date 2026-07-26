@@ -1,8 +1,15 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { GrillSession, GrillState } from './grill'
 import type { InboxAttention, InboxItem } from './inbox'
-import { hasUnseenQuestion, markSeen, type SeenMarks } from './inbox-seen'
+import {
+  hasUnseenQuestion,
+  hasUnseenSession,
+  loadSeen,
+  markSeen,
+  recordSeen,
+  type SeenMarks,
+} from './inbox-seen'
 
 const EARLIER = '2026-07-15T10:00:00Z'
 const LATER = '2026-07-15T10:05:00Z'
@@ -48,6 +55,44 @@ describe('markSeen', () => {
       'sess-1': LATER,
       'sess-2': EARLIER,
     })
+  })
+})
+
+describe('recordSeen', () => {
+  beforeEach(() => {
+    const items = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => items.get(key) ?? null,
+      setItem: (key: string, value: string) => void items.set(key, value),
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps the marks the other surface has written since', () => {
+    recordSeen(session({ state: 'waiting', id: 'sess-1' }))
+    recordSeen(session({ state: 'waiting', id: 'sess-2', updated_at: LATER }))
+    expect(loadSeen()).toEqual({ 'sess-1': EARLIER, 'sess-2': LATER })
+  })
+
+  it('advances a mark the other surface left behind', () => {
+    recordSeen(session({ state: 'waiting' }))
+    recordSeen(session({ state: 'parked', updated_at: LATER }))
+    expect(loadSeen()).toEqual({ 'sess-1': LATER })
+  })
+})
+
+describe('hasUnseenSession', () => {
+  it('lights a session never opened', () => {
+    expect(hasUnseenSession({}, session({ state: 'waiting' }))).toBe(true)
+  })
+
+  it('clears once the session has been read, and re-lights when it asks again', () => {
+    const marks: SeenMarks = { 'sess-1': EARLIER }
+    expect(hasUnseenSession(marks, session({ state: 'waiting' }))).toBe(false)
+    expect(hasUnseenSession(marks, session({ state: 'parked', updated_at: LATER }))).toBe(true)
   })
 })
 
