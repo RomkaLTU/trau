@@ -61,6 +61,10 @@ func seedQueue(t *testing.T, s *Server, root string, draining bool, items ...que
 			if err := st.Finish(it.ID, it.Status, it.Reason); err != nil {
 				t.Fatalf("seed finish %s: %v", it.ID, err)
 			}
+		case queue.StatusSkipped:
+			if err := st.MarkSkipped(it.ID, it.Reason); err != nil {
+				t.Fatalf("seed skipped %s: %v", it.ID, err)
+			}
 		}
 	}
 	if err := st.SetDraining(draining); err != nil {

@@ -23,6 +23,14 @@ import (
 // root, and the server.
 func queueServer(t *testing.T, name string) (*fakeSupervisor, string, *httptest.Server) {
 	t.Helper()
+	_, fake, root, ts := queueHub(t, name)
+	return fake, root, ts
+}
+
+// queueHub is queueServer with the hub itself returned, for tests that must seed
+// queue rows the REST surface has no route to write — a settled one, say.
+func queueHub(t *testing.T, name string) (*Server, *fakeSupervisor, string, *httptest.Server) {
+	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	root := filepath.Join(t.TempDir(), name)
 	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
@@ -32,7 +40,7 @@ func queueServer(t *testing.T, name string) (*fakeSupervisor, string, *httptest.
 	s.sup = fake
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
-	return fake, root, ts
+	return s, fake, root, ts
 }
 
 // queueTrackerServer builds a hub with one Registered repo bound to a Linear team
@@ -189,6 +197,85 @@ func TestEnqueueDedupeRefused(t *testing.T) {
 	if _, out := getQueue(t, ts, "acme"); len(out.Items) != 1 {
 		t.Errorf("items = %d, want 1 — the dupe must not be appended", len(out.Items))
 	}
+}
+
+func TestEnqueueChildOfQueuedEpicRefused(t *testing.T) {
+	s, _, root, ts := queueHub(t, "acme")
+	seedQueue(t, s, root, false,
+		queue.Item{Kind: queue.KindEpic, ID: "COD-10", SubIssues: []queue.SubIssue{{ID: "COD-12"}}},
+	)
+
+	for _, front := range []bool{false, true} {
+		res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: "COD-12", Front: front})
+		var body map[string]string
+		_ = json.NewDecoder(res.Body).Decode(&body)
+		_ = res.Body.Close()
+		if res.StatusCode != http.StatusConflict {
+			t.Fatalf("front=%v enqueue = %d, want 409", front, res.StatusCode)
+		}
+		if !strings.Contains(body["error"], "COD-10") {
+			t.Errorf("front=%v error = %q, want it to name the covering epic", front, body["error"])
+		}
+	}
+
+	if _, out := getQueue(t, ts, "acme"); len(out.Items) != 1 {
+		t.Errorf("items = %d, want only the epic — a covered child must not be queued", len(out.Items))
+	}
+}
+
+func TestEnqueueEpicOverIndividuallyQueuedChildRefused(t *testing.T) {
+	s, fake, root, ts := queueHub(t, "acme")
+	fake.captureOut = []byte(`[{"id":"COD-12","title":"First","state":"todo"},{"id":"COD-13","title":"Second","state":"todo"}]`)
+	seedQueue(t, s, root, false, queue.Item{Kind: queue.KindTicket, ID: "COD-12"})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "epic", ID: "COD-10"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", res.StatusCode)
+	}
+	var body map[string]string
+	_ = json.NewDecoder(res.Body).Decode(&body)
+	if !strings.Contains(body["error"], "COD-12") {
+		t.Errorf("error = %q, want it to list the individually queued child", body["error"])
+	}
+	if strings.Contains(body["error"], "COD-13") {
+		t.Errorf("error = %q, want only the queued child listed", body["error"])
+	}
+	if _, out := getQueue(t, ts, "acme"); len(out.Items) != 1 {
+		t.Errorf("items = %d, want the epic refused", len(out.Items))
+	}
+}
+
+// TestEnqueueSettledCounterpartAllowsDuplicate covers the exemption both add-time
+// guards share: a settled row covers nothing.
+func TestEnqueueSettledCounterpartAllowsDuplicate(t *testing.T) {
+	t.Run("child of a settled epic", func(t *testing.T) {
+		s, _, root, ts := queueHub(t, "acme")
+		seedQueue(t, s, root, false, queue.Item{
+			Kind:      queue.KindEpic,
+			ID:        "COD-10",
+			SubIssues: []queue.SubIssue{{ID: "COD-12"}},
+			Status:    queue.StatusDone,
+		})
+
+		res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "ticket", ID: "COD-12"})
+		defer func() { _ = res.Body.Close() }()
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("status = %d, want 201 — a settled epic covers nothing", res.StatusCode)
+		}
+	})
+
+	t.Run("epic over a settled child", func(t *testing.T) {
+		s, fake, root, ts := queueHub(t, "acme")
+		fake.captureOut = []byte(`[{"id":"COD-12","title":"First","state":"todo"}]`)
+		seedQueue(t, s, root, false, queue.Item{Kind: queue.KindTicket, ID: "COD-12", Status: queue.StatusSkipped})
+
+		res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue", QueueRequest{Kind: "epic", ID: "COD-10"})
+		defer func() { _ = res.Body.Close() }()
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("status = %d, want 201 — a settled child conflicts with nothing", res.StatusCode)
+		}
+	})
 }
 
 func TestEnqueueFrontInsertsAndMovesToFront(t *testing.T) {
@@ -657,25 +744,49 @@ func TestQueueRunItemResumesPausedItem(t *testing.T) {
 	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once", "--drain-report", "COD-1"})
 }
 
-// TestQueueRunItemRunsDuplicateOfQueuedEpic proves the drain's global dedup does
-// not apply: an explicit pick of a ticket an earlier queued epic covers runs it.
-func TestQueueRunItemRunsDuplicateOfQueuedEpic(t *testing.T) {
+// TestQueueRunItemRefusesDuplicateOfQueuedEpic proves the one-shot cannot bypass
+// the drain's dedup: an explicit pick of a ticket an unsettled queued epic covers
+// is refused rather than run twice.
+func TestQueueRunItemRefusesDuplicateOfQueuedEpic(t *testing.T) {
 	s, fake, root, ts := runOneServer(t)
 	seedQueue(t, s, root, false,
 		queue.Item{Kind: queue.KindEpic, ID: "COD-1", SubIssues: []queue.SubIssue{{ID: "COD-2"}}},
 		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
 	)
 
+	res, reason := runQueueItem(t, ts, "acme", "COD-2")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 — the queued epic already covers COD-2", res.StatusCode)
+	}
+	if !strings.Contains(reason, "COD-1") {
+		t.Errorf("reason = %q, want it to name the covering epic", reason)
+	}
+	if len(fake.spawns) != 0 {
+		t.Fatalf("spawns = %d, want none", len(fake.spawns))
+	}
+	if got := statusOf(t, s, root, "COD-2"); got != queue.StatusPending {
+		t.Errorf("COD-2 = %q, want it left pending", got)
+	}
+}
+
+func TestQueueRunItemRunsDuplicateOfSettledEpic(t *testing.T) {
+	s, fake, root, ts := runOneServer(t)
+	seedQueue(t, s, root, false,
+		queue.Item{Kind: queue.KindEpic, ID: "COD-1", SubIssues: []queue.SubIssue{{ID: "COD-2"}}, Status: queue.StatusDone},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
+	)
+
 	res, _ := runQueueItem(t, ts, "acme", "COD-2")
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200 — an explicit single-item pick beats the dedup", res.StatusCode)
+		t.Fatalf("status = %d, want 200 — a settled epic covers nothing", res.StatusCode)
 	}
 	if len(fake.spawns) != 1 {
-		t.Fatalf("spawns = %d, want the duplicate run anyway", len(fake.spawns))
+		t.Fatalf("spawns = %d, want the fault-recovery re-attempt spawned", len(fake.spawns))
 	}
 	if got := statusOf(t, s, root, "COD-2"); got != queue.StatusRunning {
-		t.Errorf("COD-2 = %q, want running rather than skipped", got)
+		t.Errorf("COD-2 = %q, want running", got)
 	}
 }
 
