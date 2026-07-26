@@ -17,6 +17,7 @@ export interface ConfigKey {
   editable: boolean
   secret?: boolean
   set?: boolean
+  disabled_reason?: string
 }
 
 export interface ConfigResponse {

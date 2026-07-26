@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
@@ -163,13 +162,8 @@ func proofsSweptMessage(traces, dropped int) string {
 // REMOTE config the way delivery did when it published them. An unreadable config
 // falls back to the proofsbranch default (origin).
 func (s *Server) repoRemote(root string) string {
-	projectPath := config.ProjectConfigPath(root)
-	userPath := ""
-	if home, err := os.UserHomeDir(); err == nil {
-		userPath = config.ProjectConfigPath(home)
-	}
-	cfg, err := config.LoadLayered(projectPath, userPath, "", "")
-	if err != nil {
+	cfg, ok := s.repoLayeredConfig(root)
+	if !ok {
 		return ""
 	}
 	return cfg.Remote

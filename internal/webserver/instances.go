@@ -98,7 +98,9 @@ func (s *Server) handleInstances(w http.ResponseWriter, r *http.Request) {
 // heartbeat — on start, on every session-state change, and on a timer — keyed by
 // its PID, and DELETEs it on clean exit. The hub echoes the reported state and
 // reaps a dead PID via signal 0, so a crashed loop that never DELETEs still ages
-// out. Presence is best-effort on the loop side; the hub answers plainly.
+// out. Presence is best-effort on the loop side; the hub answers plainly. A PID
+// the store has never seen is a loop starting and a DELETE is one settling, which
+// is where team sync folds the teammates' records in and publishes this machine's.
 func (s *Server) handleInstance(w http.ResponseWriter, r *http.Request) {
 	pid, err := strconv.Atoi(r.PathValue("pid"))
 	if err != nil || pid <= 0 {
@@ -127,16 +129,28 @@ func (s *Server) handleInstance(w http.ResponseWriter, r *http.Request) {
 			Detail:       req.Detail,
 			StateSince:   req.StateSince,
 		}
+		_, known, err := instances.Get(pid)
+		if err != nil {
+			logger.Verbosef("instances get %d: %v", pid, err)
+		}
 		if err := instances.Upsert(entry); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
+		if !known {
+			s.team.kick(entry.RepoRoot)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "pid": pid})
 	case http.MethodDelete:
+		entry, _, err := instances.Get(pid)
+		if err != nil {
+			logger.Verbosef("instances get %d: %v", pid, err)
+		}
 		if err := instances.Remove(pid); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
+		s.team.kick(entry.RepoRoot)
 		writeJSON(w, http.StatusOK, map[string]any{"status": "removed", "pid": pid})
 	default:
 		w.Header().Set("Allow", "PUT, DELETE")

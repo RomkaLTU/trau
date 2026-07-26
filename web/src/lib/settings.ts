@@ -13,6 +13,7 @@ export const SECTION_ORDER = [
   'Cost caps',
   'Grilling & triage',
   'Skills',
+  'Team sync',
   'Agent runtime',
   'Hub & web server',
   'Retention',
@@ -33,6 +34,8 @@ const SECTION_DESCRIPTIONS: Record<string, string> = {
   'Cost caps': 'Hard spend limits per ticket and per day.',
   'Grilling & triage': 'Pre-run readiness checks on incoming tickets.',
   Skills: 'Skills required for runs and how they are installed.',
+  'Team sync':
+    "Share this repo's lessons with teammates over its own git remote.",
   'Agent runtime':
     'Timeouts, retries, and terminal geometry for agent processes.',
   'Hub & web server': 'Bind address, auth, and sync cadence for the web hub.',
