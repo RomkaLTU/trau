@@ -137,6 +137,17 @@ export function useRepoTakenOver(repo: string): boolean {
   return data ? repoTakenOver(data.instances, repo) : false;
 }
 
+export function repoRoot(repos: readonly RepoView[], repo: string): string {
+  return repos.find((r) => r.name === repo)?.root ?? "";
+}
+
+// useRepoRoot rides the shared instances poll, so a surface that needs the repo's
+// absolute path gets it without a fetch of its own.
+export function useRepoRoot(repo: string): string {
+  const { data } = useQuery(instancesQueryOptions);
+  return data ? repoRoot(data.repos, repo) : "";
+}
+
 async function fetchRepoHealth(repo: string): Promise<RepoHealth> {
   const res = await apiFetch(
     `/api/v1/repos/${encodeURIComponent(repo)}/health`,

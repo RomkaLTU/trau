@@ -7,12 +7,15 @@ import '@git-diff-view/react/styles/diff-view.css'
 import { DiffCounts } from '@/components/trau/diff-counts'
 import { DiffFileTree } from '@/components/trau/diff-file-tree'
 import { EmptyState } from '@/components/trau/empty-state'
+import { OpenFileInEditor } from '@/components/trau/open-in-editor'
 import { SegmentedControl } from '@/components/trau/segmented-control'
 import { useResolvedTheme } from '@/components/trau/theme-toggle'
 import { diffCardId } from '@/lib/difftree'
+import { useRepoRoot } from '@/lib/instances'
 import type { ResolvedTheme } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 import {
+  firstChangedLine,
   loadDiffLayout,
   loadDiffTreeOpen,
   RunDiffError,
@@ -77,17 +80,22 @@ function useInRange() {
   return [ref, inRange] as const
 }
 
+// An empty root means the file on disk cannot be trusted to match the diff, and
+// the card drops its editor link.
 const DiffFileView = memo(function DiffFileView({
   file,
   layout,
   theme,
+  root,
 }: {
   file: RunDiffFile
   layout: DiffLayout
   theme: ResolvedTheme
+  root: string
 }) {
   const lang = fileLang(file.path)
   const [ref, inRange] = useInRange()
+  const openable = root !== '' && file.status !== 'deleted'
 
   return (
     <section
@@ -104,11 +112,19 @@ const DiffFileView = memo(function DiffFileView({
             {file.status}
           </span>
         </span>
-        <DiffCounts
-          additions={file.additions}
-          deletions={file.deletions}
-          className="font-mono text-xs"
-        />
+        <span className="flex shrink-0 items-center gap-1.5">
+          <DiffCounts
+            additions={file.additions}
+            deletions={file.deletions}
+            className="font-mono text-xs"
+          />
+          {openable && (
+            <OpenFileInEditor
+              path={`${root}/${file.path}`}
+              line={firstChangedLine(file.patch)}
+            />
+          )}
+        </span>
       </header>
       {file.patch ? (
         <div
@@ -147,7 +163,9 @@ export function RunDiff({ repo, ticket }: { repo: string; ticket: string }) {
   const [layout, setLayoutState] = useState<DiffLayout>(loadDiffLayout)
   const [treeOpen, setTreeOpenState] = useState<boolean>(loadDiffTreeOpen)
   const theme = useResolvedTheme()
+  const repoRoot = useRepoRoot(repo)
   const { data, error, isPending } = useQuery(runDiffQueryOptions(repo, ticket))
+  const root = data?.source === 'live' ? repoRoot : ''
 
   const setLayout = (next: DiffLayout) => {
     storeDiffLayout(next)
@@ -225,6 +243,7 @@ export function RunDiff({ repo, ticket }: { repo: string; ticket: string }) {
                 file={file}
                 layout={layout}
                 theme={theme}
+                root={root}
               />
             ))}
           </div>

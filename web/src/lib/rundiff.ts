@@ -24,6 +24,13 @@ export interface RunDiff {
   files: RunDiffFile[]
 }
 
+// firstChangedLine is where an editor opening the file should land: the new-file
+// start of the patch's first hunk.
+export function firstChangedLine(patch: string): number | undefined {
+  const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)/m.exec(patch)
+  return hunk ? Number(hunk[1]) : undefined
+}
+
 export class RunDiffError extends Error {
   status: number
 
