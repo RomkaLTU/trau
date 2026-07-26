@@ -75,6 +75,7 @@ func (t *fakeTracker) EnsureLabels(context.Context) error { return nil }
 type fakeGit struct{}
 
 func (fakeGit) CurrentBranch(context.Context) (string, error)        { return "main", nil }
+func (fakeGit) HeadSHA(context.Context) (string, error)              { return "", nil }
 func (fakeGit) AddAll(context.Context) error                         { return nil }
 func (fakeGit) Commit(context.Context, string, bool) error           { return nil }
 func (fakeGit) Push(context.Context, string, string, bool) error     { return nil }
@@ -106,6 +107,9 @@ func (fakeGit) WorktreeDirty(context.Context) (bool, error)               { retu
 func (fakeGit) Stash(context.Context, string) error                       { return nil }
 func (fakeGit) StashPop(context.Context) error                            { return nil }
 func (fakeGit) Commits(context.Context, string, string) ([]string, error) { return nil, nil }
+func (fakeGit) IsAncestor(context.Context, string, string) (bool, error)  { return true, nil }
+func (fakeGit) MergeBase(context.Context, string, string) (string, error) { return "", nil }
+func (fakeGit) ResolvesToCommit(context.Context, string) (bool, error)    { return true, nil }
 func (fakeGit) CommitSubject(context.Context, string) (string, error)     { return "", nil }
 func (fakeGit) Pull(context.Context, string, string) error                { return nil }
 func (fakeGit) Fetch(context.Context, string, string) error               { return nil }

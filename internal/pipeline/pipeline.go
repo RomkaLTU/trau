@@ -33,6 +33,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/forkpoint"
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/prompts"
@@ -48,6 +49,9 @@ import (
 // Later phases (commit/PR/merge, resume) widen this interface further.
 type Git interface {
 	CurrentBranch(ctx context.Context) (string, error)
+
+	// HeadSHA returns the commit HEAD points at (git rev-parse HEAD).
+	HeadSHA(ctx context.Context) (string, error)
 
 	AddAll(ctx context.Context) error
 
@@ -126,6 +130,20 @@ type Git interface {
 
 	// Commits returns the short SHAs on branch but not base (base..branch).
 	Commits(ctx context.Context, base, branch string) ([]string, error)
+
+	// IsAncestor reports whether ancestor is reachable from rev
+	// (git merge-base --is-ancestor). A commit on another line of history is an
+	// expected (false, nil); only a git failure returns an error.
+	IsAncestor(ctx context.Context, ancestor, rev string) (bool, error)
+
+	// MergeBase returns the best common ancestor of two revisions (git merge-base).
+	// Revisions that share no history are an expected ("", nil).
+	MergeBase(ctx context.Context, a, b string) (string, error)
+
+	// ResolvesToCommit reports whether rev names a commit in the repo
+	// (git rev-parse --verify). A rev that names nothing — a pinned commit a
+	// discarded rebase left unreachable — is an expected (false, nil).
+	ResolvesToCommit(ctx context.Context, rev string) (bool, error)
 
 	// CommitSubject returns the subject line of ref's commit (git log -1 --format=%s).
 	CommitSubject(ctx context.Context, ref string) (string, error)
@@ -1496,6 +1514,7 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	if err := p.assertRepoChanged(ctx, id); err != nil {
 		return err
 	}
+	p.refreshForkPoint(ctx, id)
 	p.warnBuildWithoutSkills(id, buildSkills.Names)
 	p.persistBuildNotes(id)
 	_ = p.State.Set(id, "BUILD_SUMMARY", summarizeBuildOutput(out))
@@ -1593,6 +1612,7 @@ func (p *Pipeline) resolveBuildBranch(ctx context.Context, id string) (string, e
 		return "", &GiveUpError{ID: id, Reason: "could not create feature branch for " + id}
 	}
 	p.logf("  branch %s ← %s", branch, base)
+	p.pinForkPoint(ctx, id)
 
 	if err := p.Tracker.SetStatus(ctx, id, "In Progress", ""); err != nil {
 		p.logf("  set In Progress error (continuing): %v", err)
@@ -1680,6 +1700,50 @@ func (p *Pipeline) recordDiffBase(ctx context.Context, id string) {
 		return
 	}
 	_ = p.State.Set(id, "BASE", base)
+}
+
+// pinForkPoint records the commit the run's branch was just cut at, so readers diff
+// the run from there rather than re-deriving a merge-base — which collapses to an
+// ancient common ancestor, and reports every sibling's work as this run's, once the
+// base branch is rebuilt on another line of history.
+func (p *Pipeline) pinForkPoint(ctx context.Context, id string) {
+	head, err := p.Git.HeadSHA(ctx)
+	if err != nil {
+		p.logf("  pin fork point error (continuing): %v", err)
+		return
+	}
+	_ = p.State.Set(id, "BASE_SHA", head)
+}
+
+// refreshForkPoint re-pins when the build moved the branch out from under the pin —
+// a rebase or reset onto another line of history, or onto a base that advanced while
+// the run worked. Either way the commits below the new fork point are work the run
+// found there, not work it did.
+func (p *Pipeline) refreshForkPoint(ctx context.Context, id string) {
+	pinned := p.State.Get(id, "BASE_SHA")
+	if pinned == "" {
+		return
+	}
+	fork, err := p.forkPoint(ctx, pinned)
+	if err != nil {
+		p.logf("  refresh fork point error (continuing): %v", err)
+		return
+	}
+	if fork == "" || fork == pinned {
+		return
+	}
+	_ = p.State.Set(id, "BASE_SHA", fork)
+	p.logf("  ↻ branch was rewritten during build — run diff re-anchored at %s", fork)
+}
+
+// forkPoint resolves where the run's own work starts, against the base branch this
+// build stacks on.
+func (p *Pipeline) forkPoint(ctx context.Context, pinned string) (string, error) {
+	base, err := p.buildBase(ctx)
+	if err != nil {
+		return "", err
+	}
+	return forkpoint.Resolve(ctx, p.Git, forkpoint.Anchor{Base: base, Pin: pinned}, "HEAD")
 }
 
 // repoLabel names the managed repo for guard messages — its directory basename,
@@ -4556,6 +4620,15 @@ func (g ExecGit) CurrentBranch(ctx context.Context) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+// HeadSHA returns the commit HEAD points at.
+func (g ExecGit) HeadSHA(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo, "rev-parse", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse HEAD: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // AddAll stages every change in the target repo (git add -A).
 func (g ExecGit) AddAll(ctx context.Context) error { return g.run(ctx, "add", "-A") }
 
@@ -4906,6 +4979,50 @@ func (g ExecGit) Commits(ctx context.Context, base, branch string) ([]string, er
 		}
 	}
 	return shas, nil
+}
+
+// IsAncestor reports whether ancestor is reachable from rev. git answers with its
+// exit status: 0 yes, 1 no, anything else a real failure.
+func (g ExecGit) IsAncestor(ctx context.Context, ancestor, rev string) (bool, error) {
+	err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"merge-base", "--is-ancestor", ancestor, rev).Run()
+	if err == nil {
+		return true, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git merge-base --is-ancestor %s %s: %w", ancestor, rev, err)
+}
+
+// MergeBase returns the best common ancestor of two revisions. git reports "no
+// common history" with exit status 1 and no output, not as a failure.
+func (g ExecGit) MergeBase(ctx context.Context, a, b string) (string, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo, "merge-base", a, b).Output()
+	if err == nil {
+		return strings.TrimSpace(string(out)), nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return "", nil
+	}
+	return "", fmt.Errorf("git merge-base %s %s: %w", a, b, err)
+}
+
+// ResolvesToCommit reports whether rev names a commit here. --quiet turns an
+// unknown rev into exit status 1 rather than a fatal, so it reads as a plain "no".
+func (g ExecGit) ResolvesToCommit(ctx context.Context, rev string) (bool, error) {
+	err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"rev-parse", "--verify", "--quiet", rev+"^{commit}").Run()
+	if err == nil {
+		return true, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git rev-parse --verify %s: %w", rev, err)
 }
 
 // CommitSubject returns the subject line of ref's commit.
