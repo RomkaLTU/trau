@@ -179,7 +179,8 @@ func (s *Server) dropFromQueue(root string, ids []string) {
 // never records an outcome, so any sync error a previous provider stamped is
 // cleared here — otherwise nothing would ever run to clear it and it would pin
 // health at sync-failed. A finished pull ends with a queued-label reconcile, so the
-// labels it just landed are healed against the queue the hub holds.
+// labels it just landed are healed against the queue the hub holds, and a grill
+// retire sweep, so a session blocked on an issue the pull just closed is settled.
 func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse, error) {
 	res, err := s.resolveReader(repo)
 	if err != nil {
@@ -229,6 +230,7 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 	}
 	s.resolveIdentity(ctx, store, repo.Root, res.reader)
 	s.reconcileQueuedLabels(ctx, repo.Root)
+	s.retireClosedGrill(repo.Root)
 	return SyncResponse{
 		Repo:     repo.Name,
 		Provider: res.provider,

@@ -322,6 +322,164 @@ func TestGrillListAwaitingAcrossRepos(t *testing.T) {
 	}
 }
 
+// seedGrillIssues writes the issue rows a session joins against, so a test can close
+// an issue out from under its session.
+func seedGrillIssues(t *testing.T, db *sql.DB, repo string, groups map[string]string) {
+	t.Helper()
+	issues := make([]Issue, 0, len(groups))
+	for id, group := range groups {
+		issues = append(issues, Issue{Identifier: id, StatusGroup: group})
+	}
+	if _, _, err := NewIssues(db).Upsert(repo, "linear", issues); err != nil {
+		t.Fatalf("seed issues: %v", err)
+	}
+}
+
+// blockedGrillSession opens a session on issueID and parks it in a blocked state.
+func blockedGrillSession(t *testing.T, g *Grill, repo, issueID, state string) GrillSession {
+	t.Helper()
+	sess, err := g.Create(NewGrillSession{Repo: repo, IssueID: issueID})
+	if err != nil {
+		t.Fatalf("create session on %q: %v", issueID, err)
+	}
+	moved, err := g.Transition(sess.ID, state, "")
+	if err != nil {
+		t.Fatalf("transition %d to %s: %v", sess.ID, state, err)
+	}
+	return moved
+}
+
+func TestGrillListAwaitingExcludesClosedIssue(t *testing.T) {
+	g, db := testGrill(t, 0)
+	seedGrillIssues(t, db, "acme", map[string]string{
+		"COD-1": "started",
+		"COD-2": "started",
+		"COD-3": "started",
+		"COD-4": "started",
+	})
+	waiting := blockedGrillSession(t, g, "acme", "COD-1", GrillWaiting)
+	parked := blockedGrillSession(t, g, "acme", "COD-2", GrillParked)
+	stalled := blockedGrillSession(t, g, "acme", "COD-3", GrillStalled)
+	open := blockedGrillSession(t, g, "acme", "COD-4", GrillWaiting)
+	draft := blockedGrillSession(t, g, "acme", "", GrillWaiting)
+
+	awaiting, err := g.ListAwaiting()
+	if err != nil {
+		t.Fatalf("list awaiting: %v", err)
+	}
+	if len(awaiting) != 5 {
+		t.Fatalf("awaiting = %+v, want all five while their issues are open", awaiting)
+	}
+
+	seedGrillIssues(t, db, "acme", map[string]string{
+		"COD-1": "done",
+		"COD-2": "canceled",
+		"COD-3": "done",
+	})
+	awaiting, err = g.ListAwaiting()
+	if err != nil {
+		t.Fatalf("list awaiting after close: %v", err)
+	}
+	got := map[int64]bool{}
+	for _, sess := range awaiting {
+		got[sess.ID] = true
+	}
+	if len(awaiting) != 2 || !got[open.ID] || !got[draft.ID] {
+		t.Fatalf("awaiting = %+v, want the open-issue session and the draft", awaiting)
+	}
+	for _, closed := range []GrillSession{waiting, parked, stalled} {
+		if stored, _, _ := g.Session(closed.ID); stored.State != closed.State {
+			t.Fatalf("session %d state = %q, want %q — the read path never writes", closed.ID, stored.State, closed.State)
+		}
+	}
+}
+
+func TestGrillListExcludesClosedIssue(t *testing.T) {
+	g, db := testGrill(t, 0)
+	seedGrillIssues(t, db, "acme", map[string]string{"COD-1": "done", "COD-2": "started", "COD-3": "done"})
+	running, _ := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1"})
+	open, _ := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-2"})
+	draft, _ := g.Create(NewGrillSession{Repo: "acme"})
+	settled := blockedGrillSession(t, g, "acme", "COD-3", GrillFinished)
+	if _, err := g.Transition(settled.ID, GrillApplied, ""); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	list, err := g.List("acme", "")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	got := map[int64]bool{}
+	for _, sess := range list {
+		got[sess.ID] = true
+	}
+	if len(list) != 3 || !got[open.ID] || !got[draft.ID] || !got[settled.ID] {
+		t.Fatalf("list = %+v, want the open-issue session, the draft and the applied session", list)
+	}
+	if got[running.ID] {
+		t.Fatalf("list = %+v, want no session on the closed issue", list)
+	}
+}
+
+func TestGrillRetireClosed(t *testing.T) {
+	g, db := testGrill(t, 0)
+	seedGrillIssues(t, db, "acme", map[string]string{
+		"COD-1": "done",
+		"COD-2": "canceled",
+		"COD-3": "done",
+		"COD-4": "done",
+		"COD-5": "started",
+		"COD-6": "done",
+	})
+	waiting := blockedGrillSession(t, g, "acme", "COD-1", GrillWaiting)
+	parked := blockedGrillSession(t, g, "acme", "COD-2", GrillParked)
+	stalled := blockedGrillSession(t, g, "acme", "COD-3", GrillStalled)
+	finished := blockedGrillSession(t, g, "acme", "COD-4", GrillFinished)
+	open := blockedGrillSession(t, g, "acme", "COD-5", GrillWaiting)
+	draft := blockedGrillSession(t, g, "acme", "", GrillParked)
+	running, _ := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-6"})
+
+	retired, err := g.RetireClosed("acme")
+	if err != nil {
+		t.Fatalf("retire closed: %v", err)
+	}
+	wantReasons := map[int64]string{
+		waiting.ID:  "retired: COD-1 closed",
+		parked.ID:   "retired: COD-2 closed",
+		stalled.ID:  "retired: COD-3 closed",
+		finished.ID: "retired: COD-4 closed",
+	}
+	if len(retired) != len(wantReasons) {
+		t.Fatalf("retired = %+v, want %d sessions", retired, len(wantReasons))
+	}
+	for _, sess := range retired {
+		if sess.State != GrillAbandoned {
+			t.Fatalf("retired %d state = %q, want abandoned", sess.ID, sess.State)
+		}
+		if sess.ParkedReason != wantReasons[sess.ID] {
+			t.Fatalf("retired %d reason = %q, want %q", sess.ID, sess.ParkedReason, wantReasons[sess.ID])
+		}
+		stored, _, _ := g.Session(sess.ID)
+		if stored.State != GrillAbandoned || stored.ParkedReason != wantReasons[sess.ID] {
+			t.Fatalf("stored %d = %q/%q, want abandoned with the reason", sess.ID, stored.State, stored.ParkedReason)
+		}
+	}
+
+	for _, kept := range []struct {
+		sess  GrillSession
+		state string
+	}{
+		{open, GrillWaiting},
+		{draft, GrillParked},
+		{running, GrillRunning},
+	} {
+		stored, _, _ := g.Session(kept.sess.ID)
+		if stored.State != kept.state {
+			t.Fatalf("session %d state = %q, want %q", kept.sess.ID, stored.State, kept.state)
+		}
+	}
+}
+
 func TestGrillReadsIssueTitle(t *testing.T) {
 	g, db := testGrill(t, 0)
 	if _, _, err := NewIssues(db).Upsert("acme", "linear", []Issue{
@@ -431,32 +589,27 @@ func TestGrillPruneKeepsActiveBeyondWindow(t *testing.T) {
 	}
 }
 
-func TestGrillSweepIdle(t *testing.T) {
+func TestGrillRetireClosedIgnoresAge(t *testing.T) {
 	g, db := testGrill(t, 0)
-	stale, _ := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1"})
-	fresh, _ := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-2"})
-	settled, _ := g.Create(NewGrillSession{Repo: "acme"})
+	seedGrillIssues(t, db, "acme", map[string]string{"COD-1": "started"})
+	open := blockedGrillSession(t, g, "acme", "COD-1", GrillParked)
+	draft := blockedGrillSession(t, g, "acme", "", GrillParked)
 
-	old := formatGrillTime(time.Now().Add(-40 * 24 * time.Hour))
-	if _, err := db.Exec(`UPDATE grill_sessions SET state = 'parked', updated_at = ? WHERE id = ?`, old, stale.ID); err != nil {
-		t.Fatalf("backdate stale: %v", err)
-	}
-	if _, err := db.Exec(`UPDATE grill_sessions SET state = 'applied', updated_at = ? WHERE id = ?`, old, settled.ID); err != nil {
-		t.Fatalf("backdate settled: %v", err)
+	old := formatGrillTime(time.Now().Add(-365 * 24 * time.Hour))
+	if _, err := db.Exec(`UPDATE grill_sessions SET updated_at = ?`, old); err != nil {
+		t.Fatalf("backdate sessions: %v", err)
 	}
 
-	swept, err := g.SweepIdle(time.Now().Add(-30 * 24 * time.Hour))
+	retired, err := g.RetireClosed("acme")
 	if err != nil {
-		t.Fatalf("sweep: %v", err)
+		t.Fatalf("retire closed: %v", err)
 	}
-	if len(swept) != 1 || swept[0].ID != stale.ID || swept[0].State != GrillAbandoned {
-		t.Fatalf("swept = %+v, want stale abandoned", swept)
+	if len(retired) != 0 {
+		t.Fatalf("retired = %+v, want none — age alone never retires a session", retired)
 	}
-
-	if got, _, _ := g.Session(fresh.ID); got.State != GrillRunning {
-		t.Fatalf("fresh session state = %q, want running", got.State)
-	}
-	if got, _, _ := g.Session(settled.ID); got.State != GrillApplied {
-		t.Fatalf("settled session state = %q, want applied", got.State)
+	for _, sess := range []GrillSession{open, draft} {
+		if got, _, _ := g.Session(sess.ID); got.State != GrillParked {
+			t.Fatalf("session %d state = %q, want parked", sess.ID, got.State)
+		}
 	}
 }

@@ -127,6 +127,54 @@ func TestGrillAwaitingAcrossRepos(t *testing.T) {
 	}
 }
 
+func awaitingGrillIDs(t *testing.T, ts *httptest.Server) map[string]bool {
+	t.Helper()
+	_, body := get(t, ts, APIPrefix+"/grill")
+	var list GrillAwaitingResponse
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("decode awaiting: %v", err)
+	}
+	ids := map[string]bool{}
+	for _, sess := range list.Sessions {
+		ids[sess.ID] = true
+	}
+	return ids
+}
+
+func TestGrillRetiredWhenIssueCloses(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	_, issue := createInternal(t, ts, repo, InternalIssueRequest{Title: "Onboarding wizard", State: "started"})
+	sess := createGrill(t, ts, repo, issue.ID)
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+	if _, err := stores.Grill().Transition(sid, hubstore.GrillWaiting, ""); err != nil {
+		t.Fatalf("pose question: %v", err)
+	}
+	if !awaitingGrillIDs(t, ts)[sess.ID] {
+		t.Fatalf("awaiting lacks session %s while its issue is open", sess.ID)
+	}
+
+	res := postJSON(t,
+		ts.URL+APIPrefix+"/repos/"+repo+"/issues/internal/"+issue.ID+"/transition",
+		InternalTransitionRequest{State: "done"},
+	)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("close status = %d, want 200", res.StatusCode)
+	}
+
+	if awaitingGrillIDs(t, ts)[sess.ID] {
+		t.Fatalf("awaiting still serves session %s after its issue closed", sess.ID)
+	}
+	stored, _, err := stores.Grill().Session(sid)
+	if err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	want := "retired: " + issue.ID + " closed"
+	if stored.State != hubstore.GrillAbandoned || stored.ParkedReason != want {
+		t.Fatalf("session = %q/%q, want abandoned carrying %q", stored.State, stored.ParkedReason, want)
+	}
+}
+
 func TestGrillCreateUnknownRepo(t *testing.T) {
 	ts, _, _ := grillServer(t)
 	res := postJSON(t, ts.URL+APIPrefix+"/repos/nope/grill", GrillCreateRequest{IssueID: "COD-1"})
