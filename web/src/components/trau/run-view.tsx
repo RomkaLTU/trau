@@ -20,6 +20,7 @@ import { useHandback } from "@/components/trau/handback-dialog";
 import { Eyebrow, type EyebrowGlyph } from "@/components/trau/eyebrow";
 import { NoSkillsBanner } from "@/components/trau/no-skills-banner";
 import { NoBrowserBanner } from "@/components/trau/no-browser-banner";
+import { OpenInEditor } from "@/components/trau/open-in-editor";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { PRStatusBadge } from "@/components/trau/pr-status-badge";
 import { RunDiff } from "@/components/trau/run-diff";
@@ -39,6 +40,7 @@ import {
 } from "@/lib/checkpoints";
 import {
   instancesQueryOptions,
+  repoRoot,
   repoTakenOver,
   stopInstance,
   takeoverRun,
@@ -625,6 +627,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   const parkedHere = instance?.session_state === "parked";
   const takenOverHere = instance?.session_state === "takeover";
   const takenOver = instData ? repoTakenOver(instData.instances, repo) : false;
+  const root = instData ? repoRoot(instData.repos, repo) : "";
   // Resume hands the ticket back to the loop, which cannot have the repo while a
   // terminal holds it or while the TUI is parked on this ticket's recap.
   const resumeGate = takenOver
@@ -839,6 +842,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
           </div>
 
           <div className="flex items-center gap-2">
+            {root !== "" && <OpenInEditor root={root} />}
             {instData?.takeover_supported && !takeoverUnsupported && (
               <Button
                 variant="outline"

@@ -1,18 +1,27 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { DiffModeEnum, DiffView } from '@git-diff-view/react'
+import { ListTree } from 'lucide-react'
 import '@git-diff-view/react/styles/diff-view.css'
 
+import { DiffCounts } from '@/components/trau/diff-counts'
+import { DiffFileTree } from '@/components/trau/diff-file-tree'
 import { EmptyState } from '@/components/trau/empty-state'
+import { OpenFileInEditor } from '@/components/trau/open-in-editor'
 import { SegmentedControl } from '@/components/trau/segmented-control'
 import { useResolvedTheme } from '@/components/trau/theme-toggle'
+import { diffCardId } from '@/lib/difftree'
+import { useRepoRoot } from '@/lib/instances'
 import type { ResolvedTheme } from '@/lib/theme'
 import { cn } from '@/lib/utils'
 import {
+  firstChangedLine,
   loadDiffLayout,
+  loadDiffTreeOpen,
   RunDiffError,
   runDiffQueryOptions,
   storeDiffLayout,
+  storeDiffTreeOpen,
   type DiffLayout,
   type RunDiffFile,
 } from '@/lib/rundiff'
@@ -71,20 +80,28 @@ function useInRange() {
   return [ref, inRange] as const
 }
 
+// An empty root means the file on disk cannot be trusted to match the diff, and
+// the card drops its editor link.
 const DiffFileView = memo(function DiffFileView({
   file,
   layout,
   theme,
+  root,
 }: {
   file: RunDiffFile
   layout: DiffLayout
   theme: ResolvedTheme
+  root: string
 }) {
   const lang = fileLang(file.path)
   const [ref, inRange] = useInRange()
+  const openable = root !== '' && file.status !== 'deleted'
 
   return (
-    <section className="overflow-hidden rounded-lg border border-border bg-card">
+    <section
+      id={diffCardId(file.path)}
+      className="scroll-mt-4 overflow-hidden rounded-lg border border-border bg-card"
+    >
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-2.5">
         <span className="flex min-w-0 items-center gap-2 font-mono text-xs">
           <span className="truncate text-foreground">{file.path}</span>
@@ -95,9 +112,18 @@ const DiffFileView = memo(function DiffFileView({
             {file.status}
           </span>
         </span>
-        <span className="shrink-0 font-mono text-xs tabular-nums">
-          <span className="text-done">+{file.additions}</span>{' '}
-          <span className="text-fail">−{file.deletions}</span>
+        <span className="flex shrink-0 items-center gap-1.5">
+          <DiffCounts
+            additions={file.additions}
+            deletions={file.deletions}
+            className="font-mono text-xs"
+          />
+          {openable && (
+            <OpenFileInEditor
+              path={`${root}/${file.path}`}
+              line={firstChangedLine(file.patch)}
+            />
+          )}
         </span>
       </header>
       {file.patch ? (
@@ -135,21 +161,48 @@ const DiffFileView = memo(function DiffFileView({
 
 export function RunDiff({ repo, ticket }: { repo: string; ticket: string }) {
   const [layout, setLayoutState] = useState<DiffLayout>(loadDiffLayout)
+  const [treeOpen, setTreeOpenState] = useState<boolean>(loadDiffTreeOpen)
   const theme = useResolvedTheme()
+  const repoRoot = useRepoRoot(repo)
   const { data, error, isPending } = useQuery(runDiffQueryOptions(repo, ticket))
+  const root = data?.source === 'live' ? repoRoot : ''
 
   const setLayout = (next: DiffLayout) => {
     storeDiffLayout(next)
     setLayoutState(next)
   }
 
+  const setTreeOpen = (next: boolean) => {
+    storeDiffTreeOpen(next)
+    setTreeOpenState(next)
+  }
+
   const notFound = error instanceof RunDiffError && error.status === 404
+  const files = error ? [] : (data?.files ?? [])
 
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <span className="font-mono text-xs text-muted-foreground">
-          {data ? `${data.branch} ↔ ${data.base}` : ''}
+        <span className="flex min-w-0 items-center gap-2">
+          {files.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setTreeOpen(!treeOpen)}
+              aria-expanded={treeOpen}
+              className={cn(
+                'inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border px-2 py-1 font-mono text-xs transition-colors',
+                treeOpen
+                  ? 'bg-input text-foreground'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              <ListTree className="size-3.5" aria-hidden="true" />
+              Files
+            </button>
+          )}
+          <span className="truncate font-mono text-xs text-muted-foreground">
+            {data ? `${data.branch} ↔ ${data.base}` : ''}
+          </span>
         </span>
         <SegmentedControl
           aria-label="Diff layout"
@@ -170,22 +223,31 @@ export function RunDiff({ repo, ticket }: { repo: string; ticket: string }) {
       ) : data.files.length === 0 ? (
         <EmptyState message="No changes yet" />
       ) : (
-        <>
-          {data.truncated && (
-            <p className="font-mono text-xs text-warn">
-              ⚠ This diff is too large to send in full — the largest files show
-              their counts without a patch.
-            </p>
-          )}
-          {data.files.map((file) => (
-            <DiffFileView
-              key={file.path}
-              file={file}
-              layout={layout}
-              theme={theme}
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-start">
+          {treeOpen && (
+            <DiffFileTree
+              files={data.files}
+              className="w-full shrink-0 lg:sticky lg:top-2 lg:w-72"
             />
-          ))}
-        </>
+          )}
+          <div className="flex min-w-0 flex-1 flex-col gap-2">
+            {data.truncated && (
+              <p className="font-mono text-xs text-warn">
+                ⚠ This diff is too large to send in full — the largest files show
+                their counts without a patch.
+              </p>
+            )}
+            {data.files.map((file) => (
+              <DiffFileView
+                key={file.path}
+                file={file}
+                layout={layout}
+                theme={theme}
+                root={root}
+              />
+            ))}
+          </div>
+        </div>
       )}
     </div>
   )

@@ -24,6 +24,13 @@ export interface RunDiff {
   files: RunDiffFile[]
 }
 
+// firstChangedLine is where an editor opening the file should land: the new-file
+// start of the patch's first hunk.
+export function firstChangedLine(patch: string): number | undefined {
+  const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)/m.exec(patch)
+  return hunk ? Number(hunk[1]) : undefined
+}
+
 export class RunDiffError extends Error {
   status: number
 
@@ -60,6 +67,11 @@ export const runDiffQueryOptions = (repo: string, ticket: string) =>
 type Store = Pick<Storage, 'getItem' | 'setItem'>
 
 const MODE_KEY = 'trau.rundiff.mode'
+const TREE_KEY = 'trau.rundiff.tree'
+
+// The file tree only earns a column at lg; below it it stacks on top of the cards,
+// so narrow viewports start with it closed.
+const WIDE_QUERY = '(min-width: 64rem)'
 
 export type DiffLayout = 'split' | 'inline'
 
@@ -71,10 +83,23 @@ function browserStore(): Store | null {
   }
 }
 
+function wideViewport(): boolean {
+  return globalThis.matchMedia?.(WIDE_QUERY).matches ?? true
+}
+
 export function loadDiffLayout(): DiffLayout {
   return browserStore()?.getItem(MODE_KEY) === 'inline' ? 'inline' : 'split'
 }
 
 export function storeDiffLayout(layout: DiffLayout): void {
   browserStore()?.setItem(MODE_KEY, layout)
+}
+
+export function loadDiffTreeOpen(): boolean {
+  const raw = browserStore()?.getItem(TREE_KEY) ?? null
+  return raw === null ? wideViewport() : raw === '1'
+}
+
+export function storeDiffTreeOpen(open: boolean): void {
+  browserStore()?.setItem(TREE_KEY, open ? '1' : '0')
 }
