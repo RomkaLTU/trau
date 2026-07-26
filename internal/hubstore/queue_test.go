@@ -225,6 +225,101 @@ func TestRemoveKeepsOrderAndGuardsRunning(t *testing.T) {
 	}
 }
 
+func TestPromoteSwapsChildrenForTheEpicInPlace(t *testing.T) {
+	q := testQueue(t)
+	mustAdd(t, q, "COD-1")
+	mustAdd(t, q, "COD-2")
+	mustAdd(t, q, "COD-3")
+	mustAdd(t, q, "COD-4")
+
+	epic := queue.Item{
+		Kind:      queue.KindEpic,
+		ID:        "COD-10",
+		SubIssues: []queue.SubIssue{{ID: "COD-2"}, {ID: "COD-3"}},
+	}
+	items, err := q.Promote(epic, []string{"COD-3", "COD-2"})
+	if err != nil {
+		t.Fatalf("Promote: %v", err)
+	}
+	if got := ids(items); !reflect.DeepEqual(got, []string{"COD-1", "COD-10", "COD-4"}) {
+		t.Fatalf("after promote = %v, want the epic where its first child sat", got)
+	}
+	if items[1].Status != queue.StatusPending || items[1].QueuedAt.IsZero() {
+		t.Errorf("epic = %+v, want a pending row stamped with its queue time", items[1])
+	}
+	if len(items[1].SubIssues) != 2 {
+		t.Errorf("sub_issues = %+v, want the two children it covers", items[1].SubIssues)
+	}
+}
+
+func TestPromoteGuardsRowsItCannotSwap(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(t *testing.T, q *Queue)
+		ids     []string
+		want    error
+	}{
+		{
+			name: "child no longer queued",
+			ids:  []string{"COD-1", "COD-9"},
+			want: queue.ErrNotQueued,
+		},
+		{
+			name: "child already running",
+			prepare: func(t *testing.T, q *Queue) {
+				if err := q.MarkRunning("COD-2", 11); err != nil {
+					t.Fatalf("MarkRunning: %v", err)
+				}
+			},
+			ids:  []string{"COD-1", "COD-2"},
+			want: queue.ErrRunning,
+		},
+		{
+			name: "child already settled",
+			prepare: func(t *testing.T, q *Queue) {
+				if err := q.MarkSkipped("COD-2", "duplicate"); err != nil {
+					t.Fatalf("MarkSkipped: %v", err)
+				}
+			},
+			ids:  []string{"COD-1", "COD-2"},
+			want: queue.ErrNotQueued,
+		},
+		{
+			name: "epic already queued",
+			prepare: func(t *testing.T, q *Queue) {
+				if _, err := q.Add(queue.Item{Kind: queue.KindEpic, ID: "COD-10"}); err != nil {
+					t.Fatalf("Add epic: %v", err)
+				}
+			},
+			ids:  []string{"COD-1"},
+			want: queue.ErrAlreadyQueued,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := testQueue(t)
+			mustAdd(t, q, "COD-1")
+			mustAdd(t, q, "COD-2")
+			if tt.prepare != nil {
+				tt.prepare(t, q)
+			}
+
+			if _, err := q.Promote(queue.Item{Kind: queue.KindEpic, ID: "COD-10"}, tt.ids); !errors.Is(err, tt.want) {
+				t.Fatalf("Promote = %v, want %v", err, tt.want)
+			}
+			items, err := q.Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			for _, it := range items {
+				if it.ID == "COD-1" && it.Status != queue.StatusPending {
+					t.Errorf("COD-1 = %q, want a refused promote to write nothing", it.Status)
+				}
+			}
+		})
+	}
+}
+
 func TestClearEmptiesItemsSubIssuesAndDisarms(t *testing.T) {
 	q := testQueue(t)
 	if _, err := q.Add(queue.Item{
