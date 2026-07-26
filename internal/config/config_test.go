@@ -462,6 +462,48 @@ func TestLoadCodeStyleNote(t *testing.T) {
 	t.Error("CODE_STYLE_NOTE is missing from the settings catalog")
 }
 
+func TestLoadTestEffort(t *testing.T) {
+	if got := Defaults().TestEffort; got != "high" {
+		t.Fatalf("default TestEffort = %q, want high", got)
+	}
+
+	dir := t.TempDir()
+	project := filepath.Join(dir, ".trau.ini")
+	if err := os.WriteFile(project, []byte("TEST_EFFORT=low\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadLayered(project, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TestEffort != "low" {
+		t.Errorf("TestEffort = %q, want low", cfg.TestEffort)
+	}
+	if got := keyValue(cfg, "TEST_EFFORT"); got != "low" {
+		t.Errorf("keyValue(TEST_EFFORT) = %q, want low", got)
+	}
+
+	for _, m := range KnownKeys() {
+		if m.Key != "TEST_EFFORT" {
+			continue
+		}
+		if !m.WebEditable {
+			t.Error("TEST_EFFORT should be web-editable")
+		}
+		if m.Default != "high" {
+			t.Errorf("TEST_EFFORT catalog default = %q, want high", m.Default)
+		}
+		if m.Group != sectionPipeline {
+			t.Errorf("TEST_EFFORT section = %q, want %q", m.Group, sectionPipeline)
+		}
+		if want := []string{"off", "low", "medium", "high"}; !slices.Equal(m.Options, want) {
+			t.Errorf("TEST_EFFORT options = %v, want %v", m.Options, want)
+		}
+		return
+	}
+	t.Error("TEST_EFFORT is missing from the settings catalog")
+}
+
 func TestResolveConfigItemsEnvOverride(t *testing.T) {
 	dir := t.TempDir()
 	local := filepath.Join(dir, "trau.ini")

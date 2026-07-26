@@ -43,14 +43,15 @@ type SkillsData struct {
 	Menu      []string
 }
 
-// BuildData feeds the build prompt. SkillsNote, Note, CodeStyle, and
-// BuildNotes are pre-rendered fragments; TicketContext is the injected
+// BuildData feeds the build prompt. SkillsNote, Note, TestEffort, CodeStyle,
+// and BuildNotes are pre-rendered fragments; TicketContext is the injected
 // ticket block.
 type BuildData struct {
 	ID            string
 	Branch        string
 	SkillsNote    string
 	Note          string
+	TestEffort    string
 	CodeStyle     string
 	BuildNotes    string
 	TicketContext string
@@ -67,8 +68,10 @@ type HandoffData struct {
 
 // VerifyData feeds the verify prompt. Verdict is the JSON verdict file path;
 // an empty Handoff switches the template to its derive-from-ticket wording.
-// ProofsContract adds the browser-proofs contract (record a trace, save
-// screenshots, write a manifest) when the run harvests proofs.
+// A non-empty TestEffort replaces the which-tests-to-run sentence, for a slice
+// built with TEST_EFFORT=off and therefore no new test files. ProofsContract
+// adds the browser-proofs contract (record a trace, save screenshots, write a
+// manifest) when the run harvests proofs.
 type VerifyData struct {
 	ID             string
 	Handoff        string
@@ -79,6 +82,7 @@ type VerifyData struct {
 	RubricNote     string
 	LessonsNote    string
 	SkillsNote     string
+	TestEffort     string
 	TicketContext  string
 	ProofsContract bool
 }
@@ -103,6 +107,7 @@ type RepairData struct {
 	LessonsNote   string
 	NotesNote     string
 	SkillsNote    string
+	TestEffort    string
 	CodeStyle     string
 	TicketContext string
 }

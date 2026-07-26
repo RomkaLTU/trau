@@ -220,6 +220,11 @@ LINT_FIX_CMD=                # deterministic fixer command run in the target rep
 CLEANUP=1                    # 1 = just before verify, a cheap agent strips AI-slop from the slice's diff —
                              # unnecessary comments, dead code, over-defensive scaffolding — so the code reads
                              # hand-written. Behavior-preserving; fails open. 0 disables it.
+TEST_EFFORT=high             # how many tests the build/repair/bugfix agents write: high (default, the agent
+                             # tests as it sees fit) | medium (core behavior plus important edge and error
+                             # cases) | low (only the core happy path) | off (none at all — verify then runs
+                             # the existing tests covering the changed code as a regression check).
+                             # Browser end-to-end verification is unaffected: see BROWSER_VERIFY / APP_URL.
 BROWSER_VERIFY=auto          # auto (browser only for UI slices) | always | never
 VERIFY_PROOFS=on             # on = when browser verify drives the app, record a trace and save key
                              # screenshots, then harvest them to the hub (viewable over the API). off disables it.
