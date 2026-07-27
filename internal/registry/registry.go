@@ -7,11 +7,11 @@
 package registry
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
+
+	"github.com/RomkaLTU/trau/internal/proc"
 )
 
 // Session states an instance reports through its heartbeat. The entry records
@@ -66,22 +66,8 @@ type Repo struct {
 	RunsDir string `json:"runs_dir"`
 }
 
-// Alive reports whether pid names a running process. The hub reaps presence with
-// it: a loop whose process is gone ages out, while a suspended-but-alive process
-// keeps its entry — liveness is pid-only, never heartbeat staleness (ADR 0005,
-// ADR 0008 §7).
-func Alive(pid int) bool { return alive(pid) }
-
-// alive reports whether pid names a running process, treating a permission-denied
-// probe as alive (the process exists, we just may not own it).
-func alive(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = p.Signal(syscall.Signal(0))
-	return err == nil || errors.Is(err, syscall.EPERM)
-}
+// Alive reports whether pid names a running process, through the platform probe
+// in internal/proc. The hub reaps presence with it: a loop whose process is gone
+// ages out, while a suspended-but-alive process keeps its entry — liveness is
+// pid-only, never heartbeat staleness (ADR 0005, ADR 0008 §7).
+func Alive(pid int) bool { return proc.Alive(pid) }

@@ -9,8 +9,8 @@ import (
 )
 
 // shutdownKillGrace bounds how long a teardown — a whole queue shutdown, or one
-// running item's removal — waits for a child to exit on its own SIGTERM before
-// stopAndWait escalates to a group SIGKILL. A stopped run spends that window
+// running item's removal — waits for a child to exit on its own graceful stop
+// before stopAndWait escalates to a group kill. A stopped run spends that window
 // preserving its WIP on the feature branch and cleaning back to base, so the
 // grace sits above the pipeline's cleanup budget rather than cutting it short.
 //
@@ -58,7 +58,7 @@ func (s *Server) isShuttingDown(root string) bool {
 // checkpoints a live loop would otherwise make refuseWhenLive refuse to touch —
 // the ticket that was running and every item left paused — and finally empty
 // the queue. If a pid's death is never confirmed — stopAndWait exhausted a group
-// SIGKILL and it is still alive — teardown stops there and leaves the queue
+// kill and it is still alive — teardown stops there and leaves the queue
 // untouched rather than clear a repo out from under a process it could not
 // actually kill; the in-flight flag still clears, so a later POST retries the
 // whole sequence.

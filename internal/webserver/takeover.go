@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
@@ -148,7 +147,7 @@ func (s *Server) handleRunTakeover(w http.ResponseWriter, r *http.Request) {
 	stopped := false
 	if hasRun {
 		if run.SessionState != registry.StateStopping {
-			if err := s.sup.Signal(run.PID, syscall.SIGTERM); err != nil {
+			if err := s.sup.Stop(run.PID); err != nil {
 				writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to signal loop: " + err.Error()})
 				return
 			}

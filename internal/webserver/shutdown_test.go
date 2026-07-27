@@ -207,10 +207,10 @@ func TestQueueShutdownSecondPOSTWhileInFlightIsNoOp(t *testing.T) {
 	waitQueueEmpty(t, ts, repo)
 
 	fake.mu.Lock()
-	signals := append([]signalCall{}, fake.signals...)
+	stops := append([]int{}, fake.stops...)
 	fake.mu.Unlock()
-	if len(signals) != 1 {
-		t.Fatalf("signals = %+v, want exactly one SIGTERM despite two POSTs", signals)
+	if len(stops) != 1 {
+		t.Fatalf("stops = %v, want exactly one graceful stop despite two POSTs", stops)
 	}
 }
 

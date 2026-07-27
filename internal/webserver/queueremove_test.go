@@ -174,10 +174,10 @@ func TestDequeueRunningTwiceStopsOnce(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	fake.mu.Lock()
-	signals := len(fake.signals)
+	stops := len(fake.stops)
 	fake.mu.Unlock()
-	if signals != 1 {
-		t.Errorf("signals = %d, want the child signalled once", signals)
+	if stops != 1 {
+		t.Errorf("stops = %d, want the child signalled once", stops)
 	}
 }
 

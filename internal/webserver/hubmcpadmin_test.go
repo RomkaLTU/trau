@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -153,8 +154,8 @@ func TestHubMCPDequeueRefusesRunningItem(t *testing.T) {
 	if items, _, _ := s.stores.Queue(root).Snapshot(); len(items) != 1 {
 		t.Errorf("stored queue = %+v, want the running row untouched", items)
 	}
-	if fake := s.sup.(*fakeSupervisor); len(fake.signals) != 0 || len(fake.kills) != 0 {
-		t.Errorf("dequeue signalled the child: signals=%v kills=%v", fake.signals, fake.kills)
+	if fake := s.sup.(*fakeSupervisor); len(fake.stops) != 0 || len(fake.kills) != 0 {
+		t.Errorf("dequeue signalled the child: stops=%v kills=%v", fake.stops, fake.kills)
 	}
 }
 
@@ -585,19 +586,19 @@ func TestHubMCPStopInstance(t *testing.T) {
 
 	var stopped MCPStop
 	hubToolPayload(t, hubTool(t, ts, "stop_instance", map[string]any{"pid": os.Getpid()}), &stopped)
-	if stopped.PID != os.Getpid() || stopped.Status != "stopping" || stopped.Signal != "SIGTERM" {
-		t.Fatalf("stop_instance = %+v, want SIGTERM on its way to this pid", stopped)
+	if stopped.PID != os.Getpid() || stopped.Status != "stopping" || stopped.Signal != proc.StopName {
+		t.Fatalf("stop_instance = %+v, want a stop on its way to this pid", stopped)
 	}
-	if len(fake.signals) != 1 || fake.signals[0].pid != os.Getpid() || fake.signals[0].sig != syscall.SIGTERM {
-		t.Fatalf("signals = %+v, want one SIGTERM to the registered pid", fake.signals)
+	if len(fake.stops) != 1 || fake.stops[0] != os.Getpid() {
+		t.Fatalf("stops = %v, want one graceful stop of the registered pid", fake.stops)
 	}
 
 	tr := hubTool(t, ts, "stop_instance", map[string]any{"pid": 999999})
 	if !tr.IsError || !strings.Contains(tr.Content[0].Text, "no live loop with pid") {
 		t.Fatalf("stop of an unregistered pid = %+v, want a tool error", tr)
 	}
-	if len(fake.signals) != 1 {
-		t.Errorf("signals = %+v, want an unregistered pid never signalled", fake.signals)
+	if len(fake.stops) != 1 {
+		t.Errorf("stops = %+v, want an unregistered pid never signalled", fake.stops)
 	}
 }
 

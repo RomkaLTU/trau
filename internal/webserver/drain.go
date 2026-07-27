@@ -200,7 +200,7 @@ const classUnknown = "unknown"
 //     (it catches an epic whose fault lives on a sub-issue's checkpoint);
 //   - outcome present, empty class → a clean finish; the checkpoint-derived
 //     outcome (a give-up, or "" for done) stands;
-//   - outcome absent → the child died without recording an outcome (SIGKILL,
+//   - outcome absent → the child died without recording an outcome (a kill,
 //     crash, or a failed post). A checkpoint failure class still stands, and an
 //     item the checkpoint proves merged still settles done, but otherwise the
 //     outcome is unknown (classUnknown) and must not settle done — a dead child
