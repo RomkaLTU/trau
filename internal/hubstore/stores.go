@@ -33,6 +33,7 @@ type Stores struct {
 	steer       *SteerNotes
 	proofs      *RunProofs
 	team        *TeamSync
+	push        *Push
 }
 
 // NewStores builds the hub store set over the authoritative database db and the
@@ -64,6 +65,7 @@ func NewStores(home string, db, transcriptsDB *sql.DB, retention Retention) *Sto
 		steer:       NewSteerNotes(db),
 		proofs:      NewRunProofs(db, filepath.Join(home, ProofsDir)),
 		team:        NewTeamSync(db),
+		push:        NewPush(db),
 	}
 }
 
@@ -129,6 +131,9 @@ func (s *Stores) Proofs() *RunProofs { return s.proofs }
 
 // TeamSync returns the store of teammate-published records and sync bookkeeping.
 func (s *Stores) TeamSync() *TeamSync { return s.team }
+
+// Push returns the Web Push identity and subscription store.
+func (s *Stores) Push() *Push { return s.push }
 
 // Queue returns the queue store for a repo root.
 func (s *Stores) Queue(root string) *Queue { return NewQueue(s.db, root) }

@@ -78,6 +78,7 @@ type Server struct {
 	updates          *update.Checker
 	attachFetch      singleflight.Group
 	team             *teamSyncer
+	pushSend         pushSender
 }
 
 // New builds a Server that reports version and treats now as its start time. It
@@ -119,6 +120,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		executable:       os.Executable,
 		reloadPoll:       drainPoll,
 		updates:          update.NewChecker(version),
+		pushSend:         sendWebPush,
 	}
 	s.drain = newDrainer(s)
 	s.syncer = newSyncer(s)
@@ -376,6 +378,9 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/notifications", s.handleNotifications)
 	mux.HandleFunc(APIPrefix+"/notifications/read-all", s.handleNotificationsReadAll)
 	mux.HandleFunc(APIPrefix+"/notifications/{id}/read", s.handleNotificationRead)
+	mux.HandleFunc(APIPrefix+"/push/key", s.handlePushKey)
+	mux.HandleFunc(APIPrefix+"/push/subscriptions", s.handlePushSubscriptions)
+	mux.HandleFunc(APIPrefix+"/push/test", s.handlePushTest)
 	mux.HandleFunc("/api/", handleAPINotFound)
 
 	var h http.Handler = mux
