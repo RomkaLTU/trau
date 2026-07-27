@@ -6,12 +6,15 @@ import {
   type RepoFeedEvent,
 } from '@/lib/events'
 import { fireStateNotification } from '@/lib/notifications'
+import { pushSubscribed } from '@/lib/push'
 import {
   STATE_CHANGE_KIND,
   deriveRecap,
   eventKey,
+  isPushed,
   toRecapItem,
   type Recap,
+  type RecapItem,
 } from '@/lib/recap'
 
 const LAST_SEEN_KEY = 'trau:lastSeen'
@@ -36,6 +39,16 @@ export interface AwayMonitor {
   recap: Recap
   status: FeedStatus
   dismiss: () => void
+}
+
+// notifyLive raises the state change's browser notification unless the service
+// worker is already showing it: a subscribed browser gets every needs-attention
+// state pushed under the notification's own tag, which the recap's event key would
+// stack a duplicate beside rather than coalesce with. The subscription is read live
+// so enabling push takes effect without a reload.
+async function notifyLive(item: RecapItem) {
+  if (isPushed(item.state) && (await pushSubscribed())) return
+  fireStateNotification(item)
 }
 
 // useAwayMonitor accumulates every repo's state_change events, tracks the client-
@@ -75,7 +88,7 @@ export function useAwayMonitor(shouldNotify: boolean): AwayMonitor {
       if (live && shouldNotifyRef.current && !notified.current.has(key)) {
         notified.current.add(key)
         const item = toRecapItem(ev)
-        if (item) fireStateNotification(item)
+        if (item) void notifyLive(item)
       }
     }, setStatus)
   }, [])

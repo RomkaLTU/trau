@@ -10,18 +10,15 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/button'
 import { Eyebrow } from '@/components/trau/eyebrow'
 import { TerminalCard } from '@/components/trau/terminal-card'
-import { authHeaders, onUnauthorized, serveToken, setServeToken } from '@/lib/auth'
+import { onUnauthorized, serveToken, setServeToken } from '@/lib/auth'
+import { hubHealth } from '@/lib/connectivity'
 
 type Phase = 'checking' | 'ok' | 'prompt'
 
-// only a 401 blocks the app; an unreachable server surfaces its own errors instead
+// only a 401 blocks the app; an unreachable hub is the HubGate's business
 async function probe(): Promise<boolean> {
-  try {
-    const res = await fetch('/api/v1/health', { headers: authHeaders() })
-    return res.status !== 401
-  } catch {
-    return true
-  }
+  const res = await hubHealth()
+  return res === null || res.status !== 401
 }
 
 export function AuthGate({ children }: { children: ReactNode }) {

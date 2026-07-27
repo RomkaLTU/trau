@@ -6,7 +6,9 @@ import {
   markReadInResponse,
   notificationRepoName,
   notificationScopeSwitch,
+  notificationTag,
   notificationTarget,
+  repoScopeSwitch,
   showsInAppToast,
   sortByNewest,
   unreadBadgeLabel,
@@ -54,6 +56,20 @@ describe("notificationTarget", () => {
   );
 });
 
+describe("notificationTag", () => {
+  it("keys on the event, matching the tag the hub pushes", () => {
+    expect(notificationTag(notif({ kind: "run_paused", ref: "COD-9" }))).toBe(
+      "run_pausedCOD-9",
+    );
+  });
+
+  it("keeps two events of the same kind apart", () => {
+    expect(notificationTag(notif({ kind: "grill_question", ref: "42" }))).not.toBe(
+      notificationTag(notif({ kind: "grill_question", ref: "43" })),
+    );
+  });
+});
+
 describe("showsInAppToast", () => {
   it("leaves interview questions to the dock", () => {
     expect(showsInAppToast("grill_question")).toBe(false);
@@ -93,6 +109,18 @@ describe("notificationRepoName", () => {
 
   it("passes an unknown repo through unchanged", () => {
     expect(notificationRepoName("/repos/gone", repos)).toBe("/repos/gone");
+  });
+});
+
+describe("repoScopeSwitch", () => {
+  const repos = [repoView("app"), repoView("api")];
+
+  it("adopts the project a pushed inbox link names", () => {
+    expect(repoScopeSwitch("api", "app", repos)).toBe("api");
+  });
+
+  it("stays put when the link names the active project", () => {
+    expect(repoScopeSwitch("app", "app", repos)).toBeNull();
   });
 });
 

@@ -3,7 +3,9 @@ import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 
+import { HubGate } from './components/trau/hub-gate'
 import { AuthGate } from './components/trau/token-gate'
+import { registerServiceWorker } from './lib/service-worker'
 import { routeTree } from './routeTree.gen'
 import './styles.css'
 
@@ -22,11 +24,14 @@ declare module '@tanstack/react-router' {
   }
 }
 
+registerServiceWorker()
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <AuthGate>
         <RouterProvider router={router} />
+        <HubGate onRecover={() => void router.invalidate()} />
       </AuthGate>
     </QueryClientProvider>
   </StrictMode>,

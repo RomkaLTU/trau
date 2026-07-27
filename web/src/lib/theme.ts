@@ -5,6 +5,12 @@ const THEME_KEY = 'trau.theme'
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type ResolvedTheme = 'light' | 'dark'
 
+// Mirrors --background so the installed window chrome tracks the app theme.
+const CHROME_COLOR: Record<ResolvedTheme, string> = {
+  light: '#faf8f5',
+  dark: '#0c0a09',
+}
+
 function browserStore(): Store | null {
   try {
     return globalThis.localStorage ?? null
@@ -47,5 +53,8 @@ function systemPrefersDark(): boolean {
 export function applyTheme(mode: ThemeMode): ResolvedTheme {
   const theme = resolveTheme(mode, systemPrefersDark())
   globalThis.document?.documentElement.classList.toggle('dark', theme === 'dark')
+  globalThis.document
+    ?.querySelector('meta[name="theme-color"]')
+    ?.setAttribute('content', CHROME_COLOR[theme])
   return theme
 }

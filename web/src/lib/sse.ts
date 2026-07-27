@@ -1,4 +1,5 @@
 import { authHeaders, reportUnauthorized } from './auth'
+import { reportHubFailure, reportHubReachable } from './connectivity'
 
 export interface SSEMessage {
   event: string
@@ -58,6 +59,7 @@ export function streamSSE(url: string, handlers: SSEHandlers): () => void {
           headers: authHeaders({ Accept: 'text/event-stream' }),
           signal: controller.signal,
         })
+        reportHubReachable()
         if (res.status === 401) {
           reportUnauthorized()
           handlers.onError?.()
@@ -72,6 +74,7 @@ export function streamSSE(url: string, handlers: SSEHandlers): () => void {
         await pump(res.body, handlers.onMessage)
       } catch (err) {
         if (closed) return
+        reportHubFailure()
         handlers.onError?.(err)
       }
       if (closed) return

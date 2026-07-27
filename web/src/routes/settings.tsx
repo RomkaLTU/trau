@@ -15,6 +15,7 @@ import {
   RepoPromptsSection,
 } from '@/components/trau/prompts-panel'
 import { MCPConnectSection } from '@/components/trau/mcp-connect'
+import { PushNotificationsSection } from '@/components/trau/push-notifications-section'
 import { QAAccountsSection } from '@/components/trau/qa-accounts-panel'
 import { TeamSyncSection } from '@/components/trau/team-sync-panel'
 import {
@@ -81,6 +82,8 @@ function Settings() {
       </header>
 
       <UpdatesSection />
+
+      <PushNotificationsSection />
 
       <MCPConnectSection />
 

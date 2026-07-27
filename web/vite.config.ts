@@ -2,7 +2,7 @@
 import { execSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath, URL } from 'node:url'
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { tanstackRouter } from '@tanstack/router-plugin/vite'
@@ -19,15 +19,40 @@ function gitBuild(): string {
   }
 }
 
+const build = gitBuild()
+
+// Emitted rather than bundled as an input: a Rollup input lands under assets/
+// as an ES module, which would need `{ type: 'module' }` registration.
+function serviceWorker(): Plugin {
+  const source = fileURLToPath(new URL('./src/sw.js', import.meta.url))
+  return {
+    name: 'trau-service-worker',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const shell = Object.keys(bundle)
+        .filter((name) => name.endsWith('.js') || name.endsWith('.css'))
+        .map((name) => `/${name}`)
+      this.emitFile({
+        type: 'asset',
+        fileName: 'sw.js',
+        source: readFileSync(source, 'utf8')
+          .replaceAll('__WEB_BUILD__', build)
+          .replaceAll('__WEB_SHELL__', JSON.stringify(['/', ...shell])),
+      })
+    },
+  }
+}
+
 export default defineConfig({
   define: {
     __WEB_VERSION__: JSON.stringify(pkg.version),
-    __WEB_BUILD__: JSON.stringify(gitBuild()),
+    __WEB_BUILD__: JSON.stringify(build),
   },
   plugins: [
     tanstackRouter({ target: 'react', autoCodeSplitting: false }),
     react(),
     tailwindcss(),
+    serviceWorker(),
   ],
   resolve: {
     alias: {
