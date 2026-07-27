@@ -22,6 +22,7 @@ function queue(items: QueueItem[], draining = false): QueueResponse {
   return {
     repo: 'loop',
     draining,
+    stopping: false,
     shutting_down: false,
     items,
   }

@@ -58,12 +58,14 @@ type QueueItemView struct {
 
 // QueueResponse is the /repos/{repo}/queue resource: the repo's queue in
 // registration order, whether the hub is currently draining it and since when,
-// and whether a full queue shutdown is tearing it down. DrainingSince is absent
-// unless the queue is draining.
+// whether a stop is ending the child that was running, and whether a full queue
+// shutdown is tearing it down. DrainingSince is absent unless the queue is
+// draining.
 type QueueResponse struct {
 	Repo          string          `json:"repo"`
 	Draining      bool            `json:"draining"`
 	DrainingSince string          `json:"draining_since,omitempty"`
+	Stopping      bool            `json:"stopping"`
 	ShuttingDown  bool            `json:"shutting_down"`
 	Items         []QueueItemView `json:"items"`
 }
@@ -114,9 +116,9 @@ func (s *Server) handleQueueItem(w http.ResponseWriter, r *http.Request) {
 // handleQueueDrain starts or pauses draining a repo's queue. Starting flips the
 // persisted draining flag, settles any parked item whose checkpoint already
 // proves it shipped, and launches the drain loop; pausing clears the flag and the
-// loop stops after the current child exits — there is no mid-run kill (Stop
-// remains the per-run action). A start against a queue with nothing pending or
-// paused is refused 409 and changes nothing. It is gated on the workspace
+// loop stops after the current child exits — there is no mid-run kill, which is
+// what the stop route adds on top. A start against a queue with nothing pending
+// or paused is refused 409 and changes nothing. It is gated on the workspace
 // allowlist like registration: only a Registered repo can be drained.
 func (s *Server) handleQueueDrain(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -414,9 +416,62 @@ func (s *Server) queueView(root string) (QueueResponse, error) {
 		Repo:          filepath.Base(root),
 		Draining:      meta.Draining,
 		DrainingSince: drainingSince,
+		Stopping:      s.isStopping(root),
 		ShuttingDown:  s.isShuttingDown(root),
 		Items:         queueItemViews(items, pins, blockers, s.removingItems(root)),
 	}, nil
+}
+
+// handleQueueStop stops a repo's loop where it stands: it disarms the drain
+// synchronously so no tick spawns a new child, then — in the background — ends
+// the child that was running (runningChild) with the same escalation a per-run
+// Stop uses.
+// Unlike a shutdown it clears nothing: the stopped item parks at its checkpoint
+// and every row stays queued, so Start picks the queue back up from there. It
+// answers with the queue — 202 while the stop is in flight, 200 when there was
+// no child to end — and a second POST during a stop is a no-op that answers the
+// same way. It is gated on the workspace allowlist like a drain start: only a
+// Registered repo can be stopped.
+func (s *Server) handleQueueStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	name := r.PathValue("repo")
+	root, ok := s.allowedRoot(name)
+	if !ok {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": fmt.Sprintf("repo %q is observe-only; only a Registered repo can be stopped — register it first", name),
+		})
+		return
+	}
+	store := s.stores.Queue(root)
+	if err := store.SetDraining(false); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "disarm drain: " + err.Error()})
+		return
+	}
+	items, _, err := store.Snapshot()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read queue: " + err.Error()})
+		return
+	}
+	ticket, pid, running := s.runningChild(root, items)
+	if !running {
+		s.writeQueue(w, http.StatusOK, root)
+		return
+	}
+	if !s.beginStopping(root) {
+		s.writeQueue(w, http.StatusAccepted, root)
+		return
+	}
+	// The drain loop is what parks the item once the child is gone, and a
+	// disarmed queue may have none left running.
+	s.drain.ensure(s.drainCtx, root)
+	// Answered before the stop starts, so a child that dies on its SIGTERM cannot
+	// clear the in-flight flag out from under the ack that reports it.
+	s.writeQueue(w, http.StatusAccepted, root)
+	go s.stopRunningChild(root, ticket, pid)
 }
 
 // handleQueueShutdown tears a repo's loop down completely in one gesture:
