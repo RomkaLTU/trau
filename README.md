@@ -31,6 +31,22 @@ sudo dpkg -i trau_<version>_linux_amd64.deb    # Debian, Ubuntu
 sudo rpm -i trau_<version>_linux_amd64.rpm     # Fedora, RHEL, openSUSE
 ```
 
+**Windows, native** — experimental (see [Platforms](#platforms)) — [Scoop](https://scoop.sh),
+amd64 and arm64:
+
+```powershell
+scoop bucket add trau https://github.com/RomkaLTU/scoop-trau
+scoop install trau
+trau --version
+scoop update trau           # later, to update
+```
+
+Or winget, once the manifest for a release clears Microsoft's review:
+
+```powershell
+winget install Codesomelabs.trau
+```
+
 Or from source (Go 1.25+): `git clone https://github.com/RomkaLTU/trau && cd trau && make build`.
 
 Requires `git`, `gh` (authenticated), `jq`, and an agent CLI — `claude` (default), `codex`, or
@@ -43,7 +59,7 @@ Requires `git`, `gh` (authenticated), `jq`, and an agent CLI — `claude` (defau
 | macOS | First-class | arm64 + amd64, Homebrew cask. |
 | Linux | First-class | arm64 + amd64, cask or `.deb`/`.rpm`. |
 | Windows via WSL2 | First-class | Windows 11 or Windows 10 1903+ (2004+ on Arm64), runs the Linux build inside the distro, and the only Windows path with Claude Code sandboxing — [quickstart](docs/windows-wsl2.md). |
-| Windows, native | Planned — ships experimental | The port is in progress and the PTY it needs is the open piece ([ADR 0023](docs/adr/0023-platform-support-windows.md)); until it lands, use WSL2. |
+| Windows, native | Experimental | Windows 10 1809+, arm64 + amd64, Scoop or winget. Runs unsandboxed — for Claude Code sandboxing use WSL2 ([ADR 0023](docs/adr/0023-platform-support-windows.md)). |
 
 ## Use
 

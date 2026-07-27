@@ -18,12 +18,15 @@ builds:
       - -trimpath
     ldflags:
       - -s -w -X main.version={{ .Version }}
-    goos: [darwin, linux]
+    goos: [darwin, linux, windows]
     goarch: [amd64, arm64]
 
 archives:
   - id: trau
     formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 nfpms:
@@ -82,6 +85,53 @@ homebrew_casks:
           if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/trau"]
           end
+
+scoops:
+  - name: trau
+    repository:
+      owner: RomkaLTU
+      name: scoop-trau
+      branch: main
+      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
+    directory: bucket
+    homepage: "https://trau.sh"
+    description: "Autonomous, ticket-driven development loop"
+    license: Apache-2.0
+
+winget:
+  - name: trau
+    package_identifier: Codesomelabs.trau
+    publisher: Codesomelabs
+    publisher_url: "https://trau.sh"
+    publisher_support_url: "https://github.com/RomkaLTU/trau/issues"
+    author: Codesomelabs
+    short_description: "Autonomous, ticket-driven development loop"
+    description: |
+      trau pulls the next ready issue from your tracker and drives it through
+      build, handoff, verify, commit, PR, CI and merge, one issue per iteration,
+      each phase in its own fresh agent process.
+    homepage: "https://trau.sh"
+    license: Apache-2.0
+    license_url: "https://github.com/RomkaLTU/trau/blob/main/LICENSE"
+    release_notes_url: "https://github.com/RomkaLTU/trau/releases/tag/{{ .Tag }}"
+    tags:
+      - cli
+      - developer-tools
+      - automation
+      - ai
+    # Manifests are pushed to our own fork of winget-pkgs and land upstream as a
+    # PR, so the channel goes live on Microsoft's review latency, not ours.
+    repository:
+      owner: RomkaLTU
+      name: winget-pkgs
+      branch: "trau-{{ .Version }}"
+      token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master
 
 release:
   github:
