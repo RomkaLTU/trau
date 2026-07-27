@@ -1,7 +1,7 @@
 // Package attachfile materializes an issue's images and files as local copies an
 // agent can read, and repoints the references embedded in issue text at them. The
-// copies live under /tmp beside the other agent-interface artifacts, never inside
-// the target repository's working tree.
+// copies live in the OS temp directory beside the other agent-interface artifacts,
+// never inside the target repository's working tree.
 package attachfile
 
 import (
@@ -13,9 +13,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/RomkaLTU/trau/internal/tmpfile"
 )
 
-const dirPrefix = "/tmp/trau-attachments-"
+const dirPrefix = "trau-attachments-"
 
 // readNote is the single instruction that closes the file list. It stays
 // framework-agnostic: what the files are, and why an image is worth opening.
@@ -50,7 +52,7 @@ type File struct {
 type Fetcher func(ctx context.Context, id int64) ([]byte, error)
 
 // Dir is the directory a ticket's attachments materialize into.
-func Dir(ticket string) string { return dirPrefix + ticket }
+func Dir(ticket string) string { return tmpfile.Path(dirPrefix + ticket) }
 
 // Remove drops a ticket's materialized files.
 func Remove(ticket string) { _ = os.RemoveAll(Dir(ticket)) }

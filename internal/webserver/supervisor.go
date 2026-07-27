@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+
+	"github.com/RomkaLTU/trau/internal/proc"
 )
 
 // spawnStderrTailBytes bounds the stderr kept from a spawned child. A startup
@@ -54,7 +56,7 @@ func (osSupervisor) Spawn(spec SpawnSpec) (int, error) {
 	cmd := exec.Command(exe, spec.Args...)
 	cmd.Dir = spec.Dir
 	cmd.Env = spec.Env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = proc.Detached()
 	if err := cmd.Start(); err != nil {
 		return 0, err
 	}
@@ -118,19 +120,13 @@ func captureError(err error) error {
 }
 
 func (osSupervisor) Signal(pid int, sig syscall.Signal) error {
-	proc, err := os.FindProcess(pid)
+	target, err := os.FindProcess(pid)
 	if err != nil {
 		return err
 	}
-	return proc.Signal(sig)
+	return target.Signal(sig)
 }
 
-// Kill guarantees pid's end: it SIGKILLs the whole process group so a loop's
-// own children die with it, falling back to the bare PID when the group never
-// existed or the group signal fails for any other reason.
-func (osSupervisor) Kill(pid int) error {
-	if err := syscall.Kill(-pid, syscall.SIGKILL); err == nil {
-		return nil
-	}
-	return syscall.Kill(pid, syscall.SIGKILL)
-}
+// Kill guarantees pid's end: it kills the whole process group so a loop's own
+// children die with it.
+func (osSupervisor) Kill(pid int) error { return proc.KillGroup(pid) }
