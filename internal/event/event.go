@@ -103,6 +103,11 @@ const KindSpawnFailed = "spawn_failed"
 // run of its own to explain it in the feed.
 const KindQueueReconciled = "queue_reconciled"
 
+// KindQueueAutoResumed marks a queue item the hub re-armed on its own after a
+// blameless pause, carrying the item and which try it is. The hub emits it, since
+// the re-attempt happens with no human click to explain it in the feed.
+const KindQueueAutoResumed = "queue_auto_resumed"
+
 // KindSteerQueued marks an operator steer note queued against a ticket, carrying
 // the ticket and the note's id. The hub emits it, since the queue is hub-owned;
 // the note's body stays out of the feed and is read from the steer API.

@@ -98,7 +98,7 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 	// go of both.
 	restarting := false
 	defer func() {
-		if !restarting {
+		if !restarting || supervisedHub() {
 			return
 		}
 		if spawnErr := respawnServe(args); spawnErr != nil {
@@ -181,6 +181,12 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 		return err
 	}
 }
+
+// supervisedHub reports whether launchd started this hub. Its KeepAlive already
+// starts a successor the moment the process exits, so a self-restart that also
+// respawned one would leave two hubs racing for the port. The plist sets the
+// marker; nothing else does.
+func supervisedHub() bool { return os.Getenv("TRAU_SUPERVISED") == "1" }
 
 // drainServer closes the listener and lets in-flight requests finish. It returns
 // only once the port is free, which is what makes a successor able to bind it.

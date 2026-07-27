@@ -219,6 +219,17 @@ func (s *Server) repoConfigPaths(repo registry.Repo) (projectPath, userPath stri
 	return projectPath, userPath
 }
 
+// repoConfig loads a repo's own layered config from its root alone, for the hub
+// paths that hold a root rather than a registry.Repo. Like resolveConfig it
+// ignores the hub's cwd-local file, which has no bearing on another repo's loop.
+func repoConfig(root string) (config.Config, error) {
+	userPath := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		userPath = config.ProjectConfigPath(home)
+	}
+	return config.LoadLayered(config.ProjectConfigPath(root), userPath, "", "")
+}
+
 func knownKey(key string) (config.KeyMeta, bool) {
 	for _, m := range config.KnownKeys() {
 		if m.Key == key {

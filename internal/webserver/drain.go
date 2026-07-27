@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
+	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
 // drainPoll is how often a draining repo re-evaluates: long enough not to spin,
@@ -39,25 +42,35 @@ const (
 // keeps draining strictly sequential: a repo never has two hub-spawned children
 // at once.
 type drainer struct {
-	srv      *Server
-	poll     time.Duration
-	alive    func(pid int) bool
-	repoLive func(root string) bool
-	outcome  func(root string, it queue.Item) (class, reason string)
+	srv       *Server
+	poll      time.Duration
+	backoff   time.Duration
+	now       func() time.Time
+	alive     func(pid int) bool
+	repoLive  func(root string) bool
+	outcome   func(root string, it queue.Item) (class, reason string)
+	prState   func(root, pr string) string
+	autoTries func(root string) int
 
-	mu     sync.Mutex
-	active map[string]context.CancelFunc
+	mu      sync.Mutex
+	active  map[string]context.CancelFunc
+	resumes map[string]autoResume
 }
 
 func newDrainer(s *Server) *drainer {
 	d := &drainer{
-		srv:    s,
-		poll:   drainPoll,
-		alive:  registry.Alive,
-		active: map[string]context.CancelFunc{},
+		srv:     s,
+		poll:    drainPoll,
+		backoff: autoResumeBackoff,
+		now:     time.Now,
+		alive:   registry.Alive,
+		prState: ghPRState,
+		active:  map[string]context.CancelFunc{},
+		resumes: map[string]autoResume{},
 	}
 	d.repoLive = d.repoHasLiveInstance
 	d.outcome = d.checkpointOutcome
+	d.autoTries = d.configuredAutoResumeTries
 	return d
 }
 
@@ -118,15 +131,20 @@ func (d *drainer) tick(root string) (drainAction, error) {
 			if err := store.Pause(running.ID, reason); err != nil {
 				return drainWait, err
 			}
+			d.planAutoResume(root, running, class)
 		} else {
 			if err := store.Finish(running.ID, status, reason); err != nil {
 				return drainWait, err
 			}
 			d.srv.clearQueued(d.srv.drainCtx, root, running)
+			d.forgetAutoResume(root, running.ID)
 		}
 		return drainReconcile, nil
 	}
 	if !meta.Draining {
+		if d.holdForAutoResume(root) {
+			return drainWait, nil
+		}
 		return drainStop, nil
 	}
 	next, ok := firstRunnable(items)
@@ -213,56 +231,146 @@ func (d *drainer) cleanFinish(root string, it queue.Item) bool {
 	return d.srv.stores.Checkpoints().Phase(root, it.ID) == state.Merged
 }
 
+// The three independent proofs a swept item's work already shipped, in the order
+// the sweep asks for them: the hub's own checkpoint table, the hub's mirror of the
+// tracker, and — last, because it costs a subprocess — the forge.
+const (
+	evidenceCheckpoint = "checkpoint merged"
+	evidenceTracker    = "tracker Done"
+	evidencePR         = "PR merged"
+)
+
+// prStateTimeout bounds the forge lookup one swept item costs, so a boot sweep
+// over a long queue cannot hang on an unreachable network. prStateGrace is the
+// share of that budget held back for the wait after the deadline kills gh, since
+// WaitDelay runs on top of the deadline rather than inside it.
+const (
+	prStateTimeout = 5 * time.Second
+	prStateGrace   = time.Second
+)
+
 // reconciledReason replaces the stale fault a swept item was parked with: the
 // evidence that settled it instead.
-const reconciledReason = "checkpoint merged — the work had already shipped"
+func reconciledReason(evidence string) string {
+	return evidence + " — the work had already shipped"
+}
 
-// reconcileParked settles the paused items an outage left behind. A hub that
-// comes back to an item whose work verifiably finished — an out-of-band resume,
-// a child that died after merging — should not make a Start re-discover the
-// fact. Each paused item is judged on the same evidence a finished child is, so
-// only proof of a clean finish settles it, and through the same settle path, so
-// its sub-issues and the web queue follow. Anything short of proof stays parked
-// (classUnknown never settles done), and the sweep spawns nothing.
-func (d *drainer) reconcileParked(root string) {
+// settleEvidence names the ground truth that proves an item's work is complete,
+// or "" when nothing does. The three sources are independent on purpose: a child
+// killed between its merge and the checkpoint write leaves only the merged PR
+// behind, and work finished out of band while the hub was down shows up as a
+// tracker status and nothing else.
+func (d *drainer) settleEvidence(root string, it queue.Item) string {
+	row, found, err := d.srv.stores.Checkpoints().One(root, it.ID)
+	checkpointed := found && err == nil
+	switch {
+	case checkpointed && row.Phase == state.Merged:
+		return evidenceCheckpoint
+	case d.trackerDone(root, it.ID):
+		return evidenceTracker
+	case checkpointed && d.prMerged(root, row):
+		return evidencePR
+	default:
+		return ""
+	}
+}
+
+// trackerDone reports whether the hub's issue store — its mirror of the tracker,
+// refreshed on the sync tick — already files the item under the done group.
+func (d *drainer) trackerDone(root, id string) bool {
+	iss, found, err := d.srv.stores.Issues().Get(root, id)
+	if err != nil || !found {
+		return false
+	}
+	return iss.StatusGroup == string(tracker.StatusGroupDone)
+}
+
+// prMerged reports whether the PR the item's checkpoint recorded has since been
+// merged. It is the evidence that outlives a child killed after its merge landed
+// but before the phase reached merged, and the one an epic whose finalize never
+// ran leaves behind.
+func (d *drainer) prMerged(root string, row hubstore.CheckpointRow) bool {
+	pr := checkpointField(row.Data, "PR")
+	if pr == "" {
+		return false
+	}
+	return d.prState(root, pr) == "MERGED"
+}
+
+// ghPRState asks the forge for a PR's state through gh, the tool the pipeline
+// merges with. Anything that is not a clean answer reads as unknown, so a missing
+// gh or an offline machine leaves the item parked rather than settling it. The
+// grace bounds the read too: a credential helper gh leaves holding the pipe would
+// otherwise outlive the cancelled command.
+func ghPRState(root, pr string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), prStateTimeout-prStateGrace)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", pr, "--json", "state", "-q", ".state")
+	cmd.Dir = root
+	cmd.WaitDelay = prStateGrace
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// reconcileQueue settles the unsettled items an outage left behind. A hub that
+// comes back to an item whose work verifiably finished — an out-of-band resume, a
+// child that died after merging, a ticket a human closed while the hub was down —
+// should not make a Start re-discover the fact. Every parked or failed item is
+// compared against ground truth rather than against the class it was parked with,
+// and settles through the same path a finished child does, so its sub-issues and
+// the web queue follow. Anything short of proof stays exactly as it is, and the
+// sweep spawns nothing.
+func (d *drainer) reconcileQueue(root string) {
 	store := d.srv.stores.Queue(root)
 	items, _, err := store.Snapshot()
 	if err != nil {
-		logger.Verbosef("reconcile parked queue %s: %v", root, err)
+		logger.Verbosef("reconcile queue %s: %v", root, err)
 		return
 	}
 	for _, it := range items {
-		if it.Status != queue.StatusPaused {
+		if it.Status != queue.StatusPaused && it.Status != queue.StatusFailed {
 			continue
 		}
-		if class, _ := d.reconcileOutcome(root, it); class != "" {
+		evidence := d.settleEvidence(root, it)
+		if evidence == "" {
 			continue
 		}
-		if err := store.Finish(it.ID, queue.StatusDone, reconciledReason); err != nil {
-			logger.Verbosef("reconcile parked %s: %v", it.ID, err)
+		if err := store.Finish(it.ID, queue.StatusDone, reconciledReason(evidence)); err != nil {
+			logger.Verbosef("reconcile %s: %v", it.ID, err)
 			continue
 		}
+		if err := d.srv.stores.DrainOutcomes().Remove(root, it.ID); err != nil {
+			logger.Verbosef("reconcile %s: drop drain outcome: %v", it.ID, err)
+		}
+		d.forgetAutoResume(root, it.ID)
 		d.srv.clearQueued(d.srv.drainCtx, root, it)
-		d.srv.emitQueueReconciled(root, it)
+		d.srv.emitQueueReconciled(root, it, evidence)
 	}
 }
 
 // emitQueueReconciled records a settle the sweep made on stored evidence alone,
 // so the activity view can explain a queue item that reached done with no run of
 // its own behind it.
-func (s *Server) emitQueueReconciled(root string, it queue.Item) {
+func (s *Server) emitQueueReconciled(root string, it queue.Item, evidence string) {
+	s.emitQueueEvent(root, event.KindQueueReconciled,
+		fmt.Sprintf("%s settled done without a run — %s", it.ID, evidence),
+		map[string]any{"ticket": it.ID, "kind": string(it.Kind), "evidence": evidence})
+}
+
+// emitQueueEvent appends a hub-authored queue event and pushes it to the live
+// feed, the shared tail of every settle the queue makes with no run behind it.
+func (s *Server) emitQueueEvent(root, kind, msg string, fields map[string]any) {
 	rows, err := s.stores.Events().Append(root, []hubstore.NewEvent{{
-		TS:   time.Now().UTC().Format(time.RFC3339),
-		Kind: event.KindQueueReconciled,
-		Msg:  fmt.Sprintf("%s settled done without a run — checkpoint merged", it.ID),
-		Fields: marshalFields(map[string]any{
-			"ticket":   it.ID,
-			"kind":     string(it.Kind),
-			"evidence": "checkpoint merged",
-		}),
+		TS:     time.Now().UTC().Format(time.RFC3339),
+		Kind:   kind,
+		Msg:    msg,
+		Fields: marshalFields(fields),
 	}})
 	if err != nil {
-		logger.Verbosef("queue reconcile: emit event for %s: %v", it.ID, err)
+		logger.Verbosef("queue event %s: %v", kind, err)
 		return
 	}
 	name := filepath.Base(root)

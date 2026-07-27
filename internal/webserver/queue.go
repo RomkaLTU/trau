@@ -182,7 +182,7 @@ func (s *Server) setDraining(root string, draining, noResume bool, onFault strin
 	} else if err != nil {
 		return fmt.Errorf("arm queue: %w", err)
 	}
-	s.drain.reconcileParked(root)
+	s.drain.reconcileQueue(root)
 	s.drain.ensure(s.drainCtx, root)
 	return nil
 }

@@ -19,7 +19,9 @@ import (
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/launchd"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/update"
 	"github.com/RomkaLTU/trau/internal/webserver"
 )
 
@@ -39,9 +41,118 @@ func runHub(ctx context.Context, args []string, stdout io.Writer) error {
 	switch args[0] {
 	case "restart":
 		return runHubRestart(ctx, args[1:], stdout)
+	case "supervise":
+		return runHubSupervise(ctx, args[1:], stdout)
+	case "unsupervise":
+		return runHubUnsupervise(args[1:], stdout)
 	default:
 		return usageError{fmt.Errorf("hub: unknown subcommand: %s", args[0])}
 	}
+}
+
+// runHubSupervise hands the hub to launchd with KeepAlive, so a crashed or killed
+// one comes back in seconds instead of waiting for the next interactive session
+// (ADR 0004) — nothing else brings it back, since loop children deliberately
+// never resurrect it (ADR 0008). Whatever already runs the hub — an agent from an
+// earlier run, or a bare process holding the port — is stopped first, behind the
+// same guards a forced restart uses, so launchd's copy is the one that binds it.
+// Re-running adopts a moved binary or a changed PATH: the agent in place is
+// released before the port is looked at, so only a process launchd does not own is
+// ever displaced.
+func runHubSupervise(ctx context.Context, args []string, stdout io.Writer) error {
+	if len(args) > 0 {
+		return usageError{fmt.Errorf("hub supervise: unknown arg: %s", args[0])}
+	}
+	if !launchd.Supported() {
+		return console.Actionable(launchd.ErrUnsupported, "supervise the hub",
+			"keep `trau serve` up with this machine's init system (a systemd user unit, say), or rely on SERVE_AUTOSTART")
+	}
+	cfg, err := loadServeConfig("")
+	if err != nil {
+		return console.Actionable(err, "load config", "check trau.ini, ~/.trau.ini, and environment variables")
+	}
+	if err := webserver.CheckExposure(cfg.ServeBind, cfg.ServeToken); err != nil {
+		return console.Actionable(err, "supervise the hub", "set SERVE_TOKEN to a secret, or keep SERVE_BIND on loopback (127.0.0.1)")
+	}
+	exe, err := update.ResolveBinary()
+	if err != nil {
+		return console.Actionable(err, "resolve the trau binary", "install trau so `trau` resolves on PATH")
+	}
+	st, err := launchd.Read()
+	if err != nil {
+		return console.Actionable(err, "read the LaunchAgent", "check ~/Library/LaunchAgents")
+	}
+	// Releasing the agent stops the hub under it just as surely as killing the
+	// process holding the port does, so both go behind the guards; a first install
+	// on a machine with nothing running passes them by.
+	if st.Installed || portOccupied(cfg) {
+		if err := checkForcedRestart(); err != nil {
+			return err
+		}
+	}
+	// A machine already supervised gives its agent up first: launchd's KeepAlive
+	// would re-bind the port under any hub stopped beneath it, and the plist this
+	// re-run exists to rewrite cannot be replaced while the old job holds it.
+	if st.Installed {
+		if err := launchd.Uninstall(); err != nil {
+			return console.Actionable(err, "release the installed LaunchAgent", "check ~/Library/LaunchAgents")
+		}
+		awaitPortFree(cfg, hubStopGrace)
+	}
+	if portOccupied(cfg) {
+		if err := stopWedgedHub(ctx, cfg, stdout); err != nil {
+			return console.Actionable(err, "stop the unsupervised hub",
+				fmt.Sprintf("see what holds the port with `lsof -i tcp:%d`", cfg.ServePort))
+		}
+	}
+	if err := launchd.Install(exe, []string{"serve"}, superviseEnv(), hubLogPath()); err != nil {
+		return console.Actionable(err, "supervise the hub", "see "+hubLogPath())
+	}
+	healthURL := hubBaseURL(cfg) + webserver.APIPrefix + "/health"
+	after, ok := awaitHub(ctx, healthURL, cfg.ServeToken, hubRestartDeadline, anyHub)
+	if !ok {
+		return console.Actionable(fmt.Errorf("the supervised hub did not come up within %s", hubRestartDeadline),
+			"supervise the hub", "see "+hubLogPath())
+	}
+	_, _ = fmt.Fprintf(stdout, "hub supervised by launchd (%s), running %s — it now restarts on its own\n", launchd.Label, after.version)
+	return nil
+}
+
+// runHubUnsupervise gives the hub back to the user. launchd stops the job as it
+// releases it, so the hub goes down with the agent rather than lingering under
+// nobody's supervision.
+func runHubUnsupervise(args []string, stdout io.Writer) error {
+	if len(args) > 0 {
+		return usageError{fmt.Errorf("hub unsupervise: unknown arg: %s", args[0])}
+	}
+	st, err := launchd.Read()
+	if err != nil {
+		return console.Actionable(err, "read the LaunchAgent", "check ~/Library/LaunchAgents")
+	}
+	if !st.Installed {
+		_, _ = fmt.Fprintln(stdout, "the hub is not supervised; nothing to remove")
+		return nil
+	}
+	if err := launchd.Uninstall(); err != nil {
+		return console.Actionable(err, "remove the hub's LaunchAgent", "check ~/Library/LaunchAgents")
+	}
+	_, _ = fmt.Fprintf(stdout, "hub supervision removed (%s); the hub stopped with it — `trau serve` or the next interactive session brings it back\n", launchd.Label)
+	return nil
+}
+
+// superviseEnv is the environment launchd starts the hub with. An agent inherits
+// almost nothing, so the PATH that resolves git, gh, and the provider CLIs for
+// every loop the hub spawns is captured at install time. TRAU_SUPERVISED tells
+// the hub that launchd owns it, so a self-restart exits and lets KeepAlive bring
+// the successor up instead of racing it for the port.
+func superviseEnv() map[string]string {
+	env := map[string]string{"TRAU_SUPERVISED": "1"}
+	for _, key := range []string{"PATH", "TRAU_HOME"} {
+		if v := os.Getenv(key); v != "" {
+			env[key] = v
+		}
+	}
+	return env
 }
 
 // runHubRestart makes the configured hub current: a running one is asked to
@@ -116,9 +227,19 @@ func runHubRestart(ctx context.Context, args []string, stdout io.Writer) error {
 	return nil
 }
 
+// startHub brings a stopped hub up: through launchd on a supervised machine, so
+// the process that binds the port is the one KeepAlive owns, and as a detached
+// child otherwise (ADR 0004).
 func startHub(cfg config.Config) error {
 	if err := webserver.CheckExposure(cfg.ServeBind, cfg.ServeToken); err != nil {
 		return console.Actionable(err, "start the hub", "set SERVE_TOKEN to a secret, or keep SERVE_BIND on loopback (127.0.0.1)")
+	}
+	if st, err := launchd.Read(); err == nil && st.Installed {
+		if err := launchd.Kickstart(); err != nil {
+			return console.Actionable(err, "start the supervised hub",
+				"inspect the agent with `launchctl print gui/$(id -u)/"+launchd.Label+"`, or run `trau hub unsupervise`")
+		}
+		return nil
 	}
 	if err := spawnDetachedServe(); err != nil {
 		return console.Actionable(err, "start the hub", "install trau so `trau` resolves on PATH")
@@ -209,6 +330,15 @@ func stopProcess(pid int) error {
 		return fmt.Errorf("pid %d is still alive after a SIGKILL", pid)
 	}
 	return nil
+}
+
+// awaitPortFree gives a hub that was just stopped the grace to release the port,
+// so the process launchd is letting go of is not mistaken for a foreign one.
+func awaitPortFree(cfg config.Config, within time.Duration) {
+	deadline := time.Now().Add(within)
+	for portOccupied(cfg) && time.Now().Before(deadline) {
+		time.Sleep(hubHealthPoll)
+	}
 }
 
 func awaitProcessGone(pid int, within time.Duration) bool {

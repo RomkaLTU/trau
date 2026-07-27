@@ -21,6 +21,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/launchd"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/transcriptdb"
@@ -201,6 +202,24 @@ func TestCheckLegacyRegistrationFlagsLeftover(t *testing.T) {
 	}
 	if !strings.Contains(c.Message, "workspace.json") {
 		t.Errorf("message %q should name the leftover file", c.Message)
+	}
+}
+
+// TestCheckHubSupervisionUnsupervised keeps an opt-in nobody took from reading as
+// a problem: unsupervised passes, and points at the command that changes it.
+func TestCheckHubSupervisionUnsupervised(t *testing.T) {
+	if !launchd.Supported() {
+		t.Skip("hub supervision is a launchd feature")
+	}
+	t.Setenv("HOME", t.TempDir())
+	rr := newTestRunner()
+	checkHubSupervision(rr)
+	c := lastCheck(t, rr)
+	if c.Status != pass {
+		t.Errorf("status = %q, want pass — supervision is opt-in", c.Status)
+	}
+	if !strings.Contains(c.Message, "trau hub supervise") {
+		t.Errorf("message %q should name the command that turns supervision on", c.Message)
 	}
 }
 
