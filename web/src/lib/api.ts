@@ -1,4 +1,5 @@
 import { authHeaders, reportUnauthorized } from './auth'
+import { reportHubFailure, reportHubReachable } from './connectivity'
 
 export class UnauthorizedError extends Error {
   constructor() {
@@ -11,7 +12,14 @@ export async function apiFetch(
   input: string,
   init: RequestInit = {},
 ): Promise<Response> {
-  const res = await fetch(input, { ...init, headers: authHeaders(init.headers) })
+  let res: Response
+  try {
+    res = await fetch(input, { ...init, headers: authHeaders(init.headers) })
+  } catch (err) {
+    reportHubFailure()
+    throw err
+  }
+  reportHubReachable()
   if (res.status === 401) {
     reportUnauthorized()
     throw new UnauthorizedError()
