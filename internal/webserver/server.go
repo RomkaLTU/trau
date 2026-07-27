@@ -155,7 +155,7 @@ func (s *Server) Start(ctx context.Context, syncInterval, reconcileInterval time
 		if err != nil {
 			continue
 		}
-		s.drain.reconcileParked(root)
+		s.drain.reconcileQueue(root)
 		if _, running := firstWithStatus(items, queue.StatusRunning); meta.Draining || running {
 			s.drain.ensure(ctx, root)
 		}

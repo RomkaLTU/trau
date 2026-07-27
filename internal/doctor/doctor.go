@@ -23,6 +23,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/launchd"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
@@ -74,6 +75,7 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkJiraProject(cfg, rr)
 	checkWritePerms(repoRoot, rr)
 	hub, hubUp := checkWebHub(ctx, cfg, version, rr)
+	checkHubSupervision(rr)
 	checkHubDatabase(rr)
 	checkTranscriptDatabase(rr)
 	checkAttachmentCache(hub, hubUp, rr)
@@ -627,6 +629,31 @@ func checkWebHub(ctx context.Context, cfg config.Config, version string, rr *run
 	}
 	rr.add("web hub", pass, fmt.Sprintf("running at %s (version %s, up %s)", addr, h.Version, uptime), "")
 	return h, true
+}
+
+// checkHubSupervision reports what brings a crashed hub back. Autostart only
+// fires on the next interactive session (ADR 0004) and a loop child never
+// resurrects the hub it reports to (ADR 0008), so unsupervised is a real state,
+// not a broken one — it is only a warning once an agent is installed and launchd
+// is not actually holding it.
+func checkHubSupervision(rr *runner) {
+	if !launchd.Supported() {
+		return
+	}
+	st, err := launchd.Read()
+	switch {
+	case err != nil:
+		rr.add("hub supervision", warn, "cannot read the LaunchAgent: "+err.Error(),
+			"check ~/Library/LaunchAgents")
+	case !st.Installed:
+		rr.add("hub supervision", pass, "not supervised — a killed hub stays down until the next interactive session",
+			"run `trau hub supervise` to have launchd restart it in seconds")
+	case !st.Loaded:
+		rr.add("hub supervision", warn, fmt.Sprintf("%s is installed but launchd is not holding it", launchd.Label),
+			"run `trau hub supervise` to load it again")
+	default:
+		rr.add("hub supervision", pass, fmt.Sprintf("launchd keeps the hub up (%s: %s)", launchd.Label, strings.Join(st.Program, " ")), "")
+	}
 }
 
 // checkAttachmentCache reports what the issue attachment cache is holding. The hub

@@ -343,6 +343,16 @@ type Config struct {
 	// takeover: Terminal (default) or iTerm.
 	TerminalApp string
 
+	// QueueAutoResume lets the hub re-attempt a queue item a blameless pause
+	// parked — a provider rate/auth wall, an unreachable hub — once its backoff
+	// passes, never a fault. Off by default: a re-attempt spends tokens with no
+	// human click behind it.
+	QueueAutoResume bool
+
+	// QueueAutoResumeTries bounds those automatic re-attempts. Once they are
+	// spent the item stays parked for a human, as it does with the opt-in off.
+	QueueAutoResumeTries int
+
 	// HubWriteRetryWindow is how many seconds the loop child retries an
 	// unreachable hub before a run-data write pauses the run blamelessly
 	// (ADR 0008 §3). The child sends run data to the hub over HTTP and never
@@ -486,6 +496,8 @@ func Defaults() Config {
 		HubSelfReload:          false,
 		HubReloadBuildCmd:      "make build",
 		TerminalApp:            "Terminal",
+		QueueAutoResume:        false,
+		QueueAutoResumeTries:   2,
 		HubWriteRetryWindow:    30,
 		HubWriteBufferBytes:    32 << 20,
 		TranscriptRetention:    50,
@@ -1010,6 +1022,11 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	}
 	strAllowEmpty("HUB_RELOAD_BUILD_CMD", &c.HubReloadBuildCmd)
 	str("TERMINAL_APP", &c.TerminalApp)
+	if v, src := get("QUEUE_AUTO_RESUME"); v != "" {
+		c.QueueAutoResume = v == "1"
+		sources["QUEUE_AUTO_RESUME"] = src.name
+	}
+	num("QUEUE_AUTO_RESUME_TRIES", &c.QueueAutoResumeTries)
 	num("HUB_WRITE_RETRY_WINDOW", &c.HubWriteRetryWindow)
 	num("HUB_WRITE_BUFFER_BYTES", &c.HubWriteBufferBytes)
 	num("TRANSCRIPT_RETENTION", &c.TranscriptRetention)
@@ -1764,6 +1781,8 @@ func KnownKeys() []KeyMeta {
 		{Key: "HUB_SELF_RELOAD", Group: sectionHub, WebEditable: true, Default: "0", Advanced: true, Bool: true, Description: "Let this repo ask the hub to restart itself onto the binary it builds, applied once no run is in flight anywhere; only works for a hub already running from this repo (1 = yes, 0 = no)"},
 		{Key: "HUB_RELOAD_BUILD_CMD", Group: sectionHub, Advanced: true, Default: "make build", Description: "Command that rebuilds the hub's binary, run in the repo root from the merged base once a HUB_SELF_RELOAD repo ships work; empty skips the rebuild"},
 		{Key: "TERMINAL_APP", Group: sectionHub, WebEditable: true, Default: "Terminal", Options: []string{"Terminal", "iTerm"}, Description: "macOS terminal application a web takeover opens: Terminal | iTerm"},
+		{Key: "QUEUE_AUTO_RESUME", Group: sectionHub, WebEditable: true, Default: "0", Advanced: true, Bool: true, Description: "Let the hub re-attempt a queue item parked by a blameless pause (provider rate/auth wall, unreachable hub) once its backoff passes; never for a fault (1 = yes, 0 = no)"},
+		{Key: "QUEUE_AUTO_RESUME_TRIES", Group: sectionHub, Kind: "int", WebEditable: true, Default: "2", Advanced: true, Description: "How many automatic re-attempts QUEUE_AUTO_RESUME spends before the item stays parked for a human"},
 		{Key: "HUB_WRITE_RETRY_WINDOW", Group: sectionHub, Kind: "int", WebEditable: true, Default: "30", Advanced: true, Description: "Seconds the loop retries an unreachable hub before a run-data write pauses the run blamelessly (ADR 0008)"},
 		{Key: "HUB_WRITE_BUFFER_BYTES", Group: sectionHub, Kind: "int", WebEditable: true, Default: "33554432", Advanced: true, Description: "Byte cap on the child's in-memory buffer of run-data writes queued while the hub is unreachable; over it the oldest queued events are dropped (ADR 0008)"},
 		{Key: "TRANSCRIPT_RETENTION", Group: sectionRetention, Kind: "int", WebEditable: true, Default: "50", Advanced: true, Description: "Transcript sessions per repo the hub keeps in transcripts.db before pruning the oldest; an in-flight session is never pruned (ADR 0008)"},
@@ -2408,6 +2427,13 @@ func keyValue(cfg Config, key string) string {
 		return cfg.HubReloadBuildCmd
 	case "TERMINAL_APP":
 		return cfg.TerminalApp
+	case "QUEUE_AUTO_RESUME":
+		if cfg.QueueAutoResume {
+			return "1"
+		}
+		return "0"
+	case "QUEUE_AUTO_RESUME_TRIES":
+		return intValue(cfg.QueueAutoResumeTries)
 	case "HUB_WRITE_RETRY_WINDOW":
 		return intValue(cfg.HubWriteRetryWindow)
 	case "HUB_WRITE_BUFFER_BYTES":

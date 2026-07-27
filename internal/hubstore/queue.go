@@ -52,6 +52,16 @@ func (st *queueState) disarm() {
 	st.drainingSince = time.Time{}
 }
 
+// arm starts the drain, stamping when it began. An already-draining queue keeps
+// its stamp, so a re-arm mid-run never restarts the clock.
+func (st *queueState) arm() {
+	if st.draining {
+		return
+	}
+	st.draining = true
+	st.drainingSince = time.Now().UTC()
+}
+
 // restart returns every item that is not currently running to pending with its
 // reason and child pid cleared, so the next drain runs from the top.
 func (st *queueState) restart() {
@@ -287,10 +297,26 @@ func (q *Queue) Arm(noResume bool, onFault string) error {
 	}
 	st.noResume = noResume
 	st.onFault = onFault
-	if !st.draining {
-		st.draining = true
-		st.drainingSince = time.Now().UTC()
+	st.arm()
+	return q.persist(st)
+}
+
+// Rearm resumes a queue the drain disarmed, keeping the knobs the run was armed
+// with. It is Arm without the reset: a re-attempt of one parked item must leave
+// the items that already settled alone, which replaying a no-resume arm would
+// not — that returns every settled item to pending and runs shipped work again.
+// A queue with nothing runnable left reports queue.ErrNoRunnableItems.
+func (q *Queue) Rearm() error {
+	queueMu.Lock()
+	defer queueMu.Unlock()
+	st, err := q.loadImported()
+	if err != nil {
+		return err
 	}
+	if !queue.HasRunnable(st.items) {
+		return queue.ErrNoRunnableItems
+	}
+	st.arm()
 	return q.persist(st)
 }
 
@@ -339,8 +365,7 @@ func (q *Queue) SetDraining(draining bool) error {
 		return nil
 	}
 	if draining {
-		st.draining = true
-		st.drainingSince = time.Now().UTC()
+		st.arm()
 	} else {
 		st.disarm()
 	}

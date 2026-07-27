@@ -86,6 +86,8 @@ Usage:
   trau serve                 start the local web hub — HTTP API + embedded UI on 127.0.0.1:8728 (--bind, --port)
   trau hub restart           restart the web hub so it runs the current on-disk binary (starts one if none is up)
   trau hub restart --force   stop a hub whose API has wedged, then start a fresh one (refuses while any run is live)
+  trau hub supervise         hand the hub to launchd with KeepAlive (macOS), so a crashed or killed one comes back on its own
+  trau hub unsupervise       remove that LaunchAgent and stop the hub with it
   trau --status [--json]     show saved ticket checkpoints with token/cost totals
   trau --dry-run             print the next eligible ticket without doing any work
   trau --list-eligible [--json]  list the repo's eligible ready tickets (ID, title, labels)

@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/launchd"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
@@ -25,6 +27,92 @@ func TestHubRestartRejectsUnknownArg(t *testing.T) {
 	var ue usageError
 	if !errors.As(err, &ue) {
 		t.Fatalf("runHubRestart returned %v, want a usage error", err)
+	}
+}
+
+func TestHubSuperviseRejectsUnknownArgs(t *testing.T) {
+	for _, args := range [][]string{{"--now"}, {"--force"}} {
+		var ue usageError
+		if err := runHubSupervise(context.Background(), args, io.Discard); !errors.As(err, &ue) {
+			t.Errorf("runHubSupervise(%v) = %v, want a usage error", args, err)
+		}
+		if err := runHubUnsupervise(args, io.Discard); !errors.As(err, &ue) {
+			t.Errorf("runHubUnsupervise(%v) = %v, want a usage error", args, err)
+		}
+	}
+}
+
+// TestHubUnsuperviseWithoutAnAgentIsANoOp keeps the removal safe to run blind:
+// a machine that never supervised the hub is told so and left untouched.
+func TestHubUnsuperviseWithoutAnAgentIsANoOp(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var out strings.Builder
+	if err := runHubUnsupervise(nil, &out); err != nil {
+		t.Fatalf("runHubUnsupervise: %v", err)
+	}
+	if !strings.Contains(out.String(), "not supervised") {
+		t.Errorf("output = %q, want it to say the hub is not supervised", out.String())
+	}
+}
+
+// TestHubSuperviseGuardsReleasingTheAgent covers the re-run that adopts a moved
+// binary: releasing the agent boots the hub under it out, so the same refusals a
+// forced restart answers to have to be reached before the plist is touched.
+func TestHubSuperviseGuardsReleasingTheAgent(t *testing.T) {
+	if !launchd.Supported() {
+		t.Skip("launchd is macOS only")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TRAU_HOME", filepath.Join(home, ".trau"))
+	t.Setenv("TRAU_ACTIVE", "1")
+	t.Setenv("TRAU_SERVE_BIND", "127.0.0.1")
+	t.Setenv("TRAU_SERVE_PORT", freePort(t))
+	plist := seedPlist(t)
+
+	err := runHubSupervise(context.Background(), nil, io.Discard)
+
+	if err == nil || !strings.Contains(err.Error(), "trau-managed run") {
+		t.Fatalf("runHubSupervise = %v, want a refusal naming the managed run", err)
+	}
+	if _, err := os.Stat(plist); err != nil {
+		t.Fatalf("the refused re-run released the agent anyway: %v", err)
+	}
+}
+
+// TestSuperviseEnvCarriesPathAndMarker covers what launchd would otherwise strip:
+// an agent starts with almost no environment, so the PATH every hub-spawned loop
+// resolves git, gh, and the provider CLIs through has to ride in the plist, and
+// the marker is what stops a self-restart racing KeepAlive for the port.
+func TestSuperviseEnvCarriesPathAndMarker(t *testing.T) {
+	t.Setenv("PATH", "/opt/homebrew/bin:/usr/bin")
+	t.Setenv("TRAU_HOME", "")
+
+	env := superviseEnv()
+	if env["TRAU_SUPERVISED"] != "1" {
+		t.Errorf("TRAU_SUPERVISED = %q, want 1", env["TRAU_SUPERVISED"])
+	}
+	if env["PATH"] != "/opt/homebrew/bin:/usr/bin" {
+		t.Errorf("PATH = %q, want the installing shell's", env["PATH"])
+	}
+	if _, ok := env["TRAU_HOME"]; ok {
+		t.Error("an unset TRAU_HOME must not pin the agent to an empty home")
+	}
+
+	t.Setenv("TRAU_HOME", "/tmp/iso/.trau")
+	if got := superviseEnv()["TRAU_HOME"]; got != "/tmp/iso/.trau" {
+		t.Errorf("TRAU_HOME = %q, want it carried into the agent", got)
+	}
+}
+
+func TestSupervisedHubSkipsItsOwnRespawn(t *testing.T) {
+	t.Setenv("TRAU_SUPERVISED", "")
+	if supervisedHub() {
+		t.Error("an unmarked hub respawns its own successor")
+	}
+	t.Setenv("TRAU_SUPERVISED", "1")
+	if !supervisedHub() {
+		t.Error("a launchd-owned hub must leave the successor to KeepAlive")
 	}
 }
 
@@ -154,6 +242,35 @@ func TestStopProcessEndsIt(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatalf("pid %d outlived stopProcess", pid)
 	}
+}
+
+func seedPlist(t *testing.T) string {
+	t.Helper()
+	path, err := launchd.PlistPath()
+	if err != nil {
+		t.Fatalf("plist path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create %s: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte("<plist/>"), 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	return path
+}
+
+func freePort(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+	_ = ln.Close()
+	return port
 }
 
 func seedInstance(t *testing.T, home string, e registry.Entry) {

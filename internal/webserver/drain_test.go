@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -31,6 +32,8 @@ func drainServer(t *testing.T, name string) (*Server, *fakeSupervisor, string) {
 	s.drain.repoLive = func(string) bool { return false }
 	s.drain.alive = func(int) bool { return false }
 	s.drain.outcome = func(string, queue.Item) (string, string) { return "", "" }
+	s.drain.prState = func(string, string) string { return "" }
+	s.drain.autoTries = func(string) int { return 0 }
 	return s, fake, root
 }
 
@@ -1181,16 +1184,20 @@ func TestTickSpawnsDespiteIdleInstance(t *testing.T) {
 	}
 }
 
-// TestReconcileParkedSweep table-drives the parked-item sweep over one staged
-// item: a paused item whose checkpoint proves it merged settles done — epic and
-// ticket alike, fanning its sub-issues out with it — while a paused item without
-// that proof, one whose checkpoint records a fault, and anything not paused are
+// TestReconcileQueueSweep table-drives the unsettled-item sweep over one staged
+// item, across all three proofs the ticket's work already shipped: a merged
+// checkpoint, a tracker that already files it done, and a PR the forge reports
+// merged. Epic and ticket settle alike, fanning sub-issues out with them, and so
+// does an item the queue had written off failed. An item with no proof — including
+// one whose checkpoint records a fault — and anything still pending or running are
 // left exactly as they were. The sweep never spawns.
-func TestReconcileParkedSweep(t *testing.T) {
+func TestReconcileQueueSweep(t *testing.T) {
 	tests := []struct {
 		name         string
 		item         queue.Item
 		checkpoint   map[string]string
+		issue        hubstore.Issue
+		prState      string
 		wantStatus   string
 		wantReason   string
 		wantSubState string
@@ -1206,7 +1213,7 @@ func TestReconcileParkedSweep(t *testing.T) {
 			},
 			checkpoint:   map[string]string{"PHASE": state.Merged},
 			wantStatus:   queue.StatusDone,
-			wantReason:   reconciledReason,
+			wantReason:   reconciledReason(evidenceCheckpoint),
 			wantSubState: "done",
 		},
 		{
@@ -1221,7 +1228,7 @@ func TestReconcileParkedSweep(t *testing.T) {
 			item:       queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusPaused, Reason: "outcome unknown"},
 			checkpoint: map[string]string{"PHASE": state.Merged},
 			wantStatus: queue.StatusDone,
-			wantReason: reconciledReason,
+			wantReason: reconciledReason(evidenceCheckpoint),
 		},
 		{
 			name: "paused item whose checkpoint records a fault stays parked",
@@ -1233,6 +1240,56 @@ func TestReconcileParkedSweep(t *testing.T) {
 			},
 			wantStatus: queue.StatusPaused,
 			wantReason: "unexpected error during handoff",
+		},
+		{
+			name:       "paused item the tracker already files done settles done",
+			item:       queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusPaused, Reason: "hub unreachable — run data could not be saved"},
+			checkpoint: map[string]string{"PHASE": state.Building},
+			issue:      hubstore.Issue{Identifier: "COD-1", Title: "finished out of band", Status: "Done", StatusGroup: "done"},
+			wantStatus: queue.StatusDone,
+			wantReason: reconciledReason(evidenceTracker),
+		},
+		{
+			name:       "paused item the tracker still shows open stays parked",
+			item:       queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusPaused, Reason: "outcome unknown"},
+			issue:      hubstore.Issue{Identifier: "COD-1", Title: "still open", Status: "In Progress", StatusGroup: "started"},
+			wantStatus: queue.StatusPaused,
+			wantReason: "outcome unknown",
+		},
+		{
+			name: "paused epic whose PR merged settles done",
+			item: queue.Item{
+				Kind:      queue.KindEpic,
+				ID:        "COD-1",
+				Status:    queue.StatusPaused,
+				Reason:    "unexpected error during finalize",
+				SubIssues: []queue.SubIssue{{ID: "COD-2", State: "backlog"}},
+			},
+			checkpoint: map[string]string{
+				"PHASE":          state.PROpen,
+				"PR":             "42",
+				"FAILURE_CLASS":  state.FailFaulted,
+				"FAILURE_REASON": "unexpected error during finalize",
+			},
+			prState:      "MERGED",
+			wantStatus:   queue.StatusDone,
+			wantReason:   reconciledReason(evidencePR),
+			wantSubState: "done",
+		},
+		{
+			name:       "paused item whose PR is still open stays parked",
+			item:       queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusPaused, Reason: "outcome unknown"},
+			checkpoint: map[string]string{"PHASE": state.PROpen, "PR": "42"},
+			prState:    "OPEN",
+			wantStatus: queue.StatusPaused,
+			wantReason: "outcome unknown",
+		},
+		{
+			name:       "failed item the tracker files done settles done",
+			item:       queue.Item{Kind: queue.KindTicket, ID: "COD-1", Status: queue.StatusFailed, Reason: "unexpected error during verify"},
+			issue:      hubstore.Issue{Identifier: "COD-1", Title: "shipped anyway", Status: "Done", StatusGroup: "done"},
+			wantStatus: queue.StatusDone,
+			wantReason: reconciledReason(evidenceTracker),
 		},
 		{
 			name:       "pending item is untouched",
@@ -1251,14 +1308,20 @@ func TestReconcileParkedSweep(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, fake, root := drainServer(t, "acme")
 			s.drain.outcome = s.drain.checkpointOutcome
+			s.drain.prState = func(string, string) string { return tc.prState }
 			if tc.checkpoint != nil {
 				if err := s.stores.Checkpoints().Upsert(root, tc.item.ID, tc.checkpoint); err != nil {
 					t.Fatalf("seed checkpoint: %v", err)
 				}
 			}
+			if tc.issue.Identifier != "" {
+				if _, _, err := s.stores.Issues().Upsert(root, "linear", []hubstore.Issue{tc.issue}); err != nil {
+					t.Fatalf("seed issue: %v", err)
+				}
+			}
 			seedQueue(t, s, root, false, tc.item)
 
-			s.drain.reconcileParked(root)
+			s.drain.reconcileQueue(root)
 
 			if got := statusOf(t, s, root, tc.item.ID); got != tc.wantStatus {
 				t.Errorf("%s status = %q, want %q", tc.item.ID, got, tc.wantStatus)
@@ -1354,8 +1417,8 @@ func TestServerStartSettlesParkedMergedEpic(t *testing.T) {
 	if got := statusOf(t, s, root, "COD-1151"); got != queue.StatusDone {
 		t.Fatalf("COD-1151 = %q after boot, want done — its checkpoint proved the work shipped", got)
 	}
-	if got := reasonOf(t, s, root, "COD-1151"); got != reconciledReason {
-		t.Errorf("COD-1151 reason = %q, want the settle evidence %q", got, reconciledReason)
+	if got := reasonOf(t, s, root, "COD-1151"); got != reconciledReason(evidenceCheckpoint) {
+		t.Errorf("COD-1151 reason = %q, want the settle evidence %q", got, reconciledReason(evidenceCheckpoint))
 	}
 	for _, it := range snapshot(t, s, root) {
 		for _, sub := range it.SubIssues {

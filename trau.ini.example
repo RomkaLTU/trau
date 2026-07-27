@@ -513,6 +513,23 @@ SERVE_OPEN=1
 # when the binary on disk is newer than the one it is running (after a
 # `brew upgrade trau`, say), because that check is entirely local.
 UPDATE_CHECK=1
+#
+# A queue item parked by a BLAMELESS pause — a provider rate/auth wall, a hub the
+# child could not reach — is waiting on a condition that clears on its own, unlike
+# a fault. With this on, the hub re-attempts it once a backoff passes (2 minutes,
+# then 4, …) and gives up after QUEUE_AUTO_RESUME_TRIES, leaving it parked for a
+# human exactly as it is today. Never for a fault, an unknown outcome, or a
+# deliberate Stop. Off by default: a re-attempt spends tokens with nobody
+# watching. The plan lives in the hub's memory, so a hub restart forgets it and
+# the item stays parked.
+QUEUE_AUTO_RESUME=0
+QUEUE_AUTO_RESUME_TRIES=2
+#
+# Nothing restarts a killed hub on its own: autostart only fires on the next
+# interactive session (ADR 0004) and loop children never resurrect the hub
+# (ADR 0008). On macOS, `trau hub supervise` installs a LaunchAgent with
+# KeepAlive so a crashed or killed hub comes back in seconds; `trau hub
+# unsupervise` removes it and `trau doctor` reports which state you are in.
 
 # COST NOTE: the "~$X est" in the closing recap (and --status) is a NOTIONAL
 # API-list estimate, not a bill — no provider cost is reported for interactive
