@@ -61,6 +61,13 @@ cannot install trau today despite the binaries existing. Two channels close
 that — goreleaser `nfpms:` (.deb/.rpm attached to the GitHub Release) and a
 Homebrew **formula** in the existing tap beside the cask.
 
+**Corrected 2026-07-27 (COD-1265):** casks stopped being macOS-only in Homebrew
+4.5.0, which supports casks shipping Linux binaries; ours already emits
+`on_linux` amd64/arm64 blocks around a `binary` stanza, so the existing cask
+installs on WSL2 unchanged. Only `nfpms:` was added, for users without Homebrew.
+The formula is dropped — see ADR 0002 §5 for why it is both unnecessary and
+harmful on macOS.
+
 Two WSL properties are load-bearing enough to state as decisions rather than
 leave to a README:
 
@@ -139,7 +146,7 @@ when that slice lands.
 
 - The launch matrix from ADR 0002 §4 is superseded: darwin, linux and windows,
   each amd64 + arm64, with zip alongside tar.gz and three package channels
-  (cask, formula/nfpm, scoop/winget).
+  (cask, nfpm, scoop/winget).
 - Windows is a build target CI must keep honest. A `GOOS=windows go build ./...`
   cross-compile gate is cheap and stops the two `Setpgid` lines from coming back
   in a new form.

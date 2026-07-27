@@ -26,6 +26,20 @@ archives:
     formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
+nfpms:
+  - package_name: trau
+    formats: [deb, rpm]
+    vendor: Codesomelabs
+    homepage: "https://trau.sh"
+    maintainer: "Codesomelabs <hello@codesomelabs.com>"
+    description: "Autonomous, ticket-driven development loop"
+    license: Apache-2.0
+    section: devel
+    bindir: /usr/bin
+    contents:
+      - src: LICENSE
+        dst: /usr/share/doc/trau/LICENSE
+
 checksum:
   name_template: "checksums.txt"
 
