@@ -2209,7 +2209,7 @@ func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvide
 		defer cancel()
 		teams, err := lister.ListTeams(ctx)
 		if err != nil {
-			return tui.TeamDetection{Label: label}, detectListErr(trackerProvider, err)
+			return tui.TeamDetection{Label: label}, detectListErr(trackerProvider, cfg.JiraEmail, err)
 		}
 		out := make([]tui.DetectedTeam, 0, len(teams))
 		for _, t := range teams {
@@ -2222,12 +2222,12 @@ func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvide
 }
 
 // detectListErr rewrites a team/project detection failure into an actionable
-// message. For Jira it maps an auth failure (the wizard token was rejected) to a
-// clear "regenerate your token" hint instead of the raw sentinel, so a user who
-// mistyped a token sees why detection failed rather than a bare error.
-func detectListErr(trackerProvider string, err error) error {
+// message. For Jira it maps an auth failure (the wizard credentials were rejected)
+// to an actionable hint, so a user who mistyped an email or token sees why detection
+// failed rather than a bare error.
+func detectListErr(trackerProvider, jiraEmail string, err error) error {
 	if trackerProvider == "jira" {
-		if msg := jiraapi.AuthErrorMessage(err); msg != "" {
+		if msg := jiraapi.AuthErrorMessageFor(err, jiraEmail); msg != "" {
 			return errors.New(msg)
 		}
 	}

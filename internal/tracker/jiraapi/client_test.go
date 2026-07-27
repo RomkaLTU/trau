@@ -190,13 +190,21 @@ func TestRetryAfter(t *testing.T) {
 	}
 }
 
-// AuthErrorMessage translates only ErrUnauthorized into an actionable regenerate
-// hint carrying the token URL; every other error yields "" so callers surface
-// their own message.
+// AuthErrorMessage translates only ErrUnauthorized into an actionable hint that
+// names both halves of the email:token pair and carries the regenerate URL; every
+// other error yields "" so callers surface their own message.
 func TestAuthErrorMessage(t *testing.T) {
 	msg := AuthErrorMessage(ErrUnauthorized)
 	if !strings.Contains(msg, TokenHelpURL) {
 		t.Errorf("AuthErrorMessage(ErrUnauthorized) = %q, want it to contain %q", msg, TokenHelpURL)
+	}
+	for _, want := range []string{"token", "email"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("AuthErrorMessage(ErrUnauthorized) = %q, want it to name %q as a possible cause", msg, want)
+		}
+	}
+	if strings.Contains(msg, "authenticated as") {
+		t.Errorf("AuthErrorMessage(ErrUnauthorized) = %q, want no email echo without an email", msg)
 	}
 	if wrapped := AuthErrorMessage(fmt.Errorf("call myself: %w", ErrUnauthorized)); wrapped == "" {
 		t.Error("AuthErrorMessage should match a wrapped ErrUnauthorized")
@@ -205,6 +213,26 @@ func TestAuthErrorMessage(t *testing.T) {
 		if got := AuthErrorMessage(err); got != "" {
 			t.Errorf("AuthErrorMessage(%v) = %q, want empty", err, got)
 		}
+	}
+}
+
+// AuthErrorMessageFor echoes the account email the rejected request authenticated
+// as — a 401 cannot tell a bad token from a mismatched email — while keeping the
+// two-cause wording and never naming the token.
+func TestAuthErrorMessageFor(t *testing.T) {
+	const email = "joris@example.com"
+	msg := AuthErrorMessageFor(fmt.Errorf("list projects: %w", ErrUnauthorized), "  "+email+"  ")
+	if !strings.Contains(msg, "authenticated as "+email) {
+		t.Errorf("AuthErrorMessageFor = %q, want it to echo %q", msg, email)
+	}
+	if !strings.Contains(msg, TokenHelpURL) {
+		t.Errorf("AuthErrorMessageFor = %q, want it to contain %q", msg, TokenHelpURL)
+	}
+	if got := AuthErrorMessageFor(ErrUnauthorized, "   "); got != AuthErrorMessage(ErrUnauthorized) {
+		t.Errorf("AuthErrorMessageFor with a blank email = %q, want the plain message", got)
+	}
+	if got := AuthErrorMessageFor(ErrNotFound, email); got != "" {
+		t.Errorf("AuthErrorMessageFor(ErrNotFound, %q) = %q, want empty", email, got)
 	}
 }
 

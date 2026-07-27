@@ -206,12 +206,25 @@ func TestTrackerTestConnectionJiraBadToken(t *testing.T) {
 	s := connServer(t)
 	ts := startConn(t, s)
 
-	_, out := postConn(t, ts, "jira", TestConnectionRequest{BaseURL: fake.URL, Email: "e@x.com", APIToken: "bad-secret-token"})
+	const token = "bad-secret-token"
+	body := connBody(t, ts, "jira", TestConnectionRequest{BaseURL: fake.URL, Email: "e@x.com", APIToken: token})
+	var out TestConnectionResponse
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 	if out.OK {
 		t.Fatalf("ok = true, want false")
 	}
 	if !strings.Contains(out.Hint, jiraapi.TokenHelpURL) {
 		t.Errorf("hint = %q, want it to point at the token help URL", out.Hint)
+	}
+	for _, want := range []string{"token", "email", "authenticated as e@x.com"} {
+		if !strings.Contains(out.Hint, want) {
+			t.Errorf("hint = %q, want it to contain %q", out.Hint, want)
+		}
+	}
+	if strings.Contains(body, token) {
+		t.Errorf("response leaked the token: %s", body)
 	}
 }
 
