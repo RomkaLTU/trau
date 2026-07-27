@@ -45,8 +45,10 @@ func (p *Pipeline) rebuildAndRequestReload(ctx context.Context, buildCmd string)
 	if err := p.Git.Checkout(ctx, p.Base, false); err != nil {
 		return "", fmt.Errorf("checkout %s: %w", p.Base, err)
 	}
-	if err := p.Git.Pull(ctx, p.Remote, p.Base); err != nil {
-		return "", fmt.Errorf("pull %s: %w", p.Base, err)
+	if !p.localDelivery(ctx) {
+		if err := p.Git.Pull(ctx, p.Remote, p.Base); err != nil {
+			return "", fmt.Errorf("pull %s: %w", p.Base, err)
+		}
 	}
 	if err := p.buildForReload(ctx, buildCmd); err != nil {
 		return "", err

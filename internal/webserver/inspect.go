@@ -164,9 +164,9 @@ func gitFinding(origin string) DetectionFinding {
 	if origin == "" {
 		return DetectionFinding{
 			Label:  "git repository",
-			Value:  "yes — no origin remote",
-			State:  findingWarn,
-			Detail: "trau pushes branches and opens PRs against origin; add one before running.",
+			Value:  "yes — no origin remote — trau delivers locally (no push/PR)",
+			State:  findingInfo,
+			Detail: "Finished work is squash-merged into your default branch instead. Add an origin later to get pushes, PRs and CI.",
 		}
 	}
 	return DetectionFinding{Label: "git repository", Value: "yes — origin " + origin, State: findingOK}

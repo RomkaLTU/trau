@@ -112,6 +112,23 @@ func TestInspectFreshRepo(t *testing.T) {
 	}
 }
 
+func TestInspectRemotelessRepoReadsAsLocalDelivery(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := realGitRepo(t, filepath.Join(t.TempDir(), "solo"), "main", "")
+	ts := inspectServer(t, t.TempDir())
+
+	res, insp := postInspect(t, ts, repo)
+	defer func() { _ = res.Body.Close() }()
+
+	f := findingFor(t, insp, "git repository")
+	if f.State != findingInfo {
+		t.Errorf("git finding state = %q, want %q", f.State, findingInfo)
+	}
+	if !strings.Contains(f.Value, "no origin remote") || !strings.Contains(f.Value, "delivers locally") {
+		t.Errorf("git finding value = %q, want it to name local delivery", f.Value)
+	}
+}
+
 func TestInspectHalfConfiguredMismatch(t *testing.T) {
 	userHome := t.TempDir()
 	t.Setenv("HOME", userHome)

@@ -63,6 +63,7 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkGitHub(ctx, rr)
 	checkProvider(ctx, cfg, rr)
 	checkConfig(ctx, cfg, sources, repoRoot, rr)
+	checkRemote(ctx, cfg, repoRoot, rr)
 	checkConfigLayers(paths, rr)
 	checkConfigShadowing(paths, rr)
 	checkBrowserVerify(cfg, rr)
@@ -330,6 +331,24 @@ func teamSyncState(repoRoot string) (hubstore.TeamSyncState, error) {
 	}
 	defer func() { _ = db.Close() }()
 	return hubstore.NewTeamSync(db).State(repoRoot)
+}
+
+// checkRemote reports whether the configured remote actually exists — a non-empty
+// REMOTE key says nothing about the repo. A repo without one is a local-only
+// project, not a broken one, so this always passes and only names the mode.
+func checkRemote(ctx context.Context, cfg config.Config, repoRoot string, rr *runner) {
+	if repoRoot == "" {
+		return
+	}
+	remote := strings.TrimSpace(cfg.Remote)
+	if remote == "" {
+		remote = "origin"
+	}
+	if !hasGitRemote(ctx, repoRoot, remote) {
+		rr.add("git remote", pass, fmt.Sprintf("no %s remote — local delivery mode (no push, PR or CI)", remote), "")
+		return
+	}
+	rr.add("git remote", pass, fmt.Sprintf("%s is configured", remote), "")
 }
 
 func hasGitRemote(ctx context.Context, repoRoot, remote string) bool {

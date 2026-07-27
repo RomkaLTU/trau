@@ -174,6 +174,16 @@ type Git interface {
 	// mid-merge (the resolving agent may already have committed).
 	ContinueMerge(ctx context.Context) error
 
+	// RemoteExists reports whether remote is configured in the repo at all
+	// (git remote get-url). A local-only project has none, which is an expected
+	// (false, nil); only a git failure returns a non-nil error.
+	RemoteExists(ctx context.Context, remote string) (bool, error)
+
+	// SquashMerge collapses branch's work into a single commit on the branch
+	// currently checked out (git merge --squash), the local equivalent of a
+	// squash-merged PR. A merge it cannot complete leaves nothing behind.
+	SquashMerge(ctx context.Context, branch, message string) error
+
 	// RemoteBranchExists reports whether remote/branch exists on the remote
 	// (git ls-remote). A missing branch is an expected (false, nil), not an
 	// error; only an unreachable remote returns a non-nil error.
@@ -631,6 +641,10 @@ type Pipeline struct {
 	// base branch that stayed behind. Empty means the base branch itself is checked out.
 	detachedBase string
 
+	// localOnly caches the remote preflight's verdict for the run. Nil until the
+	// first localDelivery call resolves it.
+	localOnly *bool
+
 	// buildProvider/buildSkills capture, from the last build agent call, which
 	// provider ran and which skills its session loaded — the inputs to the
 	// post-build no-skills warning. buildSkillsKnown is false in the Unknown state,
@@ -1007,6 +1021,9 @@ func (p *Pipeline) preserveAndClean(ctx context.Context, msg string) {
 }
 
 func (p *Pipeline) pushPreserved(ctx context.Context) bool {
+	if p.localDelivery(ctx) {
+		return false
+	}
 	ctx, cancel := context.WithTimeout(ctx, cleanupPushBudget)
 	defer cancel()
 	return p.Git.Push(ctx, p.Remote, "HEAD", true) == nil
@@ -1112,7 +1129,11 @@ func (p *Pipeline) InferredResumeFunc(ctx context.Context, keep func(id string) 
 	if v, ok := readVerdict(verifyPath(id)); ok && v.Pass {
 		phase = state.Verified
 	}
-	if pr, _ := p.GitHub.PRURL(ctx, head); pr != "" {
+	var pr string
+	if !p.localDelivery(ctx) {
+		pr, _ = p.GitHub.PRURL(ctx, head)
+	}
+	if pr != "" {
 		phase = state.PROpen
 		_ = p.State.Set(id, "PR", prNumber(pr))
 		_ = p.State.Set(id, "PR_URL", pr)
@@ -1128,9 +1149,14 @@ func (p *Pipeline) InferredResumeFunc(ctx context.Context, keep func(id string) 
 // PR is the authoritative signal (PRURL only sees open ones, so a hand-merged branch
 // otherwise reads as PR-less) and settles the checkpoint at merged. A terminal tracker
 // status is the weaker second guard: it declines adoption but writes nothing, since
-// without a merged PR there is no proof the branch shipped.
+// without a merged PR there is no proof the branch shipped. Local delivery never
+// opens a PR, so that guard is the only signal there.
 func (p *Pipeline) alreadyDelivered(ctx context.Context, id, head string) bool {
-	if url, _ := p.GitHub.MergedPRURL(ctx, head); url != "" {
+	var url string
+	if !p.localDelivery(ctx) {
+		url, _ = p.GitHub.MergedPRURL(ctx, head)
+	}
+	if url != "" {
 		pr := prNumber(url)
 		p.logf("  ✓ branch %s already delivered via PR #%s — not adopting", head, pr)
 		_ = p.State.Set(id, "BRANCH", head)
@@ -1181,7 +1207,7 @@ func (p *Pipeline) EnsureCleanBase(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("ensure clean base: checkout %s: %w", p.Base, err)
 	}
-	if !detached {
+	if !detached && !p.localDelivery(ctx) {
 		_ = p.Git.Pull(ctx, p.Remote, p.Base)
 	}
 	return nil
@@ -2229,16 +2255,52 @@ func (p *Pipeline) finalizeFailed(ctx context.Context, id string) {
 	p.preserveAndClean(ctx, fmt.Sprintf("wip(%s): quarantined attempt — needs human", id))
 }
 
+// localDeliveryNote names the delivery mode a remote-less repo runs in, wherever a
+// run would otherwise report a push, a PR or a CI gate; deliveryLocal is the same
+// fact as a DELIVERY checkpoint value, so a reader knows a missing PR link is the
+// mode and not a gap in the record.
+const (
+	localDeliveryNote = "local delivery — no remote"
+	deliveryLocal     = "local"
+)
+
+// localDelivery reports whether this run ships without a remote: push, PR creation
+// and the CI gate are skipped and the slice lands by a local squash-merge instead.
+// Resolved once and cached for the run. A lookup git itself could not answer keeps
+// the remote path, so a hiccup never quietly stops publishing work.
+func (p *Pipeline) localDelivery(ctx context.Context) bool {
+	if p.localOnly != nil {
+		return *p.localOnly
+	}
+	exists, err := p.Git.RemoteExists(ctx, p.Remote)
+	if err != nil {
+		p.logf("  remote %s lookup failed (%v) — delivering through it anyway", p.Remote, err)
+	}
+	local := err == nil && !exists
+	p.localOnly = &local
+	if local {
+		p.logf("  ⓘ %s: %s is not configured — skipping push, PR and CI", localDeliveryNote, p.Remote)
+		if p.Events != nil {
+			p.Events.Emit(event.KindLocalDelivery, "", localDeliveryNote, map[string]any{"remote": p.Remote})
+		}
+	}
+	return local
+}
+
 // CommitAndPR ships the verified slice: the commit phase stages and commits ONLY
 // this ticket's files, then the branch is pushed and a PR opened against Base — or
 // an existing PR reused when a prior run already created one. It checkpoints
 // pr_open with PR/PR_URL and moves the ticket to In Review with the PR link.
 // A push/PR failure aborts this ticket (returned to the caller) without
-// quarantining — the WIP stays on the branch for a later resume.
+// quarantining — the WIP stays on the branch for a later resume. In local delivery
+// mode the commit is the whole deliverable and everything after it is skipped.
 func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	p.setActivity(id, activity.Commit, "")
 	if err := p.commitSlice(ctx, id); err != nil {
 		return err
+	}
+	if p.localDelivery(ctx) {
+		return p.recordLocalDelivery(ctx, id)
 	}
 	if err := p.pushDeliverable(ctx, id, "HEAD"); err != nil {
 		return err
@@ -2281,6 +2343,24 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 		return fmt.Errorf("commit %s: checkpoint pr_open: %w", id, err)
 	}
 	if err := p.Tracker.SetStatus(ctx, id, "In Review", "Attach this PR link to the issue: "+prURL+"."); err != nil {
+		p.logf("  status (In Review) error: %v", err)
+	}
+	return nil
+}
+
+// recordLocalDelivery checkpoints a slice committed on a remote-less repo: nothing
+// to push and no PR to link, so the branch itself is the deliverable until
+// CIAndMerge lands it. The run still reaches pr_open and In Review so the ticket
+// lifecycle a reader sees is the one every other repo has.
+func (p *Pipeline) recordLocalDelivery(ctx context.Context, id string) error {
+	p.logf("  ↳ no PR to open — the slice stays on its branch until it is merged locally")
+	if err := p.State.Set(id, "DELIVERY", deliveryLocal); err != nil {
+		return fmt.Errorf("commit %s: record delivery: %w", id, err)
+	}
+	if err := p.setPhase(id, state.PROpen); err != nil {
+		return fmt.Errorf("commit %s: checkpoint pr_open: %w", id, err)
+	}
+	if err := p.Tracker.SetStatus(ctx, id, "In Review", "This repo has no remote, so no PR was opened — "+localDeliveryNote+"."); err != nil {
 		p.logf("  status (In Review) error: %v", err)
 	}
 	return nil
@@ -2365,16 +2445,22 @@ func (p *Pipeline) commitTitle(ctx context.Context, id string) string {
 //
 // Every outcome that reached the base hands it to the hub reload step. An epic
 // slice is excluded: its PR targets the epic branch, so nothing reached the base
-// yet.
+// yet. So is a local run under AUTO_MERGE=0 — the only path that settles without
+// merging, since the remote one blocks in the manual-merge wait until the PR lands.
 func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 	err := p.ciAndMerge(ctx, id)
-	if p.EpicID == "" && (err == nil || errors.Is(err, ErrAlreadyDone)) {
+	settled := err == nil || errors.Is(err, ErrAlreadyDone)
+	operatorMerges := !p.AutoMerge && p.localDelivery(ctx)
+	if p.EpicID == "" && settled && !operatorMerges {
 		p.reloadHubOntoBase(ctx)
 	}
 	return err
 }
 
 func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
+	if p.localDelivery(ctx) {
+		return p.landLocally(ctx, id)
+	}
 	pr, err := p.resolvePR(ctx, id)
 	if err != nil {
 		return err
@@ -2406,6 +2492,39 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 		return fmt.Errorf("merge %s: %w", id, err)
 	}
 	return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+}
+
+// landLocally closes a remote-less run: with no PR to gate and no CI to wait for,
+// the verified branch is squash-merged into its base right here and the ticket
+// settles Done. AUTO_MERGE=0 still means the operator lands it themselves, and a
+// merge git refuses is a dead end: give up, leaving the branch and its work intact.
+func (p *Pipeline) landLocally(ctx context.Context, id string) error {
+	branch := p.State.Get(id, "BRANCH")
+	if branch == "" {
+		branch, _ = p.Git.FindFeatureBranch(ctx, id)
+	}
+	if branch == "" {
+		return p.giveUp(ctx, id, "no feature branch to merge locally")
+	}
+	base, err := p.buildBase(ctx)
+	if err != nil {
+		return fmt.Errorf("merge %s: resolve base: %w", id, err)
+	}
+	if !p.AutoMerge {
+		p.setPRStatus(id, prStatusAwaitingMerge)
+		p.logf("  ⏳ %s is ready on %s — merge it into %s yourself (AUTO_MERGE=0)", id, branch, base)
+		return nil
+	}
+
+	p.setActivity(id, activity.Merge, "")
+	if err := p.Git.Checkout(ctx, base, false); err != nil {
+		return fmt.Errorf("merge %s: checkout %s: %w", id, base, err)
+	}
+	if err := p.Git.SquashMerge(ctx, branch, deterministicCommitMessage(id, p.commitTitle(ctx, id))); err != nil {
+		return p.giveUp(ctx, id, fmt.Sprintf("could not squash-merge %s into %s locally: %v", branch, base, err))
+	}
+	p.logf("  ✓ %s squash-merged into %s (%s)", branch, base, localDeliveryNote)
+	return p.markDone(ctx, id, "  ✓ delivered %s locally, marked Done")
 }
 
 // resolvePR is the PR the CI gate runs on, reconciled from the recorded branch when
@@ -2442,6 +2561,9 @@ func (p *Pipeline) resolvePR(ctx context.Context, id string) (string, error) {
 func (p *Pipeline) reconcileDeliveredBranch(ctx context.Context, id, from string) error {
 	branch := p.State.Get(id, "BRANCH")
 	if state.Idx(from) < state.Idx(state.HandedOff) || branch == "" || p.State.Get(id, "PR") != "" {
+		return nil
+	}
+	if p.localDelivery(ctx) {
 		return nil
 	}
 	url, _ := p.GitHub.MergedPRURL(ctx, branch)
@@ -5145,6 +5267,37 @@ func (g ExecGit) ContinueMerge(ctx context.Context) error {
 		return err
 	}
 	return g.run(ctx, "commit", "--no-edit")
+}
+
+// RemoteExists reports whether the repo has remote configured. get-url returns
+// status 2 for a remote that is not there, which reads as (false, nil) — a
+// local-only project, not a fault; any other failure returns the error.
+func (g ExecGit) RemoteExists(ctx context.Context, remote string) (bool, error) {
+	err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo, "remote", "get-url", remote).Run()
+	if err == nil {
+		return true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 2 {
+		return false, nil
+	}
+	return false, fmt.Errorf("remote get-url %s: %w", remote, err)
+}
+
+// SquashMerge stages branch's whole diff onto the checked-out branch and commits
+// it as one commit. Hooks are bypassed to match the remote path, where the squash
+// happens on the forge and the repo's local hooks never see it. A merge that stops
+// on conflicts is reset, so the tree is never left mid-merge for the next run.
+func (g ExecGit) SquashMerge(ctx context.Context, branch, message string) error {
+	if err := g.run(ctx, "merge", "--squash", branch); err != nil {
+		_ = g.run(ctx, "reset", "--hard")
+		return err
+	}
+	if err := g.run(ctx, "commit", "--no-verify", "-m", message); err != nil {
+		_ = g.run(ctx, "reset", "--hard")
+		return err
+	}
+	return nil
 }
 
 // RemoteBranchExists reports whether remote has refs/heads/<branch>. ls-remote
