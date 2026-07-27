@@ -11,7 +11,7 @@ GOFLAGS := -trimpath
 NPM      ?= npm
 WEB_DIR  := web
 WEB_DIST := internal/webserver/dist/index.html
-WEB_SRC  := $(shell find $(WEB_DIR)/src $(WEB_DIR)/index.html $(WEB_DIR)/package.json $(WEB_DIR)/vite.config.ts 2>/dev/null)
+WEB_SRC  := $(shell find $(WEB_DIR)/src $(WEB_DIR)/public $(WEB_DIR)/index.html $(WEB_DIR)/package.json $(WEB_DIR)/vite.config.ts 2>/dev/null)
 
 # Only names the port in the hub-guard message; the binary resolves the real one
 # from the layered config.

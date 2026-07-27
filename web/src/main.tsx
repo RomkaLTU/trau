@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createRouter } from '@tanstack/react-router'
 
 import { AuthGate } from './components/trau/token-gate'
+import { registerServiceWorker } from './lib/service-worker'
 import { routeTree } from './routeTree.gen'
 import './styles.css'
 
@@ -21,6 +22,8 @@ declare module '@tanstack/react-router' {
     router: typeof router
   }
 }
+
+registerServiceWorker()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

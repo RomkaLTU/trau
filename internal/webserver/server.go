@@ -426,7 +426,15 @@ func (s *Server) spa() http.Handler {
 			if _, err := fs.Stat(s.assets, name); err != nil {
 				r = r.Clone(r.Context())
 				r.URL.Path = "/"
+				name = ""
 			}
+		}
+		switch name {
+		case "sw.js":
+			// A cached worker would keep serving the previous build's shell.
+			w.Header().Set("Cache-Control", "no-cache")
+		case "manifest.webmanifest":
+			w.Header().Set("Content-Type", "application/manifest+json")
 		}
 		files.ServeHTTP(w, r)
 	})

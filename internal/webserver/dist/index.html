@@ -4,7 +4,11 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#faf8f5" />
     <title>trau</title>
+    <link rel="icon" type="image/png" sizes="64x64" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <script>
       ;(function () {
         try {
@@ -14,6 +18,9 @@
             (mode !== 'light' &&
               matchMedia('(prefers-color-scheme: dark)').matches)
           document.documentElement.classList.toggle('dark', dark)
+          document
+            .querySelector('meta[name="theme-color"]')
+            .setAttribute('content', dark ? '#0c0a09' : '#faf8f5')
         } catch (e) {}
       })()
     </script>

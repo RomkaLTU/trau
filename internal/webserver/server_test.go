@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -157,6 +158,94 @@ func TestSPAFallbackServesShell(t *testing.T) {
 		if !strings.Contains(body, `<div id="root">`) {
 			t.Errorf("%s did not fall back to the SPA shell: %q", route, body)
 		}
+	}
+}
+
+func TestServesServiceWorker(t *testing.T) {
+	ts := newTestServer(t)
+
+	res, body := get(t, ts, "/sw.js")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /sw.js status = %d, want 200", res.StatusCode)
+	}
+	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "javascript") {
+		t.Errorf("Content-Type = %q, want javascript", ct)
+	}
+	if cc := res.Header.Get("Cache-Control"); cc != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", cc)
+	}
+	if strings.Contains(body, `<div id="root">`) {
+		t.Fatalf("/sw.js was swallowed by the SPA fallback: %q", body)
+	}
+	if !strings.Contains(body, "addEventListener('fetch'") {
+		t.Errorf("/sw.js has no fetch handler: %q", body)
+	}
+}
+
+func TestServesWebManifest(t *testing.T) {
+	ts := newTestServer(t)
+
+	res, body := get(t, ts, "/manifest.webmanifest")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("GET /manifest.webmanifest status = %d, want 200", res.StatusCode)
+	}
+	if ct := res.Header.Get("Content-Type"); ct != "application/manifest+json" {
+		t.Errorf("Content-Type = %q, want application/manifest+json", ct)
+	}
+
+	var manifest struct {
+		Name     string `json:"name"`
+		Display  string `json:"display"`
+		StartURL string `json:"start_url"`
+		Icons    []struct {
+			Src     string `json:"src"`
+			Sizes   string `json:"sizes"`
+			Purpose string `json:"purpose"`
+		} `json:"icons"`
+	}
+	if err := json.Unmarshal([]byte(body), &manifest); err != nil {
+		t.Fatalf("decode manifest: %v (body %q)", err, body)
+	}
+	if manifest.Name != "trau" || manifest.Display != "standalone" || manifest.StartURL != "/" {
+		t.Errorf("manifest = %+v, want name trau, display standalone, start_url /", manifest)
+	}
+
+	declared := map[string]bool{}
+	for _, icon := range manifest.Icons {
+		declared[icon.Sizes+" "+icon.Purpose] = true
+		res, _ := get(t, ts, icon.Src)
+		if res.StatusCode != http.StatusOK {
+			t.Errorf("GET %s status = %d, want 200", icon.Src, res.StatusCode)
+		}
+		if ct := res.Header.Get("Content-Type"); ct != "image/png" {
+			t.Errorf("%s Content-Type = %q, want image/png", icon.Src, ct)
+		}
+	}
+	for _, want := range []string{"192x192 any", "512x512 any", "512x512 maskable"} {
+		if !declared[want] {
+			t.Errorf("manifest declares no %q icon, got %v", want, declared)
+		}
+	}
+}
+
+func TestServiceWorkerIsBuildScoped(t *testing.T) {
+	ts := newTestServer(t)
+
+	_, sw := get(t, ts, "/sw.js")
+	_, shell := get(t, ts, "/assets/index.js")
+
+	cache := regexp.MustCompile(`'trau-(g[0-9a-f]+)'`).FindStringSubmatch(sw)
+	if cache == nil {
+		t.Fatalf("/sw.js has no build-keyed cache name: %q", sw)
+	}
+	if !strings.Contains(shell, cache[1]) {
+		t.Errorf("worker cache is keyed to %q, which the bundle does not stamp", cache[1])
+	}
+	if !strings.Contains(sw, `"/assets/index.js"`) {
+		t.Error("/sw.js does not precache the app shell")
+	}
+	if !strings.Contains(sw, `startsWith('/api/')`) {
+		t.Error("/sw.js does not exempt the API namespace")
 	}
 }
 
