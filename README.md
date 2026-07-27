@@ -15,10 +15,20 @@ code on disk, never the build agent's reasoning.
 
 ## Install
 
+**macOS, Linux & WSL2** — Homebrew cask (needs Homebrew 4.5+ on Linux):
+
 ```bash
-brew install --cask RomkaLTU/trau/trau    # macOS / Linux
+brew install --cask RomkaLTU/trau/trau
 trau --version
-brew upgrade --cask trau                  # later, to update
+brew upgrade --cask trau    # later, to update
+```
+
+**Linux & WSL2 without Homebrew** — a `.deb`/`.rpm` from the
+[latest release](https://github.com/RomkaLTU/trau/releases/latest) (amd64 and arm64):
+
+```bash
+sudo dpkg -i trau_<version>_linux_amd64.deb    # Debian, Ubuntu
+sudo rpm -i trau_<version>_linux_amd64.rpm     # Fedora, RHEL, openSUSE
 ```
 
 Or from source (Go 1.25+): `git clone https://github.com/RomkaLTU/trau && cd trau && make build`.

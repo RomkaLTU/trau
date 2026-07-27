@@ -114,6 +114,19 @@ binary stamps `main.version` via ldflags. Full git history is also `gitleaks`-cl
   (not a formula) is goreleaser's current recommendation for shipping pre-built
   binaries — `brews:` is deprecated — and it lets us strip the macOS quarantine
   attribute on install (see §6).
+  **Amended 2026-07-27 (COD-1265):** the cask covers Linux and WSL2 too. Homebrew
+  4.5.0 added Linux cask support for casks that ship Linux binaries, and ours has
+  emitted `on_linux` amd64/arm64 blocks around a `binary` stanza all along, so
+  `brew install --cask RomkaLTU/trau/trau` is the one brew command on every
+  platform. A formula beside the cask was considered and rejected: `brews:` is
+  hard-deprecated since goreleaser 2.16 and fails `goreleaser check`, and on macOS
+  a same-named formula would shadow the cask for `brew install` without the
+  quarantine hook §6 depends on.
+- **`.deb`/`.rpm` via `nfpms:`** (added 2026-07-27, COD-1265) for linux amd64 and
+  arm64, attached to the GitHub Release for users without Homebrew. No hosted apt
+  or yum repo — `dpkg -i`/`rpm -i` from the release page is the pattern, and
+  `/usr/bin/trau` classifies as an unmanaged install so in-app self-update declines
+  rather than fighting the package manager.
 - Pushing to a *second* repo needs a token `GITHUB_TOKEN` can't provide: create a
   fine-grained PAT with contents:write on `homebrew-trau`, stored as the
   `HOMEBREW_TAP_GITHUB_TOKEN` Actions secret on `trau`.
