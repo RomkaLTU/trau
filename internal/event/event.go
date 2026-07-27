@@ -108,6 +108,11 @@ const KindQueueReconciled = "queue_reconciled"
 // the re-attempt happens with no human click to explain it in the feed.
 const KindQueueAutoResumed = "queue_auto_resumed"
 
+// KindQueueItemRemoved marks a running queue item taken out of the queue, whose
+// child the hub stopped first. The hub emits it, since the run ends with no
+// outcome of its own to explain why the queue dropped it.
+const KindQueueItemRemoved = "queue_item_removed"
+
 // KindSteerQueued marks an operator steer note queued against a ticket, carrying
 // the ticket and the note's id. The hub emits it, since the queue is hub-owned;
 // the note's body stays out of the feed and is read from the steer API.

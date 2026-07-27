@@ -225,6 +225,26 @@ func TestRemoveKeepsOrderAndGuardsRunning(t *testing.T) {
 	}
 }
 
+func TestForceRemoveDropsARunningRow(t *testing.T) {
+	q := testQueue(t)
+	mustAdd(t, q, "COD-1")
+	mustAdd(t, q, "COD-2")
+	if err := q.MarkRunning("COD-1", 7); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+
+	if _, err := q.ForceRemove("COD-9"); err != queue.ErrNotQueued {
+		t.Fatalf("force remove absent = %v, want ErrNotQueued", err)
+	}
+	items, err := q.ForceRemove("COD-1")
+	if err != nil {
+		t.Fatalf("ForceRemove: %v", err)
+	}
+	if got := ids(items); !reflect.DeepEqual(got, []string{"COD-2"}) {
+		t.Fatalf("after force remove = %v, want [COD-2]", got)
+	}
+}
+
 func TestPromoteSwapsChildrenForTheEpicInPlace(t *testing.T) {
 	q := testQueue(t)
 	mustAdd(t, q, "COD-1")

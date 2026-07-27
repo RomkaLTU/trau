@@ -8,11 +8,11 @@ import (
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
-// shutdownKillGrace bounds how long a queue shutdown's teardown waits for a
-// running child to exit on its own SIGTERM before stopAndWait escalates to a
-// group SIGKILL. A stopped run spends that window preserving its WIP on the
-// feature branch and cleaning back to base, so the grace sits above the
-// pipeline's cleanup budget rather than cutting it short.
+// shutdownKillGrace bounds how long a teardown — a whole queue shutdown, or one
+// running item's removal — waits for a child to exit on its own SIGTERM before
+// stopAndWait escalates to a group SIGKILL. A stopped run spends that window
+// preserving its WIP on the feature branch and cleaning back to base, so the
+// grace sits above the pipeline's cleanup budget rather than cutting it short.
 //
 // shutdownRaceWindow bounds the separate watch for a child the drainer spawned
 // into the repo as the shutdown landed — a registration gap measured in

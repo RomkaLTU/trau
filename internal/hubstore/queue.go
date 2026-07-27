@@ -189,6 +189,17 @@ func insertAtFirstPending(items []queue.Item, item queue.Item) []queue.Item {
 // returns the resulting queue. It reports ErrNotQueued when nothing matches and
 // ErrRunning when the item is currently being drained.
 func (q *Queue) Remove(id string) ([]queue.Item, error) {
+	return q.remove(id, false)
+}
+
+// ForceRemove drops the queued item with id whatever its status, for a caller
+// that has already stopped the item's child itself and so cannot orphan one. It
+// still reports ErrNotQueued when nothing matches.
+func (q *Queue) ForceRemove(id string) ([]queue.Item, error) {
+	return q.remove(id, true)
+}
+
+func (q *Queue) remove(id string, force bool) ([]queue.Item, error) {
 	queueMu.Lock()
 	defer queueMu.Unlock()
 	st, err := q.loadImported()
@@ -199,7 +210,7 @@ func (q *Queue) Remove(id string) ([]queue.Item, error) {
 	found := false
 	for _, it := range st.items {
 		if it.ID == id {
-			if it.Status == queue.StatusRunning {
+			if !force && it.Status == queue.StatusRunning {
 				return nil, queue.ErrRunning
 			}
 			found = true
