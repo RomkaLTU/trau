@@ -99,6 +99,36 @@ func TestRememberAddsNewSortsAndDoesNotOverwrite(t *testing.T) {
 	}
 }
 
+func TestForgetClearsBothSetsAndLeavesOthers(t *testing.T) {
+	s := testStore(t, t.TempDir())
+	if err := s.Remember([]registry.Repo{
+		{Name: "gone", Root: "/repo/gone", RunsDir: "/repo/gone/runs"},
+		{Name: "kept", Root: "/repo/kept", RunsDir: "/repo/kept/runs"},
+	}); err != nil {
+		t.Fatalf("Remember: %v", err)
+	}
+	for _, root := range []string{"/repo/gone", "/repo/kept"} {
+		if err := s.Register(root); err != nil {
+			t.Fatalf("register %s: %v", root, err)
+		}
+	}
+
+	if err := s.Forget("/repo/gone"); err != nil {
+		t.Fatalf("Forget: %v", err)
+	}
+
+	want := []registry.Repo{{Name: "kept", Root: "/repo/kept", RunsDir: "/repo/kept/runs"}}
+	if known, _ := s.Known(); !reflect.DeepEqual(known, want) {
+		t.Fatalf("known = %v, want %v", known, want)
+	}
+	if got, _ := s.Registered(); !reflect.DeepEqual(got, []string{"/repo/kept"}) {
+		t.Fatalf("registered = %v, want only the kept repo", got)
+	}
+	if err := s.Forget("/repo/gone"); err != nil {
+		t.Fatalf("re-Forget: %v", err)
+	}
+}
+
 func TestImportLegacyBackfillsAndDeletesFiles(t *testing.T) {
 	home := t.TempDir()
 	writeLegacyRepos(t, home, map[string]registry.Repo{

@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   anySyncing,
+  forgetRepo,
   healthBlocks,
   healthPill,
+  removeBlocked,
   repoHealth,
   repoTakenOver,
   syncRepo,
@@ -32,6 +34,7 @@ function repoView(freshness?: RepoFreshness): RepoView {
     live: false,
     allowed: true,
     registered: true,
+    seeded: false,
     freshness,
   };
 }
@@ -211,6 +214,62 @@ describe("unregisterRepo", () => {
 
     expect(error.message).toBe(
       'repo "melga" is granted by the SERVE_WORKSPACE config',
+    );
+  });
+});
+
+describe("removeBlocked", () => {
+  it("clears the way for a repo the hub only observed", () => {
+    expect(
+      removeBlocked({ ...repoView(), allowed: false, registered: false }),
+    ).toBeNull();
+  });
+
+  it("clears the way for a web-registered repo", () => {
+    expect(removeBlocked(repoView())).toBeNull();
+  });
+
+  it("names the live loop that would be listed again", () => {
+    expect(removeBlocked({ ...repoView(), live: true })).toMatch(/loop is live/);
+  });
+
+  it("names the config that owns a seeded repo the hub would refuse", () => {
+    expect(removeBlocked({ ...repoView(), seeded: true })).toMatch(
+      /SERVE_WORKSPACE/,
+    );
+  });
+});
+
+describe("forgetRepo", () => {
+  it("addresses the repo by root so a namesake row is not removed instead", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(respond(200, { name: "repo", root: "/tmp/two/repo" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const view = await forgetRepo("/tmp/two/repo");
+
+    expect(view.root).toBe("/tmp/two/repo");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/v1/repos/%2Ftmp%2Ftwo%2Frepo?forget=1",
+    );
+    expect(fetchMock.mock.calls[0][1].method).toBe("DELETE");
+  });
+
+  it("surfaces the hub refusal for the toast", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        respond(409, {
+          error: 'a loop is live in "melga"; stop it before removing the repo',
+        }),
+      ),
+    );
+
+    const error = await forgetRepo("/Users/rd/Projects/melga").catch((e) => e);
+
+    expect(error.message).toBe(
+      'a loop is live in "melga"; stop it before removing the repo',
     );
   });
 });

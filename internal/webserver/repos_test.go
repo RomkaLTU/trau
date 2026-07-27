@@ -6,11 +6,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RomkaLTU/trau/internal/registry"
 )
@@ -207,18 +209,19 @@ func authReq(t *testing.T, method, url, token string, body any) (*http.Response,
 }
 
 // TestRegistrationExposureGate covers the bind × token × SERVE_ALLOW_REGISTER
-// matrix for both register and unregister: loopback is always open, an exposed
-// bind needs the key on top of a valid token, and the token gate still runs first.
+// matrix for every write to the repo set — register, unregister, and remove:
+// loopback is always open, an exposed bind needs the key on top of a valid token,
+// and the token gate still runs first.
 func TestRegistrationExposureGate(t *testing.T) {
 	cases := []struct {
-		name           string
-		bind           string
-		serverToken    string
-		reqToken       string
-		allowRegister  bool
-		wantRegister   int
-		wantUnregister int
-		namesKey       bool
+		name          string
+		bind          string
+		serverToken   string
+		reqToken      string
+		allowRegister bool
+		wantRegister  int
+		wantDelete    int
+		namesKey      bool
 	}{
 		{"loopback open without key", "127.0.0.1", "", "", false, http.StatusCreated, http.StatusOK, false},
 		{"loopback ignores key", "127.0.0.1", "", "", true, http.StatusCreated, http.StatusOK, false},
@@ -234,9 +237,13 @@ func TestRegistrationExposureGate(t *testing.T) {
 			base := t.TempDir()
 			toRegister := gitRepo(t, base, "toregister", "dir")
 			toUnregister := gitRepo(t, base, "tounregister", "dir")
+			toForget := gitRepo(t, base, "toforget", "dir")
 			store := testStoresAt(t, home)
 			if err := store.Registrations().Register(toUnregister); err != nil {
 				t.Fatalf("seed unregister target: %v", err)
+			}
+			if err := store.Registrations().Remember([]registry.Repo{workspaceRepo(toForget)}); err != nil {
+				t.Fatalf("seed forget target: %v", err)
 			}
 
 			s := New("1.2.3", tc.bind, tc.serverToken, nil, tc.allowRegister, store)
@@ -258,16 +265,29 @@ func TestRegistrationExposureGate(t *testing.T) {
 			}
 
 			res, body = authReq(t, http.MethodDelete, ts.URL+APIPrefix+"/repos/tounregister", tc.reqToken, nil)
-			if res.StatusCode != tc.wantUnregister {
-				t.Fatalf("unregister = %d, want %d (%s)", res.StatusCode, tc.wantUnregister, body)
+			if res.StatusCode != tc.wantDelete {
+				t.Fatalf("unregister = %d, want %d (%s)", res.StatusCode, tc.wantDelete, body)
 			}
 			if tc.namesKey && !strings.Contains(body, "SERVE_ALLOW_REGISTER") {
 				t.Errorf("unregister refusal %q does not name SERVE_ALLOW_REGISTER", body)
 			}
 			registered, _ = store.Registrations().Registered()
 			stillRegistered := slices.Contains(registered, toUnregister)
-			if wantStill := tc.wantUnregister != http.StatusOK; stillRegistered != wantStill {
-				t.Errorf("registered(%s) = %v after unregister status %d", toUnregister, stillRegistered, tc.wantUnregister)
+			if wantStill := tc.wantDelete != http.StatusOK; stillRegistered != wantStill {
+				t.Errorf("registered(%s) = %v after unregister status %d", toUnregister, stillRegistered, tc.wantDelete)
+			}
+
+			res, body = authReq(t, http.MethodDelete, ts.URL+APIPrefix+"/repos/toforget?forget=1", tc.reqToken, nil)
+			if res.StatusCode != tc.wantDelete {
+				t.Fatalf("forget = %d, want %d (%s)", res.StatusCode, tc.wantDelete, body)
+			}
+			if tc.namesKey && !strings.Contains(body, "SERVE_ALLOW_REGISTER") {
+				t.Errorf("forget refusal %q does not name SERVE_ALLOW_REGISTER", body)
+			}
+			known, _ := store.Registrations().Known()
+			stillKnown := slices.ContainsFunc(known, func(repo registry.Repo) bool { return repo.Root == toForget })
+			if wantStill := tc.wantDelete != http.StatusOK; stillKnown != wantStill {
+				t.Errorf("known(%s) = %v after forget status %d", toForget, stillKnown, tc.wantDelete)
 			}
 		})
 	}
@@ -402,7 +422,34 @@ func TestUnregisterKeepsRepoBrowsable(t *testing.T) {
 	}
 }
 
-func allowedRepoNames(t *testing.T, ts *httptest.Server) map[string]bool {
+// TestUnregisterKeepsUnrunRepoListed covers the row a registration alone put on
+// the list: dropping it to observe-only before its first loop ran must leave it
+// listed, since removal is the only control that takes a project off the card.
+func TestUnregisterKeepsUnrunRepoListed(t *testing.T) {
+	home := t.TempDir()
+	repo := gitRepo(t, t.TempDir(), "acme", "dir")
+
+	_, ts := controlServer(t, home, nil)
+	res := postJSON(t, ts.URL+APIPrefix+"/repos", RegisterRepoRequest{Path: repo})
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("register = %d, want 201", res.StatusCode)
+	}
+
+	res, body := deleteReq(t, ts, APIPrefix+"/repos/"+url.PathEscape(repo))
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("unregister = %d, want 200 (%s)", res.StatusCode, body)
+	}
+
+	if roots := listedRepoRoots(t, ts); !slices.Contains(roots, repo) {
+		t.Fatalf("repo left the list after unregister: %v", roots)
+	}
+	if allowedRepoNames(t, ts)["acme"] {
+		t.Error("repo still allowed after unregister, want observe-only")
+	}
+}
+
+func listRepos(t *testing.T, ts *httptest.Server) []RepoView {
 	t.Helper()
 	res, body := get(t, ts, APIPrefix+"/repos")
 	if res.StatusCode != http.StatusOK {
@@ -412,11 +459,178 @@ func allowedRepoNames(t *testing.T, ts *httptest.Server) map[string]bool {
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
 		t.Fatalf("decode repos: %v", err)
 	}
-	allowed := make(map[string]bool, len(resp.Repos))
-	for _, rv := range resp.Repos {
+	return resp.Repos
+}
+
+func TestForgetRepo(t *testing.T) {
+	base := t.TempDir()
+	registered := gitRepo(t, base, "registered", "dir")
+	observed := gitRepo(t, base, "observed", "dir")
+	seeded := gitRepo(t, base, "seeded", "dir")
+	running := gitRepo(t, base, "running", "dir")
+
+	cases := []struct {
+		name       string
+		target     string
+		wantStatus int
+		errSubstr  string
+		verify     func(t *testing.T, home string, ts *httptest.Server)
+	}{
+		{
+			name:       "web-registered repo goes with its registration",
+			target:     "registered",
+			wantStatus: http.StatusOK,
+			verify: func(t *testing.T, home string, ts *httptest.Server) {
+				if slices.Contains(listedRepoRoots(t, ts), registered) {
+					t.Error("removed repo is still listed")
+				}
+				if roots, _ := testStoresAt(t, home).Registrations().Registered(); len(roots) != 0 {
+					t.Errorf("registration store still lists %v", roots)
+				}
+				if _, err := os.Stat(filepath.Join(registered, ".git")); err != nil {
+					t.Errorf("repo on disk was touched: %v", err)
+				}
+			},
+		},
+		{
+			name:       "observe-only repo the hub only watched leaves the list",
+			target:     "observed",
+			wantStatus: http.StatusOK,
+			verify: func(t *testing.T, home string, ts *httptest.Server) {
+				if slices.Contains(listedRepoRoots(t, ts), observed) {
+					t.Error("removed repo is still listed")
+				}
+				known, _ := testStoresAt(t, home).Registrations().Known()
+				for _, repo := range known {
+					if repo.Root == observed {
+						t.Error("known set still holds the removed repo")
+					}
+				}
+			},
+		},
+		{
+			name:       "config-owned seed repo is refused",
+			target:     "seeded",
+			wantStatus: http.StatusConflict,
+			errSubstr:  "SERVE_WORKSPACE",
+			verify: func(t *testing.T, _ string, ts *httptest.Server) {
+				if !slices.Contains(listedRepoRoots(t, ts), seeded) {
+					t.Error("refused seed repo left the list")
+				}
+			},
+		},
+		{
+			name:       "repo with a live loop is refused",
+			target:     "running",
+			wantStatus: http.StatusConflict,
+			errSubstr:  "stop it",
+			verify: func(t *testing.T, _ string, ts *httptest.Server) {
+				if !slices.Contains(listedRepoRoots(t, ts), running) {
+					t.Error("refused live repo left the list")
+				}
+			},
+		},
+		{
+			name:       "unknown repo is not found",
+			target:     "ghost",
+			wantStatus: http.StatusNotFound,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := testStoresAt(t, home).Registrations().Remember([]registry.Repo{
+				workspaceRepo(observed),
+				workspaceRepo(running),
+			}); err != nil {
+				t.Fatalf("seed known repos: %v", err)
+			}
+			writeEntry(t, home, registry.Entry{
+				PID:          os.Getpid(),
+				RepoRoot:     running,
+				SessionState: registry.StateIdle,
+				StartedAt:    time.Now(),
+				Heartbeat:    time.Now(),
+			})
+			_, ts := controlServer(t, home, []string{seeded})
+			res := postJSON(t, ts.URL+APIPrefix+"/repos", RegisterRepoRequest{Path: registered})
+			_ = res.Body.Close()
+			if res.StatusCode != http.StatusCreated {
+				t.Fatalf("register precondition = %d, want 201", res.StatusCode)
+			}
+
+			res, body := deleteReq(t, ts, APIPrefix+"/repos/"+tc.target+"?forget=1")
+			if res.StatusCode != tc.wantStatus {
+				t.Fatalf("DELETE %s = %d, want %d (%s)", tc.target, res.StatusCode, tc.wantStatus, body)
+			}
+			if tc.errSubstr != "" && !strings.Contains(body, tc.errSubstr) {
+				t.Errorf("error %q does not name %q", body, tc.errSubstr)
+			}
+			if tc.verify != nil {
+				tc.verify(t, home, ts)
+			}
+		})
+	}
+}
+
+// TestForgetByRootRemovesTheRightNamesake covers the case that made the list
+// unclearable: two scratch clones known by the same basename, where only the root
+// identifies which row the user pressed Remove on. The shared name identifies
+// neither, so it is refused rather than resolved to whichever came first.
+func TestForgetByRootRemovesTheRightNamesake(t *testing.T) {
+	home := t.TempDir()
+	base := t.TempDir()
+	first := gitRepo(t, filepath.Join(base, "one"), "repo", "dir")
+	second := gitRepo(t, filepath.Join(base, "two"), "repo", "dir")
+	if err := testStoresAt(t, home).Registrations().Remember([]registry.Repo{
+		workspaceRepo(first),
+		workspaceRepo(second),
+	}); err != nil {
+		t.Fatalf("seed known repos: %v", err)
+	}
+
+	_, ts := controlServer(t, home, nil)
+	res, body := deleteReq(t, ts, APIPrefix+"/repos/repo?forget=1")
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("DELETE by ambiguous name = %d, want 404 (%s)", res.StatusCode, body)
+	}
+	if roots := listedRepoRoots(t, ts); len(roots) != 2 {
+		t.Fatalf("ambiguous removal took a namesake: %v", roots)
+	}
+
+	res, body = deleteReq(t, ts, APIPrefix+"/repos/"+url.PathEscape(second)+"?forget=1")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("DELETE by root = %d, want 200 (%s)", res.StatusCode, body)
+	}
+
+	roots := listedRepoRoots(t, ts)
+	if slices.Contains(roots, second) {
+		t.Errorf("addressed repo is still listed: %v", roots)
+	}
+	if !slices.Contains(roots, first) {
+		t.Errorf("namesake was removed too: %v", roots)
+	}
+}
+
+func allowedRepoNames(t *testing.T, ts *httptest.Server) map[string]bool {
+	t.Helper()
+	repos := listRepos(t, ts)
+	allowed := make(map[string]bool, len(repos))
+	for _, rv := range repos {
 		if rv.Allowed {
 			allowed[rv.Name] = true
 		}
 	}
 	return allowed
+}
+
+func listedRepoRoots(t *testing.T, ts *httptest.Server) []string {
+	t.Helper()
+	repos := listRepos(t, ts)
+	roots := make([]string, 0, len(repos))
+	for _, rv := range repos {
+		roots = append(roots, rv.Root)
+	}
+	return roots
 }

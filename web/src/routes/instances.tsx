@@ -5,6 +5,7 @@ import { Boxes, Plus, RotateCw, Wrench } from 'lucide-react'
 
 import { EventFeed } from '@/components/event-feed'
 import { MakeStartableButton } from '@/components/make-startable-button'
+import { RemoveRepoButton } from '@/components/remove-repo-button'
 import { PageHeader } from '@/components/trau/page-header'
 import { StatusPill } from '@/components/trau/status-pill'
 import { TerminalCard } from '@/components/trau/terminal-card'
@@ -22,6 +23,7 @@ import {
   anySyncing,
   healthPill,
   instancesQueryOptions,
+  removeBlocked,
   repoHealth,
   syncRepo,
   type Instance,
@@ -117,7 +119,7 @@ function Instances() {
         )}
 
         {repoViews.length > 0 && (
-          <TerminalCard title="registered repos" bodyClassName="p-0">
+          <TerminalCard title="projects" bodyClassName="p-0">
             <ul className="flex flex-col divide-y divide-border/60">
               {repoViews.map((repo) => (
                 <RepoHealthRow key={repo.root} repo={repo} now={now} />
@@ -253,7 +255,14 @@ function RepoHealthActions({
           </Button>
         )}
         {!repo.allowed && <MakeStartableButton root={repo.root} size="sm" />}
-        {repo.registered && <UnregisterRepoButton repo={repo.name} />}
+        {repo.registered && (
+          <UnregisterRepoButton repo={repo.name} root={repo.root} />
+        )}
+        <RemoveRepoButton
+          repo={repo.name}
+          root={repo.root}
+          blocked={removeBlocked(repo)}
+        />
       </div>
       {sync.error && (
         <p className="font-mono text-xs text-fail">

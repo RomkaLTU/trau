@@ -7,8 +7,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
+	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 )
 
@@ -58,6 +61,20 @@ func (s *Server) denyRegistrationIfExposed(w http.ResponseWriter, action string)
 	return true
 }
 
+// denySeededRepo refuses a removal aimed at a root the static SERVE_WORKSPACE
+// seed grants: that grant is config-owned rather than registry-owned, so no API
+// call can take it back. verb names the removal in the refusal. It reports
+// whether it wrote the 409, so callers return early on true.
+func (s *Server) denySeededRepo(w http.ResponseWriter, ident, verb string) bool {
+	if _, ok := matchRoot(s.workspace, ident); !ok {
+		return false
+	}
+	writeJSON(w, http.StatusConflict, map[string]string{
+		"error": fmt.Sprintf("repo %q is granted by the SERVE_WORKSPACE config and cannot be %s over the API; remove its root from SERVE_WORKSPACE instead", ident, verb),
+	})
+	return true
+}
+
 // registerRepo makes a repo startable from the hub by persisting its root to the
 // hub-owned registration store. It is fail-closed on exposure: on a non-loopback
 // bind registration is refused unless SERVE_ALLOW_REGISTER is set, so a leaked
@@ -82,7 +99,7 @@ func (s *Server) registerRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to register repo: " + err.Error()})
 		return
 	}
-	resp := RegisterRepoResponse{RepoView: RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: true}}
+	resp := RegisterRepoResponse{RepoView: RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: true, Seeded: s.seeded(root)}}
 	// Seed the issue store from the tracker as the repo comes online (ADR 0007),
 	// unless the caller opted out to run the seed sync from its own step. The pull
 	// is best-effort — a repo without direct tracker credentials still registers —
@@ -104,10 +121,17 @@ func (s *Server) seedSyncOutcome(ctx context.Context, root string) *SeedSyncOutc
 	return &SeedSyncOutcome{OK: true, SyncResponse: &resp}
 }
 
+// handleRepo serves the two removals a repo row offers: the default DELETE drops
+// a web registration back to observe-only, and ?forget=1 removes the repo from
+// the hub's list altogether.
 func (s *Server) handleRepo(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete {
 		w.Header().Set("Allow", http.MethodDelete)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if r.URL.Query().Get("forget") == "1" {
+		s.forgetRepo(w, r)
 		return
 	}
 	s.unregisterRepo(w, r)
@@ -116,20 +140,19 @@ func (s *Server) handleRepo(w http.ResponseWriter, r *http.Request) {
 // unregisterRepo reverses a web registration, dropping the repo back to
 // observe-only. Only the hub-owned registered set is touched: the repo's runs,
 // events, and transcripts stay browsable exactly as they do after any loop
-// exits, and nothing on disk in the repo is removed. A repo granted by the
-// static SERVE_WORKSPACE seed is config-owned, not registry-owned, so the
-// attempt is refused rather than silently doing nothing. It follows the same
-// exposure gate as registration: refused on a non-loopback bind unless
+// exits, and nothing on disk in the repo is removed. It keeps its row too — a
+// registration is all that lists a repo no loop has run in yet, so the repo is
+// remembered on the way out and leaves the list only through a removal. A repo
+// granted by the static SERVE_WORKSPACE seed is config-owned, not registry-owned,
+// so the attempt is refused rather than silently doing nothing. It follows the
+// same exposure gate as registration: refused on a non-loopback bind unless
 // SERVE_ALLOW_REGISTER is set.
 func (s *Server) unregisterRepo(w http.ResponseWriter, r *http.Request) {
 	if s.denyRegistrationIfExposed(w, "unregistering a repo") {
 		return
 	}
 	name := r.PathValue("repo")
-	if _, ok := matchRoot(s.workspace, name); ok {
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"error": fmt.Sprintf("repo %q is granted by the SERVE_WORKSPACE config and cannot be unregistered over the API; remove its root from SERVE_WORKSPACE instead", name),
-		})
+	if s.denySeededRepo(w, name, "unregistered") {
 		return
 	}
 	registered, _ := s.stores.Registrations().Registered()
@@ -147,8 +170,55 @@ func (s *Server) unregisterRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("repo %q is not registered", name)})
 		return
 	}
+	repo := workspaceRepo(root)
+	if err := s.stores.Registrations().Remember([]registry.Repo{repo}); err != nil {
+		logger.Verbosef("remember %s after unregister: %v", root, err)
+	}
 	s.dropUnregisteredRepoState(root)
-	writeJSON(w, http.StatusOK, RepoView{Repo: workspaceRepo(root), Allowed: false})
+	writeJSON(w, http.StatusOK, RepoView{Repo: repo, Allowed: false})
+}
+
+// forgetRepo removes a repo from the hub altogether: its registration, the
+// known-repos row that keeps it listed long after its loops exited, and the
+// attachments and sync binding a later registration would resume from. Nothing on
+// disk is touched, and running trau in it again puts it back. A SERVE_WORKSPACE
+// root is config-owned and a repo with a live loop would be remembered again by
+// the next presence sweep, so both are refused. The repo is addressed by root or
+// by a name only one repo answers to, never by an ambiguous base name. It follows
+// the same exposure gate as registration.
+func (s *Server) forgetRepo(w http.ResponseWriter, r *http.Request) {
+	if s.denyRegistrationIfExposed(w, "removing a repo") {
+		return
+	}
+	ident := r.PathValue("repo")
+	if s.denySeededRepo(w, ident, "removed") {
+		return
+	}
+	repo, ok := s.matchListedRepo(ident)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("repo %q is not known to the hub", ident)})
+		return
+	}
+	if s.repoIsLive(repo.Root) {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("a loop is live in %q; stop it before removing the repo", repo.Name),
+		})
+		return
+	}
+	if err := s.stores.Registrations().Forget(repo.Root); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to remove repo: " + err.Error()})
+		return
+	}
+	s.dropUnregisteredRepoState(repo.Root)
+	writeJSON(w, http.StatusOK, RepoView{Repo: repo})
+}
+
+// seeded reports whether root is startable because the static SERVE_WORKSPACE
+// config lists it, which is what makes it config-owned and refused by every
+// removal. A root can be both seeded and web-registered, so the flag is read
+// rather than inferred from the absence of a registration.
+func (s *Server) seeded(root string) bool {
+	return slices.Contains(s.workspace, root)
 }
 
 // handleRepoGitignore keeps the repo's .trau.ini out of git, backing the wizard's

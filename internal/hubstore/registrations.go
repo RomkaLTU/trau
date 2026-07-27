@@ -115,6 +115,24 @@ func (r *Registrations) Unregister(root string) (bool, error) {
 	return n > 0, err
 }
 
+// Forget drops root from both the known set and the startable set, so a repo the
+// hub only ever observed can leave the list instead of lingering forever.
+func (r *Registrations) Forget(root string) error {
+	tx, err := r.db.Begin()
+	if err != nil {
+		return err
+	}
+	for _, stmt := range []string{
+		`DELETE FROM known_repos WHERE root = ?`,
+		`DELETE FROM registered_repos WHERE root = ?`,
+	} {
+		if _, err := tx.Exec(stmt, root); err != nil {
+			return errors.Join(err, tx.Rollback())
+		}
+	}
+	return tx.Commit()
+}
+
 // ImportLegacy backfills the store from any repos.json / workspace.json left by
 // a file-era installation, then deletes each file. Import is transactional: a
 // file is removed only after its rows commit; a failed import returns an error
