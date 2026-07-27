@@ -107,11 +107,14 @@ func (s *Server) handleRunTakeover(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
 		return
 	}
-	if s.goos != "darwin" {
-		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "terminal takeover needs a macOS hub"})
+	ticket := r.PathValue("ticket")
+	if !s.takeoverSupported() {
+		writeJSON(w, http.StatusNotImplemented, map[string]any{
+			"error":  fmt.Sprintf("this hub only opens a terminal on macOS — run `trau takeover %s` in a terminal on this machine instead", ticket),
+			"reason": "takeover_unsupported",
+		})
 		return
 	}
-	ticket := r.PathValue("ticket")
 
 	var run registry.Entry
 	var hasRun bool
@@ -191,6 +194,13 @@ func (s *Server) handleRunTakeover(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, TakeoverResult{Stopped: stopped, Opened: true})
+}
+
+// takeoverSupported reports whether this hub can open a terminal itself. The
+// launch is osascript-driven (ADR 0018), so macOS is the only platform it works
+// on; elsewhere `trau takeover <ID>` is the way in.
+func (s *Server) takeoverSupported() bool {
+	return s.goos == "darwin"
 }
 
 // takeoverHolder reports the live takeover terminal holding root, if any (ADR

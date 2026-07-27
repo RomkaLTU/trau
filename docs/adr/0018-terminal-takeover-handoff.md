@@ -43,6 +43,13 @@ On top of that handle, terminal takeover obeys four invariants:
    session. Codex/kimi expose no equivalent resume handle; a run whose current
    phase ran elsewhere takes over the last claude session instead.
 
+The hub-driven **Open in terminal** is macOS-only: opening a window means driving
+Terminal or iTerm over osascript, and there is no portable equivalent. Elsewhere
+the API reports `takeover_supported: false` and the web hides the button rather
+than offering a guaranteed refusal (ADR 0023). None of the four invariants above
+is platform-bound — `trau takeover <ID>` in a terminal the user opens takes the
+same lock and resumes the same session on every platform.
+
 ## Consequences
 
 - A stopped run is inspectable from the inside: `--resume <SESSION>` drops the

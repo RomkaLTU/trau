@@ -16,7 +16,9 @@ export interface ApplyState {
 // this page and onDisk the binary a restart would re-exec: an upgrade that has
 // landed under a still-running hub shows the two apart until it restarts.
 // selfReloadPending names the repo whose merge asked the hub to restart onto its
-// own build, empty when nothing is waiting.
+// own build, empty when nothing is waiting. upgradeCommand is what the package
+// manager that installed this trau updates it with, empty when no manager owns
+// it.
 export interface UpdateStatus {
   running: string
   onDisk: string
@@ -24,6 +26,7 @@ export interface UpdateStatus {
   restartPending: boolean
   updateAvailable: boolean
   installMethod: string
+  upgradeCommand: string
   checkedAt: string | null
   checksEnabled: boolean
   releaseUrl: string

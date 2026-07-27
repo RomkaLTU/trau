@@ -214,18 +214,34 @@ export function UpdatesSection() {
                 (status.updateAvailable || status.restartPending) && (
                   <Row label="install">
                     <span className="text-xs leading-relaxed text-muted-foreground">
-                      trau was not installed by Homebrew, so it cannot update
-                      itself. Update it the way you installed it, then restart
-                      the hub — releases are at{' '}
-                      <a
-                        href={status.releaseUrl || RELEASES_URL}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="font-mono text-primary underline-offset-2 hover:underline"
-                      >
-                        {status.releaseUrl || RELEASES_URL}
-                      </a>
-                      .
+                      {status.upgradeCommand ? (
+                        <>
+                          trau was installed with{' '}
+                          <span className="font-mono text-foreground">
+                            {status.installMethod}
+                          </span>
+                          , which owns updating it. Run{' '}
+                          <span className="font-mono text-foreground">
+                            {status.upgradeCommand}
+                          </span>
+                          , then restart the hub.
+                        </>
+                      ) : (
+                        <>
+                          trau was not installed by a package manager it knows,
+                          so it cannot update itself. Update it the way you
+                          installed it, then restart the hub — releases are at{' '}
+                          <a
+                            href={status.releaseUrl || RELEASES_URL}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-mono text-primary underline-offset-2 hover:underline"
+                          >
+                            {status.releaseUrl || RELEASES_URL}
+                          </a>
+                          .
+                        </>
+                      )}
                     </span>
                   </Row>
                 )}

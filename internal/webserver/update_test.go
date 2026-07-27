@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/RomkaLTU/trau/internal/update"
 )
 
 func TestUpdateEndpointReportsRunningVersion(t *testing.T) {
@@ -95,6 +97,45 @@ func TestUpdateApplyRejectsGet(t *testing.T) {
 	res, _ := get(t, ts, APIPrefix+"/update/apply")
 	if res.StatusCode != http.StatusMethodNotAllowed {
 		t.Fatalf("GET /update/apply = %d, want 405", res.StatusCode)
+	}
+}
+
+// TestManualUpdateInstructions covers what a refused apply tells the user: the
+// owning manager's own command when the hub knows one, the release page when
+// it does not.
+func TestManualUpdateInstructions(t *testing.T) {
+	tests := []struct {
+		name string
+		st   update.Status
+		want string
+	}{
+		{
+			name: "scoop",
+			st:   update.Status{UpgradeCommand: "scoop update trau", ReleaseURL: "https://example.test/tag/v2.2.0"},
+			want: "run `scoop update trau`, then restart the hub",
+		},
+		{
+			name: "winget",
+			st:   update.Status{UpgradeCommand: "winget upgrade Codesomelabs.trau"},
+			want: "run `winget upgrade Codesomelabs.trau`, then restart the hub",
+		},
+		{
+			name: "unmanaged with a known release",
+			st:   update.Status{ReleaseURL: "https://example.test/tag/v2.2.0"},
+			want: "update trau the way you installed it, then restart the hub: https://example.test/tag/v2.2.0",
+		},
+		{
+			name: "unmanaged before any check",
+			st:   update.Status{},
+			want: "update trau the way you installed it, then restart the hub: " + update.ReleasesURL,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := manualUpdateInstructions(tt.st); got != tt.want {
+				t.Errorf("manualUpdateInstructions() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
