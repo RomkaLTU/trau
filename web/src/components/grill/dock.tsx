@@ -20,6 +20,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { shouldDodge } from "@/lib/dock-dodge";
 import { dockPanelAction, isDockOpenKey } from "@/lib/dock-keys";
 import {
   abandonGrill,
@@ -51,8 +52,13 @@ import { cn } from "@/lib/utils";
 // Sheets and dialogs portal to the end of <body> at z-50 and switch off pointer events
 // outside themselves, so matching their z-index would bury the dock — and any interview
 // open in it — under whatever the user happened to open.
-const dockAnchor =
-  "animate-in fade-in slide-in-from-bottom-2 pointer-events-auto fixed bottom-6 right-6 z-[60]";
+const dockLayer = "pointer-events-auto fixed z-[60]";
+
+const dockAnchor = cn(dockLayer, "bottom-6 right-6");
+
+// The dodging tab is hidden rather than unmounted, so dropping the entrance while it is
+// out of the way is the only thing that leaves it to play again on the way back.
+const dockEnter = "animate-in fade-in slide-in-from-bottom-2";
 
 const UNREAD_TITLE = "A question you haven't read yet";
 
@@ -183,88 +189,194 @@ export function InterviewDock() {
   return (
     <InterviewTab
       session={tab}
-      thinking={inflight !== null}
-      count={standsFor.length}
-      breakdown={awaitingBreakdown(standsFor)}
-      unread={awaiting.some((s) => hasUnseenSession(seen, s))}
+      feed={{
+        thinking: inflight !== null,
+        count: standsFor.length,
+        breakdown: awaitingBreakdown(standsFor),
+        unread: awaiting.some((s) => hasUnseenSession(seen, s)),
+      }}
       onActivate={() => activate(tab)}
       onAbandoned={letGo}
     />
   );
 }
 
-function InterviewTab({
-  session,
-  thinking,
-  count,
-  breakdown,
-  unread,
-  onActivate,
-  onAbandoned,
-}: {
-  session: GrillAwaitingSession;
+// InterviewFeed is everything the dock says about the sessions its tab stands for, so
+// the full tab and the pill it collapses to are always speaking about the same thing.
+interface InterviewFeed {
   thinking: boolean;
   count: number;
   breakdown: string;
   unread: boolean;
+}
+
+function interviewLabel({ thinking }: InterviewFeed): string {
+  return thinking ? "Interviewer is thinking…" : "Interview waiting";
+}
+
+function InterviewStatus({ thinking, unread }: InterviewFeed) {
+  if (thinking) {
+    return (
+      <Loader2
+        className="size-3 shrink-0 animate-spin text-teal"
+        aria-hidden="true"
+      />
+    );
+  }
+
+  return (
+    <span
+      className={cn(
+        "size-2 shrink-0 rounded-full",
+        unread ? "animate-pulse bg-warn" : "bg-info/60",
+      )}
+      aria-hidden="true"
+      title={unread ? UNREAD_TITLE : undefined}
+    />
+  );
+}
+
+function InterviewTab({
+  session,
+  feed,
+  onActivate,
+  onAbandoned,
+}: {
+  session: GrillAwaitingSession;
+  feed: InterviewFeed;
   onActivate: () => void;
   onAbandoned: () => void;
 }) {
+  const card = useRef<HTMLDivElement>(null);
+  const dodging = useDodging(card);
+
   return (
-    <div
+    <>
+      <div
+        ref={card}
+        className={cn(
+          dockAnchor,
+          "flex w-80 max-w-[calc(100vw-3rem)] flex-col rounded-lg border bg-card shadow-lg transition-colors hover:bg-accent",
+          dodging ? "invisible" : dockEnter,
+        )}
+      >
+        <button
+          type="button"
+          onClick={onActivate}
+          className="flex flex-col gap-1 p-3 text-left"
+        >
+          <span className="flex items-center gap-2 pr-7">
+            <InterviewStatus {...feed} />
+            <span className="flex-1 truncate text-xs font-medium text-muted-foreground">
+              {interviewLabel(feed)}
+            </span>
+            {feed.count > 1 && (
+              <Badge
+                variant="secondary"
+                title={feed.breakdown}
+                className="shrink-0 font-mono text-[10px] tabular-nums"
+              >
+                ×{feed.count}
+              </Badge>
+            )}
+          </span>
+          {feed.count > 1 && (
+            <span className="truncate text-[11px] text-muted-foreground">
+              {feed.breakdown}
+            </span>
+          )}
+          <SessionFacts session={session} />
+        </button>
+        {/* Keyed so a re-sorted feed drops an open confirm instead of re-aiming it. */}
+        <AbandonAction
+          key={session.id}
+          session={session}
+          onAbandoned={onAbandoned}
+        />
+      </div>
+      {dodging && <DodgedTab feed={feed} onActivate={onActivate} />}
+    </>
+  );
+}
+
+// useDodging watches the field the keyboard is in and reports when the tab is over it.
+// The tab is hidden rather than unmounted so its own box stays the one shouldDodge
+// judges against.
+function useDodging(tab: RefObject<HTMLElement | null>): boolean {
+  const [dodging, setDodging] = useState(false);
+
+  useEffect(() => {
+    const card = tab.current;
+    let field: Element | null = null;
+
+    const judge = () =>
+      setDodging(shouldDodge(field, card?.getBoundingClientRect() ?? null));
+
+    // The composer grows upward as an answer wraps and the tab grows as the feed fills,
+    // so either can walk into the other long after the field took the keyboard.
+    const sizes = new ResizeObserver(judge);
+    if (card) sizes.observe(card);
+
+    const follow = (next: Element | null) => {
+      if (field) sizes.unobserve(field);
+      field = next;
+      if (field) sizes.observe(field);
+      judge();
+    };
+
+    const onFocusIn = (e: FocusEvent) => follow(e.target as Element | null);
+    // Where the focus is going, not what it left: a move straight from one field to the
+    // next would otherwise flash the tab back over both of them.
+    const onFocusOut = (e: FocusEvent) =>
+      follow(e.relatedTarget as Element | null);
+
+    follow(document.activeElement);
+    document.addEventListener("focusin", onFocusIn);
+    document.addEventListener("focusout", onFocusOut);
+    window.addEventListener("resize", judge);
+    return () => {
+      sizes.disconnect();
+      document.removeEventListener("focusin", onFocusIn);
+      document.removeEventListener("focusout", onFocusOut);
+      window.removeEventListener("resize", judge);
+    };
+  }, [tab]);
+
+  return dodging;
+}
+
+// DodgedTab is the tab out of the typing's way: a pill small enough to clear the
+// composer's own controls, opening the same interview.
+function DodgedTab({
+  feed,
+  onActivate,
+}: {
+  feed: InterviewFeed;
+  onActivate: () => void;
+}) {
+  const label = interviewLabel(feed);
+
+  return (
+    <button
+      type="button"
+      onClick={onActivate}
+      // Taking the keyboard off the field would put the tab back under the cursor
+      // between the press and the release, and the click would land on nothing.
+      onMouseDown={(e) => e.preventDefault()}
+      title={feed.count > 1 ? `${label} — ${feed.breakdown}` : label}
       className={cn(
-        dockAnchor,
-        "flex w-80 max-w-[calc(100vw-3rem)] flex-col rounded-lg border bg-card shadow-lg transition-colors hover:bg-accent",
+        dockLayer,
+        "animate-in fade-in zoom-in-95 bottom-2 right-2 flex h-9 min-w-9 items-center justify-center gap-1.5 rounded-full border bg-card px-2 shadow-lg transition-colors hover:bg-accent",
       )}
     >
-      <button
-        type="button"
-        onClick={onActivate}
-        className="flex flex-col gap-1 p-3 text-left"
-      >
-        <span className="flex items-center gap-2 pr-7">
-          {thinking ? (
-            <Loader2
-              className="size-3 shrink-0 animate-spin text-teal"
-              aria-hidden="true"
-            />
-          ) : (
-            <span
-              className={cn(
-                "size-2 shrink-0 rounded-full",
-                unread ? "animate-pulse bg-warn" : "bg-info/60",
-              )}
-              aria-hidden="true"
-              title={unread ? UNREAD_TITLE : undefined}
-            />
-          )}
-          <span className="flex-1 truncate text-xs font-medium text-muted-foreground">
-            {thinking ? "Interviewer is thinking…" : "Interview waiting"}
-          </span>
-          {count > 1 && (
-            <Badge
-              variant="secondary"
-              title={breakdown}
-              className="shrink-0 font-mono text-[10px] tabular-nums"
-            >
-              ×{count}
-            </Badge>
-          )}
+      <InterviewStatus {...feed} />
+      {feed.count > 1 && (
+        <span className="font-mono text-[10px] tabular-nums text-muted-foreground">
+          ×{feed.count}
         </span>
-        {count > 1 && (
-          <span className="truncate text-[11px] text-muted-foreground">
-            {breakdown}
-          </span>
-        )}
-        <SessionFacts session={session} />
-      </button>
-      {/* Keyed so a re-sorted feed drops an open confirm instead of re-aiming it. */}
-      <AbandonAction
-        key={session.id}
-        session={session}
-        onAbandoned={onAbandoned}
-      />
-    </div>
+      )}
+      <span className="sr-only">{label}</span>
+    </button>
   );
 }
 
@@ -360,6 +472,7 @@ function InterviewPanel({
       tabIndex={-1}
       className={cn(
         dockAnchor,
+        dockEnter,
         "flex max-h-[68vh] w-[520px] max-w-[calc(100vw-3rem)] flex-col overflow-hidden rounded-lg border bg-card shadow-xl outline-none",
       )}
     >
