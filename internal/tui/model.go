@@ -386,6 +386,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m = m.applyRecovery(msg)
 		return m, nil
 
+	case openedURLMsg:
+		m.toast, m.toastErr = openedURLLine(msg.url), false
+		return m, nil
+
 	case streamDataMsg:
 		m.streamReading = false
 		if msg.id == m.streamID && m.stream != nil {
