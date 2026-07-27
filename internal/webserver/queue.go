@@ -468,7 +468,7 @@ func (s *Server) handleQueueStop(w http.ResponseWriter, r *http.Request) {
 	// The drain loop is what parks the item once the child is gone, and a
 	// disarmed queue may have none left running.
 	s.drain.ensure(s.drainCtx, root)
-	// Answered before the stop starts, so a child that dies on its SIGTERM cannot
+	// Answered before the stop starts, so a child that dies on its graceful stop cannot
 	// clear the in-flight flag out from under the ack that reports it.
 	s.writeQueue(w, http.StatusAccepted, root)
 	go s.stopRunningChild(root, ticket, pid)

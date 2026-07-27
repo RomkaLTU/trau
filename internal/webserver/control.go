@@ -11,11 +11,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 )
@@ -41,7 +41,7 @@ const epicPreviewTimeout = 2 * time.Minute
 // bothers launching a run for them.
 var reTicketID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
 
-// handleStopInstance sends SIGTERM to a registered loop, hub-started or not, so a
+// handleStopInstance asks a registered loop to stop, hub-started or not, so a
 // web stop flows through the same graceful shutdown as Ctrl-C and in-flight work
 // checkpoints identically. Only a currently-registered PID can be stopped, which
 // keeps the endpoint from being a general process killer.
@@ -60,16 +60,16 @@ func (s *Server) handleStopInstance(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no live instance with that pid"})
 		return
 	}
-	if err := s.sup.Signal(pid, syscall.SIGTERM); err != nil {
+	if err := s.sup.Stop(pid); err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "failed to signal loop: " + err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "stopping", "signal": "SIGTERM"})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "stopping", "signal": proc.StopName})
 }
 
 // stopWaitPoll is the process-liveness poll cadence stopAndWait uses while
 // waiting out a grace period and while confirming a kill took. stopKillConfirm
-// bounds that post-kill confirmation — SIGKILL cannot be caught, so this only
+// bounds that post-kill confirmation — a group kill cannot be caught, so this only
 // covers the process's actual exit, never a resumed run. Both are vars so
 // tests compress them instead of sleeping for real.
 var (
@@ -77,8 +77,8 @@ var (
 	stopKillConfirm = 5 * time.Second
 )
 
-// stopAndWait stops pid with escalation and is guaranteed to end it: SIGTERM,
-// then wait out grace for the loop to exit on its own, then a group SIGKILL if
+// stopAndWait stops pid with escalation and is guaranteed to end it: a graceful
+// stop, then wait out grace for the loop to exit on its own, then a group kill if
 // it is still alive, confirming the process is gone before returning. A stale
 // or already-dead pid succeeds immediately without signalling anything — the
 // caller's goal (pid not running) is already met. Either way, once the process
@@ -91,7 +91,7 @@ func (s *Server) stopAndWait(pid int, grace time.Duration) error {
 		s.settleStoppedRun(pid)
 		return nil
 	}
-	if err := s.sup.Signal(pid, syscall.SIGTERM); err != nil {
+	if err := s.sup.Stop(pid); err != nil {
 		return fmt.Errorf("signal pid %d: %w", pid, err)
 	}
 	if !awaitDead(pid, grace) {
@@ -99,7 +99,7 @@ func (s *Server) stopAndWait(pid int, grace time.Duration) error {
 			return fmt.Errorf("kill pid %d: %w", pid, err)
 		}
 		if !awaitDead(pid, stopKillConfirm) {
-			return fmt.Errorf("pid %d still alive after a group SIGKILL", pid)
+			return fmt.Errorf("pid %d still alive after a group kill", pid)
 		}
 	}
 	s.settleStoppedRun(pid)
@@ -120,7 +120,7 @@ func awaitDead(pid int, within time.Duration) bool {
 
 // settleStoppedRun settles the hub's own records for pid once its process is
 // confirmed gone. A loop that deregistered cleanly on its own (the ordinary
-// SIGTERM path) has already removed its registry entry, so this is a no-op;
+// graceful-stop path) has already removed its registry entry, so this is a no-op;
 // one that never got the chance to — force-killed, or dead some other way
 // without reporting — still has one, which this drops, and its checkpoint (if
 // it was mid-ticket) gets stamped stopped/shutdown so nothing keeps showing it

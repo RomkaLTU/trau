@@ -48,8 +48,8 @@ func (s *Server) runningChild(root string, items []queue.Item) (ticket string, p
 }
 
 // stopRunningChild ends the child a stop found in flight, exactly as a per-run
-// Stop does: SIGTERM so the loop checkpoints and preserves its WIP, escalating
-// to a group SIGKILL only if it outlasts the grace. It settles nothing itself —
+// Stop does: a graceful stop so the loop checkpoints and preserves its WIP,
+// escalating to a group kill only if it outlasts the grace. It settles nothing itself —
 // the drain tick that finds the process gone reads the stopped checkpoint and
 // parks the item, so the ticket stays resumable and every other row stays
 // queued. A child whose death is never confirmed keeps the row as it is; the

@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -168,7 +168,7 @@ var hubMCPAdminTools = []mcpTool{
 	{
 		Name: "stop_instance",
 		Description: "Stops a live loop process, ending its run mid-flight and leaving the ticket unfinished at " +
-			"whatever phase it reached. It sends SIGTERM — the signal Ctrl-C sends — so the loop checkpoints what it has " +
+			"whatever phase it reached. It asks the loop to stop the way Ctrl-C does, so the loop checkpoints what it has " +
 			"and exits gracefully rather than being killed outright. Only a pid list_instances reports can be stopped.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
@@ -216,8 +216,8 @@ type MCPRunReset struct {
 	Was    string `json:"was,omitempty"`
 }
 
-// MCPStop is what stop_instance answers with: the signal is on its way to the
-// pid, and the loop exits once it has checkpointed.
+// MCPStop is what stop_instance answers with: the stop request is on its way to
+// the pid, and the loop exits once it has checkpointed.
 type MCPStop struct {
 	PID    int    `json:"pid"`
 	Status string `json:"status"`
@@ -320,7 +320,7 @@ func moveDirection(raw string) (int, error) {
 
 // mcpShutdownQueue disarms the drain synchronously and hands the teardown — the
 // child stop, the checkpoint drops, the clear — to the same background goroutine
-// the REST route uses, so the tool answers without waiting out a SIGKILL grace. A
+// the REST route uses, so the tool answers without waiting out a kill grace. A
 // second call while a teardown is already in flight is a no-op answered the same
 // way.
 func (s *Server) mcpShutdownQueue(args json.RawMessage) (any, error) {
@@ -573,10 +573,10 @@ func (s *Server) mcpStopInstance(args json.RawMessage) (any, error) {
 	if !s.registered(a.PID) {
 		return nil, fmt.Errorf("no live loop with pid %d — call list_instances for the ones running now", a.PID)
 	}
-	if err := s.sup.Signal(a.PID, syscall.SIGTERM); err != nil {
+	if err := s.sup.Stop(a.PID); err != nil {
 		return nil, fmt.Errorf("signal loop: %w", err)
 	}
-	return MCPStop{PID: a.PID, Status: "stopping", Signal: "SIGTERM"}, nil
+	return MCPStop{PID: a.PID, Status: "stopping", Signal: proc.StopName}, nil
 }
 
 // mcpRestartHub answers before restarting, the way the REST route flushes its 202

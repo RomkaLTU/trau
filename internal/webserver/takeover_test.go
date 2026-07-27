@@ -10,7 +10,6 @@ import (
 	"reflect"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -120,12 +119,12 @@ func TestTakeoverStopsLiveRunThenLaunches(t *testing.T) {
 	inst := testStoresAt(t, home).Instances()
 	var mu sync.Mutex
 	var order []string
-	sup.onSignal = func(int, syscall.Signal) {
+	sup.onStop = func(int) {
 		parked := entry
 		parked.SessionState = registry.StateParked
 		_ = inst.Upsert(parked)
 		mu.Lock()
-		order = append(order, "signal")
+		order = append(order, "stop")
 		mu.Unlock()
 	}
 	launcher.onLaunch = func() {
@@ -141,14 +140,14 @@ func TestTakeoverStopsLiveRunThenLaunches(t *testing.T) {
 	if body["stopped"] != true || body["opened"] != true {
 		t.Errorf("body = %v, want stopped and opened true", body)
 	}
-	if len(sup.signals) != 1 || sup.signals[0].pid != entry.PID || sup.signals[0].sig != syscall.SIGTERM {
-		t.Errorf("signals = %+v, want one SIGTERM to pid %d", sup.signals, entry.PID)
+	if len(sup.stops) != 1 || sup.stops[0] != entry.PID {
+		t.Errorf("stops = %v, want one graceful stop of pid %d", sup.stops, entry.PID)
 	}
 	mu.Lock()
 	got := append([]string(nil), order...)
 	mu.Unlock()
-	if !reflect.DeepEqual(got, []string{"signal", "launch"}) {
-		t.Errorf("order = %v, want signal before launch", got)
+	if !reflect.DeepEqual(got, []string{"stop", "launch"}) {
+		t.Errorf("order = %v, want stop before launch", got)
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -182,8 +181,8 @@ func TestTakeoverParkedRunSkipsStop(t *testing.T) {
 	if body["stopped"] != false || body["opened"] != true {
 		t.Errorf("body = %v, want stopped false, opened true", body)
 	}
-	if len(sup.signals) != 0 {
-		t.Errorf("signals = %+v, want none", sup.signals)
+	if len(sup.stops) != 0 {
+		t.Errorf("stops = %+v, want none", sup.stops)
 	}
 	if calls := launcher.calls(); len(calls) != 1 {
 		t.Errorf("launches = %+v, want exactly one", calls)
@@ -210,8 +209,8 @@ func TestTakeoverStopWaitTimeout(t *testing.T) {
 	if status != http.StatusGatewayTimeout {
 		t.Fatalf("takeover status = %d, body %v, want 504", status, body)
 	}
-	if len(sup.signals) != 1 {
-		t.Errorf("signals = %+v, want the stop attempt", sup.signals)
+	if len(sup.stops) != 1 {
+		t.Errorf("stops = %+v, want the stop attempt", sup.stops)
 	}
 	if calls := launcher.calls(); len(calls) != 0 {
 		t.Errorf("launches = %+v, want none after timeout", calls)
@@ -255,8 +254,8 @@ func TestTakeoverConflicts(t *testing.T) {
 			if msg, _ := body["error"].(string); !strings.Contains(msg, tc.errHas) {
 				t.Errorf("error = %q, want it to mention %q", msg, tc.errHas)
 			}
-			if len(sup.signals) != 0 || len(launcher.calls()) != 0 {
-				t.Errorf("signals = %+v, launches = %+v, want neither", sup.signals, launcher.calls())
+			if len(sup.stops) != 0 || len(launcher.calls()) != 0 {
+				t.Errorf("stops = %+v, launches = %+v, want neither", sup.stops, launcher.calls())
 			}
 		})
 	}
@@ -306,8 +305,8 @@ func TestTakeoverNonDarwin(t *testing.T) {
 	if status != http.StatusNotImplemented {
 		t.Fatalf("takeover status = %d, body %v, want 501", status, body)
 	}
-	if len(sup.signals) != 0 || len(launcher.calls()) != 0 {
-		t.Errorf("signals = %+v, launches = %+v, want neither", sup.signals, launcher.calls())
+	if len(sup.stops) != 0 || len(launcher.calls()) != 0 {
+		t.Errorf("stops = %+v, launches = %+v, want neither", sup.stops, launcher.calls())
 	}
 }
 

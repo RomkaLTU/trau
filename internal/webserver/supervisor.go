@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 
 	"github.com/RomkaLTU/trau/internal/proc"
 )
@@ -28,14 +27,14 @@ type SpawnSpec struct {
 }
 
 // Supervisor is the hub's process-control seam. It isolates OS process
-// management — spawning children, running one to completion, and signalling
-// processes — so the control layer never reaches for os/exec or syscall
-// directly and tests can drive it with a fake that records the calls instead of
-// touching real processes.
+// management — spawning children, running one to completion, and stopping or
+// killing processes — so the control layer never reaches for os/exec or the
+// platform's process primitives directly and tests can drive it with a fake that
+// records the calls instead of touching real processes.
 type Supervisor interface {
 	Spawn(SpawnSpec) (pid int, err error)
 	Capture(context.Context, SpawnSpec) (stdout []byte, err error)
-	Signal(pid int, sig syscall.Signal) error
+	Stop(pid int) error
 	Kill(pid int) error
 }
 
@@ -119,13 +118,9 @@ func captureError(err error) error {
 	return err
 }
 
-func (osSupervisor) Signal(pid int, sig syscall.Signal) error {
-	target, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-	return target.Signal(sig)
-}
+// Stop asks pid to shut down gracefully, so a loop checkpoints what it has and
+// exits on its own instead of being ended where it stands.
+func (osSupervisor) Stop(pid int) error { return proc.StopGracefully(pid) }
 
 // Kill guarantees pid's end: it kills the whole process group so a loop's own
 // children die with it.
