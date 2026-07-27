@@ -18,9 +18,10 @@ code on disk, never the build agent's reasoning.
 ```bash
 brew install --cask RomkaLTU/trau/trau    # macOS / Linux
 trau --version
+brew upgrade --cask trau                  # later, to update
 ```
 
-Or from source (Go 1.24+): `git clone https://github.com/RomkaLTU/trau && cd trau && make build`.
+Or from source (Go 1.25+): `git clone https://github.com/RomkaLTU/trau && cd trau && make build`.
 
 Requires `git`, `gh` (authenticated), `jq`, and an agent CLI — `claude` (default), `codex`, or
 `kimi` — on `$PATH`, plus a supported issue tracker — Linear, Jira, or GitHub Issues — via its MCP.

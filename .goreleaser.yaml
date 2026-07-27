@@ -39,12 +39,15 @@ changelog:
       - "^chore:"
       - "^style:"
   groups:
+    - title: Epics
+      regexp: '^.*?epic(\(.+\))??!?:.+$'
+      order: 0
     - title: Features
       regexp: '^.*?feat(\(.+\))??!?:.+$'
-      order: 0
+      order: 1
     - title: Bug fixes
       regexp: '^.*?fix(\(.+\))??!?:.+$'
-      order: 1
+      order: 2
     - title: Others
       order: 999
 
