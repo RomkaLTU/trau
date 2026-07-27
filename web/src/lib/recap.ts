@@ -11,6 +11,18 @@ export const RECAP_CATEGORIES: RecapCategory[] = [
   'quarantined',
 ]
 
+// PUSHED_STATES are the state changes the hub also raises a notification for
+// (notifyRunEvent in internal/webserver/notifications.go), and so pushes to a
+// subscribed browser. A merge is a completion and is never pushed.
+const PUSHED_STATES: RecapCategory[] = ['paused', 'faulted', 'quarantined']
+
+// isPushed reports whether Web Push already carries this state change, so the
+// in-tab notification for it can stand down rather than stack a second one under
+// its own tag.
+export function isPushed(state: RecapCategory): boolean {
+  return PUSHED_STATES.includes(state)
+}
+
 export type PauseReason = 'usage_window' | 'reauth' | 'other'
 
 export interface RecapItem {

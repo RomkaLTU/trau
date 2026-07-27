@@ -144,9 +144,11 @@ func (s *Server) notifyRunEvent(repo registry.Repo, row hubstore.EventRow) {
 }
 
 // publishNotification pushes a live wake-up frame for notif on the all-events SSE
-// broadcaster (ADR 0008). The frame is in-process only — never appended to the
-// events table, whose rows the notifications table already supersedes — and carries
-// no id so it leaves a streaming client's resume cursor untouched.
+// broadcaster (ADR 0008) and, for the browsers subscribed to Web Push, a
+// notification that reaches the user with trau closed. The frame is in-process
+// only — never appended to the events table, whose rows the notifications table
+// already supersedes — and carries no id so it leaves a streaming client's resume
+// cursor untouched.
 func (s *Server) publishNotification(notif hubstore.Notification) {
 	unread, err := s.stores.Notifications().UnreadCount()
 	if err != nil {
@@ -171,6 +173,7 @@ func (s *Server) publishNotification(notif hubstore.Notification) {
 			},
 		},
 	})
+	s.pushNotification(notif, name)
 }
 
 // grillAwaiting reports whether a session in state is waiting on the user — the set

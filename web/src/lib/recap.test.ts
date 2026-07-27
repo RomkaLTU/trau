@@ -4,6 +4,7 @@ import type { RepoFeedEvent } from '@/lib/events'
 import {
   deriveRecap,
   describeRecapItem,
+  isPushed,
   pauseReason,
   toRecapItem,
 } from '@/lib/recap'
@@ -133,5 +134,17 @@ describe('describeRecapItem', () => {
 
   it('falls back to the repo when no ticket is tagged', () => {
     expect(describeRecapItem(item('merged', '', ''))).toBe('salonradar merged')
+  })
+})
+
+describe('isPushed', () => {
+  it('leaves every needs-attention state to the service worker', () => {
+    expect(isPushed('paused')).toBe(true)
+    expect(isPushed('faulted')).toBe(true)
+    expect(isPushed('quarantined')).toBe(true)
+  })
+
+  it('keeps a merge in-tab', () => {
+    expect(isPushed('merged')).toBe(false)
   })
 })

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
@@ -152,6 +153,61 @@ func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, PushSendResponse{Sent: sent, Pruned: pruned})
+}
+
+// pushNotification wakes the browser for a needs-attention notification, so a
+// paused run or a waiting question reaches the user with every trau window closed.
+// Delivery reaches browser push services, so it runs off the producer's goroutine
+// and a failure is advisory like every other notify seam.
+func (s *Server) pushNotification(notif hubstore.Notification, repo string) {
+	payload, ok := notificationPush(notif, repo)
+	if !ok {
+		return
+	}
+	go func() {
+		if _, _, err := s.deliverPush(s.drainCtx, payload); err != nil {
+			logger.Verbosef("push notification %s: %v", payload.Tag, err)
+		}
+	}()
+}
+
+// notificationPush is the push payload for a needs-attention notification. Tag is
+// the key the in-tab notification coalesces on (notificationTag in
+// web/src/lib/notification-center.ts), so one event never shows twice. A kind
+// outside the needs-attention set is not pushed.
+func notificationPush(notif hubstore.Notification, repo string) (PushPayload, bool) {
+	target, ok := notificationURL(notif, repo)
+	if !ok {
+		return PushPayload{}, false
+	}
+	return PushPayload{
+		Title: notif.Title,
+		Body:  notif.Body,
+		Tag:   notif.Kind + notif.Ref,
+		URL:   target,
+	}, true
+}
+
+// notificationURL mirrors the web router's target for a notification
+// (notificationTarget in web/src/lib/notification-center.ts), addressing an
+// issue-less authoring session by its draft row. The inbox link names its repo
+// because the queue is built from the active scope rather than the link, so
+// without it a pushed question lands on whichever project happens to be open.
+func notificationURL(notif hubstore.Notification, repo string) (string, bool) {
+	switch notif.Kind {
+	case hubstore.NotificationGrillQuestion:
+		issue := notif.IssueID
+		if issue == "" {
+			issue = "draft:" + notif.Ref
+		}
+		return "/inbox?" + url.Values{"issue": {issue}, "repo": {repo}}.Encode(), true
+	case hubstore.NotificationRunPaused,
+		hubstore.NotificationRunFaulted,
+		hubstore.NotificationRunQuarantined,
+		hubstore.NotificationRunAwaitingMerge:
+		return "/runs/" + url.PathEscape(repo) + "/" + url.PathEscape(notif.Ref), true
+	}
+	return "", false
 }
 
 // deliverPush encrypts payload to every stored subscription and reports how many

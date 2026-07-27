@@ -4,16 +4,20 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { fireNotification, useNotifications } from "@/lib/notifications";
 import {
+  notificationTag,
   notificationTarget,
   showsInAppToast,
   useNotificationEvents,
   useNotificationNavigate,
 } from "@/lib/notification-center";
 import { isConversationOpen } from "@/lib/open-conversation";
+import { pushSubscribed } from "@/lib/push";
 
 // NotificationToaster is the headless bridge from the hub's live needs-attention
 // frames to a toast — and, when the tab is hidden, an OS notification. Interview
 // questions skip the toast and are left to the dock, but keep the OS fallback.
+// A browser subscribed to Web Push already gets the event from the service
+// worker, so the in-tab notification stands down.
 // It renders nothing; the toasts land in the root <Toaster />.
 export function NotificationToaster() {
   const navigateToNotification = useNotificationNavigate();
@@ -45,11 +49,14 @@ export function NotificationToaster() {
     }
 
     if (document.hidden && enabledRef.current) {
-      fireNotification(
-        notification.title,
-        notification.body,
-        notification.kind + notification.ref,
-      );
+      void pushSubscribed().then((pushed) => {
+        if (pushed) return;
+        fireNotification(
+          notification.title,
+          notification.body,
+          notificationTag(notification),
+        );
+      });
     }
   });
 

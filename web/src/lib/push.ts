@@ -112,6 +112,13 @@ async function currentSubscription(): Promise<PushSubscription | null> {
   return reg.pushManager.getSubscription()
 }
 
+// pushSubscribed reports whether this browser currently holds a push
+// subscription. The in-tab path asks live rather than trusting a mount-time
+// snapshot, so enabling push takes effect without a reload.
+export async function pushSubscribed(): Promise<boolean> {
+  return (await currentSubscription()) !== null
+}
+
 export interface PushNotifications {
   supported: boolean
   permission: PermissionState

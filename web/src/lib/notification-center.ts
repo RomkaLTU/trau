@@ -159,6 +159,14 @@ export function showsInAppToast(kind: NotificationKind): boolean {
   return kind !== "grill_question";
 }
 
+// notificationTag is the coalescing key an OS notification carries. The hub sends
+// the same string as the push payload's tag (notificationPush in
+// internal/webserver/push.go), so the two paths replace each other rather than
+// stacking.
+export function notificationTag(notification: HubNotification): string {
+  return notification.kind + notification.ref;
+}
+
 export type NotificationTarget =
   | { kind: "inbox"; repo: string; issue: string }
   | { kind: "run"; repo: string; ticket: string }
@@ -207,19 +215,29 @@ export function notificationRepoName(
   return knownRepo(repo, repos)?.name ?? repo;
 }
 
+// repoScopeSwitch is the repo name to adopt for a repo a link names: its registry
+// name when it differs from the active one and is still known — a repo the hub no
+// longer lists never clobbers the stored scope.
+export function repoScopeSwitch(
+  repo: string,
+  activeRepo: string | null,
+  repos: readonly RepoView[],
+): string | null {
+  const match = knownRepo(repo, repos);
+  if (!match || match.name === activeRepo) return null;
+  return match.name;
+}
+
 // notificationScopeSwitch is the repo name to adopt before an inbox navigation:
-// the target's repo when it differs from the active one and is still known — a
-// repo the hub no longer lists never clobbers the stored scope. Run targets need
-// no switch; their repo-bound route adopts the scope on entry.
+// the target's repo when it differs from the active one and is still known. Run
+// targets need no switch; their repo-bound route adopts the scope on entry.
 export function notificationScopeSwitch(
   target: NotificationTarget,
   activeRepo: string | null,
   repos: readonly RepoView[],
 ): string | null {
   if (target?.kind !== "inbox") return null;
-  const match = knownRepo(target.repo, repos);
-  if (!match || match.name === activeRepo) return null;
-  return match.name;
+  return repoScopeSwitch(target.repo, activeRepo, repos);
 }
 
 // useNotificationNavigate lands on a notification's target — the same inbox item
