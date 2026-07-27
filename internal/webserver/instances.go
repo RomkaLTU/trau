@@ -191,7 +191,7 @@ func (s *Server) listInstances(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, InstancesResponse{
 		Instances:         s.instanceViews(),
 		Repos:             s.repoViews(),
-		TakeoverSupported: s.goos == "darwin",
+		TakeoverSupported: s.takeoverSupported(),
 	})
 }
 

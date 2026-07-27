@@ -73,7 +73,7 @@ func waitStopSettled(t *testing.T, ts *httptest.Server, repo, id, status string)
 // rest of the queue is still there for a later Start.
 func TestQueueStopEndsTheRunningChildAndParksTheItem(t *testing.T) {
 	s, fake, root, ts := stopServer(t, "acme")
-	fake.onSignal = func(pid int, sig syscall.Signal) { _ = syscall.Kill(pid, sig) }
+	fake.onStop = func(pid int) { _ = syscall.Kill(pid, syscall.SIGTERM) }
 	repo := filepath.Base(root)
 
 	pid := spawnSleeper(t, "5")
@@ -135,8 +135,8 @@ func TestQueueStopWithNothingRunningOnlyDisarms(t *testing.T) {
 	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if len(fake.signals) != 0 {
-		t.Errorf("signals = %v, want nothing signalled with no child in flight", fake.signals)
+	if len(fake.stops) != 0 {
+		t.Errorf("stops = %v, want nothing signalled with no child in flight", fake.stops)
 	}
 }
 
@@ -165,8 +165,8 @@ func TestQueueStopTwiceStopsTheChildOnce(t *testing.T) {
 	}
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
-	if len(fake.signals) != 1 {
-		t.Errorf("signals = %d, want the child signalled once", len(fake.signals))
+	if len(fake.stops) != 1 {
+		t.Errorf("stops = %d, want the child signalled once", len(fake.stops))
 	}
 }
 
@@ -175,7 +175,7 @@ func TestQueueStopTwiceStopsTheChildOnce(t *testing.T) {
 // view still renders a Stop for — and the stop has to reach it.
 func TestQueueStopEndsARunTheQueueNeverLaunched(t *testing.T) {
 	s, fake, root, ts := stopServer(t, "acme")
-	fake.onSignal = func(pid int, sig syscall.Signal) { _ = syscall.Kill(pid, sig) }
+	fake.onStop = func(pid int) { _ = syscall.Kill(pid, syscall.SIGTERM) }
 	repo := filepath.Base(root)
 
 	pid := spawnSleeper(t, "5")

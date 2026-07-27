@@ -26,7 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/creack/pty"
+	"github.com/aymanbagabas/go-pty"
 
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/sanitize"
@@ -126,33 +126,53 @@ type terminalSession interface {
 type terminalStarter func(ctx context.Context, bin, dir string, args []string, cols, rows int) (terminalSession, error)
 
 type ptySession struct {
-	cmd *exec.Cmd
-	tty *os.File
+	cmd  *pty.Cmd
+	tty  pty.Pty
+	ours io.Closer
 }
 
+// startPTY is the production terminalStarter: a POSIX pty on unix, a ConPTY on
+// Windows 10 1809+. Geometry is applied before Start so the child sees its final
+// size at launch instead of redrawing off a resize.
 func startPTY(ctx context.Context, bin, dir string, args []string, cols, rows int) (terminalSession, error) {
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Dir = dir
-	cmd.Env = spawnEnv(ctx)
-	var (
-		tty *os.File
-		err error
-	)
-	if cols > 0 && rows > 0 {
-		tty, err = pty.StartWithSize(cmd, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
-	} else {
-		tty, err = pty.Start(cmd)
-	}
+	tty, err := pty.New()
 	if err != nil {
 		return nil, err
 	}
-	return &ptySession{cmd: cmd, tty: tty}, nil
+	if cols > 0 && rows > 0 {
+		if err := tty.Resize(cols, rows); err != nil {
+			_ = tty.Close()
+			return nil, err
+		}
+	}
+	cmd := tty.CommandContext(ctx, bin, args...)
+	cmd.Dir = dir
+	cmd.Env = spawnEnv(ctx)
+	if err := cmd.Start(); err != nil {
+		_ = tty.Close()
+		return nil, err
+	}
+	return &ptySession{cmd: cmd, tty: tty, ours: handOverSlave(tty)}, nil
+}
+
+// handOverSlave drops the parent's handle on the slave end and returns the end
+// the parent keeps. While a second holder stays open, a master read blocks past
+// the child's exit instead of failing, so the transcript drain would end only
+// when Close cut it off and lose whatever the agent printed last. ConPTY has no
+// separable slave end.
+func handOverSlave(p pty.Pty) io.Closer {
+	u, ok := p.(pty.UnixPty)
+	if !ok {
+		return p
+	}
+	_ = u.Slave().Close()
+	return u.Master()
 }
 
 func (s *ptySession) Read(p []byte) (int, error)  { return s.tty.Read(p) }
 func (s *ptySession) Write(p []byte) (int, error) { return s.tty.Write(p) }
 func (s *ptySession) Wait() error                 { return s.cmd.Wait() }
-func (s *ptySession) Close() error                { return s.tty.Close() }
+func (s *ptySession) Close() error                { return s.ours.Close() }
 func (s *ptySession) Kill() error {
 	if s.cmd.Process == nil {
 		return nil

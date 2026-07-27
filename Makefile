@@ -19,7 +19,7 @@ SERVE_PORT ?= 8728
 
 export CGO_ENABLED := 0
 
-.PHONY: all build reset hub-guard web vet test lint fmt dist clean
+.PHONY: all build reset hub-guard web vet windows test lint fmt dist clean
 
 all: build
 
@@ -47,9 +47,13 @@ web: $(WEB_DIST)
 $(WEB_DIST): $(WEB_SRC)
 	cd $(WEB_DIR) && $(NPM) ci && $(NPM) run build
 
-## vet: static checks
-vet:
+## vet: static checks, including the native-Windows compile gate
+vet: windows
 	go vet ./...
+
+## windows: prove the tree still compiles for native Windows (ADR 0023)
+windows:
+	GOOS=windows go build ./...
 
 ## test: compile/race-check packages; Go tests are intentionally absent for now
 test:

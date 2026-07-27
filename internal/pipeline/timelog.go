@@ -9,6 +9,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/prompts"
 	"github.com/RomkaLTU/trau/internal/timelog"
+	"github.com/RomkaLTU/trau/internal/tmpfile"
 )
 
 // gitDiffStatter is the extra git surface the time-log hook needs beyond the
@@ -147,7 +148,7 @@ func (p *Pipeline) estimateMinutesAgent(ctx context.Context, id string, ds timel
 	return n, true
 }
 
-func timelogEstimatePath(id string) string { return "/tmp/timelog-" + id + ".txt" }
+func timelogEstimatePath(id string) string { return tmpfile.Path("timelog-" + id + ".txt") }
 
 func timelogEstimateInstruction(r prompts.Renderer, id string, ds timelog.DiffStats, commits int, path string) string {
 	return r.Render("timelog_estimate", prompts.TimelogEstimateData{

@@ -3,12 +3,11 @@ package probe
 import (
 	"context"
 	"io"
-	"os/exec"
 	"regexp"
 	"strconv"
 	"time"
 
-	"github.com/creack/pty"
+	"github.com/aymanbagabas/go-pty"
 
 	"github.com/RomkaLTU/trau/internal/usage"
 )
@@ -34,13 +33,21 @@ func (p *ptyProber) Probe(ctx context.Context) usage.Window {
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, p.bin)
-	f, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 50, Cols: 160})
+	tty, err := pty.New()
 	if err != nil {
 		return usage.Window{}
 	}
+	if err := tty.Resize(160, 50); err != nil {
+		_ = tty.Close()
+		return usage.Window{}
+	}
+	cmd := tty.CommandContext(ctx, p.bin)
+	if err := cmd.Start(); err != nil {
+		_ = tty.Close()
+		return usage.Window{}
+	}
 	defer func() {
-		_ = f.Close()
+		_ = tty.Close()
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	}()
@@ -49,9 +56,9 @@ func (p *ptyProber) Probe(ctx context.Context) usage.Window {
 	if !sleepCtx(ctx, 3*time.Second) {
 		return usage.Window{}
 	}
-	_, _ = io.WriteString(f, "/usage\r")
+	_, _ = io.WriteString(tty, "/usage\r")
 
-	out := drain(ctx, f, 8*time.Second)
+	out := drain(ctx, tty, 8*time.Second)
 	return parseUsagePanel(p.provider, stripANSI(out))
 }
 

@@ -42,27 +42,22 @@ func testStoresAt(t *testing.T, home string) *hubstore.Stores {
 	return hubstore.NewStores(home, db.SQL(), nil, hubstore.Retention{})
 }
 
-type signalCall struct {
-	pid int
-	sig syscall.Signal
-}
-
-// fakeSupervisor records spawns, captures, and signals instead of touching real
+// fakeSupervisor records spawns, captures, and stops instead of touching real
 // processes, so the control layer's OS interactions are asserted without
 // launching anything.
 type fakeSupervisor struct {
 	mu         sync.Mutex
 	spawns     []SpawnSpec
 	captures   []SpawnSpec
-	signals    []signalCall
+	stops      []int
 	kills      []int
 	pid        int
 	spawnErr   error
 	captureOut []byte
 	captureErr error
-	signalErr  error
+	stopErr    error
 	killErr    error
-	onSignal   func(pid int, sig syscall.Signal)
+	onStop     func(pid int)
 	onKill     func(pid int)
 }
 
@@ -87,15 +82,15 @@ func (f *fakeSupervisor) Capture(_ context.Context, spec SpawnSpec) ([]byte, err
 	return f.captureOut, nil
 }
 
-func (f *fakeSupervisor) Signal(pid int, sig syscall.Signal) error {
+func (f *fakeSupervisor) Stop(pid int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.signalErr != nil {
-		return f.signalErr
+	if f.stopErr != nil {
+		return f.stopErr
 	}
-	f.signals = append(f.signals, signalCall{pid: pid, sig: sig})
-	if f.onSignal != nil {
-		f.onSignal(pid, sig)
+	f.stops = append(f.stops, pid)
+	if f.onStop != nil {
+		f.onStop(pid)
 	}
 	return nil
 }
@@ -155,11 +150,11 @@ func TestStopSignalsRegisteredInstance(t *testing.T) {
 	if res.StatusCode != http.StatusAccepted {
 		t.Fatalf("stop status = %d, want 202", res.StatusCode)
 	}
-	if len(fake.signals) != 1 {
-		t.Fatalf("signals = %d, want 1", len(fake.signals))
+	if len(fake.stops) != 1 {
+		t.Fatalf("stops = %d, want 1", len(fake.stops))
 	}
-	if fake.signals[0].pid != pid || fake.signals[0].sig != syscall.SIGTERM {
-		t.Errorf("signal = %+v, want SIGTERM to pid %d", fake.signals[0], pid)
+	if fake.stops[0] != pid {
+		t.Errorf("stopped pid = %d, want %d", fake.stops[0], pid)
 	}
 }
 
@@ -171,8 +166,8 @@ func TestStopUnknownPIDReturns404(t *testing.T) {
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("stop status = %d, want 404 for an unregistered pid", res.StatusCode)
 	}
-	if len(fake.signals) != 0 {
-		t.Errorf("signals = %d, want 0 (never signal an unknown pid)", len(fake.signals))
+	if len(fake.stops) != 0 {
+		t.Errorf("stops = %d, want 0 (never signal an unknown pid)", len(fake.stops))
 	}
 }
 
@@ -209,8 +204,8 @@ func TestControlEndpointsRequireTokenWhenExposed(t *testing.T) {
 	if stop.StatusCode != http.StatusUnauthorized {
 		t.Errorf("unauthenticated stop = %d, want 401 on an exposed bind", stop.StatusCode)
 	}
-	if len(fake.signals) != 0 {
-		t.Errorf("token gate let a control request through: signals=%d", len(fake.signals))
+	if len(fake.stops) != 0 {
+		t.Errorf("token gate let a control request through: stops=%d", len(fake.stops))
 	}
 }
 
@@ -752,8 +747,8 @@ func TestStopAndWaitGracefulExitNeverEscalates(t *testing.T) {
 	if err := s.stopAndWait(pid, time.Second); err != nil {
 		t.Fatalf("stopAndWait: %v", err)
 	}
-	if len(fake.signals) != 1 || fake.signals[0].pid != pid || fake.signals[0].sig != syscall.SIGTERM {
-		t.Errorf("signals = %+v, want one SIGTERM to %d", fake.signals, pid)
+	if len(fake.stops) != 1 || fake.stops[0] != pid {
+		t.Errorf("stops = %v, want one graceful stop of %d", fake.stops, pid)
 	}
 	if len(fake.kills) != 0 {
 		t.Errorf("kills = %v, want none — the child exited inside the grace period", fake.kills)
@@ -768,8 +763,8 @@ func TestStopAndWaitEscalatesToGroupKill(t *testing.T) {
 	if err := s.stopAndWait(pid, 20*time.Millisecond); err != nil {
 		t.Fatalf("stopAndWait: %v", err)
 	}
-	if len(fake.signals) != 1 || fake.signals[0].sig != syscall.SIGTERM {
-		t.Errorf("signals = %+v, want one SIGTERM before escalating", fake.signals)
+	if len(fake.stops) != 1 || fake.stops[0] != pid {
+		t.Errorf("stops = %v, want one graceful stop before escalating", fake.stops)
 	}
 	if len(fake.kills) != 1 || fake.kills[0] != pid {
 		t.Errorf("kills = %v, want one group kill of %d", fake.kills, pid)
@@ -786,8 +781,8 @@ func TestStopAndWaitStalePIDSucceedsImmediately(t *testing.T) {
 	if err := s.stopAndWait(pid, time.Second); err != nil {
 		t.Fatalf("stopAndWait(dead pid): %v", err)
 	}
-	if len(fake.signals) != 0 || len(fake.kills) != 0 {
-		t.Errorf("signals=%v kills=%v, want neither for an already-dead pid", fake.signals, fake.kills)
+	if len(fake.stops) != 0 || len(fake.kills) != 0 {
+		t.Errorf("stops=%v kills=%v, want neither for an already-dead pid", fake.stops, fake.kills)
 	}
 }
 

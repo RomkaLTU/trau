@@ -1,8 +1,8 @@
 // Package proofs reads the verify agent's browser proofs — the screenshots it
-// saved and the trace directory it recorded under /tmp during a browser-verify
-// run — so the loop can harvest them to the hub. Like attachfile, the files live
-// under /tmp beside the other agent-interface artifacts, never inside the target
-// repository's working tree.
+// saved and the trace directory it recorded during a browser-verify run — so the
+// loop can harvest them to the hub. Like attachfile, the files live in the OS
+// temp directory beside the other agent-interface artifacts, never inside the
+// target repository's working tree.
 package proofs
 
 import (
@@ -12,9 +12,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/RomkaLTU/trau/internal/tmpfile"
 )
 
-const dirPrefix = "/tmp/trau-proofs-"
+const dirPrefix = "trau-proofs-"
 
 // MaxScreenshots caps how many screenshots a run harvests, matching the hub's cap.
 const MaxScreenshots = 8
@@ -25,7 +27,7 @@ const MaxScreenshots = 8
 var ErrNoManifest = errors.New("no proofs manifest")
 
 // Dir is the contract directory the verify agent writes a run's proofs into.
-func Dir(ticket string) string { return dirPrefix + ticket }
+func Dir(ticket string) string { return tmpfile.Path(dirPrefix + ticket) }
 
 // Remove drops a ticket's harvested proofs directory.
 func Remove(ticket string) { _ = os.RemoveAll(Dir(ticket)) }

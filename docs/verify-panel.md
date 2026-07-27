@@ -53,14 +53,14 @@ vendor catches still stops the slice.
    continuation. Each verifier inherits only the handoff brief and the code (plus
    checks) on disk; it never sees the build agent's reasoning or the other
    verifiers' verdicts. Members run sequentially and each writes its own verdict
-   to `/tmp/verify-<id>-<member>.json`.
+   to `verify-<id>-<member>.json` in the OS temp directory.
 2. **Per-member gating.** Each member's verdict is gated by the
    [check library](verify-checks.md) just like a solo verify (failing
    `error`-severity checks fold into that member's failures).
 3. **Merge.** The gated member verdicts are merged by policy into one verdict.
    When it does not pass, every dissenting member's failures are carried over,
    tagged with the member name, and the merged verdict is written to
-   `/tmp/verify-<id>.json`.
+   `verify-<id>.json` beside them.
 4. **Repair & re-run.** A blocking merged verdict routes to the same
    self-heal/repair path as a solo verify (the primary provider repairs), and
    then the **whole panel re-runs** — up to the configured repair/bugfix budget.

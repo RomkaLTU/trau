@@ -64,8 +64,8 @@ func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 	switch err := s.updates.Apply(s.triggerRestart); {
 	case errors.Is(err, update.ErrNotBrew):
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error":        "not a Homebrew install",
-			"instructions": manualUpdateInstructions(s.updates.Status().ReleaseURL),
+			"error":        "trau cannot update this install itself",
+			"instructions": manualUpdateInstructions(s.updates.Status()),
 		})
 	case errors.Is(err, update.ErrApplyInFlight):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "an update is already being applied"})
@@ -74,7 +74,14 @@ func (s *Server) handleUpdateApply(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func manualUpdateInstructions(releaseURL string) string {
+// manualUpdateInstructions is what to do about an install trau will not update
+// itself: the owning manager's own upgrade command when one is known, and the
+// release page when the install belongs to no manager trau recognises.
+func manualUpdateInstructions(st update.Status) string {
+	if st.UpgradeCommand != "" {
+		return "run `" + st.UpgradeCommand + "`, then restart the hub"
+	}
+	releaseURL := st.ReleaseURL
 	if releaseURL == "" {
 		releaseURL = update.ReleasesURL
 	}

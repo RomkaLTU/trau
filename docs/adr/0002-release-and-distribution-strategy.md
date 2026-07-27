@@ -89,6 +89,10 @@ A `.goreleaser.yaml` (Appendix A) drives the release. Decisions baked in:
   `darwin/amd64` (Intel Macs) and `linux/arm64` to today's two targets. **Windows is
   deferred:** `trau` orchestrates `git`/`gh` and a Unix-style dev loop; Windows
   support is unproven and not a launch requirement.
+  **Superseded by [ADR 0023](0023-platform-support-windows.md) (2026-07-27):** the
+  2026-07-20 audit found the tree portable (two compile breaks, no cgo), so `windows`
+  joins the matrix for `amd64` + `arm64` as zip archives, shipped experimental, with
+  WSL2 supported alongside it. The deferral text above is kept for history.
 - **ldflags:** `-s -w -X main.version={{.Version}}` — matches the existing single
   `version` var. (Optional enrichment: add `commit`/`date` vars to `main.go` and
   stamp them too, for a fuller `--version`. Not required for launch.)
@@ -110,6 +114,19 @@ binary stamps `main.version` via ldflags. Full git history is also `gitleaks`-cl
   (not a formula) is goreleaser's current recommendation for shipping pre-built
   binaries — `brews:` is deprecated — and it lets us strip the macOS quarantine
   attribute on install (see §6).
+  **Amended 2026-07-27 (COD-1265):** the cask covers Linux and WSL2 too. Homebrew
+  4.5.0 added Linux cask support for casks that ship Linux binaries, and ours has
+  emitted `on_linux` amd64/arm64 blocks around a `binary` stanza all along, so
+  `brew install --cask RomkaLTU/trau/trau` is the one brew command on every
+  platform. A formula beside the cask was considered and rejected: `brews:` is
+  hard-deprecated since goreleaser 2.16 and fails `goreleaser check`, and on macOS
+  a same-named formula would shadow the cask for `brew install` without the
+  quarantine hook §6 depends on.
+- **`.deb`/`.rpm` via `nfpms:`** (added 2026-07-27, COD-1265) for linux amd64 and
+  arm64, attached to the GitHub Release for users without Homebrew. No hosted apt
+  or yum repo — `dpkg -i`/`rpm -i` from the release page is the pattern, and
+  `/usr/bin/trau` classifies as an unmanaged install so in-app self-update declines
+  rather than fighting the package manager.
 - Pushing to a *second* repo needs a token `GITHUB_TOKEN` can't provide: create a
   fine-grained PAT with contents:write on `homebrew-trau`, stored as the
   `HOMEBREW_TAP_GITHUB_TOKEN` Actions secret on `trau`.
@@ -154,6 +171,7 @@ tracked separately.
 
 - **History** — squash-in-place on `RomkaLTU/trau` (§1), not a separate public repo.
 - **Windows** — deferred; launch matrix is `darwin`+`linux` × `amd64`+`arm64` (§4).
+  *(Superseded by [ADR 0023](0023-platform-support-windows.md).)*
 - **Version vars** — keep `-X main.version` only; no `commit`/`date` for now (§4).
 - **First tag** — `v0.1.0-rc.1` dry run through the full pipeline, then `v0.1.0` (§2).
 

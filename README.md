@@ -15,16 +15,56 @@ code on disk, never the build agent's reasoning.
 
 ## Install
 
+**macOS, Linux & WSL2** — Homebrew cask (needs Homebrew 4.5+ on Linux):
+
 ```bash
-brew install --cask RomkaLTU/trau/trau    # macOS / Linux
+brew install --cask RomkaLTU/trau/trau
 trau --version
-brew upgrade --cask trau                  # later, to update
+brew upgrade --cask trau    # later, to update
 ```
 
-Or from source (Go 1.25+): `git clone https://github.com/RomkaLTU/trau && cd trau && make build`.
+**Linux & WSL2 without Homebrew** — a `.deb`/`.rpm` from the
+[latest release](https://github.com/RomkaLTU/trau/releases/latest) (amd64 and arm64):
+
+```bash
+sudo dpkg -i trau_<version>_linux_amd64.deb    # Debian, Ubuntu
+sudo rpm -i trau_<version>_linux_amd64.rpm     # Fedora, RHEL, openSUSE
+```
+
+**Windows, native** — experimental (see [Platforms](#platforms)) — [Scoop](https://scoop.sh),
+amd64 and arm64:
+
+```powershell
+scoop bucket add trau https://github.com/RomkaLTU/scoop-trau
+scoop install trau
+trau --version
+scoop update trau           # later, to update
+```
+
+Or winget, once the manifest for a release clears Microsoft's review:
+
+```powershell
+winget install Codesomelabs.trau
+```
+
+Or from source (Go 1.25+): `git clone https://github.com/RomkaLTU/trau && cd trau && make build`,
+which lands `bin/trau` (on Windows, build `bin\trau.exe` yourself — see the
+[native Windows notes](docs/windows-native.md)).
 
 Requires `git`, `gh` (authenticated), `jq`, and an agent CLI — `claude` (default), `codex`, or
 `kimi` — on `$PATH`, plus a supported issue tracker — Linear, Jira, or GitHub Issues — via its MCP.
+trau spawns every one of them by bare name, so on Windows they need to be on `PATH` (`.exe` and
+`.cmd` are resolved from `PATHEXT`, which is why no example here spells an extension out) — Git for
+Windows and the GitHub CLI in particular.
+
+### Platforms
+
+| Platform | Status | Notes |
+| --- | --- | --- |
+| macOS | First-class | arm64 + amd64, Homebrew cask. |
+| Linux | First-class | arm64 + amd64, cask or `.deb`/`.rpm`. |
+| Windows via WSL2 | First-class | Windows 11 or Windows 10 1903+ (2004+ on Arm64), runs the Linux build inside the distro, and the only Windows path with Claude Code sandboxing — [quickstart](docs/windows-wsl2.md). |
+| Windows, native | Experimental | Windows 10 1809+, arm64 + amd64, Scoop or winget. Runs unsandboxed — for Claude Code sandboxing use WSL2 ([ADR 0023](docs/adr/0023-platform-support-windows.md), [notes](docs/windows-native.md)). |
 
 ## Use
 
@@ -184,8 +224,10 @@ that minted it ([ADR 0018](docs/adr/0018-terminal-takeover-handoff.md)). Takeove
 waits for the loop to let go of the working tree *before* handing you the session — two writers on
 one checkout is exactly what it exists to prevent — and holds the repo for as long as your terminal
 lives. Hand-back is manual: closing the terminal parks the ticket, and it re-enters the loop only
-when you queue it again. The hub's run view offers the same thing as **Open in terminal** (macOS),
-which opens your terminal app on the running session.
+when you queue it again. The hub's run view offers the same thing as **Open in terminal**, which
+opens your terminal app on the running session — macOS only, since the launch drives Terminal or
+iTerm over osascript, so on Linux and Windows the button is hidden and `trau takeover` above is the
+whole affordance.
 
 Logs are written under `.trau/runs/` (override with `RUNS_DIR`). trau adds this path and
 `.trau.ini` to the target repo's `.gitignore` on first run, so its artifacts never clutter

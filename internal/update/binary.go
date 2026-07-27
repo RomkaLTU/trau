@@ -82,28 +82,61 @@ func parseVersionOutput(out string) string {
 }
 
 const (
-	installBrew  = "brew"
-	installOther = "other"
+	installBrew   = "brew"
+	installScoop  = "scoop"
+	installWinget = "winget"
+	installOther  = "other"
 )
 
+// upgradeCommands is what a user runs to update an install the named manager
+// owns. An install no manager owns has no entry, and the release page is the
+// only honest answer for it.
+var upgradeCommands = map[string]string{
+	installBrew:   "brew upgrade --cask trau",
+	installScoop:  "scoop update trau",
+	installWinget: "winget upgrade Codesomelabs.trau",
+}
+
+func upgradeCommand(method string) string {
+	return upgradeCommands[method]
+}
+
 // installMethod classifies how the binary at path was installed. It resolves
-// symlinks first: the stable /opt/homebrew/bin/trau entry is what a user's PATH
+// symlinks first: the stable /opt/homebrew/bin/trau entry — and the scoop shim
+// and winget link that stand in for it on Windows — is what a user's PATH
 // holds, and only its target names the manager that put it there.
 func installMethod(path string) string {
 	target, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		target = path
 	}
-	_, err = exec.LookPath("brew")
-	return classifyInstall(target, err == nil)
+	return classifyInstall(target, managerOnPath)
 }
 
-func classifyInstall(target string, brewAvailable bool) string {
-	if !brewAvailable {
+func managerOnPath(name string) bool {
+	_, err := exec.LookPath(name)
+	return err == nil
+}
+
+// classifyInstall names the manager whose install layout target sits in, and
+// only while that manager is still on PATH. The Homebrew prefixes are fixed,
+// while Windows paths reach here in whatever case and separator the caller
+// used.
+func classifyInstall(target string, onPath func(name string) bool) string {
+	slashed := strings.ReplaceAll(target, `\`, "/")
+	lower := strings.ToLower(slashed)
+
+	manager := installOther
+	switch {
+	case strings.Contains(slashed, "/Caskroom/") || strings.Contains(slashed, "/Cellar/"):
+		manager = installBrew
+	case strings.Contains(lower, "/scoop/"):
+		manager = installScoop
+	case strings.Contains(lower, "/winget/"):
+		manager = installWinget
+	}
+	if manager == installOther || !onPath(manager) {
 		return installOther
 	}
-	if strings.Contains(target, "/Caskroom/") || strings.Contains(target, "/Cellar/") {
-		return installBrew
-	}
-	return installOther
+	return manager
 }

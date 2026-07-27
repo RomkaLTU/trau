@@ -20,6 +20,9 @@ License, Version 2.0.
   github.com/charmbracelet/lipgloss
       Copyright (c) Charmbracelet, Inc. — MIT License
 
+  github.com/aymanbagabas/go-pty
+      Copyright (c) 2023 Ayman Bagabas — MIT License
+
   github.com/creack/pty
       Copyright (c) 2011 Keith Rarick, 2013 Guillaume J. Charmes — MIT License
 

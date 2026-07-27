@@ -39,6 +39,7 @@ type Status struct {
 	RestartPending  bool       `json:"restartPending"`
 	UpdateAvailable bool       `json:"updateAvailable"`
 	InstallMethod   string     `json:"installMethod"`
+	UpgradeCommand  string     `json:"upgradeCommand"`
 	CheckedAt       *time.Time `json:"checkedAt"`
 	ChecksEnabled   bool       `json:"checksEnabled"`
 	ReleaseURL      string     `json:"releaseUrl"`
@@ -101,6 +102,7 @@ func (c *Checker) Status() Status {
 		Latest:         c.latest,
 		RestartPending: onDisk != "" && onDisk != c.running,
 		InstallMethod:  method,
+		UpgradeCommand: upgradeCommand(method),
 		ChecksEnabled:  c.enabled,
 		ApplyState:     ApplyState{State: c.applyState, Message: c.applyMessage},
 	}

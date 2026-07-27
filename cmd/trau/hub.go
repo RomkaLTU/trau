@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/config"
@@ -20,6 +19,8 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/launchd"
+	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/update"
 	"github.com/RomkaLTU/trau/internal/webserver"
@@ -31,7 +32,7 @@ import (
 const hubRestartDeadline = 15 * time.Second
 
 // hubStopGrace bounds how long a forced restart waits for a wedged hub to exit
-// on its own SIGTERM before escalating to SIGKILL.
+// on its own graceful stop before escalating to a kill.
 const hubStopGrace = 5 * time.Second
 
 func runHub(ctx context.Context, args []string, stdout io.Writer) error {
@@ -294,8 +295,8 @@ func describeLoops(live []registry.Entry) string {
 	return strings.Join(out, ", ")
 }
 
-// stopWedgedHub ends whatever holds the hub's port — SIGTERM, then SIGKILL once
-// the grace passes. Only ever reached behind checkForcedRestart.
+// stopWedgedHub ends whatever holds the hub's port — a graceful stop, then a
+// kill once the grace passes. Only ever reached behind checkForcedRestart.
 func stopWedgedHub(ctx context.Context, cfg config.Config, stdout io.Writer) error {
 	pids, err := portListeners(ctx, cfg.ServePort)
 	if err != nil {
@@ -313,21 +314,25 @@ func stopWedgedHub(ctx context.Context, cfg config.Config, stdout io.Writer) err
 	return nil
 }
 
+// stopProcess ends pid with the same escalation the hub's own Stop routes use:
+// a graceful stop, then a group kill once the grace passes. A graceful stop that
+// cannot even be delivered escalates straight to the kill rather than failing —
+// a detached hub owns no console to take a Ctrl-Break on Windows, and displacing
+// a hub that will not step aside is the whole point of a forced restart.
 func stopProcess(pid int) error {
 	if !registry.Alive(pid) {
 		return nil
 	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
-		return fmt.Errorf("signal pid %d: %w", pid, err)
-	}
-	if awaitProcessGone(pid, hubStopGrace) {
+	if err := proc.StopGracefully(pid); err != nil {
+		logger.Verbosef("graceful stop of pid %d failed, escalating: %v", pid, err)
+	} else if awaitProcessGone(pid, hubStopGrace) {
 		return nil
 	}
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+	if err := proc.KillGroup(pid); err != nil {
 		return fmt.Errorf("kill pid %d: %w", pid, err)
 	}
 	if !awaitProcessGone(pid, hubStopGrace) {
-		return fmt.Errorf("pid %d is still alive after a SIGKILL", pid)
+		return fmt.Errorf("pid %d is still alive after a group kill", pid)
 	}
 	return nil
 }
