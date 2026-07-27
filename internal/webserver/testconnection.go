@@ -127,11 +127,11 @@ func (s *Server) testTrackerConnection(ctx context.Context, provider string, cfg
 
 	count, counted, err := probe.CheckAuth(ctx)
 	if err != nil {
-		return connFailure(provider, err)
+		return connFailure(provider, cfg, err)
 	}
 	teams, err := probe.ListTeams(ctx)
 	if err != nil {
-		return connFailure(provider, err)
+		return connFailure(provider, cfg, err)
 	}
 	if len(teams) == 0 {
 		noun := containerNoun(provider)
@@ -150,8 +150,8 @@ func (s *Server) testTrackerConnection(ctx context.Context, provider string, cfg
 // connFailure renders a probe error as a failure response, attaching a hint when the
 // failure shape is one the wizard can act on: a rejected token or an unreachable
 // base URL.
-func connFailure(provider string, err error) TestConnectionResponse {
-	return TestConnectionResponse{Error: err.Error(), Hint: connHint(provider, err)}
+func connFailure(provider string, cfg config.Config, err error) TestConnectionResponse {
+	return TestConnectionResponse{Error: err.Error(), Hint: connHint(provider, cfg, err)}
 }
 
 // missingCredentials lists the credential fields the merged config still lacks
@@ -188,10 +188,10 @@ func enterCredentialsHint(provider string) string {
 }
 
 // connHint maps a recognizable probe failure onto an actionable, secret-free hint.
-func connHint(provider string, err error) string {
+func connHint(provider string, cfg config.Config, err error) string {
 	switch provider {
 	case "jira":
-		if msg := jiraapi.AuthErrorMessage(err); msg != "" {
+		if msg := jiraapi.AuthErrorMessageFor(err, cfg.JiraEmail); msg != "" {
 			return msg
 		}
 		if isUnreachable(err) {

@@ -559,7 +559,7 @@ func checkJira(ctx context.Context, cfg config.Config, rr *runner) {
 		return
 	}
 	if err := jiraapi.New(cfg.JiraBaseURL, cfg.JiraEmail, cfg.JiraAPIToken).Ping(ctx); err != nil {
-		if hint := jiraapi.AuthErrorMessage(err); hint != "" {
+		if hint := jiraapi.AuthErrorMessageFor(err, cfg.JiraEmail); hint != "" {
 			rr.add("jira auth", fail, "Jira REST authentication failed", hint)
 			return
 		}

@@ -107,6 +107,9 @@ func TestCheckJiraLiveAuth401(t *testing.T) {
 	if !strings.Contains(c.Message, jiraapi.TokenHelpURL) {
 		t.Errorf("401 message %q should carry the regenerate URL", c.Message)
 	}
+	if !strings.Contains(c.Message, jiraapi.AuthErrorMessageFor(jiraapi.ErrUnauthorized, "me@acme.com")) {
+		t.Errorf("401 message = %q, want the shared two-cause wording", c.Message)
+	}
 	if strings.Contains(c.Message, token) {
 		t.Errorf("check message leaked the token: %q", c.Message)
 	}

@@ -33,20 +33,34 @@ var (
 )
 
 // TokenHelpURL is where a user regenerates a classic Jira API token. Classic
-// tokens cannot self-refresh and expire roughly annually, so a 401/403 usually
-// means the token lapsed rather than that the account lost access.
+// tokens cannot self-refresh and expire roughly annually, so a 401/403 often
+// means the token lapsed — though the same status covers an email that is not
+// the account the token was minted for.
 const TokenHelpURL = "https://id.atlassian.com/manage-profile/security/api-tokens"
 
-// AuthErrorMessage returns an actionable, user-facing hint for an ErrUnauthorized
-// (an expired or invalid token), or "" for any other error. It deliberately does
-// not reword ErrUnauthorized itself: the sentinel's identity arms the tracker's
-// MCP fallback, so the human-facing string lives at the boundary that has already
-// exhausted fallback (doctor) rather than in the error value.
+// AuthErrorMessage returns an actionable, user-facing hint for an ErrUnauthorized,
+// or "" for any other error. It deliberately does not reword ErrUnauthorized itself:
+// the sentinel's identity arms the tracker's MCP fallback, so the human-facing
+// string lives at the boundary that has already exhausted fallback (doctor) rather
+// than in the error value.
 func AuthErrorMessage(err error) string {
-	if errors.Is(err, ErrUnauthorized) {
-		return "Jira token expired or invalid — regenerate it at " + TokenHelpURL
+	return AuthErrorMessageFor(err, "")
+}
+
+// AuthErrorMessageFor is AuthErrorMessage with an echo of the account email the
+// rejected request authenticated as. Basic auth is an email:token pair, so a 401
+// cannot tell an expired token from an email belonging to some other Atlassian
+// account: the hint names both causes and echoes the email, never the token.
+func AuthErrorMessageFor(err error, email string) string {
+	if !errors.Is(err, ErrUnauthorized) {
+		return ""
 	}
-	return ""
+	var who string
+	if email = strings.TrimSpace(email); email != "" {
+		who = " (authenticated as " + email + ")"
+	}
+	return "Jira rejected the credentials" + who + " — either the API token is expired/invalid, " +
+		"or the account email is not the Atlassian account that created the token. Regenerate at " + TokenHelpURL
 }
 
 const (
