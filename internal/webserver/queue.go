@@ -36,7 +36,9 @@ type QueueRequest struct {
 // queued. ProviderPin is the Provider pinned on the underlying issue, which the
 // run uses whenever the item carries no override of its own. Blockers are the
 // item's still-unresolved blocked-by edges and Blocked reports whether it has
-// any, so the queue can refuse to run the row on its own and say why.
+// any, so the queue can refuse to run the row on its own and say why. Removing
+// reports a stop-then-remove in flight, so a running row that is on its way out
+// reads as leaving rather than as work still under way.
 type QueueItemView struct {
 	Position    int              `json:"position"`
 	Kind        string           `json:"kind"`
@@ -49,6 +51,7 @@ type QueueItemView struct {
 	Reason      string           `json:"reason,omitempty"`
 	Blockers    []string         `json:"blockers,omitempty"`
 	Blocked     bool             `json:"blocked"`
+	Removing    bool             `json:"removing,omitempty"`
 	SubIssues   []queue.SubIssue `json:"sub_issues,omitempty"`
 	QueuedAt    string           `json:"queued_at,omitempty"`
 }
@@ -412,7 +415,7 @@ func (s *Server) queueView(root string) (QueueResponse, error) {
 		Draining:      meta.Draining,
 		DrainingSince: drainingSince,
 		ShuttingDown:  s.isShuttingDown(root),
-		Items:         queueItemViews(items, pins, blockers),
+		Items:         queueItemViews(items, pins, blockers, s.removingItems(root)),
 	}, nil
 }
 
@@ -592,9 +595,13 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 	s.writeQueue(w, http.StatusCreated, root)
 }
 
-// dequeue removes a pending or terminal item from the queue by identifier,
-// returning the resulting queue. It reports 404 when the item is not queued and
-// 409 when it is running, so a running child is never orphaned by a dequeue.
+// dequeue removes an item from the queue by identifier, returning the resulting
+// queue. It never touches the ticket: its checkpoint, run history and tracker row
+// stay exactly as they were, so a removed item is re-queueable. It reports 404
+// when the item is not queued. A running item is refused 409 as before unless the
+// request opts in with stop=1, which stops the item's child first and answers 202
+// — the row goes once the process is confirmed gone, and an armed drain moves on
+// to the next runnable item.
 func (s *Server) dequeue(w http.ResponseWriter, r *http.Request) {
 	root, ok := s.queueRoot(r.PathValue("repo"))
 	if !ok {
@@ -603,11 +610,20 @@ func (s *Server) dequeue(w http.ResponseWriter, r *http.Request) {
 	}
 	id := strings.TrimSpace(r.PathValue("id"))
 	item, queued := s.queuedItem(root, id)
+	if queued && item.Status == queue.StatusRunning && r.URL.Query().Get("stop") == "1" {
+		if s.beginRemoving(root, id) {
+			go s.removeRunningItem(root, item)
+		}
+		s.writeQueue(w, http.StatusAccepted, root)
+		return
+	}
 	if _, err := s.stores.Queue(root).Remove(id); errors.Is(err, queue.ErrNotQueued) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": fmt.Sprintf("%s is not in the queue", id)})
 		return
 	} else if errors.Is(err, queue.ErrRunning) {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s is running and cannot be removed", id)})
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("%s is running — remove it with stop=1 to stop the run first", id),
+		})
 		return
 	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "dequeue: " + err.Error()})
@@ -714,7 +730,7 @@ func queuedIndividually(items []queue.Item, subs []queue.SubIssue) []string {
 	return out
 }
 
-func queueItemViews(items []queue.Item, pins map[string]string, blockers map[string][]string) []QueueItemView {
+func queueItemViews(items []queue.Item, pins map[string]string, blockers map[string][]string, removing map[string]bool) []QueueItemView {
 	out := make([]QueueItemView, 0, len(items))
 	for i, it := range items {
 		view := QueueItemView{
@@ -729,6 +745,7 @@ func queueItemViews(items []queue.Item, pins map[string]string, blockers map[str
 			Reason:      it.Reason,
 			Blockers:    blockers[it.ID],
 			Blocked:     len(blockers[it.ID]) > 0,
+			Removing:    removing[it.ID],
 			SubIssues:   it.SubIssues,
 		}
 		if !it.QueuedAt.IsZero() {

@@ -32,6 +32,9 @@ export interface QueueItem {
   // while it has any, so the row cannot be run on its own.
   blockers?: string[]
   blocked?: boolean
+  // removing is set while a stop-then-remove is in flight, so a running row on
+  // its way out of the queue reads as leaving rather than as work under way.
+  removing?: boolean
   sub_issues?: QueueSubIssue[]
   queued_at?: string
 }
@@ -178,12 +181,18 @@ export async function runQueueItem(
   return res.json()
 }
 
+// dequeue takes an item out of the queue without touching the ticket. A running
+// item is refused unless stop is set, which asks the hub to stop the item's child
+// first — the row then goes once the run has exited, and the answer describes the
+// queue as it is mid-removal.
 export async function dequeue(
   repo: string,
   id: string,
+  opts: { stop?: boolean } = {},
 ): Promise<QueueResponse> {
+  const query = opts.stop ? '?stop=1' : ''
   const res = await apiFetch(
-    `/api/v1/repos/${encodeURIComponent(repo)}/queue/${encodeURIComponent(id)}`,
+    `/api/v1/repos/${encodeURIComponent(repo)}/queue/${encodeURIComponent(id)}${query}`,
     { method: 'DELETE' },
   )
   if (!res.ok) {

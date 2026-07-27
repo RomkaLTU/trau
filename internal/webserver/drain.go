@@ -111,11 +111,12 @@ func (d *drainer) run(ctx context.Context, root string) {
 
 // tick advances a repo's queue by one decision: it launches the next runnable
 // item, settles a finished one per the failure taxonomy — pausing the drain on a
-// fault or provider pause — waits, never spawning a second child while one is in
-// flight or while a pending self-reload is waiting for its idle gap, or finishes
-// the drain once the queue has nothing left to run so a completed — or armed but
-// empty — queue reads stopped instead of idling armed. It is the whole drain
-// policy, pure enough to table-test.
+// fault or provider pause, but leaving a row whose removal is in flight to the
+// removal, which drops it rather than parking it — waits, never spawning a second
+// child while one is in flight or while a pending self-reload is waiting for its
+// idle gap, or finishes the drain once the queue has nothing left to run so a
+// completed — or armed but empty — queue reads stopped instead of idling armed.
+// It is the whole drain policy, pure enough to table-test.
 func (d *drainer) tick(root string) (drainAction, error) {
 	store := d.srv.stores.Queue(root)
 	items, meta, err := store.Snapshot()
@@ -123,7 +124,7 @@ func (d *drainer) tick(root string) (drainAction, error) {
 		return drainWait, err
 	}
 	if running, ok := firstWithStatus(items, queue.StatusRunning); ok {
-		if d.alive(running.PID) {
+		if d.alive(running.PID) || d.srv.isRemoving(root, running.ID) {
 			return drainWait, nil
 		}
 		class, reason := d.reconcileOutcome(root, running)

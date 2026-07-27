@@ -84,6 +84,11 @@ import {
   type QueueResponse,
 } from "@/lib/queue";
 import {
+  removeFromQueueLabel,
+  removeFromQueueTitle,
+  removeFromQueueWarning,
+} from "@/lib/queue-remove";
+import {
   pauseKind,
   runSteps,
   STOPPED_HEADLINE,
@@ -163,6 +168,66 @@ function ShutdownAction({
         onConfirm={onConfirm}
       />
     </div>
+  );
+}
+
+// RemoveFromQueueDialog confirms taking one item out of the queue and spells out
+// that the ticket survives, so the gesture reads nothing like the ticket Delete
+// a user reaches for when this one refuses. A running item is stopped first.
+function RemoveFromQueueDialog({
+  item,
+  onOpenChange,
+  onConfirm,
+}: {
+  item: QueueItem | undefined;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: (item: QueueItem) => void;
+}) {
+  if (!item) return null;
+
+  return (
+    <ConfirmDialog
+      open
+      onOpenChange={onOpenChange}
+      windowTitle="remove from queue"
+      title={removeFromQueueTitle(item)}
+      description={removeFromQueueWarning(item)}
+      confirmLabel={removeFromQueueLabel(item)}
+      destructive
+      onConfirm={() => onConfirm(item)}
+    />
+  );
+}
+
+// RemoveFromQueueButton is the queue's own X: it drops the row and keeps the
+// ticket. It stays enabled on a running item — the confirm behind it stops the
+// run first — and reads as waiting while that stop is in flight.
+function RemoveFromQueueButton({
+  item,
+  disabled,
+  onRemove,
+}: {
+  item: QueueItem;
+  disabled: boolean;
+  onRemove: (id: string) => void;
+}) {
+  const removing = item.removing ?? false;
+
+  return (
+    <button
+      type="button"
+      onClick={() => onRemove(item.id)}
+      disabled={disabled || removing}
+      title={removing ? "Removing…" : "Remove from queue (the ticket is kept)"}
+      aria-label={`Remove ${item.id} from queue`}
+      className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-fail disabled:pointer-events-none disabled:opacity-30"
+    >
+      {removing ? (
+        <RefreshCw className="size-3.5 animate-spin" aria-hidden="true" />
+      ) : (
+        <X className="size-3.5" aria-hidden="true" />
+      )}
+    </button>
   );
 }
 
@@ -409,7 +474,7 @@ function QueueBuilderRow({
   onToggle: () => void;
   onMove: (dir: -1 | 1) => void;
   onRun: () => void;
-  onRemove: () => void;
+  onRemove: (id: string) => void;
   onPeek: (id: string) => void;
 }) {
   const isEpic = item.kind === "epic";
@@ -498,15 +563,11 @@ function QueueBuilderRow({
           >
             <ArrowDown className="size-3.5" aria-hidden="true" />
           </button>
-          <button
-            type="button"
-            onClick={onRemove}
+          <RemoveFromQueueButton
+            item={item}
             disabled={busy}
-            aria-label={`Remove ${item.id} from queue`}
-            className="flex size-6 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-fail disabled:pointer-events-none disabled:opacity-30"
-          >
-            <X className="size-3.5" aria-hidden="true" />
-          </button>
+            onRemove={onRemove}
+          />
         </div>
       </div>
 
@@ -576,6 +637,7 @@ function LaunchQueueCard({
   const [provider, setProvider] = useState(NO_OVERRIDE);
   const [expandedIds, setExpandedIds] = useState<string[]>([]);
   const [browseOpen, setBrowseOpen] = useState(false);
+  const [removeId, setRemoveId] = useState<string | null>(null);
   const [skipResume, setSkipResume] = useState(false);
   const [onFault, setOnFault] = useState<OnFault>("halt");
 
@@ -647,9 +709,15 @@ function LaunchQueueCard({
   });
 
   const remove = useMutation({
-    mutationFn: (id: string) => dequeue(repo, id),
+    mutationFn: (item: QueueItem) =>
+      dequeue(repo, item.id, { stop: item.status === "running" }),
     onSuccess: setQueue,
   });
+  const askRemove = (id: string) => {
+    remove.reset();
+    setRemoveId(id);
+  };
+  const removeTarget = builder.queue.find((it) => it.id === removeId);
 
   const runOne = useMutation({
     mutationFn: (id: string) => runQueueItem(repo, id),
@@ -1023,7 +1091,7 @@ function LaunchQueueCard({
                       onToggle={() => toggleExpand(item.id)}
                       onMove={(dir) => move.mutate({ id: item.id, dir })}
                       onRun={() => runOne.mutate(item.id)}
-                      onRemove={() => remove.mutate(item.id)}
+                      onRemove={askRemove}
                       onPeek={onPeek}
                     />
                   ))}
@@ -1072,6 +1140,17 @@ function LaunchQueueCard({
           open={browseOpen}
           onOpenChange={setBrowseOpen}
           onQueue={setQueue}
+        />
+
+        <RemoveFromQueueDialog
+          item={removeTarget}
+          onOpenChange={(open) => {
+            if (!open) setRemoveId(null);
+          }}
+          onConfirm={(item) => {
+            remove.mutate(item);
+            setRemoveId(null);
+          }}
         />
       </TerminalCard>
 
@@ -1312,14 +1391,20 @@ function FinishedSection({
 function RunningRow({
   repo,
   ticket,
+  item,
   instance,
   now,
+  busy,
+  onRemove,
   onPeek,
 }: {
   repo: string;
   ticket: TimelineTicket;
+  item?: QueueItem;
   instance?: Instance;
   now: number;
+  busy: boolean;
+  onRemove: (id: string) => void;
   onPeek: (id: string) => void;
 }) {
   const live = instance?.ticket === ticket.id ? instance : undefined;
@@ -1348,6 +1433,15 @@ function RunningRow({
           View run
         </Link>
         <BacklogPRBadge status={ticket.prStatus} />
+        {item ? (
+          <span className="ml-auto flex">
+            <RemoveFromQueueButton
+              item={item}
+              disabled={busy}
+              onRemove={onRemove}
+            />
+          </span>
+        ) : null}
       </div>
       {phase || live?.activity ? (
         <PhaseStepper
@@ -1597,6 +1691,7 @@ function RunningQueueView({
   const queryClient = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
   const [runNextId, setRunNextId] = useState<string | null>(null);
+  const [removeId, setRemoveId] = useState<string | null>(null);
 
   const promote = useMutation({
     mutationFn: (id: string) => promoteQueueItem(repo, id),
@@ -1608,6 +1703,24 @@ function RunningQueueView({
   };
   const runNextTarget = queue.items.find((it) => it.id === runNextId);
   const runNextBusy = promote.isPending || shuttingDown;
+
+  const remove = useMutation({
+    mutationFn: (item: QueueItem) =>
+      dequeue(repo, item.id, { stop: item.status === "running" }),
+    onSuccess: (res) => publishQueue(queryClient, repo, res),
+  });
+  const askRemove = (id: string) => {
+    remove.reset();
+    setRemoveId(id);
+  };
+  const removeTarget = queue.items.find((it) => it.id === removeId);
+
+  // The running row's queue entry is the epic when the drain is working one of
+  // its sub-issues, since that is the row a removal drops.
+  const running = timeline.running;
+  const runningItem = running
+    ? queue.items.find((it) => it.id === (running.epicId ?? running.id))
+    : undefined;
 
   return (
     <div className="flex flex-col gap-6">
@@ -1641,8 +1754,11 @@ function RunningQueueView({
               <RunningRow
                 repo={repo}
                 ticket={timeline.running}
+                item={runningItem}
                 instance={instance}
                 now={now}
+                busy={remove.isPending || shuttingDown}
+                onRemove={askRemove}
                 onPeek={onPeek}
               />
             ) : timeline.finalize ? (
@@ -1657,6 +1773,11 @@ function RunningQueueView({
                 Idle — picking the next ticket from the queue.
               </p>
             )}
+            {remove.error ? (
+              <p className="font-mono text-xs text-fail" role="alert">
+                {actionError(remove.error)}
+              </p>
+            ) : null}
           </section>
 
           <section className="flex flex-col gap-2">
@@ -1802,6 +1923,17 @@ function RunningQueueView({
           onConfirm={() => promote.mutate(runNextTarget.id)}
         />
       ) : null}
+
+      <RemoveFromQueueDialog
+        item={removeTarget}
+        onOpenChange={(open) => {
+          if (!open) setRemoveId(null);
+        }}
+        onConfirm={(item) => {
+          remove.mutate(item);
+          setRemoveId(null);
+        }}
+      />
 
       <AddTicketDialog
         repo={repo}

@@ -51,6 +51,8 @@ type Server struct {
 	pregrill         map[int64]bool
 	shutdownMu       sync.Mutex
 	shuttingDown     map[string]bool
+	removeMu         sync.Mutex
+	removing         map[queueItemKey]bool
 	sup              Supervisor
 	term             terminalLauncher
 	sessionExists    func(sessionID string) bool
@@ -106,6 +108,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		grillEvents:      newGrillBroadcaster(),
 		pregrill:         map[int64]bool{},
 		shuttingDown:     map[string]bool{},
+		removing:         map[queueItemKey]bool{},
 		sup:              newOSSupervisor(),
 		term:             osascriptLauncher{},
 		sessionExists:    agent.SessionExists,
