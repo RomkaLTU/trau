@@ -36,6 +36,15 @@ Or from source (Go 1.25+): `git clone https://github.com/RomkaLTU/trau && cd tra
 Requires `git`, `gh` (authenticated), `jq`, and an agent CLI — `claude` (default), `codex`, or
 `kimi` — on `$PATH`, plus a supported issue tracker — Linear, Jira, or GitHub Issues — via its MCP.
 
+### Platforms
+
+| Platform | Status | Notes |
+| --- | --- | --- |
+| macOS | First-class | arm64 + amd64, Homebrew cask. |
+| Linux | First-class | arm64 + amd64, cask or `.deb`/`.rpm`. |
+| Windows via WSL2 | First-class | Windows 11 or Windows 10 1903+ (2004+ on Arm64), runs the Linux build inside the distro, and the only Windows path with Claude Code sandboxing — [quickstart](docs/windows-wsl2.md). |
+| Windows, native | Planned — ships experimental | The port is in progress and the PTY it needs is the open piece ([ADR 0023](docs/adr/0023-platform-support-windows.md)); until it lands, use WSL2. |
+
 ## Use
 
 Just run it inside the repo you want it to work on:
