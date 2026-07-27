@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"time"
 
@@ -33,13 +34,16 @@ type Instance struct {
 // here after their loop exits so their runs stay browsable; an unallowed repo is
 // observe-only. Registered marks a repo whose startability comes from a web
 // registration rather than the SERVE_WORKSPACE seed, so the UI offers unregister
-// only where it applies. Freshness carries the issue-store sync state and is
-// attached only on the repos API, where the background sync surfaces it.
+// only where it applies. Seeded marks the config-owned grant no removal can take
+// back, which a registration can overlap. Freshness carries the issue-store sync
+// state and is attached only on the repos API, where the background sync surfaces
+// it.
 type RepoView struct {
 	registry.Repo
 	Live       bool           `json:"live"`
 	Allowed    bool           `json:"allowed"`
 	Registered bool           `json:"registered"`
+	Seeded     bool           `json:"seeded"`
 	Freshness  *RepoFreshness `json:"freshness,omitempty"`
 }
 
@@ -169,6 +173,15 @@ func (s *Server) liveInstances() []registry.Entry {
 		return nil
 	}
 	return entries
+}
+
+// repoIsLive reports whether any loop is registered in root right now, idle
+// dashboards included, matching what the repos list flags as live. The presence
+// sweep remembers every live loop's repo, so removing one would not stick.
+func (s *Server) repoIsLive(root string) bool {
+	return slices.ContainsFunc(s.liveInstances(), func(e registry.Entry) bool {
+		return e.RepoRoot == root
+	})
 }
 
 // hasBusyInstance reports whether a live instance in root is past idle — a run in

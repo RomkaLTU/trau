@@ -93,6 +93,7 @@ function repoView(name: string): RepoView {
     live: false,
     allowed: true,
     registered: true,
+    seeded: false,
   };
 }
 

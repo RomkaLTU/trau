@@ -45,6 +45,7 @@ export interface RepoView {
   live: boolean;
   allowed: boolean;
   registered: boolean;
+  seeded: boolean;
   freshness?: RepoFreshness;
 }
 
@@ -239,14 +240,44 @@ export async function registerRepo(path: string): Promise<RepoView> {
   return res.json();
 }
 
-export async function unregisterRepo(repo: string): Promise<RepoView> {
-  const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(repo)}`, {
+// unregisterRepo and forgetRepo both address the repo by ident — its name, or its
+// root path, which is the only way to name one of two repos sharing a basename.
+export async function unregisterRepo(ident: string): Promise<RepoView> {
+  const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(ident)}`, {
     method: "DELETE",
   });
   if (!res.ok) {
     throw new Error(await errorMessage(res, "unregister failed"));
   }
   return res.json();
+}
+
+// forgetRepo drops the repo off the hub's list entirely, the one removal that
+// also reaches a repo the hub merely observed a loop run in.
+export async function forgetRepo(ident: string): Promise<RepoView> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(ident)}?forget=1`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, "remove failed"));
+  }
+  return res.json();
+}
+
+// removeBlocked reports why the hub would refuse to remove this repo, so the row
+// says so up front instead of handing back a toast. It reads the seeded flag the
+// hub sends rather than inferring the grant from a missing registration, which a
+// repo that is both seeded and registered would read the wrong way round. null
+// means the removal goes through.
+export function removeBlocked(repo: RepoView): string | null {
+  if (repo.live) {
+    return "A loop is live here — stop it before removing the repo";
+  }
+  if (repo.seeded) {
+    return "Granted by SERVE_WORKSPACE — drop its root from the config instead";
+  }
+  return null;
 }
 
 export interface SyncResponse {

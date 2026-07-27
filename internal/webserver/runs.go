@@ -3,6 +3,7 @@ package webserver
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"sort"
 
 	"github.com/RomkaLTU/trau/internal/hubstore"
@@ -170,23 +171,23 @@ func (s *Server) repoViews() []RepoView {
 	views := make([]RepoView, 0, len(known)+len(roots))
 	for _, repo := range known {
 		seen[repo.Root] = true
-		views = append(views, RepoView{Repo: repo, Live: live[repo.Root], Allowed: allowed[repo.Root], Registered: registered[repo.Root]})
+		views = append(views, RepoView{Repo: repo, Live: live[repo.Root], Allowed: allowed[repo.Root], Registered: registered[repo.Root], Seeded: s.seeded(repo.Root)})
 	}
 	for _, root := range roots {
 		if seen[root] {
 			continue
 		}
-		views = append(views, RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: registered[root]})
+		views = append(views, RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: registered[root], Seeded: s.seeded(root)})
 	}
 	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
 	return views
 }
 
-// knownRepos is the repos the hub has seen a loop run in: the persisted known set
-// unioned with the currently live loops, sorted by name. Reading it never writes;
-// the sweep persists live loops so they linger after exit. entries is the live
-// snapshot the caller already read, folded in so a just-started loop resolves
-// before the next sweep.
+// knownRepos is the repos the hub keeps listed: the persisted known set unioned
+// with the currently live loops, sorted by name. Reading it never writes; the
+// sweep persists live loops so they linger after exit, and unregistering a repo
+// remembers it so it lingers too. entries is the live snapshot the caller already
+// read, folded in so a just-started loop resolves before the next sweep.
 func (s *Server) knownRepos(entries []registry.Entry) []registry.Repo {
 	byRoot := make(map[string]registry.Repo)
 	if persisted, err := s.stores.Registrations().Known(); err == nil {
@@ -212,12 +213,23 @@ func (s *Server) knownRepos(entries []registry.Entry) []registry.Repo {
 // (the known set and any live loops) first, then the startable roots (the
 // workspace seed and web registrations) synthesized as workspace views, so a
 // freshly registered repo resolves before its first loop runs. Known and live
-// entries win over a synthesized view on a name collision.
+// entries win over a synthesized view on a name collision. An absolute ident is
+// matched against known roots before any name, which is the only way to address
+// one of two repos sharing a basename.
 func (s *Server) findRepo(ident string) (registry.Repo, bool) {
 	if ident == "" {
 		return registry.Repo{}, false
 	}
-	for _, repo := range s.knownRepos(s.liveInstances()) {
+	known := s.knownRepos(s.liveInstances())
+	if filepath.IsAbs(ident) {
+		cleaned := filepath.Clean(ident)
+		for _, repo := range known {
+			if repo.Root == ident || repo.Root == cleaned {
+				return repo, true
+			}
+		}
+	}
+	for _, repo := range known {
 		if repo.Name == ident {
 			return repo, true
 		}
@@ -226,6 +238,28 @@ func (s *Server) findRepo(ident string) (registry.Repo, bool) {
 		return workspaceRepo(root), true
 	}
 	return registry.Repo{}, false
+}
+
+// matchListedRepo resolves ident against the same union findRepo does, but under
+// matchRoot's rule that an ambiguous base name matches nothing. Removal is the one
+// lookup that must not fall back to an arbitrary namesake, so it takes a root or a
+// name only one listed repo answers to.
+func (s *Server) matchListedRepo(ident string) (registry.Repo, bool) {
+	known := s.knownRepos(s.liveInstances())
+	roots := make([]string, 0, len(known))
+	for _, repo := range known {
+		roots = append(roots, repo.Root)
+	}
+	root, ok := matchRoot(normalizeRoots(append(roots, s.effectiveRoots()...)), ident)
+	if !ok {
+		return registry.Repo{}, false
+	}
+	for _, repo := range known {
+		if repo.Root == root {
+			return repo, true
+		}
+	}
+	return workspaceRepo(root), true
 }
 
 // collectRuns reads every checkpoint the authoritative table holds for root into
