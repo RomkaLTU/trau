@@ -1,9 +1,10 @@
 # trau on Windows via WSL2
 
-WSL2 is how you run trau on Windows today. The distro runs trau's ordinary Linux binaries —
-nothing is emulated, nothing is ported — and it is the only Windows configuration where Claude
-Code can sandbox what the agent runs ([ADR 0023](adr/0023-platform-support-windows.md)). A native
-Windows build is in progress and will ship experimental; until then this is the whole story.
+WSL2 is the first-class way to run trau on Windows. The distro runs trau's ordinary Linux binaries
+— nothing is emulated, nothing is ported — and it is the only Windows configuration where Claude
+Code can sandbox what the agent runs ([ADR 0023](adr/0023-platform-support-windows.md)). The native
+Windows build ships alongside it as experimental and unsandboxed; its notes are in
+[trau on native Windows](windows-native.md).
 
 You need **WSL2** (not WSL1) with a distro installed. WSL2 runs on Windows 11 and on Windows 10
 1903 / build 18362.1049+ on x64, 2004 / build 19041+ on Arm64 — anything older can only run WSL1.

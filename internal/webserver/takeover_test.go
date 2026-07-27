@@ -305,8 +305,17 @@ func TestTakeoverNonDarwin(t *testing.T) {
 	if status != http.StatusNotImplemented {
 		t.Fatalf("takeover status = %d, body %v, want 501", status, body)
 	}
+	if body["reason"] != "takeover_unsupported" {
+		t.Errorf("reason = %v, want takeover_unsupported", body["reason"])
+	}
+	if msg, _ := body["error"].(string); !strings.Contains(msg, "trau takeover COD-7") {
+		t.Errorf("error = %q, want the CLI takeover a non-macOS hub can still run", msg)
+	}
 	if len(sup.stops) != 0 || len(launcher.calls()) != 0 {
 		t.Errorf("stops = %+v, launches = %+v, want neither", sup.stops, launcher.calls())
+	}
+	if getInstances(t, ts).TakeoverSupported {
+		t.Error("takeover_supported = true on a non-macOS hub, want the affordance hidden")
 	}
 }
 

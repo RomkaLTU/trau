@@ -77,24 +77,68 @@ func TestParseVersionOutput(t *testing.T) {
 }
 
 func TestClassifyInstall(t *testing.T) {
+	anyManager := func(string) bool { return true }
+	noManager := func(string) bool { return false }
+
 	tests := []struct {
-		name          string
-		target        string
-		brewAvailable bool
-		want          string
+		name   string
+		target string
+		onPath func(string) bool
+		want   string
 	}{
-		{"cask", "/opt/homebrew/Caskroom/trau/2.2.0/trau", true, installBrew},
-		{"cellar", "/opt/homebrew/Cellar/trau/2.2.0/bin/trau", true, installBrew},
-		{"intel cask", "/usr/local/Caskroom/trau/2.2.0/trau", true, installBrew},
-		{"cask path without brew", "/opt/homebrew/Caskroom/trau/2.2.0/trau", false, installOther},
-		{"go install", "/Users/rd/go/bin/trau", true, installOther},
-		{"dev build", "/Users/rd/Projects/loop/bin/trau", true, installOther},
+		{"cask", "/opt/homebrew/Caskroom/trau/2.2.0/trau", anyManager, installBrew},
+		{"cellar", "/opt/homebrew/Cellar/trau/2.2.0/bin/trau", anyManager, installBrew},
+		{"intel cask", "/usr/local/Caskroom/trau/2.2.0/trau", anyManager, installBrew},
+		{"cask path without brew", "/opt/homebrew/Caskroom/trau/2.2.0/trau", noManager, installOther},
+		{"scoop app", `C:\Users\rd\scoop\apps\trau\2.2.0\trau.exe`, anyManager, installScoop},
+		{"scoop shim", `C:\Users\rd\scoop\shims\trau.exe`, anyManager, installScoop},
+		{"scoop path without scoop", `C:\Users\rd\scoop\shims\trau.exe`, noManager, installOther},
+		{"winget package", `C:\Users\rd\AppData\Local\Microsoft\WinGet\Packages\Codesomelabs.trau_x\trau.exe`, anyManager, installWinget},
+		{"winget path without winget", `C:\Users\rd\AppData\Local\Microsoft\WinGet\Links\trau.exe`, noManager, installOther},
+		{"go install", "/Users/rd/go/bin/trau", anyManager, installOther},
+		{"dev build", "/Users/rd/Projects/loop/bin/trau", anyManager, installOther},
+		{"windows dev build", `C:\Users\rd\Projects\loop\bin\trau.exe`, anyManager, installOther},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := classifyInstall(tt.target, tt.brewAvailable); got != tt.want {
-				t.Errorf("classifyInstall(%q, %v) = %q, want %q", tt.target, tt.brewAvailable, got, tt.want)
+			if got := classifyInstall(tt.target, tt.onPath); got != tt.want {
+				t.Errorf("classifyInstall(%q) = %q, want %q", tt.target, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestClassifyInstallChecksItsOwnManager pins that the PATH probe asks for the
+// manager the path named, not brew: a Windows box has no brew to find.
+func TestClassifyInstallChecksItsOwnManager(t *testing.T) {
+	asked := []string{}
+	onPath := func(name string) bool {
+		asked = append(asked, name)
+		return true
+	}
+
+	if got := classifyInstall(`C:\Users\rd\scoop\shims\trau.exe`, onPath); got != installScoop {
+		t.Fatalf("classifyInstall = %q, want %q", got, installScoop)
+	}
+	if len(asked) != 1 || asked[0] != installScoop {
+		t.Errorf("probed %v on PATH, want just %q", asked, installScoop)
+	}
+}
+
+func TestUpgradeCommand(t *testing.T) {
+	tests := []struct {
+		method string
+		want   string
+	}{
+		{installBrew, "brew upgrade --cask trau"},
+		{installScoop, "scoop update trau"},
+		{installWinget, "winget upgrade Codesomelabs.trau"},
+		{installOther, ""},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		if got := upgradeCommand(tt.method); got != tt.want {
+			t.Errorf("upgradeCommand(%q) = %q, want %q", tt.method, got, tt.want)
+		}
 	}
 }

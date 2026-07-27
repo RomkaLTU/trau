@@ -59,11 +59,32 @@ func TestStatusReportsDriftWithoutRemoteCheck(t *testing.T) {
 	if st.InstallMethod != installBrew {
 		t.Errorf("installMethod = %q, want %q", st.InstallMethod, installBrew)
 	}
+	if want := "brew upgrade --cask trau"; st.UpgradeCommand != want {
+		t.Errorf("upgradeCommand = %q, want %q", st.UpgradeCommand, want)
+	}
 	if st.CheckedAt != nil {
 		t.Errorf("checkedAt = %v, want null before any check", st.CheckedAt)
 	}
 	if st.ReleaseURL != "" {
 		t.Errorf("releaseUrl = %q, want empty with no known release", st.ReleaseURL)
+	}
+}
+
+// TestStatusCarriesTheOwningManagersCommand pins that a scoop or winget install
+// names its own upgrade command instead of falling through to brew's.
+func TestStatusCarriesTheOwningManagersCommand(t *testing.T) {
+	tests := map[string]string{
+		installScoop:  "scoop update trau",
+		installWinget: "winget upgrade Codesomelabs.trau",
+		installOther:  "",
+	}
+	for method, want := range tests {
+		t.Run(method, func(t *testing.T) {
+			st := newTestChecker("2.1.0", "2.2.0", method).Status()
+			if st.UpgradeCommand != want {
+				t.Errorf("upgradeCommand = %q, want %q", st.UpgradeCommand, want)
+			}
+		})
 	}
 }
 

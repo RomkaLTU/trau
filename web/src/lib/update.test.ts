@@ -22,6 +22,7 @@ function status(over: Partial<UpdateStatus> = {}): UpdateStatus {
     restartPending: false,
     updateAvailable: false,
     installMethod: 'brew',
+    upgradeCommand: 'brew upgrade --cask trau',
     checkedAt: null,
     checksEnabled: true,
     releaseUrl: 'https://github.com/RomkaLTU/trau/releases/tag/v2.1.0',
