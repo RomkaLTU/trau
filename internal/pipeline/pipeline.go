@@ -5025,7 +5025,7 @@ func (g ExecGit) SnapshotWorktree(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("snapshot index dir: %w", err)
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }()
 
 	index := filepath.Join(dir, "index")
 	if err := g.seedIndex(ctx, index); err != nil {
