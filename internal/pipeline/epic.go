@@ -26,18 +26,20 @@ func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
 		return branch, nil
 	}
 
-	remote, rerr := p.Git.FindRemoteEpicBranch(ctx, p.Remote, p.EpicID)
-	if rerr != nil {
-		// An indeterminate remote must NOT fall through to creating a duplicate.
-		return "", fmt.Errorf("resolve epic branch for %s: check remote: %w", p.EpicID, rerr)
-	}
-	if remote != "" {
-		if err := p.Git.CheckoutRemoteBranch(ctx, p.Remote, remote); err != nil {
-			return "", fmt.Errorf("resolve epic branch %s: adopt from %s: %w", remote, p.Remote, err)
+	if !p.localDelivery(ctx) {
+		remote, rerr := p.Git.FindRemoteEpicBranch(ctx, p.Remote, p.EpicID)
+		if rerr != nil {
+			// An indeterminate remote must NOT fall through to creating a duplicate.
+			return "", fmt.Errorf("resolve epic branch for %s: check remote: %w", p.EpicID, rerr)
 		}
-		p.logf("  epic branch %s adopted from %s", remote, p.Remote)
-		p.epicBranch = remote
-		return remote, nil
+		if remote != "" {
+			if err := p.Git.CheckoutRemoteBranch(ctx, p.Remote, remote); err != nil {
+				return "", fmt.Errorf("resolve epic branch %s: adopt from %s: %w", remote, p.Remote, err)
+			}
+			p.logf("  epic branch %s adopted from %s", remote, p.Remote)
+			p.epicBranch = remote
+			return remote, nil
+		}
 	}
 
 	title, err := p.Tracker.Title(ctx, p.EpicID)
@@ -50,8 +52,10 @@ func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
 		return "", &GiveUpError{ID: p.EpicID, Reason: "could not create epic branch for " + p.EpicID}
 	}
 	p.logf("  epic branch %s ← %s", branch, base)
-	if err := p.Git.Push(ctx, p.Remote, branch, false); err != nil {
-		p.logf("  push epic branch error (continuing): %v", err)
+	if !p.localDelivery(ctx) {
+		if err := p.Git.Push(ctx, p.Remote, branch, false); err != nil {
+			p.logf("  push epic branch error (continuing): %v", err)
+		}
 	}
 	p.epicBranch = branch
 	return branch, nil
@@ -153,6 +157,9 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("finalize epic %s: resolve branch: %w", p.EpicID, err)
 	}
+	if p.localDelivery(ctx) {
+		return p.finalizeEpicLocally(ctx, epic)
+	}
 	synced, err := p.syncEpicForMerge(ctx, epic)
 	if err != nil {
 		return fmt.Errorf("finalize epic %s: sync with %s: %w", p.EpicID, p.Base, err)
@@ -187,6 +194,40 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 	return nil
 }
 
+// finalizeEpicLocally ships a complete epic on a remote-less repo: with no PR to
+// open and no CI to gate, the epic branch is squash-merged into the base right here
+// and the tracker epic closes on that. AUTO_MERGE=0 still means the operator lands
+// the epic themselves, so it stays open on its branch until they do — there is no
+// PR to poll, so this cannot block on the merge the way the remote path does. A
+// merge git refuses leaves the epic branch untouched for a human, exactly as an
+// unresolvable drift conflict does on the remote path.
+func (p *Pipeline) finalizeEpicLocally(ctx context.Context, epic string) error {
+	if !p.AutoMerge {
+		p.logf("  ⏳ epic %s is complete on %s — merge it into %s yourself (AUTO_MERGE=0)", p.EpicID, epic, p.Base)
+		return nil
+	}
+	if err := p.Git.Checkout(ctx, p.Base, false); err != nil {
+		return fmt.Errorf("finalize epic %s: checkout %s: %w", p.EpicID, p.Base, err)
+	}
+	title, err := p.Tracker.Title(ctx, p.EpicID)
+	if err != nil {
+		p.logf("  epic title lookup error (using id-only subject): %v", err)
+	}
+	if err := p.Git.SquashMerge(ctx, epic, epicPRTitle(p.EpicID, title)); err != nil {
+		p.logf("  ⚠ epic %s could not be merged into %s (%v) — branch left for manual resolution", p.EpicID, p.Base, err)
+		return nil
+	}
+	p.checkpointEpicMerged(ctx, "")
+	_ = p.State.Set(p.EpicID, "DELIVERY", deliveryLocal)
+	extra := "All direct sub-issues are delivered. Epic squash-merged into " + p.Base + " — " + localDeliveryNote + "."
+	if err := p.Tracker.SetStatus(ctx, p.EpicID, "Done", extra); err != nil {
+		return fmt.Errorf("finalize epic %s: close epic: %w", p.EpicID, err)
+	}
+	p.logf("  ✓ epic %s closed; merged into %s locally", p.EpicID, p.Base)
+	p.reloadHubOntoBase(ctx)
+	return nil
+}
+
 // syncEpicBest keeps the epic branch current between children: the local epic is
 // first fast-forwarded from the REMOTE epic — siblings squash-merge into the
 // remote, so a stale local epic would hand the next child a base missing that
@@ -198,6 +239,9 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 // resolving agent). Best-effort by design — any failure is logged, never blocking
 // the child about to branch off.
 func (p *Pipeline) syncEpicBest(ctx context.Context, epic string) {
+	if p.localDelivery(ctx) {
+		return
+	}
 	if err := p.Git.Checkout(ctx, epic, false); err != nil {
 		p.logf("  epic sync skipped (checkout %s: %v)", epic, err)
 		return
@@ -317,8 +361,10 @@ func (p *Pipeline) checkpointEpicMerged(ctx context.Context, prURL string) {
 	if title, _ := p.Tracker.Title(ctx, p.EpicID); title != "" {
 		_ = p.State.Set(p.EpicID, "TITLE", title)
 	}
-	_ = p.State.Set(p.EpicID, "PR", prNumber(prURL))
-	_ = p.State.Set(p.EpicID, "PR_URL", prURL)
+	if prURL != "" {
+		_ = p.State.Set(p.EpicID, "PR", prNumber(prURL))
+		_ = p.State.Set(p.EpicID, "PR_URL", prURL)
+	}
 	p.setPRStatus(p.EpicID, prStatusMerged)
 }
 

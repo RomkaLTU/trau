@@ -20,10 +20,13 @@ import (
 type reloadGit struct {
 	fakeGit
 	ops         []string
+	noRemote    bool
 	checkoutErr error
 	pullErr     error
 	discardErr  error
 }
+
+func (g *reloadGit) RemoteExists(context.Context, string) (bool, error) { return !g.noRemote, nil }
 
 func (g *reloadGit) Checkout(_ context.Context, ref string, _ bool) error {
 	g.ops = append(g.ops, "checkout "+ref)
@@ -81,22 +84,25 @@ func newReloadPipeline(t *testing.T, git Git, gh GitHub, hub *reloadHub) *Pipeli
 
 // Only work that reached the base asks the hub to reload: a standalone merge and
 // the reconcile of a PR a prior run already merged do, an epic slice (whose PR
-// targets the epic branch) does not, and a repo without HUB_SELF_RELOAD never
-// even checks the base out.
+// targets the epic branch) does not, a local run that left the merge to the
+// operator does not either, and a repo without HUB_SELF_RELOAD never even checks
+// the base out.
 func TestCIAndMergeRequestsHubReloadOnlyForBaseShips(t *testing.T) {
 	cases := []struct {
-		name        string
-		epicID      string
-		selfReload  bool
-		prState     string
-		redCI       bool
-		wantCalls   int
-		wantRebuild bool
+		name           string
+		epicID         string
+		selfReload     bool
+		prState        string
+		redCI          bool
+		operatorMerges bool
+		wantCalls      int
+		wantRebuild    bool
 	}{
 		{name: "standalone merge ships to base", selfReload: true, wantCalls: 1, wantRebuild: true},
 		{name: "already-merged reconcile ships too", selfReload: true, prState: "MERGED", wantCalls: 1, wantRebuild: true},
 		{name: "epic slice merges into the epic branch", selfReload: true, epicID: "COD-1", wantCalls: 0},
 		{name: "red CI never shipped anything", selfReload: true, redCI: true, wantCalls: 0},
+		{name: "local run awaiting the operator's merge", selfReload: true, operatorMerges: true, wantCalls: 0},
 		{name: "key unset is a complete no-op", wantCalls: 0},
 	}
 	for _, tc := range cases {
@@ -106,12 +112,13 @@ func TestCIAndMergeRequestsHubReloadOnlyForBaseShips(t *testing.T) {
 			if tc.redCI {
 				gh.checks = []Check{{Name: "ci/test", Bucket: "fail"}}
 			}
-			git := &reloadGit{}
+			git := &reloadGit{noRemote: tc.operatorMerges}
 			hub := &reloadHub{}
 			p := newReloadPipeline(t, git, gh, hub)
 			p.EpicID = tc.epicID
 			p.HubSelfReload = tc.selfReload
 			p.RequireCI = tc.redCI
+			p.AutoMerge = !tc.operatorMerges
 			seedPROpen(t, p, id, "77", "feature/COD-1185-x")
 
 			err := p.CIAndMerge(context.Background(), id)

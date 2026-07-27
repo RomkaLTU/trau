@@ -557,6 +557,35 @@ func TestCheckBrowserVerify(t *testing.T) {
 	}
 }
 
+func TestCheckRemote(t *testing.T) {
+	cases := []struct {
+		name    string
+		remote  bool
+		wantMsg string
+	}{
+		{name: "configured remote passes", remote: true, wantMsg: "origin is configured"},
+		{name: "missing remote reports local delivery", wantMsg: "local delivery mode"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := newTestRunner()
+
+			checkRemote(context.Background(), config.Config{Remote: "origin"}, teamSyncRepo(t, tc.remote), rr)
+
+			c := lastCheck(t, rr)
+			if c.Status != pass {
+				t.Errorf("status = %q, want pass", c.Status)
+			}
+			if !strings.Contains(c.Message, tc.wantMsg) {
+				t.Errorf("message = %q, want it to contain %q", c.Message, tc.wantMsg)
+			}
+			if rr.r.Errors != 0 || rr.r.Warnings != 0 {
+				t.Errorf("errors=%d warnings=%d, want 0/0 — a local-only repo is not broken", rr.r.Errors, rr.r.Warnings)
+			}
+		})
+	}
+}
+
 func TestCheckTeamSync(t *testing.T) {
 	cases := []struct {
 		name     string

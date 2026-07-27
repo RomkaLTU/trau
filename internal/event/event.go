@@ -86,6 +86,10 @@ const KindModelFallback = "model_fallback"
 // or execute at render time — the phase ran on the built-in default body.
 const KindPromptOverrideSkipped = "prompt_override_skipped"
 
+// KindLocalDelivery marks a run on a repo with no remote: it skips push, PR
+// creation and the CI gate and lands its work by merging locally instead.
+const KindLocalDelivery = "local_delivery"
+
 // KindConfigChange marks a run whose resolved routing configuration differs from
 // the one its repo last ran under — the cohort boundary spend is grouped by. The
 // hub emits it, since only it holds the previous fingerprint.
