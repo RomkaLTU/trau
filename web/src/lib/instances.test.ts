@@ -9,6 +9,7 @@ import {
   syncRepo,
   takeoverRun,
   TakeoverError,
+  unregisterRepo,
   type Instance,
   type RepoFreshness,
   type RepoHealthState,
@@ -177,6 +178,40 @@ describe("syncRepo", () => {
     const error = await syncRepo("melga").catch((e) => e);
 
     expect(error.message).toBe("sync failed: linear: unauthorized");
+  });
+});
+
+describe("unregisterRepo", () => {
+  it("deletes the registration and returns the observe-only view", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(respond(200, { name: "qa solo", allowed: false }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const view = await unregisterRepo("qa solo");
+
+    expect(view.allowed).toBe(false);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/repos/qa%20solo");
+    expect(fetchMock.mock.calls[0][1].method).toBe("DELETE");
+  });
+
+  it("surfaces the hub refusal for the toast", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          respond(409, {
+            error: 'repo "melga" is granted by the SERVE_WORKSPACE config',
+          }),
+        ),
+    );
+
+    const error = await unregisterRepo("melga").catch((e) => e);
+
+    expect(error.message).toBe(
+      'repo "melga" is granted by the SERVE_WORKSPACE config',
+    );
   });
 });
 
