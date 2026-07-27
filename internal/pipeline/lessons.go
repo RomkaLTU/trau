@@ -10,6 +10,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/prompts"
+	"github.com/RomkaLTU/trau/internal/tmpfile"
 )
 
 // LessonStore is the pipeline's seam for the durable per-repo lessons ledger. Verify
@@ -91,7 +92,7 @@ var lessonStopwords = map[string]bool{
 	"fix": true, "fixed": true, "quarantined": true, "repaired": true,
 }
 
-func lessonDistillPath(id string) string { return "/tmp/lesson-" + id + ".json" }
+func lessonDistillPath(id string) string { return tmpfile.Path("lesson-" + id + ".json") }
 
 func (l lesson) wire() hubclient.Lesson {
 	return hubclient.Lesson{

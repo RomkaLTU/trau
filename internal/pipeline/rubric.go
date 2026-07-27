@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/prompts"
+	"github.com/RomkaLTU/trau/internal/tmpfile"
 )
 
 // rubric is the structured acceptance contract for a ticket: the handoff phase
@@ -26,7 +27,7 @@ type rubric struct {
 // shares one shape the downstream phases can rely on.
 const rubricSchema = `{"ticket":"<ID>","acceptance_criteria":["..."],"non_goals":["..."],"required_tests":["..."],"ui_paths":["..."],"fail_conditions":["..."]}`
 
-func rubricPath(id string) string { return "/tmp/rubric-" + id + ".json" }
+func rubricPath(id string) string { return tmpfile.Path("rubric-" + id + ".json") }
 
 // rubricInstruction is appended to the handoff prompt: it asks the same agent
 // that wrote the QA brief to also emit the structured rubric, populated from the

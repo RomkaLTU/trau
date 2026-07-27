@@ -71,7 +71,8 @@ type HandoffData struct {
 // A non-empty TestEffort replaces the which-tests-to-run sentence, for a slice
 // built with TEST_EFFORT=off and therefore no new test files. ProofsContract
 // adds the browser-proofs contract (record a trace, save screenshots, write a
-// manifest) when the run harvests proofs.
+// manifest) when the run harvests proofs, and ProofsDir is the directory that
+// contract writes into.
 type VerifyData struct {
 	ID             string
 	Handoff        string
@@ -85,6 +86,7 @@ type VerifyData struct {
 	TestEffort     string
 	TicketContext  string
 	ProofsContract bool
+	ProofsDir      string
 }
 
 // CommitData feeds the commit prompt. Squash selects the skip-splitting

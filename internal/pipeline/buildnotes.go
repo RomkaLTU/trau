@@ -5,15 +5,16 @@ import (
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/prompts"
+	"github.com/RomkaLTU/trau/internal/tmpfile"
 )
 
-// buildNotesPath is the /tmp file the build agent jots its slice notes to — the
+// buildNotesPath is the temp file the build agent jots its slice notes to — the
 // files it touched, the test command it ran, and any non-obvious decisions. It is
 // the third durable inter-phase artifact after the QA brief and the rubric, but it
 // only ever flows forward to the mechanical phases (cleanup, repair, bugfix,
 // push-repair); it is deliberately withheld from handoff and verify so those keep
 // re-deriving everything cold from the ticket and the code on disk.
-func buildNotesPath(id string) string { return "/tmp/buildnotes-" + id + ".md" }
+func buildNotesPath(id string) string { return tmpfile.Path("buildnotes-" + id + ".md") }
 
 // buildNotesInstruction is appended to the build prompt. It is best-effort by
 // design: an agent that ignores it leaves no file, and every downstream phase then

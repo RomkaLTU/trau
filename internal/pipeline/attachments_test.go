@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
-	"strings"
+	"path/filepath"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/attachfile"
@@ -103,10 +103,10 @@ func TestTicketContextUnavailableAttachmentDegrades(t *testing.T) {
 }
 
 // Nothing is materialized inside the repository working tree — the copies live
-// under the ticket's /tmp directory, which the build sweep clears.
+// in the ticket's own OS temp directory, which the build sweep clears.
 func TestAttachmentsStayOutOfTheRepo(t *testing.T) {
 	id := "COD-1041-tmp"
-	if dir := attachfile.Dir(id); !strings.HasPrefix(dir, "/tmp/") {
-		t.Fatalf("attachment dir = %q, want a /tmp path so nothing lands in the target repo", dir)
+	if dir := attachfile.Dir(id); filepath.Dir(dir) != filepath.Clean(os.TempDir()) {
+		t.Fatalf("attachment dir = %q, want it under the OS temp dir %q so nothing lands in the target repo", dir, os.TempDir())
 	}
 }

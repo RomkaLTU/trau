@@ -2,7 +2,9 @@ package pipeline
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/activity"
@@ -61,11 +63,25 @@ func lintFixInstruction(r prompts.Renderer, id string) string {
 // under label so the run log shows what was invoked before its output.
 func (p *Pipeline) runRepoCmd(ctx context.Context, label, cmd string) ([]byte, error) {
 	p.logf("  ↳ %s: %s", label, cmd)
-	c := exec.CommandContext(ctx, "sh", "-c", cmd)
+	c := shellCommand(ctx, cmd)
 	if p.RepoRoot != "" {
 		c.Dir = p.RepoRoot
 	}
 	return c.CombinedOutput()
+}
+
+// shellCommand hands cmd to the host's shell: sh on unix, and on Windows the
+// interpreter COMSPEC names — cmd.exe unless the environment points elsewhere —
+// since stock Windows ships no sh.
+func shellCommand(ctx context.Context, cmd string) *exec.Cmd {
+	if runtime.GOOS != "windows" {
+		return exec.CommandContext(ctx, "sh", "-c", cmd)
+	}
+	shell := os.Getenv("COMSPEC")
+	if shell == "" {
+		shell = "cmd.exe"
+	}
+	return exec.CommandContext(ctx, shell, "/c", cmd)
 }
 
 func tailLines(s string, n int) []string {

@@ -317,13 +317,17 @@ func stopProcess(pid int) error {
 	if !registry.Alive(pid) {
 		return nil
 	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	target, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("find pid %d: %w", pid, err)
+	}
+	if err := target.Signal(syscall.SIGTERM); err != nil {
 		return fmt.Errorf("signal pid %d: %w", pid, err)
 	}
 	if awaitProcessGone(pid, hubStopGrace) {
 		return nil
 	}
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+	if err := target.Kill(); err != nil {
 		return fmt.Errorf("kill pid %d: %w", pid, err)
 	}
 	if !awaitProcessGone(pid, hubStopGrace) {

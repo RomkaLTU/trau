@@ -19,6 +19,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
+      - name: windows compile gate
+        run: GOOS=windows go build ./...
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"

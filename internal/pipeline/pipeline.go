@@ -41,6 +41,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/proofsbranch"
 	"github.com/RomkaLTU/trau/internal/sanitize"
 	"github.com/RomkaLTU/trau/internal/state"
+	"github.com/RomkaLTU/trau/internal/tmpfile"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
@@ -1833,7 +1834,7 @@ func (p *Pipeline) lintFixAndCleanup(ctx context.Context, id string) error {
 }
 
 // Handoff runs the handoff skill to write the QA brief to exactly
-// /tmp/handoff-<ID>.md, then checkpoints handed_off. The normal pipeline overlaps the
+// handoffPath(id), then checkpoints handed_off. The normal pipeline overlaps the
 // brief-writing work with the lintfix→cleanup chain (handoffAndCleanup); this
 // sequential form is the direct entry point.
 func (p *Pipeline) Handoff(ctx context.Context, id string) error {
@@ -3878,9 +3879,9 @@ func fmtBytes(n int64) string {
 	return fmt.Sprintf("%.1fKB", float64(n)/1024)
 }
 
-func handoffPath(id string) string { return "/tmp/handoff-" + id + ".md" }
+func handoffPath(id string) string { return tmpfile.Path("handoff-" + id + ".md") }
 
-func verifyPath(id string) string { return "/tmp/verify-" + id + ".json" }
+func verifyPath(id string) string { return tmpfile.Path("verify-" + id + ".json") }
 
 func handoffTail(r prompts.Renderer, id, ticketCtx string) string {
 	return r.Render("handoff", prompts.HandoffData{
@@ -4156,6 +4157,7 @@ func verifyTail(r prompts.Renderer, id, handoff, verdict, note, qaNote, checksFr
 		TestEffort:     testEffort,
 		TicketContext:  ticketCtx,
 		ProofsContract: proofsContract,
+		ProofsDir:      proofs.Dir(id),
 	})
 }
 
@@ -4601,7 +4603,7 @@ func normalizePolicy(policy string) string {
 }
 
 func verifyMemberPath(id, name string) string {
-	return "/tmp/verify-" + id + "-" + name + ".json"
+	return tmpfile.Path("verify-" + id + "-" + name + ".json")
 }
 
 func readVerdict(path string) (v verdict, ok bool) {

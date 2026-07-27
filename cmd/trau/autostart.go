@@ -13,13 +13,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/browser"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
+	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/update"
 	"github.com/RomkaLTU/trau/internal/webserver"
@@ -257,7 +257,7 @@ func spawnServe(logMode int, serveArgs []string) error {
 		}
 	}
 	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = proc.Detached()
 	if logFile := openHubLog(logMode); logFile != nil {
 		defer func() { _ = logFile.Close() }()
 		cmd.Stdout = logFile

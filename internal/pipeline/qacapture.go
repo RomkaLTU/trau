@@ -8,6 +8,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/hubclient"
+	"github.com/RomkaLTU/trau/internal/tmpfile"
 )
 
 // qaCaptureMax caps how many discovered accounts one verify can hand back
@@ -20,7 +21,7 @@ const qaDiscoveredLabel = "Discovered account"
 
 // qaCapturePath is the verifier's side channel for credentials it discovered
 // inside the repo under test and signed in with.
-func qaCapturePath(id string) string { return "/tmp/qa-capture-" + id + ".json" }
+func qaCapturePath(id string) string { return tmpfile.Path("qa-capture-" + id + ".json") }
 
 type qaCaptureFile struct {
 	Accounts []qaCaptureAccount `json:"accounts"`
