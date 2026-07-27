@@ -92,17 +92,28 @@ import {
   type SeenMarks,
 } from "@/lib/inbox-seen";
 import { readKeyStroke } from "@/lib/keys";
+import { repoScopeSwitch } from "@/lib/notification-center";
 import { standardTitle, usePageTitle } from "@/lib/page-title";
 import { cn } from "@/lib/utils";
 
+interface InboxSearch {
+  issue?: string;
+  repo?: string;
+}
+
 export const Route = createFileRoute("/inbox")({
   component: InboxPage,
-  // issue selects a queue row (or draft:new opens a fresh Draft) — read at runtime
-  // through nuqs, typed here so backlog and the issue drawer can link into it.
-  validateSearch: (search: Record<string, unknown>): { issue?: string } =>
-    typeof search.issue === "string" && search.issue !== ""
-      ? { issue: search.issue }
-      : {},
+  // issue selects a queue row (or draft:new opens a fresh Draft) and repo names the
+  // project it belongs to — both read at runtime through nuqs, typed here so backlog,
+  // the issue drawer and a pushed notification can link into them.
+  validateSearch: (search: Record<string, unknown>): InboxSearch => {
+    const out: InboxSearch = {};
+    if (typeof search.issue === "string" && search.issue !== "")
+      out.issue = search.issue;
+    if (typeof search.repo === "string" && search.repo !== "")
+      out.repo = search.repo;
+    return out;
+  },
 });
 
 const GROUP_COUNT_TONE: Record<InboxGroup, string> = {
@@ -145,7 +156,7 @@ function interviewModelOptions(
 
 function InboxPage() {
   usePageTitle(standardTitle("Inbox"));
-  const { repo: activeRepo } = useActiveRepo();
+  const { repo: activeRepo, repos, setRepo } = useActiveRepo();
   const repo = activeRepo ?? "";
   const queryClient = useQueryClient();
   const {
@@ -160,6 +171,17 @@ function InboxPage() {
     "issue",
     parseAsString.withOptions({ history: "push" }),
   );
+
+  // A pushed notification carries the project its item belongs to, because the queue
+  // is built from the active scope and not from the link. The scope adopts it once
+  // the repo list is in, then the param is dropped so the switcher stays in charge.
+  const [linkedRepo, setLinkedRepo] = useQueryState("repo", parseAsString);
+  useEffect(() => {
+    if (!linkedRepo || repos.length === 0) return;
+    const adopt = repoScopeSwitch(linkedRepo, activeRepo, repos);
+    if (adopt) setRepo(adopt);
+    void setLinkedRepo(null);
+  }, [linkedRepo, activeRepo, repos, setRepo, setLinkedRepo]);
 
   // The fresh Draft is client-only until its first message starts a session. It lives
   // as a synthetic row at the head of the queue, seeded when New issue selects it (or

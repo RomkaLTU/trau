@@ -4,6 +4,7 @@ import {
   applicationServerKey,
   dropPushSubscription,
   fetchPushKey,
+  pushSubscribed,
   savePushSubscription,
   sendTestPush,
   subscriptionPayload,
@@ -60,6 +61,33 @@ describe('subscriptionPayload', () => {
       toJSON: () => ({ endpoint: 'https://push.example/abc' }),
     })
     expect(payload.keys).toEqual({ p256dh: '', auth: '' })
+  })
+})
+
+function stubPushBrowser(subscription: unknown) {
+  const registration = { pushManager: { getSubscription: async () => subscription } }
+  vi.stubGlobal('window', { PushManager: class {}, Notification: class {} })
+  vi.stubGlobal('navigator', {
+    serviceWorker: {
+      getRegistration: async () => registration,
+      ready: Promise.resolve(registration),
+    },
+  })
+}
+
+describe('pushSubscribed', () => {
+  it('reports the subscription this browser holds', async () => {
+    stubPushBrowser({ endpoint: 'https://push.example/abc' })
+    await expect(pushSubscribed()).resolves.toBe(true)
+  })
+
+  it('reports none when the browser never subscribed', async () => {
+    stubPushBrowser(null)
+    await expect(pushSubscribed()).resolves.toBe(false)
+  })
+
+  it('reports none where push is unsupported', async () => {
+    await expect(pushSubscribed()).resolves.toBe(false)
   })
 })
 
