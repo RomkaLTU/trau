@@ -44,6 +44,9 @@ export interface QueueResponse {
   draining: boolean
   // When the current drain was armed. Absent unless the queue is draining.
   draining_since?: string
+  // stopping is set while a Stop is ending the child that was running, so the
+  // row still reads running but the run is already on its way out.
+  stopping: boolean
   shutting_down: boolean
   items: QueueItem[]
 }
@@ -229,6 +232,22 @@ export async function drain(
   return res.json()
 }
 
+// stopQueue stops the loop where it stands: it disarms the drain and stops the
+// child that was running, leaving the queue itself alone — the stopped item
+// parks at its checkpoint and Start picks up from there. The hub ends the child
+// asynchronously, so the answer can still carry a running row; `stopping` marks
+// that wait until a later poll shows the item parked.
+export async function stopQueue(repo: string): Promise<QueueResponse> {
+  const res = await apiFetch(
+    `/api/v1/repos/${encodeURIComponent(repo)}/queue/stop`,
+    { method: 'POST' },
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'queue stop failed'))
+  }
+  return res.json()
+}
+
 // shutdownQueue tears the loop down: stops the running child, drops paused
 // checkpoints, and clears the queue. The hub does this asynchronously — the
 // response only acknowledges the request, so callers must poll the queue
@@ -301,6 +320,20 @@ export function skipResumeApplies(items: QueueItem[], runs: Run[]): boolean {
     (it) =>
       inFlight.has(it.id) ||
       (it.sub_issues ?? []).some((s) => inFlight.has(s.id)),
+  )
+}
+
+// queueLive reports whether the hub still has work in flight for this queue,
+// which is what keeps the Loop view polling. A running row counts on its own: a
+// Stop disarms the drain immediately but the child it is ending exits later, and
+// the row only parks once the drain has seen it go.
+export function queueLive(queue?: QueueResponse): boolean {
+  if (!queue) return false
+  return (
+    queue.draining ||
+    queue.stopping ||
+    queue.shutting_down ||
+    queue.items.some((it) => it.status === 'running')
   )
 }
 

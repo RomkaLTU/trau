@@ -10,11 +10,13 @@ import {
   queueCounts,
   queueCoveredIds,
   queueExecutable,
+  queueLive,
   queueQueryOptions,
   queueRunnable,
   runNext,
   runOnly,
   skipResumeApplies,
+  stopQueue,
   type QueueItem,
   type QueueResponse,
 } from './queue'
@@ -48,7 +50,7 @@ function item(over: Partial<QueueItem>): QueueItem {
 }
 
 function queueResponse(over: Partial<QueueResponse> = {}): QueueResponse {
-  return { repo: 'trau', draining: false, shutting_down: false, items: [], ...over }
+  return { repo: 'trau', draining: false, stopping: false, shutting_down: false, items: [], ...over }
 }
 
 function run(over: Partial<Run>): Run {
@@ -359,6 +361,47 @@ describe('queueRunnable', () => {
         }),
       ]),
     ).toBe(true)
+  })
+})
+
+describe('queueLive', () => {
+  it('is false for an idle queue and true while it drains', () => {
+    expect(queueLive(queueResponse())).toBe(false)
+    expect(queueLive(queueResponse({ draining: true }))).toBe(true)
+  })
+
+  it('stays true through a stop, from the ack to the parked row', () => {
+    const running = item({ id: 'COD-1', status: 'running' })
+    expect(queueLive(queueResponse({ stopping: true, items: [running] }))).toBe(true)
+    expect(queueLive(queueResponse({ items: [running] }))).toBe(true)
+    expect(
+      queueLive(queueResponse({ items: [item({ id: 'COD-1', status: 'paused' })] })),
+    ).toBe(false)
+  })
+
+  it('is true while a shutdown tears the queue down', () => {
+    expect(queueLive(queueResponse({ shutting_down: true }))).toBe(true)
+  })
+})
+
+describe('stopQueue', () => {
+  it('posts to the stop route and answers with the queue', async () => {
+    const stopped = queueResponse({
+      stopping: true,
+      items: [item({ id: 'COD-1', status: 'running' })],
+    })
+    mockFetch.mockResolvedValueOnce(response(202, stopped))
+
+    expect(await stopQueue('trau')).toEqual(stopped)
+    expect(mockFetch).toHaveBeenCalledWith('/api/v1/repos/trau/queue/stop', {
+      method: 'POST',
+    })
+  })
+
+  it('surfaces a refusal from the hub', async () => {
+    mockFetch.mockResolvedValueOnce(response(403, { error: 'repo "trau" is observe-only' }))
+
+    await expect(stopQueue('trau')).rejects.toThrow('repo "trau" is observe-only')
   })
 })
 

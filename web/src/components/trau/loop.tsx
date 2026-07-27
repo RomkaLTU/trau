@@ -72,6 +72,7 @@ import {
   promoteQueueItem,
   publishQueue,
   queueExecutable,
+  queueLive,
   queueQueryOptions,
   queueRunnable,
   QUEUE_NOT_RUNNABLE,
@@ -79,6 +80,7 @@ import {
   runQueueItem,
   shutdownQueue,
   skipResumeApplies,
+  stopQueue,
   type OnFault,
   type QueueItem,
   type QueueResponse,
@@ -2190,9 +2192,7 @@ export function Loop() {
   const queue = useQuery({
     ...queueQueryOptions(repo),
     refetchInterval: (q) =>
-      q.state.data?.draining || q.state.data?.shutting_down || shutdownArmed
-        ? 3000
-        : false,
+      queueLive(q.state.data) || shutdownArmed ? 3000 : false,
   });
   const { data: instData } = useQuery(instancesQueryOptions);
   const liveInstance = repoInstance(instData?.instances ?? [], repo);
@@ -2215,7 +2215,7 @@ export function Loop() {
   usePageTitle(loopTitle(loopTitleState(canRun, halt, view, timeline)));
 
   const stop = useMutation({
-    mutationFn: () => drain(repo, false),
+    mutationFn: () => stopQueue(repo),
     onSuccess: (res) => publishQueue(queryClient, repo, res),
   });
 
@@ -2272,7 +2272,7 @@ export function Loop() {
           takeover={takeoverInstance}
           halt={halt}
           onStop={() => stop.mutate()}
-          stopping={stop.isPending}
+          stopping={stop.isPending || queue.data.stopping}
           stopError={stop.error}
           hasRunningChild={Boolean(liveInstance)}
           shuttingDown={shuttingDown}
