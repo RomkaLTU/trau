@@ -321,8 +321,8 @@ type appModel struct {
 	palette paletteModel
 
 	// hubChecked/hubProbing pace the throttled Web-indicator probe; hubNote is
-	// the transient Open Web UI outcome line the top-right overlay appends,
-	// cleared on the next key press like a toast.
+	// the transient line the top-right overlay appends — an Open Web UI outcome
+	// or a handed-off URL — cleared on the next key press like a toast.
 	hubChecked time.Time
 	hubProbing bool
 	hubNote    string
@@ -539,6 +539,14 @@ func (m appModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dash = m.dash.clearToast()
 		}
 		return m, openURLCmd(msg.url)
+
+	case openedURLMsg:
+		if m.dashCarriesWebStatus() {
+			m.dash.toast, m.dash.toastErr = openedURLLine(msg.url), false
+			return m, nil
+		}
+		m.hubNote, m.hubNoteErr = openedURLLine(msg.url), false
+		return m, nil
 	}
 
 	var cmd tea.Cmd

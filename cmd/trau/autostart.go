@@ -11,13 +11,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/agent"
+	"github.com/RomkaLTU/trau/internal/browser"
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/registry"
@@ -72,7 +72,7 @@ func maybeAutostartHub(ctx context.Context, cfg config.Config, noServe bool, std
 	_, _ = fmt.Fprintf(stderr, "Web UI: %s\n", webURL)
 
 	if cfg.ServeOpen {
-		_ = openBrowser(webURL)
+		_ = browser.Open(webURL)
 	}
 }
 
@@ -294,17 +294,4 @@ func openHubLog(logMode int) *os.File {
 		return nil
 	}
 	return f
-}
-
-func openBrowser(url string) error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", "", url)
-	default:
-		cmd = exec.Command("xdg-open", url)
-	}
-	return cmd.Start()
 }
