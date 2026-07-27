@@ -44,6 +44,19 @@ func postConn(t *testing.T, ts *httptest.Server, provider string, req TestConnec
 	return res, out
 }
 
+// connBody posts the request and returns the response body verbatim, for assertions
+// that turn on which fields the JSON actually carries.
+func connBody(t *testing.T, ts *httptest.Server, provider string, req TestConnectionRequest) string {
+	t.Helper()
+	res := postJSON(t, ts.URL+APIPrefix+"/trackers/"+provider+"/test-connection", req)
+	defer func() { _ = res.Body.Close() }()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	return string(body)
+}
+
 // linearFake serves the count and teams GraphQL queries from a single fake endpoint.
 func linearFake(t *testing.T, count, teamsJSON string) *httptest.Server {
 	t.Helper()
@@ -120,8 +133,8 @@ func TestTrackerTestConnectionJiraHappyPath(t *testing.T) {
 		gotAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/rest/api/3/search/approximate-count":
-			_, _ = io.WriteString(w, `{"count":12}`)
+		case "/rest/api/3/myself":
+			_, _ = io.WriteString(w, `{"accountId":"a1","displayName":"Me"}`)
 		case "/rest/api/3/project/search":
 			_, _ = io.WriteString(w, `{"values":[{"key":"ENG","name":"Engineering"}],"isLast":true,"total":1}`)
 		default:
@@ -137,15 +150,50 @@ func TestTrackerTestConnectionJiraHappyPath(t *testing.T) {
 	if !out.OK {
 		t.Fatalf("ok = false, resp = %+v", out)
 	}
-	if out.IssuesVisible != 12 {
-		t.Errorf("issues_visible = %d, want 12", out.IssuesVisible)
-	}
 	if len(out.Teams) != 1 || out.Teams[0].Key != "ENG" || out.Teams[0].Name != "Engineering" {
 		t.Errorf("teams = %+v, want [{ENG Engineering}]", out.Teams)
 	}
 	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("me@acme.com:tok"))
 	if gotAuth != wantAuth {
 		t.Errorf("auth = %q, want %q", gotAuth, wantAuth)
+	}
+}
+
+// The fake stands in for a Jira Cloud site that enforces bounded JQL: any request
+// beyond /myself and /project/search answers the enforcement 400. The probe must
+// authenticate through /myself alone, still populate the picker, and report no count.
+func TestTrackerTestConnectionJiraSkipsUnboundedCount(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/rest/api/3/myself":
+			_, _ = io.WriteString(w, `{"accountId":"a1","displayName":"Me"}`)
+		case "/rest/api/3/project/search":
+			_, _ = io.WriteString(w, `{"values":[{"key":"ENG","name":"Engineering"}],"isLast":true,"total":1}`)
+		default:
+			t.Errorf("probe requested %s, want only /myself and /project/search", r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"errorMessages":["Unbounded JQL queries are not allowed here. Please add a search restriction to your query."],"errors":{}}`)
+		}
+	}))
+	defer fake.Close()
+
+	s := connServer(t)
+	ts := startConn(t, s)
+
+	body := connBody(t, ts, "jira", TestConnectionRequest{BaseURL: fake.URL, Email: "e@x.com", APIToken: "tok"})
+	var out TestConnectionResponse
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !out.OK {
+		t.Fatalf("ok = false, resp = %s", body)
+	}
+	if len(out.Teams) != 1 || out.Teams[0].Key != "ENG" {
+		t.Errorf("teams = %+v, want [{ENG Engineering}]", out.Teams)
+	}
+	if strings.Contains(body, "issues_visible") {
+		t.Errorf("resp = %s, want no issues_visible for jira", body)
 	}
 }
 
@@ -237,8 +285,8 @@ func TestTrackerTestConnectionEmptyProjects(t *testing.T) {
 	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/rest/api/3/search/approximate-count":
-			_, _ = io.WriteString(w, `{"count":5}`)
+		case "/rest/api/3/myself":
+			_, _ = io.WriteString(w, `{"accountId":"a1","displayName":"Me"}`)
 		case "/rest/api/3/project/search":
 			_, _ = io.WriteString(w, `{"values":[],"isLast":true,"total":0}`)
 		}
@@ -269,8 +317,8 @@ func TestTrackerTestConnectionOverlayUsesStoredCreds(t *testing.T) {
 		gotAuth = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/rest/api/3/search/approximate-count":
-			_, _ = io.WriteString(w, `{"count":3}`)
+		case "/rest/api/3/myself":
+			_, _ = io.WriteString(w, `{"accountId":"a1","displayName":"Me"}`)
 		case "/rest/api/3/project/search":
 			_, _ = io.WriteString(w, `{"values":[{"key":"OPS","name":"Ops"}],"isLast":true,"total":1}`)
 		}

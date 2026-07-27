@@ -32,9 +32,10 @@ type TestConnectionRequest struct {
 }
 
 // TestConnectionResponse is the outcome of the probe. On success it carries the
-// visible-issue count and the accessible teams (Linear) or projects (Jira) that feed
-// the wizard's picker. On failure it carries the provider error verbatim plus a hint
-// when the failure shape is recognizable. No secret value ever appears in either shape.
+// accessible teams (Linear) or projects (Jira) that feed the wizard's picker, plus
+// the visible-issue count when the provider offers one — Linear does, Jira does not.
+// On failure it carries the provider error verbatim plus a hint when the failure
+// shape is recognizable. No secret value ever appears in either shape.
 type TestConnectionResponse struct {
 	OK            bool           `json:"ok"`
 	IssuesVisible int            `json:"issues_visible,omitempty"`
@@ -44,19 +45,22 @@ type TestConnectionResponse struct {
 }
 
 // trackerProbe is the throwaway credential reader the connection test drives: a cheap
-// authenticated issue count and the selectable containers, nothing persisted. Linear
-// and Jira each satisfy it over their direct API; the seam lets tests point it at a
-// fake server.
+// authenticated read and the selectable containers, nothing persisted. Linear and Jira
+// each satisfy it over their direct API; the seam lets tests point it at a fake server.
 type trackerProbe interface {
-	CountIssues(ctx context.Context) (int, error)
+	// CheckAuth performs the provider's cheapest authenticated read. It reports a
+	// visible-issue count only when the provider has one to offer: Jira's count
+	// endpoint takes an unbounded JQL that Jira Cloud rejects, so its probe
+	// authenticates with a bare identity read instead.
+	CheckAuth(ctx context.Context) (issuesVisible int, counted bool, err error)
 	ListTeams(ctx context.Context) ([]tracker.Team, error)
 }
 
 // handleTrackerTestConnection gates the wizard's tracker step: it builds a throwaway
 // reader from the submitted (or stored) credentials, performs a cheap authenticated
-// read, and reports the accessible containers and visible-issue count — or the error
-// and a hint. It receives raw secrets over the wire, so it follows the registration
-// exposure gate and never logs or echoes a secret value.
+// read, and reports the accessible containers — or the error and a hint. It receives
+// raw secrets over the wire, so it follows the registration exposure gate and never
+// logs or echoes a secret value.
 func (s *Server) handleTrackerTestConnection(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -121,7 +125,7 @@ func (s *Server) testTrackerConnection(ctx context.Context, provider string, cfg
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	count, err := probe.CountIssues(ctx)
+	count, counted, err := probe.CheckAuth(ctx)
 	if err != nil {
 		return connFailure(provider, err)
 	}
@@ -136,7 +140,11 @@ func (s *Server) testTrackerConnection(ctx context.Context, provider string, cfg
 			Hint:  "The credentials authenticated but grant access to no " + noun + "; check the account has been added to at least one.",
 		}
 	}
-	return TestConnectionResponse{OK: true, IssuesVisible: count, Teams: teams}
+	resp := TestConnectionResponse{OK: true, Teams: teams}
+	if counted {
+		resp.IssuesVisible = count
+	}
+	return resp
 }
 
 // connFailure renders a probe error as a failure response, attaching a hint when the
@@ -234,7 +242,13 @@ func defaultProbe(provider string, cfg config.Config) (trackerProbe, error) {
 
 type linearProbe struct{ client *linearapi.Client }
 
-func (p linearProbe) CountIssues(ctx context.Context) (int, error) { return p.client.CountIssues(ctx) }
+func (p linearProbe) CheckAuth(ctx context.Context) (int, bool, error) {
+	count, err := p.client.CountIssues(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	return count, true, nil
+}
 
 func (p linearProbe) ListTeams(ctx context.Context) ([]tracker.Team, error) {
 	teams, err := p.client.ListTeams(ctx)
@@ -250,7 +264,9 @@ func (p linearProbe) ListTeams(ctx context.Context) ([]tracker.Team, error) {
 
 type jiraProbe struct{ client *jiraapi.Client }
 
-func (p jiraProbe) CountIssues(ctx context.Context) (int, error) { return p.client.CountIssues(ctx) }
+func (p jiraProbe) CheckAuth(ctx context.Context) (int, bool, error) {
+	return 0, false, p.client.Ping(ctx)
+}
 
 func (p jiraProbe) ListTeams(ctx context.Context) ([]tracker.Team, error) {
 	projects, err := p.client.ListProjects(ctx)
