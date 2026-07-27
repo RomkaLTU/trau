@@ -33,30 +33,39 @@ var allowedReaders = map[string]string{
 	// §2 Repo-owned content — owned by the target repo; trau only reads it.
 	"internal/agent/skills.go":          "repo skills / skills-lock.json / package.json",
 	"internal/agent/skillmeta.go":       "repo skills' SKILL.md manifests",
+	"internal/agent/skilldrift.go":      "repo-installed skills hashed against skills-lock.json",
+	"internal/agent/skillinject.go":     "repo skills' SKILL.md bodies delivered by content",
 	"internal/checks/checks.go":         "repo .trau/checks",
 	"internal/skillrules/skillrules.go": "repo .trau/skills-rules.json",
 	"internal/state/gitignore.go":       "target repo .gitignore",
 
 	// §3 Provider-owned files — owned by the provider CLIs; read for usage/stats.
-	"internal/agent/agent.go":        "provider session files + agent .result.json read-back",
-	"internal/agent/codexsession.go": "codex session rollouts",
-	"internal/agent/kimisession.go":  "kimi session rollouts",
-	"internal/agent/transcript.go":   "provider session transcripts",
-	"internal/usage/probe/claude.go": "provider usage window",
-	"internal/usage/probe/codex.go":  "provider usage window",
+	"internal/agent/agent.go":            "provider session files + agent .result.json read-back",
+	"internal/agent/codexsession.go":     "codex session rollouts",
+	"internal/agent/kimisession.go":      "kimi session rollouts",
+	"internal/agent/transcript.go":       "provider session transcripts",
+	"internal/usage/probe/claude.go":     "provider usage window",
+	"internal/usage/probe/codex.go":      "provider usage window",
+	"internal/webserver/grilladapter.go": "codex/kimi session rollouts + kimi overlay home",
 
 	// §4 Agent-interface files — the ephemeral child↔agent-CLI /tmp wire.
-	"internal/pipeline/pipeline.go":   "/tmp handoff/verdict + git-tracked working-tree files",
-	"internal/pipeline/rubric.go":     "/tmp rubric payload",
-	"internal/pipeline/buildnotes.go": "/tmp build-notes payload",
-	"internal/pipeline/lessons.go":    "/tmp lesson-distill payload",
-	"internal/pipeline/timelog.go":    "/tmp timelog-estimate payload",
-	"internal/pipeline/qacapture.go":  "/tmp QA-credential capture payload",
-	"internal/tracker/internal.go":    "/tmp verdict payload",
-	"internal/tracker/jira.go":        "/tmp verdict payload",
+	"internal/pipeline/pipeline.go":           "/tmp handoff/verdict + git-tracked working-tree files",
+	"internal/pipeline/rubric.go":             "/tmp rubric payload",
+	"internal/pipeline/buildnotes.go":         "/tmp build-notes payload",
+	"internal/pipeline/lessons.go":            "/tmp lesson-distill payload",
+	"internal/pipeline/timelog.go":            "/tmp timelog-estimate payload",
+	"internal/pipeline/qacapture.go":          "/tmp QA-credential capture payload",
+	"internal/tracker/internal.go":            "/tmp verdict payload",
+	"internal/tracker/jira.go":                "/tmp verdict payload",
+	"internal/proofs/proofs.go":               "/tmp browser-proof manifest + screenshots, harvested to the hub",
+	"internal/webserver/videorenderrunner.go": "/tmp rendered proof video, stored as a hub blob",
 
 	// §5 Timelog — out of scope for this epic.
 	"internal/timelog/timelog.go": "timelog under ~/.trau/time",
+
+	// Machine-owned supervision artifact — the package reads back the very
+	// LaunchAgent plist it installs, to report what is on disk (ADR 0022).
+	"internal/launchd/launchd.go": "hub LaunchAgent plist",
 
 	// Hub-owned content store — the hub reads its own content-addressed
 	// attachment blobs (under <hub home>/attachments) to serve their bytes; this
