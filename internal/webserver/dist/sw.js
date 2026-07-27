@@ -1,4 +1,4 @@
-const CACHE_NAME = 'trau-gfec2e56'
+const CACHE_NAME = 'trau-g2dff941'
 const SHELL = ["/","/assets/index.js","/assets/index.css"]
 
 self.addEventListener('install', (event) => {
@@ -28,6 +28,51 @@ self.addEventListener('fetch', (event) => {
     !url.pathname.startsWith('/api/')
   if (handled) event.respondWith(networkFirst(event))
 })
+
+self.addEventListener('push', (event) => {
+  const payload = pushPayload(event)
+  event.waitUntil(
+    self.registration.showNotification(payload.title, {
+      body: payload.body,
+      tag: payload.tag,
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
+      data: { url: payload.url },
+    }),
+  )
+})
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  const target = new URL(event.notification.data?.url || '/', self.location.origin)
+  event.waitUntil(focusOrOpen(target))
+})
+
+function pushPayload(event) {
+  const fallback = { title: 'trau', body: '', tag: 'trau', url: '/' }
+  if (!event.data) return fallback
+  try {
+    return { ...fallback, ...event.data.json() }
+  } catch (notJSON) {
+    return { ...fallback, body: event.data.text() }
+  }
+}
+
+async function focusOrOpen(target) {
+  const windows = await self.clients.matchAll({
+    type: 'window',
+    includeUncontrolled: true,
+  })
+  const open = windows.find((client) => new URL(client.url).origin === target.origin)
+  if (!open) {
+    await self.clients.openWindow(target.href)
+    return
+  }
+  await open.focus()
+  if (open.url !== target.href && 'navigate' in open) {
+    await open.navigate(target.href)
+  }
+}
 
 async function networkFirst(event) {
   const cache = await caches.open(CACHE_NAME)
