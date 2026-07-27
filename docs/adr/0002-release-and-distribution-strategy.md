@@ -89,6 +89,10 @@ A `.goreleaser.yaml` (Appendix A) drives the release. Decisions baked in:
   `darwin/amd64` (Intel Macs) and `linux/arm64` to today's two targets. **Windows is
   deferred:** `trau` orchestrates `git`/`gh` and a Unix-style dev loop; Windows
   support is unproven and not a launch requirement.
+  **Superseded by [ADR 0023](0023-platform-support-windows.md) (2026-07-27):** the
+  2026-07-20 audit found the tree portable (two compile breaks, no cgo), so `windows`
+  joins the matrix for `amd64` + `arm64` as zip archives, shipped experimental, with
+  WSL2 supported alongside it. The deferral text above is kept for history.
 - **ldflags:** `-s -w -X main.version={{.Version}}` — matches the existing single
   `version` var. (Optional enrichment: add `commit`/`date` vars to `main.go` and
   stamp them too, for a fuller `--version`. Not required for launch.)
@@ -154,6 +158,7 @@ tracked separately.
 
 - **History** — squash-in-place on `RomkaLTU/trau` (§1), not a separate public repo.
 - **Windows** — deferred; launch matrix is `darwin`+`linux` × `amd64`+`arm64` (§4).
+  *(Superseded by [ADR 0023](0023-platform-support-windows.md).)*
 - **Version vars** — keep `-X main.version` only; no `commit`/`date` for now (§4).
 - **First tag** — `v0.1.0-rc.1` dry run through the full pipeline, then `v0.1.0` (§2).
 
