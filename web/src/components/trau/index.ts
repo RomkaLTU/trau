@@ -45,6 +45,7 @@ export { HandbackDialog, useHandback } from './handback-dialog'
 export { NoSkillsBanner } from './no-skills-banner'
 export { NoBrowserBanner } from './no-browser-banner'
 export { RemovedBanner } from './removed-banner'
+export { RunPageHeader } from './run-page-header'
 export {
   RunActionsMenu,
   RunActionsRow,

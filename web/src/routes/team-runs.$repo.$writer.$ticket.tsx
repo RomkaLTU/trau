@@ -1,9 +1,14 @@
 import { useQuery } from '@tanstack/react-query'
-import { Link, createFileRoute } from '@tanstack/react-router'
-import { ArrowLeft, ExternalLink, GitBranch, Users } from 'lucide-react'
+import { createFileRoute } from '@tanstack/react-router'
+import { ExternalLink, GitBranch, Users } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { Eyebrow, StatusPill, TerminalCard, useRepoRouteScope } from '@/components/trau'
+import {
+  RunPageHeader,
+  StatusPill,
+  TerminalCard,
+  useRepoRouteScope,
+} from '@/components/trau'
 import { boardPill } from '@/lib/overview'
 import { runTitle, usePageTitle } from '@/lib/page-title'
 import { formatCostUSD, formatDuration } from '@/lib/runlive'
@@ -26,25 +31,25 @@ function TeamRunPage() {
   usePageTitle(runTitle(ticket, run ? boardPill(run).label : ''))
 
   return (
-    <div className="flex flex-col gap-6">
-      <Link
-        to="/runs"
-        className="inline-flex w-fit items-center gap-1.5 font-mono text-sm text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <ArrowLeft className="size-4" aria-hidden="true" />
-        Runs
-      </Link>
-
-      {error && <p className="font-mono text-sm text-destructive">{String(error)}</p>}
-      {isPending && !error && (
-        <p className="font-mono text-sm text-muted-foreground">Loading…</p>
+    <div className="flex flex-col gap-4">
+      {run ? (
+        <TeamRunDetail repo={repo} run={run} />
+      ) : (
+        <>
+          <RunPageHeader ticket={ticket} />
+          {error && (
+            <p className="font-mono text-sm text-destructive">{String(error)}</p>
+          )}
+          {isPending && !error && (
+            <p className="font-mono text-sm text-muted-foreground">Loading…</p>
+          )}
+          {data && (
+            <p className="font-mono text-sm text-muted-foreground">
+              This teammate’s run is no longer in the shared history for {repo}.
+            </p>
+          )}
+        </>
       )}
-      {data && !run && (
-        <p className="font-mono text-sm text-muted-foreground">
-          This teammate’s run is no longer in the shared history for {repo}.
-        </p>
-      )}
-      {run && <TeamRunDetail repo={repo} run={run} />}
     </div>
   )
 }
@@ -56,35 +61,28 @@ function TeamRunDetail({ repo, run }: { repo: string; run: Run }) {
 
   return (
     <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-3">
-        <Eyebrow glyph="partial" className="text-info">
-          TEAMMATE RUN
-        </Eyebrow>
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="font-mono text-sm text-primary">{run.ticket}</span>
-          {run.title && (
-            <h1 className="text-balance text-2xl font-semibold tracking-tight text-foreground">
-              {run.title}
-            </h1>
-          )}
-        </div>
-        <div className="flex flex-wrap items-center gap-2 font-mono text-[0.7rem] text-muted-foreground">
-          <StatusPill state={pill.state} label={pill.label} />
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-info/40 bg-info/10 px-2 py-0.5 text-[0.65rem] text-info">
-            <Users className="size-3" aria-hidden="true" />
-            {author}
-          </span>
-          <span className="rounded border border-border bg-muted/60 px-1.5 py-0.5 text-[0.65rem]">
-            {shared.repo ?? repo}
-          </span>
-          {run.branch && (
-            <span className="inline-flex items-center gap-1.5">
-              <GitBranch className="size-3.5" aria-hidden="true" />
-              {run.branch}
+      <RunPageHeader
+        ticket={run.ticket}
+        title={run.title}
+        meta={
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[0.7rem] text-muted-foreground">
+            <StatusPill state={pill.state} label={pill.label} />
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-info/40 bg-info/10 px-2 py-0.5 text-[0.65rem] text-info">
+              <Users className="size-3" aria-hidden="true" />
+              {author}
             </span>
-          )}
-        </div>
-      </header>
+            <span className="rounded border border-border bg-muted/60 px-1.5 py-0.5 text-[0.65rem]">
+              {shared.repo ?? repo}
+            </span>
+            {run.branch && (
+              <span className="inline-flex items-center gap-1.5">
+                <GitBranch className="size-3.5" aria-hidden="true" />
+                {run.branch}
+              </span>
+            )}
+          </div>
+        }
+      />
 
       <div className="rounded-lg border border-info/40 bg-info/10 px-4 py-3">
         <p className="font-sans text-sm leading-relaxed text-info">
