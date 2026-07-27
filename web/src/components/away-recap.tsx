@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import {
   Ban,
   Bell,
   BellOff,
+  ChevronRight,
   CirclePause,
   GitMerge,
   TriangleAlert,
@@ -33,23 +35,58 @@ const CATEGORY_META: Record<RecapCategory, CategoryMeta> = {
   quarantined: { label: 'Quarantined', icon: Ban, text: 'text-orange-600 dark:text-orange-400' },
 }
 
-export function AwayRecap() {
+export function AwayRecap({ collapsible = false }: { collapsible?: boolean }) {
   const notifications = useNotifications()
   const { recap, dismiss } = useAwayMonitor(notifications.enabled)
+  const [expanded, setExpanded] = useState(false)
 
   if (recap.total === 0) {
     return <NotificationsPrompt notifications={notifications} />
   }
 
+  const showBreakdown = !collapsible || expanded
   const noun = recap.total === 1 ? 'change' : 'changes'
   return (
-    <section className="mb-6 rounded-lg border bg-card">
-      <header className="flex items-center gap-3 border-b px-4 py-3">
-        <h2 className="text-sm font-medium">Since you were away</h2>
-        <span className="text-xs text-muted-foreground tabular-nums">
-          {recap.total} {noun}
-        </span>
-        <div className="ml-auto flex items-center gap-1">
+    <section
+      className={cn('rounded-lg border bg-card', collapsible ? 'mb-3' : 'mb-6')}
+    >
+      <header
+        className={cn(
+          'flex items-center gap-3 px-4',
+          collapsible ? 'py-2' : 'py-3',
+          showBreakdown && 'border-b',
+        )}
+      >
+        {collapsible ? (
+          <h2 className="min-w-0 flex-1">
+            <button
+              type="button"
+              onClick={() => setExpanded((v) => !v)}
+              aria-expanded={expanded}
+              className="flex w-full items-center gap-2 text-left text-sm font-medium transition-colors hover:text-foreground"
+            >
+              <ChevronRight
+                className={cn(
+                  'size-3.5 shrink-0 text-muted-foreground transition-transform',
+                  expanded && 'rotate-90',
+                )}
+                aria-hidden="true"
+              />
+              Since you were away
+              <span className="text-xs font-normal text-muted-foreground tabular-nums">
+                · {recap.total} {noun}
+              </span>
+            </button>
+          </h2>
+        ) : (
+          <>
+            <h2 className="text-sm font-medium">Since you were away</h2>
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {recap.total} {noun}
+            </span>
+          </>
+        )}
+        <div className="ml-auto flex shrink-0 items-center gap-1">
           <NotificationToggle notifications={notifications} />
           <button
             type="button"
@@ -61,11 +98,13 @@ export function AwayRecap() {
           </button>
         </div>
       </header>
-      <div className="divide-y">
-        {RECAP_CATEGORIES.map((cat) => (
-          <RecapGroup key={cat} category={cat} items={recap[cat]} />
-        ))}
-      </div>
+      {showBreakdown && (
+        <div className="divide-y">
+          {RECAP_CATEGORIES.map((cat) => (
+            <RecapGroup key={cat} category={cat} items={recap[cat]} />
+          ))}
+        </div>
+      )}
     </section>
   )
 }

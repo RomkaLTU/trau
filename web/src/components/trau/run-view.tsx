@@ -24,6 +24,7 @@ import { OpenInEditor } from "@/components/trau/open-in-editor";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { PRStatusBadge } from "@/components/trau/pr-status-badge";
 import { RunDiff } from "@/components/trau/run-diff";
+import { RunPageHeader } from "@/components/trau/run-page-header";
 import { SegmentedControl } from "@/components/trau/segmented-control";
 import { SteerComposer } from "@/components/trau/steer-notes";
 import { StatusPill } from "@/components/trau/status-pill";
@@ -817,31 +818,21 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
 
   return (
     <>
-      <header className="flex flex-col gap-4 border-b border-border px-8 py-6">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div className="flex flex-col gap-2">
-            <Eyebrow
-              glyph={isRecap ? "done" : "active"}
-              className={isRecap ? undefined : "text-teal"}
-            >
-              RUN
-            </Eyebrow>
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="font-mono text-sm text-primary">{ticket}</span>
-              {run?.title && (
-                <h1 className="text-balance font-sans text-2xl font-semibold tracking-tight text-foreground">
-                  {run.title}
-                </h1>
-              )}
-              <StatusPill state={pill.state} label={pill.label} />
-              {!isRecap && prBadge}
-              <span className="rounded-md border border-border bg-secondary/50 px-2 py-0.5 font-mono text-xs text-muted-foreground">
-                {repo}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
+      <RunPageHeader
+        className="border-b border-border px-6 py-3"
+        ticket={ticket}
+        title={run?.title}
+        badges={
+          <>
+            <StatusPill state={pill.state} label={pill.label} />
+            {!isRecap && prBadge}
+            <span className="rounded-md border border-border bg-secondary/50 px-2 py-0.5 font-mono text-xs text-muted-foreground">
+              {repo}
+            </span>
+          </>
+        }
+        actions={
+          <>
             {root !== "" && <OpenInEditor root={root} />}
             {instData?.takeover_supported && !takeoverUnsupported && (
               <Button
@@ -879,34 +870,42 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
                 Stop
               </Button>
             )}
-          </div>
-        </div>
-
-        <div className="rounded-md border border-border bg-secondary/30 px-4 py-3">
-          <PhaseStepper steps={steps} subLabel={subLabel} />
-        </div>
-
-        {instance && (
-          <div className="flex items-center gap-6 font-mono text-xs text-muted-foreground">
-            <span>
-              elapsed{" "}
-              <span className="text-foreground">
-                {elapsedSince(instance.started_at, now)}
-              </span>
-            </span>
-            {instance.state_since && (
-              <span>
-                in phase{" "}
-                <span className="text-foreground">
-                  {elapsedSince(instance.state_since, now)}
+          </>
+        }
+        meta={
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-muted-foreground">
+            <PhaseStepper steps={steps} subLabel={subLabel} compact />
+            {instance && (
+              <>
+                <span className="text-faint" aria-hidden="true">
+                  ·
                 </span>
-              </span>
+                <span>
+                  elapsed{" "}
+                  <span className="text-foreground">
+                    {elapsedSince(instance.started_at, now)}
+                  </span>
+                </span>
+                {instance.state_since && (
+                  <>
+                    <span className="text-faint" aria-hidden="true">
+                      ·
+                    </span>
+                    <span>
+                      in phase{" "}
+                      <span className="text-foreground">
+                        {elapsedSince(instance.state_since, now)}
+                      </span>
+                    </span>
+                  </>
+                )}
+              </>
             )}
           </div>
-        )}
-      </header>
+        }
+      />
 
-      <div className="flex flex-col gap-6 p-8">
+      <div className="flex flex-col gap-4 px-6 py-4">
         {variant === "paused" && !takenOverHere && (
           <PausedBanner
             reason={run?.failure_reason ?? ""}

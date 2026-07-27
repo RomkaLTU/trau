@@ -1,5 +1,9 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { Outlet, createRootRouteWithContext } from '@tanstack/react-router'
+import {
+  Outlet,
+  createRootRouteWithContext,
+  useRouterState,
+} from '@tanstack/react-router'
 import { NuqsAdapter } from 'nuqs/adapters/tanstack-router'
 
 import { ActiveRepoProvider } from '@/components/trau/active-repo'
@@ -17,7 +21,19 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   component: RootLayout,
 })
 
+// The run screens spend their vertical budget on the transcript and diff, so the
+// recap rides them as a one-line strip instead of the full breakdown.
+const RUN_ROUTE_IDS = new Set([
+  '/live/$repo/$ticket',
+  '/runs_/$repo/$ticket',
+  '/team-runs/$repo/$writer/$ticket',
+])
+
 function RootLayout() {
+  const onRunRoute = useRouterState({
+    select: (s) => s.matches.some((m) => RUN_ROUTE_IDS.has(m.routeId)),
+  })
+
   return (
     <NuqsAdapter>
       <ActiveRepoProvider>
@@ -28,7 +44,7 @@ function RootLayout() {
                 content height. */}
             <div className="flex min-h-screen w-full flex-col px-6 py-8">
               <CreatedBanner />
-              <AwayRecap />
+              <AwayRecap collapsible={onRunRoute} />
               <Outlet />
             </div>
             <NotificationToaster />

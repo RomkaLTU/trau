@@ -1,25 +1,18 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, createFileRoute } from '@tanstack/react-router'
-import {
-  ArrowLeft,
-  ExternalLink,
-  GitBranch,
-  Loader2,
-  Send,
-  Video,
-} from 'lucide-react'
+import { createFileRoute } from '@tanstack/react-router'
+import { ExternalLink, GitBranch, Loader2, Send, Video } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import {
-  Eyebrow,
   NoSkillsBanner,
   NoBrowserBanner,
   NoticeBanner,
   PRStatusBadge,
   RemovedBanner,
   RunActionsRow,
+  RunPageHeader,
   SteerComposer,
   SteerNotesTimeline,
   StatusPill,
@@ -61,20 +54,8 @@ function RunDetailPage() {
   usePageTitle(runTitle(ticket, data ? boardPill(data).label : ''))
 
   return (
-    <div className="flex flex-col gap-6">
-      <Link
-        to="/runs"
-        className="inline-flex w-fit items-center gap-1.5 font-mono text-sm text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <ArrowLeft className="size-4" aria-hidden="true" />
-        Runs
-      </Link>
-
-      {error && <p className="font-mono text-sm text-destructive">{String(error)}</p>}
-      {isPending && !error && (
-        <p className="font-mono text-sm text-muted-foreground">Loading…</p>
-      )}
-      {data && (
+    <div className="flex flex-col gap-4">
+      {data ? (
         <Detail
           repo={repo}
           run={data}
@@ -82,6 +63,16 @@ function RunDetailPage() {
           onNotice={setNotice}
           onDismiss={() => setNotice(null)}
         />
+      ) : (
+        <>
+          <RunPageHeader ticket={ticket} />
+          {error && (
+            <p className="font-mono text-sm text-destructive">{String(error)}</p>
+          )}
+          {isPending && !error && (
+            <p className="font-mono text-sm text-muted-foreground">Loading…</p>
+          )}
+        </>
       )}
     </div>
   )
@@ -112,44 +103,40 @@ function Detail({
   ) : null
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-3">
-        <Eyebrow glyph="partial" className="text-info">
-          RUN DETAIL
-        </Eyebrow>
-        <div className="flex flex-wrap items-center gap-3">
-          <span className="font-mono text-sm text-primary">{run.ticket}</span>
-          {run.title && (
-            <h1 className="text-balance text-2xl font-semibold tracking-tight text-foreground">
-              {run.title}
-            </h1>
-          )}
-        </div>
-        <div className="flex flex-wrap items-center gap-2 font-mono text-[0.7rem] text-muted-foreground">
-          <StatusPill state={pill.state} label={pill.label} />
-          <span className="rounded border border-border bg-muted/60 px-1.5 py-0.5 text-[0.65rem]">
-            {repo}
-          </span>
-          {run.branch && (
-            <span className="inline-flex items-center gap-1.5">
-              <GitBranch className="size-3.5" aria-hidden="true" />
-              {run.branch}
-            </span>
-          )}
-          {run.updated_at && <span className="tabular-nums">updated {run.updated_at}</span>}
-        </div>
-      </header>
-
-      <RunActionsRow
-        repo={repo}
+    <div className="flex flex-col gap-4">
+      <RunPageHeader
         ticket={run.ticket}
-        phase={run.phase}
-        onNotice={onNotice}
-        leading={
-          <>
-            {openPR}
-            <PRStatusBadge status={run.pr_status} />
-          </>
+        title={run.title}
+        badges={<StatusPill state={pill.state} label={pill.label} />}
+        actions={
+          <RunActionsRow
+            repo={repo}
+            ticket={run.ticket}
+            phase={run.phase}
+            onNotice={onNotice}
+            leading={
+              <>
+                {openPR}
+                <PRStatusBadge status={run.pr_status} />
+              </>
+            }
+          />
+        }
+        meta={
+          <div className="flex flex-wrap items-center gap-2 font-mono text-[0.7rem] text-muted-foreground">
+            <span className="rounded border border-border bg-muted/60 px-1.5 py-0.5 text-[0.65rem]">
+              {repo}
+            </span>
+            {run.branch && (
+              <span className="inline-flex items-center gap-1.5">
+                <GitBranch className="size-3.5" aria-hidden="true" />
+                {run.branch}
+              </span>
+            )}
+            {run.updated_at && (
+              <span className="tabular-nums">updated {run.updated_at}</span>
+            )}
+          </div>
         }
       />
 
