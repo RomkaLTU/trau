@@ -19,6 +19,7 @@ import {
   AssigneePicker,
 } from "@/components/trau/assignee-picker";
 import { AuthorChip } from "@/components/trau/author-chip";
+import { StartIn } from "@/components/trau/member-repo-picker";
 import { ProviderPinPicker } from "@/components/trau/provider-picker";
 import { StateGroupChip } from "@/components/trau/state-group-chip";
 import { StatusPill } from "@/components/trau/status-pill";
@@ -143,14 +144,17 @@ function IssueDrawerBody({
   const liveLoop = useLiveLoops(repo)[0];
 
   const addToQueue = useMutation({
-    mutationFn: () => enqueueFresh(repo, { id }),
-    onSuccess: (res) => publishQueue(queryClient, repo, res),
+    mutationFn: (target: string) => enqueueFresh(target, { id }),
+    onSuccess: (res, target) => {
+      publishQueue(queryClient, target, res);
+      if (target !== repo) toast.success(`Queued ${id} in ${target}`);
+    },
   });
 
   const run = useMutation({
-    mutationFn: () => runOnly(repo, { id }),
-    onSuccess: (res) => {
-      publishQueue(queryClient, repo, res);
+    mutationFn: (target: string) => runOnly(target, { id }),
+    onSuccess: (res, target) => {
+      publishQueue(queryClient, target, res);
       toast.success(`Running ${id}`);
     },
     onError: (err) => toast.error(err.message),
@@ -342,29 +346,37 @@ function IssueDrawerBody({
               Unarchive
             </Button>
           ) : (
-            <Button
-              size="sm"
-              onClick={() => addToQueue.mutate()}
-              disabled={inQueue || addToQueue.isPending}
-            >
-              <ListPlus />
-              {inQueue ? "Queued" : "Add to queue"}
-            </Button>
+            <StartIn repo={repo} ticket={id} onStart={addToQueue.mutate}>
+              {(begin) => (
+                <Button
+                  size="sm"
+                  onClick={begin}
+                  disabled={inQueue || addToQueue.isPending}
+                >
+                  <ListPlus />
+                  {inQueue ? "Queued" : "Add to queue"}
+                </Button>
+              )}
+            </StartIn>
           )}
           <span
             title={runGate ?? "Run this issue now — the queue stays disarmed"}
             className="flex"
           >
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => run.mutate()}
-              disabled={runGate !== null || run.isPending}
-              aria-label={`Run ${id} now`}
-            >
-              <Play />
-              {run.isPending ? "Starting…" : "Run"}
-            </Button>
+            <StartIn repo={repo} ticket={id} onStart={run.mutate}>
+              {(begin) => (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={begin}
+                  disabled={runGate !== null || run.isPending}
+                  aria-label={`Run ${id} now`}
+                >
+                  <Play />
+                  {run.isPending ? "Starting…" : "Run"}
+                </Button>
+              )}
+            </StartIn>
           </span>
           {interviewable &&
             (activeGrill ? (

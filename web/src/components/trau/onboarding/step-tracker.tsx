@@ -10,20 +10,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { writeConfig } from '@/lib/config'
 import {
   credentialLayer,
   preselectProvider,
   testTracker,
   trackerCanContinue,
   trackerCanTest,
-  trackerConfigWrites,
+  trackerConfigValues,
   type RepoInspection,
   type Team,
   type TestState,
   type TrackerFields,
   type TrackerProvider,
 } from '@/lib/onboarding'
+import { writeProjectTracker } from '@/lib/projects'
 import { cn } from '@/lib/utils'
 import { Callout, FieldLabel, Hint, SecretInput, TextInput } from './ui'
 
@@ -36,11 +36,13 @@ const PROVIDERS: { id: TrackerProvider; name: string; blurb: string }[] = [
 export function StepTracker({
   inspection,
   repo,
+  project,
   onBack,
   onContinue,
 }: {
   inspection: RepoInspection
   repo: string
+  project: string
   onBack: () => void
   onContinue: (provider: TrackerProvider, fields: TrackerFields) => void
 }) {
@@ -93,9 +95,7 @@ export function StepTracker({
   const commit = useMutation({
     mutationFn: async () => {
       if (!provider) return
-      for (const w of trackerConfigWrites(provider, fields)) {
-        await writeConfig(repo, w)
-      }
+      await writeProjectTracker(project, trackerConfigValues(provider, fields))
     },
     onSuccess: () => provider && onContinue(provider, fields),
   })
@@ -123,7 +123,8 @@ export function StepTracker({
         <h2 className="font-mono text-base text-foreground">Where do the tickets come from?</h2>
         <Hint>
           trau writes <span className="font-mono">TRACKER_PROVIDER</span> explicitly and tests the
-          connection before it will sync.
+          connection before it will sync. One tracker per project — every repo in it inherits
+          these keys.
         </Hint>
       </div>
 

@@ -1,7 +1,8 @@
-import { ArrowRight } from 'lucide-react'
+import { useState } from 'react'
+import { ArrowRight, Plus } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import type { FindingState, RepoInspection } from '@/lib/onboarding'
+import type { FindingState, MemberRepo } from '@/lib/onboarding'
 import { cn } from '@/lib/utils'
 import { Callout, Hint } from './ui'
 
@@ -13,14 +14,19 @@ const FINDING: Record<FindingState, { glyph: string; color: string }> = {
 }
 
 export function StepDetect({
-  inspection,
+  members,
+  onAddPath,
   onBack,
   onContinue,
 }: {
-  inspection: RepoInspection
+  members: MemberRepo[]
+  onAddPath: () => void
   onBack: () => void
   onContinue: () => void
 }) {
+  const [selected, setSelected] = useState(0)
+  const member = members[selected] ?? members[0]
+  const inspection = member.inspection
   const hasWarnings = inspection.findings.some((f) => f.state === 'warn')
 
   return (
@@ -29,6 +35,26 @@ export function StepDetect({
         <h2 className="font-mono text-base text-foreground">Here's what trau found</h2>
         <Hint className="font-mono">{inspection.path}</Hint>
       </div>
+
+      {members.length > 1 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {members.map((m, i) => (
+            <button
+              key={m.root}
+              type="button"
+              onClick={() => setSelected(i)}
+              className={cn(
+                'rounded border px-2 py-0.5 font-mono text-xs',
+                i === selected
+                  ? 'border-primary/60 bg-primary/10 text-foreground'
+                  : 'border-border text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {m.repo}
+            </button>
+          ))}
+        </div>
+      )}
 
       {hasWarnings && (
         <Callout tone="warn" title="This config would break sync as-is">
@@ -66,10 +92,25 @@ export function StepDetect({
         })}
       </ul>
 
+      {members.length > 1 && (
+        <Hint>
+          The tracker step configures the whole project — every member inherits the same
+          keys. The essentials step configures{' '}
+          <span className="font-mono">{members[0].repo}</span> only; set the others from
+          their own settings.
+        </Hint>
+      )}
+
       <div className="flex items-center justify-between">
-        <Button type="button" variant="ghost" onClick={onBack}>
-          Back
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button type="button" variant="ghost" onClick={onBack}>
+            Back
+          </Button>
+          <Button type="button" variant="ghost" onClick={onAddPath}>
+            <Plus className="size-4" />
+            Add path
+          </Button>
+        </div>
         <Button type="button" onClick={onContinue}>
           Set up tracker <ArrowRight className="size-4" />
         </Button>

@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { type SyncResponse } from '@/lib/instances'
 import {
   essentialsConfigWrites,
-  trackerConfigWrites,
+  trackerConfigValues,
   type EssentialsFields,
   type TrackerFields,
   type TrackerProvider,
@@ -16,12 +16,14 @@ import {
 
 export function StepDone({
   repo,
+  members,
   provider,
   trackerFields,
   essentials,
   syncResult,
 }: {
   repo: string
+  members: string[]
   provider: TrackerProvider
   trackerFields: TrackerFields
   essentials: EssentialsFields
@@ -37,9 +39,9 @@ export function StepDone({
   }, [repo, setScope, queryClient])
 
   const writtenKeys = [
-    ...trackerConfigWrites(provider, trackerFields),
-    ...essentialsConfigWrites(essentials),
-  ].map((w) => w.key)
+    ...Object.keys(trackerConfigValues(provider, trackerFields)),
+    ...essentialsConfigWrites(essentials).map((w) => w.key),
+  ]
 
   const backlog =
     provider === 'internal'
@@ -50,6 +52,7 @@ export function StepDone({
 
   const summary: { label: string; value: string }[] = [
     { label: 'repo', value: repo },
+    ...(members.length > 1 ? [{ label: 'project', value: members.join(' · ') }] : []),
     {
       label: 'tracker',
       value: trackerFields.binding ? `${provider} · ${trackerFields.binding}` : provider,
