@@ -155,7 +155,7 @@ describe("useGrillSession start model", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { result } = renderGrillSession([]);
 
-    await act(async () => result.current.start("make it ready", "opus", "kimi"));
+    await act(async () => result.current.start({ seed: "make it ready", model: "opus", provider: "kimi" }));
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/repos/loop/grill",
@@ -166,15 +166,44 @@ describe("useGrillSession start model", () => {
           idea: "make it ready",
           model: "opus",
           provider: "kimi",
+          mode: "interview",
         }),
       }),
     );
   });
 
-  // Start over is a fresh interview on the same item, so a provider and model chosen
-  // mid-way are what it opens on — reverting to the repo default would undo a
-  // deliberate choice.
-  it("carries the discarded session's provider and model into the fresh one", async () => {
+  // The session type is declared at the start surface and locked for the session's
+  // life, so it must ride the create the same way the model does.
+  it("opens the session in the declared research mode", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(201, session({ mode: "research" })));
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderGrillSession([]);
+
+    await act(async () =>
+      result.current.start({ seed: "which oauth flow?", mode: "research" }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/repos/loop/grill",
+      expect.objectContaining({
+        body: JSON.stringify({
+          issue_id: "COD-1",
+          idea: "which oauth flow?",
+          model: "",
+          provider: "",
+          mode: "research",
+        }),
+      }),
+    );
+  });
+
+  // Start over is a fresh session on the same item, so the session type, provider and
+  // model chosen mid-way are what it opens on — reverting to the repo default would
+  // undo a deliberate choice, and reverting the mode would silently change what the
+  // session delivers.
+  it("carries the discarded session's mode, provider and model into the fresh one", async () => {
     const fetchMock = vi.fn((input: string) =>
       Promise.resolve(
         input.endsWith("/abandon")
@@ -184,7 +213,7 @@ describe("useGrillSession start model", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     const { result } = renderGrillSession([
-      session({ model: "opus", provider: "kimi" }),
+      session({ model: "opus", provider: "kimi", mode: "research" }),
     ]);
 
     await act(async () => result.current.startOver());
@@ -197,6 +226,7 @@ describe("useGrillSession start model", () => {
           idea: "",
           model: "opus",
           provider: "kimi",
+          mode: "research",
         }),
       }),
     );

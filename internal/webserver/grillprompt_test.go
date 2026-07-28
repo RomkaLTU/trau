@@ -100,6 +100,60 @@ func TestGrillFirstPromptFollowsCatalogPrecedence(t *testing.T) {
 	}
 }
 
+// A research session builds its first turn from grill_research whether it is
+// anchored to an issue or started from scratch, and the mode survives the resume
+// that rebuilds the prompt.
+func TestGrillResearchModeFirstPrompt(t *testing.T) {
+	r, store, repo, _ := newGrillRunnerTest(t, grillStubScript)
+	anchored, err := store.Create(hubstore.NewGrillSession{Repo: repo.Root, IssueID: "COD-1253", Mode: hubstore.GrillModeResearch})
+	if err != nil {
+		t.Fatalf("create anchored session: %v", err)
+	}
+	t.Cleanup(func() { attachfile.Remove(grillAttachTicket(anchored)) })
+	scratch, err := store.Create(hubstore.NewGrillSession{Repo: repo.Root, Mode: hubstore.GrillModeResearch})
+	if err != nil {
+		t.Fatalf("create from-scratch session: %v", err)
+	}
+	t.Cleanup(func() { attachfile.Remove(grillAttachTicket(scratch)) })
+
+	ctx := context.Background()
+	for name, sess := range map[string]hubstore.GrillSession{"anchored": anchored, "from-scratch": scratch} {
+		reloaded, found, err := store.Session(sess.ID)
+		if err != nil || !found {
+			t.Fatalf("%s: reload session: %v", name, err)
+		}
+		if reloaded.Mode != hubstore.GrillModeResearch {
+			t.Fatalf("%s: stored mode = %q, want research", name, reloaded.Mode)
+		}
+		got := r.firstPrompt(ctx, repo, reloaded)
+		if !strings.HasPrefix(got, "You are answering a research question") {
+			t.Errorf("%s: first turn is not the research prompt:\n%s", name, got)
+		}
+		if !strings.Contains(got, `disposition "research"`) {
+			t.Errorf("%s: research disposition missing:\n%s", name, got)
+		}
+	}
+	if got := r.firstPrompt(ctx, repo, anchored); !strings.Contains(got, "COD-1253") {
+		t.Errorf("anchored research prompt dropped the issue context:\n%s", got)
+	}
+}
+
+// Ask ahead is not mode-aware: an Ask-ahead pass over an issue keeps its own
+// unattended prompt even when a research session exists alongside it.
+func TestGrillPregrillIgnoresResearchMode(t *testing.T) {
+	r, store, repo, _ := newGrillRunnerTest(t, grillStubScript)
+	sess, err := store.Create(hubstore.NewGrillSession{Repo: repo.Root, IssueID: "COD-1253", Mode: hubstore.GrillModeResearch})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	t.Cleanup(func() { attachfile.Remove(grillAttachTicket(sess)) })
+
+	r.srv.markPregrill(sess.ID)
+	if got := r.firstPrompt(context.Background(), repo, sess); !strings.HasPrefix(got, "You are triaging a software issue ahead of time") {
+		t.Fatalf("Ask-ahead pass picked up the research prompt:\n%s", got)
+	}
+}
+
 // The three interview entries are separate catalog rows: editing the live one
 // leaves the Ask-ahead and authoring first turns on their own bodies.
 func TestGrillPromptVariantsAreIndependentlyEditable(t *testing.T) {

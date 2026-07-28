@@ -26,6 +26,7 @@ const (
 	goldenGrillBody        = "Ticket body.\n\n![shot](/tmp/trau-attachments-COD-123/shot.png)"
 	goldenGrillAttachments = "\n--- Attachments ---\n/tmp/trau-attachments-COD-123/shot.png — shot.png (image/png, 2.0KB)\nThese are local copies of the ticket's files. Images may show UI states or error screenshots that matter for this task — read them.\n"
 	goldenGrillFocus       = "Whether the collapse threshold should be configurable."
+	goldenGrillQuestion    = "Which OAuth flow the desktop client should use."
 )
 
 func goldenRepairData(codeStyle, handoff, fails, rubricNote, lessonsNote, notesNote, ticketCtx string) RepairData {
@@ -51,6 +52,10 @@ func grillIssueFocused(focus string) GrillIssueData {
 	data := grillIssue(goldenGrillTitle, goldenGrillBody, goldenGrillAttachments)
 	data.Focus = focus
 	return data
+}
+
+func grillResearchAnchored(focus string) GrillResearchData {
+	return GrillResearchData{GrillIssueData: grillIssueFocused(focus)}
 }
 
 type goldenCase struct {
@@ -148,6 +153,10 @@ func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 		{"grill_pregrill", "grill_pregrill", grillIssue(goldenGrillTitle, goldenGrillBody, goldenGrillAttachments)},
 		{"grill_authoring_seed", "grill_authoring", GrillAuthoringData{Idea: "A dark-mode toggle in the toolbar."}},
 		{"grill_authoring_empty", "grill_authoring", GrillAuthoringData{}},
+		{"grill_research_issue", "grill_research", grillResearchAnchored(goldenGrillFocus)},
+		{"grill_research_bare", "grill_research", GrillResearchData{GrillIssueData: grillIssue("", "(no description yet)", "")}},
+		{"grill_research_idea", "grill_research", GrillResearchData{Idea: goldenGrillQuestion}},
+		{"grill_research_empty", "grill_research", GrillResearchData{}},
 	}
 	assertGoldens(t, cases)
 }
@@ -191,8 +200,8 @@ func TestRenderTestEffortGoldens(t *testing.T) {
 
 func TestCatalog(t *testing.T) {
 	cat := Catalog()
-	if len(cat) != 23 {
-		t.Fatalf("catalog has %d prompts, want 23", len(cat))
+	if len(cat) != 24 {
+		t.Fatalf("catalog has %d prompts, want 24", len(cat))
 	}
 	seen := map[string]bool{}
 	for _, p := range cat {

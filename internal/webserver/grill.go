@@ -28,7 +28,8 @@ const grillDefaultProvider = "claude"
 // carries the session's seed so the queue can title an issue-less draft.
 // IssueDestination names where a create-apply filed the anchored issue, so a review
 // remounted on a settled session still names the destination it used rather than
-// reverting to the picker default. Provider is the session's locked provider.
+// reverting to the picker default. Provider is the session's locked provider and
+// Mode its locked session type.
 type GrillSessionView struct {
 	ID               string   `json:"id"`
 	Repo             string   `json:"repo"`
@@ -37,6 +38,7 @@ type GrillSessionView struct {
 	IssueTitle       string   `json:"issue_title,omitempty"`
 	State            string   `json:"state"`
 	SessionChain     string   `json:"session_chain,omitempty"`
+	Mode             string   `json:"mode"`
 	Provider         string   `json:"provider"`
 	Model            string   `json:"model,omitempty"`
 	ModelOptions     []string `json:"model_options,omitempty"`
@@ -113,11 +115,12 @@ type GrillDetailResponse struct {
 
 // GrillCreateRequest is the body of POST /repos/{repo}/grill. IssueID is empty for
 // an authoring session anchored to the repo alone; Idea is that session's one-line
-// seed, or the focus note an issue-bound interview opens on. Provider and Model are
-// optional.
+// seed, or the focus note an issue-bound interview opens on. Mode, Provider and
+// Model are optional; an empty Mode opens an interview.
 type GrillCreateRequest struct {
 	IssueID  string `json:"issue_id"`
 	Idea     string `json:"idea"`
+	Mode     string `json:"mode"`
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 }
@@ -185,6 +188,11 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 		return
 	}
 	issueID := strings.TrimSpace(req.IssueID)
+	mode, errMsg := grillValidateMode(req.Mode)
+	if errMsg != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
+		return
+	}
 	provider, errMsg := grillValidateProvider(req.Provider)
 	if errMsg != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
@@ -200,6 +208,7 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 	sess, err := s.stores.Grill().Create(hubstore.NewGrillSession{
 		Repo:     repo.Root,
 		IssueID:  issueID,
+		Mode:     mode,
 		Provider: provider,
 		Model:    model,
 	})
@@ -664,6 +673,7 @@ func (s *Server) grillSessionView(repo string, sess hubstore.GrillSession) Grill
 		IssueTitle:       sess.IssueTitle,
 		State:            sess.State,
 		SessionChain:     sess.SessionChain,
+		Mode:             grillEffectiveMode(sess.Mode),
 		Provider:         grillEffectiveProvider(sess.Provider),
 		Model:            s.grillEffectiveModel(sess),
 		ModelOptions:     grillModelOptionsFor(sess.Provider),
@@ -730,6 +740,23 @@ func grillEffectiveProvider(provider string) string {
 		return grillDefaultProvider
 	}
 	return provider
+}
+
+func grillEffectiveMode(mode string) string {
+	if mode == "" {
+		return hubstore.GrillModeInterview
+	}
+	return mode
+}
+
+func grillValidateMode(mode string) (string, string) {
+	switch mode = strings.TrimSpace(mode); mode {
+	case "", hubstore.GrillModeInterview:
+		return hubstore.GrillModeInterview, ""
+	case hubstore.GrillModeResearch:
+		return hubstore.GrillModeResearch, ""
+	}
+	return "", fmt.Sprintf("unknown mode %q (expected: %s | %s)", mode, hubstore.GrillModeInterview, hubstore.GrillModeResearch)
 }
 
 func grillValidateProvider(provider string) (string, string) {

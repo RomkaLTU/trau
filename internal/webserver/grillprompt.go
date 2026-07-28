@@ -36,6 +36,24 @@ func grillAuthoringPrompt(r prompts.Renderer, idea string) string {
 	return r.Render("grill_authoring", prompts.GrillAuthoringData{Idea: strings.TrimSpace(idea)})
 }
 
+// grillResearchPrompt is the first-turn prompt for a research session anchored to an
+// issue: the agent answers the question against primary sources — the web and the
+// repo — with the issue as its context, and finishes with a findings report rather
+// than an issue rewrite. focus is the note the session was opened with, and aims the
+// research at the issue.
+func grillResearchPrompt(r prompts.Renderer, issueID, title, description, focus string, files []attachfile.File) string {
+	issue := grillIssueData(issueID, title, description, files)
+	issue.Focus = strings.TrimSpace(focus)
+	return r.Render("grill_research", prompts.GrillResearchData{GrillIssueData: issue})
+}
+
+// grillResearchIdeaPrompt is the from-scratch counterpart: nothing anchors the
+// session, so the opening note is the question to answer; it is empty when the user
+// opened the session without one.
+func grillResearchIdeaPrompt(r prompts.Renderer, question string) string {
+	return r.Render("grill_research", prompts.GrillResearchData{Idea: strings.TrimSpace(question)})
+}
+
 func grillIssueData(issueID, title, description string, files []attachfile.File) prompts.GrillIssueData {
 	return prompts.GrillIssueData{
 		ID:          issueID,
