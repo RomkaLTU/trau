@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
+import { parseAsStringLiteral, useQueryState } from "nuqs";
 import {
   ChevronRight,
   ExternalLink,
@@ -25,7 +26,10 @@ import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { PRStatusBadge } from "@/components/trau/pr-status-badge";
 import { RunDiff } from "@/components/trau/run-diff";
 import { RunPageHeader } from "@/components/trau/run-page-header";
-import { SegmentedControl } from "@/components/trau/segmented-control";
+import {
+  SegmentedControl,
+  type SegmentOption,
+} from "@/components/trau/segmented-control";
 import { SteerComposer } from "@/components/trau/steer-notes";
 import { StatusPill } from "@/components/trau/status-pill";
 import { TerminalCard } from "@/components/trau/terminal-card";
@@ -80,12 +84,16 @@ const PHASE_EVENT_KINDS = new Set([
   "state_change",
 ]);
 
-const PANE_OPTIONS = [
-  { value: "transcript", label: "Transcript" },
-  { value: "diff", label: "Diff" },
-] as const;
+export const PANE_VALUES = ["terminal", "diff"] as const;
 
-type PaneTab = (typeof PANE_OPTIONS)[number]["value"];
+export type PaneTab = (typeof PANE_VALUES)[number];
+
+const PANE_OPTIONS: readonly SegmentOption<PaneTab>[] = [
+  { value: "terminal", label: "Terminal" },
+  { value: "diff", label: "Diff" },
+];
+
+const paneParser = parseAsStringLiteral(PANE_VALUES).withDefault("terminal");
 
 const PARKED_GATE =
   "trau is parked on this ticket’s recap in the TUI — handle it there, or stop it above to resume from here";
@@ -566,18 +574,18 @@ function MainPane({
   glyph: EyebrowGlyph;
   terminal: React.ReactNode;
 }) {
-  const [tab, setTab] = useState<PaneTab>("transcript");
+  const [tab, setTab] = useQueryState("pane", paneParser);
   const diff = tab === "diff";
 
   return (
     <div className="flex flex-1 flex-col gap-2">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <Eyebrow glyph={glyph}>{diff ? "DIFF" : "TRANSCRIPT"}</Eyebrow>
+        <Eyebrow glyph={glyph}>{diff ? "DIFF" : "TERMINAL"}</Eyebrow>
         <SegmentedControl
           aria-label="Run pane"
           options={PANE_OPTIONS}
           value={tab}
-          onChange={setTab}
+          onChange={(value) => void setTab(value)}
         />
       </div>
       <div className={cn("flex flex-1 flex-col", diff && "hidden")}>
