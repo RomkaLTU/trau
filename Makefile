@@ -4,7 +4,11 @@
 
 BINARY  := trau
 PKG     := ./cmd/trau
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# No redirects or ||: parse-time $(shell) runs under cmd.exe when make is
+# launched from PowerShell (no sh on PATH), and cmd reads 2>/dev/null as a
+# redirect to the literal path \dev\null. $(or) keeps the dev fallback for
+# builds outside a git checkout.
+VERSION ?= $(or $(shell git describe --tags --always --dirty),dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
 
@@ -23,7 +27,12 @@ endif
 NPM      ?= npm
 WEB_DIR  := web
 WEB_DIST := internal/webserver/dist/index.html
-WEB_SRC  := $(shell find $(WEB_DIR)/src $(WEB_DIR)/public $(WEB_DIR)/index.html $(WEB_DIR)/package.json $(WEB_DIR)/vite.config.ts 2>/dev/null)
+# Pure make instead of find, for the same reason VERSION shuns the shell: the
+# list must come out identical no matter what launched make. Directories are
+# listed alongside files, matching the find this replaces, so adding or
+# removing a web source still re-triggers the SPA build.
+rwildcard = $(foreach p,$(wildcard $(1)/*),$(call rwildcard,$(p)) $(p))
+WEB_SRC  := $(wildcard $(WEB_DIR)/src $(WEB_DIR)/public $(WEB_DIR)/index.html $(WEB_DIR)/package.json $(WEB_DIR)/vite.config.ts) $(call rwildcard,$(WEB_DIR)/src) $(call rwildcard,$(WEB_DIR)/public)
 
 # Only names the port in the hub-guard message; the binary resolves the real one
 # from the layered config.
