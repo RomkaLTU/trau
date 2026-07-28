@@ -701,6 +701,55 @@ func TestGrillCreateHonoursRequestedCodexProvider(t *testing.T) {
 	}
 }
 
+func TestGrillCreateHonoursResearchMode(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/grill", GrillCreateRequest{IssueID: "COD-1", Mode: hubstore.GrillModeResearch})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", res.StatusCode)
+	}
+	var v GrillSessionView
+	if err := json.NewDecoder(res.Body).Decode(&v); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if v.Mode != hubstore.GrillModeResearch {
+		t.Fatalf("created mode = %q, want research", v.Mode)
+	}
+	sid, _ := strconv.ParseInt(v.ID, 10, 64)
+	if stored, _, _ := stores.Grill().Session(sid); stored.Mode != hubstore.GrillModeResearch {
+		t.Fatalf("stored mode = %q, want research", stored.Mode)
+	}
+}
+
+// A create that omits the field, and a session stored before the mode column
+// existed, both read back as an interview.
+func TestGrillModeDefaultsToInterview(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+
+	sess := createGrill(t, ts, repo, "COD-1")
+	if sess.Mode != hubstore.GrillModeInterview {
+		t.Fatalf("created mode = %q, want interview", sess.Mode)
+	}
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+	if stored, _, _ := stores.Grill().Session(sid); stored.Mode != hubstore.GrillModeInterview {
+		t.Fatalf("stored mode = %q, want interview", stored.Mode)
+	}
+	if got := grillEffectiveMode(""); got != hubstore.GrillModeInterview {
+		t.Fatalf("legacy row mode = %q, want interview", got)
+	}
+}
+
+func TestGrillCreateRejectsUnknownMode(t *testing.T) {
+	ts, _, repo := grillServer(t)
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/grill", GrillCreateRequest{IssueID: "COD-1", Mode: "bogus"})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create status = %d, want 400", res.StatusCode)
+	}
+}
+
 func TestGrillCreateRejectsUnknownProvider(t *testing.T) {
 	ts, _, repo := grillServer(t)
 

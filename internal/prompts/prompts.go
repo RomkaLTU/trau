@@ -204,6 +204,15 @@ type GrillAuthoringData struct {
 	Idea string
 }
 
+// GrillResearchData feeds the grill_research prompt, which runs both anchored
+// to an issue and from scratch. An anchored session carries the issue context
+// and the Focus note it was opened with; a from-scratch one leaves that zero and
+// carries only Idea, the question itself, and an empty Idea opens by asking for it.
+type GrillResearchData struct {
+	GrillIssueData
+	Idea string
+}
+
 var templateFuncs = template.FuncMap{"join": strings.Join}
 
 var templates = func() map[string]*template.Template {

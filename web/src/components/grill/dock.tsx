@@ -12,6 +12,7 @@ import {
 
 import { statePill } from "@/components/grill/banners";
 import { GrillConversation } from "@/components/grill/conversation";
+import { SessionModeBadge } from "@/components/grill/session-mode";
 import { StatusPill } from "@/components/trau";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -496,6 +497,7 @@ function InterviewPanel({
             }}
           />
         )}
+        <SessionModeBadge mode={session.mode} />
         <StatusPill state={pill.state} label={pill.label} />
         <Button
           variant="ghost"
@@ -651,6 +653,7 @@ function SessionFacts({
             draft
           </span>
         )}
+        <SessionModeBadge mode={session.mode} />
         <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
           {sessionTitle(session)}
         </span>

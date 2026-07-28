@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Flame, Loader2 } from "lucide-react";
 
+import { SessionTypeChips } from "@/components/grill/session-mode";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -16,6 +17,7 @@ import {
   isActiveSessionConflict,
   publishGrillSession,
   startGrillSession,
+  type GrillMode,
 } from "@/lib/grill";
 
 // StartInterviewDialog is how an interview begins on a ticket that has none: an
@@ -36,9 +38,12 @@ export function StartInterviewDialog({
   const fieldRef = useRef<HTMLTextAreaElement | null>(null);
   const [open, setOpen] = useState(false);
   const [focus, setFocus] = useState("");
+  const [mode, setMode] = useState<GrillMode>("interview");
+  const research = mode === "research";
 
   const start = useMutation({
-    mutationFn: () => startGrillSession(repo, id, focus.trim()),
+    mutationFn: () =>
+      startGrillSession(repo, id, { seed: focus.trim(), mode }),
     onSuccess: (session) => {
       publishGrillSession(queryClient, repo, session);
       onStarted();
@@ -92,26 +97,36 @@ export function StartInterviewDialog({
           <div className="flex flex-col gap-2 p-4">
             <AlertDialogHeader className="gap-2 text-left">
               <AlertDialogTitle className="font-mono text-sm font-normal text-foreground">
-                Interview {id}
+                {research ? "Research" : "Interview"} {id}
               </AlertDialogTitle>
               <AlertDialogDescription className="font-sans text-sm leading-relaxed text-muted-foreground">
-                The interviewer reads the ticket and asks what it leaves open. A
-                note steers where it starts.
+                {research
+                  ? "The agent investigates against primary sources and delivers a findings report. A note says what to answer."
+                  : "The interviewer reads the ticket and asks what it leaves open. A note steers where it starts."}
               </AlertDialogDescription>
             </AlertDialogHeader>
+            <SessionTypeChips mode={mode} onChange={setMode} className="mt-2" />
             <textarea
               ref={fieldRef}
               value={focus}
               rows={3}
-              aria-label={`Interview focus for ${id}`}
-              placeholder="What do you want clarified? (optional)"
+              aria-label={
+                research
+                  ? `Research question for ${id}`
+                  : `Interview focus for ${id}`
+              }
+              placeholder={
+                research
+                  ? "What do you want answered? (optional)"
+                  : "What do you want clarified? (optional)"
+              }
               onChange={(e) => setFocus(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key !== "Enter" || !(e.metaKey || e.ctrlKey)) return;
                 e.preventDefault();
                 submit();
               }}
-              className="mt-2 w-full resize-none rounded-md border border-border bg-input px-2.5 py-1.5 font-sans text-sm text-foreground outline-none placeholder:text-muted-foreground/60 focus-visible:border-ring"
+              className="w-full resize-none rounded-md border border-border bg-input px-2.5 py-1.5 font-sans text-sm text-foreground outline-none placeholder:text-muted-foreground/60 focus-visible:border-ring"
             />
             {failure && (
               <p role="alert" className="font-mono text-xs text-fail">
@@ -129,7 +144,7 @@ export function StartInterviewDialog({
                 onClick={submit}
               >
                 {start.isPending && <Loader2 className="animate-spin" />}
-                Start interview
+                {research ? "Start research" : "Start interview"}
               </Button>
             </AlertDialogFooter>
           </div>

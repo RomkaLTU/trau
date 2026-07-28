@@ -12,6 +12,10 @@ export type GrillState =
 export type GrillRole = 'agent' | 'user' | 'system'
 export type GrillKind = 'question' | 'answer' | 'info' | 'outcome'
 
+// GrillMode is the session type declared at create: an interview clarifies or
+// authors an issue, research answers a question and delivers a findings report.
+export type GrillMode = 'interview' | 'research'
+
 // GrillSession mirrors the hub's GrillSessionView. issue_id is absent for an
 // authoring session anchored to the repo alone; parked_reason carries the cause a
 // parked or stalled session settled with. issue_title is the hub's join onto the
@@ -27,6 +31,7 @@ export interface GrillSession {
   issue_title?: string
   state: GrillState
   session_chain?: string
+  mode?: GrillMode
   provider?: string
   model?: string
   model_options?: string[]
@@ -405,22 +410,36 @@ export function isActiveSessionConflict(err: unknown): boolean {
   return err instanceof GrillStartError && err.status === 409
 }
 
-// startGrillSession opens a session. An empty issueId with an idea starts a
-// from-scratch authoring session anchored to the repo alone, the idea seeding the
-// first turn; a concrete issueId grills that issue. provider locks the session's
-// backend and model pins its first turn; an empty one of either leaves the hub to
-// resolve the repo's default.
+// GrillStartOpening is what a session opens on: the text seeding the opening user
+// turn, the provider to lock the session's backend to, the model to pin its first
+// turn, and the session type. An omitted provider or model leaves the hub to resolve
+// the repo's default; an omitted mode opens an interview.
+export interface GrillStartOpening {
+  seed?: string
+  model?: string
+  provider?: string
+  mode?: GrillMode
+}
+
+// startGrillSession opens a session. An empty issueId with a seed starts a
+// from-scratch authoring session anchored to the repo alone, the seed becoming the
+// first turn; a concrete issueId grills that issue. The provider, model and mode
+// the session opens on all lock for its lifetime.
 export async function startGrillSession(
   repo: string,
   issueId: string,
-  idea = '',
-  model = '',
-  provider = '',
+  opening: GrillStartOpening = {},
 ): Promise<GrillSession> {
   const res = await apiFetch(base(repo), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ issue_id: issueId, idea, model, provider }),
+    body: JSON.stringify({
+      issue_id: issueId,
+      idea: opening.seed ?? '',
+      model: opening.model ?? '',
+      provider: opening.provider ?? '',
+      mode: opening.mode ?? 'interview',
+    }),
   })
   if (!res.ok) {
     throw new GrillStartError(
