@@ -307,14 +307,10 @@ func (s *Server) grillAutoAnswer(w http.ResponseWriter, sid int64, rpcID json.Ra
 	}
 	s.publishGrillMessage(stored)
 
-	payload, _ := json.Marshal(struct {
-		Text string `json:"text"`
-		Auto bool   `json:"auto"`
-	}{Text: recommended, Auto: true})
 	answer, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
 		Role:    hubstore.GrillRoleUser,
 		Kind:    hubstore.GrillKindAnswer,
-		Payload: string(payload),
+		Payload: grillAnswerPayload(recommended, true),
 	})
 	if err != nil {
 		respondRPCError(w, rpcID, rpcInternalError, "store auto-accepted answer: "+err.Error())
@@ -436,18 +432,31 @@ func (s *Server) grillPendingQuestion(sid int64, question string) (hubstore.Gril
 	if err != nil || !found || sess.State != hubstore.GrillWaiting {
 		return hubstore.GrillMessage{}, false
 	}
-	msgs, err := s.stores.Grill().Messages(sid, 0)
-	if err != nil || len(msgs) == 0 {
-		return hubstore.GrillMessage{}, false
-	}
-	last := msgs[len(msgs)-1]
-	if last.Role != hubstore.GrillRoleAgent || last.Kind != hubstore.GrillKindQuestion {
-		return hubstore.GrillMessage{}, false
-	}
-	if grillMessageText(last.Payload) != question {
+	last, ok := s.grillTrailingQuestion(sid)
+	if !ok || grillMessageText(last.Payload) != question {
 		return hubstore.GrillMessage{}, false
 	}
 	return last, true
+}
+
+// grillTrailingQuestion returns the unanswered agent question a blocked, parked or
+// stalled session is sitting on. System notices — a model or auto-accept switch — are
+// skipped: they land in the transcript without answering anything.
+func (s *Server) grillTrailingQuestion(sid int64) (hubstore.GrillMessage, bool) {
+	msgs, err := s.stores.Grill().Messages(sid, 0)
+	if err != nil {
+		return hubstore.GrillMessage{}, false
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == hubstore.GrillRoleSystem {
+			continue
+		}
+		if msgs[i].Role == hubstore.GrillRoleAgent && msgs[i].Kind == hubstore.GrillKindQuestion {
+			return msgs[i], true
+		}
+		break
+	}
+	return hubstore.GrillMessage{}, false
 }
 
 // grillAnswerAfter returns the first user answer stored after afterID, the answer

@@ -839,3 +839,24 @@ func grillMessageText(payload string) string {
 	_ = json.Unmarshal([]byte(payload), &p)
 	return strings.TrimSpace(p.Text)
 }
+
+// grillMessageRecommended reads the "recommended" field of a question payload: the
+// option the agent would take itself, empty on a question that needs the user.
+func grillMessageRecommended(payload string) string {
+	var p struct {
+		Recommended string `json:"recommended"`
+	}
+	_ = json.Unmarshal([]byte(payload), &p)
+	return strings.TrimSpace(p.Recommended)
+}
+
+// grillAnswerPayload builds an answer message payload. auto flags one the hub took
+// from the agent's recommendation, so the transcript still shows who chose; a typed
+// answer carries no flag at all.
+func grillAnswerPayload(text string, auto bool) string {
+	payload, _ := json.Marshal(struct {
+		Text string `json:"text"`
+		Auto bool   `json:"auto,omitempty"`
+	}{Text: text, Auto: auto})
+	return string(payload)
+}
