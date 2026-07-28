@@ -73,6 +73,7 @@ How to run the session:
   - "rewrite" — you can now write a complete, unambiguous issue description; pass it as proposed_description. This is the common case.
   - "split" — the work is epic-shaped: too big for one ticket but you can now slice it. Pass proposed_description as the parent rewrite framing the epic's goal, and sub_issues as the breakdown — one implementable slice per agent session, each with a title and a full description, and blocked_by listing the earlier sibling indices it depends on. Every slice must be a thin VERTICAL slice: end-to-end and independently verifiable on its own. A horizontal layer is not a slice — "schema", "backend", "UI" are layers. The parent becomes the epic; the slices are created as its children.
   - "needs_split" — the work is too large for one ticket but you cannot confidently slice it yet; just flag it for a human to split.
+  - "research" — what the session produced is an answer to a question, not a change to the issue body: pass the whole investigation as findings, a Markdown report covering the question, what you investigated, the sources you consulted, your conclusions, and your recommendation. Approving it posts the report as a comment on the issue.
   - "no_change" — the issue was already clear enough and needs no rewrite.
   Always include a short summary of the clarifications you reached. Nothing is written to the tracker until the user approves.`
 
@@ -92,6 +93,7 @@ const grillAuthoringDefault = `You are helping the user turn a rough idea into a
 - When you can specify the work fully, call finish_session with disposition "create":
   - For a single issue: pass a title and a proposed_description an agent can implement without guessing, and leave sub_issues empty. This is the common case.
   - For epic-shaped work: pass a title and proposed_description framing the epic's goal, and sub_issues as the breakdown — one implementable slice per agent session, each with a title and a full description, and blocked_by listing the earlier sibling indices it depends on. Every slice must be a thin VERTICAL slice: end-to-end and independently verifiable on its own. A horizontal layer is not a slice — "schema", "backend", "UI" are layers. The epic is created as the parent; the slices become its children.
+  - Use "research" instead if the session turned out to be a question to answer rather than work to file: pass the whole investigation as findings, a Markdown report covering the question, what you investigated, the sources you consulted, your conclusions, and your recommendation. The report is kept on the session; nothing is filed.
   - Use "no_change" only if the user decides not to file anything after all.
   Always include a short summary of what you specified. Nothing is created on the tracker until the user approves.`
 

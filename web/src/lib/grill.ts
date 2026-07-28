@@ -166,6 +166,8 @@ export interface OutcomePayload {
   // labels (a single issue defaults to ready-for-agent server-side).
   title?: string
   proposed_description?: string
+  // findings is the research outcome's Markdown report.
+  findings?: string
   labels?: string[]
   sub_issues?: SubIssueProposal[]
   summary: string
@@ -639,6 +641,7 @@ export function outcomePayload(msg: GrillMessage): OutcomePayload {
     title: typeof p.title === 'string' ? p.title : undefined,
     proposed_description:
       typeof p.proposed_description === 'string' ? p.proposed_description : undefined,
+    findings: typeof p.findings === 'string' ? p.findings : undefined,
     labels: Array.isArray(p.labels)
       ? p.labels.filter((l): l is string => typeof l === 'string')
       : undefined,

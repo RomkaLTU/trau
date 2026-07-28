@@ -378,6 +378,9 @@ func TestGrillMCPFinishSessionValidation(t *testing.T) {
 			},
 			false,
 		},
+		{"research without findings", map[string]any{"disposition": "research", "summary": "s"}, true},
+		{"research with blank findings", map[string]any{"disposition": "research", "findings": "   ", "summary": "s"}, true},
+		{"valid research", map[string]any{"disposition": "research", "findings": "## Question\n\nWhich API?", "summary": "s"}, false},
 		{"create without title", map[string]any{"disposition": "create", "proposed_description": "body", "summary": "s"}, true},
 		{"create without description", map[string]any{"disposition": "create", "title": "New feature", "summary": "s"}, true},
 		{"valid create single", map[string]any{"disposition": "create", "title": "New feature", "proposed_description": "body", "summary": "s"}, false},
@@ -527,6 +530,54 @@ func TestGrillMCPCreateFinish(t *testing.T) {
 	}
 	if !slices.Contains(outcome.Labels, "frontend") {
 		t.Fatalf("outcome labels = %v, want the proposed labels", outcome.Labels)
+	}
+}
+
+func TestGrillMCPResearchFinish(t *testing.T) {
+	ts, _, repo := grillServer(t)
+	sess := createGrill(t, ts, repo, "COD-1")
+	report := "## Question\n\nWhich retry policy does the SDK use?\n\n## Conclusion\n\nExponential backoff."
+
+	msg := mcpJSON(t, mcpURL(ts, sess.ID), toolCall("finish_session", map[string]any{
+		"disposition": "research",
+		"findings":    report,
+		"summary":     "Answered the retry question.",
+	}))
+	if tr := toolResult(t, msg); tr.IsError {
+		t.Fatalf("valid research returned an error: %+v", tr)
+	}
+
+	detail := grillDetail(t, ts, sess.ID)
+	if detail.Session.State != hubstore.GrillFinished {
+		t.Fatalf("session state = %q, want finished", detail.Session.State)
+	}
+	last := detail.Messages[len(detail.Messages)-1]
+	var outcome grillOutcome
+	if err := json.Unmarshal(last.Payload, &outcome); err != nil {
+		t.Fatalf("decode outcome payload: %v", err)
+	}
+	if outcome.Disposition != grillDispResearch || outcome.Findings != report {
+		t.Fatalf("outcome = %+v, want the research report round-tripped", outcome)
+	}
+	if outcome.ProposedDescription != "" {
+		t.Fatalf("outcome carries a proposed_description %q, want none", outcome.ProposedDescription)
+	}
+}
+
+func TestGrillMCPResearchWithoutFindingsExplainsItself(t *testing.T) {
+	ts, _, repo := grillServer(t)
+	sess := createGrill(t, ts, repo, "COD-1")
+
+	msg := mcpJSON(t, mcpURL(ts, sess.ID), toolCall("finish_session", map[string]any{
+		"disposition": "research",
+		"summary":     "s",
+	}))
+	tr := toolResult(t, msg)
+	if !tr.IsError || len(tr.Content) != 1 || !strings.Contains(tr.Content[0].Text, "findings") {
+		t.Fatalf("result = %+v, want a tool error naming findings", tr)
+	}
+	if detail := grillDetail(t, ts, sess.ID); detail.Session.State == hubstore.GrillFinished {
+		t.Fatalf("session finished on a rejected research outcome: %+v", detail.Session)
 	}
 }
 

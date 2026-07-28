@@ -484,6 +484,32 @@ describe('outcomePayload', () => {
     })
   })
 
+  it('parses a research proposal carrying its report', () => {
+    const p = outcomePayload(
+      msg({
+        kind: 'outcome',
+        payload: {
+          disposition: 'research',
+          findings: '## Conclusion\n\nUse the vendor SDK.',
+          summary: 's',
+        },
+      }),
+    )
+    expect(p.disposition).toBe('research')
+    expect(p.findings).toBe('## Conclusion\n\nUse the vendor SDK.')
+    expect(p.proposed_description).toBeUndefined()
+  })
+
+  it('leaves findings undefined when the outcome carries none', () => {
+    const p = outcomePayload(
+      msg({
+        kind: 'outcome',
+        payload: { disposition: 'rewrite', proposed_description: 'x', summary: 's' },
+      }),
+    )
+    expect(p.findings).toBeUndefined()
+  })
+
   it('coerces malformed sub_issue fields to safe defaults', () => {
     const p = outcomePayload(
       msg({
