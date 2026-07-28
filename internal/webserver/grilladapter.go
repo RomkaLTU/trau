@@ -12,12 +12,13 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/agent"
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
 type grillAdapter interface {
 	resumable(chain string) bool
-	turnSpec(sid int64, repo registry.Repo, cfg config.Config, model, resume, prompt string) (grillTurnSpec, error)
+	turnSpec(sid int64, repo registry.Repo, cfg config.Config, mode, model, resume, prompt string) (grillTurnSpec, error)
 	deltaText(line []byte) string
 	parseResult(stream []byte) (chainID string, resultErr bool)
 }
@@ -67,7 +68,9 @@ type claudeGrillAdapter struct{ r *grillRunner }
 
 func (a claudeGrillAdapter) resumable(chain string) bool { return agent.SessionExists(chain) }
 
-func (a claudeGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.Config, model, resume, prompt string) (grillTurnSpec, error) {
+// Claude ignores mode: its grill children run permission-skipped and already carry the
+// built-in web search and fetch tools.
+func (a claudeGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.Config, mode, model, resume, prompt string) (grillTurnSpec, error) {
 	return grillTurnSpec{
 		bin:  grillProviderBin(cfg, "claude"),
 		dir:  repo.Root,
@@ -86,7 +89,7 @@ type codexGrillAdapter struct{ r *grillRunner }
 
 func (a codexGrillAdapter) resumable(chain string) bool { return codexGrillSessionExists(chain) }
 
-func (a codexGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.Config, model, resume, prompt string) (grillTurnSpec, error) {
+func (a codexGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.Config, mode, model, resume, prompt string) (grillTurnSpec, error) {
 	return grillTurnSpec{
 		bin: grillProviderBin(cfg, "codex"),
 		dir: repo.Root,
@@ -95,6 +98,7 @@ func (a codexGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.Co
 			cfg.CodexProfile,
 			model,
 			cfg.CodexEffort,
+			mode,
 			a.r.codexMCPConfigArgs(sid),
 			resume,
 			prompt,
@@ -135,7 +139,9 @@ func codexChildEnv(token string) []string {
 	return out
 }
 
-func codexGrillArgs(flags []string, profile, model, effort string, mcpArgs []string, resumeID, prompt string) []string {
+// A research turn switches codex's first-class web_search tool on here rather than
+// relying on the user's ~/.codex/config.toml, which leaves it off by default.
+func codexGrillArgs(flags []string, profile, model, effort, mode string, mcpArgs []string, resumeID, prompt string) []string {
 	args := []string{"exec"}
 	args = append(args, flags...)
 	args = append(args, "--json")
@@ -147,6 +153,9 @@ func codexGrillArgs(flags []string, profile, model, effort string, mcpArgs []str
 	}
 	if effort != "" {
 		args = append(args, "-c", "model_reasoning_effort="+effort)
+	}
+	if mode == hubstore.GrillModeResearch {
+		args = append(args, "-c", "tools.web_search=true")
 	}
 	args = append(args, mcpArgs...)
 	if resumeID != "" {
@@ -220,7 +229,7 @@ type kimiGrillAdapter struct{ r *grillRunner }
 
 func (a kimiGrillAdapter) resumable(chain string) bool { return kimiGrillSessionExists(chain) }
 
-func (a kimiGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.Config, model, resume, prompt string) (grillTurnSpec, error) {
+func (a kimiGrillAdapter) turnSpec(sid int64, repo registry.Repo, cfg config.Config, mode, model, resume, prompt string) (grillTurnSpec, error) {
 	home, err := a.r.kimiGrillHome(sid)
 	if err != nil {
 		return grillTurnSpec{}, err

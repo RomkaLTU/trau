@@ -137,7 +137,7 @@ func (r *grillRunner) runTurn(ctx context.Context, sess hubstore.GrillSession) {
 		r.settle(sess.ID, hubstore.GrillParked, "interviews do not yet support the "+sess.Provider+" provider")
 		return
 	}
-	if reason := grillProviderUnavailableReason(cfg, sess.Provider); reason != "" {
+	if reason := grillProviderUnavailableReason(cfg, sess.Provider, sess.Mode); reason != "" {
 		r.settle(sess.ID, hubstore.GrillParked, reason)
 		return
 	}
@@ -179,7 +179,7 @@ func (r *grillRunner) buildTurn(ctx context.Context, sess hubstore.GrillSession,
 	} else {
 		prompt = r.firstPrompt(ctx, repo, sess)
 	}
-	return adapter.turnSpec(sess.ID, repo, cfg, model, resume, prompt)
+	return adapter.turnSpec(sess.ID, repo, cfg, sess.Mode, model, resume, prompt)
 }
 
 // grillTurnArgs assembles the claude argument vector: the configured flags, the
@@ -235,8 +235,13 @@ func (r *grillRunner) mcpConfigJSON(sid int64) string {
 
 func (r *grillRunner) firstPrompt(ctx context.Context, repo registry.Repo, sess hubstore.GrillSession) string {
 	renderer := r.srv.promptRenderer(repo.Root)
+	research := sess.Mode == hubstore.GrillModeResearch
 	if sess.IssueID == "" {
-		return grillAuthoringPrompt(renderer, r.srv.withPastedFiles(ctx, repo, sess, r.openingNote(sess.ID)))
+		note := r.srv.withPastedFiles(ctx, repo, sess, r.openingNote(sess.ID))
+		if research {
+			return grillResearchIdeaPrompt(renderer, note)
+		}
+		return grillAuthoringPrompt(renderer, note)
 	}
 	title, description := "", ""
 	if iss, found, err := r.srv.stores.Issues().Get(repo.Root, sess.IssueID); err == nil && found {
@@ -245,6 +250,9 @@ func (r *grillRunner) firstPrompt(ctx context.Context, repo registry.Repo, sess 
 	files := r.srv.materializeIssueAttachments(ctx, repo, sess.IssueID)
 	if r.srv.isPregrill(sess.ID) {
 		return grillPregrillPrompt(renderer, sess.IssueID, title, description, files)
+	}
+	if research {
+		return grillResearchPrompt(renderer, sess.IssueID, title, description, r.openingNote(sess.ID), files)
 	}
 	return grillIssuePrompt(renderer, sess.IssueID, title, description, r.openingNote(sess.ID), files)
 }

@@ -68,6 +68,7 @@ export function MarkdownEditor({
   autoFocus = false,
   repo,
   onChange,
+  onBlur,
   onEnter,
   className,
   contentClassName,
@@ -80,6 +81,7 @@ export function MarkdownEditor({
   autoFocus?: boolean;
   repo?: string;
   onChange?: (markdown: string) => void;
+  onBlur?: (markdown: string) => void;
   onEnter?: () => void;
   className?: string;
   contentClassName?: string;
@@ -90,6 +92,8 @@ export function MarkdownEditor({
   const editorRef = useRef<Editor | null>(null);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const onBlurRef = useRef(onBlur);
+  onBlurRef.current = onBlur;
   const onEnterRef = useRef(onEnter);
   onEnterRef.current = onEnter;
   const repoRef = useRef(repo);
@@ -134,6 +138,7 @@ export function MarkdownEditor({
     autofocus: autoFocus ? "end" : false,
     editable: !disabled,
     onUpdate: ({ editor: e }) => onChangeRef.current?.(e.getMarkdown()),
+    onBlur: ({ editor: e }) => onBlurRef.current?.(e.getMarkdown()),
     editorProps: {
       attributes: {
         class: cn("min-h-9 px-3 py-2 text-sm outline-none", editorClassName),

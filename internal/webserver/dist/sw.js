@@ -1,4 +1,4 @@
-const CACHE_NAME = 'trau-gee690ef'
+const CACHE_NAME = 'trau-gce4ac7d'
 const SHELL = ["/","/assets/index.js","/assets/index.css"]
 
 self.addEventListener('install', (event) => {

@@ -12,6 +12,10 @@ export type GrillState =
 export type GrillRole = 'agent' | 'user' | 'system'
 export type GrillKind = 'question' | 'answer' | 'info' | 'outcome'
 
+// GrillMode is the session type declared at create: an interview clarifies or
+// authors an issue, research answers a question and delivers a findings report.
+export type GrillMode = 'interview' | 'research'
+
 // GrillSession mirrors the hub's GrillSessionView. issue_id is absent for an
 // authoring session anchored to the repo alone; parked_reason carries the cause a
 // parked or stalled session settled with. issue_title is the hub's join onto the
@@ -27,6 +31,7 @@ export interface GrillSession {
   issue_title?: string
   state: GrillState
   session_chain?: string
+  mode?: GrillMode
   provider?: string
   model?: string
   model_options?: string[]
@@ -58,18 +63,23 @@ export interface GrillDetail {
   messages: GrillMessage[]
 }
 
-// GrillProviderOption is one provider a not-yet-started interview can run on and the
-// model catalog choosing it swaps to.
+// GrillProviderOption is one provider a not-yet-started session can run on and the
+// model catalog choosing it swaps to. disabled marks a provider the requested session
+// type rules out, with reason saying why; note describes how a provider that does
+// support it runs the type.
 export interface GrillProviderOption {
   name: string
   model_options?: string[]
+  disabled?: boolean
+  reason?: string
+  note?: string
 }
 
-// GrillDefaults is what an interview started right now would run on. It rides on the
-// list resource so a start surface can offer the provider/model choice before any
-// session exists; a cache write the panel makes itself may not carry it. providers
-// carries every offered provider with its own catalog, so picking one swaps the
-// model list without another round trip.
+// GrillDefaults is what a session of the requested type started right now would run
+// on. It rides on the list resource so a start surface can offer the provider/model
+// choice before any session exists; a cache write the panel makes itself may not carry
+// it. providers carries every offered provider with its own catalog, so picking one
+// swaps the model list without another round trip.
 export interface GrillDefaults {
   provider: string
   model?: string
@@ -166,6 +176,8 @@ export interface OutcomePayload {
   // labels (a single issue defaults to ready-for-agent server-side).
   title?: string
   proposed_description?: string
+  // findings is the research outcome's Markdown report.
+  findings?: string
   labels?: string[]
   sub_issues?: SubIssueProposal[]
   summary: string
@@ -238,9 +250,16 @@ async function errorMessage(res: Response, fallback: string): Promise<string> {
   return detail?.error ?? `${fallback}: ${res.status}`
 }
 
-async function fetchGrillSessions(repo: string, state?: GrillState): Promise<GrillListResponse> {
-  const url = state ? `${base(repo)}?state=${state}` : base(repo)
-  const res = await apiFetch(url)
+async function fetchGrillSessions(
+  repo: string,
+  state?: GrillState,
+  mode?: GrillMode,
+): Promise<GrillListResponse> {
+  const query = new URLSearchParams()
+  if (state) query.set('state', state)
+  if (mode) query.set('mode', mode)
+  const q = query.toString()
+  const res = await apiFetch(q ? `${base(repo)}?${q}` : base(repo))
   if (!res.ok) throw new Error(await errorMessage(res, 'list interview sessions failed'))
   return res.json()
 }
@@ -254,6 +273,18 @@ export const grillSessionsQueryOptions = (repo: string) =>
     enabled: repo !== '',
     staleTime: 10_000,
     refetchInterval: 5_000,
+  })
+
+// grillDefaultsQueryOptions reads what a session of one type would start on. Provider
+// availability depends on the session type, so the mode is part of the key and
+// flipping the type chip re-renders off cache rather than a reload. It nests under the
+// repo's grill key so the list's invalidations reach it.
+export const grillDefaultsQueryOptions = (repo: string, mode: GrillMode) =>
+  queryOptions({
+    queryKey: ['grill', repo, 'defaults', mode],
+    queryFn: async () => (await fetchGrillSessions(repo, undefined, mode)).defaults ?? null,
+    enabled: repo !== '',
+    staleTime: 60_000,
   })
 
 // appliedGrillSessionsQueryOptions reads the repo's applied sessions. They are the
@@ -403,22 +434,36 @@ export function isActiveSessionConflict(err: unknown): boolean {
   return err instanceof GrillStartError && err.status === 409
 }
 
-// startGrillSession opens a session. An empty issueId with an idea starts a
-// from-scratch authoring session anchored to the repo alone, the idea seeding the
-// first turn; a concrete issueId grills that issue. provider locks the session's
-// backend and model pins its first turn; an empty one of either leaves the hub to
-// resolve the repo's default.
+// GrillStartOpening is what a session opens on: the text seeding the opening user
+// turn, the provider to lock the session's backend to, the model to pin its first
+// turn, and the session type. An omitted provider or model leaves the hub to resolve
+// the repo's default; an omitted mode opens an interview.
+export interface GrillStartOpening {
+  seed?: string
+  model?: string
+  provider?: string
+  mode?: GrillMode
+}
+
+// startGrillSession opens a session. An empty issueId with a seed starts a
+// from-scratch authoring session anchored to the repo alone, the seed becoming the
+// first turn; a concrete issueId grills that issue. The provider, model and mode
+// the session opens on all lock for its lifetime.
 export async function startGrillSession(
   repo: string,
   issueId: string,
-  idea = '',
-  model = '',
-  provider = '',
+  opening: GrillStartOpening = {},
 ): Promise<GrillSession> {
   const res = await apiFetch(base(repo), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ issue_id: issueId, idea, model, provider }),
+    body: JSON.stringify({
+      issue_id: issueId,
+      idea: opening.seed ?? '',
+      model: opening.model ?? '',
+      provider: opening.provider ?? '',
+      mode: opening.mode ?? 'interview',
+    }),
   })
   if (!res.ok) {
     throw new GrillStartError(
@@ -427,6 +472,29 @@ export async function startGrillSession(
     )
   }
   return res.json()
+}
+
+// suggestGrillMode asks the hub which session type a focus note reads as, for the
+// chip a start surface pre-selects. It resolves to null unless the hub actually
+// classified the note — a hub that could not be asked, and one that fell back to its
+// own default, both leave the chip alone rather than claiming a reading.
+export async function suggestGrillMode(
+  repo: string,
+  text: string,
+): Promise<GrillMode | null> {
+  const res = await apiFetch(`${base(repo)}/suggest-mode`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  }).catch(() => null)
+  if (!res?.ok) return null
+  const body = (await res.json().catch(() => null)) as {
+    mode?: string
+    suggested?: boolean
+  } | null
+  if (!body?.suggested) return null
+  if (body.mode !== 'research' && body.mode !== 'interview') return null
+  return body.mode
 }
 
 // publishGrillSession puts a freshly started session at the head of the repo's
@@ -639,6 +707,7 @@ export function outcomePayload(msg: GrillMessage): OutcomePayload {
     title: typeof p.title === 'string' ? p.title : undefined,
     proposed_description:
       typeof p.proposed_description === 'string' ? p.proposed_description : undefined,
+    findings: typeof p.findings === 'string' ? p.findings : undefined,
     labels: Array.isArray(p.labels)
       ? p.labels.filter((l): l is string => typeof l === 'string')
       : undefined,

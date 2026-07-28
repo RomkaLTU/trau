@@ -484,6 +484,32 @@ describe('outcomePayload', () => {
     })
   })
 
+  it('parses a research proposal carrying its report', () => {
+    const p = outcomePayload(
+      msg({
+        kind: 'outcome',
+        payload: {
+          disposition: 'research',
+          findings: '## Conclusion\n\nUse the vendor SDK.',
+          summary: 's',
+        },
+      }),
+    )
+    expect(p.disposition).toBe('research')
+    expect(p.findings).toBe('## Conclusion\n\nUse the vendor SDK.')
+    expect(p.proposed_description).toBeUndefined()
+  })
+
+  it('leaves findings undefined when the outcome carries none', () => {
+    const p = outcomePayload(
+      msg({
+        kind: 'outcome',
+        payload: { disposition: 'rewrite', proposed_description: 'x', summary: 's' },
+      }),
+    )
+    expect(p.findings).toBeUndefined()
+  })
+
   it('coerces malformed sub_issue fields to safe defaults', () => {
     const p = outcomePayload(
       msg({
@@ -961,7 +987,7 @@ describe('startGrillSession', () => {
   it('rides the focus note in as the opening idea', async () => {
     const fetchMock = stubStart(200, session({ id: '1' }))
 
-    await startGrillSession('loop', 'COD-1', 'why two flows?')
+    await startGrillSession('loop', 'COD-1', { seed: 'why two flows?' })
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('/api/v1/repos/loop/grill')
@@ -970,7 +996,20 @@ describe('startGrillSession', () => {
       idea: 'why two flows?',
       model: '',
       provider: '',
+      mode: 'interview',
     })
+  })
+
+  it('declares the research session type when one is picked', async () => {
+    const fetchMock = stubStart(200, session({ id: '1' }))
+
+    await startGrillSession('loop', 'COD-1', {
+      seed: 'which oauth flow?',
+      mode: 'research',
+    })
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).toMatchObject({ mode: 'research' })
   })
 
   it('marks a refused start as a conflict when a session raced it', async () => {

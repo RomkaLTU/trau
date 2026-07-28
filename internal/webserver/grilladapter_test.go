@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -14,7 +15,7 @@ import (
 
 func TestCodexGrillArgs(t *testing.T) {
 	mcpArgs := []string{"-c", `mcp_servers.trau-grill.url="http://127.0.0.1:1/api/v1/grill/7/mcp"`}
-	first := codexGrillArgs([]string{"--foo"}, "work", "gpt-5.6-sol", "high", mcpArgs, "", "hello prompt")
+	first := codexGrillArgs([]string{"--foo"}, "work", "gpt-5.6-sol", "high", hubstore.GrillModeInterview, mcpArgs, "", "hello prompt")
 	if first[0] != "exec" {
 		t.Fatalf("first arg = %q, want exec", first[0])
 	}
@@ -30,7 +31,7 @@ func TestCodexGrillArgs(t *testing.T) {
 		t.Errorf("prompt = %q, want it last", got)
 	}
 
-	resume := codexGrillArgs(nil, "", "", "", nil, "codex-sid-1", "the answer")
+	resume := codexGrillArgs(nil, "", "", "", hubstore.GrillModeInterview, nil, "codex-sid-1", "the answer")
 	if !contains(resume, "resume") || !contains(resume, "codex-sid-1") {
 		t.Errorf("resume args missing native resume id: %v", resume)
 	}
@@ -39,6 +40,44 @@ func TestCodexGrillArgs(t *testing.T) {
 	}
 	if got := lastArg(resume); got != "the answer" {
 		t.Errorf("resume prompt = %q, want the answer", got)
+	}
+}
+
+func TestCodexGrillArgsPerMode(t *testing.T) {
+	mcpURL := `mcp_servers.trau-grill.url="http://127.0.0.1:1/api/v1/grill/7/mcp"`
+	interview := []string{
+		"exec", "--foo", "--json",
+		"--profile", "work",
+		"--model", "gpt-5.6-sol",
+		"-c", "model_reasoning_effort=high",
+		"-c", mcpURL,
+		"hello prompt",
+	}
+	research := []string{
+		"exec", "--foo", "--json",
+		"--profile", "work",
+		"--model", "gpt-5.6-sol",
+		"-c", "model_reasoning_effort=high",
+		"-c", "tools.web_search=true",
+		"-c", mcpURL,
+		"hello prompt",
+	}
+	tests := []struct {
+		name string
+		mode string
+		want []string
+	}{
+		{name: "legacy row", want: interview},
+		{name: "interview", mode: hubstore.GrillModeInterview, want: interview},
+		{name: "research", mode: hubstore.GrillModeResearch, want: research},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := codexGrillArgs([]string{"--foo"}, "work", "gpt-5.6-sol", "high", tt.mode, []string{"-c", mcpURL}, "", "hello prompt")
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("codexGrillArgs() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

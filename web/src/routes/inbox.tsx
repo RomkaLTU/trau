@@ -26,7 +26,15 @@ import {
   GrillModelSelect,
   GrillProviderSelect,
 } from "@/components/grill/model-select";
+import {
+  useModeSuggestion,
+  type ModeSuggestion,
+} from "@/components/grill/mode-suggestion";
 import { useGrillSession } from "@/components/grill/session";
+import {
+  SessionModeBadge,
+  SessionTypeChips,
+} from "@/components/grill/session-mode";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -46,7 +54,7 @@ import {
   abandonGrill,
   applySessionModel,
   GRILLABLE_LABELS,
-  grillSessionsQueryOptions,
+  grillDefaultsQueryOptions,
   isSettled,
   latestOutcome,
   outcomePayload,
@@ -57,6 +65,7 @@ import {
   type GrillDefaults,
   type GrillListResponse,
   type GrillSession,
+  type GrillStartOpening,
   type OutcomePayload,
 } from "@/lib/grill";
 import {
@@ -136,8 +145,23 @@ interface InterviewStart {
   defaults?: GrillDefaults;
   provider: string;
   model: string;
+  sessionType: ModeSuggestion;
   onProviderChange: (provider: string) => void;
   onModelChange: (model: string) => void;
+}
+
+// starterOpening turns the panel's current pick into a start payload, so every surface
+// that opens a session sends the same provider, model and session type.
+function starterOpening(
+  starter: InterviewStart,
+  seed?: string,
+): GrillStartOpening {
+  return {
+    seed,
+    model: starter.model,
+    provider: starter.provider,
+    mode: starter.sessionType.mode,
+  };
 }
 
 // interviewModelOptions is the model catalog to offer for a provider before a session
@@ -202,26 +226,40 @@ function InboxPage() {
     if (selected && selected.id !== sticky) setSticky(selected.id);
   }, [selected?.id, sticky]);
 
+  // The session type is the user's own declaration rather than a repo setting — no
+  // repo reports a default mode — so switching scope leaves the choice standing and
+  // drops only a suggestion, which was read from a note written for one repo.
+  const sessionType = useModeSuggestion(repo);
+
   // The provider and model every interview started from this panel opens on — Start
   // interview, a first message, a fresh Draft, and Ask ahead alike. It is a page-level
   // choice so walking the queue with j/k keeps it; until the user picks, it trails the
-  // repo default the hub reports beside the session list. Switching repo drops it, so
-  // the new repo's own default wins rather than the pick made against the old one.
+  // repo default the hub reports for the chosen session type. Switching repo drops it,
+  // so the new repo's own default wins rather than the pick made against the old one.
   // Picking a provider resets the model to that provider's own default, since a claude
-  // model alias means nothing to kimi.
-  const defaults = useQuery(grillSessionsQueryOptions(repo)).data?.defaults;
+  // model alias means nothing to kimi. A pick the session type rules out — kimi cannot
+  // research — yields to that type's default rather than starting on a dead provider.
+  const defaults =
+    useQuery(grillDefaultsQueryOptions(repo, sessionType.mode)).data ?? undefined;
   const [pickedProvider, setPickedProvider] = useState<string | null>(null);
   const [pickedModel, setPickedModel] = useState<string | null>(null);
   useEffect(() => {
     setPickedProvider(null);
     setPickedModel(null);
   }, [repo]);
-  const startProvider = pickedProvider ?? defaults?.provider ?? "claude";
-  const startModel = pickedModel ?? defaults?.model ?? "";
+
+  const pickAllowed = !defaults?.providers?.some(
+    (p) => p.name === pickedProvider && p.disabled,
+  );
+  const startProvider =
+    (pickAllowed ? pickedProvider : null) ?? defaults?.provider ?? "claude";
+  const startModel =
+    (pickAllowed ? pickedModel : null) ?? defaults?.model ?? "";
   const starter: InterviewStart = {
     defaults,
     provider: startProvider,
     model: startModel,
+    sessionType,
     onProviderChange: (next) => {
       setPickedProvider(next);
       setPickedModel("");
@@ -754,6 +792,7 @@ function DoneColumn({
         <div className="flex items-center justify-between gap-3 py-3 pl-5 pr-1">
           <span className="flex min-w-0 items-center gap-2 text-sm font-medium text-foreground">
             <span className="font-mono text-muted-foreground">{item.id}</span>
+            <SessionModeBadge mode={session.mode} />
             <span className="truncate">{item.title}</span>
           </span>
           <div className="flex shrink-0 items-center gap-2">
@@ -803,9 +842,11 @@ function FreshDraftBody({
   onStarted: (session: GrillSession) => void;
 }) {
   const queryClient = useQueryClient();
+  const sessionType = starter.sessionType;
+  const research = sessionType.mode === "research";
   const start = useMutation({
     mutationFn: (seed: string) =>
-      startGrillSession(repo, "", seed, starter.model, starter.provider),
+      startGrillSession(repo, "", starterOpening(starter, seed)),
     onSuccess: (session) => {
       queryClient.setQueryData<GrillListResponse>(["grill", repo], (prev) =>
         prev
@@ -826,19 +867,24 @@ function FreshDraftBody({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex min-h-0 flex-1 items-center justify-center px-6">
         <p className="max-w-sm text-balance text-center text-sm leading-relaxed text-muted-foreground">
-          Describe the issue you want to create. Your first message starts an
-          interview toward a fully-specified issue — nothing is filed until you
-          review the proposal.
+          {research
+            ? "Ask the question you want researched. Your first message starts an investigation against primary sources — you get a findings report, and nothing is filed unless you ask for it."
+            : "Describe the issue you want to create. Your first message starts an interview toward a fully-specified issue — nothing is filed until you review the proposal."}
         </p>
       </div>
       <div className="flex flex-col gap-3 border-t border-border p-4">
-        <StartModelSelect starter={starter} className="self-end" />
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <SessionTypeChips sessionType={sessionType} />
+          <StartModelSelect starter={starter} />
+        </div>
         <Composer
           repo={repo}
-          placeholder="Describe the issue…"
+          placeholder={research ? "Ask your question…" : "Describe the issue…"}
           disabled={start.isPending}
           submitting={start.isPending}
           onSend={(text) => start.mutate(text)}
+          onNoteChange={sessionType.noteChanged}
+          onNoteSettled={sessionType.noteSettled}
           autoFocus
         />
         {start.error && <ErrorNote message={(start.error as Error).message} />}
@@ -862,10 +908,12 @@ function SessionPreview({
   repo: string;
   item: InboxItem;
   starter: InterviewStart;
-  onStart: (seed?: string, model?: string, provider?: string) => void;
+  onStart: (opening?: GrillStartOpening) => void;
   onSkip: () => void;
 }) {
   const queryClient = useQueryClient();
+  const sessionType = starter.sessionType;
+  const research = sessionType.mode === "research";
   const issue = useQuery(issueQueryOptions(repo, item.id));
   const { urlMap } = useIssueAttachments(repo, item.id);
   const labels = (item.entry?.labels ?? []).filter((l) =>
@@ -910,15 +958,13 @@ function SessionPreview({
 
       <div className="flex flex-col gap-3 border-t border-border p-4">
         <p className="text-xs text-muted-foreground">
-          No interview yet — start one, or send a first message to open with it.
+          No session yet — start one, or send a first message to open with it.
         </p>
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            size="sm"
-            onClick={() => onStart(undefined, starter.model, starter.provider)}
-          >
+          <SessionTypeChips sessionType={sessionType} />
+          <Button size="sm" onClick={() => onStart(starterOpening(starter))}>
             <Sparkles />
-            Start interview
+            {research ? "Start research" : "Start interview"}
           </Button>
           <Button
             size="sm"
@@ -937,10 +983,16 @@ function SessionPreview({
         </div>
         <Composer
           repo={repo}
-          placeholder="Type your first message to start the interview…"
+          placeholder={
+            research
+              ? "Type the question to research…"
+              : "Type your first message to start the interview…"
+          }
           disabled={askAhead.isPending}
           submitting={false}
-          onSend={(text) => onStart(text, starter.model, starter.provider)}
+          onSend={(text) => onStart(starterOpening(starter, text))}
+          onNoteChange={sessionType.noteChanged}
+          onNoteSettled={sessionType.noteSettled}
         />
         {askAhead.error && (
           <ErrorNote message={(askAhead.error as Error).message} />
@@ -997,7 +1049,7 @@ function SessionBar({
   return (
     <div className="shrink-0 border-b border-border">
       <div className="flex items-center justify-between gap-3 py-3 pl-5 pr-1">
-        <div className="flex min-w-0 items-center gap-3">
+        <div className="flex min-w-0 items-center gap-3 overflow-hidden">
           <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
             {position + 1} of {total}
           </span>
@@ -1005,7 +1057,9 @@ function SessionBar({
             {draft ? (
               <DraftChip />
             ) : (
-              <span className="font-mono text-muted-foreground">{item.id}</span>
+              <span className="shrink-0 font-mono text-muted-foreground">
+                {item.id}
+              </span>
             )}
             <span className="truncate">
               {draft ? item.title || "New draft" : item.title}
@@ -1013,6 +1067,7 @@ function SessionBar({
           </span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <SessionModeBadge mode={session?.mode} />
           {session && (
             <ModelSwitch
               repo={repo}
@@ -1141,9 +1196,7 @@ function StartModelSelect({
   starter: InterviewStart;
   className?: string;
 }) {
-  const providers =
-    starter.defaults?.providers?.map((p) => p.name) ??
-    [starter.provider].filter(Boolean);
+  const providers = starter.defaults?.providers ?? [{ name: starter.provider }];
   return (
     <div className={cn("flex items-center gap-1", className)}>
       <span className="text-xs text-muted-foreground">Runs on</span>
@@ -1412,6 +1465,7 @@ function QueueRow({
                 {item.id}
               </span>
             )}
+            <SessionModeBadge mode={session?.mode} />
             {unread && (
               <span
                 className="size-1.5 rounded-full bg-warn"
@@ -1503,6 +1557,7 @@ function DoneRow({
         <span className="inline-flex items-center gap-2 font-mono text-xs text-done">
           <span aria-hidden="true">✓</span>
           {item.id}
+          <SessionModeBadge mode={item.session?.mode} />
         </span>
         <span className="line-clamp-1 text-xs leading-relaxed text-muted-foreground">
           {item.title}

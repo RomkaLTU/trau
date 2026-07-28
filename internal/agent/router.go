@@ -49,12 +49,13 @@ func RouteKey(label string) string {
 	}
 }
 
-// mechanicalPhasePrefixes name the pipeline phases that never read the tracker —
-// cleanup, commit, repair, bugfix, and push-repair work purely from the code, the
-// verdict/brief files, and the prompt. They are matched by raw-label prefix (not
-// RouteKey) so push-repair, which RouteKey buckets under pick, is classified as
+// mechanicalPhasePrefixes name the phases that never read the tracker — cleanup,
+// commit, repair, bugfix, and push-repair work purely from the code, the
+// verdict/brief files, and the prompt, and the hub's suggest classifier reads
+// nothing at all. They are matched by raw-label prefix (not RouteKey) so
+// push-repair and suggest, which RouteKey buckets under pick, are classified as
 // mechanical without dragging the tracker-reading pick along with it.
-var mechanicalPhasePrefixes = []string{PhaseCleanup, PhaseCommit, PhaseRepair, PhaseBugfix, "push-repair"}
+var mechanicalPhasePrefixes = []string{PhaseCleanup, PhaseCommit, PhaseRepair, PhaseBugfix, "push-repair", "suggest"}
 
 // MechanicalPhase reports whether label names a mechanical phase — one a backend
 // may launch with its tracker MCP servers stripped, since it consults only the
