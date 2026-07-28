@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -507,6 +508,78 @@ func TestGrillMCPAskUserWaitsWithoutAutoAcceptedRecommendation(t *testing.T) {
 				t.Fatal("ask_user did not return after the answer")
 			}
 		})
+	}
+}
+
+// An Ask-ahead turn is a whole interview, not one parked question: its session
+// auto-accepts, so a recommended question is answered before the pre-grill park check
+// ever sees it and the turn carries on without pulling the user in.
+func TestGrillMCPAskUserPregrillAutoAnswersRecommendation(t *testing.T) {
+	ts, stores, repo, srv := grillHookServer(t)
+	sess := createGrillWith(t, ts, repo, GrillCreateRequest{IssueID: "COD-1", AutoAccept: true})
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+	srv.markPregrill(sid)
+
+	tr := toolResult(t, mcpJSON(t, mcpURL(ts, sess.ID), toolCall("ask_user", map[string]any{
+		"question":    "Which page is in scope?",
+		"options":     []string{"login", "signup"},
+		"recommended": "login",
+	})))
+	if tr.IsError || len(tr.Content) != 1 || tr.Content[0].Text != "login" {
+		t.Fatalf("ask_user result = %+v, want the recommendation as the answer", tr)
+	}
+
+	detail := grillDetail(t, ts, sess.ID)
+	if detail.Session.State != hubstore.GrillRunning {
+		t.Fatalf("session = %+v, want the turn still running rather than parked", detail.Session)
+	}
+	if len(detail.Messages) != 2 {
+		t.Fatalf("stored %d messages, want the question and its auto answer: %+v", len(detail.Messages), detail.Messages)
+	}
+	var a struct {
+		Text string `json:"text"`
+		Auto bool   `json:"auto"`
+	}
+	if err := json.Unmarshal(detail.Messages[1].Payload, &a); err != nil {
+		t.Fatalf("decode answer payload: %v", err)
+	}
+	if a.Text != "login" || !a.Auto {
+		t.Errorf("stored answer = %+v, want the recommendation flagged auto", a)
+	}
+
+	items, err := stores.Notifications().List(10)
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("stored %d notifications, want none for a question the user never saw", len(items))
+	}
+}
+
+// A pre-grill question carrying no recommendation needs the user's taste, and nobody
+// is there to give it: the session parks at once, still auto-accepting for the live
+// session that resumes it.
+func TestGrillMCPAskUserPregrillParksTasteQuestion(t *testing.T) {
+	ts, _, repo, srv := grillHookServer(t)
+	sess := createGrillWith(t, ts, repo, GrillCreateRequest{IssueID: "COD-1", AutoAccept: true})
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+	srv.markPregrill(sid)
+
+	tr := toolResult(t, mcpJSON(t, mcpURL(ts, sess.ID), toolCall("ask_user", map[string]any{
+		"question": "How playful should the empty-state copy read?",
+		"options":  []string{"playful", "plain"},
+	})))
+	var structured struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(mustJSON(t, tr.StructuredContent), &structured); err != nil {
+		t.Fatalf("decode structured content: %v", err)
+	}
+	if structured.Status != "parked" {
+		t.Fatalf("ask_user result = %+v, want the park sentinel", tr)
+	}
+	if detail := grillDetail(t, ts, sess.ID); detail.Session.State != hubstore.GrillParked || !detail.Session.AutoAccept {
+		t.Fatalf("session = %+v, want parked with auto-accept still on", detail.Session)
 	}
 }
 

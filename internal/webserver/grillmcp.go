@@ -198,9 +198,9 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 		s.notifyGrillAwaiting(waiting, question)
 	}
 
-	// An AFK pre-grill turn has no user waiting, so the opening question parks the
-	// session at once and returns the park sentinel as a plain result — the agent
-	// ends its turn and the question waits for a live session.
+	// An AFK pre-grill turn has no user waiting, so a question it could not recommend
+	// an answer to parks the session at once and returns the park sentinel as a plain
+	// result — the agent ends its turn and the question waits for a live session.
 	if s.isPregrill(sid) {
 		if parked, err := s.stores.Grill().Transition(sid, hubstore.GrillParked, ""); err == nil {
 			s.publishGrillState(parked)
