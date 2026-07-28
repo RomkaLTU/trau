@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { RepoView } from '@/lib/instances'
-import { groupRepos, type ProjectView } from '@/lib/projects'
+import { groupRepos, projectAnchor, type ProjectView } from '@/lib/projects'
 
 function repo(name: string): RepoView {
   return {
@@ -67,5 +67,28 @@ describe('groupRepos', () => {
       { project: null, repos: [repos[1]] },
       { project: null, repos: [repos[2]] },
     ])
+  })
+})
+
+describe('projectAnchor', () => {
+  const repos = [repo('alpha'), repo('bravo'), repo('charlie')]
+
+  it('leaves a repo no project holds on itself', () => {
+    expect(projectAnchor('bravo', repos, [])).toBe('bravo')
+  })
+
+  it('leaves a single-member project on its own repo', () => {
+    expect(projectAnchor('bravo', repos, [project('bravo', 'bravo', ['bravo'])])).toBe('bravo')
+  })
+
+  it('anchors every member of a project on its first repo', () => {
+    const platform = [project('platform', 'Platform', ['bravo', 'charlie'])]
+    expect(projectAnchor('bravo', repos, platform)).toBe('bravo')
+    expect(projectAnchor('charlie', repos, platform)).toBe('bravo')
+  })
+
+  it('skips a member the repos list no longer carries', () => {
+    const platform = [project('platform', 'Platform', ['gone', 'charlie'])]
+    expect(projectAnchor('charlie', repos, platform)).toBe('charlie')
   })
 })

@@ -10,7 +10,7 @@ import {
   secretPlaceholder,
   trackerCanContinue,
   trackerCanTest,
-  trackerConfigWrites,
+  trackerConfigValues,
   type RepoInspection,
   type TrackerFields,
 } from './onboarding'
@@ -76,45 +76,42 @@ describe('credentialLayer', () => {
   })
 })
 
-describe('trackerConfigWrites', () => {
-  it('always writes TRACKER_PROVIDER and skips empty secrets', () => {
-    const writes = trackerConfigWrites('linear', {
+describe('trackerConfigValues', () => {
+  it('always sets TRACKER_PROVIDER and skips empty secrets', () => {
+    const keys = trackerConfigValues('linear', {
       linearKey: '',
       jiraBaseUrl: '',
       jiraEmail: '',
       jiraToken: '',
       binding: 'COD',
     })
-    expect(writes).toEqual([
-      { key: 'TRACKER_PROVIDER', value: 'linear', layer: 'project' },
-      { key: 'LINEAR_TEAM', value: 'COD', layer: 'project' },
-    ])
+    expect(keys).toEqual({ TRACKER_PROVIDER: 'linear', LINEAR_TEAM: 'COD' })
   })
 
   it('includes a non-empty linear key', () => {
-    const writes = trackerConfigWrites('linear', {
+    const keys = trackerConfigValues('linear', {
       linearKey: 'lin_secret',
       jiraBaseUrl: '',
       jiraEmail: '',
       jiraToken: '',
       binding: 'COD',
     })
-    expect(writes.map((w) => w.key)).toEqual([
+    expect(Object.keys(keys)).toEqual([
       'TRACKER_PROVIDER',
       'LINEAR_API_KEY',
       'LINEAR_TEAM',
     ])
   })
 
-  it('writes only the Jira fields that are filled in', () => {
-    const writes = trackerConfigWrites('jira', {
+  it('sets only the Jira fields that are filled in', () => {
+    const keys = trackerConfigValues('jira', {
       linearKey: '',
       jiraBaseUrl: 'https://acme.atlassian.net',
       jiraEmail: '',
       jiraToken: 'tok',
       binding: 'MELGA',
     })
-    expect(writes.map((w) => w.key)).toEqual([
+    expect(Object.keys(keys)).toEqual([
       'TRACKER_PROVIDER',
       'JIRA_BASE_URL',
       'JIRA_API_TOKEN',
@@ -122,17 +119,15 @@ describe('trackerConfigWrites', () => {
     ])
   })
 
-  it('writes only the provider for internal', () => {
-    const writes = trackerConfigWrites('internal', {
+  it('sets only the provider for internal', () => {
+    const keys = trackerConfigValues('internal', {
       linearKey: '',
       jiraBaseUrl: '',
       jiraEmail: '',
       jiraToken: '',
       binding: '',
     })
-    expect(writes).toEqual([
-      { key: 'TRACKER_PROVIDER', value: 'internal', layer: 'project' },
-    ])
+    expect(keys).toEqual({ TRACKER_PROVIDER: 'internal' })
   })
 })
 
@@ -233,23 +228,26 @@ describe('onboardPath', () => {
     vi.unstubAllGlobals()
   })
 
-  it('inspects a path before registering it', async () => {
+  it('inspects a path, registers it, and reports the project backing it', async () => {
     const seen: string[] = []
     vi.stubGlobal(
       'fetch',
       vi.fn(async (url: string) => {
         seen.push(url)
-        return url.endsWith('/inspect')
-          ? respond(200, inspection({ path: '/Projects/acme' }))
-          : respond(201, { name: 'acme', root: '/Projects/acme' })
+        if (url.endsWith('/inspect')) return respond(200, inspection({ path: '/Projects/acme' }))
+        if (url.endsWith('/projects')) {
+          return respond(200, { projects: [{ id: 'acme', name: 'acme', repos: ['/Projects/acme'] }] })
+        }
+        return respond(201, { name: 'acme', root: '/Projects/acme' })
       }),
     )
 
     const member = await onboardPath('/Projects/acme')
 
-    expect(seen).toEqual(['/api/v1/repos/inspect', '/api/v1/repos'])
+    expect(seen).toEqual(['/api/v1/repos/inspect', '/api/v1/repos', '/api/v1/projects'])
     expect(member.repo).toBe('acme')
     expect(member.root).toBe('/Projects/acme')
+    expect(member.project).toBe('acme')
   })
 })
 

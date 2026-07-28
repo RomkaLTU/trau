@@ -136,6 +136,15 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request, repo registry
 		}
 	}
 
+	// Writing a key into the repo's own config file makes it the repo's again, so
+	// the next project tracker edit no longer refreshes it.
+	if req.Layer == "project" {
+		if err := s.stores.Projects().ReleaseTrackerKey(repo.Root, key); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "release project tracker key: " + err.Error()})
+			return
+		}
+	}
+
 	views, err := s.resolveConfig(repo)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "reload config: " + err.Error()})

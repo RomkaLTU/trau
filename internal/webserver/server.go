@@ -291,6 +291,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/fs/init", s.handleFSInit)
 	mux.HandleFunc(APIPrefix+"/projects", s.handleProjects)
 	mux.HandleFunc(APIPrefix+"/projects/{project}", s.handleProject)
+	mux.HandleFunc(APIPrefix+"/projects/{project}/tracker", s.handleProjectTracker)
 	mux.HandleFunc(APIPrefix+"/projects/{project}/repos", s.handleProjectRepos)
 	mux.HandleFunc(APIPrefix+"/projects/{project}/repos/{repo}", s.handleProjectRepo)
 	mux.HandleFunc(APIPrefix+"/repos", s.handleRepos)

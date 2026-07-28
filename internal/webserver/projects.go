@@ -39,6 +39,7 @@ type ProjectRepoRequest struct {
 func (s *Server) handleProjects(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		s.adoptRepoTrackers()
 		projects, err := s.stores.Projects().List()
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list projects: " + err.Error()})
@@ -145,6 +146,19 @@ func (s *Server) handleProjectRepos(w http.ResponseWriter, r *http.Request) {
 	proj, err := s.stores.Projects().AddRepo(r.PathValue("project"), repo.Root)
 	if err != nil {
 		writeProjectError(w, err, "failed to add repo to project")
+		return
+	}
+	// The stored tracker, not projectTracker: a project being assembled repo by
+	// repo is momentarily single-member, and adopting there would claim the first
+	// joiner's own keys as the project default.
+	keys, err := s.stores.Projects().Tracker(proj.ID)
+	if err == nil {
+		err = s.seedRepoTracker(repo.Root, keys)
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": fmt.Sprintf("repo %q joined the project but seeding its tracker failed: %v", repo.Name, err),
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, projectView(proj))

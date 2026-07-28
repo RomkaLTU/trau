@@ -12,6 +12,7 @@ import { useAttentionCount } from '@/lib/attention'
 import { healthQueryOptions } from '@/lib/health'
 import { useInboxCounts } from '@/lib/inbox'
 import { isMacPlatform, shortcutLabel } from '@/lib/palette-keys'
+import { useProjectRepo } from '@/lib/projects'
 import {
   queueQueryOptions,
   queueTerminal,
@@ -87,10 +88,11 @@ function updateHint(status: UpdateStatus | undefined): string | null {
 }
 
 export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
-  const { repo, isAll, autoScope, openSwitcher } = useActiveRepo()
+  const { repo, repos, isAll, autoScope, openSwitcher } = useActiveRepo()
   const navigate = useNavigate()
   const attention = useAttentionCount(repo)
-  const inbox = useInboxCounts(repo ?? '')
+  const inboxRepo = useProjectRepo(repo ?? '', repos)
+  const inbox = useInboxCounts(inboxRepo)
   const queue = useQuery({
     ...queueQueryOptions(repo ?? ''),
     refetchInterval: 3000,

@@ -23,6 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1911,6 +1912,21 @@ var secretKeys = map[string]bool{
 
 // IsSecretKey reports whether key holds a credential (API key or token).
 func IsSecretKey(key string) bool { return secretKeys[key] }
+
+// trackerConfigKeys names which tracker a repo talks to and how it authenticates
+// there, in the order onboarding resolves them. They travel as a set: a project
+// configures them once and every member repo inherits the same answers.
+var trackerConfigKeys = []string{
+	"TRACKER_PROVIDER",
+	"LINEAR_TEAM",
+	"LINEAR_API_KEY",
+	"JIRA_BASE_URL",
+	"JIRA_EMAIL",
+	"JIRA_API_TOKEN",
+}
+
+// TrackerConfigKeys returns the keys that describe a repo's tracker.
+func TrackerConfigKeys() []string { return slices.Clone(trackerConfigKeys) }
 
 // ProviderTuningMeta enumerates the execution knobs a provider exposes, so the
 // settings UI can offer valid pickers instead of free text. Models are

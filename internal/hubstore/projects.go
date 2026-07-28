@@ -146,7 +146,19 @@ func (p *Projects) Delete(id string) error {
 	if n == 0 {
 		return errors.Join(ErrProjectNotFound, tx.Rollback())
 	}
+	roots, err := memberRoots(tx, id)
+	if err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	for _, root := range roots {
+		if err := clearSeeded(tx, root); err != nil {
+			return errors.Join(err, tx.Rollback())
+		}
+	}
 	if _, err := tx.Exec(`DELETE FROM project_repos WHERE project = ?`, id); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	if err := dropTracker(tx, id); err != nil {
 		return errors.Join(err, tx.Rollback())
 	}
 	return tx.Commit()
@@ -154,7 +166,7 @@ func (p *Projects) Delete(id string) error {
 
 // AddRepo moves root into the project, appending it after the current members.
 // A root belongs to one project at a time, so it leaves whichever project held
-// it before.
+// it before, keeping the tracker keys that project seeded as its own.
 func (p *Projects) AddRepo(id, root string) (Project, error) {
 	tx, err := p.db.Begin()
 	if err != nil {
@@ -174,6 +186,9 @@ func (p *Projects) AddRepo(id, root string) (Project, error) {
 		return p.Get(id)
 	}
 	if _, err := tx.Exec(`DELETE FROM project_repos WHERE root = ?`, root); err != nil {
+		return Project{}, errors.Join(err, tx.Rollback())
+	}
+	if err := clearSeeded(tx, root); err != nil {
 		return Project{}, errors.Join(err, tx.Rollback())
 	}
 	if err := appendMember(tx, id, root); err != nil {
@@ -209,6 +224,9 @@ func (p *Projects) RemoveRepo(id, root string) (Project, error) {
 	if n == 0 {
 		return Project{}, errors.Join(ErrProjectRepoNotFound, tx.Rollback())
 	}
+	if err := clearSeeded(tx, root); err != nil {
+		return Project{}, errors.Join(err, tx.Rollback())
+	}
 	if err := tx.Commit(); err != nil {
 		return Project{}, err
 	}
@@ -229,6 +247,9 @@ func (p *Projects) ForgetRoot(root string) error {
 		return tx.Rollback()
 	}
 	if _, err := tx.Exec(`DELETE FROM project_repos WHERE root = ?`, root); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	if err := clearSeeded(tx, root); err != nil {
 		return errors.Join(err, tx.Rollback())
 	}
 	if err := pruneEmpty(tx, held); err != nil {
@@ -336,6 +357,22 @@ func requireProject(tx *sql.Tx, id string) error {
 	return err
 }
 
+func memberRoots(tx *sql.Tx, id string) (roots []string, err error) {
+	rows, err := tx.Query(`SELECT root FROM project_repos WHERE project = ? ORDER BY position`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var root string
+		if err := rows.Scan(&root); err != nil {
+			return nil, err
+		}
+		roots = append(roots, root)
+	}
+	return roots, rows.Err()
+}
+
 func holderOf(tx *sql.Tx, root string) (string, error) {
 	var project string
 	err := tx.QueryRow(`SELECT project FROM project_repos WHERE root = ?`, root).Scan(&project)
@@ -351,11 +388,18 @@ func pruneEmpty(tx *sql.Tx, id string) error {
 	if id == "" {
 		return nil
 	}
-	_, err := tx.Exec(
+	res, err := tx.Exec(
 		`DELETE FROM projects WHERE id = ? AND NOT EXISTS(SELECT 1 FROM project_repos WHERE project = ?)`,
 		id, id,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return err
+	}
+	return dropTracker(tx, id)
 }
 
 // freeProjectID slugifies name and disambiguates it against the identifiers
