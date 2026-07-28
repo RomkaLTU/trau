@@ -156,6 +156,17 @@ export function Callout({
   )
 }
 
+export function RegistrationRefused() {
+  return (
+    <Callout tone="fail" title="Registration is disabled on this hub">
+      This <span className="font-mono">trau serve</span> is bound to a routable address, so
+      registering a repo needs <span className="font-mono">SERVE_ALLOW_REGISTER=1</span> on
+      top of <span className="font-mono">SERVE_TOKEN</span>. Set it to open registration
+      deliberately, or run onboarding from a loopback hub on the host.
+    </Callout>
+  )
+}
+
 export function Toggle({
   id,
   checked,
