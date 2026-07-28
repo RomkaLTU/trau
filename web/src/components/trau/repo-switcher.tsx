@@ -7,11 +7,13 @@ import {
   ChevronsUpDown,
   Circle,
   FolderGit2,
+  FolderPlus,
   GitBranch,
   Plus,
 } from 'lucide-react'
 
 import { ALL_SCOPE, useActiveRepo } from '@/components/trau/active-repo'
+import { NewProjectDialog } from '@/components/trau/new-project-dialog'
 import { loadRepoUsage, sortRepos } from '@/lib/active-repo'
 import { instancesQueryOptions, type RepoView } from '@/lib/instances'
 import {
@@ -19,6 +21,11 @@ import {
   toSessionState,
   type RepoBadgeState,
 } from '@/lib/overview'
+import {
+  groupRepos,
+  projectsQueryOptions,
+  type ProjectView,
+} from '@/lib/projects'
 import { cn } from '@/lib/utils'
 
 function useRepoBadgeStates(): Map<string, RepoBadgeState> {
@@ -39,8 +46,10 @@ function useRepoBadgeStates(): Map<string, RepoBadgeState> {
 export function RepoSwitcher() {
   const { repo, repos, isAll, setScope, switcherSignal } = useActiveRepo()
   const badges = useRepoBadgeStates()
+  const { data: projectData } = useQuery(projectsQueryOptions)
   const [open, setOpen] = useState(false)
   const [pulse, setPulse] = useState(false)
+  const [creating, setCreating] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -72,10 +81,21 @@ export function RepoSwitcher() {
   const active = repos.find((r) => r.name === repo)
   // The usage stamps are read on open, so the repo picked here leads the list
   // the next time it is opened.
-  const ordered = useMemo(
-    () => (open ? sortRepos(repos, badges, loadRepoUsage()) : []),
-    [open, repos, badges],
+  const rows = useMemo(
+    () =>
+      open
+        ? groupRepos(
+            sortRepos(repos, badges, loadRepoUsage()),
+            projectData?.projects ?? [],
+          )
+        : [],
+    [open, repos, badges, projectData],
   )
+
+  function pick(name: string) {
+    setScope(name)
+    setOpen(false)
+  }
 
   return (
     <div className="relative" ref={ref}>
@@ -148,21 +168,48 @@ export function RepoSwitcher() {
               no repos yet
             </p>
           ) : (
-            ordered.map((r) => (
-              <RepoOption
-                key={r.name}
-                repo={r}
-                state={badges.get(r.name) ?? 'none'}
-                active={!isAll && r.name === repo}
-                onSelect={() => {
-                  setScope(r.name)
-                  setOpen(false)
-                }}
-              />
-            ))
+            rows.map((row) =>
+              row.project ? (
+                <ProjectGroup
+                  key={row.project.id}
+                  project={row.project}
+                  repos={row.repos}
+                  badges={badges}
+                  activeRepo={isAll ? null : repo}
+                  onSelect={pick}
+                />
+              ) : (
+                <RepoOption
+                  key={row.repos[0].name}
+                  repo={row.repos[0]}
+                  state={badges.get(row.repos[0].name) ?? 'none'}
+                  active={!isAll && row.repos[0].name === repo}
+                  onSelect={() => pick(row.repos[0].name)}
+                />
+              ),
+            )
           )}
 
           <div className="my-1 h-px bg-border" aria-hidden="true" />
+
+          <button
+            type="button"
+            onClick={() => {
+              setCreating(true)
+              setOpen(false)
+            }}
+            className="flex w-full items-center gap-2.5 px-2.5 py-1.5 text-left transition-colors hover:bg-secondary"
+          >
+            <span
+              aria-hidden="true"
+              className="flex size-7 shrink-0 items-center justify-center rounded-md border border-dashed border-border bg-secondary text-primary"
+            >
+              <FolderPlus className="size-3.5" />
+            </span>
+            <span className="font-mono text-sm text-foreground">
+              New project
+            </span>
+          </button>
 
           <Link
             to="/projects/new"
@@ -175,7 +222,9 @@ export function RepoSwitcher() {
             >
               <Plus className="size-3.5" />
             </span>
-            <span className="font-mono text-sm text-foreground">Add a project</span>
+            <span className="font-mono text-sm text-foreground">
+              Register a repo
+            </span>
           </Link>
 
           <Link
@@ -188,6 +237,48 @@ export function RepoSwitcher() {
           </Link>
         </div>
       )}
+
+      <NewProjectDialog
+        repos={repos}
+        open={creating}
+        onOpenChange={setCreating}
+      />
+    </div>
+  )
+}
+
+// ProjectGroup renders a project holding more than one repo: the name over its
+// members. A project down to a single repo never reaches here.
+function ProjectGroup({
+  project,
+  repos,
+  badges,
+  activeRepo,
+  onSelect,
+}: {
+  project: ProjectView
+  repos: RepoView[]
+  badges: Map<string, RepoBadgeState>
+  activeRepo: string | null
+  onSelect: (name: string) => void
+}) {
+  return (
+    <div role="group" aria-label={project.name}>
+      <p className="flex items-center gap-1.5 px-2.5 pb-0.5 pt-1.5 font-mono text-[0.65rem] uppercase tracking-[0.14em] text-muted-foreground">
+        <FolderGit2 className="size-3 shrink-0" aria-hidden="true" />
+        <span className="truncate">{project.name}</span>
+      </p>
+      <div className="ml-4 border-l border-border">
+        {repos.map((r) => (
+          <RepoOption
+            key={r.name}
+            repo={r}
+            state={badges.get(r.name) ?? 'none'}
+            active={r.name === activeRepo}
+            onSelect={() => onSelect(r.name)}
+          />
+        ))}
+      </div>
     </div>
   )
 }
