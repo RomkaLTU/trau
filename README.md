@@ -51,7 +51,7 @@ Or from source (Go 1.25+): `git clone https://github.com/RomkaLTU/trau && cd tra
 which lands `bin/trau` — `bin\trau.exe` on Windows, where `make` runs under Git Bash (see the
 [native Windows notes](docs/windows-native.md)).
 
-Requires `git`, `gh` (authenticated), `jq`, and an agent CLI — `claude` (default), `codex`, or
+Requires `git`, `gh` (authenticated), and an agent CLI — `claude` (default), `codex`, or
 `kimi` — on `$PATH`, plus a supported issue tracker — Linear, Jira, or GitHub Issues — via its MCP.
 trau spawns every one of them by bare name, so on Windows they need to be on `PATH` (`.exe` and
 `.cmd` are resolved from `PATHEXT`, which is why no example here spells an extension out) — Git for

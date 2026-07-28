@@ -32,6 +32,9 @@ coverage.txt
 # npm is canonical here (web/package-lock.json is tracked); ignore stray pnpm locks
 /web/pnpm-lock.yaml
 
+# macOS Finder artifacts (were tracked once; never again)
+.DS_Store
+
 # IDE
 /.idea/
 # trau run artifacts and project config (do not commit)
