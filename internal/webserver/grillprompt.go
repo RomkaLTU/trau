@@ -28,9 +28,10 @@ func grillIssuePrompt(r prompts.Renderer, in grillPromptInput) string {
 	return r.Render("grill_issue", grillIssueData(in))
 }
 
-// grillPregrillPrompt is the first-turn prompt for an AFK pre-grill pass: no user
-// is present, so the agent reads the repo and either finishes with a rewrite or
-// no_change, or lodges its single opening question via ask_user — which parks at
+// grillPregrillPrompt is the first-turn prompt for an AFK pre-grill pass: no user is
+// present, so the agent reads the repo and interviews against its own recommendations,
+// which the session auto-accepts. It finishes with a rewrite or no_change, or lodges
+// the one question it would not recommend an answer to via ask_user — which parks at
 // once — and ends its turn. The parked question waits for a live session later.
 func grillPregrillPrompt(r prompts.Renderer, in grillPromptInput) string {
 	return r.Render("grill_pregrill", grillIssueData(in))
