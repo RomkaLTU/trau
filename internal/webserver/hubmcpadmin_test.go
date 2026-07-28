@@ -7,7 +7,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -207,7 +206,7 @@ func TestHubMCPMoveQueueItem(t *testing.T) {
 // checkpoints it and the paused items hold are dropped, and the queue is emptied.
 func TestHubMCPShutdownQueueStopsChildAndClears(t *testing.T) {
 	ts, s, root := hubMCPAdminServer(t)
-	s.sup.(*fakeSupervisor).onKill = func(pid int) { _ = syscall.Kill(pid, syscall.SIGKILL) }
+	s.sup.(*fakeSupervisor).onKill = func(pid int) { _ = proc.KillGroup(pid) }
 	store := s.stores.Queue(root)
 
 	runningPID := spawnTermIgnorer(t, "5")
