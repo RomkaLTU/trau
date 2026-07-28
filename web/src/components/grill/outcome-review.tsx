@@ -43,6 +43,8 @@ import {
 import { issueQueryOptions } from "@/lib/issues";
 import { cn } from "@/lib/utils";
 
+const noReport = "This session recorded no report.";
+
 export function OutcomeProposal({ outcome }: { outcome: OutcomePayload }) {
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-info/40 bg-info/5 p-3">
@@ -62,6 +64,20 @@ export function OutcomeProposal({ outcome }: { outcome: OutcomePayload }) {
           </summary>
           <div className="mt-2 rounded-md border bg-card px-3 py-2">
             <Markdown>{outcome.proposed_description}</Markdown>
+          </div>
+        </details>
+      )}
+      {outcome.disposition === "research" && (
+        <details className="text-sm">
+          <summary className="cursor-pointer text-xs text-muted-foreground">
+            Research report
+          </summary>
+          <div className="mt-2 rounded-md border bg-card px-3 py-2">
+            {outcome.findings?.trim() ? (
+              <Markdown>{outcome.findings}</Markdown>
+            ) : (
+              <p className="text-xs text-muted-foreground">{noReport}</p>
+            )}
           </div>
         </details>
       )}
@@ -105,6 +121,7 @@ export function OutcomeReview({
   const isRewrite = outcome.disposition === "rewrite";
   const isSplit = outcome.disposition === "split";
   const isCreate = outcome.disposition === "create";
+  const isResearch = outcome.disposition === "research";
   // A create outcome files an epic when it carries a breakdown, a single issue
   // otherwise.
   const isCreateEpic = isCreate && (outcome.sub_issues?.length ?? 0) > 0;
@@ -248,6 +265,11 @@ export function OutcomeReview({
           onEdit={() => setEditing(true)}
           onPreview={() => setEditing(false)}
           onSubsChange={setSubs}
+        />
+      ) : isResearch ? (
+        <ResearchBody
+          findings={outcome.findings ?? ""}
+          anchored={issueId !== ""}
         />
       ) : (
         <p className="text-xs leading-relaxed text-muted-foreground">
@@ -798,6 +820,38 @@ function NewBody({
   );
 }
 
+// ResearchBody renders the report read-only — it is delivered as written.
+function ResearchBody({
+  findings,
+  anchored,
+}: {
+  findings: string;
+  anchored: boolean;
+}) {
+  const report = findings.trim();
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-xs font-medium text-muted-foreground">
+        Research report
+      </span>
+      {report === "" ? (
+        <p className="rounded-md border bg-card px-3 py-2 text-xs text-muted-foreground">
+          {noReport}
+        </p>
+      ) : (
+        <div className="max-h-72 overflow-auto rounded-md border bg-card px-3 py-2 text-sm">
+          <Markdown>{report}</Markdown>
+        </div>
+      )}
+      <p className="text-xs leading-relaxed text-muted-foreground">
+        {anchored
+          ? "Posts the report as a comment on the issue. The description and labels are left unchanged."
+          : "Keeps the report on this session — nothing is written to the tracker."}
+      </p>
+    </div>
+  );
+}
+
 export function DiffView({ current, next }: { current: string; next: string }) {
   const lines = diffLines(current, next);
   if (!diffHasChanges(lines)) {
@@ -930,6 +984,7 @@ function SummaryPreview({ summary }: { summary: string }) {
 const STEP_LABELS: Record<string, string> = {
   description: "Description",
   comment: "Summary comment",
+  findings: "Research comment",
   labels: "Labels",
   relations: "Blocking relations",
 };
@@ -1052,6 +1107,12 @@ function AppliedCard({
           </>
         ) : outcome.disposition === "create" ? (
           `The new issue was filed ${destination}.`
+        ) : outcome.disposition === "research" ? (
+          issueId !== "" ? (
+            "The research report was posted as a comment on the issue."
+          ) : (
+            "The research report is kept on this session — nothing was written to the tracker."
+          )
         ) : (
           "The outcome was written to the tracker. This issue is cleared."
         )}
@@ -1074,6 +1135,7 @@ function applyLabel(disposition: string, result?: GrillApplyResponse): string {
   if (result && !result.applied) return "Retry";
   if (disposition === "no_change") return "Close out";
   if (disposition === "create") return "Create";
+  if (disposition === "research") return "Approve";
   return "Apply";
 }
 
@@ -1087,6 +1149,8 @@ function dispositionLabel(disposition: string): string {
       return "Needs split";
     case "create":
       return "Create";
+    case "research":
+      return "Research";
     case "no_change":
       return "No change";
     default:

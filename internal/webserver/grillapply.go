@@ -90,6 +90,7 @@ type grillOutcome struct {
 	Disposition         string          `json:"disposition"`
 	Title               string          `json:"title"`
 	ProposedDescription string          `json:"proposed_description"`
+	Findings            string          `json:"findings"`
 	Labels              []string        `json:"labels"`
 	SubIssues           []grillSubIssue `json:"sub_issues"`
 	Summary             string          `json:"summary"`
@@ -151,7 +152,10 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if outcome.Disposition == grillDispNoChange {
+	// Research on an authoring session has no issue to comment on, so approving it
+	// keeps the report on the session and never reaches the tracker.
+	archivesOnly := outcome.Disposition == grillDispResearch && strings.TrimSpace(sess.IssueID) == ""
+	if outcome.Disposition == grillDispNoChange || archivesOnly {
 		s.settleGrillApplied(w, &sess, nil)
 		return
 	}
@@ -214,6 +218,13 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 			assignee:     assignee,
 		}
 		steps, applied = s.applyGrillSplit(r.Context(), writer, repo.Root, cfg.TrackerProvider, issueID, plan)
+	case grillDispResearch:
+		steps, applied = applyGrillResearch(
+			r.Context(),
+			writer,
+			sess.IssueID,
+			composeGrillFindings(outcome.Findings, comment),
+		)
 	default:
 		issueID, ok := grillAnchoredIssue(w, sess)
 		if !ok {
@@ -325,6 +336,16 @@ func (s *Server) applyGrillOutcome(ctx context.Context, writer tracker.Writer, r
 		}
 	}
 	return steps, allOK
+}
+
+// applyGrillResearch posts the report as a comment; nothing else about the issue changes.
+func applyGrillResearch(ctx context.Context, writer tracker.Writer, issueID, comment string) ([]GrillApplyStep, bool) {
+	step := GrillApplyStep{Step: "findings", Status: grillStepOK}
+	if err := writer.AddComment(ctx, issueID, comment); err != nil {
+		step.Status = grillStepFailed
+		step.Error = err.Error()
+	}
+	return []GrillApplyStep{step}, step.Status == grillStepOK
 }
 
 // grillSplitPlan is the resolved write plan for a split: the parent's epic-framing
@@ -773,6 +794,12 @@ func composeGrillSummary(summary string, msgs []hubstore.GrillMessage) string {
 		}
 	}
 	return b.String()
+}
+
+// composeGrillFindings builds the research comment: the report, then the usual
+// summary comment, so the clarifications that shaped the research stay attached.
+func composeGrillFindings(findings, summary string) string {
+	return "## Research findings\n\n" + strings.TrimSpace(findings) + "\n\n---\n\n" + summary
 }
 
 type grillQA struct{ question, answer string }

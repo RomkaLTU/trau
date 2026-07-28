@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/config"
@@ -911,6 +912,96 @@ func TestGrillApplyCreateNotAnchoredRewrite(t *testing.T) {
 	}
 	if len(fake.created)+len(fake.descriptions) != 0 {
 		t.Errorf("wrote to the tracker for an unanchored non-create outcome")
+	}
+}
+
+func TestGrillApplyResearchCommentsOnTheAnchoredIssue(t *testing.T) {
+	fake := newFakeWriter()
+	ts, stores, root := grillApplyServer(t, fake)
+	report := "## Question\n\nWhich retry policy?\n\n## Conclusion\n\nExponential backoff."
+	sid := seedFinishedGrill(t, stores, root, "COD-1", grillOutcome{
+		Disposition: grillDispResearch,
+		Findings:    report,
+		Summary:     "answered the retry question",
+	})
+
+	_, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if !out.Applied || out.Session.State != hubstore.GrillApplied {
+		t.Fatalf("apply result = %+v, want applied", out)
+	}
+	if want := []string{"comment"}; !slices.Equal(fake.order, want) {
+		t.Fatalf("call order = %v, want %v — research writes nothing but the comment", fake.order, want)
+	}
+	if st, ok := stepStatus(out.Steps, "findings"); !ok || st != grillStepOK {
+		t.Fatalf("steps = %+v, want a single ok findings step", out.Steps)
+	}
+	if len(fake.comments) != 1 || fake.comments[0].id != "COD-1" {
+		t.Fatalf("comments = %+v, want one on COD-1", fake.comments)
+	}
+	body := fake.comments[0].body
+	if !strings.Contains(body, report) {
+		t.Errorf("comment = %q, want the research report", body)
+	}
+	if !strings.Contains(body, "answered the retry question") {
+		t.Errorf("comment = %q, want the grilling summary alongside the report", body)
+	}
+}
+
+func TestGrillApplyResearchAuthoringWritesNothing(t *testing.T) {
+	fake := newFakeWriter()
+	ts, stores, root := grillApplyServer(t, fake)
+	// An authoring session has no issue to comment on: approving archives the report.
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition: grillDispResearch,
+		Findings:    "## Conclusion\n\nUse the vendor SDK.",
+		Summary:     "compared the two clients",
+	})
+
+	res, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("apply status = %d, want 200", res.StatusCode)
+	}
+	if !out.Applied || out.Session.State != hubstore.GrillApplied {
+		t.Fatalf("apply result = %+v, want applied", out)
+	}
+	if len(out.Steps) != 0 {
+		t.Fatalf("steps = %+v, want none", out.Steps)
+	}
+	if len(fake.order) != 0 {
+		t.Fatalf("wrote to the tracker for an unanchored research outcome: %v", fake.order)
+	}
+	// The report is the session's whole outcome, so it stays readable on it.
+	msgs, err := stores.Grill().Messages(sid, 0)
+	if err != nil {
+		t.Fatalf("read messages: %v", err)
+	}
+	outcome, ok := latestGrillOutcome(msgs)
+	if !ok || !strings.Contains(outcome.Findings, "Use the vendor SDK.") {
+		t.Fatalf("stored outcome = %+v, want the archived report", outcome)
+	}
+}
+
+func TestGrillApplyResearchCommentFailureIsReported(t *testing.T) {
+	fake := newFakeWriter()
+	fake.commentErr = errString("linear: 502")
+	ts, stores, root := grillApplyServer(t, fake)
+	sid := seedFinishedGrill(t, stores, root, "COD-1", grillOutcome{
+		Disposition: grillDispResearch,
+		Findings:    "## Conclusion\n\nBackoff it is.",
+		Summary:     "s",
+	})
+
+	_, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if out.Applied || out.Session.State != hubstore.GrillFinished {
+		t.Fatalf("failed apply = %+v, want not applied and still finished", out)
+	}
+	if len(out.Steps) != 1 || out.Steps[0].Status != grillStepFailed || out.Steps[0].Error != "linear: 502" {
+		t.Fatalf("steps = %+v, want the failed findings step carrying the error", out.Steps)
+	}
+
+	fake.commentErr = nil
+	if _, out = applyGrill(t, ts, sid, GrillApplyRequest{}); !out.Applied {
+		t.Fatalf("re-apply = %+v, want applied", out)
 	}
 }
 
