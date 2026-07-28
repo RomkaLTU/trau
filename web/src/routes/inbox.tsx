@@ -54,7 +54,7 @@ import {
   abandonGrill,
   applySessionModel,
   GRILLABLE_LABELS,
-  grillSessionsQueryOptions,
+  grillDefaultsQueryOptions,
   isSettled,
   latestOutcome,
   outcomePayload,
@@ -226,14 +226,21 @@ function InboxPage() {
     if (selected && selected.id !== sticky) setSticky(selected.id);
   }, [selected?.id, sticky]);
 
+  // The session type is the user's own declaration rather than a repo setting — no
+  // repo reports a default mode — so switching scope leaves the choice standing and
+  // drops only a suggestion, which was read from a note written for one repo.
+  const sessionType = useModeSuggestion(repo);
+
   // The provider and model every interview started from this panel opens on — Start
   // interview, a first message, a fresh Draft, and Ask ahead alike. It is a page-level
   // choice so walking the queue with j/k keeps it; until the user picks, it trails the
-  // repo default the hub reports beside the session list. Switching repo drops it, so
-  // the new repo's own default wins rather than the pick made against the old one.
+  // repo default the hub reports for the chosen session type. Switching repo drops it,
+  // so the new repo's own default wins rather than the pick made against the old one.
   // Picking a provider resets the model to that provider's own default, since a claude
-  // model alias means nothing to kimi.
-  const defaults = useQuery(grillSessionsQueryOptions(repo)).data?.defaults;
+  // model alias means nothing to kimi. A pick the session type rules out — kimi cannot
+  // research — yields to that type's default rather than starting on a dead provider.
+  const defaults =
+    useQuery(grillDefaultsQueryOptions(repo, sessionType.mode)).data ?? undefined;
   const [pickedProvider, setPickedProvider] = useState<string | null>(null);
   const [pickedModel, setPickedModel] = useState<string | null>(null);
   useEffect(() => {
@@ -241,12 +248,13 @@ function InboxPage() {
     setPickedModel(null);
   }, [repo]);
 
-  // The session type is the user's own declaration rather than a repo setting — no
-  // repo reports a default mode — so switching scope leaves the choice standing and
-  // drops only a suggestion, which was read from a note written for one repo.
-  const sessionType = useModeSuggestion(repo);
-  const startProvider = pickedProvider ?? defaults?.provider ?? "claude";
-  const startModel = pickedModel ?? defaults?.model ?? "";
+  const pickAllowed = !defaults?.providers?.some(
+    (p) => p.name === pickedProvider && p.disabled,
+  );
+  const startProvider =
+    (pickAllowed ? pickedProvider : null) ?? defaults?.provider ?? "claude";
+  const startModel =
+    (pickAllowed ? pickedModel : null) ?? defaults?.model ?? "";
   const starter: InterviewStart = {
     defaults,
     provider: startProvider,
@@ -1188,9 +1196,7 @@ function StartModelSelect({
   starter: InterviewStart;
   className?: string;
 }) {
-  const providers =
-    starter.defaults?.providers?.map((p) => p.name) ??
-    [starter.provider].filter(Boolean);
+  const providers = starter.defaults?.providers ?? [{ name: starter.provider }];
   return (
     <div className={cn("flex items-center gap-1", className)}>
       <span className="text-xs text-muted-foreground">Runs on</span>

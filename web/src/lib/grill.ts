@@ -63,18 +63,23 @@ export interface GrillDetail {
   messages: GrillMessage[]
 }
 
-// GrillProviderOption is one provider a not-yet-started interview can run on and the
-// model catalog choosing it swaps to.
+// GrillProviderOption is one provider a not-yet-started session can run on and the
+// model catalog choosing it swaps to. disabled marks a provider the requested session
+// type rules out, with reason saying why; note describes how a provider that does
+// support it runs the type.
 export interface GrillProviderOption {
   name: string
   model_options?: string[]
+  disabled?: boolean
+  reason?: string
+  note?: string
 }
 
-// GrillDefaults is what an interview started right now would run on. It rides on the
-// list resource so a start surface can offer the provider/model choice before any
-// session exists; a cache write the panel makes itself may not carry it. providers
-// carries every offered provider with its own catalog, so picking one swaps the
-// model list without another round trip.
+// GrillDefaults is what a session of the requested type started right now would run
+// on. It rides on the list resource so a start surface can offer the provider/model
+// choice before any session exists; a cache write the panel makes itself may not carry
+// it. providers carries every offered provider with its own catalog, so picking one
+// swaps the model list without another round trip.
 export interface GrillDefaults {
   provider: string
   model?: string
@@ -245,9 +250,16 @@ async function errorMessage(res: Response, fallback: string): Promise<string> {
   return detail?.error ?? `${fallback}: ${res.status}`
 }
 
-async function fetchGrillSessions(repo: string, state?: GrillState): Promise<GrillListResponse> {
-  const url = state ? `${base(repo)}?state=${state}` : base(repo)
-  const res = await apiFetch(url)
+async function fetchGrillSessions(
+  repo: string,
+  state?: GrillState,
+  mode?: GrillMode,
+): Promise<GrillListResponse> {
+  const query = new URLSearchParams()
+  if (state) query.set('state', state)
+  if (mode) query.set('mode', mode)
+  const q = query.toString()
+  const res = await apiFetch(q ? `${base(repo)}?${q}` : base(repo))
   if (!res.ok) throw new Error(await errorMessage(res, 'list interview sessions failed'))
   return res.json()
 }
@@ -261,6 +273,18 @@ export const grillSessionsQueryOptions = (repo: string) =>
     enabled: repo !== '',
     staleTime: 10_000,
     refetchInterval: 5_000,
+  })
+
+// grillDefaultsQueryOptions reads what a session of one type would start on. Provider
+// availability depends on the session type, so the mode is part of the key and
+// flipping the type chip re-renders off cache rather than a reload. It nests under the
+// repo's grill key so the list's invalidations reach it.
+export const grillDefaultsQueryOptions = (repo: string, mode: GrillMode) =>
+  queryOptions({
+    queryKey: ['grill', repo, 'defaults', mode],
+    queryFn: async () => (await fetchGrillSessions(repo, undefined, mode)).defaults ?? null,
+    enabled: repo !== '',
+    staleTime: 60_000,
   })
 
 // appliedGrillSessionsQueryOptions reads the repo's applied sessions. They are the

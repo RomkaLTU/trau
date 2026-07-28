@@ -66,7 +66,8 @@ type GrillDeltaView struct {
 	Text string `json:"text"`
 }
 
-// GrillDefaultsView is what an interview started right now would run on.
+// GrillDefaultsView is what a session of the requested mode started right now would
+// run on. Provider availability is mode-dependent, so it is only valid for that mode.
 type GrillDefaultsView struct {
 	Provider     string                `json:"provider"`
 	Model        string                `json:"model,omitempty"`
@@ -74,10 +75,15 @@ type GrillDefaultsView struct {
 	Providers    []GrillProviderOption `json:"providers,omitempty"`
 }
 
-// GrillProviderOption is one provider a not-yet-started interview can run on.
+// GrillProviderOption is one provider a not-yet-started session can run on. Disabled
+// marks a provider the requested mode rules out and Reason says why; Note describes
+// what the mode runs on a provider that does support it.
 type GrillProviderOption struct {
 	Name         string   `json:"name"`
 	ModelOptions []string `json:"model_options,omitempty"`
+	Disabled     bool     `json:"disabled,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
+	Note         string   `json:"note,omitempty"`
 }
 
 // GrillListResponse is the GET /repos/{repo}/grill resource. Tracker is the repo's
@@ -154,7 +160,12 @@ func (s *Server) handleRepoGrill(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		s.listGrill(w, repo, strings.TrimSpace(r.URL.Query().Get("state")))
+		mode, errMsg := grillValidateMode(r.URL.Query().Get("mode"))
+		if errMsg != "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
+			return
+		}
+		s.listGrill(w, repo, strings.TrimSpace(r.URL.Query().Get("state")), mode)
 	case http.MethodPost:
 		s.createGrill(w, r, repo)
 	default:
@@ -163,7 +174,7 @@ func (s *Server) handleRepoGrill(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) listGrill(w http.ResponseWriter, repo registry.Repo, state string) {
+func (s *Server) listGrill(w http.ResponseWriter, repo registry.Repo, state, mode string) {
 	sessions, err := s.stores.Grill().List(repo.Root, state)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -176,7 +187,7 @@ func (s *Server) listGrill(w http.ResponseWriter, repo registry.Repo, state stri
 	writeJSON(w, http.StatusOK, GrillListResponse{
 		Repo:     repo.Name,
 		Tracker:  s.grillTrackerFor(repo),
-		Defaults: s.grillDefaultsView(repo),
+		Defaults: s.grillDefaultsView(repo, mode),
 		Sessions: views,
 	})
 }
@@ -193,13 +204,13 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
 		return
 	}
-	provider, errMsg := grillValidateProvider(req.Provider)
+	provider, errMsg := grillValidateProvider(req.Provider, mode)
 	if errMsg != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
 		return
 	}
 	if provider == "" {
-		provider = s.grillDefaultProviderFor(repo)
+		provider = s.grillDefaultProviderFor(repo, mode)
 	}
 	model := strings.TrimSpace(req.Model)
 	if model == "" {
@@ -683,30 +694,66 @@ func (s *Server) grillSessionView(repo string, sess hubstore.GrillSession) Grill
 	}
 }
 
-func (s *Server) grillDefaultsView(repo registry.Repo) GrillDefaultsView {
-	provider := s.grillDefaultProviderFor(repo)
+func (s *Server) grillDefaultsView(repo registry.Repo, mode string) GrillDefaultsView {
+	provider := s.grillDefaultProviderFor(repo, mode)
 	return GrillDefaultsView{
 		Provider:     provider,
 		Model:        s.grillModelDefaultFor(repo, provider),
 		ModelOptions: grillModelOptionsFor(provider),
-		Providers:    s.grillProviderOptions(repo, provider),
+		Providers:    s.grillProviderOptions(repo, provider, mode),
 	}
 }
 
-func (s *Server) grillProviderOptions(repo registry.Repo, defaultProvider string) []GrillProviderOption {
+// grillProviderOptions is the picker's catalog for one session type. A provider whose
+// CLI this machine cannot spawn is left out entirely, but one the mode rules out is
+// offered disabled with its reason, so flipping the type explains the loss.
+func (s *Server) grillProviderOptions(repo registry.Repo, defaultProvider, mode string) []GrillProviderOption {
 	cfg, cfgErr := s.grillConfigFor(repo)
 	names := agent.DefaultRegistry().Names()
 	out := make([]GrillProviderOption, 0, len(names))
 	for _, name := range names {
-		if name != grillDefaultProvider && name != defaultProvider && (cfgErr != nil || grillProviderUnavailableReason(cfg, name) != "") {
+		if name != grillDefaultProvider && name != defaultProvider && (cfgErr != nil || grillProviderInstallReason(cfg, name) != "") {
 			continue
 		}
-		out = append(out, GrillProviderOption{Name: name, ModelOptions: grillModelOptionsFor(name)})
+		opt := GrillProviderOption{Name: name, ModelOptions: grillModelOptionsFor(name)}
+		if reason := grillProviderModeReason(name, mode); reason != "" {
+			opt.Disabled, opt.Reason = true, reason
+		} else if mode == hubstore.GrillModeResearch {
+			opt.Note = grillResearchNote(name)
+		}
+		out = append(out, opt)
 	}
 	return out
 }
 
-func grillProviderUnavailableReason(cfg config.Config, provider string) string {
+func grillProviderUnavailableReason(cfg config.Config, provider, mode string) string {
+	if reason := grillProviderModeReason(provider, mode); reason != "" {
+		return reason
+	}
+	return grillProviderInstallReason(cfg, provider)
+}
+
+// grillProviderModeReason rules kimi out of research: it runs under a synthetic home
+// with only the trau-grill MCP server and no permission bypass, so it has no vetted
+// way to reach the web.
+func grillProviderModeReason(provider, mode string) string {
+	if mode == hubstore.GrillModeResearch && grillEffectiveProvider(provider) == "kimi" {
+		return "kimi has no web research support in trau yet"
+	}
+	return ""
+}
+
+func grillResearchNote(provider string) string {
+	switch grillEffectiveProvider(provider) {
+	case "claude":
+		return "research uses claude's built-in web search and fetch"
+	case "codex":
+		return "research enables codex's own web_search tool"
+	}
+	return ""
+}
+
+func grillProviderInstallReason(cfg config.Config, provider string) string {
 	provider = grillEffectiveProvider(provider)
 	if _, err := exec.LookPath(grillProviderBin(cfg, provider)); err != nil {
 		return "the " + provider + " CLI is not installed on this machine"
@@ -759,7 +806,7 @@ func grillValidateMode(mode string) (string, string) {
 	return "", fmt.Sprintf("unknown mode %q (expected: %s | %s)", mode, hubstore.GrillModeInterview, hubstore.GrillModeResearch)
 }
 
-func grillValidateProvider(provider string) (string, string) {
+func grillValidateProvider(provider, mode string) (string, string) {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
 		return "", ""
@@ -768,15 +815,24 @@ func grillValidateProvider(provider string) (string, string) {
 	if _, known := reg.Lookup(provider); !known {
 		return "", fmt.Sprintf("unknown provider %q (expected: %s)", provider, strings.Join(reg.Names(), " | "))
 	}
+	if reason := grillProviderModeReason(provider, mode); reason != "" {
+		return "", reason
+	}
 	return provider, ""
 }
 
-func (s *Server) grillDefaultProviderFor(repo registry.Repo) string {
+// grillDefaultProviderFor falls back to claude when the repo's configured provider
+// cannot run the mode, rather than opening a session that would only park.
+func (s *Server) grillDefaultProviderFor(repo registry.Repo, mode string) string {
 	cfg, err := s.grillConfigFor(repo)
 	if err != nil {
 		return grillDefaultProvider
 	}
-	return grillConfiguredProvider(cfg)
+	provider := grillConfiguredProvider(cfg)
+	if grillProviderModeReason(provider, mode) != "" {
+		return grillDefaultProvider
+	}
+	return provider
 }
 
 func grillConfiguredProvider(cfg config.Config) string {
