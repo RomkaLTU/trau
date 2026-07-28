@@ -33,3 +33,13 @@ func TestStopGracefullyReportsAnAlreadyExitedProcess(t *testing.T) {
 		t.Errorf("StopGracefully(dead pid) = %v, want %v", err, os.ErrProcessDone)
 	}
 }
+
+// LookBin is the identity on unix — even for a name that does not exist. The
+// stdlib exec inside the PTY spawn does the $PATH resolution at start, and
+// resolving earlier would change the argv[0] the child sees (ADR 0023).
+func TestLookBinReturnsTheNameUnchanged(t *testing.T) {
+	got, err := LookBin("trau-test-no-such-bin")
+	if err != nil || got != "trau-test-no-such-bin" {
+		t.Errorf("LookBin = %q, %v; want the name back unchanged with no error", got, err)
+	}
+}

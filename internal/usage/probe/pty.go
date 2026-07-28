@@ -9,6 +9,7 @@ import (
 
 	"github.com/aymanbagabas/go-pty"
 
+	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/usage"
 )
 
@@ -30,6 +31,12 @@ func (p *ptyProber) Probe(ctx context.Context) usage.Window {
 	if p.bin == "" {
 		return usage.Window{}
 	}
+	// The ConPTY spawn never searches %PATH% for a bare name, so resolve the
+	// way every other spawn seam does; fail closed like the rest of the probe.
+	bin, err := proc.LookBin(p.bin)
+	if err != nil {
+		return usage.Window{}
+	}
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 
@@ -41,7 +48,7 @@ func (p *ptyProber) Probe(ctx context.Context) usage.Window {
 		_ = tty.Close()
 		return usage.Window{}
 	}
-	cmd := tty.CommandContext(ctx, p.bin)
+	cmd := tty.CommandContext(ctx, bin)
 	if err := cmd.Start(); err != nil {
 		_ = tty.Close()
 		return usage.Window{}
