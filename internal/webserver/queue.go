@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -632,8 +633,7 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		if movedToFront {
 			status = http.StatusOK
 		}
-		s.markQueued(r.Context(), root, item)
-		s.promoteQueuedEpic(r.Context(), root, item)
+		s.afterEnqueue(r.Context(), root, item)
 		s.writeQueue(w, status, root)
 		return
 	}
@@ -645,9 +645,16 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "enqueue: " + err.Error()})
 		return
 	}
-	s.markQueued(r.Context(), root, item)
-	s.promoteQueuedEpic(r.Context(), root, item)
+	s.afterEnqueue(r.Context(), root, item)
 	s.writeQueue(w, http.StatusCreated, root)
+}
+
+// afterEnqueue settles what a fresh queue entry implies elsewhere: the tracker
+// move, the epic's promotion, and the project's memory of where its tickets run.
+func (s *Server) afterEnqueue(ctx context.Context, root string, item queue.Item) {
+	s.markQueued(ctx, root, item)
+	s.promoteQueuedEpic(ctx, root, item)
+	s.rememberStartRepo(root, item.ID)
 }
 
 // dequeue removes an item from the queue by identifier, returning the resulting

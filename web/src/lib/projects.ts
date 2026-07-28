@@ -103,6 +103,61 @@ export function useProjectRepo(repo: string, repos: readonly RepoView[]): string
   return projectAnchor(repo, repos, data?.projects ?? [])
 }
 
+// ProjectMembers are the repos a project's work can be started in: its holder's
+// identifier and every member the repos list knows, in project order. A repo no
+// project holds resolves to none.
+export interface ProjectMembers {
+  project: string
+  members: RepoView[]
+}
+
+export function projectMembers(
+  repo: string,
+  repos: readonly RepoView[],
+  projects: readonly ProjectView[],
+): ProjectMembers {
+  const root = repos.find((r) => r.name === repo)?.root
+  const project = root ? projects.find((p) => p.repos.includes(root)) : undefined
+  if (!project) return { project: '', members: [] }
+  const views = new Map(repos.map((r) => [r.root, r]))
+  return {
+    project: project.id,
+    members: project.repos.flatMap((member) => views.get(member) ?? []),
+  }
+}
+
+// StartRepoHint is the hub's answer to which member repo a ticket should start
+// in: suggested names one of the project's members, reason says what earned it.
+export interface StartRepoHint {
+  project: string
+  ticket?: string
+  repos: { name: string; root: string }[]
+  suggested: string
+  reason: 'remembered' | 'named' | 'recent' | 'first'
+}
+
+async function fetchStartRepo(
+  project: string,
+  ticket: string,
+): Promise<StartRepoHint> {
+  const res = await apiFetch(
+    `/api/v1/projects/${encodeURIComponent(project)}/start-repo?id=${encodeURIComponent(ticket)}`,
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'start repo request failed'))
+  }
+  return res.json()
+}
+
+export function startRepoQueryOptions(project: string, ticket: string) {
+  return queryOptions({
+    queryKey: ['start-repo', project, ticket],
+    queryFn: () => fetchStartRepo(project, ticket),
+    enabled: project !== '',
+    staleTime: 30_000,
+  })
+}
+
 async function errorMessage(res: Response, fallback: string): Promise<string> {
   const detail = (await res.json().catch(() => null)) as {
     error?: string

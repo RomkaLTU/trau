@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import type { RepoView } from '@/lib/instances'
-import { groupRepos, projectAnchor, type ProjectView } from '@/lib/projects'
+import {
+  groupRepos,
+  projectAnchor,
+  projectMembers,
+  type ProjectView,
+} from '@/lib/projects'
 
 function repo(name: string): RepoView {
   return {
@@ -90,5 +95,39 @@ describe('projectAnchor', () => {
   it('skips a member the repos list no longer carries', () => {
     const platform = [project('platform', 'Platform', ['gone', 'charlie'])]
     expect(projectAnchor('charlie', repos, platform)).toBe('charlie')
+  })
+})
+
+describe('projectMembers', () => {
+  const repos = [repo('alpha'), repo('bravo'), repo('charlie')]
+
+  it('offers no choice for a repo no project holds', () => {
+    expect(projectMembers('bravo', repos, [])).toEqual({
+      project: '',
+      members: [],
+    })
+  })
+
+  it('offers no choice for a single-member project', () => {
+    const own = [project('bravo', 'bravo', ['bravo'])]
+    expect(projectMembers('bravo', repos, own)).toEqual({
+      project: 'bravo',
+      members: [repos[1]],
+    })
+  })
+
+  it('lists every member in project order, from any of them', () => {
+    const platform = [project('platform', 'Platform', ['charlie', 'bravo'])]
+    const want = { project: 'platform', members: [repos[2], repos[1]] }
+    expect(projectMembers('bravo', repos, platform)).toEqual(want)
+    expect(projectMembers('charlie', repos, platform)).toEqual(want)
+  })
+
+  it('drops a member the repos list no longer carries', () => {
+    const platform = [project('platform', 'Platform', ['gone', 'charlie'])]
+    expect(projectMembers('charlie', repos, platform)).toEqual({
+      project: 'platform',
+      members: [repos[2]],
+    })
   })
 })
