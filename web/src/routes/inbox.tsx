@@ -26,6 +26,10 @@ import {
   GrillModelSelect,
   GrillProviderSelect,
 } from "@/components/grill/model-select";
+import {
+  useModeSuggestion,
+  type ModeSuggestion,
+} from "@/components/grill/mode-suggestion";
 import { useGrillSession } from "@/components/grill/session";
 import {
   SessionModeBadge,
@@ -60,7 +64,6 @@ import {
   type GrillAppliedOutcome,
   type GrillDefaults,
   type GrillListResponse,
-  type GrillMode,
   type GrillSession,
   type GrillStartOpening,
   type OutcomePayload,
@@ -142,10 +145,9 @@ interface InterviewStart {
   defaults?: GrillDefaults;
   provider: string;
   model: string;
-  mode: GrillMode;
+  sessionType: ModeSuggestion;
   onProviderChange: (provider: string) => void;
   onModelChange: (model: string) => void;
-  onModeChange: (mode: GrillMode) => void;
 }
 
 // starterOpening turns the panel's current pick into a start payload, so every surface
@@ -158,7 +160,7 @@ function starterOpening(
     seed,
     model: starter.model,
     provider: starter.provider,
-    mode: starter.mode,
+    mode: starter.sessionType.mode,
   };
 }
 
@@ -240,21 +242,21 @@ function InboxPage() {
   }, [repo]);
 
   // The session type is the user's own declaration rather than a repo setting — no
-  // repo reports a default mode — so switching scope leaves the choice standing.
-  const [startMode, setStartMode] = useState<GrillMode>("interview");
+  // repo reports a default mode — so switching scope leaves the choice standing and
+  // drops only a suggestion, which was read from a note written for one repo.
+  const sessionType = useModeSuggestion(repo);
   const startProvider = pickedProvider ?? defaults?.provider ?? "claude";
   const startModel = pickedModel ?? defaults?.model ?? "";
   const starter: InterviewStart = {
     defaults,
     provider: startProvider,
     model: startModel,
-    mode: startMode,
+    sessionType,
     onProviderChange: (next) => {
       setPickedProvider(next);
       setPickedModel("");
     },
     onModelChange: setPickedModel,
-    onModeChange: setStartMode,
   };
 
   const [contextOpen, setContextOpen] = useState(loadContextOpen);
@@ -832,7 +834,8 @@ function FreshDraftBody({
   onStarted: (session: GrillSession) => void;
 }) {
   const queryClient = useQueryClient();
-  const research = starter.mode === "research";
+  const sessionType = starter.sessionType;
+  const research = sessionType.mode === "research";
   const start = useMutation({
     mutationFn: (seed: string) =>
       startGrillSession(repo, "", starterOpening(starter, seed)),
@@ -863,10 +866,7 @@ function FreshDraftBody({
       </div>
       <div className="flex flex-col gap-3 border-t border-border p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <SessionTypeChips
-            mode={starter.mode}
-            onChange={starter.onModeChange}
-          />
+          <SessionTypeChips sessionType={sessionType} />
           <StartModelSelect starter={starter} />
         </div>
         <Composer
@@ -875,6 +875,8 @@ function FreshDraftBody({
           disabled={start.isPending}
           submitting={start.isPending}
           onSend={(text) => start.mutate(text)}
+          onNoteChange={sessionType.noteChanged}
+          onNoteSettled={sessionType.noteSettled}
           autoFocus
         />
         {start.error && <ErrorNote message={(start.error as Error).message} />}
@@ -902,7 +904,8 @@ function SessionPreview({
   onSkip: () => void;
 }) {
   const queryClient = useQueryClient();
-  const research = starter.mode === "research";
+  const sessionType = starter.sessionType;
+  const research = sessionType.mode === "research";
   const issue = useQuery(issueQueryOptions(repo, item.id));
   const { urlMap } = useIssueAttachments(repo, item.id);
   const labels = (item.entry?.labels ?? []).filter((l) =>
@@ -950,10 +953,7 @@ function SessionPreview({
           No session yet — start one, or send a first message to open with it.
         </p>
         <div className="flex flex-wrap items-center gap-2">
-          <SessionTypeChips
-            mode={starter.mode}
-            onChange={starter.onModeChange}
-          />
+          <SessionTypeChips sessionType={sessionType} />
           <Button size="sm" onClick={() => onStart(starterOpening(starter))}>
             <Sparkles />
             {research ? "Start research" : "Start interview"}
@@ -983,6 +983,8 @@ function SessionPreview({
           disabled={askAhead.isPending}
           submitting={false}
           onSend={(text) => onStart(starterOpening(starter, text))}
+          onNoteChange={sessionType.noteChanged}
+          onNoteSettled={sessionType.noteSettled}
         />
         {askAhead.error && (
           <ErrorNote message={(askAhead.error as Error).message} />

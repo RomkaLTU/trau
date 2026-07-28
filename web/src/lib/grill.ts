@@ -450,6 +450,29 @@ export async function startGrillSession(
   return res.json()
 }
 
+// suggestGrillMode asks the hub which session type a focus note reads as, for the
+// chip a start surface pre-selects. It resolves to null unless the hub actually
+// classified the note — a hub that could not be asked, and one that fell back to its
+// own default, both leave the chip alone rather than claiming a reading.
+export async function suggestGrillMode(
+  repo: string,
+  text: string,
+): Promise<GrillMode | null> {
+  const res = await apiFetch(`${base(repo)}/suggest-mode`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  }).catch(() => null)
+  if (!res?.ok) return null
+  const body = (await res.json().catch(() => null)) as {
+    mode?: string
+    suggested?: boolean
+  } | null
+  if (!body?.suggested) return null
+  if (body.mode !== 'research' && body.mode !== 'interview') return null
+  return body.mode
+}
+
 // publishGrillSession puts a freshly started session at the head of the repo's
 // list. A surface that navigates on start then arrives at a live conversation
 // instead of the preview the list would hold until its next poll.

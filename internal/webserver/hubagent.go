@@ -17,7 +17,8 @@ import (
 // newHubRunner constructs the repo's default-provider backend for a one-shot,
 // headless hub session in the repo directory, using the same provider registry the
 // loop does. The prompt is passed whole to Run, so the backend's preamble stays
-// empty.
+// empty. Mechanical phases follow the repo's own MCP stripping setting: a hub call
+// that consults nothing has no use for the servers and would only pay their startup.
 func newHubRunner(cfg config.Config, repo registry.Repo) (agent.Runner, error) {
 	spec, ok := agent.DefaultRegistry().Lookup(cfg.Provider)
 	if !ok {
@@ -28,13 +29,14 @@ func newHubRunner(cfg config.Config, repo registry.Repo) (agent.Runner, error) {
 		return nil, fmt.Errorf("provider %q: %q not found on PATH", cfg.Provider, bin)
 	}
 	return spec.New(agent.BackendParams{
-		Bin:     bin,
-		Flags:   strings.Fields(flags),
-		Model:   model,
-		Effort:  effort,
-		Dir:     repo.Root,
-		Timeout: time.Duration(cfg.AgentTimeout) * time.Second,
-		Extra:   extra,
+		Bin:                bin,
+		Flags:              strings.Fields(flags),
+		Model:              model,
+		Effort:             effort,
+		Dir:                repo.Root,
+		Timeout:            time.Duration(cfg.AgentTimeout) * time.Second,
+		StripMechanicalMCP: cfg.StripMechanicalMCP,
+		Extra:              extra,
 	})
 }
 

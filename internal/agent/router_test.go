@@ -32,7 +32,7 @@ func TestRouteKey(t *testing.T) {
 }
 
 // TestMechanicalPhase pins which phases are mechanical (tracker-free, MCP-strippable).
-// The five mechanical prefixes and their dynamic suffixes match; the tracker-reading
+// The mechanical prefixes and their dynamic suffixes match; the tracker-reading
 // phases — build/handoff/verify and pick — must not, or stripping MCP would break the
 // MCP ticket-read fallback (build/handoff/verify) or ticket selection (pick).
 func TestMechanicalPhase(t *testing.T) {
@@ -45,6 +45,7 @@ func TestMechanicalPhase(t *testing.T) {
 		{"repair1", true},
 		{"bugfix2", true},
 		{"push-repair1", true},
+		{"suggest", true},
 		{"build", false},
 		{"handoff", false},
 		{"verify", false},
