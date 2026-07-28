@@ -37,9 +37,12 @@ make fmt && make vet && make test
 ```
 
 `make vet` runs the `GOOS=windows` compile gate before `go vet`, so a
-Windows-only compile break surfaces there rather than at release time. `make
-test` is `go test -race ./...`, and on Windows it needs a C compiler because
-`-race` has no pure-Go implementation there (`scoop install mingw`).
+Windows-only compile break surfaces there rather than at release time. The gate
+is `GOOS=windows go vet ./...` rather than `go build`, because `go build` skips
+`_test.go` files — a unix-only syscall in a test breaks the Windows *test*
+build, and vet type-checks test files too. `make test` is `go test -race ./...`,
+and on Windows it needs a C compiler because `-race` has no pure-Go
+implementation there (`scoop install mingw`).
 
 ### Say which OS you actually ran
 

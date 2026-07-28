@@ -20,7 +20,7 @@ jobs:
         with:
           node-version: "24"
       - name: windows compile gate
-        run: GOOS=windows go build ./...
+        run: GOOS=windows go vet ./...
       - uses: goreleaser/goreleaser-action@v7
         with:
           version: "~> v2"

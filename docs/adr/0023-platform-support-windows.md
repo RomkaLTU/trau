@@ -226,9 +226,14 @@ other up.
 - The launch matrix from ADR 0002 §4 is superseded: darwin, linux and windows,
   each amd64 + arm64, with zip alongside tar.gz and three package channels
   (cask, nfpm, scoop/winget).
-- Windows is a build target CI must keep honest. A `GOOS=windows go build ./...`
+- Windows is a build target CI must keep honest. A `GOOS=windows go vet ./...`
   cross-compile gate is cheap and stops the two `Setpgid` lines from coming back
-  in a new form.
+  in a new form. It is `vet` and not `build` because `go build` does not compile
+  `_test.go` files: the gate started as `go build ./...` and let two `syscall.Kill`
+  call sites in tests reach a native Windows machine, where they took the entire
+  `pipeline` and `webserver` suites down as `[build failed]` (COD-1313). vet
+  type-checks test files, so the gate now covers the code the port is actually
+  proven by.
 - Retiring `creack/pty` touches the one mechanism every interactive provider
   runs on. The unix-byte-identical constraint is what makes that acceptable, and
   it is a testable claim rather than a promise.
