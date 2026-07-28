@@ -51,3 +51,9 @@ func KillGroup(pid int) error {
 	}
 	return syscall.Kill(pid, syscall.SIGKILL)
 }
+
+// LookBin returns bin unchanged. Every unix spawn seam ends in os/exec, which
+// resolves a bare name against $PATH when the child starts, and resolving here
+// instead would change the argv[0] the child sees — ADR 0023 keeps unix spawn
+// behavior byte-identical.
+func LookBin(bin string) (string, error) { return bin, nil }

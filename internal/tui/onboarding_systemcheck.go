@@ -28,9 +28,12 @@ const (
 )
 
 // systemCheck is one readiness probe run at the very start of onboarding.
+// detail carries the resolved absolute path for binary probes, so a green line
+// names the executable a run will actually launch.
 type systemCheck struct {
 	name   string
 	desc   string
+	detail string
 	status checkStatus
 	err    error
 }
@@ -38,6 +41,7 @@ type systemCheck struct {
 type systemCheckResultMsg struct {
 	index  int
 	status checkStatus
+	detail string
 	err    error
 }
 
@@ -110,8 +114,8 @@ func (m onboardingModel) nextSystemCheckCmd() tea.Cmd {
 	prefillProvider := m.actions.OnboardingPrefill().Provider
 	repoRoot := m.repoRoot
 	return tea.Tick(420*time.Millisecond, func(time.Time) tea.Msg {
-		status, err := runSystemCheck(name, probe, ghReady, linearAPIReady, prefillProvider, repoRoot)
-		return systemCheckResultMsg{index: idx, status: status, err: err}
+		status, detail, err := runSystemCheck(name, probe, ghReady, linearAPIReady, prefillProvider, repoRoot)
+		return systemCheckResultMsg{index: idx, status: status, detail: detail, err: err}
 	})
 }
 
@@ -124,41 +128,41 @@ func (m onboardingModel) checkStatusFor(name string) checkStatus {
 	return checkPending
 }
 
-func runSystemCheck(name string, probe *mcpProbe, ghReady, linearAPIReady bool, prefillProvider, repoRoot string) (checkStatus, error) {
+func runSystemCheck(name string, probe *mcpProbe, ghReady, linearAPIReady bool, prefillProvider, repoRoot string) (checkStatus, string, error) {
 	switch name {
-	case "git":
-		_, err := exec.LookPath("git")
+	case "git", "gh":
+		bin, err := exec.LookPath(name)
 		if err != nil {
-			return checkFailed, err
+			return checkFailed, "", err
 		}
-		return checkDone, nil
-	case "gh":
-		_, err := exec.LookPath("gh")
-		if err != nil {
-			return checkFailed, err
-		}
-		return checkDone, nil
+		return checkDone, bin, nil
 	case "github-auth":
 		if _, err := exec.LookPath("gh"); err != nil {
-			return checkFailed, err
+			return checkFailed, "", err
 		}
 		cmd := exec.Command("gh", "auth", "status")
 		if err := cmd.Run(); err != nil {
-			return checkFailed, err
+			return checkFailed, "", err
 		}
-		return checkDone, nil
+		return checkDone, "", nil
 	case "claude", "codex", "kimi":
-		_, err := exec.LookPath(name)
+		// exec.LookPath is the resolution a run actually uses — proc.LookBin
+		// on Windows and stdlib exec inside the unix PTY spawn both go through
+		// it — so a green line here is a provider the loop can launch, at the
+		// path shown.
+		bin, err := exec.LookPath(name)
 		if err != nil {
-			return checkFailed, err
+			return checkFailed, "", err
 		}
-		return checkDone, nil
+		return checkDone, bin, nil
 	case "skills":
-		return runSkillsCheck(prefillProvider, repoRoot)
+		status, err := runSkillsCheck(prefillProvider, repoRoot)
+		return status, "", err
 	case "linear", "jira", "github":
-		return runTrackerCheck(name, probe, ghReady, linearAPIReady)
+		status, err := runTrackerCheck(name, probe, ghReady, linearAPIReady)
+		return status, "", err
 	}
-	return checkFailed, fmt.Errorf("unknown check %q", name)
+	return checkFailed, "", fmt.Errorf("unknown check %q", name)
 }
 
 // skillsInstallOffer returns the curated recommendations to offer for one-key
@@ -289,6 +293,7 @@ func (m onboardingModel) applySystemCheckResult(msg systemCheckResultMsg) onboar
 		return m
 	}
 	m.systemChecks[msg.index].status = msg.status
+	m.systemChecks[msg.index].detail = msg.detail
 	m.systemChecks[msg.index].err = msg.err
 	m.systemCheckIndex++
 	if m.systemCheckIndex < len(m.systemChecks) {
@@ -463,7 +468,11 @@ func (m onboardingModel) renderCheckLine(idx int, c systemCheck) string {
 	case checkRunning:
 		return m.systemCheckSpin.View() + " " + s.Header.Bold(true).Render(name) + " " + s.Info.Render("checking…")
 	case checkDone:
-		return s.Success.Render("✓") + " " + s.Success.Render(name) + " " + s.Subtle.Render(c.desc)
+		desc := c.desc
+		if c.detail != "" {
+			desc = c.detail
+		}
+		return s.Success.Render("✓") + " " + s.Success.Render(name) + " " + s.Subtle.Render(desc)
 	case checkSkipped:
 		hint := "not verified — install claude to probe MCPs"
 		if c.err != nil {

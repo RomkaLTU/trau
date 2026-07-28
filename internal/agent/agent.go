@@ -29,6 +29,7 @@ import (
 	"github.com/aymanbagabas/go-pty"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/sanitize"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
@@ -132,9 +133,16 @@ type ptySession struct {
 }
 
 // startPTY is the production terminalStarter: a POSIX pty on unix, a ConPTY on
-// Windows 10 1809+. Geometry is applied before Start so the child sees its final
-// size at launch instead of redrawing off a resize.
+// Windows 10 1809+. bin goes through proc.LookBin first — the ConPTY spawn is a
+// raw CreateProcess that probes a bare name against dir instead of %PATH%, so
+// it must arrive absolute there, while unix passes through untouched. Geometry
+// is applied before Start so the child sees its final size at launch instead of
+// redrawing off a resize.
 func startPTY(ctx context.Context, bin, dir string, args []string, cols, rows int) (terminalSession, error) {
+	bin, err := proc.LookBin(bin)
+	if err != nil {
+		return nil, err
+	}
 	tty, err := pty.New()
 	if err != nil {
 		return nil, err
