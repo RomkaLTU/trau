@@ -58,6 +58,12 @@ func grillResearchAnchored(focus string) GrillResearchData {
 	return GrillResearchData{GrillIssueData: grillIssueFocused(focus)}
 }
 
+func grillIssueAutoAccept() GrillIssueData {
+	data := grillIssueFocused(goldenGrillFocus)
+	data.AutoAccept = true
+	return data
+}
+
 type goldenCase struct {
 	golden string
 	name   string
@@ -157,6 +163,9 @@ func TestRenderMatchesPreRefactorGoldens(t *testing.T) {
 		{"grill_research_bare", "grill_research", GrillResearchData{GrillIssueData: grillIssue("", "(no description yet)", "")}},
 		{"grill_research_idea", "grill_research", GrillResearchData{Idea: goldenGrillQuestion}},
 		{"grill_research_empty", "grill_research", GrillResearchData{}},
+		{"grill_issue_auto_accept", "grill_issue", grillIssueAutoAccept()},
+		{"grill_authoring_auto_accept", "grill_authoring", GrillAuthoringData{Idea: "A dark-mode toggle in the toolbar.", AutoAccept: true}},
+		{"grill_research_auto_accept", "grill_research", GrillResearchData{GrillIssueData: grillIssueAutoAccept()}},
 	}
 	assertGoldens(t, cases)
 }

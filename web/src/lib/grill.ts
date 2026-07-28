@@ -22,7 +22,9 @@ export type GrillMode = 'interview' | 'research'
 // grilled issue — the only title a settled session has, since applying drops the
 // triage labels the board queries key on. issue_destination names where a create
 // apply filed the anchored issue, so a review remounted on a settled session names
-// the destination it used instead of the picker default.
+// the destination it used instead of the picker default. auto_accept marks a session
+// answering its own recommendations, so only a question needing the user's taste is
+// ever asked.
 export interface GrillSession {
   id: string
   repo: string
@@ -35,6 +37,7 @@ export interface GrillSession {
   provider?: string
   model?: string
   model_options?: string[]
+  auto_accept?: boolean
   parked_reason?: string
   created_at: string
   updated_at: string
@@ -158,6 +161,13 @@ export interface QuestionPayload {
   recommended?: string
   why?: string
   allow_free_text: boolean
+}
+
+// AnswerPayload is an answer turn's body. auto marks one the hub took from the agent's
+// own recommendation on an auto-accept session rather than from the user.
+export interface AnswerPayload {
+  text: string
+  auto?: boolean
 }
 
 // SubIssueProposal is one proposed slice of a split: a fully-specified child with
@@ -436,19 +446,21 @@ export function isActiveSessionConflict(err: unknown): boolean {
 
 // GrillStartOpening is what a session opens on: the text seeding the opening user
 // turn, the provider to lock the session's backend to, the model to pin its first
-// turn, and the session type. An omitted provider or model leaves the hub to resolve
-// the repo's default; an omitted mode opens an interview.
+// turn, the session type, and whether the agent's recommendations are auto-accepted.
+// An omitted provider or model leaves the hub to resolve the repo's default; an
+// omitted mode opens an interview and an omitted autoAccept asks every question.
 export interface GrillStartOpening {
   seed?: string
   model?: string
   provider?: string
   mode?: GrillMode
+  autoAccept?: boolean
 }
 
 // startGrillSession opens a session. An empty issueId with a seed starts a
 // from-scratch authoring session anchored to the repo alone, the seed becoming the
-// first turn; a concrete issueId grills that issue. The provider, model and mode
-// the session opens on all lock for its lifetime.
+// first turn; a concrete issueId grills that issue. The provider, model, mode and
+// auto-accept the session opens on all lock for its lifetime.
 export async function startGrillSession(
   repo: string,
   issueId: string,
@@ -463,6 +475,7 @@ export async function startGrillSession(
       model: opening.model ?? '',
       provider: opening.provider ?? '',
       mode: opening.mode ?? 'interview',
+      auto_accept: opening.autoAccept ?? false,
     }),
   })
   if (!res.ok) {
@@ -696,8 +709,16 @@ export function questionPayload(msg: GrillMessage): QuestionPayload {
 }
 
 export function answerText(msg: GrillMessage): string {
-  const p = (msg.payload ?? {}) as { text?: unknown }
+  const p = (msg.payload ?? {}) as Partial<AnswerPayload>
   return typeof p.text === 'string' ? p.text : ''
+}
+
+// isAutoAnswer reports whether the hub answered the question itself from the agent's
+// recommendation, which the transcript badges so the audit trail stays honest about
+// who chose.
+export function isAutoAnswer(msg: GrillMessage): boolean {
+  const p = (msg.payload ?? {}) as Partial<AnswerPayload>
+  return p.auto === true
 }
 
 export function outcomePayload(msg: GrillMessage): OutcomePayload {

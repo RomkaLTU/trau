@@ -189,19 +189,22 @@ type TimelogEstimateData struct {
 // issue description with every attachment reference repointed at the local copy
 // the session materialized; Attachments is the rendered listing of those files,
 // empty when the issue has none. Focus is the note the interview was opened with,
-// always empty on an Ask-ahead pass.
+// always empty on an Ask-ahead pass. AutoAccept tells the agent its recommendations
+// are answered for it, so only a question needing the user's taste reaches them.
 type GrillIssueData struct {
 	ID          string
 	Title       string
 	Body        string
 	Attachments string
 	Focus       string
+	AutoAccept  bool
 }
 
 // GrillAuthoringData feeds the grill_authoring prompt. An empty Idea switches
 // the template to the opener that asks the user what they want to build.
 type GrillAuthoringData struct {
-	Idea string
+	Idea       string
+	AutoAccept bool
 }
 
 // GrillResearchData feeds the grill_research prompt, which runs both anchored

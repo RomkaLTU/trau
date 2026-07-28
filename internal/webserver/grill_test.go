@@ -34,7 +34,12 @@ func grillServer(t *testing.T) (*httptest.Server, *hubstore.Stores, string) {
 
 func createGrill(t *testing.T, ts *httptest.Server, repo, issue string) GrillSessionView {
 	t.Helper()
-	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/grill", GrillCreateRequest{IssueID: issue})
+	return createGrillWith(t, ts, repo, GrillCreateRequest{IssueID: issue})
+}
+
+func createGrillWith(t *testing.T, ts *httptest.Server, repo string, req GrillCreateRequest) GrillSessionView {
+	t.Helper()
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/grill", req)
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("create status = %d, want 201", res.StatusCode)
