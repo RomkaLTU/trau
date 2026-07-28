@@ -79,7 +79,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     label: 'CONFIGURE',
     items: [
-      { label: 'Add a project', icon: FolderPlus, to: '/projects/new' },
+      { label: 'Register a repo', icon: FolderPlus, to: '/projects/new' },
       { label: 'Skills', icon: Puzzle, to: '/skills' },
       { label: 'Settings', icon: Settings, to: '/settings' },
     ],

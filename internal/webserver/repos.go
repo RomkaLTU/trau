@@ -209,6 +209,9 @@ func (s *Server) forgetRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to remove repo: " + err.Error()})
 		return
 	}
+	if err := s.stores.Projects().ForgetRoot(repo.Root); err != nil {
+		logger.Verbosef("drop project membership for %s: %v", repo.Root, err)
+	}
 	s.dropUnregisteredRepoState(repo.Root)
 	writeJSON(w, http.StatusOK, RepoView{Repo: repo})
 }

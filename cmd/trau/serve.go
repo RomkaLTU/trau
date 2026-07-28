@@ -139,6 +139,10 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 		return console.Actionable(err, "import legacy queue state",
 			"fix or move the named queue.json aside, then restart trau serve")
 	}
+	if err := stores.EnsureProjects(); err != nil {
+		return console.Actionable(err, "back the known repos with projects",
+			fmt.Sprintf("move %s aside (mv %s %s.bak) and restart to recreate it", hubdb.Path(home), hubdb.Path(home), hubdb.Path(home)))
+	}
 
 	addr := net.JoinHostPort(cfg.ServeBind, strconv.Itoa(cfg.ServePort))
 	hub := webserver.New(version, cfg.ServeBind, cfg.ServeToken, cfg.ServeWorkspace, cfg.ServeAllowRegister, stores)
