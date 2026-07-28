@@ -171,6 +171,27 @@ func checkProvider(ctx context.Context, cfg config.Config, rr *runner) {
 		return
 	}
 	rr.add("provider", pass, fmt.Sprintf("%s (%s)", cfg.Provider, strings.TrimSpace(string(out))), "")
+	checkClaudeBypass(cfg, rr)
+}
+
+// checkClaudeBypass verifies the one-time --dangerously-skip-permissions
+// acknowledgment Claude Code demands before that flag runs without a blocking
+// dialog. trau never accepts the dialog on the operator's behalf (COD-1326), so
+// a machine missing the acknowledgment stalls its first agent child — exactly
+// the failure preflight exists to catch.
+func checkClaudeBypass(cfg config.Config, rr *runner) {
+	if cfg.Provider != "claude" || !strings.Contains(cfg.ClaudeFlags, "--dangerously-skip-permissions") {
+		return
+	}
+	accepted, err := agent.ClaudeBypassAccepted()
+	switch {
+	case err != nil:
+		rr.add("provider-bypass", warn, fmt.Sprintf("could not verify the bypass-permissions acknowledgment (%v)", err), "")
+	case !accepted:
+		rr.add("provider-bypass", fail, "claude runs with --dangerously-skip-permissions but this machine has never accepted Claude Code's one-time acknowledgment — the first agent child will block on its dialog", "run `claude --dangerously-skip-permissions` once and accept, then re-run doctor")
+	default:
+		rr.add("provider-bypass", pass, "bypass-permissions acknowledgment recorded", "")
+	}
 }
 
 func checkConfig(ctx context.Context, cfg config.Config, sources map[string]config.Layer, repoRoot string, rr *runner) {
