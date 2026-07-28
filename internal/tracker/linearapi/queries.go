@@ -425,10 +425,11 @@ mutation IssueCreate($teamId: String!, $title: String!, $description: String, $l
 
 	// issueRelationCreateMutation links two issues. type "blocks" means issueId
 	// blocks relatedIssueId, so relatedIssueId reads issueId as a blocker in its
-	// inverseRelations — the direction blockers() interprets. The same String!
-	// typing note as issueUpdateMutation applies.
+	// inverseRelations — the direction blockers() interprets. The ids follow the
+	// String! note above, but type sits in an IssueRelationType! position and must
+	// be declared as that enum; its value still travels as a plain string.
 	issueRelationCreateMutation = `
-mutation IssueRelationCreate($issueId: String!, $relatedIssueId: String!, $type: String!) {
+mutation IssueRelationCreate($issueId: String!, $relatedIssueId: String!, $type: IssueRelationType!) {
   issueRelationCreate(input: { issueId: $issueId, relatedIssueId: $relatedIssueId, type: $type }) {
     success
   }

@@ -239,6 +239,8 @@ func TestStateIsTerminal(t *testing.T) {
 // ("Variable "$teamId" of type "ID!" used in position expecting type "String!"").
 // Only filter comparators (IDComparator.eq) take ID, so ID belongs in queries
 // alone — a mutation declaring an ID variable is always a live-API failure.
+// Enum positions such as IssueRelationCreate's type are the one exception and
+// must be declared with their enum name.
 func TestMutationsDeclareStringVariables(t *testing.T) {
 	mutations := map[string]string{
 		"issueUpdate":         issueUpdateMutation,
