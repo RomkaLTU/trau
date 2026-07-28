@@ -30,6 +30,8 @@ export function FolderPicker({
     (e) => showHidden || !e.name.startsWith('.'),
   )
   const hiddenCount = (listing?.entries.length ?? 0) - entries.length
+  const action = listing?.is_repo ? 'Inspect this folder' : 'Scan this folder'
+  const pending = listing?.is_repo ? 'Inspecting…' : 'Scanning…'
 
   return (
     <div className="flex flex-col gap-2">
@@ -148,18 +150,18 @@ export function FolderPicker({
         <Button
           type="button"
           className="ml-auto"
-          disabled={!listing?.is_repo || busy}
+          disabled={!listing || listing.path === '' || busy}
           onClick={() => listing && onSelect(listing.path)}
         >
           <FolderGit2 className="size-4" />
-          {busy ? 'Inspecting…' : 'Inspect this folder'}
+          {busy ? pending : action}
         </Button>
       </div>
 
       {listing && listing.path !== '' && !listing.is_repo && (
         <Hint>
-          No <span className="font-mono">.git</span> here — open the repository's own folder,
-          or pick one marked <span className="font-mono">git</span> above.
+          No <span className="font-mono">.git</span> here — scanning looks one or two levels
+          down for repositories, and offers to start one if there are none.
         </Hint>
       )}
     </div>

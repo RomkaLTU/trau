@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   credentialLayer,
   essentialsConfigWrites,
+  joinProject,
   laterStep,
+  onboardPath,
   preselectProvider,
   secretPlaceholder,
   trackerCanContinue,
@@ -12,6 +14,14 @@ import {
   type RepoInspection,
   type TrackerFields,
 } from './onboarding'
+
+function respond(status: number, body: unknown): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    json: async () => body,
+  } as unknown as Response
+}
 
 function inspection(over: Partial<RepoInspection> = {}): RepoInspection {
   return {
@@ -215,5 +225,66 @@ describe('laterStep', () => {
   it('keeps the furthest-reached step monotonic', () => {
     expect(laterStep('tracker', 'detect')).toBe('tracker')
     expect(laterStep('path', 'sync')).toBe('sync')
+  })
+})
+
+describe('onboardPath', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('inspects a path before registering it', async () => {
+    const seen: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        seen.push(url)
+        return url.endsWith('/inspect')
+          ? respond(200, inspection({ path: '/Projects/acme' }))
+          : respond(201, { name: 'acme', root: '/Projects/acme' })
+      }),
+    )
+
+    const member = await onboardPath('/Projects/acme')
+
+    expect(seen).toEqual(['/api/v1/repos/inspect', '/api/v1/repos'])
+    expect(member.repo).toBe('acme')
+    expect(member.root).toBe('/Projects/acme')
+  })
+})
+
+describe('joinProject', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function collect(): [string, unknown][] {
+    const calls: [string, unknown][] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push([url, init?.body ? JSON.parse(String(init.body)) : null])
+        return respond(200, { id: 'p1', name: 'acme', repos: [] })
+      }),
+    )
+    return calls
+  }
+
+  it('creates the project once and adds every member root', async () => {
+    const calls = collect()
+
+    expect(await joinProject(null, 'acme', ['/Projects/api', '/Projects/web'])).toBe('p1')
+    expect(calls).toEqual([
+      ['/api/v1/projects', { name: 'acme' }],
+      ['/api/v1/projects/p1/repos', { repo: '/Projects/api' }],
+      ['/api/v1/projects/p1/repos', { repo: '/Projects/web' }],
+    ])
+  })
+
+  it('adds to an existing project instead of creating another', async () => {
+    const calls = collect()
+
+    expect(await joinProject('p1', 'acme', ['/elsewhere/ops'])).toBe('p1')
+    expect(calls).toEqual([['/api/v1/projects/p1/repos', { repo: '/elsewhere/ops' }]])
   })
 })

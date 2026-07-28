@@ -15,6 +15,7 @@ var apiRoutes = []string{
 	APIPrefix + "/instances",
 	APIPrefix + "/repos",
 	APIPrefix + "/fs/browse",
+	APIPrefix + "/fs/discover",
 	APIPrefix + "/repos/demo/runs",
 	APIPrefix + "/repos/demo/events",
 	APIPrefix + "/repos/demo/events/stream",

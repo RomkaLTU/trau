@@ -16,12 +16,14 @@ import {
 
 export function StepDone({
   repo,
+  members,
   provider,
   trackerFields,
   essentials,
   syncResult,
 }: {
   repo: string
+  members: string[]
   provider: TrackerProvider
   trackerFields: TrackerFields
   essentials: EssentialsFields
@@ -50,6 +52,7 @@ export function StepDone({
 
   const summary: { label: string; value: string }[] = [
     { label: 'repo', value: repo },
+    ...(members.length > 1 ? [{ label: 'project', value: members.join(' · ') }] : []),
     {
       label: 'tracker',
       value: trackerFields.binding ? `${provider} · ${trackerFields.binding}` : provider,
