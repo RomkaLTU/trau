@@ -286,6 +286,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/prompts", s.handlePrompts)
 	mux.HandleFunc(APIPrefix+"/prompts/{name}", s.handlePromptItem)
 	mux.HandleFunc(APIPrefix+"/trackers/{provider}/test-connection", s.handleTrackerTestConnection)
+	mux.HandleFunc(APIPrefix+"/fs/browse", s.handleFSBrowse)
 	mux.HandleFunc(APIPrefix+"/projects", s.handleProjects)
 	mux.HandleFunc(APIPrefix+"/projects/{project}", s.handleProject)
 	mux.HandleFunc(APIPrefix+"/projects/{project}/repos", s.handleProjectRepos)

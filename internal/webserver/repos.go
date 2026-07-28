@@ -272,7 +272,7 @@ func validateRepoPath(path string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("path %q is not a directory", root)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
+	if !isGitToplevel(root) {
 		return "", fmt.Errorf("path %q is not a git repository (no .git found)", root)
 	}
 	return root, nil
