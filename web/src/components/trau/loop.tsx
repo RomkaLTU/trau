@@ -37,6 +37,7 @@ import { Eyebrow } from "@/components/trau/eyebrow";
 import { useHandback } from "@/components/trau/handback-dialog";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { PRStatusBadge } from "@/components/trau/pr-status-badge";
+import type { PaneTab } from "@/components/trau/run-view";
 import { SegmentedControl } from "@/components/trau/segmented-control";
 import { StatusPill, type RunState } from "@/components/trau/status-pill";
 import { TerminalCard } from "@/components/trau/terminal-card";
@@ -122,6 +123,14 @@ function shutdownDescription(queuedCount: number): string {
   return `Stops the running task if any (force-killed if it hasn't exited after ~30s), removes all ${queuedCount} queued ${noun}, and clears paused run leftovers. Work in progress on feature branches is kept; tracker tickets are not changed.`;
 }
 
+function ActionCaption({ children }: { children: string }) {
+  return (
+    <p className="text-pretty text-right font-mono text-[0.65rem] leading-relaxed text-muted-foreground">
+      {children}
+    </p>
+  );
+}
+
 // ShutdownAction is the destructive teardown gesture shared by both Loop card
 // shapes: it stays hidden until there is something to tear down (a queued
 // item or a live child), then disables itself and reads "Shutting down…"
@@ -169,6 +178,7 @@ function ShutdownAction({
         destructive
         onConfirm={onConfirm}
       />
+      <ActionCaption>Kills the run and clears the entire queue.</ActionCaption>
     </div>
   );
 }
@@ -1426,14 +1436,6 @@ function RunningRow({
             {ticket.title}
           </span>
         ) : null}
-        <Link
-          to="/live/$repo/$ticket"
-          params={{ repo, ticket: ticket.id }}
-          className="inline-flex items-center gap-1.5 font-mono text-xs text-teal underline-offset-4 hover:underline"
-        >
-          <ExternalLink className="size-3.5" aria-hidden="true" />
-          View run
-        </Link>
         <BacklogPRBadge status={ticket.prStatus} />
         {item ? (
           <span className="ml-auto flex">
@@ -1454,25 +1456,57 @@ function RunningRow({
           Picking the next ticket…
         </p>
       )}
-      {live ? (
-        <div className="flex flex-wrap items-center gap-6 font-mono text-xs text-muted-foreground">
-          <span>
-            elapsed{" "}
-            <span className="text-foreground">
-              {elapsedSince(live.started_at, now)}
-            </span>
-          </span>
-          {live.state_since ? (
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 font-mono text-xs text-muted-foreground">
+        <RunPaneLink repo={repo} ticket={ticket.id} pane="terminal">
+          Terminal
+        </RunPaneLink>
+        <RunPaneLink repo={repo} ticket={ticket.id} pane="diff">
+          Diff
+        </RunPaneLink>
+        {live ? (
+          <>
             <span>
-              in phase{" "}
+              elapsed{" "}
               <span className="text-foreground">
-                {elapsedSince(live.state_since, now)}
+                {elapsedSince(live.started_at, now)}
               </span>
             </span>
-          ) : null}
-        </div>
-      ) : null}
+            {live.state_since ? (
+              <span>
+                in phase{" "}
+                <span className="text-foreground">
+                  {elapsedSince(live.state_since, now)}
+                </span>
+              </span>
+            ) : null}
+          </>
+        ) : null}
+      </div>
     </div>
+  );
+}
+
+function RunPaneLink({
+  repo,
+  ticket,
+  pane,
+  children,
+}: {
+  repo: string;
+  ticket: string;
+  pane: PaneTab;
+  children: string;
+}) {
+  return (
+    <Link
+      to="/live/$repo/$ticket"
+      params={{ repo, ticket }}
+      search={{ pane }}
+      className="inline-flex items-center gap-1.5 text-teal underline-offset-4 hover:underline"
+    >
+      <ExternalLink className="size-3.5" aria-hidden="true" />
+      {children}
+    </Link>
   );
 }
 
@@ -1871,7 +1905,7 @@ function RunningQueueView({
             windowTitle="confirm"
             trigger={
               <Button
-                variant="destructive"
+                variant="outline"
                 size="sm"
                 className="font-mono"
                 disabled={stopping || shuttingDown}
@@ -1886,6 +1920,10 @@ function RunningQueueView({
             destructive
             onConfirm={onStop}
           />
+          <ActionCaption>
+            Stops now; work is saved at the last checkpoint — resumable with
+            Start.
+          </ActionCaption>
         </div>
         <ShutdownAction
           repo={repo}
