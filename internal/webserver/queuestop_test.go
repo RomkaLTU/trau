@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -73,7 +73,7 @@ func waitStopSettled(t *testing.T, ts *httptest.Server, repo, id, status string)
 // rest of the queue is still there for a later Start.
 func TestQueueStopEndsTheRunningChildAndParksTheItem(t *testing.T) {
 	s, fake, root, ts := stopServer(t, "acme")
-	fake.onStop = func(pid int) { _ = syscall.Kill(pid, syscall.SIGTERM) }
+	fake.onStop = func(pid int) { _ = proc.StopGracefully(pid) }
 	repo := filepath.Base(root)
 
 	pid := spawnSleeper(t, "5")
@@ -175,7 +175,7 @@ func TestQueueStopTwiceStopsTheChildOnce(t *testing.T) {
 // view still renders a Stop for — and the stop has to reach it.
 func TestQueueStopEndsARunTheQueueNeverLaunched(t *testing.T) {
 	s, fake, root, ts := stopServer(t, "acme")
-	fake.onStop = func(pid int) { _ = syscall.Kill(pid, syscall.SIGTERM) }
+	fake.onStop = func(pid int) { _ = proc.StopGracefully(pid) }
 	repo := filepath.Base(root)
 
 	pid := spawnSleeper(t, "5")

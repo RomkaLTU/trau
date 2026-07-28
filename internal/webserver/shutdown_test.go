@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
@@ -66,7 +66,7 @@ func waitQueueEmpty(t *testing.T, ts *httptest.Server, repo string) QueueRespons
 
 func TestQueueShutdownStopsRunningChildDropsPausedCheckpointsAndClears(t *testing.T) {
 	s, fake, root, ts := shutdownServer(t, "acme")
-	fake.onKill = func(pid int) { _ = syscall.Kill(pid, syscall.SIGKILL) }
+	fake.onKill = func(pid int) { _ = proc.KillGroup(pid) }
 	repo := filepath.Base(root)
 	store := s.stores.Queue(root)
 
@@ -144,7 +144,7 @@ func TestQueueShutdownIdleRepoJustEmptiesQueue(t *testing.T) {
 
 func TestQueueShutdownStopsDrainerRacedChild(t *testing.T) {
 	s, fake, root, ts := shutdownServer(t, "acme")
-	fake.onKill = func(pid int) { _ = syscall.Kill(pid, syscall.SIGKILL) }
+	fake.onKill = func(pid int) { _ = proc.KillGroup(pid) }
 	repo := filepath.Base(root)
 	store := s.stores.Queue(root)
 	if _, err := store.Add(queue.Item{Kind: queue.KindTicket, ID: "COD-1"}); err != nil {

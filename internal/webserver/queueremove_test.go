@@ -5,10 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -44,7 +44,7 @@ func queueViewByID(q QueueResponse, id string) (QueueItemView, bool) {
 // the checkpoint the stop left behind survives so the ticket is re-queueable.
 func TestDequeueRunningWithStopStopsChildAndKeepsTicket(t *testing.T) {
 	s, fake, root, ts := shutdownServer(t, "acme")
-	fake.onKill = func(pid int) { _ = syscall.Kill(pid, syscall.SIGKILL) }
+	fake.onKill = func(pid int) { _ = proc.KillGroup(pid) }
 	repo := filepath.Base(root)
 	store := s.stores.Queue(root)
 
