@@ -30,8 +30,9 @@ var (
 )
 
 // ApplyState is how the one-click update is going, carried on the /update
-// payload so a client polls one endpoint for the whole flow. Message holds the
-// tail of the brew output, and only when the upgrade failed.
+// payload so a client polls one endpoint for the whole flow. Message explains a
+// failed apply, and only then: the tail of the brew output, or why a brew run
+// that reported no trouble left the claimed update unapplied.
 type ApplyState struct {
 	State   string `json:"state"`
 	Message string `json:"message"`
@@ -64,14 +65,17 @@ func (c *Checker) apply(restart func() bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), applyTimeout)
 	defer cancel()
 
-	out, err := c.upgrade(ctx)
+	out, err := c.refresh(ctx)
+	logger.Printf("update apply: brew update:\n%s", out)
+	if err != nil {
+		c.setApplyState(applyFailed, brewFailure(out, err))
+		return
+	}
+
+	out, err = c.upgrade(ctx)
 	logger.Printf("update apply: brew upgrade --cask trau:\n%s", out)
 	if err != nil {
-		message := tail(string(out), applyTailLines)
-		if message == "" {
-			message = err.Error()
-		}
-		c.setApplyState(applyFailed, message)
+		c.setApplyState(applyFailed, brewFailure(out, err))
 		return
 	}
 
@@ -79,6 +83,14 @@ func (c *Checker) apply(restart func() bool) {
 	// pending: the user asked to get current, not to run an upgrade. A hub that
 	// cannot restart itself settles anyway and leaves the drift pending.
 	if c.driftPending() && restart() {
+		return
+	}
+
+	// Nothing landed while a newer release is still claimed: brew's tap has not
+	// caught up with GitHub, and settling silently would leave the update row
+	// unchanged with nothing to explain it.
+	if st := c.Status(); st.UpdateAvailable {
+		c.setApplyState(applyFailed, tapBehindMessage(st.Latest))
 		return
 	}
 
@@ -103,14 +115,41 @@ func (c *Checker) setApplyState(state, message string) {
 	c.applyState, c.applyMessage = state, message
 }
 
-// brewUpgrade resolves brew explicitly: the hub runs detached with whatever PATH
-// its spawner had, so a missing brew is a plain error rather than a lost exec.
+func brewFailure(out []byte, err error) string {
+	if message := tail(string(out), applyTailLines); message != "" {
+		return message
+	}
+	return err.Error()
+}
+
+func tapBehindMessage(latest string) string {
+	return fmt.Sprintf(
+		"Homebrew found nothing to upgrade — it does not know about v%s yet, even after `brew update`. "+
+			"The release may still be publishing to the Homebrew tap; try again in a few minutes, "+
+			"or run `brew upgrade --cask trau` manually and restart the hub.",
+		latest,
+	)
+}
+
+// brewUpdate git-pulls the taps brew resolves cask versions from. Homebrew only
+// auto-updates a third-party tap periodically, so without this the upgrade below
+// can decide a stale tap's version is already the newest there is.
+func brewUpdate(ctx context.Context) ([]byte, error) {
+	return runBrew(ctx, "update")
+}
+
 func brewUpgrade(ctx context.Context) ([]byte, error) {
+	return runBrew(ctx, "upgrade", "--cask", "trau")
+}
+
+// runBrew resolves brew explicitly: the hub runs detached with whatever PATH its
+// spawner had, so a missing brew is a plain error rather than a lost exec.
+func runBrew(ctx context.Context, args ...string) ([]byte, error) {
 	brew, err := exec.LookPath("brew")
 	if err != nil {
 		return nil, fmt.Errorf("brew not found on PATH: %w", err)
 	}
-	return exec.CommandContext(ctx, brew, "upgrade", "--cask", "trau").CombinedOutput()
+	return exec.CommandContext(ctx, brew, args...).CombinedOutput()
 }
 
 func tail(s string, n int) string {

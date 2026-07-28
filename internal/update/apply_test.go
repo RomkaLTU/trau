@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -19,9 +20,9 @@ import (
 type applyHarness struct {
 	*Checker
 
-	mu       sync.Mutex
-	onDisk   string
-	upgrades int
+	mu     sync.Mutex
+	onDisk string
+	brewed []string
 
 	restarted chan struct{}
 }
@@ -36,10 +37,12 @@ func newApplyHarness(t *testing.T, running, onDisk, method string, upgrade func(
 		defer h.mu.Unlock()
 		return h.onDisk, method
 	}
+	h.refresh = func(context.Context) ([]byte, error) {
+		h.record("update")
+		return []byte("Already up-to-date.\n"), nil
+	}
 	h.upgrade = func(context.Context) ([]byte, error) {
-		h.mu.Lock()
-		h.upgrades++
-		h.mu.Unlock()
+		h.record("upgrade")
 		return upgrade()
 	}
 	return h
@@ -51,10 +54,27 @@ func (h *applyHarness) setOnDisk(version string) {
 	h.onDisk = version
 }
 
-func (h *applyHarness) upgradeCount() int {
+// setLatest primes the remote answer the checker compares against, standing in
+// for the daily check that made the UI offer the update in the first place.
+func (h *applyHarness) setLatest(t *testing.T, version string) {
+	t.Helper()
+
+	h.endpoint = releaseServer(t, `{"tag_name":"v`+version+`"}`)
+	if err := h.CheckNow(context.Background()); err != nil {
+		t.Fatalf("CheckNow: %v", err)
+	}
+}
+
+func (h *applyHarness) record(step string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.upgrades
+	h.brewed = append(h.brewed, step)
+}
+
+func (h *applyHarness) brewRuns() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return slices.Clone(h.brewed)
 }
 
 func (h *applyHarness) restart() bool {
@@ -88,8 +108,8 @@ func TestApplyRejectsNonBrewInstall(t *testing.T) {
 	if err := h.Apply(h.restart); !errors.Is(err, ErrNotBrew) {
 		t.Fatalf("Apply on a non-brew install = %v, want ErrNotBrew", err)
 	}
-	if h.upgradeCount() != 0 {
-		t.Error("brew ran for an install Homebrew does not own")
+	if got := h.brewRuns(); len(got) != 0 {
+		t.Errorf("brew ran %v for an install Homebrew does not own", got)
 	}
 	if got := h.Status().ApplyState.State; got != applyIdle {
 		t.Errorf("applyState = %q, want %q after a refused apply", got, applyIdle)
@@ -149,8 +169,72 @@ func TestApplyWithoutDriftReturnsToIdle(t *testing.T) {
 		t.Fatal("restarted with nothing new on disk")
 	default:
 	}
+	if got := h.brewRuns(); !slices.Equal(got, []string{"update", "upgrade"}) {
+		t.Errorf("brew ran %v, want the tap refreshed before the upgrade", got)
+	}
 	if h.Status().CheckedAt == nil {
 		t.Error("checkedAt is nil, want the remote check refreshed after a no-op upgrade")
+	}
+}
+
+// TestApplyWithNothingNewerSettlesToIdle covers the user who was already current:
+// brew has nothing to do and the checker agrees, so the apply ends quietly.
+func TestApplyWithNothingNewerSettlesToIdle(t *testing.T) {
+	h := newApplyHarness(t, "2.2.0", "2.2.0", installBrew, okUpgrade)
+	h.setLatest(t, "2.2.0")
+
+	if err := h.Apply(h.restart); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	h.waitApplyState(t, applyIdle)
+
+	if got := h.Status().ApplyState.Message; got != "" {
+		t.Errorf("message = %q, want none once nothing is left to apply", got)
+	}
+}
+
+// TestApplyFailsWhenTapStillLacksTheRelease covers the publishing lag: brew
+// refreshes and upgrades without complaint, nothing lands, and the checker still
+// claims a newer release — the silent no-op the user reported.
+func TestApplyFailsWhenTapStillLacksTheRelease(t *testing.T) {
+	h := newApplyHarness(t, "2.1.0", "2.1.0", installBrew, func() ([]byte, error) {
+		return []byte("Warning: Not upgrading trau, the latest version is already installed\n"), nil
+	})
+	h.setLatest(t, "2.2.0")
+
+	if err := h.Apply(h.restart); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	h.waitApplyState(t, applyFailed)
+
+	if got := h.Status().ApplyState.Message; !strings.Contains(got, "v2.2.0") {
+		t.Errorf("message = %q, want the release brew could not see named", got)
+	}
+	select {
+	case <-h.restarted:
+		t.Fatal("restarted with nothing new on disk")
+	default:
+	}
+}
+
+// TestApplyFailsWhenBrewUpdateFails covers the metadata refresh going wrong —
+// offline, most often. The upgrade never runs on tap data brew could not read.
+func TestApplyFailsWhenBrewUpdateFails(t *testing.T) {
+	h := newApplyHarness(t, "2.1.0", "2.1.0", installBrew, okUpgrade)
+	h.refresh = func(context.Context) ([]byte, error) {
+		return []byte("fatal: unable to access 'https://github.com/RomkaLTU/homebrew-trau/'\n"), errors.New("exit status 1")
+	}
+
+	if err := h.Apply(h.restart); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	h.waitApplyState(t, applyFailed)
+
+	if got := h.Status().ApplyState.Message; !strings.Contains(got, "unable to access") {
+		t.Errorf("message = %q, want the brew update output tail", got)
+	}
+	if got := h.brewRuns(); len(got) != 0 {
+		t.Errorf("brew ran %v, want the upgrade skipped after the refresh failed", got)
 	}
 }
 
@@ -176,8 +260,9 @@ func TestApplyWithoutRestartHookSettlesToIdle(t *testing.T) {
 	}
 }
 
-// TestApplyLogsFullBrewOutput pins the log to the full output on both paths: the
-// API message carries only a tail, so the hub's log is the only complete record.
+// TestApplyLogsFullBrewOutput pins the log to the full output of both brew steps
+// on both paths: the API message carries only a tail, so the hub's log is the
+// only complete record.
 func TestApplyLogsFullBrewOutput(t *testing.T) {
 	out := strings.Repeat("brew line\n", 30) + "final line"
 
@@ -197,6 +282,9 @@ func TestApplyLogsFullBrewOutput(t *testing.T) {
 			h := newApplyHarness(t, "2.1.0", "2.1.0", installBrew, func() ([]byte, error) {
 				return []byte(out), tt.err
 			})
+			h.refresh = func(context.Context) ([]byte, error) {
+				return []byte("==> Updated 1 tap (romkaltu/trau)"), nil
+			}
 			if err := h.Apply(h.restart); err != nil {
 				t.Fatalf("Apply: %v", err)
 			}
@@ -207,7 +295,10 @@ func TestApplyLogsFullBrewOutput(t *testing.T) {
 			}
 
 			if !strings.Contains(log.String(), out) {
-				t.Errorf("log = %q, want the full brew output", log.String())
+				t.Errorf("log = %q, want the full brew upgrade output", log.String())
+			}
+			if !strings.Contains(log.String(), "==> Updated 1 tap (romkaltu/trau)") {
+				t.Errorf("log = %q, want the brew update output", log.String())
 			}
 		})
 	}
@@ -276,8 +367,8 @@ func TestApplyIsSingleFlight(t *testing.T) {
 	close(release)
 	h.waitApplyState(t, applyIdle)
 
-	if got := h.upgradeCount(); got != 1 {
-		t.Errorf("brew ran %d times, want 1", got)
+	if got := h.brewRuns(); !slices.Equal(got, []string{"update", "upgrade"}) {
+		t.Errorf("brew ran %v, want a single refresh-then-upgrade pair", got)
 	}
 	if err := h.Apply(h.restart); err != nil {
 		t.Fatalf("Apply after the first settled: %v", err)
