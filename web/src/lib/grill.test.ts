@@ -22,6 +22,7 @@ import {
   grillReducer,
   isActiveSessionConflict,
   isAwaitingAnswer,
+  isAutoAnswer,
   isGrillable,
   isOver,
   isSettled,
@@ -435,6 +436,15 @@ describe('questionPayload', () => {
     )
     expect(p.recommended).toBe('a')
     expect(p.why).toBe('a is simpler')
+  })
+})
+
+describe('isAutoAnswer', () => {
+  it('marks only an answer the hub took from the recommendation', () => {
+    expect(isAutoAnswer(answer('1'))).toBe(false)
+    expect(
+      isAutoAnswer(msg({ id: '2', role: 'user', kind: 'answer', payload: { text: 'a', auto: true } })),
+    ).toBe(true)
   })
 })
 
@@ -997,7 +1007,17 @@ describe('startGrillSession', () => {
       model: '',
       provider: '',
       mode: 'interview',
+      auto_accept: false,
     })
+  })
+
+  it('asks for auto-accepted recommendations when the checkbox is on', async () => {
+    const fetchMock = stubStart(200, session({ id: '1' }))
+
+    await startGrillSession('loop', 'COD-1', { seed: 'why two flows?', autoAccept: true })
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).toMatchObject({ auto_accept: true })
   })
 
   it('declares the research session type when one is picked', async () => {

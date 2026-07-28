@@ -29,7 +29,8 @@ const grillDefaultProvider = "claude"
 // IssueDestination names where a create-apply filed the anchored issue, so a review
 // remounted on a settled session still names the destination it used rather than
 // reverting to the picker default. Provider is the session's locked provider and
-// Mode its locked session type.
+// Mode its locked session type; AutoAccept marks a session that answers its own
+// recommendations, so the panel can label the answers it never asked for.
 type GrillSessionView struct {
 	ID               string   `json:"id"`
 	Repo             string   `json:"repo"`
@@ -42,6 +43,7 @@ type GrillSessionView struct {
 	Provider         string   `json:"provider"`
 	Model            string   `json:"model,omitempty"`
 	ModelOptions     []string `json:"model_options,omitempty"`
+	AutoAccept       bool     `json:"auto_accept"`
 	ParkedReason     string   `json:"parked_reason,omitempty"`
 	CreatedAt        string   `json:"created_at"`
 	UpdatedAt        string   `json:"updated_at"`
@@ -122,13 +124,15 @@ type GrillDetailResponse struct {
 // GrillCreateRequest is the body of POST /repos/{repo}/grill. IssueID is empty for
 // an authoring session anchored to the repo alone; Idea is that session's one-line
 // seed, or the focus note an issue-bound interview opens on. Mode, Provider and
-// Model are optional; an empty Mode opens an interview.
+// Model are optional; an empty Mode opens an interview. AutoAccept defaults off, so a
+// session only answers its own recommendations when the start surface asks for it.
 type GrillCreateRequest struct {
-	IssueID  string `json:"issue_id"`
-	Idea     string `json:"idea"`
-	Mode     string `json:"mode"`
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
+	IssueID    string `json:"issue_id"`
+	Idea       string `json:"idea"`
+	Mode       string `json:"mode"`
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	AutoAccept bool   `json:"auto_accept"`
 }
 
 // GrillAnswerRequest is the body of POST /grill/{sid}/answer.
@@ -217,11 +221,12 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 		model = s.grillModelDefaultFor(repo, provider)
 	}
 	sess, err := s.stores.Grill().Create(hubstore.NewGrillSession{
-		Repo:     repo.Root,
-		IssueID:  issueID,
-		Mode:     mode,
-		Provider: provider,
-		Model:    model,
+		Repo:       repo.Root,
+		IssueID:    issueID,
+		Mode:       mode,
+		Provider:   provider,
+		Model:      model,
+		AutoAccept: req.AutoAccept,
 	})
 	if err != nil {
 		if errors.Is(err, hubstore.ErrGrillActiveSession) {
@@ -688,6 +693,7 @@ func (s *Server) grillSessionView(repo string, sess hubstore.GrillSession) Grill
 		Provider:         grillEffectiveProvider(sess.Provider),
 		Model:            s.grillEffectiveModel(sess),
 		ModelOptions:     grillModelOptionsFor(sess.Provider),
+		AutoAccept:       sess.AutoAccept,
 		ParkedReason:     sess.ParkedReason,
 		CreatedAt:        sess.CreatedAt,
 		UpdatedAt:        sess.UpdatedAt,

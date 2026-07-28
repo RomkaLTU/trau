@@ -16,6 +16,7 @@ import {
 
 import { Markdown, type MarkdownUrlMap } from "@/components/markdown";
 import { DeleteIssueDialog } from "@/components/delete-issue-dialog";
+import { AutoAcceptToggle } from "@/components/grill/auto-accept";
 import { ErrorNote } from "@/components/grill/banners";
 import { Composer } from "@/components/grill/composer";
 import {
@@ -844,9 +845,10 @@ function FreshDraftBody({
   const queryClient = useQueryClient();
   const sessionType = starter.sessionType;
   const research = sessionType.mode === "research";
+  const [autoAccept, setAutoAccept] = useState(false);
   const start = useMutation({
     mutationFn: (seed: string) =>
-      startGrillSession(repo, "", starterOpening(starter, seed)),
+      startGrillSession(repo, "", { ...starterOpening(starter, seed), autoAccept }),
     onSuccess: (session) => {
       queryClient.setQueryData<GrillListResponse>(["grill", repo], (prev) =>
         prev
@@ -877,6 +879,7 @@ function FreshDraftBody({
           <SessionTypeChips sessionType={sessionType} />
           <StartModelSelect starter={starter} />
         </div>
+        <AutoAcceptToggle checked={autoAccept} onChange={setAutoAccept} />
         <Composer
           repo={repo}
           placeholder={research ? "Ask your question…" : "Describe the issue…"}
