@@ -94,6 +94,33 @@ func TestRecoverStepAuthFailurePausesWithoutRetry(t *testing.T) {
 	}
 }
 
+// TestRecoverStepBlockedOnPromptPausesWithoutRetry is the COD-1326 guard: a
+// child confirmed blocked on a dialog no unattended run can answer — the
+// bypass-permissions acknowledgment or any other selection menu — must pause
+// blamelessly on the first hit, exactly like an auth wall: every retry
+// re-raises the same dialog.
+func TestRecoverStepBlockedOnPromptPausesWithoutRetry(t *testing.T) {
+	for _, sentinel := range []error{agent.ErrBypassNotAccepted, agent.ErrInteractivePrompt} {
+		promptErr := fmt.Errorf("claude interactive run (build): %w", sentinel)
+		r := &countingRunner{results: []error{promptErr}, name: "claude"}
+		p := newTestPipeline(t, r, &fakeTracker{})
+		p.AgentRetries = 3
+		p.AgentBackoff = 0
+
+		_, err := p.agentStep(context.Background(), "COD-1326", "build", "prompt")
+		var pe *PausedError
+		if !errors.As(err, &pe) {
+			t.Fatalf("%v: want a *PausedError, got %v", sentinel, err)
+		}
+		if pe.Provider != "claude" {
+			t.Errorf("%v: pause provider = %q, want %q", sentinel, pe.Provider, "claude")
+		}
+		if r.calls != 1 {
+			t.Fatalf("%v: a blocking dialog must not be retried; got %d calls", sentinel, r.calls)
+		}
+	}
+}
+
 // TestRecoverStepFallsBackToNextProvider checks the provider-fallback seam: once
 // the primary's retries are exhausted, the same step runs on the next provider in
 // the chain and its success completes the phase.

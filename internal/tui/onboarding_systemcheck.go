@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -153,6 +154,14 @@ func runSystemCheck(name string, probe *mcpProbe, ghReady, linearAPIReady bool, 
 		bin, err := exec.LookPath(name)
 		if err != nil {
 			return checkFailed, "", err
+		}
+		if name == "claude" {
+			// The loop launches claude with --dangerously-skip-permissions (the
+			// config default), and trau never answers the one-time acknowledgment
+			// dialog itself (COD-1326) — an unaccepted machine is not ready.
+			if accepted, err := agent.ClaudeBypassAccepted(); err == nil && !accepted {
+				return checkFailed, bin, agent.ErrBypassNotAccepted
+			}
 		}
 		return checkDone, bin, nil
 	case "skills":
@@ -528,6 +537,9 @@ func checkFailureHint(name string, err error) string {
 	case "github-auth":
 		return "run `gh auth login`"
 	case "claude", "codex", "kimi":
+		if errors.Is(err, agent.ErrBypassNotAccepted) {
+			return err.Error()
+		}
 		return fmt.Sprintf("install %s or pick a different provider", name)
 	case "skills":
 		return "install skills with `npx skills add <skill>` or add them to .agents/skills/ (see https://skills.sh)"
