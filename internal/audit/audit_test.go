@@ -67,6 +67,10 @@ var allowedReaders = map[string]string{
 	// LaunchAgent plist it installs, to report what is on disk (ADR 0022).
 	"internal/launchd/launchd.go": "hub LaunchAgent plist",
 
+	// Machine-owned kernel file — the WSL probe behind the browser hand-off
+	// reads /proc/version to detect a Microsoft kernel (ADR 0023).
+	"internal/browser/browser.go": "kernel /proc/version for WSL detection",
+
 	// Hub-owned content store — the hub reads its own content-addressed
 	// attachment blobs (under <hub home>/attachments) to serve their bytes; this
 	// is the hub, not run data routed around it.
