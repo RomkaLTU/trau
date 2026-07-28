@@ -65,6 +65,7 @@ type Server struct {
 	newWriter        func(config.Config) (tracker.Writer, error)
 	newReader        func(config.Config) (tracker.Reader, error)
 	newProbe         func(provider string, cfg config.Config) (trackerProbe, error)
+	newHubAgent      func(cfg config.Config, repo registry.Repo) (agent.Runner, error)
 	installSkill     func(ctx context.Context, repoRoot, pkg string) error
 	removeSkill      func(ctx context.Context, repoRoot, name string) error
 	skillsMu         sync.Mutex
@@ -120,6 +121,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		newWriter:        defaultWriter,
 		newReader:        defaultReader,
 		newProbe:         defaultProbe,
+		newHubAgent:      newHubRunner,
 		installSkill:     defaultInstallSkill,
 		removeSkill:      defaultRemoveSkill,
 		skillsCache:      map[string]skillsCacheEntry{},
@@ -373,6 +375,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/transcript/stream", s.handleTranscriptStream)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/grill", s.handleRepoGrill)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/grill/pregrill", s.handleRepoPregrill)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/grill/suggest-mode", s.handleGrillSuggestMode)
 	mux.HandleFunc(APIPrefix+"/grill", s.handleGrillAwaiting)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}", s.handleGrillSession)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/answer", s.handleGrillAnswer)

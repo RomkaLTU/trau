@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Flame, Loader2 } from "lucide-react";
 
+import { useModeSuggestion } from "@/components/grill/mode-suggestion";
 import { SessionTypeChips } from "@/components/grill/session-mode";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,7 +18,6 @@ import {
   isActiveSessionConflict,
   publishGrillSession,
   startGrillSession,
-  type GrillMode,
 } from "@/lib/grill";
 
 // StartInterviewDialog is how an interview begins on a ticket that has none: an
@@ -38,12 +38,15 @@ export function StartInterviewDialog({
   const fieldRef = useRef<HTMLTextAreaElement | null>(null);
   const [open, setOpen] = useState(false);
   const [focus, setFocus] = useState("");
-  const [mode, setMode] = useState<GrillMode>("interview");
-  const research = mode === "research";
+  const sessionType = useModeSuggestion(repo);
+  const research = sessionType.mode === "research";
 
   const start = useMutation({
     mutationFn: () =>
-      startGrillSession(repo, id, { seed: focus.trim(), mode }),
+      startGrillSession(repo, id, {
+        seed: focus.trim(),
+        mode: sessionType.mode,
+      }),
     onSuccess: (session) => {
       publishGrillSession(queryClient, repo, session);
       onStarted();
@@ -105,7 +108,7 @@ export function StartInterviewDialog({
                   : "The interviewer reads the ticket and asks what it leaves open. A note steers where it starts."}
               </AlertDialogDescription>
             </AlertDialogHeader>
-            <SessionTypeChips mode={mode} onChange={setMode} className="mt-2" />
+            <SessionTypeChips sessionType={sessionType} className="mt-2" />
             <textarea
               ref={fieldRef}
               value={focus}
@@ -120,7 +123,11 @@ export function StartInterviewDialog({
                   ? "What do you want answered? (optional)"
                   : "What do you want clarified? (optional)"
               }
-              onChange={(e) => setFocus(e.target.value)}
+              onChange={(e) => {
+                setFocus(e.target.value);
+                sessionType.noteChanged(e.target.value);
+              }}
+              onBlur={(e) => sessionType.noteSettled(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key !== "Enter" || !(e.metaKey || e.ctrlKey)) return;
                 e.preventDefault();
