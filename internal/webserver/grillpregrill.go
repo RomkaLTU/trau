@@ -75,7 +75,7 @@ func (s *Server) handleRepoPregrill(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
-	if _, errMsg := grillValidateProvider(req.Provider); errMsg != "" {
+	if _, errMsg := grillValidateProvider(req.Provider, hubstore.GrillModeInterview); errMsg != "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
 		return
 	}
@@ -101,7 +101,7 @@ func (s *Server) pregrillMax(repo registry.Repo) int {
 func (s *Server) runPregrillPass(ctx context.Context, repo registry.Repo, req PregrillRequest, max int) []PregrillResult {
 	provider := strings.TrimSpace(req.Provider)
 	if provider == "" {
-		provider = s.grillDefaultProviderFor(repo)
+		provider = s.grillDefaultProviderFor(repo, hubstore.GrillModeInterview)
 	}
 	model := strings.TrimSpace(req.Model)
 	if model == "" {

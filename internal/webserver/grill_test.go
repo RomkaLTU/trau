@@ -804,16 +804,113 @@ func TestGrillListDefaultsSkipsUninstalledProvider(t *testing.T) {
 	}
 }
 
-func grillDefaultProviders(t *testing.T, ts *httptest.Server, repo string) map[string][]string {
-	t.Helper()
-	_, body := get(t, ts, APIPrefix+"/repos/"+repo+"/grill")
+func TestGrillResearchDisablesKimi(t *testing.T) {
+	ts, _, repo := grillServer(t)
+	seedKimiConfig(t, "k3")
+	writeGrillConfig(t, "KIMI_BIN="+installedStub(t, "kimi")+"\nCODEX_BIN="+codexInstalledStub(t)+"\n")
+
+	interview := grillDefaultProviderOptions(t, ts, repo, hubstore.GrillModeInterview)
+	if kimi := interview["kimi"]; kimi.Disabled || kimi.Reason != "" {
+		t.Fatalf("interview kimi = %+v, want it offered", kimi)
+	}
+
+	research := grillDefaultProviderOptions(t, ts, repo, hubstore.GrillModeResearch)
+	kimi, offered := research["kimi"]
+	if !offered {
+		t.Fatalf("research providers = %v, want kimi listed disabled", research)
+	}
+	if !kimi.Disabled || kimi.Reason != "kimi has no web research support in trau yet" {
+		t.Fatalf("research kimi = %+v, want it disabled with the reason", kimi)
+	}
+	for _, name := range []string{"claude", "codex"} {
+		if p := research[name]; p.Disabled || p.Note == "" {
+			t.Errorf("research %s = %+v, want it offered with a note", name, p)
+		}
+	}
+}
+
+func TestGrillCreateRejectsResearchOnKimi(t *testing.T) {
+	ts, _, repo := grillServer(t)
+	seedKimiConfig(t, "k3")
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/grill", GrillCreateRequest{
+		IssueID:  "COD-1",
+		Mode:     hubstore.GrillModeResearch,
+		Provider: "kimi",
+	})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create status = %d, want 400", res.StatusCode)
+	}
+	var detail struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&detail); err != nil {
+		t.Fatalf("decode error: %v", err)
+	}
+	if detail.Error != "kimi has no web research support in trau yet" {
+		t.Fatalf("error = %q, want the research reason", detail.Error)
+	}
+}
+
+// A repo that grills on kimi still gets a research session — on claude, since kimi
+// cannot run one and an unrequested provider must not open a session that only parks.
+func TestGrillResearchFallsBackFromConfiguredKimi(t *testing.T) {
+	ts, _, repo := grillServer(t)
+	seedKimiConfig(t, "k3")
+	writeGrillConfig(t, "GRILL_PROVIDER=kimi\nKIMI_BIN="+installedStub(t, "kimi")+"\n")
+
+	_, body := get(t, ts, APIPrefix+"/repos/"+repo+"/grill?mode="+hubstore.GrillModeResearch)
 	var list GrillListResponse
 	if err := json.Unmarshal([]byte(body), &list); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
+	if list.Defaults.Provider != "claude" {
+		t.Fatalf("research defaults provider = %q, want claude", list.Defaults.Provider)
+	}
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/"+repo+"/grill", GrillCreateRequest{IssueID: "COD-1", Mode: hubstore.GrillModeResearch})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", res.StatusCode)
+	}
+	var v GrillSessionView
+	if err := json.NewDecoder(res.Body).Decode(&v); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if v.Provider != "claude" {
+		t.Fatalf("created provider = %q, want claude", v.Provider)
+	}
+}
+
+func TestGrillListRejectsUnknownMode(t *testing.T) {
+	ts, _, repo := grillServer(t)
+
+	res, _ := get(t, ts, APIPrefix+"/repos/"+repo+"/grill?mode=bogus")
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("list status = %d, want 400", res.StatusCode)
+	}
+}
+
+func grillDefaultProviders(t *testing.T, ts *httptest.Server, repo string) map[string][]string {
+	t.Helper()
 	byName := map[string][]string{}
+	for name, opt := range grillDefaultProviderOptions(t, ts, repo, "") {
+		byName[name] = opt.ModelOptions
+	}
+	return byName
+}
+
+func grillDefaultProviderOptions(t *testing.T, ts *httptest.Server, repo, mode string) map[string]GrillProviderOption {
+	t.Helper()
+	_, body := get(t, ts, APIPrefix+"/repos/"+repo+"/grill?mode="+mode)
+	var list GrillListResponse
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	byName := map[string]GrillProviderOption{}
 	for _, p := range list.Defaults.Providers {
-		byName[p.Name] = p.ModelOptions
+		byName[p.Name] = p
 	}
 	return byName
 }
