@@ -3,10 +3,12 @@ import { useState } from 'react'
 import { TerminalCard } from '@/components/trau/terminal-card'
 import { type SyncResponse } from '@/lib/instances'
 import {
+  joinProject,
   laterStep,
+  onboardPath,
   stepLabel,
   type EssentialsFields,
-  type RepoInspection,
+  type MemberRepo,
   type TrackerFields,
   type TrackerProvider,
   type WizardStepId,
@@ -22,16 +24,47 @@ import { WizardStepper } from './wizard-stepper'
 export function OnboardingWizard({ initialPath = '' }: { initialPath?: string }) {
   const [step, setStep] = useState<WizardStepId>('path')
   const [maxReached, setMaxReached] = useState<WizardStepId>('path')
-  const [inspection, setInspection] = useState<RepoInspection | null>(null)
-  const [repo, setRepo] = useState<string | null>(null)
+  const [members, setMembers] = useState<MemberRepo[]>([])
+  const [project, setProject] = useState<string | null>(null)
   const [provider, setProvider] = useState<TrackerProvider | null>(null)
   const [trackerFields, setTrackerFields] = useState<TrackerFields | null>(null)
   const [essentials, setEssentials] = useState<EssentialsFields | null>(null)
   const [syncResult, setSyncResult] = useState<SyncResponse | null>(null)
 
+  const primary = members[0] ?? null
+
   function go(next: WizardStepId) {
     setStep(next)
     setMaxReached((prev) => laterStep(prev, next))
+  }
+
+  // Members are grouped into a project only once there are two of them. Re-picking
+  // a folder already taken re-registers it but never lists it twice.
+  async function addPaths(paths: string[], groupName?: string) {
+    const first = members.length === 0
+    const known = new Set(members.map((m) => m.root))
+    const added: MemberRepo[] = []
+    for (const path of paths) {
+      const member = await onboardPath(path)
+      if (known.has(member.root)) continue
+      known.add(member.root)
+      added.push(member)
+    }
+    const all = [...members, ...added]
+    if (all.length > 1) {
+      const joining = project ? added : all
+      setProject(
+        await joinProject(project, groupName ?? all[0].repo, joining.map((m) => m.root)),
+      )
+    }
+    if (first) {
+      setProvider(null)
+      setTrackerFields(null)
+      setEssentials(null)
+      setSyncResult(null)
+    }
+    setMembers(all)
+    go('detect')
   }
 
   return (
@@ -47,30 +80,24 @@ export function OnboardingWizard({ initialPath = '' }: { initialPath?: string })
         >
           {step === 'path' && (
             <StepPath
-              initialPath={inspection?.path ?? initialPath}
-              onInspected={(insp, name) => {
-                setInspection(insp)
-                setRepo(name)
-                setProvider(null)
-                setTrackerFields(null)
-                setEssentials(null)
-                setSyncResult(null)
-                setStep('detect')
-                setMaxReached('detect')
-              }}
+              initialPath={members.length === 0 ? initialPath : ''}
+              members={members}
+              onAdd={addPaths}
             />
           )}
-          {step === 'detect' && inspection && (
+          {step === 'detect' && primary && (
             <StepDetect
-              inspection={inspection}
+              members={members}
+              onAddPath={() => go('path')}
               onBack={() => go('path')}
               onContinue={() => go('tracker')}
             />
           )}
-          {step === 'tracker' && inspection && repo && (
+          {step === 'tracker' && primary && (
             <StepTracker
-              inspection={inspection}
-              repo={repo}
+              inspection={primary.inspection}
+              repo={primary.repo}
+              project={project ?? primary.project}
               onBack={() => go('detect')}
               onContinue={(p, fields) => {
                 setProvider(p)
@@ -79,10 +106,10 @@ export function OnboardingWizard({ initialPath = '' }: { initialPath?: string })
               }}
             />
           )}
-          {step === 'essentials' && inspection && repo && (
+          {step === 'essentials' && primary && (
             <StepEssentials
-              inspection={inspection}
-              repo={repo}
+              inspection={primary.inspection}
+              repo={primary.repo}
               onBack={() => go('tracker')}
               onContinue={(fields) => {
                 setEssentials(fields)
@@ -90,18 +117,19 @@ export function OnboardingWizard({ initialPath = '' }: { initialPath?: string })
               }}
             />
           )}
-          {step === 'sync' && repo && provider && (
+          {step === 'sync' && primary && provider && (
             <StepSync
-              repo={repo}
+              repo={primary.repo}
               provider={provider}
               onSynced={setSyncResult}
               onBackToTracker={() => go('tracker')}
               onContinue={() => go('done')}
             />
           )}
-          {step === 'done' && repo && provider && trackerFields && essentials && (
+          {step === 'done' && primary && provider && trackerFields && essentials && (
             <StepDone
-              repo={repo}
+              repo={primary.repo}
+              members={members.map((m) => m.repo)}
               provider={provider}
               trackerFields={trackerFields}
               essentials={essentials}

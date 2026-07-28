@@ -99,6 +99,14 @@ func (s *Server) registerRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to register repo: " + err.Error()})
 		return
 	}
+	// A repo's tracker hangs off its project, so it gets one the moment it
+	// registers rather than at the next serve start, owning whatever tracker its
+	// own config file already carries.
+	if err := s.stores.Projects().EnsureRoots([]string{root}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to back the repo with a project: " + err.Error()})
+		return
+	}
+	s.adoptRepoTrackers()
 	resp := RegisterRepoResponse{RepoView: RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: true, Seeded: s.seeded(root)}}
 	// Seed the issue store from the tracker as the repo comes online (ADR 0007),
 	// unless the caller opted out to run the seed sync from its own step. The pull
@@ -209,6 +217,9 @@ func (s *Server) forgetRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to remove repo: " + err.Error()})
 		return
 	}
+	if err := s.stores.Projects().ForgetRoot(repo.Root); err != nil {
+		logger.Verbosef("drop project membership for %s: %v", repo.Root, err)
+	}
 	s.dropUnregisteredRepoState(repo.Root)
 	writeJSON(w, http.StatusOK, RepoView{Repo: repo})
 }
@@ -269,7 +280,7 @@ func validateRepoPath(path string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("path %q is not a directory", root)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".git")); err != nil {
+	if !isGitToplevel(root) {
 		return "", fmt.Errorf("path %q is not a git repository (no .git found)", root)
 	}
 	return root, nil

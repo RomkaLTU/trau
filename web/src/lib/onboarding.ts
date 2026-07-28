@@ -1,6 +1,7 @@
 import { apiFetch } from './api'
 import type { ConfigWrite } from './config'
 import type { RepoView } from './instances'
+import { addProjectRepo, createProject, projectForRoot } from './projects'
 
 export type TrackerProvider = 'linear' | 'jira' | 'internal'
 
@@ -87,6 +88,41 @@ export async function registerForOnboarding(path: string): Promise<RepoView> {
     throw new Error(await readError(res, 'register failed'))
   }
   return res.json()
+}
+
+export interface MemberRepo {
+  repo: string
+  root: string
+  project: string
+  inspection: RepoInspection
+}
+
+// Inspects before registering, so a path the hub would refuse never reaches the
+// registration store. Registration backs the repo with a project, which is what
+// the tracker step configures.
+export async function onboardPath(path: string): Promise<MemberRepo> {
+  const inspection = await inspectRepo(path)
+  const view = await registerForOnboarding(path)
+  return {
+    repo: view.name,
+    root: view.root,
+    project: await projectForRoot(view.root),
+    inspection,
+  }
+}
+
+// Creates the project on the first call. Callers only group two or more repos —
+// the hub renders a one-member project as a bare repo anyway.
+export async function joinProject(
+  id: string | null,
+  name: string,
+  roots: string[],
+): Promise<string> {
+  const project = id ?? (await createProject(name)).id
+  for (const root of roots) {
+    await addProjectRepo(project, root)
+  }
+  return project
 }
 
 export interface TestConnectionInput {
@@ -194,33 +230,26 @@ export interface TrackerFields {
   binding: string
 }
 
-// A blank secret or Jira field is omitted, keeping whatever value is already stored.
-export function trackerConfigWrites(
+// The keys the project's tracker is configured with. A blank secret or Jira
+// field is omitted, keeping whatever value the project already stores.
+export function trackerConfigValues(
   provider: TrackerProvider,
   fields: TrackerFields,
-): ConfigWrite[] {
-  const writes: ConfigWrite[] = [
-    { key: 'TRACKER_PROVIDER', value: provider, layer: 'project' },
-  ]
-  if (provider === 'internal') return writes
+): Record<string, string> {
+  const keys: Record<string, string> = { TRACKER_PROVIDER: provider }
+  if (provider === 'internal') return keys
   if (provider === 'linear' && fields.linearKey.trim() !== '') {
-    writes.push({ key: 'LINEAR_API_KEY', value: fields.linearKey, layer: 'project' })
+    keys.LINEAR_API_KEY = fields.linearKey
   }
   if (provider === 'jira') {
-    if (fields.jiraBaseUrl.trim() !== '') {
-      writes.push({ key: 'JIRA_BASE_URL', value: fields.jiraBaseUrl.trim(), layer: 'project' })
-    }
-    if (fields.jiraEmail.trim() !== '') {
-      writes.push({ key: 'JIRA_EMAIL', value: fields.jiraEmail.trim(), layer: 'project' })
-    }
-    if (fields.jiraToken.trim() !== '') {
-      writes.push({ key: 'JIRA_API_TOKEN', value: fields.jiraToken, layer: 'project' })
-    }
+    if (fields.jiraBaseUrl.trim() !== '') keys.JIRA_BASE_URL = fields.jiraBaseUrl.trim()
+    if (fields.jiraEmail.trim() !== '') keys.JIRA_EMAIL = fields.jiraEmail.trim()
+    if (fields.jiraToken.trim() !== '') keys.JIRA_API_TOKEN = fields.jiraToken
   }
   if (fields.binding.trim() !== '') {
-    writes.push({ key: 'LINEAR_TEAM', value: fields.binding.trim(), layer: 'project' })
+    keys.LINEAR_TEAM = fields.binding.trim()
   }
-  return writes
+  return keys
 }
 
 export interface EssentialsFields {

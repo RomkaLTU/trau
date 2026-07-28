@@ -13,6 +13,7 @@ import (
 type Stores struct {
 	db          *sql.DB
 	repos       *Registrations
+	projects    *Projects
 	issues      *Issues
 	tokens      *Tokens
 	checkpoints *Checkpoints
@@ -45,6 +46,7 @@ func NewStores(home string, db, transcriptsDB *sql.DB, retention Retention) *Sto
 	return &Stores{
 		db:          db,
 		repos:       NewRegistrations(db),
+		projects:    NewProjects(db),
 		issues:      NewIssues(db),
 		tokens:      NewTokens(db, retention.TokenCalls),
 		checkpoints: NewCheckpoints(db),
@@ -71,6 +73,9 @@ func NewStores(home string, db, transcriptsDB *sql.DB, retention Retention) *Sto
 
 // Registrations returns the registration store.
 func (s *Stores) Registrations() *Registrations { return s.repos }
+
+// Projects returns the store of logical projects grouping repo roots.
+func (s *Stores) Projects() *Projects { return s.projects }
 
 // Issues returns the issue store.
 func (s *Stores) Issues() *Issues { return s.issues }
@@ -154,6 +159,17 @@ func (s *Stores) ImportLegacyQueues() error {
 		}
 	}
 	return nil
+}
+
+// EnsureProjects files every repo root the hub tracks that no project holds into
+// its own single-member project, named after the repo. It is idempotent, so
+// serve startup runs it unconditionally.
+func (s *Stores) EnsureProjects() error {
+	roots, err := s.queueRoots()
+	if err != nil {
+		return err
+	}
+	return s.projects.EnsureRoots(roots)
 }
 
 func (s *Stores) queueRoots() ([]string, error) {
