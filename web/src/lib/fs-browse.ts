@@ -29,15 +29,16 @@ export function isRefusal(err: unknown): boolean {
   return err instanceof BrowseError && err.refused
 }
 
+async function browseError(res: Response, fallback: string): Promise<BrowseError> {
+  const detail = (await res.json().catch(() => null)) as { error?: string } | null
+  return new BrowseError(detail?.error ?? `${fallback}: ${res.status}`, res.status === 403)
+}
+
 async function fetchBrowse(path: string): Promise<BrowseResponse> {
   const query = path === '' ? '' : `?path=${encodeURIComponent(path)}`
   const res = await apiFetch(`/api/v1/fs/browse${query}`)
   if (!res.ok) {
-    const detail = (await res.json().catch(() => null)) as { error?: string } | null
-    throw new BrowseError(
-      detail?.error ?? `browse failed: ${res.status}`,
-      res.status === 403,
-    )
+    throw await browseError(res, 'browse failed')
   }
   return res.json()
 }
@@ -49,6 +50,38 @@ export const browseQueryOptions = (path: string) =>
     staleTime: 15_000,
     retry: false,
   })
+
+export interface DiscoverResponse {
+  path: string
+  name: string
+  is_repo: boolean
+  children: FSEntry[]
+}
+
+export async function discoverRepos(path: string): Promise<DiscoverResponse> {
+  const res = await apiFetch(`/api/v1/fs/discover?path=${encodeURIComponent(path)}`)
+  if (!res.ok) {
+    throw await browseError(res, 'scan failed')
+  }
+  return res.json()
+}
+
+export interface GitInitResponse {
+  path: string
+  branch: string
+}
+
+export async function gitInit(path: string): Promise<GitInitResponse> {
+  const res = await apiFetch('/api/v1/fs/init', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  if (!res.ok) {
+    throw await browseError(res, 'git init failed')
+  }
+  return res.json()
+}
 
 export interface Crumb {
   label: string

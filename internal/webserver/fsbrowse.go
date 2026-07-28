@@ -77,16 +77,9 @@ func browseRoots() (FSBrowseResponse, error) {
 
 // browseDir lists the directories directly under path.
 func browseDir(path string) (FSBrowseResponse, error) {
-	root := filepath.Clean(path)
-	if !filepath.IsAbs(root) {
-		return FSBrowseResponse{}, fmt.Errorf("path %q must be absolute", path)
-	}
-	info, err := os.Stat(root)
+	root, err := absDir(path)
 	if err != nil {
-		return FSBrowseResponse{}, fmt.Errorf("cannot open %q: %v", root, err)
-	}
-	if !info.IsDir() {
-		return FSBrowseResponse{}, fmt.Errorf("path %q is not a directory", root)
+		return FSBrowseResponse{}, err
 	}
 	dirents, err := os.ReadDir(root)
 	if err != nil {
@@ -116,6 +109,23 @@ func isBrowsableDir(dirent os.DirEntry, path string) bool {
 	}
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// absDir cleans path and proves it names a directory the hub can open, the check
+// every filesystem endpoint runs before it reads or writes anything.
+func absDir(path string) (string, error) {
+	root := filepath.Clean(path)
+	if !filepath.IsAbs(root) {
+		return "", fmt.Errorf("path %q must be absolute", path)
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		return "", fmt.Errorf("cannot open %q: %v", root, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("path %q is not a directory", root)
+	}
+	return root, nil
 }
 
 func parentDir(root string) string {

@@ -1,6 +1,7 @@
 import { apiFetch } from './api'
 import type { ConfigWrite } from './config'
 import type { RepoView } from './instances'
+import { addProjectRepo, createProject } from './projects'
 
 export type TrackerProvider = 'linear' | 'jira' | 'internal'
 
@@ -87,6 +88,34 @@ export async function registerForOnboarding(path: string): Promise<RepoView> {
     throw new Error(await readError(res, 'register failed'))
   }
   return res.json()
+}
+
+export interface MemberRepo {
+  repo: string
+  root: string
+  inspection: RepoInspection
+}
+
+// Inspects before registering, so a path the hub would refuse never reaches the
+// registration store.
+export async function onboardPath(path: string): Promise<MemberRepo> {
+  const inspection = await inspectRepo(path)
+  const view = await registerForOnboarding(path)
+  return { repo: view.name, root: view.root, inspection }
+}
+
+// Creates the project on the first call. Callers only group two or more repos —
+// the hub renders a one-member project as a bare repo anyway.
+export async function joinProject(
+  id: string | null,
+  name: string,
+  roots: string[],
+): Promise<string> {
+  const project = id ?? (await createProject(name)).id
+  for (const root of roots) {
+    await addProjectRepo(project, root)
+  }
+  return project
 }
 
 export interface TestConnectionInput {
