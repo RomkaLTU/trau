@@ -120,12 +120,12 @@ func NewWriter(provider string, cfg Config) (Writer, error) {
 			issueType: jiraDefaultIssueType,
 			epicType:  cfg.EpicType,
 		}, nil
-	case "github":
-		return nil, fmt.Errorf("tracker: github issue creation over the direct API is not supported: %w", ErrUnsupported)
+	case "azure", "github":
+		return nil, fmt.Errorf("tracker: %s issue creation over the direct API is not supported: %w", provider, ErrUnsupported)
 	case "internal":
 		return nil, errors.New("tracker: internal issues are hub-owned; the serve hub writes them straight to its issue store, not through a direct-API writer")
 	default:
-		return nil, fmt.Errorf("unknown tracker provider %q (expected: linear | jira | github | internal)", provider)
+		return nil, fmt.Errorf("unknown tracker provider %q (expected: linear | jira | azure | github | internal)", provider)
 	}
 }
 

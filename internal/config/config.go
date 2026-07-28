@@ -58,6 +58,8 @@ type Config struct {
 	JiraEmail             string
 	JiraAPIToken          string
 	JiraEpicType          string
+	AzureOrgURL           string
+	AzurePAT              string
 	ReadyLabel            string
 	QuarantineLabel       string
 	QueuedLabel           string
@@ -755,6 +757,8 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("JIRA_EMAIL", &c.JiraEmail)
 	str("JIRA_API_TOKEN", &c.JiraAPIToken)
 	str("JIRA_EPIC_TYPE", &c.JiraEpicType)
+	str("AZURE_ORG_URL", &c.AzureOrgURL)
+	str("AZURE_PAT", &c.AzurePAT)
 	str("READY_LABEL", &c.ReadyLabel)
 	str("QUARANTINE_LABEL", &c.QuarantineLabel)
 	strAllowEmpty("QUEUED_LABEL", &c.QueuedLabel)
@@ -1062,15 +1066,15 @@ func ResolvePrefix(prefix, team string) string {
 }
 
 // EffectiveTrackerProvider resolves the tracker provider the loop actually uses.
-// An explicit choice — internal, jira, or github — is honored as-is. The default,
-// linear, falls back to the internal provider when no Linear configuration is
-// present, so a repo with no external tracker configured runs its own internal
+// An explicit choice — internal, jira, azure, or github — is honored as-is. The
+// default, linear, falls back to the internal provider when no Linear configuration
+// is present, so a repo with no external tracker configured runs its own internal
 // issues through the hub (ADR 0007) instead of failing to reach a tracker.
 func (c Config) EffectiveTrackerProvider() string {
 	switch p := strings.ToLower(strings.TrimSpace(c.TrackerProvider)); p {
 	case "internal":
 		return "internal"
-	case "jira", "github":
+	case "jira", "azure", "github":
 		return p
 	default:
 		if strings.TrimSpace(c.LinearTeam) != "" || strings.TrimSpace(c.LinearAPIKey) != "" {
@@ -1081,17 +1085,20 @@ func (c Config) EffectiveTrackerProvider() string {
 }
 
 // TrackerKey resolves the team/project key the tracker binds to — the value
-// behind "Linear team / Jira project / GitHub repo" (LINEAR_TEAM). For Jira it
-// falls back to PROJECT when LINEAR_TEAM is unset, so a legacy config that wrote
-// only PROJECT=<key> still resolves a binding; LINEAR_TEAM wins when both are set.
+// behind "Linear team / Jira project / Azure DevOps project / GitHub repo"
+// (LINEAR_TEAM). For the project-keyed providers it falls back to PROJECT when
+// LINEAR_TEAM is unset, so a legacy config that wrote only PROJECT=<key> still
+// resolves a binding; LINEAR_TEAM wins when both are set.
 func (c Config) TrackerKey() string {
 	if strings.TrimSpace(c.LinearTeam) != "" {
 		return c.LinearTeam
 	}
-	if c.EffectiveTrackerProvider() == "jira" {
+	switch c.EffectiveTrackerProvider() {
+	case "jira", "azure":
 		return c.Project
+	default:
+		return ""
 	}
-	return ""
 }
 
 // ResolveSyncProvider resolves the tracker provider a hub-side sync should use for
@@ -1682,14 +1689,16 @@ func ConfigSections() []string {
 func KnownKeys() []KeyMeta {
 	providerOptions := agent.DefaultRegistry().Names()
 	keys := []KeyMeta{
-		{Key: "LINEAR_TEAM", Group: sectionTracker, WebEditable: true, Description: "Linear team / Jira project / GitHub repo"},
+		{Key: "LINEAR_TEAM", Group: sectionTracker, WebEditable: true, Description: "Linear team / Jira project / Azure DevOps project / GitHub repo"},
 		{Key: "ISSUE_PREFIX", Group: sectionTracker, WebEditable: true, Description: "Issue-ID prefix for ticket parsing (default: the team key, e.g. COD, TMS, ENG)"},
 		{Key: "LINEAR_API_KEY", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Linear personal API key"},
 		{Key: "JIRA_BASE_URL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Jira Cloud site base URL for the direct REST adapter (e.g. https://acme.atlassian.net)"},
 		{Key: "JIRA_EMAIL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Atlassian account email for Jira REST Basic auth"},
 		{Key: "JIRA_API_TOKEN", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Classic (unscoped) Jira API token; enables direct REST calls with MCP fallback"},
 		{Key: "JIRA_EPIC_TYPE", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Issue type a hub-created Jira epic is filed as; empty resolves the project's own hierarchy-level-1 type"},
-		{Key: "TRACKER_PROVIDER", Group: sectionTracker, WebEditable: true, Default: "linear", Description: "Ticket backend: linear | jira | github | internal (internal issues in the hub, no external tracker)", Options: []string{"linear", "jira", "github", "internal"}},
+		{Key: "AZURE_ORG_URL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Azure DevOps organization URL for the direct REST adapter (e.g. https://dev.azure.com/acme)"},
+		{Key: "AZURE_PAT", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Azure DevOps personal access token with the Work Items (read & write) and Project and Team (read) scopes"},
+		{Key: "TRACKER_PROVIDER", Group: sectionTracker, WebEditable: true, Default: "linear", Description: "Ticket backend: linear | jira | azure | github | internal (internal issues in the hub, no external tracker)", Options: []string{"linear", "jira", "azure", "github", "internal"}},
 		{Key: "READY_LABEL", Group: sectionTracker, WebEditable: true, Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
 		{Key: "QUARANTINE_LABEL", Group: sectionTracker, WebEditable: true, Default: "needs-human", Description: "Label applied when a ticket fails"},
 		{Key: "QUEUED_LABEL", Group: sectionTracker, WebEditable: true, Default: "queued", Description: "Label mirrored onto tickets waiting in the hub queue"},
@@ -1906,6 +1915,7 @@ func tuningProviderFor(key string) string {
 var secretKeys = map[string]bool{
 	"LINEAR_API_KEY": true,
 	"JIRA_API_TOKEN": true,
+	"AZURE_PAT":      true,
 	"SERVE_TOKEN":    true,
 }
 
@@ -2174,6 +2184,10 @@ func keyValue(cfg Config, key string) string {
 		return cfg.JiraAPIToken
 	case "JIRA_EPIC_TYPE":
 		return cfg.JiraEpicType
+	case "AZURE_ORG_URL":
+		return cfg.AzureOrgURL
+	case "AZURE_PAT":
+		return cfg.AzurePAT
 	case "READY_LABEL":
 		return cfg.ReadyLabel
 	case "QUARANTINE_LABEL":

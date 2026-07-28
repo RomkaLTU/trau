@@ -941,10 +941,13 @@ export function grillBanner(session: GrillSession): GrillBanner | null {
             headline: 'Waiting for you',
             hint: 'Pick up anytime — answer below and the session resumes.',
           }
+    // The cause lives in the stored reason — an auth wall and a usage wall both
+    // stall, and naming one of them in the headline mislabelled every stall as a
+    // rate limit regardless of why the session actually stopped.
     case 'stalled':
       return {
         tone: 'stalled',
-        headline: 'Session stalled — the interview agent hit a provider usage or rate limit',
+        headline: 'Session stalled',
         hint: reason || 'Clear it, then resume — your last answer is re-sent as-is.',
         showResume: true,
       }

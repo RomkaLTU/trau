@@ -22,20 +22,22 @@ import (
 // Field keys identify the focused step for the key contract, editing() gate, and
 // per-step help. They also key the huh results map.
 const (
-	keyTracker    = "tracker"
-	keyAIProvider = "aiprovider"
-	keyLinearKey  = "linearkey"
-	keyJiraBase   = "jirabase"
-	keyJiraEmail  = "jiraemail"
-	keyJiraToken  = "jiratoken"
-	keyBaseBranch = "basebranch"
-	keyBranching  = "branching"
-	keyTeam       = "team"
-	keyTeamManual = "teammanual"
-	keyLabels     = "labels"
-	keyTimelog    = "timelog"
-	keyCI         = "ci"
-	keyWrite      = "write"
+	keyTracker     = "tracker"
+	keyAIProvider  = "aiprovider"
+	keyLinearKey   = "linearkey"
+	keyJiraBase    = "jirabase"
+	keyJiraEmail   = "jiraemail"
+	keyJiraToken   = "jiratoken"
+	keyAzureOrgURL = "azureorgurl"
+	keyAzurePAT    = "azurepat"
+	keyBaseBranch  = "basebranch"
+	keyBranching   = "branching"
+	keyTeam        = "team"
+	keyTeamManual  = "teammanual"
+	keyLabels      = "labels"
+	keyTimelog     = "timelog"
+	keyCI          = "ci"
+	keyWrite       = "write"
 )
 
 // teamManualSentinel is the team-picker option value that routes to the free-text
@@ -45,24 +47,31 @@ const teamManualSentinel = "\x00manual"
 const (
 	linearAPIKeySettingsURL = "https://linear.app/settings/account/security"
 	jiraTokenSettingsURL    = "https://id.atlassian.com/manage-profile/security/api-tokens"
+	azurePATSettingsURL     = "https://dev.azure.com/_usersSettings/tokens"
+	// azurePATScopes names both scopes the REST client needs: Work Items for the
+	// tickets, Project and Team to list the organization's team projects — which
+	// this wizard's picker and the connection test both read.
+	azurePATScopes = "Work Items (read & write) and Project and Team (read)"
 )
 
 // formValues holds the huh-bound wizard values. It is pointer-shared across the
 // value copies of onboardingModel so bindings survive the Elm update loop.
 type formValues struct {
-	tracker    string
-	aiProvider string
-	linearKey  string
-	jiraBase   string
-	jiraEmail  string
-	jiraToken  string
-	baseBranch string
-	epicFlow   bool
-	team       string
-	teamManual string
-	labels     string
-	timelog    bool
-	requireCI  bool
+	tracker     string
+	aiProvider  string
+	linearKey   string
+	jiraBase    string
+	jiraEmail   string
+	jiraToken   string
+	azureOrgURL string
+	azurePAT    string
+	baseBranch  string
+	epicFlow    bool
+	team        string
+	teamManual  string
+	labels      string
+	timelog     bool
+	requireCI   bool
 	// expectedChecks holds the required status-check names detected on GitHub;
 	// written to EXPECTED_CHECKS so the gate waits for exactly those checks.
 	expectedChecks []string
@@ -140,6 +149,13 @@ func (m onboardingModel) newForm() *huh.Form {
 	).Title("Jira REST credentials").
 		Description("Per-repo credentials let two repos use two separate Jira accounts.\nLeave blank to use the Atlassian (Rovo) MCP.\nGenerate a classic token: " + jiraTokenSettingsURL).
 		WithHideFunc(func() bool { return fv.tracker != "jira" })
+
+	azureCreds := huh.NewGroup(
+		huh.NewInput().Key(keyAzureOrgURL).Title("Organization URL").Placeholder("https://dev.azure.com/acme").CharLimit(200).Value(&fv.azureOrgURL),
+		huh.NewInput().Key(keyAzurePAT).Title("Personal access token").Placeholder("PAT with "+azurePATScopes).EchoMode(huh.EchoModePassword).CharLimit(256).Value(&fv.azurePAT),
+	).Title("Azure DevOps credentials").
+		Description("Azure DevOps has no MCP, so both values are required.\nThe token needs the " + azurePATScopes + " scopes.\nMint one: " + azurePATSettingsURL).
+		WithHideFunc(func() bool { return fv.tracker != "azure" })
 
 	baseBranch := huh.NewGroup(
 		huh.NewInput().
@@ -222,7 +238,7 @@ func (m onboardingModel) newForm() *huh.Form {
 	)
 
 	form := huh.NewForm(
-		providers, linearKey, jiraCreds, baseBranch,
+		providers, linearKey, jiraCreds, azureCreds, baseBranch,
 		team, teamManual, labels, timeTracking, ci, write,
 	).
 		WithTheme(huhTheme(theme)).
@@ -258,11 +274,7 @@ func (m onboardingModel) ciDescription() string {
 // repoints the project. On error or empty detection only the manual option is
 // offered.
 func detectTeamOptions(ctx context.Context, actions OnboardingActions, fv *formValues) []huh.Option[string] {
-	det, err := actions.DetectTeams(ctx, fv.tracker, fv.aiProvider, JiraCreds{
-		BaseURL:  strings.TrimSpace(fv.jiraBase),
-		Email:    strings.TrimSpace(fv.jiraEmail),
-		APIToken: strings.TrimSpace(fv.jiraToken),
-	})
+	det, err := actions.DetectTeams(ctx, fv.tracker, fv.aiProvider, trackerCredsFrom(fv))
 	fv.setTeamErr(err)
 
 	opts := make([]huh.Option[string], 0, len(det.Teams)+2)
@@ -282,10 +294,30 @@ func detectTeamOptions(ctx context.Context, actions OnboardingActions, fv *formV
 	return opts
 }
 
+// trackerCredsFrom collects whichever REST credentials the chosen tracker uses, so
+// detection enumerates containers as that identity rather than as a shared MCP
+// account. Fields the provider does not use stay empty.
+func trackerCredsFrom(fv *formValues) TrackerCreds {
+	switch fv.tracker {
+	case "azure":
+		return TrackerCreds{
+			BaseURL:  strings.TrimSpace(fv.azureOrgURL),
+			APIToken: strings.TrimSpace(fv.azurePAT),
+		}
+	default:
+		return TrackerCreds{
+			BaseURL:  strings.TrimSpace(fv.jiraBase),
+			Email:    strings.TrimSpace(fv.jiraEmail),
+			APIToken: strings.TrimSpace(fv.jiraToken),
+		}
+	}
+}
+
 func trackerOptionList() []huh.Option[string] {
 	return []huh.Option[string]{
 		huh.NewOption("Linear", "linear"),
 		huh.NewOption("Jira", "jira"),
+		huh.NewOption("Azure DevOps", "azure"),
 		huh.NewOption("GitHub", "github"),
 	}
 }
@@ -322,13 +354,15 @@ func labelsDescription(tracker string) string {
 	if labelCreationSupported(tracker) {
 		return "Trau routes tickets with two labels:\n  • ready-for-agent → tickets to pick up\n  • needs-human → tickets that failed\nDefaults are ready-for-agent and needs-human."
 	}
-	return "Jira labels are freeform — Trau applies ready-for-agent and needs-human\nautomatically as tickets move, so there is nothing to create."
+	return titleTracker(tracker) + " labels are freeform — Trau applies ready-for-agent and needs-human\nautomatically as tickets move, so there is nothing to create."
 }
 
 func teamTitle(tracker string) string {
 	switch tracker {
 	case "jira":
 		return "Jira project"
+	case "azure":
+		return "Azure DevOps project"
 	case "github":
 		return "GitHub repository"
 	default:
@@ -340,6 +374,8 @@ func teamNoun(tracker string) string {
 	switch tracker {
 	case "jira":
 		return "project key (e.g. PROJ)"
+	case "azure":
+		return "team project name (e.g. Contoso)"
 	case "github":
 		return "repository slug (e.g. owner/repo)"
 	default:
@@ -413,6 +449,16 @@ func (m onboardingModel) renderWritePreview() string {
 			rows = append(rows, "  JIRA_API_TOKEN=(blank — will use MCP)")
 		}
 	}
+	if fv.tracker == "azure" {
+		if v := strings.TrimSpace(fv.azureOrgURL); v != "" {
+			rows = append(rows, "  AZURE_ORG_URL="+v)
+		}
+		if tok := strings.TrimSpace(fv.azurePAT); tok != "" {
+			rows = append(rows, "  AZURE_PAT="+maskAPIKey(tok))
+		} else {
+			rows = append(rows, "  AZURE_PAT=(blank — the tracker will not be reachable)")
+		}
+	}
 	rows = append(rows, "  BASE_BRANCH="+base)
 	rows = append(rows, "  PROVIDER="+fv.aiProvider)
 	rows = append(rows, "  READY_LABEL=ready-for-agent")
@@ -463,6 +509,8 @@ func projectSetupFrom(fv *formValues) ProjectSetup {
 		JiraBaseURL:     strings.TrimSpace(fv.jiraBase),
 		JiraEmail:       strings.TrimSpace(fv.jiraEmail),
 		JiraAPIToken:    strings.TrimSpace(fv.jiraToken),
+		AzureOrgURL:     strings.TrimSpace(fv.azureOrgURL),
+		AzurePAT:        strings.TrimSpace(fv.azurePAT),
 	}
 }
 
@@ -484,6 +532,8 @@ func titleTracker(provider string) string {
 	switch provider {
 	case "jira":
 		return "Jira"
+	case "azure":
+		return "Azure DevOps"
 	case "github":
 		return "GitHub"
 	default:
@@ -492,9 +542,10 @@ func titleTracker(provider string) string {
 }
 
 // labelCreationSupported reports whether Trau can pre-create routing labels for a
-// tracker. Jira labels are freeform strings created implicitly on first use.
+// tracker. Jira labels and Azure DevOps tags are both freeform strings created
+// implicitly on first use.
 func labelCreationSupported(provider string) bool {
-	return provider != "jira"
+	return provider != "jira" && provider != "azure"
 }
 
 func boolDigit(b bool) string {

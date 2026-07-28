@@ -51,6 +51,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/skillrules"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
+	"github.com/RomkaLTU/trau/internal/tracker/azureapi"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tui"
 	"github.com/RomkaLTU/trau/internal/usage/probe"
@@ -380,7 +381,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return console.Actionable(
 				fmt.Errorf("tracker %q cannot list eligible tickets", cfg.TrackerProvider),
 				"list eligible tickets",
-				"use Linear (with LINEAR_API_KEY) or Jira with REST credentials")
+				"use Linear (with LINEAR_API_KEY), Jira, or Azure DevOps with REST credentials")
 		}
 		listCtx, cancel := context.WithTimeout(ctx, listEligibleTimeout)
 		defer cancel()
@@ -716,6 +717,12 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		if jiraRESTComplete(cfg) {
 			runner = nil
 		}
+	case "azure":
+		// Azure DevOps is REST-only: the PAT is the sole identity and there is no MCP
+		// to fall back to, so the runner is left out entirely.
+		tc.APIKey = cfg.AzurePAT
+		tc.BaseURL = cfg.AzureOrgURL
+		runner = nil
 	case "internal":
 		// The internal provider drives issues through the hub over HTTP, never the
 		// database — so it needs the hub's origin, an optional bearer token, and the
@@ -1941,6 +1948,8 @@ func (a *appActions) OnboardingPrefill() tui.OnboardingPrefill {
 		JiraBaseURL:     a.cfg.JiraBaseURL,
 		JiraEmail:       a.cfg.JiraEmail,
 		JiraAPIToken:    a.cfg.JiraAPIToken,
+		AzureOrgURL:     a.cfg.AzureOrgURL,
+		AzurePAT:        a.cfg.AzurePAT,
 	}
 }
 
@@ -2101,10 +2110,20 @@ func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (
 			values["JIRA_API_TOKEN"] = v
 		}
 	}
+	// Azure DevOps PATs are per-organization, so they belong to the repo that
+	// targets that organization rather than the shared user file.
+	if setup.TrackerProvider == "azure" {
+		if v := strings.TrimSpace(setup.AzureOrgURL); v != "" {
+			values["AZURE_ORG_URL"] = v
+		}
+		if v := strings.TrimSpace(setup.AzurePAT); v != "" {
+			values["AZURE_PAT"] = v
+		}
+	}
 	if err := config.WriteProjectEnv(path, values); err != nil {
 		return tui.SetupResult{}, fmt.Errorf("write project env: %w", err)
 	}
-	// The project .trau.ini may now hold a Jira token; keep it out of git.
+	// The project .trau.ini may now hold a tracker token; keep it out of git.
 	if err := state.EnsureGitignore(a.cfg.RepoRoot, a.cfg.RunsDir); err != nil {
 		logger.Verbosef("ensure .trau.ini gitignored: %v", err)
 	}
@@ -2154,11 +2173,11 @@ func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (
 
 // DetectTeams enumerates the selectable containers for the chosen tracker so the
 // onboarding wizard can offer a picker instead of free-text entry. GitHub's repo
-// is read locally from the git remote (no agent call); Linear and Jira are
-// listed by driving their MCP through the chosen AI provider, bounded by a
-// timeout so a hung agent cannot stall onboarding. Any error tells the wizard to
-// fall back to manual entry.
-func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvider string, jira tui.JiraCreds) (tui.TeamDetection, error) {
+// is read locally from the git remote (no agent call); Azure DevOps lists its team
+// projects over REST; Linear and Jira are listed by driving their MCP through the
+// chosen AI provider, bounded by a timeout so a hung agent cannot stall
+// onboarding. Any error tells the wizard to fall back to manual entry.
+func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvider string, creds tui.TrackerCreds) (tui.TeamDetection, error) {
 	switch trackerProvider {
 	case "github":
 		slug, err := detectGitHubRepo(a.cfg.RepoRoot)
@@ -2170,25 +2189,30 @@ func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvide
 			AutoFill: true,
 			Teams:    []tui.DetectedTeam{{Key: slug, Name: slug}},
 		}, nil
-	case "linear", "jira":
+	case "linear", "jira", "azure":
 		label := "team"
-		if trackerProvider == "jira" {
+		if trackerProvider != "linear" {
 			label = "project"
 		}
 		cfg := a.cfg
 		cfg.Provider = aiProvider
 		cfg.TrackerProvider = trackerProvider
-		if trackerProvider == "jira" {
-			cfg.JiraBaseURL = jira.BaseURL
-			cfg.JiraEmail = jira.Email
-			cfg.JiraAPIToken = jira.APIToken
+		switch trackerProvider {
+		case "jira":
+			cfg.JiraBaseURL = creds.BaseURL
+			cfg.JiraEmail = creds.Email
+			cfg.JiraAPIToken = creds.APIToken
+		case "azure":
+			cfg.AzureOrgURL = creds.BaseURL
+			cfg.AzurePAT = creds.APIToken
 		}
 		// When the wizard supplied a full set of Jira REST credentials, detection
 		// must enumerate projects as THAT identity only — never silently fall back
 		// to the shared Rovo MCP, which authenticates as a different Atlassian
 		// account. Building the tracker without an agent runner makes the REST path
-		// the sole source and surfaces an auth failure instead of masking it.
-		restOnly := trackerProvider == "jira" && jiraRESTComplete(cfg)
+		// the sole source and surfaces an auth failure instead of masking it. Azure
+		// DevOps is always rest-only: it has no MCP to fall back to.
+		restOnly := trackerProvider == "azure" || (trackerProvider == "jira" && jiraRESTComplete(cfg))
 		var runner agent.Runner
 		if !restOnly {
 			r, err := buildRouter(cfg, a.log, a.sink, a.transcripts, a.stderr, nil, nil)
@@ -2209,7 +2233,7 @@ func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvide
 		defer cancel()
 		teams, err := lister.ListTeams(ctx)
 		if err != nil {
-			return tui.TeamDetection{Label: label}, detectListErr(trackerProvider, cfg.JiraEmail, err)
+			return tui.TeamDetection{Label: label}, detectListErr(trackerProvider, cfg, err)
 		}
 		out := make([]tui.DetectedTeam, 0, len(teams))
 		for _, t := range teams {
@@ -2222,12 +2246,17 @@ func (a *appActions) DetectTeams(ctx context.Context, trackerProvider, aiProvide
 }
 
 // detectListErr rewrites a team/project detection failure into an actionable
-// message. For Jira it maps an auth failure (the wizard credentials were rejected)
-// to an actionable hint, so a user who mistyped an email or token sees why detection
-// failed rather than a bare error.
-func detectListErr(trackerProvider, jiraEmail string, err error) error {
-	if trackerProvider == "jira" {
-		if msg := jiraapi.AuthErrorMessageFor(err, jiraEmail); msg != "" {
+// message. For the REST-credentialled providers it maps an auth failure (the
+// wizard credentials were rejected) to an actionable hint, so a user who mistyped
+// a token sees why detection failed rather than a bare error.
+func detectListErr(trackerProvider string, cfg config.Config, err error) error {
+	switch trackerProvider {
+	case "jira":
+		if msg := jiraapi.AuthErrorMessageFor(err, cfg.JiraEmail); msg != "" {
+			return errors.New(msg)
+		}
+	case "azure":
+		if msg := azureapi.AuthErrorMessageFor(err, cfg.AzureOrgURL); msg != "" {
 			return errors.New(msg)
 		}
 	}

@@ -60,6 +60,7 @@ func (m *onboardingModel) resetSystemChecks() {
 		{name: "skills", desc: "skills"},
 		{name: "linear", desc: "Linear API or MCP"},
 		{name: "jira", desc: "Jira / Atlassian MCP"},
+		{name: "azure", desc: "Azure DevOps REST (PAT entered next)"},
 		{name: "github", desc: "GitHub issues (gh / MCP)"},
 	}
 	m.systemCheckIndex = 0
@@ -155,7 +156,7 @@ func runSystemCheck(name string, probe *mcpProbe, ghReady, linearAPIReady bool, 
 		return checkDone, nil
 	case "skills":
 		return runSkillsCheck(prefillProvider, repoRoot)
-	case "linear", "jira", "github":
+	case "linear", "jira", "azure", "github":
 		return runTrackerCheck(name, probe, ghReady, linearAPIReady)
 	}
 	return checkFailed, fmt.Errorf("unknown check %q", name)
@@ -212,6 +213,12 @@ func runSkillsCheck(prefillProvider, repoRoot string) (checkStatus, error) {
 // and report skipped rather than failed, so a codex/kimi user is never wrongly
 // blocked.
 func runTrackerCheck(name string, probe *mcpProbe, ghReady, linearAPIReady bool) (checkStatus, error) {
+	// Azure DevOps needs no local tooling and has no MCP to probe — a PAT alone
+	// reaches it, so it is always a viable ticket system here. The credentials step
+	// collects the token and --doctor verifies it against the organization.
+	if name == "azure" {
+		return checkDone, nil
+	}
 	res := probe.result()
 	if name == "github" && ghReady {
 		return checkDone, nil
@@ -493,7 +500,7 @@ func isProviderCheck(name string) bool {
 
 func isTrackerCheck(name string) bool {
 	switch name {
-	case "linear", "jira", "github":
+	case "linear", "jira", "azure", "github":
 		return true
 	}
 	return false

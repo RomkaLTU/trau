@@ -13,22 +13,23 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/tracker"
+	"github.com/RomkaLTU/trau/internal/tracker/azureapi"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 )
 
 // TestConnectionRequest is the body of POST /api/v1/trackers/{provider}/test-connection:
 // the credentials the onboarding wizard has typed for the chosen provider — linear an
-// API key, jira a base URL, email and API token — plus an optional repo whose stored
-// config fills any field left blank. A blank secret means "use the value already stored
-// for that repo" (write-only semantics, ADR 0011), so a re-run can test without
-// re-typing the key.
+// API key, jira a base URL, email and API token, azure an organization URL and a
+// personal access token — plus an optional repo whose stored config fills any field
+// left blank. A blank secret means "use the value already stored for that repo"
+// (write-only semantics, ADR 0011), so a re-run can test without re-typing the key.
 type TestConnectionRequest struct {
 	Repo     string `json:"repo,omitempty"`
 	APIKey   string `json:"api_key,omitempty"`   // linear API key
-	BaseURL  string `json:"base_url,omitempty"`  // jira site base URL
+	BaseURL  string `json:"base_url,omitempty"`  // jira site base URL / azure organization URL
 	Email    string `json:"email,omitempty"`     // jira account email
-	APIToken string `json:"api_token,omitempty"` // jira API token
+	APIToken string `json:"api_token,omitempty"` // jira API token / azure personal access token
 }
 
 // TestConnectionResponse is the outcome of the probe. On success it carries the
@@ -45,13 +46,14 @@ type TestConnectionResponse struct {
 }
 
 // trackerProbe is the throwaway credential reader the connection test drives: a cheap
-// authenticated read and the selectable containers, nothing persisted. Linear and Jira
-// each satisfy it over their direct API; the seam lets tests point it at a fake server.
+// authenticated read and the selectable containers, nothing persisted. Linear, Jira and
+// Azure DevOps each satisfy it over their direct API; the seam lets tests point it at a
+// fake server.
 type trackerProbe interface {
 	// CheckAuth performs the provider's cheapest authenticated read. It reports a
 	// visible-issue count only when the provider has one to offer: Jira's count
-	// endpoint takes an unbounded JQL that Jira Cloud rejects, so its probe
-	// authenticates with a bare identity read instead.
+	// endpoint takes an unbounded JQL that Jira Cloud rejects, and Azure DevOps has
+	// no equivalent at all, so both probe with a bare authenticated read instead.
 	CheckAuth(ctx context.Context) (issuesVisible int, counted bool, err error)
 	ListTeams(ctx context.Context) ([]tracker.Team, error)
 }
@@ -80,7 +82,9 @@ func (s *Server) handleTrackerTestConnection(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
-	if provider != "linear" && provider != "jira" {
+	switch provider {
+	case "linear", "jira", "azure":
+	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("unsupported tracker provider %q", provider)})
 		return
 	}
@@ -105,6 +109,9 @@ func (s *Server) connConfig(provider string, req TestConnectionRequest) config.C
 		cfg.JiraBaseURL = firstNonEmpty(req.BaseURL, stored.JiraBaseURL)
 		cfg.JiraEmail = firstNonEmpty(req.Email, stored.JiraEmail)
 		cfg.JiraAPIToken = firstNonEmpty(req.APIToken, stored.JiraAPIToken)
+	case "azure":
+		cfg.AzureOrgURL = firstNonEmpty(req.BaseURL, stored.AzureOrgURL)
+		cfg.AzurePAT = firstNonEmpty(req.APIToken, stored.AzurePAT)
 	}
 	return cfg
 }
@@ -176,15 +183,26 @@ func missingCredentials(provider string, cfg config.Config) []string {
 		if blank(cfg.JiraAPIToken) {
 			missing = append(missing, "API token")
 		}
+	case "azure":
+		if blank(cfg.AzureOrgURL) {
+			missing = append(missing, "Azure DevOps organization URL")
+		}
+		if blank(cfg.AzurePAT) {
+			missing = append(missing, "personal access token")
+		}
 	}
 	return missing
 }
 
 func enterCredentialsHint(provider string) string {
-	if provider == "jira" {
+	switch provider {
+	case "jira":
 		return "Enter the Jira site URL, account email, and API token."
+	case "azure":
+		return "Enter the Azure DevOps organization URL and a personal access token."
+	default:
+		return "Enter a Linear API key."
 	}
-	return "Enter a Linear API key."
 }
 
 // connHint maps a recognizable probe failure onto an actionable, secret-free hint.
@@ -196,6 +214,13 @@ func connHint(provider string, cfg config.Config, err error) string {
 		}
 		if isUnreachable(err) {
 			return "Could not reach the Jira site — check the base URL is a reachable https://<site>.atlassian.net."
+		}
+	case "azure":
+		if msg := azureapi.AuthErrorMessageFor(err, cfg.AzureOrgURL); msg != "" {
+			return msg
+		}
+		if isUnreachable(err) {
+			return "Could not reach the Azure DevOps organization — check the URL is a reachable https://dev.azure.com/<org>."
 		}
 	case "linear":
 		if errors.Is(err, linearapi.ErrUnauthorized) {
@@ -213,7 +238,7 @@ func isUnreachable(err error) bool {
 }
 
 func containerNoun(provider string) string {
-	if provider == "jira" {
+	if provider == "jira" || provider == "azure" {
 		return "projects"
 	}
 	return "teams"
@@ -227,14 +252,16 @@ func firstNonEmpty(a, b string) string {
 }
 
 // defaultProbe builds the direct-API reader for a provider from cfg. Linear reads the
-// GraphQL API with the key; Jira reads the REST API as the entered Basic-auth identity,
-// its base URL doubling as the endpoint. Nothing is persisted.
+// GraphQL API with the key; Jira and Azure DevOps read their REST APIs as the entered
+// Basic-auth identity, the submitted URL doubling as the endpoint. Nothing is persisted.
 func defaultProbe(provider string, cfg config.Config) (trackerProbe, error) {
 	switch provider {
 	case "linear":
 		return linearProbe{client: linearapi.New(cfg.LinearAPIKey)}, nil
 	case "jira":
 		return jiraProbe{client: jiraapi.New(cfg.JiraBaseURL, cfg.JiraEmail, cfg.JiraAPIToken)}, nil
+	case "azure":
+		return azureProbe{client: azureapi.New(cfg.AzureOrgURL, cfg.AzurePAT)}, nil
 	default:
 		return nil, fmt.Errorf("unsupported tracker provider %q", provider)
 	}
@@ -258,6 +285,24 @@ func (p linearProbe) ListTeams(ctx context.Context) ([]tracker.Team, error) {
 	out := make([]tracker.Team, 0, len(teams))
 	for _, t := range teams {
 		out = append(out, tracker.Team{Key: t.Key, Name: t.Name})
+	}
+	return out, nil
+}
+
+type azureProbe struct{ client *azureapi.Client }
+
+func (p azureProbe) CheckAuth(ctx context.Context) (int, bool, error) {
+	return 0, false, p.client.Ping(ctx)
+}
+
+func (p azureProbe) ListTeams(ctx context.Context) ([]tracker.Team, error) {
+	projects, err := p.client.ListProjects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]tracker.Team, 0, len(projects))
+	for _, pr := range projects {
+		out = append(out, tracker.Team{Key: pr.Name, Name: pr.Name})
 	}
 	return out, nil
 }

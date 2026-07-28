@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/RomkaLTU/trau/internal/event"
@@ -118,9 +119,33 @@ func (p *Pipeline) ticketRef(id string) string {
 		return "Jira: " + id
 	case "linear":
 		return "Linear: " + id
+	case "azure":
+		// Azure Boards auto-links a work item from an "AB#<id>" mention, so the
+		// trailer carries the raw number the prefixed identifier encodes.
+		if num, ok := azureWorkItemNumber(id); ok {
+			return "Azure Boards: AB#" + num
+		}
+		return "Ref: " + id
 	default:
 		return "Ref: " + id
 	}
+}
+
+// azureWorkItemNumber recovers the Azure DevOps work-item number an identifier
+// encodes: the digits after its FINAL hyphen, since a prefix derived from the
+// team project name can itself contain one (FABRIKAM-FIBER-1234 → 1234). A bare
+// number — the form Azure DevOps itself displays — is accepted as-is, and an id
+// with no numeric tail is reported as no work item at all.
+func azureWorkItemNumber(id string) (string, bool) {
+	num := strings.TrimSpace(id)
+	if i := strings.LastIndex(num, "-"); i >= 0 {
+		num = num[i+1:]
+	}
+	n, err := strconv.Atoi(num)
+	if err != nil || n <= 0 {
+		return "", false
+	}
+	return strconv.Itoa(n), true
 }
 
 // prSummary is the Summary section body: the sentences captured from the build

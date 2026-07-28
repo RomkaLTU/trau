@@ -41,10 +41,11 @@
 # Run `trau` with no arguments inside a repo that has no .trau.ini to start it.
 
 # --- project-management backend ---
-TRACKER_PROVIDER=linear      # linear | jira | github | internal
+TRACKER_PROVIDER=linear      # linear | jira | azure | github | internal
                              # internal = trau's own issues in the hub (ADR 0007), no external tracker.
                              # A repo with no Linear/Jira/GitHub configured uses internal automatically.
-LINEAR_TEAM=YourTeam         # your Linear team name, Jira project key, or GitHub repo slug (required for whole-team picks)
+LINEAR_TEAM=YourTeam         # your Linear team name, Jira project key, Azure DevOps team project name,
+                             # or GitHub repo slug (required for whole-team picks)
 ISSUE_PREFIX=                # ticket-ID prefix for parsing, branch inference, and sentinels
                              # (e.g. COD, TMS, ENG). Empty = derive from the team key above; falls back to COD.
                              # Also names internally-created issues (LOOP-12); when unset, those default to
@@ -378,6 +379,36 @@ JIRA_API_TOKEN=              # classic API token (never commit)
 # Classic tokens can't self-refresh and expire ~annually; on a 401 trau prints a
 # "regenerate at id.atlassian.com/manage-profile/security/api-tokens" hint. Run
 # `trau doctor` to validate the three keys and live-ping the site before a run.
+
+# Azure DevOps Services direct REST access (TRACKER_PROVIDER=azure). Unlike Jira
+# there is no MCP fallback: both keys are REQUIRED, and without them the provider
+# cannot reach the tracker at all. Auth is per-request Basic auth with an empty
+# username and the PAT as the password, so two repos tied to two SEPARATE Azure
+# DevOps organizations each keep their own credentials in their own .trau.ini.
+# Mint the token at dev.azure.com/_usersSettings/tokens with the
+# Work Items (read & write) AND Project and Team (read) scopes — the second one
+# is what lets trau list the organization's team projects, which `trau doctor`
+# pings and the wizard's picker reads. Treat it like LINEAR_API_KEY: keep it in
+# ~/.trau.ini or a per-repo .trau.ini, never committed.
+# The Azure DevOps team project name reuses LINEAR_TEAM above.
+AZURE_ORG_URL=               # e.g. https://dev.azure.com/acme
+AZURE_PAT=                   # personal access token (never commit)
+#
+# Work items are numbered organization-wide with no per-project key, so trau
+# addresses them through ISSUE_PREFIX: work item 1234 in a TRAU-prefixed repo is
+# TRAU-1234 everywhere (branch names, sentinels, the web UI), and the PR trailer
+# carries "AB#1234" so Azure Boards auto-links the work item.
+#
+#   # ~/work/contoso-app/.trau.ini
+#   TRACKER_PROVIDER=azure
+#   LINEAR_TEAM=Contoso            # the team project name, not a key
+#   ISSUE_PREFIX=CON               # renders work item 1234 as CON-1234
+#   AZURE_ORG_URL=https://dev.azure.com/contoso
+#   AZURE_PAT=<contoso PAT>
+#
+# PATs expire (90 days by default) and cannot self-refresh; on a 401 trau prints a
+# "regenerate at dev.azure.com/_usersSettings/tokens" hint. Run `trau doctor` to
+# validate both keys and live-ping the organization before a run.
 
 KIMI_BIN=kimi
 KIMI_FLAGS=

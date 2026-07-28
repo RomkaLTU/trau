@@ -135,6 +135,12 @@ type ptySession struct {
 // Windows 10 1809+. Geometry is applied before Start so the child sees its final
 // size at launch instead of redrawing off a resize.
 func startPTY(ctx context.Context, bin, dir string, args []string, cols, rows int) (terminalSession, error) {
+	// Resolved before the PTY layer sees it: go-pty would otherwise look a bare
+	// name up relative to dir rather than PATH. See resolveBin.
+	exe, err := resolveBin(bin)
+	if err != nil {
+		return nil, err
+	}
 	tty, err := pty.New()
 	if err != nil {
 		return nil, err
@@ -145,7 +151,7 @@ func startPTY(ctx context.Context, bin, dir string, args []string, cols, rows in
 			return nil, err
 		}
 	}
-	cmd := tty.CommandContext(ctx, bin, args...)
+	cmd := tty.CommandContext(ctx, exe, args...)
 	cmd.Dir = dir
 	cmd.Env = spawnEnv(ctx)
 	if err := cmd.Start(); err != nil {

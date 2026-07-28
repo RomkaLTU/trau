@@ -54,6 +54,8 @@ func RunAccessibleOnboarding(ctx context.Context, actions OnboardingActions) (Se
 	fv.jiraBase = p.JiraBaseURL
 	fv.jiraEmail = p.JiraEmail
 	fv.jiraToken = p.JiraAPIToken
+	fv.azureOrgURL = p.AzureOrgURL
+	fv.azurePAT = p.AzurePAT
 
 	providers := huh.NewForm(huh.NewGroup(
 		huh.NewSelect[string]().Title("Project management").Options(trackerOptionList()...).Value(&fv.tracker),
@@ -87,6 +89,11 @@ func accessibleGroups(fv *formValues) []*huh.Group {
 			huh.NewInput().Title("Jira base URL (blank keeps using the MCP)").Value(&fv.jiraBase),
 			huh.NewInput().Title("Jira email").Value(&fv.jiraEmail),
 			huh.NewInput().Title("Jira API token").EchoMode(huh.EchoModePassword).Value(&fv.jiraToken),
+		))
+	case "azure":
+		groups = append(groups, huh.NewGroup(
+			huh.NewInput().Title("Azure DevOps organization URL (required)").Value(&fv.azureOrgURL),
+			huh.NewInput().Title("Azure DevOps personal access token (required)").EchoMode(huh.EchoModePassword).Value(&fv.azurePAT),
 		))
 	}
 

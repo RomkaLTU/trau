@@ -888,6 +888,20 @@ describe('grillBanner', () => {
     expect(b?.hint).toBe('needs re-authentication')
   })
 
+  // The headline used to name a usage/rate limit for every stall, so an auth wall
+  // was reported as a limit the user had to wait out rather than a login to fix.
+  it('does not attribute a stall to a rate limit the reason does not mention', () => {
+    const b = grillBanner(session({ state: 'stalled', parked_reason: 'needs re-authentication' }))
+    expect(b?.headline).not.toMatch(/rate|usage|limit/i)
+    expect(b?.headline).toBe('Session stalled')
+  })
+
+  it('still leads with the stall when no reason was stored', () => {
+    const b = grillBanner(session({ state: 'stalled', parked_reason: '' }))
+    expect(b?.headline).toBe('Session stalled')
+    expect(b?.hint).toMatch(/resume/i)
+  })
+
   it('reports the applied outcome', () => {
     expect(grillBanner(session({ state: 'applied' }))?.tone).toBe('applied')
   })

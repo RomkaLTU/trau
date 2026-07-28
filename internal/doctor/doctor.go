@@ -25,6 +25,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/launchd"
 	"github.com/RomkaLTU/trau/internal/registry"
+	"github.com/RomkaLTU/trau/internal/tracker/azureapi"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 	"github.com/RomkaLTU/trau/internal/transcriptdb"
@@ -74,6 +75,8 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkLinearProject(ctx, cfg, rr)
 	checkJira(ctx, cfg, rr)
 	checkJiraProject(cfg, rr)
+	checkAzure(ctx, cfg, rr)
+	checkAzureProject(cfg, rr)
 	checkWritePerms(repoRoot, rr)
 	hub, hubUp := checkWebHub(ctx, cfg, version, rr)
 	checkHubSupervision(rr)
@@ -193,10 +196,10 @@ func checkConfig(ctx context.Context, cfg config.Config, sources map[string]conf
 	switch provider {
 	case "internal":
 		rr.add("tracker", pass, "internal (no external tracker configured — issues live in the hub)", "")
-	case "linear", "jira", "github":
+	case "linear", "jira", "azure", "github":
 		rr.add("tracker", pass, provider, "")
 	default:
-		rr.add("tracker", fail, fmt.Sprintf("unknown tracker provider %q", cfg.TrackerProvider), "set TRACKER_PROVIDER to linear | jira | github | internal")
+		rr.add("tracker", fail, fmt.Sprintf("unknown tracker provider %q", cfg.TrackerProvider), "set TRACKER_PROVIDER to linear | jira | azure | github | internal")
 	}
 
 	if provider == "linear" && strings.TrimSpace(cfg.LinearTeam) == "" {
@@ -590,6 +593,61 @@ func checkJiraProject(cfg config.Config, rr *runner) {
 	rr.add("jira project key", fail,
 		"neither LINEAR_TEAM nor PROJECT is set — the Jira project key is unresolved, so the backlog can never bind",
 		"set LINEAR_TEAM=<Jira project key> in this repo's .trau.ini")
+}
+
+// checkAzure validates the Azure DevOps REST credentials and, when they are
+// present, pings the organization for a live auth check. Unlike Jira, missing
+// keys are a failure rather than a warning: Azure DevOps has no MCP fallback, so
+// without the PAT the provider cannot reach the tracker at all. The token is
+// never printed.
+func checkAzure(ctx context.Context, cfg config.Config, rr *runner) {
+	if cfg.EffectiveTrackerProvider() != "azure" {
+		return
+	}
+	var missing []string
+	if strings.TrimSpace(cfg.AzureOrgURL) == "" {
+		missing = append(missing, "AZURE_ORG_URL")
+	}
+	if strings.TrimSpace(cfg.AzurePAT) == "" {
+		missing = append(missing, "AZURE_PAT")
+	}
+	if len(missing) > 0 {
+		rr.add("azure auth", fail,
+			fmt.Sprintf("%s not set — the azure provider has no MCP fallback, so it cannot reach the tracker", strings.Join(missing, ", ")),
+			"set AZURE_ORG_URL=https://dev.azure.com/<org> and AZURE_PAT in this repo's .trau.ini")
+		return
+	}
+	if err := azureapi.New(cfg.AzureOrgURL, cfg.AzurePAT).Ping(ctx); err != nil {
+		if hint := azureapi.AuthErrorMessageFor(err, cfg.AzureOrgURL); hint != "" {
+			rr.add("azure auth", fail, "Azure DevOps REST authentication failed", hint)
+			return
+		}
+		rr.add("azure auth", fail, fmt.Sprintf("Azure DevOps REST ping failed: %v", err),
+			"verify AZURE_ORG_URL is a reachable https://dev.azure.com/<org> and the PAT is valid")
+		return
+	}
+	rr.add("azure auth", pass, fmt.Sprintf("authenticated to %s", cfg.AzureOrgURL), "")
+}
+
+// checkAzureProject mirrors checkJiraProject: an Azure DevOps repo reads its team
+// project name from LINEAR_TEAM, falling back to PROJECT. With neither set no
+// work-item route can be built, so this fails rather than letting a healthy auth
+// check imply a working tracker.
+func checkAzureProject(cfg config.Config, rr *runner) {
+	if cfg.EffectiveTrackerProvider() != "azure" {
+		return
+	}
+	if key := strings.TrimSpace(cfg.LinearTeam); key != "" {
+		rr.add("azure project", pass, fmt.Sprintf("LINEAR_TEAM=%s", key), "")
+		return
+	}
+	if key := strings.TrimSpace(cfg.Project); key != "" {
+		rr.add("azure project", pass, fmt.Sprintf("PROJECT=%s (LINEAR_TEAM unset)", key), "")
+		return
+	}
+	rr.add("azure project", fail,
+		"neither LINEAR_TEAM nor PROJECT is set — the Azure DevOps team project is unresolved, so no work item can be addressed",
+		"set LINEAR_TEAM=<Azure DevOps project name> in this repo's .trau.ini")
 }
 
 // checkWritePerms probes that the repo root is writable, where the loop stages

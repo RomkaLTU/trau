@@ -1,12 +1,13 @@
 // Package tracker isolates project-management interactions behind a typed seam.
 //
 // The Linear implementation can use Linear's GraphQL API directly when a
-// LINEAR_API_KEY is configured, falling back to the Linear MCP otherwise.
-// Other providers reach the PM tool through the relevant MCP inside agent
-// calls. Each method either uses a direct API or renders a natural-language
-// prompt, runs it through an [agent.Runner], and recovers the result from
-// sentinel lines. Adding a new PM provider means implementing the Tracker
-// interface once; the loop and TUI stay provider-agnostic.
+// LINEAR_API_KEY is configured, falling back to the Linear MCP otherwise. Azure
+// DevOps is REST-only — it has no MCP path at all. The remaining providers reach
+// the PM tool through the relevant MCP inside agent calls. Each method either
+// uses a direct API or renders a natural-language prompt, runs it through an
+// [agent.Runner], and recovers the result from sentinel lines. Adding a new PM
+// provider means implementing the Tracker interface once; the loop and TUI stay
+// provider-agnostic.
 package tracker
 
 import (
@@ -347,6 +348,17 @@ func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 			Email:           cfg.Email,
 			APIToken:        cfg.APIKey,
 		}, nil
+	case "azure":
+		// Azure DevOps has no MCP path, so the runner is unused: the PAT is the only
+		// identity, and a missing one surfaces as an error rather than an agent call.
+		return &AzureDevOps{
+			OrgURL:          cfg.BaseURL,
+			PAT:             cfg.APIKey,
+			Project:         cfg.Team,
+			ReadyLabel:      cfg.ReadyLabel,
+			QuarantineLabel: cfg.QuarantineLabel,
+			SplitLabel:      cfg.SplitLabel,
+		}, nil
 	case "github":
 		return &GitHub{Runner: runner, Repo: cfg.Team, ReadyLabel: cfg.ReadyLabel, QuarantineLabel: cfg.QuarantineLabel, SplitLabel: cfg.SplitLabel}, nil
 	case "internal":
@@ -357,7 +369,7 @@ func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 			QuarantineLabel: cfg.QuarantineLabel,
 		}, nil
 	default:
-		return nil, fmt.Errorf("unknown tracker provider %q (expected: linear | jira | github | internal)", provider)
+		return nil, fmt.Errorf("unknown tracker provider %q (expected: linear | jira | azure | github | internal)", provider)
 	}
 }
 

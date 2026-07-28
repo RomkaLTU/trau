@@ -82,7 +82,7 @@ func TestQASpaceTogglesSettingsBool(t *testing.T) {
 func TestQATypingJIntoTextFieldDoesNotNavigate(t *testing.T) {
 	m := formModel(&fakeOnboardActions{repoRoot: t.TempDir()}, "github")
 	m = pressKey(m, tea.KeyEnter)
-	m = pressKey(m, tea.KeyEnter) // → base branch (linear + jira groups hidden for github)
+	m = pressKey(m, tea.KeyEnter) // → base branch (the credential groups are all hidden for github)
 	if m.focusedKey() != keyBaseBranch {
 		t.Fatalf("focused key = %q, want %q", m.focusedKey(), keyBaseBranch)
 	}
