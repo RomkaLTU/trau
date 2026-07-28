@@ -31,8 +31,8 @@ sudo dpkg -i trau_<version>_linux_amd64.deb    # Debian, Ubuntu
 sudo rpm -i trau_<version>_linux_amd64.rpm     # Fedora, RHEL, openSUSE
 ```
 
-trau's other prerequisites — `git`, `gh`, `jq` — come from the distro's package manager
-(`sudo apt install git gh jq`), and `gh` still needs `gh auth login` once.
+trau's other prerequisites — `git`, `gh` — come from the distro's package manager
+(`sudo apt install git gh`), and `gh` still needs `gh auth login` once.
 
 ## 2. Install Claude Code in the distro
 

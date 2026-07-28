@@ -16,15 +16,14 @@ import (
 )
 
 // signalledContext mirrors main's root context: it registers the loop's signal
-// handler, raises sig at this process, and returns once the cancellation has
-// landed — so the pipeline sees exactly what a web Stop or a Ctrl-C leaves behind.
+// handler, ends the context the way sig would, and returns once the cancellation
+// has landed — so the pipeline sees exactly what a web Stop or a Ctrl-C leaves
+// behind. deliverStop carries the per-OS half.
 func signalledContext(t *testing.T, sig syscall.Signal) context.Context {
 	t.Helper()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	t.Cleanup(stop)
-	if err := syscall.Kill(os.Getpid(), sig); err != nil {
-		t.Fatalf("raise %v: %v", sig, err)
-	}
+	deliverStop(t, sig, stop)
 	<-ctx.Done()
 	return ctx
 }

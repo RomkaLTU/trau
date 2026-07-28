@@ -12,12 +12,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
 )
@@ -701,9 +701,14 @@ func TestChildEnvStripsNestedLoopMarkerWithoutHome(t *testing.T) {
 // spawnSleeper starts a real child that sleeps for seconds and returns its
 // pid, reaped in the background like a real spawned loop so stopAndWait's
 // process-liveness polling observes its exit promptly rather than a zombie.
+// It detaches exactly as the supervisor does, which is what makes the child its
+// own group leader: without it a stop aimed at this pid reaches the whole group
+// it inherited — on Windows that group is the test runner's console, so the
+// Ctrl-Break would kill the test binary instead of the child.
 func spawnSleeper(t *testing.T, seconds string) int {
 	t.Helper()
 	cmd := exec.Command("sh", "-c", "sleep "+seconds)
+	cmd.SysProcAttr = proc.Detached()
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start sleeper: %v", err)
 	}
@@ -717,6 +722,7 @@ func spawnSleeper(t *testing.T, seconds string) int {
 func spawnTermIgnorer(t *testing.T, seconds string) int {
 	t.Helper()
 	cmd := exec.Command("sh", "-c", "trap '' TERM; sleep "+seconds)
+	cmd.SysProcAttr = proc.Detached()
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start SIGTERM-ignoring child: %v", err)
 	}
@@ -758,7 +764,7 @@ func TestStopAndWaitGracefulExitNeverEscalates(t *testing.T) {
 func TestStopAndWaitEscalatesToGroupKill(t *testing.T) {
 	s, fake := stopWaitServer(t, t.TempDir())
 	pid := spawnTermIgnorer(t, "5")
-	fake.onKill = func(pid int) { _ = syscall.Kill(pid, syscall.SIGKILL) }
+	fake.onKill = func(pid int) { _ = proc.KillGroup(pid) }
 
 	if err := s.stopAndWait(pid, 20*time.Millisecond); err != nil {
 		t.Fatalf("stopAndWait: %v", err)
@@ -791,7 +797,7 @@ func TestStopAndWaitSettlesForceKilledRun(t *testing.T) {
 	s, fake := stopWaitServer(t, home)
 	repoRoot := filepath.Join(t.TempDir(), "acme")
 	pid := spawnTermIgnorer(t, "5")
-	fake.onKill = func(pid int) { _ = syscall.Kill(pid, syscall.SIGKILL) }
+	fake.onKill = func(pid int) { _ = proc.KillGroup(pid) }
 
 	writeEntry(t, home, registry.Entry{
 		PID:          pid,
