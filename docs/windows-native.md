@@ -28,9 +28,21 @@ every example in the docs — `trau serve`, `trau doctor`, `trau takeover <ID>` 
 Scoop puts a shim at `%USERPROFILE%\scoop\shims\trau.exe`; winget links one into
 `%LOCALAPPDATA%\Microsoft\WinGet\Links`. Both directories are on `PATH` after the installer runs.
 
-From source there is no `make` to lean on, so run what `make build` runs — the SPA first, since the
-binary embeds it — and name the output yourself, because the Makefile's `bin/trau` has no extension
-for Windows to execute:
+From source, `make build` lands `bin\trau.exe`. `make` is the one thing here that does not run in
+PowerShell — its recipes are POSIX sh, so drive it from **Git Bash**, where GNU make finds the `sh`
+and `find` it needs:
+
+```bash
+git clone https://github.com/RomkaLTU/trau
+cd trau
+make build
+```
+
+`make test` additionally needs a C compiler on `PATH`: the race detector has no pure-Go
+implementation on Windows, so it builds through cgo. `scoop install mingw` supplies one — note it
+adds its own `bin\` to `PATH` rather than a scoop shim, so open a new shell afterwards.
+
+Without `make`, run what it runs — the SPA first, since the binary embeds it:
 
 ```powershell
 git clone https://github.com/RomkaLTU/trau

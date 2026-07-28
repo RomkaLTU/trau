@@ -48,7 +48,7 @@ winget install Codesomelabs.trau
 ```
 
 Or from source (Go 1.25+): `git clone https://github.com/RomkaLTU/trau && cd trau && make build`,
-which lands `bin/trau` (on Windows, build `bin\trau.exe` yourself — see the
+which lands `bin/trau` — `bin\trau.exe` on Windows, where `make` runs under Git Bash (see the
 [native Windows notes](docs/windows-native.md)).
 
 Requires `git`, `gh` (authenticated), `jq`, and an agent CLI — `claude` (default), `codex`, or
