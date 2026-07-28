@@ -1,3 +1,24 @@
+# Every text file is stored LF in the index and checked out LF on every OS.
+# Without this a stock Git-for-Windows clone (system core.autocrlf=true) checks
+# out CRLF, and the byte-compared golden files under internal/*/testdata fail.
+* text=auto eol=lf
+
+# Fixtures are compared byte-for-byte, so state the guarantee rather than
+# relying on content-based text detection.
+**/testdata/** text eol=lf
+
+# Real binaries: never eol-converted, diffed or merged as text.
+*.png   binary
+*.ico   binary
+*.gif   binary
+*.jpg   binary
+*.jpeg  binary
+*.webp  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+
 # Generated build output: never text-merge. Concurrent changes must surface as a
 # conflict and be resolved by rebuilding (cd web && npm ci && npm run build).
 internal/webserver/dist/** binary linguist-generated=true
