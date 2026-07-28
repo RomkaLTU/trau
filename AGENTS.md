@@ -16,7 +16,7 @@ make reset                 # rebuild + `trau hub restart` — humans only; refus
 make test                  # go test -race ./...
 go test -race ./internal/pipeline -run TestVerifyPause   # single test
 make vet                   # go vet ./... (runs the make windows gate first)
-make windows               # GOOS=windows go build ./... — native-Windows compile gate (ADR 0023)
+make windows               # GOOS=windows go vet ./... — native-Windows compile gate, test files included (ADR 0023)
 make lint                  # golangci-lint (installed separately)
 make fmt                   # gofmt -w .
 make dist                  # cross-compile release matrix into dist/

@@ -65,9 +65,12 @@ $(WEB_DIST): $(WEB_SRC)
 vet: windows
 	go vet ./...
 
-## windows: prove the tree still compiles for native Windows (ADR 0023)
+## windows: prove the tree — tests included — still compiles for native Windows (ADR 0023)
+# vet rather than build: `go build` skips _test.go, so a unix-only syscall in a
+# test file passed this gate and only surfaced as [build failed] on a real
+# Windows machine (COD-1313). vet type-checks test files too.
 windows:
-	GOOS=windows go build ./...
+	GOOS=windows go vet ./...
 
 ## race-guard: refuse `make test` when the race detector's cgo needs are unmet
 race-guard:
