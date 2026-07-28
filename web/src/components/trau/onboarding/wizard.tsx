@@ -97,6 +97,7 @@ export function OnboardingWizard({ initialPath = '' }: { initialPath?: string })
             <StepTracker
               inspection={primary.inspection}
               repo={primary.repo}
+              project={project ?? primary.project}
               onBack={() => go('detect')}
               onContinue={(p, fields) => {
                 setProvider(p)

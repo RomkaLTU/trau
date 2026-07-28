@@ -99,6 +99,14 @@ func (s *Server) registerRepo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to register repo: " + err.Error()})
 		return
 	}
+	// A repo's tracker hangs off its project, so it gets one the moment it
+	// registers rather than at the next serve start, owning whatever tracker its
+	// own config file already carries.
+	if err := s.stores.Projects().EnsureRoots([]string{root}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to back the repo with a project: " + err.Error()})
+		return
+	}
+	s.adoptRepoTrackers()
 	resp := RegisterRepoResponse{RepoView: RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: true, Seeded: s.seeded(root)}}
 	// Seed the issue store from the tracker as the repo comes online (ADR 0007),
 	// unless the caller opted out to run the seed sync from its own step. The pull

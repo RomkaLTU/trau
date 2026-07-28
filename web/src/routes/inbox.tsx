@@ -109,6 +109,7 @@ import {
 import { readKeyStroke } from "@/lib/keys";
 import { repoScopeSwitch } from "@/lib/notification-center";
 import { standardTitle, usePageTitle } from "@/lib/page-title";
+import { useProjectRepo } from "@/lib/projects";
 import { cn } from "@/lib/utils";
 
 interface InboxSearch {
@@ -187,7 +188,7 @@ function interviewModelOptions(
 function InboxPage() {
   usePageTitle(standardTitle("Inbox"));
   const { repo: activeRepo, repos, setRepo } = useActiveRepo();
-  const repo = activeRepo ?? "";
+  const repo = useProjectRepo(activeRepo ?? "", repos);
   const queryClient = useQueryClient();
   const {
     items: queueItems,
@@ -453,7 +454,7 @@ function InboxPage() {
           </p>
         )}
 
-        <RepoHealthGate className="min-h-0 flex-1">
+        <RepoHealthGate repo={repo} className="min-h-0 flex-1">
           <div
             className={cn(
               "absolute inset-0 flex flex-col px-8 pb-4 md:grid md:grid-cols-[260px_minmax(0,1fr)]",

@@ -14,21 +14,25 @@ import {
 import { cn } from '@/lib/utils'
 
 /**
- * Gates repo-scoped page content when the scoped repo can't serve it — it is
+ * Gates repo-scoped page content when the repo behind it can't serve it — it is
  * unconfigured, or its sync recorded a failure. Mirrors the ProjectScopeGate
  * overlay: children are dimmed and inert under a single designed message that
  * names the fix, instead of the raw fetch-error strings these pages would
  * otherwise print. Composes inside ProjectScopeGate, which stays outermost.
+ * Defaults to the scoped repo; a page reading another repo's tracker passes the
+ * repo it actually reads.
  */
 export function RepoHealthGate({
   children,
   className,
+  repo: gated,
 }: {
   children: ReactNode
   className?: string
+  repo?: string
 }) {
   const { repo, repos } = useActiveRepo()
-  const { data } = useQuery(repoHealthQueryOptions(repo ?? ''))
+  const { data } = useQuery(repoHealthQueryOptions(gated ?? repo ?? ''))
 
   const gate = data && healthBlocks(data.state) ? data : null
   const blocked = gate !== null

@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button'
 import { type SyncResponse } from '@/lib/instances'
 import {
   essentialsConfigWrites,
-  trackerConfigWrites,
+  trackerConfigValues,
   type EssentialsFields,
   type TrackerFields,
   type TrackerProvider,
@@ -39,9 +39,9 @@ export function StepDone({
   }, [repo, setScope, queryClient])
 
   const writtenKeys = [
-    ...trackerConfigWrites(provider, trackerFields),
-    ...essentialsConfigWrites(essentials),
-  ].map((w) => w.key)
+    ...Object.keys(trackerConfigValues(provider, trackerFields)),
+    ...essentialsConfigWrites(essentials).map((w) => w.key),
+  ]
 
   const backlog =
     provider === 'internal'

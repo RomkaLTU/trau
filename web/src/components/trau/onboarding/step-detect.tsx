@@ -94,9 +94,10 @@ export function StepDetect({
 
       {members.length > 1 && (
         <Hint>
-          The tracker and essentials steps configure{' '}
-          <span className="font-mono">{members[0].repo}</span>. The other members are
-          registered and grouped already — configure them from their own settings.
+          The tracker step configures the whole project — every member inherits the same
+          keys. The essentials step configures{' '}
+          <span className="font-mono">{members[0].repo}</span> only; set the others from
+          their own settings.
         </Hint>
       )}
 
