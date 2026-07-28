@@ -33,6 +33,7 @@ import {
   pendingQuestion,
   publishGrillSession,
   questionPayload,
+  setGrillAutoAccept,
   sortAwaiting,
   startGrillSession,
   upsertMessage,
@@ -1048,6 +1049,27 @@ describe('startGrillSession', () => {
 
     expect((err as Error).message).toBe('no interviewer configured')
     expect(isActiveSessionConflict(err)).toBe(false)
+  })
+})
+
+describe('setGrillAutoAccept', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('switches the live session and hands back the updated view', async () => {
+    const updated = session({ id: '7', auto_accept: true })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => updated } as Response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await setGrillAutoAccept('7', true)).toEqual(updated)
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/v1/grill/7/auto-accept')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({ enabled: true })
   })
 })
 

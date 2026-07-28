@@ -625,6 +625,19 @@ export async function switchGrillModel(sid: string, model: string): Promise<Gril
   return res.json()
 }
 
+// setGrillAutoAccept turns a live session's auto-accept on or off; switching it on
+// while a recommended question is waiting answers that one too. The hub echoes the
+// change over the session's state frames, so callers need no optimistic update.
+export async function setGrillAutoAccept(sid: string, enabled: boolean): Promise<GrillSession> {
+  const res = await apiFetch(`/api/v1/grill/${encodeURIComponent(sid)}/auto-accept`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  })
+  if (!res.ok) throw new Error(await errorMessage(res, 'auto-accept switch failed'))
+  return res.json()
+}
+
 // abandonGrill settles a session as abandoned — the discard path, where the user
 // rejects the proposal and nothing is written to the tracker.
 export async function abandonGrill(sid: string): Promise<GrillSession> {

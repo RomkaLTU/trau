@@ -87,9 +87,9 @@ type GrillSession struct {
 	UpdatedAt        string
 }
 
-// NewGrillSession is the input to Create. State always starts at running.
-// Provider, Mode and AutoAccept are locked at create; an empty provider runs claude,
-// an empty mode runs an interview.
+// NewGrillSession is the input to Create. State always starts at running. Provider
+// and Mode are locked at create and AutoAccept is its opening value; an empty
+// provider runs claude, an empty mode runs an interview.
 type NewGrillSession struct {
 	Repo       string
 	IssueID    string
@@ -393,6 +393,26 @@ func (g *Grill) SetModel(id int64, model string) (GrillSession, bool, error) {
 		return GrillSession{}, false, err
 	}
 	sess.Model = model
+	sess.UpdatedAt = now
+	return sess, true, nil
+}
+
+// SetAutoAccept records whether the session answers its own recommendations and
+// bumps its updated_at — the flag is read per question, so the switch lands on the
+// next one. It reports whether the session exists.
+func (g *Grill) SetAutoAccept(id int64, enabled bool) (GrillSession, bool, error) {
+	sess, found, err := g.Session(id)
+	if err != nil || !found {
+		return GrillSession{}, found, err
+	}
+	now := formatGrillTime(time.Now())
+	if _, err := g.db.Exec(
+		`UPDATE grill_sessions SET auto_accept = ?, updated_at = ? WHERE id = ?`,
+		boolToInt(enabled), now, id,
+	); err != nil {
+		return GrillSession{}, false, err
+	}
+	sess.AutoAccept = enabled
 	sess.UpdatedAt = now
 	return sess, true, nil
 }

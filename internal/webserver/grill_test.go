@@ -1,6 +1,7 @@
 package webserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,9 +17,17 @@ import (
 	"github.com/RomkaLTU/trau/internal/registry"
 )
 
-// grillServer isolates HOME because session creation resolves the repo's grill
-// model through the layered config, which reads ~/.trau.ini.
 func grillServer(t *testing.T) (*httptest.Server, *hubstore.Stores, string) {
+	t.Helper()
+	ts, stores, repo, _ := grillHookServer(t)
+	return ts, stores, repo
+}
+
+// grillHookServer hands back the hub itself as well, so a test can stand in for the
+// runner and watch what a turn-resuming request spawns. It isolates HOME because
+// session creation resolves the repo's grill model through the layered config, which
+// reads ~/.trau.ini.
+func grillHookServer(t *testing.T) (*httptest.Server, *hubstore.Stores, string, *Server) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -27,9 +36,10 @@ func grillServer(t *testing.T) (*httptest.Server, *hubstore.Stores, string) {
 	if err := stores.Registrations().Remember([]registry.Repo{repo}); err != nil {
 		t.Fatalf("remember repo: %v", err)
 	}
-	ts := httptest.NewServer(New("1.2.3", "127.0.0.1", "", nil, false, stores).Handler())
+	srv := New("1.2.3", "127.0.0.1", "", nil, false, stores)
+	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	return ts, stores, repo.Name
+	return ts, stores, repo.Name, srv
 }
 
 func createGrill(t *testing.T, ts *httptest.Server, repo, issue string) GrillSessionView {
@@ -417,6 +427,175 @@ func TestGrillModelSwitchSettled(t *testing.T) {
 		}
 		if after, _, _ := stores.Grill().Session(sid); after.Model == "opus" {
 			t.Fatalf("%s switch persisted the model", state)
+		}
+	}
+}
+
+func poseGrillQuestion(t *testing.T, stores *hubstore.Stores, sid int64, payload, state string) {
+	t.Helper()
+	if _, _, err := stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
+		Role:    hubstore.GrillRoleAgent,
+		Kind:    hubstore.GrillKindQuestion,
+		Payload: payload,
+	}); err != nil {
+		t.Fatalf("post question: %v", err)
+	}
+	if _, err := stores.Grill().Transition(sid, state, ""); err != nil {
+		t.Fatalf("pose question: %v", err)
+	}
+}
+
+func postAutoAccept(t *testing.T, ts *httptest.Server, sid string, enabled bool, want int) GrillSessionView {
+	t.Helper()
+	res := postJSON(t, ts.URL+APIPrefix+"/grill/"+sid+"/auto-accept", GrillAutoAcceptRequest{Enabled: enabled})
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != want {
+		t.Fatalf("auto-accept status = %d, want %d", res.StatusCode, want)
+	}
+	var v GrillSessionView
+	if want == http.StatusOK {
+		if err := json.NewDecoder(res.Body).Decode(&v); err != nil {
+			t.Fatalf("decode auto-accept: %v", err)
+		}
+	}
+	return v
+}
+
+func TestGrillAutoAcceptSwitch(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	sess := createGrill(t, ts, repo, "COD-1")
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+	if sess.AutoAccept {
+		t.Fatalf("created session = %+v, want auto-accept off", sess)
+	}
+
+	if v := postAutoAccept(t, ts, sess.ID, true, http.StatusOK); !v.AutoAccept {
+		t.Fatalf("switched view = %+v, want auto-accept on", v)
+	}
+	msgs, err := stores.Grill().Messages(sid, 0)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %d, want the switch notice alone", len(msgs))
+	}
+	if msgs[0].Role != hubstore.GrillRoleSystem || msgs[0].Kind != hubstore.GrillKindInfo {
+		t.Fatalf("notice = %s/%s, want system/info", msgs[0].Role, msgs[0].Kind)
+	}
+	if msgs[0].Payload != `{"text":"Auto-accept recommendations turned on"}` {
+		t.Fatalf("notice payload = %s", msgs[0].Payload)
+	}
+
+	// Re-sending the value already in effect is a no-op: 200 with no second notice.
+	postAutoAccept(t, ts, sess.ID, true, http.StatusOK)
+	if again, _ := stores.Grill().Messages(sid, 0); len(again) != 1 {
+		t.Fatalf("no-op appended a notice: %d messages, want 1", len(again))
+	}
+
+	if v := postAutoAccept(t, ts, sess.ID, false, http.StatusOK); v.AutoAccept {
+		t.Fatalf("switched-off view = %+v, want auto-accept off", v)
+	}
+	msgs, _ = stores.Grill().Messages(sid, 0)
+	if len(msgs) != 2 || msgs[1].Payload != `{"text":"Auto-accept recommendations turned off"}` {
+		t.Fatalf("messages after switching off = %+v", msgs)
+	}
+}
+
+// Switching auto-accept on while a recommended question is waiting answers that
+// question with its recommendation, so the flip lands on the one the user is looking
+// at rather than only the next.
+func TestGrillAutoAcceptAnswersPendingQuestion(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	sess := createGrill(t, ts, repo, "COD-1")
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+	poseGrillQuestion(t, stores, sid,
+		`{"text":"which store?","options":["sqlite","postgres"],"recommended":"sqlite"}`, hubstore.GrillWaiting)
+
+	v := postAutoAccept(t, ts, sess.ID, true, http.StatusOK)
+	if v.State != hubstore.GrillRunning || !v.AutoAccept {
+		t.Fatalf("view = %+v, want running with auto-accept on", v)
+	}
+	msgs, err := stores.Grill().Messages(sid, 0)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	if len(msgs) != 3 {
+		t.Fatalf("messages = %d, want the question, the notice and the auto answer", len(msgs))
+	}
+	answer := msgs[2]
+	if answer.Role != hubstore.GrillRoleUser || answer.Kind != hubstore.GrillKindAnswer {
+		t.Fatalf("last message = %s/%s, want user/answer", answer.Role, answer.Kind)
+	}
+	if answer.Payload != `{"text":"sqlite","auto":true}` {
+		t.Fatalf("auto answer payload = %s", answer.Payload)
+	}
+}
+
+// A question the agent made no recommendation on needs the user's taste, so the flip
+// leaves it standing.
+func TestGrillAutoAcceptLeavesUnrecommendedQuestion(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	sess := createGrill(t, ts, repo, "COD-1")
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+	poseGrillQuestion(t, stores, sid, `{"text":"which of these reads better?"}`, hubstore.GrillWaiting)
+
+	v := postAutoAccept(t, ts, sess.ID, true, http.StatusOK)
+	if v.State != hubstore.GrillWaiting || !v.AutoAccept {
+		t.Fatalf("view = %+v, want waiting with auto-accept on", v)
+	}
+	if msgs, _ := stores.Grill().Messages(sid, 0); len(msgs) != 2 {
+		t.Fatalf("messages = %d, want the question and the notice alone", len(msgs))
+	}
+}
+
+// A parked session has no live child to hand the answer to, so the auto-accepted one
+// must spawn a resume turn the way a typed answer does.
+func TestGrillAutoAcceptResumesParkedSession(t *testing.T) {
+	ts, stores, repo, srv := grillHookServer(t)
+	spawned := make(chan hubstore.GrillSession, 2)
+	srv.startGrill = func(_ context.Context, sess hubstore.GrillSession) { spawned <- sess }
+
+	sess := createGrill(t, ts, repo, "COD-1")
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+	<-spawned
+	poseGrillQuestion(t, stores, sid, `{"text":"ship it?","recommended":"yes"}`, hubstore.GrillParked)
+
+	if v := postAutoAccept(t, ts, sess.ID, true, http.StatusOK); v.State != hubstore.GrillRunning {
+		t.Fatalf("view = %+v, want running", v)
+	}
+	select {
+	case resumed := <-spawned:
+		if resumed.ID != sid || resumed.State != hubstore.GrillRunning {
+			t.Fatalf("resumed session = %+v, want %d running", resumed, sid)
+		}
+	default:
+		t.Fatal("auto-accepting a parked session spawned no resume turn")
+	}
+}
+
+func TestGrillAutoAcceptSettled(t *testing.T) {
+	ts, stores, repo := grillServer(t)
+	cases := []struct {
+		issue string
+		path  []string
+	}{
+		{"COD-1", []string{hubstore.GrillFinished}},
+		{"COD-2", []string{hubstore.GrillFinished, hubstore.GrillApplied}},
+		{"COD-3", []string{hubstore.GrillAbandoned}},
+	}
+	for _, tc := range cases {
+		state := tc.path[len(tc.path)-1]
+		sess := createGrill(t, ts, repo, tc.issue)
+		sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+		for _, next := range tc.path {
+			if _, err := stores.Grill().Transition(sid, next, ""); err != nil {
+				t.Fatalf("transition to %s: %v", next, err)
+			}
+		}
+
+		postAutoAccept(t, ts, sess.ID, true, http.StatusConflict)
+		if after, _, _ := stores.Grill().Session(sid); after.AutoAccept {
+			t.Fatalf("%s switch persisted auto-accept", state)
 		}
 	}
 }
