@@ -34,6 +34,7 @@ import {
   StateGroupChip,
   useActiveRepo,
 } from "@/components/trau";
+import { StartIn } from "@/components/trau/member-repo-picker";
 import {
   SegmentedControl,
   type SegmentOption,
@@ -847,8 +848,8 @@ function BacklogRow({
     enabled: editing && internal,
   });
   const addToQueue = useMutation({
-    mutationFn: () => enqueueFresh(repo, { id: entry.id }),
-    onSuccess: (res) => publishQueue(queryClient, repo, res),
+    mutationFn: (target: string) => enqueueFresh(target, { id: entry.id }),
+    onSuccess: (res, target) => publishQueue(queryClient, target, res),
   });
   const archive = useArchiveIssue(repo, (result, vars) =>
     onArchived(vars.id, vars.archived, result.queue_removed),
@@ -960,15 +961,19 @@ function BacklogRow({
           </button>
         )}
         {!archivedView && (
-          <button
-            type="button"
-            onClick={() => addToQueue.mutate()}
-            disabled={inQueue || addToQueue.isPending}
-            className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
-          >
-            <ListPlus className="size-3.5" />
-            {inQueue ? "Queued" : "Add to queue"}
-          </button>
+          <StartIn repo={repo} ticket={entry.id} onStart={addToQueue.mutate}>
+            {(begin) => (
+              <button
+                type="button"
+                onClick={begin}
+                disabled={inQueue || addToQueue.isPending}
+                className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+              >
+                <ListPlus className="size-3.5" />
+                {inQueue ? "Queued" : "Add to queue"}
+              </button>
+            )}
+          </StartIn>
         )}
         {showArchiveAction && (
           <button

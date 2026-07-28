@@ -83,6 +83,12 @@ func (p *Projects) Get(id string) (Project, error) {
 	return proj, err
 }
 
+// Holder returns the identifier of the project root belongs to, or "" when no
+// project holds it.
+func (p *Projects) Holder(root string) (string, error) {
+	return holderOf(p.db, root)
+}
+
 // Create files a project under name, allocating a slug identifier unique across
 // the store. It starts empty: repos join through AddRepo.
 func (p *Projects) Create(name string) (Project, error) {
@@ -159,6 +165,9 @@ func (p *Projects) Delete(id string) error {
 		return errors.Join(err, tx.Rollback())
 	}
 	if err := dropTracker(tx, id); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	if err := dropTicketRepos(tx, id); err != nil {
 		return errors.Join(err, tx.Rollback())
 	}
 	return tx.Commit()
@@ -373,9 +382,15 @@ func memberRoots(tx *sql.Tx, id string) (roots []string, err error) {
 	return roots, rows.Err()
 }
 
-func holderOf(tx *sql.Tx, root string) (string, error) {
+// querier is the shared read surface of *sql.DB and *sql.Tx, so one lookup backs
+// both the standalone Holder and the membership moves inside a transaction.
+type querier interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func holderOf(q querier, root string) (string, error) {
 	var project string
-	err := tx.QueryRow(`SELECT project FROM project_repos WHERE root = ?`, root).Scan(&project)
+	err := q.QueryRow(`SELECT project FROM project_repos WHERE root = ?`, root).Scan(&project)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
