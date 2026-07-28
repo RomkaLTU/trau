@@ -139,7 +139,8 @@ func (s *Server) grillMCPToolsCall(w http.ResponseWriter, r *http.Request, sid i
 // repeating the question the session is already waiting on re-attaches to it rather
 // than posting it twice. The answer is returned verbatim as the tool result; on idle
 // timeout the session parks and a structured sentinel tells the agent to end its
-// turn.
+// turn. An auto-accept session short-circuits all of that for a question that carries
+// a recommendation: only the ones needing the user's taste reach them.
 func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64, rpcID, args, progressToken json.RawMessage) {
 	var a struct {
 		Question      string   `json:"question"`
@@ -161,13 +162,19 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 	if a.AllowFreeText != nil {
 		allowFreeText = *a.AllowFreeText
 	}
+	recommended := strings.TrimSpace(a.Recommended)
 	payload, _ := json.Marshal(struct {
 		Text          string   `json:"text"`
 		Options       []string `json:"options,omitempty"`
 		Recommended   string   `json:"recommended,omitempty"`
 		Why           string   `json:"why,omitempty"`
 		AllowFreeText bool     `json:"allow_free_text"`
-	}{Text: question, Options: a.Options, Recommended: strings.TrimSpace(a.Recommended), Why: strings.TrimSpace(a.Why), AllowFreeText: allowFreeText})
+	}{Text: question, Options: a.Options, Recommended: recommended, Why: strings.TrimSpace(a.Why), AllowFreeText: allowFreeText})
+
+	if recommended != "" && s.grillAutoAccepts(sid) {
+		s.grillAutoAnswer(w, sid, rpcID, string(payload), recommended)
+		return
+	}
 
 	question0, pending := s.grillPendingQuestion(sid, question)
 	if !pending {
@@ -191,9 +198,9 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 		s.notifyGrillAwaiting(waiting, question)
 	}
 
-	// An AFK pre-grill turn has no user waiting, so the opening question parks the
-	// session at once and returns the park sentinel as a plain result — the agent
-	// ends its turn and the question waits for a live session.
+	// An AFK pre-grill turn has no user waiting, so a question it could not recommend
+	// an answer to parks the session at once and returns the park sentinel as a plain
+	// result — the agent ends its turn and the question waits for a live session.
 	if s.isPregrill(sid) {
 		if parked, err := s.stores.Grill().Transition(sid, hubstore.GrillParked, ""); err == nil {
 			s.publishGrillState(parked)
@@ -270,6 +277,47 @@ func (s *Server) grillAskUser(w http.ResponseWriter, r *http.Request, sid int64,
 			}
 		}
 	}
+}
+
+// grillAutoAccepts reports whether the session answers its own recommendations. An
+// ended session — or a read that fails — answers nothing and falls through to the
+// manual path, which returns the stop sentinel rather than auto-answering into a
+// transcript the user has already discarded.
+func (s *Server) grillAutoAccepts(sid int64) bool {
+	sess, found, err := s.stores.Grill().Session(sid)
+	if err != nil || !found {
+		return false
+	}
+	return sess.AutoAccept && !grillEnded(sess.State)
+}
+
+// grillAutoAnswer takes the agent's own recommendation as the answer. The pair still
+// lands in the transcript, the answer flagged auto so the audit trail shows who chose,
+// but the session never enters waiting: nothing notifies the user and the turn carries
+// on. A recommendation matching no offered option is still the answer, verbatim.
+func (s *Server) grillAutoAnswer(w http.ResponseWriter, sid int64, rpcID json.RawMessage, question, recommended string) {
+	stored, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
+		Role:    hubstore.GrillRoleAgent,
+		Kind:    hubstore.GrillKindQuestion,
+		Payload: question,
+	})
+	if err != nil {
+		respondRPCError(w, rpcID, rpcInternalError, "store question: "+err.Error())
+		return
+	}
+	s.publishGrillMessage(stored)
+
+	answer, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
+		Role:    hubstore.GrillRoleUser,
+		Kind:    hubstore.GrillKindAnswer,
+		Payload: grillAnswerPayload(recommended, true),
+	})
+	if err != nil {
+		respondRPCError(w, rpcID, rpcInternalError, "store auto-accepted answer: "+err.Error())
+		return
+	}
+	s.publishGrillMessage(answer)
+	respondRPCJSON(w, rpcID, grillAnswerResult(recommended))
 }
 
 // grillFinishSession validates the proposed outcome, stores it as an outcome
@@ -384,18 +432,31 @@ func (s *Server) grillPendingQuestion(sid int64, question string) (hubstore.Gril
 	if err != nil || !found || sess.State != hubstore.GrillWaiting {
 		return hubstore.GrillMessage{}, false
 	}
-	msgs, err := s.stores.Grill().Messages(sid, 0)
-	if err != nil || len(msgs) == 0 {
-		return hubstore.GrillMessage{}, false
-	}
-	last := msgs[len(msgs)-1]
-	if last.Role != hubstore.GrillRoleAgent || last.Kind != hubstore.GrillKindQuestion {
-		return hubstore.GrillMessage{}, false
-	}
-	if grillMessageText(last.Payload) != question {
+	last, ok := s.grillTrailingQuestion(sid)
+	if !ok || grillMessageText(last.Payload) != question {
 		return hubstore.GrillMessage{}, false
 	}
 	return last, true
+}
+
+// grillTrailingQuestion returns the unanswered agent question a blocked, parked or
+// stalled session is sitting on. System notices — a model or auto-accept switch — are
+// skipped: they land in the transcript without answering anything.
+func (s *Server) grillTrailingQuestion(sid int64) (hubstore.GrillMessage, bool) {
+	msgs, err := s.stores.Grill().Messages(sid, 0)
+	if err != nil {
+		return hubstore.GrillMessage{}, false
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == hubstore.GrillRoleSystem {
+			continue
+		}
+		if msgs[i].Role == hubstore.GrillRoleAgent && msgs[i].Kind == hubstore.GrillKindQuestion {
+			return msgs[i], true
+		}
+		break
+	}
+	return hubstore.GrillMessage{}, false
 }
 
 // grillAnswerAfter returns the first user answer stored after afterID, the answer
@@ -425,7 +486,11 @@ func (s *Server) grillSessionEnded(sid int64) bool {
 	if err != nil || !found {
 		return true
 	}
-	switch sess.State {
+	return grillEnded(sess.State)
+}
+
+func grillEnded(state string) bool {
+	switch state {
 	case hubstore.GrillAbandoned, hubstore.GrillApplied, hubstore.GrillFinished:
 		return true
 	}

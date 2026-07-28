@@ -30,7 +30,8 @@ const (
 
 // PregrillRequest is the body of POST /repos/{repo}/grill/pregrill: the issues to
 // pre-grill, in order. The per-item button sends one; "pre-grill all" sends the
-// inbox's untouched issues. The pass bounds the list to GRILL_PREGRILL_MAX turns.
+// inbox's untouched issues. The pass bounds the list to GRILL_PREGRILL_MAX turns —
+// one per issue, however many questions the child auto-answers inside it.
 // Model is optional and applies to every session the pass opens; an empty one
 // resolves to the repo config's grill default, same as a hand-started session.
 type PregrillRequest struct {
@@ -56,9 +57,10 @@ type PregrillResponse struct {
 }
 
 // handleRepoPregrill runs an AFK pre-grill pass over the requested issues (POST). It
-// is a bounded, sequential sweep: each issue gets a normal grilling turn whose
-// opening question parks at once (no user present) or that finishes with a rewrite
-// or no_change proposal. The session states it leaves are what the inbox surfaces.
+// is a bounded, sequential sweep: each issue gets a normal grilling turn that
+// self-drives through every question the child can recommend an answer to, and ends
+// either parked on one needing the user's taste or with a rewrite or no_change
+// proposal. The session states it leaves are what the inbox surfaces.
 func (s *Server) handleRepoPregrill(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -94,10 +96,14 @@ func (s *Server) pregrillMax(repo registry.Repo) int {
 	return cfg.GrillPregrillMax
 }
 
-// runPregrillPass grills the issues in order until the turn budget is spent. An
-// issue that already has an active session is skipped without spending budget; once
-// the budget is gone the rest are reported skipped. Each grilled issue runs its turn
-// synchronously so the settled session can be classified into an outcome.
+// runPregrillPass grills the issues in order until the turn budget is spent. The
+// budget is per-issue — one turn each, however many questions that turn auto-answers
+// on its way to a proposal. An issue that already has an active session is skipped
+// without spending budget; once the budget is gone the rest are reported skipped.
+// Each grilled issue runs its turn synchronously so the settled session can be
+// classified into an outcome. Every session the pass opens auto-accepts, so the one
+// question that can still reach the user is the one the child would not recommend an
+// answer to; it stays auto-accepting when the user resumes it later.
 func (s *Server) runPregrillPass(ctx context.Context, repo registry.Repo, req PregrillRequest, max int) []PregrillResult {
 	provider := strings.TrimSpace(req.Provider)
 	if provider == "" {
@@ -118,7 +124,13 @@ func (s *Server) runPregrillPass(ctx context.Context, repo registry.Repo, req Pr
 			results = append(results, PregrillResult{IssueID: id, Outcome: pregrillOutcomeSkipped, Detail: "pre-grill pass limit reached"})
 			continue
 		}
-		sess, err := s.stores.Grill().Create(hubstore.NewGrillSession{Repo: repo.Root, IssueID: id, Provider: provider, Model: model})
+		sess, err := s.stores.Grill().Create(hubstore.NewGrillSession{
+			Repo:       repo.Root,
+			IssueID:    id,
+			Provider:   provider,
+			Model:      model,
+			AutoAccept: true,
+		})
 		if errors.Is(err, hubstore.ErrGrillActiveSession) {
 			results = append(results, PregrillResult{IssueID: id, Outcome: pregrillOutcomeSkipped, Detail: "already has an active grill session"})
 			continue
@@ -199,10 +211,10 @@ func (s *Server) lastGrillDisposition(sid int64) string {
 	return ""
 }
 
-// markPregrill / clearPregrill / isPregrill flag the sessions whose first ask_user
-// must park immediately (the AFK pass). The flag is process-local and lives only for
-// the turn: firstPrompt reads it to pick the pre-grill prompt and grillAskUser reads
-// it to park at once instead of blocking for the full idle window.
+// markPregrill / clearPregrill / isPregrill flag the sessions whose recommendation-less
+// ask_user must park immediately (the AFK pass). The flag is process-local and lives
+// only for the turn: firstPrompt reads it to pick the pre-grill prompt and
+// grillAskUser reads it to park at once instead of blocking for the full idle window.
 func (s *Server) markPregrill(sid int64) {
 	s.pregrillMu.Lock()
 	s.pregrill[sid] = true

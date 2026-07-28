@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Flame, Loader2 } from "lucide-react";
 
+import { AutoAcceptToggle } from "@/components/grill/auto-accept";
 import { useModeSuggestion } from "@/components/grill/mode-suggestion";
 import { SessionTypeChips } from "@/components/grill/session-mode";
 import { Button } from "@/components/ui/button";
@@ -38,6 +39,7 @@ export function StartInterviewDialog({
   const fieldRef = useRef<HTMLTextAreaElement | null>(null);
   const [open, setOpen] = useState(false);
   const [focus, setFocus] = useState("");
+  const [autoAccept, setAutoAccept] = useState(false);
   const sessionType = useModeSuggestion(repo);
   const research = sessionType.mode === "research";
 
@@ -46,6 +48,7 @@ export function StartInterviewDialog({
       startGrillSession(repo, id, {
         seed: focus.trim(),
         mode: sessionType.mode,
+        autoAccept,
       }),
     onSuccess: (session) => {
       publishGrillSession(queryClient, repo, session);
@@ -109,6 +112,11 @@ export function StartInterviewDialog({
               </AlertDialogDescription>
             </AlertDialogHeader>
             <SessionTypeChips sessionType={sessionType} className="mt-2" />
+            <AutoAcceptToggle
+              checked={autoAccept}
+              onChange={setAutoAccept}
+              className="mt-1"
+            />
             <textarea
               ref={fieldRef}
               value={focus}

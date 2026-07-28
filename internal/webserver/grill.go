@@ -29,7 +29,8 @@ const grillDefaultProvider = "claude"
 // IssueDestination names where a create-apply filed the anchored issue, so a review
 // remounted on a settled session still names the destination it used rather than
 // reverting to the picker default. Provider is the session's locked provider and
-// Mode its locked session type.
+// Mode its locked session type; AutoAccept marks a session that answers its own
+// recommendations, so the panel can label the answers it never asked for.
 type GrillSessionView struct {
 	ID               string   `json:"id"`
 	Repo             string   `json:"repo"`
@@ -42,6 +43,7 @@ type GrillSessionView struct {
 	Provider         string   `json:"provider"`
 	Model            string   `json:"model,omitempty"`
 	ModelOptions     []string `json:"model_options,omitempty"`
+	AutoAccept       bool     `json:"auto_accept"`
 	ParkedReason     string   `json:"parked_reason,omitempty"`
 	CreatedAt        string   `json:"created_at"`
 	UpdatedAt        string   `json:"updated_at"`
@@ -122,13 +124,15 @@ type GrillDetailResponse struct {
 // GrillCreateRequest is the body of POST /repos/{repo}/grill. IssueID is empty for
 // an authoring session anchored to the repo alone; Idea is that session's one-line
 // seed, or the focus note an issue-bound interview opens on. Mode, Provider and
-// Model are optional; an empty Mode opens an interview.
+// Model are optional; an empty Mode opens an interview. AutoAccept defaults off, so a
+// session only answers its own recommendations when the start surface asks for it.
 type GrillCreateRequest struct {
-	IssueID  string `json:"issue_id"`
-	Idea     string `json:"idea"`
-	Mode     string `json:"mode"`
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
+	IssueID    string `json:"issue_id"`
+	Idea       string `json:"idea"`
+	Mode       string `json:"mode"`
+	Provider   string `json:"provider"`
+	Model      string `json:"model"`
+	AutoAccept bool   `json:"auto_accept"`
 }
 
 // GrillAnswerRequest is the body of POST /grill/{sid}/answer.
@@ -139,6 +143,11 @@ type GrillAnswerRequest struct {
 // GrillModelRequest is the body of POST /grill/{sid}/model.
 type GrillModelRequest struct {
 	Model string `json:"model"`
+}
+
+// GrillAutoAcceptRequest is the body of POST /grill/{sid}/auto-accept.
+type GrillAutoAcceptRequest struct {
+	Enabled bool `json:"enabled"`
 }
 
 // GrillAnswerResponse acknowledges an answer with the resulting session state and
@@ -217,11 +226,12 @@ func (s *Server) createGrill(w http.ResponseWriter, r *http.Request, repo regist
 		model = s.grillModelDefaultFor(repo, provider)
 	}
 	sess, err := s.stores.Grill().Create(hubstore.NewGrillSession{
-		Repo:     repo.Root,
-		IssueID:  issueID,
-		Mode:     mode,
-		Provider: provider,
-		Model:    model,
+		Repo:       repo.Root,
+		IssueID:    issueID,
+		Mode:       mode,
+		Provider:   provider,
+		Model:      model,
+		AutoAccept: req.AutoAccept,
 	})
 	if err != nil {
 		if errors.Is(err, hubstore.ErrGrillActiveSession) {
@@ -362,33 +372,44 @@ func (s *Server) handleGrillAnswer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "answer text is required"})
 		return
 	}
-	payload, _ := json.Marshal(struct {
-		Text string `json:"text"`
-	}{Text: text})
-	msg, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
-		Role:    hubstore.GrillRoleUser,
-		Kind:    hubstore.GrillKindAnswer,
-		Payload: string(payload),
-	})
+	msg, resumed, err := s.grillSubmitAnswer(r.Context(), sess, text, false)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
-	}
-	prior := sess.State
-	resumed, err := s.stores.Grill().Transition(sid, hubstore.GrillRunning, "")
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	s.publishGrillMessage(msg)
-	s.publishGrillState(resumed)
-	if s.grillResumeSpawns(sid, prior) && s.startGrill != nil {
-		s.startGrill(r.Context(), resumed)
 	}
 	writeJSON(w, http.StatusOK, GrillAnswerResponse{
 		Session: s.grillSessionView("", resumed),
 		Message: grillMessageView(msg),
 	})
+}
+
+// grillSubmitAnswer stores text as the session's answer and puts it back to running,
+// spawning the resume turn a session whose child has gone needs. auto marks an answer
+// the hub took from the agent's own recommendation rather than from the user.
+func (s *Server) grillSubmitAnswer(
+	ctx context.Context,
+	sess hubstore.GrillSession,
+	text string,
+	auto bool,
+) (hubstore.GrillMessage, hubstore.GrillSession, error) {
+	msg, _, err := s.stores.Grill().AppendMessage(sess.ID, hubstore.NewGrillMessage{
+		Role:    hubstore.GrillRoleUser,
+		Kind:    hubstore.GrillKindAnswer,
+		Payload: grillAnswerPayload(text, auto),
+	})
+	if err != nil {
+		return hubstore.GrillMessage{}, sess, fmt.Errorf("store answer: %w", err)
+	}
+	resumed, err := s.stores.Grill().Transition(sess.ID, hubstore.GrillRunning, "")
+	if err != nil {
+		return hubstore.GrillMessage{}, sess, fmt.Errorf("resume session: %w", err)
+	}
+	s.publishGrillMessage(msg)
+	s.publishGrillState(resumed)
+	if s.grillResumeSpawns(sess.ID, sess.State) && s.startGrill != nil {
+		s.startGrill(ctx, resumed)
+	}
+	return msg, resumed, nil
 }
 
 // handleGrillAbandon settles a session as abandoned (POST). It is idempotent on an
@@ -492,6 +513,102 @@ func (s *Server) handleGrillModel(w http.ResponseWriter, r *http.Request) {
 	}
 	s.publishGrillState(updated)
 	writeJSON(w, http.StatusOK, s.grillSessionView("", updated))
+}
+
+// handleGrillAutoAccept turns a session's auto-accept on or off (POST). The flag is
+// read per question, so the switch lands on the next one without runner coordination;
+// turning it on while a recommended question is already waiting answers that one too.
+// A finished or settled session is refused; the value already in effect is a no-op. A
+// change lands as a system notice in the transcript and a state frame on the live
+// stream.
+func (s *Server) handleGrillAutoAccept(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	sid, ok := parseSID(w, r)
+	if !ok {
+		return
+	}
+	sess, found, err := s.stores.Grill().Session(sid)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown grill session"})
+		return
+	}
+	switch sess.State {
+	case hubstore.GrillFinished, hubstore.GrillApplied, hubstore.GrillAbandoned:
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "session no longer accepts an auto-accept switch"})
+		return
+	}
+	var req GrillAutoAcceptRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if req.Enabled == sess.AutoAccept {
+		writeJSON(w, http.StatusOK, s.grillSessionView("", sess))
+		return
+	}
+	updated, found, err := s.stores.Grill().SetAutoAccept(sid, req.Enabled)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if !found {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown grill session"})
+		return
+	}
+	notice := "Auto-accept recommendations turned off"
+	if req.Enabled {
+		notice = "Auto-accept recommendations turned on"
+	}
+	payload, _ := json.Marshal(struct {
+		Text string `json:"text"`
+	}{Text: notice})
+	msg, _, err := s.stores.Grill().AppendMessage(sid, hubstore.NewGrillMessage{
+		Role:    hubstore.GrillRoleSystem,
+		Kind:    hubstore.GrillKindInfo,
+		Payload: string(payload),
+	})
+	if err != nil {
+		logger.Verbosef("grill %d: auto-accept notice: %v", sid, err)
+	} else {
+		s.publishGrillMessage(msg)
+	}
+	s.publishGrillState(updated)
+	if req.Enabled {
+		updated = s.grillAcceptPending(r.Context(), updated)
+	}
+	writeJSON(w, http.StatusOK, s.grillSessionView("", updated))
+}
+
+// grillAcceptPending answers the question a just-switched-on session is already
+// blocked on with the agent's own recommendation, so the flip lands on the question
+// the user is looking at rather than only the next one. A question the agent made no
+// recommendation on needs the user and is left waiting.
+func (s *Server) grillAcceptPending(ctx context.Context, sess hubstore.GrillSession) hubstore.GrillSession {
+	if !grillAcceptsAnswer(sess.State) {
+		return sess
+	}
+	question, ok := s.grillTrailingQuestion(sess.ID)
+	if !ok {
+		return sess
+	}
+	recommended := grillMessageRecommended(question.Payload)
+	if recommended == "" {
+		return sess
+	}
+	_, resumed, err := s.grillSubmitAnswer(ctx, sess, recommended, true)
+	if err != nil {
+		logger.Verbosef("grill %d: auto-accept pending answer: %v", sess.ID, err)
+		return sess
+	}
+	return resumed
 }
 
 // handleGrillStream streams a session's messages and state changes over SSE (GET
@@ -688,6 +805,7 @@ func (s *Server) grillSessionView(repo string, sess hubstore.GrillSession) Grill
 		Provider:         grillEffectiveProvider(sess.Provider),
 		Model:            s.grillEffectiveModel(sess),
 		ModelOptions:     grillModelOptionsFor(sess.Provider),
+		AutoAccept:       sess.AutoAccept,
 		ParkedReason:     sess.ParkedReason,
 		CreatedAt:        sess.CreatedAt,
 		UpdatedAt:        sess.UpdatedAt,

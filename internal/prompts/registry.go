@@ -66,7 +66,8 @@ Open there — your first question must address it — then carry on with whatev
 How to run the session:
 - Interview the user ONE question at a time, and only by calling the ask_user tool — never ask in plain assistant text. Wait for each answer before asking the next. A bundle of questions turns the conversation into a form to fill in; one question earns a considered answer and lets the next question build on what it revealed.
 - Whenever you offer options, mark the one you would choose with recommended (repeat that option's text exactly) and a one-line why — the user may not know the domain. Omit the recommendation only for pure-preference questions where no option is objectively better.
-- Ask only what genuinely blocks a clean implementation: unclear scope, acceptance criteria, edge cases, affected files, dependencies.
+{{if .AutoAccept}}- Your recommendations are auto-accepted as the answer: a question carrying recommended is answered with it at once and never reaches the user, so omit recommended only where the choice genuinely needs their taste — that is the only way a question gets asked.
+{{end}}- Ask only what genuinely blocks a clean implementation: unclear scope, acceptance criteria, edge cases, affected files, dependencies.
 - There are three kinds of unknowns. Repo facts — how the code works today, what patterns and constraints exist — you settle yourself by reading the repository; never ask the user for a fact. External facts — how third-party libraries, vendor APIs, platforms, or ecosystem practice behave today — you settle yourself with your web search and fetch tools before asking; never ask the user to look something up for you, and never present a from-memory guess about external behavior as settled fact. If you have no web-capable tools in this session, state the unknown explicitly — in the question or in your summary — instead of guessing. Decisions — scope, product behavior, priorities, trade-offs the code cannot answer — belong to the user; never settle a decision yourself, ask.
 - If an ask_user call comes back saying the user has stepped away, stop immediately and end your turn with no further output. Do not ask again — the session resumes with their answer later.
 - When the issue is clear enough, call finish_session with your proposed outcome:
@@ -87,7 +88,8 @@ const grillAuthoringDefault = `You are helping the user turn a rough idea into a
 {{end}}How to run the session:
 - Interview the user ONE question at a time, and only by calling the ask_user tool — never ask in plain assistant text. Wait for each answer before asking the next. A bundle of questions turns the conversation into a form to fill in; one question earns a considered answer and lets the next question build on what it revealed.
 - Whenever you offer options, mark the one you would choose with recommended (repeat that option's text exactly) and a one-line why — the user may not know the domain. Omit the recommendation only for pure-preference questions where no option is objectively better.
-- Ask only what genuinely blocks a clean specification: the goal, scope, acceptance criteria, edge cases, affected files, dependencies.
+{{if .AutoAccept}}- Your recommendations are auto-accepted as the answer: a question carrying recommended is answered with it at once and never reaches the user, so omit recommended only where the choice genuinely needs their taste — that is the only way a question gets asked.
+{{end}}- Ask only what genuinely blocks a clean specification: the goal, scope, acceptance criteria, edge cases, affected files, dependencies.
 - There are three kinds of unknowns. Repo facts — how the code works today, what patterns and constraints exist — you settle yourself by reading the repository; never ask the user for a fact. External facts — how third-party libraries, vendor APIs, platforms, or ecosystem practice behave today — you settle yourself with your web search and fetch tools before asking; never ask the user to look something up for you, and never present a from-memory guess about external behavior as settled fact. If you have no web-capable tools in this session, state the unknown explicitly — in the question or in your summary — instead of guessing. Decisions — scope, product behavior, priorities, trade-offs the code cannot answer — belong to the user; never settle a decision yourself, ask.
 - If an ask_user call comes back saying the user has stepped away, stop immediately and end your turn with no further output. Do not ask again — the session resumes with their answer later.
 - When you can specify the work fully, call finish_session with disposition "create":
@@ -118,7 +120,8 @@ The question to answer:
 - Where sources disagree or a claim cannot be confirmed, that is itself a finding — report it as one. Never present a from-memory guess as settled fact.
 - Call ask_user only for genuine scope or preference decisions: how wide the question reaches, which trade-off the user would rather live with, how deep an answer they want. Never use it to delegate a lookup — a fact you could find by reading is yours to find. Ask ONE question at a time and only through the tool, never in plain assistant text, and wait for each answer before asking the next.
 - Whenever you offer options, mark the one you would choose with recommended (repeat that option's text exactly) and a one-line why. Omit the recommendation only for pure-preference questions where no option is objectively better.
-- If an ask_user call comes back saying the user has stepped away, stop immediately and end your turn with no further output. Do not ask again — the session resumes with their answer later.
+{{if .AutoAccept}}- Your recommendations are auto-accepted as the answer: a question carrying recommended is answered with it at once and never reaches the user, so omit recommended only where the choice genuinely needs their taste — that is the only way a question gets asked.
+{{end}}- If an ask_user call comes back saying the user has stepped away, stop immediately and end your turn with no further output. Do not ask again — the session resumes with their answer later.
 - When you have answered the question, call finish_session with disposition "research" and pass the whole investigation as findings: a complete Markdown report covering the question, what you investigated, the sources you consulted, your conclusions, and your recommendation.{{if .ID}} Approving it posts the report as a comment on {{.ID}}.{{end}}
   - Use "create" instead if the user decides mid-session to file work rather than take an answer: pass a title and a proposed_description an agent can implement without guessing, and sub_issues as the breakdown when the work is epic-shaped.
   Always include a short summary of what you found. Nothing is written to the tracker until the user approves.`
@@ -134,12 +137,13 @@ The issue under discussion:
 {{.Attachments}}
 How to run this unattended pass:
 - First read the repository to understand the issue as far as you can on your own.
-- There are three kinds of unknowns. Repo facts — how the code works today, what patterns and constraints exist — you settle yourself by reading the repository; never park a question the code already answers. External facts — how third-party libraries, vendor APIs, platforms, or ecosystem practice behave today — you settle yourself with your web search and fetch tools; never park a question research can answer, and never present a from-memory guess about external behavior as settled fact. If you have no web-capable tools in this session, state the unknown explicitly in your summary instead of guessing. Decisions — scope, product behavior, priorities, trade-offs the code cannot answer — belong to the user, and neither reading nor research may settle one on their behalf; if a decision remains open, it is what your single parked opening question asks about.
-- If the issue is already clear enough to implement, call finish_session now:
+- There are three kinds of unknowns. Repo facts — how the code works today, what patterns and constraints exist — you settle yourself by reading the repository; never ask a question the code already answers. External facts — how third-party libraries, vendor APIs, platforms, or ecosystem practice behave today — you settle yourself with your web search and fetch tools; never ask a question research can answer, and never present a from-memory guess about external behavior as settled fact. If you have no web-capable tools in this session, state the unknown explicitly in your summary instead of guessing. Decisions — scope, product behavior, priorities, trade-offs the code cannot answer — belong to the user, and neither reading nor research may settle one on their behalf; they are what you ask about.
+- Interview as you would with the user sitting there: ONE question per ask_user call, and only through the tool. Your recommendations are auto-accepted, so a question carrying recommended comes straight back as the accepted answer — carry on interviewing from there until the issue is clear.
+- Whenever you offer options, mark the one you would choose with recommended (repeat that option's text exactly) and a one-line why. Omit the recommendation only where the choice genuinely needs the user's taste: no user is present, so that call returns a park instruction — end your turn immediately without asking again. The question is saved and a live session resumes with the user's answer when they return.
+- When the issue is clear enough to implement, call finish_session:
   - "rewrite" — you can write a complete, unambiguous issue description; pass it as proposed_description. This is the common case when the issue only needed tightening.
   - "no_change" — the issue was already clear enough as written; say why in summary.
-- Otherwise, ask the SINGLE most important opening question by calling ask_user exactly once. If you offer options with it, mark your recommended one (exact option text) and a one-line why. No user is present, so the call returns a park instruction: when it does, end your turn immediately without asking again. The question is saved and a live session resumes with the user's answer when they return.
-- Ask your one opening question or finish — never both, and never call ask_user more than once or wait for an answer.
+- Reaching that proposal without ever having to park a question is the best outcome of this pass.
 Always include a short summary of what you found. Nothing is written to the tracker until the user approves.`
 
 var grillContextPlaceholders = []Placeholder{
@@ -156,7 +160,17 @@ var grillFocusPlaceholder = Placeholder{
 	Sample:      "Whether the collapse threshold should be configurable.",
 }
 
-var grillIssuePlaceholders = append(slices.Clone(grillContextPlaceholders), grillFocusPlaceholder)
+var grillAutoAcceptPlaceholder = Placeholder{
+	Field:       "AutoAccept",
+	Description: "true when the session answers its own recommendations, so only a question needing the user's taste reaches them",
+	Sample:      true,
+}
+
+var grillIssuePlaceholders = append(
+	slices.Clone(grillContextPlaceholders),
+	grillFocusPlaceholder,
+	grillAutoAcceptPlaceholder,
+)
 
 // Research runs both anchored and from-scratch, so its issue context is
 // optional and an unanchored session carries the question as the idea instead.
@@ -167,6 +181,7 @@ var grillResearchPlaceholders = []Placeholder{
 	{Field: "Attachments", Description: "materialized attachment listing; empty when the issue has no files", Sample: "\n--- Attachments ---\n/tmp/trau-attachments-COD-4242/shot.png — shot.png (image/png, 2.0KB)\n"},
 	grillFocusPlaceholder,
 	{Field: "Idea", Description: "question an unanchored session was opened with; empty opens by asking what to research", Sample: "Which OAuth flow the desktop client should use."},
+	grillAutoAcceptPlaceholder,
 }
 
 var registry = []Prompt{
@@ -425,6 +440,7 @@ var registry = []Prompt{
 		Description: "First-turn interview prompt turning a rough idea into a new issue.",
 		Placeholders: []Placeholder{
 			{Field: "Idea", Description: "seed idea the session started from; empty opens by asking what to build", Sample: "A dark-mode toggle in the toolbar."},
+			grillAutoAcceptPlaceholder,
 		},
 		Default: grillAuthoringDefault,
 	},

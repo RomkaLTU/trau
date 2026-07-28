@@ -23,10 +23,11 @@ func TestGrillIssuePromptReferencesMaterializedFiles(t *testing.T) {
 		{Ref: attachfile.Ref{ID: 1, Filename: "shot.png", MimeType: "image/png", Size: 2048, IsImage: true, SourceURL: "https://uploads.linear.app/abc/shot.png"}, Path: "/tmp/trau-attachments-COD-1/shot.png"},
 	}
 	body := "The toolbar breaks:\n\n![shot](https://uploads.linear.app/abc/shot.png)"
+	in := grillPromptInput{issueID: "COD-1", title: "Broken toolbar", description: body, files: files}
 
 	for name, got := range map[string]string{
-		"grillIssuePrompt":    grillIssuePrompt(prompts.Renderer{}, "COD-1", "Broken toolbar", body, "", files),
-		"grillPregrillPrompt": grillPregrillPrompt(prompts.Renderer{}, "COD-1", "Broken toolbar", body, files),
+		"grillIssuePrompt":    grillIssuePrompt(prompts.Renderer{}, in),
+		"grillPregrillPrompt": grillPregrillPrompt(prompts.Renderer{}, in),
 	} {
 		for _, want := range []string{
 			"![shot](/tmp/trau-attachments-COD-1/shot.png)",
@@ -46,14 +47,14 @@ func TestGrillIssuePromptReferencesMaterializedFiles(t *testing.T) {
 
 // An issue with no files renders exactly as it did before attachments existed.
 func TestGrillIssuePromptWithoutAttachments(t *testing.T) {
-	got := grillIssuePrompt(prompts.Renderer{}, "COD-1", "Broken toolbar", "Fix the toolbar.", "", nil)
+	got := grillIssuePrompt(prompts.Renderer{}, grillPromptInput{issueID: "COD-1", title: "Broken toolbar", description: "Fix the toolbar."})
 	if strings.Contains(got, "--- Attachments ---") {
 		t.Errorf("empty attachment list should render no section:\n%s", got)
 	}
 	if !strings.Contains(got, "Fix the toolbar.\n\n") {
 		t.Errorf("description spacing changed:\n%s", got)
 	}
-	if empty := grillIssuePrompt(prompts.Renderer{}, "COD-1", "Broken toolbar", "", "", nil); !strings.Contains(empty, "(no description yet)\n\n") {
+	if empty := grillIssuePrompt(prompts.Renderer{}, grillPromptInput{issueID: "COD-1", title: "Broken toolbar"}); !strings.Contains(empty, "(no description yet)\n\n") {
 		t.Errorf("missing description placeholder:\n%s", empty)
 	}
 }
@@ -63,7 +64,7 @@ func TestGrillIssuePromptNotesUnavailableFile(t *testing.T) {
 	files := []attachfile.File{
 		{Ref: attachfile.Ref{ID: 1, Filename: "shot.png"}, Err: errors.New("hub unreachable")},
 	}
-	got := grillIssuePrompt(prompts.Renderer{}, "COD-1", "Broken toolbar", "See the shot.", "", files)
+	got := grillIssuePrompt(prompts.Renderer{}, grillPromptInput{issueID: "COD-1", title: "Broken toolbar", description: "See the shot.", files: files})
 	if !strings.Contains(got, "shot.png unavailable:") {
 		t.Errorf("missing the unavailable note:\n%s", got)
 	}

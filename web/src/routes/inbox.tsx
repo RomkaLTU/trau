@@ -16,6 +16,10 @@ import {
 
 import { Markdown, type MarkdownUrlMap } from "@/components/markdown";
 import { DeleteIssueDialog } from "@/components/delete-issue-dialog";
+import {
+  AutoAcceptSwitch,
+  AutoAcceptToggle,
+} from "@/components/grill/auto-accept";
 import { ErrorNote } from "@/components/grill/banners";
 import { Composer } from "@/components/grill/composer";
 import {
@@ -55,10 +59,12 @@ import {
   applySessionModel,
   GRILLABLE_LABELS,
   grillDefaultsQueryOptions,
+  isOver,
   isSettled,
   latestOutcome,
   outcomePayload,
   pregrillIssues,
+  setGrillAutoAccept,
   startGrillSession,
   switchGrillModel,
   type GrillAppliedOutcome,
@@ -844,9 +850,10 @@ function FreshDraftBody({
   const queryClient = useQueryClient();
   const sessionType = starter.sessionType;
   const research = sessionType.mode === "research";
+  const [autoAccept, setAutoAccept] = useState(false);
   const start = useMutation({
     mutationFn: (seed: string) =>
-      startGrillSession(repo, "", starterOpening(starter, seed)),
+      startGrillSession(repo, "", { ...starterOpening(starter, seed), autoAccept }),
     onSuccess: (session) => {
       queryClient.setQueryData<GrillListResponse>(["grill", repo], (prev) =>
         prev
@@ -877,6 +884,7 @@ function FreshDraftBody({
           <SessionTypeChips sessionType={sessionType} />
           <StartModelSelect starter={starter} />
         </div>
+        <AutoAcceptToggle checked={autoAccept} onChange={setAutoAccept} />
         <Composer
           repo={repo}
           placeholder={research ? "Ask your question…" : "Describe the issue…"}
@@ -1045,11 +1053,12 @@ function SessionBar({
   draft?: boolean;
 }) {
   const [modelError, setModelError] = useState<string | null>(null);
+  const [autoAcceptError, setAutoAcceptError] = useState<string | null>(null);
 
   return (
     <div className="shrink-0 border-b border-border">
-      <div className="flex items-center justify-between gap-3 py-3 pl-5 pr-1">
-        <div className="flex min-w-0 items-center gap-3 overflow-hidden">
+      <div className="flex flex-wrap items-center justify-between gap-2 py-3 pl-5 pr-1">
+        <div className="flex min-w-0 flex-1 items-center gap-3 overflow-hidden">
           <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
             {position + 1} of {total}
           </span>
@@ -1066,14 +1075,20 @@ function SessionBar({
             </span>
           </span>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="ml-auto flex max-w-full shrink-0 flex-wrap items-center justify-end gap-2">
           <SessionModeBadge mode={session?.mode} />
           {session && (
-            <ModelSwitch
-              repo={repo}
-              session={session}
-              onError={setModelError}
-            />
+            <>
+              <ModelSwitch
+                repo={repo}
+                session={session}
+                onError={setModelError}
+              />
+              <SessionAutoAccept
+                session={session}
+                onError={setAutoAcceptError}
+              />
+            </>
           )}
           {reconnecting && (
             <span className="inline-flex items-center gap-1 text-xs text-warn">
@@ -1128,6 +1143,9 @@ function SessionBar({
       {modelError && (
         <p className="px-5 pb-2 text-xs text-destructive">{modelError}</p>
       )}
+      {autoAcceptError && (
+        <p className="px-5 pb-2 text-xs text-destructive">{autoAcceptError}</p>
+      )}
     </div>
   );
 }
@@ -1173,12 +1191,33 @@ function ModelSwitch({
       model={session.model ?? ""}
       options={session.model_options ?? []}
       label="Switch model"
-      disabled={
-        session.state === "finished" ||
-        isSettled(session.state) ||
-        switchModel.isPending
-      }
+      disabled={isOver(session.state) || switchModel.isPending}
       onChange={(next) => switchModel.mutate(next)}
+    />
+  );
+}
+
+// SessionAutoAccept is the bar's auto-accept switch for a live session. Nothing here
+// is optimistic — the SSE state frame carries the new value, along with the auto answer
+// the hub posts when the flip lands on a question already waiting.
+function SessionAutoAccept({
+  session,
+  onError,
+}: {
+  session: GrillSession;
+  onError: (message: string | null) => void;
+}) {
+  const setAutoAccept = useMutation({
+    mutationFn: (enabled: boolean) => setGrillAutoAccept(session.id, enabled),
+    onMutate: () => onError(null),
+    onError: (err) => onError((err as Error).message),
+  });
+
+  return (
+    <AutoAcceptSwitch
+      checked={session.auto_accept ?? false}
+      disabled={isOver(session.state) || setAutoAccept.isPending}
+      onChange={(next) => setAutoAccept.mutate(next)}
     />
   );
 }

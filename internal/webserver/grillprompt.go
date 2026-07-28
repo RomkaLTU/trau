@@ -7,24 +7,34 @@ import (
 	"github.com/RomkaLTU/trau/internal/prompts"
 )
 
+// grillPromptInput is the issue context a first-turn prompt is built from: the issue
+// the session is anchored to with its attachments materialized locally, the focus note
+// it was opened with, and whether the agent's recommendations are answered for it.
+type grillPromptInput struct {
+	issueID     string
+	title       string
+	description string
+	focus       string
+	files       []attachfile.File
+	autoAccept  bool
+}
+
 // grillIssuePrompt is the first-turn prompt for grilling an existing issue: the
 // agent interviews the user one question at a time via the ask_user MCP tool and
 // ends with a finish_session proposal. It runs with the repo as cwd, so it is told
-// to read the code before asking when that sharpens a question. focus is the note
-// the session was opened with, and aims the opening question. Resume turns carry
+// to read the code before asking when that sharpens a question. Resume turns carry
 // only the user's answer — the child already holds this context.
-func grillIssuePrompt(r prompts.Renderer, issueID, title, description, focus string, files []attachfile.File) string {
-	data := grillIssueData(issueID, title, description, files)
-	data.Focus = strings.TrimSpace(focus)
-	return r.Render("grill_issue", data)
+func grillIssuePrompt(r prompts.Renderer, in grillPromptInput) string {
+	return r.Render("grill_issue", grillIssueData(in))
 }
 
-// grillPregrillPrompt is the first-turn prompt for an AFK pre-grill pass: no user
-// is present, so the agent reads the repo and either finishes with a rewrite or
-// no_change, or lodges its single opening question via ask_user — which parks at
+// grillPregrillPrompt is the first-turn prompt for an AFK pre-grill pass: no user is
+// present, so the agent reads the repo and interviews against its own recommendations,
+// which the session auto-accepts. It finishes with a rewrite or no_change, or lodges
+// the one question it would not recommend an answer to via ask_user — which parks at
 // once — and ends its turn. The parked question waits for a live session later.
-func grillPregrillPrompt(r prompts.Renderer, issueID, title, description string, files []attachfile.File) string {
-	return r.Render("grill_pregrill", grillIssueData(issueID, title, description, files))
+func grillPregrillPrompt(r prompts.Renderer, in grillPromptInput) string {
+	return r.Render("grill_pregrill", grillIssueData(in))
 }
 
 // grillAuthoringPrompt is the first-turn prompt for a session anchored to the repo
@@ -32,34 +42,39 @@ func grillPregrillPrompt(r prompts.Renderer, issueID, title, description string,
 // toward a fully-specified new issue and ends with a create proposal — a single
 // issue or an epic with sub-issues. idea is the one-line seed the user started with;
 // it is empty when they opened the session without one.
-func grillAuthoringPrompt(r prompts.Renderer, idea string) string {
-	return r.Render("grill_authoring", prompts.GrillAuthoringData{Idea: strings.TrimSpace(idea)})
+func grillAuthoringPrompt(r prompts.Renderer, idea string, autoAccept bool) string {
+	return r.Render("grill_authoring", prompts.GrillAuthoringData{
+		Idea:       strings.TrimSpace(idea),
+		AutoAccept: autoAccept,
+	})
 }
 
 // grillResearchPrompt is the first-turn prompt for a research session anchored to an
 // issue: the agent answers the question against primary sources — the web and the
 // repo — with the issue as its context, and finishes with a findings report rather
-// than an issue rewrite. focus is the note the session was opened with, and aims the
-// research at the issue.
-func grillResearchPrompt(r prompts.Renderer, issueID, title, description, focus string, files []attachfile.File) string {
-	issue := grillIssueData(issueID, title, description, files)
-	issue.Focus = strings.TrimSpace(focus)
-	return r.Render("grill_research", prompts.GrillResearchData{GrillIssueData: issue})
+// than an issue rewrite. The focus note aims the research at the issue.
+func grillResearchPrompt(r prompts.Renderer, in grillPromptInput) string {
+	return r.Render("grill_research", prompts.GrillResearchData{GrillIssueData: grillIssueData(in)})
 }
 
 // grillResearchIdeaPrompt is the from-scratch counterpart: nothing anchors the
 // session, so the opening note is the question to answer; it is empty when the user
 // opened the session without one.
-func grillResearchIdeaPrompt(r prompts.Renderer, question string) string {
-	return r.Render("grill_research", prompts.GrillResearchData{Idea: strings.TrimSpace(question)})
+func grillResearchIdeaPrompt(r prompts.Renderer, question string, autoAccept bool) string {
+	return r.Render("grill_research", prompts.GrillResearchData{
+		GrillIssueData: prompts.GrillIssueData{AutoAccept: autoAccept},
+		Idea:           strings.TrimSpace(question),
+	})
 }
 
-func grillIssueData(issueID, title, description string, files []attachfile.File) prompts.GrillIssueData {
+func grillIssueData(in grillPromptInput) prompts.GrillIssueData {
 	return prompts.GrillIssueData{
-		ID:          issueID,
-		Title:       strings.TrimSpace(title),
-		Body:        grillIssueBody(description, files),
-		Attachments: attachfile.Section(files),
+		ID:          in.issueID,
+		Title:       strings.TrimSpace(in.title),
+		Body:        grillIssueBody(in.description, in.files),
+		Attachments: attachfile.Section(in.files),
+		Focus:       strings.TrimSpace(in.focus),
+		AutoAccept:  in.autoAccept,
 	}
 }
 
