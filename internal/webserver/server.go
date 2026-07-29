@@ -85,6 +85,7 @@ type Server struct {
 	channel          ChannelSwitch
 	runBuild         func(ctx context.Context, dir, command string) ([]byte, error)
 	probeVersion     func(ctx context.Context, path string) (string, error)
+	pathBinaries     func() []string
 	updates          *update.Checker
 	attachFetch      singleflight.Group
 	team             *teamSyncer
@@ -134,6 +135,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		reloadPoll:       drainPoll,
 		runBuild:         runShellCommand,
 		probeVersion:     update.ProbeVersion,
+		pathBinaries:     trauOnPath,
 		updates:          update.NewChecker(version),
 		pushSend:         sendWebPush,
 	}

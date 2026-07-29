@@ -37,6 +37,7 @@ func newChannelServer(t *testing.T, selfReload bool, bind, token string, allowRe
 	s.executable = func() (string, error) { return releaseExe, nil }
 	s.runBuild = func(context.Context, string, string) ([]byte, error) { return nil, nil }
 	s.probeVersion = func(context.Context, string) (string, error) { return "2.2.0-dev", nil }
+	s.pathBinaries = func() []string { return []string{releaseExe} }
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	return s, ts, root
@@ -186,7 +187,7 @@ func TestChannelSwitchGates(t *testing.T) {
 		want       int
 		wantIn     string
 	}{
-		{name: "unsupported channel", selfReload: true, channel: channelRelease, repoRoot: ownRepo, want: http.StatusBadRequest, wantIn: "dev"},
+		{name: "unsupported channel", selfReload: true, channel: "beta", repoRoot: ownRepo, want: http.StatusBadRequest, wantIn: `"dev" or "release"`},
 		{name: "no repo named", selfReload: true, channel: channelDev, repoRoot: "  ", want: http.StatusBadRequest, wantIn: "repo_root"},
 		{name: "unregistered repo", selfReload: true, channel: channelDev, repoRoot: "/nowhere/beta", want: http.StatusNotFound, wantIn: "unknown repo"},
 		{name: "self-reload off", selfReload: false, channel: channelDev, repoRoot: ownRepo, want: http.StatusForbidden, wantIn: "HUB_SELF_RELOAD"},
@@ -358,6 +359,156 @@ func TestChannelSwitchRefusesASecondSwitch(t *testing.T) {
 	}
 }
 
+// TestChannelRebuildOnDevRestartsOntoTheFreshBuild checks the manual rebuild: a
+// hub already on dev asked for dev builds the tree as it stands and restarts
+// onto what that produced, which is the terminal-free twin of `make reset`.
+func TestChannelRebuildOnDevRestartsOntoTheFreshBuild(t *testing.T) {
+	s, ts, root := channelServer(t, true)
+	devExe := filepath.Join(root, "bin", "trau")
+	s.executable = func() (string, error) { return devExe, nil }
+	builds := make(chan string, 1)
+	s.runBuild = func(_ context.Context, dir, _ string) ([]byte, error) {
+		builds <- dir
+		return nil, nil
+	}
+	successors := make(chan string, 1)
+	s.EnableRestart(func(binary string) { successors <- binary })
+
+	res := postChannel(t, ts, channelDev, root)
+	defer func() { _ = res.Body.Close() }()
+
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusAccepted)
+	}
+	if got := <-builds; got != root {
+		t.Fatalf("build dir = %q, want the tree the hub already runs from (%q)", got, root)
+	}
+	if got := <-successors; got != devExe {
+		t.Fatalf("successor = %q, want the freshly built %q", got, devExe)
+	}
+}
+
+// TestChannelSwitchToReleaseRestartsOntoTheInstall checks the way back: the hub
+// restarts onto the trau PATH holds, without building anything.
+func TestChannelSwitchToReleaseRestartsOntoTheInstall(t *testing.T) {
+	s, ts, root := channelServer(t, true)
+	s.executable = func() (string, error) { return filepath.Join(root, "bin", "trau"), nil }
+	s.runBuild = func(context.Context, string, string) ([]byte, error) {
+		t.Error("switching back to release rebuilt something")
+		return nil, nil
+	}
+	successors := make(chan string, 1)
+	s.EnableRestart(func(binary string) { successors <- binary })
+
+	res := postChannel(t, ts, channelRelease, "")
+	defer func() { _ = res.Body.Close() }()
+
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusAccepted)
+	}
+	var ack ChannelAck
+	if err := json.NewDecoder(res.Body).Decode(&ack); err != nil {
+		t.Fatalf("decode ack: %v", err)
+	}
+	if !ack.Pending || ack.Channel != channelRelease {
+		t.Fatalf("ack = %+v, want a pending release switch", ack)
+	}
+	if got := <-successors; got != releaseExe {
+		t.Fatalf("successor = %q, want the release install %q", got, releaseExe)
+	}
+}
+
+// TestChannelSwitchToReleaseRefusals checks a machine with nothing to go back to
+// is told so before anything restarts, and that a repo's own build never counts
+// as the release install however early it sits on PATH.
+func TestChannelSwitchToReleaseRefusals(t *testing.T) {
+	tests := []struct {
+		name     string
+		onPath   func(root string) []string
+		probeErr error
+		wantIn   string
+	}{
+		{
+			name:   "nothing on PATH",
+			onPath: func(string) []string { return nil },
+			wantIn: "no release install found",
+		},
+		{
+			name:   "only the repo's own build",
+			onPath: func(root string) []string { return []string{filepath.Join(root, "bin", "trau")} },
+			wantIn: "no release install found",
+		},
+		{
+			name:     "install cannot run",
+			onPath:   func(string) []string { return []string{releaseExe} },
+			probeErr: errors.New("fork/exec: exec format error"),
+			wantIn:   "unusable",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, ts, root := channelServer(t, true)
+			s.pathBinaries = func() []string { return tt.onPath(root) }
+			if tt.probeErr != nil {
+				s.probeVersion = func(context.Context, string) (string, error) { return "", tt.probeErr }
+			}
+			s.EnableRestart(func(string) { t.Error("a refused switch restarted the hub") })
+
+			res := postChannel(t, ts, channelRelease, "")
+			defer func() { _ = res.Body.Close() }()
+
+			if res.StatusCode != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusNotFound)
+			}
+			if msg := errorOf(t, res); !strings.Contains(msg, tt.wantIn) {
+				t.Errorf("error = %q, want it to name %q", msg, tt.wantIn)
+			}
+			if got := s.channelSwitch(); got.State != switchIdle {
+				t.Errorf("switch state = %q, want %q after a refusal", got.State, switchIdle)
+			}
+		})
+	}
+}
+
+// TestReleaseCandidates checks which PATH entries a switch back would consider:
+// a trau inside a registered repo is that repo's dev build, so restarting onto
+// it would not leave the dev channel at all.
+func TestReleaseCandidates(t *testing.T) {
+	const (
+		acme  = "/src/acme"
+		beta  = "/src/beta"
+		brew  = "/opt/homebrew/bin/trau"
+		local = "/usr/local/bin/trau"
+	)
+	tests := []struct {
+		name  string
+		paths []string
+		roots []string
+		want  []string
+	}{
+		{name: "no install at all", paths: nil, roots: []string{acme}, want: []string{}},
+		{name: "install outside every root", paths: []string{brew}, roots: []string{acme, beta}, want: []string{brew}},
+		{name: "checkout ahead of the install", paths: []string{acme + "/bin/trau", brew}, roots: []string{acme}, want: []string{brew}},
+		{name: "every entry owned by a repo", paths: []string{acme + "/bin/trau", beta + "/bin/trau"}, roots: []string{acme, beta}, want: []string{}},
+		{name: "no registered repo owns anything", paths: []string{local, brew}, roots: nil, want: []string{local, brew}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := releaseCandidates(tt.paths, tt.roots)
+			if len(got) != len(tt.want) {
+				t.Fatalf("candidates = %q, want %q", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("candidates = %q, want %q", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
 // TestUpdateStatusReportsChannel checks the channel is derived from where the
 // hub's executable sits rather than recorded anywhere, and that the owning repo
 // comes back with it.
@@ -396,6 +547,13 @@ func TestUpdateStatusReportsChannel(t *testing.T) {
 			}
 			if got.ChannelRepo != wantRepo {
 				t.Errorf("channelRepo = %q, want %q", got.ChannelRepo, wantRepo)
+			}
+			wantRelease := ""
+			if tt.insideRepo {
+				wantRelease = releaseExe
+			}
+			if got.ReleaseBinary != wantRelease {
+				t.Errorf("releaseBinary = %q, want %q", got.ReleaseBinary, wantRelease)
 			}
 			if got.ChannelSwitch.State != switchIdle {
 				t.Errorf("channelSwitch.state = %q, want %q", got.ChannelSwitch.State, switchIdle)

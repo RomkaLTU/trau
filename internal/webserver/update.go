@@ -18,7 +18,8 @@ func (s *Server) SetUpdateChecks(enabled bool) {
 // newer versions, plus the repo a self-reload is waiting on and the build
 // channel this hub runs. Both live on the hub rather than the checker — a merge
 // asks for the reload, and the channel is a fact about where the executable
-// sits, not about any release.
+// sits, not about any release. ReleaseBinary names the install a switch back
+// would land on, and only while the hub is on dev.
 type UpdateStatus struct {
 	update.Status
 	SelfReloadPending string        `json:"selfReloadPending"`
@@ -26,18 +27,36 @@ type UpdateStatus struct {
 	ChannelRepo       string        `json:"channelRepo"`
 	ChannelRepos      []ChannelRepo `json:"channelRepos"`
 	ChannelSwitch     ChannelSwitch `json:"channelSwitch"`
+	ReleaseBinary     string        `json:"releaseBinary"`
 }
 
 func (s *Server) updateStatus() UpdateStatus {
 	channel, channelRepo := s.hubChannel()
-	return UpdateStatus{
-		Status:            s.updates.Status(),
+	status := UpdateStatus{
+		Status:            channelUpdateStatus(s.updates.Status(), channel),
 		SelfReloadPending: s.selfReloadPending(),
 		Channel:           channel,
 		ChannelRepo:       channelRepo,
 		ChannelRepos:      s.eligibleChannelRepos(),
 		ChannelSwitch:     s.channelSwitch(),
 	}
+	if channel == channelDev {
+		status.ReleaseBinary = s.offeredReleaseBinary()
+	}
+	return status
+}
+
+// channelUpdateStatus folds the build channel into the checker's answer. A dev
+// hub claims no available update: the checker weighs the newest release against
+// the version on disk, which for a working-tree build is a `git describe` of
+// whatever is checked out, so a newer release says nothing about it. The release
+// version itself still comes back — it is what switching back would pick up —
+// and a release-channel hub is left exactly as the checker reports it.
+func channelUpdateStatus(st update.Status, channel string) update.Status {
+	if channel == channelDev {
+		st.UpdateAvailable = false
+	}
+	return st
 }
 
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
