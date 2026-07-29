@@ -53,7 +53,7 @@ export function GlobalSearch() {
 
   return (
     <div ref={ref} className="relative">
-      <div className="flex items-center gap-2 rounded-md border border-border bg-input px-2.5 py-1.5">
+      <div className="flex items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 dark:bg-input">
         <Search
           className="size-3.5 shrink-0 text-muted-foreground"
           aria-hidden="true"

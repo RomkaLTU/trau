@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   AlertDialog,
   AlertDialogContent,
@@ -14,7 +15,7 @@ import type { RepoView } from '@/lib/instances'
 import { cn } from '@/lib/utils'
 
 const fieldClass =
-  'w-full rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:outline-none'
+  'h-auto px-2.5 py-1.5 font-mono text-sm placeholder:text-muted-foreground/60'
 
 // NewProjectDialog names a project and files the picked repos into it in one go.
 export function NewProjectDialog({
@@ -100,7 +101,7 @@ export function NewProjectDialog({
             >
               name
             </label>
-            <input
+            <Input
               id="new-project-name"
               value={name}
               onChange={(e) => setName(e.target.value)}

@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   ConfirmDialog,
   EmptyState,
@@ -529,7 +530,7 @@ function RegistrySearch({
             className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
             aria-hidden="true"
           />
-          <input
+          <Input
             type="search"
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -537,7 +538,7 @@ function RegistrySearch({
             aria-label="Search the skills registry"
             autoComplete="off"
             spellCheck={false}
-            className="w-full rounded-md border border-border bg-input py-1.5 pl-8 pr-2.5 font-mono text-sm text-foreground placeholder:text-faint focus-visible:border-ring focus-visible:outline-none"
+            className="h-auto py-1.5 pl-8 pr-2.5 font-mono text-sm placeholder:text-faint"
           />
         </div>
 
@@ -644,7 +645,7 @@ function ManualInstall({
           if (spec) onInstall({ pkg: spec, name: spec, source: spec })
         }}
       >
-        <input
+        <Input
           type="text"
           value={value}
           onChange={(e) => setValue(e.target.value)}
@@ -652,7 +653,7 @@ function ManualInstall({
           aria-label="Install skill by source"
           autoComplete="off"
           spellCheck={false}
-          className="min-w-0 flex-1 rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground placeholder:text-faint focus-visible:border-ring focus-visible:outline-none"
+          className="h-auto flex-1 px-2.5 py-1.5 font-mono text-sm placeholder:text-faint"
         />
         <Button
           type="submit"
@@ -1096,7 +1097,7 @@ function MatcherField({
       <span className="w-16 font-mono text-xs text-muted-foreground">
         {label}
       </span>
-      <input
+      <Input
         type="text"
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
@@ -1111,7 +1112,7 @@ function MatcherField({
         disabled={disabled}
         autoComplete="off"
         spellCheck={false}
-        className="min-w-0 flex-1 rounded-md border border-border bg-input px-2.5 py-1 font-mono text-xs text-foreground placeholder:text-faint focus-visible:border-ring focus-visible:outline-none disabled:opacity-60"
+        className="h-auto flex-1 px-2.5 py-1 font-mono text-xs placeholder:text-faint disabled:opacity-60"
       />
     </label>
   )

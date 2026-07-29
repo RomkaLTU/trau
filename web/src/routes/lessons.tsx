@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { ChevronDown, Search } from "lucide-react";
 
+import { Input } from "@/components/ui/input";
 import {
   EmptyState,
   Eyebrow,
@@ -77,7 +78,7 @@ function LessonList({ repo }: { repo: string }) {
               className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
               aria-hidden="true"
             />
-            <input
+            <Input
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -85,7 +86,7 @@ function LessonList({ repo }: { repo: string }) {
               aria-label="Search lessons"
               autoComplete="off"
               spellCheck={false}
-              className="w-full rounded-md border border-border bg-input py-1.5 pl-8 pr-2.5 font-mono text-sm text-foreground placeholder:text-faint focus-visible:border-ring focus-visible:outline-none"
+              className="h-auto py-1.5 pl-8 pr-2.5 font-mono text-sm placeholder:text-faint"
             />
           </div>
         </label>

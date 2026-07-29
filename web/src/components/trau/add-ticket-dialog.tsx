@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronDown, ChevronRight, Plus, Search, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   AlertDialog,
   AlertDialogContent,
@@ -40,7 +41,7 @@ const SOURCE_TAG: Record<AddSource, string> = {
 }
 
 const fieldClass =
-  'w-full rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:outline-none'
+  'h-auto px-2.5 py-1.5 font-mono text-sm placeholder:text-muted-foreground/60'
 
 function SourceTab({
   active,
@@ -233,13 +234,13 @@ function TrackerPicker({
           className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
           aria-hidden="true"
         />
-        <input
+        <Input
           value={term}
           onChange={(e) => setTerm(e.target.value)}
           placeholder="Search tracker tickets…"
           aria-label="Search tracker tickets"
           autoFocus
-          className="w-full rounded-md border border-border bg-input py-1.5 pl-9 pr-2.5 font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:outline-none"
+          className="h-auto py-1.5 pl-9 pr-2.5 font-mono text-sm placeholder:text-muted-foreground/60"
         />
       </div>
 
@@ -344,7 +345,7 @@ function SubItemRows({
             >
               ◆
             </span>
-            <input
+            <Input
               value={sub}
               onChange={(e) =>
                 onChange(subs.map((s, j) => (j === i ? e.target.value : s)))
@@ -442,7 +443,7 @@ function InternalTicketForm({
             </span>
           )}
         </div>
-        <input
+        <Input
           id="internal-ticket-title"
           value={title}
           onChange={(e) => setTitle(e.target.value)}

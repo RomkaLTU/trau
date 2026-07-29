@@ -1,6 +1,7 @@
 import type { InputHTMLAttributes, ReactNode } from 'react'
 import { Check, Info, PenLine, TriangleAlert, X, type LucideIcon } from 'lucide-react'
 
+import { Input } from '@/components/ui/input'
 import { secretPlaceholder, type CredentialLayer } from '@/lib/onboarding'
 import { cn } from '@/lib/utils'
 
@@ -45,12 +46,12 @@ export function TextInput({
   ...props
 }: InputHTMLAttributes<HTMLInputElement> & { invalid?: boolean }) {
   return (
-    <input
+    <Input
       autoComplete="off"
       spellCheck={false}
       aria-invalid={invalid || undefined}
       className={cn(
-        'w-full rounded-md border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50',
+        'h-auto px-2.5 py-1.5 font-mono text-sm',
         invalid ? 'border-fail/60 focus-visible:border-fail' : 'border-border',
         className,
       )}
@@ -88,7 +89,7 @@ export function SecretInput({
           write-only
         </span>
       </div>
-      <input
+      <Input
         id={id}
         type="password"
         autoComplete="new-password"
@@ -96,7 +97,7 @@ export function SecretInput({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={secretPlaceholder(Boolean(hasExisting), placeholder)}
-        className="w-full rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+        className="h-auto border-border px-2.5 py-1.5 font-mono text-sm"
       />
       {hasExisting && (
         <Hint>

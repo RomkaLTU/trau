@@ -4,6 +4,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Check, Lock, Pencil, Search, TriangleAlert, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   EmptyState,
   Eyebrow,
@@ -319,7 +320,7 @@ function ConfigView({ repo }: { repo: string }) {
             className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-faint"
             aria-hidden="true"
           />
-          <input
+          <Input
             type="search"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -327,7 +328,7 @@ function ConfigView({ repo }: { repo: string }) {
             aria-label="Search config keys"
             autoComplete="off"
             spellCheck={false}
-            className="w-full rounded-md border border-border bg-input py-1.5 pl-8 pr-8 font-mono text-xs text-foreground placeholder:text-faint focus-visible:border-ring focus-visible:outline-none"
+            className="h-auto py-1.5 pl-8 pr-8 font-mono text-xs placeholder:text-faint"
           />
           {searching && (
             <button

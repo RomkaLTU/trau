@@ -37,7 +37,7 @@ export function GrillModelSelect({
     >
       <SelectTrigger
         size="sm"
-        className="h-7 gap-1 border-none bg-transparent px-2 font-mono text-xs text-muted-foreground shadow-none dark:bg-transparent"
+        className="h-7 gap-1 border-none px-2 font-mono text-xs text-muted-foreground shadow-none"
         aria-label={label}
       >
         {hideProvider ? shown : `${provider} · ${shown}`}
@@ -78,7 +78,7 @@ export function GrillProviderSelect({
     >
       <SelectTrigger
         size="sm"
-        className="h-7 gap-1 border-none bg-transparent px-2 font-mono text-xs text-muted-foreground shadow-none dark:bg-transparent"
+        className="h-7 gap-1 border-none px-2 font-mono text-xs text-muted-foreground shadow-none"
         aria-label="Interview provider"
       >
         {provider}
