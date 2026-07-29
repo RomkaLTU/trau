@@ -2290,25 +2290,35 @@ func (p *Pipeline) localDelivery(ctx context.Context) bool {
 
 // CommitAndPR ships the verified slice: the commit phase stages and commits ONLY
 // this ticket's files, then the branch is pushed and a PR opened against Base — or
-// an existing PR reused when a prior run already created one. It checkpoints
+// an existing PR reused when a prior run already created one. Before anything is
+// staged the worktree is put back on the recorded branch — an outside actor's git
+// switch mid-run must not route the commit, and the push that follows, onto
+// whatever branch it left checked out. It checkpoints
 // pr_open with PR/PR_URL and moves the ticket to In Review with the PR link.
 // A push/PR failure aborts this ticket (returned to the caller) without
 // quarantining — the WIP stays on the branch for a later resume. In local delivery
 // mode the commit is the whole deliverable and everything after it is skipped.
 func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	p.setActivity(id, activity.Commit, "")
+	branch, err := p.reclaimRunBranch(ctx, id)
+	if err != nil {
+		return err
+	}
 	if err := p.commitSlice(ctx, id); err != nil {
 		return err
 	}
 	if p.localDelivery(ctx) {
 		return p.recordLocalDelivery(ctx, id)
 	}
-	if err := p.pushDeliverable(ctx, id, "HEAD"); err != nil {
+	pushRef := branch
+	if pushRef == "" {
+		pushRef = "HEAD"
+	}
+	if err := p.pushDeliverable(ctx, id, pushRef); err != nil {
 		return err
 	}
 
 	p.setActivity(id, activity.PR, "")
-	branch := p.State.Get(id, "BRANCH")
 	if branch == "" {
 		if b, err := p.Git.CurrentBranch(ctx); err == nil {
 			branch = b
@@ -2365,6 +2375,32 @@ func (p *Pipeline) recordLocalDelivery(ctx context.Context, id string) error {
 		p.logf("  status (In Review) error: %v", err)
 	}
 	return nil
+}
+
+// reclaimRunBranch puts the worktree back on the slice's recorded branch before
+// anything is committed or pushed. The run's edits live in the working tree, so a
+// plain checkout carries them along; a worktree an outside actor — another
+// session, a manual git switch — moved off the branch is reclaimed rather than
+// committed to. A checkout that fails aborts the phase with the tree untouched
+// (resumable, WIP preserved). Returns the recorded branch, empty when the
+// checkpoint predates branch recording.
+func (p *Pipeline) reclaimRunBranch(ctx context.Context, id string) (string, error) {
+	branch := p.State.Get(id, "BRANCH")
+	if branch == "" {
+		return "", nil
+	}
+	current, err := p.Git.CurrentBranch(ctx)
+	if err != nil {
+		return "", fmt.Errorf("commit %s: read current branch: %w", id, err)
+	}
+	if current == branch {
+		return branch, nil
+	}
+	p.logf("  ⚠ the worktree sits on %s, not %s — reclaiming the run's branch before committing", current, branch)
+	if err := p.Git.Checkout(ctx, branch, false); err != nil {
+		return "", fmt.Errorf("commit %s: the worktree was moved off %s (now on %s) and checkout could not reclaim it — nothing was committed, the work in progress stays in the working tree: %w", id, branch, current, err)
+	}
+	return branch, nil
 }
 
 // commitSlice records the verified slice. A squash repo takes the deterministic

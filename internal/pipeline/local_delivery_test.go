@@ -21,6 +21,8 @@ type localGit struct {
 	branch        string
 	commits       int
 	pushes        int
+	pushedRefs    []string
+	checkoutErr   error
 	squashBranch  string
 	squashMessage string
 	squashCalls   int
@@ -45,8 +47,9 @@ func (g *localGit) Commit(context.Context, string, bool) error {
 	return nil
 }
 
-func (g *localGit) Push(context.Context, string, string, bool) error {
+func (g *localGit) Push(_ context.Context, _ string, ref string, _ bool) error {
 	g.pushes++
+	g.pushedRefs = append(g.pushedRefs, ref)
 	return nil
 }
 
@@ -57,6 +60,9 @@ func (g *localGit) SquashMerge(_ context.Context, branch, message string) error 
 }
 
 func (g *localGit) Checkout(_ context.Context, ref string, _ bool) error {
+	if g.checkoutErr != nil {
+		return g.checkoutErr
+	}
 	g.checkedOut = append(g.checkedOut, ref)
 	return nil
 }
