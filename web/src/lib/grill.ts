@@ -275,20 +275,21 @@ async function fetchGrillSessions(
 }
 
 // The list polls because it is the only feed the queue rail has for sessions whose
-// thread is not on screen — only the open conversation gets an SSE stream.
+// thread is not on screen — only the open conversation gets an SSE stream. It is the
+// triage feed, so it asks for interviews alone (legacy rows with no mode included);
+// research lives on its own page.
 export const grillSessionsQueryOptions = (repo: string) =>
   queryOptions({
     queryKey: ['grill', repo],
-    queryFn: () => fetchGrillSessions(repo),
+    queryFn: () => fetchGrillSessions(repo, undefined, 'interview'),
     enabled: repo !== '',
     staleTime: 10_000,
     refetchInterval: 5_000,
   })
 
 // grillDefaultsQueryOptions reads what a session of one type would start on. Provider
-// availability depends on the session type, so the mode is part of the key and
-// flipping the type chip re-renders off cache rather than a reload. It nests under the
-// repo's grill key so the list's invalidations reach it.
+// availability depends on the session type, so the mode is part of the key. It nests
+// under the repo's grill key so the list's invalidations reach it.
 export const grillDefaultsQueryOptions = (repo: string, mode: GrillMode) =>
   queryOptions({
     queryKey: ['grill', repo, 'defaults', mode],
@@ -513,29 +514,6 @@ export async function startGrillSession(
     )
   }
   return res.json()
-}
-
-// suggestGrillMode asks the hub which session type a focus note reads as, for the
-// chip a start surface pre-selects. It resolves to null unless the hub actually
-// classified the note — a hub that could not be asked, and one that fell back to its
-// own default, both leave the chip alone rather than claiming a reading.
-export async function suggestGrillMode(
-  repo: string,
-  text: string,
-): Promise<GrillMode | null> {
-  const res = await apiFetch(`${base(repo)}/suggest-mode`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  }).catch(() => null)
-  if (!res?.ok) return null
-  const body = (await res.json().catch(() => null)) as {
-    mode?: string
-    suggested?: boolean
-  } | null
-  if (!body?.suggested) return null
-  if (body.mode !== 'research' && body.mode !== 'interview') return null
-  return body.mode
 }
 
 // publishGrillSession puts a freshly started session at the head of the repo's

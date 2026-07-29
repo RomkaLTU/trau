@@ -30,15 +30,8 @@ import {
   GrillModelSelect,
   GrillProviderSelect,
 } from "@/components/grill/model-select";
-import {
-  useModeSuggestion,
-  type ModeSuggestion,
-} from "@/components/grill/mode-suggestion";
 import { useGrillSession } from "@/components/grill/session";
-import {
-  SessionModeBadge,
-  SessionTypeChips,
-} from "@/components/grill/session-mode";
+import { SessionModeBadge } from "@/components/grill/session-mode";
 import { Button } from "@/components/ui/button";
 import {
   Popover,
@@ -153,13 +146,13 @@ interface InterviewStart {
   defaults?: GrillDefaults;
   provider: string;
   model: string;
-  sessionType: ModeSuggestion;
   onProviderChange: (provider: string) => void;
   onModelChange: (model: string) => void;
 }
 
 // starterOpening turns the panel's current pick into a start payload, so every surface
-// that opens a session sends the same provider, model and session type.
+// that opens a session sends the same provider and model. The inbox only ever opens
+// interviews — research has its own page.
 function starterOpening(
   starter: InterviewStart,
   seed?: string,
@@ -168,7 +161,7 @@ function starterOpening(
     seed,
     model: starter.model,
     provider: starter.provider,
-    mode: starter.sessionType.mode,
+    mode: "interview",
   };
 }
 
@@ -220,21 +213,15 @@ function InboxPage() {
     if (selected && selected.id !== sticky) setSticky(selected.id);
   }, [selected?.id, sticky]);
 
-  // The session type is the user's own declaration rather than a repo setting — no
-  // repo reports a default mode — so switching scope leaves the choice standing and
-  // drops only a suggestion, which was read from a note written for one repo.
-  const sessionType = useModeSuggestion(repo);
-
   // The provider and model every interview started from this panel opens on — Start
   // interview, a first message, a fresh Draft, and Ask ahead alike. It is a page-level
   // choice so walking the queue with j/k keeps it; until the user picks, it trails the
-  // repo default the hub reports for the chosen session type. Switching repo drops it,
-  // so the new repo's own default wins rather than the pick made against the old one.
-  // Picking a provider resets the model to that provider's own default, since a claude
-  // model alias means nothing to kimi. A pick the session type rules out — kimi cannot
-  // research — yields to that type's default rather than starting on a dead provider.
+  // repo default the hub reports. Switching repo drops it, so the new repo's own
+  // default wins rather than the pick made against the old one. Picking a provider
+  // resets the model to that provider's own default, since a claude model alias means
+  // nothing to kimi.
   const defaults =
-    useQuery(grillDefaultsQueryOptions(repo, sessionType.mode)).data ?? undefined;
+    useQuery(grillDefaultsQueryOptions(repo, "interview")).data ?? undefined;
   const [pickedProvider, setPickedProvider] = useState<string | null>(null);
   const [pickedModel, setPickedModel] = useState<string | null>(null);
   useEffect(() => {
@@ -242,18 +229,12 @@ function InboxPage() {
     setPickedModel(null);
   }, [repo]);
 
-  const pickAllowed = !defaults?.providers?.some(
-    (p) => p.name === pickedProvider && p.disabled,
-  );
-  const startProvider =
-    (pickAllowed ? pickedProvider : null) ?? defaults?.provider ?? "claude";
-  const startModel =
-    (pickAllowed ? pickedModel : null) ?? defaults?.model ?? "";
+  const startProvider = pickedProvider ?? defaults?.provider ?? "claude";
+  const startModel = pickedModel ?? defaults?.model ?? "";
   const starter: InterviewStart = {
     defaults,
     provider: startProvider,
     model: startModel,
-    sessionType,
     onProviderChange: (next) => {
       setPickedProvider(next);
       setPickedModel("");
@@ -836,8 +817,6 @@ function FreshDraftBody({
   onStarted: (session: GrillSession) => void;
 }) {
   const queryClient = useQueryClient();
-  const sessionType = starter.sessionType;
-  const research = sessionType.mode === "research";
   const [autoAccept, setAutoAccept] = useState(false);
   const start = useMutation({
     mutationFn: (seed: string) =>
@@ -862,25 +841,20 @@ function FreshDraftBody({
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex min-h-0 flex-1 items-center justify-center px-6">
         <p className="max-w-sm text-balance text-center text-sm leading-relaxed text-muted-foreground">
-          {research
-            ? "Ask the question you want researched. Your first message starts an investigation against primary sources — you get a findings report, and nothing is filed unless you ask for it."
-            : "Describe the issue you want to create. Your first message starts an interview toward a fully-specified issue — nothing is filed until you review the proposal."}
+          Describe the issue you want to create. Your first message starts an
+          interview toward a fully-specified issue — nothing is filed until you
+          review the proposal.
         </p>
       </div>
       <div className="flex flex-col gap-3 border-t border-border p-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <SessionTypeChips sessionType={sessionType} />
-          <StartModelSelect starter={starter} />
-        </div>
+        <StartModelSelect starter={starter} className="self-end" />
         <AutoAcceptToggle checked={autoAccept} onChange={setAutoAccept} />
         <Composer
           repo={repo}
-          placeholder={research ? "Ask your question…" : "Describe the issue…"}
+          placeholder="Describe the issue…"
           disabled={start.isPending}
           submitting={start.isPending}
           onSend={(text) => start.mutate(text)}
-          onNoteChange={sessionType.noteChanged}
-          onNoteSettled={sessionType.noteSettled}
           autoFocus
         />
         {start.error && <ErrorNote message={(start.error as Error).message} />}
@@ -908,8 +882,6 @@ function SessionPreview({
   onSkip: () => void;
 }) {
   const queryClient = useQueryClient();
-  const sessionType = starter.sessionType;
-  const research = sessionType.mode === "research";
   const issue = useQuery(issueQueryOptions(repo, item.id));
   const { urlMap } = useIssueAttachments(repo, item.id);
   const labels = (item.entry?.labels ?? []).filter((l) =>
@@ -957,10 +929,9 @@ function SessionPreview({
           No session yet — start one, or send a first message to open with it.
         </p>
         <div className="flex flex-wrap items-center gap-2">
-          <SessionTypeChips sessionType={sessionType} />
           <Button size="sm" onClick={() => onStart(starterOpening(starter))}>
             <Sparkles />
-            {research ? "Start research" : "Start interview"}
+            Start interview
           </Button>
           <Button
             size="sm"
@@ -979,16 +950,10 @@ function SessionPreview({
         </div>
         <Composer
           repo={repo}
-          placeholder={
-            research
-              ? "Type the question to research…"
-              : "Type your first message to start the interview…"
-          }
+          placeholder="Type your first message to start the interview…"
           disabled={askAhead.isPending}
           submitting={false}
           onSend={(text) => onStart(starterOpening(starter, text))}
-          onNoteChange={sessionType.noteChanged}
-          onNoteSettled={sessionType.noteSettled}
         />
         {askAhead.error && (
           <ErrorNote message={(askAhead.error as Error).message} />

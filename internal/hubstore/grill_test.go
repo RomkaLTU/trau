@@ -670,6 +670,58 @@ func TestGrillPruneKeepsActiveBeyondWindow(t *testing.T) {
 	}
 }
 
+func TestGrillPruneKeepsAppliedResearchBeyondWindow(t *testing.T) {
+	g, db := testGrill(t, 2)
+
+	settle := func(mode, state string) GrillSession {
+		t.Helper()
+		s, err := g.Create(NewGrillSession{Repo: "acme", Mode: mode})
+		if err != nil {
+			t.Fatalf("create %s: %v", mode, err)
+		}
+		if _, err := db.Exec(`UPDATE grill_sessions SET state = ? WHERE id = ?`, state, s.ID); err != nil {
+			t.Fatalf("settle %d as %s: %v", s.ID, state, err)
+		}
+		return s
+	}
+
+	report := settle(GrillModeResearch, GrillApplied)
+	discarded := settle(GrillModeResearch, GrillAbandoned)
+	interview := settle(GrillModeInterview, GrillApplied)
+	for i := 0; i < 2; i++ {
+		if _, err := g.Create(NewGrillSession{Repo: "acme"}); err != nil {
+			t.Fatalf("create filler %d: %v", i, err)
+		}
+	}
+	if _, _, err := g.AppendMessage(report.ID, NewGrillMessage{
+		Role:    GrillRoleAgent,
+		Kind:    GrillKindOutcome,
+		Payload: `{"report":"findings"}`,
+	}); err != nil {
+		t.Fatalf("append report: %v", err)
+	}
+
+	if err := g.Prune(); err != nil {
+		t.Fatalf("prune: %v", err)
+	}
+
+	if _, found, err := g.Session(report.ID); err != nil || !found {
+		t.Fatalf("applied research session pruned: found=%v err=%v", found, err)
+	}
+	msgs, err := g.Messages(report.ID, 0)
+	if err != nil {
+		t.Fatalf("messages: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Payload != `{"report":"findings"}` {
+		t.Fatalf("messages = %+v, want the surviving report", msgs)
+	}
+	for _, gone := range []GrillSession{discarded, interview} {
+		if _, found, err := g.Session(gone.ID); err != nil || found {
+			t.Fatalf("session %d survived prune: found=%v err=%v", gone.ID, found, err)
+		}
+	}
+}
+
 func TestGrillRetireClosedIgnoresAge(t *testing.T) {
 	g, db := testGrill(t, 0)
 	seedGrillIssues(t, db, "acme", map[string]string{"COD-1": "started"})

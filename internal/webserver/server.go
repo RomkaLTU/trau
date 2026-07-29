@@ -394,7 +394,6 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/transcript/stream", s.handleTranscriptStream)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/grill", s.handleRepoGrill)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/grill/pregrill", s.handleRepoPregrill)
-	mux.HandleFunc(APIPrefix+"/repos/{repo}/grill/suggest-mode", s.handleGrillSuggestMode)
 	mux.HandleFunc(APIPrefix+"/grill", s.handleGrillAwaiting)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}", s.handleGrillSession)
 	mux.HandleFunc(APIPrefix+"/grill/{sid}/answer", s.handleGrillAnswer)
