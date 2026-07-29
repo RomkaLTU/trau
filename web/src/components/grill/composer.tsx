@@ -13,8 +13,6 @@ export function Composer({
   disabled,
   submitting,
   onSend,
-  onNoteChange,
-  onNoteSettled,
   defaultValue = "",
   autoFocus = false,
 }: {
@@ -23,8 +21,6 @@ export function Composer({
   disabled: boolean;
   submitting: boolean;
   onSend: (text: string) => void;
-  onNoteChange?: (text: string) => void;
-  onNoteSettled?: (text: string) => void;
   defaultValue?: string;
   autoFocus?: boolean;
 }) {
@@ -50,11 +46,7 @@ export function Composer({
         disabled={disabled}
         defaultValue={defaultValue}
         autoFocus={autoFocus}
-        onChange={(markdown) => {
-          setEmpty(markdown.trim() === "");
-          onNoteChange?.(markdown);
-        }}
-        onBlur={onNoteSettled}
+        onChange={(markdown) => setEmpty(markdown.trim() === "")}
         onEnter={send}
       />
       <Button size="sm" onClick={send} disabled={disabled || empty}>

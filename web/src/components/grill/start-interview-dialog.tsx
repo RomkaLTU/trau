@@ -3,8 +3,6 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Flame, Loader2 } from "lucide-react";
 
 import { AutoAcceptToggle } from "@/components/grill/auto-accept";
-import { useModeSuggestion } from "@/components/grill/mode-suggestion";
-import { SessionTypeChips } from "@/components/grill/session-mode";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -41,14 +39,12 @@ export function StartInterviewDialog({
   const [open, setOpen] = useState(false);
   const [focus, setFocus] = useState("");
   const [autoAccept, setAutoAccept] = useState(false);
-  const sessionType = useModeSuggestion(repo);
-  const research = sessionType.mode === "research";
 
   const start = useMutation({
     mutationFn: () =>
       startGrillSession(repo, id, {
         seed: focus.trim(),
-        mode: sessionType.mode,
+        mode: "interview",
         autoAccept,
       }),
     onSuccess: (session) => {
@@ -104,39 +100,25 @@ export function StartInterviewDialog({
           <div className="flex flex-col gap-2 p-4">
             <AlertDialogHeader className="gap-2 text-left">
               <AlertDialogTitle className="font-mono text-sm font-normal text-foreground">
-                {research ? "Research" : "Interview"} {id}
+                Interview {id}
               </AlertDialogTitle>
               <AlertDialogDescription className="font-sans text-sm leading-relaxed text-muted-foreground">
-                {research
-                  ? "The agent investigates against primary sources and delivers a findings report. A note says what to answer."
-                  : "The interviewer reads the ticket and asks what it leaves open. A note steers where it starts."}
+                The interviewer reads the ticket and asks what it leaves open. A
+                note steers where it starts.
               </AlertDialogDescription>
             </AlertDialogHeader>
-            <SessionTypeChips sessionType={sessionType} className="mt-2" />
             <AutoAcceptToggle
               checked={autoAccept}
               onChange={setAutoAccept}
-              className="mt-1"
+              className="mt-2"
             />
             <Textarea
               ref={fieldRef}
               value={focus}
               rows={3}
-              aria-label={
-                research
-                  ? `Research question for ${id}`
-                  : `Interview focus for ${id}`
-              }
-              placeholder={
-                research
-                  ? "What do you want answered? (optional)"
-                  : "What do you want clarified? (optional)"
-              }
-              onChange={(e) => {
-                setFocus(e.target.value);
-                sessionType.noteChanged(e.target.value);
-              }}
-              onBlur={(e) => sessionType.noteSettled(e.target.value)}
+              aria-label={`Interview focus for ${id}`}
+              placeholder="What do you want clarified? (optional)"
+              onChange={(e) => setFocus(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key !== "Enter" || !(e.metaKey || e.ctrlKey)) return;
                 e.preventDefault();
@@ -160,7 +142,7 @@ export function StartInterviewDialog({
                 onClick={submit}
               >
                 {start.isPending && <Loader2 className="animate-spin" />}
-                {research ? "Start research" : "Start interview"}
+                Start interview
               </Button>
             </AlertDialogFooter>
           </div>
