@@ -5,12 +5,20 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { ExternalLink, RefreshCw, RotateCw, TriangleAlert } from 'lucide-react'
 import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/trau/confirm-dialog'
 import { TerminalCard } from '@/components/trau/terminal-card'
 import { Button } from '@/components/ui/button'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { instancesQueryOptions, type Instance } from '@/lib/instances'
 import { queueQueryOptions } from '@/lib/queue'
 import {
@@ -21,6 +29,8 @@ import {
   currentHubMark,
   markRestarted,
   restartHub,
+  switchInFlight,
+  switchToDev,
   takeRestartedVersion,
   updateQueryOptions,
   versionLabel,
@@ -30,7 +40,10 @@ import {
 } from '@/lib/update'
 import { cn } from '@/lib/utils'
 
-type Pending = 'restart' | 'update'
+type Pending = 'restart' | 'update' | 'channel'
+
+// The Hub & web server settings section, where HUB_SELF_RELOAD lives.
+const HUB_SECTION_HASH = 'hub-web-server'
 
 const RELEASES_URL = 'https://github.com/RomkaLTU/trau/releases'
 
@@ -41,6 +54,8 @@ export function UpdatesSection() {
   const [restarting, setRestarting] = useState(false)
   const [restartError, setRestartError] = useState<string | null>(null)
   const [applyMark, setApplyMark] = useState<HubMark | null>(null)
+  const [switchMark, setSwitchMark] = useState<HubMark | null>(null)
+  const [switchRepo, setSwitchRepo] = useState('')
   const [restarted, setRestarted] = useState(false)
 
   useEffect(() => setRestarted(takeRestartedVersion() !== null), [])
@@ -99,6 +114,28 @@ export function UpdatesSection() {
     onError: (err: Error) => toast.error(err.message),
   })
 
+  const status = update.data
+  const eligible = status?.channelRepos ?? []
+  const target =
+    eligible.find((repo) => repo.root === switchRepo)?.root ??
+    eligible[0]?.root ??
+    ''
+
+  const switchChannel = useMutation({
+    mutationFn: async () => {
+      const before = await currentHubMark()
+      await switchToDev(target)
+      return before
+    },
+    onSuccess: (before) => {
+      setSwitchMark(before)
+      void queryClient.invalidateQueries({
+        queryKey: updateQueryOptions.queryKey,
+      })
+    },
+    onError: (err: Error) => toast.error(err.message),
+  })
+
   // A successful apply ends in a restart the client never asked for, so the
   // apply is watched two ways: the successor may answer /update on a new version
   // before the poll ever misses, or the poll fails across the gap and the health
@@ -109,7 +146,6 @@ export function UpdatesSection() {
       void pickUpSuccessor(applyMark)
       return
     }
-    const status = update.data
     if (!status) return
     if (status.running !== applyMark.version) {
       markRestarted(status.running)
@@ -117,11 +153,35 @@ export function UpdatesSection() {
       return
     }
     if (status.applyState.state !== 'running') setApplyMark(null)
-  }, [applyMark, restarting, update.data, update.isError])
+  }, [applyMark, restarting, status, update.isError])
 
-  const status = update.data
+  // The rebuild runs on the hub, so the switch is followed the same two ways an
+  // apply is: the successor answers on a new build, or the poll fails across the
+  // gap and the health probe takes over. A failed build restarts nothing and
+  // simply hands the tail back.
+  useEffect(() => {
+    if (!switchMark || restarting) return
+    if (update.isError) {
+      void pickUpSuccessor(switchMark)
+      return
+    }
+    const phase = status?.channelSwitch.state
+    if (phase === 'restarting') {
+      void pickUpSuccessor(switchMark)
+      return
+    }
+    if (phase === 'failed') setSwitchMark(null)
+  }, [switchMark, restarting, status, update.isError])
+
   const applying = status?.applyState.state === 'running'
-  const busy = applying || restarting || restart.isPending || apply.isPending
+  const switching = switchInFlight(status)
+  const busy =
+    applying ||
+    switching ||
+    restarting ||
+    restart.isPending ||
+    apply.isPending ||
+    switchChannel.isPending
 
   return (
     <section id="updates" className="scroll-mt-6">
@@ -152,6 +212,17 @@ export function UpdatesSection() {
                   </span>
                 </Row>
               )}
+
+              <Row label="channel">
+                <ChannelAction
+                  status={status}
+                  busy={busy}
+                  switching={switching}
+                  target={target}
+                  onTarget={setSwitchRepo}
+                  onSwitch={() => setPending('channel')}
+                />
+              </Row>
 
               {status.selfReloadPending && (
                 <Row label="reload">
@@ -261,6 +332,21 @@ export function UpdatesSection() {
                 </div>
               )}
 
+              {status.channelSwitch.state === 'failed' && (
+                <div className="flex flex-col gap-2 border-b border-border/60 px-4 py-3">
+                  <p
+                    className="inline-flex items-center gap-2 font-mono text-xs text-fail"
+                    role="alert"
+                  >
+                    <TriangleAlert className="size-3.5" aria-hidden="true" />
+                    switch to dev failed — the hub kept the build it was running
+                  </p>
+                  <pre className="max-h-56 overflow-auto rounded-md border border-border bg-input px-3 py-2 font-mono text-[0.7rem] leading-relaxed text-muted-foreground">
+                    {status.channelSwitch.message}
+                  </pre>
+                </div>
+              )}
+
               {restartError && (
                 <div className="border-b border-border/60 px-4 py-3">
                   <p
@@ -311,6 +397,7 @@ export function UpdatesSection() {
           setPending(null)
           if (action === 'update') apply.mutate()
           if (action === 'restart') restart.mutate()
+          if (action === 'channel') switchChannel.mutate()
         }}
       />
     </section>
@@ -319,6 +406,83 @@ export function UpdatesSection() {
 
 function repoLabel(root: string): string {
   return root.split('/').filter(Boolean).pop() ?? root
+}
+
+// ChannelAction shows which build the hub runs and, on a release build, offers
+// the switch to a dev one. The repos it offers are the ones the hub would
+// accept, so the picker only appears when the choice is real; with none, the
+// action stays visible but disabled and points at the key that opens it.
+function ChannelAction({
+  status,
+  busy,
+  switching,
+  target,
+  onTarget,
+  onSwitch,
+}: {
+  status: UpdateStatus
+  busy: boolean
+  switching: boolean
+  target: string
+  onTarget: (root: string) => void
+  onSwitch: () => void
+}) {
+  if (status.channel === 'dev') {
+    return (
+      <span className="flex flex-wrap items-center gap-2">
+        <span className="font-mono text-xs text-teal">dev</span>
+        {status.channelRepo && (
+          <span className="font-mono text-[0.7rem] text-faint">
+            built from {repoLabel(status.channelRepo)}
+          </span>
+        )}
+      </span>
+    )
+  }
+
+  const eligible = status.channelRepos
+
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <span className="font-mono text-xs text-foreground">release</span>
+      {eligible.length > 1 && (
+        <Select value={target} onValueChange={onTarget} disabled={busy}>
+          <SelectTrigger size="sm" className="font-mono text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {eligible.map((repo) => (
+              <SelectItem key={repo.root} value={repo.root}>
+                {repo.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      )}
+      <Button
+        variant="outline"
+        size="sm"
+        className="font-mono text-xs"
+        disabled={busy || eligible.length === 0}
+        onClick={onSwitch}
+      >
+        {switching ? 'Rebuilding…' : 'Switch to dev'}
+      </Button>
+      {eligible.length === 0 && (
+        <span className="text-xs leading-relaxed text-muted-foreground">
+          No registered repo allows it — set{' '}
+          <Link
+            to="/settings"
+            hash={HUB_SECTION_HASH}
+            className="font-mono text-primary underline-offset-2 hover:underline"
+          >
+            HUB_SELF_RELOAD
+          </Link>{' '}
+          to 1 for your trau checkout.
+        </span>
+      )}
+    </span>
+  )
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -332,9 +496,31 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
-// RestartConfirm names what a restart interrupts before it happens. The queues
-// are only fetched while the dialog is open — one request per repo is worth it
-// for a confirmation and not for a settings page nobody is restarting from.
+const CONFIRM_COPY: Record<
+  Pending,
+  { windowTitle: string; title: string; confirmLabel: string }
+> = {
+  restart: {
+    windowTitle: 'restart hub',
+    title: 'Restart the hub?',
+    confirmLabel: 'Restart',
+  },
+  update: {
+    windowTitle: 'update trau',
+    title: 'Update and restart the hub?',
+    confirmLabel: 'Update now',
+  },
+  channel: {
+    windowTitle: 'switch to dev',
+    title: 'Rebuild and restart onto the dev build?',
+    confirmLabel: 'Rebuild & restart',
+  },
+}
+
+// RestartConfirm names what a restart interrupts before it happens — a channel
+// switch ends in one exactly like the Restart button does. The queues are only
+// fetched while the dialog is open — one request per repo is worth it for a
+// confirmation and not for a settings page nobody is restarting from.
 function RestartConfirm({
   pending,
   onCancel,
@@ -345,6 +531,7 @@ function RestartConfirm({
   onConfirm: () => void
 }) {
   const open = pending !== null
+  const copy = CONFIRM_COPY[pending ?? 'restart']
   const instances = useQuery({ ...instancesQueryOptions, enabled: open })
   const repos = instances.data?.repos ?? []
   const queues = useQueries({
@@ -363,12 +550,10 @@ function RestartConfirm({
     <ConfirmDialog
       open={open}
       onOpenChange={(next) => !next && onCancel()}
-      windowTitle={pending === 'update' ? 'update trau' : 'restart hub'}
-      title={
-        pending === 'update' ? 'Update and restart the hub?' : 'Restart the hub?'
-      }
+      windowTitle={copy.windowTitle}
+      title={copy.title}
       description={<RestartImpact active={active} draining={draining} />}
-      confirmLabel={pending === 'update' ? 'Update now' : 'Restart'}
+      confirmLabel={copy.confirmLabel}
       onConfirm={onConfirm}
     />
   )

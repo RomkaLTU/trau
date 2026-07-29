@@ -607,7 +607,7 @@ func TestHubMCPStopInstance(t *testing.T) {
 func TestHubMCPRestartHub(t *testing.T) {
 	ts, s, _ := hubMCPServer(t)
 	restarts := make(chan struct{}, 4)
-	s.EnableRestart(func() { restarts <- struct{}{} })
+	s.EnableRestart(func(string) { restarts <- struct{}{} })
 
 	var ack RestartAck
 	hubToolPayload(t, hubTool(t, ts, "restart_hub", nil), &ack)

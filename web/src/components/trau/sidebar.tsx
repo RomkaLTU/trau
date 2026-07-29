@@ -252,6 +252,11 @@ export function Sidebar({ onOpenPalette }: { onOpenPalette: () => void }) {
               className="inline-flex max-w-full items-center gap-1.5 text-foreground/75 transition-colors hover:text-foreground"
             >
               <span className="truncate">{cliLabel ?? '—'}</span>
+              {update.data?.channel === 'dev' && (
+                <span className="shrink-0 rounded-sm border border-teal/40 px-1 text-[0.6rem] uppercase tracking-[0.1em] text-teal">
+                  dev
+                </span>
+              )}
               {needsAttention(update.data) && (
                 <>
                   <span

@@ -7,6 +7,7 @@ import {
   isSuccessor,
   needsAttention,
   pollMs,
+  switchInFlight,
   updateQueryOptions,
   versionLabel,
   waitForSuccessor,
@@ -28,6 +29,10 @@ function status(over: Partial<UpdateStatus> = {}): UpdateStatus {
     releaseUrl: 'https://github.com/RomkaLTU/trau/releases/tag/v2.1.0',
     applyState: { state: 'idle', message: '' },
     selfReloadPending: '',
+    channel: 'release',
+    channelRepo: '',
+    channelRepos: [],
+    channelSwitch: { state: 'idle', repoRoot: '', message: '' },
     ...over,
   }
 }
@@ -81,6 +86,40 @@ describe('pollMs', () => {
     expect(pollMs(status({ applyState: { state: 'running', message: '' } }))).toBe(
       2000,
     )
+  })
+
+  it('tightens onto a channel switch so the restart is picked up promptly', () => {
+    expect(
+      pollMs(
+        status({
+          channelSwitch: { state: 'building', repoRoot: '/repos/trau', message: '' },
+        }),
+      ),
+    ).toBe(2000)
+  })
+})
+
+describe('switchInFlight', () => {
+  it('is true while the hub builds and while it waits to restart', () => {
+    for (const state of ['building', 'restarting'] as const) {
+      expect(
+        switchInFlight(
+          status({ channelSwitch: { state, repoRoot: '/repos/trau', message: '' } }),
+        ),
+      ).toBe(true)
+    }
+  })
+
+  it('is false once the switch settles, so a failure frees the action again', () => {
+    expect(switchInFlight(status())).toBe(false)
+    expect(
+      switchInFlight(
+        status({
+          channelSwitch: { state: 'failed', repoRoot: '/repos/trau', message: 'boom' },
+        }),
+      ),
+    ).toBe(false)
+    expect(switchInFlight(undefined)).toBe(false)
   })
 })
 

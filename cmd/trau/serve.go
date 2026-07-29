@@ -97,11 +97,12 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 	// binds the port and opens the hub databases only once this process has let
 	// go of both.
 	restarting := false
+	successor := ""
 	defer func() {
 		if !restarting || supervisedHub() {
 			return
 		}
-		if spawnErr := respawnServe(args); spawnErr != nil {
+		if spawnErr := respawnServe(successor, args); spawnErr != nil {
 			err = errors.Join(err, console.Actionable(spawnErr, "respawn the hub",
 				"install trau so `trau` resolves on PATH, then run `trau serve`"))
 		}
@@ -152,7 +153,11 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 	hub.EnableVideoRender(ctx)
 	hub.EnableProofRetention(cfg.ProofRetentionDays)
 	restartCh := make(chan struct{})
-	hub.EnableRestart(func() { close(restartCh) })
+	hub.EnableRestart(func(binary string) {
+		successor = binary
+		close(restartCh)
+	})
+	hub.SetSupervised(supervisedHub())
 	hub.SetUpdateChecks(cfg.UpdateCheck)
 	hub.Start(ctx, time.Duration(cfg.ServeSyncInterval)*time.Second, time.Duration(cfg.ServeReconcileInterval)*time.Second)
 	srv := &http.Server{Addr: addr, Handler: hub.Handler()}

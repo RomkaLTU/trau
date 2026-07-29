@@ -15,15 +15,29 @@ func (s *Server) SetUpdateChecks(enabled bool) {
 }
 
 // UpdateStatus is the /api/v1/update resource: what the checker knows about
-// newer versions, plus the repo a self-reload is waiting on. The pending reload
-// lives on the hub rather than the checker — a merge asks for it, not a release.
+// newer versions, plus the repo a self-reload is waiting on and the build
+// channel this hub runs. Both live on the hub rather than the checker — a merge
+// asks for the reload, and the channel is a fact about where the executable
+// sits, not about any release.
 type UpdateStatus struct {
 	update.Status
-	SelfReloadPending string `json:"selfReloadPending"`
+	SelfReloadPending string        `json:"selfReloadPending"`
+	Channel           string        `json:"channel"`
+	ChannelRepo       string        `json:"channelRepo"`
+	ChannelRepos      []ChannelRepo `json:"channelRepos"`
+	ChannelSwitch     ChannelSwitch `json:"channelSwitch"`
 }
 
 func (s *Server) updateStatus() UpdateStatus {
-	return UpdateStatus{Status: s.updates.Status(), SelfReloadPending: s.selfReloadPending()}
+	channel, channelRepo := s.hubChannel()
+	return UpdateStatus{
+		Status:            s.updates.Status(),
+		SelfReloadPending: s.selfReloadPending(),
+		Channel:           channel,
+		ChannelRepo:       channelRepo,
+		ChannelRepos:      s.eligibleChannelRepos(),
+		ChannelSwitch:     s.channelSwitch(),
+	}
 }
 
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {

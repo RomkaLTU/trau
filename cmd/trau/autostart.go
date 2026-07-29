@@ -230,24 +230,33 @@ func portBusyError(port int) error {
 // spawnDetachedServe starts a hub from a cold start, truncating hub.log so the
 // file only ever holds the latest boot's output. It passes no flags: a cold
 // start has none to inherit and the config decides where the hub listens.
-func spawnDetachedServe() error { return spawnServe(os.O_TRUNC, nil) }
+func spawnDetachedServe() error { return spawnServe("", os.O_TRUNC, nil) }
 
 // respawnServe starts the successor of a hub that is shutting down, replaying
 // serveArgs — the outgoing hub's own `serve` flags — so the successor lands on
 // the same port, bind and repo instead of falling back to the config defaults.
+// binary is the path the successor must run, empty for the ordinary restart onto
+// the outgoing hub's own binary; a channel switch names the build it just made.
 // It appends to hub.log instead of truncating so the outgoing hub's tail
 // survives next to the successor's boot output for diagnosis.
-func respawnServe(serveArgs []string) error { return spawnServe(os.O_APPEND, serveArgs) }
+func respawnServe(binary string, serveArgs []string) error {
+	return spawnServe(binary, os.O_APPEND, serveArgs)
+}
 
 // spawnServe starts `trau serve` in its own process group so the hub outlives
 // the process that launched it; its net.Listen on the port is the singleton
-// lock. TRAU_ACTIVE is stripped so the hub — and everything it later spawns —
-// is not marked as running inside the loop that autostarted it. Everything
-// else the hub's descendants need scrubbed or set is agent.ChildEnv's job.
-func spawnServe(logMode int, serveArgs []string) error {
-	exe, err := update.ResolveBinary()
-	if err != nil {
-		return err
+// lock. An empty binary resolves to the running process's own path. TRAU_ACTIVE
+// is stripped so the hub — and everything it later spawns — is not marked as
+// running inside the loop that autostarted it. Everything else the hub's
+// descendants need scrubbed or set is agent.ChildEnv's job.
+func spawnServe(binary string, logMode int, serveArgs []string) error {
+	exe := binary
+	if exe == "" {
+		resolved, err := update.ResolveBinary()
+		if err != nil {
+			return err
+		}
+		exe = resolved
 	}
 	cmd := exec.Command(exe, append([]string{"serve"}, serveArgs...)...)
 	env := make([]string, 0, len(os.Environ()))
