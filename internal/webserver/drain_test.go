@@ -614,6 +614,32 @@ func TestDrainSkipsDuplicateTicket(t *testing.T) {
 	}
 }
 
+// A Task carrying sub-issues queues as its own epic even though the grandparent
+// epic ahead of it lists it as a sub-issue. Only a standalone ticket dedups, so
+// the Task still runs — draining its own children instead of once, as a ticket
+// would.
+func TestDrainKeepsQueuedEpicCoveredByAnEarlierEpic(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	seedQueue(t, s, root, true,
+		queue.Item{Kind: queue.KindEpic, ID: "PROJ-1", Status: queue.StatusDone, SubIssues: []queue.SubIssue{{ID: "PROJ-11"}}},
+		queue.Item{Kind: queue.KindEpic, ID: "PROJ-11", SubIssues: []queue.SubIssue{{ID: "PROJ-12"}}},
+	)
+	act, err := s.drain.tick(root)
+	if err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if act != drainSpawn {
+		t.Fatalf("act = %q, want spawn — an epic is never deduped away", act)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "PROJ-11", "--drain-report", "PROJ-11"})
+	if got := statusOf(t, s, root, "PROJ-11"); got != queue.StatusRunning {
+		t.Errorf("PROJ-11 = %q, want running", got)
+	}
+}
+
 // TestDrainCleansUpReportOnReconcile proves a finished child's drain report is
 // consumed and removed when the drain reconciles it to a clean finish.
 func TestDrainCleansUpReportOnReconcile(t *testing.T) {

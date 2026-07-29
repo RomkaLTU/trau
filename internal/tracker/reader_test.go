@@ -137,6 +137,29 @@ func TestLinearReaderBacklogMapsAndFiltersProject(t *testing.T) {
 	}
 }
 
+// The single-issue read feeds the same has_children the backlog does, so a Task
+// carrying sub-issues must read back as a parent here too.
+func TestJiraReaderIssueCarriesHasChildren(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"key":"PROJ-11","fields":{
+			"summary":"Has subtasks","status":{"name":"To Do","statusCategory":{"key":"new"}},
+			"project":{"key":"PROJ"},"parent":{"key":"PROJ-1"},
+			"issuetype":{"hierarchyLevel":0},"subtasks":[{"key":"PROJ-12"}]
+		}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	r := &jiraReader{client: jiraapi.New(srv.URL, "me@acme.com", "tok"), project: "PROJ", readyLabel: "ready-for-agent"}
+	iss, err := r.Issue(context.Background(), "PROJ-11")
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if !iss.HasChildren {
+		t.Errorf("issue = %+v, want a parent — it carries sub-issues", iss)
+	}
+}
+
 func TestJiraReaderBacklogMaps(t *testing.T) {
 	const payload = `{"issues":[
 		{"key":"PROJ-1","fields":{

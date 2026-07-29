@@ -42,7 +42,7 @@ func TestIssueSendsBasicAuthAndReturnsSummary(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotPath = r.URL.Path
-		if got := r.URL.Query().Get("fields"); got != "summary,description,status,resolution,project,parent,labels,attachment" {
+		if got := r.URL.Query().Get("fields"); got != "summary,description,status,resolution,project,parent,issuetype,subtasks,labels,attachment" {
 			t.Errorf("fields query = %q, want the widened field set", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -134,6 +134,42 @@ func TestIssueMapsAllFields(t *testing.T) {
 	}
 	if issue.Parent != "PROJ-1" {
 		t.Errorf("Parent = %q, want %q", issue.Parent, "PROJ-1")
+	}
+}
+
+// The single-issue read must reach the same verdict as the search paths: an epic
+// by hierarchy, a Task by the sub-issues it carries, everything else a leaf.
+func TestIssueFlagsParents(t *testing.T) {
+	cases := []struct {
+		name   string
+		fields string
+		want   bool
+	}{
+		{"leaf", `"issuetype":{"hierarchyLevel":0},"subtasks":[]`, false},
+		{"epic by hierarchy", `"issuetype":{"hierarchyLevel":1},"subtasks":[]`, true},
+		{"task with sub-issues", `"issuetype":{"hierarchyLevel":0},"subtasks":[{"key":"PROJ-12"}]`, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var gotQuery string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotQuery = r.URL.RawQuery
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"key":"PROJ-11","fields":{"summary":"S",` + c.fields + `}}`))
+			}))
+			defer srv.Close()
+
+			issue, err := New(srv.URL, "me@acme.com", "tok").Issue(context.Background(), "PROJ-11")
+			if err != nil {
+				t.Fatalf("Issue returned error: %v", err)
+			}
+			if !strings.Contains(gotQuery, "subtasks") || !strings.Contains(gotQuery, "issuetype") {
+				t.Fatalf("query = %q, want issuetype and subtasks requested", gotQuery)
+			}
+			if issue.HasChildren != c.want {
+				t.Errorf("HasChildren = %v, want %v", issue.HasChildren, c.want)
+			}
+		})
 	}
 }
 

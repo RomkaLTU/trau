@@ -368,6 +368,34 @@ func TestLeafSubsFiltersNestedEpics(t *testing.T) {
 	}
 }
 
+type subIssueTracker struct {
+	tracker.Tracker
+	subs []tracker.SubIssue
+}
+
+func (t subIssueTracker) SubIssues(context.Context, string) ([]tracker.SubIssue, error) {
+	return t.subs, nil
+}
+
+// A mid-level issue that carries sub-issues of its own runs as its own epic, so
+// the grandparent epic's resume scope must exclude it along with its children.
+func TestEpicChildFilterExcludesNestedParent(t *testing.T) {
+	tr := subIssueTracker{subs: []tracker.SubIssue{
+		{ID: "PROJ-10"},
+		{ID: "PROJ-11", HasChildren: true},
+	}}
+	allow := epicChildFilter(context.Background(), tr, "PROJ-1")
+	if allow == nil {
+		t.Fatal("filter = nil, want the epic's leaf scope")
+	}
+	if !allow("PROJ-1") || !allow("PROJ-10") {
+		t.Error("filter should admit the epic and its leaf child")
+	}
+	if allow("PROJ-11") {
+		t.Error("filter should exclude PROJ-11 — it has sub-issues, so it is not a buildable leaf")
+	}
+}
+
 // alreadyDoneEngine feeds a scripted pick sequence; Process returns
 // ErrAlreadyDone for ids in done and succeeds otherwise.
 type alreadyDoneEngine struct {

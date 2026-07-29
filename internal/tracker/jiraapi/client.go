@@ -158,6 +158,7 @@ type Issue struct {
 	Resolution  string // resolution.name, "" while unresolved
 	Project     Project
 	Parent      string // parent issue key, "" when top-level
+	HasChildren bool   // a container (epic or an issue with sub-issues), never a buildable leaf
 	Labels      []string
 	Attachments []Attachment
 }
@@ -188,7 +189,7 @@ func (c *Client) Issue(ctx context.Context, key string) (*Issue, error) {
 		return nil, ErrNotFound
 	}
 	var dst issueResponse
-	path := "/issue/" + url.PathEscape(key) + "?fields=summary,description,status,resolution,project,parent,labels,attachment"
+	path := "/issue/" + url.PathEscape(key) + "?fields=summary,description,status,resolution,project,parent,issuetype,subtasks,labels,attachment"
 	if err := c.do(ctx, http.MethodGet, path, nil, &dst); err != nil {
 		return nil, err
 	}
@@ -217,6 +218,8 @@ type issueResponse struct {
 		Parent *struct {
 			Key string `json:"key"`
 		} `json:"parent"`
+		IssueType  *issueTypeField   `json:"issuetype"`
+		Subtasks   []json.RawMessage `json:"subtasks"`
 		Labels     []string          `json:"labels"`
 		Attachment []attachmentField `json:"attachment"`
 	} `json:"fields"`
@@ -244,6 +247,7 @@ func (r *issueResponse) toIssue() *Issue {
 	if p := r.Fields.Parent; p != nil {
 		iss.Parent = p.Key
 	}
+	iss.HasChildren = hasChildren(r.Fields.IssueType, r.Fields.Subtasks)
 	iss.Labels = r.Fields.Labels
 	return iss
 }
