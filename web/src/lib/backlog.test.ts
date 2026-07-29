@@ -4,8 +4,11 @@ import {
   backlogSections,
   hiddenStateGroups,
   nestBacklogRows,
+  rowExpandable,
+  rowProgress,
   sectionLabel,
   type BacklogEntry,
+  type BacklogRowNode,
 } from './backlog'
 
 function entry(id: string, group: string): BacklogEntry {
@@ -34,12 +37,8 @@ function child(id: string, group: string, parent: string): BacklogEntry {
   return { ...entry(id, group), parent }
 }
 
-function shape(nodes: ReturnType<typeof nestBacklogRows>) {
-  return nodes.map((node) =>
-    node.kind === 'epic'
-      ? ['epic', node.entry.id, node.children.map((c) => c.id)]
-      : ['flat', node.entry.id],
-  )
+function shape(nodes: BacklogRowNode[]): unknown[] {
+  return nodes.map((node) => [node.entry.id, shape(node.children)])
 }
 
 describe('sectionLabel', () => {
@@ -114,13 +113,21 @@ describe('backlogSections', () => {
 })
 
 describe('nestBacklogRows', () => {
-  it('nests a contiguous run of children under their epic', () => {
+  it('nests children under their parent row', () => {
     const rows = [
       epic('COD-1', 'backlog', 1, 3),
       child('COD-2', 'backlog', 'COD-1'),
       child('COD-3', 'backlog', 'COD-1'),
     ]
-    expect(shape(nestBacklogRows(rows))).toEqual([['epic', 'COD-1', ['COD-2', 'COD-3']]])
+    expect(shape(nestBacklogRows(rows))).toEqual([
+      [
+        'COD-1',
+        [
+          ['COD-2', []],
+          ['COD-3', []],
+        ],
+      ],
+    ])
   })
 
   it('keeps a standalone issue and separate epics apart', () => {
@@ -132,35 +139,70 @@ describe('nestBacklogRows', () => {
       child('COD-5', 'backlog', 'COD-4'),
     ]
     expect(shape(nestBacklogRows(rows))).toEqual([
-      ['epic', 'COD-1', ['COD-2']],
-      ['flat', 'COD-9'],
-      ['epic', 'COD-4', ['COD-5']],
+      ['COD-1', [['COD-2', []]]],
+      ['COD-9', []],
+      ['COD-4', [['COD-5', []]]],
     ])
   })
 
-  it('leaves a child flat when its epic row is absent from the section', () => {
+  it('leaves a child flat when its parent row is absent from the section', () => {
     const rows = [child('COD-2', 'started', 'COD-1'), entry('COD-8', 'started')]
     expect(shape(nestBacklogRows(rows))).toEqual([
-      ['flat', 'COD-2'],
-      ['flat', 'COD-8'],
+      ['COD-2', []],
+      ['COD-8', []],
     ])
   })
 
-  it('does not nest a child under an epic that is not the immediately preceding row', () => {
+  it('nests a child under a parent it is not adjacent to', () => {
     const rows = [
       epic('COD-1', 'backlog', 0, 1),
       entry('COD-9', 'backlog'),
       child('COD-2', 'backlog', 'COD-1'),
     ]
     expect(shape(nestBacklogRows(rows))).toEqual([
-      ['epic', 'COD-1', []],
-      ['flat', 'COD-9'],
-      ['flat', 'COD-2'],
+      ['COD-1', [['COD-2', []]]],
+      ['COD-9', []],
+    ])
+  })
+
+  it('nests a family to arbitrary depth, rendering each row once', () => {
+    const rows = [
+      epic('TMS-1018', 'started', 0, 1),
+      { ...epic('TMS-1212', 'started', 0, 1), parent: 'TMS-1018' },
+      { ...epic('TMS-1339', 'started', 1, 1), parent: 'TMS-1212' },
+      child('TMS-1401', 'started', 'TMS-1339'),
+    ]
+    expect(shape(nestBacklogRows(rows))).toEqual([
+      ['TMS-1018', [['TMS-1212', [['TMS-1339', [['TMS-1401', []]]]]]]],
     ])
   })
 
   it('returns an empty list for no rows', () => {
     expect(nestBacklogRows([])).toEqual([])
+  })
+})
+
+describe('rowExpandable', () => {
+  it('opens any row that has nested rows, whatever its stored flag says', () => {
+    const [root] = nestBacklogRows([
+      epic('TMS-1018', 'started', 0, 1),
+      child('TMS-1212', 'started', 'TMS-1018'),
+      child('TMS-1340', 'started', 'TMS-1212'),
+    ])
+    expect(rowExpandable(root)).toBe(true)
+    expect(rowExpandable(root.children[0])).toBe(true)
+    expect(rowExpandable(root.children[0].children[0])).toBe(false)
+  })
+})
+
+describe('rowProgress', () => {
+  it('reports the counts the store sent for a parent with children', () => {
+    expect(rowProgress(epic('COD-1', 'backlog', 2, 5))).toEqual({ settled: 2, total: 5 })
+  })
+
+  it('reports nothing for a parent with no children left to count', () => {
+    expect(rowProgress(epic('COD-1', 'backlog', 0, 0))).toBeNull()
+    expect(rowProgress(entry('COD-2', 'backlog'))).toBeNull()
   })
 })
 
