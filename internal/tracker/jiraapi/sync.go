@@ -21,7 +21,7 @@ type SyncIssue struct {
 	DueDate      string
 	Parent       string
 	Labels       []string
-	IsEpic       bool
+	HasChildren  bool
 	AssigneeID   string
 	AssigneeName string
 	Created      string
@@ -56,8 +56,8 @@ type Comment struct {
 // issues without it.
 var syncFields = []string{
 	"summary", "description", "status", "resolution", "priority", "duedate",
-	"parent", "labels", "issuetype", "assignee", "created", "updated", "comment",
-	"attachment", "issuelinks",
+	"parent", "labels", "issuetype", "subtasks", "assignee", "created", "updated",
+	"comment", "attachment", "issuelinks",
 }
 
 // SyncIssues pulls every issue in a project with the full content sync needs —
@@ -151,11 +151,10 @@ type syncSearchIssue struct {
 		Parent  *struct {
 			Key string `json:"key"`
 		} `json:"parent"`
-		Labels    []string `json:"labels"`
-		IssueType *struct {
-			HierarchyLevel int `json:"hierarchyLevel"`
-		} `json:"issuetype"`
-		Assignee *struct {
+		Labels    []string          `json:"labels"`
+		IssueType *issueTypeField   `json:"issuetype"`
+		Subtasks  []json.RawMessage `json:"subtasks"`
+		Assignee  *struct {
 			AccountID   string `json:"accountId"`
 			DisplayName string `json:"displayName"`
 		} `json:"assignee"`
@@ -217,9 +216,7 @@ func (r *syncSearchIssue) toSyncIssue() SyncIssue {
 	if p := r.Fields.Parent; p != nil {
 		iss.Parent = p.Key
 	}
-	if it := r.Fields.IssueType; it != nil {
-		iss.IsEpic = it.HierarchyLevel > 0
-	}
+	iss.HasChildren = hasChildren(r.Fields.IssueType, r.Fields.Subtasks)
 	if a := r.Fields.Assignee; a != nil {
 		iss.AssigneeID = a.AccountID
 		iss.AssigneeName = a.DisplayName

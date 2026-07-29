@@ -23,22 +23,22 @@ const (
 // eligibleFields and childFields are the field sets each search needs;
 // /search/jql returns ID-only issues without them.
 var (
-	eligibleFields = []string{"summary", "status", "issuetype", "issuelinks", "labels", "parent"}
+	eligibleFields = []string{"summary", "status", "issuetype", "issuelinks", "labels", "parent", "subtasks"}
 	childFields    = []string{"summary", "status", "issuetype", "subtasks"}
-	backlogFields  = []string{"summary", "status", "issuetype", "labels", "parent", "resolution"}
+	backlogFields  = []string{"summary", "status", "issuetype", "labels", "parent", "resolution", "subtasks"}
 )
 
 // Candidate is one issue from the eligibility search. It is returned in JQL order;
 // the tracker applies the remaining selection policy (epic exclusion, blocker
 // resolution, prefix match) over these.
 type Candidate struct {
-	Key        string
-	Summary    string
-	StatusName string
-	IsEpic     bool   // issuetype.hierarchyLevel > 0 — a container, never a buildable leaf
-	ParentKey  string // unified parent field — the epic this candidate sits under, empty at top level
-	Labels     []string
-	BlockedBy  []Blocker
+	Key         string
+	Summary     string
+	StatusName  string
+	HasChildren bool   // a container (epic or an issue with sub-issues), never a buildable leaf
+	ParentKey   string // unified parent field — the epic this candidate sits under, empty at top level
+	Labels      []string
+	BlockedBy   []Blocker
 }
 
 // Blocker is an issue linked to a candidate by "is blocked by". Resolved is true
@@ -49,7 +49,7 @@ type Blocker struct {
 	Resolved bool
 }
 
-// Child is one direct child of a parent issue — a sub-task or an epic-child. Done
+// Child is one direct child of a parent issue — a sub-issue or an epic-child. Done
 // marks a child already in a done status category; HasChildren flags a nested
 // parent/epic so the loop never descends into it as a leaf.
 type Child struct {
@@ -107,7 +107,7 @@ func (c *Client) SubIssues(ctx context.Context, parentKey string) ([]Child, erro
 
 // BacklogIssue is one issue in a project's full backlog, carrying the fields the
 // backlog board needs: display status and its stable category, resolution (to
-// tell a canceled done-issue from a completed one), epic-type flag, epic parent,
+// tell a canceled done-issue from a completed one), parent flag, epic parent,
 // and labels.
 type BacklogIssue struct {
 	Key            string
@@ -115,7 +115,7 @@ type BacklogIssue struct {
 	StatusName     string
 	StatusCategory string
 	Resolution     string
-	IsEpic         bool
+	HasChildren    bool
 	ParentKey      string
 	Labels         []string
 }
@@ -234,11 +234,9 @@ type searchResponse struct {
 type searchIssue struct {
 	Key    string `json:"key"`
 	Fields struct {
-		Summary   string       `json:"summary"`
-		Status    *statusField `json:"status"`
-		IssueType *struct {
-			HierarchyLevel int `json:"hierarchyLevel"`
-		} `json:"issuetype"`
+		Summary    string            `json:"summary"`
+		Status     *statusField      `json:"status"`
+		IssueType  *issueTypeField   `json:"issuetype"`
 		Subtasks   []json.RawMessage `json:"subtasks"`
 		IssueLinks []issueLink       `json:"issuelinks"`
 		Labels     []string          `json:"labels"`
@@ -256,6 +254,21 @@ type statusField struct {
 	StatusCategory struct {
 		Key string `json:"key"`
 	} `json:"statusCategory"`
+}
+
+type issueTypeField struct {
+	HierarchyLevel int `json:"hierarchyLevel"`
+}
+
+// hasChildren reports whether an issue is a parent rather than a buildable leaf.
+// The test is two-sided because Jira lists sub-issues in fields.subtasks but an
+// epic's children only through the parent field, so hierarchy alone misses a
+// level-0 issue that carries sub-issues.
+func hasChildren(issueType *issueTypeField, subtasks []json.RawMessage) bool {
+	if len(subtasks) > 0 {
+		return true
+	}
+	return issueType != nil && issueType.HierarchyLevel > 0
 }
 
 type issueLink struct {
@@ -278,9 +291,7 @@ func (r *searchIssue) toCandidate() Candidate {
 	if s := r.Fields.Status; s != nil {
 		cand.StatusName = s.Name
 	}
-	if it := r.Fields.IssueType; it != nil {
-		cand.IsEpic = it.HierarchyLevel > 0
-	}
+	cand.HasChildren = hasChildren(r.Fields.IssueType, r.Fields.Subtasks)
 	if p := r.Fields.Parent; p != nil {
 		cand.ParentKey = p.Key
 	}
@@ -294,12 +305,7 @@ func (r *searchIssue) toChild() Child {
 	if s := r.Fields.Status; s != nil {
 		ch.Done = strings.EqualFold(s.StatusCategory.Key, "done")
 	}
-	if len(r.Fields.Subtasks) > 0 {
-		ch.HasChildren = true
-	}
-	if it := r.Fields.IssueType; it != nil && it.HierarchyLevel > 0 {
-		ch.HasChildren = true
-	}
+	ch.HasChildren = hasChildren(r.Fields.IssueType, r.Fields.Subtasks)
 	return ch
 }
 
@@ -309,9 +315,7 @@ func (r *searchIssue) toBacklog() BacklogIssue {
 		b.StatusName = s.Name
 		b.StatusCategory = s.StatusCategory.Key
 	}
-	if it := r.Fields.IssueType; it != nil {
-		b.IsEpic = it.HierarchyLevel > 0
-	}
+	b.HasChildren = hasChildren(r.Fields.IssueType, r.Fields.Subtasks)
 	if p := r.Fields.Parent; p != nil {
 		b.ParentKey = p.Key
 	}

@@ -62,11 +62,11 @@ The single Registered repo the web UI is checked out to. Every screen is scoped 
 _Avoid_: current project, selected repo (that's per-page picker framing), workspace
 
 **Epic**:
-A tracker issue that has Sub-issues (`has_children`), treated everywhere as a unit of remaining work: queueing it queues its sub-issues, drain settles them together, the Loop timeline expands it, and the backlog board renders it as a collapsible row with Settled/total progress. A not-yet-closed Epic files under the board's In Progress section while any live Sub-issue is started — in-flight work lists the whole Epic as in progress. Hierarchy is one level deep — Epic → Sub-issue.
+A tracker issue that has Sub-issues (`has_children`), treated everywhere as a unit of remaining work: queueing it queues its sub-issues, drain settles them together, the Loop timeline expands it, and the backlog board renders it as a collapsible row with Settled/total progress. A not-yet-closed Epic files under the board's In Progress section while any live Sub-issue is started — in-flight work lists the whole Epic as in progress. Run and queue semantics are one level deep — Epic → Sub-issue — but the board renders the tree recursively: a Sub-issue that has children of its own is an Epic to them, with its own chevron and Settled/total over its direct children.
 _Avoid_: parent (that's the field on the child, not the concept), group, story (tracker jargon)
 
 **Sub-issue**:
-A tracker issue with a `parent` — a child of exactly one Epic. On the backlog board it nests under its Epic only when both are visible in the same status section (status-true nesting); anywhere else it renders flat with a breadcrumb chip naming its Epic.
+A tracker issue with a `parent` — a child of exactly one Epic. On the backlog board it nests under its Epic only when both are visible in the same status section (status-true nesting), at whatever depth that puts it; anywhere else it renders flat with a breadcrumb chip naming its Epic.
 _Avoid_: child (bare, ambiguous with process children), subtask, slice (that's the act of splitting a PRD, not the resulting issue)
 
 **Settled**:

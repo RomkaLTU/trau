@@ -140,7 +140,7 @@ func (j *Jira) pickAPI(ctx context.Context, scope Scope) (string, error) {
 	}
 	prefix := scope.prefix()
 	for _, c := range candidates {
-		if c.IsEpic {
+		if c.HasChildren {
 			continue
 		}
 		if !allBlockersResolved(c.BlockedBy) {
@@ -170,7 +170,7 @@ func (j *Jira) pickEpicAPI(ctx context.Context, scope Scope, leaves map[string]b
 		return "", err
 	}
 	for _, c := range candidates {
-		if c.IsEpic || !leaves[c.Key] {
+		if c.HasChildren || !leaves[c.Key] {
 			continue
 		}
 		if !allBlockersResolved(c.BlockedBy) {
@@ -249,7 +249,7 @@ func (j *Jira) listEligibleAPI(ctx context.Context, scope Scope) ([]ListedTicket
 			State:       c.StatusName,
 			Labels:      c.Labels,
 			Parent:      c.ParentKey,
-			HasChildren: c.IsEpic,
+			HasChildren: c.HasChildren,
 		})
 	}
 	return out, nil

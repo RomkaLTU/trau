@@ -630,6 +630,58 @@ func TestBacklogPageEpicWithStartedChildFilesUnderStarted(t *testing.T) {
 	}
 }
 
+func TestBacklogPageStartedSubIssuePromotesEveryAncestor(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/deepstarted"
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-1", StatusGroup: "backlog", HasChildren: true},
+		{Identifier: "COD-2", StatusGroup: "unstarted", Parent: "COD-1", HasChildren: true},
+		{Identifier: "COD-3", StatusGroup: "started", Parent: "COD-2"},
+		{Identifier: "COD-9", StatusGroup: "backlog"},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	groupsOf := func() map[string]string {
+		t.Helper()
+		page, _, _, err := s.BacklogPage(repo, BacklogFilter{})
+		if err != nil {
+			t.Fatalf("BacklogPage: %v", err)
+		}
+		groups := map[string]string{}
+		for _, iss := range page {
+			groups[iss.Identifier] = iss.StatusGroup
+		}
+		return groups
+	}
+
+	groups := groupsOf()
+	want := map[string]string{"COD-1": "started", "COD-2": "started", "COD-3": "started", "COD-9": "backlog"}
+	if !reflect.DeepEqual(groups, want) {
+		t.Fatalf("groups = %v, want %v — a started sub-issue promotes its task and the epic above it", groups, want)
+	}
+
+	started, total, counts, err := s.BacklogPage(repo, BacklogFilter{Groups: []string{"started"}})
+	if err != nil {
+		t.Fatalf("BacklogPage started: %v", err)
+	}
+	if total != 3 || !reflect.DeepEqual(idsOf(started), []string{"COD-1", "COD-2", "COD-3"}) {
+		t.Errorf("started page = %v (total %d), want the whole family under started", idsOf(started), total)
+	}
+	if wantCounts := (map[string]int{"started": 3, "backlog": 1}); !reflect.DeepEqual(counts, wantCounts) {
+		t.Errorf("counts = %v, want %v", counts, wantCounts)
+	}
+
+	if _, found, err := s.UpdateSynced(repo, "COD-3", SyncedPatch{Status: "Done", StatusGroup: "done"}); err != nil || !found {
+		t.Fatalf("settle sub-issue: found=%v err=%v", found, err)
+	}
+	settled := groupsOf()
+	wantSettled := map[string]string{"COD-1": "backlog", "COD-2": "unstarted", "COD-3": "done", "COD-9": "backlog"}
+	if !reflect.DeepEqual(settled, wantSettled) {
+		t.Errorf("groups after the sub-issue settles = %v, want %v — promotion lapses with the work", settled, wantSettled)
+	}
+}
+
 func TestBacklogPageEpicPromotionSkipsClosedAndTombstoned(t *testing.T) {
 	s := testIssues(t)
 	repo := "/repo/epicskip"

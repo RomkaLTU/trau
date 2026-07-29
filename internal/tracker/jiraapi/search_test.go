@@ -76,10 +76,10 @@ func TestBacklogPostsJQLAndMaps(t *testing.T) {
 	if len(items) != 3 {
 		t.Fatalf("items = %d, want 3", len(items))
 	}
-	if !items[0].IsEpic || items[0].StatusCategory != "indeterminate" || items[0].ParentKey != "" {
+	if !items[0].HasChildren || items[0].StatusCategory != "indeterminate" || items[0].ParentKey != "" {
 		t.Errorf("items[0] = %+v, want the epic", items[0])
 	}
-	if items[1].ParentKey != "PROJ-1" || items[1].IsEpic || len(items[1].Labels) != 1 || items[1].Labels[0] != "ready-for-agent" {
+	if items[1].ParentKey != "PROJ-1" || items[1].HasChildren || len(items[1].Labels) != 1 || items[1].Labels[0] != "ready-for-agent" {
 		t.Errorf("items[1] = %+v, want ready child parented to PROJ-1", items[1])
 	}
 	if items[2].StatusCategory != "done" || items[2].Resolution != "Won't Do" {
@@ -175,7 +175,7 @@ func TestEligiblePostsJQLAndParses(t *testing.T) {
 	if len(cands) != 3 {
 		t.Fatalf("got %d candidates, want 3", len(cands))
 	}
-	if cands[0].Key != "PROJ-1" || cands[0].StatusName != "To Do" || cands[0].IsEpic {
+	if cands[0].Key != "PROJ-1" || cands[0].StatusName != "To Do" || cands[0].HasChildren {
 		t.Errorf("candidate[0] = %+v, want PROJ-1 non-epic To Do", cands[0])
 	}
 	if cands[0].ParentKey != "PROJ-2" {
@@ -190,7 +190,7 @@ func TestEligiblePostsJQLAndParses(t *testing.T) {
 	if len(cands[0].BlockedBy) != 1 || cands[0].BlockedBy[0].Key != "PROJ-9" || !cands[0].BlockedBy[0].Resolved {
 		t.Errorf("candidate[0] blockers = %+v, want one resolved PROJ-9", cands[0].BlockedBy)
 	}
-	if !cands[1].IsEpic {
+	if !cands[1].HasChildren {
 		t.Errorf("candidate[1] should be an epic (hierarchyLevel 1)")
 	}
 	if len(cands[2].BlockedBy) != 1 || cands[2].BlockedBy[0].Resolved {
@@ -287,6 +287,71 @@ func TestSubIssuesParsesChildren(t *testing.T) {
 	}
 	if !reflect.DeepEqual(children, want) {
 		t.Errorf("children = %+v, want %+v", children, want)
+	}
+}
+
+// subIssueParentPayload pairs a plain leaf with PROJ-11, a Task sitting at
+// hierarchy level 0 that nevertheless carries sub-issues.
+const subIssueParentPayload = `{"issues":[
+	{"key":"PROJ-10","fields":{"summary":"Leaf","status":{"name":"To Do","statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},"subtasks":[]}},
+	{"key":"PROJ-11","fields":{"summary":"Has subtasks","status":{"name":"To Do","statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},"subtasks":[{"key":"PROJ-12"}]}}
+]}`
+
+// fixedSearch answers every search with payload and records the last request, for
+// tests that only care about how a response maps.
+func fixedSearch(t *testing.T, payload string) (*Client, *searchRequest) {
+	t.Helper()
+	var got searchRequest
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &got)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, payload)
+	}))
+	t.Cleanup(srv.Close)
+	return New(srv.URL, "me@acme.com", "tok"), &got
+}
+
+// A Task with sub-issues is a container even at hierarchy level 0, so the backlog
+// must flag it the same way it flags an epic — otherwise the hub stores it with
+// has_children = 0 and the queue runs it --once instead of draining its children.
+func TestBacklogFlagsTaskWithSubIssuesAsParent(t *testing.T) {
+	client, req := fixedSearch(t, subIssueParentPayload)
+	items, err := client.Backlog(context.Background(), "PROJ")
+	if err != nil {
+		t.Fatalf("Backlog error: %v", err)
+	}
+	if !containsField(req.Fields, "subtasks") {
+		t.Fatalf("backlog fields = %v, want subtasks among them", req.Fields)
+	}
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want 2", len(items))
+	}
+	if items[0].HasChildren {
+		t.Errorf("PROJ-10 = %+v, want a buildable leaf", items[0])
+	}
+	if !items[1].HasChildren {
+		t.Errorf("PROJ-11 = %+v, want a parent — it carries sub-issues", items[1])
+	}
+}
+
+func TestEligibleFlagsTaskWithSubIssuesAsParent(t *testing.T) {
+	client, req := fixedSearch(t, subIssueParentPayload)
+	cands, err := client.Eligible(context.Background(), "PROJ", "ready")
+	if err != nil {
+		t.Fatalf("Eligible error: %v", err)
+	}
+	if !containsField(req.Fields, "subtasks") {
+		t.Fatalf("eligible fields = %v, want subtasks among them", req.Fields)
+	}
+	if len(cands) != 2 {
+		t.Fatalf("candidates = %d, want 2", len(cands))
+	}
+	if cands[0].HasChildren {
+		t.Errorf("PROJ-10 = %+v, want a buildable leaf", cands[0])
+	}
+	if !cands[1].HasChildren {
+		t.Errorf("PROJ-11 = %+v, want a parent — it carries sub-issues", cands[1])
 	}
 }
 
