@@ -18,6 +18,20 @@ func archiveBoardFixture() []Issue {
 	}
 }
 
+// archiveTreeFixture is a three-level family — an epic, two tasks under it, two
+// sub-issues under the first task — plus a standalone leaf, so the cascade tests
+// can archive at the top or in the middle.
+func archiveTreeFixture() []Issue {
+	return []Issue{
+		{Identifier: "COD-1", StatusGroup: "backlog", HasChildren: true},
+		{Identifier: "COD-2", StatusGroup: "backlog", Parent: "COD-1", HasChildren: true},
+		{Identifier: "COD-3", StatusGroup: "backlog", Parent: "COD-2"},
+		{Identifier: "COD-4", StatusGroup: "backlog", Parent: "COD-2"},
+		{Identifier: "COD-5", StatusGroup: "backlog", Parent: "COD-1"},
+		{Identifier: "COD-9", StatusGroup: "backlog"},
+	}
+}
+
 func sortedIDs(issues []Issue) []string {
 	ids := idsOf(issues)
 	slices.Sort(ids)
@@ -181,6 +195,97 @@ func TestBacklogPageHidesIndividuallyArchivedChild(t *testing.T) {
 	}
 	if !reflect.DeepEqual(idsOf(archived), []string{"COD-6"}) {
 		t.Errorf("archived view = %v, want exactly the archived child [COD-6]", idsOf(archived))
+	}
+}
+
+func TestBacklogPageArchiveCascadesToGrandchildren(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/archivetree"
+	if _, _, err := s.Upsert(repo, "linear", archiveTreeFixture()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, _, err := s.SetArchived(repo, "COD-1", true); err != nil {
+		t.Fatalf("archive epic: %v", err)
+	}
+
+	live, _, _, err := s.BacklogPage(repo, BacklogFilter{})
+	if err != nil {
+		t.Fatalf("BacklogPage: %v", err)
+	}
+	if !reflect.DeepEqual(idsOf(live), []string{"COD-9"}) {
+		t.Errorf("live board = %v, want only the unrelated COD-9 — the whole three-level family goes with the epic", idsOf(live))
+	}
+
+	archived, _, _, err := s.BacklogPage(repo, BacklogFilter{Archived: true})
+	if err != nil {
+		t.Fatalf("BacklogPage archived: %v", err)
+	}
+	want := []string{"COD-1", "COD-2", "COD-3", "COD-4", "COD-5"}
+	if got := sortedIDs(archived); !reflect.DeepEqual(got, want) {
+		t.Errorf("archived view = %v, want the whole subtree %v", got, want)
+	}
+
+	if _, _, err := s.SetArchived(repo, "COD-1", false); err != nil {
+		t.Fatalf("unarchive epic: %v", err)
+	}
+	restored, _, _, err := s.BacklogPage(repo, BacklogFilter{})
+	if err != nil {
+		t.Fatalf("BacklogPage after unarchive: %v", err)
+	}
+	if got := sortedIDs(restored); !reflect.DeepEqual(got, sortedIDs(archiveTreeFixture())) {
+		t.Errorf("board after unarchive = %v, want the whole subtree back", got)
+	}
+}
+
+func TestBacklogPageArchivedMidLevelHidesOnlyItsSubtree(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/archivemid"
+	if _, _, err := s.Upsert(repo, "linear", archiveTreeFixture()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, _, err := s.SetArchived(repo, "COD-2", true); err != nil {
+		t.Fatalf("archive task: %v", err)
+	}
+
+	live, _, _, err := s.BacklogPage(repo, BacklogFilter{})
+	if err != nil {
+		t.Fatalf("BacklogPage: %v", err)
+	}
+	want := []string{"COD-1", "COD-5", "COD-9"}
+	if got := sortedIDs(live); !reflect.DeepEqual(got, want) {
+		t.Errorf("live board = %v, want %v — only the archived task's own subtree hidden", got, want)
+	}
+}
+
+func TestBacklogPageHidesSubIssueSyncedAfterGrandparentArchived(t *testing.T) {
+	s := testIssues(t)
+	repo := "/repo/archivelate"
+	if _, _, err := s.Upsert(repo, "linear", archiveTreeFixture()); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, _, err := s.SetArchived(repo, "COD-1", true); err != nil {
+		t.Fatalf("archive epic: %v", err)
+	}
+	if _, _, err := s.Upsert(repo, "linear", []Issue{
+		{Identifier: "COD-6", StatusGroup: "backlog", Parent: "COD-2"},
+	}); err != nil {
+		t.Fatalf("late sub-issue: %v", err)
+	}
+
+	live, _, _, err := s.BacklogPage(repo, BacklogFilter{})
+	if err != nil {
+		t.Fatalf("BacklogPage: %v", err)
+	}
+	if slices.Contains(idsOf(live), "COD-6") {
+		t.Errorf("live board = %v, want the sub-issue synced under an archived grandparent hidden", idsOf(live))
+	}
+
+	archived, _, _, err := s.BacklogPage(repo, BacklogFilter{Archived: true})
+	if err != nil {
+		t.Fatalf("BacklogPage archived: %v", err)
+	}
+	if !slices.Contains(idsOf(archived), "COD-6") {
+		t.Errorf("archived view = %v, want the late sub-issue COD-6 listed with the family", idsOf(archived))
 	}
 }
 

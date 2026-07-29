@@ -252,8 +252,8 @@ func (s *Issues) ChildCount(repo, parent string) (int, error) {
 // assignee id to match exactly — an unresolved "me" matches nothing; Text is a
 // case-insensitive substring over identifier and title; Parent matches the
 // direct sub-issues of that epic identifier. Archived selects the view: false
-// hides every archived family (a row whose own archived_at is set, or whose
-// family keys onto an archived identifier), true shows only those. A zero-valued
+// hides every archived subtree (a row whose own archived_at is set, or whose
+// parent chain reaches an archived identifier), true shows only those. A zero-valued
 // field is ignored, so the zero filter selects the whole live board — an empty
 // Groups means every group. Limit and Offset paginate the ordered matches; a
 // Limit of zero returns every match.
@@ -274,12 +274,19 @@ type BacklogFilter struct {
 // schema, so NULLIF collapses the empty top-level case to the row's identifier.
 const familyKey = `COALESCE(NULLIF(parent, ''), identifier)`
 
-// archivedFamily matches a row that belongs to an archived family: its own
-// archived_at is stamped, or its family key is an archived identifier — so a
-// child vanishes with the epic it hangs off, including one synced after the epic
-// was archived. It carries one repo placeholder for the identifier subquery.
-const archivedFamily = `(archived_at <> '' OR ` + familyKey +
-	` IN (SELECT identifier FROM issues WHERE repo = ? AND archived_at <> ''))`
+// archivedSubtree matches a row an archive takes down: its own archived_at is
+// stamped, or an ancestor's is, following the parent chain within the repo — so a
+// row vanishes with any epic it hangs off however deep, including one synced after
+// the archive. UNION ends the descent should tracker data ever carry a parent
+// cycle. It carries two repo placeholders, one per CTE arm.
+const archivedSubtree = `identifier IN (
+	WITH RECURSIVE archived(identifier) AS (
+		SELECT identifier FROM issues WHERE repo = ? AND archived_at <> ''
+		UNION
+		SELECT i.identifier FROM issues i JOIN archived a ON i.parent = a.identifier
+		WHERE i.repo = ?
+	)
+	SELECT identifier FROM archived)`
 
 // numericIdentOrder renders the ORDER BY terms that sort an identifier expression
 // numerically — the "COD-" prefix, then the trailing number as an integer, then
@@ -295,16 +302,23 @@ func numericIdentOrder(expr string) string {
 // filtered set, so a fresh sub-issue surfaces its whole family together.
 const familyCreated = `max(created_at) OVER (PARTITION BY ` + familyKey + `)`
 
-// backlogGroup is the group a row files under on the board: an epic that is not
-// yet closed surfaces as started while any live child is started, so the whole
-// family reads as in progress, not just the sub-issue taken from it. Every other
-// row keeps its stored status_group.
+// backlogGroup is the group a row files under on the board: a parent that is not
+// yet closed surfaces as started while any live issue under it is started — a
+// grandchild as much as a direct child — so the whole family reads as in progress,
+// not just the sub-issue taken from it. Every other row keeps its stored
+// status_group.
 const backlogGroup = `CASE
 	WHEN has_children = 1 AND status_group NOT IN ('started', 'done', 'canceled')
 		AND EXISTS (
-			SELECT 1 FROM issues c
-			WHERE c.repo = issues.repo AND c.parent = issues.identifier
-				AND c.deleted_at = '' AND c.status_group = 'started')
+			WITH RECURSIVE descendant(identifier, status_group) AS (
+				SELECT c.identifier, c.status_group FROM issues c
+				WHERE c.repo = issues.repo AND c.parent = issues.identifier AND c.deleted_at = ''
+				UNION
+				SELECT c.identifier, c.status_group FROM issues c
+				JOIN descendant d ON c.parent = d.identifier
+				WHERE c.repo = issues.repo AND c.deleted_at = ''
+			)
+			SELECT 1 FROM descendant WHERE status_group = 'started')
 	THEN 'started'
 	ELSE status_group
 END`
@@ -346,16 +360,16 @@ func (s *Issues) Backlog(repo string) ([]Issue, error) {
 // precedence (started, unstarted, backlog, unknown, done, canceled) then each
 // group's display order (backlogOrderBy), and paginated. Grouping — the ordering,
 // the state filter, the counts, and the rows' StatusGroup — is by the board group
-// (backlogGroup), so an epic with a started child files under started as a whole.
-// It also returns the total number of matches before pagination so the board can
-// page without counting the rows itself, and per-board-group counts computed over
-// the same filters with the state selection ignored — so section headers and the
-// hidden-count hint hold whichever groups are on screen. Tombstoned issues —
-// synced tickets removed from the tracker — are excluded from the board, as are
-// archived families unless filter.Archived selects the archived view. The
-// filters compose in the WHERE clause and are pushed into the query rather than
-// applied after loading everything; comments are not attached (the board renders
-// summary rows only).
+// (backlogGroup), so an epic with started work under it files under started as a
+// whole. It also returns the total number of matches before pagination so the
+// board can page without counting the rows itself, and per-board-group counts
+// computed over the same filters with the state selection ignored — so section
+// headers and the hidden-count hint hold whichever groups are on screen.
+// Tombstoned issues — synced tickets removed from the tracker — are excluded from
+// the board, as are archived subtrees unless filter.Archived selects the archived
+// view. The filters compose in the WHERE clause and are pushed into the query
+// rather than applied after loading everything; comments are not attached (the
+// board renders summary rows only).
 func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue, total int, counts map[string]int, err error) {
 	where := []string{"repo = ?", "deleted_at = ''"}
 	args := []any{repo}
@@ -392,11 +406,11 @@ func (s *Issues) BacklogPage(repo string, filter BacklogFilter) (issues []Issue,
 		args = append(args, parent)
 	}
 	if filter.Archived {
-		where = append(where, archivedFamily)
+		where = append(where, archivedSubtree)
 	} else {
-		where = append(where, "NOT "+archivedFamily)
+		where = append(where, "NOT "+archivedSubtree)
 	}
-	args = append(args, repo)
+	args = append(args, repo, repo)
 	baseClause := strings.Join(where, " AND ")
 
 	counts, err = s.backlogCounts(baseClause, args)
