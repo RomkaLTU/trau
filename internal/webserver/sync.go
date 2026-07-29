@@ -124,10 +124,9 @@ func (s *Server) forceResync(ctx context.Context, repo registry.Repo) (SyncRespo
 // reconcileRepo diffs the repo's Project identifier set against the store and
 // tombstones the synced issues the tracker no longer returns — those deleted,
 // archived, or moved out of the Project, which an incremental SyncPull never
-// reports (ADR 0007). It answers with the identifiers it tombstoned, so a caller
-// that reports what a sync changed can count them. Tombstoned issues are dropped
-// from the Queue and the backlog board but keep their run artifacts and
-// checkpoints; internal issues are never touched. A sweep failure is recorded on
+// reports (ADR 0007). Tombstoned issues are dropped from the Queue and the backlog
+// board but keep their run artifacts and checkpoints; internal issues are never
+// touched. A sweep failure is recorded on
 // the same per-repo error surface as sync so a broken tracker backs off. An empty
 // identifier set is treated as a no-op rather than tombstoning the whole store —
 // it guards against a misresolved binding (a wrong project key returns zero)
