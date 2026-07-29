@@ -13,6 +13,28 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+      - name: package manager credential gate
+        shell: bash
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          SCOOP_BUCKET_GITHUB_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}
+          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
+        run: |
+          missing=()
+          for key in \
+            HOMEBREW_TAP_GITHUB_TOKEN \
+            SCOOP_BUCKET_GITHUB_TOKEN \
+            WINGET_GITHUB_TOKEN
+          do
+            if [[ -z "${!key}" ]]; then
+              missing+=("$key")
+            fi
+          done
+
+          if (( ${#missing[@]} > 0 )); then
+            printf 'Missing required package manager secrets: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -27,8 +49,8 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Cross-repo publishing needs a PAT with `repo` on each target; the new channels
-          # reuse the tap's until narrower per-channel tokens are provisioned.
+          # Each cross-repo publisher has an explicit credential so one channel's
+          # permissions cannot silently stand in for another's.
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
-          SCOOP_BUCKET_GITHUB_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN || secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
-          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN || secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          SCOOP_BUCKET_GITHUB_TOKEN: ${{ secrets.SCOOP_BUCKET_GITHUB_TOKEN }}
+          WINGET_GITHUB_TOKEN: ${{ secrets.WINGET_GITHUB_TOKEN }}
