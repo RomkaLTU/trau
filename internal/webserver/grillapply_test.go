@@ -979,6 +979,21 @@ func TestGrillApplyResearchAuthoringWritesNothing(t *testing.T) {
 	if !ok || !strings.Contains(outcome.Findings, "Use the vendor SDK.") {
 		t.Fatalf("stored outcome = %+v, want the archived report", outcome)
 	}
+	// The draft ran as an interview, so approving its research report restamps it —
+	// otherwise the report would be readable on neither page.
+	if out.Session.Mode != hubstore.GrillModeResearch {
+		t.Errorf("applied session mode = %q, want research", out.Session.Mode)
+	}
+	if stored, _, _ := stores.Grill().Session(sid); stored.Mode != hubstore.GrillModeResearch {
+		t.Errorf("stored mode = %q, want research", stored.Mode)
+	}
+	listed, err := stores.Grill().List(root, "", hubstore.GrillModeResearch)
+	if err != nil {
+		t.Fatalf("list research: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != sid {
+		t.Fatalf("research list = %+v, want the settled draft", listed)
+	}
 }
 
 func TestGrillApplyResearchCommentFailureIsReported(t *testing.T) {

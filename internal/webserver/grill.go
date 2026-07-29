@@ -169,8 +169,11 @@ func (s *Server) handleRepoGrill(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		mode, errMsg := grillValidateMode(r.URL.Query().Get("mode"))
-		if errMsg != "" {
+		// The list keeps the mode as asked rather than as validated: an absent one
+		// lists every session, where the defaults it rides with always answer for a
+		// concrete session type.
+		mode := strings.TrimSpace(r.URL.Query().Get("mode"))
+		if _, errMsg := grillValidateMode(mode); errMsg != "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": errMsg})
 			return
 		}
@@ -184,7 +187,7 @@ func (s *Server) handleRepoGrill(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listGrill(w http.ResponseWriter, repo registry.Repo, state, mode string) {
-	sessions, err := s.stores.Grill().List(repo.Root, state)
+	sessions, err := s.stores.Grill().List(repo.Root, state, mode)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -196,7 +199,7 @@ func (s *Server) listGrill(w http.ResponseWriter, repo registry.Repo, state, mod
 	writeJSON(w, http.StatusOK, GrillListResponse{
 		Repo:     repo.Name,
 		Tracker:  s.grillTrackerFor(repo),
-		Defaults: s.grillDefaultsView(repo, mode),
+		Defaults: s.grillDefaultsView(repo, grillEffectiveMode(mode)),
 		Sessions: views,
 	})
 }

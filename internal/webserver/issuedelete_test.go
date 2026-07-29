@@ -48,7 +48,7 @@ func TestDeleteIssueRemovesItAndItsTraces(t *testing.T) {
 	if _, found, err := s.stores.Issues().Get(root, "COD-1"); err != nil || found {
 		t.Errorf("COD-1: found=%v err=%v, want the row gone", found, err)
 	}
-	sessions, err := s.stores.Grill().List(root, "")
+	sessions, err := s.stores.Grill().List(root, "", "")
 	if err != nil {
 		t.Fatalf("list grill sessions: %v", err)
 	}

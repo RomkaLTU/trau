@@ -156,6 +156,16 @@ func (s *Server) handleGrillApply(w http.ResponseWriter, r *http.Request) {
 	// keeps the report on the session and never reaches the tracker.
 	archivesOnly := outcome.Disposition == grillDispResearch && strings.TrimSpace(sess.IssueID) == ""
 	if outcome.Disposition == grillDispNoChange || archivesOnly {
+		// A draft interview may still finish on a research disposition, and its report
+		// is read on the Research page, so the session is stamped to match before it
+		// settles rather than dropping out of both lists.
+		if archivesOnly && sess.Mode != hubstore.GrillModeResearch {
+			if stamped, _, err := s.stores.Grill().SetMode(sess.ID, hubstore.GrillModeResearch); err != nil {
+				logger.Verbosef("grill apply %d: stamp research mode: %v", sess.ID, err)
+			} else {
+				sess = stamped
+			}
+		}
 		s.settleGrillApplied(w, &sess, nil)
 		return
 	}

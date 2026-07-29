@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -1073,6 +1074,39 @@ func TestGrillListRejectsUnknownMode(t *testing.T) {
 	res, _ := get(t, ts, APIPrefix+"/repos/"+repo+"/grill?mode=bogus")
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("list status = %d, want 400", res.StatusCode)
+	}
+}
+
+// The Research page reads the list with mode=research; the Inbox reads it without one
+// and must keep seeing every session, research drafts included.
+func TestGrillListNarrowsToMode(t *testing.T) {
+	ts, _, repo := grillServer(t)
+	interview := createGrill(t, ts, repo, "COD-1")
+	research := createGrillWith(t, ts, repo, GrillCreateRequest{
+		IssueID: "COD-2",
+		Mode:    hubstore.GrillModeResearch,
+	})
+
+	for _, tc := range []struct {
+		query string
+		want  []string
+	}{
+		{query: "", want: []string{research.ID, interview.ID}},
+		{query: "?mode=" + hubstore.GrillModeInterview, want: []string{interview.ID}},
+		{query: "?mode=" + hubstore.GrillModeResearch, want: []string{research.ID}},
+	} {
+		_, body := get(t, ts, APIPrefix+"/repos/"+repo+"/grill"+tc.query)
+		var list GrillListResponse
+		if err := json.Unmarshal([]byte(body), &list); err != nil {
+			t.Fatalf("decode list%s: %v", tc.query, err)
+		}
+		got := make([]string, len(list.Sessions))
+		for i, sess := range list.Sessions {
+			got[i] = sess.ID
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("list%s = %v, want %v", tc.query, got, tc.want)
+		}
 	}
 }
 
