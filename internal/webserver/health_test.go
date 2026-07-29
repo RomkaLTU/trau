@@ -55,9 +55,10 @@ func getHealth(t *testing.T, ts *httptest.Server, name string) (int, RepoHealth)
 }
 
 const (
-	linearINI   = "TRACKER_PROVIDER=linear\nLINEAR_API_KEY=k\nLINEAR_TEAM=COD\n"
-	jiraINI     = "JIRA_BASE_URL=https://acme.atlassian.net\nJIRA_EMAIL=dev@acme.io\nJIRA_API_TOKEN=tok\n"
-	internalINI = "TRACKER_PROVIDER=internal\n"
+	linearINI     = "TRACKER_PROVIDER=linear\nLINEAR_API_KEY=k\nLINEAR_TEAM=COD\n"
+	userLinearINI = "LINEAR_API_KEY=k\nLINEAR_TEAM=COD\n"
+	jiraINI       = "JIRA_BASE_URL=https://acme.atlassian.net\nJIRA_EMAIL=dev@acme.io\nJIRA_API_TOKEN=tok\n"
+	internalINI   = "TRACKER_PROVIDER=internal\n"
 )
 
 func TestDeriveHealthState(t *testing.T) {
@@ -187,6 +188,30 @@ func TestRepoHealthSyncing(t *testing.T) {
 	_, h := getHealth(t, ts, "loop")
 	if h.State != HealthSyncing {
 		t.Fatalf("state = %q, want syncing while a pull is in flight", h.State)
+	}
+}
+
+// TestRepoHealthCarriesProvider pins the field the backlog's sync control reads to
+// decide whether there is anything to pull at all. The user layer carries the
+// machine-wide Linear key here — the standard trau setup — because that is what
+// must not make a repo with no config of its own look tracker-backed.
+func TestRepoHealthCarriesProvider(t *testing.T) {
+	s, ts := healthServer(t)
+	writeRepoINI(t, s.home, userLinearINI)
+	registerRepoAt(t, s, "loop", linearINI)
+	registerRepoAt(t, s, "melga", jiraINI)
+	registerRepoAt(t, s, "notes", internalINI)
+	registerRepoAt(t, s, "fresh", "")
+
+	for repo, want := range map[string]string{
+		"loop":  "linear",
+		"melga": "jira",
+		"notes": "internal",
+		"fresh": "",
+	} {
+		if _, h := getHealth(t, ts, repo); h.Provider != want {
+			t.Fatalf("%s provider = %q, want %q", repo, h.Provider, want)
+		}
 	}
 }
 

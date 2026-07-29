@@ -53,6 +53,7 @@ import {
 } from "@/lib/add-by-id";
 import { configQueryOptions } from "@/lib/config";
 import { addAllLabel, eligibleQueryOptions, planAddAll } from "@/lib/eligible";
+import { syncedAgo, useNow } from "@/lib/elapsed";
 import { pendingHandback } from "@/lib/handback";
 import { IssueFetchError, issueQueryOptions } from "@/lib/issues";
 import {
@@ -246,15 +247,6 @@ function RemoveFromQueueButton({
   );
 }
 
-function useNow(intervalMs: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
-
 function elapsedSince(fromISO: string, now: number): string {
   const s = Math.max(0, Math.floor((now - new Date(fromISO).getTime()) / 1000));
   const h = Math.floor(s / 3600);
@@ -294,7 +286,7 @@ function SyncFreshness({ freshness }: { freshness?: RepoFreshness }) {
   return (
     <span className="inline-flex items-center gap-1.5 font-mono text-xs text-muted-foreground">
       <Check className="size-3 text-done" aria-hidden="true" />
-      synced {elapsedSince(freshness.last_synced_at, now)} ago
+      synced {syncedAgo(freshness.last_synced_at, now)}
     </span>
   );
 }

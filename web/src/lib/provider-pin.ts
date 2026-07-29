@@ -1,6 +1,7 @@
 import { type QueryClient } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
+import { invalidateRepoBoard } from './backlog'
 import { issueQueryOptions, type Issue } from './issues'
 
 // ProviderPinSource is the slice of an issue the picker reads: its own pin and
@@ -83,6 +84,5 @@ export function publishProviderPin(
   issue: Issue,
 ): void {
   client.setQueryData(issueQueryOptions(repo, issue.id).queryKey, issue)
-  void client.invalidateQueries({ queryKey: ['backlog', repo] })
-  void client.invalidateQueries({ queryKey: ['queue', repo] })
+  invalidateRepoBoard(client, repo)
 }

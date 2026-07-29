@@ -28,6 +28,7 @@ import {
 
 import {
   AssigneeAvatar,
+  BacklogSyncControl,
   PageHeader,
   ProjectScopeGate,
   RepoHealthGate,
@@ -244,6 +245,7 @@ function BacklogPage() {
         }
         actions={
           <div className="flex items-center gap-2">
+            <BacklogSyncControl repo={repo} />
             <button
               type="button"
               onClick={() => {

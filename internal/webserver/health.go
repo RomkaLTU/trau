@@ -22,9 +22,12 @@ const (
 
 // RepoHealth is the /api/v1/repos/{repo}/health resource: a single repo's health
 // state with the sync facts behind it, so a gate can poll one repo cheaply
-// instead of scanning the whole repos list.
+// instead of scanning the whole repos list. Provider is the tracker the state was
+// derived from, so a caller can tell an internal-only or unconfigured repo —
+// nothing to pull — from one that syncs.
 type RepoHealth struct {
 	Repo         string          `json:"repo"`
+	Provider     string          `json:"provider"`
 	State        RepoHealthState `json:"state"`
 	LastSyncedAt string          `json:"last_synced_at"`
 	LastError    string          `json:"last_error"`
@@ -61,7 +64,10 @@ func deriveHealthState(provider string, syncing bool, st hubstore.SyncState) Rep
 // establishes: an explicit TRACKER_PROVIDER, or credentials that establish a
 // provider on their own (present Jira credentials imply Jira). Empty means no
 // effective tracker-provider config — the repo is unconfigured. It reuses the
-// layered-config read the inspection report is built from.
+// layered-config read the inspection report is built from. It deliberately does
+// not fall back the way a pull does: the user layer's shared LINEAR_API_KEY would
+// otherwise make every repo on the machine, including one with no config at all,
+// report a tracker it was never bound to.
 func (s *Server) repoActiveProvider(repo registry.Repo) string {
 	projectPath, userPath := s.repoConfigPaths(repo)
 	cfg, sources, _ := config.LoadLayeredWithSources(projectPath, userPath, "", "")
@@ -75,9 +81,11 @@ func (s *Server) repoHealth(repo registry.Repo) RepoHealth {
 	st, _ := s.stores.Issues().SyncState(repo.Root)
 	count, _ := s.stores.Issues().Count(repo.Root)
 	syncing := s.syncer.syncing(repo.Root)
+	provider := s.repoActiveProvider(repo)
 	return RepoHealth{
 		Repo:         repo.Name,
-		State:        deriveHealthState(s.repoActiveProvider(repo), syncing, st),
+		Provider:     provider,
+		State:        deriveHealthState(provider, syncing, st),
 		LastSyncedAt: st.LastSyncedAt,
 		LastError:    st.LastError,
 		IssueCount:   count,

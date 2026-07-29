@@ -51,8 +51,11 @@ export interface RepoView {
 
 // RepoHealth is one repo's /health resource: the derived state plus the sync
 // facts behind it, so a gate can poll a single repo instead of the whole list.
+// provider is the tracker the state came from — empty or "internal" means there
+// is nothing to pull.
 export interface RepoHealth {
   repo: string;
+  provider: string;
   state: RepoHealthState;
   last_synced_at: string;
   last_error: string;
@@ -160,13 +163,16 @@ async function fetchRepoHealth(repo: string): Promise<RepoHealth> {
 }
 
 // Keyed by repo so every gate on a page shares one fetch rather than one per
-// section.
+// section. It polls because the pages behind it stay open for hours: without an
+// interval a background sync that started failing would go unnoticed until the
+// next focus or remount.
 export const repoHealthQueryOptions = (repo: string) =>
   queryOptions({
     queryKey: ["repo-health", repo],
     queryFn: () => fetchRepoHealth(repo),
     enabled: repo !== "",
     staleTime: 15_000,
+    refetchInterval: 30_000,
   });
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
@@ -285,11 +291,12 @@ export interface SyncResponse {
   provider: string;
   issues: number;
   comments: number;
+  removed: number;
   syncedAt: string;
 }
 
-// syncRepo pulls the repo's tracker project into the hub issue store, blocking
-// for the length of the pull.
+// syncRepo pulls the repo's tracker project into the hub issue store and sweeps
+// the issues the tracker no longer returns, blocking for the length of both.
 export async function syncRepo(repo: string): Promise<SyncResponse> {
   const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(repo)}/sync`, {
     method: "POST",

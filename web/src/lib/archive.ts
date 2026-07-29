@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
+import { invalidateRepoBoard } from './backlog'
 import { issueQueryOptions, type Issue } from './issues'
 
 // ArchiveResult is the archive endpoint's answer: the updated issue plus how many
@@ -69,8 +70,7 @@ export function useArchiveIssue(
     mutationFn: (vars: ArchiveVars) => archiveIssue(repo, vars.id, vars.archived),
     onSuccess: (result, vars) => {
       client.setQueryData(issueQueryOptions(repo, vars.id).queryKey, result)
-      void client.invalidateQueries({ queryKey: ['backlog', repo] })
-      void client.invalidateQueries({ queryKey: ['queue', repo] })
+      invalidateRepoBoard(client, repo)
       onArchived(result, vars)
     },
   })

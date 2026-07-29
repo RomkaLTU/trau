@@ -1,4 +1,8 @@
-import { keepPreviousData, queryOptions } from '@tanstack/react-query'
+import {
+  keepPreviousData,
+  queryOptions,
+  type QueryClient,
+} from '@tanstack/react-query'
 
 import { apiFetch } from './api'
 import { type Assignee } from './assignee'
@@ -120,6 +124,13 @@ export const backlogQueryOptions = (repo: string, params: BacklogParams = {}) =>
     staleTime: 15_000,
     placeholderData: keepPreviousData,
   })
+
+// invalidateRepoBoard refreshes the two views a change to a repo's issues always
+// moves: the backlog board and the queue derived from it.
+export function invalidateRepoBoard(client: QueryClient, repo: string): void {
+  void client.invalidateQueries({ queryKey: ['backlog', repo] })
+  void client.invalidateQueries({ queryKey: ['queue', repo] })
+}
 
 const SECTION_LABELS: Record<string, string> = {
   started: 'In Progress',

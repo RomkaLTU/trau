@@ -65,8 +65,12 @@ func TestReconcileSweepTombstonesAndDropsFromQueue(t *testing.T) {
 	}
 
 	fake.identifiers = []string{"COD-2"}
-	if err := s.reconcileRepo(context.Background(), repo); err != nil {
+	tombstoned, err := s.reconcileRepo(context.Background(), repo)
+	if err != nil {
 		t.Fatalf("reconcileRepo: %v", err)
+	}
+	if len(tombstoned) != 1 || tombstoned[0] != "COD-1" {
+		t.Fatalf("tombstoned = %v, want the one issue that left the tracker", tombstoned)
 	}
 
 	if deletedAt(t, s, root, "COD-1") == "" {
@@ -94,7 +98,7 @@ func TestReconcileEmptyIdentifierSetIsNoOp(t *testing.T) {
 	}
 
 	fake.identifiers = nil
-	if err := s.reconcileRepo(context.Background(), repo); err != nil {
+	if _, err := s.reconcileRepo(context.Background(), repo); err != nil {
 		t.Fatalf("reconcileRepo: %v", err)
 	}
 	if deletedAt(t, s, root, "COD-1") != "" {
@@ -111,7 +115,7 @@ func TestReconcileTrackerErrorRecordsAndBacksOff(t *testing.T) {
 	}
 
 	fake.identifiersErr = errors.New("linear: 500")
-	if err := s.reconcileRepo(context.Background(), repo); err == nil {
+	if _, err := s.reconcileRepo(context.Background(), repo); err == nil {
 		t.Fatal("reconcileRepo should surface the tracker error")
 	}
 	st, err := s.stores.Issues().SyncState(root)
