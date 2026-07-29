@@ -437,7 +437,7 @@ func TestAttachmentSyncReconcileDropsVanishedIssues(t *testing.T) {
 	live, liveSHA := seed("COD-2", "https://uploads.linear.app/live.png", "live bytes")
 
 	fake.identifiers = []string{"COD-2"}
-	if err := s.reconcileRepo(context.Background(), repo); err != nil {
+	if _, err := s.reconcileRepo(context.Background(), repo); err != nil {
 		t.Fatalf("reconcileRepo: %v", err)
 	}
 

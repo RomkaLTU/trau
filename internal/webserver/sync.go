@@ -14,19 +14,25 @@ import (
 )
 
 // SyncResponse is the JSON body of POST /repos/{repo}/sync: what the pull wrote to
-// the local issue store and when, so a caller sees exactly what changed.
+// the local issue store and when, so a caller sees exactly what changed. Removed
+// counts the issues the manual sweep tombstoned; it is zero on every path that
+// does not sweep.
 type SyncResponse struct {
 	Repo     string `json:"repo"`
 	Provider string `json:"provider"`
 	Issues   int    `json:"issues"`
 	Comments int    `json:"comments"`
+	Removed  int    `json:"removed"`
 	SyncedAt string `json:"syncedAt"`
 }
 
 // handleSync pulls a repo's Project into the hub issue store on demand. It is a
 // one-way inbound sync (ADR 0007): the tracker owns issue content, so this only
-// ever reads. Unknown repos 404, a repo without direct tracker credentials 422,
-// and a tracker error 502; a successful pull returns the counts it wrote.
+// ever reads. A manual sync means "make the board match the tracker", so the pull
+// is followed by the reconcile sweep an incremental pull cannot do on its own —
+// and a sweep that fails fails the request rather than reporting a half-done sync.
+// Unknown repos 404, a repo without direct tracker credentials 422, and a tracker
+// error 502; a successful sync returns the counts it wrote and removed.
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -40,14 +46,24 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := s.syncRepo(r.Context(), repo)
 	if err != nil {
-		if readerConfigErr(err) {
-			writeReaderErr(w, err)
-			return
-		}
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "sync failed: " + err.Error()})
+		writeSyncErr(w, err)
 		return
 	}
+	removed, err := s.reconcileRepo(r.Context(), repo)
+	if err != nil {
+		writeSyncErr(w, err)
+		return
+	}
+	resp.Removed = len(removed)
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func writeSyncErr(w http.ResponseWriter, err error) {
+	if readerConfigErr(err) {
+		writeReaderErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusBadGateway, map[string]string{"error": "sync failed: " + err.Error()})
 }
 
 // handleForceResync drops a repo's synced issues and cursor and re-pulls the
@@ -110,38 +126,39 @@ func (s *Server) forceResync(ctx context.Context, repo registry.Repo) (SyncRespo
 // archived, or moved out of the Project, which an incremental SyncPull never
 // reports (ADR 0007). Tombstoned issues are dropped from the Queue and the backlog
 // board but keep their run artifacts and checkpoints; internal issues are never
-// touched. A sweep failure is recorded on the same per-repo error surface as sync
-// so a broken tracker backs off. An empty identifier set is treated as a no-op
-// rather than tombstoning the whole store — it guards against a misresolved binding
-// (a wrong project key returns zero) wiping every synced row.
-func (s *Server) reconcileRepo(ctx context.Context, repo registry.Repo) error {
+// touched. A sweep failure is recorded on
+// the same per-repo error surface as sync so a broken tracker backs off. An empty
+// identifier set is treated as a no-op rather than tombstoning the whole store —
+// it guards against a misresolved binding (a wrong project key returns zero)
+// wiping every synced row.
+func (s *Server) reconcileRepo(ctx context.Context, repo registry.Repo) ([]string, error) {
 	res, err := s.resolveReader(repo)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	store := s.stores.Issues()
 	state, err := store.SyncState(repo.Root)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	binding, err := s.resolveBinding(ctx, store, repo.Root, state.Binding, res.reader)
 	if err != nil {
 		err = res.actionableErr(err)
 		_ = store.RecordError(repo.Root, err.Error())
-		return err
+		return nil, err
 	}
 	live, err := res.reader.ProjectIdentifiers(ctx, binding)
 	if err != nil {
 		err = res.actionableErr(err)
 		_ = store.RecordError(repo.Root, err.Error())
-		return err
+		return nil, err
 	}
 	if len(live) == 0 {
-		return nil
+		return nil, nil
 	}
 	tombstoned, err := store.Reconcile(repo.Root, live)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	s.dropFromQueue(repo.Root, tombstoned)
 	// Tracker-sourced attachments follow their ticket out. Uploads are exempt, so an
@@ -149,7 +166,7 @@ func (s *Server) reconcileRepo(ctx context.Context, repo registry.Repo) error {
 	if err := s.stores.Attachments().ReconcileIssues(repo.Root, live); err != nil {
 		logger.Verbosef("reconcile %s: prune attachments: %v", repo.Root, err)
 	}
-	return nil
+	return tombstoned, nil
 }
 
 // dropFromQueue removes each tombstoned identifier from the repo's Queue,

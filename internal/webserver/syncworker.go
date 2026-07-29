@@ -100,7 +100,8 @@ func (sy *syncer) syncOne(ctx context.Context, interval time.Duration, root stri
 	defer cancel()
 	_, err := sy.srv.syncRepo(ctx, workspaceRepo(root))
 	if err == nil && sy.reconcileDue(root) {
-		sy.settleReconcile(root, sy.srv.reconcileRepo(ctx, workspaceRepo(root)))
+		_, sweepErr := sy.srv.reconcileRepo(ctx, workspaceRepo(root))
+		sy.settleReconcile(root, sweepErr)
 	}
 	sy.settle(root, interval, err)
 }

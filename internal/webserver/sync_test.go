@@ -11,6 +11,7 @@ import (
 
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
@@ -389,6 +390,87 @@ func TestSyncImplicitInternalKeepsError(t *testing.T) {
 	}
 	if st, _ := store.SyncState(root); st.LastError != "linear: 500" {
 		t.Fatalf("last error = %q, want the recorded failure kept", st.LastError)
+	}
+}
+
+// TestSyncReconcilesTrackerRemovals pins the manual path's promise: after a click
+// the board matches the tracker, so a ticket deleted upstream is tombstoned,
+// dropped from the queue, and counted in the response.
+func TestSyncReconcilesTrackerRemovals(t *testing.T) {
+	fake := &fakeReader{synced: []tracker.SyncedIssue{syncedIssue("COD-1"), syncedIssue("COD-2")}}
+	s, root := reconcileServer(t, fake)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	seed, _ := postSync(t, ts, "acme")
+	_ = seed.Body.Close()
+	for _, id := range []string{"COD-1", "COD-2"} {
+		if _, err := s.stores.Queue(root).Add(queue.Item{Kind: queue.KindTicket, ID: id}); err != nil {
+			t.Fatalf("queue %s: %v", id, err)
+		}
+	}
+
+	fake.identifiers = []string{"COD-2"}
+	res, out := postSync(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	if out.Removed != 1 {
+		t.Fatalf("removed = %d, want the one issue that left the tracker", out.Removed)
+	}
+	if deletedAt(t, s, root, "COD-1") == "" {
+		t.Fatal("a manual sync should tombstone the issue the tracker no longer returns")
+	}
+	items, err := s.stores.Queue(root).Load()
+	if err != nil {
+		t.Fatalf("queue load: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "COD-2" {
+		t.Fatalf("queue = %+v, want only COD-2 left", items)
+	}
+}
+
+func TestSyncReconcileFailureIsNotASuccess(t *testing.T) {
+	fake := &fakeReader{
+		synced:         []tracker.SyncedIssue{syncedIssue("COD-1")},
+		identifiersErr: errors.New("linear: 500"),
+	}
+	s, root := reconcileServer(t, fake)
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	res, _ := postSync(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 — a half-done sync is an error", res.StatusCode)
+	}
+	if deletedAt(t, s, root, "COD-1") != "" {
+		t.Fatal("a failed sweep must not tombstone anything")
+	}
+}
+
+func TestSyncInternalProviderSweepsNothing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	runsDir := seedRepo(t, home, "acme")
+	root := filepath.Dir(filepath.Dir(runsDir))
+	writeRepoINI(t, root, "TRACKER_PROVIDER=internal\n")
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+	s.home = home
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+	if _, _, err := s.stores.Issues().Upsert(root, "linear", []hubstore.Issue{{Identifier: "COD-1", Title: "kept"}}); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+
+	res, _ := postSync(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422", res.StatusCode)
+	}
+	if deletedAt(t, s, root, "COD-1") != "" {
+		t.Fatal("a sync refused for lack of a tracker must not sweep the store")
 	}
 }
 

@@ -35,6 +35,7 @@ import { StatusPill } from "@/components/trau/status-pill";
 import { TerminalCard } from "@/components/trau/terminal-card";
 import { Terminal } from "@/components/terminal";
 import { cn } from "@/lib/utils";
+import { useNow } from "@/lib/elapsed";
 import { useEventFeed, type FeedEvent } from "@/lib/events";
 import { runTitle, usePageTitle } from "@/lib/page-title";
 import {
@@ -97,15 +98,6 @@ const paneParser = parseAsStringLiteral(PANE_VALUES).withDefault("terminal");
 
 const PARKED_GATE =
   "trau is parked on this ticket’s recap in the TUI — handle it there, or stop it above to resume from here";
-
-function useNow(intervalMs: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
 
 function elapsedSince(fromISO: string, now: number): string {
   return formatDuration(Math.max(0, now - new Date(fromISO).getTime()));
