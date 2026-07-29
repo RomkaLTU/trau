@@ -23,7 +23,7 @@ func restartServer(t *testing.T) (*Server, *httptest.Server) {
 func TestRestartAcknowledgesThenSignals(t *testing.T) {
 	s, ts := restartServer(t)
 	signalled := make(chan struct{})
-	s.EnableRestart(func() { close(signalled) })
+	s.EnableRestart(func(string) { close(signalled) })
 
 	res, err := http.Post(ts.URL+APIPrefix+"/hub/restart", "application/json", nil)
 	if err != nil {
@@ -52,7 +52,7 @@ func TestRestartSignalsOnlyOnce(t *testing.T) {
 	s, ts := restartServer(t)
 	var mu sync.Mutex
 	calls := 0
-	s.EnableRestart(func() {
+	s.EnableRestart(func(string) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls++
@@ -95,7 +95,7 @@ func TestRestartWithoutSpawnerIsUnavailable(t *testing.T) {
 // TestRestartRejectsGET keeps the endpoint out of reach of a link or a prefetch.
 func TestRestartRejectsGET(t *testing.T) {
 	s, ts := restartServer(t)
-	s.EnableRestart(func() { t.Error("GET triggered a restart") })
+	s.EnableRestart(func(string) { t.Error("GET triggered a restart") })
 
 	res, err := http.Get(ts.URL + APIPrefix + "/hub/restart")
 	if err != nil {
@@ -113,7 +113,7 @@ func TestRestartRejectsGET(t *testing.T) {
 func TestRestartRequiresTokenOnExposedBind(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	s := New("2.1.0", "0.0.0.0", "s3cret", nil, false, testStores(t))
-	s.EnableRestart(func() { t.Error("unauthenticated POST triggered a restart") })
+	s.EnableRestart(func(string) { t.Error("unauthenticated POST triggered a restart") })
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 

@@ -295,7 +295,7 @@ func TestMain(m *testing.M) {
 func TestRespawnServeReplaysServeFlags(t *testing.T) {
 	record := spawnArgvRecorder(t)
 
-	if err := respawnServe([]string{"--port", "8795", "--bind", "0.0.0.0", "--verbose"}); err != nil {
+	if err := respawnServe("", []string{"--port", "8795", "--bind", "0.0.0.0", "--verbose"}); err != nil {
 		t.Fatalf("respawnServe: %v", err)
 	}
 

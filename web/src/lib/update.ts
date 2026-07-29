@@ -5,6 +5,25 @@ import type { Health } from './health'
 
 export type ApplyPhase = 'idle' | 'running' | 'failed'
 
+export type Channel = 'dev' | 'release'
+
+export type ChannelPhase = 'idle' | 'building' | 'restarting' | 'failed'
+
+// ChannelSwitch is how a switch to the dev channel is going. message carries the
+// tail of the build output, and only once the switch failed.
+export interface ChannelSwitch {
+  state: ChannelPhase
+  repoRoot: string
+  message: string
+}
+
+// ChannelRepo is a registered repo the hub would accept a switch onto: one that
+// has set HUB_SELF_RELOAD.
+export interface ChannelRepo {
+  name: string
+  root: string
+}
+
 // ApplyState is how a one-click update is going. message carries the tail of the
 // brew output, and only once the upgrade failed.
 export interface ApplyState {
@@ -18,7 +37,8 @@ export interface ApplyState {
 // selfReloadPending names the repo whose merge asked the hub to restart onto its
 // own build, empty when nothing is waiting. upgradeCommand is what the package
 // manager that installed this trau updates it with, empty when no manager owns
-// it.
+// it. channel is the build the hub runs, derived from where its executable sits,
+// and channelRepo the repo that owns it when that build is a dev one.
 export interface UpdateStatus {
   running: string
   onDisk: string
@@ -32,6 +52,10 @@ export interface UpdateStatus {
   releaseUrl: string
   applyState: ApplyState
   selfReloadPending: string
+  channel: Channel
+  channelRepo: string
+  channelRepos: ChannelRepo[]
+  channelSwitch: ChannelSwitch
 }
 
 export interface RestartAck {
@@ -66,13 +90,22 @@ async function fetchUpdate(): Promise<UpdateStatus> {
   return res.json()
 }
 
+// switchInFlight reports whether a channel switch is still going, which is what
+// keeps the action busy and the page waiting for the successor.
+export function switchInFlight(status: UpdateStatus | undefined): boolean {
+  const state = status?.channelSwitch.state
+  return state === 'building' || state === 'restarting'
+}
+
 // pollMs is how closely /update is followed. The resource carries hub state that
 // turns over between two glances at the page — a self-reload waiting on the runs
 // to finish, a brew apply mid-flight — so it is polled live either way, and the
-// once-a-day release check simply rides along on the same requests. Only the
-// apply gets a tighter interval, because its brew output is read as it lands.
+// once-a-day release check simply rides along on the same requests. Work being
+// watched as it lands gets a tighter interval: a brew apply for its output, a
+// channel switch for the moment it arms the restart.
 export function pollMs(status: UpdateStatus | undefined): number {
-  return status?.applyState.state === 'running' ? APPLY_POLL_MS : LIVE_POLL_MS
+  const live = status?.applyState.state === 'running' || switchInFlight(status)
+  return live ? APPLY_POLL_MS : LIVE_POLL_MS
 }
 
 export const updateQueryOptions = queryOptions({
@@ -97,6 +130,20 @@ export async function applyUpdate(): Promise<UpdateStatus> {
     throw new Error(await errorMessage(res, 'update failed'))
   }
   return res.json()
+}
+
+// switchToDev answers as soon as the rebuild is under way; the outcome arrives
+// on the channelSwitch of a later /update, and a successful build ends in a
+// restart onto what it produced.
+export async function switchToDev(repoRoot: string): Promise<void> {
+  const res = await apiFetch('/api/v1/hub/channel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel: 'dev', repo_root: repoRoot }),
+  })
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'channel switch failed'))
+  }
 }
 
 export async function restartHub(): Promise<RestartAck> {

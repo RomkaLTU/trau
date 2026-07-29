@@ -340,6 +340,10 @@ type Config struct {
 	// HubSelfReload repo ships work to it, run deterministically in the repo root.
 	HubReloadBuildCmd string
 
+	// HubDevBinary is where HubReloadBuildCmd leaves the binary, relative to the
+	// repo root, so a channel switch knows what the rebuild produced.
+	HubDevBinary string
+
 	// TerminalApp is the macOS terminal application the hub opens for a web
 	// takeover: Terminal (default) or iTerm.
 	TerminalApp string
@@ -496,6 +500,7 @@ func Defaults() Config {
 		UpdateCheck:            true,
 		HubSelfReload:          false,
 		HubReloadBuildCmd:      "make build",
+		HubDevBinary:           "bin/trau",
 		TerminalApp:            "Terminal",
 		QueueAutoResume:        false,
 		QueueAutoResumeTries:   2,
@@ -1022,6 +1027,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		sources["HUB_SELF_RELOAD"] = src.name
 	}
 	strAllowEmpty("HUB_RELOAD_BUILD_CMD", &c.HubReloadBuildCmd)
+	str("HUB_DEV_BINARY", &c.HubDevBinary)
 	str("TERMINAL_APP", &c.TerminalApp)
 	if v, src := get("QUEUE_AUTO_RESUME"); v != "" {
 		c.QueueAutoResume = v == "1"
@@ -1781,6 +1787,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "UPDATE_CHECK", Group: sectionHub, WebEditable: true, Default: "1", Advanced: true, Bool: true, Description: "Check GitHub once a day for a newer trau release and surface it in the web UI (1 = yes, 0 = no)"},
 		{Key: "HUB_SELF_RELOAD", Group: sectionHub, WebEditable: true, Default: "0", Advanced: true, Bool: true, Description: "Let this repo ask the hub to restart itself onto the binary it builds, applied once no run is in flight anywhere; only works for a hub already running from this repo (1 = yes, 0 = no)"},
 		{Key: "HUB_RELOAD_BUILD_CMD", Group: sectionHub, Advanced: true, Default: "make build", Description: "Command that rebuilds the hub's binary, run in the repo root from the merged base once a HUB_SELF_RELOAD repo ships work; empty skips the rebuild"},
+		{Key: "HUB_DEV_BINARY", Group: sectionHub, Advanced: true, Default: "bin/trau", Description: "Where HUB_RELOAD_BUILD_CMD leaves the binary, relative to the repo root; the hub restarts onto it when the web UI switches this repo to the dev channel (on Windows the .exe twin is tried too)"},
 		{Key: "TERMINAL_APP", Group: sectionHub, WebEditable: true, Default: "Terminal", Options: []string{"Terminal", "iTerm"}, Description: "macOS terminal application a web takeover opens: Terminal | iTerm"},
 		{Key: "QUEUE_AUTO_RESUME", Group: sectionHub, WebEditable: true, Default: "0", Advanced: true, Bool: true, Description: "Let the hub re-attempt a queue item parked by a blameless pause (provider rate/auth wall, unreachable hub) once its backoff passes; never for a fault (1 = yes, 0 = no)"},
 		{Key: "QUEUE_AUTO_RESUME_TRIES", Group: sectionHub, Kind: "int", WebEditable: true, Default: "2", Advanced: true, Description: "How many automatic re-attempts QUEUE_AUTO_RESUME spends before the item stays parked for a human"},
@@ -2441,6 +2448,8 @@ func keyValue(cfg Config, key string) string {
 		return "0"
 	case "HUB_RELOAD_BUILD_CMD":
 		return cfg.HubReloadBuildCmd
+	case "HUB_DEV_BINARY":
+		return cfg.HubDevBinary
 	case "TERMINAL_APP":
 		return cfg.TerminalApp
 	case "QUEUE_AUTO_RESUME":
