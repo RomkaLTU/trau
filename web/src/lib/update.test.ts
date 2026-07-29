@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   RestartTimeout,
@@ -7,12 +7,18 @@ import {
   isSuccessor,
   needsAttention,
   pollMs,
+  switchChannel,
+  switchInFlight,
   updateQueryOptions,
   versionLabel,
   waitForSuccessor,
   type HubMark,
   type UpdateStatus,
 } from './update'
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 function status(over: Partial<UpdateStatus> = {}): UpdateStatus {
   return {
@@ -28,6 +34,12 @@ function status(over: Partial<UpdateStatus> = {}): UpdateStatus {
     releaseUrl: 'https://github.com/RomkaLTU/trau/releases/tag/v2.1.0',
     applyState: { state: 'idle', message: '' },
     selfReloadPending: '',
+    channel: 'release',
+    channelRepo: '',
+    channelRepos: [],
+    channelSwitch: { state: 'idle', repoRoot: '', message: '' },
+    releaseBinary: '',
+    supervised: false,
     ...over,
   }
 }
@@ -82,6 +94,40 @@ describe('pollMs', () => {
       2000,
     )
   })
+
+  it('tightens onto a channel switch so the restart is picked up promptly', () => {
+    expect(
+      pollMs(
+        status({
+          channelSwitch: { state: 'building', repoRoot: '/repos/trau', message: '' },
+        }),
+      ),
+    ).toBe(2000)
+  })
+})
+
+describe('switchInFlight', () => {
+  it('is true while the hub builds and while it waits to restart', () => {
+    for (const state of ['building', 'restarting'] as const) {
+      expect(
+        switchInFlight(
+          status({ channelSwitch: { state, repoRoot: '/repos/trau', message: '' } }),
+        ),
+      ).toBe(true)
+    }
+  })
+
+  it('is false once the switch settles, so a failure frees the action again', () => {
+    expect(switchInFlight(status())).toBe(false)
+    expect(
+      switchInFlight(
+        status({
+          channelSwitch: { state: 'failed', repoRoot: '/repos/trau', message: 'boom' },
+        }),
+      ),
+    ).toBe(false)
+    expect(switchInFlight(undefined)).toBe(false)
+  })
 })
 
 describe('updateQueryOptions', () => {
@@ -90,6 +136,29 @@ describe('updateQueryOptions', () => {
     const applying = status({ applyState: { state: 'running', message: '' } })
     expect(interval({ state: { data: status() } } as never)).toBe(pollMs(status()))
     expect(interval({ state: { data: applying } } as never)).toBe(pollMs(applying))
+  })
+
+  it('fills in the channel fields a hub from before the build channel omits', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ running: 'v2.10.0' }),
+      } as Response),
+    )
+    const fetchUpdate = updateQueryOptions.queryFn as () => Promise<UpdateStatus>
+
+    const fetched = await fetchUpdate()
+
+    expect(fetched.channel).toBe('release')
+    expect(fetched.channelRepos).toEqual([])
+    expect(fetched.channelSwitch).toEqual({
+      state: 'idle',
+      repoRoot: '',
+      message: '',
+    })
+    expect(switchInFlight(fetched)).toBe(false)
   })
 })
 
@@ -164,6 +233,48 @@ describe('versionLabel', () => {
 
   it('renders an unknown version as a dash', () => {
     expect(versionLabel('')).toBe('—')
+  })
+})
+
+describe('switchChannel', () => {
+  function fetchMock(status: number, body: unknown = {}) {
+    const mock = vi.fn().mockResolvedValue({
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+    } as Response)
+    vi.stubGlobal('fetch', mock)
+    return mock
+  }
+
+  function sentBody(mock: ReturnType<typeof fetchMock>): unknown {
+    const [, init] = mock.mock.calls[0] as [string, RequestInit]
+    return JSON.parse(String(init.body))
+  }
+
+  it('names the repo to rebuild when switching to dev', async () => {
+    const mock = fetchMock(202)
+
+    await switchChannel('dev', '/src/acme')
+
+    expect((mock.mock.calls[0] as [string])[0]).toContain('/api/v1/hub/channel')
+    expect(sentBody(mock)).toEqual({ channel: 'dev', repo_root: '/src/acme' })
+  })
+
+  it('names no repo when switching back to release', async () => {
+    const mock = fetchMock(202)
+
+    await switchChannel('release')
+
+    expect(sentBody(mock)).toEqual({ channel: 'release', repo_root: '' })
+  })
+
+  it('surfaces the reason the hub refused', async () => {
+    fetchMock(404, { error: 'no release install found' })
+
+    await expect(switchChannel('release')).rejects.toThrow(
+      'no release install found',
+    )
   })
 })
 

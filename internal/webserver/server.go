@@ -74,12 +74,18 @@ type Server struct {
 	render           *videoRenderer
 	proofRetention   int
 	recordingsRoot   string
-	restart          func()
+	restart          func(successor string)
 	restartOnce      sync.Once
+	retarget         func(binary string) error
 	executable       func() (string, error)
 	selfReloadMu     sync.Mutex
 	selfReload       string
 	reloadPoll       time.Duration
+	channelMu        sync.Mutex
+	channel          ChannelSwitch
+	runBuild         func(ctx context.Context, dir, command string) ([]byte, error)
+	probeVersion     func(ctx context.Context, path string) (string, error)
+	pathBinaries     func() []string
 	updates          *update.Checker
 	attachFetch      singleflight.Group
 	team             *teamSyncer
@@ -127,6 +133,9 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		skillsCache:      map[string]skillsCacheEntry{},
 		executable:       os.Executable,
 		reloadPoll:       drainPoll,
+		runBuild:         runShellCommand,
+		probeVersion:     update.ProbeVersion,
+		pathBinaries:     trauOnPath,
 		updates:          update.NewChecker(version),
 		pushSend:         sendWebPush,
 	}
@@ -275,6 +284,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/mcp", s.handleMCP)
 	mux.HandleFunc(APIPrefix+"/hub/restart", s.handleHubRestart)
 	mux.HandleFunc(APIPrefix+"/hub/reload", s.handleHubReload)
+	mux.HandleFunc(APIPrefix+"/hub/channel", s.handleHubChannel)
 	mux.HandleFunc(APIPrefix+"/update", s.handleUpdate)
 	mux.HandleFunc(APIPrefix+"/update/check", s.handleUpdateCheck)
 	mux.HandleFunc(APIPrefix+"/update/apply", s.handleUpdateApply)

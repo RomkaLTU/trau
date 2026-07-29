@@ -170,12 +170,27 @@ type RestartAck struct {
 // EnableRestart wires the restart endpoint to fn, which the serve command
 // implements as shutdown-then-respawn. fn must return promptly — it is called
 // from the request goroutine, and a graceful shutdown waits on that request —
-// so it signals the restart rather than performing it. Without it the endpoint
-// answers 503: a hub embedded in something other than `trau serve` has no
-// successor to spawn.
-func (s *Server) EnableRestart(fn func()) {
+// so it signals the restart rather than performing it. Its argument is the
+// binary the successor must re-exec, empty when the successor should resolve the
+// running process's own path as usual. Without a hook the endpoint answers 503:
+// a hub embedded in something other than `trau serve` has no successor to spawn.
+func (s *Server) EnableRestart(fn func(successor string)) {
 	s.restart = fn
 }
+
+// EnableSupervision tells the hub that launchd owns its process and hands it the
+// way to point the agent at another binary. A supervised hub restarts by exiting
+// — KeepAlive brings the successor up from the plist rather than from anything
+// this process spawns — so a channel switch has to rewrite the plist before it
+// arms the restart, or the respawn lands straight back on the build it was asked
+// to leave. Without a hook the hub is nobody's job and a switch simply restarts.
+func (s *Server) EnableSupervision(retarget func(binary string) error) {
+	s.retarget = retarget
+}
+
+// supervised reports whether launchd owns this hub, which /update carries so a
+// confirm dialog can say the LaunchAgent moves with the switch.
+func (s *Server) supervised() bool { return s.retarget != nil }
 
 // handleHubRestart acknowledges before restarting, so the caller learns the
 // outgoing version over a connection that is about to close. It restarts
@@ -199,15 +214,22 @@ func (s *Server) handleHubRestart(w http.ResponseWriter, r *http.Request) {
 	s.triggerRestart()
 }
 
-// triggerRestart runs the restart hook at most once and reports whether this hub
-// can restart itself at all. A hub without one — one embedded in something other
-// than `trau serve` — keeps serving; a one-click update that lands there still
-// upgrades the binary and leaves a restart pending.
+// triggerRestart restarts onto whatever binary the successor resolves for
+// itself, which is what an update, a self-reload and the Restart button all want.
 func (s *Server) triggerRestart() bool {
+	return s.triggerRestartTo("")
+}
+
+// triggerRestartTo runs the restart hook at most once, naming the binary the
+// successor must re-exec, and reports whether this hub can restart itself at
+// all. A hub without a hook — one embedded in something other than `trau serve`
+// — keeps serving; a one-click update that lands there still upgrades the binary
+// and leaves a restart pending.
+func (s *Server) triggerRestartTo(successor string) bool {
 	if s.restart == nil {
 		return false
 	}
-	s.restartOnce.Do(s.restart)
+	s.restartOnce.Do(func() { s.restart(successor) })
 	return true
 }
 

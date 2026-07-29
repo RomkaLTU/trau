@@ -139,6 +139,39 @@ func TestManualUpdateInstructions(t *testing.T) {
 	}
 }
 
+// TestChannelUpdateStatus covers the one thing the channel changes about an
+// update check: a working-tree build is not a release, so a newer release is not
+// an update it can take. A release hub keeps the checker's answer byte for byte.
+func TestChannelUpdateStatus(t *testing.T) {
+	checked := update.Status{
+		Running:         "2.1.0",
+		OnDisk:          "2.1.0",
+		Latest:          "2.2.0",
+		UpdateAvailable: true,
+		InstallMethod:   "brew",
+	}
+	tests := []struct {
+		name    string
+		channel string
+		want    bool
+	}{
+		{name: "release hub keeps the prompt", channel: channelRelease, want: true},
+		{name: "dev hub drops it", channel: channelDev, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := channelUpdateStatus(checked, tt.channel)
+			if got.UpdateAvailable != tt.want {
+				t.Errorf("updateAvailable = %v, want %v", got.UpdateAvailable, tt.want)
+			}
+			if got.Latest != checked.Latest {
+				t.Errorf("latest = %q, want the release version to survive either way", got.Latest)
+			}
+		})
+	}
+}
+
 func TestUpdateCheckRejectsGet(t *testing.T) {
 	ts := newTestServer(t)
 

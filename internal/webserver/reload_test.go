@@ -70,7 +70,7 @@ func postReload(t *testing.T, ts *httptest.Server, root string) *http.Response {
 // reload is pending rather than done, and that the hub records which repo asked.
 func TestReloadAcceptsAndDefers(t *testing.T) {
 	s, ts, root := reloadServer(t, true)
-	s.EnableRestart(func() {})
+	s.EnableRestart(func(string) {})
 
 	res := postReload(t, ts, root)
 	defer func() { _ = res.Body.Close() }()
@@ -94,7 +94,7 @@ func TestReloadAcceptsAndDefers(t *testing.T) {
 // repo's own config and refuses when it never opted in, whatever the caller says.
 func TestReloadRefusedWhenKeyUnset(t *testing.T) {
 	s, ts, root := reloadServer(t, false)
-	s.EnableRestart(func() { t.Error("a refused reload restarted the hub") })
+	s.EnableRestart(func(string) { t.Error("a refused reload restarted the hub") })
 
 	res := postReload(t, ts, root)
 	defer func() { _ = res.Body.Close() }()
@@ -112,7 +112,7 @@ func TestReloadRefusedWhenKeyUnset(t *testing.T) {
 // built, so it refuses and marks nothing.
 func TestReloadRefusedWhenHubRunsElsewhere(t *testing.T) {
 	s, ts, root := reloadServer(t, true)
-	s.EnableRestart(func() { t.Error("a refused reload restarted the hub") })
+	s.EnableRestart(func(string) { t.Error("a refused reload restarted the hub") })
 	s.executable = func() (string, error) { return "/opt/homebrew/Cellar/trau/2.1.0/bin/trau", nil }
 
 	res := postReload(t, ts, root)
@@ -131,7 +131,7 @@ func TestReloadRefusedWhenHubRunsElsewhere(t *testing.T) {
 func TestReloadRepeatsCoalesce(t *testing.T) {
 	s, ts, root := reloadServer(t, true)
 	restarts := make(chan struct{}, 4)
-	s.EnableRestart(func() { restarts <- struct{}{} })
+	s.EnableRestart(func(string) { restarts <- struct{}{} })
 
 	for range 3 {
 		res := postReload(t, ts, root)
@@ -158,7 +158,7 @@ func TestReloadRepeatsCoalesce(t *testing.T) {
 func TestReloadWaitsForIdleGap(t *testing.T) {
 	s, ts, root := reloadServer(t, true)
 	restarted := make(chan struct{})
-	s.EnableRestart(func() { close(restarted) })
+	s.EnableRestart(func(string) { close(restarted) })
 	seedQueue(t, s, root, true, queue.Item{ID: "COD-1", Status: queue.StatusRunning, PID: os.Getpid()})
 
 	res := postReload(t, ts, root)
@@ -240,7 +240,7 @@ func TestTickHoldsSpawnWhileReloadPending(t *testing.T) {
 // TestReloadRejectsGET keeps the endpoint out of reach of a link or a prefetch.
 func TestReloadRejectsGET(t *testing.T) {
 	s, ts, _ := reloadServer(t, true)
-	s.EnableRestart(func() { t.Error("GET triggered a reload") })
+	s.EnableRestart(func(string) { t.Error("GET triggered a reload") })
 
 	res, err := http.Get(ts.URL + APIPrefix + "/hub/reload")
 	if err != nil {
@@ -260,7 +260,7 @@ func TestReloadRequiresTokenOnExposedBind(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "acme")
 	writeReloadConfig(t, root, true)
 	s := New("2.1.0", "0.0.0.0", "s3cret", []string{root}, false, testStores(t))
-	s.EnableRestart(func() { t.Error("unauthenticated POST triggered a reload") })
+	s.EnableRestart(func(string) { t.Error("unauthenticated POST triggered a reload") })
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
@@ -276,7 +276,7 @@ func TestReloadRequiresTokenOnExposedBind(t *testing.T) {
 // reload: it rides the update resource the updates section already polls.
 func TestUpdateStatusCarriesPendingReload(t *testing.T) {
 	s, ts, root := reloadServer(t, true)
-	s.EnableRestart(func() {})
+	s.EnableRestart(func(string) {})
 	writeInstanceEntry(t, s, registry.Entry{
 		PID:          os.Getpid(),
 		RepoRoot:     root,

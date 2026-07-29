@@ -518,6 +518,17 @@ SERVE_OPEN=1
 # `brew upgrade trau`, say), because that check is entirely local.
 UPDATE_CHECK=1
 #
+# With HUB_SELF_RELOAD=1 this repo may ask the hub to restart onto the binary it
+# builds. That also lets the web UI (Settings → Updates) switch a hub running a
+# released trau onto this checkout's build: it runs HUB_RELOAD_BUILD_CMD in the
+# repo root against the tree as it stands, then restarts onto whatever that left
+# at HUB_DEV_BINARY — relative to the repo root, with the .exe twin tried on
+# Windows. A build that fails, or a binary that cannot print its version, is
+# never adopted and the hub keeps serving what it is on. Off by default.
+HUB_SELF_RELOAD=0
+HUB_RELOAD_BUILD_CMD=make build
+HUB_DEV_BINARY=bin/trau
+#
 # A queue item parked by a BLAMELESS pause — a provider rate/auth wall, a hub the
 # child could not reach — is waiting on a condition that clears on its own, unlike
 # a fault. With this on, the hub re-attempts it once a backoff passes (2 minutes,

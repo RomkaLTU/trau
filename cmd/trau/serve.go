@@ -16,6 +16,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/hubdb"
 	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/launchd"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/transcriptdb"
@@ -97,11 +98,12 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 	// binds the port and opens the hub databases only once this process has let
 	// go of both.
 	restarting := false
+	successor := ""
 	defer func() {
 		if !restarting || supervisedHub() {
 			return
 		}
-		if spawnErr := respawnServe(args); spawnErr != nil {
+		if spawnErr := respawnServe(successor, args); spawnErr != nil {
 			err = errors.Join(err, console.Actionable(spawnErr, "respawn the hub",
 				"install trau so `trau` resolves on PATH, then run `trau serve`"))
 		}
@@ -152,7 +154,11 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 	hub.EnableVideoRender(ctx)
 	hub.EnableProofRetention(cfg.ProofRetentionDays)
 	restartCh := make(chan struct{})
-	hub.EnableRestart(func() { close(restartCh) })
+	hub.EnableRestart(func(binary string) {
+		successor = binary
+		close(restartCh)
+	})
+	hub.EnableSupervision(supervisionHook())
 	hub.SetUpdateChecks(cfg.UpdateCheck)
 	hub.Start(ctx, time.Duration(cfg.ServeSyncInterval)*time.Second, time.Duration(cfg.ServeReconcileInterval)*time.Second)
 	srv := &http.Server{Addr: addr, Handler: hub.Handler()}
@@ -171,6 +177,14 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 		return drainServer(srv)
 	case <-restartCh:
 		restarting = true
+		// launchd respawns the job it bootstrapped, not the plist on disk, so the
+		// rewritten one a channel switch left has to be handed over while this hub
+		// is still up — its bootout then claims this exit rather than KeepAlive.
+		if successor != "" && supervisedHub() {
+			if reloadErr := launchd.Reload(); reloadErr != nil {
+				_, _ = fmt.Fprintf(stderr, "trau serve: launchd kept the agent it had (%v); it will bring this build back\n", reloadErr)
+			}
+		}
 		// A restart drops stragglers rather than failing: the listener is closed
 		// either way, and open event streams would otherwise hold the drain open
 		// for its full timeout. The successor's boot follows this line in hub.log.
@@ -191,6 +205,20 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 // respawned one would leave two hubs racing for the port. The plist sets the
 // marker; nothing else does.
 func supervisedHub() bool { return os.Getenv("TRAU_SUPERVISED") == "1" }
+
+// supervisionHook is how a channel switch points launchd at the build it picked:
+// the plist is rewritten exactly as `trau hub supervise` writes it, only naming
+// another binary, so the environment every hub-spawned loop inherits and the
+// hub.log the agent redirects to survive the switch. A hub launchd does not own
+// gets no hook and restarts on its own as before.
+func supervisionHook() func(binary string) error {
+	if !supervisedHub() {
+		return nil
+	}
+	return func(binary string) error {
+		return launchd.Write(binary, []string{"serve"}, superviseEnv(), hubLogPath())
+	}
+}
 
 // drainServer closes the listener and lets in-flight requests finish. It returns
 // only once the port is free, which is what makes a successor able to bind it.

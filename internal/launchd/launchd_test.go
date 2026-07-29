@@ -1,6 +1,7 @@
 package launchd
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -49,6 +50,31 @@ func TestProgramArgumentsRoundTrip(t *testing.T) {
 	}
 	if programArguments([]byte("not a plist")) != nil {
 		t.Error("unparseable input should read as no program, not a panic")
+	}
+}
+
+// TestWriteRetargetsTheInstalledProgram covers the rewrite a channel switch
+// performs while the hub it belongs to is still running: the plist doctor reads
+// names the chosen build, and replacing the job launchd holds is left to Reload.
+func TestWriteRetargetsTheInstalledProgram(t *testing.T) {
+	if !Supported() {
+		t.Skip("launchd is macOS only")
+	}
+	t.Setenv("HOME", t.TempDir())
+	env := map[string]string{"TRAU_SUPERVISED": "1"}
+	if err := Write("/opt/homebrew/bin/trau", []string{"serve"}, env, "/tmp/hub.log"); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := Write("/src/acme/bin/trau", []string{"serve"}, env, "/tmp/hub.log"); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+
+	st, err := Read()
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !st.Installed || !slices.Equal(st.Program, []string{"/src/acme/bin/trau", "serve"}) {
+		t.Fatalf("Read = %+v, want the agent pointed at the rewritten build", st)
 	}
 }
 
