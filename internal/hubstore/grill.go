@@ -121,14 +121,15 @@ type NewGrillMessage struct {
 // Grill is the hub's authoritative store of web grilling sessions and their
 // messages (ADR 0008). Children reach it only over MCP/HTTP; the tables — not run
 // files — are the source of truth. retention bounds how many settled sessions per
-// repo Prune keeps.
+// repo Prune keeps, except applied research sessions, which are kept forever.
 type Grill struct {
 	db        *sql.DB
 	retention int
 }
 
 // NewGrill returns a Grill store over db, pruned to the most recent retention
-// sessions per repo. The caller owns db's lifecycle.
+// sessions per repo — applied research sessions excepted. The caller owns db's
+// lifecycle.
 func NewGrill(db *sql.DB, retention int) *Grill { return &Grill{db: db, retention: retention} }
 
 // Create opens a session in the running state, enforcing one active session per
@@ -473,8 +474,11 @@ func (g *Grill) SetIssue(id int64, issueID, destination string) (GrillSession, b
 // Prune keeps the most recent retention sessions per repo and drops the settled
 // ones beyond that window, ranked by id (grilling-prd.md — the transcript retention
 // pattern). Active sessions past the window are kept so a long-parked session is
-// never pruned out from under its owner; their messages cascade on delete. A
-// non-positive retention disables pruning.
+// never pruned out from under its owner, as are applied research sessions, whose
+// reports the research page keeps indefinitely; their messages cascade on delete.
+// Both exemptions still occupy ranking slots in the window, which only makes the
+// remaining settled sessions prune a little sooner. A non-positive retention
+// disables pruning.
 func (g *Grill) Prune() error {
 	if g.retention <= 0 {
 		return nil
@@ -496,7 +500,9 @@ func (g *Grill) Prune() error {
 			return err
 		}
 		if _, err := g.db.Exec(
-			`DELETE FROM grill_sessions WHERE repo = ? AND id <= ? AND state IN ('applied', 'abandoned')`,
+			`DELETE FROM grill_sessions
+			 WHERE repo = ? AND id <= ? AND state IN ('applied', 'abandoned')
+			   AND NOT (mode = 'research' AND state = 'applied')`,
 			repo, cutoff,
 		); err != nil {
 			return err
