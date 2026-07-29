@@ -411,20 +411,10 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 
 			_ = sess.Close()
 			<-drainDone
-			select {
-			case <-authPrompt:
+			if promptErr := confirmedPromptError(authPrompt, bypassPrompt, menuPrompt); promptErr != nil {
 				res.IsError = true
-				c.report(label, res, dur, ErrAuthRequired)
-				return res, fmt.Errorf("claude interactive run (%s): %w", label, ErrAuthRequired)
-			case <-bypassPrompt:
-				res.IsError = true
-				c.report(label, res, dur, ErrBypassNotAccepted)
-				return res, fmt.Errorf("claude interactive run (%s): %w", label, ErrBypassNotAccepted)
-			case <-menuPrompt:
-				res.IsError = true
-				c.report(label, res, dur, ErrInteractivePrompt)
-				return res, fmt.Errorf("claude interactive run (%s): %w", label, ErrInteractivePrompt)
-			default:
+				c.report(label, res, dur, promptErr)
+				return res, fmt.Errorf("claude interactive run (%s): %w", label, promptErr)
 			}
 
 			c.report(label, res, dur, err)
@@ -484,6 +474,28 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 				}
 			}
 		}
+	}
+}
+
+// confirmedPromptError checks completed drain signals in specificity order. A
+// known dialog can also match the generic menu detector, so a select across all
+// three channels would choose randomly and hide the actionable diagnosis.
+func confirmedPromptError(auth, bypass, menu <-chan struct{}) error {
+	select {
+	case <-auth:
+		return ErrAuthRequired
+	default:
+	}
+	select {
+	case <-bypass:
+		return ErrBypassNotAccepted
+	default:
+	}
+	select {
+	case <-menu:
+		return ErrInteractivePrompt
+	default:
+		return nil
 	}
 }
 
