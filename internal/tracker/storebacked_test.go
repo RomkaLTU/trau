@@ -376,6 +376,50 @@ func TestStoreBackedSubIssuesOfInternalEpic(t *testing.T) {
 	}
 }
 
+// jiraFamily is a three-level Jira project as it lands in the store once a Task
+// with sub-issues syncs with has_children set: epic PROJ-1 over a leaf and over
+// PROJ-11, itself the parent of PROJ-12.
+func jiraFamily() []hubclient.BacklogItem {
+	return []hubclient.BacklogItem{
+		{ID: "PROJ-11", Source: "jira", Group: "unstarted", Ready: true, Parent: "PROJ-1", Title: "Has sub-issues", HasChildren: true},
+		{ID: "PROJ-10", Source: "jira", Group: "unstarted", Ready: true, Parent: "PROJ-1", Title: "Leaf"},
+		{ID: "PROJ-12", Source: "jira", Group: "unstarted", Ready: true, Parent: "PROJ-11", Title: "Grandchild"},
+	}
+}
+
+// The grandparent epic's run must keep skipping the mid-level Task: its listing
+// has to mark it a nested parent so the loop's leaf guards filter it out rather
+// than building it as a ticket.
+func TestStoreBackedSubIssuesFlagsNestedParent(t *testing.T) {
+	hub := newFakeStoreHub()
+	hub.backlog = jiraFamily()
+	subs, err := newStoreBacked(hub, &fakeWrites{}).SubIssues(context.Background(), "PROJ-1")
+	if err != nil {
+		t.Fatalf("sub-issues: %v", err)
+	}
+	want := []SubIssue{
+		{ID: "PROJ-10", Title: "Leaf"},
+		{ID: "PROJ-11", Title: "Has sub-issues", HasChildren: true},
+	}
+	if !reflect.DeepEqual(subs, want) {
+		t.Fatalf("sub-issues = %+v, want %+v", subs, want)
+	}
+}
+
+// Queued as its own epic, the Task drains only its direct children; the
+// grandparent epic's own pick never reaches into them.
+func TestStoreBackedPickSkipsNestedParent(t *testing.T) {
+	hub := newFakeStoreHub()
+	hub.backlog = jiraFamily()
+	sb := newStoreBacked(hub, &fakeWrites{})
+	if id, err := sb.Pick(context.Background(), Scope{Parent: "PROJ-1"}); err != nil || id != "PROJ-10" {
+		t.Fatalf("epic pick = %q err %v, want PROJ-10 — the nested parent is not a leaf", id, err)
+	}
+	if id, err := sb.Pick(context.Background(), Scope{Parent: "PROJ-11"}); err != nil || id != "PROJ-12" {
+		t.Fatalf("task pick = %q err %v, want its own sub-issue PROJ-12", id, err)
+	}
+}
+
 func TestStoreBackedPickScopedToInternalEpicSkipsSync(t *testing.T) {
 	hub := newFakeStoreHub()
 	hub.backlog = []hubclient.BacklogItem{

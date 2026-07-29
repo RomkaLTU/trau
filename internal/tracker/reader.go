@@ -211,7 +211,7 @@ func (r *jiraReader) Backlog(ctx context.Context) ([]BacklogItem, error) {
 			Group:       mapJiraGroup(iss.StatusCategory, iss.Resolution),
 			Labels:      iss.Labels,
 			Parent:      iss.ParentKey,
-			HasChildren: iss.IsEpic,
+			HasChildren: iss.HasChildren,
 			Ready:       containsLabel(iss.Labels, r.readyLabel),
 		})
 	}
@@ -228,13 +228,14 @@ func (r *jiraReader) Issue(ctx context.Context, id string) (IssueSummary, error)
 	}
 	return IssueSummary{
 		BacklogItem: BacklogItem{
-			ID:     iss.Key,
-			Title:  iss.Summary,
-			Status: iss.Status.Name,
-			Group:  mapJiraGroup(iss.Status.Category, iss.Resolution),
-			Labels: iss.Labels,
-			Parent: iss.Parent,
-			Ready:  containsLabel(iss.Labels, r.readyLabel),
+			ID:          iss.Key,
+			Title:       iss.Summary,
+			Status:      iss.Status.Name,
+			Group:       mapJiraGroup(iss.Status.Category, iss.Resolution),
+			Labels:      iss.Labels,
+			Parent:      iss.Parent,
+			HasChildren: iss.HasChildren,
+			Ready:       containsLabel(iss.Labels, r.readyLabel),
 		},
 		Project:   iss.Project.Key,
 		InProject: inProject(iss.Project.Key, r.project),

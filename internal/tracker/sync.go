@@ -196,7 +196,7 @@ func jiraSynced(iss *jiraapi.SyncIssue, scanner AttachmentScanner) SyncedIssue {
 		Priority:     iss.Priority,
 		Labels:       iss.Labels,
 		Parent:       iss.Parent,
-		HasChildren:  iss.IsEpic,
+		HasChildren:  iss.HasChildren,
 		DueDate:      iss.DueDate,
 		CreatedAt:    iss.Created,
 		UpdatedAt:    iss.Updated,

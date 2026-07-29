@@ -63,7 +63,7 @@ func TestSyncIssuesFiltersByProjectAndMapsContent(t *testing.T) {
 		t.Fatalf("issues = %d, want 1", len(issues))
 	}
 	iss := issues[0]
-	if iss.Key != "PROJ-1" || iss.Description != "Epic body" || !iss.IsEpic {
+	if iss.Key != "PROJ-1" || iss.Description != "Epic body" || !iss.HasChildren {
 		t.Fatalf("issue = %+v, want PROJ-1 epic with description", iss)
 	}
 	if iss.Priority != 2 || iss.DueDate != "2026-08-01" {
@@ -81,6 +81,29 @@ func TestSyncIssuesFiltersByProjectAndMapsContent(t *testing.T) {
 	want := []Blocker{{Key: "PROJ-9", Resolved: true}, {Key: "PROJ-8"}}
 	if !reflect.DeepEqual(iss.BlockedBy, want) {
 		t.Fatalf("blockedBy = %+v, want the blocked-by links with resolution, not the relates link", iss.BlockedBy)
+	}
+}
+
+// The sync is what fills hubdb's has_children, so a level-0 Task carrying
+// sub-issues has to come back flagged — otherwise the web queues it as a plain
+// ticket and its sub-issues never drain.
+func TestSyncIssuesFlagsTaskWithSubIssuesAsParent(t *testing.T) {
+	client, req := fixedSearch(t, subIssueParentPayload)
+	issues, err := client.SyncIssues(context.Background(), "PROJ", "")
+	if err != nil {
+		t.Fatalf("SyncIssues: %v", err)
+	}
+	if !containsField(req.Fields, "subtasks") {
+		t.Fatalf("sync fields = %v, want subtasks among them", req.Fields)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("issues = %d, want 2", len(issues))
+	}
+	if issues[0].HasChildren {
+		t.Errorf("PROJ-10 = %+v, want a buildable leaf", issues[0])
+	}
+	if !issues[1].HasChildren {
+		t.Errorf("PROJ-11 = %+v, want a parent — it carries sub-issues", issues[1])
 	}
 }
 
