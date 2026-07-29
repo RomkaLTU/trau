@@ -314,23 +314,118 @@ func TestChannelSwitchOnExposedBindWithAllowRegister(t *testing.T) {
 	}
 }
 
-// TestChannelSwitchRefusesOnSupervisedHub checks a launchd-owned hub says why it
-// cannot switch instead of restarting straight back onto the release binary its
-// plist names.
-func TestChannelSwitchRefusesOnSupervisedHub(t *testing.T) {
+// TestChannelSwitchRetargetsTheLaunchAgent checks a supervised hub moves its
+// agent before it exits: launchd respawns the successor from the plist, so both
+// directions have to name the chosen build there first or the next respawn snaps
+// the switch back.
+func TestChannelSwitchRetargetsTheLaunchAgent(t *testing.T) {
+	tests := []struct {
+		name    string
+		channel string
+		onDev   bool
+		want    func(root string) string
+	}{
+		{
+			name:    "onto the repo build",
+			channel: channelDev,
+			want:    func(root string) string { return filepath.Join(root, "bin", "trau") },
+		},
+		{
+			name:    "back onto the install",
+			channel: channelRelease,
+			onDev:   true,
+			want:    func(string) string { return releaseExe },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, ts, root := channelServer(t, true)
+			if tt.onDev {
+				s.executable = func() (string, error) { return filepath.Join(root, "bin", "trau"), nil }
+			}
+			armed := false
+			retargeted := make(chan string, 1)
+			s.EnableSupervision(func(binary string) error {
+				if armed {
+					t.Error("the LaunchAgent was rewritten only after the restart was armed")
+				}
+				retargeted <- binary
+				return nil
+			})
+			successors := make(chan string, 1)
+			s.EnableRestart(func(binary string) {
+				armed = true
+				successors <- binary
+			})
+
+			repoRoot := ""
+			if tt.channel == channelDev {
+				repoRoot = root
+			}
+			res := postChannel(t, ts, tt.channel, repoRoot)
+			defer func() { _ = res.Body.Close() }()
+
+			if res.StatusCode != http.StatusAccepted {
+				t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusAccepted)
+			}
+			want := tt.want(root)
+			if got := <-retargeted; got != want {
+				t.Errorf("LaunchAgent points at %q, want %q", got, want)
+			}
+			if got := <-successors; got != want {
+				t.Errorf("successor = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestChannelSwitchAbortsWhenTheLaunchAgentCannotBeRewritten checks a plist the
+// switch cannot rewrite stops it dead: restarting a supervised hub onto a path
+// its agent does not name is exactly how a switch silently comes back on the
+// build it was asked to leave.
+func TestChannelSwitchAbortsWhenTheLaunchAgentCannotBeRewritten(t *testing.T) {
 	s, ts, root := channelServer(t, true)
-	s.EnableRestart(func(string) { t.Error("a supervised hub restarted for a switch") })
-	s.SetSupervised(true)
+	s.EnableSupervision(func(string) error {
+		return errors.New("write ~/Library/LaunchAgents: read-only file system")
+	})
+	s.EnableRestart(func(string) { t.Error("a hub whose agent still names the old build restarted") })
 
 	res := postChannel(t, ts, channelDev, root)
-	defer func() { _ = res.Body.Close() }()
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusAccepted)
+	}
 
-	if res.StatusCode != http.StatusConflict {
-		t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusConflict)
+	got := awaitChannelState(t, s, switchFailed)
+	if !strings.Contains(got.Message, "read-only file system") {
+		t.Errorf("message = %q, want the reason the rewrite failed", got.Message)
 	}
-	if msg := errorOf(t, res); !strings.Contains(msg, "launchd") {
-		t.Errorf("error = %q, want it to name launchd", msg)
+}
+
+// TestUpdateStatusReportsSupervision checks the UI learns launchd owns the hub,
+// which is what lets the confirm dialog say the agent moves with the switch.
+func TestUpdateStatusReportsSupervision(t *testing.T) {
+	s, ts, _ := channelServer(t, true)
+	if got := updateStatus(t, ts); got.Supervised {
+		t.Error("a hub nobody supervises reported supervision")
 	}
+
+	s.EnableSupervision(func(string) error { return nil })
+
+	if got := updateStatus(t, ts); !got.Supervised {
+		t.Error("a launchd-owned hub did not report supervision")
+	}
+}
+
+func updateStatus(t *testing.T, ts *httptest.Server) UpdateStatus {
+	t.Helper()
+	_, body := get(t, ts, APIPrefix+"/update")
+	var got UpdateStatus
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode %s: %v", body, err)
+	}
+	return got
 }
 
 // TestChannelSwitchRefusesASecondSwitch checks a rebuild already under way is not
