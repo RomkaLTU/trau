@@ -31,15 +31,27 @@ export interface ApplyState {
   message: string
 }
 
+// ChannelFields are what the hub answers about the build it runs. channel is
+// derived from where its executable sits and channelRepo is the repo that owns
+// it when that build is a dev one. releaseBinary is the install a switch back
+// would restart onto — empty when PATH holds none, and only ever set while the
+// hub is on dev.
+interface ChannelFields {
+  channel: Channel
+  channelRepo: string
+  channelRepos: ChannelRepo[]
+  channelSwitch: ChannelSwitch
+  releaseBinary: string
+}
+
 // UpdateStatus is the hub's /update resource. running is the version serving
 // this page and onDisk the binary a restart would re-exec: an upgrade that has
 // landed under a still-running hub shows the two apart until it restarts.
 // selfReloadPending names the repo whose merge asked the hub to restart onto its
 // own build, empty when nothing is waiting. upgradeCommand is what the package
 // manager that installed this trau updates it with, empty when no manager owns
-// it. channel is the build the hub runs, derived from where its executable sits,
-// and channelRepo the repo that owns it when that build is a dev one.
-export interface UpdateStatus {
+// it.
+export interface UpdateStatus extends ChannelFields {
   running: string
   onDisk: string
   latest: string
@@ -52,10 +64,6 @@ export interface UpdateStatus {
   releaseUrl: string
   applyState: ApplyState
   selfReloadPending: string
-  channel: Channel
-  channelRepo: string
-  channelRepos: ChannelRepo[]
-  channelSwitch: ChannelSwitch
 }
 
 export interface RestartAck {
@@ -82,12 +90,29 @@ async function errorMessage(res: Response, fallback: string): Promise<string> {
     : detail.error
 }
 
+// withChannelFields fills in what a hub from before the build channel answers
+// without. Switching back to the installed release is how this page comes to be
+// talking to one — every published trau predates the channel — so the absence is
+// settled here instead of at each of the reads.
+function withChannelFields(
+  status: Omit<UpdateStatus, keyof ChannelFields> & Partial<ChannelFields>,
+): UpdateStatus {
+  return {
+    channel: 'release',
+    channelRepo: '',
+    channelRepos: [],
+    channelSwitch: { state: 'idle', repoRoot: '', message: '' },
+    releaseBinary: '',
+    ...status,
+  }
+}
+
 async function fetchUpdate(): Promise<UpdateStatus> {
   const res = await apiFetch('/api/v1/update')
   if (!res.ok) {
     throw new Error(`update request failed: ${res.status}`)
   }
-  return res.json()
+  return withChannelFields(await res.json())
 }
 
 // switchInFlight reports whether a channel switch is still going, which is what
@@ -119,7 +144,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
   if (!res.ok) {
     throw new Error(await errorMessage(res, 'update check failed'))
   }
-  return res.json()
+  return withChannelFields(await res.json())
 }
 
 // applyUpdate answers as soon as brew is under way; the outcome arrives on the
@@ -129,17 +154,22 @@ export async function applyUpdate(): Promise<UpdateStatus> {
   if (!res.ok) {
     throw new Error(await errorMessage(res, 'update failed'))
   }
-  return res.json()
+  return withChannelFields(await res.json())
 }
 
-// switchToDev answers as soon as the rebuild is under way; the outcome arrives
-// on the channelSwitch of a later /update, and a successful build ends in a
-// restart onto what it produced.
-export async function switchToDev(repoRoot: string): Promise<void> {
+// switchChannel answers as soon as the switch is under way; the outcome arrives
+// on the channelSwitch of a later /update. A dev switch rebuilds repoRoot first
+// and restarts onto what that produced — asking for it from a dev hub is the
+// manual rebuild of the tree already running. A release switch names no repo:
+// the hub restarts onto the install it finds on PATH.
+export async function switchChannel(
+  channel: Channel,
+  repoRoot = '',
+): Promise<void> {
   const res = await apiFetch('/api/v1/hub/channel', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ channel: 'dev', repo_root: repoRoot }),
+    body: JSON.stringify({ channel, repo_root: repoRoot }),
   })
   if (!res.ok) {
     throw new Error(await errorMessage(res, 'channel switch failed'))

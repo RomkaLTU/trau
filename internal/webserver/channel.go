@@ -49,7 +49,8 @@ const channelProbeTimeout = 30 * time.Second
 const channelTailLines = 20
 
 // ChannelRequest asks the hub to move to a build channel, naming the repo whose
-// build it should land on.
+// build it should land on. RepoRoot belongs to the dev direction only: the
+// release install is resolved from PATH, not named by the caller.
 type ChannelRequest struct {
 	Channel  string `json:"channel"`
 	RepoRoot string `json:"repo_root"`
@@ -78,13 +79,12 @@ type ChannelRepo struct {
 	Root string `json:"root"`
 }
 
-// handleHubChannel rebuilds a registered repo and restarts the hub onto what the
-// build produced, which is how a release install moves to the dev channel
-// without a terminal. The trust model is the repo's own: it has to be registered
-// and to have set HUB_SELF_RELOAD, and on an exposed bind registration has to be
-// open too — a switch runs the repo's build command on the host, so it is gated
-// exactly as widening the startable set is. The working tree is built as it
-// stands: this is the switch a developer asks for, not the post-merge reload.
+// handleHubChannel moves the hub between build channels without a terminal:
+// onto a registered repo's own build, or back onto the release install PATH
+// resolves. Both directions end in the existing restart, and both are gated on
+// an exposed bind exactly as widening the startable set is — the dev direction
+// runs a repo's build command on the host, and the release direction re-execs a
+// binary the caller did not name.
 func (s *Server) handleHubChannel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -100,11 +100,35 @@ func (s *Server) handleHubChannel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
-	if strings.TrimSpace(req.Channel) != channelDev {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": `channel must be "dev"`})
+	if !Loopback(s.bind) && !s.allowRegister {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "switching build channel on an exposed bind requires SERVE_ALLOW_REGISTER=1 in addition to SERVE_TOKEN; set it to open the switch deliberately, or switch from a loopback trau serve on the host",
+		})
 		return
 	}
-	root := strings.TrimSpace(req.RepoRoot)
+	if s.supervised {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "this hub is supervised by launchd, which restarts it from the binary its plist names; run `trau hub unsupervise` before switching channel",
+		})
+		return
+	}
+
+	switch strings.TrimSpace(req.Channel) {
+	case channelDev:
+		s.startDevSwitch(w, strings.TrimSpace(req.RepoRoot))
+	case channelRelease:
+		s.startReleaseSwitch(r.Context(), w)
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": `channel must be "dev" or "release"`})
+	}
+}
+
+// startDevSwitch rebuilds a registered repo and restarts the hub onto what the
+// build produced. The trust model is the repo's own: it has to be registered and
+// to have set HUB_SELF_RELOAD. The working tree is built as it stands, so asking
+// for dev from a hub already on dev is the honest rebuild-and-restart of the
+// current tree rather than a no-op.
+func (s *Server) startDevSwitch(w http.ResponseWriter, root string) {
 	if root == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "repo_root is required"})
 		return
@@ -127,25 +151,34 @@ func (s *Server) handleHubChannel(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if !Loopback(s.bind) && !s.allowRegister {
-		writeJSON(w, http.StatusForbidden, map[string]string{
-			"error": "switching build channel on an exposed bind requires SERVE_ALLOW_REGISTER=1 in addition to SERVE_TOKEN; set it to open the switch deliberately, or switch from a loopback trau serve on the host",
-		})
-		return
-	}
-	if s.supervised {
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"error": "this hub is supervised by launchd, which restarts it from the binary its plist names; run `trau hub unsupervise` before switching channel",
-		})
-		return
-	}
-	if !s.beginChannelSwitch(repo.Root) {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "a channel switch is already under way"})
+	if !s.beginChannelSwitch(w, repo.Root) {
 		return
 	}
 
 	writeJSON(w, http.StatusAccepted, ChannelAck{Pending: true, Channel: channelDev, RepoRoot: repo.Root})
 	go s.switchToDev(s.drainCtx, repo, cfg)
+}
+
+// startReleaseSwitch restarts the hub onto the installed release binary, which
+// is the way off a dev build. Nothing is built and no repo consents to it: the
+// binary is one PATH already resolves, so resolution happens inline and a
+// machine with no release install is refused before anything restarts.
+func (s *Server) startReleaseSwitch(ctx context.Context, w http.ResponseWriter) {
+	binary, err := s.releaseSwitchTarget(ctx)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	if !s.beginChannelSwitch(w, "") {
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, ChannelAck{Pending: true, Channel: channelRelease})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	s.markChannelSwitch(switchRestarting, "")
+	s.triggerRestartTo(binary)
 }
 
 // switchToDev rebuilds repo and arms a restart onto the binary that build left
@@ -167,7 +200,7 @@ func (s *Server) switchToDev(ctx context.Context, repo registry.Repo, cfg config
 		return
 	}
 
-	binary, err := s.devBinary(ctx, repo.Root, cfg.HubDevBinary)
+	binary, err := s.firstProbable(ctx, devBinaryPaths(repo.Root, cfg.HubDevBinary, s.goos), "the built binary")
 	if err != nil {
 		s.markChannelSwitch(switchFailed, err.Error())
 		return
@@ -177,22 +210,88 @@ func (s *Server) switchToDev(ctx context.Context, repo registry.Repo, cfg config
 	s.triggerRestartTo(binary)
 }
 
-// devBinary resolves what the rebuild produced and proves it runs. A binary that
-// cannot print its version is not adopted: a restart onto it would take the hub
-// down for good, and the release binary the hub is on still works.
-func (s *Server) devBinary(ctx context.Context, root, rel string) (string, error) {
+// firstProbable takes the first candidate that prints its version, which is what
+// makes a binary safe to restart onto. One that cannot is never adopted — the
+// restart would take the hub down for good — so a set with nothing runnable in
+// it is refused, named by what it was meant to be.
+func (s *Server) firstProbable(ctx context.Context, candidates []string, what string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, channelProbeTimeout)
 	defer cancel()
 
 	var lastErr error
-	for _, path := range devBinaryPaths(root, rel, s.goos) {
+	for _, path := range candidates {
 		_, err := s.probeVersion(ctx, path)
 		if err == nil {
 			return path, nil
 		}
 		lastErr = err
 	}
-	return "", fmt.Errorf("the built binary is unusable: %w", lastErr)
+	return "", fmt.Errorf("%s is unusable: %w", what, lastErr)
+}
+
+// releaseSwitchTarget is the binary the release direction restarts onto: the
+// first install on PATH no registered repo owns that proves it runs. Both ways
+// of having nothing to go back to — none on PATH at all, none that runs — are
+// refused here, before anything restarts.
+func (s *Server) releaseSwitchTarget(ctx context.Context) (string, error) {
+	candidates := releaseCandidates(s.pathBinaries(), s.registeredRoots())
+	if len(candidates) == 0 {
+		return "", errors.New("no release install found")
+	}
+	return s.firstProbable(ctx, candidates, "the release install")
+}
+
+// offeredReleaseBinary names the install /update advertises as somewhere to go
+// back to, empty when PATH holds none. It stops short of the probe
+// releaseSwitchTarget runs, so the switch may still refuse what it names: this
+// answer rides along on a polled resource, and the UI only needs to know whether
+// the action is worth offering.
+func (s *Server) offeredReleaseBinary() string {
+	candidates := releaseCandidates(s.pathBinaries(), s.registeredRoots())
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0]
+}
+
+// releaseCandidates keeps the PATH entries no registered repo owns, in PATH
+// order. A trau inside a repo root is that repo's dev build — restarting onto it
+// would not leave the dev channel at all — and a checkout with bin on PATH is
+// exactly how it comes to sit ahead of the release install.
+func releaseCandidates(paths, roots []string) []string {
+	candidates := []string{}
+	for _, path := range paths {
+		owned := false
+		for _, root := range roots {
+			if withinRoot(root, path) {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			candidates = append(candidates, path)
+		}
+	}
+	return candidates
+}
+
+// trauOnPath lists every trau PATH resolves, in PATH order. exec.LookPath stops
+// at the first hit, which is not necessarily the release install, so each entry
+// is asked about separately — passing a path rather than a bare name keeps
+// LookPath's own rules for what counts as executable, PATHEXT included.
+func trauOnPath() []string {
+	found := []string{}
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			continue
+		}
+		path, err := exec.LookPath(filepath.Join(dir, "trau"))
+		if err != nil {
+			continue
+		}
+		found = append(found, path)
+	}
+	return found
 }
 
 // devBinaryPaths is where the build may have left the binary: the configured
@@ -206,17 +305,22 @@ func devBinaryPaths(root, rel, goos string) []string {
 	return []string{path, path + ".exe"}
 }
 
-// beginChannelSwitch claims the switch for root, reporting false when one is
-// already building or waiting to restart — two rebuilds of the same tree would
-// race each other's artifacts.
-func (s *Server) beginChannelSwitch(root string) bool {
+// beginChannelSwitch claims the switch for root, refusing the request itself
+// when one is already building or waiting to restart — two rebuilds of the same
+// tree would race each other's artifacts, and both directions turn that away the
+// same way.
+func (s *Server) beginChannelSwitch(w http.ResponseWriter, root string) bool {
 	s.channelMu.Lock()
-	defer s.channelMu.Unlock()
-	if s.channel.State == switchBuilding || s.channel.State == switchRestarting {
-		return false
+	busy := s.channel.State == switchBuilding || s.channel.State == switchRestarting
+	if !busy {
+		s.channel = ChannelSwitch{State: switchBuilding, RepoRoot: root}
 	}
-	s.channel = ChannelSwitch{State: switchBuilding, RepoRoot: root}
-	return true
+	s.channelMu.Unlock()
+
+	if busy {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "a channel switch is already under way"})
+	}
+	return !busy
 }
 
 func (s *Server) markChannelSwitch(state, message string) {

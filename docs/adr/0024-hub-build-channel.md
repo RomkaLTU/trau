@@ -1,9 +1,9 @@
-# ADR 0024 — Build channel: the hub can rebuild a registered checkout and restart onto it
+# ADR 0024 — Build channel: the hub can rebuild a registered checkout and restart onto it, and back
 
 - **Status:** Accepted
 - **Date:** 2026-07-29
 - **Deciders:** Romas (sole maintainer)
-- **Refs:** [COD-1330]; [ADR 0004](0004-hub-autostart.md) (the hub is a port-locked singleton); [ADR 0023](0023-platform-support-windows.md) §5 (`.exe` artifacts)
+- **Refs:** [COD-1330], [COD-1331]; [ADR 0004](0004-hub-autostart.md) (the hub is a port-locked singleton); [ADR 0023](0023-platform-support-windows.md) §5 (`.exe` artifacts)
 
 ## Context
 
@@ -53,8 +53,8 @@ Three properties follow from doing it in that order:
   tracked changes. This is a developer asking for *their* tree, not the
   post-merge reload, which serves a different caller and keeps its own git
   handling.
-- **A failed build changes nothing.** The hub keeps serving, the channel stays
-  `release`, and the last ~20 lines of build output are kept for the UI. The same
+- **A failed build changes nothing.** The hub keeps serving on the build it
+  already had, and the last ~20 lines of build output are kept for the UI. The same
   is true of a binary that cannot print its version: a restart onto it would end
   the hub for good, so an unprovable build is never adopted.
 - **The restart is the existing one.** The switch does not invent a shutdown
@@ -84,7 +84,34 @@ the asking repo — is deliberately *not* part of this. It is that endpoint's wh
 point and stays there; requiring it here would refuse exactly the release-install
 case this ADR exists for.
 
-### 4. A launchd-supervised hub refuses
+### 4. The way back is the install on PATH, and it needs no repo
+
+`{"channel": "release"}` restarts the hub onto the first `trau` **on PATH that no
+registered repo root contains**. `exec.LookPath` stops at the first hit, which on
+a machine whose checkout is on PATH is the dev build itself, so the search
+continues past every entry a repo owns — restarting onto one of those would not
+leave the dev channel at all. The candidate is probed with `--version` before it
+is adopted, exactly as a fresh build is, and a machine with no release install is
+refused with that reason rather than restarted.
+
+Nothing is built, so no repo consents to this direction and `HUB_SELF_RELOAD`
+does not apply: no repo provides the binary. The bind gate stays — the hub still
+re-execs a path the caller did not name.
+
+Asking for `dev` from a hub already on `dev` is not a no-op either: the tree is
+built as it stands, so it is the rebuild-and-restart a developer runs as `make
+reset`, available from the UI once the work was done interactively.
+
+### 5. A newer release is not an update for a dev hub
+
+The update check weighs the newest release against the version on disk, which
+for a working-tree build is a `git describe` of whatever is checked out. That
+comparison means nothing, so `/api/v1/update` reports `updateAvailable: false`
+while the channel is `dev` and the UI says the release applies after switching
+back. The checker itself is unchanged: a release-channel hub sees exactly what it
+saw before.
+
+### 6. A launchd-supervised hub refuses
 
 Under `trau hub supervise` (ADR 0022 §2) launchd owns the process and restarts it
 from the binary its plist names, so a successor path the hub chose would be
@@ -99,9 +126,9 @@ release build it was asked to leave.
   command itself is repo-owned config: a repo that can set
   `HUB_RELOAD_BUILD_CMD` can already run anything, which is why `HUB_DEV_BINARY`
   needs no separate containment.
-- Switching *back* to release is not in this slice. A dev hub is left on dev
-  until a package-manager upgrade or a manual restart moves it; the honest way
-  back is the release install's own path, not a second inverse endpoint.
+- The release direction is only as good as PATH. A machine whose only trau is the
+  checkout has nothing to go back to, and the UI disables the action with that
+  reason rather than pretending otherwise.
 - The switch is a restart, so it interrupts work exactly as the Restart button
   does, and the web UI reuses that button's confirmation and impact list rather
   than inventing a gentler-looking one.
@@ -110,3 +137,4 @@ release build it was asked to leave.
   full-reload the one-click update already does.
 
 [COD-1330]: https://linear.app/codesomelabs/issue/COD-1330/hub-channel-switch-to-dev-rebuild-the-repo-tree-and-restart-the-hub
+[COD-1331]: https://linear.app/codesomelabs/issue/COD-1331/switch-back-to-release-channel-manual-rebuild-and-restart-action

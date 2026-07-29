@@ -29,18 +29,31 @@ import {
   currentHubMark,
   markRestarted,
   restartHub,
+  switchChannel,
   switchInFlight,
-  switchToDev,
   takeRestartedVersion,
   updateQueryOptions,
   versionLabel,
   waitForSuccessor,
+  type Channel,
   type HubMark,
   type UpdateStatus,
 } from '@/lib/update'
 import { cn } from '@/lib/utils'
 
-type Pending = 'restart' | 'update' | 'channel'
+// The three channel actions all POST the same endpoint: dev rebuilds a repo the
+// hub is not running from, rebuild does the same for the tree it already runs,
+// and release restarts onto the install on PATH.
+type Pending = 'restart' | 'update' | 'dev' | 'rebuild' | 'release'
+
+// What the confirm dialog says and what confirming it does, so an action is
+// described in one place rather than once for its copy and once for its call.
+interface ConfirmAction {
+  windowTitle: string
+  title: string
+  confirmLabel: string
+  run: () => void
+}
 
 // The Hub & web server settings section, where HUB_SELF_RELOAD lives.
 const HUB_SECTION_HASH = 'hub-web-server'
@@ -121,10 +134,16 @@ export function UpdatesSection() {
     eligible[0]?.root ??
     ''
 
-  const switchChannel = useMutation({
-    mutationFn: async () => {
+  const changeChannel = useMutation({
+    mutationFn: async ({
+      channel,
+      repoRoot,
+    }: {
+      channel: Channel
+      repoRoot: string
+    }) => {
       const before = await currentHubMark()
-      await switchToDev(target)
+      await switchChannel(channel, repoRoot)
       return before
     },
     onSuccess: (before) => {
@@ -181,7 +200,45 @@ export function UpdatesSection() {
     restarting ||
     restart.isPending ||
     apply.isPending ||
-    switchChannel.isPending
+    changeChannel.isPending
+
+  const actions: Record<Pending, ConfirmAction> = {
+    restart: {
+      windowTitle: 'restart hub',
+      title: 'Restart the hub?',
+      confirmLabel: 'Restart',
+      run: () => restart.mutate(),
+    },
+    update: {
+      windowTitle: 'update trau',
+      title: 'Update and restart the hub?',
+      confirmLabel: 'Update now',
+      run: () => apply.mutate(),
+    },
+    dev: {
+      windowTitle: 'switch to dev',
+      title: 'Rebuild and restart onto the dev build?',
+      confirmLabel: 'Rebuild & restart',
+      run: () => changeChannel.mutate({ channel: 'dev', repoRoot: target }),
+    },
+    rebuild: {
+      windowTitle: 'rebuild & restart',
+      title: 'Rebuild this tree and restart onto it?',
+      confirmLabel: 'Rebuild & restart',
+      run: () =>
+        changeChannel.mutate({
+          channel: 'dev',
+          repoRoot: status?.channelRepo ?? '',
+        }),
+    },
+    release: {
+      windowTitle: 'switch to release',
+      title: 'Restart onto the installed release?',
+      confirmLabel: 'Switch to release',
+      run: () => changeChannel.mutate({ channel: 'release', repoRoot: '' }),
+    },
+  }
+  const confirming = actions[pending ?? 'restart']
 
   return (
     <section id="updates" className="scroll-mt-6">
@@ -220,7 +277,7 @@ export function UpdatesSection() {
                   switching={switching}
                   target={target}
                   onTarget={setSwitchRepo}
-                  onSwitch={() => setPending('channel')}
+                  onSwitch={setPending}
                 />
               </Row>
 
@@ -277,6 +334,11 @@ export function UpdatesSection() {
                       />
                       {check.isPending ? 'checking' : 'Check for updates'}
                     </Button>
+                    {status.channel === 'dev' && (
+                      <span className="text-xs text-muted-foreground">
+                        dev channel — release updates apply after switching back.
+                      </span>
+                    )}
                   </span>
                 )}
               </Row>
@@ -339,7 +401,7 @@ export function UpdatesSection() {
                     role="alert"
                   >
                     <TriangleAlert className="size-3.5" aria-hidden="true" />
-                    switch to dev failed — the hub kept the build it was running
+                    the rebuild failed — the hub kept the build it was running
                   </p>
                   <pre className="max-h-56 overflow-auto rounded-md border border-border bg-input px-3 py-2 font-mono text-[0.7rem] leading-relaxed text-muted-foreground">
                     {status.channelSwitch.message}
@@ -390,14 +452,12 @@ export function UpdatesSection() {
       </TerminalCard>
 
       <RestartConfirm
-        pending={pending}
+        open={pending !== null}
+        action={confirming}
         onCancel={() => setPending(null)}
         onConfirm={() => {
-          const action = pending
           setPending(null)
-          if (action === 'update') apply.mutate()
-          if (action === 'restart') restart.mutate()
-          if (action === 'channel') switchChannel.mutate()
+          confirming.run()
         }}
       />
     </section>
@@ -408,10 +468,12 @@ function repoLabel(root: string): string {
   return root.split('/').filter(Boolean).pop() ?? root
 }
 
-// ChannelAction shows which build the hub runs and, on a release build, offers
-// the switch to a dev one. The repos it offers are the ones the hub would
-// accept, so the picker only appears when the choice is real; with none, the
-// action stays visible but disabled and points at the key that opens it.
+// ChannelAction shows which build the hub runs and offers the way off it. On a
+// release build that is the switch to a dev one, against the repos the hub would
+// actually accept, so the picker only appears when the choice is real; with
+// none, the action stays visible but disabled and points at the key that opens
+// it. On a dev build it is the rebuild of the tree already running and the way
+// back to the release install, disabled when PATH holds none to go back to.
 function ChannelAction({
   status,
   busy,
@@ -425,7 +487,7 @@ function ChannelAction({
   switching: boolean
   target: string
   onTarget: (root: string) => void
-  onSwitch: () => void
+  onSwitch: (action: Pending) => void
 }) {
   if (status.channel === 'dev') {
     return (
@@ -434,6 +496,30 @@ function ChannelAction({
         {status.channelRepo && (
           <span className="font-mono text-[0.7rem] text-faint">
             built from {repoLabel(status.channelRepo)}
+          </span>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          className="font-mono text-xs"
+          disabled={busy || !status.channelRepo}
+          onClick={() => onSwitch('rebuild')}
+        >
+          {switching ? 'Rebuilding…' : 'Rebuild & restart'}
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="font-mono text-xs"
+          disabled={busy || !status.releaseBinary}
+          onClick={() => onSwitch('release')}
+        >
+          Switch to release
+        </Button>
+        {!status.releaseBinary && (
+          <span className="text-xs leading-relaxed text-muted-foreground">
+            No release install found — nothing on PATH outside your registered
+            repos to go back to.
           </span>
         )}
       </span>
@@ -464,7 +550,7 @@ function ChannelAction({
         size="sm"
         className="font-mono text-xs"
         disabled={busy || eligible.length === 0}
-        onClick={onSwitch}
+        onClick={() => onSwitch('dev')}
       >
         {switching ? 'Rebuilding…' : 'Switch to dev'}
       </Button>
@@ -496,42 +582,21 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   )
 }
 
-const CONFIRM_COPY: Record<
-  Pending,
-  { windowTitle: string; title: string; confirmLabel: string }
-> = {
-  restart: {
-    windowTitle: 'restart hub',
-    title: 'Restart the hub?',
-    confirmLabel: 'Restart',
-  },
-  update: {
-    windowTitle: 'update trau',
-    title: 'Update and restart the hub?',
-    confirmLabel: 'Update now',
-  },
-  channel: {
-    windowTitle: 'switch to dev',
-    title: 'Rebuild and restart onto the dev build?',
-    confirmLabel: 'Rebuild & restart',
-  },
-}
-
 // RestartConfirm names what a restart interrupts before it happens — a channel
 // switch ends in one exactly like the Restart button does. The queues are only
 // fetched while the dialog is open — one request per repo is worth it for a
 // confirmation and not for a settings page nobody is restarting from.
 function RestartConfirm({
-  pending,
+  open,
+  action,
   onCancel,
   onConfirm,
 }: {
-  pending: Pending | null
+  open: boolean
+  action: ConfirmAction
   onCancel: () => void
   onConfirm: () => void
 }) {
-  const open = pending !== null
-  const copy = CONFIRM_COPY[pending ?? 'restart']
   const instances = useQuery({ ...instancesQueryOptions, enabled: open })
   const repos = instances.data?.repos ?? []
   const queues = useQueries({
@@ -550,10 +615,10 @@ function RestartConfirm({
     <ConfirmDialog
       open={open}
       onOpenChange={(next) => !next && onCancel()}
-      windowTitle={copy.windowTitle}
-      title={copy.title}
+      windowTitle={action.windowTitle}
+      title={action.title}
       description={<RestartImpact active={active} draining={draining} />}
-      confirmLabel={copy.confirmLabel}
+      confirmLabel={action.confirmLabel}
       onConfirm={onConfirm}
     />
   )
