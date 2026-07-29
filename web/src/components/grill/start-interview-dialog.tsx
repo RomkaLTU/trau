@@ -6,6 +6,7 @@ import { AutoAcceptToggle } from "@/components/grill/auto-accept";
 import { useModeSuggestion } from "@/components/grill/mode-suggestion";
 import { SessionTypeChips } from "@/components/grill/session-mode";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -117,7 +118,7 @@ export function StartInterviewDialog({
               onChange={setAutoAccept}
               className="mt-1"
             />
-            <textarea
+            <Textarea
               ref={fieldRef}
               value={focus}
               rows={3}
@@ -141,7 +142,7 @@ export function StartInterviewDialog({
                 e.preventDefault();
                 submit();
               }}
-              className="w-full resize-none rounded-md border border-border bg-input px-2.5 py-1.5 font-sans text-sm text-foreground outline-none placeholder:text-muted-foreground/60 focus-visible:border-ring"
+              className="resize-none px-2.5 py-1.5 font-sans placeholder:text-muted-foreground/60"
             />
             {failure && (
               <p role="alert" className="font-mono text-xs text-fail">

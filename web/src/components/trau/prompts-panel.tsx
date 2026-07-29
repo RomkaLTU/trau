@@ -4,6 +4,7 @@ import { useBlocker } from '@tanstack/react-router'
 import { Check, Pencil, RotateCcw, TriangleAlert, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
 import { ConfirmDialog } from '@/components/trau/confirm-dialog'
 import { TerminalCard } from '@/components/trau/terminal-card'
 import { cn } from '@/lib/utils'
@@ -354,7 +355,7 @@ function PromptEditor({
   return (
     <div className="flex flex-col gap-3 rounded-md border border-border bg-secondary/30 p-3">
       <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_15rem]">
-        <textarea
+        <Textarea
           autoFocus
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -364,7 +365,7 @@ function PromptEditor({
           rows={16}
           spellCheck={false}
           aria-label={`${prompt.title} template`}
-          className="w-full resize-y rounded-md border border-border bg-input px-3 py-2 font-mono text-xs leading-relaxed text-foreground focus-visible:border-ring focus-visible:outline-none"
+          className="resize-y font-mono text-xs leading-relaxed"
         />
         <PlaceholderReference placeholders={prompt.placeholders} />
       </div>

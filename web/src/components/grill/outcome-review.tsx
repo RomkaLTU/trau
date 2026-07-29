@@ -22,6 +22,8 @@ import { AssigneePicker } from "@/components/trau/assignee-picker";
 import { useCreatedBanner } from "@/components/trau/created-banner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { type Assignee } from "@/lib/assignee";
 import { assignableUsersQueryOptions } from "@/lib/assignees";
 import {
@@ -433,8 +435,7 @@ function subsAreComplete(subs: SubIssueDraft[]): boolean {
   );
 }
 
-const subInputClass =
-  "w-full rounded-md border bg-card px-2 py-1 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50";
+const subFieldClass = "h-auto px-2 py-1";
 
 // SplitBody is the split review: the parent's epic-framing description shown as an
 // editable old→new diff, then the proposed slices as cards the user can edit, add,
@@ -509,11 +510,11 @@ function CreateBody({
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-1">
         <span className="text-xs font-medium text-muted-foreground">Title</span>
-        <input
+        <Input
           value={title}
           onChange={(e) => onTitleChange(e.target.value)}
           placeholder="Issue title"
-          className={subInputClass}
+          className={subFieldClass}
         />
       </div>
       <NewBody
@@ -650,18 +651,18 @@ function SubIssueCard({
           Remove
         </Button>
       </div>
-      <input
+      <Input
         value={sub.title}
         onChange={(e) => onChange(sub.key, { title: e.target.value })}
         placeholder="Title"
-        className={subInputClass}
+        className={subFieldClass}
       />
-      <textarea
+      <Textarea
         value={sub.description}
         onChange={(e) => onChange(sub.key, { description: e.target.value })}
         rows={3}
         placeholder="Description an agent can implement without guessing"
-        className={cn(subInputClass, "min-h-20 resize-y font-mono text-xs")}
+        className={cn(subFieldClass, "min-h-20 resize-y font-mono text-xs")}
       />
       {siblings.length > 1 && (
         <div className="flex flex-col gap-1">
@@ -739,11 +740,11 @@ function RewriteBody({
         )}
       </div>
       {editing ? (
-        <textarea
+        <Textarea
           value={draft}
           onChange={(e) => onChange(e.target.value)}
           rows={10}
-          className="min-h-40 w-full resize-y rounded-md border bg-card px-3 py-2 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="min-h-40 resize-y font-mono text-xs"
         />
       ) : loading ? (
         <p className="text-xs text-muted-foreground">
@@ -801,11 +802,11 @@ function NewBody({
         )}
       </div>
       {editing ? (
-        <textarea
+        <Textarea
           value={draft}
           onChange={(e) => onChange(e.target.value)}
           rows={10}
-          className="min-h-40 w-full resize-y rounded-md border bg-card px-3 py-2 font-mono text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="min-h-40 resize-y font-mono text-xs"
         />
       ) : draft.trim() === "" ? (
         <p className="rounded-md border bg-card px-3 py-2 text-xs text-muted-foreground">

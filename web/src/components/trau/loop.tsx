@@ -25,6 +25,7 @@ import {
 import { parseAsString, useQueryState } from "nuqs";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { IssueDrawer } from "@/components/issue-drawer";
 import { MakeStartableButton } from "@/components/make-startable-button";
 import { useActiveRepo } from "@/components/trau/active-repo";
@@ -804,7 +805,7 @@ function LaunchQueueCard({
                 queue
               </label>
               <div className="flex flex-wrap items-center gap-2">
-                <input
+                <Input
                   id="queue-add"
                   value={draft}
                   onChange={(e) => {
@@ -829,7 +830,7 @@ function LaunchQueueCard({
                   autoComplete="off"
                   spellCheck={false}
                   disabled={shuttingDown}
-                  className="w-56 rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:outline-none"
+                  className="h-auto w-56 px-2.5 py-1.5 font-mono text-sm placeholder:text-muted-foreground/60"
                 />
                 <Button
                   type="button"

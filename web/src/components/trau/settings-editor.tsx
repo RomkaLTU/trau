@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, ChevronsUpDown, Lock, RotateCcw, TriangleAlert, X } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   Command,
   CommandEmpty,
@@ -255,7 +256,7 @@ function ValueEditor({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           aria-label={`${item.key} value`}
-          className="w-full max-w-xs rounded-md border border-border bg-input px-2 py-1.5 font-mono text-xs text-foreground focus-visible:border-ring focus-visible:outline-none"
+          className="w-full max-w-xs rounded-md border border-border bg-card px-2 py-1.5 font-mono text-xs text-foreground focus-visible:border-ring focus-visible:outline-none dark:bg-input"
         >
           {item.options!.map((o) => (
             <option key={o} value={o}>
@@ -277,7 +278,7 @@ function ValueEditor({
               aria-label={`${item.key} color`}
               className="size-8 shrink-0 cursor-pointer rounded border border-border bg-input p-0.5"
             />
-            <input
+            <Input
               autoFocus
               type="text"
               value={value}
@@ -286,7 +287,7 @@ function ValueEditor({
               placeholder={defaultHint(item)}
               aria-label={`${item.key} value`}
               spellCheck={false}
-              className="w-full max-w-[10rem] rounded-md border border-border bg-input px-2 py-1.5 font-mono text-xs text-foreground placeholder:text-faint focus-visible:border-ring focus-visible:outline-none"
+              className="h-auto max-w-[10rem] px-2 py-1.5 font-mono text-xs placeholder:text-faint"
             />
           </div>
           {!valid && (
@@ -303,7 +304,7 @@ function ValueEditor({
 
     default:
       return (
-        <input
+        <Input
           autoFocus
           type={item.kind === 'int' ? 'number' : 'text'}
           value={value}
@@ -311,7 +312,7 @@ function ValueEditor({
           onKeyDown={onKeyDown}
           placeholder={item.secret ? 'enter new secret value' : defaultHint(item)}
           aria-label={`${item.key} value`}
-          className="w-full max-w-md rounded-md border border-border bg-input px-2 py-1.5 font-mono text-xs text-foreground placeholder:text-faint focus-visible:border-ring focus-visible:outline-none"
+          className="h-auto max-w-md px-2 py-1.5 font-mono text-xs placeholder:text-faint"
         />
       )
   }

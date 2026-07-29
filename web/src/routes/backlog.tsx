@@ -281,7 +281,7 @@ function BacklogPage() {
           )}
 
           <div className="flex flex-wrap items-center gap-3">
-            <div className="flex min-w-56 flex-1 items-center gap-2 rounded-md border border-border bg-input px-2.5 py-1.5">
+            <div className="flex min-w-56 flex-1 items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 dark:bg-input">
               <Search className="size-4 shrink-0 text-muted-foreground" />
               <input
                 type="text"

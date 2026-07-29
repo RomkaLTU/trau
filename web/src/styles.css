@@ -234,32 +234,7 @@ body::before {
       ellipse 100% 90% at 100% 100%,
       rgba(0, 212, 170, 0.04),
       transparent 60%
-    ),
-    repeating-linear-gradient(
-      115deg,
-      rgba(255, 138, 51, 0.035) 0px,
-      rgba(255, 138, 51, 0.035) 1px,
-      transparent 1px,
-      transparent 22px
-    ),
-    repeating-linear-gradient(
-      115deg,
-      rgba(0, 0, 0, 0.18) 0px,
-      rgba(0, 0, 0, 0.18) 11px,
-      transparent 11px,
-      transparent 22px
     );
-}
-.dark body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  opacity: 0.5;
-  mix-blend-mode: overlay;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
-  background-size: 180px 180px;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -1625,7 +1625,7 @@ function QueueSelect({
       <select
         value={selectedId ?? ""}
         onChange={(e) => onSelect(e.target.value)}
-        className="h-9 w-full rounded-md border bg-transparent px-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+        className="h-9 w-full rounded-md border bg-card px-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-input"
       >
         {groups.map((group) => (
           <optgroup

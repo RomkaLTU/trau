@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -43,7 +44,7 @@ export function ForceResetDialog({
             {ticket} is merged. Resetting drops its shipped branch and re-queues it on the
             tracker — this cannot be undone. Type the ticket id to confirm.
           </p>
-          <input
+          <Input
             type="text"
             value={value}
             onChange={(e) => setValue(e.target.value)}
@@ -51,7 +52,7 @@ export function ForceResetDialog({
             aria-label="Type the ticket id to confirm"
             autoComplete="off"
             spellCheck={false}
-            className="mt-2 w-full rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground placeholder:text-faint focus-visible:border-ring focus-visible:outline-none"
+            className="mt-2 h-auto px-2.5 py-1.5 font-mono text-sm placeholder:text-faint"
           />
           <div className="mt-3 flex justify-end gap-2">
             <AlertDialogCancel className="h-8 gap-1.5 px-3 font-mono text-sm">
