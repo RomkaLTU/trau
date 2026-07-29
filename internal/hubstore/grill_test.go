@@ -3,6 +3,7 @@ package hubstore
 import (
 	"database/sql"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -297,7 +298,7 @@ func TestGrillListFilter(t *testing.T) {
 		t.Fatalf("other repo create: %v", err)
 	}
 
-	all, err := g.List("acme", "")
+	all, err := g.List("acme", "", "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -308,12 +309,59 @@ func TestGrillListFilter(t *testing.T) {
 	if _, err := g.Transition(b.ID, GrillWaiting, ""); err != nil {
 		t.Fatalf("transition: %v", err)
 	}
-	waiting, err := g.List("acme", GrillWaiting)
+	waiting, err := g.List("acme", GrillWaiting, "")
 	if err != nil {
 		t.Fatalf("list waiting: %v", err)
 	}
 	if len(waiting) != 1 || waiting[0].ID != b.ID {
 		t.Fatalf("list waiting = %+v, want [%d]", waiting, b.ID)
+	}
+}
+
+func TestGrillListModeFilter(t *testing.T) {
+	g, _ := testGrill(t, 0)
+	legacy, _ := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1"})
+	interview, _ := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-2", Mode: GrillModeInterview})
+	research, _ := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-3", Mode: GrillModeResearch})
+
+	for _, tc := range []struct {
+		mode string
+		want []int64
+	}{
+		{mode: "", want: []int64{research.ID, interview.ID, legacy.ID}},
+		{mode: GrillModeInterview, want: []int64{interview.ID, legacy.ID}},
+		{mode: GrillModeResearch, want: []int64{research.ID}},
+	} {
+		sessions, err := g.List("acme", "", tc.mode)
+		if err != nil {
+			t.Fatalf("list mode %q: %v", tc.mode, err)
+		}
+		got := make([]int64, len(sessions))
+		for i, sess := range sessions {
+			got[i] = sess.ID
+		}
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("list mode %q = %v, want %v", tc.mode, got, tc.want)
+		}
+	}
+}
+
+func TestGrillSetMode(t *testing.T) {
+	g, _ := testGrill(t, 0)
+	sess, _ := g.Create(NewGrillSession{Repo: "acme"})
+
+	stamped, found, err := g.SetMode(sess.ID, GrillModeResearch)
+	if err != nil || !found {
+		t.Fatalf("set mode: found=%v err=%v", found, err)
+	}
+	if stamped.Mode != GrillModeResearch {
+		t.Fatalf("stamped mode = %q, want research", stamped.Mode)
+	}
+	if got, _, _ := g.Session(sess.ID); got.Mode != GrillModeResearch {
+		t.Fatalf("stored mode = %q, want research", got.Mode)
+	}
+	if _, found, err := g.SetMode(9999, GrillModeResearch); found || err != nil {
+		t.Fatalf("set mode on unknown session = (found=%v, err=%v), want (false, nil)", found, err)
 	}
 }
 
@@ -438,7 +486,7 @@ func TestGrillListExcludesClosedIssue(t *testing.T) {
 		t.Fatalf("apply: %v", err)
 	}
 
-	list, err := g.List("acme", "")
+	list, err := g.List("acme", "", "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -532,7 +580,7 @@ func TestGrillReadsIssueTitle(t *testing.T) {
 		t.Fatalf("session issue title = %q, want %q", sess.IssueTitle, "Split the picker")
 	}
 
-	list, err := g.List("acme", "")
+	list, err := g.List("acme", "", "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -593,7 +641,7 @@ func TestGrillPruneKeepsRecentSettled(t *testing.T) {
 	if err := g.Prune(); err != nil {
 		t.Fatalf("prune: %v", err)
 	}
-	remaining, err := g.List("acme", "")
+	remaining, err := g.List("acme", "", "")
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}

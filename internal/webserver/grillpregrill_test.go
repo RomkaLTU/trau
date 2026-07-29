@@ -146,7 +146,7 @@ func TestPregrillPassBounding(t *testing.T) {
 	if grilled != 5 {
 		t.Fatalf("grilled %d issues, want the 5-turn budget", grilled)
 	}
-	sessions, err := srv.stores.Grill().List(repo.Root, "")
+	sessions, err := srv.stores.Grill().List(repo.Root, "", "")
 	if err != nil {
 		t.Fatalf("list sessions: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestPregrillPassSkipsActiveSession(t *testing.T) {
 		t.Errorf("COD-3 outcome = %q, want %q", got, pregrillOutcomeQuestion)
 	}
 
-	sessions, err := srv.stores.Grill().List(repo.Root, "")
+	sessions, err := srv.stores.Grill().List(repo.Root, "", "")
 	if err != nil {
 		t.Fatalf("list sessions: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestPregrillPassEnablesAutoAccept(t *testing.T) {
 
 	srv.runPregrillPass(context.Background(), repo, PregrillRequest{IssueIDs: []string{"COD-1"}}, 5)
 
-	sessions, err := srv.stores.Grill().List(repo.Root, "")
+	sessions, err := srv.stores.Grill().List(repo.Root, "", "")
 	if err != nil {
 		t.Fatalf("list sessions: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestPregrillPassPinsModel(t *testing.T) {
 		t.Fatalf("results = %+v, want one parked question", results)
 	}
 
-	sessions, err := srv.stores.Grill().List(repo.Root, "")
+	sessions, err := srv.stores.Grill().List(repo.Root, "", "")
 	if err != nil {
 		t.Fatalf("list sessions: %v", err)
 	}
@@ -342,7 +342,7 @@ func TestPregrillPassFallsBackToRepoModel(t *testing.T) {
 
 	srv.runPregrillPass(context.Background(), repo, PregrillRequest{IssueIDs: []string{"COD-1"}}, 5)
 
-	sessions, err := srv.stores.Grill().List(repo.Root, "")
+	sessions, err := srv.stores.Grill().List(repo.Root, "", "")
 	if err != nil {
 		t.Fatalf("list sessions: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestPregrillPassFallsBackToConfiguredProvider(t *testing.T) {
 
 	srv.runPregrillPass(context.Background(), repo, PregrillRequest{IssueIDs: []string{"COD-1"}}, 5)
 
-	sessions, err := srv.stores.Grill().List(repo.Root, "")
+	sessions, err := srv.stores.Grill().List(repo.Root, "", "")
 	if err != nil {
 		t.Fatalf("list sessions: %v", err)
 	}

@@ -1112,7 +1112,7 @@ function AppliedCard({
           issueId !== "" ? (
             "The research report was posted as a comment on the issue."
           ) : (
-            "The research report is kept on this session — nothing was written to the tracker."
+            "Report saved — it stays here on the Research page. Nothing was written to the tracker."
           )
         ) : (
           "The outcome was written to the tracker. This issue is cleared."

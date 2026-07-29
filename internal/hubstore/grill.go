@@ -209,13 +209,23 @@ func (g *Grill) Session(id int64) (GrillSession, bool, error) {
 }
 
 // List returns repo's sessions, newest first, minus the ones whose issue has
-// closed. A non-empty state narrows to that state.
-func (g *Grill) List(repo, state string) ([]GrillSession, error) {
+// closed. A non-empty state narrows to that state and a non-empty mode to that
+// session type — interview covering the legacy rows stored before the mode column,
+// which ran the interview prompt.
+func (g *Grill) List(repo, state, mode string) ([]GrillSession, error) {
 	query := grillSessionSelect + ` WHERE g.repo = ?` + grillIssueOpen
 	args := []any{repo}
 	if state != "" {
 		query += ` AND g.state = ?`
 		args = append(args, state)
+	}
+	switch mode {
+	case GrillModeInterview:
+		query += ` AND g.mode IN (?, ?)`
+		args = append(args, "", GrillModeInterview)
+	case GrillModeResearch:
+		query += ` AND g.mode = ?`
+		args = append(args, GrillModeResearch)
 	}
 	query += ` ORDER BY g.id DESC`
 	return g.scanSessions(query, args...)
@@ -413,6 +423,27 @@ func (g *Grill) SetAutoAccept(id int64, enabled bool) (GrillSession, bool, error
 		return GrillSession{}, false, err
 	}
 	sess.AutoAccept = enabled
+	sess.UpdatedAt = now
+	return sess, true, nil
+}
+
+// SetMode records the session type and bumps the session's updated_at. The mode is
+// otherwise locked at create; apply restamps a draft interview that settled with a
+// research report so it is listed where research is read. It reports whether the
+// session exists.
+func (g *Grill) SetMode(id int64, mode string) (GrillSession, bool, error) {
+	sess, found, err := g.Session(id)
+	if err != nil || !found {
+		return GrillSession{}, found, err
+	}
+	now := formatGrillTime(time.Now())
+	if _, err := g.db.Exec(
+		`UPDATE grill_sessions SET mode = ?, updated_at = ? WHERE id = ?`,
+		mode, now, id,
+	); err != nil {
+		return GrillSession{}, false, err
+	}
+	sess.Mode = mode
 	sess.UpdatedAt = now
 	return sess, true, nil
 }

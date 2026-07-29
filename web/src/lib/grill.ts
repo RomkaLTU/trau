@@ -297,6 +297,34 @@ export const grillDefaultsQueryOptions = (repo: string, mode: GrillMode) =>
     staleTime: 60_000,
   })
 
+// startModelOptions is the model catalog to offer for a provider before a session
+// exists: the provider's own list from the defaults payload, falling back to the flat
+// default catalog for the default provider.
+export function startModelOptions(
+  defaults: GrillDefaults | undefined,
+  provider: string,
+): string[] {
+  const match = defaults?.providers?.find((p) => p.name === provider)
+  if (match) return match.model_options ?? []
+  return provider === (defaults?.provider ?? 'claude')
+    ? (defaults?.model_options ?? [])
+    : []
+}
+
+// researchGrillSessionsQueryOptions reads the repo's research sessions — the feed
+// behind the Research page, where a report stays readable long after the day it was
+// written, so it carries the settled ones as well as the active. The mode also makes
+// the response's defaults research-appropriate, since provider availability depends
+// on the session type.
+export const researchGrillSessionsQueryOptions = (repo: string) =>
+  queryOptions({
+    queryKey: ['grill', repo, 'research'],
+    queryFn: () => fetchGrillSessions(repo, undefined, 'research'),
+    enabled: repo !== '',
+    staleTime: 10_000,
+    refetchInterval: 5_000,
+  })
+
 // appliedGrillSessionsQueryOptions reads the repo's applied sessions. They are the
 // only trace of a triaged issue once apply drops its labels, so the inbox's "Done
 // today" reads them here rather than from the board. The key nests under the repo's

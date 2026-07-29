@@ -1,5 +1,6 @@
 import {
   DollarSign,
+  FlaskConical,
   FolderPlus,
   Inbox,
   LayoutDashboard,
@@ -58,6 +59,12 @@ export const NAV_GROUPS: NavGroup[] = [
         to: '/inbox',
         requiresProject: true,
         inbox: true,
+      },
+      {
+        label: 'Research',
+        icon: FlaskConical,
+        to: '/research',
+        requiresProject: true,
       },
     ],
   },

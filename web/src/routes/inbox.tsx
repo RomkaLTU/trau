@@ -66,6 +66,7 @@ import {
   pregrillIssues,
   setGrillAutoAccept,
   startGrillSession,
+  startModelOptions,
   switchGrillModel,
   type GrillAppliedOutcome,
   type GrillDefaults,
@@ -169,20 +170,6 @@ function starterOpening(
     provider: starter.provider,
     mode: starter.sessionType.mode,
   };
-}
-
-// interviewModelOptions is the model catalog to offer for a provider before a session
-// exists: the provider's own list from the defaults payload, falling back to the flat
-// default catalog for the default provider.
-function interviewModelOptions(
-  defaults: GrillDefaults | undefined,
-  provider: string,
-): string[] {
-  const match = defaults?.providers?.find((p) => p.name === provider);
-  if (match) return match.model_options ?? [];
-  return provider === (defaults?.provider ?? "claude")
-    ? (defaults?.model_options ?? [])
-    : [];
 }
 
 function InboxPage() {
@@ -1248,7 +1235,7 @@ function StartModelSelect({
       <GrillModelSelect
         provider={starter.provider}
         model={starter.model}
-        options={interviewModelOptions(starter.defaults, starter.provider)}
+        options={startModelOptions(starter.defaults, starter.provider)}
         label="Interview model"
         hideProvider
         onChange={starter.onModelChange}
