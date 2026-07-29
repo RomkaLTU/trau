@@ -20,6 +20,7 @@ import {
   grillBanner,
   grillProgress,
   grillReducer,
+  grillSessionsQueryOptions,
   isActiveSessionConflict,
   isAwaitingAnswer,
   isAutoAnswer,
@@ -225,6 +226,27 @@ describe('publishGrillSession', () => {
     const client = new QueryClient()
     publishGrillSession(client, 'loop', session({ id: '1' }))
     expect(list(client)).toEqual({ repo: 'loop', sessions: [session({ id: '1' })] })
+  })
+})
+
+describe('grillSessionsQueryOptions', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('narrows the triage feed to interviews, so a research session stays off the queue', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ repo: 'loop', sessions: [] }),
+    } as Response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    await grillSessionsQueryOptions('loop').queryFn?.({} as never)
+
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe(
+      '/api/v1/repos/loop/grill?mode=interview',
+    )
   })
 })
 
