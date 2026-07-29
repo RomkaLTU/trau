@@ -39,6 +39,7 @@ function status(over: Partial<UpdateStatus> = {}): UpdateStatus {
     channelRepos: [],
     channelSwitch: { state: 'idle', repoRoot: '', message: '' },
     releaseBinary: '',
+    supervised: false,
     ...over,
   }
 }

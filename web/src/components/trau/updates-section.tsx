@@ -52,6 +52,7 @@ interface ConfirmAction {
   windowTitle: string
   title: string
   confirmLabel: string
+  note?: string
   run: () => void
 }
 
@@ -202,6 +203,13 @@ export function UpdatesSection() {
     apply.isPending ||
     changeChannel.isPending
 
+  // launchd restarts a supervised hub from the binary its plist names, so the
+  // switch rewrites the plist on the way — worth saying before the click, since
+  // it outlives the restart the dialog is otherwise about.
+  const supervisedNote = status?.supervised
+    ? 'launchd supervises this hub — its LaunchAgent is pointed at the new binary before the restart, so the successor it keeps alive is the one you picked.'
+    : undefined
+
   const actions: Record<Pending, ConfirmAction> = {
     restart: {
       windowTitle: 'restart hub',
@@ -219,12 +227,14 @@ export function UpdatesSection() {
       windowTitle: 'switch to dev',
       title: 'Rebuild and restart onto the dev build?',
       confirmLabel: 'Rebuild & restart',
+      note: supervisedNote,
       run: () => changeChannel.mutate({ channel: 'dev', repoRoot: target }),
     },
     rebuild: {
       windowTitle: 'rebuild & restart',
       title: 'Rebuild this tree and restart onto it?',
       confirmLabel: 'Rebuild & restart',
+      note: supervisedNote,
       run: () =>
         changeChannel.mutate({
           channel: 'dev',
@@ -235,6 +245,7 @@ export function UpdatesSection() {
       windowTitle: 'switch to release',
       title: 'Restart onto the installed release?',
       confirmLabel: 'Switch to release',
+      note: supervisedNote,
       run: () => changeChannel.mutate({ channel: 'release', repoRoot: '' }),
     },
   }
@@ -617,7 +628,12 @@ function RestartConfirm({
       onOpenChange={(next) => !next && onCancel()}
       windowTitle={action.windowTitle}
       title={action.title}
-      description={<RestartImpact active={active} draining={draining} />}
+      description={
+        <>
+          <RestartImpact active={active} draining={draining} />
+          {action.note && <span className="mt-2 block">{action.note}</span>}
+        </>
+      }
       confirmLabel={action.confirmLabel}
       onConfirm={onConfirm}
     />

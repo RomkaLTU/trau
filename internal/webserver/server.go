@@ -76,7 +76,7 @@ type Server struct {
 	recordingsRoot   string
 	restart          func(successor string)
 	restartOnce      sync.Once
-	supervised       bool
+	retarget         func(binary string) error
 	executable       func() (string, error)
 	selfReloadMu     sync.Mutex
 	selfReload       string

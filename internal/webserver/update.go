@@ -19,7 +19,8 @@ func (s *Server) SetUpdateChecks(enabled bool) {
 // channel this hub runs. Both live on the hub rather than the checker — a merge
 // asks for the reload, and the channel is a fact about where the executable
 // sits, not about any release. ReleaseBinary names the install a switch back
-// would land on, and only while the hub is on dev.
+// would land on, and only while the hub is on dev. Supervised says launchd owns
+// the process, so a switch moves its LaunchAgent too.
 type UpdateStatus struct {
 	update.Status
 	SelfReloadPending string        `json:"selfReloadPending"`
@@ -28,6 +29,7 @@ type UpdateStatus struct {
 	ChannelRepos      []ChannelRepo `json:"channelRepos"`
 	ChannelSwitch     ChannelSwitch `json:"channelSwitch"`
 	ReleaseBinary     string        `json:"releaseBinary"`
+	Supervised        bool          `json:"supervised"`
 }
 
 func (s *Server) updateStatus() UpdateStatus {
@@ -39,6 +41,7 @@ func (s *Server) updateStatus() UpdateStatus {
 		ChannelRepo:       channelRepo,
 		ChannelRepos:      s.eligibleChannelRepos(),
 		ChannelSwitch:     s.channelSwitch(),
+		Supervised:        s.supervised(),
 	}
 	if channel == channelDev {
 		status.ReleaseBinary = s.offeredReleaseBinary()

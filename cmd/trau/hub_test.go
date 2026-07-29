@@ -116,6 +116,54 @@ func TestSupervisedHubSkipsItsOwnRespawn(t *testing.T) {
 	}
 }
 
+// TestSupervisionHookRewritesThePlistToTheChosenBuild covers what a channel
+// switch hands launchd: the agent names the build the switch picked, while the
+// environment and the log paths `trau hub supervise` writes come along
+// unchanged, so the successor starts the way an installed one does.
+func TestSupervisionHookRewritesThePlistToTheChosenBuild(t *testing.T) {
+	if !launchd.Supported() {
+		t.Skip("launchd is macOS only")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TRAU_HOME", filepath.Join(home, ".trau"))
+	t.Setenv("PATH", "/opt/homebrew/bin:/usr/bin")
+
+	t.Setenv("TRAU_SUPERVISED", "")
+	if supervisionHook() != nil {
+		t.Error("a hub launchd does not own was handed an agent to rewrite")
+	}
+
+	t.Setenv("TRAU_SUPERVISED", "1")
+	hook := supervisionHook()
+	if hook == nil {
+		t.Fatal("a supervised hub was left with no way to move its agent")
+	}
+	if err := hook("/src/acme/bin/trau"); err != nil {
+		t.Fatalf("rewrite the plist: %v", err)
+	}
+
+	path, err := launchd.PlistPath()
+	if err != nil {
+		t.Fatalf("plist path: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the rewritten plist: %v", err)
+	}
+	for _, want := range []string{
+		"<string>/src/acme/bin/trau</string>",
+		"<string>serve</string>",
+		"<key>TRAU_SUPERVISED</key>\n\t\t<string>1</string>",
+		"<key>PATH</key>\n\t\t<string>/opt/homebrew/bin:/usr/bin</string>",
+		"<string>" + filepath.Join(home, ".trau", "hub.log") + "</string>",
+	} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("the rewritten plist is missing %q:\n%s", want, raw)
+		}
+	}
+}
+
 func TestCheckForcedRestart(t *testing.T) {
 	deadPID := 1 << 22
 	tests := []struct {

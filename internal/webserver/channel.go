@@ -106,12 +106,6 @@ func (s *Server) handleHubChannel(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if s.supervised {
-		writeJSON(w, http.StatusConflict, map[string]string{
-			"error": "this hub is supervised by launchd, which restarts it from the binary its plist names; run `trau hub unsupervise` before switching channel",
-		})
-		return
-	}
 
 	switch strings.TrimSpace(req.Channel) {
 	case channelDev:
@@ -177,8 +171,7 @@ func (s *Server) startReleaseSwitch(ctx context.Context, w http.ResponseWriter) 
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
-	s.markChannelSwitch(switchRestarting, "")
-	s.triggerRestartTo(binary)
+	s.restartOnto(binary)
 }
 
 // switchToDev rebuilds repo and arms a restart onto the binary that build left
@@ -206,6 +199,22 @@ func (s *Server) switchToDev(ctx context.Context, repo registry.Repo, cfg config
 		return
 	}
 
+	s.restartOnto(binary)
+}
+
+// restartOnto arms the restart onto binary, pointing a supervised hub's
+// LaunchAgent at it first: launchd respawns the successor from the plist, so one
+// still naming the outgoing build would snap the switch back at the next
+// respawn. A rewrite that fails restarts nothing — a supervised hub sent to a
+// path its plist does not name is exactly the state the switch exists to avoid —
+// and the reason lands where the UI already reads a failed switch from.
+func (s *Server) restartOnto(binary string) {
+	if s.retarget != nil {
+		if err := s.retarget(binary); err != nil {
+			s.markChannelSwitch(switchFailed, fmt.Sprintf("the LaunchAgent could not be pointed at %s, so the hub kept the build it was running: %v", binary, err))
+			return
+		}
+	}
 	s.markChannelSwitch(switchRestarting, "")
 	s.triggerRestartTo(binary)
 }

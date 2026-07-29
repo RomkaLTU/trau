@@ -35,13 +35,15 @@ export interface ApplyState {
 // derived from where its executable sits and channelRepo is the repo that owns
 // it when that build is a dev one. releaseBinary is the install a switch back
 // would restart onto — empty when PATH holds none, and only ever set while the
-// hub is on dev.
+// hub is on dev. supervised says launchd owns the process, so a switch rewrites
+// its LaunchAgent before it restarts.
 interface ChannelFields {
   channel: Channel
   channelRepo: string
   channelRepos: ChannelRepo[]
   channelSwitch: ChannelSwitch
   releaseBinary: string
+  supervised: boolean
 }
 
 // UpdateStatus is the hub's /update resource. running is the version serving
@@ -103,6 +105,7 @@ function withChannelFields(
     channelRepos: [],
     channelSwitch: { state: 'idle', repoRoot: '', message: '' },
     releaseBinary: '',
+    supervised: false,
     ...status,
   }
 }

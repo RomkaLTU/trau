@@ -18,6 +18,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/RomkaLTU/trau/internal/proc"
 )
 
 // Label identifies the agent to launchd and names its plist. It is derived from
@@ -67,12 +69,14 @@ func Read() (State, error) {
 	return State{Installed: true, Loaded: loaded(), Program: programArguments(raw)}, nil
 }
 
-// Install writes the plist and hands the job to launchd, replacing any earlier
-// one so a re-run adopts a moved binary or a changed environment. args are the
-// arguments the hub is started with, env the variables it inherits — launchd
-// gives an agent a minimal environment, so the PATH a hub-spawned loop needs to
-// find git, gh, and the provider CLIs has to be captured here.
-func Install(exe string, args []string, env map[string]string, logPath string) error {
+// Write renders the plist and nothing else, leaving the job launchd already
+// holds alone. It is how a running hub points the agent at another binary: it
+// cannot replace its own job (see Reload), so the rewrite lands first and the
+// handoff follows its exit. args are the arguments the hub is started with, env
+// the variables it inherits — launchd gives an agent a minimal environment, so
+// the PATH a hub-spawned loop needs to find git, gh, and the provider CLIs has
+// to be captured here.
+func Write(exe string, args []string, env map[string]string, logPath string) error {
 	if !Supported() {
 		return ErrUnsupported
 	}
@@ -86,6 +90,21 @@ func Install(exe string, args []string, env map[string]string, logPath string) e
 	if err := os.WriteFile(path, plist(exe, args, env, logPath), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
+	return nil
+}
+
+// Install writes the plist and hands the job to launchd, replacing any earlier
+// one so a re-run adopts a moved binary or a changed environment. The caller
+// must not be the job itself: booting a running hub out from inside it never
+// reaches the bootstrap that follows.
+func Install(exe string, args []string, env map[string]string, logPath string) error {
+	if err := Write(exe, args, env, logPath); err != nil {
+		return err
+	}
+	path, err := PlistPath()
+	if err != nil {
+		return err
+	}
 	// An agent already loaded refuses a second bootstrap, and the running job
 	// would keep the old plist, so the replacement is always unload-then-load.
 	_ = run("bootout", target())
@@ -93,6 +112,33 @@ func Install(exe string, args []string, env map[string]string, logPath string) e
 		return fmt.Errorf("load the LaunchAgent: %w", err)
 	}
 	return nil
+}
+
+// Reload hands the plist on disk back to launchd, which keeps a bootstrapped job
+// in memory and respawns it from what it loaded however the file has changed
+// since — so a rewritten plist means nothing until the agent is replaced. The
+// sequence is detached and outlives this process on purpose: launchctl waits for
+// a job to exit before booting it out, and the caller is that job, so a
+// bootstrap issued from here would never be reached. Called while the hub still
+// runs, the bootout also claims its exit, which is what keeps KeepAlive from
+// respawning the outgoing binary in the gap.
+func Reload() error {
+	if !Supported() {
+		return ErrUnsupported
+	}
+	path, err := PlistPath()
+	if err != nil {
+		return err
+	}
+	// The plist path rides in as $0 rather than inside the script, so a home
+	// directory with a space in it needs no quoting.
+	cmd := exec.Command("sh", "-c", "launchctl bootout "+target()+"; exec launchctl bootstrap "+domain()+" \"$0\"", path)
+	cmd.SysProcAttr = proc.Detached()
+	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("hand the LaunchAgent back to launchd: %w", err)
+	}
+	return cmd.Process.Release()
 }
 
 // Uninstall stops the job and removes the plist, leaving the machine exactly as

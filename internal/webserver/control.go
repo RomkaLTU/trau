@@ -178,13 +178,19 @@ func (s *Server) EnableRestart(fn func(successor string)) {
 	s.restart = fn
 }
 
-// SetSupervised tells the hub that launchd owns its process. A supervised hub
-// still restarts — its successor comes from the plist — but it cannot be pointed
-// at a different binary, so a channel switch refuses rather than restarting onto
-// the release build it was asked to leave.
-func (s *Server) SetSupervised(supervised bool) {
-	s.supervised = supervised
+// EnableSupervision tells the hub that launchd owns its process and hands it the
+// way to point the agent at another binary. A supervised hub restarts by exiting
+// — KeepAlive brings the successor up from the plist rather than from anything
+// this process spawns — so a channel switch has to rewrite the plist before it
+// arms the restart, or the respawn lands straight back on the build it was asked
+// to leave. Without a hook the hub is nobody's job and a switch simply restarts.
+func (s *Server) EnableSupervision(retarget func(binary string) error) {
+	s.retarget = retarget
 }
+
+// supervised reports whether launchd owns this hub, which /update carries so a
+// confirm dialog can say the LaunchAgent moves with the switch.
+func (s *Server) supervised() bool { return s.retarget != nil }
 
 // handleHubRestart acknowledges before restarting, so the caller learns the
 // outgoing version over a connection that is about to close. It restarts

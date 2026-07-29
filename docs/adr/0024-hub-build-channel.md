@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-07-29
 - **Deciders:** Romas (sole maintainer)
-- **Refs:** [COD-1330], [COD-1331]; [ADR 0004](0004-hub-autostart.md) (the hub is a port-locked singleton); [ADR 0023](0023-platform-support-windows.md) §5 (`.exe` artifacts)
+- **Refs:** [COD-1330], [COD-1331], [COD-1332]; [ADR 0004](0004-hub-autostart.md) (the hub is a port-locked singleton); [ADR 0022](0022-crash-resilient-orchestration.md) §2 (the LaunchAgent); [ADR 0023](0023-platform-support-windows.md) §5 (`.exe` artifacts)
 
 ## Context
 
@@ -111,12 +111,30 @@ while the channel is `dev` and the UI says the release applies after switching
 back. The checker itself is unchanged: a release-channel hub sees exactly what it
 saw before.
 
-### 6. A launchd-supervised hub refuses
+### 6. A launchd-supervised hub takes its agent with it
 
-Under `trau hub supervise` (ADR 0022 §2) launchd owns the process and restarts it
-from the binary its plist names, so a successor path the hub chose would be
-discarded. The switch refuses with that reason rather than restarting onto the
-release build it was asked to leave.
+Under `trau hub supervise` (ADR 0022 §2) launchd owns the process: a supervised
+hub restarts by exiting, and KeepAlive brings the successor up from the binary
+the plist names rather than from any path the outgoing hub chose. So the switch
+rewrites the plist to the chosen build *before* it arms the restart — the
+`TRAU_SUPERVISED=1` marker, the captured `PATH`/`TRAU_HOME` and the `hub.log`
+redirects come across exactly as `trau hub supervise` writes them — and then lets
+the ordinary supervised exit happen.
+
+The rewritten file is not enough on its own: launchd respawns the job it
+bootstrapped, not what is on disk. The agent is handed the new plist (`bootout`
+then `bootstrap`) by a short-lived detached process, because a job cannot boot
+itself out — `launchctl` waits for it to exit, so a `bootstrap` issued from the
+hub would never be reached. That sequence starts while the hub is still draining,
+which is what keeps KeepAlive from respawning the outgoing build in the gap: one
+hub hands over to one hub, and the port is never left to nobody.
+
+A plist that cannot be written aborts the switch before anything restarts. A
+supervised hub re-execed onto a path its agent does not name is precisely the
+silent snap-back this section exists to prevent, so the hub keeps serving and the
+reason surfaces on `channelSwitch` the way a failed build does. `trau doctor`
+reports the installed `ProgramArguments`, so an agent that did drift stays
+visible.
 
 ## Consequences
 
@@ -132,9 +150,14 @@ release build it was asked to leave.
 - The switch is a restart, so it interrupts work exactly as the Restart button
   does, and the web UI reuses that button's confirmation and impact list rather
   than inventing a gentler-looking one.
+- A supervised switch is the one place trau replaces its own LaunchAgent while
+  running, and the bootout/bootstrap has to outlive the process doing it. If that
+  detached spawn fails the hub still exits and KeepAlive brings the outgoing
+  build back — the safe end of that failure, and the one `trau doctor` names.
 - The SPA is embedded and its assets are not content-hashed, so a client that
   fires a switch must reload the page once the successor answers — the same
   full-reload the one-click update already does.
 
 [COD-1330]: https://linear.app/codesomelabs/issue/COD-1330/hub-channel-switch-to-dev-rebuild-the-repo-tree-and-restart-the-hub
 [COD-1331]: https://linear.app/codesomelabs/issue/COD-1331/switch-back-to-release-channel-manual-rebuild-and-restart-action
+[COD-1332]: https://linear.app/codesomelabs/issue/COD-1332/channel-switching-under-launchd-supervision-rewrite-the-launchagent-to
