@@ -63,12 +63,15 @@ untouched; the client nests adjacent runs where the parent row is visible.
 Children whose epic sits in another group cluster by epic id within their
 own section — an accepted, mildly useful side effect (siblings group
 together). Children that start a page without their parent row render flat
-with chips.
+with chips. *(The client's reliance on adjacency is superseded by the
+2026-07-29 amendment below — it nests by parent-id lookup; the ordering and
+the flat contract still hold.)*
 
 **One level.** Hierarchy on the board is epic → sub-issue, matching the one
 level the queue's `sub_issues` and add-all support. A deeper tree renders by
 immediate-parent chips only; family-key ordering makes no adjacency promise
-past one level.
+past one level. *(Rendering superseded by the 2026-07-29 amendment below;
+run and queue semantics still hold.)*
 
 ## Consequences
 
@@ -113,3 +116,28 @@ collapsed board, sections, counts, filters, and pagination are untouched, and
 a diverged child keeps its flat row in its own section — the nested copy
 exists only inside an explicitly expanded epic. An epic with no live children
 renders without a chevron.
+
+## Amendment (2026-07-29): board rendering is recursive
+
+Board **rendering** is no longer one level. A row carries a chevron and
+expands in place, nested or not, when the board has nested rows under it or
+the store reports live children of its own — so a Jira Epic → Task → Sub-task
+family, or a Linear tree of any depth, opens the whole way down, with a
+settled/total pill wherever the store counted children of its own. The
+client nests by parent-id lookup over the section's loaded rows instead of
+by adjacency, which is what makes depth work without the ordering promise
+the original decision declined to make: a row renders under its parent
+whenever that parent row is loaded, and exactly once. That guarantee is why the chevron reads the nested
+rows and not just `has_children`: a parent whose stored flag lags the tracker
+would otherwise strand every row nested beneath it, rendering it nowhere.
+Deeper levels keep loading through the same per-parent fetch.
+
+The server side is untouched — no recursive family key, no change to
+`backlogOrderBy`, pagination, or the flat `BacklogResponse`. What stays one
+level is everything below the rendering: run and queue semantics remain one
+level per epic-like unit (queueing a parent queues its direct children), and
+`children_settled`/`children_total` remain direct-children counts with no
+roll-up, so a pill reports the row's own slice of the tree rather than its
+whole subtree. A row whose parent is absent from the loaded rows — paged out,
+filtered away, or in another status section — still renders flat with its
+breadcrumb chip; that chip may now name a Task rather than an Epic.

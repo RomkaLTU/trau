@@ -67,8 +67,11 @@ import {
   backlogSections,
   hiddenStateGroups,
   nestBacklogRows,
+  rowExpandable,
+  rowProgress,
   STATE_GROUPS,
   type BacklogEntry,
+  type BacklogRowNode,
 } from "@/lib/backlog";
 import { loadExpandedEpics, storeExpandedEpics } from "@/lib/backlog-expanded";
 import {
@@ -206,32 +209,46 @@ function BacklogPage() {
   );
   const hidden = hiddenStateGroups(counts, effectiveStateGroups(state));
 
-  const renderRow = (
-    entry: BacklogEntry,
-    extra?: { nested?: boolean; expanded?: boolean; onToggle?: () => void },
-  ) => (
-    <BacklogRow
-      key={entry.id}
-      repo={repo}
-      entry={entry}
-      editing={editing === entry.id}
-      inQueue={queued.has(entry.id)}
-      highlight={created?.id === entry.id}
-      archivedView={archived}
-      nested={extra?.nested}
-      expanded={extra?.expanded}
-      onToggle={extra?.onToggle}
-      onArchived={(id, done, removed) =>
-        setArchiveNote(archiveToastMessage(id, done, removed))
-      }
-      onOpen={() => void setPeek(entry.id)}
-      onOpenParent={(id) => void setPeek(id)}
-      onToggleEdit={() =>
-        setEditing((cur) => (cur === entry.id ? null : entry.id))
-      }
-      onEditDone={() => setEditing(null)}
-    />
-  );
+  const renderNode = (node: BacklogRowNode, depth = 0): ReactNode => {
+    const { entry } = node;
+    const expandable = rowExpandable(node);
+    const open = expandable && expanded.has(entry.id);
+    return (
+      <Fragment key={entry.id}>
+        <BacklogRow
+          repo={repo}
+          entry={entry}
+          editing={editing === entry.id}
+          inQueue={queued.has(entry.id)}
+          highlight={created?.id === entry.id}
+          archivedView={archived}
+          depth={depth}
+          expandable={expandable}
+          expanded={open}
+          onToggle={() => toggle(entry.id)}
+          onArchived={(id, done, removed) =>
+            setArchiveNote(archiveToastMessage(id, done, removed))
+          }
+          onOpen={() => void setPeek(entry.id)}
+          onOpenParent={(id) => void setPeek(id)}
+          onToggleEdit={() =>
+            setEditing((cur) => (cur === entry.id ? null : entry.id))
+          }
+          onEditDone={() => setEditing(null)}
+        />
+        {open && (
+          <ChildRows
+            repo={repo}
+            parentId={entry.id}
+            archived={archived}
+            fallback={node.children}
+            depth={depth + 1}
+            renderNode={renderNode}
+          />
+        )}
+      </Fragment>
+    );
+  };
 
   return (
     <ProjectScopeGate action="manage the backlog">
@@ -372,25 +389,7 @@ function BacklogPage() {
                   )}
                   <ul className="flex flex-col gap-2">
                     {nestBacklogRows(section.items).map((node) =>
-                      node.kind === "epic" ? (
-                        <Fragment key={node.entry.id}>
-                          {renderRow(node.entry, {
-                            expanded: expanded.has(node.entry.id),
-                            onToggle: () => toggle(node.entry.id),
-                          })}
-                          {expanded.has(node.entry.id) && (
-                            <EpicChildren
-                              repo={repo}
-                              epicId={node.entry.id}
-                              archived={archived}
-                              fallback={node.children}
-                              renderRow={renderRow}
-                            />
-                          )}
-                        </Fragment>
-                      ) : (
-                        renderRow(node.entry)
-                      ),
+                      renderNode(node),
                     )}
                   </ul>
                 </section>
@@ -790,24 +789,32 @@ function AssigneeFilter({
   )
 }
 
-function EpicChildren({
+function ChildRows({
   repo,
-  epicId,
+  parentId,
   archived,
   fallback,
-  renderRow,
+  depth,
+  renderNode,
 }: {
   repo: string;
-  epicId: string;
+  parentId: string;
   archived: boolean;
-  fallback: BacklogEntry[];
-  renderRow: (entry: BacklogEntry, extra?: { nested?: boolean }) => ReactNode;
+  fallback: BacklogRowNode[];
+  depth: number;
+  renderNode: (node: BacklogRowNode, depth: number) => ReactNode;
 }) {
   const children = useQuery(
-    backlogQueryOptions(repo, { parent: epicId, archived }),
+    backlogQueryOptions(repo, { parent: parentId, archived }),
   );
-  const rows = children.data?.items ?? fallback;
-  return <>{rows.map((child) => renderRow(child, { nested: true }))}</>;
+  // Fetched rows come back flat; reuse the board's node for a child it already
+  // nested so its known descendants show while its own fetch resolves.
+  const nested = new Map(fallback.map((node) => [node.entry.id, node]));
+  const rows =
+    children.data?.items.map(
+      (entry) => nested.get(entry.id) ?? { entry, children: [] },
+    ) ?? fallback;
+  return <>{rows.map((node) => renderNode(node, depth))}</>;
 }
 
 function BacklogRow({
@@ -817,7 +824,8 @@ function BacklogRow({
   inQueue,
   highlight = false,
   archivedView,
-  nested = false,
+  depth,
+  expandable,
   expanded,
   onArchived,
   onOpen,
@@ -832,19 +840,20 @@ function BacklogRow({
   inQueue: boolean;
   highlight?: boolean;
   archivedView: boolean;
-  nested?: boolean;
-  expanded?: boolean;
+  depth: number;
+  expandable: boolean;
+  expanded: boolean;
   onArchived: (id: string, archived: boolean, queueRemoved: number) => void;
   onOpen: () => void;
   onOpenParent: (id: string) => void;
-  onToggle?: () => void;
+  onToggle: () => void;
   onToggleEdit: () => void;
   onEditDone: () => void;
 }) {
   const queryClient = useQueryClient();
   const internal = entry.source === "internal";
-  const isEpic = entry.has_children && !nested;
-  const { children_settled: settled, children_total: total } = entry;
+  const nested = depth > 0;
+  const progress = rowProgress(entry);
   const issueQuery = useQuery({
     ...internalIssueQueryOptions(repo, entry.id),
     enabled: editing && internal,
@@ -863,14 +872,14 @@ function BacklogRow({
 
   return (
     <li
+      style={{ marginLeft: `${depth * 1.5}rem` }}
       className={cn(
         "group rounded-lg border bg-card transition-colors hover:border-ring/40",
-        nested && "ml-6",
         highlight && "border-primary/60 bg-primary/5",
       )}
     >
       <div className="flex flex-wrap items-center gap-3 px-4 py-3">
-        {isEpic && (total ?? 0) > 0 && (
+        {expandable && (
           <button
             type="button"
             onClick={onToggle}
@@ -891,7 +900,7 @@ function BacklogRow({
           <button
             type="button"
             onClick={() => onOpenParent(entry.parent!)}
-            aria-label={`Open epic ${entry.parent}`}
+            aria-label={`Open parent ${entry.parent}`}
             className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:border-ring/40 hover:text-foreground"
           >
             <CornerDownRight className="size-3" aria-hidden />
@@ -910,14 +919,14 @@ function BacklogRow({
           <span className="min-w-0 flex-1 truncate text-sm text-foreground">
             {entry.title}
           </span>
-          {isEpic && settled != null && total != null && (
+          {progress && (
             <span
               className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-xs text-muted-foreground"
-              aria-label={`${settled} of ${total} settled`}
+              aria-label={`${progress.settled} of ${progress.total} settled`}
             >
               <span aria-hidden>◑</span>
               <span className="tabular-nums">
-                {settled}/{total}
+                {progress.settled}/{progress.total}
               </span>
             </span>
           )}

@@ -215,40 +215,64 @@ export function backlogSections(
   return sections
 }
 
-export interface EpicRowNode {
-  kind: 'epic'
+export interface BacklogRowNode {
   entry: BacklogEntry
-  children: BacklogEntry[]
+  children: BacklogRowNode[]
 }
 
-export interface FlatRowNode {
-  kind: 'flat'
-  entry: BacklogEntry
-}
-
-export type BacklogRowNode = EpicRowNode | FlatRowNode
-
-// nestBacklogRows groups one section's hub-ordered rows into epic nodes and flat
-// rows for status-true nesting. The hub keeps each family contiguous within a
-// status group with an epic immediately ahead of its same-group sub-issues, so an
-// epic's children are the contiguous run of rows naming it as parent. A sub-issue whose
-// epic row is absent — paged out, filtered away, or diverged into another
-// section — stays a flat row and keeps its breadcrumb chip.
+// nestBacklogRows builds one section's row tree for status-true nesting. A row
+// whose parent is absent from the section — paged out, filtered away, or diverged
+// into another section — stays a root and keeps its breadcrumb chip.
 export function nestBacklogRows(items: BacklogEntry[]): BacklogRowNode[] {
-  const nodes: BacklogRowNode[] = []
+  const nodes = new Map<string, BacklogRowNode>()
   for (const entry of items) {
-    const last = nodes[nodes.length - 1]
-    if (entry.parent && last?.kind === 'epic' && last.entry.id === entry.parent) {
-      last.children.push(entry)
-      continue
-    }
-    if (entry.has_children) {
-      nodes.push({ kind: 'epic', entry, children: [] })
-      continue
-    }
-    nodes.push({ kind: 'flat', entry })
+    nodes.set(entry.id, { entry, children: [] })
   }
-  return nodes
+  const roots: BacklogRowNode[] = []
+  for (const entry of items) {
+    const node = nodes.get(entry.id)!
+    const parent =
+      entry.parent && !inParentCycle(nodes, entry) ? nodes.get(entry.parent) : undefined
+    if (parent) parent.children.push(node)
+    else roots.push(node)
+  }
+  return roots
+}
+
+// inParentCycle reports a row whose parent chain leads back to itself. Such a row
+// belongs under no root, so it renders flat instead of vanishing from the board.
+function inParentCycle(nodes: Map<string, BacklogRowNode>, entry: BacklogEntry): boolean {
+  const seen = new Set<string>()
+  let id = entry.parent
+  while (id && !seen.has(id)) {
+    if (id === entry.id) return true
+    seen.add(id)
+    id = nodes.get(id)?.entry.parent
+  }
+  return false
+}
+
+// rowExpandable is the board's one test for "this row opens": the rows already
+// nested under it, or live children the store reports but has not loaded. Both
+// halves matter — nesting is what the board can see, and a parent whose stored
+// has_children never caught up would otherwise strand every row beneath it.
+export function rowExpandable(node: BacklogRowNode): boolean {
+  const { entry } = node
+  return node.children.length > 0 || (entry.has_children && (entry.children_total ?? 0) > 0)
+}
+
+export interface RowProgress {
+  settled: number
+  total: number
+}
+
+// rowProgress is the settled/total pill's data. It reads the same count the
+// chevron does, so a parent with nothing left to count — every child archived, or
+// a stored has_children the tracker has moved past — shows neither, not a 0/0 pill.
+export function rowProgress(entry: BacklogEntry): RowProgress | null {
+  const { children_settled: settled, children_total: total } = entry
+  if (!entry.has_children || settled == null || !total) return null
+  return { settled, total }
 }
 
 export interface HiddenGroupCount {
