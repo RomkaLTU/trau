@@ -66,6 +66,8 @@ func (w *internalWriter) UpdateDescription(_ context.Context, id, body string) e
 		State:       iss.StatusGroup,
 		Labels:      iss.Labels,
 		Parent:      iss.Parent,
+		Priority:    iss.Priority,
+		DueDate:     iss.DueDate,
 	}); err != nil {
 		return err
 	}

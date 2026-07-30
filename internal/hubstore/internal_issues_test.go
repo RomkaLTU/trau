@@ -227,3 +227,122 @@ func TestInternalIssuesAreRepoScoped(t *testing.T) {
 		t.Fatal("repo b should own its own LOOP-1")
 	}
 }
+
+func TestCreateInternalStoresPriorityDueDateAndRelations(t *testing.T) {
+	s := testIssues(t)
+	blocker, err := s.CreateInternal("/repo/loop", "LOOP", InternalDraft{Title: "Blocker", State: "unstarted"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	iss, err := s.CreateInternal("/repo/loop", "LOOP", InternalDraft{
+		Title:     "Dependent",
+		State:     "unstarted",
+		Priority:  2,
+		DueDate:   "2026-08-14",
+		BlockedBy: []string{blocker.Identifier},
+	})
+	if err != nil {
+		t.Fatalf("create dependent: %v", err)
+	}
+	if iss.Priority != 2 || iss.DueDate != "2026-08-14" {
+		t.Fatalf("created = %+v, want priority 2 due 2026-08-14", iss)
+	}
+	stored, found, err := s.Internal("/repo/loop", iss.Identifier)
+	if err != nil || !found {
+		t.Fatalf("read back: found=%v err=%v", found, err)
+	}
+	if stored.Priority != 2 || stored.DueDate != "2026-08-14" {
+		t.Fatalf("stored = %+v, want priority and due date persisted", stored)
+	}
+	blockers, err := s.Blockers("/repo/loop", iss.Identifier)
+	if err != nil {
+		t.Fatalf("blockers: %v", err)
+	}
+	if !reflect.DeepEqual(blockers, []string{blocker.Identifier}) {
+		t.Fatalf("blockers = %v, want [%s]", blockers, blocker.Identifier)
+	}
+}
+
+func TestCreateInternalBlockedUntilBlockerSettles(t *testing.T) {
+	s := testIssues(t)
+	blocker, err := s.CreateInternal("/repo/loop", "LOOP", InternalDraft{Title: "Blocker", State: "unstarted"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	dependent, err := s.CreateInternal("/repo/loop", "LOOP", InternalDraft{
+		Title: "Dependent", State: "unstarted", BlockedBy: []string{blocker.Identifier},
+	})
+	if err != nil {
+		t.Fatalf("create dependent: %v", err)
+	}
+	if !backlogBlocked(t, s, dependent.Identifier) {
+		t.Fatalf("%s is not blocked, want the blocked_by edge to hold it back", dependent.Identifier)
+	}
+	if _, err := s.TransitionInternal("/repo/loop", blocker.Identifier, InternalTransition{State: "done"}); err != nil {
+		t.Fatalf("finish blocker: %v", err)
+	}
+	if backlogBlocked(t, s, dependent.Identifier) {
+		t.Fatalf("%s is still blocked, want a done blocker to release it", dependent.Identifier)
+	}
+}
+
+func backlogBlocked(t *testing.T, s *Issues, identifier string) bool {
+	t.Helper()
+	items, err := s.Backlog("/repo/loop")
+	if err != nil {
+		t.Fatalf("backlog: %v", err)
+	}
+	for _, it := range items {
+		if it.Identifier == identifier {
+			return it.Blocked
+		}
+	}
+	t.Fatalf("%s is missing from the backlog", identifier)
+	return false
+}
+
+func TestCreateInternalRefusesUnknownRelationTarget(t *testing.T) {
+	s := testIssues(t)
+	_, err := s.CreateInternal("/repo/loop", "LOOP", InternalDraft{Title: "Dependent", BlockedBy: []string{"LOOP-99"}})
+	if !errors.Is(err, ErrRelationTargetMissing) {
+		t.Fatalf("err = %v, want ErrRelationTargetMissing", err)
+	}
+	items, err := s.Backlog("/repo/loop")
+	if err != nil {
+		t.Fatalf("backlog: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("backlog = %v, want the create rolled back with its relation", items)
+	}
+}
+
+func TestUpdateInternalReplacesPriorityAndDueDateAndAddsRelations(t *testing.T) {
+	s := testIssues(t)
+	blocker, err := s.CreateInternal("/repo/loop", "LOOP", InternalDraft{Title: "Blocker"})
+	if err != nil {
+		t.Fatalf("create blocker: %v", err)
+	}
+	iss, err := s.CreateInternal("/repo/loop", "LOOP", InternalDraft{Title: "Dependent", Priority: 1, DueDate: "2026-08-01"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	updated, err := s.UpdateInternal("/repo/loop", iss.Identifier, InternalDraft{
+		Title:    "Dependent",
+		Priority: 3,
+		DueDate:  "2026-09-30",
+		Blocks:   []string{blocker.Identifier},
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.Priority != 3 || updated.DueDate != "2026-09-30" {
+		t.Fatalf("updated = %+v, want priority 3 due 2026-09-30", updated)
+	}
+	deps, err := s.Dependents("/repo/loop", iss.Identifier)
+	if err != nil {
+		t.Fatalf("dependents: %v", err)
+	}
+	if !reflect.DeepEqual(deps, []string{blocker.Identifier}) {
+		t.Fatalf("dependents = %v, want [%s]", deps, blocker.Identifier)
+	}
+}

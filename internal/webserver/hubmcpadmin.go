@@ -389,6 +389,8 @@ func (s *Server) mcpUpdateTicket(args json.RawMessage) (any, error) {
 		State:       iss.StatusGroup,
 		Labels:      iss.Labels,
 		Parent:      iss.Parent,
+		Priority:    iss.Priority,
+		DueDate:     iss.DueDate,
 	}
 	if a.Title != nil {
 		draft.Title = strings.TrimSpace(*a.Title)
