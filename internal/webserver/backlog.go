@@ -393,8 +393,11 @@ func (r trackerResolution) actionableErr(err error) error {
 			return fmt.Errorf("inferred jira from the repo's Jira config: %w", err)
 		}
 	case "linear":
-		if r.jiraCreds {
+		switch {
+		case r.jiraCreds:
 			return fmt.Errorf("repo has Jira credentials but TRACKER_PROVIDER is unset — set TRACKER_PROVIDER=jira (tried linear: %w)", err)
+		case errors.Is(err, tracker.ErrNoTeamKey):
+			return fmt.Errorf("inferred linear from a LINEAR_API_KEY: %w, or set TRACKER_PROVIDER=internal to use this repo's internal issues", err)
 		}
 	}
 	return err
@@ -410,9 +413,11 @@ func (s *Server) readerFor(repo registry.Repo) (string, tracker.Reader, error) {
 
 // readerConfigErr reports whether err is a reader config state the hub answers
 // with a 422 backlog-unavailable response rather than a transport failure: no
-// direct credentials at all, or Jira credentials with no project key.
+// direct credentials at all, or credentials with no team/project key to bind.
 func readerConfigErr(err error) bool {
-	return errors.Is(err, tracker.ErrReaderUnavailable) || errors.Is(err, tracker.ErrNoProjectKey)
+	return errors.Is(err, tracker.ErrReaderUnavailable) ||
+		errors.Is(err, tracker.ErrNoProjectKey) ||
+		errors.Is(err, tracker.ErrNoTeamKey)
 }
 
 // noTrackerCredentialsHint is the 422 body both the backlog reader and the issue
@@ -422,10 +427,10 @@ const noTrackerCredentialsHint = "this repo has no direct tracker credentials co
 // writeReaderErr maps a Reader config state to a response. A repo that cannot
 // browse its backlog over the hub is a config state, not a bad request, so it
 // answers 422 with a hint the board renders as a backlog-unavailable state. A
-// missing project key names the key to set instead of the credentials hint.
+// missing team/project key names the key to set instead of the credentials hint.
 func writeReaderErr(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, tracker.ErrNoProjectKey):
+	case errors.Is(err, tracker.ErrNoProjectKey), errors.Is(err, tracker.ErrNoTeamKey):
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 	case errors.Is(err, tracker.ErrReaderUnavailable):
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{

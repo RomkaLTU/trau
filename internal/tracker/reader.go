@@ -24,6 +24,12 @@ var ErrReaderUnavailable = errors.New("tracker: no direct API credentials config
 // from ErrReaderUnavailable (no credentials at all): the fix is the project key.
 var ErrNoProjectKey = errors.New("jira: no project key configured — set LINEAR_TEAM in this repo's .trau.ini")
 
+// ErrNoTeamKey is the Linear counterpart of ErrNoProjectKey: a usable API key but
+// no team to bind. A key resolved from the user layer makes the provider look
+// configured for every repo, so refusing locally keeps those repos off the shared
+// key's budget.
+var ErrNoTeamKey = errors.New("linear: no team key configured — set LINEAR_TEAM in this repo's .trau.ini")
+
 // ErrIssueNotFound means the tracker has no issue with the requested identifier,
 // so a caller can tell a mistyped or absent ticket apart from a transport error.
 var ErrIssueNotFound = errors.New("tracker: issue not found")

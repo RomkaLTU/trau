@@ -121,6 +121,36 @@ func TestResolveReaderReportsJiraCredsWhenLinearTried(t *testing.T) {
 	}
 }
 
+// TestResolveReaderNamesTeamKeyFixForInferredLinear covers the machine-wide Linear
+// key: a repo that never configured a tracker still resolves to linear, so the
+// refusal it records must name both ways out rather than the tracker's own error.
+func TestResolveReaderNamesTeamKeyFixForInferredLinear(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeRepoINI(t, home, "LINEAR_API_KEY=user-linear-key\n")
+
+	root := t.TempDir()
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+
+	res, err := s.resolveReader(registry.Repo{Name: "acme", Root: root})
+	if err != nil {
+		t.Fatalf("resolveReader: %v", err)
+	}
+	if res.provider != "linear" || res.explicit {
+		t.Fatalf("resolution = %+v, want an inferred linear provider", res)
+	}
+
+	got := res.actionableErr(tracker.ErrNoTeamKey)
+	if !errors.Is(got, tracker.ErrNoTeamKey) {
+		t.Fatalf("actionableErr = %v, want the refusal still classifiable through the hint", got)
+	}
+	for _, want := range []string{"inferred linear", "LINEAR_TEAM", "TRACKER_PROVIDER=internal"} {
+		if !strings.Contains(got.Error(), want) {
+			t.Fatalf("actionableErr = %q, want it to mention %q", got, want)
+		}
+	}
+}
+
 // TestDefaultReaderUnavailableForInternal keeps a repo with no external tracker on
 // the graceful no-credentials path instead of the unknown-provider error.
 func TestDefaultReaderUnavailableForInternal(t *testing.T) {

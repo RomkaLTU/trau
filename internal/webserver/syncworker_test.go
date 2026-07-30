@@ -70,6 +70,29 @@ func TestSyncerReaderUnavailableBacksOffWithoutFailure(t *testing.T) {
 	}
 }
 
+// A repo with no Linear team has nothing the hub could bind to, so it settles at
+// the cap with a clean failure count instead of climbing the failure ladder — even
+// when the inferred-provider hint has wrapped the refusal on its way here.
+func TestSyncerNoTeamKeyBacksOffWithoutFailure(t *testing.T) {
+	sy := newSyncer(nil)
+	root := "/repo/noteam"
+	res := trackerResolution{provider: "linear"}
+
+	sy.claim(root, time.Now())
+	sy.settle(root, time.Second, res.actionableErr(tracker.ErrNoTeamKey))
+
+	st := sy.state[root]
+	if st.failures != 0 {
+		t.Fatalf("failures = %d, want 0 — a repo with no team to bind is not a broken repo", st.failures)
+	}
+	if wait := time.Until(st.nextAttempt); wait <= syncBackoffCap-time.Minute {
+		t.Fatalf("next attempt in %v, want the cap %v", wait, syncBackoffCap)
+	}
+	if sy.claim(root, time.Now()) {
+		t.Fatal("a repo with no team should back off before its next attempt")
+	}
+}
+
 func TestReconcileDueSchedulesAndBacksOff(t *testing.T) {
 	sy := newSyncer(nil)
 	sy.reconcileEvery = time.Hour

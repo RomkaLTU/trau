@@ -87,6 +87,31 @@ func TestJiraReaderResolveBindingNoProjectKey(t *testing.T) {
 	}
 }
 
+// A user-layer LINEAR_API_KEY makes every repo on the machine look linear, so a
+// repo with no team must be refused here rather than spending a request per sync
+// tick on a lookup that can only ever answer not-found.
+func TestLinearReaderResolveBindingNoTeamKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("ResolveBinding reached the Linear API with no team key configured")
+	}))
+	t.Cleanup(srv.Close)
+
+	c := linearapi.New("lin_key")
+	c.Endpoint = srv.URL
+	r := &linearReader{client: c, project: "Trau Web"}
+
+	_, err := r.ResolveBinding(context.Background())
+	if !errors.Is(err, ErrNoTeamKey) {
+		t.Fatalf("ResolveBinding err = %v, want ErrNoTeamKey", err)
+	}
+	if errors.Is(err, ErrReaderUnavailable) {
+		t.Fatalf("ResolveBinding err = %v, must not read as no credentials", err)
+	}
+	if got := err.Error(); strings.Contains(got, "credentials") || !strings.Contains(got, "LINEAR_TEAM") {
+		t.Fatalf("ResolveBinding err = %q, want it to name LINEAR_TEAM and not mention credentials", got)
+	}
+}
+
 func TestLinearReaderBacklogMapsAndFiltersProject(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -216,6 +241,7 @@ func TestClassify(t *testing.T) {
 		{"a context deadline", context.DeadlineExceeded, ErrorTransient},
 		{"rejected credentials", linearapi.ErrUnauthorized, ErrorConfig},
 		{"a missing project key", ErrNoProjectKey, ErrorConfig},
+		{"a missing team key", ErrNoTeamKey, ErrorConfig},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
