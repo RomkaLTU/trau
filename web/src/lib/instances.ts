@@ -289,14 +289,16 @@ export async function forgetRepo(ident: string): Promise<RepoView> {
 // removeBlocked reports why the hub would refuse to remove this repo, so the row
 // says so up front instead of handing back a toast. It reads the seeded flag the
 // hub sends rather than inferring the grant from a missing registration, which a
-// repo that is both seeded and registered would read the wrong way round. null
-// means the removal goes through.
+// repo that is both seeded and registered would read the wrong way round. It weighs
+// the two refusals in the hub's order, config grant before live loop, so a repo that
+// is both is refused here for the same reason the hub gives. null means the removal
+// goes through.
 export function removeBlocked(repo: RepoView): string | null {
-  if (repo.live) {
-    return "A loop is live here — stop it before removing the repo";
-  }
   if (repo.seeded) {
     return "Granted by SERVE_WORKSPACE — drop its root from the config instead";
+  }
+  if (repo.live) {
+    return "A loop is live here — stop it before removing the repo";
   }
   return null;
 }

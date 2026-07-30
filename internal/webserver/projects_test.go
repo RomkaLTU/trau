@@ -6,11 +6,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RomkaLTU/trau/internal/queue"
+	"github.com/RomkaLTU/trau/internal/registry"
 )
 
 func decodeProject(t *testing.T, body string) ProjectView {
@@ -207,6 +211,127 @@ func TestProjectDeleteLeavesReposRegistered(t *testing.T) {
 	res, body = deleteReq(t, ts, APIPrefix+"/projects/"+project.ID)
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("re-delete = %d (%s), want 404", res.StatusCode, body)
+	}
+}
+
+func removalNames(repos []ProjectRemovalRepo) []string {
+	names := make([]string, 0, len(repos))
+	for _, repo := range repos {
+		names = append(names, repo.Name)
+	}
+	return names
+}
+
+// TestProjectForgetReposClearsTheFolder is the one-action removal: every member the
+// hub will let go leaves it, and a member it refuses stays registered holding the
+// group rather than failing the whole call.
+func TestProjectForgetReposClearsTheFolder(t *testing.T) {
+	cases := []struct {
+		name        string
+		live        string
+		wantRemoved []string
+		wantBlocked []string
+		wantReason  string
+	}{
+		{
+			name:        "every member leaves the hub",
+			wantRemoved: []string{"api", "web"},
+			wantBlocked: []string{},
+		},
+		{
+			name:        "a live member stays behind with its group",
+			live:        "web",
+			wantRemoved: []string{"api"},
+			wantBlocked: []string{"web"},
+			wantReason:  "stop it",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			base := t.TempDir()
+			roots := map[string]string{
+				"api": gitRepo(t, base, "api", "dir"),
+				"web": gitRepo(t, base, "web", "dir"),
+			}
+			if tc.live != "" {
+				writeEntry(t, home, registry.Entry{
+					PID:          os.Getpid(),
+					RepoRoot:     roots[tc.live],
+					SessionState: registry.StateIdle,
+					StartedAt:    time.Now(),
+					Heartbeat:    time.Now(),
+				})
+			}
+			_, ts := controlServer(t, home, nil)
+			for _, name := range []string{"api", "web"} {
+				res := postJSON(t, ts.URL+APIPrefix+"/repos", RegisterRepoRequest{Path: roots[name]})
+				if body := readBody(t, res); res.StatusCode != http.StatusCreated {
+					t.Fatalf("register %s = %d (%s)", name, res.StatusCode, body)
+				}
+			}
+			project := createProjectReq(t, ts, "Acme")
+			for _, name := range []string{"api", "web"} {
+				if res, body := addProjectRepo(t, ts, project.ID, roots[name]); res.StatusCode != http.StatusOK {
+					t.Fatalf("add %s = %d (%s)", name, res.StatusCode, body)
+				}
+			}
+
+			res, body := deleteReq(t, ts, APIPrefix+"/projects/"+project.ID+"?forget=1")
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("forget = %d (%s)", res.StatusCode, body)
+			}
+			var out ProjectRemoval
+			if err := json.Unmarshal([]byte(body), &out); err != nil {
+				t.Fatalf("decode removal: %v (body %q)", err, body)
+			}
+			if want := []string{roots["api"], roots["web"]}; !reflect.DeepEqual(out.Project.Repos, want) {
+				t.Errorf("snapshot = %v, want the group it acted on %v", out.Project.Repos, want)
+			}
+			if got := removalNames(out.Removed); !reflect.DeepEqual(got, tc.wantRemoved) {
+				t.Errorf("removed = %v, want %v", got, tc.wantRemoved)
+			}
+			if got := removalNames(out.Blocked); !reflect.DeepEqual(got, tc.wantBlocked) {
+				t.Errorf("blocked = %v, want %v", got, tc.wantBlocked)
+			}
+			if len(out.Blocked) > 0 && !strings.Contains(out.Blocked[0].Reason, tc.wantReason) {
+				t.Errorf("blocked reason = %q, want it to name %q", out.Blocked[0].Reason, tc.wantReason)
+			}
+			if want := len(tc.wantBlocked) == 0; out.ProjectDeleted != want {
+				t.Errorf("project_deleted = %v, want %v", out.ProjectDeleted, want)
+			}
+
+			registered, _ := testStoresAt(t, home).Registrations().Registered()
+			for _, name := range tc.wantRemoved {
+				if slices.Contains(registered, roots[name]) {
+					t.Errorf("removed %s is still registered: %v", name, registered)
+				}
+			}
+			for _, name := range tc.wantBlocked {
+				if !slices.Contains(registered, roots[name]) {
+					t.Errorf("blocked %s lost its registration: %v", name, registered)
+				}
+			}
+
+			projects := listProjects(t, ts)
+			if len(tc.wantBlocked) == 0 {
+				if len(projects) != 0 {
+					t.Fatalf("projects after a clean removal = %+v, want none", projects)
+				}
+				return
+			}
+			if len(projects) != 1 {
+				t.Fatalf("projects = %+v, want the group to survive its blocked member", projects)
+			}
+			want := make([]string, 0, len(tc.wantBlocked))
+			for _, name := range tc.wantBlocked {
+				want = append(want, roots[name])
+			}
+			if !reflect.DeepEqual(projects[0].Repos, want) {
+				t.Errorf("members = %v, want %v", projects[0].Repos, want)
+			}
+		})
 	}
 }
 

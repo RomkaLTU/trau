@@ -1,10 +1,11 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { Boxes, Plus, RotateCw, Wrench } from 'lucide-react'
+import { Boxes, FolderGit2, Plus, RotateCw, Wrench } from 'lucide-react'
 
 import { EventFeed } from '@/components/event-feed'
 import { MakeStartableButton } from '@/components/make-startable-button'
+import { RemoveProjectButton } from '@/components/remove-project-button'
 import { RemoveRepoButton } from '@/components/remove-repo-button'
 import { PageHeader } from '@/components/trau/page-header'
 import { StatusPill } from '@/components/trau/status-pill'
@@ -32,6 +33,11 @@ import {
 } from '@/lib/instances'
 import { sessionStatePill, toSessionState } from '@/lib/overview'
 import { standardTitle, usePageTitle } from '@/lib/page-title'
+import {
+  groupRepos,
+  projectsQueryOptions,
+  type ProjectView,
+} from '@/lib/projects'
 import { reposQueryOptions } from '@/lib/runs'
 import { cn } from '@/lib/utils'
 
@@ -43,6 +49,7 @@ export const Route = createFileRoute('/instances')({
     Promise.all([
       context.queryClient.ensureQueryData(instancesQueryOptions),
       context.queryClient.ensureQueryData(reposQueryOptions),
+      context.queryClient.ensureQueryData(projectsQueryOptions),
     ]),
 })
 
@@ -74,10 +81,14 @@ function Instances() {
     refetchInterval: (query) =>
       anySyncing(query.state.data?.repos ?? []) ? SYNC_POLL_MS : false,
   })
+  const projects = useQuery(projectsQueryOptions)
   const now = useNow(1000)
 
   const instances = data?.instances ?? []
   const repoViews = repos.data?.repos ?? []
+  // In server order, so groupRepos seats each group where its highest-ranked member
+  // sat and the page's ordering carries over.
+  const rows = groupRepos(repoViews, projects.data?.projects ?? [])
 
   return (
     <>
@@ -122,14 +133,68 @@ function Instances() {
         {repoViews.length > 0 && (
           <TerminalCard title="projects" bodyClassName="p-0">
             <ul className="flex flex-col divide-y divide-border/60">
-              {repoViews.map((repo) => (
-                <RepoHealthRow key={repo.root} repo={repo} now={now} />
-              ))}
+              {rows.map((row) =>
+                row.project ? (
+                  <ProjectGroup
+                    key={row.project.id}
+                    project={row.project}
+                    repos={row.repos}
+                    now={now}
+                  />
+                ) : (
+                  <RepoHealthRow
+                    key={row.repos[0].root}
+                    repo={row.repos[0]}
+                    now={now}
+                  />
+                ),
+              )}
             </ul>
           </TerminalCard>
         )}
       </div>
     </>
+  )
+}
+
+// ProjectGroup renders the folder its members were registered under: a header over
+// the same rows an ungrouped repo gets, with the one control that reaches the whole
+// folder. groupRepos only forms a group at two or more members, so a lone repo and a
+// single-member project both stay bare rows and never land here. Members sit inset
+// behind a rail, so the row that ends a group reads as the group's rather than as
+// the ungrouped row following it.
+function ProjectGroup({
+  project,
+  repos,
+  now,
+}: {
+  project: ProjectView
+  repos: RepoView[]
+  now: number
+}) {
+  return (
+    <li className="flex flex-col">
+      <div className="flex items-center gap-2 border-b border-border/60 bg-secondary/20 px-5 py-2.5">
+        <FolderGit2
+          className="size-3.5 shrink-0 text-muted-foreground"
+          aria-hidden="true"
+        />
+        <span className="truncate font-mono text-xs uppercase tracking-[0.14em] text-muted-foreground">
+          {project.name}
+        </span>
+        <span className="shrink-0 font-mono text-[0.65rem] tabular-nums text-muted-foreground">
+          {repos.length} repos
+        </span>
+        <span className="ml-auto">
+          <RemoveProjectButton project={project} repos={repos} />
+        </span>
+      </div>
+      <ul className="ml-5 flex flex-col divide-y divide-border/60 border-l border-border/60">
+        {repos.map((repo) => (
+          <RepoHealthRow key={repo.root} repo={repo} now={now} />
+        ))}
+      </ul>
+    </li>
   )
 }
 

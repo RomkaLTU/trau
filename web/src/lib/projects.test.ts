@@ -6,6 +6,9 @@ import {
   groupRepos,
   projectAnchor,
   projectMembers,
+  removalPlan,
+  removalSummary,
+  type ProjectRemoval,
   type ProjectView,
 } from '@/lib/projects'
 
@@ -128,6 +131,62 @@ describe('projectAnchor', () => {
   it('skips a member the repos list no longer carries', () => {
     const platform = [project('platform', 'Platform', ['gone', 'charlie'])]
     expect(projectAnchor('charlie', repos, platform)).toBe('charlie')
+  })
+})
+
+describe('removalPlan', () => {
+  it('names the members that will go and every one the hub would keep', () => {
+    const { removing, blocked } = removalPlan([
+      repo('api'),
+      { ...repo('web'), live: true },
+      { ...repo('docs'), seeded: true },
+    ])
+    expect(removing).toEqual(['api'])
+    expect(blocked.map((member) => member.name)).toEqual(['web', 'docs'])
+    expect(blocked[0].reason).toMatch(/loop is live/)
+    expect(blocked[1].reason).toMatch(/SERVE_WORKSPACE/)
+  })
+})
+
+describe('removalSummary', () => {
+  function removal(
+    removed: string[],
+    blocked: [name: string, reason: string][] = [],
+  ): ProjectRemoval {
+    return {
+      project: project('acme', 'acme', [
+        ...removed,
+        ...blocked.map(([name]) => name),
+      ]),
+      removed: removed.map((name) => ({ name, root: `/repos/${name}` })),
+      blocked: blocked.map(([name, reason]) => ({
+        name,
+        root: `/repos/${name}`,
+        reason,
+      })),
+      project_deleted: blocked.length === 0,
+    }
+  }
+
+  it('counts what left when the whole folder cleared', () => {
+    expect(removalSummary(removal(['api', 'web', 'docs']))).toBe(
+      '3 repos removed from acme',
+    )
+  })
+
+  it('names every member that stayed and why', () => {
+    const summary = removalSummary(
+      removal(
+        ['api'],
+        [
+          ['web', 'a loop is live here'],
+          ['docs', 'granted by SERVE_WORKSPACE'],
+        ],
+      ),
+    )
+    expect(summary).toBe(
+      '1 of 3 removed from acme — web stayed (a loop is live here), docs stayed (granted by SERVE_WORKSPACE)',
+    )
   })
 })
 
