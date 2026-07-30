@@ -193,6 +193,12 @@ type Git interface {
 	// CheckoutRemoteBranch creates a local branch from remote/branch and checks
 	// it out, adopting existing remote work instead of starting fresh.
 	CheckoutRemoteBranch(ctx context.Context, remote, branch string) error
+
+	// RemoteSHA returns the commit remote/branch points at as the REMOTE reports it
+	// (git ls-remote), or "" when the remote has no such branch. A remote-tracking
+	// ref cannot answer this: a push that never landed leaves it looking like one
+	// that did.
+	RemoteSHA(ctx context.Context, remote, branch string) (string, error)
 }
 
 // Check is one PR status check (gh pr checks --json name,bucket). bucket is gh's
@@ -217,6 +223,11 @@ type GitHub interface {
 	PRState(ctx context.Context, pr string) (string, error)
 
 	Checks(ctx context.Context, pr string) ([]Check, error)
+
+	// PRSize reports how much the PR carries as GitHub sees it — the number of
+	// commits on it and the number of files it changes against its base. Both read
+	// as 0 when gh cannot answer, which the merge gate treats as unmeasured.
+	PRSize(ctx context.Context, pr string) (commits, files int, err error)
 
 	Merge(ctx context.Context, pr, method string, deleteBranch bool) error
 }
@@ -2335,6 +2346,9 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 			if err != nil {
 				return fmt.Errorf("commit %s: resolve epic branch: %w", id, err)
 			}
+			if err := p.assertEpicBaseCurrent(ctx, id, prBase); err != nil {
+				return fmt.Errorf("commit %s: %w", id, err)
+			}
 		}
 		body := p.prBody(ctx, id, p.proofsSection(ctx, id))
 		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, p.slicePRTitle(ctx, id, prBase, branch), body)
@@ -2475,10 +2489,11 @@ func (p *Pipeline) commitTitle(ctx context.Context, id string) string {
 // it polls CI; on green it squash-merges and deletes the branch when AutoMerge
 // is set (else it stops at the open PR), moves the ticket to Done, and
 // checkpoints merged. A CI failure or timeout gives up — preserving the branch
-// and quarantining without aborting the loop. A merge GitHub refuses as "not
-// mergeable" (the base moved under the PR) goes through recoverUnmergeablePR —
-// sync, agent-resolved conflicts, one more CI gate — before it too becomes a
-// give-up, never a fault.
+// and quarantining without aborting the loop, as does a PR carrying work this run
+// did not push (foreignWorkInPR) — no auto-merge may land that. A merge GitHub
+// refuses as "not mergeable" (the base moved under the PR) goes through
+// recoverUnmergeablePR — sync, agent-resolved conflicts, one more CI gate — before
+// it too becomes a give-up, never a fault.
 //
 // Every outcome that reached the base hands it to the hub reload step. An epic
 // slice is excluded: its PR targets the epic branch, so nothing reached the base
@@ -2516,6 +2531,10 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 	}
 	if !p.AutoMerge {
 		return p.awaitManualMerge(ctx, id, pr)
+	}
+	if reason := p.foreignWorkInPR(ctx, id, pr); reason != "" {
+		p.logf("  ✗ merge gate: %s", reason)
+		return p.giveUp(ctx, id, reason)
 	}
 	p.setActivity(id, activity.Merge, "")
 	err = p.mergePR(ctx, pr)
@@ -5357,6 +5376,20 @@ func (g ExecGit) RemoteBranchExists(ctx context.Context, remote, branch string) 
 	return false, fmt.Errorf("ls-remote %s %s: %w", remote, branch, err)
 }
 
+// RemoteSHA returns the commit remote/branch points at, straight from the remote.
+// A branch the remote does not have yields no ls-remote line, which reads as
+// ("", nil) — an expected answer; only a failure to reach the remote is an error.
+func (g ExecGit) RemoteSHA(ctx context.Context, remote, branch string) (string, error) {
+	out, err := exec.CommandContext(ctx, g.bin(), "-C", g.Repo,
+		"ls-remote", "--heads", remote, "refs/heads/"+branch).Output()
+	if err != nil {
+		return "", fmt.Errorf("ls-remote %s %s: %w", remote, branch, err)
+	}
+	// Each line is "<sha>\trefs/heads/<branch>"; the exact refspec matches at most one.
+	sha, _, _ := strings.Cut(strings.TrimSpace(string(out)), "\t")
+	return sha, nil
+}
+
 // CheckoutRemoteBranch creates local <branch> at remote/<branch>'s tip and checks
 // it out (git fetch <remote> <branch>:<branch>; git checkout <branch>). Used only
 // when the branch is absent locally, so the fetch is a clean create with no
@@ -5482,6 +5515,24 @@ func (g ExecGitHub) Checks(ctx context.Context, pr string) ([]Check, error) {
 		return nil, nil
 	}
 	return checks, nil
+}
+
+// PRSize returns the PR's commit count and changed-file count. A gh error or a
+// payload it cannot parse reads as (0, 0, nil) — the merge gate then has nothing to
+// compare and lets the merge through, as it does for every other blind spot.
+func (g ExecGitHub) PRSize(ctx context.Context, pr string) (int, int, error) {
+	out, err := g.output(ctx, "pr", "view", pr, "--json", "commits,changedFiles")
+	if err != nil {
+		return 0, 0, nil
+	}
+	var view struct {
+		Commits      []struct{} `json:"commits"`
+		ChangedFiles int        `json:"changedFiles"`
+	}
+	if err := json.Unmarshal([]byte(out), &view); err != nil {
+		return 0, 0, nil
+	}
+	return len(view.Commits), view.ChangedFiles, nil
 }
 
 // Merge merges the PR with the given method; deleteBranch adds --delete-branch.
