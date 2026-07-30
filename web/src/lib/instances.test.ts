@@ -64,6 +64,7 @@ describe("healthPill", () => {
     ["ready", "success", "ready"],
     ["syncing", "active", "syncing"],
     ["sync-failed", "fail", "sync failing"],
+    ["degraded", "warn", "sync degraded"],
     ["never-synced", "warn", "never synced"],
     ["unconfigured", "warn", "not configured"],
   ];
@@ -82,6 +83,7 @@ describe("healthBlocks", () => {
     ["ready", false],
     ["syncing", false],
     ["never-synced", false],
+    ["degraded", false],
     ["sync-failed", true],
     ["unconfigured", true],
   ];
@@ -98,6 +100,18 @@ describe("healthBlocks", () => {
     });
 
     expect(healthBlocks(repoHealth(repo))).toBe(true);
+  });
+
+  it("leaves a repo that is still serving its last good sync interactive", () => {
+    const repo = repoView({
+      state: "degraded",
+      syncing: false,
+      last_synced_at: "2026-07-30T12:00:00Z",
+      last_error: "linear: rate limit exceeded",
+      last_error_kind: "rate-limit",
+    });
+
+    expect(healthBlocks(repoHealth(repo))).toBe(false);
   });
 });
 

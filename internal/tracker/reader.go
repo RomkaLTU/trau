@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
+	"time"
 
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
@@ -100,6 +102,49 @@ type Reader interface {
 	// Jira the token's /myself. A sync resolves it best-effort — an identity failure
 	// never blocks the issue pull.
 	Identity(ctx context.Context) (id, name string, err error)
+}
+
+// RateLimited reports whether err is a tracker refusing the request because the
+// API key's shared request budget is spent, and when it said the budget refills
+// (zero when it did not say). A rate limit is transient and self-healing, so a
+// caller waits it out rather than recording a failure the repo cannot fix.
+func RateLimited(err error) (resetAt time.Time, ok bool) {
+	var limit *linearapi.RateLimitError
+	if !errors.As(err, &limit) {
+		return time.Time{}, false
+	}
+	return limit.ResetAt, true
+}
+
+// Unauthorized reports whether err is a tracker rejecting the repo's credentials,
+// whichever of the syncable providers answered.
+func Unauthorized(err error) bool {
+	return errors.Is(err, linearapi.ErrUnauthorized) || errors.Is(err, jiraapi.ErrUnauthorized)
+}
+
+// ErrorKind labels a sync failure by what it takes to clear. A rate limit or a
+// transport failure clears itself; a config failure needs the repo's settings or
+// credentials fixed before anything will pull.
+type ErrorKind string
+
+const (
+	ErrorConfig    ErrorKind = "config"
+	ErrorRateLimit ErrorKind = "rate-limit"
+	ErrorTransient ErrorKind = "transient"
+)
+
+// Classify labels err so the health surface can tell a repo that is briefly cut off
+// from one that is misconfigured. Anything unrecognised reads as config, so a failure
+// nobody can promise will clear still asks a human to look.
+func Classify(err error) ErrorKind {
+	if _, limited := RateLimited(err); limited || errors.Is(err, jiraapi.ErrRateLimited) {
+		return ErrorRateLimit
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return ErrorTransient
+	}
+	return ErrorConfig
 }
 
 // NewReader builds a direct Reader for the provider from cfg, or

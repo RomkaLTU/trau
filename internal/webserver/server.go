@@ -55,6 +55,8 @@ type Server struct {
 	stopping         map[string]bool
 	removeMu         sync.Mutex
 	removing         map[queueItemKey]bool
+	overlapMu        sync.Mutex
+	overlapWarned    map[overlapKey]bool
 	sup              Supervisor
 	term             terminalLauncher
 	sessionExists    func(sessionID string) bool
@@ -119,6 +121,7 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		shuttingDown:     map[string]bool{},
 		stopping:         map[string]bool{},
 		removing:         map[queueItemKey]bool{},
+		overlapWarned:    map[overlapKey]bool{},
 		sup:              newOSSupervisor(),
 		term:             osascriptLauncher{},
 		sessionExists:    agent.SessionExists,

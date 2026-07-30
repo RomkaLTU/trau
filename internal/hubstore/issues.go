@@ -87,6 +87,13 @@ type SyncIdentity struct {
 	ResolvedAt string
 }
 
+// TeamBinding is one repo's cached binding for a tracker team: the repo root and
+// the project its pull is narrowed to, empty when the repo pulls the whole team.
+type TeamBinding struct {
+	Repo      string
+	ProjectID string
+}
+
 // SyncState is a repo's sync bookkeeping: the cached binding, the last cursor,
 // the outcome of the last sync, and the resolved Me identity.
 type SyncState struct {
@@ -96,7 +103,8 @@ type SyncState struct {
 	LastIssues   int
 	LastComments int
 	LastError    string
-	Me           SyncIdentity
+	LastErrorKind string
+	Me            SyncIdentity
 }
 
 // SyncResult records the outcome of one sync on the bookkeeping row.
@@ -798,12 +806,12 @@ func (s *Issues) SyncState(repo string) (SyncState, error) {
 	var st SyncState
 	err := s.db.QueryRow(
 		`SELECT team_id, project_id, project, cursor, last_synced_at, last_issues, last_comments, last_error,
-			me_id, me_name, me_resolved_at
+			last_error_kind, me_id, me_name, me_resolved_at
 		 FROM issue_sync WHERE repo = ?`,
 		repo,
 	).Scan(
 		&st.Binding.TeamID, &st.Binding.ProjectID, &st.Binding.Project, &st.Cursor,
-		&st.LastSyncedAt, &st.LastIssues, &st.LastComments, &st.LastError,
+		&st.LastSyncedAt, &st.LastIssues, &st.LastComments, &st.LastError, &st.LastErrorKind,
 		&st.Me.ID, &st.Me.Name, &st.Me.ResolvedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -891,6 +899,38 @@ func (s *Issues) SaveIdentity(repo, id, name string) error {
 	return err
 }
 
+// InvalidateIdentity clears the stamp on a repo's resolved Me so the next sync
+// re-resolves it, keeping the last known values in place for anything reading
+// them meanwhile. It is how rejected credentials expire an identity the cache
+// would otherwise serve for a full day.
+func (s *Issues) InvalidateIdentity(repo string) error {
+	_, err := s.db.Exec(`UPDATE issue_sync SET me_resolved_at = '' WHERE repo = ?`, repo)
+	return err
+}
+
+// TeamBindings returns the repos whose cached binding names teamID, each with the
+// project its pull is narrowed to — empty when the repo pulls the whole team. It
+// lets the hub spot two repos charging the same tracker team against one API key.
+func (s *Issues) TeamBindings(teamID string) ([]TeamBinding, error) {
+	rows, err := s.db.Query(
+		`SELECT repo, project_id FROM issue_sync WHERE team_id = ? ORDER BY repo`,
+		teamID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []TeamBinding{}
+	for rows.Next() {
+		var b TeamBinding
+		if err := rows.Scan(&b.Repo, &b.ProjectID); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // RecordResult stores the outcome of a sync — counts, cursor, timestamp, and any
 // error — on the repo's bookkeeping row.
 func (s *Issues) RecordResult(repo string, r SyncResult) error {
@@ -900,21 +940,22 @@ func (s *Issues) RecordResult(repo string, r SyncResult) error {
 		 ON CONFLICT(repo) DO UPDATE SET
 			cursor = excluded.cursor, last_synced_at = excluded.last_synced_at,
 			last_issues = excluded.last_issues, last_comments = excluded.last_comments,
-			last_error = excluded.last_error`,
+			last_error = excluded.last_error, last_error_kind = ''`,
 		repo, r.Cursor, r.SyncedAt, r.Issues, r.Comments, r.Err,
 	)
 	return err
 }
 
-// RecordError stamps a failed sync's error on the repo's bookkeeping row without
-// touching the cursor, counts, or last-synced time, so a transient tracker
-// failure leaves the last good sync — and its incremental cursor — intact. A
-// later successful RecordResult clears the error.
-func (s *Issues) RecordError(repo, msg string) error {
+// RecordError stamps a failed sync's error, and what the caller classified it as,
+// on the repo's bookkeeping row without touching the cursor, counts, or last-synced
+// time, so a transient tracker failure leaves the last good sync — and its
+// incremental cursor — intact. A later successful RecordResult clears both.
+func (s *Issues) RecordError(repo, msg, kind string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO issue_sync(repo, last_error) VALUES(?, ?)
-		 ON CONFLICT(repo) DO UPDATE SET last_error = excluded.last_error`,
-		repo, msg,
+		`INSERT INTO issue_sync(repo, last_error, last_error_kind) VALUES(?, ?, ?)
+		 ON CONFLICT(repo) DO UPDATE SET
+			last_error = excluded.last_error, last_error_kind = excluded.last_error_kind`,
+		repo, msg, kind,
 	)
 	return err
 }
@@ -924,7 +965,7 @@ func (s *Issues) RecordError(repo, msg string) error {
 // escape hatch for a repo whose provider no longer pulls — explicitly internal —
 // where no successful RecordResult will ever run to clear a stale error.
 func (s *Issues) ClearError(repo string) error {
-	_, err := s.db.Exec(`UPDATE issue_sync SET last_error = '' WHERE repo = ?`, repo)
+	_, err := s.db.Exec(`UPDATE issue_sync SET last_error = '', last_error_kind = '' WHERE repo = ?`, repo)
 	return err
 }
 
@@ -1223,7 +1264,8 @@ func (s *Issues) DropSynced(repo string) error {
 		return errors.Join(err, tx.Rollback())
 	}
 	if _, err := tx.Exec(
-		`UPDATE issue_sync SET cursor = '', last_synced_at = '', last_issues = 0, last_comments = 0, last_error = ''
+		`UPDATE issue_sync SET cursor = '', last_synced_at = '', last_issues = 0, last_comments = 0,
+			last_error = '', last_error_kind = ''
 		 WHERE repo = ?`,
 		repo,
 	); err != nil {

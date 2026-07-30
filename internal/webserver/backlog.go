@@ -369,7 +369,9 @@ func (s *Server) resolveReader(repo registry.Repo) (trackerResolution, error) {
 // actionableErr rewrites a binding or pull failure into one that names what to fix
 // when the tracker provider was inferred rather than set. An explicit provider — or
 // a failure the resolution cannot explain — is returned unchanged, so a repo that
-// names its tracker still surfaces the tracker's own error.
+// names its tracker still surfaces the tracker's own error. The hint always wraps,
+// never flattens: callers classify the tracker's own error (rate limit, rejected
+// credentials) through it.
 func (r trackerResolution) actionableErr(err error) error {
 	if err == nil || r.explicit {
 		return err
@@ -381,7 +383,7 @@ func (r trackerResolution) actionableErr(err error) error {
 		}
 	case "linear":
 		if r.jiraCreds {
-			return fmt.Errorf("repo has Jira credentials but TRACKER_PROVIDER is unset — set TRACKER_PROVIDER=jira (tried linear: %v)", err)
+			return fmt.Errorf("repo has Jira credentials but TRACKER_PROVIDER is unset — set TRACKER_PROVIDER=jira (tried linear: %w)", err)
 		}
 	}
 	return err

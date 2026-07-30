@@ -980,7 +980,7 @@ func TestRecordErrorPreservesLastGoodSync(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RecordResult: %v", err)
 	}
-	if err := s.RecordError("/repo/acme", "tracker: 401 unauthorized"); err != nil {
+	if err := s.RecordError("/repo/acme", "tracker: 401 unauthorized", "config"); err != nil {
 		t.Fatalf("RecordError: %v", err)
 	}
 
@@ -1007,7 +1007,7 @@ func TestRecordErrorPreservesLastGoodSync(t *testing.T) {
 
 func TestRecordErrorOnFirstSyncInserts(t *testing.T) {
 	s := testIssues(t)
-	if err := s.RecordError("/repo/acme", "boom"); err != nil {
+	if err := s.RecordError("/repo/acme", "boom", "config"); err != nil {
 		t.Fatalf("RecordError: %v", err)
 	}
 	st, err := s.SyncState("/repo/acme")
@@ -1026,7 +1026,7 @@ func TestClearErrorPreservesLastGoodSync(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RecordResult: %v", err)
 	}
-	if err := s.RecordError("/repo/acme", "linear: no api key"); err != nil {
+	if err := s.RecordError("/repo/acme", "linear: no api key", "config"); err != nil {
 		t.Fatalf("RecordError: %v", err)
 	}
 

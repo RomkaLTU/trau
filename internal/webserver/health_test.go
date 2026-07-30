@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
 // healthServer builds a loopback hub with an empty user config and returns the
@@ -64,8 +65,17 @@ const (
 func TestDeriveHealthState(t *testing.T) {
 	synced := hubstore.SyncState{LastSyncedAt: "2026-07-14T00:00:00Z", LastIssues: 3}
 	failedAfterGood := hubstore.SyncState{
-		LastSyncedAt: "2026-07-14T00:00:00Z",
-		LastError:    "linear: issue not found",
+		LastSyncedAt:  "2026-07-14T00:00:00Z",
+		LastError:     "linear: issue not found",
+		LastErrorKind: string(tracker.ErrorConfig),
+	}
+	neverSyncedConfigErr := hubstore.SyncState{
+		LastError:     "linear: no api key",
+		LastErrorKind: string(tracker.ErrorConfig),
+	}
+	neverSyncedRateLimited := hubstore.SyncState{
+		LastError:     "linear: rate limit exceeded",
+		LastErrorKind: string(tracker.ErrorRateLimit),
 	}
 	tests := []struct {
 		name     string
@@ -75,7 +85,9 @@ func TestDeriveHealthState(t *testing.T) {
 		want     RepoHealthState
 	}{
 		{"a pull in flight wins over the last outcome", "linear", true, failedAfterGood, HealthSyncing},
-		{"a recorded error is sync-failed over a synced stamp", "linear", false, failedAfterGood, HealthSyncFailed},
+		{"a recorded error over a synced stamp is degraded", "linear", false, failedAfterGood, HealthDegraded},
+		{"a config error with nothing synced is sync-failed", "linear", false, neverSyncedConfigErr, HealthSyncFailed},
+		{"a rate limit with nothing synced is still never-synced", "linear", false, neverSyncedRateLimited, HealthNeverSynced},
 		{"a clean synced stamp is ready", "linear", false, synced, HealthReady},
 		{"configured with no sync bookkeeping is never-synced", "linear", false, hubstore.SyncState{}, HealthNeverSynced},
 		{"unconfigured with no sync bookkeeping", "", false, hubstore.SyncState{}, HealthUnconfigured},
@@ -123,7 +135,7 @@ func TestRepoHealthNeverSynced(t *testing.T) {
 func TestRepoHealthSyncFailedMelga(t *testing.T) {
 	s, ts := healthServer(t)
 	root := registerRepoAt(t, s, "melga", jiraINI)
-	if err := s.stores.Issues().RecordError(root, "linear: issue not found"); err != nil {
+	if err := s.stores.Issues().RecordError(root, "linear: issue not found", string(tracker.ErrorConfig)); err != nil {
 		t.Fatalf("RecordError: %v", err)
 	}
 
@@ -136,6 +148,40 @@ func TestRepoHealthSyncFailedMelga(t *testing.T) {
 	}
 }
 
+// TestRepoHealthDegradedOverAGoodStore is the rate-limit incident: a repo whose
+// last pull failed but whose store still holds the issues an earlier one landed.
+// Health must read degraded and name what kind of failure it is, so the page keeps
+// serving that data behind a dismissable notice instead of a blocking gate.
+func TestRepoHealthDegradedOverAGoodStore(t *testing.T) {
+	s, ts := healthServer(t)
+	root := registerRepoAt(t, s, "loop", linearINI)
+	store := s.stores.Issues()
+	if _, _, err := store.Upsert(root, "linear", []hubstore.Issue{
+		{Identifier: "COD-1", Title: "one"},
+	}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if err := store.RecordResult(root, hubstore.SyncResult{
+		Issues: 1, SyncedAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("RecordResult: %v", err)
+	}
+	if err := store.RecordError(root, "linear: dial tcp: i/o timeout", string(tracker.ErrorTransient)); err != nil {
+		t.Fatalf("RecordError: %v", err)
+	}
+
+	_, h := getHealth(t, ts, "loop")
+	if h.State != HealthDegraded {
+		t.Fatalf("state = %q, want degraded while the store still holds the last good pull", h.State)
+	}
+	if h.LastErrorKind != string(tracker.ErrorTransient) {
+		t.Fatalf("last error kind = %q, want the failure classified as transient", h.LastErrorKind)
+	}
+	if h.IssueCount != 1 || h.LastSyncedAt == "" {
+		t.Fatalf("health = %+v, want the last good sync and its issues still reported", h)
+	}
+}
+
 // TestRepoHealthInternalShedsStaleError is the filters-demo case: a linear error
 // recorded before the wizard wrote TRACKER_PROVIDER=internal. An internal repo's
 // issues live in the hub store, so health must read ready — never sync-failed —
@@ -143,7 +189,7 @@ func TestRepoHealthSyncFailedMelga(t *testing.T) {
 func TestRepoHealthInternalShedsStaleError(t *testing.T) {
 	s, ts := healthServer(t)
 	root := registerRepoAt(t, s, "filters-demo", internalINI)
-	if err := s.stores.Issues().RecordError(root, "linear: no api key"); err != nil {
+	if err := s.stores.Issues().RecordError(root, "linear: no api key", string(tracker.ErrorConfig)); err != nil {
 		t.Fatalf("RecordError: %v", err)
 	}
 
@@ -240,7 +286,7 @@ func TestReposAndHealthAgree(t *testing.T) {
 	registerRepoAt(t, s, "fresh", "")
 	registerRepoAt(t, s, "loop", linearINI)
 	melga := registerRepoAt(t, s, "melga", jiraINI)
-	if err := s.stores.Issues().RecordError(melga, "linear: issue not found"); err != nil {
+	if err := s.stores.Issues().RecordError(melga, "linear: issue not found", string(tracker.ErrorConfig)); err != nil {
 		t.Fatalf("RecordError: %v", err)
 	}
 	registerRepoAt(t, s, "notes", internalINI)
