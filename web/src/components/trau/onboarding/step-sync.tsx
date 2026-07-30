@@ -8,6 +8,19 @@ import { type TrackerProvider } from '@/lib/onboarding'
 import { cn } from '@/lib/utils'
 import { Callout, Hint } from './ui'
 
+// Providers the hub never mirrors, so there is nothing to request: the internal
+// store owns its issues, and Azure Boards is read live from the tracker (ADR 0024 §4).
+const SKIPS_SYNC: Partial<Record<TrackerProvider, { hint: string; status: string }>> = {
+  internal: {
+    hint: 'This project uses the internal issue store — there is nothing to pull from an external tracker.',
+    status: 'ready — internal store, no external sync',
+  },
+  azure: {
+    hint: "Azure Boards isn't mirrored into the hub — the loop reads work items live from the tracker.",
+    status: 'ready — read live from Azure Boards',
+  },
+}
+
 export function StepSync({
   repo,
   provider,
@@ -21,7 +34,7 @@ export function StepSync({
   onBackToTracker: () => void
   onContinue: () => void
 }) {
-  const internal = provider === 'internal'
+  const skipped = SKIPS_SYNC[provider]
 
   const sync = useMutation({
     mutationFn: () => syncRepo(repo),
@@ -32,29 +45,26 @@ export function StepSync({
   useEffect(() => {
     if (started.current) return
     started.current = true
-    if (internal) {
+    if (skipped) {
       onSynced(null)
       return
     }
     sync.mutate()
   }, [])
 
-  const done = internal || sync.isSuccess
+  const done = skipped !== undefined || sync.isSuccess
 
-  const glyph = internal || sync.isSuccess ? '✓' : sync.isError ? '✗' : '●'
-  const glyphColor =
-    internal || sync.isSuccess ? 'text-done' : sync.isError ? 'text-fail' : 'text-teal'
+  const glyph = done ? '✓' : sync.isError ? '✗' : '●'
+  const glyphColor = done ? 'text-done' : sync.isError ? 'text-fail' : 'text-teal'
 
   return (
     <div className="flex flex-col gap-5">
       <div className="flex flex-col gap-1.5">
         <h2 className="font-mono text-base text-foreground">
-          {internal ? 'No backlog to seed' : 'Seeding the backlog'}
+          {skipped ? 'No backlog to seed' : 'Seeding the backlog'}
         </h2>
         <Hint>
-          {internal
-            ? 'This project uses the internal issue store — there is nothing to pull from an external tracker.'
-            : 'Pulling every issue and comment from the tracker into the hub store.'}
+          {skipped?.hint ?? 'Pulling every issue and comment from the tracker into the hub store.'}
         </Hint>
       </div>
 
@@ -68,8 +78,8 @@ export function StepSync({
           </span>
         </div>
         <div className="px-3 py-3 font-mono text-sm" aria-live="polite">
-          {internal ? (
-            <span className="text-done">ready — internal store, no external sync</span>
+          {skipped ? (
+            <span className="text-done">{skipped.status}</span>
           ) : sync.isPending ? (
             <span className="text-muted-foreground">
               seeding<span className="cursor-block text-teal">▍</span>

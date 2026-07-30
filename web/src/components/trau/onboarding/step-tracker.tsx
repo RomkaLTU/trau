@@ -10,6 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { writeConfig } from '@/lib/config'
 import {
   credentialLayer,
   preselectProvider,
@@ -17,6 +18,7 @@ import {
   trackerCanContinue,
   trackerCanTest,
   trackerConfigValues,
+  trackerRepoConfigWrites,
   type RepoInspection,
   type Team,
   type TestState,
@@ -30,8 +32,30 @@ import { Callout, FieldLabel, Hint, SecretInput, TextInput } from './ui'
 const PROVIDERS: { id: TrackerProvider; name: string; blurb: string }[] = [
   { id: 'linear', name: 'Linear', blurb: 'Sync issues from a Linear team. Needs an API key.' },
   { id: 'jira', name: 'Jira', blurb: 'Sync from a Jira project. Needs a site URL, email + token.' },
+  {
+    id: 'azure',
+    name: 'Azure DevOps',
+    blurb: 'Sync from an Azure DevOps team project. Needs an organization URL + PAT.',
+  },
   { id: 'internal', name: 'Internal', blurb: "No external tracker — issues live in trau's own store." },
 ]
+
+const BINDING_LABEL: Partial<Record<TrackerProvider, string>> = {
+  linear: 'linear team',
+  jira: 'jira project',
+  azure: 'azure devops project',
+}
+
+const TEST_HINT: Partial<Record<TrackerProvider, string>> = {
+  linear: 'Enter the API key to test.',
+  jira: 'Enter the site URL, email, and API token to test.',
+  azure: 'Enter the organization URL and personal access token to test.',
+}
+
+// Mirrors azurePATScopes in internal/tui/onboarding_form.go so the CLI and the
+// web wizard ask for the same two scopes.
+const AZURE_PAT_SCOPES = 'Work Items (read & write) and Project and Team (read)'
+const AZURE_PAT_SETTINGS_URL = 'https://dev.azure.com/_usersSettings/tokens'
 
 export function StepTracker({
   inspection,
@@ -53,6 +77,9 @@ export function StepTracker({
   const [jiraSite, setJiraSite] = useState('')
   const [jiraEmail, setJiraEmail] = useState('')
   const [jiraToken, setJiraToken] = useState('')
+  const [azureOrgUrl, setAzureOrgUrl] = useState('')
+  const [azurePat, setAzurePat] = useState('')
+  const [issuePrefix, setIssuePrefix] = useState('')
   const [binding, setBinding] = useState(inspection.prefill?.team ?? '')
 
   const fields: TrackerFields = {
@@ -60,6 +87,9 @@ export function StepTracker({
     jiraBaseUrl: jiraSite,
     jiraEmail,
     jiraToken,
+    azureOrgUrl,
+    azurePat,
+    issuePrefix,
     binding,
   }
 
@@ -68,9 +98,9 @@ export function StepTracker({
       testTracker(p, {
         repo,
         api_key: linearKey.trim() || undefined,
-        base_url: jiraSite.trim() || undefined,
+        base_url: (p === 'azure' ? azureOrgUrl : jiraSite).trim() || undefined,
         email: jiraEmail.trim() || undefined,
-        api_token: jiraToken.trim() || undefined,
+        api_token: (p === 'azure' ? azurePat : jiraToken).trim() || undefined,
       }),
     onSuccess: (res) => {
       const first = res.teams?.[0]
@@ -96,14 +126,17 @@ export function StepTracker({
     mutationFn: async () => {
       if (!provider) return
       await writeProjectTracker(project, trackerConfigValues(provider, fields))
+      for (const w of trackerRepoConfigWrites(provider, fields)) {
+        await writeConfig(repo, w)
+      }
     },
     onSuccess: () => provider && onContinue(provider, fields),
   })
 
-  const needsBinding = provider === 'linear' || provider === 'jira'
+  const needsBinding = provider !== null && provider !== 'internal'
   const hasExisting = provider !== null && credentialLayer(inspection, provider) !== null
   const canTest = provider !== null && trackerCanTest(provider, fields, hasExisting)
-  const canContinue = trackerCanContinue(provider, binding, testState)
+  const canContinue = trackerCanContinue(provider, fields, testState)
 
   function choose(next: TrackerProvider) {
     if (next === provider) return
@@ -128,7 +161,11 @@ export function StepTracker({
         </Hint>
       </div>
 
-      <div role="radiogroup" aria-label="Tracker provider" className="flex flex-col gap-2 sm:flex-row">
+      <div
+        role="radiogroup"
+        aria-label="Tracker provider"
+        className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4"
+      >
         {PROVIDERS.map((p) => {
           const active = provider === p.id
           const suggested =
@@ -141,7 +178,7 @@ export function StepTracker({
               aria-checked={active}
               onClick={() => choose(p.id)}
               className={cn(
-                'flex flex-1 flex-col gap-1.5 rounded-md border p-3 text-left transition-colors',
+                'flex flex-col gap-1.5 rounded-md border p-3 text-left transition-colors',
                 active
                   ? 'border-primary/60 bg-primary/5'
                   : 'border-border bg-secondary/20 hover:border-ring/40',
@@ -215,6 +252,55 @@ export function StepTracker({
             </>
           )}
 
+          {provider === 'azure' && (
+            <>
+              <div className="flex flex-col gap-1.5">
+                <FieldLabel htmlFor="azure-org">organization url</FieldLabel>
+                <TextInput
+                  id="azure-org"
+                  placeholder="https://dev.azure.com/acme"
+                  value={azureOrgUrl}
+                  onChange={(e) => editCredential(e.target.value, setAzureOrgUrl)}
+                />
+              </div>
+              <SecretInput
+                id="azure-pat"
+                label="azure personal access token"
+                placeholder="Azure DevOps PAT"
+                hasExisting={credentialLayer(inspection, 'azure') !== null}
+                existingLayer={credentialLayer(inspection, 'azure') ?? undefined}
+                value={azurePat}
+                onChange={(v) => editCredential(v, setAzurePat)}
+              />
+              <Hint>
+                The token needs the {AZURE_PAT_SCOPES} scopes.{' '}
+                <a
+                  href={AZURE_PAT_SETTINGS_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-primary hover:underline"
+                >
+                  Mint one under User settings → Personal access tokens
+                </a>
+                .
+              </Hint>
+              <div className="flex flex-col gap-1.5">
+                <FieldLabel htmlFor="azure-prefix">issue prefix</FieldLabel>
+                <TextInput
+                  id="azure-prefix"
+                  placeholder="CON"
+                  value={issuePrefix}
+                  onChange={(e) => setIssuePrefix(e.target.value.toUpperCase())}
+                />
+                <Hint>
+                  Azure work items carry no project key of their own, so trau addresses them by
+                  this prefix — work item 1234 becomes CON-1234 in identifiers, branch names and
+                  sentinels.
+                </Hint>
+              </div>
+            </>
+          )}
+
           {provider === 'internal' && (
             <Callout tone="success" title="No external tracker — ready to go">
               Issues live in trau's own store. Nothing to authenticate; the seed step is skipped.
@@ -223,9 +309,7 @@ export function StepTracker({
 
           {needsBinding && (
             <div className="flex flex-col gap-2">
-              <FieldLabel htmlFor="tracker-binding">
-                {provider === 'jira' ? 'jira project' : 'linear team'}
-              </FieldLabel>
+              <FieldLabel htmlFor="tracker-binding">{BINDING_LABEL[provider]}</FieldLabel>
               <Select
                 value={binding || undefined}
                 onValueChange={setBinding}
@@ -267,9 +351,7 @@ export function StepTracker({
                 )}
                 {!canTest && (
                   <span className="font-sans text-xs text-muted-foreground">
-                    {provider === 'jira'
-                      ? 'Enter the site URL, email, and API token to test.'
-                      : 'Enter the API key to test.'}
+                    {TEST_HINT[provider]}
                   </span>
                 )}
               </div>
