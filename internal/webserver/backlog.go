@@ -402,6 +402,10 @@ func readerConfigErr(err error) bool {
 	return errors.Is(err, tracker.ErrReaderUnavailable) || errors.Is(err, tracker.ErrNoProjectKey)
 }
 
+// noTrackerCredentialsHint is the 422 body both the backlog reader and the issue
+// writer answer with, so the two surfaces name the same keys.
+const noTrackerCredentialsHint = "this repo has no direct tracker credentials configured; set LINEAR_API_KEY, or the full Jira REST credentials (JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN); Azure DevOps and GitHub boards are never mirrored into the hub — the loop reads them live"
+
 // writeReaderErr maps a Reader config state to a response. A repo that cannot
 // browse its backlog over the hub is a config state, not a bad request, so it
 // answers 422 with a hint the board renders as a backlog-unavailable state. A
@@ -412,7 +416,7 @@ func writeReaderErr(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 	case errors.Is(err, tracker.ErrReaderUnavailable):
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
-			"error": "this repo has no direct tracker credentials configured; set LINEAR_API_KEY, or the full Jira REST credentials (JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN); Azure DevOps and GitHub boards are never mirrored into the hub — the loop reads them live",
+			"error": noTrackerCredentialsHint,
 		})
 	default:
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "tracker unavailable: " + err.Error()})

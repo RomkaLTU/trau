@@ -411,7 +411,7 @@ func (s *Server) writerFor(repo registry.Repo) (string, tracker.Writer, error) {
 func writeWriterErr(w http.ResponseWriter, err error) {
 	if errors.Is(err, tracker.ErrWriterUnavailable) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
-			"error": "this repo has no direct tracker credentials configured; set LINEAR_API_KEY, or the full Jira REST credentials (JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN); Azure DevOps and GitHub boards are never mirrored into the hub — the loop reads them live",
+			"error": noTrackerCredentialsHint,
 		})
 		return
 	}
