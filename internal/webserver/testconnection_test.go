@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/config"
+	"github.com/RomkaLTU/trau/internal/tracker/azureapi"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 )
@@ -273,6 +274,88 @@ func TestTrackerTestConnectionJiraMissingAllFields(t *testing.T) {
 		t.Fatalf("ok = true, want false")
 	}
 	want := "missing Jira site URL, account email, API token"
+	if out.Error != want {
+		t.Errorf("error = %q, want %q", out.Error, want)
+	}
+}
+
+// The azure probe authenticates as the PAT alone — Basic auth with an empty
+// username — and the picker's options are the organization's visible team projects.
+func TestTrackerTestConnectionAzureHappyPath(t *testing.T) {
+	var gotAuth string
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/_apis/projects" {
+			t.Errorf("unexpected azure path %s", r.URL.Path)
+		}
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"value":[{"id":"g1","name":"Contoso"},{"id":"g2","name":"Fabrikam"}]}`)
+	}))
+	defer fake.Close()
+
+	s := connServer(t)
+	ts := startConn(t, s)
+
+	body := connBody(t, ts, "azure", TestConnectionRequest{BaseURL: fake.URL, APIToken: "pat"})
+	var out TestConnectionResponse
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !out.OK {
+		t.Fatalf("ok = false, resp = %s", body)
+	}
+	if len(out.Teams) != 2 || out.Teams[0].Key != "Contoso" || out.Teams[1].Name != "Fabrikam" {
+		t.Errorf("teams = %+v, want Contoso and Fabrikam", out.Teams)
+	}
+	if strings.Contains(body, "issues_visible") {
+		t.Errorf("resp = %s, want no issues_visible for azure", body)
+	}
+	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte(":pat"))
+	if gotAuth != wantAuth {
+		t.Errorf("auth = %q, want %q", gotAuth, wantAuth)
+	}
+}
+
+func TestTrackerTestConnectionAzureBadPAT(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer fake.Close()
+
+	s := connServer(t)
+	ts := startConn(t, s)
+
+	const pat = "bad-secret-pat"
+	body := connBody(t, ts, "azure", TestConnectionRequest{BaseURL: fake.URL, APIToken: pat})
+	var out TestConnectionResponse
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out.OK {
+		t.Fatalf("ok = true, want false")
+	}
+	if !strings.Contains(out.Hint, azureapi.TokenHelpURL) {
+		t.Errorf("hint = %q, want it to point at the token help URL", out.Hint)
+	}
+	for _, want := range []string{"Work Items (read & write)", "Project and Team (read)", fake.URL} {
+		if !strings.Contains(out.Hint, want) {
+			t.Errorf("hint = %q, want it to contain %q", out.Hint, want)
+		}
+	}
+	if strings.Contains(body, pat) {
+		t.Errorf("response leaked the token: %s", body)
+	}
+}
+
+func TestTrackerTestConnectionAzureMissingAllFields(t *testing.T) {
+	s := connServer(t)
+	ts := startConn(t, s)
+
+	_, out := postConn(t, ts, "azure", TestConnectionRequest{})
+	if out.OK {
+		t.Fatalf("ok = true, want false")
+	}
+	want := "missing Azure DevOps organization URL, personal access token"
 	if out.Error != want {
 		t.Errorf("error = %q, want %q", out.Error, want)
 	}

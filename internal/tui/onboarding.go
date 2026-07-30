@@ -34,6 +34,8 @@ type ProjectSetup struct {
 	JiraBaseURL     string
 	JiraEmail       string
 	JiraAPIToken    string
+	AzureOrgURL     string
+	AzurePAT        string
 }
 
 // SetupResult reports what the setup step actually did.
@@ -42,10 +44,11 @@ type SetupResult struct {
 	LabelErr   error
 }
 
-// JiraCreds carries the REST credentials entered in the wizard so team
-// detection enumerates projects as that Jira identity, rather than falling back
-// to the shared Rovo MCP account (a different Atlassian identity).
-type JiraCreds struct {
+// TrackerCreds carries the REST credentials entered in the wizard so team
+// detection enumerates containers as that tracker identity, rather than falling
+// back to a shared MCP account (a different identity). Jira fills all three;
+// Azure DevOps fills BaseURL with the organization URL and APIToken with the PAT.
+type TrackerCreds struct {
 	BaseURL  string
 	Email    string
 	APIToken string
@@ -113,6 +116,8 @@ type OnboardingPrefill struct {
 	JiraBaseURL     string
 	JiraEmail       string
 	JiraAPIToken    string
+	AzureOrgURL     string
+	AzurePAT        string
 }
 
 // OnboardingActions is the narrow seam the onboarding wizard needs from the
@@ -132,11 +137,11 @@ type OnboardingActions interface {
 
 	// DetectTeams enumerates the selectable containers for the chosen tracker,
 	// driving the PM tool through the chosen AI provider where needed (Linear,
-	// Jira); GitHub is detected locally from the git remote. The jira creds
-	// entered in the wizard are passed so Jira detection queries the REST API as
-	// that identity instead of the shared Rovo MCP account. An error means the
-	// wizard should fall back to manual entry.
-	DetectTeams(ctx context.Context, trackerProvider, aiProvider string, jira JiraCreds) (TeamDetection, error)
+	// Jira); Azure DevOps lists over REST and GitHub is detected locally from the
+	// git remote. The creds entered in the wizard are passed so detection queries
+	// the REST API as that identity instead of a shared MCP account. An error means
+	// the wizard should fall back to manual entry.
+	DetectTeams(ctx context.Context, trackerProvider, aiProvider string, creds TrackerCreds) (TeamDetection, error)
 
 	// SetupProject writes the project env file (and optionally creates Linear
 	// labels) from the values collected in the wizard.
@@ -278,6 +283,8 @@ func (m *onboardingModel) applyPrefill(p OnboardingPrefill) {
 	fv.jiraBase = p.JiraBaseURL
 	fv.jiraEmail = p.JiraEmail
 	fv.jiraToken = p.JiraAPIToken
+	fv.azureOrgURL = p.AzureOrgURL
+	fv.azurePAT = p.AzurePAT
 }
 
 func (m onboardingModel) Init() tea.Cmd {
@@ -551,7 +558,7 @@ func (m onboardingModel) focusedKey() string {
 // the field instead of navigating back and ? is typed literally.
 func (m onboardingModel) editing() bool {
 	switch m.focusedKey() {
-	case keyLinearKey, keyJiraBase, keyJiraEmail, keyJiraToken, keyBaseBranch, keyTeam, keyTeamManual:
+	case keyLinearKey, keyJiraBase, keyJiraEmail, keyJiraToken, keyAzureOrgURL, keyAzurePAT, keyBaseBranch, keyTeam, keyTeamManual:
 		return true
 	}
 	return false
@@ -761,6 +768,11 @@ func (m onboardingModel) formHelp(nav helpColumn) screenHelp {
 		}}
 	case keyJiraBase, keyJiraEmail, keyJiraToken:
 		return screenHelp{title: "Jira credentials", columns: []helpColumn{
+			group("Navigate", fk("tab/↑↓", "move")),
+			group("Actions", fk("enter", "next"), fk("esc/←", "back")),
+		}}
+	case keyAzureOrgURL, keyAzurePAT:
+		return screenHelp{title: "Azure DevOps credentials", columns: []helpColumn{
 			group("Navigate", fk("tab/↑↓", "move")),
 			group("Actions", fk("enter", "next"), fk("esc/←", "back")),
 		}}

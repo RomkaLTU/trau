@@ -12,8 +12,9 @@ import (
 
 // ErrReaderUnavailable means the repo carries no direct tracker credentials, so
 // the hub cannot browse the backlog without falling back to an agent/MCP — which
-// a Reader never does. It is also returned for providers with no direct read API
-// (GitHub), so the hub shows a backlog-unavailable state instead of erroring.
+// a Reader never does. It is also returned for providers the hub cannot sync
+// (GitHub, Azure DevOps), so the hub shows a backlog-unavailable state instead of
+// erroring; those repos keep reading their tickets straight from the tracker.
 var ErrReaderUnavailable = errors.New("tracker: no direct API credentials configured")
 
 // ErrNoProjectKey means a Jira repo carries valid REST credentials but no project
@@ -122,7 +123,7 @@ func NewReader(provider string, cfg Config) (Reader, error) {
 			project:    cfg.Team,
 			readyLabel: cfg.ReadyLabel,
 		}, nil
-	case "github":
+	case "azure", "github":
 		return nil, ErrReaderUnavailable
 	default:
 		return nil, fmt.Errorf("unknown tracker provider %q (expected: linear | jira)", provider)

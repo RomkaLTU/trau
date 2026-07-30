@@ -26,7 +26,7 @@ func (f *fakeOnboardActions) RepoRoot() string                     { return f.re
 func (f *fakeOnboardActions) OnboardingPrefill() OnboardingPrefill { return f.prefill }
 func (f *fakeOnboardActions) LinearAPIKeyConfigured() bool         { return false }
 
-func (f *fakeOnboardActions) DetectTeams(context.Context, string, string, JiraCreds) (TeamDetection, error) {
+func (f *fakeOnboardActions) DetectTeams(context.Context, string, string, TrackerCreds) (TeamDetection, error) {
 	return TeamDetection{Label: "project", Teams: f.teams}, f.detectErr
 }
 

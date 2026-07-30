@@ -52,6 +52,11 @@ func TestTicketRef(t *testing.T) {
 		{"internal", "LOOP", "LOOP-3", "Ref: LOOP-3"},
 		{"github", "", "COD-4", "Ref: COD-4"},
 		{"", "", "COD-5", "Ref: COD-5"},
+		{"azure", "", "TRAU-1234", "Azure Boards: AB#1234"},
+		{"azure", "", "FABRIKAM-FIBER-1234", "Azure Boards: AB#1234"},
+		{"azure", "", "1234", "Azure Boards: AB#1234"},
+		{"azure", "", "TRAU-none", "Ref: TRAU-none"},
+		{"azure", "LOOP", "LOOP-3", "Ref: LOOP-3"},
 	}
 	for _, tc := range cases {
 		p := &Pipeline{TrackerProvider: tc.provider, InternalPrefix: tc.internal}

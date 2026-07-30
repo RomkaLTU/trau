@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -117,8 +118,23 @@ func OpenReadOnly(home string) (*sql.DB, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, err
 	}
-	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&_pragma=busy_timeout(2000)"}
-	return sql.Open("sqlite", u.String())
+	return sql.Open("sqlite", readOnlyDSN(path))
+}
+
+// readOnlyDSN builds the driver's read-only file URI for path. A Windows path has
+// to be slash-separated and root-anchored first: url.URL would otherwise
+// percent-encode the backslashes and leave the drive letter to parse as the URI
+// authority, which the driver rejects outright —
+// `invalid uri authority: C:%5CUsers%5C...`, the error doctor reported for a
+// database the hub itself had open and healthy. Unix paths are already in this
+// form, so they round-trip unchanged.
+func readOnlyDSN(path string) string {
+	p := filepath.ToSlash(path)
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	u := url.URL{Scheme: "file", Path: p, RawQuery: "mode=ro&_pragma=busy_timeout(2000)"}
+	return u.String()
 }
 
 // dbSize sums the database file and its WAL/SHM sidecars — the on-disk footprint
