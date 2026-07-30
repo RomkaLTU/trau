@@ -306,7 +306,7 @@ func decode(res *http.Response, dst any) error {
 	case http.StatusNotFound:
 		return ErrNotFound
 	case http.StatusTooManyRequests:
-		return ErrRateLimited
+		return &RateLimitError{ResetAt: retryAfterReset(res.Header.Get("Retry-After"), time.Now())}
 	}
 
 	resBody, err := io.ReadAll(res.Body)
