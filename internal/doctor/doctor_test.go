@@ -24,6 +24,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/launchd"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
+	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 	"github.com/RomkaLTU/trau/internal/transcriptdb"
 	"github.com/RomkaLTU/trau/internal/webserver"
 )
@@ -42,7 +43,7 @@ func lastCheck(t *testing.T, rr *runner) Check {
 
 func TestCheckJiraSkippedForNonJira(t *testing.T) {
 	rr := newTestRunner()
-	checkJira(context.Background(), config.Config{TrackerProvider: "linear"}, rr)
+	checkJira(context.Background(), config.Config{TrackerProvider: "linear"}, "linear", rr)
 	if len(rr.r.Checks) != 0 {
 		t.Errorf("expected no jira check for linear provider, got %+v", rr.r.Checks)
 	}
@@ -50,7 +51,7 @@ func TestCheckJiraSkippedForNonJira(t *testing.T) {
 
 func TestCheckJiraWarnsOnMissingKeys(t *testing.T) {
 	rr := newTestRunner()
-	checkJira(context.Background(), config.Config{TrackerProvider: "jira", JiraBaseURL: "https://acme.atlassian.net"}, rr)
+	checkJira(context.Background(), config.Config{TrackerProvider: "jira", JiraBaseURL: "https://acme.atlassian.net"}, "jira", rr)
 	c := lastCheck(t, rr)
 	if c.Status != warn {
 		t.Errorf("status = %q, want warn", c.Status)
@@ -76,7 +77,7 @@ func TestCheckJiraLiveAuthPass(t *testing.T) {
 	rr := newTestRunner()
 	checkJira(context.Background(), config.Config{
 		TrackerProvider: "jira", JiraBaseURL: srv.URL, JiraEmail: "me@acme.com", JiraAPIToken: token,
-	}, rr)
+	}, "jira", rr)
 	c := lastCheck(t, rr)
 	if c.Status != pass {
 		t.Errorf("status = %q msg=%q, want pass", c.Status, c.Message)
@@ -96,7 +97,7 @@ func TestCheckJiraLiveAuth401(t *testing.T) {
 	rr := newTestRunner()
 	checkJira(context.Background(), config.Config{
 		TrackerProvider: "jira", JiraBaseURL: srv.URL, JiraEmail: "me@acme.com", JiraAPIToken: token,
-	}, rr)
+	}, "jira", rr)
 	c := lastCheck(t, rr)
 	if c.Status != fail {
 		t.Errorf("status = %q, want fail", c.Status)
@@ -117,7 +118,7 @@ func TestCheckJiraLiveAuth401(t *testing.T) {
 
 func TestCheckLinearProjectSkippedForNonLinear(t *testing.T) {
 	rr := newTestRunner()
-	checkLinearProject(context.Background(), config.Config{TrackerProvider: "jira"}, rr)
+	checkLinearProject(context.Background(), config.Config{TrackerProvider: "jira"}, "jira", rr)
 	if len(rr.r.Checks) != 0 {
 		t.Errorf("expected no linear project check for jira provider, got %+v", rr.r.Checks)
 	}
@@ -125,7 +126,7 @@ func TestCheckLinearProjectSkippedForNonLinear(t *testing.T) {
 
 func TestCheckLinearProjectPassWhenScoped(t *testing.T) {
 	rr := newTestRunner()
-	checkLinearProject(context.Background(), config.Config{TrackerProvider: "linear", Project: "trau"}, rr)
+	checkLinearProject(context.Background(), config.Config{TrackerProvider: "linear", Project: "trau"}, "linear", rr)
 	c := lastCheck(t, rr)
 	if c.Status != pass {
 		t.Errorf("status = %q, want pass", c.Status)
@@ -137,7 +138,7 @@ func TestCheckLinearProjectPassWhenScoped(t *testing.T) {
 
 func TestCheckJiraProjectSkippedForNonJira(t *testing.T) {
 	rr := newTestRunner()
-	checkJiraProject(config.Config{TrackerProvider: "linear", Project: "trau"}, rr)
+	checkJiraProject(config.Config{TrackerProvider: "linear", Project: "trau"}, "linear", rr)
 	if len(rr.r.Checks) != 0 {
 		t.Errorf("expected no jira project check for linear provider, got %+v", rr.r.Checks)
 	}
@@ -145,19 +146,7 @@ func TestCheckJiraProjectSkippedForNonJira(t *testing.T) {
 
 func TestCheckJiraProjectPassOnProjectFallback(t *testing.T) {
 	rr := newTestRunner()
-	checkJiraProject(config.Config{TrackerProvider: "jira", Project: "MLG"}, rr)
-	c := lastCheck(t, rr)
-	if c.Status != pass {
-		t.Errorf("status = %q, want pass", c.Status)
-	}
-	if !strings.Contains(c.Message, "PROJECT=MLG") {
-		t.Errorf("message %q should name the project key it falls back to", c.Message)
-	}
-}
-
-func TestCheckJiraProjectMixedCaseProvider(t *testing.T) {
-	rr := newTestRunner()
-	checkJiraProject(config.Config{TrackerProvider: "Jira", Project: "MLG"}, rr)
+	checkJiraProject(config.Config{TrackerProvider: "jira", Project: "MLG"}, "jira", rr)
 	c := lastCheck(t, rr)
 	if c.Status != pass {
 		t.Errorf("status = %q, want pass", c.Status)
@@ -169,7 +158,7 @@ func TestCheckJiraProjectMixedCaseProvider(t *testing.T) {
 
 func TestCheckJiraProjectFailsWhenUnset(t *testing.T) {
 	rr := newTestRunner()
-	checkJiraProject(config.Config{TrackerProvider: "jira"}, rr)
+	checkJiraProject(config.Config{TrackerProvider: "jira"}, "jira", rr)
 	c := lastCheck(t, rr)
 	if c.Status != fail {
 		t.Errorf("status = %q, want fail", c.Status)
@@ -179,6 +168,175 @@ func TestCheckJiraProjectFailsWhenUnset(t *testing.T) {
 	}
 	if !strings.Contains(c.Message, "LINEAR_TEAM") {
 		t.Errorf("suggestion %q should name LINEAR_TEAM as the key to set", c.Message)
+	}
+}
+
+// fakeLinear stands in for Linear's GraphQL endpoint and counts every request, so
+// a case can assert how often the API is reached. It answers with an empty team
+// list, enough to drive both live checks down a path that records a result.
+func fakeLinear(t *testing.T, calls *int) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		*calls++
+		_, _ = w.Write([]byte(`{"data":{"teams":{"nodes":[]}}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	restore := newLinearClient
+	newLinearClient = func(apiKey string) *linearapi.Client {
+		c := linearapi.New(apiKey)
+		c.Endpoint = srv.URL
+		return c
+	}
+	t.Cleanup(func() { newLinearClient = restore })
+}
+
+// Every provider-specific check must key off the resolved provider, not the raw
+// TRACKER_PROVIDER whose default is "linear". The first case is the one the raw
+// field got backwards — project-layer Jira credentials under a user-layer
+// LINEAR_API_KEY — where doctor used to run live Linear API calls and skip Jira.
+func TestCheckTrackerGatesOnResolvedProvider(t *testing.T) {
+	jira := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"accountId":"x"}`))
+	}))
+	defer jira.Close()
+
+	jiraCreds := func(c *config.Config) {
+		c.JiraBaseURL = jira.URL
+		c.JiraEmail = "me@acme.com"
+		c.JiraAPIToken = "s3cr3t-token"
+	}
+	projectJiraSources := map[string]config.Layer{
+		"JIRA_BASE_URL":  config.LayerProject,
+		"JIRA_EMAIL":     config.LayerProject,
+		"JIRA_API_TOKEN": config.LayerProject,
+	}
+
+	cases := []struct {
+		name         string
+		cfg          config.Config
+		withJira     bool
+		sources      map[string]config.Layer
+		wantChecks   []string
+		wantStatuses []string
+		wantLinear   int
+	}{
+		{
+			name:         "project-layer jira creds outrank a user-layer linear key",
+			cfg:          config.Config{TrackerProvider: "linear", LinearAPIKey: "user-key", LinearTeam: "MLG"},
+			withJira:     true,
+			sources:      projectJiraSources,
+			wantChecks:   []string{"jira auth", "jira project key"},
+			wantStatuses: []string{pass, pass},
+		},
+		{
+			name:         "explicit linear runs the linear checks",
+			cfg:          config.Config{TrackerProvider: "linear", LinearAPIKey: "user-key", LinearTeam: "COD"},
+			sources:      map[string]config.Layer{"TRACKER_PROVIDER": config.LayerProject},
+			wantChecks:   []string{"linear labels", "linear project"},
+			wantStatuses: []string{fail, warn},
+			wantLinear:   2,
+		},
+		{
+			name:         "explicit linear wins over project-layer jira creds",
+			cfg:          config.Config{TrackerProvider: "linear", LinearTeam: "COD"},
+			withJira:     true,
+			sources:      map[string]config.Layer{"TRACKER_PROVIDER": config.LayerProject, "JIRA_BASE_URL": config.LayerProject, "JIRA_EMAIL": config.LayerProject, "JIRA_API_TOKEN": config.LayerProject},
+			wantChecks:   []string{"linear labels", "linear project"},
+			wantStatuses: []string{warn, warn},
+		},
+		{
+			name:         "explicit jira runs only the jira checks",
+			cfg:          config.Config{TrackerProvider: "jira", LinearAPIKey: "user-key", LinearTeam: "MLG"},
+			withJira:     true,
+			sources:      map[string]config.Layer{"TRACKER_PROVIDER": config.LayerProject},
+			wantChecks:   []string{"jira auth", "jira project key"},
+			wantStatuses: []string{pass, pass},
+		},
+		{
+			name:         "mixed-case explicit jira resolves the same",
+			cfg:          config.Config{TrackerProvider: "Jira", LinearAPIKey: "user-key", LinearTeam: "MLG"},
+			withJira:     true,
+			sources:      map[string]config.Layer{"TRACKER_PROVIDER": config.LayerUser},
+			wantChecks:   []string{"jira auth", "jira project key"},
+			wantStatuses: []string{pass, pass},
+		},
+		{
+			name:         "explicit azure runs only the azure checks",
+			cfg:          config.Config{TrackerProvider: "azure", LinearAPIKey: "user-key", LinearTeam: "Contoso"},
+			sources:      map[string]config.Layer{"TRACKER_PROVIDER": config.LayerProject},
+			wantChecks:   []string{"azure auth", "azure project"},
+			wantStatuses: []string{fail, pass},
+		},
+		{
+			name:    "explicit internal runs none of them",
+			cfg:     config.Config{TrackerProvider: "internal", LinearAPIKey: "user-key", LinearTeam: "COD"},
+			sources: map[string]config.Layer{"TRACKER_PROVIDER": config.LayerProject},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			fakeLinear(t, &calls)
+			cfg := tc.cfg
+			if tc.withJira {
+				jiraCreds(&cfg)
+			}
+
+			rr := newTestRunner()
+			checkTracker(context.Background(), cfg, cfg.ResolveSyncProvider(tc.sources), rr)
+
+			names := []string{}
+			statuses := []string{}
+			for _, c := range rr.r.Checks {
+				names = append(names, c.Name)
+				statuses = append(statuses, c.Status)
+			}
+			if strings.Join(names, ",") != strings.Join(tc.wantChecks, ",") {
+				t.Errorf("checks = %v, want %v", names, tc.wantChecks)
+			}
+			if strings.Join(statuses, ",") != strings.Join(tc.wantStatuses, ",") {
+				t.Errorf("statuses = %v, want %v (%+v)", statuses, tc.wantStatuses, rr.r.Checks)
+			}
+			if calls != tc.wantLinear {
+				t.Errorf("linear API calls = %d, want %d", calls, tc.wantLinear)
+			}
+		})
+	}
+}
+
+// The two remaining gates inside checkConfig: an inferred-jira repo is named as
+// jira rather than as the raw TRACKER_PROVIDER default, and it is never asked for
+// a LINEAR_TEAM it has no use for.
+func TestCheckConfigReportsResolvedProvider(t *testing.T) {
+	cfg := config.Config{
+		TrackerProvider: "linear",
+		LinearAPIKey:    "user-key",
+		ReadyLabel:      "trau-ready",
+		QuarantineLabel: "trau-quarantine",
+		BaseBranch:      "main",
+		Remote:          "origin",
+	}
+	sources := map[string]config.Layer{
+		"JIRA_BASE_URL":  config.LayerProject,
+		"JIRA_EMAIL":     config.LayerProject,
+		"JIRA_API_TOKEN": config.LayerProject,
+	}
+
+	rr := newTestRunner()
+	checkConfig(context.Background(), cfg, cfg.ResolveSyncProvider(sources), sources, teamSyncRepo(t, false), rr)
+
+	var tracker Check
+	for _, c := range rr.r.Checks {
+		if c.Name == "linear team" {
+			t.Errorf("a jira-resolved repo must not be asked for LINEAR_TEAM: %q", c.Message)
+		}
+		if c.Name == "tracker" {
+			tracker = c
+		}
+	}
+	if tracker.Status != pass || tracker.Message != "jira" {
+		t.Errorf("tracker row = %q/%q, want pass/jira", tracker.Status, tracker.Message)
 	}
 }
 
@@ -316,7 +474,7 @@ func TestCheckHubDatabaseCorrupt(t *testing.T) {
 // (here without an API key, so the generic warning applies).
 func TestCheckLinearProjectWarnsWhenUnset(t *testing.T) {
 	rr := newTestRunner()
-	checkLinearProject(context.Background(), config.Config{TrackerProvider: "linear", LinearTeam: "COD"}, rr)
+	checkLinearProject(context.Background(), config.Config{TrackerProvider: "linear", LinearTeam: "COD"}, "linear", rr)
 	c := lastCheck(t, rr)
 	if c.Status != warn {
 		t.Errorf("status = %q, want warn", c.Status)

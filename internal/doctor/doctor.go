@@ -60,10 +60,12 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 
 	w.header("trau doctor")
 
+	provider := cfg.ResolveSyncProvider(sources)
+
 	checkGit(ctx, rr)
 	checkGitHub(ctx, rr)
 	checkProvider(ctx, cfg, rr)
-	checkConfig(ctx, cfg, sources, repoRoot, rr)
+	checkConfig(ctx, cfg, provider, sources, repoRoot, rr)
 	checkRemote(ctx, cfg, repoRoot, rr)
 	checkConfigLayers(paths, rr)
 	checkConfigShadowing(paths, rr)
@@ -71,12 +73,7 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkTeamSync(ctx, cfg, repoRoot, rr)
 	checkSkills(cfg, repoRoot, rr)
 	checkSkillsDrift(repoRoot, rr)
-	checkLinearLabels(ctx, cfg, rr)
-	checkLinearProject(ctx, cfg, rr)
-	checkJira(ctx, cfg, rr)
-	checkJiraProject(cfg, rr)
-	checkAzure(ctx, cfg, rr)
-	checkAzureProject(cfg, rr)
+	checkTracker(ctx, cfg, provider, rr)
 	checkWritePerms(repoRoot, rr)
 	hub, hubUp := checkWebHub(ctx, cfg, version, rr)
 	checkHubSupervision(rr)
@@ -197,7 +194,20 @@ func checkClaudeBypass(cfg config.Config, rr *runner) {
 	}
 }
 
-func checkConfig(ctx context.Context, cfg config.Config, sources map[string]config.Layer, repoRoot string, rr *runner) {
+// checkTracker runs the checks that belong to exactly one tracker. They gate on
+// the resolved provider rather than on the raw TRACKER_PROVIDER, whose default is
+// "linear": a repo carrying only project-layer Jira credentials must be checked as
+// Jira and never probed against the Linear API.
+func checkTracker(ctx context.Context, cfg config.Config, provider string, rr *runner) {
+	checkLinearLabels(ctx, cfg, provider, rr)
+	checkLinearProject(ctx, cfg, provider, rr)
+	checkJira(ctx, cfg, provider, rr)
+	checkJiraProject(cfg, provider, rr)
+	checkAzure(ctx, cfg, provider, rr)
+	checkAzureProject(cfg, provider, rr)
+}
+
+func checkConfig(ctx context.Context, cfg config.Config, provider string, sources map[string]config.Layer, repoRoot string, rr *runner) {
 	if repoRoot == "" {
 		rr.add("repo", fail, "no target repo resolved", "pass --repo <path>, set TRAU_REPO_ROOT, or run inside a git repository")
 		return
@@ -213,7 +223,6 @@ func checkConfig(ctx context.Context, cfg config.Config, sources map[string]conf
 	}
 	rr.add("repo", pass, repoRoot, "")
 
-	provider := cfg.EffectiveTrackerProvider()
 	switch provider {
 	case "internal":
 		rr.add("tracker", pass, "internal (no external tracker configured — issues live in the hub)", "")
@@ -479,8 +488,12 @@ func configValue(cfg config.Config, key string) string {
 	return ""
 }
 
-func checkLinearLabels(ctx context.Context, cfg config.Config, rr *runner) {
-	if cfg.TrackerProvider != "linear" {
+// newLinearClient is a test seam: it lets a test assert that a repo resolving to
+// another provider reaches the Linear API zero times.
+var newLinearClient = linearapi.New
+
+func checkLinearLabels(ctx context.Context, cfg config.Config, provider string, rr *runner) {
+	if provider != "linear" {
 		return
 	}
 	if strings.TrimSpace(cfg.LinearTeam) == "" {
@@ -490,7 +503,7 @@ func checkLinearLabels(ctx context.Context, cfg config.Config, rr *runner) {
 		rr.add("linear labels", warn, "skipped label check (no LINEAR_API_KEY)", "set LINEAR_API_KEY to verify labels offline, or they will be checked at runtime via the Linear MCP")
 		return
 	}
-	client := linearapi.New(cfg.LinearAPIKey)
+	client := newLinearClient(cfg.LinearAPIKey)
 	team, err := client.TeamByKey(ctx, cfg.LinearTeam)
 	if err != nil {
 		rr.add("linear labels", fail, fmt.Sprintf("could not look up team %q: %v", cfg.LinearTeam, err), "verify LINEAR_API_KEY and LINEAR_TEAM")
@@ -519,8 +532,8 @@ func checkLinearLabels(ctx context.Context, cfg config.Config, rr *runner) {
 // disabled, and on a Linear team hosting several projects the loop can pick a
 // ticket that belongs to a different repo. With an API key the ready queue is
 // inspected so the warning is precise; without one the hole is reported as-is.
-func checkLinearProject(ctx context.Context, cfg config.Config, rr *runner) {
-	if cfg.TrackerProvider != "linear" {
+func checkLinearProject(ctx context.Context, cfg config.Config, provider string, rr *runner) {
+	if provider != "linear" {
 		return
 	}
 	if proj := strings.TrimSpace(cfg.Project); proj != "" {
@@ -532,7 +545,7 @@ func checkLinearProject(ctx context.Context, cfg config.Config, rr *runner) {
 		rr.add("linear project", warn, "PROJECT is empty — cross-project guards are off, any ticket in the team can be picked here", suggestion)
 		return
 	}
-	client := linearapi.New(cfg.LinearAPIKey)
+	client := newLinearClient(cfg.LinearAPIKey)
 	team, err := client.TeamByKey(ctx, cfg.LinearTeam)
 	if err != nil {
 		rr.add("linear project", warn, "PROJECT is empty — cross-project guards are off, any ticket in the team can be picked here", suggestion)
@@ -562,8 +575,8 @@ func checkLinearProject(ctx context.Context, cfg config.Config, rr *runner) {
 // pings the site for a live auth check. Missing keys are a warning, not a
 // failure: the tracker falls back to the Rovo MCP, so a single-account MCP user
 // can still run. The token and Authorization header are never printed.
-func checkJira(ctx context.Context, cfg config.Config, rr *runner) {
-	if cfg.TrackerProvider != "jira" {
+func checkJira(ctx context.Context, cfg config.Config, provider string, rr *runner) {
+	if provider != "jira" {
 		return
 	}
 	var missing []string
@@ -599,8 +612,8 @@ func checkJira(ctx context.Context, cfg config.Config, rr *runner) {
 // falling back to PROJECT. With neither set the tracker can never resolve a
 // binding and the board stays empty, so this fails instead of passing silently
 // while auth alone looks healthy.
-func checkJiraProject(cfg config.Config, rr *runner) {
-	if cfg.EffectiveTrackerProvider() != "jira" {
+func checkJiraProject(cfg config.Config, provider string, rr *runner) {
+	if provider != "jira" {
 		return
 	}
 	if key := strings.TrimSpace(cfg.LinearTeam); key != "" {
@@ -621,8 +634,8 @@ func checkJiraProject(cfg config.Config, rr *runner) {
 // keys are a failure rather than a warning: Azure DevOps has no MCP fallback, so
 // without the PAT the provider cannot reach the tracker at all. The token is
 // never printed.
-func checkAzure(ctx context.Context, cfg config.Config, rr *runner) {
-	if cfg.EffectiveTrackerProvider() != "azure" {
+func checkAzure(ctx context.Context, cfg config.Config, provider string, rr *runner) {
+	if provider != "azure" {
 		return
 	}
 	var missing []string
@@ -654,8 +667,8 @@ func checkAzure(ctx context.Context, cfg config.Config, rr *runner) {
 // project name from LINEAR_TEAM, falling back to PROJECT. With neither set no
 // work-item route can be built, so this fails rather than letting a healthy auth
 // check imply a working tracker.
-func checkAzureProject(cfg config.Config, rr *runner) {
-	if cfg.EffectiveTrackerProvider() != "azure" {
+func checkAzureProject(cfg config.Config, provider string, rr *runner) {
+	if provider != "azure" {
 		return
 	}
 	if key := strings.TrimSpace(cfg.LinearTeam); key != "" {
