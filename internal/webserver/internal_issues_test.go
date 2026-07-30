@@ -308,7 +308,7 @@ func TestInternalProviderSkipsBlockedIssueUntilBlockerIsDone(t *testing.T) {
 	if picked != blocker.ID {
 		t.Fatalf("pick = %q, want the blocker %s — the dependent is blocked", picked, blocker.ID)
 	}
-	if err := provider.SetStatus(ctx, blocker.ID, "done", ""); err != nil {
+	if err := provider.SetStatus(ctx, blocker.ID, tracker.StageDone, ""); err != nil {
 		t.Fatalf("finish blocker: %v", err)
 	}
 	picked, err = provider.Pick(ctx, tracker.Scope{})

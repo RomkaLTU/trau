@@ -71,6 +71,11 @@ type Config struct {
 	Repo       string
 	HubBaseURL string
 	HubToken   string
+	// StatusOverrides pins a lifecycle stage to an exact status name, for
+	// workflows where the stage's usual names are absent and its category holds
+	// more than one candidate. An absent or empty entry leaves the stage to
+	// resolve against the workflow the tracker reports.
+	StatusOverrides map[Stage]string
 }
 
 // SubIssue is a lightweight identifier+title pair for an issue's children. Done
@@ -119,8 +124,8 @@ type Tracker interface {
 	// Title returns the human-readable title of issue id.
 	Title(ctx context.Context, id string) (string, error)
 
-	// SetStatus moves a ticket to a workflow status (e.g. "In Review", "Done").
-	SetStatus(ctx context.Context, id, status, extra string) error
+	// SetStatus moves a ticket to the workflow status its tracker uses for stage.
+	SetStatus(ctx context.Context, id string, stage Stage, extra string) error
 
 	// Reset returns a ticket to an unstarted/ready state so the picker can
 	// re-select it.
@@ -335,6 +340,7 @@ func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 			QueuedLabel:     cfg.QueuedLabel,
 			SplitLabel:      cfg.SplitLabel,
 			APIKey:          cfg.APIKey,
+			StatusOverrides: cfg.StatusOverrides,
 		}, nil
 	case "jira":
 		return &Jira{
@@ -347,6 +353,7 @@ func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 			BaseURL:         cfg.BaseURL,
 			Email:           cfg.Email,
 			APIToken:        cfg.APIKey,
+			StatusOverrides: cfg.StatusOverrides,
 		}, nil
 	case "azure":
 		// Azure DevOps has no MCP path, so the runner is unused: the PAT is the only
@@ -358,6 +365,7 @@ func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 			ReadyLabel:      cfg.ReadyLabel,
 			QuarantineLabel: cfg.QuarantineLabel,
 			SplitLabel:      cfg.SplitLabel,
+			StatusOverrides: cfg.StatusOverrides,
 		}, nil
 	case "github":
 		return &GitHub{Runner: runner, Repo: cfg.Team, ReadyLabel: cfg.ReadyLabel, QuarantineLabel: cfg.QuarantineLabel, SplitLabel: cfg.SplitLabel}, nil

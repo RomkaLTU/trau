@@ -114,7 +114,7 @@ func (t *statusTracker) IssueStatus(context.Context, string) (tracker.IssueStatu
 // doneFailTracker simulates a swallowed mark-done failure (e.g. a transient 429).
 type doneFailTracker struct{ fakeTracker }
 
-func (t *doneFailTracker) SetStatus(context.Context, string, string, string) error {
+func (t *doneFailTracker) SetStatus(context.Context, string, tracker.Stage, string) error {
 	return errors.New("429 rate limited")
 }
 

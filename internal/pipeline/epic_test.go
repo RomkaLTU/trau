@@ -53,7 +53,7 @@ func TestFinalizeEpicAutoMergesWhenCIGreen(t *testing.T) {
 	if gh.mergeMethod != "squash" || !gh.mergeDeleted {
 		t.Fatalf("expected squash merge with branch delete, got %q delete=%v", gh.mergeMethod, gh.mergeDeleted)
 	}
-	if tr.setStatus != "Done" || !strings.Contains(tr.setExtra, "merged to main") {
+	if tr.setStatus != tracker.StageDone || !strings.Contains(tr.setExtra, "merged to main") {
 		t.Fatalf("expected epic closed as merged, got %s %q", tr.setStatus, tr.setExtra)
 	}
 }
@@ -94,7 +94,7 @@ func TestFinalizeEpicMergesWithRequireCIOffAndNoChecks(t *testing.T) {
 	if gh.mergeCalls != 1 {
 		t.Fatalf("REQUIRE_CI=0 must merge a checkless PR, got %d merges", gh.mergeCalls)
 	}
-	if tr.setStatus != "Done" {
+	if tr.setStatus != tracker.StageDone {
 		t.Fatalf("expected epic closed Done, got %s", tr.setStatus)
 	}
 }
@@ -145,7 +145,7 @@ func TestFinalizeEpicReattemptAdoptsMergedPR(t *testing.T) {
 		t.Fatalf("already-merged epic must not merge again, got %d merges", gh.mergeCalls)
 	}
 	assertEpicCheckpointedMerged(t, p)
-	if tr.setStatus != "Done" || !strings.Contains(tr.setExtra, "https://github.test/pr/42") {
+	if tr.setStatus != tracker.StageDone || !strings.Contains(tr.setExtra, "https://github.test/pr/42") {
 		t.Fatalf("expected epic closed Done citing the merged PR, got %s %q", tr.setStatus, tr.setExtra)
 	}
 }
@@ -194,7 +194,7 @@ func TestFinalizeEpicManualMergeWaitsThenShips(t *testing.T) {
 	if tr.quarantineCalls != 0 {
 		t.Fatalf("a merged epic must not be quarantined, got %d", tr.quarantineCalls)
 	}
-	if tr.setID != "COD-1" || tr.setStatus != "Done" {
+	if tr.setID != "COD-1" || tr.setStatus != tracker.StageDone {
 		t.Fatalf("expected epic set Done, got %s %s", tr.setID, tr.setStatus)
 	}
 	if !strings.Contains(tr.setExtra, "merged to main") {
@@ -242,7 +242,7 @@ func TestFinalizeEpicManualMergeClosedNotShipped(t *testing.T) {
 	if tr.quarantineCalls != 1 || tr.quarantineID != "COD-1" {
 		t.Errorf("Quarantine = %d call(s) on %q, want 1 on COD-1", tr.quarantineCalls, tr.quarantineID)
 	}
-	if tr.setStatus == "Done" {
+	if tr.setStatus == tracker.StageDone {
 		t.Errorf("a rejected epic must not be closed as done, got %q", tr.setStatus)
 	}
 	if got := p.State.Get("COD-1", "PHASE"); got != state.Quarantined {
@@ -284,7 +284,7 @@ func TestFinalizeEpicManualMergeCancelThenRerunReconciles(t *testing.T) {
 	if tr.quarantineCalls != 0 {
 		t.Fatalf("a stop is blameless — Quarantine called %d times, want 0", tr.quarantineCalls)
 	}
-	if tr.setStatus == "Done" {
+	if tr.setStatus == tracker.StageDone {
 		t.Fatalf("a stopped epic must not be closed, got %q", tr.setStatus)
 	}
 	if got := p.State.Get("COD-1", "PR_STATUS"); got != "" {
@@ -298,7 +298,7 @@ func TestFinalizeEpicManualMergeCancelThenRerunReconciles(t *testing.T) {
 	if err := p.FinalizeEpic(context.Background()); err != nil {
 		t.Fatalf("rerun FinalizeEpic returned error: %v", err)
 	}
-	if tr.setStatus != "Done" || !strings.Contains(tr.setExtra, "merged to main") {
+	if tr.setStatus != tracker.StageDone || !strings.Contains(tr.setExtra, "merged to main") {
 		t.Fatalf("rerun must reconcile the merge and ship, got %s %q", tr.setStatus, tr.setExtra)
 	}
 	assertEpicCheckpointedMerged(t, p)
@@ -478,13 +478,13 @@ func TestFinalizeEpicShipsWhenTrackerRegressedChildIsCheckpointMerged(t *testing
 		t.Fatalf("delivered children must ship the epic, got %d merges", gh.mergeCalls)
 	}
 	reassert := tr.setFor("COD-3")
-	if reassert == nil || reassert.status != "Done" {
+	if reassert == nil || reassert.stage != tracker.StageDone {
 		t.Fatalf("regressed child must be re-asserted Done, got %+v", reassert)
 	}
 	if !strings.Contains(reassert.extra, "PR #424") {
 		t.Errorf("re-assert comment = %q, want the delivering PR named", reassert.extra)
 	}
-	if closed := tr.setFor("COD-1"); closed == nil || closed.status != "Done" {
+	if closed := tr.setFor("COD-1"); closed == nil || closed.stage != tracker.StageDone {
 		t.Fatalf("epic must still close, got %+v", closed)
 	}
 }
@@ -544,7 +544,7 @@ func TestFinalizeEpicShipsWhenReassertFails(t *testing.T) {
 	if gh.mergeCalls != 1 {
 		t.Fatalf("a failed re-assert must not block the epic, got %d merges", gh.mergeCalls)
 	}
-	if closed := inner.setFor("COD-1"); closed == nil || closed.status != "Done" {
+	if closed := inner.setFor("COD-1"); closed == nil || closed.stage != tracker.StageDone {
 		t.Fatalf("epic must still close, got %+v", closed)
 	}
 }
@@ -781,14 +781,17 @@ type epicTracker struct {
 	status          map[string]tracker.IssueStatus
 	statusErr       error
 	setID           string
-	setStatus       string
+	setStatus       tracker.Stage
 	setExtra        string
 	sets            []trackerSet
 	quarantineCalls int
 	quarantineID    string
 }
 
-type trackerSet struct{ id, status, extra string }
+type trackerSet struct {
+	id, extra string
+	stage     tracker.Stage
+}
 
 // setFor returns the last status write aimed at id, or nil when there was none.
 func (e *epicTracker) setFor(id string) *trackerSet {
@@ -807,11 +810,11 @@ type childSetFailTracker struct {
 	epicID string
 }
 
-func (t *childSetFailTracker) SetStatus(ctx context.Context, id, status, extra string) error {
+func (t *childSetFailTracker) SetStatus(ctx context.Context, id string, stage tracker.Stage, extra string) error {
 	if id != t.epicID {
 		return errors.New("tracker unavailable")
 	}
-	return t.epicTracker.SetStatus(ctx, id, status, extra)
+	return t.epicTracker.SetStatus(ctx, id, stage, extra)
 }
 
 func (e *epicTracker) Pick(context.Context, tracker.Scope) (string, error) { return "", nil }
@@ -819,9 +822,9 @@ func (e *epicTracker) SubIssues(context.Context, string) ([]tracker.SubIssue, er
 	return e.subs, nil
 }
 func (e *epicTracker) Title(context.Context, string) (string, error) { return e.title, nil }
-func (e *epicTracker) SetStatus(_ context.Context, id, status, extra string) error {
-	e.setID, e.setStatus, e.setExtra = id, status, extra
-	e.sets = append(e.sets, trackerSet{id: id, status: status, extra: extra})
+func (e *epicTracker) SetStatus(_ context.Context, id string, stage tracker.Stage, extra string) error {
+	e.setID, e.setStatus, e.setExtra = id, stage, extra
+	e.sets = append(e.sets, trackerSet{id: id, stage: stage, extra: extra})
 	return nil
 }
 func (e *epicTracker) Reset(context.Context, string) error { return nil }

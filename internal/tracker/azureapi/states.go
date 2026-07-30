@@ -46,23 +46,3 @@ func Category(state string) StateCategory {
 		return CategoryUnknown
 	}
 }
-
-// TargetCategory classifies the status name a caller asks to move a work item
-// to. It is deliberately separate from Category: the loop names its targets in
-// its own vocabulary ("In Review"), which has to survive being pointed at a
-// project whose template has no state by that name.
-func TargetCategory(status string) StateCategory {
-	if c := Category(status); c != CategoryUnknown {
-		return c
-	}
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "started", "in-progress", "wip":
-		return CategoryInProgress
-	case "review", "in-review", "ready for review":
-		return CategoryResolved
-	case "complete", "shipped", "delivered":
-		return CategoryCompleted
-	default:
-		return CategoryUnknown
-	}
-}

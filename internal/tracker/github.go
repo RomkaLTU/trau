@@ -144,13 +144,13 @@ func (g *GitHub) issueStatusPrompt(id string) string {
 }
 
 // SetStatus emulates a workflow status change via labels and comments.
-func (g *GitHub) SetStatus(ctx context.Context, id, status, extra string) error {
-	_, err := g.Runner.Run(ctx, g.setStatusPrompt(id, status, extra), "status")
+func (g *GitHub) SetStatus(ctx context.Context, id string, stage Stage, extra string) error {
+	_, err := g.Runner.Run(ctx, g.setStatusPrompt(id, stage, extra), "status")
 	return err
 }
 
-func (g *GitHub) setStatusPrompt(id, status, extra string) string {
-	prompt := fmt.Sprintf("Use the GitHub MCP. For issue %s in repository %q, update labels and add a comment to reflect status %q.", id, g.Repo, status)
+func (g *GitHub) setStatusPrompt(id string, stage Stage, extra string) string {
+	prompt := fmt.Sprintf("Use the GitHub MCP. For issue %s in repository %q, update labels and add a comment to reflect status %q.", id, g.Repo, stage.Display())
 	if extra != "" {
 		prompt += " " + extra
 	}
@@ -162,7 +162,7 @@ func (g *GitHub) Reset(ctx context.Context, id string) error {
 	extra := fmt.Sprintf("Remove the label '%s' if present and ensure '%s' is present so the loop can re-pick it; "+
 		"re-open the issue if it is closed; "+
 		"add a comment: \"Trau loop reset %s to start fresh.\"", g.QuarantineLabel, g.ReadyLabel, id)
-	return g.SetStatus(ctx, id, "open", extra)
+	return g.SetStatus(ctx, id, StageTodo, extra)
 }
 
 // Quarantine marks a ticket unrecoverable.

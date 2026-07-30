@@ -1652,7 +1652,7 @@ func (p *Pipeline) resolveBuildBranch(ctx context.Context, id string) (string, e
 	p.logf("  branch %s ← %s", branch, base)
 	p.pinForkPoint(ctx, id)
 
-	if err := p.Tracker.SetStatus(ctx, id, "In Progress", ""); err != nil {
+	if err := p.Tracker.SetStatus(ctx, id, tracker.StageInProgress, ""); err != nil {
 		p.logf("  set In Progress error (continuing): %v", err)
 	}
 	p.clearQueuedLabel(ctx, id)
@@ -2367,7 +2367,7 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 	if err := p.setPhase(id, state.PROpen); err != nil {
 		return fmt.Errorf("commit %s: checkpoint pr_open: %w", id, err)
 	}
-	if err := p.Tracker.SetStatus(ctx, id, "In Review", "Attach this PR link to the issue: "+prURL+"."); err != nil {
+	if err := p.Tracker.SetStatus(ctx, id, tracker.StageInReview, "Attach this PR link to the issue: "+prURL+"."); err != nil {
 		p.logf("  status (In Review) error: %v", err)
 	}
 	return nil
@@ -2385,7 +2385,7 @@ func (p *Pipeline) recordLocalDelivery(ctx context.Context, id string) error {
 	if err := p.setPhase(id, state.PROpen); err != nil {
 		return fmt.Errorf("commit %s: checkpoint pr_open: %w", id, err)
 	}
-	if err := p.Tracker.SetStatus(ctx, id, "In Review", "This repo has no remote, so no PR was opened — "+localDeliveryNote+"."); err != nil {
+	if err := p.Tracker.SetStatus(ctx, id, tracker.StageInReview, "This repo has no remote, so no PR was opened — "+localDeliveryNote+"."); err != nil {
 		p.logf("  status (In Review) error: %v", err)
 	}
 	return nil
@@ -2842,7 +2842,7 @@ func (p *Pipeline) syncBranchWithBase(ctx context.Context, id, branch, base, lab
 }
 
 func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
-	if err := p.Tracker.SetStatus(ctx, id, "Done", ""); err != nil {
+	if err := p.Tracker.SetStatus(ctx, id, tracker.StageDone, ""); err != nil {
 		p.logf("  status (Done) error: %v", err)
 	} else if err := p.State.Set(id, "TRACKER_DONE", "1"); err != nil {
 		p.logf("  checkpoint TRACKER_DONE error (continuing): %v", err)

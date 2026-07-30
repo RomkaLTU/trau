@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -753,5 +754,63 @@ func TestParseEligibleParentOptional(t *testing.T) {
 	}
 	if list[0].Parent != "" {
 		t.Errorf("Parent = %q, want empty for old-shape output", list[0].Parent)
+	}
+}
+
+// A team that renamed its workflow states still lands the review stage on the
+// state it uses for review, resolved from the states the API reports.
+func TestLinearSetStatusResolvesRenamedWorkflowState(t *testing.T) {
+	cases := []struct {
+		name     string
+		override string
+		want     string
+	}{
+		{"resolved from the team's states", "", "state-review"},
+		{"pinned by STATUS_IN_REVIEW", "Building", "state-building"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var updated string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				q := string(body)
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case strings.Contains(q, "query Issue"):
+					_, _ = io.WriteString(w, `{"data":{"issues":{"nodes":[{"id":"iss-1","identifier":"COD-7","team":{"id":"team-1","key":"COD"}}]}}}`)
+				case strings.Contains(q, "query WorkflowStates"):
+					_, _ = io.WriteString(w, `{"data":{"workflowStates":{"nodes":[
+						{"id":"state-next","name":"Up Next","type":"unstarted"},
+						{"id":"state-building","name":"Building","type":"started"},
+						{"id":"state-review","name":"Awaiting Review","type":"started"},
+						{"id":"state-live","name":"Live","type":"completed"}
+					]}}}`)
+				case strings.Contains(q, "mutation IssueUpdate"):
+					var req struct {
+						Variables struct {
+							StateID string `json:"stateId"`
+						} `json:"variables"`
+					}
+					_ = json.Unmarshal(body, &req)
+					updated = req.Variables.StateID
+					_, _ = io.WriteString(w, `{"data":{"issueUpdate":{"success":true,"issue":{"id":"iss-1"}}}}`)
+				default:
+					t.Errorf("unexpected GraphQL query: %s", q)
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+			}))
+			defer srv.Close()
+			l := &Linear{Team: "COD", APIKey: "lin_key", endpoint: srv.URL}
+			if tc.override != "" {
+				l.StatusOverrides = map[Stage]string{StageInReview: tc.override}
+			}
+
+			if err := l.SetStatus(context.Background(), "COD-7", StageInReview, ""); err != nil {
+				t.Fatalf("SetStatus error: %v", err)
+			}
+			if updated != tc.want {
+				t.Errorf("stateId = %q, want %q", updated, tc.want)
+			}
+		})
 	}
 }

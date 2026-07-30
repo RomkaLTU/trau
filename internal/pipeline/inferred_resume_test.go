@@ -22,15 +22,15 @@ func (g parkedGit) CurrentBranch(context.Context) (string, error) { return g.bra
 type inferredTracker struct {
 	fakeTracker
 	status   tracker.IssueStatus
-	statuses []string
+	statuses []tracker.Stage
 }
 
 func (t *inferredTracker) IssueStatus(context.Context, string) (tracker.IssueStatus, error) {
 	return t.status, nil
 }
 
-func (t *inferredTracker) SetStatus(_ context.Context, _, status, _ string) error {
-	t.statuses = append(t.statuses, status)
+func (t *inferredTracker) SetStatus(_ context.Context, _ string, stage tracker.Stage, _ string) error {
+	t.statuses = append(t.statuses, stage)
 	return nil
 }
 
@@ -83,8 +83,8 @@ func TestInferredResumeDeclinesBranchWithMergedPR(t *testing.T) {
 	if got := p.State.Get(id, "BRANCH"); got != branch {
 		t.Errorf("BRANCH = %q, want %q", got, branch)
 	}
-	if len(tr.statuses) != 1 || tr.statuses[0] != "Done" {
-		t.Errorf("tracker statuses = %v, want [Done]", tr.statuses)
+	if len(tr.statuses) != 1 || tr.statuses[0] != tracker.StageDone {
+		t.Errorf("tracker statuses = %v, want [done]", tr.statuses)
 	}
 	if !logs.contains("already delivered via PR #215") {
 		t.Errorf("log lines %v, want one naming the merged PR", logs.lines)

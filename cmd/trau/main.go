@@ -707,6 +707,12 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		QueuedLabel:     cfg.QueuedLabel,
 		SplitLabel:      cfg.SplitLabel,
 		APIKey:          cfg.LinearAPIKey,
+		StatusOverrides: map[tracker.Stage]string{
+			tracker.StageTodo:       cfg.StatusTodo,
+			tracker.StageInProgress: cfg.StatusInProgress,
+			tracker.StageInReview:   cfg.StatusInReview,
+			tracker.StageDone:       cfg.StatusDone,
+		},
 	}
 	switch provider {
 	case "jira":

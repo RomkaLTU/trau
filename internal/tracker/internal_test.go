@@ -126,7 +126,7 @@ func TestInternalPickNoneWhenEmpty(t *testing.T) {
 func TestInternalSetStatusMapsToState(t *testing.T) {
 	hub := newFakeHub()
 	in := newInternal(hub)
-	if err := in.SetStatus(context.Background(), "LOOP-1", "In Review", "PR: http://x"); err != nil {
+	if err := in.SetStatus(context.Background(), "LOOP-1", StageInReview, "PR: http://x"); err != nil {
 		t.Fatalf("set status: %v", err)
 	}
 	if len(hub.transitions) != 1 {

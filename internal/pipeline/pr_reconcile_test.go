@@ -69,8 +69,8 @@ func TestCIAndMergeReconcilesEmptyPRFromMergedBranch(t *testing.T) {
 	if got := p.State.Get(id, "PR_URL"); got != prURL {
 		t.Errorf("PR_URL = %q, want %q", got, prURL)
 	}
-	if len(tr.statuses) != 1 || tr.statuses[0] != "Done" {
-		t.Errorf("tracker statuses = %v, want [Done]", tr.statuses)
+	if len(tr.statuses) != 1 || tr.statuses[0] != tracker.StageDone {
+		t.Errorf("tracker statuses = %v, want [done]", tr.statuses)
 	}
 	if len(gh.polled) != 0 {
 		t.Errorf("CI polled for %v, want no poll on delivered work", gh.polled)
@@ -173,8 +173,8 @@ func TestResumeShortCircuitsPRLessCheckpointOnMergedBranch(t *testing.T) {
 	if got := p.State.Get(id, "FAILURE_REASON"); got != "" {
 		t.Errorf("FAILURE_REASON = %q, want cleared", got)
 	}
-	if len(tr.statuses) != 1 || tr.statuses[0] != "Done" {
-		t.Errorf("tracker statuses = %v, want [Done]", tr.statuses)
+	if len(tr.statuses) != 1 || tr.statuses[0] != tracker.StageDone {
+		t.Errorf("tracker statuses = %v, want [done]", tr.statuses)
 	}
 }
 

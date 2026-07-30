@@ -66,6 +66,13 @@ type Config struct {
 	QueuedLabel           string
 	SplitLabel            string
 	Project               string
+	// StatusTodo, StatusInProgress, StatusInReview and StatusDone pin a lifecycle
+	// stage to an exact tracker status name. Empty leaves the stage to resolve
+	// against the workflow the tracker reports.
+	StatusTodo       string
+	StatusInProgress string
+	StatusInReview   string
+	StatusDone       string
 
 	BaseBranch string
 	Remote     string
@@ -767,6 +774,10 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("AZURE_PAT", &c.AzurePAT)
 	str("READY_LABEL", &c.ReadyLabel)
 	str("QUARANTINE_LABEL", &c.QuarantineLabel)
+	str("STATUS_TODO", &c.StatusTodo)
+	str("STATUS_IN_PROGRESS", &c.StatusInProgress)
+	str("STATUS_IN_REVIEW", &c.StatusInReview)
+	str("STATUS_DONE", &c.StatusDone)
 	strAllowEmpty("QUEUED_LABEL", &c.QueuedLabel)
 	str("SPLIT_LABEL", &c.SplitLabel)
 	str("PROJECT", &c.Project)
@@ -1697,6 +1708,10 @@ func KnownKeys() []KeyMeta {
 		{Key: "READY_LABEL", Group: sectionTracker, WebEditable: true, Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
 		{Key: "QUARANTINE_LABEL", Group: sectionTracker, WebEditable: true, Default: "needs-human", Description: "Label applied when a ticket fails"},
 		{Key: "QUEUED_LABEL", Group: sectionTracker, WebEditable: true, Default: "queued", Description: "Label mirrored onto tickets waiting in the hub queue"},
+		{Key: "STATUS_TODO", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Status name this workflow uses for unstarted work; empty resolves it from the tracker's own transitions"},
+		{Key: "STATUS_IN_PROGRESS", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Status name this workflow uses for work in progress; empty resolves it from the tracker's own transitions"},
+		{Key: "STATUS_IN_REVIEW", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Status name this workflow uses for work awaiting review (e.g. READY FOR QA); empty resolves it from the tracker's own transitions"},
+		{Key: "STATUS_DONE", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Status name this workflow uses for delivered work; empty resolves it from the tracker's own transitions"},
 		{Key: "PROJECT", Group: sectionTracker, WebEditable: true, Description: "Linear project this repo owns — scopes the ready queue, guards cross-project runs, and targets filed bugs"},
 		{Key: "BASE_BRANCH", Group: sectionGit, WebEditable: true, Default: "main", Description: "Default git base branch"},
 		{Key: "REMOTE", Group: sectionGit, Default: "origin", Description: "Git remote name"},
@@ -2236,6 +2251,14 @@ func keyValue(cfg Config, key string) string {
 		return cfg.QuarantineLabel
 	case "QUEUED_LABEL":
 		return cfg.QueuedLabel
+	case "STATUS_TODO":
+		return cfg.StatusTodo
+	case "STATUS_IN_PROGRESS":
+		return cfg.StatusInProgress
+	case "STATUS_IN_REVIEW":
+		return cfg.StatusInReview
+	case "STATUS_DONE":
+		return cfg.StatusDone
 	case "SPLIT_LABEL":
 		return cfg.SplitLabel
 	case "PROJECT":

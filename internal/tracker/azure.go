@@ -29,6 +29,7 @@ type AzureDevOps struct {
 	ReadyLabel      string
 	QuarantineLabel string
 	SplitLabel      string
+	StatusOverrides map[Stage]string
 }
 
 func (a *AzureDevOps) api() *azureapi.Client {
@@ -299,16 +300,63 @@ func (a *AzureDevOps) IssueDetail(ctx context.Context, id string) (IssueDetail, 
 	return detail, nil
 }
 
-// SetStatus moves a work item to the state matching status, attaching extra as a
-// discussion comment when supplied. Azure DevOps writes System.State directly, so
-// the work is matching the loop's status name against the states the project's
-// process template actually declares.
-func (a *AzureDevOps) SetStatus(ctx context.Context, id, status, extra string) error {
+// SetStatus moves a work item to the state its process template uses for stage,
+// attaching extra as a discussion comment when supplied. Azure DevOps writes
+// System.State directly, so the work is matching the stage against the states the
+// project's template actually declares.
+func (a *AzureDevOps) SetStatus(ctx context.Context, id string, stage Stage, extra string) error {
 	n, err := workItemID(id)
 	if err != nil {
 		return err
 	}
-	return a.api().SetState(ctx, a.Project, n, status, extra)
+	state, err := a.resolveState(ctx, n, stage)
+	if err != nil {
+		return err
+	}
+	return a.api().SetState(ctx, a.Project, n, state, extra)
+}
+
+// resolveState picks the state name to write for stage. Each stock template names
+// the same workflow stages differently — Agile calls started work Active, Scrum
+// Committed, Basic Doing — so a name match is only the first attempt; the state
+// category the template reports carries the rest.
+func (a *AzureDevOps) resolveState(ctx context.Context, id int, stage Stage) (string, error) {
+	item, err := a.api().WorkItem(ctx, a.Project, id)
+	if err != nil {
+		return "", err
+	}
+	states, err := a.api().States(ctx, a.Project, item.Type)
+	if err != nil {
+		return "", err
+	}
+	options := make([]WorkflowOption, len(states))
+	for i, s := range states {
+		options[i] = WorkflowOption{Name: s.Name, Category: s.Category}
+	}
+	i, ok := ResolveStage(stage, a.StatusOverrides[stage], azureCategories(stage), options)
+	if !ok {
+		return "", fmt.Errorf("%w for %s on %s #%d (available: %s) — pin one with %s",
+			azureapi.ErrNoState, stage.Display(), item.Type, id, optionNames(options), stage.ConfigKey())
+	}
+	return options[i].Name, nil
+}
+
+// azureCategories are the state categories a stage settles for when no state name
+// matched. Scrum declares no Resolved category, so a review stage lands on the
+// in-progress state instead of failing — the work is still live either way.
+func azureCategories(stage Stage) []string {
+	switch stage {
+	case StageTodo:
+		return []string{string(azureapi.CategoryProposed)}
+	case StageInProgress:
+		return []string{string(azureapi.CategoryInProgress), string(azureapi.CategoryResolved)}
+	case StageInReview:
+		return []string{string(azureapi.CategoryResolved), string(azureapi.CategoryInProgress)}
+	case StageDone:
+		return []string{string(azureapi.CategoryCompleted)}
+	default:
+		return nil
+	}
 }
 
 // AddLabel adds one tag to a work item without disturbing its other tags.
@@ -346,7 +394,11 @@ func (a *AzureDevOps) Reset(ctx context.Context, id string) error {
 	if err := a.api().UpdateTags(ctx, a.Project, n, []string{a.ReadyLabel}, []string{a.QuarantineLabel}); err != nil {
 		return err
 	}
-	return a.api().SetState(ctx, a.Project, n, "To Do", fmt.Sprintf("Trau loop reset %s to start fresh.", id))
+	state, err := a.resolveState(ctx, n, StageTodo)
+	if err != nil {
+		return err
+	}
+	return a.api().SetState(ctx, a.Project, n, state, fmt.Sprintf("Trau loop reset %s to start fresh.", id))
 }
 
 // Quarantine marks a ticket unrecoverable: it drops the ready tag, adds the
