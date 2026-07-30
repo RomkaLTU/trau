@@ -3452,10 +3452,12 @@ func (p *Pipeline) clearFailureMarks(id string) {
 }
 
 // isAuthFailure reports whether err is (or wraps) the agent's auth/login-wall
-// sentinel — a provider state that retrying can't fix and that isn't the ticket's
-// fault, so the loop pauses blamelessly rather than burning retries.
+// sentinel or one of its blocked-on-a-dialog sentinels — provider states that
+// retrying can't fix and that aren't the ticket's fault, so the loop pauses
+// blamelessly rather than burning retries. A dialog pauses for the same reason
+// an auth wall does: the fix is a human at the provider CLI once (COD-1326).
 func isAuthFailure(err error) bool {
-	return agent.IsAuthRequired(err)
+	return agent.IsAuthRequired(err) || agent.IsBlockedOnPrompt(err)
 }
 
 // guardBudget enforces the configured spend ceilings before an agent call. It

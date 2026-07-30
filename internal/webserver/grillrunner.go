@@ -239,22 +239,29 @@ func (r *grillRunner) firstPrompt(ctx context.Context, repo registry.Repo, sess 
 	if sess.IssueID == "" {
 		note := r.srv.withPastedFiles(ctx, repo, sess, r.openingNote(sess.ID))
 		if research {
-			return grillResearchIdeaPrompt(renderer, note)
+			return grillResearchIdeaPrompt(renderer, note, sess.AutoAccept)
 		}
-		return grillAuthoringPrompt(renderer, note)
+		return grillAuthoringPrompt(renderer, note, sess.AutoAccept)
 	}
 	title, description := "", ""
 	if iss, found, err := r.srv.stores.Issues().Get(repo.Root, sess.IssueID); err == nil && found {
 		title, description = iss.Title, iss.Description
 	}
-	files := r.srv.materializeIssueAttachments(ctx, repo, sess.IssueID)
+	in := grillPromptInput{
+		issueID:     sess.IssueID,
+		title:       title,
+		description: description,
+		files:       r.srv.materializeIssueAttachments(ctx, repo, sess.IssueID),
+	}
 	if r.srv.isPregrill(sess.ID) {
-		return grillPregrillPrompt(renderer, sess.IssueID, title, description, files)
+		return grillPregrillPrompt(renderer, in)
 	}
+	in.focus = r.openingNote(sess.ID)
+	in.autoAccept = sess.AutoAccept
 	if research {
-		return grillResearchPrompt(renderer, sess.IssueID, title, description, r.openingNote(sess.ID), files)
+		return grillResearchPrompt(renderer, in)
 	}
-	return grillIssuePrompt(renderer, sess.IssueID, title, description, r.openingNote(sess.ID), files)
+	return grillIssuePrompt(renderer, in)
 }
 
 // answerPrompt is the resume-turn prompt: the user's latest answer with any image

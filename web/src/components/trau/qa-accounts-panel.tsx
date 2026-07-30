@@ -4,6 +4,8 @@ import { Check, Pencil, Plus, Trash2, TriangleAlert, X } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { ConfirmDialog } from '@/components/trau/confirm-dialog'
 import { TerminalCard } from '@/components/trau/terminal-card'
 import { cn } from '@/lib/utils'
@@ -274,14 +276,13 @@ function AccountEditor({
     setDraft((prev) => ({ ...prev, ...patch }))
   const valid = draft.label.trim() !== ''
 
-  const inputClass =
-    'w-full rounded-md border border-border bg-input px-3 py-1.5 font-mono text-xs text-foreground placeholder:text-faint focus-visible:border-ring focus-visible:outline-none'
+  const fieldClass = 'h-auto px-3 py-1.5 font-mono text-xs placeholder:text-faint'
 
   return (
     <div className="flex flex-col gap-3 rounded-md border border-border bg-secondary/30 p-3">
       <div className="grid gap-3 sm:grid-cols-3">
         <FieldLabel text="label">
-          <input
+          <Input
             autoFocus
             value={draft.label}
             onChange={(e) => set({ label: e.target.value })}
@@ -289,22 +290,22 @@ function AccountEditor({
             autoComplete="off"
             spellCheck={false}
             aria-label="QA account label"
-            className={inputClass}
+            className={fieldClass}
           />
         </FieldLabel>
         <FieldLabel text="username">
-          <input
+          <Input
             value={draft.username}
             onChange={(e) => set({ username: e.target.value })}
             placeholder="qa@example.test"
             autoComplete="off"
             spellCheck={false}
             aria-label="QA account username"
-            className={inputClass}
+            className={fieldClass}
           />
         </FieldLabel>
         <FieldLabel text="secret">
-          <input
+          <Input
             type="password"
             value={draft.secret}
             onChange={(e) => set({ secret: e.target.value })}
@@ -313,19 +314,19 @@ function AccountEditor({
             }
             autoComplete="new-password"
             aria-label="QA account secret"
-            className={inputClass}
+            className={fieldClass}
           />
         </FieldLabel>
       </div>
       <FieldLabel text="covers">
-        <textarea
+        <Textarea
           value={draft.description}
           onChange={(e) => set({ description: e.target.value })}
           rows={2}
           placeholder="the cases and flows this account covers"
           spellCheck={false}
           aria-label="QA account coverage description"
-          className={cn(inputClass, 'resize-y leading-relaxed')}
+          className={cn(fieldClass, 'resize-y leading-relaxed')}
         />
       </FieldLabel>
 
@@ -457,7 +458,7 @@ function NotesEditor({
 
   return (
     <div className="flex flex-col gap-3 rounded-md border border-border bg-secondary/30 p-3">
-      <textarea
+      <Textarea
         autoFocus
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
@@ -467,7 +468,7 @@ function NotesEditor({
         rows={8}
         spellCheck={false}
         aria-label="QA notes"
-        className="w-full resize-y rounded-md border border-border bg-input px-3 py-2 font-mono text-xs leading-relaxed text-foreground focus-visible:border-ring focus-visible:outline-none"
+        className="resize-y font-mono text-xs leading-relaxed"
       />
       <div className="flex items-center justify-end gap-2">
         <Button

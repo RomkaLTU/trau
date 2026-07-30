@@ -278,7 +278,7 @@ export function MarkdownEditor({
   return (
     <div
       className={cn(
-        "composer-editor min-w-0 rounded-md border bg-transparent focus-within:ring-2 focus-within:ring-ring/50",
+        "composer-editor min-w-0 rounded-md border bg-card focus-within:ring-2 focus-within:ring-ring/50 dark:bg-input",
         disabled && "opacity-50",
         className,
       )}

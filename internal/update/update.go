@@ -54,6 +54,7 @@ type Checker struct {
 	client   *http.Client
 	endpoint string
 	probe    func() (version, method string)
+	refresh  func(context.Context) ([]byte, error)
 	upgrade  func(context.Context) ([]byte, error)
 
 	mu           sync.Mutex
@@ -74,6 +75,7 @@ func NewChecker(running string) *Checker {
 		client:     &http.Client{Timeout: fetchTimeout},
 		endpoint:   latestReleaseAPI,
 		probe:      probeBinary,
+		refresh:    brewUpdate,
 		upgrade:    brewUpgrade,
 		enabled:    true,
 		applyState: applyIdle,

@@ -8,6 +8,7 @@ import {
 import { useQueryClient } from '@tanstack/react-query'
 
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Eyebrow } from '@/components/trau/eyebrow'
 import { TerminalCard } from '@/components/trau/terminal-card'
 import { onUnauthorized, serveToken, setServeToken } from '@/lib/auth'
@@ -103,7 +104,7 @@ function TokenEntry({
           This hub is reachable off-loopback and is gated behind a bearer token.
           Paste the serve token to continue.
         </p>
-        <input
+        <Input
           type="password"
           autoFocus
           autoComplete="off"
@@ -114,7 +115,7 @@ function TokenEntry({
           }}
           placeholder="SERVE_TOKEN"
           aria-invalid={rejected}
-          className="h-9 w-full rounded-md border bg-transparent px-3 font-mono text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50 aria-invalid:border-fail"
+          className="font-mono aria-invalid:border-fail"
         />
         {rejected && (
           <p className="font-mono text-xs text-fail">

@@ -112,7 +112,8 @@ func (c *KimiInteractive) Run(ctx context.Context, prompt, label string) (Result
 
 	composer := make(chan struct{}, 1)
 	authPrompt := make(chan struct{}, 1)
-	go drainWithSignals(transcript, sess, kimiWatch, terminalSignals{auth: authPrompt, ready: composer}, func() {
+	menuPrompt := make(chan struct{}, 1)
+	go drainWithSignals(transcript, sess, kimiWatch, terminalSignals{auth: authPrompt, ready: composer, menu: menuPrompt}, func() {
 		lastActivity.Store(c.clock().UnixNano())
 	})
 
@@ -178,6 +179,10 @@ func (c *KimiInteractive) Run(ctx context.Context, prompt, label string) (Result
 			return fail(ctx.Err())
 		case <-authPrompt:
 			return fail(ErrAuthRequired)
+		case <-menuPrompt:
+			// A blocking selection dialog confirmed on a quiet screen — nothing in
+			// an unattended run can answer it (COD-1326).
+			return fail(ErrInteractivePrompt)
 		case <-tick.C:
 			if c.StallWindow > 0 {
 				if idle := c.clock().Sub(time.Unix(0, lastActivity.Load())); idle >= c.StallWindow {
@@ -320,7 +325,7 @@ func kimiHome() string {
 // kimiWatch is how a kimi session's terminal output is read. Kimi opens straight
 // into its composer with no directory-trust dialog to answer, so the only screens
 // watched are the auth wall and the composer itself.
-var kimiWatch = terminalWatch{auths: hasKimiAuthWall, ready: hasKimiComposer}
+var kimiWatch = terminalWatch{auths: hasKimiAuthWall, ready: hasKimiComposer, menus: hasInteractiveMenu}
 
 // hasKimiComposer reports whether kimi has turned bracketed paste on, which is the
 // TUI telling the terminal it is now reading input the way the launch prompt is

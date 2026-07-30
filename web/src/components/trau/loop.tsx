@@ -25,12 +25,15 @@ import {
 import { parseAsString, useQueryState } from "nuqs";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { IssueDrawer } from "@/components/issue-drawer";
 import { MakeStartableButton } from "@/components/make-startable-button";
 import { useActiveRepo } from "@/components/trau/active-repo";
 import { AddTicketDialog } from "@/components/trau/add-ticket-dialog";
+import { MemberRepoField } from "@/components/trau/member-repo-picker";
 import { RepoPicker } from "@/components/trau/repo-picker";
 import { TargetRepoField } from "@/components/trau/target-repo-field";
+import { useStartRepo } from "@/lib/start-repo";
 import { ConfirmDialog } from "@/components/trau/confirm-dialog";
 import { EmptyState } from "@/components/trau/empty-state";
 import { Eyebrow } from "@/components/trau/eyebrow";
@@ -662,7 +665,11 @@ function LaunchQueueCard({
     ticket && !addState.wrongProject ? statusWarning(ticket) : null;
   const overrideProvider = provider === NO_OVERRIDE ? undefined : provider;
 
+  const startRepo = useStartRepo(repo, submittedId, submittedId !== "");
+
   const setQueue = (res: QueueResponse) => publishQueue(queryClient, repo, res);
+  const setStartQueue = (res: QueueResponse) =>
+    publishQueue(queryClient, startRepo.target, res);
 
   const resetAdd = () => {
     setDraft("");
@@ -676,9 +683,12 @@ function LaunchQueueCard({
 
   const add = useMutation({
     mutationFn: () =>
-      enqueueFresh(repo, { id: submittedId, provider: overrideProvider }),
+      enqueueFresh(startRepo.target, {
+        id: submittedId,
+        provider: overrideProvider,
+      }),
     onSuccess: (res) => {
-      setQueue(res);
+      setStartQueue(res);
       resetAdd();
     },
   });
@@ -689,12 +699,12 @@ function LaunchQueueCard({
   const runNext = useMutation({
     mutationFn: () =>
       runNextRequest(
-        repo,
+        startRepo.target,
         { id: submittedId, provider: overrideProvider },
         { no_resume: skipResume && skipResumeShown, on_fault: onFault },
       ),
     onSuccess: (res) => {
-      setQueue(res);
+      setStartQueue(res);
       resetAdd();
     },
   });
@@ -795,7 +805,7 @@ function LaunchQueueCard({
                 queue
               </label>
               <div className="flex flex-wrap items-center gap-2">
-                <input
+                <Input
                   id="queue-add"
                   value={draft}
                   onChange={(e) => {
@@ -820,7 +830,7 @@ function LaunchQueueCard({
                   autoComplete="off"
                   spellCheck={false}
                   disabled={shuttingDown}
-                  className="w-56 rounded-md border border-border bg-input px-2.5 py-1.5 font-mono text-sm text-foreground placeholder:text-muted-foreground/60 focus-visible:border-ring focus-visible:outline-none"
+                  className="h-auto w-56 px-2.5 py-1.5 font-mono text-sm placeholder:text-muted-foreground/60"
                 />
                 <Button
                   type="button"
@@ -1008,6 +1018,16 @@ function LaunchQueueCard({
 
             {addState.canQueue && (
               <div className="flex flex-col gap-4 rounded-md border border-border bg-secondary/20 px-3 py-3">
+                {startRepo.choose && (
+                  <MemberRepoField
+                    members={startRepo.members}
+                    value={startRepo.target}
+                    suggested={startRepo.suggested}
+                    picked={startRepo.picked}
+                    ticket={submittedId}
+                    onPick={startRepo.pick}
+                  />
+                )}
                 <div className="flex flex-col gap-1.5">
                   <RepoPicker
                     repos={providers}

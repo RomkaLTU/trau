@@ -2,9 +2,11 @@ import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Flame, Loader2 } from "lucide-react";
 
+import { AutoAcceptToggle } from "@/components/grill/auto-accept";
 import { useModeSuggestion } from "@/components/grill/mode-suggestion";
 import { SessionTypeChips } from "@/components/grill/session-mode";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -38,6 +40,7 @@ export function StartInterviewDialog({
   const fieldRef = useRef<HTMLTextAreaElement | null>(null);
   const [open, setOpen] = useState(false);
   const [focus, setFocus] = useState("");
+  const [autoAccept, setAutoAccept] = useState(false);
   const sessionType = useModeSuggestion(repo);
   const research = sessionType.mode === "research";
 
@@ -46,6 +49,7 @@ export function StartInterviewDialog({
       startGrillSession(repo, id, {
         seed: focus.trim(),
         mode: sessionType.mode,
+        autoAccept,
       }),
     onSuccess: (session) => {
       publishGrillSession(queryClient, repo, session);
@@ -109,7 +113,12 @@ export function StartInterviewDialog({
               </AlertDialogDescription>
             </AlertDialogHeader>
             <SessionTypeChips sessionType={sessionType} className="mt-2" />
-            <textarea
+            <AutoAcceptToggle
+              checked={autoAccept}
+              onChange={setAutoAccept}
+              className="mt-1"
+            />
+            <Textarea
               ref={fieldRef}
               value={focus}
               rows={3}
@@ -133,7 +142,7 @@ export function StartInterviewDialog({
                 e.preventDefault();
                 submit();
               }}
-              className="w-full resize-none rounded-md border border-border bg-input px-2.5 py-1.5 font-sans text-sm text-foreground outline-none placeholder:text-muted-foreground/60 focus-visible:border-ring"
+              className="resize-none px-2.5 py-1.5 font-sans placeholder:text-muted-foreground/60"
             />
             {failure && (
               <p role="alert" className="font-mono text-xs text-fail">

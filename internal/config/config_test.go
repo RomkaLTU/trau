@@ -1047,6 +1047,24 @@ func TestKnownKeysCatalogMetadata(t *testing.T) {
 	}
 }
 
+// A tracker key nobody recognises would be seeded into repo configs and silently
+// ignored by every reader, so the set must stay inside the catalog.
+func TestTrackerConfigKeysAreCatalogued(t *testing.T) {
+	known := map[string]bool{}
+	for _, m := range KnownKeys() {
+		known[m.Key] = true
+	}
+	keys := TrackerConfigKeys()
+	if !slices.Contains(keys, "TRACKER_PROVIDER") {
+		t.Fatalf("tracker keys = %v, want TRACKER_PROVIDER among them", keys)
+	}
+	for _, key := range keys {
+		if !known[key] {
+			t.Errorf("tracker key %s is not in the config catalog", key)
+		}
+	}
+}
+
 func TestLoadAppURLs(t *testing.T) {
 	dir := t.TempDir()
 	local := filepath.Join(dir, "trau.ini")

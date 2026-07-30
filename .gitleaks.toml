@@ -1,0 +1,12 @@
+title = "trau gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known non-secret test and generated-code literals"
+regexTarget = "match"
+regexes = [
+  '''parent=M4C-54''',
+  '''t\.TwoKeyMap=void''',
+]

@@ -167,6 +167,7 @@ describe("useGrillSession start model", () => {
           model: "opus",
           provider: "kimi",
           mode: "interview",
+          auto_accept: false,
         }),
       }),
     );
@@ -194,16 +195,17 @@ describe("useGrillSession start model", () => {
           model: "",
           provider: "",
           mode: "research",
+          auto_accept: false,
         }),
       }),
     );
   });
 
-  // Start over is a fresh session on the same item, so the session type, provider and
-  // model chosen mid-way are what it opens on — reverting to the repo default would
-  // undo a deliberate choice, and reverting the mode would silently change what the
-  // session delivers.
-  it("carries the discarded session's mode, provider and model into the fresh one", async () => {
+  // Start over is a fresh session on the same item, so the session type, provider,
+  // model and auto-accept chosen mid-way are what it opens on — reverting to the repo
+  // default would undo a deliberate choice, and reverting the mode would silently
+  // change what the session delivers.
+  it("carries the discarded session's mode, provider, model and auto-accept into the fresh one", async () => {
     const fetchMock = vi.fn((input: string) =>
       Promise.resolve(
         input.endsWith("/abandon")
@@ -213,7 +215,7 @@ describe("useGrillSession start model", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     const { result } = renderGrillSession([
-      session({ model: "opus", provider: "kimi", mode: "research" }),
+      session({ model: "opus", provider: "kimi", mode: "research", auto_accept: true }),
     ]);
 
     await act(async () => result.current.startOver());
@@ -227,6 +229,7 @@ describe("useGrillSession start model", () => {
           model: "opus",
           provider: "kimi",
           mode: "research",
+          auto_accept: true,
         }),
       }),
     );

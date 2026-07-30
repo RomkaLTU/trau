@@ -70,7 +70,7 @@ export function SteerComposer({
     <div className={cn('flex flex-col gap-2', className)}>
       <div
         title={settled ? STEER_SETTLED_HINT : undefined}
-        className="flex items-end gap-2 rounded-lg border border-border bg-card px-3 py-2"
+        className="flex items-end gap-2 rounded-lg border border-border bg-card px-3 py-2 dark:bg-input"
       >
         <textarea
           value={body}

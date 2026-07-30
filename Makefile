@@ -4,39 +4,62 @@
 
 BINARY  := trau
 PKG     := ./cmd/trau
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# No redirects or ||: parse-time $(shell) runs under cmd.exe when make is
+# launched from PowerShell (no sh on PATH), and cmd reads 2>/dev/null as a
+# redirect to the literal path \dev\null. $(or) keeps the dev fallback for
+# builds outside a git checkout.
+VERSION ?= $(or $(shell git describe --tags --always --dirty),dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 GOFLAGS := -trimpath
+
+# The host OS decides two things: whether the binary needs a .exe suffix for
+# anything but Git Bash to execute it, and whether the race detector needs cgo —
+# it does on windows, where -race has no pure-Go implementation.
+HOST_GOOS := $(shell go env GOOS)
+ifeq ($(HOST_GOOS),windows)
+EXE          := .exe
+CGO_FOR_TEST := 1
+else
+EXE          :=
+CGO_FOR_TEST := 0
+endif
 
 NPM      ?= npm
 WEB_DIR  := web
 WEB_DIST := internal/webserver/dist/index.html
-WEB_SRC  := $(shell find $(WEB_DIR)/src $(WEB_DIR)/public $(WEB_DIR)/index.html $(WEB_DIR)/package.json $(WEB_DIR)/vite.config.ts 2>/dev/null)
+# Pure make instead of find, for the same reason VERSION shuns the shell: the
+# list must come out identical no matter what launched make. Directories are
+# listed alongside files, matching the find this replaces, so adding or
+# removing a web source still re-triggers the SPA build.
+rwildcard = $(foreach p,$(wildcard $(1)/*),$(call rwildcard,$(p)) $(p))
+WEB_SRC  := $(wildcard $(WEB_DIR)/src $(WEB_DIR)/public $(WEB_DIR)/index.html $(WEB_DIR)/package.json $(WEB_DIR)/vite.config.ts) $(call rwildcard,$(WEB_DIR)/src) $(call rwildcard,$(WEB_DIR)/public)
 
 # Only names the port in the hub-guard message; the binary resolves the real one
 # from the layered config.
 SERVE_PORT ?= 8728
 
+# The shipped binary stays cgo-free on every platform (ADR 0023). Only `make
+# test` overrides this, and only where the race runtime leaves it no choice.
 export CGO_ENABLED := 0
 
-.PHONY: all build reset hub-guard web vet windows test lint fmt dist clean
+.PHONY: all build reset hub-guard race-guard web vet windows test lint fmt dist clean
 
 all: build
 
 ## build: compile the SPA + binary for the host platform into bin/
 build: web
-	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o bin/$(BINARY) $(PKG)
+	go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o bin/$(BINARY)$(EXE) $(PKG)
 
 ## reset: rebuild the dev binary + make the local web hub run it
 reset: hub-guard build
-	@./bin/$(BINARY) hub restart
+	@./bin/$(BINARY)$(EXE) hub restart
 
 ## hub-guard: refuse to restart the hub from inside a trau-managed agent run
 hub-guard:
 	@if [ "$$TRAU_ACTIVE" = "1" ]; then \
 		echo "✗ refusing 'make reset' inside a trau-managed run: the hub on :$(SERVE_PORT) owns this run,"; \
 		echo "  and restarting or killing it loses the run's data. For live QA start an isolated hub instead:"; \
-		echo "    iso=\$$(mktemp -d) && TRAU_HOME=\$$iso/.trau HOME=\$$iso ./bin/$(BINARY) serve --port 8799"; \
+		echo "    iso=\$$(mktemp -d) && TRAU_HOME=\$$iso/.trau HOME=\$$iso ./bin/$(BINARY)$(EXE) serve --port 8799"; \
 		echo "  and kill only that pid when done. Never touch the hub on :$(SERVE_PORT)."; \
 		exit 1; \
 	fi
@@ -55,9 +78,18 @@ vet: windows
 windows:
 	GOOS=windows go build ./...
 
-## test: compile/race-check packages; Go tests are intentionally absent for now
-test:
-	go test -race ./...
+## race-guard: refuse `make test` when the race detector's cgo needs are unmet
+race-guard:
+	@if [ "$(CGO_FOR_TEST)" = "1" ] && ! command -v $${CC:-gcc} >/dev/null 2>&1; then \
+		echo "✗ 'make test' needs a C compiler on $(HOST_GOOS): -race requires cgo here."; \
+		echo "    scoop install mingw"; \
+		echo "  Already installed? It adds its own bin/ to PATH; open a new shell."; \
+		exit 1; \
+	fi
+
+## test: run the suite under the race detector
+test: race-guard
+	CGO_ENABLED=$(CGO_FOR_TEST) go test -race ./...
 
 ## lint: golangci-lint (install separately)
 lint:

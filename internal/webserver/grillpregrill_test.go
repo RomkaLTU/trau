@@ -3,10 +3,12 @@ package webserver
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/config"
@@ -36,8 +38,8 @@ func newPregrillServer(t *testing.T, run func(*Server, hubstore.GrillSession)) (
 	return srv, repo
 }
 
-// parkTurn simulates the common pre-grill turn: the agent asked its opening question
-// and the AFK idle-park left the session parked with no reason (question waiting).
+// parkTurn simulates the pre-grill turn that reached a question needing the user's
+// taste: the AFK park left the session parked with no reason (question waiting).
 func parkTurn(s *Server, sess hubstore.GrillSession) {
 	if _, _, err := s.stores.Grill().AppendMessage(sess.ID, hubstore.NewGrillMessage{
 		Role: hubstore.GrillRoleAgent, Kind: hubstore.GrillKindQuestion, Payload: `{"text":"which flow?"}`,
@@ -62,6 +64,33 @@ func finishTurn(disposition string) func(*Server, hubstore.GrillSession) {
 		if _, err := s.stores.Grill().Transition(sess.ID, hubstore.GrillFinished, ""); err != nil {
 			panic(err)
 		}
+	}
+}
+
+// autoAcceptedTurn simulates the auto-accepting turn the pass runs: the agent asked
+// questions it recommended answers to, each one answered on the spot and badged auto,
+// before the turn settled the session.
+func autoAcceptedTurn(questions int, settle func(*Server, hubstore.GrillSession)) func(*Server, hubstore.GrillSession) {
+	return func(s *Server, sess hubstore.GrillSession) {
+		for i := range questions {
+			appendPregrillMessage(s, sess.ID, hubstore.NewGrillMessage{
+				Role:    hubstore.GrillRoleAgent,
+				Kind:    hubstore.GrillKindQuestion,
+				Payload: fmt.Sprintf(`{"text":"question %d?","recommended":"yes"}`, i+1),
+			})
+			appendPregrillMessage(s, sess.ID, hubstore.NewGrillMessage{
+				Role:    hubstore.GrillRoleUser,
+				Kind:    hubstore.GrillKindAnswer,
+				Payload: grillAnswerPayload("yes", true),
+			})
+		}
+		settle(s, sess)
+	}
+}
+
+func appendPregrillMessage(s *Server, sid int64, m hubstore.NewGrillMessage) {
+	if _, _, err := s.stores.Grill().AppendMessage(sid, m); err != nil {
+		panic(err)
 	}
 }
 
@@ -176,6 +205,71 @@ func TestPregrillPassClassifiesFinishOutcomes(t *testing.T) {
 			}
 			if results[0].Outcome != tt.wantOutcome {
 				t.Errorf("outcome = %q, want %q", results[0].Outcome, tt.wantOutcome)
+			}
+		})
+	}
+}
+
+// Every session the pass opens auto-accepts, so its turn self-drives through the
+// questions it can recommend an answer to; the one it parks on keeps auto-accepting
+// for the live session that resumes it.
+func TestPregrillPassEnablesAutoAccept(t *testing.T) {
+	srv, repo := newPregrillServer(t, parkTurn)
+
+	srv.runPregrillPass(context.Background(), repo, PregrillRequest{IssueIDs: []string{"COD-1"}}, 5)
+
+	sessions, err := srv.stores.Grill().List(repo.Root, "")
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 || !sessions[0].AutoAccept || sessions[0].State != hubstore.GrillParked {
+		t.Fatalf("sessions = %+v, want one parked session still auto-accepting", sessions)
+	}
+}
+
+// A turn that auto-accepted its way through several questions classifies by how it
+// settled — a proposal or the one question that needed the user — with the
+// auto-badged Q&A before it left in the transcript.
+func TestPregrillPassClassifiesAutoAcceptedRun(t *testing.T) {
+	tests := []struct {
+		name        string
+		settle      func(*Server, hubstore.GrillSession)
+		wantOutcome string
+	}{
+		{name: "finishes with a rewrite", settle: finishTurn(grillDispRewrite), wantOutcome: pregrillOutcomeRewrite},
+		{name: "parks on the taste question", settle: parkTurn, wantOutcome: pregrillOutcomeQuestion},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv, repo := newPregrillServer(t, autoAcceptedTurn(3, tt.settle))
+
+			results := srv.runPregrillPass(context.Background(), repo, PregrillRequest{IssueIDs: []string{"COD-9"}}, 5)
+			if len(results) != 1 || results[0].Outcome != tt.wantOutcome {
+				t.Fatalf("results = %+v, want one %q", results, tt.wantOutcome)
+			}
+
+			sid, _ := strconv.ParseInt(results[0].SessionID, 10, 64)
+			msgs, err := srv.stores.Grill().Messages(sid, 0)
+			if err != nil {
+				t.Fatalf("read transcript: %v", err)
+			}
+			auto := 0
+			for _, m := range msgs {
+				if m.Kind != hubstore.GrillKindAnswer {
+					continue
+				}
+				var a struct {
+					Auto bool `json:"auto"`
+				}
+				if err := json.Unmarshal([]byte(m.Payload), &a); err != nil {
+					t.Fatalf("decode answer payload: %v", err)
+				}
+				if a.Auto {
+					auto++
+				}
+			}
+			if auto != 3 {
+				t.Errorf("transcript has %d auto-badged answers, want the 3 the turn accepted", auto)
 			}
 		})
 	}

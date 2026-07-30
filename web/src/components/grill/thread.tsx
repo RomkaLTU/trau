@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { AlertTriangle, Play, RotateCw } from "lucide-react";
 
 import { AnswerBody } from "@/components/grill/answer-body";
+import { AutoAcceptBadge } from "@/components/grill/auto-accept";
 import { BannerRow } from "@/components/grill/banners";
 import { OutcomeProposal } from "@/components/grill/outcome-review";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
@@ -20,6 +21,7 @@ import {
 } from "@/components/ui/message-scroller";
 import {
   answerText,
+  isAutoAnswer,
   outcomePayload,
   questionPayload,
   type GrillBanner,
@@ -134,7 +136,9 @@ function MessageRow({ message }: { message: GrillMessage }) {
     case "question":
       return <AgentBubble>{questionPayload(message).text}</AgentBubble>;
     case "answer":
-      return <UserBubble text={answerText(message)} />;
+      return (
+        <UserBubble text={answerText(message)} auto={isAutoAnswer(message)} />
+      );
     // The seed idea of an authoring session rides as an info message; render it as
     // the user's opening turn so the conversation reads from the top. A system info
     // message is hub bookkeeping (a model switch), not a turn, so it reads as a
@@ -162,7 +166,7 @@ function AgentBubble({ children }: { children: React.ReactNode }) {
         <Bubble
           variant="outline"
           align="start"
-          className="max-w-[72ch] *:data-[slot=bubble-content]:bg-secondary/50"
+          className="max-w-[72ch] *:data-[slot=bubble-content]:bg-secondary"
         >
           <BubbleContent className="whitespace-pre-wrap">
             {children}
@@ -175,15 +179,20 @@ function AgentBubble({ children }: { children: React.ReactNode }) {
 
 function UserBubble({
   text,
+  auto,
   className,
 }: {
   text: string;
+  auto?: boolean;
   className?: string;
 }) {
   return (
     <Message align="end">
       <MessageContent>
-        <Eyebrow>you</Eyebrow>
+        <Eyebrow>
+          you
+          {auto && <AutoAcceptBadge />}
+        </Eyebrow>
         <Bubble variant="default" align="end" className={cn("max-w-[56ch]", className)}>
           <BubbleContent className="whitespace-pre-wrap">
             <AnswerBody text={text} />
@@ -204,7 +213,7 @@ function SystemNote({ children }: { children: React.ReactNode }) {
 
 function Eyebrow({ children }: { children: React.ReactNode }) {
   return (
-    <MessageHeader className="font-mono tracking-wide lowercase">
+    <MessageHeader className="gap-1.5 font-mono tracking-wide lowercase">
       {children}
     </MessageHeader>
   );
@@ -228,7 +237,7 @@ function PendingRow({
     <div className="flex flex-col gap-1.5">
       <UserBubble
         text={pending.text}
-        className="*:data-[slot=bubble-content]:bg-fail/15 *:data-[slot=bubble-content]:text-foreground"
+        className="*:data-[slot=bubble-content]:bg-[color-mix(in_oklch,var(--fail)_15%,var(--background))] *:data-[slot=bubble-content]:text-foreground"
       />
       <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
         <AlertTriangle className="size-3.5 text-fail" aria-hidden="true" />

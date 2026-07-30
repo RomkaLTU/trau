@@ -5,6 +5,7 @@ import { ExternalLink, GitBranch, Loader2, Send, Video } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { Textarea } from '@/components/ui/textarea'
 import {
   NoSkillsBanner,
   NoBrowserBanner,
@@ -594,12 +595,12 @@ function CommentComposer({ repo, ticket }: { repo: string; ticket: string }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <textarea
+      <Textarea
         value={body}
         onChange={(e) => setBody(e.target.value)}
         placeholder={`Add a comment to ${ticket}…`}
         rows={3}
-        className="w-full resize-y rounded-md border border-border bg-input px-3 py-2 font-sans text-sm text-foreground outline-none placeholder:text-muted-foreground focus-visible:border-ring"
+        className="resize-y font-sans"
       />
       <div className="flex items-center gap-3">
         <Button

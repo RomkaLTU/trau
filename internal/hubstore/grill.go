@@ -67,7 +67,9 @@ var grillTransitions = map[string]map[string]bool{
 // session grills — so a settled session still names its issue after apply drops the
 // triage labels the board queries key on — falling back to the authoring seed for an
 // issue-less session. IssueDestination records where a create-apply filed the
-// anchored issue; empty for anchors that predate destination tracking.
+// anchored issue; empty for anchors that predate destination tracking. AutoAccept
+// answers a question carrying a recommended option with that recommendation rather
+// than asking the user.
 type GrillSession struct {
 	ID               int64
 	Repo             string
@@ -79,20 +81,22 @@ type GrillSession struct {
 	Mode             string
 	Provider         string
 	Model            string
+	AutoAccept       bool
 	ParkedReason     string
 	CreatedAt        string
 	UpdatedAt        string
 }
 
-// NewGrillSession is the input to Create. State always starts at running.
-// Provider and Mode are locked at create; an empty provider runs claude, an
-// empty mode runs an interview.
+// NewGrillSession is the input to Create. State always starts at running. Provider
+// and Mode are locked at create and AutoAccept is its opening value; an empty
+// provider runs claude, an empty mode runs an interview.
 type NewGrillSession struct {
-	Repo     string
-	IssueID  string
-	Mode     string
-	Provider string
-	Model    string
+	Repo       string
+	IssueID    string
+	Mode       string
+	Provider   string
+	Model      string
+	AutoAccept bool
 }
 
 // GrillMessage is one message in a session's conversation. Payload is the message's
@@ -135,12 +139,12 @@ func NewGrill(db *sql.DB, retention int) *Grill { return &Grill{db: db, retentio
 func (g *Grill) Create(ns NewGrillSession) (GrillSession, error) {
 	now := formatGrillTime(time.Now())
 	res, err := g.db.Exec(
-		`INSERT INTO grill_sessions(repo, issue_id, state, session_chain, mode, provider, model, parked_reason, created_at, updated_at)
-		 SELECT ?, ?, 'running', '', ?, ?, ?, '', ?, ?
+		`INSERT INTO grill_sessions(repo, issue_id, state, session_chain, mode, provider, model, auto_accept, parked_reason, created_at, updated_at)
+		 SELECT ?, ?, 'running', '', ?, ?, ?, ?, '', ?, ?
 		 WHERE ? = '' OR NOT EXISTS (
 		     SELECT 1 FROM grill_sessions
 		     WHERE repo = ? AND issue_id = ? AND state NOT IN ('applied', 'abandoned'))`,
-		ns.Repo, ns.IssueID, ns.Mode, ns.Provider, ns.Model, now, now, ns.IssueID, ns.Repo, ns.IssueID,
+		ns.Repo, ns.IssueID, ns.Mode, ns.Provider, ns.Model, boolToInt(ns.AutoAccept), now, now, ns.IssueID, ns.Repo, ns.IssueID,
 	)
 	if err != nil {
 		return GrillSession{}, err
@@ -157,15 +161,16 @@ func (g *Grill) Create(ns NewGrillSession) (GrillSession, error) {
 		return GrillSession{}, err
 	}
 	return GrillSession{
-		ID:        id,
-		Repo:      ns.Repo,
-		IssueID:   ns.IssueID,
-		State:     GrillRunning,
-		Mode:      ns.Mode,
-		Provider:  ns.Provider,
-		Model:     ns.Model,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:         id,
+		Repo:       ns.Repo,
+		IssueID:    ns.IssueID,
+		State:      GrillRunning,
+		Mode:       ns.Mode,
+		Provider:   ns.Provider,
+		Model:      ns.Model,
+		AutoAccept: ns.AutoAccept,
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}, nil
 }
 
@@ -180,7 +185,7 @@ const grillSessionSelect = `SELECT g.id, g.repo, g.issue_id, g.issue_destination
 	            WHERE m.session_id = g.id AND m.role = 'user' AND m.kind = 'info'
 	            ORDER BY m.id LIMIT 1
 	        ), ''), g.state,
-	        g.session_chain, g.mode, g.provider, g.model, g.parked_reason, g.created_at, g.updated_at
+	        g.session_chain, g.mode, g.provider, g.model, g.auto_accept, g.parked_reason, g.created_at, g.updated_at
 	 FROM grill_sessions g
 	 LEFT JOIN issues i ON i.repo = g.repo AND i.identifier = g.issue_id`
 
@@ -392,6 +397,26 @@ func (g *Grill) SetModel(id int64, model string) (GrillSession, bool, error) {
 	return sess, true, nil
 }
 
+// SetAutoAccept records whether the session answers its own recommendations and
+// bumps its updated_at — the flag is read per question, so the switch lands on the
+// next one. It reports whether the session exists.
+func (g *Grill) SetAutoAccept(id int64, enabled bool) (GrillSession, bool, error) {
+	sess, found, err := g.Session(id)
+	if err != nil || !found {
+		return GrillSession{}, found, err
+	}
+	now := formatGrillTime(time.Now())
+	if _, err := g.db.Exec(
+		`UPDATE grill_sessions SET auto_accept = ?, updated_at = ? WHERE id = ?`,
+		boolToInt(enabled), now, id,
+	); err != nil {
+		return GrillSession{}, false, err
+	}
+	sess.AutoAccept = enabled
+	sess.UpdatedAt = now
+	return sess, true, nil
+}
+
 // SetIssue anchors a session to issueID, recording the destination it was filed
 // in, and bumps its updated_at — the create-apply flow calls it once the parent
 // issue is filed so a retry to the same destination reuses that issue instead of
@@ -488,13 +513,18 @@ func (g *Grill) scanSessions(query string, args ...any) (out []GrillSession, err
 	defer func() { err = errors.Join(err, q.Close()) }()
 	out = []GrillSession{}
 	for q.Next() {
-		var s GrillSession
+		var (
+			s          GrillSession
+			autoAccept int
+		)
 		if err := q.Scan(
 			&s.ID, &s.Repo, &s.IssueID, &s.IssueDestination, &s.IssueTitle, &s.State,
-			&s.SessionChain, &s.Mode, &s.Provider, &s.Model, &s.ParkedReason, &s.CreatedAt, &s.UpdatedAt,
+			&s.SessionChain, &s.Mode, &s.Provider, &s.Model, &autoAccept,
+			&s.ParkedReason, &s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
+		s.AutoAccept = autoAccept != 0
 		out = append(out, s)
 	}
 	return out, q.Err()

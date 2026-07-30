@@ -218,6 +218,39 @@ func TestGrillSetModel(t *testing.T) {
 	}
 }
 
+func TestGrillSetAutoAccept(t *testing.T) {
+	g, _ := testGrill(t, 0)
+	sess, err := g.Create(NewGrillSession{Repo: "acme", IssueID: "COD-1"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if sess.AutoAccept {
+		t.Fatalf("created session = %+v, want auto-accept off", sess)
+	}
+
+	updated, found, err := g.SetAutoAccept(sess.ID, true)
+	if err != nil || !found {
+		t.Fatalf("set auto-accept: found=%v err=%v", found, err)
+	}
+	if !updated.AutoAccept {
+		t.Fatal("returned session still reports auto-accept off")
+	}
+	if got, _, _ := g.Session(sess.ID); !got.AutoAccept {
+		t.Fatal("persisted session still reports auto-accept off")
+	}
+
+	if _, _, err := g.SetAutoAccept(sess.ID, false); err != nil {
+		t.Fatalf("clear auto-accept: %v", err)
+	}
+	if got, _, _ := g.Session(sess.ID); got.AutoAccept {
+		t.Fatal("persisted session still reports auto-accept on")
+	}
+
+	if _, found, err := g.SetAutoAccept(9999, true); found || err != nil {
+		t.Fatalf("set auto-accept on unknown session = (found=%v, err=%v), want (false, nil)", found, err)
+	}
+}
+
 func TestGrillSetIssue(t *testing.T) {
 	g, _ := testGrill(t, 0)
 	sess, err := g.Create(NewGrillSession{Repo: "acme"})

@@ -312,6 +312,10 @@ TIMELOG_ESTIMATOR=heuristic  # heuristic = deterministic diffstat/file/commit ->
 # Provider binaries and dangerous permission overrides. Use only in trusted,
 # sandboxed checkouts — these disable approval prompts.
 CLAUDE_BIN=claude
+# Claude Code demands a one-time, per-machine human acceptance before this flag
+# runs without a blocking dialog: run `claude --dangerously-skip-permissions`
+# once and accept. trau never answers that dialog itself — doctor and the
+# onboarding readiness check both verify the acknowledgment is recorded.
 CLAUDE_FLAGS=--dangerously-skip-permissions
 # Tools blocked inside every phase. Agent (subagent spawning) and Workflow (multi-
 # agent fan-out) are off by default: each phase already runs as its own isolated

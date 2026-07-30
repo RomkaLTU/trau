@@ -22,6 +22,7 @@ import {
   grillReducer,
   isActiveSessionConflict,
   isAwaitingAnswer,
+  isAutoAnswer,
   isGrillable,
   isOver,
   isSettled,
@@ -32,6 +33,7 @@ import {
   pendingQuestion,
   publishGrillSession,
   questionPayload,
+  setGrillAutoAccept,
   sortAwaiting,
   startGrillSession,
   upsertMessage,
@@ -435,6 +437,15 @@ describe('questionPayload', () => {
     )
     expect(p.recommended).toBe('a')
     expect(p.why).toBe('a is simpler')
+  })
+})
+
+describe('isAutoAnswer', () => {
+  it('marks only an answer the hub took from the recommendation', () => {
+    expect(isAutoAnswer(answer('1'))).toBe(false)
+    expect(
+      isAutoAnswer(msg({ id: '2', role: 'user', kind: 'answer', payload: { text: 'a', auto: true } })),
+    ).toBe(true)
   })
 })
 
@@ -1011,7 +1022,17 @@ describe('startGrillSession', () => {
       model: '',
       provider: '',
       mode: 'interview',
+      auto_accept: false,
     })
+  })
+
+  it('asks for auto-accepted recommendations when the checkbox is on', async () => {
+    const fetchMock = stubStart(200, session({ id: '1' }))
+
+    await startGrillSession('loop', 'COD-1', { seed: 'why two flows?', autoAccept: true })
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(JSON.parse(init.body as string)).toMatchObject({ auto_accept: true })
   })
 
   it('declares the research session type when one is picked', async () => {
@@ -1042,6 +1063,27 @@ describe('startGrillSession', () => {
 
     expect((err as Error).message).toBe('no interviewer configured')
     expect(isActiveSessionConflict(err)).toBe(false)
+  })
+})
+
+describe('setGrillAutoAccept', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('switches the live session and hands back the updated view', async () => {
+    const updated = session({ id: '7', auto_accept: true })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue({ ok: true, status: 200, json: async () => updated } as Response)
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await setGrillAutoAccept('7', true)).toEqual(updated)
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/v1/grill/7/auto-accept')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({ enabled: true })
   })
 })
 

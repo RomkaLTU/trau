@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Plus, X } from 'lucide-react'
 
 import { MarkdownEditor } from '@/components/markdown-editor'
-import { cn } from '@/lib/utils'
+import { Input } from '@/components/ui/input'
 import { configQueryOptions } from '@/lib/config'
 import {
   INTERNAL_STATES,
@@ -32,9 +32,6 @@ function useSuggestedLabels(repo: string): string[] {
       .map((k) => k.value)
   }, [data])
 }
-
-const inputClass =
-  'h-9 w-full rounded-md border bg-transparent px-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/50'
 
 // InternalIssueForm creates a new internal issue or, when `issue` is given, edits
 // an existing one. Internal issues live only in the hub store — no external
@@ -92,12 +89,11 @@ export function InternalIssueForm({
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border bg-card p-4">
-      <input
+      <Input
         type="text"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         placeholder="Issue title"
-        className={inputClass}
       />
       <MarkdownEditor
         repo={repo}
@@ -113,7 +109,7 @@ export function InternalIssueForm({
           <select
             value={state}
             onChange={(e) => setState(e.target.value)}
-            className="h-9 rounded-md border bg-transparent px-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            className="h-9 rounded-md border bg-card px-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-input"
           >
             {INTERNAL_STATES.map((s) => (
               <option key={s} value={s}>
@@ -124,21 +120,21 @@ export function InternalIssueForm({
         </label>
         <label className="flex flex-1 flex-col gap-1 text-xs text-muted-foreground">
           Parent epic (optional)
-          <input
+          <Input
             type="text"
             value={parent}
             onChange={(e) => setParent(e.target.value)}
             placeholder="e.g. LOOP-4"
-            className={cn(inputClass, 'font-mono')}
+            className="font-mono"
           />
         </label>
       </div>
-      <input
+      <Input
         type="text"
         value={labels}
         onChange={(e) => setLabels(e.target.value)}
         placeholder="Labels (comma-separated)"
-        className={cn(inputClass, 'font-mono')}
+        className="font-mono"
       />
       {suggested.length > 0 && (
         <div className="flex flex-wrap items-center gap-2">

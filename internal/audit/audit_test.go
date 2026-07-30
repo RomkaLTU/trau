@@ -41,6 +41,7 @@ var allowedReaders = map[string]string{
 
 	// §3 Provider-owned files — owned by the provider CLIs; read for usage/stats.
 	"internal/agent/agent.go":            "provider session files + agent .result.json read-back",
+	"internal/agent/bypass.go":           "claude per-machine bypass acknowledgment",
 	"internal/agent/codexsession.go":     "codex session rollouts",
 	"internal/agent/kimisession.go":      "kimi session rollouts",
 	"internal/agent/transcript.go":       "provider session transcripts",
@@ -75,6 +76,12 @@ var allowedReaders = map[string]string{
 	// attachment blobs (under <hub home>/attachments) to serve their bytes; this
 	// is the hub, not run data routed around it.
 	"internal/hubstore/attachmentblobs.go": "hub attachment blob store",
+
+	// User-directed machine filesystem discovery — the Hub lists and scans only
+	// the folder the operator selects during repo onboarding. This discovers
+	// repo-owned content; it is not run data and no loop child performs the read.
+	"internal/webserver/fsbrowse.go":   "onboarding folder browser",
+	"internal/webserver/fsdiscover.go": "bounded repo discovery under an operator-selected folder",
 
 	// One-shot legacy importers — the only file-era code, gated to first hub touch.
 	"internal/state/state.go":             "file-era checkpoint store read by the checkpoint importer",

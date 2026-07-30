@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -326,6 +327,260 @@ func TestGrillMCPAskUserParkSentinel(t *testing.T) {
 	}
 
 	waitForGrillState(t, ts, sess.ID, hubstore.GrillParked)
+}
+
+// A session started with auto-accept answers a recommendation-bearing question itself,
+// in either mode: the pair lands in the transcript with the answer flagged auto, the
+// tool result comes straight back, and the user is never pulled in — no waiting state
+// and no needs-you notification. A recommendation matching no offered option is still
+// the answer, trimmed.
+func TestGrillMCPAskUserAutoAcceptsRecommendation(t *testing.T) {
+	for _, mode := range []string{hubstore.GrillModeInterview, hubstore.GrillModeResearch} {
+		t.Run(mode, func(t *testing.T) {
+			ts, stores, repo := grillServer(t)
+			sess := createGrillWith(t, ts, repo, GrillCreateRequest{
+				IssueID:    "COD-1",
+				Mode:       mode,
+				AutoAccept: true,
+			})
+			if !sess.AutoAccept {
+				t.Fatalf("created session = %+v, want auto_accept on", sess)
+			}
+
+			tr := toolResult(t, mcpJSON(t, mcpURL(ts, sess.ID), toolCall("ask_user", map[string]any{
+				"question":    "Which page is in scope?",
+				"options":     []string{"login", "signup"},
+				"recommended": "login",
+				"why":         "It is the only page in scope.",
+			})))
+			if tr.IsError || len(tr.Content) != 1 || tr.Content[0].Text != "login" {
+				t.Fatalf("ask_user result = %+v, want the recommendation as the answer", tr)
+			}
+
+			detail := grillDetail(t, ts, sess.ID)
+			if detail.Session.State != hubstore.GrillRunning || !detail.Session.AutoAccept {
+				t.Fatalf("session = %+v, want running throughout with auto_accept persisted", detail.Session)
+			}
+			if len(detail.Messages) != 2 {
+				t.Fatalf("stored %d messages, want the question and its auto answer: %+v", len(detail.Messages), detail.Messages)
+			}
+			question, answer := detail.Messages[0], detail.Messages[1]
+			if question.Role != hubstore.GrillRoleAgent || question.Kind != hubstore.GrillKindQuestion {
+				t.Errorf("first message = %s/%s, want the agent's question", question.Role, question.Kind)
+			}
+			var q struct {
+				Text        string   `json:"text"`
+				Options     []string `json:"options"`
+				Recommended string   `json:"recommended"`
+				Why         string   `json:"why"`
+			}
+			if err := json.Unmarshal(question.Payload, &q); err != nil {
+				t.Fatalf("decode question payload: %v", err)
+			}
+			if q.Text != "Which page is in scope?" || !slices.Equal(q.Options, []string{"login", "signup"}) ||
+				q.Recommended != "login" || q.Why != "It is the only page in scope." {
+				t.Errorf("stored question = %+v, want the full payload the user would have seen", q)
+			}
+			if answer.Role != hubstore.GrillRoleUser || answer.Kind != hubstore.GrillKindAnswer {
+				t.Errorf("second message = %s/%s, want the user's answer", answer.Role, answer.Kind)
+			}
+			var a struct {
+				Text string `json:"text"`
+				Auto bool   `json:"auto"`
+			}
+			if err := json.Unmarshal(answer.Payload, &a); err != nil {
+				t.Fatalf("decode answer payload: %v", err)
+			}
+			if a.Text != "login" || !a.Auto {
+				t.Errorf("stored answer = %+v, want the recommendation flagged auto", a)
+			}
+
+			items, err := stores.Notifications().List(10)
+			if err != nil {
+				t.Fatalf("list notifications: %v", err)
+			}
+			if len(items) != 0 {
+				t.Errorf("stored %d notifications, want none for a question the user never saw", len(items))
+			}
+
+			offList := toolResult(t, mcpJSON(t, mcpURL(ts, sess.ID), toolCall("ask_user", map[string]any{
+				"question":    "How wide should the fix reach?",
+				"options":     []string{"login", "signup"},
+				"recommended": "  both, plus the reset page  ",
+			})))
+			if offList.IsError || len(offList.Content) != 1 || offList.Content[0].Text != "both, plus the reset page" {
+				t.Fatalf("ask_user result = %+v, want the off-list recommendation trimmed and accepted", offList)
+			}
+		})
+	}
+}
+
+// Abandoning a session does not cancel the child, so the ask_user call in flight is
+// how the agent is told to stop. Auto-accept must not answer over that: an ended
+// session gets the stop sentinel, never its own recommendation.
+func TestGrillMCPAskUserAutoAcceptStopsOnEndedSession(t *testing.T) {
+	ts, _, repo := grillServer(t)
+	sess := createGrillWith(t, ts, repo, GrillCreateRequest{IssueID: "COD-1", AutoAccept: true})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/grill/"+sess.ID+"/abandon", nil)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("abandon status = %d, want 200", res.StatusCode)
+	}
+
+	tr := toolResult(t, mcpJSON(t, mcpURL(ts, sess.ID), toolCall("ask_user", map[string]any{
+		"question":    "Which page is in scope?",
+		"recommended": "login",
+	})))
+	var structured struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(mustJSON(t, tr.StructuredContent), &structured); err != nil {
+		t.Fatalf("decode structured content: %v", err)
+	}
+	if structured.Status != "ended" {
+		t.Fatalf("ask_user result = %+v, want the ended sentinel", tr)
+	}
+	for _, m := range grillDetail(t, ts, sess.ID).Messages {
+		if m.Role == hubstore.GrillRoleUser && m.Kind == hubstore.GrillKindAnswer {
+			t.Fatalf("auto-answered an ended session: %+v", m)
+		}
+	}
+}
+
+// Auto-accept reaches only the questions carrying a recommendation, and only the
+// sessions that asked for it: everything else still poses the question and blocks.
+func TestGrillMCPAskUserWaitsWithoutAutoAcceptedRecommendation(t *testing.T) {
+	cases := []struct {
+		name string
+		req  GrillCreateRequest
+		args map[string]any
+	}{
+		{
+			name: "auto-accept without a recommendation",
+			req:  GrillCreateRequest{IssueID: "COD-1", AutoAccept: true},
+			args: map[string]any{"question": "Which page is in scope?", "options": []string{"login", "signup"}},
+		},
+		{
+			name: "recommendation without auto-accept",
+			req:  GrillCreateRequest{IssueID: "COD-1"},
+			args: map[string]any{"question": "Which page is in scope?", "recommended": "login"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts, _, repo := grillServer(t)
+			sess := createGrillWith(t, ts, repo, tc.req)
+
+			done := make(chan rpcMsg, 1)
+			errc := make(chan error, 1)
+			go func() {
+				res, err := doMCPPost(mcpURL(ts, sess.ID), toolCall("ask_user", tc.args))
+				if err != nil {
+					errc <- err
+					return
+				}
+				msg, err := readSSEResult(res)
+				if err != nil {
+					errc <- err
+					return
+				}
+				done <- msg
+			}()
+
+			waitForGrillState(t, ts, sess.ID, hubstore.GrillWaiting)
+
+			ans := postJSON(t, ts.URL+APIPrefix+"/grill/"+sess.ID+"/answer", GrillAnswerRequest{Text: "Just the login page."})
+			_ = ans.Body.Close()
+			if ans.StatusCode != http.StatusOK {
+				t.Fatalf("answer status = %d, want 200", ans.StatusCode)
+			}
+
+			select {
+			case err := <-errc:
+				t.Fatalf("ask_user call failed: %v", err)
+			case msg := <-done:
+				tr := toolResult(t, msg)
+				if tr.IsError || len(tr.Content) != 1 || tr.Content[0].Text != "Just the login page." {
+					t.Fatalf("ask_user result = %+v, want the user's own answer", tr)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("ask_user did not return after the answer")
+			}
+		})
+	}
+}
+
+// An Ask-ahead turn is a whole interview, not one parked question: its session
+// auto-accepts, so a recommended question is answered before the pre-grill park check
+// ever sees it and the turn carries on without pulling the user in.
+func TestGrillMCPAskUserPregrillAutoAnswersRecommendation(t *testing.T) {
+	ts, stores, repo, srv := grillHookServer(t)
+	sess := createGrillWith(t, ts, repo, GrillCreateRequest{IssueID: "COD-1", AutoAccept: true})
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+	srv.markPregrill(sid)
+
+	tr := toolResult(t, mcpJSON(t, mcpURL(ts, sess.ID), toolCall("ask_user", map[string]any{
+		"question":    "Which page is in scope?",
+		"options":     []string{"login", "signup"},
+		"recommended": "login",
+	})))
+	if tr.IsError || len(tr.Content) != 1 || tr.Content[0].Text != "login" {
+		t.Fatalf("ask_user result = %+v, want the recommendation as the answer", tr)
+	}
+
+	detail := grillDetail(t, ts, sess.ID)
+	if detail.Session.State != hubstore.GrillRunning {
+		t.Fatalf("session = %+v, want the turn still running rather than parked", detail.Session)
+	}
+	if len(detail.Messages) != 2 {
+		t.Fatalf("stored %d messages, want the question and its auto answer: %+v", len(detail.Messages), detail.Messages)
+	}
+	var a struct {
+		Text string `json:"text"`
+		Auto bool   `json:"auto"`
+	}
+	if err := json.Unmarshal(detail.Messages[1].Payload, &a); err != nil {
+		t.Fatalf("decode answer payload: %v", err)
+	}
+	if a.Text != "login" || !a.Auto {
+		t.Errorf("stored answer = %+v, want the recommendation flagged auto", a)
+	}
+
+	items, err := stores.Notifications().List(10)
+	if err != nil {
+		t.Fatalf("list notifications: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("stored %d notifications, want none for a question the user never saw", len(items))
+	}
+}
+
+// A pre-grill question carrying no recommendation needs the user's taste, and nobody
+// is there to give it: the session parks at once, still auto-accepting for the live
+// session that resumes it.
+func TestGrillMCPAskUserPregrillParksTasteQuestion(t *testing.T) {
+	ts, _, repo, srv := grillHookServer(t)
+	sess := createGrillWith(t, ts, repo, GrillCreateRequest{IssueID: "COD-1", AutoAccept: true})
+	sid, _ := strconv.ParseInt(sess.ID, 10, 64)
+	srv.markPregrill(sid)
+
+	tr := toolResult(t, mcpJSON(t, mcpURL(ts, sess.ID), toolCall("ask_user", map[string]any{
+		"question": "How playful should the empty-state copy read?",
+		"options":  []string{"playful", "plain"},
+	})))
+	var structured struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(mustJSON(t, tr.StructuredContent), &structured); err != nil {
+		t.Fatalf("decode structured content: %v", err)
+	}
+	if structured.Status != "parked" {
+		t.Fatalf("ask_user result = %+v, want the park sentinel", tr)
+	}
+	if detail := grillDetail(t, ts, sess.ID); detail.Session.State != hubstore.GrillParked || !detail.Session.AutoAccept {
+		t.Fatalf("session = %+v, want parked with auto-accept still on", detail.Session)
+	}
 }
 
 func TestGrillMCPFinishSessionValidation(t *testing.T) {

@@ -4,15 +4,14 @@ trau.ini
 .trau.ini.bak*
 trau.ini.bak*
 
-# Agentic / internal files — kept out of the public repo (present locally)
+# Agentic / internal files — kept out of the public repo (present locally).
+# AGENTS.md, CLAUDE.md and CONTEXT.md are deliberately NOT here: agent guidance
+# and the domain vocabulary are shared, so they must survive a fresh clone.
 tasks/
 runs/
 /.agents/
 /.claude/
 /.serena/
-/AGENTS.md
-/CLAUDE.md
-/CONTEXT.md
 
 # Per-developer dev-flow config (bind it to your own tracker/team locally)
 /.dev-flow/
@@ -31,6 +30,9 @@ coverage.txt
 /web/.vite/
 # npm is canonical here (web/package-lock.json is tracked); ignore stray pnpm locks
 /web/pnpm-lock.yaml
+
+# macOS Finder artifacts (were tracked once; never again)
+.DS_Store
 
 # IDE
 /.idea/

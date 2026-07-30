@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"syscall"
 
@@ -70,4 +71,19 @@ func KillGroup(pid int) error {
 		return err
 	}
 	return p.Kill()
+}
+
+// LookBin resolves bin the way a shell would — %PATH% with PATHEXT — and
+// returns it absolute. The ConPTY spawn behind the terminalStarter seam is a
+// raw CreateProcess that never consults %PATH%: a bare name with a working
+// directory set is probed against that directory alone, so the name must
+// arrive already resolved. A match in the process's own cwd (exec.ErrDot) is
+// accepted and, like every other match, made absolute so no later join can
+// reinterpret it against a different directory.
+func LookBin(bin string) (string, error) {
+	path, err := exec.LookPath(bin)
+	if err != nil && !errors.Is(err, exec.ErrDot) {
+		return "", err
+	}
+	return filepath.Abs(path)
 }

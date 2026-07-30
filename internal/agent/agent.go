@@ -29,6 +29,7 @@ import (
 	"github.com/aymanbagabas/go-pty"
 
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/proc"
 	"github.com/RomkaLTU/trau/internal/sanitize"
 	"github.com/RomkaLTU/trau/internal/tokens"
 )
@@ -132,12 +133,13 @@ type ptySession struct {
 }
 
 // startPTY is the production terminalStarter: a POSIX pty on unix, a ConPTY on
-// Windows 10 1809+. Geometry is applied before Start so the child sees its final
-// size at launch instead of redrawing off a resize.
+// Windows 10 1809+. bin goes through proc.LookBin first — the ConPTY spawn is a
+// raw CreateProcess that probes a bare name against dir instead of %PATH%, so
+// it must arrive absolute there, while unix passes through untouched. Geometry
+// is applied before Start so the child sees its final size at launch instead of
+// redrawing off a resize.
 func startPTY(ctx context.Context, bin, dir string, args []string, cols, rows int) (terminalSession, error) {
-	// Resolved before the PTY layer sees it: go-pty would otherwise look a bare
-	// name up relative to dir rather than PATH. See resolveBin.
-	exe, err := resolveBin(bin)
+	bin, err := proc.LookBin(bin)
 	if err != nil {
 		return nil, err
 	}
@@ -151,7 +153,7 @@ func startPTY(ctx context.Context, bin, dir string, args []string, cols, rows in
 			return nil, err
 		}
 	}
-	cmd := tty.CommandContext(ctx, exe, args...)
+	cmd := tty.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
 	cmd.Env = spawnEnv(ctx)
 	if err := cmd.Start(); err != nil {
@@ -340,10 +342,12 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 
 	trustPrompt := make(chan struct{}, 1)
 	authPrompt := make(chan struct{}, 1)
+	bypassPrompt := make(chan struct{}, 1)
+	menuPrompt := make(chan struct{}, 1)
 	drainDone := make(chan struct{})
 	go func() {
 		defer close(drainDone)
-		drainWithSignals(watched, sess, claudeWatch, terminalSignals{trust: trustPrompt, auth: authPrompt}, func() {
+		drainWithSignals(watched, sess, claudeWatch, terminalSignals{trust: trustPrompt, auth: authPrompt, bypass: bypassPrompt, menu: menuPrompt}, func() {
 			lastActivity.Store(c.clock().UnixNano())
 		})
 	}()
@@ -407,12 +411,10 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 
 			_ = sess.Close()
 			<-drainDone
-			select {
-			case <-authPrompt:
+			if promptErr := confirmedPromptError(authPrompt, bypassPrompt, menuPrompt); promptErr != nil {
 				res.IsError = true
-				c.report(label, res, dur, ErrAuthRequired)
-				return res, fmt.Errorf("claude interactive run (%s): %w", label, ErrAuthRequired)
-			default:
+				c.report(label, res, dur, promptErr)
+				return res, fmt.Errorf("claude interactive run (%s): %w", label, promptErr)
 			}
 
 			c.report(label, res, dur, err)
@@ -439,6 +441,28 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 			res := Result{IsError: true}
 			c.emit(label, res, c.clock().Sub(start), ErrAuthRequired)
 			return res, fmt.Errorf("claude interactive run (%s): %w", label, ErrAuthRequired)
+		case <-bypassPrompt:
+			// The one-time --dangerously-skip-permissions acknowledgment dialog is
+			// on a quiet screen. trau never accepts it on the operator's behalf
+			// (COD-1326); fail with the command that clears it.
+			_ = sess.Kill()
+			res := Result{IsError: true}
+			c.emit(label, res, c.clock().Sub(start), ErrBypassNotAccepted)
+			return res, fmt.Errorf("claude interactive run (%s): %w", label, ErrBypassNotAccepted)
+		case <-menuPrompt:
+			// A blocking selection dialog no unattended run can answer. When the
+			// bypass dialog confirmed in the same quiet window, name it — the
+			// generic error would hide the specific fix.
+			cause := ErrInteractivePrompt
+			select {
+			case <-bypassPrompt:
+				cause = ErrBypassNotAccepted
+			default:
+			}
+			_ = sess.Kill()
+			res := Result{IsError: true}
+			c.emit(label, res, c.clock().Sub(start), cause)
+			return res, fmt.Errorf("claude interactive run (%s): %w", label, cause)
 		case <-tick.C:
 			if c.StallWindow > 0 {
 				if idle := c.clock().Sub(time.Unix(0, lastActivity.Load())); idle >= c.StallWindow {
@@ -450,6 +474,28 @@ func (c *ClaudeInteractive) Run(ctx context.Context, prompt, label string) (Resu
 				}
 			}
 		}
+	}
+}
+
+// confirmedPromptError checks completed drain signals in specificity order. A
+// known dialog can also match the generic menu detector, so a select across all
+// three channels would choose randomly and hide the actionable diagnosis.
+func confirmedPromptError(auth, bypass, menu <-chan struct{}) error {
+	select {
+	case <-auth:
+		return ErrAuthRequired
+	default:
+	}
+	select {
+	case <-bypass:
+		return ErrBypassNotAccepted
+	default:
+	}
+	select {
+	case <-menu:
+		return ErrInteractivePrompt
+	default:
+		return nil
 	}
 }
 
@@ -710,6 +756,12 @@ type terminalWatch struct {
 	auths  func(string) bool
 	ready  func(string) bool
 
+	// bypass and menus are always debounced: the bypass acknowledgment dialog
+	// and the generic blocking-question menu are both texts an agent can quote
+	// in ordinary prose, and both real screens sit quiet once drawn (COD-1326).
+	bypass func(string) bool
+	menus  func(string) bool
+
 	// authDebounce routes the auth match through authDebouncer's quiet-window
 	// confirmation instead of signaling on first match. Claude Code's transcript
 	// can quote a "please run /login" string in ordinary prose (reviewing a
@@ -721,9 +773,9 @@ type terminalWatch struct {
 
 // terminalSignals are the channels each watched screen is announced on, once. A
 // nil channel is a screen this caller does not act on.
-type terminalSignals struct{ trust, auth, ready chan<- struct{} }
+type terminalSignals struct{ trust, auth, ready, bypass, menu chan<- struct{} }
 
-var claudeWatch = terminalWatch{trusts: hasClaudeTrustPrompt, auths: hasAuthFailure, authDebounce: true}
+var claudeWatch = terminalWatch{trusts: hasClaudeTrustPrompt, auths: hasAuthFailure, bypass: hasClaudeBypassPrompt, menus: hasInteractiveMenu, authDebounce: true}
 
 func drainWithSignals(dst io.Writer, src io.Reader, watch terminalWatch, sig terminalSignals, onActivity func()) {
 	type watcher struct {
@@ -741,13 +793,27 @@ func drainWithSignals(dst io.Writer, src io.Reader, watch terminalWatch, sig ter
 		}
 	}
 
+	// Debounced screens share one mechanism: a sighting arms a quiet-window
+	// timer, further output disarms it, and either the window or process exit
+	// confirms the screen is really blocking (see authDebounce above).
+	type debounced struct {
+		match func(string) bool
+		deb   *authDebouncer
+		text  strings.Builder
+	}
+	var debouncers []*debounced
+	if watch.authDebounce && watch.auths != nil && sig.auth != nil {
+		debouncers = append(debouncers, &debounced{match: watch.auths, deb: newAuthDebouncer(sig.auth, authQuietWindow, newAuthTimer)})
+	}
+	if watch.bypass != nil && sig.bypass != nil {
+		debouncers = append(debouncers, &debounced{match: watch.bypass, deb: newAuthDebouncer(sig.bypass, authQuietWindow, newAuthTimer)})
+	}
+	if watch.menus != nil && sig.menu != nil {
+		debouncers = append(debouncers, &debounced{match: watch.menus, deb: newAuthDebouncer(sig.menu, authQuietWindow, newAuthTimer)})
+	}
+
 	buf := make([]byte, 4096)
 	var seen strings.Builder
-	var authText strings.Builder
-	var auth *authDebouncer
-	if watch.authDebounce && watch.auths != nil && sig.auth != nil {
-		auth = newAuthDebouncer(sig.auth, authQuietWindow, newAuthTimer)
-	}
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
@@ -775,25 +841,25 @@ func drainWithSignals(dst io.Writer, src io.Reader, watch terminalWatch, sig ter
 				}
 			}
 
-			if auth != nil {
-				authText.Write(chunk)
-				text := authText.String()
-				if watch.auths(text) {
-					auth.arm()
-					authText.Reset()
+			for _, d := range debouncers {
+				d.text.Write(chunk)
+				text := d.text.String()
+				if d.match(text) {
+					d.deb.arm()
+					d.text.Reset()
 				} else {
-					auth.observeOutput(n)
-					if authText.Len() > 8192 {
+					d.deb.observeOutput(n)
+					if d.text.Len() > 8192 {
 						trimmed := text[len(text)-4096:]
-						authText.Reset()
-						authText.WriteString(trimmed)
+						d.text.Reset()
+						d.text.WriteString(trimmed)
 					}
 				}
 			}
 		}
 		if err != nil {
-			if auth != nil {
-				auth.finish()
+			for _, d := range debouncers {
+				d.deb.finish()
 			}
 			return
 		}
