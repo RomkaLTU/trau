@@ -10,13 +10,14 @@ import (
 )
 
 type fakeSettingsActions struct {
-	items      []ConfigItem
-	sections   []string
-	tunings    []ProviderTuning
-	saveCalled bool
-	savedKey   string
-	savedValue string
-	savedLayer string
+	items       []ConfigItem
+	sections    []string
+	tunings     []ProviderTuning
+	saveCalled  bool
+	savedKey    string
+	savedValue  string
+	savedLayer  string
+	deletedKeys []string
 }
 
 func (f *fakeSettingsActions) ConfigItems() []ConfigItem { return f.items }
@@ -27,6 +28,12 @@ func (f *fakeSettingsActions) SaveConfigItem(key, value, layer string) error {
 	f.saveCalled = true
 	f.savedKey = key
 	f.savedValue = value
+	f.savedLayer = layer
+	return nil
+}
+
+func (f *fakeSettingsActions) DeleteConfigItem(key, layer string) error {
+	f.deletedKeys = append(f.deletedKeys, key)
 	f.savedLayer = layer
 	return nil
 }

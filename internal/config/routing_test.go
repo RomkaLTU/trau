@@ -26,7 +26,8 @@ func loadRouting(t *testing.T, files map[string]string) RoutingFingerprint {
 
 // TestResolveRoutingKeys pins the fingerprint's inputs: the active provider, every
 // phase's fully expanded route, the required skills, and the prompt-shape flags —
-// nothing else.
+// nothing else. A phase with no route entry expands to its fixed default, never to
+// the provider default.
 func TestResolveRoutingKeys(t *testing.T) {
 	fp := ResolveRouting(Config{
 		Provider:       "claude",
@@ -41,15 +42,15 @@ func TestResolveRoutingKeys(t *testing.T) {
 		"PROVIDER":        "claude",
 		"REQUIRED_SKILLS": "bubbletea,golang-pro",
 		"CODE_STYLE_NOTE": "1",
-		"PHASE_BUILD":     "claude:opus:xhigh",
-		"PHASE_HANDOFF":   "claude:opus:xhigh",
+		"PHASE_BUILD":     "claude:opus:",
+		"PHASE_HANDOFF":   "claude:sonnet:",
 		"PHASE_VERIFY":    "claude:opus:high",
-		"PHASE_REPAIR":    "claude:opus:xhigh",
-		"PHASE_BUGFIX":    "claude:opus:xhigh",
-		"PHASE_CLEANUP":   "claude:opus:xhigh",
-		"PHASE_LINTFIX":   "claude:haiku:xhigh",
-		"PHASE_COMMIT":    "claude:opus:xhigh",
-		"PHASE_PICK":      "claude:opus:xhigh",
+		"PHASE_REPAIR":    "claude:opus:",
+		"PHASE_BUGFIX":    "claude:opus:",
+		"PHASE_CLEANUP":   "claude:sonnet:",
+		"PHASE_LINTFIX":   "claude:haiku:",
+		"PHASE_COMMIT":    "claude:sonnet:",
+		"PHASE_PICK":      "claude:sonnet:",
 	}
 	if len(fp.Keys) != len(want) {
 		t.Fatalf("keys = %v, want exactly %d entries", fp.Keys, len(want))
@@ -106,8 +107,9 @@ func TestResolveRoutingHashTracksRoutingKeys(t *testing.T) {
 		{"phase model", func(c *Config) { c.Routes = map[string]string{"verify": "claude:sonnet:xhigh"} }, true},
 		{"phase provider", func(c *Config) { c.Routes = map[string]string{"verify": "codex:gpt-5:xhigh"} }, true},
 		{"default provider", func(c *Config) { c.Provider = "codex" }, true},
-		{"default model", func(c *Config) { c.ClaudeModel = "sonnet" }, true},
-		{"default effort", func(c *Config) { c.ClaudeEffort = "high" }, true},
+		{"kimi model", func(c *Config) { c.Provider, c.KimiModel = "kimi", "kimi-fast" }, true},
+		{"claude default model", func(c *Config) { c.ClaudeModel = "sonnet" }, false},
+		{"claude default effort", func(c *Config) { c.ClaudeEffort = "high" }, false},
 		{"required skills", func(c *Config) { c.RequiredSkills = []string{"golang-pro", "bubbletea"} }, true},
 		{"code style note", func(c *Config) { c.CodeStyleNote = false }, true},
 		{"api key", func(c *Config) { c.LinearAPIKey = "lin_api_secret" }, false},

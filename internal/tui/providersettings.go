@@ -63,7 +63,7 @@ type provRow struct {
 type provPicker struct {
 	label  string
 	key    string
-	values []string // values to save (e.g. "" for the inherit/default sentinel)
+	values []string // values to save (e.g. "" for the default sentinel)
 	labels []string // display labels
 	idx    int
 }
@@ -268,13 +268,13 @@ func (m providerSettingsModel) enterEdit() (providerSettingsModel, tea.Cmd) {
 	case rowPhase:
 		ph := p.Phases[row.phaseIdx]
 		pp := strings.ToUpper(ph.Phase)
-		pickers := []provPicker{pickerField("Model", prefix+pp+"_MODEL", p.Models, ph.Model.Value, "(inherit)")}
+		pickers := []provPicker{pickerField("Model", prefix+pp+"_MODEL", p.Models, ph.Model.Value, defaultSentinel(ph.DefModel))}
 		if len(p.Efforts) > 0 {
-			pickers = append(pickers, pickerField("Effort", prefix+pp+"_EFFORT", p.Efforts, ph.Effort.Value, "(inherit)"))
+			pickers = append(pickers, pickerField("Effort", prefix+pp+"_EFFORT", p.Efforts, ph.Effort.Value, defaultSentinel(ph.DefEffort)))
 		}
 		m.edit = provEditor{
 			title:   ph.Phase + " phase — " + p.Name,
-			rowDesc: "Override the " + ph.Phase + " phase. (inherit) keeps the provider default.",
+			rowDesc: phaseDesc(ph),
 			pickers: pickers,
 		}
 	}
@@ -361,7 +361,15 @@ func (m providerSettingsModel) saveCmd(pairs []provKV, layer string) tea.Cmd {
 	}
 	return func() tea.Msg {
 		for _, p := range pairs {
-			if err := actions.SaveConfigItem(p.key, p.value, layer); err != nil {
+			// The default sentinel means "no key at all": an explicit KEY= would mask
+			// a lower layer and read as unset everywhere that looks for a value.
+			var err error
+			if p.value == "" {
+				err = actions.DeleteConfigItem(p.key, layer)
+			} else {
+				err = actions.SaveConfigItem(p.key, p.value, layer)
+			}
+			if err != nil {
 				return provSaveDoneMsg{err: err}
 			}
 		}
@@ -369,8 +377,28 @@ func (m providerSettingsModel) saveCmd(pairs []provKV, layer string) tea.Cmd {
 	}
 }
 
-// optionsWith prefixes an inherit/default sentinel ("" value) onto a provider's
-// option list so a picker can express "no override".
+// defaultSentinel labels a picker's "no override" entry with the value the phase
+// falls back to; an empty default means the provider CLI picks for itself.
+func defaultSentinel(v string) string {
+	if v == "" {
+		return "(default)"
+	}
+	return "(default: " + v + ")"
+}
+
+// phaseDesc names what the phase runs on with its keys unset.
+func phaseDesc(ph ProviderPhaseTuning) string {
+	switch {
+	case ph.DefModel != "" && ph.DefEffort != "":
+		return "Override the " + ph.Phase + " phase. Unset runs the built-in default, " + ph.DefModel + " at " + ph.DefEffort + " effort."
+	case ph.DefModel != "":
+		return "Override the " + ph.Phase + " phase. Unset runs the built-in default, " + ph.DefModel + "."
+	}
+	return "Override the " + ph.Phase + " phase. Unset follows the provider's default model."
+}
+
+// optionsWith prefixes a default sentinel ("" value) onto a provider's option
+// list so a picker can express "no override".
 func optionsWith(opts []string, sentinel string) (values, labels []string) {
 	values = make([]string, 0, len(opts)+1)
 	labels = make([]string, 0, len(opts)+1)
