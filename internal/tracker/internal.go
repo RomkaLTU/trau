@@ -184,11 +184,11 @@ func (in *Internal) ParentIssue(ctx context.Context, id string) (string, error) 
 	return iss.Parent, nil
 }
 
-// SetStatus moves an internal issue to the workflow state matching status and
-// appends extra as a comment. An unmapped status leaves the state unchanged.
-func (in *Internal) SetStatus(ctx context.Context, id, status, extra string) error {
+// SetStatus moves an internal issue to the workflow state matching stage and
+// appends extra as a comment.
+func (in *Internal) SetStatus(ctx context.Context, id string, stage Stage, extra string) error {
 	_, err := in.Hub.TransitionInternalIssue(ctx, in.Repo, id, hubclient.Transition{
-		State:   internalStateFor(status),
+		State:   internalStateFor(stage),
 		Comment: strings.TrimSpace(extra),
 	})
 	return err
@@ -257,22 +257,16 @@ func (in *Internal) RemoveLabel(ctx context.Context, id, label string) error {
 // issue row, so there is nothing to provision.
 func (in *Internal) EnsureLabels(context.Context) error { return nil }
 
-// internalStateFor maps a pipeline display status onto an internal workflow state
-// group, or "" to leave the state unchanged for an unrecognized status.
-func internalStateFor(status string) string {
-	switch s := strings.ToLower(strings.TrimSpace(status)); {
-	case s == "":
-		return ""
-	case strings.Contains(s, "progress"), strings.Contains(s, "review"), s == "started", s == "doing":
-		return "started"
-	case s == "done", s == "completed", s == "complete", s == "merged", s == "closed", s == "shipped":
-		return "done"
-	case s == "canceled", s == "cancelled", s == "wontfix", s == "wont-do":
-		return "canceled"
-	case s == "todo", s == "unstarted":
+// internalStateFor maps a lifecycle stage onto an internal workflow state group.
+// Internal issues carry the loop's own workflow, so the mapping is fixed.
+func internalStateFor(stage Stage) string {
+	switch stage {
+	case StageTodo:
 		return "unstarted"
-	case s == "backlog":
-		return "backlog"
+	case StageInProgress, StageInReview:
+		return "started"
+	case StageDone:
+		return "done"
 	default:
 		return ""
 	}

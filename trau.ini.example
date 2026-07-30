@@ -57,6 +57,15 @@ QUEUED_LABEL=queued          # label mirrored onto tickets waiting in the hub qu
                              # heals whatever drifted from queue membership. Empty = no writes.
 SPLIT_LABEL=needs-split      # label the pre-flight size judge applies to a ticket it flags as
                              # too large to build in one window (see SIZE_JUDGE under loop control)
+# The loop moves a ticket through four lifecycle stages. It resolves each one against the
+# workflow the tracker reports — the Jira transitions, the Linear state types, the Azure DevOps
+# process template — so a project that spells review "READY FOR QA" needs no configuration at all.
+# Set a key below only when the category alone is ambiguous (two In Progress statuses, say) and
+# the loop picks the wrong one; the value must be a status name the workflow actually offers.
+STATUS_TODO=                 # e.g. Backlog
+STATUS_IN_PROGRESS=          # e.g. In Development
+STATUS_IN_REVIEW=            # e.g. READY FOR QA
+STATUS_DONE=                 # e.g. Released
 PROJECT=                     # Linear project this repo owns (e.g. salonradar.com). When set, the loop only
                              # picks tickets in this project, refuses a run on a ticket from another project
                              # before any branch/checkpoint, and files bugs here. Empty = no project scoping.

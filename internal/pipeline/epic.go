@@ -208,7 +208,7 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 	} else {
 		extra += " Epic PR ready for review: " + prURL + "."
 	}
-	if err := p.Tracker.SetStatus(ctx, p.EpicID, "Done", extra); err != nil {
+	if err := p.Tracker.SetStatus(ctx, p.EpicID, tracker.StageDone, extra); err != nil {
 		return fmt.Errorf("finalize epic %s: close epic: %w", p.EpicID, err)
 	}
 	p.logf("  ✓ epic %s closed; PR %s", p.EpicID, prURL)
@@ -244,7 +244,7 @@ func (p *Pipeline) finalizeEpicLocally(ctx context.Context, epic string) error {
 	p.checkpointEpicMerged(ctx, "")
 	_ = p.State.Set(p.EpicID, "DELIVERY", deliveryLocal)
 	extra := "All direct sub-issues are delivered. Epic squash-merged into " + p.Base + " — " + localDeliveryNote + "."
-	if err := p.Tracker.SetStatus(ctx, p.EpicID, "Done", extra); err != nil {
+	if err := p.Tracker.SetStatus(ctx, p.EpicID, tracker.StageDone, extra); err != nil {
 		return fmt.Errorf("finalize epic %s: close epic: %w", p.EpicID, err)
 	}
 	p.logf("  ✓ epic %s closed; merged into %s locally", p.EpicID, p.Base)
@@ -500,7 +500,7 @@ func (p *Pipeline) reassertDone(ctx context.Context, id string) {
 		note += " in PR #" + pr
 	}
 	note += " and moved out of Done afterwards — restoring it."
-	if err := p.Tracker.SetStatus(ctx, id, "Done", note); err != nil {
+	if err := p.Tracker.SetStatus(ctx, id, tracker.StageDone, note); err != nil {
 		p.logf("  re-assert Done for %s error (continuing): %v", id, err)
 		return
 	}

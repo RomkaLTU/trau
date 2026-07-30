@@ -217,7 +217,7 @@ func TestCIAndMergeLandsLocallyWithoutRemote(t *testing.T) {
 			if got := p.State.Get(id, "PHASE"); got != state.Merged {
 				t.Errorf("PHASE = %q, want %q", got, state.Merged)
 			}
-			if set := tr.setFor(id); set == nil || set.status != "Done" {
+			if set := tr.setFor(id); set == nil || set.stage != tracker.StageDone {
 				t.Errorf("tracker status = %+v, want Done", set)
 			}
 		})
@@ -322,7 +322,7 @@ func TestFinalizeEpicMergesLocallyWithoutRemote(t *testing.T) {
 	if got := p.State.Get("COD-1", "PR_URL"); got != "" {
 		t.Errorf("epic PR_URL = %q, want it unset — there is no PR", got)
 	}
-	if tr.setStatus != "Done" || !strings.Contains(tr.setExtra, localDeliveryNote) {
+	if tr.setStatus != tracker.StageDone || !strings.Contains(tr.setExtra, localDeliveryNote) {
 		t.Errorf("epic closed as %q %q, want Done naming local delivery", tr.setStatus, tr.setExtra)
 	}
 }
@@ -347,7 +347,7 @@ func TestFinalizeEpicLeavesTheMergeToTheOperatorWhenAutoMergeIsOff(t *testing.T)
 	if git.squashCalls != 0 {
 		t.Errorf("squash-merged %d times with AUTO_MERGE=0, want 0", git.squashCalls)
 	}
-	if tr.setStatus == "Done" {
+	if tr.setStatus == tracker.StageDone {
 		t.Error("epic closed Done, want it left open until the operator merges")
 	}
 }

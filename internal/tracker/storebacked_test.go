@@ -129,8 +129,8 @@ func (f *fakeWrites) SubIssues(context.Context, string) ([]SubIssue, error) {
 func (f *fakeWrites) Title(context.Context, string) (string, error) {
 	return "", errors.New("read via tracker")
 }
-func (f *fakeWrites) SetStatus(_ context.Context, id, status, _ string) error {
-	f.setStatus = append(f.setStatus, id+":"+status)
+func (f *fakeWrites) SetStatus(_ context.Context, id string, stage Stage, _ string) error {
+	f.setStatus = append(f.setStatus, id+":"+string(stage))
 	return f.err
 }
 func (f *fakeWrites) Reset(context.Context, string) error             { f.resets++; return f.err }
@@ -249,10 +249,10 @@ func TestStoreBackedIssueDetailIncludesComments(t *testing.T) {
 func TestStoreBackedSetStatusWritesTrackerAndMirrors(t *testing.T) {
 	hub := newFakeStoreHub()
 	writes := &fakeWrites{}
-	if err := newStoreBacked(hub, writes).SetStatus(context.Background(), "COD-1", "In Progress", ""); err != nil {
+	if err := newStoreBacked(hub, writes).SetStatus(context.Background(), "COD-1", StageInProgress, ""); err != nil {
 		t.Fatalf("set status: %v", err)
 	}
-	if !reflect.DeepEqual(writes.setStatus, []string{"COD-1:In Progress"}) {
+	if !reflect.DeepEqual(writes.setStatus, []string{"COD-1:in-progress"}) {
 		t.Fatalf("tracker writes = %v, want the status transition delegated", writes.setStatus)
 	}
 	if len(hub.mirrors) != 1 || hub.mirrors[0].m.Status != "In Progress" || hub.mirrors[0].m.StatusGroup != "started" {
@@ -265,7 +265,7 @@ func TestStoreBackedSetStatusMirrorFailureDoesNotFail(t *testing.T) {
 	hub.mirrorErr = errors.New("store write failed")
 	// The tracker write is the source of truth; a failed store mirror must not fail
 	// the transition (the next sync reconciles the row).
-	if err := newStoreBacked(hub, &fakeWrites{}).SetStatus(context.Background(), "COD-1", "Done", ""); err != nil {
+	if err := newStoreBacked(hub, &fakeWrites{}).SetStatus(context.Background(), "COD-1", StageDone, ""); err != nil {
 		t.Fatalf("set status = %v, want nil despite the mirror failure", err)
 	}
 }
@@ -443,7 +443,7 @@ func TestStoreBackedWritesInternalIDThroughHub(t *testing.T) {
 	writes := &fakeWrites{}
 	sb := newStoreBacked(hub, writes)
 
-	if err := sb.SetStatus(context.Background(), "ACME-1", "In Progress", "starting"); err != nil {
+	if err := sb.SetStatus(context.Background(), "ACME-1", StageInProgress, "starting"); err != nil {
 		t.Fatalf("set status: %v", err)
 	}
 	if err := sb.Quarantine(context.Background(), "ACME-1", "gave up"); err != nil {

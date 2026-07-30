@@ -57,9 +57,9 @@ func (t *fakeTracker) Pick(context.Context, tracker.Scope) (string, error) { ret
 func (t *fakeTracker) SubIssues(context.Context, string) ([]tracker.SubIssue, error) {
 	return nil, nil
 }
-func (t *fakeTracker) Title(context.Context, string) (string, error)           { return "", nil }
-func (t *fakeTracker) SetStatus(context.Context, string, string, string) error { return nil }
-func (t *fakeTracker) Reset(context.Context, string) error                     { return nil }
+func (t *fakeTracker) Title(context.Context, string) (string, error)                  { return "", nil }
+func (t *fakeTracker) SetStatus(context.Context, string, tracker.Stage, string) error { return nil }
+func (t *fakeTracker) Reset(context.Context, string) error                            { return nil }
 func (t *fakeTracker) Quarantine(context.Context, string, string) error {
 	t.quarantineCalls++
 	return nil

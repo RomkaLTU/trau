@@ -651,6 +651,19 @@ func (c *Client) ProjectByName(ctx context.Context, name string) (*Project, erro
 	return nil, ErrNotFound
 }
 
+// WorkflowStates returns the workflow states of the team owning identifier — the
+// names and types this team actually declares, rather than Linear's defaults.
+func (c *Client) WorkflowStates(ctx context.Context, identifier string) ([]State, error) {
+	if c.apiKey == "" {
+		return nil, ErrNotEnabled
+	}
+	issue, err := c.Issue(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+	return c.workflowStates(ctx, issue.Team.ID)
+}
+
 // workflowStates returns the workflow states for a team.
 func (c *Client) workflowStates(ctx context.Context, teamID string) ([]State, error) {
 	var dst workflowStatesQueryResponse

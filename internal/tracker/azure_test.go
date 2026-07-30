@@ -414,7 +414,7 @@ func TestAzureSetStatusResolvesLoopTargetOnScrumTemplate(t *testing.T) {
 		"patch": `{"id":7}`,
 	})
 
-	if err := az.SetStatus(context.Background(), "CON-7", "In Review", "PR is up."); err != nil {
+	if err := az.SetStatus(context.Background(), "CON-7", StageInReview, "PR is up."); err != nil {
 		t.Fatalf("SetStatus returned error: %v", err)
 	}
 	if len(*patches) != 1 {

@@ -288,14 +288,14 @@ func (in *StoreBacked) IssueProject(ctx context.Context, id string) (string, err
 
 // SetStatus moves the ticket in the external tracker and mirrors the new status onto
 // the store row so the board reflects it at once.
-func (in *StoreBacked) SetStatus(ctx context.Context, id, status, extra string) error {
+func (in *StoreBacked) SetStatus(ctx context.Context, id string, stage Stage, extra string) error {
 	if in.isInternal(id) {
-		return in.internal().SetStatus(ctx, id, status, extra)
+		return in.internal().SetStatus(ctx, id, stage, extra)
 	}
-	if err := in.Writes.SetStatus(ctx, id, status, extra); err != nil {
+	if err := in.Writes.SetStatus(ctx, id, stage, extra); err != nil {
 		return err
 	}
-	in.mirror(ctx, id, hubclient.SyncedMirror{Status: status, StatusGroup: syncedStatusGroup(status)})
+	in.mirror(ctx, id, hubclient.SyncedMirror{Status: stage.Display(), StatusGroup: syncedStatusGroup(stage)})
 	return nil
 }
 
@@ -407,23 +407,16 @@ func (in *StoreBacked) mirror(ctx context.Context, id string, m hubclient.Synced
 	_ = in.Hub.MirrorSynced(ctx, in.Repo, id, m)
 }
 
-// syncedStatusGroup maps a pipeline display status onto the stored status group so a
-// mirrored transition buckets on the board the way a real sync would. An
-// unrecognized status returns "" — the store leaves the group unchanged.
-func syncedStatusGroup(status string) string {
-	switch s := strings.ToLower(strings.TrimSpace(status)); {
-	case s == "":
-		return ""
-	case strings.Contains(s, "progress"), strings.Contains(s, "review"), s == "started", s == "doing":
-		return "started"
-	case s == "done", s == "completed", s == "complete", s == "merged", s == "closed", s == "shipped":
-		return "completed"
-	case s == "canceled", s == "cancelled", s == "wontfix", s == "wont-do":
-		return "canceled"
-	case s == "todo", s == "unstarted":
+// syncedStatusGroup maps a lifecycle stage onto the stored status group so a
+// mirrored transition buckets on the board the way a real sync would.
+func syncedStatusGroup(stage Stage) string {
+	switch stage {
+	case StageTodo:
 		return "unstarted"
-	case s == "backlog":
-		return "backlog"
+	case StageInProgress, StageInReview:
+		return "started"
+	case StageDone:
+		return "completed"
 	default:
 		return ""
 	}
