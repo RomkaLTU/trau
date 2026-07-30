@@ -1055,8 +1055,10 @@ func TestTrackerConfigKeysAreCatalogued(t *testing.T) {
 		known[m.Key] = true
 	}
 	keys := TrackerConfigKeys()
-	if !slices.Contains(keys, "TRACKER_PROVIDER") {
-		t.Fatalf("tracker keys = %v, want TRACKER_PROVIDER among them", keys)
+	for _, want := range []string{"TRACKER_PROVIDER", "AZURE_ORG_URL", "AZURE_PAT"} {
+		if !slices.Contains(keys, want) {
+			t.Fatalf("tracker keys = %v, want %s among them", keys, want)
+		}
 	}
 	for _, key := range keys {
 		if !known[key] {
