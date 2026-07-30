@@ -142,7 +142,7 @@ func TestAddCommentPostsADF(t *testing.T) {
 }
 
 // LinkBlocks POSTs a "Blocks" link with the blocker as the outward issue and the
-// blocked sibling as the inward issue — the direction blockersFromLinks reads back.
+// blocked sibling as the inward issue.
 func TestLinkBlocksPostsBlocksLink(t *testing.T) {
 	var (
 		method string

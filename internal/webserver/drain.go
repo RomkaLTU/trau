@@ -110,13 +110,14 @@ func (d *drainer) run(ctx context.Context, root string) {
 }
 
 // tick advances a repo's queue by one decision: it launches the next runnable
-// item, settles a finished one per the failure taxonomy — pausing the drain on a
-// fault or provider pause, but leaving a row whose removal is in flight to the
-// removal, which drops it rather than parking it — waits, never spawning a second
-// child while one is in flight or while a pending self-reload is waiting for its
-// idle gap, or finishes the drain once the queue has nothing left to run so a
-// completed — or armed but empty — queue reads stopped instead of idling armed.
-// It is the whole drain policy, pure enough to table-test.
+// item no open blocker holds back, settles a finished one per the failure
+// taxonomy — pausing the drain on a fault or provider pause, but leaving a row
+// whose removal is in flight to the removal, which drops it rather than parking
+// it — waits, never spawning a second child while one is in flight or while a
+// pending self-reload is waiting for its idle gap, or finishes the drain once the
+// queue has nothing left to run so a completed — or armed but empty — queue reads
+// stopped instead of idling armed. It is the whole drain policy, pure enough to
+// table-test.
 func (d *drainer) tick(root string) (drainAction, error) {
 	store := d.srv.stores.Queue(root)
 	items, meta, err := store.Snapshot()
@@ -148,7 +149,10 @@ func (d *drainer) tick(root string) (drainAction, error) {
 		}
 		return drainStop, nil
 	}
-	next, ok := firstRunnable(items)
+	next, ok, err := d.firstUnblocked(root, items)
+	if err != nil {
+		return drainWait, err
+	}
 	if !ok {
 		finished, err := store.FinishDraining()
 		if err != nil {
@@ -514,14 +518,47 @@ func firstWithStatus(items []queue.Item, status string) (queue.Item, bool) {
 	return queue.Item{}, false
 }
 
-// firstRunnable returns the next item the drain should launch: the first that is
-// pending or paused. A paused item sits ahead of any pending one behind it — the
-// drain stopped when it paused — so a resume re-attempts it before moving on.
-func firstRunnable(items []queue.Item) (queue.Item, bool) {
+// firstUnblocked returns the next item the drain should launch: the first that is
+// pending or paused and whose blockers have all resolved. A paused item sits ahead
+// of any pending one behind it — the drain stopped when it paused — so a resume
+// re-attempts it before moving on. An item an open blocker still holds back is
+// passed over rather than started, so the blocker runs first even when the queue
+// holds it further down. Reporting none leaves the caller to FinishDraining, which
+// refuses to disarm a queue whose runnable items are merely blocked.
+func (d *drainer) firstUnblocked(root string, items []queue.Item) (queue.Item, bool, error) {
+	runnable := make([]string, 0, len(items))
+	shipped := map[string]bool{}
 	for _, it := range items {
-		if queue.Runnable(it.Status) {
-			return it, true
+		switch {
+		case queue.Runnable(it.Status):
+			runnable = append(runnable, it.ID)
+		case it.Status == queue.StatusDone:
+			shipped[it.ID] = true
 		}
 	}
-	return queue.Item{}, false
+	if len(runnable) == 0 {
+		return queue.Item{}, false, nil
+	}
+	blockers, err := d.srv.stores.Issues().UnresolvedBlockers(root, runnable)
+	if err != nil {
+		return queue.Item{}, false, err
+	}
+	for _, it := range items {
+		if queue.Runnable(it.Status) && !heldBack(blockers[it.ID], shipped) {
+			return it, true, nil
+		}
+	}
+	return queue.Item{}, false, nil
+}
+
+// heldBack reports whether any blocker still holds an item back. A blocker this
+// queue already settled done has shipped, whatever the tracker mirror — refreshed
+// only on the sync tick — still says about it.
+func heldBack(blockers []string, shipped map[string]bool) bool {
+	for _, id := range blockers {
+		if !shipped[id] {
+			return true
+		}
+	}
+	return false
 }
