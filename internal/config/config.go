@@ -1142,8 +1142,8 @@ func (c Config) HasJiraCredentials() bool {
 		strings.TrimSpace(c.JiraAPIToken) != ""
 }
 
-// HasAzureCredentials reports whether the resolved config carries both direct
-// Azure DevOps REST credentials, whichever layer supplied them.
+// HasAzureCredentials reports whether the resolved config carries the full set of
+// direct Azure DevOps REST credentials, whichever layer supplied them.
 func (c Config) HasAzureCredentials() bool {
 	return strings.TrimSpace(c.AzureOrgURL) != "" &&
 		strings.TrimSpace(c.AzurePAT) != ""
