@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
@@ -36,7 +37,7 @@ func newGatePipeline(t *testing.T, gh GitHub, tr tracker.Tracker) *Pipeline {
 	p.GitHub = gh
 	p.AutoMerge = true
 	p.MergeMethod = "squash"
-	p.RequireCI = true
+	p.RequireCI = config.CIGateOn
 	p.Sleep = func(time.Duration) {}
 	return p
 }

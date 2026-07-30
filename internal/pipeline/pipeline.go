@@ -506,7 +506,10 @@ type Pipeline struct {
 	// Non-squash merge methods always use the agent commit.
 	DeterministicCommit bool
 	ExpectedChecks      string
-	RequireCI           bool
+	// RequireCI is the merge gate's mode (config REQUIRE_CI): auto — the zero
+	// value — waits for checks only when a pull_request workflow targets the PR's
+	// base, 1 always waits, 0 never does.
+	RequireCI config.CIGate
 	// RequireRepoChanges gates the post-build empty-diff guard (config
 	// REQUIRE_REPO_CHANGES, default on). When set, a build that left the managed
 	// repo unchanged faults instead of advancing to a hollow handoff or empty PR.
@@ -1728,6 +1731,17 @@ func (p *Pipeline) buildBase(ctx context.Context) (string, error) {
 	return p.Base, nil
 }
 
+// prBase names the branch this run's slice PR targets. An epic branch that will
+// not resolve falls back to the configured base, which can only make the CI gate
+// wait longer, never less.
+func (p *Pipeline) prBase(ctx context.Context) string {
+	base, err := p.buildBase(ctx)
+	if err != nil || base == "" {
+		return p.Base
+	}
+	return base
+}
+
 // recordDiffBase stores the branch the run's work diverges from alongside its
 // BRANCH, so a reader can diff the run without re-deriving the epic topology. An
 // unresolvable base leaves the key absent and readers fall back to the configured
@@ -2525,7 +2539,7 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 	}
 
 	p.setActivity(id, activity.CIWait, "")
-	if err := p.pollCI(ctx, pr); err != nil {
+	if err := p.pollCI(ctx, pr, p.prBase(ctx)); err != nil {
 		p.logf("  ✗ CI: %v", err)
 		return p.giveUp(ctx, id, "CI not green")
 	}
@@ -2766,7 +2780,7 @@ func (p *Pipeline) recoverUnmergeablePR(ctx context.Context, id, pr string, merg
 		return p.giveUp(ctx, id, fmt.Sprintf("PR %s conflicts with %s and the conflicts could not be auto-resolved — resolve manually", pr, base))
 	}
 	p.setActivity(id, activity.CIWait, "")
-	if err := p.pollCI(ctx, pr); err != nil {
+	if err := p.pollCI(ctx, pr, base); err != nil {
 		p.logf("  ✗ CI after conflict sync: %v", err)
 		return p.giveUp(ctx, id, "CI not green after syncing the PR with "+base)
 	}
@@ -2859,12 +2873,24 @@ func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
 	return nil
 }
 
-func (p *Pipeline) pollCI(ctx context.Context, pr string) error {
-	if !p.RequireCI {
+// noChecksGrace bounds how long the gate waits for a PR's first check to appear
+// before it reads the silence as an answer. GitHub registers a triggered
+// workflow within seconds, so a PR still checkless this far in is one no
+// workflow was ever going to check — waiting out the full CITimeout only delays
+// the same conclusion.
+const noChecksGrace = 120
+
+// pollCI is the merge gate. A PR that receives no check at all is its own
+// outcome rather than a timeout: checkless by design waves it through, and only
+// genuinely missing checks run out the clock into ErrCITimeout. base is the
+// branch pr targets, which decides whether any workflow could have checked it.
+func (p *Pipeline) pollCI(ctx context.Context, pr, base string) error {
+	if p.RequireCI == config.CIGateOff {
 		p.logf("  CI gate off (REQUIRE_CI=0) — not waiting for checks")
 		return nil
 	}
 	expected := splitChecks(p.ExpectedChecks)
+	scan := config.ScanPullRequestCI(p.RepoRoot)
 	sawCheck := false
 	for waited := 0; ; waited += p.CIPoll {
 		checks, _ := p.GitHub.Checks(ctx, pr)
@@ -2879,13 +2905,13 @@ func (p *Pipeline) pollCI(ctx context.Context, pr string) error {
 			p.emitEvent("ci", map[string]any{"state": "green"})
 			return nil
 		}
+		checkless := !sawCheck && len(expected) == 0
+		if checkless && p.checklessByDesign(scan, base, waited) {
+			p.emitEvent("ci", map[string]any{"state": "skipped"})
+			return nil
+		}
 		if waited >= p.CITimeout {
-			if !sawCheck && len(expected) == 0 {
-				if config.ScanPullRequestCI(p.RepoRoot).AllPathFiltered {
-					p.logf("  ⓘ no checks appeared and every PR workflow is path-filtered — this change matches none of them; skipping the CI gate")
-					p.emitEvent("ci", map[string]any{"state": "skipped"})
-					return nil
-				}
+			if checkless {
 				p.logf("  ⓘ no checks ever appeared — if this repo has no PR CI, set REQUIRE_CI=0 to skip the gate")
 			}
 			p.emitEvent("ci", map[string]any{"state": "failing"})
@@ -2894,6 +2920,38 @@ func (p *Pipeline) pollCI(ctx context.Context, pr string) error {
 		p.emitEvent("ci", map[string]any{"state": "pending", "poll_secs": p.CIPoll})
 		p.sleep(p.CIPoll)
 	}
+}
+
+// checklessByDesign reports whether a PR still checkless waited seconds in is
+// one the repo never configured CI for — rather than one whose CI was configured
+// and failed to report, which stays a timeout. The repo's own PR workflows are
+// the proof, so how long the gate holds out for it depends on what they show: a
+// base they demonstrably skip is answered as soon as the grace window passes,
+// while a repo with no pull_request workflow at all says nothing about a CI
+// hosted outside Actions and is only waived once the full CITimeout has passed
+// without its first check. Both waivers merge work no check ever saw, so each
+// one says so in the log.
+func (p *Pipeline) checklessByDesign(scan config.PRCIScan, base string, waited int) bool {
+	if waited < min(noChecksGrace, p.CITimeout) {
+		return false
+	}
+	if scan.AllPathFiltered {
+		p.logf("  ⓘ no checks appeared and every PR workflow is path-filtered — this change matches none of them; skipping the CI gate")
+		return true
+	}
+	if p.RequireCI == config.CIGateOn || scan.CoversBranch(base) {
+		return false
+	}
+	switch {
+	case scan.HasPRWorkflows:
+		p.logf("  ⚠ no CI configured on base %s — no pull_request workflow targets it, so no check can ever appear", base)
+	case waited >= p.CITimeout:
+		p.logf("  ⚠ no check appeared on %s within CI_TIMEOUT and this repo has no pull_request workflow to produce one", base)
+	default:
+		return false
+	}
+	p.logf("  ⚠ merging without a CI verdict (REQUIRE_CI=auto); set REQUIRE_CI=1 to gate on checks anyway")
+	return true
 }
 
 func (p *Pipeline) sleep(seconds int) {

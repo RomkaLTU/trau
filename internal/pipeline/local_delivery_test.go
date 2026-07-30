@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
@@ -116,7 +117,7 @@ func localTestPipeline(t *testing.T, git Git, gh GitHub, tr tracker.Tracker) *Pi
 		Remote:              "origin",
 		Prefix:              "COD",
 		AutoMerge:           true,
-		RequireCI:           true,
+		RequireCI:           config.CIGateOn,
 		MergeMethod:         "squash",
 		DeterministicCommit: true,
 	}

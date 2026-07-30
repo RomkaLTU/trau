@@ -263,7 +263,7 @@ func (m onboardingModel) ciDescription() string {
 		}
 		return "Detected a pull_request-triggered workflow in .github/workflows.\nChange later in Settings or via REQUIRE_CI in .trau.ini."
 	default:
-		return "No pull_request-triggered workflow found — PRs would get zero checks,\nread by the gate as never-green. Skip only if this repo has no PR CI."
+		return "No pull_request-triggered workflow found — PRs would get zero checks;\nthe gate then merges with a warning. Skip it outright if this repo has no PR CI."
 	}
 }
 

@@ -375,7 +375,7 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 	}
 
 	for repair := 0; ; {
-		if err := p.pollCI(ctx, pr); err == nil {
+		if err := p.pollCI(ctx, pr, p.Base); err == nil {
 			break
 		} else {
 			p.logf("  ✗ epic CI: %v", err)
