@@ -1,7 +1,7 @@
 import { queryOptions, useQuery } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
-import type { RepoView } from './instances'
+import { removeBlocked, type RepoView } from './instances'
 
 // ProjectView is one logical project: a group of registered repos under a display
 // name. Members are repo roots, joined against the repos list by the caller.
@@ -35,9 +35,9 @@ export const projectsQueryOptions = queryOptions({
   refetchInterval: 5000,
 })
 
-// RepoRow is one row of the switcher. A project holding two or more listed repos
-// renders as a named group; everything else — a single-member project, a repo no
-// project holds — renders as a bare repo.
+// RepoRow is one row of a repo list — the switcher's, or the instances page's. A
+// project holding two or more listed repos renders as a named group; everything
+// else — a single-member project, a repo no project holds — renders as a bare repo.
 export interface RepoRow {
   project: ProjectView | null
   repos: RepoView[]
@@ -234,6 +234,86 @@ export async function writeProjectTracker(
     throw new Error(await errorMessage(res, 'save project tracker failed'))
   }
   return res.json()
+}
+
+// ProjectRemovalRepo is one member a removal reached; reason is the hub's refusal
+// on a member that stayed.
+export interface ProjectRemovalRepo {
+  name: string
+  root: string
+  reason?: string
+}
+
+// ProjectRemoval is the outcome of removing a project's repos. project is the
+// pre-removal snapshot, so the caller can name what it acted on even once the group
+// is gone, and blocked carries the members the hub kept: the removal is partial
+// rather than all-or-nothing, so a success can still leave members behind.
+export interface ProjectRemoval {
+  project: ProjectView
+  removed: ProjectRemovalRepo[]
+  blocked: ProjectRemovalRepo[]
+  project_deleted: boolean
+}
+
+// removeProjectRepos takes every member repo off the hub in one call, the same
+// removal the per-repo Remove button makes: nothing on disk is touched, and running
+// trau in a member again brings it back.
+export async function removeProjectRepos(id: string): Promise<ProjectRemoval> {
+  const res = await apiFetch(
+    `/api/v1/projects/${encodeURIComponent(id)}?forget=1`,
+    { method: 'DELETE' },
+  )
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'remove project failed'))
+  }
+  return res.json()
+}
+
+// BlockedMember is a member the hub would keep, with the reason the row already
+// shows for it.
+export interface BlockedMember {
+  name: string
+  reason: string
+}
+
+// RemovalPlan is what the confirm dialog names before the click: the members a
+// project-wide removal takes, and the ones it would leave with the reason each is
+// kept for. It reads the repo list the page already holds, so the hub stays the
+// authority — a member removable here can still come back blocked in the outcome.
+export interface RemovalPlan {
+  removing: string[]
+  blocked: BlockedMember[]
+}
+
+export function removalPlan(repos: readonly RepoView[]): RemovalPlan {
+  const plan: RemovalPlan = { removing: [], blocked: [] }
+  for (const repo of repos) {
+    const reason = removeBlocked(repo)
+    if (reason === null) {
+      plan.removing.push(repo.name)
+      continue
+    }
+    plan.blocked.push({ name: repo.name, reason })
+  }
+  return plan
+}
+
+// removalSummary is what a removal's toast says: the count that left when the folder
+// cleared, or which members stayed and why when the hub kept some.
+export function removalSummary({
+  project,
+  removed,
+  blocked,
+}: ProjectRemoval): string {
+  if (blocked.length === 0) {
+    const repos = removed.length === 1 ? 'repo' : 'repos'
+    return `${removed.length} ${repos} removed from ${project.name}`
+  }
+  const stayed = blocked
+    .map((repo) => `${repo.name} stayed (${repo.reason})`)
+    .join(', ')
+  const total = removed.length + blocked.length
+  return `${removed.length} of ${total} removed from ${project.name} — ${stayed}`
 }
 
 // addProjectRepo moves an already-registered repo — named or addressed by root —
