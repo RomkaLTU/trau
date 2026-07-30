@@ -11,7 +11,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/RomkaLTU/trau/internal/tracker/azureapi"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 )
@@ -224,6 +226,53 @@ func TestJiraReaderBacklogMaps(t *testing.T) {
 	}
 	if items[2].Group != StatusGroupCanceled || items[2].Status != "Closed" {
 		t.Errorf("items[2] = %+v, want a canceled (duplicate) done issue", items[2])
+	}
+}
+
+// Every provider's rate-limit refusal has to read as one, or the repo it belongs
+// to is backed off as a failure for a condition that heals itself.
+func TestRateLimited(t *testing.T) {
+	reset := time.Now().Add(15 * time.Minute).UTC()
+	cases := []struct {
+		name string
+		err  error
+		want time.Time
+	}{
+		{"linear", &linearapi.RateLimitError{Message: "budget spent", ResetAt: reset}, reset},
+		{"jira", fmt.Errorf("sync pull: %w", &jiraapi.RateLimitError{ResetAt: reset}), reset},
+		{"azure", fmt.Errorf("sync pull: %w", &azureapi.RateLimitError{ResetAt: reset}), reset},
+		{"a refusal that named no reset", &jiraapi.RateLimitError{}, time.Time{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetAt, limited := RateLimited(tc.err)
+			if !limited {
+				t.Fatalf("RateLimited(%v) = false, want a rate limit", tc.err)
+			}
+			if !resetAt.Equal(tc.want) {
+				t.Fatalf("resetAt = %v, want %v", resetAt, tc.want)
+			}
+		})
+	}
+	if _, limited := RateLimited(ErrNoProjectKey); limited {
+		t.Fatal("a missing project key is not a rate limit")
+	}
+}
+
+func TestUnauthorized(t *testing.T) {
+	rejected := []error{
+		linearapi.ErrUnauthorized,
+		jiraapi.ErrUnauthorized,
+		azureapi.ErrUnauthorized,
+		fmt.Errorf("resolve identity: %w", azureapi.ErrUnauthorized),
+	}
+	for _, err := range rejected {
+		if !Unauthorized(err) {
+			t.Errorf("Unauthorized(%v) = false, want rejected credentials", err)
+		}
+	}
+	if Unauthorized(ErrIssueNotFound) {
+		t.Error("a missing issue is not a credential rejection")
 	}
 }
 

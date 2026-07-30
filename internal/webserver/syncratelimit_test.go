@@ -2,6 +2,7 @@ package webserver
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"os"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/tracker"
+	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 )
 
@@ -19,6 +21,10 @@ func rateLimitErr(reset time.Time) error {
 		Message: "Rate limit exceeded. Only 2500 requests are allowed per 1 hour.",
 		ResetAt: reset,
 	}
+}
+
+func jiraRateLimitErr(reset time.Time) error {
+	return &jiraapi.RateLimitError{ResetAt: reset}
 }
 
 // A spent request budget is not a broken repo: recording it would pin health at
@@ -237,6 +243,68 @@ func TestRateLimitWaitIsBounded(t *testing.T) {
 	}
 	if got := rateLimitWait(time.Now().Add(10*time.Minute), time.Minute); got < 9*time.Minute || got > 10*time.Minute {
 		t.Fatalf("wait = %v, want roughly the time to the reset", got)
+	}
+}
+
+// Jira's 429 travels the same path as Linear's: the client's own retry ladder
+// gave up on a condition that heals itself, so the worker waits the window out
+// rather than backing the repo off as a failure.
+func TestSyncerJiraRateLimitWaitsForResetWithoutFailing(t *testing.T) {
+	sy := newSyncer(nil)
+	root := "/repo/acme"
+
+	sy.claim(root, time.Now())
+	sy.settle(root, time.Minute, jiraRateLimitErr(time.Now().Add(10*time.Minute)))
+
+	if sy.claim(root, time.Now().Add(5*time.Minute)) {
+		t.Fatal("a rate-limited repo should hold off until the budget window rolls")
+	}
+	if !sy.claim(root, time.Now().Add(11*time.Minute)) {
+		t.Fatal("a rate-limited repo should resume once the window has rolled")
+	}
+	if st := sy.state[root]; st.failures != 0 {
+		t.Fatalf("failures = %d, want a rate limit to count as no failure", st.failures)
+	}
+}
+
+func TestSyncJiraRateLimitDoesNotRecordFailure(t *testing.T) {
+	fake := &fakeReader{synced: syncedFixture()}
+	ts, root, store := syncServer(t, fake)
+
+	res, _ := postSync(t, ts, "acme")
+	_ = res.Body.Close()
+
+	fake.syncErr = jiraRateLimitErr(time.Now().Add(20 * time.Minute))
+	res, _ = postSync(t, ts, "acme")
+	_ = res.Body.Close()
+
+	st, err := store.SyncState(root)
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	if st.LastError != "" {
+		t.Fatalf("last error = %q, want a rate limit left off the repo's health", st.LastError)
+	}
+	if st.LastSyncedAt == "" || st.LastIssues != 1 {
+		t.Fatalf("state = %+v, want the last good sync preserved", st)
+	}
+}
+
+// A spent Jira budget refuses the remaining label writes too, and is charged for
+// each attempt, so the sweep stops at the first refusal instead of healing into
+// the limit.
+func TestQueuedLabelStopsOnJiraRateLimit(t *testing.T) {
+	s, writer, _, root, _ := queuedLabelServer(t, "QUEUED_LABEL=queued\n")
+	writer.labelErr = jiraRateLimitErr(time.Now().Add(time.Minute))
+
+	lb, ok := s.queuedLabeler(root)
+	if !ok {
+		t.Fatal("queuedLabeler: want a labeler for a repo carrying QUEUED_LABEL")
+	}
+	s.applyQueuedLabel(context.Background(), lb, []string{"COD-1", "COD-2", "COD-3"}, true)
+
+	if len(writer.labels) != 1 {
+		t.Fatalf("label writes = %+v, want the sweep stopped at the first refusal", writer.labels)
 	}
 }
 

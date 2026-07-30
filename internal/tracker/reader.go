@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/tracker/azureapi"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 )
@@ -115,17 +116,27 @@ type Reader interface {
 // (zero when it did not say). A rate limit is transient and self-healing, so a
 // caller waits it out rather than recording a failure the repo cannot fix.
 func RateLimited(err error) (resetAt time.Time, ok bool) {
-	var limit *linearapi.RateLimitError
-	if !errors.As(err, &limit) {
-		return time.Time{}, false
+	var linear *linearapi.RateLimitError
+	if errors.As(err, &linear) {
+		return linear.ResetAt, true
 	}
-	return limit.ResetAt, true
+	var jira *jiraapi.RateLimitError
+	if errors.As(err, &jira) {
+		return jira.ResetAt, true
+	}
+	var azure *azureapi.RateLimitError
+	if errors.As(err, &azure) {
+		return azure.ResetAt, true
+	}
+	return time.Time{}, false
 }
 
 // Unauthorized reports whether err is a tracker rejecting the repo's credentials,
-// whichever of the syncable providers answered.
+// whichever provider answered.
 func Unauthorized(err error) bool {
-	return errors.Is(err, linearapi.ErrUnauthorized) || errors.Is(err, jiraapi.ErrUnauthorized)
+	return errors.Is(err, linearapi.ErrUnauthorized) ||
+		errors.Is(err, jiraapi.ErrUnauthorized) ||
+		errors.Is(err, azureapi.ErrUnauthorized)
 }
 
 // ErrorKind labels a sync failure by what it takes to clear. A rate limit or a
