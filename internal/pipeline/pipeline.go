@@ -568,6 +568,12 @@ type Pipeline struct {
 	// verify proceeds without stored credentials. Nil disables QA injection.
 	FetchQAAccounts func(ctx context.Context) (hubclient.QARoster, error)
 
+	// FetchAppURLs returns the repo's stored app URL entries from the hub. It is
+	// called once at ticket-run start: one or more entries replace AppURL/AppURLs
+	// wholesale (ADR 0026), and no entries — or a failed fetch, which logs one
+	// warning — leave the config-derived values in place. Nil disables the lookup.
+	FetchAppURLs func(ctx context.Context) ([]hubclient.AppURL, error)
+
 	// SaveQAAccount stores on the hub a QA credential the verifier discovered
 	// inside the repo under test, so the next run's roster is prefilled. A
 	// failure logs one warning and the run proceeds — capture never blocks a
@@ -668,6 +674,12 @@ type Pipeline struct {
 	// what qaCaptureMax bounds.
 	qaRoster   []hubclient.QAAccount
 	qaCaptured int
+
+	// iniAppURLs snapshots the config-derived browser targets before the first run
+	// installs the hub's stored entries, so every ticket resolves the hub-wins rule
+	// against the configured values rather than the previous ticket's result. Nil
+	// until the first resolution.
+	iniAppURLs *appURLSet
 
 	// prompts is the ticket run's prompt renderer: the override snapshot
 	// fetched at run start layered over the built-in defaults. Edits made
@@ -778,6 +790,7 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 		p.setTitle(p.State.Get(id, "TITLE"))
 	}
 	p.loadPrompts(ctx, id)
+	p.loadAppURLs(ctx)
 	fi := state.Idx(from)
 
 	if from != "" {
@@ -840,6 +853,47 @@ func (p *Pipeline) loadPrompts(ctx context.Context, id string) {
 		return
 	}
 	p.prompts.Overrides = overrides
+}
+
+// appURLSet is a resolved pair of browser-verify targets: the default URL and the
+// per-workspace ones.
+type appURLSet struct {
+	def        string
+	workspaces map[string]string
+}
+
+// loadAppURLs resolves this ticket run's browser-verify targets from the hub's
+// stored app URL entries: the entry with no workspace becomes AppURL and the
+// workspace entries become AppURLs, replacing the configured values wholesale
+// (ADR 0026). A hub holding no entries — or one that can't be reached — leaves the
+// APP_URL/APP_URLS values exactly as configured.
+func (p *Pipeline) loadAppURLs(ctx context.Context) {
+	if p.FetchAppURLs == nil {
+		return
+	}
+	if p.iniAppURLs == nil {
+		p.iniAppURLs = &appURLSet{def: p.AppURL, workspaces: p.AppURLs}
+	}
+	p.AppURL, p.AppURLs = p.iniAppURLs.def, p.iniAppURLs.workspaces
+
+	entries, err := p.FetchAppURLs(ctx)
+	if err != nil {
+		p.logf("  ⚠ stored app URLs unavailable — using the configured APP_URL/APP_URLS: %v", err)
+		return
+	}
+	if len(entries) == 0 {
+		return
+	}
+	set := appURLSet{workspaces: map[string]string{}}
+	for _, e := range entries {
+		if e.Workspace == "" {
+			set.def = e.URL
+		} else {
+			set.workspaces[e.Workspace] = e.URL
+		}
+	}
+	p.AppURL, p.AppURLs = set.def, set.workspaces
+	p.logf("  ↳ browser verify: %d stored app URL(s) replace APP_URL/APP_URLS", len(entries))
 }
 
 // reopenedInTracker reports whether a merged ticket should rebuild: trau saw the
