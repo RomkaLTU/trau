@@ -323,13 +323,26 @@ func backlogOffset(raw string) int {
 	return n
 }
 
+// resolveRepoConfig loads a repo's layered config and settles the effective
+// tracker provider onto it, so every hub path binds the tracker the sync
+// actually uses. The sources map comes back with it so a caller can still tell
+// an explicit provider from an inferred one.
+func (s *Server) resolveRepoConfig(repo registry.Repo) (config.Config, map[string]config.Layer, error) {
+	projectPath, userPath := s.repoConfigPaths(repo)
+	cfg, sources, err := config.LoadLayeredWithSources(projectPath, userPath, "", "")
+	if err != nil {
+		return cfg, sources, err
+	}
+	cfg.TrackerProvider = cfg.ResolveSyncProvider(sources)
+	return cfg, sources, nil
+}
+
 // backlogConfig resolves the repo's ready label and tracker provider from its
 // layered config — the ready-label flag the board shows and the provider tag. It
 // is a local file read, never a tracker call; a config error degrades to empty
 // values so the board still serves from the store.
 func (s *Server) backlogConfig(repo registry.Repo) (readyLabel, provider string) {
-	projectPath, userPath := s.repoConfigPaths(repo)
-	cfg, err := config.LoadLayered(projectPath, userPath, "", "")
+	cfg, _, err := s.resolveRepoConfig(repo)
 	if err != nil {
 		return "", ""
 	}
@@ -351,12 +364,10 @@ type trackerResolution struct {
 // provider (inferring jira when the project layer carries Jira credentials but no
 // TRACKER_PROVIDER is set), and builds a direct Reader for it.
 func (s *Server) resolveReader(repo registry.Repo) (trackerResolution, error) {
-	projectPath, userPath := s.repoConfigPaths(repo)
-	cfg, sources, err := config.LoadLayeredWithSources(projectPath, userPath, "", "")
+	cfg, sources, err := s.resolveRepoConfig(repo)
 	if err != nil {
 		return trackerResolution{}, err
 	}
-	cfg.TrackerProvider = cfg.ResolveSyncProvider(sources)
 	reader, err := s.newReader(cfg)
 	return trackerResolution{
 		provider:  cfg.TrackerProvider,

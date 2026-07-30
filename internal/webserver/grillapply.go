@@ -715,12 +715,11 @@ func grillLabelTransition(disposition string, cfg config.Config) (add, remove []
 
 // grillWriterFor resolves the repo's layered config and the Writer the requested
 // destination reaches, returning the config so the caller can read its label
-// names. An internal apply — chosen by the request or forced by a repo on the
-// internal provider — gets the hub's in-process store-backed writer; everything
-// else gets a direct tracker Writer.
+// names and stamp what it created. An internal apply — chosen by the request or
+// forced by a repo on the internal provider — gets the hub's in-process
+// store-backed writer; everything else gets a direct tracker Writer.
 func (s *Server) grillWriterFor(repo registry.Repo, destination string) (config.Config, tracker.Writer, error) {
-	projectPath, userPath := s.repoConfigPaths(repo)
-	cfg, err := config.LoadLayered(projectPath, userPath, "", "")
+	cfg, _, err := s.resolveRepoConfig(repo)
 	if err != nil {
 		return config.Config{}, nil, err
 	}
