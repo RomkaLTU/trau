@@ -571,6 +571,41 @@ func TestGrillApplyCreateBuildsWriterFromRepoConfig(t *testing.T) {
 	}
 }
 
+func TestGrillApplyCreateStampsResolvedProvider(t *testing.T) {
+	fake := newFakeWriter()
+	fake.createQueue = []fakeCreate{{issue: tracker.NewIssue{Identifier: "ACME-100"}}}
+	var got config.Config
+	ts, stores, root := grillApplyServerWriter(t, func(cfg config.Config) (tracker.Writer, error) {
+		got = cfg
+		return fake, nil
+	})
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeRepoINI(t, home, "LINEAR_API_KEY=user-linear-key\n")
+	writeRepoINI(t, root, "JIRA_BASE_URL=https://acme.atlassian.net\nJIRA_EMAIL=dev@acme.io\nJIRA_API_TOKEN=tok\nLINEAR_TEAM=ACME\n")
+	sid := seedFinishedGrill(t, stores, root, "", grillOutcome{
+		Disposition:         grillDispCreate,
+		Title:               "Wire the preview drawer",
+		ProposedDescription: "Clicking a task id opens the preview.",
+		Summary:             "specced the drawer",
+	})
+
+	res, out := applyGrill(t, ts, sid, GrillApplyRequest{})
+	if res.StatusCode != http.StatusOK || !out.Applied {
+		t.Fatalf("apply = %+v (status %d), want applied", out, res.StatusCode)
+	}
+	if got.TrackerProvider != "jira" {
+		t.Errorf("writer config provider = %q, want jira inferred from the project layer", got.TrackerProvider)
+	}
+	iss, found, err := stores.Issues().Get(root, "ACME-100")
+	if err != nil || !found {
+		t.Fatalf("get created issue: found=%v err=%v", found, err)
+	}
+	if iss.Source != "jira" {
+		t.Errorf("created issue source = %q, want jira", iss.Source)
+	}
+}
+
 func TestGrillApplyCreateEpic(t *testing.T) {
 	fake := newFakeWriter()
 	fake.createQueue = []fakeCreate{
