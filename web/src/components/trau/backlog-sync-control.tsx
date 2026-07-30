@@ -54,8 +54,9 @@ function pullCounts(res: SyncResponse): string {
  * Pulls the repo's tracker on demand and keeps its sync status in view, so a
  * stale or failing backlog is visible without leaving the page. Hidden for a repo
  * with no external tracker: there is nothing to pull and the endpoint would
- * refuse. A failure shows the hub's own message here and leaves the blocking
- * RepoHealthGate overlay to take it from there.
+ * refuse. A failure shows the hub's own message here and leaves RepoHealthGate to
+ * take it from there — a notice over the board, or an overlay when no sync has
+ * ever landed.
  */
 export function BacklogSyncControl({ repo }: { repo: string }) {
   // The pull counts and the mutation's error belong to the repo they came from;

@@ -30,6 +30,9 @@ var (
 	ErrNotFound     = errors.New("jira: issue not found")
 	ErrUnauthorized = errors.New("jira: unauthorized")
 	ErrNotEnabled   = errors.New("jira: direct API not enabled")
+	// ErrRateLimited marks a 429 the retry ladder could not outlast: the site's
+	// request budget refills on its own, so it is transient, not misconfiguration.
+	ErrRateLimited = errors.New("jira: rate limit exceeded")
 )
 
 // TokenHelpURL is where a user regenerates a classic Jira API token. Classic
@@ -302,6 +305,8 @@ func decode(res *http.Response, dst any) error {
 		return ErrUnauthorized
 	case http.StatusNotFound:
 		return ErrNotFound
+	case http.StatusTooManyRequests:
+		return ErrRateLimited
 	}
 
 	resBody, err := io.ReadAll(res.Body)

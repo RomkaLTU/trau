@@ -351,7 +351,7 @@ func TestSyncInternalProviderClearsStaleError(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	store := testStoresAt(t, home).Issues()
-	if err := store.RecordError(root, "linear: no api key"); err != nil {
+	if err := store.RecordError(root, "linear: no api key", string(tracker.ErrorConfig)); err != nil {
 		t.Fatalf("RecordError: %v", err)
 	}
 
@@ -379,7 +379,7 @@ func TestSyncImplicitInternalKeepsError(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	t.Cleanup(ts.Close)
 	store := testStoresAt(t, home).Issues()
-	if err := store.RecordError(root, "linear: 500"); err != nil {
+	if err := store.RecordError(root, "linear: 500", string(tracker.ErrorConfig)); err != nil {
 		t.Fatalf("RecordError: %v", err)
 	}
 

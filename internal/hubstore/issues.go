@@ -103,7 +103,8 @@ type SyncState struct {
 	LastIssues   int
 	LastComments int
 	LastError    string
-	Me           SyncIdentity
+	LastErrorKind string
+	Me            SyncIdentity
 }
 
 // SyncResult records the outcome of one sync on the bookkeeping row.
@@ -805,12 +806,12 @@ func (s *Issues) SyncState(repo string) (SyncState, error) {
 	var st SyncState
 	err := s.db.QueryRow(
 		`SELECT team_id, project_id, project, cursor, last_synced_at, last_issues, last_comments, last_error,
-			me_id, me_name, me_resolved_at
+			last_error_kind, me_id, me_name, me_resolved_at
 		 FROM issue_sync WHERE repo = ?`,
 		repo,
 	).Scan(
 		&st.Binding.TeamID, &st.Binding.ProjectID, &st.Binding.Project, &st.Cursor,
-		&st.LastSyncedAt, &st.LastIssues, &st.LastComments, &st.LastError,
+		&st.LastSyncedAt, &st.LastIssues, &st.LastComments, &st.LastError, &st.LastErrorKind,
 		&st.Me.ID, &st.Me.Name, &st.Me.ResolvedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -939,21 +940,22 @@ func (s *Issues) RecordResult(repo string, r SyncResult) error {
 		 ON CONFLICT(repo) DO UPDATE SET
 			cursor = excluded.cursor, last_synced_at = excluded.last_synced_at,
 			last_issues = excluded.last_issues, last_comments = excluded.last_comments,
-			last_error = excluded.last_error`,
+			last_error = excluded.last_error, last_error_kind = ''`,
 		repo, r.Cursor, r.SyncedAt, r.Issues, r.Comments, r.Err,
 	)
 	return err
 }
 
-// RecordError stamps a failed sync's error on the repo's bookkeeping row without
-// touching the cursor, counts, or last-synced time, so a transient tracker
-// failure leaves the last good sync — and its incremental cursor — intact. A
-// later successful RecordResult clears the error.
-func (s *Issues) RecordError(repo, msg string) error {
+// RecordError stamps a failed sync's error, and what the caller classified it as,
+// on the repo's bookkeeping row without touching the cursor, counts, or last-synced
+// time, so a transient tracker failure leaves the last good sync — and its
+// incremental cursor — intact. A later successful RecordResult clears both.
+func (s *Issues) RecordError(repo, msg, kind string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO issue_sync(repo, last_error) VALUES(?, ?)
-		 ON CONFLICT(repo) DO UPDATE SET last_error = excluded.last_error`,
-		repo, msg,
+		`INSERT INTO issue_sync(repo, last_error, last_error_kind) VALUES(?, ?, ?)
+		 ON CONFLICT(repo) DO UPDATE SET
+			last_error = excluded.last_error, last_error_kind = excluded.last_error_kind`,
+		repo, msg, kind,
 	)
 	return err
 }
@@ -963,7 +965,7 @@ func (s *Issues) RecordError(repo, msg string) error {
 // escape hatch for a repo whose provider no longer pulls — explicitly internal —
 // where no successful RecordResult will ever run to clear a stale error.
 func (s *Issues) ClearError(repo string) error {
-	_, err := s.db.Exec(`UPDATE issue_sync SET last_error = '' WHERE repo = ?`, repo)
+	_, err := s.db.Exec(`UPDATE issue_sync SET last_error = '', last_error_kind = '' WHERE repo = ?`, repo)
 	return err
 }
 
@@ -1262,7 +1264,8 @@ func (s *Issues) DropSynced(repo string) error {
 		return errors.Join(err, tx.Rollback())
 	}
 	if _, err := tx.Exec(
-		`UPDATE issue_sync SET cursor = '', last_synced_at = '', last_issues = 0, last_comments = 0, last_error = ''
+		`UPDATE issue_sync SET cursor = '', last_synced_at = '', last_issues = 0, last_comments = 0,
+			last_error = '', last_error_kind = ''
 		 WHERE repo = ?`,
 		repo,
 	); err != nil {

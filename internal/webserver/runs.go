@@ -100,13 +100,14 @@ func (s *Server) repoFreshness(repo registry.Repo) *RepoFreshness {
 	count, _ := s.stores.Issues().Count(repo.Root)
 	syncing := s.syncer.syncing(repo.Root)
 	return &RepoFreshness{
-		State:        deriveHealthState(s.repoActiveProvider(repo), syncing, st),
-		LastSyncedAt: st.LastSyncedAt,
-		Syncing:      syncing,
-		LastError:    st.LastError,
-		LastIssues:   st.LastIssues,
-		LastComments: st.LastComments,
-		IssueCount:   count,
+		State:         deriveHealthState(s.repoActiveProvider(repo), syncing, st),
+		LastSyncedAt:  st.LastSyncedAt,
+		Syncing:       syncing,
+		LastError:     st.LastError,
+		LastErrorKind: st.LastErrorKind,
+		LastIssues:    st.LastIssues,
+		LastComments:  st.LastComments,
+		IssueCount:    count,
 	}
 }
 
@@ -120,11 +121,12 @@ func (s *Server) freshnessFrom(root string, st hubstore.SyncState) *RepoFreshnes
 		return nil
 	}
 	return &RepoFreshness{
-		LastSyncedAt: st.LastSyncedAt,
-		Syncing:      syncing,
-		LastError:    st.LastError,
-		LastIssues:   st.LastIssues,
-		LastComments: st.LastComments,
+		LastSyncedAt:  st.LastSyncedAt,
+		Syncing:       syncing,
+		LastError:     st.LastError,
+		LastErrorKind: st.LastErrorKind,
+		LastIssues:    st.LastIssues,
+		LastComments:  st.LastComments,
 	}
 }
 

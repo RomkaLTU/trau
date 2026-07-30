@@ -359,12 +359,12 @@ func identityStale(me hubstore.SyncIdentity) bool {
 	return time.Since(at) > identityTTL
 }
 
-// recordSyncErr stamps a failed sync on the repo's health surface, with one
-// exception: a rate-limit refusal is the shared API key's budget running out, not
-// a repo that is misconfigured, and it clears itself when the tracker's window
-// rolls — recording it would pin the repo at sync-failed with nothing to fix.
-// Credentials the tracker rejected expire the cached identity instead, so the next
-// working sync resolves Me again.
+// recordSyncErr stamps a failed sync on the repo's health surface, classified by
+// what it takes to clear, with one exception: a rate-limit refusal is the shared
+// API key's budget running out, not a repo that is misconfigured, and it clears
+// itself when the tracker's window rolls — recording it would pin the repo at
+// sync-failed with nothing to fix. Credentials the tracker rejected expire the
+// cached identity instead, so the next working sync resolves Me again.
 func recordSyncErr(store *hubstore.Issues, root string, err error) {
 	if _, limited := tracker.RateLimited(err); limited {
 		logger.Verbosef("sync %s: tracker rate limited: %v", root, err)
@@ -375,7 +375,7 @@ func recordSyncErr(store *hubstore.Issues, root string, err error) {
 			logger.Verbosef("sync %s: invalidate identity: %v", root, invalidateErr)
 		}
 	}
-	_ = store.RecordError(root, err.Error())
+	_ = store.RecordError(root, err.Error(), string(tracker.Classify(err)))
 }
 
 // warnTeamOverlap logs once per repo and team when another registered repo syncs
