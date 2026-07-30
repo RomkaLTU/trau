@@ -147,6 +147,9 @@ func credentialList(cfg config.Config, sources map[string]config.Layer) []Inspec
 	if cfg.HasJiraCredentials() {
 		creds = append(creds, InspectCredential{Provider: "jira", Layer: credLayer(sources["JIRA_API_TOKEN"])})
 	}
+	if cfg.HasAzureCredentials() {
+		creds = append(creds, InspectCredential{Provider: "azure", Layer: credLayer(sources["AZURE_PAT"])})
+	}
 	return creds
 }
 
@@ -225,6 +228,7 @@ func credentialFindings(cfg config.Config, sources map[string]config.Layer, acti
 	return []DetectionFinding{
 		credentialFinding("linear", "linear credentials", strings.TrimSpace(cfg.LinearAPIKey) != "", sources["LINEAR_API_KEY"], active),
 		credentialFinding("jira", "jira credentials", cfg.HasJiraCredentials(), sources["JIRA_API_TOKEN"], active),
+		credentialFinding("azure", "azure credentials", cfg.HasAzureCredentials(), sources["AZURE_PAT"], active),
 	}
 }
 

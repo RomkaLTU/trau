@@ -94,6 +94,46 @@ func TestProjectTrackerConfiguredOnceSeedsEveryMember(t *testing.T) {
 	}
 }
 
+// Azure DevOps travels as tracker identity like the Linear/Jira keys: the project
+// is asked once and every member repo can run the CLI against the team project.
+func TestProjectTrackerCarriesAzureKeys(t *testing.T) {
+	home := t.TempDir()
+	base := t.TempDir()
+	api := gitRepo(t, base, "api", "dir")
+	web := gitRepo(t, base, "web", "dir")
+	_, ts := controlServer(t, home, nil)
+	registerRepoReq(t, ts, api)
+	registerRepoReq(t, ts, web)
+
+	project := createProjectReq(t, ts, "Contoso")
+	for _, root := range []string{api, web} {
+		if res, body := addProjectRepo(t, ts, project.ID, root); res.StatusCode != http.StatusOK {
+			t.Fatalf("add %s = %d (%s)", root, res.StatusCode, body)
+		}
+	}
+
+	want := map[string]string{
+		"TRACKER_PROVIDER": "azure",
+		"LINEAR_TEAM":      "Contoso",
+		"AZURE_ORG_URL":    "https://dev.azure.com/contoso",
+		"AZURE_PAT":        "azure_secret",
+	}
+	res, body := putProjectTrackerReq(t, ts, project.ID, want)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("put tracker = %d (%s)", res.StatusCode, body)
+	}
+
+	for _, root := range []string{api, web} {
+		wantINI(t, root, want)
+	}
+
+	for _, key := range decodeProjectTracker(t, body).Keys {
+		if key.Key == "AZURE_PAT" && (key.Value != "" || !key.Set) {
+			t.Fatalf("AZURE_PAT served as %+v, want no value and set=true", key)
+		}
+	}
+}
+
 // Explicit per-repo config outranks the project default, on the way in and on
 // every later edit.
 func TestProjectTrackerLeavesAMembersOwnKeysAlone(t *testing.T) {

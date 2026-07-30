@@ -1141,6 +1141,13 @@ func (c Config) HasJiraCredentials() bool {
 		strings.TrimSpace(c.JiraAPIToken) != ""
 }
 
+// HasAzureCredentials reports whether the resolved config carries the full set of
+// direct Azure DevOps REST credentials, whichever layer supplied them.
+func (c Config) HasAzureCredentials() bool {
+	return strings.TrimSpace(c.AzureOrgURL) != "" &&
+		strings.TrimSpace(c.AzurePAT) != ""
+}
+
 // hasProjectJiraCreds reports whether the project layer alone supplies the full set
 // of direct Jira REST credentials — the signal that a repo configured outside the
 // wizard means to use Jira even with no explicit TRACKER_PROVIDER.
@@ -1949,6 +1956,8 @@ var trackerConfigKeys = []string{
 	"JIRA_BASE_URL",
 	"JIRA_EMAIL",
 	"JIRA_API_TOKEN",
+	"AZURE_ORG_URL",
+	"AZURE_PAT",
 }
 
 // TrackerConfigKeys returns the keys that describe a repo's tracker.

@@ -208,6 +208,31 @@ func TestInspectConfiguredPrefill(t *testing.T) {
 	}
 }
 
+// Azure credentials light the wizard's "creds found" badge, but nothing infers
+// azure as the provider: ResolveSyncProvider only ever infers jira, so claiming it
+// here would promise a sync behaviour the hub does not have.
+func TestInspectAzureCredentialsAreNotAnInferredProvider(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := realGitRepo(t, filepath.Join(t.TempDir(), "contoso"), "main", "https://dev.azure.com/contoso/_git/contoso")
+	writeRepoINI(t, repo, "AZURE_ORG_URL=https://dev.azure.com/contoso\nAZURE_PAT=azure_secret\n")
+	ts := inspectServer(t, t.TempDir())
+
+	res, insp := postInspect(t, ts, repo)
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	if !hasCredential(insp.Credentials, "azure", "project") {
+		t.Errorf("credentials = %+v, want azure/project", insp.Credentials)
+	}
+	if f := findingFor(t, insp, "azure credentials"); f.State != findingInfo {
+		t.Errorf("azure finding = %+v, want info", f)
+	}
+	if f := findingFor(t, insp, "tracker provider"); f.State != findingMissing {
+		t.Errorf("provider finding = %+v, want missing rather than an inferred azure", f)
+	}
+}
+
 func TestInspectRefusedOnExposedBind(t *testing.T) {
 	home := t.TempDir()
 	repo := gitRepo(t, t.TempDir(), "acme", "dir")

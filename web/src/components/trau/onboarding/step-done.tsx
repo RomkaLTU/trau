@@ -9,10 +9,16 @@ import { type SyncResponse } from '@/lib/instances'
 import {
   essentialsConfigWrites,
   trackerConfigValues,
+  trackerRepoConfigWrites,
   type EssentialsFields,
   type TrackerFields,
   type TrackerProvider,
 } from '@/lib/onboarding'
+
+const BACKLOG_NOTE: Partial<Record<TrackerProvider, string>> = {
+  internal: 'internal store',
+  azure: 'read live from Azure Boards — not mirrored',
+}
 
 export function StepDone({
   repo,
@@ -40,15 +46,14 @@ export function StepDone({
 
   const writtenKeys = [
     ...Object.keys(trackerConfigValues(provider, trackerFields)),
+    ...trackerRepoConfigWrites(provider, trackerFields).map((w) => w.key),
     ...essentialsConfigWrites(essentials).map((w) => w.key),
   ]
 
+  const liveRead = provider === 'azure'
   const backlog =
-    provider === 'internal'
-      ? 'internal store'
-      : syncResult
-        ? `${syncResult.issues} issues · ${syncResult.comments} comments`
-        : '—'
+    BACKLOG_NOTE[provider] ??
+    (syncResult ? `${syncResult.issues} issues · ${syncResult.comments} comments` : '—')
 
   const summary: { label: string; value: string }[] = [
     { label: 'repo', value: repo },
@@ -73,18 +78,21 @@ export function StepDone({
         <div className="flex flex-col gap-1">
           <h2 className="font-mono text-lg text-foreground">{repo} is ready</h2>
           <p className="max-w-sm text-pretty font-sans text-sm leading-relaxed text-muted-foreground">
-            The tracker is wired up and the backlog is seeded. Start the loop, or browse what came
-            in first.
+            {liveRead
+              ? 'The tracker is wired up. trau reads work items straight from Azure Boards, so there is no hub-side backlog to browse — start the loop when you are ready.'
+              : 'The tracker is wired up and the backlog is seeded. Start the loop, or browse what came in first.'}
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-center gap-3">
-          <Button asChild>
-            <Link to="/backlog">
-              <List className="size-4" />
-              Open Backlog
-            </Link>
-          </Button>
-          <Button asChild variant="outline">
+          {!liveRead && (
+            <Button asChild>
+              <Link to="/backlog">
+                <List className="size-4" />
+                Open Backlog
+              </Link>
+            </Button>
+          )}
+          <Button asChild variant={liveRead ? 'default' : 'outline'}>
             <Link to="/loop">
               <Play className="size-4" />
               Start first run
