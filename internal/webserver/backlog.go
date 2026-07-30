@@ -323,13 +323,26 @@ func backlogOffset(raw string) int {
 	return n
 }
 
+// resolveRepoConfig loads a repo's layered config and settles the effective
+// tracker provider onto it, so every hub path binds the tracker the sync
+// actually uses. The sources map comes back with it so a caller can still tell
+// an explicit provider from an inferred one.
+func (s *Server) resolveRepoConfig(repo registry.Repo) (config.Config, map[string]config.Layer, error) {
+	projectPath, userPath := s.repoConfigPaths(repo)
+	cfg, sources, err := config.LoadLayeredWithSources(projectPath, userPath, "", "")
+	if err != nil {
+		return cfg, sources, err
+	}
+	cfg.TrackerProvider = cfg.ResolveSyncProvider(sources)
+	return cfg, sources, nil
+}
+
 // backlogConfig resolves the repo's ready label and tracker provider from its
 // layered config — the ready-label flag the board shows and the provider tag. It
 // is a local file read, never a tracker call; a config error degrades to empty
 // values so the board still serves from the store.
 func (s *Server) backlogConfig(repo registry.Repo) (readyLabel, provider string) {
-	projectPath, userPath := s.repoConfigPaths(repo)
-	cfg, err := config.LoadLayered(projectPath, userPath, "", "")
+	cfg, _, err := s.resolveRepoConfig(repo)
 	if err != nil {
 		return "", ""
 	}
@@ -351,12 +364,10 @@ type trackerResolution struct {
 // provider (inferring jira when the project layer carries Jira credentials but no
 // TRACKER_PROVIDER is set), and builds a direct Reader for it.
 func (s *Server) resolveReader(repo registry.Repo) (trackerResolution, error) {
-	projectPath, userPath := s.repoConfigPaths(repo)
-	cfg, sources, err := config.LoadLayeredWithSources(projectPath, userPath, "", "")
+	cfg, sources, err := s.resolveRepoConfig(repo)
 	if err != nil {
 		return trackerResolution{}, err
 	}
-	cfg.TrackerProvider = cfg.ResolveSyncProvider(sources)
 	reader, err := s.newReader(cfg)
 	return trackerResolution{
 		provider:  cfg.TrackerProvider,
@@ -382,8 +393,11 @@ func (r trackerResolution) actionableErr(err error) error {
 			return fmt.Errorf("inferred jira from the repo's Jira config: %w", err)
 		}
 	case "linear":
-		if r.jiraCreds {
+		switch {
+		case r.jiraCreds:
 			return fmt.Errorf("repo has Jira credentials but TRACKER_PROVIDER is unset — set TRACKER_PROVIDER=jira (tried linear: %w)", err)
+		case errors.Is(err, tracker.ErrNoTeamKey):
+			return fmt.Errorf("inferred linear from a LINEAR_API_KEY: %w, or set TRACKER_PROVIDER=internal to use this repo's internal issues", err)
 		}
 	}
 	return err
@@ -399,9 +413,11 @@ func (s *Server) readerFor(repo registry.Repo) (string, tracker.Reader, error) {
 
 // readerConfigErr reports whether err is a reader config state the hub answers
 // with a 422 backlog-unavailable response rather than a transport failure: no
-// direct credentials at all, or Jira credentials with no project key.
+// direct credentials at all, or credentials with no team/project key to bind.
 func readerConfigErr(err error) bool {
-	return errors.Is(err, tracker.ErrReaderUnavailable) || errors.Is(err, tracker.ErrNoProjectKey)
+	return errors.Is(err, tracker.ErrReaderUnavailable) ||
+		errors.Is(err, tracker.ErrNoProjectKey) ||
+		errors.Is(err, tracker.ErrNoTeamKey)
 }
 
 // noTrackerCredentialsHint is the 422 body both the backlog reader and the issue
@@ -411,10 +427,10 @@ const noTrackerCredentialsHint = "this repo has no direct tracker credentials co
 // writeReaderErr maps a Reader config state to a response. A repo that cannot
 // browse its backlog over the hub is a config state, not a bad request, so it
 // answers 422 with a hint the board renders as a backlog-unavailable state. A
-// missing project key names the key to set instead of the credentials hint.
+// missing team/project key names the key to set instead of the credentials hint.
 func writeReaderErr(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, tracker.ErrNoProjectKey):
+	case errors.Is(err, tracker.ErrNoProjectKey), errors.Is(err, tracker.ErrNoTeamKey):
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 	case errors.Is(err, tracker.ErrReaderUnavailable):
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{

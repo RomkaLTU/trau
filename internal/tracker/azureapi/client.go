@@ -32,6 +32,10 @@ var (
 	ErrNotFound     = errors.New("azure: work item not found")
 	ErrUnauthorized = errors.New("azure: unauthorized")
 	ErrNotEnabled   = errors.New("azure: direct API not enabled")
+	// ErrRateLimited marks a 429 the retry ladder could not outlast: the
+	// organization's request budget refills on its own, so it is transient, not
+	// misconfiguration.
+	ErrRateLimited = errors.New("azure: rate limit exceeded")
 )
 
 // TokenHelpURL is where a user mints or regenerates a personal access token.
@@ -242,6 +246,8 @@ func decode(res *http.Response, dst any) error {
 		return ErrUnauthorized
 	case http.StatusNotFound:
 		return ErrNotFound
+	case http.StatusTooManyRequests:
+		return &RateLimitError{ResetAt: retryAfterReset(res.Header.Get("Retry-After"), time.Now())}
 	}
 
 	resBody, err := io.ReadAll(res.Body)

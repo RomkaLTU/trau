@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 
-	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/queue"
@@ -64,8 +63,7 @@ func (s *Server) queuedLabeler(root string) (queuedLabeler, bool) {
 	if !ok {
 		return queuedLabeler{}, false
 	}
-	projectPath, userPath := s.repoConfigPaths(repo)
-	cfg, err := config.LoadLayered(projectPath, userPath, "", "")
+	cfg, _, err := s.resolveRepoConfig(repo)
 	if err != nil {
 		logger.Verbosef("queued label %s: read config: %v", root, err)
 		return queuedLabeler{}, false
