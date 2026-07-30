@@ -50,6 +50,7 @@ import {
   isModified,
   matchesQuery,
   valueWarning,
+  visibleKeys,
   type Section,
 } from '@/lib/settings'
 import { standardTitle, usePageTitle } from '@/lib/page-title'
@@ -117,7 +118,7 @@ function ConfigView({ repo }: { repo: string }) {
     return () => clearTimeout(timer)
   }, [savedMsg])
 
-  const keys = data?.keys ?? []
+  const keys = useMemo(() => visibleKeys(data?.keys ?? []), [data])
   const layers = data?.layers ?? ['project', 'user']
 
   const sections = useMemo(() => deriveSections(keys), [keys])
