@@ -381,6 +381,8 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/qa/accounts/{id}", s.handleQAAccount)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/qa/notes", s.handleQANotes)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/qa/roster", s.handleQARoster)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/app-urls", s.handleAppURLs)
+	mux.HandleFunc(APIPrefix+"/repos/{repo}/app-urls/{id}", s.handleAppURL)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/steer", s.handleSteerNotes)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/steer/expire", s.handleSteerExpire)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/steer/{id}/ack", s.handleSteerAck)

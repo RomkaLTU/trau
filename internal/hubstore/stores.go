@@ -30,6 +30,7 @@ type Stores struct {
 	prompts     *PromptOverrides
 	attachments *Attachments
 	qa          *QAAccounts
+	appURLs     *AppURLs
 	routing     *Routing
 	steer       *SteerNotes
 	proofs      *RunProofs
@@ -63,6 +64,7 @@ func NewStores(home string, db, transcriptsDB *sql.DB, retention Retention) *Sto
 		prompts:     NewPromptOverrides(db),
 		attachments: NewAttachments(db, filepath.Join(home, AttachmentsDir), retention.AttachmentCacheBytes),
 		qa:          NewQAAccounts(db),
+		appURLs:     NewAppURLs(db),
 		routing:     NewRouting(db),
 		steer:       NewSteerNotes(db),
 		proofs:      NewRunProofs(db, filepath.Join(home, ProofsDir)),
@@ -124,6 +126,9 @@ func (s *Stores) Attachments() *Attachments { return s.attachments }
 
 // QA returns the per-repo QA accounts and notes store.
 func (s *Stores) QA() *QAAccounts { return s.qa }
+
+// AppURLs returns the per-repo store of browser-verify app URL entries.
+func (s *Stores) AppURLs() *AppURLs { return s.appURLs }
 
 // Routing returns the store of the routing fingerprint each repo last ran under.
 func (s *Stores) Routing() *Routing { return s.routing }
