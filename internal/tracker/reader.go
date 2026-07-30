@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
@@ -100,6 +101,24 @@ type Reader interface {
 	// Jira the token's /myself. A sync resolves it best-effort — an identity failure
 	// never blocks the issue pull.
 	Identity(ctx context.Context) (id, name string, err error)
+}
+
+// RateLimited reports whether err is a tracker refusing the request because the
+// API key's shared request budget is spent, and when it said the budget refills
+// (zero when it did not say). A rate limit is transient and self-healing, so a
+// caller waits it out rather than recording a failure the repo cannot fix.
+func RateLimited(err error) (resetAt time.Time, ok bool) {
+	var limit *linearapi.RateLimitError
+	if !errors.As(err, &limit) {
+		return time.Time{}, false
+	}
+	return limit.ResetAt, true
+}
+
+// Unauthorized reports whether err is a tracker rejecting the repo's credentials,
+// whichever of the syncable providers answered.
+func Unauthorized(err error) bool {
+	return errors.Is(err, linearapi.ErrUnauthorized) || errors.Is(err, jiraapi.ErrUnauthorized)
 }
 
 // NewReader builds a direct Reader for the provider from cfg, or

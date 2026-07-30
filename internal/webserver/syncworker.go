@@ -18,6 +18,11 @@ const syncBackoffCap = 30 * time.Minute
 // sync goroutine for the life of the hub.
 const syncOnceTimeout = 2 * time.Minute
 
+// rateLimitCap bounds how long a rate-limited repo waits for the tracker's budget
+// to refill — the widest window a provider meters over, so the repo recovers on
+// its own even when the tracker reports a reset time far in the future.
+const rateLimitCap = time.Hour
+
 // backlogStaleAfter is how old a repo's last sync may be before a backlog read
 // triggers a background refresh. Kept below the periodic interval so an open board
 // revalidates promptly while a just-synced store is left alone.
@@ -130,17 +135,29 @@ func (sy *syncer) settleReconcile(root string, err error) {
 	if st == nil {
 		return
 	}
-	now := time.Now()
-	switch {
-	case err == nil:
+	if err == nil {
 		st.reconcileFailures = 0
-		st.reconcileAt = now.Add(sy.reconcileEvery)
+		st.reconcileAt = time.Now().Add(sy.reconcileEvery)
+		return
+	}
+	wait, failures := retryAfter(err, sy.reconcileEvery, st.reconcileFailures)
+	st.reconcileFailures = failures
+	st.reconcileAt = time.Now().Add(wait)
+}
+
+// retryAfter maps a failed sync or reconcile to how long the repo holds off and
+// what its consecutive-failure count becomes, so both cadences read one error
+// taxonomy. Neither a repo without credentials — it has nothing to pull — nor a
+// rate limit, which is the shared API key's budget rather than a broken repo,
+// counts as a failure.
+func retryAfter(err error, interval time.Duration, failures int) (time.Duration, int) {
+	switch resetAt, limited := tracker.RateLimited(err); {
 	case errors.Is(err, tracker.ErrReaderUnavailable):
-		st.reconcileFailures = 0
-		st.reconcileAt = now.Add(syncBackoffCap)
+		return syncBackoffCap, 0
+	case limited:
+		return rateLimitWait(resetAt, interval), 0
 	default:
-		st.reconcileFailures++
-		st.reconcileAt = now.Add(syncBackoff(sy.reconcileEvery, st.reconcileFailures))
+		return syncBackoff(interval, failures+1), failures + 1
 	}
 }
 
@@ -174,16 +191,28 @@ func (sy *syncer) settle(root string, interval time.Duration, err error) {
 		return
 	}
 	st.syncing = false
-	switch {
-	case err == nil:
+	if err == nil {
 		st.failures = 0
 		st.nextAttempt = time.Time{}
-	case errors.Is(err, tracker.ErrReaderUnavailable):
-		st.failures = 0
-		st.nextAttempt = time.Now().Add(syncBackoffCap)
+		return
+	}
+	wait, failures := retryAfter(err, interval, st.failures)
+	st.failures = failures
+	st.nextAttempt = time.Now().Add(wait)
+}
+
+// rateLimitWait is how long a rate-limited repo holds off: until the tracker says
+// the budget refills, floored at the caller's own interval and capped at the
+// window a provider meters, so a missing or nonsensical reset time cannot park the
+// repo indefinitely.
+func rateLimitWait(resetAt time.Time, interval time.Duration) time.Duration {
+	switch wait := time.Until(resetAt); {
+	case wait < interval:
+		return interval
+	case wait > rateLimitCap:
+		return rateLimitCap
 	default:
-		st.failures++
-		st.nextAttempt = time.Now().Add(syncBackoff(interval, st.failures))
+		return wait
 	}
 }
 

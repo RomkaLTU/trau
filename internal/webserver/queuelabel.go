@@ -103,6 +103,11 @@ func (s *Server) applyQueuedLabel(ctx context.Context, lb queuedLabeler, ids []s
 		if lb.writer != nil {
 			if err := lb.writer.UpdateLabels(ctx, id, addLabels, removeLabels); err != nil {
 				logger.Verbosef("queued label %s: update tracker labels: %v", id, err)
+				// A spent budget refuses the remaining writes too, and is charged
+				// for each attempt, so stop rather than heal into the limit.
+				if _, limited := tracker.RateLimited(err); limited {
+					return
+				}
 				continue
 			}
 		}

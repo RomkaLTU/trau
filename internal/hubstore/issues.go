@@ -87,6 +87,13 @@ type SyncIdentity struct {
 	ResolvedAt string
 }
 
+// TeamBinding is one repo's cached binding for a tracker team: the repo root and
+// the project its pull is narrowed to, empty when the repo pulls the whole team.
+type TeamBinding struct {
+	Repo      string
+	ProjectID string
+}
+
 // SyncState is a repo's sync bookkeeping: the cached binding, the last cursor,
 // the outcome of the last sync, and the resolved Me identity.
 type SyncState struct {
@@ -889,6 +896,38 @@ func (s *Issues) SaveIdentity(repo, id, name string) error {
 		repo, id, name, time.Now().UTC().Format(time.RFC3339Nano),
 	)
 	return err
+}
+
+// InvalidateIdentity clears the stamp on a repo's resolved Me so the next sync
+// re-resolves it, keeping the last known values in place for anything reading
+// them meanwhile. It is how rejected credentials expire an identity the cache
+// would otherwise serve for a full day.
+func (s *Issues) InvalidateIdentity(repo string) error {
+	_, err := s.db.Exec(`UPDATE issue_sync SET me_resolved_at = '' WHERE repo = ?`, repo)
+	return err
+}
+
+// TeamBindings returns the repos whose cached binding names teamID, each with the
+// project its pull is narrowed to — empty when the repo pulls the whole team. It
+// lets the hub spot two repos charging the same tracker team against one API key.
+func (s *Issues) TeamBindings(teamID string) ([]TeamBinding, error) {
+	rows, err := s.db.Query(
+		`SELECT repo, project_id FROM issue_sync WHERE team_id = ? ORDER BY repo`,
+		teamID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := []TeamBinding{}
+	for rows.Next() {
+		var b TeamBinding
+		if err := rows.Scan(&b.Repo, &b.ProjectID); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
 }
 
 // RecordResult stores the outcome of a sync — counts, cursor, timestamp, and any
