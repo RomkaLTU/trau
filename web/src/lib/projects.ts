@@ -75,6 +75,29 @@ export function groupRepos(
   return rows
 }
 
+// filterRepoRows narrows the switcher to a query, matched case-insensitively
+// against a repo's name or its root. A group whose own name matches keeps every
+// member: naming the project reads as picking it, not as sifting it. A blank query
+// hands the same rows back, so memoized rows stay put.
+export function filterRepoRows(rows: RepoRow[], query: string): RepoRow[] {
+  const needle = query.trim().toLowerCase()
+  if (needle === '') return rows
+  const kept: RepoRow[] = []
+  for (const row of rows) {
+    if (row.project?.name.toLowerCase().includes(needle)) {
+      kept.push(row)
+      continue
+    }
+    const repos = row.repos.filter(
+      (repo) =>
+        repo.name.toLowerCase().includes(needle) ||
+        repo.root.toLowerCase().includes(needle),
+    )
+    if (repos.length > 0) kept.push({ ...row, repos })
+  }
+  return kept
+}
+
 // projectAnchor names the repo a project's shared tracker surfaces read from:
 // its first listed member. Every member of a project talks to the same tracker,
 // so anchoring gives the project one inbox instead of one per repo. A repo no

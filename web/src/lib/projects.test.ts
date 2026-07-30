@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { RepoView } from '@/lib/instances'
 import {
+  filterRepoRows,
   groupRepos,
   projectAnchor,
   projectMembers,
@@ -72,6 +73,38 @@ describe('groupRepos', () => {
       { project: null, repos: [repos[1]] },
       { project: null, repos: [repos[2]] },
     ])
+  })
+})
+
+describe('filterRepoRows', () => {
+  const repos = [repo('alpha'), repo('bravo'), repo('charlie')]
+  const platform = project('platform', 'Platform', ['bravo', 'charlie'])
+  const rows = groupRepos(repos, [platform])
+
+  it('hands a blank query the same rows back', () => {
+    expect(filterRepoRows(rows, '  ')).toBe(rows)
+  })
+
+  it('matches a repo name however it is cased', () => {
+    expect(filterRepoRows(rows, 'ALPH')).toEqual([
+      { project: null, repos: [repos[0]] },
+    ])
+  })
+
+  it('matches a repo root, keeping only the members that matched', () => {
+    expect(filterRepoRows(rows, '/repos/charlie')).toEqual([
+      { project: platform, repos: [repos[2]] },
+    ])
+  })
+
+  it('keeps every member of a group its own name matches', () => {
+    expect(filterRepoRows(rows, 'platf')).toEqual([
+      { project: platform, repos: [repos[1], repos[2]] },
+    ])
+  })
+
+  it('drops the rows nothing matches', () => {
+    expect(filterRepoRows(rows, 'nothing')).toEqual([])
   })
 })
 

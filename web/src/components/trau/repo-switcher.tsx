@@ -4,16 +4,20 @@ import { Link } from '@tanstack/react-router'
 import {
   AlertTriangle,
   Check,
+  ChevronDown,
+  ChevronRight,
   ChevronsUpDown,
   Circle,
   FolderGit2,
   FolderPlus,
   GitBranch,
   Plus,
+  Search,
 } from 'lucide-react'
 
 import { ALL_SCOPE, useActiveRepo } from '@/components/trau/active-repo'
 import { NewProjectDialog } from '@/components/trau/new-project-dialog'
+import { Input } from '@/components/ui/input'
 import { loadRepoUsage, sortRepos } from '@/lib/active-repo'
 import { instancesQueryOptions, type RepoView } from '@/lib/instances'
 import {
@@ -22,10 +26,17 @@ import {
   type RepoBadgeState,
 } from '@/lib/overview'
 import {
+  filterRepoRows,
   groupRepos,
   projectsQueryOptions,
   type ProjectView,
 } from '@/lib/projects'
+import {
+  isGroupOpen,
+  loadGroupState,
+  saveGroupState,
+  type GroupState,
+} from '@/lib/repo-groups'
 import { cn } from '@/lib/utils'
 
 function useRepoBadgeStates(): Map<string, RepoBadgeState> {
@@ -50,6 +61,8 @@ export function RepoSwitcher() {
   const [open, setOpen] = useState(false)
   const [pulse, setPulse] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [query, setQuery] = useState('')
+  const [groups, setGroups] = useState<GroupState>(loadGroupState)
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -57,8 +70,15 @@ export function RepoSwitcher() {
     function onPointerDown(e: PointerEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
     }
+    // Escape backs out one layer at a time: it drops the query first, so a search
+    // that found nothing does not also cost the popover.
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') setOpen(false)
+      if (e.key !== 'Escape') return
+      if (query !== '') {
+        setQuery('')
+        return
+      }
+      setOpen(false)
     }
     document.addEventListener('pointerdown', onPointerDown)
     document.addEventListener('keydown', onKeyDown)
@@ -66,7 +86,9 @@ export function RepoSwitcher() {
       document.removeEventListener('pointerdown', onPointerDown)
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [open])
+  }, [open, query])
+
+  useEffect(() => setQuery(''), [open])
 
   // A gated nav click pulses the switcher open so the fix is one click away
   // instead of a dead link. switcherSignal starts at 0, so mount never opens it.
@@ -92,9 +114,21 @@ export function RepoSwitcher() {
     [open, repos, badges, projectData],
   )
 
+  const visible = useMemo(() => filterRepoRows(rows, query), [rows, query])
+  const filtering = query.trim() !== ''
+  const scoped = isAll ? null : repo
+
   function pick(name: string) {
     setScope(name)
     setOpen(false)
+  }
+
+  function foldGroup(project: string, fold: 'open' | 'closed') {
+    setGroups((prev) => {
+      const next = { ...prev, [project]: fold }
+      saveGroupState(next)
+      return next
+    })
   }
 
   return (
@@ -139,13 +173,39 @@ export function RepoSwitcher() {
         />
       </button>
 
+      {/* The clamp reserve has to exceed the popover's own ~110px offset from the top of
+          the viewport (sidebar header + this button), or the footer rows fall off it. */}
       {open && (
         <div
           role="listbox"
-          className="absolute left-0 right-0 z-30 mt-1 overflow-hidden rounded-md border border-border bg-popover py-1 shadow-lg"
+          className="absolute left-0 right-0 z-30 mt-1 flex max-h-[calc(100vh-8rem)] flex-col overflow-hidden rounded-md border border-border bg-popover py-1 shadow-lg"
         >
           {repos.length > 1 && (
-            <>
+            <div className="shrink-0">
+              <div className="px-2 pb-1 pt-0.5">
+                <div className="relative">
+                  <Search
+                    className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <Input
+                    type="search"
+                    autoFocus
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter' || e.nativeEvent.isComposing) return
+                      const first = visible[0]?.repos[0]
+                      if (first) pick(first.name)
+                    }}
+                    placeholder="filter repos…"
+                    aria-label="Filter repos"
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="h-auto py-1.5 pl-8 pr-2.5 font-mono text-xs placeholder:text-faint"
+                  />
+                </div>
+              </div>
               <p className="px-2.5 pb-1 pt-1.5 font-mono text-[0.6rem] uppercase tracking-[0.2em] text-muted-foreground">
                 scope
               </p>
@@ -158,83 +218,103 @@ export function RepoSwitcher() {
                 }}
               />
               <div className="my-1 h-px bg-border" aria-hidden="true" />
-            </>
+            </div>
           )}
-          <p className="px-2.5 pb-1 pt-1.5 font-mono text-[0.6rem] uppercase tracking-[0.2em] text-muted-foreground">
+          <p className="shrink-0 px-2.5 pb-1 pt-1.5 font-mono text-[0.6rem] uppercase tracking-[0.2em] text-muted-foreground">
             repos
           </p>
-          {repos.length === 0 ? (
-            <p className="px-2.5 py-1.5 font-mono text-xs text-muted-foreground">
-              no repos yet
-            </p>
-          ) : (
-            rows.map((row) =>
-              row.project ? (
-                <ProjectGroup
-                  key={row.project.id}
-                  project={row.project}
-                  repos={row.repos}
-                  badges={badges}
-                  activeRepo={isAll ? null : repo}
-                  onSelect={pick}
-                />
-              ) : (
-                <RepoOption
-                  key={row.repos[0].name}
-                  repo={row.repos[0]}
-                  state={badges.get(row.repos[0].name) ?? 'none'}
-                  active={!isAll && row.repos[0].name === repo}
-                  onSelect={() => pick(row.repos[0].name)}
-                />
-              ),
-            )
-          )}
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            {repos.length === 0 ? (
+              <p className="px-2.5 py-1.5 font-mono text-xs text-muted-foreground">
+                no repos yet
+              </p>
+            ) : visible.length === 0 ? (
+              <p className="px-2.5 py-1.5 font-mono text-xs text-muted-foreground">
+                no match
+              </p>
+            ) : (
+              visible.map((row) => {
+                if (!row.project) {
+                  return (
+                    <RepoOption
+                      key={row.repos[0].name}
+                      repo={row.repos[0]}
+                      state={badges.get(row.repos[0].name) ?? 'none'}
+                      active={row.repos[0].name === scoped}
+                      onSelect={() => pick(row.repos[0].name)}
+                    />
+                  )
+                }
+                const id = row.project.id
+                const stored = isGroupOpen(
+                  groups,
+                  id,
+                  row.repos.map((r) => r.name),
+                  scoped,
+                )
+                return (
+                  <ProjectGroup
+                    key={id}
+                    project={row.project}
+                    repos={row.repos}
+                    badges={badges}
+                    activeRepo={scoped}
+                    expanded={filtering || stored}
+                    onToggle={() => foldGroup(id, stored ? 'closed' : 'open')}
+                    onSelect={pick}
+                  />
+                )
+              })
+            )}
+          </div>
 
-          <div className="my-1 h-px bg-border" aria-hidden="true" />
+          <div className="shrink-0">
+            <div className="my-1 h-px bg-border" aria-hidden="true" />
 
-          <button
-            type="button"
-            onClick={() => {
-              setCreating(true)
-              setOpen(false)
-            }}
-            className="flex w-full items-center gap-2.5 px-2.5 py-1.5 text-left transition-colors hover:bg-secondary"
-          >
-            <span
-              aria-hidden="true"
-              className="flex size-7 shrink-0 items-center justify-center rounded-md border border-dashed border-border bg-secondary text-primary"
+            <button
+              type="button"
+              onClick={() => {
+                setCreating(true)
+                setOpen(false)
+              }}
+              className="flex w-full items-center gap-2.5 px-2.5 py-1.5 text-left transition-colors hover:bg-secondary"
             >
-              <FolderPlus className="size-3.5" />
-            </span>
-            <span className="font-mono text-sm text-foreground">
-              New project
-            </span>
-          </button>
+              <span
+                aria-hidden="true"
+                className="flex size-7 shrink-0 items-center justify-center rounded-md border border-dashed border-border bg-secondary text-primary"
+              >
+                <FolderPlus className="size-3.5" />
+              </span>
+              <span className="font-mono text-sm text-foreground">
+                New project
+              </span>
+            </button>
 
-          <Link
-            to="/projects/new"
-            onClick={() => setOpen(false)}
-            className="flex w-full items-center gap-2.5 px-2.5 py-1.5 text-left transition-colors hover:bg-secondary"
-          >
-            <span
-              aria-hidden="true"
-              className="flex size-7 shrink-0 items-center justify-center rounded-md border border-dashed border-border bg-secondary text-primary"
+            <Link
+              to="/projects/new"
+              onClick={() => setOpen(false)}
+              className="flex w-full items-center gap-2.5 px-2.5 py-1.5 text-left transition-colors hover:bg-secondary"
             >
-              <Plus className="size-3.5" />
-            </span>
-            <span className="font-mono text-sm text-foreground">
-              Register a repo
-            </span>
-          </Link>
+              <span
+                aria-hidden="true"
+                className="flex size-7 shrink-0 items-center justify-center rounded-md border border-dashed border-border bg-secondary text-primary"
+              >
+                <Plus className="size-3.5" />
+              </span>
+              <span className="font-mono text-sm text-foreground">
+                Register a repo
+              </span>
+            </Link>
 
-          <Link
-            to="/instances"
-            onClick={() => setOpen(false)}
-            className="flex items-center gap-2 px-2.5 py-1.5 font-mono text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
-          >
-            <Plus className="size-3.5" aria-hidden="true" />
-            Add / manage repos
-          </Link>
+            <Link
+              to="/instances"
+              onClick={() => setOpen(false)}
+              className="flex items-center gap-2 px-2.5 py-1.5 font-mono text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+            >
+              <Plus className="size-3.5" aria-hidden="true" />
+              Add / manage repos
+            </Link>
+          </div>
         </div>
       )}
 
@@ -247,38 +327,60 @@ export function RepoSwitcher() {
   )
 }
 
-// ProjectGroup renders a project holding more than one repo: the name over its
-// members. A project down to a single repo never reaches here.
+// ProjectGroup renders a project holding more than one repo: a foldable header
+// over its members. A project down to a single repo never reaches here. The header
+// keeps its tint while folded, so the group holding the scoped repo stays findable
+// with its members away.
 function ProjectGroup({
   project,
   repos,
   badges,
   activeRepo,
+  expanded,
+  onToggle,
   onSelect,
 }: {
   project: ProjectView
   repos: RepoView[]
   badges: Map<string, RepoBadgeState>
   activeRepo: string | null
+  expanded: boolean
+  onToggle: () => void
   onSelect: (name: string) => void
 }) {
+  const Chevron = expanded ? ChevronDown : ChevronRight
+  const holdsActive = repos.some((r) => r.name === activeRepo)
   return (
     <div role="group" aria-label={project.name}>
-      <p className="flex items-center gap-1.5 px-2.5 pb-0.5 pt-1.5 font-mono text-[0.65rem] uppercase tracking-[0.14em] text-muted-foreground">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={expanded}
+        className={cn(
+          'flex w-full items-center gap-1.5 px-2.5 pb-0.5 pt-1.5 text-left font-mono text-[0.65rem] uppercase tracking-[0.14em] transition-colors hover:text-foreground',
+          holdsActive ? 'text-primary' : 'text-muted-foreground',
+        )}
+      >
+        <Chevron className="size-3 shrink-0" aria-hidden="true" />
         <FolderGit2 className="size-3 shrink-0" aria-hidden="true" />
         <span className="truncate">{project.name}</span>
-      </p>
-      <div className="ml-4 border-l border-border">
-        {repos.map((r) => (
-          <RepoOption
-            key={r.name}
-            repo={r}
-            state={badges.get(r.name) ?? 'none'}
-            active={r.name === activeRepo}
-            onSelect={() => onSelect(r.name)}
-          />
-        ))}
-      </div>
+        <span className="ml-auto shrink-0 pl-1.5 tabular-nums">
+          {repos.length}
+        </span>
+      </button>
+      {expanded && (
+        <div className="ml-4 border-l border-border">
+          {repos.map((r) => (
+            <RepoOption
+              key={r.name}
+              repo={r}
+              state={badges.get(r.name) ?? 'none'}
+              active={r.name === activeRepo}
+              onSelect={() => onSelect(r.name)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   )
 }
