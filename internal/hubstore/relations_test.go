@@ -1,7 +1,9 @@
 package hubstore
 
 import (
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -9,6 +11,17 @@ func seedSyncedInto(t *testing.T, store *Issues, repo string, issues ...Issue) {
 	t.Helper()
 	if _, _, err := store.Upsert(repo, "linear", issues); err != nil {
 		t.Fatalf("upsert: %v", err)
+	}
+}
+
+// seedInternalInto files one internal issue per title, allocating prefix-1..N in
+// order — the shape a hand-authored edge is allowed to touch.
+func seedInternalInto(t *testing.T, store *Issues, repo, prefix string, titles ...string) {
+	t.Helper()
+	for _, title := range titles {
+		if _, err := store.CreateInternal(repo, prefix, InternalDraft{Title: title}); err != nil {
+			t.Fatalf("create %s: %v", title, err)
+		}
 	}
 }
 
@@ -303,5 +316,74 @@ func TestUnresolvedBlockersIgnoresTombstonedBlocker(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("unresolved = %v, want a tracker-removed blocker to no longer hold ENG-2 back", got)
+	}
+}
+
+func TestAddRelationsWiresBothDirectionsIdempotently(t *testing.T) {
+	store := testIssues(t)
+	seedInternalInto(t, store, "acme", "ENG", "blocker", "subject", "dependent")
+	edits := RelationEdits{BlockedBy: []string{"ENG-1"}, Blocks: []string{"ENG-3"}}
+	for range 2 {
+		if err := store.AddRelations("acme", "ENG-2", edits); err != nil {
+			t.Fatalf("add relations: %v", err)
+		}
+	}
+	blockers, err := store.Blockers("acme", "ENG-2")
+	if err != nil {
+		t.Fatalf("blockers: %v", err)
+	}
+	if !reflect.DeepEqual(blockers, []string{"ENG-1"}) {
+		t.Errorf("blockers = %v, want [ENG-1] with no duplicate from the re-add", blockers)
+	}
+	deps, err := store.Dependents("acme", "ENG-2")
+	if err != nil {
+		t.Fatalf("dependents: %v", err)
+	}
+	if !reflect.DeepEqual(deps, []string{"ENG-3"}) {
+		t.Errorf("dependents = %v, want [ENG-3]", deps)
+	}
+}
+
+func TestAddRelationsRefusesUnknownTargetWithoutWritingAny(t *testing.T) {
+	store := testIssues(t)
+	seedInternalInto(t, store, "acme", "ENG", "blocker", "subject")
+	err := store.AddRelations("acme", "ENG-2", RelationEdits{BlockedBy: []string{"ENG-1", "GHOST-9"}})
+	if !errors.Is(err, ErrRelationTargetMissing) {
+		t.Fatalf("err = %v, want ErrRelationTargetMissing", err)
+	}
+	if !strings.Contains(err.Error(), "GHOST-9") {
+		t.Errorf("err = %q, want it to name the missing identifier", err)
+	}
+	blockers, err := store.Blockers("acme", "ENG-2")
+	if err != nil {
+		t.Fatalf("blockers: %v", err)
+	}
+	if len(blockers) != 0 {
+		t.Errorf("blockers = %v, want the whole write rolled back", blockers)
+	}
+}
+
+func TestRemoveRelationsDropsBothDirections(t *testing.T) {
+	store := testIssues(t)
+	seedInternalInto(t, store, "acme", "ENG", "blocker", "subject", "dependent")
+	edits := RelationEdits{BlockedBy: []string{"ENG-1"}, Blocks: []string{"ENG-3"}}
+	if err := store.AddRelations("acme", "ENG-2", edits); err != nil {
+		t.Fatalf("add relations: %v", err)
+	}
+	for range 2 {
+		if err := store.RemoveRelations("acme", "ENG-2", edits); err != nil {
+			t.Fatalf("remove relations: %v", err)
+		}
+	}
+	blockers, err := store.Blockers("acme", "ENG-2")
+	if err != nil {
+		t.Fatalf("blockers: %v", err)
+	}
+	deps, err := store.Dependents("acme", "ENG-2")
+	if err != nil {
+		t.Fatalf("dependents: %v", err)
+	}
+	if len(blockers) != 0 || len(deps) != 0 {
+		t.Errorf("blockers = %v, dependents = %v, want both cleared", blockers, deps)
 	}
 }

@@ -14,26 +14,140 @@ type BlockerRef struct {
 	Resolved bool
 }
 
+// ErrRelationTargetMissing marks a relation write naming an identifier no issue in
+// the repo holds. A sync-reflected edge is allowed to dangle — the slice it names
+// may sync in later — but a hand-authored one is refused so a typo never blocks an
+// issue forever.
+var ErrRelationTargetMissing = errors.New("relation target is not an issue in this repo")
+
+// ErrRelationTargetSynced marks a hand-authored edge that would land on a synced
+// ticket's graph. An edge belongs to the issue it blocks — the side ReflectBlockers
+// reconciles against the tracker — so a local one there is dropped by the next sync
+// pull (ADR 0007).
+var ErrRelationTargetSynced = errors.New("relation target is a synced ticket; its blockers are owned by the tracker")
+
+// RelationEdits names the blocking edges around one issue: the issues that block
+// it, and the issues it blocks.
+type RelationEdits struct {
+	BlockedBy []string
+	Blocks    []string
+}
+
 // AddRelation records that blocker blocks blocked, idempotently: re-adding an
 // edge that already exists is a no-op, so re-wiring an epic's graph on a retry
 // files nothing new. Either side may name an identifier not yet in issues — a
 // slice created out of order — and the edge is kept dangling rather than
 // rejected; eligibility counts a dangling blocker as unresolved.
 func (s *Issues) AddRelation(repo, blocker, blocked string) error {
-	blocker = strings.TrimSpace(blocker)
-	blocked = strings.TrimSpace(blocked)
-	if blocker == "" || blocked == "" {
-		return errors.New("relation needs both a blocker and a blocked identifier")
+	blocker, blocked, err := relationPair(blocker, blocked)
+	if err != nil {
+		return err
 	}
-	if strings.EqualFold(blocker, blocked) {
-		return fmt.Errorf("%s cannot block itself", blocked)
-	}
-	_, err := s.db.Exec(
+	_, err = s.db.Exec(
 		`INSERT INTO issue_relations(repo, blocker, blocked) VALUES(?, ?, ?)
 		 ON CONFLICT(repo, blocker, blocked) DO NOTHING`,
 		repo, blocker, blocked,
 	)
 	return err
+}
+
+// AddRelations wires the edges e names around identifier in one transaction,
+// refusing the whole write when an endpoint names no stored issue, or when an edge
+// would block a synced ticket.
+func (s *Issues) AddRelations(repo, identifier string, e RelationEdits) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	if err := addRelations(tx, repo, identifier, e); err != nil {
+		return errors.Join(err, tx.Rollback())
+	}
+	return tx.Commit()
+}
+
+// RemoveRelations drops the edges e names around identifier, tolerating ones that
+// were never recorded.
+func (s *Issues) RemoveRelations(repo, identifier string, e RelationEdits) error {
+	for _, blocker := range e.BlockedBy {
+		if err := s.RemoveRelation(repo, strings.TrimSpace(blocker), identifier); err != nil {
+			return err
+		}
+	}
+	for _, blocked := range e.Blocks {
+		if err := s.RemoveRelation(repo, identifier, strings.TrimSpace(blocked)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// addRelations inserts e's edges inside tx, so a create wires its graph in the
+// same transaction that files the issue.
+func addRelations(tx *sql.Tx, repo, identifier string, e RelationEdits) error {
+	for _, blocker := range e.BlockedBy {
+		if err := insertRelation(tx, repo, blocker, identifier); err != nil {
+			return err
+		}
+	}
+	for _, blocked := range e.Blocks {
+		if err := insertRelation(tx, repo, identifier, blocked); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// insertRelation files one hand-authored edge, refusing an endpoint the repo does
+// not hold and a blocked side the tracker owns.
+func insertRelation(tx *sql.Tx, repo, blocker, blocked string) error {
+	blocker, blocked, err := relationPair(blocker, blocked)
+	if err != nil {
+		return err
+	}
+	if _, err := relationEndpoint(tx, repo, blocker); err != nil {
+		return err
+	}
+	source, err := relationEndpoint(tx, repo, blocked)
+	if err != nil {
+		return err
+	}
+	if source != SourceInternal {
+		return fmt.Errorf("%s: %w", blocked, ErrRelationTargetSynced)
+	}
+	_, err = tx.Exec(
+		`INSERT INTO issue_relations(repo, blocker, blocked) VALUES(?, ?, ?)
+		 ON CONFLICT(repo, blocker, blocked) DO NOTHING`,
+		repo, blocker, blocked,
+	)
+	return err
+}
+
+// relationEndpoint returns the source of the issue identifier names, refusing one
+// no issue in the repo holds.
+func relationEndpoint(tx *sql.Tx, repo, identifier string) (string, error) {
+	var source string
+	switch err := tx.QueryRow(
+		`SELECT source FROM issues WHERE repo = ? AND identifier = ?`, repo, identifier,
+	).Scan(&source); {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", fmt.Errorf("%s: %w", identifier, ErrRelationTargetMissing)
+	case err != nil:
+		return "", err
+	}
+	return source, nil
+}
+
+// relationPair trims one edge's endpoints, requiring both and refusing an issue
+// that blocks itself.
+func relationPair(blocker, blocked string) (string, string, error) {
+	blocker, blocked = strings.TrimSpace(blocker), strings.TrimSpace(blocked)
+	if blocker == "" || blocked == "" {
+		return "", "", errors.New("relation needs both a blocker and a blocked identifier")
+	}
+	if strings.EqualFold(blocker, blocked) {
+		return "", "", fmt.Errorf("%s cannot block itself", blocked)
+	}
+	return blocker, blocked, nil
 }
 
 // RemoveRelation drops the blocker→blocked edge, tolerating one that was never
