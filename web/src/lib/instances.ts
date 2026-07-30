@@ -17,11 +17,21 @@ export interface Instance {
   state_since?: string;
 }
 
-// RepoHealthState mirrors the hub's derived health. A recorded error is
-// sync-failed even over a good synced stamp, so a repo whose seed sync failed
-// never reads as ready.
+// RepoHealthState mirrors the hub's derived health. A recorded error over an
+// earlier good sync is degraded — the store still holds that pull's issues — while
+// sync-failed is an error with no local data behind it.
 export type RepoHealthState =
-  "ready" | "unconfigured" | "sync-failed" | "never-synced" | "syncing";
+  | "ready"
+  | "unconfigured"
+  | "degraded"
+  | "sync-failed"
+  | "never-synced"
+  | "syncing";
+
+// SyncErrorKind is what the hub decided the last sync error takes to clear: a
+// rate limit or a transport failure retries itself, while a config failure waits
+// on the repo's settings or credentials. Empty when no error stands.
+export type SyncErrorKind = "" | "config" | "rate-limit" | "transient";
 
 // RepoFreshness is a repo's issue-store sync state: when it last synced from the
 // tracker, whether a background sync is running right now, the last sync error,
@@ -33,6 +43,7 @@ export interface RepoFreshness {
   last_synced_at?: string;
   syncing: boolean;
   last_error?: string;
+  last_error_kind?: SyncErrorKind;
   last_issues?: number;
   last_comments?: number;
   issue_count?: number;
@@ -59,6 +70,7 @@ export interface RepoHealth {
   state: RepoHealthState;
   last_synced_at: string;
   last_error: string;
+  last_error_kind: SyncErrorKind;
   issue_count: number;
 }
 
@@ -89,6 +101,8 @@ export function healthPill(state: RepoHealthState): {
       return { state: "active", label: "syncing" };
     case "sync-failed":
       return { state: "fail", label: "sync failing" };
+    case "degraded":
+      return { state: "warn", label: "sync degraded" };
     case "never-synced":
       return { state: "warn", label: "never synced" };
     case "unconfigured":
@@ -96,9 +110,10 @@ export function healthPill(state: RepoHealthState): {
   }
 }
 
-// healthBlocks reports whether a state stops a repo-scoped page from being
-// trusted: nothing is configured to fetch, or the last sync recorded an error.
-// A syncing or never-synced repo is mid-setup and left alone.
+// healthBlocks reports whether a state leaves a repo-scoped page with nothing to
+// show: nothing is configured to fetch, or every sync so far has failed. Degraded
+// is deliberately absent — the store holds the last good pull, so the page renders
+// it under a notice rather than behind an overlay.
 export function healthBlocks(state: RepoHealthState): boolean {
   return state === "unconfigured" || state === "sync-failed";
 }

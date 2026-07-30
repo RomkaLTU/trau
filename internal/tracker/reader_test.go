@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -199,3 +201,33 @@ func TestJiraReaderBacklogMaps(t *testing.T) {
 		t.Errorf("items[2] = %+v, want a canceled (duplicate) done issue", items[2])
 	}
 }
+
+func TestClassify(t *testing.T) {
+	timeout := &net.OpError{Op: "dial", Err: &timeoutErr{}}
+	cases := []struct {
+		name string
+		err  error
+		want ErrorKind
+	}{
+		{"linear rate limit", &linearapi.RateLimitError{Message: "budget spent"}, ErrorRateLimit},
+		{"jira 429 the retries could not outlast", jiraapi.ErrRateLimited, ErrorRateLimit},
+		{"a wrapped rate limit still classifies", fmt.Errorf("sync: %w", jiraapi.ErrRateLimited), ErrorRateLimit},
+		{"a transport timeout", timeout, ErrorTransient},
+		{"a context deadline", context.DeadlineExceeded, ErrorTransient},
+		{"rejected credentials", linearapi.ErrUnauthorized, ErrorConfig},
+		{"a missing project key", ErrNoProjectKey, ErrorConfig},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Classify(tc.err); got != tc.want {
+				t.Fatalf("Classify(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+type timeoutErr struct{}
+
+func (*timeoutErr) Error() string   { return "i/o timeout" }
+func (*timeoutErr) Timeout() bool   { return true }
+func (*timeoutErr) Temporary() bool { return true }

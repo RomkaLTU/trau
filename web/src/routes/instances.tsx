@@ -33,6 +33,7 @@ import {
 import { sessionStatePill, toSessionState } from '@/lib/overview'
 import { standardTitle, usePageTitle } from '@/lib/page-title'
 import { reposQueryOptions } from '@/lib/runs'
+import { cn } from '@/lib/utils'
 
 const SYNC_POLL_MS = 2000
 
@@ -170,16 +171,32 @@ function RepoFreshnessLine({
   now: number
 }) {
   const freshness = repo.freshness
+  const synced = freshness?.last_synced_at
 
-  if (state === 'sync-failed') {
+  if (state === 'sync-failed' || state === 'degraded') {
+    const failed = state === 'sync-failed'
     return (
       <div
         role="alert"
-        className="rounded-md border border-fail/40 bg-fail/5 px-3 py-2"
+        className={cn(
+          'rounded-md border px-3 py-2',
+          failed ? 'border-fail/40 bg-fail/5' : 'border-warn/40 bg-warn/5',
+        )}
       >
-        <p className="break-words font-mono text-xs leading-relaxed text-fail">
+        <p
+          className={cn(
+            'break-words font-mono text-xs leading-relaxed',
+            failed ? 'text-fail' : 'text-warn',
+          )}
+        >
           {freshness?.last_error}
         </p>
+        {!failed && (
+          <p className="mt-1 font-sans text-xs leading-relaxed text-muted-foreground">
+            {freshness?.issue_count ?? 0} issues still served from the last good
+            sync{synced && ` · ${formatElapsed(synced, now)} ago`}.
+          </p>
+        )}
       </div>
     )
   }
@@ -202,7 +219,6 @@ function RepoFreshnessLine({
     )
   }
 
-  const synced = freshness?.last_synced_at
   return (
     <p className="font-mono text-xs text-muted-foreground">
       {freshness?.issue_count ?? 0} issues
@@ -228,8 +244,12 @@ function RepoHealthActions({
     },
   })
 
-  const broken = state === 'unconfigured' || state === 'sync-failed'
-  const resyncable = state === 'sync-failed' || state === 'never-synced'
+  const degradedConfig =
+    state === 'degraded' && repo.freshness?.last_error_kind === 'config'
+  const broken =
+    state === 'unconfigured' || state === 'sync-failed' || degradedConfig
+  const resyncable =
+    state === 'sync-failed' || state === 'never-synced' || state === 'degraded'
 
   return (
     <div className="flex flex-col gap-1.5 lg:items-end lg:pt-0.5">

@@ -49,18 +49,20 @@ type RepoView struct {
 
 // RepoFreshness is a repo's issue-store freshness: its derived health state, when
 // it last synced from the tracker, whether a background sync is running right now,
-// the error from the last failed attempt (empty once a sync succeeds), the counts
-// the last good sync wrote, and how many issues the store now holds. On the repos
-// API it always carries a State so the Instances page renders a designed state;
-// the backlog attaches only the sync fields, leaving State and IssueCount unset.
+// the error from the last failed attempt and what it takes to clear (both empty
+// once a sync succeeds), the counts the last good sync wrote, and how many issues
+// the store now holds. On the repos API it always carries a State so the Instances
+// page renders a designed state; the backlog attaches only the sync fields, leaving
+// State and IssueCount unset.
 type RepoFreshness struct {
-	State        RepoHealthState `json:"state,omitempty"`
-	LastSyncedAt string          `json:"last_synced_at,omitempty"`
-	Syncing      bool            `json:"syncing"`
-	LastError    string          `json:"last_error,omitempty"`
-	LastIssues   int             `json:"last_issues,omitempty"`
-	LastComments int             `json:"last_comments,omitempty"`
-	IssueCount   int             `json:"issue_count,omitempty"`
+	State         RepoHealthState `json:"state,omitempty"`
+	LastSyncedAt  string          `json:"last_synced_at,omitempty"`
+	Syncing       bool            `json:"syncing"`
+	LastError     string          `json:"last_error,omitempty"`
+	LastErrorKind string          `json:"last_error_kind,omitempty"`
+	LastIssues    int             `json:"last_issues,omitempty"`
+	LastComments  int             `json:"last_comments,omitempty"`
+	IssueCount    int             `json:"issue_count,omitempty"`
 }
 
 // InstancesResponse is the /api/v1/instances resource: the live loops and every
