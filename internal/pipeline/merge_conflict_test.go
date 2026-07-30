@@ -102,7 +102,7 @@ func (f *mergeGitHub) Merge(ctx context.Context, pr, method string, deleteBranch
 	return f.always
 }
 
-func newMergePipeline(t *testing.T, git *mergeGit, gh *mergeGitHub, tr *fakeTracker) *Pipeline {
+func newMergePipeline(t *testing.T, git Git, gh *mergeGitHub, tr *fakeTracker) *Pipeline {
 	t.Helper()
 	dir := t.TempDir()
 	return &Pipeline{

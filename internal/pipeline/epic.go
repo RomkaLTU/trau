@@ -47,7 +47,7 @@ func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
 		p.logf("  epic title lookup error (using id-only branch): %v", err)
 	}
 	branch := epicBranch(p.EpicID, title)
-	base := p.baseRef()
+	base := p.epicBaseRef(ctx)
 	if err := p.Git.CreateBranch(ctx, branch, base); err != nil {
 		return "", &GiveUpError{ID: p.EpicID, Reason: "could not create epic branch for " + p.EpicID}
 	}
@@ -66,6 +66,30 @@ func epicBranch(id, title string) string {
 		return "epic/" + id + "-" + slug
 	}
 	return "epic/" + id
+}
+
+// epicBaseRef names the ref a brand-new epic branch is cut from: the base branch as
+// the remote has it, fetched first. An epic is a long-lived integration branch every
+// child stacks on, so cutting it from a local base that drifted behind the remote
+// starts it behind those commits — each child PR then diffs against them as if they
+// were the child's own work. Only a remote tip that cannot be resolved at all falls
+// back to the local ref.
+func (p *Pipeline) epicBaseRef(ctx context.Context) string {
+	if p.localDelivery(ctx) {
+		return p.baseRef()
+	}
+	tip := p.Remote + "/" + p.Base
+	// A fetch exits 0 without creating the tracking ref when the clone's refspec
+	// does not cover the base, so the tip is proven resolvable on both paths.
+	fetched := p.fetchBaseTip(ctx)
+	if known, _ := p.Git.ResolvesToCommit(ctx, tip); !known {
+		p.logf("  ⚠ %s could not be resolved — cutting the epic from the local %s", tip, p.Base)
+		return p.baseRef()
+	}
+	if !fetched {
+		p.logf("  fetch %s failed — cutting the epic from the last known remote tip", tip)
+	}
+	return tip
 }
 
 func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string) (string, error) {
@@ -261,6 +285,61 @@ func (p *Pipeline) syncEpicBest(ctx context.Context, epic string) {
 			p.logf("  push synced epic branch error (continuing): %v", err)
 		}
 	}
+}
+
+// assertEpicBaseCurrent makes the remote epic branch carry the commit the run was
+// cut from, before a child PR is opened against it. syncEpicBest pushes the synced
+// epic best-effort, which is right mid-run but not here: a push that never landed
+// leaves the remote epic behind the recorded fork point, and GitHub then diffs the
+// child against a base older than the branch point — burying the base's own drift in
+// the child's PR as thousands of foreign lines. A remote a push can repair is
+// repaired; one that still misses the fork point fails the phase.
+func (p *Pipeline) assertEpicBaseCurrent(ctx context.Context, id, epic string) error {
+	pin := p.State.Get(id, "BASE_SHA")
+	if pin == "" {
+		return nil
+	}
+	carries, err := p.remoteCarries(ctx, epic, pin)
+	if err != nil {
+		return err
+	}
+	if carries {
+		return nil
+	}
+	p.logf("  ⚠ %s/%s is behind the commit %s was cut from — pushing the epic branch before opening the PR", p.Remote, epic, id)
+	if err := p.Git.Push(ctx, p.Remote, epic, false); err != nil {
+		return fmt.Errorf("push epic base %s: %w", epic, err)
+	}
+	carries, err = p.remoteCarries(ctx, epic, pin)
+	if err != nil {
+		return err
+	}
+	if !carries {
+		return fmt.Errorf("epic base %s/%s does not carry %s, the commit %s was cut from — a PR opened against it would diff against a stale base", p.Remote, epic, pin, id)
+	}
+	p.logf("  ↻ %s/%s repaired — the PR base now carries %s", p.Remote, epic, pin)
+	return nil
+}
+
+// remoteCarries reports whether the remote copy of branch contains commit. The
+// remote's own tip is read with ls-remote, never a remote-tracking ref: a push that
+// failed leaves the tracking ref exactly as convincing as a push that worked. A tip
+// that moved on — a sibling squash-merged into the epic since — is fetched so its
+// reachability can be judged locally.
+func (p *Pipeline) remoteCarries(ctx context.Context, branch, commit string) (bool, error) {
+	sha, err := p.Git.RemoteSHA(ctx, p.Remote, branch)
+	if err != nil {
+		return false, fmt.Errorf("read %s/%s: %w", p.Remote, branch, err)
+	}
+	if sha == "" {
+		return false, nil
+	}
+	if known, _ := p.Git.ResolvesToCommit(ctx, sha); !known {
+		if err := p.Git.Fetch(ctx, p.Remote, branch); err != nil {
+			return false, fmt.Errorf("fetch %s/%s: %w", p.Remote, branch, err)
+		}
+	}
+	return p.Git.IsAncestor(ctx, commit, sha)
 }
 
 // syncEpicForMerge brings the base into the epic branch before the epic ships to
