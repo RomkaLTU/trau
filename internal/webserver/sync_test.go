@@ -520,3 +520,64 @@ func TestRegisterTriggersSync(t *testing.T) {
 		t.Fatalf("register did not seed the issue store: %+v", stored)
 	}
 }
+
+// A machine-wide LINEAR_API_KEY makes a repo that configured no tracker resolve to
+// linear. Its sync must refuse before any request leaves the machine and record
+// what to set, not the not-found a lookup with an empty team key answers with.
+func TestSyncRefusesLinearWithoutTeamKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeRepoINI(t, home, "LINEAR_API_KEY=user-linear-key\n")
+	runsDir := seedRepo(t, home, "acme")
+	root := filepath.Dir(filepath.Dir(runsDir))
+	writeRepoINI(t, root, "PROJECT=Trau Web\n")
+
+	s := New("1.2.3", "127.0.0.1", "", nil, false, testStoresAt(t, home))
+	s.home = home
+	ts := httptest.NewServer(s.Handler())
+	t.Cleanup(ts.Close)
+
+	res, _ := postSync(t, ts, "acme")
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 — a missing team key is a config state", res.StatusCode)
+	}
+
+	st, err := testStoresAt(t, home).Issues().SyncState(root)
+	if err != nil {
+		t.Fatalf("SyncState: %v", err)
+	}
+	for _, want := range []string{"LINEAR_TEAM", "TRACKER_PROVIDER=internal"} {
+		if !strings.Contains(st.LastError, want) {
+			t.Fatalf("last error = %q, want it to mention %q", st.LastError, want)
+		}
+	}
+	if strings.Contains(st.LastError, "not found") {
+		t.Fatalf("last error = %q, want the configuration hint rather than the tracker's own error", st.LastError)
+	}
+	if st.LastErrorKind != string(tracker.ErrorConfig) {
+		t.Fatalf("last error kind = %q, want %q", st.LastErrorKind, tracker.ErrorConfig)
+	}
+}
+
+// The guard is about having nothing to bind with, not about the config key: a repo
+// whose stored binding already carries a team id keeps syncing on it.
+func TestSyncKeepsStoredBindingWithoutTeamKey(t *testing.T) {
+	fake := &fakeReader{synced: syncedFixture(), bindingErr: tracker.ErrNoTeamKey}
+	ts, root, store := syncServer(t, fake)
+	if err := store.SaveBinding(root, hubstore.SyncBinding{TeamID: "team-1"}); err != nil {
+		t.Fatalf("SaveBinding: %v", err)
+	}
+
+	res, out := postSync(t, ts, "acme")
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — the stored binding is usable", res.StatusCode)
+	}
+	if fake.bindingCalls != 0 {
+		t.Fatalf("ResolveBinding called %d times, want the stored binding used as-is", fake.bindingCalls)
+	}
+	if out.Issues != 1 {
+		t.Fatalf("issues = %d, want the pull to have run", out.Issues)
+	}
+}

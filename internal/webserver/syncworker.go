@@ -147,12 +147,12 @@ func (sy *syncer) settleReconcile(root string, err error) {
 
 // retryAfter maps a failed sync or reconcile to how long the repo holds off and
 // what its consecutive-failure count becomes, so both cadences read one error
-// taxonomy. Neither a repo without credentials — it has nothing to pull — nor a
-// rate limit, which is the shared API key's budget rather than a broken repo,
-// counts as a failure.
+// taxonomy. Neither a repo the hub has nothing to pull for — no credentials, or no
+// team to bind — nor a rate limit, which is the shared API key's budget rather than
+// a broken repo, counts as a failure.
 func retryAfter(err error, interval time.Duration, failures int) (time.Duration, int) {
 	switch resetAt, limited := tracker.RateLimited(err); {
-	case errors.Is(err, tracker.ErrReaderUnavailable):
+	case errors.Is(err, tracker.ErrReaderUnavailable), errors.Is(err, tracker.ErrNoTeamKey):
 		return syncBackoffCap, 0
 	case limited:
 		return rateLimitWait(resetAt, interval), 0
@@ -180,9 +180,9 @@ func (sy *syncer) claim(root string, now time.Time) bool {
 }
 
 // settle records a finished sync: success clears the backoff and leaves the repo
-// due next tick; a tracker failure backs it off exponentially. A repo with no
-// direct credentials is not a failure — it simply has nothing to pull — so it
-// backs off to the cap and checks in rarely rather than every interval.
+// due next tick; a tracker failure backs it off exponentially. A repo the hub has
+// nothing to pull for is not a failure, so it backs off to the cap and checks in
+// rarely rather than every interval.
 func (sy *syncer) settle(root string, interval time.Duration, err error) {
 	sy.mu.Lock()
 	defer sy.mu.Unlock()

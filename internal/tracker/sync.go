@@ -70,6 +70,9 @@ type SyncedBlocker struct {
 }
 
 func (r *linearReader) ResolveBinding(ctx context.Context) (ProjectBinding, error) {
+	if strings.TrimSpace(r.team) == "" {
+		return ProjectBinding{}, ErrNoTeamKey
+	}
 	team, err := r.client.TeamByKey(ctx, r.team)
 	if err != nil {
 		return ProjectBinding{}, err
