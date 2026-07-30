@@ -121,9 +121,10 @@ func openReadOnly(path string) (*sql.DB, error) {
 // authority, which the driver rejects outright —
 // `invalid uri authority: C:%5CUsers%5C...`, the error doctor reported for a
 // database the hub itself had open and healthy. Unix paths are already in this
-// form, so they round-trip unchanged.
+// form, so they round-trip unchanged. filepath.ToSlash would not do: it keys off
+// the host separator, so it leaves a Windows path alone everywhere but Windows.
 func readOnlyDSN(path string) string {
-	p := filepath.ToSlash(path)
+	p := strings.ReplaceAll(path, `\`, "/")
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
 	}
