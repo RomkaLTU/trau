@@ -145,7 +145,10 @@ type Config struct {
 	CITimeout           int
 	CIPoll              int
 	ExpectedChecks      string
-	RequireCI           bool
+	// RequireCI selects the merge gate's mode: auto requires CI whenever a PR
+	// workflow targets the PR's base and merges with a warning when none does, 1
+	// always requires green checks, 0 never waits for them.
+	RequireCI CIGate
 	// RequireRepoChanges gates the post-build empty-diff guard: when on (default),
 	// a build that left the managed repo unchanged faults instead of advancing to a
 	// hollow handoff or empty PR. Set 0 for the rare legitimately no-op ticket.
@@ -467,7 +470,7 @@ func Defaults() Config {
 		CITimeout:              600,
 		CIPoll:                 30,
 		ExpectedChecks:         "",
-		RequireCI:              true,
+		RequireCI:              CIGateAuto,
 		RequireRepoChanges:     true,
 		AutoStash:              true,
 		LintFix:                true,
@@ -886,7 +889,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	num("CI_POLL", &c.CIPoll)
 	str("EXPECTED_CHECKS", &c.ExpectedChecks)
 	if v, src := get("REQUIRE_CI"); v != "" {
-		c.RequireCI = v == "1"
+		c.RequireCI = ParseCIGate(v)
 		sources["REQUIRE_CI"] = src.name
 	}
 	if v, src := get("REQUIRE_REPO_CHANGES"); v != "" {
@@ -1753,7 +1756,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "CI_TIMEOUT", Group: sectionCI, Kind: "int", WebEditable: true, Default: "600", Description: "Seconds to wait for CI checks"},
 		{Key: "CI_POLL", Group: sectionCI, Kind: "int", WebEditable: true, Default: "30", Description: "Seconds between CI polls"},
 		{Key: "EXPECTED_CHECKS", Group: sectionCI, WebEditable: true, Description: "Required CI check names (comma-separated)"},
-		{Key: "REQUIRE_CI", Group: sectionCI, WebEditable: true, Default: "1", Description: "Gate merge on CI; set 0 for repos with no PR CI (1 = yes, 0 = no)", Bool: true},
+		{Key: "REQUIRE_CI", Group: sectionCI, WebEditable: true, Default: string(CIGateAuto), Options: []string{string(CIGateAuto), string(CIGateOn), string(CIGateOff)}, Description: "Merge gate on CI: auto (wait for checks when a pull_request workflow targets the PR's base branch; merge with a warning when none does, so a base with no CI never quarantines) | 1 (always wait, absent checks time out) | 0 (never wait)"},
 		{Key: "AUTO_STASH", Group: sectionGit, Default: "1", Description: "Stash uncommitted tracked WIP before a fresh run and restore it when the run ends; 0 aborts instead (1 = yes, 0 = no)", Bool: true},
 		{Key: "AUTO_INSTALL_SKILLS", Group: sectionSkills, WebEditable: true, Default: "0", Description: "Install the recommended skill set for the repo's project type at loop start when no skills are present (opt-in; 1 = yes, 0 = no)", Bool: true},
 		{Key: "REQUIRED_SKILLS", Group: sectionSkills, WebEditable: true, Description: "Skill names (comma-separated) the build, repair and bugfix agents must load whatever the ticket touches, on top of the repo's routing rules in .trau/skills-rules.json. Names the repo cannot load warn at loop start. Empty with no matching rule = the project type's recommended skills, or every installed skill when none match"},
@@ -2352,10 +2355,7 @@ func keyValue(cfg Config, key string) string {
 	case "EXPECTED_CHECKS":
 		return cfg.ExpectedChecks
 	case "REQUIRE_CI":
-		if cfg.RequireCI {
-			return "1"
-		}
-		return "0"
+		return string(cfg.RequireCI)
 	case "AUTO_STASH":
 		if cfg.AutoStash {
 			return "1"

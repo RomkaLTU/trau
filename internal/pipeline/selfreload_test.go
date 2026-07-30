@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -117,7 +118,6 @@ func TestCIAndMergeRequestsHubReloadOnlyForBaseShips(t *testing.T) {
 			p := newReloadPipeline(t, git, gh, hub)
 			p.EpicID = tc.epicID
 			p.HubSelfReload = tc.selfReload
-			p.RequireCI = tc.redCI
 			p.AutoMerge = !tc.operatorMerges
 			seedPROpen(t, p, id, "77", "feature/COD-1185-x")
 
@@ -342,7 +342,7 @@ func TestFinalizeEpicRequestsHubReloadOnlyWhenShipped(t *testing.T) {
 			p.Tracker = tr
 			p.EpicID = "COD-1"
 			p.epicBranch = "epic/COD-1-self-reload"
-			p.RequireCI = true
+			p.RequireCI = config.CIGateOn
 			closedFirst := false
 			p.RequestHubReload = func(ctx context.Context) (hubclient.ReloadAck, error) {
 				closedFirst = tr.setFor(p.EpicID) != nil

@@ -165,10 +165,16 @@ EXPECTED_CHECKS=             # named checks (substring, case-insensitive) that m
                              # with none pending. Empty is right when your repo's tests run
                              # locally (the loop's verify phase is the gate); set to e.g.
                              # "tests,lint" when those checks run on the PR itself.
-REQUIRE_CI=1                 # 1 = gate merge on CI checks. Set 0 when the repo has NO PR-triggered
-                             # CI (e.g. only a deploy-on-push workflow): the PR then has zero checks,
-                             # which would otherwise spin to CI_TIMEOUT and quarantine. With 0 the
-                             # gate is skipped and the loop merges/leaves the clean PR per AUTO_MERGE.
+REQUIRE_CI=auto              # merge gate mode. auto (default) = gate on CI whenever a pull_request
+                             # workflow targets the PR's base branch. When the repo has PR workflows
+                             # but none targets that base (an epic/release base the triggers are
+                             # scoped away from) no check can appear, so the gate merges with a
+                             # warning a couple of minutes in instead of spinning to CI_TIMEOUT and
+                             # quarantining. A repo with no pull_request workflow at all may still
+                             # run CI elsewhere, so there the gate gives a first check the full
+                             # CI_TIMEOUT before merging with the same warning. 1 = always wait, so
+                             # absent checks still time out. 0 = never wait; merge/leave the clean
+                             # PR per AUTO_MERGE. Red and pending checks gate the same under auto and 1.
 REQUIRE_REPO_CHANGES=1       # 1 = after build, fault when the managed repo is unchanged (clean tree
                              # AND no new commits vs base) instead of advancing to a hollow handoff /
                              # empty PR — catches an agent that built in the wrong repo or escaped its

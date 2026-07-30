@@ -2099,6 +2099,12 @@ func (a *appActions) OnboardingNeeded() bool {
 // project config path that was written.
 func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (tui.SetupResult, error) {
 	path := filepath.Join(a.cfg.RepoRoot, config.ProjectConfigName)
+	// The wizard's yes means the default branch is checked, which auto already
+	// gates on — while sparing a PR into a base no workflow targets.
+	ciGate := config.CIGateAuto
+	if !setup.RequireCI {
+		ciGate = config.CIGateOff
+	}
 	values := map[string]string{
 		"TRACKER_PROVIDER": setup.TrackerProvider,
 		"LINEAR_TEAM":      setup.Team,
@@ -2107,7 +2113,7 @@ func (a *appActions) SetupProject(ctx context.Context, setup tui.ProjectSetup) (
 		"BASE_BRANCH":      setup.BaseBranch,
 		"PROVIDER":         setup.Provider,
 		"EPIC_FLOW":        boolEnvValue(setup.EpicFlow),
-		"REQUIRE_CI":       boolEnvValue(setup.RequireCI),
+		"REQUIRE_CI":       string(ciGate),
 	}
 	if len(setup.ExpectedChecks) > 0 {
 		// Detection found the exact required checks — pin the gate to them so it

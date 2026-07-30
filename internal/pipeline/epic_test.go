@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/event"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
@@ -35,7 +36,7 @@ func TestFinalizeEpicAutoMergesWhenCIGreen(t *testing.T) {
 		EpicID:      "COD-1",
 		epicBranch:  "epic/COD-1-checkout-rebuild",
 		AutoMerge:   true,
-		RequireCI:   true,
+		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
 		Git:         fakeGit{},
 		GitHub:      gh,
@@ -80,7 +81,7 @@ func TestFinalizeEpicMergesWithRequireCIOffAndNoChecks(t *testing.T) {
 		EpicID:      "COD-1",
 		epicBranch:  "epic/COD-1-checkout-rebuild",
 		AutoMerge:   true,
-		RequireCI:   false,
+		RequireCI:   config.CIGateOff,
 		MergeMethod: "squash",
 		Git:         fakeGit{},
 		GitHub:      gh,
@@ -127,7 +128,7 @@ func TestFinalizeEpicReattemptAdoptsMergedPR(t *testing.T) {
 		EpicID:      "COD-1",
 		epicBranch:  "epic/COD-1-checkout-rebuild",
 		AutoMerge:   true,
-		RequireCI:   true,
+		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
 		Git:         fakeGit{},
 		GitHub:      gh,
@@ -331,7 +332,7 @@ func newEpicWaitPipeline(t *testing.T, gh GitHub, tr *epicTracker) *Pipeline {
 		Remote:      "origin",
 		EpicID:      "COD-1",
 		epicBranch:  "epic/COD-1-checkout-rebuild",
-		RequireCI:   true,
+		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
 		Git:         fakeGit{},
 		GitHub:      gh,
@@ -352,7 +353,7 @@ func shippableEpicPipeline(t *testing.T, gh GitHub, tr tracker.Tracker) *Pipelin
 		EpicID:      "COD-1",
 		epicBranch:  "epic/COD-1-checkout-rebuild",
 		AutoMerge:   true,
-		RequireCI:   true,
+		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
 		Git:         fakeGit{},
 		GitHub:      gh,
