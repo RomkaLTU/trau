@@ -127,7 +127,30 @@ export function StepPath({
               as its own member.
             </Hint>
           </div>
-          <ul className="divide-y divide-border/40 overflow-hidden rounded-md border border-border">
+          <div className="flex items-center justify-between gap-2">
+            <FieldLabel>
+              {chosen.length} of {scan.children.length} selected
+            </FieldLabel>
+            <div className="flex items-center gap-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setChosen(scan.children.map((c) => c.path))}
+              >
+                Select all
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setChosen([])}
+              >
+                Select none
+              </Button>
+            </div>
+          </div>
+          <ul className="max-h-64 divide-y divide-border/40 overflow-y-auto rounded-md border border-border">
             {scan.children.map((child) => {
               const on = chosen.includes(child.path)
               return (
