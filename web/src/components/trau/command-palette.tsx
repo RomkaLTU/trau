@@ -4,7 +4,11 @@ import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { Check, FolderGit2, GitBranch, History, ListChecks } from 'lucide-react'
 
 import { ALL_SCOPE, useActiveRepo } from '@/components/trau/active-repo'
-import { NAV_GROUPS, type NavItem } from '@/components/trau/nav-items'
+import {
+  NAV_GROUPS,
+  UNLISTED_ITEMS,
+  type NavItem,
+} from '@/components/trau/nav-items'
 import {
   CommandDialog,
   CommandEmpty,
@@ -22,7 +26,10 @@ import { suggestFor, type SuggestionEntry } from '@/lib/suggestions'
 const GROUP_HEADING =
   '[&_[cmdk-group-heading]]:font-mono [&_[cmdk-group-heading]]:text-[0.65rem] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.2em] [&_[cmdk-group-heading]]:font-normal'
 
-const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items)
+const NAV_ITEMS = [
+  ...NAV_GROUPS.flatMap((group) => group.items),
+  ...UNLISTED_ITEMS,
+]
 
 function recentIcon(entry: RecentEntry) {
   if (entry.kind === 'project') return GitBranch

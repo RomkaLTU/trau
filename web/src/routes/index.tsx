@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
 
+import { AppURLsCard } from '@/components/trau/app-urls-card'
 import { Eyebrow } from '@/components/trau/eyebrow'
 import {
   LaunchActions,
@@ -38,6 +39,8 @@ function Overview() {
       <PulseStrip />
 
       <OverviewBoard />
+
+      <AppURLsCard />
     </div>
   )
 }

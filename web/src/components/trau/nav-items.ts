@@ -2,6 +2,7 @@ import {
   DollarSign,
   FlaskConical,
   FolderPlus,
+  Globe,
   Inbox,
   LayoutDashboard,
   Lightbulb,
@@ -91,4 +92,9 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: 'Settings', icon: Settings, to: '/settings' },
     ],
   },
+]
+
+/** Pages the palette and in-page links reach, but the sidebar deliberately doesn't list. */
+export const UNLISTED_ITEMS: NavItem[] = [
+  { label: 'App URLs', icon: Globe, to: '/app-urls', requiresProject: true },
 ]
