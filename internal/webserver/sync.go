@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/RomkaLTU/trau/internal/hubstore"
@@ -112,7 +113,7 @@ func (s *Server) forceResync(ctx context.Context, repo registry.Repo) (SyncRespo
 	store := s.stores.Issues()
 	if _, err := s.refreshBinding(ctx, store, repo.Root, res.reader); err != nil {
 		err = res.actionableErr(err)
-		_ = store.RecordError(repo.Root, err.Error())
+		recordSyncErr(store, repo.Root, err)
 		return SyncResponse{}, err
 	}
 	if err := store.DropSynced(repo.Root); err != nil {
@@ -144,13 +145,13 @@ func (s *Server) reconcileRepo(ctx context.Context, repo registry.Repo) ([]strin
 	binding, err := s.resolveBinding(ctx, store, repo.Root, state.Binding, res.reader)
 	if err != nil {
 		err = res.actionableErr(err)
-		_ = store.RecordError(repo.Root, err.Error())
+		recordSyncErr(store, repo.Root, err)
 		return nil, err
 	}
 	live, err := res.reader.ProjectIdentifiers(ctx, binding)
 	if err != nil {
 		err = res.actionableErr(err)
-		_ = store.RecordError(repo.Root, err.Error())
+		recordSyncErr(store, repo.Root, err)
 		return nil, err
 	}
 	if len(live) == 0 {
@@ -215,14 +216,15 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 	binding, err := s.resolveBinding(ctx, store, repo.Root, state.Binding, res.reader)
 	if err != nil {
 		err = res.actionableErr(err)
-		_ = store.RecordError(repo.Root, err.Error())
+		recordSyncErr(store, repo.Root, err)
 		return SyncResponse{}, err
 	}
+	s.warnTeamOverlap(repo.Root, binding)
 
 	pulled, err := res.reader.SyncPull(ctx, binding, state.Cursor)
 	if err != nil {
 		err = res.actionableErr(err)
-		_ = store.RecordError(repo.Root, err.Error())
+		recordSyncErr(store, repo.Root, err)
 		return SyncResponse{}, err
 	}
 
@@ -245,7 +247,7 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 	}); err != nil {
 		return SyncResponse{}, err
 	}
-	s.resolveIdentity(ctx, store, repo.Root, res.reader)
+	s.resolveIdentity(ctx, store, repo.Root, state.Me, res.reader)
 	s.reconcileQueuedLabels(ctx, repo.Root)
 	s.retireClosedGrill(repo.Root)
 	return SyncResponse{
@@ -318,12 +320,21 @@ func (s *Server) refreshBinding(ctx context.Context, store *hubstore.Issues, roo
 	return binding, nil
 }
 
+// identityTTL is how long a repo binding's resolved Me stays good. The tracker
+// user behind an API key essentially never changes, so re-resolving it every sync
+// tick only spends the request budget the pull itself needs.
+const identityTTL = 24 * time.Hour
+
 // resolveIdentity refreshes the repo binding's Me — the tracker user behind its
-// credentials — and persists it beside the sync bookkeeping. It is best-effort: an
-// identity call that fails (bad or missing credentials, tracker hiccup) is logged
-// and swallowed so it never blocks or fails the issue sync, leaving the previously
+// credentials — and persists it beside the sync bookkeeping, skipping the call
+// while the stored one is still within identityTTL. It is best-effort: an identity
+// call that fails (bad or missing credentials, tracker hiccup) is logged and
+// swallowed so it never blocks or fails the issue sync, leaving the previously
 // stored identity in place.
-func (s *Server) resolveIdentity(ctx context.Context, store *hubstore.Issues, root string, reader tracker.Reader) {
+func (s *Server) resolveIdentity(ctx context.Context, store *hubstore.Issues, root string, cached hubstore.SyncIdentity, reader tracker.Reader) {
+	if !identityStale(cached) {
+		return
+	}
 	id, name, err := reader.Identity(ctx)
 	if err != nil {
 		logger.Verbosef("sync %s: resolve identity: %v", root, err)
@@ -332,6 +343,111 @@ func (s *Server) resolveIdentity(ctx context.Context, store *hubstore.Issues, ro
 	if err := store.SaveIdentity(root, id, name); err != nil {
 		logger.Verbosef("sync %s: persist identity: %v", root, err)
 	}
+}
+
+// identityStale reports whether a repo's cached Me needs resolving again: never
+// resolved, resolved longer ago than identityTTL, or invalidated by credentials
+// the tracker rejected — which clears the stamp.
+func identityStale(me hubstore.SyncIdentity) bool {
+	if me.ID == "" || me.ResolvedAt == "" {
+		return true
+	}
+	at, err := time.Parse(time.RFC3339Nano, me.ResolvedAt)
+	if err != nil {
+		return true
+	}
+	return time.Since(at) > identityTTL
+}
+
+// recordSyncErr stamps a failed sync on the repo's health surface, with one
+// exception: a rate-limit refusal is the shared API key's budget running out, not
+// a repo that is misconfigured, and it clears itself when the tracker's window
+// rolls — recording it would pin the repo at sync-failed with nothing to fix.
+// Credentials the tracker rejected expire the cached identity instead, so the next
+// working sync resolves Me again.
+func recordSyncErr(store *hubstore.Issues, root string, err error) {
+	if _, limited := tracker.RateLimited(err); limited {
+		logger.Verbosef("sync %s: tracker rate limited: %v", root, err)
+		return
+	}
+	if tracker.Unauthorized(err) {
+		if invalidateErr := store.InvalidateIdentity(root); invalidateErr != nil {
+			logger.Verbosef("sync %s: invalidate identity: %v", root, invalidateErr)
+		}
+	}
+	_ = store.RecordError(root, err.Error())
+}
+
+// warnTeamOverlap logs once per repo and team when another registered repo syncs
+// the same tracker team and one of the two pulls it whole: an unfiltered binding
+// re-fetches every issue the other repo already pays for, and both spend the same
+// API key's hourly request budget doing it.
+func (s *Server) warnTeamOverlap(root string, binding tracker.ProjectBinding) {
+	key := overlapKey{root: root, team: strings.TrimSpace(binding.TeamID)}
+	if key.team == "" || !s.overlapWarningDue(key) {
+		return
+	}
+	bound, err := s.stores.Issues().TeamBindings(key.team)
+	if err != nil {
+		logger.Verbosef("sync %s: read team bindings: %v", root, err)
+		return
+	}
+	peers, wide := teamOverlap(root, binding, bound)
+	if len(peers) == 0 || len(wide) == 0 || !s.claimOverlapWarning(key) {
+		return
+	}
+	logger.Printf(
+		"sync %s: shares tracker team %s with %s, and %s pulls the whole team — narrow it with a project (LINEAR_PROJECT) so the repos stop re-fetching the same issues against one API key's hourly budget",
+		root, key.team, strings.Join(peers, ", "), strings.Join(wide, ", "),
+	)
+}
+
+// teamOverlap splits the repos bound to one team into root's peers and the ones —
+// root included — whose binding carries no project filter, so the warning can name
+// both who overlaps and which binding is the unfiltered one.
+func teamOverlap(root string, binding tracker.ProjectBinding, bound []hubstore.TeamBinding) (peers, wide []string) {
+	if strings.TrimSpace(binding.ProjectID) == "" {
+		wide = append(wide, root)
+	}
+	for _, b := range bound {
+		if b.Repo == root {
+			continue
+		}
+		peers = append(peers, b.Repo)
+		if strings.TrimSpace(b.ProjectID) == "" {
+			wide = append(wide, b.Repo)
+		}
+	}
+	return peers, wide
+}
+
+// overlapKey scopes the team-overlap warning to one repo and tracker team, so a
+// hub warns once per pair rather than once per process.
+type overlapKey struct {
+	root string
+	team string
+}
+
+// overlapWarningDue reports whether this hub still owes a warning for the pair. It
+// is the cheap check the sync path makes before reading the other repos' bindings,
+// so a standing misconfiguration costs one query rather than one per tick.
+func (s *Server) overlapWarningDue(key overlapKey) bool {
+	s.overlapMu.Lock()
+	defer s.overlapMu.Unlock()
+	return !s.overlapWarned[key]
+}
+
+// claimOverlapWarning takes the right to warn about the pair, reporting whether
+// this caller got it, so a standing misconfiguration is named once rather than on
+// every sync tick.
+func (s *Server) claimOverlapWarning(key overlapKey) bool {
+	s.overlapMu.Lock()
+	defer s.overlapMu.Unlock()
+	if s.overlapWarned[key] {
+		return false
+	}
+	s.overlapWarned[key] = true
+	return true
 }
 
 func blockerRefs(blockers []tracker.SyncedBlocker) []hubstore.BlockerRef {
