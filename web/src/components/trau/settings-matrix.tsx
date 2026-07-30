@@ -5,7 +5,7 @@ import type { ConfigKey } from '@/lib/config'
 import {
   COLUMN_LABELS,
   derivePhaseMatrix,
-  isModified,
+  routingCell,
   routingCellKey,
 } from '@/lib/settings'
 import { InlineEditor, LayerChip } from '@/components/trau/settings-editor'
@@ -104,7 +104,7 @@ export function PhaseMatrix({
                   const key = routingCellKey(activeProvider, phase, col)
                   const cfg = byKey.get(key)
                   if (!cfg) return <td key={col} className="px-3 py-2" />
-                  const modified = isModified(cfg)
+                  const cell = routingCell(cfg)
                   const isEditing = editingKey === key
                   return (
                     <td key={col} className="px-1 py-1">
@@ -115,18 +115,20 @@ export function PhaseMatrix({
                         className={cn(
                           'flex w-full items-center gap-1.5 rounded px-2 py-1 text-left transition-colors hover:bg-secondary/60',
                           isEditing && 'bg-secondary/60 ring-1 ring-ring/60',
-                          modified && !isEditing && 'bg-warn/[0.06]',
+                          cell.explicit && !isEditing && 'bg-warn/[0.06]',
                         )}
                       >
-                        {cfg.value === '' ? (
-                          <span className="text-faint">inherit</span>
-                        ) : (
+                        {cell.explicit ? (
                           <>
                             <span className="truncate text-foreground">
-                              {cfg.value}
+                              {cell.value}
                             </span>
                             <LayerChip layer={cfg.layer} />
                           </>
+                        ) : (
+                          <span className="truncate text-faint">
+                            {cell.value || '—'}
+                          </span>
                         )}
                       </button>
                     </td>

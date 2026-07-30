@@ -237,6 +237,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		userEnv = config.ProjectConfigPath(home)
 	}
 
+	if merr := config.MigratePhaseRoutes(projectEnv, userEnv, config.LocalConfigPath(), registry.Home()); merr != nil {
+		logger.Verbosef("pin legacy per-phase routing: %v", merr)
+	}
+
 	cfg, err := config.LoadLayered(projectEnv, userEnv, config.LocalConfigPath(), opts.Provider)
 	if err != nil {
 		return console.Actionable(err, "load config", "check trau.ini, ~/.trau.ini, and environment variables")
@@ -1994,9 +1998,24 @@ func (a *appActions) SaveConfigItem(key, value, layer string) error {
 	if err := config.WriteConfigLayer(layer, localEnv, projectEnv, userEnv, key, value); err != nil {
 		return err
 	}
+	return a.reloadConfig()
+}
+
+// DeleteConfigItem removes a config key from the selected layer's file, the
+// counterpart to SaveConfigItem for a picker's "run the default" entry.
+func (a *appActions) DeleteConfigItem(key, layer string) error {
+	projectEnv, userEnv, localEnv := a.configPaths()
+	if err := config.DeleteConfigLayer(layer, localEnv, projectEnv, userEnv, key); err != nil {
+		return err
+	}
+	return a.reloadConfig()
+}
+
+func (a *appActions) reloadConfig() error {
+	projectEnv, userEnv, localEnv := a.configPaths()
 	cfg, err := config.LoadLayered(projectEnv, userEnv, localEnv, a.opts.Provider)
 	if err != nil {
-		return fmt.Errorf("reload config after save: %w", err)
+		return fmt.Errorf("reload config after write: %w", err)
 	}
 	if a.opts.Repo != "" || os.Getenv("TRAU_REPO_ROOT") != "" {
 		cfg.RepoRoot = a.cfg.RepoRoot
@@ -2028,6 +2047,8 @@ func (a *appActions) ProviderTunings() []tui.ProviderTuning {
 				Phase:     ph.Phase,
 				Model:     tui.ProviderTuningField{Value: ph.Model.Value, Layer: string(ph.Model.Layer)},
 				Effort:    tui.ProviderTuningField{Value: ph.Effort.Value, Layer: string(ph.Effort.Layer)},
+				DefModel:  ph.DefModel,
+				DefEffort: ph.DefEffort,
 				EffModel:  ph.EffModel,
 				EffEffort: ph.EffEffort,
 			})
@@ -3060,7 +3081,7 @@ func buildRouter(cfg config.Config, log *event.Log, sink agent.TokenSink, transc
 
 	routes := map[string]agent.Runner{}
 	for phase, spec := range specs {
-		provider, model, effort, err := parseRoute(reg, spec, cfg)
+		provider, model, effort, err := parsePhaseRoute(reg, spec, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("%s phase route: %w", phase, err)
 		}
@@ -3290,6 +3311,35 @@ func buildBackend(reg agent.Registry, cfg config.Config, provider, model, effort
 }
 
 func parseRoute(reg agent.Registry, spec string, cfg config.Config) (provider, model, effort string, err error) {
+	provider, model, effort, err = splitRoute(reg, spec)
+	if err != nil {
+		return "", "", "", err
+	}
+	pc := providerConfigFor(cfg, provider)
+	if model == "" {
+		model = pc.model
+	}
+	if effort == "" {
+		effort = pc.effort
+	}
+	return provider, model, effort, nil
+}
+
+// parsePhaseRoute resolves a phase route spec. Phase routing already settled both
+// halves against the fixed per-phase defaults, so only a bare provider spec falls
+// back to the provider's own model and effort — elsewhere an omitted effort means
+// the CLI's own default, never CLAUDE_EFFORT/CODEX_EFFORT, which no longer steer
+// phases.
+func parsePhaseRoute(reg agent.Registry, spec string, cfg config.Config) (provider, model, effort string, err error) {
+	provider, model, effort, err = splitRoute(reg, spec)
+	if err != nil || model != "" || effort != "" {
+		return provider, model, effort, err
+	}
+	pc := providerConfigFor(cfg, provider)
+	return provider, pc.model, pc.effort, nil
+}
+
+func splitRoute(reg agent.Registry, spec string) (provider, model, effort string, err error) {
 	parts := strings.SplitN(spec, ":", 3)
 	provider = strings.TrimSpace(parts[0])
 	if len(parts) > 1 {
@@ -3300,13 +3350,6 @@ func parseRoute(reg agent.Registry, spec string, cfg config.Config) (provider, m
 	}
 	if _, ok := reg.Lookup(provider); !ok {
 		return "", "", "", fmt.Errorf("unknown provider %q (expected: %s)", provider, strings.Join(reg.Names(), " | "))
-	}
-	pc := providerConfigFor(cfg, provider)
-	if model == "" {
-		model = pc.model
-	}
-	if effort == "" {
-		effort = pc.effort
 	}
 	return provider, model, effort, nil
 }

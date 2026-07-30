@@ -20,8 +20,8 @@ type RoutingFingerprint struct {
 }
 
 // ResolveRouting fingerprints c's effective routing. A phase with no route entry
-// resolves to the active provider's own default model and effort — what the loop
-// would actually dispatch it to.
+// resolves to its fixed per-phase default — what the loop would actually dispatch
+// it to.
 func ResolveRouting(c Config) RoutingFingerprint {
 	skills := append([]string(nil), c.RequiredSkills...)
 	sort.Strings(skills)
@@ -38,15 +38,15 @@ func ResolveRouting(c Config) RoutingFingerprint {
 }
 
 // effectiveRoute renders phase's resolved route as provider:model:effort, filling
-// each field the route spec left blank from the provider's own default. All three
-// fields are always present, so a spec that omits effort and one that sets it
-// empty hash identically.
+// each field the route spec left blank from the same fixed per-phase default table
+// route building uses. All three fields are always present, so a spec that omits
+// effort and one that sets it empty hash identically.
 func (c Config) effectiveRoute(phase string) string {
 	provider, model, effort := parseRouteSpec(c.Routes[phase])
 	if provider == "" {
 		provider = c.Provider
 	}
-	defModel, defEffort := providerRouteDefaults(c, provider)
+	defModel, defEffort := phaseRouteDefault(provider, phase, c.KimiModel)
 	if model == "" {
 		model = defModel
 	}
@@ -54,18 +54,6 @@ func (c Config) effectiveRoute(phase string) string {
 		effort = defEffort
 	}
 	return provider + ":" + model + ":" + effort
-}
-
-func providerRouteDefaults(c Config, provider string) (model, effort string) {
-	switch provider {
-	case "claude":
-		return c.ClaudeModel, c.ClaudeEffort
-	case "codex":
-		return c.CodexModel, c.CodexEffort
-	case "kimi":
-		return c.KimiModel, ""
-	}
-	return "", ""
 }
 
 // hashRoutingKeys digests keys in sorted name order, terminating every name and

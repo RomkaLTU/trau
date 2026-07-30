@@ -35,11 +35,14 @@ type ProviderTuningField struct {
 }
 
 // ProviderPhaseTuning is one phase's model/effort for a provider: the raw
-// per-phase override (empty Value = inherit) plus the effective value that runs.
+// per-phase override (an empty Value means the phase runs on its fixed default)
+// plus that default and the effective value that runs.
 type ProviderPhaseTuning struct {
 	Phase     string
 	Model     ProviderTuningField
 	Effort    ProviderTuningField
+	DefModel  string
+	DefEffort string
 	EffModel  string
 	EffEffort string
 }
@@ -66,6 +69,10 @@ type SettingsActions interface {
 	// SaveConfigItem persists value for key to the named write-back layer.
 	// layer is one of the strings returned by ConfigLayers.
 	SaveConfigItem(key, value, layer string) error
+
+	// DeleteConfigItem removes key from the named layer's file so the value a
+	// lower layer or the built-in default supplies takes over again.
+	DeleteConfigItem(key, layer string) error
 
 	// ConfigLayers returns the writable layer names offered by the editor,
 	// ordered from lowest to highest precedence.

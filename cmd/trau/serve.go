@@ -79,6 +79,11 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 	}
 	logger.Init(stderr, verbose, debug)
 
+	projectEnv, userEnv, localEnv := serveConfigPaths(repo)
+	if err := config.MigratePhaseRoutes(projectEnv, userEnv, localEnv, registry.Home()); err != nil {
+		logger.Verbosef("pin legacy per-phase routing: %v", err)
+	}
+
 	cfg, err := loadServeConfig(repo)
 	if err != nil {
 		return console.Actionable(err, "load config", "check trau.ini, ~/.trau.ini, and environment variables")
@@ -241,13 +246,21 @@ func grillReachableHost(bind string) string {
 	}
 }
 
-// loadServeConfig resolves the layered config for the serve command, mirroring
-// the loop's repo/user/local precedence but without a provider selector.
-func loadServeConfig(repo string) (config.Config, error) {
+// serveConfigPaths resolves the three config layers a serve-side command reads,
+// mirroring the loop's repo/user/local precedence.
+func serveConfigPaths(repo string) (projectEnv, userEnv, localEnv string) {
 	repoRoot, _ := config.ResolveRepoRoot(repo, os.Getenv("TRAU_REPO_ROOT"), config.GitToplevel)
-	userEnv := ""
 	if home, err := os.UserHomeDir(); err == nil {
 		userEnv = config.ProjectConfigPath(home)
 	}
-	return config.LoadLayered(config.ProjectConfigPath(repoRoot), userEnv, config.LocalConfigPath(), "")
+	return config.ProjectConfigPath(repoRoot), userEnv, config.LocalConfigPath()
+}
+
+// loadServeConfig resolves the layered config for the serve command, mirroring
+// the loop's repo/user/local precedence but without a provider selector. It is
+// read-only: `trau watch`, `trau steer`, `trau hub ...` and the forensics
+// commands share it, so the one-time routing pin lives in runServe instead.
+func loadServeConfig(repo string) (config.Config, error) {
+	projectEnv, userEnv, localEnv := serveConfigPaths(repo)
+	return config.LoadLayered(projectEnv, userEnv, localEnv, "")
 }
