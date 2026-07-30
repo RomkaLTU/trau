@@ -199,6 +199,15 @@ export function routingCellKey(
   return `${provider}_${phase}_${column}`
 }
 
+export interface RoutingCell {
+  value: string
+  explicit: boolean
+}
+
+export function routingCell(item: ConfigKey): RoutingCell {
+  return { value: item.value || item.default || '', explicit: isModified(item) }
+}
+
 export function themeRoleLabel(key: string): string {
   return key.replace(/^THEME_/, '').toLowerCase()
 }

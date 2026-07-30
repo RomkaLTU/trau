@@ -831,14 +831,13 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 		"codex":  phaseGetter(codexFile, codexSrc),
 		"kimi":   phaseGetter(kimiFile, kimiSrc),
 	}
+	// Every provider records its sources, not only the active one: the keys are
+	// provider-prefixed so they cannot collide, and the settings matrix needs each
+	// tab to tell an explicit override from the fixed default.
 	c.providerRoutes = map[string]map[string]string{}
 	for provider, phaseGet := range phaseGets {
-		routeSources := sources
-		if provider != c.Provider {
-			routeSources = nil
-		}
 		routes := map[string]string{}
-		addProviderPhaseRoutesWithSources(routes, routeSources, provider, c, phaseGet)
+		addProviderPhaseRoutesWithSources(routes, sources, provider, c, phaseGet)
 		if len(routes) > 0 {
 			c.providerRoutes[provider] = routes
 		}
@@ -1226,42 +1225,20 @@ func (c Config) WithProvider(provider string) Config {
 }
 
 func addProviderPhaseRoutesWithSources(routes map[string]string, sources map[string]Layer, provider string, c Config, get func(string) (string, Layer)) {
-	var defaultModel, defaultEffort string
-	switch provider {
-	case "claude":
-		defaultModel = c.ClaudeModel
-		defaultEffort = c.ClaudeEffort
-	case "codex":
-		defaultModel = c.CodexModel
-		defaultEffort = c.CodexEffort
-	case "kimi":
-		defaultModel = c.KimiModel
-
-	default:
-		return
-	}
-
 	prefix := strings.ToUpper(provider) + "_"
 	for _, ph := range phases {
 		phasePrefix := prefix + strings.ToUpper(ph) + "_"
 		model, modelSrc := get(phasePrefix + "MODEL")
 		effort, effortSrc := get(phasePrefix + "EFFORT")
-		if model == "" && effort == "" {
-			continue
-		}
+		defModel, defEffort := phaseRouteDefault(provider, ph, c.KimiModel)
 		if model == "" {
-			model = defaultModel
-			modelSrc = sources[prefix+"MODEL"]
-			if modelSrc == "" {
-				modelSrc = LayerDefault
-			}
+			model, modelSrc = defModel, LayerDefault
 		}
 		if effort == "" {
-			effort = defaultEffort
-			effortSrc = sources[prefix+"EFFORT"]
-			if effortSrc == "" {
-				effortSrc = LayerDefault
-			}
+			effort, effortSrc = defEffort, LayerDefault
+		}
+		if model == "" && effort == "" {
+			continue
 		}
 		routes[ph] = routeSpec(provider, model, effort)
 		if sources != nil {
@@ -1269,46 +1246,50 @@ func addProviderPhaseRoutesWithSources(routes map[string]string, sources map[str
 			sources[phasePrefix+"EFFORT"] = effortSrc
 		}
 	}
-
-	// Seed cheap default routes for the judgment/cleanup phases: without an entry
-	// here they inherit Default (typically Opus), so the only lever to downtier
-	// them would be the shared pick tier — which also moves epic-sync/epic-repair
-	// (COD-641). Explicit per-phase config above already populated routes[ph]; this
-	// only fills a phase left entirely unset.
-	for _, ph := range phases {
-		if routes[ph] != "" {
-			continue
-		}
-		model := seededPhaseModel(provider, ph)
-		if model == "" {
-			continue
-		}
-		routes[ph] = routeSpec(provider, model, "")
-		if sources != nil {
-			sources[prefix+strings.ToUpper(ph)+"_MODEL"] = LayerDefault
-		}
-	}
 }
 
-// seededPhaseModel is the cheap default model for a phase left unconfigured, or ""
-// when the phase gets no seed. Only Claude is seeded — sonnet/haiku are its model
-// aliases and its Opus default is the cost trap; codex/kimi keep their own default
-// tier. cleanup, commit, and handoff make light judgments (cleanup rewrites the
-// diff and can quarantine, commit groups atomic Conventional-Commits, handoff
-// writes the PR) so they floor at sonnet, not haiku; lintfix is mechanical enough
-// for haiku (or a deterministic LINT_FIX_CMD). build/verify/repair/bugfix are
-// unseeded — they keep the Opus default.
-func seededPhaseModel(provider, phase string) string {
-	if provider != "claude" {
-		return ""
+// phaseRouteDefaults is the fixed model and effort each provider's phase runs at
+// when no per-phase key is set (ADR 0025). The heavy phases take the top tier, the
+// light judgment phases a tier down, and lintfix the cheapest model there is.
+// Claude leaves effort to the CLI's own default; Codex uses effort as the cost
+// lever because its tiers share one model. Kimi is deliberately absent: its models
+// are aliases the user defines in their own config.toml, so there is nothing
+// universal to pin and its phases follow KIMI_MODEL.
+var phaseRouteDefaults = map[string]map[string]struct{ model, effort string }{
+	"claude": {
+		"build":   {model: "opus"},
+		"verify":  {model: "opus"},
+		"repair":  {model: "opus"},
+		"bugfix":  {model: "opus"},
+		"pick":    {model: "sonnet"},
+		"cleanup": {model: "sonnet"},
+		"commit":  {model: "sonnet"},
+		"handoff": {model: "sonnet"},
+		"lintfix": {model: "haiku"},
+	},
+	"codex": {
+		"build":   {model: CodexDefaultModel, effort: "medium"},
+		"verify":  {model: CodexDefaultModel, effort: "medium"},
+		"repair":  {model: CodexDefaultModel, effort: "medium"},
+		"bugfix":  {model: CodexDefaultModel, effort: "medium"},
+		"pick":    {model: CodexDefaultModel, effort: "low"},
+		"cleanup": {model: CodexDefaultModel, effort: "low"},
+		"commit":  {model: CodexDefaultModel, effort: "low"},
+		"handoff": {model: CodexDefaultModel, effort: "low"},
+		"lintfix": {model: "gpt-5.4-mini", effort: "low"},
+	},
+}
+
+// phaseRouteDefault resolves what provider's phase falls back to with no per-phase
+// key set. It is the single table route building, the routing fingerprint, and the
+// settings surfaces all read, so none of them can drift from dispatch. kimiModel is
+// KIMI_MODEL, the one provider default that still steers phases.
+func phaseRouteDefault(provider, phase, kimiModel string) (model, effort string) {
+	if provider == "kimi" {
+		return kimiModel, ""
 	}
-	switch phase {
-	case "cleanup", "commit", "handoff":
-		return "sonnet"
-	case "lintfix":
-		return "haiku"
-	}
-	return ""
+	d := phaseRouteDefaults[provider][phase]
+	return d.model, d.effort
 }
 
 func routeSpec(provider, model, effort string) string {
@@ -1551,8 +1532,8 @@ func WriteEnvFile(path string, values map[string]string) error {
 // DeleteEnvKey removes key from an env file, dropping only its line and leaving
 // every comment, blank line, and unrelated key untouched. A missing file or an
 // absent key is a no-op. It is the unset counterpart to WriteEnvFile: writing an
-// empty value keeps an explicit "KEY=" line, delete restores inheritance from a
-// lower layer or the built-in default.
+// empty value keeps an explicit "KEY=" line, delete restores the value a lower
+// layer supplies or the built-in default.
 func DeleteEnvKey(path, key string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1733,21 +1714,21 @@ func KnownKeys() []KeyMeta {
 		{Key: "AGENT_RETRIES", Group: sectionAgent, Kind: "int", WebEditable: true, Advanced: true, Default: "2", Description: "Transient-failure retries (timeout/stall/crash) per provider before falling back / parking the ticket"},
 		{Key: "AGENT_BACKOFF", Group: sectionAgent, Kind: "int", WebEditable: true, Advanced: true, Default: "10", Description: "Base seconds to wait between transient agent-step retries"},
 		{Key: "FALLBACK_PROVIDERS", Group: sectionProviders, Advanced: true, Description: "Ordered provider[:model[:effort]] specs to try after the primary's retries are exhausted (e.g. codex,kimi). Empty = retry-only, no provider fallback"},
-		{Key: "CLAUDE_MODEL", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Default Claude model"},
+		{Key: "CLAUDE_MODEL", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Claude model for the non-phase agents — grill sessions and the hub helper; pipeline phases run on their own fixed per-phase defaults"},
 		{Key: "GRILL_PROVIDER", Group: sectionGrilling, WebEditable: true, Advanced: true, Description: "Provider for the hub's grilling agent (claude, codex, kimi); empty means claude", Options: providerOptions},
 		{Key: "GRILL_MODEL", Group: sectionGrilling, WebEditable: true, Advanced: true, Description: "Claude model for the hub's grilling agent; empty falls back to CLAUDE_MODEL"},
-		{Key: "CLAUDE_EFFORT", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Default Claude reasoning effort"},
+		{Key: "CLAUDE_EFFORT", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Claude reasoning effort for the non-phase agents — grill sessions and the hub helper; pipeline phases run on their own fixed per-phase defaults"},
 		{Key: "CLAUDE_DISALLOWED_TOOLS", Group: sectionProviders, Advanced: true, Default: "Agent,Workflow", Description: "Tools disabled inside agents"},
 		{Key: "CODEX_BIN", Group: sectionProviders, Advanced: true, Default: "codex", Description: "Codex binary"},
 		{Key: "CODEX_FLAGS", Group: sectionProviders, Advanced: true, Default: "--dangerously-bypass-approvals-and-sandbox", Description: "Extra flags passed to Codex"},
 		{Key: "CODEX_PROFILE", Group: sectionProviders, Advanced: true, Description: "Codex exec profile"},
 		{Key: "CODEX_MODE", Group: sectionProviders, Advanced: true, Default: CodexDefaultMode, Options: []string{CodexDefaultMode, "exec"}, Description: "How Codex phases run: interactive (a driven TUI, steerable mid-phase) | exec (print mode, steered at the next spawn)"},
-		{Key: "CODEX_MODEL", Group: sectionProviders, WebEditable: true, Advanced: true, Default: CodexDefaultModel, Description: "Default Codex model"},
-		{Key: "CODEX_EFFORT", Group: sectionProviders, WebEditable: true, Advanced: true, Default: CodexDefaultEffort, Description: "Default Codex reasoning effort"},
+		{Key: "CODEX_MODEL", Group: sectionProviders, WebEditable: true, Advanced: true, Default: CodexDefaultModel, Description: "Codex model for the non-phase agents — grill sessions and the hub helper; pipeline phases run on their own fixed per-phase defaults"},
+		{Key: "CODEX_EFFORT", Group: sectionProviders, WebEditable: true, Advanced: true, Default: CodexDefaultEffort, Description: "Codex reasoning effort for the non-phase agents — grill sessions and the hub helper; pipeline phases run on their own fixed per-phase defaults"},
 		{Key: "KIMI_BIN", Group: sectionProviders, Advanced: true, Default: "kimi", Description: "Kimi binary"},
 		{Key: "KIMI_FLAGS", Group: sectionProviders, Advanced: true, Description: "Extra flags passed to Kimi"},
 		{Key: "KIMI_MODE", Group: sectionProviders, Advanced: true, Default: KimiDefaultMode, Options: []string{KimiDefaultMode, "print"}, Description: "How Kimi phases run: interactive (a driven TUI, steerable mid-phase) | print (steered at the next spawn)"},
-		{Key: "KIMI_MODEL", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Default Kimi model alias (from your kimi config.toml [models.*])"},
+		{Key: "KIMI_MODEL", Group: sectionProviders, WebEditable: true, Advanced: true, Description: "Default Kimi model alias (from your kimi config.toml [models.*]); also the default every Kimi phase runs on, since aliases are yours to define"},
 		{Key: "MAX_ITERATIONS", Group: sectionPipeline, Kind: "int", WebEditable: true, Default: "15", Description: "Maximum tickets per run"},
 		{Key: "MAX_REPAIRS", Group: sectionPipeline, Kind: "int", WebEditable: true, Default: "2", Description: "Verify-fail quick repair attempts before bugfix"},
 		{Key: "MAX_BUGFIXES", Group: sectionPipeline, Kind: "int", WebEditable: true, Default: "2", Description: "Comprehensive bugfix passes after quick repairs are exhausted"},
@@ -1821,7 +1802,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "MAX_DAILY_TOKENS", Group: sectionCost, Kind: "int", WebEditable: true, Description: "Per-day token spend cap across all tickets; reaching it stops the run (empty = no cap)"},
 		{Key: "CLAUDE_BUILD_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for build phase"},
 		{Key: "CLAUDE_BUILD_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for build phase"},
-		{Key: "CLAUDE_HANDOFF_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for handoff phase (defaults to sonnet)"},
+		{Key: "CLAUDE_HANDOFF_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for handoff phase"},
 		{Key: "CLAUDE_HANDOFF_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for handoff phase"},
 		{Key: "CLAUDE_VERIFY_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for verify phase"},
 		{Key: "CLAUDE_VERIFY_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for verify phase"},
@@ -1829,11 +1810,11 @@ func KnownKeys() []KeyMeta {
 		{Key: "CLAUDE_REPAIR_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for repair phase"},
 		{Key: "CLAUDE_BUGFIX_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for comprehensive bugfix phase"},
 		{Key: "CLAUDE_BUGFIX_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for comprehensive bugfix phase"},
-		{Key: "CLAUDE_CLEANUP_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for cleanup phase (defaults to sonnet)"},
+		{Key: "CLAUDE_CLEANUP_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for cleanup phase"},
 		{Key: "CLAUDE_CLEANUP_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for cleanup phase"},
-		{Key: "CLAUDE_LINTFIX_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for lintfix phase (defaults to haiku)"},
+		{Key: "CLAUDE_LINTFIX_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for lintfix phase"},
 		{Key: "CLAUDE_LINTFIX_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for lintfix phase"},
-		{Key: "CLAUDE_COMMIT_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for commit phase (defaults to sonnet)"},
+		{Key: "CLAUDE_COMMIT_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for commit phase"},
 		{Key: "CLAUDE_COMMIT_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for commit phase"},
 		{Key: "CLAUDE_PICK_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude model for pick phase"},
 		{Key: "CLAUDE_PICK_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Claude effort for pick phase"},
@@ -1856,6 +1837,10 @@ func KnownKeys() []KeyMeta {
 		{Key: "CODEX_REPAIR_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex effort for repair phase"},
 		{Key: "CODEX_BUGFIX_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex model for comprehensive bugfix phase"},
 		{Key: "CODEX_BUGFIX_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex effort for comprehensive bugfix phase"},
+		{Key: "CODEX_CLEANUP_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex model for cleanup phase"},
+		{Key: "CODEX_CLEANUP_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex effort for cleanup phase"},
+		{Key: "CODEX_LINTFIX_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex model for lintfix phase"},
+		{Key: "CODEX_LINTFIX_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex effort for lintfix phase"},
 		{Key: "CODEX_COMMIT_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex model for commit phase"},
 		{Key: "CODEX_COMMIT_EFFORT", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex effort for commit phase"},
 		{Key: "CODEX_PICK_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Codex model for pick phase"},
@@ -1865,6 +1850,8 @@ func KnownKeys() []KeyMeta {
 		{Key: "KIMI_VERIFY_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Kimi model for verify phase"},
 		{Key: "KIMI_REPAIR_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Kimi model for repair phase"},
 		{Key: "KIMI_BUGFIX_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Kimi model for comprehensive bugfix phase"},
+		{Key: "KIMI_CLEANUP_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Kimi model for cleanup phase"},
+		{Key: "KIMI_LINTFIX_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Kimi model for lintfix phase"},
 		{Key: "KIMI_COMMIT_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Kimi model for commit phase"},
 		{Key: "KIMI_PICK_MODEL", Group: sectionRouting, WebEditable: true, Advanced: true, Description: "Kimi model for pick phase"},
 	}
@@ -1879,7 +1866,29 @@ func KnownKeys() []KeyMeta {
 		})
 	}
 	enrichProviderPickers(keys)
+	seedPhaseRouteDefaults(keys)
 	return keys
+}
+
+// seedPhaseRouteDefaults stamps every per-phase model/effort key with the fixed
+// value its phase runs at when the key is unset, so the web matrix, the TUI, and
+// the docs all render the same concrete default rather than a sentinel. Kimi keys
+// stay blank here — their default is the user's own KIMI_MODEL, which only a
+// resolved config knows.
+func seedPhaseRouteDefaults(keys []KeyMeta) {
+	for i := range keys {
+		phase := phaseFromRouteKey(keys[i].Key)
+		if phase == "" {
+			continue
+		}
+		model, effort := phaseRouteDefault(tuningProviderFor(keys[i].Key), phase, "")
+		switch {
+		case strings.HasSuffix(keys[i].Key, "_MODEL"):
+			keys[i].Default = model
+		case strings.HasSuffix(keys[i].Key, "_EFFORT"):
+			keys[i].Default = effort
+		}
+	}
 }
 
 // enrichProviderPickers fills each model key with its provider's suggested model
@@ -2049,12 +2058,14 @@ type ProviderTuningField struct {
 }
 
 // ProviderPhaseTuning is one phase's model/effort for a provider: the raw
-// per-phase override (empty Value means "inherit the default") alongside the
-// effective value that actually runs after applying the inherit fallback.
+// per-phase override (an empty Value means the phase runs on its fixed default)
+// alongside that default and the effective value that actually runs.
 type ProviderPhaseTuning struct {
 	Phase     string
 	Model     ProviderTuningField
 	Effort    ProviderTuningField
+	DefModel  string
+	DefEffort string
 	EffModel  string
 	EffEffort string
 }
@@ -2074,8 +2085,8 @@ type ProviderTuning struct {
 
 // ResolveProviderTunings returns the execution-tuning state for every provider.
 // Values are read across the standard config layers (env > user > project >
-// local); per-phase keys fall back to the provider default for their effective
-// value. activeProvider marks which provider the loop currently runs.
+// local); an unset per-phase key resolves to that phase's fixed default.
+// activeProvider marks which provider the loop currently runs.
 func ResolveProviderTunings(localPath, projectPath, userPath, activeProvider string) []ProviderTuning {
 	local, _ := ParseEnvFile(localPath)
 	proj, _ := ParseEnvFile(projectPath)
@@ -2124,27 +2135,26 @@ func ResolveProviderTunings(localPath, projectPath, userPath, activeProvider str
 		}
 		for _, ph := range phases {
 			pp := strings.ToUpper(ph)
+			defModel, defEffort := phaseRouteDefault(meta.Name, ph, model.Value)
 			pm := field(prefix + pp + "_MODEL")
 			pe := ProviderTuningField{}
-			effEffort := ""
+			effEffort := defEffort
 			if hasEffort {
 				pe = field(prefix + pp + "_EFFORT")
-				effEffort = pe.Value
-				if effEffort == "" {
-					effEffort = effort.Value
+				if pe.Value != "" {
+					effEffort = pe.Value
 				}
 			}
 			effModel := pm.Value
 			if effModel == "" {
-				effModel = seededPhaseModel(meta.Name, ph)
-			}
-			if effModel == "" {
-				effModel = model.Value
+				effModel = defModel
 			}
 			pt.Phases = append(pt.Phases, ProviderPhaseTuning{
 				Phase:     ph,
 				Model:     pm,
 				Effort:    pe,
+				DefModel:  defModel,
+				DefEffort: defEffort,
 				EffModel:  effModel,
 				EffEffort: effEffort,
 			})
@@ -2507,20 +2517,20 @@ func keyValue(cfg Config, key string) string {
 	case "MAX_DAILY_TOKENS":
 		return intValue(cfg.MaxDailyTokens)
 	case "CLAUDE_BUILD_MODEL", "CLAUDE_HANDOFF_MODEL", "CLAUDE_VERIFY_MODEL", "CLAUDE_REPAIR_MODEL", "CLAUDE_BUGFIX_MODEL", "CLAUDE_CLEANUP_MODEL", "CLAUDE_LINTFIX_MODEL", "CLAUDE_COMMIT_MODEL", "CLAUDE_PICK_MODEL":
-		return phaseRouteModel(cfg.Routes, "claude", key)
+		return phaseRouteModel(cfg.providerRoutes["claude"], key)
 	case "CLAUDE_BUILD_EFFORT", "CLAUDE_HANDOFF_EFFORT", "CLAUDE_VERIFY_EFFORT", "CLAUDE_REPAIR_EFFORT", "CLAUDE_BUGFIX_EFFORT", "CLAUDE_CLEANUP_EFFORT", "CLAUDE_LINTFIX_EFFORT", "CLAUDE_COMMIT_EFFORT", "CLAUDE_PICK_EFFORT":
-		return phaseRouteEffort(cfg.Routes, "claude", key)
+		return phaseRouteEffort(cfg.providerRoutes["claude"], key)
 	case "CLAUDE_BUILD_DISALLOWED_TOOLS", "CLAUDE_HANDOFF_DISALLOWED_TOOLS", "CLAUDE_VERIFY_DISALLOWED_TOOLS", "CLAUDE_REPAIR_DISALLOWED_TOOLS", "CLAUDE_BUGFIX_DISALLOWED_TOOLS", "CLAUDE_CLEANUP_DISALLOWED_TOOLS", "CLAUDE_LINTFIX_DISALLOWED_TOOLS", "CLAUDE_COMMIT_DISALLOWED_TOOLS", "CLAUDE_PICK_DISALLOWED_TOOLS":
 		if phase := phaseFromRouteKey(key); phase != "" {
 			return cfg.PhaseDisallowedTools(phase)
 		}
 		return ""
-	case "CODEX_BUILD_MODEL", "CODEX_HANDOFF_MODEL", "CODEX_VERIFY_MODEL", "CODEX_REPAIR_MODEL", "CODEX_BUGFIX_MODEL", "CODEX_COMMIT_MODEL", "CODEX_PICK_MODEL":
-		return phaseRouteModel(cfg.Routes, "codex", key)
-	case "CODEX_BUILD_EFFORT", "CODEX_HANDOFF_EFFORT", "CODEX_VERIFY_EFFORT", "CODEX_REPAIR_EFFORT", "CODEX_BUGFIX_EFFORT", "CODEX_COMMIT_EFFORT", "CODEX_PICK_EFFORT":
-		return phaseRouteEffort(cfg.Routes, "codex", key)
-	case "KIMI_BUILD_MODEL", "KIMI_HANDOFF_MODEL", "KIMI_VERIFY_MODEL", "KIMI_REPAIR_MODEL", "KIMI_BUGFIX_MODEL", "KIMI_COMMIT_MODEL", "KIMI_PICK_MODEL":
-		return phaseRouteModel(cfg.Routes, "kimi", key)
+	case "CODEX_BUILD_MODEL", "CODEX_HANDOFF_MODEL", "CODEX_VERIFY_MODEL", "CODEX_REPAIR_MODEL", "CODEX_BUGFIX_MODEL", "CODEX_CLEANUP_MODEL", "CODEX_LINTFIX_MODEL", "CODEX_COMMIT_MODEL", "CODEX_PICK_MODEL":
+		return phaseRouteModel(cfg.providerRoutes["codex"], key)
+	case "CODEX_BUILD_EFFORT", "CODEX_HANDOFF_EFFORT", "CODEX_VERIFY_EFFORT", "CODEX_REPAIR_EFFORT", "CODEX_BUGFIX_EFFORT", "CODEX_CLEANUP_EFFORT", "CODEX_LINTFIX_EFFORT", "CODEX_COMMIT_EFFORT", "CODEX_PICK_EFFORT":
+		return phaseRouteEffort(cfg.providerRoutes["codex"], key)
+	case "KIMI_BUILD_MODEL", "KIMI_HANDOFF_MODEL", "KIMI_VERIFY_MODEL", "KIMI_REPAIR_MODEL", "KIMI_BUGFIX_MODEL", "KIMI_CLEANUP_MODEL", "KIMI_LINTFIX_MODEL", "KIMI_COMMIT_MODEL", "KIMI_PICK_MODEL":
+		return phaseRouteModel(cfg.providerRoutes["kimi"], key)
 	}
 	if role, ok := strings.CutPrefix(key, "THEME_"); ok {
 		return cfg.ThemeColors[strings.ToLower(role)]
@@ -2546,24 +2556,16 @@ func floatValue(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
-func phaseRouteModel(routes map[string]string, provider, key string) string {
-	phase := phaseFromRouteKey(key)
-	if phase == "" {
-		return ""
-	}
-	routeProvider, model, _ := parseRouteSpec(routes[phase])
-	if routeProvider == provider || provider == "kimi" {
-		return model
-	}
-	return ""
+// phaseRouteModel and phaseRouteEffort read from the routes built for the key's own
+// provider, so every provider tab shows what it would dispatch, not just the active
+// one.
+func phaseRouteModel(routes map[string]string, key string) string {
+	_, model, _ := parseRouteSpec(routes[phaseFromRouteKey(key)])
+	return model
 }
 
-func phaseRouteEffort(routes map[string]string, provider, key string) string {
-	phase := phaseFromRouteKey(key)
-	if phase == "" {
-		return ""
-	}
-	_, _, effort := parseRouteSpec(routes[phase])
+func phaseRouteEffort(routes map[string]string, key string) string {
+	_, _, effort := parseRouteSpec(routes[phaseFromRouteKey(key)])
 	return effort
 }
 

@@ -75,9 +75,13 @@ TRAU_REPO_ROOT=
 PROVIDER=claude
 
 # Execution tuning is two independent dials per provider: model (capability) and
-# effort (reasoning depth / latency). Set a default model and effort for the active
-# provider, then optionally override either per phase below. There are no bundled
-# speed presets — "fast on a smart model" is just a strong model at low effort.
+# effort (reasoning depth / latency). There are no bundled speed presets — "fast on
+# a smart model" is just a strong model at low effort.
+#
+# CLAUDE_MODEL/CLAUDE_EFFORT and CODEX_MODEL/CODEX_EFFORT steer the non-phase agents
+# only — hub grilling sessions and the hub helper agent. Pipeline phases run on the
+# fixed per-phase defaults below and ignore these entirely. KIMI_MODEL is the one
+# exception and still sets every Kimi phase's model.
 #
 # Effort is provider-specific. Claude takes --effort (low|medium|high|xhigh|max);
 # Codex takes -c model_reasoning_effort (low|medium|high|xhigh|max). Kimi Code has
@@ -92,43 +96,40 @@ PROVIDER=claude
 # KIMI_MODEL=kimi-for-coding
 
 # Per-provider phase tuning for this project. Phases: BUILD HANDOFF VERIFY REPAIR
-# BUGFIX CLEANUP LINTFIX SIZEJUDGE COMMIT PICK. Model/effort are provider-specific.
+# BUGFIX CLEANUP LINTFIX COMMIT PICK. Model/effort are provider-specific.
 #
-# On Claude, the cheap judgment/cleanup phases are seeded so they don't ride the
-# Opus default: CLEANUP, SIZEJUDGE, COMMIT, and HANDOFF -> sonnet, LINTFIX -> haiku
-# (a phase left unset otherwise inherits Default); BUILD, VERIFY, REPAIR, and BUGFIX
-# keep the Opus default. Only the model is seeded — effort still inherits the default,
-# so set e.g. CLAUDE_COMMIT_EFFORT=low to trim the commit phase further. These are
-# independent of PICK, so downtiering cleanup no longer also downtiers
-# epic-sync/epic-repair. Set the dedicated keys to override a seed; if you previously
-# relied on CLAUDE_PICK_MODEL covering cleanup/lintfix, set these.
+# Every phase ships a fixed default, so nothing rides an unintended tier and the
+# settings UI always shows the concrete value a phase will run with:
 #
-# Example Claude tuning: Opus for implementation, Sonnet for cold verify.
-# CLAUDE_BUILD_MODEL=claude-opus-5
+#   Claude  build verify repair bugfix        -> opus
+#           pick cleanup commit handoff       -> sonnet
+#           lintfix                           -> haiku
+#           effort                            -> the CLI's own default
+#   Codex   build verify repair bugfix        -> gpt-5.6-sol @ medium
+#           pick cleanup commit handoff       -> gpt-5.6-sol @ low
+#           lintfix                           -> gpt-5.4-mini @ low
+#   Kimi    every phase                       -> KIMI_MODEL (aliases are yours to
+#                                                define, so there is nothing to pin)
+#
+# Set a key below to override one half of one phase; delete it to go back to the
+# default. PICK also covers the tracker's pick and epic-pick judgments.
+#
+# If your file grew a block of these keys next to PHASE_ROUTES_PINNED=1, the
+# one-time migration pinned what CLAUDE_MODEL/CODEX_MODEL used to run so your spend
+# did not move. The marker stops it running again, so deletions stick.
+#
+# Example Claude tuning: harder thinking on implementation, cheaper commits.
 # CLAUDE_BUILD_EFFORT=max
 # CLAUDE_VERIFY_MODEL=claude-sonnet-5
 # CLAUDE_VERIFY_EFFORT=medium
-# CLAUDE_BUGFIX_MODEL=claude-opus-5
-# CLAUDE_BUGFIX_EFFORT=max
-# CLAUDE_CLEANUP_MODEL=claude-sonnet-5
-# CLAUDE_SIZEJUDGE_MODEL=claude-sonnet-5
-# CLAUDE_COMMIT_MODEL=claude-sonnet-5
 # CLAUDE_COMMIT_EFFORT=low
-# CLAUDE_HANDOFF_MODEL=claude-sonnet-5
 #
-# Example Codex tuning: hardest work on GPT-5.6 Sol, mechanical phases on a lighter model.
-# CODEX_BUILD_MODEL=gpt-5.6-sol
+# Example Codex tuning: hardest work at high effort, mechanical phases on a lighter model.
 # CODEX_BUILD_EFFORT=xhigh
-# CODEX_REPAIR_MODEL=gpt-5.6-sol
 # CODEX_REPAIR_EFFORT=high
-# CODEX_BUGFIX_MODEL=gpt-5.6-sol
 # CODEX_BUGFIX_EFFORT=xhigh
-# CODEX_VERIFY_MODEL=gpt-5.6-sol
-# CODEX_VERIFY_EFFORT=medium
 # CODEX_COMMIT_MODEL=gpt-5.4-mini
-# CODEX_COMMIT_EFFORT=low
 # CODEX_PICK_MODEL=gpt-5.4-mini
-# CODEX_PICK_EFFORT=low
 #
 # Example Kimi tuning: a different config.toml model alias per phase (no effort knob).
 # KIMI_BUILD_MODEL=kimi-for-coding
@@ -471,8 +472,10 @@ AGENT_BACKOFF=10
 # retry-only (no provider fallback). Example: codex,kimi
 # FALLBACK_PROVIDERS=codex,kimi
 
-# Optional provider model/effort defaults when a phase does not override them.
-# Empty = provider or profile default (Codex defaults to gpt-5.6-sol at medium effort).
+# Provider model/effort for the non-phase agents (grilling sessions, the hub helper
+# agent). Pipeline phases use their own fixed per-phase defaults; KIMI_MODEL is the
+# exception and still sets every Kimi phase's model. Empty = provider or profile
+# default (Codex defaults to gpt-5.6-sol at medium effort).
 CLAUDE_MODEL=
 CLAUDE_EFFORT=
 CODEX_MODEL=

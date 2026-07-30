@@ -778,63 +778,98 @@ func TestKimiPhaseRouteReadsProviderFile(t *testing.T) {
 	}
 }
 
-// TestSeedsCheapDefaultRoutes is the COD-641/COD-643 guard: with no phase keys
-// set, a Claude run seeds cleanup/commit/handoff onto sonnet and lintfix onto
-// haiku instead of inheriting the Opus default, build/verify stay unseeded
-// (Opus), and an explicit per-phase key still wins.
-func TestSeedsCheapDefaultRoutes(t *testing.T) {
+// TestFixedPhaseRouteDefaults pins the shipped routing matrix: with no phase keys
+// set every phase resolves to its own fixed tier, the provider default no longer
+// moves any of them, and an explicit per-phase key still wins.
+func TestFixedPhaseRouteDefaults(t *testing.T) {
 	dir := t.TempDir()
 	local := filepath.Join(dir, "trau.ini")
 
-	if err := os.WriteFile(local, []byte("PROVIDER=claude\n"), 0o644); err != nil {
+	write := func(body string) Config {
+		t.Helper()
+		if err := os.WriteFile(local, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadLayered("", "", local, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+
+	claude := map[string]string{
+		"build":   "claude:opus",
+		"verify":  "claude:opus",
+		"repair":  "claude:opus",
+		"bugfix":  "claude:opus",
+		"pick":    "claude:sonnet",
+		"cleanup": "claude:sonnet",
+		"commit":  "claude:sonnet",
+		"handoff": "claude:sonnet",
+		"lintfix": "claude:haiku",
+	}
+	cfg := write("PROVIDER=claude\n")
+	for phase, want := range claude {
+		if got := cfg.Routes[phase]; got != want {
+			t.Errorf("fresh Routes[%q] = %q, want %q", phase, got, want)
+		}
+	}
+
+	// The provider default feeds the non-phase agents only; every phase holds.
+	cfg = write("PROVIDER=claude\nCLAUDE_MODEL=sonnet\nCLAUDE_EFFORT=max\n")
+	for phase, want := range claude {
+		if got := cfg.Routes[phase]; got != want {
+			t.Errorf("with CLAUDE_MODEL set, Routes[%q] = %q, want %q", phase, got, want)
+		}
+	}
+
+	cfg = write("PROVIDER=claude\nCLAUDE_COMMIT_MODEL=opus\nCLAUDE_BUILD_EFFORT=max\n")
+	if got := cfg.Routes["commit"]; got != "claude:opus" {
+		t.Errorf("explicit CLAUDE_COMMIT_MODEL: commit route = %q, want claude:opus", got)
+	}
+	if got := cfg.Routes["build"]; got != "claude:opus:max" {
+		t.Errorf("explicit CLAUDE_BUILD_EFFORT: build route = %q, want claude:opus:max", got)
+	}
+
+	// Codex tiers by effort, and Claude's model aliases must not leak into it.
+	cfg = write("PROVIDER=codex\n")
+	for phase, want := range map[string]string{
+		"build":   "codex:gpt-5.6-sol:medium",
+		"verify":  "codex:gpt-5.6-sol:medium",
+		"repair":  "codex:gpt-5.6-sol:medium",
+		"bugfix":  "codex:gpt-5.6-sol:medium",
+		"pick":    "codex:gpt-5.6-sol:low",
+		"cleanup": "codex:gpt-5.6-sol:low",
+		"commit":  "codex:gpt-5.6-sol:low",
+		"handoff": "codex:gpt-5.6-sol:low",
+		"lintfix": "codex:gpt-5.4-mini:low",
+	} {
+		if got := cfg.Routes[phase]; got != want {
+			t.Errorf("codex Routes[%q] = %q, want %q", phase, got, want)
+		}
+	}
+}
+
+// TestKimiPhasesFollowKimiModel is the documented exception: kimi models are
+// aliases from the user's own config.toml, so its phases keep tracking KIMI_MODEL
+// rather than a pinned default.
+func TestKimiPhasesFollowKimiModel(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, "trau.ini")
+	if err := os.WriteFile(local, []byte("PROVIDER=kimi\nKIMI_MODEL=kimi-for-coding\nKIMI_LINTFIX_MODEL=kimi-fast\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadLayered("", "", local, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for phase, want := range map[string]string{
-		"cleanup": "claude:sonnet",
-		"commit":  "claude:sonnet",
-		"handoff": "claude:sonnet",
-		"lintfix": "claude:haiku",
-	} {
-		if got := cfg.Routes[phase]; got != want {
-			t.Errorf("seeded Routes[%q] = %q, want %q", phase, got, want)
+	for _, phase := range []string{"build", "verify", "commit"} {
+		if got := cfg.Routes[phase]; got != "kimi:kimi-for-coding" {
+			t.Errorf("kimi Routes[%q] = %q, want kimi:kimi-for-coding", phase, got)
 		}
 	}
-
-	// build/verify are deliberately left unseeded so they keep the Opus default.
-	for _, phase := range []string{"build", "verify"} {
-		if got := cfg.Routes[phase]; got != "" {
-			t.Errorf("unseeded Routes[%q] = %q, want empty (inherits Opus default)", phase, got)
-		}
-	}
-
-	// An explicit per-phase model overrides the seed.
-	if err := os.WriteFile(local, []byte("PROVIDER=claude\nCLAUDE_COMMIT_MODEL=opus\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err = LoadLayered("", "", local, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, model, _ := parseRouteSpec(cfg.Routes["commit"]); model != "opus" {
-		t.Errorf("explicit CLAUDE_COMMIT_MODEL: commit model = %q, want opus (route %q)", model, cfg.Routes["commit"])
-	}
-
-	// The seed is Claude-only: a non-claude provider leaves the phases unseeded.
-	if err := os.WriteFile(local, []byte("PROVIDER=codex\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err = LoadLayered("", "", local, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, phase := range []string{"commit", "handoff", "cleanup", "lintfix"} {
-		if got := cfg.Routes[phase]; got != "" {
-			t.Errorf("codex Routes[%q] = %q, want empty (Claude tiers must not leak)", phase, got)
-		}
+	if got := cfg.Routes["lintfix"]; got != "kimi:kimi-fast" {
+		t.Errorf("kimi Routes[lintfix] = %q, want kimi:kimi-fast", got)
 	}
 }
 
@@ -866,9 +901,9 @@ func TestWithProviderSwapsPhaseRoutes(t *testing.T) {
 		}
 	}
 
-	// Codex configures no phase keys, so every phase falls through to its default.
-	if got := cfg.WithProvider("codex").Routes; len(got) != 0 {
-		t.Errorf("codex Routes = %v, want none", got)
+	// Codex configures no phase keys, so every phase sits on its fixed default.
+	if got := cfg.WithProvider("codex").Routes["build"]; got != "codex:gpt-5.6-sol:medium" {
+		t.Errorf("codex Routes[build] = %q, want codex:gpt-5.6-sol:medium", got)
 	}
 
 	if got := kimi.WithProvider("claude").Routes["commit"]; got != "claude:sonnet" {

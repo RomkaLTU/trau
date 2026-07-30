@@ -123,6 +123,7 @@ func (fakeGit) RemoteBranchExists(context.Context, string, string) (bool, error)
 	return false, nil
 }
 func (fakeGit) CheckoutRemoteBranch(context.Context, string, string) error { return nil }
+func (fakeGit) RemoteSHA(context.Context, string, string) (string, error)  { return "", nil }
 
 // writeHandoff drops a non-empty handoff brief so Verify skips regeneration and
 // goes straight to the verify attempt (where the bug lives). Cleans up the /tmp

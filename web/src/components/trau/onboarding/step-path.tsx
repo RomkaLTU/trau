@@ -94,8 +94,8 @@ export function StepPath({
             : 'Add another repo to the project'}
         </h2>
         <Hint>
-          Pick a folder from this machine. trau inspects it in place — nothing
-          is written until you pick a tracker.
+          Pick a folder from this machine. trau inspects it in place — nothing is written
+          until you pick a tracker.
         </Hint>
       </div>
 
@@ -119,38 +119,15 @@ export function StepPath({
         <div className="flex flex-col gap-3 rounded-md border border-border bg-card p-3">
           <div className="flex flex-col gap-1">
             <p className="font-mono text-sm text-foreground">
-              <span className="font-mono">{scan.name}</span> holds{' '}
-              {scan.children.length} repositories
+              <span className="font-mono">{scan.name}</span> holds {scan.children.length}{' '}
+              repositories
             </p>
             <Hint>
-              It is not a repository itself. Add the ones you want — each joins
-              the project as its own member.
+              It is not a repository itself. Add the ones you want — each joins the project
+              as its own member.
             </Hint>
           </div>
-          <div className="flex items-center justify-between gap-2">
-            <FieldLabel>
-              {chosen.length} of {scan.children.length} selected
-            </FieldLabel>
-            <div className="flex items-center gap-1">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => setChosen(scan.children.map((c) => c.path))}
-              >
-                Select all
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => setChosen([])}
-              >
-                Select none
-              </Button>
-            </div>
-          </div>
-          <ul className="max-h-64 divide-y divide-border/40 overflow-y-auto rounded-md border border-border">
+          <ul className="divide-y divide-border/40 overflow-hidden rounded-md border border-border">
             {scan.children.map((child) => {
               const on = chosen.includes(child.path)
               return (
@@ -166,9 +143,7 @@ export function StepPath({
                       aria-hidden="true"
                       className={cn(
                         'flex size-4 shrink-0 items-center justify-center rounded-[3px] border',
-                        on
-                          ? 'border-primary bg-primary/20 text-primary'
-                          : 'border-border',
+                        on ? 'border-primary bg-primary/20 text-primary' : 'border-border',
                       )}
                     >
                       {on && <Check className="size-3" />}
@@ -207,28 +182,20 @@ export function StepPath({
           title={`${scan.name} has no git repository — start one?`}
           actions={
             <>
-              <Button
-                type="button"
-                disabled={busy}
-                onClick={() => accept.mutate(scan)}
-              >
+              <Button type="button" disabled={busy} onClick={() => accept.mutate(scan)}>
                 <FolderPlus className="size-4" />
                 {busy ? 'Initializing…' : 'Initialize git here'}
               </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => setScan(null)}
-              >
+              <Button type="button" variant="ghost" onClick={() => setScan(null)}>
                 Back to folders
               </Button>
             </>
           }
         >
           trau runs <span className="font-mono">git init</span> in{' '}
-          <span className="font-mono">{scan.path}</span> and commits an empty
-          first commit so the repo has a base branch. Nothing else is touched,
-          and nothing happens if you go back.
+          <span className="font-mono">{scan.path}</span> and commits an empty first commit so
+          the repo has a base branch. Nothing else is touched, and nothing happens if you go
+          back.
         </Callout>
       )}
 
@@ -245,15 +212,10 @@ export function StepPath({
                 placeholder="/Users/you/Projects/acme"
                 onChange={(e) => setPath(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.nativeEvent.isComposing)
-                    submit(trimmed)
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) submit(trimmed)
                 }}
               />
-              <Button
-                type="button"
-                onClick={() => submit(trimmed)}
-                disabled={!canInspect}
-              >
+              <Button type="button" onClick={() => submit(trimmed)} disabled={!canInspect}>
                 <FolderGit2 className="size-4" />
                 {busy ? 'Inspecting…' : 'Inspect repo'}
               </Button>
@@ -281,15 +243,11 @@ export function StepPath({
 
       {!refused && (
         <div className="flex items-start gap-2.5 rounded-md border border-info/40 bg-info/5 px-3 py-3">
-          <ShieldAlert
-            className="mt-0.5 size-3.5 shrink-0 text-info"
-            aria-hidden="true"
-          />
+          <ShieldAlert className="mt-0.5 size-3.5 shrink-0 text-info" aria-hidden="true" />
           <Hint>
-            Browsing and registration are open on a loopback hub, or when the
-            operator sets{' '}
-            <span className="font-mono">SERVE_ALLOW_REGISTER</span>. The repo
-            becomes startable from the hub with no serve restart.
+            Browsing and registration are open on a loopback hub, or when the operator sets{' '}
+            <span className="font-mono">SERVE_ALLOW_REGISTER</span>. The repo becomes
+            startable from the hub with no serve restart.
           </Hint>
         </div>
       )}

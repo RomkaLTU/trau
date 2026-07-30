@@ -603,8 +603,72 @@ func TestEpicBranchNameCreatesWhenNeitherExists(t *testing.T) {
 	if g.adopted {
 		t.Fatalf("nothing to adopt when the remote branch is absent")
 	}
-	if !g.created || g.createBase != "main" {
-		t.Fatalf("expected fresh epic created off main, created=%v base=%q", g.created, g.createBase)
+	if !g.created || g.createBase != "origin/main" {
+		t.Fatalf("expected fresh epic created off origin/main, created=%v base=%q", g.created, g.createBase)
+	}
+}
+
+// A brand-new epic branch is cut from the base as the REMOTE has it, fetched first.
+// An epic born from a local base that drifted behind starts life missing those
+// commits, and every child PR then diffs against them as if the child had written
+// them. Only a remote tip that cannot be resolved at all falls back to the local ref.
+func TestEpicBranchNameCutsFromFetchedRemoteBase(t *testing.T) {
+	tests := []struct {
+		name      string
+		git       *epicGit
+		wantBase  string
+		wantFetch string
+	}{
+		{
+			name:      "remote reachable",
+			git:       &epicGit{},
+			wantBase:  "origin/main",
+			wantFetch: "origin/main",
+		},
+		{
+			name:      "fetch failed but the remote tip is known",
+			git:       &epicGit{fetchErr: errors.New("could not read from remote")},
+			wantBase:  "origin/main",
+			wantFetch: "origin/main",
+		},
+		{
+			name:      "no remote tip to cut from",
+			git:       &epicGit{fetchErr: errors.New("could not read from remote"), unknownTip: true},
+			wantBase:  "main",
+			wantFetch: "origin/main",
+		},
+		{
+			name:      "fetch succeeded but left no tracking ref",
+			git:       &epicGit{unknownTip: true},
+			wantBase:  "main",
+			wantFetch: "origin/main",
+		},
+		{
+			name:     "local delivery has no remote base",
+			git:      &epicGit{noRemote: true},
+			wantBase: "main",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &Pipeline{
+				Base:    "main",
+				Remote:  "origin",
+				EpicID:  "COD-1",
+				Git:     tt.git,
+				Tracker: &epicTracker{title: "Checkout rebuild"},
+			}
+
+			if _, err := p.epicBranchName(context.Background()); err != nil {
+				t.Fatalf("epicBranchName returned error: %v", err)
+			}
+			if !tt.git.created || tt.git.createBase != tt.wantBase {
+				t.Errorf("epic cut from %q (created=%v), want %q", tt.git.createBase, tt.git.created, tt.wantBase)
+			}
+			if tt.git.fetched != tt.wantFetch {
+				t.Errorf("fetched %q, want %q", tt.git.fetched, tt.wantFetch)
+			}
+		})
 	}
 }
 
@@ -656,13 +720,18 @@ func TestEpicBranchNameSurfacesRemoteCheckError(t *testing.T) {
 }
 
 // epicGit is a fakeGit that drives epicBranchName's local/remote branch
-// resolution and records whether it recreated or adopted the epic branch.
+// resolution and records whether it recreated or adopted the epic branch, off
+// which base, and whether the remote base was fetched first.
 type epicGit struct {
 	fakeGit
 	localExists  bool
 	remoteExists bool
 	remoteErr    error
 	existing     string // branch name the finders report; defaults via existingOr
+	noRemote     bool   // the repo has no remote at all (local delivery)
+	fetchErr     error
+	unknownTip   bool // the remote-tracking base tip does not resolve locally either
+	fetched      string
 	created      bool
 	adopted      bool
 	createBase   string
@@ -688,6 +757,14 @@ func (g *epicGit) existingOr(id string) string {
 		return g.existing
 	}
 	return "epic/" + id + "-checkout-rebuild"
+}
+func (g *epicGit) RemoteExists(context.Context, string) (bool, error) { return !g.noRemote, nil }
+func (g *epicGit) Fetch(_ context.Context, remote, branch string) error {
+	g.fetched = remote + "/" + branch
+	return g.fetchErr
+}
+func (g *epicGit) ResolvesToCommit(context.Context, string) (bool, error) {
+	return !g.unknownTip, nil
 }
 func (g *epicGit) CheckoutRemoteBranch(context.Context, string, string) error {
 	g.adopted = true
@@ -775,6 +852,8 @@ type epicGitHub struct {
 	title        string
 	body         string
 	checks       []Check
+	prCommits    int
+	prFiles      int
 	mergeCalls   int
 	mergeMethod  string
 	mergeDeleted bool
@@ -791,6 +870,9 @@ func (e *epicGitHub) CreatePR(_ context.Context, base, head, title, body string)
 }
 func (e *epicGitHub) PRState(context.Context, string) (string, error) { return e.prState, nil }
 func (e *epicGitHub) Checks(context.Context, string) ([]Check, error) { return e.checks, nil }
+func (e *epicGitHub) PRSize(context.Context, string) (int, int, error) {
+	return e.prCommits, e.prFiles, nil
+}
 func (e *epicGitHub) Merge(_ context.Context, _, method string, deleteBranch bool) error {
 	e.mergeCalls++
 	e.mergeMethod, e.mergeDeleted = method, deleteBranch

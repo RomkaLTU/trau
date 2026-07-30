@@ -12,6 +12,7 @@ import {
   isHexColor,
   isModified,
   matchesQuery,
+  routingCell,
   routingCellKey,
   sectionSlug,
   shadowNote,
@@ -250,6 +251,29 @@ describe('derivePhaseMatrix', () => {
     ])
     expect(model.providers).toEqual(['CLAUDE'])
     expect(model.phases.CLAUDE).toEqual(['BUILD'])
+  })
+})
+
+describe('routingCell', () => {
+  it('shows an explicit value with its layer', () => {
+    expect(
+      routingCell(
+        key({ key: 'CLAUDE_BUILD_MODEL', value: 'sonnet', layer: 'user' }),
+      ),
+    ).toEqual({ value: 'sonnet', explicit: true })
+  })
+
+  it('falls back to the catalog default when nothing is set', () => {
+    expect(
+      routingCell(key({ key: 'CLAUDE_BUILD_MODEL', default: 'opus' })),
+    ).toEqual({ value: 'opus', explicit: false })
+  })
+
+  it('is empty for a phase whose provider CLI picks for itself', () => {
+    expect(routingCell(key({ key: 'CLAUDE_BUILD_EFFORT' }))).toEqual({
+      value: '',
+      explicit: false,
+    })
   })
 })
 

@@ -57,8 +57,8 @@ type ConfigResponse struct {
 
 // ConfigWriteRequest is the body of a settings edit: the key, its new value, and
 // the layer to persist it to. Unset deletes the key's line from the layer's file
-// to restore inheritance; Value is ignored when it is set. Saving an empty Value
-// instead writes an explicit "KEY=" — the two operations stay distinct.
+// to restore the built-in default; Value is ignored when it is set. Saving an empty
+// Value instead writes an explicit "KEY=" — the two operations stay distinct.
 type ConfigWriteRequest struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`

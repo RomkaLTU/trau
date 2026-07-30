@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -41,5 +42,57 @@ func TestProviderTuningBrowseScrolls(t *testing.T) {
 	// The Effective footer is fixed and stays visible however far the list scrolls.
 	if !strings.Contains(view, "Effective:") {
 		t.Errorf("Effective footer should stay pinned below the scrolled list:\n%s", view)
+	}
+}
+
+// TestPhaseEditorNamesTheFixedDefault: the picker entry that clears an override
+// says which model and effort the phase falls back to, and picking it deletes the
+// per-phase keys rather than writing them empty.
+func TestPhaseEditorNamesTheFixedDefault(t *testing.T) {
+	acts := &fakeSettingsActions{
+		tunings: []ProviderTuning{{
+			Name:    "codex",
+			Active:  true,
+			Models:  []string{"gpt-5.6-sol", "gpt-5.4-mini"},
+			Efforts: []string{"low", "medium"},
+			Phases: []ProviderPhaseTuning{{
+				Phase:     "build",
+				DefModel:  "gpt-5.6-sol",
+				DefEffort: "medium",
+				EffModel:  "gpt-5.6-sol",
+				EffEffort: "medium",
+			}},
+		}},
+	}
+	m := newProviderSettingsModel(acts, DefaultStyles(), 80, 40)
+	m.cursor = len(m.rows) - 1
+	m, _ = m.enterEdit()
+
+	if got := m.edit.pickers[0].labels[0]; got != "(default: gpt-5.6-sol)" {
+		t.Errorf("model sentinel = %q, want (default: gpt-5.6-sol)", got)
+	}
+	if got := m.edit.pickers[1].labels[0]; got != "(default: medium)" {
+		t.Errorf("effort sentinel = %q, want (default: medium)", got)
+	}
+	_, cmd := m.saveEdit()
+	if cmd == nil {
+		t.Fatal("saving the phase editor produced no command")
+	}
+	cmd()
+
+	want := []string{"CODEX_BUILD_MODEL", "CODEX_BUILD_EFFORT"}
+	if got := acts.deletedKeys; !slices.Equal(got, want) {
+		t.Errorf("sentinel deleted %v, want %v deleted (an empty value would mask a lower layer)", got, want)
+	}
+	if acts.saveCalled {
+		t.Errorf("sentinel wrote %s=%q, want the key deleted instead", acts.savedKey, acts.savedValue)
+	}
+	for _, text := range []string{"gpt-5.6-sol", "medium"} {
+		if !strings.Contains(m.edit.rowDesc, text) {
+			t.Errorf("row description %q does not name the default %q", m.edit.rowDesc, text)
+		}
+	}
+	if strings.Contains(m.View(), "inherit") {
+		t.Errorf("phase editor still renders the inherit sentinel:\n%s", m.View())
 	}
 }
