@@ -543,6 +543,53 @@ func seedOutcome(t *testing.T, s *Server, root, ticket string, rep queue.DrainRe
 	}
 }
 
+// TestDrainRunsBlockerBeforeBlockedItem proves the drain's blocker gate on the
+// shape that inverted in production: COD-1 blocks COD-2, and COD-2 sits ahead of
+// it in the queue. The drain passes COD-2 over, ships COD-1, and only then starts
+// COD-2 — never the other way round.
+func TestDrainRunsBlockerBeforeBlockedItem(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	seedQueue(t, s, root, true,
+		queue.Item{Kind: queue.KindTicket, ID: "COD-2"},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-1"},
+	)
+	if _, _, err := s.stores.Issues().Upsert(root, "jira", []hubstore.Issue{
+		{Identifier: "COD-1", Title: "blocker", Status: "To Do", StatusGroup: "unstarted"},
+		{Identifier: "COD-2", Title: "blocked", Status: "To Do", StatusGroup: "unstarted"},
+	}); err != nil {
+		t.Fatalf("seed issues: %v", err)
+	}
+	if err := s.stores.Issues().AddRelation(root, "COD-1", "COD-2"); err != nil {
+		t.Fatalf("add relation: %v", err)
+	}
+
+	if act, err := s.drain.tick(root); err != nil || act != drainSpawn {
+		t.Fatalf("tick = %q, %v, want a spawn", act, err)
+	}
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusRunning {
+		t.Fatalf("COD-1 = %q, want the blocker running first", got)
+	}
+	if got := statusOf(t, s, root, "COD-2"); got != queue.StatusPending {
+		t.Fatalf("COD-2 = %q, want the blocked item left pending", got)
+	}
+
+	seedOutcome(t, s, root, "COD-1", queue.DrainReport{})
+	if act, err := s.drain.tick(root); err != nil || act != drainReconcile {
+		t.Fatalf("tick = %q, %v, want the finished blocker settled", act, err)
+	}
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusDone {
+		t.Fatalf("COD-1 = %q, want it settled done", got)
+	}
+	if act, err := s.drain.tick(root); err != nil || act != drainSpawn {
+		t.Fatalf("tick = %q, %v, want COD-2 spawned once its blocker shipped", act, err)
+	}
+	if got := statusOf(t, s, root, "COD-2"); got != queue.StatusRunning {
+		t.Errorf("COD-2 = %q, want it running after the blocker", got)
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-1", "--once", "--drain-report", "COD-1"})
+	assertArgs(t, fake.spawns[1].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-2", "--once", "--drain-report", "COD-2"})
+}
+
 // TestDrainSpawnsInternalTicket proves a hub-only internal item drains like any
 // other: the spawn follows the item's kind, and its source never gates the run.
 func TestDrainSpawnsInternalTicket(t *testing.T) {

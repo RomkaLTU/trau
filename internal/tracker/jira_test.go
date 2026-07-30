@@ -438,6 +438,41 @@ func TestJiraPickEpicUsesAPI(t *testing.T) {
 	}
 }
 
+// An epic with two ready children carrying a single "PROJ-1 blocks PROJ-2" link —
+// served from both ends, as Jira does — picks the blocker first even though the
+// blocked child outranks it in the JQL order.
+func TestJiraPickEpicDrainsBlockerBeforeBlockedChild(t *testing.T) {
+	const children = `{"issues":[
+		{"key":"PROJ-1","fields":{"summary":"A","status":{"statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},"subtasks":[]}},
+		{"key":"PROJ-2","fields":{"summary":"B","status":{"statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},"subtasks":[]}}
+	]}`
+	const eligible = `{"issues":[
+		{"key":"PROJ-2","fields":{"summary":"B","status":{"statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},
+			"issuelinks":[{"type":{"name":"Blocks","inward":"is blocked by","outward":"blocks"},"inwardIssue":{"key":"PROJ-1","fields":{"status":{"statusCategory":{"key":"new"}}}}}]}},
+		{"key":"PROJ-1","fields":{"summary":"A","status":{"statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},
+			"issuelinks":[{"type":{"name":"Blocks","inward":"is blocked by","outward":"blocks"},"outwardIssue":{"key":"PROJ-2","fields":{"status":{"statusCategory":{"key":"new"}}}}}]}}
+	]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), "parent =") {
+			_, _ = w.Write([]byte(children))
+			return
+		}
+		_, _ = w.Write([]byte(eligible))
+	}))
+	defer srv.Close()
+
+	j := &Jira{Team: "PROJ", ReadyLabel: "ready-for-agent", BaseURL: srv.URL, Email: "me@acme.com", APIToken: "tok"}
+	got, err := j.Pick(context.Background(), Scope{Team: "PROJ", Prefix: "PROJ", Parent: "PROJ-100"})
+	if err != nil {
+		t.Fatalf("Pick error: %v", err)
+	}
+	if got != "PROJ-1" {
+		t.Errorf("Pick = %q, want the blocker PROJ-1 before its blocked sibling", got)
+	}
+}
+
 func TestJiraListEligibleUsesAPIAndKeepsEpics(t *testing.T) {
 	srv := jiraIssueServer(eligiblePayload)
 	defer srv.Close()

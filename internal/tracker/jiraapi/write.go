@@ -211,10 +211,10 @@ func (c *Client) postIssue(ctx context.Context, fields createFields) (string, er
 	return resp.Key, nil
 }
 
-// LinkBlocks records a "Blocks" link where blocker blocks blocked. Jira's Blocks
-// type reads outward as "blocks" and inward as "is blocked by", so the blocker is
-// the outward issue and the blocked sibling the inward issue — the same direction
-// blockersFromLinks reads back. Success is a 201.
+// LinkBlocks records a "Blocks" link where blocker blocks blocked. The link runs
+// outward ("blocks") from the blocker to the sibling it holds up, so the blocker is
+// posted as the outward issue and the blocked one as the inward issue. Success is
+// a 201.
 func (c *Client) LinkBlocks(ctx context.Context, blocker, blocked string) error {
 	if !c.enabled() {
 		return ErrNotEnabled

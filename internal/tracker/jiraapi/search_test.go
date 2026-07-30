@@ -219,6 +219,40 @@ func TestEligibleConsidersOnlyBlockedByLinks(t *testing.T) {
 	}
 }
 
+// A single "PROJ-1 blocks PROJ-2" link as Jira serves it from both ends: PROJ-2
+// carries its blocker as inwardIssue, PROJ-1 carries the sibling it holds up as
+// outwardIssue. Only PROJ-2 comes back blocked.
+func TestEligibleReadsBlockerFromInwardEndOnly(t *testing.T) {
+	const payload = `{"issues":[
+		{"key":"PROJ-1","fields":{
+			"summary":"Blocker","status":{"name":"To Do","statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},
+			"issuelinks":[{"type":{"name":"Blocks","inward":"is blocked by","outward":"blocks"},"outwardIssue":{"key":"PROJ-2","fields":{"status":{"statusCategory":{"key":"new"}}}}}]
+		}},
+		{"key":"PROJ-2","fields":{
+			"summary":"Blocked","status":{"name":"To Do","statusCategory":{"key":"new"}},"issuetype":{"hierarchyLevel":0},
+			"issuelinks":[{"type":{"name":"Blocks","inward":"is blocked by","outward":"blocks"},"inwardIssue":{"key":"PROJ-1","fields":{"status":{"statusCategory":{"key":"new"}}}}}]
+		}}
+	]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	cands, err := New(srv.URL, "me@acme.com", "tok").Eligible(context.Background(), "PROJ", "ready")
+	if err != nil {
+		t.Fatalf("Eligible error: %v", err)
+	}
+	if len(cands) != 2 {
+		t.Fatalf("got %d candidates, want 2", len(cands))
+	}
+	if len(cands[0].BlockedBy) != 0 {
+		t.Errorf("PROJ-1 blockers = %+v, want none — it is the blocker", cands[0].BlockedBy)
+	}
+	if len(cands[1].BlockedBy) != 1 || cands[1].BlockedBy[0].Key != "PROJ-1" || cands[1].BlockedBy[0].Resolved {
+		t.Errorf("PROJ-2 blockers = %+v, want one unresolved PROJ-1", cands[1].BlockedBy)
+	}
+}
+
 func TestEligiblePaginates(t *testing.T) {
 	var requests int
 	var secondToken string
