@@ -75,6 +75,31 @@ export function groupRepos(
   return rows
 }
 
+// filterRepoRows narrows the switcher's rows to a typed query, matched against
+// repo names and roots. A group whose own name matches keeps every member — the
+// query named the project, not one repo inside it.
+export function filterRepoRows(
+  rows: readonly RepoRow[],
+  query: string,
+): RepoRow[] {
+  const needle = query.trim().toLowerCase()
+  if (needle === '') return [...rows]
+  const matched: RepoRow[] = []
+  for (const row of rows) {
+    if (row.project?.name.toLowerCase().includes(needle)) {
+      matched.push(row)
+      continue
+    }
+    const repos = row.repos.filter(
+      (repo) =>
+        repo.name.toLowerCase().includes(needle) ||
+        repo.root.toLowerCase().includes(needle),
+    )
+    if (repos.length > 0) matched.push({ project: row.project, repos })
+  }
+  return matched
+}
+
 // projectAnchor names the repo a project's shared tracker surfaces read from:
 // its first listed member. Every member of a project talks to the same tracker,
 // so anchoring gives the project one inbox instead of one per repo. A repo no
@@ -85,7 +110,9 @@ export function projectAnchor(
   projects: readonly ProjectView[],
 ): string {
   const root = repos.find((r) => r.name === repo)?.root
-  const project = root ? projects.find((p) => p.repos.includes(root)) : undefined
+  const project = root
+    ? projects.find((p) => p.repos.includes(root))
+    : undefined
   if (!project) return repo
   const names = new Map(repos.map((r) => [r.root, r.name]))
   for (const member of project.repos) {
@@ -98,7 +125,10 @@ export function projectAnchor(
 // useProjectRepo resolves a scoped repo to its project's anchor, so the tracker
 // inbox and its badge stay on one queue however the switcher moves between
 // members.
-export function useProjectRepo(repo: string, repos: readonly RepoView[]): string {
+export function useProjectRepo(
+  repo: string,
+  repos: readonly RepoView[],
+): string {
   const { data } = useQuery(projectsQueryOptions)
   return projectAnchor(repo, repos, data?.projects ?? [])
 }
@@ -117,7 +147,9 @@ export function projectMembers(
   projects: readonly ProjectView[],
 ): ProjectMembers {
   const root = repos.find((r) => r.name === repo)?.root
-  const project = root ? projects.find((p) => p.repos.includes(root)) : undefined
+  const project = root
+    ? projects.find((p) => p.repos.includes(root))
+    : undefined
   if (!project) return { project: '', members: [] }
   const views = new Map(repos.map((r) => [r.root, r]))
   return {

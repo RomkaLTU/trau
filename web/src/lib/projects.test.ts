@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { RepoView } from '@/lib/instances'
 import {
+  filterRepoRows,
   groupRepos,
   projectAnchor,
   projectMembers,
@@ -75,6 +76,39 @@ describe('groupRepos', () => {
   })
 })
 
+describe('filterRepoRows', () => {
+  const repos = [repo('alpha'), repo('bravo'), repo('charlie')]
+  const web = project('web', 'Web', ['bravo', 'charlie'])
+  const rows = groupRepos(repos, [web])
+
+  it('hands back every row for a blank query', () => {
+    expect(filterRepoRows(rows, '   ')).toEqual(rows)
+  })
+
+  it('matches a repo by name or by root, whatever the case', () => {
+    const alpha = [{ project: null, repos: [repos[0]] }]
+    expect(filterRepoRows(rows, 'ALPH')).toEqual(alpha)
+    expect(filterRepoRows(rows, '/repos/alpha')).toEqual(alpha)
+  })
+
+  it('keeps every member of a group whose own name matches', () => {
+    expect(filterRepoRows(rows, 'we')).toEqual([
+      { project: web, repos: [repos[1], repos[2]] },
+    ])
+  })
+
+  it('narrows a group to its matching members, in row order', () => {
+    expect(filterRepoRows(rows, 'l')).toEqual([
+      { project: null, repos: [repos[0]] },
+      { project: web, repos: [repos[2]] },
+    ])
+  })
+
+  it('drops a row nothing in it matches', () => {
+    expect(filterRepoRows(rows, 'delta')).toEqual([])
+  })
+})
+
 describe('projectAnchor', () => {
   const repos = [repo('alpha'), repo('bravo'), repo('charlie')]
 
@@ -83,7 +117,9 @@ describe('projectAnchor', () => {
   })
 
   it('leaves a single-member project on its own repo', () => {
-    expect(projectAnchor('bravo', repos, [project('bravo', 'bravo', ['bravo'])])).toBe('bravo')
+    expect(
+      projectAnchor('bravo', repos, [project('bravo', 'bravo', ['bravo'])]),
+    ).toBe('bravo')
   })
 
   it('anchors every member of a project on its first repo', () => {
