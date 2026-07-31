@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/RomkaLTU/trau/internal/folderrepo"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
 	"github.com/RomkaLTU/trau/internal/state"
@@ -265,9 +266,12 @@ func (s *Server) handleRepoGitignore(w http.ResponseWriter, r *http.Request) {
 }
 
 // validateRepoPath normalizes a registration path and rejects anything that is
-// not an existing directory at a git toplevel. The path must be absolute so the
-// hub records an unambiguous root; a `.git` entry — directory or file — proves a
-// toplevel while covering worktrees whose `.git` is a file.
+// neither a git toplevel nor a Folder repo. The path must be absolute so the hub
+// records an unambiguous root; a `.git` entry — directory or file — proves a
+// toplevel while covering worktrees whose `.git` is a file. A folder holding git
+// repositories registers as one Repo whose children are its ship targets, so a
+// folder of forty-four services is one board mirror and one queue, not
+// forty-four.
 func validateRepoPath(path string) (string, error) {
 	trimmed := strings.TrimSpace(path)
 	if trimmed == "" {
@@ -287,8 +291,8 @@ func validateRepoPath(path string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("path %q is not a directory", root)
 	}
-	if !isGitToplevel(root) {
-		return "", fmt.Errorf("path %q is not a git repository (no .git found)", root)
+	if !isGitToplevel(root) && !folderrepo.Is(root) {
+		return "", fmt.Errorf("path %q is neither a git repository nor a folder holding git repositories", root)
 	}
 	return root, nil
 }

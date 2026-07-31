@@ -33,6 +33,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/config"
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/folderrepo"
 	"github.com/RomkaLTU/trau/internal/forkpoint"
 	"github.com/RomkaLTU/trau/internal/hubclient"
 	"github.com/RomkaLTU/trau/internal/logger"
@@ -254,6 +255,12 @@ var (
 	ErrAlreadyDone = errors.New("ticket already done")
 )
 
+// ErrFolderRepoEpic refuses an epic run in a Folder repo. An epic stacks every
+// sub-issue on one integration branch, and a folder has no repository of its own
+// to hold one — per child it would be as many epic branches as the run changes
+// children, each with its own drift to reconcile.
+var ErrFolderRepoEpic = errors.New("a folder repo cannot run an epic: an epic stacks its sub-issues on one integration branch and a folder has no repository to hold it — queue the sub-issues individually")
+
 // Ledger is the pipeline's view of the token/cost sink: it points the bucket at
 // the current ticket (SetTicket) and reports accumulated spend for budget
 // enforcement (Total per ticket, DayTotal for the per-day window). The hub-backed
@@ -458,13 +465,19 @@ type Pipeline struct {
 	LessonLedger LessonStore
 	Git          Git
 	GitHub       GitHub
-	Tracker      tracker.Tracker
-	Tokens       Ledger
-	Budget       budget.Limits
-	RunsDir      string
-	Base         string
-	Remote       string
-	Prefix       string
+	// FolderRepo marks RepoRoot as a Folder repo: not a git repository itself, but
+	// a folder whose direct git children are the run's ship targets. Git and GitHub
+	// have no repository to act on there; GitAt and GitHubAt bind them per child.
+	FolderRepo bool
+	GitAt      func(root string) Git
+	GitHubAt   func(root string) GitHub
+	Tracker    tracker.Tracker
+	Tokens     Ledger
+	Budget     budget.Limits
+	RunsDir    string
+	Base       string
+	Remote     string
+	Prefix     string
 	// TrackerProvider is the effective tracker backend (config
 	// EffectiveTrackerProvider) that names the PR body's ticket trailer;
 	// InternalPrefix is the repo's internal issue-id prefix, marking ids no
@@ -674,6 +687,14 @@ type Pipeline struct {
 	// first localDelivery call resolves it.
 	localOnly *bool
 
+	// children and offLimits are a Folder repo run's scan of its Child repos and
+	// the start-of-run sweep's verdict on each; sliceChecks is the verify library
+	// the changed children resolved to. All three are resolved per run — offLimits
+	// from the checkpoint when the run is a resume (see startFolderRun).
+	children    []folderrepo.Child
+	offLimits   map[string]string
+	sliceChecks []checks.Check
+
 	// buildProvider/buildSkills capture, from the last build agent call, which
 	// provider ran and which skills its session loaded — the inputs to the
 	// post-build no-skills warning. buildSkillsKnown is false in the Unknown state,
@@ -771,6 +792,10 @@ func (p *Pipeline) EnsureOwnedProject(ctx context.Context, id string) error {
 // *GiveUpError, which passes straight through.
 func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 	p.armExitCleanup(ctx)
+	p.resetFolderRun()
+	if p.FolderRepo && p.EpicID != "" {
+		return ErrFolderRepoEpic
+	}
 	if err := p.EnsureOwnedProject(ctx, id); err != nil {
 		return err
 	}
@@ -813,21 +838,29 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 		p.logf("  ↳ resuming from checkpoint: %s", from)
 	}
 
-	branch := p.State.Get(id, "BRANCH")
-	exists := false
-	if branch != "" {
-		exists, _ = p.Git.BranchExists(ctx, branch)
+	if p.FolderRepo {
+		p.startFolderRun(ctx, id, from != "")
 	}
-	switch {
-	case branch != "" && exists:
-		_ = p.Git.Checkout(ctx, branch, false)
-	case fi >= 2:
-		shown := branch
-		if shown == "" {
-			shown = "?"
+
+	// A Folder repo has no checkout to reclaim: its branch name exists only in the
+	// children ship already cut it in, and each of those is already on it.
+	if !p.FolderRepo {
+		branch := p.State.Get(id, "BRANCH")
+		exists := false
+		if branch != "" {
+			exists, _ = p.Git.BranchExists(ctx, branch)
 		}
-		p.logf("  ⚠ resume: recorded branch '%s' for %s is missing — resetting it to start fresh", shown, id)
-		return p.Reset(ctx, id)
+		switch {
+		case branch != "" && exists:
+			_ = p.Git.Checkout(ctx, branch, false)
+		case fi >= 2:
+			shown := branch
+			if shown == "" {
+				shown = "?"
+			}
+			p.logf("  ⚠ resume: recorded branch '%s' for %s is missing — resetting it to start fresh", shown, id)
+			return p.Reset(ctx, id)
+		}
 	}
 
 	return p.classifyPhaseErr(ctx, id, p.runPhases(ctx, id, fi))
@@ -1245,6 +1278,9 @@ const autoStashMsg = "trau autostash: uncommitted WIP set aside for a fresh run"
 // path deliberately skips this — the feature branch's WIP IS the work.
 func (p *Pipeline) EnsureCleanBase(ctx context.Context) error {
 	p.armExitCleanup(ctx)
+	if p.FolderRepo {
+		return p.sweepFolder(ctx)
+	}
 	dirty, err := p.Git.StatusPorcelain(ctx)
 	if err != nil {
 		return fmt.Errorf("ensure clean base: git status: %w", err)
@@ -1556,6 +1592,9 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 		note = resumeNote
 	}
 	note += buildLessonsNote(p.recallLessons(p.lessonQuery(id)))
+	if p.FolderRepo {
+		note += p.folderBuildNote(ctx)
+	}
 	ticketCtx, labels := p.ticketContextWithLabels(ctx, id)
 	resolver := p.skillResolver()
 	buildSkills := resolver.Build(agent.SkillContext{Text: skillMatchText(ticketCtx, labels)})
@@ -1570,6 +1609,11 @@ func (p *Pipeline) build(ctx context.Context, id string, withNote bool) error {
 	}
 	if err := p.assertRepoChanged(ctx, id); err != nil {
 		return err
+	}
+	if p.FolderRepo {
+		if err := p.assertChildrenInBounds(ctx, id); err != nil {
+			return err
+		}
 	}
 	p.refreshForkPoint(ctx, id)
 	p.warnBuildWithoutSkills(id, buildSkills.Names)
@@ -1614,6 +1658,13 @@ func (p *Pipeline) checkRefusal(ctx context.Context, out, id string) error {
 	if !ok {
 		return nil
 	}
+	if p.FolderRepo {
+		if len(p.changedChildren(ctx)) > 0 {
+			p.logf("  ⚠ build replied REFUSED but left changes — keeping them and continuing")
+			return nil
+		}
+		return &RefusedError{ID: id, Reason: reason}
+	}
 	if dirty, err := p.Git.WorktreeDirty(ctx); err != nil || dirty {
 		p.logf("  ⚠ build replied REFUSED but left changes — keeping them and continuing")
 		return nil
@@ -1622,6 +1673,9 @@ func (p *Pipeline) checkRefusal(ctx context.Context, out, id string) error {
 }
 
 func (p *Pipeline) resolveBuildBranch(ctx context.Context, id string) (string, error) {
+	if p.FolderRepo {
+		return p.folderBuildBranch(ctx, id)
+	}
 	branch := p.State.Get(id, "BRANCH")
 	if branch == "" {
 		branch, _ = p.Git.FindFeatureBranch(ctx, id)
@@ -1681,6 +1735,31 @@ func (p *Pipeline) resolveBuildBranch(ctx context.Context, id string) (string, e
 	return branch, nil
 }
 
+// folderBuildBranch settles the name every changed Child repo's branch will
+// carry, without cutting anything. The children the ticket reaches are not known
+// until the build has run, and cutting in all of them up front would trample
+// checkouts the ticket never goes near.
+func (p *Pipeline) folderBuildBranch(ctx context.Context, id string) (string, error) {
+	if branch := p.State.Get(id, "BRANCH"); branch != "" {
+		return branch, nil
+	}
+	title, err := p.Tracker.Title(ctx, id)
+	if err != nil {
+		p.logf("  title lookup error (using id-only branch): %v", err)
+	}
+	if title != "" {
+		_ = p.State.Set(id, "TITLE", title)
+		p.setTitle(title)
+	}
+	branch := featureBranch(id, title)
+	p.logf("  branch %s ← %s, cut in each child repo the build changes", branch, p.Base)
+	if err := p.Tracker.SetStatus(ctx, id, tracker.StageInProgress, ""); err != nil {
+		p.logf("  set In Progress error (continuing): %v", err)
+	}
+	p.clearQueuedLabel(ctx, id)
+	return branch, nil
+}
+
 // clearQueuedLabel drops the hub queue's label from a ticket now that its own run
 // has started — the seam every epic sub-issue passes through as its slice begins.
 // A failed write is logged rather than stopping the run.
@@ -1717,6 +1796,9 @@ func featureBranch(id, title string) string {
 func (p *Pipeline) assertRepoChanged(ctx context.Context, id string) error {
 	if !p.RequireRepoChanges {
 		return nil
+	}
+	if p.FolderRepo {
+		return p.folderRepoChanged(ctx)
 	}
 	dirty, err := p.Git.WorktreeDirty(ctx)
 	if err != nil {
@@ -2014,8 +2096,12 @@ func (p *Pipeline) Verify(ctx context.Context, id string) error {
 	bugfixDelivery := p.resolveSkills(repairSkills, resolver.Installed(), agent.PhaseBugfix)
 	p.recordPhaseSkills(id, "verify", verifyDelivery)
 
-	checksFragment := checks.Render(p.Checks)
-	if n := len(p.Checks); n > 0 {
+	if p.FolderRepo {
+		p.sliceChecks = p.folderChecks(ctx)
+	}
+	library := p.checksLibrary()
+	checksFragment := checks.Render(library)
+	if n := len(library); n > 0 {
 		p.logf("  ↳ verify checks: %d active (severity gates the merge)", n)
 	}
 	if n := len(p.VerifyPanel); n > 0 {
@@ -2317,11 +2403,16 @@ func (p *Pipeline) localDelivery(ctx context.Context) bool {
 	if p.localOnly != nil {
 		return *p.localOnly
 	}
-	exists, err := p.Git.RemoteExists(ctx, p.Remote)
-	if err != nil {
-		p.logf("  remote %s lookup failed (%v) — delivering through it anyway", p.Remote, err)
+	local := false
+	if p.FolderRepo {
+		local = !p.folderRemoteExists(ctx)
+	} else {
+		exists, err := p.Git.RemoteExists(ctx, p.Remote)
+		if err != nil {
+			p.logf("  remote %s lookup failed (%v) — delivering through it anyway", p.Remote, err)
+		}
+		local = err == nil && !exists
 	}
-	local := err == nil && !exists
 	p.localOnly = &local
 	if local {
 		p.logf("  ⓘ %s: %s is not configured — skipping push, PR and CI", localDeliveryNote, p.Remote)
@@ -2343,6 +2434,9 @@ func (p *Pipeline) localDelivery(ctx context.Context) bool {
 // quarantining — the WIP stays on the branch for a later resume. In local delivery
 // mode the commit is the whole deliverable and everything after it is skipped.
 func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
+	if p.FolderRepo {
+		return p.folderShip(ctx, id)
+	}
 	p.setActivity(id, activity.Commit, "")
 	branch, err := p.reclaimRunBranch(ctx, id)
 	if err != nil {
@@ -2546,6 +2640,9 @@ func (p *Pipeline) CIAndMerge(ctx context.Context, id string) error {
 }
 
 func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
+	if p.FolderRepo {
+		return p.folderCIAndMerge(ctx, id)
+	}
 	if p.localDelivery(ctx) {
 		return p.landLocally(ctx, id)
 	}
@@ -2907,15 +3004,22 @@ const noChecksGrace = 120
 // genuinely missing checks run out the clock into ErrCITimeout. base is the
 // branch pr targets, which decides whether any workflow could have checked it.
 func (p *Pipeline) pollCI(ctx context.Context, pr, base string) error {
+	return p.pollCIWith(ctx, p.GitHub, p.RepoRoot, pr, base)
+}
+
+// pollCIWith is pollCI against one repository: gh names the PR's own `gh`, and
+// root the checkout whose workflows decide whether a checkless PR is checkless by
+// design. A Folder repo runs it once per changed Child repo.
+func (p *Pipeline) pollCIWith(ctx context.Context, gh GitHub, root, pr, base string) error {
 	if p.RequireCI == config.CIGateOff {
 		p.logf("  CI gate off (REQUIRE_CI=0) — not waiting for checks")
 		return nil
 	}
 	expected := splitChecks(p.ExpectedChecks)
-	scan := config.ScanPullRequestCI(p.RepoRoot)
+	scan := config.ScanPullRequestCI(root)
 	sawCheck := false
 	for waited := 0; ; waited += p.CIPoll {
-		checks, _ := p.GitHub.Checks(ctx, pr)
+		checks, _ := gh.Checks(ctx, pr)
 		if len(checks) > 0 {
 			sawCheck = true
 		}
@@ -4569,7 +4673,7 @@ func (p *Pipeline) verifyAttempt(ctx context.Context, id, label, handoff, note, 
 		v, _ = readVerdict(verdictPath)
 	}
 	var warnings []string
-	v, warnings = gateChecks(p.Checks, v)
+	v, warnings = gateChecks(p.checksLibrary(), v)
 	for _, w := range warnings {
 		p.logf("  ⚠ %s", w)
 	}
@@ -4608,7 +4712,7 @@ func (p *Pipeline) runPanel(ctx context.Context, id, label, handoff, note, qaNot
 			v = verdict{Pass: false, Summary: reason, Failures: []string{reason}}
 		}
 		var warnings []string
-		v, warnings = gateChecks(p.Checks, v)
+		v, warnings = gateChecks(p.checksLibrary(), v)
 		for _, w := range warnings {
 			p.logf("  ⚠ %s: %s", m.Name, w)
 		}

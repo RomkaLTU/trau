@@ -52,6 +52,8 @@ func TestRegisterRepoValidation(t *testing.T) {
 	if err := os.WriteFile(regularFile, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	folder := filepath.Join(base, "services")
+	gitRepo(t, folder, "api-companies", "dir")
 
 	_, ts := controlServer(t, home, nil)
 
@@ -62,6 +64,7 @@ func TestRegisterRepoValidation(t *testing.T) {
 	}{
 		{"git dir toplevel", dirRepo, http.StatusCreated},
 		{"git file worktree", worktree, http.StatusCreated},
+		{"folder of repos", folder, http.StatusCreated},
 		{"missing path", "", http.StatusBadRequest},
 		{"relative path", "relative/acme", http.StatusBadRequest},
 		{"nonexistent", filepath.Join(base, "nope"), http.StatusBadRequest},
