@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RotateCw } from 'lucide-react'
 
@@ -9,6 +9,7 @@ import {
   syncRepo,
   type RepoHealthState,
   type SyncResponse,
+  type SyncResult,
 } from '@/lib/instances'
 import { cn } from '@/lib/utils'
 
@@ -50,6 +51,19 @@ function pullCounts(res: SyncResponse): string {
   return res.removed > 0 ? `${counts} · removed ${res.removed}` : counts
 }
 
+// The button reflects only the sync this view asked for: a background pull of the
+// same repo reads as "syncing…" and leaves the button usable, because pressing it
+// there coalesces into that pull rather than duplicating it.
+export function syncDisabled(status: SyncStatus): boolean {
+  return status.pending
+}
+
+// A request that coalesced into a pull already in flight has no counts to show:
+// the status line stays on the syncing the health query is already reporting.
+export function pulledCounts(result: SyncResult): SyncResponse | undefined {
+  return result.status === 'pulled' ? result.response : undefined
+}
+
 /**
  * Pulls the repo's tracker on demand and keeps its sync status in view, so a
  * stale or failing backlog is visible without leaving the page. Hidden for a repo
@@ -72,7 +86,7 @@ function RepoSyncControl({ repo }: { repo: string }) {
 
   const sync = useMutation({
     mutationFn: () => syncRepo(repo),
-    onSuccess: setPulled,
+    onSuccess: (result) => setPulled(pulledCounts(result)),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ['repo-health', repo] })
       invalidateRepoBoard(queryClient, repo)
@@ -85,11 +99,20 @@ function RepoSyncControl({ repo }: { repo: string }) {
     return () => clearTimeout(id)
   }, [pulled])
 
+  // A sync that settles elsewhere — a background refresh, or one this view
+  // coalesced into — lands its issues without this client hearing about it, so the
+  // board is refreshed when health leaves syncing.
+  const syncing = health.data?.state === 'syncing'
+  const wasSyncing = useRef(false)
+  useEffect(() => {
+    if (wasSyncing.current && !syncing) invalidateRepoBoard(queryClient, repo)
+    wasSyncing.current = syncing
+  }, [syncing, queryClient, repo])
+
   const provider = health.data?.provider
   if (!provider || provider === 'internal') return null
 
-  const syncing = health.data?.state === 'syncing'
-  const line = syncStatusLine({
+  const status: SyncStatus = {
     state: health.data?.state,
     lastSyncedAt: health.data?.last_synced_at,
     lastError: health.data?.last_error,
@@ -97,7 +120,8 @@ function RepoSyncControl({ repo }: { repo: string }) {
     error: sync.error?.message,
     pulled,
     now,
-  })
+  }
+  const line = syncStatusLine(status)
 
   return (
     <div className="flex items-center gap-2">
@@ -115,7 +139,7 @@ function RepoSyncControl({ repo }: { repo: string }) {
       <button
         type="button"
         onClick={() => sync.mutate()}
-        disabled={sync.isPending || syncing}
+        disabled={syncDisabled(status)}
         className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm text-foreground transition-colors hover:bg-muted disabled:opacity-50"
       >
         <RotateCw className="size-4" />

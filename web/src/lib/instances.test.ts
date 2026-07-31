@@ -182,6 +182,31 @@ describe("repoTakenOver", () => {
 });
 
 describe("syncRepo", () => {
+  it("reports the counts a pull of its own wrote", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(respond(200, { repo: "melga", issues: 3 })),
+    );
+
+    const result = await syncRepo("melga");
+
+    expect(result).toEqual({
+      status: "pulled",
+      response: { repo: "melga", issues: 3 },
+    });
+  });
+
+  it("reads the hub's 202 as a coalesce, not a pull", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(respond(202, { repo: "melga", state: "syncing" })),
+    );
+
+    expect(await syncRepo("melga")).toEqual({ status: "syncing" });
+  });
+
   it("surfaces the hub reason a retry failed", async () => {
     vi.stubGlobal(
       "fetch",
