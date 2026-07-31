@@ -19,14 +19,17 @@ import { apiFetch } from '@/lib/api'
 
 import { CommandPalette } from './command-palette'
 
-const { navigations } = vi.hoisted(() => ({
-  navigations: [] as { to: string; search?: { q?: string } }[],
-}))
+type Navigation = {
+  to: string
+  search?: { q?: string }
+  params?: { repo: string; ticket: string }
+}
+
+const { navigations } = vi.hoisted(() => ({ navigations: [] as Navigation[] }))
 
 vi.mock('@/lib/api', () => ({ apiFetch: vi.fn() }))
 vi.mock('@tanstack/react-router', () => ({
-  useNavigate: () => (opts: { to: string; search?: { q?: string } }) =>
-    navigations.push(opts),
+  useNavigate: () => (opts: Navigation) => navigations.push(opts),
   useRouterState: ({
     select,
   }: {
@@ -184,18 +187,40 @@ const configKeys = [
   },
 ]
 
+const ledgerRuns = [
+  {
+    ticket: 'COD-1342',
+    title: 'Runs search in the palette',
+    phase: 'pr_open',
+    phase_rank: 5,
+    terminal: false,
+    updated_at: new Date(Date.now() - 90 * 60 * 1000).toISOString(),
+  },
+  {
+    ticket: 'COD-31',
+    title: 'Costs page',
+    phase: 'merged',
+    phase_rank: 6,
+    terminal: true,
+    updated_at: '2026-07-01T09:00:00Z',
+  },
+]
+
+function payloadFor(url: string) {
+  if (url.includes('/config')) {
+    return { repo: 'loop', layers: ['user'], providers: [], keys: configKeys }
+  }
+  if (url.includes('/runs')) return { repo: 'loop', runs: ledgerRuns }
+  return { instances: [] }
+}
+
 function renderPalette() {
   const opens: boolean[] = []
   vi.mocked(apiFetch).mockImplementation((input: string) =>
     Promise.resolve({
       ok: true,
       status: 200,
-      json: () =>
-        Promise.resolve(
-          input.includes('/config')
-            ? { repo: 'loop', layers: ['user'], providers: [], keys: configKeys }
-            : { instances: [] },
-        ),
+      json: () => Promise.resolve(payloadFor(input)),
     } as Response),
   )
   const client = new QueryClient({
@@ -229,6 +254,30 @@ function typeQuery(text: string) {
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })
 }
+
+it('lists the active repo’s matching runs and lands on the run detail', async () => {
+  const opens = renderPalette()
+  typeQuery('palette')
+  await act(async () => {})
+
+  const row = document.body.querySelector<HTMLElement>(
+    '[cmdk-item=""][data-value="run:COD-1342"]',
+  )
+  expect(row?.textContent).toContain('COD-1342')
+  expect(row?.textContent).toContain('Runs search in the palette')
+  expect(row?.textContent).toContain('pr')
+  expect(row?.textContent).toContain('1h 30m')
+  expect(
+    document.body.querySelector('[cmdk-item=""][data-value="run:COD-31"]'),
+  ).toBeNull()
+
+  act(() => row?.click())
+
+  expect(navigations).toEqual([
+    { to: '/runs/$repo/$ticket', params: { repo: 'loop', ticket: 'COD-1342' } },
+  ])
+  expect(opens).toEqual([false])
+})
 
 it('lists matching settings keys and lands on the settings page', async () => {
   const opens = renderPalette()

@@ -12,6 +12,7 @@ import {
 
 import { ALL_SCOPE, useActiveRepo } from '@/components/trau/active-repo'
 import { NAV_GROUPS, type NavItem } from '@/components/trau/nav-items'
+import { StatusPill } from '@/components/trau/status-pill'
 import {
   CommandDialog,
   CommandEmpty,
@@ -22,10 +23,15 @@ import {
   CommandSeparator,
 } from '@/components/ui/command'
 import { configQueryOptions } from '@/lib/config'
+import { useNow } from '@/lib/elapsed'
 import { instancesQueryOptions } from '@/lib/instances'
+import { formatAge } from '@/lib/ledger'
+import { boardPill } from '@/lib/overview'
 import { matchesQuery } from '@/lib/palette-filter'
 import { isPaletteShortcut, movesHighlight } from '@/lib/palette-keys'
 import { loadRecents, visibleRecents, type RecentEntry } from '@/lib/recents'
+import { matchRuns } from '@/lib/run-search'
+import { runsQueryOptions, type Run } from '@/lib/runs'
 import { issueSearchQueryOptions, type SearchResult } from '@/lib/search'
 import { displayValue, matchSettings } from '@/lib/settings'
 import { suggestFor, type SuggestionEntry } from '@/lib/suggestions'
@@ -37,6 +43,11 @@ const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items)
 
 function issueValue(id: string) {
   return `issue:${id}`
+}
+
+function runAge(run: Run, now: number): string {
+  if (!run.updated_at) return '—'
+  return formatAge(Math.max(0, now - Date.parse(run.updated_at)))
 }
 
 function recentIcon(entry: RecentEntry) {
@@ -132,6 +143,16 @@ export function CommandPalette({
     [searching, config.data, trimmed],
   )
 
+  const runs = useQuery({
+    ...runsQueryOptions(scopedRepo),
+    enabled: open && searching,
+  })
+  const runRows = useMemo(
+    () => (searching ? matchRuns(runs.data?.runs ?? [], trimmed) : []),
+    [searching, runs.data, trimmed],
+  )
+  const now = useNow(30_000)
+
   // cmdk only auto-selects when nothing is selected, so late-arriving issue rows
   // would leave the highlight on a static row: move it to the top hit ourselves,
   // unless the user has already moved the highlight.
@@ -186,6 +207,14 @@ export function CommandPalette({
     void navigate({
       to: '/runs/$repo/$ticket',
       params: { repo: scopedRepo, ticket: result.id },
+    })
+  }
+
+  function pickRun(run: Run) {
+    onOpenChange(false)
+    void navigate({
+      to: '/runs/$repo/$ticket',
+      params: { repo: scopedRepo, ticket: run.ticket },
     })
   }
 
@@ -264,6 +293,35 @@ export function CommandPalette({
                   ))}
                 </CommandItem>
               ))}
+            </CommandGroup>
+            {(runRows.length > 0 ||
+              showProjects ||
+              navRows.length > 0 ||
+              settingRows.length > 0) && <CommandSeparator />}
+          </>
+        )}
+        {runRows.length > 0 && (
+          <>
+            <CommandGroup heading="Runs" className={GROUP_HEADING}>
+              {runRows.map((run) => {
+                const pill = boardPill(run)
+                return (
+                  <CommandItem
+                    key={run.ticket}
+                    value={`run:${run.ticket}`}
+                    onSelect={() => pickRun(run)}
+                  >
+                    <span className="shrink-0 text-primary">{run.ticket}</span>
+                    <span className="min-w-0 flex-1 truncate font-sans">
+                      {run.title ?? run.ticket}
+                    </span>
+                    <StatusPill state={pill.state} label={pill.label} />
+                    <span className="shrink-0 text-[0.65rem] text-muted-foreground">
+                      {runAge(run, now)}
+                    </span>
+                  </CommandItem>
+                )
+              })}
             </CommandGroup>
             {(showProjects || navRows.length > 0 || settingRows.length > 0) && (
               <CommandSeparator />
