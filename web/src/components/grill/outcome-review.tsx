@@ -142,11 +142,15 @@ export function OutcomeReview({
 
   // A rewrite or split writes to the anchor it was opened on, so switching it to
   // the internal store is a conversion of that ticket rather than a filing choice —
-  // offered only while the anchor still belongs to the tracker.
+  // offered only while the anchor still belongs to the tracker. A create converts
+  // the parent an earlier pass filed there, which is the only anchor it owns; the
+  // ticket a create was merely opened on is left alone and files beside.
   const anchorSource = issue.data?.source ?? "";
   const rewrites = isRewrite || isSplit;
+  const converts =
+    rewrites || (isCreate && session.issue_destination === "tracker");
   const detachable =
-    rewrites && anchorSource !== "" && anchorSource !== "internal";
+    converts && anchorSource !== "" && anchorSource !== "internal";
   const anchorInternal = rewrites && anchorSource === "internal";
 
   // The probe shares its cache entry with the picker's own, so gating the control on
@@ -919,10 +923,11 @@ const TRACKER_NAMES: Record<string, string> = {
 
 // DestinationPicker is the outcome's destination choice: the repo's external
 // tracker — named, and the default — or the hub's internal backlog. anchor names
-// the ticket a rewrite or split writes to, which the internal option converts
-// rather than copies, and is empty for a create with nothing to convert. A repo on
-// the internal provider has only one destination, so it is stated rather than
-// offered as a fake choice.
+// the ticket the outcome writes to — a rewrite or split's, or the parent a create
+// already filed on the tracker — which the internal option converts rather than
+// copies, and is empty for a create with nothing to convert. A repo on the
+// internal provider has only one destination, so it is stated rather than offered
+// as a fake choice.
 function DestinationPicker({
   tracker,
   anchor,

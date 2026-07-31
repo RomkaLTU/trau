@@ -41,6 +41,14 @@ const rewrite: OutcomePayload = {
   summary: "clarified the flow",
 };
 
+const createEpic: OutcomePayload = {
+  disposition: "create",
+  title: "New epic",
+  proposed_description: "Epic body.",
+  summary: "one slice",
+  sub_issues: [{ title: "S1", description: "d1" }],
+};
+
 function issue(source: string): Issue {
   return {
     repo: "loop",
@@ -150,6 +158,17 @@ describe("OutcomeReview destination", () => {
     const el = renderReview(rewrite, "linear", "linear");
 
     expect(el.textContent).toContain("Apply to COD-42 on Linear");
+    expect(el.textContent).toContain(
+      "Convert COD-42 (and its sub-issues) to internal and apply there",
+    );
+  });
+
+  it("offers the conversion on a create anchored to the parent it filed on the tracker", () => {
+    const el = renderReview(createEpic, "linear", "linear", {
+      ...session,
+      issue_destination: "tracker",
+    });
+
     expect(el.textContent).toContain(
       "Convert COD-42 (and its sub-issues) to internal and apply there",
     );
