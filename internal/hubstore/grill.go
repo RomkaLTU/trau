@@ -67,9 +67,10 @@ var grillTransitions = map[string]map[string]bool{
 // session grills — so a settled session still names its issue after apply drops the
 // triage labels the board queries key on — falling back to the authoring seed for an
 // issue-less session. IssueDestination records where a create-apply filed the
-// anchored issue; empty for anchors that predate destination tracking. AutoAccept
-// answers a question carrying a recommended option with that recommendation rather
-// than asking the user.
+// anchored issue; empty for anchors that predate destination tracking.
+// ApplyWarnings carries what the apply that settled the session could not do but
+// never gated on. AutoAccept answers a question carrying a recommended option with
+// that recommendation rather than asking the user.
 type GrillSession struct {
 	ID               int64
 	Repo             string
@@ -83,6 +84,7 @@ type GrillSession struct {
 	Model            string
 	AutoAccept       bool
 	ParkedReason     string
+	ApplyWarnings    []string
 	CreatedAt        string
 	UpdatedAt        string
 }
@@ -186,7 +188,8 @@ const grillSessionSelect = `SELECT g.id, g.repo, g.issue_id, g.issue_destination
 	            WHERE m.session_id = g.id AND m.role = 'user' AND m.kind = 'info'
 	            ORDER BY m.id LIMIT 1
 	        ), ''), g.state,
-	        g.session_chain, g.mode, g.provider, g.model, g.auto_accept, g.parked_reason, g.created_at, g.updated_at
+	        g.session_chain, g.mode, g.provider, g.model, g.auto_accept, g.parked_reason,
+	        g.apply_warnings, g.created_at, g.updated_at
 	 FROM grill_sessions g
 	 LEFT JOIN issues i ON i.repo = g.repo AND i.identifier = g.issue_id`
 
@@ -471,6 +474,27 @@ func (g *Grill) SetIssue(id int64, issueID, destination string) (GrillSession, b
 	return sess, true, nil
 }
 
+// SetApplyWarnings records what an apply landed in spite of — the tracker writes it
+// never gated on — so a review remounted on the settled session raises them again
+// instead of losing them with the mutation that produced them. It reports whether
+// the session exists.
+func (g *Grill) SetApplyWarnings(id int64, warnings []string) (GrillSession, bool, error) {
+	sess, found, err := g.Session(id)
+	if err != nil || !found {
+		return GrillSession{}, found, err
+	}
+	now := formatGrillTime(time.Now())
+	if _, err := g.db.Exec(
+		`UPDATE grill_sessions SET apply_warnings = ?, updated_at = ? WHERE id = ?`,
+		encodeList(warnings), now, id,
+	); err != nil {
+		return GrillSession{}, false, err
+	}
+	sess.ApplyWarnings = warnings
+	sess.UpdatedAt = now
+	return sess, true, nil
+}
+
 // Prune keeps the most recent retention sessions per repo and drops the settled
 // ones beyond that window, ranked by id (grilling-prd.md — the transcript retention
 // pattern). Active sessions past the window are kept so a long-parked session is
@@ -553,15 +577,17 @@ func (g *Grill) scanSessions(query string, args ...any) (out []GrillSession, err
 		var (
 			s          GrillSession
 			autoAccept int
+			warnings   string
 		)
 		if err := q.Scan(
 			&s.ID, &s.Repo, &s.IssueID, &s.IssueDestination, &s.IssueTitle, &s.State,
 			&s.SessionChain, &s.Mode, &s.Provider, &s.Model, &autoAccept,
-			&s.ParkedReason, &s.CreatedAt, &s.UpdatedAt,
+			&s.ParkedReason, &warnings, &s.CreatedAt, &s.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
 		s.AutoAccept = autoAccept != 0
+		s.ApplyWarnings = decodeList(warnings)
 		out = append(out, s)
 	}
 	return out, q.Err()
