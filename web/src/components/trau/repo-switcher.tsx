@@ -11,12 +11,10 @@ import {
   FolderGit2,
   FolderPlus,
   GitBranch,
-  Plus,
   Search,
 } from 'lucide-react'
 
 import { ALL_SCOPE, useActiveRepo } from '@/components/trau/active-repo'
-import { NewProjectDialog } from '@/components/trau/new-project-dialog'
 import { Input } from '@/components/ui/input'
 import { loadRepoUsage, sortRepos } from '@/lib/active-repo'
 import { instancesQueryOptions, type RepoView } from '@/lib/instances'
@@ -60,7 +58,6 @@ export function RepoSwitcher() {
   const { data: projectData } = useQuery(projectsQueryOptions)
   const [open, setOpen] = useState(false)
   const [pulse, setPulse] = useState(false)
-  const [creating, setCreating] = useState(false)
   const [query, setQuery] = useState('')
   const [groups, setGroups] = useState<GroupState>(loadGroupState)
   const ref = useRef<HTMLDivElement>(null)
@@ -271,25 +268,6 @@ export function RepoSwitcher() {
           <div className="shrink-0">
             <div className="my-1 h-px bg-border" aria-hidden="true" />
 
-            <button
-              type="button"
-              onClick={() => {
-                setCreating(true)
-                setOpen(false)
-              }}
-              className="flex w-full items-center gap-2.5 px-2.5 py-1.5 text-left transition-colors hover:bg-secondary"
-            >
-              <span
-                aria-hidden="true"
-                className="flex size-7 shrink-0 items-center justify-center rounded-md border border-dashed border-border bg-secondary text-primary"
-              >
-                <FolderPlus className="size-3.5" />
-              </span>
-              <span className="font-mono text-sm text-foreground">
-                New project
-              </span>
-            </button>
-
             <Link
               to="/projects/new"
               onClick={() => setOpen(false)}
@@ -299,10 +277,10 @@ export function RepoSwitcher() {
                 aria-hidden="true"
                 className="flex size-7 shrink-0 items-center justify-center rounded-md border border-dashed border-border bg-secondary text-primary"
               >
-                <Plus className="size-3.5" />
+                <FolderPlus className="size-3.5" />
               </span>
               <span className="font-mono text-sm text-foreground">
-                Register a repo
+                New project…
               </span>
             </Link>
 
@@ -311,18 +289,12 @@ export function RepoSwitcher() {
               onClick={() => setOpen(false)}
               className="flex items-center gap-2 px-2.5 py-1.5 font-mono text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
             >
-              <Plus className="size-3.5" aria-hidden="true" />
-              Add / manage repos
+              <FolderGit2 className="size-3.5" aria-hidden="true" />
+              Manage repos
             </Link>
           </div>
         </div>
       )}
-
-      <NewProjectDialog
-        repos={repos}
-        open={creating}
-        onOpenChange={setCreating}
-      />
     </div>
   )
 }

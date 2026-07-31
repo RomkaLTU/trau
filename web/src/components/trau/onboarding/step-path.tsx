@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Check, FolderGit2, FolderPlus, ShieldAlert } from 'lucide-react'
+import { Check, FolderGit2, FolderPlus, Plus, ShieldAlert } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -11,6 +11,7 @@ import {
   type DiscoverResponse,
 } from '@/lib/fs-browse'
 import { InspectError, type MemberRepo } from '@/lib/onboarding'
+import { reposQueryOptions } from '@/lib/runs'
 import { cn } from '@/lib/utils'
 import { FolderPicker } from './folder-picker'
 import { Callout, FieldLabel, Hint, RegistrationRefused, TextInput } from './ui'
@@ -18,20 +19,35 @@ import { Callout, FieldLabel, Hint, RegistrationRefused, TextInput } from './ui'
 export function StepPath({
   initialPath,
   members,
+  projectName,
   onAdd,
+  onRename,
 }: {
   initialPath: string
   members: MemberRepo[]
+  projectName: string
   onAdd: (paths: string[], groupName?: string) => Promise<void>
+  onRename: (name: string) => Promise<void>
 }) {
   const [path, setPath] = useState(initialPath)
   const [manual, setManual] = useState(initialPath !== '')
   const [scan, setScan] = useState<DiscoverResponse | null>(null)
   const [chosen, setChosen] = useState<string[]>([])
+  const [edited, setEdited] = useState<string | null>(null)
 
   // Shares the picker's first query key; a refused browse has to hide the manual
   // escape hatch too, not just the picker.
   const roots = useQuery(browseQueryOptions(''))
+  const registered = useQuery(reposQueryOptions)
+
+  // A project forms at two members, so the name is asked for once this add would
+  // reach that count.
+  const taken = new Set(members.map((m) => m.root))
+  const picking = scan && scan.children.length > 0 ? chosen.length : 1
+  const grouping = members.length + picking > 1
+  const name = edited ?? (projectName || scan?.name || members[0]?.repo || '')
+  const groupName = grouping ? name : undefined
+  const nameMissing = grouping && name.trim() === ''
 
   // A picked repo is taken straight on; anything else parks on its scan result,
   // which is either the repos below it or the offer to start one.
@@ -39,7 +55,7 @@ export function StepPath({
     mutationFn: async (candidate: string) => {
       const found = await discoverRepos(candidate)
       if (!found.is_repo) return found
-      await onAdd([found.path])
+      await onAdd([found.path], groupName)
       return null
     },
     onSuccess: (found) => {
@@ -51,28 +67,38 @@ export function StepPath({
   const accept = useMutation({
     mutationFn: async (found: DiscoverResponse) => {
       if (found.children.length > 0) {
-        await onAdd(chosen, found.name)
+        await onAdd(chosen, groupName)
         return
       }
       const started = await gitInit(found.path)
-      await onAdd([started.path])
+      await onAdd([started.path], groupName)
     },
     onSuccess: () => setScan(null),
   })
 
-  const err = pick.error ?? accept.error
+  const quickPick = useMutation({
+    mutationFn: (root: string) => onAdd([root], groupName),
+  })
+
+  const rename = useMutation({ mutationFn: onRename })
+
+  const err = pick.error ?? accept.error ?? quickPick.error
   const refused =
     isRefusal(roots.error) ||
     isRefusal(err) ||
     (err instanceof InspectError && err.refused)
   const pathError = err && !refused ? err.message : null
-  const busy = pick.isPending || accept.isPending
+  const busy = pick.isPending || accept.isPending || quickPick.isPending
+  const blocked = busy || nameMissing
 
+  const quickPicks = (registered.data?.repos ?? []).filter((r) => !taken.has(r.root))
   const trimmed = path.trim()
-  const canInspect = trimmed !== '' && !refused && !busy
+  const canInspect = trimmed !== '' && !refused && !blocked
 
+  // The button, the Enter key and the picker all land here, so the gate belongs
+  // here and not on each control.
   function submit(candidate: string) {
-    if (candidate === '') return
+    if (candidate === '' || blocked) return
     setPath(candidate)
     pick.mutate(candidate)
   }
@@ -114,6 +140,29 @@ export function StepPath({
       )}
 
       {refused && <RegistrationRefused />}
+
+      {!refused && grouping && (
+        <div className="flex flex-col gap-1.5">
+          <FieldLabel htmlFor="project-name">project name</FieldLabel>
+          <TextInput
+            id="project-name"
+            value={name}
+            invalid={nameMissing}
+            placeholder="e.g. Acme Platform"
+            onChange={(e) => setEdited(e.target.value)}
+            onBlur={() => rename.mutate(name)}
+          />
+          <Hint>
+            Two or more repos group under this name. Nothing moves on disk and every
+            repo keeps its queue, runs, and history.
+          </Hint>
+          {rename.error && (
+            <Callout tone="fail" title="That name can't be used">
+              {rename.error.message}
+            </Callout>
+          )}
+        </div>
+      )}
 
       {!refused && scan && scan.children.length > 0 && (
         <div className="flex flex-col gap-3 rounded-md border border-border bg-card p-3">
@@ -189,7 +238,7 @@ export function StepPath({
             </Button>
             <Button
               type="button"
-              disabled={chosen.length === 0 || busy}
+              disabled={chosen.length === 0 || blocked}
               onClick={() => accept.mutate(scan)}
             >
               <FolderGit2 className="size-4" />
@@ -205,7 +254,11 @@ export function StepPath({
           title={`${scan.name} has no git repository — start one?`}
           actions={
             <>
-              <Button type="button" disabled={busy} onClick={() => accept.mutate(scan)}>
+              <Button
+                type="button"
+                disabled={blocked}
+                onClick={() => accept.mutate(scan)}
+              >
                 <FolderPlus className="size-4" />
                 {busy ? 'Initializing…' : 'Initialize git here'}
               </Button>
@@ -245,7 +298,7 @@ export function StepPath({
             </div>
           </div>
         ) : (
-          <FolderPicker busy={busy} onSelect={submit} />
+          <FolderPicker busy={busy} disabled={nameMissing} onSelect={submit} />
         ))}
 
       {!refused && !scan && (
@@ -256,6 +309,42 @@ export function StepPath({
         >
           {manual ? 'browse folders instead' : 'enter a path manually'}
         </button>
+      )}
+
+      {!refused && !scan && quickPicks.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <FieldLabel>already registered</FieldLabel>
+          <ul className="max-h-48 divide-y divide-border/40 overflow-y-auto rounded-md border border-border">
+            {quickPicks.map((repo) => (
+              <li key={repo.root}>
+                <button
+                  type="button"
+                  disabled={blocked}
+                  onClick={() => quickPick.mutate(repo.root)}
+                  className="flex w-full min-w-0 items-center gap-2 px-2.5 py-1.5 text-left hover:bg-muted/50 disabled:opacity-50"
+                >
+                  <FolderGit2
+                    className="size-3.5 shrink-0 text-primary"
+                    aria-hidden="true"
+                  />
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate font-mono text-xs text-foreground">
+                      {repo.name}
+                    </span>
+                    <span className="truncate font-mono text-[0.6rem] text-muted-foreground">
+                      {repo.root}
+                    </span>
+                  </span>
+                  <Plus
+                    className="size-3.5 shrink-0 text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <Hint>Repos the hub already knows — picking one adds it without browsing.</Hint>
+        </div>
       )}
 
       {pathError && (

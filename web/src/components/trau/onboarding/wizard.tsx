@@ -13,6 +13,7 @@ import {
   type TrackerProvider,
   type WizardStepId,
 } from '@/lib/onboarding'
+import { renameProject } from '@/lib/projects'
 import { StepDetect } from './step-detect'
 import { StepDone } from './step-done'
 import { StepEssentials } from './step-essentials'
@@ -26,6 +27,7 @@ export function OnboardingWizard({ initialPath = '' }: { initialPath?: string })
   const [maxReached, setMaxReached] = useState<WizardStepId>('path')
   const [members, setMembers] = useState<MemberRepo[]>([])
   const [project, setProject] = useState<string | null>(null)
+  const [projectName, setProjectName] = useState('')
   const [provider, setProvider] = useState<TrackerProvider | null>(null)
   const [trackerFields, setTrackerFields] = useState<TrackerFields | null>(null)
   const [essentials, setEssentials] = useState<EssentialsFields | null>(null)
@@ -36,6 +38,15 @@ export function OnboardingWizard({ initialPath = '' }: { initialPath?: string })
   function go(next: WizardStepId) {
     setStep(next)
     setMaxReached((prev) => laterStep(prev, next))
+  }
+
+  // joinProject names the group only when it creates it, so a name edited after
+  // that has to reach the project as a rename. A blank name goes to the hub too:
+  // its refusal is what the field reports, rather than the edit vanishing.
+  async function renameGroup(name: string) {
+    if (project === null || name === projectName) return
+    await renameProject(project, name)
+    setProjectName(name)
   }
 
   // Members are grouped into a project only once there are two of them. Re-picking
@@ -52,10 +63,11 @@ export function OnboardingWizard({ initialPath = '' }: { initialPath?: string })
     }
     const all = [...members, ...added]
     if (all.length > 1) {
+      const name = groupName ?? all[0].repo
       const joining = project ? added : all
-      setProject(
-        await joinProject(project, groupName ?? all[0].repo, joining.map((m) => m.root)),
-      )
+      await renameGroup(name)
+      setProject(await joinProject(project, name, joining.map((m) => m.root)))
+      setProjectName(name)
     }
     if (first) {
       setProvider(null)
@@ -74,7 +86,7 @@ export function OnboardingWizard({ initialPath = '' }: { initialPath?: string })
           <WizardStepper current={step} maxReached={maxReached} onNavigate={go} />
         </div>
         <TerminalCard
-          title={`add-project · ${stepLabel(step)}`}
+          title={`new-project · ${stepLabel(step)}`}
           className="min-w-0 flex-1"
           bodyClassName="p-5"
         >
@@ -82,7 +94,9 @@ export function OnboardingWizard({ initialPath = '' }: { initialPath?: string })
             <StepPath
               initialPath={members.length === 0 ? initialPath : ''}
               members={members}
+              projectName={projectName}
               onAdd={addPaths}
+              onRename={renameGroup}
             />
           )}
           {step === 'detect' && primary && (

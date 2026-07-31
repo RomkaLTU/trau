@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { RepoView } from '@/lib/instances'
 import {
@@ -8,6 +8,7 @@ import {
   projectMembers,
   removalPlan,
   removalSummary,
+  renameProject,
   type ProjectRemoval,
   type ProjectView,
 } from '@/lib/projects'
@@ -221,5 +222,41 @@ describe('projectMembers', () => {
       project: 'platform',
       members: [repos[2]],
     })
+  })
+})
+
+describe('renameProject', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('patches the project with its new name', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'p1', name: 'Acme Platform', repos: [] }),
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const renamed = await renameProject('p1', 'Acme Platform')
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('/api/v1/projects/p1')
+    expect(init.method).toBe('PATCH')
+    expect(JSON.parse(String(init.body))).toEqual({ name: 'Acme Platform' })
+    expect(renamed.name).toBe('Acme Platform')
+  })
+
+  it('reports the refusal of an empty name', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 400,
+        json: async () => ({ error: 'project name is empty' }),
+      })),
+    )
+
+    await expect(renameProject('p1', '')).rejects.toThrow('project name is empty')
   })
 })
