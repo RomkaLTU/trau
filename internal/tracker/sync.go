@@ -2,8 +2,12 @@ package tracker
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"strings"
 
+	"github.com/RomkaLTU/trau/internal/logger"
+	"github.com/RomkaLTU/trau/internal/tracker/azureapi"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 )
@@ -186,6 +190,113 @@ func (r *jiraReader) ProjectIdentifiers(ctx context.Context, binding ProjectBind
 
 func (r *jiraReader) Identity(ctx context.Context) (id, name string, err error) {
 	return r.client.Myself(ctx)
+}
+
+func (r *azureReader) ResolveBinding(ctx context.Context) (ProjectBinding, error) {
+	project := strings.TrimSpace(r.project)
+	if project == "" {
+		return ProjectBinding{}, ErrNoTeamProject
+	}
+	return ProjectBinding{ProjectID: project, Project: project}, nil
+}
+
+func (r *azureReader) SyncPull(ctx context.Context, binding ProjectBinding, since string) ([]SyncedIssue, error) {
+	project := r.projectOf(binding)
+	items, err := r.workItems(ctx, project, since)
+	if err != nil {
+		return nil, err
+	}
+	blockers, err := r.client.BlockerStates(ctx, project, items)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SyncedIssue, 0, len(items))
+	var lost []error
+	for i := range items {
+		iss, err := r.synced(ctx, project, &items[i], blockers)
+		if err != nil {
+			lost = append(lost, err)
+		}
+		out = append(out, iss)
+	}
+	if len(lost) > 0 {
+		logger.Printf("azure: %d of %d work items pulled without their discussion: %v", len(lost), len(items), lost[0])
+	}
+	return out, nil
+}
+
+func (r *azureReader) ProjectIdentifiers(ctx context.Context, binding ProjectBinding) ([]string, error) {
+	ids, err := r.client.SyncIDs(ctx, r.projectOf(binding), r.areaPath, "")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, azureIdentifier(r.prefix, id))
+	}
+	return out, nil
+}
+
+func (r *azureReader) Identity(ctx context.Context) (id, name string, err error) {
+	return r.client.ConnectionData(ctx)
+}
+
+// projectOf prefers the team project cached on the binding, falling back to the
+// reader's own configured one.
+func (r *azureReader) projectOf(b ProjectBinding) string {
+	if p := strings.TrimSpace(b.ProjectID); p != "" {
+		return p
+	}
+	return strings.TrimSpace(r.project)
+}
+
+// synced maps one work item onto a SyncedIssue. Azure DevOps serves a discussion
+// one work item at a time, so the extra round-trip is spent only on items that
+// report a comment; losing it costs the pull that discussion rather than the
+// ticket, so the issue is returned alongside the read failure. Work-item file
+// attachments are not mirrored: their bytes sit behind the same PAT the pull
+// holds, which the hub's attachment surface cannot present.
+func (r *azureReader) synced(ctx context.Context, project string, item *azureapi.WorkItem, blockers map[int]bool) (SyncedIssue, error) {
+	out := SyncedIssue{
+		ID:           azureIdentifier(r.prefix, item.ID),
+		ExternalID:   strconv.Itoa(item.ID),
+		Title:        item.Title,
+		Description:  item.Description,
+		Status:       item.State,
+		Group:        mapAzureGroup(item.Category(), item.Reason),
+		Priority:     item.Priority,
+		Labels:       item.Tags,
+		Parent:       azureParentIdentifier(r.prefix, item.Parent),
+		HasChildren:  item.HasChildren(),
+		URL:          r.client.WorkItemURL(project, item.ID),
+		CreatedAt:    item.CreatedAt,
+		UpdatedAt:    item.UpdatedAt,
+		AssigneeID:   item.AssignedToID,
+		AssigneeName: item.AssignedToName,
+	}
+	for _, id := range item.BlockedBy {
+		out.BlockedBy = append(out.BlockedBy, SyncedBlocker{
+			ID:       azureIdentifier(r.prefix, id),
+			Resolved: blockers[id],
+		})
+	}
+	if item.CommentCount == 0 {
+		return out, nil
+	}
+	comments, err := r.client.Comments(ctx, project, item.ID)
+	if err != nil {
+		return out, fmt.Errorf("read comments for work item %d: %w", item.ID, err)
+	}
+	for _, c := range comments {
+		out.Comments = append(out.Comments, SyncedComment{
+			ExternalID: strconv.Itoa(c.ID),
+			Author:     c.Author,
+			Body:       c.Body,
+			CreatedAt:  c.CreatedAt,
+			UpdatedAt:  c.UpdatedAt,
+		})
+	}
+	return out, nil
 }
 
 func jiraSynced(iss *jiraapi.SyncIssue, scanner AttachmentScanner) SyncedIssue {

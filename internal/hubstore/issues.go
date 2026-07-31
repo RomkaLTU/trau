@@ -97,12 +97,12 @@ type TeamBinding struct {
 // SyncState is a repo's sync bookkeeping: the cached binding, the last cursor,
 // the outcome of the last sync, and the resolved Me identity.
 type SyncState struct {
-	Binding      SyncBinding
-	Cursor       string
-	LastSyncedAt string
-	LastIssues   int
-	LastComments int
-	LastError    string
+	Binding       SyncBinding
+	Cursor        string
+	LastSyncedAt  string
+	LastIssues    int
+	LastComments  int
+	LastError     string
 	LastErrorKind string
 	Me            SyncIdentity
 }

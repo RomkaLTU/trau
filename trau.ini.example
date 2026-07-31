@@ -414,6 +414,18 @@ JIRA_API_TOKEN=              # classic API token (never commit)
 AZURE_ORG_URL=               # e.g. https://dev.azure.com/acme
 AZURE_PAT=                   # personal access token (never commit)
 #
+# AZURE_AREA_PATH narrows the team project to one Area Path and everything under
+# it — the hub mirrors only those work items and the loop picks only from them, so
+# a shared team project can be split between repos. Empty (the default) is the
+# whole team project. It needs no extra PAT scope.
+AZURE_AREA_PATH=             # e.g. Contoso\Platform
+#
+# The hub mirrors an Azure DevOps board into its own store like Linear and Jira:
+# a WIQL query returns the ids that changed since the last pull, a batched read
+# fills in the details, and the board, Inbox, search and queue-by-id confirm all
+# read from the mirror. File attachments on a work item are the one thing not
+# mirrored — their bytes sit behind the same PAT the pull holds.
+#
 # Work items are numbered organization-wide with no per-project key, so trau
 # addresses them through ISSUE_PREFIX: work item 1234 in a TRAU-prefixed repo is
 # TRAU-1234 everywhere (branch names, sentinels, the web UI), and the PR trailer

@@ -741,6 +741,7 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		// to fall back to, so the runner is left out entirely.
 		tc.APIKey = cfg.AzurePAT
 		tc.BaseURL = cfg.AzureOrgURL
+		tc.AreaPath = cfg.AzureAreaPath
 		runner = nil
 	case "internal":
 		// The internal provider drives issues through the hub over HTTP, never the

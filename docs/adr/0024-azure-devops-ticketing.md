@@ -56,6 +56,10 @@ reuses it for its project key.
    loop reads tickets straight from the tracker. Sync (ADR 0007) needs
    `SyncPull`/`ProjectIdentifiers`/`Identity` semantics that a WIQL-and-batch read
    model can satisfy, but that is a separate slice.
+
+   **Superseded for reads by ADR 0028.** That slice landed: `NewReader` now builds
+   an `azureReader` and the hub mirrors the board. `NewWriter` still refuses
+   `azure` — filing work items and publishing PRDs from the UI is untouched.
 5. **Comments ride on `System.History`.** The dedicated comments route is still
    preview-gated, whereas writing `System.History` through the work-item PATCH is
    GA and rides along on whichever update is already in flight — one round-trip for
