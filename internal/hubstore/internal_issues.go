@@ -67,11 +67,8 @@ func (s *Issues) CreateInternal(repo, prefix string, d InternalDraft) (Issue, er
 	if err != nil {
 		return Issue{}, err
 	}
-	if _, err := tx.Exec(`INSERT INTO issue_seq(repo, next) VALUES(?, 1) ON CONFLICT(repo) DO NOTHING`, repo); err != nil {
-		return Issue{}, errors.Join(err, tx.Rollback())
-	}
-	var next int64
-	if err := tx.QueryRow(`SELECT next FROM issue_seq WHERE repo = ?`, repo).Scan(&next); err != nil {
+	next, err := nextInternalSeq(tx, repo)
+	if err != nil {
 		return Issue{}, errors.Join(err, tx.Rollback())
 	}
 	identifier, err := freeIdentifier(tx, repo, prefix, &next)

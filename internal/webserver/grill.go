@@ -28,8 +28,9 @@ const grillDefaultProvider = "claude"
 // carries the session's seed so the queue can title an issue-less draft.
 // IssueDestination names where a create-apply filed the anchored issue, so a review
 // remounted on a settled session still names the destination it used rather than
-// reverting to the picker default. Provider is the session's locked provider and
-// Mode its locked session type; AutoAccept marks a session that answers its own
+// reverting to the picker default, and ApplyWarnings the caveats that apply carried,
+// so the same remount raises them again. Provider is the session's locked provider
+// and Mode its locked session type; AutoAccept marks a session that answers its own
 // recommendations, so the panel can label the answers it never asked for.
 type GrillSessionView struct {
 	ID               string   `json:"id"`
@@ -45,6 +46,7 @@ type GrillSessionView struct {
 	ModelOptions     []string `json:"model_options,omitempty"`
 	AutoAccept       bool     `json:"auto_accept"`
 	ParkedReason     string   `json:"parked_reason,omitempty"`
+	ApplyWarnings    []string `json:"apply_warnings,omitempty"`
 	CreatedAt        string   `json:"created_at"`
 	UpdatedAt        string   `json:"updated_at"`
 }
@@ -810,6 +812,7 @@ func (s *Server) grillSessionView(repo string, sess hubstore.GrillSession) Grill
 		ModelOptions:     grillModelOptionsFor(sess.Provider),
 		AutoAccept:       sess.AutoAccept,
 		ParkedReason:     sess.ParkedReason,
+		ApplyWarnings:    sess.ApplyWarnings,
 		CreatedAt:        sess.CreatedAt,
 		UpdatedAt:        sess.UpdatedAt,
 	}

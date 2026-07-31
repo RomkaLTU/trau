@@ -20,9 +20,10 @@ export type GrillMode = 'interview' | 'research'
 // authoring session anchored to the repo alone; parked_reason carries the cause a
 // parked or stalled session settled with. issue_title is the hub's join onto the
 // grilled issue — the only title a settled session has, since applying drops the
-// triage labels the board queries key on. issue_destination names where a create
-// apply filed the anchored issue, so a review remounted on a settled session names
-// the destination it used instead of the picker default. auto_accept marks a session
+// triage labels the board queries key on. issue_destination names where the apply
+// wrote, so a review remounted on a settled session names the destination it used
+// instead of the picker default, and apply_warnings carries the caveats that apply
+// reported, so the same remount raises them again. auto_accept marks a session
 // answering its own recommendations, so only a question needing the user's taste is
 // ever asked.
 export interface GrillSession {
@@ -31,6 +32,7 @@ export interface GrillSession {
   issue_id?: string
   issue_destination?: GrillDestination
   issue_title?: string
+  apply_warnings?: string[]
   state: GrillState
   session_chain?: string
   mode?: GrillMode
@@ -118,11 +120,13 @@ export interface GrillApplyStep {
 
 // GrillApplyResponse mirrors the hub's apply result: the updated session, whether
 // every step landed, and each step in the order it ran. A partial apply leaves the
-// session finished so a retry re-runs the plan.
+// session finished so a retry re-runs the plan. warnings carry what the apply could
+// not do but never gated on — the tracker note a detached ticket did not receive.
 export interface GrillApplyResponse {
   session: GrillSession
   applied: boolean
   steps: GrillApplyStep[]
+  warnings?: string[]
 }
 
 // GrillAppliedOutcome is what a landed apply reports to the host that mounted the
@@ -585,9 +589,11 @@ export async function answerGrill(sid: string, text: string): Promise<GrillAnswe
 // applyGrill writes a finished session's proposed outcome to the tracker. A rewrite,
 // split, or create carries its (possibly edited) description in the body; a split or
 // create-epic also carries the edited sub-issues, and a create carries the edited
-// title and, when the user picked one, the destination it files in. assignee rides
-// along only when a person was picked, and every issue the apply creates lands on
-// them. Other dispositions carry none and let the hub fall back to the proposal.
+// title. destination rides along when the user picked one: on a create it is where
+// the issue files, and on an anchored rewrite or split "internal" converts the
+// anchored ticket and applies to the internal issue it becomes. assignee rides along
+// only when a person was picked, and every issue the apply creates lands on them.
+// Other dispositions carry none and let the hub fall back to the proposal.
 export async function applyGrill(
   sid: string,
   proposedDescription: string,
