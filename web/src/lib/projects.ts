@@ -200,6 +200,18 @@ export async function createProject(name: string): Promise<ProjectView> {
   return res.json()
 }
 
+export async function renameProject(id: string, name: string): Promise<ProjectView> {
+  const res = await apiFetch(`/api/v1/projects/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, 'rename project failed'))
+  }
+  return res.json()
+}
+
 // ProjectTrackerKey is one key of a project's shared tracker. A secret carries
 // no value, only whether one is stored.
 export interface ProjectTrackerKey {
