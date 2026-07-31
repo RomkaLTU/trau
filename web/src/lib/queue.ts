@@ -146,9 +146,9 @@ export async function moveQueueItem(
   return res.json()
 }
 
-// promoteQueueItem moves a pending item to the first pending slot, so the drain
-// picks it when the run in flight settles. Only a pending item can be promoted:
-// one that has started or settled meanwhile answers 409.
+// promoteQueueItem moves an item to the front of the run order, ahead of every
+// row the drain would still launch, so it picks this one when the run in flight
+// settles. A row that has started or settled meanwhile answers 409.
 export async function promoteQueueItem(
   repo: string,
   id: string,
@@ -265,8 +265,9 @@ export async function shutdownQueue(repo: string): Promise<void> {
 // runNext is the one web launch gesture: make the item the queue's next run,
 // then arm the drain. A fresh id front-inserts and a pending one moves to the
 // front; on the conflict an already-queued id answers instead, a paused item is
-// already parked at the front so arming alone resumes it, and a settled
-// leftover is dropped and re-queued so the ticket runs again.
+// promoted so the arming resumes the ticket named here rather than whichever
+// runnable row sits ahead of it, and a settled leftover is dropped and re-queued
+// so the ticket runs again.
 export async function runNext(
   repo: string,
   req: EnqueueRequest,
@@ -281,6 +282,8 @@ export async function runNext(
     if (queueTerminal(queued.status)) {
       await dequeue(repo, req.id)
       await enqueue(repo, { ...req, front: true })
+    } else if (queued.status === 'paused') {
+      await promoteQueueItem(repo, req.id)
     }
   }
   return drain(repo, true, opts)
@@ -344,13 +347,18 @@ export function queueTerminal(status: string): boolean {
   return status === 'done' || status === 'failed' || status === 'skipped'
 }
 
-// queueRunnable reports whether a Start has anything to launch, mirroring the
-// hub's own queue.Runnable rule that it runs the first pending or paused item.
-// A paused epic counts even when every sub-issue reads done — the Start
-// re-attempts the finalize the pause parked on, which runs no leaf ticket of its
-// own.
+// queueStatusRunnable mirrors the hub's own queue.Runnable rule: the drain
+// launches the first pending or paused item by position and passes over every
+// settled one.
+export function queueStatusRunnable(status: string): boolean {
+  return status === 'pending' || status === 'paused'
+}
+
+// queueRunnable reports whether a Start has anything to launch. A paused epic
+// counts even when every sub-issue reads done — the Start re-attempts the
+// finalize the pause parked on, which runs no leaf ticket of its own.
 export function queueRunnable(items: QueueItem[]): boolean {
-  return items.some((it) => it.status === 'pending' || it.status === 'paused')
+  return items.some((it) => queueStatusRunnable(it.status))
 }
 
 // QUEUE_NOT_RUNNABLE is why a Start is unavailable, said both as a tooltip and

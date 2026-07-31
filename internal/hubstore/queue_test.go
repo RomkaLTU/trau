@@ -456,6 +456,50 @@ func TestMoveToFrontPromotesBehindTheRunningItem(t *testing.T) {
 	}
 }
 
+// TestMoveToFrontResumesAPausedItemAhead drives the running view's Resume: the
+// paused row sits behind pending work, and promoting it makes it the first
+// runnable item so arming the drain resumes that ticket and not the one in front.
+func TestMoveToFrontResumesAPausedItemAhead(t *testing.T) {
+	q := testQueue(t)
+	mustAdd(t, q, "COD-1")
+	mustAdd(t, q, "COD-2")
+	if err := q.Pause("COD-2", "needs re-auth"); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	items, err := q.MoveToFront("COD-2")
+	if err != nil {
+		t.Fatalf("MoveToFront: %v", err)
+	}
+	if got := ids(items); !reflect.DeepEqual(got, []string{"COD-2", "COD-1"}) {
+		t.Fatalf("order = %v, want the resumed pause first", got)
+	}
+	if items[0].Status != queue.StatusPaused {
+		t.Errorf("status = %q, want the pause kept so the run resumes from its checkpoint", items[0].Status)
+	}
+}
+
+// TestMoveToFrontPromotesAheadOfAPausedItem drives the running view's Run next
+// with a pause sitting at the head of the remaining work: the promoted row lands
+// where the drain launches next, not merely ahead of the pending rows behind it.
+func TestMoveToFrontPromotesAheadOfAPausedItem(t *testing.T) {
+	q := testQueue(t)
+	mustAdd(t, q, "COD-1")
+	mustAdd(t, q, "COD-2")
+	mustAdd(t, q, "COD-3")
+	if err := q.Pause("COD-1", "needs re-auth"); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+
+	items, err := q.MoveToFront("COD-3")
+	if err != nil {
+		t.Fatalf("MoveToFront: %v", err)
+	}
+	if got := ids(items); !reflect.DeepEqual(got, []string{"COD-3", "COD-1", "COD-2"}) {
+		t.Fatalf("order = %v, want the promoted item ahead of the pause", got)
+	}
+}
+
 func TestMoveToFrontGuardsRowsItCannotPromote(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -477,16 +521,6 @@ func TestMoveToFrontGuardsRowsItCannotPromote(t *testing.T) {
 			},
 			id:   "COD-2",
 			want: queue.ErrRunning,
-		},
-		{
-			name: "item paused",
-			prepare: func(t *testing.T, q *Queue) {
-				if err := q.Pause("COD-2", "needs re-auth"); err != nil {
-					t.Fatalf("Pause: %v", err)
-				}
-			},
-			id:   "COD-2",
-			want: queue.ErrNotPending,
 		},
 		{
 			name: "item already settled",
