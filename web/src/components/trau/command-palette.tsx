@@ -32,7 +32,11 @@ import { isPaletteShortcut, movesHighlight } from '@/lib/palette-keys'
 import { loadRecents, visibleRecents, type RecentEntry } from '@/lib/recents'
 import { matchRuns } from '@/lib/run-search'
 import { runsQueryOptions, type Run } from '@/lib/runs'
-import { issueSearchQueryOptions, type SearchResult } from '@/lib/search'
+import {
+  globalSearchQueryOptions,
+  issueSearchQueryOptions,
+  type SearchResult,
+} from '@/lib/search'
 import { displayValue, matchSettings } from '@/lib/settings'
 import { suggestFor, type SuggestionEntry } from '@/lib/suggestions'
 
@@ -41,8 +45,29 @@ const GROUP_HEADING =
 
 const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items)
 
-function issueValue(id: string) {
-  return `issue:${id}`
+type IssueRow = SearchResult & { repo?: string }
+type RunRow = Run & { repo?: string }
+
+interface SettingRow {
+  key: string
+  section: string
+  value: string
+  repo?: string
+}
+
+// Under "All projects" the same ticket id can come from two repos, and cmdk
+// selects on the value, so a cross-repo row is keyed by both.
+function rowValue(kind: string, id: string, repo?: string) {
+  return repo ? `${kind}:${repo}:${id}` : `${kind}:${id}`
+}
+
+function RepoChip({ repo }: { repo?: string }) {
+  if (!repo) return null
+  return (
+    <span className="shrink-0 truncate text-[0.65rem] text-muted-foreground">
+      {repo}
+    </span>
+  )
 }
 
 function runAge(run: Run, now: number): string {
@@ -121,45 +146,79 @@ export function CommandPalette({
     [open, pathname, repo, repos],
   )
 
-  // Issue and settings search each need one concrete repo to query; under
-  // "All projects" both groups are simply absent.
+  // Under one repo the palette queries that repo's paths; under "All projects"
+  // a single hub-side query fans the same three groups out over every repo.
   const scopedRepo = isAll ? '' : (repo ?? '')
-  const searching = scopedRepo !== '' && trimmed !== ''
+  const scopedSearch = scopedRepo !== '' && trimmed !== ''
+  const globalSearch = isAll && trimmed !== ''
+  const searching = scopedSearch || globalSearch
+
   // Holding the previous hits mounted while the next query flies keeps the
   // highlight on the row the user picked instead of churning it through cmdk.
   const issues = useQuery({
     ...issueSearchQueryOptions(scopedRepo, debounced),
     placeholderData: (previous) => previous,
   })
-  const issueRows = searching ? (issues.data?.results ?? []) : []
-  const issuesPending = searching && (debounced !== trimmed || issues.isFetching)
+  const global = useQuery({
+    ...globalSearchQueryOptions(debounced),
+    enabled: open && isAll && debounced !== '',
+    placeholderData: (previous) => previous,
+  })
+  const globalData = global.data
+
+  const issueRows: IssueRow[] = globalSearch
+    ? (globalData?.results.issues ?? [])
+    : scopedSearch
+      ? (issues.data?.results ?? [])
+      : []
+  const issuesPending =
+    searching &&
+    (debounced !== trimmed ||
+      (globalSearch ? global.isFetching : issues.isFetching))
 
   const config = useQuery({
     ...configQueryOptions(scopedRepo),
-    enabled: open && searching,
+    enabled: open && scopedSearch,
   })
-  const settingRows = useMemo(
-    () => (searching ? matchSettings(config.data?.keys ?? [], trimmed) : []),
-    [searching, config.data, trimmed],
-  )
+  const settingRows = useMemo<SettingRow[]>(() => {
+    if (globalSearch) {
+      return (globalData?.results.settings ?? []).map((row) => ({
+        key: row.key,
+        section: row.group,
+        value: row.value,
+        repo: row.repo,
+      }))
+    }
+    if (!scopedSearch) return []
+    return matchSettings(config.data?.keys ?? [], trimmed).map(
+      ({ item, section }) => ({
+        key: item.key,
+        section,
+        value: displayValue(item),
+      }),
+    )
+  }, [globalSearch, globalData, scopedSearch, config.data, trimmed])
 
   const runs = useQuery({
     ...runsQueryOptions(scopedRepo),
-    enabled: open && searching,
+    enabled: open && scopedSearch,
   })
-  const runRows = useMemo(
-    () => (searching ? matchRuns(runs.data?.runs ?? [], trimmed) : []),
-    [searching, runs.data, trimmed],
-  )
+  const runRows = useMemo<RunRow[]>(() => {
+    if (globalSearch) return globalData?.results.runs ?? []
+    return scopedSearch ? matchRuns(runs.data?.runs ?? [], trimmed) : []
+  }, [globalSearch, globalData, scopedSearch, runs.data, trimmed])
   const now = useNow(30_000)
 
   // cmdk only auto-selects when nothing is selected, so late-arriving issue rows
   // would leave the highlight on a static row: move it to the top hit ourselves,
   // unless the user has already moved the highlight.
-  const topIssue = issueRows[0]?.id
+  const topIssue = issueRows[0]
+  const topIssueValue = topIssue
+    ? rowValue('issue', topIssue.id, topIssue.repo)
+    : ''
   useEffect(() => {
-    if (topIssue && !highlightMoved.current) setSelected(issueValue(topIssue))
-  }, [topIssue])
+    if (topIssueValue && !highlightMoved.current) setSelected(topIssueValue)
+  }, [topIssueValue])
 
   // Rows that unmount can leave cmdk's controlled value pointing at nothing,
   // which silently kills Enter: hand the highlight back to the first row.
@@ -202,25 +261,29 @@ export function CommandPalette({
     void navigate({ to: entry.path })
   }
 
-  function pickIssue(result: SearchResult) {
+  // The run route carries its own repo, so a cross-repo hit lands without
+  // moving the active scope.
+  function pickIssue(result: IssueRow) {
     onOpenChange(false)
     void navigate({
       to: '/runs/$repo/$ticket',
-      params: { repo: scopedRepo, ticket: result.id },
+      params: { repo: result.repo ?? scopedRepo, ticket: result.id },
     })
   }
 
-  function pickRun(run: Run) {
+  function pickRun(run: RunRow) {
     onOpenChange(false)
     void navigate({
       to: '/runs/$repo/$ticket',
-      params: { repo: scopedRepo, ticket: run.ticket },
+      params: { repo: run.repo ?? scopedRepo, ticket: run.ticket },
     })
   }
 
-  function pickSetting(key: string) {
+  // Settings is repo-scoped, so a cross-repo key has to move the scope with it.
+  function pickSetting(row: SettingRow) {
     onOpenChange(false)
-    void navigate({ to: '/settings', search: { q: key } })
+    if (row.repo) setScope(row.repo)
+    void navigate({ to: '/settings', search: { q: row.key } })
   }
 
   function pickRecent(entry: RecentEntry) {
@@ -270,8 +333,8 @@ export function CommandPalette({
               )}
               {issueRows.map((result) => (
                 <CommandItem
-                  key={result.id}
-                  value={issueValue(result.id)}
+                  key={rowValue('issue', result.id, result.repo)}
+                  value={rowValue('issue', result.id, result.repo)}
                   onSelect={() => pickIssue(result)}
                 >
                   <span className="shrink-0 text-primary">{result.id}</span>
@@ -291,6 +354,7 @@ export function CommandPalette({
                       {label}
                     </span>
                   ))}
+                  <RepoChip repo={result.repo} />
                 </CommandItem>
               ))}
             </CommandGroup>
@@ -307,8 +371,8 @@ export function CommandPalette({
                 const pill = boardPill(run)
                 return (
                   <CommandItem
-                    key={run.ticket}
-                    value={`run:${run.ticket}`}
+                    key={rowValue('run', run.ticket, run.repo)}
+                    value={rowValue('run', run.ticket, run.repo)}
                     onSelect={() => pickRun(run)}
                   >
                     <span className="shrink-0 text-primary">{run.ticket}</span>
@@ -319,6 +383,7 @@ export function CommandPalette({
                     <span className="shrink-0 text-[0.65rem] text-muted-foreground">
                       {runAge(run, now)}
                     </span>
+                    <RepoChip repo={run.repo} />
                   </CommandItem>
                 )
               })}
@@ -448,20 +513,21 @@ export function CommandPalette({
         )}
         {settingRows.length > 0 && (
           <CommandGroup heading="Settings" className={GROUP_HEADING}>
-            {settingRows.map(({ item, section }) => (
+            {settingRows.map((row) => (
               <CommandItem
-                key={item.key}
-                value={`setting:${item.key}`}
-                onSelect={() => pickSetting(item.key)}
+                key={rowValue('setting', row.key, row.repo)}
+                value={rowValue('setting', row.key, row.repo)}
+                onSelect={() => pickSetting(row)}
               >
                 <Settings />
-                <span className="min-w-0 flex-1 truncate">{item.key}</span>
+                <span className="min-w-0 flex-1 truncate">{row.key}</span>
                 <span className="shrink-0 text-[0.65rem] text-muted-foreground">
-                  {section}
+                  {row.section}
                 </span>
                 <span className="max-w-[10rem] shrink-0 truncate text-[0.65rem]">
-                  {displayValue(item)}
+                  {row.value}
                 </span>
+                <RepoChip repo={row.repo} />
               </CommandItem>
             ))}
           </CommandGroup>

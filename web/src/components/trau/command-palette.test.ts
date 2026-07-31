@@ -25,7 +25,10 @@ type Navigation = {
   params?: { repo: string; ticket: string }
 }
 
-const { navigations } = vi.hoisted(() => ({ navigations: [] as Navigation[] }))
+const { navigations, active } = vi.hoisted(() => ({
+  navigations: [] as Navigation[],
+  active: { isAll: false, picked: [] as string[] },
+}))
 
 vi.mock('@/lib/api', () => ({ apiFetch: vi.fn() }))
 vi.mock('@tanstack/react-router', () => ({
@@ -39,11 +42,11 @@ vi.mock('@tanstack/react-router', () => ({
 vi.mock('@/components/trau/active-repo', () => ({
   ALL_SCOPE: 'All repos',
   useActiveRepo: () => ({
-    scope: 'loop',
-    repo: 'loop',
-    isAll: false,
+    scope: active.isAll ? 'All repos' : 'loop',
+    repo: active.isAll ? null : 'loop',
+    isAll: active.isAll,
     repos: [],
-    setScope: () => {},
+    setScope: (next: string) => active.picked.push(next),
     setRepo: () => {},
     autoScope: () => null,
     openSwitcher: () => {},
@@ -88,6 +91,8 @@ afterEach(() => {
   act(() => root.unmount())
   container.remove()
   navigations.length = 0
+  active.isAll = false
+  active.picked.length = 0
   vi.mocked(apiFetch).mockReset()
 })
 
@@ -206,7 +211,44 @@ const ledgerRuns = [
   },
 ]
 
+const globalResults = {
+  issues: [
+    {
+      id: 'COD-1343',
+      title: 'Cross-repo palette search',
+      status: 'In Progress',
+      group: 'started',
+      source: 'linear',
+      labels: [],
+      has_children: false,
+      repo: 'loop',
+    },
+  ],
+  settings: [
+    {
+      repo: 'atlas',
+      key: 'LINEAR_API_KEY',
+      group: 'Tracker & issues',
+      value: '••••••••',
+    },
+  ],
+  runs: [
+    {
+      ticket: 'COD-31',
+      title: 'Costs page',
+      phase: 'merged',
+      phase_rank: 6,
+      terminal: true,
+      updated_at: '2026-07-01T09:00:00Z',
+      repo: 'atlas',
+    },
+  ],
+}
+
 function payloadFor(url: string) {
+  if (url.startsWith('/api/v1/search')) {
+    return { query: 'palette', results: globalResults }
+  }
   if (url.includes('/config')) {
     return { repo: 'loop', layers: ['user'], providers: [], keys: configKeys }
   }
@@ -298,4 +340,62 @@ it('lists matching settings keys and lands on the settings page', async () => {
     { to: '/settings', search: { q: 'LINEAR_API_KEY' } },
   ])
   expect(opens).toEqual([false])
+})
+
+// The cross-repo query is debounced, so rows only arrive once the timer has run.
+async function settleSearch() {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 200))
+  })
+  await act(async () => {})
+}
+
+it('surfaces every repo’s hits under All projects without flipping scope', async () => {
+  active.isAll = true
+  const opens = renderPalette()
+  typeQuery('palette')
+  await settleSearch()
+
+  const issue = document.body.querySelector<HTMLElement>(
+    '[cmdk-item=""][data-value="issue:loop:COD-1343"]',
+  )
+  expect(issue?.textContent).toContain('Cross-repo palette search')
+  expect(issue?.textContent).toContain('loop')
+  const run = document.body.querySelector<HTMLElement>(
+    '[cmdk-item=""][data-value="run:atlas:COD-31"]',
+  )
+  expect(run?.textContent).toContain('Costs page')
+  expect(run?.textContent).toContain('atlas')
+  expect(
+    document.body.querySelector(
+      '[cmdk-item=""][data-value="setting:atlas:LINEAR_API_KEY"]',
+    ),
+  ).not.toBeNull()
+
+  act(() => run?.click())
+
+  expect(navigations).toEqual([
+    { to: '/runs/$repo/$ticket', params: { repo: 'atlas', ticket: 'COD-31' } },
+  ])
+  expect(active.picked).toEqual([])
+  expect(opens).toEqual([false])
+})
+
+it('switches to a cross-repo setting’s repo before landing on it', async () => {
+  active.isAll = true
+  renderPalette()
+  typeQuery('linear')
+  await settleSearch()
+
+  const row = document.body.querySelector<HTMLElement>(
+    '[cmdk-item=""][data-value="setting:atlas:LINEAR_API_KEY"]',
+  )
+  expect(row?.textContent).toContain('••••••••')
+
+  act(() => row?.click())
+
+  expect(active.picked).toEqual(['atlas'])
+  expect(navigations).toEqual([
+    { to: '/settings', search: { q: 'LINEAR_API_KEY' } },
+  ])
 })
