@@ -236,6 +236,10 @@ type GitHub interface {
 	// as 0 when gh cannot answer, which the merge gate treats as unmeasured.
 	PRSize(ctx context.Context, pr string) (commits, files int, err error)
 
+	// ClosePR closes a PR without merging it — what a requeue does to the attempt
+	// PR a quarantined ticket left open.
+	ClosePR(ctx context.Context, pr string) error
+
 	Merge(ctx context.Context, pr, method string, deleteBranch bool) error
 }
 
@@ -470,8 +474,13 @@ type Pipeline struct {
 	// QueuedLabel is the label the hub queue mirrors onto waiting tickets, stripped
 	// as the ticket goes In Progress. Empty disables the write.
 	QueuedLabel string
-	MaxRepairs  int
-	MaxBugfixes int
+	// ReadyLabel and QuarantineLabel are the labels the loop manages on the tracker
+	// (config READY_LABEL / QUARANTINE_LABEL). Requeue reads them back off the
+	// ticket so it reports only the steps it actually had to take.
+	ReadyLabel      string
+	QuarantineLabel string
+	MaxRepairs      int
+	MaxBugfixes     int
 
 	// AgentRetries is how many times a TRANSIENT agent-step failure (timeout,
 	// output stall, non-rate-limit crash) is retried on a fresh process per
@@ -1376,6 +1385,18 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 		_ = p.Git.DeleteBranch(ctx, branch)
 		_ = p.Git.DeletePushedBranch(ctx, p.Remote, branch)
 	}
+	p.clearLocalState(id)
+	if branch != "" {
+		p.logf("  reset %s: cleared saved state + branch %s", id, branch)
+	} else {
+		p.logf("  reset %s: cleared saved state", id)
+	}
+}
+
+// clearLocalState drops everything a ticket's attempt left on this machine: its
+// checkpoint, the hub-side artifacts and phase logs, and the prompt files and
+// attachments the phases materialized under /tmp.
+func (p *Pipeline) clearLocalState(id string) {
 	_ = os.Remove(handoffPath(id))
 	_ = os.Remove(verifyPath(id))
 	_ = os.Remove(rubricPath(id))
@@ -1384,11 +1405,6 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 	p.clearArtifacts(id)
 	p.clearPhaseLogs(id)
 	_ = p.State.RemoveState(id)
-	if branch != "" {
-		p.logf("  reset %s: cleared saved state + branch %s", id, branch)
-	} else {
-		p.logf("  reset %s: cleared saved state", id)
-	}
 }
 
 // PurgeLocal drops what a hard-deleted ticket left on this machine: its feature
@@ -5590,6 +5606,14 @@ func (g ExecGitHub) PRSize(ctx context.Context, pr string) (int, int, error) {
 		return 0, 0, nil
 	}
 	return len(view.Commits), view.ChangedFiles, nil
+}
+
+// ClosePR closes pr without merging it.
+func (g ExecGitHub) ClosePR(ctx context.Context, pr string) error {
+	if _, err := g.output(ctx, "pr", "close", pr); err != nil {
+		return fmt.Errorf("gh pr close: %w", err)
+	}
+	return nil
 }
 
 // Merge merges the PR with the given method; deleteBranch adds --delete-branch.
