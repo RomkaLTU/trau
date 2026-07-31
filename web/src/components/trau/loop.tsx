@@ -1623,7 +1623,12 @@ function PendingEpicGroup({
   const paused = item?.status === "paused";
   return (
     <li className="border-b border-border/60 last:border-0">
-      <div className="flex items-center gap-3 px-4 py-2.5">
+      <div
+        className={cn(
+          "flex items-center gap-3 px-4 py-2.5",
+          entry.active && "bg-teal/5",
+        )}
+      >
         <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sm text-info">
           <span aria-hidden="true">◆</span>
           <TicketIdButton id={entry.id} onPeek={onPeek} className="text-info" />

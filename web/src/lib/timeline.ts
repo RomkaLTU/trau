@@ -33,6 +33,10 @@ export type PendingEntry =
       id: string
       title: string
       source?: string
+      // active is the epic the drain is working. It reads the queue item rather
+      // than the running ticket so it holds through the gap between sub-issue
+      // picks, when nothing is running but the epic item still is.
+      active: boolean
       done: number
       total: number
       children: TimelineTicket[]
@@ -341,6 +345,7 @@ export function buildTimeline(
           id: item.id,
           title: item.title ?? '',
           source: item.source,
+          active: item.status === 'running',
           done,
           total: subs.length,
           children,
