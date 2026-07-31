@@ -43,7 +43,7 @@ func queueViewByID(q QueueResponse, id string) (QueueItemView, bool) {
 // running item's child is stopped with escalation, only the queue row goes, and
 // the checkpoint the stop left behind survives so the ticket is re-queueable.
 func TestDequeueRunningWithStopStopsChildAndKeepsTicket(t *testing.T) {
-	s, fake, root, ts := shutdownServer(t, "acme")
+	s, fake, root, ts := stopServer(t, "acme")
 	fake.onKill = func(pid int) { _ = proc.KillGroup(pid) }
 	repo := filepath.Base(root)
 	store := s.stores.Queue(root)
@@ -90,7 +90,7 @@ func TestDequeueRunningWithStopStopsChildAndKeepsTicket(t *testing.T) {
 // it was: a running row is a 409 that changes nothing unless the caller opts into
 // the stop.
 func TestDequeueRunningWithoutStopIsStillRefused(t *testing.T) {
-	s, _, root, ts := shutdownServer(t, "acme")
+	s, _, root, ts := stopServer(t, "acme")
 	repo := filepath.Base(root)
 	store := s.stores.Queue(root)
 	if _, err := store.Add(queue.Item{Kind: queue.KindTicket, ID: "COD-1"}); err != nil {
@@ -113,7 +113,7 @@ func TestDequeueRunningWithoutStopIsStillRefused(t *testing.T) {
 // a child: a process that outlives the escalation keeps its queue row, so a
 // later DELETE retries the whole sequence rather than losing track of it.
 func TestDequeueRunningLeavesRowWhenChildSurvives(t *testing.T) {
-	s, _, root, ts := shutdownServer(t, "acme")
+	s, _, root, ts := stopServer(t, "acme")
 	repo := filepath.Base(root)
 	store := s.stores.Queue(root)
 
@@ -150,7 +150,7 @@ func TestDequeueRunningLeavesRowWhenChildSurvives(t *testing.T) {
 // while the removal is under way answers the same way without signalling the
 // child again.
 func TestDequeueRunningTwiceStopsOnce(t *testing.T) {
-	s, fake, root, ts := shutdownServer(t, "acme")
+	s, fake, root, ts := stopServer(t, "acme")
 	repo := filepath.Base(root)
 	store := s.stores.Queue(root)
 

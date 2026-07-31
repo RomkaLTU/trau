@@ -633,6 +633,18 @@ func TestDequeueUnknownItem(t *testing.T) {
 	}
 }
 
+// TestQueueShutdownRouteIsGone proves a stale client's POST to the removed
+// shutdown endpoint reads as gone rather than falling through to the item route,
+// which would answer 405 and advertise DELETE on a path that has no row.
+func TestQueueShutdownRouteIsGone(t *testing.T) {
+	_, _, ts := queueServer(t, "acme")
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/acme/queue/shutdown", nil)
+	_ = res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for the deleted shutdown route", res.StatusCode)
+	}
+}
+
 // TestDequeueRunningRefused proves the backend, not just the disabled UI button,
 // rejects removing an item the hub is draining — so a Remove that races the
 // drainer promoting the item to running cannot orphan the just-spawned child.
@@ -915,16 +927,6 @@ func TestQueueRunItemGuards(t *testing.T) {
 			id:     "COD-1",
 			status: http.StatusConflict,
 			reason: "a loop is already running",
-		},
-		{
-			name: "repo shutting down",
-			setup: func(t *testing.T, s *Server, root string) {
-				seedQueue(t, s, root, false, queue.Item{Kind: queue.KindTicket, ID: "COD-1"})
-				s.beginShutdown(root)
-			},
-			id:     "COD-1",
-			status: http.StatusConflict,
-			reason: "shutting down",
 		},
 		{
 			name: "already settled item",

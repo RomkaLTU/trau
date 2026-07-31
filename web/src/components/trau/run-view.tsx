@@ -947,7 +947,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         onOpenChange={setStopOpen}
         windowTitle="confirm"
         title={`Stop run ${ticket}?`}
-        description="The run stops now. Work in progress is saved at the last checkpoint and the ticket stays resumable."
+        description="The run stops now. Work in progress is saved at the last checkpoint and the ticket stays resumable — Resume picks it up from there."
         confirmLabel="Stop run"
         destructive
         onConfirm={() => stop.mutate()}

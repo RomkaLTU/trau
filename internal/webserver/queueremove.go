@@ -67,7 +67,7 @@ func (s *Server) removingItems(root string) map[string]bool {
 // in-flight flag still clears so a later DELETE retries the whole sequence.
 func (s *Server) removeRunningItem(root string, it queue.Item) {
 	defer s.endRemoving(root, it.ID)
-	if err := s.stopAndWait(it.PID, shutdownKillGrace); err != nil {
+	if err := s.stopAndWait(it.PID, stopKillGrace); err != nil {
 		logger.Verbosef("remove %s from %s queue: stop pid %d: %v", it.ID, root, it.PID, err)
 	}
 	if registry.Alive(it.PID) {
