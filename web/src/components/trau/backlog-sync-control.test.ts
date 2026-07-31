@@ -1,6 +1,8 @@
 import { expect, it } from 'vitest'
 
 import {
+  pulledCounts,
+  syncDisabled,
   syncStatusLine,
   type SyncStatus,
 } from '@/components/trau/backlog-sync-control'
@@ -75,4 +77,29 @@ it('settles to a ticking relative time, calling the first few seconds just now',
 it('says never synced for a tracker-backed repo with no stamp yet', () => {
   expect(syncStatusLine(status()).text).toBe('never synced')
   expect(syncStatusLine(status({ lastSyncedAt: '' })).text).toBe('never synced')
+})
+
+it('disables the button only for the sync this view started', () => {
+  expect(syncDisabled(status({ pending: true }))).toBe(true)
+  expect(syncDisabled(status({ state: 'syncing' }))).toBe(false)
+  expect(syncDisabled(status({ state: 'syncing', lastSyncedAt: ago(90) }))).toBe(
+    false,
+  )
+})
+
+it('holds the counts of a pull of its own, and none from a coalesced sync', () => {
+  const response = pulled()
+  expect(pulledCounts({ status: 'pulled', response })).toBe(response)
+  expect(pulledCounts({ status: 'syncing' })).toBeUndefined()
+})
+
+it('leaves a coalesced sync reading as syncing rather than as counts or a failure', () => {
+  const line = syncStatusLine(
+    status({
+      state: 'syncing',
+      pulled: pulledCounts({ status: 'syncing' }),
+      lastSyncedAt: ago(90),
+    }),
+  )
+  expect(line).toEqual({ text: 'syncing…', failed: false })
 })

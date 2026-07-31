@@ -3,7 +3,7 @@ import { useMutation } from '@tanstack/react-query'
 import { ArrowRight, RotateCw, Settings2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { syncRepo, type SyncResponse } from '@/lib/instances'
+import { syncRepo, type SyncResponse, type SyncResult } from '@/lib/instances'
 import { type TrackerProvider } from '@/lib/onboarding'
 import { cn } from '@/lib/utils'
 import { Callout, Hint } from './ui'
@@ -15,6 +15,12 @@ const SKIPS_SYNC: Partial<Record<TrackerProvider, { hint: string; status: string
     hint: 'This project uses the internal issue store — there is nothing to pull from an external tracker.',
     status: 'ready — internal store, no external sync',
   },
+}
+
+// A seed sync that coalesced into the pull the registration already started has
+// landed nothing of its own to count; the step is done either way.
+function seedCounts(result: SyncResult): SyncResponse | null {
+  return result.status === 'pulled' ? result.response : null
 }
 
 export function StepSync({
@@ -34,7 +40,7 @@ export function StepSync({
 
   const sync = useMutation({
     mutationFn: () => syncRepo(repo),
-    onSuccess: (res) => onSynced(res),
+    onSuccess: (result) => onSynced(seedCounts(result)),
   })
 
   const started = useRef(false)
@@ -48,6 +54,7 @@ export function StepSync({
     sync.mutate()
   }, [])
 
+  const seeded = sync.data ? seedCounts(sync.data) : null
   const done = skipped !== undefined || sync.isSuccess
 
   const glyph = done ? '✓' : sync.isError ? '✗' : '●'
@@ -81,17 +88,19 @@ export function StepSync({
               seeding<span className="cursor-block text-teal">▍</span>
             </span>
           ) : sync.isSuccess ? (
-            <span className="text-done">done — {sync.data.issues} issues synced</span>
+            <span className="text-done">
+              {seeded ? `done — ${seeded.issues} issues synced` : 'done — seeding already under way'}
+            </span>
           ) : sync.isError ? (
             <span className="text-fail">error — {(sync.error as Error).message}</span>
           ) : null}
         </div>
       </div>
 
-      {sync.isSuccess && (
+      {seeded && (
         <div className="flex flex-wrap gap-2">
-          <SyncStat label="issues" value={sync.data.issues} />
-          <SyncStat label="comments" value={sync.data.comments} />
+          <SyncStat label="issues" value={seeded.issues} />
+          <SyncStat label="comments" value={seeded.comments} />
         </div>
       )}
 

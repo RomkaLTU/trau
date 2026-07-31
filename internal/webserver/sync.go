@@ -27,11 +27,21 @@ type SyncResponse struct {
 	SyncedAt string `json:"syncedAt"`
 }
 
+// SyncAccepted is the JSON body of a manual sync that coalesced into a pull
+// already in flight — background or manual. The caller waits on that pull's
+// outcome instead of starting a second one against the same tracker budget.
+type SyncAccepted struct {
+	Repo  string          `json:"repo"`
+	State RepoHealthState `json:"state"`
+}
+
 // handleSync pulls a repo's Project into the hub issue store on demand. It is a
 // one-way inbound sync (ADR 0007): the tracker owns issue content, so this only
 // ever reads. A manual sync means "make the board match the tracker", so the pull
 // is followed by the reconcile sweep an incremental pull cannot do on its own —
 // and a sweep that fails fails the request rather than reporting a half-done sync.
+// It runs under the syncer's per-repo claim, so a sync of the same repo already in
+// flight coalesces: 202 with the syncing marker rather than a duplicate pull.
 // Unknown repos 404, a repo without direct tracker credentials 422, and a tracker
 // error 502; a successful sync returns the counts it wrote and removed.
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
@@ -45,18 +55,32 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
 		return
 	}
-	resp, err := s.syncRepo(r.Context(), repo)
+	if !s.syncer.claimManual(repo.Root) {
+		writeJSON(w, http.StatusAccepted, SyncAccepted{Repo: repo.Name, State: HealthSyncing})
+		return
+	}
+	resp, err := s.pullAndSweep(r.Context(), repo)
+	s.syncer.settleManual(repo.Root, err)
 	if err != nil {
 		writeSyncErr(w, err)
 		return
 	}
-	removed, err := s.reconcileRepo(r.Context(), repo)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// pullAndSweep is a manual sync end to end: the incremental pull, then the
+// reconcile sweep that tombstones what the tracker no longer returns.
+func (s *Server) pullAndSweep(ctx context.Context, repo registry.Repo) (SyncResponse, error) {
+	resp, err := s.syncRepo(ctx, repo)
 	if err != nil {
-		writeSyncErr(w, err)
-		return
+		return SyncResponse{}, err
+	}
+	removed, err := s.reconcileRepo(ctx, repo)
+	if err != nil {
+		return SyncResponse{}, err
 	}
 	resp.Removed = len(removed)
-	writeJSON(w, http.StatusOK, resp)
+	return resp, nil
 }
 
 func writeSyncErr(w http.ResponseWriter, err error) {
@@ -71,8 +95,10 @@ func writeSyncErr(w http.ResponseWriter, err error) {
 // Project clean — POST /repos/{repo}/resync, the recovery path when the store's
 // sync state is doubted (ADR 0007). Internal issues are preserved, and the pull
 // converges to the same content a fresh sync would; the response is that pull's
-// counts. Unknown repos 404, a repo without direct tracker credentials 422 (with
-// the store left untouched), and a tracker error 502.
+// counts. It takes the same per-repo claim as handleSync, so a resync asked for
+// while a sync is in flight coalesces with 202 rather than dropping the store
+// under a running pull. Unknown repos 404, a repo without direct tracker
+// credentials 422 (with the store left untouched), and a tracker error 502.
 func (s *Server) handleForceResync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -84,7 +110,12 @@ func (s *Server) handleForceResync(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
 		return
 	}
+	if !s.syncer.claimManual(repo.Root) {
+		writeJSON(w, http.StatusAccepted, SyncAccepted{Repo: repo.Name, State: HealthSyncing})
+		return
+	}
 	resp, err := s.forceResync(r.Context(), repo)
+	s.syncer.settleManual(repo.Root, err)
 	if err != nil {
 		if readerConfigErr(err) {
 			writeReaderErr(w, err)

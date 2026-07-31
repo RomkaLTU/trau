@@ -167,16 +167,38 @@ func retryAfter(err error, interval time.Duration, failures int) (time.Duration,
 func (sy *syncer) claim(root string, now time.Time) bool {
 	sy.mu.Lock()
 	defer sy.mu.Unlock()
-	st := sy.state[root]
-	if st == nil {
-		st = &repoSync{}
-		sy.state[root] = st
-	}
+	st := sy.repoState(root)
 	if st.syncing || now.Before(st.nextAttempt) {
 		return false
 	}
 	st.syncing = true
 	return true
+}
+
+// claimManual takes the same per-repo claim for a sync the user pressed, so a
+// manual pull cannot overlap a background one and shows up as syncing everywhere
+// the background pull does. It refuses only while a sync is in flight: a user
+// asking for this repo now outranks its failure backoff, which a pull that
+// succeeds clears on its way out through settle.
+func (sy *syncer) claimManual(root string) bool {
+	sy.mu.Lock()
+	defer sy.mu.Unlock()
+	st := sy.repoState(root)
+	if st.syncing {
+		return false
+	}
+	st.syncing = true
+	return true
+}
+
+// repoState returns root's bookkeeping, seeding it on first use. Callers hold mu.
+func (sy *syncer) repoState(root string) *repoSync {
+	st := sy.state[root]
+	if st == nil {
+		st = &repoSync{}
+		sy.state[root] = st
+	}
+	return st
 }
 
 // settle records a finished sync: success clears the backoff and leaves the repo
@@ -199,6 +221,17 @@ func (sy *syncer) settle(root string, interval time.Duration, err error) {
 	wait, failures := retryAfter(err, interval, st.failures)
 	st.failures = failures
 	st.nextAttempt = time.Now().Add(wait)
+}
+
+// settleManual records a finished user-pressed sync on the repo's cadence, so it
+// clears or renews the backoff exactly as a background pull would. It reads the
+// loop's interval rather than taking one, so the bookkeeping holds when the
+// background loop is disabled and no caller has an interval to pass.
+func (sy *syncer) settleManual(root string, err error) {
+	sy.mu.Lock()
+	interval := sy.interval
+	sy.mu.Unlock()
+	sy.settle(root, interval, err)
 }
 
 // rateLimitWait is how long a rate-limited repo holds off: until the tracker says
