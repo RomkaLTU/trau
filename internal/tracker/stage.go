@@ -78,6 +78,32 @@ func (s Stage) hints() []string {
 	}
 }
 
+// StageFor classifies a workflow status name as the lifecycle stage it belongs
+// to, using the same vocabulary ResolveStage picks destinations with. Exact names
+// win over hints across every stage, and later stages are tried first so "READY
+// FOR QA" reads as review rather than as the "ready" a to-do column also answers
+// to. A name no stage claims reports false.
+func StageFor(name string) (Stage, bool) {
+	want := normalizeStatus(name)
+	if want == "" {
+		return "", false
+	}
+	stages := []Stage{StageDone, StageInReview, StageInProgress, StageTodo}
+	for _, s := range stages {
+		for _, n := range s.names() {
+			if normalizeStatus(n) == want {
+				return s, true
+			}
+		}
+	}
+	for _, s := range stages {
+		if hasAny(name, s.hints()) {
+			return s, true
+		}
+	}
+	return "", false
+}
+
 // WorkflowOption is one destination a tracker's workflow offers: the status name
 // as the project spells it, plus the provider's own category key for it (Jira's
 // statusCategory, Linear's state type, Azure DevOps' state category).

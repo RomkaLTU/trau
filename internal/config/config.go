@@ -75,6 +75,10 @@ type Config struct {
 	StatusInProgress string
 	StatusInReview   string
 	StatusDone       string
+	// DeliveredState is the status merged work moves to, overriding StatusDone for
+	// that write alone. A workflow with a QA gate parks delivery in a column its
+	// own team, not the loop, moves out of. Empty means Done.
+	DeliveredState string
 
 	BaseBranch string
 	Remote     string
@@ -784,6 +788,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("STATUS_IN_PROGRESS", &c.StatusInProgress)
 	str("STATUS_IN_REVIEW", &c.StatusInReview)
 	str("STATUS_DONE", &c.StatusDone)
+	str("DELIVERED_STATE", &c.DeliveredState)
 	strAllowEmpty("QUEUED_LABEL", &c.QueuedLabel)
 	str("SPLIT_LABEL", &c.SplitLabel)
 	str("PROJECT", &c.Project)
@@ -1736,6 +1741,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "STATUS_IN_PROGRESS", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Status name this workflow uses for work in progress; empty resolves it from the tracker's own transitions"},
 		{Key: "STATUS_IN_REVIEW", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Status name this workflow uses for work awaiting review (e.g. READY FOR QA); empty resolves it from the tracker's own transitions"},
 		{Key: "STATUS_DONE", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Status name this workflow uses for delivered work; empty resolves it from the tracker's own transitions"},
+		{Key: "DELIVERED_STATE", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Status a merged ticket moves to (e.g. READY FOR QA when only QA sign-off closes work); empty delivers to Done"},
 		{Key: "PROJECT", Group: sectionTracker, WebEditable: true, Description: "Linear project this repo owns — scopes the ready queue, guards cross-project runs, and targets filed bugs"},
 		{Key: "BASE_BRANCH", Group: sectionGit, WebEditable: true, Default: "main", Description: "Default git base branch"},
 		{Key: "REMOTE", Group: sectionGit, Default: "origin", Description: "Git remote name"},
@@ -2289,6 +2295,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.StatusInReview
 	case "STATUS_DONE":
 		return cfg.StatusDone
+	case "DELIVERED_STATE":
+		return cfg.DeliveredState
 	case "SPLIT_LABEL":
 		return cfg.SplitLabel
 	case "PROJECT":
