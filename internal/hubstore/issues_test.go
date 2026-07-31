@@ -3,6 +3,8 @@ package hubstore
 import (
 	"database/sql"
 	"reflect"
+	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/hubdb"
@@ -284,6 +286,46 @@ func TestIssuesAreScopedByRepo(t *testing.T) {
 	}
 	if got, _ := s.List("/repo/b"); len(got) != 1 || got[0].Identifier != "COD-2" {
 		t.Fatalf("repo b issues = %+v, want only COD-2", got)
+	}
+}
+
+func TestConcurrentUpsertsPersistEachRepo(t *testing.T) {
+	s := testIssues(t)
+	// Sized so the two transactions genuinely overlap: a handful of rows would
+	// commit before the sibling ever began, and prove nothing.
+	pulled := make([]Issue, 0, 64)
+	for i := range 64 {
+		pulled = append(pulled, Issue{
+			Identifier:  "COD-" + strconv.Itoa(i),
+			Title:       "Shared board item",
+			Status:      "Todo",
+			StatusGroup: "unstarted",
+			ExternalID:  strconv.Itoa(i),
+		})
+	}
+
+	repos := []string{"/repo/a", "/repo/b"}
+	errs := make([]error, len(repos))
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i, repo := range repos {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _, errs[i] = s.Upsert(repo, "azure", pulled)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i, repo := range repos {
+		if errs[i] != nil {
+			t.Fatalf("upsert %s: %v", repo, errs[i])
+		}
+		if got, _ := s.List(repo); len(got) != len(pulled) {
+			t.Fatalf("repo %s issues = %d, want %d", repo, len(got), len(pulled))
+		}
 	}
 }
 

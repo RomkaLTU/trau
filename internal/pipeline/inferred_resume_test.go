@@ -184,6 +184,20 @@ func TestInferredResumeFuncAdoptsBranchInScope(t *testing.T) {
 	}
 }
 
+// An Azure DevOps board settles on no prefix, so the parked branch leads with the bare
+// work-item number and the resume path has to recognise it there.
+func TestInferredResumeFuncAdoptsABareNumberedBranch(t *testing.T) {
+	p, _ := newParkedPipeline(t, "feature/6694-bare-numeric-ids", &fakeGitHub{}, &inferredTracker{})
+	p.Prefix = ""
+	p.TrackerProvider = "azure"
+
+	gotID, gotPhase := p.InferredResumeFunc(context.Background(), nil)
+
+	if gotID != "6694" || gotPhase != state.Built {
+		t.Fatalf("InferredResumeFunc = (%q, %q), want (6694, %q)", gotID, gotPhase, state.Built)
+	}
+}
+
 // With no PR to prove delivery, a tracker-terminal ticket declines adoption but leaves
 // the checkpoint untouched.
 func TestInferredResumeDeclinesTicketFinishedInTracker(t *testing.T) {

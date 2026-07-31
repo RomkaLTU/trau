@@ -975,9 +975,10 @@ function LaunchQueueCard({
                       aria-hidden="true"
                     />
                     <span>
-                      {ticket.id} belongs to another project
-                      {ticket.project ? ` (${ticket.project})` : ""}, not {repo}
-                      . Switch to that project's repo to run it.
+                      {ticket.id}
+                      {ticket.project ? ` (project ${ticket.project})` : ""} is
+                      not on {repo}'s board. Switch to the repo that owns it to
+                      run it.
                     </span>
                   </p>
                 ) : (

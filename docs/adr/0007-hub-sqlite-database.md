@@ -42,11 +42,18 @@ There are zero external users, so storage moves need no compatibility shims.
 ### 1. One global, hub-owned database
 
 The hub owns `~/.trau/trau.db` (under `TRAU_HOME`), opened at serve startup:
-WAL journal mode, busy timeout, foreign keys on. **Only the hub process opens
-it.** Loops, `trau <ID>` runs, and the TUI never touch the database; they keep
-appending run artifacts to files exactly as today. The hub is already a
-machine singleton (ADR 0004), so this yields single-writer semantics without
-any cross-process locking.
+WAL journal mode, busy timeout, foreign keys on, transactions `IMMEDIATE`.
+**Only the hub process opens it.** Loops, `trau <ID>` runs, and the TUI never
+touch the database; they keep appending run artifacts to files exactly as today.
+The hub is already a machine singleton (ADR 0004), so this yields single-writer
+semantics without any cross-process locking.
+
+*Amended (ADR 0028 §7):* transactions begin `IMMEDIATE`. Cross-process locking is
+not the whole story — the hub itself writes from concurrent goroutines, and every
+transaction it opens reads before it writes. WAL refuses that upgrade outright once
+another writer has committed: an `SQLITE_BUSY` the busy timeout cannot retry away,
+because the reader's snapshot is already stale. Taking the write lock up front
+turns the collision back into the wait the timeout is there to cover.
 
 Driver: modernc.org/sqlite (pure Go, database/sql, FTS5 included).
 `CGO_ENABLED=0` remains an invariant; `make dist` must stay green across the

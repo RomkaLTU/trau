@@ -64,10 +64,10 @@ type Config struct {
 	// AreaPath narrows an Azure DevOps read to one in-project area and everything
 	// under it. Empty is the whole team project. Unused by every other provider.
 	AreaPath string
-	// Prefix is the configured issue-identifier prefix (config.ISSUE_PREFIX), which
-	// Azure DevOps renders its organization-wide work-item numbers through because
-	// they carry no per-project key of their own.
-	Prefix string
+	// BoardTeams narrows an Azure DevOps read to the areas the named teams own, read
+	// from the team's own board settings. Empty leaves the read to AreaPath alone.
+	// Unused by every other provider.
+	BoardTeams []string
 	// EpicType names the Jira issue type an epic-shaped draft is filed as,
 	// overriding the lookup of the project's own hierarchy-level-1 type. Unused by
 	// the Linear, GitHub and internal providers.
@@ -371,6 +371,7 @@ func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 			PAT:             cfg.APIKey,
 			Project:         cfg.Team,
 			AreaPath:        cfg.AreaPath,
+			Teams:           cfg.BoardTeams,
 			ReadyLabel:      cfg.ReadyLabel,
 			QuarantineLabel: cfg.QuarantineLabel,
 			SplitLabel:      cfg.SplitLabel,

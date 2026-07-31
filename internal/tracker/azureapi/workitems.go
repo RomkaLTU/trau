@@ -124,20 +124,20 @@ func (c *Client) WorkItems(ctx context.Context, project string, ids []int) ([]Wo
 }
 
 // Eligible returns the work items the loop could pick next: everything in
-// project tagged with readyLabel — narrowed to areaPath when one is set, so the
-// loop picks from the same slice of the board the hub syncs — ranked by priority
-// then id, each carrying whether all of its blockers are resolved. The tag and
-// area filters run server-side in WIQL; the remaining policy — unstarted, not a
-// parent, blockers clear — is the caller's, matching what the other providers do
-// with their own query languages.
-func (c *Client) Eligible(ctx context.Context, project, areaPath, readyLabel string) ([]Candidate, error) {
+// project tagged with readyLabel — narrowed to scope, so the loop picks from the
+// same slice of the board the hub syncs — ranked by priority then id, each carrying
+// whether all of its blockers are resolved. The tag and scope filters run
+// server-side in WIQL; the remaining policy — unstarted, not a parent, blockers
+// clear — is the caller's, matching what the other providers do with their own
+// query languages.
+func (c *Client) Eligible(ctx context.Context, project string, scope BoardScope, readyLabel string) ([]Candidate, error) {
 	if !c.enabled() {
 		return nil, ErrNotEnabled
 	}
 	if strings.TrimSpace(readyLabel) == "" {
 		return nil, nil
 	}
-	ids, err := c.query(ctx, project, eligibleWIQL(project, areaPath, readyLabel), batchLimit)
+	ids, err := c.query(ctx, project, eligibleWIQL(project, scope, readyLabel), batchLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -228,10 +228,10 @@ func rank(items []WorkItem) {
 // is expressed here: state vocabularies differ per process template, so the
 // unstarted test is applied client-side against the normalized category instead
 // of being hard-coded into a state-name list this query cannot know.
-func eligibleWIQL(project, areaPath, readyLabel string) string {
+func eligibleWIQL(project string, scope BoardScope, readyLabel string) string {
 	return "SELECT [System.Id] FROM WorkItems" +
 		" WHERE [System.TeamProject] = " + wiqlString(project) +
-		areaClause(areaPath) +
+		scopeClause(scope) +
 		" AND [System.Tags] CONTAINS " + wiqlString(readyLabel) +
 		" ORDER BY [System.Id] ASC"
 }
@@ -243,7 +243,9 @@ func wiqlString(s string) string {
 
 // query runs a flat WIQL query and returns the matching work-item ids, capped at
 // top rows. A flat query answers with ids only, so callers follow up with a batch
-// read.
+// read. timePrecision is what makes a date comparison read the time half of its
+// literal: the endpoint defaults to day precision and rejects any timestamp
+// carrying a clock, which is every cursor an incremental pull holds.
 func (c *Client) query(ctx context.Context, project, wiql string, top int) ([]int, error) {
 	body, err := json.Marshal(map[string]string{"query": wiql})
 	if err != nil {
@@ -254,7 +256,7 @@ func (c *Client) query(ctx context.Context, project, wiql string, top int) ([]in
 			ID int `json:"id"`
 		} `json:"workItems"`
 	}
-	path := projectPath(project, "/wiql?$top="+strconv.Itoa(top))
+	path := projectPath(project, "/wiql?$top="+strconv.Itoa(top)+"&timePrecision=true")
 	if err := c.do(ctx, http.MethodPost, path, body, &dst); err != nil {
 		return nil, err
 	}

@@ -15,44 +15,34 @@ import (
 const wiqlLimit = 20000
 
 // SyncIDs returns the ids of the team project's work items for a hub sync pull:
-// every work item under areaPath (the whole project when it is empty), narrowed
+// every work item inside scope (the whole project when it is empty), narrowed
 // to what changed at or after since when that is a timestamp. A flat query
 // answers with ids only, so the caller follows up with WorkItems.
-func (c *Client) SyncIDs(ctx context.Context, project, areaPath, since string) ([]int, error) {
+func (c *Client) SyncIDs(ctx context.Context, project string, scope BoardScope, since string) ([]int, error) {
 	if !c.enabled() {
 		return nil, ErrNotEnabled
 	}
-	return c.query(ctx, project, syncWIQL(project, areaPath, since), wiqlLimit)
+	return c.query(ctx, project, syncWIQL(project, scope, since), wiqlLimit)
 }
 
 // syncWIQL renders the query behind SyncIDs.
-func syncWIQL(project, areaPath, since string) string {
+func syncWIQL(project string, scope BoardScope, since string) string {
 	q := "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = " +
-		wiqlString(project) + areaClause(areaPath)
+		wiqlString(project) + scopeClause(scope)
 	if ts, ok := wiqlTimestamp(since); ok {
 		q += " AND [System.ChangedDate] >= " + wiqlString(ts)
 	}
 	return q + " ORDER BY [System.Id] ASC"
 }
 
-// areaClause narrows a query to an Area Path, or to nothing at all when none is
-// configured. The test is UNDER rather than an equality so a parent area carries
-// its children, the way Azure DevOps itself scopes a board to an area.
-func areaClause(areaPath string) string {
-	if path := strings.TrimSpace(areaPath); path != "" {
-		return " AND [System.AreaPath] UNDER " + wiqlString(path)
-	}
-	return ""
-}
-
 // wiqlTimestamp renders a stored sync cursor as the literal a WIQL date
 // comparison accepts, truncated to whole seconds — the finest precision the
-// clause parses. Truncating with an inclusive comparison can only widen the
-// window, so an item is re-pulled rather than missed, and a cursor this cannot
-// parse reports false to fall back on a full pull. The widening also absorbs the
-// hub picking its cursor as the lexical max of the pulled stamps: System.ChangedDate
-// carries variable sub-second precision, so that max can sit a fraction of a second
-// behind the chronological one.
+// clause parses even with timePrecision on. Truncating with an inclusive
+// comparison can only widen the window, so an item is re-pulled rather than
+// missed, and a cursor this cannot parse reports false to fall back on a full
+// pull. The widening also absorbs the hub picking its cursor as the lexical max of
+// the pulled stamps: System.ChangedDate carries variable sub-second precision, so
+// that max can sit a fraction of a second behind the chronological one.
 func wiqlTimestamp(since string) (string, bool) {
 	if since = strings.TrimSpace(since); since == "" {
 		return "", false

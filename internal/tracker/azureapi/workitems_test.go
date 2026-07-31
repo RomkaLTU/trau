@@ -159,7 +159,7 @@ func TestEligibleQueriesTagsRanksAndResolvesBlockers(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	candidates, err := New(srv.URL, "pat").Eligible(context.Background(), "Contoso", "", "ready-for-agent")
+	candidates, err := New(srv.URL, "pat").Eligible(context.Background(), "Contoso", BoardScope{}, "ready-for-agent")
 	if err != nil {
 		t.Fatalf("Eligible returned error: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestEligibleTreatsUnreadableBlockerAsUnresolved(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	candidates, err := New(srv.URL, "pat").Eligible(context.Background(), "Contoso", "", "ready")
+	candidates, err := New(srv.URL, "pat").Eligible(context.Background(), "Contoso", BoardScope{}, "ready")
 	if err != nil {
 		t.Fatalf("Eligible returned error: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestEligibleWithoutReadyLabelIsEmpty(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	candidates, err := New(srv.URL, "pat").Eligible(context.Background(), "Contoso", "", "  ")
+	candidates, err := New(srv.URL, "pat").Eligible(context.Background(), "Contoso", BoardScope{}, "  ")
 	if err != nil {
 		t.Fatalf("Eligible returned error: %v", err)
 	}

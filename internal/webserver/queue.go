@@ -336,11 +336,11 @@ func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 }
 
 // validateQueueTarget confirms a to-be-queued id exists in the repo's tracker and
-// belongs to this repo's project, returning its title and the answering tracker's
-// source binding — the same provider name the sync records on the stored issue. It
-// is best-effort: a repo without direct tracker credentials cannot be checked, so
-// it passes and the id is queued unvalidated; a definite not-found or cross-project
-// answer is refused with a clear status and ok=false.
+// falls inside the slice of it this repo owns, returning its title and the answering
+// tracker's source binding — the same provider name the sync records on the stored
+// issue. It is best-effort: a repo without direct tracker credentials cannot be
+// checked, so it passes and the id is queued unvalidated; a definite not-found or
+// out-of-scope answer is refused with a clear status and ok=false.
 func (s *Server) validateQueueTarget(w http.ResponseWriter, r *http.Request, name, id string) (title, source string, ok bool) {
 	repo, found := s.findRepo(name)
 	if !found {
@@ -360,7 +360,7 @@ func (s *Server) validateQueueTarget(w http.ResponseWriter, r *http.Request, nam
 	}
 	if !item.InProject {
 		writeJSON(w, http.StatusConflict, map[string]string{
-			"error": fmt.Sprintf("%s belongs to project %q, not this repo's project — refusing to queue a cross-project ticket", id, item.Project),
+			"error": fmt.Sprintf("%s (project %q) is outside the slice of the tracker this repo owns — refusing to queue a ticket it does not mirror", id, item.Project),
 		})
 		return "", "", false
 	}

@@ -15,8 +15,11 @@ import (
 const syncBackoffCap = 30 * time.Minute
 
 // syncOnceTimeout bounds a single repo's pull so a hung tracker call cannot pin a
-// sync goroutine for the life of the hub.
-const syncOnceTimeout = 2 * time.Minute
+// sync goroutine for the life of the hub. It has to cover the widest first full
+// pull, not the steady-state incremental one: a board-wide query, the batched detail
+// reads its ids feed, and a comment sweep that owes a round-trip per ticket with a
+// discussion — with the piggybacked reconcile sweep sharing the same budget.
+const syncOnceTimeout = 10 * time.Minute
 
 // rateLimitCap bounds how long a rate-limited repo waits for the tracker's budget
 // to refill — the widest window a provider meters over, so the repo recovers on

@@ -1112,17 +1112,38 @@ func NextPhaseLabel(phase string) string {
 }
 
 // prefix returns the configured issue-identifier prefix, falling back to COD when
-// the pipeline was constructed without one (e.g. in tests).
+// the pipeline was constructed without one (e.g. in tests). An Azure DevOps board
+// addresses work items by number and settles on no prefix at all (ADR 0024 §1), so
+// there the empty prefix is the answer rather than a missing one.
 func (p *Pipeline) prefix() string {
-	if p.Prefix != "" {
+	if p.Prefix != "" || p.TrackerProvider == "azure" {
 		return p.Prefix
 	}
 	return "COD"
 }
 
+// reBranchNumber matches the bare work-item number a feature branch leads with when
+// the tracker settles on no prefix. Anchoring is what keeps it off a hand-made
+// branch: feature/fix-oauth2 carries a number, just not at the front.
+var reBranchNumber = regexp.MustCompile(`^[0-9]+`)
+
+// branchTicket recovers the ticket identifier a feature branch was named for, or ""
+// when head is not one trau parked. The id always leads the branch name —
+// feature/COD-712-slug, or feature/6694-slug on a board that numbers its tickets.
+func branchTicket(head, prefix string) string {
+	rest, ok := strings.CutPrefix(head, "feature/")
+	if !ok {
+		return ""
+	}
+	if prefix == "" {
+		return reBranchNumber.FindString(rest)
+	}
+	return regexp.MustCompile(`^` + regexp.QuoteMeta(prefix) + `-[0-9]+`).FindString(rest)
+}
+
 // InferredResumeFunc is the bridge for work started BEFORE state tracking (or whose
-// state file was lost): if HEAD is parked on a feature/<PREFIX>-… branch with no
-// tracked checkpoint, it infers how far the work got from the artifacts on disk
+// state file was lost): if HEAD is parked on a feature branch named for a ticket with
+// no tracked checkpoint, it infers how far the work got from the artifacts on disk
 // (branch → built; handoff file → handed_off; passing verdict → verified; open PR →
 // pr_open), seeds the state file, and returns (id, phase) for the resume path.
 // Conservative on purpose — only the currently checked-out branch, never a scan. It
@@ -1132,12 +1153,11 @@ func (p *Pipeline) prefix() string {
 // keep bounds the adoption to a run's scope — one pinned ticket, or an epic and its
 // children. A nil keep adopts whatever HEAD is on.
 func (p *Pipeline) InferredResumeFunc(ctx context.Context, keep func(id string) bool) (id, phase string) {
-	pfx := p.prefix()
 	head, err := p.Git.CurrentBranch(ctx)
-	if err != nil || !strings.HasPrefix(head, "feature/"+pfx+"-") {
+	if err != nil {
 		return "", ""
 	}
-	id = regexp.MustCompile(regexp.QuoteMeta(pfx) + `-[0-9]+`).FindString(head)
+	id = branchTicket(head, p.prefix())
 	if id == "" {
 		return "", ""
 	}
@@ -3226,7 +3246,7 @@ func prNumberInt(url string) int {
 
 var (
 	reBranchType = regexp.MustCompile(`^[a-z]+/`)
-	reBranchID   = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-[0-9]+-`)
+	reBranchID   = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9]*-)?[0-9]+-`)
 )
 
 func prDesc(branch string) string {

@@ -218,6 +218,60 @@ func TestSyncSecondPullIsIncremental(t *testing.T) {
 	}
 }
 
+// An Azure DevOps mirror filled before work items were addressed by their bare number
+// still holds PREFIX-n rows, and the reconcile sweep behind the pull is about to
+// tombstone them. That pull has to be a full one, or every row it does not re-file
+// leaves the board with nothing under its number to replace it.
+func TestSyncRepullsTheBoardWhenTheMirrorHoldsPrefixedAzureIDs(t *testing.T) {
+	fake := &fakeReader{
+		synced: []tracker.SyncedIssue{{
+			ID:        "6694",
+			Title:     "Widen the id contract",
+			Group:     tracker.StatusGroupUnstarted,
+			UpdatedAt: "2026-07-30T11:00:00Z",
+		}},
+		identifiers: []string{"6694"},
+	}
+	ts, root, store := syncServer(t, fake)
+	writeRepoINI(t, root, "TRACKER_PROVIDER=azure\nLINEAR_TEAM=Contoso\n")
+	if _, _, err := store.Upsert(root, "azure", []hubstore.Issue{
+		{Identifier: "CON-6694", Title: "Widen the id contract", StatusGroup: "unstarted"},
+	}); err != nil {
+		t.Fatalf("seed the pre-upgrade mirror: %v", err)
+	}
+	if err := store.RecordResult(root, hubstore.SyncResult{
+		Cursor:   "2026-07-29T10:00:00Z",
+		SyncedAt: "2026-07-29T10:00:01Z",
+	}); err != nil {
+		t.Fatalf("seed the cursor: %v", err)
+	}
+
+	res, out := postSync(t, ts, "acme")
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	if fake.syncSince != "" {
+		t.Fatalf("pull since = %q, want the whole board while the mirror holds prefixed ids", fake.syncSince)
+	}
+	if out.Removed != 1 {
+		t.Fatalf("removed = %d, want the prefixed row swept once its bare-number row landed", out.Removed)
+	}
+	iss, found, err := store.Find(root, "6694")
+	if err != nil || !found {
+		t.Fatalf("find 6694: found=%v err=%v", found, err)
+	}
+	if iss.DeletedAt != "" {
+		t.Fatalf("6694 = tombstoned, want the bare-number row live on the board")
+	}
+
+	res, _ = postSync(t, ts, "acme")
+	_ = res.Body.Close()
+	if fake.syncSince != "2026-07-30T11:00:00Z" {
+		t.Fatalf("second pull since = %q, want the cursor once the mirror is renumbered", fake.syncSince)
+	}
+}
+
 func TestSyncEmptyIncrementalPullKeepsCursor(t *testing.T) {
 	fake := &fakeReader{synced: syncedFixture()}
 	ts, root, store := syncServer(t, fake)

@@ -236,7 +236,6 @@ export interface TrackerFields {
   jiraToken: string
   azureOrgUrl: string
   azurePat: string
-  issuePrefix: string
   binding: string
 }
 
@@ -266,17 +265,6 @@ export function trackerConfigValues(
   return keys
 }
 
-// Azure work items carry no project key of their own, so a prefix is required to
-// address them. It stays out of the project tracker set: making ISSUE_PREFIX
-// project-managed would propagate each repo's current prefix across its members.
-export function trackerRepoConfigWrites(
-  provider: TrackerProvider,
-  fields: TrackerFields,
-): ConfigWrite[] {
-  if (provider !== 'azure') return []
-  return [{ key: 'ISSUE_PREFIX', value: fields.issuePrefix.trim(), layer: 'project' }]
-}
-
 export interface EssentialsFields {
   baseBranch: string
   readyLabel: string
@@ -304,7 +292,6 @@ export function trackerCanContinue(
 ): boolean {
   if (provider === 'internal') return true
   if (provider === null) return false
-  if (provider === 'azure' && fields.issuePrefix.trim() === '') return false
   return fields.binding.trim() !== '' && test === 'ok'
 }
 
