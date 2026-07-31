@@ -78,6 +78,8 @@ type Server struct {
 	recordingsRoot   string
 	restart          func(successor string)
 	restartOnce      sync.Once
+	stop             func()
+	stopOnce         sync.Once
 	retarget         func(binary string) error
 	executable       func() (string, error)
 	selfReloadMu     sync.Mutex
@@ -286,6 +288,7 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/health", s.handleHealth)
 	mux.HandleFunc(APIPrefix+"/mcp", s.handleMCP)
 	mux.HandleFunc(APIPrefix+"/hub/restart", s.handleHubRestart)
+	mux.HandleFunc(APIPrefix+"/hub/stop", s.handleHubStop)
 	mux.HandleFunc(APIPrefix+"/hub/reload", s.handleHubReload)
 	mux.HandleFunc(APIPrefix+"/hub/channel", s.handleHubChannel)
 	mux.HandleFunc(APIPrefix+"/update", s.handleUpdate)

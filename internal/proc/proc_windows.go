@@ -1,11 +1,14 @@
 package proc
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/windows"
@@ -71,6 +74,48 @@ func KillGroup(pid int) error {
 		return err
 	}
 	return p.Kill()
+}
+
+// PortListeners reports the pids listening on port. Windows maps a port to a
+// process no more portably than unix does, so this reads netstat's connection
+// table (ADR 0023 §7), unfiltered: `-p tcp` lists IPv4 only, so a hub bound to
+// ::1 would read as nothing holding the port at all. A listening row is
+// recognised by its shape rather than by the LISTENING label, which is
+// translated on a localized Windows: a local address ending in :port and an
+// unspecified foreign address, which is also what leaves the UDP rows (`*:*`) an
+// unfiltered table carries out. One process listening on both families has a row
+// per family, so each pid is reported once. A non-zero exit means "no match", as
+// it does for lsof.
+func PortListeners(ctx context.Context, port int) ([]int, error) {
+	out, err := exec.CommandContext(ctx, "netstat", "-ano").Output()
+	if errors.Is(err, exec.ErrNotFound) {
+		return nil, errors.New("netstat is not installed, so the process holding the port cannot be identified")
+	}
+	local := ":" + strconv.Itoa(port)
+	pids := make([]int, 0, 1)
+	seen := map[int]bool{}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || !strings.HasSuffix(fields[1], local) {
+			continue
+		}
+		if fields[2] != "0.0.0.0:0" && fields[2] != "[::]:0" {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[len(fields)-1])
+		if err != nil || pid == 0 || seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		pids = append(pids, pid)
+	}
+	return pids, nil
+}
+
+// PortInspectHint names the command that shows what holds port, so a caller can
+// suggest it without branching on the OS itself (ADR 0023 §7).
+func PortInspectHint(port int) string {
+	return fmt.Sprintf("`netstat -ano | findstr :%d`", port)
 }
 
 // LookBin resolves bin the way a shell would — %PATH% with PATHEXT — and

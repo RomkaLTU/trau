@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -103,7 +102,7 @@ func runHubSupervise(ctx context.Context, args []string, stdout io.Writer) error
 	if portOccupied(cfg) {
 		if err := stopWedgedHub(ctx, cfg, stdout); err != nil {
 			return console.Actionable(err, "stop the unsupervised hub",
-				fmt.Sprintf("see what holds the port with `lsof -i tcp:%d`", cfg.ServePort))
+				"see what holds the port with "+proc.PortInspectHint(cfg.ServePort))
 		}
 	}
 	if err := launchd.Install(exe, []string{"serve"}, superviseEnv(), hubLogPath()); err != nil {
@@ -178,13 +177,13 @@ func runHubRestart(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 	}
-	base := hubBaseURL(cfg)
-	healthURL := base + webserver.APIPrefix + "/health"
+	api := hubAPI{base: hubBaseURL(cfg), token: cfg.ServeToken}
+	healthURL := api.base + webserver.APIPrefix + "/health"
 
 	before := probeHub(ctx, healthURL, cfg.ServeToken)
 	switch {
 	case before.isHub:
-		if err := postHubRestart(ctx, base, cfg.ServeToken); err != nil {
+		if err := api.post(ctx, "/hub/restart"); err != nil {
 			return console.Actionable(err, "ask the hub to restart", "see "+hubLogPath())
 		}
 	case before.reachable || portOccupied(cfg):
@@ -194,7 +193,7 @@ func runHubRestart(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		if err := stopWedgedHub(ctx, cfg, stdout); err != nil {
 			return console.Actionable(err, "stop the wedged hub",
-				fmt.Sprintf("see what holds the port with `lsof -i tcp:%d`", cfg.ServePort))
+				"see what holds the port with "+proc.PortInspectHint(cfg.ServePort))
 		}
 		if err := startHub(cfg); err != nil {
 			return err
@@ -252,10 +251,8 @@ func startHub(cfg config.Config) error {
 // work instead of recovering it: a caller running inside a trau-managed run,
 // whose data channel is the hub it would kill, and a machine with live loops.
 func checkForcedRestart() error {
-	if os.Getenv("TRAU_ACTIVE") == "1" {
-		return console.Actionable(errors.New("this process runs inside a trau-managed run that the hub owns"),
-			"force-restart the hub",
-			"let the run finish; to QA hub changes now start an isolated hub: iso=$(mktemp -d) && TRAU_HOME=$iso/.trau HOME=$iso trau serve --port 8799")
+	if err := checkNotInsideARun("force-restart the hub"); err != nil {
+		return err
 	}
 	live, err := liveLoops()
 	if err != nil {
@@ -267,6 +264,20 @@ func checkForcedRestart() error {
 			"force-restart the hub", "stop them first (Ctrl-C in their terminal, or Stop in the web UI)")
 	}
 	return nil
+}
+
+// checkNotInsideARun refuses action when the caller is itself a trau-managed
+// run, whose data channel is the hub the action would take down. It is the one
+// refusal that never yields to --force, shared by the stop and the forced
+// restart so the isolated-hub escape hatch it points at cannot drift between
+// them.
+func checkNotInsideARun(action string) error {
+	if os.Getenv("TRAU_ACTIVE") != "1" {
+		return nil
+	}
+	return console.Actionable(errors.New("this process runs inside a trau-managed run that the hub owns"),
+		action,
+		"let the run finish; to QA hub changes now start an isolated hub: iso=$(mktemp -d) && TRAU_HOME=$iso/.trau HOME=$iso trau serve --port 8799")
 }
 
 // liveLoops reads presence straight from the hub database, the only way to see
@@ -298,7 +309,7 @@ func describeLoops(live []registry.Entry) string {
 // stopWedgedHub ends whatever holds the hub's port — a graceful stop, then a
 // kill once the grace passes. Only ever reached behind checkForcedRestart.
 func stopWedgedHub(ctx context.Context, cfg config.Config, stdout io.Writer) error {
-	pids, err := portListeners(ctx, cfg.ServePort)
+	pids, err := proc.PortListeners(ctx, cfg.ServePort)
 	if err != nil {
 		return err
 	}
@@ -338,42 +349,27 @@ func stopProcess(pid int) error {
 }
 
 // awaitPortFree gives a hub that was just stopped the grace to release the port,
-// so the process launchd is letting go of is not mistaken for a foreign one.
-func awaitPortFree(cfg config.Config, within time.Duration) {
-	deadline := time.Now().Add(within)
-	for portOccupied(cfg) && time.Now().Before(deadline) {
-		time.Sleep(hubHealthPoll)
-	}
+// so the process launchd is letting go of is not mistaken for a foreign one, and
+// reports whether it let go within it.
+func awaitPortFree(cfg config.Config, within time.Duration) bool {
+	return awaitFalse(func() bool { return portOccupied(cfg) }, within)
 }
 
 func awaitProcessGone(pid int, within time.Duration) bool {
+	return awaitFalse(func() bool { return registry.Alive(pid) }, within)
+}
+
+// awaitFalse polls pred until it stops reporting true, and reports whether it
+// did so within the grace.
+func awaitFalse(pred func() bool, within time.Duration) bool {
 	deadline := time.Now().Add(within)
-	for registry.Alive(pid) {
+	for pred() {
 		if time.Now().After(deadline) {
 			return false
 		}
 		time.Sleep(hubHealthPoll)
 	}
 	return true
-}
-
-// portListeners reports the pids listening on port. Nothing in the standard
-// library maps a port to a process, so this shells out to lsof, whose non-zero
-// exit means "no match" rather than a failure worth reporting.
-func portListeners(ctx context.Context, port int) ([]int, error) {
-	out, err := exec.CommandContext(ctx, "lsof", "-t", "-i", fmt.Sprintf("tcp:%d", port), "-sTCP:LISTEN").Output()
-	if errors.Is(err, exec.ErrNotFound) {
-		return nil, errors.New("lsof is not installed, so the process holding the port cannot be identified")
-	}
-	pids := make([]int, 0, 1)
-	for _, field := range strings.Fields(string(out)) {
-		pid, err := strconv.Atoi(field)
-		if err != nil {
-			continue
-		}
-		pids = append(pids, pid)
-	}
-	return pids, nil
 }
 
 // portOccupied reports whether something already holds the hub's port. The
@@ -390,13 +386,24 @@ func portOccupied(cfg config.Config) bool {
 	return true
 }
 
-func postHubRestart(ctx context.Context, base, token string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+webserver.APIPrefix+"/hub/restart", nil)
+// hubAPI reaches the hub's own control routes — restart, stop, the queue and
+// per-loop stops — over raw HTTP: hubclient is the loop's client, and no loop
+// ever calls these.
+type hubAPI struct {
+	base  string
+	token string
+}
+
+// post asks the hub for one control action. Only an accepted request counts:
+// every one of these routes answers 202 when it took the action, and anything
+// else comes back as a hubStatusError carrying the code the caller branches on.
+func (h hubAPI) post(ctx context.Context, path string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.base+webserver.APIPrefix+path, nil)
 	if err != nil {
 		return err
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if h.token != "" {
+		req.Header.Set("Authorization", "Bearer "+h.token)
 	}
 	resp, err := hubHTTP.Do(req)
 	if err != nil {
@@ -404,7 +411,24 @@ func postHubRestart(ctx context.Context, base, token string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("hub answered %s", resp.Status)
+		return hubStatusError{code: resp.StatusCode, status: resp.Status}
 	}
 	return nil
+}
+
+// hubStatusError is a control route's answer to a request it did not accept.
+type hubStatusError struct {
+	code   int
+	status string
+}
+
+func (e hubStatusError) Error() string { return "hub answered " + e.status }
+
+// hubDeclined reports whether err is a hub answer that never attempted the
+// action — a queue stop with no child of its own (200), an observe-only repo
+// (403) — which is what makes a second route worth trying. A 5xx or a dead
+// connection means the ask was spent on the attempt, and re-asking repeats it.
+func hubDeclined(err error) bool {
+	var answer hubStatusError
+	return errors.As(err, &answer) && answer.code < http.StatusInternalServerError
 }

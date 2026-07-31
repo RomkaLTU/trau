@@ -214,6 +214,50 @@ func (s *Server) handleHubRestart(w http.ResponseWriter, r *http.Request) {
 	s.triggerRestart()
 }
 
+// StopAck is the answer to an accepted stop: the version that is on its way out,
+// which the caller can only learn over the connection the shutdown closes.
+type StopAck struct {
+	Stopping bool   `json:"stopping"`
+	Version  string `json:"version"`
+}
+
+// EnableStop wires the stop endpoint to fn, which the serve command implements
+// as a drain with no successor. Like the restart hook it must return promptly —
+// it is called from the request goroutine, and the drain waits on that request —
+// so it signals the shutdown rather than performing it. Without a hook the
+// endpoint answers 503, the way an unrestartable hub refuses a restart.
+func (s *Server) EnableStop(fn func()) {
+	s.stop = fn
+}
+
+// handleHubStop acknowledges before shutting down, so the caller learns the
+// outgoing version over a connection that is about to close. A supervised hub
+// refuses: KeepAlive respawns the process the moment it exits, so exiting is not
+// stopping. Like a restart it fires once — a second POST arriving during the
+// drain is acknowledged without doing anything twice.
+func (s *Server) handleHubStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if s.supervised() {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "launchd supervises this hub and would restart it; `trau hub unsupervise` stops it as it releases the agent",
+		})
+		return
+	}
+	if s.stop == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "this hub cannot stop itself"})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, StopAck{Stopping: true, Version: s.version})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	s.stopOnce.Do(s.stop)
+}
+
 // triggerRestart restarts onto whatever binary the successor resolves for
 // itself, which is what an update, a self-reload and the Restart button all want.
 func (s *Server) triggerRestart() bool {
