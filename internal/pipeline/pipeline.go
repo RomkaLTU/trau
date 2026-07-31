@@ -218,7 +218,14 @@ type GitHub interface {
 
 	MergedPRURL(ctx context.Context, branch string) (string, error)
 
-	CreatePR(ctx context.Context, base, head, title, body string) (string, error)
+	// CreatePR opens a PR against base from head. A draft PR is one that tracks
+	// work without asking for review — what exit hygiene leaves on a partial epic
+	// branch so it is never stranded untracked.
+	CreatePR(ctx context.Context, base, head, title, body string, draft bool) (string, error)
+
+	// MarkPRReady takes a PR out of draft, so an epic a later run finishes can ship
+	// through the draft PR an earlier run's exit hygiene left behind.
+	MarkPRReady(ctx context.Context, pr string) error
 
 	PRState(ctx context.Context, pr string) (string, error)
 
@@ -520,7 +527,7 @@ type Pipeline struct {
 	LintFixCmd string
 	// AutoStash gates the fresh-pick WIP guard (config AUTO_STASH, default on). When
 	// set, EnsureCleanBase stashes the user's uncommitted tracked changes (recording
-	// the branch they were on) instead of aborting, and RestoreWIP pops them back at
+	// the branch they were on) instead of aborting, and ExitCleanup pops them back at
 	// session end. When off, a dirty tracked tree aborts the run as before. It does
 	// not gate the reconcile of an interrupted run's leftovers, which is a commit.
 	AutoStash bool
@@ -643,13 +650,11 @@ type Pipeline struct {
 	// to time.Now (overridable in tests).
 	Now func() time.Time
 
-	EpicID     string
-	epicBranch string
+	EpicID string
 
-	// stashedBranch records the branch the user's WIP was on when EnsureCleanBase
-	// auto-stashed it, so RestoreWIP can check that branch back out and pop the stash
-	// at session end. Empty means nothing was stashed this run.
-	stashedBranch string
+	// exit collects what this run has to undo when it ends — the checkout it moved,
+	// the WIP it stashed, the epic branch it left behind. ExitCleanup consumes it.
+	exit exitState
 
 	// detachedBase records the ref checkoutBase parked HEAD on when another worktree
 	// held the base branch, so baseRef cuts from those commits and not from the local
@@ -756,6 +761,7 @@ func (p *Pipeline) EnsureOwnedProject(ctx context.Context, id string) error {
 // here; verify and the CI gate run giveUp themselves and return the resulting
 // *GiveUpError, which passes straight through.
 func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
+	p.armExitCleanup(ctx)
 	if err := p.EnsureOwnedProject(ctx, id); err != nil {
 		return err
 	}
@@ -1196,19 +1202,20 @@ func (p *Pipeline) alreadyDelivered(ctx context.Context, id, head string) bool {
 }
 
 // autoStashMsg labels the stash EnsureCleanBase creates so it is recognizable in
-// `git stash list` if the run dies before RestoreWIP pops it.
+// `git stash list` if the run dies before ExitCleanup pops it.
 const autoStashMsg = "trau autostash: uncommitted WIP set aside for a fresh run"
 
 // EnsureCleanBase guards the loop's fresh-pick path: TRACKED files with uncommitted
 // changes must not ride into a fresh build (untracked tooling rides along safely).
 // Leftovers on a branch trau cut belong to a run that died without cleaning up and
 // are committed back to that branch; anything else is the user's WIP, which AutoStash
-// (default on) sets aside for RestoreWIP to put back at session end and which aborts
+// (default on) sets aside for ExitCleanup to put back at session end and which aborts
 // the run when AutoStash is off. Then it checks out the base branch and fast-forwards
 // it from the remote (best-effort); a base another worktree holds is ridden detached
 // at its tip instead, already up to date, so the pull is redundant there. The resume
 // path deliberately skips this — the feature branch's WIP IS the work.
 func (p *Pipeline) EnsureCleanBase(ctx context.Context) error {
+	p.armExitCleanup(ctx)
 	dirty, err := p.Git.StatusPorcelain(ctx)
 	if err != nil {
 		return fmt.Errorf("ensure clean base: git status: %w", err)
@@ -1323,7 +1330,7 @@ func (p *Pipeline) setAsideWIP(ctx context.Context) error {
 	if serr := p.Git.Stash(ctx, autoStashMsg); serr != nil {
 		return fmt.Errorf("tracked files have uncommitted changes and auto-stash failed: %w — commit or stash manually", serr)
 	}
-	p.stashedBranch = branch
+	p.exit.stashedBranch = branch
 	p.logf("  ↩ stashed your WIP on %s — I'll restore it when the run ends", branch)
 	return nil
 }
@@ -1343,33 +1350,6 @@ func (p *Pipeline) interruptedRunID(branch string) string {
 		}
 	}
 	return ""
-}
-
-// RestoreWIP undoes an EnsureCleanBase auto-stash at session end: it checks the
-// original branch back out and pops the stash. It is a no-op when nothing was
-// stashed, and idempotent — it consumes the recorded branch so a second deferred
-// call does nothing. Every step is best-effort: on failure the WIP stays safe in
-// `git stash`, and the log tells the user how to recover it by hand.
-func (p *Pipeline) RestoreWIP(ctx context.Context) {
-	branch := p.stashedBranch
-	if branch == "" {
-		return
-	}
-	p.stashedBranch = ""
-	// Detach from the loop's context and give the restore its own deadline so a
-	// Ctrl-C (which cancels ctx) still puts the user's WIP back rather than leaving
-	// it stranded in the stash.
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	defer cancel()
-	if err := p.Git.Checkout(ctx, branch, false); err != nil {
-		p.logf("  ⚠ couldn't switch back to %s (%v) — your WIP is safe: run `git stash pop` to restore it", branch, err)
-		return
-	}
-	if err := p.Git.StashPop(ctx); err != nil {
-		p.logf("  ⚠ back on %s but couldn't pop your WIP (%v) — it's in `git stash list`; run `git stash pop` to restore it", branch, err)
-		return
-	}
-	p.logf("  ↪ restored your WIP on %s", branch)
 }
 
 // Reset discards a ticket's attempt: drop its feature branch (local + remote) and
@@ -1651,6 +1631,9 @@ func (p *Pipeline) resolveBuildBranch(ctx context.Context, id string) (string, e
 	}
 	if err := p.Git.CreateBranch(ctx, branch, base); err != nil {
 		return "", &GiveUpError{ID: id, Reason: "could not create feature branch for " + id}
+	}
+	if p.EpicID != "" {
+		p.markEpicBranchStacked()
 	}
 	p.logf("  branch %s ← %s", branch, base)
 	p.pinForkPoint(ctx, id)
@@ -2368,6 +2351,9 @@ func (p *Pipeline) CommitAndPR(ctx context.Context, id string) error {
 		prURL, err = p.createOrAdoptPR(ctx, prBase, branch, p.slicePRTitle(ctx, id, prBase, branch), body)
 		if err != nil {
 			return fmt.Errorf("commit %s: pr create: %w", id, err)
+		}
+		if prBase != p.Base {
+			p.markEpicBranchStacked()
 		}
 	}
 	p.logf("  PR %s", prURL)
@@ -3140,7 +3126,7 @@ func classifyRemotePushErr(probeErr error) pushOutcome {
 func (p *Pipeline) createOrAdoptPR(ctx context.Context, base, branch, title, body string) (string, error) {
 	var url string
 	err := p.retryGH(ctx, "gh pr create", func() error {
-		created, e := p.GitHub.CreatePR(ctx, base, branch, title, body)
+		created, e := p.GitHub.CreatePR(ctx, base, branch, title, body, false)
 		if e == nil {
 			url = created
 			return nil
@@ -5553,12 +5539,25 @@ func (g ExecGitHub) PRState(ctx context.Context, pr string) (string, error) {
 }
 
 // CreatePR opens a PR against base from head and returns the URL gh prints.
-func (g ExecGitHub) CreatePR(ctx context.Context, base, head, title, body string) (string, error) {
-	out, err := g.output(ctx, "pr", "create", "--base", base, "--head", head, "--title", title, "--body", body)
+func (g ExecGitHub) CreatePR(ctx context.Context, base, head, title, body string, draft bool) (string, error) {
+	args := []string{"pr", "create", "--base", base, "--head", head, "--title", title, "--body", body}
+	if draft {
+		args = append(args, "--draft")
+	}
+	out, err := g.output(ctx, args...)
 	if err != nil {
 		return "", fmt.Errorf("gh pr create: %w", err)
 	}
 	return out, nil
+}
+
+// MarkPRReady takes pr out of draft. gh reports a PR that is already open for
+// review as a failure, so callers apply the swallow-and-continue convention.
+func (g ExecGitHub) MarkPRReady(ctx context.Context, pr string) error {
+	if _, err := g.output(ctx, "pr", "ready", pr); err != nil {
+		return fmt.Errorf("gh pr ready: %w", err)
+	}
+	return nil
 }
 
 // Checks returns the PR's status checks. A gh error reads as no checks, so pollCI

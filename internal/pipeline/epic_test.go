@@ -34,7 +34,7 @@ func TestFinalizeEpicAutoMergesWhenCIGreen(t *testing.T) {
 		Base:        "main",
 		Remote:      "origin",
 		EpicID:      "COD-1",
-		epicBranch:  "epic/COD-1-checkout-rebuild",
+		exit:        exitState{epicBranch: "epic/COD-1-checkout-rebuild"},
 		AutoMerge:   true,
 		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
@@ -79,7 +79,7 @@ func TestFinalizeEpicMergesWithRequireCIOffAndNoChecks(t *testing.T) {
 		Base:        "main",
 		Remote:      "origin",
 		EpicID:      "COD-1",
-		epicBranch:  "epic/COD-1-checkout-rebuild",
+		exit:        exitState{epicBranch: "epic/COD-1-checkout-rebuild"},
 		AutoMerge:   true,
 		RequireCI:   config.CIGateOff,
 		MergeMethod: "squash",
@@ -126,7 +126,7 @@ func TestFinalizeEpicReattemptAdoptsMergedPR(t *testing.T) {
 		Base:        "main",
 		Remote:      "origin",
 		EpicID:      "COD-1",
-		epicBranch:  "epic/COD-1-checkout-rebuild",
+		exit:        exitState{epicBranch: "epic/COD-1-checkout-rebuild"},
 		AutoMerge:   true,
 		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
@@ -158,7 +158,7 @@ func TestEnsureEpicPRNoCommitsWithoutMergedPRStillFails(t *testing.T) {
 		createErr: errors.New("gh pr create: exit status 1: GraphQL: No commits between main and epic/COD-1 (createPullRequest)"),
 	}
 	p := &Pipeline{Base: "main", EpicID: "COD-1", GitHub: gh, Tracker: &epicTracker{title: "x"}}
-	if _, err := p.ensureEpicPR(context.Background(), "epic/COD-1-x"); err == nil {
+	if _, err := p.ensureEpicPR(context.Background(), "epic/COD-1-x", false); err == nil {
 		t.Fatal("expected create error to surface when no merged PR exists")
 	}
 }
@@ -331,7 +331,7 @@ func newEpicWaitPipeline(t *testing.T, gh GitHub, tr *epicTracker) *Pipeline {
 		Base:        "main",
 		Remote:      "origin",
 		EpicID:      "COD-1",
-		epicBranch:  "epic/COD-1-checkout-rebuild",
+		exit:        exitState{epicBranch: "epic/COD-1-checkout-rebuild"},
 		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
 		Git:         fakeGit{},
@@ -351,7 +351,7 @@ func shippableEpicPipeline(t *testing.T, gh GitHub, tr tracker.Tracker) *Pipelin
 		Base:        "main",
 		Remote:      "origin",
 		EpicID:      "COD-1",
-		epicBranch:  "epic/COD-1-checkout-rebuild",
+		exit:        exitState{epicBranch: "epic/COD-1-checkout-rebuild"},
 		AutoMerge:   true,
 		RequireCI:   config.CIGateOn,
 		MergeMethod: "squash",
@@ -416,12 +416,12 @@ func TestFinalizeEpicWaitsWhenAnyChildOpen(t *testing.T) {
 			}
 			gh := &epicGitHub{createURL: "https://github.test/pr/42"}
 			p := &Pipeline{
-				Base:       "main",
-				EpicID:     "COD-1",
-				epicBranch: "epic/COD-1-checkout-rebuild",
-				GitHub:     gh,
-				Tracker:    tr,
-				State:      state.NewStore(t.TempDir()),
+				Base:    "main",
+				EpicID:  "COD-1",
+				exit:    exitState{epicBranch: "epic/COD-1-checkout-rebuild"},
+				GitHub:  gh,
+				Tracker: tr,
+				State:   state.NewStore(t.TempDir()),
 			}
 			for k, v := range tt.checkpoint {
 				if err := p.State.Set("COD-3", k, v); err != nil {
@@ -855,6 +855,8 @@ type epicGitHub struct {
 	head         string
 	title        string
 	body         string
+	createDraft  bool
+	readyCalls   int
 	checks       []Check
 	prCommits    int
 	prFiles      int
@@ -867,11 +869,12 @@ func (e *epicGitHub) PRURL(context.Context, string) (string, error) { return "",
 func (e *epicGitHub) MergedPRURL(context.Context, string) (string, error) {
 	return e.mergedURL, nil
 }
-func (e *epicGitHub) CreatePR(_ context.Context, base, head, title, body string) (string, error) {
+func (e *epicGitHub) CreatePR(_ context.Context, base, head, title, body string, draft bool) (string, error) {
 	e.createCalls++
-	e.base, e.head, e.title, e.body = base, head, title, body
+	e.base, e.head, e.title, e.body, e.createDraft = base, head, title, body, draft
 	return e.createURL, e.createErr
 }
+func (e *epicGitHub) MarkPRReady(context.Context, string) error       { e.readyCalls++; return nil }
 func (e *epicGitHub) PRState(context.Context, string) (string, error) { return e.prState, nil }
 func (e *epicGitHub) Checks(context.Context, string) ([]Check, error) { return e.checks, nil }
 func (e *epicGitHub) PRSize(context.Context, string) (int, int, error) {

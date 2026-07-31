@@ -170,7 +170,7 @@ func TestCIAndMergeEpicChildConflictResolvedByAgent(t *testing.T) {
 	tr := &fakeTracker{}
 	p := newMergePipeline(t, git, gh, tr)
 	p.EpicID = "COD-90697"
-	p.epicBranch = "epic/COD-90697-y"
+	p.exit.epicBranch = "epic/COD-90697-y"
 	seedPROpen(t, p, id, "105", git.branch)
 
 	if err := p.CIAndMerge(context.Background(), id); err != nil {

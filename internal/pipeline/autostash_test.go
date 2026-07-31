@@ -13,9 +13,10 @@ import (
 )
 
 // stashGit is a fakeGit whose porcelain status and current branch are fixed per
-// case, recording the stash / checkout / pop calls EnsureCleanBase and RestoreWIP
+// case, recording the stash / checkout / pop calls EnsureCleanBase and ExitCleanup
 // make — plus the preserve-and-clean calls a reconcile makes — so the fresh-pick WIP
-// guard can be exercised without a real repo.
+// guard can be exercised without a real repo. Checkouts move the branch it reports,
+// so a case can assert where the working copy ended up.
 type stashGit struct {
 	fakeGit
 	status      string
@@ -44,7 +45,11 @@ func (g *stashGit) Stash(_ context.Context, msg string) error {
 }
 func (g *stashGit) Checkout(_ context.Context, ref string, _ bool) error {
 	g.checkouts = append(g.checkouts, ref)
-	return g.checkoutErr
+	if g.checkoutErr != nil {
+		return g.checkoutErr
+	}
+	g.branch = ref
+	return nil
 }
 func (g *stashGit) StashPop(context.Context) error {
 	if g.popErr != nil {
@@ -91,8 +96,8 @@ func TestEnsureCleanBaseAutoStash(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected an abort error, got nil")
 				}
-				if p.stashedBranch != "" {
-					t.Errorf("stashedBranch recorded on an abort path: %q", p.stashedBranch)
+				if p.exit.stashedBranch != "" {
+					t.Errorf("stashedBranch recorded on an abort path: %q", p.exit.stashedBranch)
 				}
 				return
 			}
@@ -103,15 +108,15 @@ func TestEnsureCleanBaseAutoStash(t *testing.T) {
 				if len(g.stashed) != 1 {
 					t.Fatalf("expected exactly one stash, got %d", len(g.stashed))
 				}
-				if p.stashedBranch != "feature/wip" {
-					t.Errorf("stashedBranch = %q, want feature/wip", p.stashedBranch)
+				if p.exit.stashedBranch != "feature/wip" {
+					t.Errorf("stashedBranch = %q, want feature/wip", p.exit.stashedBranch)
 				}
 			} else {
 				if len(g.stashed) != 0 {
 					t.Errorf("expected no stash, got %v", g.stashed)
 				}
-				if p.stashedBranch != "" {
-					t.Errorf("stashedBranch set unexpectedly: %q", p.stashedBranch)
+				if p.exit.stashedBranch != "" {
+					t.Errorf("stashedBranch set unexpectedly: %q", p.exit.stashedBranch)
 				}
 			}
 			// A clean base always ends on the base branch.
@@ -122,16 +127,16 @@ func TestEnsureCleanBaseAutoStash(t *testing.T) {
 	}
 }
 
-// TestRestoreWIP covers session-end restore: it pops the stash back onto the
-// original branch, is a no-op when nothing was stashed, is idempotent (so a
-// double-deferred call is safe), and leaves the WIP in the stash if it can't
+// TestExitCleanupRestoresWIP covers session-end restore: it pops the stash back
+// onto the original branch, is a no-op when nothing was stashed, is idempotent (so
+// a double-deferred call is safe), and leaves the WIP in the stash if it can't
 // return to the branch.
-func TestRestoreWIP(t *testing.T) {
+func TestExitCleanupRestoresWIP(t *testing.T) {
 	t.Run("no stash → no-op", func(t *testing.T) {
 		p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
 		g := &stashGit{}
 		p.Git = g
-		p.RestoreWIP(context.Background())
+		p.ExitCleanup(context.Background())
 		if len(g.checkouts) != 0 || g.popped != 0 {
 			t.Errorf("expected a no-op; checkouts=%v popped=%d", g.checkouts, g.popped)
 		}
@@ -141,9 +146,9 @@ func TestRestoreWIP(t *testing.T) {
 		p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
 		g := &stashGit{}
 		p.Git = g
-		p.stashedBranch = "feature/wip"
+		p.exit.stashedBranch = "feature/wip"
 
-		p.RestoreWIP(context.Background())
+		p.ExitCleanup(context.Background())
 
 		if len(g.checkouts) != 1 || g.checkouts[0] != "feature/wip" {
 			t.Errorf("expected checkout of feature/wip, got %v", g.checkouts)
@@ -151,11 +156,11 @@ func TestRestoreWIP(t *testing.T) {
 		if g.popped != 1 {
 			t.Errorf("expected one stash pop, got %d", g.popped)
 		}
-		if p.stashedBranch != "" {
-			t.Errorf("stashedBranch not consumed: %q", p.stashedBranch)
+		if p.exit.stashedBranch != "" {
+			t.Errorf("stashedBranch not consumed: %q", p.exit.stashedBranch)
 		}
 
-		p.RestoreWIP(context.Background())
+		p.ExitCleanup(context.Background())
 		if len(g.checkouts) != 1 || g.popped != 1 {
 			t.Errorf("second call was not a no-op; checkouts=%v popped=%d", g.checkouts, g.popped)
 		}
@@ -165,15 +170,15 @@ func TestRestoreWIP(t *testing.T) {
 		p := newTestPipeline(t, fakeRunner{}, &fakeTracker{})
 		g := &stashGit{checkoutErr: errors.New("dirty tree")}
 		p.Git = g
-		p.stashedBranch = "feature/wip"
+		p.exit.stashedBranch = "feature/wip"
 
-		p.RestoreWIP(context.Background())
+		p.ExitCleanup(context.Background())
 
 		if g.popped != 0 {
 			t.Error("stash pop attempted after a failed checkout")
 		}
-		if p.stashedBranch != "" {
-			t.Errorf("stashedBranch should be consumed even on failure: %q", p.stashedBranch)
+		if p.exit.stashedBranch != "" {
+			t.Errorf("stashedBranch should be consumed even on failure: %q", p.exit.stashedBranch)
 		}
 	})
 }
@@ -221,8 +226,8 @@ func TestEnsureCleanBaseReconcilesInterruptedRunWIP(t *testing.T) {
 				if len(g.commitMsgs) != 0 {
 					t.Fatalf("the user's WIP was committed as an interrupted run: %v", g.commitMsgs)
 				}
-				if len(g.stashed) != 1 || p.stashedBranch != tc.branch {
-					t.Errorf("the user's WIP was not stashed: stashed=%v stashedBranch=%q", g.stashed, p.stashedBranch)
+				if len(g.stashed) != 1 || p.exit.stashedBranch != tc.branch {
+					t.Errorf("the user's WIP was not stashed: stashed=%v stashedBranch=%q", g.stashed, p.exit.stashedBranch)
 				}
 				return
 			}
@@ -233,16 +238,16 @@ func TestEnsureCleanBaseReconcilesInterruptedRunWIP(t *testing.T) {
 			if g.added == 0 || g.pushes == 0 || g.cleaned == 0 {
 				t.Errorf("leftovers not fully reconciled: adds=%d pushes=%d cleans=%d", g.added, g.pushes, g.cleaned)
 			}
-			if len(g.stashed) != 0 || p.stashedBranch != "" {
-				t.Fatalf("an interrupted run's WIP must never be stashed: stashed=%v stashedBranch=%q", g.stashed, p.stashedBranch)
+			if len(g.stashed) != 0 || p.exit.stashedBranch != "" {
+				t.Fatalf("an interrupted run's WIP must never be stashed: stashed=%v stashedBranch=%q", g.stashed, p.exit.stashedBranch)
 			}
 			if n := len(g.checkouts); n == 0 || g.checkouts[n-1] != "main" {
 				t.Errorf("expected to end on base 'main', got %v", g.checkouts)
 			}
 
-			p.RestoreWIP(context.Background())
+			p.ExitCleanup(context.Background())
 			if g.popped != 0 {
-				t.Error("RestoreWIP popped a stash after a reconcile — it must be a no-op")
+				t.Error("ExitCleanup popped a stash after a reconcile — it must be a no-op")
 			}
 		})
 	}
@@ -259,7 +264,8 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 
 // TestEnsureCleanBaseReconcilesAgainstRealGit exercises the same reconcile against a
 // real repo: modified and newly-added files stranded on a checkpointed ticket's
-// feature branch become a wip commit there, and the tree returns to a clean base.
+// feature branch become a wip commit there, the run proceeds from a clean base, and
+// exit hygiene hands the checkout back where it found it — now clean.
 func TestEnsureCleanBaseReconcilesAgainstRealGit(t *testing.T) {
 	const id = "COD-4243"
 	branch := "feature/" + id + "-orphan"
@@ -287,13 +293,13 @@ func TestEnsureCleanBaseReconcilesAgainstRealGit(t *testing.T) {
 	if err := p.EnsureCleanBase(context.Background()); err != nil {
 		t.Fatalf("EnsureCleanBase err = %v", err)
 	}
-	p.RestoreWIP(context.Background())
+	p.ExitCleanup(context.Background())
 
 	if got := gitOut(t, work, "status", "--porcelain"); got != "" {
 		t.Errorf("working tree not clean after the reconcile: %q", got)
 	}
-	if got := gitOut(t, work, "rev-parse", "--abbrev-ref", "HEAD"); got != "main" {
-		t.Errorf("HEAD = %q, want the base branch", got)
+	if got := gitOut(t, work, "rev-parse", "--abbrev-ref", "HEAD"); got != branch {
+		t.Errorf("HEAD = %q, want the branch the run started on", got)
 	}
 	if got := gitOut(t, work, "stash", "list"); got != "" {
 		t.Errorf("stash list = %q, want empty — an interrupted run's WIP is committed, never stashed", got)

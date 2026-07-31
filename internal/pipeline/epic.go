@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/prompts"
 	"github.com/RomkaLTU/trau/internal/state"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
 
 func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
-	if p.epicBranch != "" {
-		return p.epicBranch, nil
+	if p.exit.epicBranch != "" {
+		return p.exit.epicBranch, nil
 	}
 
 	// Resolve deterministically by epic ID, never by the drift-prone title slug. Any
@@ -22,7 +23,7 @@ func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
 	// instead would let a renamed Linear epic spawn a SECOND branch that orphans the
 	// children's integration work.
 	if branch, _ := p.Git.FindEpicBranch(ctx, p.EpicID); branch != "" {
-		p.epicBranch = branch
+		p.exit.epicBranch = branch
 		return branch, nil
 	}
 
@@ -37,7 +38,7 @@ func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
 				return "", fmt.Errorf("resolve epic branch %s: adopt from %s: %w", remote, p.Remote, err)
 			}
 			p.logf("  epic branch %s adopted from %s", remote, p.Remote)
-			p.epicBranch = remote
+			p.exit.epicBranch = remote
 			return remote, nil
 		}
 	}
@@ -53,11 +54,13 @@ func (p *Pipeline) epicBranchName(ctx context.Context) (string, error) {
 	}
 	p.logf("  epic branch %s ← %s", branch, base)
 	if !p.localDelivery(ctx) {
-		if err := p.Git.Push(ctx, p.Remote, branch, false); err != nil {
+		err := p.Git.Push(ctx, p.Remote, branch, false)
+		if err != nil {
 			p.logf("  push epic branch error (continuing): %v", err)
 		}
+		p.exit.epicPushed = err == nil
 	}
-	p.epicBranch = branch
+	p.exit.epicBranch = branch
 	return branch, nil
 }
 
@@ -78,12 +81,12 @@ func (p *Pipeline) epicBaseRef(ctx context.Context) string {
 	if p.localDelivery(ctx) {
 		return p.baseRef()
 	}
-	tip := p.Remote + "/" + p.Base
 	// A fetch exits 0 without creating the tracking ref when the clone's refspec
 	// does not cover the base, so the tip is proven resolvable on both paths.
 	fetched := p.fetchBaseTip(ctx)
-	if known, _ := p.Git.ResolvesToCommit(ctx, tip); !known {
-		p.logf("  ⚠ %s could not be resolved — cutting the epic from the local %s", tip, p.Base)
+	tip := p.remoteBaseTip(ctx)
+	if tip == "" {
+		p.logf("  ⚠ %s/%s could not be resolved — cutting the epic from the local %s", p.Remote, p.Base, p.Base)
 		return p.baseRef()
 	}
 	if !fetched {
@@ -92,7 +95,36 @@ func (p *Pipeline) epicBaseRef(ctx context.Context) string {
 	return tip
 }
 
-func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string) (string, error) {
+// epicWorkBase names the ref the epic branch's own commits are counted against: the
+// remote tip epicBaseRef cuts a new epic branch from, so the commits the branch was
+// merely cut on top of never read as work the epic carries. It reads the tracking ref
+// the cut already used rather than fetching again, and falls back to the local base
+// when that ref resolves to nothing.
+func (p *Pipeline) epicWorkBase(ctx context.Context) string {
+	if tip := p.remoteBaseTip(ctx); tip != "" {
+		return tip
+	}
+	return p.baseRef()
+}
+
+// remoteBaseTip names the base branch as the remote-tracking ref has it, or "" when
+// there is no such ref to read: local delivery, or a clone whose refspec never covered
+// the base.
+func (p *Pipeline) remoteBaseTip(ctx context.Context) string {
+	if p.localDelivery(ctx) {
+		return ""
+	}
+	tip := p.Remote + "/" + p.Base
+	if known, _ := p.Git.ResolvesToCommit(ctx, tip); !known {
+		return ""
+	}
+	return tip
+}
+
+// ensureEpicPR returns the epic branch's open PR, opening one when it has none.
+// draft opens it as a draft: exit hygiene tracks an unfinished epic that way, and
+// the finalize that later ships the epic adopts that same PR and marks it ready.
+func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string, draft bool) (string, error) {
 	prURL, _ := p.GitHub.PRURL(ctx, epicBranch)
 	if prURL != "" {
 		return prURL, nil
@@ -102,7 +134,7 @@ func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string) (string,
 	if err != nil {
 		title = p.EpicID
 	}
-	prURL, err = p.GitHub.CreatePR(ctx, p.Base, epicBranch, epicPRTitle(p.EpicID, title), p.epicPRBody(p.EpicID))
+	prURL, err = p.GitHub.CreatePR(ctx, p.Base, epicBranch, epicPRTitle(p.EpicID, title), p.epicPRBody(p.EpicID), draft)
 	if err != nil {
 		if strings.Contains(err.Error(), "No commits between") {
 			if merged, _ := p.GitHub.MergedPRURL(ctx, epicBranch); merged != "" {
@@ -188,7 +220,7 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("finalize epic %s: sync with %s: %w", p.EpicID, p.Base, err)
 	}
-	prURL, err := p.ensureEpicPR(ctx, epic)
+	prURL, err := p.ensureEpicPR(ctx, epic, false)
 	if err != nil {
 		return fmt.Errorf("finalize epic %s: create PR: %w", p.EpicID, err)
 	}
@@ -321,25 +353,35 @@ func (p *Pipeline) assertEpicBaseCurrent(ctx context.Context, id, epic string) e
 	return nil
 }
 
-// remoteCarries reports whether the remote copy of branch contains commit. The
-// remote's own tip is read with ls-remote, never a remote-tracking ref: a push that
-// failed leaves the tracking ref exactly as convincing as a push that worked. A tip
-// that moved on — a sibling squash-merged into the epic since — is fetched so its
-// reachability can be judged locally.
+// remoteCarries reports whether the remote copy of branch contains commit.
 func (p *Pipeline) remoteCarries(ctx context.Context, branch, commit string) (bool, error) {
+	sha, err := p.remoteTip(ctx, branch)
+	if err != nil || sha == "" {
+		return false, err
+	}
+	return p.Git.IsAncestor(ctx, commit, sha)
+}
+
+// remoteTip returns the commit remote/branch points at as the REMOTE reports it,
+// fetched into the local object store so its history can be judged locally. It is
+// read with ls-remote, never a remote-tracking ref: a push that failed leaves the
+// tracking ref exactly as convincing as a push that worked, and a tip that moved on
+// — a sibling squash-merged into the epic since — is missing from it entirely. A
+// branch the remote does not have is an expected ("", nil).
+func (p *Pipeline) remoteTip(ctx context.Context, branch string) (string, error) {
 	sha, err := p.Git.RemoteSHA(ctx, p.Remote, branch)
 	if err != nil {
-		return false, fmt.Errorf("read %s/%s: %w", p.Remote, branch, err)
+		return "", fmt.Errorf("read %s/%s: %w", p.Remote, branch, err)
 	}
 	if sha == "" {
-		return false, nil
+		return "", nil
 	}
 	if known, _ := p.Git.ResolvesToCommit(ctx, sha); !known {
 		if err := p.Git.Fetch(ctx, p.Remote, branch); err != nil {
-			return false, fmt.Errorf("fetch %s/%s: %w", p.Remote, branch, err)
+			return "", fmt.Errorf("fetch %s/%s: %w", p.Remote, branch, err)
 		}
 	}
-	return p.Git.IsAncestor(ctx, commit, sha)
+	return sha, nil
 }
 
 // syncEpicForMerge brings the base into the epic branch before the epic ships to
@@ -372,6 +414,11 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 	if st, _ := p.GitHub.PRState(ctx, pr); st == "MERGED" {
 		p.checkpointEpicMerged(ctx, prURL)
 		return true, nil
+	}
+	// The PR may be the draft an earlier run's exit hygiene opened; neither a merge
+	// nor a reviewer can take a draft, and one already open for review is not news.
+	if err := p.GitHub.MarkPRReady(ctx, pr); err != nil {
+		logger.Verbosef("mark epic PR %s ready: %v", pr, err)
 	}
 
 	for repair := 0; ; {
