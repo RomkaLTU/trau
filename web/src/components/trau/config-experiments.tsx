@@ -74,7 +74,7 @@ export function ConfigExperiments() {
           message="No project registered yet — cohorts form once a project has metered runs."
           actions={
             <Button asChild size="sm" className="font-mono">
-              <Link to="/projects/new">Add a project</Link>
+              <Link to="/projects/new">New project</Link>
             </Button>
           }
         />

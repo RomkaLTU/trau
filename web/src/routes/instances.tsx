@@ -100,7 +100,7 @@ function Instances() {
           <Button asChild size="sm" className="font-mono">
             <Link to="/projects/new">
               <Plus data-icon="inline-start" aria-hidden="true" />
-              Add a project
+              New project
             </Link>
           </Button>
         }
@@ -131,7 +131,7 @@ function Instances() {
         )}
 
         {repoViews.length > 0 && (
-          <TerminalCard title="projects" bodyClassName="p-0">
+          <TerminalCard title="repos" bodyClassName="p-0">
             <ul className="flex flex-col divide-y divide-border/60">
               {rows.map((row) =>
                 row.project ? (

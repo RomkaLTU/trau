@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
@@ -19,7 +19,7 @@ import (
 )
 
 // The destructive half of the hub's MCP surface: the external agent is a full
-// operator, so it can empty a queue, kill the running child, rewrite and delete
+// operator, so it can drop queue rows, kill the running child, rewrite and delete
 // tickets, throw a run away and restart the hub. There is no confirmation layer —
 // trau is machine-trust by design — so each description states what the tool
 // takes away in its first sentence and that honesty is the guardrail.
@@ -52,23 +52,6 @@ var hubMCPAdminTools = []mcpTool{
     "direction": {"type": "string", "enum": ["up", "down"], "description": "Which way to shift it one slot."}
   },
   "required": ["repo", "id", "direction"]
-}`),
-		Annotations: destructiveTool,
-	},
-	{
-		Name: "shutdown_queue",
-		Description: "Kills the running agent and empties the queue: it disarms the drain, stops the running child — " +
-			"escalating to a group kill if it will not go — drops the checkpoints of the running and paused items, and " +
-			"removes every row. Whatever the child had not pushed to its branch is lost and nothing is resumable " +
-			"afterwards. It answers the moment the drain is disarmed; the stop and the clear finish in the background, so " +
-			"call queue_status to watch the teardown land. To stop the queue without killing anything, call pause_queue " +
-			"instead — it lets the current item finish and leaves every row queued.",
-		InputSchema: json.RawMessage(`{
-  "type": "object",
-  "properties": {
-    "repo": {"type": "string", "description": "Repo name as list_repos reports it. Must be a repo whose can_drain is true."}
-  },
-  "required": ["repo"]
 }`),
 		Annotations: destructiveTool,
 	},
@@ -191,15 +174,6 @@ var hubMCPAdminTools = []mcpTool{
 	},
 }
 
-// MCPShutdown is what shutdown_queue answers with: the teardown is in flight and
-// which item's child it is stopping. It mirrors the REST route's 202 — the stop,
-// the checkpoint drops and the clear all land after the call returns.
-type MCPShutdown struct {
-	Repo     string `json:"repo"`
-	Status   string `json:"status"`
-	Stopping string `json:"stopping,omitempty"`
-}
-
 // MCPDeleted names every identifier delete_ticket removed: the ticket alone for a
 // leaf, the epic and its children for a family.
 type MCPDeleted struct {
@@ -233,8 +207,6 @@ func (s *Server) hubMCPAdminTool(ctx context.Context, name string) func(json.Raw
 		return s.mcpDequeue
 	case "move_queue_item":
 		return s.mcpMoveQueueItem
-	case "shutdown_queue":
-		return s.mcpShutdownQueue
 	case "update_ticket":
 		return s.mcpUpdateTicket
 	case "transition_ticket":
@@ -269,7 +241,7 @@ func (s *Server) mcpDequeue(args json.RawMessage) (any, error) {
 	case errors.Is(err, queue.ErrNotQueued):
 		return nil, fmt.Errorf("%s is not in the queue — call queue_status for the rows it has", id)
 	case errors.Is(err, queue.ErrRunning):
-		return nil, fmt.Errorf("%s is running and cannot be removed — call shutdown_queue to tear the run down", id)
+		return nil, fmt.Errorf("%s is running and cannot be removed — stop its loop with stop_instance first", id)
 	case err != nil:
 		return nil, fmt.Errorf("dequeue: %w", err)
 	}
@@ -316,43 +288,6 @@ func moveDirection(raw string) (int, error) {
 		return 1, nil
 	}
 	return 0, fmt.Errorf("direction %q must be \"up\" or \"down\"", raw)
-}
-
-// mcpShutdownQueue disarms the drain synchronously and hands the teardown — the
-// child stop, the checkpoint drops, the clear — to the same background goroutine
-// the REST route uses, so the tool answers without waiting out a kill grace. A
-// second call while a teardown is already in flight is a no-op answered the same
-// way.
-func (s *Server) mcpShutdownQueue(args json.RawMessage) (any, error) {
-	var a struct {
-		Repo string `json:"repo"`
-	}
-	if err := json.Unmarshal(args, &a); err != nil {
-		return nil, errors.New("shutdown_queue arguments were not valid JSON")
-	}
-	root, err := s.mcpAllowedRoot(a.Repo, "be shut down")
-	if err != nil {
-		return nil, err
-	}
-	store := s.stores.Queue(root)
-	if err := store.SetDraining(false); err != nil {
-		return nil, fmt.Errorf("disarm drain: %w", err)
-	}
-	res := MCPShutdown{Repo: filepath.Base(root), Status: "shutting_down"}
-	if !s.beginShutdown(root) {
-		return res, nil
-	}
-	items, _, err := store.Snapshot()
-	if err != nil {
-		s.endShutdown(root)
-		return nil, fmt.Errorf("read queue: %w", err)
-	}
-	running, hasRunning := firstWithStatus(items, queue.StatusRunning)
-	if hasRunning {
-		res.Stopping = running.ID
-	}
-	go s.teardownQueue(root, running, hasRunning)
-	return res, nil
 }
 
 // mcpUpdateTicket edits a hub-filed ticket. The store replaces every editable
@@ -510,6 +445,10 @@ func (s *Server) mcpDeleteTicket(args json.RawMessage) (any, error) {
 	s.purgeGitFootprint(repo, res.Deleted)
 	return MCPDeleted{Repo: repo.Name, Deleted: res.Deleted}, nil
 }
+
+// resetTimeout bounds a reset: it drops the branch and re-queues the ticket on
+// the tracker, so it must outlast a tracker write but never hang the call.
+const resetTimeout = 2 * time.Minute
 
 func (s *Server) mcpResetRun(ctx context.Context, args json.RawMessage) (any, error) {
 	var a struct {

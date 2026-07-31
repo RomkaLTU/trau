@@ -1,19 +1,14 @@
 package webserver
 
 import (
-	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"path/filepath"
-	"time"
 
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
-	"github.com/RomkaLTU/trau/internal/state"
 )
 
 // checkpointView is a ticket's checkpoint as the HTTP API returns it: the
@@ -158,124 +153,6 @@ func (s *Server) importAllCheckpoints() {
 	}
 }
 
-// resetTimeout bounds a reset: it drops the branch and re-queues the ticket on
-// the tracker, so it must outlast a tracker write but never hang the request.
-const resetTimeout = 2 * time.Minute
-
-// reconcileTimeout bounds a reconcile: it cross-checks every in-flight
-// checkpoint against the tracker, each query time-bounded inside the child, so
-// the ceiling covers a repo with several stale rows.
-const reconcileTimeout = 3 * time.Minute
-
-// ResetRequest is the body of the reset endpoint. Force resets a ticket whose
-// code is already merged — the same explicit override the CLI's --force is.
-type ResetRequest struct {
-	Force bool `json:"force"`
-}
-
-// ReconcileResult is the outcome of a reconcile: the tickets whose stale local
-// checkpoint was dropped because the tracker now considers them finished.
-type ReconcileResult struct {
-	Repo       string   `json:"repo"`
-	Reconciled []string `json:"reconciled"`
-}
-
-// handleResetRun resets a ticket the same way `trau --reset` does: it drops the
-// branch and checkpoint and re-queues the ticket on the tracker. The mutation is
-// refused while a live loop holds the repo, and resetting an already-merged
-// ticket requires an explicit force — CLI parity on both counts.
-func (s *Server) handleResetRun(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-	repo, ticket, ok := s.mutableCheckpoint(w, r)
-	if !ok {
-		return
-	}
-	var req ResetRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
-		return
-	}
-	if phase := s.stores.Checkpoints().Phase(repo.Root, ticket); phase == state.Merged && !req.Force {
-		writeJSON(w, http.StatusConflict, map[string]any{
-			"error":          fmt.Sprintf("%s is already merged — resetting it drops the shipped branch; confirm with force", ticket),
-			"requires_force": true,
-		})
-		return
-	}
-
-	args := []string{"--repo", repo.Root, "--reset", ticket, "--no-tui"}
-	if req.Force {
-		args = append(args, "--force")
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), resetTimeout)
-	defer cancel()
-	if _, err := s.sup.Capture(ctx, SpawnSpec{Dir: repo.Root, Args: args, Env: childEnv(s.home)}); err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "reset failed: " + err.Error()})
-		return
-	}
-	if err := s.stores.Checkpoints().Remove(repo.Root, ticket); err != nil {
-		logger.Verbosef("reset %s/%s: drop checkpoint: %v", repo.Name, ticket, err)
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "reset", "ticket": ticket})
-}
-
-// handleClearRun forgets a ticket's local checkpoint the same way `trau --clear`
-// does: it drops only the durable state, never touching git or the tracker, for
-// a ticket finished out-of-band. It is refused while a live loop holds the repo.
-func (s *Server) handleClearRun(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-	repo, ticket, ok := s.mutableCheckpoint(w, r)
-	if !ok {
-		return
-	}
-	was := s.stores.Checkpoints().Phase(repo.Root, ticket)
-	if err := s.stores.Checkpoints().Remove(repo.Root, ticket); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "clear failed: " + err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "cleared", "ticket": ticket, "was": was})
-}
-
-// handleReconcileRepo reconciles a repo's checkpoints against the tracker on
-// demand, driving `trau --status --json`, which drops any in-flight or
-// quarantined checkpoint whose issue the tracker now reports as terminal. Like
-// every checkpoint mutation it is refused while a live loop holds the repo.
-func (s *Server) handleReconcileRepo(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-	repo, ok := s.findRepo(r.PathValue("repo"))
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
-		return
-	}
-	if s.refuseWhenLive(w, repo) {
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), reconcileTimeout)
-	defer cancel()
-	out, err := s.sup.Capture(ctx, SpawnSpec{
-		Dir:  repo.Root,
-		Args: []string{"--repo", repo.Root, "--status", "--json", "--no-tui"},
-		Env:  childEnv(s.home),
-	})
-	if err != nil {
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "reconcile failed: " + err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, ReconcileResult{Repo: repo.Name, Reconciled: parseReconciled(out)})
-}
-
 // mutableCheckpoint resolves the {repo} and {ticket} path segments for a
 // checkpoint mutation and enforces the invariants every mutation shares: it 404s
 // an unknown repo, refuses with a conflict while a loop is live in the repo — so
@@ -338,20 +215,4 @@ func (s *Server) liveInstance(root string) (registry.Entry, bool) {
 		}
 	}
 	return registry.Entry{}, false
-}
-
-// parseReconciled pulls the reconciled ticket list out of a `--status --json`
-// document. A shape it cannot parse yields no reconciled tickets rather than an
-// error — the reconcile still ran in the child; this only reports what it dropped.
-func parseReconciled(stdout []byte) []string {
-	var report struct {
-		Reconciled []string `json:"reconciled"`
-	}
-	if err := json.Unmarshal(stdout, &report); err != nil {
-		return []string{}
-	}
-	if report.Reconciled == nil {
-		return []string{}
-	}
-	return report.Reconciled
 }

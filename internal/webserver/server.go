@@ -49,8 +49,6 @@ type Server struct {
 	grillTurnActive  func(sid int64) bool
 	pregrillMu       sync.Mutex
 	pregrill         map[int64]bool
-	shutdownMu       sync.Mutex
-	shuttingDown     map[string]bool
 	stopMu           sync.Mutex
 	stopping         map[string]bool
 	removeMu         sync.Mutex
@@ -120,7 +118,6 @@ func New(version, bind, token string, workspace []string, allowRegister bool, st
 		transcriptEvents: newTranscriptBroadcaster(),
 		grillEvents:      newGrillBroadcaster(),
 		pregrill:         map[int64]bool{},
-		shuttingDown:     map[string]bool{},
 		stopping:         map[string]bool{},
 		removing:         map[queueItemKey]bool{},
 		overlapWarned:    map[overlapKey]bool{},
@@ -336,7 +333,6 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue", s.handleQueue)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/drain", s.handleQueueDrain)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/stop", s.handleQueueStop)
-	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/shutdown", s.handleQueueShutdown)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}", s.handleQueueItem)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}/move", s.handleQueueMove)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/queue/{id}/run", s.handleQueueRun)
@@ -364,13 +360,10 @@ func (s *Server) apiHandler() http.Handler {
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/routing", s.handleRepoRouting)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/metrics/config-cohorts", s.handleConfigCohorts)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/comment", s.handleRunComment)
-	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/reset", s.handleResetRun)
-	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/clear", s.handleClearRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/takeover", s.handleRunTakeover)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/runs/{ticket}/advance", s.handleAdvanceRun)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/sync", s.handleSync)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/resync", s.handleForceResync)
-	mux.HandleFunc(APIPrefix+"/repos/{repo}/reconcile", s.handleReconcileRepo)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/gitignore", s.handleRepoGitignore)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/health", s.handleRepoHealth)
 	mux.HandleFunc(APIPrefix+"/repos/{repo}/lessons", s.handleLessons)

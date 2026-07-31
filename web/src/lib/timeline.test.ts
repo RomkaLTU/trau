@@ -247,6 +247,7 @@ describe('buildTimeline', () => {
         id: 'COD-9',
         title: '',
         source: undefined,
+        active: false,
         done: 1,
         total: 1,
         children: [],
@@ -518,6 +519,57 @@ describe('buildTimeline', () => {
     if (epic?.kind === 'epic') {
       expect(epic.children.map((c) => c.id)).toEqual(['COD-10', 'COD-11'])
     }
+  })
+
+  it('marks the epic the drain is working and leaves a waiting one unmarked', () => {
+    const tl = buildTimeline(
+      [
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          status: 'running',
+          sub_issues: [
+            { id: 'COD-10', title: 'a', state: 'done' },
+            { id: 'COD-11', title: 'b', state: 'todo' },
+            { id: 'COD-12', title: 'c', state: 'todo' },
+          ],
+        }),
+        item({
+          id: 'COD-20',
+          kind: 'epic',
+          sub_issues: [{ id: 'COD-21', title: 'c', state: 'todo' }],
+        }),
+      ],
+      [run({ ticket: 'COD-10', terminal: true, phase: 'merged' })],
+      instance({ ticket: 'COD-11' }),
+    )
+    expect(tl.running?.id).toBe('COD-11')
+    expect(
+      tl.pending.map((p) => (p.kind === 'epic' ? [p.id, p.active] : [])),
+    ).toEqual([
+      ['COD-9', true],
+      ['COD-20', false],
+    ])
+  })
+
+  it('keeps the running epic marked while the loop grazes between picks', () => {
+    const tl = buildTimeline(
+      [
+        item({
+          id: 'COD-9',
+          kind: 'epic',
+          status: 'running',
+          sub_issues: [
+            { id: 'COD-10', title: 'a', state: 'done' },
+            { id: 'COD-11', title: 'b', state: 'todo' },
+          ],
+        }),
+      ],
+      [run({ ticket: 'COD-10', terminal: true, phase: 'merged' })],
+      instance({ session_state: 'grazing' }),
+    )
+    expect(tl.running).toBeUndefined()
+    expect(tl.pending[0]).toMatchObject({ kind: 'epic', active: true })
   })
 
   it('reads a ticket-less active instance as the running epic finalize', () => {

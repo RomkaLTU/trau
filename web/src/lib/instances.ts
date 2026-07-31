@@ -177,6 +177,12 @@ async function fetchRepoHealth(repo: string): Promise<RepoHealth> {
   return res.json();
 }
 
+// How often the health of a repo is re-read: rarely while it sits still, every
+// few seconds while a pull is in flight so the state — and the board waiting on
+// it — follows that pull within seconds of it landing.
+const HEALTH_POLL_MS = 30_000;
+const HEALTH_SYNCING_POLL_MS = 3_000;
+
 // Keyed by repo so every gate on a page shares one fetch rather than one per
 // section. It polls because the pages behind it stay open for hours: without an
 // interval a background sync that started failing would go unnoticed until the
@@ -187,7 +193,10 @@ export const repoHealthQueryOptions = (repo: string) =>
     queryFn: () => fetchRepoHealth(repo),
     enabled: repo !== "",
     staleTime: 15_000,
-    refetchInterval: 30_000,
+    refetchInterval: (query) =>
+      query.state.data?.state === "syncing"
+        ? HEALTH_SYNCING_POLL_MS
+        : HEALTH_POLL_MS,
   });
 
 async function errorMessage(res: Response, fallback: string): Promise<string> {
@@ -312,16 +321,28 @@ export interface SyncResponse {
   syncedAt: string;
 }
 
+// SyncResult is how a sync request settled: the counts a pull of our own wrote,
+// or the hub's 202 marker that it coalesced into a pull already in flight — no
+// counts to show, and nothing that failed.
+export type SyncResult =
+  | { status: "pulled"; response: SyncResponse }
+  | { status: "syncing" };
+
 // syncRepo pulls the repo's tracker project into the hub issue store and sweeps
-// the issues the tracker no longer returns, blocking for the length of both.
-export async function syncRepo(repo: string): Promise<SyncResponse> {
+// the issues the tracker no longer returns, blocking for the length of both. A
+// sync of that repo already running coalesces rather than pulling twice, so the
+// caller waits on health instead of on this request.
+export async function syncRepo(repo: string): Promise<SyncResult> {
   const res = await apiFetch(`/api/v1/repos/${encodeURIComponent(repo)}/sync`, {
     method: "POST",
   });
   if (!res.ok) {
     throw new Error(await errorMessage(res, "sync failed"));
   }
-  return res.json();
+  if (res.status === 202) {
+    return { status: "syncing" };
+  }
+  return { status: "pulled", response: await res.json() };
 }
 
 export interface DryRunResult {
