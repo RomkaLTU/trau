@@ -171,7 +171,34 @@ func checkProvider(ctx context.Context, cfg config.Config, rr *runner) {
 		return
 	}
 	rr.add("provider", pass, fmt.Sprintf("%s (%s)", cfg.Provider, strings.TrimSpace(string(out))), "")
+	checkClaudeFirstRun(cfg, rr)
 	checkClaudeBypass(cfg, rr)
+}
+
+// claudeFirstRunRemedy is the one gesture that clears every first-run dialog:
+// onboarding and login are answered in the same interactive session.
+const claudeFirstRunRemedy = "run `claude` once interactively in your terminal to finish first-time setup, then re-run doctor"
+
+// checkClaudeFirstRun verifies that a person has already sat through Claude
+// Code's first-run dialogs on this machine. trau drives claude under its own
+// pty and the web Terminal view is a read-only replay, so a machine where
+// claude has never run raises the onboarding wizard or the login screen
+// mid-phase with no keyboard path back to it.
+func checkClaudeFirstRun(cfg config.Config, rr *runner) {
+	if cfg.Provider != "claude" {
+		return
+	}
+	state, err := agent.ClaudeFirstRunState()
+	switch {
+	case err != nil:
+		rr.add("provider-first-run", warn, fmt.Sprintf("could not verify claude's first-run state (%v)", err), "")
+	case !state.OnboardingCompleted:
+		rr.add("provider-first-run", fail, "claude has never finished its first-run setup on this machine — the first agent child will block on its onboarding dialog", claudeFirstRunRemedy)
+	case !state.LoggedIn:
+		rr.add("provider-first-run", fail, "claude records no login on this machine — the first agent child will block on its login screen", claudeFirstRunRemedy)
+	default:
+		rr.add("provider-first-run", pass, "first-run setup and login recorded", "")
+	}
 }
 
 // checkClaudeBypass verifies the one-time --dangerously-skip-permissions

@@ -41,6 +41,54 @@ func lastCheck(t *testing.T, rr *runner) Check {
 	return rr.r.Checks[len(rr.r.Checks)-1]
 }
 
+func TestCheckClaudeFirstRun(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+		file     string // "" = no config file written
+		status   string // "" = no check recorded
+		wantMsg  string
+	}{
+		{"no config file fails", "claude", "", fail, "never finished its first-run setup"},
+		{"onboarding incomplete fails", "claude", `{"hasCompletedOnboarding":false,"oauthAccount":{"emailAddress":"me@acme.com"}}`, fail, "never finished its first-run setup"},
+		{"onboarded without a login fails", "claude", `{"hasCompletedOnboarding":true}`, fail, "records no login"},
+		{"onboarded and logged in passes", "claude", `{"hasCompletedOnboarding":true,"oauthAccount":{"emailAddress":"me@acme.com"}}`, pass, "first-run setup and login recorded"},
+		{"unreadable config warns", "claude", `{not json`, warn, "could not verify"},
+		{"codex skips", "codex", "", "", ""},
+		{"kimi skips", "kimi", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("CLAUDE_CONFIG_DIR", dir)
+			if tc.file != "" {
+				if err := os.WriteFile(filepath.Join(dir, ".claude.json"), []byte(tc.file), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			rr := newTestRunner()
+			checkClaudeFirstRun(config.Config{Provider: tc.provider}, rr)
+			if tc.status == "" {
+				if len(rr.r.Checks) != 0 {
+					t.Fatalf("expected no check for provider %q, got %+v", tc.provider, rr.r.Checks)
+				}
+				return
+			}
+			c := lastCheck(t, rr)
+			if c.Status != tc.status {
+				t.Errorf("status = %q, want %q (%s)", c.Status, tc.status, c.Message)
+			}
+			if !strings.Contains(c.Message, tc.wantMsg) {
+				t.Errorf("message %q should contain %q", c.Message, tc.wantMsg)
+			}
+			if tc.status == fail && !strings.Contains(c.Message, claudeFirstRunRemedy) {
+				t.Errorf("message %q should carry the remedy", c.Message)
+			}
+		})
+	}
+}
+
 func TestCheckJiraSkippedForNonJira(t *testing.T) {
 	rr := newTestRunner()
 	checkJira(context.Background(), config.Config{TrackerProvider: "linear"}, "linear", rr)

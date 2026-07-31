@@ -97,6 +97,41 @@ func TestClaudeBypassAccepted(t *testing.T) {
 	}
 }
 
+func TestClaudeFirstRunState(t *testing.T) {
+	cases := []struct {
+		name    string
+		file    string // "" = no file written
+		want    ClaudeFirstRun
+		wantErr bool
+	}{
+		{"onboarded and logged in", `{"hasCompletedOnboarding":true,"oauthAccount":{"emailAddress":"me@acme.com"}}`, ClaudeFirstRun{OnboardingCompleted: true, LoggedIn: true}, false},
+		{"onboarded without a login", `{"hasCompletedOnboarding":true}`, ClaudeFirstRun{OnboardingCompleted: true}, false},
+		{"onboarding explicitly incomplete", `{"hasCompletedOnboarding":false,"oauthAccount":{"emailAddress":"me@acme.com"}}`, ClaudeFirstRun{LoggedIn: true}, false},
+		{"empty oauth account", `{"hasCompletedOnboarding":true,"oauthAccount":{}}`, ClaudeFirstRun{OnboardingCompleted: true}, false},
+		{"null oauth account", `{"hasCompletedOnboarding":true,"oauthAccount":null}`, ClaudeFirstRun{OnboardingCompleted: true}, false},
+		{"no config file", "", ClaudeFirstRun{}, false},
+		{"unparsable file", `{not json`, ClaudeFirstRun{}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("CLAUDE_CONFIG_DIR", dir)
+			if tc.file != "" {
+				if err := os.WriteFile(filepath.Join(dir, ".claude.json"), []byte(tc.file), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := ClaudeFirstRunState()
+			if got != tc.want {
+				t.Errorf("state = %+v, want %+v", got, tc.want)
+			}
+			if (err != nil) != tc.wantErr {
+				t.Errorf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // A sighted dialog followed by process end must confirm through the debouncer's
 // finish path — the child sat on the dialog until something killed it.
 func TestDrainConfirmsBypassPromptOnEOF(t *testing.T) {
