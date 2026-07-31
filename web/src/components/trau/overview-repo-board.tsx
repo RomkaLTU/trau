@@ -6,7 +6,6 @@ import { useActiveRepo } from '@/components/trau/active-repo'
 import { EmptyState } from '@/components/trau/empty-state'
 import { Eyebrow } from '@/components/trau/eyebrow'
 import {
-  ATTENTION_META,
   MetaInline,
   Panel,
   PhaseStepper,
@@ -69,9 +68,7 @@ function BoardLoopActivity({ loop, now }: { loop: LiveLoop; now: number }) {
 }
 
 function BoardAttentionActivity({ item }: { item: AttentionRun }) {
-  const failureClass = item.failure_class!
-  const pill = attentionPill(failureClass)
-  const action = ATTENTION_META[failureClass].action
+  const pill = attentionPill(item.failure_class!)
   return (
     <div className="flex flex-wrap items-center gap-2">
       <StatusPill state={pill.state} label={pill.label} />
@@ -84,7 +81,7 @@ function BoardAttentionActivity({ item }: { item: AttentionRun }) {
         params={{ repo: item.repo, ticket: item.ticket }}
         className="font-mono text-xs text-teal underline-offset-4 hover:underline"
       >
-        {action} →
+        Open →
       </Link>
     </div>
   )

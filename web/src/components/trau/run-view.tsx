@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { parseAsStringLiteral, useQueryState } from "nuqs";
 import {
   ChevronRight,
   ExternalLink,
   Loader2,
-  Play,
   ScrollText,
   Square,
   SquareTerminal,
@@ -15,7 +14,6 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/trau/confirm-dialog";
-import { useHandback } from "@/components/trau/handback-dialog";
 import { Eyebrow, type EyebrowGlyph } from "@/components/trau/eyebrow";
 import { NoSkillsBanner } from "@/components/trau/no-skills-banner";
 import { NoBrowserBanner } from "@/components/trau/no-browser-banner";
@@ -43,12 +41,10 @@ import {
   repoTakenOver,
   stopInstance,
   takeoverRun,
-  TAKEOVER_BLOCKED,
   TakeoverError,
   type Instance,
 } from "@/lib/instances";
 import { sessionStatePill } from "@/lib/overview";
-import { publishQueue, runNext } from "@/lib/queue";
 import { runDetailQueryOptions, type RunDetail } from "@/lib/rundetail";
 import {
   deriveElapsedMs,
@@ -88,9 +84,6 @@ const PANE_OPTIONS: readonly SegmentOption<PaneTab>[] = [
 ];
 
 const paneParser = parseAsStringLiteral(PANE_VALUES).withDefault("terminal");
-
-const PARKED_GATE =
-  "trau is parked on this ticket’s recap in the TUI — handle it there, or stop it above to resume from here";
 
 function elapsedSince(fromISO: string, now: number): string {
   return formatDuration(Math.max(0, now - new Date(fromISO).getTime()));
@@ -418,17 +411,7 @@ function Recap({
   );
 }
 
-function PausedBanner({
-  reason,
-  onResume,
-  resuming,
-  gate,
-}: {
-  reason: string;
-  onResume: () => void;
-  resuming: boolean;
-  gate: string;
-}) {
+function PausedBanner({ reason }: { reason: string }) {
   const banner = pauseBanner(reason);
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-warn/40 bg-warn/10 px-4 py-3">
@@ -439,36 +422,11 @@ function PausedBanner({
       <p className="font-sans text-sm leading-relaxed text-muted-foreground">
         {banner.hint}
       </p>
-      <div className="mt-2">
-        <Button
-          size="sm"
-          className="font-mono"
-          disabled={resuming || gate !== ""}
-          title={gate || undefined}
-          onClick={onResume}
-        >
-          <Play className="size-4" aria-hidden="true" />
-          {resuming ? "Resuming…" : "Resume"}
-        </Button>
-      </div>
-      {gate && (
-        <p className="mt-1 font-mono text-[0.65rem] text-muted-foreground">
-          {gate}
-        </p>
-      )}
     </div>
   );
 }
 
-function FailedToStartBanner({
-  error,
-  onRetry,
-  retrying,
-}: {
-  error: string;
-  onRetry: () => void;
-  retrying: boolean;
-}) {
+function FailedToStartBanner({ error }: { error: string }) {
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-fail/40 bg-fail/10 px-4 py-3">
       <span className="inline-flex items-center gap-2 font-mono text-sm text-fail">
@@ -482,30 +440,11 @@ function FailedToStartBanner({
       <pre className="overflow-x-auto rounded-md border border-border bg-secondary/40 px-3 py-2 font-mono text-xs text-foreground">
         {error || "no error output was captured"}
       </pre>
-      <div className="mt-1">
-        <Button
-          size="sm"
-          className="font-mono"
-          disabled={retrying}
-          onClick={onRetry}
-        >
-          <Play className="size-4" aria-hidden="true" />
-          {retrying ? "Retrying…" : "Retry"}
-        </Button>
-      </div>
     </div>
   );
 }
 
-function StoppedBanner({
-  onResume,
-  resuming,
-  gate,
-}: {
-  onResume: () => void;
-  resuming: boolean;
-  gate: string;
-}) {
+function StoppedBanner() {
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-info/40 bg-info/10 px-4 py-3">
       <span className="inline-flex items-center gap-2 font-mono text-sm text-info">
@@ -515,32 +454,7 @@ function StoppedBanner({
       <p className="font-sans text-sm leading-relaxed text-muted-foreground">
         {STOPPED_HINT}
       </p>
-      <div className="mt-2">
-        <Button
-          size="sm"
-          className="font-mono"
-          disabled={resuming || gate !== ""}
-          title={gate || undefined}
-          onClick={onResume}
-        >
-          <Play className="size-4" aria-hidden="true" />
-          {resuming ? "Resuming…" : "Resume"}
-        </Button>
-      </div>
-      {gate && (
-        <p className="mt-1 font-mono text-[0.65rem] text-muted-foreground">
-          {gate}
-        </p>
-      )}
     </div>
-  );
-}
-
-function GateNote({ text }: { text: string }) {
-  return (
-    <p className="w-full font-mono text-[0.65rem] text-muted-foreground">
-      {text}
-    </p>
   );
 }
 
@@ -600,7 +514,6 @@ function StartingPlaceholder() {
 
 export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const now = useNow(1000);
   const [stopOpen, setStopOpen] = useState(false);
   const [takeoverUnsupported, setTakeoverUnsupported] = useState(false);
@@ -617,17 +530,9 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   );
   const live = instance !== undefined;
   const working = instance?.session_state === "working";
-  const parkedHere = instance?.session_state === "parked";
   const takenOverHere = instance?.session_state === "takeover";
   const takenOver = instData ? repoTakenOver(instData.instances, repo) : false;
   const root = instData ? repoRoot(instData.repos, repo) : "";
-  // Resume hands the ticket back to the loop, which cannot have the repo while a
-  // terminal holds it or while the TUI is parked on this ticket's recap.
-  const resumeGate = takenOver
-    ? TAKEOVER_BLOCKED
-    : parkedHere
-      ? PARKED_GATE
-      : "";
   const session = checkpoint?.data.SESSION ?? "";
   const phase = (working ? instance.phase : "") || run?.phase || "";
   const spawnFailure = feed.events.find(
@@ -672,15 +577,6 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
     mutationFn: () => stopInstance(instance!.pid),
     onSuccess: invalidate,
   });
-  const resume = useMutation({
-    mutationFn: () => runNext(repo, { id: ticket }),
-    onSuccess: (res) => {
-      publishQueue(queryClient, repo, res);
-      void navigate({ to: "/loop" });
-    },
-  });
-  const handback = useHandback(repo, () => resume.mutate());
-  const startResume = () => handback.request(ticket, run?.handback ?? null);
   const takeover = useMutation({
     mutationFn: () => takeoverRun(repo, ticket),
     onSuccess: () => {
@@ -729,21 +625,6 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
       </Link>
     </Button>
   );
-  const resumeBtn = (
-    <Button
-      variant="outline"
-      size="sm"
-      className="font-mono"
-      disabled={resume.isPending || resumeGate !== ""}
-      title={resumeGate || undefined}
-      onClick={startResume}
-    >
-      <Play className="size-4" aria-hidden="true" />
-      {resume.isPending ? "Resuming…" : "Resume"}
-    </Button>
-  );
-  const resumeGateNote = resumeGate ? <GateNote text={resumeGate} /> : null;
-
   const recapActions =
     variant === "success" ? (
       <>
@@ -755,8 +636,6 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
       <>
         {prBadge}
         {viewLog}
-        {resumeBtn}
-        {resumeGateNote}
       </>
     );
 
@@ -851,31 +730,15 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
 
       <div className="flex flex-col gap-4 px-6 py-4">
         {variant === "paused" && !takenOverHere && (
-          <PausedBanner
-            reason={run?.failure_reason ?? ""}
-            onResume={startResume}
-            resuming={resume.isPending}
-            gate={resumeGate}
-          />
+          <PausedBanner reason={run?.failure_reason ?? ""} />
         )}
 
-        {variant === "stopped" && !takenOverHere && (
-          <StoppedBanner
-            onResume={startResume}
-            resuming={resume.isPending}
-            gate={resumeGate}
-          />
-        )}
+        {variant === "stopped" && !takenOverHere && <StoppedBanner />}
 
         {noSkills && <NoSkillsBanner />}
 
         {noBrowser && <NoBrowserBanner />}
 
-        {resume.error && (
-          <p className="font-mono text-sm text-destructive">
-            {(resume.error as Error).message}
-          </p>
-        )}
         {stop.error && (
           <p className="font-mono text-sm text-destructive">
             {(stop.error as Error).message}
@@ -912,11 +775,7 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         ) : (
           <div className="flex flex-col gap-6">
             {variant === "failed_to_start" ? (
-              <FailedToStartBanner
-                error={fieldStr(spawnFailure!, "error")}
-                onRetry={startResume}
-                retrying={resume.isPending}
-              />
+              <FailedToStartBanner error={fieldStr(spawnFailure!, "error")} />
             ) : variant === "starting" ? (
               <StartingPlaceholder />
             ) : (
@@ -947,12 +806,11 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         onOpenChange={setStopOpen}
         windowTitle="confirm"
         title={`Stop run ${ticket}?`}
-        description="The run stops now. Work in progress is saved at the last checkpoint and the ticket stays resumable — Resume picks it up from there."
+        description="The run stops now. Work in progress is saved at the last checkpoint and the ticket stays resumable — Start picks it up from there."
         confirmLabel="Stop run"
         destructive
         onConfirm={() => stop.mutate()}
       />
-      {handback.dialog}
     </>
   );
 }

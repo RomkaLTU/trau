@@ -125,24 +125,24 @@ export function pauseBanner(reason: string): PauseBanner {
     case 'reauth':
       return {
         headline: `paused — ${provider} needs re-authentication`,
-        hint: `This is not a failure. Re-login to ${provider}, then resume.`,
+        hint: `This is not a failure. Re-login to ${provider}, then start the loop again.`,
       }
     case 'usage_window':
       return {
         headline: `paused — ${provider} usage limit reached`,
-        hint: 'This is not a failure. The limit resets on its own — resume once it clears.',
+        hint: 'This is not a failure. The limit resets on its own — start the loop again once it clears.',
       }
     default:
       return {
         headline: reason ? `paused — ${reason}` : 'paused',
-        hint: 'This is not a failure. Clear the block, then resume.',
+        hint: 'This is not a failure. Clear the block, then start the loop again.',
       }
   }
 }
 
-export const STOPPED_HEADLINE = 'stopped — resume when ready'
+export const STOPPED_HEADLINE = 'stopped — start the loop when ready'
 export const STOPPED_HINT =
-  'Work is saved at its checkpoint. Resume hands it back to the loop.'
+  'Work is saved at its checkpoint. Start re-attempts it in queue order.'
 
 export interface CostSummary {
   tokens: number

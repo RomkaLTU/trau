@@ -1,13 +1,13 @@
 import type { QueueItem } from './queue'
 
 // The copy that keeps Remove from queue apart from the ticket Delete beside it:
-// one drops a row, the other purges the issue. Every removal says so, and a
-// running row also says what stopping its run costs.
-const KEEPS_TICKET =
-  'Only the queue entry goes — the ticket, its runs and its tracker row are untouched, and it can be queued again.'
+// one ejects the work, the other purges the issue. Every removal says what it
+// wipes, and a running row also says its run stops first.
+const EJECTS_RUN =
+  'The row goes, its saved progress is wiped and the ticket goes back to Ready — a later pickup starts a brand-new run.'
 
 const STOPS_RUN =
-  'The run stops first: work in progress is saved at the last checkpoint, exactly as Stop leaves it.'
+  'The run stops first, and the work it checkpointed goes with it.'
 
 export function removeFromQueueTitle(item: QueueItem): string {
   return item.status === 'running'
@@ -17,7 +17,7 @@ export function removeFromQueueTitle(item: QueueItem): string {
 
 export function removeFromQueueWarning(item: QueueItem): string {
   const parts = item.status === 'running' ? [STOPS_RUN] : []
-  parts.push(KEEPS_TICKET)
+  parts.push(EJECTS_RUN)
   const subs = item.sub_issues?.length ?? 0
   if (subs > 0) {
     parts.push(
