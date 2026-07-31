@@ -9,15 +9,11 @@ import { cn } from '@/lib/utils'
 import { Callout, Hint } from './ui'
 
 // Providers the hub never mirrors, so there is nothing to request: the internal
-// store owns its issues, and Azure Boards is read live from the tracker (ADR 0024 §4).
+// store owns its issues.
 const SKIPS_SYNC: Partial<Record<TrackerProvider, { hint: string; status: string }>> = {
   internal: {
     hint: 'This project uses the internal issue store — there is nothing to pull from an external tracker.',
     status: 'ready — internal store, no external sync',
-  },
-  azure: {
-    hint: "Azure Boards isn't mirrored into the hub — the loop reads work items live from the tracker.",
-    status: 'ready — read live from Azure Boards',
   },
 }
 

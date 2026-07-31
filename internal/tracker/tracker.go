@@ -56,10 +56,18 @@ type Config struct {
 	// leaves the provider on its MCP path.
 	APIKey string
 	// BaseURL and Email carry the extra credentials Jira Basic auth needs beyond
-	// the token: the site base URL and the account email. Both are unused by the
-	// Linear and GitHub providers.
+	// the token: the site base URL and the account email. Azure DevOps reuses
+	// BaseURL for its organization URL and APIKey for the personal access token,
+	// and leaves Email unset. Both are unused by the Linear and GitHub providers.
 	BaseURL string
 	Email   string
+	// AreaPath narrows an Azure DevOps read to one in-project area and everything
+	// under it. Empty is the whole team project. Unused by every other provider.
+	AreaPath string
+	// Prefix is the configured issue-identifier prefix (config.ISSUE_PREFIX), which
+	// Azure DevOps renders its organization-wide work-item numbers through because
+	// they carry no per-project key of their own.
+	Prefix string
 	// EpicType names the Jira issue type an epic-shaped draft is filed as,
 	// overriding the lookup of the project's own hierarchy-level-1 type. Unused by
 	// the Linear, GitHub and internal providers.
@@ -362,6 +370,7 @@ func New(provider string, runner agent.Runner, cfg Config) (Tracker, error) {
 			OrgURL:          cfg.BaseURL,
 			PAT:             cfg.APIKey,
 			Project:         cfg.Team,
+			AreaPath:        cfg.AreaPath,
 			ReadyLabel:      cfg.ReadyLabel,
 			QuarantineLabel: cfg.QuarantineLabel,
 			SplitLabel:      cfg.SplitLabel,

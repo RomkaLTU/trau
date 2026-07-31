@@ -627,7 +627,14 @@ function Notice({
 }
 
 function trackerName(provider: string): string {
-  return provider === "jira" ? "Jira" : "Linear";
+  switch (provider) {
+    case "jira":
+      return "Jira";
+    case "azure":
+      return "Azure Boards";
+    default:
+      return "Linear";
+  }
 }
 
 function when(ts: string): string {

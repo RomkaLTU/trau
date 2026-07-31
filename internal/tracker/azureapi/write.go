@@ -127,10 +127,13 @@ func (c *Client) Comments(ctx context.Context, project string, id int) ([]Commen
 	}
 	var dst struct {
 		Comments []struct {
+			ID        int    `json:"id"`
 			Text      string `json:"text"`
 			CreatedBy struct {
 				DisplayName string `json:"displayName"`
 			} `json:"createdBy"`
+			CreatedDate  string `json:"createdDate"`
+			ModifiedDate string `json:"modifiedDate"`
 		} `json:"comments"`
 	}
 	path := projectPath(project, "/workitems/"+strconv.Itoa(id)+"/comments") +
@@ -144,15 +147,26 @@ func (c *Client) Comments(ctx context.Context, project string, id int) ([]Commen
 		if body == "" {
 			continue
 		}
-		out = append(out, Comment{Author: raw.CreatedBy.DisplayName, Body: body})
+		out = append(out, Comment{
+			ID:        raw.ID,
+			Author:    raw.CreatedBy.DisplayName,
+			Body:      body,
+			CreatedAt: raw.CreatedDate,
+			UpdatedAt: raw.ModifiedDate,
+		})
 	}
 	return out, nil
 }
 
-// Comment is one entry in a work item's discussion.
+// Comment is one entry in a work item's discussion. ID is the comment's own
+// identifier, which a sync stores so a re-pull updates the entry rather than
+// filing it again.
 type Comment struct {
-	Author string
-	Body   string
+	ID        int
+	Author    string
+	Body      string
+	CreatedAt string
+	UpdatedAt string
 }
 
 // CreateWorkItem files a new work item of itemType and returns its id. The type

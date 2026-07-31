@@ -61,6 +61,7 @@ type Config struct {
 	JiraEpicType          string
 	AzureOrgURL           string
 	AzurePAT              string
+	AzureAreaPath         string
 	ReadyLabel            string
 	QuarantineLabel       string
 	QueuedLabel           string
@@ -775,6 +776,7 @@ func LoadLayeredWithSources(projectPath, userPath, localPath, provider string) (
 	str("JIRA_EPIC_TYPE", &c.JiraEpicType)
 	str("AZURE_ORG_URL", &c.AzureOrgURL)
 	str("AZURE_PAT", &c.AzurePAT)
+	str("AZURE_AREA_PATH", &c.AzureAreaPath)
 	str("READY_LABEL", &c.ReadyLabel)
 	str("QUARANTINE_LABEL", &c.QuarantineLabel)
 	str("STATUS_TODO", &c.StatusTodo)
@@ -1707,6 +1709,7 @@ func KnownKeys() []KeyMeta {
 		{Key: "JIRA_EPIC_TYPE", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Issue type a hub-created Jira epic is filed as; empty resolves the project's own hierarchy-level-1 type"},
 		{Key: "AZURE_ORG_URL", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Azure DevOps organization URL for the direct REST adapter (e.g. https://dev.azure.com/acme)"},
 		{Key: "AZURE_PAT", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Azure DevOps personal access token with the Work Items (read & write) and Project and Team (read) scopes"},
+		{Key: "AZURE_AREA_PATH", Group: sectionTracker, WebEditable: true, Advanced: true, Description: "Area Path the hub's Azure DevOps sync is narrowed to, including everything under it (e.g. Acme\\Platform); empty syncs the whole team project"},
 		{Key: "TRACKER_PROVIDER", Group: sectionTracker, WebEditable: true, Default: "linear", Description: "Ticket backend: linear | jira | azure | github | internal (internal issues in the hub, no external tracker)", Options: []string{"linear", "jira", "azure", "github", "internal"}},
 		{Key: "READY_LABEL", Group: sectionTracker, WebEditable: true, Default: "ready-for-agent", Description: "Label that marks tickets ready for the loop"},
 		{Key: "QUARANTINE_LABEL", Group: sectionTracker, WebEditable: true, Default: "needs-human", Description: "Label applied when a ticket fails"},
@@ -1976,6 +1979,7 @@ var trackerConfigKeys = []string{
 	"JIRA_API_TOKEN",
 	"AZURE_ORG_URL",
 	"AZURE_PAT",
+	"AZURE_AREA_PATH",
 }
 
 // TrackerConfigKeys returns the keys that describe a repo's tracker.
@@ -2248,6 +2252,8 @@ func keyValue(cfg Config, key string) string {
 		return cfg.AzureOrgURL
 	case "AZURE_PAT":
 		return cfg.AzurePAT
+	case "AZURE_AREA_PATH":
+		return cfg.AzureAreaPath
 	case "READY_LABEL":
 		return cfg.ReadyLabel
 	case "QUARANTINE_LABEL":

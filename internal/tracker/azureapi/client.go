@@ -297,7 +297,12 @@ func retryAfter(header string, attempt int, jitter float64) time.Duration {
 }
 
 // projectPath renders the "/{project}/_apis/wit/..." prefix every work-item
-// route hangs off, escaping a project name that may contain spaces.
+// route hangs off, escaping a project name that may contain spaces. An empty
+// project addresses the organization-scoped route, which reads a work item
+// whatever team project it belongs to.
 func projectPath(project, suffix string) string {
-	return "/" + url.PathEscape(strings.TrimSpace(project)) + "/_apis/wit" + suffix
+	if project = strings.TrimSpace(project); project == "" {
+		return "/_apis/wit" + suffix
+	}
+	return "/" + url.PathEscape(project) + "/_apis/wit" + suffix
 }

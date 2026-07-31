@@ -26,6 +26,7 @@ type AzureDevOps struct {
 	OrgURL          string // organization URL, e.g. https://dev.azure.com/acme
 	PAT             string // personal access token (Basic-auth password)
 	Project         string // Azure DevOps team project name
+	AreaPath        string // Area Path the pick is confined to; empty is the whole project
 	ReadyLabel      string
 	QuarantineLabel string
 	SplitLabel      string
@@ -93,7 +94,7 @@ func (a *AzureDevOps) Pick(ctx context.Context, scope Scope) (string, error) {
 		leaves = found
 	}
 
-	candidates, err := a.api().Eligible(ctx, a.projectFor(scope), a.ReadyLabel)
+	candidates, err := a.api().Eligible(ctx, a.projectFor(scope), a.AreaPath, a.ReadyLabel)
 	if err != nil {
 		return "", err
 	}
@@ -138,7 +139,7 @@ func (a *AzureDevOps) leafChildren(ctx context.Context, scope Scope) (map[int]bo
 // ListEligible enumerates the tickets the loop could pick next. Unlike Pick it
 // keeps containers in the list — the caller decides what to do with an epic.
 func (a *AzureDevOps) ListEligible(ctx context.Context, scope Scope) ([]ListedTicket, error) {
-	candidates, err := a.api().Eligible(ctx, a.projectFor(scope), a.ReadyLabel)
+	candidates, err := a.api().Eligible(ctx, a.projectFor(scope), a.AreaPath, a.ReadyLabel)
 	if err != nil {
 		return nil, err
 	}
