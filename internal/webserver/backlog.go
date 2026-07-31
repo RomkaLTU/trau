@@ -470,7 +470,7 @@ func defaultReader(cfg config.Config) (tracker.Reader, error) {
 		tc.APIKey = cfg.AzurePAT
 		tc.BaseURL = cfg.AzureOrgURL
 		tc.AreaPath = cfg.AzureAreaPath
-		tc.Prefix = cfg.IssuePrefix
+		tc.BoardTeams = cfg.AzureTeams
 	}
 	return tracker.NewReader(provider, tc)
 }

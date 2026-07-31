@@ -11,7 +11,6 @@ import {
   trackerCanContinue,
   trackerCanTest,
   trackerConfigValues,
-  trackerRepoConfigWrites,
   type RepoInspection,
   type TrackerFields,
 } from './onboarding'
@@ -44,7 +43,6 @@ function fields(over: Partial<TrackerFields> = {}): TrackerFields {
     jiraToken: '',
     azureOrgUrl: '',
     azurePat: '',
-    issuePrefix: '',
     binding: '',
     ...over,
   }
@@ -140,7 +138,6 @@ describe('trackerConfigValues', () => {
       fields({
         azureOrgUrl: '  https://dev.azure.com/contoso  ',
         azurePat: 'pat',
-        issuePrefix: 'CON',
         binding: 'Contoso',
       }),
     )
@@ -164,15 +161,6 @@ describe('trackerConfigValues', () => {
   it('sets only the provider for internal', () => {
     const keys = trackerConfigValues('internal', fields())
     expect(keys).toEqual({ TRACKER_PROVIDER: 'internal' })
-  })
-})
-
-describe('trackerRepoConfigWrites', () => {
-  it('writes the issue prefix to the repo project layer for azure only', () => {
-    expect(trackerRepoConfigWrites('azure', fields({ issuePrefix: ' CON ' }))).toEqual([
-      { key: 'ISSUE_PREFIX', value: 'CON', layer: 'project' },
-    ])
-    expect(trackerRepoConfigWrites('linear', fields({ issuePrefix: 'CON' }))).toEqual([])
   })
 })
 
@@ -213,12 +201,10 @@ describe('trackerCanContinue', () => {
     expect(trackerCanContinue('linear', fields({ binding: 'COD' }), 'ok')).toBe(true)
   })
 
-  it('additionally requires an issue prefix for azure', () => {
-    const azure = fields({ binding: 'Contoso' })
-    expect(trackerCanContinue('azure', azure, 'ok')).toBe(false)
-    expect(trackerCanContinue('azure', { ...azure, issuePrefix: 'CON' }, 'ok')).toBe(true)
-    expect(trackerCanContinue('azure', { ...azure, issuePrefix: 'CON' }, 'idle')).toBe(false)
-    expect(trackerCanContinue('azure', fields({ issuePrefix: 'CON' }), 'ok')).toBe(false)
+  it('needs nothing beyond the team project for azure — its work items carry no prefix', () => {
+    expect(trackerCanContinue('azure', fields({ binding: 'Contoso' }), 'ok')).toBe(true)
+    expect(trackerCanContinue('azure', fields({ binding: 'Contoso' }), 'idle')).toBe(false)
+    expect(trackerCanContinue('azure', fields(), 'ok')).toBe(false)
   })
 
   it('blocks when no provider is chosen', () => {

@@ -9,7 +9,6 @@ import { type SyncResponse } from '@/lib/instances'
 import {
   essentialsConfigWrites,
   trackerConfigValues,
-  trackerRepoConfigWrites,
   type EssentialsFields,
   type TrackerFields,
   type TrackerProvider,
@@ -45,7 +44,6 @@ export function StepDone({
 
   const writtenKeys = [
     ...Object.keys(trackerConfigValues(provider, trackerFields)),
-    ...trackerRepoConfigWrites(provider, trackerFields).map((w) => w.key),
     ...essentialsConfigWrites(essentials).map((w) => w.key),
   ]
 

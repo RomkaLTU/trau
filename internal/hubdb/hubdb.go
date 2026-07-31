@@ -37,6 +37,13 @@ type DB struct {
 // embedded forward-only migrations. It is idempotent: opening an already
 // migrated database only re-reads its schema version. An unopenable or corrupt
 // file is reported as an error naming the path.
+//
+// Transactions begin IMMEDIATE. Every transaction the hub opens reads before it
+// writes, and WAL refuses that upgrade outright once another writer has committed
+// — SQLITE_BUSY the busy timeout cannot retry away, because the reader's snapshot
+// is already stale. Taking the write lock up front turns the collision back into
+// the wait the timeout is there to cover, which is what lets two repos syncing the
+// same board persist their own rows concurrently.
 func Open(home string) (*DB, error) {
 	if home == "" {
 		return nil, errors.New("no trau home resolved — set TRAU_HOME or a usable home directory")
@@ -45,7 +52,7 @@ func Open(home string) (*DB, error) {
 		return nil, fmt.Errorf("create trau home %s: %w", home, err)
 	}
 	path := Path(home)
-	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)")
+	db, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate")
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}

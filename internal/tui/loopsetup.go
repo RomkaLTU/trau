@@ -410,12 +410,16 @@ func linearIssueURL(id string) string {
 	return "https://linear.app/issue/" + id
 }
 
+// reNumber matches the bare work-item number a tracker that settles on no prefix
+// addresses its tickets by.
+var reNumber = regexp.MustCompile(`[0-9]+`)
+
 // exampleID renders a sample ticket id for placeholders and hints using the
-// configured prefix (COD-123, ENG-123). An empty prefix falls back to COD.
+// configured prefix (COD-123, ENG-123), or a bare number for a tracker that numbers
+// its tickets and carries no prefix.
 func exampleID(prefix string) string {
-	prefix = strings.ToUpper(strings.TrimSpace(prefix))
-	if prefix == "" {
-		prefix = "COD"
+	if prefix = strings.ToUpper(strings.TrimSpace(prefix)); prefix == "" {
+		return "123"
 	}
 	return prefix + "-123"
 }
@@ -423,15 +427,13 @@ func exampleID(prefix string) string {
 // extractTicketID accepts free-form input and returns the best-effort ticket
 // identifier using the configured prefix.
 func extractTicketID(input, prefix string) string {
-	input = strings.TrimSpace(input)
-	if input == "" {
+	upper := strings.ToUpper(strings.TrimSpace(input))
+	if upper == "" {
 		return ""
 	}
-	prefix = strings.ToUpper(strings.TrimSpace(prefix))
-	if prefix == "" {
-		prefix = "COD"
+	if prefix = strings.ToUpper(strings.TrimSpace(prefix)); prefix == "" {
+		return reNumber.FindString(upper)
 	}
-	upper := strings.ToUpper(input)
 	re := regexp.MustCompile(`(` + regexp.QuoteMeta(prefix) + `)-?([0-9]+)`)
 	if ms := re.FindStringSubmatch(upper); len(ms) == 3 {
 		return ms[1] + "-" + ms[2]

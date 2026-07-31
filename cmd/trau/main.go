@@ -289,8 +289,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	for _, id := range []string{opts.Parent, opts.ResetID, opts.ResetLocalID, opts.ClearID, opts.RequeueID} {
 		if err := validateTicketID(cfg, id); err != nil {
-			return console.Actionable(err, "validate ticket id",
-				fmt.Sprintf("set ISSUE_PREFIX (or LINEAR_TEAM) to this tracker's key, or pass a %s-<n> ticket", cfg.IssuePrefix))
+			return console.Actionable(err, "validate ticket id", ticketIDHint(cfg))
 		}
 	}
 
@@ -747,6 +746,7 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 		tc.APIKey = cfg.AzurePAT
 		tc.BaseURL = cfg.AzureOrgURL
 		tc.AreaPath = cfg.AzureAreaPath
+		tc.BoardTeams = cfg.AzureTeams
 		runner = nil
 	case "internal":
 		// The internal provider drives issues through the hub over HTTP, never the
@@ -782,6 +782,16 @@ func internalIDPrefix(cfg config.Config) string {
 		return ""
 	}
 	return prefix
+}
+
+// ticketIDHint describes the ticket id shape this repo addresses, so a rejected one
+// says what to pass instead. A tracker that numbers its tickets settles on no prefix
+// (ADR 0024 §1), and there is nothing to set to change that.
+func ticketIDHint(cfg config.Config) string {
+	if cfg.IssuePrefix == "" {
+		return "pass the bare work-item number this board addresses tickets by, e.g. trau 6694"
+	}
+	return fmt.Sprintf("set ISSUE_PREFIX (or LINEAR_TEAM) to this tracker's key, or pass a %s-<n> ticket", cfg.IssuePrefix)
 }
 
 // validateTicketID accepts a ticket id passed on the command line when it is

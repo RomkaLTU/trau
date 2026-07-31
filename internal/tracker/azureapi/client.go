@@ -85,6 +85,12 @@ const (
 
 	// batchLimit is the work-item ceiling one ids= read accepts.
 	batchLimit = 200
+
+	// requestTimeout bounds one REST request. A board-wide WIQL pull is a single
+	// request the service spends real time planning before it answers a row, so the
+	// ceiling sits well above what an ordinary work-item read needs — a first full
+	// pull otherwise times out before the query ever returns.
+	requestTimeout = 60 * time.Second
 )
 
 // Client talks to a single Azure DevOps organization over the REST 7.1 API.
@@ -100,7 +106,7 @@ func New(orgURL, pat string) *Client {
 	orgURL = strings.TrimRight(strings.TrimSpace(orgURL), "/")
 	c := &Client{
 		baseURL: orgURL,
-		http:    &http.Client{Timeout: 30 * time.Second},
+		http:    &http.Client{Timeout: requestTimeout},
 	}
 	if orgURL != "" {
 		c.auth = basicAuth(pat)

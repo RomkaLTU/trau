@@ -420,21 +420,28 @@ AZURE_PAT=                   # personal access token (never commit)
 # whole team project. It needs no extra PAT scope.
 AZURE_AREA_PATH=             # e.g. Contoso\Platform
 #
+# AZURE_TEAMS narrows the same way but by naming teams instead of areas: trau reads
+# each team's own board settings and mirrors exactly the areas that board covers, so
+# two repos on one team project each see their own team's work instead of all of it.
+# Several teams mirror the union of their boards. It combines with AZURE_AREA_PATH —
+# both narrow — and needs no extra PAT scope.
+AZURE_TEAMS=                 # e.g. Platform,Payments
+#
 # The hub mirrors an Azure DevOps board into its own store like Linear and Jira:
 # a WIQL query returns the ids that changed since the last pull, a batched read
 # fills in the details, and the board, Inbox, search and queue-by-id confirm all
 # read from the mirror. File attachments on a work item are the one thing not
 # mirrored — their bytes sit behind the same PAT the pull holds.
 #
-# Work items are numbered organization-wide with no per-project key, so trau
-# addresses them through ISSUE_PREFIX: work item 1234 in a TRAU-prefixed repo is
-# TRAU-1234 everywhere (branch names, sentinels, the web UI), and the PR trailer
-# carries "AB#1234" so Azure Boards auto-links the work item.
+# Work items are numbered uniquely across the whole organization, so trau addresses
+# them by number and ISSUE_PREFIX does not apply: work item 6694 is 6694 on the
+# board, `trau 6694` on the CLI and feature/6694-slug as the branch, and the PR
+# trailer carries "AB#6694" so Azure Boards auto-links the work item.
 #
 #   # ~/work/contoso-app/.trau.ini
 #   TRACKER_PROVIDER=azure
 #   LINEAR_TEAM=Contoso            # the team project name, not a key
-#   ISSUE_PREFIX=CON               # renders work item 1234 as CON-1234
+#   AZURE_TEAMS=Contoso Platform   # this repo mirrors one team's board
 #   AZURE_ORG_URL=https://dev.azure.com/contoso
 #   AZURE_PAT=<contoso PAT>
 #

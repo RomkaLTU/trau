@@ -164,3 +164,15 @@ func TestParseArgsListEpicMutuallyExclusive(t *testing.T) {
 		}
 	}
 }
+
+// An Azure DevOps board addresses tickets by their work-item number, so `trau 6694`
+// has to reach the pin the same way `trau COD-566` does.
+func TestParseArgsPinsABareWorkItemNumber(t *testing.T) {
+	o, err := ParseArgs([]string{"6694"})
+	if err != nil {
+		t.Fatalf("ParseArgs(6694): %v", err)
+	}
+	if o.Parent != "6694" {
+		t.Errorf("Parent = %q, want 6694", o.Parent)
+	}
+}

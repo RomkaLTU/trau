@@ -7,10 +7,11 @@ import (
 )
 
 // reBareID matches a bare ticket identifier of any tracker prefix (COD-123,
-// TMS-456, ENG-7). The pre-config arg scan can't know the configured prefix yet
-// — it matches the generic <PREFIX>-<n> shape here and the prefix is validated
-// against the loaded config later (see config.ResolvePrefix).
-var reBareID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
+// TMS-456, ENG-7), or the bare number a tracker that numbers its tickets uses
+// instead (6694, an Azure DevOps work item). The pre-config arg scan can't know the
+// configured prefix yet — it matches the generic shape here and the prefix is
+// validated against the loaded config later (see config.ResolvePrefix).
+var reBareID = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]*-)?[0-9]+$`)
 
 // Options holds the parsed CLI flags. Zero values mean "not set";
 // Max is -1 when unset so the config default applies.

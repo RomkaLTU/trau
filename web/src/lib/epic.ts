@@ -17,7 +17,9 @@ export interface EpicPreviewResult {
   sub_issues: EpicSubIssue[]
 }
 
-const TICKET_ID = /^[A-Za-z][A-Za-z0-9_]*-\d+$/
+// A prefixed identifier (COD-712), or the bare work-item number an Azure DevOps
+// board addresses tickets by (6694).
+const TICKET_ID = /^([A-Za-z][A-Za-z0-9_]*-)?\d+$/
 
 export function isTicketId(id: string): boolean {
   return TICKET_ID.test(id.trim())

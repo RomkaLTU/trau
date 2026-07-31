@@ -10,7 +10,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { writeConfig } from '@/lib/config'
 import {
   credentialLayer,
   preselectProvider,
@@ -18,7 +17,6 @@ import {
   trackerCanContinue,
   trackerCanTest,
   trackerConfigValues,
-  trackerRepoConfigWrites,
   type RepoInspection,
   type Team,
   type TestState,
@@ -79,7 +77,6 @@ export function StepTracker({
   const [jiraToken, setJiraToken] = useState('')
   const [azureOrgUrl, setAzureOrgUrl] = useState('')
   const [azurePat, setAzurePat] = useState('')
-  const [issuePrefix, setIssuePrefix] = useState('')
   const [binding, setBinding] = useState(inspection.prefill?.team ?? '')
 
   const fields: TrackerFields = {
@@ -89,7 +86,6 @@ export function StepTracker({
     jiraToken,
     azureOrgUrl,
     azurePat,
-    issuePrefix,
     binding,
   }
 
@@ -126,9 +122,6 @@ export function StepTracker({
     mutationFn: async () => {
       if (!provider) return
       await writeProjectTracker(project, trackerConfigValues(provider, fields))
-      for (const w of trackerRepoConfigWrites(provider, fields)) {
-        await writeConfig(repo, w)
-      }
     },
     onSuccess: () => provider && onContinue(provider, fields),
   })
@@ -284,20 +277,11 @@ export function StepTracker({
                 </a>
                 .
               </Hint>
-              <div className="flex flex-col gap-1.5">
-                <FieldLabel htmlFor="azure-prefix">issue prefix</FieldLabel>
-                <TextInput
-                  id="azure-prefix"
-                  placeholder="CON"
-                  value={issuePrefix}
-                  onChange={(e) => setIssuePrefix(e.target.value.toUpperCase())}
-                />
-                <Hint>
-                  Azure work items carry no project key of their own, so trau addresses them by
-                  this prefix — work item 1234 becomes CON-1234 in identifiers, branch names and
-                  sentinels.
-                </Hint>
-              </div>
+              <Hint>
+                Work items are numbered uniquely across the organization, so trau addresses them
+                by that number — work item 6694 is 6694 in identifiers, branch names and
+                sentinels. There is no prefix to set.
+              </Hint>
             </>
           )}
 

@@ -16,17 +16,16 @@ import (
 // behind the configured personal access token, so a missing or rejected token is
 // surfaced rather than quietly answered by some other account.
 //
-// Azure DevOps numbers work items organization-wide and gives them no per-project
-// key, while the rest of trau addresses tickets as <PREFIX>-<n>. The provider
-// therefore renders every identifier through the repo's configured issue prefix —
-// work item 1234 in a TRAU-prefixed repo is TRAU-1234 — and parses the trailing
-// number back out before calling the API. This is the same prefix mapping the
-// GitHub provider applies to issue numbers.
+// Azure DevOps numbers work items organization-wide, so a number identifies one
+// work item on its own and trau uses it verbatim: work item 6694 is 6694
+// everywhere — on the board, on the CLI, and as feature/6694-slug (ADR 0024 §1).
+// There is no prefix to map through.
 type AzureDevOps struct {
-	OrgURL          string // organization URL, e.g. https://dev.azure.com/acme
-	PAT             string // personal access token (Basic-auth password)
-	Project         string // Azure DevOps team project name
-	AreaPath        string // Area Path the pick is confined to; empty is the whole project
+	OrgURL          string   // organization URL, e.g. https://dev.azure.com/acme
+	PAT             string   // personal access token (Basic-auth password)
+	Project         string   // Azure DevOps team project name
+	AreaPath        string   // Area Path the pick is confined to; empty is the whole project
+	Teams           []string // team names whose board areas the pick is confined to
 	ReadyLabel      string
 	QuarantineLabel string
 	SplitLabel      string
@@ -35,6 +34,13 @@ type AzureDevOps struct {
 
 func (a *AzureDevOps) api() *azureapi.Client {
 	return azureapi.New(a.OrgURL, a.PAT)
+}
+
+// scope resolves the slice of the board the loop may pick from, which must be the
+// slice the hub mirrors: a ticket the loop starts but the hub never synced has no
+// row to confirm at the queue-by-id path (ADR 0028 §3).
+func (a *AzureDevOps) scope(ctx context.Context, project string) (azureapi.BoardScope, error) {
+	return a.api().ResolveScope(ctx, project, a.AreaPath, a.Teams)
 }
 
 // projectFor returns the team project to address: the configured project,
@@ -46,9 +52,10 @@ func (a *AzureDevOps) projectFor(scope Scope) string {
 	return strings.TrimSpace(scope.Team)
 }
 
-// workItemID recovers the Azure DevOps work-item number behind a trau identifier
-// (TRAU-1234 → 1234). A bare number is accepted too, so an id typed the way Azure
-// DevOps itself displays it still resolves.
+// workItemID recovers the Azure DevOps work-item number behind an identifier. A
+// prefixed form is still accepted (TRAU-1234 → 1234) so an id minted before the
+// board moved to bare numbers, or one copied from a prefixed tracker, still
+// resolves.
 func workItemID(id string) (int, error) {
 	num := strings.TrimSpace(id)
 	if i := strings.LastIndex(num, "-"); i >= 0 {
@@ -61,19 +68,19 @@ func workItemID(id string) (int, error) {
 	return n, nil
 }
 
-// azureIdentifier renders a work-item number as the prefixed identifier the loop, the
-// branch names and the sentinel parsers all expect.
-func azureIdentifier(prefix string, id int) string {
-	return prefix + "-" + strconv.Itoa(id)
+// azureIdentifier renders a work-item number as the identifier the loop, the branch
+// names and the web UI all use — the number itself.
+func azureIdentifier(id int) string {
+	return strconv.Itoa(id)
 }
 
 // azureParentIdentifier renders a parent work-item number, or "" for a top-level item
 // (Azure DevOps reports no parent as the zero id).
-func azureParentIdentifier(prefix string, id int) string {
+func azureParentIdentifier(id int) string {
 	if id <= 0 {
 		return ""
 	}
-	return azureIdentifier(prefix, id)
+	return azureIdentifier(id)
 }
 
 // Pick returns the next eligible ticket identifier, or "" when nothing is
@@ -94,7 +101,12 @@ func (a *AzureDevOps) Pick(ctx context.Context, scope Scope) (string, error) {
 		leaves = found
 	}
 
-	candidates, err := a.api().Eligible(ctx, a.projectFor(scope), a.AreaPath, a.ReadyLabel)
+	project := a.projectFor(scope)
+	board, err := a.scope(ctx, project)
+	if err != nil {
+		return "", err
+	}
+	candidates, err := a.api().Eligible(ctx, project, board, a.ReadyLabel)
 	if err != nil {
 		return "", err
 	}
@@ -103,7 +115,7 @@ func (a *AzureDevOps) Pick(ctx context.Context, scope Scope) (string, error) {
 			continue
 		}
 		if azureStartable(c) {
-			return azureIdentifier(scope.prefix(), c.ID), nil
+			return azureIdentifier(c.ID), nil
 		}
 	}
 	return "", nil
@@ -139,22 +151,26 @@ func (a *AzureDevOps) leafChildren(ctx context.Context, scope Scope) (map[int]bo
 // ListEligible enumerates the tickets the loop could pick next. Unlike Pick it
 // keeps containers in the list — the caller decides what to do with an epic.
 func (a *AzureDevOps) ListEligible(ctx context.Context, scope Scope) ([]ListedTicket, error) {
-	candidates, err := a.api().Eligible(ctx, a.projectFor(scope), a.AreaPath, a.ReadyLabel)
+	project := a.projectFor(scope)
+	board, err := a.scope(ctx, project)
 	if err != nil {
 		return nil, err
 	}
-	prefix := scope.prefix()
+	candidates, err := a.api().Eligible(ctx, project, board, a.ReadyLabel)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]ListedTicket, 0, len(candidates))
 	for _, c := range candidates {
 		if !c.BlockersResolved {
 			continue
 		}
 		out = append(out, ListedTicket{
-			ID:          azureIdentifier(prefix, c.ID),
+			ID:          azureIdentifier(c.ID),
 			Title:       c.Title,
 			State:       c.State,
 			Labels:      c.Tags,
-			Parent:      azureParentIdentifier(prefix, c.Parent),
+			Parent:      azureParentIdentifier(c.Parent),
 			HasChildren: c.HasChildren(),
 		})
 	}
@@ -187,11 +203,10 @@ func (a *AzureDevOps) SubIssues(ctx context.Context, id string) ([]SubIssue, err
 	if err != nil {
 		return nil, err
 	}
-	prefix := prefixOf(id)
 	out := make([]SubIssue, 0, len(children))
 	for _, ch := range children {
 		out = append(out, SubIssue{
-			ID:          azureIdentifier(prefix, ch.ID),
+			ID:          azureIdentifier(ch.ID),
 			Title:       ch.Title,
 			Done:        ch.Done(),
 			HasChildren: ch.HasChildren(),
@@ -272,7 +287,7 @@ func (a *AzureDevOps) ParentIssue(ctx context.Context, id string) (string, error
 	if err != nil {
 		return "", err
 	}
-	return azureParentIdentifier(prefixOf(id), item.Parent), nil
+	return azureParentIdentifier(item.Parent), nil
 }
 
 // IssueDetail returns the title, body and discussion of a work item for
@@ -424,7 +439,7 @@ func (a *AzureDevOps) FileBug(ctx context.Context, id, verdictPath string) (stri
 	if err != nil {
 		return "", err
 	}
-	return azureIdentifier(prefixOf(id), n), nil
+	return azureIdentifier(n), nil
 }
 
 // EnsureLabels is a no-op on Azure DevOps: tags are freeform strings created

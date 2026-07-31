@@ -35,11 +35,12 @@ const eligibleTimeout = 2 * time.Minute
 // but never hang the request.
 const epicPreviewTimeout = 2 * time.Minute
 
-// reTicketID matches a bare tracker identifier of any prefix (ACME-42, TMS-456).
-// The exact prefix is validated against the target repo's config by the spawned
-// loop; the hub only rejects shapes that are clearly not a ticket before it
-// bothers launching a run for them.
-var reTicketID = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*-[0-9]+$`)
+// reTicketID matches a bare tracker identifier of any prefix (ACME-42, TMS-456), or
+// the bare work-item number an Azure DevOps board addresses tickets by (6694). The
+// exact prefix is validated against the target repo's config by the spawned loop; the
+// hub only rejects shapes that are clearly not a ticket before it bothers launching a
+// run for them.
+var reTicketID = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9_]*-)?[0-9]+$`)
 
 // handleStopInstance asks a registered loop to stop, hub-started or not, so a
 // web stop flows through the same graceful shutdown as Ctrl-C and in-flight work

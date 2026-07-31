@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -252,7 +253,7 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 	}
 	s.warnTeamOverlap(repo.Root, binding)
 
-	pulled, err := res.reader.SyncPull(ctx, binding, state.Cursor)
+	pulled, err := res.reader.SyncPull(ctx, binding, s.pullCursor(repo.Root, res.provider, state.Cursor))
 	if err != nil {
 		err = res.actionableErr(err)
 		recordSyncErr(store, repo.Root, err)
@@ -261,6 +262,7 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 
 	issues, comments, err := store.Upsert(repo.Root, res.provider, toStoredIssues(pulled))
 	if err != nil {
+		recordSyncErr(store, repo.Root, err)
 		return SyncResponse{}, err
 	}
 	for _, iss := range pulled {
@@ -288,6 +290,46 @@ func (s *Server) syncRepo(ctx context.Context, repo registry.Repo) (SyncResponse
 		Comments: comments,
 		SyncedAt: syncedAt,
 	}, nil
+}
+
+// pullCursor is the timestamp the pull resumes from: the stored cursor, unless the
+// mirror still holds rows an older trau filed under an identifier the provider has
+// since stopped minting. Azure DevOps work items were addressed as PREFIX-n before
+// trau settled on the bare organization-wide number (ADR 0024 §1), and an incremental
+// pull only re-files what the tracker changed since the cursor — so the reconcile
+// sweep behind it would tombstone every untouched row with no bare-number row to
+// replace it. One full pull re-files them all; the sweep then clears the retired rows
+// and the next tick resumes incrementally.
+func (s *Server) pullCursor(root, provider, cursor string) string {
+	if cursor == "" || provider != "azure" {
+		return cursor
+	}
+	mirrored, err := s.stores.Issues().SyncedIdentifiers(root, provider)
+	if err != nil {
+		logger.Verbosef("sync %s: read mirrored identifiers: %v", root, err)
+		return cursor
+	}
+	retired := 0
+	for _, id := range mirrored {
+		if !bareWorkItemID(id) {
+			retired++
+		}
+	}
+	if retired == 0 {
+		return cursor
+	}
+	logger.Printf(
+		"sync %s: %d of %d mirrored rows still carry a prefixed work-item id — pulling the whole board once so every row re-files under its number",
+		root, retired, len(mirrored),
+	)
+	return ""
+}
+
+// bareWorkItemID reports whether identifier is the bare work-item number Azure
+// DevOps work items are addressed by, rather than the PREFIX-n form trau retired.
+func bareWorkItemID(identifier string) bool {
+	_, err := strconv.Atoi(identifier)
+	return err == nil
 }
 
 // registerAttachments records the files one issue references — metadata only, so

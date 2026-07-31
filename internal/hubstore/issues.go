@@ -1174,6 +1174,28 @@ func (s *Issues) UpdateSynced(repo, identifier string, patch SyncedPatch) (Issue
 	return s.Find(repo, identifier)
 }
 
+// SyncedIdentifiers returns the identifiers of a repo's live rows from one sync
+// source, tombstoned rows excluded — how the mirror addresses its tickets right now,
+// without loading the issues behind them.
+func (s *Issues) SyncedIdentifiers(repo, source string) (ids []string, err error) {
+	rows, err := s.db.Query(
+		`SELECT identifier FROM issues WHERE repo = ? AND source = ? AND deleted_at = ''`,
+		repo, source,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var id string
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			return nil, scanErr
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // Reconcile tombstones the repo's synced issues the tracker no longer returns and
 // revives any that reappeared, given live — the Project's current full identifier
 // set. A tombstoned issue keeps its row (a run may still reference it) but its

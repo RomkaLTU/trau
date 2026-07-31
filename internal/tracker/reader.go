@@ -70,10 +70,11 @@ type BacklogItem struct {
 }
 
 // IssueSummary is one issue read by identifier: the BacklogItem fields plus the
-// issue's own project and whether it belongs to the repo's configured project. A
-// cross-project ticket (InProject false) exists but is out of this repo's scope,
-// so the hub can refuse to run it here instead of trusting the raw id. When the
-// repo configures no project, InProject is always true — there is no guard.
+// issue's own project and whether it falls inside the slice of the tracker this repo
+// owns. A ticket with InProject false exists but is out of that scope — another
+// project, or a part of this one the repo does not mirror — so the hub can refuse to
+// run it here instead of trusting the raw id. When the repo narrows nothing,
+// InProject is always true — there is no guard.
 type IssueSummary struct {
 	BacklogItem
 	Project   string
@@ -88,9 +89,9 @@ type Reader interface {
 	Backlog(ctx context.Context) ([]BacklogItem, error)
 	// Issue fetches one issue by its human identifier (e.g. "COD-712"), so the
 	// hub can confirm a specific ticket before running it. It returns
-	// ErrIssueNotFound when the tracker has no such issue. A ticket in another
-	// project is returned with InProject false rather than hidden, so the caller
-	// can explain why it cannot be run here.
+	// ErrIssueNotFound when the tracker has no such issue. A ticket outside the
+	// repo's scope is returned with InProject false rather than hidden, so the
+	// caller can explain why it cannot be run here.
 	Issue(ctx context.Context, id string) (IssueSummary, error)
 	// ResolveBinding resolves the repo's configured team/project to the tracker's
 	// stable ids, so the hub caches them and later syncs skip the lookup (ADR
@@ -196,9 +197,10 @@ func NewReader(provider string, cfg Config) (Reader, error) {
 		}
 		return &azureReader{
 			client:     azureapi.New(cfg.BaseURL, cfg.APIKey),
+			org:        cfg.BaseURL,
 			project:    cfg.Team,
 			areaPath:   cfg.AreaPath,
-			prefix:     Scope{Prefix: cfg.Prefix}.prefix(),
+			teams:      cfg.BoardTeams,
 			readyLabel: cfg.ReadyLabel,
 		}, nil
 	case "github":
@@ -322,15 +324,16 @@ func (r *jiraReader) Issue(ctx context.Context, id string) (IssueSummary, error)
 }
 
 // azureReader reads an Azure DevOps team project's work items over the Work Item
-// Tracking REST API. Work items carry no per-project key, so every identifier the
-// reader hands back is rendered through prefix, the same mapping the loop's
-// AzureDevOps provider applies. areaPath narrows the board to one in-project area
-// when set; empty means the whole team project.
+// Tracking REST API. Work item numbers are unique organization-wide, so every
+// identifier the reader hands back is the number itself (ADR 0024 §1). areaPath and
+// teams narrow the board to a slice of the project; with neither set the whole team
+// project is mirrored.
 type azureReader struct {
 	client     *azureapi.Client
+	org        string
 	project    string
 	areaPath   string
-	prefix     string
+	teams      []string
 	readyLabel string
 }
 
@@ -346,34 +349,55 @@ func (r *azureReader) Backlog(ctx context.Context) ([]BacklogItem, error) {
 	return out, nil
 }
 
-// backlogItem renders one work item as a board row, every identifier it carries
-// mapped through the reader's prefix.
+// backlogItem renders one work item as a board row.
 func (r *azureReader) backlogItem(item *azureapi.WorkItem) BacklogItem {
 	return BacklogItem{
-		ID:          azureIdentifier(r.prefix, item.ID),
+		ID:          azureIdentifier(item.ID),
 		Title:       item.Title,
 		Status:      item.State,
 		Group:       mapAzureGroup(item.Category(), item.Reason),
 		Labels:      item.Tags,
-		Parent:      azureParentIdentifier(r.prefix, item.Parent),
+		Parent:      azureParentIdentifier(item.Parent),
 		HasChildren: item.HasChildren(),
 		Ready:       containsLabel(item.Tags, r.readyLabel),
 	}
 }
 
 // workItems resolves the reader's scope to full work items: the ids WIQL matches
-// server-side, then the batched detail read those ids feed.
+// server-side, then the batched detail read those ids feed. Each step names itself
+// in its error so a failed pull says which stage broke rather than only that the
+// board is stale.
 func (r *azureReader) workItems(ctx context.Context, project, since string) ([]azureapi.WorkItem, error) {
-	ids, err := r.client.SyncIDs(ctx, project, r.areaPath, since)
+	ids, err := r.boardIDs(ctx, project, since)
 	if err != nil {
 		return nil, err
 	}
-	return r.client.WorkItems(ctx, project, ids)
+	items, err := r.client.WorkItems(ctx, project, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read %d work items: %w", len(ids), err)
+	}
+	return items, nil
+}
+
+// boardIDs runs the scoped WIQL query behind every read the reader makes.
+func (r *azureReader) boardIDs(ctx context.Context, project, since string) ([]int, error) {
+	scope, err := r.client.ResolveScope(ctx, project, r.areaPath, r.teams)
+	if err != nil {
+		return nil, fmt.Errorf("resolve board scope: %w", err)
+	}
+	ids, err := r.client.SyncIDs(ctx, project, scope, since)
+	if err != nil {
+		return nil, fmt.Errorf("query board: %w", err)
+	}
+	return ids, nil
 }
 
 // Issue reads one work item through the organization-scoped route rather than the
 // project's own, so a ticket belonging to another team project comes back with
-// InProject false instead of the 404 a project-scoped read would answer with.
+// InProject false instead of the 404 a project-scoped read would answer with. A
+// ticket inside the project but outside the board's scope answers the same way: the
+// hub mirrors only the scoped slice and the loop only picks from it, so confirming
+// one would offer work neither would ever run (ADR 0028 §3).
 func (r *azureReader) Issue(ctx context.Context, id string) (IssueSummary, error) {
 	n, err := workItemID(id)
 	if err != nil {
@@ -386,11 +410,35 @@ func (r *azureReader) Issue(ctx context.Context, id string) (IssueSummary, error
 		}
 		return IssueSummary{}, err
 	}
+	onBoard, err := r.onBoard(ctx, item)
+	if err != nil {
+		return IssueSummary{}, err
+	}
 	return IssueSummary{
 		BacklogItem: r.backlogItem(item),
 		Project:     item.Project,
-		InProject:   inProject(item.Project, r.project),
+		InProject:   onBoard,
 	}, nil
+}
+
+// onBoard reports whether the work item sits in the slice of the board this repo
+// mirrors. Team-project membership is the cheap half of the answer; the rest is the
+// board's own to give, so a scoped repo asks it rather than matching the item's Area
+// Path here. An unscoped repo mirrors the whole team project and has nothing to ask.
+func (r *azureReader) onBoard(ctx context.Context, item *azureapi.WorkItem) (bool, error) {
+	project := strings.TrimSpace(r.project)
+	if !inProject(item.Project, project) {
+		return false, nil
+	}
+	scoped := strings.TrimSpace(r.areaPath) != "" || len(r.teams) > 0
+	if project == "" || !scoped {
+		return true, nil
+	}
+	scope, err := r.client.ResolveScope(ctx, project, r.areaPath, r.teams)
+	if err != nil {
+		return false, fmt.Errorf("resolve board scope: %w", err)
+	}
+	return r.client.Covers(ctx, project, scope, item.ID)
 }
 
 // mapLinearGroup maps a Linear workflow-state type onto a normalized status
