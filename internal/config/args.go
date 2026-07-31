@@ -24,6 +24,7 @@ type Options struct {
 	ResetID      string
 	ResetLocalID string
 	ClearID      string
+	RequeueID    string
 	Force        bool
 	NoResume     bool
 	Status       bool
@@ -104,6 +105,12 @@ func ParseArgs(args []string) (Options, error) {
 				return o, err
 			}
 			o.ClearID = v
+		case a == "--requeue":
+			v, err := next(a)
+			if err != nil {
+				return o, err
+			}
+			o.RequeueID = v
 		case a == "--force":
 			o.Force = true
 		case a == "--no-resume":
@@ -148,13 +155,13 @@ func ParseArgs(args []string) (Options, error) {
 	}
 
 	modes := 0
-	for _, on := range []bool{o.Status, o.ResetID != "", o.ResetLocalID != "", o.ClearID != "", o.DryRun, o.ListEligible, o.ListEpicID != ""} {
+	for _, on := range []bool{o.Status, o.ResetID != "", o.ResetLocalID != "", o.ClearID != "", o.RequeueID != "", o.DryRun, o.ListEligible, o.ListEpicID != ""} {
 		if on {
 			modes++
 		}
 	}
 	if modes > 1 {
-		return o, fmt.Errorf("--status, --reset, --reset-local, --clear, --dry-run, --list-eligible, and --list-epic are mutually exclusive")
+		return o, fmt.Errorf("--status, --reset, --reset-local, --clear, --requeue, --dry-run, --list-eligible, and --list-epic are mutually exclusive")
 	}
 
 	return o, nil

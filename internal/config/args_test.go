@@ -74,6 +74,38 @@ func TestParseArgsResetLocalMutuallyExclusive(t *testing.T) {
 	}
 }
 
+func TestParseArgsRequeue(t *testing.T) {
+	o, err := ParseArgs([]string{"--requeue", "COD-1200", "--force"})
+	if err != nil {
+		t.Fatalf("ParseArgs(--requeue COD-1200 --force): %v", err)
+	}
+	if o.RequeueID != "COD-1200" {
+		t.Errorf("RequeueID = %q, want COD-1200", o.RequeueID)
+	}
+	if !o.Force {
+		t.Error("Force = false, want --force to reach a requeue")
+	}
+}
+
+func TestParseArgsRequeueRequiresValue(t *testing.T) {
+	if _, err := ParseArgs([]string{"--requeue"}); err == nil {
+		t.Error("ParseArgs(--requeue) without a value should error")
+	}
+}
+
+func TestParseArgsRequeueMutuallyExclusive(t *testing.T) {
+	pairs := [][]string{
+		{"--requeue", "COD-1", "--reset", "COD-2"},
+		{"--requeue", "COD-1", "--clear", "COD-2"},
+		{"--requeue", "COD-1", "--status"},
+	}
+	for _, args := range pairs {
+		if _, err := ParseArgs(args); err == nil {
+			t.Errorf("ParseArgs(%v) should reject combining --requeue with another mode", args)
+		}
+	}
+}
+
 func TestParseArgsListEligible(t *testing.T) {
 	o, err := ParseArgs([]string{"--list-eligible", "--json"})
 	if err != nil {

@@ -863,6 +863,8 @@ type epicGitHub struct {
 	mergeCalls   int
 	mergeMethod  string
 	mergeDeleted bool
+	closedPR     string
+	closeErr     error
 }
 
 func (e *epicGitHub) PRURL(context.Context, string) (string, error) { return "", nil }
@@ -879,6 +881,13 @@ func (e *epicGitHub) PRState(context.Context, string) (string, error) { return e
 func (e *epicGitHub) Checks(context.Context, string) ([]Check, error) { return e.checks, nil }
 func (e *epicGitHub) PRSize(context.Context, string) (int, int, error) {
 	return e.prCommits, e.prFiles, nil
+}
+func (e *epicGitHub) ClosePR(_ context.Context, pr string) error {
+	if e.closeErr != nil {
+		return e.closeErr
+	}
+	e.closedPR, e.prState = pr, "CLOSED"
+	return nil
 }
 func (e *epicGitHub) Merge(_ context.Context, _, method string, deleteBranch bool) error {
 	e.mergeCalls++

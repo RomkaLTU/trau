@@ -134,6 +134,7 @@ func (f *fakeGitHub) MergedPRURL(context.Context, string) (string, error) {
 }
 
 func (f *fakeGitHub) PRState(context.Context, string) (string, error)   { return "", nil }
+func (f *fakeGitHub) ClosePR(context.Context, string) error             { return nil }
 func (f *fakeGitHub) Checks(context.Context, string) ([]Check, error)   { return nil, nil }
 func (f *fakeGitHub) PRSize(context.Context, string) (int, int, error)  { return 0, 0, nil }
 func (f *fakeGitHub) Merge(context.Context, string, string, bool) error { return nil }

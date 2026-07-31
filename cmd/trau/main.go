@@ -95,6 +95,7 @@ Usage:
   trau --list-epic <ID> [--json]  list an epic's sub-issues and their states (ID, title, state)
   trau --reset <ID>          drop the branch + state and re-queue the ticket (refuses if already merged; --force overrides)
   trau --clear <ID>          drop only the local checkpoint (no git, no re-queue) — for tickets finished out-of-band
+  trau --requeue <ID>        un-quarantine: restore labels + status, clear the checkpoint, close the attempt PR, drop its branch
 
 Flags:
   --parent <ID>     treat <ID> as an epic and process its sub-issues (a bare <PREFIX>-<n> arg is equivalent)
@@ -109,7 +110,8 @@ Flags:
   --reset <ID>      reset a ticket and exit
   --reset-local <ID>  drop a ticket's branch + run dir, leaving its run history and the tracker alone, and exit
   --clear <ID>      drop a ticket's local checkpoint without touching git or the tracker (a.k.a. --forget)
-  --force           with --reset, reset even a ticket whose code is already merged
+  --requeue <ID>    undo a quarantine in one step (tracker labels + status, checkpoint, attempt PR, branch) and exit
+  --force           with --reset or --requeue, act even on a ticket whose code is already merged
   --status          print saved checkpoints (auto-reconciles stale in-flight/quarantined rows against the tracker) and exit
   --json            emit --status, --list-eligible, or --list-epic as machine-readable JSON
   --no-tui          force plain console output (disable the Bubble Tea TUI)
@@ -280,7 +282,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		logger.Verbosef("ensure runs .gitignore: %v", err)
 	}
 
-	for _, id := range []string{opts.Parent, opts.ResetID, opts.ResetLocalID, opts.ClearID} {
+	for _, id := range []string{opts.Parent, opts.ResetID, opts.ResetLocalID, opts.ClearID, opts.RequeueID} {
 		if err := validateTicketID(cfg, id); err != nil {
 			return console.Actionable(err, "validate ticket id",
 				fmt.Sprintf("set ISSUE_PREFIX (or LINEAR_TEAM) to this tracker's key, or pass a %s-<n> ticket", cfg.IssuePrefix))
@@ -426,7 +428,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	if opts.ResetID != "" || opts.ResetLocalID != "" {
+	if opts.ResetID != "" || opts.ResetLocalID != "" || opts.RequeueID != "" {
 		ensureHubForStore(ctx, cfg, stderr)
 		repoRoot, err := config.ResolveRepoRoot(opts.Repo, cfg.RepoRoot, config.GitToplevel)
 		if err != nil {
@@ -440,13 +442,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if opts.ResetLocalID != "" {
 			return pipe.PurgeLocal(ctx, opts.ResetLocalID)
 		}
-		if phase := pipe.State.Get(opts.ResetID, "PHASE"); phase == state.Merged && !opts.Force {
-			return console.Actionable(
-				fmt.Errorf("%s is already shipped (phase: %s)", opts.ResetID, phase),
-				"reset "+opts.ResetID,
-				"its code is already merged — pass --force to reset it anyway")
+		id, verb := opts.ResetID, "reset"
+		if opts.RequeueID != "" {
+			id, verb = opts.RequeueID, "requeue"
 		}
-		return pipe.Reset(ctx, opts.ResetID)
+		if phase := pipe.State.Get(id, "PHASE"); phase == state.Merged && !opts.Force {
+			return console.Actionable(
+				fmt.Errorf("%s is already shipped (phase: %s)", id, phase),
+				verb+" "+id,
+				fmt.Sprintf("its code is already merged — pass --force to %s it anyway", verb))
+		}
+		if opts.RequeueID != "" {
+			return pipe.Requeue(ctx, id, opts.Force)
+		}
+		return pipe.Reset(ctx, id)
 	}
 
 	epicID := opts.Parent
@@ -1444,6 +1453,8 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		TrackerProvider:      cfg.EffectiveTrackerProvider(),
 		InternalPrefix:       config.InternalPrefix(cfg.IssuePrefixConfigured, repoName(repoRoot)),
 		QueuedLabel:          cfg.QueuedLabel,
+		ReadyLabel:           cfg.ReadyLabel,
+		QuarantineLabel:      cfg.QuarantineLabel,
 		MaxRepairs:           cfg.MaxRepairs,
 		MaxBugfixes:          cfg.MaxBugfixes,
 		AgentRetries:         cfg.AgentRetries,
