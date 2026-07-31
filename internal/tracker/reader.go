@@ -15,9 +15,9 @@ import (
 
 // ErrReaderUnavailable means the repo carries no direct tracker credentials, so
 // the hub cannot browse the backlog without falling back to an agent/MCP — which
-// a Reader never does. It is also returned for providers the hub cannot sync
-// (GitHub, Azure DevOps), so the hub shows a backlog-unavailable state instead of
-// erroring; those repos keep reading their tickets straight from the tracker.
+// a Reader never does. It is also returned for GitHub, the one provider the hub
+// cannot sync, so the hub shows a backlog-unavailable state instead of erroring;
+// those repos keep reading their tickets straight from the tracker.
 var ErrReaderUnavailable = errors.New("tracker: no direct API credentials configured")
 
 // ErrNoProjectKey means a Jira repo carries valid REST credentials but no project
@@ -30,6 +30,11 @@ var ErrNoProjectKey = errors.New("jira: no project key configured — set LINEAR
 // configured for every repo, so refusing locally keeps those repos off the shared
 // key's budget.
 var ErrNoTeamKey = errors.New("linear: no team key configured — set LINEAR_TEAM in this repo's .trau.ini")
+
+// ErrNoTeamProject is the Azure DevOps counterpart of ErrNoProjectKey: a usable
+// organization URL and token but no team project to bind. Every work-item route is
+// project-scoped, so there is nothing to pull until one is named.
+var ErrNoTeamProject = errors.New("azure: no team project configured — set LINEAR_TEAM in this repo's .trau.ini")
 
 // ErrIssueNotFound means the tracker has no issue with the requested identifier,
 // so a caller can tell a mistyped or absent ticket apart from a transport error.
@@ -185,10 +190,21 @@ func NewReader(provider string, cfg Config) (Reader, error) {
 			project:    cfg.Team,
 			readyLabel: cfg.ReadyLabel,
 		}, nil
-	case "azure", "github":
+	case "azure":
+		if strings.TrimSpace(cfg.BaseURL) == "" || strings.TrimSpace(cfg.APIKey) == "" {
+			return nil, ErrReaderUnavailable
+		}
+		return &azureReader{
+			client:     azureapi.New(cfg.BaseURL, cfg.APIKey),
+			project:    cfg.Team,
+			areaPath:   cfg.AreaPath,
+			prefix:     Scope{Prefix: cfg.Prefix}.prefix(),
+			readyLabel: cfg.ReadyLabel,
+		}, nil
+	case "github":
 		return nil, ErrReaderUnavailable
 	default:
-		return nil, fmt.Errorf("unknown tracker provider %q (expected: linear | jira)", provider)
+		return nil, fmt.Errorf("unknown tracker provider %q (expected: linear | jira | azure)", provider)
 	}
 }
 
@@ -305,6 +321,78 @@ func (r *jiraReader) Issue(ctx context.Context, id string) (IssueSummary, error)
 	}, nil
 }
 
+// azureReader reads an Azure DevOps team project's work items over the Work Item
+// Tracking REST API. Work items carry no per-project key, so every identifier the
+// reader hands back is rendered through prefix, the same mapping the loop's
+// AzureDevOps provider applies. areaPath narrows the board to one in-project area
+// when set; empty means the whole team project.
+type azureReader struct {
+	client     *azureapi.Client
+	project    string
+	areaPath   string
+	prefix     string
+	readyLabel string
+}
+
+func (r *azureReader) Backlog(ctx context.Context) ([]BacklogItem, error) {
+	items, err := r.workItems(ctx, r.project, "")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BacklogItem, 0, len(items))
+	for i := range items {
+		out = append(out, r.backlogItem(&items[i]))
+	}
+	return out, nil
+}
+
+// backlogItem renders one work item as a board row, every identifier it carries
+// mapped through the reader's prefix.
+func (r *azureReader) backlogItem(item *azureapi.WorkItem) BacklogItem {
+	return BacklogItem{
+		ID:          azureIdentifier(r.prefix, item.ID),
+		Title:       item.Title,
+		Status:      item.State,
+		Group:       mapAzureGroup(item.Category(), item.Reason),
+		Labels:      item.Tags,
+		Parent:      azureParentIdentifier(r.prefix, item.Parent),
+		HasChildren: item.HasChildren(),
+		Ready:       containsLabel(item.Tags, r.readyLabel),
+	}
+}
+
+// workItems resolves the reader's scope to full work items: the ids WIQL matches
+// server-side, then the batched detail read those ids feed.
+func (r *azureReader) workItems(ctx context.Context, project, since string) ([]azureapi.WorkItem, error) {
+	ids, err := r.client.SyncIDs(ctx, project, r.areaPath, since)
+	if err != nil {
+		return nil, err
+	}
+	return r.client.WorkItems(ctx, project, ids)
+}
+
+// Issue reads one work item through the organization-scoped route rather than the
+// project's own, so a ticket belonging to another team project comes back with
+// InProject false instead of the 404 a project-scoped read would answer with.
+func (r *azureReader) Issue(ctx context.Context, id string) (IssueSummary, error) {
+	n, err := workItemID(id)
+	if err != nil {
+		return IssueSummary{}, ErrIssueNotFound
+	}
+	item, err := r.client.WorkItem(ctx, "", n)
+	if err != nil {
+		if errors.Is(err, azureapi.ErrNotFound) {
+			return IssueSummary{}, ErrIssueNotFound
+		}
+		return IssueSummary{}, err
+	}
+	return IssueSummary{
+		BacklogItem: r.backlogItem(item),
+		Project:     item.Project,
+		InProject:   inProject(item.Project, r.project),
+	}, nil
+}
+
 // mapLinearGroup maps a Linear workflow-state type onto a normalized status
 // group. Linear's state types are triage | backlog | unstarted | started |
 // completed | canceled.
@@ -340,6 +428,29 @@ func mapJiraGroup(category, resolution string) StatusGroup {
 			return StatusGroupCanceled
 		}
 		return StatusGroupDone
+	default:
+		return StatusGroupUnknown
+	}
+}
+
+// mapAzureGroup maps an Azure DevOps state category onto a normalized status
+// group. Proposed covers a fresh item and a backlog-parked one alike — the
+// category draws no line between them — and a Completed item closed with a
+// discarded reason groups as canceled rather than done, the same discriminator
+// mapAzureStatus applies.
+func mapAzureGroup(category azureapi.StateCategory, reason string) StatusGroup {
+	switch category {
+	case azureapi.CategoryProposed:
+		return StatusGroupUnstarted
+	case azureapi.CategoryInProgress, azureapi.CategoryResolved:
+		return StatusGroupStarted
+	case azureapi.CategoryCompleted:
+		if isCanceledReason(reason) {
+			return StatusGroupCanceled
+		}
+		return StatusGroupDone
+	case azureapi.CategoryRemoved:
+		return StatusGroupCanceled
 	default:
 		return StatusGroupUnknown
 	}

@@ -63,6 +63,8 @@ func TestNewReaderUnavailableWithoutCredentials(t *testing.T) {
 	}{
 		{"linear without key", "linear", Config{Team: "COD"}},
 		{"jira missing token", "jira", Config{Team: "PROJ", BaseURL: "https://acme.atlassian.net", Email: "me@acme.com"}},
+		{"azure missing organization url", "azure", Config{Team: "Contoso", APIKey: "pat"}},
+		{"azure missing token", "azure", Config{Team: "Contoso", BaseURL: "https://dev.azure.com/acme"}},
 		{"github has no direct read API", "github", Config{Team: "acme/app"}},
 	}
 	for _, tc := range cases {
@@ -105,6 +107,21 @@ func TestLinearReaderResolveBindingNoTeamKey(t *testing.T) {
 	_, err := r.ResolveBinding(context.Background())
 	if !errors.Is(err, ErrNoTeamKey) {
 		t.Fatalf("ResolveBinding err = %v, want ErrNoTeamKey", err)
+	}
+	if errors.Is(err, ErrReaderUnavailable) {
+		t.Fatalf("ResolveBinding err = %v, must not read as no credentials", err)
+	}
+	if got := err.Error(); strings.Contains(got, "credentials") || !strings.Contains(got, "LINEAR_TEAM") {
+		t.Fatalf("ResolveBinding err = %q, want it to name LINEAR_TEAM and not mention credentials", got)
+	}
+}
+
+func TestAzureReaderResolveBindingNoTeamProject(t *testing.T) {
+	r := &azureReader{client: azureapi.New("https://dev.azure.com/acme", "pat")}
+
+	_, err := r.ResolveBinding(context.Background())
+	if !errors.Is(err, ErrNoTeamProject) {
+		t.Fatalf("ResolveBinding err = %v, want ErrNoTeamProject", err)
 	}
 	if errors.Is(err, ErrReaderUnavailable) {
 		t.Fatalf("ResolveBinding err = %v, must not read as no credentials", err)

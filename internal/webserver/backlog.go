@@ -417,12 +417,13 @@ func (s *Server) readerFor(repo registry.Repo) (string, tracker.Reader, error) {
 func readerConfigErr(err error) bool {
 	return errors.Is(err, tracker.ErrReaderUnavailable) ||
 		errors.Is(err, tracker.ErrNoProjectKey) ||
-		errors.Is(err, tracker.ErrNoTeamKey)
+		errors.Is(err, tracker.ErrNoTeamKey) ||
+		errors.Is(err, tracker.ErrNoTeamProject)
 }
 
 // noTrackerCredentialsHint is the 422 body both the backlog reader and the issue
 // writer answer with, so the two surfaces name the same keys.
-const noTrackerCredentialsHint = "this repo has no direct tracker credentials configured; set LINEAR_API_KEY, or the full Jira REST credentials (JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN); Azure DevOps and GitHub boards are never mirrored into the hub — the loop reads them live"
+const noTrackerCredentialsHint = "this repo has no direct tracker credentials configured; set LINEAR_API_KEY, the full Jira REST credentials (JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN), or the Azure DevOps pair (AZURE_ORG_URL, AZURE_PAT); GitHub boards are never mirrored into the hub — the loop reads them live"
 
 // writeReaderErr maps a Reader config state to a response. A repo that cannot
 // browse its backlog over the hub is a config state, not a bad request, so it
@@ -430,7 +431,8 @@ const noTrackerCredentialsHint = "this repo has no direct tracker credentials co
 // missing team/project key names the key to set instead of the credentials hint.
 func writeReaderErr(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, tracker.ErrNoProjectKey), errors.Is(err, tracker.ErrNoTeamKey):
+	case errors.Is(err, tracker.ErrNoProjectKey), errors.Is(err, tracker.ErrNoTeamKey),
+		errors.Is(err, tracker.ErrNoTeamProject):
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
 	case errors.Is(err, tracker.ErrReaderUnavailable):
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{
@@ -459,10 +461,16 @@ func defaultReader(cfg config.Config) (tracker.Reader, error) {
 		SplitLabel:      cfg.SplitLabel,
 		APIKey:          cfg.LinearAPIKey,
 	}
-	if provider == "jira" {
+	switch provider {
+	case "jira":
 		tc.APIKey = cfg.JiraAPIToken
 		tc.BaseURL = cfg.JiraBaseURL
 		tc.Email = cfg.JiraEmail
+	case "azure":
+		tc.APIKey = cfg.AzurePAT
+		tc.BaseURL = cfg.AzureOrgURL
+		tc.AreaPath = cfg.AzureAreaPath
+		tc.Prefix = cfg.IssuePrefix
 	}
 	return tracker.NewReader(provider, tc)
 }
