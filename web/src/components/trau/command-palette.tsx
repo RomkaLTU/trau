@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { Check, FolderGit2, GitBranch, History, ListChecks } from 'lucide-react'
@@ -15,14 +15,20 @@ import {
   CommandSeparator,
 } from '@/components/ui/command'
 import { instancesQueryOptions } from '@/lib/instances'
-import { isPaletteShortcut } from '@/lib/palette-keys'
+import { matchesQuery } from '@/lib/palette-filter'
+import { isPaletteShortcut, movesHighlight } from '@/lib/palette-keys'
 import { loadRecents, visibleRecents, type RecentEntry } from '@/lib/recents'
+import { issueSearchQueryOptions, type SearchResult } from '@/lib/search'
 import { suggestFor, type SuggestionEntry } from '@/lib/suggestions'
 
 const GROUP_HEADING =
   '[&_[cmdk-group-heading]]:font-mono [&_[cmdk-group-heading]]:text-[0.65rem] [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.2em] [&_[cmdk-group-heading]]:font-normal'
 
 const NAV_ITEMS = NAV_GROUPS.flatMap((group) => group.items)
+
+function issueValue(id: string) {
+  return `issue:${id}`
+}
 
 function recentIcon(entry: RecentEntry) {
   if (entry.kind === 'project') return GitBranch
@@ -42,6 +48,16 @@ export function CommandPalette({
   const navigate = useNavigate()
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const [query, setQuery] = useState('')
+  const [debounced, setDebounced] = useState('')
+  const [selected, setSelected] = useState('')
+  const listRef = useRef<HTMLDivElement>(null)
+  const highlightMoved = useRef(false)
+  const trimmed = query.trim()
+
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(trimmed), 150)
+    return () => clearTimeout(id)
+  }, [trimmed])
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -54,7 +70,10 @@ export function CommandPalette({
   }, [open, onOpenChange])
 
   useEffect(() => {
-    if (!open) setQuery('')
+    if (open) return
+    setQuery('')
+    setSelected('')
+    highlightMoved.current = false
   }, [open])
 
   const { data: instancesData } = useQuery(instancesQueryOptions)
@@ -82,6 +101,43 @@ export function CommandPalette({
     [open, pathname, repo, repos],
   )
 
+  // Issue search needs one concrete repo to query; under "All projects" the
+  // group is simply absent.
+  const issueRepo = isAll ? '' : (repo ?? '')
+  const searching = issueRepo !== '' && trimmed !== ''
+  // Holding the previous hits mounted while the next query flies keeps the
+  // highlight on the row the user picked instead of churning it through cmdk.
+  const issues = useQuery({
+    ...issueSearchQueryOptions(issueRepo, debounced),
+    placeholderData: (previous) => previous,
+  })
+  const issueRows = searching ? (issues.data?.results ?? []) : []
+  const issuesPending = searching && (debounced !== trimmed || issues.isFetching)
+
+  // cmdk only auto-selects when nothing is selected, so late-arriving issue rows
+  // would leave the highlight on a static row: move it to the top hit ourselves,
+  // unless the user has already moved the highlight.
+  const topIssue = issueRows[0]?.id
+  useEffect(() => {
+    if (topIssue && !highlightMoved.current) setSelected(issueValue(topIssue))
+  }, [topIssue])
+
+  // Rows that unmount can leave cmdk's controlled value pointing at nothing,
+  // which silently kills Enter: hand the highlight back to the first row.
+  useEffect(() => {
+    const list = listRef.current
+    if (!list || list.querySelector('[cmdk-item][aria-selected="true"]')) return
+    const first = list.querySelector('[cmdk-item]')?.getAttribute('data-value')
+    if (first) setSelected(first)
+  })
+
+  const projectRows = repos.filter((r) => matchesQuery(trimmed, [r.name, r.root]))
+  const showAllScope = repos.length > 1 && matchesQuery(trimmed, ['All repos'])
+  const showProjects = showAllScope || projectRows.length > 0
+  const navRows = NAV_ITEMS.filter((item) =>
+    matchesQuery(trimmed, [item.label, item.to]),
+  )
+
   function pickScope(scope: string) {
     setScope(scope)
     onOpenChange(false)
@@ -107,6 +163,14 @@ export function CommandPalette({
     void navigate({ to: entry.path })
   }
 
+  function pickIssue(result: SearchResult) {
+    onOpenChange(false)
+    void navigate({
+      to: '/runs/$repo/$ticket',
+      params: { repo: issueRepo, ticket: result.id },
+    })
+  }
+
   function pickRecent(entry: RecentEntry) {
     if (entry.kind === 'project') {
       pickScope(entry.label)
@@ -124,15 +188,64 @@ export function CommandPalette({
   }
 
   return (
-    <CommandDialog open={open} onOpenChange={onOpenChange} className="font-mono">
+    <CommandDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      className="font-mono"
+      size="lg"
+      shouldFilter={false}
+      value={selected}
+      onValueChange={setSelected}
+    >
       <CommandInput
-        placeholder="Type a command or search…"
+        detachSearch
+        placeholder="Search issues, projects and pages…"
         value={query}
         onValueChange={setQuery}
+        onKeyDown={(e) => {
+          if (movesHighlight(e.nativeEvent)) highlightMoved.current = true
+        }}
       />
-      <CommandList>
-        <CommandEmpty>No results.</CommandEmpty>
-        {query === '' && suggestions.length > 0 && (
+      <CommandList ref={listRef} className="max-h-[65vh]">
+        {!issuesPending && <CommandEmpty>No results.</CommandEmpty>}
+        {(issueRows.length > 0 || issuesPending) && (
+          <>
+            <CommandGroup heading="Issues" className={GROUP_HEADING}>
+              {issuesPending && (
+                <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                  Searching…
+                </p>
+              )}
+              {issueRows.map((result) => (
+                <CommandItem
+                  key={result.id}
+                  value={issueValue(result.id)}
+                  onSelect={() => pickIssue(result)}
+                >
+                  <span className="shrink-0 text-primary">{result.id}</span>
+                  <span className="min-w-0 flex-1 truncate font-sans">
+                    {result.title || 'Untitled'}
+                  </span>
+                  {result.status && (
+                    <span className="shrink-0 text-[0.65rem] text-muted-foreground">
+                      {result.status}
+                    </span>
+                  )}
+                  {result.labels.map((label) => (
+                    <span
+                      key={label}
+                      className="shrink-0 rounded border border-border bg-muted/60 px-1.5 text-[0.6rem] text-muted-foreground"
+                    >
+                      {label}
+                    </span>
+                  ))}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+            {(showProjects || navRows.length > 0) && <CommandSeparator />}
+          </>
+        )}
+        {trimmed === '' && suggestions.length > 0 && (
           <>
             <CommandGroup heading="Suggested" className={GROUP_HEADING}>
               {suggestions.map((entry) => (
@@ -171,7 +284,7 @@ export function CommandPalette({
             <CommandSeparator />
           </>
         )}
-        {query === '' && recents.length > 0 && (
+        {trimmed === '' && recents.length > 0 && (
           <>
             <CommandGroup heading="Recent" className={GROUP_HEADING}>
               {recents.map((entry) => {
@@ -196,10 +309,10 @@ export function CommandPalette({
             <CommandSeparator />
           </>
         )}
-        {repos.length > 0 && (
+        {showProjects && (
           <>
             <CommandGroup heading="Projects" className={GROUP_HEADING}>
-              {repos.length > 1 && (
+              {showAllScope && (
                 <CommandItem
                   value="All repos"
                   onSelect={() => pickScope(ALL_SCOPE)}
@@ -209,11 +322,10 @@ export function CommandPalette({
                   {isAll && <Check className="text-primary" />}
                 </CommandItem>
               )}
-              {repos.map((r) => (
+              {projectRows.map((r) => (
                 <CommandItem
                   key={r.root}
                   value={r.root}
-                  keywords={[r.name]}
                   onSelect={() => pickScope(r.name)}
                 >
                   <GitBranch />
@@ -229,22 +341,23 @@ export function CommandPalette({
                 </CommandItem>
               ))}
             </CommandGroup>
-            <CommandSeparator />
+            {navRows.length > 0 && <CommandSeparator />}
           </>
         )}
-        <CommandGroup heading="Navigation" className={GROUP_HEADING}>
-          {NAV_ITEMS.map((item) => (
-            <CommandItem
-              key={item.to}
-              value={item.label}
-              keywords={[item.to]}
-              onSelect={() => goTo(item)}
-            >
-              <item.icon />
-              <span className="flex-1 truncate">{item.label}</span>
-            </CommandItem>
-          ))}
-        </CommandGroup>
+        {navRows.length > 0 && (
+          <CommandGroup heading="Navigation" className={GROUP_HEADING}>
+            {navRows.map((item) => (
+              <CommandItem
+                key={item.to}
+                value={item.label}
+                onSelect={() => goTo(item)}
+              >
+                <item.icon />
+                <span className="flex-1 truncate">{item.label}</span>
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        )}
       </CommandList>
     </CommandDialog>
   )
