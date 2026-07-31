@@ -1577,42 +1577,59 @@ function FinalizeRow({
   );
 }
 
-// RunNextButton promotes a remaining item to the front of the queue, so the
-// drain picks it when the run in flight settles.
-function RunNextButton({
+// RemainingAction is the gesture a remaining row offers. A paused row resumes
+// where it stopped — the hub refuses to promote one — while a pending row moves
+// to the front of the queue so the drain picks it when the run in flight
+// settles.
+function RemainingAction({
   id,
-  disabled,
+  paused,
+  first,
+  busy,
   onRunNext,
+  onResume,
 }: {
   id: string;
-  disabled: boolean;
+  paused: boolean;
+  first: boolean;
+  busy: boolean;
   onRunNext: (id: string) => void;
+  onResume: (id: string) => void;
 }) {
+  const label = paused ? "Resume" : "Run next";
+  const Icon = paused ? Play : ChevronsUp;
   return (
     <button
       type="button"
-      onClick={() => onRunNext(id)}
-      disabled={disabled}
-      title="Run next"
-      aria-label={`Run ${id} next`}
+      onClick={() => (paused ? onResume(id) : onRunNext(id))}
+      disabled={busy || (first && !paused)}
+      title={label}
+      aria-label={`${label} ${id}`}
       className="flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-primary disabled:pointer-events-none disabled:opacity-30"
     >
-      <ChevronsUp className="size-3.5" aria-hidden="true" />
+      <Icon className="size-3.5" aria-hidden="true" />
     </button>
   );
 }
 
 function PendingTicketRow({
   ticket,
+  paused,
+  first,
+  busy,
   onPeek,
   onRunNext,
-  runNextDisabled,
+  onResume,
 }: {
   ticket: TimelineTicket;
+  paused: boolean;
+  first: boolean;
+  busy: boolean;
   onPeek: (id: string) => void;
   onRunNext: (id: string) => void;
-  runNextDisabled: boolean;
+  onResume: (id: string) => void;
 }) {
+  const pill = ticketPill(ticket);
   return (
     <li className="flex items-center gap-3 border-b border-border/60 px-4 py-2.5 last:border-0">
       {ticket.epicId ? <EpicTag id={ticket.epicId} /> : null}
@@ -1627,11 +1644,14 @@ function PendingTicketRow({
       <InternalTag source={ticket.source} />
       <ProviderTag provider={ticket.provider} pin={ticket.providerPin} />
       <BacklogPRBadge status={ticket.prStatus} />
-      <StatusPill state="todo" label="pending" className="shrink-0" />
-      <RunNextButton
+      <StatusPill state={pill.state} label={pill.label} className="shrink-0" />
+      <RemainingAction
         id={ticket.id}
-        disabled={runNextDisabled}
+        paused={paused}
+        first={first}
+        busy={busy}
         onRunNext={onRunNext}
+        onResume={onResume}
       />
     </li>
   );
@@ -1639,14 +1659,20 @@ function PendingTicketRow({
 
 function PendingEpicGroup({
   entry,
+  paused,
+  first,
+  busy,
   onPeek,
   onRunNext,
-  runNextDisabled,
+  onResume,
 }: {
   entry: Extract<PendingEntry, { kind: "epic" }>;
+  paused: boolean;
+  first: boolean;
+  busy: boolean;
   onPeek: (id: string) => void;
   onRunNext: (id: string) => void;
-  runNextDisabled: boolean;
+  onResume: (id: string) => void;
 }) {
   return (
     <li className="border-b border-border/60 last:border-0">
@@ -1660,34 +1686,50 @@ function PendingEpicGroup({
         </span>
         <InternalTag source={entry.source} />
         <StatusPill
-          state="info"
-          label={`epic · ${entry.done}/${entry.total}`}
+          state={paused ? "warn" : "info"}
+          label={
+            paused
+              ? `epic · paused · ${entry.done}/${entry.total}`
+              : `epic · ${entry.done}/${entry.total}`
+          }
           className="shrink-0"
         />
-        <RunNextButton
+        <RemainingAction
           id={entry.id}
-          disabled={runNextDisabled}
+          paused={paused}
+          first={first}
+          busy={busy}
           onRunNext={onRunNext}
+          onResume={onResume}
         />
       </div>
-      <ul className="border-t border-border/60 bg-secondary/20">
-        {entry.children.map((child) => (
-          <li
-            key={child.id}
-            className="flex items-center gap-3 border-b border-border/40 py-1.5 pl-12 pr-4 last:border-0"
-          >
-            <TicketIdButton
-              id={child.id}
-              onPeek={onPeek}
-              className="text-xs text-primary/80"
-            />
-            <span className="min-w-0 flex-1 truncate font-sans text-xs text-muted-foreground">
-              {child.title || "—"}
-            </span>
-            <StatusPill state="todo" label="pending" className="shrink-0" />
-          </li>
-        ))}
-      </ul>
+      {entry.children.length > 0 ? (
+        <ul className="border-t border-border/60 bg-secondary/20">
+          {entry.children.map((child) => {
+            const pill = ticketPill(child);
+            return (
+              <li
+                key={child.id}
+                className="flex items-center gap-3 border-b border-border/40 py-1.5 pl-12 pr-4 last:border-0"
+              >
+                <TicketIdButton
+                  id={child.id}
+                  onPeek={onPeek}
+                  className="text-xs text-primary/80"
+                />
+                <span className="min-w-0 flex-1 truncate font-sans text-xs text-muted-foreground">
+                  {child.title || "—"}
+                </span>
+                <StatusPill
+                  state={pill.state}
+                  label={pill.label}
+                  className="shrink-0"
+                />
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
     </li>
   );
 }
@@ -1745,12 +1787,28 @@ function RunningQueueView({
     mutationFn: (id: string) => promoteQueueItem(repo, id),
     onSuccess: (res) => publishQueue(queryClient, repo, res),
   });
+  const resume = useMutation({
+    mutationFn: (id: string) => runNextRequest(repo, { id }),
+    onSuccess: (res) => publishQueue(queryClient, repo, res),
+  });
+  // Promote and resume report through one banner, so each gesture clears the
+  // other's error and never leaves a stale message standing in for its own.
   const askRunNext = (id: string) => {
     promote.reset();
+    resume.reset();
     setRunNextId(id);
   };
+  const startResume = (id: string) => {
+    promote.reset();
+    resume.mutate(id);
+  };
   const runNextTarget = queue.items.find((it) => it.id === runNextId);
-  const runNextBusy = promote.isPending || shuttingDown;
+  const queueActionError = promote.error ?? resume.error;
+  const actionBusy = promote.isPending || resume.isPending || shuttingDown;
+
+  const pausedIds = new Set(
+    queue.items.filter((it) => it.status === "paused").map((it) => it.id),
+  );
 
   const remove = useMutation({
     mutationFn: (item: QueueItem) =>
@@ -1850,30 +1908,37 @@ function RunningQueueView({
                         <PendingEpicGroup
                           key={entry.id}
                           entry={entry}
+                          paused={pausedIds.has(entry.id)}
+                          first={index === 0}
+                          busy={actionBusy}
                           onPeek={onPeek}
                           onRunNext={askRunNext}
-                          runNextDisabled={index === 0 || runNextBusy}
+                          onResume={startResume}
                         />
                       ) : (
                         <PendingTicketRow
                           key={entry.ticket.id}
                           ticket={entry.ticket}
+                          paused={pausedIds.has(entry.ticket.id)}
+                          first={index === 0}
+                          busy={actionBusy}
                           onPeek={onPeek}
                           onRunNext={askRunNext}
-                          runNextDisabled={index === 0 || runNextBusy}
+                          onResume={startResume}
                         />
                       ),
                     )}
                   </ul>
                 </div>
-                {promote.error ? (
+                {queueActionError ? (
                   <p className="font-mono text-xs text-fail" role="alert">
-                    {actionError(promote.error)}
+                    {actionError(queueActionError)}
                   </p>
                 ) : null}
                 <p className="font-sans text-xs leading-relaxed text-muted-foreground">
                   Remaining tickets run top to bottom — Run next moves one to the
-                  front for when the current run finishes.
+                  front for when the current run finishes, and Resume restarts a
+                  paused ticket where it stopped.
                 </p>
               </>
             ) : (
@@ -1896,10 +1961,10 @@ function RunningQueueView({
             )}
           </section>
 
-          {timeline.settled.length > 0 ? (
+          {timeline.finished.length > 0 ? (
             <FinishedSection
               repo={repo}
-              settled={timeline.settled}
+              settled={timeline.finished}
               onPeek={onPeek}
             />
           ) : null}

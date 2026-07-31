@@ -120,17 +120,35 @@ describe('runNext', () => {
     expect(res.draining).toBe(true)
   })
 
-  it('resumes a queued paused item by arming without re-queuing', async () => {
+  it('promotes a queued paused item to the front, then arms the drain', async () => {
     mockFetch
-      .mockResolvedValueOnce(response(409, { error: 'COD-1 is already in the queue' }))
+      .mockResolvedValueOnce(response(409, { error: 'COD-2 is already in the queue' }))
       .mockResolvedValueOnce(
-        response(200, queueResponse({ items: [item({ id: 'COD-1', status: 'paused' })] })),
+        response(
+          200,
+          queueResponse({
+            items: [
+              item({ id: 'COD-1', status: 'pending' }),
+              item({ id: 'COD-2', status: 'paused' }),
+            ],
+          }),
+        ),
       )
+      .mockResolvedValueOnce(response(200, queueResponse()))
       .mockResolvedValueOnce(response(200, queueResponse({ draining: true })))
 
-    const res = await runNext('trau', { id: 'COD-1' })
+    const res = await runNext('trau', { id: 'COD-2' })
 
-    expect(mockFetch).toHaveBeenCalledTimes(3)
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      3,
+      '/api/v1/repos/trau/queue/COD-2/move',
+      expect.objectContaining({ body: JSON.stringify({ to: 'front' }) }),
+    )
+    expect(mockFetch).toHaveBeenNthCalledWith(
+      4,
+      '/api/v1/repos/trau/queue/drain',
+      expect.objectContaining({ body: JSON.stringify({ draining: true }) }),
+    )
     expect(res.draining).toBe(true)
   })
 

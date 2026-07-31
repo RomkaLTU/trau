@@ -193,11 +193,12 @@ func (s *Server) setDraining(root string, draining, noResume bool, onFault strin
 	return nil
 }
 
-// handleQueueMove reorders a pending item: one slot up or down with dir, or to
-// the first pending slot with to "front", which the running view's Run next uses
-// to promote an item mid-drain. It is gated like a dequeue on any repo whose
-// queue the hub can see, reports 404 for an unknown item and 409 for one that
-// has started or settled, and answers with the reordered queue.
+// handleQueueMove reorders a queued item: one slot up or down with dir, or to
+// the front of the run order with to "front", which the running view's Run next
+// and Resume both use to name what the drain launches next mid-drain. It is
+// gated like a dequeue on any repo whose queue the hub can see, reports 404 for
+// an unknown item and 409 for one that has started or settled, and answers with
+// the reordered queue.
 func (s *Server) handleQueueMove(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -242,7 +243,7 @@ func (s *Server) handleQueueMove(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s is running and cannot be reordered", id)})
 	case errors.Is(err, queue.ErrNotPending):
 		writeJSON(w, http.StatusConflict, map[string]string{
-			"error": fmt.Sprintf("%s has already started or settled — only a pending item can be promoted", id),
+			"error": fmt.Sprintf("%s has already settled — only a pending or paused item can be promoted", id),
 		})
 	case err != nil:
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "reorder: " + err.Error()})

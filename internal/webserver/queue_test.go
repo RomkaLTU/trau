@@ -573,8 +573,8 @@ func TestQueueMoveToFrontRefusesSettledItem(t *testing.T) {
 	}
 	var body map[string]string
 	_ = json.NewDecoder(res.Body).Decode(&body)
-	if !strings.Contains(body["error"], "only a pending item can be promoted") {
-		t.Errorf("error = %q, want it to say only a pending item can be promoted", body["error"])
+	if !strings.Contains(body["error"], "only a pending or paused item can be promoted") {
+		t.Errorf("error = %q, want it to say only a pending or paused item can be promoted", body["error"])
 	}
 }
 
