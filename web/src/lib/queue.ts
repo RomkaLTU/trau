@@ -47,7 +47,6 @@ export interface QueueResponse {
   // stopping is set while a Stop is ending the child that was running, so the
   // row still reads running but the run is already on its way out.
   stopping: boolean
-  shutting_down: boolean
   items: QueueItem[]
 }
 
@@ -248,20 +247,6 @@ export async function stopQueue(repo: string): Promise<QueueResponse> {
   return res.json()
 }
 
-// shutdownQueue tears the loop down: stops the running child, drops paused
-// checkpoints, and clears the queue. The hub does this asynchronously — the
-// response only acknowledges the request, so callers must poll the queue
-// query to see `shutting_down` clear.
-export async function shutdownQueue(repo: string): Promise<void> {
-  const res = await apiFetch(
-    `/api/v1/repos/${encodeURIComponent(repo)}/queue/shutdown`,
-    { method: 'POST' },
-  )
-  if (!res.ok) {
-    throw new Error(await errorMessage(res, 'shutdown failed'))
-  }
-}
-
 // runNext is the one web launch gesture: make the item the queue's next run,
 // then arm the drain. A fresh id front-inserts and a pending one moves to the
 // front; on the conflict an already-queued id answers instead, a paused item is
@@ -335,7 +320,6 @@ export function queueLive(queue?: QueueResponse): boolean {
   return (
     queue.draining ||
     queue.stopping ||
-    queue.shutting_down ||
     queue.items.some((it) => it.status === 'running')
   )
 }

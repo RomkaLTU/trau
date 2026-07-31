@@ -117,6 +117,11 @@ const KindQueueAutoResumed = "queue_auto_resumed"
 // outcome of its own to explain why the queue dropped it.
 const KindQueueItemRemoved = "queue_item_removed"
 
+// KindQueueResetFailed marks a removed ticket whose reset never landed, so the
+// branch and tracker row the removal promised to clear are still standing. The
+// hub emits it, since the removal answers long before its reset child does.
+const KindQueueResetFailed = "queue_reset_failed"
+
 // KindSteerQueued marks an operator steer note queued against a ticket, carrying
 // the ticket and the note's id. The hub emits it, since the queue is hub-owned;
 // the note's body stays out of the feed and is read from the steer API.

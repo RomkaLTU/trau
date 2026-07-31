@@ -1,13 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import { Eye, RefreshCw, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useActiveRepo } from "@/components/trau/active-repo";
 import { EmptyState } from "@/components/trau/empty-state";
 import { Eyebrow } from "@/components/trau/eyebrow";
-import { useHandback } from "@/components/trau/handback-dialog";
 import { PhaseStepper } from "@/components/trau/phase-stepper";
 import { StatusPill, type RunState } from "@/components/trau/status-pill";
 import { TerminalCard } from "@/components/trau/terminal-card";
@@ -18,7 +17,6 @@ import { stopInstance } from "@/lib/instances";
 import {
   activeLoopCount,
   attentionPill,
-  liveGateMessage,
   loopCardView,
   phasePill,
   recentRuns,
@@ -26,8 +24,7 @@ import {
   useRepoActivity,
   type LiveLoop,
 } from "@/lib/overview";
-import { publishQueue, runNext } from "@/lib/queue";
-import { runsQueryOptions, type FailureClass, type Run } from "@/lib/runs";
+import { runsQueryOptions, type Run } from "@/lib/runs";
 import { liveSteps } from "@/lib/steps";
 
 export { PhaseStepper };
@@ -347,46 +344,9 @@ function LiveLoops() {
 
 /* ---------- single-repo focus: needs attention ---------- */
 
-export const ATTENTION_META: Record<
-  FailureClass,
-  { action: string; resume: boolean }
-> = {
-  // paused/stopped/faulted resume from the checkpoint (start a run); quarantined
-  // keeps the Reset navigation to the live view's action menu, where the
-  // destructive reset stays behind its own confirm.
-  paused: { action: "Resume", resume: true },
-  stopped: { action: "Resume", resume: true },
-  faulted: { action: "Resume", resume: true },
-  gave_up: { action: "Reset", resume: false },
-};
-
 function NeedsAttention() {
-  const { repo, repos } = useActiveRepo();
+  const { repo } = useActiveRepo();
   const attention = useAttentionRuns(repo);
-  const loops = useLiveLoops(repo);
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-
-  // A loop already holding this repo's working tree makes a resume unsafe — the
-  // server refuses it with a 409, so the client disables the action to match. A
-  // single working tree means at most one loop blocks resume here.
-  const isLive = repos.find((r) => r.name === repo)?.live ?? false;
-  const liveLoop = loops[0];
-
-  const resume = useMutation({
-    mutationFn: (ticket: string) => runNext(repo ?? "", { id: ticket }),
-    onSuccess: (res) => {
-      publishQueue(queryClient, repo ?? "", res);
-      void navigate({ to: "/loop" });
-    },
-  });
-  const handback = useHandback(repo ?? "", (ticket) => resume.mutate(ticket));
-
-  const stopLive = useMutation({
-    mutationFn: (pid: number) => stopInstance(pid),
-    onSuccess: () =>
-      void queryClient.invalidateQueries({ queryKey: ["instances"] }),
-  });
 
   if (attention.length === 0) {
     return (
@@ -402,18 +362,7 @@ function NeedsAttention() {
     <TerminalCard title="needs-attention" bodyClassName="p-0">
       <ul className="flex flex-col">
         {attention.map((run) => {
-          const meta = ATTENTION_META[run.failure_class!];
           const pill = attentionPill(run.failure_class!);
-          const pending = resume.isPending && resume.variables === run.ticket;
-          const failed = resume.isError && resume.variables === run.ticket;
-          const parkedHere =
-            isLive &&
-            liveLoop?.sessionState === "parked" &&
-            liveLoop.ticket === run.ticket;
-          const stopping =
-            stopLive.isPending && stopLive.variables === liveLoop?.pid;
-          const stopFailed =
-            stopLive.isError && stopLive.variables === liveLoop?.pid;
           return (
             <li
               key={`${run.repo} ${run.ticket}`}
@@ -428,72 +377,17 @@ function NeedsAttention() {
               <p className="text-pretty font-sans text-sm leading-relaxed text-muted-foreground">
                 {run.failure_reason || run.title || run.repo}
               </p>
-              {meta.resume ? (
-                <>
-                  <Button
-                    variant="link"
-                    size="sm"
-                    className="h-auto w-fit p-0 font-mono text-xs text-teal"
-                    disabled={isLive || pending}
-                    onClick={() =>
-                      handback.request(run.ticket, run.handback ?? null)
-                    }
-                  >
-                    {pending ? "Resuming…" : `${meta.action} →`}
-                  </Button>
-                  {isLive && parkedHere ? (
-                    <>
-                      <span className="font-mono text-[0.65rem] text-muted-foreground">
-                        trau is parked on this ticket’s recap in the TUI —
-                        handle it there, or stop it to resume from here
-                      </span>
-                      <div className="flex flex-col items-start gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-auto w-fit gap-1 p-0 font-mono text-xs text-fail hover:text-fail"
-                          disabled={stopping}
-                          onClick={() => stopLive.mutate(liveLoop!.pid)}
-                        >
-                          <Square className="size-3.5" aria-hidden="true" />
-                          {stopping ? "Stopping…" : "Stop"}
-                        </Button>
-                        {stopFailed ? (
-                          <span className="font-mono text-[0.65rem] text-destructive">
-                            {stopLive.error instanceof Error
-                              ? stopLive.error.message
-                              : "stop failed"}
-                          </span>
-                        ) : null}
-                      </div>
-                    </>
-                  ) : isLive ? (
-                    <span className="font-mono text-[0.65rem] text-muted-foreground">
-                      {liveGateMessage(liveLoop)}
-                    </span>
-                  ) : null}
-                  {failed ? (
-                    <span className="font-mono text-[0.65rem] text-destructive">
-                      {resume.error instanceof Error
-                        ? resume.error.message
-                        : "resume failed"}
-                    </span>
-                  ) : null}
-                </>
-              ) : (
-                <Link
-                  to="/live/$repo/$ticket"
-                  params={{ repo: run.repo, ticket: run.ticket }}
-                  className="w-fit font-mono text-xs text-teal underline-offset-4 hover:underline"
-                >
-                  {meta.action} →
-                </Link>
-              )}
+              <Link
+                to="/live/$repo/$ticket"
+                params={{ repo: run.repo, ticket: run.ticket }}
+                className="w-fit font-mono text-xs text-teal underline-offset-4 hover:underline"
+              >
+                Open →
+              </Link>
             </li>
           );
         })}
       </ul>
-      {handback.dialog}
     </TerminalCard>
   );
 }
