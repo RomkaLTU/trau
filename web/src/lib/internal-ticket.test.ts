@@ -20,7 +20,7 @@ function issue(over: Partial<InternalIssue> = {}): InternalIssue {
 }
 
 function queueResponse(over: Partial<QueueResponse> = {}): QueueResponse {
-  return { repo: 'trau', draining: false, stopping: false, shutting_down: false, items: [], ...over }
+  return { repo: 'trau', draining: false, stopping: false, items: [], ...over }
 }
 
 describe('planInternalTicket', () => {

@@ -17,19 +17,11 @@ import (
 )
 
 // hubMCPAdminServer builds the hub's MCP endpoint with the stop-and-wait timings
-// compressed, so a shutdown_queue test never sleeps for real seconds.
+// compressed, so a destructive-tool test never sleeps for real seconds.
 func hubMCPAdminServer(t *testing.T) (*httptest.Server, *Server, string) {
 	t.Helper()
 	ts, s, root := hubMCPServer(t)
-
-	prevPoll, prevConfirm := stopWaitPoll, stopKillConfirm
-	stopWaitPoll, stopKillConfirm = 5*time.Millisecond, time.Second
-	t.Cleanup(func() { stopWaitPoll, stopKillConfirm = prevPoll, prevConfirm })
-
-	prevKill, prevRace := shutdownKillGrace, shutdownRaceWindow
-	shutdownKillGrace, shutdownRaceWindow = 20*time.Millisecond, 20*time.Millisecond
-	t.Cleanup(func() { shutdownKillGrace, shutdownRaceWindow = prevKill, prevRace })
-
+	compressStopTimings(t)
 	return ts, s, root
 }
 
@@ -88,7 +80,7 @@ func TestHubMCPAdminToolsDeclareDestructiveHint(t *testing.T) {
 
 	tools := hubMCPToolList(t, ts)
 	destructive := []string{
-		"dequeue", "move_queue_item", "shutdown_queue", "update_ticket", "transition_ticket",
+		"dequeue", "move_queue_item", "update_ticket", "transition_ticket",
 		"delete_ticket", "reset_run", "clear_run", "stop_instance", "restart_hub",
 	}
 	for _, name := range destructive {
@@ -198,69 +190,6 @@ func TestHubMCPMoveQueueItem(t *testing.T) {
 				t.Fatalf("move result = %+v, want a tool error mentioning %q", tr, tc.want)
 			}
 		})
-	}
-}
-
-// shutdown_queue disarms the drain synchronously and hands the rest to the same
-// teardown the REST route runs: the running child is stopped for real, the
-// checkpoints it and the paused items hold are dropped, and the queue is emptied.
-func TestHubMCPShutdownQueueStopsChildAndClears(t *testing.T) {
-	ts, s, root := hubMCPAdminServer(t)
-	s.sup.(*fakeSupervisor).onKill = func(pid int) { _ = proc.KillGroup(pid) }
-	store := s.stores.Queue(root)
-
-	runningPID := spawnTermIgnorer(t, "5")
-	addQueued(t, s, root, "ACME-1", "ACME-2")
-	if err := store.MarkRunning("ACME-1", runningPID); err != nil {
-		t.Fatalf("MarkRunning: %v", err)
-	}
-	if err := store.Pause("ACME-2", "faulted"); err != nil {
-		t.Fatalf("Pause ACME-2: %v", err)
-	}
-	for _, ticket := range []string{"ACME-1", "ACME-2"} {
-		if err := s.stores.Checkpoints().Upsert(root, ticket, map[string]string{"PHASE": "building"}); err != nil {
-			t.Fatalf("seed checkpoint %s: %v", ticket, err)
-		}
-	}
-	if err := store.SetDraining(true); err != nil {
-		t.Fatalf("arm drain: %v", err)
-	}
-
-	var ack MCPShutdown
-	hubToolPayload(t, hubTool(t, ts, "shutdown_queue", map[string]any{"repo": "acme"}), &ack)
-	if ack.Repo != "acme" || ack.Status != "shutting_down" || ack.Stopping != "ACME-1" {
-		t.Fatalf("shutdown_queue = %+v, want acme tearing down with ACME-1 stopping", ack)
-	}
-	if _, meta, _ := store.Snapshot(); meta.Draining {
-		t.Error("drain still armed after shutdown_queue answered")
-	}
-
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		items, _, err := store.Snapshot()
-		if err != nil {
-			t.Fatalf("snapshot queue: %v", err)
-		}
-		if len(items) == 0 && !s.isShuttingDown(root) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("queue never emptied: %+v", items)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if registry.Alive(runningPID) {
-		t.Error("running child still alive after shutdown_queue")
-	}
-	for _, ticket := range []string{"ACME-1", "ACME-2"} {
-		if _, found, _ := s.stores.Checkpoints().One(root, ticket); found {
-			t.Errorf("%s's checkpoint survived the teardown", ticket)
-		}
-	}
-
-	tr := hubTool(t, ts, "shutdown_queue", map[string]any{"repo": "stranger"})
-	if !tr.IsError || !strings.Contains(tr.Content[0].Text, "observe-only") {
-		t.Fatalf("shutdown_queue of an observe-only repo = %+v, want a tool error", tr)
 	}
 }
 

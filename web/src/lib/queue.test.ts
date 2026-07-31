@@ -50,7 +50,7 @@ function item(over: Partial<QueueItem>): QueueItem {
 }
 
 function queueResponse(over: Partial<QueueResponse> = {}): QueueResponse {
-  return { repo: 'trau', draining: false, stopping: false, shutting_down: false, items: [], ...over }
+  return { repo: 'trau', draining: false, stopping: false, items: [], ...over }
 }
 
 function run(over: Partial<Run>): Run {
@@ -395,10 +395,6 @@ describe('queueLive', () => {
     expect(
       queueLive(queueResponse({ items: [item({ id: 'COD-1', status: 'paused' })] })),
     ).toBe(false)
-  })
-
-  it('is true while a shutdown tears the queue down', () => {
-    expect(queueLive(queueResponse({ shutting_down: true }))).toBe(true)
   })
 })
 

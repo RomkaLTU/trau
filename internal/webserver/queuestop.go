@@ -1,9 +1,19 @@
 package webserver
 
 import (
+	"time"
+
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/queue"
 )
+
+// stopKillGrace bounds how long a halt — a queue Stop, or one running item's
+// removal — waits for a child to exit on its own graceful stop before
+// stopAndWait escalates to a group kill. A stopped run spends that window
+// preserving its WIP on the feature branch and cleaning back to base, so the
+// grace sits above the pipeline's cleanup budget rather than cutting it short.
+// It is a var so tests can compress it instead of sleeping for real seconds.
+var stopKillGrace = 90 * time.Second
 
 // beginStopping / endStopping / isStopping flag which repos have a queue stop in
 // flight. beginStopping reports false when one is already running, so a repeat
@@ -56,7 +66,7 @@ func (s *Server) runningChild(root string, items []queue.Item) (ticket string, p
 // in-flight flag still clears, so a later POST retries.
 func (s *Server) stopRunningChild(root, ticket string, pid int) {
 	defer s.endStopping(root)
-	if err := s.stopAndWait(pid, shutdownKillGrace); err != nil {
+	if err := s.stopAndWait(pid, stopKillGrace); err != nil {
 		logger.Verbosef("stop %s queue: stop %s (pid %d): %v", root, ticket, pid, err)
 	}
 }
