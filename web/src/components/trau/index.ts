@@ -40,17 +40,10 @@ export { ConfigExperiments } from './config-experiments'
 export { EmptyState } from './empty-state'
 export { ConfirmDialog } from './confirm-dialog'
 export { AddTicketDialog } from './add-ticket-dialog'
-export { ForceResetDialog } from './force-reset-dialog'
 export { SteerComposer, SteerNotesTimeline } from './steer-notes'
 export { HandbackDialog, useHandback } from './handback-dialog'
 export { NoSkillsBanner } from './no-skills-banner'
 export { NoBrowserBanner } from './no-browser-banner'
 export { RemovedBanner } from './removed-banner'
 export { RunPageHeader } from './run-page-header'
-export {
-  RunActionsMenu,
-  RunActionsRow,
-  RunResetButton,
-  NoticeBanner,
-  type CheckpointNotice,
-} from './checkpoint-actions'
+export { NoticeBanner, type RunNotice } from './notice-banner'

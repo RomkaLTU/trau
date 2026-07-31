@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
@@ -510,6 +511,10 @@ func (s *Server) mcpDeleteTicket(args json.RawMessage) (any, error) {
 	s.purgeGitFootprint(repo, res.Deleted)
 	return MCPDeleted{Repo: repo.Name, Deleted: res.Deleted}, nil
 }
+
+// resetTimeout bounds a reset: it drops the branch and re-queues the ticket on
+// the tracker, so it must outlast a tracker write but never hang the call.
+const resetTimeout = 2 * time.Minute
 
 func (s *Server) mcpResetRun(ctx context.Context, args json.RawMessage) (any, error) {
 	var a struct {
