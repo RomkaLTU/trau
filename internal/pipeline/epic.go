@@ -234,19 +234,23 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 		return fmt.Errorf("finalize epic %s: ship: %w", p.EpicID, err)
 	}
 
-	extra := "All direct sub-issues are delivered."
-	if merged {
-		extra += " Epic merged to " + p.Base + " via " + prURL + "."
-	} else {
-		extra += " Epic PR ready for review: " + prURL + "."
+	// An epic PR nobody merged has shipped nothing, so the epic ticket goes to
+	// review beside it rather than closing on work still sitting in a branch.
+	if !merged {
+		extra := "All direct sub-issues are delivered. Epic PR ready for review: " + prURL + "."
+		if err := p.Tracker.SetStatus(ctx, p.EpicID, tracker.StageInReview, extra); err != nil {
+			return fmt.Errorf("finalize epic %s: mark epic in review: %w", p.EpicID, err)
+		}
+		p.logf("  ⏳ epic %s left open — PR awaiting review: %s", p.EpicID, prURL)
+		return nil
 	}
+
+	extra := "All direct sub-issues are delivered. Epic merged to " + p.Base + " via " + prURL + "."
 	if err := p.Tracker.SetStatus(ctx, p.EpicID, tracker.StageDone, extra); err != nil {
 		return fmt.Errorf("finalize epic %s: close epic: %w", p.EpicID, err)
 	}
 	p.logf("  ✓ epic %s closed; PR %s", p.EpicID, prURL)
-	if merged {
-		p.reloadHubOntoBase(ctx)
-	}
+	p.reloadHubOntoBase(ctx)
 	return nil
 }
 
@@ -508,7 +512,9 @@ func epicRepairInstruction(r prompts.Renderer, epicID, prURL, branch string) str
 // checkpoint AND the TRACKER_DONE marker written once the tracker confirmed the
 // close, which is exactly what an external automation can undo behind trau's back.
 // A merged checkpoint alone means trau never saw the ticket close, and a status it
-// could not read at all says nothing, so both keep blocking.
+// could not read at all says nothing, so both keep blocking. A delivered child
+// still sitting in the delivered state is a delivery, not a regression: a QA gate
+// is non-terminal by design and belongs to the team, not to the loop.
 func (p *Pipeline) openSubIssues(ctx context.Context, statuser tracker.IssueStatuser, subs []tracker.SubIssue) ([]string, []string, error) {
 	var open, regressed []string
 	for _, sub := range subs {
@@ -522,11 +528,13 @@ func (p *Pipeline) openSubIssues(ctx context.Context, statuser tracker.IssueStat
 		switch {
 		case st == tracker.StatusUnknown:
 			open = append(open, sub.ID+" (unknown)")
-		case p.deliveredByTrau(sub.ID):
-			p.logf("  %s is not closed in the tracker but trau merged it — counting it delivered", sub.ID)
+		case !p.deliveredByTrau(sub.ID):
+			open = append(open, sub.ID)
+		case p.behindDeliveredState(st):
+			p.logf("  %s fell behind %s after trau merged it — restoring it", sub.ID, p.deliveredStateName())
 			regressed = append(regressed, sub.ID)
 		default:
-			open = append(open, sub.ID)
+			p.logf("  %s is not closed in the tracker but trau merged it — counting it delivered", sub.ID)
 		}
 	}
 	return open, regressed, nil
@@ -538,18 +546,19 @@ func (p *Pipeline) deliveredByTrau(id string) bool {
 	return p.State.Get(id, "PHASE") == state.Merged && p.State.Get(id, "TRACKER_DONE") == "1"
 }
 
-// reassertDone re-closes a delivered child whose tracker status regressed after
-// trau itself marked it Done. The merged checkpoint already settles terminality,
-// so the write is best-effort and never blocks the finalize.
+// reassertDone restores a delivered child that fell behind the delivered state
+// after trau itself set it. The merged checkpoint already settles terminality, so
+// the write is best-effort and never blocks the finalize.
 func (p *Pipeline) reassertDone(ctx context.Context, id string) {
+	delivered := p.deliveredStateName()
 	note := "Delivered by trau"
 	if pr := p.State.Get(id, "PR"); pr != "" {
 		note += " in PR #" + pr
 	}
-	note += " and moved out of Done afterwards — restoring it."
+	note += " and moved out of " + delivered + " afterwards — restoring it."
 	if err := p.Tracker.SetStatus(ctx, id, tracker.StageDone, note); err != nil {
-		p.logf("  re-assert Done for %s error (continuing): %v", id, err)
+		p.logf("  re-assert %s for %s error (continuing): %v", delivered, id, err)
 		return
 	}
-	p.logf("  ↻ %s re-closed after a tracker status regression", id)
+	p.logf("  ↻ %s restored to %s after a tracker status regression", id, delivered)
 }

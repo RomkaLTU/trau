@@ -713,6 +713,12 @@ func runDoctor(ctx context.Context, args []string, stderr io.Writer) error {
 
 func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, error) {
 	provider := cfg.EffectiveTrackerProvider()
+	// DELIVERED_STATE pins the same write STATUS_DONE does, so it wins when a
+	// workflow sets both.
+	done := cfg.DeliveredState
+	if done == "" {
+		done = cfg.StatusDone
+	}
 	tc := tracker.Config{
 		Team:            cfg.TrackerKey(),
 		Project:         cfg.Project,
@@ -725,7 +731,7 @@ func buildTracker(cfg config.Config, runner agent.Runner) (tracker.Tracker, erro
 			tracker.StageTodo:       cfg.StatusTodo,
 			tracker.StageInProgress: cfg.StatusInProgress,
 			tracker.StageInReview:   cfg.StatusInReview,
-			tracker.StageDone:       cfg.StatusDone,
+			tracker.StageDone:       done,
 		},
 	}
 	switch provider {
@@ -1476,6 +1482,7 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		AppURLs:              cfg.AppURLs,
 		AutoMerge:            cfg.AutoMerge,
 		MergeMethod:          cfg.MergeMethod,
+		DeliveredState:       cfg.DeliveredState,
 		DeterministicCommit:  cfg.DeterministicCommit,
 		ExpectedChecks:       cfg.ExpectedChecks,
 		RequireCI:            cfg.RequireCI,

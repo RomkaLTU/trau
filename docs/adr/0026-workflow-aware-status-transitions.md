@@ -50,6 +50,14 @@ workflow its tracker reports.**
    plausible candidates. They take the standard `TRAU_*` env aliases and layer
    like every other key (ADR 0016). An override the workflow does not offer falls
    through to normal resolution rather than stranding the stage.
+5. `DELIVERED_STATE` names where a merge parks a ticket, overriding `STATUS_DONE`
+   for that one write. A workflow whose QA gate makes the delivered state
+   non-terminal keeps its epic gate on the loop's own merge record, and the
+   epic-finalize self-heal restores only a child that fell *behind* the delivered
+   state — a human moving delivered work forward is never undone. Only a delivered
+   state the stage vocabulary reads as terminal keeps the older rule that any live
+   status is a regression; a name it cannot place is treated as the live column it
+   almost certainly is, so an unrecognised state never means Done by accident.
 
 ## Consequences
 

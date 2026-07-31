@@ -175,6 +175,34 @@ func TestResolveStageAcrossRenamedLinearStates(t *testing.T) {
 	}
 }
 
+// StageFor reads a configured DELIVERED_STATE back as a lifecycle stage, so the
+// loop can tell a delivered state the workflow keeps open from a terminal one.
+func TestStageFor(t *testing.T) {
+	cases := []struct {
+		status string
+		want   Stage
+		ok     bool
+	}{
+		{"Done", StageDone, true},
+		{"READY FOR QA", StageInReview, true},
+		{"ready-for-qa", StageInReview, true},
+		{"QA Sign-off", StageInReview, true},
+		{"Released", StageDone, true},
+		{"In Development", StageInProgress, true},
+		{"Backlog", StageTodo, true},
+		{"", "", false},
+		{"Parked", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.status, func(t *testing.T) {
+			got, ok := StageFor(tc.status)
+			if got != tc.want || ok != tc.ok {
+				t.Errorf("StageFor(%q) = %q, %v; want %q, %v", tc.status, got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
 func TestStageConfigKey(t *testing.T) {
 	cases := map[Stage]string{
 		StageTodo:       "STATUS_TODO",

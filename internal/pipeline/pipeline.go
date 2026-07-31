@@ -517,6 +517,10 @@ type Pipeline struct {
 	AppURLs     map[string]string
 	AutoMerge   bool
 	MergeMethod string
+	// DeliveredState is the tracker status merged work moves to (config
+	// DELIVERED_STATE); empty means Done. When it is non-terminal the merged
+	// checkpoint, not the tracker's own terminality, settles the epic gate.
+	DeliveredState string
 	// DeterministicCommit routes a squash repo's commit phase through a templated
 	// Conventional Commit instead of a commit agent (config DETERMINISTIC_COMMIT).
 	// Non-squash merge methods always use the agent commit.
@@ -1192,7 +1196,7 @@ func (p *Pipeline) alreadyDelivered(ctx context.Context, id, head string) bool {
 		_ = p.State.Set(id, "BRANCH", head)
 		_ = p.State.Set(id, "PR", pr)
 		_ = p.State.Set(id, "PR_URL", url)
-		if err := p.markDone(ctx, id, "  ✓ %s already merged — marked Done"); err != nil {
+		if err := p.markDone(ctx, id, "  ✓ %s already merged"); err != nil {
 			p.logf("  checkpoint merged error (continuing): %v", err)
 		}
 		return true
@@ -2534,7 +2538,7 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 		return err
 	}
 	if prState, _ := p.GitHub.PRState(ctx, pr); prState == "MERGED" {
-		if err := p.markDone(ctx, id, "  ✓ %s already merged — marked Done"); err != nil {
+		if err := p.markDone(ctx, id, "  ✓ %s already merged"); err != nil {
 			return err
 		}
 		return ErrAlreadyDone
@@ -2563,7 +2567,7 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 		}
 		return fmt.Errorf("merge %s: %w", id, err)
 	}
-	return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+	return p.markDone(ctx, id, "  ✓ merged %s")
 }
 
 // landLocally closes a remote-less run: with no PR to gate and no CI to wait for,
@@ -2596,7 +2600,7 @@ func (p *Pipeline) landLocally(ctx context.Context, id string) error {
 		return p.giveUp(ctx, id, fmt.Sprintf("could not squash-merge %s into %s locally: %v", branch, base, err))
 	}
 	p.logf("  ✓ %s squash-merged into %s (%s)", branch, base, localDeliveryNote)
-	return p.markDone(ctx, id, "  ✓ delivered %s locally, marked Done")
+	return p.markDone(ctx, id, "  ✓ delivered %s locally")
 }
 
 // resolvePR is the PR the CI gate runs on, reconciled from the recorded branch when
@@ -2650,7 +2654,7 @@ func (p *Pipeline) reconcileDeliveredBranch(ctx context.Context, id, from string
 func (p *Pipeline) adoptMergedPR(ctx context.Context, id, branch, url string) error {
 	p.recordPR(id, url)
 	p.logf("  ↻ %s had no PR recorded — branch %s shipped via PR #%s", id, branch, prNumber(url))
-	if err := p.markDone(ctx, id, "  ✓ %s already merged — marked Done"); err != nil {
+	if err := p.markDone(ctx, id, "  ✓ %s already merged"); err != nil {
 		return err
 	}
 	return ErrAlreadyDone
@@ -2688,7 +2692,7 @@ func (p *Pipeline) awaitManualMerge(ctx context.Context, id, pr string) error {
 		return err
 	}
 	if merged {
-		return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+		return p.markDone(ctx, id, "  ✓ merged %s")
 	}
 	p.setPRStatus(id, prStatusClosed)
 	return p.giveUp(ctx, id, fmt.Sprintf("PR #%s closed without merge", pr))
@@ -2857,9 +2861,35 @@ func (p *Pipeline) syncBranchWithBase(ctx context.Context, id, branch, base, lab
 	return false, nil
 }
 
+// deliveredStateName names the status merged work moves to, for the log lines and
+// tracker comments that report it. The write itself always asks for StageDone;
+// DELIVERED_STATE is what that stage resolves to on this repo's workflow.
+func (p *Pipeline) deliveredStateName() string {
+	if name := strings.TrimSpace(p.DeliveredState); name != "" {
+		return name
+	}
+	return tracker.StageDone.Display()
+}
+
+// behindDeliveredState reports whether a tracker status sits before the state
+// delivery parks a ticket in — the only regression the loop restores. Only a
+// delivered state the vocabulary reads as terminal makes every live status a
+// regression; a QA gate, and equally a column name no stage claims, is one the
+// workflow keeps open on purpose. Statuses bucket coarser than those columns
+// (in-progress and review share one), so under a live delivered state only a fall
+// back to unstarted counts, leaving a ticket a human moved across the review
+// columns alone.
+func (p *Pipeline) behindDeliveredState(st tracker.IssueStatus) bool {
+	stage, ok := tracker.StageFor(p.deliveredStateName())
+	if ok && stage == tracker.StageDone {
+		return true
+	}
+	return st == tracker.StatusOpen
+}
+
 func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
 	if err := p.Tracker.SetStatus(ctx, id, tracker.StageDone, ""); err != nil {
-		p.logf("  status (Done) error: %v", err)
+		p.logf("  status (%s) error: %v", p.deliveredStateName(), err)
 	} else if err := p.State.Set(id, "TRACKER_DONE", "1"); err != nil {
 		p.logf("  checkpoint TRACKER_DONE error (continuing): %v", err)
 	}
@@ -2871,7 +2901,7 @@ func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
 	p.emitEvent("ci", map[string]any{"state": "merged"})
 	p.emitState(id, state.Merged, "merged", "")
 	p.recordTimelog(ctx, id)
-	p.logf(logFmt, id)
+	p.logf(logFmt+" — marked %s", id, p.deliveredStateName())
 	return nil
 }
 

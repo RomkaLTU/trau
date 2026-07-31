@@ -490,6 +490,118 @@ func TestFinalizeEpicShipsWhenTrackerRegressedChildIsCheckpointMerged(t *testing
 	}
 }
 
+// A workflow whose QA gate keeps delivered work open (DELIVERED_STATE=READY FOR
+// QA) parks every merged child in a started state. That is the delivery, not a
+// regression: the epic ships on its own merge record and nothing is written back
+// over the QA column the team owns.
+func TestFinalizeEpicLeavesChildrenParkedInANonTerminalDeliveredState(t *testing.T) {
+	tr := doneEpicTracker()
+	tr.status["COD-3"] = tracker.StatusStarted
+	gh := &epicGitHub{
+		createURL: "https://github.test/pr/42",
+		checks:    []Check{{Name: "ci/test", Bucket: "pass"}},
+	}
+	p := shippableEpicPipeline(t, gh, tr)
+	p.DeliveredState = "READY FOR QA"
+	for k, v := range map[string]string{"PHASE": state.Merged, "TRACKER_DONE": "1"} {
+		if err := p.State.Set("COD-3", k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+	if gh.mergeCalls != 1 {
+		t.Fatalf("a child parked in the delivered state must ship the epic, got %d merges", gh.mergeCalls)
+	}
+	if set := tr.setFor("COD-3"); set != nil {
+		t.Errorf("a child parked in the delivered state must be left alone, got %+v", set)
+	}
+}
+
+// Under a non-terminal delivered state only a child that fell all the way back to
+// an unstarted status counts as regressed — and the restoring comment names the
+// state the workflow actually delivers to, not "Done".
+func TestFinalizeEpicRestoresChildBehindANonTerminalDeliveredState(t *testing.T) {
+	tr := doneEpicTracker()
+	tr.status["COD-3"] = tracker.StatusOpen
+	gh := &epicGitHub{
+		createURL: "https://github.test/pr/42",
+		checks:    []Check{{Name: "ci/test", Bucket: "pass"}},
+	}
+	p := shippableEpicPipeline(t, gh, tr)
+	p.DeliveredState = "READY FOR QA"
+	for k, v := range map[string]string{"PHASE": state.Merged, "PR": "424", "TRACKER_DONE": "1"} {
+		if err := p.State.Set("COD-3", k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+	restored := tr.setFor("COD-3")
+	if restored == nil || restored.stage != tracker.StageDone {
+		t.Fatalf("a child behind the delivered state must be restored, got %+v", restored)
+	}
+	if !strings.Contains(restored.extra, "READY FOR QA") {
+		t.Errorf("restore comment = %q, want the delivered state named", restored.extra)
+	}
+}
+
+// DELIVERED_STATE is spelled in the project's own vocabulary, so a column no
+// stage claims is still a live one and restores a child only from an unstarted
+// status — the same as the QA gates trau does recognise. Only a delivered state
+// that reads as terminal makes every live status a regression.
+func TestBehindDeliveredState(t *testing.T) {
+	cases := []struct {
+		delivered string
+		started   bool
+	}{
+		{delivered: "", started: true},
+		{delivered: "Released", started: true},
+		{delivered: "UAT"},
+		{delivered: "Ready for Release"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.delivered, func(t *testing.T) {
+			p := &Pipeline{DeliveredState: tc.delivered}
+			if !p.behindDeliveredState(tracker.StatusOpen) {
+				t.Error("an unstarted status is behind every delivered state")
+			}
+			if got := p.behindDeliveredState(tracker.StatusStarted); got != tc.started {
+				t.Errorf("behindDeliveredState(started) = %v, want %v", got, tc.started)
+			}
+		})
+	}
+}
+
+// An epic PR the gate could not merge has shipped nothing to the base, so the epic
+// ticket goes to review beside it instead of closing over an unmerged branch.
+func TestFinalizeEpicLeavesEpicOpenWhenPRIsNotMerged(t *testing.T) {
+	tr := doneEpicTracker()
+	gh := &epicGitHub{
+		createURL: "https://github.test/pr/42",
+		checks:    []Check{{Name: "ci/test", Bucket: "fail"}},
+	}
+	p := shippableEpicPipeline(t, gh, tr)
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+	if gh.mergeCalls != 0 {
+		t.Fatalf("a red epic gate must not merge, got %d merges", gh.mergeCalls)
+	}
+	closed := tr.setFor("COD-1")
+	if closed == nil || closed.stage != tracker.StageInReview {
+		t.Fatalf("an unmerged epic must be left in review, got %+v", closed)
+	}
+	if !strings.Contains(closed.extra, "ready for review") {
+		t.Errorf("epic comment = %q, want the PR flagged for review", closed.extra)
+	}
+}
+
 // A child whose delivery trau never confirmed on the tracker (no TRACKER_DONE) is
 // still mid-flight however far its own checkpoint got: the epic keeps waiting on
 // it and nothing is written back — trau only restores a status it set itself.
