@@ -6,7 +6,7 @@ import {
   Eyebrow,
   NoticeBanner,
   RepoHealthGate,
-  type CheckpointNotice,
+  type RunNotice,
 } from '@/components/trau'
 import { RunLedger } from '@/components/trau/run-ledger'
 import { standardTitle, usePageTitle } from '@/lib/page-title'
@@ -19,7 +19,7 @@ export const Route = createFileRoute('/runs')({
 
 function Runs() {
   usePageTitle(standardTitle('Runs'))
-  const [notice, setNotice] = useState<CheckpointNotice | null>(null)
+  const [notice, setNotice] = useState<RunNotice | null>(null)
 
   return (
     <div className="flex flex-col gap-8">

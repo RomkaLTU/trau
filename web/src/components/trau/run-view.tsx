@@ -7,7 +7,6 @@ import {
   ExternalLink,
   Loader2,
   Play,
-  RotateCcw,
   ScrollText,
   Square,
   SquareTerminal,
@@ -16,7 +15,6 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/trau/confirm-dialog";
-import { ForceResetDialog } from "@/components/trau/force-reset-dialog";
 import { useHandback } from "@/components/trau/handback-dialog";
 import { Eyebrow, type EyebrowGlyph } from "@/components/trau/eyebrow";
 import { NoSkillsBanner } from "@/components/trau/no-skills-banner";
@@ -38,12 +36,7 @@ import { cn } from "@/lib/utils";
 import { useNow } from "@/lib/elapsed";
 import { useEventFeed, type FeedEvent } from "@/lib/events";
 import { runTitle, usePageTitle } from "@/lib/page-title";
-import {
-  CheckpointError,
-  checkpointErrorText,
-  resetRun,
-  runCheckpointQueryOptions,
-} from "@/lib/checkpoints";
+import { runCheckpointQueryOptions } from "@/lib/checkpoints";
 import {
   instancesQueryOptions,
   repoRoot,
@@ -610,7 +603,6 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   const navigate = useNavigate();
   const now = useNow(1000);
   const [stopOpen, setStopOpen] = useState(false);
-  const [resetOpen, setResetOpen] = useState(false);
   const [takeoverUnsupported, setTakeoverUnsupported] = useState(false);
 
   const { data: instData } = useQuery(instancesQueryOptions);
@@ -689,17 +681,6 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
   });
   const handback = useHandback(repo, () => resume.mutate());
   const startResume = () => handback.request(ticket, run?.handback ?? null);
-  const reset = useMutation({
-    mutationFn: (force: boolean) => resetRun(repo, ticket, force),
-    onSuccess: () => {
-      setResetOpen(false);
-      invalidate();
-    },
-    onError: (err) => {
-      if (err instanceof CheckpointError && err.requiresForce)
-        setResetOpen(true);
-    },
-  });
   const takeover = useMutation({
     mutationFn: () => takeoverRun(repo, ticket),
     onSuccess: () => {
@@ -762,40 +743,6 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
     </Button>
   );
   const resumeGateNote = resumeGate ? <GateNote text={resumeGate} /> : null;
-  const forceResetBtn = (
-    <Button
-      variant="ghost"
-      size="sm"
-      className="font-mono"
-      disabled={takenOver}
-      title={takenOver ? TAKEOVER_BLOCKED : undefined}
-      onClick={() => setResetOpen(true)}
-    >
-      <RotateCcw className="size-4" aria-hidden="true" />
-      Reset
-    </Button>
-  );
-  const plainResetBtn = (
-    <ConfirmDialog
-      windowTitle="confirm"
-      trigger={
-        <Button
-          variant="ghost"
-          size="sm"
-          className="font-mono"
-          disabled={reset.isPending || takenOver}
-          title={takenOver ? TAKEOVER_BLOCKED : undefined}
-        >
-          <RotateCcw className="size-4" aria-hidden="true" />
-          {reset.isPending ? "Resetting…" : "Reset"}
-        </Button>
-      }
-      title={`Reset ${ticket}?`}
-      description={`Drops ${ticket}'s branch and checkpoint and re-queues it on the tracker.`}
-      confirmLabel="Reset"
-      onConfirm={() => reset.mutate(false)}
-    />
-  );
 
   const recapActions =
     variant === "success" ? (
@@ -803,15 +750,12 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         {openPR}
         {prBadge}
         {viewLog}
-        {forceResetBtn}
-        {takenOver && <GateNote text={TAKEOVER_BLOCKED} />}
       </>
     ) : (
       <>
         {prBadge}
         {viewLog}
         {resumeBtn}
-        {plainResetBtn}
         {resumeGateNote}
       </>
     );
@@ -932,14 +876,6 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
             {(resume.error as Error).message}
           </p>
         )}
-        {reset.error &&
-          !(
-            reset.error instanceof CheckpointError && reset.error.requiresForce
-          ) && (
-            <p className="font-mono text-sm text-destructive">
-              {checkpointErrorText(reset.error)}
-            </p>
-          )}
         {stop.error && (
           <p className="font-mono text-sm text-destructive">
             {(stop.error as Error).message}
@@ -1015,13 +951,6 @@ export function RunView({ repo, ticket }: { repo: string; ticket: string }) {
         confirmLabel="Stop run"
         destructive
         onConfirm={() => stop.mutate()}
-      />
-      <ForceResetDialog
-        open={resetOpen}
-        onOpenChange={setResetOpen}
-        ticket={ticket}
-        pending={reset.isPending}
-        onConfirm={() => reset.mutate(true)}
       />
       {handback.dialog}
     </>

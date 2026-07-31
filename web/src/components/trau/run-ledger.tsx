@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
-import { Play, X } from 'lucide-react'
+import { Play } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { AuthorChip } from '@/components/trau/author-chip'
@@ -10,11 +10,7 @@ import { PRStatusBadge } from '@/components/trau/pr-status-badge'
 import { StatusPill } from '@/components/trau/status-pill'
 import { TerminalCard } from '@/components/trau/terminal-card'
 import { useActiveRepo } from '@/components/trau/active-repo'
-import {
-  RunActionsMenu,
-  RunResetButton,
-  type CheckpointNotice,
-} from '@/components/trau/checkpoint-actions'
+import { type RunNotice } from '@/components/trau/notice-banner'
 import { ATTENTION_META } from '@/components/trau/overview'
 import { useHandback } from '@/components/trau/handback-dialog'
 import { summarize } from '@/components/event-feed'
@@ -141,16 +137,12 @@ function RowItem({
   showAuthor,
   activity,
   now,
-  onNotice,
-  onConflict,
 }: {
   row: LedgerRow
   showRepo: boolean
   showAuthor: boolean
   activity?: string
   now: number
-  onNotice: (notice: CheckpointNotice) => void
-  onConflict: (repo: string) => void
 }) {
   const { repo, run, instance } = row
   const pill = rowPill(row)
@@ -185,17 +177,6 @@ function RowItem({
           <span className="w-16 text-right font-mono text-[0.7rem] text-muted-foreground">
             {rowAge(row, now)}
           </span>
-          {!shared && (
-            <div onClick={(e) => e.preventDefault()}>
-              <RunActionsMenu
-                repo={repo}
-                ticket={run.ticket}
-                phase={run.phase}
-                onNotice={onNotice}
-                onConflict={() => onConflict(repo)}
-              />
-            </div>
-          )}
         </div>
         {instance && activity && (
           <p className="pl-[5.75rem] font-mono text-xs text-muted-foreground">
@@ -217,7 +198,7 @@ function ResumeAction({
   repo: string
   ticket: string
   handback: Handback | null
-  onNotice: (notice: CheckpointNotice) => void
+  onNotice: (notice: RunNotice) => void
 }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -258,12 +239,10 @@ function AttentionRow({
   row,
   showRepo,
   onNotice,
-  onConflict,
 }: {
   row: LedgerRow
   showRepo: boolean
-  onNotice: (notice: CheckpointNotice) => void
-  onConflict: (repo: string) => void
+  onNotice: (notice: RunNotice) => void
 }) {
   const { repo, run } = row
   const pill = boardPill(run)
@@ -284,20 +263,12 @@ function AttentionRow({
       <StatusPill state={pill.state} label={pill.label} />
       <PRStatusBadge status={run.pr_status} />
       <span className="font-mono text-xs text-muted-foreground">{attentionReason(run)}</span>
-      {meta?.resume ? (
+      {meta?.resume && (
         <ResumeAction
           repo={repo}
           ticket={run.ticket}
           handback={run.handback ?? null}
           onNotice={onNotice}
-        />
-      ) : (
-        <RunResetButton
-          repo={repo}
-          ticket={run.ticket}
-          phase={run.phase}
-          onNotice={onNotice}
-          onConflict={() => onConflict(repo)}
         />
       )}
     </li>
@@ -308,12 +279,10 @@ function NeedsYouStrip({
   rows,
   showRepo,
   onNotice,
-  onConflict,
 }: {
   rows: LedgerRow[]
   showRepo: boolean
-  onNotice: (notice: CheckpointNotice) => void
-  onConflict: (repo: string) => void
+  onNotice: (notice: RunNotice) => void
 }) {
   if (rows.length === 0) return null
   return (
@@ -331,13 +300,7 @@ function NeedsYouStrip({
       </header>
       <ul className="flex flex-col divide-y divide-border/60">
         {rows.map((row) => (
-          <AttentionRow
-            key={rowKey(row)}
-            row={row}
-            showRepo={showRepo}
-            onNotice={onNotice}
-            onConflict={onConflict}
-          />
+          <AttentionRow key={rowKey(row)} row={row} showRepo={showRepo} onNotice={onNotice} />
         ))}
       </ul>
     </section>
@@ -354,36 +317,10 @@ function TotalsLine({ rows }: { rows: LedgerRow[] }) {
   )
 }
 
-function ConflictBanner({ repo, onDismiss }: { repo: string; onDismiss: () => void }) {
-  return (
-    <div
-      role="status"
-      className="flex items-start justify-between gap-3 rounded-lg border border-warn/50 bg-warn/12 px-4 py-3"
-    >
-      <div className="flex items-start gap-2.5">
-        <span aria-hidden="true" className="mt-0.5 font-mono text-sm text-warn">
-          ⚠
-        </span>
-        <p className="font-mono text-sm leading-relaxed text-warn">
-          {repo} is held by a live loop — try again after it stops.
-        </p>
-      </div>
-      <button
-        type="button"
-        onClick={onDismiss}
-        aria-label="Dismiss warning"
-        className="flex size-6 shrink-0 items-center justify-center rounded-md text-warn/80 hover:bg-warn/12 hover:text-warn"
-      >
-        <X className="size-4" aria-hidden="true" />
-      </button>
-    </div>
-  )
-}
-
 export function RunLedger({
   onNotice,
 }: {
-  onNotice: (notice: CheckpointNotice) => void
+  onNotice: (notice: RunNotice) => void
 }) {
   const { repo, isAll, repos } = useActiveRepo()
   const repoNames = useMemo(
@@ -409,7 +346,6 @@ export function RunLedger({
   const [tab, setTab] = useState<LedgerTab>('all')
   const [author, setAuthor] = useState<LedgerAuthor>('everyone')
   const [expanded, setExpanded] = useState(false)
-  const [conflict, setConflict] = useState<string | null>(null)
 
   const instances = instancesQuery.data?.instances ?? []
 
@@ -478,14 +414,7 @@ export function RunLedger({
     <div className="flex flex-col gap-6">
       <RepoErrorNotices repos={failedRepos} />
 
-      {conflict && <ConflictBanner repo={conflict} onDismiss={() => setConflict(null)} />}
-
-      <NeedsYouStrip
-        rows={needsYou}
-        showRepo={isAll}
-        onNotice={onNotice}
-        onConflict={setConflict}
-      />
+      <NeedsYouStrip rows={needsYou} showRepo={isAll} onNotice={onNotice} />
 
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex flex-wrap items-center gap-1 rounded-md border border-border bg-input p-0.5">
@@ -553,8 +482,6 @@ export function RunLedger({
               showAuthor={shared}
               activity={activityByKey.get(`${row.repo}/${row.run.ticket}`)}
               now={now}
-              onNotice={onNotice}
-              onConflict={setConflict}
             />
           ))}
         </ul>
