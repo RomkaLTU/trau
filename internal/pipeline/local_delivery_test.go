@@ -84,9 +84,14 @@ func (c *countingGitHub) MergedPRURL(ctx context.Context, branch string) (string
 	return c.epicGitHub.MergedPRURL(ctx, branch)
 }
 
-func (c *countingGitHub) CreatePR(ctx context.Context, base, head, title, body string) (string, error) {
+func (c *countingGitHub) CreatePR(ctx context.Context, base, head, title, body string, draft bool) (string, error) {
 	c.touched++
-	return c.epicGitHub.CreatePR(ctx, base, head, title, body)
+	return c.epicGitHub.CreatePR(ctx, base, head, title, body, draft)
+}
+
+func (c *countingGitHub) MarkPRReady(ctx context.Context, pr string) error {
+	c.touched++
+	return c.epicGitHub.MarkPRReady(ctx, pr)
 }
 
 func (c *countingGitHub) PRState(context.Context, string) (string, error) {
@@ -192,7 +197,7 @@ func TestCIAndMergeLandsLocallyWithoutRemote(t *testing.T) {
 			tr := &epicTracker{}
 			p := localTestPipeline(t, git, gh, tr)
 			p.EpicID = c.epicID
-			p.epicBranch = "epic/COD-1-rebuild"
+			p.exit.epicBranch = "epic/COD-1-rebuild"
 			if err := p.State.Set(id, "BRANCH", "feature/COD-96403-thing"); err != nil {
 				t.Fatal(err)
 			}
@@ -303,7 +308,7 @@ func TestFinalizeEpicMergesLocallyWithoutRemote(t *testing.T) {
 	gh := &countingGitHub{}
 	p := localTestPipeline(t, git, gh, tr)
 	p.EpicID = "COD-1"
-	p.epicBranch = "epic/COD-1-checkout-rebuild"
+	p.exit.epicBranch = "epic/COD-1-checkout-rebuild"
 
 	if err := p.FinalizeEpic(context.Background()); err != nil {
 		t.Fatalf("FinalizeEpic = %v, want nil", err)
@@ -340,7 +345,7 @@ func TestFinalizeEpicLeavesTheMergeToTheOperatorWhenAutoMergeIsOff(t *testing.T)
 	p := localTestPipeline(t, git, &countingGitHub{}, tr)
 	p.AutoMerge = false
 	p.EpicID = "COD-1"
-	p.epicBranch = "epic/COD-1-checkout-rebuild"
+	p.exit.epicBranch = "epic/COD-1-checkout-rebuild"
 
 	if err := p.FinalizeEpic(context.Background()); err != nil {
 		t.Fatalf("FinalizeEpic = %v, want nil", err)

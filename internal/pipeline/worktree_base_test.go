@@ -199,8 +199,8 @@ func TestDetachedBaseIsNotAdoptedAsInProgressWork(t *testing.T) {
 		if g.commits != 0 || g.pushes != 0 {
 			t.Errorf("a detached base was preserved as run WIP: commits=%d pushes=%d", g.commits, g.pushes)
 		}
-		if p.stashedBranch != detachedHead {
-			t.Errorf("stashedBranch = %q, want the detached head", p.stashedBranch)
+		if p.exit.stashedBranch != detachedHead {
+			t.Errorf("stashedBranch = %q, want the detached head", p.exit.stashedBranch)
 		}
 	})
 }

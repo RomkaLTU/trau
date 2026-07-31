@@ -341,7 +341,7 @@ func TestFinalizeEpicRequestsHubReloadOnlyWhenShipped(t *testing.T) {
 			p := newReloadPipeline(t, &reloadGit{}, gh, hub)
 			p.Tracker = tr
 			p.EpicID = "COD-1"
-			p.epicBranch = "epic/COD-1-self-reload"
+			p.exit.epicBranch = "epic/COD-1-self-reload"
 			p.RequireCI = config.CIGateOn
 			closedFirst := false
 			p.RequestHubReload = func(ctx context.Context) (hubclient.ReloadAck, error) {

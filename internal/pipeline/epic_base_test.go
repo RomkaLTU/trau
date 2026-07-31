@@ -50,7 +50,7 @@ func newChildPRPipeline(t *testing.T, git Git, gh GitHub) *Pipeline {
 	t.Helper()
 	p := localTestPipeline(t, git, gh, &epicTracker{title: "Child slice"})
 	p.EpicID = "COD-1"
-	p.epicBranch = epicBaseBranch
+	p.exit.epicBranch = epicBaseBranch
 	if err := p.State.Set(childPRTicketID, "BRANCH", childRunBranch); err != nil {
 		t.Fatal(err)
 	}

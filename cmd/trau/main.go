@@ -1582,9 +1582,9 @@ type engine interface {
 
 	EnsureCleanBase(ctx context.Context) error
 
-	// RestoreWIP undoes any EnsureCleanBase auto-stash at session end, popping the
-	// user's WIP back onto its original branch. No-op when nothing was stashed.
-	RestoreWIP(ctx context.Context)
+	// ExitCleanup runs the session's exit hygiene: back to the branch the run started
+	// on, any partial epic branch settled, and any EnsureCleanBase auto-stash popped.
+	ExitCleanup(ctx context.Context)
 
 	Pick(ctx context.Context) (string, error)
 
@@ -1615,7 +1615,7 @@ func (e *realEngine) InferredResume(ctx context.Context) (string, string) {
 	return e.pipe.InferredResumeFunc(ctx, e.resumeKeep)
 }
 func (e *realEngine) EnsureCleanBase(ctx context.Context) error { return e.pipe.EnsureCleanBase(ctx) }
-func (e *realEngine) RestoreWIP(ctx context.Context)            { e.pipe.RestoreWIP(ctx) }
+func (e *realEngine) ExitCleanup(ctx context.Context)           { e.pipe.ExitCleanup(ctx) }
 func (e *realEngine) Pick(ctx context.Context) (string, error)  { return e.tracker.Pick(ctx, e.scope) }
 func (e *realEngine) Process(ctx context.Context, id, from string) error {
 	err := e.pipe.Resume(ctx, id, from)
@@ -1670,9 +1670,9 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 	if report == nil {
 		report = func(string, string, string) {}
 	}
-	// Put any WIP that EnsureCleanBase auto-stashed on a fresh pick back where it
-	// came from once the loop ends (no-op when nothing was stashed).
-	defer eng.RestoreWIP(ctx)
+	// However the loop ends — clean finish, error, refusal, Ctrl-C — leave the repo
+	// on the branch it started on, with no autostash and no dangling epic branch.
+	defer eng.ExitCleanup(ctx)
 	// Poll the provider usage window for the run's lifetime, stopping when the loop
 	// returns. Windows reach the renderer over the event log; nil when disabled.
 	if p.Poller != nil {
@@ -2977,10 +2977,9 @@ func (a *appActions) RunTicket(ctx context.Context, id, provider string, r conso
 		return
 	}
 
-	// A fresh leaf run auto-stashes any uncommitted WIP in EnsureCleanBase below;
-	// restore it once this ticket is done (no-op when nothing was stashed, and when
-	// resuming an existing checkpoint).
-	defer a.pipe.RestoreWIP(ctx)
+	// Whatever this ticket does, hand the working copy back the way it was found:
+	// on its original branch, WIP restored, no epic branch left dangling.
+	defer a.pipe.ExitCleanup(ctx)
 
 	// Leaf ticket: under epic flow, if it belongs to an epic, build it ON the epic
 	// branch (and have its PR target that branch) instead of branching off the base.
