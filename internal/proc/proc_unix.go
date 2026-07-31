@@ -3,8 +3,13 @@
 package proc
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -50,6 +55,31 @@ func KillGroup(pid int) error {
 		return nil
 	}
 	return syscall.Kill(pid, syscall.SIGKILL)
+}
+
+// PortListeners reports the pids listening on port. Nothing in the standard
+// library maps a port to a process, so this shells out to lsof, whose non-zero
+// exit means "no match" rather than a failure worth reporting (ADR 0023 §7).
+func PortListeners(ctx context.Context, port int) ([]int, error) {
+	out, err := exec.CommandContext(ctx, "lsof", "-t", "-i", fmt.Sprintf("tcp:%d", port), "-sTCP:LISTEN").Output()
+	if errors.Is(err, exec.ErrNotFound) {
+		return nil, errors.New("lsof is not installed, so the process holding the port cannot be identified")
+	}
+	pids := make([]int, 0, 1)
+	for _, field := range strings.Fields(string(out)) {
+		pid, err := strconv.Atoi(field)
+		if err != nil {
+			continue
+		}
+		pids = append(pids, pid)
+	}
+	return pids, nil
+}
+
+// PortInspectHint names the command that shows what holds port, so a caller can
+// suggest it without branching on the OS itself (ADR 0023 §7).
+func PortInspectHint(port int) string {
+	return fmt.Sprintf("`lsof -i tcp:%d`", port)
 }
 
 // LookBin returns bin unchanged. Every unix spawn seam ends in os/exec, which

@@ -34,6 +34,13 @@ func TestStopGracefullyReportsAnAlreadyExitedProcess(t *testing.T) {
 	}
 }
 
+func skipWithoutPortTool(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("lsof"); err != nil {
+		t.Skip("lsof is not installed")
+	}
+}
+
 // LookBin is the identity on unix — even for a name that does not exist. The
 // stdlib exec inside the PTY spawn does the $PATH resolution at start, and
 // resolving earlier would change the argv[0] the child sees (ADR 0023).

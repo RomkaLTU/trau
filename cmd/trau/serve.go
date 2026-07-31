@@ -163,6 +163,8 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 		successor = binary
 		close(restartCh)
 	})
+	stopCh := make(chan struct{})
+	hub.EnableStop(func() { close(stopCh) })
 	hub.EnableSupervision(supervisionHook())
 	hub.SetUpdateChecks(cfg.UpdateCheck)
 	hub.Start(ctx, time.Duration(cfg.ServeSyncInterval)*time.Second, time.Duration(cfg.ServeReconcileInterval)*time.Second)
@@ -195,6 +197,14 @@ func runServe(ctx context.Context, args []string, stderr io.Writer) (err error) 
 		// for its full timeout. The successor's boot follows this line in hub.log.
 		if err := drainServer(srv); err != nil {
 			_, _ = fmt.Fprintf(stderr, "trau serve: restart drain cut short after %s (%v)\n", serveShutdownTimeout, err)
+		}
+		return nil
+	case <-stopCh:
+		// Stragglers are dropped for the same reason a restart drops them: open
+		// event streams would otherwise hold the drain open for its full timeout.
+		// restarting stays false, so nothing takes this hub's place.
+		if err := drainServer(srv); err != nil {
+			_, _ = fmt.Fprintf(stderr, "trau serve: stop drain cut short after %s (%v)\n", serveShutdownTimeout, err)
 		}
 		return nil
 	case err := <-errCh:

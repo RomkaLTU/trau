@@ -85,6 +85,7 @@ Usage:
   trau takeover <ID> [--repo <path>]  resume a parked ticket's recorded claude session in this terminal (repo locked while it runs)
   trau forensics <cmd>       read-only incident queries over the run history: runs, events, spend (see 'trau forensics --help')
   trau serve                 start the local web hub — HTTP API + embedded UI on 127.0.0.1:8728 (--bind, --port)
+  trau stop                  stop the running hub and leave it stopped (--force also stops live loops)
   trau hub restart           restart the web hub so it runs the current on-disk binary (starts one if none is up)
   trau hub restart --force   stop a hub whose API has wedged, then start a fresh one (refuses while any run is live)
   trau hub supervise         hand the hub to launchd with KeepAlive (macOS), so a crashed or killed one comes back on its own
@@ -203,6 +204,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	if len(args) > 0 && args[0] == "serve" {
 		return runServe(ctx, args[1:], stderr)
+	}
+
+	if len(args) > 0 && args[0] == "stop" {
+		return runStop(ctx, args[1:], stdout, stderr)
 	}
 
 	if len(args) > 0 && args[0] == "hub" {

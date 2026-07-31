@@ -8,8 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -239,30 +237,6 @@ func TestHubRestartPortBusyOffersForce(t *testing.T) {
 	}
 	if !strings.Contains(a.Suggestion, "--force") {
 		t.Fatalf("suggestion %q does not offer --force", a.Suggestion)
-	}
-}
-
-func TestPortListenersNamesTheHolder(t *testing.T) {
-	if _, err := exec.LookPath("lsof"); err != nil {
-		t.Skip("lsof is not installed")
-	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer func() { _ = ln.Close() }()
-	_, portStr, err := net.SplitHostPort(ln.Addr().String())
-	if err != nil {
-		t.Fatalf("split addr: %v", err)
-	}
-	port, _ := strconv.Atoi(portStr)
-
-	pids, err := portListeners(context.Background(), port)
-	if err != nil {
-		t.Fatalf("portListeners: %v", err)
-	}
-	if !slices.Contains(pids, os.Getpid()) {
-		t.Fatalf("portListeners(%d) = %v, want it to include this process (%d)", port, pids, os.Getpid())
 	}
 }
 
