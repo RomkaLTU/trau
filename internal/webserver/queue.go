@@ -624,12 +624,14 @@ func (s *Server) afterEnqueue(ctx context.Context, root string, item queue.Item)
 }
 
 // dequeue removes an item from the queue by identifier, returning the resulting
-// queue. It never touches the ticket: its checkpoint, run history and tracker row
-// stay exactly as they were, so a removed item is re-queueable. It reports 404
-// when the item is not queued. A running item is refused 409 as before unless the
-// request opts in with stop=1, which stops the item's child first and answers 202
-// — the row goes once the process is confirmed gone, and an armed drain moves on
-// to the next runnable item.
+// queue. It ejects the work with the row: the run's saved progress is wiped and
+// the ticket goes back to Ready on the tracker, so a later pickup starts a fresh
+// run rather than resuming this one. It reports 404 when the item is not queued.
+// A running item is refused 409 as before unless the request opts in with stop=1,
+// which stops the item's child first and answers 202 — the row goes once the
+// process is confirmed gone, and an armed drain moves on to the next runnable
+// item. Every other row is wiped behind the response, since a reset spawns a
+// child of its own.
 func (s *Server) dequeue(w http.ResponseWriter, r *http.Request) {
 	root, ok := s.queueRoot(r.PathValue("repo"))
 	if !ok {
@@ -659,6 +661,7 @@ func (s *Server) dequeue(w http.ResponseWriter, r *http.Request) {
 	}
 	if queued {
 		s.clearQueued(r.Context(), root, item)
+		go s.wipeRemovedRun(root, item)
 	}
 	s.writeQueue(w, http.StatusOK, root)
 }

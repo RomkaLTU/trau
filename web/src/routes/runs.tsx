@@ -1,12 +1,9 @@
-import { useState } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 
 import {
   ConfigExperiments,
   Eyebrow,
-  NoticeBanner,
   RepoHealthGate,
-  type RunNotice,
 } from '@/components/trau'
 import { RunLedger } from '@/components/trau/run-ledger'
 import { standardTitle, usePageTitle } from '@/lib/page-title'
@@ -19,7 +16,6 @@ export const Route = createFileRoute('/runs')({
 
 function Runs() {
   usePageTitle(standardTitle('Runs'))
-  const [notice, setNotice] = useState<RunNotice | null>(null)
 
   return (
     <div className="flex flex-col gap-8">
@@ -35,10 +31,8 @@ function Runs() {
         </p>
       </header>
 
-      {notice && <NoticeBanner notice={notice} onDismiss={() => setNotice(null)} />}
-
       <RepoHealthGate>
-        <RunLedger onNotice={setNotice} />
+        <RunLedger />
       </RepoHealthGate>
 
       <ConfigExperiments />

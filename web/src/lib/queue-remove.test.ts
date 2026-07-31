@@ -24,18 +24,18 @@ describe('removeFromQueueTitle', () => {
 })
 
 describe('removeFromQueueWarning', () => {
-  it('promises the ticket survives and never mentions a stop for a pending item', () => {
+  it('names the wipe and never mentions a stop for a pending item', () => {
     const warning = removeFromQueueWarning(item())
     expect(warning).toBe(
-      'Only the queue entry goes — the ticket, its runs and its tracker row are untouched, and it can be queued again.',
+      'The row goes, its saved progress is wiped and the ticket goes back to Ready — a later pickup starts a brand-new run.',
     )
     expect(warning).not.toContain('stops')
   })
 
-  it('leads with the stop for a running item, still promising the ticket', () => {
+  it('leads with the stop for a running item, still naming the wipe', () => {
     const warning = removeFromQueueWarning(item({ status: 'running' }))
     expect(warning).toMatch(/^The run stops first/)
-    expect(warning).toContain('the ticket, its runs and its tracker row are untouched')
+    expect(warning).toContain('the ticket goes back to Ready')
   })
 
   it('counts the sub-issues an epic takes with it, pluralized', () => {

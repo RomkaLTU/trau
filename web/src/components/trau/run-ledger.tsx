@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Link, useNavigate } from '@tanstack/react-router'
-import { Play } from 'lucide-react'
+import { useQueries, useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 
 import { Button } from '@/components/ui/button'
 import { AuthorChip } from '@/components/trau/author-chip'
@@ -10,12 +9,8 @@ import { PRStatusBadge } from '@/components/trau/pr-status-badge'
 import { StatusPill } from '@/components/trau/status-pill'
 import { TerminalCard } from '@/components/trau/terminal-card'
 import { useActiveRepo } from '@/components/trau/active-repo'
-import { type RunNotice } from '@/components/trau/notice-banner'
-import { ATTENTION_META } from '@/components/trau/overview'
-import { useHandback } from '@/components/trau/handback-dialog'
 import { summarize } from '@/components/event-feed'
 import { useAllEvents, useEventFeed, type RepoFeedEvent } from '@/lib/events'
-import type { Handback } from '@/lib/handback'
 import { instancesQueryOptions } from '@/lib/instances'
 import {
   attentionReason,
@@ -34,7 +29,6 @@ import {
   type LedgerTab,
 } from '@/lib/ledger'
 import { boardPill } from '@/lib/overview'
-import { publishQueue, runNext } from '@/lib/queue'
 import { formatCostUSD, formatDuration } from '@/lib/runlive'
 import { runsQueryOptions, teamRunsQueryOptions, type Run } from '@/lib/runs'
 import { checkpointSteps, liveSteps, type Step } from '@/lib/steps'
@@ -189,64 +183,9 @@ function RowItem({
   )
 }
 
-function ResumeAction({
-  repo,
-  ticket,
-  handback,
-  onNotice,
-}: {
-  repo: string
-  ticket: string
-  handback: Handback | null
-  onNotice: (notice: RunNotice) => void
-}) {
-  const queryClient = useQueryClient()
-  const navigate = useNavigate()
-  const { setRepo } = useActiveRepo()
-  const resume = useMutation({
-    mutationFn: () => runNext(repo, { id: ticket }),
-    onSuccess: (res) => {
-      publishQueue(queryClient, repo, res)
-      setRepo(repo)
-      void navigate({ to: '/loop' })
-    },
-    onError: (error) => {
-      onNotice({
-        tone: 'error',
-        text: error instanceof Error ? error.message : String(error),
-      })
-    },
-  })
-  const choice = useHandback(repo, () => resume.mutate())
-  return (
-    <>
-      <Button
-        variant="outline"
-        size="sm"
-        className="font-mono"
-        disabled={resume.isPending}
-        onClick={() => choice.request(ticket, handback)}
-      >
-        <Play className="size-3.5" aria-hidden="true" />
-        {resume.isPending ? 'Resuming…' : 'Resume'}
-      </Button>
-      {choice.dialog}
-    </>
-  )
-}
-
-function AttentionRow({
-  row,
-  showRepo,
-  onNotice,
-}: {
-  row: LedgerRow
-  showRepo: boolean
-  onNotice: (notice: RunNotice) => void
-}) {
+function AttentionRow({ row, showRepo }: { row: LedgerRow; showRepo: boolean }) {
   const { repo, run } = row
   const pill = boardPill(run)
-  const meta = run.failure_class ? ATTENTION_META[run.failure_class] : undefined
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-3">
       <Link
@@ -263,27 +202,11 @@ function AttentionRow({
       <StatusPill state={pill.state} label={pill.label} />
       <PRStatusBadge status={run.pr_status} />
       <span className="font-mono text-xs text-muted-foreground">{attentionReason(run)}</span>
-      {meta?.resume && (
-        <ResumeAction
-          repo={repo}
-          ticket={run.ticket}
-          handback={run.handback ?? null}
-          onNotice={onNotice}
-        />
-      )}
     </li>
   )
 }
 
-function NeedsYouStrip({
-  rows,
-  showRepo,
-  onNotice,
-}: {
-  rows: LedgerRow[]
-  showRepo: boolean
-  onNotice: (notice: RunNotice) => void
-}) {
+function NeedsYouStrip({ rows, showRepo }: { rows: LedgerRow[]; showRepo: boolean }) {
   if (rows.length === 0) return null
   return (
     <section
@@ -300,7 +223,7 @@ function NeedsYouStrip({
       </header>
       <ul className="flex flex-col divide-y divide-border/60">
         {rows.map((row) => (
-          <AttentionRow key={rowKey(row)} row={row} showRepo={showRepo} onNotice={onNotice} />
+          <AttentionRow key={rowKey(row)} row={row} showRepo={showRepo} />
         ))}
       </ul>
     </section>
@@ -317,11 +240,7 @@ function TotalsLine({ rows }: { rows: LedgerRow[] }) {
   )
 }
 
-export function RunLedger({
-  onNotice,
-}: {
-  onNotice: (notice: RunNotice) => void
-}) {
+export function RunLedger() {
   const { repo, isAll, repos } = useActiveRepo()
   const repoNames = useMemo(
     () =>
@@ -414,7 +333,7 @@ export function RunLedger({
     <div className="flex flex-col gap-6">
       <RepoErrorNotices repos={failedRepos} />
 
-      <NeedsYouStrip rows={needsYou} showRepo={isAll} onNotice={onNotice} />
+      <NeedsYouStrip rows={needsYou} showRepo={isAll} />
 
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex flex-wrap items-center gap-1 rounded-md border border-border bg-input p-0.5">
