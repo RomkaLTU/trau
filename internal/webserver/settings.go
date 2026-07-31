@@ -160,10 +160,29 @@ func (s *Server) putConfig(w http.ResponseWriter, r *http.Request, repo registry
 }
 
 // resolveConfig reads the repo's layered config into browsable views, redacting
-// secret values. Only the project (<repo>/.trau.ini) and user (~/.trau.ini)
-// layers plus the process environment and defaults are considered — the hub's
-// cwd-local file has no bearing on another repo's loop.
+// secret values and disabling the keys this repo cannot use.
 func (s *Server) resolveConfig(repo registry.Repo) ([]ConfigKeyView, error) {
+	views, err := s.configViews(repo)
+	if err != nil {
+		return nil, err
+	}
+	unavailable := s.unavailableKeys(repo.Root)
+	for i := range views {
+		if reason, blocked := unavailable[views[i].Key]; blocked {
+			views[i].Editable = false
+			views[i].DisabledReason = reason
+		}
+	}
+	return views, nil
+}
+
+// configViews resolves a repo's layered config into browsable views with secret
+// values redacted. Only the project (<repo>/.trau.ini) and user (~/.trau.ini)
+// layers plus the process environment and defaults are considered — the hub's
+// cwd-local file has no bearing on another repo's loop. It leaves out the
+// per-repo availability probe, which shells out to git, so read-only surfaces
+// can resolve many repos at once.
+func (s *Server) configViews(repo registry.Repo) ([]ConfigKeyView, error) {
 	projectPath, userPath := s.repoConfigPaths(repo)
 	cfg, err := config.LoadLayered(projectPath, userPath, "", "")
 	if err != nil {
@@ -173,15 +192,9 @@ func (s *Server) resolveConfig(repo registry.Repo) ([]ConfigKeyView, error) {
 	if err != nil {
 		return nil, err
 	}
-	unavailable := s.unavailableKeys(repo.Root)
 	views := make([]ConfigKeyView, 0, len(items))
 	for _, it := range items {
-		v := configKeyView(it)
-		if reason, blocked := unavailable[v.Key]; blocked {
-			v.Editable = false
-			v.DisabledReason = reason
-		}
-		views = append(views, v)
+		views = append(views, configKeyView(it))
 	}
 	return views, nil
 }
