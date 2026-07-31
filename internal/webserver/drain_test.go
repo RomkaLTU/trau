@@ -27,6 +27,9 @@ func drainServer(t *testing.T, name string) (*Server, *fakeSupervisor, string) {
 	root := filepath.Join(t.TempDir(), name)
 	s := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStores(t))
 	s.home = t.TempDir()
+	// Start arms the daily release check against GitHub; nothing here is about
+	// that, and netguard would kill the binary the moment it fired.
+	s.SetUpdateChecks(false)
 	fake := &fakeSupervisor{}
 	s.sup = fake
 	s.drain.repoLive = func(string) bool { return false }
@@ -943,6 +946,7 @@ func TestDrainPauseTakesEffectAfterCurrentChild(t *testing.T) {
 // that outcome and the queue continues.
 func TestDrainResumeSettlesLeftoverRunning(t *testing.T) {
 	home := t.TempDir()
+	t.Setenv("HOME", home)
 	root := filepath.Join(t.TempDir(), "acme")
 	first := New("1.2.3", "127.0.0.1", "", []string{root}, false, testStoresAt(t, home))
 	first.home = home

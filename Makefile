@@ -42,7 +42,7 @@ SERVE_PORT ?= 8728
 # test` overrides this, and only where the race runtime leaves it no choice.
 export CGO_ENABLED := 0
 
-.PHONY: all build reset hub-guard race-guard web vet windows test lint fmt dist clean
+.PHONY: all build reset hub-guard race-guard net-guard web vet windows test lint fmt dist clean
 
 all: build
 
@@ -87,8 +87,12 @@ race-guard:
 		exit 1; \
 	fi
 
+## net-guard: refuse `make test` when a test package skips the network guard
+net-guard:
+	go run ./internal/netguard/check
+
 ## test: run the suite under the race detector
-test: race-guard
+test: race-guard net-guard
 	CGO_ENABLED=$(CGO_FOR_TEST) go test -race ./...
 
 ## lint: golangci-lint (install separately)
