@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
-import { Check, FolderGit2, GitBranch, History, ListChecks } from 'lucide-react'
+import {
+  Check,
+  FolderGit2,
+  GitBranch,
+  History,
+  ListChecks,
+  Settings,
+} from 'lucide-react'
 
 import { ALL_SCOPE, useActiveRepo } from '@/components/trau/active-repo'
 import { NAV_GROUPS, type NavItem } from '@/components/trau/nav-items'
@@ -14,11 +21,13 @@ import {
   CommandList,
   CommandSeparator,
 } from '@/components/ui/command'
+import { configQueryOptions } from '@/lib/config'
 import { instancesQueryOptions } from '@/lib/instances'
 import { matchesQuery } from '@/lib/palette-filter'
 import { isPaletteShortcut, movesHighlight } from '@/lib/palette-keys'
 import { loadRecents, visibleRecents, type RecentEntry } from '@/lib/recents'
 import { issueSearchQueryOptions, type SearchResult } from '@/lib/search'
+import { displayValue, matchSettings } from '@/lib/settings'
 import { suggestFor, type SuggestionEntry } from '@/lib/suggestions'
 
 const GROUP_HEADING =
@@ -101,18 +110,27 @@ export function CommandPalette({
     [open, pathname, repo, repos],
   )
 
-  // Issue search needs one concrete repo to query; under "All projects" the
-  // group is simply absent.
-  const issueRepo = isAll ? '' : (repo ?? '')
-  const searching = issueRepo !== '' && trimmed !== ''
+  // Issue and settings search each need one concrete repo to query; under
+  // "All projects" both groups are simply absent.
+  const scopedRepo = isAll ? '' : (repo ?? '')
+  const searching = scopedRepo !== '' && trimmed !== ''
   // Holding the previous hits mounted while the next query flies keeps the
   // highlight on the row the user picked instead of churning it through cmdk.
   const issues = useQuery({
-    ...issueSearchQueryOptions(issueRepo, debounced),
+    ...issueSearchQueryOptions(scopedRepo, debounced),
     placeholderData: (previous) => previous,
   })
   const issueRows = searching ? (issues.data?.results ?? []) : []
   const issuesPending = searching && (debounced !== trimmed || issues.isFetching)
+
+  const config = useQuery({
+    ...configQueryOptions(scopedRepo),
+    enabled: open && searching,
+  })
+  const settingRows = useMemo(
+    () => (searching ? matchSettings(config.data?.keys ?? [], trimmed) : []),
+    [searching, config.data, trimmed],
+  )
 
   // cmdk only auto-selects when nothing is selected, so late-arriving issue rows
   // would leave the highlight on a static row: move it to the top hit ourselves,
@@ -167,8 +185,13 @@ export function CommandPalette({
     onOpenChange(false)
     void navigate({
       to: '/runs/$repo/$ticket',
-      params: { repo: issueRepo, ticket: result.id },
+      params: { repo: scopedRepo, ticket: result.id },
     })
+  }
+
+  function pickSetting(key: string) {
+    onOpenChange(false)
+    void navigate({ to: '/settings', search: { q: key } })
   }
 
   function pickRecent(entry: RecentEntry) {
@@ -242,7 +265,9 @@ export function CommandPalette({
                 </CommandItem>
               ))}
             </CommandGroup>
-            {(showProjects || navRows.length > 0) && <CommandSeparator />}
+            {(showProjects || navRows.length > 0 || settingRows.length > 0) && (
+              <CommandSeparator />
+            )}
           </>
         )}
         {trimmed === '' && suggestions.length > 0 && (
@@ -341,19 +366,44 @@ export function CommandPalette({
                 </CommandItem>
               ))}
             </CommandGroup>
-            {navRows.length > 0 && <CommandSeparator />}
+            {(navRows.length > 0 || settingRows.length > 0) && (
+              <CommandSeparator />
+            )}
           </>
         )}
         {navRows.length > 0 && (
-          <CommandGroup heading="Navigation" className={GROUP_HEADING}>
-            {navRows.map((item) => (
+          <>
+            <CommandGroup heading="Navigation" className={GROUP_HEADING}>
+              {navRows.map((item) => (
+                <CommandItem
+                  key={item.to}
+                  value={item.label}
+                  onSelect={() => goTo(item)}
+                >
+                  <item.icon />
+                  <span className="flex-1 truncate">{item.label}</span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+            {settingRows.length > 0 && <CommandSeparator />}
+          </>
+        )}
+        {settingRows.length > 0 && (
+          <CommandGroup heading="Settings" className={GROUP_HEADING}>
+            {settingRows.map(({ item, section }) => (
               <CommandItem
-                key={item.to}
-                value={item.label}
-                onSelect={() => goTo(item)}
+                key={item.key}
+                value={`setting:${item.key}`}
+                onSelect={() => pickSetting(item.key)}
               >
-                <item.icon />
-                <span className="flex-1 truncate">{item.label}</span>
+                <Settings />
+                <span className="min-w-0 flex-1 truncate">{item.key}</span>
+                <span className="shrink-0 text-[0.65rem] text-muted-foreground">
+                  {section}
+                </span>
+                <span className="max-w-[10rem] shrink-0 truncate text-[0.65rem]">
+                  {displayValue(item)}
+                </span>
               </CommandItem>
             ))}
           </CommandGroup>
