@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
@@ -140,6 +140,19 @@ export function OutcomeReview({
   );
   const [assignee, setAssignee] = useState<Assignee | null>(null);
 
+  // A rewrite or split writes to the anchor it was opened on, so switching it to
+  // the internal store is a conversion of that ticket rather than a filing choice —
+  // offered only while the anchor still belongs to the tracker. A create converts
+  // the parent an earlier pass filed there, which is the only anchor it owns; the
+  // ticket a create was merely opened on is left alone and files beside.
+  const anchorSource = issue.data?.source ?? "";
+  const rewrites = isRewrite || isSplit;
+  const converts =
+    rewrites || (isCreate && session.issue_destination === "tracker");
+  const detachable =
+    converts && anchorSource !== "" && anchorSource !== "internal";
+  const anchorInternal = rewrites && anchorSource === "internal";
+
   // The probe shares its cache entry with the picker's own, so gating the control on
   // it costs nothing and hides it entirely on a tracker with nobody to assign.
   const creates = isCreate || isSplit;
@@ -186,7 +199,7 @@ export function OutcomeReview({
           queryKey: ["issue", repo, issueId],
         });
         void queryClient.invalidateQueries({ queryKey: ["backlog", repo] });
-        reportApplyFailures(res.steps);
+        reportApplyCaveats(res.steps, res.warnings ?? []);
         onApplied?.(
           grillAppliedOutcome(res, outcome.disposition, title.trim()),
         );
@@ -202,18 +215,24 @@ export function OutcomeReview({
     },
   });
 
+  // A settled session is the only source the card can trust: the mutation that
+  // applied it is gone on a remount, and the host retires the review the moment it
+  // lands, so the destination and the caveats are read back off the session the hub
+  // stamped rather than off the picker state or the response.
   if (session.state === "applied") {
     return (
       <AppliedCard
         issueId={session.issue_id ?? ""}
         outcome={outcome}
         steps={apply.data?.steps ?? []}
-        internal={destination === "internal"}
+        warnings={session.apply_warnings ?? []}
+        internal={session.issue_destination === "internal"}
       />
     );
   }
 
   const failedSteps = apply.data && !apply.data.applied ? apply.data.steps : [];
+  const warnings = apply.data?.warnings ?? [];
   const busy = apply.isPending || discard.isPending;
   const splitReady = subsAreComplete(subs);
   const createReady =
@@ -283,14 +302,17 @@ export function OutcomeReview({
 
       <SummaryPreview summary={outcome.summary} />
 
-      {isCreate && tracker !== "" && (
+      {(isCreate || detachable) && tracker !== "" && (
         <DestinationPicker
           tracker={tracker}
+          anchor={detachable ? issueId : ""}
           destination={destination}
           disabled={busy}
           onChange={setDestination}
         />
       )}
+
+      {anchorInternal && <InternalAnchorNote anchor={issueId} />}
 
       {creates && destination === "tracker" && assignable.isSuccess && (
         <div className="flex flex-col items-start gap-1">
@@ -307,6 +329,8 @@ export function OutcomeReview({
       )}
 
       {failedSteps.length > 0 && <StepList steps={failedSteps} />}
+
+      {warnings.length > 0 && <WarningList warnings={warnings} />}
 
       {apply.error && (
         <p className="text-xs text-destructive">
@@ -328,7 +352,7 @@ export function OutcomeReview({
           {apply.isPending ? <Loader2 className="animate-spin" /> : <Check />}
           {applyLabel(outcome.disposition, apply.data)}
         </Button>
-        {isCreate &&
+        {(isCreate || detachable) &&
           destination === "tracker" &&
           tracker !== "internal" &&
           failedSteps.length > 0 && (
@@ -342,7 +366,9 @@ export function OutcomeReview({
               }}
             >
               <Inbox />
-              File internally instead
+              {isCreate
+                ? "File internally instead"
+                : "Convert and apply internally"}
             </Button>
           )}
         {onAskFollowUp && (
@@ -895,46 +921,88 @@ const TRACKER_NAMES: Record<string, string> = {
   github: "GitHub",
 };
 
-// DestinationPicker is a create outcome's filing choice: the repo's external
-// tracker — named, and the default — or the hub's internal backlog. A repo on the
+// DestinationPicker is the outcome's destination choice: the repo's external
+// tracker — named, and the default — or the hub's internal backlog. anchor names
+// the ticket the outcome writes to — a rewrite or split's, or the parent a create
+// already filed on the tracker — which the internal option converts rather than
+// copies, and is empty for a create with nothing to convert. A repo on the
 // internal provider has only one destination, so it is stated rather than offered
 // as a fake choice.
 function DestinationPicker({
   tracker,
+  anchor,
   destination,
   disabled,
   onChange,
 }: {
   tracker: string;
+  anchor: string;
   destination: GrillDestination;
   disabled: boolean;
   onChange: (destination: GrillDestination) => void;
 }) {
+  const name = TRACKER_NAMES[tracker] ?? tracker;
+  if (tracker === "internal") {
+    return anchor === "" ? (
+      <DestinationNote>Files to this repo's internal backlog.</DestinationNote>
+    ) : (
+      <InternalAnchorNote anchor={anchor} />
+    );
+  }
   return (
     <div className="flex flex-col gap-1">
       <span className="text-xs font-medium text-muted-foreground">
         Destination
       </span>
-      {tracker === "internal" ? (
-        <p className="text-xs text-muted-foreground">
-          Files to this repo's internal backlog.
+      <div className="flex flex-wrap gap-1">
+        <DestinationOption
+          label={
+            anchor === "" ? `File to ${name}` : `Apply to ${anchor} on ${name}`
+          }
+          on={destination === "tracker"}
+          disabled={disabled}
+          onPick={() => onChange("tracker")}
+        />
+        <DestinationOption
+          label={
+            anchor === ""
+              ? "File internally"
+              : `Convert ${anchor} (and its sub-issues) to internal and apply there`
+          }
+          on={destination === "internal"}
+          disabled={disabled}
+          onPick={() => onChange("internal")}
+        />
+      </div>
+      {anchor !== "" && destination === "internal" && (
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {anchor} and everything under it move into trau's backlog under new
+          ids. The {name} tickets keep a note saying so and stop driving trau.
         </p>
-      ) : (
-        <div className="flex flex-wrap gap-1">
-          <DestinationOption
-            label={`File to ${TRACKER_NAMES[tracker] ?? tracker}`}
-            on={destination === "tracker"}
-            disabled={disabled}
-            onPick={() => onChange("tracker")}
-          />
-          <DestinationOption
-            label="File internally"
-            on={destination === "internal"}
-            disabled={disabled}
-            onPick={() => onChange("internal")}
-          />
-        </div>
       )}
+    </div>
+  );
+}
+
+// InternalAnchorNote is the single destination an anchored outcome has once the
+// ticket it writes to already belongs to the internal store — either because the
+// repo has no external tracker, or because an earlier apply converted it.
+function InternalAnchorNote({ anchor }: { anchor: string }) {
+  return (
+    <DestinationNote>
+      Applies to <span className="font-mono">{anchor}</span> in this repo's
+      internal backlog.
+    </DestinationNote>
+  );
+}
+
+function DestinationNote({ children }: { children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-xs font-medium text-muted-foreground">
+        Destination
+      </span>
+      <p className="text-xs text-muted-foreground">{children}</p>
     </div>
   );
 }
@@ -994,26 +1062,33 @@ function stepLabel(step: GrillApplyStep): string {
   return STEP_LABELS[step.step] ?? step.step;
 }
 
-// reportApplyFailures raises the steps that failed inside an apply that still landed
-// — a tracker refusing an assignment on an issue it did create. The host retires the
-// review the moment the session settles, so the applied card's step list is gone
-// before it can be read; a toast outlives the queue moving on.
-function reportApplyFailures(steps: GrillApplyStep[]) {
+// reportApplyCaveats raises what an apply that still landed did not do — a tracker
+// refusing an assignment on an issue it did create, or the superseded note a detach
+// could not post. The host retires the review the moment the session settles, so the
+// applied card's lists are gone before they can be read; a toast outlives the queue
+// moving on.
+function reportApplyCaveats(steps: GrillApplyStep[], warnings: string[]) {
   const failed = steps.filter((step) => step.status === "failed");
-  if (failed.length === 0) return;
+  if (failed.length === 0 && warnings.length === 0) return;
   toast.custom(
     (id) => (
-      <ApplyFailuresCard steps={failed} onDismiss={() => toast.dismiss(id)} />
+      <ApplyCaveatsCard
+        steps={failed}
+        warnings={warnings}
+        onDismiss={() => toast.dismiss(id)}
+      />
     ),
     { duration: 10_000 },
   );
 }
 
-function ApplyFailuresCard({
+function ApplyCaveatsCard({
   steps,
+  warnings,
   onDismiss,
 }: {
   steps: GrillApplyStep[];
+  warnings: string[];
   onDismiss: () => void;
 }) {
   return (
@@ -1021,10 +1096,12 @@ function ApplyFailuresCard({
       <TriangleAlert className="mt-0.5 size-4 shrink-0 text-fail" aria-hidden />
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <p className="text-sm text-popover-foreground">
-          Applied, but {steps.length === 1 ? "a step" : `${steps.length} steps`}{" "}
-          did not land.
+          {steps.length === 0
+            ? "Applied, with caveats."
+            : `Applied, but ${steps.length === 1 ? "a step" : `${steps.length} steps`} did not land.`}
         </p>
-        <StepList steps={steps} />
+        {steps.length > 0 && <StepList steps={steps} />}
+        {warnings.length > 0 && <WarningList warnings={warnings} />}
       </div>
       <button
         type="button"
@@ -1071,19 +1148,40 @@ function StepList({ steps }: { steps: GrillApplyStep[] }) {
   );
 }
 
+// WarningList raises what the apply could not do on the side but never gated on —
+// a detached ticket the tracker refused the superseded note on. The outcome landed,
+// so these read as caveats rather than failures.
+function WarningList({ warnings }: { warnings: string[] }) {
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border bg-card px-3 py-2">
+      {warnings.map((warning) => (
+        <div key={warning} className="flex items-start gap-2 text-xs">
+          <TriangleAlert
+            className="mt-0.5 size-3.5 shrink-0 text-warn"
+            aria-hidden="true"
+          />
+          <span className="text-muted-foreground">{warning}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // AppliedCard is what a reopened Done today row shows, so a create names and links
 // the issue it filed — the reference stays useful after the toast is gone. internal
-// marks a create the review just filed to the internal backlog, so the card does
+// marks an outcome the review just wrote to the internal backlog, so the card does
 // not claim a tracker write that never happened.
 function AppliedCard({
   issueId,
   outcome,
   steps,
+  warnings,
   internal,
 }: {
   issueId: string;
   outcome: OutcomePayload;
   steps: GrillApplyStep[];
+  warnings: string[];
   internal: boolean;
 }) {
   const created = outcome.disposition === "create" && issueId !== "";
@@ -1114,6 +1212,12 @@ function AppliedCard({
           ) : (
             "Report saved — it stays here on the Research page. Nothing was written to the tracker."
           )
+        ) : internal ? (
+          <>
+            The outcome was written to{" "}
+            <span className="font-mono text-foreground">{issueId}</span> in the
+            internal backlog. This issue is cleared.
+          </>
         ) : (
           "The outcome was written to the tracker. This issue is cleared."
         )}
@@ -1128,6 +1232,7 @@ function AppliedCard({
         </Link>
       )}
       {steps.length > 0 && <StepList steps={steps} />}
+      {warnings.length > 0 && <WarningList warnings={warnings} />}
     </div>
   );
 }
