@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, createElement } from 'react'
+import { act, createElement, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 
@@ -47,13 +47,36 @@ afterEach(() => {
   container.remove()
 })
 
+function render(query: string, items: ReactNode) {
+  act(() => {
+    root.render(
+      createElement(
+        Command,
+        { shouldFilter: false },
+        createElement(CommandInput, { detachSearch: true, value: query }),
+        createElement(
+          CommandList,
+          null,
+          createElement(CommandGroup, { heading: 'Issues' }, items),
+        ),
+      ),
+    )
+  })
+}
+
+function itemValues(): string[] {
+  return Array.from(container.querySelectorAll('[cmdk-item=""]')).map(
+    (el) => el.getAttribute('data-value') ?? '',
+  )
+}
+
 function selectedValue(): string | null {
   const el = container.querySelector('[cmdk-item=""][aria-selected="true"]')
   return el?.getAttribute('data-value') ?? null
 }
 
 function arrowDown() {
-  const input = container.querySelector('[cmdk-input=""]') as HTMLInputElement
+  const input = container.querySelector('input') as HTMLInputElement
   act(() => {
     input.dispatchEvent(
       new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }),
@@ -62,34 +85,41 @@ function arrowDown() {
 }
 
 it('steps keyboard selection through repos that share a name', () => {
-  act(() => {
-    root.render(
-      createElement(
-        Command,
-        null,
-        createElement(CommandInput, null),
-        createElement(
-          CommandList,
-          null,
-          createElement(
-            CommandGroup,
-            { heading: 'Projects' },
-            repos.map((r) =>
-              createElement(
-                CommandItem,
-                { key: r.root, value: r.root, keywords: [r.name] },
-                r.name,
-              ),
-            ),
-          ),
-        ),
-      ),
-    )
-  })
+  render(
+    '',
+    repos.map((r) =>
+      createElement(CommandItem, { key: r.root, value: r.root }, r.name),
+    ),
+  )
 
   expect(selectedValue()).toBe('/Users/rd/Projects/loop')
   arrowDown()
   expect(selectedValue()).toBe('/private/tmp/a')
   arrowDown()
   expect(selectedValue()).toBe('/private/tmp/b')
+})
+
+// The hub ranks issue hits; cmdk would re-sort them by its own score and drop
+// anything it scores at zero, so the palette turns that filtering off.
+it('renders server-ranked issue rows in the order they arrived', () => {
+  const ranked = ['issue:COD-9', 'issue:COD-1340', 'issue:COD-31']
+  render(
+    'palette modal',
+    ranked.map((value) => createElement(CommandItem, { key: value, value }, value)),
+  )
+
+  expect(itemValues()).toEqual(ranked)
+})
+
+it('leaves the highlight alone while the query is edited', () => {
+  const items = ['issue:COD-9', 'issue:COD-1340', 'issue:COD-31'].map((value) =>
+    createElement(CommandItem, { key: value, value }, value),
+  )
+
+  render('palette', items)
+  arrowDown()
+  expect(selectedValue()).toBe('issue:COD-1340')
+
+  render('palett', items)
+  expect(selectedValue()).toBe('issue:COD-1340')
 })

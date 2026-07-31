@@ -13,7 +13,6 @@ export {
 } from './created-banner'
 export { RepoSwitcher } from './repo-switcher'
 export { ThemeToggle, useTheme } from './theme-toggle'
-export { GlobalSearch } from './global-search'
 export { ProjectScopeGate } from './project-scope-gate'
 export { RepoHealthGate } from './repo-health-gate'
 export { BacklogSyncControl } from './backlog-sync-control'

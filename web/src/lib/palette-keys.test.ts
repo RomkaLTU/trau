@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { isMacPlatform, isPaletteShortcut, shortcutLabel } from './palette-keys'
+import {
+  isMacPlatform,
+  isPaletteShortcut,
+  movesHighlight,
+  shortcutLabel,
+} from './palette-keys'
 
 describe('isPaletteShortcut', () => {
   it('fires on the modified k', () => {
@@ -21,6 +26,19 @@ describe('isPaletteShortcut', () => {
     expect(
       isPaletteShortcut({ key: 'k', metaKey: true, isComposing: true }),
     ).toBe(false)
+  })
+})
+
+describe('movesHighlight', () => {
+  it('matches the arrow and vim keys that walk the list', () => {
+    expect(movesHighlight({ key: 'ArrowDown' })).toBe(true)
+    expect(movesHighlight({ key: 'ArrowUp' })).toBe(true)
+    expect(movesHighlight({ key: 'n', ctrlKey: true })).toBe(true)
+  })
+
+  it('ignores plain typing', () => {
+    expect(movesHighlight({ key: 'n' })).toBe(false)
+    expect(movesHighlight({ key: 'Enter' })).toBe(false)
   })
 })
 
