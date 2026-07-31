@@ -234,6 +234,7 @@ func TestRegistrationExposureGate(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			home := t.TempDir()
+			t.Setenv("HOME", home)
 			base := t.TempDir()
 			toRegister := gitRepo(t, base, "toregister", "dir")
 			toUnregister := gitRepo(t, base, "tounregister", "dir")
