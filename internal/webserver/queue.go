@@ -62,12 +62,15 @@ type QueueItemView struct {
 // QueueResponse is the /repos/{repo}/queue resource: the repo's queue in
 // registration order, whether the hub is currently draining it and since when,
 // and whether a stop is ending the child that was running. DrainingSince is
-// absent unless the queue is draining.
+// absent unless the queue is draining. ReleasingEpic names the Epic whose release
+// holds the queue, so a drain that starts nothing reads as waiting on that release
+// rather than as idle.
 type QueueResponse struct {
 	Repo          string          `json:"repo"`
 	Draining      bool            `json:"draining"`
 	DrainingSince string          `json:"draining_since,omitempty"`
 	Stopping      bool            `json:"stopping"`
+	ReleasingEpic string          `json:"releasing_epic,omitempty"`
 	Items         []QueueItemView `json:"items"`
 }
 
@@ -270,9 +273,10 @@ func (s *Server) handleQueueMove(w http.ResponseWriter, r *http.Request) {
 // child exactly as a drain would, then starts the loop that waits for it —
 // without arming draining, so the tick that settles the item finds the drain off
 // and stops instead of picking up the next row. It refuses with 409 whenever the
-// repo already has work in flight: an armed drain, a running queue item, or a
-// live loop — and, so the one-shot cannot bypass the drain's dedup, whenever an
-// unsettled queued epic already covers the item.
+// repo already has work in flight: an armed drain, a running queue item, a live
+// loop, or an Epic whose release still holds the repo — only that Epic's own
+// finalize is let through — and, so the one-shot cannot bypass the drain's dedup,
+// whenever an unsettled queued epic already covers the item.
 func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -313,6 +317,12 @@ func (s *Server) handleQueueRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if !queue.Runnable(item.Status) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": fmt.Sprintf("%s has already settled %s and cannot be run", item.ID, item.Status)})
+		return
+	}
+	if epic, held := s.heldByRelease(root, item.ID); held {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("%s is releasing — nothing else runs in this repo until its release lands or is handed off", epic),
+		})
 		return
 	}
 	if epic, covered := coveringEpic(items, item); covered {
@@ -429,6 +439,7 @@ func (s *Server) queueView(root string) (QueueResponse, error) {
 		Draining:      meta.Draining,
 		DrainingSince: drainingSince,
 		Stopping:      s.isStopping(root),
+		ReleasingEpic: s.releasingEpic(root),
 		Items:         queueItemViews(items, pins, blockers, s.removingItems(root)),
 	}, nil
 }
@@ -695,11 +706,12 @@ func itemByID(items []queue.Item, id string) (queue.Item, bool) {
 	return queue.Item{}, false
 }
 
-// queueSettled reports whether an item is queue history — done, failed, or
-// skipped. A settled row covers nothing, so the hierarchy guards ignore it.
+// queueSettled reports whether an item is queue history — done, failed, skipped,
+// or an epic whose PR is a human's to land. A settled row covers nothing, so the
+// hierarchy guards ignore it.
 func queueSettled(it queue.Item) bool {
 	switch it.Status {
-	case queue.StatusDone, queue.StatusFailed, queue.StatusSkipped:
+	case queue.StatusDone, queue.StatusFailed, queue.StatusSkipped, queue.StatusAwaitingMerge:
 		return true
 	default:
 		return false

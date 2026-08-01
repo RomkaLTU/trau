@@ -8,6 +8,10 @@ export type FailureClass = 'paused' | 'stopped' | 'faulted' | 'gave_up'
 
 export type PRStatus = 'awaiting-merge' | 'merged' | 'closed'
 
+// ReleaseMarker rides beside an Epic's releasing phase and says who owns the
+// release: trau while it is still working it, a person once it handed the PR over.
+export type ReleaseMarker = 'active' | 'awaiting-human'
+
 export interface ActivitySpan {
   activity: string
   duration_ms: number
@@ -38,6 +42,7 @@ export interface Run {
   pr?: string
   pr_url?: string
   pr_status?: PRStatus
+  release?: ReleaseMarker
   failure_class?: FailureClass
   failure_reason?: string
   cost_usd?: number

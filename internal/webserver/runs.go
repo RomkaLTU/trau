@@ -20,8 +20,8 @@ type ReposResponse struct {
 
 // RunView is one ticket's run as read from its durable checkpoint. It carries the
 // checkpoint phase and rank the board orders on, the branch and PR reference for
-// the row, and the failure class/reason that flags a paused, faulted, or
-// quarantined run.
+// the row, the release marker that says who owns a releasing epic, and the failure
+// class/reason that flags a paused, faulted, or quarantined run.
 type RunView struct {
 	Ticket        string   `json:"ticket"`
 	Title         string   `json:"title,omitempty"`
@@ -32,6 +32,7 @@ type RunView struct {
 	PR            string   `json:"pr,omitempty"`
 	PRURL         string   `json:"pr_url,omitempty"`
 	PRStatus      string   `json:"pr_status,omitempty"`
+	Release       string   `json:"release,omitempty"`
 	FailureClass  string   `json:"failure_class,omitempty"`
 	FailureReason string   `json:"failure_reason,omitempty"`
 	CostUSD       *float64 `json:"cost_usd,omitempty"`
@@ -298,6 +299,7 @@ func runViewFromCheckpoint(tc hubstore.TicketCheckpoint) RunView {
 		PR:            tc.PR,
 		PRURL:         tc.PRURL,
 		PRStatus:      checkpointField(tc.Data, "PR_STATUS"),
+		Release:       checkpointField(tc.Data, "RELEASE"),
 		FailureClass:  class,
 		FailureReason: reason,
 		CostUSD:       tc.CostUSD,

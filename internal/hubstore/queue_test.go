@@ -558,6 +558,44 @@ func TestFinishDoneSettlesSubIssues(t *testing.T) {
 	}
 }
 
+func TestSetSubIssueStatesTouchesOnlyNamedRows(t *testing.T) {
+	q := testQueue(t)
+	if _, err := q.Add(queue.Item{
+		Kind: queue.KindEpic,
+		ID:   "COD-1",
+		SubIssues: []queue.SubIssue{
+			{ID: "COD-2", Title: "child", State: "todo"},
+			{ID: "COD-3", Title: "other", State: "todo"},
+		},
+	}); err != nil {
+		t.Fatalf("Add epic: %v", err)
+	}
+	if err := q.MarkRunning("COD-1", 7); err != nil {
+		t.Fatalf("MarkRunning: %v", err)
+	}
+
+	if err := q.SetSubIssueStates("COD-1", map[string]string{"COD-2": "done"}); err != nil {
+		t.Fatalf("SetSubIssueStates: %v", err)
+	}
+	items, err := q.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := items[0].SubIssues; got[0].State != "done" || got[1].State != "todo" {
+		t.Fatalf("sub states = %+v, want COD-2 done and COD-3 left alone", got)
+	}
+	if items[0].Status != queue.StatusRunning {
+		t.Errorf("item status = %q, want it still running", items[0].Status)
+	}
+	if items[0].SubIssues[0].Title != "child" {
+		t.Errorf("sub title = %q, want it preserved across the state write", items[0].SubIssues[0].Title)
+	}
+
+	if err := q.SetSubIssueStates("COD-9", map[string]string{"COD-2": "done"}); err != queue.ErrNotQueued {
+		t.Errorf("SetSubIssueStates on an unqueued item = %v, want ErrNotQueued", err)
+	}
+}
+
 func TestFinishOtherOutcomeLeavesSubIssues(t *testing.T) {
 	q := testQueue(t)
 	if _, err := q.Add(queue.Item{

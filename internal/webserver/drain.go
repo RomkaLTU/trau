@@ -113,11 +113,14 @@ func (d *drainer) run(ctx context.Context, root string) {
 // item no open blocker holds back, settles a finished one per the failure
 // taxonomy — pausing the drain on a fault or provider pause, but leaving a row
 // whose removal is in flight to the removal, which drops it rather than parking
-// it — waits, never spawning a second child while one is in flight or while a
-// pending self-reload is waiting for its idle gap, or finishes the drain once the
-// queue has nothing left to run so a completed — or armed but empty — queue reads
-// stopped instead of idling armed. It is the whole drain policy, pure enough to
-// table-test.
+// it — waits, never spawning a second child while one is in flight, while a
+// pending self-reload is waiting for its idle gap, or while an Epic's release
+// holds the repo — only that Epic's own finalize starts then — or finishes the
+// drain once the queue has nothing left to run so a completed — or armed but
+// empty — queue reads stopped instead of idling armed. A tick that finds a
+// running epic first advances its sub-issue rows onto what their checkpoints
+// already say, so the queue's count moves as children settle. It is the whole
+// drain policy, pure enough to table-test.
 func (d *drainer) tick(root string) (drainAction, error) {
 	store := d.srv.stores.Queue(root)
 	items, meta, err := store.Snapshot()
@@ -125,6 +128,7 @@ func (d *drainer) tick(root string) (drainAction, error) {
 		return drainWait, err
 	}
 	if running, ok := firstWithStatus(items, queue.StatusRunning); ok {
+		d.advanceSubIssues(root, running)
 		if d.alive(running.PID) || d.srv.isRemoving(root, running.ID) {
 			return drainWait, nil
 		}
@@ -168,6 +172,13 @@ func (d *drainer) tick(root string) (drainAction, error) {
 	}
 	if d.repoLive(root) {
 		return drainWait, nil
+	}
+	if epic, held := d.srv.heldByRelease(root, next.ID); held {
+		finalize, queued := runnableItem(items, epic)
+		if !queued {
+			return drainWait, nil
+		}
+		next = finalize
 	}
 	// Global dedup: a standalone ticket an earlier queued epic already covers
 	// is skipped, not run twice. First occurrence wins.
@@ -234,6 +245,48 @@ func (d *drainer) reconcileOutcome(root string, it queue.Item) (class, reason st
 // epic id (checkpointEpicMerged).
 func (d *drainer) cleanFinish(root string, it queue.Item) bool {
 	return d.srv.stores.Checkpoints().Phase(root, it.ID) == state.Merged
+}
+
+// advanceSubIssues moves a running epic's sub-issue rows onto the states their
+// own checkpoints have already reached, so the queue's count follows the drain
+// instead of jumping when the epic settles. A row already recorded done stays
+// done — an enqueue-time snapshot of a child the tracker files closed is fresher
+// than whatever checkpoint an older run left behind — and the epic's settle
+// remains the authoritative closer.
+func (d *drainer) advanceSubIssues(root string, it queue.Item) {
+	if it.Kind != queue.KindEpic {
+		return
+	}
+	states := map[string]string{}
+	for _, sub := range it.SubIssues {
+		if sub.State == subIssueDone {
+			continue
+		}
+		next := subIssueState(d.srv.stores.Checkpoints().Phase(root, sub.ID))
+		if next != "" && next != sub.State {
+			states[sub.ID] = next
+		}
+	}
+	if len(states) == 0 {
+		return
+	}
+	if err := d.srv.stores.Queue(root).SetSubIssueStates(it.ID, states); err != nil {
+		logger.Verbosef("advance sub-issues of %s: %v", it.ID, err)
+	}
+}
+
+// subIssueState maps a child's checkpoint phase onto the sub-issue state the
+// queue records, or "" while the child has reached no terminal phase. A merged
+// child is done; a quarantined one is settled but not shipped, and says so
+// rather than passing for either done or untouched work.
+func subIssueState(phase string) string {
+	switch phase {
+	case state.Merged:
+		return subIssueDone
+	case state.Quarantined:
+		return subIssueQuarantined
+	}
+	return ""
 }
 
 // The three independent proofs a swept item's work already shipped, in the order
@@ -322,12 +375,12 @@ func ghPRState(root, pr string) string {
 
 // reconcileQueue settles the unsettled items an outage left behind. A hub that
 // comes back to an item whose work verifiably finished — an out-of-band resume, a
-// child that died after merging, a ticket a human closed while the hub was down —
-// should not make a Start re-discover the fact. Every parked or failed item is
-// compared against ground truth rather than against the class it was parked with,
-// and settles through the same path a finished child does, so its sub-issues and
-// the web queue follow. Anything short of proof stays exactly as it is, and the
-// sweep spawns nothing.
+// child that died after merging, a ticket a human closed while the hub was down,
+// an epic PR the operator finally merged — should not make a Start re-discover the
+// fact. Every unresolved item is compared against ground truth rather than against
+// the class it settled with, and settles through the same path a finished child
+// does, so its sub-issues and the web queue follow. Anything short of proof stays
+// exactly as it is, and the sweep spawns nothing.
 func (d *drainer) reconcileQueue(root string) {
 	store := d.srv.stores.Queue(root)
 	items, _, err := store.Snapshot()
@@ -336,7 +389,7 @@ func (d *drainer) reconcileQueue(root string) {
 		return
 	}
 	for _, it := range items {
-		if it.Status != queue.StatusPaused && it.Status != queue.StatusFailed {
+		if !awaitsResolution(it.Status) {
 			continue
 		}
 		evidence := d.settleEvidence(root, it)
@@ -354,6 +407,17 @@ func (d *drainer) reconcileQueue(root string) {
 		d.srv.clearQueued(d.srv.drainCtx, root, it)
 		d.srv.emitQueueReconciled(root, it, evidence)
 	}
+}
+
+// awaitsResolution reports whether an item's status leaves work something outside
+// the drain may since have finished: a park, a fault, or an epic PR handed to a
+// human. Those are the rows the sweep re-checks against ground truth.
+func awaitsResolution(status string) bool {
+	switch status {
+	case queue.StatusPaused, queue.StatusFailed, queue.StatusAwaitingMerge:
+		return true
+	}
+	return false
 }
 
 // emitQueueReconciled records a settle the sweep made on stored evidence alone,
@@ -443,10 +507,15 @@ func repoRunsDir(root string) string {
 // the same way for a resume. A fault halts by default, or — when the queue was
 // started on-fault=skip — settles the item failed and lets the drain move on. A
 // give-up is a settled dead end the queue moves past; a clean finish settles done.
+// An epic release handed to a human settles awaiting-merge: visibly not done, but
+// settled, so the rest of the queue drains on and nothing re-attempts a PR only a
+// person can land.
 func classifyDrainOutcome(class, onFault string) (status string, pause bool) {
 	switch class {
 	case classUnknown:
 		return queue.StatusPaused, true
+	case state.FailAwaitingMerge:
+		return queue.StatusAwaitingMerge, false
 	case state.FailPaused, state.FailStopped:
 		return queue.StatusPaused, true
 	case state.FailFaulted:
@@ -507,6 +576,18 @@ func (d *drainer) checkpointOutcome(root string, it queue.Item) (class, reason s
 // block is temporary: the queue retries once the lock's process dies.
 func (d *drainer) repoHasLiveInstance(root string) bool {
 	return d.srv.hasBusyInstance(root)
+}
+
+// runnableItem returns id's queue row when the drain could launch it. A
+// release-gated tick reaches past the head of run order with it: every row ahead
+// of the releasing Epic is waiting on the release that Epic has to finish.
+func runnableItem(items []queue.Item, id string) (queue.Item, bool) {
+	for _, it := range items {
+		if it.ID == id && queue.Runnable(it.Status) {
+			return it, true
+		}
+	}
+	return queue.Item{}, false
 }
 
 func firstWithStatus(items []queue.Item, status string) (queue.Item, bool) {

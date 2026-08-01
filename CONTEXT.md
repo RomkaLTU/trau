@@ -86,7 +86,7 @@ The rung a Work item type sits on, normalized away from the names any one proces
 _Avoid_: hierarchy level, rank (that's the portfolio backlog's own ordering field), tier, depth
 
 **Settled**:
-Done or canceled — nothing left for trau to run. The numerator of an Epic's board progress (settled/total) and what queue drain marks an epic's sub-issues on completion; remaining work is always total − settled. A canceled Sub-issue settles its share: an Epic with one canceled child still reaches n/n.
+Done or canceled — nothing left for trau to run. The numerator of an Epic's board progress (settled/total) and what queue drain marks an epic's sub-issues: each one as its own Checkpoint reaches a terminal phase mid-drain — merged reads done, quarantined reads quarantined — and then all of them when a clean epic finish settles the parent; remaining work is always total − settled. A canceled Sub-issue settles its share: an Epic with one canceled child still reaches n/n.
 _Avoid_: done (bare — canceled isn't done but is settled), finished, closed, resolved
 
 **Archive**:
@@ -148,6 +148,10 @@ _Avoid_: run artifacts (implies files-on-disk — the pre-DB-first framing), run
 **Checkpoint**:
 The durable saved state of one ticket's run — the phase it reached plus its branch, PR, and any failure — persisted so the run can resume or be inspected after the process ends. One per ticket. Casual "last state" means the checkpoint.
 _Avoid_: state (bare, overloaded), run (that's the execution), snapshot, save
+
+**Releasing**:
+The Epic-level phase between the last Sub-issue's Ship and the Epic's own merge to base: syncing the epic branch with the base, opening its PR, gating its CI, merging. It is a real Checkpoint phase on the Epic id, not a display state — it survives the loop that wrote it — and it is never picked up as unfinished ticket work: a release the run died inside is re-entered through that Epic's own finalize instead, on a tree exit hygiene left clean by aborting the half-merge rather than committing its conflict markers. It ends one of two ways: merged, or handed to a human (unresolvable drift, a gate that never went green, or a merge only the operator can make), which the checkpoint records beside the phase. While the release is still trau's to finish, the Repo's Queue starts no new run — only that Epic's own finalize, which the hub re-arms on its own a bounded number of times when the finalize keeps dying — since its working tree is mid-merge on the epic branch; the hand-off releases the hold, as does a release that outlived those re-attempts and now reads faulted, and the Queue carries on with its other items. Neither ending is silent and neither reads as the other: a hand-off notifies the operator with the PR and settles the Epic's Queue item **awaiting-merge** — visibly not done, never re-attempted on its own, and settled done only once the PR actually lands — while a merge notifies it as delivered and settles done.
+_Avoid_: finalizing (the code name — `FinalizeEpic`), shipping, deploying, publishing
 
 **Failure class**:
 Why a checkpoint stopped short — one of three, distinct from the phase (how far it got): **Paused** (blameless — a provider/rate/auth wall; work-in-progress intact, the fix is to Resume), **Faulted** (an unexpected error mid-run; WIP preserved and resumable), and **Gave up** (a verified dead end, surfaced as **Quarantined** — a human must decide).

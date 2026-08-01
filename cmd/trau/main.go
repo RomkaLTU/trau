@@ -614,6 +614,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		NoResume:     opts.NoResume,
 		ParentSuffix: parentSuffix,
 		ForcedID:     forcedID,
+		EpicID:       epicID,
 		Poller:       usagePoller(cfg, log),
 		Report:       reg.SetState,
 	}, con, result)
@@ -650,11 +651,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 // failures included, posts faulted so the drainer parks the item instead of
 // settling it done with no work behind it. An epic whose finalize declined while
 // children still read open posts a pause too, so a start re-attempts the finalize
-// instead of the item settling done with the epic branch unmerged.
+// instead of the item settling done with the epic branch unmerged. An epic whose
+// release was handed to a human posts its own class: there is nothing left to
+// re-attempt, but the epic did not ship either.
 func drainClass(err error) (class, reason string) {
 	switch {
 	case err == nil:
 		return "", ""
+	case pipeline.IsEpicHandOff(err):
+		return state.FailAwaitingMerge, err.Error()
 	case pipeline.IsPaused(err), pipeline.IsEpicUnfinalized(err):
 		return state.FailPaused, err.Error()
 	case pipeline.IsStopped(err):
@@ -665,11 +670,12 @@ func drainClass(err error) (class, reason string) {
 }
 
 // blamelessPause reports whether err parked the run without blaming anything:
-// a provider rate/usage pause, or an epic whose finalize declined while children
-// still read open. Both leave every ticket resumable where it stands, so the
-// summary owes the operator a pause line, not an "aborted" one.
+// a provider rate/usage pause, an epic whose finalize declined while children
+// still read open, or an epic release left for a human. All three leave every
+// ticket exactly where it stands, so the summary owes the operator a pause line,
+// not an "aborted" one.
 func blamelessPause(err error) bool {
-	return pipeline.IsPaused(err) || pipeline.IsEpicUnfinalized(err)
+	return pipeline.IsPaused(err) || pipeline.IsEpicUnfinalized(err) || pipeline.IsEpicHandOff(err)
 }
 
 // applyFault fills a SessionSummary's fault fields from err when the loop stopped
@@ -1641,6 +1647,8 @@ type engine interface {
 
 	InferredResume(ctx context.Context) (id, phase string)
 
+	ResumableRelease() bool
+
 	EnsureCleanBase(ctx context.Context) error
 
 	// ExitCleanup runs the session's exit hygiene: back to the branch the run started
@@ -1675,6 +1683,7 @@ func (e *realEngine) ResumeTarget() (string, string) {
 func (e *realEngine) InferredResume(ctx context.Context) (string, string) {
 	return e.pipe.InferredResumeFunc(ctx, e.resumeKeep)
 }
+func (e *realEngine) ResumableRelease() bool                    { return e.pipe.ResumableRelease() }
 func (e *realEngine) EnsureCleanBase(ctx context.Context) error { return e.pipe.EnsureCleanBase(ctx) }
 func (e *realEngine) ExitCleanup(ctx context.Context)           { e.pipe.ExitCleanup(ctx) }
 func (e *realEngine) Pick(ctx context.Context) (string, error)  { return e.tracker.Pick(ctx, e.scope) }
@@ -1719,7 +1728,9 @@ type loopParams struct {
 	NoResume     bool
 	ParentSuffix string
 	ForcedID     string
-	Poller       *probe.Poller
+	// EpicID names the epic the run builds under, empty for a standalone run.
+	EpicID string
+	Poller *probe.Poller
 	// Report, when set, records the loop's session-state transitions to the
 	// instance registry; nil disables reporting.
 	Report func(state, ticket, phase string)
@@ -1786,6 +1797,15 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 			con.Logf("⏹ interrupted — stopping")
 			return processed, nil
 		default:
+		}
+
+		// A release a dead finalize left behind is the run's whole job, and grazing
+		// for a ticket first would run the clean-base reset over the epic branch that
+		// release is still mid-merge on.
+		if eng.ResumableRelease() {
+			con.Logf("↻ resuming the release of %s", p.EpicID)
+			ownsFinalize = true
+			break
 		}
 
 		if len(processed) >= p.Max {
@@ -1900,6 +1920,12 @@ func runLoop(ctx context.Context, eng engine, p loopParams, con console.Renderer
 			con.Logf("--once: stopping")
 			break
 		}
+	}
+	// The finalize is the epic's own work, but the loop arrives here grazing or
+	// still pinned to the child it last touched.
+	if p.EpicID != "" {
+		report(registry.StateWorking, p.EpicID, "")
+		defer report(registry.StateGrazing, "", "")
 	}
 	if err := eng.Finalize(ctx); err != nil {
 		if !ownsFinalize && pipeline.IsEpicUnfinalized(err) {
@@ -2982,7 +3008,7 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 		}
 	}
 	start := time.Now()
-	processed, lerr := runLoop(ctx, a.eng, loopParams{Max: max, Poller: usagePoller(a.cfg, a.log), Report: a.reg.SetState}, r, result)
+	processed, lerr := runLoop(ctx, a.eng, loopParams{Max: max, EpicID: epic, Poller: usagePoller(a.cfg, a.log), Report: a.reg.SetState}, r, result)
 	a.reportAfterRun(lerr)
 	tk, cost, metered := total(processed)
 	r.LoopDone(applyFault(console.SessionSummary{

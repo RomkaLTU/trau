@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -289,7 +291,7 @@ func TestFinalizeEpicManualMergeCancelThenRerunReconciles(t *testing.T) {
 		t.Fatalf("a stopped epic must not be closed, got %q", tr.setStatus)
 	}
 	if got := p.State.Get("COD-1", "PR_STATUS"); got != "" {
-		t.Fatalf("epic PR_STATUS = %q, want none — an unshipped epic owns no run row", got)
+		t.Fatalf("epic PR_STATUS = %q, want none — nothing shipped", got)
 	}
 
 	p.GitHub = &waitGitHub{
@@ -321,6 +323,385 @@ func assertEpicCheckpointedMerged(t *testing.T, p *Pipeline) {
 	}
 	if got := p.State.Get("COD-1", "PR_URL"); got != "https://github.test/pr/42" {
 		t.Fatalf("epic PR_URL = %q, want the epic PR url", got)
+	}
+}
+
+// assertEpicHandedOff pins a parked release: the phase stays releasing — the epic
+// is still mid-release — beside the marker that says a human owns it.
+func assertEpicHandedOff(t *testing.T, p *Pipeline) {
+	t.Helper()
+	if got := p.State.Get("COD-1", "PHASE"); got != state.Releasing {
+		t.Fatalf("epic PHASE = %q, want %q", got, state.Releasing)
+	}
+	if got := p.State.Get("COD-1", "RELEASE"); got != state.ReleaseAwaitingHuman {
+		t.Fatalf("epic RELEASE = %q, want %q", got, state.ReleaseAwaitingHuman)
+	}
+}
+
+// releaseProbeGitHub reads the epic's checkpoint at CI-poll time, so a test can
+// see the state a finalize runs under rather than only the state it lands in.
+type releaseProbeGitHub struct {
+	epicGitHub
+	cps         state.Checkpoints
+	seenPhase   string
+	seenRelease string
+	seenTitle   string
+}
+
+func (g *releaseProbeGitHub) Checks(ctx context.Context, pr string) ([]Check, error) {
+	g.seenPhase = g.cps.Get("COD-1", "PHASE")
+	g.seenRelease = g.cps.Get("COD-1", "RELEASE")
+	g.seenTitle = g.cps.Get("COD-1", "TITLE")
+	return g.epicGitHub.Checks(ctx, pr)
+}
+
+// conflictedEpicGit is a base-current fake whose merge with the base always
+// conflicts and never comes clean, so the resolving agent runs out of attempts.
+type conflictedEpicGit struct{ baseCurrentGit }
+
+func (conflictedEpicGit) MergeRemote(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+func (conflictedEpicGit) Unmerged(context.Context) (string, error) {
+	return "both modified: internal/x.go", nil
+}
+
+// The epic's own checkpoint brackets the shipping: releasing from the moment the
+// last child is confirmed terminal, merged once the epic lands, with the title
+// riding along so the row is never a phase-less one.
+func TestFinalizeEpicBracketsShippingWithReleasing(t *testing.T) {
+	tr := doneEpicTracker()
+	gh := &releaseProbeGitHub{epicGitHub: epicGitHub{
+		createURL: "https://github.test/pr/42",
+		checks:    []Check{{Name: "ci/test", Bucket: "pass"}},
+	}}
+	p := shippableEpicPipeline(t, gh, tr)
+	gh.cps = p.State
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+	if gh.seenPhase != state.Releasing {
+		t.Errorf("epic PHASE while shipping = %q, want %q", gh.seenPhase, state.Releasing)
+	}
+	if gh.seenRelease != state.ReleaseActive {
+		t.Errorf("epic RELEASE while shipping = %q, want %q", gh.seenRelease, state.ReleaseActive)
+	}
+	if gh.seenTitle != "Checkout rebuild" {
+		t.Errorf("epic TITLE while shipping = %q, want the epic title beside the phase", gh.seenTitle)
+	}
+	assertEpicCheckpointedMerged(t, p)
+	if got := p.State.Get("COD-1", "RELEASE"); got != "" {
+		t.Errorf("epic RELEASE after the merge = %q, want it cleared", got)
+	}
+}
+
+// resumedEpicGit is the repo a killed finalize leaves behind: the epic branch is
+// only discoverable by id (nothing cached it this run) and the tree still sits
+// mid-merge where the resolving agent died.
+type resumedEpicGit struct {
+	baseCurrentGit
+	branch      string
+	midMerge    bool
+	abortCalls  int
+	checkedOut  []string
+	mergedAfter bool
+}
+
+func (g *resumedEpicGit) FindEpicBranch(context.Context, string) (string, error) {
+	return g.branch, nil
+}
+func (g *resumedEpicGit) MergeInProgress(context.Context) (bool, error) { return g.midMerge, nil }
+func (g *resumedEpicGit) MergeAbort(context.Context) error {
+	g.abortCalls++
+	g.midMerge = false
+	return nil
+}
+func (g *resumedEpicGit) Checkout(_ context.Context, ref string, _ bool) error {
+	g.checkedOut = append(g.checkedOut, ref)
+	return nil
+}
+func (g *resumedEpicGit) MergeRemote(context.Context, string, string) (bool, error) {
+	g.mergedAfter = !g.midMerge
+	return false, nil
+}
+
+// adoptingEpicGitHub already has the epic PR an earlier finalize opened, so the
+// resume adopts it instead of opening a second one.
+type adoptingEpicGitHub struct {
+	epicGitHub
+	openURL string
+}
+
+func (g *adoptingEpicGitHub) PRURL(context.Context, string) (string, error) {
+	return g.openURL, nil
+}
+
+// A finalize killed mid-release resumes from its own checkpoint: the epic branch is
+// re-adopted by id, the half-merge the dead run left is aborted before the sync
+// starts over, the PR that run opened is adopted rather than duplicated, and the
+// epic ships. The release stops being resumable exactly when it lands.
+func TestFinalizeEpicResumesFromReleasingCheckpoint(t *testing.T) {
+	const epic = "epic/COD-1-checkout-rebuild"
+	tr := doneEpicTracker()
+	gh := &adoptingEpicGitHub{
+		epicGitHub: epicGitHub{checks: []Check{{Name: "ci/test", Bucket: "pass"}}},
+		openURL:    "https://github.test/pr/42",
+	}
+	git := &resumedEpicGit{branch: epic, midMerge: true}
+	p := shippableEpicPipeline(t, gh, tr)
+	p.Git = git
+	p.exit = exitState{}
+	if err := p.State.Set("COD-1", "PHASE", state.Releasing); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.State.Set("COD-1", "RELEASE", state.ReleaseActive); err != nil {
+		t.Fatal(err)
+	}
+	if !p.ResumableRelease() {
+		t.Fatal("a releasing checkpoint with no hand-off marker must be resumable")
+	}
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+
+	if git.abortCalls != 1 {
+		t.Errorf("MergeAbort calls = %d, want the half-merge aborted once on entry", git.abortCalls)
+	}
+	if !git.mergedAfter {
+		t.Error("the sync merged while the tree was still mid-merge, want it restarted clean")
+	}
+	if !slices.Contains(git.checkedOut, epic) {
+		t.Errorf("checkouts = %v, want the epic branch adopted by id", git.checkedOut)
+	}
+	if gh.createCalls != 0 {
+		t.Errorf("CreatePR calls = %d, want the open epic PR adopted", gh.createCalls)
+	}
+	if gh.mergeCalls != 1 {
+		t.Errorf("merge calls = %d, want the resumed release to ship", gh.mergeCalls)
+	}
+	assertEpicCheckpointedMerged(t, p)
+	if p.ResumableRelease() {
+		t.Error("a shipped epic must stop reading as a release to resume")
+	}
+}
+
+// A drift conflict the resolving agent could not clear leaves the epic PR to a
+// human; the checkpoint says so instead of reading as trau still working on it,
+// and the decline is typed so the caller never records a delivery over it.
+func TestFinalizeEpicHandsOffWhenSyncConflictsRemain(t *testing.T) {
+	tr := doneEpicTracker()
+	gh := &epicGitHub{createURL: "https://github.test/pr/42"}
+	p := shippableEpicPipeline(t, gh, tr)
+	p.Git = conflictedEpicGit{}
+	p.Runner = fakeRunner{}
+	p.PhaseLogs = newMemPhaseLogs()
+	p.RunsDir = t.TempDir()
+	var buf bytes.Buffer
+	p.Events = event.New(&buf)
+
+	err := p.FinalizeEpic(context.Background())
+	assertEpicHandOffError(t, err, "https://github.test/pr/42")
+	if gh.mergeCalls != 0 {
+		t.Fatalf("an unresolved conflict must not merge, got %d merges", gh.mergeCalls)
+	}
+	assertEpicHandedOff(t, p)
+	assertEpicAwaitingMergeNotified(t, &buf)
+}
+
+// A gate that never went green is the same hand-off: the PR is left for review,
+// the epic checkpoint records that a human owns the release now, and the operator
+// hears about it.
+func TestFinalizeEpicHandsOffWhenCINeverGreen(t *testing.T) {
+	tr := doneEpicTracker()
+	gh := &epicGitHub{
+		createURL: "https://github.test/pr/42",
+		checks:    []Check{{Name: "ci/test", Bucket: "fail"}},
+	}
+	p := shippableEpicPipeline(t, gh, tr)
+	var buf bytes.Buffer
+	p.Events = event.New(&buf)
+
+	err := p.FinalizeEpic(context.Background())
+	assertEpicHandOffError(t, err, "https://github.test/pr/42")
+	assertEpicHandedOff(t, p)
+	assertEpicAwaitingMergeNotified(t, &buf)
+	if got := p.State.Get("COD-1", "PR_URL"); got != "https://github.test/pr/42" {
+		t.Errorf("epic PR_URL = %q, want the handed-off PR recorded so a later merge can settle it", got)
+	}
+	if got := p.State.Get("COD-1", "PR_STATUS"); got != prStatusAwaitingMerge {
+		t.Errorf("epic PR_STATUS = %q, want %q", got, prStatusAwaitingMerge)
+	}
+}
+
+// A release that actually lands announces itself: an epic can drain in the
+// background for hours, so the merge that ends it owes the operator a push
+// carrying the PR rather than only the absence of a problem.
+func TestFinalizeEpicNotifiesTheDelivery(t *testing.T) {
+	gh := &epicGitHub{
+		createURL: "https://github.test/pr/42",
+		checks:    []Check{{Name: "ci/test", Bucket: "pass"}},
+	}
+	p := shippableEpicPipeline(t, gh, doneEpicTracker())
+	var buf bytes.Buffer
+	p.Events = event.New(&buf)
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+	evs := deliveredEvents(t, &buf)
+	if len(evs) != 1 {
+		t.Fatalf("emitted %d epic_delivered events, want exactly 1", len(evs))
+	}
+	if got := strField(evs[0].Fields, "ticket"); got != "COD-1" {
+		t.Errorf("ticket field = %q, want the epic id", got)
+	}
+	if got := strField(evs[0].Fields, "url"); got != "https://github.test/pr/42" {
+		t.Errorf("url field = %q, want the epic PR url", got)
+	}
+	if !strings.Contains(evs[0].Msg, "https://github.test/pr/42") {
+		t.Errorf("delivery message = %q, want it to name the PR", evs[0].Msg)
+	}
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("re-run FinalizeEpic returned error: %v", err)
+	}
+	if evs := deliveredEvents(t, &buf); len(evs) != 1 {
+		t.Fatalf("emitted %d epic_delivered events after a re-finalize, want the news pushed once", len(evs))
+	}
+}
+
+func deliveredEvents(t *testing.T, buf *bytes.Buffer) []event.Event {
+	t.Helper()
+	var out []event.Event
+	for _, ev := range stateChangeEvents(t, buf) {
+		if strField(ev.Fields, "state") == "epic_delivered" {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// assertEpicHandOffError pins the typed decline a parked release ends on: the
+// queue reads it to settle the item awaiting a human, and the reason it carries
+// is what the item's card shows, so it must name the PR to land.
+func assertEpicHandOffError(t *testing.T, err error, prURL string) {
+	t.Helper()
+	var h *EpicHandOffError
+	if !errors.As(err, &h) {
+		t.Fatalf("FinalizeEpic = %v, want an *EpicHandOffError", err)
+	}
+	if h.PRURL != prURL {
+		t.Errorf("hand-off PRURL = %q, want %q", h.PRURL, prURL)
+	}
+	if prURL != "" && !strings.Contains(h.Error(), prURL) {
+		t.Errorf("hand-off error = %q, want it to name the PR", h.Error())
+	}
+}
+
+// assertEpicAwaitingMergeNotified pins the one notification a hand-off owes the
+// operator: the same awaiting-merge pathway the ticket-level manual merge uses,
+// attributed to the epic and carrying its PR.
+func assertEpicAwaitingMergeNotified(t *testing.T, buf *bytes.Buffer) {
+	t.Helper()
+	evs := awaitingMergeEvents(t, buf)
+	if len(evs) != 1 {
+		t.Fatalf("emitted %d awaiting_merge events, want exactly 1", len(evs))
+	}
+	if got := strField(evs[0].Fields, "ticket"); got != "COD-1" {
+		t.Errorf("ticket field = %q, want the epic id", got)
+	}
+	if got := strField(evs[0].Fields, "url"); got != "https://github.test/pr/42" {
+		t.Errorf("url field = %q, want the epic PR url", got)
+	}
+}
+
+// AUTO_MERGE=0 hands the green PR to the operator the moment the wait starts, so a
+// wait that ends without a merge — here a stop mid-wait — leaves the release parked.
+func TestFinalizeEpicHandsOffWhileAwaitingAManualMerge(t *testing.T) {
+	tr := doneEpicTracker()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gh := &waitGitHub{
+		epicGitHub: epicGitHub{
+			createURL: "https://github.test/pr/42",
+			checks:    []Check{{Name: "ci/test", Bucket: "pass"}},
+		},
+		replies: []prReply{{state: "OPEN"}},
+		onCall: func(call int) {
+			if call == 1 {
+				cancel()
+			}
+		},
+	}
+	p := newEpicWaitPipeline(t, gh, tr)
+
+	if err := p.FinalizeEpic(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("FinalizeEpic = %v, want context.Canceled", err)
+	}
+	assertEpicHandedOff(t, p)
+}
+
+// The local-delivery path gets the same bracket: an operator-owned merge parks the
+// epic mid-release, and trau's own squash-merge lands it terminal.
+func TestFinalizeEpicLocallyBracketsShippingWithReleasing(t *testing.T) {
+	tests := []struct {
+		name        string
+		autoMerge   bool
+		wantPhase   string
+		wantRelease string
+		wantHandOff bool
+	}{
+		{"operator merges it", false, state.Releasing, state.ReleaseAwaitingHuman, true},
+		{"trau merges it", true, state.Merged, "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := shippableEpicPipeline(t, &epicGitHub{}, doneEpicTracker())
+			p.Git = &localGit{}
+			p.AutoMerge = tc.autoMerge
+
+			err := p.FinalizeEpic(context.Background())
+			switch {
+			case tc.wantHandOff:
+				assertEpicHandOffError(t, err, "")
+			case err != nil:
+				t.Fatalf("FinalizeEpic returned error: %v", err)
+			}
+			if got := p.State.Get("COD-1", "PHASE"); got != tc.wantPhase {
+				t.Errorf("epic PHASE = %q, want %q", got, tc.wantPhase)
+			}
+			if got := p.State.Get("COD-1", "RELEASE"); got != tc.wantRelease {
+				t.Errorf("epic RELEASE = %q, want %q", got, tc.wantRelease)
+			}
+		})
+	}
+}
+
+// Shipping is bracketed once: a second finalize of an epic that already merged —
+// a re-queue, or a bare `trau --epic` re-run — leaves the terminal checkpoint
+// alone rather than reopening the release it would then fail to finish.
+func TestFinalizeEpicRerunLeavesAShippedEpicMerged(t *testing.T) {
+	p := shippableEpicPipeline(t, &epicGitHub{}, doneEpicTracker())
+	p.Git = &localGit{}
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("FinalizeEpic returned error: %v", err)
+	}
+	if got := p.State.Get("COD-1", "PHASE"); got != state.Merged {
+		t.Fatalf("epic PHASE after the merge = %q, want %q", got, state.Merged)
+	}
+
+	p.Git = &localGit{checkoutErr: errors.New("pathspec 'main' did not match")}
+	if err := p.FinalizeEpic(context.Background()); err == nil {
+		t.Fatal("re-run FinalizeEpic = nil, want the checkout failure")
+	}
+	if got := p.State.Get("COD-1", "PHASE"); got != state.Merged {
+		t.Errorf("epic PHASE after the re-run = %q, want it still %q", got, state.Merged)
+	}
+	if got := p.State.Get("COD-1", "RELEASE"); got != "" {
+		t.Errorf("epic RELEASE after the re-run = %q, want it still cleared", got)
 	}
 }
 
@@ -587,9 +968,7 @@ func TestFinalizeEpicLeavesEpicOpenWhenPRIsNotMerged(t *testing.T) {
 	}
 	p := shippableEpicPipeline(t, gh, tr)
 
-	if err := p.FinalizeEpic(context.Background()); err != nil {
-		t.Fatalf("FinalizeEpic returned error: %v", err)
-	}
+	assertEpicHandOffError(t, p.FinalizeEpic(context.Background()), "https://github.test/pr/42")
 	if gh.mergeCalls != 0 {
 		t.Fatalf("a red epic gate must not merge, got %d merges", gh.mergeCalls)
 	}
@@ -955,6 +1334,56 @@ func (e *epicTracker) IssueStatus(_ context.Context, id string) (tracker.IssueSt
 		return tracker.StatusUnknown, e.statusErr
 	}
 	return e.status[id], nil
+}
+
+// redThenGreenGitHub fails the epic's first CI poll and passes every one after, so
+// the gate drives exactly one repair attempt before the merge.
+type redThenGreenGitHub struct {
+	epicGitHub
+	polls int
+}
+
+func (g *redThenGreenGitHub) Checks(context.Context, string) ([]Check, error) {
+	g.polls++
+	if g.polls == 1 {
+		return []Check{{Name: "ci/test", Bucket: "fail"}}, nil
+	}
+	return []Check{{Name: "ci/test", Bucket: "pass"}}, nil
+}
+
+// The CI gate, every repair attempt and the merge report under the epic's own id,
+// so the stepper follows the epic to the base instead of going silent after the
+// last child.
+func TestEpicCIAndMergeReportsActivities(t *testing.T) {
+	rec := &activityRecorder{}
+	gh := &redThenGreenGitHub{}
+	p := newTestPipeline(t, fakeRunner{}, &epicTracker{title: "Thing"})
+	p.GitHub = gh
+	p.Remote = "origin"
+	p.EpicID = "COD-7110"
+	p.exit.epicBranch = "epic/COD-7110-thing"
+	p.AutoMerge = true
+	p.MergeMethod = "squash"
+	p.MaxRepairs = 1
+	p.OnActivity = rec.hook()
+
+	merged, err := p.epicCIAndMerge(context.Background(), "https://github.test/pr/7")
+	if err != nil {
+		t.Fatalf("epicCIAndMerge err = %v", err)
+	}
+	if !merged {
+		t.Fatal("expected the epic to merge once the repair turned CI green")
+	}
+
+	want := []reportedActivity{
+		{"COD-7110", "ci-wait", ""},
+		{"COD-7110", "merge", "epic-repair1/1"},
+		{"COD-7110", "ci-wait", ""},
+		{"COD-7110", "merge", ""},
+	}
+	if !reflect.DeepEqual(rec.seen, want) {
+		t.Fatalf("activity reports = %+v, want %+v", rec.seen, want)
+	}
 }
 
 type epicGitHub struct {

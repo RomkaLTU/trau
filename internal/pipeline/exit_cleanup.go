@@ -60,12 +60,12 @@ func (p *Pipeline) armExitCleanup(ctx context.Context) {
 }
 
 // ExitCleanup is the run's exit hygiene, deferred by every entry point so it runs
-// on success, refusal, error and signal alike: it commits what the run left uncommitted
-// on its own branch, puts HEAD back on the branch the run started on, settles whatever
-// the run left on the epic branch, and pops the WIP EnsureCleanBase auto-stashed.
-// It consumes what it restores, so a second deferred
-// call does nothing, and every step is best-effort — on failure the WIP stays safe
-// in `git stash` and the log tells the user how to finish by hand.
+// on success, refusal, error and signal alike: it aborts a merge the run died inside,
+// commits what the run left uncommitted on its own branch, puts HEAD back on the
+// branch the run started on, settles whatever the run left on the epic branch, and
+// pops the WIP EnsureCleanBase auto-stashed. It consumes what it restores, so a
+// second deferred call does nothing, and every step is best-effort — on failure the
+// WIP stays safe in `git stash` and the log tells the user how to finish by hand.
 func (p *Pipeline) ExitCleanup(ctx context.Context) {
 	home, stashed := p.exit.startBranch, p.exit.stashedBranch
 	p.exit.startBranch, p.exit.stashedBranch = "", ""
@@ -78,6 +78,7 @@ func (p *Pipeline) ExitCleanup(ctx context.Context) {
 	ctx, cancel := detachedCleanup(ctx)
 	defer cancel()
 
+	p.abortHalfMerge(ctx)
 	p.preserveRunLeftovers(ctx, home)
 	restored := p.restoreCheckout(ctx, home)
 	p.settleEpicBranch(ctx)
@@ -93,6 +94,23 @@ func (p *Pipeline) ExitCleanup(ctx context.Context) {
 		return
 	}
 	p.logf("  ↪ restored your WIP on %s", stashed)
+}
+
+// abortHalfMerge undoes a merge the run died inside, on whatever branch it died on.
+// A signal landing while the conflict-resolution agent works leaves MERGE_HEAD and
+// conflict-marked files in the tree, and preserving those the way ordinary leftovers
+// are preserved would stage the markers and commit them — on the epic branch, in the
+// middle of a release. Aborting puts the branch back on the tip the merge started
+// from, which is where the finalize that resumes re-enters.
+func (p *Pipeline) abortHalfMerge(ctx context.Context) {
+	if mid, err := p.Git.MergeInProgress(ctx); err != nil || !mid {
+		return
+	}
+	if err := p.Git.MergeAbort(ctx); err != nil {
+		p.logf("  ⚠ couldn't abort the merge left in progress (%v) — run `git merge --abort` before the next run", err)
+		return
+	}
+	p.logf("  ↩ aborted the merge the run left in progress")
 }
 
 // preserveRunLeftovers commits whatever the run left uncommitted back to the branch it

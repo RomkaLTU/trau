@@ -81,6 +81,7 @@ import {
   queueQueryOptions,
   queueRunnable,
   QUEUE_NOT_RUNNABLE,
+  releaseGateLabel,
   runNext as runNextRequest,
   runQueueItem,
   skipResumeApplies,
@@ -100,10 +101,11 @@ import {
   STOPPED_HEADLINE,
   STOPPED_HINT,
 } from "@/lib/runlive";
-import { stepName, syncState } from "@/lib/steps";
+import { isAwaitingHuman, stepName, syncState } from "@/lib/steps";
 import { runsQueryOptions, type PRStatus } from "@/lib/runs";
 import {
   builderView,
+  finalizePill,
   finishedReducer,
   finishedView,
   ticketPill,
@@ -243,6 +245,7 @@ const STATUS_STATE: Record<string, RunState> = {
   done: "success",
   failed: "fail",
   skipped: "info",
+  "awaiting-merge": "warn",
 };
 
 function statusState(status: string): RunState {
@@ -255,6 +258,7 @@ const SUB_GLYPH: Record<
 > = {
   done: { glyph: "✓", className: "text-done", label: "done" },
   epic: { glyph: "◆", className: "text-info", label: "epic" },
+  quarantined: { glyph: "✕", className: "text-fail", label: "quarantined" },
   todo: { glyph: "○", className: "text-faint", label: "todo" },
 };
 
@@ -1494,8 +1498,16 @@ function RunPaneLink({
   );
 }
 
-// FinalizeRow takes the running row's place while the drain does epic-level work
-// no ticket owns.
+const RELEASE_TONE: Partial<Record<RunState, string>> = {
+  active: "border-teal/40 bg-teal/5",
+  warn: "border-warn/40 bg-warn/5",
+  info: "border-info/40 bg-info/5",
+  fail: "border-fail/40 bg-fail/5",
+};
+
+// FinalizeRow takes the running row's place while the epic ships itself to its
+// base. It reads the epic's own checkpoint, so a release parked for a human — or
+// halted by one — still holds the row, wearing that state instead of live ticks.
 function FinalizeRow({
   finalize,
   instance,
@@ -1507,11 +1519,20 @@ function FinalizeRow({
   now: number;
   onPeek: (id: string) => void;
 }) {
+  const halted = finalize.failureClass !== undefined;
+  const parked = !halted && isAwaitingHuman(finalize.release);
+  const pill = finalizePill(finalize);
+  const live = instance?.ticket === finalize.epicId ? instance : undefined;
   return (
-    <div className="flex flex-col gap-3 rounded-md border border-teal/40 bg-teal/5 px-4 py-3">
+    <div
+      className={cn(
+        "flex flex-col gap-3 rounded-md border px-4 py-3",
+        RELEASE_TONE[pill.state],
+      )}
+    >
       <div className="flex flex-wrap items-center gap-3">
         <span className="font-sans text-base text-foreground">
-          Finalizing epic
+          Releasing epic
         </span>
         <span className="inline-flex shrink-0 items-center gap-1 font-mono text-sm text-info">
           <span aria-hidden="true">◆</span>
@@ -1527,23 +1548,43 @@ function FinalizeRow({
           </span>
         ) : null}
         <InternalTag source={finalize.source} />
+        <StatusPill
+          state={pill.state}
+          label={pill.label}
+          className="shrink-0"
+        />
       </div>
-      {finalize.activity ? (
+      {halted ? (
+        finalize.reason ? <TicketReason>{finalize.reason}</TicketReason> : null
+      ) : parked ? (
+        <p className="font-sans text-sm text-muted-foreground">
+          Every ticket is done — the epic PR is ready and yours to merge.
+          {finalize.prUrl ? (
+            <>
+              {" "}
+              <a
+                href={finalize.prUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono text-xs text-primary underline-offset-2 hover:underline"
+              >
+                {finalize.prUrl}
+              </a>
+            </>
+          ) : null}
+        </p>
+      ) : (
         <LiveProgress
-          phase=""
+          phase={finalize.phase}
           activity={finalize.activity}
           detail={finalize.detail}
         />
-      ) : (
-        <p className="font-sans text-sm text-muted-foreground">
-          Every ticket is done — shipping the epic branch to its base.
-        </p>
       )}
-      {instance?.state_since ? (
+      {live?.state_since ? (
         <div className="font-mono text-xs text-muted-foreground">
           in step{" "}
           <span className="text-foreground">
-            {elapsedSince(instance.state_since, now)}
+            {elapsedSince(live.state_since, now)}
           </span>
         </div>
       ) : null}
@@ -1722,7 +1763,7 @@ function drainStep(timeline: Timeline): string {
       ).toLowerCase() || "draining"
     );
   }
-  return timeline.finalize ? "finalizing" : "draining";
+  return timeline.finalize ? "releasing" : "draining";
 }
 
 function RunningQueueView({
@@ -1783,6 +1824,9 @@ function RunningQueueView({
   const runningItem = running
     ? itemsById.get(running.epicId ?? running.id)
     : undefined;
+  // The releasing epic's own finalize is the one run the gate lets through, so
+  // the wait reads as a wait only while nothing is in flight.
+  const gate = running || timeline.finalize ? "" : releaseGateLabel(queue);
 
   return (
     <div className="flex flex-col gap-6">
@@ -1806,7 +1850,10 @@ function RunningQueueView({
                   </span>
                 </span>
               ) : null}
-              <StatusPill state="active" label={drainStep(timeline)} />
+              <StatusPill
+                state={gate ? "warn" : "active"}
+                label={gate || drainStep(timeline)}
+              />
             </div>
           </div>
 
@@ -1830,6 +1877,11 @@ function RunningQueueView({
                 now={now}
                 onPeek={onPeek}
               />
+            ) : gate ? (
+              <p className="font-sans text-sm text-muted-foreground">
+                Nothing new starts while {queue.releasing_epic} is releasing —
+                the queue picks up once its release lands or is handed off.
+              </p>
             ) : (
               <p className="font-sans text-sm text-muted-foreground">
                 Idle — picking the next ticket from the queue.
