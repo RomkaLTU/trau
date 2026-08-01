@@ -113,11 +113,12 @@ func (d *drainer) run(ctx context.Context, root string) {
 // item no open blocker holds back, settles a finished one per the failure
 // taxonomy — pausing the drain on a fault or provider pause, but leaving a row
 // whose removal is in flight to the removal, which drops it rather than parking
-// it — waits, never spawning a second child while one is in flight or while a
-// pending self-reload is waiting for its idle gap, or finishes the drain once the
-// queue has nothing left to run so a completed — or armed but empty — queue reads
-// stopped instead of idling armed. It is the whole drain policy, pure enough to
-// table-test.
+// it — waits, never spawning a second child while one is in flight, while a
+// pending self-reload is waiting for its idle gap, or while an Epic's release
+// holds the repo — only that Epic's own finalize starts then — or finishes the
+// drain once the queue has nothing left to run so a completed — or armed but
+// empty — queue reads stopped instead of idling armed. It is the whole drain
+// policy, pure enough to table-test.
 func (d *drainer) tick(root string) (drainAction, error) {
 	store := d.srv.stores.Queue(root)
 	items, meta, err := store.Snapshot()
@@ -168,6 +169,13 @@ func (d *drainer) tick(root string) (drainAction, error) {
 	}
 	if d.repoLive(root) {
 		return drainWait, nil
+	}
+	if epic, held := d.srv.heldByRelease(root, next.ID); held {
+		finalize, queued := runnableItem(items, epic)
+		if !queued {
+			return drainWait, nil
+		}
+		next = finalize
 	}
 	// Global dedup: a standalone ticket an earlier queued epic already covers
 	// is skipped, not run twice. First occurrence wins.
@@ -507,6 +515,18 @@ func (d *drainer) checkpointOutcome(root string, it queue.Item) (class, reason s
 // block is temporary: the queue retries once the lock's process dies.
 func (d *drainer) repoHasLiveInstance(root string) bool {
 	return d.srv.hasBusyInstance(root)
+}
+
+// runnableItem returns id's queue row when the drain could launch it. A
+// release-gated tick reaches past the head of run order with it: every row ahead
+// of the releasing Epic is waiting on the release that Epic has to finish.
+func runnableItem(items []queue.Item, id string) (queue.Item, bool) {
+	for _, it := range items {
+		if it.ID == id && queue.Runnable(it.Status) {
+			return it, true
+		}
+	}
+	return queue.Item{}, false
 }
 
 func firstWithStatus(items []queue.Item, status string) (queue.Item, bool) {
