@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/RomkaLTU/trau/internal/hubstore"
@@ -71,6 +73,28 @@ func TestEnqueueLastChildPromotesToTheEpic(t *testing.T) {
 	_, view := getQueue(t, ts, "acme")
 	if len(view.Items) != 1 || view.Items[0].ID != "COD-10" {
 		t.Errorf("queue view = %+v, want only the promoted epic", view.Items)
+	}
+}
+
+// TestEnqueueChildrenIntoFolderRepoStayTickets holds a folder repo's queue to the
+// rows it accepted: the epic itself is refused there, so completing the family must
+// not collapse the children into an epic row the pipeline would then refuse to run.
+func TestEnqueueChildrenIntoFolderRepoStayTickets(t *testing.T) {
+	_, _, root, ts := promoteHub(t)
+	if err := os.MkdirAll(filepath.Join(root, "api-a", ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	enqueueTicket(t, ts, QueueRequest{ID: "COD-11"})
+	out := enqueueTicket(t, ts, QueueRequest{ID: "COD-12"})
+
+	if len(out.Items) != 2 {
+		t.Fatalf("items = %+v, want both children queued as their own tickets", out.Items)
+	}
+	for _, it := range out.Items {
+		if it.Kind != "ticket" {
+			t.Errorf("item = %+v, want a ticket row, not an epic a folder repo cannot run", it)
+		}
 	}
 }
 

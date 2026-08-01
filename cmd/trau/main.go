@@ -35,6 +35,7 @@ import (
 	"github.com/RomkaLTU/trau/internal/console"
 	"github.com/RomkaLTU/trau/internal/doctor"
 	"github.com/RomkaLTU/trau/internal/event"
+	"github.com/RomkaLTU/trau/internal/folderrepo"
 	"github.com/RomkaLTU/trau/internal/hubartifact"
 	"github.com/RomkaLTU/trau/internal/hubcheckpoint"
 	"github.com/RomkaLTU/trau/internal/hubclient"
@@ -538,6 +539,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	p.SelectRunner = newRunnerSelector(cfg, opts.Provider, repoName(repoRoot),
 		hubclient.New(hubBaseURL(cfg), cfg.ServeToken), runner, buildRunner)
 	stampRouting(ctx, cfg, sink)
+	// A folder of repositories has no repository at its root to hold an epic's
+	// integration branch: running the epic is refused, and a sub-issue forced here
+	// by name is built off each child's own base instead of stacked on its siblings.
+	if forcedID == "" {
+		if err := p.RefuseEpic(epicID); err != nil {
+			return err
+		}
+	} else if p.FolderRepo && epicID != "" {
+		con.Logf("  %s is a folder of repositories — building %s off %s, not on %s's branch", repoName(repoRoot), forcedID, cfg.BaseBranch, epicID)
+		epicID, parentSuffix = "", ""
+	}
 	p.EpicID = epicID
 	if epicID != "" {
 		if subs, serr := pm.SubIssues(ctx, epicID); serr == nil && len(subs) > 0 {
@@ -1476,6 +1488,9 @@ func buildPipeline(cfg config.Config, runner agent.Runner, repoRoot string, pm t
 		LessonLedger:         newLessonStore(cfg, repoRoot),
 		Git:                  pipeline.ExecGit{Repo: repoRoot},
 		GitHub:               pipeline.ExecGitHub{Repo: repoRoot},
+		FolderRepo:           folderrepo.Is(repoRoot),
+		GitAt:                func(root string) pipeline.Git { return pipeline.ExecGit{Repo: root} },
+		GitHubAt:             func(root string) pipeline.GitHub { return pipeline.ExecGitHub{Repo: root} },
 		Tracker:              pm,
 		Tokens:               sessionLedger{Sink: sink, rec: rec},
 		Budget:               budgetLimits(cfg),
@@ -2921,6 +2936,11 @@ func (a *appActions) runEpicLoop(ctx context.Context, epic string, r console.Ren
 	}
 	stampRouting(ctx, a.cfg, a.sink)
 	a.pipe.Renderer = r
+	if err := a.pipe.RefuseEpic(epic); err != nil {
+		r.Logf("✗ %v", err)
+		r.LoopDone(console.SessionSummary{Err: err})
+		return
+	}
 	a.pipe.EpicID = epic
 	a.eng.scope = scopeFor(a.cfg, epic)
 	a.eng.resumeKeep = nil
@@ -3030,9 +3050,11 @@ func (a *appActions) RunTicket(ctx context.Context, id, provider string, r conso
 	// Leaf ticket: under epic flow, if it belongs to an epic, build it ON the epic
 	// branch (and have its PR target that branch) instead of branching off the base.
 	// Resolve the parent fresh each run — and clear any stale value from a prior epic
-	// run on this shared pipeline — so the decision tracks this ticket alone.
+	// run on this shared pipeline — so the decision tracks this ticket alone. A folder
+	// repo has no root repository to hold an epic branch, so its sub-issues are always
+	// built off the base.
 	a.pipe.EpicID = ""
-	if a.cfg.EpicFlow {
+	if a.cfg.EpicFlow && !a.pipe.FolderRepo {
 		if parent := parentEpic(ctx, a.tracker, id); parent != "" {
 			r.Logf("%s is a sub-issue of epic %s → building on the epic branch", id, parent)
 			a.pipe.EpicID = parent

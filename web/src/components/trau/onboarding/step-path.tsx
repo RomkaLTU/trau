@@ -80,15 +80,23 @@ export function StepPath({
     mutationFn: (root: string) => onAdd([root], groupName),
   })
 
+  // A folder repo is one Repo, so it joins whatever project the other members
+  // already form rather than grouping its children into one of their own.
+  const takeFolder = useMutation({
+    mutationFn: (root: string) => onAdd([root], members.length > 0 ? name : undefined),
+    onSuccess: () => setScan(null),
+  })
+
   const rename = useMutation({ mutationFn: onRename })
 
-  const err = pick.error ?? accept.error ?? quickPick.error
+  const err = pick.error ?? accept.error ?? quickPick.error ?? takeFolder.error
   const refused =
     isRefusal(roots.error) ||
     isRefusal(err) ||
     (err instanceof InspectError && err.refused)
   const pathError = err && !refused ? err.message : null
-  const busy = pick.isPending || accept.isPending || quickPick.isPending
+  const busy =
+    pick.isPending || accept.isPending || quickPick.isPending || takeFolder.isPending
   const blocked = busy || nameMissing
 
   const quickPicks = (registered.data?.repos ?? []).filter((r) => !taken.has(r.root))
@@ -168,14 +176,37 @@ export function StepPath({
         <div className="flex flex-col gap-3 rounded-md border border-border bg-card p-3">
           <div className="flex flex-col gap-1">
             <p className="font-mono text-sm text-foreground">
-              <span className="font-mono">{scan.name}</span> holds {scan.children.length}{' '}
-              repositories
+              <span className="font-mono">{scan.name}</span> holds{' '}
+              {scan.truncated ? 'more than ' : ''}
+              {scan.children.length} repositories
             </p>
             <Hint>
-              It is not a repository itself. Add the ones you want — each joins the project
-              as its own member.
+              It is not a repository itself. Take the whole folder as one repo, or add the
+              ones you want — each of those joins the project as its own member.
             </Hint>
           </div>
+
+          {scan.folder_repo && (
+            <Callout
+              tone="info"
+              title={`Take ${scan.name} as one repo`}
+              actions={
+                <Button
+                  type="button"
+                  disabled={blocked}
+                  onClick={() => takeFolder.mutate(scan.path)}
+                >
+                  <FolderGit2 className="size-4" />
+                  {busy ? 'Adding…' : 'Register the folder'}
+                </Button>
+              }
+            >
+              One board, one queue and one Runs ledger for the whole folder. A run works
+              across the repositories inside it and opens a pull request in each one it
+              changed. Nothing on disk moves, and a repository you register separately
+              stays independent.
+            </Callout>
+          )}
           <div className="flex items-center justify-between gap-2">
             <FieldLabel>
               {chosen.length} of {scan.children.length} selected

@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/RomkaLTU/trau/internal/folderrepo"
 )
 
 // Bounds on the child-repo scan, so a picked volume root costs a listing rather
@@ -16,17 +18,23 @@ import (
 const (
 	discoverMaxDepth = 2
 	discoverMaxDirs  = 2000
-	discoverMaxRepos = 64
+	discoverMaxRepos = folderrepo.MaxChildren
 )
 
 // FSDiscoverResponse is what the picker can offer for one picked folder: the
 // folder itself when it is a git toplevel, otherwise the repositories found
 // beneath it. Neither — not a repo, nothing below — is the git-init case.
+// FolderRepo marks the third offer: the repositories sit directly inside the
+// folder, so the folder itself can be taken whole as one Folder repo instead of
+// its children joining a project one by one. Truncated says the scan stopped at
+// its cap, so a count is never reported as complete when it is not.
 type FSDiscoverResponse struct {
-	Path     string    `json:"path"`
-	Name     string    `json:"name"`
-	IsRepo   bool      `json:"is_repo"`
-	Children []FSEntry `json:"children"`
+	Path       string    `json:"path"`
+	Name       string    `json:"name"`
+	IsRepo     bool      `json:"is_repo"`
+	FolderRepo bool      `json:"folder_repo"`
+	Truncated  bool      `json:"truncated"`
+	Children   []FSEntry `json:"children"`
 }
 
 // GitInitRequest is the body of POST /api/v1/fs/init: the folder to turn into a
@@ -121,7 +129,8 @@ func discoverRepos(path string) (FSDiscoverResponse, error) {
 		Children: []FSEntry{},
 	}
 	if !resp.IsRepo {
-		resp.Children = childRepos(root)
+		resp.Children, resp.Truncated = childRepos(root)
+		resp.FolderRepo = folderrepo.Is(root)
 	}
 	return resp, nil
 }
@@ -129,16 +138,17 @@ func discoverRepos(path string) (FSDiscoverResponse, error) {
 // childRepos finds the repositories nested under root, breadth-first and bounded.
 // A repository is never descended into — repos join a project as siblings, never
 // nested — and symlinked children are left alone, which keeps the walk inside the
-// picked tree and free of cycles.
-func childRepos(root string) []FSEntry {
-	found := []FSEntry{}
+// picked tree and free of cycles. truncated reports that a bound stopped the walk
+// short, so the caller never presents a partial count as the whole folder.
+func childRepos(root string) (found []FSEntry, truncated bool) {
+	found = []FSEntry{}
 	frontier := []string{root}
 	budget := discoverMaxDirs
 	for depth := 0; depth < discoverMaxDepth && len(frontier) > 0; depth++ {
 		next := []string{}
 		for _, dir := range frontier {
 			if budget == 0 {
-				return found
+				return found, true
 			}
 			budget--
 			dirents, err := os.ReadDir(dir)
@@ -155,7 +165,7 @@ func childRepos(root string) []FSEntry {
 					continue
 				}
 				if len(found) == discoverMaxRepos {
-					return found
+					return found, true
 				}
 				found = append(found, FSEntry{
 					Name:   strings.TrimPrefix(child, root+string(filepath.Separator)),
@@ -166,7 +176,7 @@ func childRepos(root string) []FSEntry {
 		}
 		frontier = next
 	}
-	return found
+	return found, false
 }
 
 // initRepo turns a git-free folder into a repository the loop can work in: `git

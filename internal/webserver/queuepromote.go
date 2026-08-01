@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/RomkaLTU/trau/internal/folderrepo"
 	"github.com/RomkaLTU/trau/internal/hubstore"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/queue"
@@ -15,9 +16,10 @@ import (
 // swapped for one epic row in the first child's place, so a queue filled in
 // ticket by ticket describes the same run queueing the epic would have. It runs
 // after a ticket lands and is best-effort — an epic that cannot be resolved
-// leaves the children queued as they are.
+// leaves the children queued as they are. A Folder repo refuses to run an epic at
+// all, so its queue keeps the sub-issues as the individual tickets it accepted.
 func (s *Server) promoteQueuedEpic(ctx context.Context, root string, item queue.Item) {
-	if item.Kind != queue.KindTicket {
+	if item.Kind != queue.KindTicket || folderrepo.Is(root) {
 		return
 	}
 	epic, children, err := s.epicToPromote(ctx, root, item.ID)

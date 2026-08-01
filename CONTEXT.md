@@ -9,6 +9,14 @@ Build → Verify → Ship pipeline via an AI coding agent, and merges the PR.
 The target codebase trau builds, branches, and opens PRs against — resolved at launch, not necessarily the shell's cwd. Identified on screen by its folder name. Several Repos can share one Project (e.g. the m4c repos), so the Repo is the only unambiguous "where am I" signal.
 _Avoid_: project (that's the tracker binding), workspace, target, directory, cwd
 
+**Folder repo**:
+A registered folder that is not itself a git repository — the git repositories directly inside it are its Child repos. It carries the tracker binding, the Queue and the board like any Repo, so a folder of forty-four services is one board mirror and one Queue rather than forty-four, and a single run may change several Child repos at once (ADR 0030). Registering a folder neither requires nor removes any child's own registration: a separately registered child stays an independent Repo with its own Queue and board.
+_Avoid_: monorepo (the children are separate repositories), project (that's the tracker binding), parent repo, umbrella repo, workspace
+
+**Child repo**:
+A git repository inside a Folder repo, found by a bounded scan of the folder at run time rather than registered. It is a ship target: a run that changes it cuts the ticket's branch there and opens its pull request there, and one that leaves it alone never touches it. A Child repo that was dirty or off its base branch when the run started is named to the build agent as off limits, and a change landing in one anyway aborts the run.
+_Avoid_: member (that's a Project's registered repo), submodule, sub-repo, nested repo, workspace
+
 **Project**:
 The tracker (Linear/Jira) project a Repo is bound to via the `PROJECT` config key — it scopes the ready queue and guards cross-project runs. May be empty; never use it to identify which Repo trau is operating on.
 _Avoid_: repo, board
