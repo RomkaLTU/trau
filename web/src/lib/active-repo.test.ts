@@ -20,6 +20,7 @@ function repo(name: string, live = false): RepoView {
     allowed: true,
     registered: true,
     seeded: false,
+    kind: 'repo',
   }
 }
 

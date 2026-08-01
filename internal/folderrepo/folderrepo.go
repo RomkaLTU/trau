@@ -29,15 +29,31 @@ func IsRepo(dir string) bool {
 	return err == nil
 }
 
+// Census is what a scan of a candidate Folder repo found: its Child repos, whether
+// the scan stopped at MaxChildren, and whether root is a Folder repo at all.
+type Census struct {
+	Children  []Child
+	Truncated bool
+	IsFolder  bool
+}
+
+// Scan takes the census of root in a single directory read. A root that is itself
+// a git repository, that cannot be read, or that holds no git repositories is not
+// a Folder repo, and a caller reads that off IsFolder rather than an error.
+func Scan(root string) Census {
+	if root == "" || IsRepo(root) {
+		return Census{}
+	}
+	children, truncated, err := Children(root)
+	if err != nil || len(children) == 0 {
+		return Census{}
+	}
+	return Census{Children: children, Truncated: truncated, IsFolder: true}
+}
+
 // Is reports whether root is a Folder repo — not a git repository itself, but
 // holding at least one directly inside it.
-func Is(root string) bool {
-	if root == "" || IsRepo(root) {
-		return false
-	}
-	children, _, err := Children(root)
-	return err == nil && len(children) > 0
-}
+func Is(root string) bool { return Scan(root).IsFolder }
 
 // Children lists the git repositories directly inside root, in name order. Only
 // the top level is read: a Folder repo's children are its immediate

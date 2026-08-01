@@ -117,7 +117,7 @@ func (s *Server) registerRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.adoptRepoTrackers()
-	resp := RegisterRepoResponse{RepoView: RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: true, Seeded: s.seeded(root)}}
+	resp := RegisterRepoResponse{RepoView: RepoView{Repo: workspaceRepo(root), Allowed: true, Registered: true, Seeded: s.seeded(root)}.withKind()}
 	// Seed the issue store from the tracker as the repo comes online (ADR 0007),
 	// unless the caller opted out to run the seed sync from its own step. The pull
 	// is best-effort — a repo without direct tracker credentials still registers —
@@ -193,7 +193,7 @@ func (s *Server) unregisterRepo(w http.ResponseWriter, r *http.Request) {
 		logger.Verbosef("remember %s after unregister: %v", root, err)
 	}
 	s.dropUnregisteredRepoState(root)
-	writeJSON(w, http.StatusOK, RepoView{Repo: repo, Allowed: false})
+	writeJSON(w, http.StatusOK, RepoView{Repo: repo, Allowed: false}.withKind())
 }
 
 // forgetRepo removes a repo from the hub altogether: its registration, the
@@ -229,7 +229,7 @@ func (s *Server) forgetRepo(w http.ResponseWriter, r *http.Request) {
 		logger.Verbosef("drop project membership for %s: %v", repo.Root, err)
 	}
 	s.dropUnregisteredRepoState(repo.Root)
-	writeJSON(w, http.StatusOK, RepoView{Repo: repo})
+	writeJSON(w, http.StatusOK, RepoView{Repo: repo}.withKind())
 }
 
 // seeded reports whether root is startable because the static SERVE_WORKSPACE
@@ -243,7 +243,9 @@ func (s *Server) seeded(root string) bool {
 // handleRepoGitignore keeps the repo's .trau.ini out of git, backing the wizard's
 // essentials-step toggle (CLI parity with SetupProject). It writes into the repo,
 // so it follows the same exposure gate as registration. The ensure is idempotent:
-// a repo already ignoring .trau.ini is left untouched.
+// a repo already ignoring .trau.ini is left untouched. A Folder repo is not a git
+// repository — ADR 0030 keeps its config untracked for exactly that reason — so
+// the write would leave an inert .gitignore nothing reads, and is skipped.
 func (s *Server) handleRepoGitignore(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -256,6 +258,10 @@ func (s *Server) handleRepoGitignore(w http.ResponseWriter, r *http.Request) {
 	repo, ok := s.findRepo(r.PathValue("repo"))
 	if !ok {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown repo"})
+		return
+	}
+	if folderrepo.Is(repo.Root) {
+		writeJSON(w, http.StatusOK, map[string]any{"repo": repo.Name, "gitignored": false})
 		return
 	}
 	if err := state.EnsureGitignore(repo.Root, ""); err != nil {

@@ -7,7 +7,7 @@ import { createQAAccount } from './qa'
 
 export type TrackerProvider = 'linear' | 'jira' | 'azure' | 'internal'
 
-export type FindingState = 'ok' | 'warn' | 'missing' | 'info'
+export type FindingState = 'ok' | 'warn' | 'missing' | 'info' | 'fail'
 
 export interface InspectCredential {
   provider: string
@@ -28,13 +28,23 @@ export interface InspectPrefill {
   epic_flow: boolean
 }
 
+// One Child repo of a folder under inspection: the branch it agrees or disagrees
+// on, and whether a run could open a pull request in it.
+export interface InspectChild {
+  name: string
+  default_branch: string
+  has_remote: boolean
+}
+
 export interface RepoInspection {
   path: string
   repo_name: string
+  kind: 'repo' | 'folder'
   has_trau_ini: boolean
   detected_provider?: string
   credentials: InspectCredential[]
   default_branch: string
+  children?: InspectChild[]
   findings: DetectionFinding[]
   prefill?: InspectPrefill
 }

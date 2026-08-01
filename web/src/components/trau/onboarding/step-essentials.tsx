@@ -37,6 +37,8 @@ export function StepEssentials({
   const [readyLabel, setReadyLabel] = useState(prefill?.ready_label ?? 'ready-for-agent')
   const [epicFlow, setEpicFlow] = useState(prefill?.epic_flow ?? false)
   const [gitignore, setGitignore] = useState(true)
+  // A Folder repo is not a git repository, so a .gitignore in it is inert clutter.
+  const gitignorable = members.filter((m) => m.inspection.kind !== 'folder')
 
   const fields: EssentialsFields = {
     baseBranches: members.map((m) => ({
@@ -67,7 +69,7 @@ export function StepEssentials({
         ),
       )
       if (gitignore) {
-        pending.push(...members.map((m) => () => ensureGitignore(m.root)))
+        pending.push(...gitignorable.map((m) => () => ensureGitignore(m.root)))
       }
       const failures: unknown[] = []
       for (const write of pending) {
@@ -142,17 +144,19 @@ export function StepEssentials({
         description="Stack an epic's sub-issues on a shared integration branch instead of one PR each."
       />
 
-      <Toggle
-        id="gitignore"
-        checked={gitignore}
-        onChange={setGitignore}
-        label="add .trau/ to .gitignore"
-        description={
-          members.length > 1
-            ? 'Keeps the local run store and generated config out of version control in every member repo.'
-            : 'Keeps the local run store and generated config out of version control.'
-        }
-      />
+      {gitignorable.length > 0 && (
+        <Toggle
+          id="gitignore"
+          checked={gitignore}
+          onChange={setGitignore}
+          label="add .trau/ to .gitignore"
+          description={
+            gitignorable.length > 1
+              ? 'Keeps the local run store and generated config out of version control in every member repo.'
+              : 'Keeps the local run store and generated config out of version control.'
+          }
+        />
+      )}
 
       <a
         href="/settings"

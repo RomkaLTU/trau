@@ -35,6 +35,7 @@ function repoView(freshness?: RepoFreshness): RepoView {
     allowed: true,
     registered: true,
     seeded: false,
+    kind: "repo",
     freshness,
   };
 }

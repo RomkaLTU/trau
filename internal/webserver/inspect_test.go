@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -126,6 +127,44 @@ func TestInspectRemotelessRepoReadsAsLocalDelivery(t *testing.T) {
 	}
 	if !strings.Contains(f.Value, "no origin remote") || !strings.Contains(f.Value, "delivers locally") {
 		t.Errorf("git finding value = %q, want it to name local delivery", f.Value)
+	}
+}
+
+// TestInspectFolderRepoReadsItsChildren holds folder inspection to what the Child
+// repos say rather than to the folder's own absent git facts: the branch they
+// agree on, a row each, and none of the no-origin copy a folder can never earn.
+func TestInspectFolderRepoReadsItsChildren(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	folder := filepath.Join(t.TempDir(), "services")
+	for _, name := range []string{"api", "docs", "web"} {
+		realGitRepo(t, filepath.Join(folder, name), "main", "https://github.com/rd/"+name+".git")
+	}
+	ts := inspectServer(t, t.TempDir())
+
+	res, insp := postInspect(t, ts, folder)
+	defer func() { _ = res.Body.Close() }()
+
+	if insp.Kind != repoKindFolder {
+		t.Fatalf("kind = %q, want %q", insp.Kind, repoKindFolder)
+	}
+	if insp.DefaultBranch != "main" {
+		t.Errorf("default branch = %q, want main", insp.DefaultBranch)
+	}
+	want := []InspectChild{
+		{Name: "api", DefaultBranch: "main", HasRemote: true},
+		{Name: "docs", DefaultBranch: "main", HasRemote: true},
+		{Name: "web", DefaultBranch: "main", HasRemote: true},
+	}
+	if !slices.Equal(insp.Children, want) {
+		t.Errorf("children = %+v, want %+v", insp.Children, want)
+	}
+	if f := findingFor(t, insp, "child repositories"); f.Value != "3" || f.State != findingOK {
+		t.Errorf("child count finding = %+v, want 3 / ok", f)
+	}
+	for _, f := range insp.Findings {
+		if f.Label == "git repository" {
+			t.Errorf("folder reported %+v, but it has no origin of its own to report on", f)
+		}
 	}
 }
 

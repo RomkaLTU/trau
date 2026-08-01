@@ -435,8 +435,8 @@ function RepoOption({
         >
           {repo.name}
         </span>
-        <span className="truncate font-mono text-[0.65rem] text-muted-foreground">
-          {repo.root}
+        <span className="break-words font-mono text-[0.65rem] text-muted-foreground">
+          {repoSubtitle(repo)}
         </span>
       </span>
       {active && (
@@ -444,6 +444,18 @@ function RepoOption({
       )}
     </button>
   )
+}
+
+// A Folder repo is an ordinary Repo — one board, one queue, one row — so its
+// folder-ness rides on the subtitle rather than a badge of its own. The count
+// belongs here and not in the right-aligned slot the Project group header uses,
+// which would read as a project. The subtitle wraps rather than truncates: the
+// sidebar is narrower than the folder marker alone, so a single clipped line
+// would drop the one thing the row has to say.
+function repoSubtitle(repo: RepoView): string {
+  if (repo.kind !== 'folder') return repo.root
+  const count = repo.child_repos ?? 0
+  return `${repo.root} · folder repo, ${count} ${count === 1 ? 'repository' : 'repositories'}`
 }
 
 function RepoIcon({ state }: { state: RepoBadgeState }) {

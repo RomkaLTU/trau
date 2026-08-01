@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/folderrepo"
 	"github.com/RomkaLTU/trau/internal/logger"
 	"github.com/RomkaLTU/trau/internal/registry"
 )
@@ -35,16 +36,39 @@ type Instance struct {
 // observe-only. Registered marks a repo whose startability comes from a web
 // registration rather than the SERVE_WORKSPACE seed, so the UI offers unregister
 // only where it applies. Seeded marks the config-owned grant no removal can take
-// back, which a registration can overlap. Freshness carries the issue-store sync
-// state and is attached only on the repos API, where the background sync surfaces
-// it.
+// back, which a registration can overlap. Kind tells a Folder repo from an
+// ordinary one and ChildRepos counts the Child repos behind it. Freshness carries
+// the issue-store sync state and is attached only on the repos API, where the
+// background sync surfaces it.
 type RepoView struct {
 	registry.Repo
 	Live       bool           `json:"live"`
 	Allowed    bool           `json:"allowed"`
 	Registered bool           `json:"registered"`
 	Seeded     bool           `json:"seeded"`
+	Kind       string         `json:"kind"`
+	ChildRepos int            `json:"child_repos,omitempty"`
 	Freshness  *RepoFreshness `json:"freshness,omitempty"`
+}
+
+const (
+	repoKindRepo   = "repo"
+	repoKindFolder = "folder"
+)
+
+// withKind fills in the folder facts, derived on every read rather than stored:
+// an ordinary repo costs the one stat the scan short-circuits on, and only a real
+// Folder repo pays the directory read. The instances resource polls every few
+// seconds, and that scan is the price of a count that is always right and a
+// registration store that never has to be told a child was cloned or removed. A
+// directory that cannot be read reads as an ordinary repo rather than failing the
+// request.
+func (v RepoView) withKind() RepoView {
+	v.Kind = repoKindRepo
+	if census := folderrepo.Scan(v.Root); census.IsFolder {
+		v.Kind, v.ChildRepos = repoKindFolder, len(census.Children)
+	}
+	return v
 }
 
 // RepoFreshness is a repo's issue-store freshness: its derived health state, when
