@@ -5,6 +5,7 @@ import {
   CheckCheck,
   GitMerge,
   MessageCircleQuestion,
+  PackageCheck,
   TriangleAlert,
   type LucideIcon,
 } from "lucide-react";
@@ -37,6 +38,14 @@ const KIND_ICON: Record<NotificationKind, LucideIcon> = {
   run_faulted: TriangleAlert,
   run_quarantined: TriangleAlert,
   run_awaiting_merge: GitMerge,
+  epic_delivered: PackageCheck,
+};
+
+// A delivery is the one notification that is good news, so it wears the done tone
+// rather than the attention one every other run kind shares.
+const KIND_TONE: Partial<Record<NotificationKind, string>> = {
+  grill_question: "text-primary",
+  epic_delivered: "text-done",
 };
 
 export function NotificationBell() {
@@ -175,7 +184,7 @@ function NotificationRow({
       <Icon
         className={cn(
           "mt-0.5 size-4 shrink-0",
-          notification.kind === "grill_question" ? "text-primary" : "text-warn",
+          KIND_TONE[notification.kind] ?? "text-warn",
           !unread && "opacity-50",
         )}
         aria-hidden="true"

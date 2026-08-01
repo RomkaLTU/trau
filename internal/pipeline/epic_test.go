@@ -396,7 +396,8 @@ func TestFinalizeEpicBracketsShippingWithReleasing(t *testing.T) {
 }
 
 // A drift conflict the resolving agent could not clear leaves the epic PR to a
-// human; the checkpoint says so instead of reading as trau still working on it.
+// human; the checkpoint says so instead of reading as trau still working on it,
+// and the decline is typed so the caller never records a delivery over it.
 func TestFinalizeEpicHandsOffWhenSyncConflictsRemain(t *testing.T) {
 	tr := doneEpicTracker()
 	gh := &epicGitHub{createURL: "https://github.test/pr/42"}
@@ -405,18 +406,21 @@ func TestFinalizeEpicHandsOffWhenSyncConflictsRemain(t *testing.T) {
 	p.Runner = fakeRunner{}
 	p.PhaseLogs = newMemPhaseLogs()
 	p.RunsDir = t.TempDir()
+	var buf bytes.Buffer
+	p.Events = event.New(&buf)
 
-	if err := p.FinalizeEpic(context.Background()); err != nil {
-		t.Fatalf("FinalizeEpic returned error: %v", err)
-	}
+	err := p.FinalizeEpic(context.Background())
+	assertEpicHandOffError(t, err, "https://github.test/pr/42")
 	if gh.mergeCalls != 0 {
 		t.Fatalf("an unresolved conflict must not merge, got %d merges", gh.mergeCalls)
 	}
 	assertEpicHandedOff(t, p)
+	assertEpicAwaitingMergeNotified(t, &buf)
 }
 
 // A gate that never went green is the same hand-off: the PR is left for review,
-// and the epic checkpoint records that a human owns the release now.
+// the epic checkpoint records that a human owns the release now, and the operator
+// hears about it.
 func TestFinalizeEpicHandsOffWhenCINeverGreen(t *testing.T) {
 	tr := doneEpicTracker()
 	gh := &epicGitHub{
@@ -424,11 +428,101 @@ func TestFinalizeEpicHandsOffWhenCINeverGreen(t *testing.T) {
 		checks:    []Check{{Name: "ci/test", Bucket: "fail"}},
 	}
 	p := shippableEpicPipeline(t, gh, tr)
+	var buf bytes.Buffer
+	p.Events = event.New(&buf)
+
+	err := p.FinalizeEpic(context.Background())
+	assertEpicHandOffError(t, err, "https://github.test/pr/42")
+	assertEpicHandedOff(t, p)
+	assertEpicAwaitingMergeNotified(t, &buf)
+	if got := p.State.Get("COD-1", "PR_URL"); got != "https://github.test/pr/42" {
+		t.Errorf("epic PR_URL = %q, want the handed-off PR recorded so a later merge can settle it", got)
+	}
+	if got := p.State.Get("COD-1", "PR_STATUS"); got != prStatusAwaitingMerge {
+		t.Errorf("epic PR_STATUS = %q, want %q", got, prStatusAwaitingMerge)
+	}
+}
+
+// A release that actually lands announces itself: an epic can drain in the
+// background for hours, so the merge that ends it owes the operator a push
+// carrying the PR rather than only the absence of a problem.
+func TestFinalizeEpicNotifiesTheDelivery(t *testing.T) {
+	gh := &epicGitHub{
+		createURL: "https://github.test/pr/42",
+		checks:    []Check{{Name: "ci/test", Bucket: "pass"}},
+	}
+	p := shippableEpicPipeline(t, gh, doneEpicTracker())
+	var buf bytes.Buffer
+	p.Events = event.New(&buf)
 
 	if err := p.FinalizeEpic(context.Background()); err != nil {
 		t.Fatalf("FinalizeEpic returned error: %v", err)
 	}
-	assertEpicHandedOff(t, p)
+	evs := deliveredEvents(t, &buf)
+	if len(evs) != 1 {
+		t.Fatalf("emitted %d epic_delivered events, want exactly 1", len(evs))
+	}
+	if got := strField(evs[0].Fields, "ticket"); got != "COD-1" {
+		t.Errorf("ticket field = %q, want the epic id", got)
+	}
+	if got := strField(evs[0].Fields, "url"); got != "https://github.test/pr/42" {
+		t.Errorf("url field = %q, want the epic PR url", got)
+	}
+	if !strings.Contains(evs[0].Msg, "https://github.test/pr/42") {
+		t.Errorf("delivery message = %q, want it to name the PR", evs[0].Msg)
+	}
+
+	if err := p.FinalizeEpic(context.Background()); err != nil {
+		t.Fatalf("re-run FinalizeEpic returned error: %v", err)
+	}
+	if evs := deliveredEvents(t, &buf); len(evs) != 1 {
+		t.Fatalf("emitted %d epic_delivered events after a re-finalize, want the news pushed once", len(evs))
+	}
+}
+
+func deliveredEvents(t *testing.T, buf *bytes.Buffer) []event.Event {
+	t.Helper()
+	var out []event.Event
+	for _, ev := range stateChangeEvents(t, buf) {
+		if strField(ev.Fields, "state") == "epic_delivered" {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// assertEpicHandOffError pins the typed decline a parked release ends on: the
+// queue reads it to settle the item awaiting a human, and the reason it carries
+// is what the item's card shows, so it must name the PR to land.
+func assertEpicHandOffError(t *testing.T, err error, prURL string) {
+	t.Helper()
+	var h *EpicHandOffError
+	if !errors.As(err, &h) {
+		t.Fatalf("FinalizeEpic = %v, want an *EpicHandOffError", err)
+	}
+	if h.PRURL != prURL {
+		t.Errorf("hand-off PRURL = %q, want %q", h.PRURL, prURL)
+	}
+	if prURL != "" && !strings.Contains(h.Error(), prURL) {
+		t.Errorf("hand-off error = %q, want it to name the PR", h.Error())
+	}
+}
+
+// assertEpicAwaitingMergeNotified pins the one notification a hand-off owes the
+// operator: the same awaiting-merge pathway the ticket-level manual merge uses,
+// attributed to the epic and carrying its PR.
+func assertEpicAwaitingMergeNotified(t *testing.T, buf *bytes.Buffer) {
+	t.Helper()
+	evs := awaitingMergeEvents(t, buf)
+	if len(evs) != 1 {
+		t.Fatalf("emitted %d awaiting_merge events, want exactly 1", len(evs))
+	}
+	if got := strField(evs[0].Fields, "ticket"); got != "COD-1" {
+		t.Errorf("ticket field = %q, want the epic id", got)
+	}
+	if got := strField(evs[0].Fields, "url"); got != "https://github.test/pr/42" {
+		t.Errorf("url field = %q, want the epic PR url", got)
+	}
 }
 
 // AUTO_MERGE=0 hands the green PR to the operator the moment the wait starts, so a
@@ -465,9 +559,10 @@ func TestFinalizeEpicLocallyBracketsShippingWithReleasing(t *testing.T) {
 		autoMerge   bool
 		wantPhase   string
 		wantRelease string
+		wantHandOff bool
 	}{
-		{"operator merges it", false, state.Releasing, state.ReleaseAwaitingHuman},
-		{"trau merges it", true, state.Merged, ""},
+		{"operator merges it", false, state.Releasing, state.ReleaseAwaitingHuman, true},
+		{"trau merges it", true, state.Merged, "", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -475,7 +570,11 @@ func TestFinalizeEpicLocallyBracketsShippingWithReleasing(t *testing.T) {
 			p.Git = &localGit{}
 			p.AutoMerge = tc.autoMerge
 
-			if err := p.FinalizeEpic(context.Background()); err != nil {
+			err := p.FinalizeEpic(context.Background())
+			switch {
+			case tc.wantHandOff:
+				assertEpicHandOffError(t, err, "")
+			case err != nil:
 				t.Fatalf("FinalizeEpic returned error: %v", err)
 			}
 			if got := p.State.Get("COD-1", "PHASE"); got != tc.wantPhase {
@@ -777,9 +876,7 @@ func TestFinalizeEpicLeavesEpicOpenWhenPRIsNotMerged(t *testing.T) {
 	}
 	p := shippableEpicPipeline(t, gh, tr)
 
-	if err := p.FinalizeEpic(context.Background()); err != nil {
-		t.Fatalf("FinalizeEpic returned error: %v", err)
-	}
+	assertEpicHandOffError(t, p.FinalizeEpic(context.Background()), "https://github.test/pr/42")
 	if gh.mergeCalls != 0 {
 		t.Fatalf("a red epic gate must not merge, got %d merges", gh.mergeCalls)
 	}

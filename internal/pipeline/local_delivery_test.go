@@ -351,8 +351,9 @@ func TestFinalizeEpicLeavesTheMergeToTheOperatorWhenAutoMergeIsOff(t *testing.T)
 	p.EpicID = "COD-1"
 	p.exit.epicBranch = "epic/COD-1-checkout-rebuild"
 
-	if err := p.FinalizeEpic(context.Background()); err != nil {
-		t.Fatalf("FinalizeEpic = %v, want nil", err)
+	var handOff *EpicHandOffError
+	if err := p.FinalizeEpic(context.Background()); !errors.As(err, &handOff) {
+		t.Fatalf("FinalizeEpic = %v, want an *EpicHandOffError", err)
 	}
 	if git.squashCalls != 0 {
 		t.Errorf("squash-merged %d times with AUTO_MERGE=0, want 0", git.squashCalls)

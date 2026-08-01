@@ -63,7 +63,7 @@ func seedQueue(t *testing.T, s *Server, root string, draining bool, items ...que
 			if err := st.Pause(it.ID, it.Reason); err != nil {
 				t.Fatalf("seed paused %s: %v", it.ID, err)
 			}
-		case queue.StatusDone, queue.StatusFailed:
+		case queue.StatusDone, queue.StatusFailed, queue.StatusAwaitingMerge:
 			if err := st.Finish(it.ID, it.Status, it.Reason); err != nil {
 				t.Fatalf("seed finish %s: %v", it.ID, err)
 			}
@@ -218,6 +218,18 @@ func TestDrainTickDecisions(t *testing.T) {
 			wantDraining:  boolPtr(true),
 		},
 		{
+			name:          "a handed-off epic release settles awaiting-merge and keeps draining",
+			items:         []queue.Item{{ID: "COD-1", Kind: queue.KindEpic, Status: queue.StatusRunning, PID: 7}, {ID: "COD-2"}},
+			draining:      true,
+			outcomeClass:  state.FailAwaitingMerge,
+			outcomeReason: "epic COD-1 awaits a human — CI never went green: https://gh/pr/7",
+			wantAction:    drainReconcile,
+			wantSpawns:    0,
+			wantStatus:    map[string]string{"COD-1": queue.StatusAwaitingMerge, "COD-2": queue.StatusPending},
+			wantReason:    map[string]string{"COD-1": "epic COD-1 awaits a human — CI never went green: https://gh/pr/7"},
+			wantDraining:  boolPtr(true),
+		},
+		{
 			name:          "fault pauses the queue and parks the item",
 			items:         []queue.Item{{ID: "COD-1", Status: queue.StatusRunning, PID: 7}, {ID: "COD-2"}},
 			draining:      true,
@@ -352,8 +364,9 @@ func TestDrainTickDecisions(t *testing.T) {
 func boolPtr(b bool) *bool { return &b }
 
 // TestClassifyDrainOutcome table-drives the outcome-class → queue-action mapping
-// for every class the loop records: a clean finish and a give-up drain on (done /
-// failed), while a fault and a provider pause park the item and stop the drain.
+// for every class the loop records: a clean finish, a give-up and a handed-off
+// epic release drain on (done / failed / awaiting-merge), while a fault and a
+// provider pause park the item and stop the drain.
 func TestClassifyDrainOutcome(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -365,6 +378,7 @@ func TestClassifyDrainOutcome(t *testing.T) {
 		{name: "clean finish settles done", class: "", wantStatus: queue.StatusDone, wantPause: false},
 		{name: "unknown outcome parks regardless of on-fault", class: classUnknown, onFault: queue.OnFaultSkip, wantStatus: queue.StatusPaused, wantPause: true},
 		{name: "give-up settles failed and drains on", class: state.FailGaveUp, wantStatus: queue.StatusFailed, wantPause: false},
+		{name: "handed-off epic settles awaiting-merge and drains on", class: state.FailAwaitingMerge, onFault: queue.OnFaultHalt, wantStatus: queue.StatusAwaitingMerge, wantPause: false},
 		{name: "fault pauses the queue by default", class: state.FailFaulted, onFault: queue.OnFaultHalt, wantStatus: queue.StatusPaused, wantPause: true},
 		{name: "fault skips on on-fault=skip", class: state.FailFaulted, onFault: queue.OnFaultSkip, wantStatus: queue.StatusFailed, wantPause: false},
 		{name: "provider pause parks regardless of on-fault", class: state.FailPaused, onFault: queue.OnFaultSkip, wantStatus: queue.StatusPaused, wantPause: true},
@@ -636,6 +650,37 @@ func TestDrainSpawnsWithProviderOverride(t *testing.T) {
 		t.Fatalf("tick = %q, %v, want spawn of the epic", act, err)
 	}
 	assertArgs(t, fake.spawns[1].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-2", "--provider", "kimi", "--drain-report", "COD-2"})
+}
+
+// An epic release handed to a human parks that item visibly and nothing else: the
+// queue is not the operator's inbox, so the item behind it launches on the very
+// next tick instead of waiting on a merge only a person can make.
+func TestDrainStartsTheNextItemAfterAHandedOffEpic(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	s.drain.outcome = func(string, queue.Item) (string, string) {
+		return state.FailAwaitingMerge, "epic COD-1 awaits a human — CI never went green: https://gh/pr/7"
+	}
+	seedQueue(t, s, root, true,
+		queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusRunning, PID: 7},
+		queue.Item{Kind: queue.KindTicket, ID: "COD-9"},
+	)
+
+	if act, err := s.drain.tick(root); err != nil || act != drainReconcile {
+		t.Fatalf("settling tick = %q, %v, want reconcile", act, err)
+	}
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusAwaitingMerge {
+		t.Fatalf("COD-1 = %q, want %q", got, queue.StatusAwaitingMerge)
+	}
+	if !drainingOf(t, s, root) {
+		t.Fatal("a hand-off must not stop the drain — the rest of the queue is unaffected")
+	}
+	if act, err := s.drain.tick(root); err != nil || act != drainSpawn {
+		t.Fatalf("next tick = %q, %v, want the item behind the epic to spawn", act, err)
+	}
+	if len(fake.spawns) != 1 {
+		t.Fatalf("spawns = %d, want 1", len(fake.spawns))
+	}
+	assertArgs(t, fake.spawns[0].Args, []string{"--repo", root, "--no-tui", "--parent", "COD-9", "--once", "--drain-report", "COD-9"})
 }
 
 // TestDrainSkipsDuplicateTicket proves a standalone ticket an earlier queued
@@ -1352,6 +1397,34 @@ func TestReconcileQueueSweep(t *testing.T) {
 			wantStatus:   queue.StatusDone,
 			wantReason:   reconciledReason(evidencePR),
 			wantSubState: "done",
+		},
+		{
+			name: "awaiting-merge epic whose PR the human merged settles done",
+			item: queue.Item{
+				Kind:      queue.KindEpic,
+				ID:        "COD-1",
+				Status:    queue.StatusAwaitingMerge,
+				Reason:    "epic COD-1 awaits a human — CI never went green: https://gh/pr/42",
+				SubIssues: []queue.SubIssue{{ID: "COD-2", State: "backlog"}},
+			},
+			checkpoint:   map[string]string{"PHASE": state.Releasing, "PR": "42", "RELEASE": state.ReleaseAwaitingHuman},
+			prState:      "MERGED",
+			wantStatus:   queue.StatusDone,
+			wantReason:   reconciledReason(evidencePR),
+			wantSubState: "done",
+		},
+		{
+			name: "awaiting-merge epic whose PR nobody merged keeps waiting",
+			item: queue.Item{
+				Kind:   queue.KindEpic,
+				ID:     "COD-1",
+				Status: queue.StatusAwaitingMerge,
+				Reason: "epic COD-1 awaits a human — CI never went green: https://gh/pr/42",
+			},
+			checkpoint: map[string]string{"PHASE": state.Releasing, "PR": "42", "RELEASE": state.ReleaseAwaitingHuman},
+			prState:    "OPEN",
+			wantStatus: queue.StatusAwaitingMerge,
+			wantReason: "epic COD-1 awaits a human — CI never went green: https://gh/pr/42",
 		},
 		{
 			name:       "paused item whose PR is still open stays parked",

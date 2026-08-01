@@ -10,7 +10,12 @@ import { draftItemId } from "./inbox";
 import type { RepoView } from "./instances";
 
 export type NotificationKind =
-  "grill_question" | "run_paused" | "run_faulted" | "run_quarantined" | "run_awaiting_merge";
+  | "grill_question"
+  | "run_paused"
+  | "run_faulted"
+  | "run_quarantined"
+  | "run_awaiting_merge"
+  | "epic_delivered";
 
 // HubNotification mirrors the hub's notifications resource — named apart from the
 // browser Notification the OS layer raises (@/lib/notifications). Repo is the
@@ -190,6 +195,7 @@ export function notificationTarget(
     case "run_faulted":
     case "run_quarantined":
     case "run_awaiting_merge":
+    case "epic_delivered":
       return { kind: "run", repo, ticket: notification.ref };
     default:
       return null;

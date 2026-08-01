@@ -353,10 +353,15 @@ export function releaseGateLabel(queue?: QueueResponse): string {
 }
 
 // queueTerminal reports whether an item has already settled: the drain only
-// launches pending or paused items, so a done, failed, or skipped one no longer
-// contributes work to a Start.
+// launches pending or paused items, so a done, failed, skipped, or awaiting-merge
+// one no longer contributes work to a Start.
 export function queueTerminal(status: string): boolean {
-  return status === 'done' || status === 'failed' || status === 'skipped'
+  return (
+    status === 'done' ||
+    status === 'failed' ||
+    status === 'skipped' ||
+    status === 'awaiting-merge'
+  )
 }
 
 // queueStatusRunnable mirrors the hub's own queue.Runnable rule: the drain

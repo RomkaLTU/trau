@@ -6,7 +6,14 @@ import type { FailureClass, PRStatus, ReleaseMarker, Run } from './runs'
 import { RELEASING, releasePill, stepPill } from './steps'
 
 export type TicketStatus =
-  'done' | 'running' | 'paused' | 'stopped' | 'failed' | 'skipped' | 'pending'
+  | 'done'
+  | 'running'
+  | 'paused'
+  | 'stopped'
+  | 'failed'
+  | 'skipped'
+  | 'awaiting-merge'
+  | 'pending'
 
 export interface TimelineTicket {
   id: string
@@ -51,6 +58,7 @@ export interface FinalizeEntry {
   source?: string
   phase: string
   release?: ReleaseMarker
+  prUrl?: string
   failureClass?: FailureClass
   reason?: string
   activity?: string
@@ -211,6 +219,8 @@ function resolve(
       return { ...base, status: 'failed', reason: leaf.reason }
     case 'skipped':
       return { ...base, status: 'skipped', reason: leaf.reason }
+    case 'awaiting-merge':
+      return { ...base, status: 'awaiting-merge', reason: leaf.reason }
     case 'paused':
       return { ...base, status: 'paused', reason: leaf.reason }
     case 'running':
@@ -225,6 +235,7 @@ function isSettled(status: TicketStatus): boolean {
     status === 'done' ||
     status === 'failed' ||
     status === 'skipped' ||
+    status === 'awaiting-merge' ||
     status === 'paused' ||
     status === 'stopped'
   )
@@ -270,6 +281,7 @@ function epicFinalize(
       source: item.source,
       phase: run.phase,
       release: run.release,
+      prUrl: run.pr_url,
       failureClass: run.failure_class,
       reason: run.failure_reason,
       activity: live ? instance?.activity : undefined,
@@ -434,7 +446,13 @@ export function finishedReducer(
 }
 
 export type SettleLabel =
-  'merged' | 'done' | 'failed' | 'skipped' | 'paused' | 'stopped'
+  | 'merged'
+  | 'done'
+  | 'failed'
+  | 'skipped'
+  | 'awaiting merge'
+  | 'paused'
+  | 'stopped'
 
 export interface SettleTally {
   label: SettleLabel
@@ -473,6 +491,10 @@ export function finishedView(
     {
       label: 'skipped',
       count: settled.filter((t) => t.status === 'skipped').length,
+    },
+    {
+      label: 'awaiting merge',
+      count: settled.filter((t) => t.status === 'awaiting-merge').length,
     },
     {
       label: 'paused',
@@ -524,6 +546,8 @@ export function ticketPill(t: TimelineTicket): {
         : { state: 'fail', label: 'fault' }
     case 'skipped':
       return { state: 'info', label: 'skipped' }
+    case 'awaiting-merge':
+      return { state: 'warn', label: 'awaiting human merge' }
     case 'pending':
       return { state: 'todo', label: 'pending' }
   }

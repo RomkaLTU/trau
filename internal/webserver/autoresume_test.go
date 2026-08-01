@@ -159,6 +159,34 @@ func TestAutoResumeIgnoresNonBlamelessPauses(t *testing.T) {
 	}
 }
 
+// TestAutoResumeLeavesAHandedOffEpicAlone: a release parked for a human is not a
+// wall that clears on its own — re-attempting it would re-run a finalize whose
+// only remaining move is the operator's merge. The item settles awaiting-merge
+// without ever paying into an auto-resume plan, so the drain moves straight on to
+// the next item and stops when the queue runs dry.
+func TestAutoResumeLeavesAHandedOffEpicAlone(t *testing.T) {
+	s, fake, root := drainServer(t, "acme")
+	s.drain.autoTries = func(string) int { return 2 }
+	s.drain.backoff = 0
+	s.drain.outcome = func(string, queue.Item) (string, string) {
+		return state.FailAwaitingMerge, "epic COD-1 awaits a human — CI never went green: https://gh/pr/7"
+	}
+	seedQueue(t, s, root, true, queue.Item{Kind: queue.KindEpic, ID: "COD-1", Status: queue.StatusRunning, PID: 7})
+
+	if act, _ := s.drain.tick(root); act != drainReconcile {
+		t.Fatalf("settling tick = %q, want reconcile", act)
+	}
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusAwaitingMerge {
+		t.Fatalf("COD-1 = %q, want %q", got, queue.StatusAwaitingMerge)
+	}
+	if act, _ := s.drain.tick(root); act != drainStop {
+		t.Fatalf("tick after the hand-off = %q, want stop — nothing is re-armed", act)
+	}
+	if len(fake.spawns) != 0 {
+		t.Fatalf("spawns = %d, want none — a human's merge is not a re-attempt", len(fake.spawns))
+	}
+}
+
 func TestAutoResumeOffByDefault(t *testing.T) {
 	s, _, root := drainServer(t, "acme")
 	s.drain.backoff = 0

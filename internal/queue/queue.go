@@ -33,6 +33,11 @@ const (
 	// StatusSkipped marks an item the drain passed over without running: a
 	// duplicate of work already claimed elsewhere in the same queue.
 	StatusSkipped = "skipped"
+	// StatusAwaitingMerge marks an epic whose release trau handed to a human: the
+	// run finished but the epic never shipped, so the item is settled — the drain
+	// moves on to the rest of the queue and never re-attempts it on its own —
+	// without ever reading done. The reconcile sweep settles it once the PR lands.
+	StatusAwaitingMerge = "awaiting-merge"
 )
 
 // OnFault selects what a fault does to the rest of the queue: halt parks the

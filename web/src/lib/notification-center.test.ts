@@ -47,7 +47,13 @@ describe("notificationTarget", () => {
     expect(target).toEqual({ kind: "inbox", repo: "app", issue: "draft:42" });
   });
 
-  it.each(["run_paused", "run_faulted", "run_quarantined"] as const)(
+  it.each([
+    "run_paused",
+    "run_faulted",
+    "run_quarantined",
+    "run_awaiting_merge",
+    "epic_delivered",
+  ] as const)(
     "sends %s to its run detail page with repo and ticket",
     (kind) => {
       const target = notificationTarget(notif({ kind, ref: "COD-9" }), "app");
@@ -80,6 +86,7 @@ describe("showsInAppToast", () => {
     "run_faulted",
     "run_quarantined",
     "run_awaiting_merge",
+    "epic_delivered",
   ] as const)("still toasts %s", (kind) => {
     expect(showsInAppToast(kind)).toBe(true);
   });

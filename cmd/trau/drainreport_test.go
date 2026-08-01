@@ -14,7 +14,9 @@ import (
 // failure, a crashed child, anything outside the pause taxonomy — must post
 // faulted, because an empty class settles the queue item done and marks every
 // sub-issue of an epic done with it (the COD-896 incident: an epic that never
-// ran settled done after its child died on a conflicted checkout).
+// ran settled done after its child died on a conflicted checkout). An epic whose
+// release was handed to a human posts its own class: nothing to re-attempt, but
+// nothing shipped either.
 func TestDrainClass(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -25,6 +27,8 @@ func TestDrainClass(t *testing.T) {
 		{"paused stays paused", &pipeline.PausedError{ID: "COD-1", Phase: "build", Reason: "usage limit"}, state.FailPaused},
 		{"wrapped paused stays paused", fmt.Errorf("loop: %w", &pipeline.PausedError{ID: "COD-1", Phase: "build", Reason: "usage limit"}), state.FailPaused},
 		{"declined epic finalize posts paused", &pipeline.EpicUnfinalizedError{EpicID: "COD-1", Open: []string{"COD-2"}}, state.FailPaused},
+		{"handed-off epic release posts awaiting merge", &pipeline.EpicHandOffError{EpicID: "COD-1", PRURL: "https://gh/pr/7", Reason: "CI never went green"}, state.FailAwaitingMerge},
+		{"wrapped hand-off stays awaiting merge", fmt.Errorf("loop: %w", &pipeline.EpicHandOffError{EpicID: "COD-1", Reason: "AUTO_MERGE=0"}), state.FailAwaitingMerge},
 		{"deliberate stop posts stopped", &pipeline.StoppedError{ID: "COD-1", Phase: "building"}, state.FailStopped},
 		{"fault posts faulted", &pipeline.FaultError{ID: "COD-1", Phase: "verify", Err: errors.New("push failed")}, state.FailFaulted},
 		{"generic error posts faulted, never clean", errors.New("repo has unmerged paths"), state.FailFaulted},
