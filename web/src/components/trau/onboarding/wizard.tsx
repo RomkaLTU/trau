@@ -13,6 +13,7 @@ import {
   type TrackerProvider,
   type WizardStepId,
 } from '@/lib/onboarding'
+import { StepAppURLs } from './step-appurls'
 import { StepDetect } from './step-detect'
 import { StepDone } from './step-done'
 import { StepEssentials } from './step-essentials'
@@ -113,8 +114,15 @@ export function OnboardingWizard({ initialPath = '' }: { initialPath?: string })
               onBack={() => go('tracker')}
               onContinue={(fields) => {
                 setEssentials(fields)
-                go('sync')
+                go('appurls')
               }}
+            />
+          )}
+          {step === 'appurls' && primary && (
+            <StepAppURLs
+              repo={primary.repo}
+              onBack={() => go('essentials')}
+              onContinue={() => go('sync')}
             />
           )}
           {step === 'sync' && primary && provider && (
