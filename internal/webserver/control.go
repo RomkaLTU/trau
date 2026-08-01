@@ -426,8 +426,12 @@ type EpicSubIssue struct {
 }
 
 // subIssueDone is the preview state of a child an epic run has nothing left to
-// do on.
-const subIssueDone = "done"
+// do on; subIssueQuarantined is the state of one the drain parked for a human
+// instead of shipping.
+const (
+	subIssueDone        = "done"
+	subIssueQuarantined = "quarantined"
+)
 
 // EpicPreviewResult is the outcome of an epic preview: the repo, the previewed
 // epic, and its direct sub-issues, empty when the epic has no children.

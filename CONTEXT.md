@@ -86,7 +86,7 @@ The rung a Work item type sits on, normalized away from the names any one proces
 _Avoid_: hierarchy level, rank (that's the portfolio backlog's own ordering field), tier, depth
 
 **Settled**:
-Done or canceled — nothing left for trau to run. The numerator of an Epic's board progress (settled/total) and what queue drain marks an epic's sub-issues on completion; remaining work is always total − settled. A canceled Sub-issue settles its share: an Epic with one canceled child still reaches n/n.
+Done or canceled — nothing left for trau to run. The numerator of an Epic's board progress (settled/total) and what queue drain marks an epic's sub-issues: each one as its own Checkpoint reaches a terminal phase mid-drain — merged reads done, quarantined reads quarantined — and then all of them when a clean epic finish settles the parent; remaining work is always total − settled. A canceled Sub-issue settles its share: an Epic with one canceled child still reaches n/n.
 _Avoid_: done (bare — canceled isn't done but is settled), finished, closed, resolved
 
 **Archive**:

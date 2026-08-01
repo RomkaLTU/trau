@@ -109,6 +109,22 @@ func reasonOf(t *testing.T, s *Server, root, id string) string {
 	return ""
 }
 
+func subStatesOf(t *testing.T, s *Server, root, id string) map[string]string {
+	t.Helper()
+	for _, it := range snapshot(t, s, root) {
+		if it.ID != id {
+			continue
+		}
+		states := map[string]string{}
+		for _, sub := range it.SubIssues {
+			states[sub.ID] = sub.State
+		}
+		return states
+	}
+	t.Fatalf("item %s missing from queue", id)
+	return nil
+}
+
 func drainingOf(t *testing.T, s *Server, root string) bool {
 	t.Helper()
 	_, meta, err := s.stores.Queue(root).Snapshot()
@@ -854,6 +870,70 @@ func TestDrainNoReportPausesEpicWithoutFanout(t *testing.T) {
 			if sub.State != "backlog" {
 				t.Errorf("sub %s state = %q, want its enqueue-time backlog — a park must not fan out", sub.ID, sub.State)
 			}
+		}
+	}
+}
+
+// An epic's sub-issue rows used to be an enqueue-time snapshot only the parent's
+// settle ever wrote, so a board watched an epic drain at 0/N for hours. Every
+// tick over the live epic now records what its children's own checkpoints
+// already say — merged reads done, quarantined reads quarantined rather than
+// passing for done or for untouched work — while the epic itself keeps running,
+// and its settle still stamps every row at the end.
+func TestDrainAdvancesEpicSubIssuesWhileRunning(t *testing.T) {
+	s, _, root := drainServer(t, "acme")
+	s.drain.alive = func(int) bool { return true }
+	seedQueue(t, s, root, true, queue.Item{
+		Kind:      queue.KindEpic,
+		ID:        "COD-1",
+		Status:    queue.StatusRunning,
+		PID:       7,
+		SubIssues: []queue.SubIssue{{ID: "COD-2", State: "todo"}, {ID: "COD-3", State: "todo"}},
+	})
+
+	if act, _ := s.drain.tick(root); act != drainWait {
+		t.Fatalf("act = %q, want wait while the epic's child runs", act)
+	}
+	if got := subStatesOf(t, s, root, "COD-1"); got["COD-2"] != "todo" || got["COD-3"] != "todo" {
+		t.Fatalf("sub states = %v, want both todo — no child has reached a terminal phase", got)
+	}
+
+	if err := s.stores.Checkpoints().Upsert(root, "COD-2", map[string]string{"PHASE": state.Merged}); err != nil {
+		t.Fatalf("seed merged child checkpoint: %v", err)
+	}
+	if act, _ := s.drain.tick(root); act != drainWait {
+		t.Fatalf("act = %q, want wait", act)
+	}
+	if got := subStatesOf(t, s, root, "COD-1"); got["COD-2"] != subIssueDone || got["COD-3"] != "todo" {
+		t.Fatalf("sub states = %v, want COD-2 done mid-drain and COD-3 untouched", got)
+	}
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusRunning {
+		t.Fatalf("COD-1 = %q, want it still running — the count moves before the parent settles", got)
+	}
+
+	if err := s.stores.Checkpoints().Upsert(root, "COD-3", map[string]string{"PHASE": state.Quarantined}); err != nil {
+		t.Fatalf("seed quarantined child checkpoint: %v", err)
+	}
+	if act, _ := s.drain.tick(root); act != drainWait {
+		t.Fatalf("act = %q, want wait", act)
+	}
+	if got := subStatesOf(t, s, root, "COD-1"); got["COD-3"] != subIssueQuarantined {
+		t.Fatalf("sub states = %v, want COD-3 quarantined — a parked child is neither done nor todo", got)
+	}
+
+	s.drain.alive = func(int) bool { return false }
+	if err := s.stores.Checkpoints().Upsert(root, "COD-1", map[string]string{"PHASE": state.Merged}); err != nil {
+		t.Fatalf("seed merged epic checkpoint: %v", err)
+	}
+	if act, _ := s.drain.tick(root); act != drainReconcile {
+		t.Fatalf("act = %q, want reconcile", act)
+	}
+	if got := statusOf(t, s, root, "COD-1"); got != queue.StatusDone {
+		t.Fatalf("COD-1 = %q, want done", got)
+	}
+	for id, st := range subStatesOf(t, s, root, "COD-1") {
+		if st != subIssueDone {
+			t.Errorf("sub %s state = %q after the settle, want done — the settle still stamps every row", id, st)
 		}
 	}
 }
