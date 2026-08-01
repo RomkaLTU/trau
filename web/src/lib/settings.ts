@@ -30,7 +30,8 @@ const SECTION_DESCRIPTIONS: Record<string, string> = {
   'Per-phase routing':
     'Override model, effort, and tool restrictions per pipeline phase.',
   'Pipeline behavior': 'Iteration limits and optional pipeline phases.',
-  Verification: 'How finished work is checked before handoff.',
+  Verification:
+    'How finished work is checked before handoff. The URLs browser verify drives live on the App URLs card on Overview.',
   'Cost caps': 'Hard spend limits per ticket and per day.',
   'Grilling & triage': 'Pre-run readiness checks on incoming tickets.',
   Skills: 'Skills required for runs and how they are installed.',
@@ -123,6 +124,19 @@ export function matchesQuery(item: ConfigKey, query: string): boolean {
     item.key.toLowerCase().includes(q) ||
     (item.description ?? '').toLowerCase().includes(q)
   )
+}
+
+export interface SettingsSearch {
+  q?: string
+}
+
+// The router merges this over the raw params, so a rejected q has to be
+// overwritten with undefined — omitting it leaves the raw value in place.
+export function parseSettingsSearch(
+  search: Record<string, unknown>,
+): SettingsSearch {
+  const { q } = search
+  return { q: typeof q === 'string' && q !== '' ? q : undefined }
 }
 
 export const ROUTING_SECTION = 'Per-phase routing'
@@ -248,6 +262,14 @@ export function comboboxFreeEntry(
   return suggestions.includes(trimmed) ? null : trimmed
 }
 
+// App URLs are edited as hub entries on their own page, so their ini fallback
+// keys stay out of Settings even though they remain editable in the file.
+const HIDDEN_KEYS = new Set(['APP_URL', 'APP_URLS'])
+
+export function visibleKeys(keys: ConfigKey[]): ConfigKey[] {
+  return keys.filter((k) => !HIDDEN_KEYS.has(k.key))
+}
+
 export function deriveSections(keys: ConfigKey[]): Section[] {
   const buckets = new Map<string, ConfigKey[]>()
   for (const item of keys) {
@@ -280,4 +302,29 @@ export function deriveSections(keys: ConfigKey[]): Section[] {
     })
   }
   return sections
+}
+
+export interface SettingMatch {
+  item: ConfigKey
+  section: string
+}
+
+const PALETTE_MATCH_LIMIT = 5
+
+export function matchSettings(
+  keys: ConfigKey[],
+  query: string,
+): SettingMatch[] {
+  const trimmed = query.trim()
+  if (trimmed === '') return []
+
+  const matches: SettingMatch[] = []
+  for (const section of deriveSections(keys)) {
+    for (const item of section.keys) {
+      if (!matchesQuery(item, trimmed)) continue
+      matches.push({ item, section: section.group })
+      if (matches.length === PALETTE_MATCH_LIMIT) return matches
+    }
+  }
+  return matches
 }

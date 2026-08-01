@@ -25,13 +25,22 @@ function CommandDialog({
   title = "Command Palette",
   description = "Search for a command to run...",
   className,
+  size = "default",
+  shouldFilter,
+  value,
+  onValueChange,
   children,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Root> & {
-  title?: string
-  description?: string
-  className?: string
-}) {
+}: React.ComponentProps<typeof DialogPrimitive.Root> &
+  Pick<
+    React.ComponentProps<typeof Command>,
+    "shouldFilter" | "value" | "onValueChange"
+  > & {
+    title?: string
+    description?: string
+    className?: string
+    size?: "default" | "lg"
+  }) {
   return (
     <DialogPrimitive.Root data-slot="command-dialog" {...props}>
       <DialogPrimitive.Portal>
@@ -41,7 +50,10 @@ function CommandDialog({
         />
         <DialogPrimitive.Content
           data-slot="command-dialog-content"
-          className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] overflow-hidden rounded-lg border bg-popover p-0 shadow-lg duration-200 sm:max-w-lg"
+          className={cn(
+            "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] overflow-hidden rounded-lg border bg-popover p-0 shadow-lg duration-200",
+            size === "lg" ? "sm:max-w-2xl" : "sm:max-w-lg"
+          )}
         >
           <DialogPrimitive.Title className="sr-only">
             {title}
@@ -49,31 +61,64 @@ function CommandDialog({
           <DialogPrimitive.Description className="sr-only">
             {description}
           </DialogPrimitive.Description>
-          <Command className={className}>{children}</Command>
+          <Command
+            className={className}
+            shouldFilter={shouldFilter}
+            value={value}
+            onValueChange={onValueChange}
+          >
+            {children}
+          </Command>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
   )
 }
 
+// cmdk reselects its first row on every search change, so consumers that filter
+// and highlight rows themselves keep their query out of it with detachSearch.
 function CommandInput({
   className,
+  detachSearch,
+  leading,
+  value,
+  onValueChange,
   ...props
-}: React.ComponentProps<typeof CommandPrimitive.Input>) {
+}: React.ComponentProps<typeof CommandPrimitive.Input> & {
+  detachSearch?: boolean
+  leading?: React.ReactNode
+}) {
+  const inputClassName = cn(
+    "placeholder:text-muted-foreground flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-50",
+    className
+  )
   return (
     <div
       data-slot="command-input-wrapper"
       className="flex h-9 items-center gap-2 border-b px-3"
     >
       <Search className="size-4 shrink-0 opacity-50" />
-      <CommandPrimitive.Input
-        data-slot="command-input"
-        className={cn(
-          "placeholder:text-muted-foreground flex h-10 w-full rounded-md bg-transparent py-3 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-50",
-          className
-        )}
-        {...props}
-      />
+      {leading}
+      {detachSearch ? (
+        <input
+          data-slot="command-input"
+          className={inputClassName}
+          autoComplete="off"
+          autoCorrect="off"
+          spellCheck={false}
+          value={value}
+          onChange={(e) => onValueChange?.(e.target.value)}
+          {...props}
+        />
+      ) : (
+        <CommandPrimitive.Input
+          data-slot="command-input"
+          className={inputClassName}
+          value={value}
+          onValueChange={onValueChange}
+          {...props}
+        />
+      )}
     </div>
   )
 }

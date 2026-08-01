@@ -66,6 +66,10 @@ STATUS_TODO=                 # e.g. Backlog
 STATUS_IN_PROGRESS=          # e.g. In Development
 STATUS_IN_REVIEW=            # e.g. READY FOR QA
 STATUS_DONE=                 # e.g. Released
+DELIVERED_STATE=             # status a merged ticket (and a merged epic) moves to, for workflows where a
+                             # merge is not the end of the line — e.g. READY FOR QA when only QA sign-off
+                             # closes work. The loop never moves a ticket out of this state again, and the
+                             # epic gate goes on trusting its own merge record. Empty = Done.
 PROJECT=                     # Linear project this repo owns (e.g. salonradar.com). When set, the loop only
                              # picks tickets in this project, refuses a run on a ticket from another project
                              # before any branch/checkpoint, and files bugs here. Empty = no project scoping.
@@ -248,7 +252,9 @@ VERIFY_PROOFS=on             # on = when browser verify drives the app, record a
 PROOF_RETENTION_DAYS=14      # days the hub keeps a run's raw local trace and its trau-proofs branch images
                              # before the daily sweep prunes them. 0 = keep forever. Hub-stored screenshots
                              # and rendered videos are small and always kept.
-APP_URL=http://localhost     # base URL of your locally-running app (used by browser verify)
+APP_URL=http://localhost     # base URL of your locally-running app (used by browser verify). Fallback
+                             # only: app URL entries stored on the hub for the repo replace this and
+                             # APP_URLS wholesale (ADR 0026).
 APP_URLS=                    # multi-app monorepos: per-workspace app URLs as comma-separated
                              # <workspace>=<url> pairs (e.g. web=http://localhost:3000,api=http://localhost:3001).
                              # A workspace is named by its manifest package name, directory path, or

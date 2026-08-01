@@ -1,6 +1,7 @@
 import { queryOptions } from '@tanstack/react-query'
 
 import { apiFetch } from './api'
+import type { AppURL } from './app-urls'
 
 export interface QAAccount {
   id: number
@@ -9,6 +10,8 @@ export interface QAAccount {
   description: string
   source: 'manual' | 'agent'
   secret_set: boolean
+  /** The app URL this login opens, or null when it applies to every URL. */
+  app_url_id: number | null
 }
 
 export interface QAAccountDraft {
@@ -16,6 +19,7 @@ export interface QAAccountDraft {
   username: string
   secret: string
   description: string
+  app_url_id: number | null
 }
 
 export interface QANotes {
@@ -102,17 +106,45 @@ export function draftFor(account: QAAccount | null): QAAccountDraft {
     username: account?.username ?? '',
     secret: '',
     description: account?.description ?? '',
+    app_url_id: account?.app_url_id ?? null,
   }
 }
 
-export function matchesQAAccount(a: QAAccount, query: string): boolean {
-  if (query === '') return true
-  const q = query.toLowerCase()
-  return (
-    a.label.toLowerCase().includes(q) ||
-    a.username.toLowerCase().includes(q) ||
-    a.description.toLowerCase().includes(q)
-  )
+/** The entry an account is attached to, or null when the repo no longer holds it. */
+export function attachedEntry(
+  entries: readonly AppURL[],
+  id: number | null,
+): AppURL | null {
+  return entries.find((e) => e.id === id) ?? null
+}
+
+export interface QAAccountGroup {
+  /** The app URL these logins open, or null for the “any URL” group. */
+  entry: AppURL | null
+  accounts: QAAccount[]
+}
+
+/**
+ * Buckets accounts under the app URL they are attached to, in entry order with
+ * the unattached ones last. An attachment the repo no longer holds reads as
+ * unattached.
+ */
+export function groupQAAccounts(
+  accounts: readonly QAAccount[],
+  entries: readonly AppURL[],
+): QAAccountGroup[] {
+  return [
+    ...entries.map((entry) => ({
+      entry,
+      accounts: accounts.filter((a) => a.app_url_id === entry.id),
+    })),
+    {
+      entry: null,
+      accounts: accounts.filter(
+        (a) => attachedEntry(entries, a.app_url_id) === null,
+      ),
+    },
+  ]
 }
 
 export const qaAccountsQueryOptions = (repo: string) =>

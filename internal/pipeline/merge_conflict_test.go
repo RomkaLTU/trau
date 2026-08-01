@@ -297,3 +297,54 @@ func TestSyncEpicForMergePullsRemoteEpicFirst(t *testing.T) {
 		t.Errorf("git ops = %q, want %q", got, strings.Join(want, "; "))
 	}
 }
+
+// A conflicted epic sync is a state, not a stuck run: every attempt reports the
+// Merge Activity under epic-sync<n>/<N>, so a display can name the resolution and
+// its attempt counter instead of reading the half-merged worktree as an anomaly.
+// The counter clears when the loop ends — the epic then polls CI and merges for
+// minutes without reporting an activity of its own. The phase log stays keyed by
+// the bare call label the attempt ran under.
+func TestSyncEpicForMergeConflictReportsAttemptCounter(t *testing.T) {
+	git := &mergeGit{conflicted: true, unmergedLeft: 1}
+	rec := &activityRecorder{}
+	p := newMergePipeline(t, git, &mergeGitHub{}, &fakeTracker{})
+	p.EpicID = "COD-90697"
+	p.MaxRepairs = 2
+	p.PhaseLogs = newMemPhaseLogs()
+	p.OnActivity = rec.hook()
+
+	synced, err := p.syncEpicForMerge(context.Background(), "epic/COD-90697-y")
+	if err != nil || !synced {
+		t.Fatalf("syncEpicForMerge = %v, %v; want true, nil", synced, err)
+	}
+	want := []reportedActivity{
+		{"COD-90697", "merge", "epic-sync1/2"},
+		{"COD-90697", "merge", "epic-sync2/2"},
+		{"COD-90697", "merge", ""},
+	}
+	if got, wantStr := fmt.Sprint(rec.seen), fmt.Sprint(want); got != wantStr {
+		t.Errorf("reported activities = %v, want %v", got, wantStr)
+	}
+	logs := p.PhaseLogs.(*memPhaseLogs)
+	for _, phase := range []string{"epic-sync1", "epic-sync2"} {
+		if _, ok := logs.get("COD-90697", phase); !ok {
+			t.Errorf("phase log %q missing, want the attempt's log under its call label", phase)
+		}
+	}
+}
+
+// A fast-forward sync stays silent: nothing reports a conflict-resolution state
+// for a run that never hit one.
+func TestSyncEpicForMergeCleanReportsNoActivity(t *testing.T) {
+	rec := &activityRecorder{}
+	p := newMergePipeline(t, &mergeGit{}, &mergeGitHub{}, &fakeTracker{})
+	p.EpicID = "COD-90697"
+	p.OnActivity = rec.hook()
+
+	if _, err := p.syncEpicForMerge(context.Background(), "epic/COD-90697-y"); err != nil {
+		t.Fatalf("syncEpicForMerge = %v, want nil", err)
+	}
+	if got := rec.activities(); len(got) != 0 {
+		t.Errorf("reported activities = %v, want none for a clean sync", got)
+	}
+}

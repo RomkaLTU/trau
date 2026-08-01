@@ -1,7 +1,9 @@
 import { apiFetch } from './api'
+import { createAppURL } from './app-urls'
 import type { ConfigWrite } from './config'
 import type { RepoView } from './instances'
 import { addProjectRepo, createProject, projectForRoot } from './projects'
+import { createQAAccount } from './qa'
 
 export type TrackerProvider = 'linear' | 'jira' | 'azure' | 'internal'
 
@@ -166,6 +168,7 @@ export type WizardStepId =
   | 'detect'
   | 'tracker'
   | 'essentials'
+  | 'appurls'
   | 'sync'
   | 'done'
 
@@ -179,6 +182,7 @@ export const WIZARD_STEPS: WizardStep[] = [
   { id: 'detect', label: 'detection' },
   { id: 'tracker', label: 'tracker' },
   { id: 'essentials', label: 'essentials' },
+  { id: 'appurls', label: 'app urls' },
   { id: 'sync', label: 'seed sync' },
   { id: 'done', label: 'ready' },
 ]
@@ -281,6 +285,99 @@ export function essentialsConfigWrites(fields: EssentialsFields): ConfigWrite[] 
   }
   writes.push({ key: 'EPIC_FLOW', value: fields.epicFlow ? '1' : '0', layer: 'project' })
   return writes
+}
+
+export interface AppURLAccountFields {
+  label: string
+  username: string
+  secret: string
+  description: string
+}
+
+export interface AppURLRowFields {
+  url: string
+  label: string
+  workspace: string
+  accounts: AppURLAccountFields[]
+}
+
+export function blankAppURLAccount(): AppURLAccountFields {
+  return { label: '', username: '', secret: '', description: '' }
+}
+
+export function blankAppURLRow(): AppURLRowFields {
+  return { url: '', label: '', workspace: '', accounts: [] }
+}
+
+function accountTouched(account: AppURLAccountFields): boolean {
+  const { label, username, secret, description } = account
+  return [label, username, secret, description].some((v) => v.trim() !== '')
+}
+
+function rowTouched(row: AppURLRowFields): boolean {
+  return (
+    [row.url, row.label, row.workspace].some((v) => v.trim() !== '') ||
+    row.accounts.some(accountTouched)
+  )
+}
+
+/** Rows carrying a URL. Leaving every row untouched is how the step is skipped. */
+export function appURLRowsToWrite(
+  rows: readonly AppURLRowFields[],
+): AppURLRowFields[] {
+  return rows.filter((r) => r.url.trim() !== '')
+}
+
+// A row nobody typed into never blocks the step; the clash is reported on the
+// later of the two rows so the first one entered stays the valid one.
+export function appURLRowIssue(
+  rows: readonly AppURLRowFields[],
+  index: number,
+): string | null {
+  const row = rows[index]
+  if (!rowTouched(row)) return null
+  if (row.url.trim() === '') return 'a URL is required'
+  const workspace = row.workspace.trim()
+  const clash = rows
+    .slice(0, index)
+    .some((r) => r.url.trim() !== '' && r.workspace.trim() === workspace)
+  if (clash) {
+    return workspace === ''
+      ? 'a default app URL is already listed above — give this entry a workspace'
+      : `workspace “${workspace}” is already listed above`
+  }
+  if (row.accounts.some((a) => accountTouched(a) && a.label.trim() === '')) {
+    return 'every QA account needs a label'
+  }
+  return null
+}
+
+export function appURLsCanContinue(rows: readonly AppURLRowFields[]): boolean {
+  return rows.every((_, i) => appURLRowIssue(rows, i) === null)
+}
+
+// Accounts attach to the entry they were entered under, so each URL is created
+// before its logins.
+export async function writeAppURLRows(
+  repo: string,
+  rows: readonly AppURLRowFields[],
+): Promise<void> {
+  for (const row of appURLRowsToWrite(rows)) {
+    const entry = await createAppURL(repo, {
+      label: row.label.trim(),
+      url: row.url.trim(),
+      workspace: row.workspace.trim(),
+    })
+    for (const account of row.accounts.filter(accountTouched)) {
+      await createQAAccount(repo, {
+        label: account.label.trim(),
+        username: account.username.trim(),
+        secret: account.secret,
+        description: account.description.trim(),
+        app_url_id: entry.id,
+      })
+    }
+  }
 }
 
 export type TestState = 'idle' | 'testing' | 'ok' | 'fail'

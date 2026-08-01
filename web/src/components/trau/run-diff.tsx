@@ -25,6 +25,7 @@ import {
   type DiffLayout,
   type RunDiffFile,
 } from '@/lib/rundiff'
+import type { SyncState } from '@/lib/steps'
 
 const LAYOUT_OPTIONS = [
   { value: 'split', label: 'Split' },
@@ -159,7 +160,15 @@ const DiffFileView = memo(function DiffFileView({
   )
 })
 
-export function RunDiff({ repo, ticket }: { repo: string; ticket: string }) {
+export function RunDiff({
+  repo,
+  ticket,
+  sync,
+}: {
+  repo: string
+  ticket: string
+  sync?: SyncState
+}) {
   const [layout, setLayoutState] = useState<DiffLayout>(loadDiffLayout)
   const [treeOpen, setTreeOpenState] = useState<boolean>(loadDiffTreeOpen)
   const theme = useResolvedTheme()
@@ -200,8 +209,17 @@ export function RunDiff({ repo, ticket }: { repo: string; ticket: string }) {
               Files
             </button>
           )}
-          <span className="truncate font-mono text-xs text-muted-foreground">
-            {data ? `${data.branch} ↔ ${data.base}` : ''}
+          <span
+            className={cn(
+              'truncate font-mono text-xs',
+              sync ? 'text-info' : 'text-muted-foreground',
+            )}
+          >
+            {!data
+              ? ''
+              : sync
+                ? `merge resolution in progress · ${data.base} → ${data.branch}`
+                : `${data.branch} ↔ ${data.base}`}
           </span>
         </span>
         <SegmentedControl
@@ -231,6 +249,12 @@ export function RunDiff({ repo, ticket }: { repo: string; ticket: string }) {
             />
           )}
           <div className="flex min-w-0 flex-1 flex-col gap-2">
+            {sync && (
+              <p className="font-mono text-xs text-info">
+                These are the changes {data.base} brings into {data.branch}, staged
+                by the resolution in flight — not this slice's own diff.
+              </p>
+            )}
             {data.truncated && (
               <p className="font-mono text-xs text-warn">
                 ⚠ This diff is too large to send in full — the largest files show

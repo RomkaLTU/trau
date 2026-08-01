@@ -535,6 +535,10 @@ type Pipeline struct {
 	AppURLs     map[string]string
 	AutoMerge   bool
 	MergeMethod string
+	// DeliveredState is the tracker status merged work moves to (config
+	// DELIVERED_STATE); empty means Done. When it is non-terminal the merged
+	// checkpoint, not the tracker's own terminality, settles the epic gate.
+	DeliveredState string
 	// DeterministicCommit routes a squash repo's commit phase through a templated
 	// Conventional Commit instead of a commit agent (config DETERMINISTIC_COMMIT).
 	// Non-squash merge methods always use the agent commit.
@@ -615,6 +619,12 @@ type Pipeline struct {
 	// time only for a browser-verify UI slice; a failure logs one warning and
 	// verify proceeds without stored credentials. Nil disables QA injection.
 	FetchQAAccounts func(ctx context.Context) (hubclient.QARoster, error)
+
+	// FetchAppURLs returns the repo's stored app URL entries from the hub. It is
+	// called once at ticket-run start: one or more entries replace AppURL/AppURLs
+	// wholesale (ADR 0026), and no entries — or a failed fetch, which logs one
+	// warning — leave the config-derived values in place. Nil disables the lookup.
+	FetchAppURLs func(ctx context.Context) ([]hubclient.AppURL, error)
 
 	// SaveQAAccount stores on the hub a QA credential the verifier discovered
 	// inside the repo under test, so the next run's roster is prefilled. A
@@ -722,9 +732,18 @@ type Pipeline struct {
 	// verifier was handed. Each captured account joins it, so a later attempt
 	// of the same verify offering that credential again is a duplicate.
 	// qaCaptured counts what the current verify has already stored, which is
-	// what qaCaptureMax bounds.
+	// what qaCaptureMax bounds. qaAppURLID is the app URL entry the verify is
+	// driving, so a captured credential is filed against the app it opens; zero
+	// when the target came from the ini rather than a stored entry.
 	qaRoster   []hubclient.QAAccount
 	qaCaptured int
+	qaAppURLID int64
+
+	// iniAppURLs snapshots the config-derived browser targets before the first run
+	// installs the hub's stored entries, so every ticket resolves the hub-wins rule
+	// against the configured values rather than the previous ticket's result. Nil
+	// until the first resolution.
+	iniAppURLs *appURLSet
 
 	// prompts is the ticket run's prompt renderer: the override snapshot
 	// fetched at run start layered over the built-in defaults. Edits made
@@ -840,6 +859,7 @@ func (p *Pipeline) Resume(ctx context.Context, id, from string) error {
 		p.setTitle(p.State.Get(id, "TITLE"))
 	}
 	p.loadPrompts(ctx, id)
+	p.loadAppURLs(ctx)
 	fi := state.Idx(from)
 
 	if from != "" {
@@ -910,6 +930,47 @@ func (p *Pipeline) loadPrompts(ctx context.Context, id string) {
 		return
 	}
 	p.prompts.Overrides = overrides
+}
+
+// appURLSet is a resolved pair of browser-verify targets: the default URL and the
+// per-workspace ones.
+type appURLSet struct {
+	def        string
+	workspaces map[string]string
+}
+
+// loadAppURLs resolves this ticket run's browser-verify targets from the hub's
+// stored app URL entries: the entry with no workspace becomes AppURL and the
+// workspace entries become AppURLs, replacing the configured values wholesale
+// (ADR 0026). A hub holding no entries — or one that can't be reached — leaves the
+// APP_URL/APP_URLS values exactly as configured.
+func (p *Pipeline) loadAppURLs(ctx context.Context) {
+	if p.FetchAppURLs == nil {
+		return
+	}
+	if p.iniAppURLs == nil {
+		p.iniAppURLs = &appURLSet{def: p.AppURL, workspaces: p.AppURLs}
+	}
+	p.AppURL, p.AppURLs = p.iniAppURLs.def, p.iniAppURLs.workspaces
+
+	entries, err := p.FetchAppURLs(ctx)
+	if err != nil {
+		p.logf("  ⚠ stored app URLs unavailable — using the configured APP_URL/APP_URLS: %v", err)
+		return
+	}
+	if len(entries) == 0 {
+		return
+	}
+	set := appURLSet{workspaces: map[string]string{}}
+	for _, e := range entries {
+		if e.Workspace == "" {
+			set.def = e.URL
+		} else {
+			set.workspaces[e.Workspace] = e.URL
+		}
+	}
+	p.AppURL, p.AppURLs = set.def, set.workspaces
+	p.logf("  ↳ browser verify: %d stored app URL(s) replace APP_URL/APP_URLS", len(entries))
 }
 
 // reopenedInTracker reports whether a merged ticket should rebuild: trau saw the
@@ -1253,7 +1314,7 @@ func (p *Pipeline) alreadyDelivered(ctx context.Context, id, head string) bool {
 		_ = p.State.Set(id, "BRANCH", head)
 		_ = p.State.Set(id, "PR", pr)
 		_ = p.State.Set(id, "PR_URL", url)
-		if err := p.markDone(ctx, id, "  ✓ %s already merged — marked Done"); err != nil {
+		if err := p.markDone(ctx, id, "  ✓ %s already merged"); err != nil {
 			p.logf("  checkpoint merged error (continuing): %v", err)
 		}
 		return true
@@ -2659,7 +2720,7 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 		return err
 	}
 	if prState, _ := p.GitHub.PRState(ctx, pr); prState == "MERGED" {
-		if err := p.markDone(ctx, id, "  ✓ %s already merged — marked Done"); err != nil {
+		if err := p.markDone(ctx, id, "  ✓ %s already merged"); err != nil {
 			return err
 		}
 		return ErrAlreadyDone
@@ -2688,7 +2749,7 @@ func (p *Pipeline) ciAndMerge(ctx context.Context, id string) error {
 		}
 		return fmt.Errorf("merge %s: %w", id, err)
 	}
-	return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+	return p.markDone(ctx, id, "  ✓ merged %s")
 }
 
 // landLocally closes a remote-less run: with no PR to gate and no CI to wait for,
@@ -2721,7 +2782,7 @@ func (p *Pipeline) landLocally(ctx context.Context, id string) error {
 		return p.giveUp(ctx, id, fmt.Sprintf("could not squash-merge %s into %s locally: %v", branch, base, err))
 	}
 	p.logf("  ✓ %s squash-merged into %s (%s)", branch, base, localDeliveryNote)
-	return p.markDone(ctx, id, "  ✓ delivered %s locally, marked Done")
+	return p.markDone(ctx, id, "  ✓ delivered %s locally")
 }
 
 // resolvePR is the PR the CI gate runs on, reconciled from the recorded branch when
@@ -2775,7 +2836,7 @@ func (p *Pipeline) reconcileDeliveredBranch(ctx context.Context, id, from string
 func (p *Pipeline) adoptMergedPR(ctx context.Context, id, branch, url string) error {
 	p.recordPR(id, url)
 	p.logf("  ↻ %s had no PR recorded — branch %s shipped via PR #%s", id, branch, prNumber(url))
-	if err := p.markDone(ctx, id, "  ✓ %s already merged — marked Done"); err != nil {
+	if err := p.markDone(ctx, id, "  ✓ %s already merged"); err != nil {
 		return err
 	}
 	return ErrAlreadyDone
@@ -2813,7 +2874,7 @@ func (p *Pipeline) awaitManualMerge(ctx context.Context, id, pr string) error {
 		return err
 	}
 	if merged {
-		return p.markDone(ctx, id, "  ✓ merged %s, marked Done")
+		return p.markDone(ctx, id, "  ✓ merged %s")
 	}
 	p.setPRStatus(id, prStatusClosed)
 	return p.giveUp(ctx, id, fmt.Sprintf("PR #%s closed without merge", pr))
@@ -2944,7 +3005,9 @@ func (p *Pipeline) checkoutExisting(ctx context.Context, branch string) error {
 // bounded repair-agent loop (labeled label<N>), then the merge is completed and
 // pushed. Returns false (with the merge aborted) when the conflicts could not be
 // resolved, so the caller leaves the PR to a human instead of shipping a broken
-// merge.
+// merge. The attempt counter it reports is live state, so it clears back to a bare
+// Merge on the way out — however the loop ended, the resolution is no longer in
+// flight and no caller is obliged to report something else next.
 func (p *Pipeline) syncBranchWithBase(ctx context.Context, id, branch, base, label string) (bool, error) {
 	conflicted, err := p.Git.MergeRemote(ctx, p.Remote, base)
 	if err != nil {
@@ -2957,13 +3020,14 @@ func (p *Pipeline) syncBranchWithBase(ctx context.Context, id, branch, base, lab
 		return true, nil
 	}
 
-	p.setActivity(id, activity.Merge, label)
 	p.logf("  ⚠ %s conflicts with %s — resolving merge conflicts", branch, base)
 	maxAttempts := p.MaxRepairs
 	if maxAttempts < 1 {
 		maxAttempts = 1
 	}
+	defer p.setActivity(id, activity.Merge, "")
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		p.setActivity(id, activity.Merge, fmt.Sprintf("%s%d/%d", label, attempt, maxAttempts))
 		if _, err := p.agentStep(ctx, id, fmt.Sprintf("%s%d", label, attempt), resolveConflictsInstruction(p.prompts, id, base, branch)); err != nil {
 			return false, err
 		}
@@ -2982,9 +3046,35 @@ func (p *Pipeline) syncBranchWithBase(ctx context.Context, id, branch, base, lab
 	return false, nil
 }
 
+// deliveredStateName names the status merged work moves to, for the log lines and
+// tracker comments that report it. The write itself always asks for StageDone;
+// DELIVERED_STATE is what that stage resolves to on this repo's workflow.
+func (p *Pipeline) deliveredStateName() string {
+	if name := strings.TrimSpace(p.DeliveredState); name != "" {
+		return name
+	}
+	return tracker.StageDone.Display()
+}
+
+// behindDeliveredState reports whether a tracker status sits before the state
+// delivery parks a ticket in — the only regression the loop restores. Only a
+// delivered state the vocabulary reads as terminal makes every live status a
+// regression; a QA gate, and equally a column name no stage claims, is one the
+// workflow keeps open on purpose. Statuses bucket coarser than those columns
+// (in-progress and review share one), so under a live delivered state only a fall
+// back to unstarted counts, leaving a ticket a human moved across the review
+// columns alone.
+func (p *Pipeline) behindDeliveredState(st tracker.IssueStatus) bool {
+	stage, ok := tracker.StageFor(p.deliveredStateName())
+	if ok && stage == tracker.StageDone {
+		return true
+	}
+	return st == tracker.StatusOpen
+}
+
 func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
 	if err := p.Tracker.SetStatus(ctx, id, tracker.StageDone, ""); err != nil {
-		p.logf("  status (Done) error: %v", err)
+		p.logf("  status (%s) error: %v", p.deliveredStateName(), err)
 	} else if err := p.State.Set(id, "TRACKER_DONE", "1"); err != nil {
 		p.logf("  checkpoint TRACKER_DONE error (continuing): %v", err)
 	}
@@ -2996,7 +3086,7 @@ func (p *Pipeline) markDone(ctx context.Context, id, logFmt string) error {
 	p.emitEvent("ci", map[string]any{"state": "merged"})
 	p.emitState(id, state.Merged, "merged", "")
 	p.recordTimelog(ctx, id)
-	p.logf(logFmt, id)
+	p.logf(logFmt+" — marked %s", id, p.deliveredStateName())
 	return nil
 }
 
@@ -3769,7 +3859,9 @@ func providerOf(err error) string {
 // durable log, so per-activity wall-clock — including non-agent waits like CI,
 // invisible to agent_call durations — derives from event timestamp deltas. One
 // writer, two displays: the TUI stepper and the web read the same signal. detail
-// carries the raw call label (e.g. repair2), empty when there is none. Checkpoint
+// carries the raw call label (e.g. repair2), empty when there is none; a bounded
+// loop whose display names the attempt counter appends its bound to that label
+// (epic-sync1/2), leaving the call label recoverable as the prefix. Checkpoint
 // phases are untouched; Activity is its own signal.
 func (p *Pipeline) setActivity(id string, act activity.Activity, detail string) {
 	if p.Renderer != nil {
@@ -4304,6 +4396,8 @@ func (p *Pipeline) qaVerifyNote(ctx context.Context, id, browserNote string) str
 		return ""
 	}
 	roster, err := p.FetchQAAccounts(ctx)
+	p.qaAppURLID = drivenAppURLID(roster.AppURLs, p.sliceAppURL(ctx))
+	roster.Accounts = sliceQAAccounts(roster, p.qaAppURLID)
 	p.reportQARoster(id, roster, err)
 	if err != nil {
 		roster = hubclient.QARoster{}
@@ -4311,6 +4405,35 @@ func (p *Pipeline) qaVerifyNote(ctx context.Context, id, browserNote string) str
 	p.qaRoster = roster.Accounts
 	p.qaCaptured = 0
 	return qaRosterNote(id, roster.Accounts, roster.Notes)
+}
+
+// drivenAppURLID identifies the stored entry holding url, zero when none does —
+// a repo storing no entries, or one whose target the ini still supplies.
+func drivenAppURLID(entries []hubclient.AppURL, url string) int64 {
+	for _, e := range entries {
+		if e.URL == url {
+			return e.ID
+		}
+	}
+	return 0
+}
+
+// sliceQAAccounts narrows a roster to the accounts that open the app this slice's
+// browser verify drives: the ones attached to the resolved entry plus the
+// unattached ones, which apply to every URL. A roster carrying no entries comes
+// from a repo whose targets are still the ini values, where there is nothing to
+// attach to, so its accounts are left whole.
+func sliceQAAccounts(roster hubclient.QARoster, appURLID int64) []hubclient.QAAccount {
+	if len(roster.AppURLs) == 0 {
+		return roster.Accounts
+	}
+	out := make([]hubclient.QAAccount, 0, len(roster.Accounts))
+	for _, a := range roster.Accounts {
+		if a.AppURLID == 0 || a.AppURLID == appURLID {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // reportQARoster records what the roster contributed to an active verify gate —

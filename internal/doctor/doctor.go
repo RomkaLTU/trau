@@ -69,7 +69,7 @@ func Run(ctx context.Context, cfg config.Config, sources map[string]config.Layer
 	checkRemote(ctx, cfg, repoRoot, rr)
 	checkConfigLayers(paths, rr)
 	checkConfigShadowing(paths, rr)
-	checkBrowserVerify(cfg, rr)
+	checkBrowserVerify(cfg, repoRoot, rr)
 	checkTeamSync(ctx, cfg, repoRoot, rr)
 	checkSkills(cfg, repoRoot, rr)
 	checkSkillsDrift(repoRoot, rr)
@@ -336,11 +336,16 @@ func checkConfigShadowing(paths config.LayerPaths, rr *runner) {
 }
 
 // checkBrowserVerify flags the config-debt case the pipeline downgrades to
-// advisory: browser verify is on (auto or always) but no APP_URL is configured,
-// so a UI slice has no reachable target to drive and the gate can only warn.
-func checkBrowserVerify(cfg config.Config, rr *runner) {
+// advisory: browser verify is on (auto or always) but neither surface names a
+// target — no app URL entry in the hub store and no APP_URL configured — so a UI
+// slice has nothing to drive and the gate can only warn.
+func checkBrowserVerify(cfg config.Config, repoRoot string, rr *runner) {
 	mode := strings.TrimSpace(cfg.BrowserVerify)
 	if mode == "" || mode == "never" {
+		return
+	}
+	if n, err := storedAppURLs(repoRoot); err == nil && n > 0 {
+		rr.add("browser verify", pass, fmt.Sprintf("BROWSER_VERIFY=%s with %d hub-managed app URL(s)", mode, n), "")
 		return
 	}
 	if strings.TrimSpace(cfg.AppURL) != "" || len(cfg.AppURLs) > 0 {
@@ -348,8 +353,25 @@ func checkBrowserVerify(cfg config.Config, rr *runner) {
 		return
 	}
 	rr.add("browser verify", warn,
-		fmt.Sprintf("BROWSER_VERIFY=%s but APP_URL is empty — UI slices have no browser target, so the gate stays advisory", mode),
-		"set APP_URL (or APP_URLS for a monorepo) to the running app's URL, or set BROWSER_VERIFY=never")
+		fmt.Sprintf("BROWSER_VERIFY=%s but the hub stores no app URL for this repo and APP_URL is empty — UI slices have no browser target, so the gate stays advisory", mode),
+		"add an app URL for the repo on the hub, or set APP_URL (or APP_URLS for a monorepo) to the running app's URL, or set BROWSER_VERIFY=never")
+}
+
+// storedAppURLs counts the repo's hub-managed app URL entries, read from the hub
+// database read-only so doctor reports them whether or not the hub is up. An
+// unreadable database (none yet, or one predating the table) is an error the
+// caller falls back to the ini keys on.
+func storedAppURLs(repoRoot string) (int, error) {
+	db, err := hubdb.OpenReadOnly(registry.Home())
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = db.Close() }()
+	entries, err := hubstore.NewAppURLs(db).List(repoRoot)
+	if err != nil {
+		return 0, err
+	}
+	return len(entries), nil
 }
 
 // checkTeamSync reports the repo's last team-sync pass. It stays silent unless

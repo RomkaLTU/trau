@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  appURLRowIssue,
+  appURLRowsToWrite,
+  appURLsCanContinue,
+  blankAppURLAccount,
+  blankAppURLRow,
   credentialLayer,
   essentialsConfigWrites,
   joinProject,
@@ -11,6 +16,9 @@ import {
   trackerCanContinue,
   trackerCanTest,
   trackerConfigValues,
+  WIZARD_STEPS,
+  writeAppURLRows,
+  type AppURLRowFields,
   type RepoInspection,
   type TrackerFields,
 } from './onboarding'
@@ -326,5 +334,151 @@ describe('joinProject', () => {
 
     expect(await joinProject('p1', 'acme', ['/elsewhere/ops'])).toBe('p1')
     expect(calls).toEqual([['/api/v1/projects/p1/repos', { repo: '/elsewhere/ops' }]])
+  })
+})
+
+describe('WIZARD_STEPS', () => {
+  it('offers app urls between the essentials and the seed sync', () => {
+    expect(WIZARD_STEPS.map((s) => s.id)).toEqual([
+      'path',
+      'detect',
+      'tracker',
+      'essentials',
+      'appurls',
+      'sync',
+      'done',
+    ])
+  })
+})
+
+describe('appURLRowIssue', () => {
+  function row(over: Partial<AppURLRowFields> = {}): AppURLRowFields {
+    return { ...blankAppURLRow(), ...over }
+  }
+
+  it('leaves an untouched row alone so the step can be skipped', () => {
+    expect(appURLRowIssue([blankAppURLRow()], 0)).toBeNull()
+    expect(appURLsCanContinue([blankAppURLRow()])).toBe(true)
+  })
+
+  it('accepts a single URL with nothing else filled in', () => {
+    expect(appURLRowIssue([row({ url: 'http://localhost:3000' })], 0)).toBeNull()
+  })
+
+  it('asks for a URL once anything else on the row is filled in', () => {
+    expect(appURLRowIssue([row({ label: 'storefront' })], 0)).toBe('a URL is required')
+    expect(
+      appURLRowIssue([row({ accounts: [{ ...blankAppURLAccount(), label: 'admin' }] })], 0),
+    ).toBe('a URL is required')
+  })
+
+  it('reports a repeated workspace on the later row only', () => {
+    const rows = [
+      row({ url: 'http://localhost:3000', workspace: 'web' }),
+      row({ url: 'http://localhost:4000', workspace: 'web' }),
+    ]
+    expect(appURLRowIssue(rows, 0)).toBeNull()
+    expect(appURLRowIssue(rows, 1)).toContain('already listed above')
+    expect(appURLsCanContinue(rows)).toBe(false)
+  })
+
+  it('reports a second default entry as a missing workspace', () => {
+    const rows = [row({ url: 'http://localhost:3000' }), row({ url: 'http://localhost:4000' })]
+    expect(appURLRowIssue(rows, 1)).toBe(
+      'a default app URL is already listed above — give this entry a workspace',
+    )
+  })
+
+  it('requires a label on a QA account that was typed into', () => {
+    const rows = [
+      row({
+        url: 'http://localhost:3000',
+        accounts: [{ ...blankAppURLAccount(), username: 'qa@example.test' }],
+      }),
+    ]
+    expect(appURLRowIssue(rows, 0)).toBe('every QA account needs a label')
+  })
+
+  it('ignores a QA account row nobody typed into', () => {
+    const rows = [row({ url: 'http://localhost:3000', accounts: [blankAppURLAccount()] })]
+    expect(appURLRowIssue(rows, 0)).toBeNull()
+  })
+})
+
+describe('appURLRowsToWrite', () => {
+  it('keeps only the rows carrying a URL', () => {
+    const filled = { ...blankAppURLRow(), url: 'http://localhost:3000' }
+    expect(appURLRowsToWrite([filled, blankAppURLRow()])).toEqual([filled])
+  })
+})
+
+describe('writeAppURLRows', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function collect(): [string, unknown][] {
+    const calls: [string, unknown][] = []
+    let id = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push([url, init?.body ? JSON.parse(String(init.body)) : null])
+        id += 1
+        return respond(201, { id, label: '', url: '', workspace: '' })
+      }),
+    )
+    return calls
+  }
+
+  it('creates each filled URL and attaches the accounts entered under it', async () => {
+    const calls = collect()
+
+    await writeAppURLRows('acme', [
+      {
+        url: ' http://localhost:3000 ',
+        label: 'storefront',
+        workspace: '',
+        accounts: [blankAppURLAccount()],
+      },
+      {
+        url: 'http://localhost:4000',
+        label: '',
+        workspace: ' api ',
+        accounts: [
+          { label: 'admin', username: 'qa@example.test', secret: 'pw', description: 'checkout' },
+        ],
+      },
+      blankAppURLRow(),
+    ])
+
+    expect(calls).toEqual([
+      [
+        '/api/v1/repos/acme/app-urls',
+        { label: 'storefront', url: 'http://localhost:3000', workspace: '' },
+      ],
+      [
+        '/api/v1/repos/acme/app-urls',
+        { label: '', url: 'http://localhost:4000', workspace: 'api' },
+      ],
+      [
+        '/api/v1/repos/acme/qa/accounts',
+        {
+          label: 'admin',
+          username: 'qa@example.test',
+          secret: 'pw',
+          description: 'checkout',
+          app_url_id: 2,
+        },
+      ],
+    ])
+  })
+
+  it('writes nothing when every row was left untouched', async () => {
+    const calls = collect()
+
+    await writeAppURLRows('acme', [blankAppURLRow(), blankAppURLRow()])
+
+    expect(calls).toEqual([])
   })
 })

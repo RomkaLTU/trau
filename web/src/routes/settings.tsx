@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
 import { Check, Lock, Pencil, Search, TriangleAlert, X } from 'lucide-react'
@@ -17,7 +17,6 @@ import {
 } from '@/components/trau/prompts-panel'
 import { MCPConnectSection } from '@/components/trau/mcp-connect'
 import { PushNotificationsSection } from '@/components/trau/push-notifications-section'
-import { QAAccountsSection } from '@/components/trau/qa-accounts-panel'
 import { TeamSyncSection } from '@/components/trau/team-sync-panel'
 import {
   InlineEditor,
@@ -36,11 +35,6 @@ import {
   promptsQueryOptions,
   repoPromptsQueryOptions,
 } from '@/lib/prompts'
-import {
-  matchesQAAccount,
-  qaAccountsQueryOptions,
-  qaNotesQueryOptions,
-} from '@/lib/qa'
 import { matchesTeamSync } from '@/lib/teamsync'
 import {
   ROUTING_SECTION,
@@ -49,13 +43,19 @@ import {
   displayValue,
   isModified,
   matchesQuery,
+  parseSettingsSearch,
   valueWarning,
+  visibleKeys,
   type Section,
 } from '@/lib/settings'
 import { standardTitle, usePageTitle } from '@/lib/page-title'
 
+const LANDING_MS = 2000
+const LANDING_FRAMES = 20
+
 export const Route = createFileRoute('/settings')({
   component: Settings,
+  validateSearch: parseSettingsSearch,
   loader: ({ context }) =>
     Promise.all([
       context.queryClient.ensureQueryData(reposQueryOptions),
@@ -104,9 +104,9 @@ function ConfigView({ repo }: { repo: string }) {
   const { data, error, isPending, refetch } = useQuery(configQueryOptions(repo))
   const promptsData = useQuery(promptsQueryOptions).data
   const repoPromptsData = useQuery(repoPromptsQueryOptions(repo)).data
-  const qaAccountsData = useQuery(qaAccountsQueryOptions(repo)).data
-  const qaNotesData = useQuery(qaNotesQueryOptions(repo)).data
-  const [search, setSearch] = useState('')
+  const { q } = Route.useSearch()
+  const [search, setSearch] = useState(q ?? '')
+  const [landedKey, setLandedKey] = useState(q ?? '')
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [editingKey, setEditingKey] = useState<string | null>(null)
   const [savedMsg, setSavedMsg] = useState<string | null>(null)
@@ -117,17 +117,26 @@ function ConfigView({ repo }: { repo: string }) {
     return () => clearTimeout(timer)
   }, [savedMsg])
 
-  const keys = data?.keys ?? []
+  // The rows only exist once the config lands, so the highlight window starts
+  // there — on a slow query it would otherwise expire against the skeleton.
+  useEffect(() => {
+    if (!q || isPending) return
+    setSearch(q)
+    setLandedKey(q)
+    const timer = setTimeout(() => setLandedKey(''), LANDING_MS)
+    return () => clearTimeout(timer)
+  }, [q, isPending])
+
+  const keys = useMemo(() => visibleKeys(data?.keys ?? []), [data])
   const layers = data?.layers ?? ['project', 'user']
 
   const sections = useMemo(() => deriveSections(keys), [keys])
   const globalPrompts = promptsData?.prompts ?? []
   const repoPrompts = repoPromptsData?.prompts ?? []
-  const qaAccounts = qaAccountsData ?? []
-  const qaNotes = qaNotesData?.notes ?? ''
 
   const query = search.trim().toLowerCase()
   const searching = query.length > 0
+  const landed = landedKey.toLowerCase()
   const matchCount = useMemo(
     () => (searching ? keys.filter((k) => matchesQuery(k, query)).length : 0),
     [keys, query, searching],
@@ -135,8 +144,7 @@ function ConfigView({ repo }: { repo: string }) {
   const panelMatches =
     !searching ||
     [...globalPrompts, ...repoPrompts].some((p) => matchesPrompt(p, query)) ||
-    matchesTeamSync(query) ||
-    qaAccounts.some((a) => matchesQAAccount(a, query))
+    matchesTeamSync(query)
 
   const navSections = useMemo(
     () => [
@@ -164,14 +172,8 @@ function ConfigView({ repo }: { repo: string }) {
         count: 0,
         modified: false,
       },
-      {
-        id: 'qa-accounts',
-        title: 'QA accounts',
-        count: qaAccounts.length,
-        modified: qaNotes !== '',
-      },
     ],
-    [sections, globalPrompts, repoPrompts, qaAccounts, qaNotes],
+    [sections, globalPrompts, repoPrompts],
   )
 
   if (isPending && !error) return <ConfigSkeleton />
@@ -217,6 +219,7 @@ function ConfigView({ repo }: { repo: string }) {
       item={item}
       layers={layers}
       hubRestart={section.hubRestart}
+      landed={landed !== '' && item.key.toLowerCase() === landed}
       editing={editingKey === item.key}
       onEdit={() => setEditingKey(item.key)}
       onCancel={() => setEditingKey(null)}
@@ -387,7 +390,6 @@ function ConfigView({ repo }: { repo: string }) {
           <PromptsSection query={query} />
           <RepoPromptsSection repo={repo} query={query} />
           <TeamSyncSection repo={repo} query={query} />
-          <QAAccountsSection repo={repo} query={query} />
         </div>
       </div>
     </div>
@@ -534,6 +536,7 @@ function KeyRow({
   item,
   layers,
   hubRestart,
+  landed,
   editing,
   onEdit,
   onCancel,
@@ -543,6 +546,7 @@ function KeyRow({
   item: ConfigKey
   layers: string[]
   hubRestart: boolean
+  landed: boolean
   editing: boolean
   onEdit: () => void
   onCancel: () => void
@@ -552,13 +556,28 @@ function KeyRow({
   const value = displayValue(item)
   const dimmed = value === '—' || (item.bool && item.value !== '1')
   const warning = valueWarning(item.key, item.value)
+  const row = useRef<HTMLDivElement>(null)
+
+  // The panels above the config load in after the row does and push it down, so
+  // the aim is held for a few frames instead of fired once.
+  useEffect(() => {
+    if (!landed) return
+    let frames = LANDING_FRAMES
+    let handle = requestAnimationFrame(function aim() {
+      row.current?.scrollIntoView({ block: 'center' })
+      if (frames-- > 0) handle = requestAnimationFrame(aim)
+    })
+    return () => cancelAnimationFrame(handle)
+  }, [landed])
 
   return (
     <div
+      ref={row}
       className={cn(
-        'group border-b border-border/60 px-4 py-2.5 last:border-0',
+        'group border-b border-border/60 px-4 py-2.5 transition-[background-color,box-shadow] duration-700 last:border-0',
         modified && 'bg-warn/[0.04]',
         editing && 'bg-secondary/20',
+        landed && 'bg-primary/5 inset-ring-2 inset-ring-primary/50',
       )}
     >
       <div className="flex items-center gap-2.5">
