@@ -671,9 +671,12 @@ type Pipeline struct {
 	// verifier was handed. Each captured account joins it, so a later attempt
 	// of the same verify offering that credential again is a duplicate.
 	// qaCaptured counts what the current verify has already stored, which is
-	// what qaCaptureMax bounds.
+	// what qaCaptureMax bounds. qaAppURLID is the app URL entry the verify is
+	// driving, so a captured credential is filed against the app it opens; zero
+	// when the target came from the ini rather than a stored entry.
 	qaRoster   []hubclient.QAAccount
 	qaCaptured int
+	qaAppURLID int64
 
 	// iniAppURLs snapshots the config-derived browser targets before the first run
 	// installs the hub's stored entries, so every ticket resolves the hub-wins rule
@@ -4147,6 +4150,8 @@ func (p *Pipeline) qaVerifyNote(ctx context.Context, id, browserNote string) str
 		return ""
 	}
 	roster, err := p.FetchQAAccounts(ctx)
+	p.qaAppURLID = drivenAppURLID(roster.AppURLs, p.sliceAppURL(ctx))
+	roster.Accounts = sliceQAAccounts(roster, p.qaAppURLID)
 	p.reportQARoster(id, roster, err)
 	if err != nil {
 		roster = hubclient.QARoster{}
@@ -4154,6 +4159,35 @@ func (p *Pipeline) qaVerifyNote(ctx context.Context, id, browserNote string) str
 	p.qaRoster = roster.Accounts
 	p.qaCaptured = 0
 	return qaRosterNote(id, roster.Accounts, roster.Notes)
+}
+
+// drivenAppURLID identifies the stored entry holding url, zero when none does —
+// a repo storing no entries, or one whose target the ini still supplies.
+func drivenAppURLID(entries []hubclient.AppURL, url string) int64 {
+	for _, e := range entries {
+		if e.URL == url {
+			return e.ID
+		}
+	}
+	return 0
+}
+
+// sliceQAAccounts narrows a roster to the accounts that open the app this slice's
+// browser verify drives: the ones attached to the resolved entry plus the
+// unattached ones, which apply to every URL. A roster carrying no entries comes
+// from a repo whose targets are still the ini values, where there is nothing to
+// attach to, so its accounts are left whole.
+func sliceQAAccounts(roster hubclient.QARoster, appURLID int64) []hubclient.QAAccount {
+	if len(roster.AppURLs) == 0 {
+		return roster.Accounts
+	}
+	out := make([]hubclient.QAAccount, 0, len(roster.Accounts))
+	for _, a := range roster.Accounts {
+		if a.AppURLID == 0 || a.AppURLID == appURLID {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // reportQARoster records what the roster contributed to an active verify gate —

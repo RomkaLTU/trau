@@ -40,6 +40,8 @@ export function AppURLsSection({ repo }: { repo: string }) {
   const done = () => {
     setEditing(null)
     void queryClient.invalidateQueries({ queryKey: ['app-urls', repo] })
+    // Deleting an entry detaches its QA accounts server-side.
+    void queryClient.invalidateQueries({ queryKey: ['qa-accounts', repo] })
   }
 
   return (
@@ -257,7 +259,7 @@ function EntryRow({
         onOpenChange={setConfirmDelete}
         windowTitle="delete app url"
         title={`Delete the ${workspaceLabel(entry.workspace)} app URL?`}
-        description="Browser verify loses this target. If it was the last entry, the ini APP_URL and APP_URLS take over again."
+        description="Browser verify loses this target and the QA accounts attached to it fall back to any URL. If it was the last entry, the ini APP_URL and APP_URLS take over again."
         confirmLabel="Delete"
         destructive
         onConfirm={() => remove.mutate()}

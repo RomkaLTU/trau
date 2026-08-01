@@ -14,18 +14,21 @@ import (
 // QAAccountRequest is the body of a QA account create or update: the login the
 // browser verifier signs in with and the cases or flows it covers. A blank Secret
 // on update keeps the stored one (write-only, ADR 0011); on create it stores none.
-// Source is optional and applies on create only, defaulting to manual.
+// Source is optional and applies on create only, defaulting to manual. A null
+// AppURLID leaves the account unattached, so it applies to every app URL.
 type QAAccountRequest struct {
 	Label       string `json:"label"`
 	Username    string `json:"username"`
 	Secret      string `json:"secret"`
 	Description string `json:"description"`
 	Source      string `json:"source,omitempty"`
+	AppURLID    *int64 `json:"app_url_id"`
 }
 
 // QAAccountView is a QA account as the settings surface reads it: its identifier,
-// label, username, coverage description, and provenance, plus whether a secret is
-// stored. The secret itself is write-only and never crosses the wire on a read.
+// label, username, coverage description, provenance, and app URL attachment, plus
+// whether a secret is stored. The secret itself is write-only and never crosses
+// the wire on a read.
 type QAAccountView struct {
 	ID          int64  `json:"id"`
 	Label       string `json:"label"`
@@ -33,6 +36,7 @@ type QAAccountView struct {
 	Description string `json:"description"`
 	Source      string `json:"source"`
 	SecretSet   bool   `json:"secret_set"`
+	AppURLID    *int64 `json:"app_url_id"`
 	CreatedAt   string `json:"created_at,omitempty"`
 	UpdatedAt   string `json:"updated_at,omitempty"`
 }
@@ -47,20 +51,24 @@ type QANotesView struct {
 }
 
 // QARosterAccount is one QA account with its full credentials, as the loop's
-// verify-time fetch reads them.
+// verify-time fetch reads them. AppURLID is absent when the account is
+// unattached and so applies to every app URL.
 type QARosterAccount struct {
 	Label       string `json:"label"`
 	Username    string `json:"username"`
 	Secret      string `json:"secret"`
 	Description string `json:"description"`
+	AppURLID    int64  `json:"app_url_id,omitempty"`
 }
 
 // QARosterResponse is the loop's verify-time view of a repo's QA credentials:
-// every account with its full secret, plus the free-text notes. Unmasked because
-// the hub is localhost-only and the machine-trust posture applies; the settings
-// surface never uses this shape.
+// every account with its full secret, the repo's app URL entries so the loop can
+// tell which accounts open the app it is about to drive, plus the free-text
+// notes. Unmasked because the hub is localhost-only and the machine-trust posture
+// applies; the settings surface never uses this shape.
 type QARosterResponse struct {
 	Accounts []QARosterAccount `json:"accounts"`
+	AppURLs  []AppURLView      `json:"app_urls"`
 	Notes    string            `json:"notes"`
 }
 
@@ -108,7 +116,11 @@ func (s *Server) createQAAccount(w http.ResponseWriter, r *http.Request, repo re
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "a QA account labelled " + strconv.Quote(req.Label) + " already exists"})
 		return
 	}
-	a, err := s.stores.QA().Create(repo.Root, qaInput(req))
+	appURLID, ok := s.qaAttachment(w, repo, req.AppURLID)
+	if !ok {
+		return
+	}
+	a, err := s.stores.QA().Create(repo.Root, qaInput(req, appURLID))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "create qa account: " + err.Error()})
 		return
@@ -177,7 +189,11 @@ func (s *Server) updateQAAccount(w http.ResponseWriter, r *http.Request, repo re
 			return
 		}
 	}
-	in := qaInput(req)
+	appURLID, ok := s.qaAttachment(w, repo, req.AppURLID)
+	if !ok {
+		return
+	}
+	in := qaInput(req, appURLID)
 	in.Secret = firstNonEmpty(in.Secret, existing.Secret)
 	a, err := s.stores.QA().Update(repo.Root, id, in)
 	if errors.Is(err, hubstore.ErrQAAccountNotFound) {
@@ -260,16 +276,49 @@ func (s *Server) handleQARoster(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read qa notes: " + err.Error()})
 		return
 	}
-	roster := QARosterResponse{Accounts: make([]QARosterAccount, 0, len(accounts)), Notes: notes}
+	entries, err := s.stores.AppURLs().List(repo.Root)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list app urls: " + err.Error()})
+		return
+	}
+	roster := QARosterResponse{
+		Accounts: make([]QARosterAccount, 0, len(accounts)),
+		AppURLs:  make([]AppURLView, 0, len(entries)),
+		Notes:    notes,
+	}
 	for _, a := range accounts {
 		roster.Accounts = append(roster.Accounts, QARosterAccount{
 			Label:       a.Label,
 			Username:    a.Username,
 			Secret:      a.Secret,
 			Description: a.Description,
+			AppURLID:    a.AppURLID,
 		})
 	}
+	for _, e := range entries {
+		roster.AppURLs = append(roster.AppURLs, appURLView(e))
+	}
 	writeJSON(w, http.StatusOK, roster)
+}
+
+// qaAttachment resolves the app URL entry a QA account write attaches to,
+// rejecting an id the repo does not hold rather than storing a dangling
+// attachment. It reports false once it has answered the request. A nil id leaves
+// the account unattached, applying to every URL.
+func (s *Server) qaAttachment(w http.ResponseWriter, repo registry.Repo, id *int64) (int64, bool) {
+	if id == nil {
+		return 0, true
+	}
+	_, found, err := s.stores.AppURLs().Get(repo.Root, *id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "read app url: " + err.Error()})
+		return 0, false
+	}
+	if !found {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "unknown app url"})
+		return 0, false
+	}
+	return *id, true
 }
 
 func decodeQAAccount(w http.ResponseWriter, r *http.Request) (QAAccountRequest, bool) {
@@ -304,18 +353,19 @@ func qaAccountID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	return id, true
 }
 
-func qaInput(req QAAccountRequest) hubstore.QAAccountInput {
+func qaInput(req QAAccountRequest, appURLID int64) hubstore.QAAccountInput {
 	return hubstore.QAAccountInput{
 		Label:       req.Label,
 		Username:    strings.TrimSpace(req.Username),
 		Secret:      req.Secret,
 		Description: req.Description,
 		Source:      req.Source,
+		AppURLID:    appURLID,
 	}
 }
 
 func qaAccountView(a hubstore.QAAccount) QAAccountView {
-	return QAAccountView{
+	view := QAAccountView{
 		ID:          a.ID,
 		Label:       a.Label,
 		Username:    a.Username,
@@ -325,4 +375,8 @@ func qaAccountView(a hubstore.QAAccount) QAAccountView {
 		CreatedAt:   a.CreatedAt,
 		UpdatedAt:   a.UpdatedAt,
 	}
+	if a.AppURLID != 0 {
+		view.AppURLID = &a.AppURLID
+	}
+	return view
 }
