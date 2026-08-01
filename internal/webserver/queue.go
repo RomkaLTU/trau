@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/folderrepo"
 	"github.com/RomkaLTU/trau/internal/hubstore"
+	"github.com/RomkaLTU/trau/internal/pipeline"
 	"github.com/RomkaLTU/trau/internal/queue"
 	"github.com/RomkaLTU/trau/internal/tracker"
 )
@@ -570,6 +572,11 @@ func (s *Server) enqueue(w http.ResponseWriter, r *http.Request) {
 				item.Kind = queue.KindTicket
 			}
 		}
+	}
+
+	if item.Kind == queue.KindEpic && folderrepo.Is(root) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": pipeline.ErrFolderRepoEpic.Error()})
+		return
 	}
 
 	queued, err := s.stores.Queue(root).Load()

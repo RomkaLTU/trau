@@ -55,6 +55,8 @@ export interface DiscoverResponse {
   path: string
   name: string
   is_repo: boolean
+  folder_repo: boolean
+  truncated: boolean
   children: FSEntry[]
 }
 

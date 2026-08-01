@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/RomkaLTU/trau/internal/folderrepo"
 )
 
 // FSEntry is one directory in a browse listing. IsRepo is the same `.git` proof
@@ -138,7 +140,4 @@ func parentDir(root string) string {
 
 // isGitToplevel reports whether dir holds a `.git` entry — a directory for a
 // normal clone, a file for a worktree.
-func isGitToplevel(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, ".git"))
-	return err == nil
-}
+func isGitToplevel(dir string) bool { return folderrepo.IsRepo(dir) }

@@ -80,8 +80,9 @@ var allowedReaders = map[string]string{
 	// User-directed machine filesystem discovery — the Hub lists and scans only
 	// the folder the operator selects during repo onboarding. This discovers
 	// repo-owned content; it is not run data and no loop child performs the read.
-	"internal/webserver/fsbrowse.go":   "onboarding folder browser",
-	"internal/webserver/fsdiscover.go": "bounded repo discovery under an operator-selected folder",
+	"internal/webserver/fsbrowse.go":    "onboarding folder browser",
+	"internal/webserver/fsdiscover.go":  "bounded repo discovery under an operator-selected folder",
+	"internal/folderrepo/folderrepo.go": "Folder repo child scan under an operator-registered folder",
 
 	// One-shot legacy importers — the only file-era code, gated to first hub touch.
 	"internal/state/state.go":             "file-era checkpoint store read by the checkpoint importer",
