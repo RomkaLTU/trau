@@ -445,6 +445,32 @@ func IsEpicUnfinalized(err error) bool {
 	return errors.As(err, &e)
 }
 
+// EpicHandOffError signals FinalizeEpic ran out of moves and left the release to
+// a human: drift conflicts no repair attempt cleared, a gate that never went
+// green, or a merge the operator reserved for themselves. Nothing is blamed and
+// nothing is retried, but the epic did NOT ship — a caller must park it awaiting
+// a human rather than record a delivery over a branch still sitting unmerged.
+// PRURL names the PR to land, empty on a local delivery that has none.
+type EpicHandOffError struct {
+	EpicID string
+	PRURL  string
+	Reason string
+}
+
+func (e *EpicHandOffError) Error() string {
+	msg := fmt.Sprintf("epic %s awaits a human — %s", e.EpicID, e.Reason)
+	if e.PRURL == "" {
+		return msg
+	}
+	return msg + ": " + e.PRURL
+}
+
+// IsEpicHandOff reports whether err is (or wraps) an *EpicHandOffError.
+func IsEpicHandOff(err error) bool {
+	var e *EpicHandOffError
+	return errors.As(err, &e)
+}
+
 // parseRefusal recovers the build agent's refusal from its final output: the
 // last line starting with the REFUSED: sentinel, with the reason after the
 // colon. Line-anchored and case-sensitive so prose mentioning the word can't

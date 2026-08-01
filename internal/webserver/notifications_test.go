@@ -100,6 +100,7 @@ func TestNotifyRunEventPushesOnlyNeedsAttention(t *testing.T) {
 		{name: "faulted", row: stateChangeRow(t, "faulted", "COD-2", "push failed"), push: true},
 		{name: "quarantined", row: stateChangeRow(t, "quarantined", "COD-3", "gave up"), push: true},
 		{name: "awaiting merge", row: stateChangeRow(t, "awaiting_merge", "COD-4", "pr open"), push: true},
+		{name: "epic delivered", row: stateChangeRow(t, "epic_delivered", "COD-7", "epic COD-7 merged to main"), push: true},
 		{name: "done", row: stateChangeRow(t, "done", "COD-5", "merged")},
 		{name: "running", row: stateChangeRow(t, "running", "COD-6", "building")},
 		{name: "other kind", row: hubstore.EventRow{Kind: "phase", Msg: "verify"}},

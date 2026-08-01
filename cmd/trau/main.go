@@ -651,11 +651,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 // failures included, posts faulted so the drainer parks the item instead of
 // settling it done with no work behind it. An epic whose finalize declined while
 // children still read open posts a pause too, so a start re-attempts the finalize
-// instead of the item settling done with the epic branch unmerged.
+// instead of the item settling done with the epic branch unmerged. An epic whose
+// release was handed to a human posts its own class: there is nothing left to
+// re-attempt, but the epic did not ship either.
 func drainClass(err error) (class, reason string) {
 	switch {
 	case err == nil:
 		return "", ""
+	case pipeline.IsEpicHandOff(err):
+		return state.FailAwaitingMerge, err.Error()
 	case pipeline.IsPaused(err), pipeline.IsEpicUnfinalized(err):
 		return state.FailPaused, err.Error()
 	case pipeline.IsStopped(err):
@@ -666,11 +670,12 @@ func drainClass(err error) (class, reason string) {
 }
 
 // blamelessPause reports whether err parked the run without blaming anything:
-// a provider rate/usage pause, or an epic whose finalize declined while children
-// still read open. Both leave every ticket resumable where it stands, so the
-// summary owes the operator a pause line, not an "aborted" one.
+// a provider rate/usage pause, an epic whose finalize declined while children
+// still read open, or an epic release left for a human. All three leave every
+// ticket exactly where it stands, so the summary owes the operator a pause line,
+// not an "aborted" one.
 func blamelessPause(err error) bool {
-	return pipeline.IsPaused(err) || pipeline.IsEpicUnfinalized(err)
+	return pipeline.IsPaused(err) || pipeline.IsEpicUnfinalized(err) || pipeline.IsEpicHandOff(err)
 }
 
 // applyFault fills a SessionSummary's fault fields from err when the loop stopped

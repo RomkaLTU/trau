@@ -861,6 +861,7 @@ describe('builderView', () => {
         item({ id: 'COD-2', status: 'done' }),
         item({ id: 'COD-3', status: 'skipped' }),
         item({ id: 'COD-4', status: 'failed' }),
+        item({ id: 'COD-5', status: 'awaiting-merge' }),
       ],
       [run({ ticket: 'COD-1', terminal: true, phase: 'merged' })],
     )
@@ -870,6 +871,30 @@ describe('builderView', () => {
       { label: 'done', count: 1 },
       { label: 'failed', count: 1 },
       { label: 'skipped', count: 1 },
+      { label: 'awaiting merge', count: 1 },
+    ])
+  })
+
+  // A release handed to a human is settled without ever reading done: the row
+  // leaves the run order carrying the reason that names the PR to land.
+  it('collapses an awaiting-merge item into Finished with its reason', () => {
+    const view = builderView(
+      [
+        item({
+          id: 'COD-9',
+          status: 'awaiting-merge',
+          reason: 'epic COD-9 awaits a human — CI never went green: https://gh/pr/7',
+        }),
+      ],
+      [],
+    )
+    expect(view.queue).toEqual([])
+    expect(view.settled.map((t) => [t.id, t.status, t.reason])).toEqual([
+      [
+        'COD-9',
+        'awaiting-merge',
+        'epic COD-9 awaits a human — CI never went green: https://gh/pr/7',
+      ],
     ])
   })
 })
@@ -962,6 +987,11 @@ describe('ticketPill', () => {
         ticket({ id: 'a', title: '', status: 'skipped', hasRun: false }),
       ),
     ).toEqual({ state: 'info', label: 'skipped' })
+    expect(
+      ticketPill(
+        ticket({ id: 'a', title: '', status: 'awaiting-merge', hasRun: true }),
+      ),
+    ).toEqual({ state: 'warn', label: 'awaiting human merge' })
     expect(
       ticketPill(
         ticket({ id: 'a', title: '', status: 'pending', hasRun: false }),

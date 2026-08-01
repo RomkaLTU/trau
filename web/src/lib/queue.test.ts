@@ -476,11 +476,14 @@ describe('queueCoveredIds', () => {
 })
 
 describe('queueActiveIds', () => {
-  it.each(['done', 'failed', 'skipped'])('drops a %s ticket row', (status) => {
-    expect(
-      queueActiveIds([item({ id: 'COD-1' }), item({ id: 'COD-2', status })]),
-    ).toEqual(new Set(['COD-1']))
-  })
+  it.each(['done', 'failed', 'skipped', 'awaiting-merge'])(
+    'drops a %s ticket row',
+    (status) => {
+      expect(
+        queueActiveIds([item({ id: 'COD-1' }), item({ id: 'COD-2', status })]),
+      ).toEqual(new Set(['COD-1']))
+    },
+  )
 
   it('drops a settled epic along with its sub-issues', () => {
     expect(

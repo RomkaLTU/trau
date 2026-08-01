@@ -9,13 +9,14 @@ import (
 
 // Notification kinds. grill_question is the one coalescing kind — at most one
 // unread row per grilling session — while the run kinds each record a distinct
-// pause, fault, or quarantine fact.
+// pause, fault, quarantine, or delivery fact.
 const (
 	NotificationGrillQuestion    = "grill_question"
 	NotificationRunPaused        = "run_paused"
 	NotificationRunFaulted       = "run_faulted"
 	NotificationRunQuarantined   = "run_quarantined"
 	NotificationRunAwaitingMerge = "run_awaiting_merge"
+	NotificationEpicDelivered    = "epic_delivered"
 )
 
 // notificationReadRetention bounds how many read notifications the store keeps;

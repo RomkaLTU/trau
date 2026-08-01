@@ -330,12 +330,12 @@ func ghPRState(root, pr string) string {
 
 // reconcileQueue settles the unsettled items an outage left behind. A hub that
 // comes back to an item whose work verifiably finished — an out-of-band resume, a
-// child that died after merging, a ticket a human closed while the hub was down —
-// should not make a Start re-discover the fact. Every parked or failed item is
-// compared against ground truth rather than against the class it was parked with,
-// and settles through the same path a finished child does, so its sub-issues and
-// the web queue follow. Anything short of proof stays exactly as it is, and the
-// sweep spawns nothing.
+// child that died after merging, a ticket a human closed while the hub was down,
+// an epic PR the operator finally merged — should not make a Start re-discover the
+// fact. Every unresolved item is compared against ground truth rather than against
+// the class it settled with, and settles through the same path a finished child
+// does, so its sub-issues and the web queue follow. Anything short of proof stays
+// exactly as it is, and the sweep spawns nothing.
 func (d *drainer) reconcileQueue(root string) {
 	store := d.srv.stores.Queue(root)
 	items, _, err := store.Snapshot()
@@ -344,7 +344,7 @@ func (d *drainer) reconcileQueue(root string) {
 		return
 	}
 	for _, it := range items {
-		if it.Status != queue.StatusPaused && it.Status != queue.StatusFailed {
+		if !awaitsResolution(it.Status) {
 			continue
 		}
 		evidence := d.settleEvidence(root, it)
@@ -362,6 +362,17 @@ func (d *drainer) reconcileQueue(root string) {
 		d.srv.clearQueued(d.srv.drainCtx, root, it)
 		d.srv.emitQueueReconciled(root, it, evidence)
 	}
+}
+
+// awaitsResolution reports whether an item's status leaves work something outside
+// the drain may since have finished: a park, a fault, or an epic PR handed to a
+// human. Those are the rows the sweep re-checks against ground truth.
+func awaitsResolution(status string) bool {
+	switch status {
+	case queue.StatusPaused, queue.StatusFailed, queue.StatusAwaitingMerge:
+		return true
+	}
+	return false
 }
 
 // emitQueueReconciled records a settle the sweep made on stored evidence alone,
@@ -451,10 +462,15 @@ func repoRunsDir(root string) string {
 // the same way for a resume. A fault halts by default, or — when the queue was
 // started on-fault=skip — settles the item failed and lets the drain move on. A
 // give-up is a settled dead end the queue moves past; a clean finish settles done.
+// An epic release handed to a human settles awaiting-merge: visibly not done, but
+// settled, so the rest of the queue drains on and nothing re-attempts a PR only a
+// person can land.
 func classifyDrainOutcome(class, onFault string) (status string, pause bool) {
 	switch class {
 	case classUnknown:
 		return queue.StatusPaused, true
+	case state.FailAwaitingMerge:
+		return queue.StatusAwaitingMerge, false
 	case state.FailPaused, state.FailStopped:
 		return queue.StatusPaused, true
 	case state.FailFaulted:

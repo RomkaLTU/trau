@@ -706,11 +706,12 @@ func itemByID(items []queue.Item, id string) (queue.Item, bool) {
 	return queue.Item{}, false
 }
 
-// queueSettled reports whether an item is queue history — done, failed, or
-// skipped. A settled row covers nothing, so the hierarchy guards ignore it.
+// queueSettled reports whether an item is queue history — done, failed, skipped,
+// or an epic whose PR is a human's to land. A settled row covers nothing, so the
+// hierarchy guards ignore it.
 func queueSettled(it queue.Item) bool {
 	switch it.Status {
-	case queue.StatusDone, queue.StatusFailed, queue.StatusSkipped:
+	case queue.StatusDone, queue.StatusFailed, queue.StatusSkipped, queue.StatusAwaitingMerge:
 		return true
 	default:
 		return false

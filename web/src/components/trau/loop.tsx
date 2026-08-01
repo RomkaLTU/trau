@@ -245,6 +245,7 @@ const STATUS_STATE: Record<string, RunState> = {
   done: "success",
   failed: "fail",
   skipped: "info",
+  "awaiting-merge": "warn",
 };
 
 function statusState(status: string): RunState {
@@ -1557,6 +1558,19 @@ function FinalizeRow({
       ) : parked ? (
         <p className="font-sans text-sm text-muted-foreground">
           Every ticket is done — the epic PR is ready and yours to merge.
+          {finalize.prUrl ? (
+            <>
+              {" "}
+              <a
+                href={finalize.prUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono text-xs text-primary underline-offset-2 hover:underline"
+              >
+                {finalize.prUrl}
+              </a>
+            </>
+          ) : null}
         </p>
       ) : (
         <LiveProgress
