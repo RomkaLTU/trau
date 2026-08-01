@@ -19,7 +19,7 @@ func TestIdxRanking(t *testing.T) {
 		want  int
 	}{
 		{Building, 1}, {Built, 2}, {HandedOff, 3}, {Verified, 4},
-		{PROpen, 5}, {Merged, 6}, {Quarantined, 9},
+		{PROpen, 5}, {Releasing, 6}, {Merged, 7}, {Quarantined, 9},
 		{"", 0}, {"bogus", 0},
 	}
 	for _, tc := range tests {
@@ -28,7 +28,7 @@ func TestIdxRanking(t *testing.T) {
 		}
 	}
 	// The ordered in-flight phases must rank strictly increasing.
-	order := []string{Building, Built, HandedOff, Verified, PROpen, Merged}
+	order := []string{Building, Built, HandedOff, Verified, PROpen, Releasing, Merged}
 	for i := 1; i < len(order); i++ {
 		if Idx(order[i]) <= Idx(order[i-1]) {
 			t.Errorf("phase order broken: Idx(%s) !> Idx(%s)", order[i], order[i-1])
@@ -42,7 +42,7 @@ func TestTerminal(t *testing.T) {
 			t.Errorf("Terminal(%q) = false, want true", p)
 		}
 	}
-	for _, p := range []string{Building, Built, HandedOff, Verified, PROpen, "", "bogus"} {
+	for _, p := range []string{Building, Built, HandedOff, Verified, PROpen, Releasing, "", "bogus"} {
 		if Terminal(p) {
 			t.Errorf("Terminal(%q) = true, want false", p)
 		}
@@ -56,9 +56,16 @@ func TestAdvancedPhase(t *testing.T) {
 			t.Errorf("AdvancedPhase(%q) = %q, want %q", from, got, want)
 		}
 	}
-	for _, p := range []string{Verified, PROpen, Merged, Quarantined, "", "bogus"} {
+	for _, p := range []string{Verified, PROpen, Releasing, Merged, Quarantined, "", "bogus"} {
 		if got := AdvancedPhase(p); got != "" {
 			t.Errorf("AdvancedPhase(%q) = %q, want no completed phase to advance to", p, got)
+		}
+	}
+	// /advance promotes a ticket run; the epic's release is not one, so no phase
+	// may advance into it either.
+	for _, p := range []string{Building, Built, HandedOff, Verified, PROpen, Releasing, Merged, Quarantined} {
+		if AdvancedPhase(p) == Releasing {
+			t.Errorf("AdvancedPhase(%q) = %q, want no phase to advance into releasing", p, Releasing)
 		}
 	}
 }
@@ -66,9 +73,9 @@ func TestAdvancedPhase(t *testing.T) {
 // --- Reconcilable / StaleCheckpoint --------------------------------------
 
 func TestReconcilable(t *testing.T) {
-	// In-flight (rank 1–5) and quarantined (9) are candidates; merged (6) and
-	// unknown/empty (0) are not.
-	for _, p := range []string{Building, Built, HandedOff, Verified, PROpen, Quarantined} {
+	// In-flight (rank 1–5), releasing (6) and quarantined (9) are candidates;
+	// merged (7) and unknown/empty (0) are not.
+	for _, p := range []string{Building, Built, HandedOff, Verified, PROpen, Releasing, Quarantined} {
 		if !Reconcilable(p) {
 			t.Errorf("Reconcilable(%q) = false, want true", p)
 		}
@@ -92,6 +99,8 @@ func TestStaleCheckpoint(t *testing.T) {
 		{"in-flight pr_open but done is stale", PROpen, true, true},
 		{"still-open quarantined is left intact", Quarantined, false, false},
 		{"still-open in-flight is left intact", Built, false, false},
+		{"releasing-but-done is stale", Releasing, true, true},
+		{"still-open releasing is left intact", Releasing, false, false},
 		{"merged is never stale even if done", Merged, true, false},
 		{"unknown phase is never stale", "", true, false},
 	}
@@ -242,6 +251,7 @@ func TestResumeTargetSkipsTerminalAndUnknown(t *testing.T) {
 	_ = s.Set("COD-1", "PHASE", Merged)
 	_ = s.Set("COD-2", "PHASE", Quarantined)
 	_ = s.Set("COD-3", "PHASE", "garbage") // rank 0 — skipped
+	_ = s.Set("COD-4", "PHASE", Releasing) // an epic mid-release owns no ticket work
 
 	if id, phase := s.ResumeTarget(); id != "" || phase != "" {
 		t.Errorf("ResumeTarget = (%q,%q), want empty when nothing is in-flight", id, phase)

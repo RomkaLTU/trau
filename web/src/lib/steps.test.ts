@@ -7,6 +7,7 @@ import {
   checkpointSteps,
   isSyncLog,
   liveSteps,
+  releaseSubState,
   stepName,
   stepPill,
   syncHeadline,
@@ -34,7 +35,54 @@ describe('checkpointStep', () => {
     expect(checkpointStep('handed_off')).toBe(1)
     expect(checkpointStep('verified')).toBe(2)
     expect(checkpointStep('pr_open')).toBe(2)
+    expect(checkpointStep('releasing')).toBe(2)
     expect(checkpointStep('merged')).toBe(3)
+  })
+})
+
+describe('releaseSubState', () => {
+  it('names the live sub-state of a release trau still owns', () => {
+    expect(releaseSubState(undefined, 'ci-wait', '')).toBe('waiting on CI')
+    expect(releaseSubState('active', 'merge', '')).toBe('merging')
+    expect(releaseSubState('active', 'merge-wait', '')).toBe('awaiting human merge')
+    expect(releaseSubState('active', 'merge', 'epic-sync1/2')).toBe(
+      'resolving conflicts (attempt 1/2)',
+    )
+    expect(releaseSubState('active', 'merge', 'epic-repair2/3')).toBe(
+      'repairing CI (attempt 2/3)',
+    )
+  })
+
+  it('lets the hand-off marker outrank whatever the loop last reported', () => {
+    expect(releaseSubState('awaiting-human', 'ci-wait', '')).toBe('awaiting human merge')
+    expect(releaseSubState('awaiting-human', 'merge', 'epic-sync1/2')).toBe(
+      'awaiting human merge',
+    )
+  })
+
+  it('says nothing extra when no loop is reporting', () => {
+    expect(releaseSubState(undefined, undefined, undefined)).toBe('')
+    expect(releaseSubState('active', '', '')).toBe('')
+    expect(releaseSubState('active', 'build', '')).toBe('')
+  })
+})
+
+describe('a releasing epic on the surfaces that read a checkpoint', () => {
+  it('walks the stepper to Ship rather than rendering an empty one', () => {
+    expect(checkpointSteps('releasing').map((s) => s.state)).toEqual([
+      'done',
+      'done',
+      'active',
+    ])
+    expect(liveSteps(undefined, undefined, 'releasing').steps.map((s) => s.state)).toEqual([
+      'done',
+      'done',
+      'active',
+    ])
+  })
+
+  it('is a Step short of done, never a finished run', () => {
+    expect(stepName(undefined, 'releasing')).toBe('Ship')
   })
 })
 

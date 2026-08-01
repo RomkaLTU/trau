@@ -1,7 +1,14 @@
 import type { RunState } from '@/components/trau/status-pill'
 import type { PhaseCost } from '@/lib/rundetail'
-import type { FailureClass } from '@/lib/runs'
-import { checkpointSteps, liveSteps, stepPill, type LiveSteps } from '@/lib/steps'
+import type { FailureClass, ReleaseMarker } from '@/lib/runs'
+import {
+  checkpointSteps,
+  liveSteps,
+  RELEASING,
+  releasePill,
+  stepPill,
+  type LiveSteps,
+} from '@/lib/steps'
 
 export type RunVariant =
   | 'starting'
@@ -64,12 +71,21 @@ export function runSteps(
   }
 }
 
+// headerPill names the one state a run leads with. An epic mid-release leads with
+// its own phase rather than the Step it maps to: "ship" says nothing about who is
+// shipping. A halt outranks the release — a paused or faulted epic is not one in
+// flight, whatever phase its checkpoint stopped at.
 export function headerPill(
   variant: RunVariant,
   phase: string,
   failureClass?: FailureClass,
   activity?: string,
+  detail?: string,
+  release?: ReleaseMarker,
 ): { state: RunState; label: string } {
+  if (variant === 'live' && phase === RELEASING) {
+    return releasePill(release, activity, detail)
+  }
   switch (variant) {
     case 'success':
       return { state: 'success', label: 'merged' }
@@ -97,6 +113,7 @@ const PHASE_LABELS: Record<string, string> = {
   handed_off: 'handoff',
   verified: 'verify',
   pr_open: 'pr',
+  releasing: 'releasing',
   merged: 'merge',
   quarantined: 'quarantined',
 }

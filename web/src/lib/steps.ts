@@ -37,7 +37,8 @@ const ACTIVITY_STEP: Record<string, number> = {
 // CHECKPOINT_STEP reads a past-tense checkpoint as the Step a run is actually in
 // once that checkpoint is written — the corrected interpretation of ADR 0009.
 // building/built are still inside Build; handed_off means the run has moved on to
-// Verify; verified/pr_open mean it is Shipping. It is the fallback for a
+// Verify; verified/pr_open mean it is Shipping, and so does an epic's releasing —
+// shipping the epic branch is the same Step one level up. It is the fallback for a
 // heartbeat without an Activity and the mapping for a stopped run.
 const CHECKPOINT_STEP: Record<string, number> = {
   '': NONE,
@@ -46,6 +47,7 @@ const CHECKPOINT_STEP: Record<string, number> = {
   handed_off: 1,
   verified: 2,
   pr_open: 2,
+  releasing: 2,
   merged: DONE,
 }
 
@@ -117,6 +119,61 @@ export function syncHeadline(sync: SyncState): string {
 // isSyncLog picks the conflict-resolution attempts out of a run's phase logs.
 export function isSyncLog(phase: string): boolean {
   return SYNC_LOG.test(phase)
+}
+
+// RELEASING is the Epic's own checkpoint phase; AWAITING_HUMAN is the hand-off
+// marker stored beside it, read through isAwaitingHuman so the phase gate and the
+// marker never drift apart across surfaces.
+export const RELEASING = 'releasing'
+const AWAITING_HUMAN = 'awaiting-human'
+
+const AWAITING_HUMAN_LABEL = 'awaiting human merge'
+
+const RELEASE_ACTIVITY: Record<string, string> = {
+  'ci-wait': 'waiting on CI',
+  merge: 'merging',
+  'merge-wait': AWAITING_HUMAN_LABEL,
+}
+
+const EPIC_REPAIR = /^epic-repair(\d+)(?:\/(\d+))?$/
+
+// isAwaitingHuman reads the hand-off marker: trau ran out of moves and the epic PR
+// is a person's to land, so the release is nobody's work in flight.
+export function isAwaitingHuman(release?: string): boolean {
+  return release === AWAITING_HUMAN
+}
+
+// releaseSubState names what a releasing epic is doing right now. The hand-off
+// marker outranks everything — once the PR is a person's, the last Activity the
+// loop reported says nothing about who is waiting.
+export function releaseSubState(
+  release?: string,
+  activity?: string,
+  detail?: string,
+): string {
+  if (isAwaitingHuman(release)) return AWAITING_HUMAN_LABEL
+  const sync = syncState(activity, detail)
+  if (sync) return `resolving conflicts (attempt ${sync.attempt}/${sync.attempts})`
+  const repair = EPIC_REPAIR.exec((detail ?? '').trim())
+  if (repair) {
+    return `repairing CI (attempt ${repair[1]}/${repair[2] ?? repair[1]})`
+  }
+  return RELEASE_ACTIVITY[(activity ?? '').trim()] ?? ''
+}
+
+// releasePill is the one pill a releasing epic wears, wherever it is drawn: the
+// warn palette once the release is parked for a human, else the running teal, over
+// the sub-state — falling back to the phase itself when there is nothing live to
+// name. Callers gate it on the releasing phase.
+export function releasePill(
+  release?: string,
+  activity?: string,
+  detail?: string,
+): { state: RunState; label: string } {
+  return {
+    state: isAwaitingHuman(release) ? 'warn' : 'active',
+    label: releaseSubState(release, activity, detail) || RELEASING,
+  }
 }
 
 // stepName is the active Step under the corrected reading — the Activity when the

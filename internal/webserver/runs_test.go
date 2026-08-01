@@ -117,6 +117,10 @@ func TestRunsBoardCoversEveryPhaseAndFailureClass(t *testing.T) {
 		"PHASE": state.HandedOff, "FAILURE_CLASS": state.FailFaulted,
 		"FAILURE_REASON": "unexpected error during verify: boom",
 	})
+	seedCheckpoint(t, runsDir, "COD-10", map[string]string{
+		"PHASE": state.Releasing, "TITLE": "checkout rebuild",
+		"RELEASE": state.ReleaseAwaitingHuman,
+	})
 
 	ts := ingestedServer(t, home)
 	out := getRuns(t, ts, "acme")
@@ -124,8 +128,8 @@ func TestRunsBoardCoversEveryPhaseAndFailureClass(t *testing.T) {
 	if out.Repo != "acme" {
 		t.Errorf("Repo = %q, want acme", out.Repo)
 	}
-	if len(out.Runs) != 9 {
-		t.Fatalf("runs = %d, want 9", len(out.Runs))
+	if len(out.Runs) != 10 {
+		t.Fatalf("runs = %d, want 10", len(out.Runs))
 	}
 
 	prevRank := -1
@@ -150,10 +154,11 @@ func TestRunsBoardCoversEveryPhaseAndFailureClass(t *testing.T) {
 		{"COD-3", state.HandedOff, 3, false, "", ""},
 		{"COD-4", state.Verified, 4, false, "", ""},
 		{"COD-5", state.PROpen, 5, false, "", ""},
-		{"COD-6", state.Merged, 6, true, "", ""},
+		{"COD-6", state.Merged, 7, true, "", ""},
 		{"COD-7", state.Quarantined, 9, true, state.FailGaveUp, "verify failed after repairs"},
 		{"COD-8", state.Built, 2, false, state.FailPaused, "claude rate/usage limit reached"},
 		{"COD-9", state.HandedOff, 3, false, state.FailFaulted, "unexpected error during verify: boom"},
+		{"COD-10", state.Releasing, 6, false, "", ""},
 	}
 	for _, c := range cases {
 		r, ok := byID[c.id]
@@ -180,6 +185,9 @@ func TestRunsBoardCoversEveryPhaseAndFailureClass(t *testing.T) {
 	}
 	if r := byID["COD-5"]; r.Branch != "feature/COD-5-x" || r.PR != "42" || r.PRURL == "" {
 		t.Errorf("COD-5 branch/pr = %+v, want the PR reference carried through", r)
+	}
+	if r := byID["COD-10"]; r.Release != state.ReleaseAwaitingHuman || r.Title == "" {
+		t.Errorf("COD-10 release/title = %q/%q, want the parked release named on the board", r.Release, r.Title)
 	}
 }
 

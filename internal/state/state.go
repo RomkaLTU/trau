@@ -1,10 +1,11 @@
 // Package state is the durable per-ticket checkpoint layer that makes the loop
 // resumable. Each ticket's progress lives in runs/<ID>/state as key=value lines
-// (PHASE, BRANCH, PR, PR_URL, SESSION, SESSION_PHASE, UPDATED), written under
-// runs/ so it survives a reboot — never /tmp. SESSION/SESSION_PHASE name the
+// (PHASE, BRANCH, PR, PR_URL, RELEASE, SESSION, SESSION_PHASE, UPDATED), written
+// under runs/ so it survives a reboot — never /tmp. SESSION/SESSION_PHASE name the
 // most recent claude phase's session id and label, the handle terminal takeover
-// resumes (ADR 0018). It also owns the ordered phase ranking the resume logic
-// keys off and the --status reporter.
+// resumes (ADR 0018). RELEASE is the Epic-only hand-off marker read beside a
+// Releasing phase. It also owns the ordered phase ranking the resume logic keys
+// off and the --status reporter.
 //
 // The file format and the phase ranking must stay stable across runs for
 // checkpoints to remain readable.
@@ -28,19 +29,33 @@ import (
 
 // Checkpoint phase values written to the PHASE key. The loop advances a ticket
 // through these in order; Merged and Quarantined are terminal (resume skips them).
+// Releasing belongs to an Epic rather than a ticket — it brackets the shipping of
+// the epic branch itself — and is deliberately non-terminal without being
+// resumable.
 const (
 	Building    = "building"
 	Built       = "built"
 	HandedOff   = "handed_off"
 	Verified    = "verified"
 	PROpen      = "pr_open"
+	Releasing   = "releasing"
 	Merged      = "merged"
 	Quarantined = "quarantined"
 )
 
-// Idx is the ordered rank of a checkpoint phase:
-// building(1) → built(2) → handed_off(3) → verified(4) → pr_open(5) → merged(6),
-// quarantined(9), and 0 for an unknown/empty phase. Anything ≥ 6 is terminal.
+// Release marker values written to the RELEASE key beside a Releasing phase.
+// ReleaseAwaitingHuman is the hand-off: trau ran out of moves and the epic PR is
+// a human's to land. Any other value — ReleaseActive, or no key at all on an older
+// checkpoint — means trau still owns the release.
+const (
+	ReleaseActive        = "active"
+	ReleaseAwaitingHuman = "awaiting-human"
+)
+
+// Idx is the ordered rank of a checkpoint phase: building(1) → built(2) →
+// handed_off(3) → verified(4) → pr_open(5) → releasing(6) → merged(7),
+// quarantined(9), and 0 for an unknown/empty phase. Ranks 1–5 are the resumable
+// in-flight window; anything ≥ 7 is terminal.
 func Idx(phase string) int {
 	switch phase {
 	case Building:
@@ -53,8 +68,10 @@ func Idx(phase string) int {
 		return 4
 	case PROpen:
 		return 5
-	case Merged:
+	case Releasing:
 		return 6
+	case Merged:
+		return 7
 	case Quarantined:
 		return 9
 	default:
@@ -62,14 +79,16 @@ func Idx(phase string) int {
 	}
 }
 
-// Terminal reports whether a phase is at or beyond merged(6) — a finished or
-// quarantined ticket that the resume scan must skip (rank >= 6).
-func Terminal(phase string) bool { return Idx(phase) >= 6 }
+// Terminal reports whether a phase is at or beyond merged(7) — a finished or
+// quarantined ticket that the resume scan must skip (rank >= 7). Releasing sits
+// just below: an epic on its way to the base has not shipped yet.
+func Terminal(phase string) bool { return Idx(phase) >= 7 }
 
 // AdvancedPhase maps a checkpoint phase to the phase that records the step
 // running from it as finished, and "" where there is none. It stops at verified:
 // the commit/PR step also records the PR and PR_URL a later phase needs, so no
-// PHASE write alone can stand for it.
+// PHASE write alone can stand for it. Releasing is neither a source nor a target:
+// /advance promotes a ticket run, and an epic's release is not one.
 func AdvancedPhase(phase string) string {
 	switch phase {
 	case Building:
@@ -85,12 +104,12 @@ func AdvancedPhase(phase string) string {
 
 // Reconcilable reports whether a checkpoint phase is worth cross-checking against
 // the tracker: any tracked attempt that is not already merged locally — an
-// in-flight phase (rank 1–5) or a quarantined one (rank 9). Merged (6) and
-// unknown/empty (0) phases are skipped, since neither can be a stale "problem"
-// left over after the work shipped out-of-band.
+// in-flight phase (rank 1–5), a releasing epic (6) or a quarantined one (rank 9).
+// Merged (7) and unknown/empty (0) phases are skipped, since neither can be a
+// stale "problem" left over after the work shipped out-of-band.
 func Reconcilable(phase string) bool {
 	r := Idx(phase)
-	return r != 0 && r != 6
+	return r != 0 && r != 7
 }
 
 // StaleCheckpoint reports whether a local checkpoint should be cleared during
@@ -314,10 +333,10 @@ func (s *Store) Tickets() []string {
 
 // ResumeTarget returns the lowest-numbered ticket with an in-flight checkpoint
 // (rank 1–5) and its phase, or ("", "") when none. It scans local state only (no
-// MCP call), skips terminal (rank ≥ 6) and unknown (rank 0) phases, and orders by
-// the numeric part of the id, not lexicographically (so COD-9 sorts before
-// COD-10). This is the authoritative "where did we leave off" signal for the main
-// loop.
+// MCP call), skips the releasing, terminal (rank ≥ 6) and unknown (rank 0)
+// phases, and orders by the numeric part of the id, not lexicographically (so
+// COD-9 sorts before COD-10). This is the authoritative "where did we leave off"
+// signal for the main loop.
 func (s *Store) ResumeTarget() (id, phase string) {
 	return s.ResumeTargetFunc(nil)
 }
@@ -338,7 +357,8 @@ func (s *Store) ResumeTargetFunc(keep func(id string) bool) (id, phase string) {
 // PickResumeTarget selects the resume target from a set of ticket→phase pairs:
 // the lowest-numbered ticket the keep predicate accepts whose phase is in-flight
 // (rank 1–5), or ("", "") when none. It orders by the numeric part of the id, so
-// COD-9 precedes COD-10, and skips terminal (rank ≥ 6) and unknown (0) phases. It
+// COD-9 precedes COD-10, and skips unknown (0) phases along with everything from
+// releasing up (rank ≥ 6) — an epic mid-release owns no ticket work to resume. It
 // is the shared selection both the file-backed Store and the hub-backed client
 // reuse, so the ranking lives in one place.
 func PickResumeTarget(phases map[string]string, keep func(id string) bool) (id, phase string) {

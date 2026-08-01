@@ -149,6 +149,10 @@ _Avoid_: run artifacts (implies files-on-disk — the pre-DB-first framing), run
 The durable saved state of one ticket's run — the phase it reached plus its branch, PR, and any failure — persisted so the run can resume or be inspected after the process ends. One per ticket. Casual "last state" means the checkpoint.
 _Avoid_: state (bare, overloaded), run (that's the execution), snapshot, save
 
+**Releasing**:
+The Epic-level phase between the last Sub-issue's Ship and the Epic's own merge to base: syncing the epic branch with the base, opening its PR, gating its CI, merging. It is a real Checkpoint phase on the Epic id, not a display state — it survives the loop that wrote it — and it is deliberately not resumable, so an Epic mid-release is never picked up as unfinished ticket work. It ends one of two ways: merged, or handed to a human (unresolvable drift, a gate that never went green, or a merge only the operator can make), which the checkpoint records beside the phase.
+_Avoid_: finalizing (the code name — `FinalizeEpic`), shipping, deploying, publishing
+
 **Failure class**:
 Why a checkpoint stopped short — one of three, distinct from the phase (how far it got): **Paused** (blameless — a provider/rate/auth wall; work-in-progress intact, the fix is to Resume), **Faulted** (an unexpected error mid-run; WIP preserved and resumable), and **Gave up** (a verified dead end, surfaced as **Quarantined** — a human must decide).
 _Avoid_: error, status (that's the phase), failed (bare)

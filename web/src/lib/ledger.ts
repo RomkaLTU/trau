@@ -196,6 +196,7 @@ const CHECKPOINT_LABELS: Record<string, string> = {
   handed_off: 'handed off',
   verified: 'verified',
   pr_open: 'pr open',
+  releasing: 'releasing',
   merged: 'merged',
 }
 

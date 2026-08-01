@@ -212,6 +212,7 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 		p.logf("  epic %s still open — waiting on %s", p.EpicID, strings.Join(open, ", "))
 		return &EpicUnfinalizedError{EpicID: p.EpicID, Open: open}
 	}
+	p.checkpointEpicReleasing(ctx)
 
 	epic, err := p.epicBranchName(ctx)
 	if err != nil {
@@ -229,6 +230,7 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 		return fmt.Errorf("finalize epic %s: create PR: %w", p.EpicID, err)
 	}
 	if !synced {
+		p.handOffEpic()
 		p.logf("  ⚠ epic %s still conflicts with %s — PR left for manual resolution: %s", p.EpicID, p.Base, prURL)
 		return nil
 	}
@@ -267,6 +269,7 @@ func (p *Pipeline) FinalizeEpic(ctx context.Context) error {
 // unresolvable drift conflict does on the remote path.
 func (p *Pipeline) finalizeEpicLocally(ctx context.Context, epic string) error {
 	if !p.AutoMerge {
+		p.handOffEpic()
 		p.logf("  ⏳ epic %s is complete on %s — merge it into %s yourself (AUTO_MERGE=0)", p.EpicID, epic, p.Base)
 		return nil
 	}
@@ -278,6 +281,7 @@ func (p *Pipeline) finalizeEpicLocally(ctx context.Context, epic string) error {
 		p.logf("  epic title lookup error (using id-only subject): %v", err)
 	}
 	if err := p.Git.SquashMerge(ctx, epic, epicPRTitle(p.EpicID, title)); err != nil {
+		p.handOffEpic()
 		p.logf("  ⚠ epic %s could not be merged into %s (%v) — branch left for manual resolution", p.EpicID, p.Base, err)
 		return nil
 	}
@@ -387,6 +391,7 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 			p.logf("  ✗ epic CI: %v", err)
 		}
 		if repair >= p.MaxRepairs {
+			p.handOffEpic()
 			p.logf("  ⚠ epic CI not green after %d repair attempt(s) — leaving PR for review: %s", repair, prURL)
 			return false, nil
 		}
@@ -409,6 +414,7 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 	}
 
 	if !p.AutoMerge {
+		p.handOffEpic()
 		merged, err := p.waitForManualMerge(ctx, p.EpicID, pr, prURL)
 		if err != nil {
 			return false, err
@@ -435,24 +441,63 @@ func (p *Pipeline) epicCIAndMerge(ctx context.Context, prURL string) (bool, erro
 	return true, nil
 }
 
+// checkpointEpicReleasing opens the epic's own run row the moment shipping starts.
+// Title and phase land together — a phase-less row reads as a run still in flight.
+// Releasing ranks above the resume scan's in-flight window, so naming the epic
+// here still never makes it a resume target. A shipped epic keeps its terminal
+// checkpoint: reopening the release would un-ship it, and the re-run that follows
+// usually fails on the branch it has already merged away, stranding the epic
+// non-terminal for good.
+func (p *Pipeline) checkpointEpicReleasing(ctx context.Context) {
+	if p.State.Get(p.EpicID, "PHASE") == state.Merged {
+		return
+	}
+	if err := p.State.Set(p.EpicID, "PHASE", state.Releasing); err != nil {
+		p.logf("  epic checkpoint releasing error (continuing): %v", err)
+		return
+	}
+	p.stampEpicTitle(ctx)
+	_ = p.State.Set(p.EpicID, "RELEASE", state.ReleaseActive)
+}
+
+// handOffEpic marks the release parked for a human — an unresolvable drift
+// conflict, a gate that never went green, or a merge only the operator can make.
+// The releasing phase stays: the epic is still mid-release.
+func (p *Pipeline) handOffEpic() {
+	if err := p.State.Set(p.EpicID, "RELEASE", state.ReleaseAwaitingHuman); err != nil {
+		p.logf("  epic hand-off marker error (continuing): %v", err)
+	}
+}
+
 // checkpointEpicMerged records the shipped epic as a merged run — title, PR and
-// terminal phase beside its PR status. The epic id carries no checkpoint of its
-// own until it ships, so stamping PR_STATUS alone would leave the board a
-// phase-less row it reads as a run still in flight. The phase stays terminal on
-// purpose: an in-flight one would make the epic id a resume target.
+// terminal phase beside its PR status, with the hand-off marker dropped now that
+// nothing is left to hand off. The phase stays terminal on purpose: an in-flight
+// one would make the epic id a resume target.
 func (p *Pipeline) checkpointEpicMerged(ctx context.Context, prURL string) {
 	if err := p.State.Set(p.EpicID, "PHASE", state.Merged); err != nil {
 		p.logf("  epic checkpoint merged error (continuing): %v", err)
 		return
 	}
-	if title, _ := p.Tracker.Title(ctx, p.EpicID); title != "" {
-		_ = p.State.Set(p.EpicID, "TITLE", title)
-	}
+	p.stampEpicTitle(ctx)
 	if prURL != "" {
 		_ = p.State.Set(p.EpicID, "PR", prNumber(prURL))
 		_ = p.State.Set(p.EpicID, "PR_URL", prURL)
 	}
+	_ = p.State.Unset(p.EpicID, "RELEASE")
 	p.setPRStatus(p.EpicID, prStatusMerged)
+}
+
+// stampEpicTitle names the epic's run row from the tracker; a failed lookup leaves
+// the row on its id rather than holding up the checkpoint it rides with.
+func (p *Pipeline) stampEpicTitle(ctx context.Context) {
+	title, err := p.Tracker.Title(ctx, p.EpicID)
+	if err != nil {
+		p.logf("  epic title lookup error (leaving the row id-only): %v", err)
+		return
+	}
+	if title != "" {
+		_ = p.State.Set(p.EpicID, "TITLE", title)
+	}
 }
 
 func resolveConflictsInstruction(r prompts.Renderer, id, base, branch string) string {
