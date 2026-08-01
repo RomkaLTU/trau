@@ -13,11 +13,13 @@ import (
 // the base branch), and records what the ship phase did to it.
 type childGit struct {
 	fakeGit
-	status  string
-	head    string
-	branch  string
-	commits []string
-	pushed  []string
+	status     string
+	head       string
+	branch     string
+	commits    []string
+	pushed     []string
+	baseBehind bool // this child's remote base is missing the local base tip
+	pushFixes  bool // whether pushing the base brings the remote current
 }
 
 func (g *childGit) WorktreeStatus(context.Context) (string, error) { return g.status, nil }
@@ -41,7 +43,18 @@ func (g *childGit) Commit(_ context.Context, message string, _ bool) error {
 
 func (g *childGit) Push(_ context.Context, _, ref string, _ bool) error {
 	g.pushed = append(g.pushed, ref)
+	if ref == prBaseBranch && g.pushFixes {
+		g.baseBehind = false
+	}
 	return nil
+}
+
+func (g *childGit) RemoteSHA(context.Context, string, string) (string, error) {
+	return prBaseRemoteTip, nil
+}
+
+func (g *childGit) IsAncestor(context.Context, string, string) (bool, error) {
+	return !g.baseBehind, nil
 }
 
 // TestFolderShipFansOutToEveryChangedChild is the Folder repo delivery contract:

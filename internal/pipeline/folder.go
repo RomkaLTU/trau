@@ -506,6 +506,9 @@ func (p *Pipeline) openChildPR(ctx context.Context, c folderrepo.Child, branch, 
 	if url, err := gh.PRURL(ctx, branch); err == nil && url != "" {
 		return url, nil
 	}
+	if err := p.assertPRBaseCurrent(ctx, g, p.Base, p.Base); err != nil {
+		return "", err
+	}
 	url, err := gh.CreatePR(ctx, p.Base, branch, title, body, false)
 	if err != nil {
 		return "", fmt.Errorf("pr create: %w", err)

@@ -29,6 +29,9 @@ type exitGit struct {
 }
 
 func (g *exitGit) CurrentBranch(context.Context) (string, error) { return g.branch, nil }
+func (g *exitGit) RemoteSHA(_ context.Context, _, branch string) (string, error) {
+	return currentBaseSHA(branch), nil
+}
 func (g *exitGit) Checkout(_ context.Context, ref string, _ bool) error {
 	g.checkouts = append(g.checkouts, ref)
 	if g.checkoutErr != nil {
