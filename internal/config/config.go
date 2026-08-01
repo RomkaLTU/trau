@@ -2032,6 +2032,15 @@ var trackerConfigKeys = []string{
 // TrackerConfigKeys returns the keys that describe a repo's tracker.
 func TrackerConfigKeys() []string { return slices.Clone(trackerConfigKeys) }
 
+// projectSeededKeys are the settings a project owns on its members' behalf: the
+// tracker set plus the answers that describe how the whole project is worked. A
+// project stores them once and every member repo inherits them, late joiners
+// included, unless the repo sets one explicitly.
+var projectSeededKeys = slices.Concat(trackerConfigKeys, []string{"READY_LABEL", "EPIC_FLOW"})
+
+// ProjectSeededKeys returns the keys a project seeds into its member repos.
+func ProjectSeededKeys() []string { return slices.Clone(projectSeededKeys) }
+
 // ProviderTuningMeta enumerates the execution knobs a provider exposes, so the
 // settings UI can offer valid pickers instead of free text. Models are
 // suggestions (custom values are still allowed); Efforts is the exact set the

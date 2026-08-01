@@ -42,9 +42,11 @@ export function StepDone({
     void queryClient.invalidateQueries({ queryKey: ['instances'] })
   }, [repo, setScope, queryClient])
 
+  // The project-wide keys reach every member's .trau.ini either way, so the null
+  // form names them whichever route the essentials step took.
   const writtenKeys = [
     ...Object.keys(trackerConfigValues(provider, trackerFields)),
-    ...new Set(essentialsConfigWrites(essentials).map((w) => w.key)),
+    ...new Set(essentialsConfigWrites(essentials, null).map((w) => w.key)),
   ]
 
   const baseBranches = essentials.baseBranches

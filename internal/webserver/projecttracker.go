@@ -24,8 +24,9 @@ type ProjectTrackerKey struct {
 }
 
 // ProjectTrackerResponse is the /api/v1/projects/{project}/tracker resource: the
-// tracker every member repo of the project talks to, and the roots it is seeded
-// into.
+// settings every member repo of the project shares — the tracker it talks to and
+// the answers that describe how the project is worked — and the roots they are
+// seeded into.
 type ProjectTrackerResponse struct {
 	Project string              `json:"project"`
 	Repos   []string            `json:"repos"`
@@ -40,7 +41,7 @@ type ProjectTrackerRequest struct {
 	Keys map[string]string `json:"keys"`
 }
 
-// handleProjectTracker reads (GET) or replaces (PUT) the tracker a project's
+// handleProjectTracker reads (GET) or replaces (PUT) the settings a project's
 // member repos share.
 func (s *Server) handleProjectTracker(w http.ResponseWriter, r *http.Request) {
 	proj, err := s.stores.Projects().Get(r.PathValue("project"))
@@ -70,11 +71,11 @@ func (s *Server) putProjectTracker(w http.ResponseWriter, r *http.Request, proj 
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
 		return
 	}
-	allowed := config.TrackerConfigKeys()
+	allowed := config.ProjectSeededKeys()
 	for key := range req.Keys {
 		if !slices.Contains(allowed, key) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": fmt.Sprintf("%q is not a project tracker key", key),
+				"error": fmt.Sprintf("%q is not a project-wide key", key),
 			})
 			return
 		}
@@ -116,30 +117,43 @@ func (s *Server) putProjectTracker(w http.ResponseWriter, r *http.Request, proj 
 }
 
 // projectTracker returns the tracker the project's members share. A lone repo
-// whose project holds nothing adopts its own config file, so a repo onboarded
-// before projects owned the tracker keeps working with no prompt and a repo
-// joining it later inherits the same answers. Adopted keys count as
-// project-managed from then on, so a later edit propagates back to it. A project
-// with several members was grouped deliberately and waits to be configured
-// instead of claiming one member's keys.
+// fills in every project-wide key its project does not hold from its own config
+// file, so a repo onboarded before projects owned the tracker keeps working with
+// no prompt, the keys onboarding wrote straight to it still answer for the
+// project, and a repo joining it later inherits the same answers. Adopted keys
+// count as project-managed from then on, so a later edit propagates back to it.
+// A project with several members was grouped deliberately and waits to be
+// configured instead of claiming one member's keys.
 func (s *Server) projectTracker(proj hubstore.Project) (map[string]string, error) {
 	projects := s.stores.Projects()
 	keys, err := projects.Tracker(proj.ID)
-	if err != nil || len(keys) > 0 || len(proj.Repos) != 1 {
+	if err != nil || len(proj.Repos) != 1 {
 		return keys, err
 	}
 	root := proj.Repos[0]
 	adopted, err := readRepoTracker(root)
-	if err != nil || len(adopted) == 0 {
+	if err != nil {
 		return keys, err
 	}
-	if err := projects.SetTracker(proj.ID, adopted); err != nil {
+	maps.DeleteFunc(adopted, func(key, _ string) bool {
+		_, held := keys[key]
+		return held
+	})
+	if len(adopted) == 0 {
+		return keys, nil
+	}
+	seeded, err := projects.SeededTrackerKeys(root)
+	if err != nil {
 		return nil, err
 	}
-	if err := projects.MarkTrackerSeeded(root, slices.Collect(maps.Keys(adopted))); err != nil {
+	maps.Copy(keys, adopted)
+	if err := projects.SetTracker(proj.ID, keys); err != nil {
 		return nil, err
 	}
-	return adopted, nil
+	for key := range adopted {
+		seeded[key] = true
+	}
+	return keys, projects.MarkTrackerSeeded(root, slices.Collect(maps.Keys(seeded)))
 }
 
 // adoptRepoTrackers runs adoption across every project the hub holds. The
@@ -167,7 +181,7 @@ func readRepoTracker(root string) (map[string]string, error) {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	keys := map[string]string{}
-	for _, key := range config.TrackerConfigKeys() {
+	for _, key := range config.ProjectSeededKeys() {
 		if value := file[key]; value != "" {
 			keys[key] = value
 		}
@@ -207,7 +221,7 @@ func (s *Server) seedRepoTracker(root string, keys map[string]string) error {
 	}
 	write := map[string]string{}
 	var drop []string
-	for _, key := range config.TrackerConfigKeys() {
+	for _, key := range config.ProjectSeededKeys() {
 		value, wanted := keys[key]
 		_, present := file[key]
 		switch {
@@ -236,7 +250,7 @@ func writeTrackerReadError(w http.ResponseWriter, err error) {
 
 func projectTrackerResponse(proj hubstore.Project, keys map[string]string) ProjectTrackerResponse {
 	resp := ProjectTrackerResponse{Project: proj.ID, Repos: proj.Repos, Keys: []ProjectTrackerKey{}}
-	for _, key := range config.TrackerConfigKeys() {
+	for _, key := range config.ProjectSeededKeys() {
 		value, ok := keys[key]
 		if !ok {
 			continue

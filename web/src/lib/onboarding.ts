@@ -288,28 +288,31 @@ export interface EssentialsWrite extends ConfigWrite {
   root: string
 }
 
-// Every member keeps its own BASE_BRANCH; the remaining keys land on the primary only.
-export function essentialsConfigWrites(fields: EssentialsFields): EssentialsWrite[] {
-  const primary = fields.baseBranches[0].root
+// The keys that answer for the whole project rather than one repo. The hub seeds
+// them into every member, so a repo joining later inherits the same answers.
+export function essentialsProjectKeys(fields: EssentialsFields): Record<string, string> {
+  const keys: Record<string, string> = {}
+  if (fields.readyLabel.trim() !== '') keys.READY_LABEL = fields.readyLabel.trim()
+  keys.EPIC_FLOW = fields.epicFlow ? '1' : '0'
+  return keys
+}
+
+// Every member keeps its own BASE_BRANCH. Without a project to hold them, the
+// project-wide keys land on the primary repo instead.
+export function essentialsConfigWrites(
+  fields: EssentialsFields,
+  project: string | null,
+): EssentialsWrite[] {
   const writes: EssentialsWrite[] = []
   for (const { root, branch } of fields.baseBranches) {
     if (branch.trim() === '') continue
     writes.push({ root, key: 'BASE_BRANCH', value: branch.trim(), layer: 'project' })
   }
-  if (fields.readyLabel.trim() !== '') {
-    writes.push({
-      root: primary,
-      key: 'READY_LABEL',
-      value: fields.readyLabel.trim(),
-      layer: 'project',
-    })
+  if (project !== null) return writes
+  const primary = fields.baseBranches[0].root
+  for (const [key, value] of Object.entries(essentialsProjectKeys(fields))) {
+    writes.push({ root: primary, key, value, layer: 'project' })
   }
-  writes.push({
-    root: primary,
-    key: 'EPIC_FLOW',
-    value: fields.epicFlow ? '1' : '0',
-    layer: 'project',
-  })
   return writes
 }
 
