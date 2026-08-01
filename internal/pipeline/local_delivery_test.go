@@ -48,6 +48,10 @@ func (g *localGit) Commit(context.Context, string, bool) error {
 	return nil
 }
 
+func (g *localGit) RemoteSHA(_ context.Context, _, branch string) (string, error) {
+	return currentBaseSHA(branch), nil
+}
+
 func (g *localGit) Push(_ context.Context, _ string, ref string, _ bool) error {
 	g.pushes++
 	g.pushedRefs = append(g.pushedRefs, ref)

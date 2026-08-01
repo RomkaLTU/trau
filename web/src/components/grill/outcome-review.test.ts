@@ -18,6 +18,7 @@ import type {
   OutcomePayload,
 } from "@/lib/grill";
 import type { Issue } from "@/lib/issues";
+import type { QueueItem, QueueResponse } from "@/lib/queue";
 
 import { OutcomeReview } from "./outcome-review";
 
@@ -50,6 +51,25 @@ const createEpic: OutcomePayload = {
   sub_issues: [{ title: "S1", description: "d1" }],
 };
 
+const createTicket: OutcomePayload = {
+  disposition: "create",
+  title: "New ticket",
+  proposed_description: "Ticket body.",
+  summary: "one ticket",
+};
+
+const filedEpic: GrillSession = {
+  ...session,
+  issue_id: "COD-77",
+  issue_title: "New epic",
+};
+
+const filedTicket: GrillSession = {
+  ...session,
+  issue_id: "COD-78",
+  issue_title: "New ticket",
+};
+
 function issue(source: string): Issue {
   return {
     repo: "loop",
@@ -71,6 +91,7 @@ function issue(source: string): Issue {
 
 let root: Root | undefined;
 let host: HTMLElement | undefined;
+let client: QueryClient | undefined;
 
 const azureOptions: AzureCreateOptions = {
   types: ["User Story", "Bug"],
@@ -88,17 +109,18 @@ function renderReview(
   anchorSource: string,
   open: GrillSession = session,
 ) {
-  const client = new QueryClient({
+  const seeded = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  client.setQueryData<GrillListResponse>(["grill", "loop"], {
+  client = seeded;
+  seeded.setQueryData<GrillListResponse>(["grill", "loop"], {
     repo: "loop",
     tracker,
     sessions: [open],
   });
-  client.setQueryData<Issue>(["issue", "loop", "COD-42"], issue(anchorSource));
-  client.setQueryData(["assignable-users", "loop", ""], []);
-  client.setQueryData<AzureCreateOptions>(
+  seeded.setQueryData<Issue>(["issue", "loop", "COD-42"], issue(anchorSource));
+  seeded.setQueryData(["assignable-users", "loop", ""], []);
+  seeded.setQueryData<AzureCreateOptions>(
     ["azure-create-options", "loop"],
     azureOptions,
   );
@@ -110,7 +132,7 @@ function renderReview(
     mounted.render(
       createElement(
         QueryClientProvider,
-        { client },
+        { client: seeded },
         createElement(
           CreatedBannerProvider,
           null,
@@ -162,6 +184,7 @@ afterEach(() => {
   host?.remove();
   root = undefined;
   host = undefined;
+  client = undefined;
   vi.unstubAllGlobals();
 });
 
@@ -294,6 +317,181 @@ describe("OutcomeReview caveats", () => {
     expect(toast?.textContent).toContain("Applied, with caveats.");
     expect(toast?.textContent).toContain(
       "the superseded note failed: linear: 503",
+    );
+  });
+});
+
+// serveCreate routes the two calls a queued create makes: the apply, taken in
+// order so a retry can answer differently from the first attempt, and the queue
+// add. Every other queue call reads the rows given, which is what the re-add
+// paths inspect when the add is refused.
+function serveCreate(
+  applies: GrillApplyResponse[],
+  add: Response = jsonResponse(200, queue([])),
+  rows: QueueItem[] = [],
+) {
+  const pending = [...applies];
+  const fetchMock = vi.fn((input: string, init?: RequestInit) => {
+    if (input.includes("/apply")) {
+      const next = pending.length > 1 ? pending.shift()! : pending[0];
+      return Promise.resolve(jsonResponse(200, next));
+    }
+    if (init?.method === "POST") return Promise.resolve(add);
+    return Promise.resolve(jsonResponse(200, queue(rows)));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+function queue(items: QueueItem[]): QueueResponse {
+  return { repo: "loop", draining: false, stopping: false, items };
+}
+
+function queueAdds(fetchMock: { mock: { calls: unknown[][] } }): unknown[] {
+  return fetchMock.mock.calls
+    .filter(([input, init]) => {
+      const req = init as RequestInit | undefined;
+      return String(input).endsWith("/queue") && req?.method === "POST";
+    })
+    .map(([, init]) => JSON.parse(String((init as RequestInit).body)));
+}
+
+// The chevron opens on pointerdown, which is what the menu's trigger listens
+// for, and the menu itself lands in a portal outside the review's host.
+async function pickCreateAndQueue() {
+  const chevron = host?.querySelector<HTMLElement>(
+    '[aria-label="More create actions"]',
+  );
+  if (!chevron) throw new Error("no create menu trigger");
+  await act(async () => {
+    chevron.dispatchEvent(
+      new PointerEvent("pointerdown", { bubbles: true, button: 0 }),
+    );
+  });
+  const item = Array.from(
+    document.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+  ).find((el) => el.textContent?.trim() === "Create and queue");
+  if (!item) throw new Error("no Create and queue item");
+  await act(async () => item.click());
+}
+
+describe("OutcomeReview create and queue", () => {
+  it("offers the subaction on a create and nowhere else", () => {
+    const el = renderReview(createEpic, "linear", "linear");
+    expect(
+      el.querySelector('[aria-label="More create actions"]'),
+    ).not.toBeNull();
+
+    act(() => root?.unmount());
+    host?.remove();
+    const rewritten = renderReview(rewrite, "linear", "linear");
+    expect(
+      rewritten.querySelector('[aria-label="More create actions"]'),
+    ).toBeNull();
+  });
+
+  it("leaves the queue alone on a plain Create", async () => {
+    const fetchMock = serveCreate([applyResponse({ session: filedTicket })]);
+    renderReview(createTicket, "linear", "linear");
+
+    await act(async () => button("Create").click());
+
+    expect(queueAdds(fetchMock)).toEqual([]);
+  });
+
+  it("adds a single create to the back as a ticket", async () => {
+    const fetchMock = serveCreate([applyResponse({ session: filedTicket })]);
+    renderReview(createTicket, "linear", "linear");
+
+    await pickCreateAndQueue();
+
+    expect(queueAdds(fetchMock)).toEqual([
+      { id: "COD-78", kind: "ticket", title: "New ticket" },
+    ]);
+  });
+
+  it("adds an epic create as the parent so its slices run in order", async () => {
+    const row: QueueItem = {
+      position: 1,
+      kind: "epic",
+      id: "COD-77",
+      status: "pending",
+    };
+    const fetchMock = serveCreate(
+      [applyResponse({ session: filedEpic })],
+      jsonResponse(200, queue([row])),
+    );
+    renderReview(createEpic, "linear", "linear");
+
+    await pickCreateAndQueue();
+
+    expect(queueAdds(fetchMock)).toEqual([
+      { id: "COD-77", kind: "epic", title: "New epic" },
+    ]);
+    expect(
+      client?.getQueryData<QueueResponse>(["queue", "loop"])?.items,
+    ).toEqual([row]);
+  });
+
+  it("carries the intent into the internal fallback", async () => {
+    const fetchMock = serveCreate([
+      applyResponse({
+        session: { ...session, issue_id: "" },
+        applied: false,
+        steps: [
+          { step: "description", status: "failed", error: "linear: 500" },
+        ],
+      }),
+      applyResponse({ session: filedEpic }),
+    ]);
+    renderReview(createEpic, "linear", "linear");
+
+    await pickCreateAndQueue();
+    expect(queueAdds(fetchMock)).toEqual([]);
+
+    await act(async () => button("File internally instead").click());
+
+    expect(queueAdds(fetchMock)).toEqual([
+      { id: "COD-77", kind: "epic", title: "New epic" },
+    ]);
+  });
+
+  it("reads a row the queue already holds as queued", async () => {
+    const row: QueueItem = {
+      position: 1,
+      kind: "epic",
+      id: "COD-77",
+      status: "pending",
+    };
+    const fetchMock = serveCreate(
+      [applyResponse({ session: filedEpic })],
+      jsonResponse(409, { error: "COD-77 is already queued" }),
+      [row],
+    );
+    renderReview(createEpic, "linear", "linear");
+
+    await pickCreateAndQueue();
+
+    expect(queueAdds(fetchMock)).toHaveLength(1);
+    const toast = document.querySelector("[data-sonner-toaster]");
+    expect(toast?.textContent ?? "").not.toContain("adding it to the queue");
+    expect(
+      client?.getQueryData<QueueResponse>(["queue", "loop"])?.items,
+    ).toEqual([row]);
+  });
+
+  it("raises a caveat when the create lands but the queue add fails", async () => {
+    serveCreate(
+      [applyResponse({ session: filedEpic })],
+      jsonResponse(500, { error: "queue is sealed" }),
+    );
+    renderReview(createEpic, "linear", "linear");
+
+    await pickCreateAndQueue();
+
+    const toast = document.querySelector("[data-sonner-toaster]");
+    expect(toast?.textContent).toContain(
+      "COD-77 was created but adding it to the queue failed: queue is sealed",
     );
   });
 });

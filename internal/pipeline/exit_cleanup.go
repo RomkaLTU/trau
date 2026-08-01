@@ -208,7 +208,7 @@ func (p *Pipeline) epicRemoteTip(ctx context.Context, epic string) string {
 	if p.localDelivery(ctx) {
 		return ""
 	}
-	sha, err := p.remoteTip(ctx, epic)
+	sha, err := p.remoteTip(ctx, p.Git, epic)
 	if err != nil || sha == "" {
 		return ""
 	}

@@ -130,6 +130,9 @@ func (p *Pipeline) ensureEpicPR(ctx context.Context, epicBranch string, draft bo
 		return prURL, nil
 	}
 
+	if err := p.assertPRBaseCurrent(ctx, p.Git, p.Base, p.baseRef()); err != nil {
+		return "", err
+	}
 	title, err := p.Tracker.Title(ctx, p.EpicID)
 	if err != nil {
 		title = p.EpicID
@@ -335,57 +338,7 @@ func (p *Pipeline) assertEpicBaseCurrent(ctx context.Context, id, epic string) e
 	if pin == "" {
 		return nil
 	}
-	carries, err := p.remoteCarries(ctx, epic, pin)
-	if err != nil {
-		return err
-	}
-	if carries {
-		return nil
-	}
-	p.logf("  ⚠ %s/%s is behind the commit %s was cut from — pushing the epic branch before opening the PR", p.Remote, epic, id)
-	if err := p.Git.Push(ctx, p.Remote, epic, false); err != nil {
-		return fmt.Errorf("push epic base %s: %w", epic, err)
-	}
-	carries, err = p.remoteCarries(ctx, epic, pin)
-	if err != nil {
-		return err
-	}
-	if !carries {
-		return fmt.Errorf("epic base %s/%s does not carry %s, the commit %s was cut from — a PR opened against it would diff against a stale base", p.Remote, epic, pin, id)
-	}
-	p.logf("  ↻ %s/%s repaired — the PR base now carries %s", p.Remote, epic, pin)
-	return nil
-}
-
-// remoteCarries reports whether the remote copy of branch contains commit.
-func (p *Pipeline) remoteCarries(ctx context.Context, branch, commit string) (bool, error) {
-	sha, err := p.remoteTip(ctx, branch)
-	if err != nil || sha == "" {
-		return false, err
-	}
-	return p.Git.IsAncestor(ctx, commit, sha)
-}
-
-// remoteTip returns the commit remote/branch points at as the REMOTE reports it,
-// fetched into the local object store so its history can be judged locally. It is
-// read with ls-remote, never a remote-tracking ref: a push that failed leaves the
-// tracking ref exactly as convincing as a push that worked, and a tip that moved on
-// — a sibling squash-merged into the epic since — is missing from it entirely. A
-// branch the remote does not have is an expected ("", nil).
-func (p *Pipeline) remoteTip(ctx context.Context, branch string) (string, error) {
-	sha, err := p.Git.RemoteSHA(ctx, p.Remote, branch)
-	if err != nil {
-		return "", fmt.Errorf("read %s/%s: %w", p.Remote, branch, err)
-	}
-	if sha == "" {
-		return "", nil
-	}
-	if known, _ := p.Git.ResolvesToCommit(ctx, sha); !known {
-		if err := p.Git.Fetch(ctx, p.Remote, branch); err != nil {
-			return "", fmt.Errorf("fetch %s/%s: %w", p.Remote, branch, err)
-		}
-	}
-	return sha, nil
+	return p.assertPRBaseCurrent(ctx, p.Git, epic, pin)
 }
 
 // syncEpicForMerge brings the base into the epic branch before the epic ships to

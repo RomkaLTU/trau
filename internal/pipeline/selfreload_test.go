@@ -29,6 +29,10 @@ type reloadGit struct {
 
 func (g *reloadGit) RemoteExists(context.Context, string) (bool, error) { return !g.noRemote, nil }
 
+func (g *reloadGit) RemoteSHA(_ context.Context, _, branch string) (string, error) {
+	return currentBaseSHA(branch), nil
+}
+
 func (g *reloadGit) Checkout(_ context.Context, ref string, _ bool) error {
 	g.ops = append(g.ops, "checkout "+ref)
 	return g.checkoutErr

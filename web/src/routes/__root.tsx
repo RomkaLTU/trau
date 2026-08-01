@@ -42,7 +42,7 @@ function RootLayout() {
             {/* A column so a route can claim the height left under the recap banner
                 instead of guessing at it; routes that just stack keep their own
                 content height. */}
-            <div className="flex min-h-screen w-full flex-col px-6 py-8">
+            <div className="mx-auto flex min-h-screen w-full max-w-[96rem] flex-col px-6 py-8">
               <CreatedBanner />
               <AwayRecap collapsible={onRunRoute} />
               <Outlet />
