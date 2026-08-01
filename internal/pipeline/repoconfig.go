@@ -59,6 +59,13 @@ func ensureConfigInclude(ctx context.Context, repoRoot, configFile, include stri
 		}
 		return false, fmt.Errorf("stat %s: %w", RepoConfigFile, err)
 	}
+	g := ExecGit{Repo: repoRoot}
+	// Read the file before including it: an include.path git cannot parse breaks
+	// every later git call in the repo, down to the unset that would remove it
+	// again, so a malformed file has to be refused rather than wired and undone.
+	if err := g.run(ctx, "config", "--file", configFile, "--list"); err != nil {
+		return false, fmt.Errorf("read %s: %w", RepoConfigFile, err)
+	}
 	out, err := exec.CommandContext(ctx, "git", "-C", repoRoot, "config", "--local", "--get-all", "include.path").Output()
 	if err != nil {
 		// Exit status 1 means the key is simply unset; anything else is real.
@@ -72,7 +79,7 @@ func ensureConfigInclude(ctx context.Context, repoRoot, configFile, include stri
 			return false, nil
 		}
 	}
-	if err := (ExecGit{Repo: repoRoot}).run(ctx, "config", "--local", "--add", "include.path", include); err != nil {
+	if err := g.run(ctx, "config", "--local", "--add", "include.path", include); err != nil {
 		return false, err
 	}
 	return true, nil

@@ -52,9 +52,10 @@ type attempt struct {
 	pr     string
 }
 
-// in names the Child repo an attempt acted in, for a message that has to say
-// which of several it means.
-func (a attempt) in() string {
+// inRepo names the Child repo an attempt acted in as a message suffix — " in
+// api-billing" — for a message that has to say which of several it means. The
+// target repo itself needs no naming and contributes nothing.
+func (a attempt) inRepo() string {
 	if a.repo == "" {
 		return ""
 	}
@@ -80,13 +81,16 @@ func (p *Pipeline) attempts(id string) []attempt {
 
 // baseCheckout puts an attempt's repo back on the base branch before its branch
 // is deleted. Only the target repo's own checkout can collide with another
-// worktree holding the base, so only it goes through checkoutBase.
-func (p *Pipeline) baseCheckout(ctx context.Context, a attempt) error {
+// worktree holding the base, so only it goes through checkoutBase. discard says
+// what a Child repo's uncommitted work is up against: a reset throws it away on
+// purpose, while a purge leaves it standing and lets the branch it could not
+// leave be reported instead.
+func (p *Pipeline) baseCheckout(ctx context.Context, a attempt, discard bool) error {
 	if a.repo == "" {
 		_, err := p.checkoutBase(ctx, true)
 		return err
 	}
-	return a.git.Checkout(ctx, p.Base, true)
+	return a.git.Checkout(ctx, p.Base, discard)
 }
 
 // RefuseEpic answers ErrFolderRepoEpic when a Folder repo is asked to run the epic
@@ -234,26 +238,11 @@ func (p *Pipeline) sweepFolder(ctx context.Context) error {
 
 // changedChildren lists the Child repos the build actually touched: the ones
 // whose working tree no longer reads as the start-of-run sweep found it. A folder
-// run commits nothing until ship, so the change is still loose in the tree — but
-// so is whatever an operator left there, and that is theirs, not this run's. A
-// child whose status cannot be read now stays as the sweep found it.
+// run commits nothing until ship — the branch it would have committed to is no
+// part of the reading — so the change is still loose in the tree, but so is
+// whatever an operator left there, and that is theirs, not this run's.
 func (p *Pipeline) changedChildren(ctx context.Context) []folderrepo.Child {
-	children := p.folderChildren()
-	start := p.folderStartDirt(ctx)
-	dirt := folderrepo.Sweep(ctx, children, func(ctx context.Context, c folderrepo.Child) string {
-		d, err := childDirt(ctx, p.childGit(c), c.Path)
-		if err != nil {
-			return start[c.Name]
-		}
-		return d
-	})
-	changed := make([]folderrepo.Child, 0, len(children))
-	for i, c := range children {
-		if dirt[i] != start[c.Name] {
-			changed = append(changed, c)
-		}
-	}
-	return changed
+	return folderrepo.Carrying(ctx, p.folderChildren(), p.folderStartDirt(ctx), "", p.readChildState)
 }
 
 // folderBuildNote tells the build agent it is working across a folder of
@@ -370,7 +359,12 @@ func (p *Pipeline) checksLibrary() []checks.Check {
 
 // folderShip is the Folder repo's commit and PR phase. The branch is cut lazily —
 // only in the children the build actually changed, and with the same name in each
-// — so a run never touches a checkout the ticket had no business in.
+// — so a run never touches a checkout the ticket had no business in. A child whose
+// commit cannot be made — an unreadable .gitconfig.repo is the way that happens —
+// fails on its own: its siblings are still committed and recorded as ship targets,
+// so nothing this run cut is left outside SHIP_TARGETS, and the run is then given
+// up naming the children it could not commit in. Nothing is pushed: the cross-repo
+// change is incomplete, and no part of it may reach a remote or a merge.
 func (p *Pipeline) folderShip(ctx context.Context, id string) error {
 	p.setActivity(id, activity.Commit, "")
 	if err := p.assertChildrenInBounds(ctx, id); err != nil {
@@ -383,14 +377,20 @@ func (p *Pipeline) folderShip(ctx context.Context, id string) error {
 	branch := p.State.Get(id, "BRANCH")
 	message := deterministicCommitMessage(id, p.commitTitle(ctx, id))
 	targets := make([]shipTarget, 0, len(changed))
+	refused := []string{}
 	for _, c := range changed {
 		if err := p.commitChild(ctx, c, branch, message); err != nil {
-			return fmt.Errorf("commit %s in %s: %w", id, c.Name, err)
+			p.logf("  ✗ %s: %v", c.Name, err)
+			refused = append(refused, c.Name+" ("+err.Error()+")")
+			continue
 		}
 		targets = append(targets, shipTarget{Child: c})
 	}
 	if err := p.recordShipTargets(id, targets); err != nil {
 		return err
+	}
+	if len(refused) > 0 {
+		return &GiveUpError{ID: id, Reason: "could not commit " + id + " in " + strings.Join(refused, ", ")}
 	}
 	if p.localDelivery(ctx) {
 		return p.recordLocalDelivery(ctx, id)

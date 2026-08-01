@@ -1507,7 +1507,7 @@ func (p *Pipeline) resetLocal(ctx context.Context, id string) {
 
 	branch := p.featureBranch(ctx, id)
 	for _, a := range p.attempts(id) {
-		_ = p.baseCheckout(ctx, a)
+		_ = p.baseCheckout(ctx, a, true)
 		if branch != "" && branch != p.Base {
 			_ = a.git.DeleteBranch(ctx, branch)
 			_ = a.git.DeletePushedBranch(ctx, p.Remote, branch)
@@ -1557,10 +1557,12 @@ func (p *Pipeline) clearLocalState(id string) {
 // PurgeLocal drops what a hard-deleted ticket left on this machine: its feature
 // branch, local and remote, and its run directory. It is deliberately narrower
 // than a reset — the hub's run history (checkpoint, phase logs, artifacts) stays,
-// so what ran is still browsable once the ticket it ran for is gone, and the
-// tracker is never touched because a tombstoned ticket's upstream issue is not
-// trau's to reset. It returns the cleanup steps that failed so the hub that
-// ordered it can log them; the purge itself has already happened either way.
+// so what ran is still browsable once the ticket it ran for is gone; no Child
+// repo's uncommitted work is discarded, since a purge undoes a ticket rather than
+// a working tree; and the tracker is never touched because a tombstoned ticket's
+// upstream issue is not trau's to reset. It returns the cleanup steps that failed
+// so the hub that ordered it can log them; the purge itself has already happened
+// either way.
 func (p *Pipeline) PurgeLocal(ctx context.Context, id string) error {
 	ctx, cancel := detachedCleanup(ctx)
 	defer cancel()
@@ -1569,12 +1571,12 @@ func (p *Pipeline) PurgeLocal(ctx context.Context, id string) error {
 
 	var errs []error
 	for _, a := range p.attempts(id) {
-		_ = p.baseCheckout(ctx, a)
+		_ = p.baseCheckout(ctx, a, false)
 		if branch == "" || branch == p.Base {
 			continue
 		}
 		if err := a.git.DeleteBranch(ctx, branch); err != nil {
-			errs = append(errs, fmt.Errorf("delete branch %s%s: %w", branch, a.in(), err))
+			errs = append(errs, fmt.Errorf("delete branch %s%s: %w", branch, a.inRepo(), err))
 		}
 		if err := p.dropPushedBranch(ctx, a, branch); err != nil {
 			errs = append(errs, err)
@@ -1603,13 +1605,13 @@ func (p *Pipeline) PurgeLocal(ctx context.Context, id string) error {
 func (p *Pipeline) dropPushedBranch(ctx context.Context, a attempt, branch string) error {
 	exists, err := a.git.RemoteBranchExists(ctx, p.Remote, branch)
 	if err != nil {
-		return fmt.Errorf("look up %s/%s%s: %w", p.Remote, branch, a.in(), err)
+		return fmt.Errorf("look up %s/%s%s: %w", p.Remote, branch, a.inRepo(), err)
 	}
 	if !exists {
 		return nil
 	}
 	if err := a.git.DeletePushedBranch(ctx, p.Remote, branch); err != nil {
-		return fmt.Errorf("delete %s/%s%s: %w", p.Remote, branch, a.in(), err)
+		return fmt.Errorf("delete %s/%s%s: %w", p.Remote, branch, a.inRepo(), err)
 	}
 	return nil
 }

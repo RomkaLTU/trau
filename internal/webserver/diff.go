@@ -169,9 +169,8 @@ func (s *Server) folderRunDiff(ctx context.Context, repo registry.Repo, children
 
 // folderDiffChildren names the Child repos a folder run's diff covers, and
 // whether ship is what named them: the ship set once ship has run, and otherwise
-// every child still carrying the run's work loose — sitting on its branch, or
-// dirty against the census the run started from, which is what tells its work
-// from whatever an operator left there.
+// every child still carrying the run's work — the same reading the run itself
+// makes of its children.
 func folderDiffChildren(ctx context.Context, children []folderrepo.Child, row hubstore.CheckpointRow) ([]folderrepo.Child, bool) {
 	if shipped := checkpointField(row.Data, "SHIP_TARGETS"); shipped != "" {
 		named := strings.Split(shipped, ",")
@@ -180,19 +179,7 @@ func folderDiffChildren(ctx context.Context, children []folderrepo.Child, row hu
 		}), true
 	}
 	start := folderrepo.ParseCensus(checkpointField(row.Data, "START_DIRT"))
-	carrying := folderrepo.Sweep(ctx, children, func(ctx context.Context, c folderrepo.Child) bool {
-		if gitOutput(ctx, c.Path, "rev-parse", "--abbrev-ref", "HEAD") == row.Branch {
-			return true
-		}
-		return folderrepo.Fingerprint(c.Path, gitOutput(ctx, c.Path, "status", "--porcelain")) != start[c.Name]
-	})
-	out := make([]folderrepo.Child, 0, len(children))
-	for i, c := range children {
-		if carrying[i] {
-			out = append(out, c)
-		}
-	}
-	return out, false
+	return folderrepo.Carrying(ctx, children, start, row.Branch, folderrepo.ReadState), false
 }
 
 // prefixDiffFiles roots one Child repo's files under its own name. Only the path

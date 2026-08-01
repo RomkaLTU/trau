@@ -98,3 +98,26 @@ func TestEnsureChildConfigIncludeFallsBackToTheFolderRoot(t *testing.T) {
 		}
 	}
 }
+
+// TestEnsureChildConfigIncludeRefusesAConfigGitCannotRead is the wedge guard: an
+// include.path pointing at a file git cannot parse fails every later git call in
+// that child — the unset that would remove the include again included — so a
+// malformed file is refused with the child's git left exactly as usable as before.
+func TestEnsureChildConfigIncludeRefusesAConfigGitCannotRead(t *testing.T) {
+	root := t.TempDir()
+	child := filepath.Join(root, "api-users")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, child, "init")
+	if err := os.WriteFile(filepath.Join(child, RepoConfigFile), []byte("this is not a git config\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := EnsureChildConfigInclude(context.Background(), root, child); err == nil {
+		t.Fatal("wired a .gitconfig.repo git cannot read")
+	}
+	if err := exec.Command("git", "-C", child, "status", "--porcelain").Run(); err != nil {
+		t.Fatalf("child git is unusable after the refusal: %v", err)
+	}
+}

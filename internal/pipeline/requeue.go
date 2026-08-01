@@ -28,7 +28,7 @@ func (p *Pipeline) Requeue(ctx context.Context, id string, force bool) error {
 		states[i], _ = a.github.PRState(ctx, a.pr)
 		if states[i] == "MERGED" && !force {
 			return console.Actionable(
-				fmt.Errorf("%s is already shipped (PR %s is merged%s)", id, a.pr, a.in()),
+				fmt.Errorf("%s is already shipped (PR %s is merged%s)", id, a.pr, a.inRepo()),
 				"requeue "+id,
 				"its code is already merged — pass --force to requeue it anyway")
 		}
@@ -48,9 +48,9 @@ func (p *Pipeline) Requeue(ctx context.Context, id string, force bool) error {
 	for i, a := range attempts {
 		if a.pr != "" && states[i] != "CLOSED" && states[i] != "MERGED" {
 			if err := a.github.ClosePR(ctx, a.pr); err != nil {
-				errs = append(errs, fmt.Errorf("close PR %s%s: %w", a.pr, a.in(), err))
+				errs = append(errs, fmt.Errorf("close PR %s%s: %w", a.pr, a.inRepo(), err))
 			} else {
-				changed = append(changed, "closed the attempt PR "+a.pr+a.in())
+				changed = append(changed, "closed the attempt PR "+a.pr+a.inRepo())
 			}
 		}
 		dropped, dropErrs := p.dropAttemptBranch(ctx, a, branch)
@@ -86,12 +86,12 @@ func (p *Pipeline) dropAttemptBranch(ctx context.Context, a attempt, branch stri
 		return nil, nil
 	}
 	if local, _ := a.git.BranchExists(ctx, branch); local {
-		if err := p.baseCheckout(ctx, a); err != nil {
-			errs = append(errs, fmt.Errorf("check out %s%s: %w", p.Base, a.in(), err))
+		if err := p.baseCheckout(ctx, a, true); err != nil {
+			errs = append(errs, fmt.Errorf("check out %s%s: %w", p.Base, a.inRepo(), err))
 		} else if err := a.git.DeleteBranch(ctx, branch); err != nil {
-			errs = append(errs, fmt.Errorf("delete branch %s%s: %w", branch, a.in(), err))
+			errs = append(errs, fmt.Errorf("delete branch %s%s: %w", branch, a.inRepo(), err))
 		} else {
-			changed = append(changed, "deleted branch "+branch+a.in())
+			changed = append(changed, "deleted branch "+branch+a.inRepo())
 		}
 	}
 	if p.localDelivery(ctx) {
@@ -99,12 +99,12 @@ func (p *Pipeline) dropAttemptBranch(ctx context.Context, a attempt, branch stri
 	}
 	switch pushed, err := a.git.RemoteBranchExists(ctx, p.Remote, branch); {
 	case err != nil:
-		errs = append(errs, fmt.Errorf("look up %s/%s%s: %w", p.Remote, branch, a.in(), err))
+		errs = append(errs, fmt.Errorf("look up %s/%s%s: %w", p.Remote, branch, a.inRepo(), err))
 	case pushed:
 		if err := a.git.DeletePushedBranch(ctx, p.Remote, branch); err != nil {
-			errs = append(errs, fmt.Errorf("delete %s/%s%s: %w", p.Remote, branch, a.in(), err))
+			errs = append(errs, fmt.Errorf("delete %s/%s%s: %w", p.Remote, branch, a.inRepo(), err))
 		} else {
-			changed = append(changed, fmt.Sprintf("deleted %s/%s%s", p.Remote, branch, a.in()))
+			changed = append(changed, fmt.Sprintf("deleted %s/%s%s", p.Remote, branch, a.inRepo()))
 		}
 	}
 	return changed, errs

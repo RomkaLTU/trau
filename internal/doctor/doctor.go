@@ -328,11 +328,7 @@ func checkChildRepos(ctx context.Context, cfg config.Config, children []folderre
 	}
 	states := folderrepo.Sweep(ctx, children, func(ctx context.Context, c folderrepo.Child) childState {
 		return childState{
-			State: folderrepo.State{
-				Child:  c,
-				Branch: gitLine(ctx, c.Path, "rev-parse", "--abbrev-ref", "HEAD"),
-				Dirt:   gitLine(ctx, c.Path, "status", "--porcelain"),
-			},
+			State:     folderrepo.ReadState(ctx, c),
 			hasRemote: hasGitRemote(ctx, c.Path, remote),
 		}
 	})
@@ -362,15 +358,6 @@ func checkChildRepos(ctx context.Context, cfg config.Config, children []folderre
 	default:
 		rr.add("child repos", pass, message, "")
 	}
-}
-
-// gitLine reads a single-line git answer in dir, empty when the command fails.
-func gitLine(ctx context.Context, dir string, args ...string) string {
-	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
 
 // checkConfigLayers names the file every config layer resolved to. The

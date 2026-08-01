@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -36,8 +37,8 @@ func Sweep[T any](ctx context.Context, children []Child, read func(context.Conte
 }
 
 // State is a Child repo's condition when a sweep read it: the branch it sits on
-// and whatever uncommitted work its tree carries, or the error that stopped
-// either from being read.
+// and the Fingerprint of whatever uncommitted work its tree carries, or the error
+// that stopped either from being read.
 type State struct {
 	Child
 	Branch string
@@ -58,6 +59,64 @@ func (s State) OffLimitsReason(base string) string {
 		return "it sits on " + s.Branch + ", not " + base
 	}
 	return ""
+}
+
+// carries answers whether this child still holds the work a run left in it: its
+// tree no longer reads as the start-of-run census found it, or it sits on the
+// branch the run committed to. A child that could not be read stays as the census
+// found it.
+func (s State) carries(start map[string]string, branch string) bool {
+	switch {
+	case s.Err != nil:
+		return false
+	case branch != "" && s.Branch == branch:
+		return true
+	}
+	return s.Dirt != start[s.Name]
+}
+
+// ReadState reads a Child repo's condition by running git in it, for the callers
+// outside a run — the doctor's preview, the hub's diff pane — that hold no git
+// seam of their own. A run reads its children through its own.
+func ReadState(ctx context.Context, c Child) State {
+	st := State{Child: c}
+	branch, err := gitOutput(ctx, c.Path, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		st.Err = err
+		return st
+	}
+	st.Branch = branch
+	status, err := gitOutput(ctx, c.Path, "status", "--porcelain")
+	if err != nil {
+		st.Err = err
+		return st
+	}
+	st.Dirt = Fingerprint(c.Path, status)
+	return st
+}
+
+func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
+	out, err := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...).Output()
+	if err != nil {
+		return "", fmt.Errorf("git %s in %s: %w", strings.Join(args, " "), dir, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// Carrying names the Child repos still holding a run's work, judged against the
+// census the run started from: the ones whose tree no longer reads as it did
+// then, which is what tells a run's own work from whatever an operator left
+// there. branch also counts a child sitting on it — work already committed there
+// leaves the tree reading clean again — and a caller whose run has committed
+// nothing anywhere passes "".
+func Carrying(ctx context.Context, children []Child, start map[string]string, branch string, read func(context.Context, Child) State) []Child {
+	out := make([]Child, 0, len(children))
+	for i, st := range Sweep(ctx, children, read) {
+		if st.carries(start, branch) {
+			out = append(out, children[i])
+		}
+	}
+	return out
 }
 
 // Fingerprint condenses a Child repo's porcelain status — untracked files
