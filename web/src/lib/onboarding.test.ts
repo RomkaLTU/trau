@@ -36,6 +36,7 @@ function inspection(over: Partial<RepoInspection> = {}): RepoInspection {
   return {
     path: '/repo',
     repo_name: 'repo',
+    kind: 'repo',
     has_trau_ini: false,
     credentials: [],
     default_branch: 'main',

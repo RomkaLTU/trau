@@ -49,6 +49,9 @@ export interface RepoFreshness {
   issue_count?: number;
 }
 
+// kind tells a Folder repo — a registered folder whose git children are the
+// repositories a run ships to — from an ordinary one; child_repos counts those
+// children and is set only for a folder.
 export interface RepoView {
   name: string;
   root: string;
@@ -57,6 +60,8 @@ export interface RepoView {
   allowed: boolean;
   registered: boolean;
   seeded: boolean;
+  kind: "repo" | "folder";
+  child_repos?: number;
   freshness?: RepoFreshness;
 }
 

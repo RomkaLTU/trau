@@ -91,6 +91,32 @@ func TestRegisterRepoValidation(t *testing.T) {
 	}
 }
 
+// TestGitignoreIsANoOpForAFolderRepo holds the essentials toggle to ADR 0030: a
+// folder is not a git repository, so a .gitignore written into one is clutter
+// nothing reads, and the endpoint says plainly that it wrote none.
+func TestGitignoreIsANoOpForAFolderRepo(t *testing.T) {
+	home := t.TempDir()
+	folder := filepath.Join(t.TempDir(), "services")
+	gitRepo(t, folder, "api", "dir")
+	_, ts := controlServer(t, home, []string{folder})
+
+	res := postJSON(t, ts.URL+APIPrefix+"/repos/services/gitignore", nil)
+	defer func() { _ = res.Body.Close() }()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", res.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body["gitignored"] != false {
+		t.Errorf("gitignored = %v, want false", body["gitignored"])
+	}
+	if _, err := os.Stat(filepath.Join(folder, ".gitignore")); !os.IsNotExist(err) {
+		t.Errorf("stat .gitignore = %v, want it never written", err)
+	}
+}
+
 func TestRegisterThenDryRunWithoutRestart(t *testing.T) {
 	home := t.TempDir()
 	repo := gitRepo(t, t.TempDir(), "acme", "dir")
