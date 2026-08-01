@@ -36,6 +36,7 @@ import {
   useActiveRepo,
 } from "@/components/trau";
 import { StartIn } from "@/components/trau/member-repo-picker";
+import { WorkItemTypeChip } from "@/components/trau/work-item-type-chip";
 import {
   SegmentedControl,
   type SegmentOption,
@@ -939,6 +940,9 @@ function BacklogRow({
             <span className="rounded-full border border-sky-500/40 bg-sky-500/5 px-2 py-0.5 text-xs text-sky-600 dark:text-sky-400">
               queued
             </span>
+          )}
+          {entry.type && (
+            <WorkItemTypeChip type={entry.type} level={entry.level} />
           )}
           <StateGroupChip group={entry.group} />
           <span

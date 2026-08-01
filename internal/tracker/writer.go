@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RomkaLTU/trau/internal/tracker/azureapi"
 	"github.com/RomkaLTU/trau/internal/tracker/jiraapi"
 	"github.com/RomkaLTU/trau/internal/tracker/linearapi"
 )
@@ -26,18 +27,32 @@ var ErrUnsupported = errors.New("tracker: operation not supported by this provid
 // a type.
 const jiraDefaultIssueType = "Task"
 
+// DraftShape is where a draft sits relative to the issue an apply is building out,
+// which a tracker with a typed hierarchy files a level apart: Jira rejects a child
+// whose parent sits at the child's own level, and Azure DevOps files a slice a
+// level down as a Task where Parent alone would read as the Feature a story hangs
+// off.
+type DraftShape string
+
+const (
+	DraftIssue DraftShape = ""      // a standalone issue, at the tracker's own default level
+	DraftEpic  DraftShape = "epic"  // a parent filed one level above the slices it will carry
+	DraftSlice DraftShape = "slice" // one piece of the issue named by Parent, filed one level down
+)
+
 // IssueDraft is a new issue to create: a title, an optional markdown description,
 // any labels to apply (e.g. the ready label), and an optional parent to nest the
-// issue under so an epic and its sub-issues can be filed from the board. Epic
-// marks a draft that will carry sub-issues of its own, so a tracker with a typed
-// hierarchy files it one level up — Jira rejects a child whose parent sits at the
-// child's own level.
+// issue under so an epic and its sub-issues can be filed from the board. Shape
+// places the draft in a tracker's typed hierarchy. Type pins the tracker's own
+// work-item type, for a provider whose hierarchy is typed and offers more than one
+// type at the draft's level; empty files that level's default.
 type IssueDraft struct {
 	Title       string
 	Description string
 	Labels      []string
 	Parent      string
-	Epic        bool
+	Shape       DraftShape
+	Type        string
 }
 
 // NewIssue identifies a freshly created issue: its human identifier and a link.
@@ -96,6 +111,14 @@ type Writer interface {
 	AssignableUsers(ctx context.Context, query string) ([]AssignableUser, error)
 }
 
+// IssueTyper is the optional capability of naming the work-item types a create
+// may file as, for a provider whose hierarchy is typed and offers more than one at
+// the level trau files on. A surface that reads it offers the choice; one whose
+// Writer does not implement it hides the affordance.
+type IssueTyper interface {
+	CreatableTypes(ctx context.Context) ([]string, error)
+}
+
 // NewWriter builds a direct Writer for the provider from cfg, or
 // ErrWriterUnavailable when cfg carries no usable direct credentials. A Writer
 // only ever uses the direct API — it never falls back to an agent/MCP, so the
@@ -120,7 +143,16 @@ func NewWriter(provider string, cfg Config) (Writer, error) {
 			issueType: jiraDefaultIssueType,
 			epicType:  cfg.EpicType,
 		}, nil
-	case "azure", "github":
+	case "azure":
+		if strings.TrimSpace(cfg.BaseURL) == "" || strings.TrimSpace(cfg.APIKey) == "" {
+			return nil, ErrWriterUnavailable
+		}
+		return &azureWriter{
+			client:  azureapi.New(cfg.BaseURL, cfg.APIKey),
+			project: cfg.Team,
+			team:    levelTeam(cfg.BoardTeams),
+		}, nil
+	case "github":
 		return nil, fmt.Errorf("tracker: %s issue creation over the direct API is not supported: %w", provider, ErrUnsupported)
 	case "internal":
 		return nil, errors.New("tracker: internal issues are hub-owned; the serve hub writes them straight to its issue store, not through a direct-API writer")
@@ -288,7 +320,7 @@ func (w *jiraWriter) CreateIssue(ctx context.Context, draft IssueDraft) (NewIssu
 }
 
 func (w *jiraWriter) createKey(ctx context.Context, draft IssueDraft) (string, error) {
-	if draft.Epic {
+	if draft.Shape == DraftEpic {
 		return w.client.CreateEpic(ctx, w.project, w.epicType, draft.Title, draft.Description, draft.Labels)
 	}
 	return w.client.CreateIssue(ctx, w.project, w.issueType, draft.Title, draft.Description, draft.Labels, strings.TrimSpace(draft.Parent))

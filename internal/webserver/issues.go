@@ -434,11 +434,16 @@ func defaultWriter(cfg config.Config) (tracker.Writer, error) {
 		SplitLabel:      cfg.SplitLabel,
 		APIKey:          cfg.LinearAPIKey,
 	}
-	if provider == "jira" {
+	switch provider {
+	case "jira":
 		tc.APIKey = cfg.JiraAPIToken
 		tc.BaseURL = cfg.JiraBaseURL
 		tc.Email = cfg.JiraEmail
 		tc.EpicType = cfg.JiraEpicType
+	case "azure":
+		tc.APIKey = cfg.AzurePAT
+		tc.BaseURL = cfg.AzureOrgURL
+		tc.BoardTeams = cfg.AzureTeams
 	}
 	return tracker.NewWriter(provider, tc)
 }

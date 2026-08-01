@@ -77,6 +77,14 @@ _Avoid_: parent (that's the field on the child, not the concept), group, story (
 A tracker issue with a `parent` — a child of exactly one Epic. On the backlog board it nests under its Epic only when both are visible in the same status section (status-true nesting), at whatever depth that puts it; anywhere else it renders flat with a breadcrumb chip naming its Epic.
 _Avoid_: child (bare, ambiguous with process children), subtask, slice (that's the act of splitting a PRD, not the resulting issue)
 
+**Work item type**:
+The tracker's own name for what an issue *is* — `Epic`, `Feature`, `User Story`, `Bug`, `Task` on an Azure DevOps board, and whatever a customized process renamed them to. It is what the board badge shows, because it is what the user recognises. Azure DevOps only: every other provider leaves it empty (ADR 0031).
+_Avoid_: issue type, kind, category (that's the state category), level (that's the normalized rung, below)
+
+**Backlog level**:
+The rung a Work item type sits on, normalized away from the names any one process uses: `epic`, `feature`, `requirement` or `task` — or empty for a type the project's backlog configuration places nowhere. Read from the project and its team, never matched against a literal type name, and it is the level rather than the type that drives behaviour: the loop refuses to start anything above `requirement`, a create files at `requirement`, and its slices file as `task` (ADR 0031). Unrelated to the **Epic** entry above, which is trau's provider-neutral name for any issue that has Sub-issues.
+_Avoid_: hierarchy level, rank (that's the portfolio backlog's own ordering field), tier, depth
+
 **Settled**:
 Done or canceled — nothing left for trau to run. The numerator of an Epic's board progress (settled/total) and what queue drain marks an epic's sub-issues on completion; remaining work is always total − settled. A canceled Sub-issue settles its share: an Epic with one canceled child still reaches n/n.
 _Avoid_: done (bare — canceled isn't done but is settled), finished, closed, resolved

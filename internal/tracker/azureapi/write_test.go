@@ -154,7 +154,13 @@ func TestCreateWorkItemPostsToDollarType(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	id, err := New(srv.URL, "pat").CreateWorkItem(context.Background(), "Contoso", "Bug", "QA blocked", "It broke", []string{"HITL"})
+	id, err := New(srv.URL, "pat").CreateWorkItem(context.Background(), "Contoso", NewWorkItem{
+		Type:        "Bug",
+		Title:       "QA blocked",
+		Description: "It broke",
+		Tags:        []string{"HITL"},
+		Parent:      42,
+	})
 	if err != nil {
 		t.Fatalf("CreateWorkItem returned error: %v", err)
 	}
@@ -167,7 +173,7 @@ func TestCreateWorkItemPostsToDollarType(t *testing.T) {
 	if gotContentType != "application/json-patch+json" {
 		t.Errorf("Content-Type = %q, want application/json-patch+json", gotContentType)
 	}
-	wantPaths := []string{"/fields/System.Title", "/fields/System.Description", "/fields/System.Tags"}
+	wantPaths := []string{"/fields/System.Title", "/fields/System.Description", "/fields/System.Tags", "/relations/-"}
 	got := make([]string, len(gotOps))
 	for i, op := range gotOps {
 		got[i] = op.Path
@@ -228,7 +234,7 @@ func TestWriteOpsWithoutCredentialsAreNotEnabled(t *testing.T) {
 	if err := c.AddComment(ctx, "Contoso", 1, "hi"); !errors.Is(err, ErrNotEnabled) {
 		t.Errorf("AddComment err = %v, want ErrNotEnabled", err)
 	}
-	if _, err := c.CreateWorkItem(ctx, "Contoso", "Bug", "t", "d", nil); !errors.Is(err, ErrNotEnabled) {
+	if _, err := c.CreateWorkItem(ctx, "Contoso", NewWorkItem{Type: "Bug", Title: "t"}); !errors.Is(err, ErrNotEnabled) {
 		t.Errorf("CreateWorkItem err = %v, want ErrNotEnabled", err)
 	}
 }

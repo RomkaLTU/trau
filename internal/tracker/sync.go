@@ -60,7 +60,12 @@ type SyncedIssue struct {
 	UpdatedAt    string
 	AssigneeID   string
 	AssigneeName string
-	Comments     []SyncedComment
+	// Type and Level are the tracker's own work-item type name and the normalized
+	// backlog level the project places it on. Azure DevOps only: every other
+	// provider leaves both empty.
+	Type     string
+	Level    string
+	Comments []SyncedComment
 	// Attachments are the files the issue references — the tracker's own file
 	// list plus the images its markdown embeds. Metadata only: a pull never
 	// downloads bytes.
@@ -240,9 +245,10 @@ func (r *azureReader) syncPull(ctx context.Context, project, since string) ([]Sy
 	if err != nil {
 		return nil, fmt.Errorf("read blockers: %w", err)
 	}
+	levels := readBacklogLevels(ctx, r.client, project, r.teams)
 	out := make([]SyncedIssue, len(items))
 	for i := range items {
-		out[i] = r.synced(project, &items[i], blockers)
+		out[i] = r.synced(project, &items[i], blockers, levels)
 	}
 	r.sweepComments(ctx, project, items, out)
 	return out, nil
@@ -287,7 +293,7 @@ func (r *azureReader) scopeKey(stage, project, since string) string {
 // round-trip per item and is swept separately. Work-item file attachments are not
 // mirrored: their bytes sit behind the same PAT the pull holds, which the hub's
 // attachment surface cannot present.
-func (r *azureReader) synced(project string, item *azureapi.WorkItem, blockers map[int]bool) SyncedIssue {
+func (r *azureReader) synced(project string, item *azureapi.WorkItem, blockers map[int]bool, levels azureapi.Levels) SyncedIssue {
 	out := SyncedIssue{
 		ID:           azureIdentifier(item.ID),
 		ExternalID:   strconv.Itoa(item.ID),
@@ -304,6 +310,8 @@ func (r *azureReader) synced(project string, item *azureapi.WorkItem, blockers m
 		UpdatedAt:    item.UpdatedAt,
 		AssigneeID:   item.AssignedToID,
 		AssigneeName: item.AssignedToName,
+		Type:         item.Type,
+		Level:        string(levels.Of(item.Type)),
 	}
 	for _, id := range item.BlockedBy {
 		out.BlockedBy = append(out.BlockedBy, SyncedBlocker{

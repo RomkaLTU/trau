@@ -27,6 +27,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { type Assignee } from "@/lib/assignee";
 import { assignableUsersQueryOptions } from "@/lib/assignees";
 import {
+  azureCreateOptionsQueryOptions,
+  type AzureCreateOptions,
+} from "@/lib/azure";
+import {
   abandonGrill,
   applyGrill,
   diffHasChanges,
@@ -139,6 +143,8 @@ export function OutcomeReview({
     session.issue_destination === "internal" ? "internal" : "tracker",
   );
   const [assignee, setAssignee] = useState<Assignee | null>(null);
+  const [workItemType, setWorkItemType] = useState("");
+  const [parent, setParent] = useState("");
 
   // A rewrite or split writes to the anchor it was opened on, so switching it to
   // the internal store is a conversion of that ticket rather than a filing choice —
@@ -161,6 +167,18 @@ export function OutcomeReview({
     enabled: creates && destination === "tracker",
   });
 
+  // Azure DevOps files a create at requirement level under a Feature the board
+  // already has, so the choice is only offered where one exists to make. The
+  // create-options answer is cached per repo and shared with every session the
+  // panel opens, so the picker rides the query's own gate rather than its success
+  // alone — the hub reads the hierarchy on a create and nowhere else.
+  const placesInHierarchy =
+    isCreate && destination === "tracker" && tracker === "azure";
+  const hierarchy = useQuery({
+    ...azureCreateOptionsQueryOptions(repo),
+    enabled: placesInHierarchy,
+  });
+
   // The session's new state rides onSession (and the hub's SSE state frame), so the
   // grill list is left to go stale on its own — invalidating it here would drop the
   // panel's now-settled active session back to a preview. Only the issue and board
@@ -178,6 +196,7 @@ export function OutcomeReview({
         isCreate ? title.trim() : undefined,
         internal ? destination : undefined,
         internal ? null : assignee,
+        internal ? undefined : { workItemType, parent },
       );
     },
     onSuccess: (res) => {
@@ -313,6 +332,18 @@ export function OutcomeReview({
       )}
 
       {anchorInternal && <InternalAnchorNote anchor={issueId} />}
+
+      {placesInHierarchy && hierarchy.isSuccess && (
+        <HierarchyPicker
+          options={hierarchy.data}
+          workItemType={workItemType}
+          parent={parent}
+          disabled={busy}
+          isEpic={isCreateEpic}
+          onTypeChange={setWorkItemType}
+          onParentChange={setParent}
+        />
+      )}
 
       {creates && destination === "tracker" && assignable.isSuccess && (
         <div className="flex flex-col items-start gap-1">
@@ -979,6 +1010,77 @@ function DestinationPicker({
           {anchor} and everything under it move into trau's backlog under new
           ids. The {name} tickets keep a note saying so and stop driving trau.
         </p>
+      )}
+    </div>
+  );
+}
+
+// HierarchyPicker places an Azure DevOps create in the board's Epic → Feature →
+// User Story/Bug → Task hierarchy: the requirement-level type it files as, and the
+// Feature it hangs off. Only Features already on the board are offered — trau
+// never creates one — and picking none files the work item top-level, leaving the
+// re-parenting to Azure DevOps. Its slices become Tasks under it either way.
+function HierarchyPicker({
+  options,
+  workItemType,
+  parent,
+  disabled,
+  isEpic,
+  onTypeChange,
+  onParentChange,
+}: {
+  options: AzureCreateOptions;
+  workItemType: string;
+  parent: string;
+  disabled: boolean;
+  isEpic: boolean;
+  onTypeChange: (type: string) => void;
+  onParentChange: (parent: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      {options.types.length > 1 && (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-muted-foreground">
+            Work item type
+          </span>
+          <div className="flex flex-wrap gap-1">
+            {options.types.map((type, i) => (
+              <DestinationOption
+                key={type}
+                label={type}
+                on={workItemType === type || (workItemType === "" && i === 0)}
+                disabled={disabled}
+                onPick={() => onTypeChange(type)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+      {options.features.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-medium text-muted-foreground">
+            Feature
+          </span>
+          <select
+            value={parent}
+            disabled={disabled}
+            onChange={(e) => onParentChange(e.target.value)}
+            className="w-full rounded-md border bg-card px-2 py-1 text-sm text-foreground"
+          >
+            <option value="">No Feature — file top-level</option>
+            {options.features.map((feature) => (
+              <option key={feature.id} value={feature.id}>
+                {feature.id} · {feature.title}
+              </option>
+            ))}
+          </select>
+          {isEpic && (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              The slices below are filed as Tasks under the new work item.
+            </p>
+          )}
+        </div>
       )}
     </div>
   );
