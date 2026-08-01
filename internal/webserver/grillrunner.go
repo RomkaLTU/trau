@@ -361,11 +361,16 @@ func drainGrillStdout(r io.Reader, onLine func([]byte)) []byte {
 	}
 }
 
-// deltaSink publishes the agent's text as the child produces it.
+// deltaSink publishes the agent's text as the child produces it, and the tool work
+// it does between replies so a turn spent working is not a silent one.
 func (r *grillRunner) deltaSink(sid int64, adapter grillAdapter) func([]byte) {
 	return func(line []byte) {
 		if text := adapter.deltaText(line); text != "" {
 			r.srv.publishGrillDelta(sid, text)
+			return
+		}
+		if act := adapter.activityEvent(line); act != nil {
+			r.srv.publishGrillActivity(sid, *act)
 		}
 	}
 }
@@ -449,7 +454,8 @@ type grillStreamEvent struct {
 }
 
 // grillPartialEvent is the slice of an --include-partial-messages stream_event the
-// runner reads: the assistant's reply as it is written, one text delta at a time.
+// runner reads: the assistant's reply as it is written, one text delta at a time,
+// and each block as it opens, which is where a tool call names itself.
 type grillPartialEvent struct {
 	Type  string `json:"type"`
 	Event struct {
@@ -458,7 +464,22 @@ type grillPartialEvent struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"delta"`
+		ContentBlock struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+		} `json:"content_block"`
 	} `json:"event"`
+}
+
+// grillToolResultEvent is the slice of the top-level user event claude emits when a
+// tool comes back: whether it failed, never what it returned.
+type grillToolResultEvent struct {
+	Message struct {
+		Content []struct {
+			Type    string `json:"type"`
+			IsError bool   `json:"is_error"`
+		} `json:"content"`
+	} `json:"message"`
 }
 
 // grillDeltaText returns the reply text one stream-json line carries. Only a partial
@@ -473,6 +494,46 @@ func grillDeltaText(line []byte) string {
 		return ""
 	}
 	return ev.Event.Delta.Text
+}
+
+// grillActivityEvent returns the work one stream-json line reports the agent doing:
+// a block start naming the tool it reached for or opening a stretch of thinking, and
+// the user event that closes a tool out. The call's input is not read — a block start
+// carries none of it yet, and accumulating the input deltas would put whatever the
+// agent passed a tool on a stream any hub-token holder can read.
+func grillActivityEvent(line []byte) *GrillActivityView {
+	var ev grillPartialEvent
+	if json.Unmarshal(line, &ev) != nil {
+		return nil
+	}
+	if ev.Type == "user" {
+		return grillToolResultActivity(line)
+	}
+	if ev.Type != "stream_event" || ev.Event.Type != "content_block_start" {
+		return nil
+	}
+	switch ev.Event.ContentBlock.Type {
+	case "tool_use":
+		return &GrillActivityView{Kind: grillActivityTool, Name: ev.Event.ContentBlock.Name}
+	case "thinking":
+		return &GrillActivityView{Kind: grillActivityThinking}
+	}
+	return nil
+}
+
+// A user event is a tool coming back on a headless turn, so the first tool_result
+// block it carries settles the activity; anything else is not tool traffic.
+func grillToolResultActivity(line []byte) *GrillActivityView {
+	var ev grillToolResultEvent
+	if json.Unmarshal(line, &ev) != nil {
+		return nil
+	}
+	for _, blk := range ev.Message.Content {
+		if blk.Type == "tool_result" {
+			return grillToolResult(!blk.IsError)
+		}
+	}
+	return nil
 }
 
 // parseGrillStream extracts the latest session id and the terminal result's error
