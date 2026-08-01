@@ -5,9 +5,12 @@ import {
   activityText,
   checkpointStep,
   checkpointSteps,
+  isSyncLog,
   liveSteps,
   stepName,
   stepPill,
+  syncHeadline,
+  syncState,
 } from '@/lib/steps'
 
 describe('activityStep', () => {
@@ -86,6 +89,50 @@ describe('checkpointSteps', () => {
 
   it('marks the Step a failed run stopped in', () => {
     expect(checkpointSteps('verified', true).map((s) => s.state)).toEqual(['done', 'done', 'fail'])
+  })
+})
+
+describe('syncState', () => {
+  it('reads a conflicted epic sync with its attempt counter', () => {
+    expect(syncState('merge', 'epic-sync1/2')).toEqual({
+      title: 'Syncing epic with its base',
+      attempt: 1,
+      attempts: 2,
+    })
+  })
+
+  it('keys on the sync label, not on epic-ness', () => {
+    expect(syncState('merge', 'merge-sync2/3')?.title).toBe('Syncing branch with its base')
+  })
+
+  it('reads an older heartbeat that carries no bound', () => {
+    expect(syncState('merge', 'epic-sync1')).toMatchObject({ attempt: 1, attempts: 1 })
+  })
+
+  it('leaves every other merge as the generic phase', () => {
+    expect(syncState('merge', '')).toBeUndefined()
+    expect(syncState('merge', 'epic-sync')).toBeUndefined()
+    expect(syncState('merge-wait', 'epic-sync1/2')).toBeUndefined()
+    expect(syncState('repair', 'repair2')).toBeUndefined()
+    expect(syncState(undefined, undefined)).toBeUndefined()
+  })
+
+  it('names the state with the attempt the agent is on', () => {
+    expect(syncHeadline(syncState('merge', 'epic-sync2/3')!)).toBe(
+      'Syncing epic with its base: resolving merge conflicts (attempt 2/3, agent running)',
+    )
+  })
+})
+
+describe('isSyncLog', () => {
+  it('picks out the resolution attempts among the run phase logs', () => {
+    expect(['epic-sync1', 'merge-sync2'].map(isSyncLog)).toEqual([true, true])
+    expect(['build', 'verify', 'repair1', 'epic-repair1'].map(isSyncLog)).toEqual([
+      false,
+      false,
+      false,
+      false,
+    ])
   })
 })
 
