@@ -619,6 +619,7 @@ func TestSyncRefusesLinearWithoutTeamKey(t *testing.T) {
 func TestSyncKeepsStoredBindingWithoutTeamKey(t *testing.T) {
 	fake := &fakeReader{synced: syncedFixture(), bindingErr: tracker.ErrNoTeamKey}
 	ts, root, store := syncServer(t, fake)
+	writeRepoINI(t, root, "TRACKER_PROVIDER=linear\n")
 	if err := store.SaveBinding(root, hubstore.SyncBinding{TeamID: "team-1"}); err != nil {
 		t.Fatalf("SaveBinding: %v", err)
 	}
